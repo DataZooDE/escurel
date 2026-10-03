@@ -39,6 +39,7 @@ interface Open {
   reload: () => void;
   render: () => void;
   select: (nodeId: string) => void;
+  detailFor: (nodeId: string) => InspectorView | undefined;
   toggleCollapse: (nodeId: string) => void;
   expandAll: () => void;
   dispose: () => void;
@@ -69,6 +70,16 @@ export class ThreadController implements vscode.Disposable {
   readonly onDidCollapse = this.collapseChanged.event;
   private readonly selected = new vscode.EventEmitter<{ rootEventId: string; nodeId: string }>();
   readonly onDidSelect = this.selected.event;
+  private readonly detailsChanged = new vscode.EventEmitter<{
+    rootEventId: string;
+    /** Absent: nothing selected any more (or the thread closed). */
+    nodeId?: string;
+    detail?: InspectorView;
+    /** `select`: the user chose this node. `refresh`: the same node, after a live reload. */
+    reason: 'select' | 'refresh';
+  }>();
+  /** What the details view should show: the selected node of a thread, with its inspector. */
+  readonly onDidChangeDetails = this.detailsChanged.event;
 
   constructor(
     private readonly context: vscode.ExtensionContext,
@@ -96,6 +107,22 @@ export class ThreadController implements vscode.Disposable {
    */
   toggleCollapse(rootEventId: string, nodeId: string): void {
     this.panels.get(rootEventId)?.toggleCollapse(nodeId);
+  }
+
+  /** Whether a thread panel is open for this root event. */
+  isOpen(rootEventId: string): boolean {
+    return this.panels.has(rootEventId);
+  }
+
+  /** Whether this thread's panel is the active editor (it had the focus). */
+  isActive(rootEventId: string): boolean {
+    return this.panels.get(rootEventId)?.panel.active ?? false;
+  }
+
+  /** Give the keyboard focus back to a thread's canvas (Esc in the details view). */
+  focusCanvas(rootEventId: string): void {
+    const open = this.panels.get(rootEventId);
+    if (open) open.panel.reveal(open.panel.viewColumn, false);
   }
 
   /** The toolbar's "Expand all". */
@@ -180,6 +207,19 @@ export class ThreadController implements vscode.Disposable {
     let cachedAdmin: AdminState = 'unknown';
     let timer: NodeJS.Timeout | undefined;
     let disposed = false;
+    // The node the details view is showing for this thread, and the inspector built for every node
+    // at the last render. The canvas no longer carries the inspector; the details view does.
+    let selectedNodeId: string | undefined;
+    let lastDetails: Record<string, InspectorView> = {};
+    const fireDetails = (reason: 'select' | 'refresh') => {
+      const detail = selectedNodeId ? lastDetails[selectedNodeId] : undefined;
+      if (selectedNodeId && detail) {
+        this.detailsChanged.fire({ rootEventId, nodeId: selectedNodeId, detail, reason });
+      } else {
+        selectedNodeId = undefined;
+        this.detailsChanged.fire({ rootEventId, reason });
+      }
+    };
 
     const post = (m: ThreadHostToWebview) => {
       if (disposed) return;
@@ -221,13 +261,15 @@ export class ThreadController implements vscode.Disposable {
           }
         }
       }
+      lastDetails = details;
       post({
         type: 'thread',
         view,
         layout,
         focus: focusGraph(view, layout),
-        details,
       });
+      // The node the user selected may have changed (a live reload) or gone.
+      if (selectedNodeId) fireDetails('refresh');
       const root = view.nodes.find((n) => n.id === view.rootEventId);
       // The event's own title when it has one. `title` is the skill label, which every thread
       // from that skill shares: two open threads were both 'Thread · supplier-risk' and could
@@ -298,6 +340,8 @@ export class ThreadController implements vscode.Disposable {
         case 'select-node': {
           // Only a node of this thread: the outline reveals whatever it is told to.
           if (!knownNodeId(current && toThreadView(current), m.nodeId)) return;
+          selectedNodeId = m.nodeId;
+          fireDetails('select');
           return void this.selected.fire({ rootEventId, nodeId: m.nodeId });
         }
         case 'open-node': {
@@ -340,11 +384,19 @@ export class ThreadController implements vscode.Disposable {
       getAdmin: () => cachedAdmin,
       reload: () => void load(),
       render: () => render(),
-      select: (nodeId) => post({ type: 'thread-select', nodeId }),
+      select: (nodeId) => {
+        post({ type: 'thread-select', nodeId });
+        // The outline selected it: the details follow, exactly as for a click on the canvas.
+        if (!knownNodeId(current && toThreadView(current), nodeId)) return;
+        selectedNodeId = nodeId;
+        fireDetails('select');
+      },
+      detailFor: (nodeId) => lastDetails[nodeId],
       toggleCollapse,
       expandAll,
       dispose: () => {
         disposed = true;
+        this.detailsChanged.fire({ rootEventId, reason: 'refresh' });
         clearTimeout(timer);
         adminSub.dispose();
         live.dispose();
@@ -358,6 +410,7 @@ export class ThreadController implements vscode.Disposable {
     this.loaded.dispose();
     this.collapseChanged.dispose();
     this.selected.dispose();
+    this.detailsChanged.dispose();
     log().info('escurel: thread panels closed');
   }
 }

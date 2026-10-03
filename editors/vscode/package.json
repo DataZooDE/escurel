@@ -239,6 +239,13 @@
           "title": "Runner",
           "icon": "media/icon.svg"
         }
+      ],
+      "panel": [
+        {
+          "id": "escurel-details",
+          "title": "Escurel Details",
+          "icon": "media/details.svg"
+        }
       ]
     },
     "views": {
@@ -268,6 +275,13 @@
         {
           "id": "escurel.runner",
           "name": "Runner"
+        }
+      ],
+      "escurel-details": [
+        {
+          "id": "escurel.details",
+          "name": "Details",
+          "type": "webview"
         }
       ]
     },

@@ -12,7 +12,6 @@ import {
   gatedFocus,
   gatedLayout,
   gatedThreadView,
-  recordedDetails,
   recordedFocus,
   recordedLayout,
   recordedThreadView,
@@ -26,7 +25,6 @@ async function renderCanvas(
       .view=${props.view ?? recordedThreadView}
       .layout=${props.layout ?? recordedLayout}
       .focus=${props.focus ?? recordedFocus}
-      .details=${props.details ?? recordedDetails}
       .error=${props.error}
     ></escurel-thread-canvas>
   `);
@@ -242,10 +240,10 @@ describe('<escurel-thread-canvas>', () => {
     const runCard = q(el, `.card[data-node-id="${runId}"]`);
     expect(runCard?.classList.contains('selected')).to.equal(true);
 
-    // Inspector is rendered for selected node.
-    const inspector = q(el, 'escurel-thread-inspector') as { detail?: { title?: string } } | null;
-    expect(inspector).to.exist;
-    expect(inspector?.detail?.title).to.equal('signal run');
+    // The details are a view of their own in the panel area: the canvas shows no inspector, so a
+    // selection takes no width from it.
+    expect(q(el, 'escurel-thread-inspector')).to.equal(null);
+    expect(q(el, '.inspector-container')).to.equal(null);
   });
 
   it('routes ready, loading, thread, error, and select messages while ignoring unknown types', async () => {
@@ -267,7 +265,6 @@ describe('<escurel-thread-canvas>', () => {
             view: recordedThreadView,
             layout: recordedLayout,
             focus: recordedFocus,
-            details: recordedDetails,
           },
         }),
       );
@@ -477,7 +474,6 @@ describe('<escurel-thread-canvas>', () => {
         view: recordedThreadView,
         layout: recordedLayout,
         focus: recordedFocus,
-        details: recordedDetails,
       });
       await el.updateComplete;
       el.selectNode(recordedThreadView.rootEventId);
@@ -491,10 +487,8 @@ describe('<escurel-thread-canvas>', () => {
     }
   });
 
-  it('keeps a selected card in view once the inspector has taken its share of the width', async () => {
-    // Selecting opens the inspector, which takes 320px from the canvas; the reveal was
-    // computed against the canvas as it was BEFORE that, so a card near the right edge could
-    // be clipped the moment it was selected.
+  it('keeps a selected card in view', async () => {
+    // A card near the right edge must not be clipped the moment it is selected.
     const el = await renderCanvas();
     const last = recordedLayout.nodes.reduce((a, b) => (b.x > a.x ? b : a));
     el.selectNode(last.id);
@@ -520,7 +514,6 @@ describe('<escurel-thread-canvas>', () => {
             .view=${view}
             .layout=${layout}
             .focus=${focus}
-            .details=${recordedDetails}
           ></escurel-thread-canvas>
         </div>
       `);
@@ -569,7 +562,6 @@ describe('<escurel-thread-canvas>', () => {
             .view=${branchingThreadView}
             .layout=${branchingLayout}
             .focus=${branchingFocus}
-            .details=${recordedDetails}
           ></escurel-thread-canvas>
         </div>
       `);
@@ -607,7 +599,6 @@ describe('<escurel-thread-canvas>', () => {
             .view=${branchingThreadView}
             .layout=${branchingLayout}
             .focus=${branchingFocus}
-            .details=${recordedDetails}
           ></escurel-thread-canvas>
         </div>
       `);
@@ -700,27 +691,99 @@ describe('<escurel-thread-canvas>', () => {
     }
     const visible = (e: Element | null) => !!e && getComputedStyle(e).display !== 'none';
 
-    it('below 70% a card keeps icon, accent bar and state chip but no text', async () => {
-      const el = await at(0.69);
+    it('below 70% a card keeps icon, type word, title and state chip, and drops the body', async () => {
+      const el = await at(0.5);
       expect(q(el, '.canvas-area')!.classList.contains('low-zoom')).to.equal(true);
-      // The assertions below must have something to bite on: the thread has buttons and titles to hide.
+      // The assertions below must have something to bite on: the thread has buttons and bodies to hide.
       expect(qa(el, '.gate-actions').length > 0, 'a card with Promote/Discard').to.equal(true);
       expect(qa(el, '.needs-reason').length > 0, 'a card with a reason').to.equal(true);
       expect(qa(el, '.card-title').length > 0, 'cards with titles').to.equal(true);
       for (const card of qa(el, '.card')) {
-        expect(visible(card.querySelector('.type-icon')), 'icon').to.equal(true);
-        expect(visible(card.querySelector('.chip')), 'state chip').to.equal(true);
+        for (const sel of ['.type-icon', '.card-title', '.type-label', '.chip']) {
+          expect(visible(card.querySelector(sel)), `${sel} visible`).to.equal(true);
+        }
         for (const sel of [
-          '.card-title',
-          '.type-label',
           '.card-subtitle',
           '.meta-lines',
           '.needs-reason',
           '.gate-actions',
+          '.draft-list',
         ]) {
           const el2 = card.querySelector(sel);
           expect(el2 === null || !visible(el2), `${sel} hidden`).to.equal(true);
         }
+      }
+    });
+
+    it('keeps the words readable at any zoom: rendered text is never below 10px', async () => {
+      // The card text is counter-scaled, so zooming out shrinks the picture, not the words.
+      for (const zoom of [0.69, 0.5, 0.4]) {
+        const el = await at(zoom);
+        for (const card of qa(el, '.card')) {
+          for (const sel of ['.card-title', '.type-label', '.chip']) {
+            const node = card.querySelector(sel);
+            if (!node) continue;
+            const rendered = parseFloat(getComputedStyle(node).fontSize) * zoom;
+            expect(
+              rendered >= 9.5,
+              `${sel} renders at ${rendered.toFixed(1)}px at ${zoom}`,
+            ).to.equal(true);
+          }
+        }
+      }
+    });
+
+    it('fits the words in the card: nothing spills out of a box at the lowest zoom', async () => {
+      const el = await at(0.4);
+      // A row squeezed by flex-shrink clips its own text while its box still looks inside the card:
+      // each row must hold its own text.
+      for (const card of qa(el, '.card') as HTMLElement[]) {
+        for (const row of [...card.children] as HTMLElement[]) {
+          if (getComputedStyle(row).display === 'none') continue;
+          expect(
+            row.scrollHeight <= row.clientHeight + 1,
+            `row ${row.className} of ${card.dataset.nodeId}: text ${row.scrollHeight} in ${row.clientHeight}`,
+          ).to.equal(true);
+        }
+      }
+      // scrollHeight/scrollWidth are in layout px and count clipped content: a row cut off by the
+      // card's own overflow:hidden (what the 40% baseline showed) is still caught.
+      for (const card of qa(el, '.card') as HTMLElement[]) {
+        expect(
+          card.scrollHeight <= card.clientHeight + 1,
+          `card ${card.dataset.nodeId} content ${card.scrollHeight} > box ${card.clientHeight}`,
+        ).to.equal(true);
+        expect(
+          card.scrollWidth <= card.clientWidth + 1,
+          `card ${card.dataset.nodeId} content wider than box`,
+        ).to.equal(true);
+      }
+      for (const card of qa(el, '.card') as HTMLElement[]) {
+        const box = card.getBoundingClientRect();
+        for (const sel of ['.card-title', '.type-label', '.chip']) {
+          const n = card.querySelector(sel);
+          if (!n) continue;
+          const r = n.getBoundingClientRect();
+          expect(
+            r.right <= box.right + 1 && r.bottom <= box.bottom + 1,
+            `${sel} inside its card`,
+          ).to.equal(true);
+        }
+      }
+    });
+
+    it('keeps the focus ring visible when zoomed out: it renders at least 1.5px at any zoom', async () => {
+      // A 2px outline on a card scaled to 40% is 0.8px: a keyboard user loses where they are.
+      for (const zoom of [0.69, 0.4]) {
+        const el = await at(zoom);
+        const card = qa(el, '.card')[0] as HTMLElement;
+        card.focus();
+        await el.updateComplete;
+        const width = parseFloat(getComputedStyle(card).outlineWidth);
+        expect(
+          width * zoom >= 1.5,
+          `outline ${width}px renders at ${(width * zoom).toFixed(2)}px at ${zoom}`,
+        ).to.equal(true);
       }
     });
 
@@ -778,7 +841,6 @@ describe('<escurel-thread-canvas>', () => {
           .view=${recordedThreadView}
           .layout=${recordedLayout}
           .focus=${recordedFocus}
-          .details=${recordedDetails}
         ></escurel-thread-canvas>
       </div>
     `);
@@ -939,6 +1001,17 @@ describe('<escurel-thread-canvas>', () => {
       const card = q(el, '.card.type-changeset.needs-you')!;
       expect(text(card.querySelector('.changeset-author'))).to.contain('agent:supplier-risk');
       expect(/ago|just now/.test(text(card.querySelector('.changeset-author')))).to.equal(true);
+    });
+
+    it('measures a changeset’s age against the canvas’s own clock, so a baseline does not age', async () => {
+      // The visual baselines read "4 h ago", then "5 h ago": the age came from the real clock.
+      const el = await branching();
+      el.clock = () => new Date('2026-10-03T08:03:06Z');
+      await el.updateComplete;
+      const card = q(el, '.card.type-changeset.needs-you')!;
+      expect(text(card.querySelector('.changeset-author'))).to.equal(
+        'agent:supplier-risk · 3 min ago',
+      );
     });
 
     it('lists the pages it changes, each openable', async () => {

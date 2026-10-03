@@ -100,10 +100,16 @@ test('the thread shows the cascade, and an instance offers a skill to start', as
   await expect(canvas.locator('.card .type-icon svg').first()).toBeVisible();
   await stack.shot('02-thread');
 
-  // The instance a draft proposes a change to: select it, and the inspector offers its skill's actions.
+  // The instance a draft proposes a change to: select it, and the DETAILS view, a view of its own in
+  // the bottom panel (VS Code lays it out), shows the node and offers its skill's actions.
   await canvas.getByRole('treeitem', { name: /order-4500123/ }).click();
-  const start = wv.getByRole('group', { name: 'Skills' }).locator('.primary').first();
+  const details = await webviewWith(page, 'escurel-details');
+  await expect(details.locator('escurel-details')).toContainText('order-4500123');
+  const start = details.getByRole('group', { name: 'Skills' }).locator('.primary').first();
   await expect(start).toBeVisible();
+  // The canvas keeps its full width: the inspector is no longer a column inside it.
+  await expect(canvas.locator('escurel-thread-inspector')).toHaveCount(0);
+  await expect(page.getByRole('tab', { name: /Escurel Details/ })).toBeVisible();
   await stack.shot('03-thread-inspector-instance');
 
   // Click it. A start event appears in the Inbox, and the runner takes it.
@@ -169,7 +175,9 @@ test('work that waits on a person stands out: a Needs-you changeset with its dra
   await expect(picker).toBeHidden();
 });
 
-test('zoomed out, cards keep icon, accent and state but drop their words', async ({ stack }) => {
+test('zoomed out, cards keep icon, type, title and state but drop their body', async ({
+  stack,
+}) => {
   const { page } = stack;
   const wv = await webviewWith(page, 'escurel-thread-canvas');
   const canvas = wv.locator('escurel-thread-canvas');
@@ -179,7 +187,17 @@ test('zoomed out, cards keep icon, accent and state but drop their words', async
   const card = canvas.locator('.card.type-changeset.needs-you');
   await expect(card.locator('.type-icon svg')).toBeVisible();
   await expect(card.locator('.needs-badge svg')).toBeVisible();
-  await expect(card.locator('.card-title')).toBeHidden();
+  // The words stay, at a readable size: type word and title are visible, the body is not.
+  await expect(card.locator('.card-title')).toBeVisible();
+  await expect(card.locator('.type-label')).toBeVisible();
+  await expect(card.locator('.draft-list')).toBeHidden();
+  const rendered = await card
+    .locator('.card-title')
+    .evaluate(
+      (el, z) => parseFloat(getComputedStyle(el).fontSize) * z,
+      await canvas.evaluate((c) => (c as unknown as { viewport: { zoom: number } }).viewport.zoom),
+    );
+  expect(rendered).toBeGreaterThanOrEqual(9.5);
   // The accessible name still carries everything.
   await expect(card).toHaveAttribute('aria-label', /changeset.*needs you/i);
   await stack.shot('02d-overview');

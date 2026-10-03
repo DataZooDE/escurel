@@ -284,8 +284,6 @@ export type ThreadHostToWebview =
       view: ThreadView;
       layout: ThreadLayout;
       focus: FocusGraph;
-      /** Keyed by node id; a node with no entry has nothing to inspect. */
-      details: Record<string, InspectorView>;
     }
   | { type: 'thread-error'; message: string; canReconnect: boolean }
   /** The outline selected a node: the canvas highlights it and pans to it. */
@@ -305,6 +303,34 @@ export type ThreadWebviewToHost =
   /** The toolbar's "Expand all": the host owns which nodes are collapsed. */
   | { type: 'expand-all' }
   | { type: 'refresh' };
+
+// ── details view (the bottom panel) ──────────────────────────────────
+
+/** The inspector actions a details view may send; everything else a thread offers stays on the canvas. */
+export type DetailsAction = Extract<
+  ThreadWebviewToHost,
+  { type: 'start-skill' | 'view-skill' | 'run-control' }
+>;
+
+/** What the details view shows: one node of one open thread. */
+export interface ShownDetails {
+  rootEventId: string;
+  nodeId: string;
+  detail: InspectorView;
+}
+
+export type DetailsHostToWebview =
+  /** The node to show, with the thread it belongs to (every action goes back WITH this id). */
+  | ({ type: 'details' } & ShownDetails)
+  /** Nothing selected, or the thread closed. */
+  | { type: 'details-empty' };
+
+export type DetailsWebviewToHost =
+  | { type: 'ready' }
+  /** An inspector button, wrapped with the thread it was shown for. The host re-validates it. */
+  | { type: 'details-action'; rootEventId: string; message: DetailsAction }
+  /** Esc in the details view: give the focus back to that thread's canvas. */
+  | { type: 'focus-canvas'; rootEventId: string };
 
 // ── run detail ───────────────────────────────────────────────────────
 
