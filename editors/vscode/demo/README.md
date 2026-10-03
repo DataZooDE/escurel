@@ -35,15 +35,23 @@ exposes the window to a debugger for screenshots.
 6. **Knowledge.** Open `order-4500123` as a page (read-only form), then `Markdown`: edit and save;
    the edit is held as _your_ draft and shows up in Awaiting, the page itself does not move.
 7. **Search.** `Escurel: Search` for "Meier" and open the hit.
-8. **A link in a page.** Open `order-4500131`: its History names the vendor as a link
+8. **The analysis a run leaves behind.** Open Knowledge → `supplier-risk-analysis` → the Meier-Guss
+   instance. A supplier-risk run does not only change the order: it persisted what it worked out as
+   an instance of its own (risk level and score, orders affected, net value at risk), in the same
+   changeset, so one promotion published both. Its body states the chart's takeaway as one sentence
+   and carries the table behind it, so a reader (or agent) without Peacock still gets the picture;
+   the graph itself is drawn by Peacock from the skill's `viewer:` report. The buttons at the bottom
+   are the follow-ups the skill declares (Notify the affected customers, Ask the supplier for a new
+   confirmation); the third action (a chat prompt) is Peacock's and is not offered here.
+9. **A link in a page.** Open `order-4500131`: its History names the vendor as a link
    (Meier-Guss GmbH). Click it, or Tab to it and press Enter: the supplier opens in its own tab.
-9. **Start a skill.** At the bottom of an order, the **Supplier risk for … with an agent** button.
-   Its chevron (or the arrow-down key) offers: _Start in background_, _First make a plan_,
-   _Start in terminal_, _View skill_. Start one in the background and watch the Runner view (right
-   side) show it live, then the thread of that event grow a run.
-10. **First make a plan.** Choose it: the runner drafts a plan and stops; a notification offers
+10. **Start a skill.** At the bottom of an order, the **Supplier risk for … with an agent** button.
+    Its chevron (or the arrow-down key) offers: _Start in background_, _First make a plan_,
+    _Start in terminal_, _View skill_. Start one in the background and watch the Runner view (right
+    side) show it live, then the thread of that event grow a run.
+11. **First make a plan.** Choose it: the runner drafts a plan and stops; a notification offers
     **Approve plan**. Nothing runs until you say so.
-11. **Cancel and retry.** In the Runner view, open a live run and **Cancel run**. Right-click a run
+12. **Cancel and retry.** In the Runner view, open a live run and **Cancel run**. Right-click a run
     under _Dead letters_: **Retry run** asks the runner again and tells you what happened. Requeue,
     Pause and Resume are there too, deactivated with the reason, because they are for admins.
 

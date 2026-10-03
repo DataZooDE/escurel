@@ -27,7 +27,9 @@ test('the thread shows the cascade, and an instance offers a skill to start', as
   const { page } = stack;
   const wv = await webviewWith(page, 'escurel-thread-canvas');
   const canvas = wv.locator('escurel-thread-canvas');
-  await expect(canvas.getByRole('treeitem')).toHaveCount(6);
+  // event -> run -> changeset -> its two instances (the order and the run's analysis) -> ONE follow-on
+  // event -> its run. The analysis is part of the run's output, not a cascade hop of its own.
+  await expect(canvas.getByRole('treeitem')).toHaveCount(7);
   await stack.shot('02-thread');
 
   // The instance a draft proposes a change to: select it, and the inspector offers its skill's actions.
@@ -144,6 +146,43 @@ test('"First make a plan" ends in a plan the person is asked to approve', async 
   await stack.shot('08-plan-ready');
   // Not now: nothing is run behind the person's back.
   await page.keyboard.press('Escape');
+});
+
+test('a supplier-risk run leaves an analysis: fields, a text alternative for its chart, and follow-ups', async ({
+  stack,
+}) => {
+  const { page } = stack;
+  const knowledge = pane(page, 'Knowledge');
+  // Earlier scenarios left customer-order expanded; the tree only renders the rows in view, so fold it.
+  const orders = knowledge.getByRole('treeitem', { name: /^customer-order/ }).first();
+  if ((await orders.getAttribute('aria-expanded')) === 'true') await orders.click();
+  await knowledge.getByRole('treeitem', { name: /^supplier-risk-analysis/ }).click();
+  // The analysis the first run wrote and the demo promoted together with its change to the order
+  // (its id is the supplier plus the tail of the signal's event id; the supplier itself has none).
+  await knowledge.getByRole('treeitem', { name: /^meier-guss-/ }).click();
+  const wv = await webviewWith(page, 'escurel-page-as-ui');
+  const analysis = wv.locator('escurel-page-as-ui');
+  await expect(analysis.locator('.field[data-name="risk_level"]')).toContainText('high');
+  await expect(analysis.locator('.field[data-name="net_value_at_risk"]')).toContainText(
+    '128,600.00',
+  );
+  // The chart's text alternative: a plain sentence with the takeaway, and the table behind the chart.
+  await expect(analysis.getByText(/2 orders are affected and carry 128,600\.00 EUR/)).toBeVisible();
+  await expect(analysis.locator('table thead th', { hasText: 'Net value (EUR)' })).toBeVisible();
+  await expect(analysis.locator('table tbody tr')).toHaveCount(2);
+  // Follow-ups are labelled by what the skill declares; the prompt-kind action is not offered here.
+  await expect(
+    analysis.locator('.skill-button .primary', { hasText: /Notify the affected customers/ }),
+  ).toBeVisible();
+  await expect(
+    analysis.locator('.skill-button .primary', {
+      hasText: /Ask the supplier for a new confirmation/,
+    }),
+  ).toBeVisible();
+  await expect(
+    analysis.locator('.skill-button .primary', { hasText: /Why is this risky/ }),
+  ).toHaveCount(0);
+  await stack.shot('06c-supplier-risk-analysis');
 });
 
 test('a failed run is listed under Dead letters, and Requeue is there but deactivated for a human', async ({
