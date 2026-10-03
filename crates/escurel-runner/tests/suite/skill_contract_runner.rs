@@ -16,8 +16,8 @@ const CONFIRM_SKILL: &str =
     "---\ntype: skill\nid: renewal\nautonomy: confirm\nsummary: s.\n---\n# renewal\n";
 const CODEX_SKILL: &str =
     "---\ntype: skill\nid: invoice\nautonomy: auto\nharness: codex\n---\n# invoice\n";
-const MEETING: &str = "---\ntype: skill\nid: meeting\nautonomy: auto\nactions:\n  - decision-record\n---\n# meeting\n";
-const MEETING_LOCKED: &str = "---\ntype: skill\nid: meeting-locked\nautonomy: auto\nactions:\n  - changelog\n---\n# meeting-locked\n";
+const MEETING: &str = "---\ntype: skill\nid: meeting\nautonomy: auto\nactions:\n  - {name: record-decision, kind: event, label: Record the decision, event: decision-record}\n---\n# meeting\n";
+const MEETING_LOCKED: &str = "---\ntype: skill\nid: meeting-locked\nautonomy: auto\nactions:\n  - {name: log-change, kind: event, label: Log the change, event: changelog}\n---\n# meeting-locked\n";
 const DECISION: &str = "---\ntype: skill\nid: decision-record\nautonomy: auto\ncascade:\n  target: markdown/instances/changelog/log.md\n  max_depth: 1\n---\n# decision-record\n";
 const CHANGELOG: &str = "---\ntype: skill\nid: changelog\nautonomy: auto\n---\n# changelog\n";
 fn instance(skill: &str, id: &str) -> String {

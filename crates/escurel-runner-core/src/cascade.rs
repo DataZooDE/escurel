@@ -90,6 +90,24 @@ pub struct SkillContract {
 
 /// Read a skill's contract off its page; `None` when the skill cannot be
 /// resolved or expanded (the caller treats that as "nothing declared").
+/// The cascade allow-list a skill's `actions:` declares: the `event` skill of every
+/// `kind: event` object (Peacock's form). `kind: prompt` entries are chat turns and restrict
+/// nothing; no actions at all means no restriction (an empty list).
+fn event_skills(fm: &serde_json::Value) -> Vec<String> {
+    fm.get("actions")
+        .and_then(|v| v.as_array())
+        .map(|a| {
+            a.iter()
+                .filter(|e| e.get("kind").and_then(|k| k.as_str()) == Some("event"))
+                .filter_map(|e| e.get("event").and_then(|v| v.as_str()))
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_owned)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 pub async fn skill_contract(client: &Client, skill: &str) -> Option<SkillContract> {
     let resolved = client
         .resolve(ResolveRequest {
@@ -133,21 +151,7 @@ pub async fn skill_contract(client: &Client, skill: &str) -> Option<SkillContrac
     }
     Some(SkillContract {
         harness: text(fm.get("harness")),
-        // The cascade allow-list is the `event` skill of every `kind: event` action (Peacock's
-        // object form). `kind: prompt` actions are chat turns and restrict nothing.
-        actions: fm
-            .get("actions")
-            .and_then(|v| v.as_array())
-            .map(|a| {
-                a.iter()
-                    .filter(|e| e.get("kind").and_then(|k| k.as_str()) == Some("event"))
-                    .filter_map(|e| e.get("event").and_then(|v| v.as_str()))
-                    .map(str::trim)
-                    .filter(|s| !s.is_empty())
-                    .map(str::to_owned)
-                    .collect()
-            })
-            .unwrap_or_default(),
+        actions: event_skills(fm),
         cascade_target: text(cascade.and_then(|c| c.get("target")))
             .or_else(|| text(fm.get("cascade_target"))),
         max_depth: cascade
@@ -383,6 +387,25 @@ fn instance_skill(page_id: &str) -> Option<String> {
 mod tests {
     use super::*;
     use crate::Lineage;
+
+    #[test]
+    fn the_allow_list_is_the_event_skills_of_kind_event_actions() {
+        let fm = serde_json::json!({"actions": [
+            {"name": "a", "kind": "event", "label": "A", "event": "decision-record"},
+            {"name": "b", "kind": "prompt", "label": "B", "prompt": "why?"},
+            {"name": "c", "kind": "event", "label": "C", "event": " changelog "},
+        ]});
+        assert_eq!(event_skills(&fm), ["decision-record", "changelog"]);
+    }
+
+    #[test]
+    fn prompt_only_or_no_actions_restrict_nothing() {
+        let only_prompts = serde_json::json!({"actions": [{"name": "b", "kind": "prompt", "label": "B", "prompt": "why?"}]});
+        assert!(event_skills(&only_prompts).is_empty());
+        assert!(event_skills(&serde_json::json!({})).is_empty());
+        // The retired shorthand grants nothing: a bare string is not an action.
+        assert!(event_skills(&serde_json::json!({"actions": ["decision-record"]})).is_empty());
+    }
 
     fn trigger(label: &str, event_id: &str, lineage: Lineage) -> Trigger {
         Trigger {
