@@ -51,18 +51,46 @@ describe('pickTarget', () => {
     expect(node.y < lanes[1]!.y).toBe(true);
   });
 
-  it('with nobody waiting, is the newest active node (newest id among unfinished)', () => {
-    const calm: ThreadView = {
-      ...branchingThreadView,
-      nodes: branchingThreadView.nodes.map((n) => {
-        const { needsYou: _gone, ...rest } = n;
-        void _gone;
-        return { ...rest, emphasis: n.emphasis === 'needs-you' ? ('normal' as const) : n.emphasis };
-      }) as ThreadNode[],
-    };
-    const active = calm.nodes.filter((n) => n.emphasis !== 'compact');
-    const newest = [...active].sort((a, b) => (a.id < b.id ? 1 : -1))[0]!;
-    expect(pickTarget(calm, branchingLayout)).toBe(newest.id);
+  it('with nobody waiting, is the newest unfinished node (not the newest overall)', () => {
+    const n = (id: string, emphasis: 'compact' | 'normal') =>
+      ({
+        id,
+        kind: 'event',
+        parent: null,
+        children: [],
+        state: 'x',
+        tone: 'neutral',
+        title: id,
+        meta: [],
+        chips: [],
+        target: { kind: 'none' },
+        collapsible: false,
+        emphasis,
+      }) as unknown as ThreadNode;
+    const laid = (id: string, x: number) => ({
+      id,
+      column: 0,
+      x,
+      y: 0,
+      width: 100,
+      height: 50,
+      hidden: false,
+    });
+    const view = {
+      rootEventId: 'a',
+      nodes: [n('01A', 'normal'), n('01C', 'compact'), n('01B', 'normal')],
+      columns: [],
+      loading: false,
+    } as unknown as ThreadView;
+    const layout = {
+      nodes: [laid('01A', 0), laid('01B', 200), laid('01C', 400)],
+      wires: [],
+      bounds: { width: 600, height: 100 },
+      columnHeaders: [],
+      lanes: [],
+    } as ThreadLayout;
+    // 01C is the newest but finished; 01B is the newest of the unfinished ones.
+    expect(pickTarget(view, layout)).toBe('01B');
   });
 
   it('with everything finished, is the last node of the main row', () => {
@@ -179,5 +207,62 @@ describe('scrollMetrics', () => {
       box(1000, 700),
     );
     expect(m.h).toEqual({ size: 0.5, pos: 0 });
+  });
+});
+
+describe('pickTarget: ids with a kind prefix', () => {
+  // Node ids are ULIDs, sometimes with a prefix ("cascade:<ulid>"). Comparing whole strings made the
+  // letter beat any digit, so a prefixed OLD node always counted as the newest.
+  const node = (id: string): ThreadNode =>
+    ({
+      id,
+      kind: 'event',
+      parent: null,
+      children: [],
+      state: 'inbox',
+      tone: 'neutral',
+      title: id,
+      meta: [],
+      chips: [],
+      target: { kind: 'none' },
+      collapsible: false,
+    }) as unknown as ThreadNode;
+  const laid = (id: string, x: number) => ({
+    id,
+    column: 0,
+    x,
+    y: 0,
+    width: 100,
+    height: 50,
+    hidden: false,
+  });
+
+  it('compares the ULID part, not the prefix', () => {
+    const view = {
+      rootEventId: 'a',
+      nodes: [node('cascade:01M4X10000000000000000001'), node('01M4X90000000000000000009')],
+      columns: [],
+      loading: false,
+    } as unknown as ThreadView;
+    const layout = {
+      nodes: [laid('cascade:01M4X10000000000000000001', 0), laid('01M4X90000000000000000009', 200)],
+      wires: [],
+      bounds: { width: 400, height: 100 },
+      columnHeaders: [],
+      lanes: [],
+    } as ThreadLayout;
+    expect(pickTarget(view, layout)).toBe('01M4X90000000000000000009');
+  });
+});
+
+describe('scrollMetrics: the thumb stays on its track', () => {
+  it('never starts past 1 - size, even when the view is panned beyond the graph', () => {
+    const m = scrollMetrics(
+      { x: -9000, y: 0, zoom: 1 },
+      { width: 2000, height: 300 },
+      box(1000, 700),
+    );
+    expect(m.h!.pos).toBe(0.5);
+    expect(m.h!.pos + m.h!.size <= 1).toBe(true);
   });
 });

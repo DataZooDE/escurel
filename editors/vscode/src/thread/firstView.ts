@@ -36,6 +36,9 @@ function documentOrder(layout: ThreadLayout): LaidOutNode[] {
     .map((e) => e.n);
 }
 
+/** A node id is a ULID, sometimes behind a kind prefix ("cascade:<ulid>"): compare the ULID part. */
+const ulidOf = (id: string): string => id.slice(id.lastIndexOf(':') + 1);
+
 /**
  * The node a thread opens on. The first one that waits on a person; else the newest unfinished
  * node (ids are ULIDs, so the greatest id is the newest); else, when everything is finished, the
@@ -53,7 +56,7 @@ export function pickTarget(view: ThreadView, layout: ThreadLayout): string | und
     return node !== undefined && node.emphasis !== 'compact';
   });
   if (active.length > 0) {
-    return active.reduce((best, cur) => (cur.id > best.id ? cur : best)).id;
+    return active.reduce((best, cur) => (ulidOf(cur.id) > ulidOf(best.id) ? cur : best)).id;
   }
 
   const laneStarts = layout.lanes.map((l) => l.y).sort((a, b) => a - b);
@@ -103,7 +106,8 @@ export function scrollMetrics(
   const axis = (extent: number, view: number, offset: number): Thumb | undefined => {
     const scaled = extent * viewport.zoom;
     if (view <= 0 || scaled <= view) return undefined;
-    return { size: view / scaled, pos: clamp(-offset / scaled, 0, 1) };
+    const size = view / scaled;
+    return { size, pos: clamp(-offset / scaled, 0, 1 - size) };
   };
   return {
     h: axis(bounds.width, container.width, viewport.x),

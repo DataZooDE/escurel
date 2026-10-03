@@ -561,6 +561,97 @@ describe('<escurel-thread-canvas>', () => {
       expect(el.viewport).to.deep.equal({ x: 10, y: 20, zoom: 0.5 });
     });
 
+    it('applies the first view even when the canvas was not measurable at first (a hidden tab)', async () => {
+      const host = await fixture<HTMLElement>(html`
+        <div id="w" style="display:none;width:420px;height:700px;position:relative">
+          <escurel-thread-canvas
+            style="display:block;width:100%;height:100%"
+            .view=${branchingThreadView}
+            .layout=${branchingLayout}
+            .focus=${branchingFocus}
+            .details=${recordedDetails}
+          ></escurel-thread-canvas>
+        </div>
+      `);
+      const el = host.querySelector('escurel-thread-canvas') as EscurelThreadCanvas;
+      await el.updateComplete;
+      expect(el.viewport).to.deep.equal({ x: 0, y: 0, zoom: 1 });
+      host.style.display = 'block';
+      await new Promise((r) => setTimeout(r, 100));
+      await el.updateComplete;
+      expect(el.viewport.x < 0, `x ${el.viewport.x}`).to.equal(true);
+    });
+
+    it('keeps measuring the canvas after the thread was empty and came back', async () => {
+      const el = await inBox(420);
+      const view = el.view!;
+      el.view = { ...view, nodes: [] };
+      await el.updateComplete;
+      el.view = view;
+      await el.updateComplete;
+      await new Promise((r) => requestAnimationFrame(() => r(undefined)));
+      (el.parentElement as HTMLElement).style.width = '300px';
+      await new Promise((r) => setTimeout(r, 100));
+      await el.updateComplete;
+      const area = el.shadowRoot!.querySelector('.canvas-area') as HTMLElement;
+      expect((el as unknown as { areaSize: { width: number } }).areaSize.width).to.equal(
+        area.clientWidth,
+      );
+    });
+
+    it('the vertical thumb reaches the bottom of the graph when dragged to the end', async () => {
+      const host = await fixture<HTMLElement>(html`
+        <div style="width:900px;height:160px;position:relative">
+          <escurel-thread-canvas
+            style="width:100%;height:100%"
+            .view=${branchingThreadView}
+            .layout=${branchingLayout}
+            .focus=${branchingFocus}
+            .details=${recordedDetails}
+          ></escurel-thread-canvas>
+        </div>
+      `);
+      const el = host.querySelector('escurel-thread-canvas') as EscurelThreadCanvas;
+      await el.updateComplete;
+      await new Promise((r) => requestAnimationFrame(() => r(undefined)));
+      await el.updateComplete;
+      // From the top: a drag that starts mid-graph would hit the clamp whatever the maths said.
+      el.viewport = { x: 0, y: 0, zoom: 1 };
+      await el.updateComplete;
+      const thumb = el.shadowRoot!.querySelector('.scroll-thumb.v') as HTMLElement;
+      expect(thumb !== null, 'a vertical thumb').to.equal(true);
+      const r = thumb.getBoundingClientRect();
+      const ev = (y: number, type: string) =>
+        new PointerEvent(type, {
+          clientX: r.left + 2,
+          clientY: y,
+          pointerId: 1,
+          bubbles: true,
+          composed: true,
+        });
+      thumb.dispatchEvent(ev(r.top + 2, 'pointerdown'));
+      // Exactly the free length of the track: the thumb ends at the bottom of its track.
+      const track = el.shadowRoot!.querySelector('.scroll-track.v') as HTMLElement;
+      const free = track.getBoundingClientRect().height - r.height;
+      thumb.dispatchEvent(ev(r.top + 2 + free, 'pointermove'));
+      thumb.dispatchEvent(ev(r.top + 2 + free, 'pointerup'));
+      await el.updateComplete;
+      const area = el.shadowRoot!.querySelector('.canvas-area') as HTMLElement;
+      const bottom = branchingLayout.bounds.height * el.viewport.zoom + el.viewport.y;
+      expect(Math.round(bottom), `graph bottom ${bottom} vs area ${area.clientHeight}`).to.equal(
+        area.clientHeight,
+      );
+    });
+
+    it('does not squash the column headings when zoomed out', async () => {
+      const el = await inBox(4000);
+      el.viewport = { x: 0, y: 0, zoom: 0.5 };
+      await el.updateComplete;
+      const track = el.shadowRoot!.querySelector('.header-transformed-track') as HTMLElement;
+      const m = new DOMMatrixReadOnly(getComputedStyle(track).transform);
+      expect(m.a, 'horizontal scale of the heading track').to.equal(1);
+    });
+
     it('Fit still shows the whole graph', async () => {
       const el = await inBox(420);
       el.fit();
@@ -612,6 +703,10 @@ describe('<escurel-thread-canvas>', () => {
     it('below 70% a card keeps icon, accent bar and state chip but no text', async () => {
       const el = await at(0.69);
       expect(q(el, '.canvas-area')!.classList.contains('low-zoom')).to.equal(true);
+      // The assertions below must have something to bite on: the thread has buttons and titles to hide.
+      expect(qa(el, '.gate-actions').length > 0, 'a card with Promote/Discard').to.equal(true);
+      expect(qa(el, '.needs-reason').length > 0, 'a card with a reason').to.equal(true);
+      expect(qa(el, '.card-title').length > 0, 'cards with titles').to.equal(true);
       for (const card of qa(el, '.card')) {
         expect(visible(card.querySelector('.type-icon')), 'icon').to.equal(true);
         expect(visible(card.querySelector('.chip')), 'state chip').to.equal(true);

@@ -96,12 +96,13 @@ export class EscurelThreadCanvas extends LitElement {
         height: 8px;
       }
       .scroll-track.v {
-        top: 28px;
+        top: 0;
         right: 0;
         bottom: 0;
         width: 8px;
       }
       .scroll-thumb {
+        box-sizing: border-box;
         position: absolute;
         background: var(--vscode-scrollbarSlider-background, var(--escurel-muted));
         border: 1px solid var(--vscode-contrastBorder, transparent);
@@ -600,23 +601,11 @@ export class EscurelThreadCanvas extends LitElement {
     }
   }
 
-  protected override updated(changed: PropertyValues<this>): void {
-    const area = this.shadowRoot?.querySelector<HTMLElement>('.canvas-area');
-    if (area && !this.resizeObserver && typeof ResizeObserver !== 'undefined') {
-      this.resizeObserver = new ResizeObserver(() => {
-        const a = this.shadowRoot?.querySelector<HTMLElement>('.canvas-area');
-        if (a) this.areaSize = { width: a.clientWidth, height: a.clientHeight };
-      });
-      this.resizeObserver.observe(area);
-    }
-    if (
-      area &&
-      (area.clientWidth !== this.areaSize.width || area.clientHeight !== this.areaSize.height)
-    ) {
-      this.areaSize = { width: area.clientWidth, height: area.clientHeight };
-    }
-    if (this.firstViewApplied || !changed.has('layout') || !this.layout || !this.view) return;
-    if (!area || !area.clientWidth) return;
+  protected override updated(): void {
+    const area = this.shadowRoot?.querySelector<HTMLElement>('.canvas-area') ?? undefined;
+    this.observeArea(area);
+    if (this.firstViewApplied || !this.layout || !this.view) return;
+    if (!area || !area.clientWidth) return; // not measurable yet (a hidden tab): the observer retries
     this.firstViewApplied = true;
     // A graph that fits opens as it is. A bigger one opens at 100% with the node that matters (the
     // first that needs you, else the newest active) centred, and a scrollbar to reach the rest.
@@ -628,9 +617,36 @@ export class EscurelThreadCanvas extends LitElement {
     });
   }
 
+  /**
+   * Keep `areaSize` current (for the scrollbar thumbs and for a first view that had to wait for a
+   * measurable canvas). The canvas element is replaced when the thread goes empty and comes back, so
+   * the observer follows the element, not the first one it saw. State is changed in a microtask:
+   * changing it inside `updated` is a Lit dev-mode warning.
+   */
+  private observedArea?: HTMLElement;
+  private observeArea(area: HTMLElement | undefined): void {
+    if (area === this.observedArea) return;
+    this.resizeObserver?.disconnect();
+    this.observedArea = area;
+    if (!area) return;
+    const measure = () => {
+      const a = this.observedArea;
+      if (!a) return;
+      if (a.clientWidth !== this.areaSize.width || a.clientHeight !== this.areaSize.height) {
+        this.areaSize = { width: a.clientWidth, height: a.clientHeight };
+      }
+    };
+    queueMicrotask(measure);
+    if (typeof ResizeObserver !== 'undefined') {
+      this.resizeObserver = new ResizeObserver(measure);
+      this.resizeObserver.observe(area);
+    }
+  }
+
   override disconnectedCallback(): void {
     this.resizeObserver?.disconnect();
     this.resizeObserver = undefined;
+    this.observedArea = undefined;
     super.disconnectedCallback();
   }
 
@@ -1159,11 +1175,13 @@ export class EscurelThreadCanvas extends LitElement {
           <div class="header-pinned-strip">
             <div
               class="header-transformed-track"
-              style="transform: translateX(${this.viewport.x}px) scaleX(${this.viewport.zoom});"
+              style="transform: translateX(${this.viewport.x}px);"
             >
               ${this.layout.columnHeaders.map(
                 (col) =>
-                  html`<div class="column-header" style="left: ${col.x}px;">${col.label}</div>`,
+                  html`<div class="column-header" style="left: ${col.x * this.viewport.zoom}px;">
+                    ${col.label}
+                  </div>`,
               )}
             </div>
           </div>
