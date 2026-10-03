@@ -251,7 +251,7 @@ an `escurel:review` system event on the target page (`draft-created`,
 decided_by, already_decided}` — see *Review events* in `references/11`. A
 review queue subscribes instead of polling.
 
-Note this list is **curated, not exhaustive** — the server exposes 85 tools
+Note this list is **curated, not exhaustive** — the server exposes 86 tools
 (the count is pinned by `skill_doc_parity.rs`; update it here when the
 surface changes), most of them operator/admin surface (tenant CRUD,
 credential and endpoint registries, pack import/export, lane inspection,

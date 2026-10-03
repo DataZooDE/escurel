@@ -195,6 +195,10 @@ const COVERAGE: &[(&str, Coverage)] = &[
         Excluded("provisioning preflight; MCP-only"),
     ),
     (
+        "describe_backend",
+        Excluded("remote-backend provisioning aid (admin); MCP-only"),
+    ),
+    (
         "create_remote_instance",
         Excluded("remote provisioning; MCP/gRPC-twin"),
     ),

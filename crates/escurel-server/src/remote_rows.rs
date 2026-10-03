@@ -170,6 +170,13 @@ pub(crate) async fn get(
     };
     match remote_backend::call_read(egress, &src.limiter_key, &src.ep, &src.remote, &parts[0]).await
     {
+        // An MCP read tool answers "no such object" with an empty result, not a 404.
+        Ok(item)
+            if src.remote.kind == escurel_index::RemoteKind::Mcp
+                && resolve_projection(&item, &src.remote.project).is_empty() =>
+        {
+            Ok(None)
+        }
         Ok(item) => Ok(row_from(src, &item).or_else(|| {
             // The read response may not repeat the key; the id we asked for is the identity.
             let fields = resolve_projection(&item, &src.remote.project);

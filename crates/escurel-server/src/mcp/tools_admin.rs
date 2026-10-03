@@ -2273,3 +2273,38 @@ pub(super) async fn tool_compact_lanes(
         bytes_reclaimed,
     })
 }
+
+/// `describe_backend` — the tools of a registered MCP endpoint and their argument names, so an
+/// author can write a skill's `list:`/`read:` mapping. Only NAMES and a coarse type per argument
+/// are returned: a tool's `description` and the server's `instructions` are the upstream's own text
+/// and never reach this wire.
+pub(super) async fn tool_describe_backend(
+    indexer: &Indexer,
+    egress: &crate::egress::Egress,
+    args: Value,
+) -> Result<Value, JsonRpcError> {
+    #[derive(Deserialize)]
+    struct A {
+        endpoint: String,
+    }
+    let a: A = parse_args(args, "describe_backend")?;
+    let rec = indexer
+        .lookup_endpoint(&a.endpoint)
+        .await
+        .map_err(|e| JsonRpcError::internal(format!("describe_backend: {e}")))?
+        .ok_or_else(|| {
+            JsonRpcError::invalid_params(format!("endpoint `{}` is not registered", a.endpoint))
+        })?;
+    if rec.kind != "mcp" {
+        return Err(JsonRpcError::invalid_params(
+            "describe_backend supports mcp endpoints; an openapi endpoint is described by its \
+             OpenAPI document"
+                .to_owned(),
+        ));
+    }
+    let key = format!("{}:{}", indexer.tenant(), rec.name);
+    let tools = crate::remote_backend::list_tools(egress, &key, &rec)
+        .await
+        .map_err(|e| JsonRpcError::internal(format!("describe_backend: {e}")))?;
+    Ok(json!({ "endpoint": rec.name, "kind": "mcp", "tools": tools, "trust": "external" }))
+}

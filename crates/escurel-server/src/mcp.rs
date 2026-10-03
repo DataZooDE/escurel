@@ -1137,6 +1137,7 @@ async fn dispatch_tools_call(
         "list_endpoints" => tool_list_endpoints(indexer).await,
         "delete_endpoint" => tool_delete_endpoint(indexer, params.arguments).await,
         "validate_endpoints" => tool_validate_endpoints(indexer, &state.egress).await,
+        "describe_backend" => tool_describe_backend(indexer, &state.egress, params.arguments).await,
         // Materialise a remote (openapi/mcp) overlay page from a skill that
         // declares a remote backend. Admin-only, mirroring create_sql_instance.
         "create_remote_instance" => tool_create_remote_instance(indexer, params.arguments).await,

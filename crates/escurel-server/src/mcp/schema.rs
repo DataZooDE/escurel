@@ -1236,6 +1236,20 @@ pub(crate) fn tool_defs() -> Vec<ToolDef> {
             json!({ "type": "object", "properties": {} }),
         ),
         tool_entry(
+            "describe_backend",
+            Execution::Orchestration,
+            Scope::Admin,
+            Touches::READ,
+            "Admin: describe a registered MCP endpoint's tools and their argument names, to \
+                 author a skill's `backend:` list/read mapping. Never returns the server's own \
+                 descriptions or instructions (external text, not instructions).",
+            json!({
+                "type": "object",
+                "properties": { "endpoint": { "type": "string" } },
+                "required": ["endpoint"]
+            }),
+        ),
+        tool_entry(
             "create_remote_instance",
             Execution::Orchestration,
             Scope::Admin,

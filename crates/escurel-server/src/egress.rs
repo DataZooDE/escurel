@@ -18,6 +18,7 @@
 
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -158,10 +159,28 @@ struct Limiter {
     bucket: Mutex<(f64, Instant)>,
 }
 
-/// The outbound runtime: the policy plus the per-endpoint limiters.
+/// A response read within the policy: status, headers and the capped body.
+pub struct Capped {
+    pub status: reqwest::StatusCode,
+    pub headers: reqwest::header::HeaderMap,
+    pub body: Vec<u8>,
+}
+
+/// An MCP streamable-HTTP session with one endpoint: the `Mcp-Session-Id` the server assigned (none
+/// for a stateless server) and the protocol version negotiated at `initialize`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct McpSession {
+    pub id: Option<String>,
+    /// `None` for a legacy upstream that does not speak `initialize` at all.
+    pub protocol: Option<String>,
+}
+
+/// The outbound runtime: the policy, the per-endpoint limiters and the MCP session cache.
 pub struct Egress {
     policy: EgressPolicy,
     limiters: Mutex<HashMap<String, Arc<Limiter>>>,
+    mcp_sessions: Mutex<HashMap<String, McpSession>>,
+    rpc_id: AtomicU64,
 }
 
 impl Egress {
@@ -170,7 +189,37 @@ impl Egress {
         Self {
             policy,
             limiters: Mutex::new(HashMap::new()),
+            mcp_sessions: Mutex::new(HashMap::new()),
+            rpc_id: AtomicU64::new(1),
         }
+    }
+
+    /// The cached MCP session for an endpoint key, if one was established.
+    #[must_use]
+    pub fn mcp_session(&self, key: &str) -> Option<McpSession> {
+        self.mcp_sessions
+            .lock()
+            .expect("sessions")
+            .get(key)
+            .cloned()
+    }
+
+    pub fn set_mcp_session(&self, key: &str, session: McpSession) {
+        self.mcp_sessions
+            .lock()
+            .expect("sessions")
+            .insert(key.to_owned(), session);
+    }
+
+    /// Forget a session (it expired, or the endpoint was re-registered).
+    pub fn drop_mcp_session(&self, key: &str) {
+        self.mcp_sessions.lock().expect("sessions").remove(key);
+    }
+
+    /// A fresh JSON-RPC request id.
+    #[must_use]
+    pub fn next_rpc_id(&self) -> u64 {
+        self.rpc_id.fetch_add(1, Ordering::SeqCst)
     }
 
     #[must_use]
@@ -273,12 +322,10 @@ impl Egress {
     ///
     /// # Errors
     /// Any [`EgressError`]: transport, redirect, timeout, or an oversize body.
-    pub async fn send_capped(
-        &self,
-        req: reqwest::RequestBuilder,
-    ) -> Result<(reqwest::StatusCode, Vec<u8>), EgressError> {
+    pub async fn send_capped(&self, req: reqwest::RequestBuilder) -> Result<Capped, EgressError> {
         let mut resp = req.send().await.map_err(|e| self.map_err(&e))?;
         let status = resp.status();
+        let headers = resp.headers().clone();
         if status.is_redirection() {
             return Err(EgressError::Redirect(status.as_u16()));
         }
@@ -293,7 +340,11 @@ impl Egress {
             }
             body.extend_from_slice(&chunk);
         }
-        Ok((status, body))
+        Ok(Capped {
+            status,
+            headers,
+            body,
+        })
     }
 
     fn map_err(&self, e: &reqwest::Error) -> EgressError {

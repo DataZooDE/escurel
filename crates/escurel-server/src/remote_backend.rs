@@ -27,7 +27,7 @@ use escurel_index::endpoints::{EndpointAuth, EndpointRecord};
 use escurel_index::{Indexer, RemoteBinding, RemoteKind, RemoteOp};
 use serde_json::{Map, Value, json};
 
-use crate::egress::{Egress, EgressError};
+use crate::egress::{Capped, Egress, EgressError, McpSession};
 
 /// The per-endpoint limiter key: tenant-scoped, so one tenant cannot exhaust another's budget.
 fn limiter_key(indexer: &Indexer, endpoint: &str) -> String {
@@ -186,12 +186,11 @@ pub(crate) async fn call_list(
             if let (Some(c), Some(cur)) = (&list.cursor, cursor) {
                 query.push((c.param.clone(), cur.to_owned()));
             }
-            let (status, bytes) =
-                send_path(egress, key, ep, path, |c, url| c.get(url).query(&query)).await?;
-            if !status.is_success() {
-                return Err(format!("upstream status {}", status.as_u16()));
+            let r = send_path(egress, key, ep, path, |c, url| c.get(url).query(&query)).await?;
+            if !r.status.is_success() {
+                return Err(format!("upstream status {}", r.status.as_u16()));
             }
-            serde_json::from_slice(&bytes)
+            serde_json::from_slice(&r.body)
                 .map_err(|_| "invalid JSON from the upstream list call".to_owned())
         }
         (RemoteOp::McpTool { name }, RemoteKind::Mcp) => {
@@ -210,6 +209,9 @@ pub(crate) async fn call_list(
                 json!({ "name": name, "arguments": Value::Object(args) }),
             )
             .await?;
+            if let Some(e) = tool_error(&result) {
+                return Err(e);
+            }
             Ok(extract_mcp_result("tools/call", result))
         }
         _ => Err("list op does not match endpoint kind".to_owned()),
@@ -225,6 +227,56 @@ pub(crate) async fn call_read(
     id: &str,
 ) -> Result<Value, String> {
     exec(egress, key, ep, remote, &remote.read, Some(id), None).await
+}
+
+/// The tools of an MCP endpoint, reduced to what an author needs: names and argument names with a
+/// coarse type. A tool's `description` and everything the server says about itself are dropped here.
+pub(crate) async fn list_tools(
+    egress: &Egress,
+    key: &str,
+    ep: &EndpointRecord,
+) -> Result<Value, String> {
+    const MAX_TOOLS: usize = 200;
+    const MAX_ARGS: usize = 50;
+    let safe_name = |s: &str| {
+        !s.is_empty()
+            && s.len() <= 64
+            && s.chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.'))
+    };
+    let result = mcp_call(egress, key, ep, "tools/list", json!({})).await?;
+    let mut tools = Vec::new();
+    for t in result["tools"]
+        .as_array()
+        .map(Vec::as_slice)
+        .unwrap_or_default()
+        .iter()
+        .take(MAX_TOOLS)
+    {
+        let Some(name) = t["name"].as_str().filter(|n| safe_name(n)) else {
+            continue;
+        };
+        let mut arguments = Vec::new();
+        if let Some(props) = t["inputSchema"]["properties"].as_object() {
+            for (arg, def) in props.iter().take(MAX_ARGS) {
+                if !safe_name(arg) {
+                    continue;
+                }
+                let ty = def["type"]
+                    .as_str()
+                    .filter(|t| {
+                        matches!(
+                            *t,
+                            "string" | "integer" | "number" | "boolean" | "object" | "array"
+                        )
+                    })
+                    .unwrap_or("unknown");
+                arguments.push(json!({ "name": arg, "type": ty }));
+            }
+        }
+        tools.push(json!({ "name": name, "arguments": arguments }));
+    }
+    Ok(Value::Array(tools))
 }
 
 /// Reachability probe for `validate_endpoints`: an `mcp` endpoint answers a
@@ -258,7 +310,7 @@ async fn send(
     key: &str,
     ep: &EndpointRecord,
     build: impl FnOnce(&reqwest::Client, &str) -> reqwest::RequestBuilder,
-) -> Result<(reqwest::StatusCode, Vec<u8>), String> {
+) -> Result<Capped, String> {
     let _permit = egress.admit(key).map_err(|e| e.to_string())?;
     let (client, url) = egress
         .client_for(&ep.base_url)
@@ -279,7 +331,7 @@ async fn send_path(
     ep: &EndpointRecord,
     path: &str,
     build: impl FnOnce(&reqwest::Client, &str) -> reqwest::RequestBuilder,
-) -> Result<(reqwest::StatusCode, Vec<u8>), String> {
+) -> Result<Capped, String> {
     let _permit = egress.admit(key).map_err(|e| e.to_string())?;
     let full = join_url(&ep.base_url, path);
     let (client, _url) = egress.client_for(&full).await.map_err(|e| e.to_string())?;
@@ -328,6 +380,9 @@ async fn exec(
                 json!({ "name": name, "arguments": args }),
             )
             .await?;
+            if let Some(e) = tool_error(&result) {
+                return Err(e);
+            }
             Ok(extract_mcp_result("tools/call", result))
         }
         (RemoteKind::Mcp, RemoteOp::McpResource { uri }) => {
@@ -380,7 +435,7 @@ async fn http_call(
     } else {
         payload.cloned()
     };
-    let (status, bytes) = send_path(egress, key, ep, &filled, |c, url| {
+    let r = send_path(egress, key, ep, &filled, |c, url| {
         let r = c.request(http_method, url);
         match &json_body {
             Some(b) => r.json(b),
@@ -388,17 +443,181 @@ async fn http_call(
         }
     })
     .await?;
-    let body: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
-    if !status.is_success() {
+    let body: Value = serde_json::from_slice(&r.body).unwrap_or(Value::Null);
+    if !r.status.is_success() {
         // The upstream's error body is untrusted text; only the status is reported.
-        return Err(format!("upstream status {}", status.as_u16()));
+        return Err(format!("upstream status {}", r.status.as_u16()));
     }
     Ok(body)
 }
 
-/// Execute a JSON-RPC 2.0 MCP call over HTTP to the endpoint's `/mcp` URL and
-/// return the `result` object (or an error string for a JSON-RPC error /
-/// non-2xx / transport failure).
+/// The protocol version this client offers at `initialize`.
+const MCP_PROTOCOL: &str = "2025-06-18";
+
+/// Cap on an upstream-supplied error message that may be shown to a caller.
+const MAX_UPSTREAM_MESSAGE: usize = 200;
+
+/// Pull the JSON-RPC message with `id` out of a response body that is either plain JSON or an SSE
+/// stream (`event: message\ndata: {...}\n\n`).
+fn parse_rpc_body(content_type: &str, body: &[u8], id: u64) -> Result<Value, String> {
+    let text =
+        std::str::from_utf8(body).map_err(|_| "the upstream answered with non-text".to_owned())?;
+    if !content_type
+        .to_ascii_lowercase()
+        .contains("text/event-stream")
+    {
+        return serde_json::from_str(text)
+            .map_err(|_| "invalid JSON-RPC response from the upstream".to_owned());
+    }
+    let mut fallback: Option<Value> = None;
+    for event in text.replace("\r\n", "\n").split("\n\n") {
+        let data: String = event
+            .lines()
+            .filter_map(|l| l.strip_prefix("data:"))
+            .map(|d| d.strip_prefix(' ').unwrap_or(d))
+            .collect::<Vec<_>>()
+            .join("\n");
+        if data.is_empty() {
+            continue;
+        }
+        let Ok(v) = serde_json::from_str::<Value>(&data) else {
+            continue;
+        };
+        if v.get("id").and_then(Value::as_u64) == Some(id) {
+            return Ok(v);
+        }
+        if fallback.is_none() && (v.get("result").is_some() || v.get("error").is_some()) {
+            fallback = Some(v);
+        }
+    }
+    fallback.ok_or_else(|| "the upstream's event stream carried no response".to_owned())
+}
+
+/// A JSON-RPC error as a bounded message: the upstream's text is data, never an instruction, and a
+/// long one is cut.
+fn rpc_error_message(err: &Value) -> String {
+    let msg = err
+        .get("message")
+        .and_then(Value::as_str)
+        .unwrap_or("error");
+    format!(
+        "mcp error: {}",
+        msg.chars().take(MAX_UPSTREAM_MESSAGE).collect::<String>()
+    )
+}
+
+/// One MCP request over streamable HTTP with an established session.
+async fn mcp_post(
+    egress: &Egress,
+    key: &str,
+    ep: &EndpointRecord,
+    session: Option<&McpSession>,
+    method: &str,
+    params: Option<Value>,
+    notification: bool,
+) -> Result<(Capped, u64), String> {
+    let id = egress.next_rpc_id();
+    let mut rpc = json!({ "jsonrpc": "2.0", "method": method });
+    if !notification {
+        rpc["id"] = json!(id);
+    }
+    if let Some(p) = params {
+        rpc["params"] = p;
+    }
+    let r = send(egress, key, ep, |c, url| {
+        let mut req = c
+            .post(url)
+            .header("accept", "application/json, text/event-stream")
+            .json(&rpc);
+        if let Some(s) = session {
+            if let Some(sid) = &s.id {
+                req = req.header("mcp-session-id", sid);
+            }
+            if let Some(v) = &s.protocol {
+                req = req.header("mcp-protocol-version", v);
+            }
+        }
+        req
+    })
+    .await?;
+    Ok((r, id))
+}
+
+fn content_type(r: &Capped) -> &str {
+    r.headers
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("application/json")
+}
+
+/// Establish (or reuse) the session with an MCP endpoint: `initialize`, then
+/// `notifications/initialized`. An upstream that answers `initialize` with "method not found" is a
+/// stateless/legacy server: the client proceeds without a session instead of failing.
+async fn ensure_session(
+    egress: &Egress,
+    key: &str,
+    ep: &EndpointRecord,
+) -> Result<McpSession, String> {
+    if let Some(s) = egress.mcp_session(key) {
+        return Ok(s);
+    }
+    let init = json!({
+        "protocolVersion": MCP_PROTOCOL,
+        "capabilities": {},
+        "clientInfo": { "name": "escurel", "version": env!("CARGO_PKG_VERSION") },
+    });
+    let (r, id) = mcp_post(egress, key, ep, None, "initialize", Some(init), false).await?;
+    if !r.status.is_success() {
+        return Err(format!("upstream status {}", r.status.as_u16()));
+    }
+    let body = parse_rpc_body(content_type(&r), &r.body, id)?;
+    let session = if let Some(err) = body.get("error") {
+        if err.get("code").and_then(Value::as_i64) == Some(-32601) {
+            McpSession {
+                id: None,
+                protocol: None,
+            }
+        } else {
+            return Err(rpc_error_message(err));
+        }
+    } else {
+        // The server's `instructions` and `serverInfo` are read by NOBODY: they are the server's
+        // own text, and are never forwarded to a model.
+        let protocol = body["result"]["protocolVersion"]
+            .as_str()
+            .map_or_else(|| MCP_PROTOCOL.to_owned(), str::to_owned);
+        let sid = r
+            .headers
+            .get("mcp-session-id")
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_owned);
+        let s = McpSession {
+            id: sid,
+            protocol: Some(protocol),
+        };
+        // The handshake's last step. A server that rejects it is not one we can talk to.
+        let (n, _) = mcp_post(
+            egress,
+            key,
+            ep,
+            Some(&s),
+            "notifications/initialized",
+            None,
+            true,
+        )
+        .await?;
+        if !n.status.is_success() {
+            return Err(format!("upstream status {}", n.status.as_u16()));
+        }
+        s
+    };
+    egress.set_mcp_session(key, session.clone());
+    Ok(session)
+}
+
+/// Execute an MCP request (`tools/call`, `resources/read`, `tools/list`) over streamable HTTP and
+/// return the `result`. The session is established once per endpoint and reused; a 404 on a
+/// session-bound request means it expired, so the client re-initialises ONCE and retries.
 async fn mcp_call(
     egress: &Egress,
     key: &str,
@@ -406,30 +625,51 @@ async fn mcp_call(
     method: &str,
     params: Value,
 ) -> Result<Value, String> {
-    let rpc = json!({ "jsonrpc": "2.0", "id": 1, "method": method, "params": params });
-    let (status, bytes) = send(egress, key, ep, |c, url| {
-        c.post(url)
-            .header("accept", "application/json, text/event-stream")
-            .json(&rpc)
-    })
-    .await?;
-    let body: Value = serde_json::from_slice(&bytes)
-        .map_err(|_| "invalid JSON-RPC response from the upstream".to_owned())?;
-    if let Some(err) = body.get("error") {
-        // The message is the upstream's text: bounded, and never forwarded as an instruction.
-        let msg = err
-            .get("message")
-            .and_then(Value::as_str)
-            .unwrap_or("error");
-        return Err(format!(
-            "mcp error: {}",
-            msg.chars().take(200).collect::<String>()
-        ));
+    for attempt in 0..2 {
+        let session = ensure_session(egress, key, ep).await?;
+        let (r, id) = mcp_post(
+            egress,
+            key,
+            ep,
+            Some(&session),
+            method,
+            Some(params.clone()),
+            false,
+        )
+        .await?;
+        if r.status == reqwest::StatusCode::NOT_FOUND && session.id.is_some() && attempt == 0 {
+            egress.drop_mcp_session(key);
+            continue;
+        }
+        if !r.status.is_success() {
+            return Err(format!("upstream status {}", r.status.as_u16()));
+        }
+        let body = parse_rpc_body(content_type(&r), &r.body, id)?;
+        if let Some(err) = body.get("error") {
+            return Err(rpc_error_message(err));
+        }
+        return Ok(body.get("result").cloned().unwrap_or(Value::Null));
     }
-    if !status.is_success() {
-        return Err(format!("upstream status {}", status.as_u16()));
+    Err("the upstream session could not be re-established".to_owned())
+}
+
+/// An MCP tool result flagged `isError` is a failure the TOOL reports: surface it as a bounded
+/// message (its text is the server's, so it is cut and never treated as an instruction).
+fn tool_error(result: &Value) -> Option<String> {
+    if result.get("isError").and_then(Value::as_bool) != Some(true) {
+        return None;
     }
-    Ok(body.get("result").cloned().unwrap_or(Value::Null))
+    let text = result
+        .get("content")
+        .and_then(Value::as_array)
+        .and_then(|a| a.first())
+        .and_then(|c| c.get("text"))
+        .and_then(Value::as_str)
+        .unwrap_or("the tool reported an error");
+    Some(format!(
+        "mcp tool error: {}",
+        text.chars().take(MAX_UPSTREAM_MESSAGE).collect::<String>()
+    ))
 }
 
 /// Normalise an MCP `result` into a plain JSON value the projection can read:
