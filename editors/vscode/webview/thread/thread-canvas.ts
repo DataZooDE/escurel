@@ -1,3 +1,6 @@
+import { typeIcon } from './node-icons';
+import { describeNodeType } from '../../src/thread/nodeStyle';
+import { MARGIN } from '../../src/thread/layout';
 import { LitElement, css, html, nothing, svg } from 'lit';
 import type { PropertyValues } from 'lit';
 import { property, state } from 'lit/decorators.js';
@@ -17,6 +20,8 @@ import type { ViewportState } from './viewport';
 
 /** The smallest zoom a thread OPENS at; the Fit button still fits everything. */
 const MIN_FIRST_VIEW_ZOOM = 0.7;
+/** Where a fitted graph starts: just under the 28px pinned column headers. */
+const FIT_TOP = 40;
 
 export class EscurelThreadCanvas extends LitElement {
   static override styles = [
@@ -144,7 +149,13 @@ export class EscurelThreadCanvas extends LitElement {
         position: absolute;
         box-sizing: border-box;
         background: var(--vscode-editorWidget-background, var(--vscode-editor-background));
-        border: 1px solid var(--escurel-border);
+        /* The theme's widget border was one or two levels off the background in light and dark, so
+           a card lost its edge. A tint of the foreground keeps it visible; high contrast keeps its own. */
+        border: 1px solid
+          var(
+            --vscode-contrastBorder,
+            color-mix(in srgb, var(--vscode-foreground) 32%, transparent)
+          );
         border-radius: 4px;
         padding: 6px 10px;
         overflow: hidden;
@@ -171,29 +182,76 @@ export class EscurelThreadCanvas extends LitElement {
         gap: 6px;
         min-width: 0;
       }
-      .tone-dot {
-        width: 8px;
-        height: 8px;
-        border-radius: 50%;
+      .type-icon {
+        display: inline-flex;
         flex-shrink: 0;
+        color: var(--accent, var(--escurel-muted));
       }
-      .tone-dot.event {
-        background: var(--escurel-event);
+      .type-label {
+        font-size: 0.7em;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+        color: var(--accent, var(--escurel-muted));
       }
-      .tone-dot.instance {
-        background: var(--escurel-instance);
+      .type-line {
+        display: flex;
+        gap: 6px;
+        align-items: baseline;
+        min-width: 0;
       }
-      .tone-dot.run {
-        background: var(--escurel-run);
+      .type-line .card-subtitle {
+        flex: 1;
+        min-width: 0;
       }
-      .tone-dot.failed {
-        background: var(--escurel-run-failed);
+      /* Each type has its own accent colour, drawn as a bar on the card's left edge. The icon and
+         the type word say the same thing, so colour is never the only cue. */
+      .type-event {
+        --accent: var(--escurel-event);
       }
-      .tone-dot.skill {
-        background: var(--escurel-skill);
+      .type-cascade {
+        --accent: var(--vscode-charts-yellow, var(--escurel-event));
       }
-      .tone-dot.neutral {
-        background: var(--escurel-muted);
+      .type-run {
+        --accent: var(--escurel-run);
+      }
+      .type-changeset {
+        --accent: var(--escurel-skill);
+      }
+      .type-page {
+        --accent: var(--escurel-instance);
+      }
+      .card {
+        border-left: 4px solid var(--accent, var(--escurel-border));
+      }
+      .card.compact {
+        padding: 4px 10px;
+        justify-content: center;
+        gap: 3px;
+        background: transparent;
+      }
+      .card.compact .card-title {
+        font-weight: 500;
+      }
+      .compact-line {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        min-width: 0;
+      }
+      .lane-divider {
+        position: absolute;
+        left: 0;
+        height: 0;
+        border-top: 1px dashed var(--escurel-border);
+        pointer-events: none;
+      }
+      .lane-caption {
+        position: absolute;
+        font-size: 0.75em;
+        color: var(--escurel-muted);
+        white-space: nowrap;
+        pointer-events: none;
       }
       .card-title {
         font-weight: 600;
@@ -359,7 +417,7 @@ export class EscurelThreadCanvas extends LitElement {
       // Fitting a big thread can mean 30-40%, where no card text is legible. Open at a readable
       // size from the top-left and let the person pan or press Fit for the whole picture.
       if (this.viewport.zoom < MIN_FIRST_VIEW_ZOOM) {
-        this.viewport = { x: 20, y: 20, zoom: MIN_FIRST_VIEW_ZOOM };
+        this.viewport = { x: 20, y: FIT_TOP, zoom: MIN_FIRST_VIEW_ZOOM };
       }
     }
   }
@@ -402,7 +460,10 @@ export class EscurelThreadCanvas extends LitElement {
       width: containerEl?.clientWidth || 800,
       height: containerEl?.clientHeight || 600,
     };
-    this.viewport = fitToBounds(this.layout.bounds, containerSize, 20);
+    const fitted = fitToBounds(this.layout.bounds, containerSize, 20);
+    // Start under the pinned column headers: a graph shorter than the pane used to float in the
+    // middle with an empty band above it.
+    this.viewport = { ...fitted, y: Math.min(fitted.y, FIT_TOP) };
   }
 
   public zoomBy(factor: number): void {
@@ -545,7 +606,16 @@ export class EscurelThreadCanvas extends LitElement {
   private renderCard(node: ThreadNode, layoutNode: LaidOutNode) {
     const isFocused = node.id === this.focusedNodeId;
     const isSelected = node.id === this.selectedNodeId;
-    const accessibleName = [node.title, node.subtitle, node.state].filter(Boolean).join(', ');
+    const described = describeNodeType(node, this.view?.rootEventId ?? '');
+    const compact = node.emphasis === 'compact';
+    const accessibleName = [`${described.label}: ${node.title}`, node.subtitle, node.state]
+      .filter(Boolean)
+      .join(', ');
+    // A small card hides its details; they stay on hover and in the inspector.
+    const tooltip = compact
+      ? [node.title, node.subtitle, ...node.meta].filter(Boolean).join('\n')
+      : nothing;
+    const subtitle = node.subtitle && node.subtitle !== described.label ? node.subtitle : undefined;
 
     // Check if any child is hidden by collapse to derive expansion state.
     const isCollapsed = node.children.some((childId) => {
@@ -555,11 +625,12 @@ export class EscurelThreadCanvas extends LitElement {
 
     return html`
       <div
-        class="card ${isSelected ? 'selected' : ''}"
+        class="card type-${described.type} ${compact ? 'compact' : ''} ${isSelected ? 'selected' : ''}"
         data-node-id="${node.id}"
         role="treeitem"
         aria-level="${layoutNode.column + 1}"
         aria-label="${accessibleName}"
+        title=${tooltip}
         aria-expanded="${node.collapsible ? (isCollapsed ? 'false' : 'true') : nothing}"
         tabindex="${isFocused ? '0' : '-1'}"
         style="left: ${layoutNode.x}px; top: ${layoutNode.y}px; width: ${layoutNode.width}px; height: ${layoutNode.height}px;"
@@ -575,7 +646,7 @@ export class EscurelThreadCanvas extends LitElement {
         @keydown=${(e: KeyboardEvent) => this.handleCardKeydown(e, node.id)}
       >
         <div class="card-header">
-          <span class="tone-dot ${node.tone}"></span>
+          <span class="type-icon">${typeIcon(described.type)}</span>
           <span class="card-title" title="${node.title}">${node.title}</span>
           ${
             node.collapsible
@@ -593,52 +664,68 @@ export class EscurelThreadCanvas extends LitElement {
           }
         </div>
         ${
-          node.subtitle
-            ? html`<div class="card-subtitle" title="${node.subtitle}">${node.subtitle}</div>`
-            : nothing
+          compact
+            ? html`<div class="compact-line">
+                <span class="type-label">${described.label}</span>
+                ${node.chips.map((chip) => html`<span class="chip ${chip.tone}">${chip.text}</span>`)}
+              </div>`
+            : html`<div class="type-line">
+                  <span class="type-label">${described.label}</span>
+                  ${
+                    subtitle
+                      ? html`<span class="card-subtitle" title="${subtitle}">${subtitle}</span>`
+                      : nothing
+                  }
+                </div>
+                ${
+                  node.meta.length
+                    ? html`<div class="meta-lines">
+                        ${node.meta
+                          .slice(0, 4)
+                          .map((line) => html`<div class="meta-line">${line}</div>`)}
+                      </div>`
+                    : nothing
+                }`
         }
         ${
-          node.meta.length
-            ? html`<div class="meta-lines">
-                ${node.meta.slice(0, 4).map((line) => html`<div class="meta-line">${line}</div>`)}
+          compact
+            ? nothing
+            : html`<div class="card-footer">
+                ${node.chips.map((chip) => html`<span class="chip ${chip.tone}">${chip.text}</span>`)}
+                ${
+                  node.gate
+                    ? html`<div class="gate-actions">
+                        <button
+                          class="promote-btn"
+                          @click=${(e: Event) => {
+                            e.stopPropagation();
+                            this.send({
+                              type: 'promote',
+                              changesetId: node.gate?.changesetId,
+                              draftId: node.gate?.draftId,
+                            });
+                          }}
+                        >
+                          ${node.kind === 'changeset' ? `Promote all ${node.gate.drafts}` : 'Promote'}
+                        </button>
+                        <button
+                          class="discard-btn"
+                          @click=${(e: Event) => {
+                            e.stopPropagation();
+                            this.send({
+                              type: 'discard',
+                              changesetId: node.gate?.changesetId,
+                              draftId: node.gate?.draftId,
+                            });
+                          }}
+                        >
+                          Discard
+                        </button>
+                      </div>`
+                    : nothing
+                }
               </div>`
-            : nothing
         }
-        <div class="card-footer">
-          ${node.chips.map((chip) => html`<span class="chip ${chip.tone}">${chip.text}</span>`)}
-          ${
-            node.gate
-              ? html`<div class="gate-actions">
-                  <button
-                    class="promote-btn"
-                    @click=${(e: Event) => {
-                      e.stopPropagation();
-                      this.send({
-                        type: 'promote',
-                        changesetId: node.gate?.changesetId,
-                        draftId: node.gate?.draftId,
-                      });
-                    }}
-                  >
-                    ${node.kind === 'changeset' ? `Promote all ${node.gate.drafts}` : 'Promote'}
-                  </button>
-                  <button
-                    class="discard-btn"
-                    @click=${(e: Event) => {
-                      e.stopPropagation();
-                      this.send({
-                        type: 'discard',
-                        changesetId: node.gate?.changesetId,
-                        draftId: node.gate?.draftId,
-                      });
-                    }}
-                  >
-                    Discard
-                  </button>
-                </div>`
-              : nothing
-          }
-        </div>
       </div>
     `;
   }
@@ -732,6 +819,24 @@ export class EscurelThreadCanvas extends LitElement {
               })}
             </svg>
 
+            ${this.layout.lanes
+              .filter((lane) => lane.index > 0)
+              .map(
+                (lane) => html`
+                  <div
+                    class="lane-divider"
+                    aria-hidden="true"
+                    style="top: ${lane.y - 6}px; width: ${this.layout!.bounds.width}px;"
+                  ></div>
+                  <div
+                    class="lane-caption"
+                    aria-hidden="true"
+                    style="top: ${lane.y - 24}px; left: ${MARGIN}px;"
+                  >
+                    follow-up${lane.title ? html` · ${lane.title}` : nothing}
+                  </div>
+                `,
+              )}
             ${visibleLaidOutNodes.map((laidOut) => {
               const node = nodeMap.get(laidOut.id);
               return node ? this.renderCard(node, laidOut) : nothing;

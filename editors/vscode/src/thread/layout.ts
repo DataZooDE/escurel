@@ -2,6 +2,7 @@ import type {
   FocusGraph,
   FocusStep,
   LaidOutNode,
+  Lane,
   ThreadLayout,
   ThreadNode,
   ThreadView,
@@ -14,8 +15,12 @@ export const CARD_WIDTH = 240;
 // only a screenshot showed.
 // Tall enough for a title, a subtitle, four meta lines and the footer at the readable 11px text size.
 export const CARD_HEIGHT = 150;
+/** A finished node: title and state on two lines, nothing else. */
+export const COMPACT_HEIGHT = 58;
 export const GAP_X = 50;
 export const GAP_Y = 24;
+/** Space between two lanes (cascade branches), over and above a card gap. */
+export const LANE_GAP = 40;
 export const MARGIN = 32;
 // Same-column and backward wires need a minimum bend to remain visible beside card edges.
 const MIN_BEZIER_CURVATURE = 20;
@@ -106,6 +111,26 @@ function cubicBezierPath(x1: number, y1: number, x2: number, y2: number): string
 }
 
 /**
+ * A wire into another lane runs through space that holds no card: out of the parent's right edge
+ * into the gap beside its column, down into the gap between the lanes, along it, then into the
+ * gap before the child's column and across to the child. A straight or curved wire would cut
+ * through the cards of the lane in between.
+ */
+function branchPath(
+  parent: { x: number; y: number; width: number; height: number },
+  child: { x: number; y: number; height: number },
+  laneGapY: number,
+): string {
+  const x1 = parent.x + parent.width;
+  const y1 = parent.y + parent.height / 2;
+  const x2 = child.x;
+  const y2 = child.y + child.height / 2;
+  const xa = x1 + GAP_X / 2;
+  const xb = x2 - GAP_X / 2;
+  return `M ${x1} ${y1} L ${xa} ${y1} L ${xa} ${laneGapY} L ${xb} ${laneGapY} L ${xb} ${y2} L ${x2} ${y2}`;
+}
+
+/**
  * Promoted writes and processed cascade events receive distinctive wire styles
  * so the eye immediately tracks approved drafts and executed outbound hops
  * without inspecting individual card badges.
@@ -120,11 +145,51 @@ function wireStyle(child: ThreadNode): Wire['style'] {
   return 'solid';
 }
 
+/** The room a node takes: a finished node is a small card. Heights differ, so y is in pixels. */
+export function heightFor(node: ThreadNode): number {
+  return node.emphasis === 'compact' ? COMPACT_HEIGHT : CARD_HEIGHT;
+}
+
+/**
+ * Lane of every node. The main chain is lane 0. A run's FIRST follow-on event continues its lane
+ * (the chain keeps reading left to right); every further follow-on event of that run starts a lane
+ * of its own, below, so branches stop crossing each other. Everything downstream of a node stays
+ * in its lane.
+ */
+function assignLanes(
+  orderedNodes: ThreadNode[],
+  nodeMap: Map<string, ThreadNode>,
+): { laneOf: Map<string, number>; laneCount: number; starters: Map<number, string> } {
+  const laneOf = new Map<string, number>();
+  const starters = new Map<number, string>();
+  let laneCount = 1;
+  for (const node of orderedNodes) {
+    const parent = node.parent ? nodeMap.get(node.parent) : undefined;
+    if (!parent) {
+      laneOf.set(node.id, 0);
+      continue;
+    }
+    const parentLane = laneOf.get(parent.id) ?? 0;
+    const startsBranch =
+      node.kind === 'event' &&
+      parent.kind === 'run' &&
+      parent.children.filter((id) => nodeMap.get(id)?.kind === 'event')[0] !== node.id;
+    if (startsBranch) {
+      laneOf.set(node.id, laneCount);
+      starters.set(laneCount, node.id);
+      laneCount += 1;
+    } else {
+      laneOf.set(node.id, parentLane);
+    }
+  }
+  return { laneOf, laneCount, starters };
+}
+
 /**
  * Lays out a ThreadView onto a 2D coordinate space.
- * Nodes stack top-to-bottom within each column, and parents align vertically
- * with their first visible child where column constraints allow, preserving
- * straight horizontal reading paths across steps.
+ * Columns are stages; lanes are cascade branches, stacked top to bottom. Within a lane, nodes stack
+ * top to bottom in each column, and a parent aligns with its first visible child where columns
+ * allow, preserving straight horizontal reading paths across steps.
  */
 export function layoutThread(view: ThreadView, collapsed: ReadonlySet<string>): ThreadLayout {
   const nodeMap = new Map<string, ThreadNode>(view.nodes.map((n) => [n.id, n]));
@@ -158,109 +223,95 @@ export function layoutThread(view: ThreadView, collapsed: ReadonlySet<string>): 
     hiddenMap.set(node.id, isAncestorCollapsed(node.id, collapsed, nodeMap));
   }
 
-  const nextRowPerCol: number[] = [];
-  const assignedRow = new Map<string, number>();
+  const { laneOf, laneCount, starters } = assignLanes(orderedNodes, nodeMap);
+  const cursor: number[] = []; // next free y per column, within the lane being placed
+  const placedY = new Map<string, number>();
+  const lanes: Lane[] = [];
+  let laneTop = MARGIN;
 
-  function getVisibleChildren(nodeId: string): ThreadNode[] {
+  const colOf = (id: string) => colMap.get(id) ?? 0;
+  const heightOf = (id: string) => {
+    const n = nodeMap.get(id);
+    return n ? heightFor(n) : CARD_HEIGHT;
+  };
+  const cursorAt = (col: number) => cursor[col] ?? laneTop;
+
+  function laneChildren(nodeId: string, lane: number): ThreadNode[] {
     const parent = nodeMap.get(nodeId);
     if (!parent) return [];
     return parent.children
       .map((id) => nodeMap.get(id))
-      .filter((c): c is ThreadNode => Boolean(c && !hiddenMap.get(c.id)));
+      .filter((c): c is ThreadNode =>
+        Boolean(c && !hiddenMap.get(c.id) && laneOf.get(c.id) === lane),
+      );
   }
 
-  function assignRowRecursive(nodeId: string): void {
-    if (hiddenMap.get(nodeId)) {
-      return;
-    }
+  function place(nodeId: string, lane: number): void {
+    if (hiddenMap.get(nodeId)) return;
     const node = nodeMap.get(nodeId);
     if (!node) return;
-
-    const col = colMap.get(node.id) ?? 0;
-    while (nextRowPerCol.length <= col) {
-      nextRowPerCol.push(0);
-    }
-
-    let row = assignedRow.get(node.id);
-    if (row === undefined) {
-      const visibleChildren = getVisibleChildren(node.id);
-      const firstChild = visibleChildren[0];
-
-      if (firstChild) {
-        const childCol = colMap.get(firstChild.id) ?? 0;
-        while (nextRowPerCol.length <= childCol) {
-          nextRowPerCol.push(0);
-        }
-
-        if (childCol !== col) {
-          // Align parent with first visible child across columns where both columns
-          // are currently clear at that vertical offset.
-          const sharedRow = Math.max(nextRowPerCol[col] ?? 0, nextRowPerCol[childCol] ?? 0);
-          row = sharedRow;
-          assignedRow.set(node.id, row);
-          assignedRow.set(firstChild.id, row);
-          nextRowPerCol[col] = row + 1;
-          nextRowPerCol[childCol] = row + 1;
-        } else {
-          // Same column (e.g. run and changeset): cannot share vertical row, so parent
-          // claims next available row and child will stack beneath it.
-          const currentRow = nextRowPerCol[col] ?? 0;
-          row = currentRow;
-          assignedRow.set(node.id, row);
-          nextRowPerCol[col] = row + 1;
-        }
+    const col = colOf(node.id);
+    if (!placedY.has(node.id)) {
+      const first = laneChildren(node.id, lane)[0];
+      const childCol = first ? colOf(first.id) : col;
+      if (first && childCol !== col) {
+        // Align the parent with its first child across columns where both are clear at that offset.
+        const y = Math.max(cursorAt(col), cursorAt(childCol));
+        placedY.set(node.id, y);
+        placedY.set(first.id, y);
+        cursor[col] = y + heightOf(node.id) + GAP_Y;
+        cursor[childCol] = y + heightOf(first.id) + GAP_Y;
       } else {
-        const currentRow = nextRowPerCol[col] ?? 0;
-        row = currentRow;
-        assignedRow.set(node.id, row);
-        nextRowPerCol[col] = row + 1;
+        // Same column (a changeset under its run) or a leaf: next free slot.
+        const y = cursorAt(col);
+        placedY.set(node.id, y);
+        cursor[col] = y + heightOf(node.id) + GAP_Y;
       }
     }
-
-    for (const child of getVisibleChildren(node.id)) {
-      assignRowRecursive(child.id);
-    }
+    for (const child of laneChildren(node.id, lane)) place(child.id, lane);
   }
 
-  // Traverse from root down depth-first in children order.
   const rootNode =
     nodeMap.get(view.rootEventId) ?? orderedNodes.find((n) => n.parent === null) ?? orderedNodes[0];
 
-  if (rootNode) {
-    assignRowRecursive(rootNode.id);
-  }
-
-  // Cover disconnected or unparented nodes so ACL-pruned trees still layout deterministically.
-  for (const node of orderedNodes) {
-    if (!assignedRow.has(node.id) && !hiddenMap.get(node.id)) {
-      assignRowRecursive(node.id);
+  for (let lane = 0; lane < laneCount; lane += 1) {
+    cursor.length = 0;
+    const start = lane === 0 ? rootNode?.id : starters.get(lane);
+    if (start) place(start, lane);
+    if (lane === 0) {
+      // Disconnected or unparented nodes so ACL-pruned trees still lay out deterministically.
+      for (const node of orderedNodes) {
+        if (laneOf.get(node.id) === 0 && !placedY.has(node.id) && !hiddenMap.get(node.id)) {
+          place(node.id, 0);
+        }
+      }
     }
+    const members = orderedNodes.filter((n) => laneOf.get(n.id) === lane && placedY.has(n.id));
+    if (members.length === 0) continue;
+    const bottom = Math.max(...members.map((n) => (placedY.get(n.id) ?? 0) + heightOf(n.id)));
+    const starter = starters.get(lane);
+    lanes.push({
+      index: lane,
+      y: laneTop,
+      height: bottom - laneTop,
+      ...(starter ? { title: nodeMap.get(starter)?.title ?? '' } : {}),
+    });
+    laneTop = bottom + LANE_GAP;
   }
 
   const laidOutNodes: LaidOutNode[] = orderedNodes.map((node) => {
-    const isHidden = Boolean(hiddenMap.get(node.id));
+    const isHidden = Boolean(hiddenMap.get(node.id)) || !placedY.has(node.id);
     const column = colMap.get(node.id) ?? 0;
     if (isHidden) {
-      return {
-        id: node.id,
-        column,
-        x: 0,
-        y: 0,
-        width: 0,
-        height: 0,
-        hidden: true,
-      };
+      return { id: node.id, column, x: 0, y: 0, width: 0, height: 0, hidden: true };
     }
-    const row = assignedRow.get(node.id) ?? 0;
-    const x = MARGIN + column * (CARD_WIDTH + GAP_X);
-    const y = MARGIN + row * (CARD_HEIGHT + GAP_Y);
     return {
       id: node.id,
       column,
-      x,
-      y,
+      x: MARGIN + column * (CARD_WIDTH + GAP_X),
+      y: placedY.get(node.id) ?? MARGIN,
       width: CARD_WIDTH,
-      height: CARD_HEIGHT,
+      height: heightFor(node),
       hidden: false,
     };
   });
@@ -284,14 +335,18 @@ export function layoutThread(view: ThreadView, collapsed: ReadonlySet<string>): 
     // wire goes bottom to top. Right edge to left edge would leave the parent's right side,
     // loop out and double back across the card.
     const sameColumn = parentLayout.column === childLayout.column;
-    const path = sameColumn
-      ? `M ${parentLayout.x + parentLayout.width / 2} ${parentLayout.y + parentLayout.height} L ${childLayout.x + childLayout.width / 2} ${childLayout.y}`
-      : cubicBezierPath(
-          parentLayout.x + parentLayout.width,
-          parentLayout.y + parentLayout.height / 2,
-          childLayout.x,
-          childLayout.y + childLayout.height / 2,
-        );
+    const childLane = lanes.find((lane) => lane.index === laneOf.get(child.id));
+    const crossesLanes = laneOf.get(child.id) !== laneOf.get(child.parent) && childLane;
+    const path = crossesLanes
+      ? branchPath(parentLayout, childLayout, childLane.y - LANE_GAP / 2)
+      : sameColumn
+        ? `M ${parentLayout.x + parentLayout.width / 2} ${parentLayout.y + parentLayout.height} L ${childLayout.x + childLayout.width / 2} ${childLayout.y}`
+        : cubicBezierPath(
+            parentLayout.x + parentLayout.width,
+            parentLayout.y + parentLayout.height / 2,
+            childLayout.x,
+            childLayout.y + childLayout.height / 2,
+          );
 
     wires.push({ from: child.parent, to: child.id, path, style: wireStyle(child) });
   }
@@ -337,6 +392,7 @@ export function layoutThread(view: ThreadView, collapsed: ReadonlySet<string>): 
     wires,
     bounds,
     columnHeaders,
+    lanes,
   };
 }
 

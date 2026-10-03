@@ -3,6 +3,9 @@ import { runControls } from '../../../src/runs/controls';
 import type { InspectorView } from '../../../src/shared/protocol';
 import type { EscurelThreadCanvas } from '../../../webview/thread/thread-canvas';
 import {
+  branchingFocus,
+  branchingLayout,
+  branchingThreadView,
   recordedDetails,
   recordedFocus,
   recordedLayout,
@@ -10,9 +13,11 @@ import {
 } from '../../component/thread-fixtures';
 
 const el = document.querySelector('escurel-thread-canvas') as EscurelThreadCanvas;
-el.view = recordedThreadView;
-el.layout = recordedLayout;
-el.focus = recordedFocus;
+// `?scenario=branches`: the hand-built thread with work waiting on a person and a second lane.
+const branches = new URLSearchParams(location.search).get('scenario') === 'branches';
+el.view = branches ? branchingThreadView : recordedThreadView;
+el.layout = branches ? branchingLayout : recordedLayout;
+el.focus = branches ? branchingFocus : recordedFocus;
 el.details = recordedDetails;
 
 // Fit, so the baseline shows the WHOLE thread. The first baselines were taken at 100% in a

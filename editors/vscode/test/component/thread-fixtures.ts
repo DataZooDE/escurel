@@ -8,6 +8,7 @@ import type {
 import { focusGraph, layoutThread } from '../../src/thread/layout';
 import { foldLineage, toThreadView } from '../../src/thread/threadModel';
 import lineageCascade from '../unit/fixtures/lineage/lineage-cascade.json';
+import branching from '../unit/fixtures/lineage/lineage-review-branches.json';
 
 // Build the fixture through the real gateway folding and layout modules.
 const folded = foldLineage([lineageCascade as unknown as ListLineageResponse]);
@@ -44,6 +45,8 @@ export const openChangesetThreadView: ThreadView = {
       ? {
           ...node,
           state: 'open',
+          // An open changeset is not finished: it keeps its full card (and its buttons).
+          emphasis: 'normal' as const,
           gate: { drafts: 1, changesetId: node.id },
         }
       : node,
@@ -61,3 +64,11 @@ export const openChangesetFocus: FocusGraph = focusGraph(
 export const gatedThreadView = openChangesetThreadView;
 export const gatedLayout = openChangesetLayout;
 export const gatedFocus = openChangesetFocus;
+
+// Hand-built lineage (see fixtures/lineage/README.md): an open changeset, a planned run, a dead-lettered
+// run and a second cascade branch, so what waits on a person is on screen.
+export const branchingThreadView: ThreadView = toThreadView(
+  foldLineage([branching as unknown as ListLineageResponse]),
+);
+export const branchingLayout: ThreadLayout = layoutThread(branchingThreadView, new Set<string>());
+export const branchingFocus: FocusGraph = focusGraph(branchingThreadView, branchingLayout);

@@ -141,6 +141,12 @@ export interface ThreadNode {
    * puts Promote and Discard on the card itself (SPEC §3.5 "Inline gate buttons").
    */
   gate?: { drafts: number; changesetId?: string; draftId?: string };
+  /**
+   * How much room the card earns. `compact` is a node that is finished with nothing left to do (a
+   * processed event or run, a decided changeset or page); everything else is `normal`. Absent
+   * means `normal`.
+   */
+  emphasis?: 'compact' | 'normal';
   /** Collapsed subtrees render as the mock's "… collapsed. Click to expand." row. */
   collapsible: boolean;
 }
@@ -181,6 +187,19 @@ export interface ThreadLayout {
   /** The whole graph's extent, for Fit. */
   bounds: { width: number; height: number };
   columnHeaders: { label: string; x: number }[];
+  /**
+   * One lane per cascade branch, top to bottom: the main chain first. A lane is only reported when
+   * it has a visible card, so a collapsed branch leaves no empty band.
+   */
+  lanes: Lane[];
+}
+
+export interface Lane {
+  index: number;
+  y: number;
+  height: number;
+  /** What started the branch (the first lane is the main chain and has none). */
+  title?: string;
 }
 
 /**
