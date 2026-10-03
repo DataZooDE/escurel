@@ -66,3 +66,12 @@ exposes the window to a debugger for screenshots.
   that always writes cannot break out of.
 - "Start in terminal" needs `escurel.shellHarness` set in your own user settings (it is never read
   from a workspace); the demo profile leaves it empty, so there it only explains how to enable it.
+- The analysis chart is drawn by **Peacock**, not by this extension (which shows the page's markdown and
+  its table). For Peacock to have rows, the demo ships a read-only SQL view over the demo's order lines:
+  `sources/order-lines/*.json` (one JSON file per order item) behind the `order-lines` skill, and the
+  authored query page `query::analysis_orders` that the report's `data:` reads. `demo/run.sh` points the
+  skill at the absolute path (DuckDB resolves a relative glob against the server's cwd) and
+  `demo/materialise.mjs` creates the `order-lines::all` instance as the admin, which a sql_view
+  requires. The query finds an analysis's orders by its id prefix (`meier-guss-…` takes the lines whose
+  supplier is `meier-guss`), so the id scheme must keep the supplier slug first. Checked for real:
+  `peacock author preview supplier-risk-report.md` against this demo renders 2 rows, 1 chart, rasterized.

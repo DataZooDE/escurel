@@ -1,0 +1,11 @@
+{
+  "order_id": "order-4500123",
+  "item": 10,
+  "customer": "Hoffmann Automotive GmbH",
+  "supplier": "meier-guss",
+  "material": "GH-4711",
+  "description": "Gearbox housing, cast, 14 kg",
+  "qty": 240,
+  "net_value": 62400.0,
+  "currency": "EUR"
+}

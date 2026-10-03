@@ -1,0 +1,11 @@
+{
+  "order_id": "order-4500124",
+  "item": 10,
+  "customer": "Brandt Maschinenbau AG",
+  "supplier": "hartmann-hydraulik",
+  "material": "HS-2200",
+  "description": "Hydraulic fitting set",
+  "qty": 500,
+  "net_value": 18750.0,
+  "currency": "EUR"
+}

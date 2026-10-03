@@ -58,14 +58,23 @@ stop
 rm -rf "$HOME_DIR"
 mkdir -p "$HOME_DIR/workspace" "$HOME_DIR/profile/User" "$HOME_DIR/ext"
 
+# The seed, with one placeholder resolved: the `order-lines` sql_view reads a JSON extract, and DuckDB
+# resolves a relative glob against the server's cwd, so its skill page must carry an absolute path.
+cp -r "$HERE/seed" "$HOME_DIR/seed"
+sed -i "s|@ORDER_LINES_DIR@|$HERE/sources/order-lines|" "$HOME_DIR/seed/skills/order-lines.md"
+
 # The gateway: verifies tokens, and keeps a fresh bearer in a file (a demo outlasts a token).
-setsid nohup "$GATEWAY_BIN" --tenant vsx --seed "$HERE/seed" --subject alice \
+setsid nohup "$GATEWAY_BIN" --tenant vsx --seed "$HOME_DIR/seed" --subject alice \
   --bearer-file "$HOME_DIR/bearer.json" > "$HOME_DIR/gateway.json" 2> "$HOME_DIR/gateway.log" < /dev/null &
 echo $! > "$HOME_DIR/gateway.pid"
 for _ in $(seq 1 120); do [ -s "$HOME_DIR/gateway.json" ] && break; sleep 0.5; done
 [ -s "$HOME_DIR/gateway.json" ] || { echo "the gateway printed nothing; see $HOME_DIR/gateway.log" >&2; exit 1; }
 
 field() { python3 -c "import json,sys; print(json.loads(open('$HOME_DIR/gateway.json').readline())['$1'])"; }
+
+# A sql_view instance is not a page you author: an admin materialises it. This is what lets the
+# analysis chart (Peacock's supplier-risk-report -> query analysis_orders) read the order lines.
+node "$HERE/materialise.mjs" "$HOME_DIR/gateway.json"
 PORT="$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1])')"
 
 # The runner, MINTED mode: it signs a token per run, which is what lets the gateway tell which run

@@ -1,0 +1,11 @@
+{
+  "order_id": "order-4500140",
+  "item": 10,
+  "customer": "Weidmann Pumpentechnik GmbH",
+  "supplier": "bronzewerk-lenz",
+  "material": "PM-3300",
+  "description": "Pump body, bronze",
+  "qty": 60,
+  "net_value": 44200.0,
+  "currency": "EUR"
+}

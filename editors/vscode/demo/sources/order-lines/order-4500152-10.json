@@ -1,0 +1,11 @@
+{
+  "order_id": "order-4500152",
+  "item": 10,
+  "customer": "Nordlicht Energietechnik AG",
+  "supplier": "dichtungstechnik-nord",
+  "material": "SK-1190",
+  "description": "Sealing kit, FKM",
+  "qty": 300,
+  "net_value": 12900.0,
+  "currency": "EUR"
+}
