@@ -106,6 +106,8 @@ mod reader_role_chat;
 mod reader_role_crdt;
 mod reader_role_events;
 mod remote_backend_tools;
+mod remote_rest_rows;
+mod remote_support;
 mod report_progress;
 mod review_events;
 mod rows_instances;

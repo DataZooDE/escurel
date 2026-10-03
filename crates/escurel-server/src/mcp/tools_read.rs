@@ -173,6 +173,7 @@ pub(super) struct ListInstancesArgs {
 
 pub(super) async fn tool_list_instances(
     indexer: &Indexer,
+    egress: &crate::egress::Egress,
     caller: AclCaller<'_>,
     args: Value,
 ) -> Result<Value, JsonRpcError> {
@@ -185,6 +186,13 @@ pub(super) async fn tool_list_instances(
         .map_err(|e| rows_err("list_instances", e))?
     {
         return list_rows(indexer, caller, &src, &a).await;
+    }
+    // A REST/MCP `rows` skill (stage 4): the upstream's own listing, paged by its own cursor.
+    if let Some(src) = crate::remote_rows::source(indexer, &a.skill_id)
+        .await
+        .map_err(|e| JsonRpcError::internal(format!("list_instances: {e}")))?
+    {
+        return list_remote_rows(indexer, egress, caller, &src, &a).await;
     }
     let order = match a.order_by.as_deref() {
         Some(s) => match s.to_ascii_lowercase().as_str() {
@@ -361,6 +369,7 @@ pub(super) struct ResolveArgs {
 
 pub(super) async fn tool_resolve(
     indexer: &Indexer,
+    egress: &crate::egress::Egress,
     caller: AclCaller<'_>,
     args: Value,
 ) -> Result<Value, JsonRpcError> {
@@ -405,6 +414,30 @@ pub(super) async fn tool_resolve(
             .rows_get(&src, id)
             .await
             .map_err(|e| rows_err("resolve", e))?
+        && indexer
+            .may_read_instance(&caller, skill, &Value::Object(row.fields.clone()))
+            .await
+            .map_err(|e| JsonRpcError::internal(format!("resolve acl: {e}")))?
+    {
+        resolved.page = Some(escurel_index::PageRef {
+            page_id: row.page_id,
+            slug: Some(row.id),
+            skill: skill.to_owned(),
+            page_kind: PageKind::Instance,
+        });
+    }
+    // The same for a row of a REMOTE `rows` skill (REST/MCP): resolved against the upstream.
+    if resolved.page.is_none()
+        && let (Some(skill), Some(id)) = (
+            resolved.parsed.skill.as_deref(),
+            resolved.parsed.id.as_deref(),
+        )
+        && let Some(src) = crate::remote_rows::source(indexer, skill)
+            .await
+            .map_err(|e| JsonRpcError::internal(format!("resolve: {e}")))?
+        && let Some(row) = crate::remote_rows::get(egress, &src, id)
+            .await
+            .map_err(|e| JsonRpcError::internal(format!("resolve: {e}")))?
         && indexer
             .may_read_instance(&caller, skill, &Value::Object(row.fields.clone()))
             .await
@@ -475,6 +508,13 @@ pub(super) async fn tool_expand(
             .map_err(|e| rows_err("expand", e))?
     {
         return expand_row(state, indexer, caller, args, &src, id).await;
+    }
+    if let Some((skill, id)) = split_instance_page_id(&a.page_id)
+        && let Some(src) = crate::remote_rows::source(indexer, skill)
+            .await
+            .map_err(|e| JsonRpcError::internal(format!("expand: {e}")))?
+    {
+        return expand_remote_row(state, indexer, caller, args, &src, id).await;
     }
     tool_expand_stored(state, indexer, caller, args).await
 }
@@ -890,6 +930,125 @@ async fn list_rows(
         }
     }
     Ok(json!({ "instances": instances, "next_cursor": page.next_cursor }))
+}
+
+/// `list_instances` for a remote `rows` skill: one page of the upstream's objects, ACL-filtered AFTER
+/// the fetch (a page may be short; only a null `next_cursor` means done). Everything here is
+/// external data and says so.
+async fn list_remote_rows(
+    indexer: &Indexer,
+    egress: &crate::egress::Egress,
+    caller: AclCaller<'_>,
+    src: &crate::remote_rows::RemoteRows,
+    a: &ListInstancesArgs,
+) -> Result<Value, JsonRpcError> {
+    let (rows, next_cursor) = crate::remote_rows::list(egress, src, a.cursor.as_deref(), a.limit)
+        .await
+        .map_err(|e| {
+            if e == "invalid cursor" {
+                JsonRpcError::invalid_params(format!("list_instances: {e}"))
+            } else {
+                JsonRpcError::internal(format!("list_instances: {e}"))
+            }
+        })?;
+    let mut instances = Vec::with_capacity(rows.len());
+    for r in &rows {
+        let fm = Value::Object(r.fields.clone());
+        if indexer
+            .may_read_instance(&caller, &src.skill, &fm)
+            .await
+            .map_err(|e| JsonRpcError::internal(format!("list_instances acl: {e}")))?
+        {
+            instances.push(json!({
+                "page_id": r.page_id,
+                "skill": src.skill,
+                "frontmatter": fm,
+                "at": Value::Null,
+                "row": true,
+                "trust": "external",
+            }));
+        }
+    }
+    Ok(json!({ "instances": instances, "next_cursor": next_cursor }))
+}
+
+/// `expand` of a row of a remote `rows` skill: the live object (read through the skill's `read` op)
+/// merged with the stored linked markdown, when there is one. The object is external data.
+async fn expand_remote_row(
+    state: &crate::server::AppState,
+    indexer: &Indexer,
+    caller: AclCaller<'_>,
+    args: Value,
+    src: &crate::remote_rows::RemoteRows,
+    id: &str,
+) -> Result<Value, JsonRpcError> {
+    let page_id = format!("markdown/instances/{}/{id}.md", src.skill);
+    let stored = tool_expand_stored(state, indexer, caller, args).await?;
+    let has_stored = !stored["page"].is_null();
+    let fetched_at = escurel_index::now_rfc3339_micros();
+    let linked = |exists: bool, orphan: bool| json!({ "enabled": src.cfg.linked, "exists": exists, "orphan": orphan });
+    let kind = src.remote.kind.as_str();
+    let row = match crate::remote_rows::get(&state.egress, src, id).await {
+        Ok(r) => r,
+        Err(e) => {
+            // The upstream cannot be read right now: the linked notes (if any) still come back, with
+            // the failure named. Never a fabricated row.
+            if !has_stored {
+                return Err(JsonRpcError::internal(format!("expand: {e}")));
+            }
+            let mut out = stored;
+            out["backend_projection"] = json!({
+                "kind": kind, "instances": "rows", "read_only": true, "trust": "external",
+                "fetched_at": fetched_at, "rows": [], "source": {},
+                "linked": linked(true, false), "issue": e,
+            });
+            return Ok(out);
+        }
+    };
+    let Some(row) = row else {
+        if !has_stored {
+            return Ok(json!({ "page": Value::Null }));
+        }
+        let mut out = stored;
+        out["backend_projection"] = json!({
+            "kind": kind, "instances": "rows", "read_only": true, "trust": "external",
+            "fetched_at": fetched_at, "rows": [], "source": {}, "linked": linked(true, true),
+            "issue": { "code": "source_missing",
+                "message": "the upstream has no object with this key any more; the linked notes are kept" },
+        });
+        return Ok(out);
+    };
+    let fields = Value::Object(row.fields.clone());
+    if !indexer
+        .may_read_instance(&caller, &src.skill, &fields)
+        .await
+        .map_err(|e| JsonRpcError::internal(format!("expand acl: {e}")))?
+    {
+        return Ok(json!({ "page": Value::Null }));
+    }
+    let projection = json!({
+        "kind": kind, "instances": "rows", "read_only": true, "trust": "external",
+        "fetched_at": fetched_at, "rows": [fields.clone()], "source": fields,
+        "truncated": false, "linked": linked(has_stored && src.cfg.linked, false),
+    });
+    let mut out = if has_stored && src.cfg.linked {
+        stored
+    } else {
+        json!({
+            "page": {
+                "page_id": page_id, "slug": id, "skill": src.skill,
+                "page_kind": "instance", "last_written_by": Value::Null,
+            },
+            "frontmatter": {}, "body": "", "blocks": [], "wikilinks_out": [],
+        })
+    };
+    if let (Some(fm), Value::Object(cols)) = (out["frontmatter"].as_object_mut(), &fields) {
+        for (k, v) in cols {
+            fm.insert(k.clone(), v.clone());
+        }
+    }
+    out["backend_projection"] = projection;
+    Ok(out)
 }
 
 /// `expand` of a row page: the live row (typed fields + a bounded read-only projection) merged with

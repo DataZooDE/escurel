@@ -124,6 +124,31 @@ pub struct RemoteBinding {
     /// Response field → overlay frontmatter field. Value is a dotted JSON
     /// path (`$.a.b`) or a bare top-level key.
     pub project: BTreeMap<String, String>,
+    /// How `list_instances` enumerates the upstream's objects (`instances: rows`). `None` for a
+    /// per-instance skill (today's behaviour).
+    pub list: Option<RemoteList>,
+}
+
+/// The `list:` op of a remote `instances: rows` skill (stage 4a/4b): which call enumerates the
+/// upstream's objects, where the items are in the response, and how the upstream pages.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RemoteList {
+    /// The call: an HTTP `GET path` (openapi) or an MCP `tool` (mcp).
+    pub op: RemoteOp,
+    /// JSON path of the items array in the response (`$` when the response IS the array).
+    pub items: String,
+    /// The upstream's page-size parameter / argument, when it has one.
+    pub limit_param: Option<String>,
+    /// How the upstream's cursor is sent and found. `None` for an upstream that does not page.
+    pub cursor: Option<RemoteCursor>,
+}
+
+/// Cursor mapping: send the previous page's cursor as `param` (a query parameter for REST, a tool
+/// argument for MCP); the NEXT cursor is read from the response at the JSON path `from`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RemoteCursor {
+    pub param: String,
+    pub from: String,
 }
 
 /// A `document` skill's intake config (REQ-DOC-01). `accepts` is the
@@ -301,7 +326,7 @@ impl BackendBinding {
                 document: None,
                 remote: parse_remote(block, RemoteKind::OpenApi),
                 projection_limit: read_usize("projection_limit"),
-                rows: None,
+                rows: parse_rows(block),
             },
             Some("mcp") => Self {
                 kind: BackendKind::Mcp,
@@ -309,7 +334,7 @@ impl BackendBinding {
                 document: None,
                 remote: parse_remote(block, RemoteKind::Mcp),
                 projection_limit: read_usize("projection_limit"),
-                rows: None,
+                rows: parse_rows(block),
             },
             // A workflow plan skill is markdown-file-backed; the index only
             // records the kind. The `phases:`/`verify:` orchestration spec is
@@ -422,12 +447,45 @@ fn parse_remote(
                 .collect()
         })
         .unwrap_or_default();
+    let list = block
+        .get("list")
+        .and_then(serde_json::Value::as_object)
+        .and_then(|op| parse_remote_list(op, kind));
     Some(RemoteBinding {
         kind,
         endpoint,
         read,
         write,
         project,
+        list,
+    })
+}
+
+/// Parse `list: { path|tool, items, limit_param?, cursor: { param|arg, from } }`.
+fn parse_remote_list(
+    op: &serde_json::Map<String, serde_json::Value>,
+    kind: RemoteKind,
+) -> Option<RemoteList> {
+    let call = parse_remote_op(op, kind, /* is_write */ false)?;
+    let get_str = |m: &serde_json::Map<String, serde_json::Value>, k: &str| {
+        m.get(k)
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned)
+    };
+    let cursor = op
+        .get("cursor")
+        .and_then(serde_json::Value::as_object)
+        .and_then(|c| {
+            Some(RemoteCursor {
+                param: get_str(c, "param").or_else(|| get_str(c, "arg"))?,
+                from: get_str(c, "from")?,
+            })
+        });
+    Some(RemoteList {
+        op: call,
+        items: get_str(op, "items").unwrap_or_else(|| "$".to_owned()),
+        limit_param: get_str(op, "limit_param"),
+        cursor,
     })
 }
 
@@ -523,6 +581,82 @@ fn parse_sql_view(block: &serde_json::Map<String, serde_json::Value>) -> Option<
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn a_rest_rows_skill_parses_list_key_cursor_and_rows_config() {
+        let fm = json!({
+            "backend": {
+                "kind": "openapi",
+                "endpoint": "crm_rest",
+                "instances": "rows",
+                "key": "$.id",
+                "linked": true,
+                "list": {
+                    "path": "/customers",
+                    "items": "$.data",
+                    "limit_param": "limit",
+                    "cursor": { "param": "after", "from": "$.paging.next" }
+                },
+                "read": { "path": "/customers/{id}" },
+                "project": { "display_name": "$.name" }
+            }
+        });
+        let b = BackendBinding::parse(&fm);
+        let rows = b.rows.expect("a remote rows skill carries a RowsConfig");
+        assert_eq!(rows.key, vec!["$.id".to_owned()]);
+        assert!(rows.linked);
+        let l = b.remote.expect("remote").list.expect("list op");
+        assert_eq!(
+            l.op,
+            RemoteOp::Http {
+                method: "GET".into(),
+                path: "/customers".into(),
+                body: None
+            }
+        );
+        assert_eq!(l.items, "$.data");
+        assert_eq!(l.limit_param.as_deref(), Some("limit"));
+        let c = l.cursor.expect("cursor mapping");
+        assert_eq!(
+            (c.param.as_str(), c.from.as_str()),
+            ("after", "$.paging.next")
+        );
+    }
+
+    #[test]
+    fn an_mcp_rows_skill_parses_a_list_tool_with_a_cursor_argument() {
+        let fm = json!({
+            "backend": {
+                "kind": "mcp",
+                "endpoint": "kb",
+                "instances": "rows",
+                "key": "$.slug",
+                "list": { "tool": "listArticles", "items": "$.articles",
+                          "cursor": { "arg": "after", "from": "$.next" } },
+                "read": { "tool": "getArticle" }
+            }
+        });
+        let b = BackendBinding::parse(&fm);
+        let l = b.remote.expect("remote").list.expect("list op");
+        assert_eq!(
+            l.op,
+            RemoteOp::McpTool {
+                name: "listArticles".into()
+            }
+        );
+        assert_eq!(l.cursor.expect("cursor").param, "after");
+        assert_eq!(b.rows.expect("rows").key, vec!["$.slug".to_owned()]);
+    }
+
+    #[test]
+    fn a_remote_skill_without_instances_rows_has_no_rows_config_and_a_list_is_optional() {
+        let fm = json!({
+            "backend": { "kind": "openapi", "endpoint": "e", "read": { "path": "/x/{id}" } }
+        });
+        let b = BackendBinding::parse(&fm);
+        assert!(b.rows.is_none());
+        assert!(b.remote.expect("remote").list.is_none());
+    }
 
     #[test]
     fn parse_backend_binding_absent_block_is_markdown() {

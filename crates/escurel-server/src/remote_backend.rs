@@ -152,6 +152,81 @@ pub(crate) async fn write_instance(
     )
 }
 
+/// The tenant-scoped limiter key for `endpoint` (shared by every call to it).
+pub(crate) fn endpoint_key(indexer: &Indexer, endpoint: &str) -> String {
+    limiter_key(indexer, endpoint)
+}
+
+/// One page of a remote `instances: rows` skill: call the `list:` op with the upstream's own cursor
+/// and page size, and return the parsed response. A cursor is a query parameter VALUE (REST) or a
+/// tool argument (MCP), never part of the path, so it cannot change the shape of the request.
+pub(crate) async fn call_list(
+    egress: &Egress,
+    key: &str,
+    ep: &EndpointRecord,
+    remote: &RemoteBinding,
+    list: &escurel_index::backend::RemoteList,
+    cursor: Option<&str>,
+    limit: usize,
+) -> Result<Value, String> {
+    if ep.kind != remote.kind.as_str() {
+        return Err(format!(
+            "endpoint `{}` is registered as `{}` but the skill's backend is `{}`",
+            ep.name,
+            ep.kind,
+            remote.kind.as_str()
+        ));
+    }
+    match (&list.op, remote.kind) {
+        (RemoteOp::Http { path, .. }, RemoteKind::OpenApi) => {
+            let mut query: Vec<(String, String)> = Vec::new();
+            if let Some(lp) = &list.limit_param {
+                query.push((lp.clone(), limit.to_string()));
+            }
+            if let (Some(c), Some(cur)) = (&list.cursor, cursor) {
+                query.push((c.param.clone(), cur.to_owned()));
+            }
+            let (status, bytes) =
+                send_path(egress, key, ep, path, |c, url| c.get(url).query(&query)).await?;
+            if !status.is_success() {
+                return Err(format!("upstream status {}", status.as_u16()));
+            }
+            serde_json::from_slice(&bytes)
+                .map_err(|_| "invalid JSON from the upstream list call".to_owned())
+        }
+        (RemoteOp::McpTool { name }, RemoteKind::Mcp) => {
+            let mut args = Map::new();
+            if let Some(lp) = &list.limit_param {
+                args.insert(lp.clone(), json!(limit));
+            }
+            if let (Some(c), Some(cur)) = (&list.cursor, cursor) {
+                args.insert(c.param.clone(), Value::String(cur.to_owned()));
+            }
+            let result = mcp_call(
+                egress,
+                key,
+                ep,
+                "tools/call",
+                json!({ "name": name, "arguments": Value::Object(args) }),
+            )
+            .await?;
+            Ok(extract_mcp_result("tools/call", result))
+        }
+        _ => Err("list op does not match endpoint kind".to_owned()),
+    }
+}
+
+/// Read ONE object of a remote rows skill by its (decoded) key, through the skill's `read` op.
+pub(crate) async fn call_read(
+    egress: &Egress,
+    key: &str,
+    ep: &EndpointRecord,
+    remote: &RemoteBinding,
+    id: &str,
+) -> Result<Value, String> {
+    exec(egress, key, ep, remote, &remote.read, Some(id), None).await
+}
+
 /// Reachability probe for `validate_endpoints`: an `mcp` endpoint answers a
 /// `tools/list`; an `openapi` endpoint answers a bare `GET` to its base URL.
 /// Returns `("ok", None)` on success or `("unreachable", Some(detail))`; a policy refusal is

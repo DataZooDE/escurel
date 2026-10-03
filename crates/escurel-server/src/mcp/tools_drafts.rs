@@ -355,6 +355,22 @@ pub(super) async fn tool_create_draft(
             }],
         }));
     }
+    // The same guard for a row of a REMOTE `rows` skill (REST/MCP).
+    if let Some(r) =
+        crate::remote_rows::write_rejection(indexer, &state.egress, &a.target_page_id, &a.content)
+            .await
+            .map_err(|e| JsonRpcError::internal(format!("create_draft rows guard: {e}")))?
+    {
+        return Ok(json!({
+            "ok": false,
+            "issues": [{
+                "severity": "error",
+                "code": r.code,
+                "location": r.location,
+                "message": r.message,
+            }],
+        }));
+    }
 
     // **An empty base means "no page here yet". Check that it is true.**
     //

@@ -46,6 +46,7 @@ mod live_dispatch;
 mod mcp;
 pub mod pack;
 mod remote_backend;
+mod remote_rows;
 pub mod selfpack;
 mod server;
 mod session;

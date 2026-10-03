@@ -161,6 +161,10 @@ impl Indexer {
         let Some(cfg) = b.rows else {
             return Ok(None);
         };
+        // A REST/MCP rows skill (stage 4) is served by the gateway's connector, not by DuckDB.
+        if b.remote.is_some() {
+            return Ok(None);
+        }
         let sql = b.sql_view.ok_or_else(|| {
             SqlViewError::InvalidBinding(format!(
                 "skill `{skill}` declares `instances: rows` but has no usable `source:`"

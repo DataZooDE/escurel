@@ -327,6 +327,22 @@ pub(super) async fn tool_update_page(
             }],
         }));
     }
+    // The same guard for a row of a REMOTE `rows` skill (REST/MCP).
+    if let Some(r) =
+        crate::remote_rows::write_rejection(indexer, &state.egress, &a.page_id, &a.content)
+            .await
+            .map_err(|e| JsonRpcError::internal(format!("update_page rows guard: {e}")))?
+    {
+        return Ok(json!({
+            "ok": false,
+            "issues": [{
+                "severity": "error",
+                "code": r.code,
+                "location": r.location,
+                "message": r.message,
+            }],
+        }));
+    }
 
     // Base-layer guard (REQ-LAYER-02): a page imported from a subscribed
     // pack (`layer: base@<pack>@<version>`) is read-only at this node, and
