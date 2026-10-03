@@ -192,6 +192,20 @@ export class EscurelThreadCanvas extends LitElement {
         min-width: 0;
         overflow: hidden;
       }
+      /* The canvas scales a 2px outline to 0.8px at 40%: the ring that says where the keyboard is
+         counter-scales like the words, so it renders at about 2px at any zoom (Chrome floors an outline to whole pixels, hence 2.5). */
+      .low-zoom .card:focus-visible {
+        outline-width: calc(2.5px / var(--zoom, 0.5));
+        outline-offset: calc(1px / var(--zoom, 0.5));
+      }
+      .low-zoom .card.selected {
+        box-shadow: 0 0 0 calc(2px / var(--zoom, 0.5)) var(--vscode-focusBorder);
+      }
+      .low-zoom .card.needs-you.selected {
+        box-shadow:
+          0 0 0 calc(3px / var(--zoom, 0.5)) color-mix(in srgb, var(--accent) 24%, transparent),
+          0 0 0 calc(5px / var(--zoom, 0.5)) var(--vscode-focusBorder);
+      }
       .low-zoom .card .card-title {
         flex: 1;
         min-width: 0;

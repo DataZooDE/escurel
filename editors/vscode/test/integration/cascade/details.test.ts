@@ -2,6 +2,7 @@ import * as assert from 'node:assert/strict';
 import * as vscode from 'vscode';
 import type { EscurelApi } from '../../../src/extension';
 import type { LoadedThread } from '../../../src/thread/loadThread';
+import { toThreadView } from '../../../src/thread/threadModel';
 import { activate, discardOpenDrafts, freeOrder, until, wait } from './support';
 
 function once<T>(event: vscode.Event<T>, ms = 30_000): Promise<T> {
@@ -107,6 +108,53 @@ suite('the details view follows the selected node and acts only for its thread',
       unoffered,
       false,
       'the thread re-validates: cancel is not offered for a finished run',
+    );
+
+    // 5. The positive path, through the same host entry the view's messages use: select the instance
+    //    the changeset proposes a change to, and an action its skill offers goes through, while the
+    //    same skill on ANOTHER page, or on this node's sibling, is refused (the view is held to the
+    //    node it shows).
+    const view = toThreadView(thread);
+    let offered: { pageId: string; skill: string } | undefined;
+    for (const node of view.nodes) {
+      api.threads.select(rootEventId, node.id);
+      const now = await until(
+        async () => {
+          const c = api.details.current();
+          return c?.nodeId === node.id ? c : undefined;
+        },
+        10_000,
+        `the details view to show ${node.id}`,
+      );
+      const skills = now.detail.actions?.skills;
+      if (skills && skills.actions.length > 0) {
+        offered = { pageId: skills.pageId, skill: skills.actions[0]!.skill };
+        break;
+      }
+    }
+    assert.ok(offered, 'an instance node of this thread offers its skill’s actions');
+    assert.equal(
+      await api.details.handleMessage({
+        type: 'details-action',
+        rootEventId,
+        message: { type: 'view-skill', skill: offered.skill },
+      }),
+      true,
+      'viewing a skill the shown node offers is acted on',
+    );
+    assert.equal(
+      await api.details.handleMessage({
+        type: 'details-action',
+        rootEventId,
+        message: {
+          type: 'start-skill',
+          skill: offered.skill,
+          pageId: 'markdown/instances/customer-order__some-other-order.md',
+          mode: 'background',
+        },
+      }),
+      false,
+      'a start on a page other than the shown node’s is refused',
     );
 
     // 5. Closing the thread leaves nothing to show.

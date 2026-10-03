@@ -3,7 +3,7 @@ import type { DetailsHostToWebview, DetailsWebviewToHost, ShownDetails } from '.
 import { safePost } from '../shared/safePost';
 import { webviewHtml, webviewOptions } from '../shared/webviewHtml';
 import { log } from '../log';
-import { acceptDetailsAction } from './detailsRouting';
+import { acceptDetailsAction, type Shown } from './detailsRouting';
 import type { ThreadController } from './controller';
 
 /**
@@ -22,6 +22,7 @@ export class DetailsViewProvider implements vscode.WebviewViewProvider, vscode.D
   /** The panel is brought up on the first selection of a session, never again unless the user asks. */
   private broughtUp = false;
   private readonly subs: vscode.Disposable[] = [];
+  private viewSub: vscode.Disposable | undefined;
 
   constructor(
     private readonly context: vscode.ExtensionContext,
@@ -63,6 +64,8 @@ export class DetailsViewProvider implements vscode.WebviewViewProvider, vscode.D
       'escurel-details',
     );
     const sub = view.webview.onDidReceiveMessage((m: unknown) => void this.handleMessage(m));
+    this.viewSub?.dispose();
+    this.viewSub = sub;
     view.onDidDispose(() => {
       sub.dispose();
       if (this.view === view) this.view = undefined;
@@ -92,12 +95,28 @@ export class DetailsViewProvider implements vscode.WebviewViewProvider, vscode.D
       this.threads.focusCanvas(m.rootEventId);
       return true;
     }
-    const accepted = acceptDetailsAction(this.shown, (id) => this.threads.isOpen(id), raw);
+    const accepted = acceptDetailsAction(this.scope(), (id) => this.threads.isOpen(id), raw);
     if (!accepted) {
       log().warn('details: refused a message for a thread that is not the one shown');
       return false;
     }
     return this.threads.handleWebviewMessage(accepted.rootEventId, accepted.message);
+  }
+
+  /** What the node on show offers: the only things the view may act on. */
+  private scope(): Shown | undefined {
+    const shown = this.shown;
+    if (!shown) return undefined;
+    const actions = shown.detail.actions;
+    return {
+      rootEventId: shown.rootEventId,
+      nodeId: shown.nodeId,
+      pageId: actions?.skills?.pageId,
+      skills: [
+        ...(actions?.skills?.actions.map((a) => a.skill) ?? []),
+        ...(actions?.skill ? [actions.skill] : []),
+      ],
+    };
   }
 
   private update(next: ShownDetails, reason: 'select' | 'refresh'): void {
@@ -126,16 +145,26 @@ export class DetailsViewProvider implements vscode.WebviewViewProvider, vscode.D
    */
   private async bringUp(rootEventId: string): Promise<void> {
     if (this.broughtUp) return;
-    this.broughtUp = true;
-    if (this.view) {
-      this.view.show(true);
-      return;
+    try {
+      if (this.view) {
+        this.view.show(true);
+      } else {
+        // Only give the focus back if the canvas had it: a selection made from the outline
+        // must not be pulled over to the editor.
+        const canvasHadFocus = this.threads.isActive(rootEventId);
+        await vscode.commands.executeCommand('escurel.details.focus');
+        if (canvasHadFocus) this.threads.focusCanvas(rootEventId);
+      }
+      // Only once it has worked: a failed attempt must not stop the next selection from trying.
+      this.broughtUp = true;
+    } catch (err) {
+      log().warn(`details: could not bring the panel up: ${String(err)}`);
     }
-    await vscode.commands.executeCommand('escurel.details.focus');
-    this.threads.focusCanvas(rootEventId);
   }
 
   dispose(): void {
     for (const s of this.subs) s.dispose();
+    this.viewSub?.dispose();
+    this.view = undefined;
   }
 }

@@ -114,6 +114,11 @@ export class ThreadController implements vscode.Disposable {
     return this.panels.has(rootEventId);
   }
 
+  /** Whether this thread's panel is the active editor (it had the focus). */
+  isActive(rootEventId: string): boolean {
+    return this.panels.get(rootEventId)?.panel.active ?? false;
+  }
+
   /** Give the keyboard focus back to a thread's canvas (Esc in the details view). */
   focusCanvas(rootEventId: string): void {
     const open = this.panels.get(rootEventId);

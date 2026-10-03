@@ -1,9 +1,13 @@
 import type { DetailsAction } from '../shared/protocol';
 
-/** Which node of which open thread the details view is showing. */
+/** Which node of which open thread the details view is showing, and what that node offers. */
 export interface Shown {
   rootEventId: string;
   nodeId: string;
+  /** The page a start would run on (an instance node), if the node offers skills. */
+  pageId?: string | undefined;
+  /** The skills the node offers: its Skill buttons, and the skill a run executes (Fix skill). */
+  skills?: readonly string[] | undefined;
 }
 
 const ACTIONS = new Set<string>(['start-skill', 'view-skill', 'run-control']);
@@ -31,20 +35,22 @@ export function acceptDetailsAction(
   if (!isRecord(message) || typeof message.type !== 'string' || !ACTIONS.has(message.type)) {
     return undefined;
   }
+  // Held to the node on show: the thread would also allow any other run or page of it.
+  switch (message.type) {
+    case 'run-control':
+      if (message.runId !== shown.nodeId || message.eventId !== undefined) return undefined;
+      break;
+    case 'start-skill':
+      if (shown.pageId === undefined || message.pageId !== shown.pageId) return undefined;
+      if (typeof message.skill !== 'string' || !shown.skills?.includes(message.skill)) {
+        return undefined;
+      }
+      break;
+    case 'view-skill':
+      if (typeof message.skill !== 'string' || !shown.skills?.includes(message.skill)) {
+        return undefined;
+      }
+      break;
+  }
   return { rootEventId, message: message as unknown as DetailsAction };
-}
-
-/** After a thread reloads: keep showing the node if it is still in the thread, else nothing. */
-export function shownAfterReload(
-  shown: Shown | undefined,
-  rootEventId: string,
-  nodeIds: readonly string[],
-): Shown | undefined {
-  if (!shown || shown.rootEventId !== rootEventId) return shown;
-  return nodeIds.includes(shown.nodeId) ? shown : undefined;
-}
-
-/** After a thread panel closes: nothing to show for it any more. */
-export function shownAfterClose(shown: Shown | undefined, rootEventId: string): Shown | undefined {
-  return shown && shown.rootEventId === rootEventId ? undefined : shown;
 }

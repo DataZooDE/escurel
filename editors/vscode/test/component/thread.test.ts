@@ -772,6 +772,21 @@ describe('<escurel-thread-canvas>', () => {
       }
     });
 
+    it('keeps the focus ring visible when zoomed out: it renders at least 1.5px at any zoom', async () => {
+      // A 2px outline on a card scaled to 40% is 0.8px: a keyboard user loses where they are.
+      for (const zoom of [0.69, 0.4]) {
+        const el = await at(zoom);
+        const card = qa(el, '.card')[0] as HTMLElement;
+        card.focus();
+        await el.updateComplete;
+        const width = parseFloat(getComputedStyle(card).outlineWidth);
+        expect(
+          width * zoom >= 1.5,
+          `outline ${width}px renders at ${(width * zoom).toFixed(2)}px at ${zoom}`,
+        ).to.equal(true);
+      }
+    });
+
     it('keeps the Needs-you badge icon at low zoom, without its words', async () => {
       const el = await at(0.5);
       const badges = qa(el, '.needs-badge');

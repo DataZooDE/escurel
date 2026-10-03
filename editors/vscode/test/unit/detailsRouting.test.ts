@@ -1,11 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import {
-  acceptDetailsAction,
-  shownAfterClose,
-  shownAfterReload,
-} from '../../src/thread/detailsRouting';
+import { acceptDetailsAction } from '../../src/thread/detailsRouting';
 
-const shown = { rootEventId: 'root-A', nodeId: 'run-1' };
+const shown = {
+  rootEventId: 'root-A',
+  nodeId: 'run-1',
+  pageId: 'markdown/instances/customer-order__order-1.md',
+  skills: ['supplier-risk'],
+};
 const open = (ids: string[]) => (id: string) => ids.includes(id);
 const action = {
   type: 'details-action',
@@ -67,22 +68,34 @@ describe('acceptDetailsAction', () => {
   });
 });
 
-describe('what stays shown', () => {
-  it('keeps the node shown when its thread reloads and the node is still there', () => {
-    expect(shownAfterReload(shown, 'root-A', ['root-A', 'run-1', 'chs-1'])).toEqual(shown);
+// The details view shows ONE node. Even the thread's own validation would allow another run or page
+// of the same thread, so the host also holds the view to the node it is showing.
+describe('acceptDetailsAction: only the node being shown', () => {
+  const ok = (message: unknown) =>
+    acceptDetailsAction(shown, open(['root-A']), {
+      type: 'details-action',
+      rootEventId: 'root-A',
+      message,
+    });
+
+  it('accepts a run control for the shown run, refuses one for any other run', () => {
+    expect(ok({ type: 'run-control', action: 'retry', runId: 'run-1' })).toBeDefined();
+    expect(ok({ type: 'run-control', action: 'retry', runId: 'run-2' })).toBeUndefined();
+    expect(ok({ type: 'run-control', action: 'requeue', eventId: 'ev-9' })).toBeUndefined();
+    expect(ok({ type: 'run-control', action: 'retry' })).toBeUndefined();
   });
 
-  it('clears it when the reloaded thread no longer has the node', () => {
-    expect(shownAfterReload(shown, 'root-A', ['root-A', 'chs-1'])).toBeUndefined();
+  it('accepts a start for the shown page and an offered skill, refuses another page or skill', () => {
+    const base = { type: 'start-skill', mode: 'background' };
+    expect(ok({ ...base, skill: 'supplier-risk', pageId: shown.pageId })).toBeDefined();
+    expect(
+      ok({ ...base, skill: 'supplier-risk', pageId: 'markdown/instances/other.md' }),
+    ).toBeUndefined();
+    expect(ok({ ...base, skill: 'delete-everything', pageId: shown.pageId })).toBeUndefined();
   });
 
-  it('ignores a reload of some other thread', () => {
-    expect(shownAfterReload(shown, 'root-B', ['x'])).toEqual(shown);
-  });
-
-  it('clears it when the shown thread closes, and only then', () => {
-    expect(shownAfterClose(shown, 'root-A')).toBeUndefined();
-    expect(shownAfterClose(shown, 'root-B')).toEqual(shown);
-    expect(shownAfterClose(undefined, 'root-A')).toBeUndefined();
+  it('accepts viewing an offered skill only', () => {
+    expect(ok({ type: 'view-skill', skill: 'supplier-risk' })).toBeDefined();
+    expect(ok({ type: 'view-skill', skill: 'something-else' })).toBeUndefined();
   });
 });
