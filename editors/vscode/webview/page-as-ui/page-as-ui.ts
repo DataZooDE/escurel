@@ -45,6 +45,9 @@ export class EscurelPageAsUi extends LitElement {
       .toggle button[aria-pressed='true'] {
         background: var(--vscode-button-background);
         color: var(--vscode-button-foreground);
+        /* Weight and an inset ring, so the selection never depends on a fill (high contrast has none). */
+        font-weight: 600;
+        box-shadow: inset 0 0 0 2px var(--vscode-contrastActiveBorder, transparent);
       }
       h1 {
         font-size: 1.5em;

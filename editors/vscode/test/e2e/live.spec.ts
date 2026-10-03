@@ -38,7 +38,7 @@ test('the thread shows the cascade, and an instance offers a skill to start', as
 
   // Click it. A start event appears in the Inbox, and the runner takes it.
   const inbox = pane(page, 'Inbox').getByRole('treeitem', {
-    name: /supplier-risk · order-4500123/,
+    name: /^(?=.*order-4500123)(?=.*supplier-risk)/,
   });
   const before = await inbox.count();
   await start.click();

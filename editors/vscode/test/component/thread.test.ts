@@ -533,4 +533,29 @@ describe('<escurel-thread-canvas>', () => {
       expect(el.viewport).to.deep.equal({ x: 10, y: 20, zoom: 0.5 });
     });
   });
+
+  it('keeps card text at a readable size (11px or more) and the first meta line in the main text colour', async () => {
+    // The reviewers could not read the cards: meta text was about 9.75px in dim grey.
+    const host = await fixture<HTMLElement>(html`
+      <div style="--vscode-font-size:13px;font-size:13px">
+        <escurel-thread-canvas
+          .view=${recordedThreadView}
+          .layout=${recordedLayout}
+          .focus=${recordedFocus}
+          .details=${recordedDetails}
+        ></escurel-thread-canvas>
+      </div>
+    `);
+    const el = host.querySelector('escurel-thread-canvas') as EscurelThreadCanvas;
+    await el.updateComplete;
+    const px = (e: Element) => parseFloat(getComputedStyle(e).fontSize);
+    const lines = qa(el, '.meta-line');
+    expect(lines.length > 0, 'the recorded thread has cards with meta lines').to.equal(true);
+    for (const l of lines) expect(px(l) >= 11, `meta ${px(l)}px`).to.equal(true);
+    for (const l of qa(el, '.card-subtitle'))
+      expect(px(l) >= 11, `subtitle ${px(l)}px`).to.equal(true);
+    // Bigger text must still FIT its card: a clipped first line was the regression this guards.
+    const first = lines[0]!;
+    expect(getComputedStyle(first).color).to.equal(getComputedStyle(el).color);
+  });
 });

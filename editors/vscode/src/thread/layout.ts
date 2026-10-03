@@ -12,7 +12,8 @@ export const CARD_WIDTH = 240;
 // Tall enough for the most a card carries: title, subtitle, four meta lines and a row of
 // chips. At 80 the run card — the fullest — clipped its state chip and its summary, which
 // only a screenshot showed.
-export const CARD_HEIGHT = 128;
+// Tall enough for a title, a subtitle, four meta lines and the footer at the readable 11px text size.
+export const CARD_HEIGHT = 150;
 export const GAP_X = 50;
 export const GAP_Y = 24;
 export const MARGIN = 32;

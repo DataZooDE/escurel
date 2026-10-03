@@ -236,4 +236,48 @@ describe('<escurel-page-as-ui> thread strip', () => {
     (q(el, '.body .wikilink') as HTMLButtonElement).click();
     expect(sent).to.deep.equal([{ type: 'open-wikilink', wikilink: '[[supplier::stahl-ag]]' }]);
   });
+
+  describe('high contrast', () => {
+    const HC =
+      '--vscode-contrastBorder:#6fc3df;--vscode-contrastActiveBorder:#f38518;--vscode-widget-border:#ffffff;--vscode-button-background:transparent;--vscode-button-foreground:#ffffff;--vscode-badge-background:#000000;--vscode-badge-foreground:#ffffff';
+    async function renderHc(): Promise<EscurelPageAsUi> {
+      // A read-only skill shows the layer chip.
+      const model = { ...orderPage, skill: { ...orderPage.skill, readOnly: true } };
+      const host = await fixture<HTMLElement>(
+        html`<div style=${HC}><escurel-page-as-ui .model=${model}></escurel-page-as-ui></div>`,
+      );
+      const el = host.querySelector('escurel-page-as-ui') as EscurelPageAsUi;
+      await el.updateComplete;
+      return el;
+    }
+
+    it('shows which of Page | Markdown is selected without relying on a fill', async () => {
+      // In high contrast the button background is transparent, so the selected one looked like the
+      // other. It carries the active-border colour and a heavier weight instead.
+      const el = await renderHc();
+      const on = q(el, '.toggle button[aria-pressed="true"]') as HTMLElement;
+      const off = q(el, '.toggle button[aria-pressed="false"]') as HTMLElement;
+      expect(getComputedStyle(on).boxShadow).to.contain('rgb(243, 133, 24)');
+      expect(getComputedStyle(off).boxShadow).to.not.contain('rgb(243, 133, 24)');
+      expect(Number(getComputedStyle(on).fontWeight)).to.be.greaterThan(
+        Number(getComputedStyle(off).fontWeight),
+      );
+    });
+
+    it('outlines a chip, which otherwise loses its pill and reads as bare text', async () => {
+      const el = await renderHc();
+      const chip = (el.shadowRoot!.querySelector('.chip') ??
+        qa(el, 'escurel-field')
+          .map((f) => f.querySelector('.chip'))
+          .find(Boolean)) as HTMLElement | null;
+      expect(chip !== null, 'the fixture page has a chip').to.equal(true);
+      expect(getComputedStyle(chip!).borderTopColor).to.equal('rgb(111, 195, 223)');
+    });
+
+    it('draws every rule in one colour', async () => {
+      const el = await renderHc();
+      const border = getComputedStyle(el).getPropertyValue('--escurel-border').trim();
+      expect(border).to.equal('#6fc3df');
+    });
+  });
 });

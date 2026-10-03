@@ -201,7 +201,7 @@ export class EscurelThreadCanvas extends LitElement {
         flex: 1;
       }
       .card-subtitle {
-        font-size: 0.8em;
+        font-size: 0.85em;
         color: var(--escurel-muted);
         overflow: hidden;
         text-overflow: ellipsis;
@@ -220,6 +220,9 @@ export class EscurelThreadCanvas extends LitElement {
         color: var(--vscode-foreground);
         border-color: var(--vscode-focusBorder);
       }
+      .meta-line:first-child {
+        color: var(--vscode-foreground);
+      }
       .meta-lines {
         display: flex;
         flex-direction: column;
@@ -227,7 +230,8 @@ export class EscurelThreadCanvas extends LitElement {
         margin: 2px 0;
       }
       .meta-line {
-        font-size: 0.75em;
+        /* 11px at the editor's 13px: the cards were unreadable at 9.75px in dim grey. */
+        font-size: 0.85em;
         color: var(--escurel-muted);
         overflow: hidden;
         text-overflow: ellipsis;
