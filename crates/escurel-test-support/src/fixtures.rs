@@ -116,7 +116,7 @@ impl TenantFixture {
     /// Seed a skill page at `markdown/skills/<id>.md`.
     ///
     /// The body must be a valid skill markdown document (frontmatter
-    /// with `type: skill`, `id: <id>`). The builder does no
+    /// with `kind: skill`, `id: <id>`). The builder does no
     /// validation here — the gateway's `update_page` does it, and
     /// `spawn` will panic if seeding fails, which is the right
     /// behaviour for a test fixture.

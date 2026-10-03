@@ -330,7 +330,7 @@ fn build_instance_content(page_id: &str, capability: &str, result_ref: Option<&V
         .map(|v| v.to_string())
         .unwrap_or_else(|| "null".to_owned());
     format!(
-        "---\ntype: instance\nid: {id}\nskill: {skill}\n---\n\
+        "---\nkind: instance\nid: {id}\nskill: {skill}\n---\n\
          # {skill}\n\nDelegated `{capability}` result produced by the agent.\n\n\
          result_ref: {rr}\n"
     )

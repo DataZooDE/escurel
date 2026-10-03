@@ -183,7 +183,7 @@ mod tests {
     fn first_write_establishes_any_sections() {
         // No established baseline → a custom meta-skill (e.g. the
         // crm-demo's) is free to ship its own sections.
-        let custom = "---\ntype: skill\nid: escurel\n\
+        let custom = "---\nkind: skill\nid: escurel\n\
                       description: d\nrequired_frontmatter: []\n\
                       optional_frontmatter: []\n---\n# escurel\n\n## Reading order\n\nx\n";
         assert_eq!(meta_skill_violation(custom, &[]), None);

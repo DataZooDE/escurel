@@ -2754,7 +2754,7 @@ async fn await_issues(p: &EscurelProcess, kind: &str, secs: u64) -> Vec<Value> {
         let issues = r["instances"].as_array().cloned().unwrap_or_default();
         let has_kind = issues
             .iter()
-            .any(|i| i["frontmatter"]["kind"].as_str() == Some(kind));
+            .any(|i| i["frontmatter"]["issue_kind"].as_str() == Some(kind));
         if has_kind {
             return issues;
         }
@@ -2862,7 +2862,7 @@ async fn lint_flags_orphan_stale_contradiction_without_rewriting() {
     let of_kind = |kind: &str| -> Vec<String> {
         issues
             .iter()
-            .filter(|i| i["frontmatter"]["kind"].as_str() == Some(kind))
+            .filter(|i| i["frontmatter"]["issue_kind"].as_str() == Some(kind))
             .filter_map(|i| i["frontmatter"]["subject_page"].as_str().map(str::to_owned))
             .collect()
     };
@@ -3242,7 +3242,7 @@ async fn eval_improves_a_failing_skill_then_reverify_passes() {
     .await;
     let regressions = issues["instances"].as_array().map_or(0, |a| {
         a.iter()
-            .filter(|i| i["frontmatter"]["kind"].as_str() == Some("eval_regression"))
+            .filter(|i| i["frontmatter"]["issue_kind"].as_str() == Some("eval_regression"))
             .count()
     });
     assert_eq!(

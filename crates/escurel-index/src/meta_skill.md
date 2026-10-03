@@ -1,5 +1,5 @@
 ---
-type: skill
+kind: skill
 id: escurel
 description: How this knowledge base is organised and how to navigate
   it. Read this first when entering a new tenant.

@@ -160,12 +160,12 @@ mod tests {
         write(
             d.path(),
             "skills/goal.md",
-            "---\ntype: skill\nid: goal\n---\n# goal\n",
+            "---\nkind: skill\nid: goal\n---\n# goal\n",
         );
         write(
             d.path(),
             "instances/goal/g1.md",
-            "---\ntype: instance\nskill: goal\nid: g1\n---\n# g1\n",
+            "---\nkind: instance\nskill: goal\nid: g1\n---\n# g1\n",
         );
         d
     }

@@ -252,16 +252,16 @@ mod tests {
 
     #[test]
     fn stamp_layer_inserts_once_and_refuses_predeclared() {
-        let page = "---\ntype: skill\nid: a\n---\nbody\n";
+        let page = "---\nkind: skill\nid: a\n---\nbody\n";
         let stamped = stamp_layer(page, "base@p@v1").unwrap();
         assert!(
-            stamped.starts_with("---\nlayer: base@p@v1\ntype: skill\nid: a\n---"),
+            stamped.starts_with("---\nlayer: base@p@v1\nkind: skill\nid: a\n---"),
             "{stamped}"
         );
         assert!(stamp_layer("no fence", "base@p@v1").is_err());
         assert!(
             stamp_layer(
-                "---\ntype: skill\nlayer: overlay\nid: a\n---\n",
+                "---\nkind: skill\nlayer: overlay\nid: a\n---\n",
                 "base@p@v1"
             )
             .is_err()
@@ -274,21 +274,21 @@ mod tests {
         // message; a `layer` key found by the PARSER (indented / quoted
         // variants a `starts_with` scan missed); a `\n---` inside a
         // multi-line frontmatter string does NOT truncate the check.
-        let bom = "\u{feff}---\ntype: skill\nid: a\n---\nbody\n";
+        let bom = "\u{feff}---\nkind: skill\nid: a\n---\nbody\n";
         assert!(stamp_layer(bom, "base@p@v1").is_ok(), "BOM is stripped");
 
-        let crlf = "---\r\ntype: skill\r\nid: a\r\n---\r\nbody\r\n";
+        let crlf = "---\r\nkind: skill\r\nid: a\r\n---\r\nbody\r\n";
         let err = stamp_layer(crlf, "base@p@v1").unwrap_err();
         assert!(err.contains("CRLF"), "{err}");
 
-        let quoted_layer = "---\ntype: skill\nid: a\n\"layer\": overlay\n---\n";
+        let quoted_layer = "---\nkind: skill\nid: a\n\"layer\": overlay\n---\n";
         assert!(
             stamp_layer(quoted_layer, "base@p@v1").is_err(),
             "a quoted layer key is still a layer key"
         );
 
         let embedded_fence =
-            "---\ntype: skill\nid: a\ndescription: |\n  looks like\n  ---\n  a fence\n---\nbody\n";
+            "---\nkind: skill\nid: a\ndescription: |\n  looks like\n  ---\n  a fence\n---\nbody\n";
         let stamped = stamp_layer(embedded_fence, "base@p@v1").unwrap();
         assert!(stamped.contains("looks like"), "{stamped}");
     }

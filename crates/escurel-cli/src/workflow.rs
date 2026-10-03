@@ -58,7 +58,7 @@ fn run_page(run_id: &str) -> String {
 /// recovery pass and `status` read `wf_skill` from here).
 fn board_markdown(run_id: &str, wf_skill: &str, status: &str) -> String {
     format!(
-        "---\ntype: instance\nskill: workflow-run\nid: {run_id}\n\
+        "---\nkind: instance\nskill: workflow-run\nid: {run_id}\n\
          wf_skill: {wf_skill}\nstatus: {status}\n---\n# workflow run {run_id}\n\n\
          Plan: [[{wf_skill}]].\n"
     )

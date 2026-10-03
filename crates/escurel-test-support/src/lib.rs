@@ -27,7 +27,7 @@
 //!     fixtures: Some(
 //!         FixtureBuilder::new()
 //!             .tenant("acme")
-//!                 .skill("customer", "---\ntype: skill\nid: customer\n---\n# customer\n")
+//!                 .skill("customer", "---\nkind: skill\nid: customer\n---\n# customer\n")
 //!             .done(),
 //!     ),
 //!     ..Default::default()

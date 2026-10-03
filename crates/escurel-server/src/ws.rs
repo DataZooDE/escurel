@@ -699,7 +699,7 @@ async fn event_push_allowed(
 
 /// Whether `caller` may attach to a session on `page_id`.
 ///
-/// Mirrors the HTTP read path: only `type: instance` pages carry an instance
+/// Mirrors the HTTP read path: only `kind: instance` pages carry an instance
 /// ACL, and `may_read_instance` is the same predicate `expand` applies to the
 /// same bytes.
 ///
@@ -709,7 +709,7 @@ async fn event_push_allowed(
 /// * **No indexer.** A session-only gateway (`indexer = None`) has no page
 ///   corpus, so no ACL exists. `tool_open_session`'s layer guard reasons the
 ///   same way about the same deployment.
-/// * **The page is not an instance.** Only `type: instance` pages carry an
+/// * **The page is not an instance.** Only `kind: instance` pages carry an
 ///   instance ACL; skill pages are readable by any tenant member on the HTTP
 ///   path too, so refusing here would be stricter than `expand`, not safer.
 ///

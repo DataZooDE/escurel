@@ -11,7 +11,7 @@
 //!
 //! ```text
 //! ---
-//! type: skill
+//! kind: skill
 //! id: customer
 //! description: A buying entity that may have one or more contacts.
 //! required_frontmatter: [tier, opened, status]
@@ -23,9 +23,13 @@
 //! Body markdown here.
 //! ```
 //!
-//! The required field is `type:`, which must be `skill` or
+//! The required field is `kind:`, which must be `skill` or
 //! `instance`. Everything else is preserved verbatim in
 //! [`Frontmatter::fields`] for the indexer to project as needed.
+//!
+//! `kind:` replaced the original `type:` key (OKF alignment, where `type` means the concept's
+//! own kind). While the migration window is open the parser still reads a legacy `type:`;
+//! see [`legacy::rewrite_legacy_type_key`] and `escurel admin migrate-kind`.
 
 pub mod legacy;
 pub mod wikilink;
@@ -50,9 +54,9 @@ pub enum PageType {
 /// Parsed frontmatter for one page.
 #[derive(Debug, Clone)]
 pub struct Frontmatter {
-    /// Convenience projection of the `type:` field.
+    /// Convenience projection of the page-kind key (`kind:`).
     pub page_type: PageType,
-    /// Raw frontmatter mapping (includes `type` and every other key).
+    /// Raw frontmatter mapping (includes `kind` and every other key).
     /// Callers project skill-specific fields from here.
     pub fields: serde_yaml_ng::Mapping,
 }
@@ -79,8 +83,8 @@ pub enum ParseError {
     /// Frontmatter parsed as YAML but was not a mapping at the top level.
     #[error("frontmatter must be a YAML mapping at the top level")]
     NotAMapping,
-    /// `type:` was missing or not `skill` / `instance`.
-    #[error("frontmatter missing or invalid 'type' (expected 'skill' or 'instance')")]
+    /// `kind:` was missing or not `skill` / `instance`.
+    #[error("frontmatter missing or invalid 'kind' (expected 'skill' or 'instance')")]
     InvalidType,
 }
 
@@ -93,7 +97,7 @@ pub enum ParseError {
 /// # Errors
 ///
 /// Returns [`ParseError`] when the input is missing a frontmatter
-/// block, the YAML is malformed, or the required `type:` field is
+/// block, the YAML is malformed, or the required `kind:` field is
 /// absent or unrecognised.
 pub fn parse(input: &str) -> Result<Page<'_>, ParseError> {
     let after_open = input

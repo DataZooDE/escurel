@@ -630,7 +630,7 @@ pub(super) async fn tool_create_remote_instance(
     let page_id = format!("markdown/instances/{}/{}.md", a.skill, a.id);
     let content = format!(
         "---\n\
-         type: instance\n\
+         kind: instance\n\
          skill: {skill}\n\
          id: {id}\n\
          backend_ref:\n\

@@ -9,7 +9,7 @@
 //! function outlived the tool and kept its authority. Nothing outside its own
 //! tests called it.
 //!
-//! A query is a markdown page with `type: instance, skill: query`
+//! A query is a markdown page with `kind: instance, skill: query`
 //! and frontmatter that declares
 //!
 //! ```yaml

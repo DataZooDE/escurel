@@ -240,7 +240,7 @@ fn derive_instance_frontmatter(page_id: &str, vote: Option<&VoteStamp>) -> Optio
     if skill.is_empty() || id.is_empty() {
         return None;
     }
-    let mut fm = format!("---\ntype: instance\nskill: {skill}\nid: {id}\n");
+    let mut fm = format!("---\nkind: instance\nskill: {skill}\nid: {id}\n");
     if let Some(v) = vote {
         // `claim` is the upstream item's slug (the tally's grouping key), or
         // the vote's own id when no `over` was routed — mirrors the Gemini
@@ -812,7 +812,7 @@ fn issue_md(
     id: &str,
 ) -> String {
     format!(
-        "---\ntype: instance\nskill: issue\nid: {id}\nkind: {kind}\nseverity: {severity}\n\
+        "---\nkind: instance\nskill: issue\nid: {id}\nissue_kind: {kind}\nseverity: {severity}\n\
          subject_page: {subject}\nmessage: {message}\nsource_run: {run}\n---\n# {kind} issue\n\n{message}\n"
     )
 }
@@ -1072,7 +1072,7 @@ fn curate_index(
 
     let index_id = run_slug(index_page);
     let content = format!(
-        "---\ntype: instance\nskill: index\nid: {index_id}\ngenerated_at: {at}\nsource_run: {run}\n---\n{body}"
+        "---\nkind: instance\nskill: index\nid: {index_id}\ngenerated_at: {at}\nsource_run: {run}\n---\n{body}"
     );
     mcp.call(
         "update_page",
@@ -1161,11 +1161,11 @@ fn eval_score(
     let result_id = run_slug(result_page);
     let content = if passed {
         format!(
-            "---\ntype: instance\nskill: eval-result\nid: {result_id}\ntask: {task_id}\nverdict: pass\n---\n# eval-result\n\nPASS: {implicated} answers the task.\n"
+            "---\nkind: instance\nskill: eval-result\nid: {result_id}\ntask: {task_id}\nverdict: pass\n---\n# eval-result\n\nPASS: {implicated} answers the task.\n"
         )
     } else {
         format!(
-            "---\ntype: instance\nskill: eval-result\nid: {result_id}\ntask: {task_id}\nverdict: fail\n\
+            "---\nkind: instance\nskill: eval-result\nid: {result_id}\ntask: {task_id}\nverdict: fail\n\
              target_page: {implicated}\nfix: {fix}\n---\n# eval-result\n\nFAIL: {implicated} is missing the expected content.\n"
         )
     };
@@ -1323,7 +1323,7 @@ mod tests {
 
     #[test]
     fn stamp_inserts_a_new_key_before_the_closing_fence() {
-        let fm = "---\ntype: instance\nskill: entity\nid: acme\n---\n";
+        let fm = "---\nkind: instance\nskill: entity\nid: acme\n---\n";
         let out = stamp_frontmatter(fm, "source_event", "EV1");
         assert!(out.contains("source_event: EV1\n"));
         assert!(out.contains("skill: entity\n"));
@@ -1333,7 +1333,7 @@ mod tests {
 
     #[test]
     fn stamp_replaces_an_existing_key() {
-        let fm = "---\ntype: instance\nsource_event: OLD\nid: acme\n---\n";
+        let fm = "---\nkind: instance\nsource_event: OLD\nid: acme\n---\n";
         let out = stamp_frontmatter(fm, "source_event", "NEW");
         assert!(out.contains("source_event: NEW\n"));
         assert!(!out.contains("OLD"));
@@ -1362,7 +1362,7 @@ mod tests {
                 .expect("instance path");
         assert_eq!(
             fm,
-            "---\ntype: instance\nskill: risk-signal\nid: r1-signals-9\n---\n"
+            "---\nkind: instance\nskill: risk-signal\nid: r1-signals-9\n---\n"
         );
     }
 

@@ -897,7 +897,7 @@ fn overlay_markdown(
     }
     format!(
         "---\n\
-         type: instance\n\
+         kind: instance\n\
          skill: {skill}\n\
          id: {id}\n\
          backend_ref:\n\

@@ -31,7 +31,7 @@
 
 /// The `deep-research` workflow plan (`kind: workflow`).
 pub const DEEP_RESEARCH_PLAN: &str = "---\n\
-type: skill\n\
+kind: skill\n\
 id: deep-research\n\
 description: Fan-out web search, adversarially verify claims, synthesize a cited report. Invoke on an underspecified research question.\n\
 backend: {kind: workflow}\n\
@@ -70,7 +70,7 @@ answer. Link refuted claims for transparency.\n";
 
 /// One research angle set (the scope phase output).
 pub const RESEARCH_ANGLE: &str = "---\n\
-type: skill\n\
+kind: skill\n\
 id: research-angle\n\
 description: A set of search angles decomposing a research question.\n\
 optional_frontmatter: [angles, workflow_run]\n\
@@ -79,7 +79,7 @@ optional_frontmatter: [angles, workflow_run]\n\
 
 /// A fetched web source (search + fetch phases).
 pub const SOURCE: &str = "---\n\
-type: skill\n\
+kind: skill\n\
 id: source\n\
 description: A fetched web source — url, normalised url, and readable text.\n\
 optional_frontmatter: [url, norm_url, excerpt, untrusted, workflow_run]\n\
@@ -88,7 +88,7 @@ optional_frontmatter: [url, norm_url, excerpt, untrusted, workflow_run]\n\
 
 /// A set of scored claims extracted from one source (extract phase).
 pub const CLAIMS: &str = "---\n\
-type: skill\n\
+kind: skill\n\
 id: claims\n\
 description: 2-5 scored claims extracted from a source (id/text/quote/importance/source_quality).\n\
 optional_frontmatter: [claims, source, workflow_run]\n\
@@ -97,7 +97,7 @@ optional_frontmatter: [claims, source, workflow_run]\n\
 
 /// One skeptic's vote on a claim (verify phase; the barrier's unit).
 pub const VERIFY_VOTE: &str = "---\n\
-type: skill\n\
+kind: skill\n\
 id: verify-vote\n\
 description: One skeptic's vote on a claim — verdict refuted/valid/unverified at a vote slot.\n\
 required_frontmatter: [claim, vote_index, verdict]\n\
@@ -107,7 +107,7 @@ optional_frontmatter: [reason, workflow_run]\n\
 
 /// The synthesized, cited deliverable (synthesize phase).
 pub const RESEARCH_REPORT: &str = "---\n\
-type: skill\n\
+kind: skill\n\
 id: research-report\n\
 description: The cited, fact-checked report answering the research question.\n\
 optional_frontmatter: [question, workflow_run]\n\
@@ -122,7 +122,7 @@ optional_frontmatter: [question, workflow_run]\n\
 /// — may read it. Without this the board is tenant-public and leaks
 /// `requester_groups`, `conversation_ref` and the raw `input`.
 pub const WORKFLOW_RUN: &str = "---\n\
-type: skill\n\
+kind: skill\n\
 id: workflow-run\n\
 description: A dynamic-workflow run board — its per-phase progress and status.\n\
 visibility: owner\n\
@@ -135,7 +135,7 @@ optional_frontmatter: [wf_skill, status, requested_by, requester_groups, idempot
 /// (admin surface; NOT the decision path). Filters the canonical
 /// `pages.frontmatter` JSON column (the `frontmatter_index` table is gone).
 pub const VERIFY_TALLY_QUERY: &str = "---\n\
-type: instance\n\
+kind: instance\n\
 skill: query\n\
 id: verify-tally\n\
 db: relational\n\
@@ -188,7 +188,7 @@ pub fn deep_research_corpus() -> Vec<(String, &'static str)> {
 
 /// The `distill` workflow plan (`kind: workflow`).
 pub const DISTILL_PLAN: &str = "---\n\
-type: skill\n\
+kind: skill\n\
 id: distill\n\
 description: Weave a new source's claims into the existing entity/concept pages they touch. Invoke on an ingested source.\n\
 backend: {kind: workflow}\n\
@@ -218,7 +218,7 @@ audit trail.\n";
 
 /// One atomic claim extracted from the source, tagged with its durable target.
 pub const DISTILL_CLAIM: &str = "---\n\
-type: skill\n\
+kind: skill\n\
 id: distill-claim\n\
 description: One atomic claim from a source, tagged with the existing page it should be woven into.\n\
 required_frontmatter: [target_page]\n\
@@ -229,7 +229,7 @@ optional_frontmatter: [claim, quote, action, workflow_run]\n\
 /// The weave instruction skill — the `writes: existing` phase routes here; the
 /// instance it writes is the durable target page, not a `weave` instance.
 pub const WEAVE: &str = "---\n\
-type: skill\n\
+kind: skill\n\
 id: weave\n\
 description: Merge a source claim into an existing entity/concept page, citing the source and stamping source_event.\n\
 optional_frontmatter: [source_event, last_verified, workflow_run]\n\
@@ -238,7 +238,7 @@ optional_frontmatter: [source_event, last_verified, workflow_run]\n\
 
 /// The distill run's audit summary (integrate phase).
 pub const DISTILL_REPORT: &str = "---\n\
-type: skill\n\
+kind: skill\n\
 id: distill-report\n\
 description: Summary of a distill run — which existing pages were woven, and from what source.\n\
 optional_frontmatter: [source, woven_pages, workflow_run]\n\
@@ -275,12 +275,13 @@ pub fn distill_corpus() -> Vec<(String, &'static str)> {
 
 /// The persisted typed Issue — the stored companion to the ephemeral
 /// `validate` issue. An ordinary instance, so it is derivable, ACL'd, and
-/// queryable via `list_instances(issue, {frontmatter_key: kind})`.
+/// queryable via `list_instances(issue, {frontmatter_key: issue_kind})`. The data field is
+/// `issue_kind`, not `kind`: `kind:` is the page-kind key (`skill` | `instance`).
 pub const ISSUE: &str = "---\n\
-type: skill\n\
+kind: skill\n\
 id: issue\n\
 description: A recorded semantic-health finding — a contradiction, stale claim, orphan page, or missing cross-reference. Lint proposes; a human or write-privileged agent disposes.\n\
-required_frontmatter: [kind, severity, subject_page, message]\n\
+required_frontmatter: [issue_kind, severity, subject_page, message]\n\
 optional_frontmatter: [suggestion, detected_at, source_run, status]\n\
 ---\n\
 # issue\n";
@@ -288,7 +289,7 @@ optional_frontmatter: [suggestion, detected_at, source_run, status]\n\
 /// The `lint` workflow plan (`kind: workflow`). A single `scan` pass over the
 /// board's `scan_skills` produces `issue` instances.
 pub const LINT_PLAN: &str = "---\n\
-type: skill\n\
+kind: skill\n\
 id: lint\n\
 description: Scheduled whole-corpus health pass — flag contradictions, stale claims, orphans, and missing cross-references as issues. Proposes, never rewrites.\n\
 backend: {kind: workflow}\n\
@@ -304,7 +305,7 @@ For each page under review: flag an `orphan` when nothing links to it\n\
 older than the review threshold; a `missing_xref` when it names an entity that\n\
 exists as a page but is not linked (suggest the wikilink); and a\n\
 `contradiction` when two pages assert different values for the same fact. Set\n\
-`kind`, `severity`, `subject_page`, and `message` on each `issue`; suggest a\n\
+`issue_kind`, `severity`, `subject_page`, and `message` on each `issue`; suggest a\n\
 fix in `suggestion`. Do not edit the pages under review.\n";
 
 /// The eager per-edit maintenance handler (#246). An out-of-band `update_page`
@@ -314,7 +315,7 @@ fix in `suggestion`. Do not edit the pages under review.\n";
 /// run on the narrowed `WORKFLOW_STEP_TOOLS` surface (read + update_page; the
 /// event surface is denied), so a maintenance write can't itself steer the run.
 pub const PAGE_EDITED: &str = "---\n\
-type: skill\n\
+kind: skill\n\
 id: page-edited\n\
 description: React to an out-of-band page edit — re-verify the touched page and flag any orphan / stale / contradiction it introduced as issues.\n\
 optional_frontmatter: [edit]\n\
@@ -348,7 +349,7 @@ pub fn lint_corpus() -> Vec<(String, &'static str)> {
 
 /// The curated corpus index — a by-category map of the knowledge base.
 pub const INDEX: &str = "---\n\
-type: skill\n\
+kind: skill\n\
 id: index\n\
 description: A curated, by-category map of the knowledge base — the map of the territory.\n\
 optional_frontmatter: [generated_at, workflow_run]\n\
@@ -357,7 +358,7 @@ optional_frontmatter: [generated_at, workflow_run]\n\
 
 /// The `curate` workflow plan (`kind: workflow`).
 pub const CURATE_PLAN: &str = "---\n\
-type: skill\n\
+kind: skill\n\
 id: curate\n\
 description: Regenerate the curated by-category index of the knowledge base. Generated then agent-curated; stays derivable.\n\
 backend: {kind: workflow}\n\
@@ -393,7 +394,7 @@ pub fn curation_corpus() -> Vec<(String, &'static str)> {
 /// One evaluation task: a question the KB should answer, the page that should
 /// answer it, the substring that proves it does, and the fix if it doesn't.
 pub const EVAL_TASK: &str = "---\n\
-type: skill\n\
+kind: skill\n\
 id: eval-task\n\
 description: A task the knowledge base should satisfy — its implicated page, the expected content, and the fix.\n\
 required_frontmatter: [implicated_page, expect]\n\
@@ -403,7 +404,7 @@ optional_frontmatter: [fix, question, workflow_run]\n\
 
 /// One scored evaluation outcome — a failure names the page to improve.
 pub const EVAL_RESULT: &str = "---\n\
-type: skill\n\
+kind: skill\n\
 id: eval-result\n\
 description: A scored evaluation outcome — verdict pass/fail, and for a failure the implicated target_page and the fix to weave in.\n\
 required_frontmatter: [task, verdict]\n\
@@ -414,7 +415,7 @@ optional_frontmatter: [target_page, fix, tier, score, workflow_run]\n\
 /// The weave instruction skill for `eval`'s apply phase (the `writes: existing`
 /// phase routes here; the instance it writes is the durable target page/skill).
 pub const IMPROVEMENT: &str = "---\n\
-type: skill\n\
+kind: skill\n\
 id: improvement\n\
 description: Merge an eval fix into the implicated document or skill, citing the eval-result and stamping freshness.\n\
 optional_frontmatter: [source_event, last_verified, workflow_run]\n\
@@ -427,7 +428,7 @@ optional_frontmatter: [source_event, last_verified, workflow_run]\n\
 /// durable-target `apply` can fan out over `score`'s run-scoped eval-results
 /// (cross-run data flow is out of scope for the run-prefix-scoped reducer).
 pub const EVAL_PLAN: &str = "---\n\
-type: skill\n\
+kind: skill\n\
 id: eval\n\
 description: Score how well the knowledge base answers a task set and, in the same run, weave the fix for each failure into the implicated document or skill. Re-run to confirm.\n\
 backend: {kind: workflow}\n\
@@ -522,7 +523,9 @@ mod tests {
         ] {
             assert!(ids.iter().any(|id| id == expected), "missing {expected}");
         }
-        assert!(ISSUE.contains("required_frontmatter: [kind, severity, subject_page, message]"));
+        assert!(
+            ISSUE.contains("required_frontmatter: [issue_kind, severity, subject_page, message]")
+        );
     }
 
     #[test]

@@ -118,5 +118,5 @@ pub async fn ingest_corpus(
 /// this markdown body, so the heading is cosmetic.
 fn overlay_markdown(skill: &str, id: &str, title: &str) -> String {
     let heading = if title.trim().is_empty() { id } else { title };
-    format!("---\ntype: instance\nskill: {skill}\nid: {id}\n---\n# {heading}\n")
+    format!("---\nkind: instance\nskill: {skill}\nid: {id}\n---\n# {heading}\n")
 }

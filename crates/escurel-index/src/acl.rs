@@ -1,6 +1,6 @@
 //! Deterministic per-instance access control.
 //!
-//! A `type: skill` page declares a read policy (`visibility: public|owner`,
+//! A `kind: skill` page declares a read policy (`visibility: public|owner`,
 //! [`crate::Visibility`]) and, for `owner` visibility, the frontmatter
 //! field naming the owning principal (`owner_field:`). The check here is a
 //! pure comparison on the read path — resolve the instance's owner from its
@@ -239,7 +239,7 @@ impl Indexer {
     /// the incoming content (no create-for-/transfer-to another subject).
     /// Public / no-`owner_field` instances are therefore admin-write-only.
     ///
-    /// Only `type: instance` pages are gated here (P1); skill/other pages
+    /// Only `kind: instance` pages are gated here (P1); skill/other pages
     /// return `Ok(true)` and keep the existing meta-skill protection.
     pub async fn may_write_page(
         &self,

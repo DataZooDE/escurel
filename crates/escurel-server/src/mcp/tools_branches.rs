@@ -506,7 +506,7 @@ mod tests {
 
     #[test]
     fn the_scenario_stamp_is_server_owned_in_both_directions() {
-        let doc = "---\ntype: instance\nskill: note\nid: a\n---\n# a\nbody\n";
+        let doc = "---\nkind: instance\nskill: note\nid: a\n---\n# a\nbody\n";
         let stamped = stamp_scenario(doc, "wip");
         let fm = escurel_md::parse(&stamped)
             .expect("parses")
@@ -520,7 +520,7 @@ mod tests {
 
         // A caller-supplied scenario is REPLACED, not honoured: choosing it
         // would mean writing into somebody else's branch.
-        let forged = "---\ntype: instance\nskill: note\nid: a\nscenario: theirs\n---\n# a\n";
+        let forged = "---\nkind: instance\nskill: note\nid: a\nscenario: theirs\n---\n# a\n";
         let fm = escurel_md::parse(&stamp_scenario(forged, "mine"))
             .expect("parses")
             .frontmatter

@@ -2088,7 +2088,7 @@ pub(super) async fn tool_start_operation(
     let groups_json =
         serde_json::to_string(caller.token_groups).unwrap_or_else(|_| "[]".to_owned());
     let mut content = format!(
-        "---\ntype: instance\nskill: workflow-run\nid: {slug}\nwf_skill: {}\n\
+        "---\nkind: instance\nskill: workflow-run\nid: {slug}\nwf_skill: {}\n\
          requested_by: {}\nrequester_groups: {groups_json}\n",
         a.wf_skill,
         json_scalar(caller.subject),
