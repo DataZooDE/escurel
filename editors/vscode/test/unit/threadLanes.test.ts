@@ -34,6 +34,8 @@ function node(
     target: { open: 'nothing' },
     collapsible: false,
     emphasis,
+    // A normal card with something to show takes the full height.
+    ...(emphasis === 'normal' ? { meta: ['08:00'] } : {}),
   };
 }
 

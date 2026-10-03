@@ -17,6 +17,13 @@ export const CARD_WIDTH = 240;
 export const CARD_HEIGHT = 150;
 /** A finished node: title and state on two lines, nothing else. */
 export const COMPACT_HEIGHT = 58;
+/** A live card with nothing but its title, type and state (no meta lines): no empty box. */
+export const SHORT_HEIGHT = 84;
+/** A node that waits on a person: more room for the badge, the reason and the actions. */
+export const NEEDS_YOU_HEIGHT = 176;
+/** One listed draft on an open changeset's card, and how many the card lists before "+N more". */
+export const DRAFT_ROW_HEIGHT = 22;
+export const MAX_LISTED_DRAFTS = 4;
 export const GAP_X = 50;
 export const GAP_Y = 24;
 /** Space between two lanes (cascade branches), over and above a card gap. */
@@ -165,7 +172,14 @@ function wireStyle(child: ThreadNode): Wire['style'] {
 
 /** The room a node takes: a finished node is a small card. Heights differ, so y is in pixels. */
 export function heightFor(node: ThreadNode): number {
-  return node.emphasis === 'compact' ? COMPACT_HEIGHT : CARD_HEIGHT;
+  if (node.emphasis === 'compact') return COMPACT_HEIGHT;
+  if (node.emphasis === 'needs-you') {
+    const listed = node.changeset?.drafts.length ?? 0;
+    // Up to MAX_LISTED_DRAFTS rows; more than that is one "+N more" row.
+    const rows = listed <= MAX_LISTED_DRAFTS ? listed : MAX_LISTED_DRAFTS + 1;
+    return NEEDS_YOU_HEIGHT + rows * DRAFT_ROW_HEIGHT;
+  }
+  return node.meta.length === 0 ? SHORT_HEIGHT : CARD_HEIGHT;
 }
 
 /**

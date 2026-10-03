@@ -1,9 +1,13 @@
 import { expect, fixture, html } from '@open-wc/testing';
 import type { ThreadWebviewToHost } from '../../src/shared/protocol';
+import { layoutThread } from '../../src/thread/layout';
 import { connectThreadWebview } from '../../webview/thread/main';
 import type { EscurelThreadCanvas } from '../../webview/thread/thread-canvas';
 import '../../webview/thread/thread-canvas';
 import {
+  branchingFocus,
+  branchingLayout,
+  branchingThreadView,
   gatedFocus,
   gatedLayout,
   gatedThreadView,
@@ -665,5 +669,211 @@ describe('<escurel-thread-canvas>', () => {
     el.selectNode(card.getAttribute('data-node-id')!);
     await el.updateComplete;
     expect(card.getAttribute('aria-selected')).to.equal('true');
+  });
+
+  describe('work that needs you', () => {
+    const branching = () =>
+      renderCanvas({ view: branchingThreadView, layout: branchingLayout, focus: branchingFocus });
+
+    it('marks every card that waits on a person with a badge, a person icon and the reason', async () => {
+      const el = await branching();
+      const needing = qa(el, '.card.needs-you');
+      // The open changeset, the planned run and the dead-lettered run.
+      expect(needing).to.have.length(3);
+      for (const card of needing) {
+        const badge = card.querySelector('.needs-badge');
+        expect(text(badge)).to.contain('Needs you');
+        expect(badge?.querySelector('svg') !== null, 'a person icon').to.equal(true);
+        expect(text(card.querySelector('.needs-reason')).length > 0).to.equal(true);
+      }
+      expect(qa(el, '.card:not(.needs-you) .needs-badge')).to.have.length(0);
+    });
+
+    it('says so in the accessible name, not by colour', async () => {
+      const el = await branching();
+      for (const card of qa(el, '.card.needs-you')) {
+        expect(card.getAttribute('aria-label')!.toLowerCase()).to.contain('needs you');
+      }
+    });
+
+    it('gives them a bigger card than a normal one, and the finished ones the smallest', async () => {
+      const el = await branching();
+      const needing = Math.min(
+        ...qa(el, '.card.needs-you').map((c) => c.getBoundingClientRect().height),
+      );
+      const compact = Math.max(
+        ...qa(el, '.card.compact').map((c) => c.getBoundingClientRect().height),
+      );
+      expect(needing > compact * 2, `${needing}px vs ${compact}px`).to.equal(true);
+    });
+
+    it('never clips a card, however full', async () => {
+      const el = await branching();
+      for (const card of qa(el, '.card') as HTMLElement[]) {
+        expect(
+          card.scrollHeight <= card.clientHeight + 1,
+          `${card.getAttribute('aria-label')}: content ${card.scrollHeight}px in ${card.clientHeight}px`,
+        ).to.equal(true);
+      }
+    });
+
+    it('shows who proposed an open changeset and how long ago', async () => {
+      const el = await branching();
+      const card = q(el, '.card.type-changeset.needs-you')!;
+      expect(text(card.querySelector('.changeset-author'))).to.contain('agent:supplier-risk');
+      expect(/ago|just now/.test(text(card.querySelector('.changeset-author')))).to.equal(true);
+    });
+
+    it('lists the pages it changes, each openable', async () => {
+      const el = await branching();
+      const card = q(el, '.card.type-changeset.needs-you')!;
+      const entries = Array.from(card.querySelectorAll('.draft-entry')) as HTMLButtonElement[];
+      expect(entries.map(text)).to.deep.equal(['order-4500131', 'meier-guss-2026-10-03']);
+      const sent: ThreadWebviewToHost[] = [];
+      el.addEventListener('escurel-message', (e) =>
+        sent.push((e as CustomEvent<ThreadWebviewToHost>).detail),
+      );
+      entries[1]!.click();
+      expect(sent).to.deep.equal([{ type: 'open-node', nodeId: '01M4DRF2000000000000000002' }]);
+    });
+
+    it('opens the review of the whole changeset from its card', async () => {
+      const el = await branching();
+      const card = q(el, '.card.type-changeset.needs-you')!;
+      const sent: ThreadWebviewToHost[] = [];
+      el.addEventListener('escurel-message', (e) =>
+        sent.push((e as CustomEvent<ThreadWebviewToHost>).detail),
+      );
+      (card.querySelector('.review-btn') as HTMLButtonElement).click();
+      expect(sent).to.deep.equal([{ type: 'open-node', nodeId: '01M4CHS1000000000000000001' }]);
+    });
+
+    it('offers Promote all and Discard on the open changeset', async () => {
+      const el = await branching();
+      const card = q(el, '.card.type-changeset.needs-you')!;
+      expect(text(card.querySelector('.promote-btn'))).to.equal('Promote all 2');
+      expect(text(card.querySelector('.discard-btn'))).to.equal('Discard');
+    });
+
+    // Relative luminance and contrast per WCAG 2.x.
+    const channel = (v: number) => {
+      const c = v / 255;
+      return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
+    };
+    const luminance = (rgb: string) => {
+      const [r, g, b] = (rgb.match(/[\d.]+/g) ?? []).slice(0, 3).map(Number);
+      return 0.2126 * channel(r!) + 0.7152 * channel(g!) + 0.0722 * channel(b!);
+    };
+    const contrast = (a: string, b: string) => {
+      const [hi, lo] = [luminance(a), luminance(b)].sort((x, y) => y - x);
+      return (hi! + 0.05) / (lo! + 0.05);
+    };
+    const darkTokens =
+      '--vscode-charts-green:#89d185;--vscode-button-foreground:#ffffff;--vscode-button-secondaryBackground:#3a3d41;' +
+      '--vscode-button-secondaryForeground:#ffffff;--vscode-errorForeground:#f48771;--vscode-foreground:#cccccc;' +
+      '--vscode-editorWarning-foreground:#cca700;--vscode-focusBorder:#007fd4;--vscode-editor-background:#1e1e1e;' +
+      '--vscode-editorWidget-background:#252526;--vscode-descriptionForeground:#9d9d9d';
+
+    it('keeps the action buttons readable in a dark theme (Promote was white on light green, 1.8:1)', async () => {
+      const host = await fixture<HTMLElement>(
+        html`<div style=${darkTokens}>
+          <escurel-thread-canvas
+            .view=${branchingThreadView}
+            .layout=${branchingLayout}
+            .focus=${branchingFocus}
+          ></escurel-thread-canvas>
+        </div>`,
+      );
+      const el = host.querySelector('escurel-thread-canvas') as EscurelThreadCanvas;
+      await el.updateComplete;
+      const card = q(el, '.card.type-changeset.needs-you')!;
+      for (const sel of ['.promote-btn', '.discard-btn', '.review-btn']) {
+        const cs = getComputedStyle(card.querySelector(sel)!);
+        const ratio = contrast(cs.backgroundColor, cs.color);
+        expect(
+          ratio >= 4.5,
+          `${sel}: ${cs.color} on ${cs.backgroundColor} = ${ratio.toFixed(2)}`,
+        ).to.equal(true);
+      }
+    });
+
+    it('keeps the warning border and halo when the card is selected', async () => {
+      const host = await fixture<HTMLElement>(
+        html`<div style=${darkTokens}>
+          <escurel-thread-canvas
+            .view=${branchingThreadView}
+            .layout=${branchingLayout}
+            .focus=${branchingFocus}
+          ></escurel-thread-canvas>
+        </div>`,
+      );
+      const el = host.querySelector('escurel-thread-canvas') as EscurelThreadCanvas;
+      await el.updateComplete;
+      const card = q(el, '.card.type-changeset.needs-you') as HTMLElement;
+      const warning = getComputedStyle(card).borderTopColor;
+      el.selectNode(card.getAttribute('data-node-id')!);
+      await el.updateComplete;
+      expect(getComputedStyle(card).borderTopColor, 'still the warning colour').to.equal(warning);
+      // Selection is a ring beyond the halo, not a replacement for it.
+      expect(getComputedStyle(card).boxShadow).to.contain('rgb(0, 127, 212)');
+    });
+
+    it('makes "+N more" a button that opens the whole changeset', async () => {
+      const many = {
+        ...branchingThreadView,
+        nodes: branchingThreadView.nodes.map((n) =>
+          n.kind === 'changeset' && n.changeset
+            ? {
+                ...n,
+                changeset: {
+                  ...n.changeset,
+                  drafts: Array.from({ length: 7 }, (_, i) => ({
+                    id: `d${i}`,
+                    title: `page-${i}`,
+                  })),
+                },
+              }
+            : n,
+        ),
+      };
+      const el = await renderCanvas({
+        view: many,
+        layout: layoutThread(many, new Set()),
+        focus: branchingFocus,
+      });
+      const card = q(el, '.card.type-changeset.needs-you')!;
+      expect(card.querySelectorAll('.draft-entry')).to.have.length(4);
+      const more = card.querySelector('.draft-more') as HTMLButtonElement;
+      expect(more.tagName).to.equal('BUTTON');
+      expect(text(more)).to.equal('+3 more');
+      const sent: ThreadWebviewToHost[] = [];
+      el.addEventListener('escurel-message', (e) =>
+        sent.push((e as CustomEvent<ThreadWebviewToHost>).detail),
+      );
+      more.click();
+      expect(sent).to.deep.equal([{ type: 'open-node', nodeId: '01M4CHS1000000000000000001' }]);
+    });
+
+    it('deactivates the buttons and says why when the person may not decide', async () => {
+      const view = {
+        ...branchingThreadView,
+        nodes: branchingThreadView.nodes.map((n) =>
+          n.kind === 'changeset' && n.gate
+            ? { ...n, gate: { ...n.gate, disabledReason: 'Only the page owner can promote this.' } }
+            : n,
+        ),
+      };
+      const el = await renderCanvas({ view, layout: branchingLayout, focus: branchingFocus });
+      const card = q(el, '.card.type-changeset.needs-you')!;
+      const promote = card.querySelector('.promote-btn') as HTMLButtonElement;
+      expect(promote.getAttribute('aria-disabled')).to.equal('true');
+      expect(text(card.querySelector('.gate-reason'))).to.contain('Only the page owner');
+      const sent: ThreadWebviewToHost[] = [];
+      el.addEventListener('escurel-message', (e) =>
+        sent.push((e as CustomEvent<ThreadWebviewToHost>).detail),
+      );
+      promote.click();
+      expect(sent).to.deep.equal([]);
+    });
   });
 });

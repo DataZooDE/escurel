@@ -1,4 +1,4 @@
-import { emphasisOf } from './nodeStyle';
+import { emphasisOf, needsYouOf } from './nodeStyle';
 import type { LineageNode, ListLineageResponse } from '../client/types';
 import { pageSlug } from '../shared/pageId';
 import type { ThreadNode, ThreadView } from '../shared/protocol';
@@ -136,7 +136,10 @@ function resolveViewParents(folded: FoldedLineage): {
   return { parents, children };
 }
 
-type CardDetails = Pick<ThreadNode, 'title' | 'subtitle' | 'meta' | 'target' | 'gate' | 'tone'>;
+type CardDetails = Pick<
+  ThreadNode,
+  'title' | 'subtitle' | 'meta' | 'target' | 'gate' | 'tone' | 'changeset'
+>;
 
 function eventCard(node: LineageNode): CardDetails {
   const line = [formatClock(node.at), stringAttr(node, 'kind')].filter(Boolean).join(' · ');
@@ -190,7 +193,24 @@ function countDrafts(node: LineageNode, children: string[], folded: FoldedLineag
 
 function changesetCard(node: LineageNode, children: string[], folded: FoldedLineage): CardDetails {
   const drafts = countDrafts(node, children, folded);
+  const listed = children
+    .map((id) => folded.nodes.get(id))
+    .filter((c): c is LineageNode => c?.type === 'draft');
+  // The gateway sends no time on a changeset; its drafts were written with it.
+  const created = listed
+    .map((d) => stringAttr(d, 'created_at'))
+    .filter((t): t is string => Boolean(t))
+    .sort()[0];
+  const author = stringAttr(node, 'author');
   return {
+    changeset: {
+      ...(author ? { author } : {}),
+      ...(created ? { at: created } : {}),
+      drafts: listed.map((d) => ({
+        id: d.id,
+        title: pageSlug(stringAttr(d, 'target_page_id') ?? '') || shortId(d.id),
+      })),
+    },
     title: `changeset ${shortId(node.id)}`,
     meta: [pluralise(drafts, 'draft')],
     tone: 'instance',
@@ -240,15 +260,19 @@ function buildNode(
         },
       ]
     : [];
-  const kind: ThreadNode['kind'] =
+  const inChangeset = parent !== null && folded.nodes.get(parent)?.type === 'changeset';
+  const kindOf: ThreadNode['kind'] =
     node.type === 'run' || node.type === 'changeset' || node.type === 'draft' ? node.type : 'event';
+  const kind = kindOf;
+  const needs = needsYouOf(kind, state, inChangeset);
   return {
     id: node.id,
     kind,
     parent,
     children,
     state,
-    emphasis: emphasisOf(kind, state),
+    ...(needs ? { needsYou: needs } : {}),
+    emphasis: needs ? 'needs-you' : emphasisOf(kind, state),
     ...details,
     chips,
     collapsible: node.type === 'run' || children.length > 0,

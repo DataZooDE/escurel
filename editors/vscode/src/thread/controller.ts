@@ -13,7 +13,13 @@ import type { InspectorExtras } from './inspector';
 import { buildNodeActions, resolveThreadAction } from './inspectorActions';
 import { focusGraph, layoutThread } from './layout';
 import { loadThread, type LoadedThread } from './loadThread';
-import { commandForTarget, resolveGate, rootEventIdOf } from './nodeTarget';
+import {
+  collapsibleNodeId,
+  commandForTarget,
+  knownNodeId,
+  resolveGate,
+  rootEventIdOf,
+} from './nodeTarget';
 import { toThreadView } from './threadModel';
 
 /** Events arrive in bursts when a run finishes; one refetch serves the whole burst. */
@@ -284,12 +290,16 @@ export class ThreadController implements vscode.Disposable {
     );
 
     const sub = panel.webview.onDidReceiveMessage((m: ThreadWebviewToHost) => {
+      if (!m || typeof m !== 'object') return;
       switch (m.type) {
         case 'ready':
         case 'refresh':
           return void load();
-        case 'select-node':
+        case 'select-node': {
+          // Only a node of this thread: the outline reveals whatever it is told to.
+          if (!knownNodeId(current && toThreadView(current), m.nodeId)) return;
           return void this.selected.fire({ rootEventId, nodeId: m.nodeId });
+        }
         case 'open-node': {
           const node = current && toThreadView(current).nodes.find((n) => n.id === m.nodeId);
           const cmd = node && commandForTarget(node.target);
@@ -316,6 +326,7 @@ export class ThreadController implements vscode.Disposable {
         case 'view-skill':
           return void this.handleWebviewMessage(rootEventId, m);
         case 'toggle-collapse':
+          if (!collapsibleNodeId(current && toThreadView(current), m.nodeId)) return;
           return toggleCollapse(m.nodeId);
         case 'expand-all':
           return expandAll();

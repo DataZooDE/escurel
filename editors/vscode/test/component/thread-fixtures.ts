@@ -45,8 +45,9 @@ export const openChangesetThreadView: ThreadView = {
       ? {
           ...node,
           state: 'open',
-          // An open changeset is not finished: it keeps its full card (and its buttons).
-          emphasis: 'normal' as const,
+          // An open changeset waits on a person: the strongest card, with its buttons.
+          emphasis: 'needs-you' as const,
+          needsYou: { reason: 'review' as const, text: 'Review changes' },
           gate: { drafts: 1, changesetId: node.id },
         }
       : node,

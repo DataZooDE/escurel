@@ -1,6 +1,12 @@
 import type { ThreadNode } from '../../src/shared/protocol';
 import { describe, expect, it } from 'vitest';
-import { commandForTarget, resolveGate, rootEventIdOf } from '../../src/thread/nodeTarget';
+import {
+  collapsibleNodeId,
+  commandForTarget,
+  knownNodeId,
+  resolveGate,
+  rootEventIdOf,
+} from '../../src/thread/nodeTarget';
 
 describe('commandForTarget', () => {
   it('routes each node target to the command that already owns that surface', () => {
@@ -101,5 +107,44 @@ describe('resolveGate', () => {
   it('refuses an id that names a node of the other kind', () => {
     expect(resolveGate(view, { draftId: 'cs1' })).toBeUndefined();
     expect(resolveGate(view, { changesetId: 'd1' })).toBeUndefined();
+  });
+});
+
+// The canvas is a webview and is not trusted: a selection or a collapse names a node, and the host acts
+// only on a node of the thread it loaded. (Found by an external review: both used to take any id.)
+describe('knownNodeId and collapsibleNodeId', () => {
+  const node = (id: string, collapsible: boolean) =>
+    ({
+      id,
+      kind: 'run',
+      parent: null,
+      children: [],
+      state: null,
+      tone: 'run',
+      title: id,
+      meta: [],
+      chips: [],
+      target: { open: 'nothing' },
+      collapsible,
+    }) as ThreadNode;
+  const view = {
+    rootEventId: 'r',
+    columns: [],
+    loadingMore: false,
+    nodes: [node('a', true), node('b', false)],
+  };
+
+  it('knows the nodes of the loaded thread, and nothing else', () => {
+    expect(knownNodeId(view, 'a')).toBe(true);
+    expect(knownNodeId(view, 'b')).toBe(true);
+    expect(knownNodeId(view, 'someone-elses-node')).toBe(false);
+    expect(knownNodeId(view, 7 as never)).toBe(false);
+    expect(knownNodeId(undefined, 'a')).toBe(false);
+  });
+
+  it('lets only a node that can collapse be collapsed', () => {
+    expect(collapsibleNodeId(view, 'a')).toBe(true);
+    expect(collapsibleNodeId(view, 'b')).toBe(false);
+    expect(collapsibleNodeId(view, 'nope')).toBe(false);
   });
 });

@@ -56,3 +56,15 @@ export function formatDuration(start: unknown, end: unknown): string {
   const rest = s % 60;
   return rest ? `${Math.floor(s / 60)} min ${rest} s` : `${Math.floor(s / 60)} min`;
 }
+
+/** "just now", "3 min ago", "3 h ago", "2 d ago"; empty when the time is missing or unreadable. */
+export function formatAge(raw: unknown, now: Date = new Date()): string {
+  const then = parseGatewayTime(raw);
+  if (!then) return '';
+  const minutes = Math.max(0, Math.floor((now.getTime() - then.getTime()) / 60_000));
+  if (minutes < 1) return 'just now';
+  if (minutes < 60) return `${minutes} min ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours} h ago`;
+  return `${Math.floor(hours / 24)} d ago`;
+}

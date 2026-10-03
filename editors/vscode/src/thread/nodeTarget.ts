@@ -59,3 +59,13 @@ export function resolveGate(
   if (msg.changesetId) return node.kind === 'changeset' ? { changesetId: id } : undefined;
   return node.kind === 'draft' ? { draftId: id } : undefined;
 }
+
+/** A node of the thread the host loaded. The webview is not trusted to name one that exists. */
+export function knownNodeId(view: ThreadView | undefined, id: unknown): boolean {
+  return typeof id === 'string' && Boolean(view?.nodes.some((n) => n.id === id));
+}
+
+/** A node that is part of the loaded thread AND has something to collapse. */
+export function collapsibleNodeId(view: ThreadView | undefined, id: unknown): boolean {
+  return typeof id === 'string' && Boolean(view?.nodes.find((n) => n.id === id)?.collapsible);
+}
