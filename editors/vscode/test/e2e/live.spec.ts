@@ -83,6 +83,10 @@ test('work that waits on a person stands out: a Needs-you changeset with its dra
     .click();
   const wv = await webviewWith(page, 'escurel-thread-canvas');
   const canvas = wv.locator('escurel-thread-canvas');
+  // First view: the node that needs you is on screen when the thread opens, at 100%, without Fit.
+  await expect(canvas.locator('.card.type-changeset.needs-you')).toBeInViewport({ ratio: 1 });
+  await expect(canvas.locator('.zoom-level')).toHaveText('100%');
+  await stack.shot('02a-first-view');
   await wv.getByRole('button', { name: 'Fit' }).click();
   const card = canvas.locator('.card.type-changeset.needs-you');
   await expect(card).toBeVisible();
@@ -102,6 +106,25 @@ test('work that waits on a person stands out: a Needs-you changeset with its dra
   await stack.shot('02c-review-picker');
   await page.keyboard.press('Escape');
   await expect(picker).toBeHidden();
+});
+
+test('zoomed out, cards keep icon, accent and state but drop their words', async ({ stack }) => {
+  const { page } = stack;
+  const wv = await webviewWith(page, 'escurel-thread-canvas');
+  const canvas = wv.locator('escurel-thread-canvas');
+  for (let i = 0; i < 6; i += 1) await wv.getByRole('button', { name: 'Zoom out' }).click();
+  await expect(canvas.locator('.canvas-area.low-zoom')).toBeVisible();
+  await expect(canvas.locator('.zoom-hint')).toHaveText('overview');
+  const card = canvas.locator('.card.type-changeset.needs-you');
+  await expect(card.locator('.type-icon svg')).toBeVisible();
+  await expect(card.locator('.needs-badge svg')).toBeVisible();
+  await expect(card.locator('.card-title')).toBeHidden();
+  // The accessible name still carries everything.
+  await expect(card).toHaveAttribute('aria-label', /changeset.*needs you/i);
+  await stack.shot('02d-overview');
+  // Back to readable text for the scenarios that follow.
+  for (let i = 0; i < 6; i += 1) await wv.getByRole('button', { name: 'Zoom in' }).click();
+  await expect(canvas.locator('.canvas-area.low-zoom')).toHaveCount(0);
 });
 
 test('a sales order opens as a real order page: SAP fields and an items table', async ({

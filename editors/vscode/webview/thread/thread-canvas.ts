@@ -17,10 +17,9 @@ import type {
 import { theme } from '../shared/theme.css';
 import './inspector';
 import { fitToBounds, panToReveal, zoomAboutPoint } from './viewport';
+import { firstViewport, isLowZoom, pickTarget, scrollMetrics } from '../../src/thread/firstView';
 import type { ViewportState } from './viewport';
 
-/** The smallest zoom a thread OPENS at; the Fit button still fits everything. */
-const MIN_FIRST_VIEW_ZOOM = 0.7;
 /** Where a fitted graph starts: just under the 28px pinned column headers. */
 const FIT_TOP = 40;
 
@@ -71,6 +70,74 @@ export class EscurelThreadCanvas extends LitElement {
         color: var(--escurel-muted);
         min-width: 44px;
         text-align: center;
+      }
+      .zoom-hint {
+        font-size: 0.8em;
+        color: var(--escurel-muted);
+        border: 1px solid var(--escurel-border);
+        border-radius: 8px;
+        padding: 0 6px;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+      }
+      .scroll-track {
+        position: absolute;
+        z-index: 6;
+        background: color-mix(
+          in srgb,
+          var(--vscode-scrollbarSlider-background, var(--escurel-muted)) 15%,
+          transparent
+        );
+      }
+      .scroll-track.h {
+        left: 0;
+        right: 0;
+        bottom: 0;
+        height: 8px;
+      }
+      .scroll-track.v {
+        top: 0;
+        right: 0;
+        bottom: 0;
+        width: 8px;
+      }
+      .scroll-thumb {
+        box-sizing: border-box;
+        position: absolute;
+        background: var(--vscode-scrollbarSlider-background, var(--escurel-muted));
+        border: 1px solid var(--vscode-contrastBorder, transparent);
+        border-radius: 4px;
+        cursor: grab;
+      }
+      .scroll-thumb:hover {
+        background: var(--vscode-scrollbarSlider-hoverBackground, var(--escurel-muted));
+      }
+      .scroll-thumb.h {
+        top: 0;
+        bottom: 0;
+      }
+      .scroll-thumb.v {
+        left: 0;
+        right: 0;
+      }
+      /* Semantic zoom: below 70% a card keeps its icon, accent bar and state chip, and drops every
+         word. The box keeps its size, so wires and positions do not move; the full text is the
+         tooltip and the accessible name. */
+      .low-zoom .card .card-title,
+      .low-zoom .card .type-label,
+      .low-zoom .card .card-subtitle,
+      .low-zoom .card .meta-lines,
+      .low-zoom .card .needs-reason,
+      .low-zoom .card .needs-text,
+      .low-zoom .card .changeset-author,
+      .low-zoom .card .draft-list,
+      .low-zoom .card .gate-actions,
+      .low-zoom .card .collapse-toggle,
+      .low-zoom .card .type-line {
+        display: none;
+      }
+      .low-zoom .card .chip {
+        font-size: 1.05em;
       }
       .main-split {
         display: flex;
@@ -502,8 +569,12 @@ export class EscurelThreadCanvas extends LitElement {
   @state() viewport: ViewportState = { x: 0, y: 0, zoom: 1.0 };
   @state() private isPanning = false;
 
-  /** The first view of a thread is fitted once; after that the viewport belongs to the person. */
-  private autoFitted = false;
+  /** The first view of a thread is applied once; after that the viewport belongs to the person. */
+  private firstViewApplied = false;
+  /** The canvas area's size, for the scrollbar thumbs; kept by a ResizeObserver. */
+  @state() private areaSize = { width: 0, height: 0 };
+  private resizeObserver?: ResizeObserver;
+  private thumbDrag?: { axis: 'h' | 'v'; start: number; origin: number };
   private panStart = { x: 0, y: 0 };
   private viewportStart = { x: 0, y: 0 };
 
@@ -530,26 +601,57 @@ export class EscurelThreadCanvas extends LitElement {
     }
   }
 
-  protected override updated(changed: PropertyValues<this>): void {
-    if (this.autoFitted || !changed.has('layout') || !this.layout) return;
-    const area = this.shadowRoot?.querySelector('.canvas-area');
-    if (!area || !area.clientWidth) return;
-    this.autoFitted = true;
-    // Only when the graph overflows: a thread that fits stays at 100%, where text is readable. A
-    // cropped canvas (the third column cut off, nothing saying there is more) was the first thing
-    // a reviewer saw in the live window.
-    const { width, height } = this.layout.bounds;
-    if (
-      width > area.clientWidth - 40 ||
-      (area.clientHeight > 0 && height > area.clientHeight - 40)
-    ) {
-      this.fit();
-      // Fitting a big thread can mean 30-40%, where no card text is legible. Open at a readable
-      // size from the top-left and let the person pan or press Fit for the whole picture.
-      if (this.viewport.zoom < MIN_FIRST_VIEW_ZOOM) {
-        this.viewport = { x: 20, y: FIT_TOP, zoom: MIN_FIRST_VIEW_ZOOM };
+  protected override updated(): void {
+    const area = this.shadowRoot?.querySelector<HTMLElement>('.canvas-area') ?? undefined;
+    this.observeArea(area);
+    if (this.firstViewApplied || !this.layout || !this.view) return;
+    if (!area || !area.clientWidth) return; // not measurable yet (a hidden tab): the observer retries
+    this.firstViewApplied = true;
+    // A graph that fits opens as it is. A bigger one opens at 100% with the node that matters (the
+    // first that needs you, else the newest active) centred, and a scrollbar to reach the rest.
+    // Fitting everything used to shrink big threads to 40-50%, where no card text was legible; Fit
+    // still gives that overview on request.
+    const viewport = firstViewport(this.layout, pickTarget(this.view, this.layout), {
+      width: area.clientWidth,
+      height: area.clientHeight,
+    });
+    // After this update: changing state inside `updated` is a Lit dev-mode warning.
+    queueMicrotask(() => {
+      this.viewport = viewport;
+    });
+  }
+
+  /**
+   * Keep `areaSize` current (for the scrollbar thumbs and for a first view that had to wait for a
+   * measurable canvas). The canvas element is replaced when the thread goes empty and comes back, so
+   * the observer follows the element, not the first one it saw. State is changed in a microtask:
+   * changing it inside `updated` is a Lit dev-mode warning.
+   */
+  private observedArea?: HTMLElement;
+  private observeArea(area: HTMLElement | undefined): void {
+    if (area === this.observedArea) return;
+    this.resizeObserver?.disconnect();
+    this.observedArea = area;
+    if (!area) return;
+    const measure = () => {
+      const a = this.observedArea;
+      if (!a) return;
+      if (a.clientWidth !== this.areaSize.width || a.clientHeight !== this.areaSize.height) {
+        this.areaSize = { width: a.clientWidth, height: a.clientHeight };
       }
+    };
+    queueMicrotask(measure);
+    if (typeof ResizeObserver !== 'undefined') {
+      this.resizeObserver = new ResizeObserver(measure);
+      this.resizeObserver.observe(area);
     }
+  }
+
+  override disconnectedCallback(): void {
+    this.resizeObserver?.disconnect();
+    this.resizeObserver = undefined;
+    this.observedArea = undefined;
+    super.disconnectedCallback();
   }
 
   public selectNode(nodeId: string): void {
@@ -787,7 +889,61 @@ export class EscurelThreadCanvas extends LitElement {
     `;
   }
 
-  private renderCard(node: ThreadNode, layoutNode: LaidOutNode) {
+  /** Thin scrollbars on the axes where the graph is bigger than the canvas: the cut-off edge is reachable. */
+  private renderScrollbars() {
+    if (!this.layout) return nothing;
+    const m = scrollMetrics(this.viewport, this.layout.bounds, this.areaSize);
+    const thumb = (axis: 'h' | 'v', t: { size: number; pos: number }) => {
+      const style =
+        axis === 'h'
+          ? `left: ${t.pos * 100}%; width: ${t.size * 100}%;`
+          : `top: ${t.pos * 100}%; height: ${t.size * 100}%;`;
+      return html`<div
+        class="scroll-track ${axis}"
+        aria-hidden="true"
+        @pointerdown=${(e: PointerEvent) => e.stopPropagation()}
+      >
+        <div
+          class="scroll-thumb ${axis}"
+          style=${style}
+          @pointerdown=${(e: PointerEvent) => this.startThumbDrag(e, axis)}
+          @pointermove=${(e: PointerEvent) => this.moveThumbDrag(e)}
+          @pointerup=${() => (this.thumbDrag = undefined)}
+          @pointercancel=${() => (this.thumbDrag = undefined)}
+        ></div>
+      </div>`;
+    };
+    return html`${m.h ? thumb('h', m.h) : nothing}${m.v ? thumb('v', m.v) : nothing}`;
+  }
+
+  private startThumbDrag(e: PointerEvent, axis: 'h' | 'v'): void {
+    e.stopPropagation();
+    this.thumbDrag = {
+      axis,
+      start: axis === 'h' ? e.clientX : e.clientY,
+      origin: axis === 'h' ? this.viewport.x : this.viewport.y,
+    };
+    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+  }
+
+  private moveThumbDrag(e: PointerEvent): void {
+    const drag = this.thumbDrag;
+    if (!drag || !this.layout) return;
+    const trackLength = drag.axis === 'h' ? this.areaSize.width : this.areaSize.height;
+    const extent =
+      (drag.axis === 'h' ? this.layout.bounds.width : this.layout.bounds.height) *
+      this.viewport.zoom;
+    if (trackLength <= 0) return;
+    // A thumb moves trackLength/extent of what the content moves.
+    const delta =
+      ((drag.axis === 'h' ? e.clientX : e.clientY) - drag.start) * (extent / trackLength);
+    const min = Math.min(0, trackLength - extent);
+    const next = Math.max(min, Math.min(0, drag.origin - delta));
+    this.viewport =
+      drag.axis === 'h' ? { ...this.viewport, x: next } : { ...this.viewport, y: next };
+  }
+
+  private renderCard(node: ThreadNode, layoutNode: LaidOutNode, lowZoom: boolean) {
     const isFocused = node.id === this.focusedNodeId;
     const isSelected = node.id === this.selectedNodeId;
     const described = describeNodeType(node, this.view?.rootEventId ?? '');
@@ -802,9 +958,18 @@ export class EscurelThreadCanvas extends LitElement {
       .filter(Boolean)
       .join(', ');
     // A small card hides its details; they stay on hover and in the inspector.
-    const tooltip = compact
-      ? [node.title, node.subtitle, ...node.meta].filter(Boolean).join('\n')
-      : nothing;
+    const tooltip =
+      compact || lowZoom
+        ? [
+            `${described.label}: ${node.title}`,
+            node.subtitle,
+            node.state,
+            needs?.text,
+            ...node.meta,
+          ]
+            .filter(Boolean)
+            .join('\n')
+        : nothing;
     const subtitle = node.subtitle && node.subtitle !== described.label ? node.subtitle : undefined;
 
     // Check if any child is hidden by collapse to derive expansion state.
@@ -871,7 +1036,9 @@ export class EscurelThreadCanvas extends LitElement {
                 ${
                   needs
                     ? html`<div class="needs-row">
-                        <span class="needs-badge">${personIcon()}Needs you</span>
+                        <span class="needs-badge"
+                          >${personIcon()}<span class="needs-text">Needs you</span></span
+                        >
                         <span class="needs-reason" title="${needs.text}">${needs.text}</span>
                       </div>`
                     : nothing
@@ -976,6 +1143,7 @@ export class EscurelThreadCanvas extends LitElement {
       return html`<div class="status-message empty" role="status">No events in this thread.</div>`;
     }
 
+    const lowZoom = isLowZoom(this.viewport.zoom);
     const nodeMap = new Map<string, ThreadNode>(this.view.nodes.map((n) => [n.id, n]));
     const visibleLaidOutNodes = this.layout.nodes.filter((n) => !n.hidden);
 
@@ -983,6 +1151,7 @@ export class EscurelThreadCanvas extends LitElement {
       <div class="toolbar" role="group" aria-label="Thread canvas controls">
         <button aria-label="Zoom out" @click=${() => this.zoomBy(0.8)}>−</button>
         <span class="zoom-level" aria-live="polite">${Math.round(this.viewport.zoom * 100)}%</span>
+        ${lowZoom ? html`<span class="zoom-hint" title="Zoomed out: cards show icon, type colour and state only. Zoom in to 70% for text.">overview</span>` : nothing}
         <button aria-label="Zoom in" @click=${() => this.zoomBy(1.25)}>+</button>
         <button aria-label="Fit graph to view" data-action="fit" @click=${() => this.fit()}>
           Fit
@@ -998,7 +1167,7 @@ export class EscurelThreadCanvas extends LitElement {
 
       <div class="main-split">
         <div
-          class="canvas-area ${this.isPanning ? 'panning' : ''}"
+          class="canvas-area ${this.isPanning ? 'panning' : ''} ${lowZoom ? 'low-zoom' : ''}"
           role="tree"
           aria-label="Thread execution tree"
           @pointerdown=${this.handlePointerDown}
@@ -1010,11 +1179,13 @@ export class EscurelThreadCanvas extends LitElement {
           <div class="header-pinned-strip">
             <div
               class="header-transformed-track"
-              style="transform: translateX(${this.viewport.x}px) scaleX(${this.viewport.zoom});"
+              style="transform: translateX(${this.viewport.x}px);"
             >
               ${this.layout.columnHeaders.map(
                 (col) =>
-                  html`<div class="column-header" style="left: ${col.x}px;">${col.label}</div>`,
+                  html`<div class="column-header" style="left: ${col.x * this.viewport.zoom}px;">
+                    ${col.label}
+                  </div>`,
               )}
             </div>
           </div>
@@ -1061,9 +1232,10 @@ export class EscurelThreadCanvas extends LitElement {
               )}
             ${visibleLaidOutNodes.map((laidOut) => {
               const node = nodeMap.get(laidOut.id);
-              return node ? this.renderCard(node, laidOut) : nothing;
+              return node ? this.renderCard(node, laidOut, lowZoom) : nothing;
             })}
           </div>
+          ${this.renderScrollbars()}
         </div>
 
         ${

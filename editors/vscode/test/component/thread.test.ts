@@ -1,3 +1,4 @@
+import { pickTarget } from '../../src/thread/firstView';
 import { expect, fixture, html } from '@open-wc/testing';
 import type { ThreadWebviewToHost } from '../../src/shared/protocol';
 import { layoutThread } from '../../src/thread/layout';
@@ -506,14 +507,19 @@ describe('<escurel-thread-canvas>', () => {
   });
 
   describe('first view', () => {
-    async function inBox(width: number): Promise<EscurelThreadCanvas> {
+    async function inBox(
+      width: number,
+      view = branchingThreadView,
+      layout = branchingLayout,
+      focus = branchingFocus,
+    ): Promise<EscurelThreadCanvas> {
       const host = await fixture<HTMLElement>(html`
         <div style="width:${width}px;height:700px;position:relative">
           <escurel-thread-canvas
             style="display:block;width:100%;height:100%"
-            .view=${recordedThreadView}
-            .layout=${recordedLayout}
-            .focus=${recordedFocus}
+            .view=${view}
+            .layout=${layout}
+            .focus=${focus}
             .details=${recordedDetails}
           ></escurel-thread-canvas>
         </div>
@@ -524,32 +530,243 @@ describe('<escurel-thread-canvas>', () => {
       await el.updateComplete;
       return el;
     }
+    const cardOf = (el: EscurelThreadCanvas, id: string) =>
+      el.shadowRoot!.querySelector(`.card[data-node-id="${id}"]`) as HTMLElement;
 
-    it('fits a thread that is wider than the window, instead of cropping it at 100%', async () => {
-      // Seen in the live window: the third column was cut off with no cue that more existed.
+    it('a big thread opens at 100% with the node that needs you in view, not shrunk to a fit', async () => {
       const el = await inBox(420);
-      expect(el.viewport.zoom < 1, `zoom ${el.viewport.zoom}`).to.equal(true);
-    });
-
-    it('never opens smaller than a readable size: a big thread scrolls instead of shrinking to 30%', async () => {
-      // A nine-node thread fitted at 48% made every card unreadable.
-      const el = await inBox(300);
-      expect(el.viewport.zoom >= 0.7, `zoom ${el.viewport.zoom}`).to.equal(true);
-      expect(el.viewport.zoom < 1).to.equal(true);
-    });
-
-    it('leaves a thread that fits at 100%', async () => {
-      const el = await inBox(4000);
       expect(el.viewport.zoom).to.equal(1);
+      const target = pickTarget(branchingThreadView, branchingLayout)!;
+      const card = cardOf(el, target);
+      const area = el.shadowRoot!.querySelector('.canvas-area') as HTMLElement;
+      const left = card.getBoundingClientRect().left - area.getBoundingClientRect().left;
+      const right = card.getBoundingClientRect().right - area.getBoundingClientRect().left;
+      expect(
+        left >= 0 && right <= area.clientWidth,
+        `card ${left}..${right} in ${area.clientWidth}`,
+      ).to.equal(true);
+    });
+
+    it('a small thread opens as is: 100%, nothing scrolled', async () => {
+      const el = await inBox(4000);
+      expect(el.viewport).to.deep.equal({ x: 0, y: 0, zoom: 1 });
     });
 
     it('does not pull the view back when the thread reloads after the person moved it', async () => {
       const el = await inBox(420);
       el.viewport = { x: 10, y: 20, zoom: 0.5 };
-      el.layout = { ...recordedLayout };
+      el.layout = { ...branchingLayout };
       await el.updateComplete;
       await new Promise((r) => requestAnimationFrame(() => r(undefined)));
       expect(el.viewport).to.deep.equal({ x: 10, y: 20, zoom: 0.5 });
+    });
+
+    it('applies the first view even when the canvas was not measurable at first (a hidden tab)', async () => {
+      const host = await fixture<HTMLElement>(html`
+        <div id="w" style="display:none;width:420px;height:700px;position:relative">
+          <escurel-thread-canvas
+            style="display:block;width:100%;height:100%"
+            .view=${branchingThreadView}
+            .layout=${branchingLayout}
+            .focus=${branchingFocus}
+            .details=${recordedDetails}
+          ></escurel-thread-canvas>
+        </div>
+      `);
+      const el = host.querySelector('escurel-thread-canvas') as EscurelThreadCanvas;
+      await el.updateComplete;
+      expect(el.viewport).to.deep.equal({ x: 0, y: 0, zoom: 1 });
+      host.style.display = 'block';
+      await new Promise((r) => setTimeout(r, 100));
+      await el.updateComplete;
+      expect(el.viewport.x < 0, `x ${el.viewport.x}`).to.equal(true);
+    });
+
+    it('keeps measuring the canvas after the thread was empty and came back', async () => {
+      const el = await inBox(420);
+      const view = el.view!;
+      el.view = { ...view, nodes: [] };
+      await el.updateComplete;
+      el.view = view;
+      await el.updateComplete;
+      await new Promise((r) => requestAnimationFrame(() => r(undefined)));
+      (el.parentElement as HTMLElement).style.width = '300px';
+      await new Promise((r) => setTimeout(r, 100));
+      await el.updateComplete;
+      const area = el.shadowRoot!.querySelector('.canvas-area') as HTMLElement;
+      expect((el as unknown as { areaSize: { width: number } }).areaSize.width).to.equal(
+        area.clientWidth,
+      );
+    });
+
+    it('the vertical thumb reaches the bottom of the graph when dragged to the end', async () => {
+      const host = await fixture<HTMLElement>(html`
+        <div style="width:900px;height:160px;position:relative">
+          <escurel-thread-canvas
+            style="width:100%;height:100%"
+            .view=${branchingThreadView}
+            .layout=${branchingLayout}
+            .focus=${branchingFocus}
+            .details=${recordedDetails}
+          ></escurel-thread-canvas>
+        </div>
+      `);
+      const el = host.querySelector('escurel-thread-canvas') as EscurelThreadCanvas;
+      await el.updateComplete;
+      await new Promise((r) => requestAnimationFrame(() => r(undefined)));
+      await el.updateComplete;
+      // From the top: a drag that starts mid-graph would hit the clamp whatever the maths said.
+      el.viewport = { x: 0, y: 0, zoom: 1 };
+      await el.updateComplete;
+      const thumb = el.shadowRoot!.querySelector('.scroll-thumb.v') as HTMLElement;
+      expect(thumb !== null, 'a vertical thumb').to.equal(true);
+      const r = thumb.getBoundingClientRect();
+      const ev = (y: number, type: string) =>
+        new PointerEvent(type, {
+          clientX: r.left + 2,
+          clientY: y,
+          pointerId: 1,
+          bubbles: true,
+          composed: true,
+        });
+      thumb.dispatchEvent(ev(r.top + 2, 'pointerdown'));
+      // Exactly the free length of the track: the thumb ends at the bottom of its track.
+      const track = el.shadowRoot!.querySelector('.scroll-track.v') as HTMLElement;
+      const free = track.getBoundingClientRect().height - r.height;
+      thumb.dispatchEvent(ev(r.top + 2 + free, 'pointermove'));
+      thumb.dispatchEvent(ev(r.top + 2 + free, 'pointerup'));
+      await el.updateComplete;
+      const area = el.shadowRoot!.querySelector('.canvas-area') as HTMLElement;
+      const bottom = branchingLayout.bounds.height * el.viewport.zoom + el.viewport.y;
+      expect(Math.round(bottom), `graph bottom ${bottom} vs area ${area.clientHeight}`).to.equal(
+        area.clientHeight,
+      );
+    });
+
+    it('does not squash the column headings when zoomed out', async () => {
+      const el = await inBox(4000);
+      el.viewport = { x: 0, y: 0, zoom: 0.5 };
+      await el.updateComplete;
+      const track = el.shadowRoot!.querySelector('.header-transformed-track') as HTMLElement;
+      const m = new DOMMatrixReadOnly(getComputedStyle(track).transform);
+      expect(m.a, 'horizontal scale of the heading track').to.equal(1);
+    });
+
+    it('Fit still shows the whole graph', async () => {
+      const el = await inBox(420);
+      el.fit();
+      await el.updateComplete;
+      expect(el.viewport.zoom < 1).to.equal(true);
+    });
+
+    it('dragging the scrollbar thumb pans the graph', async () => {
+      const el = await inBox(420);
+      const before = el.viewport.x;
+      const thumb = el.shadowRoot!.querySelector('.scroll-thumb.h') as HTMLElement;
+      const r = thumb.getBoundingClientRect();
+      const at = (dx: number, type: string) =>
+        new PointerEvent(type, {
+          clientX: r.left + 2 + dx,
+          clientY: r.top + 2,
+          pointerId: 1,
+          bubbles: true,
+          composed: true,
+        });
+      thumb.dispatchEvent(at(0, 'pointerdown'));
+      thumb.dispatchEvent(at(60, 'pointermove'));
+      thumb.dispatchEvent(at(60, 'pointerup'));
+      await el.updateComplete;
+      expect(el.viewport.x < before, `x ${before} -> ${el.viewport.x}`).to.equal(true);
+    });
+
+    it('shows a scrollbar thumb on an axis that overflows, so the cut-off edge is reachable', async () => {
+      const el = await inBox(420);
+      expect(el.shadowRoot!.querySelector('.scroll-thumb.h') !== null).to.equal(true);
+      const small = await inBox(4000);
+      expect(small.shadowRoot!.querySelector('.scroll-thumb.h') === null).to.equal(true);
+    });
+  });
+
+  describe('semantic zoom', () => {
+    async function at(zoom: number): Promise<EscurelThreadCanvas> {
+      const el = await renderCanvas({
+        view: branchingThreadView,
+        layout: branchingLayout,
+        focus: branchingFocus,
+      });
+      el.viewport = { x: 0, y: 0, zoom };
+      await el.updateComplete;
+      return el;
+    }
+    const visible = (e: Element | null) => !!e && getComputedStyle(e).display !== 'none';
+
+    it('below 70% a card keeps icon, accent bar and state chip but no text', async () => {
+      const el = await at(0.69);
+      expect(q(el, '.canvas-area')!.classList.contains('low-zoom')).to.equal(true);
+      // The assertions below must have something to bite on: the thread has buttons and titles to hide.
+      expect(qa(el, '.gate-actions').length > 0, 'a card with Promote/Discard').to.equal(true);
+      expect(qa(el, '.needs-reason').length > 0, 'a card with a reason').to.equal(true);
+      expect(qa(el, '.card-title').length > 0, 'cards with titles').to.equal(true);
+      for (const card of qa(el, '.card')) {
+        expect(visible(card.querySelector('.type-icon')), 'icon').to.equal(true);
+        expect(visible(card.querySelector('.chip')), 'state chip').to.equal(true);
+        for (const sel of [
+          '.card-title',
+          '.type-label',
+          '.card-subtitle',
+          '.meta-lines',
+          '.needs-reason',
+          '.gate-actions',
+        ]) {
+          const el2 = card.querySelector(sel);
+          expect(el2 === null || !visible(el2), `${sel} hidden`).to.equal(true);
+        }
+      }
+    });
+
+    it('keeps the Needs-you badge icon at low zoom, without its words', async () => {
+      const el = await at(0.5);
+      const badges = qa(el, '.needs-badge');
+      expect(badges.length > 0).to.equal(true);
+      for (const b of badges) {
+        expect(visible(b)).to.equal(true);
+        expect(visible(b.querySelector('svg')), 'person icon').to.equal(true);
+        const words = b.querySelector('.needs-text');
+        expect(words !== null && !visible(words), 'words hidden').to.equal(true);
+      }
+    });
+
+    it('from 70% up the cards show their text as before', async () => {
+      const el = await at(0.7);
+      expect(q(el, '.canvas-area')!.classList.contains('low-zoom')).to.equal(false);
+      expect(visible(q(el, '.card-title'))).to.equal(true);
+      expect(q(el, '.zoom-hint') === null).to.equal(true);
+    });
+
+    it('says "overview" next to the zoom percentage while in the low-zoom form', async () => {
+      const el = await at(0.5);
+      expect(text(q(el, '.zoom-hint'))).to.equal('overview');
+    });
+
+    it('keeps every card’s accessible name (type, title, state, needs you) at low zoom', async () => {
+      const normal = await at(1);
+      const names = qa(normal, '.card').map((c) => c.getAttribute('aria-label'));
+      const low = await at(0.5);
+      expect(qa(low, '.card').map((c) => c.getAttribute('aria-label'))).to.deep.equal(names);
+      expect(names.some((n) => /needs you/.test(n ?? ''))).to.equal(true);
+    });
+
+    it('puts the full text in the tooltip at low zoom', async () => {
+      const el = await at(0.5);
+      const first = qa(el, '.card')[0] as HTMLElement;
+      expect((first.getAttribute('title') ?? '').length > 0).to.equal(true);
+    });
+
+    it('does not move or resize any card when the form changes (wires keep their place)', async () => {
+      const el = await at(1);
+      const before = qa(el, '.card').map((c) => (c as HTMLElement).style.cssText);
+      const low = await at(0.5);
+      expect(qa(low, '.card').map((c) => (c as HTMLElement).style.cssText)).to.deep.equal(before);
     });
   });
 

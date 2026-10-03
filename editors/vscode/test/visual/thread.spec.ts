@@ -15,9 +15,23 @@ test('thread canvas with waiting work and lanes renders in the current theme', a
   page,
 }, testInfo) => {
   const theme = (testInfo.project.metadata as { theme: string }).theme;
-  await page.goto(`/test/visual/harness/thread.html?theme=${theme}&scenario=branches`);
+  await page.goto(`/test/visual/harness/thread.html?theme=${theme}&scenario=branches&view=first`);
   await page.locator('escurel-thread-canvas').waitFor();
   await expect(page).toHaveScreenshot('thread-lanes.png', {
+    maxDiffPixelRatio: 0.01,
+    fullPage: true,
+  });
+});
+
+// The same thread zoomed out to the overview (Fit): below 70% every card keeps its icon, accent bar,
+// state chip and the Needs-you icon, and drops its words.
+test('thread canvas zoomed out shows the low-zoom form in the current theme', async ({
+  page,
+}, testInfo) => {
+  const theme = (testInfo.project.metadata as { theme: string }).theme;
+  await page.goto(`/test/visual/harness/thread.html?theme=${theme}&scenario=branches&view=fit`);
+  await page.locator('escurel-thread-canvas').waitFor();
+  await expect(page).toHaveScreenshot('thread-overview.png', {
     maxDiffPixelRatio: 0.01,
     fullPage: true,
   });
