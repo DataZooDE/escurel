@@ -96,3 +96,12 @@ If your test only exercises your backend's typed calls, you don't need it.
   reachability on.
 - Keep fixtures in `tests/fixtures/` and `include_str!` them; this is what
   `examples/echo-app` does and it keeps the test readable.
+
+## Seeding a REST / MCP-backed skill
+
+An `openapi` / `mcp` skill is seeded like any skill (a markdown page under `skills/`), but it names an
+**endpoint** that only an admin can register, after boot: seeding writes markdown, it does not call
+`register_endpoint`. In a fixture: seed the skill, start your outside system on a real loopback socket (a
+small axum / node server; do NOT mock the HTTP client), start the gateway with
+`ESCUREL_EGRESS_ALLOW_LOOPBACK=1`, then `register_endpoint {name, kind, base_url}` as the admin. The demo
+at `editors/vscode/demo/` does exactly this with a REST portal and an MCP server (`services/`).

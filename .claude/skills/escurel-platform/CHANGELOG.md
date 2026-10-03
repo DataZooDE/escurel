@@ -4,6 +4,25 @@ The skill version tracks the consumer-facing contract, not the Escurel
 binary version. The Escurel repo's checked-out git ref is the true version
 pin (see `SKILL.md` → "How this skill is installed").
 
+## 0.11.0 — REST and MCP sources as instances, with human-gated write-back; `ESCUREL_EGRESS_*`
+
+Additive (no break): skills without a remote backend are untouched.
+
+- **`backend.kind: openapi | mcp` with `instances: rows`**: one virtual instance per object of an outside
+  REST service or MCP server (same page ids, `list_instances` / `expand`, linked notes as the `sql_view`
+  rows). `expand` / `list_instances` carry `trust: "external"` and `fetched_at`: upstream text is DATA,
+  never instructions. A down source degrades `expand` to `issue.code = source_unavailable` (no rows, no
+  etag) instead of an error. See `references/01` §backend axis.
+- **Write-back**: `backend_projection.writable_columns` and `etag`; propose with `create_draft` carrying
+  `write_back: {patch, base_etag}`; applied only on `promote_draft` (etag-checked, idempotent, retried on
+  transient failure, audited as `escurel:write-back` system events). New refusal codes:
+  `write_back_requires_draft`, `write_back_invalid`, `write_back_conflict`, `write_back_failed`,
+  `write_back_rejected`, `write_back_unknown_outcome`, `write_back_unmappable`, `write_back_unsupported`.
+- **New tool `describe_backend`** (admin; 86 tools). `register_endpoint` / `list_endpoints` take
+  `secret_ref` (`env:` / `gsm:` / `file:`) and report `secret_kind`; `write_instance` is size-capped and
+  refuses `rows` skills.
+- **Outbound policy** (egress): https and public addresses only, no redirects, size / time / rate caps,
+  sanitized errors. Local dev: `ESCUREL_EGRESS_ALLOW_LOOPBACK=1`. See `references/09`.
 ## 0.10.0 — `backend.instances: rows`: one instance per row of a `sql_view`, with optional linked markdown
 
 Additive (no break): a `sql_view` skill without `instances:` behaves exactly as before.

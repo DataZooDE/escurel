@@ -379,7 +379,7 @@ alongside the backend codes (`backend_read_only`) and `conflict`.
 ## Instance backends
 
 `list_skills` reports each skill's `backend.kind` (`markdown` | `sql_view` |
-`document`) + a `capabilities` object. Reading a backend-sourced instance uses
+`document` | `openapi` | `mcp`) + a `capabilities` object. Reading a backend-sourced instance uses
 the ordinary read tools (`expand` returns `backend_projection` for `sql_view` — for a ROW of an
 `instances: rows` skill the live row + its linked markdown, see `references/01` §backend axis —
 or top-k chunks + `chunks_total` for `document`); both kinds are read-only, so
@@ -393,6 +393,16 @@ them is `escurel:admin`-gated and so not part of the normal agent surface:
   never echoed back).
 - `validate_bindings()` — re-probe every `sql_view` for schema drift; a
   `binding_degraded` view reads fail-closed.
+- `register_endpoint(name, kind, base_url, [secret_ref | secret])` / `list_endpoints()` — the REST / MCP
+  endpoint registry that `openapi` / `mcp` skills point at by name. Give the credential as a **reference**
+  (`secret_ref`: `env:NAME`, `gsm:NAME` = `ESCUREL_SECRET_<NAME>`, or `file:/path`); an inline `secret` is
+  accepted but flagged in the result, and neither is ever echoed (`list_endpoints` shows only the
+  `secret_kind`). `validate_endpoints()` probes each endpoint through the egress policy and reports
+  `refused` for a policy violation. `describe_backend(skill)` shows what a remote skill's calls would be —
+  names and argument names only, never a URL or a value.
+- `write_instance` is for `openapi` / `mcp` skills that are NOT `rows` (whole-object push): bounded to
+  64 KiB, sent with a deterministic `Idempotency-Key`. A `rows` skill refuses it — change a row through the
+  reviewed write-back instead (`references/01` §backend axis).
 - Document uploads use the authenticated `POST /ingest` / `POST /ingest/upload`
   (both accept an optional `event_id` **idempotency key** — a redelivery
   with the same key returns `{status: "duplicate"}` instead of minting a
