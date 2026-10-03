@@ -159,7 +159,7 @@ async fn skill_list_emits_seeded_skill() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn skill_list_emits_autonomy_and_the_contract_keys() {
     const REVIEWED_SKILL: &str = "---\ntype: skill\nid: reviewed\ndescription: d.\n\
-        autonomy: review\nsummary: One line.\nharness: echo\nactions:\n  - customer\n\
+        autonomy: review\nsummary: One line.\nharness: echo\nactions:\n  - {name: open-customer, kind: event, label: Open the customer, event: customer}\n\
         cascade:\n  target: produced\n  max_depth: 2\n---\n# reviewed\n";
     let process = EscurelProcess::spawn(Opts {
         auth: AuthMode::TestIssuer,
@@ -201,7 +201,7 @@ async fn skill_list_emits_autonomy_and_the_contract_keys() {
     assert_eq!(reviewed["harness"], "echo", "{reviewed}");
     assert_eq!(
         reviewed["actions"],
-        serde_json::json!(["customer"]),
+        serde_json::json!([{"name": "open-customer", "kind": "event", "label": "Open the customer", "event": "customer"}]),
         "{reviewed}"
     );
     assert_eq!(reviewed["cascade"]["max_depth"], 2, "{reviewed}");

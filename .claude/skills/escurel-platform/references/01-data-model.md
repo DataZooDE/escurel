@@ -39,9 +39,30 @@ optional; reported on `list_skills`, linted by `validate`):
 - `harness: echo | claude | codex | agy | muse | gemini | delegate` — the
   adapter the skill asks to run on; anything else is `harness_unknown`.
   The runner honours it within its own allow-list.
-- `actions: [<skill id>, …]` — the skills this one may fan out to; an
-  entry naming a skill the corpus does not have is `action_skill_unknown`
-  at `frontmatter.actions[i]`.
+- `actions:` — what a reader may do from this skill's pages, as a list of
+  **objects** (Peacock's form; a bare skill id is `action_invalid`):
+
+  ```yaml
+  actions:
+    - name: notify-customer      # slug, unique within the skill: the action's id
+      kind: event                # event | prompt
+      label: Notify customer     # the button's text (required)
+      event: customer-notice     # kind=event: the skill the event is filed under
+    - name: ask-why
+      kind: prompt
+      label: Ask why
+      prompt: "why is {id} at risk?"   # kind=prompt: a chat turn (chat hosts like Peacock)
+  ```
+
+  A `title:`/`body:` template may also ride a `kind: event` entry (Peacock
+  substitutes `{id}` / `{frontmatter.<key>}` server-side); they are NOT on the
+  `list_skills` row. Findings: `action_invalid`, `action_name_invalid`,
+  `action_name_duplicate`, `action_kind_unknown`, `action_label_missing`,
+  `action_event_missing`, `action_prompt_missing`, and `action_skill_unknown` at
+  `frontmatter.actions[i].event` for an event skill the corpus does not have.
+  The `event` skills of the `kind: event` entries are also the skills a run may
+  cascade into (see references/11). `list_skills` carries
+  `actions: [{name, kind, label, event?, prompt?}]`.
 - `cascade: { target: <page id> | produced, max_depth: <n> }` — where a
   confirmed write cascades (`produced` = the page the run wrote) and how
   deep; supersedes the older flat `cascade_target:` key, which still works.
@@ -243,6 +264,16 @@ that loads it. Worked example: `examples/crm-demo/skills/escurel.md`.
 Do not confuse it with *this* `escurel-platform` skill: the meta-skill is
 content inside a tenant for runtime agents; this skill is developer
 documentation for building the app.
+
+## Pages with rendered views: always carry a text alternative
+
+When a page is shown graphically by a consumer (a Peacock `viewer:` report, a chart,
+a diagram), the **markdown itself must still say what the picture shows**, so an
+agent — or a reader — that only sees the markdown learns the content. For every
+chart: a section titled after it, ONE plain sentence with the takeaway ("Order
+4500123 carries 62% of the 97,300 EUR at risk."), and the table of the data behind
+it (the table is the alt data). A viewer's own spec carries the same `title` and
+`description`. Never persist a graph as the only copy of its numbers.
 
 ## Designing your tenant — checklist
 

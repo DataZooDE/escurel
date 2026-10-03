@@ -359,6 +359,33 @@ pub struct SkillCapabilities {
 /// A Tier-1 skill. MCP wire keys: `id`, `description`,
 /// `required_frontmatter`, `optional_frontmatter`, `is_event_typed`,
 /// `visibility`, `owner_field`, `acl`, `backend`, `capabilities`, `params`.
+/// What an `actions:` entry does when chosen.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SkillActionKind {
+    /// Files an event under the skill named by `event` (starts that skill).
+    Event,
+    /// Sends `prompt` as a chat turn (a chat host such as Peacock; not a workbench action).
+    Prompt,
+}
+
+/// One entry of a skill's `actions:` list, in Peacock's object form. `title`/`body`
+/// templates a page may also carry are deliberately not part of the row.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SkillAction {
+    /// Slug, unique within the skill: the id of the action.
+    pub name: String,
+    pub kind: SkillActionKind,
+    /// The human text of the button.
+    pub label: String,
+    /// `kind: event` — the skill the event is filed under.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub event: Option<String>,
+    /// `kind: prompt` — the chat turn to send.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt: Option<String>,
+}
+
 /// A skill's `cascade:` block (workbench backend P2-7).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(default)]
@@ -436,10 +463,11 @@ pub struct Skill {
     /// runner honours it within its allow-list).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub harness: Option<String>,
-    /// `actions:` — the skills this one may fan out to. Absent = no
-    /// restriction declared.
+    /// `actions:` — what a reader may do from this skill's pages, in Peacock's
+    /// object form. The `event` skills of the `kind: event` entries are also the
+    /// skills a run may cascade into. Absent = none declared (no restriction).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub actions: Vec<String>,
+    pub actions: Vec<SkillAction>,
     /// `cascade:` — where a confirmed write cascades and how deep.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cascade: Option<SkillCascade>,

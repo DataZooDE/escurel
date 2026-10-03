@@ -4,6 +4,18 @@ The skill version tracks the consumer-facing contract, not the Escurel
 binary version. The Escurel repo's checked-out git ref is the true version
 pin (see `SKILL.md` → "How this skill is installed").
 
+## 0.7.0 — BREAKING: a skill's `actions:` is a list of objects (Peacock's form)
+
+- `actions:` entries are `{name, kind: event|prompt, label, event|prompt}` objects; a bare skill id is
+  now `action_invalid` (migrate: `- decision-record` becomes `- {name: record-decision, kind: event,
+  label: Record the decision, event: decision-record}`). New findings: `action_name_invalid`,
+  `action_name_duplicate`, `action_kind_unknown`, `action_label_missing`, `action_event_missing`,
+  `action_prompt_missing`; `action_skill_unknown` now points at `frontmatter.actions[i].event`.
+- `list_skills` (and the CLI's `skill list`) return `actions: [{name, kind, label, event?, prompt?}]`.
+- The cascade allow-list is the `event` skills of the `kind: event` actions; prompt-only or no actions
+  restrict nothing. See references/01 and references/11.
+- New authoring rule (references/01): pages rendered graphically carry a text alternative in the markdown.
+
 ## 0.6.82 — `escurel-test-gateway` can mint agent tokens
 
 - The test gateway is started with a signing identity on its issuer's own key, so

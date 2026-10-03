@@ -12,7 +12,7 @@ use serde_json::{Value, json};
 const TENANT: &str = "carl";
 const RENEWAL: &str = "---\ntype: skill\nid: renewal\ndescription: d.\nautonomy: review\n\
 summary: Keeps each contract's renewal date and terms current.\nharness: claude\n\
-actions:\n  - decision-record\ncascade:\n  target: produced\n  max_depth: 2\n---\n# renewal\n";
+actions:\n  - {name: record-decision, kind: event, label: Record the decision, event: decision-record}\n  - {name: ask-why, kind: prompt, label: Ask why, prompt: \"why was {id} renewed?\"}\ncascade:\n  target: produced\n  max_depth: 2\n---\n# renewal\n";
 const DECISION: &str = "---\ntype: skill\nid: decision-record\ndescription: d.\nautonomy: auto\n---\n# decision-record\n";
 
 async fn start() -> EscurelProcess {
@@ -75,7 +75,16 @@ async fn list_skills_reports_the_contract_keys_a_skill_declares() {
         "{r}"
     );
     assert_eq!(r["harness"], "claude", "{r}");
-    assert_eq!(r["actions"], json!(["decision-record"]), "{r}");
+    // Objects on the wire: name, kind, label and the event/prompt; the title/body templates a
+    // skill may carry are not part of the row.
+    assert_eq!(
+        r["actions"],
+        json!([
+            {"name": "record-decision", "kind": "event", "label": "Record the decision", "event": "decision-record"},
+            {"name": "ask-why", "kind": "prompt", "label": "Ask why", "prompt": "why was {id} renewed?"},
+        ]),
+        "{r}"
+    );
     assert_eq!(r["cascade"]["target"], "produced", "{r}");
     assert_eq!(r["cascade"]["max_depth"], 2, "{r}");
     let d = by_id["decision-record"];
@@ -92,7 +101,7 @@ async fn validate_lints_the_contract_keys() {
 
     // A well-formed skill carries none of the new findings.
     let good = call(&p, &token, "validate", json!({ "content": skill(
-        "summary: Short and sweet.\nharness: gemini\nactions:\n  - renewal\ncascade:\n  target: produced\n") })).await;
+        "summary: Short and sweet.\nharness: gemini\nactions:\n  - {name: renew, kind: event, label: Renew, event: renewal}\ncascade:\n  target: produced\n") })).await;
     for code in [
         "summary_missing",
         "summary_too_long",
@@ -144,26 +153,80 @@ async fn validate_lints_the_contract_keys() {
     );
     assert_eq!(out["ok"], false);
 
-    // An action naming a skill the corpus does not have — and a malformed
-    // actions key — are errors at the offending entry.
+    // An action naming a skill the corpus does not have is an error at the entry's `event`.
     let out = call(
         &p,
         &token,
         "validate",
-        json!({ "content": skill("summary: s.\nactions:\n  - renewal\n  - ghost\n") }),
+        json!({ "content": skill("summary: s.\nactions:\n  - {name: a, kind: event, label: A, event: renewal}\n  - {name: b, kind: event, label: B, event: ghost}\n") }),
     )
     .await;
     let i = issue(&out, "action_skill_unknown").unwrap_or_else(|| panic!("{out}"));
-    assert_eq!(i["location"], "frontmatter.actions[1]", "{out}");
+    assert_eq!(i["location"], "frontmatter.actions[1].event", "{out}");
     assert!(i["message"].as_str().unwrap().contains("ghost"), "{out}");
     assert_eq!(out["ok"], false);
+
+    // The old shorthand — a bare skill id — and a non-list are `action_invalid`, and the message
+    // points at the object form.
+    for (content, location) in [
+        (
+            "summary: s.\nactions:\n  - renewal\n",
+            "frontmatter.actions[0]",
+        ),
+        ("summary: s.\nactions: renewal\n", "frontmatter.actions"),
+    ] {
+        let out = call(&p, &token, "validate", json!({ "content": skill(content) })).await;
+        let i = issue(&out, "action_invalid").unwrap_or_else(|| panic!("{out}"));
+        assert_eq!(i["location"], location, "{out}");
+        assert!(i["message"].as_str().unwrap().contains("name"), "{out}");
+        assert_eq!(out["ok"], false);
+    }
+
+    // Each way an object can be wrong has its own code.
+    for (entry, code, location) in [
+        (
+            "{name: Bad Name, kind: event, label: L, event: renewal}",
+            "action_name_invalid",
+            "frontmatter.actions[0].name",
+        ),
+        (
+            "{name: a, kind: shout, label: L}",
+            "action_kind_unknown",
+            "frontmatter.actions[0].kind",
+        ),
+        (
+            "{name: a, kind: event, event: renewal}",
+            "action_label_missing",
+            "frontmatter.actions[0].label",
+        ),
+        (
+            "{name: a, kind: event, label: L}",
+            "action_event_missing",
+            "frontmatter.actions[0].event",
+        ),
+        (
+            "{name: a, kind: prompt, label: L}",
+            "action_prompt_missing",
+            "frontmatter.actions[0].prompt",
+        ),
+    ] {
+        let out = call(
+            &p,
+            &token,
+            "validate",
+            json!({ "content": skill(&format!("summary: s.\nactions:\n  - {entry}\n")) }),
+        )
+        .await;
+        let i = issue(&out, code).unwrap_or_else(|| panic!("{code}: {out}"));
+        assert_eq!(i["location"], location, "{out}");
+    }
     let out = call(
         &p,
         &token,
         "validate",
-        json!({ "content": skill("summary: s.\nactions: renewal\n") }),
+        json!({ "content": skill("summary: s.\nactions:\n  - {name: a, kind: event, label: A, event: renewal}\n  - {name: a, kind: prompt, label: B, prompt: p}\n") }),
     )
     .await;
-    let i = issue(&out, "action_skill_unknown").unwrap_or_else(|| panic!("{out}"));
-    assert_eq!(i["location"], "frontmatter.actions", "{out}");
+    let i = issue(&out, "action_name_duplicate").unwrap_or_else(|| panic!("{out}"));
+    assert_eq!(i["location"], "frontmatter.actions[1].name", "{out}");
 }

@@ -246,6 +246,44 @@ fn skill_field_render_and_blocks_round_trip_and_are_omitted_when_undeclared() {
 }
 
 #[test]
+fn skill_actions_are_peacock_style_objects_and_omitted_when_undeclared() {
+    // `actions[]`: {name, kind, label, event?, prompt?}. The title/body templates a page may
+    // carry never ride the row; absent stays absent.
+    let wire = json!({
+        "id": "supplier-risk-analysis",
+        "description": "d",
+        "actions": [
+            { "name": "notify-customer", "kind": "event", "label": "Notify customer", "event": "customer-notice" },
+            { "name": "ask-why", "kind": "prompt", "label": "Ask why", "prompt": "why is {id} at risk?" },
+        ],
+    });
+    let skill: Skill = serde_json::from_value(wire.clone()).unwrap();
+    assert_eq!(skill.actions.len(), 2);
+    assert_eq!(skill.actions[0].event.as_deref(), Some("customer-notice"));
+    assert_eq!(
+        skill.actions[1].prompt.as_deref(),
+        Some("why is {id} at risk?")
+    );
+    assert_eq!(
+        serde_json::to_value(&skill).unwrap()["actions"],
+        wire["actions"]
+    );
+    let bare: Skill = serde_json::from_value(json!({ "id": "n", "description": "d" })).unwrap();
+    assert!(bare.actions.is_empty());
+    assert!(
+        serde_json::to_value(&bare)
+            .unwrap()
+            .get("actions")
+            .is_none()
+    );
+    // The retired shorthand does not parse as an action.
+    assert!(
+        serde_json::from_value::<Skill>(json!({ "id": "n", "description": "d", "actions": ["x"] }))
+            .is_err()
+    );
+}
+
+#[test]
 fn skill_layer_defaults_to_overlay_on_old_servers() {
     // An old server that doesn't emit `layer` must parse to the overlay
     // default — pre-layer skills are tenant-authored and editable.
