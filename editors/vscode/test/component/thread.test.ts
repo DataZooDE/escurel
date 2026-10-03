@@ -1,3 +1,4 @@
+import { pickTarget } from '../../src/thread/firstView';
 import { expect, fixture, html } from '@open-wc/testing';
 import type { ThreadWebviewToHost } from '../../src/shared/protocol';
 import { layoutThread } from '../../src/thread/layout';
@@ -506,14 +507,19 @@ describe('<escurel-thread-canvas>', () => {
   });
 
   describe('first view', () => {
-    async function inBox(width: number): Promise<EscurelThreadCanvas> {
+    async function inBox(
+      width: number,
+      view = branchingThreadView,
+      layout = branchingLayout,
+      focus = branchingFocus,
+    ): Promise<EscurelThreadCanvas> {
       const host = await fixture<HTMLElement>(html`
         <div style="width:${width}px;height:700px;position:relative">
           <escurel-thread-canvas
             style="display:block;width:100%;height:100%"
-            .view=${recordedThreadView}
-            .layout=${recordedLayout}
-            .focus=${recordedFocus}
+            .view=${view}
+            .layout=${layout}
+            .focus=${focus}
             .details=${recordedDetails}
           ></escurel-thread-canvas>
         </div>
@@ -524,32 +530,148 @@ describe('<escurel-thread-canvas>', () => {
       await el.updateComplete;
       return el;
     }
+    const cardOf = (el: EscurelThreadCanvas, id: string) =>
+      el.shadowRoot!.querySelector(`.card[data-node-id="${id}"]`) as HTMLElement;
 
-    it('fits a thread that is wider than the window, instead of cropping it at 100%', async () => {
-      // Seen in the live window: the third column was cut off with no cue that more existed.
+    it('a big thread opens at 100% with the node that needs you in view, not shrunk to a fit', async () => {
       const el = await inBox(420);
-      expect(el.viewport.zoom < 1, `zoom ${el.viewport.zoom}`).to.equal(true);
-    });
-
-    it('never opens smaller than a readable size: a big thread scrolls instead of shrinking to 30%', async () => {
-      // A nine-node thread fitted at 48% made every card unreadable.
-      const el = await inBox(300);
-      expect(el.viewport.zoom >= 0.7, `zoom ${el.viewport.zoom}`).to.equal(true);
-      expect(el.viewport.zoom < 1).to.equal(true);
-    });
-
-    it('leaves a thread that fits at 100%', async () => {
-      const el = await inBox(4000);
       expect(el.viewport.zoom).to.equal(1);
+      const target = pickTarget(branchingThreadView, branchingLayout)!;
+      const card = cardOf(el, target);
+      const area = el.shadowRoot!.querySelector('.canvas-area') as HTMLElement;
+      const left = card.getBoundingClientRect().left - area.getBoundingClientRect().left;
+      const right = card.getBoundingClientRect().right - area.getBoundingClientRect().left;
+      expect(
+        left >= 0 && right <= area.clientWidth,
+        `card ${left}..${right} in ${area.clientWidth}`,
+      ).to.equal(true);
+    });
+
+    it('a small thread opens as is: 100%, nothing scrolled', async () => {
+      const el = await inBox(4000);
+      expect(el.viewport).to.deep.equal({ x: 0, y: 0, zoom: 1 });
     });
 
     it('does not pull the view back when the thread reloads after the person moved it', async () => {
       const el = await inBox(420);
       el.viewport = { x: 10, y: 20, zoom: 0.5 };
-      el.layout = { ...recordedLayout };
+      el.layout = { ...branchingLayout };
       await el.updateComplete;
       await new Promise((r) => requestAnimationFrame(() => r(undefined)));
       expect(el.viewport).to.deep.equal({ x: 10, y: 20, zoom: 0.5 });
+    });
+
+    it('Fit still shows the whole graph', async () => {
+      const el = await inBox(420);
+      el.fit();
+      await el.updateComplete;
+      expect(el.viewport.zoom < 1).to.equal(true);
+    });
+
+    it('dragging the scrollbar thumb pans the graph', async () => {
+      const el = await inBox(420);
+      const before = el.viewport.x;
+      const thumb = el.shadowRoot!.querySelector('.scroll-thumb.h') as HTMLElement;
+      const r = thumb.getBoundingClientRect();
+      const at = (dx: number, type: string) =>
+        new PointerEvent(type, {
+          clientX: r.left + 2 + dx,
+          clientY: r.top + 2,
+          pointerId: 1,
+          bubbles: true,
+          composed: true,
+        });
+      thumb.dispatchEvent(at(0, 'pointerdown'));
+      thumb.dispatchEvent(at(60, 'pointermove'));
+      thumb.dispatchEvent(at(60, 'pointerup'));
+      await el.updateComplete;
+      expect(el.viewport.x < before, `x ${before} -> ${el.viewport.x}`).to.equal(true);
+    });
+
+    it('shows a scrollbar thumb on an axis that overflows, so the cut-off edge is reachable', async () => {
+      const el = await inBox(420);
+      expect(el.shadowRoot!.querySelector('.scroll-thumb.h') !== null).to.equal(true);
+      const small = await inBox(4000);
+      expect(small.shadowRoot!.querySelector('.scroll-thumb.h') === null).to.equal(true);
+    });
+  });
+
+  describe('semantic zoom', () => {
+    async function at(zoom: number): Promise<EscurelThreadCanvas> {
+      const el = await renderCanvas({
+        view: branchingThreadView,
+        layout: branchingLayout,
+        focus: branchingFocus,
+      });
+      el.viewport = { x: 0, y: 0, zoom };
+      await el.updateComplete;
+      return el;
+    }
+    const visible = (e: Element | null) => !!e && getComputedStyle(e).display !== 'none';
+
+    it('below 70% a card keeps icon, accent bar and state chip but no text', async () => {
+      const el = await at(0.69);
+      expect(q(el, '.canvas-area')!.classList.contains('low-zoom')).to.equal(true);
+      for (const card of qa(el, '.card')) {
+        expect(visible(card.querySelector('.type-icon')), 'icon').to.equal(true);
+        expect(visible(card.querySelector('.chip')), 'state chip').to.equal(true);
+        for (const sel of [
+          '.card-title',
+          '.type-label',
+          '.card-subtitle',
+          '.meta-lines',
+          '.needs-reason',
+          '.gate-actions',
+        ]) {
+          const el2 = card.querySelector(sel);
+          expect(el2 === null || !visible(el2), `${sel} hidden`).to.equal(true);
+        }
+      }
+    });
+
+    it('keeps the Needs-you badge icon at low zoom, without its words', async () => {
+      const el = await at(0.5);
+      const badges = qa(el, '.needs-badge');
+      expect(badges.length > 0).to.equal(true);
+      for (const b of badges) {
+        expect(visible(b)).to.equal(true);
+        expect(visible(b.querySelector('svg')), 'person icon').to.equal(true);
+        const words = b.querySelector('.needs-text');
+        expect(words !== null && !visible(words), 'words hidden').to.equal(true);
+      }
+    });
+
+    it('from 70% up the cards show their text as before', async () => {
+      const el = await at(0.7);
+      expect(q(el, '.canvas-area')!.classList.contains('low-zoom')).to.equal(false);
+      expect(visible(q(el, '.card-title'))).to.equal(true);
+      expect(q(el, '.zoom-hint') === null).to.equal(true);
+    });
+
+    it('says "overview" next to the zoom percentage while in the low-zoom form', async () => {
+      const el = await at(0.5);
+      expect(text(q(el, '.zoom-hint'))).to.equal('overview');
+    });
+
+    it('keeps every card’s accessible name (type, title, state, needs you) at low zoom', async () => {
+      const normal = await at(1);
+      const names = qa(normal, '.card').map((c) => c.getAttribute('aria-label'));
+      const low = await at(0.5);
+      expect(qa(low, '.card').map((c) => c.getAttribute('aria-label'))).to.deep.equal(names);
+      expect(names.some((n) => /needs you/.test(n ?? ''))).to.equal(true);
+    });
+
+    it('puts the full text in the tooltip at low zoom', async () => {
+      const el = await at(0.5);
+      const first = qa(el, '.card')[0] as HTMLElement;
+      expect((first.getAttribute('title') ?? '').length > 0).to.equal(true);
+    });
+
+    it('does not move or resize any card when the form changes (wires keep their place)', async () => {
+      const el = await at(1);
+      const before = qa(el, '.card').map((c) => (c as HTMLElement).style.cssText);
+      const low = await at(0.5);
+      expect(qa(low, '.card').map((c) => (c as HTMLElement).style.cssText)).to.deep.equal(before);
     });
   });
 

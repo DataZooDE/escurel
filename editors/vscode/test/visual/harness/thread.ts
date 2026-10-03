@@ -20,12 +20,16 @@ el.layout = branches ? branchingLayout : recordedLayout;
 el.focus = branches ? branchingFocus : recordedFocus;
 el.details = recordedDetails;
 
-// Fit, so the baseline shows the WHOLE thread. The first baselines were taken at 100% in a
-// 900px window and silently clipped the cascade hop off the right edge: a screenshot of
-// half a thread passes as happily as one of all of it.
-void el.updateComplete.then(() => {
-  el.fit();
-});
+// `?view=first` keeps the canvas's own first view (100% on the node that needs you, with a
+// scrollbar); anything else Fits, so the baseline shows the WHOLE thread. The first baselines were
+// taken at 100% in a 900px window and silently clipped the cascade hop off the right edge: a
+// screenshot of half a thread passes as happily as one of all of it. Below 70% the cards switch to
+// their low-zoom form, so a Fit of a big thread is also the overview baseline.
+if (new URLSearchParams(location.search).get('view') !== 'first') {
+  void el.updateComplete.then(() => {
+    el.fit();
+  });
+}
 
 // `?select=run` / `?select=draft` selects a node that offers actions, so the inspector's buttons are
 // in the baseline: the run as a NON-admin sees a dead letter (Requeue deactivated, with its reason),
