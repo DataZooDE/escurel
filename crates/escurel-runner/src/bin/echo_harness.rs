@@ -26,7 +26,7 @@
 //! steps; the echo harness performs them deterministically. The escurel
 //! writes are identical real `/mcp` calls either way.
 
-#[path = "echo_analysis.rs"]
+#[path = "../echo_support/analysis.rs"]
 mod analysis;
 
 use std::io::Read;
