@@ -37,6 +37,24 @@ suite('Knowledge tree: folders, roles, previews', () => {
     assert.equal(item.collapsibleState, vscode.TreeItemCollapsibleState.Expanded);
   });
 
+  test('skills and instances have stable ids, so what a person expanded survives a live refresh', async () => {
+    // Without an id VS Code cannot match a row across a refresh and collapses it: the tree folded
+    // whatever you had opened every time anything live happened.
+    const roots = await kids();
+    const sales = find(roots, 'folder', 'sales')!;
+    const orders = find(await kids(sales), 'folder', 'orders')!;
+    const order = find(await kids(orders), 'skill', 'customer-order')!;
+    assert.equal(api.knowledge.getTreeItem(order).id, 'skill:customer-order');
+    const rows = await kids(order);
+    const instance = rows.find((n) => n.kind === 'instance');
+    if (instance) {
+      assert.match(
+        String(api.knowledge.getTreeItem(instance).id),
+        /^instance:markdown\/instances\//,
+      );
+    }
+  });
+
   test('a skill with no folder stays at the top level, after the folders', async () => {
     const roots = await kids();
     const customer = find(roots, 'skill', 'customer');

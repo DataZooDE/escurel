@@ -56,10 +56,14 @@ export class PageAsUiEditor implements vscode.CustomReadonlyEditorProvider {
     // The model the host last built: a webview message is judged against THIS, never against what
     // the webview claims.
     let current: PageModel | undefined;
+    // The loading state is for the FIRST load only. A reload caused by something live (every event
+    // reloads the page) replaces the content quietly: flashing it to "loading" each time swallowed
+    // clicks and reset the reader's place.
+    let shown = false;
     const load = async () => {
       if (!pageId)
         return post({ type: 'error', message: `not an escurel page: ${doc.uri.toString()}` });
-      post({ type: 'loading' });
+      if (!shown) post({ type: 'loading' });
       try {
         const c = this.client();
         const [e, skills] = await Promise.all([c.expand({ page_id: pageId }), c.listSkills()]);
@@ -102,6 +106,7 @@ export class PageAsUiEditor implements vscode.CustomReadonlyEditorProvider {
         }
         const base = strip ? { ...model, thread: strip } : model;
         current = writeBack ? { ...base, writeBack } : base;
+        shown = true;
         post({ type: 'page', model: current });
       } catch (err) {
         post({ type: 'error', message: describeError(err) });

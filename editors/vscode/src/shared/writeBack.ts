@@ -102,6 +102,8 @@ export function writeBackLine(s: WriteBackStatus): string {
     case 'applied':
       return `Last change sent to the source at ${t}: applied.`;
     case 'failed':
+      if (s.attempts === 0)
+        return `Last change to the source at ${t} did not go through: the source could not be reached, so nothing was sent. Promote it again from Awaiting You to retry.`;
       return `Last change to the source at ${t} could not be sent after ${s.attempts} attempts. Promote it again from Awaiting You to retry.`;
     case 'rejected':
       return `Last change to the source at ${t} was rejected by it. Propose it again with a different value.`;

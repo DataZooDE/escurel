@@ -149,6 +149,21 @@ describe('describeWriteBackRefusal', () => {
   });
 });
 
+describe('writeBackLine when nothing was sent', () => {
+  it('says the source could not be reached, not "after 0 attempts"', () => {
+    const line = writeBackLine({
+      outcome: 'failed',
+      at: '2026-10-03T12:05:00.000000Z',
+      draftId: 'd1',
+      attempts: 0,
+    });
+    expect(line).toMatch(/did not go through/);
+    expect(line).toMatch(/could not be reached/);
+    expect(line).not.toMatch(/0 attempts/);
+    expect(line).toMatch(/Promote it again/);
+  });
+});
+
 describe('parseProposedValue', () => {
   it('keeps the type the field has: a number stays a number, a boolean a boolean, text text', () => {
     expect(parseProposedValue('gold', 'silver')).toEqual({ ok: true, value: 'gold' });

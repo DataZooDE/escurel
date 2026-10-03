@@ -76,6 +76,8 @@ export class KnowledgeTree implements vscode.TreeDataProvider<Node> {
       case 'skill': {
         const { role, inferred } = effectiveRole(n.skill);
         const item = new vscode.TreeItem(n.label, vscode.TreeItemCollapsibleState.Collapsed);
+        // A stable id: VS Code matches rows across a refresh by it, and keeps them expanded.
+        item.id = `skill:${n.skill.id}`;
         item.description = n.description;
         const where = n.skill.folder ? `\n\nfolder \`${n.skill.folder}\`` : '';
         const tags = n.skill.tags?.length ? `\n\ntags: ${n.skill.tags.join(', ')}` : '';
@@ -96,6 +98,7 @@ export class KnowledgeTree implements vscode.TreeDataProvider<Node> {
       }
       case 'instance': {
         const item = new vscode.TreeItem(n.label, vscode.TreeItemCollapsibleState.None);
+        item.id = `instance:${n.pageId}`;
         item.description = n.description;
         item.iconPath = new vscode.ThemeIcon('symbol-field', new vscode.ThemeColor('charts.blue'));
         item.contextValue = 'instance';
