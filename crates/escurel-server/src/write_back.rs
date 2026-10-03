@@ -264,7 +264,35 @@ pub(crate) async fn run(
                 format!("`{skill}` has no object `{row_id}` upstream"),
             ));
         }
-        Err(e) => return Err(refusal("write_back_failed", e)),
+        Err(e) => {
+            // Nothing was sent, but the person promoted a change and must be able to see that it did
+            // not go through: record the dead-letter (no attempt was made) before refusing.
+            audit(
+                state,
+                indexer,
+                &id_failed,
+                "write-back-failed",
+                target_page_id,
+                &json!({
+                    "draft_id": draft_id,
+                    "endpoint": src.ep.name,
+                    "skill": skill,
+                    "key": row_id,
+                    "columns": intent.patch.keys().collect::<Vec<_>>(),
+                    "decided_by": decided_by,
+                    "outcome": "failed",
+                    "attempts": 0,
+                }),
+            )
+            .await;
+            return Err(refusal(
+                "write_back_failed",
+                format!(
+                    "the source could not be reached to check the row before changing it ({e}); \
+                     nothing was sent"
+                ),
+            ));
+        }
     };
     let current = etag_of(&row.fields);
     if intent.base_etag.as_deref().is_some_and(|b| b != current) {

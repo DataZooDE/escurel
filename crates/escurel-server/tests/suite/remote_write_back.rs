@@ -57,6 +57,8 @@ struct Crm {
     reject: std::sync::atomic::AtomicBool,
     /// Answer 503 to every PATCH.
     down: std::sync::atomic::AtomicBool,
+    /// Answer 503 to every GET (the portal is unreachable before anything is sent).
+    read_down: std::sync::atomic::AtomicBool,
 }
 
 impl Crm {
@@ -75,6 +77,9 @@ impl Crm {
 }
 
 async fn get_one(State(c): State<Arc<Crm>>, Path(id): Path<String>) -> Response {
+    if c.read_down.load(Ordering::SeqCst) {
+        return (StatusCode::SERVICE_UNAVAILABLE, "down: do-not-repeat-this").into_response();
+    }
     let rows = c.rows.lock().unwrap();
     match rows.get(&id) {
         Some(v) => {
@@ -501,5 +506,56 @@ async fn a_local_failure_after_the_upstream_applied_never_calls_the_upstream_twi
         before,
         "the upstream is NOT called again: the outcome event is the witness"
     );
+    p.shutdown().await;
+}
+
+#[tokio::test]
+async fn an_outage_before_anything_is_sent_is_still_audited_and_leaves_the_draft_open() {
+    // The portal cannot even be READ to check the row (the etag precondition), so nothing is sent. The
+    // refusal must still leave a trace: a promoted change that fails silently has no audit trail and a
+    // page that cannot say what happened.
+    let c = crm();
+    let (p, _d) = gateway_over(&c, 5).await;
+    let etag = etag_of_row(&p).await;
+    let id = draft_id(&draft(&p, &intent_content("tier: gold", &etag, "n")).await);
+    c.read_down.store(true, Ordering::SeqCst);
+
+    let first = promote(&p, &id).await;
+
+    assert_eq!(first["ok"], false, "{first}");
+    assert!(
+        issue_codes(&first).contains(&"write_back_failed".to_owned()),
+        "{first}"
+    );
+    let text = first.to_string();
+    assert!(
+        !text.contains("do-not-repeat") && !text.contains("127.0.0.1"),
+        "{first}"
+    );
+    assert!(
+        text.contains("could not be reached"),
+        "worded for a person: {first}"
+    );
+    assert!(c.patches.lock().unwrap().is_empty(), "nothing was sent");
+    let ev = events(&p).await;
+    let failed = ev
+        .iter()
+        .find(|e| {
+            e["event_id"]
+                .as_str()
+                .is_some_and(|i| i.ends_with(":failed"))
+        })
+        .unwrap_or_else(|| panic!("a failed event is recorded: {ev:?}"));
+    let body: Value = serde_json::from_str(failed["body"].as_str().unwrap()).unwrap();
+    assert_eq!(body["outcome"], "failed", "{body}");
+    assert_eq!(body["attempts"], 0, "{body}");
+    assert_eq!(body["draft_id"], id, "{body}");
+    assert_eq!(c.tier("c-0001"), "silver");
+
+    // The portal comes back; promoting again applies it.
+    c.read_down.store(false, Ordering::SeqCst);
+    let again = promote(&p, &id).await;
+    assert_eq!(again["ok"], true, "{again}");
+    assert_eq!(c.tier("c-0001"), "gold");
     p.shutdown().await;
 }
