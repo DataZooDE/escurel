@@ -26,6 +26,9 @@
 //! steps; the echo harness performs them deterministically. The escurel
 //! writes are identical real `/mcp` calls either way.
 
+#[path = "echo_analysis.rs"]
+mod analysis;
+
 use std::io::Read;
 use std::process::ExitCode;
 
@@ -292,6 +295,82 @@ fn pick_event<'a>(events: &'a [Value], trigger: Option<&str>) -> Option<&'a Valu
     }
 }
 
+/// The last path segment of an instance page id, sans `.md` and any `<skill>__` prefix.
+fn instance_id(page_id: &str) -> String {
+    let file = page_id.rsplit('/').next().unwrap_or(page_id);
+    let file = file.strip_suffix(".md").unwrap_or(file);
+    file.split_once("__").map_or(file, |(_, id)| id).to_owned()
+}
+
+/// The supplier-risk analysis for a signal, worked out from the gateway's own data: the supplier
+/// (by vendor number) and the customer orders whose items use the signal's material. Best effort:
+/// any lookup that fails or finds nothing means NO analysis, and the fold still happens.
+fn analyse(mcp: &Mcp, event: &Value, event_id: &str) -> Option<analysis::Built> {
+    let title = event
+        .get("title")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let body = event
+        .get("body")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let signal = analysis::parse_signal(title, body)?;
+    let material = signal.material.clone()?;
+    let suppliers = mcp
+        .call(
+            "list_instances",
+            json!({ "skill_id": "supplier", "frontmatter_key": "vendor", "frontmatter_value": signal.vendor }),
+        )
+        .ok()?;
+    let sup = suppliers
+        .get("instances")
+        .or_else(|| suppliers.get("items"))?
+        .as_array()?
+        .first()?;
+    let supplier = analysis::Supplier {
+        id: instance_id(sup.get("page_id")?.as_str()?),
+        name: sup
+            .get("frontmatter")
+            .and_then(|f| f.get("name"))
+            .and_then(Value::as_str)
+            .unwrap_or("supplier")
+            .to_owned(),
+        vendor: signal.vendor.clone(),
+    };
+    let orders = mcp
+        .call("list_instances", json!({ "skill_id": "customer-order" }))
+        .ok()?;
+    let mut lines = Vec::new();
+    for o in orders
+        .get("instances")
+        .or_else(|| orders.get("items"))?
+        .as_array()?
+    {
+        let page = o.get("page_id")?.as_str()?;
+        let fm = o.get("frontmatter");
+        let text = |k: &str, d: &str| {
+            fm.and_then(|f| f.get(k))
+                .and_then(Value::as_str)
+                .unwrap_or(d)
+                .to_owned()
+        };
+        let expanded = mcp.call("expand", json!({ "page_id": page })).ok()?;
+        let order_body = expanded
+            .get("body")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        lines.extend(analysis::order_lines(
+            &instance_id(page),
+            &text("sold_to_name", "customer"),
+            &text("currency", "EUR"),
+            order_body,
+            &material,
+        ));
+    }
+    lines.sort_by(|a, b| a.order_id.cmp(&b.order_id));
+    (!lines.is_empty()).then(|| analysis::build_analysis(&supplier, &signal, &lines, event_id))
+}
+
 /// Perform the deterministic fold; returns the structured outcome.
 fn run(task: &HarnessTask) -> Result<HarnessOutcome, String> {
     let mcp = Mcp::new(&task.mcp_endpoint, &task.token);
@@ -508,11 +587,24 @@ fn run(task: &HarnessTask) -> Result<HarnessOutcome, String> {
         .split_once("## Approved plan")
         .and_then(|(_, rest)| rest.lines().find(|l| l.starts_with("- ")))
         .map(|l| l.trim_start_matches("- ").to_owned());
+    // A supplier-risk run under review also persists its ANALYSIS as an instance of its own, in the
+    // same changeset as the fold, and the fold's note links to it.
+    let reviewing = task.allowed_tools.iter().any(|t| t == "create_draft")
+        && !task.allowed_tools.iter().any(|t| t == "update_page");
+    let analysis = if reviewing && instance_page_id.contains("customer-order") {
+        analyse(&mcp, event, &event_id)
+    } else {
+        None
+    };
+    let link = analysis
+        .as_ref()
+        .map(|a| format!(" — analysis [[supplier-risk-analysis::{}]]", a.id))
+        .unwrap_or_default();
     let note = match approved_step {
         Some(step) => {
-            format!("\n- folded event `{event_id}`: {title} (per approved plan: {step})\n")
+            format!("\n- folded event `{event_id}`: {title} (per approved plan: {step}){link}\n")
         }
-        None => format!("\n- folded event `{event_id}`: {title}\n"),
+        None => format!("\n- folded event `{event_id}`: {title}{link}\n"),
     };
     let new_body = format!("{}{}", current_body.trim_end_matches('\n'), note);
     let new_content = format!("{frontmatter}{new_body}");
@@ -564,6 +656,24 @@ fn run(task: &HarnessTask) -> Result<HarnessOutcome, String> {
             .as_str()
             .unwrap_or_default()
             .to_owned();
+        // The analysis joins the fold's changeset, so one promotion publishes both.
+        if let (Some(a), Some(changeset)) = (&analysis, drafted["draft"]["changeset_id"].as_str()) {
+            let second = mcp.call(
+                "create_draft",
+                json!({
+                    "target_page_id": a.page_id,
+                    "content": a.content,
+                    "event_id": event_id,
+                    "changeset_id": changeset,
+                }),
+            )?;
+            tool_calls += 1;
+            if second.get("ok").and_then(Value::as_bool) != Some(true) {
+                return Err(format!(
+                    "echo: create_draft refused for the analysis: {second}"
+                ));
+            }
+        }
         return Ok(HarnessOutcome {
             result_ref: knob_result_ref(),
             usage: None,
