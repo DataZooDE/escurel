@@ -111,8 +111,11 @@ pub fn parse(input: &str) -> Result<Page<'_>, ParseError> {
         _ => return Err(ParseError::NotAMapping),
     };
 
+    // `kind:` is the page-kind key. `type:` is the legacy spelling, still read while the migration
+    // window is open; `kind:` wins when a page carries both.
     let page_type = mapping
-        .get("type")
+        .get("kind")
+        .or_else(|| mapping.get("type"))
         .and_then(serde_yaml_ng::Value::as_str)
         .and_then(|s| match s {
             "skill" => Some(PageType::Skill),

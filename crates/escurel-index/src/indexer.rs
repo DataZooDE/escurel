@@ -2162,11 +2162,14 @@ fn collect_md(
     Ok(())
 }
 
-/// True if the markdown declares `type: skill` in its frontmatter.
-/// Cheap scan of the leading lines — enough to order skills before
-/// instances during a seed.
+/// True if the markdown declares `kind: skill` (or the legacy `type: skill`, read during the
+/// migration window) in its frontmatter. Cheap scan of the leading lines — enough to order skills
+/// before instances during a seed.
 fn is_skill(content: &str) -> bool {
-    content.lines().take(40).any(|l| l.trim() == "type: skill")
+    content
+        .lines()
+        .take(40)
+        .any(|l| matches!(l.trim(), "kind: skill" | "type: skill"))
 }
 
 fn hash_body(content: &str) -> String {
@@ -2313,4 +2316,19 @@ pub(crate) fn format_vector_literal(v: &[f32]) -> String {
     }
     out.push(']');
     out
+}
+
+#[cfg(test)]
+mod kind_scan_tests {
+    use super::is_skill;
+
+    #[test]
+    fn seed_ordering_recognises_both_spellings_of_a_skill_page() {
+        assert!(is_skill("---\nkind: skill\nid: a\n---\n"));
+        assert!(
+            is_skill("---\ntype: skill\nid: a\n---\n"),
+            "legacy spelling, migration window"
+        );
+        assert!(!is_skill("---\nkind: instance\nskill: a\nid: b\n---\n"));
+    }
 }

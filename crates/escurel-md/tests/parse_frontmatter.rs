@@ -179,3 +179,19 @@ fn set_frontmatter_bool_rejects_malformed_input() {
         .expect_err("malformed input must error");
     assert!(matches!(err, ParseError::MissingFrontmatter));
 }
+
+#[test]
+fn parses_the_kind_key() {
+    let skill = parse("---\nkind: skill\nid: customer\n---\nbody\n").expect("kind: skill parses");
+    assert_eq!(skill.frontmatter.page_type, PageType::Skill);
+    let instance = parse("---\nkind: instance\nskill: customer\nid: c1\n---\n")
+        .expect("kind: instance parses");
+    assert_eq!(instance.frontmatter.page_type, PageType::Instance);
+}
+
+#[test]
+fn kind_wins_over_a_legacy_type_during_the_transition() {
+    // The migration window reads both; a page that carries both says `kind:`.
+    let page = parse("---\nkind: skill\ntype: instance\nid: a\n---\n").expect("parses");
+    assert_eq!(page.frontmatter.page_type, PageType::Skill);
+}
