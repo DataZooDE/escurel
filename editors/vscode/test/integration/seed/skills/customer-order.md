@@ -3,7 +3,8 @@ type: skill
 id: customer-order
 description: A customer order. A change to one is announced.
 autonomy: review
-actions: [supplier-risk]
+actions:
+  - {name: assess-supplier-risk, kind: event, label: "Assess supplier risk", event: supplier-risk}
 cascade:
   target: produced
 ---

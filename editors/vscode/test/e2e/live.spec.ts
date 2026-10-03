@@ -32,7 +32,7 @@ test('the thread shows the cascade, and an instance offers a skill to start', as
 
   // The instance a draft proposes a change to: select it, and the inspector offers its skill's actions.
   await canvas.getByRole('treeitem', { name: /order-4500123/ }).click();
-  const start = wv.getByRole('button', { name: /with an agent/ }).first();
+  const start = wv.getByRole('group', { name: 'Skills' }).locator('.primary').first();
   await expect(start).toBeVisible();
   await stack.shot('03-thread-inspector-instance');
 
@@ -107,7 +107,7 @@ test('the Skill menu works from the keyboard alone, and Escape gives the focus b
 }) => {
   const { page } = stack;
   const wv = await webviewWith(page, 'escurel-page-as-ui');
-  const chevron = wv.getByRole('button', { name: /More actions for .*with an agent/ }).first();
+  const chevron = wv.getByRole('button', { name: /More actions for / }).first();
   await chevron.focus();
   await page.keyboard.press('ArrowDown');
   const menu = wv.getByRole('menu').first();
@@ -133,7 +133,7 @@ test('the Skill menu works from the keyboard alone, and Escape gives the focus b
 test('"First make a plan" ends in a plan the person is asked to approve', async ({ stack }) => {
   const { page } = stack;
   const wv = await webviewWith(page, 'escurel-page-as-ui');
-  const chevron = wv.getByRole('button', { name: /More actions for .*with an agent/ }).first();
+  const chevron = wv.getByRole('button', { name: /More actions for / }).first();
   await chevron.focus();
   await page.keyboard.press('ArrowDown');
   await wv.getByRole('menuitem', { name: 'First make a plan' }).click();

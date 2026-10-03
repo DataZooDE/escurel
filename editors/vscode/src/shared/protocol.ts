@@ -23,8 +23,9 @@ export interface FieldView {
 }
 
 export interface ActionView {
+  /** The skill the action starts (`actions[].event`). */
   skill: string;
-  /** Until BACKEND_GAPS PR-2: "<Skill title> for <instance title> with an agent". */
+  /** The skill author's own label for the action (`actions[].label`). */
   label: string;
 }
 

@@ -1,7 +1,7 @@
 import type { AdminState } from '../auth/adminState';
 import type { LineageNode, Skill } from '../client/types';
 import { factsFromLineage, offeredControls, resolveControl, type RunFacts } from '../runs/runFacts';
-import { actionLabel } from '../shared/page';
+import { skillActionViews } from '../shared/actions';
 import { pageSlug } from '../shared/pageId';
 import type {
   ActionView,
@@ -103,11 +103,8 @@ export function buildNodeActions(
       return undefined;
     }
 
-    const instanceTitle = node.title || pageSlug(pageId, skill.id);
-    const actions: ActionView[] = skill.actions.map((actionSkill) => ({
-      skill: actionSkill,
-      label: actionLabel(actionSkill, instanceTitle),
-    }));
+    const actions: ActionView[] = skillActionViews(skill.actions);
+    if (actions.length === 0) return undefined;
 
     return {
       skills: {
@@ -181,7 +178,7 @@ export function resolveThreadAction(
     if (!offersSkill && ctx.skills && message.pageId) {
       const pageSkillName = skillFromPageId(message.pageId);
       const pageSkill = ctx.skills.find((s) => s.id === pageSkillName);
-      if (pageSkill?.actions?.includes(message.skill)) {
+      if (skillActionViews(pageSkill?.actions).some((a) => a.skill === message.skill)) {
         offersSkill = true;
       }
     }

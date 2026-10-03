@@ -1,4 +1,5 @@
 // PageModel from `expand` + the skill row — pure, shared with the webview tests.
+import { skillActionViews } from './actions';
 import type { ExpandResponse, Skill, SkillField } from '../client/types';
 import type { ActionView, FieldView, PageModel } from './protocol';
 
@@ -8,11 +9,6 @@ const TITLE_KEYS = ['title', 'name', 'subject', 'label'];
 export function titleCase(id: string): string {
   const s = id.replace(/[-_]+/g, ' ').trim();
   return s.charAt(0).toUpperCase() + s.slice(1);
-}
-
-/** BACKEND_GAPS PR-2 degradation: the label derived from the two ids. */
-export function actionLabel(skillId: string, instanceTitle: string): string {
-  return `${titleCase(skillId)} for ${instanceTitle} with an agent`;
 }
 
 export function buildPageModel(e: ExpandResponse, skill: Skill): PageModel {
@@ -30,10 +26,7 @@ export function buildPageModel(e: ExpandResponse, skill: Skill): PageModel {
   const summary = typeof fm.summary === 'string' ? fm.summary : undefined;
   const autonomy =
     skill.autonomy === 'auto' || skill.autonomy === 'confirm' ? skill.autonomy : 'review';
-  const actions: ActionView[] = (skill.actions ?? []).map((s) => ({
-    skill: s,
-    label: actionLabel(s, slug || title),
-  }));
+  const actions: ActionView[] = skillActionViews(skill.actions);
   return {
     pageId: e.page?.page_id ?? '',
     title,
