@@ -994,6 +994,9 @@ async fn expand_remote_row(
             // The upstream cannot be read right now. The page still opens: the linked notes (if any)
             // come back, or an empty shell when there are none, with the failure named in words. Never
             // a fabricated row, and nothing to propose a change against (no etag, no writable columns).
+            // The detail (which may carry the upstream's own words) goes to the log for operators; the
+            // page only says the source could not be reached, so upstream text never becomes page data.
+            tracing::warn!(skill = %src.skill, row = id, error = %e, "remote row could not be read");
             let mut out = if has_stored {
                 stored
             } else {
@@ -1004,7 +1007,7 @@ async fn expand_remote_row(
                 "fetched_at": fetched_at, "rows": [], "source": {},
                 "linked": linked(has_stored, false),
                 "issue": { "code": "source_unavailable",
-                    "message": format!("the source could not be reached right now ({e}); showing what is known") },
+                    "message": "the source could not be reached right now; showing what is known" },
             });
             return Ok(out);
         }

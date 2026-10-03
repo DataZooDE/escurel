@@ -211,14 +211,28 @@ async fn a_tool_error_degrades_to_a_bounded_message_without_the_servers_text_as_
     .await;
 
     let text = v.to_string();
+    // An unreadable row still opens (an empty shell) and names the problem; it is not an error, and
+    // no row is invented.
+    assert!(v.get("error").is_none(), "an unreadable row degrades: {v}");
+    let page: Value =
+        serde_json::from_str(v["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(
+        page["backend_projection"]["issue"]["code"], "source_unavailable",
+        "{v}"
+    );
+    assert_eq!(page["backend_projection"]["rows"], json!([]), "{v}");
+    // The upstream's long, hostile error text is bounded and is not carried into the page as content.
+    let issue = page["backend_projection"]["issue"]["message"]
+        .as_str()
+        .unwrap();
     assert!(
-        v.get("error").is_some(),
-        "an unreadable row with no notes is an error: {v}"
+        issue.len() < 600 && !issue.contains(&"x".repeat(300)),
+        "the upstream's error text must be bounded, got {} bytes: {issue}",
+        issue.len()
     );
     assert!(
-        text.len() < 1_200,
-        "the upstream's long error text must be bounded, got {} bytes",
-        text.len()
+        !text.contains(INJECTION),
+        "an upstream error is never repeated as page content: {v}"
     );
     p.shutdown().await;
 }

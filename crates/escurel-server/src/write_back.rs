@@ -285,12 +285,10 @@ pub(crate) async fn run(
                 }),
             )
             .await;
+            tracing::warn!(skill, row = row_id, draft = draft_id, error = %e, "write-back pre-read failed");
             return Err(refusal(
                 "write_back_failed",
-                format!(
-                    "the source could not be reached to check the row before changing it ({e}); \
-                     nothing was sent"
-                ),
+                "the source could not be reached to check the row before changing it; nothing was sent",
             ));
         }
     };
