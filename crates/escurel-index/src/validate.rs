@@ -190,6 +190,95 @@ fn check_harness(page_type: PageType, fields: &YamlMapping) -> Option<Issue> {
     }
 }
 
+/// A slug as an action `name` takes: lowercase letters, digits, `-` and `_`.
+fn is_action_slug(s: &str) -> bool {
+    !s.is_empty()
+        && s.chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_')
+}
+
+/// Lints a skill's `actions:` (Peacock's object form). Returns the findings and the
+/// `(index, skill)` of every `kind: event` entry, whose skill the caller checks against the corpus.
+fn check_actions(raw: &YamlValue) -> (Vec<Issue>, Vec<(usize, String)>) {
+    let mut issues = Vec::new();
+    let mut events = Vec::new();
+    let Some(seq) = raw.as_sequence() else {
+        issues.push(Issue::error(
+            "action_invalid",
+            "frontmatter.actions",
+            "`actions:` must be a list of action objects: `{name, kind: event|prompt, label, event|prompt}`",
+        ));
+        return (issues, events);
+    };
+    let mut seen: HashSet<String> = HashSet::new();
+    let text = |m: &YamlMapping, k: &str| -> Option<String> {
+        m.get(k)
+            .and_then(YamlValue::as_str)
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+            .map(str::to_owned)
+    };
+    for (i, entry) in seq.iter().enumerate() {
+        let at = |field: &str| format!("frontmatter.actions[{i}].{field}");
+        let Some(m) = entry.as_mapping() else {
+            issues.push(Issue::error(
+                "action_invalid",
+                format!("frontmatter.actions[{i}]"),
+                "an `actions` entry is an object `{name, kind: event|prompt, label, event|prompt}`, not a bare skill id",
+            ));
+            continue;
+        };
+        match text(m, "name") {
+            Some(name) if is_action_slug(&name) => {
+                if !seen.insert(name.clone()) {
+                    issues.push(Issue::error(
+                        "action_name_duplicate",
+                        at("name"),
+                        format!("two actions are named `{name}`; a name is the action's id"),
+                    ));
+                }
+            }
+            _ => issues.push(Issue::error(
+                "action_name_invalid",
+                at("name"),
+                "`name` is a slug: lowercase letters, digits, `-` and `_`",
+            )),
+        }
+        if text(m, "label").is_none() {
+            issues.push(Issue::error(
+                "action_label_missing",
+                at("label"),
+                "`label` is the text of the button",
+            ));
+        }
+        match text(m, "kind").as_deref() {
+            Some("event") => match text(m, "event") {
+                Some(skill) => events.push((i, skill)),
+                None => issues.push(Issue::error(
+                    "action_event_missing",
+                    at("event"),
+                    "a `kind: event` action names the skill its event is filed under",
+                )),
+            },
+            Some("prompt") => {
+                if text(m, "prompt").is_none() {
+                    issues.push(Issue::error(
+                        "action_prompt_missing",
+                        at("prompt"),
+                        "a `kind: prompt` action carries the `prompt` text",
+                    ));
+                }
+            }
+            _ => issues.push(Issue::error(
+                "action_kind_unknown",
+                at("kind"),
+                "`kind` is `event` or `prompt`",
+            )),
+        }
+    }
+    (issues, events)
+}
+
 fn check_autonomy(page_type: PageType, fields: &YamlMapping) -> Option<Issue> {
     if page_type != PageType::Skill {
         return None;
@@ -747,35 +836,17 @@ impl Indexer {
         if parsed.frontmatter.page_type == PageType::Skill
             && let Some(raw) = fields.get("actions")
         {
-            match raw.as_sequence() {
-                None => issues.push(Issue::error(
-                    "action_skill_unknown",
-                    "frontmatter.actions",
-                    "`actions:` must be a list of skill ids this skill may fan out to",
-                )),
-                Some(seq) => {
-                    let mut named: Vec<(usize, String)> = Vec::new();
-                    for (i, entry) in seq.iter().enumerate() {
-                        match entry.as_str().map(str::trim).filter(|s| !s.is_empty()) {
-                            Some(name) => named.push((i, name.to_owned())),
-                            None => issues.push(Issue::error(
-                                "action_skill_unknown",
-                                format!("frontmatter.actions[{i}]"),
-                                "an `actions` entry must be a skill id",
-                            )),
-                        }
-                    }
-                    let wanted: HashSet<&str> = named.iter().map(|(_, n)| n.as_str()).collect();
-                    let known = self.resolve_skills(&wanted).await?;
-                    for (i, name) in named {
-                        if !known.contains_key(&name) {
-                            issues.push(Issue::error(
-                                "action_skill_unknown",
-                                format!("frontmatter.actions[{i}]"),
-                                format!("`actions` names skill `{name}`, which this corpus does not have"),
-                            ));
-                        }
-                    }
+            let (action_issues, events) = check_actions(raw);
+            issues.extend(action_issues);
+            let wanted: HashSet<&str> = events.iter().map(|(_, n)| n.as_str()).collect();
+            let known = self.resolve_skills(&wanted).await?;
+            for (i, name) in events {
+                if !known.contains_key(&name) {
+                    issues.push(Issue::error(
+                        "action_skill_unknown",
+                        format!("frontmatter.actions[{i}].event"),
+                        format!("`event` names skill `{name}`, which this corpus does not have"),
+                    ));
                 }
             }
         }

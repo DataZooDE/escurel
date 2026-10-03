@@ -133,12 +133,15 @@ pub async fn skill_contract(client: &Client, skill: &str) -> Option<SkillContrac
     }
     Some(SkillContract {
         harness: text(fm.get("harness")),
+        // The cascade allow-list is the `event` skill of every `kind: event` action (Peacock's
+        // object form). `kind: prompt` actions are chat turns and restrict nothing.
         actions: fm
             .get("actions")
             .and_then(|v| v.as_array())
             .map(|a| {
                 a.iter()
-                    .filter_map(|v| v.as_str())
+                    .filter(|e| e.get("kind").and_then(|k| k.as_str()) == Some("event"))
+                    .filter_map(|e| e.get("event").and_then(|v| v.as_str()))
                     .map(str::trim)
                     .filter(|s| !s.is_empty())
                     .map(str::to_owned)

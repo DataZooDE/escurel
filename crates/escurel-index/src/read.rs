@@ -75,9 +75,9 @@ pub struct SkillInfo {
     /// `harness:` — the adapter this skill asks to run on. Advisory here;
     /// the runner honours it within its allow-list.
     pub harness: Option<String>,
-    /// `actions:` — the skills this one may fan out to (cascade targets).
-    /// Empty when undeclared: no restriction.
-    pub actions: Vec<String>,
+    /// `actions:` — the object-form actions this skill declares (see
+    /// `escurel_types::SkillAction`). Empty when undeclared: no restriction on cascades.
+    pub actions: Vec<escurel_types::SkillAction>,
     /// `cascade:` — where a confirmed write cascades (`target`: a page id or
     /// `produced`) and how deep (`max_depth`). `None` when undeclared.
     pub cascade: Option<CascadePolicy>,
@@ -739,7 +739,7 @@ impl Indexer {
                     .map(str::trim)
                     .filter(|s| !s.is_empty())
                     .map(str::to_owned),
-                actions: string_array_field(&fm, "actions"),
+                actions: parse_actions(&fm),
                 cascade: parse_cascade(&fm),
                 params: parse_params(&fm),
                 blocks: parse_blocks(&fm),
@@ -1598,6 +1598,39 @@ fn skill_id(fm: &serde_json::Value) -> Option<String> {
     fm.get("id")
         .and_then(serde_json::Value::as_str)
         .map(str::to_owned)
+}
+
+/// The well-formed object entries of `actions:`. Malformed entries are skipped here;
+/// `validate` is what tells their author (a catalogue read must not fail on one bad page).
+fn parse_actions(fm: &serde_json::Value) -> Vec<escurel_types::SkillAction> {
+    use escurel_types::{SkillAction, SkillActionKind};
+    let text = |v: Option<&serde_json::Value>| {
+        v.and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_owned)
+    };
+    fm.get("actions")
+        .and_then(serde_json::Value::as_array)
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|e| {
+                    let kind = match e.get("kind").and_then(serde_json::Value::as_str)? {
+                        "event" => SkillActionKind::Event,
+                        "prompt" => SkillActionKind::Prompt,
+                        _ => return None,
+                    };
+                    Some(SkillAction {
+                        name: text(e.get("name"))?,
+                        kind,
+                        label: text(e.get("label"))?,
+                        event: text(e.get("event")),
+                        prompt: text(e.get("prompt")),
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 fn string_array_field(fm: &serde_json::Value, key: &str) -> Vec<String> {
