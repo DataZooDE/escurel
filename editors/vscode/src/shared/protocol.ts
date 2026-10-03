@@ -1,6 +1,8 @@
 // The host ↔ webview contract (SPEC §5): typed postMessage both ways.
 // Shared by both tsconfigs, so nothing here may import `vscode` or Node.
 
+import type { PreviewModel } from './preview';
+
 export interface FieldView {
   name: string;
   label: string;
@@ -50,6 +52,10 @@ export interface PageModel {
     backend: string;
   };
   fields: FieldView[];
+  /** What the source system holds for a non-markdown page (read-only); absent for markdown. */
+  preview?: PreviewModel;
+  /** The skill's OKF `resource:` link, shown with the preview. */
+  resource?: string;
   summary?: string;
   body: string;
   lastWrittenBy?: string | null;
@@ -86,6 +92,7 @@ export type WebviewToHost =
   | { type: 'open-wikilink'; wikilink: string }
   | { type: 'view-skill'; skill: string }
   | { type: 'show-raw' }
+  | { type: 'open-original' }
   | { type: 'refresh' }
   | { type: 'open-thread'; rootEventId: string }
   | { type: 'open-run'; runId: string }

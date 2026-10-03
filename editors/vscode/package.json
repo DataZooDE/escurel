@@ -167,6 +167,11 @@
         "category": "Escurel"
       },
       {
+        "command": "escurel.openOriginal",
+        "title": "Open original document",
+        "category": "Escurel"
+      },
+      {
         "command": "escurel.approvePlan",
         "title": "Approve plan",
         "category": "Escurel"
@@ -315,6 +320,10 @@
         },
         {
           "command": "escurel.startInTerminal",
+          "when": "false"
+        },
+        {
+          "command": "escurel.openOriginal",
           "when": "false"
         },
         {

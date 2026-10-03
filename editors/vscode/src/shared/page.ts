@@ -1,6 +1,7 @@
 // PageModel from `expand` + the skill row — pure, shared with the webview tests.
 import { skillActionViews } from './actions';
 import type { ExpandResponse, Skill, SkillField } from '../client/types';
+import { buildPreview } from './preview';
 import type { ActionView, FieldView, PageModel } from './protocol';
 
 const HIDDEN = new Set(['type', 'skill', 'id']);
@@ -40,11 +41,21 @@ export function buildPageModel(e: ExpandResponse, skill: Skill): PageModel {
       backend: skill.backend.kind,
     },
     fields,
+    ...previewFields(e, skill),
     summary,
     body: e.body,
     lastWrittenBy: e.page?.last_written_by,
     editable: false,
     actions,
+  };
+}
+
+/** `preview` and `resource`, present only when there is something to show. */
+function previewFields(e: ExpandResponse, skill: Skill): Pick<PageModel, 'preview' | 'resource'> {
+  const preview = buildPreview(e, skill.backend.kind);
+  return {
+    ...(preview ? { preview } : {}),
+    ...(skill.resource ? { resource: skill.resource } : {}),
   };
 }
 

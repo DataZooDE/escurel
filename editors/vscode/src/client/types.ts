@@ -51,6 +51,16 @@ export interface Skill {
   autonomy?: string;
   summary?: string;
   harness?: string;
+  /** `/`-separated path of slugs placing the skill in a tree (`sales/orders`); absent = top level. */
+  folder?: string;
+  /** `record | process | report | helper`; typed as a string so a newer server's value still parses. */
+  role?: string;
+  /** OKF tags. */
+  tags?: string[];
+  /** OKF display title. */
+  title?: string;
+  /** OKF link to the external thing this skill describes (a table, an API). */
+  resource?: string;
   /** What a follow-up from this skill can be: see `SkillAction`. Absent when none are declared. */
   actions?: SkillAction[];
   cascade?: { target?: string; max_depth?: number };
@@ -119,6 +129,10 @@ export interface WikilinkParsed {
   alias: string | null;
 }
 
+export interface FetchBlobResponse {
+  blob: { content_type: string; size: number; bytes_base64: string } | null;
+}
+
 export interface ExpandResponse {
   /** `null` when the page does not exist or the caller may not read it (absence, never a leak). */
   page: PageRef | null;
@@ -133,7 +147,11 @@ export interface ExpandResponse {
   /** Only on a gateway with a live CRDT backend. */
   version?: string;
   shadow?: unknown;
+  /** `sql_view`: `{view, rows, source, truncated?, issue?}`; `openapi`/`mcp`: `{source, fields}` or `{issue}`. */
   backend_projection?: unknown;
+  /** `document` pages: how many chunks the document has, and whether `blocks` holds only the lead. */
+  chunks_total?: number;
+  chunks_truncated?: boolean;
 }
 
 export interface ValidationIssue {

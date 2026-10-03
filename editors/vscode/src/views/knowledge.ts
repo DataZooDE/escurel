@@ -4,9 +4,17 @@ import type { EscurelClient, Instance } from '../client';
 import { uriForPage } from '../fs/provider';
 import { log } from '../log';
 import { describeError } from '../errors';
-import { instanceRow, skillRow, type InstanceRow, type SkillRow } from './knowledgeModel';
+import { instanceRow, type InstanceRow, type SkillRow } from './knowledgeModel';
+import {
+  ROLE_ICONS,
+  buildSkillTree,
+  effectiveRole,
+  skillAccessibleName,
+  type FolderRow,
+} from './skillTree';
 
 type Node =
+  | FolderRow
   | SkillRow
   | InstanceRow
   | { kind: 'more'; skill: string; cursor: string }
@@ -51,18 +59,39 @@ export class KnowledgeTree implements vscode.TreeDataProvider<Node> {
 
   getTreeItem(n: Node): vscode.TreeItem {
     switch (n.kind) {
+      case 'folder': {
+        const item = new vscode.TreeItem(
+          n.label,
+          n.collapsed
+            ? vscode.TreeItemCollapsibleState.Collapsed
+            : vscode.TreeItemCollapsibleState.Expanded,
+        );
+        item.id = `folder:${n.path}`;
+        item.iconPath = new vscode.ThemeIcon('folder');
+        item.tooltip = n.path;
+        item.contextValue = 'folder';
+        item.accessibilityInformation = { label: `folder ${n.path}`, role: 'treeitem' };
+        return item;
+      }
       case 'skill': {
+        const { role, inferred } = effectiveRole(n.skill);
         const item = new vscode.TreeItem(n.label, vscode.TreeItemCollapsibleState.Collapsed);
         item.description = n.description;
+        const where = n.skill.folder ? `\n\nfolder \`${n.skill.folder}\`` : '';
+        const tags = n.skill.tags?.length ? `\n\ntags: ${n.skill.tags.join(', ')}` : '';
         item.tooltip = new vscode.MarkdownString(
-          `**${n.skill.id}** — ${n.skill.summary ?? n.skill.description}\n\n${n.readOnly ? '_read-only (' + n.skill.layer + ')_' : 'layer ' + n.skill.layer}`,
+          `**${n.skill.title ?? n.skill.id}** — ${n.skill.summary ?? n.skill.description}\n\nrole **${role}**${inferred ? ' (inferred)' : ''} · ${n.readOnly ? '_read-only (' + n.skill.layer + ')_' : 'layer ' + n.skill.layer}${where}${tags}`,
         );
         item.iconPath = new vscode.ThemeIcon(
-          'symbol-class',
+          ROLE_ICONS[role],
           new vscode.ThemeColor('charts.purple'),
         );
         item.contextValue = n.readOnly ? 'skill.readonly' : 'skill';
         item.resourceUri = uriForPage(`markdown/skills/${n.skill.id}.md`);
+        item.accessibilityInformation = {
+          label: skillAccessibleName(n.skill),
+          role: 'treeitem',
+        };
         return item;
       }
       case 'instance': {
@@ -105,8 +134,9 @@ export class KnowledgeTree implements vscode.TreeDataProvider<Node> {
       if (!n) {
         const skills = await this.client().listSkills();
         await vscode.commands.executeCommand('setContext', 'escurel.connected', true);
-        return skills.map(skillRow);
+        return buildSkillTree(skills);
       }
+      if (n.kind === 'folder') return n.children;
       if (n.kind === 'skill') {
         const page = this.pages.get(n.skill.id) ?? (await this.fetch(n.skill.id, undefined));
         return this.rows(page);

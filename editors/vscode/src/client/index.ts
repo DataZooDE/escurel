@@ -19,6 +19,7 @@ import type {
   EventsPage,
   ExpandRequest,
   ExpandResponse,
+  FetchBlobResponse,
   GetRunToolCallsRequest,
   GetRunToolCallsResponse,
   ListEventsRequest,
@@ -185,6 +186,11 @@ export class EscurelClient {
 
   expand(req: ExpandRequest): Promise<ExpandResponse> {
     return this.call('expand', { ...req });
+  }
+
+  /** The ORIGINAL file behind a `document` page (base64), or `blob: null` when absent or hidden. */
+  fetchBlob(pageId: string): Promise<FetchBlobResponse> {
+    return this.call('fetch_blob', { page_id: pageId });
   }
 
   updatePage(req: UpdatePageRequest): Promise<UpdatePageResponse> {

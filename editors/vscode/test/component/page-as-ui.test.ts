@@ -280,4 +280,57 @@ describe('<escurel-page-as-ui> thread strip', () => {
       expect(border).to.equal('#6fc3df');
     });
   });
+
+  it('shows the source data of a non-markdown page under the form, and says the page is read-only data', async () => {
+    const el = await fixture<EscurelPageAsUi>(
+      html`<escurel-page-as-ui
+        .model=${{
+          ...orderPage,
+          preview: {
+            kind: 'rows',
+            readOnly: true,
+            source: 'vw_order_lines_all',
+            columns: ['vbeln'],
+            rows: [['4500123']],
+            truncated: false,
+          },
+        }}
+      ></escurel-page-as-ui>`,
+    );
+    await el.updateComplete;
+    const preview = q(el, 'escurel-source-preview')!;
+    expect(preview !== null).to.equal(true);
+    expect(text(preview.shadowRoot!.querySelector('.badge'))).to.contain('read-only (source)');
+    // A markdown page has no such section.
+    const plain = await render();
+    expect(q(plain, 'escurel-source-preview')).to.equal(null);
+  });
+
+  it('asks the host for the original when a document page offers it', async () => {
+    const el = await fixture<EscurelPageAsUi>(
+      html`<escurel-page-as-ui
+        .model=${{
+          ...orderPage,
+          preview: {
+            kind: 'document',
+            readOnly: true,
+            chunks: [{ anchor: 'c1', text: 't' }],
+            total: 3,
+            truncated: true,
+          },
+        }}
+      ></escurel-page-as-ui>`,
+    );
+    await el.updateComplete;
+    const sent: WebviewToHost[] = [];
+    el.addEventListener('escurel-message', (e) =>
+      sent.push((e as CustomEvent<WebviewToHost>).detail),
+    );
+    (
+      q(el, 'escurel-source-preview')!.shadowRoot!.querySelector(
+        'button.open-original',
+      ) as HTMLButtonElement
+    ).click();
+    expect(sent).to.deep.equal([{ type: 'open-original' }]);
+  });
 });

@@ -4,6 +4,7 @@ import { property, state } from 'lit/decorators.js';
 import type { PageModel, StartMode, WebviewToHost } from '../../src/shared/protocol';
 import { fieldRows, splitButton, theme } from '../shared/theme.css';
 import './field';
+import './source-preview';
 import './split-button';
 
 const START_ITEMS = [
@@ -250,6 +251,18 @@ export class EscurelPageAsUi extends LitElement {
         </p>
       </section>
 
+      ${
+        m.preview
+          ? html`<section>
+              <h2>Source data</h2>
+              <escurel-source-preview
+                .preview=${m.preview}
+                .resource=${m.resource}
+                @open-original=${() => this.send({ type: 'open-original' })}
+              ></escurel-source-preview>
+            </section>`
+          : nothing
+      }
       ${
         m.summary
           ? html`<section>

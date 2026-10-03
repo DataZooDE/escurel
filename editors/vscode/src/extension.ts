@@ -22,6 +22,7 @@ import { toThreadView } from './thread/threadModel';
 import { ThreadsTree } from './views/threads';
 import { expandableRows, type OutlineRow } from './views/threadsModel';
 import { registerStartInTerminal } from './start/terminal';
+import { registerOpenOriginal } from './commands/openOriginal';
 import { registerStartSkill } from './start/startSkill';
 import { registerApprovePlan } from './start/approvePlan';
 import { registerRunnerView, type RunnerTree } from './views/runner';
@@ -50,6 +51,7 @@ export function activate(context: vscode.ExtensionContext): EscurelApi | undefin
   registerControlCommands(context, services);
   context.subscriptions.push(services);
   registerStartInTerminal(context, services);
+  registerOpenOriginal(context, services);
   registerSkillDiagnostics(context, () => services.client);
   WikilinkProvider.register(context);
   const knowledge = KnowledgeTree.register(context, () => services.client);

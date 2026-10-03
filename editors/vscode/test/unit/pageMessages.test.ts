@@ -87,3 +87,19 @@ describe('resolvePageMessage: open-wikilink', () => {
     ).toBeUndefined();
   });
 });
+
+describe('resolvePageMessage: open-original', () => {
+  const docModel = {
+    ...model,
+    preview: { kind: 'document', readOnly: true, chunks: [], total: 0, truncated: false },
+  } as unknown as PageModel;
+
+  it('opens the original of THIS page, taken from the host model, only for a document page', () => {
+    expect(resolvePageMessage(docModel, { type: 'open-original' })).toEqual({
+      command: 'escurel.openOriginal',
+      args: [model.pageId],
+    });
+    expect(resolvePageMessage(model, { type: 'open-original' })).toBeUndefined();
+    expect(resolvePageMessage(undefined, { type: 'open-original' })).toBeUndefined();
+  });
+});

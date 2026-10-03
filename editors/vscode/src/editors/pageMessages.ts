@@ -35,6 +35,11 @@ export function resolvePageMessage(
       const known = m.skill === model.skill.id || model.actions.some((a) => a.skill === m.skill);
       return known ? { command: 'escurel.viewSkill', args: [m.skill] } : undefined;
     }
+    case 'open-original':
+      // The page is the host's own, never the webview's; only a document page has an original.
+      return model?.preview?.kind === 'document'
+        ? { command: 'escurel.openOriginal', args: [model.pageId] }
+        : undefined;
     case 'open-run':
       return nonEmpty(m.runId) ? { command: 'escurel.openRun', args: [m.runId] } : undefined;
     case 'open-thread':
