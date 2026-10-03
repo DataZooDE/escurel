@@ -1,0 +1,115 @@
+{
+  "root_event_id": "01M4ROOT00000000000000000A",
+  "nodes": [
+    {
+      "id": "01M4ROOT00000000000000000A",
+      "type": "event",
+      "parent": null,
+      "state": "processed",
+      "label_skill": "supplier-risk",
+      "title": "Vendor 100234 Meier-Guss: PO 4500087412 confirmation moved +14 days",
+      "at": "2026-10-03T08:00:00Z",
+      "kind": "user",
+      "instance_page_id": "markdown/instances/supplier__meier-guss.md",
+      "parent_event_id": null,
+      "depth": null
+    },
+    {
+      "id": "01M4RUN1000000000000000001",
+      "type": "run",
+      "parent": "01M4ROOT00000000000000000A",
+      "state": "processed",
+      "harness": "echo",
+      "autonomy": "review",
+      "started_at": "2026-10-03T08:00:01Z",
+      "finished_at": "2026-10-03T08:00:07Z",
+      "tool_calls": 5,
+      "summary": "drafted the order change and a supplier-risk analysis; awaiting a human",
+      "held": true,
+      "target_page_id": "markdown/instances/customer-order__order-4500131.md"
+    },
+    {
+      "id": "01M4CHS1000000000000000001",
+      "type": "changeset",
+      "parent": "01M4RUN1000000000000000001",
+      "state": "open",
+      "drafts": 2,
+      "author": "agent:supplier-risk",
+      "run_id": "01M4RUN1000000000000000001"
+    },
+    {
+      "id": "01M4DRF1000000000000000001",
+      "type": "draft",
+      "parent": "01M4CHS1000000000000000001",
+      "state": "open",
+      "target_page_id": "markdown/instances/customer-order__order-4500131.md",
+      "author": "agent:supplier-risk",
+      "changeset_id": "01M4CHS1000000000000000001",
+      "run_id": "01M4RUN1000000000000000001",
+      "created_at": "2026-10-03T08:00:06Z"
+    },
+    {
+      "id": "01M4DRF2000000000000000002",
+      "type": "draft",
+      "parent": "01M4CHS1000000000000000001",
+      "state": "open",
+      "target_page_id": "markdown/instances/supplier-risk-analysis__meier-guss-2026-10-03.md",
+      "author": "agent:supplier-risk",
+      "changeset_id": "01M4CHS1000000000000000001",
+      "run_id": "01M4RUN1000000000000000001",
+      "created_at": "2026-10-03T08:00:06Z"
+    },
+    {
+      "id": "cascade:01M4X10000000000000000001",
+      "type": "event",
+      "parent": "01M4RUN1000000000000000001",
+      "state": "processed",
+      "label_skill": "customer-order",
+      "title": "order updated by supplier-risk",
+      "at": "2026-10-03T08:00:08Z",
+      "kind": "user",
+      "instance_page_id": "markdown/instances/customer-order__order-4500131.md",
+      "parent_event_id": "01M4ROOT00000000000000000A",
+      "depth": 1
+    },
+    {
+      "id": "01M4RUN2000000000000000002",
+      "type": "run",
+      "parent": "cascade:01M4X10000000000000000001",
+      "state": "planned",
+      "harness": "echo",
+      "autonomy": "review",
+      "started_at": "2026-10-03T08:00:09Z",
+      "finished_at": "2026-10-03T08:00:10Z",
+      "tool_calls": 1,
+      "summary": "plan ready; waiting for approval",
+      "target_page_id": "markdown/instances/customer-order__order-4500131.md"
+    },
+    {
+      "id": "cascade:01M4X20000000000000000002",
+      "type": "event",
+      "parent": "01M4RUN1000000000000000001",
+      "state": "processed",
+      "label_skill": "customer-notice",
+      "title": "notify Kessler Werkzeugbau about the delay",
+      "at": "2026-10-03T08:00:08Z",
+      "kind": "user",
+      "instance_page_id": "markdown/instances/customer-order__order-4500131.md",
+      "parent_event_id": "01M4ROOT00000000000000000A",
+      "depth": 1
+    },
+    {
+      "id": "01M4RUN3000000000000000003",
+      "type": "run",
+      "parent": "cascade:01M4X20000000000000000002",
+      "state": "dead_letter",
+      "harness": "no-such-harness",
+      "autonomy": "review",
+      "started_at": "2026-10-03T08:00:09Z",
+      "finished_at": "2026-10-03T08:00:09Z",
+      "tool_calls": 0,
+      "summary": "harness not allowed",
+      "target_page_id": "markdown/instances/customer-order__order-4500131.md"
+    }
+  ]
+}

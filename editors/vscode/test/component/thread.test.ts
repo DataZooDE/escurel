@@ -41,12 +41,20 @@ describe('<escurel-thread-canvas>', () => {
     const cards = qa(el, '.card');
     expect(cards.length).to.equal(visibleNodes.length);
 
-    // Each visible card is placed in the DOM with treeitem role and column-derived aria-level.
+    // Each visible card is placed in the DOM with treeitem role and a lineage-depth aria-level.
+    const parentOf = new Map(recordedThreadView.nodes.map((n) => [n.id, n.parent]));
+    const depthOf = (id: string): number => {
+      let depth = 1;
+      for (let p = parentOf.get(id); p; p = parentOf.get(p)) depth += 1;
+      return depth;
+    };
     for (const node of visibleNodes) {
       const card = q(el, `.card[data-node-id="${node.id}"]`);
       expect(card).to.exist;
       expect(card?.getAttribute('role')).to.equal('treeitem');
-      expect(card?.getAttribute('aria-level')).to.equal(String(node.column + 1));
+      // The tree level is the depth in the lineage, not the stage column: a changeset shares its run's
+      // column and a follow-on event skips one.
+      expect(card?.getAttribute('aria-level')).to.equal(String(depthOf(node.id)));
     }
 
     const wires = qa(el, '.wire');
@@ -564,5 +572,98 @@ describe('<escurel-thread-canvas>', () => {
     // Bigger text must still FIT its card: a clipped first line was the regression this guards.
     const first = lines[0]!;
     expect(getComputedStyle(first).color).to.equal(getComputedStyle(el).color);
+  });
+
+  describe('typed and compact cards', () => {
+    it('gives every card a type icon, a type word and a type accent', async () => {
+      const el = await renderCanvas();
+      const cards = qa(el, '.card');
+      expect(cards.length > 0).to.equal(true);
+      for (const card of cards) {
+        expect(card.querySelector('.type-icon svg') !== null, 'an inline svg icon').to.equal(true);
+        expect((card.querySelector('.type-label')?.textContent ?? '').trim().length > 0).to.equal(
+          true,
+        );
+        expect(/\btype-(event|cascade|run|changeset|page)\b/.test(card.className)).to.equal(true);
+      }
+      const words = new Set(cards.map((c) => text(c.querySelector('.type-label'))));
+      expect(words.size > 2, `type words: ${[...words].join(', ')}`).to.equal(true);
+    });
+
+    it('names a card by its type first, so a screen reader hears what it is', async () => {
+      const el = await renderCanvas();
+      const run = qa(el, '.card.type-run')[0]!;
+      expect(run.getAttribute('aria-label')!.startsWith('run')).to.equal(true);
+    });
+
+    it('draws a finished card small: title and state on two lines, no meta lines', async () => {
+      const el = await renderCanvas();
+      const compact = qa(el, '.card.compact');
+      expect(compact.length > 0, 'the recorded thread has finished nodes').to.equal(true);
+      for (const card of compact) {
+        expect(card.querySelector('.meta-lines')).to.equal(null);
+        expect(card.querySelector('.card-title') !== null).to.equal(true);
+        expect(card.querySelector('.chip') !== null, 'the state stays').to.equal(true);
+        expect(card.getBoundingClientRect().height < 80).to.equal(true);
+      }
+      const full = qa(el, '.card:not(.compact)')[0];
+      if (full) expect(full.getBoundingClientRect().height > 100).to.equal(true);
+    });
+
+    it('never clips a card: its content fits inside its box, small or full', async () => {
+      // The finished cards lost their bottom edge to the clipping (seen in a baseline).
+      const el = await renderCanvas();
+      for (const card of qa(el, '.card') as HTMLElement[]) {
+        expect(
+          card.scrollHeight <= card.clientHeight + 1,
+          `${card.getAttribute('aria-label')}: content ${card.scrollHeight}px in a ${card.clientHeight}px card`,
+        ).to.equal(true);
+      }
+    });
+
+    it('keeps the details of a small card available on hover', async () => {
+      const el = await renderCanvas();
+      const compact = qa(el, '.card.compact')[0]!;
+      expect((compact.getAttribute('title') ?? '').length > 0).to.equal(true);
+    });
+  });
+
+  describe('lanes', () => {
+    it('draws a divider and a caption for every lane after the first', async () => {
+      const view = recordedThreadView;
+      const layout = {
+        ...recordedLayout,
+        lanes: [
+          { index: 0, y: 32, height: 150 },
+          { index: 1, y: 222, height: 150, title: 'customer-notice' },
+        ],
+      };
+      const el = await renderCanvas({ view, layout });
+      const dividers = qa(el, '.lane-divider');
+      expect(dividers).to.have.length(1);
+      expect(text(q(el, '.lane-caption'))).to.contain('customer-notice');
+    });
+
+    it('draws no lane furniture when the thread is a single chain', async () => {
+      const el = await renderCanvas();
+      expect(qa(el, '.lane-divider')).to.have.length(0);
+    });
+  });
+
+  it('fits from the top: a short graph does not float in the middle under an empty band', async () => {
+    const el = await renderCanvas();
+    el.fit();
+    await el.updateComplete;
+    // Below the pinned header strip, not centred in a tall box.
+    expect(el.viewport.y <= 48, `y ${el.viewport.y}`).to.equal(true);
+  });
+
+  it('says which card is selected, for a screen reader', async () => {
+    const el = await renderCanvas();
+    const card = qa(el, '.card')[1] as HTMLElement;
+    expect(card.getAttribute('aria-selected')).to.equal('false');
+    el.selectNode(card.getAttribute('data-node-id')!);
+    await el.updateComplete;
+    expect(card.getAttribute('aria-selected')).to.equal('true');
   });
 });

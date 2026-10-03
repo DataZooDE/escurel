@@ -1,3 +1,4 @@
+import { emphasisOf } from './nodeStyle';
 import type { LineageNode, ListLineageResponse } from '../client/types';
 import { pageSlug } from '../shared/pageId';
 import type { ThreadNode, ThreadView } from '../shared/protocol';
@@ -239,15 +240,15 @@ function buildNode(
         },
       ]
     : [];
+  const kind: ThreadNode['kind'] =
+    node.type === 'run' || node.type === 'changeset' || node.type === 'draft' ? node.type : 'event';
   return {
     id: node.id,
-    kind:
-      node.type === 'run' || node.type === 'changeset' || node.type === 'draft'
-        ? node.type
-        : 'event',
+    kind,
     parent,
     children,
     state,
+    emphasis: emphasisOf(kind, state),
     ...details,
     chips,
     collapsible: node.type === 'run' || children.length > 0,

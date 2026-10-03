@@ -316,15 +316,14 @@ describe('thread layout and focus graph', () => {
       const expectedEndX = child.x;
       const expectedEndY = child.y + child.height / 2;
 
-      // Parse M x y and final coordinates out of path: "M x1 y1 C ... x2 y2"
-      const match = /^M\s*([0-9.-]+)\s+([0-9.-]+)\s+C.*?\s+([0-9.-]+)\s+([0-9.-]+)$/.exec(
-        wire.path,
-      );
-      expect(match, `Invalid wire path format: ${wire.path}`).not.toBeNull();
-      const sx = match?.[1];
-      const sy = match?.[2];
-      const ex = match?.[3];
-      const ey = match?.[4];
+      // A curve is "M x1 y1 C ... x2 y2"; a wire that skips columns is a polyline "M x1 y1 L ... x2 y2".
+      // Either way the first and the last point are what must meet the cards.
+      const numbers = wire.path.match(/-?[0-9.]+/g) ?? [];
+      expect(numbers.length >= 4, `Invalid wire path format: ${wire.path}`).toBe(true);
+      const sx = numbers[0];
+      const sy = numbers[1];
+      const ex = numbers[numbers.length - 2];
+      const ey = numbers[numbers.length - 1];
       expect(sx).toBeDefined();
       expect(sy).toBeDefined();
       expect(ex).toBeDefined();

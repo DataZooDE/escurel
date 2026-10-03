@@ -40,3 +40,5 @@ because its run is not on them. Folding all nine pages in any order must reprodu
 full read exactly.
 
 Every recording is a separate run, so ids differ between sets. Keep each set together, and never join a file from one set with a file from another: B1 and B2 were recorded separately, which is exactly how a test once joined two different runs without noticing.
+
+- `lineage-review-branches.json`: HAND-BUILT from the recorded node shapes (not a recording): an open changeset with two drafts, a planned run, a dead-lettered run and a second cascade branch (a second lane). It exists so the canvas baselines show the nodes that wait on a person, which the recordings (all finished) do not.

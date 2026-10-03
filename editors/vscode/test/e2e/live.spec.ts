@@ -30,6 +30,13 @@ test('the thread shows the cascade, and an instance offers a skill to start', as
   // event -> run -> changeset -> its two instances (the order and the run's analysis) -> ONE follow-on
   // event -> its run. The analysis is part of the run's output, not a cascade hop of its own.
   await expect(canvas.getByRole('treeitem')).toHaveCount(7);
+  // Finished nodes are small; every card says what it is with an icon and a word; the open top-left
+  // starts under the headers instead of floating in the middle.
+  await expect(canvas.locator('.card.compact').first()).toBeVisible();
+  await expect(canvas.locator('.card.type-event .type-label').first()).toHaveText('event');
+  await expect(canvas.locator('.card.type-run .type-label').first()).toHaveText('run');
+  await expect(canvas.locator('.card.type-changeset .type-label').first()).toHaveText('changeset');
+  await expect(canvas.locator('.card .type-icon svg').first()).toBeVisible();
   await stack.shot('02-thread');
 
   // The instance a draft proposes a change to: select it, and the inspector offers its skill's actions.
@@ -56,13 +63,8 @@ test('run detail opens from the canvas with its plan and tool calls', async ({ s
   const wv = await webviewWith(page, 'escurel-thread-canvas');
   // The canvas is panned to whatever was selected last; Fit brings every card back into view.
   await wv.getByRole('button', { name: 'Fit' }).click();
-  // By its visible text: a card's accessible name is its title, subtitle and state, not its meta lines.
-  await wv
-    .locator('escurel-thread-canvas')
-    .getByRole('treeitem')
-    .filter({ hasText: 'echo · review' })
-    .first()
-    .dblclick();
+  // The run card, by its type: a finished card is small and no longer shows its meta lines.
+  await wv.locator('escurel-thread-canvas').locator('.card.type-run').first().dblclick();
   await expect(page.locator('.tab .label-name', { hasText: /^Run / })).toBeVisible();
   const run = await webviewWith(page, 'escurel-run-detail');
   await expect(run.locator('escurel-run-detail h1')).toContainText('Run ');
