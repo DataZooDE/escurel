@@ -12,3 +12,16 @@ test('page-as-ui renders in the current theme', async ({ page }, testInfo) => {
     fullPage: true,
   });
 });
+
+// What the source system holds beneath the form, for each kind of backend, in each theme.
+for (const kind of ['rows', 'fields', 'document', 'issue']) {
+  test(`page-as-ui previews a ${kind} source in the current theme`, async ({ page }, testInfo) => {
+    const theme = (testInfo.project.metadata as { theme: string }).theme;
+    await page.goto(`/test/visual/harness/index.html?theme=${theme}&preview=${kind}`);
+    await page.locator('escurel-source-preview').waitFor();
+    await expect(page).toHaveScreenshot(`page-as-ui-preview-${kind}.png`, {
+      maxDiffPixelRatio: 0.01,
+      fullPage: true,
+    });
+  });
+}

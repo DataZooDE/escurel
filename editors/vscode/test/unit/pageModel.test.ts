@@ -124,3 +124,37 @@ describe('page model', () => {
     expect(m.fields.every((f) => f.kind === 'string')).toBe(true);
   });
 });
+
+describe('buildPageModel: the form shows data, not bookkeeping', () => {
+  it('hides the page kind, the skill, the id and a backend binding when the skill declares no fields', () => {
+    const skill = {
+      id: 'order-lines',
+      description: 'd',
+      backend: { kind: 'sql_view' },
+      layer: 'overlay',
+      autonomy: 'review',
+    } as unknown as Skill;
+    const model = buildPageModel(
+      {
+        page: {
+          page_id: 'markdown/instances/order-lines/all.md',
+          slug: 'all',
+          skill: 'order-lines',
+          page_kind: 'instance',
+        },
+        frontmatter: {
+          kind: 'instance',
+          skill: 'order-lines',
+          id: 'all',
+          backend_ref: { kind: 'sql_view', view: 'vw_order_lines__all' },
+          customer: 'Hoffmann',
+        },
+        body: '',
+        blocks: [],
+        wikilinks_out: [],
+      } as unknown as ExpandResponse,
+      skill,
+    );
+    expect(model.fields.map((f) => f.name)).toEqual(['customer']);
+  });
+});

@@ -1,6 +1,10 @@
 ---
 kind: skill
 id: order-lines
+title: Order lines (SAP extract)
+folder: plumbing/sap
+role: helper
+tags: [sap, extract]
 description: The demo's sales-order lines as rows (a read-only SQL view over a JSON extract), so reports and charts can aggregate across orders.
 backend:
   kind: sql_view

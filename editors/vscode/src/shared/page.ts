@@ -4,7 +4,8 @@ import type { ExpandResponse, Skill, SkillField } from '../client/types';
 import { buildPreview } from './preview';
 import type { ActionView, FieldView, PageModel } from './protocol';
 
-const HIDDEN = new Set(['type', 'skill', 'id']);
+/** Bookkeeping, not data: the page kind (and its retired name), the skill, the id, a backend binding. */
+const HIDDEN = new Set(['kind', 'type', 'skill', 'id', 'backend_ref']);
 const TITLE_KEYS = ['title', 'name', 'subject', 'label'];
 
 export function titleCase(id: string): string {

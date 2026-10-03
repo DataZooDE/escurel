@@ -15,12 +15,21 @@ exposes the window to a debugger for screenshots.
 
 ## The state it leaves
 
-| Where         | What you see                                                                                                                                   |
-| ------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
-| Knowledge     | Skills `supplier-risk`, `customer-order`, `supplier`; five orders and a supplier                                                               |
-| Thread (open) | "Vendor 100234 Meier-Guss: PO 4500087412 confirmation moved +14 days" → run → changeset **promoted** → cascade event → the follow-on's own run |
-| Awaiting you  | One changeset, sales order `4500131`, proposed by the agent for "PO 4500087433 confirmed 120 of 200 PC"                                        |
-| Inbox         | Both signals, newest first                                                                                                                     |
+| Where         | What you see                                                                                                                                                                                                                                                                          |
+| ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Knowledge     | Skills in folders (`sales/orders`, `purchasing/risk`, `purchasing/follow-ups`, `purchasing/suppliers`, `plumbing/…`), each with a role icon: records (cylinder), processes (play), reports (chart), helpers (tools; the plumbing folder starts collapsed). Five orders and a supplier |
+| Thread (open) | "Vendor 100234 Meier-Guss: PO 4500087412 confirmation moved +14 days" → run → changeset **promoted** → cascade event → the follow-on's own run                                                                                                                                        |
+| Awaiting you  | One changeset, sales order `4500131`, proposed by the agent for "PO 4500087433 confirmed 120 of 200 PC"                                                                                                                                                                               |
+| Inbox         | Both signals, newest first                                                                                                                                                                                                                                                            |
+
+## How the Knowledge tree is organised
+
+Every demo skill declares `folder:`, `role:` and `tags:` in its frontmatter (the vocabulary follows Google's
+Open Knowledge Format). The tree nests skills under their folder, sorts folders first and then skills by
+role (record, process, report, helper) and name, and starts folders that hold only helpers collapsed. Open
+`plumbing > sap > order-lines > all`: it is a read-only SQL view over a JSON extract, so the page shows the
+form and, beneath it, a **Source data** table of the rows the source holds, under a `read-only (source)`
+badge. A skill without a folder sits at the top level; its role is inferred when it declares none.
 
 ## A walkthrough (about ten minutes)
 

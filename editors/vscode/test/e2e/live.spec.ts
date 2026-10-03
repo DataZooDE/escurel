@@ -9,17 +9,63 @@ test.describe.configure({ mode: 'serial' });
 const pane = (page: Page, title: string) =>
   page.locator('.pane', { has: page.locator('.pane-header', { hasText: title }) });
 
+/**
+ * The tree views only render the rows in view (the list is virtualised), and the Knowledge tree now
+ * holds folders, so a row may not exist until it is scrolled to. Scroll from the top, a step at a time,
+ * until the row is rendered; no test depends on how tall the window happens to be.
+ */
+async function knowledgeRow(page: Page, name: RegExp) {
+  const k = pane(page, 'Knowledge');
+  const row = k.getByRole('treeitem', { name });
+  const list = k.locator('.monaco-list').first();
+  await list.hover();
+  await page.mouse.wheel(0, -10_000);
+  for (let i = 0; i < 40 && (await row.count()) === 0; i += 1) {
+    await page.mouse.wheel(0, 120);
+    await page.waitForTimeout(120);
+  }
+  await expect(row.first()).toBeVisible();
+  return row.first();
+}
+
+/** A skill row by what a screen reader hears: its role, then its id. */
+const skillRow = (page: Page, id: string) => knowledgeRow(page, new RegExp(`skill ${id},`));
+
 test('the story is on screen: knowledge, threads, awaiting, inbox and the runner', async ({
   stack,
 }) => {
   const { page } = stack;
-  await expect(
-    pane(page, 'Knowledge').getByRole('treeitem', { name: /customer-order review/ }),
-  ).toBeVisible();
+  // The Knowledge tree: skills sit in folders from their `folder:`, with a role in the name a screen
+  // reader hears; the plumbing folder starts collapsed.
+  await expect(await knowledgeRow(page, /^folder sales\/orders$/)).toBeVisible();
+  await expect(await skillRow(page, 'customer-order')).toHaveAttribute(
+    'aria-label',
+    /^record skill customer-order/,
+  );
+  await expect(await skillRow(page, 'supplier-risk')).toHaveAttribute(
+    'aria-label',
+    /^process skill supplier-risk/,
+  );
+  await expect(await skillRow(page, 'supplier-risk-report')).toHaveAttribute(
+    'aria-label',
+    /^report skill supplier-risk-report/,
+  );
+  // Helpers are tucked away: the plumbing folder starts collapsed.
+  await expect(await knowledgeRow(page, /^folder plumbing$/)).toHaveAttribute(
+    'aria-expanded',
+    'false',
+  );
+  await (await knowledgeRow(page, /^folder sales\/orders$/)).scrollIntoViewIfNeeded();
+  await stack.shot('01b-knowledge-tree');
   await expect(pane(page, 'Awaiting You').getByRole('treeitem').first()).toBeVisible();
   await expect(pane(page, 'Inbox').getByRole('treeitem').first()).toBeVisible();
   await expect(pane(page, 'Runner').getByRole('treeitem', { name: /Health ok/ })).toBeVisible();
-  await expect(pane(page, 'Runner').getByRole('treeitem', { name: /harness: echo/ })).toBeVisible();
+  // First: a live run's row names the harness too, so there can be two.
+  await expect(
+    pane(page, 'Runner')
+      .getByRole('treeitem', { name: /harness: echo/ })
+      .first(),
+  ).toBeVisible();
   await stack.shot('01-overview');
 });
 
@@ -131,9 +177,8 @@ test('a sales order opens as a real order page: SAP fields and an items table', 
   stack,
 }) => {
   const { page } = stack;
-  const knowledge = pane(page, 'Knowledge');
-  await knowledge.getByRole('treeitem', { name: /customer-order review/ }).click();
-  await knowledge.getByRole('treeitem', { name: /order-4500131/ }).click();
+  await (await skillRow(page, 'customer-order')).click();
+  await (await knowledgeRow(page, /order-4500131/)).click();
   const wv = await webviewWith(page, 'escurel-page-as-ui');
   const order = wv.locator('escurel-page-as-ui');
   await expect(order.getByText('Sales document (VBELN)')).toBeVisible();
@@ -156,9 +201,7 @@ test('a wikilink in the order opens the page it names', async ({ stack }) => {
   await expect(supplier.getByRole('heading', { level: 1 }).first()).toContainText('Meier-Guss');
   await stack.shot('06b-wikilink-opened');
   // Back to the order, as the following scenarios expect.
-  await pane(page, 'Knowledge')
-    .getByRole('treeitem', { name: /order-4500131/ })
-    .click();
+  await (await knowledgeRow(page, /order-4500131/)).click();
 });
 
 test('the Skill menu works from the keyboard alone, and Escape gives the focus back', async ({
@@ -209,14 +252,13 @@ test('a supplier-risk run leaves an analysis: fields, a text alternative for its
   stack,
 }) => {
   const { page } = stack;
-  const knowledge = pane(page, 'Knowledge');
-  // Earlier scenarios left customer-order expanded; the tree only renders the rows in view, so fold it.
-  const orders = knowledge.getByRole('treeitem', { name: /^customer-order/ }).first();
+  // Earlier scenarios left customer-order expanded: fold it, then open the analysis skill and its page
+  // (the analysis the first run wrote and the demo promoted together with its change to the order; its
+  // id is the supplier and the day: meier-guss-YYYY-MM-DD).
+  const orders = await skillRow(page, 'customer-order');
   if ((await orders.getAttribute('aria-expanded')) === 'true') await orders.click();
-  await knowledge.getByRole('treeitem', { name: /^supplier-risk-analysis/ }).click();
-  // The analysis the first run wrote and the demo promoted together with its change to the order
-  // (its id is the supplier and the day: meier-guss-YYYY-MM-DD).
-  await knowledge.getByRole('treeitem', { name: /^meier-guss-\d{4}-\d{2}-\d{2}/ }).click();
+  await (await skillRow(page, 'supplier-risk-analysis')).click();
+  await (await knowledgeRow(page, /^meier-guss-\d{4}-\d{2}-\d{2}/)).click();
   const wv = await webviewWith(page, 'escurel-page-as-ui');
   const analysis = wv.locator('escurel-page-as-ui');
   await expect(analysis.locator('.field[data-name="risk_level"]')).toContainText('high');
@@ -243,6 +285,29 @@ test('a supplier-risk run leaves an analysis: fields, a text alternative for its
     analysis.locator('.skill-button .primary', { hasText: /Why is this risky/ }),
   ).toHaveCount(0);
   await stack.shot('06c-supplier-risk-analysis');
+});
+
+test('a SQL-view page previews the rows the source holds, read-only, under its form', async ({
+  stack,
+}) => {
+  const { page } = stack;
+  // The helper folders start collapsed: open plumbing > sap > order-lines > all.
+  await (await knowledgeRow(page, /^folder plumbing$/)).click();
+  await (await knowledgeRow(page, /^folder plumbing\/sap$/)).click();
+  await expect(await skillRow(page, 'order-lines')).toHaveAttribute(
+    'aria-label',
+    /^helper skill order-lines/,
+  );
+  await (await skillRow(page, 'order-lines')).click();
+  await (await knowledgeRow(page, /^all/)).click();
+  const wv = await webviewWith(page, 'escurel-source-preview');
+  const preview = wv.locator('escurel-page-as-ui escurel-source-preview');
+  await expect(preview.locator('.badge')).toContainText('read-only (source)');
+  // The rows come from the real gateway's `expand` (the sql_view over the JSON extract).
+  await expect(preview.locator('thead th')).toContainText(['order_id', 'item', 'customer']);
+  await expect(preview.locator('tbody tr')).toHaveCount(6);
+  await expect(preview.locator('tbody')).toContainText('GH-4711');
+  await stack.shot('06d-sql-view-preview');
 });
 
 test('a failed run is listed under Dead letters, and Requeue is there but deactivated for a human', async ({

@@ -1,6 +1,10 @@
 ---
 kind: skill
 id: customer-order
+title: Customer order
+folder: sales/orders
+role: record
+tags: [sap, sd]
 description: A customer sales order (SAP SD, transaction VA03) - header data, delivery status and the items behind it.
 autonomy: review
 actions:

@@ -1,6 +1,9 @@
 ---
 kind: skill
 id: customer-order
+folder: sales/orders
+role: record
+tags: [sap, sd]
 description: A customer order. A change to one is announced.
 autonomy: review
 actions:

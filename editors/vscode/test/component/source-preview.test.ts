@@ -119,4 +119,26 @@ describe('<escurel-source-preview>', () => {
     expect(q(bad, 'a.resource')).to.equal(null);
     expect(text(q(bad, '.resource'))).to.contain('javascript:alert(1)');
   });
+
+  it('right-aligns numeric cells so the figures line up, and leaves text alone', async () => {
+    const el = await render({
+      kind: 'rows',
+      readOnly: true,
+      source: 'v',
+      columns: ['material', 'qty', 'net'],
+      rows: [
+        ['GH-4711', '240', '62400.50'],
+        ['TH-0815', '-80', ''],
+      ],
+      truncated: false,
+    });
+    const first = qa(el, 'tbody tr')[0]!.querySelectorAll('td');
+    expect([...first].map((td) => td.classList.contains('num'))).to.deep.equal([false, true, true]);
+    const second = qa(el, 'tbody tr')[1]!.querySelectorAll('td');
+    expect([...second].map((td) => td.classList.contains('num'))).to.deep.equal([
+      false,
+      true,
+      false,
+    ]);
+  });
 });

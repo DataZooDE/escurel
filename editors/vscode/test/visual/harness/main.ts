@@ -1,7 +1,63 @@
-// The visual harness: the built component with the realistic fixture.
+// The visual harness: the built component with the realistic fixture. `?preview=rows|fields|document|issue`
+// shows the same page backed by a source system, with what that source holds beneath the form.
 import '../../../webview/page-as-ui/main';
 import type { EscurelPageAsUi } from '../../../webview/page-as-ui/page-as-ui';
+import type { PreviewModel } from '../../../src/shared/preview';
 import { orderPage } from '../../component/fixtures';
 
+const PREVIEWS: Record<string, PreviewModel> = {
+  rows: {
+    kind: 'rows',
+    readOnly: true,
+    source: 'vw_order_lines_all',
+    columns: ['order_id', 'item', 'customer', 'material', 'qty', 'net_value', 'currency'],
+    rows: [
+      ['order-4500123', '10', 'Hoffmann Automotive GmbH', 'GH-4711', '240', '62400', 'EUR'],
+      ['order-4500131', '10', 'Kessler Werkzeugbau GmbH', 'TH-0815', '80', '31100', 'EUR'],
+      ['order-4500131', '20', 'Kessler Werkzeugbau GmbH', 'GH-4711', '200', '66200', 'EUR'],
+    ],
+    truncated: true,
+  },
+  fields: {
+    kind: 'fields',
+    readOnly: true,
+    source: 'sap-orders-api',
+    fields: [
+      { name: 'status', value: 'open' },
+      { name: 'confirmed_delivery', value: '2026-10-19' },
+      { name: 'carrier', value: 'DHL Freight' },
+    ],
+  },
+  document: {
+    kind: 'document',
+    readOnly: true,
+    chunks: [
+      {
+        anchor: 'c1',
+        text: 'Framework agreement between Hoffmann Automotive GmbH and Meier-Guss GmbH.',
+      },
+      { anchor: 'c2', text: 'Delivery terms: confirmed dates bind the supplier for 30 days.' },
+    ],
+    total: 14,
+    truncated: true,
+  },
+  issue: {
+    kind: 'issue',
+    readOnly: true,
+    source: 'vw_order_lines_all',
+    code: 'binding_degraded',
+    message:
+      'source schema drifted from the stored fingerprint; reads fail closed until re-validated',
+  },
+};
+
 const el = document.querySelector('escurel-page-as-ui') as EscurelPageAsUi;
-el.model = orderPage;
+const preview = PREVIEWS[new URLSearchParams(location.search).get('preview') ?? ''];
+el.model = preview
+  ? {
+      ...orderPage,
+      skill: { ...orderPage.skill, backend: 'sql_view', readOnly: true },
+      resource: 'https://sap.example/vbak',
+      preview,
+    }
+  : orderPage;

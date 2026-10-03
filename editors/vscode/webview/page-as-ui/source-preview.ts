@@ -2,6 +2,7 @@ import { LitElement, css, html, nothing } from 'lit';
 import type { PreviewModel } from '../../src/shared/preview';
 import { theme } from '../shared/theme.css';
 
+const isNumeric = (v: string): boolean => /^-?\d+([.,]\d+)?$/.test(v);
 const isHttp = (s: string | undefined): s is string => !!s && /^https?:\/\/\S+$/i.test(s);
 
 /**
@@ -49,6 +50,10 @@ export class EscurelSourcePreview extends LitElement {
         padding: 3px 8px;
         text-align: left;
         white-space: nowrap;
+      }
+      td.num {
+        text-align: right;
+        font-variant-numeric: tabular-nums;
       }
       th {
         background: var(--vscode-editor-inactiveSelectionBackground, transparent);
@@ -130,7 +135,7 @@ export class EscurelSourcePreview extends LitElement {
                     ${p.rows.map(
                       (r) =>
                         html`<tr>
-                          ${r.map((v) => html`<td>${v}</td>`)}
+                          ${r.map((v) => html`<td class=${isNumeric(v) ? 'num' : ''}>${v}</td>`)}
                         </tr>`,
                     )}
                   </tbody>

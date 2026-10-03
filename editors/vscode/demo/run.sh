@@ -97,6 +97,7 @@ cat > "$HOME_DIR/profile/User/settings.json" <<JSON
   "security.workspace.trust.enabled": false,
   "workbench.startupEditor": "none",
   "workbench.tips.enabled": false,
+  "workbench.tree.enableStickyScroll": false,
   "telemetry.telemetryLevel": "off",
   "update.mode": "none",
   "extensions.autoUpdate": false,

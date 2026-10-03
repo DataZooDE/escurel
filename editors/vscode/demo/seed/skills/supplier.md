@@ -1,6 +1,10 @@
 ---
 kind: skill
 id: supplier
+title: Supplier
+folder: purchasing/suppliers
+role: record
+tags: [sap, mm]
 description: A vendor we buy from (SAP MM, transaction XK03 / BP) - master data and how dependable its confirmations have been.
 autonomy: review
 required_frontmatter: [vendor, name, country, rating]
