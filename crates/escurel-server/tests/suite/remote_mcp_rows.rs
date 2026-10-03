@@ -352,3 +352,137 @@ async fn describe_backend_lists_tools_and_argument_names_but_never_the_servers_t
     assert!(other.get("error").is_some(), "{other}");
     p.shutdown().await;
 }
+
+// --- write-back over MCP (stage 4c) -------------------------------------------------------------
+
+fn article_skill_writable(idempotency_arg: Option<&str>) -> String {
+    let write = match idempotency_arg {
+        Some(a) => format!("write: {{ tool: putArticle, idempotency_arg: {a} }}"),
+        None => "write: { tool: putArticle }".to_owned(),
+    };
+    ARTICLE_SKILL
+        .replace(
+            "    \x20 read: { tool: getArticle }\n\\
+",
+            "",
+        )
+        .replace(
+            "read: { tool: getArticle }",
+            &format!("read: {{ tool: getArticle }}\n  writable_columns: [title]\n  {write}"),
+        )
+}
+
+const ART: &str = "markdown/instances/article/a-0002.md";
+
+fn wb_content(title: &str, etag: &str) -> String {
+    format!(
+        "---\nkind: instance\nid: a-0002\nskill: article\nwrite_back:\n  patch: {{ title: \"{title}\" }}\n  base_etag: \"{etag}\"\n---\nRetitled for the launch.\n"
+    )
+}
+
+async fn wb_gateway(
+    up: &Arc<Upstream>,
+    skill: &str,
+) -> (escurel_test_support::EscurelProcess, Vec<tempfile::TempDir>) {
+    let url = start(up).await;
+    let (p, dirs) = spawn_gateway(
+        &[("article", skill)],
+        escurel_test_support::EgressPolicy {
+            allow_loopback: true,
+            write_retry_backoff: std::time::Duration::from_millis(5),
+            ..escurel_test_support::EgressPolicy::default()
+        },
+    )
+    .await;
+    admin(
+        &p,
+        "register_endpoint",
+        json!({ "name": "upstream_kb", "kind": "mcp", "base_url": url }),
+    )
+    .await;
+    (p, dirs)
+}
+
+async fn wb_propose(p: &escurel_test_support::EscurelProcess, title: &str) -> String {
+    let page = admin(p, "expand", json!({ "page_id": ART })).await;
+    let etag = page["backend_projection"]["etag"]
+        .as_str()
+        .expect("etag")
+        .to_owned();
+    let d = call_as(
+        p,
+        Role::Admin,
+        "create_draft",
+        json!({ "target_page_id": ART, "content": wb_content(title, &etag) }),
+    )
+    .await;
+    d["result"]["structuredContent"]["draft"]["draft_id"]
+        .as_str()
+        .unwrap_or_else(|| panic!("{d}"))
+        .to_owned()
+}
+
+async fn wb_promote(p: &escurel_test_support::EscurelProcess, id: &str) -> Value {
+    call_as(p, Role::Admin, "promote_draft", json!({ "draft_id": id })).await["result"]["structuredContent"].clone()
+}
+
+#[tokio::test]
+async fn an_idempotent_mcp_write_back_retries_with_the_same_key_and_applies_once() {
+    let up = Upstream::new(5);
+    up.fail_puts.store(2, Ordering::SeqCst);
+    let (p, _d) = wb_gateway(&up, &article_skill_writable(Some("idempotency_key"))).await;
+    let id = wb_propose(&p, "Launch Day").await;
+
+    let done = wb_promote(&p, &id).await;
+
+    assert_eq!(done["ok"], true, "{done}");
+    let puts = up.puts.lock().unwrap().clone();
+    assert_eq!(puts.len(), 3, "two 503s then success: {puts:?}");
+    assert!(
+        puts.iter()
+            .all(|a| a["idempotency_key"] == id.as_str() && a["id"] == "a-0002"),
+        "{puts:?}"
+    );
+    assert_eq!(up.applied_keys.lock().unwrap().len(), 1, "applied once");
+    assert_eq!(
+        up.titles.lock().unwrap().get("a-0002").map(String::as_str),
+        Some("Launch Day")
+    );
+    let page = admin(&p, "expand", json!({ "page_id": ART })).await;
+    assert_eq!(
+        page["frontmatter"]["title"], "Launch Day",
+        "the row reads back from the upstream: {page}"
+    );
+    p.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_non_idempotent_mcp_write_is_attempted_at_most_once_and_never_repeated_unattended() {
+    let up = Upstream::new(5);
+    up.fail_puts.store(5, Ordering::SeqCst);
+    let (p, _d) = wb_gateway(&up, &article_skill_writable(None)).await;
+    let id = wb_propose(&p, "Launch Day").await;
+
+    let first = wb_promote(&p, &id).await;
+
+    assert_eq!(first["ok"], false, "{first}");
+    assert_eq!(
+        up.puts.lock().unwrap().len(),
+        1,
+        "no idempotency key: ONE attempt, no retry"
+    );
+
+    let second = wb_promote(&p, &id).await;
+
+    assert_eq!(second["ok"], false, "{second}");
+    assert!(
+        second.to_string().contains("write_back_unknown_outcome"),
+        "an unknown outcome needs an operator: {second}"
+    );
+    assert_eq!(
+        up.puts.lock().unwrap().len(),
+        1,
+        "the upstream was NOT called again"
+    );
+    p.shutdown().await;
+}

@@ -1030,6 +1030,8 @@ async fn expand_remote_row(
         "kind": kind, "instances": "rows", "read_only": true, "trust": "external",
         "fetched_at": fetched_at, "rows": [fields.clone()], "source": fields,
         "truncated": false, "linked": linked(has_stored && src.cfg.linked, false),
+        // What a reviewer saw: a write-back proposal names it as its `base_etag`.
+        "etag": crate::write_back::etag_of(&row.fields),
     });
     let mut out = if has_stored && src.cfg.linked {
         stored

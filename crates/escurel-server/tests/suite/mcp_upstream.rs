@@ -41,6 +41,14 @@ pub struct Upstream {
     pub seen: Mutex<Vec<Seen>>,
     /// Number of articles `listArticles` pages over.
     pub articles: usize,
+    /// Title overrides applied by `putArticle`, by slug.
+    pub titles: Mutex<std::collections::BTreeMap<String, String>>,
+    /// Idempotency keys `putArticle` already applied.
+    pub applied_keys: Mutex<Vec<String>>,
+    /// Every `putArticle` call received: its arguments.
+    pub puts: Mutex<Vec<Value>>,
+    /// Answer HTTP 503 to the next N `putArticle` calls.
+    pub fail_puts: AtomicUsize,
 }
 
 impl Upstream {
@@ -182,10 +190,35 @@ async fn handle(State(u): State<Arc<Upstream>>, headers: HeaderMap, body: String
                         .strip_prefix("a-")
                         .and_then(|n| n.parse::<usize>().ok())
                         .filter(|n| *n < u.articles);
-                    let payload = found.map_or(json!({}), article);
+                    let mut payload = found.map_or(json!({}), article);
+                    if let Some(title) = u.titles.lock().unwrap().get(slug) {
+                        payload["title"] = json!(title);
+                    }
                     axum::Json(rpc_result(
                         &id,
                         json!({ "structuredContent": payload, "content": [], "isError": false }),
+                    ))
+                    .into_response()
+                }
+                "putArticle" => {
+                    u.puts.lock().unwrap().push(args.clone());
+                    if u.fail_puts.load(Ordering::SeqCst) > 0 {
+                        u.fail_puts.fetch_sub(1, Ordering::SeqCst);
+                        return (StatusCode::SERVICE_UNAVAILABLE, "try later").into_response();
+                    }
+                    let key = args["idempotency_key"].as_str().unwrap_or_default().to_owned();
+                    let replay = !key.is_empty() && u.applied_keys.lock().unwrap().contains(&key);
+                    if !replay {
+                        if let (Some(slug), Some(title)) = (args["id"].as_str(), args["title"].as_str()) {
+                            u.titles.lock().unwrap().insert(slug.to_owned(), title.to_owned());
+                        }
+                        if !key.is_empty() {
+                            u.applied_keys.lock().unwrap().push(key);
+                        }
+                    }
+                    axum::Json(rpc_result(
+                        &id,
+                        json!({ "structuredContent": { "ok": true }, "content": [], "isError": false }),
                     ))
                     .into_response()
                 }

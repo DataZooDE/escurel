@@ -356,10 +356,15 @@ pub(super) async fn tool_create_draft(
         }));
     }
     // The same guard for a row of a REMOTE `rows` skill (REST/MCP).
-    if let Some(r) =
-        crate::remote_rows::write_rejection(indexer, &state.egress, &a.target_page_id, &a.content)
-            .await
-            .map_err(|e| JsonRpcError::internal(format!("create_draft rows guard: {e}")))?
+    if let Some(r) = crate::remote_rows::write_rejection(
+        indexer,
+        &state.egress,
+        &a.target_page_id,
+        &a.content,
+        true,
+    )
+    .await
+    .map_err(|e| JsonRpcError::internal(format!("create_draft rows guard: {e}")))?
     {
         return Ok(json!({
             "ok": false,
@@ -698,11 +703,28 @@ pub(super) async fn tool_promote_draft(
             }));
         }
     }
+    // **Write-back (stage 4c).** A draft against a row of a remote `rows` skill may carry a
+    // `write_back` intent. The human's promotion is the gate: only now does the change reach the
+    // upstream (etag check, audit-first, idempotent apply, durable outcome), and what is committed
+    // as the row's notes is the draft WITHOUT the intent. A draft with no intent passes through.
+    let landing = match crate::write_back::run(
+        state,
+        indexer,
+        &draft.draft_id,
+        &draft.target_page_id,
+        &subject,
+        corrected.unwrap_or(draft.content.as_str()),
+    )
+    .await
+    {
+        Ok(c) => c,
+        Err(refusal) => return Ok(refusal),
+    };
     let mut write_args = json!({
         "page_id": draft.target_page_id,
-        "content": corrected.unwrap_or(draft.content.as_str()),
+        "content": landing.as_str(),
     });
-    let promoted = corrected.unwrap_or(draft.content.as_str()).to_owned();
+    let promoted = landing.clone();
 
     // **Which guard travels (#509 §2).**
     //

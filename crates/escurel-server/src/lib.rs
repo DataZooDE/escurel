@@ -54,6 +54,7 @@ pub mod snapshot_publish;
 pub mod snapshot_refresh;
 mod tenant_archive;
 mod webhook;
+mod write_back;
 mod ws;
 
 pub use config::{BootedServer, ConfigError, EscurelConfig};

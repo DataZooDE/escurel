@@ -486,3 +486,83 @@ async fn an_upstream_that_echoes_the_credential_in_its_error_is_not_repeated() {
     );
     process.shutdown().await;
 }
+
+// --- write_instance hardening (stage 4c) -------------------------------------------------------
+
+#[tokio::test]
+async fn write_instance_sends_a_stable_idempotency_key_and_caps_the_payload() {
+    let keys: Arc<std::sync::Mutex<Vec<String>>> = Arc::default();
+    async fn post_order(
+        State(keys): State<Arc<std::sync::Mutex<Vec<String>>>>,
+        Path((_id, _o)): Path<(String, String)>,
+        headers: HeaderMap,
+    ) -> Json<Value> {
+        keys.lock().unwrap().push(
+            headers
+                .get("idempotency-key")
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("")
+                .to_owned(),
+        );
+        Json(json!({ "ok": true }))
+    }
+    let app = Router::new()
+        .route(
+            "/customers/{id}/orders/{order_id}",
+            axum::routing::post(post_order),
+        )
+        .route(
+            "/customers/{id}",
+            get(|| async { Json(json!({ "name": "Acme" })) }),
+        )
+        .with_state(Arc::clone(&keys));
+    let (base, _srv) = serve(app).await;
+    let (process, _dirs) = spawn_gateway(loopback_ok()).await;
+    let reg = call(
+        &process,
+        "register_endpoint",
+        json!({ "name": "crm_rest", "kind": "openapi", "base_url": base }),
+    )
+    .await;
+    assert!(reg.get("error").is_none(), "register: {reg}");
+    let _ = call(
+        &process,
+        "create_remote_instance",
+        json!({ "skill": "customer", "id": "acme" }),
+    )
+    .await;
+
+    let same = json!({ "ref": "customer::acme", "payload": { "order_id": "o-1", "qty": 2 } });
+    let a = call(&process, "write_instance", same.clone()).await;
+    let b = call(&process, "write_instance", same).await;
+    assert!(
+        a.get("error").is_none() && b.get("error").is_none(),
+        "{a} {b}"
+    );
+
+    let sent = keys.lock().unwrap().clone();
+    assert_eq!(sent.len(), 2, "{sent:?}");
+    assert!(!sent[0].is_empty(), "a write carries an Idempotency-Key");
+    assert_eq!(
+        sent[0], sent[1],
+        "the SAME write has the SAME key, so an upstream can deduplicate it"
+    );
+
+    // A payload past the cap is refused before it goes anywhere.
+    let big = call(
+        &process,
+        "write_instance",
+        json!({ "ref": "customer::acme", "payload": { "order_id": "o-2", "blob": "x".repeat(200_000) } }),
+    )
+    .await;
+    assert!(
+        big.get("error").is_some(),
+        "an oversize payload is refused: {big}"
+    );
+    assert_eq!(
+        keys.lock().unwrap().len(),
+        2,
+        "the oversize write never reached the upstream"
+    );
+    process.shutdown().await;
+}

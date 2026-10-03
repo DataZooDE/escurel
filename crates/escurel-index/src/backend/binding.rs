@@ -127,6 +127,10 @@ pub struct RemoteBinding {
     /// How `list_instances` enumerates the upstream's objects (`instances: rows`). `None` for a
     /// per-instance skill (today's behaviour).
     pub list: Option<RemoteList>,
+    /// The argument an MCP write tool takes its idempotency key in (`write: {tool, idempotency_arg}`).
+    /// `None`: the tool is not idempotent, so a write-back to it is at-most-once. (REST always sends
+    /// an `Idempotency-Key` header.)
+    pub write_idempotency_arg: Option<String>,
 }
 
 /// The `list:` op of a remote `instances: rows` skill (stage 4a/4b): which call enumerates the
@@ -451,6 +455,12 @@ fn parse_remote(
         .get("list")
         .and_then(serde_json::Value::as_object)
         .and_then(|op| parse_remote_list(op, kind));
+    let write_idempotency_arg = block
+        .get("write")
+        .and_then(serde_json::Value::as_object)
+        .and_then(|w| w.get("idempotency_arg"))
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned);
     Some(RemoteBinding {
         kind,
         endpoint,
@@ -458,6 +468,7 @@ fn parse_remote(
         write,
         project,
         list,
+        write_idempotency_arg,
     })
 }
 
@@ -646,6 +657,30 @@ mod tests {
         );
         assert_eq!(l.cursor.expect("cursor").param, "after");
         assert_eq!(b.rows.expect("rows").key, vec!["$.slug".to_owned()]);
+    }
+
+    #[test]
+    fn an_mcp_write_tool_may_declare_its_idempotency_argument() {
+        let with = json!({ "backend": { "kind": "mcp", "endpoint": "kb",
+            "read": { "tool": "g" },
+            "write": { "tool": "put", "idempotency_arg": "idempotency_key" } } });
+        assert_eq!(
+            BackendBinding::parse(&with)
+                .remote
+                .unwrap()
+                .write_idempotency_arg
+                .as_deref(),
+            Some("idempotency_key")
+        );
+        let without = json!({ "backend": { "kind": "mcp", "endpoint": "kb",
+            "read": { "tool": "g" }, "write": { "tool": "put" } } });
+        assert_eq!(
+            BackendBinding::parse(&without)
+                .remote
+                .unwrap()
+                .write_idempotency_arg,
+            None
+        );
     }
 
     #[test]

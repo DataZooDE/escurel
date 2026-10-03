@@ -110,6 +110,7 @@ mod remote_backend_tools;
 mod remote_mcp_rows;
 mod remote_rest_rows;
 mod remote_support;
+mod remote_write_back;
 mod report_progress;
 mod review_events;
 mod rows_instances;

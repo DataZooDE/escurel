@@ -717,6 +717,19 @@ pub(super) async fn tool_write_instance(
         .ok_or_else(|| {
             JsonRpcError::invalid_params(format!("no instance for ref `{}`", a.reference))
         })?;
+    // The rows of a `rows` skill are changed through human-gated write-back (a draft carrying a
+    // `write_back` intent), never by a direct write-through.
+    if crate::remote_rows::source(indexer, &page.skill)
+        .await
+        .map_err(|e| JsonRpcError::internal(format!("write_instance: {e}")))?
+        .is_some()
+    {
+        return Err(JsonRpcError::invalid_params(
+            "this skill's rows are changed through write-back: propose a draft with a \
+             `write_back` block and have a human promote it"
+                .to_owned(),
+        ));
+    }
     // Load the target's frontmatter (for the ACL decision) via expand.
     let expanded = indexer
         .expand(&page.page_id, None, None)

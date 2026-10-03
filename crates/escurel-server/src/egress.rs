@@ -46,6 +46,8 @@ pub struct EgressPolicy {
     pub timeout: Duration,
     pub max_concurrency: usize,
     pub rate_per_sec: u32,
+    /// The pause between the attempts of a write-back (jittered, doubled each time).
+    pub write_retry_backoff: Duration,
 }
 
 impl Default for EgressPolicy {
@@ -56,6 +58,7 @@ impl Default for EgressPolicy {
             timeout: DEFAULT_TIMEOUT,
             max_concurrency: DEFAULT_MAX_CONCURRENCY,
             rate_per_sec: DEFAULT_RATE_PER_SEC,
+            write_retry_backoff: Duration::from_millis(500),
         }
     }
 }
@@ -82,6 +85,10 @@ impl EgressPolicy {
         }
         if let Some(n) = get("ESCUREL_EGRESS_RATE_PER_SEC").and_then(|v| v.parse().ok()) {
             p.rate_per_sec = n;
+        }
+        if let Some(ms) = get("ESCUREL_EGRESS_WRITE_RETRY_BACKOFF_MS").and_then(|v| v.parse().ok())
+        {
+            p.write_retry_backoff = Duration::from_millis(ms);
         }
         p
     }

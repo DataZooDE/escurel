@@ -329,7 +329,7 @@ pub(super) async fn tool_update_page(
     }
     // The same guard for a row of a REMOTE `rows` skill (REST/MCP).
     if let Some(r) =
-        crate::remote_rows::write_rejection(indexer, &state.egress, &a.page_id, &a.content)
+        crate::remote_rows::write_rejection(indexer, &state.egress, &a.page_id, &a.content, false)
             .await
             .map_err(|e| JsonRpcError::internal(format!("update_page rows guard: {e}")))?
     {

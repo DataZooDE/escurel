@@ -29,6 +29,9 @@ use serde_json::{Map, Value, json};
 
 use crate::egress::{Capped, Egress, EgressError, McpSession};
 
+/// The largest payload `write_instance` forwards (64 KiB).
+const MAX_WRITE_PAYLOAD_BYTES: usize = 64 * 1024;
+
 /// The per-endpoint limiter key: tenant-scoped, so one tenant cannot exhaust another's budget.
 fn limiter_key(indexer: &Indexer, endpoint: &str) -> String {
     format!("{}:{endpoint}", indexer.tenant())
@@ -143,6 +146,12 @@ pub(crate) async fn write_instance(
         .await
         .map_err(|e| e.to_string())?
         .ok_or_else(|| format!("endpoint `{}` is not registered", remote.endpoint))?;
+    // A payload is bounded before it goes anywhere.
+    if payload.to_string().len() > MAX_WRITE_PAYLOAD_BYTES {
+        return Err(format!(
+            "payload too large: a write is limited to {MAX_WRITE_PAYLOAD_BYTES} bytes"
+        ));
+    }
     let key = limiter_key(indexer, &ep.name);
     let resp = exec(egress, &key, &ep, &remote, &write, page_slug, Some(payload)).await?;
     let fields = resolve_projection(&resp, &remote.project);
@@ -277,6 +286,151 @@ pub(crate) async fn list_tools(
         tools.push(json!({ "name": name, "arguments": arguments }));
     }
     Ok(Value::Array(tools))
+}
+
+/// Why a write to the upstream did not land, classified for the retry policy.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum WriteFail {
+    /// A transport error, timeout, 429 or 5xx: worth retrying with the same idempotency key.
+    Retryable(String),
+    /// The upstream refused the request: retrying cannot help.
+    Final(String),
+    /// 412: the precondition (`If-Match`) no longer holds, the row moved.
+    Conflict,
+}
+
+/// Is an error from the policed client one a retry could cure?
+fn transient(msg: &str) -> bool {
+    msg.starts_with("transport error")
+        || msg.contains("did not answer")
+        || msg.contains("too many calls")
+}
+
+/// Apply a patch to ONE object upstream, once, with the idempotency key and (REST) the `If-Match`
+/// the row was read with. The caller owns retries; this classifies the outcome.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn call_write(
+    egress: &Egress,
+    key: &str,
+    ep: &EndpointRecord,
+    remote: &RemoteBinding,
+    id: &str,
+    payload: &Map<String, Value>,
+    idempotency_key: &str,
+    if_match: Option<&str>,
+) -> Result<(), WriteFail> {
+    let write = remote
+        .write
+        .as_ref()
+        .ok_or_else(|| WriteFail::Final("backend_read_only: no write op".to_owned()))?;
+    if ep.kind != remote.kind.as_str() {
+        return Err(WriteFail::Final(
+            "endpoint kind does not match the skill's backend".to_owned(),
+        ));
+    }
+    let body = Value::Object(payload.clone());
+    match (remote.kind, write) {
+        (RemoteKind::OpenApi, RemoteOp::Http { method, path, .. }) => {
+            let vars = template_vars(Some(id), Some(&body));
+            let filled = fill_path_template(path, &vars);
+            let missing = unfilled_placeholders(&filled);
+            if !missing.is_empty() {
+                return Err(WriteFail::Final(format!(
+                    "unfilled path placeholders: {missing:?}"
+                )));
+            }
+            let method = reqwest::Method::from_bytes(method.as_bytes())
+                .map_err(|_| WriteFail::Final(format!("invalid HTTP method `{method}`")))?;
+            let r = send_path(egress, key, ep, &filled, |c, url| {
+                let mut req = c
+                    .request(method, url)
+                    .header("idempotency-key", idempotency_key)
+                    .json(&body);
+                if let Some(m) = if_match {
+                    req = req.header("if-match", m);
+                }
+                req
+            })
+            .await
+            .map_err(|e| {
+                if transient(&e) {
+                    WriteFail::Retryable(e)
+                } else {
+                    WriteFail::Final(e)
+                }
+            })?;
+            let code = r.status.as_u16();
+            match code {
+                200..=299 => Ok(()),
+                412 => Err(WriteFail::Conflict),
+                408 | 425 | 429 | 500..=599 => {
+                    Err(WriteFail::Retryable(format!("upstream status {code}")))
+                }
+                _ => Err(WriteFail::Final(format!("upstream status {code}"))),
+            }
+        }
+        (RemoteKind::Mcp, RemoteOp::McpTool { name }) => {
+            let mut args = payload.clone();
+            args.insert("id".to_owned(), Value::String(id.to_owned()));
+            if let Some(a) = &remote.write_idempotency_arg {
+                args.insert(a.clone(), Value::String(idempotency_key.to_owned()));
+            }
+            let result = mcp_call(
+                egress,
+                key,
+                ep,
+                "tools/call",
+                json!({ "name": name, "arguments": Value::Object(args) }),
+            )
+            .await
+            .map_err(|e| {
+                if transient(&e) || e.starts_with("upstream status 5") {
+                    WriteFail::Retryable(e)
+                } else {
+                    WriteFail::Final(e)
+                }
+            })?;
+            match tool_error(&result) {
+                Some(e) => Err(WriteFail::Final(e)),
+                None => Ok(()),
+            }
+        }
+        _ => Err(WriteFail::Final(
+            "write op does not match endpoint kind".to_owned(),
+        )),
+    }
+}
+
+/// Read ONE object and, for REST, the upstream's own `ETag` header (the `If-Match` of a later write).
+pub(crate) async fn call_read_etag(
+    egress: &Egress,
+    key: &str,
+    ep: &EndpointRecord,
+    remote: &RemoteBinding,
+    id: &str,
+) -> Result<(Value, Option<String>), String> {
+    match &remote.read {
+        RemoteOp::Http { path, .. } if remote.kind == RemoteKind::OpenApi => {
+            let filled = fill_path_template(path, &template_vars(Some(id), None));
+            let missing = unfilled_placeholders(&filled);
+            if !missing.is_empty() {
+                return Err(format!("unfilled path placeholders: {missing:?}"));
+            }
+            let r = send_path(egress, key, ep, &filled, |c, url| c.get(url)).await?;
+            if !r.status.is_success() {
+                return Err(format!("upstream status {}", r.status.as_u16()));
+            }
+            let etag = r
+                .headers
+                .get("etag")
+                .and_then(|v| v.to_str().ok())
+                .map(str::to_owned);
+            let body = serde_json::from_slice(&r.body)
+                .map_err(|_| "invalid JSON from the upstream read call".to_owned())?;
+            Ok((body, etag))
+        }
+        _ => Ok((call_read(egress, key, ep, remote, id).await?, None)),
+    }
 }
 
 /// Reachability probe for `validate_endpoints`: an `mcp` endpoint answers a
@@ -435,8 +589,15 @@ async fn http_call(
     } else {
         payload.cloned()
     };
+    // A write carries a DETERMINISTIC idempotency key (a hash of what is written and where): the
+    // same write sent twice has the same key, so an upstream can deduplicate it.
+    let idem = payload
+        .map(|p| escurel_index::drafts::content_hash(&format!("{key}|{method}|{filled}|{p}")));
     let r = send_path(egress, key, ep, &filled, |c, url| {
-        let r = c.request(http_method, url);
+        let mut r = c.request(http_method, url);
+        if let Some(k) = &idem {
+            r = r.header("idempotency-key", k);
+        }
         match &json_body {
             Some(b) => r.json(b),
             None => r,

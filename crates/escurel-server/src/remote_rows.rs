@@ -191,6 +191,37 @@ pub(crate) async fn get(
     }
 }
 
+/// Like [`get`], plus the upstream's own `ETag` for REST (the `If-Match` of a later write).
+pub(crate) async fn get_with_etag(
+    egress: &Egress,
+    src: &RemoteRows,
+    id: &str,
+) -> Result<Option<(RemoteRow, Option<String>)>, String> {
+    let Some(parts) = decode_row_id(id, 1) else {
+        return Ok(None);
+    };
+    match remote_backend::call_read_etag(egress, &src.limiter_key, &src.ep, &src.remote, &parts[0])
+        .await
+    {
+        Ok((item, etag)) => {
+            let fields = resolve_projection(&item, &src.remote.project);
+            if src.remote.kind == escurel_index::RemoteKind::Mcp && fields.is_empty() {
+                return Ok(None);
+            }
+            Ok(Some((
+                RemoteRow {
+                    id: id.to_owned(),
+                    page_id: format!("markdown/instances/{}/{id}.md", src.skill),
+                    fields,
+                },
+                etag,
+            )))
+        }
+        Err(e) if e == "upstream status 404" => Ok(None),
+        Err(e) => Err(e),
+    }
+}
+
 /// The write guard for a page id inside a remote `rows` skill (the counterpart of the SQL rows'
 /// `rows_write_rejection`): `None` when the write may go ahead. A row page is the object's LINKED
 /// MARKDOWN, so a write needs `linked`, an existing object (or an existing companion), no
@@ -200,6 +231,7 @@ pub(crate) async fn write_rejection(
     egress: &Egress,
     page_id: &str,
     content: &str,
+    allow_intent: bool,
 ) -> Result<Option<RowsWriteRejection>, String> {
     let Some((skill, id)) = escurel_index::backend::rows::split_instance_page_id(page_id) else {
         return Ok(None);
@@ -207,6 +239,56 @@ pub(crate) async fn write_rejection(
     let Some(src) = source(indexer, skill).await? else {
         return Ok(None);
     };
+    // A `write_back` intent is a human-gated instruction to the upstream: it may only travel in a
+    // DRAFT (the promote hook is the gate), and only for the columns the skill declares writable.
+    if let Ok(parsed) = escurel_md::parse(content)
+        && parsed.frontmatter.fields.contains_key("write_back")
+    {
+        if !allow_intent {
+            return Ok(Some(RowsWriteRejection {
+                code: "write_back_requires_draft",
+                location: "frontmatter.write_back".to_owned(),
+                message: "a `write_back` change must be proposed as a draft: a human promotes it, \
+                          and only then does it reach the upstream"
+                    .to_owned(),
+            }));
+        }
+        if src.remote.write.is_none() {
+            return Ok(Some(RowsWriteRejection {
+                code: "backend_read_only",
+                location: "frontmatter.write_back".to_owned(),
+                message: format!(
+                    "skill `{skill}` declares no `write` op; its rows cannot be written back"
+                ),
+            }));
+        }
+        match crate::write_back::parse_intent(&crate::write_back::frontmatter_json(
+            &parsed.frontmatter.fields,
+        )) {
+            Err(m) => {
+                return Ok(Some(RowsWriteRejection {
+                    code: "write_back_invalid",
+                    location: "frontmatter.write_back".to_owned(),
+                    message: m,
+                }));
+            }
+            Ok(Some(intent)) => {
+                for f in intent.patch.keys() {
+                    if !src.cfg.writable_columns.contains(f) {
+                        return Ok(Some(RowsWriteRejection {
+                            code: "backend_read_only_field",
+                            location: format!("frontmatter.write_back.patch.{f}"),
+                            message: format!(
+                                "`{f}` is not a writable column of `{skill}` (writable: {:?})",
+                                src.cfg.writable_columns
+                            ),
+                        }));
+                    }
+                }
+            }
+            Ok(None) => {}
+        }
+    }
     if !src.cfg.linked {
         return Ok(Some(RowsWriteRejection {
             code: "backend_read_only",
