@@ -132,7 +132,7 @@ escurel admin pack submit-promotion --tenant acme --candidate-id acme-candidate 
 | `admin …` | the EscurelAdmin surface |
 
 The mapping is enforced by a **parity guard test**
-(`crates/escurel-cli/tests/cli_parity.rs`): every agent-role tool the
+(`crates/escurel-cli/tests/suite/cli_parity.rs`): every agent-role tool the
 gateway advertises in `tools/list` must have a CLI command, so this table
 can't silently drift as new tools land. The admin/ops *provisioning*
 MCP-twins (credential/endpoint/group management, `create_sql_instance`,

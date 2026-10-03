@@ -1144,7 +1144,7 @@ found next to these checkouts: locate it before the cut. triton and herkules-ui 
   export|import|list|rebase|unsubscribe|submit-promotion` subcommands +
   map rows. `06`: the hub↔spoke two-process pack-test recipe
   (`ConfigOverrides.pack_secret`; worked version in
-  `crates/escurel-server/tests/pack_import.rs`). `09`: the
+  `crates/escurel-server/tests/suite/pack_import.rs`). `09`: the
   `escurel_writes_total{tenant,origin}` absorption metric.
 - `SKILL.md` + `10`: the cross-tenant prohibition re-scoped — runtime
   calls never span tenants; curated pack publish/subscribe is the
@@ -1159,7 +1159,7 @@ found next to these checkouts: locate it before the cut. triton and herkules-ui 
   `session open|apply|close`, and `ingest` (POST `/ingest/upload`) — plus a
   CLI→tool map, the `--format` flag, stdin-body list, and the create-ACL
   gotcha on `ingest --skill`.
-- Noted the **parity guard** (`crates/escurel-cli/tests/cli_parity.rs`):
+- Noted the **parity guard** (`crates/escurel-cli/tests/suite/cli_parity.rs`):
   every agent-role tool must have a CLI command, so the map can't drift;
   the admin/ops provisioning MCP-twins are deliberately CLI-less.
 - Fixed the same stale flat-command style in `references/06`, `07`, `09`.
