@@ -134,6 +134,32 @@ async fn it_seeds_skills_and_flat_instances_from_a_directory() {
     );
 }
 
+/// A seed instance in a SUBDIRECTORY becomes the NESTED page `markdown/instances/<skill>/<id>.md`. That is
+/// the layout of an `instances: rows` skill's linked markdown (the page id of a row is nested), so a
+/// harness that seeds a row's companion needs it — a gateway that silently skipped the directory left
+/// the demo's orders without their notes and the agent without the items it analyses.
+#[tokio::test]
+async fn it_seeds_nested_instances_as_nested_page_ids() {
+    let g = start(&[]);
+    let bearer = g.info["bearer"].as_str().unwrap().to_owned();
+    let resp = call(
+        &g,
+        Some(&bearer),
+        "expand",
+        json!({ "page_id": "markdown/instances/note/nested.md", "raw": true }),
+    )
+    .await;
+    assert_eq!(resp.status(), 200);
+    let body: Value = resp.json().await.unwrap();
+    let content = body["result"]["structuredContent"]["content"]
+        .as_str()
+        .unwrap_or_default();
+    assert!(
+        content.contains("NESTED BASELINE."),
+        "the nested seed page must be readable: {body}"
+    );
+}
+
 /// SIGTERM ends it cleanly. A harness that kills it must not leave a gateway, its port or its
 /// data directory behind for the next run to trip over.
 #[tokio::test]
