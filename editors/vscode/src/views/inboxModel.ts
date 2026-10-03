@@ -42,32 +42,27 @@ export interface InboxRow {
 }
 
 /**
- * The label leads with the label_skill because that is what routes the
- * event; the title is the human part, and the event id stands in when a
- * capture carried no title.
+ * The row is narrow and its END is what gets cut off, so the part that tells two rows apart comes
+ * first: the page the event is about (or its title, or its id), with the skill that routes it as the
+ * dimmed secondary text. The full sentence is the tooltip.
  */
 export function inboxRow(event: Event, now?: number): InboxRow {
   const title = event.title?.trim();
-  const label = title
-    ? `${event.label_skill} · ${title}`
-    : `${event.label_skill} · ${event.event_id}`;
+  const slug = event.instance_page_id ? pageSlug(event.instance_page_id) : '';
+  const label = slug || title || event.event_id;
 
-  const parts: string[] = [];
-  if (event.instance_page_id) {
-    parts.push(pageSlug(event.instance_page_id));
-  }
   const time = formatRelativeTime(event.at, now);
-  if (time) {
-    parts.push(time);
-  }
-  const description = parts.join(' · ');
+  const description = [event.label_skill, time].filter(Boolean).join(' · ');
+
+  const headline = `${event.label_skill} · ${title || event.event_id}`;
+  const where = [slug, time].filter(Boolean).join(' · ');
 
   return {
     kind: 'event',
     event,
     label,
     description,
-    tooltip: `${label}${description ? ` (${description})` : ''}`,
+    tooltip: where ? `${headline}\n${where}` : headline,
     pageId: event.instance_page_id ?? undefined,
     body: event.body,
   };

@@ -109,6 +109,7 @@ export class RunnerTree implements vscode.TreeDataProvider<RunnerRow>, vscode.Di
 
     const item = new vscode.TreeItem(element.label, collapsible);
     item.description = element.description;
+    if (element.tooltip) item.tooltip = element.tooltip;
 
     // Apply specific icons and context values based on row kind
     switch (element.kind) {

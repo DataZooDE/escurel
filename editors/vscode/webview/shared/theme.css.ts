@@ -9,7 +9,12 @@ export const theme = css`
     --escurel-event: var(--vscode-charts-orange);
     --escurel-run: var(--vscode-charts-green);
     --escurel-run-failed: var(--vscode-errorForeground);
-    --escurel-border: var(--vscode-widget-border, var(--vscode-panel-border));
+    /* One colour for every rule: in high contrast that is contrastBorder, otherwise rules alternated
+       between it and the widget border. */
+    --escurel-border: var(
+      --vscode-contrastBorder,
+      var(--vscode-widget-border, var(--vscode-panel-border))
+    );
     --escurel-muted: var(--vscode-descriptionForeground);
     color: var(--vscode-foreground);
     font-family: var(--vscode-font-family);
@@ -42,6 +47,8 @@ export const theme = css`
     line-height: 1.6;
     background: var(--vscode-badge-background);
     color: var(--vscode-badge-foreground);
+    /* High contrast drops the fill; the outline keeps it a chip. Transparent elsewhere. */
+    border: 1px solid var(--vscode-contrastBorder, transparent);
   }
   .muted {
     color: var(--escurel-muted);

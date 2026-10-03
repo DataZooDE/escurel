@@ -74,6 +74,8 @@ export interface RunnerRow {
   kind: RunnerRowKind;
   label: string;
   description?: string;
+  /** The full text, for a row whose description is cut off by the narrow view. */
+  tooltip?: string;
   contextValue?: string;
   runId?: string;
   eventId?: string;
@@ -346,18 +348,37 @@ export function buildRunnerRows(
     kind: 'runner',
     label: 'Runner',
     description: runnerDescParts.join(' · '),
+    tooltip: runnerDescParts.join('\n'),
     collapsibleState: 'none',
   });
 
   // 3. Runs row: live_runs.length live, then processed, failed, dead_letter, cancelled, planned, pending
   const liveRuns = body.live_runs ?? [];
   const runsCount = body.runs ?? {};
-  const runsDesc = `${liveRuns.length} live · ${runsCount.processed ?? 0} processed, ${runsCount.failed ?? 0} failed, ${runsCount.dead_letter ?? 0} dead letter, ${runsCount.cancelled ?? 0} cancelled, ${runsCount.planned ?? 0} planned, ${runsCount.pending ?? 0} pending`;
+  // The row is narrow and its END is cut off, so what needs attention comes first; the rarer
+  // counts appear only when they are not zero.
+  const n = (v: number | undefined) => v ?? 0;
+  const lead = [
+    `${n(runsCount.failed)} failed`,
+    `${n(runsCount.dead_letter)} dead letter`,
+    `${n(runsCount.processed)} processed`,
+    `${liveRuns.length} live`,
+  ];
+  const rare = [
+    [n(runsCount.cancelled), 'cancelled'],
+    [n(runsCount.planned), 'planned'],
+    [n(runsCount.pending), 'pending'],
+  ] as const;
+  const runsDesc = [...lead, ...rare.filter(([c]) => c > 0).map(([c, w]) => `${c} ${w}`)].join(
+    ' · ',
+  );
+  const runsTooltip = [...lead, ...rare.map(([c, w]) => `${c} ${w}`)].join('\n');
 
   rows.push({
     kind: 'runs',
     label: 'Runs',
     description: runsDesc,
+    tooltip: runsTooltip,
     collapsibleState: 'none',
   });
 
@@ -448,7 +469,12 @@ export function buildRunnerRows(
       children: deadLetterItems.map((dl) => ({
         kind: 'deadLetter',
         label: dl.slug,
-        description: dl.description ?? dl.reason ?? dl.error ?? '',
+        // Two failures on one page read the same; the end of the run id tells them apart. It leads
+        // the description because the end of a narrow row is what gets cut off.
+        description: [`#${dl.runId.slice(-4)}`, dl.description ?? dl.reason ?? dl.error ?? '']
+          .filter(Boolean)
+          .join(' · '),
+        tooltip: [dl.slug, dl.reason, dl.error, `run ${dl.runId}`].filter(Boolean).join('\n'),
         contextValue: 'deadLetter',
         runId: dl.runId,
         eventId: dl.eventId,

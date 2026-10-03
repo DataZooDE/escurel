@@ -108,6 +108,9 @@ describe('runnerModel', () => {
       expect(runsRow?.description).toContain('3 processed');
       expect(runsRow?.description).toContain('0 failed');
       expect(runsRow?.description).toContain('1 dead letter');
+      // The row is narrow and its end is cut off, so what needs attention comes first.
+      expect(runsRow?.description?.startsWith('0 failed · 1 dead letter')).toBe(true);
+      expect(runsRow?.tooltip).toContain('3 processed');
 
       // Permits row
       const permitsRow = rows.find((r) => r.kind === 'permits');
@@ -335,5 +338,28 @@ describe('health ages with the clock', () => {
     const at = Date.parse(row.at as string);
     expect(deriveHealth(row, at + 5_000).status).toBe('ok');
     expect(deriveHealth(row, at + 10 * 60_000).status).toBe('stale');
+  });
+
+  describe('dead letters that look alike', () => {
+    it('tell two failures on the same page apart, and keep the whole story in the tooltip', () => {
+      const base = {
+        slug: 'order-4500152',
+        description: 'permanent — harness refused',
+        eventId: 'e',
+      };
+      const rows = buildRunnerRows(
+        { runs: {}, live_runs: [] },
+        [
+          { ...base, runId: '01M3Y7MD5XWKPB08508JGNBW6M', error: 'harness not allowed: x' },
+          { ...base, runId: '01M3Y7MD5XWKPB08508JGNAAAA', error: 'harness not allowed: x' },
+        ],
+        { admin: 'not-admin' },
+      );
+      const [a, b] = rows.find((r) => r.kind === 'deadLetters')!.children!;
+      expect(a!.description).not.toBe(b!.description);
+      expect(a!.description!.startsWith('#')).toBe(true);
+      expect(a!.tooltip).toContain('01M3Y7MD5XWKPB08508JGNBW6M');
+      expect(a!.tooltip).toContain('harness not allowed: x');
+    });
   });
 });

@@ -62,8 +62,11 @@ describe('inboxModel', () => {
 
       const row = inboxRow(event, baseNow);
       expect(row.kind).toBe('event');
-      expect(row.label).toBe('customer · New customer registration');
-      expect(row.description).toBe('alpina-biotech · 2h ago');
+      // What tells two rows apart comes FIRST (the row is narrow and the end is cut off); the skill
+      // that routes it is the dimmed secondary text.
+      expect(row.label).toBe('alpina-biotech');
+      expect(row.description).toBe('customer · 2h ago');
+      expect(row.tooltip).toBe('customer · New customer registration\nalpina-biotech · 2h ago');
       expect(row.pageId).toBe('markdown/instances/customer__alpina-biotech.md');
       expect(row.event).toBe(event);
     });
@@ -86,8 +89,8 @@ describe('inboxModel', () => {
       };
 
       const row = inboxRow(event, baseNow);
-      expect(row.label).toBe('email · RFQ inquiry');
-      expect(row.description).toBe('1h ago');
+      expect(row.label).toBe('RFQ inquiry');
+      expect(row.description).toBe('email · 1h ago');
       expect(row.pageId).toBeUndefined();
     });
 
@@ -109,7 +112,8 @@ describe('inboxModel', () => {
       };
 
       const row = inboxRow(event, baseNow);
-      expect(row.label).toBe('doc · ev-3');
+      expect(row.label).toBe('ev-3');
+      expect(row.description).toContain('doc');
     });
   });
 
@@ -129,7 +133,8 @@ describe('inboxModel', () => {
       const rows = buildInboxRows(inboxFixture, baseNow);
       expect(rows.length).toBe(inboxFixture.length);
       expect(rows[0]!.event.event_id).toBe('01M38SJJEMTNW3XTYQ6YJDPJ36');
-      expect(rows[0]!.label).toBe('customer · hello');
+      expect(rows[0]!.label).toBe('alpina-biotech');
+      expect(rows[0]!.description).toContain('customer');
       expect(rows[0]!.pageId).toBe('markdown/instances/customer__alpina-biotech.md');
     });
   });
