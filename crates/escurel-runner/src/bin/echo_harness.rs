@@ -146,6 +146,28 @@ fn render_frontmatter(value: Option<&Value>) -> String {
     out
 }
 
+/// The page's frontmatter without the row's source columns: for a `rows` instance, `expand` merges
+/// the row's projected columns (`backend_projection.source`) over the linked markdown's frontmatter,
+/// and only the markdown side may be written. Any other page is returned unchanged.
+fn without_source_columns(expanded: &Value) -> Option<Value> {
+    let mut fm = expanded.get("frontmatter")?.clone();
+    let projection = expanded
+        .get("backend_projection")
+        .cloned()
+        .unwrap_or(Value::Null);
+    if projection.get("instances").and_then(Value::as_str) == Some("rows")
+        && let (Some(map), Some(source)) = (
+            fm.as_object_mut(),
+            projection.get("source").and_then(Value::as_object),
+        )
+    {
+        for key in source.keys() {
+            map.remove(key);
+        }
+    }
+    Some(fm)
+}
+
 /// Upsert a scalar `key: value` into a rendered frontmatter block
 /// (`---\n…\n---\n`). Replaces the line if the key is already present,
 /// otherwise inserts it just before the closing `---`. A block with no
@@ -535,7 +557,11 @@ fn run(task: &HarnessTask) -> Result<HarnessOutcome, String> {
     // its `markdown/instances/<skill>/<id>.md` path. This lets the echo
     // harness stand in for a phase that produces a fresh typed instance (a
     // dynamic-workflow step), not only one that appends to an existing page.
-    let mut frontmatter = render_frontmatter(expanded.get("frontmatter"));
+    // A ROW instance (`instances: rows`) reads as the row's source columns MERGED with its linked
+    // markdown's own frontmatter. The write goes to the markdown side only, so the source columns are
+    // dropped before the page is written back (the gateway refuses a write that carries one).
+    let writable_frontmatter = without_source_columns(&expanded);
+    let mut frontmatter = render_frontmatter(writable_frontmatter.as_ref());
     if frontmatter.is_empty() {
         // A missing target is *created*. If the driving step is a barrier
         // vote, stamp the tally's coordinates (`§3.5`) so distinct skeptics
