@@ -17,6 +17,7 @@ import { RunController } from './runs/controller';
 import { registerControlCommands } from './runs/controlCommands';
 import { adminContextValue } from './runs/adminContext';
 import { ThreadController } from './thread/controller';
+import { DetailsViewProvider } from './thread/detailsView';
 import { buildInspectors } from './thread/inspector';
 import { toThreadView } from './thread/threadModel';
 import { ThreadsTree } from './views/threads';
@@ -35,6 +36,8 @@ export interface EscurelApi {
   review: ReviewController;
   live: LiveCoordinator;
   threads: ThreadController;
+  /** The bottom-panel details view of the node selected in a thread. */
+  details: DetailsViewProvider;
   runs: RunController;
   threadsTree: ThreadsTree;
   /**
@@ -124,6 +127,7 @@ export function activate(context: vscode.ExtensionContext): EscurelApi | undefin
       if (row && outlineRoot) threads.select(outlineRoot, row.id);
     }),
   );
+  const details = DetailsViewProvider.register(context, threads);
   const runs = RunController.register(context, services);
   context.subscriptions.push(
     services.onDidChange(() => {
@@ -206,6 +210,7 @@ export function activate(context: vscode.ExtensionContext): EscurelApi | undefin
     review,
     live,
     threads,
+    details,
     runs,
     threadsTree,
     canAdmin: adminContextValue,

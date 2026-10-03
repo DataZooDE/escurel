@@ -12,7 +12,6 @@ import {
   gatedFocus,
   gatedLayout,
   gatedThreadView,
-  recordedDetails,
   recordedFocus,
   recordedLayout,
   recordedThreadView,
@@ -26,7 +25,6 @@ async function renderCanvas(
       .view=${props.view ?? recordedThreadView}
       .layout=${props.layout ?? recordedLayout}
       .focus=${props.focus ?? recordedFocus}
-      .details=${props.details ?? recordedDetails}
       .error=${props.error}
     ></escurel-thread-canvas>
   `);
@@ -242,10 +240,10 @@ describe('<escurel-thread-canvas>', () => {
     const runCard = q(el, `.card[data-node-id="${runId}"]`);
     expect(runCard?.classList.contains('selected')).to.equal(true);
 
-    // Inspector is rendered for selected node.
-    const inspector = q(el, 'escurel-thread-inspector') as { detail?: { title?: string } } | null;
-    expect(inspector).to.exist;
-    expect(inspector?.detail?.title).to.equal('signal run');
+    // The details are a view of their own in the panel area: the canvas shows no inspector, so a
+    // selection takes no width from it.
+    expect(q(el, 'escurel-thread-inspector')).to.equal(null);
+    expect(q(el, '.inspector-container')).to.equal(null);
   });
 
   it('routes ready, loading, thread, error, and select messages while ignoring unknown types', async () => {
@@ -267,7 +265,6 @@ describe('<escurel-thread-canvas>', () => {
             view: recordedThreadView,
             layout: recordedLayout,
             focus: recordedFocus,
-            details: recordedDetails,
           },
         }),
       );
@@ -477,7 +474,6 @@ describe('<escurel-thread-canvas>', () => {
         view: recordedThreadView,
         layout: recordedLayout,
         focus: recordedFocus,
-        details: recordedDetails,
       });
       await el.updateComplete;
       el.selectNode(recordedThreadView.rootEventId);
@@ -491,10 +487,8 @@ describe('<escurel-thread-canvas>', () => {
     }
   });
 
-  it('keeps a selected card in view once the inspector has taken its share of the width', async () => {
-    // Selecting opens the inspector, which takes 320px from the canvas; the reveal was
-    // computed against the canvas as it was BEFORE that, so a card near the right edge could
-    // be clipped the moment it was selected.
+  it('keeps a selected card in view', async () => {
+    // A card near the right edge must not be clipped the moment it is selected.
     const el = await renderCanvas();
     const last = recordedLayout.nodes.reduce((a, b) => (b.x > a.x ? b : a));
     el.selectNode(last.id);
@@ -520,7 +514,6 @@ describe('<escurel-thread-canvas>', () => {
             .view=${view}
             .layout=${layout}
             .focus=${focus}
-            .details=${recordedDetails}
           ></escurel-thread-canvas>
         </div>
       `);
@@ -569,7 +562,6 @@ describe('<escurel-thread-canvas>', () => {
             .view=${branchingThreadView}
             .layout=${branchingLayout}
             .focus=${branchingFocus}
-            .details=${recordedDetails}
           ></escurel-thread-canvas>
         </div>
       `);
@@ -607,7 +599,6 @@ describe('<escurel-thread-canvas>', () => {
             .view=${branchingThreadView}
             .layout=${branchingLayout}
             .focus=${branchingFocus}
-            .details=${recordedDetails}
           ></escurel-thread-canvas>
         </div>
       `);
@@ -835,7 +826,6 @@ describe('<escurel-thread-canvas>', () => {
           .view=${recordedThreadView}
           .layout=${recordedLayout}
           .focus=${recordedFocus}
-          .details=${recordedDetails}
         ></escurel-thread-canvas>
       </div>
     `);
@@ -996,6 +986,17 @@ describe('<escurel-thread-canvas>', () => {
       const card = q(el, '.card.type-changeset.needs-you')!;
       expect(text(card.querySelector('.changeset-author'))).to.contain('agent:supplier-risk');
       expect(/ago|just now/.test(text(card.querySelector('.changeset-author')))).to.equal(true);
+    });
+
+    it('measures a changeset’s age against the canvas’s own clock, so a baseline does not age', async () => {
+      // The visual baselines read "4 h ago", then "5 h ago": the age came from the real clock.
+      const el = await branching();
+      el.clock = () => new Date('2026-10-03T08:03:06Z');
+      await el.updateComplete;
+      const card = q(el, '.card.type-changeset.needs-you')!;
+      expect(text(card.querySelector('.changeset-author'))).to.equal(
+        'agent:supplier-risk · 3 min ago',
+      );
     });
 
     it('lists the pages it changes, each openable', async () => {

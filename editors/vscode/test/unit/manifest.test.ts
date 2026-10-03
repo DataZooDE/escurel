@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { readFileSync, readdirSync, statSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 
 /**
@@ -131,5 +131,24 @@ describe('command titles', () => {
           .some((w) => /^[A-Z][a-z]/.test(w) && !proper.has(w.replace(/[….]$/, ''))),
       );
     expect(bad).toEqual([]);
+  });
+});
+
+describe('the details view', () => {
+  // The thread's details are a view of their own in VS Code's PANEL area, so the user docks, moves
+  // and resizes it with VS Code's own layout (owner: "use native layout mechanisms"), not a column
+  // inside the canvas webview.
+  const contributes = manifest.contributes as unknown as {
+    viewsContainers: Record<string, { id: string; title: string; icon: string }[]>;
+    views: Record<string, { id: string; name: string; type?: string }[]>;
+  };
+
+  it('is a webview view in a panel container, with an icon that exists', () => {
+    const container = contributes.viewsContainers.panel?.find((c) => c.id === 'escurel-details');
+    expect(container?.title).toBe('Escurel Details');
+    expect(existsSync(join(__dirname, '../../', container?.icon ?? 'missing'))).toBe(true);
+    expect(contributes.views['escurel-details']).toEqual([
+      expect.objectContaining({ id: 'escurel.details', type: 'webview' }),
+    ]);
   });
 });

@@ -39,10 +39,16 @@ test('the thread shows the cascade, and an instance offers a skill to start', as
   await expect(canvas.locator('.card .type-icon svg').first()).toBeVisible();
   await stack.shot('02-thread');
 
-  // The instance a draft proposes a change to: select it, and the inspector offers its skill's actions.
+  // The instance a draft proposes a change to: select it, and the DETAILS view, a view of its own in
+  // the bottom panel (VS Code lays it out), shows the node and offers its skill's actions.
   await canvas.getByRole('treeitem', { name: /order-4500123/ }).click();
-  const start = wv.getByRole('group', { name: 'Skills' }).locator('.primary').first();
+  const details = await webviewWith(page, 'escurel-details');
+  await expect(details.locator('escurel-details')).toContainText('order-4500123');
+  const start = details.getByRole('group', { name: 'Skills' }).locator('.primary').first();
   await expect(start).toBeVisible();
+  // The canvas keeps its full width: the inspector is no longer a column inside it.
+  await expect(canvas.locator('escurel-thread-inspector')).toHaveCount(0);
+  await expect(page.getByRole('tab', { name: /Escurel Details/ })).toBeVisible();
   await stack.shot('03-thread-inspector-instance');
 
   // Click it. A start event appears in the Inbox, and the runner takes it.

@@ -10,7 +10,7 @@ import type * as vscode from 'vscode';
  * collapse). Catching only the second left the first, which showed up as an intermittent
  * 'Webview is disposed' in the integration log.
  */
-export function safePost(panel: vscode.WebviewPanel, message: unknown): void {
+export function safePost(panel: Pick<vscode.WebviewPanel, 'webview'>, message: unknown): void {
   try {
     void panel.webview.postMessage(message).then(undefined, () => undefined);
   } catch {

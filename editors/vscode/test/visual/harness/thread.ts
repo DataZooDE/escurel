@@ -1,12 +1,9 @@
 import '../../../webview/thread/main';
-import { runControls } from '../../../src/runs/controls';
-import type { InspectorView } from '../../../src/shared/protocol';
 import type { EscurelThreadCanvas } from '../../../webview/thread/thread-canvas';
 import {
   branchingFocus,
   branchingLayout,
   branchingThreadView,
-  recordedDetails,
   recordedFocus,
   recordedLayout,
   recordedThreadView,
@@ -18,7 +15,8 @@ const branches = new URLSearchParams(location.search).get('scenario') === 'branc
 el.view = branches ? branchingThreadView : recordedThreadView;
 el.layout = branches ? branchingLayout : recordedLayout;
 el.focus = branches ? branchingFocus : recordedFocus;
-el.details = recordedDetails;
+// The fixtures' timestamps are fixed; a card's age ("3 min ago") must not depend on today's date.
+el.clock = () => new Date('2026-10-03T08:03:06Z');
 
 // `?view=first` keeps the canvas's own first view (100% on the node that needs you, with a
 // scrollbar); anything else Fits, so the baseline shows the WHOLE thread. The first baselines were
@@ -38,39 +36,4 @@ if (zoomParam) {
   void el.updateComplete.then(() => {
     el.viewport = { x: 10, y: 40, zoom: Number(zoomParam) };
   });
-}
-
-// `?select=run` / `?select=draft` selects a node that offers actions, so the inspector's buttons are
-// in the baseline: the run as a NON-admin sees a dead letter (Requeue deactivated, with its reason),
-// and the instance a draft proposes a change to (the skill's actions as Skill split buttons).
-const select = new URLSearchParams(location.search).get('select');
-if (select) {
-  const kind = select === 'run' ? 'run' : 'draft';
-  const node = recordedThreadView.nodes.find((n) => n.kind === kind);
-  if (node) {
-    const base: InspectorView = recordedDetails[node.id] ?? {
-      title: node.title,
-      rows: [],
-      sideTitle: '',
-      side: [],
-    };
-    el.details = {
-      ...recordedDetails,
-      [node.id]: {
-        ...base,
-        actions:
-          kind === 'run'
-            ? { controls: runControls('dead_letter', 'not-admin'), skill: 'supplier-risk' }
-            : {
-                skills: {
-                  pageId: 'markdown/instances/customer-order__order-4500123.md',
-                  actions: [
-                    { skill: 'supplier-risk', label: 'Reassess risk for 4500123 with an agent' },
-                  ],
-                },
-              },
-      },
-    };
-    void el.updateComplete.then(() => el.selectNode(node.id));
-  }
 }

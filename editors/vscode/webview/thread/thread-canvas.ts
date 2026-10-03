@@ -7,7 +7,6 @@ import type { PropertyValues } from 'lit';
 import { property, state } from 'lit/decorators.js';
 import type {
   FocusGraph,
-  InspectorView,
   LaidOutNode,
   ThreadLayout,
   ThreadNode,
@@ -15,7 +14,6 @@ import type {
   ThreadWebviewToHost,
 } from '../../src/shared/protocol';
 import { theme } from '../shared/theme.css';
-import './inspector';
 import { fitToBounds, panToReveal, zoomAboutPoint } from './viewport';
 import { firstViewport, isLowZoom, pickTarget, scrollMetrics } from '../../src/thread/firstView';
 import type { ViewportState } from './viewport';
@@ -603,15 +601,6 @@ export class EscurelThreadCanvas extends LitElement {
       .reconnect:hover {
         background: var(--vscode-button-hoverBackground);
       }
-      .inspector-container {
-        width: 320px;
-        border-left: 1px solid var(--escurel-border);
-        overflow-y: auto;
-        background: var(--vscode-sideBar-background, var(--vscode-editor-background));
-        flex-shrink: 0;
-        padding: 12px;
-        box-sizing: border-box;
-      }
     `,
   ];
 
@@ -619,8 +608,9 @@ export class EscurelThreadCanvas extends LitElement {
   @property({ attribute: false }) layout?: ThreadLayout;
   // @ts-expect-error Specification requires property named 'focus' for FocusGraph
   @property({ attribute: false }) override focus?: FocusGraph;
-  @property({ attribute: false }) details?: Record<string, InspectorView>;
   @property({ attribute: false }) error?: { message: string; canReconnect: boolean };
+  /** The clock a card's age is measured against; a visual baseline pins it so it does not age. */
+  @property({ attribute: false }) clock: () => Date = () => new Date();
 
   @state() focusedNodeId = '';
   @state() selectedNodeId = '';
@@ -716,11 +706,9 @@ export class EscurelThreadCanvas extends LitElement {
   public selectNode(nodeId: string): void {
     this.selectedNodeId = nodeId;
     this.focusedNodeId = nodeId;
+    // The details are a view of their own now (the panel area), so selecting takes no width from
+    // the canvas and one reveal is enough.
     this.panToFocusedNode();
-    // Selecting opens the inspector, which takes its share of the width from the canvas. The
-    // reveal above used the canvas as it was BEFORE that, so a card near the right edge could
-    // be clipped the moment it was selected; reveal again once the layout has settled.
-    void this.updateComplete.then(() => this.panToFocusedNode());
   }
 
   public focusNode(nodeId: string): void {
@@ -910,7 +898,7 @@ export class EscurelThreadCanvas extends LitElement {
   private renderChangesetDetails(node: ThreadNode) {
     const details = node.changeset;
     if (!details || node.emphasis !== 'needs-you') return nothing;
-    const age = formatAge(details.at);
+    const age = formatAge(details.at, this.clock());
     const who = [details.author, age].filter(Boolean).join(' · ');
     const listed = details.drafts.slice(0, MAX_LISTED_DRAFTS);
     const more = details.drafts.length - listed.length;
@@ -1297,17 +1285,6 @@ export class EscurelThreadCanvas extends LitElement {
           </div>
           ${this.renderScrollbars()}
         </div>
-
-        ${
-          this.selectedNodeId
-            ? html`<div class="inspector-container">
-                <escurel-thread-inspector
-                  .nodeId=${this.selectedNodeId}
-                  .detail=${this.details?.[this.selectedNodeId]}
-                ></escurel-thread-inspector>
-              </div>`
-            : nothing
-        }
       </div>
     `;
   }
