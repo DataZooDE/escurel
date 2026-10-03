@@ -40,6 +40,14 @@ export function resolvePageMessage(
       return model?.preview?.kind === 'document'
         ? { command: 'escurel.openOriginal', args: [model.pageId] }
         : undefined;
+    case 'propose-write-back': {
+      // Only a column THIS page's own source said is writable.
+      if (!model?.source?.writableColumns?.includes(m.field)) return undefined;
+      return {
+        command: 'escurel.proposeWriteBack',
+        args: [{ pageId: model.pageId, field: m.field }],
+      };
+    }
     case 'open-run':
       return nonEmpty(m.runId) ? { command: 'escurel.openRun', args: [m.runId] } : undefined;
     case 'open-thread':

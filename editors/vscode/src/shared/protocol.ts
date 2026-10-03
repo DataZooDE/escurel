@@ -1,3 +1,4 @@
+import type { WriteBackStatus } from './writeBack';
 import type { RowSource } from './rowSource';
 // The host ↔ webview contract (SPEC §5): typed postMessage both ways.
 // Shared by both tsconfigs, so nothing here may import `vscode` or Node.
@@ -67,6 +68,8 @@ export interface PageModel {
   thread?: ThreadStrip;
   /** Present when the page is a ROW of an `instances: rows` skill: read-only source data plus notes. */
   source?: RowSource;
+  /** The last write-back to the source, from the page's `escurel:write-back` events. */
+  writeBack?: WriteBackStatus;
 }
 
 export type HostToWebview =
@@ -95,6 +98,7 @@ export type WebviewToHost =
   | { type: 'open-wikilink'; wikilink: string }
   | { type: 'view-skill'; skill: string }
   | { type: 'show-raw' }
+  | { type: 'propose-write-back'; field: string }
   | { type: 'open-original' }
   | { type: 'refresh' }
   | { type: 'open-thread'; rootEventId: string }

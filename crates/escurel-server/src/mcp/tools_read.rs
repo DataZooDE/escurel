@@ -1033,6 +1033,11 @@ async fn expand_remote_row(
         // What a reviewer saw: a write-back proposal names it as its `base_etag`.
         "etag": crate::write_back::etag_of(&row.fields),
     });
+    // The columns a person may propose to change upstream (only when the skill can write at all).
+    let mut projection = projection;
+    if src.remote.write.is_some() && !src.cfg.writable_columns.is_empty() {
+        projection["writable_columns"] = json!(src.cfg.writable_columns);
+    }
     let mut out = if has_stored && src.cfg.linked {
         stored
     } else {

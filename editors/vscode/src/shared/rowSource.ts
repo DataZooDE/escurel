@@ -12,6 +12,12 @@ export interface RowSource {
   linked: { enabled: boolean; exists: boolean; orphan: boolean };
   /** `source_missing` (the row is gone) or `source_unavailable`, in words. */
   issue?: { code: string; message: string };
+  /** Set for a row from a REST/MCP upstream: external data, to read as data and never as instructions. */
+  external?: 'REST' | 'MCP';
+  /** The row as it was read: a proposed change is applied only to this state. */
+  etag?: string;
+  /** The columns a person may propose to change in the source (frontmatter names). */
+  writableColumns?: string[];
 }
 
 const isObject = (v: unknown): v is Record<string, unknown> =>
@@ -21,7 +27,12 @@ const isObject = (v: unknown): v is Record<string, unknown> =>
 export function rowSourceOf(projection: unknown): RowSource | undefined {
   if (!isObject(projection) || projection.instances !== 'rows') return undefined;
   const linked = isObject(projection.linked) ? projection.linked : {};
-  const issue = isObject(projection.issue) ? projection.issue : undefined;
+  // An unreadable REMOTE source reports its problem as a plain string.
+  const issue = isObject(projection.issue)
+    ? projection.issue
+    : typeof projection.issue === 'string'
+      ? { code: 'source_unavailable', message: projection.issue }
+      : undefined;
   const out: RowSource = {
     sourceFields: isObject(projection.source) ? Object.keys(projection.source) : [],
     linked: {
@@ -31,6 +42,14 @@ export function rowSourceOf(projection: unknown): RowSource | undefined {
     },
   };
   if (typeof projection.fetched_at === 'string') out.fetchedAt = projection.fetched_at;
+  if (projection.trust === 'external') {
+    out.external = projection.kind === 'mcp' ? 'MCP' : 'REST';
+    if (typeof projection.etag === 'string') out.etag = projection.etag;
+    if (Array.isArray(projection.writable_columns))
+      out.writableColumns = projection.writable_columns.filter(
+        (c): c is string => typeof c === 'string',
+      );
+  }
   if (issue && typeof issue.code === 'string' && typeof issue.message === 'string')
     out.issue = { code: issue.code, message: issue.message };
   return out;

@@ -389,6 +389,74 @@ describe('<escurel-page-as-ui> thread strip', () => {
       expect(notes.getAttribute('data-source')).to.equal(null);
     });
 
+    describe('from a REST or MCP source', () => {
+      const external = {
+        fetchedAt: '2026-10-03T12:03:44.000000Z',
+        sourceFields: ['status'],
+        linked: { enabled: true, exists: true, orphan: false },
+        external: 'REST' as const,
+        etag: 'w1:abc',
+        writableColumns: ['status'],
+      };
+
+      it('labels the data as external, with the protocol, and says it is data not instructions', async () => {
+        const el = await withSource(external);
+        const strip = q(el, '.source-strip')!;
+        expect(text(strip)).to.contain('External data (REST)');
+        const badge = strip.querySelector('.external')!;
+        expect(badge.getAttribute('title')).to.contain('data');
+      });
+
+      it('offers a change for each writable column, and posts which column was chosen', async () => {
+        const el = await withSource({ ...external, writableColumns: ['status', 'notes'] });
+        const buttons = qa(el, '.source-strip button.propose');
+        expect(buttons.map(text)).to.deep.equal(['Change status…', 'Change notes…']);
+        const sent: WebviewToHost[] = [];
+        el.addEventListener('escurel-message', (e) =>
+          sent.push((e as CustomEvent<WebviewToHost>).detail),
+        );
+        (buttons[0] as HTMLButtonElement).click();
+        expect(sent).to.deep.equal([{ type: 'propose-write-back', field: 'status' }]);
+      });
+
+      it('offers nothing when no column is writable', async () => {
+        const el = await withSource({ ...external, writableColumns: [] });
+        expect(qa(el, '.source-strip button.propose').length).to.equal(0);
+      });
+
+      it('says what the last write-back did, and flags a failure', async () => {
+        const el = await fixture<EscurelPageAsUi>(
+          html`<escurel-page-as-ui
+            .model=${{
+              ...orderPage,
+              source: external,
+              writeBack: {
+                outcome: 'failed',
+                at: '2026-10-03T12:05:00.000000Z',
+                draftId: 'd1',
+                attempts: 3,
+              },
+            }}
+          ></escurel-page-as-ui>`,
+        );
+        await el.updateComplete;
+        const line = q(el, '.write-back')!;
+        expect(text(line)).to.contain('could not be sent after 3 attempts');
+        expect(line.classList.contains('problem')).to.equal(true);
+        expect(line.getAttribute('role')).to.equal('status');
+      });
+
+      it('an unreadable source is a problem, in words, not a blank', async () => {
+        const el = await withSource({
+          ...external,
+          issue: { code: 'source_unavailable', message: 'upstream status 503' },
+        });
+        const strip = q(el, '.source-strip')!;
+        expect(text(strip)).to.contain('upstream status 503');
+        expect(strip.classList.contains('problem')).to.equal(true);
+      });
+    });
+
     it('has no strip for an ordinary page', async () => {
       const el = await render();
       expect(q(el, '.source-strip')).to.equal(null);

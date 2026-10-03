@@ -529,6 +529,27 @@ describe('reviewModel', () => {
         expect(outcome.message).toContain('Conflict');
       });
 
+      it('explains a write-back refusal in plain words and keeps the draft open for another try', () => {
+        const refused = (code: string, message: string) =>
+          new EscurelError('refused', message, {
+            issues: [{ severity: 'error', code, location: 'write_back', message }],
+          });
+
+        const conflict = interpretPromoteDraftError(refused('write_back_conflict', 'moved'), 'd-1');
+        expect(conflict.kind).toBe('conflict');
+        expect(conflict.message).toMatch(/changed upstream/i);
+        expect(conflict.closeDiff).toBe(false);
+
+        const failed = interpretPromoteDraftError(
+          refused('write_back_failed', 'could not be reached after 3 attempts'),
+          'd-1',
+        );
+        expect(failed.kind).toBe('error');
+        expect(failed.message).toMatch(/Write-back failed/);
+        expect(failed.closeDiff).toBe(false);
+        expect(failed.refresh).toBe(true); // the dead-letter event appears in the queue
+      });
+
       it('treats generic errors as errors, leaves diff open', () => {
         const err = new Error('network down');
         const outcome = interpretPromoteDraftError(err, 'd-1');

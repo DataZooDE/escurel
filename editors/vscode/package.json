@@ -212,6 +212,11 @@
       {
         "command": "escurel.knowledge.loadMore",
         "title": "Load more"
+      },
+      {
+        "command": "escurel.proposeWriteBack",
+        "title": "Propose a change to the source",
+        "category": "Escurel"
       }
     ],
     "authentication": [
@@ -353,6 +358,10 @@
         {
           "command": "escurel.openRun",
           "when": "escurel.connected"
+        },
+        {
+          "command": "escurel.proposeWriteBack",
+          "when": "false"
         }
       ],
       "view/title": [

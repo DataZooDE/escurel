@@ -24,6 +24,7 @@ import { expandableRows, type OutlineRow } from './views/threadsModel';
 import { registerStartInTerminal } from './start/terminal';
 import { registerOpenOriginal } from './commands/openOriginal';
 import { registerStartSkill } from './start/startSkill';
+import { registerProposeWriteBack } from './editors/proposeWriteBack';
 import { registerApprovePlan } from './start/approvePlan';
 import { registerRunnerView, type RunnerTree } from './views/runner';
 
@@ -194,6 +195,7 @@ export function activate(context: vscode.ExtensionContext): EscurelApi | undefin
     ),
 
     registerStartSkill(context, services),
+    registerProposeWriteBack(services),
     registerApprovePlan(context, services),
   );
   log().info('escurel: activated');

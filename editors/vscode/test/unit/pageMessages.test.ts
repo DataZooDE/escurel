@@ -103,3 +103,34 @@ describe('resolvePageMessage: open-original', () => {
     expect(resolvePageMessage(undefined, { type: 'open-original' })).toBeUndefined();
   });
 });
+
+describe('resolvePageMessage: propose-write-back', () => {
+  const rowModel = {
+    ...model,
+    source: {
+      sourceFields: ['tier'],
+      linked: { enabled: true, exists: false, orphan: false },
+      writableColumns: ['tier'],
+      etag: 'w1:abc',
+    },
+  } as unknown as PageModel;
+
+  it('accepts only a column the page itself said is writable, on THIS page', () => {
+    expect(resolvePageMessage(rowModel, { type: 'propose-write-back', field: 'tier' })).toEqual({
+      command: 'escurel.proposeWriteBack',
+      args: [{ pageId: rowModel.pageId, field: 'tier' }],
+    });
+  });
+
+  it('refuses a column that is not writable, and a page that is not a writable row', () => {
+    expect(
+      resolvePageMessage(rowModel, { type: 'propose-write-back', field: 'display_name' }),
+    ).toBeUndefined();
+    expect(
+      resolvePageMessage(model, { type: 'propose-write-back', field: 'tier' }),
+    ).toBeUndefined();
+    expect(
+      resolvePageMessage(undefined, { type: 'propose-write-back', field: 'tier' }),
+    ).toBeUndefined();
+  });
+});

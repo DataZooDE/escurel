@@ -1,3 +1,4 @@
+import { describeWriteBackRefusal } from '../shared/writeBack';
 import type {
   Changeset,
   DiffDraftResponse,
@@ -346,6 +347,22 @@ export function interpretPromoteDraftError(err: unknown, draftId: string): Decis
         message: `Conflict: target page moved under draft ${draftId}. Re-draft required.`,
         closeDiff: false,
         refresh: false,
+      };
+    }
+  }
+
+  // A write-back refusal (the human gate was passed, the SOURCE did not take the change): say what
+  // happened and what to do. The draft stays open, so promoting again is the retry.
+  if (err instanceof EscurelError) {
+    const issue = err.issues?.[0];
+    const advice = issue ? describeWriteBackRefusal(issue.code, issue.message) : undefined;
+    if (issue && advice) {
+      return {
+        kind: issue.code === 'write_back_conflict' ? 'conflict' : 'error',
+        message: advice,
+        closeDiff: false,
+        // a dead-lettered or conflicted attempt leaves an event and may change what Awaiting shows
+        refresh: issue.code !== 'write_back_conflict',
       };
     }
   }

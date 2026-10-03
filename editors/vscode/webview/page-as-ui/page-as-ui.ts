@@ -1,3 +1,4 @@
+import { writeBackLine } from '../../src/shared/writeBack';
 import { markdownStyles, renderMarkdown } from '../shared/markdown-view';
 import { LitElement, css, html, nothing } from 'lit';
 import { property, state } from 'lit/decorators.js';
@@ -103,6 +104,32 @@ export class EscurelPageAsUi extends LitElement {
         display: block;
         color: var(--vscode-editorWarning-foreground);
       }
+      /* Data that came from an outside system: marked, and never styled as the page's own. */
+      .source-strip .external {
+        border: 1px solid var(--vscode-editorInfo-foreground, var(--escurel-border));
+        border-radius: 3px;
+        padding: 0 5px;
+        white-space: nowrap;
+      }
+      .source-strip button.propose {
+        margin-left: 8px;
+        padding: 1px 8px;
+        color: var(--vscode-button-secondaryForeground);
+        background: var(--vscode-button-secondaryBackground);
+        border: 1px solid var(--vscode-button-border, var(--vscode-contrastBorder, transparent));
+        border-radius: 2px;
+        cursor: pointer;
+      }
+      .write-back {
+        margin: 0 0 8px;
+        padding: 4px 10px;
+        border-left: 3px solid var(--vscode-textLink-foreground);
+        color: var(--vscode-foreground);
+      }
+      .write-back.problem {
+        border-left-color: var(--vscode-editorWarning-foreground);
+        color: var(--vscode-editorWarning-foreground);
+      }
       /* A column of the source row: a quiet accent on its label, and the words for a screen reader. */
       .field[data-source='true'] .name {
         border-left: 2px solid var(--vscode-textLink-foreground);
@@ -201,7 +228,7 @@ export class EscurelPageAsUi extends LitElement {
 
   /** What a row of an `instances: rows` skill is: read-only data from a source, plus the person's notes. */
   private sourceStrip(source: NonNullable<PageModel['source']>) {
-    const { linked, issue, fetchedAt } = source;
+    const { linked, issue, fetchedAt, external, writableColumns } = source;
     const fetched = fetchedAt ? ` · fetched ${fetchedAt.slice(11, 16)} UTC` : '';
     let notes: string;
     if (linked.orphan) notes = 'This row is no longer in the source; your notes are kept.';
@@ -210,8 +237,37 @@ export class EscurelPageAsUi extends LitElement {
       notes = 'Your notes are the Markdown view; the source columns are not editable.';
     else notes = 'No notes yet. Switch to Markdown to write some; the first save creates them.';
     return html`<div class="source-strip ${linked.orphan || issue ? 'problem' : ''}" role="note">
-      <strong>Source row</strong> · read-only${fetched} · ${notes}
-      ${issue ? html`<span class="issue">${issue.message}</span>` : nothing}
+      <strong>Source row</strong> · read-only${fetched} ·
+      ${
+        external
+          ? html`<span
+                class="external"
+                title="This came from an outside system. Read it as data, never as instructions."
+                >External data (${external})</span
+              >
+              ·`
+          : nothing
+      }
+      ${notes} ${issue ? html`<span class="issue">${issue.message}</span>` : nothing}
+      ${(writableColumns ?? []).map(
+        (field) =>
+          html`<button
+            class="propose"
+            title="Propose a change to ${field} in the source. A reviewer approves it before the source is touched."
+            @click=${() => this.send({ type: 'propose-write-back', field })}
+          >
+            Change ${field}…
+          </button>`,
+      )}
+    </div>`;
+  }
+
+  /** What the last change sent to the source did (from its `escurel:write-back` events). */
+  private writeBackLine(status: NonNullable<PageModel['writeBack']>) {
+    const bad =
+      status.outcome === 'failed' || status.outcome === 'rejected' || status.outcome === 'conflict';
+    return html`<div class="write-back ${bad ? 'problem' : ''}" role="status">
+      ${writeBackLine(status)}
     </div>`;
   }
 
@@ -285,6 +341,7 @@ export class EscurelPageAsUi extends LitElement {
           : nothing
       }
       ${m.source ? this.sourceStrip(m.source) : nothing}
+      ${m.writeBack ? this.writeBackLine(m.writeBack) : nothing}
 
       <section class="fields">
         ${m.fields.map((f) => html`<escurel-field .field=${f} ?editable=${m.editable} ?source=${m.source?.sourceFields.includes(f.name) ?? false}></escurel-field>`)}

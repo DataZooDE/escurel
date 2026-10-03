@@ -1,3 +1,4 @@
+import { latestWriteBack, type WriteBackStatus } from '../shared/writeBack';
 import { resolvePageMessage } from './pageMessages';
 import * as vscode from 'vscode';
 import type { EscurelClient } from '../client';
@@ -82,7 +83,25 @@ export class PageAsUiEditor implements vscode.CustomReadonlyEditorProvider {
             ...(cursor ? { cursor } : {}),
           }),
         );
-        current = strip ? { ...model, thread: strip } : model;
+        // What the last change sent to the source did. Like the thread strip it is an addition: a
+        // failure here must not cost the user the page.
+        let writeBack: WriteBackStatus | undefined;
+        if (model.source?.external) {
+          try {
+            const evs = await c.listEvents({
+              instance_page_id: pageId,
+              label_skill: 'escurel:write-back',
+              include_system: true,
+              newest_first: true,
+              limit: 20,
+            });
+            writeBack = latestWriteBack(evs.events);
+          } catch {
+            writeBack = undefined;
+          }
+        }
+        const base = strip ? { ...model, thread: strip } : model;
+        current = writeBack ? { ...base, writeBack } : base;
         post({ type: 'page', model: current });
       } catch (err) {
         post({ type: 'error', message: describeError(err) });

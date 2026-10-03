@@ -250,6 +250,13 @@ async fn a_promoted_write_back_is_applied_once_with_an_idempotency_key_and_an_et
     )
     .await;
     let id = draft_id(&d);
+    // The page tells a client which columns may be proposed for write-back.
+    let proj = admin(&p, "expand", json!({ "page_id": PAGE })).await;
+    assert_eq!(
+        proj["backend_projection"]["writable_columns"],
+        json!(["tier"]),
+        "the projection names the writable columns: {proj}"
+    );
     assert_eq!(
         c.patches.lock().unwrap().len(),
         0,

@@ -71,3 +71,42 @@ describe('companionFrontmatter', () => {
     expect(companionFrontmatter(fm, undefined)).toEqual(fm);
   });
 });
+
+describe('rowSourceOf: rows from a remote (REST/MCP) upstream', () => {
+  const remote = {
+    kind: 'openapi',
+    instances: 'rows',
+    read_only: true,
+    trust: 'external',
+    fetched_at: '2026-10-03T12:03:44.000000Z',
+    etag: 'w1:abc',
+    writable_columns: ['tier'],
+    rows: [{ display_name: 'Acme' }],
+    source: { display_name: 'Acme', tier: 'silver' },
+    linked: { enabled: true, exists: false, orphan: false },
+  };
+
+  it('knows the data is external, where it came from and what may be proposed', () => {
+    expect(rowSourceOf(remote)).toEqual({
+      fetchedAt: '2026-10-03T12:03:44.000000Z',
+      sourceFields: ['display_name', 'tier'],
+      linked: { enabled: true, exists: false, orphan: false },
+      external: 'REST',
+      etag: 'w1:abc',
+      writableColumns: ['tier'],
+    });
+    expect(rowSourceOf({ ...remote, kind: 'mcp' })?.external).toBe('MCP');
+  });
+
+  it('reads a plain-string issue (the upstream could not be read) as an unavailable source', () => {
+    expect(rowSourceOf({ ...remote, issue: 'upstream status 503' })?.issue).toEqual({
+      code: 'source_unavailable',
+      message: 'upstream status 503',
+    });
+  });
+
+  it('a SQL rows projection is not external', () => {
+    expect(rowSourceOf(projection)?.external).toBeUndefined();
+    expect(rowSourceOf(projection)?.writableColumns).toBeUndefined();
+  });
+});
