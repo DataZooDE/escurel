@@ -54,7 +54,7 @@ pub const BLOCKS_DENSE_VEC_DIM: usize = 768;
 pub const DEFAULT_QUERY_TIMEOUT_MS: u64 = 60_000;
 
 pub struct Indexer {
-    store: Arc<dyn LaneStore>,
+    pub(crate) store: Arc<dyn LaneStore>,
     pub(crate) embedder: Arc<dyn Embedder>,
     pub(crate) conn: Mutex<Connection>,
     /// Write-serialization lock. Held across the whole
@@ -243,6 +243,16 @@ pub enum IndexerError {
          pages. If the corpus is genuinely empty, clear the index explicitly."
     )]
     RefusedEmptyRebuild { existing: i64 },
+
+    /// `migrate_kind(apply)` found pages with CRDT ops newer than their newest snapshot. The live
+    /// document would no longer line up with a rewritten snapshot, so nothing is written.
+    #[error(
+        "refusing to migrate: {} page(s) have live CRDT ops newer than their newest snapshot \
+         (close the sessions, or run `escurel admin compact-lanes` and retry): {}",
+        pages.len(),
+        pages.join(", ")
+    )]
+    KindMigrationRefused { pages: Vec<String> },
 
     #[error("duckdb error: {0}")]
     Duckdb(#[from] duckdb::Error),
@@ -1985,7 +1995,7 @@ impl Indexer {
         Ok(())
     }
 
-    async fn list_markdown_paths(&self) -> Result<HashSet<String>, IndexerError> {
+    pub(crate) async fn list_markdown_paths(&self) -> Result<HashSet<String>, IndexerError> {
         let prefix = Key::new(self.tenant.as_str(), "markdown/")?;
         let keys = self.store.list(&prefix).await?;
         Ok(keys.into_iter().map(|k| k.path().to_owned()).collect())
@@ -2278,7 +2288,7 @@ fn render_yaml_markup(v: &escurel_md::YamlValue) -> String {
 /// LaneStore for audit but skipped by rebuild/seed so they stay out of the
 /// derived index. A parse failure is treated as not-archived (the normal
 /// index path will surface the error).
-fn is_archived(content: &str) -> bool {
+pub(crate) fn is_archived(content: &str) -> bool {
     parse(content)
         .ok()
         .and_then(|p| {

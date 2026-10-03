@@ -108,6 +108,7 @@ const COVERAGE: &[(&str, Coverage)] = &[
     ("embedding_reload", Admin(&["embedding-reload"])),
     ("rebuild", Admin(&["rebuild"])),
     ("compact_lanes", Admin(&["compact-lanes"])),
+    ("migrate_kind", Admin(&["migrate-kind"])),
     ("tenant_create", Admin(&["tenant", "create"])),
     ("tenant_list", Admin(&["tenant", "list"])),
     ("tenant_get", Admin(&["tenant", "get"])),

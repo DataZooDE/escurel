@@ -1,0 +1,324 @@
+//! `Indexer::migrate_kind`: the one-way rewrite of the page-kind key `type:` -> `kind:`.
+//!
+//! Real DuckDB + real file store + real Loro snapshots, no mocks. The failure modes this guards
+//! are the ones that lose data or take a tenant down: a dry run that writes, a rewrite that
+//! touches a user's own `type:` field, an open draft left unpromotable, a signed pack page
+//! rewritten under its signature, a run that is not idempotent.
+
+use std::sync::Arc;
+
+use bytes::Bytes;
+use duckdb::Connection;
+use escurel_embed::{Embedder, ZeroEmbedder};
+use escurel_index::drafts::{NewDraft, content_hash};
+use escurel_index::{Indexer, Migrator};
+use escurel_storage::{FsStore, Key, LaneStore};
+use tempfile::TempDir;
+
+const TENANT: &str = "acme";
+
+struct Harness {
+    store: Arc<dyn LaneStore>,
+    indexer: Indexer,
+    /// A second connection onto the SAME database instance the indexer uses (a fresh
+    /// `Connection::open` would be a separate instance whose writes the indexer cannot see).
+    side: Connection,
+    _store_dir: TempDir,
+    _db_dir: TempDir,
+}
+
+fn fresh() -> Harness {
+    let store_dir = TempDir::new().unwrap();
+    let db_dir = TempDir::new().unwrap();
+    let store: Arc<dyn LaneStore> = Arc::new(FsStore::new(store_dir.path().to_path_buf()));
+    let embedder: Arc<dyn Embedder> = Arc::new(ZeroEmbedder::default());
+    let db_path = db_dir.path().join("escurel.duckdb");
+    let conn = Connection::open(&db_path).unwrap();
+    Migrator::up(&conn).unwrap();
+    let side = conn.try_clone().unwrap();
+    let indexer = Indexer::new(Arc::clone(&store), embedder, conn, TENANT).unwrap();
+    Harness {
+        store,
+        indexer,
+        side,
+        _store_dir: store_dir,
+        _db_dir: db_dir,
+    }
+}
+
+fn key(path: &str) -> Key {
+    Key::new(TENANT, path.to_owned()).unwrap()
+}
+
+/// Write a LEGACY page straight into the lane (as an old store holds it) and index it through the
+/// transitional parser, which still reads both spellings.
+async fn put(h: &Harness, path: &str, md: &str) {
+    h.store
+        .write(&key(path), Bytes::from(md.to_owned()))
+        .await
+        .unwrap();
+    h.indexer.update_page(path, md).await.unwrap();
+}
+
+async fn lane(h: &Harness, path: &str) -> String {
+    String::from_utf8(h.store.read(&key(path)).await.unwrap().to_vec()).unwrap()
+}
+
+const SKILL: &str = "markdown/skills/customer.md";
+const C1: &str = "markdown/instances/customer/c1.md";
+const INVOICE: &str = "markdown/instances/doc/inv1.md";
+const BOTH: &str = "markdown/instances/doc/both.md";
+const BASE: &str = "markdown/base/pack/skills/shared.md";
+
+fn skill_md() -> &'static str {
+    "---\ntype: skill\nid: customer\ndescription: A buyer.\n---\n# customer\n"
+}
+fn c1_md() -> &'static str {
+    "---\ntype: instance\nskill: customer\nid: c1\n---\n# c1\n\ntype: instance in prose stays.\n"
+}
+fn invoice_md() -> &'static str {
+    // An instance that is ALREADY on `kind:` and has its own data field named `type`.
+    "---\nkind: instance\nskill: doc\nid: inv1\ntype: invoice\n---\n# inv1\n"
+}
+fn both_md() -> &'static str {
+    "---\ntype: instance\nkind: instance\nskill: doc\nid: both\n---\n# both\n"
+}
+fn base_md() -> &'static str {
+    "---\ntype: skill\nid: shared\n---\n# shared\n"
+}
+
+async fn seed(h: &Harness) {
+    put(h, SKILL, skill_md()).await;
+    put(h, C1, c1_md()).await;
+    put(h, INVOICE, invoice_md()).await;
+    put(h, BOTH, both_md()).await;
+    put(h, BASE, base_md()).await;
+}
+
+#[tokio::test]
+async fn a_dry_run_reports_what_it_would_do_and_writes_nothing() {
+    let h = fresh();
+    seed(&h).await;
+
+    let report = h.indexer.migrate_kind(false).await.unwrap();
+
+    assert!(!report.applied);
+    let mut would = report.pages_to_migrate.clone();
+    would.sort();
+    assert_eq!(would, vec![C1.to_owned(), SKILL.to_owned()]);
+    assert_eq!(report.conflicts, vec![BOTH.to_owned()]);
+    assert_eq!(report.skipped_pack_base, vec![BASE.to_owned()]);
+    assert_eq!(
+        report.already_kind, 1,
+        "the invoice page is already on kind:"
+    );
+    // Nothing was written: every lane object is byte-identical.
+    assert_eq!(lane(&h, SKILL).await, skill_md());
+    assert_eq!(lane(&h, C1).await, c1_md());
+    assert!(
+        report.audit_event_id.is_none(),
+        "a dry run records no audit event"
+    );
+}
+
+#[tokio::test]
+async fn apply_rewrites_only_the_page_kind_key_and_a_second_run_is_a_no_op() {
+    let h = fresh();
+    seed(&h).await;
+
+    let report = h.indexer.migrate_kind(true).await.unwrap();
+    assert!(report.applied);
+    assert_eq!(report.pages_to_migrate.len(), 2);
+
+    assert_eq!(
+        lane(&h, SKILL).await,
+        "---\nkind: skill\nid: customer\ndescription: A buyer.\n---\n# customer\n"
+    );
+    assert_eq!(
+        lane(&h, C1).await,
+        "---\nkind: instance\nskill: customer\nid: c1\n---\n# c1\n\ntype: instance in prose stays.\n",
+        "prose that happens to say `type: instance` is not frontmatter"
+    );
+    // The user's own `type: invoice` field is untouched, and so is everything else about the page.
+    assert_eq!(lane(&h, INVOICE).await, invoice_md());
+    // A conflict is reported and left exactly as it was; so is the signed pack page.
+    assert_eq!(lane(&h, BOTH).await, both_md());
+    assert_eq!(lane(&h, BASE).await, base_md());
+
+    // The index follows the lane: the migrated page still reads back.
+    let page = h
+        .indexer
+        .expand(C1, None, None)
+        .await
+        .unwrap()
+        .expect("c1 is indexed");
+    assert_eq!(page.page.skill, "customer");
+
+    let again = h.indexer.migrate_kind(true).await.unwrap();
+    assert!(
+        again.pages_to_migrate.is_empty(),
+        "idempotent: nothing left to migrate"
+    );
+    assert_eq!(again.already_kind, 3, "skill, c1 and the invoice page");
+    assert_eq!(again.conflicts, vec![BOTH.to_owned()]);
+    assert_eq!(lane(&h, SKILL).await, lane(&h, SKILL).await);
+}
+
+#[tokio::test]
+async fn apply_preserves_who_wrote_each_page() {
+    let h = fresh();
+    h.store
+        .write(&key(C1), Bytes::from(c1_md().to_owned()))
+        .await
+        .unwrap();
+    h.indexer
+        .update_page_as(C1, c1_md(), Some("agent:alice"))
+        .await
+        .unwrap();
+
+    h.indexer.migrate_kind(true).await.unwrap();
+
+    assert!(
+        lane(&h, C1).await.starts_with("---\nkind: instance\n"),
+        "it was migrated"
+    );
+    let page = h.indexer.expand(C1, None, None).await.unwrap().unwrap();
+    assert_eq!(page.last_written_by.as_deref(), Some("agent:alice"));
+}
+
+#[tokio::test]
+async fn an_open_draft_is_rewritten_in_place_with_a_new_hash_and_decided_drafts_are_not() {
+    let h = fresh();
+    put(&h, SKILL, skill_md()).await;
+    let proposed = "---\ntype: instance\nskill: customer\nid: c2\n---\n# c2\n";
+    let open = h
+        .indexer
+        .create_draft(NewDraft {
+            target_page_id: "markdown/instances/customer/c2.md".to_owned(),
+            content: proposed.to_owned(),
+            base_sha256: None,
+            author: "agent:x".to_owned(),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    let decided = h
+        .indexer
+        .create_draft(NewDraft {
+            target_page_id: "markdown/instances/customer/c3.md".to_owned(),
+            content: "---\ntype: instance\nskill: customer\nid: c3\n---\n# c3\n".to_owned(),
+            base_sha256: None,
+            author: "agent:x".to_owned(),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    h.indexer
+        .close_draft(&decided.draft_id, "discarded", "alice", "no")
+        .await
+        .unwrap();
+
+    let report = h.indexer.migrate_kind(true).await.unwrap();
+
+    assert_eq!(report.drafts.len(), 1);
+    let m = &report.drafts[0];
+    assert_eq!(m.draft_id, open.draft_id);
+    assert_eq!(m.old_sha256, content_hash(proposed));
+    let after = h.indexer.get_draft(&open.draft_id).await.unwrap().unwrap();
+    assert!(after.content.starts_with("---\nkind: instance\n"));
+    assert_eq!(after.content_sha256, content_hash(&after.content));
+    assert_eq!(after.content_sha256, m.new_sha256);
+    assert_ne!(after.content_sha256, open.content_sha256);
+    assert_eq!(after.status, "open");
+    // The decided draft keeps its bytes: it is history, not pending work.
+    let kept = h
+        .indexer
+        .get_draft(&decided.draft_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(kept.content.starts_with("---\ntype: instance\n"));
+    // The audit trail records that the bytes changed and why.
+    let id = report
+        .audit_event_id
+        .expect("an applied migration records an audit event");
+    let event = h
+        .indexer
+        .get_event(&id)
+        .await
+        .unwrap()
+        .expect("event stored");
+    assert_eq!(event.label_skill, "escurel:kind-migration");
+    assert!(event.body.contains(&open.draft_id), "{}", event.body);
+}
+
+#[tokio::test]
+async fn historical_crdt_snapshots_are_rewritten_so_history_still_reads() {
+    let h = fresh();
+    put(&h, SKILL, skill_md()).await;
+    let page = "markdown/instances/engagement/spine.md";
+    let old = "---\ntype: instance\nskill: engagement\nid: spine\nat: 2026-03-01T00:00:00Z\nphase: a\n---\n# Spine\n";
+    put(&h, page, old).await;
+    h.indexer
+        .seed_snapshot_history(page, &[("2026-03-10T00:00:00Z", old)])
+        .await
+        .unwrap();
+
+    let dry = h.indexer.migrate_kind(false).await.unwrap();
+    assert_eq!(dry.snapshots_rewritten, 0, "a dry run rewrites no snapshot");
+    assert_eq!(
+        dry.snapshots_to_rewrite, 1,
+        "but it counts what it would rewrite"
+    );
+
+    let report = h.indexer.migrate_kind(true).await.unwrap();
+    assert_eq!(report.snapshots_rewritten, 1);
+
+    // Snapshot bytes are Loro; the table is read directly, the way history reads it.
+    let bytes: Vec<u8> = h
+        .side
+        .query_row(
+            "SELECT snapshot_bytes FROM crdt_snapshots WHERE page_id = ?",
+            [page],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let md = escurel_crdt::body_from_snapshot(&bytes).unwrap();
+    assert!(md.starts_with("---\nkind: instance\n"), "{md}");
+    assert!(
+        !md.contains("type: instance"),
+        "no legacy key left in history: {md}"
+    );
+}
+
+#[tokio::test]
+async fn apply_refuses_while_a_page_has_crdt_ops_newer_than_its_newest_snapshot() {
+    let h = fresh();
+    let page = "markdown/instances/engagement/live.md";
+    let old = "---\ntype: instance\nskill: engagement\nid: live\n---\n# Live\n";
+    put(&h, page, old).await;
+    h.indexer
+        .seed_snapshot_history(page, &[("2026-03-10T00:00:00Z", old)])
+        .await
+        .unwrap();
+    {
+        let conn = &h.side;
+        conn.execute(
+            "INSERT INTO crdt_ops (page_id, op_id, hlc, op_bytes) VALUES (?, 'o1', 99, ?)",
+            duckdb::params![page, vec![1u8, 2, 3]],
+        )
+        .unwrap();
+    }
+
+    let dry = h.indexer.migrate_kind(false).await.unwrap();
+    assert_eq!(dry.crdt_pages_with_live_ops, vec![page.to_owned()]);
+
+    let err = h
+        .indexer
+        .migrate_kind(true)
+        .await
+        .expect_err("apply must refuse");
+    assert!(err.to_string().contains("live"), "{err}");
+    // Nothing was written by the refused run.
+    assert_eq!(lane(&h, page).await, old);
+}

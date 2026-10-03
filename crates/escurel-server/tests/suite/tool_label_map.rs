@@ -51,6 +51,7 @@ const EXPECTED: &[&str] = &[
     "list_lineage:deterministic",
     "close_session:orchestration",
     "compact_lanes:orchestration",
+    "migrate_kind:orchestration",
     "abandon_branch:orchestration",
     "create_branch:deterministic",
     "create_draft:orchestration",

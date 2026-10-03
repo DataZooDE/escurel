@@ -35,6 +35,7 @@ pub mod groups;
 pub mod indexer;
 mod materialise;
 pub mod meta_skill;
+pub mod migrate_kind;
 pub mod pack;
 pub mod quack_policy;
 pub mod quack_session;

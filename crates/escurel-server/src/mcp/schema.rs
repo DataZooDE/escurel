@@ -1552,6 +1552,28 @@ pub(crate) fn tool_defs() -> Vec<ToolDef> {
             }),
         ),
         tool_entry(
+            "migrate_kind",
+            Execution::Orchestration,
+            Scope::Admin,
+            Touches::INDEX,
+            "Admin: rewrite the tenant's stored pages, OPEN drafts and historical CRDT snapshots from \
+                 the removed `type:` page-kind key to `kind:`. DRY RUN unless `apply` is true: the \
+                 dry run reports `{pages_to_migrate, conflicts, skipped_pack_base, drafts, \
+                 snapshots_to_rewrite, crdt_pages_with_live_ops}` and writes nothing. A page that \
+                 has BOTH keys is a conflict and is never auto-fixed; signed pack pages \
+                 (`markdown/base/**`) are skipped (the publisher re-exports). `apply` refuses \
+                 while a page has a live CRDT session, and records an `escurel:kind-migration` \
+                 audit event.",
+            json!({
+                "type": "object",
+                "required": ["tenant_id"],
+                "properties": {
+                    "tenant_id": { "type": "string" },
+                    "apply": { "type": "boolean", "description": "Write the changes. Default false (dry run)." }
+                }
+            }),
+        ),
+        tool_entry(
             "publish_snapshot",
             Execution::Orchestration,
             Scope::Admin,

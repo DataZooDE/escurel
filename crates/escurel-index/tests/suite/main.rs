@@ -40,6 +40,7 @@ mod kreuzberg_extract;
 mod live_inspect;
 mod merge_from_attached;
 mod migrate;
+mod migrate_kind;
 mod neighbours;
 mod no_payload_in_catalog_live;
 mod quack_load_probe;

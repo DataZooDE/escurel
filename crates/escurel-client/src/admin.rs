@@ -36,11 +36,11 @@ pub use escurel_types::{
     AttachExternalRequest, AttachExternalResponse, AuditRequest, AuditResponse,
     CompactLanesRequest, CompactProgress, DeleteChatHistoryRequest, DeleteChatHistoryResponse,
     EmbeddingReloadRequest, EmbeddingReloadResponse, ExportPackRequest, HealthRequest,
-    HealthResponse, PackManifest, QuotaGetRequest, QuotaGetResponse, RebuildProgress,
-    RebuildRequest, TenantCreateRequest, TenantCreateResponse, TenantDeleteRequest,
-    TenantDeleteResponse, TenantExportRequest, TenantGetRequest, TenantGetResponse,
-    TenantImportResponse, TenantListRequest, TenantListResponse, TenantUpdateRequest,
-    TenantUpdateResponse,
+    HealthResponse, MigrateKindReport, MigrateKindRequest, PackManifest, QuotaGetRequest,
+    QuotaGetResponse, RebuildProgress, RebuildRequest, TenantCreateRequest, TenantCreateResponse,
+    TenantDeleteRequest, TenantDeleteResponse, TenantExportRequest, TenantGetRequest,
+    TenantGetResponse, TenantImportResponse, TenantListRequest, TenantListResponse,
+    TenantUpdateRequest, TenantUpdateResponse,
 };
 
 /// Typed MCP-over-HTTP client for the Escurel v1 **admin** surface.
@@ -229,6 +229,17 @@ impl AdminClient {
     pub async fn compact_lanes(&self, req: CompactLanesRequest) -> Result<CompactProgress, Error> {
         self.transport
             .call_typed("compact_lanes", json!({ "tenant_id": req.tenant_id }))
+            .await
+    }
+
+    /// Rewrite a tenant's pages, open drafts and historical CRDT snapshots from the removed `type:`
+    /// page-kind key to `kind:`. A dry run unless `apply` is set.
+    pub async fn migrate_kind(&self, req: MigrateKindRequest) -> Result<MigrateKindReport, Error> {
+        self.transport
+            .call_typed(
+                "migrate_kind",
+                json!({ "tenant_id": req.tenant_id, "apply": req.apply }),
+            )
             .await
     }
 

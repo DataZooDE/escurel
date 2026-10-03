@@ -49,12 +49,13 @@ use escurel_quota::{Dimension, QuotaError, QuotaManager};
 use escurel_storage::{Key, StoreError};
 use escurel_types::{
     AdminLaneBlobResponse, AttachExternalResponse, CompactProgress, EmbeddingReloadResponse,
-    ListSkillsResponse, PublishSnapshotResponse, QuotaGetResponse, RebuildProgress,
-    Skill as TypesSkill, SkillAcl as TypesSkillAcl, SkillBackend as TypesSkillBackend,
-    SkillCapabilities as TypesSkillCapabilities, SkillField as TypesSkillField,
-    SkillParam as TypesSkillParam, TenantCreateResponse, TenantDeleteResponse, TenantGetResponse,
-    TenantImportResponse, TenantListResponse, TenantSpec as TypesTenantSpec, TenantUpdateResponse,
-    WebhookDeliveriesResponse, WebhookDelivery,
+    ListSkillsResponse, MigrateKindRequest, PublishSnapshotResponse, QuotaGetResponse,
+    RebuildProgress, Skill as TypesSkill, SkillAcl as TypesSkillAcl,
+    SkillBackend as TypesSkillBackend, SkillCapabilities as TypesSkillCapabilities,
+    SkillField as TypesSkillField, SkillParam as TypesSkillParam, TenantCreateResponse,
+    TenantDeleteResponse, TenantGetResponse, TenantImportResponse, TenantListResponse,
+    TenantSpec as TypesTenantSpec, TenantUpdateResponse, WebhookDeliveriesResponse,
+    WebhookDelivery,
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -932,6 +933,9 @@ async fn dispatch_tools_call(
         }
         "compact_lanes" => {
             return tool_compact_lanes(state, params.arguments).await;
+        }
+        "migrate_kind" => {
+            return tool_migrate_kind(state, params.arguments).await;
         }
         "publish_snapshot" => {
             return tool_publish_snapshot(state).await;

@@ -2178,6 +2178,28 @@ pub(super) async fn tool_publish_snapshot(state: &AppState) -> Result<Value, Jso
     })
 }
 
+/// Admin: rewrite the tenant's stored pages from the legacy `type:` page-kind key to `kind:`
+/// (stage 1 of the OKF program). `apply` defaults to false: a dry run that writes nothing.
+pub(super) async fn tool_migrate_kind(
+    state: &AppState,
+    args: Value,
+) -> Result<Value, JsonRpcError> {
+    let a: MigrateKindRequest = parse_args(args, "migrate_kind")?;
+    if !a.tenant_id.is_empty() {
+        validate_tenant_id(&a.tenant_id)
+            .map_err(|e| JsonRpcError::invalid_params(e.to_string()))?;
+    }
+    let indexer = admin_indexer(state)?;
+    ensure_tenant_matches(&indexer, &a.tenant_id)?;
+    match indexer.migrate_kind(a.apply).await {
+        Ok(report) => to_value(report),
+        Err(e @ escurel_index::indexer::IndexerError::KindMigrationRefused { .. }) => {
+            Err(JsonRpcError::invalid_params(format!("migrate_kind: {e}")))
+        }
+        Err(e) => Err(JsonRpcError::internal(format!("migrate_kind: {e}"))),
+    }
+}
+
 pub(super) async fn tool_compact_lanes(
     state: &AppState,
     args: Value,

@@ -9,8 +9,8 @@ use clap::{Args, Subcommand};
 use escurel_client::{
     AdminClient, AttachExternalRequest, AuditRequest, CompactLanesRequest,
     DeleteChatHistoryRequest, EmbeddingReloadRequest, ExportPackRequest, HealthRequest,
-    QuotaGetRequest, RebuildRequest, TenantCreateRequest, TenantDeleteRequest, TenantExportRequest,
-    TenantGetRequest, TenantListRequest, TenantSpec, TenantUpdateRequest,
+    MigrateKindRequest, QuotaGetRequest, RebuildRequest, TenantCreateRequest, TenantDeleteRequest,
+    TenantExportRequest, TenantGetRequest, TenantListRequest, TenantSpec, TenantUpdateRequest,
 };
 use serde_json::{Value, json};
 
@@ -59,6 +59,17 @@ pub enum AdminCmd {
     CompactLanes {
         #[arg(long)]
         tenant: String,
+    },
+    /// Rewrite a tenant's pages, open drafts and historical CRDT snapshots from the removed
+    /// `type:` page-kind key to `kind:`. A DRY RUN unless `--apply` is given: it reports what it
+    /// would change and writes nothing. Pages with both keys are conflicts and are never
+    /// auto-fixed; signed pack pages are skipped (the publisher re-exports).
+    MigrateKind {
+        #[arg(long)]
+        tenant: String,
+        /// Write the changes (default: dry run).
+        #[arg(long)]
+        apply: bool,
     },
     /// Skill packs — the versioned, signed unit of distribution
     /// between escurel nodes.
@@ -355,6 +366,15 @@ pub async fn run(client: &AdminClient, cmd: AdminCmd) -> Result<Value> {
                 })
                 .await?;
             Ok(json!({ "done": p.done, "total": p.total }))
+        }
+        AdminCmd::MigrateKind { tenant, apply } => {
+            let r = client
+                .migrate_kind(MigrateKindRequest {
+                    tenant_id: tenant,
+                    apply,
+                })
+                .await?;
+            Ok(serde_json::to_value(r)?)
         }
         AdminCmd::CompactLanes { tenant } => {
             let p = client
