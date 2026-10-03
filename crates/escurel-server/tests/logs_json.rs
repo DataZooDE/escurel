@@ -23,7 +23,7 @@ use escurel_obs::{TelemetryConfig, json_log_layer};
 use escurel_test_support::{AuthMode, ConfigOverrides, EscurelProcess, FixtureBuilder, Opts};
 use serde_json::{Value, json};
 
-const CUSTOMER_SKILL: &str = "---\ntype: skill\nid: customer\n\
+const CUSTOMER_SKILL: &str = "---\nkind: skill\nid: customer\n\
 description: A buyer.\nrequired_frontmatter: [id]\n---\n# customer\n";
 use tracing_subscriber::layer::SubscriberExt;
 

@@ -20,7 +20,7 @@ use std::sync::{Arc, Mutex};
 const TENANT: &str = "acme";
 const PAGE: &str = "markdown/instances/customer/acme-gmbh.md";
 const BODY: &str =
-    "---\ntype: instance\nskill: customer\nid: acme-gmbh\n---\n# Acme GmbH\nA customer.\n";
+    "---\nkind: instance\nskill: customer\nid: acme-gmbh\n---\n# Acme GmbH\nA customer.\n";
 
 /// A webhook sink that records every delivered payload.
 async fn sink() -> (String, Arc<Mutex<Vec<serde_json::Value>>>) {
@@ -132,7 +132,7 @@ async fn a_skill_page_write_is_not_announced() {
     let _ = c
         .update_page(UpdatePageRequest {
             page_id: "markdown/skills/customer.md".to_owned(),
-            content: "---\ntype: skill\nid: customer\ndescription: Customers.\n---\n# customer\n"
+            content: "---\nkind: skill\nid: customer\ndescription: Customers.\n---\n# customer\n"
                 .to_owned(),
             ..Default::default()
         })

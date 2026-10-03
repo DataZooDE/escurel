@@ -410,7 +410,7 @@ FixtureEscurelClient _bootstrapInlineFixture() {
   return FixtureEscurelClient.fromSources(
     skillFiles: const {
       'note.md': '''---
-type: skill
+kind: skill
 id: note
 description: A free-form note. The simplest skill — useful for first-light demos.
 required_frontmatter: [title]
@@ -424,7 +424,7 @@ A bare-bones note skill. Replace this inline corpus with your tenant.
     },
     instanceFiles: const {
       'note__welcome.md': '''---
-type: instance
+kind: instance
 skill: note
 id: welcome
 title: Welcome

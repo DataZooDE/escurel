@@ -26,7 +26,7 @@ const WF_SKILL: &str = "deep-research";
 // `backend`/`phases` blocks avoids block-indent pitfalls; the reducer reads
 // this frontmatter via `expand`.
 const WF_SKILL_BODY: &str = "---\n\
-type: skill\n\
+kind: skill\n\
 id: deep-research\n\
 description: Two-phase workflow test plan.\n\
 backend: {kind: workflow}\n\
@@ -41,7 +41,7 @@ phases: [{id: scope, produces: research-angle, fan_out: 1}, {id: synthesize, pro
 // produced instance (async-ops Phase 4 slice 3a; crew F8).
 const DELEGATE_WF_SKILL: &str = "delegate-plan";
 const DELEGATE_WF_BODY: &str = "---\n\
-type: skill\n\
+kind: skill\n\
 id: delegate-plan\n\
 description: A one-phase plan whose step delegates to an unavailable harness.\n\
 backend: {kind: workflow}\n\
@@ -54,7 +54,7 @@ phases: [{id: produce, produces: research-report, fan_out: 1, harness: delegate}
 // up-front budget gate refuses to start it when max_runs_per_root is small.
 const BIG_WF_SKILL: &str = "over-budget";
 const BIG_WF_SKILL_BODY: &str = "---\n\
-type: skill\n\
+kind: skill\n\
 id: over-budget\n\
 description: A plan too large for a tiny budget.\n\
 backend: {kind: workflow}\n\
@@ -70,7 +70,7 @@ phases: [{id: scope, produces: research-angle, fan_out: 10}]\n\
 // per-skeptic `vote_index` stamping.
 const VERIFY_WF_SKILL: &str = "claim-check";
 const VERIFY_WF_BODY: &str = "---\n\
-type: skill\n\
+kind: skill\n\
 id: claim-check\n\
 description: Barrier workflow test plan — extract, adversarially verify, synthesize.\n\
 backend: {kind: workflow}\n\
@@ -82,24 +82,24 @@ verify: {votes_per_claim: 3, refutations_required: 2}\n\
 
 // Per-phase framing rides the `produces:` skill body (the packager's
 // `instructions`), not the plan's sections.
-const CLAIMS_SKILL_BODY: &str = "---\ntype: skill\nid: claims\n---\n# claims\n\n\
+const CLAIMS_SKILL_BODY: &str = "---\nkind: skill\nid: claims\n---\n# claims\n\n\
 Read the question on the run board and extract 2-4 concise, checkable factual \
 claims that answer it. Write them as a short numbered list.\n";
-const VERIFY_VOTE_SKILL_BODY: &str = "---\ntype: skill\nid: verify-vote\n\
+const VERIFY_VOTE_SKILL_BODY: &str = "---\nkind: skill\nid: verify-vote\n\
 required_frontmatter: [claim, vote_index, verdict]\n\
 optional_frontmatter: [reason, workflow_run]\n---\n# verify-vote\n\n\
 You are an adversarial skeptic. Try to refute the claims under review; if they \
 hold up, vote valid. Be rigorous and cite your reasoning in one line.\n";
 
 const ANGLE_SKILL_BODY: &str =
-    "---\ntype: skill\nid: research-angle\n---\n# research-angle\n\nOne search angle.\n";
+    "---\nkind: skill\nid: research-angle\n---\n# research-angle\n\nOne search angle.\n";
 const REPORT_SKILL_BODY: &str =
-    "---\ntype: skill\nid: research-report\n---\n# research-report\n\nThe cited report.\n";
+    "---\nkind: skill\nid: research-report\n---\n# research-report\n\nThe cited report.\n";
 // Owner-scoped (crew Phase-2 F3): a `start_operation` board carries
 // `requested_by` and is readable only by that requester (+admin). Boards created
 // directly via `capture_event` in the reducer-focused tests carry no
 // `requested_by`, so their `get_operation` reads use an admin token.
-const RUN_SKILL_BODY: &str = "---\ntype: skill\nid: workflow-run\n\
+const RUN_SKILL_BODY: &str = "---\nkind: skill\nid: workflow-run\n\
 visibility: owner\nowner_field: requested_by\n\
 optional_frontmatter: [wf_skill, status, requested_by, requester_groups, idempotency_key, conversation_ref, channel_tenant]\n\
 ---\n# workflow-run\n\nThe run board.\n";
@@ -322,7 +322,7 @@ async fn create_run_board(p: &EscurelProcess, run_page: &str, wf_skill: &str) {
         .and_then(|s| s.strip_suffix(".md"))
         .expect("run board page id shape");
     let content = format!(
-        "---\ntype: instance\nskill: workflow-run\nid: {slug}\nwf_skill: {wf_skill}\n\
+        "---\nkind: instance\nskill: workflow-run\nid: {slug}\nwf_skill: {wf_skill}\n\
          ---\n# operation\n\nAsync operation run board.\n"
     );
     let written = call_mcp(
@@ -1037,7 +1037,7 @@ async fn workflow_first_step_failure_drives_operation_to_terminal_failed() {
 // to `Stop`.
 const PROSE_WF_SKILL: &str = "reorder-flow";
 const PROSE_WF_BODY: &str = "---\n\
-type: skill\n\
+kind: skill\n\
 id: reorder-flow\n\
 description: Prose-authored workflow test plan.\n\
 backend: {kind: workflow}\n\
@@ -2400,7 +2400,7 @@ async fn recovery_re_drives_a_non_terminal_run_to_completion() {
     // proving resume survives process death (§7).
     let run_page = "markdown/instances/workflow-run/rec.md";
     // The board records which plan it belongs to (recovery reads `wf_skill`).
-    let board_body = "---\ntype: instance\nskill: workflow-run\nid: rec\n\
+    let board_body = "---\nkind: instance\nskill: workflow-run\nid: rec\n\
          wf_skill: deep-research\n---\n# run rec\n";
     // Scope's produced instance, at its DETERMINISTIC pre-flagged page id.
     let angle_page = escurel_runner_workflow::key::step_instance_page_id(
@@ -2415,7 +2415,7 @@ async fn recovery_re_drives_a_non_terminal_run_to_completion() {
         .strip_suffix(".md")
         .unwrap();
     let angle_body =
-        format!("---\ntype: instance\nskill: research-angle\nid: {angle_id}\n---\n# angle\n");
+        format!("---\nkind: instance\nskill: research-angle\nid: {angle_id}\n---\n# angle\n");
 
     let gateway = EscurelProcess::spawn(Opts {
         auth: AuthMode::TestIssuer,
@@ -2574,9 +2574,9 @@ async fn over_budget_plan_fails_fast_at_invocation_emitting_no_steps() {
 // --- G1: integrative distillation (durable-target weave) -------------------
 
 const ENTITY_SKILL_BODY: &str =
-    "---\ntype: skill\nid: entity\n---\n# entity\n\nA durable entity/concept page.\n";
-const ENTITY_ACME: &str = "---\ntype: instance\nskill: entity\nid: acme\n---\n# Acme Corp\n\nBaseline facts about Acme.\n";
-const ENTITY_GLOBEX: &str = "---\ntype: instance\nskill: entity\nid: globex\n---\n# Globex\n\nBaseline facts about Globex.\n";
+    "---\nkind: skill\nid: entity\n---\n# entity\n\nA durable entity/concept page.\n";
+const ENTITY_ACME: &str = "---\nkind: instance\nskill: entity\nid: acme\n---\n# Acme Corp\n\nBaseline facts about Acme.\n";
+const ENTITY_GLOBEX: &str = "---\nkind: instance\nskill: entity\nid: globex\n---\n# Globex\n\nBaseline facts about Globex.\n";
 
 /// Poll `expand(page_id)` until its frontmatter carries `key`, returning the
 /// value — or panic at the deadline.
@@ -2625,7 +2625,7 @@ async fn distill_weaves_one_source_into_two_existing_pages() {
                     "distill-claim",
                     "d1-c-acme",
                     format!(
-                        "---\ntype: instance\nskill: distill-claim\nid: d1-c-acme\n\
+                        "---\nkind: instance\nskill: distill-claim\nid: d1-c-acme\n\
                          target_page: {acme_page}\naction: update\nworkflow_run: {run_page}\n\
                          ---\n# claim\n\nAcme shipped a new product line in 2026.\n"
                     ),
@@ -2634,7 +2634,7 @@ async fn distill_weaves_one_source_into_two_existing_pages() {
                     "distill-claim",
                     "d1-c-globex",
                     format!(
-                        "---\ntype: instance\nskill: distill-claim\nid: d1-c-globex\n\
+                        "---\nkind: instance\nskill: distill-claim\nid: d1-c-globex\n\
                          target_page: {globex_page}\naction: update\nworkflow_run: {run_page}\n\
                          ---\n# claim\n\nGlobex opened a Berlin office in 2026.\n"
                     ),
@@ -2642,7 +2642,7 @@ async fn distill_weaves_one_source_into_two_existing_pages() {
                 .instance(
                     "workflow-run",
                     "d1",
-                    "---\ntype: instance\nskill: workflow-run\nid: d1\nwf_skill: distill\n---\n# run d1\n",
+                    "---\nkind: instance\nskill: workflow-run\nid: d1\nwf_skill: distill\n---\n# run d1\n",
                 )
                 .done(),
         ),
@@ -2781,21 +2781,21 @@ async fn lint_flags_orphan_stale_contradiction_without_rewriting() {
         auth: AuthMode::TestIssuer,
         fixtures: Some(
             tf.skill("entity", ENTITY_SKILL_BODY)
-                .skill("note", "---\ntype: skill\nid: note\n---\n# note\n")
+                .skill("note", "---\nkind: skill\nid: note\n---\n# note\n")
                 // orphan: nothing links to it.
-                .instance("entity", "orphan", "---\ntype: instance\nskill: entity\nid: orphan\n---\n# Orphan\n\nUnreferenced.\n")
+                .instance("entity", "orphan", "---\nkind: instance\nskill: entity\nid: orphan\n---\n# Orphan\n\nUnreferenced.\n")
                 // stale: old last_verified, but linked (so it is stale, not orphan).
-                .instance("entity", "stale", "---\ntype: instance\nskill: entity\nid: stale\nlast_verified: 2020-01-01T00:00:00Z\n---\n# Stale\n\nOld.\n")
+                .instance("entity", "stale", "---\nkind: instance\nskill: entity\nid: stale\nlast_verified: 2020-01-01T00:00:00Z\n---\n# Stale\n\nOld.\n")
                 // contradiction: same fact_key, different fact_value; both linked.
-                .instance("entity", "c1", "---\ntype: instance\nskill: entity\nid: c1\nfact_key: capital\nfact_value: Berlin\n---\n# C1\n")
-                .instance("entity", "c2", "---\ntype: instance\nskill: entity\nid: c2\nfact_key: capital\nfact_value: Munich\n---\n# C2\n")
+                .instance("entity", "c1", "---\nkind: instance\nskill: entity\nid: c1\nfact_key: capital\nfact_value: Berlin\n---\n# C1\n")
+                .instance("entity", "c2", "---\nkind: instance\nskill: entity\nid: c2\nfact_key: capital\nfact_value: Munich\n---\n# C2\n")
                 // linked control: has an inbound link, fresh, consistent → no issue.
-                .instance("entity", "linked", "---\ntype: instance\nskill: entity\nid: linked\n---\n# Linked\n")
+                .instance("entity", "linked", "---\nkind: instance\nskill: entity\nid: linked\n---\n# Linked\n")
                 // The linker gives stale/c1/c2/linked an inbound edge (its own
                 // skill `note` is not scanned).
-                .instance("note", "links", "---\ntype: instance\nskill: note\nid: links\n---\n# links\n\nSee [[entity::stale]], [[entity::c1]], [[entity::c2]], [[entity::linked]].\n")
+                .instance("note", "links", "---\nkind: instance\nskill: note\nid: links\n---\n# links\n\nSee [[entity::stale]], [[entity::c1]], [[entity::c2]], [[entity::linked]].\n")
                 // Run board carries the scan scope + staleness cutoff.
-                .instance("workflow-run", "lint1", "---\ntype: instance\nskill: workflow-run\nid: lint1\nwf_skill: lint\nscan_skills: entity\nstale_before: 2025-01-01T00:00:00Z\n---\n# lint run\n")
+                .instance("workflow-run", "lint1", "---\nkind: instance\nskill: workflow-run\nid: lint1\nwf_skill: lint\nscan_skills: entity\nstale_before: 2025-01-01T00:00:00Z\n---\n# lint run\n")
                 .done(),
         ),
         ..Default::default()
@@ -2922,7 +2922,7 @@ async fn lint_tick_schedules_a_scan_without_manual_invocation() {
         auth: AuthMode::TestIssuer,
         fixtures: Some(
             tf.skill("entity", ENTITY_SKILL_BODY)
-                .instance("entity", "lonely", "---\ntype: instance\nskill: entity\nid: lonely\n---\n# Lonely\n\nNo inbound links.\n")
+                .instance("entity", "lonely", "---\nkind: instance\nskill: entity\nid: lonely\n---\n# Lonely\n\nNo inbound links.\n")
                 .done(),
         ),
         ..Default::default()
@@ -3092,9 +3092,9 @@ async fn distill_stamps_last_verified_on_the_woven_page() {
                 .instance(
                     "distill-claim",
                     "f1-c-acme",
-                    format!("---\ntype: instance\nskill: distill-claim\nid: f1-c-acme\ntarget_page: {target}\naction: update\n---\n# claim\n\nAcme fact.\n"),
+                    format!("---\nkind: instance\nskill: distill-claim\nid: f1-c-acme\ntarget_page: {target}\naction: update\n---\n# claim\n\nAcme fact.\n"),
                 )
-                .instance("workflow-run", "f1", "---\ntype: instance\nskill: workflow-run\nid: f1\nwf_skill: distill\n---\n# run\n")
+                .instance("workflow-run", "f1", "---\nkind: instance\nskill: workflow-run\nid: f1\nwf_skill: distill\n---\n# run\n")
                 .done(),
         ),
         ..Default::default()
@@ -3182,10 +3182,10 @@ async fn eval_improves_a_failing_skill_then_reverify_passes() {
         auth: AuthMode::TestIssuer,
         fixtures: Some(
             // The skill under evaluation — initially missing the expected fact.
-            tf.page("skills/faq.md", "---\ntype: skill\nid: faq\ndescription: FAQ\n---\n# FAQ\n\nEscurel is a knowledge base.\n")
+            tf.page("skills/faq.md", "---\nkind: skill\nid: faq\ndescription: FAQ\n---\n# FAQ\n\nEscurel is a knowledge base.\n")
                 // A persistent benchmark task (not run-scoped) — every eval run
                 // scores it; the fix is applied once, then re-scoring passes.
-                .instance("eval-task", "air", format!("---\ntype: instance\nskill: eval-task\nid: air\nimplicated_page: {faq_skill}\nexpect: air-gappable\nfix: Escurel is fully air-gappable.\n---\n# task\n"))
+                .instance("eval-task", "air", format!("---\nkind: instance\nskill: eval-task\nid: air\nimplicated_page: {faq_skill}\nexpect: air-gappable\nfix: Escurel is fully air-gappable.\n---\n# task\n"))
                 .done(),
         ),
         ..Default::default()
@@ -3264,9 +3264,9 @@ async fn eval_regression_is_flagged_when_a_fix_does_not_hold() {
     let gateway = EscurelProcess::spawn(Opts {
         auth: AuthMode::TestIssuer,
         fixtures: Some(
-            tf.page("skills/faq.md", "---\ntype: skill\nid: faq\ndescription: FAQ\n---\n# FAQ\n\nEscurel is a KB.\n")
+            tf.page("skills/faq.md", "---\nkind: skill\nid: faq\ndescription: FAQ\n---\n# FAQ\n\nEscurel is a KB.\n")
                 // A BROKEN fix: the woven text does not contain the expected string.
-                .instance("eval-task", "x", format!("---\ntype: instance\nskill: eval-task\nid: x\nimplicated_page: {doc}\nexpect: air-gappable\nfix: This note does not answer it.\n---\n# task\n"))
+                .instance("eval-task", "x", format!("---\nkind: instance\nskill: eval-task\nid: x\nimplicated_page: {doc}\nexpect: air-gappable\nfix: This note does not answer it.\n---\n# task\n"))
                 .done(),
         ),
         ..Default::default()

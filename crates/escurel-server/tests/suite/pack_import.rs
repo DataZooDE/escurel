@@ -39,21 +39,21 @@ const SPOKE_TENANT: &str = "acme";
 const PACK_SECRET: &str = "shared-pack-signing-secret";
 
 const PALLET_SKILL: &str = "---\n\
-type: skill\n\
+kind: skill\n\
 id: pallet-consolidation\n\
 description: Consolidate partial pallets (firm-authored).\n\
 ---\n\
 # pallet-consolidation\n\nFirm-authored canonical procedure.\n";
 
 const PALLET_EDGE: &str = "---\n\
-type: instance\n\
+kind: instance\n\
 skill: pallet-consolidation\n\
 id: edge-mixed-carrier\n\
 ---\n\
 # Edge case: mixed carrier\n\nTemplate shipped with the pack.\n";
 
 const DENTAL_SKILL: &str = "---\n\
-type: skill\n\
+kind: skill\n\
 id: recall-scheduling\n\
 description: Dental recall scheduling.\n\
 ---\n\
@@ -366,7 +366,7 @@ async fn update_page_can_never_write_under_the_reserved_base_prefix() {
     // alone, even for page ids no import has landed yet.
     let spoke = start_spoke().await;
     let squat = "---\n\
-        type: skill\n\
+        kind: skill\n\
         id: squatted\n\
         description: agent-authored, pretending to be pack content\n\
         ---\n\
@@ -424,7 +424,7 @@ async fn same_version_with_different_content_is_refused() {
 
     // The hub edits the skill and (wrongly) re-publishes the SAME v7.
     let edited = "---\n\
-        type: skill\n\
+        kind: skill\n\
         id: pallet-consolidation\n\
         description: Edited after publish.\n\
         ---\n\
@@ -470,7 +470,7 @@ async fn a_pack_with_one_malformed_page_lands_nothing() {
     let pages = vec![
         (
             "skills/good.md".to_owned(),
-            "---\ntype: skill\nid: good\ndescription: ok\n---\n# good\n".to_owned(),
+            "---\nkind: skill\nid: good\ndescription: ok\n---\n# good\n".to_owned(),
         ),
         (
             "skills/naked.md".to_owned(),
@@ -567,7 +567,7 @@ async fn a_manifest_id_with_unsafe_characters_is_refused() {
     let spoke = start_spoke().await;
     let pages = vec![(
         "skills/x.md".to_owned(),
-        "---\ntype: skill\nid: x\ndescription: ok\n---\n# x\n".to_owned(),
+        "---\nkind: skill\nid: x\ndescription: ok\n---\n# x\n".to_owned(),
     )];
     let tarball = escurel_server::pack::build_tarball(&pages).unwrap();
     let mut manifest = escurel_types::PackManifest {
@@ -604,7 +604,7 @@ async fn a_version_zero_candidate_is_not_importable() {
     let spoke = start_spoke().await;
     let pages = vec![(
         "skills/x.md".to_owned(),
-        "---\ntype: skill\nid: x\ndescription: ok\n---\n# x\n".to_owned(),
+        "---\nkind: skill\nid: x\ndescription: ok\n---\n# x\n".to_owned(),
     )];
     let tarball = escurel_server::pack::build_tarball(&pages).unwrap();
     let mut manifest = escurel_types::PackManifest {
@@ -641,11 +641,11 @@ async fn a_pack_shipping_the_same_skill_id_twice_is_refused() {
     let pages = vec![
         (
             "skills/a.md".to_owned(),
-            "---\ntype: skill\nid: twin\ndescription: first\n---\n# a\n".to_owned(),
+            "---\nkind: skill\nid: twin\ndescription: first\n---\n# a\n".to_owned(),
         ),
         (
             "skills/b.md".to_owned(),
-            "---\ntype: skill\nid: twin\ndescription: second\n---\n# b\n".to_owned(),
+            "---\nkind: skill\nid: twin\ndescription: second\n---\n# b\n".to_owned(),
         ),
     ];
     let tarball = escurel_server::pack::build_tarball(&pages).unwrap();
@@ -716,10 +716,10 @@ async fn export_of_api_authored_pages_roundtrips_to_spoke() {
     let spoke = start_spoke().await;
 
     // Author a skill AND an instance through the public write path.
-    let skill = "---\ntype: skill\nid: playbook\ndescription: A reusable playbook.\n\
+    let skill = "---\nkind: skill\nid: playbook\ndescription: A reusable playbook.\n\
                  required_frontmatter: [title]\n---\n# playbook\n";
     let inst =
-        "---\ntype: instance\nskill: playbook\nid: p1\ntitle: First playbook\n---\n# First\n";
+        "---\nkind: instance\nskill: playbook\nid: p1\ntitle: First playbook\n---\n# First\n";
     let w = call(
         &hub,
         HUB_TENANT,

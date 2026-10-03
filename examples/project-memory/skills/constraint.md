@@ -1,5 +1,5 @@
 ---
-type: skill
+kind: skill
 id: constraint
 description: A limit the project must respect (budget, deadline, regulatory, data-access). Constrains goals and analyses; drifts like expectations do.
 required_frontmatter: [at, statement, constrains, status]

@@ -1,5 +1,5 @@
 ---
-type: instance
+kind: instance
 skill: customer
 id: hoffmann-automotive
 name: Hoffmann Automotive GmbH

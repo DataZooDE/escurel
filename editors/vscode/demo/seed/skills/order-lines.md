@@ -1,5 +1,5 @@
 ---
-type: skill
+kind: skill
 id: order-lines
 description: The demo's sales-order lines as rows (a read-only SQL view over a JSON extract), so reports and charts can aggregate across orders.
 backend:

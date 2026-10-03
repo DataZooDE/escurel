@@ -1,5 +1,5 @@
 ---
-type: skill
+kind: skill
 id: customer-notice
 description: A notice to the customers of the orders an analysis puts at risk (delivery date at risk, new date, apology).
 autonomy: review

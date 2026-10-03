@@ -1,5 +1,5 @@
 ---
-type: skill
+kind: skill
 id: customer-order
 description: A customer sales order (SAP SD, transaction VA03) - header data, delivery status and the items behind it.
 autonomy: review

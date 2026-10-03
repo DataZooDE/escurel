@@ -16,7 +16,7 @@ use tempfile::TempDir;
 const TENANT: &str = "acme";
 const MEMO_SKILL: &str = "\
 ---
-type: skill
+kind: skill
 id: memo
 description: text memos
 backend:
@@ -246,13 +246,13 @@ async fn rebuild_reconstructs_mixed_corpus() {
         // markdown
         i1.update_page(
             "markdown/skills/note.md",
-            "---\ntype: skill\nid: note\ndescription: x\n---\n# note\n",
+            "---\nkind: skill\nid: note\ndescription: x\n---\n# note\n",
         )
         .await
         .unwrap();
         i1.update_page(
             "markdown/instances/note/n1.md",
-            "---\ntype: instance\nskill: note\nid: n1\n---\n# Note one\n",
+            "---\nkind: instance\nskill: note\nid: n1\n---\n# Note one\n",
         )
         .await
         .unwrap();
@@ -338,7 +338,7 @@ async fn document_skill_for_mime_is_deterministic_on_ambiguous_accepts() {
     let i = indexer_on(Arc::clone(&store), &db);
     let pdf_skill = |id: &str| {
         format!(
-            "---\ntype: skill\nid: {id}\ndescription: x\nbackend:\n  kind: document\n  accepts: [application/pdf]\n---\n# {id}\n"
+            "---\nkind: skill\nid: {id}\ndescription: x\nbackend:\n  kind: document\n  accepts: [application/pdf]\n---\n# {id}\n"
         )
     };
     i.update_page("markdown/skills/zreport.md", &pdf_skill("zreport"))

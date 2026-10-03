@@ -10,10 +10,10 @@ use escurel_test_support::{AuthMode, EscurelProcess, FixtureBuilder, Opts, Role}
 use serde_json::{Value, json};
 
 const TENANT: &str = "carl";
-const RENEWAL: &str = "---\ntype: skill\nid: renewal\ndescription: d.\nautonomy: review\n\
+const RENEWAL: &str = "---\nkind: skill\nid: renewal\ndescription: d.\nautonomy: review\n\
 summary: Keeps each contract's renewal date and terms current.\nharness: claude\n\
 actions:\n  - {name: record-decision, kind: event, label: Record the decision, event: decision-record}\n  - {name: ask-why, kind: prompt, label: Ask why, prompt: \"why was {id} renewed?\"}\ncascade:\n  target: produced\n  max_depth: 2\n---\n# renewal\n";
-const DECISION: &str = "---\ntype: skill\nid: decision-record\ndescription: d.\nautonomy: auto\n---\n# decision-record\n";
+const DECISION: &str = "---\nkind: skill\nid: decision-record\ndescription: d.\nautonomy: auto\n---\n# decision-record\n";
 
 async fn start() -> EscurelProcess {
     EscurelProcess::spawn(Opts {
@@ -47,7 +47,7 @@ async fn call(p: &EscurelProcess, token: &str, name: &str, args: Value) -> Value
 }
 
 fn skill(extra: &str) -> String {
-    format!("---\ntype: skill\nid: note\ndescription: d.\nautonomy: review\n{extra}---\n# note\n")
+    format!("---\nkind: skill\nid: note\ndescription: d.\nautonomy: review\n{extra}---\n# note\n")
 }
 
 fn issue<'a>(out: &'a Value, code: &str) -> Option<&'a Value> {

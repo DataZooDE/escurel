@@ -26,13 +26,13 @@ const TENANT: &str = "acme";
 
 const SKILL_QUERY: (&str, &str) = (
     "markdown/skills/query.md",
-    "---\ntype: skill\nid: query\ndescription: Reusable parameterised reads.\n---\n# query\n",
+    "---\nkind: skill\nid: query\ndescription: Reusable parameterised reads.\n---\n# query\n",
 );
 
 /// Public sql_view skill (default tenant read policy ⇒ `public` may read).
 const SKILL_INVENTORY: (&str, &str) = (
     "markdown/skills/inventory.md",
-    "---\ntype: skill\nid: inventory\ndescription: SKU planning inputs, read-only.\n\
+    "---\nkind: skill\nid: inventory\ndescription: SKU planning inputs, read-only.\n\
      backend:\n  kind: sql_view\n  source: { connector: json_dir, relation: /unused }\n\
      search_text: [sku]\n---\n# inventory\n",
 );
@@ -40,7 +40,7 @@ const SKILL_INVENTORY: (&str, &str) = (
 /// Owner-private sql_view skill — a non-owner, non-admin caller is denied.
 const SKILL_INVENTORY_SECRET: (&str, &str) = (
     "markdown/skills/secret_inventory.md",
-    "---\ntype: skill\nid: secret_inventory\ndescription: Owner-private SKU inputs.\n\
+    "---\nkind: skill\nid: secret_inventory\ndescription: Owner-private SKU inputs.\n\
      visibility: owner\nowner_field: credential\n\
      backend:\n  kind: sql_view\n  source: { connector: json_dir, relation: /unused }\n\
      search_text: [sku]\n---\n# secret_inventory\n",
@@ -50,7 +50,7 @@ const SKILL_INVENTORY_SECRET: (&str, &str) = (
 /// managed `{{target}}` view. The model would only ever *select* this page.
 const QUERY_REORDER: (&str, &str) = (
     "markdown/instances/query/reorder-proposal.md",
-    "---\ntype: instance\nskill: query\nid: reorder-proposal\n\
+    "---\nkind: instance\nskill: query\nid: reorder-proposal\n\
      target: \"[[inventory::wh]]\"\n\
      params: []\n\
      sql: \"SELECT sku, t.policy.reorder_point AS reorder_point, t.policy.order_quantity AS order_quantity \
@@ -62,7 +62,7 @@ const QUERY_REORDER: (&str, &str) = (
 /// The same page pointed at the owner-private instance — the negative ACL path.
 const QUERY_REORDER_SECRET: (&str, &str) = (
     "markdown/instances/query/reorder-secret.md",
-    "---\ntype: instance\nskill: query\nid: reorder-secret\n\
+    "---\nkind: instance\nskill: query\nid: reorder-secret\n\
      target: \"[[secret_inventory::wh]]\"\n\
      params: []\n\
      sql: \"SELECT sku, inv_optimize_qr(annual_demand, demand_std, lead_time, order_cost, holding_rate, unit_cost, shortage_cost).reorder_point AS reorder_point FROM {{target}}\"\n\

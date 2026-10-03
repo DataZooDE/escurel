@@ -922,13 +922,13 @@ fn expand_response_guard_fields_wire_shape() {
         "wikilinks_out": [],
         "version": "v12",
         "content_sha256": "cd".repeat(32),
-        "content": "---\ntype: instance\n---\nb\n",
+        "content": "---\nkind: instance\n---\nb\n",
     });
     let resp: ExpandResponse = serde_json::from_value(wire).unwrap();
     assert_eq!(resp.version.as_deref(), Some("v12"));
     assert_eq!(
         resp.content.as_deref(),
-        Some("---\ntype: instance\n---\nb\n"),
+        Some("---\nkind: instance\n---\nb\n"),
         "the stored markdown rides as `content` when asked for (raw: true)"
     );
     assert_eq!(

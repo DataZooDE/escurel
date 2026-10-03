@@ -17,7 +17,7 @@ A skill:
 
 ```markdown
 ---
-type: skill
+kind: skill
 id: customer
 description: A buying organisation tracked by the sales team.
 ---
@@ -31,7 +31,7 @@ An instance:
 
 ```markdown
 ---
-type: instance
+kind: instance
 skill: customer
 id: acme-corp
 ---

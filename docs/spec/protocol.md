@@ -630,7 +630,7 @@ block → the skill's block → the tenant default → deny.
 
 ```yaml
 # markdown/instances/customer_note/hoffmann-1.md
-type: instance
+kind: instance
 skill: customer_note
 id: hoffmann-1
 acl:
@@ -721,7 +721,7 @@ view. The query page
 
 ```yaml
 # markdown/instances/query/sales-by-category.md
-type: instance
+kind: instance
 skill: query
 id: sales-by-category
 target: "[[sales::eu-2026]]"        # the sql_view instance to read

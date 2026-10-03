@@ -222,7 +222,7 @@ class _SkillTile extends ConsumerWidget {
     // Seed a blank draft: every required/optional field empty, body a
     // bare `# <id>` heading the operator fills in.
     final fm = <String, dynamic>{
-      'type': 'instance',
+      'kind': 'instance',
       'skill': skill.id,
       'id': '',
       for (final k in skill.requiredFrontmatter) k: '',

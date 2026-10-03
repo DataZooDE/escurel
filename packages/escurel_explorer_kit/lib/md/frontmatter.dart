@@ -6,7 +6,7 @@
 ///
 /// ```text
 /// ---
-/// type: skill        # required, "skill" or "instance"
+/// kind: skill        # required, "skill" or "instance"
 /// id: customer
 /// ... other yaml ...
 /// ---
@@ -73,12 +73,13 @@ Page parse(String input) {
   }
   final fields = _normaliseMap(loaded);
 
-  final typeRaw = fields['type'];
-  final pageType = switch (typeRaw) {
+  // `kind:` is the page-kind key (it replaced `type:`, OKF alignment).
+  final kindRaw = fields['kind'];
+  final pageType = switch (kindRaw) {
     'skill' => PageType.skill,
     'instance' => PageType.instance,
     _ => throw const ParseException(
-      'frontmatter missing or invalid "type" (expected "skill" or "instance")',
+      'frontmatter missing or invalid "kind" (expected "skill" or "instance")',
     ),
   };
 

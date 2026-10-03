@@ -238,7 +238,7 @@ async fn injection_in_relation_is_rejected() {
 
 const CUSTOMERS_SKILL_TITLE: &str = "\
 ---
-type: skill
+kind: skill
 id: customers
 description: x
 backend:

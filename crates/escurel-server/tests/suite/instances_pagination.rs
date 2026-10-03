@@ -13,7 +13,7 @@ use serde_json::{Value, json};
 use std::collections::BTreeSet;
 
 const TENANT: &str = "stuttgart-ai";
-const NOTE_SKILL: &str = "---\ntype: skill\nid: note\ndescription: A note.\n\
+const NOTE_SKILL: &str = "---\nkind: skill\nid: note\ndescription: A note.\n\
     visibility: public\n---\n# note\n";
 
 async fn start() -> EscurelProcess {
@@ -25,11 +25,11 @@ async fn start() -> EscurelProcess {
         // block must paginate under `order_by` too.
         let body = if i % 2 == 0 {
             format!(
-                "---\ntype: instance\nskill: note\nid: n{i:02}\nat: \"2026-08-01T10:{:02}:00Z\"\n---\n# n{i:02}\n",
+                "---\nkind: instance\nskill: note\nid: n{i:02}\nat: \"2026-08-01T10:{:02}:00Z\"\n---\n# n{i:02}\n",
                 i % 60
             )
         } else {
-            format!("---\ntype: instance\nskill: note\nid: n{i:02}\n---\n# n{i:02}\n")
+            format!("---\nkind: instance\nskill: note\nid: n{i:02}\n---\n# n{i:02}\n")
         };
         fx = fx.instance("note", &format!("n{i:02}"), body);
     }

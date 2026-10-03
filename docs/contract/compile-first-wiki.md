@@ -65,7 +65,7 @@ packager's narrowed `WORKFLOW_STEP_TOOLS` surface, the ledger, recovery.
 ### 2.1 The plan
 
 ```yaml
-type: skill
+kind: skill
 id: distill
 backend: {kind: workflow}
 run_skill: workflow-run
@@ -125,7 +125,7 @@ A new `issue` typed instance-kind (the stored companion to the ephemeral
 `validate` `Issue`):
 
 ```yaml
-type: skill
+kind: skill
 id: issue
 required_frontmatter: [issue_kind, severity, subject_page, message]
 optional_frontmatter: [suggestion, detected_at, source_run, status]

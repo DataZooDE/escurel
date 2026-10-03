@@ -30,7 +30,7 @@ const TENANT: &str = "acme";
 const CUSTOMER_SKILL: (&str, &str) = (
     "markdown/skills/customer.md",
     "---\n\
-     type: skill\n\
+     kind: skill\n\
      id: customer\n\
      description: a customer\n\
      ---\n\

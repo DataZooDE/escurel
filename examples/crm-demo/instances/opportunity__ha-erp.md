@@ -1,5 +1,5 @@
 ---
-type: instance
+kind: instance
 skill: opportunity
 id: ha-erp
 opened: 2026-05-04

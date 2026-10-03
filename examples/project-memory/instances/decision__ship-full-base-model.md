@@ -1,5 +1,5 @@
 ---
-type: instance
+kind: instance
 skill: decision
 id: ship-full-base-model
 at: 2026-02-06T09:00:00Z

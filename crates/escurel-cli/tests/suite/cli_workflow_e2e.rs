@@ -13,7 +13,7 @@ use serde_json::Value;
 const TENANT: &str = "acme";
 
 const WF_SKILL_BODY: &str = "---\n\
-type: skill\n\
+kind: skill\n\
 id: deep-research\n\
 description: Two-phase workflow test plan.\n\
 backend: {kind: workflow}\n\
@@ -22,9 +22,9 @@ phases: [{id: scope, produces: research-angle, fan_out: 1}, {id: synthesize, pro
 ---\n\
 # deep-research\n\nFan out, then synthesize.\n";
 
-const ANGLE_SKILL_BODY: &str = "---\ntype: skill\nid: research-angle\n---\n# research-angle\n";
-const REPORT_SKILL_BODY: &str = "---\ntype: skill\nid: research-report\n---\n# research-report\n";
-const RUN_SKILL_BODY: &str = "---\ntype: skill\nid: workflow-run\n---\n# workflow-run\n";
+const ANGLE_SKILL_BODY: &str = "---\nkind: skill\nid: research-angle\n---\n# research-angle\n";
+const REPORT_SKILL_BODY: &str = "---\nkind: skill\nid: research-report\n---\n# research-report\n";
+const RUN_SKILL_BODY: &str = "---\nkind: skill\nid: workflow-run\n---\n# workflow-run\n";
 
 struct Harness {
     process: EscurelProcess,

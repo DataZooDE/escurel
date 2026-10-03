@@ -38,13 +38,13 @@ const B2_PAGE: &str = "markdown/instances/beta/b2.md";
 const B1_PAGE: &str = "markdown/instances/beta/b1.md";
 
 const ALPHA_SKILL_BODY: &str =
-    "---\ntype: skill\nid: alpha\nautonomy: auto\n---\n# alpha\n\nFold the event in.\n";
+    "---\nkind: skill\nid: alpha\nautonomy: auto\n---\n# alpha\n\nFold the event in.\n";
 const A_INSTANCE_BODY: &str =
-    "---\ntype: instance\nid: a1\nskill: alpha\n---\n# A1\n\nBASELINE alpha.\n";
+    "---\nkind: instance\nid: a1\nskill: alpha\n---\n# A1\n\nBASELINE alpha.\n";
 const B1_INSTANCE_BODY: &str =
-    "---\ntype: instance\nid: b1\nskill: beta\n---\n# B1\n\nBASELINE b1.\n";
+    "---\nkind: instance\nid: b1\nskill: beta\n---\n# B1\n\nBASELINE b1.\n";
 const B2_INSTANCE_BODY: &str =
-    "---\ntype: instance\nid: b2\nskill: beta\n---\n# B2\n\nBASELINE b2.\n";
+    "---\nkind: instance\nid: b2\nskill: beta\n---\n# B2\n\nBASELINE b2.\n";
 
 struct ChildGuard(Child);
 impl Drop for ChildGuard {
@@ -78,7 +78,7 @@ async fn call_mcp(p: &EscurelProcess, name: &str, args: Value) -> Value {
 /// Returns the cascaded beta event, or `None` if none appeared in time.
 async fn cascaded_beta_event(beta_cascade_target: &str) -> Option<Value> {
     let beta_skill = format!(
-        "---\ntype: skill\nid: beta\nautonomy: auto\ncascade_target: {beta_cascade_target}\n\
+        "---\nkind: skill\nid: beta\nautonomy: auto\ncascade_target: {beta_cascade_target}\n\
          ---\n# beta\n\nFold the event in.\n"
     );
     let gateway = EscurelProcess::spawn(Opts {

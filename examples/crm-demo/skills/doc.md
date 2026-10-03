@@ -1,5 +1,5 @@
 ---
-type: skill
+kind: skill
 id: doc
 description: A document artifact (drive/sharepoint) captured into the knowledge base, often an agent-generated analysis.
 required_frontmatter: [at, source, channel]

@@ -1,5 +1,5 @@
 ---
-type: instance
+kind: instance
 skill: workstream
 id: ha-integration
 name: SAP integration bridge

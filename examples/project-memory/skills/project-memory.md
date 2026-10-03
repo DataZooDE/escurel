@@ -1,5 +1,5 @@
 ---
-type: skill
+kind: skill
 id: project-memory
 description: How this project's memory is organised — the two-graph model (knowledge + expectation) and the provenance relation vocabulary. Read this first when entering a data-science project tenant.
 required_frontmatter: []

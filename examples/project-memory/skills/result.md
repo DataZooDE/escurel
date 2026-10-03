@@ -1,5 +1,5 @@
 ---
-type: skill
+kind: skill
 id: result
 description: A measured finding produced by an analysis. Supports or refutes a hypothesis; chains via prev_result on a metric.
 required_frontmatter: [at, statement, produced_by]

@@ -27,7 +27,7 @@ use tempfile::TempDir;
 use tokio::sync::Mutex;
 
 const TENANT: &str = "acme";
-const CUSTOMER_SKILL: &str = "---\ntype: skill\nid: customer\ndescription: x\n---\n# customer\n";
+const CUSTOMER_SKILL: &str = "---\nkind: skill\nid: customer\ndescription: x\n---\n# customer\n";
 
 struct Harness {
     process: EscurelProcess,
@@ -453,7 +453,7 @@ async fn tenant_export_then_import_round_trips() {
     std::fs::create_dir_all(md_dir.join("skills")).unwrap();
     std::fs::write(
         md_dir.join("skills").join("customer.md"),
-        "---\ntype: skill\nid: customer\n---\n# customer\n",
+        "---\nkind: skill\nid: customer\n---\n# customer\n",
     )
     .unwrap();
 

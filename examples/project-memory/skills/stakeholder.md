@@ -1,5 +1,5 @@
 ---
-type: skill
+kind: skill
 id: stakeholder
 description: A person or role whose goals, priorities and constraints shape the project. The root of the expectation graph.
 required_frontmatter: [name, role]

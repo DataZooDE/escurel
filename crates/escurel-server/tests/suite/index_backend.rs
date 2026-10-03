@@ -20,7 +20,7 @@ const TENANT: &str = "acme";
 
 const SKILL_CUSTOMER_PAGE: &str = "markdown/skills/customer.md";
 const SKILL_CUSTOMER_BODY: &str = "---\n\
-     type: skill\n\
+     kind: skill\n\
      id: customer\n\
      description: A buying entity.\n\
      ---\n\
@@ -28,7 +28,7 @@ const SKILL_CUSTOMER_BODY: &str = "---\n\
 
 const INSTANCE_ACME_PAGE: &str = "markdown/instances/customer/acme-corp.md";
 const INSTANCE_ACME_BODY: &str = "---\n\
-     type: instance\n\
+     kind: instance\n\
      skill: customer\n\
      id: acme-corp\n\
      ---\n\

@@ -11,9 +11,9 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
 const TENANT: &str = "stuttgart-ai";
-const NOTE_SKILL: &str = "---\ntype: skill\nid: note\ndescription: A note.\n\
+const NOTE_SKILL: &str = "---\nkind: skill\nid: note\ndescription: A note.\n\
     visibility: public\n---\n# note\n";
-const BASE: &str = "---\ntype: instance\nskill: note\nid: plan\n---\n# Plan\nv1 body.\n";
+const BASE: &str = "---\nkind: instance\nskill: note\nid: plan\n---\n# Plan\nv1 body.\n";
 const PAGE: &str = "markdown/instances/note/plan.md";
 const RUN: &str = "01HRUNXXXXXXXXXXXXXXXXXXXX";
 const ROOT: &str = "01HROOTXXXXXXXXXXXXXXXXXXX";
@@ -58,7 +58,7 @@ async fn call(p: &EscurelProcess, token: &str, tool: &str, args: Value) -> Value
 fn draft_args(text: &str) -> Value {
     json!({
         "target_page_id": PAGE,
-        "content": format!("---\ntype: instance\nskill: note\nid: plan\n---\n# Plan\n{text}\n"),
+        "content": format!("---\nkind: instance\nskill: note\nid: plan\n---\n# Plan\n{text}\n"),
         "base_sha256": sha(BASE),
     })
 }

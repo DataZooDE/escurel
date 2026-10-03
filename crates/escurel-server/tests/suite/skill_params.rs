@@ -27,7 +27,7 @@ const TENANT: &str = "stuttgart-ai";
 
 // The control: a skill that declares no `params:` at all. Every existing
 // skill page in every existing tenant looks like this.
-const NOTE_SKILL: &str = "---\ntype: skill\nid: note\ndescription: A note.\n---\n# note\n";
+const NOTE_SKILL: &str = "---\nkind: skill\nid: note\ndescription: A note.\n---\n# note\n";
 
 // The issue's motivating example — a report skill whose run inputs are
 // nothing like its instance frontmatter. Declared in the LIST form, which
@@ -35,7 +35,7 @@ const NOTE_SKILL: &str = "---\ntype: skill\nid: note\ndescription: A note.\n---\
 // only form that preserves the author's field order.
 const CHURN_SKILL: &str = "\
 ---
-type: skill
+kind: skill
 id: churn-report
 description: Churn over a window.
 required_frontmatter: [at, generated_by]
@@ -53,7 +53,7 @@ params:
 // An author copying the issue verbatim must not get silence.
 const COMPARE_SKILL: &str = "\
 ---
-type: skill
+kind: skill
 id: compare
 description: Compare two instances.
 params:
@@ -67,7 +67,7 @@ params:
 // arrives with from the query-page `params:` idiom (`type: text`).
 const ALIASED_SKILL: &str = "\
 ---
-type: skill
+kind: skill
 id: aliased
 description: Alias soup.
 params:
@@ -84,7 +84,7 @@ params:
 // independently of whatever `validate` says about it.
 const BROKEN_SKILL: &str = "\
 ---
-type: skill
+kind: skill
 id: broken
 description: Fat fingers.
 params:
@@ -381,7 +381,7 @@ async fn validate_warns_on_an_unreadable_param_kind_only() {
     // Positive controls: the renderable set and its aliases stay silent...
     for good in ["string", "integer", "boolean", "text", "int", "bool", "INT"] {
         let page = format!(
-            "---\ntype: skill\nid: note\ndescription: d.\n\
+            "---\nkind: skill\nid: note\ndescription: d.\n\
              params:\n  - {{name: a, kind: {good}}}\n---\n# note\n"
         );
         let out = call(&p, &token, "validate", json!({ "content": page })).await;
@@ -406,7 +406,7 @@ async fn validate_warns_on_an_unreadable_param_kind_only() {
     // the A2UI-renderable set; `dat`/`strng` are typos; `3` is not a string.
     for bad in ["dat", "strng", "date", "number", "3"] {
         let page = format!(
-            "---\ntype: skill\nid: note\ndescription: d.\n\
+            "---\nkind: skill\nid: note\ndescription: d.\n\
              params:\n  - {{name: a, kind: {bad}}}\n---\n# note\n"
         );
         let out = call(&p, &token, "validate", json!({ "content": page })).await;
@@ -439,7 +439,7 @@ async fn validate_errors_on_a_params_block_it_cannot_read() {
         "params: 'window'\n",
         "params:\n  - {kind: string}\n",
     ] {
-        let page = format!("---\ntype: skill\nid: note\ndescription: d.\n{bad}---\n# note\n");
+        let page = format!("---\nkind: skill\nid: note\ndescription: d.\n{bad}---\n# note\n");
         let out = call(&p, &token, "validate", json!({ "content": page })).await;
         let found = issues_with(&out, "frontmatter_params_malformed");
         assert_eq!(found.len(), 1, "should be flagged: {out}");
@@ -453,7 +453,7 @@ async fn validate_errors_on_a_params_block_it_cannot_read() {
         "params:\n  a: {kind: string}\n",
         "params: []\n",
     ] {
-        let page = format!("---\ntype: skill\nid: note\ndescription: d.\n{good}---\n# note\n");
+        let page = format!("---\nkind: skill\nid: note\ndescription: d.\n{good}---\n# note\n");
         let out = call(&p, &token, "validate", json!({ "content": page })).await;
         assert!(
             issues_with(&out, "frontmatter_params_malformed").is_empty(),
@@ -474,7 +474,7 @@ async fn validate_ignores_params_on_a_query_instance_page() {
 
     let query_page = "\
 ---
-type: instance
+kind: instance
 skill: note
 id: churn-trend
 params:
@@ -493,7 +493,7 @@ params:
 
     // Positive control in the same test: the identical block on a SKILL page
     // IS flagged, so the silence above is scoping and not a dead check.
-    let skill_page = query_page.replace("type: instance\nskill: note", "type: skill");
+    let skill_page = query_page.replace("kind: instance\nskill: note", "kind: skill");
     let out = call(&p, &token, "validate", json!({ "content": skill_page })).await;
     assert_eq!(
         issues_with(&out, "frontmatter_param_kind_unknown").len(),

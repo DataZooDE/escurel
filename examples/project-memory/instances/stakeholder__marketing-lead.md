@@ -1,5 +1,5 @@
 ---
-type: instance
+kind: instance
 skill: stakeholder
 id: marketing-lead
 name: Dana Ruiz

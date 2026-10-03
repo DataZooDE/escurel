@@ -13,9 +13,9 @@ use serde_json::{Value, json};
 use std::collections::BTreeSet;
 
 const TENANT: &str = "stuttgart-ai";
-const NOTE_SKILL: &str = "---\ntype: skill\nid: note\ndescription: A note.\n\
+const NOTE_SKILL: &str = "---\nkind: skill\nid: note\ndescription: A note.\n\
     visibility: public\n---\n# note\n";
-const TARGET: &str = "---\ntype: instance\nskill: note\nid: log\n---\n# Log\n";
+const TARGET: &str = "---\nkind: instance\nskill: note\nid: log\n---\n# Log\n";
 const TARGET_PAGE: &str = "markdown/instances/note/log.md";
 
 async fn start() -> EscurelProcess {

@@ -1,5 +1,5 @@
 ---
-type: instance
+kind: instance
 skill: dataset
 id: customer-events
 name: customer-events

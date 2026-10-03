@@ -1,5 +1,5 @@
 ---
-type: skill
+kind: skill
 id: supplier-risk
 description: A supplier-risk signal from purchasing - a vendor's confirmation date moved, a quantity was cut, or its rating changed - folded into the sales orders it affects.
 autonomy: review

@@ -11,15 +11,15 @@ use escurel_test_support::{AuthMode, EscurelProcess, FixtureBuilder, Opts, Role,
 use serde_json::{Value, json};
 
 const TENANT: &str = "acme";
-const RISK: &str = "---\ntype: skill\nid: supplier-risk\nautonomy: review\nactions:\n  - {name: write-analysis, kind: event, label: Write the analysis, event: supplier-risk-analysis}\n  - {name: update-order, kind: event, label: Update the order, event: customer-order}\n---\n# supplier-risk\n";
-const ANALYSIS_SKILL: &str = "---\ntype: skill\nid: supplier-risk-analysis\nautonomy: review\n---\n# supplier-risk-analysis\n";
+const RISK: &str = "---\nkind: skill\nid: supplier-risk\nautonomy: review\nactions:\n  - {name: write-analysis, kind: event, label: Write the analysis, event: supplier-risk-analysis}\n  - {name: update-order, kind: event, label: Update the order, event: customer-order}\n---\n# supplier-risk\n";
+const ANALYSIS_SKILL: &str = "---\nkind: skill\nid: supplier-risk-analysis\nautonomy: review\n---\n# supplier-risk-analysis\n";
 const ORDER_SKILL: &str =
-    "---\ntype: skill\nid: customer-order\nautonomy: review\n---\n# customer-order\n";
-const SUPPLIER_SKILL: &str = "---\ntype: skill\nid: supplier\nautonomy: review\n---\n# supplier\n";
+    "---\nkind: skill\nid: customer-order\nautonomy: review\n---\n# customer-order\n";
+const SUPPLIER_SKILL: &str = "---\nkind: skill\nid: supplier\nautonomy: review\n---\n# supplier\n";
 
 fn order(id: &str, customer: &str, qty: u32, net: &str) -> String {
     format!(
-        "---\ntype: instance\nid: {id}\nskill: customer-order\nsold_to_name: {customer}\ncurrency: EUR\n---\n# {id}\n\n| Item | Material | Description | Qty | Unit | Net value | Confirmed |\n|---|---|---|---:|---|---:|---|\n| 10 | GH-4711 | Gearbox | {qty} | PC | {net} | 2026-10-12 |\n"
+        "---\nkind: instance\nid: {id}\nskill: customer-order\nsold_to_name: {customer}\ncurrency: EUR\n---\n# {id}\n\n| Item | Material | Description | Qty | Unit | Net value | Confirmed |\n|---|---|---|---:|---|---:|---|\n| 10 | GH-4711 | Gearbox | {qty} | PC | {net} | 2026-10-12 |\n"
     )
 }
 
@@ -52,7 +52,7 @@ async fn a_supplier_risk_run_drafts_an_analysis_in_the_same_changeset_as_its_fol
                 .skill("supplier-risk-analysis", ANALYSIS_SKILL)
                 .skill("customer-order", ORDER_SKILL)
                 .skill("supplier", SUPPLIER_SKILL)
-                .instance("supplier", "meier-guss", "---\ntype: instance\nid: meier-guss\nskill: supplier\nvendor: 100234\nname: Meier-Guss GmbH\n---\n# Meier-Guss GmbH\n")
+                .instance("supplier", "meier-guss", "---\nkind: instance\nid: meier-guss\nskill: supplier\nvendor: 100234\nname: Meier-Guss GmbH\n---\n# Meier-Guss GmbH\n")
                 .instance("customer-order", "order-1", order("order-1", "Hoffmann GmbH", 240, "62,400.00"))
                 .instance("customer-order", "order-2", order("order-2", "Kessler GmbH", 200, "66,200.00"))
                 .done(),

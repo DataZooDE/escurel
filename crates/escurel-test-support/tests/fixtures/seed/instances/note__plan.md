@@ -1,5 +1,5 @@
 ---
-type: instance
+kind: instance
 skill: note
 id: plan
 ---

@@ -24,7 +24,7 @@ const TENANT: &str = "acme";
 fn sql_skill_md(data_dir: &str) -> String {
     format!(
         "---\n\
-         type: skill\n\
+         kind: skill\n\
          id: customers\n\
          description: EU customers, mirrored read-only.\n\
          backend:\n\
@@ -44,7 +44,7 @@ fn sql_skill_md(data_dir: &str) -> String {
 // A document skill: tiny chunks (so a short body yields many) + a 2-chunk lead.
 const DOC_SKILL_MD: &str = "\
 ---
-type: skill
+kind: skill
 id: memo
 description: Text memos ingested as documents.
 backend:

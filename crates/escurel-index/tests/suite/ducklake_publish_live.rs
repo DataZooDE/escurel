@@ -30,7 +30,7 @@ const BUCKET: &str = "escurel-lake";
 
 const CUSTOMER_SKILL: &str = "\
 ---
-type: skill
+kind: skill
 id: customer
 description: a customer
 ---
@@ -39,7 +39,7 @@ description: a customer
 
 const ACME_INSTANCE: &str = "\
 ---
-type: instance
+kind: instance
 skill: customer
 id: acme-corp
 ---

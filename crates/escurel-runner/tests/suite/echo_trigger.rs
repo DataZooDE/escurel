@@ -15,12 +15,12 @@ use escurel_test_support::{AuthMode, EscurelProcess, FixtureBuilder, Opts, Role,
 use serde_json::{Value, json};
 
 const TENANT: &str = "acme";
-const SKILL_BODY: &str = "---\ntype: skill\nid: renewal\nautonomy: review\n---\n# renewal\n\nFold the event into the instance.\n";
+const SKILL_BODY: &str = "---\nkind: skill\nid: renewal\nautonomy: review\n---\n# renewal\n\nFold the event into the instance.\n";
 const PAGE_A: &str = "markdown/instances/renewal/c1.md";
 const PAGE_B: &str = "markdown/instances/renewal/c2.md";
 
 fn instance(id: &str) -> String {
-    format!("---\ntype: instance\nid: {id}\nskill: renewal\n---\n# {id}\n\nBASELINE.\n")
+    format!("---\nkind: instance\nid: {id}\nskill: renewal\n---\n# {id}\n\nBASELINE.\n")
 }
 
 struct ChildGuard(Child);

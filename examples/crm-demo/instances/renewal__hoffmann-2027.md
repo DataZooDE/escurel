@@ -1,5 +1,5 @@
 ---
-type: instance
+kind: instance
 skill: renewal
 id: hoffmann-2027
 at: 2026-06-05T17:00:00Z

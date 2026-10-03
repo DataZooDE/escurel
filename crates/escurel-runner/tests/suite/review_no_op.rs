@@ -109,11 +109,11 @@ async fn spawn_idle_model(page_id: String, calls: Arc<Mutex<usize>>) -> String {
 async fn a_review_run_with_nothing_to_do_is_not_retried_into_drafting() {
     let skill = "customer_review";
     let skill_body = format!(
-        "---\ntype: skill\nid: {skill}\nautonomy: review\n---\n# {skill}\n\n\
+        "---\nkind: skill\nid: {skill}\nautonomy: review\n---\n# {skill}\n\n\
          Fold the event in.\n"
     );
     let instance_body = format!(
-        "---\ntype: instance\nid: {INSTANCE_ID}\nskill: {skill}\n---\n\
+        "---\nkind: instance\nid: {INSTANCE_ID}\nskill: {skill}\n---\n\
          # Globex\n\nBASELINE.\n"
     );
     let gateway = EscurelProcess::spawn(Opts {

@@ -67,7 +67,7 @@ fn k(tenant: &str, path: &str) -> Key {
 async fn s3_write_then_read_roundtrip() {
     let (store, _node) = store_and_minio("p1").await;
     let key = k("acme", "markdown/skills/customer.md");
-    let body = Bytes::from_static(b"---\ntype: skill\nid: customer\n---\n# customer\n");
+    let body = Bytes::from_static(b"---\nkind: skill\nid: customer\n---\n# customer\n");
 
     store
         .write(&key, body.clone())
@@ -216,7 +216,7 @@ async fn s3_survives_indexer_style_page_write_and_readback() {
     let key = k("acme", "markdown/instances/customer/acme.md");
     let body = Bytes::from(
         "---\n\
-         type: instance\n\
+         kind: instance\n\
          skill: customer\n\
          id: acme\n\
          ---\n\

@@ -1,5 +1,5 @@
 ---
-type: instance
+kind: instance
 skill: customer
 id: muenchner-pharma
 name: Münchner Pharma AG

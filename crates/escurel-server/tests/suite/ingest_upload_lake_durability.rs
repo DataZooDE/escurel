@@ -26,7 +26,7 @@ use tempfile::TempDir;
 const TENANT: &str = "acme";
 const MEMO_SKILL: &str = "\
 ---
-type: skill
+kind: skill
 id: memo
 description: Text memos ingested as documents.
 backend:

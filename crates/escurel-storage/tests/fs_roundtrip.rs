@@ -24,7 +24,7 @@ fn k(tenant: &str, path: &str) -> Key {
 async fn write_then_read_roundtrip() {
     let (store, _dir) = store_and_dir();
     let key = k("acme", "markdown/skills/customer.md");
-    let body = Bytes::from_static(b"---\ntype: skill\nid: customer\n---\n# customer\n");
+    let body = Bytes::from_static(b"---\nkind: skill\nid: customer\n---\n# customer\n");
 
     store
         .write(&key, body.clone())
@@ -39,7 +39,7 @@ async fn write_then_read_roundtrip() {
 async fn write_creates_parent_directories() {
     let (store, dir) = store_and_dir();
     let key = k("acme", "markdown/instances/customer/acme-corp.md");
-    let body = Bytes::from_static(b"---\ntype: instance\nskill: customer\n---\n");
+    let body = Bytes::from_static(b"---\nkind: instance\nskill: customer\n---\n");
 
     store
         .write(&key, body)

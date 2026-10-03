@@ -15,9 +15,9 @@ use escurel_test_support::{AuthMode, ConfigOverrides, EscurelProcess, FixtureBui
 use serde_json::{Value, json};
 
 const TENANT: &str = "stuttgart-ai";
-const NOTE_SKILL: &str = "---\ntype: skill\nid: note\ndescription: A note.\n\
+const NOTE_SKILL: &str = "---\nkind: skill\nid: note\ndescription: A note.\n\
     visibility: public\n---\n# note\n";
-const NOTE_A: &str = "---\ntype: instance\nskill: note\nid: a\n---\n# A\n";
+const NOTE_A: &str = "---\nkind: instance\nskill: note\nid: a\n---\n# A\n";
 
 async fn start() -> EscurelProcess {
     EscurelProcess::spawn(Opts {

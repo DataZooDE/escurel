@@ -1,5 +1,5 @@
 ---
-type: instance
+kind: instance
 skill: customer-order
 id: order-4500152
 sales_doc: 4500152

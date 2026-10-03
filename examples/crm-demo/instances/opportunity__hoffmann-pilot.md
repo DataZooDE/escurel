@@ -1,5 +1,5 @@
 ---
-type: instance
+kind: instance
 skill: opportunity
 id: hoffmann-pilot
 opened: 2026-04-02

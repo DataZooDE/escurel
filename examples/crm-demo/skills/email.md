@@ -1,5 +1,5 @@
 ---
-type: skill
+kind: skill
 id: email
 description: An inbound or outbound email artifact captured into the knowledge base from a source channel.
 required_frontmatter: [at, source, channel]

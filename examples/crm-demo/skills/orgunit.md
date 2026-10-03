@@ -1,5 +1,5 @@
 ---
-type: skill
+kind: skill
 id: orgunit
 description: A buying centre or division inside a customer — the organisational unit an engagement actually lands in, below the legal account.
 required_frontmatter: [name, customer]

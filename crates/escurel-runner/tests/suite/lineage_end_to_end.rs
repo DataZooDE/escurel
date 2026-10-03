@@ -22,10 +22,10 @@ use serde_json::{Value, json};
 
 const TENANT: &str = "acme";
 const SKILL: &str = "note";
-const SKILL_BODY: &str = "---\ntype: skill\nid: note\nautonomy: review\n---\n# note\n\n\
+const SKILL_BODY: &str = "---\nkind: skill\nid: note\nautonomy: review\n---\n# note\n\n\
     Fold the event into the note it concerns; a human approves.\n";
 const INSTANCE_BODY: &str =
-    "---\ntype: instance\nid: plan\nskill: note\n---\n# Plan\n\nBASELINE.\n";
+    "---\nkind: instance\nid: plan\nskill: note\n---\n# Plan\n\nBASELINE.\n";
 const PAGE: &str = "markdown/instances/note/plan.md";
 
 struct ChildGuard(Child);

@@ -11,7 +11,7 @@ A **skill** page is a type declaration:
 
 ```markdown
 ---
-type: skill
+kind: skill
 id: customer
 description: A buying organisation tracked by the sales team.
 required_frontmatter: [name]
@@ -71,7 +71,7 @@ An **instance** page is a memory of that type:
 
 ```markdown
 ---
-type: instance
+kind: instance
 skill: customer
 id: acme-corp
 name: Acme Corp

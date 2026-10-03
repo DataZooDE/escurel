@@ -1,5 +1,5 @@
 ---
-type: skill
+kind: skill
 id: project
 description: A unit of work with a goal and a lifecycle. A sub-project is a project whose `part_of` names its parent; every work item scopes to its project. Closed with a conclusion.
 required_frontmatter: [title, status]

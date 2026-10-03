@@ -1,5 +1,5 @@
 ---
-type: skill
+kind: skill
 id: customer
 description: A buying organisation. Aggregates contacts, engagements, opportunities and projects under one entity.
 required_frontmatter: [name, country]

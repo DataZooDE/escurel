@@ -25,11 +25,11 @@ const TENANT: &str = "stuttgart-ai";
 const ALICE: &str = "consultant:alice";
 const BOB: &str = "consultant:bob";
 
-const NOTE_SKILL: &str = "---\ntype: skill\nid: note\ndescription: A note.\n---\n# note\n";
+const NOTE_SKILL: &str = "---\nkind: skill\nid: note\ndescription: A note.\n---\n# note\n";
 const NOTE_PAGE: &str = "markdown/instances/note/n1.md";
 
 fn note_markdown(body: &str) -> String {
-    format!("---\ntype: instance\nskill: note\nid: n1\n---\n# n1\n\n{body}\n")
+    format!("---\nkind: instance\nskill: note\nid: n1\n---\n# n1\n\n{body}\n")
 }
 
 async fn start() -> EscurelProcess {
@@ -64,7 +64,7 @@ const HOFFMANN_GROUP: &str = "engagement-hoffmann";
 const ALPINA_GROUP: &str = "engagement-alpina";
 
 const ACL_NOTE_SKILL: &str = r#"---
-type: skill
+kind: skill
 id: customer_note
 description: A note filed against an engagement.
 acl:
@@ -75,7 +75,7 @@ acl:
 "#;
 
 const ALPINA_NOTE: &str = r#"---
-type: instance
+kind: instance
 skill: customer_note
 id: alpina-1
 acl:
@@ -245,7 +245,7 @@ async fn caller_supplied_attribution_cannot_override_the_stamp() {
     let alice = p.mint_token_with_sub(TENANT, Role::Agent, ALICE);
     let bob = p.mint_token_with_sub(TENANT, Role::Agent, BOB);
 
-    let forged = "---\ntype: instance\nskill: note\nid: n1\n\
+    let forged = "---\nkind: instance\nskill: note\nid: n1\n\
         last_written_by: \"consultant:mallory\"\nprincipal: \"consultant:mallory\"\n\
         ---\n# n1\n\nforged\n";
 

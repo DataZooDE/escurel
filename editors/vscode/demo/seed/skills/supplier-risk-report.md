@@ -1,5 +1,5 @@
 ---
-type: skill
+kind: skill
 id: supplier-risk-report
 render: a2ui
 description: One supplier-risk analysis as a report - the facts, the net value at risk per order as a bar chart, and the analysis text.

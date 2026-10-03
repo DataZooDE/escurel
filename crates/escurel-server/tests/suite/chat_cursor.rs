@@ -13,7 +13,7 @@ use serde_json::{Value, json};
 
 const TENANT: &str = "stuttgart-ai";
 
-const NOTE_SKILL: &str = "---\ntype: skill\nid: note\ndescription: A note.\n\
+const NOTE_SKILL: &str = "---\nkind: skill\nid: note\ndescription: A note.\n\
     visibility: public\n---\n# note\n";
 
 async fn start() -> EscurelProcess {

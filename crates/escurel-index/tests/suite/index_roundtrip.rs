@@ -20,7 +20,7 @@ const TENANT: &str = "acme";
 const SKILL_CUSTOMER: (&str, &str) = (
     "markdown/skills/customer.md",
     "---\n\
-     type: skill\n\
+     kind: skill\n\
      id: customer\n\
      description: A buying entity.\n\
      ---\n\
@@ -32,7 +32,7 @@ const SKILL_CUSTOMER: (&str, &str) = (
 const INSTANCE_ACME: (&str, &str) = (
     "markdown/instances/customer/acme-corp.md",
     "---\n\
-     type: instance\n\
+     kind: instance\n\
      skill: customer\n\
      id: acme-corp\n\
      ---\n\
@@ -45,7 +45,7 @@ const INSTANCE_ACME: (&str, &str) = (
 const INSTANCE_GLOBEX: (&str, &str) = (
     "markdown/instances/customer/globex-llc.md",
     "---\n\
-     type: instance\n\
+     kind: instance\n\
      skill: customer\n\
      id: globex-llc\n\
      ---\n\
@@ -568,7 +568,7 @@ async fn update_page_preserves_wikilink_anchors() {
     let h = fresh_harness();
     let path = "markdown/instances/customer/anchored.md";
     let body = "---\n\
-                type: instance\n\
+                kind: instance\n\
                 skill: customer\n\
                 id: anchored\n\
                 ---\n\

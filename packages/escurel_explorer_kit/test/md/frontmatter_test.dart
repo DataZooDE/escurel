@@ -5,7 +5,7 @@ void main() {
   group('parse', () {
     test('parses a valid skill page', () {
       const input = '''---
-type: skill
+kind: skill
 id: customer
 description: A buying entity.
 required_frontmatter: [name, country]
@@ -25,7 +25,7 @@ Body here.
 
     test('parses a valid instance page', () {
       const input = '''---
-type: instance
+kind: instance
 skill: contact
 id: hoffmann
 name: Dr. Hoffmann
@@ -49,7 +49,7 @@ body
 
     test('throws when the frontmatter block is unterminated', () {
       expect(
-        () => parse('---\ntype: skill\nid: x\n'),
+        () => parse('---\nkind: skill\nid: x\n'),
         throwsA(
           isA<ParseException>().having(
             (e) => e.message,
@@ -84,14 +84,14 @@ id: x
     });
 
     test('returns empty body when delimiter is the last line', () {
-      const input = '---\ntype: skill\nid: x\n---';
+      const input = '---\nkind: skill\nid: x\n---';
       final page = parse(input);
       expect(page.body, '');
     });
 
     test('normalises nested yaml maps and lists', () {
       const input = '''---
-type: instance
+kind: instance
 skill: contact
 nested:
   one: 1

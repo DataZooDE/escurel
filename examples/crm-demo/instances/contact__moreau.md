@@ -1,5 +1,5 @@
 ---
-type: instance
+kind: instance
 skill: contact
 id: moreau
 name: Dr. Moreau

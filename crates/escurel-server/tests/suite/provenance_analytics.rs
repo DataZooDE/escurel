@@ -20,11 +20,11 @@ use serde_json::{Value, json};
 const TENANT: &str = "proj";
 
 fn skill(id: &str, extra: &str) -> String {
-    format!("---\ntype: skill\nid: {id}\ndescription: {id}.\n{extra}---\n# {id}\n")
+    format!("---\nkind: skill\nid: {id}\ndescription: {id}.\n{extra}---\n# {id}\n")
 }
 
 fn inst(skill: &str, id: &str, extra: &str) -> String {
-    format!("---\ntype: instance\nskill: {skill}\nid: {id}\n{extra}---\n# {id}\n")
+    format!("---\nkind: instance\nskill: {skill}\nid: {id}\n{extra}---\n# {id}\n")
 }
 
 fn fixtures(decision_owner_private: bool) -> FixtureBuilder {

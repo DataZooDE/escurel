@@ -160,7 +160,7 @@ Proposed contents:
 
 ```yaml
 ---
-type: skill
+kind: skill
 id: escurel
 description: How this knowledge base is organised and how to navigate
   it. Read this first when entering a new tenant.
@@ -540,7 +540,7 @@ frontmatter:
 
 ```yaml
 ---
-type: instance
+kind: instance
 skill: query
 id: customer-churn-trend
 db: ext
@@ -646,7 +646,7 @@ instance. It then declares a bounded walk over the link graph rather than
 SQL, and `query_instance` dispatches on `target:`:
 
 ```yaml
-type: instance
+kind: instance
 skill: query
 id: warm-intro
 target: corpus                       # vs. a [[skill::id]] sql_view

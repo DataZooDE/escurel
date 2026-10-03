@@ -466,7 +466,7 @@ mod tests {
     #[test]
     fn parse_backend_binding_absent_block_is_markdown() {
         assert_eq!(
-            BackendBinding::parse(&json!({"type": "skill", "id": "customer"})),
+            BackendBinding::parse(&json!({"kind": "skill", "id": "customer"})),
             BackendBinding::default()
         );
     }

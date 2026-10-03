@@ -1,5 +1,5 @@
 ---
-type: skill
+kind: skill
 id: project-memory-assistant
 description: How to act as a conversational project-memory assistant — turn a user's chat into well-formed goals/decisions/hypotheses, record them safely, surface drift, and visualise the graph. Load this when a (possibly non-technical) project owner talks to you through any MCP client; you are the interface, there is no app.
 required_frontmatter: []

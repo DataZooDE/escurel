@@ -23,7 +23,7 @@ const TENANT: &str = "acme";
 
 const CUSTOMER_SKILL: &str = "\
 ---
-type: skill
+kind: skill
 id: customer
 description: a customer
 ---
@@ -32,7 +32,7 @@ description: a customer
 
 const ACME_INSTANCE: &str = "\
 ---
-type: instance
+kind: instance
 skill: customer
 id: acme-corp
 ---
@@ -424,7 +424,7 @@ async fn publish_page_sync_is_idempotent_across_repeated_edits() {
     h.indexer
         .update_page(
             "markdown/skills/customer.md",
-            "---\ntype: skill\nid: customer\ndescription: a customer, edited\n---\n# customer\n",
+            "---\nkind: skill\nid: customer\ndescription: a customer, edited\n---\n# customer\n",
         )
         .await
         .unwrap();

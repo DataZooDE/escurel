@@ -1,5 +1,5 @@
 ---
-type: instance
+kind: instance
 skill: supplier
 id: meier-guss
 vendor: 100234

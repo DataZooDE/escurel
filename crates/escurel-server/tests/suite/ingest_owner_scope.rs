@@ -26,7 +26,7 @@ const TENANT: &str = "herkules";
 // A personal document skill: anyone may create their own; only the uploader reads.
 const PERSONAL_SKILL: &str = "\
 ---
-type: skill
+kind: skill
 id: ablage
 description: Persönliche Ablage.
 owner_field: author
@@ -43,7 +43,7 @@ backend:
 // A group-shared document skill: uploads are visible to the whole fraktion.
 const TEAM_SKILL: &str = "\
 ---
-type: skill
+kind: skill
 id: fraktion_gruene_dok
 description: Interne Dokumente der Fraktion GRÜNE.
 owner_field: author

@@ -14,7 +14,7 @@ use tempfile::TempDir;
 const TENANT: &str = "acme";
 const OVERLAY: &str = "\
 ---
-type: instance
+kind: instance
 skill: memo
 id: doc-x
 backend_ref: { kind: document }
@@ -132,7 +132,7 @@ async fn markdown_blocks_have_no_context_while_document_chunks_keep_theirs() {
     let store: Arc<dyn LaneStore> = Arc::new(FsStore::new(store_dir.path().to_path_buf()));
 
     const MD_PAGE: &str = "markdown/skills/memo.md";
-    const MD: &str = "---\ntype: skill\nid: memo\ndescription: memo\n---\n# memo\n\nplain body.\n";
+    const MD: &str = "---\nkind: skill\nid: memo\ndescription: memo\n---\n# memo\n\nplain body.\n";
 
     {
         let conn = duckdb::Connection::open(&db_path).unwrap();

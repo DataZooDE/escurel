@@ -13,11 +13,11 @@ const TENANT: &str = "stuttgart-ai";
 const ALICE: &str = "whatsapp:111";
 const BOB: &str = "whatsapp:222";
 
-const DEAL_NOTE_SKILL: &str = "---\ntype: skill\nid: deal_note\n\
+const DEAL_NOTE_SKILL: &str = "---\nkind: skill\nid: deal_note\n\
     description: A shared deal note.\nowner_field: author\n\
     acl:\n  read: [owner, team-acme]\n  create: [owner]\n  update: [owner]\n  delete: [owner]\n\
     ---\n# deal_note\n";
-const ALICE_NOTE: &str = "---\ntype: instance\nskill: deal_note\nid: alice-q3\n\
+const ALICE_NOTE: &str = "---\nkind: instance\nskill: deal_note\nid: alice-q3\n\
     author: \"whatsapp:111\"\n---\n# Alice Q3\nPipeline.\n";
 const ALICE_NOTE_PAGE: &str = "markdown/instances/deal_note/alice-q3.md";
 
@@ -223,13 +223,13 @@ async fn duckdb_membership_admits_a_groupless_token_to_a_group_granted_write() {
                 .tenant(TENANT)
                 .skill(
                     "shared_note",
-                    "---\ntype: skill\nid: shared_note\ndescription: A note the team may edit.\n\
+                    "---\nkind: skill\nid: shared_note\ndescription: A note the team may edit.\n\
                      acl:\n  read: [public]\n  create: [team-acme]\n  update: [team-acme]\n---\n# shared_note\n",
                 )
                 .instance(
                     "shared_note",
                     "q3",
-                    "---\ntype: instance\nskill: shared_note\nid: q3\n---\n# Q3\nOriginal.\n",
+                    "---\nkind: instance\nskill: shared_note\nid: q3\n---\n# Q3\nOriginal.\n",
                 )
                 .done(),
         ),
@@ -239,7 +239,7 @@ async fn duckdb_membership_admits_a_groupless_token_to_a_group_granted_write() {
     // A token with NO groups — what heron mints for a consultant.
     let groupless = p.mint_token_with_sub(TENANT, Role::Agent, BOB);
     let page = "markdown/instances/shared_note/q3.md";
-    let revised = "---\ntype: instance\nskill: shared_note\nid: q3\n---\n# Q3\nRevised.\n";
+    let revised = "---\nkind: instance\nskill: shared_note\nid: q3\n---\n# Q3\nRevised.\n";
 
     let refused = call_ok(
         &p,

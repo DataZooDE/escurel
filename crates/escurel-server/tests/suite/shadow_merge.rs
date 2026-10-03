@@ -29,7 +29,7 @@ const TENANT: &str = "acme";
 const PACK_SECRET: &str = "shared-pack-signing-secret";
 
 const BASE_SKILL_IN_PACK: &str = "---\n\
-type: skill\n\
+kind: skill\n\
 id: pallet-consolidation\n\
 description: Firm-authored canonical procedure (v1).\n\
 severity_threshold: 10\n\
@@ -37,7 +37,7 @@ severity_threshold: 10\n\
 # pallet-consolidation\n\nFirm-authored body.\n";
 
 const OVERLAY_SKILL: &str = "---\n\
-type: skill\n\
+kind: skill\n\
 id: pallet-consolidation\n\
 description: Acme-specialised procedure.\n\
 ---\n\
@@ -213,7 +213,7 @@ async fn expand_of_the_shadowing_overlay_exposes_base_fields() {
         Role::Admin,
         "update_page",
         json!({ "page_id": "markdown/skills/local-notes.md",
-                "content": "---\ntype: skill\nid: local-notes\ndescription: x\n---\n# local-notes\n" }),
+                "content": "---\nkind: skill\nid: local-notes\ndescription: x\n---\n# local-notes\n" }),
     )
     .await;
     assert_eq!(plain["result"]["structuredContent"]["ok"], true, "{plain}");
@@ -291,7 +291,7 @@ async fn a_promotable_shadowing_overlay_still_promotes() {
     let p = start(FixtureBuilder::new().tenant(TENANT).done()).await;
     let imp = import_base_pack(&p).await;
     assert!(imp.get("error").is_none(), "{imp}");
-    let promotable_overlay = "---\ntype: skill\nid: pallet-consolidation\n\
+    let promotable_overlay = "---\nkind: skill\nid: pallet-consolidation\n\
         description: Acme-specialised, curated for harvest.\npromotable: true\n---\n\
         # pallet-consolidation\n\nTenant-specialised body.\n";
     let w = call(

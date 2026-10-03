@@ -24,7 +24,7 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
 const TENANT: &str = "stuttgart-ai";
-const NOTE_SKILL: &str = "---\ntype: skill\nid: note\ndescription: A note.\n\
+const NOTE_SKILL: &str = "---\nkind: skill\nid: note\ndescription: A note.\n\
     visibility: public\n---\n# note\n";
 
 /// Three pages, because the interesting failure — one member refuses, the
@@ -36,7 +36,7 @@ fn page_id(id: &str) -> String {
 }
 
 fn body(id: &str, text: &str) -> String {
-    format!("---\ntype: instance\nskill: note\nid: {id}\n---\n# {id}\n{text}\n")
+    format!("---\nkind: instance\nskill: note\nid: {id}\n---\n# {id}\n{text}\n")
 }
 
 fn sha(s: &str) -> String {

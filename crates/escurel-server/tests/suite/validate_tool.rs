@@ -12,7 +12,7 @@ use serde_json::{Value, json};
 const TENANT: &str = "acme";
 
 const CUSTOMER_SKILL: &str = "---\n\
-type: skill\n\
+kind: skill\n\
 id: customer\n\
 description: A buying organisation.\n\
 required_frontmatter: [name]\n\
@@ -21,7 +21,7 @@ optional_frontmatter: [tier]\n\
 # customer\n";
 
 const ACME_INSTANCE: &str = "---\n\
-type: instance\n\
+kind: instance\n\
 skill: customer\n\
 id: acme\n\
 name: Acme Corp\n\
@@ -77,7 +77,7 @@ async fn validate_mcp(p: &EscurelProcess, content: &str, as_page_id: Option<&str
 async fn validate_clean_content_returns_no_issues() {
     let p = start().await;
     let content = "---\n\
-                   type: instance\n\
+                   kind: instance\n\
                    skill: customer\n\
                    id: globex\n\
                    name: Globex\n\
@@ -98,7 +98,7 @@ async fn validate_malformed_frontmatter_returns_issue() {
     // Frontmatter that is not valid YAML mapping (a tab + broken
     // indentation under a key produces a YAML scan error).
     let content = "---\n\
-                   type: instance\n\
+                   kind: instance\n\
                    skill: customer\n\
                    id: [unclosed\n\
                    ---\n\
@@ -117,7 +117,7 @@ async fn validate_malformed_frontmatter_returns_issue() {
 async fn validate_unknown_skill_reference_returns_issue() {
     let p = start().await;
     let content = "---\n\
-                   type: instance\n\
+                   kind: instance\n\
                    skill: customer\n\
                    id: globex\n\
                    name: Globex\n\
@@ -139,7 +139,7 @@ async fn validate_missing_required_frontmatter_returns_issue() {
     let p = start().await;
     // `customer` declares required_frontmatter [name]; omit it.
     let content = "---\n\
-                   type: instance\n\
+                   kind: instance\n\
                    skill: customer\n\
                    id: globex\n\
                    ---\n\
@@ -160,7 +160,7 @@ async fn validate_does_not_commit() {
     let p = start().await;
     let new_page = "markdown/instances/customer/ephemeral.md";
     let content = "---\n\
-                   type: instance\n\
+                   kind: instance\n\
                    skill: customer\n\
                    id: ephemeral\n\
                    name: Ephemeral\n\

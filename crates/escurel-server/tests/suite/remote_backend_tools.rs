@@ -96,7 +96,7 @@ async fn live_field(p: &EscurelProcess, page_id: &str, field: &str) -> String {
 // --- openapi: a real, stateful CRM over REST ---------------------------
 
 const CUSTOMER_SKILL: &str = "---\n\
-     type: skill\n\
+     kind: skill\n\
      id: customer\n\
      description: CRM customers, proxied live over REST.\n\
      backend:\n\
@@ -155,7 +155,7 @@ async fn start_crm() -> (String, tokio::task::JoinHandle<()>) {
 /// (kept as a number), `{sku}` interpolates, `via` is a constant. The read
 /// projects the stored order back out so the write is verified end-to-end.
 const ORDERS_SKILL: &str = "---\n\
-     type: skill\n\
+     kind: skill\n\
      id: order\n\
      description: customer orders, proxied live.\n\
      backend:\n\
@@ -367,7 +367,7 @@ async fn openapi_remote_backend_read_write_over_the_wire() {
 // --- mcp: a real, stateful JSON-RPC KB ---------------------------------
 
 const ARTICLE_SKILL: &str = "---\n\
-     type: skill\n\
+     kind: skill\n\
      id: article\n\
      description: KB articles, proxied live over MCP.\n\
      backend:\n\
@@ -383,7 +383,7 @@ const ARTICLE_SKILL: &str = "---\n\
 /// that a read cannot resolve (reads have no payload, only `{id}`). Used to
 /// prove the resource path fails closed rather than sending a literal `{x}`.
 const ARTICLE_RES_SKILL: &str = "---\n\
-     type: skill\n\
+     kind: skill\n\
      id: article_res\n\
      description: KB articles via an MCP resource URI.\n\
      backend:\n\

@@ -45,7 +45,7 @@ const TENANT: &str = "heron";
 // intent unambiguous to a human reading the fixture.
 const RECORDING_SKILL: &str = "\
 ---
-type: skill
+kind: skill
 id: recording
 description: Audio recordings retained as evidence behind derived records.
 backend:
@@ -60,7 +60,7 @@ backend:
 // the alphabetically-earlier wildcard one.
 const PODCAST_SKILL: &str = "\
 ---
-type: skill
+kind: skill
 id: podcast
 description: MP3 episodes, claimed by exact MIME.
 backend:
@@ -74,7 +74,7 @@ backend:
 // Reached by explicit `skill:` (MIME routing would pick `podcast`/`recording`).
 const PRIVATE_SKILL: &str = "\
 ---
-type: skill
+kind: skill
 id: recording_team
 description: Team-internal recordings.
 owner_field: author
@@ -91,7 +91,7 @@ backend:
 // A text skill, so the audio assertions have a same-pipeline control.
 const MEMO_SKILL: &str = "\
 ---
-type: skill
+kind: skill
 id: memo
 description: Text memos.
 backend:
@@ -436,7 +436,7 @@ async fn the_recording_is_an_ordinary_instance_with_identity_links_and_history()
         .update_page(
             "markdown/instances/memo/transkript.md",
             &format!(
-                "---\ntype: instance\nskill: memo\nid: transkript\n---\n\
+                "---\nkind: instance\nskill: memo\nid: transkript\n---\n\
                  # Transkript\nEvidence: [[recording::{instance_id}]].\n"
             ),
         )
@@ -480,7 +480,7 @@ async fn the_recording_is_an_ordinary_instance_with_identity_links_and_history()
     // filing an annotated recording will hit, and the answer is "annotate a
     // page that links to it", not "edit the overlay".
     let edited = format!(
-        "---\ntype: instance\nskill: recording\nid: {instance_id}\n---\n\
+        "---\nkind: instance\nskill: recording\nid: {instance_id}\n---\n\
          # Kundengespräch\nAnnotated after review.\n"
     );
     let write = call(

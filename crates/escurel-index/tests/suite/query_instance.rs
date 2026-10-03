@@ -22,13 +22,13 @@ const TENANT: &str = "acme";
 
 const SKILL_QUERY: (&str, &str) = (
     "markdown/skills/query.md",
-    "---\ntype: skill\nid: query\ndescription: Reusable parameterised reads.\n---\n# query\n",
+    "---\nkind: skill\nid: query\ndescription: Reusable parameterised reads.\n---\n# query\n",
 );
 
 /// A public sql_view skill (default tenant read policy ⇒ `public` may read).
 const SKILL_SALES: (&str, &str) = (
     "markdown/skills/sales.md",
-    "---\ntype: skill\nid: sales\ndescription: Sales lines, mirrored read-only.\n\
+    "---\nkind: skill\nid: sales\ndescription: Sales lines, mirrored read-only.\n\
      backend:\n  kind: sql_view\n  source: { connector: json_dir, relation: /unused }\n\
      search_text: [category]\n---\n# sales\n",
 );
@@ -37,7 +37,7 @@ const SKILL_SALES: (&str, &str) = (
 /// denied (fail-closed), exercising the per-instance ACL on the read path.
 const SKILL_SECRET: (&str, &str) = (
     "markdown/skills/secret_sales.md",
-    "---\ntype: skill\nid: secret_sales\ndescription: Owner-private sales.\n\
+    "---\nkind: skill\nid: secret_sales\ndescription: Owner-private sales.\n\
      visibility: owner\nowner_field: credential\n\
      backend:\n  kind: sql_view\n  source: { connector: json_dir, relation: /unused }\n\
      search_text: [category]\n---\n# secret_sales\n",
@@ -47,7 +47,7 @@ const SKILL_SECRET: (&str, &str) = (
 /// as `:min`. References the target view via `{{target}}`.
 const QUERY_BY_CATEGORY: (&str, &str) = (
     "markdown/instances/query/sales-by-category.md",
-    "---\ntype: instance\nskill: query\nid: sales-by-category\n\
+    "---\nkind: instance\nskill: query\nid: sales-by-category\n\
      target: \"[[sales::eu]]\"\n\
      params:\n  - {name: min, type: number, required: true}\n\
      sql: \"SELECT category, SUM(amount)::BIGINT AS total FROM {{target}} WHERE amount >= :min GROUP BY category ORDER BY category\"\n\
@@ -58,7 +58,7 @@ const QUERY_BY_CATEGORY: (&str, &str) = (
 /// passed as `:cat` is bound, not interpolated.
 const QUERY_BY_NAME: (&str, &str) = (
     "markdown/instances/query/sales-by-name.md",
-    "---\ntype: instance\nskill: query\nid: sales-by-name\n\
+    "---\nkind: instance\nskill: query\nid: sales-by-name\n\
      target: \"[[sales::eu]]\"\n\
      params:\n  - {name: cat, type: text, required: true}\n\
      sql: \"SELECT category, SUM(amount)::BIGINT AS total FROM {{target}} WHERE category = :cat GROUP BY category\"\n\
@@ -69,14 +69,14 @@ const QUERY_BY_NAME: (&str, &str) = (
 /// what `run_stored_query` is for).
 const QUERY_NO_TARGET: (&str, &str) = (
     "markdown/instances/query/no-target.md",
-    "---\ntype: instance\nskill: query\nid: no-target\n\
+    "---\nkind: instance\nskill: query\nid: no-target\n\
      params: []\nsql: \"SELECT 1 AS n\"\n---\n# no-target\n",
 );
 
 /// A query whose target points at an owner-private instance.
 const QUERY_SECRET: (&str, &str) = (
     "markdown/instances/query/secret-by-category.md",
-    "---\ntype: instance\nskill: query\nid: secret-by-category\n\
+    "---\nkind: instance\nskill: query\nid: secret-by-category\n\
      target: \"[[secret_sales::eu]]\"\n\
      params: []\n\
      sql: \"SELECT category, SUM(amount) AS total FROM {{target}} GROUP BY category\"\n\
@@ -325,7 +325,7 @@ async fn acl_denies_non_owner_on_owner_private_target() {
 /// execution now, and would have left this test asserting nothing.
 const QUERY_RUNAWAY: (&str, &str) = (
     "markdown/instances/query/runaway.md",
-    "---\ntype: instance\nskill: query\nid: runaway\n\
+    "---\nkind: instance\nskill: query\nid: runaway\n\
      target: \"[[sales::eu]]\"\n\
      sql: \"SELECT COUNT(*)::BIGINT AS n FROM {{target}} t, range(4000000) a, range(4000000) b, range(4000000) c\"\n\
      ---\n# runaway\n",

@@ -13,14 +13,14 @@ use escurel_test_support::{AuthMode, EscurelProcess, FixtureBuilder, Opts};
 use serde_json::{Value, json};
 
 const SKILL_CUSTOMER_BODY: &str = "---\n\
-     type: skill\n\
+     kind: skill\n\
      id: customer\n\
      description: A buying entity.\n\
      ---\n\
      # customer\n";
 
 const INSTANCE_ACME_BODY: &str = "---\n\
-     type: instance\n\
+     kind: instance\n\
      skill: customer\n\
      id: acme-corp\n\
      ---\n\
@@ -244,7 +244,7 @@ async fn rejected_write_sets_is_error() {
 
     // An instance page missing its required `id` — rejected by validation.
     let bad_content = "---\n\
-         type: instance\n\
+         kind: instance\n\
          skill: customer\n\
          ---\n\
          # No id\n";

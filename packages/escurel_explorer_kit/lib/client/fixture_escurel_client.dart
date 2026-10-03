@@ -72,7 +72,7 @@ class FixtureEscurelClient implements EscurelClient {
       final parsed = _tryParse(basename, raw);
       if (parsed.frontmatter.pageType != md.PageType.skill) {
         throw EscurelToolException(
-          'expected type: skill in $basename',
+          'expected kind: skill in $basename',
           code: 'fixture.wrong_type',
         );
       }
@@ -98,7 +98,7 @@ class FixtureEscurelClient implements EscurelClient {
       final parsed = _tryParse(basename, raw);
       if (parsed.frontmatter.pageType != md.PageType.instance) {
         throw EscurelToolException(
-          'expected type: instance in $basename',
+          'expected kind: instance in $basename',
           code: 'fixture.wrong_type',
         );
       }
@@ -790,7 +790,7 @@ class FixtureEscurelClient implements EscurelClient {
       }
     }
 
-    requireKey('type');
+    requireKey('kind');
     requireKey('id');
     if (parsed.frontmatter.pageType == md.PageType.instance) {
       requireKey('skill');
@@ -1115,7 +1115,7 @@ class FixtureEscurelClient implements EscurelClient {
       skill: skill,
       pageType: md.PageType.instance,
       frontmatter: {
-        'type': 'instance',
+        'kind': 'instance',
         'skill': skill,
         'id': id,
         'name': id,
@@ -1174,7 +1174,7 @@ class FixtureEscurelClient implements EscurelClient {
       skill: skill,
       pageType: md.PageType.instance,
       frontmatter: {
-        'type': 'instance',
+        'kind': 'instance',
         'skill': skill,
         'id': id,
         'name': id,
@@ -1235,7 +1235,7 @@ class FixtureEscurelClient implements EscurelClient {
       skill: handler,
       pageType: md.PageType.instance,
       frontmatter: {
-        'type': 'instance',
+        'kind': 'instance',
         'skill': handler,
         'id': id,
         'name': title ?? id,

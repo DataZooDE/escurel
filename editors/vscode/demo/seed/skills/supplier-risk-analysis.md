@@ -1,5 +1,5 @@
 ---
-type: skill
+kind: skill
 id: supplier-risk-analysis
 description: The persisted result of one supplier-risk run - what was found about a supplier, the orders it puts at risk, how much, and what to do about it.
 autonomy: review

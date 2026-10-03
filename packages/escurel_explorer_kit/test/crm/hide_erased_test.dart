@@ -17,14 +17,14 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 const _memberSkill =
-    '---\ntype: skill\nid: community_member\n'
+    '---\nkind: skill\nid: community_member\n'
     'description: A member.\n---\n# community_member\n';
 const _alice =
-    '---\ntype: instance\nskill: community_member\nid: alice\n'
+    '---\nkind: instance\nskill: community_member\nid: alice\n'
     'name: Alice\ncredential: "whatsapp:111"\n---\n# Alice\n';
 // A tombstoned member, exactly as erase_member leaves it.
 const _bob =
-    '---\ntype: instance\nskill: community_member\nid: bob\n'
+    '---\nkind: instance\nskill: community_member\nid: bob\n'
     'name: Bob\ncredential: "whatsapp:222"\nstatus: erased\n'
     'erased_at: "2026-06-15T00:00:00Z"\n---\n# Bob\nGelöscht auf Nutzerwunsch.\n';
 

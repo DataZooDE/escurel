@@ -20,9 +20,9 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
 const TENANT: &str = "stuttgart-ai";
-const NOTE_SKILL: &str = "---\ntype: skill\nid: note\ndescription: A note.\n\
+const NOTE_SKILL: &str = "---\nkind: skill\nid: note\ndescription: A note.\n\
     visibility: public\n---\n# note\n";
-const DRAFT_BASE: &str = "---\ntype: instance\nskill: note\nid: plan\n---\n# Plan\nv1 body.\n";
+const DRAFT_BASE: &str = "---\nkind: instance\nskill: note\nid: plan\n---\n# Plan\nv1 body.\n";
 const PAGE: &str = "markdown/instances/note/plan.md";
 
 fn sha(s: &str) -> String {
@@ -69,7 +69,7 @@ async fn approve_by_hash_is_a_real_cas_on_a_plain_gateway() {
     let p = start().await;
     let token = p.mint_token(TENANT, Role::Agent);
 
-    let approved = "---\ntype: instance\nskill: note\nid: plan\n---\n# Plan\nAPPROVED body.\n";
+    let approved = "---\nkind: instance\nskill: note\nid: plan\n---\n# Plan\nAPPROVED body.\n";
 
     // A guard drafted against the WRONG state refuses with the head, so
     // the approver can re-diff — never a silent overwrite.
@@ -135,7 +135,7 @@ async fn approve_create_guards_against_a_page_appearing_in_between() {
     let p = start().await;
     let token = p.mint_token(TENANT, Role::Agent);
     const NEW: &str = "markdown/instances/note/fresh.md";
-    let content = "---\ntype: instance\nskill: note\nid: fresh\n---\n# Fresh\n";
+    let content = "---\nkind: instance\nskill: note\nid: fresh\n---\n# Fresh\n";
 
     // Nothing there yet → the empty-guard create commits.
     let ok = update(

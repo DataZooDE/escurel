@@ -17,11 +17,11 @@ import 'package:flutter_test/flutter_test.dart';
 FixtureEscurelClient _client() => FixtureEscurelClient.fromSources(
   skillFiles: const {
     'note.md':
-        '---\ntype: skill\nid: note\ndescription: A note.\n---\n\n# note',
+        '---\nkind: skill\nid: note\ndescription: A note.\n---\n\n# note',
   },
   instanceFiles: const {
     'note__hallo.md':
-        '---\ntype: instance\nskill: note\nid: hallo\ntitle: Hallo\n---\n\n# Hallo',
+        '---\nkind: instance\nskill: note\nid: hallo\ntitle: Hallo\n---\n\n# Hallo',
   },
 );
 

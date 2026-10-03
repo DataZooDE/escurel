@@ -1,5 +1,5 @@
 ---
-type: skill
+kind: skill
 id: supplier
 description: A vendor we buy from (SAP MM, transaction XK03 / BP) - master data and how dependable its confirmations have been.
 autonomy: review

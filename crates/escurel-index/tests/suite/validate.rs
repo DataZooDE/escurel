@@ -19,7 +19,7 @@ const TENANT: &str = "acme";
 const SKILL_CUSTOMER: (&str, &str) = (
     "markdown/skills/customer.md",
     "---\n\
-     type: skill\n\
+     kind: skill\n\
      id: customer\n\
      description: A buying entity.\n\
      required_frontmatter:\n\
@@ -32,7 +32,7 @@ const SKILL_CUSTOMER: (&str, &str) = (
 const SKILL_MEETING: (&str, &str) = (
     "markdown/skills/meeting.md",
     "---\n\
-     type: skill\n\
+     kind: skill\n\
      id: meeting\n\
      description: A meeting.\n\
      ---\n\
@@ -107,7 +107,7 @@ async fn a_skill_page_does_not_have_to_satisfy_its_own_required_frontmatter() {
     // still an error, so the assertion above is about the page type and not
     // about the check having been switched off.
     let instance = "---\n\
-                    type: instance\n\
+                    kind: instance\n\
                     skill: customer\n\
                     id: acme\n\
                     ---\n\
@@ -130,7 +130,7 @@ async fn validate_clean_draft_has_no_issues() {
     seed(&h, &[SKILL_CUSTOMER]).await;
 
     let draft = "---\n\
-                 type: instance\n\
+                 kind: instance\n\
                  skill: customer\n\
                  id: acme\n\
                  tier: enterprise\n\
@@ -151,7 +151,7 @@ async fn validate_batches_mixed_wikilink_skills_with_identical_issue_set() {
     // link and a bare link (no skill). It also declares skill:
     // customer but omits the required `status` key.
     let draft = "---\n\
-                 type: instance\n\
+                 kind: instance\n\
                  skill: customer\n\
                  id: acme\n\
                  tier: enterprise\n\
@@ -213,7 +213,7 @@ async fn validate_instance_with_unknown_declared_skill_errors() {
     let h = fresh_harness();
     // No skills seeded.
     let draft = "---\n\
-                 type: instance\n\
+                 kind: instance\n\
                  skill: ghost\n\
                  id: x\n\
                  ---\n\
@@ -241,7 +241,7 @@ async fn validate_instance_with_unknown_declared_skill_errors() {
 const SKILL_OFFER: (&str, &str) = (
     "markdown/skills/offer.md",
     "---\n\
-     type: skill\n\
+     kind: skill\n\
      id: offer\n\
      description: A quote.\n\
      required_frontmatter:\n\
@@ -253,7 +253,7 @@ const SKILL_OFFER: (&str, &str) = (
 const INSTANCE_ACME: (&str, &str) = (
     "markdown/instances/customer/acme.md",
     "---\n\
-     type: instance\n\
+     kind: instance\n\
      skill: customer\n\
      id: acme\n\
      tier: enterprise\n\
@@ -273,7 +273,7 @@ async fn unknown_skill_in_frontmatter_is_rejected_like_one_in_the_body() {
     seed(&h, &[SKILL_CUSTOMER]).await;
 
     let draft = "---\n\
-                 type: instance\n\
+                 kind: instance\n\
                  skill: customer\n\
                  id: acme\n\
                  tier: enterprise\n\
@@ -296,7 +296,7 @@ async fn dangling_target_in_a_required_field_is_an_error() {
     seed(&h, &[SKILL_CUSTOMER, SKILL_OFFER, INSTANCE_ACME]).await;
 
     let draft = "---\n\
-                 type: instance\n\
+                 kind: instance\n\
                  skill: offer\n\
                  id: an26-9999\n\
                  customer: \"[[customer::totally-made-up-gmbh]]\"\n\
@@ -312,7 +312,7 @@ async fn dangling_target_in_a_required_field_is_an_error() {
 
     // ...and the same field pointing at a real page is clean.
     let good = "---\n\
-                type: instance\n\
+                kind: instance\n\
                 skill: offer\n\
                 id: an26-9999\n\
                 customer: \"[[customer::acme]]\"\n\
@@ -334,7 +334,7 @@ async fn dangling_target_outside_a_required_field_only_warns() {
     seed(&h, &[SKILL_CUSTOMER, SKILL_MEETING]).await;
 
     let draft = "---\n\
-                 type: instance\n\
+                 kind: instance\n\
                  skill: customer\n\
                  id: acme\n\
                  tier: enterprise\n\
@@ -368,7 +368,7 @@ async fn an_instance_without_an_id_is_rejected() {
     seed(&h, &[SKILL_CUSTOMER]).await;
 
     let draft = "---\n\
-                 type: instance\n\
+                 kind: instance\n\
                  skill: customer\n\
                  tier: enterprise\n\
                  status: active\n\
@@ -406,7 +406,7 @@ async fn rebuild_tolerates_dangling_links_that_authoring_would_flag() {
     // exactly the `continues:` forward reference a multi-session workshop
     // produces.
     let forward = "---\n\
-                   type: instance\n\
+                   kind: instance\n\
                    skill: customer\n\
                    id: acme\n\
                    tier: enterprise\n\
@@ -462,7 +462,7 @@ async fn validate_accepts_the_reserved_skill_namespace() {
     seed(&h, &[SKILL_CUSTOMER]).await;
 
     let draft = "---\n\
-                 type: skill\n\
+                 kind: skill\n\
                  id: onboarding\n\
                  description: References another skill's procedure.\n\
                  ---\n\
@@ -497,7 +497,7 @@ async fn validate_still_refuses_a_reserved_link_to_a_missing_skill() {
     seed(&h, &[SKILL_CUSTOMER]).await;
 
     let draft = "---\n\
-                 type: skill\n\
+                 kind: skill\n\
                  id: onboarding\n\
                  description: References a skill that is not there.\n\
                  ---\n\
@@ -522,7 +522,7 @@ async fn validate_still_refuses_a_reserved_link_to_a_missing_skill() {
 const SKILL_TYPED: (&str, &str) = (
     "markdown/skills/account.md",
     "---\n\
-     type: skill\n\
+     kind: skill\n\
      id: account\n\
      description: A customer account.\n\
      fields:\n\
@@ -537,7 +537,7 @@ const SKILL_TYPED: (&str, &str) = (
 );
 
 fn typed_instance(body: &str) -> String {
-    format!("---\ntype: instance\nskill: account\nid: globex\n{body}---\n# Globex\n")
+    format!("---\nkind: instance\nskill: account\nid: globex\n{body}---\n# Globex\n")
 }
 
 /// The article's showcase, reproduced: an agent physically cannot write
@@ -676,7 +676,7 @@ async fn a_missing_required_field_is_reported_as_a_missing_key() {
 async fn a_malformed_fields_block_is_reported_on_the_skill_page() {
     let h = fresh_harness();
 
-    let nameless = "---\ntype: skill\nid: broken\nfields:\n  - {kind: enum}\n---\n# broken\n";
+    let nameless = "---\nkind: skill\nid: broken\nfields:\n  - {kind: enum}\n---\n# broken\n";
     let issues = h.indexer.validate(None, nameless).await.unwrap();
     let bad = issues
         .iter()
@@ -684,7 +684,7 @@ async fn a_malformed_fields_block_is_reported_on_the_skill_page() {
         .unwrap_or_else(|| panic!("a field with no name cannot be enforced: {issues:?}"));
     assert_eq!(bad.severity, Severity::Error, "{bad:?}");
 
-    let scalar = "---\ntype: skill\nid: broken\nfields: hotness\n---\n# broken\n";
+    let scalar = "---\nkind: skill\nid: broken\nfields: hotness\n---\n# broken\n";
     assert!(
         h.indexer
             .validate(None, scalar)
@@ -698,7 +698,7 @@ async fn a_malformed_fields_block_is_reported_on_the_skill_page() {
     // An unknown kind DEGRADES to string with a warning rather than erroring:
     // the same fallback direction `ParamKind` chose, and for the same reason —
     // an over-permissive field under-validates, a dropped one loses data.
-    let odd = "---\ntype: skill\nid: odd\nfields:\n  - {name: x, kind: uuid}\n---\n# odd\n";
+    let odd = "---\nkind: skill\nid: odd\nfields:\n  - {name: x, kind: uuid}\n---\n# odd\n";
     let issues = h.indexer.validate(None, odd).await.unwrap();
     let warn = issues
         .iter()
@@ -721,7 +721,7 @@ async fn a_skill_without_fields_is_unchanged() {
     seed(&h, &[SKILL_CUSTOMER]).await;
 
     let instance = "---\n\
-                    type: instance\n\
+                    kind: instance\n\
                     skill: customer\n\
                     id: acme\n\
                     tier: 5-Cold-ish\n\

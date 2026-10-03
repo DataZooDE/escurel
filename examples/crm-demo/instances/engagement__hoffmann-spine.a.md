@@ -1,5 +1,5 @@
 ---
-type: instance
+kind: instance
 skill: engagement
 id: hoffmann-spine
 scenario: A

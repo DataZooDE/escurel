@@ -17,9 +17,9 @@ use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::protocol::Message;
 
 const TENANT: &str = "stuttgart-ai";
-const NOTE_SKILL: &str = "---\ntype: skill\nid: note\ndescription: A note.\n\
+const NOTE_SKILL: &str = "---\nkind: skill\nid: note\ndescription: A note.\n\
     visibility: public\n---\n# note\n";
-const FIRST: &str = "---\ntype: instance\nskill: note\nid: quartz\n---\n# quartz\n\
+const FIRST: &str = "---\nkind: instance\nskill: note\nid: quartz\n---\n# quartz\n\
     The quartz oscillator hums quietly.\n";
 
 type Sock =
@@ -103,7 +103,7 @@ async fn search_subscribe_runs_the_query_and_pushes_on_index_change() {
             "jsonrpc": "2.0", "id": 1, "method": "tools/call",
             "params": { "name": "update_page", "arguments": {
                 "page_id": "markdown/instances/note/feldspar.md",
-                "content": "---\ntype: instance\nskill: note\nid: feldspar\n---\n# feldspar\n\
+                "content": "---\nkind: instance\nskill: note\nid: feldspar\n---\n# feldspar\n\
                     Another quartz oscillator appears.\n",
             }},
         }))
@@ -186,7 +186,7 @@ async fn a_draft_wakes_a_subscriber_although_it_writes_no_page() {
             "jsonrpc": "2.0", "id": 1, "method": "tools/call",
             "params": { "name": "create_draft", "arguments": {
                 "target_page_id": "markdown/instances/note/quartz.md",
-                "content": "---\ntype: instance\nskill: note\nid: quartz\n---\n# quartz\n\
+                "content": "---\nkind: instance\nskill: note\nid: quartz\n---\n# quartz\n\
                     A held rewrite nobody has approved.\n",
             }},
         }))
@@ -243,9 +243,9 @@ async fn search_subscribe_without_a_query_is_refused() {
 // skill, so every hit was readable by construction and an ACL that did nothing
 // would have passed them.
 
-const DIARY_SKILL: &str = "---\ntype: skill\nid: diary\ndescription: A diary.\n\
+const DIARY_SKILL: &str = "---\nkind: skill\nid: diary\ndescription: A diary.\n\
     visibility: owner\nowner_field: credential\n---\n# diary\n";
-const ALICE_DIARY: &str = "---\ntype: instance\nskill: diary\nid: alice\n\
+const ALICE_DIARY: &str = "---\nkind: instance\nskill: diary\nid: alice\n\
     credential: \"whatsapp:111\"\n---\n# alice\n\
     The quartz oscillator hums in Alice's private diary.\n";
 
@@ -342,7 +342,7 @@ async fn a_subscription_is_not_a_side_channel_around_the_acl() {
             "jsonrpc": "2.0", "id": 1, "method": "tools/call",
             "params": { "name": "update_page", "arguments": {
                 "page_id": "markdown/instances/diary/alice.md",
-                "content": "---\ntype: instance\nskill: diary\nid: alice\n\
+                "content": "---\nkind: instance\nskill: diary\nid: alice\n\
                     credential: \"whatsapp:111\"\n---\n# alice\n\
                     The quartz oscillator hums louder in Alice's private diary.\n",
             }},
@@ -413,7 +413,7 @@ async fn a_resubscribe_carries_what_changed_while_the_client_was_gone() {
             "jsonrpc": "2.0", "id": 1, "method": "tools/call",
             "params": { "name": "update_page", "arguments": {
                 "page_id": "markdown/instances/note/gneiss.md",
-                "content": "---\ntype: instance\nskill: note\nid: gneiss\n---\n# gneiss\n\
+                "content": "---\nkind: instance\nskill: note\nid: gneiss\n---\n# gneiss\n\
                     A quartz oscillator was fitted while nobody watched.\n",
             }},
         }))

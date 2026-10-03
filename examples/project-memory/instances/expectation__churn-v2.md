@@ -1,5 +1,5 @@
 ---
-type: instance
+kind: instance
 skill: expectation
 id: churn-v2
 at: 2026-03-02T10:00:00Z

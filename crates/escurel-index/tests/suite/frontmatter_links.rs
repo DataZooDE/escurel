@@ -16,24 +16,24 @@ const TENANT: &str = "acme";
 
 const SKILL_ENGAGEMENT: (&str, &str) = (
     "markdown/skills/engagement.md",
-    "---\ntype: skill\nid: engagement\ndescription: A delivery engagement.\n---\n# engagement\n",
+    "---\nkind: skill\nid: engagement\ndescription: A delivery engagement.\n---\n# engagement\n",
 );
 const SKILL_EMAIL: (&str, &str) = (
     "markdown/skills/email.md",
-    "---\ntype: skill\nid: email\ndescription: An email event.\nrequired_frontmatter:\n  - at\n---\n# email\n",
+    "---\nkind: skill\nid: email\ndescription: An email event.\nrequired_frontmatter:\n  - at\n---\n# email\n",
 );
 
 // The entity (instance). Its body has NO backlinks to anything.
 const ENTITY_SPINE: (&str, &str) = (
     "markdown/instances/engagement/spine.md",
-    "---\ntype: instance\nskill: engagement\nid: spine\n---\n# Spine\n\nThe lifecycle spine.\n",
+    "---\nkind: instance\nskill: engagement\nid: spine\n---\n# Spine\n\nThe lifecycle spine.\n",
 );
 
 // An event whose ONLY mention of the entity is the frontmatter `about:`
 // link — the body deliberately never names the spine.
 const EVENT_ABOUT: (&str, &str) = (
     "markdown/instances/email/ev1.md",
-    "---\ntype: instance\nskill: email\nid: ev1\nat: 2026-04-01T09:00:00Z\nabout: [[engagement::spine]]\n---\n# Inbound mail\n\nBody text that names no entity at all.\n",
+    "---\nkind: instance\nskill: email\nid: ev1\nat: 2026-04-01T09:00:00Z\nabout: [[engagement::spine]]\n---\n# Inbound mail\n\nBody text that names no entity at all.\n",
 );
 
 struct Harness {

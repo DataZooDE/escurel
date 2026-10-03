@@ -13,7 +13,7 @@ use escurel_test_support::{AuthMode, EscurelProcess, FixtureBuilder, Opts, Role,
 use serde_json::{Value, json};
 
 const TENANT: &str = "acme";
-const SKILL_BODY: &str = "---\ntype: skill\nid: renewal\nautonomy: auto\n---\n# renewal\n";
+const SKILL_BODY: &str = "---\nkind: skill\nid: renewal\nautonomy: auto\n---\n# renewal\n";
 
 struct ChildGuard(Child);
 impl Drop for ChildGuard {

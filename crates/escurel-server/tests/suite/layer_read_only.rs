@@ -38,7 +38,7 @@ use tokio::sync::Mutex;
 const TENANT: &str = "acme";
 
 const BASE_SKILL: &str = "---\n\
-type: skill\n\
+kind: skill\n\
 id: pallet-consolidation\n\
 description: Consolidate partial pallets (firm-authored, from the logistics pack).\n\
 layer: base@logistics-midmarket@v7\n\
@@ -47,7 +47,7 @@ layer: base@logistics-midmarket@v7\n\
 Firm-authored canonical procedure.\n";
 
 const BASE_INSTANCE: &str = "---\n\
-type: instance\n\
+kind: instance\n\
 skill: pallet-consolidation\n\
 id: edge-mixed-carrier\n\
 layer: base@logistics-midmarket@v7\n\
@@ -56,7 +56,7 @@ layer: base@logistics-midmarket@v7\n\
 Template shipped with the pack.\n";
 
 const PLAIN_SKILL: &str = "---\n\
-type: skill\n\
+kind: skill\n\
 id: local-notes\n\
 description: Tenant-authored notes skill.\n\
 ---\n\
@@ -144,7 +144,7 @@ async fn update_page_on_base_layer_skill_rejected_layer_read_only() {
     // unlock the page; the guard keys off the stored page's layer.
     let s = setup().await;
     let draft = "---\n\
-        type: skill\n\
+        kind: skill\n\
         id: pallet-consolidation\n\
         description: HIJACKED\n\
         ---\n\
@@ -182,7 +182,7 @@ async fn update_page_on_base_layer_instance_rejected_layer_read_only() {
     // AT-LAYER-1 for the pack's edge-case instance library.
     let s = setup().await;
     let draft = "---\n\
-        type: instance\n\
+        kind: instance\n\
         skill: pallet-consolidation\n\
         id: edge-mixed-carrier\n\
         ---\n\
@@ -210,7 +210,7 @@ async fn update_page_cannot_fabricate_a_base_layer_page() {
     // future pack import would land on) is rejected.
     let s = setup().await;
     let forged = "---\n\
-        type: skill\n\
+        kind: skill\n\
         id: forged-base\n\
         description: not really from a pack\n\
         layer: base@evil-pack@v1\n\
@@ -235,7 +235,7 @@ async fn pages_without_base_layer_write_as_today() {
     // declaring the explicit default `layer: overlay` — writes fine.
     let s = setup().await;
     let edit = "---\n\
-        type: skill\n\
+        kind: skill\n\
         id: local-notes\n\
         description: Edited tenant notes skill.\n\
         ---\n\
@@ -250,7 +250,7 @@ async fn pages_without_base_layer_write_as_today() {
     assert_eq!(r["ok"], true, "plain page must stay writable: {body}");
 
     let overlay = "---\n\
-        type: instance\n\
+        kind: instance\n\
         skill: local-notes\n\
         id: note-1\n\
         layer: overlay\n\

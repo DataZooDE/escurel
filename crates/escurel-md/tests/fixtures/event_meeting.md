@@ -1,5 +1,5 @@
 ---
-type: instance
+kind: instance
 skill: meeting
 id: 2026-04-12-acme-qbr
 at: 2026-04-12T10:00:00+02:00

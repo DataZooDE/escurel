@@ -30,8 +30,8 @@ use serde_json::{Value, json};
 
 const TENANT: &str = "acme";
 const SKILL: &str = "note";
-const SKILL_BODY: &str = "---\ntype: skill\nid: note\n---\n# note\n\nFold the note.\n";
-const INSTANCE_BODY: &str = "---\ntype: instance\nid: log\nskill: note\n---\n# Log\n\nBASELINE.\n";
+const SKILL_BODY: &str = "---\nkind: skill\nid: note\n---\n# note\n\nFold the note.\n";
+const INSTANCE_BODY: &str = "---\nkind: instance\nid: log\nskill: note\n---\n# Log\n\nBASELINE.\n";
 
 /// Runs/min budget — deliberately small so a burst of more than this many
 /// events must throttle within the one-minute window.

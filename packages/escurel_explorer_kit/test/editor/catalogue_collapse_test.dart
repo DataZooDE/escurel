@@ -10,9 +10,9 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 const _skill =
-    '---\ntype: skill\nid: ausgabe\ndescription: x\n---\n# ausgabe\n';
+    '---\nkind: skill\nid: ausgabe\ndescription: x\n---\n# ausgabe\n';
 const _inst =
-    '---\ntype: instance\nskill: ausgabe\nid: li-clean-1\n---\n# li-clean-1\n';
+    '---\nkind: instance\nskill: ausgabe\nid: li-clean-1\n---\n# li-clean-1\n';
 
 Widget _host(ProviderContainer c) => UncontrolledProviderScope(
       container: c,

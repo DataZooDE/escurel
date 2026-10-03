@@ -44,7 +44,7 @@ const PACK_SECRET: &str = "shared-pack-signing-secret";
 const PACK: &str = "logistics";
 
 fn skill(id: &str, description: &str) -> String {
-    format!("---\ntype: skill\nid: {id}\ndescription: {description}\n---\n# {id}\n\nbody\n")
+    format!("---\nkind: skill\nid: {id}\ndescription: {description}\n---\n# {id}\n\nbody\n")
 }
 
 fn v1_pages() -> Vec<(String, String)> {

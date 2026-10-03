@@ -21,7 +21,7 @@
       "content": [
         {
           "type": "text",
-          "text": "{\"instances\":[{\"page_id\":\"markdown/instances/customer__muenchner-pharma.md\",\"skill\":\"customer\",\"frontmatter\":{\"type\":\"instance\",\"skill\":\"customer\",\"id\":\"muenchner-pharma\",\"name\":\"Münchner Pharma AG\",\"country\":\"DE\",\"industry\":\"pharma-mid-cap\",\"employee_band\":\"1000-9999\",\"primary_owner\":[[\"contact::hoffmann\"]]},\"at\":null}],\"next_cursor\":null}"
+          "text": "{\"instances\":[{\"page_id\":\"markdown/instances/customer__muenchner-pharma.md\",\"skill\":\"customer\",\"frontmatter\":{\"kind\":\"instance\",\"skill\":\"customer\",\"id\":\"muenchner-pharma\",\"name\":\"Münchner Pharma AG\",\"country\":\"DE\",\"industry\":\"pharma-mid-cap\",\"employee_band\":\"1000-9999\",\"primary_owner\":[[\"contact::hoffmann\"]]},\"at\":null}],\"next_cursor\":null}"
         }
       ],
       "structuredContent": {
@@ -30,7 +30,7 @@
             "page_id": "markdown/instances/customer__muenchner-pharma.md",
             "skill": "customer",
             "frontmatter": {
-              "type": "instance",
+              "kind": "instance",
               "skill": "customer",
               "id": "muenchner-pharma",
               "name": "Münchner Pharma AG",

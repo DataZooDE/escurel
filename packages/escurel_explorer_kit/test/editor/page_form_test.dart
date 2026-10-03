@@ -13,7 +13,7 @@ import 'package:escurel_explorer_kit/md/frontmatter.dart' as md;
 import 'package:flutter_test/flutter_test.dart';
 
 const _noteSkill = '---\n'
-    'type: skill\n'
+    'kind: skill\n'
     'id: note\n'
     'required_frontmatter: [title]\n'
     'optional_frontmatter: [tags]\n'
@@ -23,17 +23,17 @@ FixtureEscurelClient _client() => FixtureEscurelClient.fromSources(
       writeEnabled: true,
       skillFiles: {'note.md': _noteSkill},
       instanceFiles: {
-        'note__a.md': '---\ntype: instance\nskill: note\nid: a\ntitle: A\n---\n\n# A\n',
+        'note__a.md': '---\nkind: instance\nskill: note\nid: a\ntitle: A\n---\n\n# A\n',
       },
     );
 
 void main() {
   test('serializePage emits structural keys first and parses back', () {
     final md.Page page = md.parse(serializePage(
-      {'skill': 'note', 'type': 'instance', 'id': 'x', 'title': 'Hello', 'tags': ['a', 'b']},
+      {'skill': 'note', 'kind': 'instance', 'id': 'x', 'title': 'Hello', 'tags': ['a', 'b']},
       '# Body\n\ntext',
     ));
-    expect(page.frontmatter.fields['type'], 'instance');
+    expect(page.frontmatter.fields['kind'], 'instance');
     expect(page.frontmatter.fields['skill'], 'note');
     expect(page.frontmatter.fields['id'], 'x');
     expect(page.frontmatter.fields['title'], 'Hello');
@@ -43,21 +43,21 @@ void main() {
 
   test('serializePage quotes values that would break the YAML parser', () {
     final page = md.parse(serializePage(
-      {'type': 'instance', 'skill': 'note', 'id': 'x', 'title': 'a: b'},
+      {'kind': 'instance', 'skill': 'note', 'id': 'x', 'title': 'a: b'},
       '# x',
     ));
     expect(page.frontmatter.fields['title'], 'a: b');
   });
 
   test('fixture validate: missing required structural key is an error', () async {
-    final res = await _client().validate('---\ntype: instance\nskill: note\n---\n\n# x\n');
+    final res = await _client().validate('---\nkind: instance\nskill: note\n---\n\n# x\n');
     expect(res.isOk, isFalse);
     expect(res.issues.any((i) => i.severity == IssueSeverity.error), isTrue);
   });
 
   test('fixture validate: skill-declared required frontmatter is enforced', () async {
     // `title` is required by the note skill; omit it.
-    final res = await _client().validate('---\ntype: instance\nskill: note\nid: q\n---\n\n# q\n');
+    final res = await _client().validate('---\nkind: instance\nskill: note\nid: q\n---\n\n# q\n');
     expect(res.isOk, isFalse);
     expect(res.issues.map((i) => i.message).join(), contains('title'));
   });
@@ -66,7 +66,7 @@ void main() {
     final client = _client();
     final res = await client.updatePage(
       'markdown/instances/note/b.md',
-      '---\ntype: instance\nskill: note\nid: b\ntitle: B\n---\n\n# B\n',
+      '---\nkind: instance\nskill: note\nid: b\ntitle: B\n---\n\n# B\n',
     );
     expect(res.ok, isTrue);
     expect(res.newVersion, isNotNull);
@@ -84,13 +84,13 @@ void main() {
     // First write to establish a head version.
     final first = await client.updatePage(
       'markdown/instances/note/a.md',
-      '---\ntype: instance\nskill: note\nid: a\ntitle: A2\n---\n\n# A2\n',
+      '---\nkind: instance\nskill: note\nid: a\ntitle: A2\n---\n\n# A2\n',
     );
     expect(first.ok, isTrue);
     // A write against a now-stale base version is rejected.
     final stale = await client.updatePage(
       'note__a',
-      '---\ntype: instance\nskill: note\nid: a\ntitle: A3\n---\n\n# A3\n',
+      '---\nkind: instance\nskill: note\nid: a\ntitle: A3\n---\n\n# A3\n',
       baseVersion: 'fx-999',
     );
     expect(stale.ok, isFalse);
@@ -111,7 +111,7 @@ void main() {
     final client = FixtureEscurelClient.fromSources(
       skillFiles: {
         'note.md': _noteSkill,
-        'private_profile.md': '---\ntype: skill\nid: private_profile\n'
+        'private_profile.md': '---\nkind: skill\nid: private_profile\n'
             'visibility: owner\nowner_field: owner\n---\n\n# p\n',
       },
       instanceFiles: const {},

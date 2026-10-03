@@ -13,13 +13,13 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 const _ausgabeSkill =
-    '---\ntype: skill\nid: ausgabe\n'
+    '---\nkind: skill\nid: ausgabe\n'
     'description: Notebook outputs.\n---\n# ausgabe\n';
 const _live =
-    '---\ntype: instance\nskill: ausgabe\nid: li-clean-1\n---\n# li-clean-1\n';
+    '---\nkind: instance\nskill: ausgabe\nid: li-clean-1\n---\n# li-clean-1\n';
 // An archived instance, exactly as herkules leaves it.
 const _archived =
-    '---\ntype: instance\nskill: ausgabe\nid: li-dbg-1\n'
+    '---\nkind: instance\nskill: ausgabe\nid: li-dbg-1\n'
     'archived: true\n---\n# li-dbg-1\n';
 
 FixtureEscurelClient _client() => FixtureEscurelClient.fromSources(

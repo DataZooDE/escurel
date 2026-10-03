@@ -23,9 +23,9 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
 const TENANT: &str = "stuttgart-ai";
-const NOTE_SKILL: &str = "---\ntype: skill\nid: note\ndescription: A note.\n\
+const NOTE_SKILL: &str = "---\nkind: skill\nid: note\ndescription: A note.\n\
     visibility: public\n---\n# note\n";
-const BASE: &str = "---\ntype: instance\nskill: note\nid: plan\n---\n# Plan\nv1 body.\n";
+const BASE: &str = "---\nkind: instance\nskill: note\nid: plan\n---\n# Plan\nv1 body.\n";
 const PAGE: &str = "markdown/instances/note/plan.md";
 
 fn sha(s: &str) -> String {
@@ -33,7 +33,7 @@ fn sha(s: &str) -> String {
 }
 
 fn body(id: &str, text: &str) -> String {
-    format!("---\ntype: instance\nskill: note\nid: {id}\n---\n# Plan\n{text}\n")
+    format!("---\nkind: instance\nskill: note\nid: {id}\n---\n# Plan\n{text}\n")
 }
 
 async fn start() -> EscurelProcess {
@@ -538,12 +538,12 @@ mod acl {
 
     const ALICE: &str = "whatsapp:111";
     const BOB: &str = "whatsapp:222";
-    const MEMBER_SKILL: &str = "---\ntype: skill\nid: community_member\n\
+    const MEMBER_SKILL: &str = "---\nkind: skill\nid: community_member\n\
         description: A member.\nvisibility: owner\nowner_field: credential\n---\n# community_member\n";
-    const ALICE_MEMBER: &str = "---\ntype: instance\nskill: community_member\nid: alice\n\
+    const ALICE_MEMBER: &str = "---\nkind: instance\nskill: community_member\nid: alice\n\
         credential: \"whatsapp:111\"\n---\n# Alice\n";
     const ALICE_PAGE: &str = "markdown/instances/community_member/alice.md";
-    const ALICE_EDIT: &str = "---\ntype: instance\nskill: community_member\nid: alice\n\
+    const ALICE_EDIT: &str = "---\nkind: instance\nskill: community_member\nid: alice\n\
         credential: \"whatsapp:111\"\n---\n# Alice\nEdited.\n";
 
     async fn start_acl() -> EscurelProcess {
@@ -616,19 +616,19 @@ mod scope {
 
     const ALICE: &str = "whatsapp:111";
     const BOB: &str = "whatsapp:222";
-    const MEMBER_SKILL: &str = "---\ntype: skill\nid: community_member\n\
+    const MEMBER_SKILL: &str = "---\nkind: skill\nid: community_member\n\
         description: A member.\nvisibility: owner\nowner_field: credential\n---\n# community_member\n";
-    const TALK_SKILL: &str = "---\ntype: skill\nid: talk\ndescription: A talk.\n\
+    const TALK_SKILL: &str = "---\nkind: skill\nid: talk\ndescription: A talk.\n\
         visibility: public\n---\n# talk\n";
-    const ALICE_MEMBER: &str = "---\ntype: instance\nskill: community_member\nid: alice\n\
+    const ALICE_MEMBER: &str = "---\nkind: instance\nskill: community_member\nid: alice\n\
         credential: \"whatsapp:111\"\n---\n# Alice\n";
     const ALICE_PAGE: &str = "markdown/instances/community_member/alice.md";
-    const ALICE_EDIT: &str = "---\ntype: instance\nskill: community_member\nid: alice\n\
+    const ALICE_EDIT: &str = "---\nkind: instance\nskill: community_member\nid: alice\n\
         credential: \"whatsapp:111\"\n---\n# Alice\nPRIVATE edit.\n";
-    const KEYNOTE: &str = "---\ntype: instance\nskill: talk\nid: keynote\n---\n# Keynote\n";
+    const KEYNOTE: &str = "---\nkind: instance\nskill: talk\nid: keynote\n---\n# Keynote\n";
     const KEYNOTE_PAGE: &str = "markdown/instances/talk/keynote.md";
     const KEYNOTE_EDIT: &str =
-        "---\ntype: instance\nskill: talk\nid: keynote\n---\n# Keynote\nPUBLIC edit.\n";
+        "---\nkind: instance\nskill: talk\nid: keynote\n---\n# Keynote\nPUBLIC edit.\n";
 
     async fn start_scoped() -> EscurelProcess {
         EscurelProcess::spawn(Opts {
@@ -781,7 +781,7 @@ async fn a_draft_whose_frontmatter_does_not_parse_is_refused() {
     let token = p.mint_token(TENANT, Role::Agent);
 
     // The real shape, minimised: a colon in an unquoted scalar.
-    let unparseable = "---\ntype: instance\nskill: note\nid: plan\n\
+    let unparseable = "---\nkind: instance\nskill: note\nid: plan\n\
         subject: Re: Workshop Groz-Beckert am 29.07.2026\n---\n# Plan\nBody.\n";
     let refused = call(
         &p,
@@ -819,7 +819,7 @@ async fn a_draft_whose_frontmatter_does_not_parse_is_refused() {
 
     // Positive control: quote the value and both paths accept it, so the
     // refusals above are about the YAML and not about colons in a subject.
-    let quoted = "---\ntype: instance\nskill: note\nid: plan\n\
+    let quoted = "---\nkind: instance\nskill: note\nid: plan\n\
         subject: \"Re: Workshop Groz-Beckert am 29.07.2026\"\n---\n# Plan\nBody.\n";
     let ok = call(
         &p,
@@ -848,7 +848,7 @@ async fn an_instance_with_no_skill_is_refused_because_it_would_be_unbrowsable() 
     let p = start().await;
     let token = p.mint_token(TENANT, Role::Agent);
 
-    let skill_less = "---\ntype: instance\nid: orphan\ntitle: \"A note\"\n---\n# A note\nBody.\n";
+    let skill_less = "---\nkind: instance\nid: orphan\ntitle: \"A note\"\n---\n# A note\nBody.\n";
     let page = "markdown/instances/note/orphan.md";
 
     let refused = call(
@@ -886,7 +886,7 @@ async fn an_instance_with_no_skill_is_refused_because_it_would_be_unbrowsable() 
     // add `skill: note` and the page not only writes, it is FINDABLE by
     // type, which is the whole thing the missing key costs.
     let with_skill =
-        "---\ntype: instance\nskill: note\nid: orphan\ntitle: \"A note\"\n---\n# A note\nBody.\n";
+        "---\nkind: instance\nskill: note\nid: orphan\ntitle: \"A note\"\n---\n# A note\nBody.\n";
     let ok = call(
         &p,
         &token,
@@ -922,7 +922,7 @@ async fn an_unquoted_wikilink_in_frontmatter_warns_but_still_writes() {
     let p = start().await;
     let token = p.mint_token(TENANT, Role::Agent);
 
-    let unquoted = "---\ntype: instance\nskill: note\nid: plan\n\
+    let unquoted = "---\nkind: instance\nskill: note\nid: plan\n\
         about: [[note::plan]]\n---\n# Plan\nBody.\n";
     let reported = call(&p, &token, "validate", json!({ "content": unquoted })).await;
     let issue = reported["issues"]
@@ -955,9 +955,9 @@ async fn an_unquoted_wikilink_in_frontmatter_warns_but_still_writes() {
 /// A skill that REQUIRES `engagement`, so the draft path has something to hold
 /// the line on. `update_page`'s looser rule is asserted against this same
 /// skill below, which is the point of declaring it here.
-const SCOPED_SKILL: &str = "---\ntype: skill\nid: scoped\ndescription: A scoped note.\n\
+const SCOPED_SKILL: &str = "---\nkind: skill\nid: scoped\ndescription: A scoped note.\n\
     visibility: public\nrequired_frontmatter: [id, skill, engagement]\n---\n# scoped\n";
-const SCOPED_BASE: &str = "---\ntype: instance\nskill: scoped\nid: plan\n\
+const SCOPED_BASE: &str = "---\nkind: instance\nskill: scoped\nid: plan\n\
     engagement: engagement-groz\n---\n# Plan\nv1 body.\n";
 const SCOPED_PAGE: &str = "markdown/instances/scoped/plan.md";
 
@@ -989,7 +989,7 @@ async fn a_draft_missing_a_key_its_skill_requires_is_refused() {
     .await;
     let token = p.mint_token(TENANT, Role::Agent);
 
-    let unattributable = "---\ntype: instance\nskill: scoped\nid: plan\n---\n\
+    let unattributable = "---\nkind: instance\nskill: scoped\nid: plan\n---\n\
         # Plan\nDrafted without saying whose this is.\n";
     let refused = call(
         &p,
@@ -1016,7 +1016,7 @@ async fn a_draft_missing_a_key_its_skill_requires_is_refused() {
 
     // POSITIVE CONTROL: the same content WITH the field is accepted, so the
     // refusal above is about the missing key and not about this skill or page.
-    let attributed = "---\ntype: instance\nskill: scoped\nid: plan\n\
+    let attributed = "---\nkind: instance\nskill: scoped\nid: plan\n\
         engagement: engagement-groz\n---\n# Plan\nDrafted properly.\n";
     let ok = call(
         &p,
@@ -1741,7 +1741,7 @@ async fn diff_draft_shows_what_approving_would_change() {
     let token = p.mint_token(TENANT, Role::Agent);
 
     // A draft that changes one key, adds another, and rewrites the body.
-    let proposed = "---\ntype: instance\nskill: note\nid: plan\nhotness: hot\n---\n\
+    let proposed = "---\nkind: instance\nskill: note\nid: plan\nhotness: hot\n---\n\
                     # Plan\nv2 body.\n";
     let created = call(
         &p,

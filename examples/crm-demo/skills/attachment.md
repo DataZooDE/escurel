@@ -1,5 +1,5 @@
 ---
-type: skill
+kind: skill
 id: attachment
 description: An uploaded document (text/markdown) ingested through the document backend — extracted, chunked, and embedded into one page-with-blocks. Read-only; the original blob is canonical.
 backend:

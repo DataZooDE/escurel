@@ -33,8 +33,8 @@ use tempfile::TempDir;
 use tokio::sync::Mutex;
 
 const TENANT: &str = "acme";
-const CUSTOMER: &str = "---\ntype: skill\nid: customer\ndescription: x\n---\n# customer\n";
-const C1: &str = "---\ntype: instance\nskill: customer\nid: c1\n---\n# Acme\n\nseed.\n";
+const CUSTOMER: &str = "---\nkind: skill\nid: customer\ndescription: x\n---\n# customer\n";
+const C1: &str = "---\nkind: instance\nskill: customer\nid: c1\n---\n# Acme\n\nseed.\n";
 const PAGE: &str = "markdown/instances/customer/c1.md";
 
 struct Harness {
@@ -138,7 +138,7 @@ async fn session_edit(h: &Harness, new_body: &str) -> String {
 async fn committed_session_leaves_expand_body_and_version_consistent() {
     let h = start().await;
     let edited =
-        "---\ntype: instance\nskill: customer\nid: c1\n---\n# Acme\n\nEDITED-IN-SESSION.\n";
+        "---\nkind: instance\nskill: customer\nid: c1\n---\n# Acme\n\nEDITED-IN-SESSION.\n";
     session_edit(&h, edited).await;
 
     let ex = call(&h, "expand", json!({ "page_id": PAGE })).await;
@@ -156,7 +156,7 @@ async fn committed_session_leaves_expand_body_and_version_consistent() {
 #[tokio::test]
 async fn update_page_with_matching_base_after_session_commit_does_not_clobber_it() {
     let h = start().await;
-    let edited = "---\ntype: instance\nskill: customer\nid: c1\n---\n# Acme\n\nSESSION-WORK.\n";
+    let edited = "---\nkind: instance\nskill: customer\nid: c1\n---\n# Acme\n\nSESSION-WORK.\n";
     session_edit(&h, edited).await;
 
     // Read exactly what a well-behaved client would read.
@@ -185,7 +185,7 @@ async fn update_page_with_matching_base_after_session_commit_does_not_clobber_it
 async fn search_finds_a_committed_session_edit() {
     let h = start().await;
     let edited =
-        "---\ntype: instance\nskill: customer\nid: c1\n---\n# Acme\n\nZEPHYRQUARTZ marker.\n";
+        "---\nkind: instance\nskill: customer\nid: c1\n---\n# Acme\n\nZEPHYRQUARTZ marker.\n";
     session_edit(&h, edited).await;
 
     let hits = call(&h, "search", json!({ "q": "ZEPHYRQUARTZ", "k": 10 })).await;

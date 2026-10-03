@@ -22,7 +22,7 @@ const TENANT: &str = "acme";
 const SKILL_CUSTOMER: (&str, &str) = (
     "markdown/skills/customer.md",
     "---\n\
-     type: skill\n\
+     kind: skill\n\
      id: customer\n\
      description: A buying entity.\n\
      ---\n\
@@ -34,7 +34,7 @@ const SKILL_CUSTOMER: (&str, &str) = (
 const ACME: (&str, &str) = (
     "markdown/instances/customer/acme-corp.md",
     "---\n\
-     type: instance\n\
+     kind: instance\n\
      skill: customer\n\
      id: acme-corp\n\
      ---\n\
@@ -46,7 +46,7 @@ const ACME: (&str, &str) = (
 const GLOBEX: (&str, &str) = (
     "markdown/instances/customer/globex-llc.md",
     "---\n\
-     type: instance\n\
+     kind: instance\n\
      skill: customer\n\
      id: globex-llc\n\
      ---\n\
@@ -58,7 +58,7 @@ const GLOBEX: (&str, &str) = (
 const MEETING: (&str, &str) = (
     "markdown/instances/meeting/2026-04-12-acme-qbr.md",
     "---\n\
-     type: instance\n\
+     kind: instance\n\
      skill: meeting\n\
      id: 2026-04-12-acme-qbr\n\
      at: 2026-04-12T10:00:00+02:00\n\
@@ -323,7 +323,7 @@ async fn search_scores_are_monotonic_decreasing() {
 const FOERDER: (&str, &str) = (
     "markdown/instances/customer/foerderprogramm.md",
     "---\n\
-     type: instance\n\
+     kind: instance\n\
      skill: customer\n\
      id: foerderprogramm\n\
      ---\n\

@@ -1,5 +1,5 @@
 ---
-type: instance
+kind: instance
 skill: project
 id: churn-2026
 title: Reduce customer churn (2026)

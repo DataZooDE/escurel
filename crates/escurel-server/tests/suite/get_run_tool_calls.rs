@@ -11,8 +11,8 @@ const TENANT: &str = "carl";
 const RUN: &str = "01HRUNTOOLCALLS00000000000";
 const ROOT: &str = "01HROOTTOOLCALLS0000000000";
 const PAGE: &str = "markdown/instances/note/n1.md";
-const SKILL: &str = "---\ntype: skill\nid: note\ndescription: d.\n---\n# note\n";
-const NOTE: &str = "---\ntype: instance\nid: n1\nskill: note\n---\n# n1\n";
+const SKILL: &str = "---\nkind: skill\nid: note\ndescription: d.\n---\n# note\n";
+const NOTE: &str = "---\nkind: instance\nid: n1\nskill: note\n---\n# n1\n";
 
 async fn start() -> EscurelProcess {
     start_with(EventAclMode::Off).await

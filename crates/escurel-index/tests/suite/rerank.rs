@@ -109,22 +109,22 @@ async fn seed(h: &Harness, pages: &[(&str, &'static str)]) {
 
 const SKILL_NOTE: (&str, &str) = (
     "markdown/skills/note.md",
-    "---\ntype: skill\nid: note\ndescription: A note.\n---\n# note\n",
+    "---\nkind: skill\nid: note\ndescription: A note.\n---\n# note\n",
 );
 
 const ALPHA: (&str, &str) = (
     "markdown/instances/note/alpha.md",
-    "---\ntype: instance\nskill: note\nid: alpha\n---\n# Alpha\n\nGeneral remarks about quarterly planning and logistics.\n",
+    "---\nkind: instance\nskill: note\nid: alpha\n---\n# Alpha\n\nGeneral remarks about quarterly planning and logistics.\n",
 );
 
 const BETA: (&str, &str) = (
     "markdown/instances/note/beta.md",
-    "---\ntype: instance\nskill: note\nid: beta\n---\n# Beta\n\nThe zebra crossing budget was approved for planning.\n",
+    "---\nkind: instance\nskill: note\nid: beta\n---\n# Beta\n\nThe zebra crossing budget was approved for planning.\n",
 );
 
 const GAMMA: (&str, &str) = (
     "markdown/instances/note/gamma.md",
-    "---\ntype: instance\nskill: note\nid: gamma\n---\n# Gamma\n\nMore planning notes, unrelated to anything striped.\n",
+    "---\nkind: instance\nskill: note\nid: gamma\n---\n# Gamma\n\nMore planning notes, unrelated to anything striped.\n",
 );
 
 #[tokio::test]
@@ -167,7 +167,7 @@ async fn rerank_reorders_hits_by_score_and_preserves_the_set() {
 // the full block body. The lead matches "planning" so FTS retrieves it.
 const TAIL: (&str, &str) = (
     "markdown/instances/note/tail.md",
-    "---\ntype: instance\nskill: note\nid: tail\n---\n# Tail\n\n\
+    "---\nkind: instance\nskill: note\nid: tail\n---\n# Tail\n\n\
      Quarterly planning notes covering logistics, budgets, staffing, vendors, \
      timelines, milestones, dependencies, risks, owners, reviewers, approvers, \
      and stakeholders across every regional division and operating unit in the \

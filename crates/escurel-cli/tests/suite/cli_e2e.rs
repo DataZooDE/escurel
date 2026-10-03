@@ -13,7 +13,7 @@ use serde_json::Value;
 const TENANT: &str = "acme";
 
 const CUSTOMER_SKILL: &str = "---\n\
-type: skill\n\
+kind: skill\n\
 id: customer\n\
 description: A buying organisation.\n\
 required_frontmatter: [id, name]\n\
@@ -22,7 +22,7 @@ optional_frontmatter: [tier]\n\
 # customer\n";
 
 const ACME_INSTANCE: &str = "---\n\
-type: instance\n\
+kind: instance\n\
 skill: customer\n\
 id: acme\n\
 name: Acme Corp\n\
@@ -31,7 +31,7 @@ tier: gold\n\
 # Acme Corp\n\nKey account. See [[customer::initech]].\n";
 
 const INITECH_INSTANCE: &str = "---\n\
-type: instance\n\
+kind: instance\n\
 skill: customer\n\
 id: initech\n\
 name: Initech\n\
@@ -158,7 +158,7 @@ async fn skill_list_emits_seeded_skill() {
 /// projection dropped every one of them).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn skill_list_emits_autonomy_and_the_contract_keys() {
-    const REVIEWED_SKILL: &str = "---\ntype: skill\nid: reviewed\ndescription: d.\n\
+    const REVIEWED_SKILL: &str = "---\nkind: skill\nid: reviewed\ndescription: d.\n\
         autonomy: review\nsummary: One line.\nharness: echo\nactions:\n  - {name: open-customer, kind: event, label: Open the customer, event: customer}\n\
         cascade:\n  target: produced\n  max_depth: 2\n---\n# reviewed\n";
     let process = EscurelProcess::spawn(Opts {
@@ -213,7 +213,7 @@ async fn skill_list_emits_autonomy_and_the_contract_keys() {
 /// declared (live smoke of P3 found them dropped).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn skill_list_carries_params_fields_and_blocks() {
-    const TYPED_SKILL: &str = "---\ntype: skill\nid: typed\ndescription: d.\n\
+    const TYPED_SKILL: &str = "---\nkind: skill\nid: typed\ndescription: d.\n\
         params:\n  - {name: window, kind: string, required: true}\n\
         fields:\n  - {name: arr_eur, kind: float, render: money}\n\
         blocks:\n  - {anchor: summary, title: Summary, kind: markdown}\n---\n# typed\n";
@@ -413,7 +413,7 @@ async fn page_validate_accepts_well_formed_body() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn page_validate_emits_severity_and_suggestion() {
     let h = start().await;
-    const BAD_SKILL: &str = "---\ntype: skill\nid: x\ndescription: d.\nsummary: s.\n\
+    const BAD_SKILL: &str = "---\nkind: skill\nid: x\ndescription: d.\nsummary: s.\n\
         fields:\n  - {name: a, render: sparkle}\n---\n# x\n";
     let out = run_stdin(
         &h,
@@ -443,7 +443,7 @@ async fn page_validate_emits_severity_and_suggestion() {
 async fn page_update_via_stdin_round_trips() {
     let h = start().await;
     let body = "---\n\
-                type: instance\n\
+                kind: instance\n\
                 skill: customer\n\
                 id: globex\n\
                 name: Globex\n\
@@ -629,20 +629,20 @@ async fn skill_list_and_page_expand_surface_layer_and_shadow() {
     use std::sync::Arc;
 
     const BASE_SKILL: &str = "---\n\
-type: skill\n\
+kind: skill\n\
 id: pallet-consolidation\n\
 description: Firm-authored canonical procedure (v7).\n\
 layer: base@logistics-midmarket@v7\n\
 ---\n\
 # pallet-consolidation\n\nFirm-authored body.\n";
     const OVERLAY_SKILL: &str = "---\n\
-type: skill\n\
+kind: skill\n\
 id: pallet-consolidation\n\
 description: Acme-specialised procedure.\n\
 ---\n\
 # pallet-consolidation\n\nTenant-specialised body.\n";
     const PLAIN_SKILL: &str = "---\n\
-type: skill\n\
+kind: skill\n\
 id: local-notes\n\
 description: Tenant-authored notes skill.\n\
 ---\n\

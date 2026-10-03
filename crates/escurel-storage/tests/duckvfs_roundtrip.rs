@@ -76,7 +76,7 @@ async fn write_then_read_roundtrip_is_byte_exact() {
     // COPY ... TO (FORMAT csv) — the obvious-looking way to write bytes
     // from SQL — appends one, so every write would grow the file and
     // content hashes would drift. write_blob does not.
-    let body = Bytes::from_static(b"---\ntype: skill\n---\n# customer\n");
+    let body = Bytes::from_static(b"---\nkind: skill\n---\n# customer\n");
 
     store.write(&key, body.clone()).await.expect("write");
     assert_eq!(store.read(&key).await.expect("read"), body);

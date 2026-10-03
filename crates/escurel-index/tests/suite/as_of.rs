@@ -20,27 +20,27 @@ const TENANT: &str = "acme";
 // Event-typed skill + an untimed (non-event) skill.
 const SKILL_DOC: (&str, &str) = (
     "markdown/skills/doc.md",
-    "---\ntype: skill\nid: doc\ndescription: A document.\nrequired_frontmatter:\n  - at\n---\n# doc\n",
+    "---\nkind: skill\nid: doc\ndescription: A document.\nrequired_frontmatter:\n  - at\n---\n# doc\n",
 );
 const SKILL_CUSTOMER: (&str, &str) = (
     "markdown/skills/customer.md",
-    "---\ntype: skill\nid: customer\ndescription: A buying org.\n---\n# customer\n",
+    "---\nkind: skill\nid: customer\ndescription: A buying org.\n---\n# customer\n",
 );
 
 // doc::early born 2026-01-01; doc::late born 2026-02-01 and links to early.
 const DOC_EARLY: (&str, &str) = (
     "markdown/instances/doc/early.md",
-    "---\ntype: instance\nskill: doc\nid: early\nat: 2026-01-01T00:00:00Z\n---\n# Early\n\nThe quarterly zeppelin report.\n",
+    "---\nkind: instance\nskill: doc\nid: early\nat: 2026-01-01T00:00:00Z\n---\n# Early\n\nThe quarterly zeppelin report.\n",
 );
 const DOC_LATE: (&str, &str) = (
     "markdown/instances/doc/late.md",
-    "---\ntype: instance\nskill: doc\nid: late\nat: 2026-02-01T00:00:00Z\n---\n# Late\n\nFollow-up zeppelin memo: [[doc::early]].\n",
+    "---\nkind: instance\nskill: doc\nid: late\nat: 2026-02-01T00:00:00Z\n---\n# Late\n\nFollow-up zeppelin memo: [[doc::early]].\n",
 );
 
 // Untimed instance — no `at`; must survive every cut.
 const CUSTOMER_ACME: (&str, &str) = (
     "markdown/instances/customer/acme.md",
-    "---\ntype: instance\nskill: customer\nid: acme\n---\n# Acme\n",
+    "---\nkind: instance\nskill: customer\nid: acme\n---\n# Acme\n",
 );
 
 const CUT_MID: &str = "2026-01-15T00:00:00Z"; // between early and late

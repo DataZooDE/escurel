@@ -17,7 +17,7 @@ use serde_json::{Value, json};
 use tempfile::TempDir;
 
 const TENANT: &str = "acme";
-const CUSTOMER_SKILL: &str = "---\ntype: skill\nid: customer\ndescription: x\n---\n# customer\n";
+const CUSTOMER_SKILL: &str = "---\nkind: skill\nid: customer\ndescription: x\n---\n# customer\n";
 const DSN: &str = "postgresql://svc:hunter2@crm.internal:5432/crm";
 
 struct Harness {

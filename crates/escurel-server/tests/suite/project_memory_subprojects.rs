@@ -22,7 +22,7 @@ const TENANT: &str = "proj";
 fn skill(id: &str) -> String {
     // required_frontmatter:[] — author instances freely with just the
     // relation fields the lifecycle needs.
-    format!("---\ntype: skill\nid: {id}\ndescription: {id}.\nvisibility: public\n---\n# {id}\n")
+    format!("---\nkind: skill\nid: {id}\ndescription: {id}.\nvisibility: public\n---\n# {id}\n")
 }
 
 fn start() -> FixtureBuilder {
@@ -34,38 +34,38 @@ fn start() -> FixtureBuilder {
         .instance(
             "project",
             "churn",
-            "---\ntype: instance\nskill: project\nid: churn\ntitle: Churn\nstatus: active\n---\n# churn\n",
+            "---\nkind: instance\nskill: project\nid: churn\ntitle: Churn\nstatus: active\n---\n# churn\n",
         )
         .instance(
             "project",
             "p1",
-            "---\ntype: instance\nskill: project\nid: p1\ntitle: Phase 1\n\
+            "---\nkind: instance\nskill: project\nid: p1\ntitle: Phase 1\n\
              part_of: \"[[project::churn]]\"\nstatus: closed\n\
              concluded_by: \"[[conclusion::c1]]\"\n---\n# p1\n",
         )
         .instance(
             "project",
             "p2",
-            "---\ntype: instance\nskill: project\nid: p2\ntitle: Phase 2\n\
+            "---\nkind: instance\nskill: project\nid: p2\ntitle: Phase 2\n\
              part_of: \"[[project::churn]]\"\nstatus: closed\n\
              concluded_by: \"[[conclusion::c2]]\"\n---\n# p2\n",
         )
         .instance(
             "conclusion",
             "c1",
-            "---\ntype: instance\nskill: conclusion\nid: c1\nat: 2026-02-10T00:00:00Z\n\
+            "---\nkind: instance\nskill: conclusion\nid: c1\nat: 2026-02-10T00:00:00Z\n\
              concludes: \"[[project::p1]]\"\n---\n# c1\n",
         )
         .instance(
             "conclusion",
             "c2",
-            "---\ntype: instance\nskill: conclusion\nid: c2\nat: 2026-04-15T00:00:00Z\n\
+            "---\nkind: instance\nskill: conclusion\nid: c2\nat: 2026-04-15T00:00:00Z\n\
              concludes: \"[[project::p2]]\"\nsupersedes: \"[[conclusion::c1]]\"\n---\n# c2\n",
         )
         .instance(
             "hypothesis",
             "downstream",
-            "---\ntype: instance\nskill: hypothesis\nid: downstream\n\
+            "---\nkind: instance\nskill: hypothesis\nid: downstream\n\
              builds_on: \"[[conclusion::c2]]\"\nscope: \"[[project::p2]]\"\n---\n# downstream\n",
         )
         .done()

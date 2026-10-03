@@ -18,7 +18,7 @@ import 'package:path/path.dart' as p;
 // stacked PR branch that does not yet contain the examples tree.
 
 const _customerSkill = '''---
-type: skill
+kind: skill
 id: customer
 description: A buying organisation.
 required_frontmatter: [name, country]
@@ -30,7 +30,7 @@ body
 ''';
 
 const _contactSkill = '''---
-type: skill
+kind: skill
 id: contact
 description: An individual person at a customer.
 required_frontmatter: [name, customer]
@@ -42,7 +42,7 @@ body
 ''';
 
 const _customerInst = '''---
-type: instance
+kind: instance
 skill: customer
 id: acme
 name: Acme Ltd
@@ -55,7 +55,7 @@ Primary champion: [[contact::dora]].
 ''';
 
 const _contactInst = '''---
-type: instance
+kind: instance
 skill: contact
 id: dora
 name: Dora Doe
@@ -228,7 +228,7 @@ void main() {
 
   group('FixtureEscurelClient (layers + packs)', () {
     const basePlaybook = '''---
-type: skill
+kind: skill
 id: playbook
 description: Firm-authored engagement playbook (crm-essentials v1).
 layer: base@crm-essentials@v1
@@ -242,7 +242,7 @@ Firm-authored canonical playbook.
 ''';
 
     const overlayPlaybook = '''---
-type: skill
+kind: skill
 id: playbook
 description: Demo-specialised engagement playbook.
 required_frontmatter: [name]
@@ -255,7 +255,7 @@ Demo-specialised playbook.
 ''';
 
     const baseOnlyEscalation = '''---
-type: skill
+kind: skill
 id: escalation
 description: Firm-authored escalation ladder.
 layer: base@crm-essentials@v1

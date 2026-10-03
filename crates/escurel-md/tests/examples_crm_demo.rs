@@ -49,7 +49,7 @@ fn every_skill_page_parses_with_type_skill() {
         assert_eq!(
             page.frontmatter.page_type,
             PageType::Skill,
-            "{}: expected type: skill",
+            "{}: expected kind: skill",
             path.display(),
         );
     }
@@ -73,7 +73,7 @@ fn every_instance_page_parses_with_type_instance() {
         assert_eq!(
             page.frontmatter.page_type,
             PageType::Instance,
-            "{}: expected type: instance",
+            "{}: expected kind: instance",
             path.display(),
         );
     }

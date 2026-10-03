@@ -18,7 +18,7 @@ const TENANT: &str = "carl";
 const RUN: &str = "01HRUNSPANS000000000000000";
 const ROOT: &str = "01HROOTSPANS00000000000000";
 const TRACE: &str = "0123456789abcdef0123456789abcdef";
-const SKILL: &str = "---\ntype: skill\nid: note\ndescription: d.\n---\n# note\n";
+const SKILL: &str = "---\nkind: skill\nid: note\ndescription: d.\n---\n# note\n";
 
 static PIPELINE: OnceLock<(InMemorySpanExporter, SdkTracerProvider)> = OnceLock::new();
 

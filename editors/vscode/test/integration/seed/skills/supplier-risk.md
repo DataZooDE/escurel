@@ -1,5 +1,5 @@
 ---
-type: skill
+kind: skill
 id: supplier-risk
 description: A supplier-risk signal, folded into the customer order it concerns.
 autonomy: review
