@@ -183,8 +183,8 @@ test('a sales order opens as a real order page: SAP fields and an items table', 
   const order = wv.locator('escurel-page-as-ui');
   await expect(order.getByText('Sales document (VBELN)')).toBeVisible();
   await expect(order.getByText('Customer PO (BSTNK)')).toBeVisible();
-  await expect(order.locator('table thead th', { hasText: 'Material' })).toBeVisible();
-  await expect(order.locator('table tbody tr')).toHaveCount(2);
+  await expect(order.locator('.body table thead th', { hasText: 'Material' })).toBeVisible();
+  await expect(order.locator('.body table tbody tr')).toHaveCount(2);
   // The order is ONE ROW of the SAP extract (read-only) plus the person's own notes, and says so.
   const strip = order.locator('.source-strip');
   await expect(strip).toContainText('Source row');
