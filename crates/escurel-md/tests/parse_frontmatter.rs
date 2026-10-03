@@ -195,3 +195,13 @@ fn kind_wins_over_a_legacy_type_during_the_transition() {
     let page = parse("---\nkind: skill\ntype: instance\nid: a\n---\n").expect("parses");
     assert_eq!(page.frontmatter.page_type, PageType::Skill);
 }
+
+#[test]
+fn a_data_field_named_kind_does_not_hide_the_legacy_page_kind() {
+    // The compile-first `issue` pages carry their OWN data field `kind: lint_summary` next to the
+    // legacy `type: instance`. During the migration window the page kind is the first of the two
+    // keys whose value is actually `skill` or `instance`.
+    let page = parse("---\ntype: instance\nskill: issue\nid: i1\nkind: lint_summary\n---\n")
+        .expect("legacy page kind still readable beside a kind data field");
+    assert_eq!(page.frontmatter.page_type, PageType::Instance);
+}

@@ -113,11 +113,13 @@ pub fn parse(input: &str) -> Result<Page<'_>, ParseError> {
 
     // `kind:` is the page-kind key. `type:` is the legacy spelling, still read while the migration
     // window is open; `kind:` wins when a page carries both.
-    let page_type = mapping
-        .get("kind")
-        .or_else(|| mapping.get("type"))
-        .and_then(serde_yaml_ng::Value::as_str)
-        .and_then(|s| match s {
+    //
+    // A page may carry its OWN data field named `kind` (an `issue` page has `kind: lint_summary`),
+    // so the page kind is the first of the two keys whose value is actually `skill` or `instance`.
+    let page_type = ["kind", "type"]
+        .iter()
+        .filter_map(|key| mapping.get(*key).and_then(serde_yaml_ng::Value::as_str))
+        .find_map(|s| match s {
             "skill" => Some(PageType::Skill),
             "instance" => Some(PageType::Instance),
             _ => None,

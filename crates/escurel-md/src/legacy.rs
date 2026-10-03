@@ -138,6 +138,19 @@ mod tests {
     }
 
     #[test]
+    fn a_kind_data_field_beside_the_legacy_type_is_a_conflict() {
+        // The compile-first `issue` pages: legacy `type: instance` plus the page's OWN `kind:`
+        // data. Renaming `type` -> `kind` would produce two `kind:` keys, so it is reported, not
+        // rewritten; the owner of that skill renames its data field first.
+        assert_eq!(
+            rewrite_legacy_type_key(
+                "---\ntype: instance\nskill: issue\nid: i1\nkind: lint_summary\n---\n"
+            ),
+            KindRewrite::Conflict
+        );
+    }
+
+    #[test]
     fn a_user_data_field_named_type_is_not_the_page_kind() {
         // `type: invoice` is the instance's own data; the page kind is missing, which is invalid
         // today and not something this tool may invent.
