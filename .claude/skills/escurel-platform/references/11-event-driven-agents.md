@@ -356,7 +356,8 @@ workbench asks the human explicitly), the runner honours the contract keys
 of references/01: `harness:` (like a manual start's ask, within
 `ESCUREL_RUNNER_HARNESS_ALLOW`; a workflow step's declaration wins; outside
 the list the run fails closed), `actions:` (a confirmed cross-skill write
-cascades only to a listed skill; undeclared = any), `cascade.target`
+cascades only to the `event` skill of a listed `kind: event` action; undeclared = any;
+`kind: prompt` actions restrict nothing), `cascade.target`
 (where the hop is pre-flagged; `produced` = the page just written) and
 `cascade.max_depth` (the deepest hop this skill's chains reach; the
 runner's global `ESCUREL_RUNNER_MAX_DEPTH` still caps everything).
