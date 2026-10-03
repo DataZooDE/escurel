@@ -74,7 +74,13 @@ export function latestWriteBack(events: readonly Event[]): WriteBackStatus | und
     if (!OUTCOMES.includes(b.outcome as WriteBackOutcome) || typeof b.draft_id !== 'string')
       continue;
     const at = e.at ?? '';
-    if (!best || at >= best.at)
+    // `applying` is written just before the outcome, in the same instant: on a tie the outcome wins,
+    // so a finished change is never shown as still being sent, whichever way the events are ordered.
+    const outranks =
+      !best ||
+      at > best.at ||
+      (at === best.at && (best.outcome === 'applying' || b.outcome !== 'applying'));
+    if (outranks)
       best = {
         outcome: b.outcome as WriteBackOutcome,
         at,

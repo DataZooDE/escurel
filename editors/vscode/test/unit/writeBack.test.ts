@@ -84,6 +84,20 @@ describe('latestWriteBack', () => {
     expect(latestWriteBack([events[0]!])?.outcome).toBe('applying');
   });
 
+  it('a finished change is never reported as still in progress, whatever order the events come in', () => {
+    // The gateway writes `applying` and then the outcome within the same instant, so they can carry
+    // the very same timestamp; the live demo showed "being sent" for a change that had been applied.
+    const at = '2026-10-03T12:05:00.000000Z';
+    const applying = ev({
+      event_id: 'write-back:d1:applying',
+      at,
+      body: { outcome: 'applying', draft_id: 'd1' },
+    });
+    const applied = ev({ at, body: { outcome: 'applied', draft_id: 'd1', attempts: 1 } });
+    expect(latestWriteBack([applied, applying])?.outcome).toBe('applied'); // newest first
+    expect(latestWriteBack([applying, applied])?.outcome).toBe('applied'); // oldest first
+  });
+
   it('ignores other events, and an event whose body is not a write-back outcome', () => {
     expect(latestWriteBack([])).toBeUndefined();
     expect(
