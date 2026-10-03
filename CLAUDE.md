@@ -120,6 +120,12 @@ A PR cycle:
    count, breaking chains the other way). Use `set -o pipefail`, or
    keep the status observable
    (`cargo clippy … >/dev/null 2>clippy.log; echo $?`):
+   `scripts/check.sh` runs the first three in this order (plus clippy
+   over the shipped `s3,gcs` features) and is the pre-push hook — run
+   `scripts/install-hooks.sh` once per clone. The hook adds the Flutter
+   (`explore`) and VS Code (`vscode`) checks when a push touches those
+   trees; `scripts/check.sh release` is the fourth. CI calls the same
+   steps. `git push --no-verify` skips the hook, not CI.
    - `cargo fmt --check`
    - `cargo clippy --workspace --all-targets -- -D warnings`
    - `cargo test --workspace --all-targets` (what CI runs).

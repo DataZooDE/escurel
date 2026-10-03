@@ -137,6 +137,8 @@ class _CapStubClient implements EscurelClient {
   Future<QueryResult> runStoredQuery(
     String queryId, {
     Map<String, Object?> params = const {},
+    // The wrapper must forward every interface member, deprecated or not.
+    // ignore: deprecated_member_use
   }) => inner.runStoredQuery(queryId, params: params);
 
   @override

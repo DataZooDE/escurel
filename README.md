@@ -101,6 +101,18 @@ skills → instances → entity, inspect outgoing links + backlinks,
 browse the event inbox and per-instance history, filter with `/`, `?`
 for help, `q` to quit.
 
+## Local checks
+
+```sh
+scripts/install-hooks.sh   # once per clone: enables .githooks/pre-push
+scripts/check.sh           # fmt, clippy (+ s3,gcs features), workspace tests
+scripts/check.sh --list    # every step, including explore / vscode / release
+```
+
+The pre-push hook runs `scripts/check.sh` and adds the Flutter and VS Code
+checks when the push touches them. CI runs the same steps and remains the
+required gate.
+
 ## License
 
 Source-available under the [Business Source License 1.1](LICENSE),

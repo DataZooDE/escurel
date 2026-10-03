@@ -99,11 +99,13 @@ jobs:
             cargo clean -p libduckdb-sys || true
           fi
 
+      # Every command below is a step of scripts/check.sh, the same script the
+      # local pre-push hook runs — change a command there, not here.
       - name: cargo fmt --check
-        run: cargo fmt --all -- --check
+        run: scripts/check.sh fmt
 
       - name: cargo clippy
-        run: cargo clippy --workspace --all-targets -- -D warnings
+        run: scripts/check.sh clippy
 
       # Still plain `cargo test`, and that is a measured decision rather than
       # inertia — `cargo nextest` was tried here and is SLOWER on this runner.
@@ -128,7 +130,7 @@ jobs:
       # cargo's build parallelism only; it does not throttle libtest's test
       # threads.
       - name: cargo test
-        run: cargo test --workspace --all-targets
+        run: scripts/check.sh test
         env:
           CARGO_BUILD_JOBS: "1"
 
@@ -199,7 +201,7 @@ jobs:
           fi
 
       - name: cargo build --release
-        run: cargo build --workspace --release
+        run: scripts/check.sh release
         env:
           # Same link-memory cap as the test build; this job links every
           # binary in the workspace.
@@ -251,4 +253,4 @@ jobs:
           fi
 
       - name: cargo clippy --features s3,gcs
-        run: cargo clippy -p escurel-server -p escurel-storage --features s3,gcs -- -D warnings
+        run: scripts/check.sh clippy-features
