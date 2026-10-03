@@ -42,6 +42,7 @@ mod corpus_traversal;
 mod crm_demo_backends;
 mod delete_page;
 mod demo_analysis_orders;
+mod demo_rows;
 mod dispatch_aliases;
 mod document_ingestion;
 mod draft_lineage;

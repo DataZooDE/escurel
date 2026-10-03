@@ -1,14 +1,7 @@
 ---
 kind: instance
-skill: supplier
 id: meier-guss
-vendor: 100234
-name: Meier-Guss GmbH
-city: Pforzheim
-country: DE
-purchasing_org: DE10
-payment_terms: Z030
-rating: A
+skill: supplier
 ---
 
 # Meier-Guss GmbH

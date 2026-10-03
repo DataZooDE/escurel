@@ -28,11 +28,20 @@ fields:
   - {name: overall_status, kind: enum, values: [open, partial, complete], required: true, label: "Overall status (GBSTK)", render: badge}
   - {name: delivery_block, kind: enum, values: [none, credit, supply], label: "Delivery block (LIFSK)", render: badge}
   - {name: delivery_risk, kind: enum, values: [low, medium, high], label: "Delivery risk", render: badge}
+backend:
+  kind: sql_view
+  instances: rows
+  key: order_id
+  linked: markdown
+  filterable: [kunnr, vbeln]
+  source: {connector: json_dir, relation: "@VBAK_DIR@"}
+  project: {vbeln: sales_doc, auart: order_type, kunnr: sold_to, name1: sold_to_name, vkorg: sales_org, bstnk: po_number, werks: plant, netwr: net_value, waerk: currency, vdatu: requested_delivery, edatu: confirmed_delivery, gbstk: overall_status, lifsk: delivery_block}
 ---
 
 # customer-order
 
-A customer sales order as it lives in SAP SD: the header (sold-to party, order type, sales
+A customer sales order as it lives in SAP SD (**one instance per row** of the VBAK extract; the order's
+notes, items and history are its linked markdown): the header (sold-to party, order type, sales
 organisation, customer PO), its status (overall, delivery block) and the items with their
 confirmed delivery dates. A signal about a vendor that supplies one of the materials changes
 `delivery_risk` and, if the confirmation moves, `confirmed_delivery`, and is noted under

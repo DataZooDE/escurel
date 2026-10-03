@@ -1,0 +1,16 @@
+{
+  "order_id": "order-4500123",
+  "vbeln": 4500123,
+  "auart": "OR",
+  "kunnr": 1000234,
+  "name1": "Hoffmann Automotive GmbH",
+  "vkorg": "DE10",
+  "bstnk": "HA-2026-0917",
+  "werks": "DE01",
+  "netwr": 62400.0,
+  "waerk": "EUR",
+  "vdatu": "2026-10-12",
+  "edatu": "2026-10-12",
+  "gbstk": "open",
+  "lifsk": "none"
+}
