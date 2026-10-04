@@ -226,6 +226,25 @@ pub(super) async fn tool_list_instances(
     args: Value,
 ) -> Result<Value, JsonRpcError> {
     let a: ListInstancesArgs = parse_args(args, "list_instances")?;
+    // A skill that does not exist is the caller's mistake, not "no instances": answer with the
+    // skills there are (the catalogue is public to every caller).
+    let known = indexer
+        .list_skills()
+        .await
+        .map_err(|e| JsonRpcError::internal(format!("list_instances: {e}")))?;
+    if !known.iter().any(|s| s.id == a.skill_id) {
+        let names: Vec<&str> = known.iter().map(|s| s.id.as_str()).take(30).collect();
+        return Err(JsonRpcError::domain(
+            "unknown_skill",
+            "skill_id",
+            format!(
+                "no skill `{}`; known skills: {}",
+                a.skill_id,
+                names.join(", ")
+            ),
+            Some("`list_skills` is the catalogue; pass one of its `id`s as `skill_id`"),
+        ));
+    }
     // `instances: rows` skills (stage 3): every ROW of the source is an instance, listed lazily by
     // keyset. Everything below is the stored-page path and is untouched.
     if let Some(src) = indexer

@@ -21,7 +21,10 @@ const NOTE_A: &str = "---\nkind: instance\nskill: note\nid: a\n---\n# A\n";
 async fn start() -> EscurelProcess {
     EscurelProcess::spawn(Opts {
         auth: AuthMode::TestIssuer,
-        config_overrides: ConfigOverrides::default(),
+        config_overrides: ConfigOverrides {
+            signing: true,
+            ..Default::default()
+        },
         fixtures: Some(
             FixtureBuilder::new()
                 .tenant(TENANT)
@@ -420,5 +423,108 @@ async fn a_write_back_value_outside_the_field_is_refused_at_draft_time() {
             .unwrap_or_default()
             .contains("discard_draft"),
         "{again}"
+    );
+}
+
+// ------------------------------------------------------------------ empty successes ---
+
+fn text_of(v: &Value) -> String {
+    v["result"]["content"][0]["text"]
+        .as_str()
+        .unwrap_or_default()
+        .to_owned()
+}
+
+/// `list_instances` of a skill that does not exist used to answer an empty success; it is the
+/// caller's mistake, and the answer names the skills there are.
+#[tokio::test]
+async fn list_instances_of_an_unknown_skill_is_an_error_naming_the_known_ones() {
+    let p = start().await;
+    let t = p.mint_token(TENANT, Role::Agent);
+    let r = call(&p, &t, "list_instances", json!({ "skill_id": "nope" })).await;
+    assert_eq!(r["result"]["isError"], json!(true), "{r}");
+    let i = first_issue(&r);
+    assert_eq!(i["code"], "unknown_skill", "{r}");
+    assert!(
+        i["message"].as_str().unwrap().contains("note"),
+        "names the known skills: {r}"
+    );
+    // A known skill with no instances is still an honest empty list.
+    let ok = call(&p, &t, "list_instances", json!({ "skill_id": "note" })).await;
+    assert_eq!(ok["result"]["isError"], json!(false), "{ok}");
+}
+
+/// A text-only client sees what a JSON client does: not-found says so, a page says where the next
+/// one is, a refusal keeps its guidance whole, and a minted token is announced without being
+/// repeated into a transcript.
+#[tokio::test]
+async fn the_summary_text_carries_the_control_data() {
+    let p = start().await;
+    let t = p.mint_token(TENANT, Role::Agent);
+
+    let missing = call(
+        &p,
+        &t,
+        "expand",
+        json!({ "page_id": "markdown/instances/note/ghost.md" }),
+    )
+    .await;
+    let text = text_of(&missing);
+    assert!(
+        text.to_lowercase().contains("not found") && text.contains("page: null"),
+        "{text}"
+    );
+    assert!(!text.contains("2 keys"), "{text}");
+
+    // Two pages of one note each: the summary names the cursor.
+    let admin = p.mint_token(TENANT, Role::Admin);
+    let b = "---\nkind: instance\nskill: note\nid: b\n---\n# B\n";
+    let w = call(
+        &p,
+        &admin,
+        "update_page",
+        json!({ "page_id": "markdown/instances/note/b.md", "content": b }),
+    )
+    .await;
+    assert_eq!(w["result"]["structuredContent"]["ok"], true, "{w}");
+    let page = call(
+        &p,
+        &t,
+        "list_instances",
+        json!({ "skill_id": "note", "limit": 1 }),
+    )
+    .await;
+    let cursor = page["result"]["structuredContent"]["next_cursor"]
+        .as_str()
+        .expect("a next page");
+    let text = text_of(&page);
+    assert!(text.contains(&format!("next_cursor={cursor}")), "{text}");
+
+    // A refusal's guidance is not cut mid-sentence.
+    let refused = call(&p, &t, "update_page", json!({ "page_id": "markdown/instances/note/c.md", "content": "no frontmatter at all, but long enough to be a body " })).await;
+    let text = text_of(&refused);
+    assert!(text.starts_with("Refused:"), "{text}");
+    assert!(!text.contains('…'), "no truncation of a refusal: {text}");
+
+    // The token is in structuredContent only; the text announces it.
+    let minted = call(
+        &p,
+        &admin,
+        "mint_agent_token",
+        json!({ "skill": "note", "target_page_id": "markdown/instances/note/a.md" }),
+    )
+    .await;
+    let token = minted["result"]["structuredContent"]["token"]
+        .as_str()
+        .expect("token")
+        .to_owned();
+    let text = text_of(&minted);
+    assert!(
+        !text.contains(&token),
+        "a secret is not repeated into the text: {text}"
+    );
+    assert!(
+        text.contains("token minted") && text.contains("expires"),
+        "{text}"
     );
 }

@@ -718,10 +718,38 @@ fn summarise_payload(payload: &Value) -> String {
         } else {
             String::new()
         };
+        // The whole guidance: a refusal is cut where it says what to DO (a `write_back` hint was
+        // truncated at "in the frontmatter"). Only an absurdly long message is shortened.
+        let suggestion = issue["suggestion"]
+            .as_str()
+            .filter(|s| !s.is_empty())
+            .map_or(String::new(), |s| format!(" Suggestion: {}", short(s, 600)));
         return format!(
-            "Refused: {}: {}{more}. {MORE}",
+            "Refused: {}: {}{suggestion}{more}. {MORE}",
             issue["code"].as_str().unwrap_or("error"),
-            short(issue["message"].as_str().unwrap_or(""), 220),
+            short(issue["message"].as_str().unwrap_or(""), 1200),
+        );
+    }
+    // Absent: say so in words (it used to read "2 keys"). Covers `expand` / `resolve`.
+    if obj.get("page") == Some(&Value::Null) {
+        let why = obj
+            .get("hint")
+            .and_then(Value::as_str)
+            .unwrap_or("no such page, or you may not read it");
+        return format!("Not found (page: null): {}. {MORE}", short(why, 400));
+    }
+    // A minted token is announced, never repeated: the text lands in transcripts and logs.
+    if obj.get("token").is_some_and(Value::is_string) {
+        let expires = obj
+            .get("expires_at")
+            .and_then(Value::as_str)
+            .map_or(String::new(), |e| format!(", expires {e}"));
+        let run = obj
+            .get("run_id")
+            .and_then(Value::as_str)
+            .map_or(String::new(), |r| format!(", run_id {r}"));
+        return format!(
+            "Agent token minted (secret: read it from structuredContent.token){expires}{run}."
         );
     }
     let mut parts: Vec<String> = Vec::new();
@@ -736,7 +764,11 @@ fn summarise_payload(payload: &Value) -> String {
                     parts.push(k.clone());
                 }
             }
-            _ if k == "next_cursor" => parts.push("more via next_cursor".to_owned()),
+            Value::String(c) if k == "next_cursor" => {
+                parts.push(format!(
+                    "next_cursor={c} (pass it as `cursor` for the next page)"
+                ));
+            }
             _ => {}
         }
     }

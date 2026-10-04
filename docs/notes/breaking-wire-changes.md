@@ -54,3 +54,8 @@ One line per change. Folded into the root `CHANGELOG.md` BREAKING entry and `doc
   the skill field's kind/enum is refused at draft time (`write_back_invalid_value`) instead of leaving a
   dead draft that blocks the page; the open-draft `conflict` now carries a `suggestion` naming
   `discard_draft`.
+- `list_instances` of a skill that does not exist answers `isError` + `unknown_skill` (naming the known
+  skills) instead of an empty success. Summary text (`content[0].text`): `expand`/`resolve` of an absent
+  page reads "Not found (page: null): ..."; a page names its cursor (`next_cursor=<value>`); a
+  refusal carries its whole message and `suggestion` (no mid-sentence "…"); `mint_agent_token` says the
+  token was minted (and when it expires) WITHOUT repeating the secret (read `structuredContent.token`).
