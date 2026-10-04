@@ -176,12 +176,10 @@ pub async fn mcp(
     // own field rather than only as the `request_id` prefix so a single
     // `run_id=<ulid>` query returns every tool call the run made, in order,
     // alongside the runner's own lines for it. Empty for every other caller.
-    let run_id = headers
-        .get("x-escurel-run-id")
-        .and_then(|v| v.to_str().ok())
-        .map(str::trim)
-        .unwrap_or_default()
-        .to_owned();
+    // The header is the CALLER'S claim: it is not recorded until the bearer has authenticated (a
+    // rejected request must not be able to stamp lines with a run of its choosing), and a run-bound
+    // token's own `run_id` claim wins over it.
+    let run_hint = run_id_hint(&headers);
     let tool_name = tool_name_from(&req.method, &req.params).unwrap_or_default();
     // Per-record audit fields per `platform.md §Observability`:
     // `transport` + `trace_id` are known up front; `tenant` + `subject`
@@ -198,7 +196,7 @@ pub async fn mcp(
         "mcp.request",
         request_id = %request_id,
         trace_id = %request_id,
-        run_id = %run_id,
+        run_id = tracing::field::Empty,
         transport = "mcp_http",
         method = %req.method,
         tool = %tool_name,
@@ -212,6 +210,16 @@ pub async fn mcp(
     // a TOOL span on the run's own trace (P3-3), and an OTel parent can
     // only be set on a span that has not started yet.
     let auth = crate::auth_gate::authenticate(&state, &headers).await;
+    match &auth {
+        Ok(Some(ctx)) => {
+            let claimed = ctx.run.as_ref().map(|r| r.run_id.as_str());
+            span.record("run_id", claimed.unwrap_or(run_hint.as_str()));
+        }
+        Ok(None) => {
+            span.record("run_id", run_hint.as_str());
+        }
+        Err(_) => {}
+    }
     if let Ok(Some(ctx)) = &auth
         && let Some(run) = &ctx.run
     {
@@ -227,6 +235,23 @@ pub async fn mcp(
         }
     }
     mcp_inner(state, req, auth).instrument(span).await
+}
+
+/// The run id a caller names in `x-escurel-run-id`: a plain token of at most 64 characters, else
+/// nothing. It lands in structured logs, so a newline or an overlong value is dropped.
+fn run_id_hint(headers: &HeaderMap) -> String {
+    headers
+        .get("x-escurel-run-id")
+        .and_then(|v| v.to_str().ok())
+        .map(str::trim)
+        .filter(|v| {
+            !v.is_empty()
+                && v.len() <= 64
+                && v.chars()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | ':'))
+        })
+        .unwrap_or_default()
+        .to_owned()
 }
 
 async fn mcp_inner(
@@ -2527,5 +2552,25 @@ mod registry_conformance {
             unroutable.is_empty(),
             "advertised by `tools/list` with no dispatch arm: {unroutable:?}"
         );
+    }
+}
+
+#[cfg(test)]
+mod run_hint_tests {
+    use super::*;
+
+    fn hint(v: &str) -> String {
+        let mut h = HeaderMap::new();
+        h.insert("x-escurel-run-id", v.parse().unwrap());
+        run_id_hint(&h)
+    }
+
+    #[test]
+    fn only_a_plain_bounded_token_is_ever_a_run_id() {
+        assert_eq!(hint("01HZX-run_1:2"), "01HZX-run_1:2");
+        assert_eq!(hint(&"x".repeat(65)), "", "overlong");
+        assert_eq!(hint("run id with spaces"), "");
+        assert_eq!(hint("a\"b"), "", "a quote would break the structured line");
+        assert_eq!(run_id_hint(&HeaderMap::new()), "");
     }
 }

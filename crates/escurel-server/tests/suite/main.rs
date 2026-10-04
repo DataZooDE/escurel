@@ -109,6 +109,7 @@ mod provenance_ancestry;
 mod provenance_path;
 mod quack_enforcement;
 mod quack_schema_isolation;
+mod query_acl;
 mod query_instance_tools;
 mod reader_legacy_lake;
 mod reader_role;

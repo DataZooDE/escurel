@@ -524,7 +524,11 @@ fn apply_does_not_write_through_a_planted_symlink() {
 
     let (_code, _v, _err) = run(&["--path", d.path().to_str().unwrap(), "--apply"]);
 
-    assert_eq!(read(&victim), "DO NOT TOUCH", "the link target was written through");
+    assert_eq!(
+        read(&victim),
+        "DO NOT TOUCH",
+        "the link target was written through"
+    );
     // The migration itself still happened (or was cleanly refused): never half-applied.
     let migrated = read(&page);
     assert!(

@@ -209,6 +209,17 @@ impl Indexer {
                 .ok_or_else(|| QueryError::NotFound {
                     id: query_id.to_owned(),
                 })?;
+        // The query page is an instance like any other and has its own `acl.read`: `expand` of it is
+        // denied to a caller who may not read it, and running it must be too. Denial reads as absence.
+        if !self
+            .may_read_instance(caller, &page.skill, &fm)
+            .await
+            .map_err(|err| QueryError::Indexer(Box::new(err)))?
+        {
+            return Err(QueryError::NotFound {
+                id: query_id.to_owned(),
+            });
+        }
         let target_raw = fm
             .get("target")
             .and_then(serde_json::Value::as_str)
