@@ -260,15 +260,22 @@ mod tests {
     #[test]
     fn lineage_migration_adds_columns_via_duckdb_and_indexes_via_postgres() {
         let sqls = migrate_events_pg_lineage_sql();
-        // kind, root_event_id, run_id (0016) + seq (0018), then the indexes.
-        assert_eq!(sqls.len(), 5, "{sqls:?}");
-        for (sql, col) in sqls.iter().zip(["kind", "root_event_id", "run_id", "seq"]) {
+        // kind, root_event_id, run_id (0016), seq (0018), and the
+        // gateway-owned revision binding, then the indexes.
+        assert_eq!(sqls.len(), 6, "{sqls:?}");
+        for (sql, col) in sqls.iter().zip([
+            "kind",
+            "root_event_id",
+            "run_id",
+            "seq",
+            "revision_binding_sha256",
+        ]) {
             assert!(
                 sql.contains(&format!("ADD COLUMN IF NOT EXISTS {col}")),
                 "{sql}"
             );
         }
-        let idx = &sqls[4];
+        let idx = &sqls[5];
         assert!(idx.starts_with(&format!("CALL postgres_execute('{EVENTS_PG_ALIAS}'")));
         assert!(idx.contains("escurel_events_root_at"));
         assert!(idx.contains("escurel_events_run_at"));
