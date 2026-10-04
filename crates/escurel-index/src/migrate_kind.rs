@@ -38,9 +38,23 @@ const PACK_BASE_PREFIX: &str = "markdown/base/";
 /// How many offending pages an error message lists before saying "and N more".
 const LISTED: usize = 20;
 
+/// The durable "a migration started and has not finished" marker, kept in the lane beside the data
+/// it protects. It is written BEFORE the first rewrite and removed only after pages, drafts,
+/// snapshots AND the index rebuild all succeeded, so an interruption at any point (an error, a
+/// kill -9) leaves a tenant that boots QUARANTINED instead of one whose lane looks fully migrated
+/// while its index was never rebuilt from it. It is not under `markdown/`, so it is never a page.
+pub const MIGRATION_MARKER_PATH: &str = "meta/migrate-kind.pending";
+
 /// The refusal text: what is wrong, the exact command, and what cannot be migrated locally.
 #[must_use]
 pub fn legacy_kind_message(tenant: &str, pages: &[String]) -> String {
+    if pages.is_empty() {
+        return format!(
+            "tenant `{tenant}` has a `migrate-kind` run that started and did not finish (the lane \
+             may be partly rewritten and the index was not rebuilt from it). Run `escurel admin \
+             migrate-kind --tenant {tenant}` (a dry run), then with `--apply`: it is safe to repeat."
+        );
+    }
     let shown: Vec<&str> = pages.iter().take(LISTED).map(String::as_str).collect();
     let more = pages.len().saturating_sub(LISTED);
     let tail = if more > 0 {
@@ -92,20 +106,30 @@ impl Indexer {
         }
 
         let quarantined_before = self.legacy_quarantine().is_some();
+        if apply {
+            // Durable BEFORE the first rewrite: see `MIGRATION_MARKER_PATH`.
+            self.write_migration_marker().await?;
+        }
         self.migrate_kind_pages(apply, quarantined_before, &mut report)
             .await?;
         self.migrate_kind_drafts(apply, &mut report).await?;
         self.migrate_kind_snapshots(apply, &mut report).await?;
 
-        if apply && quarantined_before {
-            // A quarantined tenant's index was never (or only partly) built from its lane: the
-            // pages were rewritten lane-only, so re-derive the whole index from the migrated lane
-            // (with the real embedder) and lift the quarantine, unless something legacy remains
-            // (a signed pack page, a conflict), in which case the tenant stays quarantined.
-            if self.quarantine_legacy_kind_pages().await? {
-                // Still legacy pages (a signed pack page, a conflict): stay quarantined.
+        if apply {
+            // Pages were rewritten lane-only when the tenant was quarantined (its index was never,
+            // or only partly, built from the lane), and an interrupted earlier run may have left the
+            // index stale: re-derive the whole index from the migrated lane (with the real
+            // embedder) and lift the quarantine, unless something legacy remains (a signed pack
+            // page, a conflict), in which case the tenant stays quarantined and keeps its marker.
+            let still_legacy = self.legacy_kind_pages().await?;
+            if still_legacy.is_empty() {
+                if quarantined_before {
+                    self.rebuild().await?;
+                }
+                self.clear_migration_marker().await?;
+                self.set_quarantine(None);
             } else {
-                self.rebuild().await?;
+                self.set_quarantine(Some(still_legacy));
             }
         }
         report.tenant_quarantined = self.legacy_quarantine().is_some();
@@ -170,6 +194,31 @@ impl Indexer {
             .and_then(|g| g.as_ref().cloned())
     }
 
+    async fn write_migration_marker(&self) -> Result<(), IndexerError> {
+        let key = Key::new(self.tenant(), MIGRATION_MARKER_PATH)?;
+        self.store
+            .write(&key, Bytes::from_static(b"migrate-kind in progress\n"))
+            .await?;
+        Ok(())
+    }
+
+    async fn clear_migration_marker(&self) -> Result<(), IndexerError> {
+        let key = Key::new(self.tenant(), MIGRATION_MARKER_PATH)?;
+        match self.store.delete(&key).await {
+            Ok(()) | Err(escurel_storage::StoreError::NotFound(_)) => Ok(()),
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    async fn migration_marker_present(&self) -> Result<bool, IndexerError> {
+        let key = Key::new(self.tenant(), MIGRATION_MARKER_PATH)?;
+        match self.store.read(&key).await {
+            Ok(_) => Ok(true),
+            Err(escurel_storage::StoreError::NotFound(_)) => Ok(false),
+            Err(e) => Err(e.into()),
+        }
+    }
+
     fn set_quarantine(&self, pages: Option<Vec<String>>) {
         if let Ok(mut g) = self.kind_quarantine.write() {
             *g = pages;
@@ -184,7 +233,8 @@ impl Indexer {
     /// When listing or reading the lane store fails.
     pub async fn quarantine_legacy_kind_pages(&self) -> Result<bool, IndexerError> {
         let pages = self.legacy_kind_pages().await?;
-        let quarantined = !pages.is_empty();
+        // An unfinished migration quarantines even when no legacy page is left to find.
+        let quarantined = !pages.is_empty() || self.migration_marker_present().await?;
         self.set_quarantine(quarantined.then_some(pages));
         Ok(quarantined)
     }
@@ -310,28 +360,19 @@ impl Indexer {
     ) -> Result<(), IndexerError> {
         let table = self.crdt_snapshots_table();
         let tenant = self.crdt_tenant_scope().map(str::to_owned);
-        let rows: Vec<(String, i64, Vec<u8>)> = {
+        // Keys only up front; each snapshot's bytes are fetched one at a time below, so a tenant
+        // with a long history does not hold every snapshot blob in memory at once.
+        let rows: Vec<(String, i64)> = {
             let conn = self.conn.lock().await;
             let (sql, scoped) = match &tenant {
-                None => (
-                    format!("SELECT page_id, snapshot_hlc, snapshot_bytes FROM {table}"),
-                    false,
-                ),
+                None => (format!("SELECT page_id, snapshot_hlc FROM {table}"), false),
                 Some(_) => (
-                    format!(
-                        "SELECT page_id, snapshot_hlc, snapshot_bytes FROM {table} WHERE tenant = ?"
-                    ),
+                    format!("SELECT page_id, snapshot_hlc FROM {table} WHERE tenant = ?"),
                     true,
                 ),
             };
             let mut stmt = conn.prepare(&sql)?;
-            let map = |r: &duckdb::Row<'_>| {
-                Ok((
-                    r.get::<_, String>(0)?,
-                    r.get::<_, i64>(1)?,
-                    r.get::<_, Vec<u8>>(2)?,
-                ))
-            };
+            let map = |r: &duckdb::Row<'_>| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?));
             if scoped {
                 stmt.query_map(params![tenant.as_deref().unwrap_or("")], map)?
                     .collect::<Result<Vec<_>, _>>()?
@@ -340,7 +381,27 @@ impl Indexer {
             }
         };
 
-        for (page_id, hlc, bytes) in rows {
+        for (page_id, hlc) in rows {
+            let bytes: Vec<u8> = {
+                let conn = self.conn.lock().await;
+                match &tenant {
+                    None => conn.query_row(
+                        &format!(
+                            "SELECT snapshot_bytes FROM {table} WHERE page_id = ? AND snapshot_hlc = ?"
+                        ),
+                        params![page_id, hlc],
+                        |r| r.get(0),
+                    )?,
+                    Some(t) => conn.query_row(
+                        &format!(
+                            "SELECT snapshot_bytes FROM {table} \
+                             WHERE page_id = ? AND snapshot_hlc = ? AND tenant = ?"
+                        ),
+                        params![page_id, hlc, t],
+                        |r| r.get(0),
+                    )?,
+                }
+            };
             // A snapshot that does not decode is not ours to judge here: history reads surface it.
             let Ok(markdown) = escurel_crdt::body_from_snapshot(&bytes) else {
                 continue;

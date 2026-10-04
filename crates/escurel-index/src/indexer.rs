@@ -253,6 +253,17 @@ pub enum IndexerError {
     #[error("{}", crate::migrate_kind::legacy_kind_message(tenant, pages))]
     LegacyKindPages { tenant: String, pages: Vec<String> },
 
+    /// A rebuild found pages it cannot parse (no frontmatter at byte 0 because of a BOM or CRLF
+    /// line ends, broken YAML, not UTF-8...). Refused BEFORE anything is truncated, with every
+    /// offender named, because a rebuild that finds out half-way leaves an index that is part
+    /// rebuilt and part empty.
+    #[error(
+        "refused: {} page(s) cannot be parsed, so the index was left untouched: {}",
+        pages.len(),
+        pages.iter().take(20).map(|(p, why)| format!("{p} ({why})")).collect::<Vec<_>>().join(", ")
+    )]
+    UnparsablePages { pages: Vec<(String, String)> },
+
     /// `migrate_kind(apply)` found pages with CRDT ops newer than their newest snapshot. The live
     /// document would no longer line up with a rewritten snapshot, so nothing is written.
     #[error(
@@ -1787,6 +1798,26 @@ impl Indexer {
                 tenant: self.tenant.clone(),
                 pages: legacy,
             });
+        }
+
+        // Non-destructive: prove every page parses BEFORE the truncate below. Archived pages are
+        // kept out of the index, so they are not parsed here either.
+        let mut unparsable: Vec<(String, String)> = Vec::new();
+        for path in &sorted {
+            let key = Key::new(self.tenant.as_str(), path.clone())?;
+            let body = self.store.read(&key).await?;
+            match std::str::from_utf8(&body) {
+                Err(_) => unparsable.push((path.clone(), "not UTF-8".to_owned())),
+                Ok(content) if is_archived(content) => {}
+                Ok(content) => {
+                    if let Err(e) = escurel_md::parse(content) {
+                        unparsable.push((path.clone(), e.to_string()));
+                    }
+                }
+            }
+        }
+        if !unparsable.is_empty() {
+            return Err(IndexerError::UnparsablePages { pages: unparsable });
         }
 
         // Attribution (escurel#357) is the one thing in `pages` that a

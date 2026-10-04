@@ -104,6 +104,7 @@ escurel-embed = { path = "../escurel-embed" }
 tempfile = "3"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "time", "sync"] }
 async-trait = "0.1"
+url = "2"
 # Live SQL-view connector round-trip (sql_view_postgres.rs): a real Postgres
 # in a testcontainer + a real libpq client to seed it. No mocks. `minio` is
 # for the live DuckLake publish test (ducklake_publish_live.rs, feature
