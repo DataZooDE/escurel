@@ -8,7 +8,7 @@ import type {
 } from '../client';
 import { EscurelError } from '../client/errors';
 import { describeError } from '../errors';
-import { pageSlug } from '../shared/pageId';
+import { pageSkill, pageSlug } from '../shared/pageId';
 import { pluralise } from '../shared/text';
 
 export const REVIEW_SCHEME = 'escurel-review';
@@ -143,7 +143,9 @@ export function buildChangesetQuickPickItems(
     items.push({
       action: 'draft',
       label: pageSlug(draft.target_page_id),
-      description: formatDiffSummary(diff),
+      description: [pageSkill(draft.target_page_id), formatDiffSummary(diff)]
+        .filter(Boolean)
+        .join(' · '),
       draft,
     });
   }
@@ -326,6 +328,8 @@ export interface DecisionOutcome {
   message: string;
   closeDiff: boolean;
   refresh: boolean;
+  /** The pages that were applied: a notice that names a page offers to open it. */
+  pages?: string[];
 }
 
 /**
@@ -405,6 +409,7 @@ export function interpretPromoteChangesetResult(res: PromoteChangesetResponse): 
     status: r.status ?? 'failed',
   }));
   const total = names.length;
+  const pages = res.results.filter((r) => r.ok !== false && !r.status).map((r) => r.page_id);
   const hasFailures = res.partial || res.results.some((r) => r.ok === false);
   if (hasFailures) {
     const applied = names.filter((n) => n.ok).length;
@@ -414,6 +419,7 @@ export function interpretPromoteChangesetResult(res: PromoteChangesetResponse): 
       message: `Applied ${applied} of ${total} ${total === 1 ? 'change' : 'changes'}. Not applied: ${notApplied.join(', ')}.`,
       closeDiff: false,
       refresh: true,
+      pages,
     };
   }
 
@@ -423,6 +429,7 @@ export function interpretPromoteChangesetResult(res: PromoteChangesetResponse): 
     message: `Applied ${total} ${total === 1 ? 'change' : 'changes'}: ${list}.`,
     closeDiff: true,
     refresh: true,
+    pages,
   };
 }
 

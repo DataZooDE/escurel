@@ -1,3 +1,4 @@
+import { pageSlug } from '../shared/pageId';
 import * as vscode from 'vscode';
 import type { DiffDraftResponse, Draft, EscurelClient } from '../client';
 import { EscurelError } from '../client/errors';
@@ -256,9 +257,9 @@ export class ReviewController implements vscode.Disposable {
       const res = await this.client().promoteChangeset({ changeset_id: target.changesetId });
       outcome = interpretPromoteChangesetResult(res);
       if (outcome.kind === 'partial') {
-        void vscode.window.showWarningMessage(`${outcome.message}`);
+        void this.tellWithOpen(outcome, 'warning');
       } else {
-        void vscode.window.showInformationMessage(`${outcome.message}`);
+        void this.tellWithOpen(outcome, 'info');
       }
     } catch (err) {
       if (err instanceof EscurelError && err.kind === 'already_decided') {
@@ -358,6 +359,20 @@ export class ReviewController implements vscode.Disposable {
   /**
    * Closes the active diff editor tab if it matches the decided review.
    */
+  /**
+   * A notice that names pages offers to open them (at most two buttons: the notice stays small, and the
+   * Awaiting and Knowledge views reach the rest).
+   */
+  private async tellWithOpen(outcome: DecisionOutcome, level: 'info' | 'warning'): Promise<void> {
+    const pages = (outcome.pages ?? []).slice(0, 2);
+    const labels = pages.map((id) => `Open ${pageSlug(id)}`);
+    const show =
+      level === 'warning' ? vscode.window.showWarningMessage : vscode.window.showInformationMessage;
+    const choice = await show(outcome.message, ...labels);
+    const at = choice ? labels.indexOf(choice) : -1;
+    if (at >= 0) await vscode.commands.executeCommand('escurel.openInstance', pages[at]);
+  }
+
   private async closeDiffIfOpen(draftId?: string): Promise<void> {
     const activeDoc = vscode.window.activeTextEditor?.document;
     if (!activeDoc) return;

@@ -576,4 +576,26 @@ describe('<escurel-page-as-ui> thread strip', () => {
       expect(q(el, '.source-strip') === null).to.equal(true);
     });
   });
+
+  it('says which report draws the record, and opens it', async () => {
+    const el = await fixture<EscurelPageAsUi>(
+      html`<escurel-page-as-ui
+        .model=${{ ...orderPage, viewer: { report: 'supplier-risk-report' } }}
+      ></escurel-page-as-ui>`,
+    );
+    await el.updateComplete;
+    expect(text(q(el, '.viewer'))).to.contain('Chart: supplier-risk-report');
+    expect(text(q(el, '.viewer'))).to.contain('Peacock');
+    const sent: WebviewToHost[] = [];
+    el.addEventListener('escurel-message', (e) =>
+      sent.push((e as CustomEvent<WebviewToHost>).detail),
+    );
+    (q(el, '.viewer button') as HTMLButtonElement).click();
+    expect(sent).to.deep.equal([{ type: 'view-skill', skill: 'supplier-risk-report' }]);
+  });
+
+  it('shows no chart line for a record with no viewer', async () => {
+    const el = await render();
+    expect(q(el, '.viewer')).to.equal(null);
+  });
 });
