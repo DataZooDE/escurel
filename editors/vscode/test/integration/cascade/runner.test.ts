@@ -40,7 +40,7 @@ suite('runs panel in cascade', () => {
     const sentence = await until(
       () => {
         const m = api.runner.viewMessage;
-        return /Runner ok · echo harness · last seen/.test(m) ? m : undefined;
+        return /Runner ok · echo harness \(demo, no AI model\) · last seen/.test(m) ? m : undefined;
       },
       60_000,
       'the runner sentence',
@@ -69,7 +69,8 @@ suite('runs panel in cascade', () => {
     // It names the skill and the page, never an id.
     assert.match(row.label, /^supplier-risk · order-/);
     assert.doesNotMatch(row.label, /[0-9A-Z]{20,}/);
-    assert.match(row.description ?? '', /^succeeded in /);
+    assert.match(row.description ?? '', /^ok · /);
+    assert.match(row.tooltip ?? '', /succeeded/);
     // And it is not still "running": a stale Running row after a run ended was the old panel's bug.
     const roots = await api.runner.getChildren();
     assert.equal(
@@ -101,7 +102,10 @@ suite('runs panel in cascade', () => {
     );
     assert.equal(row.contextValue, 'run.failed');
     assert.ok(row.runId, 'the row carries the run id the retry and open commands read');
-    assert.match(row.description ?? '', /^failed/);
+    assert.match(row.description ?? '', /^(gave up|failed)/);
+    // The reason is its own row beneath, not a cut-off description.
+    assert.equal(row.children?.[0]?.kind, 'reason');
+    assert.ok(row.children![0]!.label.length > 0);
     assert.match(row.tooltip ?? '', /Reason: /);
     // The same failure is in History too: History is everything that ended.
     const history = runs(await api.runner.getChildren(), 'group:history');
@@ -158,5 +162,17 @@ suite('runs panel in cascade', () => {
     h = group(await api.runner.getChildren(), 'group:history')!;
     assert.equal(h.children![0]!.label, 'No runs match the filter.');
     await api.runner.setFilter({});
+  });
+
+  test('"Show failed runs" (the link under Needs attention) filters History to failures', async function () {
+    this.timeout(60_000);
+    await vscode.commands.executeCommand('escurel.runs.showFailed');
+    const h = group(await api.runner.getChildren(), 'group:history')!;
+    const rows = h.children!.filter((c) => c.kind === 'run');
+    assert.ok(rows.length > 0, 'the earlier tests left failures');
+    assert.ok(rows.every((r) => r.state === 'failed' || r.state === 'dead_letter'));
+    assert.match(api.runner.viewMessage, /Filtered: failed/);
+    await vscode.commands.executeCommand('escurel.runs.clearFilter');
+    assert.doesNotMatch(api.runner.viewMessage, /Filtered:/);
   });
 });

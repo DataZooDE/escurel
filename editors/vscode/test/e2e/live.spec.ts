@@ -38,12 +38,10 @@ test('the story is on screen: knowledge, threads, awaiting, inbox and the runner
   await stack.shot('01b-knowledge-tree');
   await expect(pane(page, 'Awaiting You').getByRole('treeitem').first()).toBeVisible();
   await expect(pane(page, 'Inbox').getByRole('treeitem').first()).toBeVisible();
-  await expect(pane(page, 'Runner').getByRole('treeitem', { name: /Health ok/ })).toBeVisible();
-  // First: a live run's row names the harness too, so there can be two.
+  // The runner is described in plain words, and dispatch is a row of its own.
+  await expect(pane(page, 'Runner').getByText(/Runner ok · echo harness/)).toBeVisible();
   await expect(
-    pane(page, 'Runner')
-      .getByRole('treeitem', { name: /harness: echo/ })
-      .first(),
+    pane(page, 'Runner').getByRole('treeitem', { name: /Dispatch is on/ }),
   ).toBeVisible();
   await stack.shot('01-overview');
 });
@@ -387,7 +385,7 @@ test('a SQL-view page previews the rows the source holds, read-only, under its f
   await stack.shot('06d-sql-view-preview');
 });
 
-test('a failed run is listed under Dead letters, and Requeue is there but deactivated for a human', async ({
+test('a failed run is listed under Needs attention, and Requeue is there but deactivated for a human', async ({
   stack,
 }) => {
   const { page } = stack;
@@ -401,8 +399,17 @@ test('a failed run is listed under Dead letters, and Requeue is there but deacti
     provenance: { manual: { mode: 'run', harness: 'no-such-harness' } },
   });
   const runner = pane(page, 'Runner');
-  const dead = runner.getByRole('treeitem', { name: /order-4500152.*permanent/ });
+  // Needs attention comes before History in the tree, so the first match is the one that can be acted on.
+  const dead = runner.getByRole('treeitem', { name: /order-4500152/ }).first();
   await expect(dead).toBeVisible({ timeout: 60_000 });
+  // A short word on screen, the whole one for a screen reader.
+  await expect(dead).toContainText(/gave up/);
+  await expect(dead).toHaveAttribute(
+    'aria-label',
+    /^failed for good: supplier-risk · order-4500152/,
+  );
+  // And the reason is its own line under it, in words.
+  await expect(runner.getByRole('treeitem', { name: /Reason: permanent — harness/ })).toBeVisible();
   await dead.click({ button: 'right' });
   const requeue = page.getByRole('menuitem', { name: /Requeue/ });
   await expect(requeue).toBeVisible();
@@ -416,7 +423,9 @@ test('a failed run can be retried from the Runner view, and the person is told w
   stack,
 }) => {
   const { page } = stack;
-  const dead = pane(page, 'Runner').getByRole('treeitem', { name: /order-4500152.*permanent/ });
+  const dead = pane(page, 'Runner')
+    .getByRole('treeitem', { name: /order-4500152/ })
+    .first();
   await dead.click({ button: 'right' });
   // VS Code's own context menu acts on Enter; a synthetic click on its item is not reliable.
   await page.getByRole('menuitem', { name: /Retry run/ }).hover();
@@ -445,7 +454,7 @@ test('a live run can be cancelled from its run detail', async ({ stack }) => {
     provenance: { manual: { mode: 'run' } },
   });
   const runner = pane(page, 'Runner');
-  const live = runner.getByRole('treeitem', { name: /order-4500140/ });
+  const live = runner.getByRole('treeitem', { name: /order-4500140/ }).first();
   await expect(live).toBeVisible({ timeout: 60_000 });
   await live.click();
   const run = await webviewWith(page, 'escurel-run-detail');
@@ -455,6 +464,40 @@ test('a live run can be cancelled from its run detail', async ({ stack }) => {
   await cancel.click();
   await expect(run.locator('.status-chip')).toContainText('cancelled', { timeout: 30_000 });
   await stack.shot('09-cancelled');
+});
+
+test('the Runner panel is a control center: sections with counts, an insight line, a filter, and no ids', async ({
+  stack,
+}) => {
+  const { page } = stack;
+  const runner = pane(page, 'Runner');
+  // Sections, each with its count, in words.
+  await expect(runner.getByRole('treeitem', { name: /^Running now/ })).toBeVisible();
+  await expect(runner.getByRole('treeitem', { name: /^Needs attention/ })).toBeVisible();
+  const history = runner.getByRole('treeitem', { name: /^History/ });
+  await expect(history).toBeVisible();
+  // The insight line sums the day up.
+  await expect(runner.getByText(/Last 24 h: \d+ runs? · \d+ ok/)).toBeVisible();
+  // A run says what it did, to what, in words: status as a word, never a bare id.
+  const cancelled = runner.getByRole('treeitem', { name: /cancelled: .*order-4500140/ }).first();
+  await expect(cancelled).toBeVisible();
+  for (const row of await runner.getByRole('treeitem').all()) {
+    expect(await row.innerText()).not.toMatch(/[0-9A-Z]{20,}/);
+  }
+  await stack.shot('10-runs-panel');
+
+  // Filter History to what failed: a title action opens a pick list; nothing else has to change.
+  // The Runner is alone in its container, so its title actions sit in the container's title bar.
+  await page.getByRole('button', { name: /Filter runs/ }).click();
+  const picker = page.locator('.quick-input-widget');
+  await expect(picker).toBeVisible();
+  await picker.getByRole('checkbox', { name: /^Failed/ }).first().click();
+  await page.keyboard.press('Enter');
+  await expect(runner.getByText(/Filtered: failed/)).toBeVisible();
+  await expect(runner.getByRole('treeitem', { name: /cancelled: / })).toHaveCount(0);
+  await stack.shot('10b-runs-filtered');
+  await page.getByRole('button', { name: /Clear run filter/ }).click();
+  await expect(runner.getByText(/Filtered:/)).toHaveCount(0);
 });
 
 // --- outside systems: a REST portal and an MCP server, real processes the demo started -------------

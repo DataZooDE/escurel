@@ -10,6 +10,9 @@ export function registerRunsCommands(tree: RunnerTree): vscode.Disposable {
   return vscode.Disposable.from(
     vscode.commands.registerCommand('escurel.runs.refresh', () => tree.refresh()),
     vscode.commands.registerCommand('escurel.runs.loadMore', () => tree.loadMore()),
+    vscode.commands.registerCommand('escurel.runs.showFailed', () =>
+      tree.setFilter({ states: ['failed', 'dead_letter'] }),
+    ),
     vscode.commands.registerCommand('escurel.runs.clearFilter', () => tree.setFilter({})),
     vscode.commands.registerCommand('escurel.runs.filter', async () => {
       const qp = vscode.window.createQuickPick<vscode.QuickPickItem & { id: string }>();

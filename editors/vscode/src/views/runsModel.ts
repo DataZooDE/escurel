@@ -1,7 +1,7 @@
 // The runs control center's model: pure, no `vscode`. Run lifecycle events in, rows and words out.
 import type { Event } from '../client';
 import { pageSlug } from '../shared/pageId';
-import { formatAge, parseGatewayTime } from '../shared/time';
+import { parseGatewayTime } from '../shared/time';
 import {
   deriveHealth,
   ESCUREL_RUNNER_STATUS_INTERVAL_MS,
@@ -267,24 +267,33 @@ export function stateWord(state: RunState): string {
 }
 
 /** The row's second line: what happened, how long it took, how long ago. */
+/** "now", "3 m", "5 h", "2 d": a relative time short enough for a narrow row. Empty when unreadable. */
+export function shortAgo(raw: unknown, nowMs: number): string {
+  const then = parseGatewayTime(raw)?.getTime();
+  if (then === undefined) return '';
+  const minutes = Math.max(0, Math.floor((nowMs - then) / 60_000));
+  if (minutes < 1) return 'now';
+  if (minutes < 60) return `${minutes} m`;
+  const hours = Math.floor(minutes / 60);
+  return hours < 24 ? `${hours} h` : `${Math.floor(hours / 24)} d`;
+}
+
+/** What a narrow row says; the full word is in the tooltip and the accessible name. */
+const SHORT_WORD: Partial<Record<RunState, string>> = { dead_letter: 'gave up' };
+
 export function runDescription(r: RunRecord, nowMs: number): string {
-  const now = new Date(nowMs);
   const ago =
-    r.finishedAtMs !== undefined ? formatAge(new Date(r.finishedAtMs).toISOString(), now) : '';
-  if (r.state === 'running') {
-    return r.startedAtMs !== undefined
-      ? `running for ${formatMs(Math.max(0, nowMs - r.startedAtMs))}`
-      : 'running';
-  }
-  if (r.state === 'planned')
-    return ['plan ready · waiting for you', ago].filter(Boolean).join(' · ');
-  if (r.state === 'succeeded') {
-    const head =
-      r.durationMs !== undefined ? `succeeded in ${formatMs(r.durationMs)}` : 'succeeded';
-    return [head, ago].filter(Boolean).join(' · ');
-  }
-  const reason = (r.reason ?? r.error ?? '').split('\n')[0]!.slice(0, 80);
-  return [STATE_WORD[r.state], reason, ago].filter(Boolean).join(' · ');
+    r.finishedAtMs !== undefined ? shortAgo(new Date(r.finishedAtMs).toISOString(), nowMs) : '';
+  // Elapsed time only: the spinner and the section already say it is running.
+  if (r.state === 'running')
+    return r.startedAtMs !== undefined ? formatMs(Math.max(0, nowMs - r.startedAtMs)) : '';
+  if (r.state === 'planned') return ['plan', ago].filter(Boolean).join(' · ');
+  if (r.state === 'succeeded')
+    return ['ok', r.durationMs !== undefined ? formatMs(r.durationMs) : '', ago]
+      .filter(Boolean)
+      .join(' · ');
+  // The reason is its own row: a narrow panel cuts a description, and the reason is what matters.
+  return [SHORT_WORD[r.state] ?? STATE_WORD[r.state], ago].filter(Boolean).join(' · ');
 }
 
 export interface RunnerDescription {
@@ -314,14 +323,23 @@ export function describeRunner(
     ? Math.max(0, Math.round((nowMs - (parseGatewayTime(status.at)?.getTime() ?? nowMs)) / 1000))
     : 0;
   const paused = !!opts.tenant && (body.paused_tenants ?? []).includes(opts.tenant);
-  const harness = body.harness ? `${body.harness} harness` : undefined;
+  // Honest about the demo: the echo harness folds events by rule, there is no model behind it.
+  const harness = body.harness
+    ? body.harness === 'echo'
+      ? 'echo harness (demo, no AI model)'
+      : `${body.harness} harness`
+    : undefined;
   const lead =
     health.state === 'stale'
       ? 'Runner not responding'
       : health.state === 'draining'
         ? 'Runner shutting down'
         : 'Runner ok';
-  const parts = [lead, harness, `last seen ${formatMs(seconds * 1000)} ago`].filter(Boolean);
+  const parts = [
+    lead,
+    harness,
+    seconds < 2 ? 'last seen just now' : `last seen ${formatMs(seconds * 1000)} ago`,
+  ].filter(Boolean);
   if (paused) parts.push('Dispatch is paused: new work waits');
   const verb = paused ? 'Resume' : 'Pause';
   return {
@@ -344,7 +362,8 @@ function safeBody(raw: string): RunnerStatusBody {
 
 // --- the tree -------------------------------------------------------------------------------
 
-export type RunsNodeKind = 'dispatch' | 'group' | 'run' | 'more' | 'empty' | 'error';
+export type RunsNodeKind =
+  'insight' | 'dispatch' | 'group' | 'run' | 'reason' | 'more' | 'empty' | 'error';
 
 export interface RunsNode {
   /** Stable, so VS Code keeps a group expanded across refreshes. */
@@ -365,6 +384,9 @@ export interface RunsNode {
   children?: RunsNode[] | undefined;
   expanded?: boolean | undefined;
 }
+
+/** How many failures the section lists; the rest are one click away in History, filtered. */
+const ATTENTION_LIMIT = 10;
 
 export interface TreeInput {
   records: readonly RunRecord[];
@@ -400,6 +422,18 @@ export function tooltipFor(r: RunRecord, nowMs: number): string {
 }
 
 function runNode(r: RunRecord, nowMs: number, section: string): RunsNode {
+  const reason = [
+    ...new Set([r.reason, r.error].map((x) => (x ?? '').trim()).filter(Boolean)),
+  ].join(' — ');
+  const reasonRow: RunsNode | undefined =
+    section === 'attention' && reason
+      ? {
+          id: `reason:${r.runId}`,
+          kind: 'reason',
+          label: reason.split('\n')[0]!.slice(0, 160),
+          tooltip: reason,
+        }
+      : undefined;
   const context =
     r.state === 'running'
       ? 'run.running'
@@ -421,6 +455,7 @@ function runNode(r: RunRecord, nowMs: number, section: string): RunsNode {
     rootEventId: r.rootEventId ?? undefined,
     pageId: r.targetPageId ?? undefined,
     skill: r.skill,
+    ...(reasonRow ? { children: [reasonRow], expanded: true } : {}),
   };
 }
 
@@ -446,11 +481,19 @@ export function buildRunsTree(input: TreeInput): RunsNode[] {
       id: 'dispatch',
       kind: 'dispatch',
       label: input.runner.paused ? 'Dispatch is paused' : 'Dispatch is on',
-      description: input.runner.dispatchHint,
-      tooltip: input.runner.text,
+      // The button is there for an admin; for anyone else the short reason, and the sentence on hover.
+      description: input.isAdmin
+        ? undefined
+        : input.runner.paused
+          ? 'admins can resume'
+          : 'admins can pause',
+      tooltip: `${input.runner.text}\n${input.runner.dispatchHint}`,
       contextValue: input.runner.paused ? 'dispatch.paused' : 'dispatch.running',
     });
   }
+
+  const insight = insightLine(input.records, input.nowMs);
+  if (insight) out.push({ id: 'insight', kind: 'insight', label: insight, tooltip: insight });
 
   out.push({
     id: 'group:running',
@@ -460,7 +503,7 @@ export function buildRunsTree(input: TreeInput): RunsNode[] {
     expanded: true,
     children: groups.running.length
       ? groups.running.map((r) => runNode(r, input.nowMs, 'running'))
-      : [empty('empty:running', 'Nothing is running. Start a skill from a record.')],
+      : [empty('empty:running', 'Nothing is running.')],
   });
 
   if (groups.waiting.length) {
@@ -474,13 +517,27 @@ export function buildRunsTree(input: TreeInput): RunsNode[] {
     });
   }
   if (groups.attention.length) {
+    const shown = groups.attention.slice(0, ATTENTION_LIMIT);
+    const rest = groups.attention.length - shown.length;
     out.push({
       id: 'group:attention',
       kind: 'group',
       label: 'Needs attention',
       description: String(groups.attention.length),
       expanded: true,
-      children: groups.attention.map((r) => runNode(r, input.nowMs, 'attention')),
+      children: [
+        ...shown.map((r) => runNode(r, input.nowMs, 'attention')),
+        ...(rest > 0
+          ? [
+              {
+                id: 'more:attention',
+                kind: 'more' as const,
+                label: `Show ${rest} older failure${rest === 1 ? '' : 's'} in History`,
+                contextValue: 'runs.showFailed',
+              },
+            ]
+          : []),
+      ],
     });
   }
 
@@ -565,4 +622,15 @@ export function filterFromPicks(picks: readonly string[], text: string | undefin
     ...(skill ? { skill } : {}),
     ...(t ? { text: t } : {}),
   };
+}
+
+/** The few words the view shows while a filter is on: "failed · supplier-risk". */
+export function filterNote(f: RunsFilter): string {
+  // The pick "Failed" stands for failed AND failed for good: say it once.
+  const states = (f.states ?? []).filter(
+    (s) => !(s === 'dead_letter' && f.states?.includes('failed')),
+  );
+  return [...states.map((s) => stateWord(s)), f.skill, f.text ? `“${f.text}”` : undefined]
+    .filter(Boolean)
+    .join(' · ');
 }

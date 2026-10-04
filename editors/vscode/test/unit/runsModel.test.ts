@@ -256,15 +256,15 @@ describe('words for a row', () => {
   });
 
   it('says what happened and how long ago', () => {
-    expect(runDescription(r, NOW)).toBe('succeeded in 6 s · just now');
+    expect(runDescription(r, NOW)).toBe('ok · 6 s · now');
+    // The reason is its own row (a narrow panel cuts a description), so the description stays short.
     expect(runDescription({ ...r, state: 'failed', reason: 'harness error' }, NOW)).toBe(
-      'failed · harness error · just now',
+      'failed · now',
     );
     const running = foldRuns([started('b', 12)], { nowMs: NOW, liveRunIds: new Set(['b']) })[0]!;
-    expect(runDescription(running, NOW)).toBe('running for 12 s');
-    expect(runDescription({ ...r, state: 'planned' }, NOW)).toBe(
-      'plan ready · waiting for you · just now',
-    );
+    // Elapsed time only: the icon and the section already say it is running.
+    expect(runDescription(running, NOW)).toBe('12 s');
+    expect(runDescription({ ...r, state: 'planned' }, NOW)).toBe('plan · now');
   });
 });
 
@@ -279,7 +279,7 @@ describe('describeRunner', () => {
       'No runner has reported yet.',
     );
     const d = describeRunner(fresh, NOW, { isAdmin: true, tenant: 'vsx' });
-    expect(d.text).toBe('Runner ok · echo harness · last seen 3 s ago');
+    expect(d.text).toBe('Runner ok · echo harness (demo, no AI model) · last seen 3 s ago');
     expect(d.paused).toBe(false);
   });
 
@@ -301,7 +301,7 @@ describe('describeRunner', () => {
   });
 });
 
-import { buildRunsTree, tooltipFor, type RunsNode } from '../../src/views/runsModel';
+import { buildRunsTree, shortAgo, tooltipFor, type RunsNode } from '../../src/views/runsModel';
 
 describe('buildRunsTree', () => {
   const runner = describeRunner({ at: iso(3), body: { harness: 'echo', tenant: 'vsx' } }, NOW, {
@@ -337,6 +337,7 @@ describe('buildRunsTree', () => {
     const tree = buildRunsTree({ ...base, records: records() });
     expect(tree.map((n) => n.id)).toEqual([
       'dispatch',
+      'insight',
       'group:running',
       'group:waiting',
       'group:attention',
@@ -359,8 +360,11 @@ describe('buildRunsTree', () => {
     expect(on).toMatchObject({
       label: 'Dispatch is on',
       contextValue: 'dispatch.running',
-      description: 'Pause dispatch',
     });
+    // An admin has the button; the sentence is the tooltip, not a cut-off description.
+    expect(on.description).toBeUndefined();
+    expect(on.tooltip).toContain('Pause dispatch');
+    expect(on.description).toBeUndefined();
     const paused = describeRunner(
       { at: iso(3), body: { harness: 'echo', paused_tenants: ['vsx'] } },
       NOW,
@@ -373,8 +377,9 @@ describe('buildRunsTree', () => {
     expect(row).toMatchObject({
       label: 'Dispatch is paused',
       contextValue: 'dispatch.paused',
-      description: 'Only an admin can resume dispatch.',
+      description: 'admins can resume',
     });
+    expect(row.tooltip).toContain('Only an admin can resume dispatch.');
   });
 
   it('an empty section says so in words; waiting and attention hide when empty', () => {
@@ -382,7 +387,7 @@ describe('buildRunsTree', () => {
     expect(tree.map((n) => n.id)).toEqual(['dispatch', 'group:running', 'group:history']);
     expect(find(tree, 'group:running')!.children![0]).toMatchObject({
       kind: 'empty',
-      label: 'Nothing is running. Start a skill from a record.',
+      label: 'Nothing is running.',
     });
     expect(find(tree, 'group:history')!.children![0]).toMatchObject({
       kind: 'empty',
@@ -460,7 +465,7 @@ describe('buildRunsTree', () => {
   });
 });
 
-import { filterFromPicks, filterPickItems } from '../../src/views/runsModel';
+import { filterFromPicks, filterNote, filterPickItems } from '../../src/views/runsModel';
 
 describe('the filter pick list', () => {
   it('offers the states, then the skills seen, then a text search', () => {
@@ -499,5 +504,250 @@ describe('the filter pick list', () => {
     });
     // Only one skill at a time: the first one picked.
     expect(filterFromPicks(['skill:b', 'skill:a'], undefined)).toEqual({ skill: 'b' });
+  });
+});
+
+describe('a failed run explains itself on its own row', () => {
+  const NOW2 = NOW;
+  const failed = foldRuns(
+    [
+      started('bad', 150),
+      finished('bad', 140, 'dead_letter', {
+        reason: 'harness not allowed: no-such-harness\nsecond line',
+      }),
+    ],
+    { nowMs: NOW2 },
+  );
+  const tree = buildRunsTree({
+    records: failed,
+    filter: {},
+    nowMs: NOW2,
+    historyLimit: 25,
+    hasMoreHistory: false,
+    runner: undefined,
+    isAdmin: false,
+  });
+
+  it('under Needs attention the reason is a child line, first line only, with the whole text in its tooltip', () => {
+    const row = tree.find((n) => n.id === 'group:attention')!.children![0]!;
+    expect(row.children).toHaveLength(1);
+    expect(row.children![0]).toMatchObject({
+      kind: 'reason',
+      label: 'harness not allowed: no-such-harness',
+    });
+    expect(row.children![0]!.tooltip).toContain('second line');
+    expect(row.expanded).toBe(true);
+  });
+
+  it('History keeps one line per run: the reason is in its tooltip', () => {
+    const row = tree.find((n) => n.id === 'group:history')!.children![0]!;
+    expect(row.children).toBeUndefined();
+    expect(row.tooltip).toContain('harness not allowed');
+  });
+
+  it('a failed run with no reason gets no empty child', () => {
+    const none = foldRuns([started('x', 100), finished('x', 90, 'failed')], { nowMs: NOW2 });
+    const t = buildRunsTree({
+      records: none,
+      filter: {},
+      nowMs: NOW2,
+      historyLimit: 25,
+      hasMoreHistory: false,
+      runner: undefined,
+      isAdmin: false,
+    });
+    expect(t.find((n) => n.id === 'group:attention')!.children![0]!.children).toBeUndefined();
+  });
+});
+
+describe('the reason line carries both the class and the cause', () => {
+  it('joins the runner’s reason (permanent, transient…) with the error text', () => {
+    const rs = foldRuns(
+      [
+        started('p', 150),
+        finished('p', 140, 'dead_letter', {
+          reason: 'permanent',
+          error: 'harness not allowed: no-such-harness',
+        }),
+      ],
+      { nowMs: NOW },
+    );
+    const t = buildRunsTree({
+      records: rs,
+      filter: {},
+      nowMs: NOW,
+      historyLimit: 25,
+      hasMoreHistory: false,
+      runner: undefined,
+      isAdmin: false,
+    });
+    expect(t.find((n) => n.id === 'group:attention')!.children![0]!.children![0]!.label).toBe(
+      'permanent — harness not allowed: no-such-harness',
+    );
+  });
+
+  it('does not say the same thing twice', () => {
+    const rs = foldRuns(
+      [started('q', 150), finished('q', 140, 'failed', { reason: 'boom', error: 'boom' })],
+      { nowMs: NOW },
+    );
+    const t = buildRunsTree({
+      records: rs,
+      filter: {},
+      nowMs: NOW,
+      historyLimit: 25,
+      hasMoreHistory: false,
+      runner: undefined,
+      isAdmin: false,
+    });
+    expect(t.find((n) => n.id === 'group:attention')!.children![0]!.children![0]!.label).toBe(
+      'boom',
+    );
+  });
+});
+
+describe('short status words fit a narrow row; the full words stay for the tooltip', () => {
+  it('uses ok / failed / gave up / cancelled in the description', () => {
+    const base = foldRuns([started('a', 100), finished('a', 90, 'processed')], { nowMs: NOW })[0]!;
+    expect(runDescription({ ...base, state: 'dead_letter' }, NOW)).toMatch(/^gave up · /);
+    expect(runDescription({ ...base, state: 'cancelled' }, NOW)).toMatch(/^cancelled · /);
+    expect(tooltipFor({ ...base, state: 'dead_letter' }, NOW)).toContain('failed for good');
+  });
+});
+
+describe('filterNote', () => {
+  it('says what is filtered in a few words, and nothing when nothing is', () => {
+    expect(filterNote({})).toBe('');
+    expect(filterNote({ states: ['failed', 'dead_letter'], skill: 'supplier-risk' })).toBe(
+      'failed · supplier-risk',
+    );
+    expect(filterNote({ states: ['succeeded', 'cancelled'], text: 'order-45' })).toBe(
+      'succeeded · cancelled · “order-45”',
+    );
+  });
+});
+
+describe('the insight row', () => {
+  const input = (records: ReturnType<typeof foldRuns>) => ({
+    records,
+    filter: {},
+    nowMs: NOW,
+    historyLimit: 25,
+    hasMoreHistory: false,
+    runner: undefined,
+    isAdmin: false,
+  });
+
+  it('is the first row, a sentence about the day, and is not interactive', () => {
+    const rs = foldRuns([started('a', 100), finished('a', 90, 'processed')], { nowMs: NOW });
+    const row = buildRunsTree(input(rs))[0]!;
+    expect(row).toMatchObject({ id: 'insight', kind: 'insight' });
+    expect(row.label).toMatch(/^Last 24 h: 1 run · 1 ok/);
+    expect(row.contextValue).toBeUndefined();
+  });
+
+  it('is absent when there is nothing to say', () => {
+    expect(buildRunsTree(input([])).some((n) => n.kind === 'insight')).toBe(false);
+  });
+});
+
+describe('shortAgo', () => {
+  const at = (msAgo: number) => new Date(NOW - msAgo).toISOString();
+  it('is as short as a narrow row needs', () => {
+    expect(shortAgo(at(5_000), NOW)).toBe('now');
+    expect(shortAgo(at(3 * 60_000), NOW)).toBe('3 m');
+    expect(shortAgo(at(5 * 3_600_000), NOW)).toBe('5 h');
+    expect(shortAgo(at(2 * 86_400_000), NOW)).toBe('2 d');
+    expect(shortAgo('garbage', NOW)).toBe('');
+  });
+});
+
+describe('last seen', () => {
+  it('says "just now" instead of "0 ms ago"', () => {
+    const d = describeRunner({ at: iso(0), body: { harness: 'echo', tenant: 'vsx' } }, NOW, {
+      isAdmin: false,
+      tenant: 'vsx',
+    });
+    expect(d.text).toContain('last seen just now');
+    expect(d.text).not.toContain('0 ms');
+  });
+});
+
+describe('a long history does not freeze the panel', () => {
+  it('folds, groups and builds the tree for 5,000 events well inside a frame budget', () => {
+    const events: Event[] = [];
+    for (let i = 0; i < 1250; i += 1) {
+      events.push(started(`r${i}`, 100_000 - i * 10));
+      events.push(finished(`r${i}`, 99_990 - i * 10, i % 7 === 0 ? 'failed' : 'processed'));
+      events.push(ev(`r${i}`, 'run-attempt', iso(99_995 - i * 10), { attempt: 1, outcome: 'ok' }));
+      events.push(ev(`r${i}`, 'run-progress', iso(99_992 - i * 10), { plan: [] }));
+    }
+    expect(events).toHaveLength(5000);
+    const t0 = performance.now();
+    const records = foldRuns(events, { nowMs: NOW });
+    const tree = buildRunsTree({
+      records,
+      filter: {},
+      nowMs: NOW,
+      historyLimit: 25,
+      hasMoreHistory: true,
+      runner: undefined,
+      isAdmin: false,
+    });
+    const ms = performance.now() - t0;
+    expect(records).toHaveLength(1250);
+    // Only a page of History is turned into rows, however long the history is.
+    const history = tree.find((n) => n.id === 'group:history')!;
+    expect(history.children!.filter((c) => c.kind === 'run')).toHaveLength(25);
+    expect(ms).toBeLessThan(500);
+  });
+});
+
+describe('Needs attention is bounded', () => {
+  const many = foldRuns(
+    Array.from({ length: 25 }, (_, i) => [
+      started(`f${i}`, 5000 - i * 10),
+      finished(`f${i}`, 4990 - i * 10, 'failed', { reason: `boom ${i}` }),
+    ]).flat(),
+    { nowMs: NOW },
+  );
+  const tree = buildRunsTree({
+    records: many,
+    filter: {},
+    nowMs: NOW,
+    historyLimit: 25,
+    hasMoreHistory: false,
+    runner: undefined,
+    isAdmin: false,
+  });
+  const group = tree.find((n) => n.id === 'group:attention')!;
+
+  it('counts every failure but lists the ten newest, then says where the rest are', () => {
+    expect(group.description).toBe('25');
+    const runs = group.children!.filter((c) => c.kind === 'run');
+    expect(runs).toHaveLength(10);
+    // Newest first: f24 started last (the smaller the number, the longer ago).
+    expect(runs[0]!.runId).toBe('f24');
+    const more = group.children!.at(-1)!;
+    expect(more).toMatchObject({
+      kind: 'more',
+      id: 'more:attention',
+      label: 'Show 15 older failures in History',
+      contextValue: 'runs.showFailed',
+    });
+  });
+
+  it('has no such row when everything fits', () => {
+    const few = buildRunsTree({
+      records: many.slice(0, 10),
+      filter: {},
+      nowMs: NOW,
+      historyLimit: 25,
+      hasMoreHistory: false,
+      runner: undefined,
+      isAdmin: false,
+    });
+    const g = few.find((n) => n.id === 'group:attention')!;
+    expect(g.children!.some((c) => c.kind === 'more')).toBe(false);
   });
 });

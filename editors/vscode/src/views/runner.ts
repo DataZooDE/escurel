@@ -24,7 +24,7 @@ import { registerRunsCommands } from './runsCommands';
 import {
   buildRunsTree,
   describeRunner,
-  insightLine,
+  filterNote,
   groupRuns,
   stateWord,
   type RunRecord,
@@ -125,12 +125,11 @@ export class RunnerTree implements vscode.TreeDataProvider<RunsNode>, vscode.Dis
   // --- tree ---------------------------------------------------------------------------------
 
   getTreeItem(node: RunsNode): vscode.TreeItem {
-    const collapsible =
-      node.kind === 'group'
-        ? node.expanded
-          ? vscode.TreeItemCollapsibleState.Expanded
-          : vscode.TreeItemCollapsibleState.Collapsed
-        : vscode.TreeItemCollapsibleState.None;
+    const collapsible = node.children?.length
+      ? node.expanded
+        ? vscode.TreeItemCollapsibleState.Expanded
+        : vscode.TreeItemCollapsibleState.Collapsed
+      : vscode.TreeItemCollapsibleState.None;
     const item = new vscode.TreeItem(node.label, collapsible);
     item.id = node.id;
     if (node.description) item.description = node.description;
@@ -150,6 +149,9 @@ export class RunnerTree implements vscode.TreeDataProvider<RunsNode>, vscode.Dis
           role: 'treeitem',
         };
         break;
+      case 'insight':
+        item.iconPath = new vscode.ThemeIcon('graph');
+        break;
       case 'group':
         item.accessibilityInformation = {
           label: `${node.label}, ${node.description ?? '0'}`,
@@ -168,9 +170,19 @@ export class RunnerTree implements vscode.TreeDataProvider<RunsNode>, vscode.Dis
         item.command = { command: 'escurel.openRun', title: 'Open run', arguments: [node] };
         break;
       }
+      case 'reason':
+        item.iconPath = new vscode.ThemeIcon(
+          'debug-stackframe-dot',
+          new vscode.ThemeColor('testing.iconFailed'),
+        );
+        item.accessibilityInformation = { label: `Reason: ${node.label}`, role: 'treeitem' };
+        break;
       case 'more':
         item.iconPath = new vscode.ThemeIcon('chevron-down');
-        item.command = { command: 'escurel.runs.loadMore', title: 'Load more' };
+        item.command =
+          node.id === 'more:attention'
+            ? { command: 'escurel.runs.showFailed', title: 'Show failures in History' }
+            : { command: 'escurel.runs.loadMore', title: 'Load more' };
         break;
       case 'error':
         item.iconPath = new vscode.ThemeIcon('warning', new vscode.ThemeColor('errorForeground'));
@@ -352,15 +364,9 @@ export class RunnerTree implements vscode.TreeDataProvider<RunsNode>, vscode.Dis
     const now = Date.now();
     const d = this.runnerDescription(now);
     const f = this.filter;
-    const note = [
-      ...(f.states ?? []).map((s) => stateWord(s)),
-      f.skill,
-      f.text ? `“${f.text}”` : undefined,
-    ]
-      .filter(Boolean)
-      .join(' · ');
-    view.message = [d.text, note ? `Filtered: ${note}` : undefined].filter(Boolean).join('\n');
-    view.description = insightLine(this.records, now);
+    const note = filterNote(f);
+    // The insight line lives in the message: a view's description is not shown in this header.
+    view.message = [d.text, note ? `Filtered: ${note}` : undefined].filter(Boolean).join(' · ');
     const g = groupRuns(this.records, now);
     const needs = g.waiting.length + g.attention.length;
     view.badge =

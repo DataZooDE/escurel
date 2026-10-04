@@ -316,6 +316,11 @@
         "command": "escurel.runs.copyRunId",
         "title": "Copy run id",
         "category": "Escurel"
+      },
+      {
+        "command": "escurel.runs.showFailed",
+        "title": "Show failed runs",
+        "category": "Escurel"
       }
     ],
     "authentication": [
@@ -555,6 +560,10 @@
         {
           "command": "escurel.runs.clearFilter",
           "when": "escurel.runs.filtered"
+        },
+        {
+          "command": "escurel.runs.showFailed",
+          "when": "false"
         }
       ],
       "view/title": [
@@ -764,6 +773,21 @@
           "command": "escurel.runs.copyRunId",
           "when": "view == escurel.runner && viewItem =~ /^run\\./",
           "group": "3_copy@1"
+        },
+        {
+          "command": "escurel.cancelRun",
+          "when": "view == escurel.runner && viewItem == run.running",
+          "group": "1_control@1"
+        },
+        {
+          "command": "escurel.approvePlan",
+          "when": "view == escurel.runner && viewItem == run.planned",
+          "group": "1_control@1"
+        },
+        {
+          "command": "escurel.retryRun",
+          "when": "view == escurel.runner && viewItem == run.failed",
+          "group": "1_control@1"
         }
       ],
       "editor/title": [
