@@ -12,7 +12,8 @@
 //! - a DRY RUN unless `--apply`; the report carries a unified-diff style hunk per changed page;
 //! - `--apply` refuses a dirty git working tree unless `--allow-dirty`;
 //! - only `*.md` files are read; symlinks are never followed; `.git`, `node_modules`, `target`,
-//!   `.dart_tool`, `.venv` are skipped; signed pack pages (`markdown/base/**`) are the publisher's
+//!   `.dart_tool`, `.venv` are skipped; a nested git repository or submodule is not entered
+//!   (`--include-nested-repos` opts in), because its pages belong to another history; signed pack pages (`markdown/base/**`) are the publisher's
 //!   to re-export and are reported, never rewritten;
 //! - pages the ENGINE cannot parse today (a BOM or a CRLF opening `---` line) are reported as
 //!   `needs_manual` and never rewritten: changing their key would not make them valid;
@@ -45,6 +46,10 @@ pub struct MigrateKindFilesArgs {
     /// Files larger than this are skipped and reported (bytes).
     #[arg(long, default_value_t = 64 * 1024 * 1024)]
     pub max_bytes: u64,
+    /// Also migrate pages inside nested git repositories and submodules (skipped by default: they
+    /// belong to another repository's history).
+    #[arg(long)]
+    pub include_nested_repos: bool,
 }
 
 /// What one file turned out to be.
@@ -183,11 +188,24 @@ fn diff(old: &str, new: &str) -> String {
     out
 }
 
-/// Every `*.md` file under `root` (sorted, symlinks never followed, vendor dirs skipped).
-fn markdown_files(root: &Path) -> Result<Vec<PathBuf>> {
+/// What a directory walk found: the markdown files, and the nested repositories it did not enter.
+struct Walk {
+    files: Vec<PathBuf>,
+    nested_repos: Vec<PathBuf>,
+}
+
+/// Every `*.md` file under `root` (sorted, symlinks never followed, vendor dirs skipped). A nested
+/// git repository (a directory holding its own `.git` file or directory, e.g. a submodule) is not
+/// entered unless `include_nested`: its pages belong to another history.
+fn markdown_files(root: &Path, include_nested: bool) -> Result<Walk> {
     let mut files = vec![];
+    let mut nested_repos = vec![];
     let mut stack = vec![root.to_path_buf()];
     while let Some(dir) = stack.pop() {
+        if dir != root && !include_nested && dir.join(".git").exists() {
+            nested_repos.push(dir);
+            continue;
+        }
         let mut entries: Vec<_> = fs::read_dir(&dir)
             .with_context(|| format!("reading directory {}", dir.display()))?
             .collect::<std::io::Result<_>>()?;
@@ -209,7 +227,11 @@ fn markdown_files(root: &Path) -> Result<Vec<PathBuf>> {
         }
     }
     files.sort();
-    Ok(files)
+    nested_repos.sort();
+    Ok(Walk {
+        files,
+        nested_repos,
+    })
 }
 
 /// `markdown/base/<pack>/...`: a signed pack's pages.
@@ -303,7 +325,11 @@ pub fn run(args: MigrateKindFilesArgs) -> Result<Value> {
     let mut unreadable = 0;
 
     for root in &roots {
-        for path in markdown_files(root)? {
+        let walk = markdown_files(root, args.include_nested_repos)?;
+        for repo in &walk.nested_repos {
+            skipped.push(json!({"path": repo.display().to_string(), "reason": "nested_repo"}));
+        }
+        for path in walk.files {
             scanned += 1;
             let shown = path.display().to_string();
             let rel = path.strip_prefix(root).unwrap_or(&path);
@@ -375,6 +401,7 @@ pub fn run(args: MigrateKindFilesArgs) -> Result<Value> {
         "needs_manual": needs_manual.len(),
         "skipped_signed_pack": skipped.iter().filter(|s| s["reason"] == "signed_pack").count(),
         "skipped_too_large": skipped.iter().filter(|s| s["reason"] == "too_large").count(),
+        "skipped_nested_repo": skipped.iter().filter(|s| s["reason"] == "nested_repo").count(),
         "unreadable": unreadable,
         "no_frontmatter": no_frontmatter,
         "no_page_kind": no_page_kind,

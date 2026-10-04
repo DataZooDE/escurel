@@ -426,3 +426,63 @@ fn several_roots_and_a_missing_root() {
     assert_ne!(code, 0);
     assert!(err.contains("/definitely/not/here"), "{err}");
 }
+
+#[test]
+fn a_nested_repository_or_submodule_is_skipped_and_reported_unless_asked() {
+    // `vendor/lib` is a git submodule (its `.git` is a FILE pointing at the superproject's module
+    // dir); `third_party/x` is a nested clone (a `.git` DIRECTORY). Their pages belong to ANOTHER
+    // repository: migrating them here would edit a different history.
+    let d = TempDir::new().unwrap();
+    let own = write(d.path(), "skills/own.md", SKILL);
+    write(
+        d.path(),
+        "vendor/lib/.git",
+        "gitdir: ../../.git/modules/lib\n",
+    );
+    let sub = write(d.path(), "vendor/lib/skills/s.md", SKILL);
+    fs::create_dir_all(d.path().join("third_party/x/.git")).unwrap();
+    let nested = write(d.path(), "third_party/x/skills/n.md", SKILL);
+
+    let (code, v, err) = run(&[
+        "--path",
+        d.path().to_str().unwrap(),
+        "--apply",
+        "--allow-dirty",
+    ]);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(
+        v["summary"]["to_migrate"], 1,
+        "only this repository's own pages"
+    );
+    assert_eq!(v["summary"]["skipped_nested_repo"], 2);
+    assert!(read(&own).starts_with("---\nkind: skill\n"));
+    assert_eq!(read(&sub), SKILL);
+    assert_eq!(read(&nested), SKILL);
+    let nested_paths: Vec<String> = v["skipped"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|s| s["reason"] == "nested_repo")
+        .map(|s| s["path"].as_str().unwrap().to_owned())
+        .collect();
+    assert!(
+        nested_paths.iter().any(|p| p.ends_with("vendor/lib")),
+        "{nested_paths:?}"
+    );
+    assert!(
+        nested_paths.iter().any(|p| p.ends_with("third_party/x")),
+        "{nested_paths:?}"
+    );
+
+    // Explicitly opting in migrates them too (a repo that vendors pages it owns).
+    let (code, v, err) = run(&[
+        "--path",
+        d.path().to_str().unwrap(),
+        "--apply",
+        "--allow-dirty",
+        "--include-nested-repos",
+    ]);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(v["summary"]["to_migrate"], 2);
+    assert!(read(&sub).starts_with("---\nkind: skill\n"));
+}
