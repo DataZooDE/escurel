@@ -23,8 +23,24 @@ x-escurel-quarantined: 1
 and `/metrics` carries `escurel_tenant_quarantined{tenant="<t>"} 1` (it reads `0`, not absent, once lifted;
 alert on `== 1`). **A proxy that gates only on the status code (kamal-proxy, a k8s readiness probe) will route
 traffic to a quarantined tenant** that answers every call with `tenant_quarantined`. So the upgrade is
-**stop-first with the migration BEFORE the traffic swap**, as below. `/ws`, `/ingest` and `/blob` are not yet
-gated by the quarantine (tracked separately); do not expose a quarantined tenant.
+**stop-first with the migration BEFORE the traffic swap**, as below.
+
+Every write or read surface refuses a quarantined tenant, not only MCP `tools/call`: `/ingest`, `/ingest/upload`,
+`/blob/*` and `/ws` answer **503 `tenant_quarantined`** too (one shared check), so a quarantined tenant cannot
+record events or serve a half-built index even if it is reachable.
+
+### An interrupted migration is visible
+
+`migrate-kind --apply` writes a **durable marker** (`meta/migrate-kind.pending` in the tenant's lane) *before* its
+first rewrite and removes it only after pages, drafts, snapshots and the index rebuild have all succeeded. If the
+process is killed in between, the next boot sees the marker and **quarantines the tenant again** (it is never
+served on a half-migrated lane), `/readyz` carries `"migration_pending": true` and `/metrics` reads
+`escurel_migration_pending 1`. Run `migrate-kind --apply` again: it is idempotent and clears the marker last.
+
+Outbound connector and write-back health is on the same `/metrics` endpoint:
+`escurel_egress_total{outcome}` (`ok`, `refused`, `limited`, `timeout`, `error`),
+`escurel_write_back_total{outcome}` (`applied`, `conflict`, `failed`, `dead_letter`) and
+`escurel_source_unavailable_total{kind}`.
 
 ## 0. Prerequisites
 

@@ -63,6 +63,7 @@ operator, not by the tenant:
 | `ESCUREL_SECRET_<NAME>` | — | a credential an endpoint references as `secret_ref: gsm:<name>` (injected from GCP Secret Manager) |
 | `ESCUREL_SECRET_ENV_ALLOW` | — | extra env var names a tenant may name as `env:NAME` |
 | `ESCUREL_SECRET_FILE_DIRS` | `/run/secrets` | directories a tenant may name as `file:/path` |
+| `ESCUREL_SHUTDOWN_DRAIN_SECS` | `25` | how long a graceful stop (SIGTERM) waits for in-flight requests (a long write-back, an open stream) before aborting them, so a stuck request cannot hold the host past the orchestrator's kill timeout |
 
 A value that does not parse (`ESCUREL_EGRESS_TIMEOUT_MS=5s`, `…ALLOW_LOOPBACK=yes`) or a zero limit **fails the
 boot** with the variable named; it is never silently ignored. Secrets live in env or mounted files, never in
