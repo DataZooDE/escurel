@@ -83,6 +83,7 @@ mod mcp_session_tools;
 mod mcp_upstream;
 mod meta_skill;
 mod metrics_real;
+mod migrate_kind_cli;
 mod migrate_kind_sigkill;
 mod migrate_kind_tool;
 mod mint_agent_token;

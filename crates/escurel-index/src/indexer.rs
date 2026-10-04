@@ -141,6 +141,8 @@ pub struct Indexer {
     /// the tenant is QUARANTINED: it must not serve, but it must stay up so an operator can run
     /// `migrate_kind` against it (a boot that exits would make the migration unrunnable).
     pub(crate) kind_quarantine: std::sync::RwLock<Option<Vec<String>>>,
+    /// Serialises `migrate_kind` runs (see there).
+    pub(crate) migration_lock: tokio::sync::Mutex<()>,
     /// How long one `rows` list/get query may run before it is interrupted (the single DuckDB
     /// connection is held for its duration, so an unbounded source query stalls every other read).
     pub(crate) rows_query_timeout: std::time::Duration,
@@ -417,6 +419,7 @@ impl Indexer {
             drafts_backend: std::sync::OnceLock::new(),
             crdt_pg_backend: std::sync::OnceLock::new(),
             kind_quarantine: std::sync::RwLock::new(None),
+            migration_lock: tokio::sync::Mutex::new(()),
             rows_query_timeout: crate::backend::rows::ROWS_QUERY_TIMEOUT,
             credential_resolver: std::sync::RwLock::new(None),
         })

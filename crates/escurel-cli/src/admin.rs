@@ -70,6 +70,11 @@ pub enum AdminCmd {
         /// Write the changes (default: dry run).
         #[arg(long)]
         apply: bool,
+        /// Give up waiting after this many seconds (default: wait as long as it takes). The
+        /// migration runs in a server task and CONTINUES after the CLI gives up or is killed;
+        /// re-run the command to wait for it, or watch `/readyz`.
+        #[arg(long)]
+        timeout_secs: Option<u64>,
     },
     /// OFFLINE `type:` -> `kind:` migration of a directory tree of page files (skills/instances
     /// kept as markdown in git). The file twin of `migrate-kind`: a dry run unless `--apply`, one
@@ -372,14 +377,40 @@ pub async fn run(client: &AdminClient, cmd: AdminCmd) -> Result<Value> {
                 .await?;
             Ok(json!({ "done": p.done, "total": p.total }))
         }
-        AdminCmd::MigrateKind { tenant, apply } => {
-            let r = client
-                .migrate_kind(MigrateKindRequest {
-                    tenant_id: tenant,
-                    apply,
-                })
-                .await?;
-            Ok(serde_json::to_value(r)?)
+        AdminCmd::MigrateKind {
+            tenant,
+            apply,
+            timeout_secs,
+        } => {
+            let started = std::time::Instant::now();
+            let call = client.migrate_kind(MigrateKindRequest {
+                tenant_id: tenant,
+                apply,
+            });
+            tokio::pin!(call);
+            let mut tick = tokio::time::interval(std::time::Duration::from_secs(30));
+            tick.tick().await;
+            let r = loop {
+                tokio::select! {
+                    r = &mut call => break r,
+                    _ = tick.tick() => eprintln!(
+                        "migrate-kind: still running on the server ({}s elapsed)",
+                        started.elapsed().as_secs()
+                    ),
+                }
+            };
+            match r {
+                Ok(r) => Ok(serde_json::to_value(r)?),
+                Err(escurel_client::Error::Transport(e)) if apply && e.is_timeout() => {
+                    anyhow::bail!(
+                        "migrate-kind: gave up waiting after {}s; the migration is still running \
+                         and continues on the server (it is not cancelled). Re-run the same \
+                         command to wait for it, or watch /readyz until `quarantined` clears",
+                        timeout_secs.unwrap_or_default()
+                    )
+                }
+                Err(e) => Err(e.into()),
+            }
         }
         AdminCmd::CompactLanes { tenant } => {
             let p = client

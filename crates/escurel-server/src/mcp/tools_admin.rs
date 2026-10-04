@@ -2356,7 +2356,15 @@ pub(super) async fn tool_migrate_kind(
     }
     let indexer = admin_indexer(state)?;
     ensure_tenant_matches(&indexer, &a.tenant_id)?;
-    match indexer.migrate_kind(a.apply).await {
+    // The apply runs in a SPAWNED task: a client that disconnects (a CLI timeout, a killed shell,
+    // a proxy cutting a long request) drops this handler future, and without the spawn that
+    // cancelled the migration half-way. The task finishes on its own; a retried `--apply` waits
+    // for it (the indexer serialises migrations) and finds nothing left to do.
+    let run = tokio::spawn(async move { indexer.migrate_kind(a.apply).await });
+    let outcome = run
+        .await
+        .map_err(|e| JsonRpcError::internal(format!("migrate_kind: task failed: {e}")))?;
+    match outcome {
         Ok(report) => to_value(report),
         Err(e @ escurel_index::indexer::IndexerError::KindMigrationRefused { .. }) => {
             Err(JsonRpcError::invalid_params(format!("migrate_kind: {e}")))
