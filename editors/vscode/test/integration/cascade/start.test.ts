@@ -121,11 +121,24 @@ suite('start a skill: background and plan, approve a plan', () => {
       // approval's thread is not something this harness can show; a real harness folds the event
       // it is given.)
       const before = loads.length;
-      await vscode.commands.executeCommand('escurel.approvePlan', {
-        runId: planned.id,
-        skill: 'customer-order',
-        pageId: page,
+      // The approval is confirmed in a modal; the test answers it, and counts how often it was asked.
+      let asked = 0;
+      const restore = api.setApprovalConfirm(async (m) => {
+        asked += 1;
+        assert.ok(m.includes('customer-order'), `the prompt names the skill: ${m}`);
+        assert.ok(m.includes(planned.id), 'the prompt names the run');
+        return true;
       });
+      try {
+        // A double click: both invocations name only the run; exactly one approval comes of it.
+        await Promise.all([
+          vscode.commands.executeCommand('escurel.approvePlan', { runId: planned.id }),
+          vscode.commands.executeCommand('escurel.approvePlan', { runId: planned.id }),
+        ]);
+      } finally {
+        api.setApprovalConfirm(restore);
+      }
+      assert.equal(asked, 1, 'one confirmation for a double invocation');
       const approvalRoot = await until(
         () => loads.slice(before).find((l) => l.rootEventId !== planRoot)?.rootEventId,
         30_000,

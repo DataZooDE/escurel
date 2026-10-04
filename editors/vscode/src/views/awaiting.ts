@@ -100,9 +100,10 @@ export class AwaitingTree implements vscode.TreeDataProvider<Node> {
         item.iconPath = new vscode.ThemeIcon('checklist', new vscode.ThemeColor('charts.orange'));
         item.contextValue = 'awaiting.plan';
         item.command = {
-          command: 'escurel.approvePlan',
-          title: 'Approve plan',
-          arguments: [{ runId: n.runId, skill: n.skill, pageId: n.pageId }],
+          // Opening is safe; approving is the inline button, and asks for confirmation.
+          command: 'escurel.openRun',
+          title: 'Open run',
+          arguments: [{ runId: n.runId }],
         };
         return item;
       }
