@@ -217,8 +217,9 @@ The skill had drifted badly while nobody was looking:
 - `04-consume-via-cli.md` was missing the `provenance`, `workflow` and
   `ui` subcommands, and `page delete`.
 - `02-tool-surface.md`'s write-tools table omitted `delete_page`, a core
-  write operation. (66 tools are exposed; the tables document 19. That
-  curation is deliberate — but a *core write op* missing is drift, not
+  write operation. (At the time 66 tools were exposed and the tables documented 19; the
+  current count and full coverage are pinned by `skill_doc_parity.rs`. That
+  curation was deliberate — but a *core write op* missing is drift, not
   curation.)
 
 All three were corrected in the same PR that added this section. The

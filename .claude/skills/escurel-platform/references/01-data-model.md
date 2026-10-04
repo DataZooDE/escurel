@@ -350,7 +350,7 @@ citation; never treat one as a link. The link's `skill` segment is its
     - **Write-back (human-gated).** When `write:` and `writable_columns:` are declared, `expand` also
       returns `backend_projection.writable_columns` and `etag` (`w1:<sha256>` of the projected columns as
       read). To change the source a person PROPOSES: `create_draft` on the row's page with
-      `write_back: {patch: {rating: "B"}, base_etag: "<that etag>"}` in its frontmatter (the body is the
+      `write_back: {patch: {rating: "B"}, base_etag: "<that etag>"}` (the `write_back` ARGUMENT of `create_draft`, which the server writes into the frontmatter; or in the frontmatter of `content` yourself — not both; the body is the
       reviewer's note and becomes the row's notes). Nothing reaches the source until someone
       `promote_draft`s it; then the gateway re-reads the row, refuses if its etag moved
       (`write_back_conflict`), and sends the change (REST: `Idempotency-Key` = the draft id and
