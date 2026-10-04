@@ -210,7 +210,11 @@ async fn a_hostile_cursor_is_refused_or_encoded_never_spliced_into_the_upstream_
 
     // 2. A valid token that DECODES to a hostile upstream cursor stays one encoded query value.
     let hostile = "x&admin=1&limit=99999#frag";
-    let token: String = hostile.bytes().map(|b| format!("{b:02x}")).collect();
+    use base64::Engine as _;
+    let token = format!(
+        "u1.{}",
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(hostile.as_bytes())
+    );
     let _ = call_as(
         &p,
         Role::Admin,
