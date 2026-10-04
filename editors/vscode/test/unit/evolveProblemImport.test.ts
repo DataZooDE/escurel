@@ -14,7 +14,8 @@ const training = {
   unit_order_costs: { '1': 1 }, terminal_stock_tolerance: { '1': 0 },
   training_start: '2026-08-01', training_end: '2026-08-02',
   history_start: '2026-07-30', history_end: '2026-07-31',
-  source_sha256: 'a'.repeat(64), max_generations: 0,
+  inventory_as_of: '2026-08-01', demand_observation: 'true_demand',
+  training_source_id: 'prepared-training', source_sha256: 'a'.repeat(64), max_generations: 0,
   budget: { max_evaluated: 1 },
 };
 
@@ -23,7 +24,7 @@ describe('V2 problem import', () => {
     expect(v2TrainingStarter).not.toHaveProperty('holdout_id');
     expect(v2TrainingStarter).not.toHaveProperty('max_cost_ratio');
     expect(v2TrainingStarter.source_sha256).toMatch(/^REPLACE_/);
-    expect(() => normalizeV2TrainingSpec(v2TrainingStarter, 'private-1')).toThrow(/source_sha256/);
+    expect(() => normalizeV2TrainingSpec(v2TrainingStarter, 'private-1')).toThrow(/normalized_sha256/);
     expect(smokeOnlyWarnings(v2TrainingStarter)).toEqual([
       'zero proposal generations', 'the seed and baseline are identical',
     ]);
@@ -36,6 +37,7 @@ describe('V2 problem import', () => {
     expect(front.owner_subject).toBe('alice');
     expect(front.search_request.evaluator_version).toBe('replenishment_decision_v2');
     expect(front.search_request.holdout_id).toBe('private-1');
+    expect(front.search_request.training_source_id).toBe('prepared-training');
     expect(front.search_request.skus[0].demand).toEqual([1, 1]);
     expect(page.content).not.toContain('holdout_demand');
     expect(training).not.toHaveProperty('holdout_id');

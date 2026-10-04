@@ -4,7 +4,8 @@ const REQUIRED = [
   'capacity', 'skus', 'service_targets', 'seed_sql', 'baseline_sql',
   'planning_window_days', 'scored_window_days', 'unit_order_costs',
   'terminal_stock_tolerance', 'training_start', 'training_end',
-  'history_start', 'history_end', 'source_sha256', 'max_generations', 'budget',
+  'history_start', 'history_end', 'inventory_as_of', 'demand_observation',
+  'training_source_id', 'source_sha256', 'max_generations', 'budget',
 ] as const;
 
 const ALLOWED = new Set<string>([
@@ -39,6 +40,8 @@ export const v2TrainingStarter = {
   unit_order_costs: { '1': 1 }, terminal_stock_tolerance: { '1': 0 },
   training_start: '2026-08-01', training_end: '2026-08-06',
   history_start: '2026-07-30', history_end: '2026-07-31',
+  inventory_as_of: '2026-08-01', demand_observation: 'true_demand',
+  training_source_id: 'REPLACE_WITH_PREPARED_TRAINING_SOURCE_ID',
   source_sha256: 'REPLACE_WITH_64_HEX_TRAINING_SOURCE_SHA256',
   max_generations: 0, budget: { max_evaluated: 1 },
 };
@@ -59,12 +62,18 @@ export function normalizeV2TrainingSpec(value: unknown, holdoutId: string): Reco
       throw new Error(`Training spec needs ${key}.`);
   }
   for (const key of ['seed_sql', 'baseline_sql', 'training_start', 'training_end',
-    'history_start', 'history_end', 'source_sha256']) {
+    'history_start', 'history_end', 'inventory_as_of', 'demand_observation',
+    'training_source_id', 'source_sha256']) {
     if (typeof input[key] !== 'string' || !(input[key] as string).trim())
       throw new Error(`Training spec needs a nonempty ${key}.`);
   }
   if (!/^[a-f0-9]{64}$/i.test(input.source_sha256 as string))
-    throw new Error('Replace source_sha256 with the 64-character digest of the training source.');
+    throw new Error('Use the normalized_sha256 returned by evolve_prepare_training_source.');
+  if (!/^[A-Za-z0-9_-]{1,128}$/.test(input.training_source_id as string)
+      || (input.training_source_id as string).startsWith('REPLACE_'))
+    throw new Error('Use the training_source_id returned by evolve_prepare_training_source.');
+  if (input.demand_observation !== 'true_demand' || input.inventory_as_of !== input.training_start)
+    throw new Error('Training demand must be true demand and opening inventory as of training_start.');
   if (!Array.isArray(input.skus) || input.skus.length === 0)
     throw new Error('Training spec needs at least one SKU.');
   for (const [index, sku] of input.skus.entries()) onlyKeys(sku, SKU_FIELDS, `SKU ${index + 1}`);

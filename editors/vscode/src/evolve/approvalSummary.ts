@@ -32,7 +32,7 @@ export function evolveApprovalSummary(
     `Pilot: ${field(spec.pilot)}; holdout ID: ${field(spec.holdout_id)}`,
     `Limits: ${field(spec.max_generations)} generations; ${field(budget.max_evaluated)} evaluations; ${usd}`,
     `Service targets: ${service}`,
-    `Training source SHA-256: ${field(spec.source_sha256)}`,
+    `Training source ID: ${field(spec.training_source_id)}; normalized SHA-256: ${field(spec.source_sha256)}`,
     `Seed SQL SHA-256: ${sqlDigest(spec.seed_sql)}`,
     `Baseline SQL SHA-256: ${sqlDigest(spec.baseline_sql)}`,
     'The plan and the private preflight are not validation of policy quality.',
