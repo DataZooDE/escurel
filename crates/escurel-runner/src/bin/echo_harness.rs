@@ -412,7 +412,7 @@ fn analyse(mcp: &Mcp, event: &Value, event_id: &str) -> Option<analysis::Built> 
         .collect();
     let id = analysis::analysis_id(&supplier.id, event_id, |candidate| {
         let page = format!("markdown/instances/supplier-risk-analysis__{candidate}.md");
-        drafted.iter().any(|t| *t == page)
+        drafted.contains(&page)
             || mcp
                 .call("expand", json!({ "page_id": page }))
                 .ok()
