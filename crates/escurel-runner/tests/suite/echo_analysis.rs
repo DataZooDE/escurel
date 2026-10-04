@@ -182,3 +182,96 @@ async fn a_supplier_risk_run_drafts_an_analysis_in_the_same_changeset_as_its_fol
         fold["content"]
     );
 }
+
+#[tokio::test]
+async fn a_second_run_for_the_same_supplier_and_day_gets_its_own_analysis_id_while_the_first_is_still_a_draft()
+ {
+    let gw = EscurelProcess::spawn(Opts {
+        auth: AuthMode::TestIssuer,
+        fixtures: Some(
+            FixtureBuilder::new()
+                .tenant(TENANT)
+                .skill("supplier-risk", RISK)
+                .skill("supplier-risk-analysis", ANALYSIS_SKILL)
+                .skill("customer-order", ORDER_SKILL)
+                .skill("supplier", SUPPLIER_SKILL)
+                .instance("supplier", "meier-guss", "---\nkind: instance\nid: meier-guss\nskill: supplier\nvendor: 100234\nname: Meier-Guss GmbH\n---\n# Meier-Guss GmbH\n")
+                .instance("customer-order", "order-1", order("order-1", "Hoffmann GmbH", 240, "62,400.00"))
+                .instance("customer-order", "order-2", order("order-2", "Kessler GmbH", 200, "66,200.00"))
+                .done(),
+        ),
+        ..Default::default()
+    })
+    .await;
+    let alice = gw.mint_token_with_sub(TENANT, Role::Agent, "alice");
+
+    let (signing_key, kid) = gw.signing_material();
+    let listen = format!("127.0.0.1:{}", free_port());
+    let ledger_dir = tempfile::tempdir().expect("tempdir");
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_escurel-runner"));
+    cmd.env("ESCUREL_RUNNER_LISTEN", &listen)
+        .env("ESCUREL_RUNNER_GATEWAY_URL", gw.base_url())
+        .env("ESCUREL_RUNNER_TENANT", TENANT)
+        .env_remove("ESCUREL_RUNNER_TOKEN")
+        .env("ESCUREL_RUNNER_AUTH_ISSUER", gw.issuer_url())
+        .env("ESCUREL_RUNNER_AUTH_KID", kid)
+        .env("ESCUREL_RUNNER_AUTH_SIGNING_KEY", &signing_key)
+        .env("ESCUREL_RUNNER_HARNESS", "echo")
+        .env(
+            "ESCUREL_RUNNER_LEDGER_PATH",
+            ledger_dir.keep().join("ledger.sqlite"),
+        )
+        .env("ESCUREL_RUNNER_POLL_INTERVAL", "250ms");
+    let _runner = ChildGuard(cmd.spawn().expect("spawn runner"));
+
+    let capture = |order: &str, n: u32| {
+        json!({
+            "source": "test", "mime": "text/plain", "label_skill": "supplier-risk",
+            "instance_page_id": format!("markdown/instances/customer-order/{order}.md"),
+            "title": format!("Vendor 100234 Meier-Guss: signal {n}"),
+            "body": "vendor 100234, material GH-4711. Confirmation moved (+14 days); vendor rating downgraded A to B.",
+        })
+    };
+    // The first signal: its fold and its analysis are open drafts nobody has decided.
+    call(&gw, &alice, "capture_event", capture("order-1", 1)).await;
+    open_drafts(&gw, &alice, 2).await;
+    // The second signal, same supplier, same day, while the first analysis is still only a DRAFT (so no
+    // stored page holds its id yet): it must pick its own id, not collide and dead-letter.
+    call(&gw, &alice, "capture_event", capture("order-2", 2)).await;
+    let drafts = open_drafts(&gw, &alice, 4).await;
+
+    let mut ids: Vec<&str> = drafts
+        .iter()
+        .filter_map(|d| d["target_page_id"].as_str())
+        .filter(|t| t.contains("supplier-risk-analysis__"))
+        .collect();
+    ids.sort_unstable();
+    ids.dedup();
+    assert_eq!(
+        ids.len(),
+        2,
+        "two runs, two distinct analysis pages: {ids:?}"
+    );
+}
+
+async fn open_drafts(gw: &EscurelProcess, alice: &str, want: usize) -> Vec<Value> {
+    let deadline = Instant::now() + Duration::from_secs(40);
+    loop {
+        let d = call(gw, alice, "list_drafts", json!({})).await;
+        let open: Vec<Value> = d["drafts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|x| x["status"] == "open")
+            .cloned()
+            .collect();
+        if open.len() >= want {
+            return open;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "expected {want} open drafts (the run must not have dead-lettered): {d}"
+        );
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+}

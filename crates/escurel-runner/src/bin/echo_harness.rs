@@ -394,11 +394,29 @@ fn analyse(mcp: &Mcp, event: &Value, event_id: &str) -> Option<analysis::Built> 
         return None;
     }
     // A human id: supplier and day, with a counter when that day already has an analysis.
+    // An id is also TAKEN while an earlier analysis is still an open DRAFT (no stored page holds it
+    // yet): two runs for one supplier on one day must not both claim it, or the second dead-letters on
+    // "a draft is already open for this page".
+    let drafted: Vec<String> = mcp
+        .call("list_drafts", json!({}))
+        .ok()
+        .and_then(|d| d.get("drafts").and_then(Value::as_array).cloned())
+        .unwrap_or_default()
+        .iter()
+        .filter(|d| d.get("status").and_then(Value::as_str) == Some("open"))
+        .filter_map(|d| {
+            d.get("target_page_id")
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+        })
+        .collect();
     let id = analysis::analysis_id(&supplier.id, event_id, |candidate| {
         let page = format!("markdown/instances/supplier-risk-analysis__{candidate}.md");
-        mcp.call("expand", json!({ "page_id": page }))
-            .ok()
-            .is_some_and(|r| r.get("page").is_some_and(|p| !p.is_null()))
+        drafted.iter().any(|t| *t == page)
+            || mcp
+                .call("expand", json!({ "page_id": page }))
+                .ok()
+                .is_some_and(|r| r.get("page").is_some_and(|p| !p.is_null()))
     });
     Some(analysis::build_analysis(
         &supplier, &signal, &lines, event_id, &id, title,

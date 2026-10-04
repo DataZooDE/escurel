@@ -85,23 +85,40 @@ el.model =
             attempts: 1,
           },
         }
-      : variant === 'external-down'
+      : variant === 'external-down-blank'
         ? {
+            // The real shape of a page whose source did not answer: NO source column is known and
+            // every source field is blank. Each shows a dash, never a blank row or an empty pill.
             ...base,
+            fields: base.fields.map((f) => ({ ...f, value: undefined, display: '' })),
             source: {
-              ...rowSource,
-              external: 'MCP',
+              fetchedAt: '2026-10-03T12:03:44.000000Z',
+              sourceFields: [],
+              linked: { enabled: true, exists: false, orphan: false },
+              external: 'REST' as const,
               issue: {
                 code: 'source_unavailable',
-                message:
-                  'the source could not be reached right now (transport error); showing what is known',
+                message: 'the source could not be reached right now; its values show as —',
               },
             },
-            writeBack: {
-              outcome: 'failed',
-              at: '2026-10-03T12:05:00.000000Z',
-              draftId: 'd1',
-              attempts: 0,
-            },
           }
-        : base;
+        : variant === 'external-down'
+          ? {
+              ...base,
+              source: {
+                ...rowSource,
+                external: 'MCP',
+                issue: {
+                  code: 'source_unavailable',
+                  message:
+                    'the source could not be reached right now (transport error); showing what is known',
+                },
+              },
+              writeBack: {
+                outcome: 'failed',
+                at: '2026-10-03T12:05:00.000000Z',
+                draftId: 'd1',
+                attempts: 0,
+              },
+            }
+          : base;

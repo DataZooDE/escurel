@@ -42,7 +42,7 @@ test('a row instance says it is read-only source data with its own notes', async
 
 // A row from an outside REST / MCP system: marked as external data, a way to propose a change, and what
 // the last change did (applied; or: the source is unreachable and the change did not go through).
-for (const variant of ['external', 'external-down']) {
+for (const variant of ['external', 'external-down', 'external-down-blank']) {
   test(`a ${variant} row in the current theme`, async ({ page }, testInfo) => {
     const theme = (testInfo.project.metadata as { theme: string }).theme;
     await page.goto(`/test/visual/harness/index.html?theme=${theme}&variant=${variant}`);
