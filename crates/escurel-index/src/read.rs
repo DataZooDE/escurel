@@ -1498,6 +1498,19 @@ impl Indexer {
         as_of: Option<&str>,
         scenario: Option<&str>,
     ) -> Result<Vec<Edge>, IndexerError> {
+        // A ROW of an `instances: rows` skill has no `pages` row until someone writes notes for it,
+        // yet other pages can link to it by key. Work out its (slug, skill) from the page id BEFORE the
+        // connection is locked (`rows_source` takes the lock itself).
+        let virtual_row = if matches!(direction, Direction::In | Direction::Both) {
+            match crate::backend::rows::split_instance_page_id(page_id) {
+                Some((skill, id)) if matches!(self.rows_source(skill).await, Ok(Some(_))) => {
+                    Some((Some(id.to_owned()), skill.to_owned()))
+                }
+                _ => None,
+            }
+        } else {
+            None
+        };
         let conn = self.conn.lock().await;
 
         let target = if matches!(direction, Direction::In | Direction::Both) {
@@ -1507,6 +1520,7 @@ impl Indexer {
                 |row| Ok((row.get::<_, Option<String>>(0)?, row.get::<_, String>(1)?)),
             )
             .ok()
+            .or(virtual_row)
         } else {
             None
         };

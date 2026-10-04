@@ -699,3 +699,38 @@ async fn an_unreachable_source_is_counted() {
     );
     p.shutdown().await;
 }
+
+/// `search` never reaches into a REST/MCP-backed skill (the source system is not ours to scan), and it
+/// SAYS so instead of answering with silent emptiness that reads as "no such customer".
+#[tokio::test]
+async fn search_does_not_look_inside_a_rest_skill_and_says_so() {
+    let crm = crm_with(20);
+    let queries = Arc::clone(&crm.list_queries);
+    let base = start(crm).await;
+    let (p, _dirs) = gateway_over(&base).await;
+
+    let r = admin(&p, "search", json!({ "q": "Customer 0007", "page_kind": "instance", "k": 10 })).await;
+    assert!(
+        r["hits"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|h| h["skill"] != "customer"),
+        "nothing from the upstream is searched: {r}"
+    );
+    let hint = r["hint"].as_str().unwrap_or_default();
+    assert!(
+        hint.contains("customer") && hint.contains("list_instances"),
+        "the answer names the skills it did not search and where to look: {r}"
+    );
+    assert!(
+        queries.lock().unwrap().is_empty(),
+        "a search must not call the upstream at all"
+    );
+
+    // Restricting to skill pages is a search of the catalogue: no hint, nothing to explain.
+    let skills_only = admin(&p, "search", json!({ "q": "customer", "page_kind": "skill" })).await;
+    assert!(skills_only.get("hint").is_none(), "{skills_only}");
+    p.shutdown().await;
+}
+

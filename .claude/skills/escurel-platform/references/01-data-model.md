@@ -280,6 +280,14 @@ citation; never treat one as a link. The link's `skill` segment is its
     `backend_projection` (`instances: "rows"`, `read_only`, `fetched_at`, `rows`, `columns[{name,type,
     kind}]`, `linked`). **Reads are live** — `fetched_at` says when. The source's own row-level security is
     not honoured; escurel's ACL is the only row gate.
+    **`search` and `neighbours` see rows, within limits.** `search` (with `page_kind: instance` or `any`)
+    matches a query as a case-insensitive substring of the row's KEY and its declared `filterable:`
+    columns (a column the skill did not declare is never searched), at most 20 rows per skill and 50 in
+    all, with the row ACL applied per row; the hit's `snippet` says which column matched
+    (`sold_to = 1000007`). `neighbours` follows the links of a row's notes to other pages and rows, and
+    finds the pages that link INTO a row even when it has no notes yet. Rows served by a REST/MCP
+    connector are NOT searched: the `search` answer carries a `hint` naming those skills; use
+    `list_instances` on them.
     **Linked markdown** (`linked: markdown`): the STORED page at the row's page id is the row's notes.
     It is created lazily by the first write (`update_page` / `create_draft`) and merged into `expand` as
     ONE instance (the row's columns win for projected fields). It is an ordinary page: drafts, changesets

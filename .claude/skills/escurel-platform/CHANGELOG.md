@@ -17,6 +17,11 @@ byte-identical to before).
 - They stay optional and lint-only (`validate` warns about malformed ones, never rejects). A skill's own
   `fields:` declaration still wins over an OKF key; INSTANCE pages keep their own meaning of `status`.
 - `expand` already returned a page's whole frontmatter, so nothing changes there.
+- **`search` and `neighbours` now reach rows of `instances: rows` skills** (DuckDB sources): `search`
+  matches the key and the declared `filterable:` columns (capped: 20 per skill, 50 in all; ACL per row;
+  nothing else is searchable), and `neighbours` follows a row's notes and finds links INTO a row without
+  notes (an edge to an unreadable row is dropped). A REST/MCP-backed skill is not searched: the `search`
+  answer carries a `hint` naming it.
 
 ## 0.13.0 — BREAKING: `content[0].text` is a summary; `autonomy` is enforced for machine callers
 

@@ -716,3 +716,105 @@ async fn search_over_rows_never_returns_a_row_the_caller_may_not_read() {
     }
 }
 
+/// `neighbours` over rows: the notes of a row link to other rows, and a row nobody wrote notes for is
+/// still reachable from the pages that link to it (it has no stored page, only a key).
+#[tokio::test]
+async fn neighbours_follow_links_from_a_rows_notes_and_into_a_row_without_a_stored_page() {
+    let t = Rows::start().await;
+    let notes = format!(
+        "---\nkind: instance\nid: {0}\nskill: sales-order\n---\n# {0}\n\nSee also [[sales-order::{1}]].\n",
+        doc(11),
+        doc(12)
+    );
+    let w = t
+        .call("update_page", json!({ "page_id": row_page(11), "content": notes }))
+        .await;
+    assert_eq!(w["ok"], true, "{w}");
+
+    // OUT of the notes: the row they point at.
+    let out = t
+        .call("neighbours", json!({ "page_id": row_page(11), "direction": "out" }))
+        .await;
+    let edges = out["edges"].as_array().unwrap();
+    assert!(
+        edges
+            .iter()
+            .any(|e| e["dst_page"] == doc(12) && e["link_skill"] == "sales-order"),
+        "the notes link to row 12: {out}"
+    );
+
+    // INTO a row that has no stored page: who points at it.
+    let into = t
+        .call("neighbours", json!({ "page_id": row_page(12), "direction": "in" }))
+        .await;
+    let edges = into["edges"].as_array().unwrap();
+    assert!(
+        edges.iter().any(|e| e["src_page"] == row_page(11)),
+        "row 12 has no stored page but is linked from row 11's notes: {into}"
+    );
+}
+
+/// An edge to an owner-private row is dropped for a caller who may not read that row, exactly like a
+/// direct read: the link must not reveal that a foreign row exists.
+#[tokio::test]
+async fn neighbours_do_not_reveal_a_link_to_a_row_the_caller_may_not_read() {
+    use escurel_test_support::{FixtureBuilder, Role};
+    let src_dir = TempDir::new().unwrap();
+    let src = src_dir.path().join("vbak");
+    write_source(&src, None);
+    let note_skill =
+        "---\nkind: skill\nid: note\ndescription: A free note.\nautonomy: auto\n---\n# note\n";
+    let p = EscurelProcess::spawn(Opts {
+        auth: AuthMode::TestIssuer,
+        fixtures: Some(
+            FixtureBuilder::new()
+                .tenant("acme")
+                .skill(ACL_SKILL, acl_skill_page(&src))
+                .skill("note", note_skill)
+                .done(),
+        ),
+        ..Default::default()
+    })
+    .await;
+    let tok = p.mint_token_with_sub("acme", Role::Agent, "1000005");
+    let post = |name: &'static str, args: Value| {
+        let url = p.mcp_url();
+        let tok = tok.clone();
+        async move {
+            let body: Value = reqwest::Client::new()
+                .post(url)
+                .header("authorization", format!("Bearer {tok}"))
+                .json(&json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                               "params": { "name": name, "arguments": args } }))
+                .send()
+                .await
+                .unwrap()
+                .json()
+                .await
+                .unwrap();
+            assert!(body.get("error").is_none(), "{name}: {body}");
+            body["result"]["structuredContent"].clone()
+        }
+    };
+    let page = "markdown/instances/note/n1.md";
+    let content = format!(
+        "---\nkind: instance\nid: n1\nskill: note\n---\n# n1\n\nMine [[sales-order::{}]], not mine [[sales-order::{}]].\n",
+        doc(5),
+        doc(6)
+    );
+    let w = post("update_page", json!({ "page_id": page, "content": content })).await;
+    assert_eq!(w["ok"], true, "{w}");
+    let out = post("neighbours", json!({ "page_id": page, "direction": "out" })).await;
+    let dsts: Vec<&str> = out["edges"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|e| e["dst_page"].as_str())
+        .collect();
+    assert!(dsts.contains(&doc(5).as_str()), "her own row is linked: {out}");
+    assert!(
+        !dsts.contains(&doc(6).as_str()),
+        "a foreign row's link is not revealed: {out}"
+    );
+}
+
