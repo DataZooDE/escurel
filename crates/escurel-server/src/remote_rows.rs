@@ -328,13 +328,26 @@ pub(crate) async fn write_rejection(
     }
     for f in src.remote.project.keys() {
         if fields.contains_key(f.as_str()) {
+            // A column the skill lets a PERSON change upstream has a way in: say it, instead of the
+            // dead end an agent had to find in the reference docs.
+            let message = if src.remote.write.is_some() && src.cfg.writable_columns.contains(f) {
+                format!(
+                    "`{f}` is a source field of `{skill}`: it cannot be written directly, but it IS \
+                     writable through a human-gated draft: `create_draft` with \
+                     `write_back: {{patch: {{{f}: <value>}}, base_etag: <etag>}}` in the frontmatter \
+                     (the etag is `expand.backend_projection.etag`); a reviewer promotes it and only \
+                     then does it reach the source"
+                )
+            } else {
+                format!(
+                    "`{f}` is a source field of `{skill}` and read-only; keep your own fields \
+                     and the body in the companion page instead"
+                )
+            };
             return Ok(Some(RowsWriteRejection {
                 code: "backend_read_only_field",
                 location: format!("frontmatter.{f}"),
-                message: format!(
-                    "`{f}` is a source field of `{skill}` and read-only; keep your own fields \
-                     and the body in the companion page instead"
-                ),
+                message,
             }));
         }
     }

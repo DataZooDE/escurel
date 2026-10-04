@@ -559,3 +559,71 @@ async fn an_outage_before_anything_is_sent_is_still_audited_and_leaves_the_draft
     assert_eq!(c.tier("c-0001"), "gold");
     p.shutdown().await;
 }
+
+#[tokio::test]
+async fn a_direct_write_of_a_writable_column_says_how_to_propose_it_instead() {
+    let c = crm();
+    let (p, _d) = gateway_over(&c, 5).await;
+    // The projection used to say `read_only: true` AND list writable columns, which reads as a
+    // contradiction. It now says WHICH way the writable ones can change.
+    let proj = admin(&p, "expand", json!({ "page_id": PAGE })).await;
+    assert_eq!(proj["backend_projection"]["read_only"], true, "{proj}");
+    assert_eq!(
+        proj["backend_projection"]["writable_via"], "write_back",
+        "{proj}"
+    );
+    // Writing the column directly is refused, and the refusal teaches the working path.
+    let direct = call_as(
+        &p,
+        Role::Admin,
+        "update_page",
+        json!({ "page_id": PAGE,
+                "content": "---\nkind: instance\nskill: customer\nid: c-0001\ntier: gold\n---\n# c\n" }),
+    )
+    .await;
+    let text = direct.to_string();
+    assert!(text.contains("backend_read_only_field"), "{direct}");
+    for needle in [
+        "write_back",
+        "base_etag",
+        "backend_projection.etag",
+        "draft",
+    ] {
+        assert!(
+            text.contains(needle),
+            "the refusal mentions {needle}: {direct}"
+        );
+    }
+    p.shutdown().await;
+}
+
+#[tokio::test]
+async fn write_instance_on_a_row_points_at_the_write_back_draft_instead_of_failing_to_find_it() {
+    let c = crm();
+    let (p, _d) = gateway_over(&c, 5).await;
+    // Every ref form an agent might try used to fail with `no instance for ref` (a virtual row is not
+    // a stored instance), which said nothing about WHY or what to do.
+    for r in ["[[customer::c-0001]]", "customer::c-0001", PAGE] {
+        let out = call_as(
+            &p,
+            Role::Admin,
+            "write_instance",
+            json!({ "ref": r, "payload": { "tier": "gold" } }),
+        )
+        .await;
+        assert_eq!(out["result"]["isError"], true, "{r}: {out}");
+        let issue = &out["result"]["structuredContent"]["issues"][0];
+        assert_eq!(issue["code"], "use_write_back", "{r}: {out}");
+        let msg = issue["message"].as_str().unwrap();
+        assert!(
+            msg.contains("create_draft") && msg.contains("write_back"),
+            "{msg}"
+        );
+    }
+    assert_eq!(
+        c.patches.lock().unwrap().len(),
+        0,
+        "nothing reached the upstream"
+    );
+    p.shutdown().await;
+}

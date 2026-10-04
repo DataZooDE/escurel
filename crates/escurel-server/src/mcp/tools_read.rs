@@ -1089,6 +1089,9 @@ async fn expand_remote_row(
     let mut projection = projection;
     if src.remote.write.is_some() && !src.cfg.writable_columns.is_empty() {
         projection["writable_columns"] = json!(src.cfg.writable_columns);
+        // `read_only` means "not writable directly": the writable columns change only through a
+        // human-gated `write_back` draft. Said in the data so it does not read as a contradiction.
+        projection["writable_via"] = json!("write_back");
     }
     let mut out = if has_stored && src.cfg.linked {
         stored
