@@ -1094,6 +1094,7 @@ pub(crate) fn tool_defs() -> Vec<ToolDef> {
             json!({
                 "type": "object",
                 "properties": {
+                    "tenant_id": { "type": "string", "description": "Must be the tenant this token is bound to; optional." },
                     "chat_group_id": { "type": "string" },
                     "before_ts": { "type": "string" },
                     "author": { "type": "string" }

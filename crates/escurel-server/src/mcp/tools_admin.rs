@@ -231,6 +231,10 @@ pub(super) fn map_lane_err(e: StoreError) -> JsonRpcError {
 
 #[derive(Deserialize)]
 pub(super) struct AdminDeleteChatHistoryArgs {
+    /// Optional; when given it must name the tenant this gateway serves (a mismatch is refused,
+    /// never silently applied to the gateway's own tenant).
+    #[serde(default)]
+    tenant_id: String,
     #[serde(default)]
     chat_group_id: Option<String>,
     #[serde(default)]
@@ -244,6 +248,7 @@ pub(super) async fn tool_admin_delete_chat_history(
     args: Value,
 ) -> Result<Value, JsonRpcError> {
     let a: AdminDeleteChatHistoryArgs = parse_args(args, "admin_delete_chat_history")?;
+    ensure_tenant_matches(indexer, &a.tenant_id)?;
     let deleted = indexer
         .delete_chat_history(
             a.chat_group_id.as_deref(),
