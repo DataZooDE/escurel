@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import { createHash } from 'node:crypto';
 import type { Services } from '../services';
 import { readPageMarkdown } from '../fs/read';
 import { describeError } from '../errors';
@@ -11,6 +12,29 @@ import {
 export function registerPrepareEvolveTrainingSource(
   context: vscode.ExtensionContext, services: Services,
 ): vscode.Disposable {
+  type PendingSource = { fileUri: string; fileSha256: string; owner: string; pageSha256: string };
+  const pendingKey = 'evolve.pendingTrainingSources';
+  const pendingSources = () => context.workspaceState.get<Record<string, PendingSource>>(pendingKey, {});
+  const openPreparedDraft = async (eventId: string, result: Record<string, unknown>, pageSha256: string) => {
+    const pending = pendingSources()[eventId];
+    if (!pending || pending.pageSha256 !== pageSha256) return false;
+    if (await services.subject() !== pending.owner)
+      throw new Error('Sign in as the source owner to reopen its local draft.');
+    const bytes = await vscode.workspace.fs.readFile(vscode.Uri.parse(pending.fileUri));
+    if (createHash('sha256').update(bytes).digest('hex') !== pending.fileSha256)
+      throw new Error('The selected training JSON changed after preparation. Restore that file to reopen its draft.');
+    const input: unknown = JSON.parse(new TextDecoder().decode(bytes));
+    const source = trainingSourcePayload(input);
+    const sourceId = result.training_source_id;
+    const digest = result.normalized_sha256;
+    if (typeof sourceId !== 'string' || typeof digest !== 'string' || !/^[a-f0-9]{64}$/.test(digest))
+      throw new Error('The preparation receipt lacks a valid source ID or digest.');
+    const document = await vscode.workspace.openTextDocument({
+      language: 'json', content: JSON.stringify(preparedV2Draft(input, source, sourceId, digest), null, 2) + '\n',
+    });
+    await vscode.window.showTextDocument(document, { preview: false });
+    return true;
+  };
   const check = vscode.commands.registerCommand('escurel.checkEvolveTrainingSource', async (knownEventId?: string) => {
     try {
       const eventId = knownEventId ?? await vscode.window.showInputBox({ prompt: 'Escurel source preparation event ID' });
@@ -26,9 +50,12 @@ export function registerPrepareEvolveTrainingSource(
       if (!result) {
         void vscode.window.showInformationMessage(`Preparation ${eventId} is still pending. Check again later.`);
       } else if (result.prepared === true) {
-        void vscode.window.showInformationMessage(
+        const canReopen = pendingSources()[eventId]?.pageSha256 === pageSha;
+        const action = await vscode.window.showInformationMessage(
           `Source ${String(result.training_source_id)} prepared. Digest: ${String(result.normalized_sha256)}. Register a matching private holdout, then import a completed V2 spec.`,
+          ...(canReopen ? ['Open prepared V2 draft'] : []),
         );
+        if (action === 'Open prepared V2 draft') await openPreparedDraft(eventId, result, pageSha);
       } else {
         void vscode.window.showErrorMessage(`Source preparation failed: ${String(result.issue ?? 'inspect the event')}`);
       }
@@ -58,7 +85,8 @@ export function registerPrepareEvolveTrainingSource(
       });
       const file = files?.[0];
       if (!file) return;
-      const input: unknown = JSON.parse(new TextDecoder().decode(await vscode.workspace.fs.readFile(file)));
+      const fileBytes = await vscode.workspace.fs.readFile(file);
+      const input: unknown = JSON.parse(new TextDecoder().decode(fileBytes));
       const id = await vscode.window.showInputBox({
         prompt: 'Private source page ID (lowercase letters, numbers, underscores, hyphens)',
         ignoreFocusOut: true,
@@ -94,6 +122,13 @@ export function registerPrepareEvolveTrainingSource(
         throw new Error('Source page changed during preparation. Review it and retry.');
       services.onDidChangeEmit();
       const event = await client.captureEvent(preparationEvent(page.pageId, stored.sha256));
+      await context.workspaceState.update(pendingKey, {
+        ...pendingSources(),
+        [event.event_id]: {
+          fileUri: file.toString(), fileSha256: createHash('sha256').update(fileBytes).digest('hex'),
+          owner, pageSha256: stored.sha256,
+        },
+      });
       const receiptId = preparationReceiptId(event.event_id);
       let result: Record<string, unknown> | undefined;
       for (let attempt = 0; attempt < 80; attempt++) {
@@ -113,17 +148,9 @@ export function registerPrepareEvolveTrainingSource(
       }
       if (result.prepared !== true)
         throw new Error(`Source preparation was rejected: ${String(result.issue ?? 'inspect the request thread')}`);
-      const sourceId = result.training_source_id;
-      const digest = result.normalized_sha256;
-      if (typeof sourceId !== 'string' || typeof digest !== 'string' || !/^[a-f0-9]{64}$/.test(digest))
-        throw new Error('The preparation receipt lacks a valid source ID or digest.');
-      const filled = preparedV2Draft(input, source, sourceId, digest);
-      const document = await vscode.workspace.openTextDocument({
-        language: 'json', content: JSON.stringify(filled, null, 2) + '\n',
-      });
-      await vscode.window.showTextDocument(document, { preview: false });
+      await openPreparedDraft(event.event_id, result, stored.sha256);
       void vscode.window.showInformationMessage(
-        `Source ${sourceId} prepared. The opened V2 draft needs policy SQL, service targets, costs, windows, and budget. Save it, register a matching private holdout, then import the completed spec.`,
+        `Source ${String(result.training_source_id)} prepared. The opened V2 draft needs policy SQL, service targets, costs, windows, and budget. Save it, register a matching private holdout, then import the completed spec.`,
       );
     } catch (error) {
       void vscode.window.showErrorMessage(`Evolve source preparation failed: ${describeError(error)}`);

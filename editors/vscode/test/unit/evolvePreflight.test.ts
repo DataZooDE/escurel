@@ -35,6 +35,24 @@ describe('Evolve problem preflight', () => {
     });
   });
 
+  it('shows only the sealed contract terms before plan review', () => {
+    const ready = receipt({ problem_sha256: sha, structural_ready_for_start: true,
+      holdout_contract: {
+        holdout_sha256: 'c'.repeat(64), training_source_id: 'source-1',
+        training_source_sha256: 'd'.repeat(64), training_start: '2026-08-01',
+        training_end: '2026-08-06', holdout_start: '2026-09-01',
+        holdout_end: '2026-09-06', sku_count: 1,
+        service_targets: { aggregate_min_fill_rate: 0.8 },
+        baseline_sql_sha256: 'e'.repeat(64), max_cost_ratio: 0.9,
+        sensitivity_tail_days: [1, 4], evaluator_version: 'replenishment_decision_v2',
+      },
+    });
+    const result = parsePreflightReceipt(ready, 'root', sha);
+    expect(result?.holdoutContract).toContain('Holdout dates: 2026-09-01 to 2026-09-06');
+    expect(result?.holdoutContract).toContain('Maximum cost ratio: 0.9');
+    expect(result?.holdoutContract).not.toContain('demand');
+  });
+
   it('waits for a final receipt rather than treating the captured request as readiness', async () => {
     let calls = 0;
     const result = await waitForPreflight({

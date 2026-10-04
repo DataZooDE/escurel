@@ -15,7 +15,7 @@ export function parsePreflightReceipt(
   receipt: Event,
   rootEventId: string,
   pageSha256: string,
-): { ready: boolean; issue?: string } | undefined {
+): { ready: boolean; issue?: string; holdoutContract?: string } | undefined {
   if (receipt.kind !== 'system' || receipt.source !== 'anofox-evolve'
       || receipt.label_skill !== 'evolve:preflight'
       || receipt.root_event_id !== rootEventId || !receipt.body) return undefined;
@@ -26,7 +26,14 @@ export function parsePreflightReceipt(
     return undefined;
   }
   if (result.problem_sha256 !== pageSha256) return undefined;
-  if (result.structural_ready_for_start === true) return { ready: true };
+  if (result.structural_ready_for_start === true) {
+    const contract = result.holdout_contract;
+    return {
+      ready: true,
+      ...(contract && typeof contract === 'object' && !Array.isArray(contract)
+        ? { holdoutContract: describeHoldoutContract(contract as Record<string, unknown>) } : {}),
+    };
+  }
   const preflight = result.preflight as Record<string, unknown> | undefined;
   const issues = preflight?.issues;
   const messages = Array.isArray(issues)
@@ -39,6 +46,24 @@ export function parsePreflightReceipt(
   };
 }
 
+/** Summarize the frozen acceptance terms without reading private outcome rows. */
+export function describeHoldoutContract(contract: Record<string, unknown>): string {
+  const value = (key: string): string => String(contract[key] ?? 'missing');
+  const tails = Array.isArray(contract.sensitivity_tail_days)
+    ? contract.sensitivity_tail_days.map(String).join(', ') : 'missing';
+  return [
+    `Private holdout SHA-256: ${value('holdout_sha256')}`,
+    `Training source: ${value('training_source_id')} (${value('training_source_sha256')})`,
+    `Training dates: ${value('training_start')} to ${value('training_end')}`,
+    `Holdout dates: ${value('holdout_start')} to ${value('holdout_end')}`,
+    `SKUs: ${value('sku_count')}; evaluator: ${value('evaluator_version')}`,
+    `Service targets: ${JSON.stringify(contract.service_targets ?? 'missing')}`,
+    `Baseline SQL SHA-256: ${value('baseline_sql_sha256')}`,
+    `Maximum cost ratio: ${value('max_cost_ratio')}; continuation tails (days): ${tails}`,
+    'These are operator-attested terms for one private episode. No outcomes are shown here.',
+  ].join('\n');
+}
+
 export async function waitForPreflight(args: {
   rootEventId: string;
   pageSha256: string;
@@ -46,7 +71,7 @@ export async function waitForPreflight(args: {
   isCancelled?: () => boolean;
   sleep?: (ms: number) => Promise<void>;
   timeoutMs?: number;
-}): Promise<{ ready: boolean; issue?: string }> {
+}): Promise<{ ready: boolean; issue?: string; holdoutContract?: string }> {
   const start = Date.now();
   const timeout = args.timeoutMs ?? 60_000;
   const sleep = args.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));

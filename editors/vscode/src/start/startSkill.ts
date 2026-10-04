@@ -317,9 +317,18 @@ export function registerStartSkill(
             await vscode.commands.executeCommand('escurel.openThread', check.event_id);
             throw new Error(`Evolve problem preflight found issues: ${result.issue} Re-import a corrected training spec, then review the new page revision.`);
           }
-          void vscode.window.showInformationMessage(
-            'Structural and holdout-binding checks passed. Baseline, seed, and provider readiness are checked during the durable search; this is ready for plan review.',
-          );
+          if (result.holdoutContract) {
+            const reviewed = await vscode.window.showInformationMessage(
+              `Review the frozen private holdout contract before planning:\n${result.holdoutContract}\n\n`
+              + 'Structural and binding checks passed. Baseline, seed, and provider readiness are checked during durable search.',
+              { modal: true }, 'Review experiment plan',
+            );
+            if (reviewed !== 'Review experiment plan') return;
+          } else {
+            void vscode.window.showInformationMessage(
+              'Structural and holdout-binding checks passed. Baseline, seed, and provider readiness are checked during the durable search; this is ready for plan review.',
+            );
+          }
         }
         if (action.event.label_skill === 'evolve_validate') {
           const page = await readPageMarkdown(client, pageId);
