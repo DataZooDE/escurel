@@ -573,3 +573,24 @@ async fn a_malformed_cursor_gets_an_answer_not_a_dropped_connection() {
         .await;
     assert_eq!(r["instances"].as_array().map(Vec::len), Some(2), "{r}");
 }
+
+#[tokio::test]
+async fn source_rows_say_where_their_values_came_from() {
+    // SQL rows are not instructions either: every list item and every projection is marked `source`
+    // (the REST/MCP rows are marked `external`), so an agent can tell record data from authored text.
+    let t = Rows::start().await;
+    let listed = t
+        .call(
+            "list_instances",
+            json!({ "skill": "sales-order", "limit": 3 }),
+        )
+        .await;
+    for i in listed["instances"].as_array().expect("instances") {
+        assert_eq!(i["trust"], "source", "a listed row is marked: {i}");
+    }
+    let page = t.call("expand", json!({ "page_id": row_page(7) })).await;
+    assert_eq!(
+        page["backend_projection"]["trust"], "source",
+        "an expanded row's projection is marked: {page}"
+    );
+}
