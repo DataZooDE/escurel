@@ -27,10 +27,22 @@ async function scanForRow(page: Page, name: RegExp) {
   await list.focus();
   await page.keyboard.press('Home');
   await page.mouse.wheel(0, -10_000);
-  await page.waitForTimeout(700);
+  // At the top when the first row (index 0) is rendered: a condition, not a sleep.
+  await expect(list.locator('.monaco-list-row[data-index="0"]')).toHaveCount(1);
+  const rendered = () =>
+    list.evaluate((el) =>
+      Array.from(el.querySelectorAll('.monaco-list-row'))
+        .map((r) => r.getAttribute('data-index'))
+        .join(','),
+    );
   for (let i = 0; i < 40 && (await row.count()) === 0; i += 1) {
+    const before = await rendered();
     await page.mouse.wheel(0, 120);
-    await page.waitForTimeout(120);
+    // Scrolled when the set of rendered rows changed; at the bottom it never does (hence the cap).
+    await expect
+      .poll(rendered, { timeout: 1_500 })
+      .not.toBe(before)
+      .catch(() => undefined);
   }
   return (await row.count()) > 0 ? row.first() : undefined;
 }
@@ -454,8 +466,13 @@ async function openRow(page: Page, skill: string, row: RegExp) {
   for (let attempt = 0; attempt < 6; attempt += 1) {
     const skillItem = await skillRow(page, skill);
     if ((await skillItem.getAttribute('aria-expanded')) !== 'true') await skillItem.click();
-    await page.waitForTimeout(1_200); // the children are fetched from the outside system
-    const item = await scanForRow(page, row);
+    // The children are fetched from the outside system: wait for the row, not for a duration.
+    const found = await expect
+      .poll(async () => (await scanForRow(page, row)) !== undefined, { timeout: 10_000 })
+      .toBe(true)
+      .then(() => true)
+      .catch(() => false);
+    const item = found ? await scanForRow(page, row) : undefined;
     if (item) {
       await item.click();
       return;

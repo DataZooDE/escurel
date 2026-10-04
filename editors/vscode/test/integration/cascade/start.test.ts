@@ -3,13 +3,14 @@ import * as vscode from 'vscode';
 import type { EscurelApi } from '../../../src/extension';
 import type { LoadedThread } from '../../../src/thread/loadThread';
 import { activate, discardOpenDrafts, freeOrder, markProcessed, until } from './support';
+import { requireEnv } from '../requireEnv';
 
 suite('start a skill: background and plan, approve a plan', () => {
   let api: EscurelApi;
 
   suiteSetup(async function () {
     this.timeout(120_000);
-    if (!process.env.ESCUREL_TEST_RUNNER) this.skip();
+    requireEnv(this, 'ESCUREL_TEST_RUNNER');
     api = await activate();
   });
 

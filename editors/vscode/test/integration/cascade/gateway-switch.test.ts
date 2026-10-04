@@ -4,6 +4,7 @@ import * as vscode from 'vscode';
 import type { EscurelApi } from '../../../src/extension';
 import type { LoadedThread } from '../../../src/thread/loadThread';
 import { activate, discardOpenDrafts, freeOrder, until, wait } from './support';
+import { requireEnv } from '../requireEnv';
 
 interface Gateway {
   proc: ChildProcess;
@@ -62,7 +63,7 @@ suite('a gateway switch retires the open threads and the details view', () => {
 
   suiteSetup(async function () {
     this.timeout(120_000);
-    if (!process.env.ESCUREL_TEST_RUNNER) this.skip();
+    requireEnv(this, 'ESCUREL_TEST_RUNNER');
     api = await activate();
   });
 

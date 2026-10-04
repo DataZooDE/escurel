@@ -82,7 +82,11 @@ describe('describeError never passes control or bidi characters or an unbounded 
   it('strips them from a message and caps its length', () => {
     const evil = `Pay now ‮exe.txt‬\u0007\u0000 ${'x'.repeat(5000)}`;
     const out = describeError(new Error(evil));
-    expect(out).not.toMatch(/[‪-‮⁦-⁩\u0000-\u0008\u000B-\u001F]/);
+    const bad = [...out].filter((ch) => {
+      const c = ch.codePointAt(0)!;
+      return c <= 0x1f || (c >= 0x202a && c <= 0x202e) || (c >= 0x2066 && c <= 0x2069);
+    });
+    expect(bad).toEqual([]);
     expect(out.length).toBeLessThanOrEqual(400);
   });
 });
