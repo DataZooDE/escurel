@@ -91,6 +91,20 @@ export class AwaitingTree implements vscode.TreeDataProvider<Node> {
         };
         return item;
       }
+      case 'plan': {
+        const item = new vscode.TreeItem(n.label, vscode.TreeItemCollapsibleState.None);
+        item.description = n.description;
+        item.tooltip = 'A plan the agent wrote and stopped at. Nothing runs until you approve it.';
+        item.accessibilityInformation = { label: accessibleLabel(n) };
+        item.iconPath = new vscode.ThemeIcon('checklist', new vscode.ThemeColor('charts.orange'));
+        item.contextValue = 'awaiting.plan';
+        item.command = {
+          command: 'escurel.approvePlan',
+          title: 'Approve plan',
+          arguments: [{ runId: n.runId, skill: n.skill, pageId: n.pageId }],
+        };
+        return item;
+      }
       case 'error': {
         const spec = errorRowSpec(n.message);
         const item = new vscode.TreeItem(spec.label, vscode.TreeItemCollapsibleState.None);
@@ -106,15 +120,35 @@ export class AwaitingTree implements vscode.TreeDataProvider<Node> {
   async getChildren(n?: Node): Promise<Node[]> {
     try {
       if (!n) {
-        const [changesets, drafts, inboxPage, skills] = await Promise.all([
+        const [changesets, drafts, inboxPage, skills, runPage, userPage] = await Promise.all([
           this.client().listChangesets(),
           this.client().listDrafts(),
           this.client().listInbox(),
           this.client().listSkills(),
+          // Plans waiting for approval: the run lifecycle (a run that ended `planned`) and the user events
+          // (the triggers, and any approval). Bounded; a failure here must not empty the whole queue.
+          this.client()
+            .listEvents({
+              label_skill: 'escurel:run',
+              include_system: true,
+              newest_first: true,
+              limit: 100,
+            })
+            .catch(() => undefined),
+          this.client()
+            .listEvents({ newest_first: true, limit: 200 })
+            .catch(() => undefined),
         ]);
         await vscode.commands.executeCommand('setContext', 'escurel.connected', true);
         await vscode.commands.executeCommand('setContext', 'escurel.connectionState', 'ok');
-        const rows = buildAwaitingRows({ changesets, drafts, events: inboxPage.events, skills });
+        const rows = buildAwaitingRows({
+          changesets,
+          drafts,
+          events: inboxPage.events,
+          skills,
+          runEvents: runPage?.events ?? [],
+          userEvents: userPage?.events ?? [],
+        });
         if (this.treeView) {
           this.treeView.badge =
             rows.length > 0

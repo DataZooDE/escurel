@@ -41,6 +41,12 @@ export function nodeRefs(arg: unknown): NodeRefs {
       put(refs, 'pageId', str(event.instance_page_id));
       break;
     }
+    case 'plan':
+      put(refs, 'rootEventId', str(arg.rootEventId));
+      put(refs, 'runId', str(arg.runId));
+      put(refs, 'skill', str(arg.skill));
+      put(refs, 'pageId', str(arg.pageId));
+      break;
     case 'changeset': {
       const c = isRecord(arg.changeset) ? arg.changeset : {};
       put(refs, 'rootEventId', str(c.root_event_id));

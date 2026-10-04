@@ -30,10 +30,19 @@ export function staleViews(event: Event): StaleViews {
   if (event.label_skill === 'escurel:review') {
     return { inbox: false, awaiting: true };
   }
+  // A run that ends `planned` puts a 'Plan ready' row in Awaiting; the event that approves it takes the
+  // row away again. A system run event belongs to no queue otherwise, so only run-finished counts.
+  if (event.label_skill === 'escurel:run') {
+    return { inbox: false, awaiting: event.title === 'run-finished' };
+  }
   const isInboxEvent = event.kind !== 'system' && (event.status === 'inbox' || !event.status);
+  const approves =
+    event.kind !== 'system' &&
+    typeof (event.provenance as { manual?: { approved_plan_run_id?: unknown } } | null)?.manual
+      ?.approved_plan_run_id === 'string';
   return {
     inbox: isInboxEvent,
-    awaiting: false,
+    awaiting: approves,
   };
 }
 

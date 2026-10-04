@@ -179,7 +179,8 @@
       {
         "command": "escurel.approvePlan",
         "title": "Approve plan",
-        "category": "Escurel"
+        "category": "Escurel",
+        "icon": "$(check)"
       },
       {
         "command": "escurel.openThread",
@@ -652,7 +653,7 @@
         },
         {
           "command": "escurel.openNodeRun",
-          "when": "view == escurel.awaiting && viewItem =~ /^awaiting\\.(changeset|draft)$/",
+          "when": "view == escurel.awaiting && viewItem =~ /^awaiting\\.(changeset|draft|plan)$/",
           "group": "2_trace@2"
         },
         {
@@ -674,6 +675,16 @@
           "command": "escurel.showSkillThreads",
           "when": "view == escurel.knowledge && viewItem =~ /^skill/",
           "group": "3_trace@1"
+        },
+        {
+          "command": "escurel.approvePlan",
+          "when": "view == escurel.awaiting && viewItem == awaiting.plan",
+          "group": "inline@1"
+        },
+        {
+          "command": "escurel.approvePlan",
+          "when": "view == escurel.awaiting && viewItem == awaiting.plan",
+          "group": "1_review@1"
         }
       ],
       "editor/title": [
