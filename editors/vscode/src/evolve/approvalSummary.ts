@@ -23,7 +23,7 @@ export function evolveApprovalSummary(
     ? JSON.stringify(spec.service_targets) : 'missing';
   const usd = budget.max_usd === undefined ? 'NO USD CAP'
     : `${Number(budget.max_usd).toFixed(2)} USD max`;
-  const steps = plan?.steps?.slice(0, 3).map((item, i) => `${i + 1}. ${item.step.trim()}`) ?? [];
+  const steps = plan?.steps?.map((item, i) => `${i + 1}. ${item.step.trim()}`) ?? [];
   return [
     'Approve this Evolve search against the frozen problem revision?',
     ...(plan ? [`Plan harness: ${field(plan.harness)}`,

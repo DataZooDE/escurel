@@ -27,10 +27,14 @@ describe('Evolve approval summary', () => {
 
   it('shows the actual plan steps and marks an echo plan as a workflow smoke test', () => {
     const summary = evolveApprovalSummary('a'.repeat(64), { pilot: 'p1_decision' }, {
-      harness: 'echo', steps: [{ step: 'Fold the event; no policy reasoning.' }],
+      harness: 'echo', steps: [
+        { step: 'Fold the event; no policy reasoning.' },
+        { step: 'Second step' }, { step: 'Third step' }, { step: 'Fourth step' },
+      ],
     });
     expect(summary).toContain('Plan harness: echo');
     expect(summary).toContain('1. Fold the event; no policy reasoning.');
+    expect(summary).toContain('4. Fourth step');
     expect(summary).toContain('Echo plans are workflow smoke tests');
   });
 });

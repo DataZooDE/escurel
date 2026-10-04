@@ -162,6 +162,12 @@ export function registerApprovePlan(
           const { rootEventId, view } = await loadRun(client, req.runId);
           if (!rootEventId) throw new Error('The Evolve plan has no initiating event. Make a new plan.');
           if (view.plan.length === 0) throw new Error('The Evolve plan has no reviewable steps. Make a new plan.');
+          if (!view.harness) {
+            throw new Error('The Evolve plan has no runner harness. Make a new plan.');
+          }
+          if (view.harness === 'echo') {
+            throw new Error('Echo plans are workflow smoke tests and cannot authorize Evolve search. Configure a planning harness and make a new plan.');
+          }
           const frozen = await evolveApprovalRevision(client, rootEventId, subject.pageId);
           const page = await readPageMarkdown(client, subject.pageId);
           if (!page || page.sha256 !== frozen || page.degraded) {

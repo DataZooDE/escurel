@@ -1,6 +1,4 @@
 import type { Page } from '@playwright/test';
-import { execFileSync } from 'node:child_process';
-import { join } from 'node:path';
 import { expect, test, webviewWith } from './fixtures';
 
 const pane = (page: Page, title: string) =>
@@ -21,7 +19,7 @@ async function events(
   return (result.events ?? []) as GatewayEvent[];
 }
 
-test('a person reviews Evolve search limits before approving the frozen plan', async ({ stack }) => {
+test('an echo plan cannot approve a spend-capable Evolve search', async ({ stack }) => {
   const id = `v2-visible-approval-${Date.now()}`;
   const pageId = `markdown/instances/evolve_problem/${id}.md`;
   const spec = {
@@ -101,47 +99,8 @@ test('a person reviews Evolve search limits before approving the frozen plan', a
   const thread = await webviewWith(stack.page, 'escurel-thread-canvas');
   await thread.locator('escurel-thread-canvas .card.type-run').first().click();
   await thread.getByRole('button', { name: 'Approve plan' }).click();
-  // VS Code uses a native Electron dialog for modal messages. CDP only sees the
-  // workbench renderer, so inspect and click the dialog on this isolated X11 display.
-  const nativeDialog = execFileSync('python3', ['-c', `
-from Xlib import display, X
-from Xlib.ext import xtest
-from PIL import Image
-import sys
-import time
-d = display.Display()
-r = d.screen().root
-window = None
-for _ in range(100):
-    window = next((c for c in r.query_tree().children if c.get_wm_name() == 'Visual Studio Code'), None)
-    if window: break
-    time.sleep(0.1)
-if window is None: raise RuntimeError('VS Code approval dialog did not appear')
-dialog = window.get_geometry()
-if dialog.width < 500 or dialog.height < 250: raise RuntimeError('approval dialog is unexpectedly small')
-g = r.get_geometry()
-raw = r.get_image(0, 0, g.width, g.height, X.ZPixmap, 0xffffffff)
-Image.frombytes('RGB', (g.width, g.height), raw.data, 'raw', 'BGRX').save(sys.argv[1])
-px = dialog.x + int(dialog.width * 0.75)
-py = dialog.y + dialog.height - 25
-xtest.fake_input(d, X.MotionNotify, x=px, y=py)
-xtest.fake_input(d, X.ButtonPress, detail=1)
-xtest.fake_input(d, X.ButtonRelease, detail=1)
-d.sync()
-print(f'{dialog.width}x{dialog.height}')
-`, join(__dirname, 'artifacts', 'evolve-approval-limits.png')], {
-    encoding: 'utf8', env: { ...process.env, DISPLAY: stack.display },
-  }).trim();
-  expect(nativeDialog).toMatch(/\d+x\d+$/);
-
-  const approvalId = `evolve-approval-${runId}`;
-  let approval: GatewayEvent | undefined;
-  await expect.poll(async () => {
-    approval = (await events(stack.call, 'evolve_run'))
-      .find((event) => event.event_id === approvalId);
-    return approval?.event_id;
-  }, { timeout: 30_000 }).toBe(approvalId);
-  expect(approval!.revision_binding_attested).toBe(true);
-  expect(approval!.provenance?.manual?.expected_page_sha256).toBe(revision);
-  expect(approval!.provenance?.manual?.approved_plan_run_id).toBe(runId);
+  await expect(stack.page.getByRole('dialog', { name: /Error: Echo plans are workflow smoke tests/ }))
+    .toBeVisible();
+  expect((await events(stack.call, 'evolve_run'))
+    .some((event) => event.event_id === `evolve-approval-${runId}`)).toBe(false);
 });
