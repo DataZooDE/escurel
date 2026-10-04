@@ -1,5 +1,6 @@
 import * as assert from 'node:assert/strict';
 import { spawn, type ChildProcess } from 'node:child_process';
+import { join } from 'node:path';
 import * as vscode from 'vscode';
 import type { EscurelApi } from '../../../src/extension';
 import type { LoadedThread } from '../../../src/thread/loadThread';
@@ -16,7 +17,12 @@ interface Gateway {
 async function startOtherGateway(): Promise<Gateway> {
   const bin = process.env.ESCUREL_TEST_GATEWAY_BIN;
   assert.ok(bin, 'the harness must provide ESCUREL_TEST_GATEWAY_BIN');
-  const proc = spawn(bin, ['--tenant', 'other', '--subject', 'alice'], {
+  // The extension's own seed (an empty-inbox tenant): any seed does, the second gateway only has to be a
+  // real, different one.
+  const ext = vscode.extensions.all.find((e) => e.id.toLowerCase().endsWith('.escurel'));
+  assert.ok(ext, 'the extension under test must be installed');
+  const seed = join(ext.extensionPath, 'test', 'integration', 'seed');
+  const proc = spawn(bin, ['--tenant', 'other', '--seed', seed, '--subject', 'alice'], {
     stdio: ['ignore', 'pipe', 'inherit'],
   });
   const line = await new Promise<string>((resolve, reject) => {
@@ -73,15 +79,17 @@ suite('a gateway switch retires the open threads and the details view', () => {
     if (api) await discardOpenDrafts(api);
   });
 
-  test('after the switch nothing of the old tenant can be shown or acted on', async function () {
-    this.timeout(240_000);
+  /** An event run to completion, its thread open, and the details view showing the run node. */
+  async function openThreadShowingRun(
+    title: string,
+  ): Promise<{ rootEventId: string; runId: string }> {
     const page = await freeOrder(api);
     const e1 = await api.services.client.captureEvent({
       label_skill: 'supplier-risk',
       mime: 'text/plain',
       source: 'integration',
-      title: 'Gateway switch: confirmation moved',
-      body: 'Meier-Guss: PO confirmation moved by 13 days.',
+      title,
+      body: `Meier-Guss: ${title}.`,
       instance_page_id: page,
     });
     const rootEventId = e1.event_id;
@@ -93,7 +101,6 @@ suite('a gateway switch retires the open threads and the details view', () => {
       else await wait(400);
     }
     assert.ok(runId, 'the run and changeset must finish');
-
     const loading = once<{ rootEventId: string; thread?: LoadedThread }>(api.threads.onDidLoad);
     await vscode.commands.executeCommand('escurel.openThread', rootEventId);
     await loading;
@@ -104,35 +111,65 @@ suite('a gateway switch retires the open threads and the details view', () => {
       'the details to show the run',
     );
     assert.equal(shown.nodeId, runId);
+    return { rootEventId, runId };
+  }
 
-    // Switch to a second real gateway, the way a person does: the setting, the sign-in, the signal.
-    other = await startOtherGateway();
+  /** Point the extension at `url` with `bearer`, the way a person does: setting, sign-in, signal. */
+  async function switchTo(url: string, bearer: string): Promise<() => Promise<void>> {
     const cfg = vscode.workspace.getConfiguration('escurel');
     const previousUrl = cfg.get<string>('gatewayUrl');
     const human = process.env.ESCUREL_TEST_BEARER;
     const subject = process.env.ESCUREL_TEST_SUBJECT ?? 'alice';
-    try {
-      await cfg.update('gatewayUrl', other.url, vscode.ConfigurationTarget.Global);
-      api.services.auth.refresher.useStaticToken(other.bearer, subject);
-      api.services.onDidChangeEmit();
-
-      await until(
-        async () => (api.details.current() === undefined ? true : undefined),
-        15_000,
-        'the details view to drop the old tenant’s node',
-      );
-      // The old thread's id is still a thread this host has a panel for, but its state is gone: an action
-      // that would have passed the checks against the stale model is refused.
-      const stale = await api.details.handleMessage({
-        type: 'details-action',
-        rootEventId,
-        message: { type: 'view-skill', skill: 'supplier-risk' },
-      });
-      assert.equal(stale, false, 'an action for the old tenant’s node must be refused');
-    } finally {
+    await cfg.update('gatewayUrl', url, vscode.ConfigurationTarget.Global);
+    api.services.auth.refresher.useStaticToken(bearer, subject);
+    api.services.onDidChangeEmit();
+    return async () => {
       await cfg.update('gatewayUrl', previousUrl, vscode.ConfigurationTarget.Global);
       if (human) api.services.auth.refresher.useStaticToken(human, subject);
       api.services.onDidChangeEmit();
+    };
+  }
+
+  async function assertOldNodeIsGone(rootEventId: string): Promise<void> {
+    await until(
+      async () => (api.details.current() === undefined ? true : undefined),
+      15_000,
+      'the details view to drop the old tenant’s node',
+    );
+    // The old thread's id is still a thread this host has a panel for, but its state is gone: an action
+    // that would have passed the checks against the stale model is refused.
+    const stale = await api.details.handleMessage({
+      type: 'details-action',
+      rootEventId,
+      message: { type: 'view-skill', skill: 'supplier-risk' },
+    });
+    assert.equal(stale, false, 'an action for the old tenant’s node must be refused');
+  }
+
+  test('a second real gateway: nothing of the old tenant can be shown or acted on', async function () {
+    this.timeout(240_000);
+    const { rootEventId } = await openThreadShowingRun('Gateway switch: confirmation moved');
+    other = await startOtherGateway();
+    const restore = await switchTo(other.url, other.bearer);
+    try {
+      await assertOldNodeIsGone(rootEventId);
+    } finally {
+      await restore();
+    }
+  });
+
+  // The hole the first test does not reach: the reload that follows a switch FAILS (the new gateway is
+  // down). The failed load used to leave the old thread, the old inspectors and the selected node in
+  // place, so the details view kept offering the old tenant's actions, and they passed the host's checks.
+  test('an unreachable gateway: the failed reload does not leave the old tenant on screen', async function () {
+    this.timeout(240_000);
+    const { rootEventId } = await openThreadShowingRun('Gateway switch: unreachable target');
+    // A real closed port: the connection is refused by the operating system.
+    const restore = await switchTo('http://127.0.0.1:1', 'not-a-token');
+    try {
+      await assertOldNodeIsGone(rootEventId);
+    } finally {
+      await restore();
     }
   });
 });
