@@ -98,11 +98,15 @@ where
 /// installed — every process embedding the gateway (a demo, an
 /// application's test harness) was flooded with hyper/reqwest TRACE
 /// lines, and `RUST_LOG` was silently ignored.
+/// `info`, except the CRDT library, which logs one INFO line per document it touches: a migration of
+/// a 20,000-page tenant otherwise buries every line that matters.
+const DEFAULT_FILTER: &str = "info,loro_internal=warn";
+
 fn env_filter(rust_log: Option<&str>) -> tracing_subscriber::EnvFilter {
     match rust_log {
         Some(v) if !v.trim().is_empty() => tracing_subscriber::EnvFilter::try_new(v)
-            .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
-        _ => tracing_subscriber::EnvFilter::new("info"),
+            .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(DEFAULT_FILTER)),
+        _ => tracing_subscriber::EnvFilter::new(DEFAULT_FILTER),
     }
 }
 
@@ -200,9 +204,11 @@ mod tests {
     /// assert what a filter was built from.
     #[test]
     fn env_filter_defaults_to_info_and_honours_rust_log() {
-        assert_eq!(env_filter(None).to_string(), "info");
-        assert_eq!(env_filter(Some("")).to_string(), "info");
-        assert_eq!(env_filter(Some("  ")).to_string(), "info");
+        // `loro_internal` logs at INFO for every document it touches (thousands of lines per
+        // migrated tenant): quiet by default, an explicit RUST_LOG still wins.
+        assert_eq!(env_filter(None).to_string(), "loro_internal=warn,info");
+        assert_eq!(env_filter(Some("")).to_string(), "loro_internal=warn,info");
+        assert_eq!(env_filter(Some("  ")).to_string(), "loro_internal=warn,info");
         assert_eq!(env_filter(Some("debug")).to_string(), "debug");
         assert_eq!(
             env_filter(Some("info,hyper_util=warn")).to_string(),
@@ -210,6 +216,9 @@ mod tests {
         );
         // Unparseable directives fall back to `info` rather than panicking
         // at boot.
-        assert_eq!(env_filter(Some("not==valid==")).to_string(), "info");
+        assert_eq!(
+            env_filter(Some("not==valid==")).to_string(),
+            "loro_internal=warn,info"
+        );
     }
 }
