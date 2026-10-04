@@ -155,14 +155,14 @@
       },
       {
         "command": "escurel.pauseDispatch",
-        "title": "Pause dispatch",
+        "title": "Pause agents",
         "icon": "$(debug-pause)",
         "category": "Escurel",
         "enablement": "escurel.canAdmin"
       },
       {
         "command": "escurel.resumeDispatch",
-        "title": "Resume dispatch",
+        "title": "Resume agents",
         "icon": "$(debug-continue)",
         "category": "Escurel",
         "enablement": "escurel.canAdmin"
@@ -232,7 +232,7 @@
       },
       {
         "command": "escurel.showRunner",
-        "title": "Show runner",
+        "title": "Show runs",
         "category": "Escurel"
       },
       {
@@ -351,6 +351,32 @@
         "command": "escurel.runs.showFailed",
         "title": "Show failed runs",
         "category": "Escurel"
+      },
+      {
+        "command": "escurel.runs.forPage",
+        "title": "Runs for this record",
+        "category": "Escurel",
+        "icon": "$(history)"
+      },
+      {
+        "command": "escurel.focusRuns",
+        "title": "Focus runs",
+        "category": "Escurel"
+      },
+      {
+        "command": "escurel.focusAwaiting",
+        "title": "Focus awaiting you",
+        "category": "Escurel"
+      },
+      {
+        "command": "escurel.focusInbox",
+        "title": "Focus inbox",
+        "category": "Escurel"
+      },
+      {
+        "command": "escurel.focusKnowledge",
+        "title": "Focus knowledge",
+        "category": "Escurel"
       }
     ],
     "authentication": [
@@ -370,7 +396,7 @@
       "secondarySidebar": [
         {
           "id": "escurel-runner",
-          "title": "Runner",
+          "title": "Runs",
           "icon": "media/icon.svg"
         }
       ],
@@ -412,7 +438,7 @@
       "escurel-runner": [
         {
           "id": "escurel.runner",
-          "name": "Runner"
+          "name": "Runs"
         }
       ],
       "escurel-details": [
@@ -427,11 +453,21 @@
       {
         "view": "escurel.knowledge",
         "contents": "Not connected to the escurel gateway.\n\n1. Set the gateway address.\n[Open the gateway setting](command:workbench.action.openSettings?%5B%22escurel.gatewayUrl%22%5D)\n\n2. Sign in, if your gateway asks for it.\n[Sign in](command:escurel.signIn)\n\n3. Try again.\n[Reconnect](command:escurel.refresh)\n\n[Get started](command:workbench.action.openWalkthrough?%7B%22category%22%3A%22datazoo.escurel%23escurel.start%22%7D)",
-        "when": "escurel.connected == false && escurel.connectionState != 'quarantined' && escurel.connectionState != 'incompatible'"
+        "when": "escurel.connected == false && escurel.connectionState != 'quarantined' && escurel.connectionState != 'incompatible' && escurel.connectionState != 'unauthorized' && escurel.connectionState != 'unreachable'"
       },
       {
         "view": "escurel.knowledge",
-        "contents": "This tenant is waiting for a data migration: the page format changed (`type:` is now `kind:`), so it serves nothing else until an operator runs `escurel admin migrate-kind`.\n[Check again](command:escurel.refresh)",
+        "contents": "The gateway did not accept your sign-in, or it has expired.\n[Sign in](command:escurel.signIn)\n[Check the gateway address](command:workbench.action.openSettings?%5B%22escurel.gatewayUrl%22%5D)",
+        "when": "escurel.connected == false && escurel.connectionState == 'unauthorized'"
+      },
+      {
+        "view": "escurel.knowledge",
+        "contents": "The gateway could not be reached. Check that it is running and that the address is right (setting: escurel.gatewayUrl).\n[Open the gateway setting](command:workbench.action.openSettings?%5B%22escurel.gatewayUrl%22%5D)\n[Try again](command:escurel.refresh)",
+        "when": "escurel.connected == false && escurel.connectionState == 'unreachable'"
+      },
+      {
+        "view": "escurel.knowledge",
+        "contents": "Your administrator needs to finish an upgrade before this workspace can be used. Tell them: run `escurel admin migrate-kind`.\n[Check again](command:escurel.refresh)",
         "when": "escurel.connected == false && escurel.connectionState == 'quarantined'"
       },
       {
@@ -442,11 +478,21 @@
       {
         "view": "escurel.awaiting",
         "contents": "Not connected to the escurel gateway.\n\n1. Set the gateway address.\n[Open the gateway setting](command:workbench.action.openSettings?%5B%22escurel.gatewayUrl%22%5D)\n\n2. Sign in, if your gateway asks for it.\n[Sign in](command:escurel.signIn)\n\n3. Try again.\n[Reconnect](command:escurel.refresh)\n\n[Get started](command:workbench.action.openWalkthrough?%7B%22category%22%3A%22datazoo.escurel%23escurel.start%22%7D)",
-        "when": "escurel.connected == false && escurel.connectionState != 'quarantined' && escurel.connectionState != 'incompatible'"
+        "when": "escurel.connected == false && escurel.connectionState != 'quarantined' && escurel.connectionState != 'incompatible' && escurel.connectionState != 'unauthorized' && escurel.connectionState != 'unreachable'"
       },
       {
         "view": "escurel.awaiting",
-        "contents": "This tenant is waiting for a data migration: the page format changed (`type:` is now `kind:`), so it serves nothing else until an operator runs `escurel admin migrate-kind`.\n[Check again](command:escurel.refresh)",
+        "contents": "The gateway did not accept your sign-in, or it has expired.\n[Sign in](command:escurel.signIn)\n[Check the gateway address](command:workbench.action.openSettings?%5B%22escurel.gatewayUrl%22%5D)",
+        "when": "escurel.connected == false && escurel.connectionState == 'unauthorized'"
+      },
+      {
+        "view": "escurel.awaiting",
+        "contents": "The gateway could not be reached. Check that it is running and that the address is right (setting: escurel.gatewayUrl).\n[Open the gateway setting](command:workbench.action.openSettings?%5B%22escurel.gatewayUrl%22%5D)\n[Try again](command:escurel.refresh)",
+        "when": "escurel.connected == false && escurel.connectionState == 'unreachable'"
+      },
+      {
+        "view": "escurel.awaiting",
+        "contents": "Your administrator needs to finish an upgrade before this workspace can be used. Tell them: run `escurel admin migrate-kind`.\n[Check again](command:escurel.refresh)",
         "when": "escurel.connected == false && escurel.connectionState == 'quarantined'"
       },
       {
@@ -457,11 +503,21 @@
       {
         "view": "escurel.inbox",
         "contents": "Not connected to the escurel gateway.\n\n1. Set the gateway address.\n[Open the gateway setting](command:workbench.action.openSettings?%5B%22escurel.gatewayUrl%22%5D)\n\n2. Sign in, if your gateway asks for it.\n[Sign in](command:escurel.signIn)\n\n3. Try again.\n[Reconnect](command:escurel.refresh)\n\n[Get started](command:workbench.action.openWalkthrough?%7B%22category%22%3A%22datazoo.escurel%23escurel.start%22%7D)",
-        "when": "escurel.connected == false && escurel.connectionState != 'quarantined' && escurel.connectionState != 'incompatible'"
+        "when": "escurel.connected == false && escurel.connectionState != 'quarantined' && escurel.connectionState != 'incompatible' && escurel.connectionState != 'unauthorized' && escurel.connectionState != 'unreachable'"
       },
       {
         "view": "escurel.inbox",
-        "contents": "This tenant is waiting for a data migration: the page format changed (`type:` is now `kind:`), so it serves nothing else until an operator runs `escurel admin migrate-kind`.\n[Check again](command:escurel.refresh)",
+        "contents": "The gateway did not accept your sign-in, or it has expired.\n[Sign in](command:escurel.signIn)\n[Check the gateway address](command:workbench.action.openSettings?%5B%22escurel.gatewayUrl%22%5D)",
+        "when": "escurel.connected == false && escurel.connectionState == 'unauthorized'"
+      },
+      {
+        "view": "escurel.inbox",
+        "contents": "The gateway could not be reached. Check that it is running and that the address is right (setting: escurel.gatewayUrl).\n[Open the gateway setting](command:workbench.action.openSettings?%5B%22escurel.gatewayUrl%22%5D)\n[Try again](command:escurel.refresh)",
+        "when": "escurel.connected == false && escurel.connectionState == 'unreachable'"
+      },
+      {
+        "view": "escurel.inbox",
+        "contents": "Your administrator needs to finish an upgrade before this workspace can be used. Tell them: run `escurel admin migrate-kind`.\n[Check again](command:escurel.refresh)",
         "when": "escurel.connected == false && escurel.connectionState == 'quarantined'"
       },
       {
@@ -472,11 +528,21 @@
       {
         "view": "escurel.runner",
         "contents": "Not connected to the escurel gateway.\n\n1. Set the gateway address.\n[Open the gateway setting](command:workbench.action.openSettings?%5B%22escurel.gatewayUrl%22%5D)\n\n2. Sign in, if your gateway asks for it.\n[Sign in](command:escurel.signIn)\n\n3. Try again.\n[Reconnect](command:escurel.refresh)\n\n[Get started](command:workbench.action.openWalkthrough?%7B%22category%22%3A%22datazoo.escurel%23escurel.start%22%7D)",
-        "when": "escurel.connected == false && escurel.connectionState != 'quarantined' && escurel.connectionState != 'incompatible'"
+        "when": "escurel.connected == false && escurel.connectionState != 'quarantined' && escurel.connectionState != 'incompatible' && escurel.connectionState != 'unauthorized' && escurel.connectionState != 'unreachable'"
       },
       {
         "view": "escurel.runner",
-        "contents": "This tenant is waiting for a data migration: the page format changed (`type:` is now `kind:`), so it serves nothing else until an operator runs `escurel admin migrate-kind`.\n[Check again](command:escurel.refresh)",
+        "contents": "The gateway did not accept your sign-in, or it has expired.\n[Sign in](command:escurel.signIn)\n[Check the gateway address](command:workbench.action.openSettings?%5B%22escurel.gatewayUrl%22%5D)",
+        "when": "escurel.connected == false && escurel.connectionState == 'unauthorized'"
+      },
+      {
+        "view": "escurel.runner",
+        "contents": "The gateway could not be reached. Check that it is running and that the address is right (setting: escurel.gatewayUrl).\n[Open the gateway setting](command:workbench.action.openSettings?%5B%22escurel.gatewayUrl%22%5D)\n[Try again](command:escurel.refresh)",
+        "when": "escurel.connected == false && escurel.connectionState == 'unreachable'"
+      },
+      {
+        "view": "escurel.runner",
+        "contents": "Your administrator needs to finish an upgrade before this workspace can be used. Tell them: run `escurel admin migrate-kind`.\n[Check again](command:escurel.refresh)",
         "when": "escurel.connected == false && escurel.connectionState == 'quarantined'"
       },
       {
@@ -610,6 +676,10 @@
         {
           "command": "escurel.runs.showFailed",
           "when": "false"
+        },
+        {
+          "command": "escurel.runs.forPage",
+          "when": "false"
         }
       ],
       "view/title": [
@@ -677,6 +747,21 @@
           "command": "escurel.runs.refresh",
           "when": "view == escurel.runner",
           "group": "navigation@3"
+        },
+        {
+          "command": "escurel.explainView",
+          "when": "view == escurel.awaiting",
+          "group": "navigation@9"
+        },
+        {
+          "command": "escurel.explainView",
+          "when": "view == escurel.inbox",
+          "group": "navigation@9"
+        },
+        {
+          "command": "escurel.explainView",
+          "when": "view == escurel.runner",
+          "group": "navigation@9"
         }
       ],
       "view/item/context": [
@@ -854,6 +939,11 @@
           "command": "escurel.retryRun",
           "when": "view == escurel.runner && viewItem == run.failed",
           "group": "1_control@1"
+        },
+        {
+          "command": "escurel.runs.forPage",
+          "when": "view == escurel.knowledge && viewItem == instance",
+          "group": "3_trace@3"
         }
       ],
       "editor/title": [
@@ -961,6 +1051,28 @@
             "completionEvents": [
               "onView:escurel.awaiting"
             ]
+          },
+          {
+            "id": "runs",
+            "title": "Watch and control agents",
+            "description": "See what is running, what needs attention, and past runs with their traces.\n[Show Runs](command:escurel.runner.focus)",
+            "media": {
+              "markdown": "media/walkthrough/runs.md"
+            },
+            "completionEvents": [
+              "onView:escurel.runner"
+            ]
+          },
+          {
+            "id": "explain",
+            "title": "Learn how things connect",
+            "description": "A one-screen explanation of events, skills, runs and changes.\n[Explain this view](command:escurel.explainView)",
+            "media": {
+              "markdown": "media/walkthrough/explain.md"
+            },
+            "completionEvents": [
+              "onCommand:escurel.explainView"
+            ]
           }
         ]
       }
@@ -976,6 +1088,26 @@
         "key": "ctrl+alt+d",
         "mac": "cmd+alt+d",
         "when": "escurel.connected"
+      },
+      {
+        "command": "escurel.focusRuns",
+        "key": "ctrl+alt+r",
+        "mac": "cmd+alt+r"
+      },
+      {
+        "command": "escurel.focusAwaiting",
+        "key": "ctrl+alt+a",
+        "mac": "cmd+alt+a"
+      },
+      {
+        "command": "escurel.focusInbox",
+        "key": "ctrl+alt+i",
+        "mac": "cmd+alt+i"
+      },
+      {
+        "command": "escurel.focusKnowledge",
+        "key": "ctrl+alt+k",
+        "mac": "cmd+alt+k"
       }
     ]
   },

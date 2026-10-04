@@ -27,7 +27,7 @@ describe('<escurel-skill-page>', () => {
   it('shows role, folder, tags, backend as a list of facts', async () => {
     const el = await render();
     const dt = qa(el, 'dl.facts dt').map(text);
-    expect(dt).to.include.members(['Role', 'Folder', 'Tags', 'Backend']);
+    expect(dt).to.include.members(['Role', 'Folder', 'Tags', 'Data from']);
     expect(text(qa(el, 'dl.facts dd')[dt.indexOf('Folder')]!)).to.equal('sales/orders');
   });
 
@@ -70,15 +70,52 @@ describe('<escurel-skill-page>', () => {
     expect(start.detail).to.deep.equal({ type: 'start-skill', skill: 'credit-check', mode: 'run' });
   });
 
-  it('says so when there are no records or runs', async () => {
+  it('collapses what is empty into one line instead of three empty sections', async () => {
     const el = await fixture<EscurelSkillPage>(
       html`<escurel-skill-page
-        .model=${{ ...orderSkillPage, instances: { items: [], more: false }, runs: [], actions: [] }}
+        .model=${{
+          ...orderSkillPage,
+          fields: [],
+          instances: { items: [], more: false },
+          runs: [],
+          actions: [],
+        }}
       ></escurel-skill-page>`,
     );
     await el.updateComplete;
-    expect(text(q(el, '.instances'))).to.contain('No records yet');
-    expect(text(q(el, '.runs'))).to.contain('No runs yet');
+    expect(q(el, '.fields') === null).to.equal(true);
+    expect(q(el, '.instances') === null).to.equal(true);
+    expect(q(el, '.runs') === null).to.equal(true);
     expect(q(el, '.follow-ups') === null).to.equal(true);
+    expect(text(q(el, '.nothing-yet'))).to.equal(
+      'No fields declared, no records yet and no runs yet.',
+    );
+  });
+
+  it('puts Show Markdown beside the title, and gives the follow-up the primary look', async () => {
+    const el = await render();
+    expect(q(el, '.title-row .show-markdown') !== null).to.equal(true);
+    expect(q(el, '.follow-ups button.primary') !== null).to.equal(true);
+  });
+
+  it('explains a fact in a tooltip', async () => {
+    const el = await render();
+    const dt = qa(el, 'dl.facts dt').find((n) => text(n) === 'Data from') as HTMLElement;
+    expect(dt.getAttribute('title')).to.contain('stored or read from');
+  });
+
+  it('says on the page, not in a toast, that a report is never run', async () => {
+    const el = await fixture<EscurelSkillPage>(
+      html`<escurel-skill-page
+        .model=${{
+          ...orderSkillPage,
+          facts: [{ label: 'Role', value: 'report' }],
+        }}
+      ></escurel-skill-page>`,
+    );
+    await el.updateComplete;
+    expect(text(q(el, '.report-note'))).to.contain('never run');
+    const plain = await render();
+    expect(q(plain, '.report-note') === null).to.equal(true);
   });
 });

@@ -2,6 +2,7 @@
 // A skill is a recipe for one kind of work; its Markdown file is the source, not the thing to read.
 import type { Event, Instance, Skill, SkillField } from '../client/types';
 import { skillActionViews } from './actions';
+import { backendLabel } from './backendLabel';
 import { skillFacts } from './freshness';
 import { titleCase } from './page';
 import { pageSlug } from './pageId';
@@ -14,6 +15,15 @@ export const SKILL_PAGE_RUNS = 8;
 export interface SkillFactView {
   label: string;
   value: string;
+  /** One sentence for a tooltip: what the label means. */
+  hint?: string;
+}
+
+/** What the skill's gate means for an agent's changes, in plain words. */
+function agentChanges(autonomy: string | undefined): string {
+  if (autonomy === 'auto') return 'applied without review';
+  if (autonomy === 'confirm') return 'agent asks you first';
+  return 'wait for your approval';
 }
 
 export interface SkillFieldView {
@@ -141,12 +151,23 @@ export function buildSkillPageModel(
   if (skill.folder) facts.push({ label: 'Folder', value: cleanText(skill.folder, 200) });
   if (skill.tags?.length)
     facts.push({ label: 'Tags', value: cleanText(skill.tags.slice(0, 30).join(', '), 300) });
-  facts.push({ label: 'Backend', value: cleanText(String(skill.backend.kind), 40) });
   facts.push({
-    label: 'Autonomy',
-    value: skill.autonomy === 'auto' || skill.autonomy === 'confirm' ? skill.autonomy : 'review',
+    label: 'Data from',
+    value: backendLabel(skill.backend.kind),
+    hint: 'Where the records of this skill are stored or read from.',
   });
-  facts.push({ label: 'Layer', value: cleanText(String(skill.layer), 40) });
+  facts.push({
+    label: 'Agent changes',
+    value: agentChanges(skill.autonomy),
+    hint: 'What happens to a change an agent proposes to a record of this skill (its autonomy setting).',
+  });
+  // Only worth a line when the skill is shared: an ordinary one is simply yours to edit.
+  if (skill.layer !== 'overlay')
+    facts.push({
+      label: 'Shared from',
+      value: cleanText(String(skill.layer), 40),
+      hint: 'This skill comes from a shared skill pack and is read-only here.',
+    });
   if (skill.resource) facts.push({ label: 'Describes', value: cleanText(skill.resource, 300) });
 
   const runs = [...events]

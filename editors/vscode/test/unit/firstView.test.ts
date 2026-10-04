@@ -238,10 +238,11 @@ describe('firstViewport', () => {
 });
 
 describe('semantic zoom threshold', () => {
-  it('switches to the low-zoom form below 70%, and only below', () => {
-    expect(LOW_ZOOM_BELOW).toBe(0.7);
-    expect(isLowZoom(0.69)).toBe(true);
-    expect(isLowZoom(0.7)).toBe(false);
+  it('switches to the low-zoom form below 85%, and only below', () => {
+    expect(LOW_ZOOM_BELOW).toBe(0.85);
+    expect(isLowZoom(0.84)).toBe(true);
+    expect(isLowZoom(0.7)).toBe(true);
+    expect(isLowZoom(0.85)).toBe(false);
     expect(isLowZoom(1)).toBe(false);
   });
 });

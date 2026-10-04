@@ -45,3 +45,14 @@ describe('statusIconName', () => {
     expect(statusIconName('mystery')).toBe('warn');
   });
 });
+
+import { statusWord } from '../../src/runs/runWording';
+describe('statusWord', () => {
+  it('uses the words a person uses for a run state', () => {
+    expect(statusWord('processed')).toBe('done');
+    expect(statusWord('dead_letter')).toBe('gave up');
+    expect(statusWord('planned')).toBe('plan ready');
+    expect(statusWord('running')).toBe('running');
+    expect(statusWord('in_between')).toBe('in between');
+  });
+});

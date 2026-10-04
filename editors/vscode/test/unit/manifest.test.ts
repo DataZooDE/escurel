@@ -45,6 +45,7 @@ describe('the manifest and the code agree', () => {
         'escurel.cancelRun',
         'escurel.pauseDispatch',
         'escurel.requeue',
+        'escurel.explainView',
         'escurel.resumeDispatch',
         'escurel.retryRun',
         'escurel.retryRun',
@@ -179,6 +180,19 @@ describe('the empty views say WHY they are empty', () => {
         );
       expect(forState('quarantined')?.contents).toContain('escurel admin migrate-kind');
       expect(forState('incompatible')?.contents).toMatch(/older than this extension/i);
+      // The person is told whom to ask and what to say, not what changed inside a page file.
+      expect(forState('quarantined')?.contents).toMatch(/administrator/i);
+      expect(forState('quarantined')?.contents).not.toContain('type:');
+    });
+
+    it(`${view} has its own message for a rejected sign-in and for an unreachable gateway`, () => {
+      const forState = (state: string) =>
+        welcome.find(
+          (w) => w.view === view && w.when.includes(`escurel.connectionState == '${state}'`),
+        );
+      expect(forState('unauthorized')?.contents).toContain('command:escurel.signIn');
+      expect(forState('unreachable')?.contents).toMatch(/could not be reached/i);
+      expect(forState('unreachable')?.contents).toContain('escurel.gatewayUrl');
     });
 
     it(`${view} keeps the generic Reconnect message for the other failures only`, () => {
@@ -186,7 +200,9 @@ describe('the empty views say WHY they are empty', () => {
         (w) =>
           w.view === view &&
           !w.when.includes("== 'quarantined'") &&
-          !w.when.includes("== 'incompatible'"),
+          !w.when.includes("== 'incompatible'") &&
+          !w.when.includes("== 'unauthorized'") &&
+          !w.when.includes("== 'unreachable'"),
       );
       expect(generic.length).toBeGreaterThan(0);
       for (const g of generic) {
@@ -266,5 +282,28 @@ describe('first run and discoverability', () => {
     expect(declared.has('escurel.showRunner')).toBe(true);
     expect(m.activationEvents).toContain('onView:escurel.details');
     expect(m.activationEvents).toContain('onView:escurel.runner');
+  });
+});
+
+describe('keybindings', () => {
+  it('give each view a focus key, and no chord hides another binding', () => {
+    const kb = (
+      manifest.contributes as unknown as { keybindings: { command: string; key: string }[] }
+    ).keybindings;
+    for (const c of [
+      'escurel.focusRuns',
+      'escurel.focusAwaiting',
+      'escurel.focusInbox',
+      'escurel.focusKnowledge',
+    ])
+      expect(
+        kb.some((k) => k.command === c),
+        c,
+      ).toBe(true);
+    // A chord that starts with another binding's whole key makes that binding unreachable.
+    const keys = kb.map((k) => k.key);
+    for (const a of keys)
+      for (const b of keys) if (a !== b) expect(b.startsWith(`${a} `), `${a} vs ${b}`).toBe(false);
+    expect(new Set(keys).size).toBe(keys.length);
   });
 });

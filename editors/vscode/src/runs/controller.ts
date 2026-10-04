@@ -63,7 +63,7 @@ export class RunController implements vscode.Disposable {
   open(arg: unknown): void {
     const runId = runIdOf(arg);
     if (!runId) {
-      void vscode.window.showInformationMessage('Select a run in the Runner view to open it.');
+      void vscode.window.showInformationMessage('Select a run in the Runs view to open it.');
       return;
     }
     const existing = this.panels.get(runId);

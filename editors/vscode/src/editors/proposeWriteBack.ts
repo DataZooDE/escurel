@@ -1,4 +1,4 @@
-import { notify } from '../commands/notify';
+import { quietly } from '../shared/quiet';
 import * as vscode from 'vscode';
 import { describeError } from '../errors';
 import { rowSourceOf } from '../shared/rowSource';
@@ -62,10 +62,10 @@ export function registerProposeWriteBack(services: Services): vscode.Disposable 
             notes: notes.trim(),
           }),
         });
-        void notify(
-          'info',
-          `Proposed: ${field} to ${describeCurrent(parsed.value)}. A reviewer approves it from Awaiting You.`,
-          [{ kind: 'page', pageId }],
+        // Routine: the status bar says it in one line; the proposal itself is in Awaiting you.
+        quietly(
+          `Proposed: ${field} to ${describeCurrent(parsed.value)}. A reviewer approves it from Awaiting you.`,
+          8000,
         );
         void vscode.commands.executeCommand('escurel.refresh');
       } catch (e) {

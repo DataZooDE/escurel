@@ -51,6 +51,8 @@ export function resolvePageMessage(
         args: [{ pageId: model.pageId, field: m.field }],
       };
     }
+    case 'show-runs':
+      return model ? { command: 'escurel.runs.forPage', args: [model.pageId] } : undefined;
     case 'open-run':
       return nonEmpty(m.runId) ? { command: 'escurel.openRun', args: [m.runId] } : undefined;
     case 'open-thread':

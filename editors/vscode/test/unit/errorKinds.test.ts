@@ -25,7 +25,8 @@ describe('error kinds the gateway emits', () => {
 
   it('says what to do about each', () => {
     const q = describeError(new EscurelError('tenant_quarantined', 'x'));
-    expect(q).toMatch(/migration/i);
+    expect(q).toMatch(/administrator/i);
+    expect(q).not.toContain('type:');
     expect(q).toContain('escurel admin migrate-kind');
     expect(describeError(new EscurelError('forbidden', 'HTTP 403'))).toMatch(/not allowed|access/i);
     expect(describeError(new EscurelError('quota_exhausted', 'HTTP 429'))).toMatch(

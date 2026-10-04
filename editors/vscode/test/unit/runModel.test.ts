@@ -208,3 +208,34 @@ describe('the draft or page a run produced', () => {
     expect(buildRunView(undefined, [] as never).producedPageId).toBeUndefined();
   });
 });
+
+describe('why a run failed', () => {
+  const finishedEvent = (body: object): Event =>
+    ({
+      event_id: 'e1',
+      at: '2026-10-04T10:00:00Z',
+      source: 'escurel-runner',
+      mime: 'application/json',
+      label_skill: 'escurel:run',
+      instance_page_id: null,
+      status: 'processed',
+      title: 'run-finished',
+      body: JSON.stringify(body),
+      provenance: null,
+      kind: 'system',
+      root_event_id: null,
+      run_id: 'r1',
+    }) as unknown as Event;
+
+  it('puts the reason and the last attempt’s error together, once, for a failed run', () => {
+    const v = buildRunView(undefined, [
+      finishedEvent({ status: 'failed', reason: 'permanent', error: 'harness refused' }),
+    ]);
+    expect(v.failure).toBe('permanent — harness refused');
+  });
+  it('has no failure for a run that succeeded', () => {
+    expect(
+      buildRunView(undefined, [finishedEvent({ status: 'processed' })]).failure,
+    ).toBeUndefined();
+  });
+});

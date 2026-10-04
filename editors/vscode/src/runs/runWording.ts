@@ -46,3 +46,17 @@ export function statusIconName(status: string): 'check' | 'sync' | 'cross' | 'wa
       return 'warn';
   }
 }
+
+/** A run's status as a person says it: `processed` is "done", `dead_letter` is "gave up". */
+export function statusWord(status: string): string {
+  switch (status) {
+    case 'processed':
+      return 'done';
+    case 'dead_letter':
+      return 'gave up';
+    case 'planned':
+      return 'plan ready';
+    default:
+      return status.replaceAll('_', ' ');
+  }
+}

@@ -44,9 +44,9 @@ export function describeOutcome(result: ControlResult): string {
       return result.newRunId ? `${done}; a new run has started.` : `${done}.`;
     }
     case 'paused':
-      return 'Dispatch paused.';
+      return 'Agents paused.';
     case 'resumed':
-      return 'Dispatch resumed.';
+      return 'Agents resumed.';
     case 'refused':
       return result.detail
         ? `The runner refused: ${result.detail}.`

@@ -251,8 +251,11 @@ export function registerStartSkill(
       if (action.type === 'terminal') {
         try {
           await vscode.commands.executeCommand(action.command, action.args);
-        } catch {
-          void vscode.window.showInformationMessage('Could not start in a terminal.');
+        } catch (error) {
+          // Say why: the person's next step depends on it (not signed in, no permission, a bad setting).
+          void vscode.window.showWarningMessage(
+            `Could not start in a terminal: ${describeError(error)}`,
+          );
         }
         return;
       }

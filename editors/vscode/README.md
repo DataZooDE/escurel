@@ -8,16 +8,16 @@ degradations are tracked in `docs/BACKEND_GAPS.md`.
 
 - **Browse and read** skills and their instances (Knowledge), search, follow wikilinks; an instance opens as a
   form (typed fields, the page body with its tables) or as Markdown.
-- **Review**: the Inbox, *Awaiting you*, a diff with comments, promote or discard a draft or a whole changeset.
+- **Review**: the Inbox, _Awaiting you_, a diff with comments, promote or discard a draft or a whole changeset.
 - **Follow work as it happens**: the thread of an event (event → run → changeset → follow-on events) and each
   run's plan, attempts and tool calls, live, without reload.
-- **Start a skill** from an instance or a thread node: in the background, *first make a plan* and approve it,
+- **Start a skill** from an instance or a thread node: in the background, _first make a plan_ and approve it,
   or in a terminal (a token minted for that one run; the run still shows up in the thread as a governed run).
-- **Control agents and read their history**: the Runner view (secondary sidebar) is a runs control center:
+- **Control agents and read their history**: the Runs view (secondary sidebar) is a runs control center:
   what is running now (cancel it), what waits for you (approve the plan), what needs attention (the reason on
   its own line; retry it), and the history of past runs, paged and filterable, with a day's summary on top.
   One click opens a run: its plan, attempts and a readable trace of every tool call, with a link to what the
-  run produced. An admin can also requeue a dead letter and pause or resume dispatch; a human sees those
+  run produced. An admin can also requeue a dead letter and pause or resume agents; a human sees those
   controls deactivated, with the reason, not hidden.
 
 ## Security model
@@ -62,7 +62,7 @@ nothing about whether it looks right. They need the built extension, the release
 for them, since a VS Code webview is an out-of-process iframe Playwright cannot otherwise see into; they
 never touch a window you have open (their own display and profile).
 
-The minimum VS Code is **1.104**: the Runner view lives in the secondary sidebar, which an extension can contribute to from that release (`docs/notes/discovered/2026-10-02-vscode-secondary-sidebar-floor.md`). `@types/vscode` is pinned to that version, so the typecheck rejects a newer API.
+The minimum VS Code is **1.104**: the Runs view lives in the secondary sidebar, which an extension can contribute to from that release (`docs/notes/discovered/2026-10-02-vscode-secondary-sidebar-floor.md`). `@types/vscode` is pinned to that version, so the typecheck rejects a newer API.
 
 The extension runs in Restricted Mode windows too; there its `escurel.*` settings are read from your user settings only (a folder cannot redirect you to another gateway).
 

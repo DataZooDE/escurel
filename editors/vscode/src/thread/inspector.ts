@@ -22,10 +22,30 @@ function tone(state: string): InspectorRow['tone'] {
   return undefined;
 }
 
+/** A node's state as a person says it; an unknown state is shown as sent. */
+export function stateWords(state: string): string {
+  switch (state) {
+    case 'processed':
+      return 'Done';
+    case 'inbox':
+      return 'Waiting for an agent';
+    case 'open':
+      return 'Waiting for your review';
+    case 'promoted':
+      return 'Applied';
+    case 'dead_letter':
+      return 'Gave up';
+    case 'planned':
+      return 'Plan ready';
+    default:
+      return state.charAt(0).toUpperCase() + state.slice(1).replaceAll('_', ' ');
+  }
+}
+
 function row(k: string, raw: unknown, state = false, tech = false): InspectorRow | undefined {
   const v = value(raw);
   if (v === undefined) return undefined;
-  const row: InspectorRow = { k, v };
+  const row: InspectorRow = { k, v: state ? stateWords(v) : v };
   if (state) row.tone = tone(v);
   if (tech) row.tech = true;
   return row;
@@ -75,7 +95,7 @@ function eventDetail(
     kindLabel: 'Signal',
     ...summaryFields({ kind: 'event', state: value(raw.state), runs: counts.runs }),
     rows: rows(
-      row('state', raw.state, true),
+      row('Status', raw.state, true),
       row('at', formatDateTime(raw.at)),
       row('label_skill', raw.label_skill, false, true),
       row('kind', raw.kind, false, true),
@@ -117,9 +137,9 @@ function runDetail(node: ThreadNode, raw: LineageNode): InspectorView {
       reason: value(raw.reason),
     }),
     rows: rows(
-      row('state', raw.state, true),
+      row('Status', raw.state, true),
       row('reason', raw.reason),
-      row('held', raw.held),
+      row('Held for review', raw.held === true ? 'Yes' : undefined),
       row('harness', raw.harness, false, true),
       row('model', raw.model, false, true),
       row('autonomy', raw.autonomy, false, true),
@@ -154,7 +174,7 @@ function changesetDetail(
       drafts: typeof raw.drafts === 'number' ? raw.drafts : undefined,
     }),
     rows: rows(
-      row('state', raw.state, true),
+      row('Status', raw.state, true),
       row('drafts', raw.drafts),
       row('author', raw.author),
       row('run', raw.run_id, false, true),
@@ -183,7 +203,7 @@ function draftDetail(node: ThreadNode, raw: LineageNode): InspectorView {
         : undefined,
     }),
     rows: rows(
-      row('state', raw.state, true),
+      row('Status', raw.state, true),
       row('author', raw.author),
       row('target', raw.target_page_id, false, true),
     ),

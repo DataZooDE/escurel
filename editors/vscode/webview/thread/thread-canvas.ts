@@ -15,6 +15,8 @@ import type {
 } from '../../src/shared/protocol';
 import { theme } from '../shared/theme.css';
 import { fitToBounds, panToReveal, zoomAboutPoint } from './viewport';
+import { chipWords } from '../../src/thread/chipWords';
+import { checkIcon, clockIcon, crossIcon, syncIcon } from '../shared/icons';
 import {
   columnsOffRight,
   firstViewport,
@@ -76,13 +78,25 @@ export class EscurelThreadCanvas extends LitElement {
         text-align: center;
       }
       .zoom-hint {
-        font-size: 0.8em;
+        font-size: 0.85em;
         color: var(--escurel-muted);
         border: 1px solid var(--escurel-border);
         border-radius: 8px;
         padding: 0 6px;
         text-transform: uppercase;
         letter-spacing: 0.04em;
+      }
+      /* The icon of a state chip: small, inline with the word, never taller than the chip. */
+      .card .chip {
+        display: inline-flex;
+        align-items: center;
+        gap: 3px;
+        line-height: 1.5;
+      }
+      .card .chip svg {
+        flex: none;
+        width: 10px;
+        height: 10px;
       }
       /* More stages lie beyond the right edge: a fade and a chip that brings them in. */
       .edge-fade {
@@ -153,7 +167,7 @@ export class EscurelThreadCanvas extends LitElement {
         left: 0;
         right: 0;
       }
-      /* Semantic zoom: below 70% a card keeps its icon, type word, title and state chip, and drops
+      /* Semantic zoom: below 85% a card keeps its icon, type word, title and state chip, and drops
          the body (subtitle, meta, reason, draft list, buttons). The words are COUNTER-SCALED: the
          canvas shrinks by --zoom, so their font is divided by it and they render at about 10.5px
          whatever the zoom. The box keeps its size, so wires and positions do not move; the full
@@ -280,7 +294,7 @@ export class EscurelThreadCanvas extends LitElement {
       .column-header {
         position: absolute;
         top: 6px;
-        font-size: 0.8em;
+        font-size: 0.85em;
         font-weight: 600;
         text-transform: uppercase;
         letter-spacing: 0.05em;
@@ -377,7 +391,7 @@ export class EscurelThreadCanvas extends LitElement {
         display: none;
       }
       .type-label {
-        font-size: 0.75em;
+        font-size: 0.8em;
         font-weight: 600;
         text-transform: uppercase;
         letter-spacing: 0.06em;
@@ -466,7 +480,7 @@ export class EscurelThreadCanvas extends LitElement {
         border: 1px solid var(--accent);
         background: color-mix(in srgb, var(--accent) 30%, transparent);
         color: var(--vscode-foreground);
-        font-size: 0.75em;
+        font-size: 0.85em;
         font-weight: 700;
       }
       .needs-reason {
@@ -516,7 +530,7 @@ export class EscurelThreadCanvas extends LitElement {
         height: 20px;
         line-height: 20px;
         padding: 0 4px;
-        font-size: 0.8em;
+        font-size: 0.85em;
         color: var(--vscode-textLink-foreground);
         cursor: pointer;
       }
@@ -530,7 +544,7 @@ export class EscurelThreadCanvas extends LitElement {
         background: var(--vscode-button-secondaryBackground);
         color: var(--vscode-button-secondaryForeground, var(--vscode-foreground));
         border: 1px solid var(--vscode-button-border, var(--escurel-border));
-        font-size: 0.8em;
+        font-size: 0.85em;
         padding: 1px 6px;
         border-radius: 2px;
       }
@@ -540,7 +554,7 @@ export class EscurelThreadCanvas extends LitElement {
       }
       .gate-reason {
         flex-basis: 100%;
-        font-size: 0.75em;
+        font-size: 0.85em;
         color: var(--escurel-muted);
       }
       .gate-actions {
@@ -559,7 +573,7 @@ export class EscurelThreadCanvas extends LitElement {
       }
       .lane-caption {
         position: absolute;
-        font-size: 0.75em;
+        font-size: 0.85em;
         color: var(--escurel-muted);
         white-space: nowrap;
         pointer-events: none;
@@ -580,7 +594,7 @@ export class EscurelThreadCanvas extends LitElement {
         white-space: nowrap;
       }
       .collapse-toggle {
-        font-size: 0.75em;
+        font-size: 0.85em;
         padding: 0 4px;
         line-height: 1.2;
         border: 1px solid var(--escurel-border);
@@ -819,6 +833,22 @@ export class EscurelThreadCanvas extends LitElement {
     }
   }
 
+  /** A state chip: the icon's shape and a short word, so state is never colour alone. */
+  private renderChip(chip: { text: string; tone: string }) {
+    const words = chipWords(chip.text);
+    const icon =
+      words.icon === 'check'
+        ? checkIcon()
+        : words.icon === 'cross'
+          ? crossIcon()
+          : words.icon === 'sync'
+            ? syncIcon()
+            : words.icon === 'clock'
+              ? clockIcon()
+              : nothing;
+    return html`<span class="chip ${chip.tone}" title=${chip.text}>${icon}${words.text}</span>`;
+  }
+
   public fit(): void {
     if (!this.layout) return;
     const containerEl = this.shadowRoot?.querySelector('.canvas-area');
@@ -826,7 +856,8 @@ export class EscurelThreadCanvas extends LitElement {
       width: containerEl?.clientWidth || 800,
       height: containerEl?.clientHeight || 600,
     };
-    const fitted = fitToBounds(this.layout.bounds, containerSize, 20);
+    // Never above 100%: a small thread fitted to a big pane would blow every card up past readable.
+    const fitted = fitToBounds(this.layout.bounds, containerSize, 20, 1);
     // Start under the pinned column headers: a graph shorter than the pane used to float in the
     // middle with an empty band above it.
     this.viewport = { ...fitted, y: Math.min(fitted.y, FIT_TOP) };
@@ -1188,7 +1219,7 @@ export class EscurelThreadCanvas extends LitElement {
                       >`
                     : nothing
                 }
-                ${node.chips.map((chip) => html`<span class="chip ${chip.tone}">${chip.text}</span>`)}
+                ${node.chips.map((chip) => this.renderChip(chip))}
               </div>`
             : html`<div class="type-line">
                   <span class="type-label">${described.label}</span>
@@ -1230,7 +1261,7 @@ export class EscurelThreadCanvas extends LitElement {
           compact
             ? nothing
             : html`<div class="card-footer">
-                ${node.chips.map((chip) => html`<span class="chip ${chip.tone}">${chip.text}</span>`)}
+                ${node.chips.map((chip) => this.renderChip(chip))}
                 ${
                   needs?.reason === 'approve-plan'
                     ? html`<div class="gate-actions">
@@ -1350,7 +1381,7 @@ export class EscurelThreadCanvas extends LitElement {
       <div class="toolbar" role="group" aria-label="Thread canvas controls">
         <button aria-label="Zoom out" @click=${() => this.zoomBy(0.8)}>−</button>
         <span class="zoom-level" aria-live="polite">${Math.round(this.viewport.zoom * 100)}%</span>
-        ${lowZoom ? html`<span class="zoom-hint" title="Zoomed out: cards show icon, type, title and state, without their details. Zoom in to 70% for the details.">overview</span>` : nothing}
+        ${lowZoom ? html`<span class="zoom-hint" title="Zoomed out: cards show icon, type, title and state, without their details. Zoom in to 85% for the details.">overview</span>` : nothing}
         <button aria-label="Zoom in" @click=${() => this.zoomBy(1.25)}>+</button>
         <button aria-label="Fit graph to view" data-action="fit" @click=${() => this.fit()}>
           Fit

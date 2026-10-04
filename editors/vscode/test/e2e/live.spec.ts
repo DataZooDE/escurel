@@ -38,10 +38,11 @@ test('the story is on screen: knowledge, threads, awaiting, inbox and the runner
   await stack.shot('01b-knowledge-tree');
   await expect(pane(page, 'Awaiting You').getByRole('treeitem').first()).toBeVisible();
   await expect(pane(page, 'Inbox').getByRole('treeitem').first()).toBeVisible();
-  // The runner is described in plain words, and dispatch is a row of its own.
-  await expect(pane(page, 'Runner').getByText(/Runner ok · echo harness/)).toBeVisible();
+  // The agents are described in plain words (no 'harness'), and Pause/Resume is a row of its own.
+  await expect(pane(page, 'Runs').getByText(/^Agents last seen/)).toBeVisible();
+  await expect(pane(page, 'Runs').getByText(/harness/i)).toHaveCount(0);
   await expect(
-    pane(page, 'Runner').getByRole('treeitem', { name: /Dispatch is on/ }),
+    pane(page, 'Runs').getByRole('treeitem', { name: /Agents are running/ }),
   ).toBeVisible();
   await stack.shot('01-overview');
 });
@@ -127,7 +128,7 @@ test('run detail opens from the canvas with its plan and tool calls', async ({ s
   await expect(page.locator('.tab .label-name', { hasText: /^Run / })).toBeVisible();
   const run = await webviewWith(page, 'escurel-run-detail');
   await expect(run.locator('escurel-run-detail h1')).toContainText('supplier-risk on ');
-  await expect(run.getByText('Tool calls')).toBeVisible();
+  await expect(run.getByText('What the agent did')).toBeVisible();
   // Plain words, and the 26-character id stays behind Copy run id.
   await expect(run.locator('escurel-run-detail .meta')).toContainText('Run by the');
   await expect(run.getByRole('button', { name: 'Copy run id' })).toBeVisible();
@@ -149,7 +150,7 @@ test('work that waits on a person stands out: a Needs-you changeset with its dra
   await expect(canvas.locator('.card.type-changeset.needs-you')).toBeInViewport({ ratio: 1 });
   await expect(canvas.locator('.zoom-level')).toHaveText('100%');
   await stack.shot('02a-first-view');
-  await wv.getByRole('button', { name: 'Fit' }).click();
+  // Still at 100%: Fit would zoom out into the overview form, which drops the in-card buttons.
   const card = canvas.locator('.card.type-changeset.needs-you');
   await expect(card).toBeVisible();
   await expect(card.locator('.needs-badge')).toContainText('Needs you');
@@ -321,7 +322,7 @@ test('"First make a plan" ends in a plan the person is asked to approve', async 
   });
   await stack.shot('08b-approve-on-card');
   // The wait is also a row in Awaiting You, so it survives a dismissed toast and a closed thread.
-  const planRow = pane(page, 'Awaiting You').getByRole('treeitem', { name: /Plan ready/ });
+  const planRow = pane(page, 'Awaiting You').getByRole('treeitem', { name: /Plan to approve/ });
   await expect(planRow.first()).toBeVisible({ timeout: 30_000 });
   await stack.shot('08c-plan-row-in-awaiting');
   // Not now: nothing is run behind the person's back.
@@ -402,16 +403,13 @@ test('a failed run is listed under Needs attention, and Requeue is there but dea
     source: 'e2e',
     provenance: { manual: { mode: 'run', harness: 'no-such-harness' } },
   });
-  const runner = pane(page, 'Runner');
+  const runner = pane(page, 'Runs');
   // Needs attention comes before History in the tree, so the first match is the one that can be acted on.
   const dead = runner.getByRole('treeitem', { name: /order-4500152/ }).first();
   await expect(dead).toBeVisible({ timeout: 60_000 });
-  // A short word on screen, the whole one for a screen reader.
-  await expect(dead).toContainText(/gave up/);
-  await expect(dead).toHaveAttribute(
-    'aria-label',
-    /^failed for good: supplier-risk · order-4500152/,
-  );
+  // The outcome comes FIRST, so a narrow panel cuts the page and not the word that matters.
+  await expect(dead).toContainText(/^Gave up · supplier-risk · order-4500152/);
+  await expect(dead).toHaveAttribute('aria-label', /^Gave up · supplier-risk · order-4500152/);
   // And the reason is its own line under it, in words.
   await expect(runner.getByRole('treeitem', { name: /Reason: permanent — harness/ })).toBeVisible();
   await dead.click({ button: 'right' });
@@ -423,11 +421,11 @@ test('a failed run is listed under Needs attention, and Requeue is there but dea
   await page.keyboard.press('Escape');
 });
 
-test('a failed run can be retried from the Runner view, and the person is told what happened', async ({
+test('a failed run can be retried from the Runs view, and the person is told what happened', async ({
   stack,
 }) => {
   const { page } = stack;
-  const dead = pane(page, 'Runner')
+  const dead = pane(page, 'Runs')
     .getByRole('treeitem', { name: /order-4500152/ })
     .first();
   await dead.click({ button: 'right' });
@@ -438,13 +436,11 @@ test('a failed run can be retried from the Runner view, and the person is told w
   // The person is told the request is out (a progress toast) and then what the runner answered, in words
   // and with no id. The progress toast lives only as long as the runner takes to answer, which can be
   // shorter than a poll: it is accepted when seen, but only the answer is required.
-  const progress = page.locator('.notification-toast', { hasText: /Waiting for runner to retry/ });
-  const answer = page.locator('.notification-toast', { hasText: /Retried; a new run has started/ });
-  await expect(progress.or(answer).first()).toBeVisible({ timeout: 40_000 });
-  await expect(answer).toBeVisible({ timeout: 40_000 });
-  expect(await answer.innerText()).not.toMatch(/[0-9A-Z]{20,}/);
-  // A notice that names a run offers to open it.
-  await expect(answer.getByRole('button', { name: 'Open run' })).toBeVisible();
+  // Routine outcomes go to the STATUS BAR, one line, and expire; no toast stacks over the panels.
+  const status = page.locator('.statusbar');
+  await expect(status.getByText(/Retried; a new run has started/)).toBeVisible({ timeout: 40_000 });
+  expect(await status.innerText()).not.toMatch(/[0-9A-Z]{20,}/);
+  await expect(page.locator('.notification-toast')).toHaveCount(0);
   await stack.shot('07b-retry-answer');
 });
 
@@ -459,7 +455,7 @@ test('a live run can be cancelled from its run detail', async ({ stack }) => {
     source: 'e2e',
     provenance: { manual: { mode: 'run' } },
   });
-  const runner = pane(page, 'Runner');
+  const runner = pane(page, 'Runs');
   const live = runner.getByRole('treeitem', { name: /order-4500140/ }).first();
   await expect(live).toBeVisible({ timeout: 60_000 });
   await live.click();
@@ -468,24 +464,35 @@ test('a live run can be cancelled from its run detail', async ({ stack }) => {
   await expect(cancel).toBeVisible();
   await stack.shot('08-cancel-offered');
   await cancel.click();
+  // Cancelling asks first, inline, and says what is kept.
+  const confirm = run.locator('escurel-run-detail .confirm');
+  await expect(confirm).toContainText(/Cancel this run\?/);
+  await expect(confirm).toContainText(/Work already done is kept/);
+  await stack.shot('08d-cancel-confirmation');
+  await confirm.getByRole('button', { name: 'Cancel run' }).click();
   await expect(run.locator('.status-chip')).toContainText('cancelled', { timeout: 30_000 });
+  await expect(page.locator('.statusbar').getByText(/Run cancelled/)).toBeVisible({
+    timeout: 30_000,
+  });
+  await expect(page.locator('.notification-toast')).toHaveCount(0);
   await stack.shot('09-cancelled');
 });
 
-test('the Runner panel is a control center: sections with counts, an insight line, a filter, and no ids', async ({
+test('the Runs panel is a control center: sections with counts, an insight line, a filter, and no ids', async ({
   stack,
 }) => {
   const { page } = stack;
-  const runner = pane(page, 'Runner');
+  const runner = pane(page, 'Runs');
   // Sections, each with its count, in words.
   await expect(runner.getByRole('treeitem', { name: /^Running now/ })).toBeVisible();
   await expect(runner.getByRole('treeitem', { name: /^Needs attention/ })).toBeVisible();
   const history = runner.getByRole('treeitem', { name: /^History/ });
   await expect(history).toBeVisible();
   // The insight line sums the day up.
-  await expect(runner.getByText(/Last 24 h: \d+ runs? · \d+ ok/)).toBeVisible();
+  await expect(runner.getByText(/^Last 24 h: \d+ runs?$/)).toBeVisible();
+  await expect(runner.getByText(/^\d+ ok/)).toBeVisible();
   // A run says what it did, to what, in words: status as a word, never a bare id.
-  const cancelled = runner.getByRole('treeitem', { name: /cancelled: .*order-4500140/ }).first();
+  const cancelled = runner.getByRole('treeitem', { name: /^Cancelled · .*order-4500140/ }).first();
   await expect(cancelled).toBeVisible();
   for (const row of await runner.getByRole('treeitem').all()) {
     expect(await row.innerText()).not.toMatch(/[0-9A-Z]{20,}/);
@@ -497,10 +504,13 @@ test('the Runner panel is a control center: sections with counts, an insight lin
   await page.getByRole('button', { name: /Filter runs/ }).click();
   const picker = page.locator('.quick-input-widget');
   await expect(picker).toBeVisible();
-  await picker.getByRole('checkbox', { name: /^Failed/ }).first().click();
+  await picker
+    .getByRole('checkbox', { name: /^Failed/ })
+    .first()
+    .click();
   await page.keyboard.press('Enter');
   await expect(runner.getByText(/Filtered: failed/)).toBeVisible();
-  await expect(runner.getByRole('treeitem', { name: /cancelled: / })).toHaveCount(0);
+  await expect(runner.getByRole('treeitem', { name: /^Cancelled · / })).toHaveCount(0);
   await stack.shot('10b-runs-filtered');
   await page.getByRole('button', { name: /Clear run filter/ }).click();
   await expect(runner.getByText(/Filtered:/)).toHaveCount(0);
@@ -596,6 +606,9 @@ test('the two outside systems are in the tree, and a REST row says it is externa
   await expect(wv.locator('.field[data-name="display_name"]')).toContainText('Ibérica Forja S.L.');
   await expect(wv.locator('.field[data-name="rating"]')).toContainText('A');
   await expect(strip.getByRole('button', { name: 'Change rating…' })).toBeVisible();
+  // No agent wrote this record, so it has no thread: the page says so, and where the runs that read it are.
+  await expect(wv.locator('.no-thread-note')).toContainText(/no agent wrote it/);
+  await expect(wv.getByRole('button', { name: 'Runs for this record' })).toBeVisible();
   await stack.shot('10-rest-row');
 });
 
@@ -607,9 +620,9 @@ test('a rating change is proposed from the page, approved by a reviewer, and the
   await wv.getByRole('button', { name: 'Change rating…' }).click();
   await answerQuickInput(page, /^Change \w+ in the source$/, 'B');
   await answerQuickInput(page, /^Note for the reviewer/, 'Three late deliveries in Q3.');
-  await expect(
-    page.locator('.notification-toast', { hasText: /Proposed: rating to B/ }),
-  ).toBeVisible({ timeout: 20_000 });
+  await expect(page.locator('.statusbar', { hasText: /Proposed: rating to B/ })).toBeVisible({
+    timeout: 20_000,
+  });
 
   // Proposing touched nothing: the portal still says A.
   const base = outside(stack.home, 'ratings');
@@ -642,7 +655,7 @@ test('an MCP row works the same way: external data, a proposed change, applied o
   await answerQuickInput(page, /^Change \w+ in the source$/, 'confirmed');
   await answerQuickInput(page, /^Note for the reviewer/, 'Supplier confirmed by phone.');
   await expect(
-    page.locator('.notification-toast', { hasText: /Proposed: status to confirmed/ }),
+    page.locator('.statusbar', { hasText: /Proposed: status to confirmed/ }),
   ).toBeVisible({ timeout: 20_000 });
   const mine = await waitForDraft(stack, 'delivery-confirmation');
   const done = await stack.call('promote_draft', { draft_id: mine.draft_id });
@@ -664,9 +677,9 @@ test('a change based on a row that has moved is refused, and the portal is not t
   await wv.getByRole('button', { name: 'Change rating…' }).click();
   await answerQuickInput(page, /^Change \w+ in the source$/, 'A');
   await answerQuickInput(page, /^Note for the reviewer/, 'Upgrade after the audit.');
-  await expect(
-    page.locator('.notification-toast', { hasText: /Proposed: rating to A/ }),
-  ).toBeVisible({ timeout: 20_000 });
+  await expect(page.locator('.statusbar', { hasText: /Proposed: rating to A/ })).toBeVisible({
+    timeout: 20_000,
+  });
 
   // Someone else changes the supplier at the portal while the proposal waits for a reviewer.
   const base = outside(stack.home, 'ratings');
@@ -697,9 +710,9 @@ test('when the portal is down a promoted change is refused, recorded as failed, 
   await wv.getByRole('button', { name: 'Change rating…' }).click();
   await answerQuickInput(page, /^Change \w+ in the source$/, 'A');
   await answerQuickInput(page, /^Note for the reviewer/, 'Strong quarter.');
-  await expect(
-    page.locator('.notification-toast', { hasText: /Proposed: rating to A/ }),
-  ).toBeVisible({ timeout: 20_000 });
+  await expect(page.locator('.statusbar', { hasText: /Proposed: rating to A/ })).toBeVisible({
+    timeout: 20_000,
+  });
 
   // The portal goes away (a real process, killed): nothing can be sent.
   const mine = await waitForDraft(stack, 'nordform.md');
@@ -764,9 +777,9 @@ test('a row of a SQL database is changed through a proposal, only after a review
   await wv.getByRole('button', { name: 'Change status…' }).click();
   await answerQuickInput(page, /^Change \w+ in the source$/, 'shipped');
   await answerQuickInput(page, /^Note for the reviewer/, 'Left the warehouse today.');
-  await expect(
-    page.locator('.notification-toast', { hasText: /Proposed: status to shipped/ }),
-  ).toBeVisible({ timeout: 20_000 });
+  await expect(page.locator('.statusbar', { hasText: /Proposed: status to shipped/ })).toBeVisible({
+    timeout: 20_000,
+  });
 
   // Proposing touched nothing: the database file still says open.
   expect(orderInDb(stack.home, 'SO-100231')).toEqual({ status: 'open', qty: 40 });
@@ -925,9 +938,13 @@ test('a skill opens as a readable page, and Show Markdown opens its source', asy
   await chooseMenuItem(page, 'View skill');
   const wv = await webviewWith(page, 'escurel-skill-page');
   await expect(wv.locator('escurel-skill-page h1')).toContainText(/supplier/i);
-  for (const heading of ['About', 'Fields', 'Records', 'Recent runs']) {
+  for (const heading of ['About', 'What it can start', 'Recent runs']) {
     await expect(wv.getByRole('heading', { name: new RegExp(`^${heading}`) })).toBeVisible();
   }
+  // A section with nothing in it is not drawn; one line says so.
+  await expect(wv.locator('escurel-skill-page .nothing-yet')).toContainText(
+    /no fields declared and no records yet/i,
+  );
   await stack.shot('09-skill-page');
   await wv.getByRole('button', { name: 'Show Markdown' }).click();
   await expect(page.locator('.tab.active', { hasText: 'supplier-risk.md' })).toBeVisible();
@@ -935,14 +952,54 @@ test('a skill opens as a readable page, and Show Markdown opens its source', asy
   await stack.shot('09b-skill-markdown');
 });
 
+test('Runs for this record: from a record page to its runs, filtered, and back', async ({
+  stack,
+}) => {
+  const { page } = stack;
+  await (await skillRow(page, 'customer-order')).click();
+  await (await knowledgeRow(page, /order-4500131/)).click();
+  const wv = await webviewWith(page, 'escurel-page-as-ui');
+  const order = wv.locator('escurel-page-as-ui');
+  await order.getByRole('button', { name: 'Runs for this record' }).click();
+  const runs = pane(page, 'Runs');
+  await expect(runs.getByText(/Filtered: order-4500131/)).toBeVisible({ timeout: 15_000 });
+  // Only runs that worked on this record are listed.
+  await expect(runs.getByRole('treeitem', { name: /order-4500152|order-4500140/ })).toHaveCount(0);
+  await expect(runs.getByRole('treeitem', { name: /order-4500131/ }).first()).toBeVisible();
+  await stack.shot('10c-runs-for-this-record');
+  await page.getByRole('button', { name: /Clear run filter/ }).click();
+  await expect(runs.getByText(/Filtered:/)).toHaveCount(0);
+});
+
+test('the Runs filter has a day range, so "what did the agent do today" is three clicks', async ({
+  stack,
+}) => {
+  const { page } = stack;
+  const runs = pane(page, 'Runs');
+  await page.getByRole('button', { name: /Filter runs/ }).click();
+  const picker = page.locator('.quick-input-widget');
+  await expect(picker).toBeVisible();
+  await picker
+    .getByRole('checkbox', { name: /^Today/ })
+    .first()
+    .click();
+  await page.keyboard.press('Enter');
+  await expect(runs.getByText(/Filtered: today/)).toBeVisible();
+  await stack.shot('10d-runs-today');
+  await page.getByRole('button', { name: /Clear run filter/ }).click();
+});
+
 test('Explain this view tells how events, skills, runs and records connect', async ({ stack }) => {
   const { page } = stack;
   await page.keyboard.press('F1');
   await page.keyboard.type('Escurel: Explain this view');
   await page.keyboard.press('Enter');
-  const wv = await webviewWith(page, 'h1');
+  const wv = await webviewWith(page, 'h1', 'How things connect');
   await expect(wv.getByRole('heading', { name: /How things connect/ })).toBeVisible();
   await expect(wv.getByText('Awaiting You').first()).toBeVisible();
+  // The words the views use are explained, and the tab is named for what it is.
+  await expect(wv.getByText('Dead letter').first()).toBeVisible();
+  await expect(page.locator('.tab', { hasText: /Preview How things connect/ })).toBeVisible();
   await stack.shot('10-explain-this-view');
 });
 

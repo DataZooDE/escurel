@@ -39,6 +39,14 @@ export const theme = css`
     outline: 1px solid var(--vscode-focusBorder);
     outline-offset: 1px;
   }
+  /* The one thing to do on a page: the filled button of the VS Code theme. */
+  button.primary {
+    background: var(--vscode-button-background);
+    color: var(--vscode-button-foreground);
+  }
+  button.primary:hover {
+    background: var(--vscode-button-hoverBackground);
+  }
   .chip {
     display: inline-block;
     padding: 0 6px;

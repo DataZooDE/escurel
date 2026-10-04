@@ -720,7 +720,7 @@ describe('<escurel-thread-canvas>', () => {
     }
     const visible = (e: Element | null) => !!e && getComputedStyle(e).display !== 'none';
 
-    it('below 70% a card keeps icon, type word, title and state chip, and drops the body', async () => {
+    it('below 85% a card keeps icon, type word, title and state chip, and drops the body', async () => {
       const el = await at(0.5);
       expect(q(el, '.canvas-area')!.classList.contains('low-zoom')).to.equal(true);
       // The assertions below must have something to bite on: the thread has buttons and bodies to hide.
@@ -746,7 +746,7 @@ describe('<escurel-thread-canvas>', () => {
 
     it('keeps the words readable at any zoom: rendered text is never below 10px', async () => {
       // The card text is counter-scaled, so zooming out shrinks the picture, not the words.
-      for (const zoom of [0.69, 0.5, 0.4]) {
+      for (const zoom of [0.84, 0.69, 0.5, 0.4]) {
         const el = await at(zoom);
         for (const card of qa(el, '.card')) {
           for (const sel of ['.card-title', '.type-label', '.chip']) {
@@ -803,7 +803,7 @@ describe('<escurel-thread-canvas>', () => {
 
     it('keeps the focus ring visible when zoomed out: it renders at least 1.5px at any zoom', async () => {
       // A 2px outline on a card scaled to 40% is 0.8px: a keyboard user loses where they are.
-      for (const zoom of [0.69, 0.4]) {
+      for (const zoom of [0.84, 0.69, 0.4]) {
         const el = await at(zoom);
         const card = qa(el, '.card')[0] as HTMLElement;
         card.focus();
@@ -828,8 +828,8 @@ describe('<escurel-thread-canvas>', () => {
       }
     });
 
-    it('from 70% up the cards show their text as before', async () => {
-      const el = await at(0.7);
+    it('from 85% up the cards show their text as before', async () => {
+      const el = await at(0.85);
       expect(q(el, '.canvas-area')!.classList.contains('low-zoom')).to.equal(false);
       expect(visible(q(el, '.card-title'))).to.equal(true);
       expect(q(el, '.zoom-hint') === null).to.equal(true);

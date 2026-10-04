@@ -152,3 +152,13 @@ describe('resolvePageMessage: the report that draws this page', () => {
     ).toBeUndefined();
   });
 });
+
+describe('show-runs', () => {
+  it('filters the Runs view to the page the host built the model for, never to a webview id', () => {
+    expect(resolvePageMessage(model, { type: 'show-runs' })).toEqual({
+      command: 'escurel.runs.forPage',
+      args: [model.pageId],
+    });
+    expect(resolvePageMessage(undefined, { type: 'show-runs' })).toBeUndefined();
+  });
+});

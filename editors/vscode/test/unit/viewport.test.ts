@@ -88,6 +88,18 @@ describe('viewport pure arithmetic', () => {
   });
 
   describe('fitToBounds', () => {
+    it('can be capped, so a small graph in a big pane is not blown up past readable', () => {
+      const small = { width: 200, height: 100 };
+      const big = { width: 1200, height: 800 };
+      expect(fitToBounds(small, big).zoom).toBeGreaterThan(1);
+      const capped = fitToBounds(small, big, 0, 1);
+      expect(capped.zoom).toBe(1);
+      // Still centred at the capped size.
+      expect(capped.x).toBeCloseTo((1200 - 200) / 2, 4);
+      // A graph bigger than the pane is still shrunk to fit.
+      expect(fitToBounds({ width: 2000, height: 100 }, big, 0, 1).zoom).toBeCloseTo(0.6, 4);
+    });
+
     it('centres and scales to bounds when graph is wider than container', () => {
       const bounds = { width: 1000, height: 400 };
       const container = { width: 500, height: 400 };

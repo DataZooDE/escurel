@@ -54,7 +54,12 @@ export function zoomAboutPoint(
  * Calculates a uniform zoom and translation that centers the entire graph
  * within the visible canvas container.
  */
-export function fitToBounds(bounds: Size, container: Size, padding = 0): ViewportState {
+export function fitToBounds(
+  bounds: Size,
+  container: Size,
+  padding = 0,
+  maxZoom = MAX_ZOOM,
+): ViewportState {
   if (bounds.width <= 0 || bounds.height <= 0 || container.width <= 0 || container.height <= 0) {
     return { x: 0, y: 0, zoom: 1.0 };
   }
@@ -63,7 +68,7 @@ export function fitToBounds(bounds: Size, container: Size, padding = 0): Viewpor
 
   const scaleX = availableWidth / bounds.width;
   const scaleY = availableHeight / bounds.height;
-  const zoom = clampZoom(Math.min(scaleX, scaleY));
+  const zoom = Math.min(maxZoom, clampZoom(Math.min(scaleX, scaleY)));
 
   const scaledWidth = bounds.width * zoom;
   const scaledHeight = bounds.height * zoom;

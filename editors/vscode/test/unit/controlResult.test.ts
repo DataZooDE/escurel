@@ -13,8 +13,8 @@ const events = recorded.events as Event[];
 describe('recorded runner control results', () => {
   it('parses and describes every recorded outcome', () => {
     expect(events.map((event) => describeOutcome(parseControlResult(event)!))).toEqual([
-      'Dispatch resumed.',
-      'Dispatch paused.',
+      'Agents resumed.',
+      'Agents paused.',
       'Requeued; a new run has started.',
       'That run is not running any more (run is dead_letter).',
     ]);

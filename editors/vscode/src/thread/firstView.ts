@@ -1,7 +1,11 @@
 import type { LaidOutNode, ThreadLayout, ThreadNode, ThreadView } from '../shared/protocol';
 
-/** Below this zoom a card drops its text and keeps icon, accent bar and state chip. */
-export const LOW_ZOOM_BELOW = 0.7;
+/**
+ * Below this zoom a card drops its body and keeps icon, accent bar, title and state chip, at a size that
+ * stays readable. The card text is 11px at 100%, so 85% is where it would fall under about 9.4px (WCAG 1.4.4).
+ * It was 70% until the UX review found 8-9px text at 80% zoom.
+ */
+export const LOW_ZOOM_BELOW = 0.85;
 
 export const isLowZoom = (zoom: number): boolean => zoom < LOW_ZOOM_BELOW;
 

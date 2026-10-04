@@ -49,7 +49,9 @@ export class EscurelField extends LitElement {
     const f = this.field;
     // A source value the source did not give: a dash that says so, not a blank that looks broken.
     if (this.source && (f.value === null || f.value === undefined || f.display === '')) {
-      return html`<span class="value unavailable" title="Not available from the source">—</span>`;
+      return html`<span class="value unavailable" title="The source did not give a value"
+        >— <span class="muted">unavailable</span></span
+      >`;
     }
     if (f.links?.length)
       return html`<span class="links">${f.links.map((l) => this.instanceButton(l))}</span>`;

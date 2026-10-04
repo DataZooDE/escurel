@@ -418,11 +418,14 @@ export class ReviewController implements vscode.Disposable {
    */
   private tell(outcome: DecisionOutcome, level: 'info' | 'warning' | 'error', arg?: unknown): void {
     const refs = nodeRefs(arg);
+    // Two buttons at most: one page AND the thread, so "Applied 2 changes" leads to where they came from
+    // and to what they changed. A second applied page is one click away from the thread.
+    const [firstPage, ...otherPages] = outcome.pages ?? [];
     const targets: NoticeTarget[] = [
-      ...(outcome.pages ?? []).map((pageId) => ({ kind: 'page' as const, pageId })),
-      { kind: 'page', pageId: refs.pageId },
+      { kind: 'page', pageId: firstPage ?? refs.pageId },
       { kind: 'thread', rootEventId: refs.rootEventId },
       { kind: 'run', runId: refs.runId },
+      ...otherPages.map((pageId) => ({ kind: 'page' as const, pageId })),
     ];
     void notify(level, outcome.message, targets);
   }

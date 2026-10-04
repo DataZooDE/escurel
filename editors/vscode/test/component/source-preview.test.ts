@@ -80,7 +80,7 @@ describe('<escurel-source-preview>', () => {
     expect(asked).to.equal(1);
   });
 
-  it('shows an issue as an alert with its code', async () => {
+  it('shows an issue as an alert, with the code only in the tooltip', async () => {
     const el = await render({
       kind: 'issue',
       readOnly: true,
@@ -90,7 +90,9 @@ describe('<escurel-source-preview>', () => {
     });
     const alert = q(el, '[role="alert"]');
     expect(text(alert)).to.contain('source schema drifted');
-    expect(text(alert)).to.contain('binding_degraded');
+    // The code is for the tooltip: a person reads the sentence.
+    expect(alert!.getAttribute('title')).to.equal('binding_degraded');
+    expect(text(alert)).not.to.contain('binding_degraded');
   });
 
   it('never renders a value as markup', async () => {

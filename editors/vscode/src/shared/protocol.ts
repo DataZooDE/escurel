@@ -99,6 +99,8 @@ export interface RunControl {
   /** Deactivated, not hidden: a control that is not yours still shows, with the reason. */
   enabled: boolean;
   disabledReason?: string;
+  /** What the control does, in one sentence (the tooltip): "Starts a new run; this attempt stays in history." */
+  hint?: string;
 }
 
 export type WebviewToHost =
@@ -107,6 +109,8 @@ export type WebviewToHost =
   | { type: 'open-wikilink'; wikilink: string }
   | { type: 'view-skill'; skill: string }
   | { type: 'show-raw' }
+  /** "Runs for this record": the host opens the Runs view filtered to THIS page. */
+  | { type: 'show-runs' }
   | { type: 'propose-write-back'; field: string }
   | { type: 'open-original' }
   | { type: 'refresh' }
@@ -422,6 +426,8 @@ export interface RunView {
   maxAttempts?: number;
   plan: PlanStep[];
   summary?: string;
+  /** Why a failed run failed, in full: the reason the runner gave, else the last attempt's error. */
+  failure?: string;
   /**
    * The run's own count, from `run-finished`. Not the same thing as `calls.length`:
    * per-call rows are attributed by the run-bound token, so a run can honestly

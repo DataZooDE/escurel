@@ -1,8 +1,10 @@
 import * as vscode from 'vscode';
 import type { Services } from '../services';
 import { describeError } from '../errors';
+import { pageSkill } from '../shared/pageId';
 import { findThreadStrip } from '../shared/threadStrip';
 import { nodeRefs, skillThreadItems } from './nodeRefs';
+import { noThreadMessage } from './noThreadWording';
 
 /**
  * Navigation from a row of any tree to the other places it belongs: its thread, its run, its skill, and
@@ -24,23 +26,39 @@ export function registerNodeCommands(context: vscode.ExtensionContext, services:
       }),
     );
 
+  /** Said when a record has no thread or run: what is true for ITS source, and a way to the runs that read it. */
+  const noThread = async (pageId: string | undefined): Promise<void> => {
+    let backend: string | undefined;
+    const skill = pageId ? pageSkill(pageId) : undefined;
+    if (skill) {
+      try {
+        backend = (await services.client.listSkills()).find((s) => s.id === skill)?.backend.kind;
+      } catch {
+        // The words are a courtesy: without the skill list the general sentence still says what to do.
+      }
+    }
+    const show = 'Runs for this record';
+    const pick = await vscode.window.showInformationMessage(
+      noThreadMessage(backend),
+      ...(pageId ? [show] : []),
+    );
+    if (pick === show && pageId)
+      await vscode.commands.executeCommand('escurel.runs.forPage', pageId);
+  };
+
   context.subscriptions.push(
     vscode.commands.registerCommand('escurel.openNodeThread', async (arg: unknown) => {
       const refs = nodeRefs(arg);
       let root = refs.rootEventId;
       if (!root && refs.pageId) root = (await strip(refs.pageId))?.rootEventId;
-      if (!root)
-        return void vscode.window.showInformationMessage(
-          'No run has changed this page yet, so there is no thread to open.',
-        );
+      if (!root) return void (await noThread(refs.pageId));
       await vscode.commands.executeCommand('escurel.openThread', root);
     }),
     vscode.commands.registerCommand('escurel.openNodeRun', async (arg: unknown) => {
       const refs = nodeRefs(arg);
       let run = refs.runId;
       if (!run && refs.pageId) run = (await strip(refs.pageId))?.runId;
-      if (!run)
-        return void vscode.window.showInformationMessage('No run has changed this page yet.');
+      if (!run) return void (await noThread(refs.pageId));
       await vscode.commands.executeCommand('escurel.openRun', run);
     }),
     vscode.commands.registerCommand('escurel.viewNodeSkill', async (arg: unknown) => {

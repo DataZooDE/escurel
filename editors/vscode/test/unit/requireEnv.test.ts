@@ -24,7 +24,9 @@ describe('requireEnv', () => {
 
   it('FAILS in CI when it is missing, naming the variable', () => {
     const c = ctx();
-    expect(() => requireEnv(c, 'ESCUREL_TEST_RUNNER', { CI: 'true' })).toThrow(/ESCUREL_TEST_RUNNER/);
+    expect(() => requireEnv(c, 'ESCUREL_TEST_RUNNER', { CI: 'true' })).toThrow(
+      /ESCUREL_TEST_RUNNER/,
+    );
     expect(c.calls).toEqual([]);
   });
 

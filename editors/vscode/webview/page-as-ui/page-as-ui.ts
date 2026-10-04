@@ -2,6 +2,9 @@ import { isSourceField } from '../../src/shared/rowSource';
 import { sourceBanner } from '../../src/shared/sourceBanner';
 import { writeBackLine } from '../../src/shared/writeBack';
 import { writeBackLead } from '../../src/shared/writeBackLead';
+import { backendLabel } from '../../src/shared/backendLabel';
+import { noThreadNote } from '../../src/commands/noThreadWording';
+import { statusWord } from '../../src/runs/runWording';
 import { checkIcon, lockIcon, syncIcon, warnIcon } from '../shared/icons';
 import { markdownStyles, renderMarkdown } from '../shared/markdown-view';
 import { LitElement, css, html, nothing } from 'lit';
@@ -18,6 +21,20 @@ const START_ITEMS = [
   { id: 'terminal', label: 'Start in terminal' },
   { id: 'skill', label: 'View skill' },
 ];
+
+const gateWords = (gate: string): string =>
+  gate === 'auto'
+    ? 'Agent changes apply without review'
+    : gate === 'confirm'
+      ? 'Agent asks you to confirm first'
+      : 'Agent changes need your approval';
+
+const gateHint = (gate: string): string =>
+  `Autonomy of this skill: ${gate}. ${
+    gate === 'auto'
+      ? 'An agent may change this page directly.'
+      : 'An agent proposes a change and you decide before anything is applied.'
+  }`;
 
 /**
  * Page as UI (SPEC §3.4): header with the Skill link, the typed field
@@ -77,10 +94,20 @@ export class EscurelPageAsUi extends LitElement {
         margin-right: 6px;
         font-weight: 600;
       }
+      /* A link, not a pill: high-contrast themes draw a border on every button. */
       .skill-link {
         color: var(--escurel-skill);
         font-weight: 600;
         padding: 0 2px;
+        border: 0;
+        text-decoration: underline;
+      }
+      .runs-link {
+        border: 0;
+        padding: 0;
+        color: var(--vscode-textLink-foreground);
+        text-decoration: underline;
+        margin-left: 8px;
       }
       section {
         margin-top: 18px;
@@ -99,7 +126,11 @@ export class EscurelPageAsUi extends LitElement {
         padding: 4px 8px;
         border-radius: 2px;
         border: 1px solid var(--vscode-editorWarning-foreground);
-        color: var(--vscode-editorWarning-foreground);
+        color: color-mix(
+          in srgb,
+          var(--vscode-editorWarning-foreground) 55%,
+          var(--vscode-foreground)
+        );
       }
       .gate.auto {
         border-color: var(--escurel-run);
@@ -174,9 +205,15 @@ export class EscurelPageAsUi extends LitElement {
       .source-strip.problem {
         border-left-color: var(--vscode-editorWarning-foreground);
       }
+      /* The warning colour is a ~3:1 amber on a light page: mixed with the foreground it stays amber and
+         reads at 4.5:1 in every theme. The icon and the word say it as well. */
       .source-strip .issue {
         display: block;
-        color: var(--vscode-editorWarning-foreground);
+        color: color-mix(
+          in srgb,
+          var(--vscode-editorWarning-foreground) 55%,
+          var(--vscode-foreground)
+        );
       }
       /* Data that came from an outside system: marked, and never styled as the page's own. */
       .source-strip .external {
@@ -198,14 +235,25 @@ export class EscurelPageAsUi extends LitElement {
         display: flex;
         align-items: baseline;
         gap: 8px;
-        margin: 0 0 8px;
-        padding: 4px 10px;
+        margin: 8px 0;
+        padding: 6px 10px;
         border-left: 3px solid var(--vscode-textLink-foreground);
         color: var(--vscode-foreground);
       }
+      /* Inside the source box the last change is a part of it, not a banner of its own. */
+      .source-strip .write-back {
+        margin: 8px 0 0;
+        padding: 6px 0 0;
+        border-left: 0;
+        border-top: 1px solid var(--escurel-border);
+      }
       .write-back.problem {
         border-left-color: var(--vscode-editorWarning-foreground);
-        color: var(--vscode-editorWarning-foreground);
+        color: color-mix(
+          in srgb,
+          var(--vscode-editorWarning-foreground) 55%,
+          var(--vscode-foreground)
+        );
       }
       /* A column of the source row: a quiet accent on its label, and the words for a screen reader. */
       .field[data-source='true'] .name {
@@ -318,7 +366,10 @@ export class EscurelPageAsUi extends LitElement {
   }
 
   /** What a row of an `instances: rows` skill is: read-only data from a source, plus the person's notes. */
-  private sourceStrip(source: NonNullable<PageModel['source']>) {
+  private sourceStrip(
+    source: NonNullable<PageModel['source']>,
+    writeBack: NonNullable<PageModel['writeBack']> | undefined,
+  ) {
     const b = sourceBanner(source);
     return html`<div class="source-strip ${b.problem ? 'problem' : ''}" role="note">
       <div class="head">
@@ -364,6 +415,7 @@ export class EscurelPageAsUi extends LitElement {
             </div>`
           : nothing
       }
+      ${writeBack ? this.writeBackLine(writeBack) : nothing}
     </div>`;
   }
 
@@ -401,17 +453,24 @@ export class EscurelPageAsUi extends LitElement {
             Markdown
           </button>
         </span>
-        <span class="gate ${gate}" title="autonomy: ${gate}"
-          >${gate === 'auto' ? '● no human gate' : `⚠ human gate: ${gate}`}${m.skill.readOnly ? html` · <span class="chip">${m.skill.layer} · read-only</span>` : nothing}</span
+        <span class="gate ${gate}" title=${gateHint(gate)}
+          >${gate === 'auto' ? '● ' : '⚠ '}${gateWords(gate)}${m.skill.readOnly ? html` · <span class="chip">${m.skill.layer} · read-only</span>` : nothing}</span
         >
       </header>
       <h1>${m.title}</h1>
       <div class="subline">
         ${m.lastWrittenBy ? html`Last written by ${m.lastWrittenBy}` : nothing}
+        <button
+          class="runs-link show-runs"
+          title="Open Runs, showing only the runs that worked on this record"
+          @click=${() => this.send({ type: 'show-runs' })}
+        >
+          Runs for this record
+        </button>
       </div>
       <details class="page-meta">
         <summary>Page details</summary>
-        <div>page id ${m.pageId} · backend ${m.skill.backend}</div>
+        <div>page id ${m.pageId} · data from ${backendLabel(m.skill.backend)}</div>
       </details>
       <div class="skill-row">
         skill
@@ -468,7 +527,7 @@ export class EscurelPageAsUi extends LitElement {
               ${
                 m.thread.runStatus
                   ? html`<span class="run-status ${m.thread.runStatus}"
-                      >${m.thread.runStatus.replaceAll('_', ' ')}</span
+                      >${statusWord(m.thread.runStatus)}</span
                     >`
                   : nothing
               }
@@ -477,8 +536,8 @@ export class EscurelPageAsUi extends LitElement {
             </div>`
           : nothing
       }
-      ${m.source ? this.sourceStrip(m.source) : nothing}
-      ${m.writeBack ? this.writeBackLine(m.writeBack) : nothing}
+      ${m.source && !m.thread ? html`<p class="muted no-thread-note">${noThreadNote(true, false)}</p>` : nothing}
+      ${m.source ? this.sourceStrip(m.source, m.writeBack) : m.writeBack ? this.writeBackLine(m.writeBack) : nothing}
 
       <section class="fields">
         ${m.fields.map((f) => html`<escurel-field .field=${f} ?editable=${m.editable} ?source=${isSourceField(m.source, f)}></escurel-field>`)}
