@@ -408,7 +408,7 @@ fn like_contains(q: &str) -> String {
 }
 
 impl Indexer {
-    /// Up to `limit` rows whose KEY or one of whose `filterable:` columns contains `q`
+    /// Up to `limit` rows whose KEY or one of whose `filterable:` / `searchable:` columns contains `q`
     /// (case-insensitive), in key order. Only those columns are searched: a column the skill did not
     /// declare is never matched, so a search cannot be used to probe data the skill keeps back. `q` is
     /// a bound parameter (a LIKE pattern with its wildcards escaped), never spliced into the SQL.
@@ -429,7 +429,7 @@ impl Indexer {
         let names: Vec<&str> = cols.iter().map(|(n, _)| n.as_str()).collect();
         let key_exprs = key_exprs(src, &names)?;
         let mut searchable: Vec<&str> = src.cfg.key.iter().map(String::as_str).collect();
-        for c in &src.cfg.filterable {
+        for c in src.cfg.filterable.iter().chain(&src.cfg.searchable) {
             if names.contains(&c.as_str()) && !searchable.contains(&c.as_str()) {
                 searchable.push(c.as_str());
             }
@@ -510,7 +510,12 @@ impl Indexer {
 /// shown under its frontmatter name (`sold_to = 1000007`).
 fn matched_snippet(src: &RowsSource, rec: &RowRecord, q: &str) -> String {
     let needle = q.trim().to_lowercase();
-    let searched = src.cfg.key.iter().chain(src.cfg.filterable.iter());
+    let searched = src
+        .cfg
+        .key
+        .iter()
+        .chain(src.cfg.filterable.iter())
+        .chain(src.cfg.searchable.iter());
     for col in searched {
         let Some(v) = rec.columns.get(col) else {
             continue;

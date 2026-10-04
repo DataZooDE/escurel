@@ -48,6 +48,43 @@ pub(super) async fn tool_list_skills(
     to_value(resp)
 }
 
+/// What a skill's backend tells an agent: for a `rows` skill the key, what it may filter / search by
+/// and what a `write_back` draft may change, each column under the field name the rows show.
+fn backend_to_wire(b: &escurel_index::backend::BackendBinding) -> TypesSkillBackend {
+    let mut out = TypesSkillBackend {
+        kind: b.kind.as_str().to_string(),
+        ..TypesSkillBackend::default()
+    };
+    if b.rows.is_none() && b.kind == escurel_index::backend::BackendKind::SqlView {
+        out.instances = Some("view".to_owned());
+    }
+    let Some(rows) = b.rows.as_ref() else {
+        return out;
+    };
+    let project = b
+        .sql_view
+        .as_ref()
+        .map(|v| &v.project)
+        .or_else(|| b.remote.as_ref().map(|r| &r.project));
+    let field_of = |col: &String| TypesBackendField {
+        field: project
+            .and_then(|p| p.get(col))
+            .cloned()
+            .unwrap_or_else(|| col.clone()),
+        column: col.clone(),
+    };
+    out.instances = Some("rows".to_owned());
+    out.key = rows.key.clone();
+    out.filterable = rows.filterable.iter().map(field_of).collect();
+    out.searchable = rows.searchable.iter().map(field_of).collect();
+    out.writable_columns = rows.writable_columns.iter().map(field_of).collect();
+    if !rows.writable_columns.is_empty() {
+        out.writable_via = Some("write_back".to_owned());
+    }
+    out.linked = Some(rows.linked);
+    out
+}
+
 /// One skill row on the wire (`list_skills`). Pure: every redaction is decided here from the row and
 /// the caller's role. `acl` is admin-only, so a non-admin row is byte-identical to one for a skill that
 /// declares no block at all: the redaction is not an existence oracle either.
@@ -73,9 +110,7 @@ fn skill_to_wire(s: escurel_index::SkillInfo, is_admin: bool) -> TypesSkill {
             update: a.update,
             delete: a.delete,
         }),
-        backend: TypesSkillBackend {
-            kind: s.backend.kind.as_str().to_string(),
-        },
+        backend: backend_to_wire(&s.backend),
         capabilities: {
             let c = Capabilities::for_kind(s.backend.kind);
             TypesSkillCapabilities {
@@ -1680,6 +1715,9 @@ pub(crate) async fn tool_search(
     }
     let a: SearchArgs = parse_args(args, "search")?;
     let pt = match a.page_kind.as_deref() {
+        // Searching WITHIN a skill means its instances: the skill's own page matches its name and
+        // fields and used to come back as a hit (`any` still asks for both).
+        None if a.skill.as_deref().is_some_and(|s| !s.is_empty()) => Some(PageKind::Instance),
         None | Some("any") => None,
         Some("skill") => Some(PageKind::Skill),
         Some("instance") => Some(PageKind::Instance),
@@ -1782,7 +1820,7 @@ pub(crate) async fn tool_search(
     let out: Vec<Value> = final_hits
         .iter()
         .map(|h| {
-            json!({
+            let mut hit = json!({
                 "page_id": h.page_id,
                 "slug": h.slug,
                 "skill": h.skill,
@@ -1790,9 +1828,14 @@ pub(crate) async fn tool_search(
                 "anchor": h.anchor,
                 "snippet": h.snippet,
                 "score": h.score,
-                "similarity": h.similarity,
                 "frontmatter_excerpt": h.frontmatter_excerpt,
-            })
+            });
+            // A cosine similarity is reported only when one was computed: `0.0` (a row or BM25-only
+            // hit) and `-1.0` (an unembedded query) are "not available", not a measured relevance.
+            if h.similarity.is_finite() && h.similarity > 0.0 {
+                hit["similarity"] = json!(h.similarity);
+            }
+            hit
         })
         .collect();
     let mut result = json!({

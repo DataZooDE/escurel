@@ -202,9 +202,11 @@ pub(crate) fn tool_defs() -> Vec<ToolDef> {
             "Hybrid vector + FTS search, RRF-fused. Pass `q` for a single \
                  query, or `queries` with 2-3 phrasings to fuse their results \
                  in one ranking (provide exactly one of the two). Rows of `instances: rows` \
-                 skills (DuckDB sources) are found by their KEY and their declared `filterable:` \
-                 columns (substring, case-insensitive; at most 20 per skill, 50 in all, ACL per \
-                 row); no other column is searched. Skills whose rows live in a REST/MCP source \
+                 skills (DuckDB sources) are found by their KEY and their declared `filterable:` and \
+                 `searchable:` columns (`list_skills` shows them; substring, case-insensitive; at \
+                 most 20 per skill, 50 in all, ACL per row); no other column is searched. With a \
+                 `skill` filter the default `page_kind` is `instance` (pass `any` to include the \
+                 skill page). `similarity` is present only when a vector score was computed. Skills whose rows live in a REST/MCP source \
                  are not searched: the answer carries a `hint` naming them: use list_instances.",
             json!({
                 "type": "object",
@@ -213,8 +215,8 @@ pub(crate) fn tool_defs() -> Vec<ToolDef> {
                     "queries": { "type": "array", "items": { "type": "string" }, "description": "Multiple query variants fused into one ranking (RRF across all variants × lanes). Provide this OR `q`." },
                     "k": { "type": "integer", "minimum": 0, "maximum": 1000 },
                     "granularity": { "type": "string", "enum": ["block", "page"], "description": "Result granularity; `page` collapses block hits to one per page. Default `block`." },
-                    "page_kind": { "type": "string", "enum": ["skill", "instance", "any"] },
-                    "skill": { "type": "string" },
+                    "page_kind": { "type": "string", "enum": ["skill", "instance", "any"], "description": "Default `any`; `instance` when `skill` is given." },
+                    "skill": { "type": "string", "description": "Search within this skill's instances." },
                     "filter": { "type": "object", "description": "Frontmatter post-filter; clauses are ANDed, e.g. {\"tier\": \"gold\", \"at\": {\">=\": \"2026-04-01\"}}." },
                     "as_of": { "type": "string", "description": "RFC 3339 time-travel cut; blocks born after it are excluded." },
                     "scenario": { "type": "string", "description": "What-if overlay; base-only when absent." },

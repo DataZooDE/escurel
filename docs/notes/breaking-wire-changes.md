@@ -42,3 +42,10 @@ One line per change. Folded into the root `CHANGELOG.md` BREAKING entry and `doc
   Schema gaps this exposed are declared now: `promote_draft`/`discard_draft` (`decided_by`, `content`,
   `reason`), `delete_page.branch`, `search.page_id`, `admin_quota`/`admin_audit.tenant_id`,
   `register_endpoint.secret_ref`, `tenant_create` (`status`, `quotas`, `embedding_provider`).
+- `list_skills` rows now carry what the description always promised for a `rows` backend:
+  `backend.{instances: rows|view, key[], filterable[{field,column}], searchable[{field,column}],
+  writable_columns[{field,column}], writable_via: "write_back", linked}` (all omitted when not applicable).
+  A rows skill may declare `backend.searchable: [<display columns>]`; `search` matches the key, the
+  `filterable` and the `searchable` columns (a customer is found by name). `search` with a `skill` filter
+  defaults `page_kind` to `instance` (it used to return the skill's own page too; `any` restores that).
+  `search` hits omit `similarity` when none was computed (it was `0.0` / `-1.0` sentinels).

@@ -58,6 +58,9 @@ pub struct RowsConfig {
     pub filterable: Vec<String>,
     /// RESERVED for write-back (stage 4c); parsed, never acted on yet.
     pub writable_columns: Vec<String>,
+    /// DISPLAY columns `search` may match besides the key and the `filterable:` ones (a customer
+    /// name, say). Declared, never inferred: a column the skill did not list is never searched.
+    pub searchable: Vec<String>,
 }
 
 /// Which remote-proxy protocol a `RemoteBinding` speaks. Mirrors the
@@ -386,6 +389,7 @@ fn parse_rows(block: &serde_json::Map<String, serde_json::Value>) -> Option<Rows
         linked,
         filterable: strings("filterable"),
         writable_columns: strings("writable_columns"),
+        searchable: strings("searchable"),
     })
 }
 

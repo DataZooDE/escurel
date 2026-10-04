@@ -343,6 +343,36 @@ pub struct SkillAcl {
 #[serde(default)]
 pub struct SkillBackend {
     pub kind: String,
+    /// `rows` (every row of the source is an instance) | `view` (the whole relation is ONE instance).
+    /// Absent for markdown/document skills.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub instances: Option<String>,
+    /// `rows` skills: the identity column(s) an instance id is built from.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub key: Vec<String>,
+    /// `rows` skills: what `list_instances` may filter by, as `{field, column}`.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub filterable: Vec<BackendField>,
+    /// `rows` skills: the extra display columns `search` matches (the key and `filterable` always are).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub searchable: Vec<BackendField>,
+    /// `rows` skills: the columns a `write_back` draft may change.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub writable_columns: Vec<BackendField>,
+    /// `write_back` when rows change only through a human-promoted `create_draft`; absent otherwise.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub writable_via: Option<String>,
+    /// `rows` skills: a row may carry linked markdown notes.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub linked: Option<bool>,
+}
+
+/// A source column under the frontmatter field name an agent sees it by.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct BackendField {
+    pub field: String,
+    pub column: String,
 }
 
 /// What a skill's backend can do — reported so a client learns
