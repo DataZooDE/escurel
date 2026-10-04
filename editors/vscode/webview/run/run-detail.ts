@@ -119,6 +119,7 @@ export class EscurelRunDetail extends LitElement {
         outline-offset: 2px;
       }
       .link,
+      .jump,
       .copy-trace {
         /* Buttons that read as the links they are, not as boxed default buttons. */
         background: none;
@@ -130,11 +131,13 @@ export class EscurelRunDetail extends LitElement {
         text-decoration: underline;
       }
       .link:focus-visible,
+      .jump:focus-visible,
       .copy-trace:focus-visible {
         outline: 1px solid var(--vscode-focusBorder);
         outline-offset: 2px;
       }
       .link:hover,
+      .jump:hover,
       .copy-trace:hover {
         color: var(--vscode-textLink-activeForeground);
       }
@@ -315,6 +318,22 @@ export class EscurelRunDetail extends LitElement {
       </header>
       <div class="meta">
         <span>${runByline(run)}</span>
+        ${
+          run.skill
+            ? html`<button
+                class="jump view-skill"
+                @click=${() => this.send({ type: 'view-skill', skill: run.skill! })}
+              >
+                View skill: ${run.skill}
+              </button>`
+            : nothing
+        }
+        <button
+          class="jump open-thread"
+          @click=${() => this.send({ type: 'open-thread', rootEventId: '' })}
+        >
+          Open thread
+        </button>
         <button
           class="copy-run"
           title=${run.runId}

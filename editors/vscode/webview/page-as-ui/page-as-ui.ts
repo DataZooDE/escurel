@@ -207,6 +207,20 @@ export class EscurelPageAsUi extends LitElement {
         clip-path: inset(50%);
         white-space: nowrap;
       }
+      .viewer {
+        margin: 4px 0 8px;
+        color: var(--escurel-muted);
+      }
+      .viewer button {
+        appearance: none;
+        background: none;
+        border: 0;
+        padding: 0;
+        font: inherit;
+        color: var(--vscode-textLink-foreground);
+        text-decoration: underline;
+        cursor: pointer;
+      }
       .thread-strip {
         display: flex;
         flex-wrap: wrap;
@@ -399,6 +413,20 @@ export class EscurelPageAsUi extends LitElement {
       </div>
 
       ${
+        m.viewer
+          ? html`<div class="viewer">
+              Chart:
+              <button
+                class="open-report"
+                @click=${() => this.send({ type: 'view-skill', skill: m.viewer!.report })}
+              >
+                ${m.viewer.report}
+              </button>
+              (rendered by Peacock)
+            </div>`
+          : nothing
+      }
+      ${
         m.thread
           ? html`<div class="thread-strip">
               <span>Thread</span>
@@ -417,9 +445,13 @@ export class EscurelPageAsUi extends LitElement {
               >
                 Open run
               </button>
-              <span class="run-status ${m.thread.runStatus}"
-                >${m.thread.runStatus.replaceAll('_', ' ')}</span
-              >
+              ${
+                m.thread.runStatus
+                  ? html`<span class="run-status ${m.thread.runStatus}"
+                      >${m.thread.runStatus.replaceAll('_', ' ')}</span
+                    >`
+                  : nothing
+              }
               <span aria-hidden="true">→</span>
               <span>this page</span>
             </div>`

@@ -84,7 +84,13 @@ export class EscurelDetails extends LitElement {
     const shown = this.shown;
     const m = e.detail;
     if (!shown) return;
-    if (m.type !== 'start-skill' && m.type !== 'view-skill' && m.type !== 'run-control') return;
+    if (
+      m.type !== 'start-skill' &&
+      m.type !== 'view-skill' &&
+      m.type !== 'run-control' &&
+      m.type !== 'open-link'
+    )
+      return;
     this.emit({
       type: 'details-action',
       rootEventId: shown.rootEventId,
@@ -110,6 +116,11 @@ export class EscurelDetails extends LitElement {
         <div>
           <p>Select a node in a thread to see its details.</p>
           <p class="hint">Click a card on the canvas, or press Enter on it.</p>
+          <p class="hint how">
+            How things connect: a signal starts a run (a skill at work); the run proposes changes;
+            promoted changes become pages, which belong to a skill. Open any node's links to move
+            between them.
+          </p>
         </div>
       </div>`;
     }

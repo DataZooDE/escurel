@@ -166,10 +166,10 @@ export class RunController implements vscode.Disposable {
         case 'open-page':
           return void vscode.commands.executeCommand('escurel.openPage', m.pageId);
         case 'open-thread':
-          return void vscode.commands.executeCommand(
-            'escurel.openThread',
-            m.rootEventId || rootEventId,
-          );
+          // This run's own thread, from the host: the webview names no id (a forged message must not
+          // open whatever thread it likes).
+          if (rootEventId) void vscode.commands.executeCommand('escurel.openThread', rootEventId);
+          return;
         case 'copy-trace-id': {
           // The host owns the clipboard, so only the host can say it worked. It copies ITS trace
           // id, never the string the webview sent: a forged message must not be able to plant text

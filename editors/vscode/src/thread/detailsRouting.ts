@@ -10,7 +10,8 @@ export interface Shown {
   skills?: readonly string[] | undefined;
 }
 
-const ACTIONS = new Set<string>(['start-skill', 'view-skill', 'run-control']);
+const ACTIONS = new Set<string>(['start-skill', 'view-skill', 'run-control', 'open-link']);
+const LINKS = new Set<string>(['skill', 'page', 'run', 'thread', 'review']);
 
 const isRecord = (v: unknown): v is Record<string, unknown> =>
   typeof v === 'object' && v !== null && !Array.isArray(v);
@@ -20,7 +21,7 @@ const isRecord = (v: unknown): v is Record<string, unknown> =>
  *
  * The details view is a webview of its own and can post anything, so the host acts only when it
  * names the thread whose node is being shown, that thread is still open, and the message is one of
- * the three inspector actions. The inner message is then validated again, against that thread's
+ * the inspector actions (and a node's links). The inner message is then validated again, against that thread's
  * loaded state, by `resolveThreadAction`: an id in it is never trusted.
  */
 export function acceptDetailsAction(
@@ -45,6 +46,11 @@ export function acceptDetailsAction(
       if (typeof message.skill !== 'string' || !shown.skills?.includes(message.skill)) {
         return undefined;
       }
+      break;
+    case 'open-link':
+      // Held to the node on show, and to the five kinds: what each opens is the host's to decide.
+      if (message.nodeId !== shown.nodeId) return undefined;
+      if (typeof message.link !== 'string' || !LINKS.has(message.link)) return undefined;
       break;
     case 'view-skill':
       if (typeof message.skill !== 'string' || !shown.skills?.includes(message.skill)) {

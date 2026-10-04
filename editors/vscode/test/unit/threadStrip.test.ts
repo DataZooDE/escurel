@@ -28,9 +28,14 @@ describe('buildThreadStrip', () => {
   it('ignores review transitions and unfinished runs', () => {
     // A page is "produced by" a run only once that run has finished: a run-started row says
     // a run is underway, not that it wrote this version.
-    const onlyStarted = events.filter((e) => e.title !== 'run-finished');
+    const onlyStarted = events.filter(
+      (e) => e.title !== 'run-finished' && e.title !== 'draft-promoted',
+    );
     expect(buildThreadStrip(onlyStarted)).toBeUndefined();
-    const review = events.filter((e) => e.label_skill === 'escurel:review');
+    // A draft that was only proposed is not a version: no strip from `draft-created`.
+    const review = events.filter(
+      (e) => e.label_skill === 'escurel:review' && e.title !== 'draft-promoted',
+    );
     expect(buildThreadStrip(review)).toBeUndefined();
   });
 
@@ -100,5 +105,39 @@ describe('findThreadStrip', () => {
       throw new Error('boom');
     });
     expect(strip).toBeUndefined();
+  });
+});
+
+// A page a run CREATED (the supplier-risk analysis) has no run-finished row of its own: the run's
+// rows sit on the page it worked on. Its own history is the review transitions of the draft that wrote it.
+describe('buildThreadStrip, for a page written by a promoted draft', () => {
+  const review = (title: string, extra: Partial<Event> = {}): Event =>
+    ({
+      event_id: `e-${title}`,
+      label_skill: 'escurel:review',
+      title,
+      run_id: 'run-9',
+      root_event_id: 'root-9',
+      at: '2026-10-04T07:00:00Z',
+      kind: 'system',
+      status: 'processed',
+      ...extra,
+    }) as Event;
+
+  it('points at the run and thread whose draft was promoted into the page', () => {
+    const strip = buildThreadStrip([review('draft-promoted'), review('draft-created')]);
+    expect(strip).toEqual({ rootEventId: 'root-9', runId: 'run-9' });
+  });
+  it('does not claim a run for a draft that was only proposed', () => {
+    expect(buildThreadStrip([review('draft-created')])).toBeUndefined();
+  });
+  it('ignores a promotion that names no run (a human edit)', () => {
+    expect(
+      buildThreadStrip([review('draft-promoted', { run_id: null, root_event_id: null })]),
+    ).toBeUndefined();
+  });
+  it('a finished run on the page itself still wins', () => {
+    const strip = buildThreadStrip([review('draft-promoted'), finished]);
+    expect(strip?.runId).toBe(finished.run_id);
   });
 });

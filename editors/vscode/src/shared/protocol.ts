@@ -37,8 +37,11 @@ export interface ActionView {
 export interface ThreadStrip {
   rootEventId: string;
   runId: string;
-  /** `processed | failed | dead_letter | cancelled | planned`, as the run finished. */
-  runStatus: string;
+  /**
+   * `processed | failed | dead_letter | cancelled | planned`, as the run finished. Absent when the
+   * strip comes from a promoted draft's review rows, which do not say how the run ended.
+   */
+  runStatus?: string;
 }
 
 export interface PageModel {
@@ -66,6 +69,8 @@ export interface PageModel {
   actions: ActionView[];
   /** Absent when no run has finished against this page. */
   thread?: ThreadStrip;
+  /** The report skill that draws this skill's records (its `viewer:`), if it names one. */
+  viewer?: { report: string };
   /** Present when the page is a ROW of an `instances: rows` skill: read-only source data plus notes. */
   source?: RowSource;
   /** The last write-back to the source, from the page's `escurel:write-back` events. */
@@ -165,8 +170,30 @@ export interface ThreadNode {
   needsYou?: { reason: 'review' | 'approve-plan' | 'failed' | 'ask-human'; text: string };
   /** An open or decided changeset: who proposed it, when, and the pages it changes. */
   changeset?: { author?: string; at?: string; drafts: { id: string; title: string }[] };
+  /** The skill this node is about: the skill an event was filed under, a run executed, a page belongs to. */
+  skill?: string;
+  /** The instance page this node is about (an event's page, a run's target, a draft's target). */
+  pageId?: string;
+  /** The run behind this node: a run's own id, or the run that wrote a changeset or draft. */
+  runId?: string;
   /** Collapsed subtrees render as the mock's "… collapsed. Click to expand." row. */
   collapsible: boolean;
+}
+
+/** What a link on a node opens. The host decides the target from its OWN view of the node. */
+export type NodeLinkKind = 'skill' | 'page' | 'run' | 'thread' | 'review';
+export const NODE_LINK_KINDS: readonly NodeLinkKind[] = [
+  'skill',
+  'page',
+  'run',
+  'thread',
+  'review',
+];
+
+export interface NodeLink {
+  id: NodeLinkKind;
+  /** In a person's words, never an id: 'View skill: customer-order', 'Open page: order-4500131'. */
+  label: string;
 }
 
 export interface ThreadView {
@@ -283,6 +310,8 @@ export interface InspectorView {
   body?: string;
   sideTitle: string;
   side: InspectorRow[];
+  /** Where this node leads: its skill, its page, its run, its thread, its review. */
+  links?: NodeLink[];
 }
 
 export type ThreadHostToWebview =
@@ -305,6 +334,8 @@ export type ThreadWebviewToHost =
   | { type: 'discard'; changesetId?: string; draftId?: string }
   | { type: 'start-skill'; skill: string; pageId: string; mode: StartMode }
   | { type: 'view-skill'; skill: string }
+  /** A link on a node: only the kind travels; the host looks the target up in its own thread. */
+  | { type: 'open-link'; nodeId: string; link: NodeLinkKind }
   /** `runId` for cancel/retry/approve/fix-skill; `eventId` for requeue. Checked against the thread. */
   | { type: 'run-control'; action: RunControlAction; runId?: string; eventId?: string }
   | { type: 'toggle-collapse'; nodeId: string }
@@ -317,7 +348,7 @@ export type ThreadWebviewToHost =
 /** The inspector actions a details view may send; everything else a thread offers stays on the canvas. */
 export type DetailsAction = Extract<
   ThreadWebviewToHost,
-  { type: 'start-skill' | 'view-skill' | 'run-control' }
+  { type: 'start-skill' | 'view-skill' | 'run-control' | 'open-link' }
 >;
 
 /** What the details view shows: one node of one open thread. */

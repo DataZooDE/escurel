@@ -271,10 +271,11 @@ describe('threadModel', () => {
       // Draft card uses slug from target_page_id
       expect(draft?.title).toBe('o1');
       expect(draft?.tone).toBe('instance');
+      // This draft was PROMOTED, so its page exists: double-click opens the page. (A review of a
+      // decided change has nothing left to decide; that target is for a draft that still waits.)
       expect(draft?.target).toEqual({
-        open: 'review',
-        draftId: draft?.id,
-        changesetId: changeset?.id,
+        open: 'page',
+        pageId: 'markdown/instances/order/o1.md',
       });
 
       // Default 5 columns from mock

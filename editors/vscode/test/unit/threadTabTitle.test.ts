@@ -11,10 +11,16 @@ describe('threadTabTitle', () => {
     const t = threadTabTitle('Vendor 100234 Meier-Guss: PO 4500087433 confirmed 120 of 200 PC');
     expect(t.length <= 'Thread · '.length + 32).toBe(true);
     expect(t.endsWith('…')).toBe(true);
-    expect(t.startsWith('Thread · Vendor 100234 Meier-Guss')).toBe(true);
+    // The part that tells two threads apart comes FIRST: a tab clips its END.
+    expect(t.startsWith('Thread · PO 4500087433 confirmed')).toBe(true);
   });
   it('never returns an empty name', () => {
     expect(threadTabTitle('')).toBe('Thread');
     expect(threadTabTitle('   ')).toBe('Thread');
+  });
+  it('two threads about one vendor differ within the first words, not after the clip', () => {
+    const a = threadTabTitle('Vendor 100234 Meier-Guss: PO 4500087412 confirmation moved +14 days');
+    const b = threadTabTitle('Vendor 100234 Meier-Guss: PO 4500087433 confirmed 120 of 200 PC');
+    expect(a.slice(0, 22)).not.toBe(b.slice(0, 22));
   });
 });

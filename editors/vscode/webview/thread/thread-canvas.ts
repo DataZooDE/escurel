@@ -365,6 +365,17 @@ export class EscurelThreadCanvas extends LitElement {
         flex-shrink: 0;
         color: var(--accent, var(--escurel-muted));
       }
+      .type-qualifier {
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        font-weight: 600;
+        color: var(--vscode-foreground);
+      }
+      .low-zoom .card .type-qualifier {
+        display: none;
+      }
       .type-label {
         font-size: 0.75em;
         font-weight: 600;
@@ -1097,7 +1108,7 @@ export class EscurelThreadCanvas extends LitElement {
     const compact = node.emphasis === 'compact';
     const needs = node.needsYou;
     const accessibleName = [
-      `${described.label}: ${node.title}`,
+      `${described.label}: ${node.title}${described.qualifier ? ` (${described.qualifier})` : ''}`,
       node.subtitle,
       node.state,
       needs ? `needs you: ${needs.text}` : undefined,
@@ -1108,7 +1119,7 @@ export class EscurelThreadCanvas extends LitElement {
     const tooltip =
       compact || lowZoom
         ? [
-            `${described.label}: ${node.title}`,
+            `${described.label}: ${node.title}${described.qualifier ? ` (${described.qualifier})` : ''}`,
             node.subtitle,
             node.state,
             needs?.text,
@@ -1170,10 +1181,24 @@ export class EscurelThreadCanvas extends LitElement {
           compact
             ? html`<div class="compact-line">
                 <span class="type-label">${described.label}</span>
+                ${
+                  described.qualifier
+                    ? html`<span class="type-qualifier" title=${described.qualifier}
+                        >${described.qualifier}</span
+                      >`
+                    : nothing
+                }
                 ${node.chips.map((chip) => html`<span class="chip ${chip.tone}">${chip.text}</span>`)}
               </div>`
             : html`<div class="type-line">
                   <span class="type-label">${described.label}</span>
+                  ${
+                    described.qualifier
+                      ? html`<span class="type-qualifier" title=${described.qualifier}
+                          >${described.qualifier}</span
+                        >`
+                      : nothing
+                  }
                   ${
                     subtitle
                       ? html`<span class="card-subtitle" title="${subtitle}">${subtitle}</span>`

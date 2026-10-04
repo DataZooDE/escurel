@@ -117,6 +117,29 @@ export class EscurelThreadInspector extends LitElement {
         flex-direction: column;
         gap: 8px;
       }
+      .links {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 4px 16px;
+        margin: 6px 0 2px;
+      }
+      .link-button {
+        appearance: none;
+        background: none;
+        border: 0;
+        padding: 0;
+        font: inherit;
+        color: var(--vscode-textLink-foreground);
+        text-decoration: underline;
+        cursor: pointer;
+      }
+      .link-button:hover {
+        color: var(--vscode-textLink-activeForeground);
+      }
+      .link-button:focus-visible {
+        outline: 1px solid var(--vscode-focusBorder);
+        outline-offset: 2px;
+      }
       .actions {
         display: flex;
         flex-wrap: wrap;
@@ -331,6 +354,22 @@ export class EscurelThreadInspector extends LitElement {
           ? html`<p class="summary ${detail.needsYou ? 'needs-you' : ''}">
               ${detail.needsYou ? html`<span class="needs">Needs you</span>` : nothing}${detail.summary}
             </p>`
+          : nothing
+      }
+      ${
+        detail.links?.length
+          ? html`<nav class="links" aria-label="Go to">
+              ${detail.links.map(
+                (l) =>
+                  html`<button
+                    class="link-button"
+                    data-link=${l.id}
+                    @click=${() => this.send({ type: 'open-link', nodeId: this.nodeId ?? '', link: l.id })}
+                  >
+                    ${l.label}
+                  </button>`,
+              )}
+            </nav>`
           : nothing
       }
       ${this.renderActions(detail.actions)}
