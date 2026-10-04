@@ -803,14 +803,14 @@ mod evolve_projection_tests {
 
     #[test]
     fn refuses_a_new_blob_hash_next_to_old_displayed_problem_content() {
-        let stored = "---\ntype: instance\nskill: evolve_problem\nid: a\n---\n# New budget\n";
+        let stored = "---\nkind: instance\nskill: evolve_problem\nid: a\n---\n# New budget\n";
         let old_projection = json!({
-            "frontmatter": {"type": "instance", "skill": "evolve_problem", "id": "a"},
+            "frontmatter": {"kind": "instance", "skill": "evolve_problem", "id": "a"},
             "body": "# Old budget\n"
         });
         assert!(ensure_evolve_problem_projection_matches(stored, &old_projection).is_err());
         let current_projection = json!({
-            "frontmatter": {"type": "instance", "skill": "evolve_problem", "id": "a"},
+            "frontmatter": {"kind": "instance", "skill": "evolve_problem", "id": "a"},
             "body": "# New budget\n"
         });
         assert!(ensure_evolve_problem_projection_matches(stored, &current_projection).is_ok());
@@ -818,9 +818,9 @@ mod evolve_projection_tests {
 
     #[test]
     fn refuses_a_new_source_blob_hash_next_to_old_training_json() {
-        let stored = "---\ntype: instance\nskill: evolve_training_source\nid: a\nowner_subject: owner\n---\n```json\n{\"capacity\": 20}\n```\n";
+        let stored = "---\nkind: instance\nskill: evolve_training_source\nid: a\nowner_subject: owner\n---\n```json\n{\"capacity\": 20}\n```\n";
         let old_projection = json!({
-            "frontmatter": {"type": "instance", "skill": "evolve_training_source", "id": "a", "owner_subject": "owner"},
+            "frontmatter": {"kind": "instance", "skill": "evolve_training_source", "id": "a", "owner_subject": "owner"},
             "body": "```json\n{\"capacity\": 10}\n```\n"
         });
         assert!(ensure_evolve_problem_projection_matches(stored, &old_projection).is_err());
