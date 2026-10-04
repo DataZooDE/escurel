@@ -85,6 +85,7 @@ mod migrate_kind_tool;
 mod mint_agent_token;
 mod multi_issuer_groups;
 mod openapi_surface;
+mod ops_visibility;
 mod pack_export;
 mod pack_import;
 mod pack_rebase;

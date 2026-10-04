@@ -2026,11 +2026,26 @@ impl EscurelConfig {
         )));
 
         // 7. Readiness probe over the live dependencies.
-        let readiness = Arc::new(DependencyProbe::new(
-            Arc::clone(&store),
-            Arc::clone(&embedder),
-            self.tenant.clone(),
-        ));
+        // Zero-vector embeddings (explicit `zero`, or `gemini` without a key) leave lexical search
+        // working and semantic search inert: say so on /readyz and /metrics instead of only in a
+        // boot log line.
+        let semantic_search = match self.embedding_provider {
+            EmbeddingProvider::Zero => false,
+            EmbeddingProvider::Gemini => self
+                .gemini_api_key
+                .as_deref()
+                .is_some_and(|k| !k.is_empty()),
+            _ => true,
+        };
+        let readiness = Arc::new(
+            DependencyProbe::new(
+                Arc::clone(&store),
+                Arc::clone(&embedder),
+                self.tenant.clone(),
+            )
+            .with_indexer(indexer_handle.clone())
+            .with_semantic_search(semantic_search),
+        );
 
         let server_config = ServerConfig {
             // Per-instance write ACL (`ESCUREL_WRITE_ACL`): off (default) |

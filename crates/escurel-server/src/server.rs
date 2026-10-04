@@ -750,7 +750,22 @@ async fn healthz() -> impl IntoResponse {
 async fn readyz(State(state): State<AppState>) -> impl IntoResponse {
     let report: ReadinessReport = state.readiness.probe().await;
     if report.all_up() {
-        (StatusCode::OK, "OK").into_response()
+        let notices = report.notices();
+        if notices.is_empty() {
+            return (StatusCode::OK, "OK").into_response();
+        }
+        // Ready, but something an operator must know: 200 so a one-shot `migrate-kind` can still run
+        // against a quarantined tenant, with the state in the body and a header orchestrators and
+        // load-balancer rules can match on.
+        let body = json!({ "ready": true, "notices": notices, "components": report });
+        let mut resp = (StatusCode::OK, axum::Json(body)).into_response();
+        if report.quarantined {
+            resp.headers_mut().insert(
+                "x-escurel-quarantined",
+                axum::http::HeaderValue::from_static("1"),
+            );
+        }
+        resp
     } else {
         let body = json!({
             "ready": false,
@@ -780,6 +795,19 @@ async fn metrics(State(state): State<AppState>) -> impl IntoResponse {
     state
         .metrics
         .set_live_sessions(state.sessions.open_count() as i64);
+    // Operator-visible state that is not a request counter: sampled at scrape time.
+    let report = state.readiness.probe().await;
+    let tenant = state
+        .indexer
+        .as_ref()
+        .map_or_else(String::new, |h| h.current().tenant().to_owned());
+    state
+        .metrics
+        .set_tenant_quarantined(&tenant, report.quarantined);
+    state
+        .metrics
+        .set_migration_pending(report.migration_pending);
+    state.metrics.set_semantic_search(report.semantic_search);
     let body = state.metrics.render_prometheus();
     (
         StatusCode::OK,
