@@ -5,8 +5,8 @@
 //! lets the gateway hold exactly one instance behind an `Arc`.
 
 use prometheus::{
-    CounterVec, Encoder, Gauge, HistogramOpts, HistogramVec, IntCounterVec, IntGauge, IntGaugeVec,
-    Opts, Registry, TextEncoder,
+    CounterVec, Encoder, Gauge, HistogramOpts, HistogramVec, IntCounter, IntCounterVec, IntGauge,
+    IntGaugeVec, Opts, Registry, TextEncoder,
 };
 
 /// Latency histogram buckets, in seconds. Chosen to straddle the
@@ -75,6 +75,9 @@ pub struct Metrics {
     write_back: IntCounterVec,
     /// `escurel_source_unavailable_total{kind}` — a row's source could not be reached.
     source_unavailable: IntCounterVec,
+    /// `escurel_log_lines_dropped_total` — log lines dropped because the log consumer (stdout's
+    /// reader) was not reading; the gateway drops lines rather than stall behind a full pipe.
+    log_dropped: IntCounter,
 }
 
 impl Metrics {
@@ -301,6 +304,14 @@ impl Metrics {
         ] {
             registry.register(c).expect("register operator metric");
         }
+        let log_dropped = IntCounter::new(
+            "escurel_log_lines_dropped_total",
+            "Log lines dropped because the log consumer was not reading stdout",
+        )
+        .expect("escurel_log_lines_dropped_total");
+        registry
+            .register(Box::new(log_dropped.clone()))
+            .expect("register escurel_log_lines_dropped_total");
         // Semantic search is on until a scrape says otherwise.
         semantic_search.set(1);
 
@@ -334,6 +345,7 @@ impl Metrics {
             egress,
             write_back,
             source_unavailable,
+            log_dropped,
         }
     }
 
@@ -483,6 +495,11 @@ impl Metrics {
     pub fn render_prometheus(&self) -> String {
         let mut buf = Vec::new();
         let encoder = TextEncoder::new();
+        // The writer counts in a process-wide atomic (it has no handle on a registry): catch up.
+        let dropped = crate::nonblocking::dropped_log_lines();
+        if dropped > self.log_dropped.get() {
+            self.log_dropped.inc_by(dropped - self.log_dropped.get());
+        }
         let families = self.registry.gather();
         encoder
             .encode(&families, &mut buf)
@@ -499,6 +516,15 @@ impl Default for Metrics {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_dropped_log_lines_counter_is_exposed() {
+        let text = Metrics::new().render_prometheus();
+        assert!(
+            text.contains("escurel_log_lines_dropped_total"),
+            "operators must be able to see that log lines were lost:\n{text}"
+        );
+    }
+
     use super::*;
 
     #[test]
