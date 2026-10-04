@@ -91,7 +91,7 @@ impl InstanceBackend for MarkdownBackend {
         ctx: BackendCtx<'_>,
         q: &str,
         k: usize,
-        page_type: Option<PageKind>,
+        page_kind: Option<PageKind>,
         skill: Option<&str>,
         granularity: Granularity,
         filter: Option<&serde_json::Value>,
@@ -100,7 +100,7 @@ impl InstanceBackend for MarkdownBackend {
             .search_with(
                 q,
                 k,
-                page_type,
+                page_kind,
                 skill,
                 ctx.as_of,
                 ctx.scenario,

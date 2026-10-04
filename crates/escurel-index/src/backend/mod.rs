@@ -1,6 +1,22 @@
 //! The `InstanceBackend` seam: a per-skill strategy for *where an
 //! instance's data comes from*.
 //!
+//! ## STATUS: NOT THE DISPATCH PATH (read this before extending it)
+//!
+//! [`InstanceBackend`] / [`BackendRegistry`] / [`MarkdownBackend`] / [`BackendCtx`] were introduced
+//! as the planned dispatcher (PR-1) but have exactly ONE implementation (markdown) and **no caller
+//! in the server**: nothing calls [`BackendRegistry::for_skill`] outside the seam's own test suite
+//! (`tests/suite/backend_registry.rs`). The real per-skill dispatch is by probe, in the server's
+//! read tools: [`Indexer::rows_source`], the remote-rows source and the `BackendView` classifier
+//! (`escurel-server/src/mcp/backend_view.rs`, which explains why the trait's return types did not
+//! fit). The backends themselves (`sql_view`, `document`, `rows`, the `remote` openapi/mcp
+//! bindings) are plain modules reached directly.
+//!
+//! Do not route a new backend "through the registry" without first deciding to make it the real
+//! dispatcher: `docs/notes/complexity-reduction-plan.md` R3 argues to keep the trait and route the
+//! others through it, the code went the other way. Until that is settled the seam is kept (it is
+//! small and tested) but it is documentation of an intent, not of behaviour.
+//!
 //! escurel's triad (Skills, Instances, Events) is realised as markdown
 //! pages in a single referent space `[[skill::id]]`. This module introduces
 //! the abstraction that lets a skill drive instances living in **new
@@ -8,7 +24,7 @@
 //! instance keeps a markdown overlay page for identity, links, ACL, and
 //! CRDT (HLD §3, change-request §5.1).
 //!
-//! ## PR-1 scope (this commit)
+//! ## PR-1 scope (historical)
 //!
 //! Only [`MarkdownBackend`] exists; it wraps the existing [`Indexer`] and
 //! delegates every call verbatim, so behaviour is bit-identical. The
@@ -18,7 +34,7 @@
 //! knobs — collapsing them into clean DTOs would be a behaviour change,
 //! deferred to a later simplification.
 //!
-//! ## Seams reserved for later PRs
+//! ## Seams reserved for later PRs (historical)
 //!
 //! - `create_instance` — SQL view materialisation / document ingestion.
 //!   Writes still flow through `Indexer::update_page` in PR-1.
@@ -253,7 +269,8 @@ pub struct BackendCtx<'a> {
     pub scenario: Option<&'a str>,
 }
 
-/// The per-skill strategy for materialising and reading instances.
+/// The per-skill strategy for materialising and reading instances. **Not the live dispatch path**
+/// (see the module docs): one impl, no server caller.
 ///
 /// PR-1's only impl is [`MarkdownBackend`], which delegates to [`Indexer`].
 /// Every method mirrors an existing `Indexer` method so the markdown impl
@@ -310,7 +327,7 @@ pub trait InstanceBackend: Send + Sync {
         ctx: BackendCtx<'_>,
         q: &str,
         k: usize,
-        page_type: Option<PageKind>,
+        page_kind: Option<PageKind>,
         skill: Option<&str>,
         granularity: Granularity,
         filter: Option<&serde_json::Value>,

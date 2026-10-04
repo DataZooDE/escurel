@@ -342,3 +342,16 @@ asks — so under CI's parallelism another test bound it and the dead endpoint
 answered `status: "ok"`. It failed a docs-only PR and passed every local
 `--workspace` run. Now uses port 0 directly: nothing can ever listen on it,
 so the race is gone by construction rather than narrowed.
+
+## Status update (2026-10-04): R3 is still open, and the code went the other way
+
+`InstanceBackend` / `BackendRegistry` still have exactly one implementation (markdown) and **no
+caller in the server**. The backends added since (`rows`, remote `openapi`/`mcp` rows, write-back)
+were dispatched by probe in the read tools (`rows_source`, `remote_rows::source`,
+`escurel-server/src/mcp/backend_view.rs`, whose header argues the trait is the wrong home because
+its `expand` return type cannot carry the row projection). R3 above ("do not delete the trait, route
+the others through it") was therefore NOT done and is now doubtful: a dispatcher that must carry
+rows, remote rows, projections, write-back and trust markers would need a different trait than the
+PR-1 one. The seam is kept and now says so in its module docs. The decision to make, before any
+further backend: either redesign the trait around the row/projection model and route everything
+through it, or delete the seam. Do not add a new backend to the registry in the meantime.
