@@ -6,6 +6,63 @@ loosely [Keep a Changelog](https://keepachangelog.com/). Through the
 follow **`vYYYY.MM.DD`** — the date the binary set was cut (same-day
 re-cuts append `.N`), matching the DataZoo release scheme (cf. erpl).
 
+## Unreleased — BREAKING (stored format, wire, skills, agent behaviour)
+
+**Read first:** [`docs/deploy/kind-migration.md`](docs/deploy/kind-migration.md) (stop-first upgrade, backup,
+rollback) and the consumer checklist in
+[`.claude/skills/escurel-platform/CHANGELOG.md`](.claude/skills/escurel-platform/CHANGELOG.md) (0.7.0 – 0.11.0).
+Skill version `0.11.0`. Every consumer that writes pages or reads the tool surface moves in the same window.
+
+### BREAKING
+
+- **The page kind is `kind:` (was `type:`).** `type: skill|instance` is removed — a hard cut with no
+  compatibility switch. A tenant whose lane still holds such pages boots **QUARANTINED** (up, answers only
+  `migrate_kind` / `compact_lanes`); writes with the old key are refused (`frontmatter_type_removed`).
+  Migrate with `escurel admin migrate-kind --tenant <t> [--apply]` (dry run by default, idempotent; rewrites
+  pages, open drafts and CRDT snapshots; skips signed pack pages — the publisher re-exports). The `issue`
+  skill's `kind` data field is now `issue_kind`.
+- **Wire: `page_type` is `page_kind`** (`search` argument, `PageRef` answers, CLI `--page-kind`, Rust
+  `PageKind`, Dart `PageKind`). A caller still sending `page_type` is refused, not silently unfiltered. The
+  derived SQL column `pages.page_type` keeps its name.
+- **Workflow-run pages: `status` → `run_status`** (migrated by `migrate_kind`; a tenant's own `status` data and
+  the DB/API `status` fields are untouched).
+- **A skill's `actions:` is a list of objects** (`{name, kind: event|prompt, label, event?, prompt?}`, Peacock's
+  form); bare skill-id strings are rejected (`action_invalid`). `list_skills` returns the objects.
+- **`resume_cursor` is removed** — `next_cursor` is the only cursor name.
+- **MCP `content[0].text` is now a short summary**; `structuredContent` is the full payload (clients that parsed
+  the text block as JSON must read `structuredContent`).
+- **`autonomy: review|confirm` is enforced at the gateway**: an agent-role `update_page` on such a skill becomes
+  a draft (`held_for_review`) instead of landing directly.
+- **Write-back drafts can only be promoted by a non-agent token** (`promote_requires_human`).
+- More breaking wire changes, one line each, are appended to
+  [`docs/notes/breaking-wire-changes.md`](docs/notes/breaking-wire-changes.md) as they land.
+
+### Added
+
+- `folder:`, `role:`, `tags:` and the OKF vocabulary (`title`, `resource`, `generated`, `verified`, `status`,
+  `stale_after`, `sources`) on skill pages; the Knowledge tree in the VS Code extension shows them.
+- `backend.instances: rows` (one instance per row of a `sql_view`, optional linked markdown), REST (`openapi`)
+  and MCP rows, `describe_backend`, and **human-gated write-back** (draft + promote, etag conflict check,
+  idempotency key, bounded retries, dead-letter, audit).
+
+### Operators
+
+- **`/readyz` reports quarantine** without failing: still 200 (so the migration can run) with
+  `x-escurel-quarantined: 1` and a JSON `notices` body; new metrics `escurel_tenant_quarantined{tenant}`,
+  `escurel_migration_pending`, `escurel_semantic_search_enabled`, `escurel_egress_total{outcome}`,
+  `escurel_write_back_total{outcome}`, `escurel_source_unavailable_total{kind}`. **Do not gate traffic on the
+  status code alone**; deploy stop-first with the migration before the swap.
+- **New env (all documented in `docs/deploy/README.md`):** `ESCUREL_EGRESS_ALLOW_LOOPBACK` (dev/tests only —
+  never in production), `ESCUREL_EGRESS_MAX_RESPONSE_BYTES`, `…_TIMEOUT_MS`, `…_MAX_CONCURRENCY`,
+  `…_RATE_PER_SEC`, `…_WRITE_RETRY_BACKOFF_MS`, `ESCUREL_SECRET_<NAME>`, `ESCUREL_SECRET_ENV_ALLOW`,
+  `ESCUREL_SECRET_FILE_DIRS`. An unparsable `ESCUREL_EGRESS_*` value now **fails the boot** (it used to be
+  silently ignored).
+- The server image runs **non-root (uid 65532)**, ships the `escurel` CLI (`docker exec … escurel admin …`), and
+  fetches the gdrive DuckDB extension over https. `escurel-server --help` / `--version` no longer boot the
+  server.
+- `tenant export` is refused while a tenant is quarantined: take the pre-upgrade backup with the server stopped
+  (`tar` the tenant directory), see the runbook.
+
 ## v2026.07.13
 
 ### Changed

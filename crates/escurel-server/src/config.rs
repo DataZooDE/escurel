@@ -90,6 +90,15 @@
 //! | `ESCUREL_SNAPSHOT_PUBLISH_SECS` | unset | a writer's optional periodic publish interval (seconds); an explicit `0` disables it (manual-only, via the `publish_snapshot` admin tool). Unset: disabled, UNLESS chat/events are lake-backed (`ESCUREL_CHAT_BACKEND` / `ESCUREL_EVENTS_BACKEND` = `ducklake`), where the task doubles as append-table compaction and unset defaults to `300` — see `resolve_publish_secs` / `escurel_server::snapshot_publish::PublishTask` |
 //! | `ESCUREL_SNAPSHOT_KEEP` | `5` | how many DuckLake snapshots to retain after a successful publish; the GC pass never touches the current snapshot |
 //! | `ESCUREL_WRITER_LEASE` | `on` | ducklake-writer single-writer boot guard (#371): a catalog advisory lock refused when another live writer holds it; `off` disables — only if you guarantee a single writer yourself |
+//! | `ESCUREL_EGRESS_ALLOW_LOOPBACK` | `false` | outbound connector calls (REST/MCP rows, write-back) may reach `127.0.0.1`. `1`/`true`/`0`/`false` only. **Dev and tests only** — never in production (SSRF guard); any other value fails the boot |
+//! | `ESCUREL_EGRESS_MAX_RESPONSE_BYTES` | `4194304` | cap on one upstream response (streamed; over the cap → the call fails). Whole number ≥ 1 |
+//! | `ESCUREL_EGRESS_TIMEOUT_MS` | `10000` | total timeout of one upstream call; clamped to 30000. Whole number ≥ 1 |
+//! | `ESCUREL_EGRESS_MAX_CONCURRENCY` | `8` | simultaneous upstream calls per endpoint. Whole number ≥ 1 |
+//! | `ESCUREL_EGRESS_RATE_PER_SEC` | `50` | upstream calls per second per endpoint (token bucket). Whole number ≥ 1 |
+//! | `ESCUREL_EGRESS_WRITE_RETRY_BACKOFF_MS` | `500` | base backoff between write-back retries (a test knob; leave unset in production). Whole number ≥ 0 |
+//! | `ESCUREL_SECRET_<NAME>` | — | a connector credential, referenced from an endpoint as `secret_ref: gsm:<name>` (the substrate injects GCP Secret Manager secrets as env). Never put a secret in a page |
+//! | `ESCUREL_SECRET_ENV_ALLOW` | — | comma list of extra env var names a tenant may reference as `env:NAME` (names starting `ESCUREL_SECRET_` are always allowed) — the *security* policy: stream "secret_ref allow-list" |
+//! | `ESCUREL_SECRET_FILE_DIRS` | `/run/secrets` | `:`-separated directories a tenant may reference as `file:/path` (canonicalised; never `/proc`, `/sys`, `/dev`) |
 
 use std::path::PathBuf;
 use std::sync::Arc;
