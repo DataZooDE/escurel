@@ -50,10 +50,14 @@ export const v2TrainingStarter = {
 export function preparedV2Draft(input: unknown, source: Record<string, unknown>, sourceId: string, digest: string): Record<string, unknown> {
   const full = input && typeof input === 'object' && !Array.isArray(input)
     ? input as Record<string, unknown> : {};
+  const problemSource = { ...source };
+  const problemInput = { ...full };
+  delete problemSource.daily_demand;
+  delete problemInput.daily_demand;
   if ('service_targets' in full && 'seed_sql' in full && 'baseline_sql' in full)
-    return { ...v2TrainingStarter, ...full, ...source, training_source_id: sourceId, source_sha256: digest };
+    return { ...v2TrainingStarter, ...problemInput, ...problemSource, training_source_id: sourceId, source_sha256: digest };
   return {
-    ...v2TrainingStarter, ...source, training_source_id: sourceId, source_sha256: digest,
+    ...v2TrainingStarter, ...problemSource, training_source_id: sourceId, source_sha256: digest,
     service_targets: { aggregate_min_fill_rate: 'REPLACE_WITH_TARGET', per_sku_min_fill_rate: {} },
     unit_order_costs: {}, terminal_stock_tolerance: {},
     seed_sql: 'REPLACE_WITH_SEED_SQL', baseline_sql: 'REPLACE_WITH_BASELINE_SQL',

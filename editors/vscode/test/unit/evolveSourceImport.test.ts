@@ -7,6 +7,25 @@ import {
 } from '../../src/evolve/sourceImport';
 
 describe('private V2 training source preparation', () => {
+  it('keeps dated demand on the private source page and removes it from policy drafts', () => {
+    const daily_demand = v2TrainingStarter.skus[0]!.demand.map((demand, index) => ({
+      sku_id: 1, date: `2026-08-${String(index + 1).padStart(2, '0')}`, demand,
+    }));
+    const sourceOnly = { ...trainingSourcePayload(v2TrainingStarter), daily_demand };
+    const page = trainingSourcePage({ id: 'dated-training', owner: 'alice', value: sourceOnly });
+    expect(page.payload.daily_demand).toEqual(daily_demand);
+    expect(page.content).toContain('"daily_demand"');
+    const draft = preparedV2Draft(sourceOnly, page.payload, 'src_dated', 'b'.repeat(64));
+    expect(draft).not.toHaveProperty('daily_demand');
+    const fullPage = trainingSourcePage({
+      id: 'dated-full-spec', owner: 'alice', value: { ...v2TrainingStarter, daily_demand },
+    });
+    expect(fullPage.payload.daily_demand).toEqual(daily_demand);
+    expect(preparedV2Draft({ ...v2TrainingStarter, daily_demand }, fullPage.payload,
+      'src_dated', 'b'.repeat(64))).not.toHaveProperty('daily_demand');
+    expect(() => trainingSourcePayload({ ...sourceOnly, daily_demand: [{}] }))
+      .toThrow(/Each daily_demand row/);
+  });
   it('opens an incomplete source-only policy draft and rejects it for import', () => {
     const source = trainingSourcePayload({ ...v2TrainingStarter, skus: [
       { ...v2TrainingStarter.skus[0], sku_id: 42 },

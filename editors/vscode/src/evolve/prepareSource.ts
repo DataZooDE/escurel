@@ -74,7 +74,7 @@ export function registerPrepareEvolveTrainingSource(
       if (!owner) throw new Error('Sign in before preparing an owner-private source.');
       const choice = await vscode.window.showQuickPick([
         { label: 'Open starter source JSON', description: 'Edit and save it locally first' },
-        { label: 'Prepare a local JSON file', description: 'Eight-field source or full V2 training spec' },
+        { label: 'Prepare a local JSON file', description: 'Eight required fields, optional dated demand, or full V2 spec' },
       ], { placeHolder: 'Prepare an Anofox Evolve V2 training source' });
       if (!choice) return;
       if (choice.label === 'Open starter source JSON') {

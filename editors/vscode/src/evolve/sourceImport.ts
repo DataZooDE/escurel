@@ -7,9 +7,9 @@ const SOURCE_FIELDS = [
   'capacity', 'skus', 'training_start', 'training_end',
   'history_start', 'history_end', 'inventory_as_of', 'demand_observation',
 ] as const;
-const SOURCE_ONLY_FIELDS = new Set<string>(SOURCE_FIELDS);
+const SOURCE_ONLY_FIELDS = new Set<string>([...SOURCE_FIELDS, 'daily_demand']);
 const FULL_SPEC_FIELDS = new Set<string>([
-  ...SOURCE_FIELDS, 'service_targets', 'seed_sql', 'baseline_sql',
+  ...SOURCE_ONLY_FIELDS, 'service_targets', 'seed_sql', 'baseline_sql',
   'planning_window_days', 'scored_window_days', 'unit_order_costs',
   'terminal_stock_tolerance', 'training_source_id', 'source_sha256',
   'max_generations', 'budget', 'num_islands', 'migration_interval',
@@ -25,7 +25,7 @@ export function trainingSourcePayload(value: unknown): Record<string, unknown> {
     .some((field) => field in input);
   for (const key of Object.keys(input)) {
     if (!(fullSpec ? FULL_SPEC_FIELDS : SOURCE_ONLY_FIELDS).has(key))
-      throw new Error(`Unsupported source key ${key}. Choose an eight-field source or a full V2 training spec.`);
+      throw new Error(`Unsupported source key ${key}. Choose a source with eight required fields and optional daily_demand, or a full V2 training spec.`);
   }
   const source: Record<string, unknown> = {};
   for (const field of SOURCE_FIELDS) {
@@ -39,6 +39,22 @@ export function trainingSourcePayload(value: unknown): Record<string, unknown> {
     throw new Error('The V2 pilot needs 1–16 SKUs.');
   if (source.demand_observation !== 'true_demand' || source.inventory_as_of !== source.training_start)
     throw new Error('Attest true demand and opening inventory as of training_start.');
+  if ('daily_demand' in input) {
+    const rows = input.daily_demand;
+    if (!Array.isArray(rows) || rows.length === 0 || rows.length > 16 * 90)
+      throw new Error('daily_demand needs 1–1440 dated SKU observations.');
+    for (const row of rows) {
+      if (!row || typeof row !== 'object' || Array.isArray(row)
+          || Object.keys(row).sort().join(',') !== 'date,demand,sku_id')
+        throw new Error('Each daily_demand row needs only sku_id, date, and demand.');
+      const record = row as Record<string, unknown>;
+      if (!Number.isSafeInteger(record.sku_id) || (record.sku_id as number) <= 0
+          || typeof record.date !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(record.date)
+          || !Number.isSafeInteger(record.demand) || (record.demand as number) < 0)
+        throw new Error('daily_demand rows need a positive SKU ID, YYYY-MM-DD date, and nonnegative integer demand.');
+    }
+    source.daily_demand = rows;
+  }
   for (const field of ['training_start', 'training_end', 'history_start', 'history_end'] as const) {
     if (typeof source[field] !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(source[field] as string))
       throw new Error(`${field} must be a YYYY-MM-DD date.`);
