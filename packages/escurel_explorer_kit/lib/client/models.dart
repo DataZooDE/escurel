@@ -30,7 +30,7 @@ String generateUploadEventId() {
 }
 
 /// Restrict a search to pages of a particular kind.
-enum PageTypeFilter { skill, instance, any }
+enum PageKindFilter { skill, instance, any }
 
 /// Block-level vs page-level [search] hits.
 enum SearchGranularity { block, page }

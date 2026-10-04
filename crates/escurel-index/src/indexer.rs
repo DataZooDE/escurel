@@ -931,7 +931,7 @@ impl Indexer {
 
         let frontmatter_json = mapping_to_json(&parsed.frontmatter.fields)?;
         let body_hash = hash_body(content);
-        let page_type_str = match parsed.frontmatter.page_kind {
+        let page_kind_str = match parsed.frontmatter.page_kind {
             PageKind::Skill => "skill",
             PageKind::Instance => "instance",
         };
@@ -1014,7 +1014,7 @@ impl Indexer {
             page_id,
             slug.as_deref(),
             &skill,
-            page_type_str,
+            page_kind_str,
             &frontmatter_json,
             &body_hash,
             at_ts.as_deref(),
@@ -1075,7 +1075,7 @@ impl Indexer {
             &tx,
             page_id,
             &skill,
-            page_type_str,
+            page_kind_str,
             at_ts.as_deref(),
             scenario.as_deref(),
             &[crate::materialise::BlockRow {

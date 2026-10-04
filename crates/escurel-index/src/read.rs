@@ -1367,11 +1367,11 @@ impl Indexer {
                 },
             )
             .ok();
-        let Some((page_id, slug, skill, page_type_str, fm_json, last_written_by)) = page_with_fm
+        let Some((page_id, slug, skill, page_kind_str, fm_json, last_written_by)) = page_with_fm
         else {
             return Ok(None);
         };
-        let page_type = match page_type_str.as_str() {
+        let page_kind = match page_kind_str.as_str() {
             "skill" => PageKind::Skill,
             _ => PageKind::Instance,
         };
@@ -1405,7 +1405,7 @@ impl Indexer {
                 page_id,
                 slug,
                 skill,
-                page_kind: page_type,
+                page_kind,
             },
             frontmatter,
             body,
@@ -1596,8 +1596,8 @@ fn page_ref_from_row(row: &duckdb::Row<'_>) -> duckdb::Result<PageRef> {
     let page_id: String = row.get(0)?;
     let slug: Option<String> = row.get(1)?;
     let skill: String = row.get(2)?;
-    let page_type_str: String = row.get(3)?;
-    let page_type = match page_type_str.as_str() {
+    let page_kind_str: String = row.get(3)?;
+    let page_kind = match page_kind_str.as_str() {
         "skill" => PageKind::Skill,
         _ => PageKind::Instance,
     };
@@ -1605,7 +1605,7 @@ fn page_ref_from_row(row: &duckdb::Row<'_>) -> duckdb::Result<PageRef> {
         page_id,
         slug,
         skill,
-        page_kind: page_type,
+        page_kind,
     })
 }
 

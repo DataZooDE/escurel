@@ -122,7 +122,7 @@ class HttpEscurelClient implements EscurelClient {
     required String q,
     int k = 10,
     SearchGranularity granularity = SearchGranularity.block,
-    PageTypeFilter pageKind = PageTypeFilter.any,
+    PageKindFilter pageKind = PageKindFilter.any,
     String? skill,
     String? asOf,
   }) async {
@@ -162,7 +162,7 @@ class HttpEscurelClient implements EscurelClient {
       pageId:
           (page?['page_id'] as String?) ?? (result['page_id'] as String?) ?? '',
       skill: (page?['skill'] as String?) ?? (result['skill'] as String?) ?? '',
-      pageKind: _pageTypeFromString(
+      pageKind: _pageKindFromString(
         (page?['page_kind'] ?? result['page_kind']) as String?,
       ),
       exists: (result['exists'] as bool?) ?? false,
@@ -194,7 +194,7 @@ class HttpEscurelClient implements EscurelClient {
       return ExpandResult(
         pageId: '',
         skill: '',
-        pageKind: _pageTypeFromString(null),
+        pageKind: _pageKindFromString(null),
         frontmatter: const {},
         body: '',
         blocks: const [],
@@ -216,7 +216,7 @@ class HttpEscurelClient implements EscurelClient {
           (result['page_id'] as String?) ??
           pageId,
       skill: (page?['skill'] as String?) ?? (result['skill'] as String?) ?? '',
-      pageKind: _pageTypeFromString(
+      pageKind: _pageKindFromString(
         (page?['page_kind'] ?? result['page_kind']) as String?,
       ),
       frontmatter: Map<String, dynamic>.from(
@@ -1087,6 +1087,6 @@ class HttpEscurelClient implements EscurelClient {
   @override
   void close() => _dio.close(force: true);
 
-  static md.PageKind _pageTypeFromString(String? s) =>
+  static md.PageKind _pageKindFromString(String? s) =>
       s == 'skill' ? md.PageKind.skill : md.PageKind.instance;
 }

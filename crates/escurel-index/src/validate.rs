@@ -131,8 +131,8 @@ pub const KNOWN_HARNESSES: [&str; 7] = [
 /// `summary:` on a skill page (workbench backend P2-7): absent is a
 /// warning (the workbench falls back to `description`), over
 /// [`SUMMARY_MAX_CHARS`] is an error.
-fn check_summary(page_type: PageKind, fields: &YamlMapping) -> Option<Issue> {
-    if page_type != PageKind::Skill {
+fn check_summary(page_kind: PageKind, fields: &YamlMapping) -> Option<Issue> {
+    if page_kind != PageKind::Skill {
         return None;
     }
     let text = fields
@@ -163,8 +163,8 @@ fn check_summary(page_type: PageKind, fields: &YamlMapping) -> Option<Issue> {
 }
 
 /// `harness:` on a skill page names an adapter the runner has.
-fn check_harness(page_type: PageKind, fields: &YamlMapping) -> Option<Issue> {
-    if page_type != PageKind::Skill {
+fn check_harness(page_kind: PageKind, fields: &YamlMapping) -> Option<Issue> {
+    if page_kind != PageKind::Skill {
         return None;
     }
     let raw = fields.get("harness")?;
@@ -195,8 +195,8 @@ pub const SKILL_ROLES: [&str; 4] = ["record", "process", "report", "helper"];
 
 /// `folder:` on a skill page: a `/`-separated path of slugs (`sales/orders`). A malformed one is an
 /// error: a tree cannot place the skill.
-fn check_folder(page_type: PageKind, fields: &YamlMapping) -> Option<Issue> {
-    if page_type != PageKind::Skill {
+fn check_folder(page_kind: PageKind, fields: &YamlMapping) -> Option<Issue> {
+    if page_kind != PageKind::Skill {
         return None;
     }
     let raw = fields.get("folder")?;
@@ -225,8 +225,8 @@ fn check_folder(page_type: PageKind, fields: &YamlMapping) -> Option<Issue> {
 }
 
 /// `role:` on a skill page: one of [`SKILL_ROLES`].
-fn check_role(page_type: PageKind, fields: &YamlMapping) -> Option<Issue> {
-    if page_type != PageKind::Skill {
+fn check_role(page_kind: PageKind, fields: &YamlMapping) -> Option<Issue> {
+    if page_kind != PageKind::Skill {
         return None;
     }
     let raw = fields.get("role")?;
@@ -285,9 +285,9 @@ fn is_iso_duration(s: &str) -> bool {
 /// The OKF keys on a SKILL page (`tags`, `generated`, `verified`, `stale_after`, `sources`): all
 /// optional, and a malformed one is a WARNING, never an error. Unknown keys are never looked at.
 /// (`title`, `resource` and `status` are free text; `status` keeps whatever meaning the skill gives it.)
-fn check_okf_keys(page_type: PageKind, fields: &YamlMapping) -> Vec<Issue> {
+fn check_okf_keys(page_kind: PageKind, fields: &YamlMapping) -> Vec<Issue> {
     let mut issues = Vec::new();
-    if page_type != PageKind::Skill {
+    if page_kind != PageKind::Skill {
         return issues;
     }
     let warn = |code: &str, key: &str, msg: String, suggestion: &str| {
@@ -442,8 +442,8 @@ fn check_actions(raw: &YamlValue) -> (Vec<Issue>, Vec<(usize, String)>) {
     (issues, events)
 }
 
-fn check_autonomy(page_type: PageKind, fields: &YamlMapping) -> Option<Issue> {
-    if page_type != PageKind::Skill {
+fn check_autonomy(page_kind: PageKind, fields: &YamlMapping) -> Option<Issue> {
+    if page_kind != PageKind::Skill {
         return None;
     }
     let raw = fields.get("autonomy")?;
@@ -501,8 +501,8 @@ fn check_autonomy(page_type: PageKind, fields: &YamlMapping) -> Option<Issue> {
 ///   form still works, so failing the write would be a behaviour change for
 ///   a key that has never been validated. Compare `autonomy:`, which is
 ///   error-severity because there the failure mode is an ungated write.
-fn check_params(page_type: PageKind, fields: &YamlMapping) -> Vec<Issue> {
-    if page_type != PageKind::Skill {
+fn check_params(page_kind: PageKind, fields: &YamlMapping) -> Vec<Issue> {
+    if page_kind != PageKind::Skill {
         return Vec::new();
     }
     let Some(raw) = fields.get("params") else {
@@ -597,8 +597,8 @@ fn check_params(page_type: PageKind, fields: &YamlMapping) -> Vec<Issue> {
 /// unknown `kind:` is a WARNING and the field degrades to `string`, because an
 /// over-permissive field under-validates while a dropped one silently deletes
 /// a constraint the author believes is in force.
-fn check_fields(page_type: PageKind, fields: &YamlMapping) -> Vec<Issue> {
-    if page_type != PageKind::Skill {
+fn check_fields(page_kind: PageKind, fields: &YamlMapping) -> Vec<Issue> {
+    if page_kind != PageKind::Skill {
         return Vec::new();
     }
     let Some(raw) = fields.get("fields") else {
@@ -741,8 +741,8 @@ const KNOWN_RENDERS: &[&str] = &[
 /// mappings (workbench backend P3-5). A block without an anchor has nowhere
 /// to render, so that — and a `blocks:` that is not a sequence — is an error
 /// at the offending location.
-fn check_blocks(page_type: PageKind, fields: &YamlMapping) -> Vec<Issue> {
-    if page_type != PageKind::Skill {
+fn check_blocks(page_kind: PageKind, fields: &YamlMapping) -> Vec<Issue> {
+    if page_kind != PageKind::Skill {
         return Vec::new();
     }
     let Some(raw) = fields.get("blocks") else {

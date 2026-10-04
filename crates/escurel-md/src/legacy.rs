@@ -1,3 +1,5 @@
+//! REMOVE after v2027.xx: legacy migration shim (see docs/notes/legacy-migration-shims.md).
+//!
 //! The one-way migration of the page-kind key: `type: skill|instance` -> `kind: skill|instance`.
 //!
 //! This is a TEXT edit of the leading frontmatter block, not a YAML re-serialisation:

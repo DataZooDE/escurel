@@ -198,7 +198,10 @@ pub(crate) fn tool_defs() -> Vec<ToolDef> {
             Touches::READ,
             "Hybrid vector + FTS search, RRF-fused. Pass `q` for a single \
                  query, or `queries` with 2-3 phrasings to fuse their results \
-                 in one ranking (provide exactly one of the two).",
+                 in one ranking (provide exactly one of the two). Rows of an \
+                 `instances: rows` skill are virtual and NOT searched (only their \
+                 stored notes page is): use `list_instances` or resolve \
+                 `[[skill::key]]` for a row.",
             json!({
                 "type": "object",
                 "properties": {

@@ -83,6 +83,7 @@ pub enum ParseError {
     /// Frontmatter parsed as YAML but was not a mapping at the top level.
     #[error("frontmatter must be a YAML mapping at the top level")]
     NotAMapping,
+    // REMOVE after v2027.xx together with `legacy.rs`: legacy migration shim (docs/notes/legacy-migration-shims.md).
     /// The page still carries the removed `type: skill|instance` page-kind key. Not a YAML error
     /// and not "no kind at all": the page is fine, it needs migrating.
     #[error(
@@ -135,7 +136,7 @@ pub fn parse(input: &str) -> Result<Page<'_>, ParseError> {
                 _ => None,
             })
     };
-    let page_type = match kind_of("kind") {
+    let page_kind = match kind_of("kind") {
         Some(kind) => kind,
         None if kind_of("type").is_some() => return Err(ParseError::LegacyTypeKey),
         None => return Err(ParseError::InvalidType),
@@ -143,7 +144,7 @@ pub fn parse(input: &str) -> Result<Page<'_>, ParseError> {
 
     Ok(Page {
         frontmatter: Frontmatter {
-            page_kind: page_type,
+            page_kind,
             fields: mapping,
         },
         body,

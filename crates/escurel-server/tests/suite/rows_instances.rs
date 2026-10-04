@@ -595,3 +595,43 @@ async fn source_rows_say_where_their_values_came_from() {
         "an expanded row's projection is marked: {page}"
     );
 }
+
+/// A documented LIMIT, pinned so a change to it is deliberate: a row is virtual, so `search` and
+/// `neighbours` do not see it (find rows with `list_instances` or a `[[skill::key]]` wikilink), but
+/// the row's stored linked notes page is an ordinary page and IS searchable and has edges.
+#[tokio::test]
+async fn search_and_neighbours_do_not_see_a_virtual_row_but_do_see_its_notes() {
+    let t = Rows::start().await;
+    let page = row_page(7);
+    let hits = |r: &Value| r.to_string().contains(&page);
+
+    // The row's own values (its document number) are not indexed anywhere.
+    let r = t
+        .call("search", json!({ "q": doc(7), "page_kind": "instance" }))
+        .await;
+    assert!(!hits(&r), "a virtual row is not a search hit: {r}");
+    let r = t.call("neighbours", json!({ "page_id": page })).await;
+    assert!(
+        r["edges"].as_array().is_none_or(Vec::is_empty),
+        "a virtual row has no edges: {r}"
+    );
+
+    // Once the notes exist, the stored page is found and links out like any page.
+    let notes = overlay(7, "high", "zebra-token see [[sales-order::0004500008]]");
+    let w = t
+        .call("update_page", json!({ "page_id": page, "content": notes }))
+        .await;
+    assert_eq!(w["ok"], true, "{w}");
+    let r = t
+        .call(
+            "search",
+            json!({ "q": "zebra-token", "page_kind": "instance" }),
+        )
+        .await;
+    assert!(hits(&r), "the notes page is searchable: {r}");
+    let r = t.call("neighbours", json!({ "page_id": page })).await;
+    assert!(
+        r["edges"].as_array().is_some_and(|e| !e.is_empty()),
+        "the notes page has edges: {r}"
+    );
+}

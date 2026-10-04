@@ -422,7 +422,7 @@ impl Indexer {
         &self,
         q: &str,
         k: usize,
-        page_type: Option<PageKind>,
+        page_kind: Option<PageKind>,
         skill: Option<&str>,
         as_of: Option<&str>,
         scenario: Option<&str>,
@@ -430,7 +430,7 @@ impl Indexer {
         self.search_with(
             q,
             k,
-            page_type,
+            page_kind,
             skill,
             as_of,
             scenario,
@@ -445,7 +445,7 @@ impl Indexer {
     /// ordered by RRF-fused score descending.
     ///
     /// SQL-pushed filters narrow both the vector and FTS sides before
-    /// fusion (`page_type`, `skill`, `as_of`, `scenario`). The
+    /// fusion (`page_kind`, `skill`, `as_of`, `scenario`). The
     /// `filter` object is a frontmatter post-filter applied after
     /// hydration (see [`crate::filter`]); `granularity` controls
     /// block- vs page-level collapse.
@@ -454,7 +454,7 @@ impl Indexer {
         &self,
         q: &str,
         k: usize,
-        page_type: Option<PageKind>,
+        page_kind: Option<PageKind>,
         skill: Option<&str>,
         as_of: Option<&str>,
         scenario: Option<&str>,
@@ -483,7 +483,7 @@ impl Indexer {
         let q_lit = crate::indexer::format_vector_literal(&q_vec);
 
         // 2. Build filter SQL + params shared by both halves.
-        let (filter_sql, filter_params) = build_filters(page_type, skill, as_of, scenario, page_id);
+        let (filter_sql, filter_params) = build_filters(page_kind, skill, as_of, scenario, page_id);
         let n_candidates = candidate_pool(k);
 
         let conn = self.conn.lock().await;
@@ -619,7 +619,7 @@ impl Indexer {
 /// drop out of search. `scenario` keeps base blocks (and the overlay's
 /// when set); base-only when `None`.
 fn build_filters(
-    page_type: Option<PageKind>,
+    page_kind: Option<PageKind>,
     skill: Option<&str>,
     as_of: Option<&str>,
     scenario: Option<&str>,
@@ -634,7 +634,7 @@ fn build_filters(
         sql.push_str(" AND blocks.page_id = ?");
         params.push(pid.to_owned());
     }
-    if let Some(pt) = page_type {
+    if let Some(pt) = page_kind {
         sql.push_str(" AND blocks.page_type = ?");
         params.push(
             match pt {
@@ -833,9 +833,9 @@ fn hydrate_blocks(
         let body: String = r.get(3)?;
         let slug: Option<String> = r.get(4)?;
         let skill: String = r.get(5)?;
-        let page_type_str: String = r.get(6)?;
+        let page_kind_str: String = r.get(6)?;
         let fm_json: String = r.get(7)?;
-        let page_type = match page_type_str.as_str() {
+        let page_kind = match page_kind_str.as_str() {
             "skill" => PageKind::Skill,
             _ => PageKind::Instance,
         };
@@ -846,7 +846,7 @@ fn hydrate_blocks(
                 page_id,
                 slug,
                 skill,
-                page_kind: page_type,
+                page_kind,
                 anchor: anchor.filter(|a| !a.is_empty()),
                 snippet: snippet_from_body(&body),
                 frontmatter_excerpt,

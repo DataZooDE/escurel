@@ -485,7 +485,7 @@ class FixtureEscurelClient implements EscurelClient {
     required String q,
     int k = 10,
     SearchGranularity granularity = SearchGranularity.block,
-    PageTypeFilter pageKind = PageTypeFilter.any,
+    PageKindFilter pageKind = PageKindFilter.any,
     String? skill,
     String? asOf, // ignored in fixture mode; honoured by the HTTP backend
   }) async {
@@ -495,10 +495,10 @@ class FixtureEscurelClient implements EscurelClient {
     final needle = q.toLowerCase();
     final hits = <SearchHit>[];
     for (final p in _pages.values) {
-      if (pageKind == PageTypeFilter.skill && p.pageKind != md.PageKind.skill) {
+      if (pageKind == PageKindFilter.skill && p.pageKind != md.PageKind.skill) {
         continue;
       }
-      if (pageKind == PageTypeFilter.instance &&
+      if (pageKind == PageKindFilter.instance &&
           p.pageKind != md.PageKind.instance) {
         continue;
       }

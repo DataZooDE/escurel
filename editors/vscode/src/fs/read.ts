@@ -46,7 +46,7 @@ export interface PageMarkdown {
   degraded: boolean;
   frontmatter: Record<string, unknown>;
   skill: string;
-  pageType: string;
+  pageKind: string;
   lastWrittenBy?: string | null;
 }
 
@@ -75,7 +75,7 @@ export async function readPageMarkdown(
       degraded: false,
       frontmatter: e.frontmatter,
       skill: e.page.skill,
-      pageType: e.page.page_kind,
+      pageKind: e.page.page_kind,
       lastWrittenBy: e.page.last_written_by,
     };
   }
@@ -87,7 +87,7 @@ export async function readPageMarkdown(
     degraded,
     frontmatter: e.frontmatter,
     skill: e.page.skill,
-    pageType: e.page.page_kind,
+    pageKind: e.page.page_kind,
     lastWrittenBy: e.page.last_written_by,
   };
 }

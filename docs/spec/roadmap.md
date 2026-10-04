@@ -183,7 +183,7 @@ Shipped as a non-breaking, opt-in layer:
   (Stakeholder, Goal, Expectation, Constraint, Priority, Success-Criterion,
   Hypothesis, Dataset, Analysis, Result, Decision) + an overview skill,
   distributed via the existing signed base-layer pack mechanism. Entities
-  are ordinary `skill` pages (the `PageType` enum is untouched); provenance
+  are ordinary `skill` pages (the `PageKind` enum is untouched); provenance
   relations are typed frontmatter wikilinks (`derived_from`, `motivated_by`,
   `supersedes`, …) whose *kind* is carried by `links.src_field`.
 - **The `resolved_links` view** — one derived DuckDB VIEW that resolves the

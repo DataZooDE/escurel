@@ -174,7 +174,7 @@ async fn search_fts_ranks_keyword_match_above_unrelated() {
 }
 
 #[tokio::test]
-async fn search_filters_by_page_type() {
+async fn search_filters_by_page_kind() {
     let h = fresh_harness();
     seed(&h, &[SKILL_CUSTOMER, ACME, GLOBEX, MEETING]).await;
 

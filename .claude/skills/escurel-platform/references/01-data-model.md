@@ -121,7 +121,8 @@ concept's own kind, e.g. `customer`). There is no compatibility window and no en
   skill's data field is `issue_kind` for exactly this reason.
 - The wire follows: `search` takes `page_kind` (a caller still sending `page_type` is refused, not
   silently unfiltered), and `search`/`resolve`/`expand` answer `page_kind`. The derived SQL column
-  keeps its old name.
+  keeps its old name, so a `query` page's SQL still says `WHERE page_type = 'instance'` while the
+  frontmatter it reads says `kind: instance`.
 - The engine-owned `workflow-run` board page records its lifecycle as `run_status` (not `status`,
   an OKF key); `migrate_kind` renames existing boards. A tenant's own `status` data is untouched.
 
@@ -284,6 +285,11 @@ citation; never treat one as a link. The link's `skill` segment is its
     notes are kept and `expand` flags `backend_projection.issue.code = source_missing` (and
     `linked.orphan`); `list_instances` lists live rows only. Validation treats projected fields as
     supplied by the source (`required:` is not reported for them).
+    **Virtual rows are invisible to `search` and `neighbours`.** A row is not stored, so its own
+    values are not indexed and it has no edges; find a row with `list_instances` (filter on a
+    `filterable:` column) or by resolving `[[<skill>::<key>]]`. Its stored linked-notes page, once
+    written, is an ordinary page: searchable, with edges. (Pinned by
+    `rows_instances::search_and_neighbours_do_not_see_a_virtual_row_but_do_see_its_notes`.)
   - **`openapi` / `mcp` with `instances: rows`** — ONE INSTANCE PER OBJECT of an outside REST service
     or MCP server, read live, with the same page ids, `list_instances`/`expand` shapes and optional
     linked markdown as the `sql_view` rows above. The skill never carries a URL or a secret: `endpoint:`

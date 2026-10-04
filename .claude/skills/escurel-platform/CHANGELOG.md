@@ -4,6 +4,12 @@ The skill version tracks the consumer-facing contract, not the Escurel
 binary version. The Escurel repo's checked-out git ref is the true version
 pin (see `SKILL.md` → "How this skill is installed").
 
+## 0.13.1 — docs only
+
+- A query page's SQL keeps `WHERE page_type = 'instance'` although the frontmatter says `kind:`.
+- Virtual rows of an `instances: rows` skill are invisible to `search` and `neighbours` (their stored
+  notes page is not); the `search` tool description says so.
+
 ## 0.13.0 — BREAKING: `content[0].text` is a summary; `autonomy` is enforced for machine callers
 
 - **BREAKING — `tools/call` text block.** `result.content[0].text` is a one-or-two-line summary (what came
