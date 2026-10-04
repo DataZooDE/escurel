@@ -317,3 +317,34 @@ describe('<escurel-thread-inspector>', () => {
     });
   });
 });
+
+describe('cancelling from the Details panel asks first, inline', () => {
+  it('shows the question and posts nothing until it is confirmed', async () => {
+    const el = await fixture<EscurelThreadInspector>(
+      html`<escurel-thread-inspector
+        .detail=${
+          {
+            title: 'supplier-risk',
+            rows: [],
+            side: [],
+            sideTitle: '',
+            actions: {
+              controls: [{ action: 'cancel', label: 'Cancel run', enabled: true }],
+              skill: 's',
+            },
+          } as InspectorView
+        }
+        .nodeId=${'run-1'}
+      ></escurel-thread-inspector>`,
+    );
+    await el.updateComplete;
+    const sent: unknown[] = [];
+    el.addEventListener('escurel-message', (e) => sent.push((e as CustomEvent).detail));
+    (el.shadowRoot!.querySelector('.control-button') as HTMLButtonElement).click();
+    await el.updateComplete;
+    expect(el.shadowRoot!.querySelector('.confirm')!.textContent).to.contain('Cancel this run?');
+    expect(sent).to.deep.equal([]);
+    (el.shadowRoot!.querySelector('.confirm-yes') as HTMLButtonElement).click();
+    expect(sent).to.deep.equal([{ type: 'run-control', action: 'cancel', runId: 'run-1' }]);
+  });
+});

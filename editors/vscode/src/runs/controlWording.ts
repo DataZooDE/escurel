@@ -57,3 +57,11 @@ export function progressTitle(action: Action): string {
       return 'Resuming agents…';
   }
 }
+
+/**
+ * Who asks before a control runs. A tree row (it carries its `kind`) is asked here, in a dialog; a webview
+ * asks inline before it posts; a bare id or a `{ runId }` is a programmatic call and is trusted to have asked.
+ */
+export function asksHere(arg: unknown): boolean {
+  return typeof arg === 'object' && arg !== null && 'kind' in arg;
+}

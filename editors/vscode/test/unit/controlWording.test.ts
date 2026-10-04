@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { confirmationFor, outcomeChannel, progressTitle } from '../../src/runs/controlWording';
+import {
+  asksHere,
+  confirmationFor,
+  outcomeChannel,
+  progressTitle,
+} from '../../src/runs/controlWording';
 
 // Routine outcomes belong in the status bar (one line, expires); a toast is for what needs the user.
 describe('outcomeChannel', () => {
@@ -35,5 +40,16 @@ describe('progressTitle', () => {
   it('is one short line for the others', () => {
     expect(progressTitle('cancel')).toBe('Cancelling…');
     expect(progressTitle('pause')).toBe('Pausing agents…');
+  });
+});
+
+describe('asksHere', () => {
+  it('asks for a tree row, and never for a webview or a programmatic call', () => {
+    expect(asksHere({ kind: 'run', runId: 'r1' })).toBe(true);
+    expect(asksHere({ kind: 'dispatch' })).toBe(true);
+    // A webview posts { runId } after asking inline; a bare id comes from code.
+    expect(asksHere({ runId: 'r1' })).toBe(false);
+    expect(asksHere('r1')).toBe(false);
+    expect(asksHere(undefined)).toBe(false);
   });
 });

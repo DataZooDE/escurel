@@ -5,7 +5,7 @@ import type { Services } from '../services';
 import { buildControlEvent, type ControlRequest } from './controls';
 import { describeControlRefusal, describeOutcome, findControlResult } from './controlResult';
 import { registerAdminContext } from './adminContext';
-import { confirmationFor, outcomeChannel, progressTitle } from './controlWording';
+import { asksHere, confirmationFor, outcomeChannel, progressTitle } from './controlWording';
 
 type Action = ControlRequest['action'];
 export type Argument =
@@ -31,9 +31,7 @@ export function registerControlCommands(
   const once = inFlight();
   const register = (command: string, action: Action) =>
     vscode.commands.registerCommand(command, async (arg?: Argument) => {
-      // A bare id is a programmatic call; an object is a click on a row or a button: ask first.
-      const confirmation =
-        typeof arg === 'object' && arg !== null ? confirmationFor(action) : undefined;
+      const confirmation = asksHere(arg) ? confirmationFor(action) : undefined;
       if (confirmation) {
         const answer = await vscode.window.showWarningMessage(
           confirmation.message,
