@@ -993,11 +993,14 @@ impl Indexer {
                 // A parse failure short-circuits: there is no
                 // frontmatter / body to run the remaining checks
                 // against. One structured error rather than a panic.
-                return Ok(vec![Issue::error(
-                    "frontmatter_parse",
-                    "frontmatter",
-                    e.to_string(),
-                )]);
+                return Ok(vec![
+                    Issue::error("frontmatter_parse", "frontmatter", e.to_string()).with_suggestion(
+                        "start the page with a frontmatter block, e.g. \"---\\nkind: instance\\nid: \
+                         <slug>\\nskill: <skill>\\n---\\n<body>\" (a skill page: `kind: skill`, \
+                         `id`, `description`); the page-kind key is `kind:` — the old `type:` is no \
+                         longer accepted",
+                    ),
+                ]);
             }
         };
 

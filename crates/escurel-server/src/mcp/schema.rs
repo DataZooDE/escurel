@@ -98,7 +98,11 @@ pub(crate) fn tool_defs() -> Vec<ToolDef> {
             Execution::Deterministic,
             Scope::Agent,
             Touches::READ,
-            "Fetch a page's frontmatter + body + outbound wikilinks.",
+            "Fetch a page's frontmatter + body + outbound wikilinks. A row page (`instances: rows`) \
+                 merges the live row into its frontmatter: those fields are READ-ONLY (listed in \
+                 `backend_projection.read_only_fields`, with `direct_write: false`); send only your \
+                 own fields to `update_page`, and change source columns through a `write_back` \
+                 draft (`create_draft`). `backend_projection.etag` is its `base_etag`.",
             json!({
                 "type": "object",
                 "required": ["page_id"],
@@ -107,6 +111,7 @@ pub(crate) fn tool_defs() -> Vec<ToolDef> {
                     "as_of": { "type": "string", "description": "RFC 3339 time-travel cut; the page is null if born after it." },
                     "scenario": { "type": "string", "description": "What-if overlay to read against; absent = base only." },
                     "full": { "type": "boolean", "description": "Return ALL chunks of a document instance instead of the bounded lead (REQ-DOC-05)." },
+                    "include_schema": { "type": "boolean", "description": "Row pages (`instances: rows`): also return the column schema (`backend_projection.columns`) and the raw source row (`rows`). Default off: the values are in `backend_projection.source` and the frontmatter." },
                     "raw": { "type": "boolean", "description": "Also return the STORED markdown verbatim as `content` — the bytes behind `content_sha256` — for an editor that must show and re-save the author's own text. Plain reads only (never under as_of/scenario)." }
                 }
             }),
@@ -1311,13 +1316,16 @@ pub(crate) fn tool_defs() -> Vec<ToolDef> {
             json!({ "type": "object", "properties": {} }),
         ),
         tool_entry(
-            "describe_backend",
+            "describe_endpoint",
             Execution::Orchestration,
             Scope::Admin,
             Touches::READ,
-            "Admin: describe a registered MCP endpoint's tools and their argument names, to \
-                 author a skill's `backend:` list/read mapping. Never returns the server's own \
-                 descriptions or instructions (external text, not instructions).",
+            "Admin: describe a registered endpoint (`list_endpoints` names them): an MCP \
+                 endpoint's tools and their argument names, to author a skill's `backend:` \
+                 list/read mapping; an openapi endpoint answers its kind and base URL (it is \
+                 described by its own OpenAPI document). Never returns the server's own \
+                 descriptions or instructions (external text, not instructions). Formerly \
+                 `describe_backend` (still accepted).",
             json!({
                 "type": "object",
                 "properties": { "endpoint": { "type": "string" } },
@@ -1710,7 +1718,29 @@ pub(crate) fn tool_defs() -> Vec<ToolDef> {
 }
 
 pub(super) fn tools_list_payload() -> Value {
-    json!({ "tools": tool_defs().into_iter().map(|d| d.value).collect::<Vec<_>>() })
+    // Grouped the way an agent reads the catalogue (READ first, ADMIN last), alphabetical inside a
+    // group — the registry's own order is the order tools were added in.
+    let group_rank = |v: &Value| {
+        let d = v["description"].as_str().unwrap_or_default();
+        [
+            "[READ]",
+            "[WRITE]",
+            "[REVIEW]",
+            "[RUNNER]",
+            "[SESSION]",
+            "[ADMIN]",
+        ]
+        .iter()
+        .position(|g| d.starts_with(g))
+        .unwrap_or(usize::MAX)
+    };
+    let mut tools: Vec<Value> = tool_defs().into_iter().map(|d| d.value).collect();
+    tools.sort_by(|a, b| {
+        group_rank(a)
+            .cmp(&group_rank(b))
+            .then_with(|| a["name"].as_str().cmp(&b["name"].as_str()))
+    });
+    json!({ "tools": tools })
 }
 
 /// Tools a reader replica must refuse outright: they write the LOCAL index,
@@ -1786,7 +1816,7 @@ fn annotations_of(name: &str) -> Value {
                 | "query_instance"
                 | "validate"
                 | "diff_draft"
-                | "describe_backend"
+                | "describe_endpoint"
                 | "validate_bindings"
                 | "validate_endpoints"
                 | "admin_quota"
@@ -1833,7 +1863,7 @@ fn annotations_of(name: &str) -> Value {
         "list_instances"
             | "expand"
             | "resolve"
-            | "describe_backend"
+            | "describe_endpoint"
             | "validate_endpoints"
             | "write_instance"
             | "promote_draft"
@@ -2098,6 +2128,8 @@ pub(crate) fn canonical_tool_name(name: &str) -> Option<&'static str> {
         // legacy tool was admin-gated; the target enforces the
         // per-instance ACL, so routing is never a privilege increase.
         "run_stored_query" => "query_instance",
+        // Renamed: it describes an ENDPOINT (what `register_endpoint` made), not a backend.
+        "describe_backend" => "describe_endpoint",
         _ => return None,
     })
 }

@@ -570,6 +570,7 @@ pub(super) async fn tool_expand(
 ) -> Result<Value, JsonRpcError> {
     // A row of an `instances: rows` skill (stage 3) has no stored page of its own: the stored page
     // at its id, if any, is the row's LINKED MARKDOWN, and the two read as ONE instance.
+    // (`include_schema` is read from `args` by the two row expanders.)
     let a: ExpandArgs = parse_args(args.clone(), "expand")?;
     if let Some((skill, id)) = split_instance_page_id(&a.page_id)
         && let Some(src) = indexer
@@ -1118,6 +1119,7 @@ async fn expand_remote_row(
     id: &str,
 ) -> Result<Value, JsonRpcError> {
     let page_id = instance_page_id(&src.skill, id);
+    let args_include_schema = args["include_schema"].as_bool().unwrap_or(false);
     let stored = tool_expand_stored(state, indexer, caller, args).await?;
     let has_stored = !stored["page"].is_null();
     let fetched_at = escurel_index::now_rfc3339_micros();
@@ -1139,7 +1141,7 @@ async fn expand_remote_row(
                 row_shell(&page_id, id, &src.skill)
             };
             out["backend_projection"] = json!({
-                "kind": kind, "instances": "rows", "read_only": true, "trust": "external",
+                "kind": kind, "instances": "rows", "read_only": true, "direct_write": false, "trust": "external",
                 "fetched_at": fetched_at, "rows": [], "source": {},
                 "linked": linked(has_stored, false),
                 "issue": { "code": "source_unavailable",
@@ -1154,7 +1156,7 @@ async fn expand_remote_row(
         }
         let mut out = stored;
         out["backend_projection"] = json!({
-            "kind": kind, "instances": "rows", "read_only": true, "trust": "external",
+            "kind": kind, "instances": "rows", "read_only": true, "direct_write": false, "trust": "external",
             "fetched_at": fetched_at, "rows": [], "source": {}, "linked": linked(true, true),
             "issue": { "code": "source_missing",
                 "message": "the upstream has no object with this key any more; the linked notes are kept" },
@@ -1169,15 +1171,20 @@ async fn expand_remote_row(
     {
         return Ok(row_hidden(&page_id));
     }
-    let projection = json!({
-        "kind": kind, "instances": "rows", "read_only": true, "trust": "external",
-        "fetched_at": fetched_at, "rows": [fields.clone()], "source": fields,
+    let mut projection = json!({
+        "kind": kind, "instances": "rows", "read_only": true, "direct_write": false, "trust": "external",
+        "fetched_at": fetched_at, "source": fields,
+        // The source's own fields as they appear in `frontmatter`: read-only there. Send only YOUR
+        // fields (the linked notes') to `update_page`; change these through a `write_back` draft.
+        "read_only_fields": row.fields.keys().collect::<Vec<_>>(),
         "truncated": false, "linked": linked(has_stored && src.cfg.linked, false),
         // What a reviewer saw: a write-back proposal names it as its `base_etag`.
         "etag": crate::write_back::etag_of(&row.fields),
     });
+    if args_include_schema {
+        projection["rows"] = json!([fields.clone()]);
+    }
     // The columns a person may propose to change upstream (only when the skill can write at all).
-    let mut projection = projection;
     if src.remote.write.is_some() && !src.cfg.writable_columns.is_empty() {
         projection["writable_columns"] = json!(src.cfg.writable_columns);
         // `read_only` means "not writable directly": the writable columns change only through a
@@ -1246,6 +1253,7 @@ async fn expand_row(
     id: &str,
 ) -> Result<Value, JsonRpcError> {
     let page_id = instance_page_id(&src.skill, id);
+    let include_schema = args["include_schema"].as_bool().unwrap_or(false);
     let stored = tool_expand_stored(state, indexer, caller, args).await?;
     let has_stored = !stored["page"].is_null();
     let row = indexer
@@ -1263,7 +1271,7 @@ async fn expand_row(
         }
         let mut out = stored;
         out["backend_projection"] = json!({
-            "view": src.view, "instances": "rows", "read_only": true, "trust": "source",
+            "view": src.view, "instances": "rows", "read_only": true, "direct_write": false, "trust": "source",
             "fetched_at": fetched_at, "rows": [], "source": {}, "truncated": false,
             "linked": linked(true, true),
             "issue": { "code": "source_missing",
@@ -1281,18 +1289,29 @@ async fn expand_row(
     {
         return Ok(row_hidden(&page_id));
     }
-    let projection = json!({
-        "view": src.view, "instances": "rows", "read_only": true, "trust": "source",
-        "fetched_at": fetched_at, "rows": [row.columns], "source": fields,
+    let mut projection = json!({
+        "view": src.view, "instances": "rows", "read_only": true, "direct_write": false, "trust": "source",
+        "fetched_at": fetched_at, "source": fields,
+        // The source's own fields as they appear in `frontmatter`: read-only there. Send only YOUR
+        // fields (the linked notes') to `update_page`; change these through a `write_back` draft.
+        "read_only_fields": row.fields.keys().collect::<Vec<_>>(),
         "truncated": false,
         "linked": linked(has_stored && src.cfg.linked, false),
-        // The DISCOVERED schema (DuckDB `DESCRIBE`); the skill's own `fields:` override kind and label.
-        "columns": row.types.iter().map(|(n, t)| json!({
-            "name": n, "type": t,
-            "kind": escurel_index::backend::rows::field_kind_for(t),
-        })).collect::<Vec<_>>(),
     });
-    let mut projection = projection;
+    if include_schema {
+        // The DISCOVERED schema (DuckDB `DESCRIBE`; the skill's own `fields:` override kind and label)
+        // and the raw source row, columns as the source names them.
+        projection["rows"] = json!([row.columns]);
+        projection["columns"] = json!(
+            row.types
+                .iter()
+                .map(|(n, t)| json!({
+                    "name": n, "type": t,
+                    "kind": escurel_index::backend::rows::field_kind_for(t),
+                }))
+                .collect::<Vec<_>>()
+        );
+    }
     if escurel_index::Indexer::rows_source_is_writable(src) {
         // What a reviewer saw: a write-back proposal names it as its `base_etag`, and the columns
         // that may be proposed. `read_only` means "not writable DIRECTLY": these change only through a

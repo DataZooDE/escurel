@@ -64,3 +64,14 @@ One line per change. Folded into the root `CHANGELOG.md` BREAKING entry and `doc
   in the typed shape (`list_inbox` / `list_events` / `list_messages` used to answer a bare JSON-RPC
   `-32602` carrying a decoder message). The key is random per process: a cursor does not survive a restart
   (restart the listing); replicas of one deployment share `ESCUREL_CURSOR_KEY` so paging works across them.
+- `expand` of a ROW page (`instances: rows`) returns each value once: the projected values are in
+  `backend_projection.source` (and the frontmatter); the discovered `columns` schema and the raw `rows`
+  are behind the new `include_schema: true`. `backend_projection.read_only_fields` names the
+  source-owned frontmatter fields (send only your own fields to `update_page`), and `direct_write: false`
+  says what `read_only: true` meant (rows change through a `write_back` draft); `read_only` stays for one
+  release and is deprecated.
+- `describe_backend` is renamed `describe_endpoint` (the old name still answers for one release); for an
+  `openapi` endpoint it answers `{kind, base_url, hint}` instead of an `invalid_params` error. `tools/list`
+  is sorted by group tag (READ, WRITE, REVIEW, RUNNER, SESSION, ADMIN) and then by name.
+- A write whose page has no frontmatter (or none `kind:`) is refused `frontmatter_parse` WITH a
+  `suggestion` holding a minimal frontmatter example and the `type:` -> `kind:` rename.

@@ -614,3 +614,156 @@ async fn cursors_are_signed_and_every_list_refuses_a_bad_one_the_same_way() {
         assert!(is_invalid_cursor(&r), "{tool}: {r}");
     }
 }
+
+// ------------------------------------------------------------------- row ergonomics ---
+
+/// A row's values are returned once: `source` carries them, the schema and the raw row are behind
+/// `include_schema`, the source-owned frontmatter fields are named, and `direct_write: false` says
+/// what `read_only: true` always meant (rows change through a `write_back` draft).
+#[tokio::test]
+async fn expanding_a_row_returns_each_value_once() {
+    let g = Gw::start().await;
+    let slim = g.admin("expand", json!({ "page_id": row_page(2) })).await;
+    let bp = &slim["backend_projection"];
+    assert!(
+        bp.get("columns").is_none() && bp.get("rows").is_none(),
+        "{bp}"
+    );
+    assert_eq!(bp["source"]["sales_doc"], doc(2), "{bp}");
+    assert_eq!(bp["direct_write"], false, "{bp}");
+    assert_eq!(bp["read_only"], true, "kept for one release: {bp}");
+    let ro: Vec<&str> = bp["read_only_fields"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(Value::as_str)
+        .collect();
+    assert!(
+        ro.contains(&"sales_doc") && ro.contains(&"status"),
+        "{ro:?}"
+    );
+    assert_eq!(bp["writable_via"], "write_back", "{bp}");
+
+    let full = g
+        .admin(
+            "expand",
+            json!({ "page_id": row_page(2), "include_schema": true }),
+        )
+        .await;
+    let bp = &full["backend_projection"];
+    assert!(
+        bp["columns"].as_array().is_some_and(|c| !c.is_empty()),
+        "{bp}"
+    );
+    assert_eq!(bp["rows"].as_array().map(Vec::len), Some(1), "{bp}");
+    assert!(
+        slim.to_string().len() < full.to_string().len(),
+        "the default answer is the smaller one"
+    );
+}
+
+/// A body-only write is refused WITH the shape that would have worked (and the `type:` -> `kind:` rename).
+#[tokio::test]
+async fn a_write_without_frontmatter_is_refused_with_a_minimal_example() {
+    let p = start().await;
+    let admin = p.mint_token(TENANT, Role::Admin);
+    let r = call(
+        &p,
+        &admin,
+        "update_page",
+        json!({ "page_id": "markdown/instances/note/z.md", "content": "just a body" }),
+    )
+    .await;
+    let i = first_issue(&r);
+    assert_eq!(i["code"], "frontmatter_parse", "{r}");
+    let hint = i["suggestion"].as_str().unwrap_or_default();
+    assert!(
+        hint.contains("kind: instance") && hint.contains("skill: <skill>"),
+        "{hint}"
+    );
+    assert!(hint.contains("`type:`"), "names the retired key: {hint}");
+    assert!(
+        text_of(&r).contains("kind: instance"),
+        "the text carries it too: {}",
+        text_of(&r)
+    );
+}
+
+// ------------------------------------------------------------------- naming and order ---
+
+async fn tools_list(p: &EscurelProcess, token: &str) -> Vec<Value> {
+    let v: Value = reqwest::Client::new()
+        .post(p.mcp_url())
+        .header("authorization", format!("Bearer {token}"))
+        .json(&json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/list" }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    v["result"]["tools"].as_array().cloned().unwrap_or_default()
+}
+
+/// `tools/list` is grouped (READ, WRITE, REVIEW, RUNNER, SESSION, ADMIN) and alphabetical inside a
+/// group, so an agent scanning ~40 tools finds the one it wants.
+#[tokio::test]
+async fn tools_list_is_grouped_and_sorted() {
+    let p = start().await;
+    let admin = p.mint_token(TENANT, Role::Admin);
+    let tools = tools_list(&p, &admin).await;
+    let order = [
+        "[READ]",
+        "[WRITE]",
+        "[REVIEW]",
+        "[RUNNER]",
+        "[SESSION]",
+        "[ADMIN]",
+    ];
+    let key = |t: &Value| {
+        let d = t["description"].as_str().unwrap();
+        (
+            order
+                .iter()
+                .position(|g| d.starts_with(g))
+                .expect("every tool has a group tag"),
+            t["name"].as_str().unwrap().to_owned(),
+        )
+    };
+    let keys: Vec<_> = tools.iter().map(key).collect();
+    let mut sorted = keys.clone();
+    sorted.sort();
+    assert_eq!(keys, sorted, "grouped, then by name");
+}
+
+/// `describe_backend` is `describe_endpoint` (it describes what `register_endpoint` made); the old
+/// name still answers for a release. An openapi endpoint gets an answer, not a protocol error.
+#[tokio::test]
+async fn describe_endpoint_replaces_describe_backend_and_answers_for_openapi() {
+    let p = start().await;
+    let admin = p.mint_token(TENANT, Role::Admin);
+    let names: Vec<String> = tools_list(&p, &admin)
+        .await
+        .iter()
+        .filter_map(|t| t["name"].as_str().map(str::to_owned))
+        .collect();
+    assert!(names.contains(&"describe_endpoint".to_owned()), "{names:?}");
+    assert!(!names.contains(&"describe_backend".to_owned()), "{names:?}");
+
+    let reg = call(
+        &p,
+        &admin,
+        "register_endpoint",
+        json!({ "name": "crm", "kind": "openapi", "base_url": "http://127.0.0.1:9/" }),
+    )
+    .await;
+    assert_eq!(reg["result"]["structuredContent"]["ok"], true, "{reg}");
+    for tool in ["describe_endpoint", "describe_backend"] {
+        let d = call(&p, &admin, tool, json!({ "endpoint": "crm" })).await;
+        assert_eq!(d["result"]["isError"], json!(false), "{tool}: {d}");
+        assert_eq!(
+            d["result"]["structuredContent"]["kind"], "openapi",
+            "{tool}: {d}"
+        );
+    }
+}
