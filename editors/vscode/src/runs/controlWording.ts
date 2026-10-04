@@ -23,7 +23,7 @@ export interface Confirmation {
 }
 
 /** The questions asked before an action that cannot be taken back. Undoable actions are not asked. */
-export function confirmationFor(action: Action): Confirmation | undefined {
+export function confirmationFor(action: string): Confirmation | undefined {
   switch (action) {
     case 'cancel':
       return {

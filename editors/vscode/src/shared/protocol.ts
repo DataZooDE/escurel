@@ -99,6 +99,8 @@ export interface RunControl {
   /** Deactivated, not hidden: a control that is not yours still shows, with the reason. */
   enabled: boolean;
   disabledReason?: string;
+  /** What the control does, in one sentence (the tooltip): "Starts a new run; this attempt stays in history." */
+  hint?: string;
 }
 
 export type WebviewToHost =

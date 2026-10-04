@@ -578,3 +578,61 @@ describe('a failed run', () => {
     );
   });
 });
+
+describe('cancelling a run asks first, inline', () => {
+  const running = (): RunView => ({
+    ...recordedRunView,
+    status: 'running',
+    controls: [{ action: 'cancel', label: 'Cancel run', enabled: true, hint: 'Stops the run.' }],
+  });
+  it('shows the question and the consequence, and sends nothing until it is confirmed', async () => {
+    const el = await fixture<EscurelRunDetail>(
+      html`<escurel-run-detail .view=${running()}></escurel-run-detail>`,
+    );
+    await el.updateComplete;
+    const sent: RunWebviewToHost[] = [];
+    el.addEventListener('escurel-message', (e) =>
+      sent.push((e as CustomEvent<RunWebviewToHost>).detail),
+    );
+    (el.shadowRoot!.querySelector('.run-control') as HTMLButtonElement).click();
+    await el.updateComplete;
+    const confirm = el.shadowRoot!.querySelector('.confirm')!;
+    expect(confirm.textContent).to.contain('Cancel this run?');
+    expect(confirm.textContent).to.contain('Work already done is kept');
+    expect(sent).to.deep.equal([]);
+    (el.shadowRoot!.querySelector('.confirm-no') as HTMLButtonElement).click();
+    await el.updateComplete;
+    expect(el.shadowRoot!.querySelector('.confirm')).to.equal(null);
+    expect(sent).to.deep.equal([]);
+    (el.shadowRoot!.querySelector('.run-control') as HTMLButtonElement).click();
+    await el.updateComplete;
+    (el.shadowRoot!.querySelector('.confirm-yes') as HTMLButtonElement).click();
+    expect(sent).to.deep.equal([
+      { type: 'run-control', action: 'cancel', runId: recordedRunView.runId },
+    ]);
+  });
+  it('does not ask before a retry, and the retry says what it does', async () => {
+    const el = await fixture<EscurelRunDetail>(
+      html`<escurel-run-detail
+        .view=${{
+          ...recordedRunView,
+          status: 'failed',
+          controls: [
+            {
+              action: 'retry',
+              label: 'Retry',
+              enabled: true,
+              hint: 'Starts a new run. This attempt stays in history.',
+            },
+          ],
+        }}
+      ></escurel-run-detail>`,
+    );
+    await el.updateComplete;
+    const btn = el.shadowRoot!.querySelector('.run-control') as HTMLButtonElement;
+    expect(btn.getAttribute('title')).to.contain('stays in history');
+    btn.click();
+    await el.updateComplete;
+    expect(el.shadowRoot!.querySelector('.confirm')).to.equal(null);
+  });
+});

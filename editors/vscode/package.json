@@ -1091,23 +1091,23 @@
       },
       {
         "command": "escurel.focusRuns",
-        "key": "ctrl+alt+e r",
-        "mac": "cmd+alt+e r"
+        "key": "ctrl+alt+r",
+        "mac": "cmd+alt+r"
       },
       {
         "command": "escurel.focusAwaiting",
-        "key": "ctrl+alt+e a",
-        "mac": "cmd+alt+e a"
+        "key": "ctrl+alt+a",
+        "mac": "cmd+alt+a"
       },
       {
         "command": "escurel.focusInbox",
-        "key": "ctrl+alt+e i",
-        "mac": "cmd+alt+e i"
+        "key": "ctrl+alt+i",
+        "mac": "cmd+alt+i"
       },
       {
         "command": "escurel.focusKnowledge",
-        "key": "ctrl+alt+e k",
-        "mac": "cmd+alt+e k"
+        "key": "ctrl+alt+k",
+        "mac": "cmd+alt+k"
       }
     ]
   },

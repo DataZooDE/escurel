@@ -34,13 +34,15 @@ suite('runs panel in cascade', () => {
       60_000,
       'the dispatch row',
     );
-    assert.equal(dispatch.label, 'Dispatch is on');
+    assert.equal(dispatch.label, 'Agents are running');
     assert.equal(dispatch.contextValue, 'dispatch.running');
-    // The runner sentence is the view's own message, with the harness in words, not "harness: echo".
+    // The sentence is the view's own message, in words, with no engine name ("harness: echo") in it.
     const sentence = await until(
       () => {
         const m = api.runner.viewMessage;
-        return /Runner ok · echo harness \(demo, no AI model\) · last seen/.test(m) ? m : undefined;
+        return /^Agents are running · last seen/.test(m) && !/harness|echo/i.test(m)
+          ? m
+          : undefined;
       },
       60_000,
       'the runner sentence',
@@ -67,9 +69,10 @@ suite('runs panel in cascade', () => {
     );
     assert.equal(row.state, 'succeeded');
     // It names the skill and the page, never an id.
-    assert.match(row.label, /^supplier-risk · order-/);
+    assert.match(row.label, /^Done · supplier-risk · order-/);
     assert.doesNotMatch(row.label, /[0-9A-Z]{20,}/);
-    assert.match(row.description ?? '', /^ok · /);
+    // The outcome is the label's first word; the description is only the time.
+    assert.match(row.description ?? '', /\d+ (ms|s|min)|now|\d+ m/);
     assert.match(row.tooltip ?? '', /succeeded/);
     // And it is not still "running": a stale Running row after a run ended was the old panel's bug.
     const roots = await api.runner.getChildren();
@@ -102,7 +105,7 @@ suite('runs panel in cascade', () => {
     );
     assert.equal(row.contextValue, 'run.failed');
     assert.ok(row.runId, 'the row carries the run id the retry and open commands read');
-    assert.match(row.description ?? '', /^(gave up|failed)/);
+    assert.match(row.label, /^(Gave up|Failed) · /);
     // The reason is its own row beneath, not a cut-off description.
     assert.equal(row.children?.[0]?.kind, 'reason');
     assert.ok(row.children![0]!.label.length > 0);

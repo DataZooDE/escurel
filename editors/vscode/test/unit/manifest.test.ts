@@ -284,3 +284,26 @@ describe('first run and discoverability', () => {
     expect(m.activationEvents).toContain('onView:escurel.runner');
   });
 });
+
+describe('keybindings', () => {
+  it('give each view a focus key, and no chord hides another binding', () => {
+    const kb = (
+      manifest.contributes as unknown as { keybindings: { command: string; key: string }[] }
+    ).keybindings;
+    for (const c of [
+      'escurel.focusRuns',
+      'escurel.focusAwaiting',
+      'escurel.focusInbox',
+      'escurel.focusKnowledge',
+    ])
+      expect(
+        kb.some((k) => k.command === c),
+        c,
+      ).toBe(true);
+    // A chord that starts with another binding's whole key makes that binding unreachable.
+    const keys = kb.map((k) => k.key);
+    for (const a of keys)
+      for (const b of keys) if (a !== b) expect(b.startsWith(`${a} `), `${a} vs ${b}`).toBe(false);
+    expect(new Set(keys).size).toBe(keys.length);
+  });
+});

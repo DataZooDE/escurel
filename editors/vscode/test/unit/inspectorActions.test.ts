@@ -97,7 +97,7 @@ describe('inspectorActions', () => {
         { ...rawRunNode, state: 'running' },
         { admin: 'admin', lineageNodes: folded.nodes },
       );
-      expect(runningActions?.controls).toEqual([
+      expect(runningActions?.controls).toMatchObject([
         { action: 'cancel', label: 'Cancel run', enabled: true },
       ]);
       expect(runningActions?.skill).toBe('note');
@@ -108,7 +108,7 @@ describe('inspectorActions', () => {
         { ...rawRunNode, state: 'planned' },
         { admin: 'admin', lineageNodes: folded.nodes },
       );
-      expect(plannedActions?.controls).toEqual([
+      expect(plannedActions?.controls).toMatchObject([
         { action: 'approve', label: 'Approve plan', enabled: true },
       ]);
       expect(plannedActions?.skill).toBe('note');
@@ -119,7 +119,7 @@ describe('inspectorActions', () => {
         { ...rawRunNode, state: 'failed' },
         { admin: 'admin', lineageNodes: folded.nodes },
       );
-      expect(failedActions?.controls).toEqual([
+      expect(failedActions?.controls).toMatchObject([
         { action: 'retry', label: 'Retry', enabled: true },
         { action: 'fix-skill', label: 'Fix skill', enabled: true },
       ]);
@@ -131,7 +131,7 @@ describe('inspectorActions', () => {
         { ...rawRunNode, state: 'dead_letter' },
         { admin: 'admin', lineageNodes: folded.nodes },
       );
-      expect(deadLetterActions?.controls).toEqual([
+      expect(deadLetterActions?.controls).toMatchObject([
         { action: 'retry', label: 'Retry', enabled: true },
         { action: 'requeue', label: 'Requeue', enabled: true },
         { action: 'fix-skill', label: 'Fix skill', enabled: true },
@@ -143,7 +143,7 @@ describe('inspectorActions', () => {
         { ...rawRunNode, state: 'cancelled' },
         { admin: 'admin', lineageNodes: folded.nodes },
       );
-      expect(cancelledActions?.controls).toEqual([
+      expect(cancelledActions?.controls).toMatchObject([
         { action: 'retry', label: 'Retry', enabled: true },
       ]);
 
@@ -153,7 +153,7 @@ describe('inspectorActions', () => {
         { ...rawRunNode, state: 'processed' },
         { admin: 'admin', lineageNodes: folded.nodes },
       );
-      expect(processedActions?.controls).toEqual([]);
+      expect(processedActions?.controls).toMatchObject([]);
     });
 
     it('Requeue disabled with a reason for not-admin, enabled for admin and unknown', () => {
@@ -169,7 +169,7 @@ describe('inspectorActions', () => {
         { admin: 'not-admin', lineageNodes: folded.nodes },
       );
       const requeueNotAdmin = notAdmin?.controls?.find((c) => c.action === 'requeue');
-      expect(requeueNotAdmin).toEqual({
+      expect(requeueNotAdmin).toMatchObject({
         action: 'requeue',
         label: 'Requeue',
         enabled: false,
@@ -183,7 +183,7 @@ describe('inspectorActions', () => {
         { admin: 'admin', lineageNodes: folded.nodes },
       );
       const requeueAdmin = admin?.controls?.find((c) => c.action === 'requeue');
-      expect(requeueAdmin).toEqual({
+      expect(requeueAdmin).toMatchObject({
         action: 'requeue',
         label: 'Requeue',
         enabled: true,
@@ -196,7 +196,7 @@ describe('inspectorActions', () => {
         { admin: 'unknown', lineageNodes: folded.nodes },
       );
       const requeueUnknown = unknownAdmin?.controls?.find((c) => c.action === 'requeue');
-      expect(requeueUnknown).toEqual({
+      expect(requeueUnknown).toMatchObject({
         action: 'requeue',
         label: 'Requeue',
         enabled: true,
@@ -237,7 +237,7 @@ describe('inspectorActions', () => {
 
       // Run node got controls
       const runNode = view.nodes.find((n) => n.kind === 'run')!;
-      expect(details[runNode.id]?.actions?.controls).toEqual([]); // processed run
+      expect(details[runNode.id]?.actions?.controls).toMatchObject([]); // processed run
       expect(details[runNode.id]?.actions?.skill).toBe('note');
     });
   });

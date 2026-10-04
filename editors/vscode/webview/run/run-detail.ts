@@ -15,6 +15,8 @@ import { property, state } from 'lit/decorators.js';
 import type { RunControl, RunView, RunWebviewToHost } from '../../src/shared/protocol';
 import { formatDateTime, formatDuration } from '../../src/shared/time';
 import { theme } from '../shared/theme.css';
+import { confirmRow, confirmStyles } from '../shared/confirm';
+import { confirmationFor } from '../../src/runs/controlWording';
 
 const glyphs = { completed: '✓', in_progress: '◐', pending: '○', blocked: '!', unfinished: '◌' };
 
@@ -34,6 +36,7 @@ const statusIcon = (status: string) => {
 export class EscurelRunDetail extends LitElement {
   static styles = [
     theme,
+    confirmStyles,
     css`
       :host {
         padding: 12px 20px 40px;
@@ -287,11 +290,14 @@ export class EscurelRunDetail extends LitElement {
    * seconds in case it never does.
    */
   @state() private controlPending = false;
+  /** The control waiting for a yes: cancelling asks first, inline (a webview has no modal). */
+  @state() private confirming: string | undefined;
   private pendingTimer?: ReturnType<typeof setTimeout>;
 
   protected override willUpdate(changed: PropertyValues<this>): void {
     if (changed.has('view')) {
       this.loadingMore = false;
+      this.confirming = undefined;
       this.releaseControls();
     }
   }
@@ -310,6 +316,11 @@ export class EscurelRunDetail extends LitElement {
     // aria-disabled keeps a deactivated control reachable and announced, so the click is what is
     // refused here, not the focus.
     if (!control.enabled || this.controlPending) return;
+    if (confirmationFor(control.action) && this.confirming !== control.action) {
+      this.confirming = control.action;
+      return;
+    }
+    this.confirming = undefined;
     this.controlPending = true;
     clearTimeout(this.pendingTimer);
     this.pendingTimer = setTimeout(() => this.releaseControls(), 5_000);
@@ -371,7 +382,7 @@ export class EscurelRunDetail extends LitElement {
                     <button
                       class="run-control ${control.action === 'approve' ? 'primary' : ''}"
                       aria-disabled=${!control.enabled || this.controlPending ? 'true' : nothing}
-                      title=${control.disabledReason ?? ''}
+                      title=${control.disabledReason ?? control.hint ?? ''}
                       aria-describedby=${
                         !control.enabled && control.disabledReason ? 'control-hint' : nothing
                       }
@@ -385,6 +396,18 @@ export class EscurelRunDetail extends LitElement {
             : nothing
         }
         ${this.controlHint(run)}
+        ${
+          this.confirming && confirmationFor(this.confirming)
+            ? confirmRow(
+                confirmationFor(this.confirming)!,
+                () => {
+                  const c = (run.controls ?? []).find((x) => x.action === this.confirming);
+                  if (c) this.onControl(run, c);
+                },
+                () => (this.confirming = undefined),
+              )
+            : nothing
+        }
       </header>
       ${
         run.failure

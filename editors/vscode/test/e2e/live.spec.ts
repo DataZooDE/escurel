@@ -128,7 +128,7 @@ test('run detail opens from the canvas with its plan and tool calls', async ({ s
   await expect(page.locator('.tab .label-name', { hasText: /^Run / })).toBeVisible();
   const run = await webviewWith(page, 'escurel-run-detail');
   await expect(run.locator('escurel-run-detail h1')).toContainText('supplier-risk on ');
-  await expect(run.getByText('Tool calls')).toBeVisible();
+  await expect(run.getByText('What the agent did')).toBeVisible();
   // Plain words, and the 26-character id stays behind Copy run id.
   await expect(run.locator('escurel-run-detail .meta')).toContainText('Run by the');
   await expect(run.getByRole('button', { name: 'Copy run id' })).toBeVisible();
@@ -464,12 +464,12 @@ test('a live run can be cancelled from its run detail', async ({ stack }) => {
   await expect(cancel).toBeVisible();
   await stack.shot('08-cancel-offered');
   await cancel.click();
-  // Cancelling asks first, and says what is kept.
-  const dialog = page.locator('.monaco-dialog-box');
-  await expect(dialog).toContainText(/Cancel this run\?/);
-  await expect(dialog).toContainText(/Work already done is kept/);
+  // Cancelling asks first, inline, and says what is kept.
+  const confirm = run.locator('escurel-run-detail .confirm');
+  await expect(confirm).toContainText(/Cancel this run\?/);
+  await expect(confirm).toContainText(/Work already done is kept/);
   await stack.shot('08d-cancel-confirmation');
-  await dialog.getByRole('button', { name: 'Cancel run' }).click();
+  await confirm.getByRole('button', { name: 'Cancel run' }).click();
   await expect(run.locator('.status-chip')).toContainText('cancelled', { timeout: 30_000 });
   await expect(page.locator('.statusbar').getByText(/Run cancelled/)).toBeVisible({
     timeout: 30_000,

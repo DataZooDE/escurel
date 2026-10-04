@@ -13,19 +13,25 @@ import { middleTruncate } from '../../src/shared/middleTruncate';
 import { START_ITEMS } from '../shared/skill-button';
 import '../shared/skill-button';
 import { splitButton, theme } from '../shared/theme.css';
+import { confirmRow, confirmStyles } from '../shared/confirm';
+import { confirmationFor } from '../../src/runs/controlWording';
 
 export class EscurelThreadInspector extends LitElement {
   static override properties = {
     detail: { attribute: false },
     nodeId: { type: String },
+    confirming: { state: true },
   };
 
   declare detail: InspectorView | undefined;
   declare nodeId: string | undefined;
+  /** The control waiting for a yes: cancelling asks first, inline (a webview has no modal). */
+  declare confirming: string | undefined;
 
   static override styles = [
     theme,
     splitButton,
+    confirmStyles,
     css`
       :host {
         display: block;
@@ -243,6 +249,11 @@ export class EscurelThreadInspector extends LitElement {
   }
 
   private onRunControl(action: RunControlAction): void {
+    if (confirmationFor(action) && this.confirming !== action) {
+      this.confirming = action;
+      return;
+    }
+    this.confirming = undefined;
     const runId = this.nodeId ?? (this.detail?.actions as { runId?: string } | undefined)?.runId;
     this.send({ type: 'run-control', action, runId });
   }
@@ -280,7 +291,7 @@ export class EscurelThreadInspector extends LitElement {
             <button
               class="control-button ${c.action === 'approve' ? 'primary' : ''}"
               aria-disabled=${c.enabled ? nothing : 'true'}
-              title=${c.disabledReason ?? c.label}
+              title=${c.disabledReason ?? c.hint ?? c.label}
               aria-describedby=${!c.enabled && c.disabledReason ? 'control-hint' : nothing}
               @click=${() => c.enabled && this.onRunControl(c.action)}
             >
@@ -289,6 +300,15 @@ export class EscurelThreadInspector extends LitElement {
           `,
         )}
         ${reason ? html`<p class="control-hint" id="control-hint">${reason}</p>` : nothing}
+        ${
+          this.confirming && confirmationFor(this.confirming)
+            ? confirmRow(
+                confirmationFor(this.confirming)!,
+                () => this.onRunControl(this.confirming as RunControlAction),
+                () => (this.confirming = undefined),
+              )
+            : nothing
+        }
       </div>
     `;
   }
