@@ -4,6 +4,25 @@ The skill version tracks the consumer-facing contract, not the Escurel
 binary version. The Escurel repo's checked-out git ref is the true version
 pin (see `SKILL.md` → "How this skill is installed").
 
+## 0.15.0 — `list_skills` carries the OKF provenance keys and Peacock's `viewer:`
+
+Additive (a client that ignores the new keys keeps working; rows of skills that declare none are
+byte-identical to before).
+
+- **New row keys, present only when declared:** `generated`, `verified`, `status`, `stale_after`
+  (strings, as written: a date or RFC 3339 instant; `stale_after` may be an ISO-8601 duration such as
+  `P90D`, counted from `verified` — the CLIENT decides whether the skill is stale), `sources` (a list of
+  links or `{title, url}` objects) and `viewer` (`{report, param?}`: Peacock's pointer to the report
+  skill that charts this skill's instances). The same keys appear in `escurel skill list`.
+- They stay optional and lint-only (`validate` warns about malformed ones, never rejects). A skill's own
+  `fields:` declaration still wins over an OKF key; INSTANCE pages keep their own meaning of `status`.
+- `expand` already returned a page's whole frontmatter, so nothing changes there.
+- **`search` and `neighbours` now reach rows of `instances: rows` skills** (DuckDB sources): `search`
+  matches the key and the declared `filterable:` columns (capped: 20 per skill, 50 in all; ACL per row;
+  nothing else is searchable), and `neighbours` follows a row's notes and finds links INTO a row without
+  notes (an edge to an unreadable row is dropped). A REST/MCP-backed skill is not searched: the `search`
+  answer carries a `hint` naming it.
+
 ## 0.14.0 — SQL rows: database connectors and human-gated write-back (additive)
 
 - **`sql_view` rows over a real database.** `connector: postgres | mysql | sqlite` with `instances: rows` pages
@@ -40,8 +59,8 @@ pin (see `SKILL.md` → "How this skill is installed").
 ## 0.13.1 — docs only
 
 - A query page's SQL keeps `WHERE page_type = 'instance'` although the frontmatter says `kind:`.
-- Virtual rows of an `instances: rows` skill are invisible to `search` and `neighbours` (their stored
-  notes page is not); the `search` tool description says so.
+- Virtual rows of an `instances: rows` skill were invisible to `search` and `neighbours` (their stored
+  notes page is not) — superseded in 0.15.0, which makes rows searchable by key and `filterable:` columns.
 
 ## 0.13.0 — BREAKING: `content[0].text` is a summary; `autonomy` is enforced for machine callers
 

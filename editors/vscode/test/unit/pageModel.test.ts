@@ -214,4 +214,24 @@ describe('buildPageModel on a row instance', () => {
     } as unknown as Parameters<typeof buildPageModel>[1];
     expect(buildPageModel(e, skill).source).toBeUndefined();
   });
+
+  it("carries the skill's OKF provenance as short facts, and says when it has gone stale", () => {
+    const now = Date.parse('2026-10-04T12:00:00Z');
+    const fresh = buildPageModel(
+      expanded,
+      { ...skill, verified: '2026-09-30', stale_after: 'P90D' },
+      now,
+    );
+    expect(fresh.skill.facts).toEqual(['verified 2026-09-30', 'stale after P90D']);
+    expect(fresh.skill.stale).toBeUndefined();
+    const old = buildPageModel(
+      expanded,
+      { ...skill, verified: '2026-01-01', stale_after: 'P30D' },
+      now,
+    );
+    expect(old.skill.stale).toBe(true);
+    expect(old.skill.facts?.[0]).toBe('stale');
+    // A skill that declares nothing adds nothing to the model.
+    expect(buildPageModel(expanded, skill, now).skill.facts).toBeUndefined();
+  });
 });

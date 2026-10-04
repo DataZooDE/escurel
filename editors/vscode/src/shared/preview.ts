@@ -61,12 +61,10 @@ function issueOf(raw: unknown): { code: string; message: string } {
 export function buildPreview(e: ExpandResponse, backendKind: string): PreviewModel | undefined {
   if (backendKind === 'document') {
     const all = e.blocks ?? [];
-    const chunks = all
-      .slice(0, MAX_CHUNKS)
-      .map((b) => ({
-        anchor: cleanText(String(b.anchor), 80),
-        text: cleanBlock(String(b.content), MAX_CHUNK),
-      }));
+    const chunks = all.slice(0, MAX_CHUNKS).map((b) => ({
+      anchor: cleanText(String(b.anchor), 80),
+      text: cleanBlock(String(b.content), MAX_CHUNK),
+    }));
     const total = typeof e.chunks_total === 'number' ? e.chunks_total : all.length;
     return {
       kind: 'document',

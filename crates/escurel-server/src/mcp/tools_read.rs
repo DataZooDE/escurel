@@ -98,6 +98,12 @@ fn skill_to_wire(s: escurel_index::SkillInfo, is_admin: bool) -> TypesSkill {
         tags: s.tags,
         title: s.title,
         resource: s.resource,
+        generated: s.generated,
+        verified: s.verified,
+        status: s.status,
+        stale_after: s.stale_after,
+        sources: s.sources,
+        viewer: s.viewer,
         actions: s.actions,
         cascade: s.cascade.map(|c| escurel_types::SkillCascade {
             target: c.target,
@@ -1301,16 +1307,26 @@ pub(super) async fn tool_neighbours(
         } else {
             &e.src_page
         };
-        let readable = match indexer
-            .expand(neighbour, None, None)
-            .await
-            .map_err(|err| JsonRpcError::internal(format!("neighbours acl: {err}")))?
-        {
-            Some(ex) if ex.page.page_kind == PageKind::Instance => indexer
-                .may_read_instance(&caller, &ex.page.skill, &ex.frontmatter)
+        // A link into a ROW of an `instances: rows` skill points at a key, not a stored page: the
+        // row's own columns decide who may see it (the same rule as reading the row directly).
+        let row_verdict = if neighbour == &e.dst_page {
+            virtual_row_readable(indexer, &caller, &e.link_skill, &e.dst_page).await?
+        } else {
+            None
+        };
+        let readable = match row_verdict {
+            Some(v) => v,
+            None => match indexer
+                .expand(neighbour, None, None)
                 .await
-                .map_err(|err| JsonRpcError::internal(format!("neighbours acl: {err}")))?,
-            _ => true, // non-instance / absent → not owner-gated
+                .map_err(|err| JsonRpcError::internal(format!("neighbours acl: {err}")))?
+            {
+                Some(ex) if ex.page.page_kind == PageKind::Instance => indexer
+                    .may_read_instance(&caller, &ex.page.skill, &ex.frontmatter)
+                    .await
+                    .map_err(|err| JsonRpcError::internal(format!("neighbours acl: {err}")))?,
+                _ => true, // non-instance / absent → not owner-gated
+            },
         };
         if readable {
             out.push(json!({
@@ -1323,6 +1339,32 @@ pub(super) async fn tool_neighbours(
         }
     }
     Ok(json!({ "edges": out }))
+}
+
+/// Whether `caller` may see row `id` of the rows-backed skill `skill`, judged by the row's own columns;
+/// `None` when `skill` is not a rows skill (the caller falls back to the stored-page rule). A row that
+/// is gone from its source gives `Some(true)`: a dangling link names nothing the caller cannot see.
+async fn virtual_row_readable(
+    indexer: &Indexer,
+    caller: &AclCaller<'_>,
+    skill: &str,
+    id: &str,
+) -> Result<Option<bool>, JsonRpcError> {
+    let Ok(Some(src)) = indexer.rows_source(skill).await else {
+        return Ok(None);
+    };
+    let Some(row) = indexer
+        .rows_get(&src, id)
+        .await
+        .map_err(|e| JsonRpcError::internal(format!("neighbours rows: {e}")))?
+    else {
+        return Ok(Some(true));
+    };
+    indexer
+        .may_read_instance(caller, &src.skill, &Value::Object(row.fields))
+        .await
+        .map(Some)
+        .map_err(|e| JsonRpcError::internal(format!("neighbours acl: {e}")))
 }
 
 /// Default hop depth when the caller omits `max_hops`.
@@ -1704,6 +1746,16 @@ pub(crate) async fn tool_search(
             if !sql_allowed.is_empty() {
                 lanes.push(sql_allowed);
             }
+            // The ROWS lane: rows of `instances: rows` skills match on their key and `filterable:`
+            // columns. Candidates only, ACL-filtered per row BEFORE fusion like every other lane.
+            let rows = indexer
+                .rows_search_candidates(q, a.skill.as_deref())
+                .await
+                .map_err(|e| JsonRpcError::internal(format!("search rows lane: {e}")))?;
+            let rows_allowed = acl_filter_hits(indexer, &caller, rows).await?;
+            if !rows_allowed.is_empty() {
+                lanes.push(rows_allowed);
+            }
         }
     }
 
@@ -1743,10 +1795,38 @@ pub(crate) async fn tool_search(
             })
         })
         .collect();
-    Ok(json!({
+    let mut result = json!({
         "hits": out,
         "granularity": granularity.as_str(),
-    }))
+    });
+    // Skills whose rows live in a REST/MCP source are not searched (the source is not ours to scan).
+    // Say so: silent emptiness reads as "no such record".
+    if sql_lane_enabled {
+        let mut unsearched = Vec::new();
+        for skill in indexer
+            .list_skills()
+            .await
+            .map_err(|e| JsonRpcError::internal(format!("search skills: {e}")))?
+        {
+            if a.skill.as_deref().is_some_and(|f| f != skill.id) {
+                continue;
+            }
+            if matches!(
+                crate::remote_rows::source(indexer, &skill.id).await,
+                Ok(Some(_))
+            ) {
+                unsearched.push(skill.id);
+            }
+        }
+        if !unsearched.is_empty() {
+            result["hint"] = json!(format!(
+                "search does not look inside REST/MCP-backed skills ({}): their rows live in the source \
+                 system. Use list_instances on the skill (with its filterable fields) to find rows there.",
+                unsearched.join(", ")
+            ));
+        }
+    }
+    Ok(result)
 }
 
 /// Apply the fail-closed per-instance read ACL to one lane's candidates,

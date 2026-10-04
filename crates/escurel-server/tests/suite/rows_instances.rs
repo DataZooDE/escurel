@@ -596,27 +596,253 @@ async fn source_rows_say_where_their_values_came_from() {
     );
 }
 
-/// A documented LIMIT, pinned so a change to it is deliberate: a row is virtual, so `search` and
-/// `neighbours` do not see it (find rows with `list_instances` or a `[[skill::key]]` wikilink), but
-/// the row's stored linked notes page is an ordinary page and IS searchable and has edges.
+/// `search` reaches into rows-backed skills, honestly and bounded: a query matches the KEY and the
+/// declared `filterable:` columns (never an undeclared column), a bound parameter does the matching,
+/// the page is capped, and the ACL runs after the fetch. Rows were invisible to `search` before.
 #[tokio::test]
-async fn search_and_neighbours_do_not_see_a_virtual_row_but_do_see_its_notes() {
+async fn search_finds_rows_by_key_and_by_a_filterable_column_and_nothing_else() {
+    let t = Rows::start().await;
+
+    // By the KEY: one row, a page id the rest of the surface can open.
+    let by_key = t
+        .call(
+            "search",
+            json!({ "q": "4501234", "page_kind": "instance", "k": 10 }),
+        )
+        .await;
+    let hits = by_key["hits"].as_array().unwrap();
+    assert_eq!(hits.len(), 1, "{by_key}");
+    assert_eq!(hits[0]["page_id"], row_page(1234), "{by_key}");
+    assert_eq!(hits[0]["skill"], "sales-order", "{by_key}");
+    assert_eq!(hits[0]["page_kind"], "instance", "{by_key}");
+
+    // By a FILTERABLE column (`kunnr`, shown as `sold_to`): 62 rows match; the page is capped at `k`.
+    let by_col = t
+        .call(
+            "search",
+            json!({ "q": "1000007", "page_kind": "instance", "k": 5 }),
+        )
+        .await;
+    let hits = by_col["hits"].as_array().unwrap();
+    assert_eq!(hits.len(), 5, "capped at k: {by_col}");
+    for h in hits {
+        assert_eq!(h["skill"], "sales-order", "{h}");
+        assert_eq!(h["frontmatter_excerpt"]["sold_to"], "1000007", "{h}");
+    }
+
+    // A column the skill did NOT declare searchable never matches, and never leaks.
+    let hidden = t
+        .call(
+            "search",
+            json!({ "q": "never on the wire", "page_kind": "instance", "k": 10 }),
+        )
+        .await;
+    assert!(
+        hidden["hits"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|h| h["skill"] != "sales-order"),
+        "an undeclared column is not searchable: {hidden}"
+    );
+
+    // Restricting to skills, or to another skill, brings no rows.
+    for args in [
+        json!({ "q": "4501234", "page_kind": "skill", "k": 10 }),
+        json!({ "q": "4501234", "skill": "other-skill", "k": 10 }),
+    ] {
+        let none = t.call("search", args.clone()).await;
+        assert!(
+            none["hits"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|h| h["page_kind"] != "instance" || h["skill"] != "sales-order"),
+            "{args}: {none}"
+        );
+    }
+}
+
+/// The same lookup for an owner-private skill: the row ACL runs AFTER the fetch, so a caller finds
+/// only their own rows however they phrase the query.
+#[tokio::test]
+async fn search_over_rows_never_returns_a_row_the_caller_may_not_read() {
+    use escurel_test_support::{FixtureBuilder, Role};
+    let src_dir = TempDir::new().unwrap();
+    let src = src_dir.path().join("vbak");
+    write_source(&src, None);
+    let p = EscurelProcess::spawn(Opts {
+        auth: AuthMode::TestIssuer,
+        fixtures: Some(
+            FixtureBuilder::new()
+                .tenant("acme")
+                .skill(ACL_SKILL, acl_skill_page(&src))
+                .done(),
+        ),
+        ..Default::default()
+    })
+    .await;
+    let tok = p.mint_token_with_sub("acme", Role::Agent, "1000005");
+    let search = |q: &'static str| {
+        let url = p.mcp_url();
+        let tok = tok.clone();
+        async move {
+            let body: Value = reqwest::Client::new()
+                .post(url)
+                .header("authorization", format!("Bearer {tok}"))
+                .json(&json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                    "params": { "name": "search",
+                                "arguments": { "q": q, "page_kind": "instance", "k": 50 } } }))
+                .send()
+                .await
+                .unwrap()
+                .json()
+                .await
+                .unwrap();
+            assert!(body.get("error").is_none(), "search: {body}");
+            body["result"]["structuredContent"]["hits"].clone()
+        }
+    };
+    // Someone else's customer number finds nothing of hers; hers finds only hers.
+    assert!(
+        search("1000006").await.as_array().unwrap().is_empty(),
+        "no foreign row"
+    );
+    let mine = search("1000005").await;
+    let mine = mine.as_array().unwrap();
+    assert!(!mine.is_empty(), "her own rows are found");
+    for h in mine {
+        assert_eq!(h["frontmatter_excerpt"]["sold_to"], "1000005", "{h}");
+    }
+}
+
+/// `neighbours` over rows: the notes of a row link to other rows, and a row nobody wrote notes for is
+/// still reachable from the pages that link to it (it has no stored page, only a key).
+#[tokio::test]
+async fn neighbours_follow_links_from_a_rows_notes_and_into_a_row_without_a_stored_page() {
+    let t = Rows::start().await;
+    let notes = format!(
+        "---\nkind: instance\nid: {0}\nskill: sales-order\n---\n# {0}\n\nSee also [[sales-order::{1}]].\n",
+        doc(11),
+        doc(12)
+    );
+    let w = t
+        .call(
+            "update_page",
+            json!({ "page_id": row_page(11), "content": notes }),
+        )
+        .await;
+    assert_eq!(w["ok"], true, "{w}");
+
+    // OUT of the notes: the row they point at.
+    let out = t
+        .call(
+            "neighbours",
+            json!({ "page_id": row_page(11), "direction": "out" }),
+        )
+        .await;
+    let edges = out["edges"].as_array().unwrap();
+    assert!(
+        edges
+            .iter()
+            .any(|e| e["dst_page"] == doc(12) && e["link_skill"] == "sales-order"),
+        "the notes link to row 12: {out}"
+    );
+
+    // INTO a row that has no stored page: who points at it.
+    let into = t
+        .call(
+            "neighbours",
+            json!({ "page_id": row_page(12), "direction": "in" }),
+        )
+        .await;
+    let edges = into["edges"].as_array().unwrap();
+    assert!(
+        edges.iter().any(|e| e["src_page"] == row_page(11)),
+        "row 12 has no stored page but is linked from row 11's notes: {into}"
+    );
+}
+
+/// An edge to an owner-private row is dropped for a caller who may not read that row, exactly like a
+/// direct read: the link must not reveal that a foreign row exists.
+#[tokio::test]
+async fn neighbours_do_not_reveal_a_link_to_a_row_the_caller_may_not_read() {
+    use escurel_test_support::{FixtureBuilder, Role};
+    let src_dir = TempDir::new().unwrap();
+    let src = src_dir.path().join("vbak");
+    write_source(&src, None);
+    let note_skill =
+        "---\nkind: skill\nid: note\ndescription: A free note.\nautonomy: auto\n---\n# note\n";
+    let p = EscurelProcess::spawn(Opts {
+        auth: AuthMode::TestIssuer,
+        fixtures: Some(
+            FixtureBuilder::new()
+                .tenant("acme")
+                .skill(ACL_SKILL, acl_skill_page(&src))
+                .skill("note", note_skill)
+                .done(),
+        ),
+        ..Default::default()
+    })
+    .await;
+    let tok = p.mint_token_with_sub("acme", Role::Agent, "1000005");
+    let post = |name: &'static str, args: Value| {
+        let url = p.mcp_url();
+        let tok = tok.clone();
+        async move {
+            let body: Value = reqwest::Client::new()
+                .post(url)
+                .header("authorization", format!("Bearer {tok}"))
+                .json(&json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                               "params": { "name": name, "arguments": args } }))
+                .send()
+                .await
+                .unwrap()
+                .json()
+                .await
+                .unwrap();
+            assert!(body.get("error").is_none(), "{name}: {body}");
+            body["result"]["structuredContent"].clone()
+        }
+    };
+    let page = "markdown/instances/note/n1.md";
+    let content = format!(
+        "---\nkind: instance\nid: n1\nskill: note\n---\n# n1\n\nMine [[sales-order::{}]], not mine [[sales-order::{}]].\n",
+        doc(5),
+        doc(6)
+    );
+    let w = post(
+        "update_page",
+        json!({ "page_id": page, "content": content }),
+    )
+    .await;
+    assert_eq!(w["ok"], true, "{w}");
+    let out = post("neighbours", json!({ "page_id": page, "direction": "out" })).await;
+    let dsts: Vec<&str> = out["edges"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|e| e["dst_page"].as_str())
+        .collect();
+    assert!(
+        dsts.contains(&doc(5).as_str()),
+        "her own row is linked: {out}"
+    );
+    assert!(
+        !dsts.contains(&doc(6).as_str()),
+        "a foreign row's link is not revealed: {out}"
+    );
+}
+
+/// Still true after rows became searchable by key: the row's stored linked NOTES page is an ordinary
+/// page. Its free text is searchable and its wikilinks are edges (a row's own columns are found by key
+/// and declared `filterable:` columns, covered above).
+#[tokio::test]
+async fn a_rows_linked_notes_page_is_searchable_and_has_edges() {
     let t = Rows::start().await;
     let page = row_page(7);
     let hits = |r: &Value| r.to_string().contains(&page);
 
-    // The row's own values (its document number) are not indexed anywhere.
-    let r = t
-        .call("search", json!({ "q": doc(7), "page_kind": "instance" }))
-        .await;
-    assert!(!hits(&r), "a virtual row is not a search hit: {r}");
-    let r = t.call("neighbours", json!({ "page_id": page })).await;
-    assert!(
-        r["edges"].as_array().is_none_or(Vec::is_empty),
-        "a virtual row has no edges: {r}"
-    );
-
-    // Once the notes exist, the stored page is found and links out like any page.
     let notes = overlay(7, "high", "zebra-token see [[sales-order::0004500008]]");
     let w = t
         .call("update_page", json!({ "page_id": page, "content": notes }))

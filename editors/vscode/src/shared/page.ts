@@ -3,6 +3,7 @@ import { skillActionViews } from './actions';
 import type { ExpandResponse, Skill, SkillField } from '../client/types';
 import { buildPreview } from './preview';
 import type { ActionView, FieldView, PageModel } from './protocol';
+import { skillFacts } from './freshness';
 import { rowSourceOf } from './rowSource';
 
 /** Bookkeeping, not data: the page kind (and its retired name), the skill, the id, a backend binding. */
@@ -14,8 +15,13 @@ export function titleCase(id: string): string {
   return s.charAt(0).toUpperCase() + s.slice(1);
 }
 
-export function buildPageModel(e: ExpandResponse, skill: Skill): PageModel {
+export function buildPageModel(
+  e: ExpandResponse,
+  skill: Skill,
+  now: number = Date.now(),
+): PageModel {
   const fm = e.frontmatter ?? {};
+  const provenance = skillFacts(skill, now);
   const slug = e.page?.slug ?? e.page?.page_id.split('/').pop()?.replace(/\.md$/, '') ?? '';
   const title =
     (TITLE_KEYS.map((k) => fm[k]).find((v) => typeof v === 'string' && v.trim()) as
@@ -42,6 +48,8 @@ export function buildPageModel(e: ExpandResponse, skill: Skill): PageModel {
       layer: skill.layer,
       readOnly: skill.layer !== 'overlay',
       backend: skill.backend.kind,
+      ...(provenance.facts.length ? { facts: provenance.facts } : {}),
+      ...(provenance.stale ? { stale: true as const } : {}),
     },
     fields,
     ...previewFields(e, skill),

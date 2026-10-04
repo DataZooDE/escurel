@@ -29,6 +29,50 @@ async function call(name, args) {
   return body.result.structuredContent;
 }
 
+// A supplier document the demo uploads as a FILE (the document backend: text extracted and chunked,
+// the original kept). Markdown on purpose: the extension never hands it to an application, it only
+// saves it as plain text and shows where, which is what the e2e checks.
+const FRAME_AGREEMENT = `# Frame agreement Meier-Guss GmbH, 2026
+
+Supplier: Meier-Guss GmbH, Pforzheim (vendor 100234). Buyer: the plant at DE01.
+
+## Scope
+
+Cast gearbox housings (material GH-4711) and tool holders (TH-0815), called off against purchase orders.
+The supplier is the sole source for GH-4711.
+
+## Delivery terms
+
+A confirmed delivery date may move by at most 7 days without the buyer's written consent. A move of more
+than 7 days is a supply risk and is reported to purchasing the same day.
+
+## Quality
+
+Each delivery carries a material certificate. Rejected parts are replaced within 10 working days.
+
+## Term
+
+The agreement runs until 31 December 2026 and renews for one year unless either side gives notice three
+months before it ends.
+`;
+
+async function uploadDocument(title, text, eventId) {
+  const res = await fetch(`${gw.gateway_url}/ingest/upload`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${bearer}` },
+    body: JSON.stringify({
+      bytes_b64: Buffer.from(text).toString('base64'),
+      content_type: 'text/markdown',
+      title,
+      event_id: eventId,
+    }),
+  });
+  const body = await res.json();
+  if (!res.ok || body.status !== 'materialised')
+    throw new Error(`ingest ${title}: ${res.status} ${JSON.stringify(body)}`);
+  return body.page_id;
+}
+
 async function until(what, f, ms = 120_000) {
   const end = Date.now() + ms;
   for (;;) {
@@ -89,11 +133,20 @@ const b = await call('capture_event', {
 });
 const csB = await until('the second changeset', () => openChangesetOn(page('order-4500131')));
 
+// Last, on purpose: the runner treats the upload like any signal (it dispatches the document skill), so
+// uploading it while the story's runs are in flight made their timing depend on it.
+const documentPage = await uploadDocument(
+  'Frame agreement Meier-Guss 2026',
+  FRAME_AGREEMENT,
+  'demo-frame-agreement',
+);
+
 console.log(
   JSON.stringify({
     rootA: a.event_id,
     rootB: b.event_id,
     promoted: csA.changeset_id,
     awaiting: csB.changeset_id,
+    document: documentPage,
   }),
 );

@@ -695,6 +695,23 @@ async fn list_skills(client: &Client) -> Result<Value> {
             if let Some(v) = s.resource {
                 skill["resource"] = json!(v);
             }
+            // The OKF provenance keys and Peacock's viewer, as on the wire.
+            for (key, value) in [
+                ("generated", s.generated),
+                ("verified", s.verified),
+                ("status", s.status),
+                ("stale_after", s.stale_after),
+            ] {
+                if let Some(v) = value {
+                    skill[key] = json!(v);
+                }
+            }
+            if !s.sources.is_empty() {
+                skill["sources"] = json!(s.sources);
+            }
+            if let Some(v) = s.viewer {
+                skill["viewer"] = json!(v);
+            }
             if !s.actions.is_empty() {
                 skill["actions"] = json!(s.actions);
             }

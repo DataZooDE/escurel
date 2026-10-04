@@ -389,6 +389,144 @@ impl Indexer {
     }
 }
 
+/// How many row hits one `search` takes from ONE rows-backed skill, and in total: a lookup, not a scan.
+pub const ROWS_SEARCH_PER_SKILL: usize = 20;
+pub const ROWS_SEARCH_TOTAL: usize = 50;
+
+/// `q` as a LIKE pattern that matches it literally anywhere (`%`, `_` and `\` are escaped).
+fn like_contains(q: &str) -> String {
+    let mut out = String::with_capacity(q.len() + 2);
+    out.push('%');
+    for c in q.chars() {
+        if matches!(c, '%' | '_' | '\\') {
+            out.push('\\');
+        }
+        out.push(c);
+    }
+    out.push('%');
+    out
+}
+
+impl Indexer {
+    /// Up to `limit` rows whose KEY or one of whose `filterable:` columns contains `q`
+    /// (case-insensitive), in key order. Only those columns are searched: a column the skill did not
+    /// declare is never matched, so a search cannot be used to probe data the skill keeps back. `q` is
+    /// a bound parameter (a LIKE pattern with its wildcards escaped), never spliced into the SQL.
+    pub async fn rows_search(
+        &self,
+        src: &RowsSource,
+        q: &str,
+        limit: usize,
+    ) -> Result<Vec<RowRecord>, SqlViewError> {
+        let q = q.trim();
+        if q.is_empty() {
+            return Ok(Vec::new());
+        }
+        let limit = limit.clamp(1, ROWS_MAX_LIMIT);
+        materialise_view_on(self, &src.view, &src.sql, false).await?;
+        let conn = self.conn.lock().await;
+        let cols = describe(&conn, &src.view)?;
+        let names: Vec<&str> = cols.iter().map(|(n, _)| n.as_str()).collect();
+        let key_exprs = key_exprs(src, &names)?;
+        let mut searchable: Vec<&str> = src.cfg.key.iter().map(String::as_str).collect();
+        for c in &src.cfg.filterable {
+            if names.contains(&c.as_str()) && !searchable.contains(&c.as_str()) {
+                searchable.push(c.as_str());
+            }
+        }
+        let ors: Vec<String> = searchable
+            .iter()
+            .map(|c| format!("CAST(\"{c}\" AS VARCHAR) ILIKE ? ESCAPE '\\'"))
+            .collect();
+        let params: Vec<String> = searchable.iter().map(|_| like_contains(q)).collect();
+        let mut wheres = vec![format!("({})", ors.join(" OR "))];
+        for k in &src.cfg.key {
+            wheres.push(format!("\"{k}\" IS NOT NULL"));
+        }
+        let sql = format!(
+            "SELECT {} FROM {} WHERE {} ORDER BY {} LIMIT {limit}",
+            select_with_keys(&key_exprs),
+            src.view,
+            wheres.join(" AND "),
+            key_exprs.join(", ")
+        );
+        let timeout = self.rows_query_timeout;
+        with_statement_timeout(&conn, timeout, || {
+            let mut stmt = conn.prepare(&sql)?;
+            let mut rows = stmt.query(duckdb::params_from_iter(params.iter()))?;
+            let mut out = Vec::new();
+            while let Some(row) = rows.next()? {
+                let keys = cast_keys(row, cols.len(), src.cfg.key.len())?;
+                out.push(read_record(src, row, &cols, &keys)?);
+            }
+            Ok(out)
+        })
+    }
+
+    /// Search CANDIDATES from every rows-backed (DuckDB) skill: page-grain hits for the rows `q`
+    /// matches, at most [`ROWS_SEARCH_PER_SKILL`] per skill and [`ROWS_SEARCH_TOTAL`] overall, ranked by
+    /// key order. Like the SQL-view lane these are candidates only: the dispatcher applies the
+    /// fail-closed row ACL BEFORE fusion. A skill whose source cannot be read is skipped, not fatal.
+    pub async fn rows_search_candidates(
+        &self,
+        q: &str,
+        skill_filter: Option<&str>,
+    ) -> Result<Vec<crate::search::SearchHit>, crate::IndexerError> {
+        use crate::search::SearchHit;
+        let mut hits: Vec<SearchHit> = Vec::new();
+        for skill in self.list_skills().await? {
+            if skill_filter.is_some_and(|f| f != skill.id) || hits.len() >= ROWS_SEARCH_TOTAL {
+                continue;
+            }
+            let Ok(Some(src)) = self.rows_source(&skill.id).await else {
+                continue;
+            };
+            let Ok(rows) = self.rows_search(&src, q, ROWS_SEARCH_PER_SKILL).await else {
+                continue;
+            };
+            for rec in rows {
+                let rank = hits.len();
+                hits.push(SearchHit {
+                    snippet: matched_snippet(&src, &rec, q),
+                    page_id: rec.page_id,
+                    slug: Some(rec.id),
+                    skill: skill.id.clone(),
+                    page_kind: escurel_md::PageKind::Instance,
+                    anchor: None,
+                    score: 1.0 / (1.0 + rank as f64),
+                    similarity: 0.0,
+                    frontmatter_excerpt: Value::Object(rec.fields),
+                });
+                if hits.len() >= ROWS_SEARCH_TOTAL {
+                    break;
+                }
+            }
+        }
+        Ok(hits)
+    }
+}
+
+/// What matched, for a hit's snippet: the first searched column (key first) whose value contains `q`,
+/// shown under its frontmatter name (`sold_to = 1000007`).
+fn matched_snippet(src: &RowsSource, rec: &RowRecord, q: &str) -> String {
+    let needle = q.trim().to_lowercase();
+    let searched = src.cfg.key.iter().chain(src.cfg.filterable.iter());
+    for col in searched {
+        let Some(v) = rec.columns.get(col) else {
+            continue;
+        };
+        let text = match v {
+            Value::String(s) => s.clone(),
+            other => other.to_string(),
+        };
+        if text.to_lowercase().contains(&needle) {
+            let name = src.project.get(col).map_or(col.as_str(), String::as_str);
+            return format!("{name} = {text}");
+        }
+    }
+    String::new()
+}
+
 /// `SELECT` list: every column, then each key as DuckDB's own `CAST(.. AS VARCHAR)` text under the
 /// alias `__escurel_key<j>`. The id of a row and the cursor after it are built from THESE texts, so
 /// they are exactly what the ORDER BY, the `>` comparison and a lookup (`CAST(col AS VARCHAR) = ?`)

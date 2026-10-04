@@ -130,7 +130,10 @@ pub(crate) fn tool_defs() -> Vec<ToolDef> {
             Execution::Deterministic,
             Scope::Agent,
             Touches::READ,
-            "Typed link-graph traversal.",
+            "Typed link-graph traversal. Rows of an `instances: rows` skill take part: the \
+                 notes of a row link out to other pages and rows, and a row with no notes yet is \
+                 still reachable from the pages that link to it by key (an edge into a row you \
+                 may not read is not shown).",
             json!({
                 "type": "object",
                 "required": ["page_id"],
@@ -198,10 +201,11 @@ pub(crate) fn tool_defs() -> Vec<ToolDef> {
             Touches::READ,
             "Hybrid vector + FTS search, RRF-fused. Pass `q` for a single \
                  query, or `queries` with 2-3 phrasings to fuse their results \
-                 in one ranking (provide exactly one of the two). Rows of an \
-                 `instances: rows` skill are virtual and NOT searched (only their \
-                 stored notes page is): use `list_instances` or resolve \
-                 `[[skill::key]]` for a row.",
+                 in one ranking (provide exactly one of the two). Rows of `instances: rows` \
+                 skills (DuckDB sources) are found by their KEY and their declared `filterable:` \
+                 columns (substring, case-insensitive; at most 20 per skill, 50 in all, ACL per \
+                 row); no other column is searched. Skills whose rows live in a REST/MCP source \
+                 are not searched: the answer carries a `hint` naming them: use list_instances.",
             json!({
                 "type": "object",
                 "properties": {

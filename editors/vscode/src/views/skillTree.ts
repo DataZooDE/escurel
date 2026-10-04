@@ -117,3 +117,57 @@ export function buildSkillTree(skills: Skill[]): TreeNode[] {
   }
   return toNodes(root, '');
 }
+
+/** What the Knowledge tree is narrowed to: a tag, free text, or both (both have to match). */
+export interface SkillFilter {
+  tag?: string | undefined;
+  text?: string | undefined;
+}
+
+const norm = (s: string | undefined): string => (s ?? '').trim().toLowerCase();
+
+const tagMatches = (skill: Skill, tag: string): boolean =>
+  (skill.tags ?? []).some((t) => {
+    const x = t.toLowerCase();
+    // A tag path (`risk/analysis`) is also found by its parent (`risk`).
+    return x === tag || x.startsWith(`${tag}/`);
+  });
+
+const textMatches = (skill: Skill, text: string): boolean =>
+  [
+    skill.id,
+    skill.title,
+    skill.summary,
+    skill.description,
+    skill.folder,
+    ...(skill.tags ?? []),
+  ].some((v) => v?.toLowerCase().includes(text));
+
+/** The skills the filter lets through; the SAME array when the filter is empty. */
+export function filterSkills(skills: Skill[], filter: SkillFilter): Skill[] {
+  const tag = norm(filter.tag);
+  const text = norm(filter.text);
+  if (!tag && !text) return skills;
+  return skills.filter((s) => (!tag || tagMatches(s, tag)) && (!text || textMatches(s, text)));
+}
+
+/** Every tag in use with how many skills carry it: most used first, then by name. */
+export function knownTags(skills: Skill[]): { tag: string; count: number }[] {
+  const counts = new Map<string, number>();
+  for (const s of skills)
+    for (const t of new Set((s.tags ?? []).map((x) => x.trim()).filter(Boolean)))
+      counts.set(t, (counts.get(t) ?? 0) + 1);
+  return [...counts.entries()]
+    .map(([tag, count]) => ({ tag, count }))
+    .sort((a, b) => b.count - a.count || a.tag.localeCompare(b.tag));
+}
+
+/** The view's message while a filter is on, or `undefined` when none is. */
+export function describeFilter(filter: SkillFilter, shown: number): string | undefined {
+  const tag = filter.tag?.trim();
+  const text = filter.text?.trim();
+  if (!tag && !text) return undefined;
+  const parts = [tag ? `tag: ${tag}` : '', text ? `text: “${text}”` : ''].filter(Boolean);
+  const count = shown === 0 ? 'no skills match' : `${shown} ${shown === 1 ? 'skill' : 'skills'}`;
+  return `Filtered by ${parts.join(' and ')} — ${count}`;
+}

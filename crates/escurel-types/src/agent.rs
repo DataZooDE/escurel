@@ -403,6 +403,17 @@ pub struct SkillCascade {
     pub max_depth: Option<u32>,
 }
 
+/// Peacock's `viewer:` on a skill page: the report skill that renders the skill's instances and the
+/// parameter the instance id is passed in. Carried as written; escurel never interprets it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SkillViewer {
+    /// The report skill id (`supplier-risk-report`).
+    pub report: String,
+    /// The report parameter that takes the instance id (`analysis`). Absent = the report decides.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub param: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct Skill {
@@ -486,6 +497,27 @@ pub struct Skill {
     /// `resource:` — OKF link to the external thing this skill describes (a table, an API).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resource: Option<String>,
+    /// `generated:` — OKF provenance: who or what wrote this skill (free text), or when.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub generated: Option<String>,
+    /// `verified:` — OKF: when a human last confirmed the skill (a date or RFC 3339 instant).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verified: Option<String>,
+    /// `status:` — OKF currency marker as the skill's author wrote it. Free text; a skill's own
+    /// `fields:` declaration and instance pages keep their own meaning of `status`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<String>,
+    /// `stale_after:` — OKF freshness: an RFC 3339 instant or an ISO-8601 duration (`P90D`)
+    /// counted from `verified`. A client decides whether the skill is stale.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stale_after: Option<String>,
+    /// `sources:` — OKF origin links: plain strings or `{title, url}` objects, as written.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sources: Vec<serde_json::Value>,
+    /// `viewer:` — Peacock's `{report, param}`: the report skill that charts this skill's
+    /// instances. escurel only carries it, so a client can link to where the data is rendered.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub viewer: Option<SkillViewer>,
     /// `actions:` — what a reader may do from this skill's pages, in Peacock's
     /// object form. The `event` skills of the `kind: event` entries are also the
     /// skills a run may cascade into. Absent = none declared (no restriction).

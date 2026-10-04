@@ -64,6 +64,19 @@ export class EscurelPageAsUi extends LitElement {
         color: var(--escurel-muted);
         font-size: 0.9em;
       }
+      .skill-facts {
+        color: var(--escurel-muted);
+        font-size: 0.85em;
+        margin-top: 2px;
+      }
+      .stale-badge {
+        border: 1px solid var(--vscode-editorWarning-foreground);
+        color: var(--vscode-editorWarning-foreground);
+        border-radius: 3px;
+        padding: 0 5px;
+        margin-right: 6px;
+        font-weight: 600;
+      }
       .skill-link {
         color: var(--escurel-skill);
         font-weight: 600;
@@ -397,7 +410,14 @@ export class EscurelPageAsUi extends LitElement {
         </button>
         — ${m.skill.summary ?? m.skill.description}
       </div>
-
+      ${
+        m.skill.facts?.length
+          ? html`<div class="skill-facts">
+              ${m.skill.stale ? html`<span class="stale-badge">Stale</span>` : nothing}
+              ${m.skill.facts.filter((f) => f !== 'stale').join(' · ')}
+            </div>`
+          : nothing
+      }
       ${
         m.thread
           ? html`<div class="thread-strip">

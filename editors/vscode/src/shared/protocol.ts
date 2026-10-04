@@ -52,6 +52,10 @@ export interface PageModel {
     layer: string;
     readOnly: boolean;
     backend: string;
+    /** The skill's own OKF provenance in short phrases (verified, generated, stale after …). */
+    facts?: string[];
+    /** The skill has outlived its `stale_after`: shown as a word, not only a colour. */
+    stale?: true;
   };
   fields: FieldView[];
   /** What the source system holds for a non-markdown page (read-only); absent for markdown. */

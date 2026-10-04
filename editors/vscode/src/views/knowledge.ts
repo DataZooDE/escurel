@@ -1,8 +1,9 @@
+import { skillFacts } from '../shared/freshness';
 import { errorRowSpec } from './errorRow';
 import { InstancePager } from './instancePager';
 import { autonomyMeaning, backendIcon, backendMeaning, countSkills } from './skillMeaning';
 import * as vscode from 'vscode';
-import type { EscurelClient, Instance } from '../client';
+import type { EscurelClient, Instance, Skill } from '../client';
 import { uriForPage } from '../fs/provider';
 import { log } from '../log';
 import { connectionStateOf, describeError } from '../errors';
@@ -10,9 +11,13 @@ import { instanceRow, type InstanceRow, type SkillRow } from './knowledgeModel';
 import {
   ROLE_ICONS,
   buildSkillTree,
+  describeFilter,
   effectiveRole,
+  filterSkills,
+  knownTags,
   skillAccessibleName,
   type FolderRow,
+  type SkillFilter,
 } from './skillTree';
 
 type Node =
@@ -34,6 +39,11 @@ export class KnowledgeTree implements vscode.TreeDataProvider<Node> {
   private readonly changed = new vscode.EventEmitter<Node | undefined>();
   readonly onDidChangeTreeData = this.changed.event;
   private readonly pager: InstancePager<InstanceRow>;
+  /** What the tree is narrowed to (tag and/or text); empty = everything. Instances are unaffected. */
+  private filter: SkillFilter = {};
+  /** The skills of the last load: the tag picker offers the tags in use without another round trip. */
+  private skills: Skill[] = [];
+  private view: vscode.TreeView<Node> | undefined;
 
   constructor(private readonly client: () => EscurelClient) {
     this.pager = new InstancePager<InstanceRow>(
@@ -47,11 +57,15 @@ export class KnowledgeTree implements vscode.TreeDataProvider<Node> {
 
   static register(context: vscode.ExtensionContext, client: () => EscurelClient): KnowledgeTree {
     const tree = new KnowledgeTree(client);
+    tree.view = vscode.window.createTreeView('escurel.knowledge', {
+      treeDataProvider: tree,
+      showCollapseAll: true,
+    });
+    context.subscriptions.push(tree.view);
     context.subscriptions.push(
-      vscode.window.createTreeView('escurel.knowledge', {
-        treeDataProvider: tree,
-        showCollapseAll: true,
-      }),
+      vscode.commands.registerCommand('escurel.filterKnowledgeByTag', () => tree.pickTag()),
+      vscode.commands.registerCommand('escurel.filterKnowledge', () => tree.askText()),
+      vscode.commands.registerCommand('escurel.clearKnowledgeFilter', () => tree.setFilter({})),
     );
     context.subscriptions.push(
       vscode.commands.registerCommand(
@@ -60,6 +74,43 @@ export class KnowledgeTree implements vscode.TreeDataProvider<Node> {
       ),
     );
     return tree;
+  }
+
+  /** Narrow (or, with `{}`, widen) the skill level; the view's message says what is on. */
+  setFilter(filter: SkillFilter): void {
+    this.filter = filter;
+    const on = Boolean(filter.tag?.trim() || filter.text?.trim());
+    void vscode.commands.executeCommand('setContext', 'escurel.knowledgeFiltered', on);
+    this.changed.fire(undefined);
+  }
+
+  private async pickTag(): Promise<void> {
+    if (this.skills.length === 0) this.skills = await this.client().listSkills();
+    const tags = knownTags(this.skills);
+    if (tags.length === 0) {
+      void vscode.window.showInformationMessage(
+        'No skill declares a tag yet (tags: [...] on a skill page).',
+      );
+      return;
+    }
+    const picked = await vscode.window.showQuickPick(
+      tags.map((t) => ({
+        label: `$(tag) ${t.tag}`,
+        description: `${t.count} ${t.count === 1 ? 'skill' : 'skills'}`,
+        tag: t.tag,
+      })),
+      { placeHolder: 'Show only skills with this tag', matchOnDescription: true },
+    );
+    if (picked) this.setFilter({ ...this.filter, tag: picked.tag });
+  }
+
+  private async askText(): Promise<void> {
+    const text = await vscode.window.showInputBox({
+      prompt: 'Show only skills whose name, summary, folder or tags contain…',
+      value: this.filter.text ?? '',
+      placeHolder: 'e.g. supplier',
+    });
+    if (text !== undefined) this.setFilter({ ...this.filter, text });
   }
 
   refresh(): void {
@@ -94,6 +145,8 @@ export class KnowledgeTree implements vscode.TreeDataProvider<Node> {
         item.description = n.description;
         const where = n.skill.folder ? `\n\nfolder \`${n.skill.folder}\`` : '';
         const tags = n.skill.tags?.length ? `\n\ntags: ${n.skill.tags.join(', ')}` : '';
+        const facts = skillFacts(n.skill, Date.now()).facts;
+        const provenance = facts.length ? `\n\n${facts.join(' · ')}` : '';
         // Compact on purpose: a tooltip covers the rows below it. One line for role, layer and what the
         // gate means; the data source only when it is not plain markdown.
         const gate = `${n.skill.autonomy ?? 'review'}: ${autonomyMeaning(n.skill.autonomy)}`;
@@ -102,7 +155,7 @@ export class KnowledgeTree implements vscode.TreeDataProvider<Node> {
             ? ''
             : `\n\ndata: ${backendMeaning(n.skill.backend.kind)}`;
         item.tooltip = new vscode.MarkdownString(
-          `**${n.skill.title ?? n.skill.id}** — ${n.skill.summary ?? n.skill.description}\n\nrole **${role}**${inferred ? ' (inferred)' : ''} · ${n.readOnly ? '_read-only (' + n.skill.layer + ')_' : 'layer ' + n.skill.layer} · ${gate}${source}${where}${tags}`,
+          `**${n.skill.title ?? n.skill.id}** — ${n.skill.summary ?? n.skill.description}\n\nrole **${role}**${inferred ? ' (inferred)' : ''} · ${n.readOnly ? '_read-only (' + n.skill.layer + ')_' : 'layer ' + n.skill.layer} · ${gate}${source}${where}${tags}${provenance}`,
         );
         // Data that lives outside the knowledge base gets an icon of its own (cloud, plug, table):
         // where the data comes from matters more at a glance than the role.
@@ -160,7 +213,10 @@ export class KnowledgeTree implements vscode.TreeDataProvider<Node> {
         const skills = await this.client().listSkills();
         await vscode.commands.executeCommand('setContext', 'escurel.connected', true);
         await vscode.commands.executeCommand('setContext', 'escurel.connectionState', 'ok');
-        return buildSkillTree(skills);
+        this.skills = skills;
+        const shown = filterSkills(skills, this.filter);
+        if (this.view) this.view.message = describeFilter(this.filter, shown.length);
+        return buildSkillTree(shown);
       }
       if (n.kind === 'folder') return n.children;
       if (n.kind === 'skill') {

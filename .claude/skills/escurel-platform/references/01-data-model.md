@@ -39,6 +39,11 @@ optional; reported on `list_skills`, linted by `validate`):
 - `harness: echo | claude | codex | agy | muse | gemini | delegate` — the
   adapter the skill asks to run on; anything else is `harness_unknown`.
   The runner honours it within its own allow-list.
+- `generated:`, `verified:`, `status:`, `stale_after:`, `sources:` — the OKF provenance keys, all optional and
+  lint-only (a malformed one is a warning). They reach `list_skills` as written; `stale_after` is an
+  RFC 3339 instant or an ISO-8601 duration (`P90D`) counted from `verified`, and a client decides what
+  "stale" means. `viewer: {report, param}` (Peacock) is carried the same way. A skill's own `fields:`
+  declaration wins over an OKF key, and instance pages keep their own meaning of `status`.
 - `folder:`, `role:`, `tags:` — where the skill sits and what it is (OKF-aligned), all optional.
   `folder` is a `/`-separated path of lowercase slugs (`sales/orders`; anything else is `folder_invalid`);
   `role` is `record` (business data), `process` (something a runner executes), `report` (a rendered view)
@@ -282,6 +287,14 @@ citation; never treat one as a link. The link's `skill` segment is its
     `backend_projection` (`instances: "rows"`, `read_only`, `fetched_at`, `rows`, `columns[{name,type,
     kind}]`, `linked`). **Reads are live** — `fetched_at` says when. The source's own row-level security is
     not honoured; escurel's ACL is the only row gate.
+    **`search` and `neighbours` see rows, within limits.** `search` (with `page_kind: instance` or `any`)
+    matches a query as a case-insensitive substring of the row's KEY and its declared `filterable:`
+    columns (a column the skill did not declare is never searched), at most 20 rows per skill and 50 in
+    all, with the row ACL applied per row; the hit's `snippet` says which column matched
+    (`sold_to = 1000007`). `neighbours` follows the links of a row's notes to other pages and rows, and
+    finds the pages that link INTO a row even when it has no notes yet. Rows served by a REST/MCP
+    connector are NOT searched: the `search` answer carries a `hint` naming those skills; use
+    `list_instances` on them.
     **Linked markdown** (`linked: markdown`): the STORED page at the row's page id is the row's notes.
     It is created lazily by the first write (`update_page` / `create_draft`) and merged into `expand` as
     ONE instance (the row's columns win for projected fields). It is an ordinary page: drafts, changesets
@@ -291,11 +304,12 @@ citation; never treat one as a link. The link's `skill` segment is its
     notes are kept and `expand` flags `backend_projection.issue.code = source_missing` (and
     `linked.orphan`); `list_instances` lists live rows only. Validation treats projected fields as
     supplied by the source (`required:` is not reported for them).
-    **Virtual rows are invisible to `search` and `neighbours`.** A row is not stored, so its own
-    values are not indexed and it has no edges; find a row with `list_instances` (filter on a
-    `filterable:` column) or by resolving `[[<skill>::<key>]]`. Its stored linked-notes page, once
-    written, is an ordinary page: searchable, with edges. (Pinned by
-    `rows_instances::search_and_neighbours_do_not_see_a_virtual_row_but_do_see_its_notes`.)
+    **A row is virtual, so only what is declared searchable is found.** Its own values are not indexed: `search`
+    reaches a row by its KEY and its declared `filterable:` columns (above), nothing else; find any other row with
+    `list_instances` (filter on a `filterable:` column) or by resolving `[[<skill>::<key>]]`. Its stored
+    linked-notes page, once written, is an ordinary page: searchable by its own text, with edges. (Pinned by
+    `rows_instances::search_finds_rows_by_key_and_by_a_filterable_column_and_nothing_else` and
+    `rows_instances::a_rows_linked_notes_page_is_searchable_and_has_edges`.)
   - **`openapi` / `mcp` with `instances: rows`** — ONE INSTANCE PER OBJECT of an outside REST service
     or MCP server, read live, with the same page ids, `list_instances`/`expand` shapes and optional
     linked markdown as the `sql_view` rows above. The skill never carries a URL or a secret: `endpoint:`
