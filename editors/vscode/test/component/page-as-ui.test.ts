@@ -48,6 +48,24 @@ describe('<escurel-page-as-ui>', () => {
     expect(q(el, '.field[data-name="notes"] .markdown')).to.exist;
   });
 
+  it('a record from a source says on the page that it has no thread, until a run has written it', async () => {
+    const src = {
+      external: 'REST' as const,
+      sourceFields: [],
+      linked: { enabled: true, exists: false, orphan: false },
+    };
+    const el = await fixture<EscurelPageAsUi>(
+      html`<escurel-page-as-ui .model=${{ ...orderPage, source: src }}></escurel-page-as-ui>`,
+    );
+    await el.updateComplete;
+    expect(text(q(el, '.no-thread-note'))).to.contain('no agent wrote it');
+    const plain = await fixture<EscurelPageAsUi>(
+      html`<escurel-page-as-ui .model=${orderPage}></escurel-page-as-ui>`,
+    );
+    await plain.updateComplete;
+    expect(q(plain, '.no-thread-note') === null).to.equal(true);
+  });
+
   it('offers Runs for this record, and the host is asked to filter to THIS page', async () => {
     const el = await fixture<EscurelPageAsUi>(
       html`<escurel-page-as-ui .model=${orderPage}></escurel-page-as-ui>`,

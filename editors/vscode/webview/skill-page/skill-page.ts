@@ -174,6 +174,14 @@ export class EscurelSkillPage extends LitElement {
         </button>
       </div>
       <p class="lede">${m.summary ?? m.description}</p>
+      ${
+        m.facts.some((f) => f.label === 'Role' && f.value === 'report')
+          ? html`<p class="muted report-note">
+              This skill is a report: it draws the data of a record (for example a chart). It is
+              never run, so it has no threads. Open a record that uses it to see it.
+            </p>`
+          : nothing
+      }
       ${m.summary && m.description !== m.summary ? html`<p class="muted">${m.description}</p>` : nothing}
       ${
         m.provenance.length

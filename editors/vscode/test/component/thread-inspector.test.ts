@@ -35,7 +35,7 @@ describe('<escurel-thread-inspector>', () => {
     const changeset = view.nodes.find((node) => node.kind === 'changeset')!;
     const el = await render(details[changeset.id]);
     const toned = el.shadowRoot!.querySelector('.tone-ok');
-    expect(toned?.textContent).to.equal('promoted');
+    expect(toned?.textContent).to.equal('Applied');
   });
 
   it('renders nothing without detail', async () => {

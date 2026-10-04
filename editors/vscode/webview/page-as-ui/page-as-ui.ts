@@ -3,6 +3,7 @@ import { sourceBanner } from '../../src/shared/sourceBanner';
 import { writeBackLine } from '../../src/shared/writeBack';
 import { writeBackLead } from '../../src/shared/writeBackLead';
 import { backendLabel } from '../../src/shared/backendLabel';
+import { noThreadNote } from '../../src/commands/noThreadWording';
 import { statusWord } from '../../src/runs/runWording';
 import { checkIcon, lockIcon, syncIcon, warnIcon } from '../shared/icons';
 import { markdownStyles, renderMarkdown } from '../shared/markdown-view';
@@ -521,6 +522,7 @@ export class EscurelPageAsUi extends LitElement {
             </div>`
           : nothing
       }
+      ${m.source && !m.thread ? html`<p class="muted no-thread-note">${noThreadNote(true, false)}</p>` : nothing}
       ${m.source ? this.sourceStrip(m.source, m.writeBack) : m.writeBack ? this.writeBackLine(m.writeBack) : nothing}
 
       <section class="fields">

@@ -103,4 +103,19 @@ describe('<escurel-skill-page>', () => {
     const dt = qa(el, 'dl.facts dt').find((n) => text(n) === 'Data from') as HTMLElement;
     expect(dt.getAttribute('title')).to.contain('stored or read from');
   });
+
+  it('says on the page, not in a toast, that a report is never run', async () => {
+    const el = await fixture<EscurelSkillPage>(
+      html`<escurel-skill-page
+        .model=${{
+          ...orderSkillPage,
+          facts: [{ label: 'Role', value: 'report' }],
+        }}
+      ></escurel-skill-page>`,
+    );
+    await el.updateComplete;
+    expect(text(q(el, '.report-note'))).to.contain('never run');
+    const plain = await render();
+    expect(q(plain, '.report-note') === null).to.equal(true);
+  });
 });
