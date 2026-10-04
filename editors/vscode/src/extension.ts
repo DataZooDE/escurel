@@ -28,6 +28,7 @@ import { registerOpenOriginal } from './commands/openOriginal';
 import { registerStartSkill } from './start/startSkill';
 import { registerProposeWriteBack } from './editors/proposeWriteBack';
 import { registerApprovePlan } from './start/approvePlan';
+import { registerNodeCommands } from './commands/nodeCommands';
 import { registerRunnerView, type RunnerTree } from './views/runner';
 
 /** What `activate` returns — the integration suite drives the extension through it. */
@@ -54,6 +55,7 @@ export interface EscurelApi {
 export function activate(context: vscode.ExtensionContext): EscurelApi | undefined {
   const services = new Services(context);
   registerControlCommands(context, services);
+  registerNodeCommands(context, services);
   context.subscriptions.push(services);
   registerStartInTerminal(context, services);
   registerOpenOriginal(context, services);
