@@ -53,9 +53,8 @@ pub mod validate;
 
 pub use acl::{AclCaller, CAPTURED_BY_FIELD, CAPTURED_VIA_FIELD, captured_by};
 pub use backend::{
-    BackendBinding, BackendCtx, BackendKind, BackendRegistry, BindingStatus, Capabilities,
-    InstanceBackend, MarkdownBackend, Materialized, RemoteBinding, RemoteKind, RemoteOp,
-    SearchMode, SqlConnector, SqlViewBackend, SqlViewBinding, SqlViewError,
+    BackendBinding, BackendKind, BindingStatus, Capabilities, Materialized, RemoteBinding,
+    RemoteKind, RemoteOp, SearchMode, SqlConnector, SqlViewBackend, SqlViewBinding, SqlViewError,
 };
 pub use branches::{BranchInfo, BranchPage};
 pub use chat::{AppendChatMessage, ChatMessage, ChatPage, ListChatMessages};

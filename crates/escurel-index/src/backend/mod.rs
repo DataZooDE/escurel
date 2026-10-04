@@ -1,73 +1,30 @@
-//! The `InstanceBackend` seam: a per-skill strategy for *where an
-//! instance's data comes from*.
+//! Instance backends: *where an instance's data comes from*.
 //!
-//! ## STATUS: NOT THE DISPATCH PATH (read this before extending it)
+//! escurel's triad (Skills, Instances, Events) is realised as markdown pages in a single referent
+//! space `[[skill::id]]`. A skill can drive instances living in other backends (read-only SQL
+//! views and rows, ingested documents, remote REST/MCP bindings) while every instance keeps a
+//! markdown overlay page for identity, links, ACL and CRDT.
 //!
-//! [`InstanceBackend`] / [`BackendRegistry`] / [`MarkdownBackend`] / [`BackendCtx`] were introduced
-//! as the planned dispatcher (PR-1) but have exactly ONE implementation (markdown) and **no caller
-//! in the server**: nothing calls [`BackendRegistry::for_skill`] outside the seam's own test suite
-//! (`tests/suite/backend_registry.rs`). The real per-skill dispatch is by probe, in the server's
-//! read tools: [`Indexer::rows_source`], the remote-rows source and the `BackendView` classifier
-//! (`escurel-server/src/mcp/backend_view.rs`, which explains why the trait's return types did not
-//! fit). The backends themselves (`sql_view`, `document`, `rows`, the `remote` openapi/mcp
-//! bindings) are plain modules reached directly.
-//!
-//! Do not route a new backend "through the registry" without first deciding to make it the real
-//! dispatcher: `docs/notes/complexity-reduction-plan.md` R3 argues to keep the trait and route the
-//! others through it, the code went the other way. Until that is settled the seam is kept (it is
-//! small and tested) but it is documentation of an intent, not of behaviour.
-//!
-//! escurel's triad (Skills, Instances, Events) is realised as markdown
-//! pages in a single referent space `[[skill::id]]`. This module introduces
-//! the abstraction that lets a skill drive instances living in **new
-//! backends** — read-only SQL views, ingested documents — while every
-//! instance keeps a markdown overlay page for identity, links, ACL, and
-//! CRDT (HLD §3, change-request §5.1).
-//!
-//! ## PR-1 scope (historical)
-//!
-//! Only [`MarkdownBackend`] exists; it wraps the existing [`Indexer`] and
-//! delegates every call verbatim, so behaviour is bit-identical. The
-//! [`BackendRegistry`] maps `skill_id → Arc<dyn InstanceBackend>` and
-//! returns the markdown default for any unannotated skill. The trait is
-//! shaped to keep today's `as_of` / `scenario` / `granularity` / `filter`
-//! knobs — collapsing them into clean DTOs would be a behaviour change,
-//! deferred to a later simplification.
-//!
-//! ## Seams reserved for later PRs (historical)
-//!
-//! - `create_instance` — SQL view materialisation / document ingestion.
-//!   Writes still flow through `Indexer::update_page` in PR-1.
-//! - `acl_predicate` — the dispatcher computes ACL today
-//!   (`Indexer::may_read_instance`); PR-4's row-grain SQL pushes a SQL
-//!   predicate here.
-//! - `search_contribution` is named for the multi-lane future where the
-//!   dispatcher fuses candidates from several backends and must apply ACL
-//!   **before** fusion (INV-ACL-FUSION, change-request §5.5). In PR-1 there
-//!   is exactly one backend, fusion already happened inside it, and ACL
-//!   runs after — equivalent for a single lane. Relocating fusion to the
-//!   dispatcher lands with the second searchable backend (PR-2d).
+//! There is deliberately NO dispatcher trait here: the planned `InstanceBackend` /
+//! `BackendRegistry` seam had exactly one implementation and no caller, and was deleted. The real
+//! per-skill dispatch is by probe in the server's read tools (`Indexer::rows_source`, the
+//! remote-rows source and the `BackendView` classifier in `escurel-server/src/mcp/backend_view.rs`).
+//! The backends themselves (`sql_view`, `document`, `rows`, the `remote` openapi/mcp bindings) are
+//! plain modules reached directly. If a second markdown-like backend ever needs a common
+//! interface, design it then, around rows, projections and write-back.
 
 mod binding;
 #[cfg(feature = "contextualize-llm")]
 pub mod contextualize_llm;
 pub mod document;
-mod markdown;
 pub mod remote;
 pub mod rows;
 pub mod rows_write;
 mod sql_view;
 
-use std::collections::HashMap;
-use std::sync::Arc;
-
-use async_trait::async_trait;
 use escurel_md::{PageKind, parse};
 
-use crate::acl::AclCaller;
-use crate::read::{Direction, Edge, ExpandedPage, InstanceInfo, OrderDir, ResolvedWikilink};
 use crate::search::{Granularity, SearchHit};
-use crate::validate::Issue;
 use crate::{Indexer, IndexerError};
 
 pub use binding::{
@@ -84,7 +41,6 @@ pub use document::{
     RetainedMediaExtractor, chunk_text, contextualized_chunks, heading_path_at,
     structural_context_prefix,
 };
-pub use markdown::MarkdownBackend;
 pub use remote::{
     RemoteError, encode_segment, fill_path_template, fill_template, has_dot_segment, json_path_get,
     resolve_projection,
@@ -258,130 +214,6 @@ impl Capabilities {
                 supports_crdt: true,
             },
         }
-    }
-}
-
-/// Read-context threaded through every backend call: the verified caller
-/// (for ACL, once backends own it) plus the time-travel cut and scenario
-/// overlay every `Indexer` read already takes. Borrowed and `Copy`; cheap.
-#[derive(Clone, Copy)]
-pub struct BackendCtx<'a> {
-    pub caller: AclCaller<'a>,
-    pub as_of: Option<&'a str>,
-    pub scenario: Option<&'a str>,
-}
-
-/// The per-skill strategy for materialising and reading instances. **Not the live dispatch path**
-/// (see the module docs): one impl, no server caller.
-///
-/// PR-1's only impl is [`MarkdownBackend`], which delegates to [`Indexer`].
-/// Every method mirrors an existing `Indexer` method so the markdown impl
-/// is a verbatim delegate (no logic moves in the refactor).
-#[async_trait]
-pub trait InstanceBackend: Send + Sync {
-    /// The backend discriminant.
-    fn kind(&self) -> BackendKind;
-
-    /// The contract for what the dispatcher may call.
-    fn capabilities(&self) -> Capabilities;
-
-    /// List a skill's instances (mirrors [`Indexer::list_instances`]).
-    async fn list(
-        &self,
-        ctx: BackendCtx<'_>,
-        skill: &str,
-        order_by_at: Option<OrderDir>,
-        limit: Option<usize>,
-        filter: Option<(&str, &str)>,
-    ) -> Result<Vec<InstanceInfo>, IndexerError>;
-
-    /// Resolve a `[[skill::id]]` wikilink (mirrors [`Indexer::resolve`]).
-    async fn resolve(
-        &self,
-        ctx: BackendCtx<'_>,
-        wikilink: &str,
-    ) -> Result<ResolvedWikilink, IndexerError>;
-
-    /// Expand a page's body + frontmatter + outbound links (mirrors
-    /// [`Indexer::expand`]).
-    async fn expand(
-        &self,
-        ctx: BackendCtx<'_>,
-        page_id: &str,
-    ) -> Result<Option<ExpandedPage>, IndexerError>;
-
-    /// Links touching a page (mirrors [`Indexer::neighbours`]).
-    async fn neighbours(
-        &self,
-        ctx: BackendCtx<'_>,
-        page_id: &str,
-        direction: Direction,
-        link_skill_filter: Option<&str>,
-    ) -> Result<Vec<Edge>, IndexerError>;
-
-    /// Candidate hits this backend contributes for `q`. For markdown this
-    /// is the existing fully-fused hybrid result (see module docs on
-    /// INV-ACL-FUSION); future lanes return pre-fusion candidates and the
-    /// dispatcher fuses. Mirrors [`Indexer::search_with`].
-    #[allow(clippy::too_many_arguments)]
-    async fn search_contribution(
-        &self,
-        ctx: BackendCtx<'_>,
-        q: &str,
-        k: usize,
-        page_kind: Option<PageKind>,
-        skill: Option<&str>,
-        granularity: Granularity,
-        filter: Option<&serde_json::Value>,
-    ) -> Result<Vec<SearchHit>, IndexerError>;
-
-    /// Dry-run authoring validation (mirrors [`Indexer::validate`]).
-    async fn validate(
-        &self,
-        ctx: BackendCtx<'_>,
-        page_id: Option<&str>,
-        content: &str,
-    ) -> Result<Vec<Issue>, IndexerError>;
-}
-
-/// Per-tenant map `skill_id → Arc<dyn InstanceBackend>`, with a markdown
-/// default for any skill that is absent or declares no `backend:` block.
-///
-/// Lives on the server's `AppState` (not on `Indexer`), because
-/// `MarkdownBackend` holds an `Arc<Indexer>` and nesting the registry on the
-/// indexer would create an `Arc` cycle.
-pub struct BackendRegistry {
-    markdown: Arc<dyn InstanceBackend>,
-    by_skill: HashMap<String, Arc<dyn InstanceBackend>>,
-}
-
-impl BackendRegistry {
-    /// Build a registry whose default (and, in PR-1, only) backend is the
-    /// given markdown impl.
-    #[must_use]
-    pub fn new(markdown: Arc<dyn InstanceBackend>) -> Self {
-        Self {
-            markdown,
-            by_skill: HashMap::new(),
-        }
-    }
-
-    /// Bind a skill id to a specific backend.
-    pub fn bind(&mut self, skill_id: impl Into<String>, backend: Arc<dyn InstanceBackend>) {
-        self.by_skill.insert(skill_id.into(), backend);
-    }
-
-    /// The backend for `skill_id`; an unbound skill resolves to the
-    /// markdown default (REQ-BK-01).
-    #[must_use]
-    pub fn for_skill(&self, skill_id: &str) -> &Arc<dyn InstanceBackend> {
-        self.by_skill.get(skill_id).unwrap_or(&self.markdown)
-    }
-
-    /// The markdown default backend (used as the fallback lane).
-    #[must_use]
-    pub fn markdown(&self) -> &Arc<dyn InstanceBackend> {
-        &self.markdown
     }
 }
 

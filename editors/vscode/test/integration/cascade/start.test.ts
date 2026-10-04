@@ -104,6 +104,17 @@ suite('start a skill: background and plan, approve a plan', () => {
         'a plan writes nothing',
       );
 
+      // The plan waits for a person, and that wait must not live only in a toast: Awaiting You lists
+      // it as 'Plan ready', naming the skill and the page, until somebody approves it.
+      const planRow = async () => {
+        const rows = await api.awaiting.getChildren();
+        for (const r of rows) if (r.kind === 'plan' && r.runId === planned.id) return r;
+        return undefined;
+      };
+      const waiting = await until(planRow, 30_000, `a 'Plan ready' row in Awaiting You`);
+      assert.match(waiting.label, /^Plan ready · customer-order on /);
+      assert.equal(waiting.description, 'Approve plan');
+
       // Approve it. What is the EXTENSION's to get right is the approval it sends: a user event for
       // the same skill on the same page, naming the plan run. (The echo harness then folds the
       // oldest inbox event with a target page, which is the plan's own, so a changeset under the
@@ -132,6 +143,12 @@ suite('start a skill: background and plan, approve a plan', () => {
       assert.equal(manual?.approved_plan_run_id, planned.id, 'it names the plan run it approves');
       assert.equal(manual?.mode, 'run', 'approving runs the skill for real');
       assert.ok(manual?.requested_by, 'the gateway stamped who asked');
+      // And the row goes away once the plan is approved.
+      await until(
+        async () => ((await planRow()) === undefined ? true : undefined),
+        30_000,
+        `the 'Plan ready' row to disappear after the approval`,
+      );
     } finally {
       sub.dispose();
       for (const id of cleanup) await markProcessed(id, page).catch(() => undefined);

@@ -1,3 +1,4 @@
+import { notify } from '../commands/notify';
 import * as vscode from 'vscode';
 import { describeError } from '../errors';
 import { rowSourceOf } from '../shared/rowSource';
@@ -56,8 +57,10 @@ export function registerProposeWriteBack(services: Services): vscode.Disposable 
             notes: notes.trim(),
           }),
         });
-        void vscode.window.showInformationMessage(
+        void notify(
+          'info',
           `Proposed: ${field} to ${describeCurrent(parsed.value)}. A reviewer approves it from Awaiting You.`,
+          [{ kind: 'page', pageId }],
         );
         void vscode.commands.executeCommand('escurel.refresh');
       } catch (e) {

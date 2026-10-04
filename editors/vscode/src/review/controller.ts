@@ -1,4 +1,6 @@
-import { pageSlug } from '../shared/pageId';
+import { notify } from '../commands/notify';
+import { nodeRefs } from '../commands/nodeRefs';
+import { noticeActions, type NoticeTarget } from '../shared/notice';
 import * as vscode from 'vscode';
 import type { DiffDraftResponse, Draft, EscurelClient } from '../client';
 import { EscurelError } from '../client/errors';
@@ -43,6 +45,17 @@ export class ReviewController implements vscode.Disposable {
       ),
       vscode.commands.registerCommand('escurel.promote', (arg?: unknown) => this.promote(arg)),
       vscode.commands.registerCommand('escurel.discard', (arg?: unknown) => this.discard(arg)),
+      // The header of a review diff: the way to what the change is about.
+      vscode.commands.registerCommand('escurel.reviewOpenInstance', () =>
+        this.openFromReview('page'),
+      ),
+      vscode.commands.registerCommand('escurel.reviewOpenThread', () =>
+        this.openFromReview('thread'),
+      ),
+      vscode.commands.registerCommand('escurel.reviewOpenRun', () => this.openFromReview('run')),
+      vscode.commands.registerCommand('escurel.reviewViewSkill', () =>
+        this.openFromReview('skill'),
+      ),
       vscode.workspace.onDidOpenTextDocument(async (doc) => {
         const decoded = decodeReviewUri(doc.uri);
         if (decoded && decoded.side === 'proposed') {
@@ -77,6 +90,46 @@ export class ReviewController implements vscode.Disposable {
     );
     context.subscriptions.push(controller);
     return controller;
+  }
+
+  /**
+   * From the header of the review diff that is in front: open the instance, thread or run the change
+   * belongs to, or its skill. The draft is found from the diff's own URI; when the change has no run or
+   * thread behind it (a person's draft) the answer is a worded notice, not silence.
+   */
+  private async openFromReview(what: 'page' | 'thread' | 'run' | 'skill'): Promise<void> {
+    const uri = vscode.window.activeTextEditor?.document.uri ?? this.activeReviewUri();
+    const decoded = uri ? decodeReviewUri(uri) : undefined;
+    const draft = decoded ? this.contentProvider.getDraft(decoded.draftId) : undefined;
+    if (!draft) {
+      void vscode.window.showInformationMessage('Open a change from Awaiting you first.');
+      return;
+    }
+    const refs = nodeRefs({ kind: 'draft', draft });
+    const target: NoticeTarget =
+      what === 'page'
+        ? { kind: 'page', pageId: refs.pageId }
+        : what === 'thread'
+          ? { kind: 'thread', rootEventId: refs.rootEventId }
+          : what === 'run'
+            ? { kind: 'run', runId: refs.runId }
+            : { kind: 'skill', skill: refs.skill };
+    const [action] = noticeActions([target]);
+    if (!action) {
+      void vscode.window.showInformationMessage(
+        what === 'page' || what === 'skill'
+          ? 'This change does not say which page it is for.'
+          : 'No agent run is behind this change: a person made it.',
+      );
+      return;
+    }
+    await vscode.commands.executeCommand(action.command, ...action.args);
+  }
+
+  /** The diff tab that is in front, when it is a review diff (the text editor is not the diff itself). */
+  private activeReviewUri(): vscode.Uri | undefined {
+    const input = vscode.window.tabGroups.activeTabGroup.activeTab?.input;
+    return input instanceof vscode.TabInputTextDiff ? input.modified : undefined;
   }
 
   /**
@@ -233,13 +286,13 @@ export class ReviewController implements vscode.Disposable {
       try {
         await this.client().promoteDraft({ draft_id: target.draftId });
         outcome = interpretPromoteDraftSuccess(target.draftId);
-        void vscode.window.showInformationMessage(`${outcome.message}`);
+        this.tell(outcome, 'info', arg);
       } catch (err) {
         outcome = interpretPromoteDraftError(err, target.draftId);
         if (outcome.kind === 'already_decided') {
-          void vscode.window.showInformationMessage(`${outcome.message}`);
+          this.tell(outcome, 'info', arg);
         } else {
-          void vscode.window.showErrorMessage(`${outcome.message}`);
+          this.tell(outcome, 'error', arg);
         }
       }
 
@@ -257,9 +310,9 @@ export class ReviewController implements vscode.Disposable {
       const res = await this.client().promoteChangeset({ changeset_id: target.changesetId });
       outcome = interpretPromoteChangesetResult(res);
       if (outcome.kind === 'partial') {
-        void this.tellWithOpen(outcome, 'warning');
+        this.tell(outcome, 'warning', arg);
       } else {
-        void this.tellWithOpen(outcome, 'info');
+        this.tell(outcome, 'info', arg);
       }
     } catch (err) {
       if (err instanceof EscurelError && err.kind === 'already_decided') {
@@ -269,7 +322,7 @@ export class ReviewController implements vscode.Disposable {
           closeDiff: true,
           refresh: true,
         };
-        void vscode.window.showInformationMessage(`${outcome.message}`);
+        this.tell(outcome, 'info', arg);
       } else {
         outcome = {
           kind: 'error',
@@ -277,7 +330,7 @@ export class ReviewController implements vscode.Disposable {
           closeDiff: false,
           refresh: false,
         };
-        void vscode.window.showErrorMessage(`${outcome.message}`);
+        this.tell(outcome, 'error', arg);
       }
     }
 
@@ -315,13 +368,13 @@ export class ReviewController implements vscode.Disposable {
       try {
         await this.client().discardDraft({ draft_id: target.draftId, reason });
         outcome = interpretDiscardResult('draft', target.draftId);
-        void vscode.window.showInformationMessage(`${outcome.message}`);
+        this.tell(outcome, 'info', arg);
       } catch (err) {
         outcome = interpretDiscardError(err, 'draft', target.draftId);
         if (outcome.kind === 'already_decided') {
-          void vscode.window.showInformationMessage(`${outcome.message}`);
+          this.tell(outcome, 'info', arg);
         } else {
-          void vscode.window.showErrorMessage(`${outcome.message}`);
+          this.tell(outcome, 'error', arg);
         }
       }
 
@@ -338,13 +391,13 @@ export class ReviewController implements vscode.Disposable {
     try {
       await this.client().discardChangeset({ changeset_id: target.changesetId, reason });
       outcome = interpretDiscardResult('changeset', target.changesetId);
-      void vscode.window.showInformationMessage(`${outcome.message}`);
+      this.tell(outcome, 'info', arg);
     } catch (err) {
       outcome = interpretDiscardError(err, 'changeset', target.changesetId);
       if (outcome.kind === 'already_decided') {
-        void vscode.window.showInformationMessage(`${outcome.message}`);
+        this.tell(outcome, 'info', arg);
       } else {
-        void vscode.window.showErrorMessage(`${outcome.message}`);
+        this.tell(outcome, 'error', arg);
       }
     }
 
@@ -360,17 +413,18 @@ export class ReviewController implements vscode.Disposable {
    * Closes the active diff editor tab if it matches the decided review.
    */
   /**
-   * A notice that names pages offers to open them (at most two buttons: the notice stays small, and the
-   * Awaiting and Knowledge views reach the rest).
+   * A decision notice. It offers to open what it names: the pages that were applied (or the page the
+   * row was about), else the thread the row belongs to (at most two buttons, see `noticeActions`).
    */
-  private async tellWithOpen(outcome: DecisionOutcome, level: 'info' | 'warning'): Promise<void> {
-    const pages = (outcome.pages ?? []).slice(0, 2);
-    const labels = pages.map((id) => `Open ${pageSlug(id)}`);
-    const show =
-      level === 'warning' ? vscode.window.showWarningMessage : vscode.window.showInformationMessage;
-    const choice = await show(outcome.message, ...labels);
-    const at = choice ? labels.indexOf(choice) : -1;
-    if (at >= 0) await vscode.commands.executeCommand('escurel.openInstance', pages[at]);
+  private tell(outcome: DecisionOutcome, level: 'info' | 'warning' | 'error', arg?: unknown): void {
+    const refs = nodeRefs(arg);
+    const targets: NoticeTarget[] = [
+      ...(outcome.pages ?? []).map((pageId) => ({ kind: 'page' as const, pageId })),
+      { kind: 'page', pageId: refs.pageId },
+      { kind: 'thread', rootEventId: refs.rootEventId },
+      { kind: 'run', runId: refs.runId },
+    ];
+    void notify(level, outcome.message, targets);
   }
 
   private async closeDiffIfOpen(draftId?: string): Promise<void> {

@@ -179,7 +179,8 @@
       {
         "command": "escurel.approvePlan",
         "title": "Approve plan",
-        "category": "Escurel"
+        "category": "Escurel",
+        "icon": "$(check)"
       },
       {
         "command": "escurel.openThread",
@@ -276,6 +277,36 @@
         "command": "escurel.showSkillThreads",
         "title": "Show threads using this skill",
         "category": "Escurel"
+      },
+      {
+        "command": "escurel.reviewOpenInstance",
+        "title": "Open instance",
+        "category": "Escurel",
+        "icon": "$(file)"
+      },
+      {
+        "command": "escurel.reviewOpenThread",
+        "title": "Open thread",
+        "category": "Escurel",
+        "icon": "$(type-hierarchy)"
+      },
+      {
+        "command": "escurel.reviewOpenRun",
+        "title": "Open run",
+        "category": "Escurel",
+        "icon": "$(play-circle)"
+      },
+      {
+        "command": "escurel.reviewViewSkill",
+        "title": "View skill",
+        "category": "Escurel",
+        "icon": "$(symbol-class)"
+      },
+      {
+        "command": "escurel.explainView",
+        "title": "Explain this view",
+        "category": "Escurel",
+        "icon": "$(question)"
       }
     ],
     "authentication": [
@@ -495,6 +526,22 @@
         {
           "command": "escurel.showSkillThreads",
           "when": "false"
+        },
+        {
+          "command": "escurel.reviewOpenInstance",
+          "when": "false"
+        },
+        {
+          "command": "escurel.reviewOpenThread",
+          "when": "false"
+        },
+        {
+          "command": "escurel.reviewOpenRun",
+          "when": "false"
+        },
+        {
+          "command": "escurel.reviewViewSkill",
+          "when": "false"
         }
       ],
       "view/title": [
@@ -547,6 +594,16 @@
           "command": "escurel.clearKnowledgeFilter",
           "when": "view == escurel.knowledge && escurel.knowledgeFiltered",
           "group": "navigation@5"
+        },
+        {
+          "command": "escurel.explainView",
+          "when": "view == escurel.threads",
+          "group": "navigation@9"
+        },
+        {
+          "command": "escurel.explainView",
+          "when": "view == escurel.knowledge",
+          "group": "navigation@9"
         }
       ],
       "view/item/context": [
@@ -652,7 +709,7 @@
         },
         {
           "command": "escurel.openNodeRun",
-          "when": "view == escurel.awaiting && viewItem =~ /^awaiting\\.(changeset|draft)$/",
+          "when": "view == escurel.awaiting && viewItem =~ /^awaiting\\.(changeset|draft|plan)$/",
           "group": "2_trace@2"
         },
         {
@@ -674,12 +731,22 @@
           "command": "escurel.showSkillThreads",
           "when": "view == escurel.knowledge && viewItem =~ /^skill/",
           "group": "3_trace@1"
+        },
+        {
+          "command": "escurel.approvePlan",
+          "when": "view == escurel.awaiting && viewItem == awaiting.plan",
+          "group": "inline@1"
+        },
+        {
+          "command": "escurel.approvePlan",
+          "when": "view == escurel.awaiting && viewItem == awaiting.plan",
+          "group": "1_review@1"
         }
       ],
       "editor/title": [
         {
           "command": "escurel.showRaw",
-          "when": "resourceScheme == escurel && activeCustomEditorId == escurel.pageAsUi",
+          "when": "resourceScheme == escurel && (activeCustomEditorId == escurel.pageAsUi || activeCustomEditorId == escurel.skillPage)",
           "group": "navigation"
         },
         {
@@ -691,6 +758,26 @@
           "command": "escurel.discard",
           "when": "resourceScheme == escurel-review",
           "group": "navigation@2"
+        },
+        {
+          "command": "escurel.reviewOpenInstance",
+          "when": "resourceScheme == escurel-review",
+          "group": "navigation@3"
+        },
+        {
+          "command": "escurel.reviewOpenThread",
+          "when": "resourceScheme == escurel-review",
+          "group": "navigation@4"
+        },
+        {
+          "command": "escurel.reviewOpenRun",
+          "when": "resourceScheme == escurel-review",
+          "group": "navigation@5"
+        },
+        {
+          "command": "escurel.reviewViewSkill",
+          "when": "resourceScheme == escurel-review",
+          "group": "navigation@6"
         }
       ],
       "comments/commentThread/context": [
@@ -708,6 +795,16 @@
         "selector": [
           {
             "filenamePattern": "escurel:/instances/**/*.md"
+          }
+        ],
+        "priority": "default"
+      },
+      {
+        "viewType": "escurel.skillPage",
+        "displayName": "Escurel Skill",
+        "selector": [
+          {
+            "filenamePattern": "escurel:/skills/**/*.md"
           }
         ],
         "priority": "default"

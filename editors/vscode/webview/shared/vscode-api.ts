@@ -1,7 +1,8 @@
 import type { WebviewToHost } from '../../src/shared/protocol';
+import type { SkillPageToHost } from '../../src/shared/skillPage';
 
 interface VsCodeApi {
-  postMessage(message: WebviewToHost): void;
+  postMessage(message: WebviewToHost | SkillPageToHost): void;
   getState(): unknown;
   setState(state: unknown): void;
 }

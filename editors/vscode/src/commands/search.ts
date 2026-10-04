@@ -75,11 +75,15 @@ export async function resolveCommand(
   }
 }
 
-/** Open a page the way its type wants: a skill as raw markdown, an instance as page-as-UI (falls back to raw until the editor lands). */
+/** Open a page the way its type wants: an instance as page-as-UI, a skill as its readable page; `raw` is the Markdown source. */
 export async function openPage(pageId: string, raw = false): Promise<void> {
   const uri = uriForPage(pageId);
   if (pageId.startsWith('markdown/instances/') && !raw) {
     await vscode.commands.executeCommand('vscode.openWith', uri, 'escurel.pageAsUi');
+    return;
+  }
+  if (pageId.startsWith('markdown/skills/') && !raw) {
+    await vscode.commands.executeCommand('vscode.openWith', uri, 'escurel.skillPage');
     return;
   }
   await vscode.window.showTextDocument(uri, { preview: true });

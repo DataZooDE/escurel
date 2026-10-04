@@ -44,6 +44,27 @@ describe('staleViews (live event routing)', () => {
     }
   });
 
+  // A plan run that ends 'planned' (run-finished) and an event approving it both change what Awaiting
+  // lists (the 'Plan ready' row appears, then goes).
+  it('a run-finished event and an approval event mark Awaiting stale', () => {
+    const finished = makeEvent({
+      event_id: 'run:R1:finished',
+      label_skill: 'escurel:run',
+      kind: 'system',
+      status: 'processed',
+      title: 'run-finished',
+    });
+    expect(staleViews(finished).awaiting).toBe(true);
+    const approval = makeEvent({
+      event_id: 'A1',
+      label_skill: 'supplier-risk',
+      kind: 'user',
+      status: 'inbox',
+      provenance: { manual: { mode: 'run', approved_plan_run_id: 'R1' } },
+    });
+    expect(staleViews(approval)).toEqual({ inbox: true, awaiting: true });
+  });
+
   it('an ordinary event marks the Inbox stale and not Awaiting', () => {
     // Ordinary inbox items are unprocessed user-scoped events (list_inbox).
     const userInboxEvent = makeEvent({

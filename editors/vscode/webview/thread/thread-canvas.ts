@@ -744,7 +744,7 @@ export class EscurelThreadCanvas extends LitElement {
     if (!area || !area.clientWidth) return; // not measurable yet (a hidden tab): the observer retries
     this.firstViewApplied = true;
     // A graph that fits opens as it is. A bigger one opens at 100% with the node that matters (the
-    // first that needs you, else the newest active) centred, and a scrollbar to reach the rest.
+    // first that needs you, else the root) at the left, and a scrollbar to reach the rest.
     // Fitting everything used to shrink big threads to 40-50%, where no card text was legible; Fit
     // still gives that overview on request.
     const viewport = firstViewport(this.layout, pickTarget(this.view, this.layout), {

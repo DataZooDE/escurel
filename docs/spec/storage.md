@@ -249,12 +249,10 @@ blobs).
 
 ## Instance backends — storage & indexing
 
-The [`InstanceBackend`](protocol.md#instance-backends) seam (markdown |
-`sql_view` | `document`) is a `BackendRegistry` keyed by skill id on
-`AppState` (next to the `Indexer`, *not* on it — `MarkdownBackend` holds an
-`Arc<Indexer>`, so putting the registry on the indexer would cycle). Each
-backend holds an `Arc<Indexer>` and delegates; the indexer's read/search/write
-methods stay put. Markdown is bit-identical to pre-feature behaviour.
+Instance backends (markdown | `sql_view` | `document`, plus the `rows` and remote `openapi`/`mcp` modes) are
+plain modules in `escurel-index::backend`, reached by probe from the server's read tools; there is no
+dispatcher trait (the planned `InstanceBackend`/`BackendRegistry` seam was never wired and was deleted).
+The indexer's read/search/write methods stay put. Markdown is bit-identical to pre-feature behaviour.
 
 **`sql_view`.** `create_instance` runs under the per-tenant write lock:
 `INSTALL`/`LOAD` the connector, `ATTACH … (READ_ONLY)` (the engine rejects

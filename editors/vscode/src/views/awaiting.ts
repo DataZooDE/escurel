@@ -3,6 +3,7 @@ import * as vscode from 'vscode';
 import type { EscurelClient } from '../client';
 import { connectionStateOf, describeError } from '../errors';
 import { log } from '../log';
+import { loadPlanInputs } from './planInputs';
 import { accessibleLabel, buildAwaitingRows, type AwaitingRow } from './awaitingModel';
 
 export interface ErrorRow {
@@ -91,6 +92,20 @@ export class AwaitingTree implements vscode.TreeDataProvider<Node> {
         };
         return item;
       }
+      case 'plan': {
+        const item = new vscode.TreeItem(n.label, vscode.TreeItemCollapsibleState.None);
+        item.description = n.description;
+        item.tooltip = 'A plan the agent wrote and stopped at. Nothing runs until you approve it.';
+        item.accessibilityInformation = { label: accessibleLabel(n) };
+        item.iconPath = new vscode.ThemeIcon('checklist', new vscode.ThemeColor('charts.orange'));
+        item.contextValue = 'awaiting.plan';
+        item.command = {
+          command: 'escurel.approvePlan',
+          title: 'Approve plan',
+          arguments: [{ runId: n.runId, skill: n.skill, pageId: n.pageId }],
+        };
+        return item;
+      }
       case 'error': {
         const spec = errorRowSpec(n.message);
         const item = new vscode.TreeItem(spec.label, vscode.TreeItemCollapsibleState.None);
@@ -106,15 +121,24 @@ export class AwaitingTree implements vscode.TreeDataProvider<Node> {
   async getChildren(n?: Node): Promise<Node[]> {
     try {
       if (!n) {
-        const [changesets, drafts, inboxPage, skills] = await Promise.all([
+        const [changesets, drafts, inboxPage, skills, plans] = await Promise.all([
           this.client().listChangesets(),
           this.client().listDrafts(),
           this.client().listInbox(),
           this.client().listSkills(),
+          // Plans waiting for approval; a failure here must not empty the whole queue.
+          loadPlanInputs(this.client()),
         ]);
         await vscode.commands.executeCommand('setContext', 'escurel.connected', true);
         await vscode.commands.executeCommand('setContext', 'escurel.connectionState', 'ok');
-        const rows = buildAwaitingRows({ changesets, drafts, events: inboxPage.events, skills });
+        const rows = buildAwaitingRows({
+          changesets,
+          drafts,
+          events: inboxPage.events,
+          skills,
+          runEvents: plans.runEvents,
+          userEvents: plans.userEvents,
+        });
         if (this.treeView) {
           this.treeView.badge =
             rows.length > 0

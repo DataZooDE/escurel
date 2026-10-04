@@ -1,21 +1,13 @@
 //! How an external backend presents itself on the wire.
 //!
-//! ## Why this is not `InstanceBackend`
+//! ## Why this is not a trait in `escurel-index`
 //!
-//! R3 of `docs/notes/complexity-reduction-plan.md` proposed routing the four
-//! external backends through `escurel_index::backend::InstanceBackend`, which
-//! today has exactly one implementation while `sql_view`, `document`,
-//! `openapi` and `mcp` were special-cased with `backend_ref.kind` probes
-//! scattered through the read tools.
-//!
-//! That diagnosis was half right. The duplication was real, but
-//! `InstanceBackend` is the wrong home for it: its `expand` returns an
-//! `ExpandedPage`, a domain value with nowhere to carry `backend_projection`,
-//! `chunks_total` or a bounded block list. Those are *presentation* concerns —
-//! they shape the JSON an agent receives, not what the store holds. Pushing
-//! them into `escurel-index` would have moved wire-shaping into the storage
-//! crate to satisfy a trait, which is a worse arrangement than the one it
-//! replaced.
+//! The original plan (R3 of `docs/notes/complexity-reduction-plan.md`) was to route the external
+//! backends through an `escurel_index::backend::InstanceBackend` trait. That trait had one
+//! implementation and no caller and has been deleted: its `expand` returned an `ExpandedPage`, a
+//! domain value with nowhere to carry `backend_projection`, `chunks_total` or a bounded block list.
+//! Those are *presentation* concerns, they shape the JSON an agent receives, not what the store
+//! holds, and pushing them into `escurel-index` would have moved wire-shaping into the storage crate.
 //!
 //! So the abstraction lives here, on the presentation side, and does the job
 //! the plan wanted: **one place that knows the set of backend kinds, and one

@@ -36,13 +36,11 @@ function documentOrder(layout: ThreadLayout): LaidOutNode[] {
     .map((e) => e.n);
 }
 
-/** A node id is a ULID, sometimes behind a kind prefix ("cascade:<ulid>"): compare the ULID part. */
-const ulidOf = (id: string): string => id.slice(id.lastIndexOf(':') + 1);
-
 /**
- * The node a thread opens on. The first one that waits on a person; else the newest unfinished
- * node (ids are ULIDs, so the greatest id is the newest); else, when everything is finished, the
- * last node of the main row.
+ * The node a thread opens on. The first one that waits on a person (main row first, then lanes,
+ * left to right). When nothing waits on anyone, the ROOT: the story starts there, and a thread that
+ * opened scrolled to its newest node left the person without the beginning. If the root is hidden
+ * (collapsed away) or unknown, the first visible card in document order.
  */
 export function pickTarget(view: ThreadView, layout: ThreadLayout): string | undefined {
   const ordered = documentOrder(layout);
@@ -50,19 +48,8 @@ export function pickTarget(view: ThreadView, layout: ThreadLayout): string | und
   const byId = new Map<string, ThreadNode>(view.nodes.map((n) => [n.id, n]));
   const waiting = ordered.find((l) => byId.get(l.id)?.needsYou);
   if (waiting) return waiting.id;
-
-  const active = ordered.filter((l) => {
-    const node = byId.get(l.id);
-    return node !== undefined && node.emphasis !== 'compact';
-  });
-  if (active.length > 0) {
-    return active.reduce((best, cur) => (ulidOf(cur.id) > ulidOf(best.id) ? cur : best)).id;
-  }
-
-  const laneStarts = layout.lanes.map((l) => l.y).sort((a, b) => a - b);
-  const secondLaneY = laneStarts[1] ?? Infinity;
-  const mainRow = ordered.filter((l) => l.y + l.height / 2 < secondLaneY);
-  return (mainRow[mainRow.length - 1] ?? ordered[ordered.length - 1])?.id;
+  const root = ordered.find((l) => l.id === view.rootEventId);
+  return (root ?? ordered[0])?.id;
 }
 
 const clamp = (v: number, lo: number, hi: number): number => Math.min(hi, Math.max(lo, v));
