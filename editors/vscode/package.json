@@ -36,6 +36,12 @@
           "default": "http://127.0.0.1:8080",
           "description": "The one escurel gateway this window talks to (its /mcp and /ws live under this origin)."
         },
+        "escurel.evolveEndpoint": {
+          "type": "string",
+          "scope": "application",
+          "default": "",
+          "description": "Anofox Evolve HTTPS origin for direct owner-private holdout registration. Loopback HTTP is allowed for local development. The signed-in Escurel token must also be accepted by Evolve's configured OIDC audience."
+        },
         "escurel.auth.issuer": {
           "type": "string",
           "scope": "application",
@@ -133,6 +139,11 @@
       {
         "command": "escurel.prepareEvolveTrainingSource",
         "title": "Prepare Anofox Evolve V2 training source…",
+        "category": "Escurel"
+      },
+      {
+        "command": "escurel.registerEvolveHoldout",
+        "title": "Register private Anofox Evolve V2 holdout…",
         "category": "Escurel"
       },
       {

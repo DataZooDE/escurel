@@ -1,5 +1,7 @@
 import type { Page } from '@playwright/test';
 import { createHash } from 'node:crypto';
+import { writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { expect, test, webviewWith } from './fixtures';
 
 test.use({ runnerHarness: 'gemini', evolveAgentBin: process.env.EVOLVE_AGENT_BIN });
@@ -53,7 +55,7 @@ test('native owner approval, two proposal generations, validation, and inactive 
   const holdoutSkuB = { ...trainingSkuB, name: 'PRIVATE_HOLDOUT_OUTCOMES_SENTINEL_B' };
   const serviceTargets = { aggregate_min_fill_rate: 0.8,
     per_sku_min_fill_rate: { '1': 0.8, '2': 0.8 } };
-  const holdout = await stack.evolveCall('evolve_register_holdout', {
+  const holdoutPayload = {
     holdout_id: `${id}-holdout`, source_sha256: 'c'.repeat(64),
     training_source_id: source.training_source_id,
     training_source_sha256: source.normalized_sha256,
@@ -69,8 +71,44 @@ test('native owner approval, two proposal generations, validation, and inactive 
     planning_window_days: 1, scored_window_days: 3,
     sensitivity_tail_days: [3, 9], unit_order_costs: { '1': 1, '2': 1 },
     terminal_stock_tolerance: { '1': 0, '2': 0 },
-  });
+  };
+  const holdoutFile = join(stack.workspaceDir, 'private-holdout.json');
+  writeFileSync(holdoutFile, JSON.stringify(holdoutPayload, null, 2));
+  await expect(pane(stack.page, 'Runner')).toContainText('3 processed', { timeout: 30_000 });
+  await stack.page.keyboard.press('Control+P');
+  const quickInput = stack.page.locator('.quick-input-widget input');
+  await quickInput.fill(holdoutFile);
+  await expect(stack.page.locator('.quick-input-list')).toContainText('private-holdout.json');
+  await quickInput.press('Enter');
+  await stack.page.getByRole('tab', { name: 'private-holdout.json' }).click();
+  await expect(stack.page.locator('.tab.active')).toContainText('private-holdout.json');
+  await stack.page.keyboard.press('Control+P');
+  await quickInput.fill('>Register private Anofox Evolve V2 holdout');
+  await expect(stack.page.locator('.quick-input-list')).toContainText('Register private Anofox Evolve V2 holdout');
+  await quickInput.press('Enter');
+  await expect(stack.page.locator('.quick-input-list')).toContainText('Use active JSON file');
+  await quickInput.press('Enter');
+  await expect(stack.page.locator('.quick-input-widget')).toContainText('Registered Evolve training-source ID');
+  await quickInput.fill(String(source.training_source_id));
+  await quickInput.press('Enter');
+  await expect(stack.page.locator('.quick-input-widget')).toContainText('Server-computed normalized training-source SHA-256');
+  await quickInput.fill(String(source.normalized_sha256));
+  await quickInput.press('Enter');
+  const sealDialog = stack.page.getByRole('dialog').filter({ hasText: `Seal private V2 holdout ${id}-holdout` });
+  await expect(sealDialog).toBeVisible();
+  await expect(sealDialog).toContainText('Publicly disclosed synthetic fixture');
+  await expect(sealDialog).not.toContainText('PRIVATE_HOLDOUT_OUTCOMES_SENTINEL_A');
+  await sealDialog.getByRole('button', { name: 'Seal private holdout' }).click();
+  await expect(stack.page.getByRole('dialog')
+    .filter({ hasText: `Private holdout ${id}-holdout sealed in Evolve.` })).toBeVisible();
+  await stack.page.keyboard.press('Escape');
+  const holdout = await stack.evolveCall('evolve_register_holdout', holdoutPayload);
+  expect(holdout.idempotent).toBe(true);
   expect(holdout.holdout_sha256).toMatch(/^[a-f0-9]{64}$/);
+  const beforeProblemEvents = await stack.call('list_events', {
+    label_skill: 'evolve_run', limit: 100, include_system: true,
+  });
+  expect(JSON.stringify(beforeProblemEvents)).not.toContain('PRIVATE_HOLDOUT_OUTCOMES_SENTINEL_A');
 
   const search = {
     pilot: 'p1_decision', brain: 'llm', evaluator_version: 'replenishment_decision_v2',

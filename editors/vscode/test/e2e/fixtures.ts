@@ -47,6 +47,7 @@ export type ToolResult = Record<string, unknown>;
 
 export interface Stack {
   page: Page;
+  workspaceDir: string;
   display: string;
   /** What the demo driver left behind: the root events and changesets of the story. */
   story: { rootA: string; rootB: string; promoted: string; awaiting: string };
@@ -122,6 +123,8 @@ export const test = base.extend<object, {
       });
       await new Promise((r) => setTimeout(r, 1200));
       const cdpPort = await freePort();
+      const evolvePort = evolveAgentBin ? await freePort() : undefined;
+      const configuredEvolveUrl = evolvePort ? `http://127.0.0.1:${evolvePort}` : undefined;
       const bin = process.env.ESCUREL_BIN_DIR ?? join(REPO, 'target', 'release');
       const env = {
         ...process.env,
@@ -144,6 +147,7 @@ export const test = base.extend<object, {
         ESCUREL_DEMO_DIALOG_STYLE: 'custom',
         ESCUREL_DEMO_EVOLVE_SEED: '1',
         ESCUREL_DEMO_RUNNER_HARNESS: runnerHarness,
+        ...(configuredEvolveUrl ? { ESCUREL_DEMO_EVOLVE_ENDPOINT: configuredEvolveUrl } : {}),
         ...(modelBase ? {
           ESCUREL_GEMINI_API_KEY: 'deterministic-native-plan-key',
           ESCUREL_RUNNER_GEMINI_BASE_URL: modelBase,
@@ -165,8 +169,8 @@ export const test = base.extend<object, {
         };
       let evolveUrl: string | undefined;
       if (evolveAgentBin) {
-        const port = await freePort();
-        evolveUrl = `http://127.0.0.1:${port}`;
+        const port = evolvePort!;
+        evolveUrl = configuredEvolveUrl;
         evolveLogFd = openSync(join(home, 'evolve.log'), 'w');
         evolveProcess = spawn(evolveAgentBin, ['serve', '--addr', `127.0.0.1:${port}`,
           '--db', join(home, 'evolve.duckdb')], {
@@ -228,6 +232,7 @@ export const test = base.extend<object, {
 
       const stack: Stack = {
         page,
+        workspaceDir: join(home, 'workspace'),
         display,
         story,
         gatewayUrl: info.gateway_url,

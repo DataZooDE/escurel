@@ -110,6 +110,7 @@ fi
 cat > "$HOME_DIR/profile/User/settings.json" <<JSON
 {
   "escurel.gatewayUrl": "$(field gateway_url)",
+  "escurel.evolveEndpoint": "${ESCUREL_DEMO_EVOLVE_ENDPOINT:-}",
   "security.workspace.trust.enabled": false,
   "workbench.startupEditor": "none",
   "workbench.tips.enabled": false,

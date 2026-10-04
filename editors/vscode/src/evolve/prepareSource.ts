@@ -53,9 +53,14 @@ export function registerPrepareEvolveTrainingSource(
         const canReopen = pendingSources()[eventId]?.pageSha256 === pageSha;
         const action = await vscode.window.showInformationMessage(
           `Source ${String(result.training_source_id)} prepared. Digest: ${String(result.normalized_sha256)}. Register a matching private holdout, then import a completed V2 spec.`,
-          ...(canReopen ? ['Open prepared V2 draft'] : []),
+          ...(canReopen ? ['Open prepared V2 draft'] : []), 'Register private holdout',
         );
         if (action === 'Open prepared V2 draft') await openPreparedDraft(eventId, result, pageSha);
+        if (action === 'Register private holdout') await vscode.commands.executeCommand(
+          'escurel.registerEvolveHoldout', {
+            sourceId: result.training_source_id, digest: result.normalized_sha256,
+          },
+        );
       } else {
         void vscode.window.showErrorMessage(`Source preparation failed: ${String(result.issue ?? 'inspect the event')}`);
       }
@@ -149,8 +154,15 @@ export function registerPrepareEvolveTrainingSource(
       if (result.prepared !== true)
         throw new Error(`Source preparation was rejected: ${String(result.issue ?? 'inspect the request thread')}`);
       await openPreparedDraft(event.event_id, result, stored.sha256);
-      void vscode.window.showInformationMessage(
+      const action = await vscode.window.showInformationMessage(
         `Source ${String(result.training_source_id)} prepared. The opened V2 draft needs policy SQL, service targets, costs, windows, and budget. Save it, register a matching private holdout, then import the completed spec.`,
+        'Register private holdout',
+      );
+      if (action === 'Register private holdout') await vscode.commands.executeCommand(
+        'escurel.registerEvolveHoldout', {
+          sourceId: result.training_source_id, digest: result.normalized_sha256,
+          trainingStart: source.training_start, trainingEnd: source.training_end,
+        },
       );
     } catch (error) {
       void vscode.window.showErrorMessage(`Evolve source preparation failed: ${describeError(error)}`);

@@ -3,6 +3,9 @@ import type { Services } from '../services';
 import { readPageMarkdown } from '../fs/read';
 import { describeError } from '../errors';
 import { smokeOnlyWarnings, v2ProblemPage, v2TrainingStarter } from './problemImport';
+import { savedHoldout } from './registerHoldout';
+import { evolveOrigin } from './holdoutClient';
+import { readConfig } from '../config';
 
 export function registerImportEvolveProblem(
   context: vscode.ExtensionContext,
@@ -14,12 +17,17 @@ export function registerImportEvolveProblem(
       if (!owner) throw new Error('Sign in before creating an owner-scoped Evolve problem.');
       const source = await vscode.window.showQuickPick([
         { label: 'Prepare a training source', description: 'Create the private source page and receive its ID and digest' },
+        { label: 'Register private holdout', description: 'Submit a local V2 holdout file directly to Anofox Evolve' },
         { label: 'Open starter training spec', description: 'Edit it locally, save as JSON, then import it' },
         { label: 'Import completed training spec', description: 'Choose a local JSON file' },
       ], { placeHolder: 'Create an Anofox Evolve V2 problem' });
       if (!source) return;
       if (source.label === 'Prepare a training source') {
         await vscode.commands.executeCommand('escurel.prepareEvolveTrainingSource');
+        return;
+      }
+      if (source.label === 'Register private holdout') {
+        await vscode.commands.executeCommand('escurel.registerEvolveHoldout');
         return;
       }
       if (source.label === 'Open starter training spec') {
@@ -38,8 +46,19 @@ export function registerImportEvolveProblem(
       if (!file) return;
       const bytes = await vscode.workspace.fs.readFile(file);
       const trainingSpec: unknown = JSON.parse(new TextDecoder().decode(bytes));
+      const specForLookup = trainingSpec as Record<string, unknown>;
+      let recent: string | undefined;
+      try {
+        const endpoint = evolveOrigin(readConfig().evolveEndpoint);
+        if (typeof specForLookup.training_source_id === 'string'
+            && typeof specForLookup.source_sha256 === 'string') {
+          recent = savedHoldout(context, owner, endpoint,
+            specForLookup.training_source_id, specForLookup.source_sha256)?.holdoutId;
+        }
+      } catch { /* A configured endpoint is required for direct registration, not chat imports. */ }
       const holdoutId = await vscode.window.showInputBox({
-        prompt: 'Registered private holdout ID (register it with evolve_register_holdout in chat first)',
+        prompt: 'Registered private holdout ID (Workbench registration or Evolve chat tool)',
+        value: recent,
         ignoreFocusOut: true,
       });
       if (holdoutId === undefined) return;
