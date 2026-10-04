@@ -253,13 +253,17 @@ impl EventInfo {
         (self.kind == EventKind::User
             && matches!(
                 self.label_skill.as_str(),
-                "evolve_preflight" | "evolve_validate" | "evolve_publish_candidate"
+                "evolve_preflight"
+                    | "evolve_prepare_source"
+                    | "evolve_validate"
+                    | "evolve_publish_candidate"
             ))
             || (self.kind == EventKind::System
                 && matches!(
                     self.label_skill.as_str(),
                     "evolve:admission"
                         | "evolve:preflight"
+                        | "evolve:training-source"
                         | "evolve:validation"
                         | "evolve:candidate"
                 )

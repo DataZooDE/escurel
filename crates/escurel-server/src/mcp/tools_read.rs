@@ -140,6 +140,7 @@ pub(super) async fn tool_list_skills(
     value["evolve_revision_binding"] = json!("gateway-owned-v2");
     value["evolve_validation_revision_binding"] = json!("gateway-owned-v1");
     value["evolve_preflight_revision_binding"] = json!("gateway-owned-v1");
+    value["evolve_source_revision_binding"] = json!("gateway-owned-v1");
     value["evolve_candidate_revision_binding"] = json!("gateway-owned-v1");
     Ok(value)
 }
@@ -493,7 +494,7 @@ pub(super) async fn tool_expand(
                 // `indexer.expand` and the blob read are separate operations.
                 // A concurrent edit can otherwise pair an old rendered Evolve
                 // problem with the NEW blob hash, authorizing bytes nobody saw.
-                if e.page.skill == "evolve_problem" {
+                if matches!(e.page.skill.as_str(), "evolve_problem" | "evolve_training_source") {
                     ensure_evolve_problem_projection_matches(&stored, &page)?;
                 }
                 use sha2::{Digest, Sha256};
@@ -621,6 +622,16 @@ mod evolve_projection_tests {
             "body": "# New budget\n"
         });
         assert!(ensure_evolve_problem_projection_matches(stored, &current_projection).is_ok());
+    }
+
+    #[test]
+    fn refuses_a_new_source_blob_hash_next_to_old_training_json() {
+        let stored = "---\ntype: instance\nskill: evolve_training_source\nid: a\nowner_subject: owner\n---\n```json\n{\"capacity\": 20}\n```\n";
+        let old_projection = json!({
+            "frontmatter": {"type": "instance", "skill": "evolve_training_source", "id": "a", "owner_subject": "owner"},
+            "body": "```json\n{\"capacity\": 10}\n```\n"
+        });
+        assert!(ensure_evolve_problem_projection_matches(stored, &old_projection).is_err());
     }
 }
 

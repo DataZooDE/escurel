@@ -458,7 +458,10 @@ impl Indexer {
         if event.kind == crate::EventKind::User
             && matches!(
                 event.label_skill.as_str(),
-                "evolve_preflight" | "evolve_validate" | "evolve_publish_candidate"
+                "evolve_preflight"
+                    | "evolve_prepare_source"
+                    | "evolve_validate"
+                    | "evolve_publish_candidate"
             )
         {
             return Ok(event.provenance["captured_by"].as_str() == Some(caller.subject));
@@ -472,6 +475,7 @@ impl Indexer {
             };
             let expected_root = match event.label_skill.as_str() {
                 "evolve:preflight" => "evolve_preflight",
+                "evolve:training-source" => "evolve_prepare_source",
                 "evolve:validation" => "evolve_validate",
                 "evolve:candidate" => "evolve_publish_candidate",
                 _ => "evolve_run",

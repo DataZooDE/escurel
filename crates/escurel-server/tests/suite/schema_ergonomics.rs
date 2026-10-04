@@ -23,6 +23,8 @@ const EVOLVE_PROBLEM_A: &str = "---\ntype: instance\nskill: evolve_problem\nid: 
 const PRIVATE_EVOLVE_PROBLEM_SKILL: &str = "---\ntype: skill\nid: evolve_problem\ndescription: Owner problem.\nowner_field: owner_subject\nacl:\n  read: [owner]\n  create: [owner]\n  update: [owner]\n---\n# Evolve problem\n";
 const PRIVATE_EVOLVE_PROBLEM_A: &str =
     "---\ntype: instance\nskill: evolve_problem\nid: a\nowner_subject: test-subject\n---\n# A\n";
+const PRIVATE_EVOLVE_SOURCE_SKILL: &str = "---\ntype: skill\nid: evolve_training_source\ndescription: Private training source.\nowner_field: owner_subject\nacl:\n  read: [owner]\n  create: [owner]\n  update: [owner]\n---\n# Source\n";
+const PRIVATE_EVOLVE_SOURCE_A: &str = "---\ntype: instance\nskill: evolve_training_source\nid: a\nowner_subject: test-subject\n---\n```json\n{\"capacity\":10}\n```\n";
 const EVOLVE_EXPERIMENT_SKILL: &str = "---\ntype: skill\nid: evolve_experiment\ndescription: Evolve experiment.\nowner_field: owner_subject\nacl:\n  read: [owner]\n  create: [admin]\n  update: [admin]\n---\n# Evolve experiment\n";
 const EVOLVE_EXPERIMENT_A: &str = "---\ntype: instance\nskill: evolve_experiment\nid: a\nowner_subject: test-subject\nstatus: completed\nbest_program_id: 7\nnext_validation_action: evolve_validate_winner\n---\n# A\n";
 const EVOLVE_REPORT_SKILL: &str = "---\ntype: skill\nid: evolve_validation_report\ndescription: Evolve private report.\nowner_field: owner_subject\nacl:\n  read: [owner]\n  create: [admin]\n  update: [admin]\n---\n# Evolve report\n";
@@ -316,6 +318,116 @@ async fn evolve_preflight_capture_is_private_and_revision_bound() {
     let inbox = call(&p, &owner, "list_inbox", json!({})).await;
     assert!(
         inbox["result"]["structuredContent"]["events"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[tokio::test]
+async fn evolve_source_capture_is_private_and_revision_bound() {
+    use sha2::{Digest, Sha256};
+    let p = EscurelProcess::spawn(Opts {
+        auth: AuthMode::TestIssuer,
+        fixtures: Some(
+            FixtureBuilder::new()
+                .tenant(TENANT)
+                .skill("evolve_training_source", PRIVATE_EVOLVE_SOURCE_SKILL)
+                .instance("evolve_training_source", "a", PRIVATE_EVOLVE_SOURCE_A)
+                .done(),
+        ),
+        ..Default::default()
+    })
+    .await;
+    let owner = p.mint_token(TENANT, Role::Agent);
+    let other = p.mint_token_with_sub(TENANT, Role::Agent, "other-user");
+    let catalog = call(&p, &owner, "list_skills", json!({})).await;
+    assert_eq!(
+        catalog["result"]["structuredContent"]["evolve_source_revision_binding"],
+        "gateway-owned-v1"
+    );
+    let page_id = "markdown/instances/evolve_training_source/a.md";
+    let sha = format!("{:x}", Sha256::digest(PRIVATE_EVOLVE_SOURCE_A.as_bytes()));
+    let request = |event_id: &str, hash: &str| {
+        json!({
+            "label_skill": "evolve_prepare_source", "event_id": event_id,
+            "instance_page_id": page_id, "source": "workbench",
+            "provenance": {"manual": {"mode": "run", "expected_page_sha256": hash}}
+        })
+    };
+    let stale = call(
+        &p,
+        &owner,
+        "capture_event",
+        request("SOURCE-STALE", &"0".repeat(64)),
+    )
+    .await;
+    assert_eq!(stale["error"]["code"], -32602);
+    let denied = call(&p, &other, "capture_event", request("SOURCE-FOREIGN", &sha)).await;
+    assert_eq!(denied["error"]["code"], -32602);
+    let accepted = call(&p, &owner, "capture_event", request("SOURCE-OWNER", &sha)).await;
+    assert!(accepted.get("error").is_none(), "{accepted}");
+    let row = call(
+        &p,
+        &owner,
+        "list_events",
+        json!({"event_id": "SOURCE-OWNER"}),
+    )
+    .await;
+    assert_eq!(
+        row["result"]["structuredContent"]["events"][0]["revision_binding_attested"],
+        true
+    );
+    assert_eq!(
+        row["result"]["structuredContent"]["events"][0]["status"],
+        "processed"
+    );
+    let hidden = call(
+        &p,
+        &other,
+        "list_events",
+        json!({"event_id": "SOURCE-OWNER"}),
+    )
+    .await;
+    assert!(
+        hidden["result"]["structuredContent"]["events"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    let receipt = call(
+        &p,
+        &p.mint_token(TENANT, Role::Admin),
+        "capture_event",
+        json!({
+            "event_id": "SOURCE-RECEIPT", "label_skill": "evolve:training-source",
+            "source": "anofox-evolve", "kind": "system", "mime": "application/json",
+            "body": "{\"prepared\":true}",
+            "provenance": {"runner": {"root_event_id": "SOURCE-OWNER"}}
+        }),
+    )
+    .await;
+    assert!(receipt.get("error").is_none(), "{receipt}");
+    let owner_receipt = call(
+        &p,
+        &owner,
+        "list_events",
+        json!({"event_id": "SOURCE-RECEIPT"}),
+    )
+    .await;
+    assert_eq!(
+        owner_receipt["result"]["structuredContent"]["events"][0]["body"],
+        "{\"prepared\":true}"
+    );
+    let other_receipt = call(
+        &p,
+        &other,
+        "list_events",
+        json!({"event_id": "SOURCE-RECEIPT"}),
+    )
+    .await;
+    assert!(
+        other_receipt["result"]["structuredContent"]["events"]
             .as_array()
             .unwrap()
             .is_empty()

@@ -46,6 +46,22 @@ export const v2TrainingStarter = {
   max_generations: 0, budget: { max_evaluated: 1 },
 };
 
+/** A prepared source still needs an authored policy, economics, and budget. */
+export function preparedV2Draft(input: unknown, source: Record<string, unknown>, sourceId: string, digest: string): Record<string, unknown> {
+  const full = input && typeof input === 'object' && !Array.isArray(input)
+    ? input as Record<string, unknown> : {};
+  if ('service_targets' in full && 'seed_sql' in full && 'baseline_sql' in full)
+    return { ...v2TrainingStarter, ...full, ...source, training_source_id: sourceId, source_sha256: digest };
+  return {
+    ...v2TrainingStarter, ...source, training_source_id: sourceId, source_sha256: digest,
+    service_targets: { aggregate_min_fill_rate: 'REPLACE_WITH_TARGET', per_sku_min_fill_rate: {} },
+    unit_order_costs: {}, terminal_stock_tolerance: {},
+    seed_sql: 'REPLACE_WITH_SEED_SQL', baseline_sql: 'REPLACE_WITH_BASELINE_SQL',
+    planning_window_days: 'REPLACE_WITH_WINDOW', scored_window_days: 'REPLACE_WITH_WINDOW',
+    max_generations: 'REPLACE_WITH_GENERATIONS', budget: { max_evaluated: 'REPLACE_WITH_BUDGET' },
+  };
+}
+
 export function normalizeV2TrainingSpec(value: unknown, holdoutId: string): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value))
     throw new Error('Training spec must be one JSON object.');
@@ -76,9 +92,26 @@ export function normalizeV2TrainingSpec(value: unknown, holdoutId: string): Reco
     throw new Error('Training demand must be true demand and opening inventory as of training_start.');
   if (!Array.isArray(input.skus) || input.skus.length === 0)
     throw new Error('Training spec needs at least one SKU.');
+  if (input.skus.length > 16) throw new Error('V2 supports at most 16 SKUs.');
+  const skuIds = input.skus.map((sku) => String((sku as Record<string, unknown>).sku_id));
+  if (skuIds.some((id) => !/^[1-9]\d*$/.test(id)) || new Set(skuIds).size !== skuIds.length)
+    throw new Error('Each SKU needs a unique positive SKU ID.');
+  for (const key of ['seed_sql', 'baseline_sql']) {
+    if ((input[key] as string).startsWith('REPLACE_')) throw new Error(`Fill ${key} before import.`);
+  }
   for (const [index, sku] of input.skus.entries()) onlyKeys(sku, SKU_FIELDS, `SKU ${index + 1}`);
   onlyKeys(input.service_targets, new Set(['aggregate_min_fill_rate', 'per_sku_min_fill_rate']), 'service_targets');
   onlyKeys(input.budget, new Set(['max_generated', 'max_evaluated', 'max_usd']), 'budget');
+  const targets = input.service_targets as Record<string, unknown>;
+  for (const [label, mapping] of [
+    ['per_sku_min_fill_rate', targets.per_sku_min_fill_rate],
+    ['unit_order_costs', input.unit_order_costs],
+    ['terminal_stock_tolerance', input.terminal_stock_tolerance],
+  ] as const) {
+    if (!mapping || typeof mapping !== 'object' || Array.isArray(mapping)
+        || Object.keys(mapping).sort().join(',') !== skuIds.sort().join(','))
+      throw new Error(`Fill ${label} for exactly the training SKU IDs before import.`);
+  }
   if (!Number.isSafeInteger(input.capacity) || (input.capacity as number) <= 0)
     throw new Error('Training spec capacity must be a positive integer.');
   if (!Number.isSafeInteger(input.max_generations) || (input.max_generations as number) < 0)

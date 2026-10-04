@@ -607,6 +607,7 @@ fn gate_and_enqueue(
     if trigger.is_system
         || trigger.label_skill.starts_with("escurel:")
         || trigger.label_skill == "evolve_preflight"
+        || trigger.label_skill == "evolve_prepare_source"
         || trigger.label_skill == "evolve_validate"
         || trigger.label_skill == "evolve_publish_candidate"
         || (trigger.label_skill == "evolve_run"
@@ -3721,6 +3722,17 @@ mod tests {
             "webhook",
         );
         assert!(!preflight);
+        let source = gate_and_enqueue(
+            &ledger,
+            &queue,
+            &limits,
+            &governor,
+            &metrics,
+            &inflight,
+            trigger_with_label("evt-source-1", "evolve_prepare_source"),
+            "webhook",
+        );
+        assert!(!source);
         let admitted = gate_and_enqueue(
             &ledger,
             &queue,

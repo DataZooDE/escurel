@@ -131,6 +131,16 @@
         "category": "Escurel"
       },
       {
+        "command": "escurel.prepareEvolveTrainingSource",
+        "title": "Prepare Anofox Evolve V2 training source…",
+        "category": "Escurel"
+      },
+      {
+        "command": "escurel.checkEvolveTrainingSource",
+        "title": "Check Anofox Evolve source preparation…",
+        "category": "Escurel"
+      },
+      {
         "command": "escurel.startSkill",
         "title": "Start skill\u2026",
         "category": "Escurel"

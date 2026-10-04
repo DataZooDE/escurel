@@ -13,10 +13,15 @@ export function registerImportEvolveProblem(
       const owner = await services.subject();
       if (!owner) throw new Error('Sign in before creating an owner-scoped Evolve problem.');
       const source = await vscode.window.showQuickPick([
+        { label: 'Prepare a training source', description: 'Create the private source page and receive its ID and digest' },
         { label: 'Open starter training spec', description: 'Edit it locally, save as JSON, then import it' },
         { label: 'Import completed training spec', description: 'Choose a local JSON file' },
       ], { placeHolder: 'Create an Anofox Evolve V2 problem' });
       if (!source) return;
+      if (source.label === 'Prepare a training source') {
+        await vscode.commands.executeCommand('escurel.prepareEvolveTrainingSource');
+        return;
+      }
       if (source.label === 'Open starter training spec') {
         const document = await vscode.workspace.openTextDocument({
           language: 'json', content: JSON.stringify(v2TrainingStarter, null, 2) + '\n',
@@ -24,11 +29,6 @@ export function registerImportEvolveProblem(
         await vscode.window.showTextDocument(document, { preview: false });
         return;
       }
-      const holdoutId = await vscode.window.showInputBox({
-        prompt: 'Registered private holdout ID (register it with evolve_register_holdout in chat first)',
-        ignoreFocusOut: true,
-      });
-      if (holdoutId === undefined) return;
       const files = await vscode.window.showOpenDialog({
         canSelectMany: false,
         openLabel: 'Import V2 training spec JSON',
@@ -36,6 +36,13 @@ export function registerImportEvolveProblem(
       });
       const file = files?.[0];
       if (!file) return;
+      const bytes = await vscode.workspace.fs.readFile(file);
+      const trainingSpec: unknown = JSON.parse(new TextDecoder().decode(bytes));
+      const holdoutId = await vscode.window.showInputBox({
+        prompt: 'Registered private holdout ID (register it with evolve_register_holdout in chat first)',
+        ignoreFocusOut: true,
+      });
+      if (holdoutId === undefined) return;
       const id = await vscode.window.showInputBox({
         prompt: 'Problem page ID (lowercase letters, numbers, underscores, hyphens)',
         ignoreFocusOut: true,
@@ -46,8 +53,6 @@ export function registerImportEvolveProblem(
         ignoreFocusOut: true,
       });
       if (objective === undefined) return;
-      const bytes = await vscode.workspace.fs.readFile(file);
-      const trainingSpec: unknown = JSON.parse(new TextDecoder().decode(bytes));
       const { pageId, content } = v2ProblemPage({
         id: id.trim(), owner, holdoutId: holdoutId.trim(), objective, trainingSpec,
       });

@@ -1747,6 +1747,7 @@ pub(super) async fn tool_capture_event(
     let evolve_target_skill = match a.label_skill.as_str() {
         "evolve_run" => Some("evolve_problem"),
         "evolve_preflight" => Some("evolve_problem"),
+        "evolve_prepare_source" => Some("evolve_training_source"),
         "evolve_validate" => Some("evolve_experiment"),
         "evolve_publish_candidate" => Some("evolve_validation_report"),
         _ => None,
@@ -1764,7 +1765,10 @@ pub(super) async fn tool_capture_event(
     };
     if matches!(
         a.label_skill.as_str(),
-        "evolve_preflight" | "evolve_validate" | "evolve_publish_candidate"
+        "evolve_preflight"
+            | "evolve_prepare_source"
+            | "evolve_validate"
+            | "evolve_publish_candidate"
     ) && let Some(existing) = existing_evolve_event.as_ref()
     {
         let requested_manual = a.provenance.as_ref().and_then(|p| p.get("manual"));
@@ -1816,7 +1820,10 @@ pub(super) async fn tool_capture_event(
         }
         let allowed = if matches!(
             a.label_skill.as_str(),
-            "evolve_preflight" | "evolve_validate" | "evolve_publish_candidate"
+            "evolve_preflight"
+                | "evolve_prepare_source"
+                | "evolve_validate"
+                | "evolve_publish_candidate"
         ) {
             expanded.frontmatter["owner_subject"] == caller.subject
                 && indexer
@@ -1865,8 +1872,10 @@ pub(super) async fn tool_capture_event(
                 "capture_event: problem page changed since review".to_owned(),
             ));
         }
-        if a.label_skill == "evolve_preflight"
-            && manual.get("mode").and_then(Value::as_str) != Some("run")
+        if matches!(
+            a.label_skill.as_str(),
+            "evolve_preflight" | "evolve_prepare_source"
+        ) && manual.get("mode").and_then(Value::as_str) != Some("run")
         {
             return Err(JsonRpcError::invalid_params(
                 "capture_event: Evolve preflight must run in the background".to_owned(),
@@ -1956,7 +1965,10 @@ pub(super) async fn tool_capture_event(
     .map_err(|e| JsonRpcError::internal(format!("capture_event: {e}")))?;
     if matches!(
         requested.label_skill.as_str(),
-        "evolve_preflight" | "evolve_validate" | "evolve_publish_candidate"
+        "evolve_preflight"
+            | "evolve_prepare_source"
+            | "evolve_validate"
+            | "evolve_publish_candidate"
     ) && stored.label_skill == requested.label_skill
     {
         // This is an Evolve control request, not a runnable skill. Keep it
@@ -2731,7 +2743,11 @@ pub(super) async fn tool_list_events(
         if event.kind == escurel_index::EventKind::User
             && matches!(
                 event.label_skill.as_str(),
-                "evolve_run" | "evolve_preflight" | "evolve_validate" | "evolve_publish_candidate"
+                "evolve_run"
+                    | "evolve_preflight"
+                    | "evolve_prepare_source"
+                    | "evolve_validate"
+                    | "evolve_publish_candidate"
             )
         {
             let sha = event.provenance["manual"]["target_page_sha256"]
