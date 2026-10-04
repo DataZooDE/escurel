@@ -388,3 +388,40 @@ async fn a_workflow_run_boards_status_is_renamed_run_status_and_a_tenants_status
     assert!(again.run_status_renamed.is_empty(), "idempotent");
     assert!(again.pages_to_migrate.is_empty());
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn many_historical_snapshots_are_rewritten_in_one_apply() {
+    // A real tenant has hundreds of pages with snapshot history; the migration must walk them all and
+    // finish (one snapshot, as above, would not exercise the per-snapshot connection hand-off).
+    let h = fresh();
+    put(&h, SKILL, skill_md()).await;
+    let n = 60;
+    for i in 0..n {
+        let page = format!("markdown/instances/engagement/e{i}.md");
+        let old = format!(
+            "---\ntype: instance\nskill: engagement\nid: e{i}\nat: 2026-03-01T00:00:00Z\nphase: a\n---\n# E{i}\n"
+        );
+        put(&h, &page, &old).await;
+        h.indexer
+            .seed_snapshot_history(&page, &[("2026-03-10T00:00:00Z", &old)])
+            .await
+            .unwrap();
+    }
+
+    // Booted the way the server boots a legacy tenant: quarantined, so the pages are rewritten in the
+    // lane only and the whole index is REBUILT at the end (with snapshot history present).
+    assert!(h.indexer.quarantine_legacy_kind_pages().await.unwrap());
+    let report = tokio::time::timeout(
+        std::time::Duration::from_secs(60),
+        h.indexer.migrate_kind(true),
+    )
+    .await
+    .expect("the migration hung")
+    .unwrap();
+    assert_eq!(report.snapshots_rewritten, n);
+    let left: i64 = h
+        .side
+        .query_row("SELECT count(*) FROM crdt_snapshots", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(left, n as i64);
+}
