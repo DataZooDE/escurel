@@ -44,6 +44,10 @@ struct Crm {
     /// The raw query string of every list request.
     list_queries: Arc<Mutex<Vec<String>>>,
     list_fail: Arc<std::sync::atomic::AtomicBool>,
+    /// Answer 503 to the next N list requests, then recover.
+    list_fail_next: Arc<std::sync::atomic::AtomicUsize>,
+    /// Answer 400 to every list request (a caller mistake no retry can cure).
+    list_bad: Arc<std::sync::atomic::AtomicBool>,
 }
 
 async fn list(
@@ -57,6 +61,19 @@ async fn list(
         .push(raw.query().unwrap_or_default().to_owned());
     if c.list_fail.load(std::sync::atomic::Ordering::SeqCst) {
         return (StatusCode::SERVICE_UNAVAILABLE, "down: do-not-repeat-this").into_response();
+    }
+    if c.list_bad.load(std::sync::atomic::Ordering::SeqCst) {
+        return (StatusCode::BAD_REQUEST, "bad request").into_response();
+    }
+    if c.list_fail_next
+        .fetch_update(
+            std::sync::atomic::Ordering::SeqCst,
+            std::sync::atomic::Ordering::SeqCst,
+            |n| n.checked_sub(1),
+        )
+        .is_ok()
+    {
+        return (StatusCode::SERVICE_UNAVAILABLE, "try later").into_response();
     }
     let limit: usize = q
         .get("limit")
@@ -528,6 +545,85 @@ async fn an_upstream_that_ignores_the_limit_does_not_lose_rows_and_keyless_items
     assert_eq!(
         page["skipped_without_key"], 2,
         "the objects that cannot be instances (no id) are counted, not silently dropped: {page}"
+    );
+    p.shutdown().await;
+}
+
+async fn gateway_fast_retries(
+    base: &str,
+) -> (escurel_test_support::EscurelProcess, Vec<tempfile::TempDir>) {
+    let (p, dirs) = spawn_gateway(
+        &[("customer", CUSTOMER_SKILL)],
+        escurel_test_support::EgressPolicy {
+            allow_loopback: true,
+            write_retry_backoff: std::time::Duration::from_millis(5),
+            ..escurel_test_support::EgressPolicy::default()
+        },
+    )
+    .await;
+    admin(
+        &p,
+        "register_endpoint",
+        json!({ "name": "crm_rest", "kind": "openapi", "base_url": base }),
+    )
+    .await;
+    (p, dirs)
+}
+
+#[tokio::test]
+async fn a_read_that_hits_a_transient_failure_is_retried_with_backoff_and_succeeds() {
+    let crm = crm_with(10);
+    crm.list_fail_next
+        .store(2, std::sync::atomic::Ordering::SeqCst);
+    let queries = Arc::clone(&crm.list_queries);
+    let base = start(crm).await;
+    let (p, _dirs) = gateway_fast_retries(&base).await;
+
+    let page = admin(
+        &p,
+        "list_instances",
+        json!({ "skill_id": "customer", "limit": 10 }),
+    )
+    .await;
+
+    assert_eq!(
+        page["instances"].as_array().map(Vec::len),
+        Some(10),
+        "{page}"
+    );
+    assert_eq!(
+        queries.lock().unwrap().len(),
+        3,
+        "two 503s were retried, the third attempt answered"
+    );
+    p.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_caller_mistake_is_not_retried() {
+    let crm = crm_with(10);
+    crm.list_bad
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let queries = Arc::clone(&crm.list_queries);
+    let base = start(crm).await;
+    let (p, _dirs) = gateway_fast_retries(&base).await;
+
+    let r = call_as(
+        &p,
+        Role::Admin,
+        "list_instances",
+        json!({ "skill_id": "customer", "limit": 10 }),
+    )
+    .await;
+
+    assert!(
+        r.get("error").is_some() || r["result"]["isError"] == json!(true),
+        "{r}"
+    );
+    assert_eq!(
+        queries.lock().unwrap().len(),
+        1,
+        "a 400 cannot be cured by asking again"
     );
     p.shutdown().await;
 }

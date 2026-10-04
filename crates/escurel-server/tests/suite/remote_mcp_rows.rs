@@ -500,3 +500,87 @@ async fn a_non_idempotent_mcp_write_is_attempted_at_most_once_and_never_repeated
     );
     p.shutdown().await;
 }
+
+// ── Crew review: connector behaviour under concurrency and odd streams ───────────────────────
+
+async fn gateway_with(
+    url: &str,
+    policy: escurel_test_support::EgressPolicy,
+) -> (escurel_test_support::EscurelProcess, Vec<tempfile::TempDir>) {
+    let (p, dirs) = spawn_gateway(&[("article", ARTICLE_SKILL)], policy).await;
+    admin(
+        &p,
+        "register_endpoint",
+        json!({ "name": "upstream_kb", "kind": "mcp", "base_url": url }),
+    )
+    .await;
+    (p, dirs)
+}
+
+#[tokio::test]
+async fn callers_racing_for_the_first_session_initialise_the_upstream_once() {
+    let up = Upstream::new(10);
+    let url = start(&up).await;
+    let (p, _dirs) = gateway_over(&url).await;
+
+    // Eight listings at once, with no session cached yet.
+    let calls = (0..8).map(|_| {
+        admin(
+            &p,
+            "list_instances",
+            json!({ "skill_id": "article", "limit": 5 }),
+        )
+    });
+    let pages = futures::future::join_all(calls).await;
+    assert!(
+        pages
+            .iter()
+            .all(|p| p["instances"].as_array().is_some_and(|a| a.len() == 5))
+    );
+
+    assert_eq!(
+        up.initializes.load(Ordering::SeqCst),
+        1,
+        "one handshake, however many callers raced for the session"
+    );
+    p.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_response_on_a_stream_that_stays_open_is_taken_when_it_arrives_not_when_the_stream_ends()
+{
+    let up = Upstream::new(10);
+    up.hold_stream_open.store(true, Ordering::SeqCst);
+    let url = start(&up).await;
+    // A 3 s ceiling: waiting for the stream to close would fail with "did not answer" (and, for a
+    // write, be classified Retryable after the upstream may already have applied it).
+    let (p, _dirs) = gateway_with(
+        &url,
+        escurel_test_support::EgressPolicy {
+            allow_loopback: true,
+            timeout: std::time::Duration::from_secs(3),
+            ..escurel_test_support::EgressPolicy::default()
+        },
+    )
+    .await;
+
+    let started = std::time::Instant::now();
+    let page = admin(
+        &p,
+        "list_instances",
+        json!({ "skill_id": "article", "limit": 5 }),
+    )
+    .await;
+
+    assert_eq!(
+        page["instances"].as_array().map(Vec::len),
+        Some(5),
+        "{page}"
+    );
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(2),
+        "the response was waiting on the stream's end: {:?}",
+        started.elapsed()
+    );
+    p.shutdown().await;
+}

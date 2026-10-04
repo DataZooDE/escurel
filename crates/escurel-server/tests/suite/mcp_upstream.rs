@@ -16,6 +16,7 @@ use axum::extract::State;
 use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::post;
+use futures::StreamExt;
 use serde_json::{Value, json};
 
 use super::remote_support::serve;
@@ -49,6 +50,9 @@ pub struct Upstream {
     pub puts: Mutex<Vec<Value>>,
     /// Answer HTTP 503 to the next N `putArticle` calls.
     pub fail_puts: AtomicUsize,
+    /// Keep every SSE response stream OPEN after its event (a server that streams and does not
+    /// close): a client that waits for the stream to end waits for ever.
+    pub hold_stream_open: std::sync::atomic::AtomicBool,
 }
 
 impl Upstream {
@@ -77,6 +81,18 @@ impl Upstream {
 
 fn rpc_result(id: &Value, result: Value) -> Value {
     json!({ "jsonrpc": "2.0", "id": id, "result": result })
+}
+
+fn sse_held_open(body: &Value) -> Response {
+    let mut h = HeaderMap::new();
+    h.insert(
+        "content-type",
+        HeaderValue::from_static("text/event-stream"),
+    );
+    let first = bytes::Bytes::from(format!("event: message\ndata: {body}\n\n"));
+    let stream = futures::stream::once(async move { Ok::<_, std::convert::Infallible>(first) })
+        .chain(futures::stream::pending());
+    (StatusCode::OK, h, axum::body::Body::from_stream(stream)).into_response()
 }
 
 fn sse(body: &Value) -> Response {
@@ -178,11 +194,16 @@ async fn handle(State(u): State<Arc<Upstream>>, headers: HeaderMap, body: String
                         .then(|| format!("a-{:04}", start + page.len() - 1));
                     let payload = json!({ "articles": page, "next": next });
                     // Listings arrive as SSE with the payload as JSON text, as many servers do.
-                    sse(&rpc_result(
+                    let event = rpc_result(
                         &id,
                         json!({ "content": [{ "type": "text", "text": payload.to_string() }],
                                 "isError": false }),
-                    ))
+                    );
+                    if u.hold_stream_open.load(Ordering::SeqCst) {
+                        sse_held_open(&event)
+                    } else {
+                        sse(&event)
+                    }
                 }
                 "getArticle" => {
                     let slug = args["id"].as_str().unwrap_or_default();

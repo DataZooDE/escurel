@@ -138,7 +138,7 @@ fn refusal(code: &str, message: impl Into<String>) -> Value {
 /// A short jittered pause: `base * 2^(attempt-1)` plus up to 25 %, so concurrent promotions do not
 /// retry in lock-step. The jitter comes from a randomly keyed hasher (not the clock's nanoseconds,
 /// which two promotions started in the same instant share).
-fn backoff(base: Duration, attempt: u32) -> Duration {
+pub(crate) fn backoff(base: Duration, attempt: u32) -> Duration {
     let scaled = base.saturating_mul(1 << (attempt - 1).min(6));
     let roll = RandomState::new().hash_one((attempt, std::time::Instant::now())) % 1000;
     scaled + scaled / 4 * u32::try_from(roll).unwrap_or(0) / 1000
