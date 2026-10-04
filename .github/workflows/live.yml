@@ -114,6 +114,40 @@ jobs:
           cargo test -p escurel-server --features live-ducklake --test suite reader_role_events::
           cargo test -p escurel-server --features live-ducklake --test suite reader_role_crdt::
 
+      # The SQL connectors against a REAL Postgres (rows paging, typed columns, write-back with the
+      # database's own trigger counting UPDATEs, a black-holed host, the egress policy) and the
+      # writer lease. They sit behind `live-postgres`, which no other workflow passes, so before this
+      # step they were verified only by someone remembering the flag locally. Each test starts its
+      # own `postgres:16-alpine` container (already pre-pulled above).
+      - name: SQL connectors + writer lease — live Postgres
+        run: |
+          set -euo pipefail
+          cargo test -p escurel-server --features live-postgres --test suite sql_rows_postgres::
+          cargo test -p escurel-index --features live-postgres --test suite sql_view_postgres::
+          cargo test -p escurel-index --features live-postgres --test suite writer_lease_live::
+
+      # The migrate-kind SIGKILL test kills the real server at ten points of the migration; the PR
+      # gate runs four (one per phase, to stay inside the runner's budget). Nightly runs all ten.
+      - name: migrate-kind — SIGKILL at all ten points (nightly)
+        if: github.event_name != 'pull_request'
+        run: |
+          set -euo pipefail
+          ESCUREL_SIGKILL_FULL=1 cargo test -p escurel-server --test suite migrate_kind_sigkill
+
+      # `#[ignore]`d live tests that need a secret. Said out loud when the secret is absent, instead of
+      # passing vacuously (they used to `return` early and report green).
+      - name: Live Gemini harness tests (when the key is configured)
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "${GEMINI_API_KEY:-}" ]; then
+            echo "::warning title=Gemini live tests NOT run::the GEMINI_API_KEY secret is not configured; the #[ignore]d live Gemini workflow tests did not run"
+            exit 0
+          fi
+          ESCUREL_GEMINI_API_KEY="$GEMINI_API_KEY" cargo test -p escurel-runner --test suite workflow_end_to_end::deep_research_runs_against_gemini -- --ignored
+          ESCUREL_GEMINI_API_KEY="$GEMINI_API_KEY" cargo test -p escurel-runner --test suite workflow_end_to_end::verify_barrier_runs_against_gemini -- --ignored
+
       # GCS has no emulator wired up yet, so there is no live GCS job.
       # `gcs.rs` is compiled and linted on every PR by ci.yml's
       # shipped-features step; its integration coverage is an open gap and

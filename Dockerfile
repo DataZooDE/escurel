@@ -13,6 +13,11 @@
 # via ESCUREL_EMBEDDING_PROVIDER, but `embeddinggemma` needs its own feature
 # build + a baked model, so it is intentionally not compiled in here.
 
+# The DuckDB release the image bakes extensions for. It must be the one libduckdb-sys links (Cargo.lock):
+# extensions resolve under <version>/<platform>, so a mismatch is a silent 137 MB download at boot, or an
+# extension that refuses to load. The builder stage asserts the two agree.
+ARG DUCKDB_VERSION=v1.5.5
+
 # ---- builder -------------------------------------------------------------
 # Pinned to the workspace toolchain (rust-toolchain.toml: 1.91.0).
 # libduckdb-sys downloads the precompiled libduckdb release instead of
@@ -23,6 +28,14 @@
 FROM rust:1.91-bookworm AS builder
 WORKDIR /build
 COPY . .
+# Fail the build, not the pod, when the pinned DuckDB release drifts from the linked one.
+# libduckdb-sys 1.<MMPP>.x is DuckDB 1.<MM>.<PP> (1.10505.0 -> v1.5.5).
+ARG DUCKDB_VERSION
+RUN set -eu; \
+    n="$(grep -A1 '^name = "libduckdb-sys"$' Cargo.lock | sed -n 's/^version = "1\.\([0-9]*\)\..*/\1/p' | head -n1)"; \
+    [ -n "$n" ] || { echo "libduckdb-sys not found in Cargo.lock"; exit 1; }; \
+    want="v1.$((n / 100 % 100)).$((n % 100))"; \
+    [ "$want" = "${DUCKDB_VERSION}" ] || { echo "DUCKDB_VERSION=${DUCKDB_VERSION} but Cargo.lock links libduckdb-sys for DuckDB ${want}: bump the ARG (the baked extensions would not match)"; exit 1; }
 # Serialise codegen/link: linking the release binary against libduckdb is
 # memory-hungry and OOMs a default-parallelism release+LTO build on a 7 GB CI
 # runner (the CI workflow caps this the same way). Release profile already
@@ -68,7 +81,7 @@ RUN --mount=type=cache,target=/build/target \
 # extensions under <version>/<platform>, so a mismatch silently downloads
 # again at runtime. Both are asserted below rather than assumed.
 FROM debian:bookworm-slim AS extensions
-ARG DUCKDB_VERSION=v1.5.5
+ARG DUCKDB_VERSION
 # gdrive from the erpl.io mirror, NOT `community`: workload identity federation
 # only exists in v2026.09.01 and the community repository still serves
 # v2026.08.07, whose credential_chain refuses external_account outright. Swap

@@ -50,22 +50,42 @@ impl Pg {
     }
 
     async fn start() -> Self {
-        let port = {
-            let l = TcpListener::bind("127.0.0.1:0").unwrap();
-            l.local_addr().unwrap().port()
-        };
-        let id = Self::docker(&[
-            "run",
-            "-d",
-            "-p",
-            &format!("127.0.0.1:{port}:5432"),
-            "-e",
-            "POSTGRES_PASSWORD=postgres",
-            "postgres:16-alpine",
-        ]);
-        let pg = Self { id, port };
-        pg.wait_ready().await;
-        pg
+        // The host port is FIXED for the container's life (the dead-letter test stops it and brings
+        // it back on the same port), so it is chosen up front. Probing a free port and then handing it
+        // to `docker run` races with anything else binding in between (a parallel test, another job on
+        // the runner): when Docker refuses the bind, pick another port and try again.
+        let mut last = String::new();
+        for _ in 0..8 {
+            let port = {
+                let l = TcpListener::bind("127.0.0.1:0").unwrap();
+                l.local_addr().unwrap().port()
+            };
+            let out = Command::new("docker")
+                .args([
+                    "run",
+                    "-d",
+                    "-p",
+                    &format!("127.0.0.1:{port}:5432"),
+                    "-e",
+                    "POSTGRES_PASSWORD=postgres",
+                    "postgres:16-alpine",
+                ])
+                .output()
+                .expect("docker");
+            if out.status.success() {
+                let id = String::from_utf8_lossy(&out.stdout).trim().to_owned();
+                let pg = Self { id, port };
+                pg.wait_ready().await;
+                return pg;
+            }
+            last = String::from_utf8_lossy(&out.stderr).into_owned();
+            assert!(
+                last.contains("port is already allocated")
+                    || last.contains("address already in use"),
+                "docker run failed for a reason other than the port: {last}"
+            );
+        }
+        panic!("no free host port for the postgres container after 8 tries: {last}");
     }
 
     fn dsn(&self) -> String {

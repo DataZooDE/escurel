@@ -44,10 +44,12 @@ fn store_and_dir() -> Option<(DuckVfsStore, TempDir)> {
     Some((store, dir))
 }
 
-/// Emitted once per skipped test so a green run that tested nothing is not
-/// mistaken for a green run that tested everything.
+/// These tests are `#[ignore]`d (they need a built `gdrive.duckdb_extension`), so an ordinary run
+/// REPORTS them as ignored instead of passing them vacuously. Run on purpose with
+/// `ESCUREL_TEST_GDRIVE_EXTENSION=… cargo test -p escurel-storage --test duckvfs_roundtrip -- --ignored`;
+/// asked for and not equipped, they FAIL rather than skip.
 fn skip(name: &str) {
-    eprintln!("SKIP {name}: set ESCUREL_TEST_GDRIVE_EXTENSION to a built gdrive.duckdb_extension");
+    panic!("{name}: set ESCUREL_TEST_GDRIVE_EXTENSION to a built gdrive.duckdb_extension");
 }
 
 fn k(tenant: &str, path: &str) -> Key {
@@ -59,6 +61,7 @@ fn k(tenant: &str, path: &str) -> Key {
 /// are held to. This is the point of the file: a new backend either passes
 /// the existing conformance suite or it is not a LaneStore.
 #[tokio::test]
+#[ignore = "needs ESCUREL_TEST_GDRIVE_EXTENSION (a built gdrive.duckdb_extension)"]
 async fn passes_lane_store_conformance() {
     let Some((store, _dir)) = store_and_dir() else {
         return skip("passes_lane_store_conformance");
@@ -67,6 +70,7 @@ async fn passes_lane_store_conformance() {
 }
 
 #[tokio::test]
+#[ignore = "needs ESCUREL_TEST_GDRIVE_EXTENSION (a built gdrive.duckdb_extension)"]
 async fn write_then_read_roundtrip_is_byte_exact() {
     let Some((store, _dir)) = store_and_dir() else {
         return skip("write_then_read_roundtrip_is_byte_exact");
@@ -83,6 +87,7 @@ async fn write_then_read_roundtrip_is_byte_exact() {
 }
 
 #[tokio::test]
+#[ignore = "needs ESCUREL_TEST_GDRIVE_EXTENSION (a built gdrive.duckdb_extension)"]
 async fn overwrite_with_shorter_content_truncates() {
     let Some((store, _dir)) = store_and_dir() else {
         return skip("overwrite_with_shorter_content_truncates");
@@ -108,6 +113,7 @@ async fn overwrite_with_shorter_content_truncates() {
 }
 
 #[tokio::test]
+#[ignore = "needs ESCUREL_TEST_GDRIVE_EXTENSION (a built gdrive.duckdb_extension)"]
 async fn binary_content_survives_including_nul_bytes() {
     let Some((store, _dir)) = store_and_dir() else {
         return skip("binary_content_survives_including_nul_bytes");
@@ -123,6 +129,7 @@ async fn binary_content_survives_including_nul_bytes() {
 }
 
 #[tokio::test]
+#[ignore = "needs ESCUREL_TEST_GDRIVE_EXTENSION (a built gdrive.duckdb_extension)"]
 async fn empty_body_is_a_real_zero_length_object() {
     let Some((store, _dir)) = store_and_dir() else {
         return skip("empty_body_is_a_real_zero_length_object");
@@ -135,6 +142,7 @@ async fn empty_body_is_a_real_zero_length_object() {
 }
 
 #[tokio::test]
+#[ignore = "needs ESCUREL_TEST_GDRIVE_EXTENSION (a built gdrive.duckdb_extension)"]
 async fn missing_key_reports_not_found_not_a_generic_io_error() {
     let Some((store, _dir)) = store_and_dir() else {
         return skip("missing_key_reports_not_found_not_a_generic_io_error");
@@ -160,6 +168,7 @@ async fn missing_key_reports_not_found_not_a_generic_io_error() {
 }
 
 #[tokio::test]
+#[ignore = "needs ESCUREL_TEST_GDRIVE_EXTENSION (a built gdrive.duckdb_extension)"]
 async fn delete_removes_then_reports_not_found() {
     let Some((store, _dir)) = store_and_dir() else {
         return skip("delete_removes_then_reports_not_found");
@@ -178,6 +187,7 @@ async fn delete_removes_then_reports_not_found() {
 }
 
 #[tokio::test]
+#[ignore = "needs ESCUREL_TEST_GDRIVE_EXTENSION (a built gdrive.duckdb_extension)"]
 async fn list_is_recursive_prefix_scoped_and_tenant_isolated() {
     let Some((store, _dir)) = store_and_dir() else {
         return skip("list_is_recursive_prefix_scoped_and_tenant_isolated");
@@ -210,6 +220,7 @@ async fn list_is_recursive_prefix_scoped_and_tenant_isolated() {
 }
 
 #[tokio::test]
+#[ignore = "needs ESCUREL_TEST_GDRIVE_EXTENSION (a built gdrive.duckdb_extension)"]
 async fn list_of_an_unknown_tenant_is_empty_not_an_error() {
     let Some((store, _dir)) = store_and_dir() else {
         return skip("list_of_an_unknown_tenant_is_empty_not_an_error");
@@ -225,6 +236,7 @@ async fn list_of_an_unknown_tenant_is_empty_not_an_error() {
 }
 
 #[tokio::test]
+#[ignore = "needs ESCUREL_TEST_GDRIVE_EXTENSION (a built gdrive.duckdb_extension)"]
 async fn write_returns_a_content_addressed_version() {
     let Some((store, _dir)) = store_and_dir() else {
         return skip("write_returns_a_content_addressed_version");
@@ -253,6 +265,7 @@ async fn write_returns_a_content_addressed_version() {
 }
 
 #[tokio::test]
+#[ignore = "needs ESCUREL_TEST_GDRIVE_EXTENSION (a built gdrive.duckdb_extension)"]
 async fn blob_helpers_ride_the_same_primitives() {
     let Some((store, _dir)) = store_and_dir() else {
         return skip("blob_helpers_ride_the_same_primitives");
