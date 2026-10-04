@@ -286,3 +286,127 @@ async fn a_cursor_is_opaque_and_a_forged_one_says_how_to_recover() {
         );
     }
 }
+
+// ---- (3)(4) descriptions, groups and annotations ----------------------------------------------
+
+async fn tools(p: &EscurelProcess) -> Vec<Value> {
+    let body: Value = reqwest::Client::new()
+        .post(p.mcp_url())
+        .json(&json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/list" }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    body["result"]["tools"].as_array().expect("tools").clone()
+}
+
+fn tool<'a>(all: &'a [Value], name: &str) -> &'a Value {
+    all.iter()
+        .find(|t| t["name"] == name)
+        .unwrap_or_else(|| panic!("tool {name}"))
+}
+
+#[tokio::test]
+async fn every_tool_names_its_group_and_carries_the_four_mcp_annotations() {
+    let t = Rows::start().await;
+    let all = tools(&t.p).await;
+    assert!(all.len() > 40, "the whole surface is listed: {}", all.len());
+    for tl in &all {
+        let name = tl["name"].as_str().unwrap();
+        let desc = tl["description"].as_str().unwrap();
+        assert!(
+            [
+                "[READ]",
+                "[WRITE]",
+                "[REVIEW]",
+                "[RUNNER]",
+                "[SESSION]",
+                "[ADMIN]"
+            ]
+            .iter()
+            .any(|g| desc.starts_with(g)),
+            "{name}: a group tag first, so an agent can pick among 80 tools: {desc}"
+        );
+        let a = &tl["annotations"];
+        for hint in [
+            "readOnlyHint",
+            "destructiveHint",
+            "idempotentHint",
+            "openWorldHint",
+        ] {
+            assert!(a[hint].is_boolean(), "{name}: annotations.{hint}: {tl}");
+        }
+        if a["readOnlyHint"] == true {
+            assert_eq!(a["destructiveHint"], false, "{name}: a read cannot destroy");
+        }
+    }
+    // The ones an agent must not get wrong.
+    assert_eq!(
+        tool(&all, "list_instances")["annotations"]["readOnlyHint"],
+        true
+    );
+    assert_eq!(tool(&all, "search")["annotations"]["readOnlyHint"], true);
+    assert_eq!(
+        tool(&all, "delete_page")["annotations"]["destructiveHint"],
+        true
+    );
+    assert_eq!(
+        tool(&all, "purge_page")["annotations"]["destructiveHint"],
+        true
+    );
+    assert_eq!(
+        tool(&all, "capture_event")["annotations"]["idempotentHint"],
+        true
+    );
+    assert_eq!(tool(&all, "expand")["annotations"]["openWorldHint"], true);
+}
+
+#[tokio::test]
+async fn the_entry_point_descriptions_say_what_the_tool_returns_and_what_to_do_next() {
+    let t = Rows::start().await;
+    let all = tools(&t.p).await;
+    let d = |n: &str| tool(&all, n)["description"].as_str().unwrap().to_owned();
+    let skills = d("list_skills");
+    for needle in [
+        "START HERE",
+        "folder",
+        "role",
+        "fields",
+        "backend",
+        "actions",
+        "autonomy",
+        "writable",
+    ] {
+        assert!(
+            skills.contains(needle),
+            "list_skills mentions {needle}: {skills}"
+        );
+    }
+    let inst = d("list_instances");
+    assert!(
+        inst.contains("rows") && inst.contains("filterable") && inst.contains("trust"),
+        "{inst}"
+    );
+    let cap = d("capture_event");
+    assert!(
+        cap.contains("label_skill=<action.event>") && cap.contains("instance_page_id"),
+        "how to START a skill action: {cap}"
+    );
+    for reviewer in [
+        "promote_draft",
+        "discard_draft",
+        "promote_changeset",
+        "discard_changeset",
+        "merge_branch",
+    ] {
+        assert!(
+            d(reviewer).contains("human reviewer action"),
+            "{reviewer} says an agent must not decide its own work: {}",
+            d(reviewer)
+        );
+    }
+    // `resolve` finally has an output contract.
+    assert!(tool(&all, "resolve")["outputSchema"].is_object());
+}
