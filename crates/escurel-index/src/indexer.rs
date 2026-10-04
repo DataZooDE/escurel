@@ -148,6 +148,8 @@ pub struct Indexer {
     /// How long one `rows` list/get query may run before it is interrupted (the single DuckDB
     /// connection is held for its duration, so an unbounded source query stalls every other read).
     pub(crate) rows_query_timeout: std::time::Duration,
+    /// libpq `connect_timeout` applied to a network database source at ATTACH.
+    pub(crate) sql_connect_timeout: std::time::Duration,
     /// Resolves a registered credential (a reference or an inline secret) and polices its target; the
     /// server installs it. `None` (a bare indexer, most tests) uses the stored value as it is.
     pub(crate) credential_resolver:
@@ -424,6 +426,7 @@ impl Indexer {
             skipped_pages: std::sync::RwLock::new(Vec::new()),
             migration_lock: tokio::sync::Mutex::new(()),
             rows_query_timeout: crate::backend::rows::ROWS_QUERY_TIMEOUT,
+            sql_connect_timeout: crate::backend::SQL_CONNECT_TIMEOUT,
             credential_resolver: std::sync::RwLock::new(None),
         })
     }
@@ -779,6 +782,15 @@ impl Indexer {
     #[must_use]
     pub fn with_rows_query_timeout(mut self, timeout: std::time::Duration) -> Self {
         self.rows_query_timeout = timeout;
+        self
+    }
+
+    /// Bound how long attaching a network database source may spend CONNECTING (libpq
+    /// `connect_timeout`; default 5 s). A black-holed host would otherwise hold the single index
+    /// connection for as long as the OS TCP timeout, and DuckDB's interrupt cannot cancel it.
+    #[must_use]
+    pub fn with_sql_connect_timeout(mut self, timeout: std::time::Duration) -> Self {
+        self.sql_connect_timeout = timeout;
         self
     }
 

@@ -232,10 +232,10 @@ pub(crate) fn resolve_attach_secret(
                     .to_owned(),
             ));
         }
-        return Ok(with_server_statement_timeout(
+        return Ok(with_connect_timeout(
             connector,
-            stored,
-            indexer.rows_query_timeout,
+            &with_server_statement_timeout(connector, stored, indexer.rows_query_timeout),
+            indexer.sql_connect_timeout,
         ));
     };
     let secret = resolver
@@ -244,11 +244,35 @@ pub(crate) fn resolve_attach_secret(
     resolver
         .check_target(connector.as_str(), &secret)
         .map_err(|m| SqlViewError::InvalidBinding(format!("backend_unavailable: {m}")))?;
-    Ok(with_server_statement_timeout(
+    Ok(with_connect_timeout(
         connector,
-        &secret,
-        indexer.rows_query_timeout,
+        &with_server_statement_timeout(connector, &secret, indexer.rows_query_timeout),
+        indexer.sql_connect_timeout,
     ))
+}
+
+/// Default libpq `connect_timeout` for a network database source (`ESCUREL_SQL_CONNECT_TIMEOUT_SECS`).
+pub const SQL_CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Bound the libpq CONNECT (`connect_timeout=<secs>`) of a Postgres source. DuckDB's interrupt cannot
+/// cancel a connect that is blocked in libpq, so a black-holed host would hold the tenant's single
+/// index connection for the OS TCP timeout (minutes). A DSN that already names its own
+/// `connect_timeout` keeps it. Other connectors are returned unchanged.
+pub(crate) fn with_connect_timeout(
+    connector: SqlConnector,
+    dsn: &str,
+    timeout: std::time::Duration,
+) -> String {
+    if connector != SqlConnector::Postgres || dsn.contains("connect_timeout") {
+        return dsn.to_owned();
+    }
+    let secs = timeout.as_secs().max(1);
+    if dsn.starts_with("postgres://") || dsn.starts_with("postgresql://") {
+        let sep = if dsn.contains('?') { '&' } else { '?' };
+        format!("{dsn}{sep}connect_timeout={secs}")
+    } else {
+        format!("{} connect_timeout={secs}", dsn.trim_end())
+    }
 }
 
 /// Make a Postgres server enforce the statement timeout itself.
@@ -327,10 +351,15 @@ async fn prepare_source(
             if matches!(db, SqlConnector::Erpl) && allow_unsigned {
                 conn.execute_batch("SET allow_unsigned_extensions=true;")?;
             }
-            for stmt in install_load(db) {
-                conn.execute_batch(stmt)?;
-            }
-            conn.execute_batch(&attach_sql(db, attach, &secret))?;
+            // INSTALL/LOAD/ATTACH talk to the network synchronously while the single connection is
+            // held: tell the runtime so it moves its other tasks off this worker meanwhile.
+            super::blocking_section(|| -> Result<(), SqlViewError> {
+                for stmt in install_load(db) {
+                    conn.execute_batch(stmt)?;
+                }
+                conn.execute_batch(&attach_sql(db, attach, &secret))?;
+                Ok(())
+            })?;
             // The postgres/mysql scanners cache the remote catalog at ATTACH
             // time. Because the Indexer's connection is persistent, a view
             // re-materialised by validate_bindings / reconstruct_views would
@@ -1370,6 +1399,29 @@ mod statement_timeout_tests {
         );
         assert_eq!(
             with_server_statement_timeout(SqlConnector::Sqlite, "/data/x.db", t),
+            "/data/x.db"
+        );
+    }
+
+    #[test]
+    fn a_postgres_connect_is_bounded_in_both_dsn_spellings_and_an_own_value_wins() {
+        let t = Duration::from_secs(5);
+        assert_eq!(
+            with_connect_timeout(SqlConnector::Postgres, "host=h dbname=d ", t),
+            "host=h dbname=d connect_timeout=5"
+        );
+        assert_eq!(
+            with_connect_timeout(
+                SqlConnector::Postgres,
+                "postgres://u@h/d?sslmode=require",
+                t
+            ),
+            "postgres://u@h/d?sslmode=require&connect_timeout=5"
+        );
+        let own = "host=h connect_timeout=60";
+        assert_eq!(with_connect_timeout(SqlConnector::Postgres, own, t), own);
+        assert_eq!(
+            with_connect_timeout(SqlConnector::Sqlite, "/data/x.db", t),
             "/data/x.db"
         );
     }

@@ -696,6 +696,12 @@ pub struct EscurelConfig {
     /// `[<title> › <heading path> › p.<page>]` context (stored beside the
     /// verbatim body; feeds the dense/FTS/rerank representations only).
     pub ingest_contextualize: ContextualizeMode,
+    /// How long one `instances: rows` source query may run (`ESCUREL_ROWS_QUERY_TIMEOUT_SECS`,
+    /// default 30): interrupted past it, and enforced by a Postgres server itself.
+    pub rows_query_timeout: std::time::Duration,
+    /// libpq `connect_timeout` for a network database source (`ESCUREL_SQL_CONNECT_TIMEOUT_SECS`,
+    /// default 5): a black-holed host must not hold the tenant's index connection for minutes.
+    pub sql_connect_timeout: std::time::Duration,
     /// Whether to drop + rebuild the derived DuckDB index at boot
     /// (`ESCUREL_REBUILD_INDEX_ON_BOOT`; default `if-missing`). The container
     /// image sets `always` to sidestep the HNSW-persistence-reload segfault.
@@ -1161,6 +1167,33 @@ impl EscurelConfig {
             "structural",
         ));
 
+        let secs_knob = |var: &'static str,
+                         default: std::time::Duration|
+         -> Result<std::time::Duration, ConfigError> {
+            match env.get(var) {
+                Some(raw) => raw
+                    .trim()
+                    .parse::<u64>()
+                    .ok()
+                    .filter(|n| *n >= 1)
+                    .map(std::time::Duration::from_secs)
+                    .ok_or(ConfigError::InvalidValue {
+                        var,
+                        value: raw,
+                        reason: "expected a positive number of seconds",
+                    }),
+                None => Ok(default),
+            }
+        };
+        let rows_query_timeout = secs_knob(
+            "ESCUREL_ROWS_QUERY_TIMEOUT_SECS",
+            escurel_index::ROWS_QUERY_TIMEOUT,
+        )?;
+        let sql_connect_timeout = secs_knob(
+            "ESCUREL_SQL_CONNECT_TIMEOUT_SECS",
+            escurel_index::SQL_CONNECT_TIMEOUT,
+        )?;
+
         // --- retrieval (rerank) ---
         // Default-on where built: a `--features rerank` binary defaults to the
         // bge cross-encoder; a default (rerank-less) binary defaults to `off`.
@@ -1397,6 +1430,8 @@ impl EscurelConfig {
             operation_slug_secret,
             metrics_listen,
             ingest_contextualize,
+            rows_query_timeout,
+            sql_connect_timeout,
             rebuild_index_on_boot,
             index_backend,
             role,
@@ -1610,7 +1645,12 @@ impl EscurelConfig {
         let attach_cfg = self.clone();
         let attach: AttachRetrievalFn = Arc::new(move |base: Indexer| {
             let cfg = attach_cfg.clone();
-            Box::pin(async move { cfg.attach_retrieval(base).await })
+            Box::pin(async move {
+                let base = base
+                    .with_rows_query_timeout(cfg.rows_query_timeout)
+                    .with_sql_connect_timeout(cfg.sql_connect_timeout);
+                cfg.attach_retrieval(base).await
+            })
         });
 
         let single_file = SingleFileStore {

@@ -179,3 +179,36 @@ async fn an_unauthenticated_non_loopback_listener_is_flagged_on_readyz() {
     let local = notices("127.0.0.1:0", dir2.path()).await;
     assert!(!local.contains("unauthenticated_exposed"), "{local}");
 }
+
+// The source-timeout knobs are config, validated at boot like every other number.
+#[tokio::test]
+async fn source_timeout_knobs_are_validated_at_boot() {
+    for (var, bad) in [
+        ("ESCUREL_ROWS_QUERY_TIMEOUT_SECS", "soon"),
+        ("ESCUREL_SQL_CONNECT_TIMEOUT_SECS", "0"),
+    ] {
+        let dir = TempDir::new().unwrap();
+        let pairs = [
+            ("ESCUREL_SERVER_DATA_DIR", dir.path().to_str().unwrap()),
+            ("ESCUREL_SERVER_LISTEN_HTTP", "127.0.0.1:0"),
+            ("ESCUREL_EMBEDDING_PROVIDER", "zero"),
+            (var, bad),
+        ];
+        let err = EscurelConfig::from_source(&source(&pairs)).err();
+        assert!(
+            err.is_some_and(|e| e.to_string().contains(var)),
+            "{var}={bad} must be refused naming the variable"
+        );
+    }
+    let dir = TempDir::new().unwrap();
+    let pairs = [
+        ("ESCUREL_SERVER_DATA_DIR", dir.path().to_str().unwrap()),
+        ("ESCUREL_SERVER_LISTEN_HTTP", "127.0.0.1:0"),
+        ("ESCUREL_EMBEDDING_PROVIDER", "zero"),
+        ("ESCUREL_ROWS_QUERY_TIMEOUT_SECS", "45"),
+        ("ESCUREL_SQL_CONNECT_TIMEOUT_SECS", "9"),
+    ];
+    let cfg = EscurelConfig::from_source(&source(&pairs)).unwrap();
+    assert_eq!(cfg.rows_query_timeout.as_secs(), 45);
+    assert_eq!(cfg.sql_connect_timeout.as_secs(), 9);
+}

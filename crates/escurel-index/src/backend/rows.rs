@@ -52,7 +52,7 @@ pub(crate) fn with_statement_timeout<T, E: From<SqlViewError>>(
         }
     });
     let started = std::time::Instant::now();
-    let result = f();
+    let result = super::blocking_section(f);
     let overran = started.elapsed() >= timeout;
     let _ = done.send(());
     let _ = watchdog.join();

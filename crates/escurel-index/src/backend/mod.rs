@@ -22,6 +22,19 @@ pub mod rows;
 pub mod rows_write;
 mod sql_view;
 
+/// Run a synchronous, possibly long section (a source query or ATTACH that blocks on the network)
+/// without occupying the async runtime: on a multi-thread runtime other tasks are moved off this
+/// worker for the duration, so one slow source cannot starve `/healthz` or other tenants' requests.
+/// On a current-thread runtime (or none) it simply runs inline.
+pub(crate) fn blocking_section<T>(f: impl FnOnce() -> T) -> T {
+    match tokio::runtime::Handle::try_current() {
+        Ok(h) if h.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread => {
+            tokio::task::block_in_place(f)
+        }
+        _ => f(),
+    }
+}
+
 use escurel_md::{PageKind, parse};
 
 use crate::search::{Granularity, SearchHit};
@@ -45,13 +58,14 @@ pub use remote::{
     RemoteError, encode_segment, fill_path_template, fill_template, has_dot_segment, json_path_get,
     resolve_projection,
 };
-pub use rows::{RowRecord, RowsPage, RowsSource};
+pub use rows::{ROWS_QUERY_TIMEOUT, RowRecord, RowsPage, RowsSource};
 pub use rows_write::RowWriteError;
 pub use sql_view::{
     BindingStatus, MAX_PROJECTION_ROWS, Materialized, SqlViewBackend, SqlViewError,
 };
 // Crate-internal: `query_instance` allow-lists the `{{target}}` view
 // identifier through the same `vw_`-prefix guard the projection path uses.
+pub use sql_view::SQL_CONNECT_TIMEOUT;
 pub(crate) use sql_view::is_managed_view;
 // Crate-internal: the DuckLake attach/secret builders (`snapshot::lake`)
 // validate their spliced DSN / data path / credentials with the same

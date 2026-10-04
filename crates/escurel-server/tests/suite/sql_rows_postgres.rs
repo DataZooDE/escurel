@@ -733,3 +733,118 @@ async fn a_change_that_committed_but_lost_its_witness_completes_without_a_second
     );
     assert_eq!(touches(&db).await, before, "and no second UPDATE was sent");
 }
+
+/// A TCP listener that completes the handshake (the kernel accepts) and never answers: the
+/// behaviour of a black-holed or firewalled database host as libpq sees it.
+struct Blackhole {
+    _l: TcpListener,
+    port: u16,
+}
+
+impl Blackhole {
+    fn start() -> Self {
+        let l = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = l.local_addr().unwrap().port();
+        Self { _l: l, port }
+    }
+}
+
+// Round-2 review: a blackholed Postgres host stalled the tenant's whole index connection (ATTACH ran
+// under `indexer.conn.lock()` with no timeout; DuckDB's interrupt cannot cancel a libpq connect).
+// libpq's `connect_timeout` bounds it, and the blocking ATTACH must not occupy the async runtime:
+// this runs on ONE runtime worker, and `/healthz` has to answer while the attach is stuck.
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn a_blackholed_database_host_is_bounded_and_does_not_starve_the_runtime() {
+    let hole = Blackhole::start();
+    let store_dir = TempDir::new().unwrap();
+    let db_dir = TempDir::new().unwrap();
+    let secret_dir = TempDir::new().unwrap();
+    let secret: PathBuf = secret_dir.path().join("shop-pg");
+    std::fs::write(
+        &secret,
+        format!(
+            "host=127.0.0.1 port={} user=postgres password=x dbname=postgres\n",
+            hole.port
+        ),
+    )
+    .unwrap();
+    let store: Arc<dyn LaneStore> = Arc::new(FsStore::new(store_dir.path().to_path_buf()));
+    let embedder: Arc<dyn Embedder> = Arc::new(ZeroEmbedder::default());
+    let conn = Connection::open(db_dir.path().join("escurel.duckdb")).unwrap();
+    Migrator::up(&conn).unwrap();
+    let indexer = Arc::new(
+        Indexer::new(store, embedder, conn, TENANT)
+            .unwrap()
+            .with_sql_connect_timeout(Duration::from_secs(3)),
+    );
+    let p = EscurelProcess::spawn(Opts {
+        auth: AuthMode::TestIssuer,
+        config_overrides: ConfigOverrides {
+            indexer: Some(indexer),
+            egress: Some(policy(secret_dir.path())),
+            signing: true,
+            ..Default::default()
+        },
+        ..Default::default()
+    })
+    .await;
+    let token = p.mint_token(TENANT, Role::Admin);
+    let reg = call_as(
+        &p,
+        &token,
+        "register_credential",
+        json!({ "name": "shop_pg", "connector": "postgres",
+                "secret_ref": format!("file:{}", secret.display()) }),
+    )
+    .await;
+    assert_eq!(reg["ok"], true, "{reg}");
+    let r = call_as(
+        &p,
+        &token,
+        "update_page",
+        json!({ "page_id": "markdown/skills/pg-order.md", "content": skill_page() }),
+    )
+    .await;
+    assert_eq!(r["ok"], true, "{r}");
+
+    let started = std::time::Instant::now();
+    let stuck = {
+        let (url, token) = (p.mcp_url(), token.clone());
+        tokio::spawn(async move {
+            reqwest::Client::new()
+                .post(url)
+                .header("authorization", format!("Bearer {token}"))
+                .json(&json!({"jsonrpc":"2.0","id":1,"method":"tools/call",
+                    "params":{"name":"list_instances","arguments":{"skill":"pg-order","limit":5}}}))
+                .send()
+                .await
+                .unwrap()
+                .text()
+                .await
+                .unwrap()
+        })
+    };
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let health = tokio::time::timeout(
+        Duration::from_secs(2),
+        reqwest::get(format!("{}/healthz", p.base_url())),
+    )
+    .await
+    .expect("/healthz must answer while a source attach is stuck")
+    .unwrap();
+    assert!(health.status().is_success());
+
+    let body = tokio::time::timeout(Duration::from_secs(20), stuck)
+        .await
+        .expect("the connect is bounded by connect_timeout, not the OS TCP timeout")
+        .unwrap();
+    assert!(
+        started.elapsed() < Duration::from_secs(15),
+        "took {:?}",
+        started.elapsed()
+    );
+    assert!(
+        body.contains("backend_unavailable") || body.contains("error"),
+        "{body}"
+    );
+}
