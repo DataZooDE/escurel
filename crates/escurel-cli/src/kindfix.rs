@@ -295,9 +295,25 @@ fn write_if_unchanged(path: &Path, original: &str, new: &str) -> Result<()> {
     if current != original.as_bytes() {
         bail!("{} changed while it was being migrated", path.display());
     }
-    let tmp = path.with_extension("md.kindfix.tmp");
-    fs::write(&tmp, new)?;
-    fs::set_permissions(&tmp, fs::metadata(path)?.permissions())?;
+    // Created EXCLUSIVELY under a name nobody can have planted: `O_EXCL` never follows a symlink and
+    // fails on anything that exists, where `fs::write` followed a link at a predictable name to
+    // overwrite whatever it pointed at.
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_nanos());
+    let tmp = path.with_extension(format!("md.kindfix.{}.{nanos:x}.tmp", std::process::id()));
+    {
+        use std::io::Write as _;
+        let mut f = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&tmp)?;
+        f.write_all(new.as_bytes())?;
+        f.sync_all()?;
+    }
+    fs::set_permissions(&tmp, fs::metadata(path)?.permissions()).inspect_err(|_| {
+        let _ = fs::remove_file(&tmp);
+    })?;
     fs::rename(&tmp, path).inspect_err(|_| {
         let _ = fs::remove_file(&tmp);
     })?;
@@ -532,10 +548,12 @@ mod tests {
             fs::read_to_string(&p).unwrap(),
             "---\ntype: skill\n---\nedited meanwhile\n"
         );
-        assert!(
-            !d.path().join("a.md.kindfix.tmp").exists(),
-            "no temp file is left behind"
-        );
+        let left: Vec<_> = fs::read_dir(d.path())
+            .unwrap()
+            .flatten()
+            .filter(|e| e.file_name().to_string_lossy().contains("kindfix"))
+            .collect();
+        assert!(left.is_empty(), "no temp file is left behind: {left:?}");
     }
 
     #[test]

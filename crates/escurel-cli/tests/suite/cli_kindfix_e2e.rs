@@ -511,3 +511,24 @@ fn a_nested_repository_or_submodule_is_skipped_and_reported_unless_asked() {
     assert_eq!(v["summary"]["to_migrate"], 2);
     assert!(read(&sub).starts_with("---\nkind: skill\n"));
 }
+
+/// A planted symlink at the temp file's name must not turn the migrator into an arbitrary-file
+/// overwrite: the temp used to be created with `fs::write`, which follows a link.
+#[test]
+fn apply_does_not_write_through_a_planted_symlink() {
+    let d = TempDir::new().unwrap();
+    let outside = TempDir::new().unwrap();
+    let victim = write(outside.path(), "victim.txt", "DO NOT TOUCH");
+    let page = write(d.path(), "skills/customer.md", SKILL);
+    std::os::unix::fs::symlink(&victim, d.path().join("skills/customer.md.kindfix.tmp")).unwrap();
+
+    let (_code, _v, _err) = run(&["--path", d.path().to_str().unwrap(), "--apply"]);
+
+    assert_eq!(read(&victim), "DO NOT TOUCH", "the link target was written through");
+    // The migration itself still happened (or was cleanly refused): never half-applied.
+    let migrated = read(&page);
+    assert!(
+        migrated == SKILL || migrated.contains("kind: skill"),
+        "{migrated}"
+    );
+}
