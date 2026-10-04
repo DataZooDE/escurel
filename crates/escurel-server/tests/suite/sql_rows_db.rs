@@ -24,7 +24,7 @@ use escurel_test_support::{AuthMode, ConfigOverrides, EscurelProcess, Opts};
 use serde_json::{Value, json};
 use tempfile::TempDir;
 
-const TENANT: &str = "acme";
+pub(crate) const TENANT: &str = "acme";
 const SKILL_PAGE: &str = "markdown/skills/shop-order.md";
 const ROWS: usize = 2_500;
 
@@ -180,13 +180,20 @@ impl Gw {
     /// A gateway whose tenant has the `shop-order` skill over a real SQLite file, with the credential
     /// registered as a `file:` secret reference.
     pub(crate) async fn start() -> Self {
+        Self::start_with(None).await
+    }
+
+    /// [`Self::start`] with the gateway's write-ACL mode set.
+    pub(crate) async fn start_with(write_acl: Option<escurel_test_support::WriteAclMode>) -> Self {
         let store_dir = TempDir::new().unwrap();
         let db_dir = TempDir::new().unwrap();
         let sql_dir = TempDir::new().unwrap();
         let secret_dir = TempDir::new().unwrap();
         let db = sql_dir.path().join("shop.db");
         seed_sqlite(&db);
-        let secrets = secret_dir.path().join("shop-dsn");
+        // A tenant's secret files live under `<dir>/<tenant>/`.
+        std::fs::create_dir(secret_dir.path().join(TENANT)).unwrap();
+        let secrets = secret_dir.path().join(TENANT).join("shop-dsn");
         std::fs::write(&secrets, format!("{}\n", db.display())).unwrap();
 
         let store: Arc<dyn LaneStore> = Arc::new(FsStore::new(store_dir.path().to_path_buf()));
@@ -200,6 +207,7 @@ impl Gw {
                 indexer: Some(indexer),
                 egress: Some(policy(secret_dir.path(), sql_dir.path())),
                 signing: true,
+                write_acl,
                 ..Default::default()
             },
             ..Default::default()

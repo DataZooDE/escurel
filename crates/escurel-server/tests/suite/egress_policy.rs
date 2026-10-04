@@ -373,7 +373,9 @@ async fn expand_acme(p: &EscurelProcess) -> Value {
 async fn a_secret_reference_is_resolved_at_call_time_and_never_stored_or_echoed() {
     let token = "tok-7f3a9c-DO-NOT-LEAK";
     let secret_dir = TempDir::new().unwrap();
-    let secret_file = secret_dir.path().join("crm-token");
+    // A tenant's secret files live under `<dir>/<tenant>/`.
+    std::fs::create_dir(secret_dir.path().join(TENANT)).unwrap();
+    let secret_file = secret_dir.path().join(TENANT).join("crm-token");
     std::fs::write(&secret_file, format!("{token}\n")).unwrap();
     let secret_ref = format!("file:{}", secret_file.display());
     let (base, seen) = authed_crm(token).await;
@@ -413,7 +415,8 @@ async fn a_secret_reference_is_resolved_at_call_time_and_never_stored_or_echoed(
 async fn an_unset_reference_degrades_naming_the_reference_not_a_value() {
     let (base, seen) = authed_crm("whatever").await;
     let secret_dir = TempDir::new().unwrap();
-    let missing = format!("file:{}/never-set", secret_dir.path().display());
+    std::fs::create_dir(secret_dir.path().join(TENANT)).unwrap();
+    let missing = format!("file:{}/{TENANT}/never-set", secret_dir.path().display());
     let (process, _dirs) = spawn_gateway(loopback_with_secrets(secret_dir.path())).await;
     let reg = register_bearer(&process, &base, ("secret_ref", missing.as_str())).await;
     assert!(reg.get("error").is_none(), "register: {reg}");
@@ -467,7 +470,8 @@ async fn an_upstream_that_echoes_the_credential_in_its_error_is_not_repeated() {
     // The registered token is WRONG for this upstream, so it answers 401 echoing what it got.
     let secret = "wrong-tok-55d1-DO-NOT-LEAK";
     let secret_dir = TempDir::new().unwrap();
-    let secret_file = secret_dir.path().join("wrong-token");
+    std::fs::create_dir(secret_dir.path().join(TENANT)).unwrap();
+    let secret_file = secret_dir.path().join(TENANT).join("wrong-token");
     std::fs::write(&secret_file, secret).unwrap();
     let secret_ref = format!("file:{}", secret_file.display());
     let (base, _seen) = authed_crm("the-real-token").await;
@@ -763,5 +767,51 @@ async fn ipv6_forms_that_wrap_a_private_or_metadata_address_are_refused() {
             e["name"]
         );
     }
+    process.shutdown().await;
+}
+
+/// A tenant names ITS secrets only. The namespace was global (`ESCUREL_SECRET_*`, any file under the
+/// secret directory), so one tenant's admin could register an endpoint that sends another tenant's
+/// secret, as a bearer token, to a host of the admin's choosing.
+#[tokio::test]
+async fn a_tenant_cannot_name_another_tenants_secret() {
+    let theirs = "tok-of-the-other-tenant-DO-NOT-LEAK";
+    let secret_dir = TempDir::new().unwrap();
+    std::fs::create_dir(secret_dir.path().join("globex")).unwrap();
+    let their_file = secret_dir.path().join("globex").join("crm-token");
+    std::fs::write(&their_file, theirs).unwrap();
+    let (base, seen) = capture_any_auth().await;
+    let (process, _dirs) = spawn_gateway(loopback_with_secrets(secret_dir.path())).await;
+    for secret_ref in [
+        format!("file:{}", their_file.display()),
+        "env:ESCUREL_SECRET_GLOBEX__CRM_TOKEN".to_owned(),
+        // the old global namespace
+        "env:ESCUREL_SECRET_CRM_TOKEN".to_owned(),
+    ] {
+        let reg = register_bearer(&process, &base, ("secret_ref", secret_ref.as_str())).await;
+        assert!(
+            refused(&reg),
+            "`{secret_ref}` must be refused for acme: {reg}"
+        );
+    }
+    let own = register_bearer(
+        &process,
+        &base,
+        ("secret_ref", "env:ESCUREL_SECRET_ACME__CRM_TOKEN"),
+    )
+    .await;
+    assert!(!refused(&own), "a tenant names its own namespace: {own}");
+    let gsm = register_bearer(&process, &base, ("secret_ref", "gsm:crm-token")).await;
+    assert!(
+        !refused(&gsm),
+        "gsm maps into the tenant's namespace: {gsm}"
+    );
+    // Another tenant's FILE secret is refused when it is resolved too (a registration that slipped
+    // through, e.g. an older registry row, still must not put the value on the wire).
+    let _ = expand_acme(&process).await;
+    assert!(
+        !seen.lock().unwrap().iter().any(|h| h.contains(theirs)),
+        "the other tenant's secret reached the upstream"
+    );
     process.shutdown().await;
 }

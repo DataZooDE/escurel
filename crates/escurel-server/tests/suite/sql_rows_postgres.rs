@@ -206,7 +206,9 @@ impl Gw {
         let store_dir = TempDir::new().unwrap();
         let db_dir = TempDir::new().unwrap();
         let secret_dir = TempDir::new().unwrap();
-        let secret: PathBuf = secret_dir.path().join("shop-pg");
+        // A tenant's secret files live under `<dir>/<tenant>/`.
+        std::fs::create_dir(secret_dir.path().join(TENANT)).unwrap();
+        let secret: PathBuf = secret_dir.path().join(TENANT).join("shop-pg");
         std::fs::write(&secret, format!("{}\n", pg.dsn())).unwrap();
         let store: Arc<dyn LaneStore> = Arc::new(FsStore::new(store_dir.path().to_path_buf()));
         let embedder: Arc<dyn Embedder> = Arc::new(ZeroEmbedder::default());
@@ -548,7 +550,7 @@ async fn a_database_host_in_a_private_range_is_refused_before_any_connection() {
     // A second credential whose DSN names a metadata/private address: the attach policy refuses it by
     // name, immediately (a connection attempt to 169.254.169.254 would hang).
     let secret_dir = &g._dirs[2];
-    let f = secret_dir.path().join("evil-pg");
+    let f = secret_dir.path().join(TENANT).join("evil-pg");
     std::fs::write(
         &f,
         "host=169.254.169.254 port=5432 user=u password=p dbname=x\n",
@@ -589,6 +591,54 @@ async fn a_database_host_in_a_private_range_is_refused_before_any_connection() {
         started.elapsed() < Duration::from_secs(5),
         "refused before any connection attempt ({:?})",
         started.elapsed()
+    );
+}
+
+/// A connection STRING in URI form must work end to end. The statement timeout used to be appended as
+/// a bare `?options=-cstatement_timeout=<ms>`, which libpq refuses ("extra key/value separator"), so
+/// every `postgresql://` DSN failed to attach.
+#[tokio::test]
+async fn a_uri_connection_string_attaches_and_pages_with_the_servers_statement_timeout() {
+    let g = Gw::start().await;
+    let secret_dir = &g._dirs[2];
+    let f = secret_dir.path().join(TENANT).join("shop-pg-uri");
+    std::fs::write(
+        &f,
+        format!(
+            "postgresql://postgres:postgres@127.0.0.1:{}/postgres?sslmode=disable\n",
+            g.pg.port
+        ),
+    )
+    .unwrap();
+    let reg = g
+        .admin(
+            "register_credential",
+            json!({ "name": "shop_pg_uri", "connector": "postgres",
+                    "secret_ref": format!("file:{}", f.display()) }),
+        )
+        .await;
+    assert_eq!(reg["ok"], true, "{reg}");
+    let skill = skill_page()
+        .replace("id: pg-order", "id: uri-order")
+        .replace("attach: shop_pg", "attach: shop_pg_uri")
+        .replace("# pg-order", "# uri-order");
+    let r = g
+        .admin(
+            "update_page",
+            json!({ "page_id": "markdown/skills/uri-order.md", "content": skill }),
+        )
+        .await;
+    assert_eq!(r["ok"], true, "{r}");
+    let page = g
+        .admin(
+            "list_instances",
+            json!({ "skill": "uri-order", "limit": 5 }),
+        )
+        .await;
+    assert_eq!(
+        page["instances"].as_array().map(Vec::len),
+        Some(5),
+        "a URI DSN attaches: {page}"
     );
 }
 

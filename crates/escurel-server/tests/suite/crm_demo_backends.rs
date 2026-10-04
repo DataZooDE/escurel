@@ -54,6 +54,7 @@ async fn spawn_demo_gateway() -> (EscurelProcess, Vec<TempDir>) {
             // The demo upstreams (and the deliberately dead one) are on loopback.
             egress: Some(escurel_server::egress::EgressPolicy {
                 allow_loopback: true,
+                sql_file_dirs: vec![demo_dir().join("sources")],
                 ..Default::default()
             }),
             indexer: Some(indexer),

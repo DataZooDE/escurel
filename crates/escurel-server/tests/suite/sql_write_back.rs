@@ -358,7 +358,8 @@ async fn an_agent_run_token_proposes_but_never_approves_a_database_change() {
 #[tokio::test]
 async fn a_file_connector_declaring_writable_columns_still_cannot_be_written_back() {
     let g = Gw::start().await;
-    let dir = tempfile::TempDir::new().unwrap();
+    // A directory source must lie under the operator's `ESCUREL_SQL_FILE_DIRS`.
+    let dir = tempfile::TempDir::new_in(g._dirs[2].path()).unwrap();
     std::fs::write(
         dir.path().join("a.json"),
         r#"[{"vbeln":"0000000001","status":"open"}]"#,
@@ -393,4 +394,27 @@ async fn a_file_connector_declaring_writable_columns_still_cannot_be_written_bac
         proj["backend_projection"].get("writable_via").is_none(),
         "no writable promise for a read-only source: {proj}"
     );
+}
+
+/// Promotion asks the page's WRITE ACL before anything reaches the source: a person who may read the
+/// row but not write it must not cause a change in the database behind it.
+#[tokio::test]
+async fn a_person_without_write_access_cannot_cause_a_database_change() {
+    let g = Gw::start_with(Some(escurel_test_support::WriteAclMode::Enforce)).await;
+    let e = etag(&g, 7).await;
+    let d = draft(&g, 7, &intent(7, "status: shipped", &e, "n")).await;
+    let id = draft_id(&d);
+    // An ordinary (non-admin) person: under `Enforce` an instance with no owner is admin-write-only.
+    let bob =
+        g.p.mint_token_with_groups(super::sql_rows_db::TENANT, "bob", &[], false);
+    let out = call_as(&g.p, &bob, "promote_draft", json!({ "draft_id": id })).await;
+    assert_eq!(out["ok"], false, "{out}");
+    assert_eq!(
+        db_row(&g.db, 7)["status"],
+        "open",
+        "nothing may reach the database on a write the ACL would refuse: {out}"
+    );
+    // The admin can.
+    assert_eq!(promote(&g, &id).await["ok"], true);
+    assert_eq!(db_row(&g.db, 7)["status"], "shipped");
 }

@@ -33,6 +33,9 @@ use crate::egress::{Capped, Egress, EgressError, McpSession};
 const MAX_WRITE_PAYLOAD_BYTES: usize = 64 * 1024;
 
 /// The per-endpoint limiter key: tenant-scoped, so one tenant cannot exhaust another's budget.
+///
+/// The tenant is the part before the FIRST `:` ([`tenant_of_key`] reads it back to scope secrets), and
+/// a tenant id never contains one.
 fn limiter_key(indexer: &Indexer, endpoint: &str) -> String {
     format!("{}:{endpoint}", indexer.tenant())
 }
@@ -42,10 +45,16 @@ fn limiter_key(indexer: &Indexer, endpoint: &str) -> String {
 /// secret directories). Anything else is the legacy inline secret, kept only for development. An
 /// unresolvable or forbidden reference is one error that names the REFERENCE, never a value.
 fn resolve_secret(
+    tenant: &str,
     raw: &str,
     policy: &crate::secret_policy::SecretPolicy,
 ) -> Result<String, String> {
-    policy.resolve(raw)
+    policy.resolve(tenant, raw)
+}
+
+/// The tenant a [`limiter_key`] belongs to.
+fn tenant_of_key(key: &str) -> &str {
+    key.split_once(':').map_or(key, |(t, _)| t)
 }
 
 /// A `backend_projection` value carrying only an `issue` — returned when a
@@ -516,6 +525,7 @@ async fn send(
     let req = apply_auth(
         build(&client, ep.base_url.as_str()),
         ep,
+        tenant_of_key(key),
         &egress.policy().secrets,
     )?;
     egress
@@ -539,7 +549,12 @@ async fn send_path(
     let _permit = egress.admit(key).map_err(|e| e.to_string())?;
     let full = join_url(&ep.base_url, path);
     let (client, _url) = egress.client_for(&full).await.map_err(|e| e.to_string())?;
-    let req = apply_auth(build(&client, full.as_str()), ep, &egress.policy().secrets)?;
+    let req = apply_auth(
+        build(&client, full.as_str()),
+        ep,
+        tenant_of_key(key),
+        &egress.policy().secrets,
+    )?;
     egress
         .send_capped(req)
         .await
@@ -952,11 +967,12 @@ fn mcp_args(id: Option<&str>, payload: Option<&Value>) -> Value {
 fn apply_auth(
     req: reqwest::RequestBuilder,
     ep: &EndpointRecord,
+    tenant: &str,
     secrets: &crate::secret_policy::SecretPolicy,
 ) -> Result<reqwest::RequestBuilder, String> {
     let secret = match (&ep.auth, &ep.secret) {
         (EndpointAuth::None, _) | (_, None) => return Ok(req),
-        (_, Some(raw)) => resolve_secret(raw, secrets)?,
+        (_, Some(raw)) => resolve_secret(tenant, raw, secrets)?,
     };
     Ok(match &ep.auth {
         EndpointAuth::None => req,
@@ -1047,11 +1063,26 @@ mod tests {
     #[test]
     fn a_file_reference_is_read_and_trimmed() {
         let dir = tempfile::tempdir().unwrap();
-        let f = dir.path().join("token");
+        std::fs::create_dir(dir.path().join("acme")).unwrap();
+        let f = dir.path().join("acme/token");
         std::fs::write(&f, "  s3cr3t-value \n").unwrap();
         assert_eq!(
-            resolve_secret(&format!("file:{}", f.display()), &open_policy(dir.path())).unwrap(),
+            resolve_secret(
+                "acme",
+                &format!("file:{}", f.display()),
+                &open_policy(dir.path())
+            )
+            .unwrap(),
             "s3cr3t-value"
+        );
+        // Another tenant cannot name it.
+        assert!(
+            resolve_secret(
+                "globex",
+                &format!("file:{}", f.display()),
+                &open_policy(dir.path())
+            )
+            .is_err()
         );
     }
 
@@ -1059,16 +1090,18 @@ mod tests {
     fn a_missing_or_forbidden_reference_names_itself_and_nothing_else() {
         let dir = tempfile::tempdir().unwrap();
         let policy = open_policy(dir.path());
-        let missing = format!("file:{}/not-here", dir.path().display());
+        std::fs::create_dir(dir.path().join("acme")).unwrap();
+        let missing = format!("file:{}/acme/not-here", dir.path().display());
         assert_eq!(
-            resolve_secret(&missing, &policy).unwrap_err(),
+            resolve_secret("acme", &missing, &policy).unwrap_err(),
             format!("secret reference `{missing}` is not available")
         );
-        let e = resolve_secret("env:ESCUREL_SECRET_SURELY_UNSET_X", &policy).unwrap_err();
-        assert!(e.contains("ESCUREL_SECRET_SURELY_UNSET_X") && e.contains("not available"));
+        let e =
+            resolve_secret("acme", "env:ESCUREL_SECRET_ACME__SURELY_UNSET_X", &policy).unwrap_err();
+        assert!(e.contains("ESCUREL_SECRET_ACME__SURELY_UNSET_X") && e.contains("not available"));
         // Forbidden by policy reads exactly like unavailable.
         assert_eq!(
-            resolve_secret("env:HOME", &policy).unwrap_err(),
+            resolve_secret("acme", "env:HOME", &policy).unwrap_err(),
             "secret reference `env:HOME` is not available"
         );
     }
@@ -1076,13 +1109,14 @@ mod tests {
     #[test]
     fn a_gsm_reference_maps_to_the_escurel_secret_namespace() {
         let dir = tempfile::tempdir().unwrap();
-        assert!(resolve_secret("gsm:some-secret.name", &open_policy(dir.path())).is_err());
+        assert!(resolve_secret("acme", "gsm:some-secret.name", &open_policy(dir.path())).is_err());
     }
 
     #[test]
     fn an_inline_value_is_returned_as_is() {
         assert_eq!(
             resolve_secret(
+                "acme",
                 "plain-dev-token",
                 &crate::secret_policy::SecretPolicy::default()
             )

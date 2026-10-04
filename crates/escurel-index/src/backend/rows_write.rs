@@ -102,8 +102,7 @@ fn classify(msg: &str) -> bool {
 
 /// The source's own words, with the connection string removed (it may carry a password).
 fn scrub(msg: &str, secret: &str) -> String {
-    let one_line = msg.replace(secret, "***").replace(['\n', '\r'], " ");
-    one_line.chars().take(200).collect()
+    crate::dsn::scrub(msg, secret).chars().take(200).collect()
 }
 
 impl Indexer {

@@ -28,6 +28,7 @@ pub mod credential_resolver;
 pub mod creds;
 mod cursor;
 pub mod drafts;
+pub mod dsn;
 pub mod endpoints;
 pub mod events;
 pub mod filter;

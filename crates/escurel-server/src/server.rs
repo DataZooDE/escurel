@@ -565,7 +565,10 @@ pub async fn serve(
     // this gateway opens. Installed on the served indexer; `IndexerHandle::swap` carries it over.
     if let Some(h) = config.indexer.as_ref() {
         h.current().set_credential_resolver(Arc::new(
-            crate::credential_policy::ServerCredentialPolicy::new(config.egress.clone()),
+            crate::credential_policy::ServerCredentialPolicy::new(
+                config.egress.clone(),
+                h.current().tenant(),
+            ),
         ));
     }
     let state = AppState {

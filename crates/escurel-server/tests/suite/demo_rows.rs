@@ -56,6 +56,11 @@ async fn demo_gateway() -> (EscurelProcess, Vec<TempDir>) {
         auth: AuthMode::Disabled,
         config_overrides: ConfigOverrides {
             indexer: Some(indexer),
+            // The operator exposes the demo's extracts (the start script does the same).
+            egress: Some(escurel_server::egress::EgressPolicy {
+                sql_file_dirs: vec![demo_dir().join("sources")],
+                ..Default::default()
+            }),
             ..Default::default()
         },
         ..Default::default()

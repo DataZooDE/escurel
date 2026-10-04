@@ -367,11 +367,12 @@ pub(super) async fn tool_register_credential(
             }
             // What may be NAMED is the operator's call; lexical, so it answers the same for a file
             // that exists and one that does not.
-            if !egress.policy().secrets.permits(r) {
+            if !egress.policy().secrets.permits(indexer.tenant(), r) {
                 return Err(JsonRpcError::invalid_params(format!(
                     "secret_ref `{r}` is not permitted by this gateway's secret policy: use \
-                     `gsm:NAME`, `env:ESCUREL_SECRET_<NAME>` (or a name the operator allow-lists), or \
-                     a `file:` under the operator's secret directories"
+                     `gsm:NAME`, `env:ESCUREL_SECRET_<TENANT>__<NAME>` (or a name the operator \
+                     allow-lists for you), or a `file:` under the operator's secret directory for \
+                     your tenant (`<dir>/<tenant>/…`)"
                 )));
             }
             r
@@ -557,11 +558,11 @@ pub(super) async fn tool_register_endpoint(
         }
         // What may be NAMED is the operator's call (never a tenant's): this check is lexical, so it
         // answers the same for a file that exists and one that does not.
-        if !egress.policy().secrets.permits(r) {
+        if !egress.policy().secrets.permits(indexer.tenant(), r) {
             return Err(JsonRpcError::invalid_params(format!(
                 "secret_ref `{r}` is not permitted by this gateway's secret policy: use `gsm:NAME`, \
-                 `env:ESCUREL_SECRET_<NAME>` (or a name the operator allow-lists), or a `file:` \
-                 under the operator's secret directories"
+                 `env:ESCUREL_SECRET_<TENANT>__<NAME>` (or a name the operator allow-lists for you), \
+                 or a `file:` under the operator's secret directory for your tenant (`<dir>/<tenant>/…`)"
             )));
         }
     }

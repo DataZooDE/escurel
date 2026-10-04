@@ -241,8 +241,9 @@ pub(crate) fn resolve_attach_secret(
     let secret = resolver
         .resolve(stored)
         .map_err(|m| SqlViewError::InvalidBinding(format!("backend_unavailable: {m}")))?;
-    resolver
-        .check_target(connector.as_str(), &secret)
+    // Judged AND pinned in one step: the string returned is the one to connect with.
+    let secret = resolver
+        .pin_target(connector.as_str(), &secret)
         .map_err(|m| SqlViewError::InvalidBinding(format!("backend_unavailable: {m}")))?;
     Ok(with_server_statement_timeout(
         connector,
@@ -263,17 +264,13 @@ pub(crate) fn with_server_statement_timeout(
     dsn: &str,
     timeout: std::time::Duration,
 ) -> String {
-    if connector != SqlConnector::Postgres || dsn.contains("options") {
+    // Decided from the PARSED keys: a substring test took `application_name=options` for the option,
+    // and appending a bare `options=-c…=…` to a URI is a libpq error ("extra key/value separator").
+    if connector != SqlConnector::Postgres || crate::dsn::has_key(dsn, "options") {
         return dsn.to_owned();
     }
     let ms = timeout.as_millis().max(1);
-    let opt = format!("-cstatement_timeout={ms}");
-    if dsn.starts_with("postgres://") || dsn.starts_with("postgresql://") {
-        let sep = if dsn.contains('?') { '&' } else { '?' };
-        format!("{dsn}{sep}options={opt}")
-    } else {
-        format!("{} options={opt}", dsn.trim_end())
-    }
+    crate::dsn::with_param(dsn, "options", &format!("-cstatement_timeout={ms}"))
 }
 
 /// Resolve the FROM-clause source expression, performing any required
@@ -293,6 +290,15 @@ async fn prepare_source(
                 )));
             }
             let glob = directory_glob(binding.connector, &binding.relation);
+            // A directory connector reads whatever the gateway can: confine it to the directories the
+            // operator exposes (`ESCUREL_SQL_FILE_DIRS`), exactly as a file database is.
+            if let Some(resolver) = indexer.credential_resolver() {
+                resolver
+                    .check_directory(binding.connector.as_str(), &glob)
+                    .map_err(|m| {
+                        SqlViewError::InvalidBinding(format!("backend_unavailable: {m}"))
+                    })?;
+            }
             let func = match binding.connector {
                 SqlConnector::JsonDir => "read_json_auto",
                 SqlConnector::ParquetDir => "read_parquet",
@@ -330,7 +336,14 @@ async fn prepare_source(
             for stmt in install_load(db) {
                 conn.execute_batch(stmt)?;
             }
-            conn.execute_batch(&attach_sql(db, attach, &secret))?;
+            // The driver's own words can quote the connection string (and so the password): scrub.
+            conn.execute_batch(&attach_sql(db, attach, &secret))
+                .map_err(|e| {
+                    SqlViewError::InvalidBinding(format!(
+                        "backend_unavailable: the source could not be attached: {}",
+                        crate::dsn::scrub(&e.to_string(), &secret)
+                    ))
+                })?;
             // The postgres/mysql scanners cache the remote catalog at ATTACH
             // time. Because the Indexer's connection is persistent, a view
             // re-materialised by validate_bindings / reconstruct_views would
@@ -1348,7 +1361,7 @@ mod statement_timeout_tests {
         );
         assert_eq!(
             with_server_statement_timeout(SqlConnector::Postgres, "postgres://u@h/d", t),
-            "postgres://u@h/d?options=-cstatement_timeout=30000"
+            "postgres://u@h/d?options=-cstatement_timeout%3D30000"
         );
         assert_eq!(
             with_server_statement_timeout(
@@ -1356,7 +1369,31 @@ mod statement_timeout_tests {
                 "postgres://u@h/d?sslmode=require",
                 t
             ),
-            "postgres://u@h/d?sslmode=require&options=-cstatement_timeout=30000"
+            "postgres://u@h/d?sslmode=require&options=-cstatement_timeout%3D30000"
+        );
+    }
+
+    /// libpq refuses a literal `=` inside a URI query value ("extra key/value separator"), so the
+    /// appended option is percent-encoded; and `options` is found by KEY, not as a substring.
+    #[test]
+    fn the_option_is_found_by_key_and_encoded_in_a_uri() {
+        let t = Duration::from_secs(30);
+        assert!(
+            with_server_statement_timeout(
+                SqlConnector::Postgres,
+                "host=h application_name=options",
+                t
+            )
+            .ends_with("options=-cstatement_timeout=30000"),
+            "an application_name that spells `options` is not the option"
+        );
+        assert_eq!(
+            with_server_statement_timeout(
+                SqlConnector::Postgres,
+                "postgres://u@h/d?options=-cwork_mem%3D1MB",
+                t
+            ),
+            "postgres://u@h/d?options=-cwork_mem%3D1MB"
         );
     }
 
