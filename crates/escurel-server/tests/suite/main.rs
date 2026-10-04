@@ -114,6 +114,7 @@ mod remote_write_back;
 mod report_progress;
 mod review_events;
 mod rows_instances;
+mod rows_paging_keys;
 mod run_control_events;
 mod run_tool_calls;
 mod schema_ergonomics;

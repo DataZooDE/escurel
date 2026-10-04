@@ -942,15 +942,16 @@ async fn list_remote_rows(
     src: &crate::remote_rows::RemoteRows,
     a: &ListInstancesArgs,
 ) -> Result<Value, JsonRpcError> {
-    let (rows, next_cursor) = crate::remote_rows::list(egress, src, a.cursor.as_deref(), a.limit)
-        .await
-        .map_err(|e| {
-            if e == "invalid cursor" {
-                JsonRpcError::invalid_params(format!("list_instances: {e}"))
-            } else {
-                JsonRpcError::internal(format!("list_instances: {e}"))
-            }
-        })?;
+    let (rows, next_cursor, skipped) =
+        crate::remote_rows::list(egress, src, a.cursor.as_deref(), a.limit)
+            .await
+            .map_err(|e| {
+                if e == "invalid cursor" {
+                    JsonRpcError::invalid_params(format!("list_instances: {e}"))
+                } else {
+                    JsonRpcError::internal(format!("list_instances: {e}"))
+                }
+            })?;
     let mut instances = Vec::with_capacity(rows.len());
     for r in &rows {
         let fm = Value::Object(r.fields.clone());
@@ -969,7 +970,13 @@ async fn list_remote_rows(
             }));
         }
     }
-    Ok(json!({ "instances": instances, "next_cursor": next_cursor }))
+    let mut out = json!({ "instances": instances, "next_cursor": next_cursor });
+    if skipped > 0 {
+        // Objects the upstream listed that have no usable key cannot be instances; say so rather
+        // than let a short page look complete.
+        out["skipped_without_key"] = json!(skipped);
+    }
+    Ok(out)
 }
 
 /// `expand` of a row of a remote `rows` skill: the live object (read through the skill's `read` op)

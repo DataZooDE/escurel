@@ -476,3 +476,58 @@ async fn notes_written_before_an_outage_are_still_there_when_the_source_goes_dow
     assert!(page["backend_projection"].get("etag").is_none(), "{page}");
     p.shutdown().await;
 }
+
+// ── Crew review: rows must never be lost silently ─────────────────────────────────────────────
+
+/// An upstream that IGNORES the limit hint and mixes objects without an id in: one page of 6 items
+/// (4 keyed, 2 not) whose `paging.next` points PAST all six. Truncating to the requested limit and
+/// dropping the keyless ones used to lose real rows with nothing saying so.
+async fn limit_ignoring_upstream() -> String {
+    let items = json!([
+        { "id": "c-0001", "name": "One", "account_tier": "gold" },
+        { "name": "No id A", "account_tier": "silver" },
+        { "id": "c-0002", "name": "Two", "account_tier": "gold" },
+        { "id": "c-0003", "name": "Three", "account_tier": "silver" },
+        { "name": "No id B", "account_tier": "silver" },
+        { "id": "c-0004", "name": "Four", "account_tier": "gold" },
+    ]);
+    let app = Router::new().route(
+        "/customers",
+        get(move || {
+            let items = items.clone();
+            async move { Json(json!({ "data": items, "paging": { "next": "after-six" } })) }
+        }),
+    );
+    serve(app).await.0
+}
+
+#[tokio::test]
+async fn an_upstream_that_ignores_the_limit_does_not_lose_rows_and_keyless_items_are_counted() {
+    let base = limit_ignoring_upstream().await;
+    let (p, _dirs) = gateway_over(&base).await;
+
+    let page = admin(
+        &p,
+        "list_instances",
+        json!({ "skill_id": "customer", "limit": 2 }),
+    )
+    .await;
+
+    let ids: Vec<&str> = page["instances"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|i| i["page_id"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        ids.len(),
+        4,
+        "all four keyed objects arrive: the cursor points past the whole page, so nothing the \
+         upstream sent may be thrown away: {ids:?}"
+    );
+    assert_eq!(
+        page["skipped_without_key"], 2,
+        "the objects that cannot be instances (no id) are counted, not silently dropped: {page}"
+    );
+    p.shutdown().await;
+}

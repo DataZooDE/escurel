@@ -141,6 +141,9 @@ pub struct Indexer {
     /// the tenant is QUARANTINED: it must not serve, but it must stay up so an operator can run
     /// `migrate_kind` against it (a boot that exits would make the migration unrunnable).
     pub(crate) kind_quarantine: std::sync::RwLock<Option<Vec<String>>>,
+    /// How long one `rows` list/get query may run before it is interrupted (the single DuckDB
+    /// connection is held for its duration, so an unbounded source query stalls every other read).
+    pub(crate) rows_query_timeout: std::time::Duration,
 }
 
 /// Which physical tables [`Indexer::list_snapshots`] /
@@ -410,6 +413,7 @@ impl Indexer {
             drafts_backend: std::sync::OnceLock::new(),
             crdt_pg_backend: std::sync::OnceLock::new(),
             kind_quarantine: std::sync::RwLock::new(None),
+            rows_query_timeout: crate::backend::rows::ROWS_QUERY_TIMEOUT,
         })
     }
 
@@ -742,6 +746,13 @@ impl Indexer {
     #[must_use]
     pub fn with_contextualize(mut self, mode: crate::backend::ContextualizeMode) -> Self {
         self.contextualize = mode;
+        self
+    }
+
+    /// Bound one `instances: rows` source query (default [`crate::backend::rows::ROWS_QUERY_TIMEOUT`]).
+    #[must_use]
+    pub fn with_rows_query_timeout(mut self, timeout: std::time::Duration) -> Self {
+        self.rows_query_timeout = timeout;
         self
     }
 

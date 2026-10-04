@@ -121,7 +121,7 @@ pub(crate) async fn list(
     src: &RemoteRows,
     cursor: Option<&str>,
     limit: Option<usize>,
-) -> Result<(Vec<RemoteRow>, Option<String>), String> {
+) -> Result<(Vec<RemoteRow>, Option<String>, usize), String> {
     let upstream_cursor = cursor.map(decode_cursor).transpose()?;
     let limit = limit
         .unwrap_or(REMOTE_DEFAULT_LIMIT)
@@ -139,10 +139,20 @@ pub(crate) async fn list(
     let items = json_path_get(&resp, &src.list.items)
         .and_then(Value::as_array)
         .ok_or_else(|| "the upstream list response has no items array".to_owned())?;
+    // EVERY item the upstream sent is considered, not just the first `limit`: its `next` cursor
+    // points past the whole response, so truncating here would lose rows for good. (The response is
+    // already bounded by the egress policy's size cap.) An item with no usable key cannot be an
+    // instance; it is counted so the caller can say so instead of dropping it silently.
+    let mut skipped_without_key = 0usize;
     let rows: Vec<RemoteRow> = items
         .iter()
-        .take(limit)
-        .filter_map(|item| row_from(src, item))
+        .filter_map(|item| {
+            let row = row_from(src, item);
+            if row.is_none() {
+                skipped_without_key += 1;
+            }
+            row
+        })
         .collect();
     let next = src
         .list
@@ -155,7 +165,7 @@ pub(crate) async fn list(
             _ => None,
         })
         .map(|c| encode_cursor(&c));
-    Ok((rows, next))
+    Ok((rows, next, skipped_without_key))
 }
 
 /// One object by instance id. `None` when the upstream says it has no such object (404) or the id
