@@ -132,6 +132,18 @@ impl McpTransport {
         Some((run.clone(), format!("{run}.{seq}")))
     }
 
+    /// Replace the total per-request deadline (`None` = no deadline). For the operator calls that
+    /// legitimately run for minutes (`migrate_kind` on a tenant with thousands of pages), where the
+    /// default would cut the request while the server is still working.
+    pub(crate) fn with_timeout(mut self, timeout: Option<std::time::Duration>) -> Self {
+        let mut b = reqwest::Client::builder();
+        if let Some(t) = timeout {
+            b = b.timeout(t);
+        }
+        self.http = b.build().unwrap_or_default();
+        self
+    }
+
     pub(crate) fn new(endpoint: &str, token: SecretString) -> Result<Self, Error> {
         let base = endpoint.trim_end_matches('/').to_owned();
         if !(base.starts_with("http://") || base.starts_with("https://")) {

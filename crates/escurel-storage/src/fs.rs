@@ -30,6 +30,30 @@ impl FsStore {
         Self { root: root.into() }
     }
 
+    /// Delete the `*.md.tmp` files a killed write left behind in this tenant's lane, and say how many.
+    /// Call it at boot, when no writer is running (a live write's temp file would otherwise vanish
+    /// under it). Only regular files named `*.md.tmp` under `markdown/` are touched: DuckDB's own
+    /// `<db>.tmp` spill directory and every other file are left alone.
+    ///
+    /// # Errors
+    /// An I/O error while walking the tree.
+    pub fn sweep_orphan_temp_files(&self, tenant: &str) -> std::io::Result<usize> {
+        let lane = self.tenant_root(tenant).join("markdown");
+        let mut swept = 0;
+        for entry in WalkDir::new(&lane)
+            .into_iter()
+            .filter_map(std::result::Result::ok)
+        {
+            if entry.file_type().is_file()
+                && entry.file_name().to_string_lossy().ends_with(".md.tmp")
+            {
+                std::fs::remove_file(entry.path())?;
+                swept += 1;
+            }
+        }
+        Ok(swept)
+    }
+
     fn resolve(&self, key: &Key) -> PathBuf {
         self.root
             .join("tenants")

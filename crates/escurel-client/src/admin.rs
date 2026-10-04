@@ -74,6 +74,14 @@ impl AdminClient {
         })
     }
 
+    /// Replace the total per-request deadline of this client (default 60 s; `None` = none). Use
+    /// it for the operator calls that run for minutes, e.g. `migrate_kind --apply` on a big tenant.
+    #[must_use]
+    pub fn with_timeout(mut self, timeout: Option<std::time::Duration>) -> Self {
+        self.transport = self.transport.with_timeout(timeout);
+        self
+    }
+
     /// Substrate liveness probe. The MCP surface has no `health` tool;
     /// the gateway answers `GET /healthz` (dependency-free) and
     /// `GET /version`. This method probes both and synthesizes the

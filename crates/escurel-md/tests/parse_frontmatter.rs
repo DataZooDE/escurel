@@ -229,3 +229,52 @@ fn a_page_with_neither_a_kind_nor_a_legacy_type_is_invalid() {
     let err = parse("---\nid: a\ntype: invoice\n---\n").expect_err("no page kind");
     assert!(matches!(err, ParseError::InvalidType), "{err:?}");
 }
+
+// Round-2 review: a page saved by a Windows editor (CRLF) or one with a UTF-8 BOM was accepted by
+// the legacy scan but refused by `parse`, so a rebuilt index (fresh volume, node loss) refused to
+// boot over it. Both are ordinary files; `parse` tolerates them and keeps the body bytes verbatim.
+#[test]
+fn a_crlf_page_parses_and_its_body_is_verbatim() {
+    let md = "---\r\nkind: instance\r\nskill: s0\r\nid: a\r\n---\r\n# A\r\n\r\nBody line.\r\n";
+    let page = escurel_md::parse(md).expect("CRLF page parses");
+    assert_eq!(page.frontmatter.page_kind, escurel_md::PageKind::Instance);
+    assert_eq!(page.body, "# A\r\n\r\nBody line.\r\n");
+}
+
+#[test]
+fn a_bom_prefixed_page_parses() {
+    let md = "\u{feff}---\nkind: skill\nid: s0\ndescription: d\n---\n# s0\n";
+    let page = escurel_md::parse(md).expect("BOM page parses");
+    assert_eq!(page.frontmatter.page_kind, escurel_md::PageKind::Skill);
+    assert_eq!(page.body, "# s0\n");
+}
+
+#[test]
+fn a_bom_and_crlf_page_parses() {
+    let md = "\u{feff}---\r\nkind: instance\r\nskill: s0\r\nid: a\r\n---\r\nbody\r\n";
+    assert!(escurel_md::parse(md).is_ok());
+}
+
+#[test]
+fn legacy_rewrite_handles_crlf_and_bom_and_keeps_the_eol() {
+    use escurel_md::legacy::{KindRewrite, rewrite_legacy_type_key};
+    let crlf = "---\r\ntype: instance\r\nskill: s0\r\nid: a\r\n---\r\n# A\r\n";
+    match rewrite_legacy_type_key(crlf) {
+        KindRewrite::Rewritten(out) => {
+            assert_eq!(
+                out,
+                "---\r\nkind: instance\r\nskill: s0\r\nid: a\r\n---\r\n# A\r\n"
+            );
+            assert!(escurel_md::parse(&out).is_ok());
+        }
+        other => panic!("expected a rewrite, got {other:?}"),
+    }
+    let bom = "\u{feff}---\ntype: skill\nid: s0\ndescription: d\n---\n# s0\n";
+    match rewrite_legacy_type_key(bom) {
+        KindRewrite::Rewritten(out) => {
+            assert!(out.starts_with("\u{feff}---\nkind: skill\n"));
+            assert!(escurel_md::parse(&out).is_ok());
+        }
+        other => panic!("expected a rewrite, got {other:?}"),
+    }
+}

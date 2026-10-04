@@ -108,8 +108,11 @@ pub enum ParseError {
 /// block, the YAML is malformed, or the required `kind:` field is
 /// absent or unrecognised.
 pub fn parse(input: &str) -> Result<Page<'_>, ParseError> {
-    let after_open = input
+    // An editor-saved page may carry a UTF-8 BOM and/or CRLF line endings; both are ordinary files.
+    // Slices (not copies) are returned, so the body stays byte-verbatim.
+    let after_open = strip_bom(input)
         .strip_prefix("---\n")
+        .or_else(|| strip_bom(input).strip_prefix("---\r\n"))
         .ok_or(ParseError::MissingFrontmatter)?;
 
     // Find the closing delimiter: a `---` line. Match either
@@ -217,6 +220,11 @@ pub fn set_frontmatter_str(
 /// where `body_slice` starts at the first character after the
 /// closing delimiter's trailing newline (or is empty if the
 /// delimiter is the last line).
+/// `input` without a leading UTF-8 byte-order mark.
+pub(crate) fn strip_bom(input: &str) -> &str {
+    input.strip_prefix('\u{feff}').unwrap_or(input)
+}
+
 fn split_at_close(after_open: &str) -> Option<(&str, &str)> {
     // Walk line-starts in the remainder. A closing delimiter is a
     // line whose entire content is `---`.
@@ -227,7 +235,7 @@ fn split_at_close(after_open: &str) -> Option<(&str, &str)> {
         let line_end = after_open[cursor..]
             .find('\n')
             .map_or(bytes.len(), |off| cursor + off);
-        let line = &after_open[cursor..line_end];
+        let line = after_open[cursor..line_end].trim_end_matches('\r');
         if line == "---" {
             let yaml = &after_open[..cursor.saturating_sub(1)];
             // Skip past `---` and the following `\n` if present.

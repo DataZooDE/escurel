@@ -400,7 +400,7 @@ async fn a_file_connector_declaring_writable_columns_still_cannot_be_written_bac
 /// row but not write it must not cause a change in the database behind it.
 #[tokio::test]
 async fn a_person_without_write_access_cannot_cause_a_database_change() {
-    let g = Gw::start_with(Some(escurel_test_support::WriteAclMode::Enforce)).await;
+    let g = Gw::start_acl(escurel_test_support::WriteAclMode::Enforce).await;
     let e = etag(&g, 7).await;
     let d = draft(&g, 7, &intent(7, "status: shipped", &e, "n")).await;
     let id = draft_id(&d);
@@ -417,4 +417,92 @@ async fn a_person_without_write_access_cannot_cause_a_database_change() {
     // The admin can.
     assert_eq!(promote(&g, &id).await["ok"], true);
     assert_eq!(db_row(&g.db, 7)["status"], "shipped");
+}
+
+// Round-2 review: "already applied" compared JSON renderings as strings, so a patch spelled `12.0`
+// over a stored integer 12 was a false conflict forever once the witness was lost. The database
+// compares, typed.
+#[tokio::test]
+async fn a_committed_change_in_another_spelling_is_applied_not_a_conflict() {
+    let g = Gw::start().await;
+    let e = etag(&g, 7).await;
+    let id = draft_id(&draft(&g, 7, &intent(7, "quantity: 12.0", &e, "n")).await);
+    // The crash window: the UPDATE committed, the witness was never written.
+    db_exec(
+        &g.db,
+        &format!("UPDATE s.orders SET qty = 12 WHERE vbeln = '{}'", doc(7)),
+    );
+
+    let done = promote(&g, &id).await;
+
+    assert_eq!(
+        done["ok"], true,
+        "the row already holds 12: applied, not a conflict: {done}"
+    );
+    assert_eq!(db_row(&g.db, 7)["qty"], 12);
+}
+
+/// Overwrite the first byte of the TEXT value `open` of row `n` with 0xFF, in the SQLite file itself:
+/// a column holding invalid UTF-8, which SQLite stores happily and DuckDB refuses to read. Every
+/// copy of the row's bytes is patched (a page split leaves stale copies of cells behind), and the
+/// header's file change counter is bumped like a writer would.
+fn corrupt_status_bytes(db: &std::path::Path, n: usize) {
+    let mut bytes = std::fs::read(db).unwrap();
+    let needle = doc(n).into_bytes();
+    let mut patched = 0;
+    let mut from = 0;
+    while let Some(off) = bytes[from..]
+        .windows(needle.len())
+        .position(|w| w == needle.as_slice())
+    {
+        let at = from + off;
+        if let Some(rel) = bytes[at..(at + 80).min(bytes.len())]
+            .windows(4)
+            .position(|w| w == b"open")
+        {
+            bytes[at + rel] = 0xFF;
+            patched += 1;
+        }
+        from = at + needle.len();
+    }
+    assert!(patched > 0, "row {n} not found in the SQLite file");
+    let counter = u32::from_be_bytes(bytes[24..28].try_into().unwrap()).wrapping_add(1);
+    bytes[24..28].copy_from_slice(&counter.to_be_bytes());
+    bytes[92..96].copy_from_slice(&counter.to_be_bytes());
+    std::fs::write(db, bytes).unwrap();
+}
+
+// Round-2 review: SQLite text that is not valid UTF-8 raised a DuckDB INTERNAL error that failed
+// every list/search touching the column. One bad row must not take the skill's whole listing down.
+#[tokio::test]
+async fn one_row_with_invalid_utf8_text_does_not_take_the_listing_down() {
+    let g = Gw::start_prepared(|db| corrupt_status_bytes(db, 7)).await;
+
+    let list = super::sql_rows_db::raw_call(
+        &g.p,
+        &g.p.mint_token("acme", escurel_auth::Role::Admin),
+        "list_instances",
+        json!({ "skill": "shop-order", "limit": 20 }),
+    )
+    .await;
+    assert!(
+        list["result"]["structuredContent"]["instances"]
+            .as_array()
+            .is_some_and(|a| a.len() == 20),
+        "the listing is whole, the bad row shown with a replacement character: {list}"
+    );
+    // The one bad row is readable too (lossily), not an engine error.
+    let tok = g.p.mint_token("acme", escurel_auth::Role::Admin);
+    let one =
+        super::sql_rows_db::raw_call(&g.p, &tok, "expand", json!({ "page_id": row_page(7) })).await;
+    assert!(
+        one.get("error").is_none()
+            && one["result"]["structuredContent"]["frontmatter"]["status"] == "\u{fffd}pen",
+        "expand of the row must not be a raw driver error: {one}"
+    );
+    let text = list.to_string();
+    assert!(
+        !text.contains("INTERNAL") && !text.contains("Invalid unicode"),
+        "the raw engine error must not be the answer: {text}"
+    );
 }

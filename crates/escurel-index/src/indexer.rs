@@ -141,9 +141,15 @@ pub struct Indexer {
     /// the tenant is QUARANTINED: it must not serve, but it must stay up so an operator can run
     /// `migrate_kind` against it (a boot that exits would make the migration unrunnable).
     pub(crate) kind_quarantine: std::sync::RwLock<Option<Vec<String>>>,
+    /// Pages the last boot-time rebuild skipped as unparsable: `(page_id, reason)`.
+    skipped_pages: std::sync::RwLock<Vec<(String, String)>>,
+    /// Serialises `migrate_kind` runs (see there).
+    pub(crate) migration_lock: tokio::sync::Mutex<()>,
     /// How long one `rows` list/get query may run before it is interrupted (the single DuckDB
     /// connection is held for its duration, so an unbounded source query stalls every other read).
     pub(crate) rows_query_timeout: std::time::Duration,
+    /// libpq `connect_timeout` applied to a network database source at ATTACH.
+    pub(crate) sql_connect_timeout: std::time::Duration,
     /// Resolves a registered credential (a reference or an inline secret) and polices its target; the
     /// server installs it. `None` (a bare indexer, most tests) uses the stored value as it is.
     pub(crate) credential_resolver:
@@ -417,7 +423,10 @@ impl Indexer {
             drafts_backend: std::sync::OnceLock::new(),
             crdt_pg_backend: std::sync::OnceLock::new(),
             kind_quarantine: std::sync::RwLock::new(None),
+            skipped_pages: std::sync::RwLock::new(Vec::new()),
+            migration_lock: tokio::sync::Mutex::new(()),
             rows_query_timeout: crate::backend::rows::ROWS_QUERY_TIMEOUT,
+            sql_connect_timeout: crate::backend::SQL_CONNECT_TIMEOUT,
             credential_resolver: std::sync::RwLock::new(None),
         })
     }
@@ -773,6 +782,15 @@ impl Indexer {
     #[must_use]
     pub fn with_rows_query_timeout(mut self, timeout: std::time::Duration) -> Self {
         self.rows_query_timeout = timeout;
+        self
+    }
+
+    /// Bound how long attaching a network database source may spend CONNECTING (libpq
+    /// `connect_timeout`; default 5 s). A black-holed host would otherwise hold the single index
+    /// connection for as long as the OS TCP timeout, and DuckDB's interrupt cannot cancel it.
+    #[must_use]
+    pub fn with_sql_connect_timeout(mut self, timeout: std::time::Duration) -> Self {
+        self.sql_connect_timeout = timeout;
         self
     }
 
@@ -1808,7 +1826,39 @@ impl Indexer {
     /// tuple. Used by the `rebuild` admin tool to stream
     /// `RebuildProgress` chunks to the caller. `done` is `1` on
     /// the first emission and equal to `total` on the last.
-    pub async fn rebuild_with_progress<F>(&self, mut on_progress: F) -> Result<(), IndexerError>
+    pub async fn rebuild_with_progress<F>(&self, on_progress: F) -> Result<(), IndexerError>
+    where
+        F: FnMut(RebuildProgress<'_>),
+    {
+        self.rebuild_inner(on_progress, false).await
+    }
+
+    /// The BOOT-time rebuild (fresh volume, node loss): like [`Self::rebuild`] but a page that
+    /// cannot be parsed is SKIPPED and recorded ([`Self::skipped_pages`], surfaced as the
+    /// `pages_skipped` `/readyz` notice) instead of refusing the whole rebuild. One bad file must not
+    /// take a node offline; it stays in the lane untouched, and the explicit admin `rebuild` still
+    /// refuses and names every offender.
+    ///
+    /// # Errors
+    /// As [`Self::rebuild`], except for unparsable pages.
+    pub async fn rebuild_skipping_unparsable(&self) -> Result<(), IndexerError> {
+        self.rebuild_inner(|_| {}, true).await
+    }
+
+    /// Pages the last tolerant rebuild skipped, as `(page_id, reason)`.
+    #[must_use]
+    pub fn skipped_pages(&self) -> Vec<(String, String)> {
+        self.skipped_pages
+            .read()
+            .map(|g| g.clone())
+            .unwrap_or_default()
+    }
+
+    async fn rebuild_inner<F>(
+        &self,
+        mut on_progress: F,
+        skip_unparsable: bool,
+    ) -> Result<(), IndexerError>
     where
         F: FnMut(RebuildProgress<'_>),
     {
@@ -1848,7 +1898,17 @@ impl Indexer {
             }
         }
         if !unparsable.is_empty() {
-            return Err(IndexerError::UnparsablePages { pages: unparsable });
+            if !skip_unparsable {
+                return Err(IndexerError::UnparsablePages { pages: unparsable });
+            }
+            let bad: std::collections::HashSet<&str> =
+                unparsable.iter().map(|(p, _)| p.as_str()).collect();
+            sorted.retain(|p| !bad.contains(p.as_str()));
+            if let Ok(mut g) = self.skipped_pages.write() {
+                *g = unparsable;
+            }
+        } else if let Ok(mut g) = self.skipped_pages.write() {
+            g.clear();
         }
 
         // Attribution (escurel#357) is the one thing in `pages` that a

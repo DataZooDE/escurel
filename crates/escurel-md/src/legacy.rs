@@ -31,13 +31,15 @@ pub enum KindRewrite {
 pub fn rewrite_legacy_type_key(input: &str) -> KindRewrite {
     // The block is `---\n` .. a line that is exactly `---` (CRLF tolerated). Anything else is not a
     // page this function may edit.
-    let Some(first) = input.split_inclusive('\n').next() else {
+    // A UTF-8 BOM and CRLF line endings are tolerated; the file's own bytes (BOM, EOLs) are kept.
+    let bom = input.len() - crate::strip_bom(input).len();
+    let Some(first) = input[bom..].split_inclusive('\n').next() else {
         return KindRewrite::NotAPageKind;
     };
-    if first != "---\n" {
+    if first != "---\n" && first != "---\r\n" {
         return KindRewrite::NotAPageKind;
     }
-    let mut offset = first.len();
+    let mut offset = bom + first.len();
     let mut legacy_line: Option<(usize, usize)> = None; // byte range of the `type` key text
     let mut has_kind = false;
     let mut closed = false;
@@ -95,11 +97,12 @@ fn page_kind_value(rest: &str) -> bool {
 /// Returns the rewritten page, or `None` when there is nothing to do.
 #[must_use]
 pub fn rewrite_workflow_run_status(input: &str) -> Option<String> {
-    let first = input.split_inclusive('\n').next()?;
-    if first != "---\n" {
+    let bom = input.len() - crate::strip_bom(input).len();
+    let first = input[bom..].split_inclusive('\n').next()?;
+    if first != "---\n" && first != "---\r\n" {
         return None;
     }
-    let mut offset = first.len();
+    let mut offset = bom + first.len();
     let mut status_at: Option<usize> = None;
     let mut is_run_page = false;
     let mut has_run_status = false;

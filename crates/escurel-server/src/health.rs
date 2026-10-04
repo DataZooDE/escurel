@@ -43,6 +43,12 @@ pub struct ReadinessReport {
     /// stand-in (`ESCUREL_EMBEDDING_PROVIDER=zero`, or `gemini` with no `ESCUREL_GEMINI_API_KEY`):
     /// lexical search still works, ranking by meaning does not. Informational.
     pub semantic_search: bool,
+    /// Pages the boot-time rebuild could not parse and SKIPPED (`page (reason)`); they stay
+    /// untouched in the lane but are not served. Informational.
+    pub skipped_pages: Vec<String>,
+    /// Authentication is DISABLED and the listener is not loopback: every caller is a tenant
+    /// admin. Informational (a dev setup on a laptop is fine; a container on 0.0.0.0 is not).
+    pub unauthenticated_exposed: bool,
 }
 
 impl ReadinessReport {
@@ -63,6 +69,12 @@ impl ReadinessReport {
         }
         if !self.semantic_search {
             n.push("semantic_search_disabled");
+        }
+        if !self.skipped_pages.is_empty() {
+            n.push("pages_skipped");
+        }
+        if self.unauthenticated_exposed {
+            n.push("unauthenticated_exposed");
         }
         n
     }
@@ -95,6 +107,8 @@ impl ReadinessProbe for AlwaysReady {
             quarantined: false,
             migration_pending: false,
             semantic_search: true,
+            skipped_pages: Vec::new(),
+            unauthenticated_exposed: false,
         }
     }
 }

@@ -166,15 +166,14 @@ fn analyst(subject: &str) -> AclCaller<'_> {
 }
 
 #[tokio::test]
+#[ignore = "needs ../anofox-inventory built (`make release` there); run with --ignored"]
 async fn reorder_proposal_e2e_through_query_page_and_acl() {
     let ext = inventory_extension_path();
-    if !ext.exists() {
-        eprintln!(
-            "SKIP: {} not built — run `make release` in anofox-inventory to exercise this E2E.",
-            ext.display()
-        );
-        return;
-    }
+    assert!(
+        ext.exists(),
+        "{} not built — run `make release` in anofox-inventory (this test was asked for with --ignored)",
+        ext.display()
+    );
 
     let h = fresh_harness();
     seed(

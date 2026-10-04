@@ -52,7 +52,7 @@ pub(crate) fn with_statement_timeout<T, E: From<SqlViewError>>(
         }
     });
     let started = std::time::Instant::now();
-    let result = f();
+    let result = super::blocking_section(f);
     let overran = started.elapsed() >= timeout;
     let _ = done.send(());
     let _ = watchdog.join();
@@ -380,12 +380,82 @@ impl Indexer {
                 rec.source_texts = cols
                     .iter()
                     .enumerate()
-                    .map(|(i, (n, _))| Ok((n.clone(), row.get::<_, Option<String>>(base + i)?)))
+                    .map(|(i, (n, _))| Ok((n.clone(), text_lossy(row, base + i)?)))
                     .collect::<Result<_, SqlViewError>>()?;
                 Ok(Some(rec))
             }
             None => Ok(None),
         }
+    }
+}
+
+impl Indexer {
+    /// Whether the row `id` ALREADY holds every value of `patch` (frontmatter field -> scalar), judged
+    /// by the database, TYPED: the patch value is cast to the column's own type and both sides are
+    /// compared as DuckDB renders them (`DECIMAL 12.00` equals `12` and `"12.50"`, a timestamp equals
+    /// its `T`/`Z` spelling). A comparison of JSON renderings cannot do that, and a false "differs"
+    /// turns a change that committed before a crash into a conflict forever.
+    ///
+    /// `false` also when the row is gone, a field is not a projected column, or a value does not cast.
+    ///
+    /// # Errors
+    /// The source could not be read.
+    pub async fn rows_holds_patch(
+        &self,
+        src: &RowsSource,
+        id: &str,
+        patch: &Map<String, Value>,
+    ) -> Result<bool, SqlViewError> {
+        let Some(key_values) = decode_row_id(id, src.cfg.key.len()) else {
+            return Ok(false);
+        };
+        materialise_view_on(self, &src.view, &src.sql, false).await?;
+        let conn = self.conn.lock().await;
+        let cols = describe(&conn, &src.view)?;
+        let names: Vec<&str> = cols.iter().map(|(n, _)| n.as_str()).collect();
+        let exprs = key_exprs(src, &names)?;
+        let mut wheres: Vec<String> = exprs.iter().map(|e| format!("{e} = ?")).collect();
+        let mut params: Vec<String> = key_values;
+        for (field, value) in patch {
+            let Some(column) = Self::rows_column_for_field(src, field) else {
+                return Ok(false);
+            };
+            let Some(ty) = cols
+                .iter()
+                .find(|(n, _)| n == &column)
+                .map(|(_, t)| t.as_str())
+                .filter(|t| super::rows_write::safe_type(t))
+            else {
+                return Ok(false);
+            };
+            let Some(text) = super::rows_write::param_text(value) else {
+                return Ok(false);
+            };
+            wheres.push(format!(
+                "CAST(\"{column}\" AS VARCHAR) IS NOT DISTINCT FROM CAST(CAST(? AS {ty}) AS VARCHAR)"
+            ));
+            params.push(text);
+        }
+        let sql = format!(
+            "SELECT count(*) FROM {} WHERE {}",
+            src.view,
+            wheres.join(" AND ")
+        );
+        let timeout = self.rows_query_timeout;
+        let counted = with_statement_timeout::<_, SqlViewError>(&conn, timeout, || {
+            let mut stmt = conn.prepare(&sql)?;
+            // A value that does not cast to the column's type is an error of the CAST: not "held".
+            match stmt.query_row(duckdb::params_from_iter(params.iter()), |r| {
+                r.get::<_, i64>(0)
+            }) {
+                Ok(n) => Ok(Some(n)),
+                Err(duckdb::Error::DuckDBFailure(_, Some(m))) if m.contains("Conversion Error") => {
+                    Ok(None)
+                }
+                Err(e) => Err(e.into()),
+            }
+        })?;
+        Ok(counted == Some(1))
     }
 }
 
@@ -542,6 +612,22 @@ fn select_with_keys(key_exprs: &[String]) -> String {
 
 /// The cast key texts [`select_with_keys`] appended after the `ncols` view columns. A NULL key has
 /// no identity and is filtered out by the caller; it reads as an error here, never as an empty id.
+/// A VARCHAR cell as text; bytes that are not valid UTF-8 (SQLite stores whatever it is given) become
+/// U+FFFD, exactly as the listing renders them, instead of failing the whole row with the driver's
+/// raw `Conversion error from type Text ... invalid utf-8 sequence`.
+fn text_lossy(row: &duckdb::Row<'_>, idx: usize) -> Result<Option<String>, SqlViewError> {
+    Ok(match row.get_ref(idx)? {
+        ValueRef::Null => None,
+        ValueRef::Text(bytes) => Some(String::from_utf8_lossy(bytes).into_owned()),
+        other => {
+            return Err(SqlViewError::InvalidBinding(format!(
+                "expected a text cell, got {:?}",
+                other.data_type()
+            )));
+        }
+    })
+}
+
 fn cast_keys(
     row: &duckdb::Row<'_>,
     ncols: usize,
@@ -549,7 +635,7 @@ fn cast_keys(
 ) -> Result<Vec<String>, SqlViewError> {
     (0..nkeys)
         .map(|j| {
-            row.get::<_, Option<String>>(ncols + j)?.ok_or_else(|| {
+            text_lossy(row, ncols + j)?.ok_or_else(|| {
                 SqlViewError::InvalidBinding(
                     "a row has a NULL key and cannot be an instance".to_owned(),
                 )

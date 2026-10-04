@@ -2045,11 +2045,12 @@ async fn verify_barrier_runs_to_completion_via_echo() {
 /// Run with:  GEMINI_API_KEY=… cargo test -p escurel-runner --test
 /// workflow_end_to_end deep_research_runs_against_gemini -- --nocapture
 #[tokio::test]
+#[ignore = "live: needs GEMINI_API_KEY (run with --ignored)"]
 async fn deep_research_runs_against_gemini() {
-    if std::env::var("GEMINI_API_KEY").is_err() {
-        eprintln!("skipping: GEMINI_API_KEY not set");
-        return;
-    }
+    assert!(
+        std::env::var("GEMINI_API_KEY").is_ok(),
+        "GEMINI_API_KEY is not set: this live test was asked for (--ignored) and cannot run"
+    );
     let gateway = EscurelProcess::spawn(Opts {
         auth: AuthMode::TestIssuer,
         fixtures: Some(
@@ -2206,11 +2207,12 @@ async fn await_instances(
 /// Run with:  GEMINI_API_KEY=… cargo test -p escurel-runner --test
 /// workflow_end_to_end verify_barrier_runs_against_gemini -- --nocapture
 #[tokio::test]
+#[ignore = "live: needs GEMINI_API_KEY (run with --ignored)"]
 async fn verify_barrier_runs_against_gemini() {
-    if std::env::var("GEMINI_API_KEY").is_err() {
-        eprintln!("skipping: GEMINI_API_KEY not set");
-        return;
-    }
+    assert!(
+        std::env::var("GEMINI_API_KEY").is_ok(),
+        "GEMINI_API_KEY is not set: this live test was asked for (--ignored) and cannot run"
+    );
     let gateway = EscurelProcess::spawn(Opts {
         auth: AuthMode::TestIssuer,
         fixtures: Some(

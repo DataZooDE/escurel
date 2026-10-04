@@ -93,6 +93,9 @@ impl Indexer {
     /// [`IndexerError::KindMigrationRefused`] when `apply` is set and a page has a live CRDT
     /// session; otherwise when a store, index or CRDT read/write fails.
     pub async fn migrate_kind(&self, apply: bool) -> Result<MigrateKindReport, IndexerError> {
+        // One migration at a time: a second `--apply` (a retried CLI while the first one is still
+        // running server-side) waits, then finds nothing left to do. Idempotent by design.
+        let _one_at_a_time = self.migration_lock.lock().await;
         let mut report = MigrateKindReport {
             applied: apply,
             ..MigrateKindReport::default()
@@ -265,7 +268,11 @@ impl Indexer {
         report.pages_scanned = paths.len() as u64;
         let attribution = self.written_by_map().await?;
 
+        let page_delay = test_page_delay();
         for path in paths {
+            if let Some(d) = page_delay {
+                tokio::time::sleep(d).await;
+            }
             if path.starts_with(PACK_BASE_PREFIX) {
                 report.skipped_pack_base.push(path);
                 continue;
@@ -487,4 +494,17 @@ impl Indexer {
         let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
         Ok(rows.collect::<Result<HashMap<_, _>, _>>()?)
     }
+}
+
+/// TEST-ONLY knob: `ESCUREL_TEST_MIGRATE_KIND_PAGE_DELAY_MS` sleeps that long before each page of
+/// the migration, so a CI-sized tenant has the long migration window a 20k-page one has in
+/// production. Unset in every real deployment.
+fn test_page_delay() -> Option<std::time::Duration> {
+    static DELAY: std::sync::OnceLock<Option<std::time::Duration>> = std::sync::OnceLock::new();
+    *DELAY.get_or_init(|| {
+        std::env::var("ESCUREL_TEST_MIGRATE_KIND_PAGE_DELAY_MS")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .map(std::time::Duration::from_millis)
+    })
 }

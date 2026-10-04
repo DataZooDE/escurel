@@ -39,6 +39,7 @@
 
 mod auth_gate;
 pub mod config;
+pub mod config_keys;
 mod config_probe;
 pub mod credential_policy;
 pub mod egress;

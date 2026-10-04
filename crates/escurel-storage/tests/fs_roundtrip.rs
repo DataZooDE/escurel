@@ -278,3 +278,38 @@ async fn list_on_a_provisioned_store_with_a_new_tenant_is_empty() {
         .expect("a provisioned store with no writes for this tenant is empty, not an error");
     assert!(keys.is_empty());
 }
+
+// Round-2 review: a process killed between "write <page>.md.tmp" and "rename" leaves the temp file
+// behind for ever. It is not a page (the listing skips it), but it is garbage that accumulates and
+// confuses an operator. At boot, with no writer running, they are swept and counted.
+#[tokio::test]
+async fn orphan_temp_files_are_swept_and_counted_but_pages_and_other_files_are_kept() {
+    let (store, dir) = store_and_dir();
+    let page = k("acme", "markdown/instances/s/a.md");
+    store
+        .write(&page, Bytes::from_static(b"---\nkind: instance\n---\n"))
+        .await
+        .unwrap();
+    let md = dir.path().join("tenants/acme/markdown/instances/s");
+    std::fs::write(md.join("b.md.tmp"), b"half a write").unwrap();
+    std::fs::write(md.join("c.md.tmp"), b"another").unwrap();
+    // DuckDB keeps its own `<db>.tmp` spill directory next to the database: never touched.
+    let spill = dir.path().join("tenants/acme/escurel.duckdb.tmp");
+    std::fs::create_dir_all(&spill).unwrap();
+    std::fs::write(spill.join("spill.tmp"), b"x").unwrap();
+
+    let swept = store.sweep_orphan_temp_files("acme").unwrap();
+
+    assert_eq!(swept, 2);
+    assert!(!md.join("b.md.tmp").exists() && !md.join("c.md.tmp").exists());
+    assert!(store.read(&page).await.is_ok(), "the page is untouched");
+    assert!(
+        spill.join("spill.tmp").exists(),
+        "not a lane file: left alone"
+    );
+    assert_eq!(
+        store.sweep_orphan_temp_files("acme").unwrap(),
+        0,
+        "idempotent"
+    );
+}

@@ -390,7 +390,7 @@ them is `escurel:admin`-gated and so not part of the normal agent surface:
   view-backed instance.
 - `register_credential(name, connector, secret_ref | secret)` / `list_credentials()` /
   `delete_credential(name)` — the `sql_view` source-secret registry (secrets
-  never echoed back). Give the connection string as a **reference** (`secret_ref`: `file:` / `env:` / `gsm:`, same
+  never echoed back; re-registering a name with a NEW secret does not re-point an already-attached source until the gateway restarts, while `delete_credential` takes effect at once). Give the connection string as a **reference** (`secret_ref`: `file:` / `env:` / `gsm:`, same
   per-tenant allow-list as `register_endpoint`); inline `secret` is deprecated and flagged. `postgres` / `mysql`
   connection strings are parsed with libpq's grammar and checked against the operator's egress policy when first
   used (only `host`, `hostaddr`, `port`, `dbname`, `user`, `password`, `sslmode`, `options`, `application_name`,

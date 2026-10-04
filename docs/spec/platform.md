@@ -104,7 +104,7 @@ global config is the *default* used when no per-tenant value is set.
 | operation | what happens | preconditions |
 |---|---|---|
 | **Create** | `mkdir` tenant dir, write manifest, initialise empty `escurel.duckdb` with the `vss` and `fts` extensions loaded and schema applied, drop in the `escurel` meta-skill page. ~50 ms. | id is unique; admin role |
-| **List** | enumerate manifests under `${ESCUREL_DATA_DIR}/tenants/` | admin role |
+| **List** | enumerate manifests under `${ESCUREL_SERVER_DATA_DIR}/tenants/` | admin role |
 | **Get** | parse manifest plus runtime status (open sessions, current usage) | admin role |
 | **Update** | rewrite manifest fields under per-tenant write lock; quotas take effect on next request | admin role |
 | **Suspend** | set `status = suspended`; existing connections drained over 30 s | admin role |

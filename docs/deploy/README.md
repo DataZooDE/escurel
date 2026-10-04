@@ -29,8 +29,10 @@ agnostic; the files here bind it to concrete targets.
 One TOML file (`${ESCUREL_CONFIG:-/etc/escurel/server.toml}`), with
 `ESCUREL_<UPPER_SNAKE>` env overrides for any field (the env name is
 the TOML key path upper-snake-cased: `[server] data_dir` →
-`ESCUREL_SERVER_DATA_DIR`). The full table is in
-[`../spec/README.md § Configuration`](../spec/README.md#configuration).
+`ESCUREL_SERVER_DATA_DIR`). The full table of every variable the binaries
+read — generated from the code, so it cannot drift — is
+[`env.md`](env.md) (`escurel-server --print-config-keys`); the TOML shape
+is in [`../spec/README.md § Configuration`](../spec/README.md#configuration).
 Everything below is expressed as env vars so each target is copy-paste
 runnable.
 
@@ -40,7 +42,7 @@ runnable.
 |---|---|
 | `GET /healthz` | liveness, dependency-free, always `200 OK` |
 | `GET /version` | the build version (`ESCUREL_VERSION`) |
-| `GET /readyz` | **503** + `{"ready":false,"components":{…}}` when the lane store, indexer, embedder or index snapshot is down. **200** otherwise, with plain `OK` when there is nothing to report, or `{"ready":true,"notices":[…],"components":{…}}` when there is. A **quarantined** tenant (legacy `type:` pages) is *ready* — the one-shot migration must be able to run against it — and says so with the notice `quarantined`, `components.quarantined: true` and the header `x-escurel-quarantined: 1`. `semantic_search_disabled` is the notice for the zero-vector embedder (`ESCUREL_EMBEDDING_PROVIDER=zero`, or `gemini` without `ESCUREL_GEMINI_API_KEY`). |
+| `GET /readyz` | **503** + `{"ready":false,"components":{…}}` when the lane store, indexer, embedder or index snapshot is down. **200** otherwise, with plain `OK` when there is nothing to report, or `{"ready":true,"notices":[…],"components":{…}}` when there is. A **quarantined** tenant (legacy `type:` pages) is *ready* — the one-shot migration must be able to run against it — and says so with the notice `quarantined`, `components.quarantined: true` and the header `x-escurel-quarantined: 1`. `semantic_search_disabled` is the notice for the zero-vector embedder (`ESCUREL_EMBEDDING_PROVIDER=zero`, or `gemini` without `ESCUREL_GEMINI_API_KEY`). `unauthenticated_exposed` means **no OIDC issuer is configured and the listener is not loopback**: every caller who can reach the port is a tenant admin (the boot log carries the same WARN); set `ESCUREL_AUTH_OIDC_ISSUER`, or bind `127.0.0.1` behind an authenticating proxy. `pages_skipped` lists pages a boot-time index rebuild could not parse (left untouched in the lane, not served); fix or remove them and run `escurel admin rebuild`. |
 | `GET /metrics` (dedicated listener, `ESCUREL_OBSERVABILITY_METRICS_LISTEN`, default `:9090`) | `escurel_up`, `escurel_requests_total`, `escurel_tool_calls`, … plus the operator gauges `escurel_tenant_quarantined{tenant}` (0 or 1), `escurel_migration_pending`, `escurel_semantic_search_enabled`, and the connector counters `escurel_egress_total{outcome}`, `escurel_write_back_total{outcome}`, `escurel_source_unavailable_total{kind}` |
 
 > **Gate on the body, not just the status code.** A proxy or readiness probe that only looks at `/readyz`'s status
@@ -69,7 +71,7 @@ operator, not by the tenant:
 **SQL row connectors (Postgres / MySQL / SQLite).** A `sql_view` credential is registered as a **reference**
 (`register_credential {name, connector, secret_ref}`; an inline `secret` still works but is deprecated and flagged),
 resolved by the same allow-list as endpoint secrets and checked against the egress policy before any connection
-(a private/metadata host, an unlisted file directory, a unix socket: refused by name). The image bakes the
+(a private/metadata host, an unlisted file directory, a unix socket: refused by name). **Rotation:** re-registering an existing credential NAME with a new secret does not re-point a source that is already attached: reads keep using the old connection string until the server restarts (a deleted credential is effective at once: the source answers `backend_unavailable`). Rotate by restarting the gateway (or register under a new name and rebind the skill). Network connects are bounded by `ESCUREL_SQL_CONNECT_TIMEOUT_SECS` (default 5) and a source query by `ESCUREL_ROWS_QUERY_TIMEOUT_SECS` (default 30). The image bakes the
 `postgres`, `sqlite` and `mysql` DuckDB extensions (build-time assertion). **Write-back to a database uses the
 SAME credential**, opened read-write on a short-lived connection only when a human promotes a draft: grant that
 database user `UPDATE` on the writable columns of the tables you expose and nothing else. Postgres attaches carry
@@ -150,6 +152,12 @@ export ESCUREL_SERVER_LISTEN_HTTP=127.0.0.1:8080
 # Filesystem LaneStore — no S3, no spool-to-cloud.
 export ESCUREL_STORAGE_BACKEND=fs
 
+# BUILD REQUIREMENT: `embeddinggemma` (the local candle embedder) is only in a binary
+# built with `cargo build --release -p escurel-server --features embeddinggemma`.
+# The default build and the published image do NOT have it and refuse to boot
+# with `ESCUREL_EMBEDDING_PROVIDER=embeddinggemma` ("requires the embeddinggemma
+# cargo feature"); use `gemini` (needs ESCUREL_GEMINI_API_KEY) or `zero` (FTS-only)
+# with those.
 # A BERT-family sentence-transformer via candle; on a laptop, let it
 # fetch to the HF cache under $ESCUREL_SERVER_DATA_DIR/cache/models/ on
 # first start. NOTE: the candle backend is BERT-only today — it cannot
@@ -172,9 +180,7 @@ export ESCUREL_AUTH_OIDC_AUDIENCE=escurel
 # No OTLP: leave ESCUREL_OBSERVABILITY_OTLP_ENDPOINT unset → tracing is
 # a no-op. (Bare ESCUREL_OTLP_ENDPOINT is a deprecated alias, still
 # honoured as a fallback.) Logs still go to stdout as JSON.
-# NOTE: ESCUREL_OBSERVABILITY_LOG_FORMAT is not yet implemented — JSON is
-# always emitted regardless of this value.
-export ESCUREL_OBSERVABILITY_LOG_FORMAT=json
+# Logs are always JSON on stdout (there is no log-format switch).
 
 mkdir -p "$ESCUREL_SERVER_DATA_DIR"
 escurel-server
@@ -231,6 +237,8 @@ ESCUREL_SERVER_LISTEN_HTTP=0.0.0.0:8080
 
 ESCUREL_STORAGE_BACKEND=fs
 
+# Needs a binary built with `--features embeddinggemma` (NOT the default build or the
+# published image: they refuse to boot with this value). Otherwise use `gemini` or `zero`.
 ESCUREL_EMBEDDING_PROVIDER=embeddinggemma
 # Staged onto the VM once — absolute local path, loaded via from_local
 # (no egress). Must be a BERT-family sentence-transformer (candle is
@@ -251,8 +259,7 @@ ESCUREL_AUTH_ADMIN_ROLE_VALUE=escurel:admin
 # (Bare ESCUREL_OTLP_ENDPOINT is a deprecated alias for the OTLP endpoint.)
 ESCUREL_OBSERVABILITY_OTLP_ENDPOINT=http://127.0.0.1:4317
 ESCUREL_OBSERVABILITY_METRICS_LISTEN=0.0.0.0:9090
-# ESCUREL_OBSERVABILITY_LOG_FORMAT is not yet implemented — JSON is always emitted.
-ESCUREL_OBSERVABILITY_LOG_FORMAT=json
+# Logs are always JSON on stdout (there is no log-format switch).
 ```
 
 ```sh

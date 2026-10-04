@@ -180,17 +180,31 @@ impl Gw {
     /// A gateway whose tenant has the `shop-order` skill over a real SQLite file, with the credential
     /// registered as a `file:` secret reference.
     pub(crate) async fn start() -> Self {
-        Self::start_with(None).await
+        Self::start_with(None, |_| {}).await
     }
 
     /// [`Self::start`] with the gateway's write-ACL mode set.
-    pub(crate) async fn start_with(write_acl: Option<escurel_test_support::WriteAclMode>) -> Self {
+    pub(crate) async fn start_acl(write_acl: escurel_test_support::WriteAclMode) -> Self {
+        Self::start_with(Some(write_acl), |_| {}).await
+    }
+
+    /// Like [`Self::start`], with a hook that may alter the SQLite file BEFORE the gateway attaches
+    /// it (SQLite caches pages per connection, so changes made afterwards may never be seen).
+    pub(crate) async fn start_prepared(prepare: impl FnOnce(&Path)) -> Self {
+        Self::start_with(None, prepare).await
+    }
+
+    async fn start_with(
+        write_acl: Option<escurel_test_support::WriteAclMode>,
+        prepare: impl FnOnce(&Path),
+    ) -> Self {
         let store_dir = TempDir::new().unwrap();
         let db_dir = TempDir::new().unwrap();
         let sql_dir = TempDir::new().unwrap();
         let secret_dir = TempDir::new().unwrap();
         let db = sql_dir.path().join("shop.db");
         seed_sqlite(&db);
+        prepare(&db);
         // A tenant's secret files live under `<dir>/<tenant>/`.
         std::fs::create_dir(secret_dir.path().join(TENANT)).unwrap();
         let secrets = secret_dir.path().join(TENANT).join("shop-dsn");

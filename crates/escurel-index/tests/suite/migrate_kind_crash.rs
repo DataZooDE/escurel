@@ -169,8 +169,8 @@ async fn an_interruption_after_every_page_was_rewritten_still_quarantines_on_reb
 
 #[tokio::test]
 async fn a_page_the_rebuild_cannot_parse_stops_the_rebuild_before_it_truncates_the_index() {
-    // A BOM-prefixed page does not parse (no frontmatter at byte 0). The rebuild used to find out
-    // AFTER it had truncated the index, leaving it partly rebuilt.
+    // A page with broken YAML does not parse. The rebuild used to find out AFTER it had truncated the
+    // index, leaving it partly rebuilt. (A BOM or CRLF page DOES parse now: see escurel-md.)
     let rig = rig();
     let idx = indexer(&rig, "a.duckdb");
     idx.update_page(SKILL, "---\nkind: skill\nid: note\n---\n# note\n")
@@ -192,7 +192,7 @@ async fn a_page_the_rebuild_cannot_parse_stops_the_rebuild_before_it_truncates_t
     put(
         &rig,
         "markdown/instances/note/bom.md",
-        "\u{feff}---\nkind: instance\nskill: note\nid: bom\n---\n# bom\n",
+        "---\nkind: instance\nskill: [unclosed\nid: bom\n---\n# bom\n",
     )
     .await;
 
@@ -215,8 +215,7 @@ async fn a_page_the_rebuild_cannot_parse_stops_the_rebuild_before_it_truncates_t
 }
 
 #[tokio::test]
-async fn a_bom_or_crlf_page_is_named_and_keeps_the_tenant_quarantined_instead_of_serving_half_built()
- {
+async fn bom_and_crlf_legacy_pages_migrate_and_an_unparsable_one_keeps_the_tenant_quarantined() {
     let rig = rig();
     let (p, md) = legacy_page(0);
     put(&rig, SKILL, SKILL_LEGACY).await;
@@ -233,26 +232,29 @@ async fn a_bom_or_crlf_page_is_named_and_keeps_the_tenant_quarantined_instead_of
         "---\r\ntype: instance\r\nskill: note\r\nid: crlf\r\n---\r\n# crlf\r\n",
     )
     .await;
+    put(
+        &rig,
+        "markdown/instances/note/broken.md",
+        "---\ntype: instance\nskill: [unclosed\nid: broken\n---\n# broken\n",
+    )
+    .await;
     let boot = indexer(&rig, "a.duckdb");
     assert!(boot.quarantine_legacy_kind_pages().await.unwrap());
 
-    // The report names the pages it cannot treat as pages; the apply stops at the rebuild with all
-    // of them named (not just the first), and the tenant is NOT lifted.
+    // BOM and CRLF pages are ordinary files: the dry run migrates them. Only the page that cannot be
+    // parsed stops the apply at the rebuild (named), and the tenant is NOT lifted.
     let dry = boot.migrate_kind(false).await.unwrap();
-    assert!(
-        dry.not_a_page_kind.iter().any(|p| p.ends_with("bom.md")),
-        "{dry:?}"
-    );
-    assert!(
-        dry.not_a_page_kind.iter().any(|p| p.ends_with("crlf.md")),
-        "{dry:?}"
-    );
+    for name in ["bom.md", "crlf.md"] {
+        assert!(
+            dry.pages_to_migrate.iter().any(|p| p.ends_with(name)),
+            "{dry:?}"
+        );
+    }
     let err = boot
         .migrate_kind(true)
         .await
         .expect_err("the rebuild must refuse");
-    let msg = err.to_string();
-    assert!(msg.contains("bom.md") && msg.contains("crlf.md"), "{msg}");
+    assert!(err.to_string().contains("broken.md"), "{err}");
 
     let rebooted = indexer(&rig, "b.duckdb");
     assert!(
