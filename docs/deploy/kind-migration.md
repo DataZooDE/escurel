@@ -105,18 +105,22 @@ Use the **same** env as production for the embedder (`ESCUREL_EMBEDDING_PROVIDER
 
 ```sh
 docker run --rm -v <data-volume>:/data \
-  -e ESCUREL_SERVER_LISTEN_HTTP=127.0.0.1:8080 -e ESCUREL_OBSERVABILITY_METRICS_LISTEN= \
   -e ESCUREL_TENANT=<t> -e ESCUREL_EMBEDDING_PROVIDER=... \
-  --entrypoint sh <new-image> -c '
-    escurel-server & S=$!
-    until curl -fsS http://127.0.0.1:8080/healthz >/dev/null; do sleep 1; done
-    escurel --server http://127.0.0.1:8080 admin migrate-kind --tenant "$ESCUREL_TENANT" --apply
-    kill $S; wait $S'
+  --entrypoint migrate-kind-job <new-image>
+echo "exit=$?"     # 0 ONLY when the tenant ended migrated and un-quarantined
 ```
 
-(the one-shot script was run end to end against the real binaries: `"applied": true`,
-`"tenant_quarantined": false`, the server exited 0 on SIGTERM.) In k8s run the same container as a `Job` that
-mounts the data PVC, then roll the Deployment.
+`migrate-kind-job` is [`scripts/migrate-kind-job.sh`](../../scripts/migrate-kind-job.sh), shipped in the image. It
+runs under `set -eu`, boots the throwaway server on the container's loopback, notices a server that died at boot
+(no infinite wait), enforces `ESCUREL_JOB_DEADLINE_SECS` (default 3600, boot + apply), and **fails unless the apply
+response says `"tenant_quarantined": false`** (a both-keys conflict or a signed pack page leaves the tenant
+quarantined and the job exits 1). It is exercised against the real binaries for success, conflict and
+boot-failure (`crates/escurel-server/tests/suite/migrate_kind_job_script.rs`). In k8s run the same container as a
+`Job` that mounts the data PVC (a non-zero exit fails the Job), then roll the Deployment.
+
+**Long migrations.** The CLI has no total deadline for `migrate-kind` (`--timeout-secs N` opts in). The apply runs
+in a server task: a CLI that gives up or is killed does **not** cancel it; re-run the same command to wait for it
+(migrations are serialised and idempotent) or watch `/readyz` until `quarantined` clears.
 
 `--apply` is idempotent (a second run reports nothing to migrate), records an `escurel:kind-migration` system
 event (the audit trail for rewritten drafts) and returns its id.

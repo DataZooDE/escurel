@@ -117,6 +117,8 @@ COPY --from=builder /usr/local/bin/escurel-server /usr/local/bin/escurel-server
 # exposed: `docker exec <c> escurel --server http://127.0.0.1:8080 admin migrate-kind --tenant <t>`
 # (docs/deploy/kind-migration.md). It is a pure HTTP client of the server above.
 COPY --from=builder /usr/local/bin/escurel /usr/local/bin/escurel
+# The one-shot migration job (exits non-zero unless the tenant ends migrated and un-quarantined).
+COPY --from=builder /build/scripts/migrate-kind-job.sh /usr/local/bin/migrate-kind-job
 # The dynamically-linked libduckdb.so (see the builder note). Land it in a
 # standard search dir and refresh the loader cache so the binary — which has
 # no rpath — finds it at startup.
