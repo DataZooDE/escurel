@@ -79,7 +79,8 @@ export const test = base.extend<object, { stack: Stack }>({
         ESCUREL_DEMO_HOME: home,
         ESCUREL_DEMO_CDP_PORT: String(cdpPort),
         ESCUREL_DEMO_CODE_ARGS:
-          '--ozone-platform=x11 --disable-site-isolation-trials --disable-features=IsolateOrigins,site-per-process',
+          '--ozone-platform=x11 --disable-site-isolation-trials --disable-features=IsolateOrigins,site-per-process' +
+          (process.env.CI ? ' --no-sandbox' : ''),
         ESCUREL_TEST_GATEWAY_BIN: join(bin, 'escurel-test-gateway'),
         ESCUREL_RUNNER_BIN: join(bin, 'escurel-runner'),
         ESCUREL_ECHO_SLEEP_MS: '6000',
@@ -107,7 +108,13 @@ export const test = base.extend<object, { stack: Stack }>({
           await new Promise((r) => setTimeout(r, 500));
         }
       }
-      if (!browser) throw new Error('could not attach to the VS Code window');
+      if (!browser) {
+        const codeLog = readFileSync(join(home, 'code.log'), 'utf8');
+        throw new Error(
+          `could not attach to the VS Code window (display=${display}, xvfbExit=${xvfb.exitCode}, ` +
+            `codeLog=${codeLog.slice(-6000)})`,
+        );
+      }
       // The window may not have a page yet when the debugger first answers.
       let page: Page | undefined;
       for (let i = 0; i < 120 && !page; i += 1) {
