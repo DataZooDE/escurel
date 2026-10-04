@@ -94,6 +94,7 @@ export function buildRunView(runNode: LineageNode | undefined, runEvents: Event[
     autonomy: stringValue(runNode?.autonomy) ?? stringValue(finished.autonomy),
     targetPageId: stringValue(runNode?.target_page_id) ?? stringValue(finished.target_page_id),
     traceId: stringValue(runNode?.trace_id) ?? stringValue(finished.trace_id),
+    producedPageId: stringValue(finished.produced_instance),
     startedAt: toIsoUtc(runNode?.started_at) ?? toIsoUtc(finished.started_at),
     finishedAt: toIsoUtc(runNode?.finished_at) ?? toIsoUtc(finished.finished_at),
     depth: numberValue(runNode?.depth) ?? numberValue(finished.depth),

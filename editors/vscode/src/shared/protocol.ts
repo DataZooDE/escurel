@@ -413,6 +413,8 @@ export interface RunView {
   targetPageId?: string;
   /** Copyable, per SPEC §3.6. */
   traceId?: string;
+  /** The page or draft the run produced (`run-finished.produced_instance`). */
+  producedPageId?: string;
   startedAt?: string;
   finishedAt?: string;
   depth?: number;
@@ -448,6 +450,8 @@ export type RunWebviewToHost =
   | { type: 'copy-trace-id'; traceId: string }
   /** The host copies THIS panel's own run id; the webview names nothing. */
   | { type: 'copy-run-id' }
+  /** The host opens THIS run's produced page; the webview names nothing. */
+  | { type: 'open-produced' }
   | { type: 'run-control'; action: RunControlAction; runId: string; eventId?: string }
   | { type: 'view-skill'; skill: string }
   | { type: 'refresh' };

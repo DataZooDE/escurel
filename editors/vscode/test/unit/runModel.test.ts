@@ -188,3 +188,23 @@ describe('a stale page arriving late', () => {
     expect(again.calls.map((c) => c.seq)).toEqual([1, 2, 3, 4]);
   });
 });
+
+describe('the draft or page a run produced', () => {
+  it('is read from run-finished so the trace can link to it', () => {
+    const events = [
+      {
+        event_id: 'run:R1:finished',
+        at: '2026-10-04T12:00:00Z',
+        title: 'run-finished',
+        label_skill: 'escurel:run',
+        run_id: 'R1',
+        body: JSON.stringify({
+          status: 'processed',
+          produced_instance: 'markdown/instances/order/o1.md',
+        }),
+      },
+    ] as never;
+    expect(buildRunView(undefined, events).producedPageId).toBe('markdown/instances/order/o1.md');
+    expect(buildRunView(undefined, [] as never).producedPageId).toBeUndefined();
+  });
+});

@@ -1,3 +1,4 @@
+import { traceTimeline } from '../../src/shared/trace';
 import { emptyAttempts, emptyPlan, runByline, statusIconName } from '../../src/runs/runWording';
 import { checkIcon, crossIcon, syncIcon, warnIcon } from '../shared/icons';
 import { displayStepStatus, runHeading } from '../../src/runs/runTitle';
@@ -144,11 +145,57 @@ export class EscurelRunDetail extends LitElement {
       .attempt,
       .plan-step,
       .tool-call {
-        padding: 8px 0;
+        padding: 6px 0;
         border-bottom: 1px solid var(--escurel-border);
       }
-      .attempt-line,
-      .tool-call {
+      .tool-call summary {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px 10px;
+        align-items: baseline;
+        cursor: pointer;
+      }
+      .tool-call summary:focus-visible {
+        outline: 1px solid var(--vscode-focusBorder);
+        outline-offset: 2px;
+      }
+      .call-seq {
+        min-width: 1.5em;
+        opacity: 0.7;
+      }
+      .call-tool {
+        font-family: var(--vscode-editor-font-family, monospace);
+        font-weight: 600;
+      }
+      .call-duration,
+      .call-offset {
+        opacity: 0.8;
+      }
+      .call-bar {
+        flex: 1 1 80px;
+        min-width: 60px;
+        height: 4px;
+        background: var(--escurel-border);
+        border-radius: 2px;
+        align-self: center;
+      }
+      .call-bar > span {
+        display: block;
+        height: 100%;
+        background: var(--vscode-progressBar-background, currentColor);
+        border-radius: 2px;
+      }
+      .tool-call.failed .call-bar > span {
+        background: var(--vscode-errorForeground);
+      }
+      .call-sizes {
+        margin: 4px 0 0 1.5em;
+        opacity: 0.8;
+      }
+      button.open-produced {
+        margin: 4px 0;
+      }
+      .attempt-line {
         display: flex;
         flex-wrap: wrap;
         gap: 6px;
@@ -370,6 +417,18 @@ export class EscurelRunDetail extends LitElement {
             </div>`
           : nothing
       }
+      ${
+        run.producedPageId
+          ? html`<div>
+              <button
+                class="link open-produced"
+                @click=${() => this.send({ type: 'open-produced' })}
+              >
+                Open what this run produced
+              </button>
+            </div>`
+          : nothing
+      }
 
       <section aria-label="Attempts">
         <h2>Attempts</h2>
@@ -417,18 +476,23 @@ export class EscurelRunDetail extends LitElement {
         <h2>Tool calls</h2>
         ${
           run.calls.length
-            ? run.calls.map(
-                (call) => html`
-                  <div class="tool-call">
-                    <span>${call.seq} · ${call.tool} ·</span
-                    ><span
-                      class=${call.status === 'error' || call.status === 'rejected' ? 'call-error' : ''}
-                      >${call.status}${call.errorCode ? html` · ${call.errorCode}` : nothing}</span
-                    ><span
-                      >· ${call.durationMs.toFixed(1)} ms · ${call.bytes.request} request bytes /
-                      ${call.bytes.response} response bytes</span
-                    >
-                  </div>
+            ? traceTimeline(run.calls, run.startedAt).map(
+                (row) => html`
+                  <details class="tool-call ${row.failed ? 'failed' : ''}">
+                    <summary>
+                      <span class="call-seq">${row.seq}</span>
+                      <span class="call-tool">${row.tool}</span>
+                      <span class="call-outcome ${row.failed ? 'call-error' : ''}"
+                        >${row.failed ? '✕ ' : '✓ '}${row.outcome}${row.detail ? html` · ${row.detail}` : nothing}</span
+                      >
+                      <span class="call-duration">${row.duration}</span>
+                      ${row.offset ? html`<span class="call-offset">${row.offset}</span>` : nothing}
+                      <span class="call-bar" aria-hidden="true"
+                        ><span style="width:${row.barPercent}%"></span
+                      ></span>
+                    </summary>
+                    <div class="call-sizes">${row.sizes}</div>
+                  </details>
                 `,
               )
             : run.toolCallCount && run.toolCallCount > 0
