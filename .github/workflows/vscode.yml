@@ -42,6 +42,7 @@ jobs:
       ESCUREL_SERVER_BIN: ${{ github.workspace }}/target/debug/escurel-server
       ESCUREL_RUNNER_BIN: ${{ github.workspace }}/target/debug/escurel-runner
       ESCUREL_TEST_GATEWAY_BIN: ${{ github.workspace }}/target/debug/escurel-test-gateway
+      LD_LIBRARY_PATH: ${{ github.workspace }}/target/debug/deps
     steps:
       - uses: actions/checkout@v4
       - name: Install Rust toolchain
