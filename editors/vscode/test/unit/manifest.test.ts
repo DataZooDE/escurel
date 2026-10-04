@@ -186,3 +186,75 @@ describe('the empty views say WHY they are empty', () => {
     });
   }
 });
+
+describe('first run and discoverability', () => {
+  const m = manifest as unknown as {
+    contributes: {
+      commands: { command: string }[];
+      keybindings: { command: string }[];
+      walkthroughs: {
+        steps: { description: string; media: { markdown: string }; completionEvents?: string[] }[];
+      }[];
+      viewsWelcome: { view: string; contents: string }[];
+      menus: { commandPalette: { command: string; when: string }[] };
+    };
+    activationEvents: string[];
+  };
+  const declared = new Set(m.contributes.commands.map((c) => c.command));
+  // A command: link may call one of ours, a VS Code built-in, or a view's auto-generated focus command.
+  const known = (id: string) =>
+    declared.has(id) || id.startsWith('workbench.') || id.endsWith('.focus');
+
+  it('every command a welcome text, walkthrough step or keybinding runs exists', () => {
+    const uris = [
+      ...m.contributes.viewsWelcome.map((w) => w.contents),
+      ...m.contributes.walkthroughs.flatMap((w) => w.steps.map((s) => s.description)),
+    ].flatMap((text) => [...text.matchAll(/command:([A-Za-z0-9_.]+)/g)].map((x) => x[1]!));
+    expect(uris.length > 0).toBe(true);
+    expect(uris.filter((u) => !known(u))).toEqual([]);
+    expect(m.contributes.keybindings.map((k) => k.command).filter((c) => !known(c))).toEqual([]);
+  });
+
+  it('a not-connected view tells you HOW to connect: a link that opens the gateway setting', () => {
+    // The quarantined and old-gateway states have their own words (the setting is not what is wrong).
+    const generic = (m.contributes.viewsWelcome as { when?: string; contents: string }[]).filter(
+      (w) =>
+        !(w.when ?? '').includes("== 'quarantined'") &&
+        !(w.when ?? '').includes("== 'incompatible'"),
+    );
+    expect(generic.length > 0).toBe(true);
+    for (const w of generic) {
+      expect(w.contents).toContain('command:workbench.action.openSettings');
+      expect(w.contents).toContain('escurel.gatewayUrl');
+    }
+  });
+
+  it('the walkthrough ships its pages', () => {
+    const dir = new URL('../../', import.meta.url).pathname;
+    for (const step of m.contributes.walkthroughs.flatMap((w) => w.steps)) {
+      expect(existsSync(join(dir, step.media.markdown))).toBe(true);
+    }
+  });
+
+  it('the commands people ran from the palette are no longer hidden from it', () => {
+    const hidden = new Set(
+      m.contributes.menus.commandPalette.filter((c) => c.when === 'false').map((c) => c.command),
+    );
+    for (const id of [
+      'escurel.cancelRun',
+      'escurel.retryRun',
+      'escurel.approvePlan',
+      'escurel.openThread',
+      'escurel.openReview',
+    ]) {
+      expect(hidden.has(id)).toBe(false);
+    }
+  });
+
+  it('the bottom Details panel and the Runner can be opened by name, and wake the extension', () => {
+    expect(declared.has('escurel.showDetails')).toBe(true);
+    expect(declared.has('escurel.showRunner')).toBe(true);
+    expect(m.activationEvents).toContain('onView:escurel.details');
+    expect(m.activationEvents).toContain('onView:escurel.runner');
+  });
+});

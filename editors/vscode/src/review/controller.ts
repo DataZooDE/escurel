@@ -108,7 +108,7 @@ export class ReviewController implements vscode.Disposable {
       return;
     }
 
-    void vscode.window.showInformationMessage('Pick an item in Awaiting You to review it.');
+    void vscode.window.showInformationMessage('Pick an item in Awaiting you to review it.');
   }
 
   /**
@@ -222,7 +222,7 @@ export class ReviewController implements vscode.Disposable {
     const target = resolveReviewTarget(arg, activeUri);
 
     if (!target) {
-      void vscode.window.showErrorMessage('Open a change from Awaiting You first, then apply it.');
+      void vscode.window.showErrorMessage('Open a change from Awaiting you first, then apply it.');
       return;
     }
 
@@ -296,7 +296,7 @@ export class ReviewController implements vscode.Disposable {
     const target = resolveReviewTarget(arg, activeUri);
 
     if (!target) {
-      void vscode.window.showErrorMessage('Open a change from Awaiting You first, then reject it.');
+      void vscode.window.showErrorMessage('Open a change from Awaiting you first, then reject it.');
       return;
     }
 

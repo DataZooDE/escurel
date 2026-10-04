@@ -199,6 +199,18 @@ export function activate(context: vscode.ExtensionContext): EscurelApi | undefin
       },
     ),
 
+    vscode.commands.registerCommand('escurel.showDetails', () =>
+      vscode.commands.executeCommand('escurel.details.focus'),
+    ),
+    vscode.commands.registerCommand('escurel.showRunner', () =>
+      vscode.commands.executeCommand('escurel.runner.focus'),
+    ),
+    vscode.commands.registerCommand('escurel.focusCanvas', () => {
+      const shown = details.current();
+      if (shown) threads.focusCanvas(shown.rootEventId);
+      else
+        void vscode.window.showInformationMessage('Open a thread first, then select a node in it.');
+    }),
     registerStartSkill(context, services),
     registerProposeWriteBack(services),
     registerApprovePlan(context, services),

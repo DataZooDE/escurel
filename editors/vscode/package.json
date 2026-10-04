@@ -19,12 +19,17 @@
   ],
   "main": "./dist/extension.js",
   "activationEvents": [
-    "onFileSystem:escurel",
     "onAuthenticationRequest:escurel",
-    "onView:escurel.knowledge",
+    "onCommand:escurel.search",
+    "onCommand:escurel.showDetails",
+    "onCommand:escurel.showRunner",
+    "onFileSystem:escurel",
     "onView:escurel.awaiting",
+    "onView:escurel.details",
     "onView:escurel.inbox",
-    "onCommand:escurel.search"
+    "onView:escurel.knowledge",
+    "onView:escurel.runner",
+    "onView:escurel.threads"
   ],
   "contributes": {
     "configuration": {
@@ -100,7 +105,7 @@
       },
       {
         "command": "escurel.resolve",
-        "title": "Resolve wikilink",
+        "title": "Resolve wikilink\u2026",
         "category": "Escurel"
       },
       {
@@ -217,6 +222,21 @@
         "command": "escurel.proposeWriteBack",
         "title": "Propose a change to the source",
         "category": "Escurel"
+      },
+      {
+        "command": "escurel.showDetails",
+        "title": "Show details panel",
+        "category": "Escurel"
+      },
+      {
+        "command": "escurel.showRunner",
+        "title": "Show runner",
+        "category": "Escurel"
+      },
+      {
+        "command": "escurel.focusCanvas",
+        "title": "Focus thread canvas",
+        "category": "Escurel"
       }
     ],
     "authentication": [
@@ -288,7 +308,7 @@
     "viewsWelcome": [
       {
         "view": "escurel.knowledge",
-        "contents": "Not connected to the escurel gateway.\n[Reconnect](command:escurel.refresh)\n[Sign in](command:escurel.signIn)\n\nSet `escurel.gatewayUrl` in Settings.",
+        "contents": "Not connected to the escurel gateway.\n\n1. Set the gateway address.\n[Open the gateway setting](command:workbench.action.openSettings?%5B%22escurel.gatewayUrl%22%5D)\n\n2. Sign in, if your gateway asks for it.\n[Sign in](command:escurel.signIn)\n\n3. Try again.\n[Reconnect](command:escurel.refresh)\n\n[Get started](command:workbench.action.openWalkthrough?%7B%22category%22%3A%22datazoo.escurel%23escurel.start%22%7D)",
         "when": "escurel.connected == false && escurel.connectionState != 'quarantined' && escurel.connectionState != 'incompatible'"
       },
       {
@@ -303,7 +323,7 @@
       },
       {
         "view": "escurel.awaiting",
-        "contents": "Not connected to the escurel gateway.\n[Reconnect](command:escurel.refresh)\n[Sign in](command:escurel.signIn)\n\nSet `escurel.gatewayUrl` in Settings.",
+        "contents": "Not connected to the escurel gateway.\n\n1. Set the gateway address.\n[Open the gateway setting](command:workbench.action.openSettings?%5B%22escurel.gatewayUrl%22%5D)\n\n2. Sign in, if your gateway asks for it.\n[Sign in](command:escurel.signIn)\n\n3. Try again.\n[Reconnect](command:escurel.refresh)\n\n[Get started](command:workbench.action.openWalkthrough?%7B%22category%22%3A%22datazoo.escurel%23escurel.start%22%7D)",
         "when": "escurel.connected == false && escurel.connectionState != 'quarantined' && escurel.connectionState != 'incompatible'"
       },
       {
@@ -318,7 +338,7 @@
       },
       {
         "view": "escurel.inbox",
-        "contents": "Not connected to the escurel gateway.\n[Reconnect](command:escurel.refresh)\n[Sign in](command:escurel.signIn)\n\nSet `escurel.gatewayUrl` in Settings.",
+        "contents": "Not connected to the escurel gateway.\n\n1. Set the gateway address.\n[Open the gateway setting](command:workbench.action.openSettings?%5B%22escurel.gatewayUrl%22%5D)\n\n2. Sign in, if your gateway asks for it.\n[Sign in](command:escurel.signIn)\n\n3. Try again.\n[Reconnect](command:escurel.refresh)\n\n[Get started](command:workbench.action.openWalkthrough?%7B%22category%22%3A%22datazoo.escurel%23escurel.start%22%7D)",
         "when": "escurel.connected == false && escurel.connectionState != 'quarantined' && escurel.connectionState != 'incompatible'"
       },
       {
@@ -333,7 +353,7 @@
       },
       {
         "view": "escurel.runner",
-        "contents": "Not connected to the escurel gateway.\n[Reconnect](command:escurel.refresh)\n[Sign in](command:escurel.signIn)\n\nSet `escurel.gatewayUrl` in Settings.",
+        "contents": "Not connected to the escurel gateway.\n\n1. Set the gateway address.\n[Open the gateway setting](command:workbench.action.openSettings?%5B%22escurel.gatewayUrl%22%5D)\n\n2. Sign in, if your gateway asks for it.\n[Sign in](command:escurel.signIn)\n\n3. Try again.\n[Reconnect](command:escurel.refresh)\n\n[Get started](command:workbench.action.openWalkthrough?%7B%22category%22%3A%22datazoo.escurel%23escurel.start%22%7D)",
         "when": "escurel.connected == false && escurel.connectionState != 'quarantined' && escurel.connectionState != 'incompatible'"
       },
       {
@@ -351,11 +371,11 @@
       "commandPalette": [
         {
           "command": "escurel.cancelRun",
-          "when": "false"
+          "when": "escurel.connected"
         },
         {
           "command": "escurel.retryRun",
-          "when": "false"
+          "when": "escurel.connected"
         },
         {
           "command": "escurel.requeue",
@@ -387,15 +407,15 @@
         },
         {
           "command": "escurel.approvePlan",
-          "when": "false"
+          "when": "escurel.connected"
         },
         {
           "command": "escurel.openThread",
-          "when": "false"
+          "when": "escurel.connected"
         },
         {
           "command": "escurel.openReview",
-          "when": "false"
+          "when": "escurel.connected"
         },
         {
           "command": "escurel.promote",
@@ -582,6 +602,61 @@
           }
         ],
         "priority": "default"
+      }
+    ],
+    "walkthroughs": [
+      {
+        "id": "escurel.start",
+        "title": "Get started with Escurel",
+        "description": "Connect to your gateway, sign in, and review your first agent proposal.",
+        "steps": [
+          {
+            "id": "gateway",
+            "title": "Set your gateway",
+            "description": "Tell Escurel where your gateway runs.\n[Open the gateway setting](command:workbench.action.openSettings?%5B%22escurel.gatewayUrl%22%5D)",
+            "media": {
+              "markdown": "media/walkthrough/gateway.md"
+            },
+            "completionEvents": [
+              "onSettingChanged:escurel.gatewayUrl"
+            ]
+          },
+          {
+            "id": "signin",
+            "title": "Sign in",
+            "description": "Sign in if your gateway asks for it.\n[Sign in](command:escurel.signIn)",
+            "media": {
+              "markdown": "media/walkthrough/signin.md"
+            },
+            "completionEvents": [
+              "onCommand:escurel.signIn"
+            ]
+          },
+          {
+            "id": "review",
+            "title": "Review what an agent proposed",
+            "description": "Open the first item waiting for you.\n[Show Awaiting you](command:escurel.awaiting.focus)",
+            "media": {
+              "markdown": "media/walkthrough/review.md"
+            },
+            "completionEvents": [
+              "onView:escurel.awaiting"
+            ]
+          }
+        ]
+      }
+    ],
+    "keybindings": [
+      {
+        "command": "escurel.search",
+        "key": "ctrl+alt+e",
+        "mac": "cmd+alt+e"
+      },
+      {
+        "command": "escurel.showDetails",
+        "key": "ctrl+alt+d",
+        "mac": "cmd+alt+d",
+        "when": "escurel.connected"
       }
     ]
   },

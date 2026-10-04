@@ -48,6 +48,19 @@ export function registerControlCommands(
       let request: ReturnType<typeof controlRequest>;
       try {
         request = controlRequest(action, arg);
+        // From the palette there is no run to act on: say where to pick one.
+        if ((action === 'cancel' || action === 'retry') && !('runId' in request && request.runId)) {
+          void vscode.window.showInformationMessage(
+            `Select a run in the Runner view or in a thread, then use its menu to ${action} it.`,
+          );
+          return;
+        }
+        if (action === 'requeue' && !('eventId' in request && request.eventId)) {
+          void vscode.window.showInformationMessage(
+            'Select a dead letter in the Runner view, then use its menu to requeue it.',
+          );
+          return;
+        }
       } catch (error) {
         void vscode.window.showErrorMessage(describeControlRefusal(error));
         return;
