@@ -14,6 +14,7 @@ use tracing_subscriber::registry::LookupSpan;
 use tracing_subscriber::util::SubscriberInitExt;
 
 use crate::log_fields::{JsonContract, SpanFieldLayer, StaticFields};
+use crate::nonblocking::{DEFAULT_CAPACITY, NonBlockingWriter};
 
 /// Configuration for [`init_telemetry`].
 pub struct TelemetryConfig {
@@ -44,6 +45,8 @@ pub enum Error {
 /// the provider means traces were a no-op.
 pub struct TelemetryGuard {
     provider: Option<SdkTracerProvider>,
+    /// The stdout log writer: flushed on drop so the last lines of a graceful stop are not lost.
+    logs: Option<NonBlockingWriter>,
 }
 
 impl TelemetryGuard {
@@ -55,6 +58,9 @@ impl TelemetryGuard {
 
 impl Drop for TelemetryGuard {
     fn drop(&mut self) {
+        if let Some(logs) = self.logs.take() {
+            logs.flush_within(std::time::Duration::from_secs(1));
+        }
         if let Some(provider) = self.provider.take() {
             // Best-effort flush; shutdown errors are not actionable here.
             let _ = provider.shutdown();
@@ -141,19 +147,49 @@ pub fn init_telemetry(cfg: TelemetryConfig) -> Result<TelemetryGuard, Error> {
         .with(SpanFieldLayer)
         .with(otel_layer);
 
+    // Logs go to stdout (the substrate contract) through a bounded queue and one writer thread, so a
+    // log consumer that stops reading can never stall the gateway (see `nonblocking`).
+    let logs = NonBlockingWriter::new(io::stdout(), DEFAULT_CAPACITY, drop_notice(&statics));
+
     let install = if cfg.json_logs {
         let fmt_layer = tracing_subscriber::fmt::layer()
-            .with_writer(io::stdout)
+            .with_writer(logs.clone())
             .event_format(JsonContract { statics });
         registry.with(fmt_layer).try_init()
     } else {
-        let fmt_layer = tracing_subscriber::fmt::layer().with_writer(io::stdout);
+        let fmt_layer = tracing_subscriber::fmt::layer().with_writer(logs.clone());
         registry.with(fmt_layer).try_init()
     };
 
     install.map_err(|e| Error::AlreadyInstalled(e.to_string()))?;
 
-    Ok(TelemetryGuard { provider })
+    Ok(TelemetryGuard {
+        provider,
+        logs: Some(logs),
+    })
+}
+
+/// The line the writer emits once a log consumer that stopped reading is back: how much was lost.
+fn drop_notice(statics: &StaticFields) -> crate::nonblocking::DropNotice {
+    let (app, env, version) = (
+        statics.app.clone(),
+        statics.env.clone(),
+        statics.version.clone(),
+    );
+    Box::new(move |n| {
+        let ts = time::OffsetDateTime::now_utc()
+            .format(&time::format_description::well_known::Rfc3339)
+            .unwrap_or_default();
+        let mut line = serde_json::json!({
+            "ts": ts, "level": "warn", "app": app, "env": env, "version": version,
+            "msg": "logs.dropped", "dropped": n,
+            "detail": "log lines were dropped because the log consumer was not reading",
+        })
+        .to_string()
+        .into_bytes();
+        line.push(b'\n');
+        line
+    })
 }
 
 #[cfg(test)]
