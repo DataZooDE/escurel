@@ -848,3 +848,32 @@ async fn a_blackholed_database_host_is_bounded_and_does_not_starve_the_runtime()
         "{body}"
     );
 }
+
+// Round-2 review: "already applied" compared STRINGS of JSON renderings, so a NUMERIC that the source
+// renders `12.0` never equalled a patch of `12` or `"12.50"`: after a crash between COMMIT and the
+// witness, the retry was a false conflict forever. The comparison is typed, done by the database
+// (`CAST(? AS <column type>)`).
+#[tokio::test]
+async fn a_committed_change_is_recognised_whatever_spelling_the_patch_used() {
+    for (patch, stored) in [("discount: 12", "12.00"), ("discount: \"12.50\"", "12.50")] {
+        let g = Gw::start().await;
+        let db = g.pg.client().await;
+        let e = g.etag(7).await;
+        let id = draft_id(&g.draft(7, patch, &e).await);
+        db.execute(
+            &format!("UPDATE public.orders SET discount = {stored} WHERE vbeln = $1"),
+            &[&doc(7)],
+        )
+        .await
+        .unwrap();
+        let before = touches(&db).await;
+
+        let done = g.promote(&id).await;
+
+        assert_eq!(
+            done["ok"], true,
+            "`{patch}` over a stored {stored} is applied, not a conflict: {done}"
+        );
+        assert_eq!(touches(&db).await, before, "no second UPDATE for `{patch}`");
+    }
+}

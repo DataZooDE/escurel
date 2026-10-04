@@ -112,11 +112,17 @@ pub(crate) async fn run(
     let current = etag_of(&row.fields);
     // The change is ALREADY there: an earlier UPDATE committed but its witness was lost. The row now
     // carries our own change, so its etag no longer matches the draft's base: that is "applied".
-    if intent.patch.iter().all(|(field, want)| {
+    // Judged by the database, typed (`rows_holds_patch`): the JSON rendering of a NUMERIC or a
+    // timestamp is not the spelling the patch used. The cheap JSON comparison stays as a fast path.
+    let already_there = intent.patch.iter().all(|(field, want)| {
         row.fields
             .get(field)
             .is_some_and(|have| same_scalar(have, want))
-    }) {
+    }) || indexer
+        .rows_holds_patch(&src, row_id, &intent.patch)
+        .await
+        .unwrap_or(false);
+    if already_there {
         audit_after_apply(
             state,
             indexer,
@@ -195,6 +201,41 @@ pub(crate) async fn run(
                 state.metrics.inc_write_back("applied");
                 return Ok(stripped);
             }
+            Err(RowWriteError::Conflict) if attempt > 1 => {
+                // A retry matched no row. If the row now holds OUR change, an earlier attempt
+                // committed (its error was lost): that is "applied", not a conflict.
+                if indexer
+                    .rows_holds_patch(&src, row_id, &intent.patch)
+                    .await
+                    .unwrap_or(false)
+                {
+                    audit_after_apply(
+                        state,
+                        indexer,
+                        &id_applied,
+                        "write-back-applied",
+                        target_page_id,
+                        &audit_body("applied", attempt),
+                    )
+                    .await;
+                    state.metrics.inc_write_back("applied");
+                    return Ok(stripped);
+                }
+                audit_after_apply(
+                    state,
+                    indexer,
+                    &id_failed,
+                    "write-back-conflict",
+                    target_page_id,
+                    &audit_body("conflict", attempt),
+                )
+                .await;
+                state.metrics.inc_write_back("conflict");
+                return Err(refusal(
+                    "write_back_conflict",
+                    "the source refused the change: the row changed since it was read",
+                ));
+            }
             Err(RowWriteError::Conflict) => {
                 audit_after_apply(
                     state,
@@ -221,6 +262,26 @@ pub(crate) async fn run(
                 if attempt < MAX_ATTEMPTS {
                     tokio::time::sleep(backoff(state.egress.policy().write_retry_backoff, attempt))
                         .await;
+                    // The failed attempt may have COMMITTED before the error reached us (a dropped
+                    // connection after the commit). Re-sending the same basis would match no row and
+                    // report a conflict for our own change: look first.
+                    if indexer
+                        .rows_holds_patch(&src, row_id, &intent.patch)
+                        .await
+                        .unwrap_or(false)
+                    {
+                        audit_after_apply(
+                            state,
+                            indexer,
+                            &id_applied,
+                            "write-back-applied",
+                            target_page_id,
+                            &audit_body("applied", attempt),
+                        )
+                        .await;
+                        state.metrics.inc_write_back("applied");
+                        return Ok(stripped);
+                    }
                 }
             }
         }

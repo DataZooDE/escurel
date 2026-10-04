@@ -55,7 +55,7 @@ impl std::fmt::Display for RowWriteError {
 }
 
 /// A scalar patch value as the text a `CAST(? AS <type>)` takes.
-fn param_text(v: &Value) -> Option<String> {
+pub(super) fn param_text(v: &Value) -> Option<String> {
     match v {
         Value::String(s) => Some(s.clone()),
         Value::Number(n) => Some(n.to_string()),
@@ -66,7 +66,7 @@ fn param_text(v: &Value) -> Option<String> {
 
 /// A DuckDB type name is spliced into `CAST(.. AS <type>)`: only the shapes DuckDB itself reports
 /// (`VARCHAR`, `DECIMAL(18,3)`, `TIMESTAMP WITH TIME ZONE`, …) pass.
-fn safe_type(t: &str) -> bool {
+pub(super) fn safe_type(t: &str) -> bool {
     !t.is_empty()
         && t.len() <= 64
         && t.chars()

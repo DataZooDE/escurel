@@ -389,6 +389,76 @@ impl Indexer {
     }
 }
 
+impl Indexer {
+    /// Whether the row `id` ALREADY holds every value of `patch` (frontmatter field -> scalar), judged
+    /// by the database, TYPED: the patch value is cast to the column's own type and both sides are
+    /// compared as DuckDB renders them (`DECIMAL 12.00` equals `12` and `"12.50"`, a timestamp equals
+    /// its `T`/`Z` spelling). A comparison of JSON renderings cannot do that, and a false "differs"
+    /// turns a change that committed before a crash into a conflict forever.
+    ///
+    /// `false` also when the row is gone, a field is not a projected column, or a value does not cast.
+    ///
+    /// # Errors
+    /// The source could not be read.
+    pub async fn rows_holds_patch(
+        &self,
+        src: &RowsSource,
+        id: &str,
+        patch: &Map<String, Value>,
+    ) -> Result<bool, SqlViewError> {
+        let Some(key_values) = decode_row_id(id, src.cfg.key.len()) else {
+            return Ok(false);
+        };
+        materialise_view_on(self, &src.view, &src.sql, false).await?;
+        let conn = self.conn.lock().await;
+        let cols = describe(&conn, &src.view)?;
+        let names: Vec<&str> = cols.iter().map(|(n, _)| n.as_str()).collect();
+        let exprs = key_exprs(src, &names)?;
+        let mut wheres: Vec<String> = exprs.iter().map(|e| format!("{e} = ?")).collect();
+        let mut params: Vec<String> = key_values;
+        for (field, value) in patch {
+            let Some(column) = Self::rows_column_for_field(src, field) else {
+                return Ok(false);
+            };
+            let Some(ty) = cols
+                .iter()
+                .find(|(n, _)| n == &column)
+                .map(|(_, t)| t.as_str())
+                .filter(|t| super::rows_write::safe_type(t))
+            else {
+                return Ok(false);
+            };
+            let Some(text) = super::rows_write::param_text(value) else {
+                return Ok(false);
+            };
+            wheres.push(format!(
+                "CAST(\"{column}\" AS VARCHAR) IS NOT DISTINCT FROM CAST(CAST(? AS {ty}) AS VARCHAR)"
+            ));
+            params.push(text);
+        }
+        let sql = format!(
+            "SELECT count(*) FROM {} WHERE {}",
+            src.view,
+            wheres.join(" AND ")
+        );
+        let timeout = self.rows_query_timeout;
+        let counted = with_statement_timeout::<_, SqlViewError>(&conn, timeout, || {
+            let mut stmt = conn.prepare(&sql)?;
+            // A value that does not cast to the column's type is an error of the CAST: not "held".
+            match stmt.query_row(duckdb::params_from_iter(params.iter()), |r| {
+                r.get::<_, i64>(0)
+            }) {
+                Ok(n) => Ok(Some(n)),
+                Err(duckdb::Error::DuckDBFailure(_, Some(m))) if m.contains("Conversion Error") => {
+                    Ok(None)
+                }
+                Err(e) => Err(e.into()),
+            }
+        })?;
+        Ok(counted == Some(1))
+    }
+}
+
 /// How many row hits one `search` takes from ONE rows-backed skill, and in total: a lookup, not a scan.
 pub const ROWS_SEARCH_PER_SKILL: usize = 20;
 pub const ROWS_SEARCH_TOTAL: usize = 50;

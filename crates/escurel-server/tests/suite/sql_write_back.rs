@@ -394,3 +394,26 @@ async fn a_file_connector_declaring_writable_columns_still_cannot_be_written_bac
         "no writable promise for a read-only source: {proj}"
     );
 }
+
+// Round-2 review: "already applied" compared JSON renderings as strings, so a patch spelled `12.0`
+// over a stored integer 12 was a false conflict forever once the witness was lost. The database
+// compares, typed.
+#[tokio::test]
+async fn a_committed_change_in_another_spelling_is_applied_not_a_conflict() {
+    let g = Gw::start().await;
+    let e = etag(&g, 7).await;
+    let id = draft_id(&draft(&g, 7, &intent(7, "quantity: 12.0", &e, "n")).await);
+    // The crash window: the UPDATE committed, the witness was never written.
+    db_exec(
+        &g.db,
+        &format!("UPDATE s.orders SET qty = 12 WHERE vbeln = '{}'", doc(7)),
+    );
+
+    let done = promote(&g, &id).await;
+
+    assert_eq!(
+        done["ok"], true,
+        "the row already holds 12: applied, not a conflict: {done}"
+    );
+    assert_eq!(db_row(&g.db, 7)["qty"], 12);
+}
