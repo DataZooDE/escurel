@@ -57,10 +57,11 @@ fn seed(data: &Path, extra: &[(&str, &str)]) {
 }
 
 fn job(data: &Path, deadline: u64, env: &[(&str, &str)]) -> (std::process::Output, Duration) {
+    let bin = bin_dir(); // build the CLI BEFORE the clock starts
     let started = Instant::now();
     let mut c = Command::new("sh");
     c.arg(repo_root().join("scripts/migrate-kind-job.sh"))
-        .env("ESCUREL_BIN_DIR", bin_dir())
+        .env("ESCUREL_BIN_DIR", bin)
         .env("ESCUREL_TENANT", "default")
         .env("ESCUREL_JOB_PORT", free_port().to_string())
         .env("ESCUREL_JOB_DEADLINE_SECS", deadline.to_string())
