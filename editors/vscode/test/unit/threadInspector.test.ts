@@ -39,7 +39,7 @@ describe('buildInspectors', () => {
     const detail = buildInspectors(view, nodes)[changeset.id];
     expect(detail?.sideTitle).toBe('Drafts');
     expect(detail?.side).toContainEqual({ k: 'o1', v: 'promoted', tone: 'ok' });
-    expect(detail?.rows).toContainEqual({ k: 'state', v: 'promoted', tone: 'ok' });
+    expect(detail?.rows).toContainEqual({ k: 'Status', v: 'Applied', tone: 'ok' });
   });
 
   it('omits null values and marks a failed run as an error', () => {
@@ -53,7 +53,7 @@ describe('buildInspectors', () => {
     focusGraph(view, layoutThread(view, new Set()));
     const run = view.nodes.find((node) => node.kind === 'run')!;
     const rows = buildInspectors(view, [...folded.nodes.values()])[run.id]!.rows;
-    expect(rows).toContainEqual({ k: 'state', v: 'failed', tone: 'error' });
+    expect(rows).toContainEqual({ k: 'Status', v: 'Failed', tone: 'error' });
     expect(rows.some((row) => row.k === 'model' || row.k === 'reason')).toBe(false);
   });
 });
@@ -128,6 +128,16 @@ describe('buildInspectors: what a person reads first', () => {
     const tech = d.rows.filter((r) => r.tech).map((r) => r.k);
     expect(tech).toContain('trace_id');
     expect(tech).toContain('harness');
-    expect(d.rows.find((r) => r.k === 'state')?.tech).toBeUndefined();
+    expect(d.rows.find((r) => r.k === 'Status')?.tech).toBeUndefined();
+  });
+});
+
+describe('node states in words', () => {
+  it('says what a state means, not the wire word', async () => {
+    const { stateWords } = await import('../../src/thread/inspector');
+    expect(stateWords('processed')).toBe('Done');
+    expect(stateWords('open')).toBe('Waiting for your review');
+    expect(stateWords('dead_letter')).toBe('Gave up');
+    expect(stateWords('something_new')).toBe('Something new');
   });
 });
