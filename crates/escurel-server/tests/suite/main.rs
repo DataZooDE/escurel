@@ -113,6 +113,7 @@ mod reader_role;
 mod reader_role_chat;
 mod reader_role_crdt;
 mod reader_role_events;
+mod rebuild_boot_tolerance;
 mod remote_backend_tools;
 mod remote_mcp_rows;
 mod remote_rest_rows;

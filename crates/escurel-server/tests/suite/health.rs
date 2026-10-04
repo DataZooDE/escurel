@@ -25,6 +25,8 @@ fn ready_all_up() -> Arc<dyn ReadinessProbe> {
         index_snapshot: true,
         quarantined: false,
         migration_pending: false,
+        skipped_pages: Vec::new(),
+        unauthenticated_exposed: false,
         semantic_search: true,
     }))
 }
@@ -37,6 +39,8 @@ fn ready_one_down() -> Arc<dyn ReadinessProbe> {
         index_snapshot: true,
         quarantined: false,
         migration_pending: false,
+        skipped_pages: Vec::new(),
+        unauthenticated_exposed: false,
         semantic_search: true,
     }))
 }

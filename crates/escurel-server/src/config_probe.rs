@@ -31,6 +31,9 @@ pub struct DependencyProbe {
     indexer: Option<IndexerHandle>,
     /// Real (non-zero-vector) embeddings configured: see [`ReadinessReport::semantic_search`].
     semantic_search: bool,
+    /// Auth is off while the listener is reachable beyond loopback: see
+    /// [`ReadinessReport::unauthenticated_exposed`].
+    unauthenticated_exposed: bool,
 }
 
 impl DependencyProbe {
@@ -46,6 +49,7 @@ impl DependencyProbe {
             tenant,
             indexer: None,
             semantic_search: true,
+            unauthenticated_exposed: false,
         }
     }
 
@@ -53,6 +57,13 @@ impl DependencyProbe {
     #[must_use]
     pub fn with_indexer(mut self, indexer: IndexerHandle) -> Self {
         self.indexer = Some(indexer);
+        self
+    }
+
+    /// Flag a deployment that serves every caller as an admin on a non-loopback listener.
+    #[must_use]
+    pub fn with_unauthenticated_exposed(mut self, exposed: bool) -> Self {
+        self.unauthenticated_exposed = exposed;
         self
     }
 
@@ -102,6 +113,18 @@ impl ReadinessProbe for DependencyProbe {
                 Err(_) => false,
             },
             semantic_search: self.semantic_search && self.embedder.is_loaded(),
+            skipped_pages: self
+                .indexer
+                .as_ref()
+                .map(|h| {
+                    h.current()
+                        .skipped_pages()
+                        .into_iter()
+                        .map(|(p, why)| format!("{p} ({why})"))
+                        .collect()
+                })
+                .unwrap_or_default(),
+            unauthenticated_exposed: self.unauthenticated_exposed,
         }
     }
 }

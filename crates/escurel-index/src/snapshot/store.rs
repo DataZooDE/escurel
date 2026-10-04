@@ -213,7 +213,7 @@ impl IndexStore for SingleFileStore {
         // fresh-boot rebuild cannot run until it is migrated.
         let quarantined = indexer.quarantine_legacy_kind_pages().await?;
         if !quarantined && fresh {
-            indexer.rebuild().await?;
+            indexer.rebuild_skipping_unparsable().await?;
         }
 
         // Optional seed: import a directory of markdown (e.g.

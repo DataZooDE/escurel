@@ -1812,6 +1812,16 @@ impl EscurelConfig {
                             indexer.tenant()
                         );
                     }
+                    for (page, why) in indexer.skipped_pages() {
+                        tracing::warn!(
+                            target: "escurel",
+                            tenant = %indexer.tenant(),
+                            page = %page,
+                            reason = %why,
+                            "boot rebuild SKIPPED an unparsable page (left untouched in the lane; \
+                             fix or remove it, then run `escurel admin rebuild`)"
+                        );
+                    }
                     let crdt_conn = opened
                         .crdt_conn
                         .expect("SingleFileStore::open always returns a CRDT connection");
@@ -2048,6 +2058,17 @@ impl EscurelConfig {
                 .is_some_and(|k| !k.is_empty()),
             _ => true,
         };
+        let unauthenticated_exposed =
+            self.auth.is_none() && !listener_is_loopback(&self.listen_http);
+        if unauthenticated_exposed {
+            tracing::warn!(
+                target: "escurel",
+                listen = %self.listen_http,
+                "AUTHENTICATION IS DISABLED and the HTTP listener is not loopback: every caller who \
+                 can reach it is a tenant ADMIN (read, write, run). Set ESCUREL_AUTH_OIDC_ISSUER, \
+                 or bind to 127.0.0.1 behind an authenticating proxy"
+            );
+        }
         let readiness = Arc::new(
             DependencyProbe::new(
                 Arc::clone(&store),
@@ -2055,7 +2076,8 @@ impl EscurelConfig {
                 self.tenant.clone(),
             )
             .with_indexer(indexer_handle.clone())
-            .with_semantic_search(semantic_search),
+            .with_semantic_search(semantic_search)
+            .with_unauthenticated_exposed(unauthenticated_exposed),
         );
 
         let server_config = ServerConfig {
@@ -2767,5 +2789,13 @@ mod rerank_config_tests {
                 ..
             }
         ));
+    }
+}
+
+/// Whether the listen address (`host:port`) only accepts connections from this machine.
+fn listener_is_loopback(listen: &str) -> bool {
+    match listen.parse::<std::net::SocketAddr>() {
+        Ok(addr) => addr.ip().is_loopback(),
+        Err(_) => listen.starts_with("localhost:"),
     }
 }
