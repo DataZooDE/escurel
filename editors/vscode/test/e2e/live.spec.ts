@@ -322,6 +322,10 @@ test('"First make a plan" ends in a plan the person is asked to approve', async 
     timeout: 30_000,
   });
   await stack.shot('08b-approve-on-card');
+  // The wait is also a row in Awaiting You, so it survives a dismissed toast and a closed thread.
+  const planRow = pane(page, 'Awaiting You').getByRole('treeitem', { name: /Plan ready/ });
+  await expect(planRow.first()).toBeVisible({ timeout: 30_000 });
+  await stack.shot('08c-plan-row-in-awaiting');
   // Not now: nothing is run behind the person's back.
   await page.keyboard.press('Escape');
 });
@@ -869,6 +873,34 @@ test('journey: Knowledge and Awaiting You rows lead to threads, runs and skills'
   expect(instanceMenu).toContain('Open thread');
   expect(instanceMenu).toContain('Open run');
   await page.keyboard.press('Escape');
+});
+
+test('a skill opens as a readable page, and Show Markdown opens its source', async ({ stack }) => {
+  const { page } = stack;
+  const skill = await skillRow(page, 'supplier-risk');
+  await skill.click({ button: 'right' });
+  await chooseMenuItem(page, 'View skill');
+  const wv = await webviewWith(page, 'escurel-skill-page');
+  await expect(wv.locator('escurel-skill-page h1')).toContainText(/supplier/i);
+  for (const heading of ['About', 'Fields', 'Records', 'Recent runs']) {
+    await expect(wv.getByRole('heading', { name: new RegExp(`^${heading}`) })).toBeVisible();
+  }
+  await stack.shot('09-skill-page');
+  await wv.getByRole('button', { name: 'Show Markdown' }).click();
+  await expect(page.locator('.tab.active', { hasText: 'supplier-risk.md' })).toBeVisible();
+  await expect(page.locator('.view-lines').first()).toContainText('kind:');
+  await stack.shot('09b-skill-markdown');
+});
+
+test('Explain this view tells how events, skills, runs and records connect', async ({ stack }) => {
+  const { page } = stack;
+  await page.keyboard.press('F1');
+  await page.keyboard.type('Escurel: Explain this view');
+  await page.keyboard.press('Enter');
+  const wv = await webviewWith(page, 'h1');
+  await expect(wv.getByRole('heading', { name: /How things connect/ })).toBeVisible();
+  await expect(wv.getByText('Awaiting You').first()).toBeVisible();
+  await stack.shot('10-explain-this-view');
 });
 
 test('nothing in the extension threw while all of that happened', async ({ stack }) => {
