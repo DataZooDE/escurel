@@ -208,7 +208,10 @@ mod tests {
         // migrated tenant): quiet by default, an explicit RUST_LOG still wins.
         assert_eq!(env_filter(None).to_string(), "loro_internal=warn,info");
         assert_eq!(env_filter(Some("")).to_string(), "loro_internal=warn,info");
-        assert_eq!(env_filter(Some("  ")).to_string(), "loro_internal=warn,info");
+        assert_eq!(
+            env_filter(Some("  ")).to_string(),
+            "loro_internal=warn,info"
+        );
         assert_eq!(env_filter(Some("debug")).to_string(), "debug");
         assert_eq!(
             env_filter(Some("info,hyper_util=warn")).to_string(),

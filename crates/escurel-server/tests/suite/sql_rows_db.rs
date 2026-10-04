@@ -180,12 +180,19 @@ impl Gw {
     /// A gateway whose tenant has the `shop-order` skill over a real SQLite file, with the credential
     /// registered as a `file:` secret reference.
     pub(crate) async fn start() -> Self {
+        Self::start_with(|_| {}).await
+    }
+
+    /// Like [`Self::start`], with a hook that may alter the SQLite file BEFORE the gateway attaches
+    /// it (SQLite caches pages per connection, so changes made afterwards may never be seen).
+    pub(crate) async fn start_with(prepare: impl FnOnce(&Path)) -> Self {
         let store_dir = TempDir::new().unwrap();
         let db_dir = TempDir::new().unwrap();
         let sql_dir = TempDir::new().unwrap();
         let secret_dir = TempDir::new().unwrap();
         let db = sql_dir.path().join("shop.db");
         seed_sqlite(&db);
+        prepare(&db);
         let secrets = secret_dir.path().join("shop-dsn");
         std::fs::write(&secrets, format!("{}\n", db.display())).unwrap();
 

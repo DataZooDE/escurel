@@ -380,7 +380,7 @@ impl Indexer {
                 rec.source_texts = cols
                     .iter()
                     .enumerate()
-                    .map(|(i, (n, _))| Ok((n.clone(), row.get::<_, Option<String>>(base + i)?)))
+                    .map(|(i, (n, _))| Ok((n.clone(), text_lossy(row, base + i)?)))
                     .collect::<Result<_, SqlViewError>>()?;
                 Ok(Some(rec))
             }
@@ -612,6 +612,22 @@ fn select_with_keys(key_exprs: &[String]) -> String {
 
 /// The cast key texts [`select_with_keys`] appended after the `ncols` view columns. A NULL key has
 /// no identity and is filtered out by the caller; it reads as an error here, never as an empty id.
+/// A VARCHAR cell as text; bytes that are not valid UTF-8 (SQLite stores whatever it is given) become
+/// U+FFFD, exactly as the listing renders them, instead of failing the whole row with the driver's
+/// raw `Conversion error from type Text ... invalid utf-8 sequence`.
+fn text_lossy(row: &duckdb::Row<'_>, idx: usize) -> Result<Option<String>, SqlViewError> {
+    Ok(match row.get_ref(idx)? {
+        ValueRef::Null => None,
+        ValueRef::Text(bytes) => Some(String::from_utf8_lossy(bytes).into_owned()),
+        other => {
+            return Err(SqlViewError::InvalidBinding(format!(
+                "expected a text cell, got {:?}",
+                other.data_type()
+            )));
+        }
+    })
+}
+
 fn cast_keys(
     row: &duckdb::Row<'_>,
     ncols: usize,
@@ -619,7 +635,7 @@ fn cast_keys(
 ) -> Result<Vec<String>, SqlViewError> {
     (0..nkeys)
         .map(|j| {
-            row.get::<_, Option<String>>(ncols + j)?.ok_or_else(|| {
+            text_lossy(row, ncols + j)?.ok_or_else(|| {
                 SqlViewError::InvalidBinding(
                     "a row has a NULL key and cannot be an instance".to_owned(),
                 )
