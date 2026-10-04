@@ -39,8 +39,11 @@ class SkillWheel extends ConsumerWidget {
     );
 
     return neighbours.when(
-      loading: () => const _WheelFrame(child: Center(child: CircularProgressIndicator(strokeWidth: 2))),
-      error: (e, _) => _WheelFrame(child: Center(child: Text('wheel error: $e'))),
+      loading: () => const _WheelFrame(
+        child: Center(child: CircularProgressIndicator(strokeWidth: 2)),
+      ),
+      error: (e, _) =>
+          _WheelFrame(child: Center(child: Text('wheel error: $e'))),
       data: (edges) {
         // Unique (linkSkill, dst) nodes; drop self-references.
         final seen = <String>{};
@@ -99,9 +102,18 @@ class _WheelFrame extends StatelessWidget {
             Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
-                Text('NAVIGATOR', style: text.labelSmall?.copyWith(color: kOutline, letterSpacing: 1)),
+                Text(
+                  'NAVIGATOR',
+                  style: text.labelSmall?.copyWith(
+                    color: kOutline,
+                    letterSpacing: 1,
+                  ),
+                ),
                 if (linkCount != null)
-                  Text('$linkCount links', style: text.labelSmall?.copyWith(color: kOutline)),
+                  Text(
+                    '$linkCount links',
+                    style: text.labelSmall?.copyWith(color: kOutline),
+                  ),
               ],
             ),
             const SizedBox(height: 8),
@@ -114,7 +126,11 @@ class _WheelFrame extends StatelessWidget {
 }
 
 class _Radial extends StatelessWidget {
-  const _Radial({required this.hubLabel, required this.nodes, required this.ref});
+  const _Radial({
+    required this.hubLabel,
+    required this.nodes,
+    required this.ref,
+  });
   final String hubLabel;
   final List<_Node> nodes;
   final WidgetRef ref;
@@ -129,8 +145,12 @@ class _Radial extends StatelessWidget {
         final radius = math.max(24.0, math.min(w, h) / 2 - node);
         final positions = <Offset>[];
         for (var i = 0; i < nodes.length; i++) {
-          final a = (nodes.isEmpty ? 0 : 2 * math.pi * i / nodes.length) - math.pi / 2;
-          positions.add(Offset(cx + radius * math.cos(a), cy + radius * math.sin(a)));
+          final a =
+              (nodes.isEmpty ? 0 : 2 * math.pi * i / nodes.length) -
+              math.pi / 2;
+          positions.add(
+            Offset(cx + radius * math.cos(a), cy + radius * math.sin(a)),
+          );
         }
         return Stack(
           children: [
@@ -139,7 +159,10 @@ class _Radial extends StatelessWidget {
               child: CustomPaint(
                 painter: _SpokePainter(
                   center: Offset(cx, cy),
-                  nodes: [for (var i = 0; i < nodes.length; i++) (positions[i], _skillColor(nodes[i].linkSkill))],
+                  nodes: [
+                    for (var i = 0; i < nodes.length; i++)
+                      (positions[i], _skillColor(nodes[i].linkSkill)),
+                  ],
                   radius: radius,
                 ),
               ),
@@ -171,20 +194,21 @@ class _Hub extends StatelessWidget {
   final String label;
   @override
   Widget build(BuildContext context) => Container(
-        width: 72,
-        height: 72,
-        alignment: Alignment.center,
-        decoration: const BoxDecoration(color: kPrimary, shape: BoxShape.circle),
-        child: Padding(
-          padding: const EdgeInsets.all(4),
-          child: FittedBox(
-            child: Text(
-              label.isEmpty ? '·' : label,
-              style: Theme.of(context).textTheme.labelSmall?.copyWith(color: Colors.white, fontWeight: FontWeight.w700),
-            ),
-          ),
+    width: 72,
+    height: 72,
+    alignment: Alignment.center,
+    decoration: const BoxDecoration(color: kPrimary, shape: BoxShape.circle),
+    child: Padding(
+      padding: const EdgeInsets.all(4),
+      child: FittedBox(
+        child: Text(
+          label.isEmpty ? '·' : label,
+          style: Theme.of(context).textTheme.labelSmall
+              ?.copyWith(color: Colors.white, fontWeight: FontWeight.w700),
         ),
-      );
+      ),
+    ),
+  );
 }
 
 class _WheelNode extends StatelessWidget {
@@ -213,7 +237,8 @@ class _WheelNode extends StatelessWidget {
             ),
             child: Text(
               node.linkSkill.isEmpty ? '?' : node.linkSkill[0].toUpperCase(),
-              style: Theme.of(context).textTheme.labelMedium?.copyWith(color: color, fontWeight: FontWeight.w700),
+              style: Theme.of(context).textTheme.labelMedium
+                  ?.copyWith(color: color, fontWeight: FontWeight.w700),
             ),
           ),
         ),
@@ -223,7 +248,11 @@ class _WheelNode extends StatelessWidget {
 }
 
 class _SpokePainter extends CustomPainter {
-  _SpokePainter({required this.center, required this.nodes, required this.radius});
+  _SpokePainter({
+    required this.center,
+    required this.nodes,
+    required this.radius,
+  });
   final Offset center;
   final List<(Offset, Color)> nodes;
   final double radius;
@@ -245,5 +274,7 @@ class _SpokePainter extends CustomPainter {
 
   @override
   bool shouldRepaint(covariant _SpokePainter old) =>
-      old.center != center || old.radius != radius || old.nodes.length != nodes.length;
+      old.center != center ||
+      old.radius != radius ||
+      old.nodes.length != nodes.length;
 }

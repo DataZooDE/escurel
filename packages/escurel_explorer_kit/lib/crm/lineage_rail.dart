@@ -28,12 +28,23 @@ class LineageRail extends ConsumerWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text('LINEAGE & LINKS', style: text.labelSmall?.copyWith(color: kOutline, letterSpacing: 1)),
+            Text(
+              'LINEAGE & LINKS',
+              style: text.labelSmall?.copyWith(
+                color: kOutline,
+                letterSpacing: 1,
+              ),
+            ),
             const SizedBox(height: 8),
             Expanded(
               child: neighbours.when(
-                loading: () => const Center(child: CircularProgressIndicator(strokeWidth: 2)),
-                error: (e, _) => Text('error: $e', style: text.bodySmall?.copyWith(color: kError)),
+                loading: () => const Center(
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                ),
+                error: (e, _) => Text(
+                  'error: $e',
+                  style: text.bodySmall?.copyWith(color: kError),
+                ),
                 data: (edges) {
                   final unique = <String, Neighbour>{};
                   for (final e in edges) {
@@ -41,7 +52,10 @@ class LineageRail extends ConsumerWidget {
                     unique.putIfAbsent('${e.linkSkill}::${e.dst}', () => e);
                   }
                   if (unique.isEmpty) {
-                    return Text('No typed links', style: text.bodySmall?.copyWith(color: kOutline));
+                    return Text(
+                      'No typed links',
+                      style: text.bodySmall?.copyWith(color: kOutline),
+                    );
                   }
                   final items = unique.values.toList()
                     ..sort((a, b) => a.linkSkill.compareTo(b.linkSkill));
@@ -80,7 +94,8 @@ class _LinkTile extends ConsumerWidget {
               Expanded(
                 child: Text(
                   n.dst,
-                  style: Theme.of(context).textTheme.bodyMedium?.copyWith(color: kPrimary),
+                  style: Theme.of(context).textTheme.bodyMedium
+                      ?.copyWith(color: kPrimary),
                   overflow: TextOverflow.ellipsis,
                 ),
               ),
@@ -97,11 +112,15 @@ class _SkillChip extends StatelessWidget {
   final String skill;
   @override
   Widget build(BuildContext context) => Container(
-        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-        decoration: BoxDecoration(color: kSecondaryContainer, borderRadius: BorderRadius.circular(6)),
-        child: Text(
-          skill,
-          style: Theme.of(context).textTheme.labelSmall?.copyWith(color: kOnSecondaryContainer, fontSize: 9),
-        ),
-      );
+    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+    decoration: BoxDecoration(
+      color: kSecondaryContainer,
+      borderRadius: BorderRadius.circular(6),
+    ),
+    child: Text(
+      skill,
+      style: Theme.of(context).textTheme.labelSmall
+          ?.copyWith(color: kOnSecondaryContainer, fontSize: 9),
+    ),
+  );
 }

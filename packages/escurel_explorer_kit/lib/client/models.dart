@@ -750,15 +750,21 @@ class Event {
 }
 
 /// One page of [Event]s plus the opaque cursor for the next page.
-/// `list_inbox` / `list_events` emit `next_cursor` iff more rows remain
-/// — its ABSENCE (never a short page) means the listing is exhausted.
+/// `list_inbox` / `list_events`: `next_cursor` is where THIS page ended
+/// (present iff the page is non-empty); `has_more` says rows already lie
+/// past it. Only a null `next_cursor` means the listing is exhausted, and
+/// a client paging until then makes one extra empty call — [hasMore]
+/// avoids it. (`resume_cursor` no longer exists.)
 class EventPage {
-  const EventPage({required this.events, this.nextCursor});
+  const EventPage({required this.events, this.nextCursor, bool? hasMore})
+    : _hasMore = hasMore;
   final List<Event> events;
   final String? nextCursor;
+  final bool? _hasMore;
 
-  /// Whether another page can be fetched.
-  bool get hasMore => nextCursor != null;
+  /// Whether another page can be fetched. A fixture built without the
+  /// wire flag falls back to the cursor's presence.
+  bool get hasMore => _hasMore ?? (nextCursor != null);
 }
 
 // ── tools/list (scope labels) ───────────────────────────────────

@@ -84,16 +84,19 @@ pub struct ListInboxRequest {
 #[serde(default)]
 pub struct ListInboxResponse {
     pub events: Vec<Event>,
-    /// Present iff rows lie past the page — pass back as `cursor` to
-    /// continue. **Only its absence means the listing is complete**; a
-    /// short page never does (the per-event ACL filter runs after the
-    /// limit and legitimately shortens pages).
+    /// Where THIS page ended (present iff the page is non-empty, full or
+    /// not): pass it back as `cursor` to continue, or poll from it to
+    /// tail. **Only its absence means the listing is complete**; a short
+    /// page never does (the per-event ACL filter runs after the limit and
+    /// legitimately shortens pages), and a client paging until it is
+    /// absent makes one extra call that comes back empty. It replaces
+    /// the old `resume_cursor`, which no longer exists.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub next_cursor: Option<String>,
-    /// The cursor of this page's LAST row (present iff the page is
-    /// non-empty, full or not): a tail resumes from it.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub resume_cursor: Option<String>,
+    /// `true` iff rows already lie past this page — for a client that
+    /// wants to know without the extra empty call.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub has_more: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
@@ -143,9 +146,9 @@ pub struct ListEventsResponse {
     /// See [`ListInboxResponse::next_cursor`] — same contract.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub next_cursor: Option<String>,
-    /// See [`ListInboxResponse::resume_cursor`] — a tail resumes here.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub resume_cursor: Option<String>,
+    /// See [`ListInboxResponse::has_more`].
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub has_more: bool,
 }
 
 /// One step of an agent's plan, as `report_progress` snapshots it.

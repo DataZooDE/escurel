@@ -69,7 +69,10 @@ class _BackBar extends ConsumerWidget {
           child: Row(
             children: [
               Container(
-                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 10,
+                  vertical: 4,
+                ),
                 decoration: BoxDecoration(
                   color: kSecondaryContainer,
                   borderRadius: BorderRadius.circular(999),
@@ -77,12 +80,18 @@ class _BackBar extends ConsumerWidget {
                 child: Row(
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    const Icon(Icons.arrow_back, size: 14, color: kOnSecondaryContainer),
+                    const Icon(
+                      Icons.arrow_back,
+                      size: 14,
+                      color: kOnSecondaryContainer,
+                    ),
                     const SizedBox(width: 4),
                     Text(
                       'back',
-                      style: text.labelMedium
-                          ?.copyWith(color: kOnSecondaryContainer, fontWeight: FontWeight.w600),
+                      style: text.labelMedium?.copyWith(
+                        color: kOnSecondaryContainer,
+                        fontWeight: FontWeight.w600,
+                      ),
                     ),
                   ],
                 ),
@@ -122,7 +131,8 @@ class _VersionMarkers extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final snaps = ref.watch(instanceSnapshotsProvider).valueOrNull ?? const <String>[];
+    final snaps =
+        ref.watch(instanceSnapshotsProvider).valueOrNull ?? const <String>[];
     if (snaps.isEmpty) return const SizedBox.shrink();
     final asOf = ref.watch(asOfProvider);
     final text = Theme.of(context).textTheme;
@@ -148,7 +158,13 @@ class _VersionMarkers extends ConsumerWidget {
         padding: const EdgeInsets.fromLTRB(12, 8, 12, 8),
         child: Row(
           children: [
-            Text('STATE OVER TIME', style: text.labelSmall?.copyWith(color: kOutline, letterSpacing: 1)),
+            Text(
+              'STATE OVER TIME',
+              style: text.labelSmall?.copyWith(
+                color: kOutline,
+                letterSpacing: 1,
+              ),
+            ),
             const SizedBox(width: 10),
             Expanded(
               child: Wrap(
@@ -166,8 +182,8 @@ class _VersionMarkers extends ConsumerWidget {
                       label: 'v${i + 1}',
                       semantics: 'version-v${i + 1}',
                       active: activeIndex == i,
-                      onTap: () =>
-                          ref.read(asOfProvider.notifier).state = DateTime.tryParse(snaps[i])?.toUtc(),
+                      onTap: () => ref.read(asOfProvider.notifier).state =
+                          DateTime.tryParse(snaps[i])?.toUtc(),
                     ),
                 ],
               ),
@@ -212,9 +228,9 @@ class _VersionChip extends StatelessWidget {
           child: Text(
             label,
             style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                  color: active ? kSurface : kOnSurfaceVariant,
-                  fontWeight: FontWeight.w600,
-                ),
+              color: active ? kSurface : kOnSurfaceVariant,
+              fontWeight: FontWeight.w600,
+            ),
           ),
         ),
       ),

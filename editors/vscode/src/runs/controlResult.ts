@@ -84,16 +84,18 @@ export function describeControlRefusal(error: unknown): string {
  * before the next poll, and the one asked for would sit past the first page for good.
  */
 export async function findControlResult(
-  fetchPage: (cursor?: string) => Promise<{ events: Event[]; next_cursor?: string | null }>,
+  fetchPage: (
+    cursor?: string,
+  ) => Promise<{ events: Event[]; next_cursor?: string | null; has_more?: boolean }>,
   request: { eventId: string; action: string; runId?: string },
   maxPages = 5,
 ): Promise<ControlResult | undefined> {
   let cursor: string | undefined;
   for (let page = 0; page < maxPages; page += 1) {
-    const { events, next_cursor } = await fetchPage(cursor);
+    const { events, next_cursor, has_more } = await fetchPage(cursor);
     const found = matchResult(events, request);
     if (found) return found;
-    if (!next_cursor) return undefined;
+    if (!has_more || !next_cursor) return undefined;
     cursor = next_cursor;
   }
   return undefined;

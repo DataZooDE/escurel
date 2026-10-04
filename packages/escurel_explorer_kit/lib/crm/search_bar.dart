@@ -34,7 +34,9 @@ class _SearchBarState extends ConsumerState<WorkspaceSearchBar> {
       // A search is a fresh jump — drop any link-following trail.
       ref.read(currentPageIdProvider.notifier).state = res.hits.first.pageId;
       clearNavHistory(ref);
-      setState(() => _status = '${res.hits.length} hits → ${res.hits.first.skill}');
+      setState(
+        () => _status = '${res.hits.length} hits → ${res.hits.first.skill}',
+      );
     } catch (e) {
       setState(() => _status = 'error: ${humanizeEscurelError(e)}');
     }
@@ -79,7 +81,10 @@ class _SearchBarState extends ConsumerState<WorkspaceSearchBar> {
           if (_status.isNotEmpty) ...[
             Semantics(
               label: 'search-status',
-              child: Text(_status, style: text.labelSmall?.copyWith(color: kOutline)),
+              child: Text(
+                _status,
+                style: text.labelSmall?.copyWith(color: kOutline),
+              ),
             ),
             const SizedBox(width: 12),
           ],
@@ -90,7 +95,9 @@ class _SearchBarState extends ConsumerState<WorkspaceSearchBar> {
             excludeSemantics: true,
             child: FilledButton(
               onPressed: _send,
-              style: FilledButton.styleFrom(visualDensity: VisualDensity.compact),
+              style: FilledButton.styleFrom(
+                visualDensity: VisualDensity.compact,
+              ),
               child: const Text('search'),
             ),
           ),

@@ -599,3 +599,116 @@ async fn a_draft_with_invalid_content_gets_the_validation_error_not_a_conflict()
     let open = t.call("list_drafts", json!({})).await;
     assert_eq!(open["drafts"].as_array().unwrap().len(), 1, "{open}");
 }
+
+// ---- (9) pagination: one cursor name, and every list can page --------------------------------
+
+#[tokio::test]
+async fn event_listings_say_next_cursor_only_and_has_more_says_whether_rows_follow() {
+    let t = Rows::start().await;
+    for i in 0..3 {
+        t.call(
+            "capture_event",
+            json!({ "label_skill": "sales-order", "body": format!("e{i}"), "mime": "text/plain" }),
+        )
+        .await;
+    }
+    for tool in ["list_inbox", "list_events"] {
+        let sel = if tool == "list_events" {
+            json!({ "label_skill": "sales-order" })
+        } else {
+            json!({})
+        };
+        let with = |extra: Value| {
+            let mut a = sel.clone();
+            for (k, v) in extra.as_object().unwrap() {
+                a[k] = v.clone();
+            }
+            a
+        };
+        let first = t.call(tool, with(json!({ "limit": 2 }))).await;
+        assert_eq!(
+            first["events"].as_array().unwrap().len(),
+            2,
+            "{tool}: {first}"
+        );
+        assert!(
+            first.get("resume_cursor").is_none(),
+            "{tool}: resume_cursor is gone: {first}"
+        );
+        assert_eq!(first["has_more"], true, "{tool}: {first}");
+        let c1 = first["next_cursor"]
+            .as_str()
+            .expect("next_cursor")
+            .to_owned();
+
+        let second = t
+            .call(tool, with(json!({ "limit": 2, "cursor": c1 })))
+            .await;
+        assert_eq!(
+            second["events"].as_array().unwrap().len(),
+            1,
+            "{tool}: {second}"
+        );
+        assert!(
+            second.get("has_more").is_none() || second["has_more"] == false,
+            "{tool}: {second}"
+        );
+        // `next_cursor` is where this page ENDED, so a tail polls from it; a client that pages until
+        // null makes one extra call, which comes back empty with a null cursor.
+        let c2 = second["next_cursor"]
+            .as_str()
+            .expect("end-of-page cursor")
+            .to_owned();
+        let tail = t
+            .call(tool, with(json!({ "limit": 2, "cursor": c2 })))
+            .await;
+        assert_eq!(
+            tail["events"].as_array().unwrap().len(),
+            0,
+            "{tool}: {tail}"
+        );
+        assert!(tail["next_cursor"].is_null(), "{tool}: {tail}");
+    }
+}
+
+#[tokio::test]
+async fn drafts_changesets_and_branches_page_with_limit_and_next_cursor() {
+    let t = Rows::start().await;
+    let skill = "---\nkind: skill\nid: note\ndescription: a note\n---\n# note\n";
+    t.call(
+        "update_page",
+        json!({ "page_id": "markdown/skills/note.md", "content": skill }),
+    )
+    .await;
+    for i in 0..3 {
+        let page = format!("markdown/instances/note/n{i}.md");
+        let c = format!("---\nkind: instance\nskill: note\nid: n{i}\n---\n# n{i}\n");
+        let d = t
+            .call(
+                "create_draft",
+                json!({ "target_page_id": page, "content": c, "base_sha256": "" }),
+            )
+            .await;
+        assert_eq!(d["ok"], true, "{d}");
+    }
+    let mut seen = 0;
+    let mut cursor: Option<String> = None;
+    for _ in 0..5 {
+        let page = t
+            .call("list_drafts", json!({ "limit": 2, "cursor": cursor }))
+            .await;
+        seen += page["drafts"].as_array().unwrap().len();
+        match page["next_cursor"].as_str() {
+            Some(c) => cursor = Some(c.to_owned()),
+            None => break,
+        }
+    }
+    assert_eq!(seen, 3, "every draft, across pages");
+    for tool in ["list_changesets", "list_branches"] {
+        let page = t.call(tool, json!({ "limit": 1 })).await;
+        assert!(
+            page.get("next_cursor").is_some() || page.is_object(),
+            "{tool}: {page}"
+        );
+    }
+}

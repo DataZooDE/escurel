@@ -184,35 +184,39 @@ void main() {
   // ── event assignment (capture → assign → instance history) ──────
 
   group('FixtureEscurelClient (event assignment)', () {
-    test('capture then assign lands the event in the instance history',
-        () async {
-      final client = _inlineClient();
-      addTearDown(client.close);
+    test(
+      'capture then assign lands the event in the instance history',
+      () async {
+        final client = _inlineClient();
+        addTearDown(client.close);
 
-      final ev = await client.captureEvent(
-        source: 'test',
-        labelSkill: 'comment',
-        instancePageId: 'customer::acme',
-        title: 'probe',
-        body: '{"text":"hi"}',
-      );
-      // Mirrors the server: capture always lands in the inbox; only
-      // assign_event moves it onto the instance timeline.
-      expect(ev.status, 'inbox');
-      expect(
-        (await client.listEvents('customer::acme')).events.map((e) => e.eventId),
-        isNot(contains(ev.eventId)),
-      );
+        final ev = await client.captureEvent(
+          source: 'test',
+          labelSkill: 'comment',
+          instancePageId: 'customer::acme',
+          title: 'probe',
+          body: '{"text":"hi"}',
+        );
+        // Mirrors the server: capture always lands in the inbox; only
+        // assign_event moves it onto the instance timeline.
+        expect(ev.status, 'inbox');
+        expect(
+          (await client.listEvents(
+            'customer::acme',
+          )).events.map((e) => e.eventId),
+          isNot(contains(ev.eventId)),
+        );
 
-      await client.assignEvent(ev.eventId, 'customer::acme');
+        await client.assignEvent(ev.eventId, 'customer::acme');
 
-      final history = (await client.listEvents('customer::acme')).events;
-      expect(history.map((e) => e.eventId), contains(ev.eventId));
-      expect(
-        (await client.listInbox()).events.map((e) => e.eventId),
-        isNot(contains(ev.eventId)),
-      );
-    });
+        final history = (await client.listEvents('customer::acme')).events;
+        expect(history.map((e) => e.eventId), contains(ev.eventId));
+        expect(
+          (await client.listInbox()).events.map((e) => e.eventId),
+          isNot(contains(ev.eventId)),
+        );
+      },
+    );
 
     test('assignEvent of an unknown event id refuses', () async {
       final client = _inlineClient();

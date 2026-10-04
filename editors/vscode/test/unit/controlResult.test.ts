@@ -83,7 +83,7 @@ describe('findControlResult', () => {
       calls += 1;
       return {
         events: all[i] as never[],
-        ...(i + 1 < all.length ? { next_cursor: String(i + 1) } : {}),
+        ...(i + 1 < all.length ? { next_cursor: String(i + 1), has_more: true } : {}),
       };
     };
     return { fetchPage, calls: () => calls };

@@ -116,7 +116,9 @@ class EntityEventHistory extends AsyncNotifier<EventPage> {
     final current = state.valueOrNull;
     final cursor = current?.nextCursor;
     final id = ref.read(currentPageIdProvider);
-    if (current == null || cursor == null || id == null) return;
+    if (current == null || cursor == null || !current.hasMore || id == null) {
+      return;
+    }
     final next = await ref
         .read(escurelClientProvider)
         .listEvents(id, limit: kEventsPageSize, cursor: cursor);
@@ -124,6 +126,7 @@ class EntityEventHistory extends AsyncNotifier<EventPage> {
       EventPage(
         events: [...current.events, ...next.events],
         nextCursor: next.nextCursor,
+        hasMore: next.hasMore,
       ),
     );
   }
@@ -181,7 +184,7 @@ class InboxEvents extends AsyncNotifier<EventPage> {
   Future<void> loadMore() async {
     final current = state.valueOrNull;
     final cursor = current?.nextCursor;
-    if (current == null || cursor == null) return;
+    if (current == null || cursor == null || !current.hasMore) return;
     final next = await ref
         .read(escurelClientProvider)
         .listInbox(limit: kEventsPageSize, cursor: cursor);
@@ -189,6 +192,7 @@ class InboxEvents extends AsyncNotifier<EventPage> {
       EventPage(
         events: [...current.events, ...next.events],
         nextCursor: next.nextCursor,
+        hasMore: next.hasMore,
       ),
     );
   }

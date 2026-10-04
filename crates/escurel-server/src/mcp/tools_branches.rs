@@ -178,11 +178,20 @@ pub(super) async fn tool_create_branch(
 }
 
 /// Every branch, newest first — including decided ones.
+#[derive(serde::Deserialize, Default)]
+struct ListBranchesArgs {
+    #[serde(default)]
+    limit: Option<usize>,
+    #[serde(default)]
+    cursor: Option<String>,
+}
+
 pub(super) async fn tool_list_branches(
     indexer: &Indexer,
     caller: AclCaller<'_>,
-    _args: Value,
+    args: Value,
 ) -> Result<Value, JsonRpcError> {
+    let a: ListBranchesArgs = super::parse_args(args, "list_branches")?;
     let branches = indexer
         .list_branches()
         .await
@@ -203,9 +212,20 @@ pub(super) async fn tool_list_branches(
         .filter(|b| caller.is_admin || b.author == caller.subject)
         .collect();
 
-    Ok(json!({
-        "branches": visible.into_iter().map(branch_to_json).collect::<Vec<_>>(),
-    }))
+    // Newest first by creation time (the name breaks ties), then the page.
+    let (page, next) = super::tools_drafts::page_newest_first(
+        visible,
+        |b| format!("{}|{}", b.created_at, b.name),
+        a.limit,
+        a.cursor.as_deref(),
+    )?;
+    let mut out = json!({
+        "branches": page.into_iter().map(branch_to_json).collect::<Vec<_>>(),
+    });
+    if let Some(c) = next {
+        out["next_cursor"] = json!(c);
+    }
+    Ok(out)
 }
 
 fn branch_to_json(b: &escurel_index::BranchInfo) -> Value {

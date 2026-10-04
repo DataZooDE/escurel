@@ -265,7 +265,7 @@ async fn list_events_by_run_id_returns_only_that_runs_system_events() {
 /// P2-0: a subscriber that has no WebSocket (the runner) TAILS a label:
 /// `list_events { label_skill }` alone lists every event under that label,
 /// any status; an `escurel:` label implies `include_system`; and the page
-/// carries a `resume_cursor` for its LAST row even when it is not full, so
+/// carries a `next_cursor` for its LAST row even when it is not full, so
 /// the next poll starts exactly after what was seen.
 #[tokio::test]
 async fn list_events_by_label_skill_is_a_tail_over_that_label() {
@@ -310,10 +310,10 @@ async fn list_events_by_label_skill_is_a_tail_over_that_label() {
     let page2 = result(&page2);
     assert_eq!(ids(page2), vec![b.as_str().unwrap()], "{page2}");
     assert!(
-        page2.get("next_cursor").is_none(),
+        page2.get("has_more").is_none(),
         "nothing past the page: {page2}"
     );
-    let resume = page2["resume_cursor"]
+    let resume = page2["next_cursor"]
         .as_str()
         .expect("a short page still says where it ended")
         .to_owned();
@@ -334,11 +334,11 @@ async fn list_events_by_label_skill_is_a_tail_over_that_label() {
         &p,
         &admin,
         "list_events",
-        json!({ "label_skill": "escurel:runner-status", "cursor": page3["resume_cursor"] }),
+        json!({ "label_skill": "escurel:runner-status", "cursor": page3["next_cursor"] }),
     )
     .await;
     assert!(ids(result(&page4)).is_empty());
-    assert!(result(&page4).get("resume_cursor").is_none());
+    assert!(result(&page4).get("next_cursor").is_none());
 }
 
 #[tokio::test]

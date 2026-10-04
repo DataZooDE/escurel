@@ -335,7 +335,7 @@ export class RunnerTree implements vscode.TreeDataProvider<RunnerRow>, vscode.Di
         return items.slice(0, targetCount);
       }
 
-      if (!page.next_cursor) break;
+      if (!page.has_more || !page.next_cursor) break;
       cursor = page.next_cursor;
     }
 

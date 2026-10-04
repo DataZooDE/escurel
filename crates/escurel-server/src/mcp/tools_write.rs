@@ -2432,21 +2432,24 @@ pub(super) fn cursor_aware_error(tool: &str, e: IndexerError) -> JsonRpcError {
     }
 }
 
-/// `{events, next_cursor?}` — `next_cursor` is present iff more rows
-/// lie past the page. Its ABSENCE (never a short page — the ACL filter
-/// shortens pages legitimately) is the termination signal.
+/// `{events, next_cursor?, has_more?}`.
+///
+/// `next_cursor` is where THIS page ended (present iff the page is non-empty, full or not): pass it back
+/// as `cursor` to continue, or poll from it to tail. It replaces `resume_cursor`, which is gone. A short
+/// page never means done (the ACL filter shortens pages): only a null `next_cursor` does, and a client
+/// paging until null makes one extra call that comes back empty. `has_more: true` says rows already lie
+/// past the page, for a client that wants to know without that call.
 fn events_page_json(
     events: Vec<EventInfo>,
-    next_cursor: Option<String>,
-    resume_cursor: Option<String>,
+    more_cursor: Option<String>,
+    end_cursor: Option<String>,
 ) -> Value {
     let mut out = json!({ "events": events.iter().map(event_to_json).collect::<Vec<_>>() });
-    if let Some(c) = next_cursor {
+    if let Some(c) = end_cursor {
         out["next_cursor"] = json!(c);
     }
-    // Where this page ENDED, full or not — a tail's next poll starts here.
-    if let Some(c) = resume_cursor {
-        out["resume_cursor"] = json!(c);
+    if more_cursor.is_some() {
+        out["has_more"] = json!(true);
     }
     out
 }

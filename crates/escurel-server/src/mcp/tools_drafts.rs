@@ -57,6 +57,56 @@ pub(super) struct CreateDraftArgs {
 pub(super) struct ListDraftsArgs {
     #[serde(default)]
     limit: Option<usize>,
+    #[serde(default)]
+    cursor: Option<String>,
+}
+
+/// One page of an already-ACL-filtered list that is ordered NEWEST FIRST by `key` (a string that
+/// sorts the way the list does and is unique per row), by an opaque keyset cursor.
+///
+/// Keyset, not offset: a row decided between two pages cannot make the next page skip or repeat
+/// another. `limit` applies AFTER the caller's ACL filter, so a page is as long as asked unless the
+/// list ends. No `limit` returns everything, as these tools always have. `next_cursor` is present iff
+/// rows follow.
+pub(super) fn page_newest_first<T>(
+    mut items: Vec<T>,
+    key: impl Fn(&T) -> String,
+    limit: Option<usize>,
+    cursor: Option<&str>,
+) -> Result<(Vec<T>, Option<String>), JsonRpcError> {
+    use base64::Engine as _;
+    const PREFIX: &str = "k1.";
+    items.sort_by_key(|i| std::cmp::Reverse(key(i)));
+    if let Some(token) = cursor {
+        let bad = || {
+            JsonRpcError::domain(
+                "invalid_cursor",
+                "cursor",
+                "cursor invalid or expired; restart without `cursor`",
+                Some("repeat the call without `cursor` to start from the first page"),
+            )
+        };
+        let body = token.strip_prefix(PREFIX).ok_or_else(bad)?;
+        let raw = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .decode(body.as_bytes())
+            .map_err(|_| bad())?;
+        let after = String::from_utf8(raw).map_err(|_| bad())?;
+        items.retain(|i| key(i) < after);
+    }
+    let Some(limit) = limit else {
+        return Ok((items, None));
+    };
+    if items.len() <= limit {
+        return Ok((items, None));
+    }
+    items.truncate(limit);
+    let next = items.last().map(|i| {
+        format!(
+            "{PREFIX}{}",
+            base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(key(i).as_bytes())
+        )
+    });
+    Ok((items, next))
 }
 
 #[derive(Deserialize)]
@@ -615,17 +665,29 @@ pub(super) async fn tool_list_drafts(
     args: Value,
 ) -> Result<Value, JsonRpcError> {
     let a: ListDraftsArgs = parse_args(args, "list_drafts")?;
+    // Fetch every open draft, filter by what the caller may see, THEN page: a limit applied before the
+    // ACL filter made a page shorter than asked for no reason a caller could see.
     let drafts = indexer
-        .list_drafts(a.limit)
+        .list_drafts(None)
         .await
         .map_err(|e| JsonRpcError::internal(format!("list_drafts: {e}")))?;
     let mut visible = Vec::new();
-    for d in &drafts {
-        if may_see(indexer, &caller, d).await? {
-            visible.push(draft_to_json(d));
+    for d in drafts {
+        if may_see(indexer, &caller, &d).await? {
+            visible.push(d);
         }
     }
-    Ok(json!({ "drafts": visible }))
+    let (page, next) = page_newest_first(
+        visible,
+        |d| format!("{}|{}", d.created_at, d.draft_id),
+        a.limit,
+        a.cursor.as_deref(),
+    )?;
+    let mut out = json!({ "drafts": page.iter().map(draft_to_json).collect::<Vec<_>>() });
+    if let Some(c) = next {
+        out["next_cursor"] = json!(c);
+    }
+    Ok(out)
 }
 
 /// Land a held write, under the approver's identity.
@@ -1158,6 +1220,8 @@ fn block_changes(head: Option<&str>, proposed_body: &str) -> Vec<Value> {
 pub(super) struct ListChangesetsArgs {
     #[serde(default)]
     limit: Option<usize>,
+    #[serde(default)]
+    cursor: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -1179,11 +1243,12 @@ pub(super) async fn tool_list_changesets(
     args: Value,
 ) -> Result<Value, JsonRpcError> {
     let a: ListChangesetsArgs = parse_args(args, "list_changesets")?;
+    // Every changeset first, then the caller's visibility, THEN the page (same reason as list_drafts).
     let rows = indexer
-        .list_changesets(a.limit)
+        .list_changesets(None)
         .await
         .map_err(|e| JsonRpcError::internal(format!("list_changesets: {e}")))?;
-    let mut out = Vec::new();
+    let mut out: Vec<(String, Value)> = Vec::new();
     for row in rows {
         // Scoped the same way the draft queue is, and for the same reason:
         // one tenant holds several people. A changeset is visible when its
@@ -1204,25 +1269,34 @@ pub(super) async fn tool_list_changesets(
         if !visible {
             continue;
         }
-        out.push(json!({
-            "changeset_id": row.changeset_id,
-            "drafts": row.drafts,
-            "status": row.status,
-            "author": row.author,
-            "created_at": row.created_at,
-            "run_id": row.run_id,
-            "root_event_id": row.root_event_id,
-            "event_ids": members
-                .iter()
-                .filter_map(|m| m.event_id.clone())
-                .collect::<Vec<_>>(),
-            "target_page_ids": members
-                .iter()
-                .map(|m| m.target_page_id.clone())
-                .collect::<Vec<_>>(),
-        }));
+        let key = format!("{}|{}", row.created_at, row.changeset_id);
+        out.push((
+            key,
+            json!({
+                "changeset_id": row.changeset_id,
+                "drafts": row.drafts,
+                "status": row.status,
+                "author": row.author,
+                "created_at": row.created_at,
+                "run_id": row.run_id,
+                "root_event_id": row.root_event_id,
+                "event_ids": members
+                    .iter()
+                    .filter_map(|m| m.event_id.clone())
+                    .collect::<Vec<_>>(),
+                "target_page_ids": members
+                    .iter()
+                    .map(|m| m.target_page_id.clone())
+                    .collect::<Vec<_>>(),
+            }),
+        ));
     }
-    Ok(json!({ "changesets": out }))
+    let (page, next) = page_newest_first(out, |(k, _)| k.clone(), a.limit, a.cursor.as_deref())?;
+    let mut res = json!({ "changesets": page.into_iter().map(|(_, v)| v).collect::<Vec<_>>() });
+    if let Some(c) = next {
+        res["next_cursor"] = json!(c);
+    }
+    Ok(res)
 }
 
 /// Every member of a changeset the caller may fully see, or the refusal that

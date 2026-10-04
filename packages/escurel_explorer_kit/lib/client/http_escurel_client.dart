@@ -47,10 +47,8 @@ class HttpEscurelClient implements EscurelClient {
 
   // ── tool dispatch (MCP-over-HTTP envelope) ──────────────────
 
-  Future<Map<String, dynamic>> _call(
-    String tool,
-    Map<String, dynamic> args,
-  ) => _rpc('tools/call', {'name': tool, 'arguments': args});
+  Future<Map<String, dynamic>> _call(String tool, Map<String, dynamic> args) =>
+      _rpc('tools/call', {'name': tool, 'arguments': args});
 
   /// One raw JSON-RPC round-trip over `/mcp`. [_call] wraps it for
   /// `tools/call`; `tools/list` (a method-level request, no tool
@@ -606,14 +604,15 @@ class HttpEscurelClient implements EscurelClient {
     return _eventPage(result);
   }
 
-  /// `{events[], next_cursor?}` — the cursor is present iff more rows
-  /// remain; its ABSENCE (never a short page) means done.
+  /// `{events[], next_cursor?, has_more?}` — `next_cursor` is where the
+  /// page ended; `has_more` says rows already follow.
   EventPage _eventPage(Map<String, dynamic> result) => EventPage(
     events: (result['events'] as List? ?? const [])
         .cast<Map<String, dynamic>>()
         .map(Event.fromJson)
         .toList(),
     nextCursor: result['next_cursor'] as String?,
+    hasMore: result['has_more'] == true,
   );
 
   @override

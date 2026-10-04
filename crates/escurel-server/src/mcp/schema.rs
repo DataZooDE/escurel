@@ -288,10 +288,14 @@ pub(crate) fn tool_defs() -> Vec<ToolDef> {
                  per changeset with how many held writes it holds, who \
                  proposed it, the pages it touches and the events it answers. \
                  `status` is derived from its members — `open` while any is \
-                 open, `mixed` when members were decided individually.",
+                 open, `mixed` when members were decided individually. Paged: `limit` + \
+                 `cursor`; ONLY a null `next_cursor` means done.",
             json!({
                 "type": "object",
-                "properties": { "limit": { "type": "integer" } }
+                "properties": {
+                    "limit": { "type": "integer", "minimum": 1, "maximum": 10000 },
+                    "cursor": { "type": "string", "description": "Opaque resume cursor from a previous page's next_cursor." }
+                }
             }),
         ),
         tool_entry(
@@ -356,8 +360,15 @@ pub(crate) fn tool_defs() -> Vec<ToolDef> {
             "Every branch, newest first, including decided ones — \
                  \"did we already decide that one?\" must stay answerable. Each \
                  row carries its author, `base_version`, `status` \
-                 (open | merged | abandoned) and the reason it was abandoned.",
-            json!({ "type": "object", "properties": {} }),
+                 (open | merged | abandoned) and the reason it was abandoned. Paged: `limit` + \
+                 `cursor`; ONLY a null `next_cursor` means done.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "limit": { "type": "integer", "minimum": 1, "maximum": 10000 },
+                    "cursor": { "type": "string", "description": "Opaque resume cursor from a previous page's next_cursor." }
+                }
+            }),
         ),
         tool_entry(
             "merge_branch",
@@ -425,10 +436,14 @@ pub(crate) fn tool_defs() -> Vec<ToolDef> {
                  `event_id` it answers. This is the answer to \"what is waiting \
                  for me?\" — a question that, before drafts existed, only the \
                  consumer that invented its own pending-change convention could \
-                 answer.",
+                 answer. Paged: `limit` + `cursor`; ONLY a null `next_cursor` \
+                 means done.",
             json!({
                 "type": "object",
-                "properties": { "limit": { "type": "integer" } }
+                "properties": {
+                    "limit": { "type": "integer", "minimum": 1, "maximum": 10000 },
+                    "cursor": { "type": "string", "description": "Opaque resume cursor from a previous page's next_cursor." }
+                }
             }),
         ),
         tool_entry(
@@ -803,9 +818,10 @@ pub(crate) fn tool_defs() -> Vec<ToolDef> {
                  events you may see: an event filed into an instance follows \
                  that instance's ACL, an un-triaged one is yours only if you \
                  captured it, and admin sees all (`ESCUREL_EVENT_ACL`). A page \
-                 may therefore come back shorter than `limit` — ONLY the \
-                 absence of `next_cursor` means the listing is complete; pass \
-                 `next_cursor` back as `cursor` to continue. `kind: system` \
+                 may therefore come back shorter than `limit` — ONLY a null \
+                 `next_cursor` means the listing is complete; `next_cursor` is \
+                 where this page ENDED (pass it back as `cursor` to continue or \
+                 to tail), and `has_more: true` says rows already follow. `kind: system` \
                  rows (run bookkeeping) are hidden unless `include_system`.",
             json!({
                 "type": "object",
@@ -833,9 +849,10 @@ pub(crate) fn tool_defs() -> Vec<ToolDef> {
                  bookkeeping) are hidden unless `include_system` (implied by \
                  `run_id`); `kind` narrows to one kind. Filtered by the same \
                  per-event ACL as `list_inbox`; an event you may not see is \
-                 absent, not an error. Paginated: ONLY the absence of \
-                 `next_cursor` means the listing is complete; pass it back as \
-                 `cursor` to read past `limit`.",
+                 absent, not an error. Paginated: ONLY a null \
+                 `next_cursor` means the listing is complete; it is where this \
+                 page ENDED (pass it back as `cursor` to read on or to tail), \
+                 and `has_more: true` says rows already follow.",
             json!({
                 "type": "object",
                 "properties": {
@@ -2060,8 +2077,8 @@ fn output_schema_for(name: &str) -> Option<Value> {
         })),
         "list_inbox" | "list_events" => obj(json!({
             "events": { "type": "array" },
-            "next_cursor": { "type": "string", "description": "present iff rows lie past the page; absence (only) means done" },
-            "resume_cursor": { "type": "string", "description": "the cursor of the page's LAST row (present iff non-empty, full or not): a tail's next poll starts here" }
+            "next_cursor": { "type": "string", "description": "where this page ENDED (present iff the page is non-empty): pass it back as `cursor` to continue or to tail; null = done" },
+            "has_more": { "type": "boolean", "description": "true iff rows already lie past this page" }
         })),
         "list_messages" => obj(json!({
             "messages": { "type": "array" },
