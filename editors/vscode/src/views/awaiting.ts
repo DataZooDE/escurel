@@ -4,7 +4,8 @@ import type { EscurelClient } from '../client';
 import { connectionStateOf, describeError } from '../errors';
 import { log } from '../log';
 import { loadPlanInputs } from './planInputs';
-import { accessibleLabel, buildAwaitingRows, type AwaitingRow } from './awaitingModel';
+import { buildAwaitingRows, type AwaitingRow } from './awaitingModel';
+import { awaitingDisplay } from './awaitingDisplay';
 
 export interface ErrorRow {
   kind: 'error';
@@ -46,12 +47,13 @@ export class AwaitingTree implements vscode.TreeDataProvider<Node> {
   }
 
   getTreeItem(n: Node): vscode.TreeItem {
+    const shown = n.kind === 'error' ? undefined : awaitingDisplay(n, Date.now());
     switch (n.kind) {
       case 'changeset': {
-        const item = new vscode.TreeItem(n.label, vscode.TreeItemCollapsibleState.None);
-        item.description = n.description;
-        item.tooltip = `Changeset ${n.changeset.changeset_id}: ${n.description}`;
-        item.accessibilityInformation = { label: accessibleLabel(n) };
+        const item = new vscode.TreeItem(shown!.label, vscode.TreeItemCollapsibleState.None);
+        item.description = shown!.description;
+        item.tooltip = `${shown!.kind}\n${n.label} · ${shown!.description}`;
+        item.accessibilityInformation = { label: `${shown!.label}. ${shown!.description}` };
         item.iconPath = new vscode.ThemeIcon(
           'git-pull-request',
           new vscode.ThemeColor('charts.orange'),
@@ -65,10 +67,10 @@ export class AwaitingTree implements vscode.TreeDataProvider<Node> {
         return item;
       }
       case 'draft': {
-        const item = new vscode.TreeItem(n.label, vscode.TreeItemCollapsibleState.None);
-        item.description = n.description;
-        item.tooltip = `Draft on ${n.label} by ${n.description}`;
-        item.accessibilityInformation = { label: accessibleLabel(n) };
+        const item = new vscode.TreeItem(shown!.label, vscode.TreeItemCollapsibleState.None);
+        item.description = shown!.description;
+        item.tooltip = `${shown!.kind}\n${n.label} · ${shown!.description}`;
+        item.accessibilityInformation = { label: `${shown!.label}. ${shown!.description}` };
         item.iconPath = new vscode.ThemeIcon('edit', new vscode.ThemeColor('charts.orange'));
         item.contextValue = 'awaiting.draft';
         item.command = {
@@ -79,10 +81,10 @@ export class AwaitingTree implements vscode.TreeDataProvider<Node> {
         return item;
       }
       case 'confirm_gate': {
-        const item = new vscode.TreeItem(n.label, vscode.TreeItemCollapsibleState.None);
-        item.description = n.description;
-        item.tooltip = `Confirm gate: ${n.label} (${n.description})`;
-        item.accessibilityInformation = { label: accessibleLabel(n) };
+        const item = new vscode.TreeItem(shown!.label, vscode.TreeItemCollapsibleState.None);
+        item.description = shown!.description;
+        item.tooltip = `${shown!.kind}\n${n.label} · ${shown!.description}`;
+        item.accessibilityInformation = { label: `${shown!.label}. ${shown!.description}` };
         item.iconPath = new vscode.ThemeIcon('bell', new vscode.ThemeColor('charts.orange'));
         item.contextValue = 'awaiting.confirm_gate';
         item.command = {
@@ -93,10 +95,10 @@ export class AwaitingTree implements vscode.TreeDataProvider<Node> {
         return item;
       }
       case 'plan': {
-        const item = new vscode.TreeItem(n.label, vscode.TreeItemCollapsibleState.None);
-        item.description = n.description;
-        item.tooltip = 'A plan the agent wrote and stopped at. Nothing runs until you approve it.';
-        item.accessibilityInformation = { label: accessibleLabel(n) };
+        const item = new vscode.TreeItem(shown!.label, vscode.TreeItemCollapsibleState.None);
+        item.description = shown!.description;
+        item.tooltip = `${shown!.kind}.`;
+        item.accessibilityInformation = { label: `${shown!.label}. ${shown!.description}` };
         item.iconPath = new vscode.ThemeIcon('checklist', new vscode.ThemeColor('charts.orange'));
         item.contextValue = 'awaiting.plan';
         item.command = {

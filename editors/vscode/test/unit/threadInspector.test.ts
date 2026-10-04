@@ -38,7 +38,7 @@ describe('buildInspectors', () => {
     const changeset = view.nodes.find((node) => node.kind === 'changeset')!;
     const detail = buildInspectors(view, nodes)[changeset.id];
     expect(detail?.sideTitle).toBe('Drafts');
-    expect(detail?.side).toContainEqual({ k: 'o1', v: 'promoted', tone: 'ok' });
+    expect(detail?.side).toContainEqual({ k: 'o1', v: 'Applied', tone: 'ok' });
     expect(detail?.rows).toContainEqual({ k: 'Status', v: 'Applied', tone: 'ok' });
   });
 
