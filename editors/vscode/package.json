@@ -591,6 +591,7 @@
       "description": "The extension only talks to the configured escurel gateway. In a Restricted Mode window the gateway and sign-in settings come from your user settings, never from the folder.",
       "restrictedConfigurations": [
         "escurel.gatewayUrl",
+        "escurel.evolveEndpoint",
         "escurel.auth.issuer",
         "escurel.auth.clientId",
         "escurel.auth.scopes",
