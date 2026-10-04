@@ -379,7 +379,7 @@ impl Client {
         if !req.as_page_id.is_empty() {
             args["as_page_id"] = json!(req.as_page_id);
         }
-        self.transport.call_typed("validate", args).await
+        self.transport.call_typed_outcome("validate", args).await
     }
 
     /// Upsert a markdown page (the public write path).
@@ -407,7 +407,7 @@ impl Client {
         if let Some(p) = &req.provenance {
             args["provenance"] = p.clone();
         }
-        self.transport.call_typed("update_page", args).await
+        self.transport.call_typed_outcome("update_page", args).await
     }
 
     /// Soft-delete (archive) a markdown page (#300). Retracts it from
@@ -418,14 +418,14 @@ impl Client {
         if !req.base_version.is_empty() {
             args["base_version"] = json!(req.base_version);
         }
-        self.transport.call_typed("delete_page", args).await
+        self.transport.call_typed_outcome("delete_page", args).await
     }
 
     /// Permanently remove an already-archived page, finishing what
     /// [`Self::delete_page`] started. Refuses a live page.
     pub async fn purge_page(&self, req: PurgePageRequest) -> Result<PurgePageResponse, Error> {
         self.transport
-            .call_typed("purge_page", json!({ "page_id": req.page_id }))
+            .call_typed_outcome("purge_page", json!({ "page_id": req.page_id }))
             .await
     }
 
@@ -436,7 +436,7 @@ impl Client {
     /// is right for a retraction and pure noise for a move.
     pub async fn move_page(&self, req: MovePageRequest) -> Result<MovePageResponse, Error> {
         self.transport
-            .call_typed("move_page", json!({ "from": req.from, "to": req.to }))
+            .call_typed_outcome("move_page", json!({ "from": req.from, "to": req.to }))
             .await
     }
 
@@ -666,7 +666,9 @@ impl Client {
         if !req.note.is_empty() {
             args["note"] = json!(req.note);
         }
-        self.transport.call_typed("report_progress", args).await
+        self.transport
+            .call_typed_outcome("report_progress", args)
+            .await
     }
 
     /// Bind an inbox event to an instance and mark it processed.
@@ -704,7 +706,9 @@ impl Client {
         if !req.event_id.is_empty() {
             args["event_id"] = json!(req.event_id);
         }
-        self.transport.call_typed("create_draft", args).await
+        self.transport
+            .call_typed_outcome("create_draft", args)
+            .await
     }
 
     /// Everything still waiting for a decision, newest first.
@@ -721,7 +725,7 @@ impl Client {
     /// `delete_page`; the server stamps the scenario, so you never type it.
     pub async fn create_branch(&self, req: BranchRequest) -> Result<CreateBranchResponse, Error> {
         self.transport
-            .call_typed("create_branch", json!({ "name": req.name }))
+            .call_typed_outcome("create_branch", json!({ "name": req.name }))
             .await
     }
 
@@ -734,14 +738,14 @@ impl Client {
     /// whole merge.
     pub async fn merge_branch(&self, req: BranchRequest) -> Result<DecideBranchResponse, Error> {
         self.transport
-            .call_typed("merge_branch", json!({ "name": req.name }))
+            .call_typed_outcome("merge_branch", json!({ "name": req.name }))
             .await
     }
 
     /// Close a branch without landing anything.
     pub async fn abandon_branch(&self, req: BranchRequest) -> Result<DecideBranchResponse, Error> {
         self.transport
-            .call_typed(
+            .call_typed_outcome(
                 "abandon_branch",
                 json!({ "name": req.name, "reason": req.reason }),
             )
@@ -756,7 +760,7 @@ impl Client {
     /// `not_found` rather than a refusal.
     pub async fn diff_draft(&self, req: DiffDraftRequest) -> Result<DiffDraftResponse, Error> {
         self.transport
-            .call_typed("diff_draft", json!({ "draft_id": req.draft_id }))
+            .call_typed_outcome("diff_draft", json!({ "draft_id": req.draft_id }))
             .await
     }
 
@@ -781,7 +785,7 @@ impl Client {
         req: DecideChangesetRequest,
     ) -> Result<DecideChangesetResponse, Error> {
         self.transport
-            .call_typed(
+            .call_typed_outcome(
                 "promote_changeset",
                 json!({ "changeset_id": req.changeset_id }),
             )
@@ -794,7 +798,7 @@ impl Client {
         req: DecideChangesetRequest,
     ) -> Result<DecideChangesetResponse, Error> {
         self.transport
-            .call_typed(
+            .call_typed_outcome(
                 "discard_changeset",
                 json!({ "changeset_id": req.changeset_id, "reason": req.reason }),
             )
@@ -811,7 +815,7 @@ impl Client {
         req: DecideDraftRequest,
     ) -> Result<DecideDraftResponse, Error> {
         self.transport
-            .call_typed("promote_draft", json!({ "draft_id": req.draft_id }))
+            .call_typed_outcome("promote_draft", json!({ "draft_id": req.draft_id }))
             .await
     }
 
@@ -824,7 +828,9 @@ impl Client {
         if !req.reason.is_empty() {
             args["reason"] = json!(req.reason);
         }
-        self.transport.call_typed("discard_draft", args).await
+        self.transport
+            .call_typed_outcome("discard_draft", args)
+            .await
     }
 
     /// Open a live CRDT co-editing session on `page_id` over the
@@ -900,7 +906,7 @@ impl Client {
             req.payload
         };
         self.transport
-            .call_typed(
+            .call_typed_outcome(
                 "write_instance",
                 json!({ "ref": req.instance_ref, "payload": payload }),
             )
@@ -927,7 +933,7 @@ impl Client {
     /// token subject — there is no way to name one (#357).
     pub async fn apply_op(&self, req: ApplyOpRequest) -> Result<ApplyOpResponse, Error> {
         self.transport
-            .call_typed("apply_op", json!({ "session": req.session, "op": req.op }))
+            .call_typed_outcome("apply_op", json!({ "session": req.session, "op": req.op }))
             .await
     }
 
@@ -940,7 +946,7 @@ impl Client {
         req: CloseSessionRequest,
     ) -> Result<CloseSessionResponse, Error> {
         self.transport
-            .call_typed(
+            .call_typed_outcome(
                 "close_session",
                 json!({ "session": req.session, "commit": req.commit }),
             )

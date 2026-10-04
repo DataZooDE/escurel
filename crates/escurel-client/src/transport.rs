@@ -174,6 +174,19 @@ impl McpTransport {
         serde_json::from_value(result).map_err(|e| Error::Decode(format!("{tool}: {e}")))
     }
 
+    /// Like [`Self::call_typed`] for the tools whose RESPONSE TYPE models `ok`/`issues` itself (the
+    /// write family and `validate`): a refusal is the typed response with `ok: false`, which callers
+    /// already branch on, not an `Err`.
+    pub(crate) async fn call_typed_outcome<T: serde::de::DeserializeOwned>(
+        &self,
+        tool: &str,
+        arguments: Value,
+    ) -> Result<T, Error> {
+        let result = self.call_result(tool, arguments).await?;
+        serde_json::from_value(escurel_types::call_result::payload_of(&result))
+            .map_err(|e| Error::Decode(format!("{tool}: {e}")))
+    }
+
     /// Low-level JSON-RPC `tools/call` driver. Returns the tool's
     /// payload, or maps the JSON-RPC error envelope to
     /// [`Error::JsonRpc`] and a non-success HTTP status to
@@ -185,6 +198,14 @@ impl McpTransport {
     /// every typed/raw consumer sees the payload directly, falling back
     /// to the whole `result` for back-compat with any non-wrapped shape.
     pub(crate) async fn call(&self, tool: &str, arguments: Value) -> Result<Value, Error> {
+        let result = self.call_result(tool, arguments).await?;
+        // A refusal is an error here, never a payload: see `Error::Refused`.
+        escurel_types::call_result::unwrap_call_result(result).map_err(Error::Refused)
+    }
+
+    /// The whole `CallToolResult` (`{content, structuredContent, isError}`), unopened. Everything
+    /// that reads a payload goes through [`Self::call`] or [`Self::call_typed_outcome`].
+    async fn call_result(&self, tool: &str, arguments: Value) -> Result<Value, Error> {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let envelope = json!({
             "jsonrpc": "2.0",
@@ -290,7 +311,7 @@ impl McpTransport {
         let result = body.get("result").cloned().ok_or_else(|| {
             Error::Decode(format!("response missing `result` field: {body_text}"))
         })?;
-        Ok(unwrap_call_result(result))
+        Ok(result)
     }
 
     /// GET a plain-text endpoint relative to the base (e.g.
@@ -496,44 +517,4 @@ fn http_header_value(
 /// `tokio-stream` for the one wrapper we need.
 fn tokio_stream_from<T>(mut rx: tokio::sync::mpsc::UnboundedReceiver<T>) -> impl Stream<Item = T> {
     futures_util::stream::poll_fn(move |cx| rx.poll_recv(cx))
-}
-
-/// The payload of an MCP `CallToolResult`: `structuredContent` (the full result; what every current
-/// gateway sends, with a short summary in `content[0].text`), else — for a LEGACY gateway that only put
-/// the payload in the text block as JSON — that text parsed, else the result as it is.
-fn unwrap_call_result(result: serde_json::Value) -> serde_json::Value {
-    if let Some(sc) = result.get("structuredContent") {
-        return sc.clone();
-    }
-    if let Some(text) = result["content"][0]["text"].as_str()
-        && let Ok(parsed @ serde_json::Value::Object(_)) = serde_json::from_str(text)
-    {
-        return parsed;
-    }
-    result
-}
-
-#[cfg(test)]
-mod call_result_tests {
-    use super::unwrap_call_result;
-    use serde_json::json;
-
-    #[test]
-    fn structured_content_wins_over_a_summary_text() {
-        let r = json!({ "content": [{ "type": "text", "text": "3 events. Full result in structuredContent." }],
-                        "structuredContent": { "events": [1, 2, 3] } });
-        assert_eq!(unwrap_call_result(r), json!({ "events": [1, 2, 3] }));
-    }
-
-    #[test]
-    fn a_legacy_gateway_with_json_text_only_still_decodes() {
-        let r = json!({ "content": [{ "type": "text", "text": "{\"events\":[1]}" }] });
-        assert_eq!(unwrap_call_result(r), json!({ "events": [1] }));
-    }
-
-    #[test]
-    fn a_summary_text_without_structured_content_is_not_mistaken_for_a_payload() {
-        let r = json!({ "content": [{ "type": "text", "text": "3 events" }] });
-        assert_eq!(unwrap_call_result(r.clone()), r);
-    }
 }

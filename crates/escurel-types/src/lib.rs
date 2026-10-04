@@ -23,6 +23,7 @@
 
 mod admin;
 mod agent;
+pub mod call_result;
 mod chat;
 mod core;
 mod drafts;

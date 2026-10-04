@@ -68,6 +68,17 @@ pub enum Error {
         retryable: Option<bool>,
     },
 
+    /// The tool REFUSED the call: an MCP result flagged `isError: true` whose payload is
+    /// `{ok: false, issues: [...]}` (an access denial, `invalid_limit`, `query_not_found`,
+    /// `endpoint_not_registered`, ...). It is an error, never an empty success: a refused read used to
+    /// decode into a response with every field defaulted, a silent partial read after a denial.
+    ///
+    /// The tools that model `ok`/`issues` in their own response (the write family: `update_page`,
+    /// `create_draft`, `promote_draft`, ...) still return `Ok(response)` with `ok: false`; branch on
+    /// that for writes.
+    #[error("refused: {}", .0)]
+    Refused(escurel_types::call_result::Refusal),
+
     /// The response body could not be decoded into the expected typed
     /// shape (malformed JSON, missing `result`, or a field-type
     /// mismatch against the wire contract).
