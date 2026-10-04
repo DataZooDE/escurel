@@ -232,7 +232,11 @@ pub(crate) fn resolve_attach_secret(
                     .to_owned(),
             ));
         }
-        return Ok(stored.to_owned());
+        return Ok(with_server_statement_timeout(
+            connector,
+            stored,
+            indexer.rows_query_timeout,
+        ));
     };
     let secret = resolver
         .resolve(stored)
@@ -240,7 +244,36 @@ pub(crate) fn resolve_attach_secret(
     resolver
         .check_target(connector.as_str(), &secret)
         .map_err(|m| SqlViewError::InvalidBinding(format!("backend_unavailable: {m}")))?;
-    Ok(secret)
+    Ok(with_server_statement_timeout(
+        connector,
+        &secret,
+        indexer.rows_query_timeout,
+    ))
+}
+
+/// Make a Postgres server enforce the statement timeout itself.
+///
+/// DuckDB's interrupt cannot cancel a scan that is blocked inside the `postgres` extension's own
+/// libpq call (observed: a 2 s timeout let a slow view run for the full 60 s), so the limit is also
+/// passed to the server as the libpq `options` parameter, `-cstatement_timeout=<ms>` (no spaces or
+/// quotes, so it is safe in both DSN spellings). A DSN that already sets `options` is left alone: the
+/// operator's choice wins.
+pub(crate) fn with_server_statement_timeout(
+    connector: SqlConnector,
+    dsn: &str,
+    timeout: std::time::Duration,
+) -> String {
+    if connector != SqlConnector::Postgres || dsn.contains("options") {
+        return dsn.to_owned();
+    }
+    let ms = timeout.as_millis().max(1);
+    let opt = format!("-cstatement_timeout={ms}");
+    if dsn.starts_with("postgres://") || dsn.starts_with("postgresql://") {
+        let sep = if dsn.contains('?') { '&' } else { '?' };
+        format!("{dsn}{sep}options={opt}")
+    } else {
+        format!("{} options={opt}", dsn.trim_end())
+    }
 }
 
 /// Resolve the FROM-clause source expression, performing any required
@@ -1298,5 +1331,46 @@ mod tests {
         assert!(!is_allowed_filter("1 = 1 OR name = 'x'"));
         assert!(!is_allowed_filter("score > 1 + 1"));
         assert!(!is_allowed_filter("col = 'unterminated"));
+    }
+}
+
+#[cfg(test)]
+mod statement_timeout_tests {
+    use super::*;
+    use std::time::Duration;
+
+    #[test]
+    fn a_postgres_dsn_gains_the_servers_statement_timeout_in_both_spellings() {
+        let t = Duration::from_secs(30);
+        assert_eq!(
+            with_server_statement_timeout(SqlConnector::Postgres, "host=h dbname=d ", t),
+            "host=h dbname=d options=-cstatement_timeout=30000"
+        );
+        assert_eq!(
+            with_server_statement_timeout(SqlConnector::Postgres, "postgres://u@h/d", t),
+            "postgres://u@h/d?options=-cstatement_timeout=30000"
+        );
+        assert_eq!(
+            with_server_statement_timeout(
+                SqlConnector::Postgres,
+                "postgres://u@h/d?sslmode=require",
+                t
+            ),
+            "postgres://u@h/d?sslmode=require&options=-cstatement_timeout=30000"
+        );
+    }
+
+    #[test]
+    fn an_operators_own_options_and_other_connectors_are_left_alone() {
+        let t = Duration::from_secs(30);
+        let own = "host=h options=-cstatement_timeout=5000";
+        assert_eq!(
+            with_server_statement_timeout(SqlConnector::Postgres, own, t),
+            own
+        );
+        assert_eq!(
+            with_server_statement_timeout(SqlConnector::Sqlite, "/data/x.db", t),
+            "/data/x.db"
+        );
     }
 }

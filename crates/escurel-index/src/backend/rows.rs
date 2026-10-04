@@ -51,11 +51,15 @@ pub(crate) fn with_statement_timeout<T, E: From<SqlViewError>>(
             handle.interrupt();
         }
     });
+    let started = std::time::Instant::now();
     let result = f();
+    let overran = started.elapsed() >= timeout;
     let _ = done.send(());
     let _ = watchdog.join();
     match result {
-        Err(_) if fired.load(std::sync::atomic::Ordering::SeqCst) => {
+        // `overran`: a Postgres server cancels at the same instant as the watchdog fires (see
+        // `with_server_statement_timeout`), so an error that arrives past the deadline is the timeout.
+        Err(_) if overran || fired.load(std::sync::atomic::Ordering::SeqCst) => {
             Err(E::from(SqlViewError::InvalidBinding(format!(
                 "backend_unavailable: the source query did not answer within {}s and was \
                  interrupted; narrow the list with a filter or ask the source's owner",

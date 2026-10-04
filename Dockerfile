@@ -91,15 +91,16 @@ RUN if [ -n "${GDRIVE_SHA256}" ]; then \
       && curl -sSfL "${GDRIVE_REPO}/${DUCKDB_VERSION}/linux_amd64/gdrive.duckdb_extension.gz" | sha256sum -c /tmp/gdrive.sha256; \
     fi
 RUN mkdir -p /opt/escurel \
- && duckdb -unsigned -c "INSTALL ducklake; INSTALL postgres; INSTALL httpfs; INSTALL fts; INSTALL vss; INSTALL gdrive FROM '${GDRIVE_REPO}';"
+ && duckdb -unsigned -c "INSTALL ducklake; INSTALL postgres; INSTALL sqlite; INSTALL mysql; INSTALL httpfs; INSTALL fts; INSTALL vss; INSTALL gdrive FROM '${GDRIVE_REPO}';"
 # Fail the BUILD, not the pod, if anything did not land where DuckDB looks for
 # it. A missing extension here is a silent 137MB download at boot.
 RUN set -eu; \
     d="/opt/escurel/.duckdb/extensions/${DUCKDB_VERSION}/linux_amd64"; \
+    # sqlite_scanner / mysql_scanner (SQL rows connectors, `docs/spec` backends) are baked for the same reason.
     # postgres_scanner, not postgres: `INSTALL postgres` is an ALIAS and the
     # artifact it lands is postgres_scanner.duckdb_extension. Checking the
-    # alias name failed the build while all six were present.
-    for e in ducklake postgres_scanner httpfs fts vss gdrive; do \
+    # alias name failed the build while all six were present (now eight).
+    for e in ducklake postgres_scanner sqlite_scanner mysql_scanner httpfs fts vss gdrive; do \
       test -s "$d/$e.duckdb_extension" || { echo "MISSING: $e in $d"; ls -la "$d" || true; exit 1; }; \
     done; \
     echo "baked $(ls "$d"/*.duckdb_extension | wc -l) extensions, $(du -sh /opt/escurel/.duckdb | cut -f1)"

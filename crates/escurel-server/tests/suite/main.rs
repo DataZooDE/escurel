@@ -137,6 +137,7 @@ mod skill_vocabulary;
 mod snapshot_refresh;
 mod sql_creds;
 mod sql_rows_db;
+mod sql_rows_postgres;
 mod sql_validate;
 mod sql_view_tools;
 mod sql_write_back;
