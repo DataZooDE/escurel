@@ -1807,11 +1807,13 @@ fn annotations_of(name: &str) -> Value {
     })
 }
 
-/// `(min, max)` of the `limit` a tool's input schema declares, when it declares one.
-fn limit_bounds(name: &str) -> Option<(Option<i64>, Option<i64>)> {
-    static MAP: std::sync::OnceLock<
-        std::collections::HashMap<&'static str, (Option<i64>, Option<i64>)>,
-    > = std::sync::OnceLock::new();
+/// `(min, max)` of a declared `limit`; either bound may be absent.
+type LimitBounds = (Option<i64>, Option<i64>);
+
+/// The `limit` bounds a tool's input schema declares, when it declares a `limit` at all.
+fn limit_bounds(name: &str) -> Option<LimitBounds> {
+    static MAP: std::sync::OnceLock<std::collections::HashMap<&'static str, LimitBounds>> =
+        std::sync::OnceLock::new();
     MAP.get_or_init(|| {
         tool_defs()
             .iter()
