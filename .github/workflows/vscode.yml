@@ -72,7 +72,7 @@ jobs:
             cargo clean -p libduckdb-sys || true
           fi
       - name: Build real gateway and runner
-        run: cargo build -p escurel-server -p escurel-runner -p escurel-test-support --bin escurel-server --bin escurel-runner --bin escurel-test-gateway
+        run: cargo build -p escurel-server -p escurel-runner -p escurel-test-support --bin escurel-server --bin escurel-runner --bin escurel-echo-harness --bin escurel-test-gateway
       - uses: actions/setup-node@v4
         with:
           node-version-file: editors/vscode/.nvmrc
