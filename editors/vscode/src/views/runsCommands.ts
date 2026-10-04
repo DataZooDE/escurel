@@ -13,6 +13,18 @@ export function registerRunsCommands(tree: RunnerTree): vscode.Disposable {
     vscode.commands.registerCommand('escurel.runs.showFailed', () =>
       tree.setFilter({ states: ['failed', 'dead_letter'] }),
     ),
+    // "Runs for this record": the runs panel, narrowed to the runs that worked on one page.
+    vscode.commands.registerCommand('escurel.runs.forPage', async (arg?: unknown) => {
+      const pageId =
+        typeof arg === 'string'
+          ? arg
+          : arg && typeof arg === 'object' && 'pageId' in arg
+            ? String((arg as { pageId?: unknown }).pageId ?? '')
+            : '';
+      if (!pageId) return;
+      await tree.setFilter({ pageId });
+      await vscode.commands.executeCommand('escurel.runner.focus');
+    }),
     vscode.commands.registerCommand('escurel.runs.clearFilter', () => tree.setFilter({})),
     vscode.commands.registerCommand('escurel.runs.filter', async () => {
       const qp = vscode.window.createQuickPick<vscode.QuickPickItem & { id: string }>();
@@ -47,7 +59,7 @@ export function registerRunsCommands(tree: RunnerTree): vscode.Disposable {
         });
         if (text === undefined) return;
       }
-      await tree.setFilter(filterFromPicks(picks, text));
+      await tree.setFilter(filterFromPicks(picks, text, tree.getFilter()));
     }),
     vscode.commands.registerCommand('escurel.runs.openThread', async (arg?: unknown) => {
       const node = asNode(arg);

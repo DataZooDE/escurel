@@ -32,7 +32,8 @@ export function registerControlCommands(
   const register = (command: string, action: Action) =>
     vscode.commands.registerCommand(command, async (arg?: Argument) => {
       // A bare id is a programmatic call; an object is a click on a row or a button: ask first.
-      const confirmation = typeof arg === 'object' && arg !== null ? confirmationFor(action) : undefined;
+      const confirmation =
+        typeof arg === 'object' && arg !== null ? confirmationFor(action) : undefined;
       if (confirmation) {
         const answer = await vscode.window.showWarningMessage(
           confirmation.message,

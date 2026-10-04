@@ -8,6 +8,7 @@ import {
   insightLine,
   runDescription,
   runLabel,
+  runRowLabel,
   type RunRecord,
 } from '../../src/views/runsModel';
 
@@ -256,15 +257,17 @@ describe('words for a row', () => {
   });
 
   it('says what happened and how long ago', () => {
-    expect(runDescription(r, NOW)).toBe('ok · 6 s · now');
+    expect(runDescription(r, NOW)).toBe('6 s · now');
+    // The outcome is the first word of the label, so a narrow row never cuts it off.
+    expect(runRowLabel(r)).toBe('Done · supplier-risk · order-4500123');
+    expect(runRowLabel({ ...r, state: 'failed' })).toBe('Failed · supplier-risk · order-4500123');
+    expect(runRowLabel({ ...r, state: 'dead_letter' })).toMatch(/^Gave up · /);
     // The reason is its own row (a narrow panel cuts a description), so the description stays short.
-    expect(runDescription({ ...r, state: 'failed', reason: 'harness error' }, NOW)).toBe(
-      'failed · now',
-    );
+    expect(runDescription({ ...r, state: 'failed', reason: 'harness error' }, NOW)).toBe('now');
     const running = foldRuns([started('b', 12)], { nowMs: NOW, liveRunIds: new Set(['b']) })[0]!;
     // Elapsed time only: the icon and the section already say it is running.
     expect(runDescription(running, NOW)).toBe('12 s');
-    expect(runDescription({ ...r, state: 'planned' }, NOW)).toBe('plan · now');
+    expect(runDescription({ ...r, state: 'planned' }, NOW)).toBe('now');
   });
 });
 
@@ -276,28 +279,31 @@ describe('describeRunner', () => {
 
   it('says in words whether a runner is there', () => {
     expect(describeRunner(null, NOW, { isAdmin: true, tenant: 'vsx' }).text).toBe(
-      'No runner has reported yet.',
+      'No agents have reported yet.',
     );
     const d = describeRunner(fresh, NOW, { isAdmin: true, tenant: 'vsx' });
-    expect(d.text).toBe('Runner ok · echo harness (demo, no AI model) · last seen 3 s ago');
+    expect(d.text).toBe('Agents are running · last seen 3 s ago');
     expect(d.paused).toBe(false);
+    // The engine is a technical detail: in the tooltip, never in the sentence.
+    expect(d.text).not.toMatch(/harness|echo/i);
+    expect(d.engine).toBe('Agent engine: echo (demo, no AI model)');
   });
 
   it('says so when dispatch is paused, and who may change that', () => {
     const paused = { at: iso(3), body: { ...fresh.body, paused_tenants: ['vsx'] } };
     const admin = describeRunner(paused, NOW, { isAdmin: true, tenant: 'vsx' });
     expect(admin.paused).toBe(true);
-    expect(admin.text).toContain('Dispatch is paused');
-    expect(admin.dispatchHint).toBe('Resume dispatch');
+    expect(admin.text).toContain('Agents are paused');
+    expect(admin.dispatchHint).toBe('Resume agents');
     const human = describeRunner(paused, NOW, { isAdmin: false, tenant: 'vsx' });
-    expect(human.dispatchHint).toBe('Only an admin can resume dispatch.');
+    expect(human.dispatchHint).toBe('Only an admin can resume agents.');
   });
 
   it('calls a silent runner stale', () => {
     const old = { at: iso(600), body: fresh.body };
     expect(
       describeRunner(old, NOW, { isAdmin: true, tenant: 'vsx', intervalMs: 30_000 }).text,
-    ).toMatch(/^Runner not responding/);
+    ).toMatch(/^Agents are not responding/);
   });
 });
 
@@ -338,6 +344,7 @@ describe('buildRunsTree', () => {
     expect(tree.map((n) => n.id)).toEqual([
       'dispatch',
       'insight',
+      'insight:detail',
       'group:running',
       'group:waiting',
       'group:attention',
@@ -358,12 +365,13 @@ describe('buildRunsTree', () => {
   it('the dispatch row says what dispatch is doing and what an admin or anyone else can do', () => {
     const on = find(buildRunsTree({ ...base, records: [] }), 'dispatch')!;
     expect(on).toMatchObject({
-      label: 'Dispatch is on',
+      label: 'Agents are running',
       contextValue: 'dispatch.running',
     });
     // An admin has the button; the sentence is the tooltip, not a cut-off description.
     expect(on.description).toBeUndefined();
-    expect(on.tooltip).toContain('Pause dispatch');
+    expect(on.tooltip).toContain('Pause agents');
+    expect(on.tooltip).toContain('Agent engine: echo');
     expect(on.description).toBeUndefined();
     const paused = describeRunner(
       { at: iso(3), body: { harness: 'echo', paused_tenants: ['vsx'] } },
@@ -375,11 +383,11 @@ describe('buildRunsTree', () => {
       'dispatch',
     )!;
     expect(row).toMatchObject({
-      label: 'Dispatch is paused',
+      label: 'Agents are paused',
       contextValue: 'dispatch.paused',
-      description: 'admins can resume',
+      description: 'admins only',
     });
-    expect(row.tooltip).toContain('Only an admin can resume dispatch.');
+    expect(row.tooltip).toContain('Only an admin can resume agents.');
   });
 
   it('an empty section says so in words; waiting and attention hide when empty', () => {
@@ -400,7 +408,7 @@ describe('buildRunsTree', () => {
     const run = find(tree, 'group:running')!.children![0]!;
     expect(run).toMatchObject({
       kind: 'run',
-      label: 'supplier-risk · order-4500123',
+      label: 'Running · supplier-risk · order-4500123',
       contextValue: 'run.running',
       runId: 'run1',
       rootEventId: 'root-run1',
@@ -474,6 +482,9 @@ describe('the filter pick list', () => {
       'state:succeeded',
       'state:failed',
       'state:cancelled',
+      'range:today',
+      'range:yesterday',
+      'range:7d',
       'skill:customer-notice',
       'skill:supplier-risk',
       'text',
@@ -607,10 +618,11 @@ describe('the reason line carries both the class and the cause', () => {
 });
 
 describe('short status words fit a narrow row; the full words stay for the tooltip', () => {
-  it('uses ok / failed / gave up / cancelled in the description', () => {
+  it('leads the label with the outcome; the description is only the time', () => {
     const base = foldRuns([started('a', 100), finished('a', 90, 'processed')], { nowMs: NOW })[0]!;
-    expect(runDescription({ ...base, state: 'dead_letter' }, NOW)).toMatch(/^gave up · /);
-    expect(runDescription({ ...base, state: 'cancelled' }, NOW)).toMatch(/^cancelled · /);
+    expect(runRowLabel({ ...base, state: 'dead_letter' })).toMatch(/^Gave up · /);
+    expect(runRowLabel({ ...base, state: 'cancelled' })).toMatch(/^Cancelled · /);
+    expect(runDescription({ ...base, state: 'cancelled' }, NOW)).toBe('1 m');
     expect(tooltipFor({ ...base, state: 'dead_letter' }, NOW)).toContain('failed for good');
   });
 });
@@ -642,7 +654,11 @@ describe('the insight row', () => {
     const rs = foldRuns([started('a', 100), finished('a', 90, 'processed')], { nowMs: NOW });
     const row = buildRunsTree(input(rs))[0]!;
     expect(row).toMatchObject({ id: 'insight', kind: 'insight' });
-    expect(row.label).toMatch(/^Last 24 h: 1 run · 1 ok/);
+    // Two short lines: a narrow panel cuts a long one mid-word.
+    expect(row.label).toBe('Last 24 h: 1 run');
+    expect(buildRunsTree(input(rs))[1]!.id).toBe('insight:detail');
+    expect(buildRunsTree(input(rs))[1]!.label).toMatch(/^1 ok/);
+    expect(row.tooltip).toMatch(/^Last 24 h: 1 run · 1 ok/);
     expect(row.contextValue).toBeUndefined();
   });
 
@@ -749,5 +765,59 @@ describe('Needs attention is bounded', () => {
     });
     const g = few.find((n) => n.id === 'group:attention')!;
     expect(g.children!.some((c) => c.kind === 'more')).toBe(false);
+  });
+});
+
+describe('filtering by day and by record', () => {
+  const DAY = 86_400_000;
+  // NOW is 2026-10-04 12:00 UTC
+  const ago = (ms: number) => new Date(NOW - ms).toISOString();
+  const runs = foldRuns(
+    [
+      ev('today', 'run-finished', ago(3_600_000), { status: 'processed' }),
+      ev('yday', 'run-finished', ago(DAY), { status: 'failed', reason: 'x' }),
+      ev('old', 'run-finished', ago(5 * DAY), { status: 'processed' }),
+      ev(
+        'other',
+        'run-finished',
+        ago(1_800_000),
+        { status: 'processed' },
+        { instance_page_id: 'markdown/instances/customer-order__order-9.md' },
+      ),
+    ],
+    { nowMs: NOW },
+  );
+  const ids = (f: Parameters<typeof applyFilter>[1]) =>
+    applyFilter(runs, f, NOW)
+      .map((r) => r.runId)
+      .sort();
+
+  it('knows today, yesterday and the last 7 days', () => {
+    expect(ids({ range: 'today' })).toEqual(['other', 'today']);
+    expect(ids({ range: 'yesterday' })).toEqual(['yday']);
+    expect(ids({ range: '7d' })).toEqual(['old', 'other', 'today', 'yday']);
+  });
+
+  it('narrows to one record, alone or with a day and a state', () => {
+    const page = 'markdown/instances/customer-order__order-4500123.md';
+    expect(ids({ pageId: page })).toEqual(['old', 'today', 'yday']);
+    expect(ids({ pageId: page, range: 'yesterday', states: ['failed'] })).toEqual(['yday']);
+  });
+
+  it('says it in the filter note', () => {
+    expect(
+      filterNote({
+        pageId: 'markdown/instances/customer-order__order-4500123.md',
+        range: 'yesterday',
+      }),
+    ).toBe('order-4500123 · yesterday');
+  });
+
+  it('carries the record through the pick list', () => {
+    const page = 'markdown/instances/customer-order__order-4500123.md';
+    expect(filterFromPicks(['range:yesterday'], undefined, { pageId: page })).toEqual({
+      range: 'yesterday',
+      pageId: page,
+    });
   });
 });

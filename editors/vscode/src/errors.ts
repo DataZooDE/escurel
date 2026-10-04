@@ -21,7 +21,7 @@ export function describeError(e: unknown): string {
       case 'tenant_suspended':
         return 'this tenant is suspended; ask an operator';
       case 'tenant_quarantined':
-        return 'this tenant is waiting for a data migration (the page format changed); ask an operator to run `escurel admin migrate-kind`';
+        return 'your administrator needs to finish an upgrade; tell them to run `escurel admin migrate-kind`';
       case 'server_incompatible':
         return 'this gateway is older than this extension (it uses a data format the extension no longer reads); update the gateway or use an older extension';
       default:

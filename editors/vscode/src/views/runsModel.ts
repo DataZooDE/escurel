@@ -53,6 +53,8 @@ interface Acc {
   attemptEnd?: number;
 }
 
+const DAY_MS = 86_400_000;
+
 const ms = (raw: unknown): number | undefined => parseGatewayTime(raw)?.getTime();
 
 function json(e: Event | undefined): Record<string, unknown> {
@@ -184,17 +186,52 @@ export function groupRuns(records: readonly RunRecord[], _nowMs: number): RunGro
   };
 }
 
+/** The day windows the filter offers: "what did the agent do yesterday". */
+export type RunsRange = 'today' | 'yesterday' | '7d';
+
 export interface RunsFilter {
   states?: readonly RunState[] | undefined;
   skill?: string | undefined;
   text?: string | undefined;
+  /** Only the runs that worked on this page: "Runs for this record". */
+  pageId?: string | undefined;
+  range?: RunsRange | undefined;
 }
 
-export function applyFilter(records: readonly RunRecord[], f: RunsFilter): RunRecord[] {
+/** [from, to) in epoch ms for a range: calendar days in UTC, so the same words mean the same window everywhere. */
+export function rangeBounds(range: RunsRange, nowMs: number): [number, number] {
+  const startOfToday = nowMs - (nowMs % DAY_MS);
+  switch (range) {
+    case 'today':
+      return [startOfToday, startOfToday + DAY_MS];
+    case 'yesterday':
+      return [startOfToday - DAY_MS, startOfToday];
+    case '7d':
+      return [nowMs - 7 * DAY_MS, nowMs + 1];
+  }
+}
+
+const RANGE_WORD: Record<RunsRange, string> = {
+  today: 'today',
+  yesterday: 'yesterday',
+  '7d': 'last 7 days',
+};
+
+export function applyFilter(
+  records: readonly RunRecord[],
+  f: RunsFilter,
+  nowMs: number = Date.now(),
+): RunRecord[] {
   const text = f.text?.trim().toLowerCase();
+  const bounds = f.range ? rangeBounds(f.range, nowMs) : undefined;
   return records.filter((r) => {
     if (f.states?.length && !f.states.includes(r.state)) return false;
     if (f.skill && r.skill !== f.skill) return false;
+    if (f.pageId && r.targetPageId !== f.pageId) return false;
+    if (bounds) {
+      const at = r.finishedAtMs ?? r.startedAtMs;
+      if (at === undefined || at < bounds[0] || at >= bounds[1]) return false;
+    }
     if (text) {
       const hay = [
         r.skill,
@@ -211,8 +248,6 @@ export function applyFilter(records: readonly RunRecord[], f: RunsFilter): RunRe
     return true;
   });
 }
-
-const DAY_MS = 86_400_000;
 
 /** "Last 24 h: 12 runs · 11 ok · 1 failed · avg 6 s", or nothing when nothing finished. */
 export function insightLine(records: readonly RunRecord[], nowMs: number): string | undefined {
@@ -236,6 +271,17 @@ export function insightLine(records: readonly RunRecord[], nowMs: number): strin
   return `Last 24 h: ${parts.join(' · ')}`;
 }
 
+/** The same sentence as two short lines, so a narrow panel never cuts it mid-word. */
+export function insightLines(
+  records: readonly RunRecord[],
+  nowMs: number,
+): [string, string | undefined] | undefined {
+  const line = insightLine(records, nowMs);
+  if (!line) return undefined;
+  const [head, ...rest] = line.replace('Last 24 h: ', '').split(' · ');
+  return [`Last 24 h: ${head}`, rest.length ? rest.join(' · ') : undefined];
+}
+
 /** A length of time at the scale a person reads it. */
 export function formatMs(msValue: number): string {
   if (msValue < 1000) return `${Math.round(msValue)} ms`;
@@ -250,6 +296,22 @@ export function runLabel(r: Pick<RunRecord, 'skill' | 'targetPageId'>): string {
   const page = r.targetPageId ? pageSlug(r.targetPageId) : '';
   if (r.skill && page) return `${r.skill} · ${page}`;
   return r.skill || page || 'Run';
+}
+
+/** The outcome, first in a row: a narrow panel cuts the end, and the end is the skill and page. */
+const ROW_WORD: Record<RunState, string> = {
+  running: 'Running',
+  planned: 'Plan ready',
+  succeeded: 'Done',
+  failed: 'Failed',
+  dead_letter: 'Gave up',
+  cancelled: 'Cancelled',
+  unknown: 'No result',
+};
+
+/** "Failed · supplier-risk · order-4500123": what happened first, then to what. */
+export function runRowLabel(r: Pick<RunRecord, 'state' | 'skill' | 'targetPageId'>): string {
+  return `${ROW_WORD[r.state]} · ${runLabel(r)}`;
 }
 
 const STATE_WORD: Record<RunState, string> = {
@@ -278,28 +340,26 @@ export function shortAgo(raw: unknown, nowMs: number): string {
   return hours < 24 ? `${hours} h` : `${Math.floor(hours / 24)} d`;
 }
 
-/** What a narrow row says; the full word is in the tooltip and the accessible name. */
-const SHORT_WORD: Partial<Record<RunState, string>> = { dead_letter: 'gave up' };
-
+/** The row's description: only the time, because the outcome is already the first word of the label. */
 export function runDescription(r: RunRecord, nowMs: number): string {
   const ago =
     r.finishedAtMs !== undefined ? shortAgo(new Date(r.finishedAtMs).toISOString(), nowMs) : '';
   // Elapsed time only: the spinner and the section already say it is running.
   if (r.state === 'running')
     return r.startedAtMs !== undefined ? formatMs(Math.max(0, nowMs - r.startedAtMs)) : '';
-  if (r.state === 'planned') return ['plan', ago].filter(Boolean).join(' · ');
   if (r.state === 'succeeded')
-    return ['ok', r.durationMs !== undefined ? formatMs(r.durationMs) : '', ago]
+    return [r.durationMs !== undefined ? formatMs(r.durationMs) : '', ago]
       .filter(Boolean)
       .join(' · ');
-  // The reason is its own row: a narrow panel cuts a description, and the reason is what matters.
-  return [SHORT_WORD[r.state] ?? STATE_WORD[r.state], ago].filter(Boolean).join(' · ');
+  return ago;
 }
 
 export interface RunnerDescription {
   /** One sentence for the top of the view. */
   text: string;
   paused: boolean;
+  /** Which engine runs the agents, for a tooltip; never in the sentence. */
+  engine?: string | undefined;
   /** What the dispatch row offers: the action, or why the person cannot take it. */
   dispatchHint: string;
   health: 'ok' | 'stale' | 'draining' | 'none';
@@ -312,7 +372,12 @@ export function describeRunner(
   opts: { isAdmin: boolean; tenant?: string | undefined; intervalMs?: number | undefined },
 ): RunnerDescription {
   if (!status) {
-    return { text: 'No runner has reported yet.', paused: false, dispatchHint: '', health: 'none' };
+    return {
+      text: 'No agents have reported yet.',
+      paused: false,
+      dispatchHint: '',
+      health: 'none',
+    };
   }
   const body: RunnerStatusBody =
     typeof status.body === 'string' ? safeBody(status.body) : (status.body ?? {});
@@ -323,31 +388,32 @@ export function describeRunner(
     ? Math.max(0, Math.round((nowMs - (parseGatewayTime(status.at)?.getTime() ?? nowMs)) / 1000))
     : 0;
   const paused = !!opts.tenant && (body.paused_tenants ?? []).includes(opts.tenant);
-  // Honest about the demo: the echo harness folds events by rule, there is no model behind it.
-  const harness = body.harness
-    ? body.harness === 'echo'
-      ? 'echo harness (demo, no AI model)'
-      : `${body.harness} harness`
-    : undefined;
   const lead =
     health.state === 'stale'
-      ? 'Runner not responding'
+      ? 'Agents are not responding'
       : health.state === 'draining'
-        ? 'Runner shutting down'
-        : 'Runner ok';
+        ? 'Agents are shutting down'
+        : 'Agents are running';
   const parts = [
     lead,
-    harness,
     seconds < 2 ? 'last seen just now' : `last seen ${formatMs(seconds * 1000)} ago`,
-  ].filter(Boolean);
-  if (paused) parts.push('Dispatch is paused: new work waits');
+  ];
+  if (paused) parts[0] = 'Agents are paused: new work waits';
   const verb = paused ? 'Resume' : 'Pause';
+  // Honest about the demo: the echo engine folds events by rule, there is no model behind it. Only
+  // in the tooltip: the name of the engine is a technical detail.
+  const engine = body.harness
+    ? body.harness === 'echo'
+      ? 'Agent engine: echo (demo, no AI model)'
+      : `Agent engine: ${body.harness}`
+    : undefined;
   return {
     text: parts.join(' · '),
     paused,
+    engine,
     dispatchHint: opts.isAdmin
-      ? `${verb} dispatch`
-      : `Only an admin can ${verb.toLowerCase()} dispatch.`,
+      ? `${verb} agents`
+      : `Only an admin can ${verb.toLowerCase()} agents.`,
     health: health.state,
   };
 }
@@ -411,7 +477,7 @@ export function tooltipFor(r: RunRecord, nowMs: number): string {
   if (r.durationMs !== undefined) lines.push(`Took: ${formatMs(r.durationMs)}`);
   else if (r.state === 'running' && r.startedAtMs !== undefined)
     lines.push(`Running for: ${formatMs(Math.max(0, nowMs - r.startedAtMs))}`);
-  if (r.harness) lines.push(`Harness: ${r.harness}`);
+  if (r.harness) lines.push(`Agent engine: ${r.harness}`);
   if (r.attempts !== undefined) lines.push(`Attempts: ${r.attempts}`);
   if (r.toolCalls !== undefined) lines.push(`Tool calls: ${r.toolCalls}`);
   if (r.reason) lines.push(`Reason: ${r.reason}`);
@@ -445,7 +511,7 @@ function runNode(r: RunRecord, nowMs: number, section: string): RunsNode {
   return {
     id: `run:${section}:${r.runId}`,
     kind: 'run',
-    label: runLabel(r),
+    label: runRowLabel(r),
     description: runDescription(r, nowMs),
     tooltip: tooltipFor(r, nowMs),
     contextValue: context,
@@ -480,20 +546,23 @@ export function buildRunsTree(input: TreeInput): RunsNode[] {
     out.push({
       id: 'dispatch',
       kind: 'dispatch',
-      label: input.runner.paused ? 'Dispatch is paused' : 'Dispatch is on',
+      label: input.runner.paused ? 'Agents are paused' : 'Agents are running',
       // The button is there for an admin; for anyone else the short reason, and the sentence on hover.
-      description: input.isAdmin
-        ? undefined
-        : input.runner.paused
-          ? 'admins can resume'
-          : 'admins can pause',
-      tooltip: `${input.runner.text}\n${input.runner.dispatchHint}`,
+      description: input.isAdmin ? undefined : input.runner.paused ? 'admins only' : 'admins only',
+      tooltip: [input.runner.text, input.runner.engine, input.runner.dispatchHint]
+        .filter(Boolean)
+        .join('\n'),
       contextValue: input.runner.paused ? 'dispatch.paused' : 'dispatch.running',
     });
   }
 
-  const insight = insightLine(input.records, input.nowMs);
-  if (insight) out.push({ id: 'insight', kind: 'insight', label: insight, tooltip: insight });
+  const insight = insightLines(input.records, input.nowMs);
+  if (insight) {
+    const full = insightLine(input.records, input.nowMs);
+    out.push({ id: 'insight', kind: 'insight', label: insight[0], tooltip: full });
+    if (insight[1])
+      out.push({ id: 'insight:detail', kind: 'insight', label: insight[1], tooltip: full });
+  }
 
   out.push({
     id: 'group:running',
@@ -541,12 +610,18 @@ export function buildRunsTree(input: TreeInput): RunsNode[] {
     });
   }
 
-  const history = applyFilter(groups.history, input.filter);
+  const history = applyFilter(groups.history, input.filter, input.nowMs);
   const shown = history.slice(0, input.historyLimit);
   const children: RunsNode[] = shown.map((r) => runNode(r, input.nowMs, 'history'));
   const hidden = history.length - shown.length;
   if (children.length === 0) {
-    const filtered = !!(input.filter.states?.length || input.filter.skill || input.filter.text);
+    const filtered = !!(
+      input.filter.states?.length ||
+      input.filter.skill ||
+      input.filter.text ||
+      input.filter.pageId ||
+      input.filter.range
+    );
     children.push(
       empty('empty:history', filtered ? 'No runs match the filter.' : 'No finished runs yet.'),
     );
@@ -592,6 +667,9 @@ export function filterPickItems(skills: readonly string[], current: RunsFilter):
       picked: has('failed'),
     },
     { id: 'state:cancelled', label: 'Cancelled', picked: has('cancelled') },
+    { id: 'range:today', label: 'Today', picked: current.range === 'today' },
+    { id: 'range:yesterday', label: 'Yesterday', picked: current.range === 'yesterday' },
+    { id: 'range:7d', label: 'Last 7 days', picked: current.range === '7d' },
     ...skills.map((s) => ({
       id: `skill:${s}`,
       label: s,
@@ -608,7 +686,11 @@ export function filterPickItems(skills: readonly string[], current: RunsFilter):
 }
 
 /** The filter the picks stand for. "Failed" also means failed for good: a person does not tell them apart. */
-export function filterFromPicks(picks: readonly string[], text: string | undefined): RunsFilter {
+export function filterFromPicks(
+  picks: readonly string[],
+  text: string | undefined,
+  keep: Pick<RunsFilter, 'pageId'> = {},
+): RunsFilter {
   const states: RunState[] = [];
   for (const id of picks) {
     if (id === 'state:succeeded') states.push('succeeded');
@@ -617,10 +699,13 @@ export function filterFromPicks(picks: readonly string[], text: string | undefin
   }
   const skill = picks.find((id) => id.startsWith('skill:'))?.slice('skill:'.length);
   const t = picks.includes('text') ? text?.trim() : undefined;
+  const range = (['today', 'yesterday', '7d'] as const).find((r) => picks.includes(`range:${r}`));
   return {
     ...(states.length ? { states } : {}),
+    ...(range ? { range } : {}),
     ...(skill ? { skill } : {}),
     ...(t ? { text: t } : {}),
+    ...(keep.pageId ? { pageId: keep.pageId } : {}),
   };
 }
 
@@ -630,7 +715,13 @@ export function filterNote(f: RunsFilter): string {
   const states = (f.states ?? []).filter(
     (s) => !(s === 'dead_letter' && f.states?.includes('failed')),
   );
-  return [...states.map((s) => stateWord(s)), f.skill, f.text ? `“${f.text}”` : undefined]
+  return [
+    f.pageId ? pageSlug(f.pageId) : undefined,
+    ...states.map((s) => stateWord(s)),
+    f.range ? RANGE_WORD[f.range] : undefined,
+    f.skill,
+    f.text ? `“${f.text}”` : undefined,
+  ]
     .filter(Boolean)
     .join(' · ');
 }

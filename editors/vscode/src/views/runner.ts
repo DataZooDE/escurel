@@ -26,7 +26,6 @@ import {
   describeRunner,
   filterNote,
   groupRuns,
-  stateWord,
   type RunRecord,
   type RunState,
   type RunsFilter,
@@ -164,17 +163,14 @@ export class RunnerTree implements vscode.TreeDataProvider<RunsNode>, vscode.Dis
         item.iconPath = new vscode.ThemeIcon(id, color ? new vscode.ThemeColor(color) : undefined);
         // The state is a WORD in the description and in the accessible name: never colour alone.
         item.accessibilityInformation = {
-          label: `${stateWord(state)}: ${node.label}. ${node.description ?? ''}`,
+          label: `${node.label}. ${node.description ?? ''}`,
           role: 'treeitem',
         };
         item.command = { command: 'escurel.openRun', title: 'Open run', arguments: [node] };
         break;
       }
       case 'reason':
-        item.iconPath = new vscode.ThemeIcon(
-          'debug-stackframe-dot',
-          new vscode.ThemeColor('testing.iconFailed'),
-        );
+        // The second line of the failed row above it: no icon, so it reads as that row's own text.
         item.accessibilityInformation = { label: `Reason: ${node.label}`, role: 'treeitem' };
         break;
       case 'more':
@@ -218,7 +214,7 @@ export class RunnerTree implements vscode.TreeDataProvider<RunsNode>, vscode.Dis
     await vscode.commands.executeCommand(
       'setContext',
       'escurel.runs.filtered',
-      !!(filter.states?.length || filter.skill || filter.text),
+      !!(filter.states?.length || filter.skill || filter.text || filter.pageId || filter.range),
     );
     this.rebuild();
   }
@@ -371,7 +367,10 @@ export class RunnerTree implements vscode.TreeDataProvider<RunsNode>, vscode.Dis
     const needs = g.waiting.length + g.attention.length;
     view.badge =
       needs > 0
-        ? { value: needs, tooltip: `${needs} run${needs === 1 ? '' : 's'} need you` }
+        ? {
+            value: needs,
+            tooltip: `${needs} run${needs === 1 ? '' : 's'} need${needs === 1 ? 's' : ''} you`,
+          }
         : undefined;
   }
 

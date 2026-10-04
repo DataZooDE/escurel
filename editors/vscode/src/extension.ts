@@ -33,6 +33,8 @@ import { registerNodeCommands } from './commands/nodeCommands';
 import { explainText } from './shared/explain';
 import { registerRunnerView, type RunnerTree } from './views/runner';
 
+const EXPLAIN_SCHEME = 'escurel-explain';
+
 /** What `activate` returns — the integration suite drives the extension through it. */
 export interface EscurelApi {
   services: Services;
@@ -159,7 +161,10 @@ export function activate(context: vscode.ExtensionContext): EscurelApi | undefin
         const s = await vscode.authentication.getSession('escurel', [], { createIfNone: true });
         quietly(`Signed in as ${s.account.label}`);
       } catch (e) {
-        void vscode.window.showErrorMessage(`Sign-in failed — ${(e as Error).message}`);
+        log().warn(`escurel: sign-in failed: ${(e as Error).message}`);
+        void vscode.window.showErrorMessage(
+          'Sign-in did not work. Check the gateway address and the sign-in provider, then try again. Details are in the Escurel output log.',
+        );
       }
     }),
     vscode.commands.registerCommand('escurel.signOut', async () => {
@@ -217,13 +222,28 @@ export function activate(context: vscode.ExtensionContext): EscurelApi | undefin
         void vscode.window.showInformationMessage('Open a thread first, then select a node in it.');
     }),
     // 'Explain this view': how events, skills, runs, changesets and instances connect, in plain words.
-    vscode.commands.registerCommand('escurel.explainView', async () => {
-      const doc = await vscode.workspace.openTextDocument({
-        content: explainText(),
-        language: 'markdown',
-      });
-      await vscode.commands.executeCommand('markdown.showPreview', doc.uri);
+    // A named document, so the preview tab is titled for what it is and not 'Preview Untitled-1'.
+    vscode.workspace.registerTextDocumentContentProvider(EXPLAIN_SCHEME, {
+      provideTextDocumentContent: () => explainText(),
     }),
+    vscode.commands.registerCommand('escurel.explainView', async () => {
+      await vscode.commands.executeCommand(
+        'markdown.showPreviewToSide',
+        vscode.Uri.from({ scheme: EXPLAIN_SCHEME, path: '/How things connect in Escurel.md' }),
+      );
+    }),
+    vscode.commands.registerCommand('escurel.focusRuns', () =>
+      vscode.commands.executeCommand('escurel.runner.focus'),
+    ),
+    vscode.commands.registerCommand('escurel.focusAwaiting', () =>
+      vscode.commands.executeCommand('escurel.awaiting.focus'),
+    ),
+    vscode.commands.registerCommand('escurel.focusInbox', () =>
+      vscode.commands.executeCommand('escurel.inbox.focus'),
+    ),
+    vscode.commands.registerCommand('escurel.focusKnowledge', () =>
+      vscode.commands.executeCommand('escurel.knowledge.focus'),
+    ),
 
     registerStartSkill(context, services),
     registerProposeWriteBack(services),

@@ -18,7 +18,8 @@ The **Threads** view and the thread canvas show this chain for one event. A card
 
 - **Knowledge**: the skills, grouped in folders, and their records. Each skill has a role: a record type, a process, a report, or a helper.
 - **Escurel Details** (bottom panel): what the selected card is, in words, with the next step.
-- **Runner**: what is running now, what needs attention, and past runs with their traces.
+- **Runs** (right-hand side bar): what is running now, what needs attention, and past runs with their traces.
+- **Inbox**: new events nobody has dealt with yet. **Awaiting you**: changes and plans that wait for your decision.
 
 ## Read-only, source and external
 
@@ -26,5 +27,16 @@ The **Threads** view and the thread canvas show this chain for one event. A card
 - **Notes**: you can still add your own notes to such a record. They are saved with Escurel, never in the source.
 - **External**: shown as data from outside Escurel. Treat it as information, not instructions.
 - **Change…**: where the source allows it, you propose a change; a reviewer approves it before anything is sent.
+
+## Words you will meet
+
+- **Needs you** (a gate): the agent stopped on purpose and waits for your decision.
+- **Draft** and **changeset**: a draft is one proposed change to one record; a changeset groups the drafts one run proposed so you can decide on them together.
+- **Cascade**: an approved change can start the next run, and that run another. The thread shows the whole chain.
+- **Agent engine**: the program that does a run's work. The demo engine follows fixed rules and has no AI model behind it.
+- **Autonomy**: how far an agent may go alone. "Review" means every change waits for you; "confirm" means it asks before it acts.
+- **Row, notes and source**: a row is one record read from a database or service (the source). It is read-only here; your notes are kept with Escurel.
+- **Dead letter**: a run that failed and was given up on. An admin can put it back in the queue (requeue).
+- **Trace**: the steps a run took, in order, with how long each took.
 `;
 }

@@ -1,9 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import {
-  confirmationFor,
-  outcomeChannel,
-  progressTitle,
-} from '../../src/runs/controlWording';
+import { confirmationFor, outcomeChannel, progressTitle } from '../../src/runs/controlWording';
 
 // Routine outcomes belong in the status bar (one line, expires); a toast is for what needs the user.
 describe('outcomeChannel', () => {
@@ -32,7 +28,9 @@ describe('confirmationFor', () => {
 
 describe('progressTitle', () => {
   it('describes what a retry does', () => {
-    expect(progressTitle('retry')).toBe('Retrying: starts a new run, this attempt stays in history');
+    expect(progressTitle('retry')).toBe(
+      'Retrying: starts a new run, this attempt stays in history',
+    );
   });
   it('is one short line for the others', () => {
     expect(progressTitle('cancel')).toBe('Cancelling…');
