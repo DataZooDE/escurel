@@ -28,10 +28,10 @@ const TENANT: &str = "acme";
 const SKILL_PAGE: &str = "markdown/skills/shop-order.md";
 const ROWS: usize = 2_500;
 
-fn doc(n: usize) -> String {
+pub(crate) fn doc(n: usize) -> String {
     format!("{:010}", 4_500_000 + n)
 }
-fn row_page(n: usize) -> String {
+pub(crate) fn row_page(n: usize) -> String {
     format!("markdown/instances/shop-order/{}.md", doc(n))
 }
 
@@ -74,6 +74,32 @@ pub(crate) fn db_row(path: &Path, n: usize) -> Value {
     .unwrap()
 }
 
+/// Run SQL against the database file directly (someone else changing the source under the gateway).
+pub(crate) fn db_exec(path: &Path, sql: &str) {
+    let c = Connection::open_in_memory().unwrap();
+    c.execute_batch("INSTALL sqlite; LOAD sqlite;").unwrap();
+    c.execute_batch(&format!("ATTACH '{}' AS s (TYPE sqlite);", path.display()))
+        .unwrap();
+    c.execute_batch(sql).unwrap();
+}
+
+/// How many rows have `status = <status>`, straight from the file.
+pub(crate) fn db_count(path: &Path, status: &str) -> i64 {
+    let c = Connection::open_in_memory().unwrap();
+    c.execute_batch("INSTALL sqlite; LOAD sqlite;").unwrap();
+    c.execute_batch(&format!(
+        "ATTACH '{}' AS s (TYPE sqlite, READ_ONLY);",
+        path.display()
+    ))
+    .unwrap();
+    c.query_row(
+        "SELECT count(*) FROM s.orders WHERE status = ?",
+        [status],
+        |r| r.get(0),
+    )
+    .unwrap()
+}
+
 pub(crate) fn skill_page() -> String {
     r#"---
 kind: skill
@@ -91,7 +117,7 @@ backend:
   key: vbeln
   linked: markdown
   filterable: [kunnr]
-  writable_columns: [status, qty]
+  writable_columns: [status, quantity]
   source: {connector: sqlite, attach: shop_db, relation: "main.orders"}
   project: {vbeln: sales_doc, kunnr: sold_to, netwr: net_value, qty: quantity, status: status}
 ---
@@ -173,6 +199,7 @@ impl Gw {
             config_overrides: ConfigOverrides {
                 indexer: Some(indexer),
                 egress: Some(policy(secret_dir.path(), sql_dir.path())),
+                signing: true,
                 ..Default::default()
             },
             ..Default::default()

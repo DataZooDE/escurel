@@ -187,6 +187,35 @@ pub(crate) async fn materialise_view_on(
     schema_fingerprint(&conn, view)
 }
 
+/// The attach alias and the RESOLVED, policy-checked, injection-safe connection string of a database
+/// binding: what write-back opens its own connection with. Never used for directory connectors.
+pub(crate) async fn resolve_attach(
+    indexer: &Indexer,
+    binding: &SqlViewBinding,
+) -> Result<(String, String), SqlViewError> {
+    let db = binding.connector;
+    let attach = binding
+        .attach
+        .as_deref()
+        .ok_or(SqlViewError::MissingAttach(db.as_str()))?;
+    let cred = indexer
+        .lookup_credential(attach)
+        .await?
+        .ok_or_else(|| SqlViewError::CredentialNotFound(attach.to_owned()))?;
+    let secret = resolve_attach_secret(indexer, db, &cred.secret)?;
+    if !is_safe_sql_fragment(&secret) {
+        return Err(SqlViewError::InvalidBinding(
+            "registered secret contains an unsafe character".to_owned(),
+        ));
+    }
+    if !is_valid_db_relation(&binding.relation) || !is_valid_identifier(attach) {
+        return Err(SqlViewError::InvalidBinding(
+            "relation or attach name is unsafe".to_owned(),
+        ));
+    }
+    Ok((attach.to_owned(), secret))
+}
+
 /// The connection string behind a registered credential, resolved through the operator's resolver
 /// (a reference is read now; an inline secret is returned as stored) and checked against its attach
 /// policy. A bare indexer with no resolver (most tests) uses the stored value as it is.
@@ -452,6 +481,19 @@ pub(crate) fn project_view_rows(
     Ok(out)
 }
 
+/// The READ-WRITE `ATTACH` of the same source, used ONLY by write-back on its own short-lived
+/// connection (the indexer's persistent connection never holds a writable attachment).
+#[must_use]
+pub(crate) fn attach_sql_rw(connector: SqlConnector, alias: &str, secret: &str) -> String {
+    let ty = match connector {
+        SqlConnector::Postgres => "postgres",
+        SqlConnector::Mysql => "mysql",
+        SqlConnector::Sqlite => "sqlite",
+        _ => "",
+    };
+    format!("ATTACH '{secret}' AS {alias} (TYPE {ty})")
+}
+
 /// Build the READ_ONLY `ATTACH` for a database connector. Pure so the
 /// no-write-back invariant (REQ-SQL-04) is unit-testable without a live
 /// source. `alias` and `secret` are validated by the caller.
@@ -483,7 +525,7 @@ pub fn attach_sql(connector: SqlConnector, alias: &str, secret: &str) -> String 
 }
 
 /// The INSTALL/LOAD statements a DB connector needs before ATTACH.
-fn install_load(connector: SqlConnector) -> &'static [&'static str] {
+pub(crate) fn install_load(connector: SqlConnector) -> &'static [&'static str] {
     match connector {
         SqlConnector::Postgres => &["INSTALL postgres;", "LOAD postgres;"],
         SqlConnector::Mysql => &["INSTALL mysql;", "LOAD mysql;"],
@@ -561,7 +603,7 @@ pub(crate) fn is_safe_sql_fragment(s: &str) -> bool {
 
 /// Validate that a relation name is strictly a dot-separated sequence of
 /// valid unquoted identifiers.
-fn is_valid_db_relation(s: &str) -> bool {
+pub(crate) fn is_valid_db_relation(s: &str) -> bool {
     !s.is_empty() && s.split('.').all(is_valid_identifier)
 }
 

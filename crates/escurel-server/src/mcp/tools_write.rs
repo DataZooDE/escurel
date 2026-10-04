@@ -451,6 +451,21 @@ pub(super) async fn tool_update_page_ungated(
         }));
     }
 
+    // A `write_back` intent is not a direct write: it must be a draft.
+    if let Some(r) = crate::sql_rows::write_rejection(indexer, &a.page_id, &a.content, false)
+        .await
+        .map_err(|e| JsonRpcError::internal(format!("update_page rows guard: {e}")))?
+    {
+        return Ok(json!({
+            "ok": false,
+            "issues": [{
+                "severity": "error",
+                "code": r.code,
+                "location": r.location,
+                "message": r.message,
+            }],
+        }));
+    }
     // `instances: rows` guard (stage 3): a row page is the row's linked markdown. The write may not
     // touch a source column, smuggle a `backend_ref`, or invent a row.
     if let Some(r) = indexer

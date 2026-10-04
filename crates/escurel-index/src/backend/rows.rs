@@ -33,11 +33,11 @@ pub const ROWS_QUERY_TIMEOUT: std::time::Duration = std::time::Duration::from_se
 
 /// Runs `f` with a watchdog that interrupts the connection's running statement after `timeout`. The
 /// watchdog is joined before this returns, so a late interrupt can never hit the NEXT statement.
-fn with_statement_timeout<T>(
+pub(crate) fn with_statement_timeout<T, E: From<SqlViewError>>(
     conn: &duckdb::Connection,
     timeout: std::time::Duration,
-    f: impl FnOnce() -> Result<T, SqlViewError>,
-) -> Result<T, SqlViewError> {
+    f: impl FnOnce() -> Result<T, E>,
+) -> Result<T, E> {
     let handle = conn.interrupt_handle();
     let (done, wait) = std::sync::mpsc::channel::<()>();
     let fired = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -56,11 +56,11 @@ fn with_statement_timeout<T>(
     let _ = watchdog.join();
     match result {
         Err(_) if fired.load(std::sync::atomic::Ordering::SeqCst) => {
-            Err(SqlViewError::InvalidBinding(format!(
+            Err(E::from(SqlViewError::InvalidBinding(format!(
                 "backend_unavailable: the source query did not answer within {}s and was \
                  interrupted; narrow the list with a filter or ask the source's owner",
                 timeout.as_secs().max(1)
-            )))
+            ))))
         }
         other => other,
     }
@@ -92,6 +92,10 @@ pub struct RowRecord {
     pub fields: Map<String, Value>,
     /// `(column, DuckDB type)` of the source relation, from `DESCRIBE` — the discovered schema.
     pub types: Vec<(String, String)>,
+    /// Every source column as DuckDB's own `CAST(col AS VARCHAR)` text (`None` = NULL), captured by
+    /// [`Indexer::rows_get`] only: the basis a write-back's optimistic check compares against, in the
+    /// same representation the `UPDATE` compares with, so no value is ever round-tripped through JSON.
+    pub source_texts: Vec<(String, Option<String>)>,
 }
 
 /// The escurel field kind a DuckDB column type maps to (the skill's own `fields:` override it).
@@ -288,33 +292,34 @@ impl Indexer {
             limit + 1
         );
         let timeout = self.rows_query_timeout;
-        let (out, cast_keys_seen, more) = with_statement_timeout(&conn, timeout, || {
-            let mut stmt = conn.prepare(&sql)?;
-            let mut rows = stmt.query(duckdb::params_from_iter(params.iter()))?;
-            let mut out: Vec<RowRecord> = Vec::new();
-            // The key of each row as `CAST(.. AS VARCHAR)` renders it: the SAME text the ORDER BY and
-            // the `>` comparison use (see `select_with_keys`).
-            let mut cast_keys_seen: Vec<Vec<String>> = Vec::new();
-            let mut bytes = 0usize;
-            let mut more = false;
-            while let Some(row) = rows.next()? {
-                if out.len() == limit {
-                    more = true;
-                    break;
+        let (out, cast_keys_seen, more) =
+            with_statement_timeout::<_, SqlViewError>(&conn, timeout, || {
+                let mut stmt = conn.prepare(&sql)?;
+                let mut rows = stmt.query(duckdb::params_from_iter(params.iter()))?;
+                let mut out: Vec<RowRecord> = Vec::new();
+                // The key of each row as `CAST(.. AS VARCHAR)` renders it: the SAME text the ORDER BY and
+                // the `>` comparison use (see `select_with_keys`).
+                let mut cast_keys_seen: Vec<Vec<String>> = Vec::new();
+                let mut bytes = 0usize;
+                let mut more = false;
+                while let Some(row) = rows.next()? {
+                    if out.len() == limit {
+                        more = true;
+                        break;
+                    }
+                    let keys = cast_keys(row, cols.len(), src.cfg.key.len())?;
+                    let rec = read_record(src, row, &cols, &keys)?;
+                    bytes += serde_json::to_string(&rec.columns).map_or(0, |s| s.len());
+                    out.push(rec);
+                    cast_keys_seen.push(keys);
+                    // Stop on bytes (not just rows), but never return an empty page.
+                    if bytes >= ROWS_MAX_PAGE_BYTES {
+                        more = rows.next()?.is_some();
+                        break;
+                    }
                 }
-                let keys = cast_keys(row, cols.len(), src.cfg.key.len())?;
-                let rec = read_record(src, row, &cols, &keys)?;
-                bytes += serde_json::to_string(&rec.columns).map_or(0, |s| s.len());
-                out.push(rec);
-                cast_keys_seen.push(keys);
-                // Stop on bytes (not just rows), but never return an empty page.
-                if bytes >= ROWS_MAX_PAGE_BYTES {
-                    more = rows.next()?.is_some();
-                    break;
-                }
-            }
-            Ok((out, cast_keys_seen, more))
-        })?;
+                Ok((out, cast_keys_seen, more))
+            })?;
         let next_cursor = if more {
             cast_keys_seen.last().map(|k| encode_cursor(k))
         } else {
@@ -341,9 +346,16 @@ impl Indexer {
         let names: Vec<&str> = cols.iter().map(|(n, _)| n.as_str()).collect();
         let exprs = key_exprs(src, &names)?;
         let wheres: Vec<String> = exprs.iter().map(|e| format!("{e} = ?")).collect();
+        // Every column's VARCHAR text rides along after the key texts: the write-back basis.
+        let texts: Vec<String> = cols
+            .iter()
+            .enumerate()
+            .map(|(i, (n, _))| format!("CAST(\"{n}\" AS VARCHAR) AS \"__escurel_v{i}\""))
+            .collect();
         let sql = format!(
-            "SELECT {} FROM {} WHERE {} LIMIT 1",
+            "SELECT {}, {} FROM {} WHERE {} LIMIT 1",
             select_with_keys(&exprs),
+            texts.join(", "),
             src.view,
             wheres.join(" AND ")
         );
@@ -352,7 +364,14 @@ impl Indexer {
         match rows.next()? {
             Some(row) => {
                 let keys = cast_keys(row, cols.len(), src.cfg.key.len())?;
-                Ok(Some(read_record(src, row, &cols, &keys)?))
+                let mut rec = read_record(src, row, &cols, &keys)?;
+                let base = cols.len() + src.cfg.key.len();
+                rec.source_texts = cols
+                    .iter()
+                    .enumerate()
+                    .map(|(i, (n, _))| Ok((n.clone(), row.get::<_, Option<String>>(base + i)?)))
+                    .collect::<Result<_, SqlViewError>>()?;
+                Ok(Some(rec))
             }
             None => Ok(None),
         }
@@ -466,6 +485,7 @@ fn read_record(
         columns,
         fields,
         types: cols.to_vec(),
+        source_texts: Vec::new(),
     })
 }
 

@@ -1188,6 +1188,15 @@ async fn expand_row(
             "kind": escurel_index::backend::rows::field_kind_for(t),
         })).collect::<Vec<_>>(),
     });
+    let mut projection = projection;
+    if escurel_index::Indexer::rows_source_is_writable(src) {
+        // What a reviewer saw: a write-back proposal names it as its `base_etag`, and the columns
+        // that may be proposed. `read_only` means "not writable DIRECTLY": these change only through a
+        // human-gated `write_back` draft.
+        projection["etag"] = json!(crate::write_back::etag_of(&row.fields));
+        projection["writable_columns"] = json!(src.cfg.writable_columns);
+        projection["writable_via"] = json!("write_back");
+    }
     let mut out = if has_stored && src.cfg.linked {
         stored
     } else {

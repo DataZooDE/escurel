@@ -123,7 +123,7 @@ pub(crate) fn strip_intent(content: &str) -> String {
     out
 }
 
-fn refusal(code: &str, message: impl Into<String>) -> Value {
+pub(crate) fn refusal(code: &str, message: impl Into<String>) -> Value {
     json!({
         "ok": false,
         "issues": [{
@@ -146,7 +146,7 @@ pub(crate) fn backoff(base: Duration, attempt: u32) -> Duration {
 
 /// One audit event. Idempotent per `event_id`, so a retried promotion rewrites the same row.
 #[allow(clippy::too_many_arguments)]
-async fn audit(
+pub(crate) async fn audit(
     state: &crate::server::AppState,
     indexer: &Indexer,
     event_id: &str,
@@ -185,7 +185,7 @@ async fn audit(
 /// The audit write that records an upstream call that ALREADY HAPPENED: the call cannot be taken
 /// back, so a failure is retried a few times and then logged loudly; the draft's own state stays
 /// the source of truth (a re-promote recognises a row that already holds the change).
-async fn audit_after_apply(
+pub(crate) async fn audit_after_apply(
     state: &crate::server::AppState,
     indexer: &Indexer,
     event_id: &str,
@@ -226,7 +226,7 @@ pub(crate) const RESERVED_EVENT_ID_PREFIX: &str = "write-back:";
 
 /// The audit event under `event_id`, but only if the GATEWAY wrote it: a system event under the
 /// reserved label from source `escurel`.
-async fn witness(
+pub(crate) async fn witness(
     indexer: &Indexer,
     event_id: &str,
 ) -> Result<Option<escurel_index::EventInfo>, String> {
@@ -360,6 +360,28 @@ async fn run_inner(
             "a write-back targets a row page",
         ));
     };
+    // A row of a DATABASE-backed `rows` skill (SQLite / Postgres / MySQL) has its own apply step.
+    if let Some(sql) = indexer
+        .rows_source(skill)
+        .await
+        .map_err(|e| internal(e.to_string()))?
+    {
+        return crate::write_back_sql::run(
+            state,
+            indexer,
+            crate::write_back_sql::Request {
+                draft_id,
+                target_page_id,
+                decided_by,
+                skill,
+                row_id,
+                intent: &intent,
+                stripped,
+            },
+            sql,
+        )
+        .await;
+    }
     let src = remote_rows::source(indexer, skill)
         .await
         .map_err(internal)?
@@ -634,7 +656,7 @@ async fn run_inner(
 }
 
 /// Whether two scalars are the same value as a person would read them (`7` and `"7"` are).
-fn same_scalar(a: &Value, b: &Value) -> bool {
+pub(crate) fn same_scalar(a: &Value, b: &Value) -> bool {
     let text = |v: &Value| match v {
         Value::String(s) => Some(s.clone()),
         Value::Number(n) => Some(n.to_string()),

@@ -139,6 +139,7 @@ mod sql_creds;
 mod sql_rows_db;
 mod sql_validate;
 mod sql_view_tools;
+mod sql_write_back;
 mod surface_consolidation;
 mod synchronous_lake_durability;
 mod tool_execution_labels;
