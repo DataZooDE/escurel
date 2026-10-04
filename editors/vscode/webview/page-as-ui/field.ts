@@ -47,6 +47,10 @@ export class EscurelField extends LitElement {
 
   private value() {
     const f = this.field;
+    // A source value the source did not give: a dash that says so, not a blank that looks broken.
+    if (this.source && (f.value === null || f.value === undefined || f.display === '')) {
+      return html`<span class="value unavailable" title="Not available from the source">—</span>`;
+    }
     if (f.links?.length)
       return html`<span class="links">${f.links.map((l) => this.instanceButton(l))}</span>`;
     switch (f.render) {
@@ -57,12 +61,10 @@ export class EscurelField extends LitElement {
     }
     switch (f.kind) {
       case 'bool':
-        return html`<input
-          type="checkbox"
-          aria-label=${f.label}
-          .checked=${f.value === true}
-          ?disabled=${!this.editable}
-        />`;
+        // Read-only yes/no is words: a disabled checkbox looks like a bug in light themes.
+        if (!this.editable)
+          return html`<span class="value">${f.value === true ? 'Yes' : 'No'}</span>`;
+        return html`<input type="checkbox" aria-label=${f.label} .checked=${f.value === true} />`;
       default:
         return html`<span class="value">${f.display}</span>`;
     }

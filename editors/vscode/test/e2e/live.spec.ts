@@ -232,7 +232,7 @@ test('a sales order opens as a real order page: SAP fields and an items table', 
   await expect(order.locator('.body table tbody tr')).toHaveCount(2);
   // The order is ONE ROW of the SAP extract (read-only) plus the person's own notes, and says so.
   const strip = order.locator('.source-strip');
-  await expect(strip).toContainText('Source row');
+  await expect(strip).toContainText('Read-only copy from');
   await expect(strip).toContainText('read-only');
   await expect(order.locator('.field[data-source="true"]')).not.toHaveCount(0);
   // The delivery risk is the notes' own field, not a source column.

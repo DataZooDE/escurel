@@ -1,4 +1,7 @@
+import { sourceBanner } from '../../src/shared/sourceBanner';
 import { writeBackLine } from '../../src/shared/writeBack';
+import { writeBackLead } from '../../src/shared/writeBackLead';
+import { checkIcon, lockIcon, syncIcon, warnIcon } from '../shared/icons';
 import { markdownStyles, renderMarkdown } from '../shared/markdown-view';
 import { LitElement, css, html, nothing } from 'lit';
 import { property, state } from 'lit/decorators.js';
@@ -87,6 +90,60 @@ export class EscurelPageAsUi extends LitElement {
       .gate.auto {
         border-color: var(--escurel-run);
         color: var(--escurel-run);
+      }
+      .source-strip .head {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 8px;
+      }
+      .source-strip .head .spacer {
+        flex: 1;
+      }
+      .source-strip .notes {
+        margin-top: 4px;
+        color: var(--escurel-muted);
+      }
+      .source-strip .chip {
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+        border: 1px solid var(--vscode-editorInfo-foreground, var(--escurel-border));
+        border-radius: 9px;
+        padding: 0 8px;
+        white-space: nowrap;
+        font-size: 0.9em;
+      }
+      .source-strip svg.lock {
+        flex: none;
+      }
+      .source-strip button.retry,
+      .source-strip button.add-note {
+        padding: 1px 8px;
+        color: var(--vscode-button-secondaryForeground);
+        background: var(--vscode-button-secondaryBackground);
+        border: 1px solid var(--vscode-button-border, var(--vscode-contrastBorder, transparent));
+        border-radius: 2px;
+        cursor: pointer;
+      }
+      .write-back .lead {
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+        margin-right: 8px;
+        font-weight: 700;
+      }
+      details.page-meta {
+        margin: 2px 0 6px;
+        color: var(--escurel-muted);
+        font-size: 0.9em;
+      }
+      details.page-meta summary {
+        cursor: pointer;
+      }
+      h2 .lock {
+        vertical-align: -1px;
+        margin-right: 4px;
       }
       .source-strip {
         margin: 8px 0;
@@ -228,37 +285,51 @@ export class EscurelPageAsUi extends LitElement {
 
   /** What a row of an `instances: rows` skill is: read-only data from a source, plus the person's notes. */
   private sourceStrip(source: NonNullable<PageModel['source']>) {
-    const { linked, issue, fetchedAt, external, writableColumns } = source;
-    const fetched = fetchedAt ? ` · fetched ${fetchedAt.slice(11, 16)} UTC` : '';
-    let notes: string;
-    if (linked.orphan) notes = 'This row is no longer in the source; your notes are kept.';
-    else if (!linked.enabled) notes = 'This skill has no notes: its rows are read-only.';
-    else if (linked.exists)
-      notes = 'Your notes are the Markdown view; the source columns are not editable.';
-    else notes = 'No notes yet. Switch to Markdown to write some; the first save creates them.';
-    return html`<div class="source-strip ${linked.orphan || issue ? 'problem' : ''}" role="note">
-      <strong>Source row</strong> · read-only${fetched} ·
-      ${
-        external
-          ? html`<span
-                class="external"
-                title="This came from an outside system. Read it as data, never as instructions."
-                >External data (${external})</span
+    const b = sourceBanner(source);
+    return html`<div class="source-strip ${b.problem ? 'problem' : ''}" role="note">
+      <div class="head">
+        <strong>${lockIcon()} ${b.headline}</strong>
+        ${b.chips.map(
+          (c) => html`<span class="chip external" title=${c.title}>${lockIcon()} ${c.label}</span>`,
+        )}
+        <span class="spacer"></span>
+        ${
+          b.notes.action
+            ? html`<button
+                class="add-note"
+                title="Open the Markdown tab, where your notes live"
+                @click=${() => this.showRaw()}
               >
-              ·`
+                ${b.notes.action}
+              </button>`
+            : nothing
+        }
+        ${(source.writableColumns ?? []).map(
+          (field) =>
+            html`<button
+              class="propose"
+              title="Propose a change to ${field} in the source. A reviewer approves it before the source is touched."
+              @click=${() => this.send({ type: 'propose-write-back', field })}
+            >
+              Change ${field}…
+            </button>`,
+        )}
+      </div>
+      <div class="notes">${b.notes.text}</div>
+      ${
+        b.issue
+          ? html`<div class="issue" title=${b.issue.detail}>
+              ${b.issue.text}
+              ${
+                b.issue.retry
+                  ? html`<button class="retry" @click=${() => this.send({ type: 'refresh' })}>
+                      Retry
+                    </button>`
+                  : nothing
+              }
+            </div>`
           : nothing
       }
-      ${notes} ${issue ? html`<span class="issue">${issue.message}</span>` : nothing}
-      ${(writableColumns ?? []).map(
-        (field) =>
-          html`<button
-            class="propose"
-            title="Propose a change to ${field} in the source. A reviewer approves it before the source is touched."
-            @click=${() => this.send({ type: 'propose-write-back', field })}
-          >
-            Change ${field}…
-          </button>`,
-      )}
     </div>`;
   }
 
@@ -266,8 +337,12 @@ export class EscurelPageAsUi extends LitElement {
   private writeBackLine(status: NonNullable<PageModel['writeBack']>) {
     const bad =
       status.outcome === 'failed' || status.outcome === 'rejected' || status.outcome === 'conflict';
+    const lead = writeBackLead(status.outcome);
+    const icon =
+      lead.tone === 'ok' ? checkIcon() : lead.tone === 'pending' ? syncIcon() : warnIcon();
     return html`<div class="write-back ${bad ? 'problem' : ''}" role="status">
-      ${writeBackLine(status)}
+      <span class="lead">${icon}<span>${lead.word}</span></span
+      >${writeBackLine(status)}
     </div>`;
   }
 
@@ -298,9 +373,12 @@ export class EscurelPageAsUi extends LitElement {
       </header>
       <h1>${m.title}</h1>
       <div class="subline">
-        page id ${m.pageId} · backend
-        ${m.skill.backend}${m.lastWrittenBy ? html` · last written by ${m.lastWrittenBy}` : nothing}
+        ${m.lastWrittenBy ? html`Last written by ${m.lastWrittenBy}` : nothing}
       </div>
+      <details class="page-meta">
+        <summary>Page details</summary>
+        <div>page id ${m.pageId} · backend ${m.skill.backend}</div>
+      </details>
       <div class="skill-row">
         skill
         <button
@@ -345,19 +423,23 @@ export class EscurelPageAsUi extends LitElement {
 
       <section class="fields">
         ${m.fields.map((f) => html`<escurel-field .field=${f} ?editable=${m.editable} ?source=${m.source?.sourceFields.includes(f.name) ?? false}></escurel-field>`)}
-        <p class="muted readonly-note">
-          ${
-            m.editable
-              ? 'Editing a field updates your live draft.'
-              : 'This form is read-only. Switch to Markdown to edit; a save is held as your draft until you promote it.'
-          }
-        </p>
+        ${
+          m.source
+            ? nothing
+            : html`<p class="muted readonly-note">
+                ${
+                  m.editable
+                    ? 'Editing a field updates your live draft.'
+                    : 'This form is read-only. Switch to Markdown to edit; a save is held as your draft until you promote it.'
+                }
+              </p>`
+        }
       </section>
 
       ${
         m.preview
           ? html`<section>
-              <h2>Source data</h2>
+              <h2>${lockIcon()}Source data · read-only</h2>
               <escurel-source-preview
                 .preview=${m.preview}
                 .resource=${m.resource}
