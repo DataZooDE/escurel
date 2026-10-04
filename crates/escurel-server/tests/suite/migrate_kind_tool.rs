@@ -365,6 +365,18 @@ async fn quarantined_status(
 }
 
 #[tokio::test]
+async fn a_quarantined_tenant_refuses_a_malformed_ingest_with_the_quarantine_not_a_422() {
+    // The quarantine is checked BEFORE the body is validated: a client that has not read the notice
+    // and sends a malformed body must still be told the tenant is waiting for its migration.
+    let h = start_with_legacy_lane_quarantined(true).await;
+    for body in [json!({}), json!({ "nonsense": 1 })] {
+        let (status, json) = quarantined_status(&h.process, "POST", "/ingest", Some(body)).await;
+        assert_eq!(status, 503, "{json}");
+        assert_eq!(json["error"], "tenant_quarantined", "{json}");
+    }
+}
+
+#[tokio::test]
 async fn a_quarantined_tenant_refuses_ingest_upload_and_blob_reads() {
     let h = start_with_legacy_lane_quarantined(true).await;
     let p = &h.process;

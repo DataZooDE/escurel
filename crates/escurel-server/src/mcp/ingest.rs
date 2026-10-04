@@ -128,8 +128,23 @@ async fn ingest_gate(
 pub(crate) async fn ingest(
     State(state): State<crate::server::AppState>,
     headers: HeaderMap,
-    Json(req): Json<IngestRequest>,
+    body: Result<Json<IngestRequest>, axum::extract::rejection::JsonRejection>,
 ) -> axum::response::Response {
+    let req = match body {
+        Ok(Json(req)) => req,
+        Err(rejection) => {
+            // The same gate as a well-formed request (auth, suspension, QUARANTINE) runs BEFORE the
+            // body is faulted, so a client with a malformed body still learns the tenant is waiting
+            // for its migration (503) instead of a 422, and an unauthenticated one still gets a 401,
+            // never the page names in the quarantine message.
+            let resp = match ingest_gate(&state, &headers).await {
+                Err(gate) => gate,
+                Ok(_) => rejection.into_response(),
+            };
+            state.metrics.inc_request("/ingest", resp.status().as_u16());
+            return resp;
+        }
+    };
     // Metrics record the OUTCOME — a refused request is not a 200.
     let resp = ingest_inner(&state, &headers, req).await;
     state.metrics.inc_request("/ingest", resp.status().as_u16());
