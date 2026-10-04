@@ -180,6 +180,12 @@ export class RunController implements vscode.Disposable {
           quietly('Trace id copied');
           return;
         }
+        case 'copy-run-id': {
+          // The panel's own run id (the host holds it): nothing the webview sent is copied.
+          await vscode.env.clipboard.writeText(runId);
+          quietly('Run id copied');
+          return;
+        }
         case 'run-control':
         case 'view-skill':
           return void this.handleWebviewMessage(runId, m);

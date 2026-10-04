@@ -411,6 +411,8 @@ export type RunWebviewToHost =
   | { type: 'open-page'; pageId: string }
   | { type: 'open-thread'; rootEventId: string }
   | { type: 'copy-trace-id'; traceId: string }
+  /** The host copies THIS panel's own run id; the webview names nothing. */
+  | { type: 'copy-run-id' }
   | { type: 'run-control'; action: RunControlAction; runId: string; eventId?: string }
   | { type: 'view-skill'; skill: string }
   | { type: 'refresh' };

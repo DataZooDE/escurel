@@ -1,3 +1,5 @@
+import { emptyAttempts, emptyPlan, runByline, statusIconName } from '../../src/runs/runWording';
+import { checkIcon, crossIcon, syncIcon, warnIcon } from '../shared/icons';
 import { displayStepStatus, runHeading } from '../../src/runs/runTitle';
 import { LitElement, css, html, nothing } from 'lit';
 import type { PropertyValues } from 'lit';
@@ -7,6 +9,19 @@ import { formatDateTime, formatDuration } from '../../src/shared/time';
 import { theme } from '../shared/theme.css';
 
 const glyphs = { completed: '✓', in_progress: '◐', pending: '○', blocked: '!', unfinished: '◌' };
+
+const statusIcon = (status: string) => {
+  switch (statusIconName(status)) {
+    case 'check':
+      return checkIcon();
+    case 'sync':
+      return syncIcon();
+    case 'cross':
+      return crossIcon();
+    default:
+      return warnIcon();
+  }
+};
 
 export class EscurelRunDetail extends LitElement {
   static styles = [
@@ -73,15 +88,35 @@ export class EscurelRunDetail extends LitElement {
         font-size: 0.9em;
         color: var(--escurel-muted);
       }
+      /* An outlined chip on the page's own background: the badge fill made green text about 2.5:1 in
+         light themes. The colour is mixed with the foreground so it stays legible in every theme, and
+         an icon (a shape per state) says it without colour. */
       .status-chip {
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+        background: transparent;
         border: 1px solid currentColor;
-        color: var(--escurel-run);
+        color: color-mix(in srgb, var(--escurel-run) 60%, var(--vscode-foreground));
       }
       .status-chip.failed {
-        color: var(--escurel-run-failed);
+        color: color-mix(in srgb, var(--escurel-run-failed) 70%, var(--vscode-foreground));
       }
       .status-chip.neutral {
-        color: var(--escurel-muted);
+        color: var(--vscode-foreground);
+      }
+      .copy-run {
+        background: none;
+        border: 0;
+        padding: 0;
+        font: inherit;
+        cursor: pointer;
+        color: var(--vscode-textLink-foreground);
+        text-decoration: underline;
+      }
+      .copy-run:focus-visible {
+        outline: 1px solid var(--vscode-focusBorder);
+        outline-offset: 2px;
       }
       .link,
       .copy-trace {
@@ -251,11 +286,10 @@ export class EscurelRunDetail extends LitElement {
     if (!run) return html`<div class="status-message" role="status">Loading run…</div>`;
     return html`
       <header>
-        <h1>
-          ${runHeading(run).title}
-          <span class="run-id" title="Run id">${run.runId}</span>
-        </h1>
-        <span class="chip status-chip ${run.tone}">${run.status.replaceAll('_', ' ')}</span>
+        <h1>${runHeading(run).title}</h1>
+        <span class="chip status-chip ${run.tone}"
+          >${statusIcon(run.status)}${run.status.replaceAll('_', ' ')}</span
+        >
         ${
           (run.controls ?? []).length > 0
             ? html`<div class="controls" role="group" aria-label="Run controls">
@@ -280,10 +314,14 @@ export class EscurelRunDetail extends LitElement {
         ${this.controlHint(run)}
       </header>
       <div class="meta">
-        ${run.harness ? html`<span>Harness ${run.harness}</span>` : nothing}
-        ${run.model ? html`<span>· Model ${run.model}</span>` : nothing}
-        ${run.autonomy ? html`<span>· Autonomy ${run.autonomy}</span>` : nothing}
-        ${run.depth !== undefined ? html`<span>· Depth ${run.depth}</span>` : nothing}
+        <span>${runByline(run)}</span>
+        <button
+          class="copy-run"
+          title=${run.runId}
+          @click=${() => this.send({ type: 'copy-run-id' })}
+        >
+          Copy run id
+        </button>
       </div>
       ${
         run.traceId
@@ -333,7 +371,7 @@ export class EscurelRunDetail extends LitElement {
                   </div>
                 `,
               )
-            : html`<p class="muted">No attempts reported.</p>`
+            : html`<p class="muted">${emptyAttempts(run.status)}</p>`
         }
       </section>
       <section aria-label="Plan">
@@ -353,7 +391,7 @@ export class EscurelRunDetail extends LitElement {
                   </div>
                 `;
               })
-            : html`<p class="muted">No plan reported.</p>`
+            : html`<p class="muted">${emptyPlan(run.status)}</p>`
         }
       </section>
       <section aria-label="Tool calls">

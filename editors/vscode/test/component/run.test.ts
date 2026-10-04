@@ -324,7 +324,8 @@ describe('<escurel-run-detail>', () => {
     } as RunView);
     const h1 = q(el, 'h1')!;
     expect(text(h1)).to.contain('supplier-risk on order-4500123');
-    expect(text(q(el, 'h1 .run-id'))).to.equal(recordedRunView.runId);
+    // The id is not in the heading at all: it is the tooltip of Copy run id.
+    expect(q(el, 'button.copy-run')!.getAttribute('title')).to.equal(recordedRunView.runId);
   });
 
   it('does not show a step as in progress under a finished run', async () => {
@@ -351,4 +352,95 @@ describe('<escurel-run-detail>', () => {
     });
     expect(qa(el, '.plan-step').map(text).join(' ')).to.contain('in progress');
   });
+
+  describe('wording and legibility', () => {
+    it('keeps the 26-character run id out of the heading: it sits behind a Copy run id button', async () => {
+      const el = await render({ ...recordedRunView, skill: 'supplier-risk' } as RunView);
+      expect(text(q(el, 'h1')).includes(recordedRunView.runId)).to.equal(false);
+      const copy = q(el, 'button.copy-run') as HTMLButtonElement;
+      expect(text(copy)).to.equal('Copy run id');
+      const sent: RunWebviewToHost[] = [];
+      el.addEventListener('escurel-message', (e) =>
+        sent.push((e as CustomEvent<RunWebviewToHost>).detail),
+      );
+      copy.click();
+      expect(sent).to.deep.equal([{ type: 'copy-run-id' }]);
+    });
+
+    it('describes who ran it as a sentence, not "Harness echo · Autonomy review · Depth 0"', async () => {
+      const el = await render({
+        ...recordedRunView,
+        harness: 'echo',
+        autonomy: 'review',
+        depth: 0,
+      });
+      const meta = text(q(el, '.meta'));
+      expect(meta).to.contain('Run by the echo agent');
+      expect(meta).to.not.contain('Harness');
+      expect(meta).to.not.contain('Depth 0');
+    });
+
+    it('a run that has just begun says it is starting, not that nothing was reported', async () => {
+      const el = await render({ ...recordedRunView, status: 'running', attempts: [], plan: [] });
+      const muted = qa(el, '.muted').map(text).join(' | ');
+      expect(muted).to.contain('Starting…');
+      expect(muted).to.contain('has not reported a plan yet');
+      expect(muted).to.not.contain('No attempts reported');
+    });
+
+    it('every status chip carries an icon of its own shape', async () => {
+      for (const status of ['processed', 'running', 'failed', 'dead_letter']) {
+        const el = await render({ ...recordedRunView, status });
+        expect(q(el, '.status-chip svg') !== null, status).to.equal(true);
+      }
+    });
+
+    // The pill was grey with green text (about 2.5:1 in light themes, 3:1 on dark teal).
+    const themes: Record<string, string> = {
+      light:
+        '--vscode-editor-background:#ffffff;--vscode-foreground:#3b3b3b;--vscode-charts-green:#388a34;--vscode-errorForeground:#a1260d;--vscode-badge-background:#c4c4c4;--vscode-badge-foreground:#333',
+      dark: '--vscode-editor-background:#1e1e1e;--vscode-foreground:#cccccc;--vscode-charts-green:#89d185;--vscode-errorForeground:#f48771;--vscode-badge-background:#4d4d4d;--vscode-badge-foreground:#fff',
+    };
+    for (const [name, tokens] of Object.entries(themes)) {
+      it(`keeps the status text above 4.5:1 in ${name} (processed and failed)`, async () => {
+        for (const status of ['processed', 'dead_letter']) {
+          const host = await fixture<HTMLElement>(
+            html`<div style=${tokens + ';background:var(--vscode-editor-background)'}>
+              <escurel-run-detail
+                .view=${{ ...recordedRunView, status, tone: status === 'processed' ? 'ok' : 'failed' }}
+              ></escurel-run-detail>
+            </div>`,
+          );
+          const el = host.querySelector('escurel-run-detail') as EscurelRunDetail;
+          await el.updateComplete;
+          const chip = el.shadowRoot!.querySelector('.status-chip') as HTMLElement;
+          const cs = getComputedStyle(chip);
+          const bg =
+            cs.backgroundColor === 'rgba(0, 0, 0, 0)'
+              ? getComputedStyle(host).backgroundColor
+              : cs.backgroundColor;
+          const ratio = contrast(cs.color, bg);
+          expect(
+            ratio >= 4.5,
+            `${name} ${status}: ${cs.color} on ${bg} = ${ratio.toFixed(2)}`,
+          ).to.equal(true);
+        }
+      });
+    }
+  });
 });
+
+function channel(v: number): number {
+  const c = v / 255;
+  return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
+}
+function luminance(rgb: string): number {
+  // color-mix() computes to `color(srgb 0.64 0.81 0.63)` (0..1), plain colours to `rgb(r, g, b)` (0..255).
+  const scale = rgb.startsWith('color(') ? 255 : 1;
+  const [r, g, b] = (rgb.match(/[\d.]+/g) ?? []).slice(0, 3).map((n) => Number(n) * scale);
+  return 0.2126 * channel(r!) + 0.7152 * channel(g!) + 0.0722 * channel(b!);
+}
+function contrast(a: string, b: string): number {
+  const [hi, lo] = [luminance(a), luminance(b)].sort((x, y) => y - x);
+  return (hi! + 0.05) / (lo! + 0.05);
+}
