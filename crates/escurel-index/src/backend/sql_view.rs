@@ -264,16 +264,16 @@ pub(crate) fn with_connect_timeout(
     dsn: &str,
     timeout: std::time::Duration,
 ) -> String {
-    if connector != SqlConnector::Postgres || dsn.contains("connect_timeout") {
+    // Decided from the PARSED keys, and added with the same encoder as the statement timeout, so it is
+    // right for both the key/value and the URI spelling (and for a pinned `hostaddr=` string).
+    if connector != SqlConnector::Postgres || crate::dsn::has_key(dsn, "connect_timeout") {
         return dsn.to_owned();
     }
-    let secs = timeout.as_secs().max(1);
-    if dsn.starts_with("postgres://") || dsn.starts_with("postgresql://") {
-        let sep = if dsn.contains('?') { '&' } else { '?' };
-        format!("{dsn}{sep}connect_timeout={secs}")
-    } else {
-        format!("{} connect_timeout={secs}", dsn.trim_end())
-    }
+    crate::dsn::with_param(
+        dsn,
+        "connect_timeout",
+        &timeout.as_secs().max(1).to_string(),
+    )
 }
 
 /// Make a Postgres server enforce the statement timeout itself.
@@ -1460,6 +1460,48 @@ mod statement_timeout_tests {
         assert_eq!(
             with_connect_timeout(SqlConnector::Sqlite, "/data/x.db", t),
             "/data/x.db"
+        );
+    }
+}
+
+#[cfg(test)]
+mod connect_timeout_tests {
+    use super::*;
+    use std::time::Duration;
+
+    #[test]
+    fn connect_timeout_is_added_in_both_dsn_spellings_and_never_twice() {
+        let t = Duration::from_secs(7);
+        let kv = with_connect_timeout(SqlConnector::Postgres, "host=db dbname=x", t);
+        assert!(kv.contains("connect_timeout=7"), "{kv}");
+        let uri = with_connect_timeout(
+            SqlConnector::Postgres,
+            "postgresql://u:p@db/x?sslmode=require",
+            t,
+        );
+        assert!(
+            uri.contains("connect_timeout=7") && uri.contains("sslmode=require"),
+            "{uri}"
+        );
+        // The statement timeout and the connect timeout compose on a URI without a bare `options=`.
+        let both = with_connect_timeout(
+            SqlConnector::Postgres,
+            &with_server_statement_timeout(SqlConnector::Postgres, "postgresql://u:p@db/x", t),
+            t,
+        );
+        assert_eq!(both.matches('?').count(), 1, "{both}");
+        // An operator's own value wins, and `application_name=connect_timeout` is not the option.
+        assert_eq!(
+            with_connect_timeout(SqlConnector::Postgres, "host=db connect_timeout=2", t),
+            "host=db connect_timeout=2"
+        );
+        assert!(
+            with_connect_timeout(
+                SqlConnector::Postgres,
+                "host=db application_name=connect_timeout",
+                t
+            )
+            .ends_with("connect_timeout=7")
         );
     }
 }
