@@ -241,8 +241,8 @@ class HttpEscurelClient implements EscurelClient {
   }) async {
     final result = await _call('expand', {
       'page_id': pageId,
-      'anchor': ?anchor,
-      'version': ?version,
+      // `anchor` / `version` are wikilink parts the gateway has no argument for (it returns the whole
+      // page); sending them is refused as an unknown argument, so they stay client-side.
       'as_of': ?asOf,
       'scenario': ?scenario,
     });
