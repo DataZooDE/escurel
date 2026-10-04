@@ -94,9 +94,15 @@ export class KnowledgeTree implements vscode.TreeDataProvider<Node> {
         item.description = n.description;
         const where = n.skill.folder ? `\n\nfolder \`${n.skill.folder}\`` : '';
         const tags = n.skill.tags?.length ? `\n\ntags: ${n.skill.tags.join(', ')}` : '';
-        const meaning = `\n\n**${n.skill.autonomy ?? 'review'}**: ${autonomyMeaning(n.skill.autonomy)}\n\n**${n.skill.backend.kind}**: data in ${backendMeaning(n.skill.backend.kind)}`;
+        // Compact on purpose: a tooltip covers the rows below it. One line for role, layer and what the
+        // gate means; the data source only when it is not plain markdown.
+        const gate = `${n.skill.autonomy ?? 'review'}: ${autonomyMeaning(n.skill.autonomy)}`;
+        const source =
+          n.skill.backend.kind === 'markdown'
+            ? ''
+            : `\n\ndata: ${backendMeaning(n.skill.backend.kind)}`;
         item.tooltip = new vscode.MarkdownString(
-          `**${n.skill.title ?? n.skill.id}** — ${n.skill.summary ?? n.skill.description}\n\nrole **${role}**${inferred ? ' (inferred)' : ''} · ${n.readOnly ? '_read-only (' + n.skill.layer + ')_' : 'layer ' + n.skill.layer}${meaning}${where}${tags}`,
+          `**${n.skill.title ?? n.skill.id}** — ${n.skill.summary ?? n.skill.description}\n\nrole **${role}**${inferred ? ' (inferred)' : ''} · ${n.readOnly ? '_read-only (' + n.skill.layer + ')_' : 'layer ' + n.skill.layer} · ${gate}${source}${where}${tags}`,
         );
         // Data that lives outside the knowledge base gets an icon of its own (cloud, plug, table):
         // where the data comes from matters more at a glance than the role.

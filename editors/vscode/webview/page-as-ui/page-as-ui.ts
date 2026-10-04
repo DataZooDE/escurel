@@ -130,8 +130,11 @@ export class EscurelPageAsUi extends LitElement {
         display: inline-flex;
         align-items: center;
         gap: 4px;
-        margin-right: 8px;
+        flex: none;
         font-weight: 700;
+      }
+      .write-back .lead svg {
+        align-self: center;
       }
       details.page-meta {
         margin: 2px 0 6px;
@@ -178,6 +181,9 @@ export class EscurelPageAsUi extends LitElement {
         cursor: pointer;
       }
       .write-back {
+        display: flex;
+        align-items: baseline;
+        gap: 8px;
         margin: 0 0 8px;
         padding: 4px 10px;
         border-left: 3px solid var(--vscode-textLink-foreground);

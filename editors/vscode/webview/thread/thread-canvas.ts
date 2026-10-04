@@ -98,9 +98,8 @@ export class EscurelThreadCanvas extends LitElement {
       button.edge-more {
         position: absolute;
         z-index: 7;
-        right: 14px;
-        top: 50%;
-        transform: translateY(-50%);
+        right: 18px;
+        bottom: 20px;
         padding: 4px 10px;
         font: inherit;
         font-size: 0.85em;

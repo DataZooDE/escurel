@@ -48,6 +48,8 @@ async function scanForRow(page: Page, name: RegExp) {
 }
 
 async function knowledgeRow(page: Page, name: RegExp) {
+  // A tooltip left by the last hover would cover the rows below it.
+  await page.mouse.move(1000, 700);
   const row =
     (await scanForRow(page, name)) ??
     pane(page, 'Knowledge').getByRole('treeitem', { name }).first();
@@ -98,6 +100,8 @@ test('the story is on screen: knowledge, threads, awaiting, inbox and the runner
 
 test('the thread shows the cascade, and an instance offers a skill to start', async ({ stack }) => {
   const { page } = stack;
+  // The previous scenario left the pointer over a Knowledge row; its tooltip would cover the canvas.
+  await page.mouse.move(1000, 700);
   const wv = await webviewWith(page, 'escurel-thread-canvas');
   const canvas = wv.locator('escurel-thread-canvas');
   // event -> run -> changeset -> its two instances (the order and the run's analysis) -> ONE follow-on
@@ -122,6 +126,9 @@ test('the thread shows the cascade, and an instance offers a skill to start', as
   // The canvas keeps its full width: the inspector is no longer a column inside it.
   await expect(canvas.locator('escurel-thread-inspector')).toHaveCount(0);
   await expect(page.getByRole('tab', { name: /Escurel Details/ })).toBeVisible();
+  // The panel opens with a SENTENCE, not a key/value dump, and the engineer fields are collapsed.
+  await expect(details.locator('escurel-thread-inspector .summary')).toBeVisible();
+  await expect(details.locator('escurel-thread-inspector .kind')).toBeVisible();
   await stack.shot('03-thread-inspector-instance');
 
   // Click it. A start event appears in the Inbox, and the runner takes it.
@@ -131,6 +138,9 @@ test('the thread shows the cascade, and an instance offers a skill to start', as
   const before = await inbox.count();
   await start.click();
   await expect.poll(() => inbox.count()).toBeGreaterThan(before);
+  // Routine feedback is a fading status-bar message, not a toast that covers the panel.
+  await expect(page.locator('.statusbar')).toContainText('Started supplier-risk');
+  await expect(page.locator('.notification-toast', { hasText: /^Started / })).toHaveCount(0);
   await stack.shot('04-after-start');
 });
 
@@ -138,7 +148,7 @@ test('run detail opens from the canvas with its plan and tool calls', async ({ s
   const { page } = stack;
   // Scenario 2 started a skill, which opened that event's thread in a NEW tab. Go back to the story's
   // thread, the one with a finished run, as a person would.
-  await page.locator('.tab', { hasText: 'PO 4500087412' }).first().click();
+  await page.locator('.tab', { hasText: 'Vendor 100234 Meier-Guss' }).first().click();
   const wv = await webviewWith(page, 'escurel-thread-canvas');
   // The canvas is panned to whatever was selected last; Fit brings every card back into view.
   await wv.getByRole('button', { name: 'Fit' }).click();
@@ -148,6 +158,9 @@ test('run detail opens from the canvas with its plan and tool calls', async ({ s
   const run = await webviewWith(page, 'escurel-run-detail');
   await expect(run.locator('escurel-run-detail h1')).toContainText('Run ');
   await expect(run.getByText('Tool calls')).toBeVisible();
+  // Plain words, and the 26-character id stays behind Copy run id.
+  await expect(run.locator('escurel-run-detail .meta')).toContainText('Run by the');
+  await expect(run.getByRole('button', { name: 'Copy run id' })).toBeVisible();
   await stack.shot('05-run-detail');
 });
 
@@ -181,7 +194,13 @@ test('work that waits on a person stands out: a Needs-you changeset with its dra
   await card.getByRole('button', { name: 'Review changes' }).click();
   const picker = page.locator('.quick-input-widget');
   await expect(picker).toBeVisible();
-  await expect(picker).toContainText('Promote all');
+  // Titled by the decision and who proposed it (no ULID), with rows that name the pages.
+  await expect(picker.locator('input')).toHaveAttribute(
+    'placeholder',
+    'Review 2 changes from agent:supplier-risk',
+  );
+  await expect(picker).toContainText('Apply all changes');
+  await expect(picker).not.toContainText(/[0-9A-Z]{26}/);
   await stack.shot('02c-review-picker');
   await page.keyboard.press('Escape');
   await expect(picker).toBeHidden();
@@ -233,13 +252,20 @@ test('a sales order opens as a real order page: SAP fields and an items table', 
   // The order is ONE ROW of the SAP extract (read-only) plus the person's own notes, and says so.
   const strip = order.locator('.source-strip');
   await expect(strip).toContainText('Read-only copy from');
-  await expect(strip).toContainText('read-only');
+  await expect(strip).toContainText(/read-only/i);
   await expect(order.locator('.field[data-source="true"]')).not.toHaveCount(0);
   // The delivery risk is the notes' own field, not a source column.
   await expect(order.locator('.field[data-name="delivery_risk"]')).not.toHaveAttribute(
     'data-source',
     'true',
   );
+  // One clear action for the person's own notes, and the page details are folded away.
+  await expect(strip.getByRole('button', { name: /^(Add|Edit) notes?$/ })).toBeVisible();
+  await expect(order.locator('details.page-meta')).not.toHaveAttribute('open', '');
+  await expect(order.locator('.readonly-note')).toHaveCount(0);
+  // The Details panel follows the editor in front: beside an order page it is empty, not stale.
+  const details = await webviewWith(page, 'escurel-details');
+  await expect(details.locator('escurel-details .empty')).toBeVisible();
   await stack.shot('06-order-page');
 });
 
@@ -315,6 +341,15 @@ test('"First make a plan" ends in a plan the person is asked to approve', async 
   await expect(toast).toBeVisible({ timeout: 60_000 });
   await expect(toast.getByRole('button', { name: 'Approve plan' })).toBeVisible();
   await stack.shot('08-plan-ready');
+  // A dismissed toast must not lose the plan: the planned run's card in the thread has the button too.
+  await page.keyboard.press('Escape');
+  const canvas = (await webviewWith(page, 'escurel-thread-canvas')).locator(
+    'escurel-thread-canvas',
+  );
+  await expect(canvas.locator('.card.needs-you button.approve-btn')).toBeVisible({
+    timeout: 30_000,
+  });
+  await stack.shot('08b-approve-on-card');
   // Not now: nothing is run behind the person's back.
   await page.keyboard.press('Escape');
 });
@@ -467,6 +502,7 @@ async function openRow(page: Page, skill: string, row: RegExp) {
   for (let attempt = 0; attempt < 6; attempt += 1) {
     const skillItem = await skillRow(page, skill);
     if ((await skillItem.getAttribute('aria-expanded')) !== 'true') await skillItem.click();
+    await page.mouse.move(1000, 700);
     // The children are fetched from the outside system: wait for the row, not for a duration.
     const found = await expect
       .poll(async () => (await scanForRow(page, row)) !== undefined, { timeout: 10_000 })
@@ -520,7 +556,7 @@ test('the two outside systems are in the tree, and a REST row says it is externa
   const wv = await webviewWith(page, 'escurel-page-as-ui', 'iberica-forja');
   const strip = wv.locator('.source-strip');
   await expect(strip).toContainText('External data (REST)');
-  await expect(strip).toContainText('read-only');
+  await expect(strip).toContainText(/read-only/i);
   // The portal's own columns, live from the real service.
   await expect(wv.locator('.field[data-name="display_name"]')).toContainText('Ibérica Forja S.L.');
   await expect(wv.locator('.field[data-name="rating"]')).toContainText('A');
