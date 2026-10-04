@@ -182,6 +182,7 @@ export const test = base.extend<object, {
             EVOLVE_OIDC_AUDIENCE: 'escurel',
             EVOLVE_TENANT: 'vsx',
             GEMINI_API_KEY: 'unused-seed-only-test-key',
+            EVOLVE_ALLOW_SYNTHETIC_BRAIN: '1',
           },
           stdio: ['ignore', evolveLogFd, evolveLogFd],
         });

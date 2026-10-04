@@ -19,19 +19,26 @@ type EventRow = {
   provenance?: { manual?: Record<string, unknown>; evolve?: Record<string, unknown> };
 };
 
-test('native owner approval, seed run, validation, and inactive candidate through Evolve', async ({ stack }) => {
+test('native owner approval, two proposal generations, validation, and inactive candidate through Evolve', async ({ stack }) => {
   const id = `native-service-${Date.now()}`;
-  const baseline = 'SELECT sku_id, 1::BIGINT AS order_qty FROM p1_observation';
-  const seed = 'SELECT sku_id, CASE WHEN period % 3 = 0 THEN 2 WHEN period % 3 = 2 THEN 1 ELSE 0 END::BIGINT AS order_qty FROM p1_observation';
+  const baselineRule = 'CASE WHEN period % 6 = 0 THEN 2 WHEN period % 6 IN (1, 2, 3, 4) THEN 1 ELSE 0 END';
+  const winnerRule = 'CASE WHEN period % 3 = 0 THEN 3 ELSE 0 END';
+  const policySql = (rule: string) => `SELECT sku_id, (${rule} * CASE WHEN sku_id = 1 THEN 1 ELSE 2 END)::BIGINT AS order_qty FROM p1_observation`;
+  const baseline = policySql(baselineRule);
+  const winnerSql = policySql(winnerRule);
+  const pipeline = Array(12).fill(0) as number[];
   const trainingSku = {
-    sku_id: 1, name: 'Synthetic SKU', initial_stock: 1,
-    initial_pipeline: [0, 0, 0, 0, 0, 0], history: [1, 1],
-    demand: [1, 1, 1, 1, 1, 2], lead_time: 1, case_pack: 1, min_order: 0,
-    holding_cost: 0, shortage_cost: 10, fixed_order_cost: 5,
+    sku_id: 1, name: 'Synthetic SKU A', initial_stock: 1,
+    initial_pipeline: pipeline, history: [1],
+    demand: Array(12).fill(1) as number[], lead_time: 1, case_pack: 1, min_order: 0,
+    holding_cost: 0, shortage_cost: 100, fixed_order_cost: 5,
   };
+  const trainingSkuB = { ...trainingSku,
+    sku_id: 2, name: 'Synthetic SKU B', initial_stock: 2,
+    history: [2], demand: Array(12).fill(2) as number[] };
   const sourcePayload = {
-    capacity: 10, skus: [trainingSku], training_start: '2026-08-01',
-    training_end: '2026-08-06', history_start: '2026-07-30',
+    capacity: 9, skus: [trainingSku, trainingSkuB], training_start: '2026-08-01',
+    training_end: '2026-08-12', history_start: '2026-07-31',
     history_end: '2026-07-31', inventory_as_of: '2026-08-01',
     demand_observation: 'true_demand',
   };
@@ -42,40 +49,41 @@ test('native owner approval, seed run, validation, and inactive candidate throug
   expect(source.normalized_sha256).toMatch(/^[a-f0-9]{64}$/);
   expect(source.raw_sha256).toMatch(/^[a-f0-9]{64}$/);
 
-  const holdoutSku = { ...trainingSku,
-    name: 'PRIVATE_HOLDOUT_OUTCOMES_SENTINEL', demand: [1, 1, 1, 1, 1, 1] };
+  const holdoutSku = { ...trainingSku, name: 'PRIVATE_HOLDOUT_OUTCOMES_SENTINEL_A' };
+  const holdoutSkuB = { ...trainingSkuB, name: 'PRIVATE_HOLDOUT_OUTCOMES_SENTINEL_B' };
   const serviceTargets = { aggregate_min_fill_rate: 0.8,
-    per_sku_min_fill_rate: { '1': 0.8 } };
+    per_sku_min_fill_rate: { '1': 0.8, '2': 0.8 } };
   const holdout = await stack.evolveCall('evolve_register_holdout', {
     holdout_id: `${id}-holdout`, source_sha256: 'c'.repeat(64),
     training_source_id: source.training_source_id,
     training_source_sha256: source.normalized_sha256,
     source_ref: `synthetic:${id}:holdout`, training_source_ref: `synthetic:${id}:training`,
-    training_start: '2026-08-01', training_end: '2026-08-06',
-    history_start: '2026-08-30', history_end: '2026-08-31',
+    training_start: '2026-08-01', training_end: '2026-08-12',
+    history_start: '2026-08-31', history_end: '2026-08-31',
     inventory_as_of: '2026-09-01', holdout_start: '2026-09-01',
-    holdout_end: '2026-09-06', outcomes_sealed_before_search: true,
+    holdout_end: '2026-09-12', outcomes_sealed_before_search: true,
     outcomes_publicly_disclosed: true, demand_observation: 'true_demand',
-    problem: { capacity: 10, skus: [holdoutSku] }, service_targets: serviceTargets,
+    problem: { capacity: 9, skus: [holdoutSku, holdoutSkuB] }, service_targets: serviceTargets,
     baseline_sql: baseline, max_cost_ratio: 0.9,
     evaluator_version: 'replenishment_decision_v2',
-    planning_window_days: 2, scored_window_days: 2,
-    sensitivity_tail_days: [1, 4], unit_order_costs: { '1': 1 },
-    terminal_stock_tolerance: { '1': 0 },
+    planning_window_days: 1, scored_window_days: 3,
+    sensitivity_tail_days: [3, 9], unit_order_costs: { '1': 1, '2': 1 },
+    terminal_stock_tolerance: { '1': 0, '2': 0 },
   });
   expect(holdout.holdout_sha256).toMatch(/^[a-f0-9]{64}$/);
 
   const search = {
     pilot: 'p1_decision', brain: 'llm', evaluator_version: 'replenishment_decision_v2',
-    seed_sql: seed, baseline_sql: baseline, capacity: 10, skus: sourcePayload.skus,
-    service_targets: serviceTargets, planning_window_days: 2, scored_window_days: 2,
-    unit_order_costs: { '1': 1 }, terminal_stock_tolerance: { '1': 0 },
+    seed_sql: baseline, baseline_sql: baseline, capacity: 9, skus: sourcePayload.skus,
+    service_targets: serviceTargets, planning_window_days: 1, scored_window_days: 3,
+    unit_order_costs: { '1': 1, '2': 1 }, terminal_stock_tolerance: { '1': 0, '2': 0 },
     holdout_id: `${id}-holdout`, training_source_id: source.training_source_id,
     source_sha256: source.normalized_sha256,
-    training_start: '2026-08-01', training_end: '2026-08-06',
-    history_start: '2026-07-30', history_end: '2026-07-31',
+    training_start: '2026-08-01', training_end: '2026-08-12',
+    history_start: '2026-07-31', history_end: '2026-07-31',
     inventory_as_of: '2026-08-01', demand_observation: 'true_demand',
-    max_generations: 0, budget: { max_evaluated: 1 },
+    max_generations: 2, budget: { max_evaluated: 3 },
+    synthetic_brain: 'batch_progression_v1',
   };
   const pageId = `markdown/instances/evolve_problem/${id}.md`;
   const content = `---\ntype: instance\nskill: evolve_problem\nid: ${id}\nowner_subject: alice\npilot: p1_decision\nsearch_request: ${JSON.stringify(search)}\n---\n# Synthetic seed admission\n`;
@@ -101,14 +109,16 @@ test('native owner approval, seed run, validation, and inactive candidate throug
   await expect.poll(async () => {
     const result = await stack.call('list_events', { root_event_id: preflight!.event_id,
       label_skill: 'evolve:preflight', include_system: true });
-    ready = (result.events as EventRow[]).find((event) => event.title === 'problem-structure-checked');
+    ready = (result.events as EventRow[])[0];
     return ready?.event_id;
   }, { timeout: 30_000 }).toBeTruthy();
+  expect(ready!.title, ready!.body).toBe('problem-structure-checked');
   const report = JSON.parse(ready!.body) as Record<string, unknown>;
   expect(report.problem_sha256).toBe(revision);
   expect(report.structural_ready_for_start).toBe(true);
   expect(ready!.body).not.toContain('initial_pipeline');
   expect(ready!.body).not.toContain(holdoutSku.name);
+  expect(ready!.body).not.toContain(holdoutSkuB.name);
   const contractDialog = stack.page.getByRole('dialog', { name: 'Info' })
     .filter({ hasText: 'Review the frozen private holdout contract' });
   await expect(contractDialog).toContainText(`synthetic:${id}:holdout`);
@@ -132,6 +142,7 @@ test('native owner approval, seed run, validation, and inactive candidate throug
   expect(stack.geminiRequests).toHaveLength(3);
   for (const request of stack.geminiRequests) {
     expect(JSON.stringify(request)).not.toContain(holdoutSku.name);
+    expect(JSON.stringify(request)).not.toContain(holdoutSkuB.name);
     expect(JSON.stringify(request)).not.toContain('synthetic:' + id + ':holdout');
   }
 
@@ -141,6 +152,7 @@ test('native owner approval, seed run, validation, and inactive candidate throug
   const approvalDialog = stack.page.getByRole('dialog', { name: 'Warning' })
     .filter({ hasText: 'Approve this Evolve search' });
   await expect(approvalDialog).toContainText('Plan harness: gemini');
+  await expect(approvalDialog).toContainText('Proposal source: deterministic synthetic fixture');
   await approvalDialog.getByRole('button', { name: 'Approve search' }).click();
 
   let approvalId: string | undefined;
@@ -173,16 +185,29 @@ test('native owner approval, seed run, validation, and inactive candidate throug
   }, { timeout: 60_000 }).toBe('completed');
   expect(completedStatus!.bound_holdout_sha256).toBe(holdout.holdout_sha256);
   expect(completedStatus!.bound_training_source_id).toBe(source.training_source_id);
+  expect(completedStatus!.proposal_source).toBe('synthetic_batch_progression_v1_not_model_judgment');
   expect(completedStatus!.training_source_binding).toBe('server_hashed_submitted_json');
   expect(completedStatus!.validation_effective_passed).toBe(false);
   expect(completedStatus!.promotable).toBe(false);
   expect(completedStatus!.next_validation_action).toBe('evolve_validate_winner');
-  expect((completedStatus!.budget_spent as Record<string, unknown>).candidates_evaluated).toBe(1);
+  expect((completedStatus!.budget_spent as Record<string, unknown>).candidates_evaluated).toBe(3);
+  expect((completedStatus!.budget_spent as Record<string, unknown>).candidates_generated).toBe(3);
+  expect(completedStatus!.generation).toBe(2);
   expect(completedStatus!.best_program_id).toEqual(expect.any(Number));
   const best = await stack.evolveCall('evolve_best', { experiment: experimentId });
   expect(best.id).toBe(completedStatus!.best_program_id);
-  expect(best.origin).toBe('seed');
-  expect(best.generation).toBe(0);
+  expect(best.origin).toBe('synthetic_fixture');
+  expect(best.generation).toBe(2);
+  expect(best.parent_id).toEqual(expect.any(Number));
+  const lifecycle = await stack.evolveCall('evolve_events', { experiment: experimentId });
+  const improvements = (lifecycle.events as Array<{ kind: string; payload: Record<string, unknown> }>)
+    .filter((event) => event.kind === 'new_best');
+  expect(improvements).toHaveLength(2);
+  const proposalIds = improvements.map((event) => event.payload.program_id);
+  expect(new Set(proposalIds).size).toBe(2);
+  expect(proposalIds[1]).toBe(best.id);
+  expect(best.parent_id).toBe(proposalIds[0]);
+  expect(improvements[1]!.payload.combined_score).toBeGreaterThan(improvements[0]!.payload.combined_score as number);
   const experimentPageId = `markdown/instances/evolve_experiment/${experimentId}.md`;
   await expect.poll(async () => {
     try {
@@ -196,6 +221,7 @@ test('native owner approval, seed run, validation, and inactive candidate throug
   await expect(stack.page.getByRole('tab', { name: new RegExp(String(experimentId)), selected: true })).toBeVisible();
   const experimentUi = await webviewWith(stack.page, 'escurel-page-as-ui');
   await expect(experimentUi.getByText('completed', { exact: true })).toBeVisible();
+  await expect(experimentUi.getByText('Proposal source: deterministic synthetic fixture', { exact: false })).toBeVisible();
   await experimentUi.getByRole('button', { name: 'Validate winner', exact: true }).click();
 
   let validationEvent: EventRow | undefined;
@@ -214,7 +240,7 @@ test('native owner approval, seed run, validation, and inactive candidate throug
   const validationReport = validation!.report as Record<string, unknown>;
   expect(validationReport.evaluator).toBe('replenishment_decision_v2');
   expect(validationReport.winner_program_id).toBe(best.id);
-  expect(validationReport.winner_sql_sha256).toBe(createHash('sha256').update(seed).digest('hex'));
+  expect(validationReport.winner_sql_sha256).toBe(createHash('sha256').update(winnerSql).digest('hex'));
   expect(validationReport.baseline_sql_sha256).toBe(createHash('sha256').update(baseline).digest('hex'));
   expect(validationReport.holdout_sha256).toBe(holdout.holdout_sha256);
   expect(validationReport.source_binding_kind).toBe('server_hashed_submitted_json');
@@ -315,7 +341,7 @@ test('native owner approval, seed run, validation, and inactive candidate throug
   expect(policy.validation_ref).toBe(`decision-validation::${experimentId}`);
   expect(policy.candidate_kind).toBe('synthetic_sandbox_candidate');
   expect(policy.validation_evidence_scope).toBe('disclosed_synthetic_replay_two_nested_tails');
-  expect(policyPage.body).toContain(seed);
+  expect(policyPage.body).toContain(winnerSql);
   const candidateThread = await webviewWith(stack.page, 'escurel-thread-canvas');
   await candidateThread.locator(`escurel-thread-canvas .card[data-node-id="${candidateReceipt!.event_id}"]`).click();
   await candidateThread.locator('escurel-thread-inspector .wikilink').click();

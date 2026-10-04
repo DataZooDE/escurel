@@ -43,4 +43,13 @@ describe('Evolve approval summary', () => {
     expect(summary).toContain('4. Fourth step');
     expect(summary).toContain('Echo plans are workflow smoke tests');
   });
+
+  it('separates the planning harness from a deterministic synthetic proposal source', () => {
+    const summary = evolveApprovalSummary('a'.repeat(64), {
+      pilot: 'p1_decision', synthetic_brain: 'batch_progression_v1',
+    }, { harness: 'gemini', steps: [{ step: 'Review' }] });
+    expect(summary).toContain('Plan harness: gemini');
+    expect(summary).toContain('Proposal source: deterministic synthetic fixture');
+    expect(summary).toContain('no Gemini proposal judgment');
+  });
 });

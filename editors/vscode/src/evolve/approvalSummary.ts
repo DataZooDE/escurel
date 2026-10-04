@@ -28,6 +28,9 @@ export function evolveApprovalSummary(
     'Approve this Evolve search against the frozen problem revision?',
     ...(plan ? [`Plan harness: ${field(plan.harness)}`,
       ...(steps.length ? ['Plan steps:', ...steps] : ['Plan steps: missing'])] : []),
+    `Proposal source: ${spec.synthetic_brain === 'batch_progression_v1'
+      ? 'deterministic synthetic fixture (integration test only; no Gemini proposal judgment)'
+      : 'Gemini LLM'}`,
     `Page SHA-256: ${pageSha256}`,
     `Pilot: ${field(spec.pilot)}; holdout ID: ${field(spec.holdout_id)}`,
     `Limits: ${field(spec.max_generations)} generations; ${field(budget.max_evaluated)} evaluations; ${usd}`,
