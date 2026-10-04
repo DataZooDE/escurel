@@ -391,13 +391,16 @@ them is `escurel:admin`-gated and so not part of the normal agent surface:
 - `register_credential(name, connector, secret_ref | secret)` / `list_credentials()` /
   `delete_credential(name)` — the `sql_view` source-secret registry (secrets
   never echoed back). Give the connection string as a **reference** (`secret_ref`: `file:` / `env:` / `gsm:`, same
-  allow-list as `register_endpoint`); inline `secret` is deprecated and flagged. `postgres` / `mysql` hosts and
-  `sqlite` file paths are checked against the operator's egress policy (`ESCUREL_SQL_FILE_DIRS`) when first used.
+  per-tenant allow-list as `register_endpoint`); inline `secret` is deprecated and flagged. `postgres` / `mysql`
+  connection strings are parsed with libpq's grammar and checked against the operator's egress policy when first
+  used (only `host`, `hostaddr`, `port`, `dbname`, `user`, `password`, `sslmode`, `options`, `application_name`,
+  `connect_timeout` are accepted; every host must be public); `sqlite` file paths AND `json_dir` / `parquet_dir`
+  globs must lie under `ESCUREL_SQL_FILE_DIRS` (unset = none).
 - `validate_bindings()` — re-probe every `sql_view` for schema drift; a
   `binding_degraded` view reads fail-closed.
 - `register_endpoint(name, kind, base_url, [secret_ref | secret])` / `list_endpoints()` — the REST / MCP
   endpoint registry that `openapi` / `mcp` skills point at by name. Give the credential as a **reference**
-  (`secret_ref`: `gsm:NAME` = `ESCUREL_SECRET_<NAME>`, `env:ESCUREL_SECRET_<NAME>` (or a name in the operator's `ESCUREL_SECRET_ENV_ALLOW`), or `file:/path` under the operator's `ESCUREL_SECRET_FILE_DIRS`, default `/run/secrets`; anything else is refused at registration - the operator, not the tenant, decides what is nameable); an inline `secret` is
+  (`secret_ref`: `gsm:NAME` = `ESCUREL_SECRET_<TENANT>__<NAME>`, `env:ESCUREL_SECRET_<TENANT>__<NAME>` (or a name the operator lists in `ESCUREL_SECRET_ENV_ALLOW`), or `file:/path` under `<ESCUREL_SECRET_FILE_DIRS>/<tenant>/` (default dir `/run/secrets`); `<TENANT>` is your tenant id upper-cased, non-alphanumerics as `_`; anything else is refused at registration - the operator, not the tenant, decides what is nameable, and a tenant cannot name another tenant's secret); an inline `secret` is
   accepted but flagged in the result, and neither is ever echoed (`list_endpoints` shows only the
   `secret_kind`). `validate_endpoints()` probes each endpoint through the egress policy and reports
   `refused` for a policy violation. `describe_backend(skill)` shows what a remote skill's calls would be —
@@ -483,5 +486,11 @@ of the normal app surface — see `references/08` and `references/10`.
 - **Summary text, full structuredContent (0.13.0).** `content[0].text` is a short summary; read
   `structuredContent` for the result.
 - **Autonomy is enforced for machine tokens (0.13.0).** A run's write to a `review|confirm` skill's
-  instance is held as a draft (`held_for_review: true`); `move_page` / `delete_page` answer
-  `review_required`; people, admins and `autonomy: auto` skills write directly; promoting always lands.
+  instance is held as a draft (`held_for_review: true`, typed on `UpdatePageResponse`: `ok` is true but
+  NOTHING landed, so do not mark an event processed on it); `move_page` (source AND destination) /
+  `delete_page` / `merge_branch` / `/ingest` / `write_instance` answer `review_required`; people, admins on
+  a plain token and `autonomy: auto` skills write directly. **A machine is gated even when its token is
+  admin** (the runner's run tokens are), and a machine's edit of a SKILL page is held too (a run cannot
+  write `autonomy: auto` for itself). **Only a person promotes**: `promote_draft` / `promote_changeset`
+  answer `promote_requires_human` to any run token (propose, then leave it in Awaiting You); a machine may
+  `discard_draft` only what its own run proposed. `mint_agent_token` never carries `escurel:admin`.

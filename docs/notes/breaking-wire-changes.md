@@ -32,4 +32,24 @@ One line per change. Folded into the root `CHANGELOG.md` BREAKING entry and `doc
   `move_page` / `delete_page` answer `review_required` (a removal cannot be held as a draft). People on
   plain agent-role tokens, admins and `autonomy: auto` skills are unchanged; promoting always lands.
   A runner/agent flow that wrote review-skill pages directly must now propose drafts.
+- Round-2 security review (autonomy gate, 2026-10-04): a MACHINE is now gated EVEN WHEN ITS TOKEN IS ADMIN
+  (the runner mints its agents' run tokens as admin; the gate used to wave admins through). A machine's
+  edit of a SKILL page (`markdown/skills/*`) is held as a draft like a review skill's instance (a run
+  cannot write `autonomy: auto` for itself); a skill page that does not parse holds (it failed open).
+  `move_page` gates the destination as well as the source; `merge_branch` is refused (`review_required`)
+  for a machine when a member page belongs to a review skill; `/ingest` answers `409 review_required`
+  for a machine uploading into a review document skill; `write_instance` answers `review_required`.
+  `promote_draft` / `promote_changeset` answer `promote_requires_human` to ANY machine token (it was
+  write-back drafts only): an agent proposes, a person decides; `discard_draft` / `discard_changeset`
+  by a machine only for drafts its own run proposed. `mint_agent_token` no longer inherits `escurel:admin`
+  from its minter. `update_page` answers (and the typed clients decode) `held_for_review` / `draft`.
+- `secret_ref` is per tenant: `env:` names live in `ESCUREL_SECRET_<TENANT>__*` (`gsm:NAME` reads
+  `ESCUREL_SECRET_<TENANT>__<NAME>`), `file:` under `<ESCUREL_SECRET_FILE_DIRS>/<tenant>/`, and
+  `ESCUREL_SECRET_ENV_ALLOW` takes `tenant:NAME` (a bare `NAME` stays global). A credential registered
+  against the old global names must be re-registered (this is the first release with `secret_ref`).
+- SQL sources: the connection-string check parses libpq's grammar (a second host in a URI query, `host =
+  x`, host lists, `service=` are judged or refused; keys outside a short allow-list are refused), pins a
+  checked host name to its address, and `json_dir` / `parquet_dir` globs must lie under
+  `ESCUREL_SQL_FILE_DIRS` (unset = no directory sources; set it on a gateway that serves them).
+  `query_instance` enforces the query page's own `acl.read`.
 

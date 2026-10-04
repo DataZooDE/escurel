@@ -4,6 +4,23 @@ The skill version tracks the consumer-facing contract, not the Escurel
 binary version. The Escurel repo's checked-out git ref is the true version
 pin (see `SKILL.md` → "How this skill is installed").
 
+## 0.16.0 — the autonomy gate holds against machines; secrets and file sources are scoped (BREAKING behaviour)
+
+Round-2 security review. Behaviour changes a consumer can see:
+
+- **A machine is gated even with an admin token** (the runner's run tokens are admin). Its edits of SKILL
+  pages are held; `move_page` gates the destination too; `merge_branch`, `/ingest` (409) and `write_instance`
+  answer `review_required` for a review skill. A skill page that does not parse holds.
+- **Only a person promotes.** `promote_draft` / `promote_changeset` answer `promote_requires_human` to any run
+  token; a machine may `discard_draft` only its own run's drafts. `mint_agent_token` never carries admin.
+- **`UpdatePageResponse.held_for_review` / `draft` are typed** (Rust, TS, Dart): `ok: true` + `held_for_review`
+  means NOTHING landed. The echo harness no longer marks an event processed on a held write.
+- **`secret_ref` is per tenant**: `ESCUREL_SECRET_<TENANT>__<NAME>`, files under `<dir>/<tenant>/`,
+  `ESCUREL_SECRET_ENV_ALLOW=tenant:NAME`. Re-register credentials that used the global names.
+- **File sources need `ESCUREL_SQL_FILE_DIRS`**: `json_dir` / `parquet_dir` globs must lie under it (it was
+  only `sqlite`); Postgres/MySQL DSNs accept a short key list, all hosts are judged, a host name is pinned.
+- `query_instance` enforces the query page's own `acl.read`.
+
 ## 0.15.1 — a refused call is an error in every client (PATCH, behaviour fix)
 
 - **Fix:** the Rust client (`escurel-client`) decoded a refused READ (`isError: true`, payload `{ok: false,
