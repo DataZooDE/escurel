@@ -94,7 +94,7 @@
       },
       {
         "command": "escurel.search",
-        "title": "Search\u2026",
+        "title": "Search…",
         "category": "Escurel",
         "icon": "$(search)"
       },
@@ -127,7 +127,7 @@
       },
       {
         "command": "escurel.startSkill",
-        "title": "Start skill\u2026",
+        "title": "Start skill…",
         "category": "Escurel"
       },
       {
@@ -289,22 +289,62 @@
       {
         "view": "escurel.knowledge",
         "contents": "Not connected to the escurel gateway.\n[Reconnect](command:escurel.refresh)\n[Sign in](command:escurel.signIn)\n\nSet `escurel.gatewayUrl` in Settings.",
-        "when": "escurel.connected == false"
+        "when": "escurel.connected == false && escurel.connectionState != 'quarantined' && escurel.connectionState != 'incompatible'"
+      },
+      {
+        "view": "escurel.knowledge",
+        "contents": "This tenant is waiting for a data migration: the page format changed (`type:` is now `kind:`), so it serves nothing else until an operator runs `escurel admin migrate-kind`.\n[Check again](command:escurel.refresh)",
+        "when": "escurel.connected == false && escurel.connectionState == 'quarantined'"
+      },
+      {
+        "view": "escurel.knowledge",
+        "contents": "This gateway is older than this extension: it uses a data format the extension no longer reads. Update the gateway, or install an older extension.\n[Check again](command:escurel.refresh)",
+        "when": "escurel.connected == false && escurel.connectionState == 'incompatible'"
       },
       {
         "view": "escurel.awaiting",
         "contents": "Not connected to the escurel gateway.\n[Reconnect](command:escurel.refresh)\n[Sign in](command:escurel.signIn)\n\nSet `escurel.gatewayUrl` in Settings.",
-        "when": "escurel.connected == false"
+        "when": "escurel.connected == false && escurel.connectionState != 'quarantined' && escurel.connectionState != 'incompatible'"
+      },
+      {
+        "view": "escurel.awaiting",
+        "contents": "This tenant is waiting for a data migration: the page format changed (`type:` is now `kind:`), so it serves nothing else until an operator runs `escurel admin migrate-kind`.\n[Check again](command:escurel.refresh)",
+        "when": "escurel.connected == false && escurel.connectionState == 'quarantined'"
+      },
+      {
+        "view": "escurel.awaiting",
+        "contents": "This gateway is older than this extension: it uses a data format the extension no longer reads. Update the gateway, or install an older extension.\n[Check again](command:escurel.refresh)",
+        "when": "escurel.connected == false && escurel.connectionState == 'incompatible'"
       },
       {
         "view": "escurel.inbox",
         "contents": "Not connected to the escurel gateway.\n[Reconnect](command:escurel.refresh)\n[Sign in](command:escurel.signIn)\n\nSet `escurel.gatewayUrl` in Settings.",
-        "when": "escurel.connected == false"
+        "when": "escurel.connected == false && escurel.connectionState != 'quarantined' && escurel.connectionState != 'incompatible'"
+      },
+      {
+        "view": "escurel.inbox",
+        "contents": "This tenant is waiting for a data migration: the page format changed (`type:` is now `kind:`), so it serves nothing else until an operator runs `escurel admin migrate-kind`.\n[Check again](command:escurel.refresh)",
+        "when": "escurel.connected == false && escurel.connectionState == 'quarantined'"
+      },
+      {
+        "view": "escurel.inbox",
+        "contents": "This gateway is older than this extension: it uses a data format the extension no longer reads. Update the gateway, or install an older extension.\n[Check again](command:escurel.refresh)",
+        "when": "escurel.connected == false && escurel.connectionState == 'incompatible'"
       },
       {
         "view": "escurel.runner",
         "contents": "Not connected to the escurel gateway.\n[Reconnect](command:escurel.refresh)\n[Sign in](command:escurel.signIn)\n\nSet `escurel.gatewayUrl` in Settings.",
-        "when": "escurel.connected == false"
+        "when": "escurel.connected == false && escurel.connectionState != 'quarantined' && escurel.connectionState != 'incompatible'"
+      },
+      {
+        "view": "escurel.runner",
+        "contents": "This tenant is waiting for a data migration: the page format changed (`type:` is now `kind:`), so it serves nothing else until an operator runs `escurel admin migrate-kind`.\n[Check again](command:escurel.refresh)",
+        "when": "escurel.connected == false && escurel.connectionState == 'quarantined'"
+      },
+      {
+        "view": "escurel.runner",
+        "contents": "This gateway is older than this extension: it uses a data format the extension no longer reads. Update the gateway, or install an older extension.\n[Check again](command:escurel.refresh)",
+        "when": "escurel.connected == false && escurel.connectionState == 'incompatible'"
       }
     ],
     "menus": {

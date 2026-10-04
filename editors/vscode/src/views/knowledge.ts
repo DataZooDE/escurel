@@ -4,7 +4,7 @@ import * as vscode from 'vscode';
 import type { EscurelClient, Instance } from '../client';
 import { uriForPage } from '../fs/provider';
 import { log } from '../log';
-import { describeError } from '../errors';
+import { connectionStateOf, describeError } from '../errors';
 import { instanceRow, type InstanceRow, type SkillRow } from './knowledgeModel';
 import {
   ROLE_ICONS,
@@ -147,6 +147,7 @@ export class KnowledgeTree implements vscode.TreeDataProvider<Node> {
       if (!n) {
         const skills = await this.client().listSkills();
         await vscode.commands.executeCommand('setContext', 'escurel.connected', true);
+        await vscode.commands.executeCommand('setContext', 'escurel.connectionState', 'ok');
         return buildSkillTree(skills);
       }
       if (n.kind === 'folder') return n.children;
@@ -162,7 +163,15 @@ export class KnowledgeTree implements vscode.TreeDataProvider<Node> {
       return [];
     } catch (e) {
       log().warn(`escurel: knowledge tree: ${describeError(e)}`);
-      if (!n) await vscode.commands.executeCommand('setContext', 'escurel.connected', false);
+      if (!n) {
+        await vscode.commands.executeCommand('setContext', 'escurel.connected', false);
+        // WHY it is not connected decides which welcome text the empty views show.
+        await vscode.commands.executeCommand(
+          'setContext',
+          'escurel.connectionState',
+          connectionStateOf(e),
+        );
+      }
       return [{ kind: 'error', message: describeError(e) }];
     }
   }

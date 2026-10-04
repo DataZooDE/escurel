@@ -1,3 +1,4 @@
+import { checkSkillsCompatible } from './compat';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { McpError } from '@modelcontextprotocol/sdk/types.js';
 import type { ToolInfo } from '../auth/adminState';
@@ -166,7 +167,7 @@ export class EscurelClient {
   // ── catalogue + pages ────────────────────────────────────────────
 
   async listSkills(): Promise<Skill[]> {
-    return (await this.call<{ skills: Skill[] }>('list_skills', {})).skills;
+    return checkSkillsCompatible((await this.call<{ skills: Skill[] }>('list_skills', {})).skills);
   }
 
   listInstancesPage(req: ListInstancesRequest): Promise<ListInstancesResponse> {

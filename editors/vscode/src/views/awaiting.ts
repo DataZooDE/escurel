@@ -1,7 +1,7 @@
 import { errorRowSpec } from './errorRow';
 import * as vscode from 'vscode';
 import type { EscurelClient } from '../client';
-import { describeError } from '../errors';
+import { connectionStateOf, describeError } from '../errors';
 import { log } from '../log';
 import { accessibleLabel, buildAwaitingRows, type AwaitingRow } from './awaitingModel';
 
@@ -113,6 +113,7 @@ export class AwaitingTree implements vscode.TreeDataProvider<Node> {
           this.client().listSkills(),
         ]);
         await vscode.commands.executeCommand('setContext', 'escurel.connected', true);
+        await vscode.commands.executeCommand('setContext', 'escurel.connectionState', 'ok');
         const rows = buildAwaitingRows({ changesets, drafts, events: inboxPage.events, skills });
         if (this.treeView) {
           this.treeView.badge =
@@ -128,7 +129,14 @@ export class AwaitingTree implements vscode.TreeDataProvider<Node> {
       if (this.treeView) {
         this.treeView.badge = undefined;
       }
-      if (!n) await vscode.commands.executeCommand('setContext', 'escurel.connected', false);
+      if (!n) {
+        await vscode.commands.executeCommand('setContext', 'escurel.connected', false);
+        await vscode.commands.executeCommand(
+          'setContext',
+          'escurel.connectionState',
+          connectionStateOf(e),
+        );
+      }
       return [{ kind: 'error', message: describeError(e) }];
     }
   }

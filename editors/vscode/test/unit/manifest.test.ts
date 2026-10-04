@@ -152,3 +152,37 @@ describe('the details view', () => {
     ]);
   });
 });
+
+describe('the empty views say WHY they are empty', () => {
+  // `Not connected` for every failure left a person with a quarantined tenant or an outdated gateway
+  // clicking Reconnect. The host publishes `escurel.connectionState`; each state has its own words.
+  const welcome = (
+    manifest.contributes as unknown as {
+      viewsWelcome: { view: string; contents: string; when: string }[];
+    }
+  ).viewsWelcome;
+  for (const view of ['escurel.knowledge', 'escurel.awaiting', 'escurel.inbox', 'escurel.runner']) {
+    it(`${view} has a message for a quarantined tenant and an outdated gateway`, () => {
+      const forState = (state: string) =>
+        welcome.find(
+          (w) => w.view === view && w.when.includes(`escurel.connectionState == '${state}'`),
+        );
+      expect(forState('quarantined')?.contents).toContain('escurel admin migrate-kind');
+      expect(forState('incompatible')?.contents).toMatch(/older than this extension/i);
+    });
+
+    it(`${view} keeps the generic Reconnect message for the other failures only`, () => {
+      const generic = welcome.filter(
+        (w) =>
+          w.view === view &&
+          !w.when.includes("== 'quarantined'") &&
+          !w.when.includes("== 'incompatible'"),
+      );
+      expect(generic.length).toBeGreaterThan(0);
+      for (const g of generic) {
+        expect(g.when).toContain("escurel.connectionState != 'quarantined'");
+        expect(g.when).toContain("escurel.connectionState != 'incompatible'");
+      }
+    });
+  }
+});
