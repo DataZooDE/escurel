@@ -494,7 +494,10 @@ pub(super) async fn tool_expand(
                 // `indexer.expand` and the blob read are separate operations.
                 // A concurrent edit can otherwise pair an old rendered Evolve
                 // problem with the NEW blob hash, authorizing bytes nobody saw.
-                if matches!(e.page.skill.as_str(), "evolve_problem" | "evolve_training_source") {
+                if matches!(
+                    e.page.skill.as_str(),
+                    "evolve_problem" | "evolve_training_source"
+                ) {
                     ensure_evolve_problem_projection_matches(&stored, &page)?;
                 }
                 use sha2::{Digest, Sha256};
