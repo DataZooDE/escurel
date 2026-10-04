@@ -1,6 +1,7 @@
 import { cleanText } from '../shared/untrustedText';
 import type { Instance, Skill } from '../client';
 import { pageSlug } from '../shared/pageId';
+import { backendChip } from '../shared/backendLabel';
 
 /** The chips the mock shows beside a skill: autonomy, event-typed, a non-markdown backend, a non-overlay layer, shadows. */
 export function chipsForSkill(s: Skill): string[] {
@@ -8,7 +9,7 @@ export function chipsForSkill(s: Skill): string[] {
     s.autonomy && ['auto', 'review', 'confirm'].includes(s.autonomy) ? s.autonomy : 'review',
   ];
   if (s.is_event_typed) chips.push('event-typed');
-  if (s.backend.kind !== 'markdown') chips.push(s.backend.kind);
+  if (s.backend.kind !== 'markdown') chips.push(backendChip(s.backend.kind));
   if (s.layer !== 'overlay') chips.push(s.layer);
   if (s.shadows) chips.push('shadows');
   return chips;

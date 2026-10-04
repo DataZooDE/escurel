@@ -12,14 +12,23 @@ export const orderSkillPage: SkillPageModel = {
   summary: 'One order per customer purchase.',
   readOnly: false,
   stale: true,
-  provenance: ['stale', 'verified 2026-01-10', 'status reviewed', 'stale after P90D', '2 sources'],
+  provenance: [
+    'stale',
+    'verified 2026-01-10',
+    'status reviewed',
+    'stale after 90 days',
+    '2 sources',
+  ],
   facts: [
     { label: 'Role', value: 'record' },
     { label: 'Folder', value: 'sales/orders' },
     { label: 'Tags', value: 'erp, sales' },
-    { label: 'Backend', value: 'sql_view' },
-    { label: 'Autonomy', value: 'review' },
-    { label: 'Layer', value: 'overlay' },
+    {
+      label: 'Data from',
+      value: 'SQL table',
+      hint: 'Where the records of this skill are stored or read from.',
+    },
+    { label: 'Agent changes', value: 'wait for your approval' },
   ],
   fields: [
     {

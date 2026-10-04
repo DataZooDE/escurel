@@ -222,7 +222,7 @@ describe('buildPageModel on a row instance', () => {
       { ...skill, verified: '2026-09-30', stale_after: 'P90D' },
       now,
     );
-    expect(fresh.skill.facts).toEqual(['verified 2026-09-30', 'stale after P90D']);
+    expect(fresh.skill.facts).toEqual(['verified 2026-09-30', 'stale after 90 days']);
     expect(fresh.skill.stale).toBeUndefined();
     const old = buildPageModel(
       expanded,

@@ -58,12 +58,18 @@ describe('buildSkillPageModel', () => {
     expect(m.title).toBe('Customer order');
     expect(m.description).toMatch(/customer order/);
     expect(m.facts.map((f) => f.label)).toEqual(
-      expect.arrayContaining(['Role', 'Folder', 'Tags', 'Backend', 'Autonomy']),
+      expect.arrayContaining(['Role', 'Folder', 'Tags', 'Data from', 'Agent changes']),
     );
     expect(m.facts.find((f) => f.label === 'Role')?.value).toBe('record');
     expect(m.facts.find((f) => f.label === 'Folder')?.value).toBe('sales/orders');
     expect(m.facts.find((f) => f.label === 'Tags')?.value).toBe('erp, sales');
-    expect(m.facts.find((f) => f.label === 'Backend')?.value).toBe('markdown');
+    expect(m.facts.find((f) => f.label === 'Data from')?.value).toBe(
+      'Pages in this knowledge base',
+    );
+    expect(m.facts.find((f) => f.label === 'Agent changes')?.value).toBe('wait for your approval');
+    // An ordinary (editable) skill has no 'shared from' line: it is simply yours.
+    expect(m.facts.some((f) => f.label === 'Shared from')).toBe(false);
+    expect(m.facts.some((f) => /^(Backend|Autonomy|Layer)$/.test(f.label))).toBe(false);
   });
 
   it('uses the OKF title when the skill has one', () => {
@@ -130,6 +136,8 @@ describe('buildSkillPageModel', () => {
       Date.parse('2026-10-01T00:00:00Z'),
     );
     expect(m.readOnly).toBe(true);
+    expect(m.facts.find((f) => f.label === 'Shared from')?.value).toBe('base@pack@1');
+    expect(m.provenance.join(' ')).toContain('stale after 30 days');
     expect(m.stale).toBe(true);
     expect(m.provenance.join(' ')).toContain('stale');
   });

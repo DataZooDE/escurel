@@ -580,7 +580,7 @@ describe('<escurel-page-as-ui> thread strip', () => {
   it("shows the skill's provenance facts next to it, and a Stale badge when it has gone stale", async () => {
     const fresh = await fixture<EscurelPageAsUi>(
       html`<escurel-page-as-ui
-        .model=${{ ...orderPage, skill: { ...orderPage.skill, facts: ['verified 2026-09-30', 'stale after P90D'] } }}
+        .model=${{ ...orderPage, skill: { ...orderPage.skill, facts: ['verified 2026-09-30', 'stale after 90 days'] } }}
       ></escurel-page-as-ui>`,
     );
     await fresh.updateComplete;

@@ -497,7 +497,10 @@ test('the Runner panel is a control center: sections with counts, an insight lin
   await page.getByRole('button', { name: /Filter runs/ }).click();
   const picker = page.locator('.quick-input-widget');
   await expect(picker).toBeVisible();
-  await picker.getByRole('checkbox', { name: /^Failed/ }).first().click();
+  await picker
+    .getByRole('checkbox', { name: /^Failed/ })
+    .first()
+    .click();
   await page.keyboard.press('Enter');
   await expect(runner.getByText(/Filtered: failed/)).toBeVisible();
   await expect(runner.getByRole('treeitem', { name: /cancelled: / })).toHaveCount(0);

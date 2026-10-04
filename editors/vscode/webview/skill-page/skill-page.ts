@@ -25,12 +25,18 @@ export class EscurelSkillPage extends LitElement {
       :host {
         padding: 12px 20px 40px;
       }
-      header {
+      .title-row {
         display: flex;
-        justify-content: space-between;
-        align-items: center;
+        align-items: baseline;
         gap: 12px;
         flex-wrap: wrap;
+      }
+      .title-row .show-markdown {
+        font-size: 0.85em;
+        color: var(--escurel-muted);
+      }
+      .nothing-yet {
+        margin-top: 18px;
       }
       h1 {
         font-size: 1.5em;
@@ -150,9 +156,15 @@ export class EscurelSkillPage extends LitElement {
     if (this.error) return html`<div class="status error">${this.error}</div>`;
     const m = this.model;
     if (!m) return html`<div class="status">Loading…</div>`;
+    const empty = [
+      m.fields.length ? '' : 'no fields declared',
+      m.instances.items.length ? '' : 'no records yet',
+      m.runs.length ? '' : 'no runs yet',
+    ].filter(Boolean);
     return html`
-      <header>
-        <span class="kind">Skill</span>
+      <span class="kind">Skill</span>
+      <div class="title-row">
+        <h1>${m.title}</h1>
         <button
           class="show-markdown"
           title="Open the skill's Markdown source"
@@ -160,8 +172,7 @@ export class EscurelSkillPage extends LitElement {
         >
           Show Markdown
         </button>
-      </header>
-      <h1>${m.title}</h1>
+      </div>
       <p class="lede">${m.summary ?? m.description}</p>
       ${m.summary && m.description !== m.summary ? html`<p class="muted">${m.description}</p>` : nothing}
       ${
@@ -180,17 +191,17 @@ export class EscurelSkillPage extends LitElement {
         <dl class="facts">
           ${m.facts.map(
             (f) =>
-              html`<dt>${f.label}</dt>
+              html`<dt title=${f.hint ?? nothing}>${f.label}</dt>
                 <dd>${f.value}</dd>`,
           )}
         </dl>
       </section>
 
-      <section class="fields">
-        <h2>Fields <span class="muted">what each ${m.id} record holds</span></h2>
-        ${
-          m.fields.length
-            ? html`<table>
+      ${
+        m.fields.length
+          ? html`<section class="fields">
+              <h2>Fields <span class="muted">what each ${m.id} record holds</span></h2>
+              <table>
                 <thead>
                   <tr>
                     <th>Field</th>
@@ -210,11 +221,10 @@ export class EscurelSkillPage extends LitElement {
                       </tr>`,
                   )}
                 </tbody>
-              </table>`
-            : html`<p class="muted">This skill declares no fields.</p>`
-        }
-      </section>
-
+              </table>
+            </section>`
+          : nothing
+      }
       ${
         m.actions.length
           ? html`<section class="follow-ups">
@@ -223,8 +233,9 @@ export class EscurelSkillPage extends LitElement {
               </h2>
               <div class="actions">
                 ${m.actions.map(
-                  (a) =>
+                  (a, i) =>
                     html`<button
+                      class=${i === 0 ? 'primary' : ''}
                       title=${`Starts skill ${a.skill}; you pick the record it works on`}
                       @click=${() => this.send({ type: 'start-skill', skill: a.skill, mode: 'run' })}
                     >
@@ -235,17 +246,17 @@ export class EscurelSkillPage extends LitElement {
             </section>`
           : nothing
       }
-
-      <section class="instances">
-        <h2>
-          Records
-          <span class="muted"
-            >first ${m.instances.items.length}${m.instances.more ? ', more in Knowledge' : ''}</span
-          >
-        </h2>
-        ${
-          m.instances.items.length
-            ? html`<ul class="rows">
+      ${
+        m.instances.items.length
+          ? html`<section class="instances">
+              <h2>
+                Records
+                <span class="muted"
+                  >first
+                  ${m.instances.items.length}${m.instances.more ? ', more in Knowledge' : ''}</span
+                >
+              </h2>
+              <ul class="rows">
                 ${m.instances.items.map(
                   (i) =>
                     html`<li>
@@ -257,16 +268,15 @@ export class EscurelSkillPage extends LitElement {
                       </button>
                     </li>`,
                 )}
-              </ul>`
-            : html`<p class="muted">No records yet.</p>`
-        }
-      </section>
-
-      <section class="runs">
-        <h2>Recent runs <span class="muted">latest events for this skill</span></h2>
-        ${
-          m.runs.length
-            ? html`<ul class="rows">
+              </ul>
+            </section>`
+          : nothing
+      }
+      ${
+        m.runs.length
+          ? html`<section class="runs">
+              <h2>Recent runs <span class="muted">latest events for this skill</span></h2>
+              <ul class="rows">
                 ${m.runs.map(
                   (r) =>
                     html`<li>
@@ -290,12 +300,20 @@ export class EscurelSkillPage extends LitElement {
                       <span class="muted">${formatAge(r.at)}</span>
                     </li>`,
                 )}
-              </ul>`
-            : html`<p class="muted">No runs yet.</p>`
-        }
-      </section>
+              </ul>
+            </section>`
+          : nothing
+      }
+      ${empty.length ? html`<p class="muted nothing-yet">${sentence(empty)}.</p>` : nothing}
     `;
   }
+}
+
+/** "No fields declared, no records yet and no runs yet." */
+function sentence(parts: string[]): string {
+  const text =
+    parts.length > 1 ? `${parts.slice(0, -1).join(', ')} and ${parts.at(-1)}` : (parts[0] ?? '');
+  return text.charAt(0).toUpperCase() + text.slice(1);
 }
 
 customElements.define('escurel-skill-page', EscurelSkillPage);
