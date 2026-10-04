@@ -81,7 +81,6 @@ pub(super) fn page_newest_first<T>(
     limit: Option<usize>,
     cursor: Option<&str>,
 ) -> Result<(Vec<T>, Option<String>), JsonRpcError> {
-    use base64::Engine as _;
     const PREFIX: &str = "k1.";
     items.sort_by_key(|i| std::cmp::Reverse(key(i)));
     if let Some(token) = cursor {
@@ -94,9 +93,7 @@ pub(super) fn page_newest_first<T>(
             )
         };
         let body = token.strip_prefix(PREFIX).ok_or_else(bad)?;
-        let raw = base64::engine::general_purpose::URL_SAFE_NO_PAD
-            .decode(body.as_bytes())
-            .map_err(|_| bad())?;
+        let raw = escurel_index::cursor::unseal(body).ok_or_else(bad)?;
         let after = String::from_utf8(raw).map_err(|_| bad())?;
         items.retain(|i| key(i) < after);
     }
@@ -107,12 +104,9 @@ pub(super) fn page_newest_first<T>(
         return Ok((items, None));
     }
     items.truncate(limit);
-    let next = items.last().map(|i| {
-        format!(
-            "{PREFIX}{}",
-            base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(key(i).as_bytes())
-        )
-    });
+    let next = items
+        .last()
+        .map(|i| format!("{PREFIX}{}", escurel_index::cursor::seal(key(i).as_bytes())));
     Ok((items, next))
 }
 

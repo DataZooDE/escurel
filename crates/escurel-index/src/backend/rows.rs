@@ -725,22 +725,14 @@ const CURSOR_PREFIX: &str = "r1.";
 /// (`r1.`) and the remote rows (`u1.`) so the envelope exists once.
 #[must_use]
 pub fn seal_cursor(prefix: &str, raw: &[u8]) -> String {
-    use base64::Engine as _;
-    format!(
-        "{prefix}{}",
-        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(raw)
-    )
+    format!("{prefix}{}", crate::cursor::seal(raw))
 }
 
 /// The bytes inside a token made by [`seal_cursor`] with the same `prefix`; `None` for anything else
-/// (wrong prefix, not base64url).
+/// (wrong prefix, not signed by this server).
 #[must_use]
 pub fn open_cursor(prefix: &str, token: &str) -> Option<Vec<u8>> {
-    use base64::Engine as _;
-    let body = token.strip_prefix(prefix)?;
-    base64::engine::general_purpose::URL_SAFE_NO_PAD
-        .decode(body.as_bytes())
-        .ok()
+    crate::cursor::unseal(token.strip_prefix(prefix)?)
 }
 
 fn encode_cursor(values: &[String]) -> String {

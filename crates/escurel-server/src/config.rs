@@ -59,6 +59,7 @@
 //! | `ESCUREL_AUTH_JWKS_REFRESH_SECS` | `300` | JWKS cache TTL (seconds) |
 //! | `ESCUREL_AUTH_JWKS_URI` | derived from issuer | explicit JWKS URL (e.g. Triton's `<issuer>/.well-known/jwks.json`) |
 //! | `ESCUREL_RUN_PROGRESS_KEEP` | `50` | how many `run-progress` snapshots a run keeps (pruned at capture) |
+//! | `ESCUREL_CURSOR_KEY` | random per process | signing key of the list cursors (`next_cursor`): set the SAME value on every replica of a deployment, or a cursor issued by one answers `invalid_cursor` on another (and after a restart) |
 //! | `ESCUREL_SHUTDOWN_DRAIN_SECS` | `25` | how long a graceful stop waits for in-flight requests before aborting them (keep below the orchestrator's kill timeout) |
 //! | `ESCUREL_AUTH_SIGNING_KEY` | — | RSA private key (PKCS#8 or PKCS#1 PEM) the gateway signs `mint_agent_token` bearers with; unset → the tool refuses `unsupported` |
 //! | `ESCUREL_AUTH_SIGNING_KID` | derived | the `kid` those bearers carry (must be in a trusted JWKS) |
@@ -1543,6 +1544,13 @@ impl EscurelConfig {
     /// the build's features can't satisfy). Embedder *load* failure is
     /// recoverable and does not error here.
     pub async fn build(&self) -> Result<BootedServer, ConfigError> {
+        // List cursors are signed. Unset, the key is random per process (a cursor does not survive a
+        // restart and answers `invalid_cursor`); replicas of one deployment share it through this.
+        if let Ok(key) = std::env::var("ESCUREL_CURSOR_KEY")
+            && !key.trim().is_empty()
+        {
+            escurel_index::cursor::set_key(key.trim());
+        }
         // 0. Telemetry, before ANYTHING else. This used to be the last
         // thing `serve` did, at the very end of boot — meaning every
         // log line from the rest of this function (DuckLake attach,

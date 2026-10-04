@@ -528,3 +528,89 @@ async fn the_summary_text_carries_the_control_data() {
         "{text}"
     );
 }
+
+// ------------------------------------------------------------------------- cursors ---
+
+fn is_invalid_cursor(v: &Value) -> bool {
+    v["result"]["isError"] == json!(true) && first_issue(v)["code"] == "invalid_cursor"
+}
+
+/// A cursor is signed: one the server did not issue (made up, or a real one with a character
+/// changed) is `invalid_cursor` — on every paged list, in the same typed shape.
+#[tokio::test]
+async fn cursors_are_signed_and_every_list_refuses_a_bad_one_the_same_way() {
+    let p = start().await;
+    let admin = p.mint_token(TENANT, Role::Admin);
+    for id in ["b", "c"] {
+        let c = format!("---\nkind: instance\nskill: note\nid: {id}\n---\n# {id}\n");
+        let w = call(
+            &p,
+            &admin,
+            "update_page",
+            json!({ "page_id": format!("markdown/instances/note/{id}.md"), "content": c }),
+        )
+        .await;
+        assert_eq!(w["result"]["structuredContent"]["ok"], true, "{w}");
+    }
+    let page = call(
+        &p,
+        &admin,
+        "list_instances",
+        json!({ "skill_id": "note", "limit": 1 }),
+    )
+    .await;
+    let real = page["result"]["structuredContent"]["next_cursor"]
+        .as_str()
+        .expect("cursor")
+        .to_owned();
+    let next = call(
+        &p,
+        &admin,
+        "list_instances",
+        json!({ "skill_id": "note", "limit": 1, "cursor": real }),
+    )
+    .await;
+    assert_eq!(
+        next["result"]["isError"],
+        json!(false),
+        "the issued cursor works: {next}"
+    );
+
+    // Tampered: flip the last character of the issued token.
+    let mut tampered = real.clone();
+    let last = tampered.pop().unwrap();
+    tampered.push(if last == 'A' { 'B' } else { 'A' });
+    let r = call(
+        &p,
+        &admin,
+        "list_instances",
+        json!({ "skill_id": "note", "limit": 1, "cursor": tampered }),
+    )
+    .await;
+    assert!(is_invalid_cursor(&r), "{r}");
+
+    // Made up: the unsigned base64 of a plausible key (what used to be accepted).
+    use base64::Engine as _;
+    let forged =
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode("|markdown/instances/note/a.md");
+    for (tool, args) in [
+        (
+            "list_instances",
+            json!({ "skill_id": "note", "cursor": forged }),
+        ),
+        ("list_inbox", json!({ "cursor": forged })),
+        (
+            "list_events",
+            json!({ "label_skill": "note", "cursor": forged }),
+        ),
+        ("list_drafts", json!({ "cursor": forged })),
+        ("list_changesets", json!({ "cursor": "k1.Zm9yZ2Vk" })),
+        (
+            "list_messages",
+            json!({ "chat_group_id": "g", "cursor": forged }),
+        ),
+    ] {
+        let r = call(&p, &admin, tool, args).await;
+        assert!(is_invalid_cursor(&r), "{tool}: {r}");
+    }
+}

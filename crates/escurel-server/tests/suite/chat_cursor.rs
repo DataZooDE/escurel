@@ -62,9 +62,9 @@ async fn list_messages_garbage_cursor_is_invalid_params() {
     )
     .await;
     assert_eq!(
-        out["error"]["code"],
-        json!(-32602),
-        "an undecodable list_messages cursor must be invalid_params, \
+        out["result"]["structuredContent"]["issues"][0]["code"],
+        json!("invalid_cursor"),
+        "an undecodable list_messages cursor is a typed `invalid_cursor` refusal, \
          not internal: {out}"
     );
 }

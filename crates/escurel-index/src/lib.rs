@@ -26,7 +26,7 @@ pub mod citation;
 pub mod crdt_history;
 pub mod credential_resolver;
 pub mod creds;
-mod cursor;
+pub mod cursor;
 pub mod drafts;
 pub mod endpoints;
 pub mod events;

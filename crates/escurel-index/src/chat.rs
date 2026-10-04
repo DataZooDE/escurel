@@ -21,8 +21,6 @@
 //! `WHERE dense_vec IS NOT NULL`
 //! (docs/notes/discovered/2026-05-25-vss-hnsw-tolerates-null-rows.md).
 
-use base64::Engine;
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use escurel_embed::EmbedError;
 use ulid::Ulid;
 
@@ -157,13 +155,13 @@ struct Cursor {
 impl Cursor {
     fn encode(&self) -> String {
         let raw = format!("{}|{}", self.ts, self.msg_id);
-        URL_SAFE_NO_PAD.encode(raw.as_bytes())
+        crate::cursor::seal(raw.as_bytes())
     }
 
     fn decode(raw: &str) -> Result<Self, IndexerError> {
-        let bytes = URL_SAFE_NO_PAD
-            .decode(raw.as_bytes())
-            .map_err(|e| IndexerError::InvalidCursor(format!("base64: {e}")))?;
+        let bytes = crate::cursor::unseal(raw).ok_or_else(|| {
+            IndexerError::InvalidCursor("not a cursor this server issued".to_owned())
+        })?;
         let s = std::str::from_utf8(&bytes)
             .map_err(|e| IndexerError::InvalidCursor(format!("utf-8: {e}")))?;
         let (ts, msg_id) = s

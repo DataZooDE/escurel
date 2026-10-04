@@ -64,6 +64,7 @@ operator, not by the tenant:
 | `ESCUREL_SECRET_ENV_ALLOW` | — | extra env var names a tenant may name as `env:NAME` |
 | `ESCUREL_SECRET_FILE_DIRS` | `/run/secrets` | directories a tenant may name as `file:/path` |
 | `ESCUREL_SQL_FILE_DIRS` | — | directories a `sqlite` credential's database file may live under; unset refuses file databases. Postgres/MySQL credentials are checked like an endpoint: the DSN host must resolve to public addresses (loopback only with `ESCUREL_EGRESS_ALLOW_LOOPBACK`) |
+| `ESCUREL_CURSOR_KEY` | random per process | signing key of the list cursors (`next_cursor`). A cursor the server did not issue (forged, edited, issued before a restart) answers `invalid_cursor`. Set the SAME value on every replica (writer + readers) of one deployment so a client may page across them |
 | `ESCUREL_SHUTDOWN_DRAIN_SECS` | `25` | how long a graceful stop (SIGTERM) waits for in-flight requests (a long write-back, an open stream) before aborting them, so a stuck request cannot hold the host past the orchestrator's kill timeout |
 
 **SQL row connectors (Postgres / MySQL / SQLite).** A `sql_view` credential is registered as a **reference**

@@ -2602,9 +2602,14 @@ pub(super) async fn tool_list_inbox(
 /// not a server fault.
 pub(super) fn cursor_aware_error(tool: &str, e: IndexerError) -> JsonRpcError {
     match e {
-        IndexerError::InvalidCursor(msg) => {
-            JsonRpcError::invalid_params(format!("{tool}: cursor: {msg}"))
-        }
+        // The same typed refusal every paged list gives (it used to be a bare -32602 carrying a
+        // decoder message such as "utf-8: invalid utf-8 sequence").
+        IndexerError::InvalidCursor(_) => JsonRpcError::domain(
+            "invalid_cursor",
+            "cursor",
+            format!("{tool}: cursor invalid or expired; restart without `cursor`"),
+            Some("repeat the call without `cursor` to start from the first page"),
+        ),
         e => JsonRpcError::internal(format!("{tool}: {e}")),
     }
 }

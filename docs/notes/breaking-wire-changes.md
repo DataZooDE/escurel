@@ -59,3 +59,8 @@ One line per change. Folded into the root `CHANGELOG.md` BREAKING entry and `doc
   page reads "Not found (page: null): ..."; a page names its cursor (`next_cursor=<value>`); a
   refusal carries its whole message and `suggestion` (no mid-sentence "…"); `mint_agent_token` says the
   token was minted (and when it expires) WITHOUT repeating the secret (read `structuredContent.token`).
+- List cursors (`next_cursor`) are SIGNED (HMAC; every family: instances, rows, events/inbox, chat,
+  drafts). A cursor the server did not issue, or edited, answers `invalid_cursor` — on every paged list,
+  in the typed shape (`list_inbox` / `list_events` / `list_messages` used to answer a bare JSON-RPC
+  `-32602` carrying a decoder message). The key is random per process: a cursor does not survive a restart
+  (restart the listing); replicas of one deployment share `ESCUREL_CURSOR_KEY` so paging works across them.
