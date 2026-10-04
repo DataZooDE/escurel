@@ -1,8 +1,5 @@
-import type { Page } from '@playwright/test';
 import { expect, test, webviewWith } from './fixtures';
-
-const pane = (page: Page, title: string) =>
-  page.locator('.pane', { has: page.locator('.pane-header', { hasText: title }) });
+import { openRow } from './helpers';
 
 type GatewayEvent = {
   event_id: string;
@@ -51,9 +48,7 @@ test('owner reviews a real runner plan in the native window', async ({ stack }) 
   expect(revision).toMatch(/^[0-9a-f]{64}$/);
   stack.setGeminiPlanTarget(pageId, revision);
 
-  const knowledge = pane(stack.page, 'Knowledge');
-  await knowledge.getByRole('treeitem', { name: /^evolve_problem/ }).click();
-  await knowledge.getByRole('treeitem', { name: new RegExp(id) }).click();
+  await openRow(stack.page, 'evolve_problem', new RegExp(id));
   const pageUi = await webviewWith(stack.page, 'escurel-page-as-ui');
   await pageUi.getByRole('button', { name: 'Review experiment plan', exact: true }).click();
 
@@ -170,7 +165,8 @@ test('owner reviews a real runner plan in the native window', async ({ stack }) 
   const receiptCard = approvalThread.locator(`escurel-thread-canvas .card[data-node-id="${receiptId}"]`);
   await expect(receiptCard).toBeVisible();
   await receiptCard.click();
-  const experimentLink = approvalThread.locator('escurel-thread-inspector .wikilink');
+  const approvalDetails = await webviewWith(stack.page, 'escurel-details');
+  const experimentLink = approvalDetails.locator('escurel-thread-inspector .wikilink');
   await expect(experimentLink).toContainText(id);
   await experimentLink.click();
   await expect(stack.page.getByRole('tab', { name: new RegExp(id), selected: true })).toBeVisible();

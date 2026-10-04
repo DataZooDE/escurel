@@ -1,8 +1,5 @@
-import type { Page } from '@playwright/test';
 import { expect, test, webviewWith } from './fixtures';
-
-const pane = (page: Page, title: string) =>
-  page.locator('.pane', { has: page.locator('.pane-header', { hasText: title }) });
+import { openRow } from './helpers';
 
 type GatewayEvent = {
   event_id: string;
@@ -50,11 +47,7 @@ test('echo plan is refused and a synthetic non-echo plan approves the exact revi
   const revision = expanded.content_sha256 as string;
   expect(revision).toMatch(/^[0-9a-f]{64}$/);
 
-  const knowledge = pane(stack.page, 'Knowledge');
-  const folder = knowledge.getByRole('treeitem', { name: /^evolve_problem/ });
-  await expect(folder).toBeVisible({ timeout: 30_000 });
-  await folder.click();
-  await knowledge.getByRole('treeitem', { name: new RegExp(id) }).click();
+  await openRow(stack.page, 'evolve_problem', new RegExp(id));
   const pageUi = await webviewWith(stack.page, 'escurel-page-as-ui');
   await pageUi.getByRole('button', { name: 'Review experiment plan', exact: true }).click();
 
@@ -101,7 +94,7 @@ test('echo plan is refused and a synthetic non-echo plan approves the exact revi
   const thread = await webviewWith(stack.page, 'escurel-thread-canvas');
   await thread.locator('escurel-thread-canvas .card.type-run').first().click();
   await thread.getByRole('button', { name: 'Approve plan' }).click();
-  await expect(stack.page.getByRole('dialog', { name: /Error: Echo plans are workflow smoke tests/ }))
+  await expect(stack.page.getByRole('alert').filter({ hasText: 'Echo or unlabelled plans cannot authorize Evolve search' }))
     .toBeVisible();
   expect((await events(stack.call, 'evolve_run'))
     .some((event) => event.event_id === `evolve-approval-${runId}`)).toBe(false);
