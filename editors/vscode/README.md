@@ -8,10 +8,10 @@ degradations are tracked in `docs/BACKEND_GAPS.md`.
 
 - **Browse and read** skills and their instances (Knowledge), search, follow wikilinks; an instance opens as a
   form (typed fields, the page body with its tables) or as Markdown.
-- **Review**: the Inbox, *Awaiting you*, a diff with comments, promote or discard a draft or a whole changeset.
+- **Review**: the Inbox, _Awaiting you_, a diff with comments, promote or discard a draft or a whole changeset.
 - **Follow work as it happens**: the thread of an event (event → run → changeset → follow-on events) and each
   run's plan, attempts and tool calls, live, without reload.
-- **Start a skill** from an instance or a thread node: in the background, *first make a plan* and approve it,
+- **Start a skill** from an instance or a thread node: in the background, _first make a plan_ and approve it,
   or in a terminal (a token minted for that one run; the run still shows up in the thread as a governed run).
 - **Control agents and read their history**: the Runs view (secondary sidebar) is a runs control center:
   what is running now (cancel it), what waits for you (approve the plan), what needs attention (the reason on

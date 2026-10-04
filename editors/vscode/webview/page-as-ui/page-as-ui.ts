@@ -126,7 +126,11 @@ export class EscurelPageAsUi extends LitElement {
         padding: 4px 8px;
         border-radius: 2px;
         border: 1px solid var(--vscode-editorWarning-foreground);
-        color: var(--vscode-editorWarning-foreground);
+        color: color-mix(
+          in srgb,
+          var(--vscode-editorWarning-foreground) 55%,
+          var(--vscode-foreground)
+        );
       }
       .gate.auto {
         border-color: var(--escurel-run);
@@ -201,9 +205,15 @@ export class EscurelPageAsUi extends LitElement {
       .source-strip.problem {
         border-left-color: var(--vscode-editorWarning-foreground);
       }
+      /* The warning colour is a ~3:1 amber on a light page: mixed with the foreground it stays amber and
+         reads at 4.5:1 in every theme. The icon and the word say it as well. */
       .source-strip .issue {
         display: block;
-        color: var(--vscode-editorWarning-foreground);
+        color: color-mix(
+          in srgb,
+          var(--vscode-editorWarning-foreground) 55%,
+          var(--vscode-foreground)
+        );
       }
       /* Data that came from an outside system: marked, and never styled as the page's own. */
       .source-strip .external {
@@ -239,7 +249,11 @@ export class EscurelPageAsUi extends LitElement {
       }
       .write-back.problem {
         border-left-color: var(--vscode-editorWarning-foreground);
-        color: var(--vscode-editorWarning-foreground);
+        color: color-mix(
+          in srgb,
+          var(--vscode-editorWarning-foreground) 55%,
+          var(--vscode-foreground)
+        );
       }
       /* A column of the source row: a quiet accent on its label, and the words for a screen reader. */
       .field[data-source='true'] .name {

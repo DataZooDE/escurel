@@ -40,9 +40,7 @@ suite('runs panel in cascade', () => {
     const sentence = await until(
       () => {
         const m = api.runner.viewMessage;
-        return /^Agents are running · last seen/.test(m) && !/harness|echo/i.test(m)
-          ? m
-          : undefined;
+        return /^Agents last seen/.test(m) && !/harness|echo/i.test(m) ? m : undefined;
       },
       60_000,
       'the runner sentence',
