@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import type { EscurelClient } from '../client';
+import { describeError } from '../errors';
 import { log } from '../log';
 import { pageIdFromPath } from '../fs/read';
 import { SCHEME } from '../fs/provider';
@@ -24,10 +25,12 @@ export function registerSkillDiagnostics(
       const v = await client().validate({ content: doc.getText(), as_page_id: p.pageId });
       diagnostics.set(
         doc.uri,
-        v.issues.map((i) => toDiagnostic(doc, i)),
+        (Array.isArray(v.issues) ? v.issues : []).map((i) => toDiagnostic(doc, i)),
       );
     } catch (e) {
       log().warn(`escurel: validate failed for ${p.pageId}: ${(e as Error).message}`);
+      // Silence would read as "valid". Say the check did not happen.
+      diagnostics.set(doc.uri, [unavailable(`Validation unavailable: ${describeError(e)}`)]);
     }
   };
   const schedule = (doc: vscode.TextDocument) => {
@@ -49,6 +52,18 @@ export function registerSkillDiagnostics(
     }),
   );
   for (const doc of vscode.workspace.textDocuments) schedule(doc);
+}
+
+/** A warning on the first line: the skill was not checked, which is not the same as it being clean. */
+export function unavailable(message: string): vscode.Diagnostic {
+  const d = new vscode.Diagnostic(
+    new vscode.Range(0, 0, 0, 1),
+    message,
+    vscode.DiagnosticSeverity.Warning,
+  );
+  d.source = 'escurel';
+  d.code = 'validation_unavailable';
+  return d;
 }
 
 export function toDiagnostic(
