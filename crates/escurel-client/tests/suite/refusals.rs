@@ -144,3 +144,34 @@ async fn an_admin_gate_stays_a_typed_jsonrpc_error() {
     assert!(matches!(err, Error::JsonRpc { .. }), "{err:?}");
     p.shutdown().await;
 }
+
+/// The test-support MCP client keeps `call` (payload, refusals included: tests assert on them) and
+/// offers `call_ok`, which fails loudly.
+#[tokio::test]
+async fn the_test_support_client_has_a_strict_call() {
+    let p = start().await;
+    let mcp = p.mcp_client();
+    let err = mcp
+        .call_ok(
+            "list_instances",
+            json!({ "skill_id": "customer", "limit": 10_001 }),
+        )
+        .await
+        .expect_err("a refused call is an error");
+    assert!(
+        matches!(err, escurel_test_support::McpError::Refused(_)),
+        "{err:?}"
+    );
+    let payload = mcp
+        .call(
+            "list_instances",
+            json!({ "skill_id": "customer", "limit": 10_001 }),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        payload["ok"], false,
+        "`call` still hands tests the refusal payload"
+    );
+    p.shutdown().await;
+}

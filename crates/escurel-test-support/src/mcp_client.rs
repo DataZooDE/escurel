@@ -33,6 +33,9 @@ pub enum McpError {
     JsonRpc { code: i64, message: String },
     #[error("response missing `result` field: {body}")]
     MissingResult { body: String },
+    /// [`McpTestClient::call_ok`] only: the tool REFUSED the call (`isError` / `ok: false`).
+    #[error("refused: {0}")]
+    Refused(escurel_types::call_result::Refusal),
     #[error("response decode failed: {source}")]
     Decode {
         #[source]
@@ -76,7 +79,24 @@ impl McpTestClient {
     /// `result` JSON value, or maps the JSON-RPC error envelope to
     /// [`McpError::JsonRpc`] and a non-success HTTP status to
     /// [`McpError::Http`].
+    ///
+    /// NOTE for tests: this returns the payload WHETHER OR NOT the tool refused (a refusal is the
+    /// payload `{ok: false, issues}`), because many tests assert on refusals. A test that wants a
+    /// refusal to fail loudly uses [`Self::call_ok`].
     pub async fn call(&self, tool: &str, arguments: Value) -> Result<Value, McpError> {
+        let result = self.call_envelope(tool, arguments).await?;
+        Ok(result.get("structuredContent").cloned().unwrap_or(result))
+    }
+
+    /// Like [`Self::call`], but a refused call (`isError` / `ok: false`) is
+    /// [`McpError::Refused`], never a payload.
+    pub async fn call_ok(&self, tool: &str, arguments: Value) -> Result<Value, McpError> {
+        let result = self.call_envelope(tool, arguments).await?;
+        escurel_types::call_result::unwrap_call_result(result).map_err(McpError::Refused)
+    }
+
+    /// The whole `CallToolResult`, unopened.
+    async fn call_envelope(&self, tool: &str, arguments: Value) -> Result<Value, McpError> {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let envelope = json!({
             "jsonrpc": "2.0",
@@ -112,9 +132,6 @@ impl McpTestClient {
             .get("result")
             .cloned()
             .ok_or(McpError::MissingResult { body: body_text })?;
-        // This helper only issues `tools/call`, whose result is an MCP
-        // `CallToolResult` (`{content, structuredContent, isError}`). The raw
-        // tool payload is under `structuredContent`; fall back to `result`.
-        Ok(result.get("structuredContent").cloned().unwrap_or(result))
+        Ok(result)
     }
 }

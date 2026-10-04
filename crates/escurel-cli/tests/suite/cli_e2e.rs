@@ -909,3 +909,31 @@ async fn missing_token_against_authed_server_emits_json_error() {
     );
     h.process.shutdown().await;
 }
+
+/// A refused read must fail the command: non-zero exit and the refusal's code and message on stderr.
+/// (`escurel-client` used to turn a refusal into an empty success, so this printed `[]` and exited 0.)
+#[tokio::test]
+async fn a_refused_read_fails_the_command_and_names_the_refusal() {
+    let h = start().await;
+    let addr = h.http_addr.clone();
+    let bearer = h.bearer.clone();
+    let out = tokio::task::spawn_blocking(move || {
+        Command::cargo_bin("escurel")
+            .unwrap()
+            .env("ESCUREL_SERVER", format!("http://{addr}"))
+            .env("ESCUREL_TOKEN", bearer)
+            .args([
+                "instance", "list", "--skill", "customer", "--limit", "10001",
+            ])
+            .output()
+            .unwrap()
+    })
+    .await
+    .unwrap();
+    assert!(!out.status.success(), "a refused read must not exit 0");
+    let err: Value = serde_json::from_slice(&out.stderr).expect("stderr is JSON");
+    let msg = err["error"].as_str().unwrap();
+    assert!(msg.contains("invalid_limit"), "got: {err}");
+    assert!(msg.contains("10000"), "the range is in the message: {err}");
+    h.process.shutdown().await;
+}

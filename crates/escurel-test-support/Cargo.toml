@@ -10,6 +10,7 @@ repository.workspace = true
 homepage.workspace = true
 
 [dependencies]
+escurel-types = { path = "../escurel-types" }
 escurel-admin = { path = "../escurel-admin" }
 escurel-auth = { path = "../escurel-auth" }
 escurel-client = { path = "../escurel-client" }

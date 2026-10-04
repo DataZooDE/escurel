@@ -10,6 +10,7 @@ repository.workspace = true
 homepage.workspace = true
 
 [dependencies]
+escurel-types = { path = "../escurel-types" }
 async-trait = "0.1"
 escurel-runner-core = { path = "../escurel-runner-core" }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
