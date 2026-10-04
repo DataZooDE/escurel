@@ -1,5 +1,5 @@
 ---
-type: instance
+kind: instance
 skill: result
 id: gbm-auc
 at: 2026-02-05T16:00:00Z

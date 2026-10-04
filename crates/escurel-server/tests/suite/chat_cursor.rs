@@ -13,7 +13,7 @@ use serde_json::{Value, json};
 
 const TENANT: &str = "stuttgart-ai";
 
-const NOTE_SKILL: &str = "---\ntype: skill\nid: note\ndescription: A note.\n\
+const NOTE_SKILL: &str = "---\nkind: skill\nid: note\ndescription: A note.\n\
     visibility: public\n---\n# note\n";
 
 async fn start() -> EscurelProcess {
@@ -62,9 +62,9 @@ async fn list_messages_garbage_cursor_is_invalid_params() {
     )
     .await;
     assert_eq!(
-        out["error"]["code"],
-        json!(-32602),
-        "an undecodable list_messages cursor must be invalid_params, \
+        out["result"]["structuredContent"]["issues"][0]["code"],
+        json!("invalid_cursor"),
+        "an undecodable list_messages cursor is a typed `invalid_cursor` refusal, \
          not internal: {out}"
     );
 }

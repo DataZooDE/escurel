@@ -1,5 +1,5 @@
 ---
-type: instance
+kind: instance
 skill: orgunit
 id: ha-plant-eng
 name: Hoffmann · Plant Engineering

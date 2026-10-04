@@ -29,10 +29,85 @@ agnostic; the files here bind it to concrete targets.
 One TOML file (`${ESCUREL_CONFIG:-/etc/escurel/server.toml}`), with
 `ESCUREL_<UPPER_SNAKE>` env overrides for any field (the env name is
 the TOML key path upper-snake-cased: `[server] data_dir` →
-`ESCUREL_SERVER_DATA_DIR`). The full table is in
-[`../spec/README.md § Configuration`](../spec/README.md#configuration).
+`ESCUREL_SERVER_DATA_DIR`). The full table of every variable the binaries
+read — generated from the code, so it cannot drift — is
+[`env.md`](env.md) (`escurel-server --print-config-keys`); the TOML shape
+is in [`../spec/README.md § Configuration`](../spec/README.md#configuration).
 Everything below is expressed as env vars so each target is copy-paste
 runnable.
+
+### Operational endpoints (what an operator can rely on)
+
+| endpoint | meaning |
+|---|---|
+| `GET /healthz` | liveness, dependency-free, always `200 OK` |
+| `GET /version` | the build version (`ESCUREL_VERSION`) |
+| `GET /readyz` | **503** + `{"ready":false,"components":{…}}` when the lane store, indexer, embedder or index snapshot is down. **200** otherwise, with plain `OK` when there is nothing to report, or `{"ready":true,"notices":[…],"components":{…}}` when there is. A **quarantined** tenant (legacy `type:` pages) is *ready* — the one-shot migration must be able to run against it — and says so with the notice `quarantined`, `components.quarantined: true` and the header `x-escurel-quarantined: 1`. `semantic_search_disabled` is the notice for the zero-vector embedder (`ESCUREL_EMBEDDING_PROVIDER=zero`, or `gemini` without `ESCUREL_GEMINI_API_KEY`). `unauthenticated_exposed` means **no OIDC issuer is configured and the listener is not loopback**: every caller who can reach the port is a tenant admin (the boot log carries the same WARN); set `ESCUREL_AUTH_OIDC_ISSUER`, or bind `127.0.0.1` behind an authenticating proxy. `pages_skipped` lists pages a boot-time index rebuild could not parse (left untouched in the lane, not served); fix or remove them and run `escurel admin rebuild`. |
+| `GET /metrics` (dedicated listener, `ESCUREL_OBSERVABILITY_METRICS_LISTEN`, default `:9090`) | `escurel_up`, `escurel_requests_total`, `escurel_tool_calls`, … plus the operator gauges `escurel_tenant_quarantined{tenant}` (0 or 1), `escurel_migration_pending`, `escurel_semantic_search_enabled`, and the connector counters `escurel_egress_total{outcome}`, `escurel_write_back_total{outcome}`, `escurel_source_unavailable_total{kind}` |
+
+> **Gate on the body, not just the status code.** A proxy or readiness probe that only looks at `/readyz`'s status
+> code will route traffic to a quarantined tenant, which answers every call with `tenant_quarantined`. Either alert
+> on `escurel_tenant_quarantined == 1`, or deploy stop-first with the migration before the swap (below).
+
+### Connectors: outbound egress and secrets
+
+REST (`openapi`) and MCP rows call out to services an *admin* registered. That outbound path is policed by the
+operator, not by the tenant:
+
+| var | default | meaning |
+|---|---|---|
+| `ESCUREL_EGRESS_ALLOW_LOOPBACK` | `false` | allow calls to `127.0.0.1`. **Dev/tests only — never in production** (it widens the SSRF guard). Accepts `1`/`true`/`0`/`false`; anything else fails the boot |
+| `ESCUREL_EGRESS_MAX_RESPONSE_BYTES` | `4194304` | cap on one response |
+| `ESCUREL_EGRESS_TIMEOUT_MS` | `10000` | total per-call timeout (clamped to 30000) |
+| `ESCUREL_EGRESS_MAX_CONCURRENCY` | `8` | simultaneous calls per endpoint |
+| `ESCUREL_EGRESS_RATE_PER_SEC` | `50` | calls per second per endpoint |
+| `ESCUREL_EGRESS_WRITE_RETRY_BACKOFF_MS` | `500` | write-back retry backoff (test knob) |
+| `ESCUREL_SECRET_<TENANT>__<NAME>` | — | a TENANT's credential, referenced as `secret_ref: gsm:<name>` or `env:ESCUREL_SECRET_<TENANT>__<NAME>` (injected from GCP Secret Manager). `<TENANT>` is the tenant id upper-cased, non-alphanumerics as `_` (`stuttgart-ai` → `STUTTGART_AI`). The namespace used to be global (`ESCUREL_SECRET_<NAME>`), so one tenant's admin could name another's secret |
+| `ESCUREL_SECRET_ENV_ALLOW` | — | extra env var names a tenant may name as `env:NAME`: `tenant:NAME` for one tenant, a bare `NAME` for EVERY tenant (an explicit operator choice) |
+| `ESCUREL_SECRET_FILE_DIRS` | `/run/secrets` | directories whose `<dir>/<tenant>/` sub-directory a tenant may name as `file:/path` (a tenant cannot read `<dir>/<other-tenant>/…`) |
+| `ESCUREL_SQL_FILE_DIRS` | — | directories a `sqlite` credential's database file, and every `json_dir` / `parquet_dir` source's files, may live under (canonicalised; `..`, a symlink out and a glob reaching outside are refused). Unset refuses file databases AND directory sources. Postgres/MySQL credentials are checked like an endpoint: the connection string is parsed with libpq's grammar, only `host`, `hostaddr`, `port`, `dbname`, `user`, `password`, `sslmode`, `options`, `application_name`, `connect_timeout` are accepted (`service=`, `passfile=`, `sslrootcert=` … are refused), EVERY host/`hostaddr` must resolve to public addresses (loopback only with `ESCUREL_EGRESS_ALLOW_LOOPBACK`), and a host named by NAME is pinned to the address that was checked |
+| `ESCUREL_CURSOR_KEY` | random per process | signing key of the list cursors (`next_cursor`). A cursor the server did not issue (forged, edited, issued before a restart) answers `invalid_cursor`. Set the SAME value on every replica (writer + readers) of one deployment so a client may page across them |
+| `ESCUREL_SHUTDOWN_DRAIN_SECS` | `25` | how long a graceful stop (SIGTERM) waits for in-flight requests (a long write-back, an open stream) before aborting them, so a stuck request cannot hold the host past the orchestrator's kill timeout |
+
+**SQL row connectors (Postgres / MySQL / SQLite).** A `sql_view` credential is registered as a **reference**
+(`register_credential {name, connector, secret_ref}`; an inline `secret` still works but is deprecated and flagged),
+resolved by the same allow-list as endpoint secrets and checked against the egress policy before any connection
+(a private/metadata host, an unlisted file directory, a unix socket: refused by name). **Rotation:** re-registering an existing credential NAME with a new secret does not re-point a source that is already attached: reads keep using the old connection string until the server restarts (a deleted credential is effective at once: the source answers `backend_unavailable`). Rotate by restarting the gateway (or register under a new name and rebind the skill). Network connects are bounded by `ESCUREL_SQL_CONNECT_TIMEOUT_SECS` (default 5) and a source query by `ESCUREL_ROWS_QUERY_TIMEOUT_SECS` (default 30). The image bakes the
+`postgres`, `sqlite` and `mysql` DuckDB extensions (build-time assertion). **Write-back to a database uses the
+SAME credential**, opened read-write on a short-lived connection only when a human promotes a draft: grant that
+database user `UPDATE` on the writable columns of the tables you expose and nothing else. Postgres attaches carry
+the server-side `statement_timeout`; watch `escurel_write_back_total{outcome}` (`dead_letter`, `conflict`).
+
+A value that does not parse (`ESCUREL_EGRESS_TIMEOUT_MS=5s`, `…ALLOW_LOOPBACK=yes`) or a zero limit **fails the
+boot** with the variable named; it is never silently ignored. Secrets live in env or mounted files, never in
+pages. The authoritative table of every variable is the module doc of `crates/escurel-server/src/config.rs`.
+
+### Upgrading across a BREAKING release
+
+The single-writer pet means an upgrade is **stop-first**. For a release that changes the stored format (the
+`type:` → `kind:` release, escurel skill 0.8.0) do it in this order, per tenant:
+
+1. **Stop** the old container and **back up** the tenant directory (`tar -C /data -czf … tenants/<t>`).
+2. Run the **migration as a one-shot job** from the new image (it ships the `escurel` CLI) *before* any traffic
+   goes to it — nothing routes to a quarantined tenant, and no admin token is needed.
+3. Verify (`/readyz` has no `x-escurel-quarantined`, `escurel_tenant_quarantined 0`), then start the new
+   container and swap traffic.
+4. Rollback = restore the tarball and run the previous image.
+
+This release also changes **behaviour agents and integrations rely on**, so roll those out in the same window
+(full list: [`CHANGELOG`](../../CHANGELOG.md), BREAKING): `resume_cursor` is gone (`next_cursor` + `has_more`),
+MCP `content[0].text` is only a summary (read `structuredContent`), `autonomy: review|confirm` is enforced for
+machine tokens (`held_for_review` / `review_required`), write-back drafts need a non-agent promoter
+(`promote_requires_human`), and `secret_ref` is allow-listed (`ESCUREL_SECRET_ENV_ALLOW`,
+`ESCUREL_SECRET_FILE_DIRS`; set them before a connector that used `env:`/`file:` references is expected to work
+again). New operator knobs: `ESCUREL_SHUTDOWN_DRAIN_SECS`, the `ESCUREL_EGRESS_*` family (never enable
+`ALLOW_LOOPBACK` in production). New metrics to alert on: `escurel_tenant_quarantined`,
+`escurel_migration_pending`, `escurel_egress_total{outcome="refused"}`, `escurel_write_back_total{outcome="dead_letter"}`,
+`escurel_source_unavailable_total`.
+
+The full, command-verified procedure, the dry-run report, timing (the rebuild dominates: a real embedder
+re-embeds the corpus) and rollback are in [`kind-migration.md`](kind-migration.md). The order for the repositories and services that depend on the engine (prepare on branches, then one stop-first window) is [`consumer-rollout.md`](consumer-rollout.md). Consumers (agents that write
+pages, other repos' skill pages) must change in the same release: see the [`CHANGELOG`](../../CHANGELOG.md).
 
 ---
 
@@ -59,7 +134,9 @@ curl -fsS localhost:8080/healthz     # -> OK
 
 One replica, STOP-FIRST (single-writer DuckDB — no scaling, no rolling
 restart). State is the `escurel-data` volume; back it up by snapshotting
-the volume or via the logical `tenant_export` admin tool.
+the volume (stop first: DuckDB is single-writer; a restore point of the tenant is
+`tar -C /data -czf … tenants/<t>` with the server stopped). The logical `tenant_export` admin tool is
+refused while a tenant is quarantined — see [Upgrading across a BREAKING release](#upgrading-across-a-breaking-release).
 
 ### Target A — single binary on a laptop (FS backend, no OTLP)
 
@@ -76,6 +153,12 @@ export ESCUREL_SERVER_LISTEN_HTTP=127.0.0.1:8080
 # Filesystem LaneStore — no S3, no spool-to-cloud.
 export ESCUREL_STORAGE_BACKEND=fs
 
+# BUILD REQUIREMENT: `embeddinggemma` (the local candle embedder) is only in a binary
+# built with `cargo build --release -p escurel-server --features embeddinggemma`.
+# The default build and the published image do NOT have it and refuse to boot
+# with `ESCUREL_EMBEDDING_PROVIDER=embeddinggemma` ("requires the embeddinggemma
+# cargo feature"); use `gemini` (needs ESCUREL_GEMINI_API_KEY) or `zero` (FTS-only)
+# with those.
 # A BERT-family sentence-transformer via candle; on a laptop, let it
 # fetch to the HF cache under $ESCUREL_SERVER_DATA_DIR/cache/models/ on
 # first start. NOTE: the candle backend is BERT-only today — it cannot
@@ -98,9 +181,7 @@ export ESCUREL_AUTH_OIDC_AUDIENCE=escurel
 # No OTLP: leave ESCUREL_OBSERVABILITY_OTLP_ENDPOINT unset → tracing is
 # a no-op. (Bare ESCUREL_OTLP_ENDPOINT is a deprecated alias, still
 # honoured as a fallback.) Logs still go to stdout as JSON.
-# NOTE: ESCUREL_OBSERVABILITY_LOG_FORMAT is not yet implemented — JSON is
-# always emitted regardless of this value.
-export ESCUREL_OBSERVABILITY_LOG_FORMAT=json
+# Logs are always JSON on stdout (there is no log-format switch).
 
 mkdir -p "$ESCUREL_SERVER_DATA_DIR"
 escurel-server
@@ -157,6 +238,8 @@ ESCUREL_SERVER_LISTEN_HTTP=0.0.0.0:8080
 
 ESCUREL_STORAGE_BACKEND=fs
 
+# Needs a binary built with `--features embeddinggemma` (NOT the default build or the
+# published image: they refuse to boot with this value). Otherwise use `gemini` or `zero`.
 ESCUREL_EMBEDDING_PROVIDER=embeddinggemma
 # Staged onto the VM once — absolute local path, loaded via from_local
 # (no egress). Must be a BERT-family sentence-transformer (candle is
@@ -177,8 +260,7 @@ ESCUREL_AUTH_ADMIN_ROLE_VALUE=escurel:admin
 # (Bare ESCUREL_OTLP_ENDPOINT is a deprecated alias for the OTLP endpoint.)
 ESCUREL_OBSERVABILITY_OTLP_ENDPOINT=http://127.0.0.1:4317
 ESCUREL_OBSERVABILITY_METRICS_LISTEN=0.0.0.0:9090
-# ESCUREL_OBSERVABILITY_LOG_FORMAT is not yet implemented — JSON is always emitted.
-ESCUREL_OBSERVABILITY_LOG_FORMAT=json
+# Logs are always JSON on stdout (there is no log-format switch).
 ```
 
 ```sh

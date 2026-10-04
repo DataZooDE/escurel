@@ -16,7 +16,7 @@ const TENANT: &str = "acme";
 const PACK_SECRET: &str = "shared-pack-signing-secret";
 
 fn skill(id: &str, description: &str, extra: &str) -> String {
-    format!("---\ntype: skill\nid: {id}\ndescription: {description}\n{extra}---\n# {id}\n\nbody\n")
+    format!("---\nkind: skill\nid: {id}\ndescription: {description}\n{extra}---\n# {id}\n\nbody\n")
 }
 
 async fn start() -> EscurelProcess {

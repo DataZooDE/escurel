@@ -134,6 +134,32 @@ async fn it_seeds_skills_and_flat_instances_from_a_directory() {
     );
 }
 
+/// A seed instance in a SUBDIRECTORY becomes the NESTED page `markdown/instances/<skill>/<id>.md`. That is
+/// the layout of an `instances: rows` skill's linked markdown (the page id of a row is nested), so a
+/// harness that seeds a row's companion needs it — a gateway that silently skipped the directory left
+/// the demo's orders without their notes and the agent without the items it analyses.
+#[tokio::test]
+async fn it_seeds_nested_instances_as_nested_page_ids() {
+    let g = start(&[]);
+    let bearer = g.info["bearer"].as_str().unwrap().to_owned();
+    let resp = call(
+        &g,
+        Some(&bearer),
+        "expand",
+        json!({ "page_id": "markdown/instances/note/nested.md", "raw": true }),
+    )
+    .await;
+    assert_eq!(resp.status(), 200);
+    let body: Value = resp.json().await.unwrap();
+    let content = body["result"]["structuredContent"]["content"]
+        .as_str()
+        .unwrap_or_default();
+    assert!(
+        content.contains("NESTED BASELINE."),
+        "the nested seed page must be readable: {body}"
+    );
+}
+
 /// SIGTERM ends it cleanly. A harness that kills it must not leave a gateway, its port or its
 /// data directory behind for the next run to trip over.
 #[tokio::test]
@@ -281,4 +307,52 @@ async fn the_gateway_can_mint_an_agent_token() {
         minted["run_id"].as_str().is_some_and(|r| !r.is_empty()),
         "a run id: {body}"
     );
+}
+
+/// A log reader that stops reading must not stop the gateway.
+///
+/// The gateway logs one JSON line per request to stdout (the substrate log contract). The write was
+/// synchronous, so a consumer that read the connection line and then left the pipe alone (a stuck log
+/// shipper, a `docker logs` that backs up, a harness that only wants the first line) filled the 64 KiB
+/// pipe after ~90 requests, a tokio worker blocked inside the write holding the stdout lock, and every
+/// other worker queued behind it: the gateway answered nothing, for ever. Found by a consumer migration
+/// that validated its pages one by one: it "hung" at call 88 on the same page, every time.
+///
+/// Real binary, a real pipe that is held open and never drained, real HTTP.
+#[tokio::test]
+async fn a_log_reader_that_stops_reading_does_not_stall_the_gateway() {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_escurel-test-gateway"))
+        .args(["--tenant", "vsx", "--seed"])
+        .arg(seed_dir())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("spawn escurel-test-gateway");
+    // Keep the read end ALIVE and UNREAD after the connection line: that is the stuck consumer.
+    let mut stdout = BufReader::new(child.stdout.take().expect("stdout"));
+    let mut line = String::new();
+    stdout.read_line(&mut line).expect("the connection line");
+    let info: Value = serde_json::from_str(line.trim()).expect("JSON connection line");
+    let g = Running { child, info };
+    let bearer = g.info["bearer"].as_str().expect("bearer").to_owned();
+
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(20))
+        .build()
+        .expect("client");
+    let url = format!("{}/mcp", g.info["gateway_url"].as_str().expect("url"));
+    // ~730 bytes of log per call: 400 calls is ~290 KB, far past a 64 KiB pipe.
+    for i in 0..400 {
+        let resp = client
+            .post(&url)
+            .header("authorization", format!("Bearer {bearer}"))
+            .json(&json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                           "params": { "name": "list_skills", "arguments": {} } }))
+            .send()
+            .await
+            .unwrap_or_else(|e| {
+                panic!("call {i} got no answer: the gateway is stalled behind its log pipe ({e})")
+            });
+        assert_eq!(resp.status(), 200, "call {i}");
+    }
+    drop(stdout);
 }

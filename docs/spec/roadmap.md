@@ -183,7 +183,7 @@ Shipped as a non-breaking, opt-in layer:
   (Stakeholder, Goal, Expectation, Constraint, Priority, Success-Criterion,
   Hypothesis, Dataset, Analysis, Result, Decision) + an overview skill,
   distributed via the existing signed base-layer pack mechanism. Entities
-  are ordinary `skill` pages (the `PageType` enum is untouched); provenance
+  are ordinary `skill` pages (the `PageKind` enum is untouched); provenance
   relations are typed frontmatter wikilinks (`derived_from`, `motivated_by`,
   `supersedes`, …) whose *kind* is carried by `links.src_field`.
 - **The `resolved_links` view** — one derived DuckDB VIEW that resolves the
@@ -236,8 +236,9 @@ In:
   `at:` denormalised to an indexed column on both the DuckDB
   `pages` and `blocks` tables; `list_instances` accepts
   `order_by` and the operator-wrapped `FilterClause` syntax
-- **External instance backends** — the `InstanceBackend` trait with three
-  impls (`markdown` | `sql_view` | `document`). `sql_view`: read-only DuckDB
+- **External instance backends** — three backend kinds
+  (`markdown` | `sql_view` | `document`), dispatched by probe in the read tools (the `InstanceBackend`
+  trait of the original plan was never wired and has been deleted). `sql_view`: read-only DuckDB
   views over postgres/mysql/sqlite/erpl/json_dir/parquet_dir, server-side
   credential registry, `validate_bindings`, ACL-before-fusion search.
   `document`: PDF/DOCX/PPTX/XLSX + text uploaded via `/ingest` /

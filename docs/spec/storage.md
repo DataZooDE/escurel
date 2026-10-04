@@ -25,7 +25,7 @@ as the acceptance baseline for indexer behaviour.
 ## Per-tenant directory layout
 
 ```
-${ESCUREL_DATA_DIR}/tenants/<tenant_id>/
+${ESCUREL_SERVER_DATA_DIR}/tenants/<tenant_id>/
 ├── manifest.toml              # tenant metadata, quotas, embedding provider
 ├── markdown/                  # canonical source
 │   ├── skills/
@@ -117,7 +117,7 @@ key.
 
 Three implementations ship:
 
-- **`FsStore`**. `${ESCUREL_DATA_DIR}/tenants/<tenant>/<rest>`.
+- **`FsStore`**. `${ESCUREL_SERVER_DATA_DIR}/tenants/<tenant>/<rest>`.
   Writes go to `<rest>.tmp` and `rename(2)` to publish (atomic
   on POSIX same-filesystem). `url()` returns `file://...`.
 - **`S3Store`**. Backed by the official `aws-sdk-s3` crate (not
@@ -249,12 +249,10 @@ blobs).
 
 ## Instance backends — storage & indexing
 
-The [`InstanceBackend`](protocol.md#instance-backends) seam (markdown |
-`sql_view` | `document`) is a `BackendRegistry` keyed by skill id on
-`AppState` (next to the `Indexer`, *not* on it — `MarkdownBackend` holds an
-`Arc<Indexer>`, so putting the registry on the indexer would cycle). Each
-backend holds an `Arc<Indexer>` and delegates; the indexer's read/search/write
-methods stay put. Markdown is bit-identical to pre-feature behaviour.
+Instance backends (markdown | `sql_view` | `document`, plus the `rows` and remote `openapi`/`mcp` modes) are
+plain modules in `escurel-index::backend`, reached by probe from the server's read tools; there is no
+dispatcher trait (the planned `InstanceBackend`/`BackendRegistry` seam was never wired and was deleted).
+The indexer's read/search/write methods stay put. Markdown is bit-identical to pre-feature behaviour.
 
 **`sql_view`.** `create_instance` runs under the per-tenant write lock:
 `INSTALL`/`LOAD` the connector, `ATTACH … (READ_ONLY)` (the engine rejects
@@ -400,7 +398,7 @@ CREATE TABLE pages (
   page_id        VARCHAR PRIMARY KEY,    -- ULID
   slug           VARCHAR,                 -- mutable, indexed but not unique
   skill          VARCHAR NOT NULL,
-  page_type      VARCHAR NOT NULL,       -- 'skill' | 'instance'
+  page_type      VARCHAR NOT NULL,       -- 'skill' | 'instance' (the wire and frontmatter say `kind`/`page_kind`; this derived-index column keeps its name)
   frontmatter    JSON NOT NULL,
   body_hash      VARCHAR NOT NULL,       -- WHAT changed (audit); see last_written_by for WHO
   at_ts          TIMESTAMP,              -- mirrored from frontmatter.at (NULL for non-events)
@@ -741,7 +739,7 @@ behaviour).
 | External edit mid-session (live mode) | Two-stage reconciler: for cited pages the CRDT snapshot wins; for new or uncited pages the external edit wins |
 | DuckDB file corruption (rare) | Auto-suspend tenant (`status: suspended_corrupt`); admin runs `rebuild --tenant <id>` to recreate from canonical markdown |
 | `vss` or `fts` index corruption | `PRAGMA drop_index` plus rebuild — the index is derivable from `blocks.dense_vec` and `blocks.body` without re-embedding |
-| S3 backend timeout | Local spool under `${ESCUREL_DATA_DIR}/spool/<tenant>/` — **host-local, not synced to the LaneStore**; queue flushes on reconnect. On a host recreate the previous host's spool is lost; the markdown source-of-truth is preserved (writes only enter the spool after a successful DuckDB commit per the row above), so recovery is a client re-submit |
+| S3 backend timeout | Local spool under `${ESCUREL_SERVER_DATA_DIR}/spool/<tenant>/` — **host-local, not synced to the LaneStore**; queue flushes on reconnect. On a host recreate the previous host's spool is lost; the markdown source-of-truth is preserved (writes only enter the spool after a successful DuckDB commit per the row above), so recovery is a client re-submit |
 | Cattle node destroyed; `escurel.duckdb` gone; markdown intact on LaneStore | First request to the tenant triggers automatic `rebuild` from canonical markdown on the LaneStore (~32 ms/page; ~32 s for 1000 pages); transparent to agent except for one-time first-request latency |
 
 The two recovery primitives (`audit`, `rebuild`) are the full

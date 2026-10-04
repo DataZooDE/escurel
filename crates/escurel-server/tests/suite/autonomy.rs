@@ -19,19 +19,19 @@ use serde_json::{Value, json};
 const TENANT: &str = "stuttgart-ai";
 
 // A skill that declares nothing — the "must behave exactly as today" control.
-const NOTE_SKILL: &str = "---\ntype: skill\nid: note\ndescription: A note.\n---\n# note\n";
+const NOTE_SKILL: &str = "---\nkind: skill\nid: note\ndescription: A note.\n---\n# note\n";
 // The three recognised values, one per skill.
 const PAYMENT_SKILL: &str =
-    "---\ntype: skill\nid: payment\ndescription: Money moves.\nautonomy: confirm\n---\n# payment\n";
+    "---\nkind: skill\nid: payment\ndescription: Money moves.\nautonomy: confirm\n---\n# payment\n";
 const TRIAGE_SKILL: &str =
-    "---\ntype: skill\nid: triage\ndescription: Triage.\nautonomy: review\n---\n# triage\n";
+    "---\nkind: skill\nid: triage\ndescription: Triage.\nautonomy: review\n---\n# triage\n";
 // Deliberately padded + mixed case: the value is normalised, not matched raw.
 const DRAFT_SKILL: &str =
-    "---\ntype: skill\nid: draft\ndescription: Drafting.\nautonomy: \"  Auto  \"\n---\n# draft\n";
+    "---\nkind: skill\nid: draft\ndescription: Drafting.\nautonomy: \"  Auto  \"\n---\n# draft\n";
 // The typo. Seeded while the write-time lint is Off — which is exactly the
 // existing-tenant state the lint has to be rolled out over.
 const BROKEN_SKILL: &str =
-    "---\ntype: skill\nid: broken\ndescription: Fat fingers.\nautonomy: atuo\n---\n# broken\n";
+    "---\nkind: skill\nid: broken\ndescription: Fat fingers.\nautonomy: atuo\n---\n# broken\n";
 
 fn catalogue() -> FixtureBuilder {
     FixtureBuilder::new()
@@ -76,7 +76,7 @@ async fn call(p: &EscurelProcess, token: &str, name: &str, args: Value) -> Value
 
 fn skill_page(id: &str, autonomy: Option<&str>) -> String {
     let line = autonomy.map_or_else(String::new, |a| format!("autonomy: {a}\n"));
-    format!("---\ntype: skill\nid: {id}\ndescription: d.\n{line}---\n# {id}\n")
+    format!("---\nkind: skill\nid: {id}\ndescription: d.\n{line}---\n# {id}\n")
 }
 
 /// Does the issue list carry the unknown-autonomy finding?
@@ -236,7 +236,7 @@ async fn validate_ignores_autonomy_on_an_instance_page() {
     let token = p.mint_token(TENANT, Role::Agent);
 
     let instance =
-        "---\ntype: instance\nskill: note\nid: n1\nautonomy: atuo\n---\n# n1\n".to_owned();
+        "---\nkind: instance\nskill: note\nid: n1\nautonomy: atuo\n---\n# n1\n".to_owned();
     let out = call(&p, &token, "validate", json!({ "content": instance })).await;
     assert!(
         !has_autonomy_issue(&out),
@@ -265,7 +265,7 @@ const BROKEN_PAGE: &str = "markdown/skills/broken.md";
 fn dangling_skill(id: &str, autonomy: Option<&str>) -> String {
     let line = autonomy.map_or_else(String::new, |a| format!("autonomy: {a}\n"));
     format!(
-        "---\ntype: skill\nid: {id}\ndescription: d.\n{line}---\n# {id}\nSee [[nosuchskill::x]].\n"
+        "---\nkind: skill\nid: {id}\ndescription: d.\n{line}---\n# {id}\nSee [[nosuchskill::x]].\n"
     )
 }
 
@@ -364,7 +364,7 @@ async fn update_page_rejects_unknown_autonomy_under_enforce() {
         "update_page",
         json!({
             "page_id": "markdown/instances/note/n1.md",
-            "content": "---\ntype: instance\nskill: note\nid: n1\nautonomy: atuo\n---\n# n1\n",
+            "content": "---\nkind: instance\nskill: note\nid: n1\nautonomy: atuo\n---\n# n1\n",
         }),
     )
     .await;
@@ -379,7 +379,7 @@ async fn enforce_blocks_an_unrelated_edit_to_a_page_that_already_has_junk() {
     let token = p.mint_token(TENANT, Role::Admin);
 
     // Body edit only; the junk `autonomy:` is carried over untouched.
-    let body_edit = "---\ntype: skill\nid: broken\ndescription: d.\nautonomy: atuo\n---\n# broken\nMore text.\n";
+    let body_edit = "---\nkind: skill\nid: broken\ndescription: d.\nautonomy: atuo\n---\n# broken\nMore text.\n";
     let out = call(
         &p,
         &token,
@@ -390,7 +390,7 @@ async fn enforce_blocks_an_unrelated_edit_to_a_page_that_already_has_junk() {
     assert_eq!(out["ok"], json!(false), "{out}");
 
     // Positive control: the same body edit with the value corrected lands.
-    let fixed = "---\ntype: skill\nid: broken\ndescription: d.\nautonomy: auto\n---\n# broken\nMore text.\n";
+    let fixed = "---\nkind: skill\nid: broken\ndescription: d.\nautonomy: auto\n---\n# broken\nMore text.\n";
     let out = call(
         &p,
         &token,

@@ -1,5 +1,5 @@
 ---
-type: instance
+kind: instance
 skill: engagement
 id: ha-spine
 at: 2026-04-20T10:00:00Z

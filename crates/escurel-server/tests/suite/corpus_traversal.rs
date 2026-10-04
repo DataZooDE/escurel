@@ -30,28 +30,28 @@ const TENANT: &str = "stuttgart-ai";
 const ALICE: &str = "consultant:alice";
 const BOB: &str = "consultant:bob";
 
-const QUERY_SKILL: &str = "---\ntype: skill\nid: query\ndescription: A stored query.\n\
+const QUERY_SKILL: &str = "---\nkind: skill\nid: query\ndescription: A stored query.\n\
     visibility: public\n---\n# query\n";
-const COMPANY_SKILL: &str = "---\ntype: skill\nid: company\ndescription: A company.\n\
+const COMPANY_SKILL: &str = "---\nkind: skill\nid: company\ndescription: A company.\n\
     visibility: public\n---\n# company\n";
 /// The contact AT the account is a shared record — everyone in the tenant
 /// works the same accounts. Our own people are not: `person` is owner-scoped,
 /// which is what makes the ACL half testable, because a traversal that hops
 /// through someone else's person record must not leak it.
-const CONTACT_SKILL: &str = "---\ntype: skill\nid: contact\ndescription: Someone at an account.\n\
+const CONTACT_SKILL: &str = "---\nkind: skill\nid: contact\ndescription: Someone at an account.\n\
     visibility: public\n---\n# contact\n";
-const PERSON_SKILL: &str = "---\ntype: skill\nid: person\ndescription: One of ours.\n\
+const PERSON_SKILL: &str = "---\nkind: skill\nid: person\ndescription: One of ours.\n\
     visibility: owner\nowner_field: credential\n---\n# person\n";
 
 fn company(id: &str) -> String {
-    format!("---\ntype: instance\nskill: company\nid: {id}\nname: {id} GmbH\n---\n# {id}\n")
+    format!("---\nkind: instance\nskill: company\nid: {id}\nname: {id} GmbH\n---\n# {id}\n")
 }
 
 /// A contact who works at `employer`, as a typed wikilink — so the traversal
 /// walks REAL link rows rather than a fixture shortcut.
 fn contact(id: &str, employer: &str) -> String {
     format!(
-        "---\ntype: instance\nskill: contact\nid: {id}\nname: {id}\n\
+        "---\nkind: instance\nskill: contact\nid: {id}\nname: {id}\n\
          works_at: \"[[company::{employer}]]\"\n---\n# {id}\n"
     )
 }
@@ -59,7 +59,7 @@ fn contact(id: &str, employer: &str) -> String {
 /// One of ours, owned by `credential`, who knows a contact.
 fn person(id: &str, credential: &str, employer: &str, knows: &str) -> String {
     format!(
-        "---\ntype: instance\nskill: person\nid: {id}\nname: {id}\n\
+        "---\nkind: instance\nskill: person\nid: {id}\nname: {id}\n\
          credential: \"{credential}\"\nemployer: {employer}\n\
          knows: \"[[contact::{knows}]]\"\n---\n# {id}\n"
     )
@@ -68,7 +68,7 @@ fn person(id: &str, credential: &str, employer: &str, knows: &str) -> String {
 /// The article's `warm_intro($account)`, as one page.
 const WARM_INTRO: &str = "\
 ---
-type: instance
+kind: instance
 skill: query
 id: warm-intro
 description: Which of our people knows someone at the target account?
@@ -254,7 +254,7 @@ async fn an_unbounded_or_malformed_traversal_is_rejected_at_validation_time() {
 
     let page = |traversal: &str| {
         format!(
-            "---\ntype: instance\nskill: query\nid: bad\ntarget: corpus\n{traversal}---\n# bad\n"
+            "---\nkind: instance\nskill: query\nid: bad\ntarget: corpus\n{traversal}---\n# bad\n"
         )
     };
 
@@ -414,7 +414,7 @@ async fn a_traversal_reads_the_base_timeline_unless_a_scenario_is_named() {
     // a changed projected value. `scenario:` is author-supplied today (#512
     // §2 would make it a write context; that is not this change).
     let overlay = format!(
-        "---\ntype: instance\nskill: person\nid: mara\nname: mara (what-if)\n\
+        "---\nkind: instance\nskill: person\nid: mara\nname: mara (what-if)\n\
          credential: \"{ALICE}\"\nemployer: datazoo\nscenario: what-if\n\
          knows: \"[[contact::wile]]\"\n---\n# mara\n"
     );

@@ -2908,8 +2908,8 @@ impl LabelTail {
         loop {
             match client.list_events(self.request()).await {
                 Ok(page) => {
-                    self.remember(page.resume_cursor);
-                    if page.next_cursor.is_none() {
+                    self.remember(page.next_cursor.clone());
+                    if !page.has_more {
                         self.caught_up = true;
                         return;
                     }
@@ -2954,7 +2954,7 @@ impl LabelTail {
         }
         match client.list_events(self.request()).await {
             Ok(page) => {
-                self.remember(page.resume_cursor);
+                self.remember(page.next_cursor.clone());
                 let (fresh, stale): (Vec<_>, Vec<_>) =
                     page.events.into_iter().partition(|e| !self.too_old(e));
                 for e in &stale {

@@ -1,5 +1,5 @@
 ---
-type: instance
+kind: instance
 skill: orgunit
 id: mp-clinical
 name: Münchner Pharma · Clinical Data Platform

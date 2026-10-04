@@ -5,13 +5,14 @@ import * as assert from 'node:assert/strict';
 import type { EscurelApi } from '../../../src/extension';
 import { detectAdminState } from '../../../src/auth/adminState';
 import { activate, signInAsAdmin } from './support';
+import { requireEnv } from '../requireEnv';
 
 suite('who is an admin', () => {
   let api: EscurelApi;
 
   suiteSetup(async function () {
     this.timeout(120_000);
-    if (!process.env.ESCUREL_TEST_ADMIN_BEARER) this.skip();
+    requireEnv(this, 'ESCUREL_TEST_ADMIN_BEARER');
     api = await activate();
   });
 

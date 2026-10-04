@@ -1,8 +1,8 @@
 //! `mint_agent_token` (knowledge-workbench backend P2-6 — BRD FR-M-3): the
 //! gateway hands an interactive agent a run-bound bearer. The token names
 //! the agent (`agent:<skill>`), keeps the human visible as the actor
-//! (`act.sub`), carries the caller's OWN authority (never more: an admin's
-//! mint is admin, a member's mint is their groups), and the run identity
+//! (`act.sub`), carries the caller's OWN groups (never more, and never admin: an
+//! admin's mint is an agent that names the admin as `act.sub`), and the run identity
 //! claims the rest of the workbench backend keys on — so drafts made with
 //! it are stamped, `report_progress` accepts it, and `list_events{run_id}`
 //! shows the run. The gateway writes `run-started` at mint and
@@ -25,15 +25,15 @@ use serde_json::{Value, json};
 
 const TENANT: &str = "carl";
 const SKILL: &str =
-    "---\ntype: skill\nid: renewal\nautonomy: review\nvisibility: public\n---\n# renewal\n";
-const PAGE_BODY: &str = "---\ntype: instance\nid: c1\nskill: renewal\n---\n# C1\n\nBASELINE.\n";
+    "---\nkind: skill\nid: renewal\nautonomy: review\nvisibility: public\n---\n# renewal\n";
+const PAGE_BODY: &str = "---\nkind: instance\nid: c1\nskill: renewal\n---\n# C1\n\nBASELINE.\n";
 const PAGE: &str = "markdown/instances/renewal/c1.md";
 /// An owner-private skill whose one instance is OWNED BY the agent
 /// principal a member could mint (`agent:renewal`). The workbench token
 /// must not confer that ownership on the human who minted it.
 const VAULT_SKILL: &str =
-    "---\ntype: skill\nid: vault\nvisibility: owner\nowner_field: credential\n---\n# vault\n";
-const VAULT_PAGE_BODY: &str = "---\ntype: instance\nid: v1\nskill: vault\ncredential: \"agent:renewal\"\n---\n# v1\n\nSECRET-OF-THE-AGENT\n";
+    "---\nkind: skill\nid: vault\nvisibility: owner\nowner_field: credential\n---\n# vault\n";
+const VAULT_PAGE_BODY: &str = "---\nkind: instance\nid: v1\nskill: vault\ncredential: \"agent:renewal\"\n---\n# v1\n\nSECRET-OF-THE-AGENT\n";
 const VAULT_PAGE: &str = "markdown/instances/vault/v1.md";
 
 async fn start(signing: bool) -> EscurelProcess {
@@ -150,7 +150,7 @@ async fn a_minted_token_names_the_agent_keeps_the_human_and_carries_the_run() {
         &p,
         &token,
         "create_draft",
-        json!({ "target_page_id": PAGE, "content": "---\ntype: instance\nid: c1\nskill: renewal\n---\n# C1\n\nBASELINE.\n\n- renewed\n",
+        json!({ "target_page_id": PAGE, "content": "---\nkind: instance\nid: c1\nskill: renewal\n---\n# C1\n\nBASELINE.\n\n- renewed\n",
                 "base_sha256": base }),
     )
     .await;
@@ -197,7 +197,8 @@ async fn a_minted_token_names_the_agent_keeps_the_human_and_carries_the_run() {
         "{started}"
     );
 
-    // An admin's mint carries admin; a bad skill id does not mint.
+    // An admin's mint does NOT carry admin (an agent never holds the admin tools, whoever minted it); a
+    // bad skill id does not mint.
     let r = call(
         &p,
         &admin,
@@ -208,12 +209,12 @@ async fn a_minted_token_names_the_agent_keeps_the_human_and_carries_the_run() {
     let claims = claims_of(r["token"].as_str().unwrap());
     assert_eq!(claims["act"]["sub"], "ops:jo");
     assert!(
-        claims["roles"]
+        !claims["roles"]
             .as_array()
             .unwrap()
             .iter()
             .any(|r| r == "escurel:admin"),
-        "{claims}"
+        "an admin's mint is an agent, not an admin: {claims}"
     );
     let err = rpc(
         &p,

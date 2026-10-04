@@ -13,9 +13,9 @@ use serde_json::{Value, json};
 use std::collections::BTreeSet;
 
 const TENANT: &str = "stuttgart-ai";
-const NOTE_SKILL: &str = "---\ntype: skill\nid: note\ndescription: A note.\n\
+const NOTE_SKILL: &str = "---\nkind: skill\nid: note\ndescription: A note.\n\
     visibility: public\n---\n# note\n";
-const TARGET: &str = "---\ntype: instance\nskill: note\nid: log\n---\n# Log\n";
+const TARGET: &str = "---\nkind: instance\nskill: note\nid: log\n---\n# Log\n";
 const TARGET_PAGE: &str = "markdown/instances/note/log.md";
 
 async fn start() -> EscurelProcess {
@@ -163,8 +163,8 @@ async fn invalid_cursor_is_invalid_params() {
     )
     .await;
     assert_eq!(
-        out["error"]["code"],
-        json!(-32602),
-        "an undecodable cursor must be invalid_params: {out}"
+        out["result"]["structuredContent"]["issues"][0]["code"],
+        json!("invalid_cursor"),
+        "an undecodable cursor is a typed `invalid_cursor` refusal: {out}"
     );
 }

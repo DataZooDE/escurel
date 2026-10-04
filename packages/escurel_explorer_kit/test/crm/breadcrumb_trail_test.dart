@@ -14,9 +14,9 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 const _skill =
-    '---\ntype: skill\nid: talk\ndescription: A talk.\n---\n# talk\n';
+    '---\nkind: skill\nid: talk\ndescription: A talk.\n---\n# talk\n';
 String _inst(String id) =>
-    '---\ntype: instance\nskill: talk\nid: $id\nname: $id\n---\n# $id\n';
+    '---\nkind: instance\nskill: talk\nid: $id\nname: $id\n---\n# $id\n';
 
 FixtureEscurelClient _client() => FixtureEscurelClient.fromSources(
   skillFiles: {'talk.md': _skill},

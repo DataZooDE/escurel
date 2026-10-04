@@ -33,16 +33,16 @@ const ALPINA_GROUP: &str = "engagement-alpina";
 
 // A public "type" page for the engagements themselves — the notes wikilink
 // to these, which is what gives `neighbours` an edge to filter.
-const ENGAGEMENT_SKILL: &str = "---\ntype: skill\nid: engagement\n\
+const ENGAGEMENT_SKILL: &str = "---\nkind: skill\nid: engagement\n\
     description: A customer engagement.\nvisibility: public\n---\n# engagement\n";
-const HOFFMANN: &str = "---\ntype: instance\nskill: engagement\nid: hoffmann\n---\n# Hoffmann\n";
-const ALPINA: &str = "---\ntype: instance\nskill: engagement\nid: alpina\n---\n# Alpina\n";
+const HOFFMANN: &str = "---\nkind: instance\nskill: engagement\nid: hoffmann\n---\n# Hoffmann\n";
+const ALPINA: &str = "---\nkind: instance\nskill: engagement\nid: alpina\n---\n# Alpina\n";
 
 // The shared type. Its skill-level block grants BOTH engagements — which
 // is exactly the v1 shape the issue calls too coarse: without an
 // instance-level override, either group reads every note.
 const NOTE_SKILL: &str = r#"---
-type: skill
+kind: skill
 id: customer_note
 description: A note filed against an engagement.
 required_frontmatter: [engagement]
@@ -57,7 +57,7 @@ acl:
 
 // Two notes of that one skill, each narrowed to its own engagement.
 const HOFFMANN_NOTE: &str = r#"---
-type: instance
+kind: instance
 skill: customer_note
 id: hoffmann-1
 engagement: "[[engagement::hoffmann]]"
@@ -69,7 +69,7 @@ acl:
 Zwischenbericht: die Migration liegt hinter dem Plan.
 "#;
 const ALPINA_NOTE: &str = r#"---
-type: instance
+kind: instance
 skill: customer_note
 id: alpina-1
 engagement: "[[engagement::alpina]]"
@@ -83,7 +83,7 @@ Zwischenbericht: die Verlaengerung ist gefaehrdet.
 // The backward-compatibility page: NO `acl:` block, so the skill's block
 // decides and both engagements keep reading it exactly as they do today.
 const SHARED_NOTE: &str = r#"---
-type: instance
+kind: instance
 skill: customer_note
 id: shared-1
 engagement: "[[engagement::hoffmann]]"
@@ -454,7 +454,7 @@ async fn update(p: &EscurelProcess, token: &str, page_id: &str, content: &str) -
 }
 
 const HOFFMANN_NOTE_EDIT: &str = r#"---
-type: instance
+kind: instance
 skill: customer_note
 id: hoffmann-1
 engagement: "[[engagement::hoffmann]]"
@@ -466,7 +466,7 @@ acl:
 Zwischenbericht: nachgetragen von Carol.
 "#;
 const ALPINA_NOTE_EDIT: &str = r#"---
-type: instance
+kind: instance
 skill: customer_note
 id: alpina-1
 engagement: "[[engagement::alpina]]"

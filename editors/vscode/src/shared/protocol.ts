@@ -1,5 +1,9 @@
+import type { WriteBackStatus } from './writeBack';
+import type { RowSource } from './rowSource';
 // The host ↔ webview contract (SPEC §5): typed postMessage both ways.
 // Shared by both tsconfigs, so nothing here may import `vscode` or Node.
+
+import type { PreviewModel } from './preview';
 
 export interface FieldView {
   name: string;
@@ -33,8 +37,11 @@ export interface ActionView {
 export interface ThreadStrip {
   rootEventId: string;
   runId: string;
-  /** `processed | failed | dead_letter | cancelled | planned`, as the run finished. */
-  runStatus: string;
+  /**
+   * `processed | failed | dead_letter | cancelled | planned`, as the run finished. Absent when the
+   * strip comes from a promoted draft's review rows, which do not say how the run ended.
+   */
+  runStatus?: string;
 }
 
 export interface PageModel {
@@ -48,8 +55,16 @@ export interface PageModel {
     layer: string;
     readOnly: boolean;
     backend: string;
+    /** The skill's own OKF provenance in short phrases (verified, generated, stale after …). */
+    facts?: string[];
+    /** The skill has outlived its `stale_after`: shown as a word, not only a colour. */
+    stale?: true;
   };
   fields: FieldView[];
+  /** What the source system holds for a non-markdown page (read-only); absent for markdown. */
+  preview?: PreviewModel;
+  /** The skill's OKF `resource:` link, shown with the preview. */
+  resource?: string;
   summary?: string;
   body: string;
   lastWrittenBy?: string | null;
@@ -58,6 +73,12 @@ export interface PageModel {
   actions: ActionView[];
   /** Absent when no run has finished against this page. */
   thread?: ThreadStrip;
+  /** The report skill that draws this skill's records (its `viewer:`), if it names one. */
+  viewer?: { report: string };
+  /** Present when the page is a ROW of an `instances: rows` skill: read-only source data plus notes. */
+  source?: RowSource;
+  /** The last write-back to the source, from the page's `escurel:write-back` events. */
+  writeBack?: WriteBackStatus;
 }
 
 export type HostToWebview =
@@ -78,6 +99,8 @@ export interface RunControl {
   /** Deactivated, not hidden: a control that is not yours still shows, with the reason. */
   enabled: boolean;
   disabledReason?: string;
+  /** What the control does, in one sentence (the tooltip): "Starts a new run; this attempt stays in history." */
+  hint?: string;
 }
 
 export type WebviewToHost =
@@ -86,6 +109,10 @@ export type WebviewToHost =
   | { type: 'open-wikilink'; wikilink: string }
   | { type: 'view-skill'; skill: string }
   | { type: 'show-raw' }
+  /** "Runs for this record": the host opens the Runs view filtered to THIS page. */
+  | { type: 'show-runs' }
+  | { type: 'propose-write-back'; field: string }
+  | { type: 'open-original' }
   | { type: 'refresh' }
   | { type: 'open-thread'; rootEventId: string }
   | { type: 'open-run'; runId: string }
@@ -151,8 +178,30 @@ export interface ThreadNode {
   needsYou?: { reason: 'review' | 'approve-plan' | 'failed' | 'ask-human'; text: string };
   /** An open or decided changeset: who proposed it, when, and the pages it changes. */
   changeset?: { author?: string; at?: string; drafts: { id: string; title: string }[] };
+  /** The skill this node is about: the skill an event was filed under, a run executed, a page belongs to. */
+  skill?: string;
+  /** The instance page this node is about (an event's page, a run's target, a draft's target). */
+  pageId?: string;
+  /** The run behind this node: a run's own id, or the run that wrote a changeset or draft. */
+  runId?: string;
   /** Collapsed subtrees render as the mock's "… collapsed. Click to expand." row. */
   collapsible: boolean;
+}
+
+/** What a link on a node opens. The host decides the target from its OWN view of the node. */
+export type NodeLinkKind = 'skill' | 'page' | 'run' | 'thread' | 'review';
+export const NODE_LINK_KINDS: readonly NodeLinkKind[] = [
+  'skill',
+  'page',
+  'run',
+  'thread',
+  'review',
+];
+
+export interface NodeLink {
+  id: NodeLinkKind;
+  /** In a person's words, never an id: 'View skill: customer-order', 'Open page: order-4500131'. */
+  label: string;
 }
 
 export interface ThreadView {
@@ -229,6 +278,8 @@ export interface InspectorRow {
   k: string;
   v: string;
   tone?: 'ok' | 'warn' | 'error';
+  /** An identifier or setting only an engineer needs (trace id, harness...): shown under 'Technical details'. */
+  tech?: boolean;
 }
 
 /**
@@ -255,12 +306,20 @@ export interface InspectorActions {
 
 export interface InspectorView {
   title: string;
+  /** What kind of node this is, in a person's words ('Agent run', 'Proposed changes'...). */
+  kindLabel?: string;
+  /** One sentence: what happened and what (if anything) waits for the person. */
+  summary?: string;
+  /** The node waits for a person: the panel makes it stand out. */
+  needsYou?: boolean;
   actions?: InspectorActions;
   rows: InspectorRow[];
   bodyTitle?: string;
   body?: string;
   sideTitle: string;
   side: InspectorRow[];
+  /** Where this node leads: its skill, its page, its run, its thread, its review. */
+  links?: NodeLink[];
 }
 
 export type ThreadHostToWebview =
@@ -270,8 +329,6 @@ export type ThreadHostToWebview =
       view: ThreadView;
       layout: ThreadLayout;
       focus: FocusGraph;
-      /** Keyed by node id; a node with no entry has nothing to inspect. */
-      details: Record<string, InspectorView>;
     }
   | { type: 'thread-error'; message: string; canReconnect: boolean }
   /** The outline selected a node: the canvas highlights it and pans to it. */
@@ -285,12 +342,42 @@ export type ThreadWebviewToHost =
   | { type: 'discard'; changesetId?: string; draftId?: string }
   | { type: 'start-skill'; skill: string; pageId: string; mode: StartMode }
   | { type: 'view-skill'; skill: string }
+  /** A link on a node: only the kind travels; the host looks the target up in its own thread. */
+  | { type: 'open-link'; nodeId: string; link: NodeLinkKind }
   /** `runId` for cancel/retry/approve/fix-skill; `eventId` for requeue. Checked against the thread. */
   | { type: 'run-control'; action: RunControlAction; runId?: string; eventId?: string }
   | { type: 'toggle-collapse'; nodeId: string }
   /** The toolbar's "Expand all": the host owns which nodes are collapsed. */
   | { type: 'expand-all' }
   | { type: 'refresh' };
+
+// ── details view (the bottom panel) ──────────────────────────────────
+
+/** The inspector actions a details view may send; everything else a thread offers stays on the canvas. */
+export type DetailsAction = Extract<
+  ThreadWebviewToHost,
+  { type: 'start-skill' | 'view-skill' | 'run-control' | 'open-link' }
+>;
+
+/** What the details view shows: one node of one open thread. */
+export interface ShownDetails {
+  rootEventId: string;
+  nodeId: string;
+  detail: InspectorView;
+}
+
+export type DetailsHostToWebview =
+  /** The node to show, with the thread it belongs to (every action goes back WITH this id). */
+  | ({ type: 'details' } & ShownDetails)
+  /** Nothing selected, or the thread closed. */
+  | { type: 'details-empty' };
+
+export type DetailsWebviewToHost =
+  | { type: 'ready' }
+  /** An inspector button, wrapped with the thread it was shown for. The host re-validates it. */
+  | { type: 'details-action'; rootEventId: string; message: DetailsAction }
+  /** Esc in the details view: give the focus back to that thread's canvas. */
+  | { type: 'focus-canvas'; rootEventId: string };
 
 // ── run detail ───────────────────────────────────────────────────────
 
@@ -330,6 +417,8 @@ export interface RunView {
   targetPageId?: string;
   /** Copyable, per SPEC §3.6. */
   traceId?: string;
+  /** The page or draft the run produced (`run-finished.produced_instance`). */
+  producedPageId?: string;
   startedAt?: string;
   finishedAt?: string;
   depth?: number;
@@ -337,6 +426,8 @@ export interface RunView {
   maxAttempts?: number;
   plan: PlanStep[];
   summary?: string;
+  /** Why a failed run failed, in full: the reason the runner gave, else the last attempt's error. */
+  failure?: string;
   /**
    * The run's own count, from `run-finished`. Not the same thing as `calls.length`:
    * per-call rows are attributed by the run-bound token, so a run can honestly
@@ -363,6 +454,10 @@ export type RunWebviewToHost =
   | { type: 'open-page'; pageId: string }
   | { type: 'open-thread'; rootEventId: string }
   | { type: 'copy-trace-id'; traceId: string }
+  /** The host copies THIS panel's own run id; the webview names nothing. */
+  | { type: 'copy-run-id' }
+  /** The host opens THIS run's produced page; the webview names nothing. */
+  | { type: 'open-produced' }
   | { type: 'run-control'; action: RunControlAction; runId: string; eventId?: string }
   | { type: 'view-skill'; skill: string }
   | { type: 'refresh' };

@@ -16,7 +16,7 @@
 //! `neighbours` land in later M2 PRs.
 
 use duckdb::params;
-use escurel_md::PageType;
+use escurel_md::PageKind;
 use escurel_md::wikilink::{WikilinkParsed, parse_wikilinks};
 
 use crate::{Indexer, IndexerError};
@@ -75,6 +75,25 @@ pub struct SkillInfo {
     /// `harness:` — the adapter this skill asks to run on. Advisory here;
     /// the runner honours it within its allow-list.
     pub harness: Option<String>,
+    /// `folder:` — the `/` path placing this skill in a tree. `None` when undeclared.
+    pub folder: Option<String>,
+    /// `role:` — `record` | `process` | `report` | `helper` as written. `None` when undeclared.
+    pub role: Option<String>,
+    /// `tags:` — the string entries of the OKF `tags:` list. Empty when undeclared.
+    pub tags: Vec<String>,
+    /// `title:` — OKF display title.
+    pub title: Option<String>,
+    /// `resource:` — OKF external resource link.
+    pub resource: Option<String>,
+    /// `generated:` / `verified:` / `status:` / `stale_after:` — the OKF provenance keys, as written.
+    pub generated: Option<String>,
+    pub verified: Option<String>,
+    pub status: Option<String>,
+    pub stale_after: Option<String>,
+    /// `sources:` — the entries of the OKF `sources:` list (strings or `{title, url}` objects).
+    pub sources: Vec<serde_json::Value>,
+    /// `viewer:` — Peacock's `{report, param}` as written.
+    pub viewer: Option<escurel_types::SkillViewer>,
     /// `actions:` — the object-form actions this skill declares (see
     /// `escurel_types::SkillAction`). Empty when undeclared: no restriction on cascades.
     pub actions: Vec<escurel_types::SkillAction>,
@@ -739,6 +758,17 @@ impl Indexer {
                     .map(str::trim)
                     .filter(|s| !s.is_empty())
                     .map(str::to_owned),
+                folder: trimmed_str(&fm, "folder"),
+                role: trimmed_str(&fm, "role"),
+                tags: string_array_field(&fm, "tags"),
+                title: trimmed_str(&fm, "title"),
+                resource: trimmed_str(&fm, "resource"),
+                generated: scalar_text(&fm, "generated"),
+                verified: scalar_text(&fm, "verified"),
+                status: trimmed_str(&fm, "status"),
+                stale_after: scalar_text(&fm, "stale_after"),
+                sources: sources_field(&fm),
+                viewer: parse_viewer(&fm),
                 actions: parse_actions(&fm),
                 cascade: parse_cascade(&fm),
                 params: parse_params(&fm),
@@ -1079,7 +1109,7 @@ pub struct PageRef {
     /// pages whose frontmatter doesn't declare one.
     pub slug: Option<String>,
     pub skill: String,
-    pub page_type: PageType,
+    pub page_kind: PageKind,
 }
 
 /// Result of [`Indexer::resolve`].
@@ -1352,13 +1382,13 @@ impl Indexer {
                 },
             )
             .ok();
-        let Some((page_id, slug, skill, page_type_str, fm_json, last_written_by)) = page_with_fm
+        let Some((page_id, slug, skill, page_kind_str, fm_json, last_written_by)) = page_with_fm
         else {
             return Ok(None);
         };
-        let page_type = match page_type_str.as_str() {
-            "skill" => PageType::Skill,
-            _ => PageType::Instance,
+        let page_kind = match page_kind_str.as_str() {
+            "skill" => PageKind::Skill,
+            _ => PageKind::Instance,
         };
         let frontmatter: serde_json::Value = serde_json::from_str(&fm_json)?;
 
@@ -1390,7 +1420,7 @@ impl Indexer {
                 page_id,
                 slug,
                 skill,
-                page_type,
+                page_kind,
             },
             frontmatter,
             body,
@@ -1468,6 +1498,19 @@ impl Indexer {
         as_of: Option<&str>,
         scenario: Option<&str>,
     ) -> Result<Vec<Edge>, IndexerError> {
+        // A ROW of an `instances: rows` skill has no `pages` row until someone writes notes for it,
+        // yet other pages can link to it by key. Work out its (slug, skill) from the page id BEFORE the
+        // connection is locked (`rows_source` takes the lock itself).
+        let virtual_row = if matches!(direction, Direction::In | Direction::Both) {
+            match crate::backend::rows::split_instance_page_id(page_id) {
+                Some((skill, id)) if matches!(self.rows_source(skill).await, Ok(Some(_))) => {
+                    Some((Some(id.to_owned()), skill.to_owned()))
+                }
+                _ => None,
+            }
+        } else {
+            None
+        };
         let conn = self.conn.lock().await;
 
         let target = if matches!(direction, Direction::In | Direction::Both) {
@@ -1477,6 +1520,7 @@ impl Indexer {
                 |row| Ok((row.get::<_, Option<String>>(0)?, row.get::<_, String>(1)?)),
             )
             .ok()
+            .or(virtual_row)
         } else {
             None
         };
@@ -1581,22 +1625,31 @@ fn page_ref_from_row(row: &duckdb::Row<'_>) -> duckdb::Result<PageRef> {
     let page_id: String = row.get(0)?;
     let slug: Option<String> = row.get(1)?;
     let skill: String = row.get(2)?;
-    let page_type_str: String = row.get(3)?;
-    let page_type = match page_type_str.as_str() {
-        "skill" => PageType::Skill,
-        _ => PageType::Instance,
+    let page_kind_str: String = row.get(3)?;
+    let page_kind = match page_kind_str.as_str() {
+        "skill" => PageKind::Skill,
+        _ => PageKind::Instance,
     };
     Ok(PageRef {
         page_id,
         slug,
         skill,
-        page_type,
+        page_kind,
     })
 }
 
 fn skill_id(fm: &serde_json::Value) -> Option<String> {
     fm.get("id")
         .and_then(serde_json::Value::as_str)
+        .map(str::to_owned)
+}
+
+/// A non-empty, trimmed string frontmatter value; `None` for absent, empty or a non-string.
+fn trimmed_str(fm: &serde_json::Value, key: &str) -> Option<String> {
+    fm.get(key)
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
         .map(str::to_owned)
 }
 
@@ -1631,6 +1684,48 @@ fn parse_actions(fm: &serde_json::Value) -> Vec<escurel_types::SkillAction> {
                 .collect()
         })
         .unwrap_or_default()
+}
+
+/// A scalar frontmatter value as text. YAML reads an unquoted `2026-09-30` as a date, which the
+/// frontmatter value may carry as a string or a number: render either as the text the author wrote.
+fn scalar_text(fm: &serde_json::Value, key: &str) -> Option<String> {
+    match fm.get(key)? {
+        serde_json::Value::String(s) => Some(s.trim().to_owned()).filter(|s| !s.is_empty()),
+        serde_json::Value::Number(n) => Some(n.to_string()),
+        _ => None,
+    }
+}
+
+/// The entries of `sources:` that are links or `{title, url}` objects; anything else is skipped
+/// (`validate` is what warns the author).
+fn sources_field(fm: &serde_json::Value) -> Vec<serde_json::Value> {
+    fm.get("sources")
+        .and_then(serde_json::Value::as_array)
+        .map(|arr| {
+            arr.iter()
+                .filter(|v| v.is_string() || v.is_object())
+                .cloned()
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Peacock's `viewer: {report, param}`; absent when `report` is missing or empty.
+fn parse_viewer(fm: &serde_json::Value) -> Option<escurel_types::SkillViewer> {
+    let v = fm.get("viewer")?.as_object()?;
+    let report = v.get("report")?.as_str()?.trim();
+    if report.is_empty() {
+        return None;
+    }
+    Some(escurel_types::SkillViewer {
+        report: report.to_owned(),
+        param: v
+            .get("param")
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_owned),
+    })
 }
 
 fn string_array_field(fm: &serde_json::Value, key: &str) -> Vec<String> {

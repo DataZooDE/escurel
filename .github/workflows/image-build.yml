@@ -1,0 +1,67 @@
+name: image-build
+
+# Build the production Dockerfile on every PR that can change it.
+#
+# `publish-image.yml` only runs on `main`, so until now a Dockerfile (or a Cargo.lock / feature
+# change the Dockerfile builds) that does not build was found AFTER the merge, when the substrate
+# image stopped updating. This job builds the same Dockerfile without pushing it. The build itself
+# carries the assertions that matter and fails the job when they do not hold:
+#   * the DUCKDB_VERSION build arg matches the DuckDB release libduckdb-sys links (Cargo.lock);
+#   * every extension the image bakes landed under <version>/<platform> (a missing one is a silent
+#     137 MB download at boot).
+# The smoke step then boots the image against an empty volume and checks /healthz and /version.
+on:
+  pull_request:
+    paths:
+      - "Dockerfile"
+      - "Cargo.lock"
+      - "Cargo.toml"
+      - "rust-toolchain.toml"
+      - "crates/**"
+      - "scripts/migrate-kind-job.sh"
+      - ".github/workflows/image-build.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: image-build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: docker build (no push)
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build the image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          load: true
+          tags: escurel-pr-check:latest
+          cache-from: type=gha,scope=image-build
+          cache-to: type=gha,scope=image-build,mode=max
+
+      - name: Smoke — boots on an empty volume, answers /healthz and /version
+        run: |
+          set -euo pipefail
+          docker run -d --name escurel-smoke -p 127.0.0.1:18080:8080 \
+            -e ESCUREL_EMBEDDING_PROVIDER=zero -e ESCUREL_OBSERVABILITY_METRICS_LISTEN= \
+            escurel-pr-check:latest
+          for i in $(seq 1 60); do
+            curl -fsS http://127.0.0.1:18080/healthz >/dev/null 2>&1 && break
+            docker inspect -f '{{.State.Running}}' escurel-smoke | grep -q true || { docker logs escurel-smoke; exit 1; }
+            sleep 1
+          done
+          curl -fsS http://127.0.0.1:18080/healthz
+          curl -fsS http://127.0.0.1:18080/version
+          docker rm -f escurel-smoke
+
+      - name: The migration job ships in the image and fails on a bad boot
+        run: |
+          set -euo pipefail
+          docker run --rm --entrypoint sh escurel-pr-check:latest -c 'command -v migrate-kind-job && command -v escurel'

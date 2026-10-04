@@ -1,5 +1,5 @@
 ---
-type: skill
+kind: skill
 id: playbook
 description: Firm-authored engagement playbook (crm-essentials v1).
 layer: base@crm-essentials@v1

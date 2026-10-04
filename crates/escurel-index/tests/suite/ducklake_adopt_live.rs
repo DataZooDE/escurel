@@ -31,7 +31,7 @@ const BUCKET: &str = "escurel-lake";
 const CUSTOMER_SKILL: (&str, &str) = (
     "markdown/skills/customer.md",
     "---\n\
-     type: skill\n\
+     kind: skill\n\
      id: customer\n\
      description: a customer\n\
      ---\n\
@@ -41,7 +41,7 @@ const CUSTOMER_SKILL: (&str, &str) = (
 const ACME: (&str, &str) = (
     "markdown/instances/customer/acme-corp.md",
     "---\n\
-     type: instance\n\
+     kind: instance\n\
      skill: customer\n\
      id: acme-corp\n\
      ---\n\
@@ -55,7 +55,7 @@ const ACME: (&str, &str) = (
 const STOPWORT: (&str, &str) = (
     "markdown/instances/customer/stopwort.md",
     "---\n\
-     type: instance\n\
+     kind: instance\n\
      skill: customer\n\
      id: stopwort\n\
      ---\n\

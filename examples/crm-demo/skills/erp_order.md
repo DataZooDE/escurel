@@ -1,5 +1,5 @@
 ---
-type: skill
+kind: skill
 id: erp_order
 description: ERP sales orders, mirrored read-only through a sql_view backend over the shipped sources/erp JSON extract. Instances are materialised views — never authored as markdown.
 backend:

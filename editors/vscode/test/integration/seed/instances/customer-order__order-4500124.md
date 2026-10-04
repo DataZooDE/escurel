@@ -1,5 +1,5 @@
 ---
-type: instance
+kind: instance
 skill: customer-order
 id: order-4500124
 customer: Brandt Maschinenbau AG

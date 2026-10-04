@@ -101,13 +101,13 @@ mod tests {
 
     #[test]
     fn snapshot_round_trips_full_page_markdown() {
-        let md = "---\ntype: instance\nskill: engagement\nid: spine\ncontract_value: \"350k\"\n---\n# Spine\n\nBody.\n";
+        let md = "---\nkind: instance\nskill: engagement\nid: spine\ncontract_value: \"350k\"\n---\n# Spine\n\nBody.\n";
         let bytes = snapshot_bytes_from_markdown(md).unwrap();
         assert_eq!(body_from_snapshot(&bytes).unwrap(), md);
     }
 
     const BASE: &str =
-        "---\ntype: instance\nskill: customer\nid: c1\n---\n# Acme\n\nAlpha.\n\nBeta.\n\nGamma.\n";
+        "---\nkind: instance\nskill: customer\nid: c1\n---\n# Acme\n\nAlpha.\n\nBeta.\n\nGamma.\n";
 
     #[test]
     fn three_way_merge_keeps_both_disjoint_edits() {

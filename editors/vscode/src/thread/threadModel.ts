@@ -1,8 +1,9 @@
 import { emphasisOf, needsYouOf } from './nodeStyle';
 import type { LineageNode, ListLineageResponse } from '../client/types';
-import { pageSlug } from '../shared/pageId';
+import { pageSkill, pageSlug } from '../shared/pageId';
 import type { ThreadNode, ThreadView } from '../shared/protocol';
 import { pluralise } from '../shared/text';
+import { cleanText } from '../shared/untrustedText';
 import { formatClock, formatDuration, parseGatewayTime } from '../shared/time';
 
 /** Immutable lineage store keyed by id for paging and parent lookup. */
@@ -78,7 +79,8 @@ export function foldLineage(pages: ListLineageResponse[]): FoldedLineage {
 /** Read string attributes from the gateway's open attribute bag in one place. */
 function stringAttr(node: LineageNode | undefined, key: string): string | undefined {
   const value = node?.[key];
-  return typeof value === 'string' ? value : undefined;
+  // Titles, skills and summaries on a card are other people's text: cleaned and bounded here.
+  return typeof value === 'string' ? cleanText(value, 400) : undefined;
 }
 
 function shortId(id: string): string {
@@ -138,17 +140,30 @@ function resolveViewParents(folded: FoldedLineage): {
 
 type CardDetails = Pick<
   ThreadNode,
-  'title' | 'subtitle' | 'meta' | 'target' | 'gate' | 'tone' | 'changeset'
+  | 'title'
+  | 'subtitle'
+  | 'meta'
+  | 'target'
+  | 'gate'
+  | 'tone'
+  | 'changeset'
+  | 'skill'
+  | 'pageId'
+  | 'runId'
 >;
 
 function eventCard(node: LineageNode): CardDetails {
   const line = [formatClock(node.at), stringAttr(node, 'kind')].filter(Boolean).join(' · ');
+  const skill = stringAttr(node, 'label_skill');
+  const pageId = stringAttr(node, 'instance_page_id');
   return {
-    title: stringAttr(node, 'label_skill') ?? '',
+    title: skill ?? '',
     subtitle: stringAttr(node, 'title'),
     meta: line ? [line] : [],
     tone: 'event',
     target: { open: 'thread', rootEventId: node.id },
+    ...(skill ? { skill } : {}),
+    ...(pageId ? { pageId } : {}),
   };
 }
 
@@ -172,16 +187,20 @@ function runCard(node: LineageNode, folded: FoldedLineage): CardDetails {
   if (count !== undefined) meta.push(pluralise(count, 'tool call'));
   const summary = stringAttr(node, 'summary');
   if (summary) meta.push(summary);
+  const skill =
+    stringAttr(parentEvent, 'label_skill') ??
+    stringAttr(node, 'label_skill') ??
+    stringAttr(node, 'skill');
+  const pageId = stringAttr(node, 'target_page_id');
   return {
-    title:
-      stringAttr(parentEvent, 'label_skill') ??
-      stringAttr(node, 'label_skill') ??
-      stringAttr(node, 'skill') ??
-      'run',
+    title: skill ?? 'run',
     subtitle: 'run',
     meta,
     tone: failed ? 'failed' : 'run',
     target: { open: 'run', runId: node.id },
+    ...(skill ? { skill } : {}),
+    ...(pageId ? { pageId } : {}),
+    runId: node.id,
   };
 }
 
@@ -202,7 +221,9 @@ function changesetCard(node: LineageNode, children: string[], folded: FoldedLine
     .filter((t): t is string => Boolean(t))
     .sort()[0];
   const author = stringAttr(node, 'author');
+  const runId = stringAttr(node, 'run_id');
   return {
+    ...(runId ? { runId } : {}),
     changeset: {
       ...(author ? { author } : {}),
       ...(created ? { at: created } : {}),
@@ -222,11 +243,22 @@ function changesetCard(node: LineageNode, children: string[], folded: FoldedLine
 function draftCard(node: LineageNode, parent: string | null, folded: FoldedLineage): CardDetails {
   const changesetId = stringAttr(node, 'changeset_id');
   const parentNode = parent ? folded.nodes.get(parent) : undefined;
+  const pageId = stringAttr(node, 'target_page_id');
+  const skill = pageId ? pageSkill(pageId) : undefined;
+  const runId = stringAttr(node, 'run_id');
   return {
-    title: pageSlug(stringAttr(node, 'target_page_id') ?? ''),
+    title: pageSlug(pageId ?? ''),
     meta: [],
     tone: 'instance',
-    target: { open: 'review', draftId: node.id, ...(changesetId ? { changesetId } : {}) },
+    // A promoted page EXISTS: double-click opens it. A review of a decided change has nothing to
+    // decide ('There is nothing left to review'), so it is only the target while the change waits.
+    target:
+      node.state === 'promoted' && pageId
+        ? { open: 'page', pageId }
+        : { open: 'review', draftId: node.id, ...(changesetId ? { changesetId } : {}) },
+    ...(skill ? { skill } : {}),
+    ...(pageId ? { pageId } : {}),
+    ...(runId ? { runId } : {}),
     gate:
       node.state === 'open' && !node.changeset_id && parentNode?.type !== 'changeset'
         ? { drafts: 1, draftId: node.id }

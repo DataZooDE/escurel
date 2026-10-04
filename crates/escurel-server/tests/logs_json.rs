@@ -23,7 +23,7 @@ use escurel_obs::{TelemetryConfig, json_log_layer};
 use escurel_test_support::{AuthMode, ConfigOverrides, EscurelProcess, FixtureBuilder, Opts};
 use serde_json::{Value, json};
 
-const CUSTOMER_SKILL: &str = "---\ntype: skill\nid: customer\n\
+const CUSTOMER_SKILL: &str = "---\nkind: skill\nid: customer\n\
 description: A buyer.\nrequired_frontmatter: [id]\n---\n# customer\n";
 use tracing_subscriber::layer::SubscriberExt;
 
@@ -323,7 +323,7 @@ async fn a_failed_tool_call_records_why_it_failed() {
             "jsonrpc": "2.0", "id": 1, "method": "tools/call",
             "params": {
                 "name": "query_instance",
-                "arguments": { "query_ref": "[[query::does_not_exist]]", "params": {} }
+                "arguments": { "params": {} }
             }
         }))
         .send()

@@ -16,9 +16,9 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
 const TENANT: &str = "carl";
-const NOTE_SKILL: &str = "---\ntype: skill\nid: note\ndescription: A note.\n\
+const NOTE_SKILL: &str = "---\nkind: skill\nid: note\ndescription: A note.\n\
     visibility: public\n---\n# note\n";
-const BASE: &str = "---\ntype: instance\nskill: note\nid: plan\n---\n# Plan\nv1 body.\n";
+const BASE: &str = "---\nkind: instance\nskill: note\nid: plan\n---\n# Plan\nv1 body.\n";
 const PAGE: &str = "markdown/instances/note/plan.md";
 const ROOT: &str = "01HROOT";
 const RUN1: &str = "01HRUN1";
@@ -119,7 +119,7 @@ async fn seed_thread(p: &EscurelProcess) -> (String, String) {
     }
     let mut args = json!({
         "target_page_id": PAGE,
-        "content": "---\ntype: instance\nskill: note\nid: plan\n---\n# Plan\nv2 from run 1.\n",
+        "content": "---\nkind: instance\nskill: note\nid: plan\n---\n# Plan\nv2 from run 1.\n",
         "base_sha256": format!("{:x}", Sha256::digest(BASE.as_bytes())),
         "new_changeset": true,
     });

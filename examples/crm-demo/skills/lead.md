@@ -1,5 +1,5 @@
 ---
-type: skill
+kind: skill
 id: lead
 description: A qualified follow-up under BANT. Lives between engagement and opportunity.
 required_frontmatter: [opened, status, contact]

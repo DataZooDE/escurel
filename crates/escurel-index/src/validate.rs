@@ -35,7 +35,7 @@
 use std::collections::{HashMap, HashSet};
 
 use escurel_md::wikilink::{WikilinkParsed, parse_wikilinks};
-use escurel_md::{PageType, YamlMapping, YamlValue, parse};
+use escurel_md::{PageKind, YamlMapping, YamlValue, parse};
 
 use crate::{Indexer, IndexerError};
 
@@ -131,8 +131,8 @@ pub const KNOWN_HARNESSES: [&str; 7] = [
 /// `summary:` on a skill page (workbench backend P2-7): absent is a
 /// warning (the workbench falls back to `description`), over
 /// [`SUMMARY_MAX_CHARS`] is an error.
-fn check_summary(page_type: PageType, fields: &YamlMapping) -> Option<Issue> {
-    if page_type != PageType::Skill {
+fn check_summary(page_kind: PageKind, fields: &YamlMapping) -> Option<Issue> {
+    if page_kind != PageKind::Skill {
         return None;
     }
     let text = fields
@@ -163,8 +163,8 @@ fn check_summary(page_type: PageType, fields: &YamlMapping) -> Option<Issue> {
 }
 
 /// `harness:` on a skill page names an adapter the runner has.
-fn check_harness(page_type: PageType, fields: &YamlMapping) -> Option<Issue> {
-    if page_type != PageType::Skill {
+fn check_harness(page_kind: PageKind, fields: &YamlMapping) -> Option<Issue> {
+    if page_kind != PageKind::Skill {
         return None;
     }
     let raw = fields.get("harness")?;
@@ -188,6 +188,169 @@ fn check_harness(page_type: PageType, fields: &YamlMapping) -> Option<Issue> {
             .with_suggestion(suggestion),
         ),
     }
+}
+
+/// The roles a skill may declare (`role:`), as a knowledge tree sorts and icons them.
+pub const SKILL_ROLES: [&str; 4] = ["record", "process", "report", "helper"];
+
+/// `folder:` on a skill page: a `/`-separated path of slugs (`sales/orders`). A malformed one is an
+/// error: a tree cannot place the skill.
+fn check_folder(page_kind: PageKind, fields: &YamlMapping) -> Option<Issue> {
+    if page_kind != PageKind::Skill {
+        return None;
+    }
+    let raw = fields.get("folder")?;
+    let suggestion = "a `/`-separated path of lowercase slugs, e.g. `folder: sales/orders`";
+    let Some(path) = raw.as_str().map(str::trim) else {
+        return Some(
+            Issue::error(
+                "folder_invalid",
+                "frontmatter.folder",
+                "`folder:` must be a string path",
+            )
+            .with_suggestion(suggestion),
+        );
+    };
+    if path.is_empty() || !path.split('/').all(is_action_slug) {
+        return Some(
+            Issue::error(
+                "folder_invalid",
+                "frontmatter.folder",
+                format!("`folder: {path}` is not a `/`-separated path of lowercase slugs (letters, digits, `-`, `_`)"),
+            )
+            .with_suggestion(suggestion),
+        );
+    }
+    None
+}
+
+/// `role:` on a skill page: one of [`SKILL_ROLES`].
+fn check_role(page_kind: PageKind, fields: &YamlMapping) -> Option<Issue> {
+    if page_kind != PageKind::Skill {
+        return None;
+    }
+    let raw = fields.get("role")?;
+    match raw.as_str().map(str::trim) {
+        Some(role) if SKILL_ROLES.contains(&role) => None,
+        other => Some(
+            Issue::error(
+                "role_unknown",
+                "frontmatter.role",
+                format!(
+                    "`role: {}` is not a skill role",
+                    other.unwrap_or("<not a string>")
+                ),
+            )
+            .with_suggestion(format!("use one of: {}", SKILL_ROLES.join(" | "))),
+        ),
+    }
+}
+
+/// Whether `s` is an ISO-8601 duration such as `P90D`, `P1Y2M`, `PT36H` or `P1W`.
+fn is_iso_duration(s: &str) -> bool {
+    let Some(rest) = s.strip_prefix('P') else {
+        return false;
+    };
+    if rest.is_empty() {
+        return false;
+    }
+    let (date_part, time_part) = match rest.split_once('T') {
+        Some((d, t)) => (d, Some(t)),
+        None => (rest, None),
+    };
+    let units = |part: &str, allowed: &str| -> bool {
+        let mut digits = 0;
+        let mut seen = 0;
+        for c in part.chars() {
+            if c.is_ascii_digit() {
+                digits += 1;
+            } else if allowed.contains(c) && digits > 0 {
+                digits = 0;
+                seen += 1;
+            } else {
+                return false;
+            }
+        }
+        digits == 0 && (seen > 0 || part.is_empty())
+    };
+    if !units(date_part, "YMWD") {
+        return false;
+    }
+    match time_part {
+        Some(t) => !t.is_empty() && units(t, "HMS"),
+        None => !date_part.is_empty(),
+    }
+}
+
+/// The OKF keys on a SKILL page (`tags`, `generated`, `verified`, `stale_after`, `sources`): all
+/// optional, and a malformed one is a WARNING, never an error. Unknown keys are never looked at.
+/// (`title`, `resource` and `status` are free text; `status` keeps whatever meaning the skill gives it.)
+fn check_okf_keys(page_kind: PageKind, fields: &YamlMapping) -> Vec<Issue> {
+    let mut issues = Vec::new();
+    if page_kind != PageKind::Skill {
+        return issues;
+    }
+    let warn = |code: &str, key: &str, msg: String, suggestion: &str| {
+        Issue::warning(code, format!("frontmatter.{key}"), msg).with_suggestion(suggestion)
+    };
+    if let Some(v) = fields.get("tags") {
+        let ok = v
+            .as_sequence()
+            .is_some_and(|seq| seq.iter().all(|t| t.as_str().is_some()));
+        if !ok {
+            issues.push(warn(
+                "tags_invalid",
+                "tags",
+                "`tags:` is a list of strings".to_owned(),
+                "write `tags: [sales, sap]`",
+            ));
+        }
+    }
+    if let Some(v) = fields.get("sources") {
+        let ok = v.as_sequence().is_some_and(|seq| {
+            seq.iter()
+                .all(|t| t.as_str().is_some() || t.as_mapping().is_some())
+        });
+        if !ok {
+            issues.push(warn(
+                "sources_invalid",
+                "sources",
+                "`sources:` is a list (of links or `{title, url}` entries)".to_owned(),
+                "write `sources: [https://example.com/doc]`",
+            ));
+        }
+    }
+    for key in ["generated", "verified"] {
+        if let Some(v) = fields.get(key) {
+            let ok = v
+                .as_str()
+                .map(str::trim)
+                .is_some_and(|t| is_date(t) || is_datetime(t));
+            if !ok {
+                issues.push(warn(
+                    &format!("{key}_invalid"),
+                    key,
+                    format!("`{key}:` is a date (`YYYY-MM-DD`) or an RFC 3339 timestamp"),
+                    "e.g. `2026-10-01T10:00:00Z`",
+                ));
+            }
+        }
+    }
+    if let Some(v) = fields.get("stale_after") {
+        let ok = v
+            .as_str()
+            .map(str::trim)
+            .is_some_and(|t| is_date(t) || is_datetime(t) || is_iso_duration(t));
+        if !ok {
+            issues.push(warn(
+                "stale_after_invalid",
+                "stale_after",
+                "`stale_after:` is an RFC 3339 instant or an ISO-8601 duration".to_owned(),
+                "e.g. `2027-01-01T00:00:00Z` or `P90D`",
+            ));
+        }
+    }
+    issues
 }
 
 /// A slug as an action `name` takes: lowercase letters, digits, `-` and `_`.
@@ -279,8 +442,8 @@ fn check_actions(raw: &YamlValue) -> (Vec<Issue>, Vec<(usize, String)>) {
     (issues, events)
 }
 
-fn check_autonomy(page_type: PageType, fields: &YamlMapping) -> Option<Issue> {
-    if page_type != PageType::Skill {
+fn check_autonomy(page_kind: PageKind, fields: &YamlMapping) -> Option<Issue> {
+    if page_kind != PageKind::Skill {
         return None;
     }
     let raw = fields.get("autonomy")?;
@@ -338,8 +501,8 @@ fn check_autonomy(page_type: PageType, fields: &YamlMapping) -> Option<Issue> {
 ///   form still works, so failing the write would be a behaviour change for
 ///   a key that has never been validated. Compare `autonomy:`, which is
 ///   error-severity because there the failure mode is an ungated write.
-fn check_params(page_type: PageType, fields: &YamlMapping) -> Vec<Issue> {
-    if page_type != PageType::Skill {
+fn check_params(page_kind: PageKind, fields: &YamlMapping) -> Vec<Issue> {
+    if page_kind != PageKind::Skill {
         return Vec::new();
     }
     let Some(raw) = fields.get("params") else {
@@ -434,8 +597,8 @@ fn check_params(page_type: PageType, fields: &YamlMapping) -> Vec<Issue> {
 /// unknown `kind:` is a WARNING and the field degrades to `string`, because an
 /// over-permissive field under-validates while a dropped one silently deletes
 /// a constraint the author believes is in force.
-fn check_fields(page_type: PageType, fields: &YamlMapping) -> Vec<Issue> {
-    if page_type != PageType::Skill {
+fn check_fields(page_kind: PageKind, fields: &YamlMapping) -> Vec<Issue> {
+    if page_kind != PageKind::Skill {
         return Vec::new();
     }
     let Some(raw) = fields.get("fields") else {
@@ -578,8 +741,8 @@ const KNOWN_RENDERS: &[&str] = &[
 /// mappings (workbench backend P3-5). A block without an anchor has nowhere
 /// to render, so that — and a `blocks:` that is not a sequence — is an error
 /// at the offending location.
-fn check_blocks(page_type: PageType, fields: &YamlMapping) -> Vec<Issue> {
-    if page_type != PageType::Skill {
+fn check_blocks(page_kind: PageKind, fields: &YamlMapping) -> Vec<Issue> {
+    if page_kind != PageKind::Skill {
         return Vec::new();
     }
     let Some(raw) = fields.get("blocks") else {
@@ -811,15 +974,33 @@ impl Indexer {
     ) -> Result<Vec<Issue>, IndexerError> {
         let parsed = match parse(content) {
             Ok(p) => p,
+            Err(escurel_md::ParseError::LegacyTypeKey) => {
+                // Not a YAML error: the page is fine and uses the REMOVED page-kind key. Say which
+                // key, and how a tenant's stored pages are rewritten.
+                let mut issue = Issue::error(
+                    "frontmatter_type_removed",
+                    "frontmatter.type",
+                    "the `type: skill|instance` page-kind key was removed; the page kind is `kind:` now",
+                );
+                issue.suggestion = Some(
+                    "rename `type:` to `kind:` in this page; rewrite a tenant's stored pages with \
+                     `escurel admin migrate-kind`"
+                        .to_owned(),
+                );
+                return Ok(vec![issue]);
+            }
             Err(e) => {
                 // A parse failure short-circuits: there is no
                 // frontmatter / body to run the remaining checks
                 // against. One structured error rather than a panic.
-                return Ok(vec![Issue::error(
-                    "frontmatter_parse",
-                    "frontmatter",
-                    e.to_string(),
-                )]);
+                return Ok(vec![
+                    Issue::error("frontmatter_parse", "frontmatter", e.to_string()).with_suggestion(
+                        "start the page with a frontmatter block, e.g. \"---\\nkind: instance\\nid: \
+                         <slug>\\nskill: <skill>\\n---\\n<body>\" (a skill page: `kind: skill`, \
+                         `id`, `description`); the page-kind key is `kind:` — the old `type:` is no \
+                         longer accepted",
+                    ),
+                ]);
             }
         };
 
@@ -828,12 +1009,16 @@ impl Indexer {
 
         // The human-in-the-loop policy a skill declares (heron#5 / CR-1).
         // Cheap, local, and independent of every skill lookup below.
-        issues.extend(check_autonomy(parsed.frontmatter.page_type, fields));
+        issues.extend(check_autonomy(parsed.frontmatter.page_kind, fields));
         // The workbench's skill-contract keys (P2-7): the one-liner and the
         // adapter, both local; the fan-out list needs the corpus (below).
-        issues.extend(check_summary(parsed.frontmatter.page_type, fields));
-        issues.extend(check_harness(parsed.frontmatter.page_type, fields));
-        if parsed.frontmatter.page_type == PageType::Skill
+        issues.extend(check_summary(parsed.frontmatter.page_kind, fields));
+        issues.extend(check_harness(parsed.frontmatter.page_kind, fields));
+        // Where a skill sits and what it is (OKF-aligned tree vocabulary), then the optional OKF keys.
+        issues.extend(check_folder(parsed.frontmatter.page_kind, fields));
+        issues.extend(check_role(parsed.frontmatter.page_kind, fields));
+        issues.extend(check_okf_keys(parsed.frontmatter.page_kind, fields));
+        if parsed.frontmatter.page_kind == PageKind::Skill
             && let Some(raw) = fields.get("actions")
         {
             let (action_issues, events) = check_actions(raw);
@@ -851,13 +1036,13 @@ impl Indexer {
             }
         }
         // The invocation-parameter block a skill declares (heron#11 / CR-7).
-        issues.extend(check_params(parsed.frontmatter.page_type, fields));
+        issues.extend(check_params(parsed.frontmatter.page_kind, fields));
         // The instance-shape block a skill declares (#508). Checked on the
         // SKILL page, so a malformed schema reaches its author once rather
         // than every instance's author repeatedly.
-        issues.extend(check_fields(parsed.frontmatter.page_type, fields));
+        issues.extend(check_fields(parsed.frontmatter.page_kind, fields));
         // The instance-body layout a skill declares (workbench P3-5).
-        issues.extend(check_blocks(parsed.frontmatter.page_type, fields));
+        issues.extend(check_blocks(parsed.frontmatter.page_kind, fields));
         // A stored corpus traversal (#511). Checked HERE rather than at query
         // time: a bound that is only enforced when someone runs the query is a
         // bound that ships broken, and the author finds out from a stranger.
@@ -865,9 +1050,9 @@ impl Indexer {
 
         // Skill pages declare themselves via `id:`; instance pages
         // via `skill:`.
-        let declared_skill = match parsed.frontmatter.page_type {
-            PageType::Instance => fields.get("skill").and_then(YamlValue::as_str),
-            PageType::Skill => fields.get("id").and_then(YamlValue::as_str),
+        let declared_skill = match parsed.frontmatter.page_kind {
+            PageKind::Instance => fields.get("skill").and_then(YamlValue::as_str),
+            PageKind::Skill => fields.get("id").and_then(YamlValue::as_str),
         };
 
         // Collect every skill slug we need to resolve up front — the
@@ -908,7 +1093,7 @@ impl Indexer {
         // lists, but `expand` fails with `invalid type: null, expected a
         // string` and `resolve` cannot find it — a page that exists and is
         // unreachable. Observed on a real tenant.
-        if parsed.frontmatter.page_type == PageType::Instance
+        if parsed.frontmatter.page_kind == PageKind::Instance
             && fields
                 .get("id")
                 .and_then(YamlValue::as_str)
@@ -937,7 +1122,7 @@ impl Indexer {
         //
         // Symmetric with the `id` rule above, and for the same reason: both
         // are identity failures rather than completeness ones.
-        if parsed.frontmatter.page_type == PageType::Instance
+        if parsed.frontmatter.page_kind == PageKind::Instance
             && fields
                 .get("skill")
                 .and_then(YamlValue::as_str)
@@ -982,12 +1167,12 @@ impl Indexer {
         // the real thing is worse than no dry run, because it teaches people
         // to ignore it.
         if let Some(skill) = declared_skill
-            && parsed.frontmatter.page_type == PageType::Instance
+            && parsed.frontmatter.page_kind == PageKind::Instance
         {
             match skills.get(skill) {
                 // A `skill:` on an instance that names a non-existent
                 // skill is itself an unknown-skill error.
-                None if parsed.frontmatter.page_type == PageType::Instance => {
+                None if parsed.frontmatter.page_kind == PageKind::Instance => {
                     issues.push(Issue::error(
                         "unknown_skill",
                         "frontmatter.skill",
@@ -995,8 +1180,14 @@ impl Indexer {
                     ));
                 }
                 Some(contract) => {
+                    // A ROW of an `instances: rows` skill gets its projected columns from the source, so its
+                    // linked markdown need not (and may not) carry them: they are never "missing".
+                    let source_supplied: Vec<String> = match self.rows_source(skill).await {
+                        Ok(Some(src)) => src.project.values().cloned().collect(),
+                        _ => Vec::new(),
+                    };
                     for key in &contract.required {
-                        if fields.get(key.as_str()).is_none() {
+                        if fields.get(key.as_str()).is_none() && !source_supplied.contains(key) {
                             issues.push(Issue::error(
                                 "frontmatter_required_key_missing",
                                 format!("frontmatter.{key}"),
@@ -1017,6 +1208,7 @@ impl Indexer {
                         match fields.get(field.name.as_str()) {
                             Some(value) => issues.extend(check_field_value(field, value)),
                             None if field.required
+                                && !source_supplied.contains(&field.name)
                                 && !contract.required.iter().any(|k| k == &field.name) =>
                             {
                                 issues.push(Issue::error(
@@ -1265,7 +1457,7 @@ impl Indexer {
         &self,
         frontmatter: &escurel_md::Frontmatter,
     ) -> Result<Vec<Issue>, IndexerError> {
-        if frontmatter.page_type != PageType::Instance
+        if frontmatter.page_kind != PageKind::Instance
             || frontmatter.fields.get("skill").and_then(YamlValue::as_str) != Some("query")
         {
             return Ok(Vec::new());
@@ -1356,6 +1548,42 @@ impl Indexer {
         Ok(declared > 0)
     }
 
+    /// Why `value` could not be written to `field` of `skill`, in words an agent can act on; `None`
+    /// when it fits the skill's declared `fields:` (or the skill declares nothing about it). Used to
+    /// refuse a `write_back` proposal at draft time, where a bad value would otherwise surface only
+    /// when the upstream rejects it at promotion and leave a dead draft behind.
+    ///
+    /// # Errors
+    /// [`IndexerError`] when the skill catalogue cannot be read.
+    pub async fn field_value_problem(
+        &self,
+        skill: &str,
+        field: &str,
+        value: &serde_json::Value,
+    ) -> Result<Option<String>, IndexerError> {
+        let skills = self.list_skills().await?;
+        let Some(f) = skills
+            .iter()
+            .find(|s| s.id == skill)
+            .and_then(|s| s.fields.iter().find(|f| f.name == field))
+        else {
+            return Ok(None);
+        };
+        let Ok(yaml) = serde_json::from_value::<YamlValue>(value.clone()) else {
+            return Ok(None);
+        };
+        let issues = check_field_value(f, &yaml);
+        if issues.is_empty() {
+            return Ok(None);
+        }
+        let got = value.to_string();
+        Ok(Some(if f.kind == crate::FieldKind::Enum {
+            format!("{field} must be one of {}; got {got}", f.values.join("|"))
+        } else {
+            issues[0].message.clone()
+        }))
+    }
+
     /// Resolve a set of skill slugs in a single locked DuckDB pass.
     ///
     /// Returns a map keyed by the slugs that exist as indexed skill
@@ -1422,5 +1650,30 @@ impl Indexer {
             out.insert(slug, contract);
         }
         Ok(out)
+    }
+}
+
+#[cfg(test)]
+mod duration_tests {
+    use super::is_iso_duration;
+
+    #[test]
+    fn accepts_iso_8601_durations_and_nothing_else() {
+        for ok in [
+            "P90D",
+            "P1Y",
+            "P1Y2M3D",
+            "P2W",
+            "PT36H",
+            "P1DT12H",
+            "PT1H30M5S",
+        ] {
+            assert!(is_iso_duration(ok), "{ok}");
+        }
+        for bad in [
+            "", "P", "90D", "P90", "PD", "PT", "P1H", "P1DT", "p90d", "P-1D", "P1.5D", "someday",
+        ] {
+            assert!(!is_iso_duration(bad), "{bad}");
+        }
     }
 }

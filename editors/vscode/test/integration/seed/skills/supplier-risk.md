@@ -1,10 +1,13 @@
 ---
-type: skill
+kind: skill
 id: supplier-risk
+folder: sales/risk
+role: process
+tags: [risk]
 description: A supplier-risk signal, folded into the customer order it concerns.
 autonomy: review
 actions:
-  - {name: review-order, kind: event, label: "Review the order", event: customer-order}
+  - { name: review-order, kind: event, label: 'Review the order', event: customer-order }
 ---
 
 # supplier-risk

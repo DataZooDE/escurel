@@ -65,7 +65,7 @@ packager's narrowed `WORKFLOW_STEP_TOOLS` surface, the ledger, recovery.
 ### 2.1 The plan
 
 ```yaml
-type: skill
+kind: skill
 id: distill
 backend: {kind: workflow}
 run_skill: workflow-run
@@ -125,27 +125,27 @@ A new `issue` typed instance-kind (the stored companion to the ephemeral
 `validate` `Issue`):
 
 ```yaml
-type: skill
+kind: skill
 id: issue
-required_frontmatter: [kind, severity, subject_page, message]
+required_frontmatter: [issue_kind, severity, subject_page, message]
 optional_frontmatter: [suggestion, detected_at, source_run, status]
 ```
 
 Issues are ordinary instances → derivable, ACL'd, and queryable via
-`list_instances(issue, {frontmatter_key: kind})`.
+`list_instances(issue, {frontmatter_key: issue_kind})`.
 
 ### 3.2 The plan — detect, never rewrite
 
 Phases each `produces: issue`:
 
 - `orphans` — `neighbours` (in-direction) finds pages with no inbound links →
-  `issue{kind: orphan}`.
+  `issue{issue_kind: orphan}`.
 - `missing-xref` — `search` each page's entities; a strong match with no
-  `[[link]]` → `issue{kind: missing_xref, suggestion: <wikilink>}`.
+  `[[link]]` → `issue{issue_kind: missing_xref, suggestion: <wikilink>}`.
 - `stale` — a page whose `last_verified` (G3) predates the plan's `stale_after`
-  → `issue{kind: stale}`.
+  → `issue{issue_kind: stale}`.
 - `contradiction` — a Fixed barrier agent pass over topically-clustered /
-  recently-touched instances → `issue{kind: contradiction}`.
+  recently-touched instances → `issue{issue_kind: contradiction}`.
 
 **Lint proposes, never disposes — three enforcement layers:** (1) every phase
 `produces: issue`, so the reconciled output is always an issue; (2) lint steps
@@ -215,7 +215,7 @@ Triggered reactively by a failing `eval-result`
   stamp `last_verified`/`source_event`).
 - `reverify` (Fixed barrier) re-runs the eval on just the affected task. The
   improvement is **integrated only if the score now crosses the gate**;
-  otherwise `issue{kind: eval_regression}` for human review. Bounded by the
+  otherwise `issue{issue_kind: eval_regression}` for human review. Bounded by the
   plan's max attempts + `admit` — **never an unbounded self-edit loop.**
 
 This closes the loop: **eval → diagnosis → improve doc/skill → re-eval →

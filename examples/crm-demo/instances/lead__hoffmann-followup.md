@@ -1,5 +1,5 @@
 ---
-type: instance
+kind: instance
 skill: lead
 id: hoffmann-followup
 opened: 2026-03-15

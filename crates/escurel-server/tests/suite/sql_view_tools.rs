@@ -26,7 +26,7 @@ struct Setup {
 fn skill_md(data_dir: &str) -> String {
     format!(
         "---\n\
-         type: skill\n\
+         kind: skill\n\
          id: customers\n\
          description: EU customers, mirrored read-only.\n\
          backend:\n\
@@ -156,7 +156,7 @@ async fn update_page_creating_sql_instance_is_rejected_backend_read_only() {
     let s = setup().await;
     // Attempt to fabricate a NEW sql_view instance via update_page (instead
     // of the materialise path) → rejected with backend_read_only.
-    let content = "---\ntype: instance\nskill: customers\nid: us\n---\n# US (forged)\n";
+    let content = "---\nkind: instance\nskill: customers\nid: us\n---\n# US (forged)\n";
     let body = call(
         &s.process,
         "update_page",
@@ -177,7 +177,7 @@ async fn update_page_on_sql_instance_rejected_backend_read_only() {
     // is a phase-2 refinement.
     let s = setup().await;
     let content = "---\n\
-         type: instance\n\
+         kind: instance\n\
          skill: customers\n\
          id: eu\n\
          backend_ref:\n\
@@ -205,7 +205,7 @@ async fn update_page_cannot_repoint_backend_ref_to_secrets_table() {
     // the read-only guard and, defence-in-depth, by the `vw_`-only projection.
     let s = setup().await;
     let attack = "---\n\
-         type: instance\n\
+         kind: instance\n\
          skill: customers\n\
          id: eu\n\
          backend_ref:\n\

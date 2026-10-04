@@ -35,7 +35,7 @@ const expanded: ExpandResponse = {
     page_id: 'markdown/instances/customer-order/4500123.md',
     slug: '4500123',
     skill: 'customer-order',
-    page_type: 'instance',
+    page_kind: 'instance',
     last_written_by: 'agent:supplier-risk',
   },
   frontmatter: {
@@ -122,5 +122,116 @@ describe('page model', () => {
       'summary',
     ]);
     expect(m.fields.every((f) => f.kind === 'string')).toBe(true);
+  });
+});
+
+describe('buildPageModel: the form shows data, not bookkeeping', () => {
+  it('hides the page kind, the skill, the id and a backend binding when the skill declares no fields', () => {
+    const skill = {
+      id: 'order-lines',
+      description: 'd',
+      backend: { kind: 'sql_view' },
+      layer: 'overlay',
+      autonomy: 'review',
+    } as unknown as Skill;
+    const model = buildPageModel(
+      {
+        page: {
+          page_id: 'markdown/instances/order-lines/all.md',
+          slug: 'all',
+          skill: 'order-lines',
+          page_kind: 'instance',
+        },
+        frontmatter: {
+          kind: 'instance',
+          skill: 'order-lines',
+          id: 'all',
+          backend_ref: { kind: 'sql_view', view: 'vw_order_lines__all' },
+          customer: 'Hoffmann',
+        },
+        body: '',
+        blocks: [],
+        wikilinks_out: [],
+      } as unknown as ExpandResponse,
+      skill,
+    );
+    expect(model.fields.map((f) => f.name)).toEqual(['customer']);
+  });
+});
+
+describe('buildPageModel on a row instance', () => {
+  it('says the page is a read-only row with notes, and when it was fetched', () => {
+    const e = {
+      page: {
+        page_id: 'markdown/instances/customer-order/order-4500131.md',
+        slug: 'order-4500131',
+        skill: 'customer-order',
+        page_kind: 'instance',
+      },
+      frontmatter: { sales_doc: 4500131, delivery_risk: 'low' },
+      body: 'Notes',
+      blocks: [],
+      wikilinks_out: [],
+      backend_projection: {
+        instances: 'rows',
+        read_only: true,
+        fetched_at: '2026-10-03T12:03:44.000000Z',
+        source: { sales_doc: 4500131 },
+        linked: { enabled: true, exists: true, orphan: false },
+      },
+    } as unknown as Parameters<typeof buildPageModel>[0];
+    const skill = {
+      id: 'customer-order',
+      description: '',
+      fields: [],
+      backend: { kind: 'sql_view' },
+      layer: 'overlay',
+      actions: [],
+    } as unknown as Parameters<typeof buildPageModel>[1];
+    const model = buildPageModel(e, skill);
+    expect(model.source).toEqual({
+      fetchedAt: '2026-10-03T12:03:44.000000Z',
+      sourceFields: ['sales_doc'],
+      linked: { enabled: true, exists: true, orphan: false },
+    });
+  });
+
+  it('has no source for an ordinary page', () => {
+    const e = {
+      page: { page_id: 'markdown/instances/x/y.md', skill: 'x', page_kind: 'instance' },
+      frontmatter: {},
+      body: '',
+      blocks: [],
+      wikilinks_out: [],
+    } as unknown as Parameters<typeof buildPageModel>[0];
+    const skill = {
+      id: 'x',
+      description: '',
+      fields: [],
+      backend: { kind: 'markdown' },
+      layer: 'overlay',
+      actions: [],
+    } as unknown as Parameters<typeof buildPageModel>[1];
+    expect(buildPageModel(e, skill).source).toBeUndefined();
+  });
+
+  it("carries the skill's OKF provenance as short facts, and says when it has gone stale", () => {
+    const now = Date.parse('2026-10-04T12:00:00Z');
+    const fresh = buildPageModel(
+      expanded,
+      { ...skill, verified: '2026-09-30', stale_after: 'P90D' },
+      now,
+    );
+    expect(fresh.skill.facts).toEqual(['verified 2026-09-30', 'stale after 90 days']);
+    expect(fresh.skill.stale).toBeUndefined();
+    const old = buildPageModel(
+      expanded,
+      { ...skill, verified: '2026-01-01', stale_after: 'P30D' },
+      now,
+    );
+    expect(old.skill.stale).toBe(true);
+    expect(old.skill.facts?.[0]).toBe('stale');
+    // A skill that declares nothing adds nothing to the model.
+    expect(buildPageModel(expanded, skill, now).skill.facts).toBeUndefined();
   });
 });

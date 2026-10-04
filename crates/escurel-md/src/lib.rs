@@ -11,7 +11,7 @@
 //!
 //! ```text
 //! ---
-//! type: skill
+//! kind: skill
 //! id: customer
 //! description: A buying entity that may have one or more contacts.
 //! required_frontmatter: [tier, opened, status]
@@ -23,22 +23,28 @@
 //! Body markdown here.
 //! ```
 //!
-//! The required field is `type:`, which must be `skill` or
+//! The required field is `kind:`, which must be `skill` or
 //! `instance`. Everything else is preserved verbatim in
 //! [`Frontmatter::fields`] for the indexer to project as needed.
+//!
+//! `kind:` replaced the original `type:` key (OKF alignment, where `type` means the concept's
+//! own kind). The legacy key is rejected with [`ParseError::LegacyTypeKey`]; stored pages are
+//! rewritten by `escurel admin migrate-kind` (see [`legacy::rewrite_legacy_type_key`]).
 
+pub mod legacy;
 pub mod wikilink;
 
 // Re-export the YAML types we expose in our public API so downstream
 // crates can read parsed frontmatter without having to depend on
 // `serde_yaml_ng` directly.
+pub use legacy::{KindRewrite, rewrite_legacy_type_key, rewrite_workflow_run_status};
 pub use serde_yaml_ng::{Mapping as YamlMapping, Value as YamlValue};
 
 use thiserror::Error;
 
 /// The two kinds of pages an Escurel tenant carries.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PageType {
+pub enum PageKind {
     /// A type declaration. Defines what its instances look like.
     Skill,
     /// A memory of some skill type.
@@ -48,9 +54,9 @@ pub enum PageType {
 /// Parsed frontmatter for one page.
 #[derive(Debug, Clone)]
 pub struct Frontmatter {
-    /// Convenience projection of the `type:` field.
-    pub page_type: PageType,
-    /// Raw frontmatter mapping (includes `type` and every other key).
+    /// Convenience projection of the page-kind key (`kind:`).
+    pub page_kind: PageKind,
+    /// Raw frontmatter mapping (includes `kind` and every other key).
     /// Callers project skill-specific fields from here.
     pub fields: serde_yaml_ng::Mapping,
 }
@@ -77,8 +83,16 @@ pub enum ParseError {
     /// Frontmatter parsed as YAML but was not a mapping at the top level.
     #[error("frontmatter must be a YAML mapping at the top level")]
     NotAMapping,
-    /// `type:` was missing or not `skill` / `instance`.
-    #[error("frontmatter missing or invalid 'type' (expected 'skill' or 'instance')")]
+    // REMOVE after v2027.xx together with `legacy.rs`: legacy migration shim (docs/notes/legacy-migration-shims.md).
+    /// The page still carries the removed `type: skill|instance` page-kind key. Not a YAML error
+    /// and not "no kind at all": the page is fine, it needs migrating.
+    #[error(
+        "this page uses the removed `type:` page-kind key; it is `kind:` now \
+         (run `escurel admin migrate-kind` on the tenant to rewrite stored pages)"
+    )]
+    LegacyTypeKey,
+    /// `kind:` was missing or not `skill` / `instance`.
+    #[error("frontmatter missing or invalid 'kind' (expected 'skill' or 'instance')")]
     InvalidType,
 }
 
@@ -91,11 +105,14 @@ pub enum ParseError {
 /// # Errors
 ///
 /// Returns [`ParseError`] when the input is missing a frontmatter
-/// block, the YAML is malformed, or the required `type:` field is
+/// block, the YAML is malformed, or the required `kind:` field is
 /// absent or unrecognised.
 pub fn parse(input: &str) -> Result<Page<'_>, ParseError> {
-    let after_open = input
+    // An editor-saved page may carry a UTF-8 BOM and/or CRLF line endings; both are ordinary files.
+    // Slices (not copies) are returned, so the body stays byte-verbatim.
+    let after_open = strip_bom(input)
         .strip_prefix("---\n")
+        .or_else(|| strip_bom(input).strip_prefix("---\r\n"))
         .ok_or(ParseError::MissingFrontmatter)?;
 
     // Find the closing delimiter: a `---` line. Match either
@@ -109,19 +126,28 @@ pub fn parse(input: &str) -> Result<Page<'_>, ParseError> {
         _ => return Err(ParseError::NotAMapping),
     };
 
-    let page_type = mapping
-        .get("type")
-        .and_then(serde_yaml_ng::Value::as_str)
-        .and_then(|s| match s {
-            "skill" => Some(PageType::Skill),
-            "instance" => Some(PageType::Instance),
-            _ => None,
-        })
-        .ok_or(ParseError::InvalidType)?;
+    // `kind:` is the page-kind key. The legacy `type: skill|instance` spelling is REMOVED (OKF stage 1
+    // hard cut): a page that has it and no valid `kind:` is told so, instead of being reported as a
+    // page with no kind at all. A page's own data field named `type` (`type: invoice`) is just data.
+    let kind_of = |key: &str| {
+        mapping
+            .get(key)
+            .and_then(serde_yaml_ng::Value::as_str)
+            .and_then(|s| match s {
+                "skill" => Some(PageKind::Skill),
+                "instance" => Some(PageKind::Instance),
+                _ => None,
+            })
+    };
+    let page_kind = match kind_of("kind") {
+        Some(kind) => kind,
+        None if kind_of("type").is_some() => return Err(ParseError::LegacyTypeKey),
+        None => return Err(ParseError::InvalidType),
+    };
 
     Ok(Page {
         frontmatter: Frontmatter {
-            page_type,
+            page_kind,
             fields: mapping,
         },
         body,
@@ -194,6 +220,11 @@ pub fn set_frontmatter_str(
 /// where `body_slice` starts at the first character after the
 /// closing delimiter's trailing newline (or is empty if the
 /// delimiter is the last line).
+/// `input` without a leading UTF-8 byte-order mark.
+pub(crate) fn strip_bom(input: &str) -> &str {
+    input.strip_prefix('\u{feff}').unwrap_or(input)
+}
+
 fn split_at_close(after_open: &str) -> Option<(&str, &str)> {
     // Walk line-starts in the remainder. A closing delimiter is a
     // line whose entire content is `---`.
@@ -204,7 +235,7 @@ fn split_at_close(after_open: &str) -> Option<(&str, &str)> {
         let line_end = after_open[cursor..]
             .find('\n')
             .map_or(bytes.len(), |off| cursor + off);
-        let line = &after_open[cursor..line_end];
+        let line = after_open[cursor..line_end].trim_end_matches('\r');
         if line == "---" {
             let yaml = &after_open[..cursor.saturating_sub(1)];
             // Skip past `---` and the following `\n` if present.

@@ -1,3 +1,4 @@
+import { describeWriteBackRefusal } from '../shared/writeBack';
 import type {
   Changeset,
   DiffDraftResponse,
@@ -7,7 +8,7 @@ import type {
 } from '../client';
 import { EscurelError } from '../client/errors';
 import { describeError } from '../errors';
-import { pageSlug } from '../shared/pageId';
+import { pageSkill, pageSlug } from '../shared/pageId';
 import { pluralise } from '../shared/text';
 
 export const REVIEW_SCHEME = 'escurel-review';
@@ -52,11 +53,13 @@ export function parseReviewParts(
 }
 
 /**
- * Formats the diff editor tab title as `<slug> — draft by <author>`.
+ * Formats the diff editor tab title as `<skill> · <slug> — draft by <author>`: the skill says what KIND of
+ * record the change is for, so an order and an analysis with similar names are told apart.
  */
 export function formatDraftDiffTitle(draft: Pick<Draft, 'target_page_id' | 'author'>): string {
   const slug = pageSlug(draft.target_page_id);
-  return `${slug} — draft by ${draft.author}`;
+  const skill = pageSkill(draft.target_page_id);
+  return `${skill ? `${skill} · ` : ''}${slug} — draft by ${draft.author}`;
 }
 
 export interface BaseMovedCheck {
@@ -118,20 +121,22 @@ export interface ChangesetQuickPickItem {
  * first so reviewers can land or reject the entire set without clicking through each draft.
  */
 export function buildChangesetQuickPickItems(
-  changesetId: string,
+  _changesetId: string,
   drafts: Draft[],
   diffs: Map<string, DiffDraftResponse>,
 ): ChangesetQuickPickItem[] {
+  const n = drafts.length;
+  const pages = drafts.map((d) => pageSlug(d.target_page_id)).join(', ');
   const items: ChangesetQuickPickItem[] = [
     {
       action: 'promote_all',
-      label: '$(check) Promote all',
-      description: `Land all ${pluralise(drafts.length, 'draft')} in changeset ${changesetId}`,
+      label: '$(check) Apply all changes',
+      description: n === 1 ? `Apply the change: ${pages}` : `Apply all ${n} changes: ${pages}`,
     },
     {
       action: 'discard_all',
-      label: '$(trash) Discard all',
-      description: `Refuse all ${pluralise(drafts.length, 'draft')} in changeset ${changesetId}`,
+      label: '$(trash) Reject all changes',
+      description: n === 1 ? 'Reject the change' : `Reject all ${n} changes`,
     },
   ];
 
@@ -140,7 +145,9 @@ export function buildChangesetQuickPickItems(
     items.push({
       action: 'draft',
       label: pageSlug(draft.target_page_id),
-      description: formatDiffSummary(diff),
+      description: [pageSkill(draft.target_page_id), formatDiffSummary(diff)]
+        .filter(Boolean)
+        .join(' · '),
       draft,
     });
   }
@@ -323,19 +330,20 @@ export interface DecisionOutcome {
   message: string;
   closeDiff: boolean;
   refresh: boolean;
+  /** The pages that were applied: a notice that names a page offers to open it. */
+  pages?: string[];
 }
 
 /**
  * Translates errors from draft promotion into user-facing outcomes.
  * `already_decided` is handled gracefully without treating it as an operational failure.
  */
-export function interpretPromoteDraftError(err: unknown, draftId: string): DecisionOutcome {
+export function interpretPromoteDraftError(err: unknown, _draftId: string): DecisionOutcome {
   if (err instanceof EscurelError) {
     if (err.kind === 'already_decided') {
-      const status = err.draft?.status ? ` (${err.draft.status})` : '';
       return {
         kind: 'already_decided',
-        message: `Draft ${draftId} was already decided${status}.`,
+        message: 'That change was already handled.',
         closeDiff: true,
         refresh: true,
       };
@@ -343,9 +351,25 @@ export function interpretPromoteDraftError(err: unknown, draftId: string): Decis
     if (err.kind === 'conflict') {
       return {
         kind: 'conflict',
-        message: `Conflict: target page moved under draft ${draftId}. Re-draft required.`,
+        message: 'The page changed after this was proposed. Ask the agent to propose it again.',
         closeDiff: false,
         refresh: false,
+      };
+    }
+  }
+
+  // A write-back refusal (the human gate was passed, the SOURCE did not take the change): say what
+  // happened and what to do. The draft stays open, so promoting again is the retry.
+  if (err instanceof EscurelError) {
+    const issue = err.issues?.[0];
+    const advice = issue ? describeWriteBackRefusal(issue.code, issue.message) : undefined;
+    if (issue && advice) {
+      return {
+        kind: issue.code === 'write_back_conflict' ? 'conflict' : 'error',
+        message: advice,
+        closeDiff: false,
+        // a dead-lettered or conflicted attempt leaves an event and may change what Awaiting shows
+        refresh: issue.code !== 'write_back_conflict',
       };
     }
   }
@@ -358,10 +382,10 @@ export function interpretPromoteDraftError(err: unknown, draftId: string): Decis
   };
 }
 
-export function interpretPromoteDraftSuccess(draftId: string): DecisionOutcome {
+export function interpretPromoteDraftSuccess(_draftId: string): DecisionOutcome {
   return {
     kind: 'success',
-    message: `Promoted draft ${draftId}.`,
+    message: 'Applied the change.',
     closeDiff: true,
     refresh: true,
   };
@@ -374,47 +398,47 @@ export function interpretPromoteChangesetResult(res: PromoteChangesetResponse): 
   if (res.already_decided) {
     return {
       kind: 'already_decided',
-      message: `Changeset ${res.changeset_id} was already decided.`,
+      message: 'That set of changes was already handled.',
       closeDiff: true,
       refresh: true,
     };
   }
 
-  const summaries = res.results.map((r) => {
-    const slug = pageSlug(r.page_id);
-    const status = r.already_applied
-      ? 'already applied'
-      : r.ok
-        ? 'applied'
-        : (r.status ?? 'failed');
-    return `${slug}: ${status}`;
-  });
-
+  const names = res.results.map((r) => ({
+    slug: pageSlug(r.page_id),
+    ok: r.ok !== false && !r.status,
+    already: Boolean(r.already_applied),
+    status: r.status ?? 'failed',
+  }));
+  const total = names.length;
+  const pages = res.results.filter((r) => r.ok !== false && !r.status).map((r) => r.page_id);
   const hasFailures = res.partial || res.results.some((r) => r.ok === false);
   if (hasFailures) {
-    const okCount = res.results.filter((r) => r.ok).length;
-    const failCount = res.results.length - okCount;
+    const applied = names.filter((n) => n.ok).length;
+    const notApplied = names.filter((n) => !n.ok).map((n) => `${n.slug} (${n.status})`);
     return {
       kind: 'partial',
-      message: `Changeset ${res.changeset_id} partially promoted (${okCount} succeeded, ${failCount} failed): ${summaries.join(', ')}`,
+      message: `Applied ${applied} of ${total} ${total === 1 ? 'change' : 'changes'}. Not applied: ${notApplied.join(', ')}.`,
       closeDiff: false,
       refresh: true,
+      pages,
     };
   }
 
+  const list = names.map((n) => (n.already ? `${n.slug} (already applied)` : n.slug)).join(', ');
   return {
     kind: 'success',
-    message: `Promoted changeset ${res.changeset_id}: ${summaries.join(', ')}`,
+    message: `Applied ${total} ${total === 1 ? 'change' : 'changes'}: ${list}.`,
     closeDiff: true,
     refresh: true,
+    pages,
   };
 }
 
-export function interpretDiscardResult(kind: 'draft' | 'changeset', id: string): DecisionOutcome {
-  const noun = kind === 'draft' ? 'draft' : 'changeset';
+export function interpretDiscardResult(kind: 'draft' | 'changeset', _id: string): DecisionOutcome {
   return {
     kind: 'success',
-    message: `Discarded ${noun} ${id}.`,
+    message: kind === 'draft' ? 'Rejected the change.' : 'Rejected the changes.',
     closeDiff: true,
     refresh: true,
   };
@@ -423,13 +447,15 @@ export function interpretDiscardResult(kind: 'draft' | 'changeset', id: string):
 export function interpretDiscardError(
   err: unknown,
   action: 'draft' | 'changeset',
-  id: string,
+  _id: string,
 ): DecisionOutcome {
   if (err instanceof EscurelError && err.kind === 'already_decided') {
-    const noun = action === 'draft' ? 'Draft' : 'Changeset';
     return {
       kind: 'already_decided',
-      message: `${noun} ${id} was already decided.`,
+      message:
+        action === 'draft'
+          ? 'That change was already handled.'
+          : 'That set of changes was already handled.',
       closeDiff: true,
       refresh: true,
     };
@@ -441,4 +467,11 @@ export function interpretDiscardError(
     closeDiff: false,
     refresh: false,
   };
+}
+
+/** The picker's title: the decision and who proposed it, never the changeset id. */
+export function changesetPickTitle(drafts: Draft[]): string {
+  const n = drafts.length;
+  const author = drafts.find((d) => d.author)?.author;
+  return `Review ${n} ${n === 1 ? 'change' : 'changes'}${author ? ` from ${author}` : ''}`;
 }

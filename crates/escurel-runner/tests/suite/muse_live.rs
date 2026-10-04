@@ -41,14 +41,14 @@ use serde_json::{Value, json};
 
 const TENANT: &str = "acme";
 const SKILL: &str = "customer";
-const SKILL_BODY: &str = "---\ntype: skill\nid: customer\nautonomy: auto\n---\n# customer\n\n\
+const SKILL_BODY: &str = "---\nkind: skill\nid: customer\nautonomy: auto\n---\n# customer\n\n\
 Fold the triggering event into the named customer instance. Read the instance \
 with `expand`, append a short dated note about the event to its body (do NOT \
 delete existing content), write it back with `update_page`, then call \
 `assign_event` to mark the event processed and bound to the instance.\n";
 const INSTANCE_ID: &str = "globex";
 const INSTANCE_BODY: &str =
-    "---\ntype: instance\nid: globex\nskill: customer\n---\n# Globex\n\nBASELINE account state.\n";
+    "---\nkind: instance\nid: globex\nskill: customer\n---\n# Globex\n\nBASELINE account state.\n";
 
 /// Kills the spawned runner on drop so a test failure never orphans it.
 struct ChildGuard(Child);

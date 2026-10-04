@@ -17,7 +17,7 @@ export function buildThreadStrip(events: readonly Event[]): ThreadStrip | undefi
     const at = parseGatewayTime(e.at)?.getTime() ?? 0;
     if (!best || at > best.at) best = { at, event: e };
   }
-  if (!best) return undefined;
+  if (!best) return fromPromotedDraft(events);
   const { event } = best;
   const runner = (event.provenance as { runner?: { root_event_id?: unknown } } | undefined)?.runner;
   const rootEventId =
@@ -36,6 +36,24 @@ export function buildThreadStrip(events: readonly Event[]): ThreadStrip | undefi
   return { rootEventId, runId: event.run_id!, runStatus };
 }
 
+/**
+ * A page a run CREATED has no run-finished row of its own (the run's rows sit on the page it worked
+ * on). What it has is the review history of the draft that wrote it: a `draft-promoted` row stamped
+ * with the run and thread the draft came from. A draft that was only proposed is not a version, and a
+ * promotion with no run (a human edit) names nobody, so neither counts. How the run ended is not in
+ * those rows, so the strip leaves the status out rather than guess.
+ */
+function fromPromotedDraft(events: readonly Event[]): ThreadStrip | undefined {
+  let best: { at: number; event: Event } | undefined;
+  for (const e of events) {
+    if (e.label_skill !== 'escurel:review' || e.title !== 'draft-promoted') continue;
+    if (!e.run_id || !e.root_event_id) continue;
+    const at = parseGatewayTime(e.at)?.getTime() ?? 0;
+    if (!best || at > best.at) best = { at, event: e };
+  }
+  return best ? { rootEventId: best.event.root_event_id!, runId: best.event.run_id! } : undefined;
+}
+
 const STRIP_PAGE_CAP = 10;
 
 /**
@@ -46,7 +64,9 @@ const STRIP_PAGE_CAP = 10;
  * history; a failed read is no strip, because the strip is an addition to the page.
  */
 export async function findThreadStrip(
-  readPage: (cursor?: string) => Promise<{ events: Event[]; next_cursor?: string }>,
+  readPage: (
+    cursor?: string,
+  ) => Promise<{ events: Event[]; next_cursor?: string; has_more?: boolean }>,
   maxPages = STRIP_PAGE_CAP,
 ): Promise<ThreadStrip | undefined> {
   try {
@@ -55,7 +75,7 @@ export async function findThreadStrip(
       const page = await readPage(cursor);
       const strip = buildThreadStrip(page.events);
       if (strip) return strip;
-      if (!page.next_cursor) return undefined;
+      if (!page.has_more || !page.next_cursor) return undefined;
       cursor = page.next_cursor;
     }
   } catch {

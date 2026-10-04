@@ -13,7 +13,7 @@ use serde_json::Value;
 const TENANT: &str = "acme";
 
 const CUSTOMER_SKILL: &str = "---\n\
-type: skill\n\
+kind: skill\n\
 id: customer\n\
 description: A buying organisation.\n\
 required_frontmatter: [id, name]\n\
@@ -22,7 +22,7 @@ optional_frontmatter: [tier]\n\
 # customer\n";
 
 const ACME_INSTANCE: &str = "---\n\
-type: instance\n\
+kind: instance\n\
 skill: customer\n\
 id: acme\n\
 name: Acme Corp\n\
@@ -31,7 +31,7 @@ tier: gold\n\
 # Acme Corp\n\nKey account. See [[customer::initech]].\n";
 
 const INITECH_INSTANCE: &str = "---\n\
-type: instance\n\
+kind: instance\n\
 skill: customer\n\
 id: initech\n\
 name: Initech\n\
@@ -158,7 +158,7 @@ async fn skill_list_emits_seeded_skill() {
 /// projection dropped every one of them).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn skill_list_emits_autonomy_and_the_contract_keys() {
-    const REVIEWED_SKILL: &str = "---\ntype: skill\nid: reviewed\ndescription: d.\n\
+    const REVIEWED_SKILL: &str = "---\nkind: skill\nid: reviewed\ndescription: d.\n\
         autonomy: review\nsummary: One line.\nharness: echo\nactions:\n  - {name: open-customer, kind: event, label: Open the customer, event: customer}\n\
         cascade:\n  target: produced\n  max_depth: 2\n---\n# reviewed\n";
     let process = EscurelProcess::spawn(Opts {
@@ -208,12 +208,81 @@ async fn skill_list_emits_autonomy_and_the_contract_keys() {
     h.process.shutdown().await;
 }
 
+/// The tree vocabulary a skill declares (`folder`, `role`, `tags`, `title`, `resource`) reaches the
+/// CLI's `skill list` as the wire carries it, and a skill declaring none emits none.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn skill_list_carries_the_tree_vocabulary() {
+    const PLACED: &str = "---\nkind: skill\nid: placed\ndescription: d.\nautonomy: review\n\
+        folder: sales/orders\nrole: record\ntags: [sap, sd]\ntitle: Placed\nresource: https://sap.example/t\n\
+        verified: 2026-09-30\nstale_after: P90D\nviewer: {report: placed-report, param: placed}\n---\n# placed\n";
+    let process = EscurelProcess::spawn(Opts {
+        auth: AuthMode::TestIssuer,
+        fixtures: Some(
+            FixtureBuilder::new()
+                .tenant(TENANT)
+                .skill("customer", CUSTOMER_SKILL)
+                .skill("placed", PLACED)
+                .done(),
+        ),
+        config_overrides: ConfigOverrides {
+            gateway_version: Some("1.0.0-test".to_owned()),
+            ..Default::default()
+        },
+    })
+    .await;
+    let http_addr = process
+        .base_url()
+        .strip_prefix("http://")
+        .unwrap()
+        .to_owned();
+    let bearer = process.mint_token(TENANT, Role::Agent);
+    let h = Harness {
+        process,
+        http_addr,
+        bearer,
+    };
+    let out = run_args(&h, v(&["skill", "list"])).await;
+    let val = json(&out);
+    let row = |id: &str| {
+        val["skills"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|s| s["id"] == id)
+            .cloned()
+            .unwrap_or_else(|| panic!("{id}: {val}"))
+    };
+    let placed = row("placed");
+    assert_eq!(placed["folder"], "sales/orders", "{placed}");
+    assert_eq!(placed["role"], "record", "{placed}");
+    assert_eq!(placed["tags"], serde_json::json!(["sap", "sd"]), "{placed}");
+    assert_eq!(placed["title"], "Placed", "{placed}");
+    assert_eq!(placed["resource"], "https://sap.example/t", "{placed}");
+    assert_eq!(placed["verified"], "2026-09-30", "{placed}");
+    assert_eq!(placed["stale_after"], "P90D", "{placed}");
+    assert_eq!(placed["viewer"]["report"], "placed-report", "{placed}");
+    let plain = row("customer");
+    for key in [
+        "folder",
+        "role",
+        "tags",
+        "title",
+        "resource",
+        "verified",
+        "stale_after",
+        "viewer",
+    ] {
+        assert!(plain.get(key).is_none(), "{key} on a plain skill: {plain}");
+    }
+    h.process.shutdown().await;
+}
+
 /// The typed shape keys (`params`, `fields` with `render`, `blocks`) reach
 /// the CLI's `skill list` as the wire carries them, present only when
 /// declared (live smoke of P3 found them dropped).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn skill_list_carries_params_fields_and_blocks() {
-    const TYPED_SKILL: &str = "---\ntype: skill\nid: typed\ndescription: d.\n\
+    const TYPED_SKILL: &str = "---\nkind: skill\nid: typed\ndescription: d.\n\
         params:\n  - {name: window, kind: string, required: true}\n\
         fields:\n  - {name: arr_eur, kind: float, render: money}\n\
         blocks:\n  - {anchor: summary, title: Summary, kind: markdown}\n---\n# typed\n";
@@ -369,7 +438,7 @@ async fn link_neighbours_traverses() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn search_honours_switches_and_table_format() {
     let h = start().await;
-    // --k + --page-type + --skill.
+    // --k + --page-kind + --skill.
     let out = run_args(
         &h,
         v(&[
@@ -377,7 +446,7 @@ async fn search_honours_switches_and_table_format() {
             "Acme",
             "--k",
             "5",
-            "--page-type",
+            "--page-kind",
             "any",
             "--skill",
             "customer",
@@ -413,7 +482,7 @@ async fn page_validate_accepts_well_formed_body() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn page_validate_emits_severity_and_suggestion() {
     let h = start().await;
-    const BAD_SKILL: &str = "---\ntype: skill\nid: x\ndescription: d.\nsummary: s.\n\
+    const BAD_SKILL: &str = "---\nkind: skill\nid: x\ndescription: d.\nsummary: s.\n\
         fields:\n  - {name: a, render: sparkle}\n---\n# x\n";
     let out = run_stdin(
         &h,
@@ -443,7 +512,7 @@ async fn page_validate_emits_severity_and_suggestion() {
 async fn page_update_via_stdin_round_trips() {
     let h = start().await;
     let body = "---\n\
-                type: instance\n\
+                kind: instance\n\
                 skill: customer\n\
                 id: globex\n\
                 name: Globex\n\
@@ -629,20 +698,20 @@ async fn skill_list_and_page_expand_surface_layer_and_shadow() {
     use std::sync::Arc;
 
     const BASE_SKILL: &str = "---\n\
-type: skill\n\
+kind: skill\n\
 id: pallet-consolidation\n\
 description: Firm-authored canonical procedure (v7).\n\
 layer: base@logistics-midmarket@v7\n\
 ---\n\
 # pallet-consolidation\n\nFirm-authored body.\n";
     const OVERLAY_SKILL: &str = "---\n\
-type: skill\n\
+kind: skill\n\
 id: pallet-consolidation\n\
 description: Acme-specialised procedure.\n\
 ---\n\
 # pallet-consolidation\n\nTenant-specialised body.\n";
     const PLAIN_SKILL: &str = "---\n\
-type: skill\n\
+kind: skill\n\
 id: local-notes\n\
 description: Tenant-authored notes skill.\n\
 ---\n\
@@ -838,5 +907,33 @@ async fn missing_token_against_authed_server_emits_json_error() {
         msg.contains("401") || msg.contains("unauthorized"),
         "got: {err}"
     );
+    h.process.shutdown().await;
+}
+
+/// A refused read must fail the command: non-zero exit and the refusal's code and message on stderr.
+/// (`escurel-client` used to turn a refusal into an empty success, so this printed `[]` and exited 0.)
+#[tokio::test]
+async fn a_refused_read_fails_the_command_and_names_the_refusal() {
+    let h = start().await;
+    let addr = h.http_addr.clone();
+    let bearer = h.bearer.clone();
+    let out = tokio::task::spawn_blocking(move || {
+        Command::cargo_bin("escurel")
+            .unwrap()
+            .env("ESCUREL_SERVER", format!("http://{addr}"))
+            .env("ESCUREL_TOKEN", bearer)
+            .args([
+                "instance", "list", "--skill", "customer", "--limit", "10001",
+            ])
+            .output()
+            .unwrap()
+    })
+    .await
+    .unwrap();
+    assert!(!out.status.success(), "a refused read must not exit 0");
+    let err: Value = serde_json::from_slice(&out.stderr).expect("stderr is JSON");
+    let msg = err["error"].as_str().unwrap();
+    assert!(msg.contains("invalid_limit"), "got: {err}");
+    assert!(msg.contains("10000"), "the range is in the message: {err}");
     h.process.shutdown().await;
 }

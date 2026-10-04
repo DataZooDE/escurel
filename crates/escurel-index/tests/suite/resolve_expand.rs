@@ -6,7 +6,7 @@ use bytes::Bytes;
 use duckdb::Connection;
 use escurel_embed::{Embedder, ZeroEmbedder};
 use escurel_index::{Indexer, Migrator};
-use escurel_md::PageType;
+use escurel_md::PageKind;
 use escurel_storage::{FsStore, Key, LaneStore};
 use tempfile::TempDir;
 
@@ -15,7 +15,7 @@ const TENANT: &str = "acme";
 const SKILL_CUSTOMER: (&str, &str) = (
     "markdown/skills/customer.md",
     "---\n\
-     type: skill\n\
+     kind: skill\n\
      id: customer\n\
      description: A buying entity.\n\
      ---\n\
@@ -25,7 +25,7 @@ const SKILL_CUSTOMER: (&str, &str) = (
 const INSTANCE_ACME: (&str, &str) = (
     "markdown/instances/customer/acme-corp.md",
     "---\n\
-     type: instance\n\
+     kind: instance\n\
      skill: customer\n\
      id: acme-corp\n\
      tier: enterprise\n\
@@ -40,7 +40,7 @@ const INSTANCE_ACME: (&str, &str) = (
 const INSTANCE_GLOBEX: (&str, &str) = (
     "markdown/instances/customer/globex-llc.md",
     "---\n\
-     type: instance\n\
+     kind: instance\n\
      skill: customer\n\
      id: globex-llc\n\
      ---\n\
@@ -100,7 +100,7 @@ async fn resolve_typed_wikilink_to_known_page() {
     let page = r.page.unwrap();
     assert_eq!(page.skill, "customer");
     assert_eq!(page.slug.as_deref(), Some("acme-corp"));
-    assert_eq!(page.page_type, PageType::Instance);
+    assert_eq!(page.page_kind, PageKind::Instance);
     assert_eq!(r.parsed.skill.as_deref(), Some("customer"));
     assert_eq!(r.parsed.id.as_deref(), Some("acme-corp"));
 }
@@ -167,7 +167,7 @@ async fn resolve_skill_namespace_finds_the_skill_page() {
     );
     let page = r.page.unwrap();
     assert_eq!(page.slug.as_deref(), Some("customer"));
-    assert_eq!(page.page_type, PageType::Skill);
+    assert_eq!(page.page_kind, PageKind::Skill);
     assert_eq!(r.parsed.skill.as_deref(), Some("skill"));
     assert_eq!(r.parsed.id.as_deref(), Some("customer"));
 }
@@ -229,7 +229,7 @@ async fn expand_returns_full_body_and_wikilinks() {
     assert_eq!(out.page.page_id, INSTANCE_ACME.0);
     assert_eq!(out.page.skill, "customer");
     assert_eq!(out.page.slug.as_deref(), Some("acme-corp"));
-    assert_eq!(out.page.page_type, PageType::Instance);
+    assert_eq!(out.page.page_kind, PageKind::Instance);
 
     // Frontmatter projection.
     assert_eq!(

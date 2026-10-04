@@ -47,15 +47,43 @@ class HttpEscurelClient implements EscurelClient {
 
   // ── tool dispatch (MCP-over-HTTP envelope) ──────────────────
 
+  /// `tools/call`. A REFUSED call (`isError`, or an `ok: false` payload) is an
+  /// [EscurelToolException], never data: a read that was refused used to parse
+  /// its `{ok: false, issues}` payload as an empty success.
   Future<Map<String, dynamic>> _call(
     String tool,
     Map<String, dynamic> args,
-  ) => _rpc('tools/call', {'name': tool, 'arguments': args});
+  ) async {
+    final result = await _rpcResult('tools/call', {
+      'name': tool,
+      'arguments': args,
+    });
+    final refusal = _refusalOf(result);
+    if (refusal != null) throw refusal;
+    return _payloadOf(result);
+  }
+
+  /// Like [_call] for the tools whose RESPONSE models `ok`/`issues` itself
+  /// (the write family and `validate`): a refusal is the result with
+  /// `ok: false`, which callers branch on.
+  Future<Map<String, dynamic>> _callOutcome(
+    String tool,
+    Map<String, dynamic> args,
+  ) async => _payloadOf(
+    await _rpcResult('tools/call', {'name': tool, 'arguments': args}),
+  );
 
   /// One raw JSON-RPC round-trip over `/mcp`. [_call] wraps it for
   /// `tools/call`; `tools/list` (a method-level request, no tool
   /// envelope) posts through here directly.
   Future<Map<String, dynamic>> _rpc(
+    String method,
+    Map<String, dynamic> params,
+  ) async => _payloadOf(await _rpcResult(method, params));
+
+  /// The JSON-RPC `result`, unopened (`{content, structuredContent, isError}`
+  /// for a `tools/call`).
+  Future<Map<String, dynamic>> _rpcResult(
     String method,
     Map<String, dynamic> params,
   ) async {
@@ -91,14 +119,60 @@ class HttpEscurelClient implements EscurelClient {
     if (result is! Map<String, dynamic>) {
       throw EscurelTransportException('unexpected result shape: $result');
     }
-    // A `tools/call` result is an MCP `CallToolResult`
-    // (`{content, structuredContent, isError}`); the raw tool payload lives
-    // under `structuredContent`. Fall back to `result` for older gateways.
+    return result;
+  }
+
+  /// The payload of a `tools/call` result: `structuredContent` (the full
+  /// result; current gateways put a short summary in the text block), else, for
+  /// a LEGACY gateway that sent the payload only as JSON text, that text parsed,
+  /// else the result as it is.
+  static Map<String, dynamic> _payloadOf(Map<String, dynamic> result) {
     final structured = result['structuredContent'];
-    if (structured is Map<String, dynamic>) {
-      return structured;
+    if (structured is Map<String, dynamic>) return structured;
+    final content = result['content'];
+    if (content is List && content.isNotEmpty && content.first is Map) {
+      final text = (content.first as Map)['text'];
+      if (text is String) {
+        try {
+          final parsed = jsonDecode(text);
+          if (parsed is Map<String, dynamic>) return parsed;
+        } catch (_) {
+          // a summary, not JSON
+        }
+      }
     }
     return result;
+  }
+
+  /// The refusal in a `tools/call` result (`isError`, or `ok: false`), else
+  /// null. It always carries a reason: the first issue's code and message, or
+  /// the result's own text.
+  static EscurelToolException? _refusalOf(Map<String, dynamic> result) {
+    final payload = _payloadOf(result);
+    final flagged = result['isError'] == true;
+    if (!flagged && payload['ok'] != false) return null;
+    final issues = payload['issues'];
+    if (issues is List && issues.isNotEmpty && issues.first is Map) {
+      final i = (issues.first as Map).cast<String, Object?>();
+      final loc = (i['location'] as String?) ?? '';
+      final msg = (i['message'] as String?) ?? 'the tool refused the call';
+      return EscurelToolException(
+        loc.isEmpty ? msg : '$msg ($loc)',
+        code: (i['code'] as String?) ?? 'tool_error',
+        details: payload.cast<String, Object?>(),
+      );
+    }
+    final content = result['content'];
+    var text = 'the tool refused the call';
+    if (content is List && content.isNotEmpty && content.first is Map) {
+      final t = (content.first as Map)['text'];
+      if (t is String && t.isNotEmpty) text = t;
+    }
+    return EscurelToolException(
+      text,
+      code: 'tool_error',
+      details: payload.cast<String, Object?>(),
+    );
   }
 
   // ── read tools ──────────────────────────────────────────────
@@ -108,7 +182,7 @@ class HttpEscurelClient implements EscurelClient {
     required String q,
     int k = 10,
     SearchGranularity granularity = SearchGranularity.block,
-    PageTypeFilter pageType = PageTypeFilter.any,
+    PageKindFilter pageKind = PageKindFilter.any,
     String? skill,
     String? asOf,
   }) async {
@@ -116,7 +190,7 @@ class HttpEscurelClient implements EscurelClient {
       'q': q,
       'k': k,
       'granularity': granularity.name,
-      'page_type': pageType.name,
+      'page_kind': pageKind.name,
       'skill': ?skill,
       'as_of': ?asOf,
     });
@@ -148,8 +222,8 @@ class HttpEscurelClient implements EscurelClient {
       pageId:
           (page?['page_id'] as String?) ?? (result['page_id'] as String?) ?? '',
       skill: (page?['skill'] as String?) ?? (result['skill'] as String?) ?? '',
-      pageType: _pageTypeFromString(
-        (page?['page_type'] ?? result['page_type']) as String?,
+      pageKind: _pageKindFromString(
+        (page?['page_kind'] ?? result['page_kind']) as String?,
       ),
       exists: (result['exists'] as bool?) ?? false,
       description: result['description'] as String?,
@@ -167,8 +241,8 @@ class HttpEscurelClient implements EscurelClient {
   }) async {
     final result = await _call('expand', {
       'page_id': pageId,
-      'anchor': ?anchor,
-      'version': ?version,
+      // `anchor` / `version` are wikilink parts the gateway has no argument for (it returns the whole
+      // page); sending them is refused as an unknown argument, so they stay client-side.
       'as_of': ?asOf,
       'scenario': ?scenario,
     });
@@ -180,7 +254,7 @@ class HttpEscurelClient implements EscurelClient {
       return ExpandResult(
         pageId: '',
         skill: '',
-        pageType: _pageTypeFromString(null),
+        pageKind: _pageKindFromString(null),
         frontmatter: const {},
         body: '',
         blocks: const [],
@@ -202,8 +276,8 @@ class HttpEscurelClient implements EscurelClient {
           (result['page_id'] as String?) ??
           pageId,
       skill: (page?['skill'] as String?) ?? (result['skill'] as String?) ?? '',
-      pageType: _pageTypeFromString(
-        (page?['page_type'] ?? result['page_type']) as String?,
+      pageKind: _pageKindFromString(
+        (page?['page_kind'] ?? result['page_kind']) as String?,
       ),
       frontmatter: Map<String, dynamic>.from(
         result['frontmatter'] as Map? ?? const {},
@@ -391,7 +465,7 @@ class HttpEscurelClient implements EscurelClient {
     bool acknowledgeConflicts = false,
     bool dryRun = false,
   }) async {
-    final r = await _call('rebase_pack', {
+    final r = await _callOutcome('rebase_pack', {
       'tenant_id': '',
       'manifest': _decodeManifest(manifestJson),
       'tarball_b64': tarballBase64,
@@ -414,7 +488,7 @@ class HttpEscurelClient implements EscurelClient {
 
   @override
   Future<List<BindingStatus>> validateBindings() async {
-    final result = await _call('validate_bindings', const {});
+    final result = await _callOutcome('validate_bindings', const {});
     return (result['bindings'] as List? ?? const [])
         .cast<Map<String, dynamic>>()
         .map(BindingStatus.fromJson)
@@ -484,7 +558,7 @@ class HttpEscurelClient implements EscurelClient {
 
   @override
   Future<List<EndpointHealth>> validateEndpoints() async {
-    final result = await _call('validate_endpoints', const {});
+    final result = await _callOutcome('validate_endpoints', const {});
     return (result['endpoints'] as List? ?? const [])
         .cast<Map<String, dynamic>>()
         .map(EndpointHealth.fromJson)
@@ -606,14 +680,15 @@ class HttpEscurelClient implements EscurelClient {
     return _eventPage(result);
   }
 
-  /// `{events[], next_cursor?}` — the cursor is present iff more rows
-  /// remain; its ABSENCE (never a short page) means done.
+  /// `{events[], next_cursor?, has_more?}` — `next_cursor` is where the
+  /// page ended; `has_more` says rows already follow.
   EventPage _eventPage(Map<String, dynamic> result) => EventPage(
     events: (result['events'] as List? ?? const [])
         .cast<Map<String, dynamic>>()
         .map(Event.fromJson)
         .toList(),
     nextCursor: result['next_cursor'] as String?,
+    serverHasMore: result['has_more'] == true,
   );
 
   @override
@@ -726,7 +801,7 @@ class HttpEscurelClient implements EscurelClient {
 
   @override
   Future<ValidationResult> validate(String content, {String? asPageId}) async {
-    final result = await _call('validate', {
+    final result = await _callOutcome('validate', {
       'content': content,
       'as_page_id': ?asPageId,
     });
@@ -739,7 +814,7 @@ class HttpEscurelClient implements EscurelClient {
     String content, {
     String? baseVersion,
   }) async {
-    final result = await _call('update_page', {
+    final result = await _callOutcome('update_page', {
       'page_id': pageId,
       'content': content,
       'base_version': ?baseVersion,
@@ -748,6 +823,7 @@ class HttpEscurelClient implements EscurelClient {
       ok: (result['ok'] as bool?) ?? true,
       issues: _issuesFromJson(result['issues']),
       newVersion: result['new_version'] as String?,
+      heldForReview: (result['held_for_review'] as bool?) ?? false,
     );
   }
 
@@ -837,7 +913,7 @@ class HttpEscurelClient implements EscurelClient {
     // `op`. The browser live-edit path drives ops over `/ws`
     // instead (see the Live panel); this HTTP method is kept for
     // completeness / non-CRDT callers.
-    final result = await _call('apply_op', {
+    final result = await _callOutcome('apply_op', {
       'session': session,
       'op': op.payload['base64'] ?? '',
     });
@@ -846,7 +922,7 @@ class HttpEscurelClient implements EscurelClient {
 
   @override
   Future<CloseResult> closeSession(String session, {bool commit = true}) async {
-    final result = await _call('close_session', {
+    final result = await _callOutcome('close_session', {
       'session': session,
       'commit': commit,
     });
@@ -1072,6 +1148,6 @@ class HttpEscurelClient implements EscurelClient {
   @override
   void close() => _dio.close(force: true);
 
-  static md.PageType _pageTypeFromString(String? s) =>
-      s == 'skill' ? md.PageType.skill : md.PageType.instance;
+  static md.PageKind _pageKindFromString(String? s) =>
+      s == 'skill' ? md.PageKind.skill : md.PageKind.instance;
 }

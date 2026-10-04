@@ -1,7 +1,6 @@
 //! Parsing the per-skill `backend:` frontmatter block.
 //!
-//! A skill page MAY declare a `backend:` block selecting which
-//! [`InstanceBackend`](super::InstanceBackend) materialises and reads its
+//! A skill page MAY declare a `backend:` block selecting which backend materialises and reads its
 //! instances. A skill with no `backend:` block — every skill in the corpus
 //! today — defaults to [`BackendKind::Markdown`], so this is fully
 //! backward-compatible (REQ-BK-01).
@@ -35,6 +34,33 @@ pub struct BackendBinding {
     /// `sql_view` read cap: the maximum rows `expand` renders in the bounded
     /// projection (`backend.projection_limit`). `None` ⇒ the server default.
     pub projection_limit: Option<usize>,
+    /// Present when a `sql_view` skill declares `instances: rows`: every ROW
+    /// of the source relation is an instance (see [`RowsConfig`]).
+    pub rows: Option<RowsConfig>,
+}
+
+/// `backend.instances: rows` (stage 3 of the OKF/knowledge program): one
+/// instance per row of a `sql_view` source, instead of the whole relation
+/// as ONE instance (`instances: view`, the default and today's behaviour).
+///
+/// The rows are VIRTUAL — no stored page per row. A row's identity is its
+/// `key` column(s); the stored overlay page at the same page id (created
+/// lazily by the first write, when `linked`) is the row's optional linked
+/// markdown, merged into one instance on read.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct RowsConfig {
+    /// Identity column(s). More than one ⇒ a composite key, joined by `-`
+    /// in declared order to form the instance id.
+    pub key: Vec<String>,
+    /// Whether a row may have a stored companion markdown page.
+    pub linked: bool,
+    /// Source columns the list filter may target (bound parameters only).
+    pub filterable: Vec<String>,
+    /// RESERVED for write-back (stage 4c); parsed, never acted on yet.
+    pub writable_columns: Vec<String>,
+    /// DISPLAY columns `search` may match besides the key and the `filterable:` ones (a customer
+    /// name, say). Declared, never inferred: a column the skill did not list is never searched.
+    pub searchable: Vec<String>,
 }
 
 /// Which remote-proxy protocol a `RemoteBinding` speaks. Mirrors the
@@ -100,6 +126,35 @@ pub struct RemoteBinding {
     /// Response field → overlay frontmatter field. Value is a dotted JSON
     /// path (`$.a.b`) or a bare top-level key.
     pub project: BTreeMap<String, String>,
+    /// How `list_instances` enumerates the upstream's objects (`instances: rows`). `None` for a
+    /// per-instance skill (today's behaviour).
+    pub list: Option<RemoteList>,
+    /// The argument an MCP write tool takes its idempotency key in (`write: {tool, idempotency_arg}`).
+    /// `None`: the tool is not idempotent, so a write-back to it is at-most-once. (REST always sends
+    /// an `Idempotency-Key` header.)
+    pub write_idempotency_arg: Option<String>,
+}
+
+/// The `list:` op of a remote `instances: rows` skill (stage 4a/4b): which call enumerates the
+/// upstream's objects, where the items are in the response, and how the upstream pages.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RemoteList {
+    /// The call: an HTTP `GET path` (openapi) or an MCP `tool` (mcp).
+    pub op: RemoteOp,
+    /// JSON path of the items array in the response (`$` when the response IS the array).
+    pub items: String,
+    /// The upstream's page-size parameter / argument, when it has one.
+    pub limit_param: Option<String>,
+    /// How the upstream's cursor is sent and found. `None` for an upstream that does not page.
+    pub cursor: Option<RemoteCursor>,
+}
+
+/// Cursor mapping: send the previous page's cursor as `param` (a query parameter for REST, a tool
+/// argument for MCP); the NEXT cursor is read from the response at the JSON path `from`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RemoteCursor {
+    pub param: String,
+    pub from: String,
 }
 
 /// A `document` skill's intake config (REQ-DOC-01). `accepts` is the
@@ -261,6 +316,7 @@ impl BackendBinding {
                 document: None,
                 remote: None,
                 projection_limit: read_usize("projection_limit"),
+                rows: parse_rows(block),
             },
             Some("document") => Self {
                 kind: BackendKind::Document,
@@ -268,6 +324,7 @@ impl BackendBinding {
                 document: Some(parse_document(block)),
                 remote: None,
                 projection_limit: None,
+                rows: None,
             },
             Some("openapi") => Self {
                 kind: BackendKind::OpenApi,
@@ -275,6 +332,7 @@ impl BackendBinding {
                 document: None,
                 remote: parse_remote(block, RemoteKind::OpenApi),
                 projection_limit: read_usize("projection_limit"),
+                rows: parse_rows(block),
             },
             Some("mcp") => Self {
                 kind: BackendKind::Mcp,
@@ -282,6 +340,7 @@ impl BackendBinding {
                 document: None,
                 remote: parse_remote(block, RemoteKind::Mcp),
                 projection_limit: read_usize("projection_limit"),
+                rows: parse_rows(block),
             },
             // A workflow plan skill is markdown-file-backed; the index only
             // records the kind. The `phases:`/`verify:` orchestration spec is
@@ -292,12 +351,46 @@ impl BackendBinding {
                 document: None,
                 remote: None,
                 projection_limit: None,
+                rows: None,
             },
             // Unknown kind: lenient on the read path (markdown); the
             // create/validate path is where a bad binding is rejected.
             Some(_) => Self::default(),
         }
     }
+}
+
+/// `instances: rows` + `key` / `linked` / `filterable` / `writable_columns`.
+/// `None` for the default (`instances: view` or absent). A rows skill with no
+/// usable `key` still parses (empty `key`), so the read path can say exactly
+/// what is missing instead of silently behaving as a whole-view skill.
+fn parse_rows(block: &serde_json::Map<String, serde_json::Value>) -> Option<RowsConfig> {
+    if block.get("instances").and_then(serde_json::Value::as_str) != Some("rows") {
+        return None;
+    }
+    let strings = |key: &str| -> Vec<String> {
+        match block.get(key) {
+            Some(serde_json::Value::String(s)) => vec![s.clone()],
+            Some(serde_json::Value::Array(a)) => a
+                .iter()
+                .filter_map(serde_json::Value::as_str)
+                .map(str::to_owned)
+                .collect(),
+            _ => Vec::new(),
+        }
+    };
+    let linked = match block.get("linked") {
+        Some(serde_json::Value::Bool(b)) => *b,
+        Some(serde_json::Value::String(s)) => s == "markdown" || s == "true",
+        _ => false,
+    };
+    Some(RowsConfig {
+        key: strings("key"),
+        linked,
+        filterable: strings("filterable"),
+        writable_columns: strings("writable_columns"),
+        searchable: strings("searchable"),
+    })
 }
 
 fn parse_document(block: &serde_json::Map<String, serde_json::Value>) -> DocumentBinding {
@@ -361,12 +454,52 @@ fn parse_remote(
                 .collect()
         })
         .unwrap_or_default();
+    let list = block
+        .get("list")
+        .and_then(serde_json::Value::as_object)
+        .and_then(|op| parse_remote_list(op, kind));
+    let write_idempotency_arg = block
+        .get("write")
+        .and_then(serde_json::Value::as_object)
+        .and_then(|w| w.get("idempotency_arg"))
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned);
     Some(RemoteBinding {
         kind,
         endpoint,
         read,
         write,
         project,
+        list,
+        write_idempotency_arg,
+    })
+}
+
+/// Parse `list: { path|tool, items, limit_param?, cursor: { param|arg, from } }`.
+fn parse_remote_list(
+    op: &serde_json::Map<String, serde_json::Value>,
+    kind: RemoteKind,
+) -> Option<RemoteList> {
+    let call = parse_remote_op(op, kind, /* is_write */ false)?;
+    let get_str = |m: &serde_json::Map<String, serde_json::Value>, k: &str| {
+        m.get(k)
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned)
+    };
+    let cursor = op
+        .get("cursor")
+        .and_then(serde_json::Value::as_object)
+        .and_then(|c| {
+            Some(RemoteCursor {
+                param: get_str(c, "param").or_else(|| get_str(c, "arg"))?,
+                from: get_str(c, "from")?,
+            })
+        });
+    Some(RemoteList {
+        op: call,
+        items: get_str(op, "items").unwrap_or_else(|| "$".to_owned()),
+        limit_param: get_str(op, "limit_param"),
+        cursor,
     })
 }
 
@@ -464,9 +597,109 @@ mod tests {
     use serde_json::json;
 
     #[test]
+    fn a_rest_rows_skill_parses_list_key_cursor_and_rows_config() {
+        let fm = json!({
+            "backend": {
+                "kind": "openapi",
+                "endpoint": "crm_rest",
+                "instances": "rows",
+                "key": "$.id",
+                "linked": true,
+                "list": {
+                    "path": "/customers",
+                    "items": "$.data",
+                    "limit_param": "limit",
+                    "cursor": { "param": "after", "from": "$.paging.next" }
+                },
+                "read": { "path": "/customers/{id}" },
+                "project": { "display_name": "$.name" }
+            }
+        });
+        let b = BackendBinding::parse(&fm);
+        let rows = b.rows.expect("a remote rows skill carries a RowsConfig");
+        assert_eq!(rows.key, vec!["$.id".to_owned()]);
+        assert!(rows.linked);
+        let l = b.remote.expect("remote").list.expect("list op");
+        assert_eq!(
+            l.op,
+            RemoteOp::Http {
+                method: "GET".into(),
+                path: "/customers".into(),
+                body: None
+            }
+        );
+        assert_eq!(l.items, "$.data");
+        assert_eq!(l.limit_param.as_deref(), Some("limit"));
+        let c = l.cursor.expect("cursor mapping");
+        assert_eq!(
+            (c.param.as_str(), c.from.as_str()),
+            ("after", "$.paging.next")
+        );
+    }
+
+    #[test]
+    fn an_mcp_rows_skill_parses_a_list_tool_with_a_cursor_argument() {
+        let fm = json!({
+            "backend": {
+                "kind": "mcp",
+                "endpoint": "kb",
+                "instances": "rows",
+                "key": "$.slug",
+                "list": { "tool": "listArticles", "items": "$.articles",
+                          "cursor": { "arg": "after", "from": "$.next" } },
+                "read": { "tool": "getArticle" }
+            }
+        });
+        let b = BackendBinding::parse(&fm);
+        let l = b.remote.expect("remote").list.expect("list op");
+        assert_eq!(
+            l.op,
+            RemoteOp::McpTool {
+                name: "listArticles".into()
+            }
+        );
+        assert_eq!(l.cursor.expect("cursor").param, "after");
+        assert_eq!(b.rows.expect("rows").key, vec!["$.slug".to_owned()]);
+    }
+
+    #[test]
+    fn an_mcp_write_tool_may_declare_its_idempotency_argument() {
+        let with = json!({ "backend": { "kind": "mcp", "endpoint": "kb",
+            "read": { "tool": "g" },
+            "write": { "tool": "put", "idempotency_arg": "idempotency_key" } } });
+        assert_eq!(
+            BackendBinding::parse(&with)
+                .remote
+                .unwrap()
+                .write_idempotency_arg
+                .as_deref(),
+            Some("idempotency_key")
+        );
+        let without = json!({ "backend": { "kind": "mcp", "endpoint": "kb",
+            "read": { "tool": "g" }, "write": { "tool": "put" } } });
+        assert_eq!(
+            BackendBinding::parse(&without)
+                .remote
+                .unwrap()
+                .write_idempotency_arg,
+            None
+        );
+    }
+
+    #[test]
+    fn a_remote_skill_without_instances_rows_has_no_rows_config_and_a_list_is_optional() {
+        let fm = json!({
+            "backend": { "kind": "openapi", "endpoint": "e", "read": { "path": "/x/{id}" } }
+        });
+        let b = BackendBinding::parse(&fm);
+        assert!(b.rows.is_none());
+        assert!(b.remote.expect("remote").list.is_none());
+    }
+
+    #[test]
     fn parse_backend_binding_absent_block_is_markdown() {
         assert_eq!(
-            BackendBinding::parse(&json!({"type": "skill", "id": "customer"})),
+            BackendBinding::parse(&json!({"kind": "skill", "id": "customer"})),
             BackendBinding::default()
         );
     }

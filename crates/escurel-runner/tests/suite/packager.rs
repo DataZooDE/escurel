@@ -30,9 +30,9 @@ use serde_json::{Value, json};
 
 const TENANT: &str = "acme";
 const SKILL: &str = "customer";
-const SKILL_BODY: &str = "---\ntype: skill\nid: customer\nautonomy: auto\n---\n# customer\n\nUNIQUE_SKILL_MARKER fold the event into a customer instance.\n";
+const SKILL_BODY: &str = "---\nkind: skill\nid: customer\nautonomy: auto\n---\n# customer\n\nUNIQUE_SKILL_MARKER fold the event into a customer instance.\n";
 const INSTANCE_ID: &str = "globex";
-const INSTANCE_BODY: &str = "---\ntype: instance\nid: globex\nskill: customer\n---\n# Globex\n\nUNIQUE_INSTANCE_MARKER current account state.\n";
+const INSTANCE_BODY: &str = "---\nkind: instance\nid: globex\nskill: customer\n---\n# Globex\n\nUNIQUE_INSTANCE_MARKER current account state.\n";
 
 /// Call an MCP tool over `/mcp` with a freshly minted bearer; return the
 /// JSON-RPC `result`.
@@ -230,7 +230,7 @@ async fn workflow_step_trigger_is_packaged_without_the_event_surface() {
                 .instance(
                     SKILL,
                     instance_id,
-                    "---\ntype: instance\nskill: customer\nid: acme-corp\n---\n# Acme\n",
+                    "---\nkind: instance\nskill: customer\nid: acme-corp\n---\n# Acme\n",
                 )
                 .done(),
         ),

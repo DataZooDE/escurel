@@ -22,7 +22,7 @@ const TENANT: &str = "lab";
 // undeclared, which is fine: the indexer extracts a link from EVERY
 // frontmatter wikilink regardless of declaration.
 fn skill(id: &str, extra: &str) -> String {
-    format!("---\ntype: skill\nid: {id}\ndescription: {id}.\n{extra}---\n# {id}\n")
+    format!("---\nkind: skill\nid: {id}\ndescription: {id}.\n{extra}---\n# {id}\n")
 }
 
 fn start_fixtures(analysis_owner_private: bool) -> FixtureBuilder {
@@ -33,19 +33,19 @@ fn start_fixtures(analysis_owner_private: bool) -> FixtureBuilder {
     };
     // r1 also carries a DANGLING derived_from → analysis::ghost (no such
     // page) to prove dangling links never appear in a traversal.
-    let r1 = "---\ntype: instance\nskill: result\nid: r1\n\
+    let r1 = "---\nkind: instance\nskill: result\nid: r1\n\
         produced_by: \"[[analysis::a1]]\"\n\
         derived_from: \"[[analysis::ghost]]\"\n---\n# r1\n";
     let a1 = if analysis_owner_private {
-        "---\ntype: instance\nskill: analysis\nid: a1\n\
+        "---\nkind: instance\nskill: analysis\nid: a1\n\
          owner: \"someone-else\"\nuses: \"[[dataset::d1]]\"\n---\n# a1\n"
     } else {
-        "---\ntype: instance\nskill: analysis\nid: a1\n\
+        "---\nkind: instance\nskill: analysis\nid: a1\n\
          uses: \"[[dataset::d1]]\"\n---\n# a1\n"
     };
-    let d1 = "---\ntype: instance\nskill: dataset\nid: d1\n\
+    let d1 = "---\nkind: instance\nskill: dataset\nid: d1\n\
         derived_from: \"[[dataset::d0]]\"\n---\n# d1\n";
-    let d0 = "---\ntype: instance\nskill: dataset\nid: d0\n---\n# d0\n";
+    let d0 = "---\nkind: instance\nskill: dataset\nid: d0\n---\n# d0\n";
 
     FixtureBuilder::new()
         .tenant(TENANT)

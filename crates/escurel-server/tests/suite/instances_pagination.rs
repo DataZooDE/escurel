@@ -13,7 +13,7 @@ use serde_json::{Value, json};
 use std::collections::BTreeSet;
 
 const TENANT: &str = "stuttgart-ai";
-const NOTE_SKILL: &str = "---\ntype: skill\nid: note\ndescription: A note.\n\
+const NOTE_SKILL: &str = "---\nkind: skill\nid: note\ndescription: A note.\n\
     visibility: public\n---\n# note\n";
 
 async fn start() -> EscurelProcess {
@@ -25,11 +25,11 @@ async fn start() -> EscurelProcess {
         // block must paginate under `order_by` too.
         let body = if i % 2 == 0 {
             format!(
-                "---\ntype: instance\nskill: note\nid: n{i:02}\nat: \"2026-08-01T10:{:02}:00Z\"\n---\n# n{i:02}\n",
+                "---\nkind: instance\nskill: note\nid: n{i:02}\nat: \"2026-08-01T10:{:02}:00Z\"\n---\n# n{i:02}\n",
                 i % 60
             )
         } else {
-            format!("---\ntype: instance\nskill: note\nid: n{i:02}\n---\n# n{i:02}\n")
+            format!("---\nkind: instance\nskill: note\nid: n{i:02}\n---\n# n{i:02}\n")
         };
         fx = fx.instance("note", &format!("n{i:02}"), body);
     }
@@ -119,7 +119,7 @@ async fn at_desc_ordering_pages_past_the_limit() {
 }
 
 #[tokio::test]
-async fn invalid_cursor_is_invalid_params() {
+async fn an_invalid_cursor_is_a_worded_refusal_not_a_bare_rpc_error() {
     let p = start().await;
     let token = p.mint_token(TENANT, Role::Agent);
     let out = call(
@@ -128,5 +128,16 @@ async fn invalid_cursor_is_invalid_params() {
         json!({ "skill_id": "note", "cursor": "!!definitely-not-base64!!" }),
     )
     .await;
-    assert_eq!(out["error"]["code"], json!(-32602), "{out}");
+    // A caller mistake an agent can act on: `isError` with `issues[]`, naming the way out.
+    assert!(out.get("error").is_none(), "{out}");
+    assert_eq!(out["result"]["isError"], json!(true), "{out}");
+    let issue = &out["result"]["structuredContent"]["issues"][0];
+    assert_eq!(issue["code"], json!("invalid_cursor"), "{out}");
+    assert!(
+        issue["message"]
+            .as_str()
+            .unwrap()
+            .contains("restart without `cursor`"),
+        "{out}"
+    );
 }

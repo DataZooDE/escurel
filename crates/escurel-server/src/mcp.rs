@@ -24,6 +24,7 @@
 //! / WebSocket transports for the same CRDT session arrive in
 //! M4.3 and M4.4 respectively.
 
+use futures_util::FutureExt;
 use std::sync::Arc;
 
 use axum::Json;
@@ -44,13 +45,14 @@ use escurel_index::{
     GraphDir, Indexer, IndexerError, IndexerHandle, Issue, ListChatMessages, NewEvent, OrderDir,
     Severity, Visibility, derive_attach_alias, is_safe_attach_source,
 };
-use escurel_md::PageType;
+use escurel_md::PageKind;
 use escurel_quota::{Dimension, QuotaError, QuotaManager};
 use escurel_storage::{Key, StoreError};
 use escurel_types::{
-    AdminLaneBlobResponse, AttachExternalResponse, CompactProgress, EmbeddingReloadResponse,
-    ListSkillsResponse, PublishSnapshotResponse, QuotaGetResponse, RebuildProgress,
-    Skill as TypesSkill, SkillAcl as TypesSkillAcl, SkillBackend as TypesSkillBackend,
+    AdminLaneBlobResponse, AttachExternalResponse, BackendField as TypesBackendField,
+    CompactProgress, EmbeddingReloadResponse, ListSkillsResponse, MigrateKindRequest,
+    PublishSnapshotResponse, QuotaGetResponse, RebuildProgress, Skill as TypesSkill,
+    SkillAcl as TypesSkillAcl, SkillBackend as TypesSkillBackend,
     SkillCapabilities as TypesSkillCapabilities, SkillField as TypesSkillField,
     SkillParam as TypesSkillParam, TenantCreateResponse, TenantDeleteResponse, TenantGetResponse,
     TenantImportResponse, TenantListResponse, TenantSpec as TypesTenantSpec, TenantUpdateResponse,
@@ -77,7 +79,7 @@ mod tools_read;
 mod tools_write;
 pub(crate) use ingest::{blob_get, ingest, ingest_upload};
 pub(crate) use schema::openapi_document;
-use schema::page_type_str;
+use schema::page_kind_str;
 use tools_admin::*;
 use tools_branches::*;
 use tools_drafts::*;
@@ -174,12 +176,10 @@ pub async fn mcp(
     // own field rather than only as the `request_id` prefix so a single
     // `run_id=<ulid>` query returns every tool call the run made, in order,
     // alongside the runner's own lines for it. Empty for every other caller.
-    let run_id = headers
-        .get("x-escurel-run-id")
-        .and_then(|v| v.to_str().ok())
-        .map(str::trim)
-        .unwrap_or_default()
-        .to_owned();
+    // The header is the CALLER'S claim: it is not recorded until the bearer has authenticated (a
+    // rejected request must not be able to stamp lines with a run of its choosing), and a run-bound
+    // token's own `run_id` claim wins over it.
+    let run_hint = run_id_hint(&headers);
     let tool_name = tool_name_from(&req.method, &req.params).unwrap_or_default();
     // Per-record audit fields per `platform.md §Observability`:
     // `transport` + `trace_id` are known up front; `tenant` + `subject`
@@ -196,7 +196,7 @@ pub async fn mcp(
         "mcp.request",
         request_id = %request_id,
         trace_id = %request_id,
-        run_id = %run_id,
+        run_id = tracing::field::Empty,
         transport = "mcp_http",
         method = %req.method,
         tool = %tool_name,
@@ -210,6 +210,16 @@ pub async fn mcp(
     // a TOOL span on the run's own trace (P3-3), and an OTel parent can
     // only be set on a span that has not started yet.
     let auth = crate::auth_gate::authenticate(&state, &headers).await;
+    match &auth {
+        Ok(Some(ctx)) => {
+            let claimed = ctx.run.as_ref().map(|r| r.run_id.as_str());
+            span.record("run_id", claimed.unwrap_or(run_hint.as_str()));
+        }
+        Ok(None) => {
+            span.record("run_id", run_hint.as_str());
+        }
+        Err(_) => {}
+    }
     if let Ok(Some(ctx)) = &auth
         && let Some(run) = &ctx.run
     {
@@ -225,6 +235,23 @@ pub async fn mcp(
         }
     }
     mcp_inner(state, req, auth).instrument(span).await
+}
+
+/// The run id a caller names in `x-escurel-run-id`: a plain token of at most 64 characters, else
+/// nothing. It lands in structured logs, so a newline or an overlong value is dropped.
+fn run_id_hint(headers: &HeaderMap) -> String {
+    headers
+        .get("x-escurel-run-id")
+        .and_then(|v| v.to_str().ok())
+        .map(str::trim)
+        .filter(|v| {
+            !v.is_empty()
+                && v.len() <= 64
+                && v.chars()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | ':'))
+        })
+        .unwrap_or_default()
+        .to_owned()
 }
 
 async fn mcp_inner(
@@ -372,7 +399,9 @@ async fn mcp_inner(
             // the outer `match result`) — only the success value is
             // wrapped. `initialize` / `ping` / `tools/list` are NOT
             // CallToolResults and are returned raw above.
-            let r = dispatch_tools_call(
+            // A panic inside one tool (a malformed argument reaching a slice, say) must cost that
+            // CALL, not the connection: the caller gets a JSON-RPC error and the gateway lives on.
+            let r = std::panic::AssertUnwindSafe(dispatch_tools_call(
                 &state,
                 &tenant_id,
                 role,
@@ -382,8 +411,18 @@ async fn mcp_inner(
                 run.as_ref(),
                 agent_skill.as_deref(),
                 req.params,
-            )
-            .await;
+            ))
+            .catch_unwind()
+            .await
+            .unwrap_or_else(|_| {
+                tracing::error!(%tool, "a tool handler panicked; the call was answered with an error");
+                Err(JsonRpcError::internal(
+                    "the tool failed unexpectedly (invalid input reached an internal error); \
+                     the failure was logged"
+                        .to_owned(),
+                ))
+            })
+            .or_else(JsonRpcError::into_refusal);
             let rejected = matches!(&r, Ok(payload) if is_rejected_payload(&tool, payload));
             let r = r.map(|payload| wrap_tool_result(payload, rejected));
             let status = if r.is_err() {
@@ -672,20 +711,117 @@ fn to_value<T: serde::Serialize>(resp: T) -> Result<Value, JsonRpcError> {
 /// }
 /// ```
 ///
-/// `content[0].text` is the payload serialised to a JSON string — that
-/// is what a text-only MCP client (Claude Code) reads. `structuredContent`
-/// carries the raw payload object for programmatic clients (escurel-client
-/// decodes this). `isError` is true when the payload is a refusal (see
+/// `content[0].text` is a SHORT SUMMARY (what came back, counts, and where the rest is; a refusal's
+/// code and message) — it no longer repeats the payload. `structuredContent` carries the full payload
+/// object (escurel-client and every in-repo consumer decode this). `isError` is true when the payload is a refusal (see
 /// [`is_rejected_payload`]). Applied to the SUCCESS value of `tools/call`
 /// ONLY; tool errors keep the JSON-RPC error envelope, and `initialize` /
 /// `ping` / `tools/list` are returned raw (they are not `CallToolResult`s).
 fn wrap_tool_result(payload: Value, rejected: bool) -> Value {
-    let text = serde_json::to_string(&payload).unwrap_or_else(|_| payload.to_string());
     json!({
-        "content": [ { "type": "text", "text": text } ],
+        "content": [ { "type": "text", "text": summarise_payload(&payload) } ],
         "structuredContent": payload,
         "isError": rejected,
     })
+}
+
+/// The one-or-two-line text of a tool result: what came back and where the rest is. The full payload is
+/// `structuredContent` alone (it used to be sent twice, once as a JSON string here, doubling the tokens
+/// of every call). A refusal's summary carries its first issue's code and message, so a client that
+/// reads only the text still learns WHY.
+fn summarise_payload(payload: &Value) -> String {
+    const MORE: &str = "Full result in structuredContent.";
+    let Some(obj) = payload.as_object() else {
+        return format!("{} {MORE}", short(&payload.to_string(), 200));
+    };
+    if obj.get("ok") == Some(&Value::Bool(false))
+        && let Some(issue) = obj.get("issues").and_then(|i| i.get(0))
+    {
+        let n = obj["issues"].as_array().map_or(1, Vec::len);
+        let more = if n > 1 {
+            format!(" (+{} more issues)", n - 1)
+        } else {
+            String::new()
+        };
+        // The whole guidance: a refusal is cut where it says what to DO (a `write_back` hint was
+        // truncated at "in the frontmatter"). Only an absurdly long message is shortened.
+        let suggestion = issue["suggestion"]
+            .as_str()
+            .filter(|s| !s.is_empty())
+            .map_or(String::new(), |s| format!(" Suggestion: {}", short(s, 600)));
+        return format!(
+            "Refused: {}: {}{suggestion}{more}. {MORE}",
+            issue["code"].as_str().unwrap_or("error"),
+            short(issue["message"].as_str().unwrap_or(""), 1200),
+        );
+    }
+    // Absent: say so in words (it used to read "2 keys"). Covers `expand` / `resolve`.
+    if obj.get("page") == Some(&Value::Null) {
+        let why = obj
+            .get("hint")
+            .and_then(Value::as_str)
+            .unwrap_or("no such page, or you may not read it");
+        return format!("Not found (page: null): {}. {MORE}", short(why, 400));
+    }
+    // A minted token is announced, never repeated: the text lands in transcripts and logs.
+    if obj.get("token").is_some_and(Value::is_string) {
+        let expires = obj
+            .get("expires_at")
+            .and_then(Value::as_str)
+            .map_or(String::new(), |e| format!(", expires {e}"));
+        let run = obj
+            .get("run_id")
+            .and_then(Value::as_str)
+            .map_or(String::new(), |r| format!(", run_id {r}"));
+        return format!(
+            "Agent token minted (secret: read it from structuredContent.token){expires}{run}."
+        );
+    }
+    let mut parts: Vec<String> = Vec::new();
+    for (k, v) in obj {
+        match v {
+            Value::Array(a) => parts.push(format!("{} {k}", a.len())),
+            Value::Null => {}
+            Value::Bool(b)
+                if k == "ok" || k == "has_more" || k == "held_for_review" || k == "replayed" =>
+            {
+                if *b {
+                    parts.push(k.clone());
+                }
+            }
+            Value::String(c) if k == "next_cursor" => {
+                parts.push(format!(
+                    "next_cursor={c} (pass it as `cursor` for the next page)"
+                ));
+            }
+            _ => {}
+        }
+    }
+    let mut head = if parts.is_empty() {
+        format!("{} keys", obj.len())
+    } else {
+        parts.join(", ")
+    };
+    if let Some(w) = obj
+        .get("issues")
+        .and_then(Value::as_array)
+        .filter(|a| !a.is_empty())
+    {
+        head.push_str(&format!(
+            ", {} issue(s): {}",
+            w.len(),
+            w[0]["code"].as_str().unwrap_or("?")
+        ));
+    }
+    format!("{} {MORE}", short(&head, 240))
+}
+
+fn short(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        s.to_owned()
+    } else {
+        format!("{}…", s.chars().take(max).collect::<String>())
+    }
 }
 
 /// Whether a tool's `Ok` payload is a REFUSAL — the call ran, nothing was
@@ -840,6 +976,36 @@ async fn dispatch_tools_call(
         require_admin(role)?;
     }
 
+    // The hard cut (`type:` -> `kind:`): a tenant that booted with legacy pages is QUARANTINED. It
+    // is up, so an operator can run `migrate_kind` against it (and clear live sessions with
+    // `compact_lanes`), but it serves nothing else: a search or a read over a half-readable corpus
+    // would be silently incomplete.
+    if !matches!(params.name.as_str(), "migrate_kind" | "compact_lanes")
+        && let Some(pages) = current_indexer
+            .as_deref()
+            .and_then(escurel_index::Indexer::legacy_quarantine)
+    {
+        return Err(JsonRpcError::invalid_params(format!(
+            "tenant_quarantined: {}",
+            escurel_index::migrate_kind::legacy_kind_message(
+                current_indexer.as_deref().map_or("", |i| i.tenant()),
+                &pages,
+            )
+        ))
+        .with_code("tenant_quarantined", false));
+    }
+
+    // `limit` is bounded in the tool's own schema; enforce what the schema says. A value outside it
+    // used to be accepted silently (0 and 10001 returned a page) or fail with a Rust type name.
+    if let Some(refusal) = schema::limit_refusal(&params.name, &params.arguments) {
+        return Ok(refusal);
+    }
+    // An argument the tool does not declare is a typo or another tool's spelling; dropping it ran
+    // the call with default behaviour (`limt: 5`, `filter: {..}`).
+    if let Some(refusal) = schema::unknown_args_refusal(&params.name, &params.arguments) {
+        return Ok(refusal);
+    }
+
     // Session tools depend on `crdt_backend` + `sessions`, not on
     // the indexer. Route them before the indexer gate.
     match params.name.as_str() {
@@ -933,6 +1099,9 @@ async fn dispatch_tools_call(
         "compact_lanes" => {
             return tool_compact_lanes(state, params.arguments).await;
         }
+        "migrate_kind" => {
+            return tool_migrate_kind(state, params.arguments).await;
+        }
         "publish_snapshot" => {
             return tool_publish_snapshot(state).await;
         }
@@ -950,9 +1119,11 @@ async fn dispatch_tools_call(
 
     match params.name.as_str() {
         "list_skills" => tool_list_skills(indexer, caller).await,
-        "list_instances" => tool_list_instances(indexer, caller, params.arguments).await,
+        "list_instances" => {
+            tool_list_instances(indexer, &state.egress, caller, params.arguments).await
+        }
         "get_operation" => tool_get_operation(indexer, caller, params.arguments).await,
-        "resolve" => tool_resolve(indexer, caller, params.arguments).await,
+        "resolve" => tool_resolve(indexer, &state.egress, caller, params.arguments).await,
         "expand" => tool_expand(state, indexer, caller, params.arguments).await,
         "fetch_blob" => tool_fetch_blob(indexer, caller, params.arguments).await,
         "neighbours" => tool_neighbours(indexer, caller, params.arguments).await,
@@ -1100,7 +1271,9 @@ async fn dispatch_tools_call(
         "list_group_members" => tool_list_group_members(indexer, params.arguments).await,
         // SQL-view credential registry (admin-only). Secrets live
         // server-side in kb.duckdb, never in the markdown corpus (REQ-SQL-05).
-        "register_credential" => tool_register_credential(indexer, subject, params.arguments).await,
+        "register_credential" => {
+            tool_register_credential(indexer, &state.egress, subject, params.arguments).await
+        }
         "list_credentials" => tool_list_credentials(indexer).await,
         "delete_credential" => tool_delete_credential(indexer, params.arguments).await,
         "validate_bindings" => tool_validate_bindings(indexer).await,
@@ -1108,16 +1281,23 @@ async fn dispatch_tools_call(
         // Remote-backend endpoint registry (admin-only). Base URL + auth live
         // server-side in kb.duckdb; the secret is never echoed. This is the
         // SSRF guard — a remote instance can only reach a registered endpoint.
-        "register_endpoint" => tool_register_endpoint(indexer, subject, params.arguments).await,
+        "register_endpoint" => {
+            tool_register_endpoint(indexer, &state.egress, subject, params.arguments).await
+        }
         "list_endpoints" => tool_list_endpoints(indexer).await,
-        "delete_endpoint" => tool_delete_endpoint(indexer, params.arguments).await,
-        "validate_endpoints" => tool_validate_endpoints(indexer).await,
+        "delete_endpoint" => tool_delete_endpoint(indexer, &state.egress, params.arguments).await,
+        "validate_endpoints" => tool_validate_endpoints(indexer, &state.egress).await,
+        "describe_endpoint" => {
+            tool_describe_endpoint(indexer, &state.egress, params.arguments).await
+        }
         // Materialise a remote (openapi/mcp) overlay page from a skill that
         // declares a remote backend. Admin-only, mirroring create_sql_instance.
         "create_remote_instance" => tool_create_remote_instance(indexer, params.arguments).await,
         // Write-back to a remote instance's upstream. Agent tool, gated by the
         // target instance's acl.update (may_write_instance, fail-closed).
-        "write_instance" => tool_write_instance(indexer, caller, params.arguments).await,
+        "write_instance" => {
+            tool_write_instance(indexer, &state.egress, caller, params.arguments).await
+        }
         other => Err(JsonRpcError::method_not_found(format!(
             "unknown tool `{other}`"
         ))),
@@ -1602,7 +1782,7 @@ async fn tool_list_op_authors(
         .await
         .map_err(|e| JsonRpcError::internal(format!("list_op_authors acl: {e}")))?
     {
-        Some(e) if e.page.page_type == PageType::Instance => indexer
+        Some(e) if e.page.page_kind == PageKind::Instance => indexer
             .may_read_instance(&caller, &e.page.skill, &e.frontmatter)
             .await
             .map_err(|e| JsonRpcError::internal(format!("list_op_authors acl: {e}")))?,
@@ -1838,6 +2018,27 @@ async fn tool_close_session(
                     }));
                 }
             }
+            // The autonomy gate: a MACHINE's commit to a review skill becomes an open draft carrying the
+            // session's merged body. The session is closed without a write-through; the page is untouched.
+            if let Some(mut held) = tools_write::hold_if_review_required(
+                state,
+                ix,
+                &caller,
+                state.write_acl,
+                &page_id,
+                &body,
+            )
+            .await?
+            {
+                if held.get("ok") == Some(&Value::Bool(true)) {
+                    let v = sessions
+                        .close(&a.session, false)
+                        .await
+                        .map_err(|e| session_error_to_jsonrpc(&e, "close_session"))?;
+                    held["final_version"] = json!(v.as_str());
+                }
+                return Ok(held);
+            }
             let _gate = state.update_page_gate.lock().await;
             // The commit is a page write, so it carries the same stamp an
             // `update_page` would (#357): the caller that closed the
@@ -1897,6 +2098,50 @@ struct JsonRpcError {
 }
 
 impl JsonRpcError {
+    /// A DOMAIN refusal from a read tool: the caller's mistake, not a protocol fault.
+    ///
+    /// Write tools answer a refusal as `isError: true` with `issues[{code, location, message,
+    /// suggestion?}]`, which an agent can branch on and act on. Read tools used to answer the same
+    /// kind of mistake as a bare JSON-RPC string (`-32602 …`, or `-32603` for what was really a
+    /// client error). Returning this from a read tool gives it the same shape; [`Self::into_refusal`]
+    /// converts it at the one dispatch point. JSON-RPC errors stay for malformed requests.
+    fn domain(
+        code: &str,
+        location: &str,
+        message: impl Into<String>,
+        suggestion: Option<&str>,
+    ) -> Self {
+        let message = message.into();
+        let mut issue = json!({
+            "severity": "error",
+            "code": code,
+            "location": location,
+            "message": message,
+        });
+        if let Some(s) = suggestion {
+            issue["suggestion"] = json!(s);
+        }
+        Self {
+            code: -32602,
+            message,
+            data: Some(json!({ "domain_issue": issue })),
+        }
+    }
+
+    /// The refusal payload (`{ok: false, issues: [..]}`) of a [`Self::domain`] error, or the error
+    /// itself when it is an ordinary protocol error.
+    fn into_refusal(self) -> Result<Value, Self> {
+        match self
+            .data
+            .as_ref()
+            .and_then(|d| d.get("domain_issue"))
+            .cloned()
+        {
+            Some(issue) => Ok(json!({ "ok": false, "issues": [issue] })),
+            None => Err(self),
+        }
+    }
+
     /// Attach the machine-readable `{code, retryable}` detail.
     fn with_code(mut self, code: &str, retryable: bool) -> Self {
         self.data = Some(json!({ "code": code, "retryable": retryable }));
@@ -2030,7 +2275,7 @@ mod search_fusion_tests {
             q: q.map(str::to_owned),
             queries: queries.map(|v| v.into_iter().map(str::to_owned).collect()),
             k: 10,
-            page_type: None,
+            page_kind: None,
             skill: None,
             as_of: None,
             scenario: None,
@@ -2076,7 +2321,7 @@ mod search_fusion_tests {
             page_id: page_id.to_owned(),
             slug: None,
             skill: "note".to_owned(),
-            page_type: PageType::Instance,
+            page_kind: PageKind::Instance,
             anchor: None,
             snippet: String::new(),
             score: 0.0,
@@ -2346,5 +2591,25 @@ mod registry_conformance {
             unroutable.is_empty(),
             "advertised by `tools/list` with no dispatch arm: {unroutable:?}"
         );
+    }
+}
+
+#[cfg(test)]
+mod run_hint_tests {
+    use super::*;
+
+    fn hint(v: &str) -> String {
+        let mut h = HeaderMap::new();
+        h.insert("x-escurel-run-id", v.parse().unwrap());
+        run_id_hint(&h)
+    }
+
+    #[test]
+    fn only_a_plain_bounded_token_is_ever_a_run_id() {
+        assert_eq!(hint("01HZX-run_1:2"), "01HZX-run_1:2");
+        assert_eq!(hint(&"x".repeat(65)), "", "overlong");
+        assert_eq!(hint("run id with spaces"), "");
+        assert_eq!(hint("a\"b"), "", "a quote would break the structured line");
+        assert_eq!(run_id_hint(&HeaderMap::new()), "");
     }
 }

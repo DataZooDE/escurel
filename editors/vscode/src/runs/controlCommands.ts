@@ -1,9 +1,11 @@
+import { notify } from '../commands/notify';
 import { inFlight, pollControlResult } from './controlWait';
 import * as vscode from 'vscode';
 import type { Services } from '../services';
 import { buildControlEvent, type ControlRequest } from './controls';
 import { describeControlRefusal, describeOutcome, findControlResult } from './controlResult';
 import { registerAdminContext } from './adminContext';
+import { asksHere, confirmationFor, outcomeChannel, progressTitle } from './controlWording';
 
 type Action = ControlRequest['action'];
 export type Argument =
@@ -21,14 +23,6 @@ export function controlRequest(action: Action, arg: Argument): ControlRequest {
   return { action };
 }
 
-const label: Record<Action, string> = {
-  cancel: 'cancel',
-  retry: 'retry',
-  requeue: 'requeue',
-  pause: 'pause dispatch',
-  resume: 'resume dispatch',
-};
-
 export function registerControlCommands(
   context: vscode.ExtensionContext,
   services: Services,
@@ -37,17 +31,31 @@ export function registerControlCommands(
   const once = inFlight();
   const register = (command: string, action: Action) =>
     vscode.commands.registerCommand(command, async (arg?: Argument) => {
-      if (action === 'pause') {
+      const confirmation = asksHere(arg) ? confirmationFor(action) : undefined;
+      if (confirmation) {
         const answer = await vscode.window.showWarningMessage(
-          'Pause dispatch for the whole tenant?',
-          { modal: true },
-          'Pause dispatch',
+          confirmation.message,
+          { modal: true, detail: confirmation.detail },
+          confirmation.button,
         );
-        if (answer !== 'Pause dispatch') return;
+        if (answer !== confirmation.button) return;
       }
       let request: ReturnType<typeof controlRequest>;
       try {
         request = controlRequest(action, arg);
+        // From the palette there is no run to act on: say where to pick one.
+        if ((action === 'cancel' || action === 'retry') && !('runId' in request && request.runId)) {
+          void vscode.window.showInformationMessage(
+            `Select a run in the Runs view or in a thread, then use its menu to ${action} it.`,
+          );
+          return;
+        }
+        if (action === 'requeue' && !('eventId' in request && request.eventId)) {
+          void vscode.window.showInformationMessage(
+            'Select a dead letter in the Runs view, then use its menu to requeue it.',
+          );
+          return;
+        }
       } catch (error) {
         void vscode.window.showErrorMessage(describeControlRefusal(error));
         return;
@@ -64,11 +72,11 @@ export function registerControlCommands(
         }
         await vscode.window.withProgress(
           {
-            location: vscode.ProgressLocation.Notification,
-            title: `Waiting for runner to ${label[action]}`,
-            cancellable: true,
+            // The status bar, not a toast: one line while the runner picks it up.
+            location: vscode.ProgressLocation.Window,
+            title: progressTitle(action),
           },
-          async (_progress, cancellation) => {
+          async () => {
             const outcome = await pollControlResult({
               find: () =>
                 findControlResult(
@@ -90,14 +98,25 @@ export function registerControlCommands(
               sleep: (ms) => new Promise<void>((resolve) => setTimeout(resolve, ms)),
               timeoutMs: 30_000,
               intervalMs: 500,
-              cancelled: () => cancellation.isCancellationRequested,
+              cancelled: () => false,
             });
             if (outcome.kind === 'result') {
-              void vscode.window.showInformationMessage(describeOutcome(outcome.result));
+              const text = describeOutcome(outcome.result);
+              if (outcomeChannel(outcome.result.outcome) === 'status') {
+                vscode.window.setStatusBarMessage(text, 8000);
+              } else {
+                // The result may name a run (the one acted on, or the new one a retry started): offer to open it.
+                void notify('warning', text, [
+                  {
+                    kind: 'run',
+                    runId: outcome.result.newRunId ?? outcome.result.runId ?? undefined,
+                  },
+                ]);
+              }
             } else if (outcome.kind === 'timeout') {
               void vscode.window.showInformationMessage(
                 outcome.lookupFailed
-                  ? 'The request was sent, but the answer could not be read. Check the Runner view.'
+                  ? 'The request was sent, but the answer could not be read. Check the Runs view.'
                   : 'The runner has not answered yet. It acts on requests as it polls.',
               );
             }

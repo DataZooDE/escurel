@@ -196,7 +196,7 @@ pub(super) fn blocking_issues<'a>(
             // Blocking it here also upgrades `update_page`'s answer for the
             // same content from that -32603 to `{ok:false, issues:[…]}` —
             // a refusal a client can act on, which an internal error is not.
-            "frontmatter_parse" => true,
+            "frontmatter_parse" | "frontmatter_type_removed" => true,
             // A link that names a type or a page that does not exist. This is
             // the hole being closed: an agent could cite
             // `[[customer::invented-gmbh]]` and the graph would carry it.
@@ -251,7 +251,227 @@ pub(super) fn blocking_issues<'a>(
         .collect()
 }
 
+/// Whether the caller is a MACHINE: a token minted for an agent run, a narrowed per-skill agent, or one
+/// acting for a runner (`run_id` / `skill` / `act.sub` claims). A person on a plain agent-role token
+/// (the extension, the CLI) is not: they write directly.
+pub(super) fn is_machine_caller(caller: &AclCaller<'_>) -> bool {
+    caller.run_id.is_some() || caller.agent_skill.is_some() || caller.actor.is_some()
+}
+
+/// The skill an INSTANCE page id belongs to (`markdown/instances/<skill>/<id>.md`).
+fn instance_skill_of(page_id: &str) -> Option<&str> {
+    page_id
+        .strip_prefix("markdown/instances/")?
+        .split('/')
+        .next()
+        .filter(|s| !s.is_empty())
+}
+
+/// Does `skill` ask for human review of what a machine writes? `autonomy: review | confirm` do, and so
+/// does ANY value that is not recognised (a typo must never read as `auto`); only an explicit `auto`,
+/// or no `autonomy:` at all, lands directly.
+pub(super) async fn skill_requires_review(
+    indexer: &Indexer,
+    skill: &str,
+) -> Result<bool, JsonRpcError> {
+    let Some(md) = indexer
+        .read_page_markdown(&format!("markdown/skills/{skill}.md"))
+        .await
+        .map_err(|e| JsonRpcError::internal(format!("autonomy gate: {e}")))?
+    else {
+        return Ok(false);
+    };
+    Ok(autonomy_requires_review(&md))
+}
+
+/// The gate's decision from a skill page's bytes. A page that does not parse cannot say it is `auto`,
+/// so it holds: failing OPEN here would let anything that corrupts a skill page switch the gate off.
+fn autonomy_requires_review(skill_page_markdown: &str) -> bool {
+    let Ok(parsed) = escurel_md::parse(skill_page_markdown) else {
+        return true;
+    };
+    match parsed.frontmatter.fields.get("autonomy") {
+        None => false,
+        Some(v) => v
+            .as_str()
+            .and_then(escurel_index::Autonomy::parse)
+            .is_none_or(|a| a != escurel_index::Autonomy::Auto),
+    }
+}
+
+/// Whether `page_id` is a SKILL page (`markdown/skills/<id>.md`): the page that carries the gate's own
+/// configuration (`autonomy`, `actions`, `backend`, `writable_columns`, `acl`, …).
+fn is_skill_page(page_id: &str) -> bool {
+    page_id.starts_with("markdown/skills/")
+}
+
+/// The autonomy gate (owner decision 2026-10-04): a MACHINE caller's direct write to an instance of a
+/// skill that asks for review does not land; it becomes an open draft and the answer says so, in the
+/// shape `create_draft` answers. `Ok(None)` = not held, go on and write.
+///
+/// Admin tokens, people on plain agent-role tokens and `autonomy: auto` skills are untouched. PROMOTING a
+/// draft never comes through here (it re-enters the ungated write), or an approver would hold their own
+/// approval for ever.
+pub(super) async fn hold_if_review_required(
+    state: &crate::server::AppState,
+    indexer: &Indexer,
+    caller: &AclCaller<'_>,
+    write_acl: crate::server::WriteAclMode,
+    page_id: &str,
+    content: &str,
+) -> Result<Option<Value>, JsonRpcError> {
+    // A MACHINE is gated even when its token is admin: the runner mints its agents' run tokens with the
+    // admin role, and a gate that waved admins through would not apply to the one caller it exists for.
+    // A PERSON who is admin, or on a plain agent token, is not a machine and writes directly.
+    if !is_machine_caller(caller) {
+        return Ok(None);
+    }
+    // A skill page is the gate's own configuration: a run that could edit it could write
+    // `autonomy: auto` for itself and then land everything unreviewed. Every machine edit of a skill
+    // page is held, whatever the skill says about its instances.
+    let skill = if is_skill_page(page_id) {
+        "a skill page"
+    } else {
+        let Some(skill) = instance_skill_of(page_id) else {
+            return Ok(None);
+        };
+        if !skill_requires_review(indexer, skill).await? {
+            return Ok(None);
+        }
+        skill
+    };
+    use sha2::{Digest, Sha256};
+    let base = indexer
+        .read_page_markdown(page_id)
+        .await
+        .map_err(|e| JsonRpcError::internal(format!("autonomy gate: {e}")))?
+        .map(|m| format!("{:x}", Sha256::digest(m.as_bytes())))
+        .unwrap_or_default();
+    let mut held = crate::mcp::tools_drafts::tool_create_draft(
+        state,
+        indexer,
+        AclCaller { ..*caller },
+        write_acl,
+        json!({ "target_page_id": page_id, "content": content, "base_sha256": base }),
+    )
+    .await?;
+    if held.get("ok") == Some(&json!(true)) {
+        held["held_for_review"] = json!(true);
+        held["message"] = json!(if is_skill_page(page_id) {
+            "a skill page configures what agents may do, so an agent's edit of it was held as an open \
+             draft; nothing changed until a person promotes it"
+                .to_owned()
+        } else {
+            format!(
+                "`{skill}` asks for human review (`autonomy`), so this write was held as an open draft; \
+                 nothing changed on the page until a reviewer promotes it"
+            )
+        });
+    }
+    Ok(Some(held))
+}
+
+/// A MOVE or DELETE cannot be held as a draft (a draft carries the proposed bytes of ONE page, and a
+/// removal has none), so a machine's attempt on a review skill is refused with a code that says whom to
+/// ask, instead of landing unreviewed.
+pub(super) async fn refuse_machine_removal(
+    indexer: &Indexer,
+    caller: &AclCaller<'_>,
+    page_id: &str,
+    what: &str,
+) -> Result<Option<Value>, JsonRpcError> {
+    if !is_machine_caller(caller) {
+        return Ok(None);
+    }
+    let skill = if is_skill_page(page_id) {
+        "a skill page"
+    } else {
+        let Some(skill) = instance_skill_of(page_id) else {
+            return Ok(None);
+        };
+        if !skill_requires_review(indexer, skill).await? {
+            return Ok(None);
+        }
+        skill
+    };
+    Ok(Some(json!({
+        "ok": false,
+        "issues": [{
+            "severity": "error",
+            "code": "review_required",
+            "location": "page_id",
+            "message": format!(
+                "`{skill}` asks for human review (`autonomy`): an agent run cannot {what} `{page_id}` \
+                 on its own, and a removal cannot be held as a draft. Propose the change in a draft of \
+                 the page, or ask a person to do it"
+            ),
+        }],
+    })))
+}
+
+/// The per-instance WRITE ACL as one decision, shared by `update_page` and by promotion (which must
+/// ask it BEFORE a write-back touches an external system). `Off` skips; `Log` records a would-be
+/// denial and allows; `Enforce` answers the `forbidden` refusal. `Ok(None)` = go on.
+pub(super) async fn write_acl_refusal(
+    indexer: &Indexer,
+    caller: &AclCaller<'_>,
+    write_acl: crate::server::WriteAclMode,
+    page_id: &str,
+    content: &str,
+) -> Result<Option<Value>, JsonRpcError> {
+    if write_acl == crate::server::WriteAclMode::Off {
+        return Ok(None);
+    }
+    let allowed = indexer
+        .may_write_page(caller, page_id, content)
+        .await
+        .map_err(|e| JsonRpcError::internal(format!("update_page acl: {e}")))?;
+    if allowed {
+        return Ok(None);
+    }
+    if write_acl == crate::server::WriteAclMode::Log {
+        tracing::warn!(
+            subject = %caller.subject,
+            page_id = %page_id,
+            "write-ACL would deny this write (log mode) — allowing"
+        );
+        return Ok(None);
+    }
+    Ok(Some(json!({
+        "ok": false,
+        "issues": [{
+            "severity": "error",
+            "code": "forbidden",
+            "location": "frontmatter",
+            "message": format!(
+                "write denied: caller `{}` does not own instance `{}`",
+                caller.subject, page_id
+            ),
+        }],
+    })))
+}
+
+/// `update_page` as a caller reaches it: the autonomy gate first, then the write.
 pub(super) async fn tool_update_page(
+    state: &crate::server::AppState,
+    indexer: &Indexer,
+    caller: AclCaller<'_>,
+    write_acl: crate::server::WriteAclMode,
+    args: Value,
+) -> Result<Value, JsonRpcError> {
+    if let (Some(page_id), Some(content), None) = (
+        args.get("page_id").and_then(Value::as_str),
+        args.get("content").and_then(Value::as_str),
+        args.get("branch").filter(|b| !b.is_null()),
+    ) && let Some(held) =
+        hold_if_review_required(state, indexer, &caller, write_acl, page_id, content).await?
+    {
+        return Ok(held);
+    }
+    tool_update_page_ungated(state, indexer, caller, write_acl, args).await
+}
+
+pub(super) async fn tool_update_page_ungated(
     state: &crate::server::AppState,
     indexer: &Indexer,
     caller: AclCaller<'_>,
@@ -306,6 +526,55 @@ pub(super) async fn tool_update_page(
                 "code": "backend_read_only",
                 "location": "frontmatter.backend_ref",
                 "message": reason,
+            }],
+        }));
+    }
+
+    // A `write_back` intent is not a direct write: it must be a draft.
+    if let Some(r) = crate::sql_rows::write_rejection(indexer, &a.page_id, &a.content, false)
+        .await
+        .map_err(|e| JsonRpcError::internal(format!("update_page rows guard: {e}")))?
+    {
+        return Ok(json!({
+            "ok": false,
+            "issues": [{
+                "severity": "error",
+                "code": r.code,
+                "location": r.location,
+                "message": r.message,
+            }],
+        }));
+    }
+    // `instances: rows` guard (stage 3): a row page is the row's linked markdown. The write may not
+    // touch a source column, smuggle a `backend_ref`, or invent a row.
+    if let Some(r) = indexer
+        .rows_write_rejection(&a.page_id, &a.content)
+        .await
+        .map_err(|e| JsonRpcError::internal(format!("update_page rows guard: {e}")))?
+    {
+        return Ok(json!({
+            "ok": false,
+            "issues": [{
+                "severity": "error",
+                "code": r.code,
+                "location": r.location,
+                "message": r.message,
+            }],
+        }));
+    }
+    // The same guard for a row of a REMOTE `rows` skill (REST/MCP).
+    if let Some(r) =
+        crate::remote_rows::write_rejection(indexer, &state.egress, &a.page_id, &a.content, false)
+            .await
+            .map_err(|e| JsonRpcError::internal(format!("update_page rows guard: {e}")))?
+    {
+        return Ok(json!({
+            "ok": false,
+            "issues": [{
+                "severity": "error",
+                "code": r.code,
+                "location": r.location,
+                "message": r.message,
             }],
         }));
     }
@@ -367,7 +636,7 @@ pub(super) async fn tool_update_page(
     // identical on every side of a merge).
     if !caller.is_admin
         && let Ok(parsed) = escurel_md::parse(&a.content)
-        && parsed.frontmatter.page_type == PageType::Skill
+        && parsed.frontmatter.page_kind == PageKind::Skill
     {
         let skill_id = parsed
             .frontmatter
@@ -403,33 +672,10 @@ pub(super) async fn tool_update_page(
     // only the resolved owner (or admin) may mutate an owner-private
     // instance; public/no-owner instances are admin-write-only. `Off`
     // skips; `Log` records a would-be denial but allows; `Enforce` rejects.
-    if write_acl != crate::server::WriteAclMode::Off {
-        let allowed = indexer
-            .may_write_page(&caller, &a.page_id, &a.content)
-            .await
-            .map_err(|e| JsonRpcError::internal(format!("update_page acl: {e}")))?;
-        if !allowed {
-            if write_acl == crate::server::WriteAclMode::Log {
-                tracing::warn!(
-                    subject = %caller.subject,
-                    page_id = %a.page_id,
-                    "write-ACL would deny this write (log mode) — allowing"
-                );
-            } else {
-                return Ok(json!({
-                    "ok": false,
-                    "issues": [{
-                        "severity": "error",
-                        "code": "forbidden",
-                        "location": "frontmatter",
-                        "message": format!(
-                            "write denied: caller `{}` does not own instance `{}`",
-                            caller.subject, a.page_id
-                        ),
-                    }],
-                }));
-            }
-        }
+    if let Some(refused) =
+        write_acl_refusal(indexer, &caller, write_acl, &a.page_id, &a.content).await?
+    {
+        return Ok(refused);
     }
 
     // #246 optimistic concurrency + monotonic versions + CRDT auto-merge. The
@@ -784,6 +1030,13 @@ pub(super) async fn tool_move_page(
     args: Value,
 ) -> Result<Value, JsonRpcError> {
     let a: MovePageArgs = parse_args(args, "move_page")?;
+    // A move writes BOTH ids: it removes `from` and creates `to`, so a machine may not move a page out
+    // of a review skill, nor INTO one (that would land bytes in the namespace unreviewed).
+    for id in [&a.from, &a.to] {
+        if let Some(refused) = refuse_machine_removal(indexer, &caller, id, "move").await? {
+            return Ok(refused);
+        }
+    }
 
     let Some(existing) = indexer
         .read_page_markdown(&a.from)
@@ -916,6 +1169,12 @@ pub(super) async fn tool_delete_page(
     args: Value,
 ) -> Result<Value, JsonRpcError> {
     let a: DeletePageArgs = parse_args(args, "delete_page")?;
+    if a.branch.is_none()
+        && let Some(refused) =
+            refuse_machine_removal(indexer, &caller, &a.page_id, "delete").await?
+    {
+        return Ok(refused);
+    }
 
     // ── A branch delete is a TOMBSTONE, not a retraction (#512 §3). ──
     //
@@ -958,7 +1217,7 @@ pub(super) async fn tool_delete_page(
                 }));
             };
             let stamped = crate::mcp::tools_branches::stamp_scenario(&base, &branch);
-            let wrote = tool_update_page(
+            let wrote = tool_update_page_ungated(
                 state,
                 indexer,
                 caller,
@@ -1650,6 +1909,18 @@ pub(super) async fn tool_capture_event(
     } else {
         None
     };
+    // The gateway's own write-back bookkeeping (`write-back:<draft>:applying|applied|failed`) is
+    // addressed by id, and a promotion trusts those ids: a caller must not be able to file one, or
+    // it could make a promote skip the upstream (a forged `applied`) or refuse it (`applying`).
+    if a.event_id
+        .as_deref()
+        .is_some_and(|id| id.starts_with(crate::write_back::RESERVED_EVENT_ID_PREFIX))
+    {
+        return Err(JsonRpcError::invalid_params(format!(
+            "capture_event: event ids starting with `{}` are reserved for the gateway",
+            crate::write_back::RESERVED_EVENT_ID_PREFIX
+        )));
+    }
     if a.label_skill.starts_with("escurel:")
         && !caller.is_admin
         && control.is_none()
@@ -1775,6 +2046,28 @@ pub(super) async fn tool_capture_event(
         root_event_id,
         run_id,
     };
+    // A re-capture of a known `event_id` is a REPLAY: the stored first-writer event comes back, and
+    // the caller is told so (an agent retrying after a timeout must be able to tell "stored now" from
+    // "was already stored").
+    let replayed = match requested.event_id.as_deref() {
+        Some(id) => indexer
+            .get_event(id)
+            .await
+            .map_err(|e| JsonRpcError::internal(format!("capture_event: {e}")))?
+            .is_some(),
+        None => false,
+    };
+    // A label no skill answers to is stored (the caller may be ahead of the corpus), but nothing will
+    // process it: say so, with the way out, instead of minting a silent dead inbox event.
+    let unknown_label = if requested.label_skill.starts_with("escurel:") {
+        false
+    } else {
+        indexer
+            .read_page_markdown(&format!("markdown/skills/{}.md", requested.label_skill))
+            .await
+            .map_err(|e| JsonRpcError::internal(format!("capture_event: {e}")))?
+            .is_none()
+    };
     let stored = indexer
         .capture_event(requested.clone())
         .await
@@ -1811,11 +2104,27 @@ pub(super) async fn tool_capture_event(
             "event-ACL would hide this idempotent read-back (log mode) — showing"
         );
     }
-    let event = if visible || event_acl == crate::server::EventAclMode::Log {
+    let mut event = if visible || event_acl == crate::server::EventAclMode::Log {
         event_to_json(&stored)
     } else {
         event_to_json(&echoed_event(&stored, &requested))
     };
+    if replayed {
+        event["replayed"] = json!(true);
+    }
+    if unknown_label {
+        event["issues"] = json!([{
+            "severity": "warning",
+            "code": "unknown_label_skill",
+            "location": "label_skill",
+            "message": format!(
+                "no skill `{}` exists in this tenant, so nothing will process this event",
+                requested.label_skill
+            ),
+            "suggestion": "call `list_skills` for the valid ids; to start a skill action use \
+                           `label_skill=<action.event>` from `list_skills.actions[]`",
+        }]);
+    }
     // Notify any external processor of the new inbox item (opt-in,
     // fire-and-forget; never fails the capture). The gateway is
     // single-tenant per indexer, so `indexer.tenant()` is the
@@ -2088,7 +2397,7 @@ pub(super) async fn tool_start_operation(
     let groups_json =
         serde_json::to_string(caller.token_groups).unwrap_or_else(|_| "[]".to_owned());
     let mut content = format!(
-        "---\ntype: instance\nskill: workflow-run\nid: {slug}\nwf_skill: {}\n\
+        "---\nkind: instance\nskill: workflow-run\nid: {slug}\nwf_skill: {}\n\
          requested_by: {}\nrequester_groups: {groups_json}\n",
         a.wf_skill,
         json_scalar(caller.subject),
@@ -2353,28 +2662,36 @@ pub(super) async fn tool_list_inbox(
 /// not a server fault.
 pub(super) fn cursor_aware_error(tool: &str, e: IndexerError) -> JsonRpcError {
     match e {
-        IndexerError::InvalidCursor(msg) => {
-            JsonRpcError::invalid_params(format!("{tool}: cursor: {msg}"))
-        }
+        // The same typed refusal every paged list gives (it used to be a bare -32602 carrying a
+        // decoder message such as "utf-8: invalid utf-8 sequence").
+        IndexerError::InvalidCursor(_) => JsonRpcError::domain(
+            "invalid_cursor",
+            "cursor",
+            format!("{tool}: cursor invalid or expired; restart without `cursor`"),
+            Some("repeat the call without `cursor` to start from the first page"),
+        ),
         e => JsonRpcError::internal(format!("{tool}: {e}")),
     }
 }
 
-/// `{events, next_cursor?}` — `next_cursor` is present iff more rows
-/// lie past the page. Its ABSENCE (never a short page — the ACL filter
-/// shortens pages legitimately) is the termination signal.
+/// `{events, next_cursor?, has_more?}`.
+///
+/// `next_cursor` is where THIS page ended (present iff the page is non-empty, full or not): pass it back
+/// as `cursor` to continue, or poll from it to tail. It replaces `resume_cursor`, which is gone. A short
+/// page never means done (the ACL filter shortens pages): only a null `next_cursor` does, and a client
+/// paging until null makes one extra call that comes back empty. `has_more: true` says rows already lie
+/// past the page, for a client that wants to know without that call.
 fn events_page_json(
     events: Vec<EventInfo>,
-    next_cursor: Option<String>,
-    resume_cursor: Option<String>,
+    more_cursor: Option<String>,
+    end_cursor: Option<String>,
 ) -> Value {
     let mut out = json!({ "events": events.iter().map(event_to_json).collect::<Vec<_>>() });
-    if let Some(c) = next_cursor {
+    if let Some(c) = end_cursor {
         out["next_cursor"] = json!(c);
     }
-    // Where this page ENDED, full or not — a tail's next poll starts here.
-    if let Some(c) = resume_cursor {
-        out["resume_cursor"] = json!(c);
+    if more_cursor.is_some() {
+        out["has_more"] = json!(true);
     }
     out
 }
@@ -2552,7 +2869,7 @@ pub(super) async fn tool_list_snapshots(
         .await
         .map_err(|e| JsonRpcError::internal(format!("list_snapshots acl: {e}")))?
     {
-        Some(e) if e.page.page_type == PageType::Instance => indexer
+        Some(e) if e.page.page_kind == PageKind::Instance => indexer
             .may_read_instance(&caller, &e.page.skill, &e.frontmatter)
             .await
             .map_err(|e| JsonRpcError::internal(format!("list_snapshots acl: {e}")))?,
@@ -2773,6 +3090,24 @@ pub(super) async fn tool_purge_page(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_skill_page_that_does_not_parse_asks_for_review() {
+        // Failing OPEN here would let a corrupt skill page switch the gate off.
+        assert!(autonomy_requires_review(
+            "---\nkind: skill\nid: x\nautonomy: [review\n---\n# x\n"
+        ));
+        assert!(autonomy_requires_review("no frontmatter at all"));
+        assert!(!autonomy_requires_review(
+            "---\nkind: skill\nid: x\nautonomy: auto\n---\n# x\n"
+        ));
+        assert!(!autonomy_requires_review(
+            "---\nkind: skill\nid: x\n---\n# x\n"
+        ));
+        assert!(autonomy_requires_review(
+            "---\nkind: skill\nid: x\nautonomy: atuo\n---\n# x\n"
+        ));
+    }
 
     /// F-4 hardening: with a server secret the operation slug is an HMAC — a
     /// peer who knows the (guessable) subject, plan and key STILL cannot compute

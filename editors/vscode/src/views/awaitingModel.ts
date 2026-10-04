@@ -1,6 +1,8 @@
 import type { Changeset, Draft, Event, Skill } from '../client';
 import { pageSlug } from '../shared/pageId';
+import { cleanText } from '../shared/untrustedText';
 import { pluralise } from '../shared/text';
+import { planRows, type PlanRow } from './planRows';
 
 export type AwaitingKind = 'changeset' | 'draft' | 'confirm_gate';
 
@@ -31,7 +33,7 @@ export interface ConfirmGateRow {
   event: Event;
 }
 
-export type AwaitingRow = ChangesetRow | DraftRow | ConfirmGateRow;
+export type AwaitingRow = ChangesetRow | DraftRow | ConfirmGateRow | PlanRow;
 
 /**
  * What a reviewer recognises a changeset by: the page it changes (and how many more), not its
@@ -52,7 +54,7 @@ export function changesetRow(changeset: Changeset): ChangesetRow {
     kind: 'changeset',
     id: changeset.changeset_id,
     label: changesetLabel(changeset),
-    description: `${pluralise(changeset.drafts, 'draft')} · ${changeset.author}`,
+    description: `${pluralise(changeset.drafts, 'draft')} · ${cleanText(changeset.author ?? '', 80)}`,
     timestamp: changeset.created_at ?? '',
     changeset,
   };
@@ -68,7 +70,7 @@ export function draftRow(draft: Draft): DraftRow {
     kind: 'draft',
     id: draft.draft_id,
     label: pageSlug(draft.target_page_id),
-    description: draft.author,
+    description: cleanText(draft.author ?? '', 80),
     timestamp: draft.created_at ?? '',
     draft,
   };
@@ -79,8 +81,8 @@ export function confirmGateRow(event: Event): ConfirmGateRow {
   return {
     kind: 'confirm_gate',
     id: event.event_id,
-    label: event.title?.trim() || event.event_id,
-    description: `confirm · ${event.label_skill}`,
+    label: cleanText(event.title ?? '', 160) || event.event_id,
+    description: `confirm · ${cleanText(event.label_skill, 80)}`,
     timestamp: event.at ?? '',
     event,
   };
@@ -114,6 +116,10 @@ export interface AwaitingInputs {
   drafts: Draft[];
   events: Event[];
   skills: Skill[];
+  /** `escurel:run` lifecycle events (to find plans waiting for approval). */
+  runEvents?: Event[];
+  /** User-kind events of any status (the triggers and the approvals of plans). */
+  userEvents?: Event[];
 }
 
 /**
@@ -146,6 +152,9 @@ export function buildAwaitingRows(inputs: AwaitingInputs): AwaitingRow[] {
     }
   }
 
+  // A plan that ended `planned` and that nobody approved waits on a human too.
+  rows.push(...planRows(inputs.runEvents ?? [], inputs.userEvents ?? []));
+
   // Human live drafts arrive with PR-1 (BACKEND_GAPS.md) — personal drafts will be merged here.
 
   return sortAwaitingNewestFirst(rows);
@@ -164,5 +173,7 @@ export function accessibleLabel(row: AwaitingRow): string {
       return `Draft for ${row.label}, ${row.description}`;
     case 'confirm_gate':
       return `Waiting for you: ${row.label}, ${row.description}`;
+    case 'plan':
+      return `${row.label}. Waiting for you to approve it.`;
   }
 }

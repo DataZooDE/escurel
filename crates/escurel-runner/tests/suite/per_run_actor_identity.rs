@@ -39,12 +39,12 @@ impl Drop for ChildGuard {
 
 fn skill_body(skill: &str) -> String {
     format!(
-        "---\ntype: skill\nid: {skill}\nautonomy: auto\n---\n# {skill}\n\nFold the event into the instance.\n"
+        "---\nkind: skill\nid: {skill}\nautonomy: auto\n---\n# {skill}\n\nFold the event into the instance.\n"
     )
 }
 
 fn instance_body(skill: &str) -> String {
-    format!("---\ntype: instance\nid: {INSTANCE_ID}\nskill: {skill}\n---\n# Globex\n\nBASELINE.\n")
+    format!("---\nkind: instance\nid: {INSTANCE_ID}\nskill: {skill}\n---\n# Globex\n\nBASELINE.\n")
 }
 
 fn page_id(skill: &str) -> String {
@@ -109,7 +109,7 @@ async fn spawn_stub_model() -> String {
                 { "functionCall": { "name": "update_page", "args": {
                     "page_id": page,
                     "content": format!(
-                        "---\ntype: instance\nid: {INSTANCE_ID}\nskill: {skill}\n---\n\
+                        "---\nkind: instance\nid: {INSTANCE_ID}\nskill: {skill}\n---\n\
                          # Globex\n\nBASELINE.\n\n{MARKER} {event_id}\n"
                     ),
                 } } },

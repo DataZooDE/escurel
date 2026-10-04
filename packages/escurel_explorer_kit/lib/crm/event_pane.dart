@@ -22,12 +22,10 @@ class EventPane extends ConsumerWidget {
     final events = ref.watch(entityEventsProvider);
     final inbox = ref.watch(inboxEventsProvider);
     final open = ref.watch(openEventProvider);
-    // The history's cursor lives on the UNfiltered accumulated page —
-    // present iff the server has more rows (never inferred from length).
-    final historyCursor = ref
-        .watch(entityEventHistoryProvider)
-        .valueOrNull
-        ?.nextCursor;
+    // Whether the server has more history rows lives on the UNfiltered
+    // accumulated page (`has_more`; never inferred from length).
+    final historyHasMore =
+        ref.watch(entityEventHistoryProvider).valueOrNull?.hasMore ?? false;
 
     return Semantics(
       label: 'event-pane',
@@ -42,7 +40,7 @@ class EventPane extends ConsumerWidget {
           _SectionHeader(
             label: 'EVENTS',
             trailing: events.maybeWhen(
-                data: (e) => '${e.length}${historyCursor != null ? '+' : ''}',
+                data: (e) => '${e.length}${historyHasMore ? '+' : ''}',
                 orElse: () => null),
           ),
           Expanded(
@@ -60,7 +58,7 @@ class EventPane extends ConsumerWidget {
                         padding: EdgeInsets.zero,
                         // A trailing "load more" row iff the server sent a
                         // cursor (more rows remain).
-                        itemCount: list.length + (historyCursor != null ? 1 : 0),
+                        itemCount: list.length + (historyHasMore ? 1 : 0),
                         separatorBuilder: (_, _) => const Divider(height: 1),
                         itemBuilder: (_, i) => i < list.length
                             ? _EventTile(

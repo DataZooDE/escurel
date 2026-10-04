@@ -18,19 +18,19 @@ use serde_json::{Value, json};
 
 const TENANT: &str = "acme";
 /// The review-gated skill a human must approve…
-const MEETING_SKILL_BODY: &str = "---\ntype: skill\nid: meeting\nautonomy: review\n---\n# meeting\n\n\
+const MEETING_SKILL_BODY: &str = "---\nkind: skill\nid: meeting\nautonomy: review\n---\n# meeting\n\n\
     Fold the meeting note into the decision record it concerns; a human approves.\n";
 /// …and the skill of the page it folds into, whose own change cascades onto
 /// its changelog page (`cascade_target`) and lands its writes itself. The
 /// target is a DIFFERENT page on purpose: re-entering the page run 1 wrote
 /// would close a cycle, and the loop control dead-letters that hop.
-const DECISION_SKILL_BODY: &str = "---\ntype: skill\nid: decision-record\nautonomy: auto\n\
+const DECISION_SKILL_BODY: &str = "---\nkind: skill\nid: decision-record\nautonomy: auto\n\
     cascade_target: markdown/instances/decision-record/changelog.md\n---\n# decision-record\n\n\
     Maintain the running decision record.\n";
 const DECISION_INSTANCE_BODY: &str =
-    "---\ntype: instance\nid: q3\nskill: decision-record\n---\n# Q3\n\nBASELINE.\n";
+    "---\nkind: instance\nid: q3\nskill: decision-record\n---\n# Q3\n\nBASELINE.\n";
 const CHANGELOG_INSTANCE_BODY: &str =
-    "---\ntype: instance\nid: changelog\nskill: decision-record\n---\n# Changelog\n\n(empty)\n";
+    "---\nkind: instance\nid: changelog\nskill: decision-record\n---\n# Changelog\n\n(empty)\n";
 const PAGE: &str = "markdown/instances/decision-record/q3.md";
 const CHANGELOG: &str = "markdown/instances/decision-record/changelog.md";
 

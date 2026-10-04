@@ -35,7 +35,7 @@ use tokio::net::TcpListener;
 const TENANT: &str = "acme";
 
 const CUSTOMER_SKILL: &str = r"---
-type: skill
+kind: skill
 id: customer
 description: A buying organisation.
 required_frontmatter: [id, name]
@@ -45,7 +45,7 @@ required_frontmatter: [id, name]
 
 const ACME_PAGE_ID: &str = "markdown/instances/customer/acme.md";
 const ACME_INSTANCE: &str = r"---
-type: instance
+kind: instance
 skill: customer
 id: acme
 name: Acme Corp
@@ -58,7 +58,7 @@ name: Acme Corp
 /// PlainTextExtractor — fully offline). Raw string: the YAML indentation
 /// of the `backend:` block is load-bearing.
 const MEMO_SKILL: &str = r"---
-type: skill
+kind: skill
 id: memo
 description: Text memos ingested as documents.
 backend:
@@ -71,7 +71,7 @@ backend:
 
 /// An `openapi` remote-proxy skill whose write op PATCHes the upstream.
 const REMOTE_CUSTOMER_SKILL: &str = r#"---
-type: skill
+kind: skill
 id: customer
 description: CRM customers, proxied live over REST.
 backend:
@@ -151,7 +151,7 @@ async fn session_trio_round_trips_typed() {
     // Author a FRESH page through the session: the op carries the whole
     // markdown document, so the commit write-through parses cleanly.
     let page_id = "markdown/instances/customer/globex.md";
-    let doc = "---\ntype: instance\nskill: customer\nid: globex\nname: Globex\n---\n\
+    let doc = "---\nkind: instance\nskill: customer\nid: globex\nname: Globex\n---\n\
                # Globex\n\ntyped-session-edit\n";
 
     let opened = client
@@ -244,7 +244,7 @@ async fn list_snapshots_round_trips_typed() {
     let w = client
         .update_page(UpdatePageRequest {
             page_id: ACME_PAGE_ID.to_owned(),
-            content: "---\ntype: instance\nskill: customer\nid: acme\nname: Acme Corp\n---\n# v2\n"
+            content: "---\nkind: instance\nskill: customer\nid: acme\nname: Acme Corp\n---\n# v2\n"
                 .to_owned(),
             ..Default::default()
         })
@@ -386,7 +386,14 @@ async fn write_instance_round_trips_typed() {
                 .skill("customer", REMOTE_CUSTOMER_SKILL)
                 .done(),
         ),
-        config_overrides: ConfigOverrides::default(),
+        config_overrides: ConfigOverrides {
+            // The CRM upstream below is a real server on loopback; the strict default refuses it.
+            egress: Some(escurel_test_support::EgressPolicy {
+                allow_loopback: true,
+                ..Default::default()
+            }),
+            ..Default::default()
+        },
     })
     .await;
     let admin = client_as(&p, Role::Admin).await;
@@ -465,7 +472,7 @@ async fn error_data_code_and_retryable_surface_typed() {
     let err = client
         .update_page(UpdatePageRequest {
             page_id: "markdown/instances/customer/x.md".to_owned(),
-            content: "---\ntype: instance\nskill: customer\nid: x\nname: X\n---\n# X\n".to_owned(),
+            content: "---\nkind: instance\nskill: customer\nid: x\nname: X\n---\n# X\n".to_owned(),
             ..Default::default()
         })
         .await

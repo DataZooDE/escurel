@@ -1,5 +1,5 @@
 ---
-type: instance
+kind: instance
 skill: goal
 id: reduce-churn
 at: 2026-01-10T09:00:00Z

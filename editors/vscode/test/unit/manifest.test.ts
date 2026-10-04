@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { readFileSync, readdirSync, statSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 
 /**
@@ -38,12 +38,23 @@ describe('the manifest and the code agree', () => {
     const runner = entries.filter((entry) => entry.when?.includes('escurel.runner'));
     expect(runner.map((entry) => entry.command).sort()).toEqual(
       [
+        // Inline AND in the context menu: an icon alone is out of reach of a keyboard-only user.
+        'escurel.approvePlan',
+        'escurel.approvePlan',
+        'escurel.cancelRun',
         'escurel.cancelRun',
         'escurel.pauseDispatch',
         'escurel.requeue',
-        'escurel.resumeDispatch',
+        'escurel.explainView',
         'escurel.resumeDispatch',
         'escurel.retryRun',
+        'escurel.retryRun',
+        'escurel.runs.clearFilter',
+        'escurel.runs.copyRunId',
+        'escurel.runs.filter',
+        'escurel.runs.openTarget',
+        'escurel.runs.openThread',
+        'escurel.runs.refresh',
       ].sort(),
     );
   });
@@ -131,5 +142,168 @@ describe('command titles', () => {
           .some((w) => /^[A-Z][a-z]/.test(w) && !proper.has(w.replace(/[….]$/, ''))),
       );
     expect(bad).toEqual([]);
+  });
+});
+
+describe('the details view', () => {
+  // The thread's details are a view of their own in VS Code's PANEL area, so the user docks, moves
+  // and resizes it with VS Code's own layout (owner: "use native layout mechanisms"), not a column
+  // inside the canvas webview.
+  const contributes = manifest.contributes as unknown as {
+    viewsContainers: Record<string, { id: string; title: string; icon: string }[]>;
+    views: Record<string, { id: string; name: string; type?: string }[]>;
+  };
+
+  it('is a webview view in a panel container, with an icon that exists', () => {
+    const container = contributes.viewsContainers.panel?.find((c) => c.id === 'escurel-details');
+    expect(container?.title).toBe('Escurel Details');
+    expect(existsSync(join(__dirname, '../../', container?.icon ?? 'missing'))).toBe(true);
+    expect(contributes.views['escurel-details']).toEqual([
+      expect.objectContaining({ id: 'escurel.details', type: 'webview' }),
+    ]);
+  });
+});
+
+describe('the empty views say WHY they are empty', () => {
+  // `Not connected` for every failure left a person with a quarantined tenant or an outdated gateway
+  // clicking Reconnect. The host publishes `escurel.connectionState`; each state has its own words.
+  const welcome = (
+    manifest.contributes as unknown as {
+      viewsWelcome: { view: string; contents: string; when: string }[];
+    }
+  ).viewsWelcome;
+  for (const view of ['escurel.knowledge', 'escurel.awaiting', 'escurel.inbox', 'escurel.runner']) {
+    it(`${view} has a message for a quarantined tenant and an outdated gateway`, () => {
+      const forState = (state: string) =>
+        welcome.find(
+          (w) => w.view === view && w.when.includes(`escurel.connectionState == '${state}'`),
+        );
+      expect(forState('quarantined')?.contents).toContain('escurel admin migrate-kind');
+      expect(forState('incompatible')?.contents).toMatch(/older than this extension/i);
+      // The person is told whom to ask and what to say, not what changed inside a page file.
+      expect(forState('quarantined')?.contents).toMatch(/administrator/i);
+      expect(forState('quarantined')?.contents).not.toContain('type:');
+    });
+
+    it(`${view} has its own message for a rejected sign-in and for an unreachable gateway`, () => {
+      const forState = (state: string) =>
+        welcome.find(
+          (w) => w.view === view && w.when.includes(`escurel.connectionState == '${state}'`),
+        );
+      expect(forState('unauthorized')?.contents).toContain('command:escurel.signIn');
+      expect(forState('unreachable')?.contents).toMatch(/could not be reached/i);
+      expect(forState('unreachable')?.contents).toContain('escurel.gatewayUrl');
+    });
+
+    it(`${view} keeps the generic Reconnect message for the other failures only`, () => {
+      const generic = welcome.filter(
+        (w) =>
+          w.view === view &&
+          !w.when.includes("== 'quarantined'") &&
+          !w.when.includes("== 'incompatible'") &&
+          !w.when.includes("== 'unauthorized'") &&
+          !w.when.includes("== 'unreachable'"),
+      );
+      expect(generic.length).toBeGreaterThan(0);
+      for (const g of generic) {
+        expect(g.when).toContain("escurel.connectionState != 'quarantined'");
+        expect(g.when).toContain("escurel.connectionState != 'incompatible'");
+      }
+    });
+  }
+});
+
+describe('first run and discoverability', () => {
+  const m = manifest as unknown as {
+    contributes: {
+      commands: { command: string }[];
+      keybindings: { command: string }[];
+      walkthroughs: {
+        steps: { description: string; media: { markdown: string }; completionEvents?: string[] }[];
+      }[];
+      viewsWelcome: { view: string; contents: string }[];
+      menus: { commandPalette: { command: string; when: string }[] };
+    };
+    activationEvents: string[];
+  };
+  const declared = new Set(m.contributes.commands.map((c) => c.command));
+  // A command: link may call one of ours, a VS Code built-in, or a view's auto-generated focus command.
+  const known = (id: string) =>
+    declared.has(id) || id.startsWith('workbench.') || id.endsWith('.focus');
+
+  it('every command a welcome text, walkthrough step or keybinding runs exists', () => {
+    const uris = [
+      ...m.contributes.viewsWelcome.map((w) => w.contents),
+      ...m.contributes.walkthroughs.flatMap((w) => w.steps.map((s) => s.description)),
+    ].flatMap((text) => [...text.matchAll(/command:([A-Za-z0-9_.]+)/g)].map((x) => x[1]!));
+    expect(uris.length > 0).toBe(true);
+    expect(uris.filter((u) => !known(u))).toEqual([]);
+    expect(m.contributes.keybindings.map((k) => k.command).filter((c) => !known(c))).toEqual([]);
+  });
+
+  it('a not-connected view tells you HOW to connect: a link that opens the gateway setting', () => {
+    // The quarantined and old-gateway states have their own words (the setting is not what is wrong).
+    const generic = (m.contributes.viewsWelcome as { when?: string; contents: string }[]).filter(
+      (w) =>
+        !(w.when ?? '').includes("== 'quarantined'") &&
+        !(w.when ?? '').includes("== 'incompatible'"),
+    );
+    expect(generic.length > 0).toBe(true);
+    for (const w of generic) {
+      expect(w.contents).toContain('command:workbench.action.openSettings');
+      expect(w.contents).toContain('escurel.gatewayUrl');
+    }
+  });
+
+  it('the walkthrough ships its pages', () => {
+    const dir = new URL('../../', import.meta.url).pathname;
+    for (const step of m.contributes.walkthroughs.flatMap((w) => w.steps)) {
+      expect(existsSync(join(dir, step.media.markdown))).toBe(true);
+    }
+  });
+
+  it('the commands people ran from the palette are no longer hidden from it', () => {
+    const hidden = new Set(
+      m.contributes.menus.commandPalette.filter((c) => c.when === 'false').map((c) => c.command),
+    );
+    for (const id of [
+      'escurel.cancelRun',
+      'escurel.retryRun',
+      'escurel.approvePlan',
+      'escurel.openThread',
+      'escurel.openReview',
+    ]) {
+      expect(hidden.has(id)).toBe(false);
+    }
+  });
+
+  it('the bottom Details panel and the Runner can be opened by name, and wake the extension', () => {
+    expect(declared.has('escurel.showDetails')).toBe(true);
+    expect(declared.has('escurel.showRunner')).toBe(true);
+    expect(m.activationEvents).toContain('onView:escurel.details');
+    expect(m.activationEvents).toContain('onView:escurel.runner');
+  });
+});
+
+describe('keybindings', () => {
+  it('give each view a focus key, and no chord hides another binding', () => {
+    const kb = (
+      manifest.contributes as unknown as { keybindings: { command: string; key: string }[] }
+    ).keybindings;
+    for (const c of [
+      'escurel.focusRuns',
+      'escurel.focusAwaiting',
+      'escurel.focusInbox',
+      'escurel.focusKnowledge',
+    ])
+      expect(
+        kb.some((k) => k.command === c),
+        c,
+      ).toBe(true);
+    // A chord that starts with another binding's whole key makes that binding unreachable.
+    const keys = kb.map((k) => k.key);
+    for (const a of keys)
+      for (const b of keys) if (a !== b) expect(b.startsWith(`${a} `), `${a} vs ${b}`).toBe(false);
+    expect(new Set(keys).size).toBe(keys.length);
   });
 });

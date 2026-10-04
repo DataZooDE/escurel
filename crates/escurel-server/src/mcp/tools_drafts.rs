@@ -31,7 +31,14 @@ use escurel_index::{EventKind, NewEvent};
 #[derive(Deserialize)]
 pub(super) struct CreateDraftArgs {
     target_page_id: String,
+    /// The whole proposed markdown. Optional only with `write_back` (the change is then all there is).
+    #[serde(default)]
     content: String,
+    /// A change to an external row: `{patch: {column: value}, base_etag}`. The server writes it into
+    /// the frontmatter of `content` (or builds a minimal row page when there is none); a human's
+    /// promotion is what sends it.
+    #[serde(default)]
+    write_back: Option<Value>,
     /// The target's `content_sha256` when the draft was written, as published
     /// by `expand`; `""` means "no page yet" (the create case). Carried
     /// verbatim into `update_page`'s CAS at promotion, so a target that moved
@@ -57,6 +64,50 @@ pub(super) struct CreateDraftArgs {
 pub(super) struct ListDraftsArgs {
     #[serde(default)]
     limit: Option<usize>,
+    #[serde(default)]
+    cursor: Option<String>,
+}
+
+/// One page of an already-ACL-filtered list that is ordered NEWEST FIRST by `key` (a string that
+/// sorts the way the list does and is unique per row), by an opaque keyset cursor.
+///
+/// Keyset, not offset: a row decided between two pages cannot make the next page skip or repeat
+/// another. `limit` applies AFTER the caller's ACL filter, so a page is as long as asked unless the
+/// list ends. No `limit` returns everything, as these tools always have. `next_cursor` is present iff
+/// rows follow.
+pub(super) fn page_newest_first<T>(
+    mut items: Vec<T>,
+    key: impl Fn(&T) -> String,
+    limit: Option<usize>,
+    cursor: Option<&str>,
+) -> Result<(Vec<T>, Option<String>), JsonRpcError> {
+    const PREFIX: &str = "k1.";
+    items.sort_by_key(|i| std::cmp::Reverse(key(i)));
+    if let Some(token) = cursor {
+        let bad = || {
+            JsonRpcError::domain(
+                "invalid_cursor",
+                "cursor",
+                "cursor invalid or expired; restart without `cursor`",
+                Some("repeat the call without `cursor` to start from the first page"),
+            )
+        };
+        let body = token.strip_prefix(PREFIX).ok_or_else(bad)?;
+        let raw = escurel_index::cursor::unseal(body).ok_or_else(bad)?;
+        let after = String::from_utf8(raw).map_err(|_| bad())?;
+        items.retain(|i| key(i) < after);
+    }
+    let Some(limit) = limit else {
+        return Ok((items, None));
+    };
+    if items.len() <= limit {
+        return Ok((items, None));
+    }
+    items.truncate(limit);
+    let next = items
+        .last()
+        .map(|i| format!("{PREFIX}{}", escurel_index::cursor::seal(key(i).as_bytes())));
+    Ok((items, next))
 }
 
 #[derive(Deserialize)]
@@ -304,7 +355,24 @@ pub(super) async fn tool_create_draft(
     write_acl: crate::server::WriteAclMode,
     args: Value,
 ) -> Result<Value, JsonRpcError> {
-    let a: CreateDraftArgs = parse_args(args, "create_draft")?;
+    let content_given = args.get("content").is_some_and(|c| !c.is_null());
+    let mut a: CreateDraftArgs = parse_args(args, "create_draft")?;
+    if let Some(intent) = a.write_back.take() {
+        match crate::write_back::inject_intent(
+            &a.target_page_id,
+            content_given.then_some(a.content.as_str()),
+            &intent,
+        ) {
+            Ok(c) => a.content = c,
+            Err(m) => return Ok(crate::write_back::refusal("write_back_invalid", m)),
+        }
+    } else if !content_given {
+        return Err(JsonRpcError::invalid_params(
+            "create_draft: missing `content` (the whole proposed page), or give `write_back` for \
+             a change to an external row"
+                .to_owned(),
+        ));
+    }
 
     // Rule 1. Same call, same arguments and same three modes as
     // `update_page`'s — a draft is a write in waiting, and the authority to
@@ -336,6 +404,108 @@ pub(super) async fn tool_create_draft(
                 }));
             }
         }
+    }
+
+    // A `write_back` intent against a row of a DATABASE `rows` skill: only a draft may carry it, only
+    // for writable columns.
+    if let Some(r) = crate::sql_rows::write_rejection(indexer, &a.target_page_id, &a.content, true)
+        .await
+        .map_err(|e| JsonRpcError::internal(format!("create_draft rows guard: {e}")))?
+    {
+        return Ok(json!({
+            "ok": false,
+            "issues": [{
+                "severity": "error",
+                "code": r.code,
+                "location": r.location,
+                "message": r.message,
+            }],
+        }));
+    }
+    // `instances: rows` guard (stage 3): an agent's proposal against a row page is refused when it is
+    // MADE — a draft that touches a source column could never be promoted.
+    if let Some(r) = indexer
+        .rows_write_rejection(&a.target_page_id, &a.content)
+        .await
+        .map_err(|e| JsonRpcError::internal(format!("create_draft rows guard: {e}")))?
+    {
+        return Ok(json!({
+            "ok": false,
+            "issues": [{
+                "severity": "error",
+                "code": r.code,
+                "location": r.location,
+                "message": r.message,
+            }],
+        }));
+    }
+    // The same guard for a row of a REMOTE `rows` skill (REST/MCP).
+    if let Some(r) = crate::remote_rows::write_rejection(
+        indexer,
+        &state.egress,
+        &a.target_page_id,
+        &a.content,
+        true,
+    )
+    .await
+    .map_err(|e| JsonRpcError::internal(format!("create_draft rows guard: {e}")))?
+    {
+        return Ok(json!({
+            "ok": false,
+            "issues": [{
+                "severity": "error",
+                "code": r.code,
+                "location": r.location,
+                "message": r.message,
+            }],
+        }));
+    }
+
+    // A `write_back` value the skill's field cannot hold (an enum outside its values, text for an
+    // int) is refused HERE: otherwise only the upstream's refusal at promotion would say so, and the
+    // dead draft would block the next proposal on this page.
+    if let Ok(parsed) = escurel_md::parse(&a.content)
+        && let Ok(Some(intent)) = crate::write_back::parse_intent(
+            &crate::write_back::frontmatter_json(&parsed.frontmatter.fields),
+        )
+        && let Some((skill, _)) =
+            escurel_index::backend::rows::split_instance_page_id(&a.target_page_id)
+    {
+        for (field, value) in &intent.patch {
+            if let Some(problem) = indexer
+                .field_value_problem(skill, field, value)
+                .await
+                .map_err(|e| JsonRpcError::internal(format!("create_draft value check: {e}")))?
+            {
+                return Ok(json!({
+                    "ok": false,
+                    "issues": [{
+                        "severity": "error",
+                        "code": "write_back_invalid_value",
+                        "location": format!("write_back.patch.{field}"),
+                        "message": problem,
+                        "suggestion": "`list_skills` shows each field's kind and allowed values",
+                    }],
+                }));
+            }
+        }
+    }
+
+    // Validate at DRAFT time, FIRST: the content is judged before any conflict question, and before a
+    // stale predecessor is superseded (a refused draft must not have cost the open one its place).
+    // Same blocking set promotion will
+    // apply. A draft that cannot be promoted is worse than a refused write:
+    // it costs a human a review before anyone finds out.
+    let issues = indexer
+        .validate(Some(&a.target_page_id), &a.content)
+        .await
+        .map_err(|e| JsonRpcError::internal(format!("create_draft validate: {e}")))?;
+    let blocking = draft_blocking_issues(state, &issues);
+    if !blocking.is_empty() {
+        return Ok(json!({
+            "ok": false,
+            "issues": issues.iter().map(issue_to_json).collect::<Vec<_>>(),
+        }));
     }
 
     // **An empty base means "no page here yet". Check that it is true.**
@@ -448,6 +618,11 @@ pub(super) async fn tool_create_draft(
                          that one, then draft against the head it leaves.",
                         open.draft_id, a.target_page_id
                     ),
+                    "suggestion": format!(
+                        "`discard_draft` `{}` (your own proposal) or wait for its reviewer, then \
+                         draft again",
+                        open.draft_id
+                    ),
                 }],
             }));
         }
@@ -513,21 +688,6 @@ pub(super) async fn tool_create_draft(
         None => None,
     };
 
-    // Validate at DRAFT time, with the same blocking set promotion will
-    // apply. A draft that cannot be promoted is worse than a refused write:
-    // it costs a human a review before anyone finds out.
-    let issues = indexer
-        .validate(Some(&a.target_page_id), &a.content)
-        .await
-        .map_err(|e| JsonRpcError::internal(format!("create_draft validate: {e}")))?;
-    let blocking = draft_blocking_issues(state, &issues);
-    if !blocking.is_empty() {
-        return Ok(json!({
-            "ok": false,
-            "issues": issues.iter().map(issue_to_json).collect::<Vec<_>>(),
-        }));
-    }
-
     let stored = indexer
         .create_draft(NewDraft {
             target_page_id: a.target_page_id,
@@ -574,17 +734,29 @@ pub(super) async fn tool_list_drafts(
     args: Value,
 ) -> Result<Value, JsonRpcError> {
     let a: ListDraftsArgs = parse_args(args, "list_drafts")?;
+    // Fetch every open draft, filter by what the caller may see, THEN page: a limit applied before the
+    // ACL filter made a page shorter than asked for no reason a caller could see.
     let drafts = indexer
-        .list_drafts(a.limit)
+        .list_drafts(None)
         .await
         .map_err(|e| JsonRpcError::internal(format!("list_drafts: {e}")))?;
     let mut visible = Vec::new();
-    for d in &drafts {
-        if may_see(indexer, &caller, d).await? {
-            visible.push(draft_to_json(d));
+    for d in drafts {
+        if may_see(indexer, &caller, &d).await? {
+            visible.push(d);
         }
     }
-    Ok(json!({ "drafts": visible }))
+    let (page, next) = page_newest_first(
+        visible,
+        |d| format!("{}|{}", d.created_at, d.draft_id),
+        a.limit,
+        a.cursor.as_deref(),
+    )?;
+    let mut out = json!({ "drafts": page.iter().map(draft_to_json).collect::<Vec<_>>() });
+    if let Some(c) = next {
+        out["next_cursor"] = json!(c);
+    }
+    Ok(out)
 }
 
 /// Land a held write, under the approver's identity.
@@ -664,11 +836,51 @@ pub(super) async fn tool_promote_draft(
             }));
         }
     }
+    // **Write-back (stage 4c).** A draft against a row of a remote `rows` skill may carry a
+    // `write_back` intent. The human's promotion is the gate: only now does the change reach the
+    // upstream (etag check, audit-first, idempotent apply, durable outcome), and what is committed
+    // as the row's notes is the draft WITHOUT the intent. A draft with no intent passes through.
+    // The human gate is a RULE, for EVERY draft. A machine (a per-run agent token: it carries
+    // `run_id` / `act`, minted by the runner or by `mint_agent_token`) may PROPOSE a change but never
+    // approve one: otherwise an agent steered by injected text could be held for review, promote its
+    // own draft, and the review would be a formality (and, for a write-back draft, the upstream would
+    // change on no human's say-so). A person's token carries neither claim.
+    if crate::mcp::tools_write::is_machine_caller(&caller) {
+        return Ok(promote_requires_human(&draft.draft_id));
+    }
+    // The page's WRITE ACL, asked BEFORE anything reaches the source. Promotion only used to check
+    // that the caller may SEE the draft, and the ACL was asked later by the page write: after
+    // `write_back::run` had already changed the upstream. A person who may read a row but not write it
+    // must not be able to cause a change in the system behind it.
+    if let Some(refused) = crate::mcp::tools_write::write_acl_refusal(
+        indexer,
+        &caller,
+        write_acl,
+        &draft.target_page_id,
+        corrected.unwrap_or(draft.content.as_str()),
+    )
+    .await?
+    {
+        return Ok(refused);
+    }
+    let landing = match crate::write_back::run(
+        state,
+        indexer,
+        &draft.draft_id,
+        &draft.target_page_id,
+        &subject,
+        corrected.unwrap_or(draft.content.as_str()),
+    )
+    .await
+    {
+        Ok(c) => c,
+        Err(refusal) => return Ok(refusal),
+    };
     let mut write_args = json!({
         "page_id": draft.target_page_id,
-        "content": corrected.unwrap_or(draft.content.as_str()),
+        "content": landing.as_str(),
     });
-    let promoted = corrected.unwrap_or(draft.content.as_str()).to_owned();
+    let promoted = landing.clone();
 
     // **Which guard travels (#509 §2).**
     //
@@ -713,9 +925,10 @@ pub(super) async fn tool_promote_draft(
     // answers with `head_version`, not the `head_sha256` the old detection
     // read off the refusal.
     let already_landed = head_markdown.as_deref() == Some(promoted.as_str());
-    let mut result =
-        crate::mcp::tools_write::tool_update_page(state, indexer, caller, write_acl, write_args)
-            .await?;
+    let mut result = crate::mcp::tools_write::tool_update_page_ungated(
+        state, indexer, caller, write_acl, write_args,
+    )
+    .await?;
 
     // **The interrupted promotion.**
     //
@@ -871,6 +1084,14 @@ pub(super) async fn tool_discard_draft(
         && !may_see(indexer, &caller, d).await?
     {
         return Ok(not_found());
+    }
+    // A machine may withdraw what ITS OWN run proposed (it must, to re-draft a page that already has
+    // an open draft), never another run's or a person's: that is a decision on someone else's work.
+    if let Some(d) = &draft
+        && crate::mcp::tools_write::is_machine_caller(&caller)
+        && (d.run_id.is_none() || d.run_id.as_deref() != caller.run_id)
+    {
+        return Ok(promote_requires_human(&d.draft_id));
     }
     let decided_by = decided_by_or_caller(a.decided_by.as_deref(), &caller)?;
     let closed = indexer
@@ -1100,6 +1321,8 @@ fn block_changes(head: Option<&str>, proposed_body: &str) -> Vec<Value> {
 pub(super) struct ListChangesetsArgs {
     #[serde(default)]
     limit: Option<usize>,
+    #[serde(default)]
+    cursor: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -1121,11 +1344,12 @@ pub(super) async fn tool_list_changesets(
     args: Value,
 ) -> Result<Value, JsonRpcError> {
     let a: ListChangesetsArgs = parse_args(args, "list_changesets")?;
+    // Every changeset first, then the caller's visibility, THEN the page (same reason as list_drafts).
     let rows = indexer
-        .list_changesets(a.limit)
+        .list_changesets(None)
         .await
         .map_err(|e| JsonRpcError::internal(format!("list_changesets: {e}")))?;
-    let mut out = Vec::new();
+    let mut out: Vec<(String, Value)> = Vec::new();
     for row in rows {
         // Scoped the same way the draft queue is, and for the same reason:
         // one tenant holds several people. A changeset is visible when its
@@ -1146,25 +1370,34 @@ pub(super) async fn tool_list_changesets(
         if !visible {
             continue;
         }
-        out.push(json!({
-            "changeset_id": row.changeset_id,
-            "drafts": row.drafts,
-            "status": row.status,
-            "author": row.author,
-            "created_at": row.created_at,
-            "run_id": row.run_id,
-            "root_event_id": row.root_event_id,
-            "event_ids": members
-                .iter()
-                .filter_map(|m| m.event_id.clone())
-                .collect::<Vec<_>>(),
-            "target_page_ids": members
-                .iter()
-                .map(|m| m.target_page_id.clone())
-                .collect::<Vec<_>>(),
-        }));
+        let key = format!("{}|{}", row.created_at, row.changeset_id);
+        out.push((
+            key,
+            json!({
+                "changeset_id": row.changeset_id,
+                "drafts": row.drafts,
+                "status": row.status,
+                "author": row.author,
+                "created_at": row.created_at,
+                "run_id": row.run_id,
+                "root_event_id": row.root_event_id,
+                "event_ids": members
+                    .iter()
+                    .filter_map(|m| m.event_id.clone())
+                    .collect::<Vec<_>>(),
+                "target_page_ids": members
+                    .iter()
+                    .map(|m| m.target_page_id.clone())
+                    .collect::<Vec<_>>(),
+            }),
+        ));
     }
-    Ok(json!({ "changesets": out }))
+    let (page, next) = page_newest_first(out, |(k, _)| k.clone(), a.limit, a.cursor.as_deref())?;
+    let mut res = json!({ "changesets": page.into_iter().map(|(_, v)| v).collect::<Vec<_>>() });
+    if let Some(c) = next {
+        res["next_cursor"] = json!(c);
+    }
+    Ok(res)
 }
 
 /// Every member of a changeset the caller may fully see, or the refusal that
@@ -1230,6 +1463,9 @@ pub(super) async fn tool_promote_changeset(
         Ok(m) => m,
         Err(refusal) => return Ok(refusal),
     };
+    if crate::mcp::tools_write::is_machine_caller(&caller) {
+        return Ok(promote_requires_human(&a.changeset_id));
+    }
     let subject = decided_by_or_caller(a.decided_by.as_deref(), &caller)?;
 
     // Already decided: a retry after a timeout the client never saw an answer
@@ -1381,6 +1617,13 @@ pub(super) async fn tool_discard_changeset(
         Ok(m) => m,
         Err(refusal) => return Ok(refusal),
     };
+    if crate::mcp::tools_write::is_machine_caller(&caller)
+        && members
+            .iter()
+            .any(|m| m.run_id.is_none() || m.run_id.as_deref() != caller.run_id)
+    {
+        return Ok(promote_requires_human(&a.changeset_id));
+    }
     let subject = decided_by_or_caller(a.decided_by.as_deref(), &caller)?;
     let mut discarded = 0usize;
     for m in members.iter().filter(|m| m.status == "open") {
@@ -1426,4 +1669,22 @@ pub(super) async fn tool_discard_changeset(
         "discarded": discarded,
         "decided_by": subject,
     }))
+}
+
+/// Does this draft content carry a `write_back` intent (or a malformed one: refused the same way)?
+/// The refusal a machine gets when it tries to promote: the decision is a person's.
+fn promote_requires_human(id: &str) -> Value {
+    json!({
+        "ok": false,
+        "issues": [{
+            "severity": "error",
+            "code": "promote_requires_human",
+            "location": "draft_id",
+            "message": format!(
+                "`{id}` is waiting for a person: an agent run may propose a change but never approve \
+                 one, whatever it changes"
+            ),
+            "suggestion": "leave it open: it appears in Awaiting You for a person to approve",
+        }],
+    })
 }

@@ -9,8 +9,8 @@ use clap::{Args, Subcommand};
 use escurel_client::{
     AdminClient, AttachExternalRequest, AuditRequest, CompactLanesRequest,
     DeleteChatHistoryRequest, EmbeddingReloadRequest, ExportPackRequest, HealthRequest,
-    QuotaGetRequest, RebuildRequest, TenantCreateRequest, TenantDeleteRequest, TenantExportRequest,
-    TenantGetRequest, TenantListRequest, TenantSpec, TenantUpdateRequest,
+    MigrateKindRequest, QuotaGetRequest, RebuildRequest, TenantCreateRequest, TenantDeleteRequest,
+    TenantExportRequest, TenantGetRequest, TenantListRequest, TenantSpec, TenantUpdateRequest,
 };
 use serde_json::{Value, json};
 
@@ -60,6 +60,31 @@ pub enum AdminCmd {
         #[arg(long)]
         tenant: String,
     },
+    /// Rewrite a tenant's pages, open drafts and historical CRDT snapshots from the removed
+    /// `type:` page-kind key to `kind:`. A DRY RUN unless `--apply` is given: it reports what it
+    /// would change and writes nothing. Pages with both keys are conflicts and are never
+    /// auto-fixed; signed pack pages are skipped (the publisher re-exports).
+    MigrateKind {
+        #[arg(long)]
+        tenant: String,
+        /// Write the changes (default: dry run).
+        #[arg(long)]
+        apply: bool,
+        /// Give up waiting after this many seconds (default: wait as long as it takes). The
+        /// migration runs in a server task and CONTINUES after the CLI gives up or is killed;
+        /// re-run the command to wait for it, or watch `/readyz`.
+        #[arg(long)]
+        timeout_secs: Option<u64>,
+        /// Print every page path (default: the first 10 of each long list plus its total; at 20,000
+        /// pages the full list is megabytes). `conflicts` is always printed in full.
+        #[arg(long)]
+        verbose: bool,
+    },
+    /// OFFLINE `type:` -> `kind:` migration of a directory tree of page files (skills/instances
+    /// kept as markdown in git). The file twin of `migrate-kind`: a dry run unless `--apply`, one
+    /// frontmatter line changes per page, conflicts and pages the engine cannot parse are
+    /// reported and never rewritten. Needs no gateway.
+    MigrateKindFiles(crate::kindfix::MigrateKindFilesArgs),
     /// Skill packs — the versioned, signed unit of distribution
     /// between escurel nodes.
     #[command(subcommand)]
@@ -356,6 +381,48 @@ pub async fn run(client: &AdminClient, cmd: AdminCmd) -> Result<Value> {
                 .await?;
             Ok(json!({ "done": p.done, "total": p.total }))
         }
+        AdminCmd::MigrateKind {
+            tenant,
+            apply,
+            timeout_secs,
+            verbose,
+        } => {
+            let started = std::time::Instant::now();
+            let call = client.migrate_kind(MigrateKindRequest {
+                tenant_id: tenant,
+                apply,
+            });
+            tokio::pin!(call);
+            let mut tick = tokio::time::interval(std::time::Duration::from_secs(30));
+            tick.tick().await;
+            let r = loop {
+                tokio::select! {
+                    r = &mut call => break r,
+                    _ = tick.tick() => eprintln!(
+                        "migrate-kind: still running on the server ({}s elapsed)",
+                        started.elapsed().as_secs()
+                    ),
+                }
+            };
+            match r {
+                Ok(r) => {
+                    let mut v = serde_json::to_value(r)?;
+                    if !verbose {
+                        summarise_lists(&mut v, 10);
+                    }
+                    Ok(v)
+                }
+                Err(escurel_client::Error::Transport(e)) if apply && e.is_timeout() => {
+                    anyhow::bail!(
+                        "migrate-kind: gave up waiting after {}s; the migration is still running \
+                         and continues on the server (it is not cancelled). Re-run the same \
+                         command to wait for it, or watch /readyz until `quarantined` clears",
+                        timeout_secs.unwrap_or_default()
+                    )
+                }
+                Err(e) => Err(e.into()),
+            }
+        }
         AdminCmd::CompactLanes { tenant } => {
             let p = client
                 .compact_lanes(CompactLanesRequest { tenant_id: tenant })
@@ -411,6 +478,7 @@ pub async fn run(client: &AdminClient, cmd: AdminCmd) -> Result<Value> {
         // Normally intercepted in main.rs BEFORE any client exists (the
         // command is purely local); kept here so the dispatch stays total.
         AdminCmd::Pack(PackCmd::Verify { input, manifest }) => verify_pack_local(&input, manifest),
+        AdminCmd::MigrateKindFiles(args) => crate::kindfix::run(args),
         AdminCmd::Pack(PackCmd::Unsubscribe { tenant, id }) => client
             .call_raw(
                 "unsubscribe_pack",
@@ -578,5 +646,35 @@ async fn tenant(client: &AdminClient, cmd: TenantCmd) -> Result<Value> {
             let imported = client.tenant_import(&id, bytes).await?;
             Ok(json!({ "bytes_imported": imported }))
         }
+    }
+}
+
+/// Keep the first `keep` entries of the report's long path lists and say how many there are:
+/// `<key>_total` and `<key>_more` accompany a truncated list. `conflicts` is never truncated.
+fn summarise_lists(report: &mut serde_json::Value, keep: usize) {
+    const LISTS: [&str; 5] = [
+        "pages_to_migrate",
+        "run_status_renamed",
+        "not_a_page_kind",
+        "skipped_pack_base",
+        "drafts",
+    ];
+    let Some(obj) = report.as_object_mut() else {
+        return;
+    };
+    for key in LISTS {
+        let Some(list) = obj.get_mut(key).and_then(serde_json::Value::as_array_mut) else {
+            continue;
+        };
+        let total = list.len();
+        if total <= keep {
+            continue;
+        }
+        list.truncate(keep);
+        obj.insert(format!("{key}_total"), json!(total));
+        obj.insert(
+            format!("{key}_more"),
+            json!(format!("{} more not shown (use --verbose)", total - keep)),
+        );
     }
 }

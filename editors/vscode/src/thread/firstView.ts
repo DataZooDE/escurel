@@ -1,7 +1,11 @@
 import type { LaidOutNode, ThreadLayout, ThreadNode, ThreadView } from '../shared/protocol';
 
-/** Below this zoom a card drops its text and keeps icon, accent bar and state chip. */
-export const LOW_ZOOM_BELOW = 0.7;
+/**
+ * Below this zoom a card drops its body and keeps icon, accent bar, title and state chip, at a size that
+ * stays readable. The card text is 11px at 100%, so 85% is where it would fall under about 9.4px (WCAG 1.4.4).
+ * It was 70% until the UX review found 8-9px text at 80% zoom.
+ */
+export const LOW_ZOOM_BELOW = 0.85;
 
 export const isLowZoom = (zoom: number): boolean => zoom < LOW_ZOOM_BELOW;
 
@@ -36,13 +40,11 @@ function documentOrder(layout: ThreadLayout): LaidOutNode[] {
     .map((e) => e.n);
 }
 
-/** A node id is a ULID, sometimes behind a kind prefix ("cascade:<ulid>"): compare the ULID part. */
-const ulidOf = (id: string): string => id.slice(id.lastIndexOf(':') + 1);
-
 /**
- * The node a thread opens on. The first one that waits on a person; else the newest unfinished
- * node (ids are ULIDs, so the greatest id is the newest); else, when everything is finished, the
- * last node of the main row.
+ * The node a thread opens on. The first one that waits on a person (main row first, then lanes,
+ * left to right). When nothing waits on anyone, the ROOT: the story starts there, and a thread that
+ * opened scrolled to its newest node left the person without the beginning. If the root is hidden
+ * (collapsed away) or unknown, the first visible card in document order.
  */
 export function pickTarget(view: ThreadView, layout: ThreadLayout): string | undefined {
   const ordered = documentOrder(layout);
@@ -50,27 +52,20 @@ export function pickTarget(view: ThreadView, layout: ThreadLayout): string | und
   const byId = new Map<string, ThreadNode>(view.nodes.map((n) => [n.id, n]));
   const waiting = ordered.find((l) => byId.get(l.id)?.needsYou);
   if (waiting) return waiting.id;
-
-  const active = ordered.filter((l) => {
-    const node = byId.get(l.id);
-    return node !== undefined && node.emphasis !== 'compact';
-  });
-  if (active.length > 0) {
-    return active.reduce((best, cur) => (ulidOf(cur.id) > ulidOf(best.id) ? cur : best)).id;
-  }
-
-  const laneStarts = layout.lanes.map((l) => l.y).sort((a, b) => a - b);
-  const secondLaneY = laneStarts[1] ?? Infinity;
-  const mainRow = ordered.filter((l) => l.y + l.height / 2 < secondLaneY);
-  return (mainRow[mainRow.length - 1] ?? ordered[ordered.length - 1])?.id;
+  const root = ordered.find((l) => l.id === view.rootEventId);
+  return (root ?? ordered[0])?.id;
 }
 
 const clamp = (v: number, lo: number, hi: number): number => Math.min(hi, Math.max(lo, v));
 
+const LEFT_MARGIN = 24;
+
 /**
  * The first viewport. A graph that fits the canvas at 100% opens as it is. A bigger one opens at 100%
- * with the target centred, clamped so the view never scrolls past the graph. A container height of 0
- * means "not measured yet" and is not treated as overflow.
+ * with the target at the LEFT (with a margin), starting one column earlier when the neighbour and the
+ * target both fit, so the card to its left is whole and nothing is cut at the left edge (centring the
+ * target cut the first card in half). Clamped so the view never scrolls past the graph. A container
+ * height of 0 means "not measured yet" and is not treated as overflow.
  */
 export function firstViewport(
   layout: ThreadLayout,
@@ -83,9 +78,22 @@ export function firstViewport(
   const target = targetId ? layout.nodes.find((n) => n.id === targetId) : undefined;
   if (!target || (!overflowX && !overflowY)) return { x: 0, y: 0, zoom: 1 };
 
-  const cx = target.x + target.width / 2;
+  let x = 0;
+  if (overflowX) {
+    const before = layout.nodes
+      .filter((n) => !n.hidden && n.x < target.x)
+      .reduce<number | undefined>(
+        (best, n) => (best === undefined || n.x > best ? n.x : best),
+        undefined,
+      );
+    const fromTarget = target.x - LEFT_MARGIN;
+    const fromNeighbour = before !== undefined ? before - LEFT_MARGIN : undefined;
+    const fits =
+      fromNeighbour !== undefined &&
+      target.x + target.width + LEFT_MARGIN - fromNeighbour <= container.width;
+    x = clamp(-(fits ? fromNeighbour : fromTarget), container.width - width, 0);
+  }
   const cy = target.y + target.height / 2;
-  const x = overflowX ? clamp(container.width / 2 - cx, container.width - width, 0) : 0;
   const y = overflowY ? clamp(container.height / 2 - cy, container.height - height, 0) : 0;
   return { x, y, zoom: 1 };
 }
@@ -113,4 +121,20 @@ export function scrollMetrics(
     h: axis(bounds.width, container.width, viewport.x),
     v: axis(bounds.height, container.height, viewport.y),
   };
+}
+
+/**
+ * How many stages (columns) start beyond the right edge of the canvas: the cue that "there is more
+ * this way". Columns are the distinct `x` positions of the visible cards.
+ */
+export function columnsOffRight(
+  layout: ThreadLayout,
+  viewport: Viewport,
+  areaWidth: number,
+): number {
+  if (areaWidth <= 0) return 0;
+  const xs = new Set(layout.nodes.filter((n) => !n.hidden).map((n) => n.x));
+  let off = 0;
+  for (const x of xs) if (x * viewport.zoom + viewport.x >= areaWidth) off += 1;
+  return off;
 }

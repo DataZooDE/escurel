@@ -1,9 +1,13 @@
 // PageModel from `expand` + the skill row — pure, shared with the webview tests.
 import { skillActionViews } from './actions';
 import type { ExpandResponse, Skill, SkillField } from '../client/types';
+import { buildPreview } from './preview';
 import type { ActionView, FieldView, PageModel } from './protocol';
+import { skillFacts } from './freshness';
+import { rowSourceOf } from './rowSource';
 
-const HIDDEN = new Set(['type', 'skill', 'id']);
+/** Bookkeeping, not data: the page kind (and its retired name), the skill, the id, a backend binding. */
+const HIDDEN = new Set(['kind', 'type', 'skill', 'id', 'backend_ref']);
 const TITLE_KEYS = ['title', 'name', 'subject', 'label'];
 
 export function titleCase(id: string): string {
@@ -11,8 +15,13 @@ export function titleCase(id: string): string {
   return s.charAt(0).toUpperCase() + s.slice(1);
 }
 
-export function buildPageModel(e: ExpandResponse, skill: Skill): PageModel {
+export function buildPageModel(
+  e: ExpandResponse,
+  skill: Skill,
+  now: number = Date.now(),
+): PageModel {
   const fm = e.frontmatter ?? {};
+  const provenance = skillFacts(skill, now);
   const slug = e.page?.slug ?? e.page?.page_id.split('/').pop()?.replace(/\.md$/, '') ?? '';
   const title =
     (TITLE_KEYS.map((k) => fm[k]).find((v) => typeof v === 'string' && v.trim()) as
@@ -27,6 +36,7 @@ export function buildPageModel(e: ExpandResponse, skill: Skill): PageModel {
   const autonomy =
     skill.autonomy === 'auto' || skill.autonomy === 'confirm' ? skill.autonomy : 'review';
   const actions: ActionView[] = skillActionViews(skill.actions);
+  const source = rowSourceOf(e.backend_projection);
   return {
     pageId: e.page?.page_id ?? '',
     title,
@@ -38,13 +48,26 @@ export function buildPageModel(e: ExpandResponse, skill: Skill): PageModel {
       layer: skill.layer,
       readOnly: skill.layer !== 'overlay',
       backend: skill.backend.kind,
+      ...(provenance.facts.length ? { facts: provenance.facts } : {}),
+      ...(provenance.stale ? { stale: true as const } : {}),
     },
     fields,
+    ...previewFields(e, skill),
     summary,
     body: e.body,
     lastWrittenBy: e.page?.last_written_by,
     editable: false,
     actions,
+    ...(source ? { source } : {}),
+  };
+}
+
+/** `preview` and `resource`, present only when there is something to show. */
+function previewFields(e: ExpandResponse, skill: Skill): Pick<PageModel, 'preview' | 'resource'> {
+  const preview = buildPreview(e, skill.backend.kind);
+  return {
+    ...(preview ? { preview } : {}),
+    ...(skill.resource ? { resource: skill.resource } : {}),
   };
 }
 

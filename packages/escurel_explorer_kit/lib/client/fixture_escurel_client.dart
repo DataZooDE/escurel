@@ -30,7 +30,7 @@ class _ParsedPage {
   _ParsedPage({
     required this.id,
     required this.skill,
-    required this.pageType,
+    required this.pageKind,
     required this.frontmatter,
     required this.body,
     required this.wikilinksOut,
@@ -39,7 +39,7 @@ class _ParsedPage {
 
   final String id;
   final String skill;
-  final md.PageType pageType;
+  final md.PageKind pageKind;
   final Map<String, dynamic> frontmatter;
   final String body;
   final List<WikilinkRef> wikilinksOut;
@@ -70,9 +70,9 @@ class FixtureEscurelClient implements EscurelClient {
 
     skillFiles.forEach((basename, raw) {
       final parsed = _tryParse(basename, raw);
-      if (parsed.frontmatter.pageType != md.PageType.skill) {
+      if (parsed.frontmatter.pageKind != md.PageKind.skill) {
         throw EscurelToolException(
-          'expected type: skill in $basename',
+          'expected kind: skill in $basename',
           code: 'fixture.wrong_type',
         );
       }
@@ -87,7 +87,7 @@ class FixtureEscurelClient implements EscurelClient {
       pages[pageKey] = _ParsedPage(
         id: pageKey,
         skill: id,
-        pageType: md.PageType.skill,
+        pageKind: md.PageKind.skill,
         frontmatter: parsed.frontmatter.fields,
         body: parsed.body,
         wikilinksOut: parseWikilinks(parsed.body),
@@ -96,9 +96,9 @@ class FixtureEscurelClient implements EscurelClient {
 
     instanceFiles.forEach((basename, raw) {
       final parsed = _tryParse(basename, raw);
-      if (parsed.frontmatter.pageType != md.PageType.instance) {
+      if (parsed.frontmatter.pageKind != md.PageKind.instance) {
         throw EscurelToolException(
-          'expected type: instance in $basename',
+          'expected kind: instance in $basename',
           code: 'fixture.wrong_type',
         );
       }
@@ -119,7 +119,7 @@ class FixtureEscurelClient implements EscurelClient {
       pages[qualifiedId] = _ParsedPage(
         id: qualifiedId,
         skill: skill,
-        pageType: md.PageType.instance,
+        pageKind: md.PageKind.instance,
         frontmatter: fields,
         body: parsed.body,
         wikilinksOut: _outgoingFromInstance(fields, parsed.body),
@@ -210,7 +210,7 @@ class FixtureEscurelClient implements EscurelClient {
   @override
   Future<List<SkillSummary>> listSkills() async {
     final skillPages = _pages.values
-        .where((p) => p.pageType == md.PageType.skill)
+        .where((p) => p.pageKind == md.PageKind.skill)
         .toList();
     // Fold shadows the way the server does (REQ-LAYER-03): when an
     // overlay skill and a base-layer skill share an id, the catalogue
@@ -269,7 +269,7 @@ class FixtureEscurelClient implements EscurelClient {
     String? cursor,
   }) async {
     var instances = _pages.values
-        .where((p) => p.pageType == md.PageType.instance && p.skill == skillId)
+        .where((p) => p.pageKind == md.PageKind.instance && p.skill == skillId)
         .toList();
 
     if (filter != null) {
@@ -332,7 +332,7 @@ class FixtureEscurelClient implements EscurelClient {
       return const ResolveResult(
         pageId: '',
         skill: '',
-        pageType: md.PageType.instance,
+        pageKind: md.PageKind.instance,
         exists: false,
         error: 'malformed wikilink',
       );
@@ -346,7 +346,7 @@ class FixtureEscurelClient implements EscurelClient {
               // matches by page type + declared id — a skill page's
               // `skill` column holds its own id, never the literal
               // "skill" (mirrors read.rs).
-              return p.pageType == md.PageType.skill && p.skill == ref.id;
+              return p.pageKind == md.PageKind.skill && p.skill == ref.id;
             }
             if (ref.skill != null) {
               return p.skill == ref.skill && p.id.endsWith('__${ref.id}');
@@ -356,7 +356,7 @@ class FixtureEscurelClient implements EscurelClient {
             // find it via the declared id, not the path.
             return p.id == ref.id ||
                 p.id.endsWith('__${ref.id}') ||
-                (p.pageType == md.PageType.skill && p.skill == ref.id);
+                (p.pageKind == md.PageKind.skill && p.skill == ref.id);
           }).toList()
           // Overlay wins over a shadowed base for the same id (REQ-LAYER-03)
           // — mirror the server's `ORDER BY page_id LIKE 'markdown/base/%'`.
@@ -370,7 +370,7 @@ class FixtureEscurelClient implements EscurelClient {
       return ResolveResult(
         pageId: ref.skill != null ? '${ref.skill}__${ref.id}' : ref.id!,
         skill: ref.skill ?? '',
-        pageType: md.PageType.instance,
+        pageKind: md.PageKind.instance,
         exists: false,
       );
     }
@@ -379,7 +379,7 @@ class FixtureEscurelClient implements EscurelClient {
     return ResolveResult(
       pageId: p.id,
       skill: p.skill,
-      pageType: p.pageType,
+      pageKind: p.pageKind,
       exists: true,
       description: p.frontmatter['description'] as String?,
     );
@@ -402,7 +402,7 @@ class FixtureEscurelClient implements EscurelClient {
     return ExpandResult(
       pageId: p.id,
       skill: p.skill,
-      pageType: p.pageType,
+      pageKind: p.pageKind,
       frontmatter: p.frontmatter,
       body: p.body,
       blocks: const <Block>[],
@@ -417,12 +417,12 @@ class FixtureEscurelClient implements EscurelClient {
   /// The shadowed base behind [p] when it is a tenant OVERLAY skill page
   /// shadowing a base-layer skill of the same id (REQ-LAYER-03), else null.
   ShadowInfo? _shadowFor(_ParsedPage p) {
-    if (p.pageType != md.PageType.skill || _isBaseLayer(p.frontmatter)) {
+    if (p.pageKind != md.PageKind.skill || _isBaseLayer(p.frontmatter)) {
       return null;
     }
     final bases = _pages.values.where(
       (c) =>
-          c.pageType == md.PageType.skill &&
+          c.pageKind == md.PageKind.skill &&
           c.skill == p.skill &&
           _isBaseLayer(c.frontmatter),
     );
@@ -485,7 +485,7 @@ class FixtureEscurelClient implements EscurelClient {
     required String q,
     int k = 10,
     SearchGranularity granularity = SearchGranularity.block,
-    PageTypeFilter pageType = PageTypeFilter.any,
+    PageKindFilter pageKind = PageKindFilter.any,
     String? skill,
     String? asOf, // ignored in fixture mode; honoured by the HTTP backend
   }) async {
@@ -495,11 +495,11 @@ class FixtureEscurelClient implements EscurelClient {
     final needle = q.toLowerCase();
     final hits = <SearchHit>[];
     for (final p in _pages.values) {
-      if (pageType == PageTypeFilter.skill && p.pageType != md.PageType.skill) {
+      if (pageKind == PageKindFilter.skill && p.pageKind != md.PageKind.skill) {
         continue;
       }
-      if (pageType == PageTypeFilter.instance &&
-          p.pageType != md.PageType.instance) {
+      if (pageKind == PageKindFilter.instance &&
+          p.pageKind != md.PageKind.instance) {
         continue;
       }
       if (skill != null && p.skill != skill) continue;
@@ -727,12 +727,12 @@ class FixtureEscurelClient implements EscurelClient {
     final fields = parsed.frontmatter.fields;
     final version = 'fx-${++_writeSeq}';
 
-    if (parsed.frontmatter.pageType == md.PageType.skill) {
+    if (parsed.frontmatter.pageKind == md.PageKind.skill) {
       final id = (fields['id'] as String?) ?? pageId;
       _pages[id] = _ParsedPage(
         id: id,
         skill: id,
-        pageType: md.PageType.skill,
+        pageKind: md.PageKind.skill,
         frontmatter: fields,
         body: parsed.body,
         wikilinksOut: parseWikilinks(parsed.body),
@@ -749,7 +749,7 @@ class FixtureEscurelClient implements EscurelClient {
     _pages[qualifiedId] = _ParsedPage(
       id: qualifiedId,
       skill: skill,
-      pageType: md.PageType.instance,
+      pageKind: md.PageKind.instance,
       frontmatter: fields,
       body: parsed.body,
       wikilinksOut: _outgoingFromInstance(fields, parsed.body),
@@ -790,9 +790,9 @@ class FixtureEscurelClient implements EscurelClient {
       }
     }
 
-    requireKey('type');
+    requireKey('kind');
     requireKey('id');
-    if (parsed.frontmatter.pageType == md.PageType.instance) {
+    if (parsed.frontmatter.pageKind == md.PageKind.instance) {
       requireKey('skill');
       // Enforce the instance's skill-declared required frontmatter — a
       // real gate the indexer applies, and what makes "clear a required
@@ -1087,7 +1087,7 @@ class FixtureEscurelClient implements EscurelClient {
     return _pages.values
         .where(
           (p) =>
-              p.pageType == md.PageType.instance &&
+              p.pageKind == md.PageKind.instance &&
               (p.frontmatter['backend_ref'] as Map?)?['kind'] == 'sql_view',
         )
         .map(
@@ -1113,9 +1113,9 @@ class FixtureEscurelClient implements EscurelClient {
     _pages[qualifiedId] = _ParsedPage(
       id: qualifiedId,
       skill: skill,
-      pageType: md.PageType.instance,
+      pageKind: md.PageKind.instance,
       frontmatter: {
-        'type': 'instance',
+        'kind': 'instance',
         'skill': skill,
         'id': id,
         'name': id,
@@ -1138,7 +1138,7 @@ class FixtureEscurelClient implements EscurelClient {
     // skill's `backend:` block (never the caller), and an unregistered
     // endpoint fails closed before anything is materialised.
     final skillPages = _pages.values.where(
-      (p) => p.pageType == md.PageType.skill && p.skill == skill,
+      (p) => p.pageKind == md.PageKind.skill && p.skill == skill,
     );
     final backend = skillPages.isEmpty
         ? null
@@ -1172,9 +1172,9 @@ class FixtureEscurelClient implements EscurelClient {
     _pages[qualifiedId] = _ParsedPage(
       id: qualifiedId,
       skill: skill,
-      pageType: md.PageType.instance,
+      pageKind: md.PageKind.instance,
       frontmatter: {
-        'type': 'instance',
+        'kind': 'instance',
         'skill': skill,
         'id': id,
         'name': id,
@@ -1208,7 +1208,7 @@ class FixtureEscurelClient implements EscurelClient {
     final handlers = _pages.values
         .where(
           (p) =>
-              p.pageType == md.PageType.skill &&
+              p.pageKind == md.PageKind.skill &&
               _backendKind(p.frontmatter) == 'document',
         )
         .map((p) => p.skill)
@@ -1233,9 +1233,9 @@ class FixtureEscurelClient implements EscurelClient {
     _pages[qualifiedId] = _ParsedPage(
       id: qualifiedId,
       skill: handler,
-      pageType: md.PageType.instance,
+      pageKind: md.PageKind.instance,
       frontmatter: {
-        'type': 'instance',
+        'kind': 'instance',
         'skill': handler,
         'id': id,
         'name': title ?? id,

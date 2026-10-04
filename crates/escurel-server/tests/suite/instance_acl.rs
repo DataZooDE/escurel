@@ -12,22 +12,22 @@ const TENANT: &str = "stuttgart-ai";
 const ALICE: &str = "whatsapp:111";
 const BOB: &str = "whatsapp:222";
 
-const MEMBER_SKILL: &str = "---\ntype: skill\nid: community_member\n\
+const MEMBER_SKILL: &str = "---\nkind: skill\nid: community_member\n\
     description: A member.\nvisibility: owner\nowner_field: credential\n---\n# community_member\n";
-const EVENT_PROFILE_SKILL: &str = "---\ntype: skill\nid: event_profile\n\
+const EVENT_PROFILE_SKILL: &str = "---\nkind: skill\nid: event_profile\n\
     description: Per-event profile.\nvisibility: owner\nowner_field: member\n\
     required_frontmatter: [member]\n---\n# event_profile\n";
-const TALK_SKILL: &str = "---\ntype: skill\nid: talk\ndescription: A program item.\n\
+const TALK_SKILL: &str = "---\nkind: skill\nid: talk\ndescription: A program item.\n\
     visibility: public\n---\n# talk\n";
 
-const ALICE_MEMBER: &str = "---\ntype: instance\nskill: community_member\nid: alice\n\
+const ALICE_MEMBER: &str = "---\nkind: instance\nskill: community_member\nid: alice\n\
     credential: \"whatsapp:111\"\n---\n# Alice\n";
-const BOB_MEMBER: &str = "---\ntype: instance\nskill: community_member\nid: bob\n\
+const BOB_MEMBER: &str = "---\nkind: instance\nskill: community_member\nid: bob\n\
     credential: \"whatsapp:222\"\n---\n# Bob\n";
-const ALICE_PROFILE: &str = "---\ntype: instance\nskill: event_profile\nid: alice-ki\n\
+const ALICE_PROFILE: &str = "---\nkind: instance\nskill: event_profile\nid: alice-ki\n\
     member: \"[[community_member::alice]]\"\n---\n# Alice @ KI-Gipfel\nInnovation Managerin.\n";
 const KEYNOTE: &str =
-    "---\ntype: instance\nskill: talk\nid: keynote\n---\n# Keynote\nDie Eröffnung.\n";
+    "---\nkind: instance\nskill: talk\nid: keynote\n---\n# Keynote\nDie Eröffnung.\n";
 
 async fn start() -> EscurelProcess {
     EscurelProcess::spawn(Opts {

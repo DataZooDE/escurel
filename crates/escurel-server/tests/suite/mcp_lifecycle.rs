@@ -13,14 +13,14 @@ use escurel_test_support::{AuthMode, EscurelProcess, FixtureBuilder, Opts};
 use serde_json::{Value, json};
 
 const SKILL_CUSTOMER_BODY: &str = "---\n\
-     type: skill\n\
+     kind: skill\n\
      id: customer\n\
      description: A buying entity.\n\
      ---\n\
      # customer\n";
 
 const INSTANCE_ACME_BODY: &str = "---\n\
-     type: instance\n\
+     kind: instance\n\
      skill: customer\n\
      id: acme-corp\n\
      ---\n\
@@ -174,13 +174,13 @@ async fn mcp_streamable_http_lifecycle_round_trips() {
         content[0]["type"], "text",
         "first content block is text: {captured}"
     );
-    // The text block parses back to the same payload (this is what a
-    // text-only client reads).
+    // The text block is a SHORT SUMMARY that points at `structuredContent` (it no longer repeats
+    // the payload, which doubled the tokens of every call).
     let text = content[0]["text"].as_str().expect("content[0].text string");
-    let parsed: Value = serde_json::from_str(text).expect("content text parses as JSON");
-    assert_eq!(
-        parsed, call_result["structuredContent"],
-        "content text == structuredContent payload"
+    assert!(text.len() < 400, "a summary, not the payload: {text}");
+    assert!(
+        text.contains("structuredContent"),
+        "says where the rest is: {text}"
     );
     // Programmatic clients read the raw payload from `structuredContent`.
     let structured = &call_result["structuredContent"];
@@ -244,7 +244,7 @@ async fn rejected_write_sets_is_error() {
 
     // An instance page missing its required `id` — rejected by validation.
     let bad_content = "---\n\
-         type: instance\n\
+         kind: instance\n\
          skill: customer\n\
          ---\n\
          # No id\n";
@@ -280,10 +280,10 @@ async fn rejected_write_sets_is_error() {
         result["isError"], true,
         "a rejected write must set CallToolResult.isError: {resp}"
     );
-    // The text block still carries the payload for text-only clients.
+    // The text block carries the refusal's code for text-only clients.
     let text = result["content"][0]["text"].as_str().expect("content text");
-    let parsed: Value = serde_json::from_str(text).expect("text parses");
-    assert_eq!(parsed["ok"], false);
+    assert!(text.starts_with("Refused:"), "{text}");
+    assert_eq!(result["structuredContent"]["ok"], false);
 
     // Same issues through `validate` remain a SUCCESSFUL call: the tool
     // was asked to report, and it reported.

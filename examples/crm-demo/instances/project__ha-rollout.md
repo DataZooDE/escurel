@@ -1,5 +1,5 @@
 ---
-type: instance
+kind: instance
 skill: project
 id: ha-rollout
 opened: 2026-09-20

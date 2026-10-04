@@ -1,5 +1,5 @@
 ---
-type: instance
+kind: instance
 skill: analysis
 id: gbm-run
 at: 2026-02-01T15:00:00Z

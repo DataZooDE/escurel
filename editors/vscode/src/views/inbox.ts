@@ -1,7 +1,7 @@
 import { errorRowSpec } from './errorRow';
 import * as vscode from 'vscode';
 import type { EscurelClient } from '../client';
-import { describeError } from '../errors';
+import { connectionStateOf, describeError } from '../errors';
 import { uriForPage } from '../fs/provider';
 import { log } from '../log';
 import { buildInboxRows, type InboxRow } from './inboxModel';
@@ -78,12 +78,20 @@ export class InboxTree implements vscode.TreeDataProvider<Node> {
       if (!n) {
         const page = await this.client().listInbox();
         await vscode.commands.executeCommand('setContext', 'escurel.connected', true);
+        await vscode.commands.executeCommand('setContext', 'escurel.connectionState', 'ok');
         return buildInboxRows(page.events);
       }
       return [];
     } catch (e) {
       log().warn(`escurel: inbox tree: ${describeError(e)}`);
-      if (!n) await vscode.commands.executeCommand('setContext', 'escurel.connected', false);
+      if (!n) {
+        await vscode.commands.executeCommand('setContext', 'escurel.connected', false);
+        await vscode.commands.executeCommand(
+          'setContext',
+          'escurel.connectionState',
+          connectionStateOf(e),
+        );
+      }
       return [{ kind: 'error', message: describeError(e) }];
     }
   }

@@ -699,7 +699,7 @@ impl DocumentIngestWorker {
         cfg: &ExtractConfig,
         extra: &serde_json::Value,
     ) -> Result<IngestOutcome, IndexerError> {
-        let page_id = format!("markdown/instances/{skill}/{instance_id}.md");
+        let page_id = crate::backend::rows::instance_page_id(skill, instance_id);
         let bytes = self.indexer.read_inbox_blob(blob_id).await?;
 
         // Extract + chunk OFF the write lock.
@@ -1037,7 +1037,7 @@ fn document_overlay(
     };
     format!(
         "---\n\
-         type: instance\n\
+         kind: instance\n\
          skill: {skill}\n\
          id: {id}\n\
          backend_ref:\n\
@@ -1333,12 +1333,12 @@ mod tests {
 
     #[test]
     fn overlay_heading_title_reads_h1() {
-        let md = "---\ntype: instance\nid: x\n---\n# My Document Title\n";
+        let md = "---\nkind: instance\nid: x\n---\n# My Document Title\n";
         assert_eq!(
             overlay_heading_title(md).as_deref(),
             Some("My Document Title")
         );
-        let no_heading = "---\ntype: instance\nid: x\n---\njust body\n";
+        let no_heading = "---\nkind: instance\nid: x\n---\njust body\n";
         assert_eq!(overlay_heading_title(no_heading), None);
     }
 

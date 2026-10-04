@@ -19,12 +19,12 @@ use tempfile::TempDir;
 use tokio::sync::Mutex;
 
 const TENANT: &str = "acme";
-const CUSTOMER: &str = "---\ntype: skill\nid: customer\ndescription: x\n---\n# customer\n";
-const C1: &str = "---\ntype: instance\nskill: customer\nid: c1\n---\n# Acme\n\nv0 body.\n";
+const CUSTOMER: &str = "---\nkind: skill\nid: customer\ndescription: x\n---\n# customer\n";
+const C1: &str = "---\nkind: instance\nskill: customer\nid: c1\n---\n# Acme\n\nv0 body.\n";
 // c2 links to c1 in its body — so the happy-path test can show that the
 // retracted page stops resolving even while a live page still references it.
 const C2: &str =
-    "---\ntype: instance\nskill: customer\nid: c2\n---\n# Beta\n\nSee [[customer::c1]].\n";
+    "---\nkind: instance\nskill: customer\nid: c2\n---\n# Beta\n\nSee [[customer::c1]].\n";
 
 const C1_PAGE: &str = "markdown/instances/customer/c1.md";
 

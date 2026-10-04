@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { detectAdminState } from '../../src/auth/adminState';
-import { EscurelClient } from '../../src/client';
+import { EscurelClient, refusalFor } from '../../src/client';
 import { EscurelError } from '../../src/client/errors';
 import { fixture, startMockGateway, type MockGateway } from './mockGateway';
 
@@ -176,5 +176,23 @@ describe('typed wrapper', () => {
     expect(res.final_version).toBe('1@1');
     expect(gw.calls.at(-1)?.arguments.session).toBe('sess-123');
     expect(gw.calls.at(-1)?.arguments.commit).toBe(true);
+  });
+});
+
+describe('refusalFor validate', () => {
+  it('an ok:false validate WITH issues is data, not a refusal', () => {
+    const r = { isError: false, structuredContent: { ok: false, issues: [{ code: 'x' }] } };
+    expect(refusalFor('validate', r)).toBeUndefined();
+    expect(refusalFor('validate', { ...r, isError: true })).toBeUndefined();
+  });
+  it('a validate that failed (isError, no issues) is thrown, never an empty clean result', () => {
+    const r = { isError: true, structuredContent: {}, content: [{ type: 'text', text: 'boom' }] };
+    const refused = refusalFor('validate', r);
+    expect(refused).toBeDefined();
+    expect((refused!.issues as { message: string }[])[0]!.message).toBe('boom');
+  });
+  it('other tools keep refusalOf', () => {
+    expect(refusalFor('expand', { isError: true, structuredContent: {} })).toBeDefined();
+    expect(refusalFor('expand', { structuredContent: { page: null } })).toBeUndefined();
   });
 });

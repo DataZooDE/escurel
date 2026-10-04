@@ -13,17 +13,17 @@ const TENANT: &str = "stuttgart-ai";
 const ALICE: &str = "whatsapp:111";
 const BOB: &str = "whatsapp:222";
 
-const MEMBER_SKILL: &str = "---\ntype: skill\nid: community_member\n\
+const MEMBER_SKILL: &str = "---\nkind: skill\nid: community_member\n\
     description: A member.\nvisibility: owner\nowner_field: credential\n---\n# community_member\n";
-const TALK_SKILL: &str = "---\ntype: skill\nid: talk\ndescription: A program item.\n\
+const TALK_SKILL: &str = "---\nkind: skill\nid: talk\ndescription: A program item.\n\
     visibility: public\n---\n# talk\n";
 
-const ALICE_MEMBER: &str = "---\ntype: instance\nskill: community_member\nid: alice\n\
+const ALICE_MEMBER: &str = "---\nkind: instance\nskill: community_member\nid: alice\n\
     credential: \"whatsapp:111\"\n---\n# Alice\n";
-const BOB_MEMBER: &str = "---\ntype: instance\nskill: community_member\nid: bob\n\
+const BOB_MEMBER: &str = "---\nkind: instance\nskill: community_member\nid: bob\n\
     credential: \"whatsapp:222\"\n---\n# Bob\n";
 const KEYNOTE: &str =
-    "---\ntype: instance\nskill: talk\nid: keynote\n---\n# Keynote\nDie Eröffnung.\n";
+    "---\nkind: instance\nskill: talk\nid: keynote\n---\n# Keynote\nDie Eröffnung.\n";
 
 const ALICE_PAGE: &str = "markdown/instances/community_member/alice.md";
 const KEYNOTE_PAGE: &str = "markdown/instances/talk/keynote.md";
@@ -70,11 +70,11 @@ async fn update(p: &EscurelProcess, token: &str, page_id: &str, content: &str) -
 }
 
 // Alice's member page with a tweaked body — same owner (credential).
-const ALICE_MEMBER_EDIT: &str = "---\ntype: instance\nskill: community_member\nid: alice\n\
+const ALICE_MEMBER_EDIT: &str = "---\nkind: instance\nskill: community_member\nid: alice\n\
     credential: \"whatsapp:111\"\n---\n# Alice\nEdited by the owner.\n";
 // A hijack attempt: rewrite alice's page, keeping her credential, by Bob.
 // A create-for-other: a NEW member page owned by alice, written by Bob.
-const NEW_MALLORY_AS_ALICE: &str = "---\ntype: instance\nskill: community_member\nid: mallory\n\
+const NEW_MALLORY_AS_ALICE: &str = "---\nkind: instance\nskill: community_member\nid: mallory\n\
     credential: \"whatsapp:111\"\n---\n# Mallory\n";
 const NEW_MALLORY_PAGE: &str = "markdown/instances/community_member/mallory.md";
 
@@ -114,7 +114,7 @@ async fn public_instance_write_is_admin_only() {
     let p = start(WriteAclMode::Enforce).await;
     let bob = p.mint_token_with_sub(TENANT, Role::Agent, BOB);
     // A public talk has no owner → only admin may write it.
-    let edited = "---\ntype: instance\nskill: talk\nid: keynote\n---\n# Keynote\nHacked.\n";
+    let edited = "---\nkind: instance\nskill: talk\nid: keynote\n---\n# Keynote\nHacked.\n";
     let r = update(&p, &bob, KEYNOTE_PAGE, edited).await;
     assert_eq!(
         r["ok"],
@@ -130,7 +130,7 @@ async fn admin_writes_anything() {
     // Admin edits alice's owner-private record AND a public talk.
     let r1 = update(&p, &admin, ALICE_PAGE, ALICE_MEMBER_EDIT).await;
     assert_eq!(r1["ok"], json!(true), "admin edits any member: {r1}");
-    let edited = "---\ntype: instance\nskill: talk\nid: keynote\n---\n# Keynote\nCurated.\n";
+    let edited = "---\nkind: instance\nskill: talk\nid: keynote\n---\n# Keynote\nCurated.\n";
     let r2 = update(&p, &admin, KEYNOTE_PAGE, edited).await;
     assert_eq!(r2["ok"], json!(true), "admin curates public talks: {r2}");
 }

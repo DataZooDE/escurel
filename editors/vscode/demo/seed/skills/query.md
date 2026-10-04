@@ -1,6 +1,10 @@
 ---
-type: skill
+kind: skill
 id: query
+title: Query
+folder: plumbing
+role: helper
+tags: [plumbing]
 description: An authored, parameterised read over a SQL view. Reports (Peacock) and agents call it with query_instance; adding one is a page write, not a deploy.
 ---
 

@@ -1,6 +1,6 @@
 //! Deterministic per-instance access control.
 //!
-//! A `type: skill` page declares a read policy (`visibility: public|owner`,
+//! A `kind: skill` page declares a read policy (`visibility: public|owner`,
 //! [`crate::Visibility`]) and, for `owner` visibility, the frontmatter
 //! field naming the owning principal (`owner_field:`). The check here is a
 //! pure comparison on the read path — resolve the instance's owner from its
@@ -20,7 +20,7 @@
 
 use std::collections::HashSet;
 
-use escurel_md::{PageType, YamlValue, parse};
+use escurel_md::{PageKind, YamlValue, parse};
 use serde_json::Value;
 
 use crate::meta_skill::META_SKILL_PAGE_ID;
@@ -239,7 +239,7 @@ impl Indexer {
     /// the incoming content (no create-for-/transfer-to another subject).
     /// Public / no-`owner_field` instances are therefore admin-write-only.
     ///
-    /// Only `type: instance` pages are gated here (P1); skill/other pages
+    /// Only `kind: instance` pages are gated here (P1); skill/other pages
     /// return `Ok(true)` and keep the existing meta-skill protection.
     pub async fn may_write_page(
         &self,
@@ -251,7 +251,7 @@ impl Indexer {
             return Ok(true);
         }
         let parsed = parse(content)?;
-        if parsed.frontmatter.page_type != PageType::Instance {
+        if parsed.frontmatter.page_kind != PageKind::Instance {
             return Ok(true); // P1: gate instance writes only
         }
         // Async-ops: a workflow STEP runs under a caller-scoped (non-admin)
@@ -398,7 +398,7 @@ impl Indexer {
         if caller.is_admin {
             return Ok(true);
         }
-        let page_id = format!("markdown/instances/{CHAT_OWNER_SKILL}/{chat_group_id}.md");
+        let page_id = crate::backend::rows::instance_page_id(CHAT_OWNER_SKILL, chat_group_id);
         let Some(expanded) = self.expand(&page_id, None, None).await? else {
             return Ok(true); // no owning instance → ungated (compat)
         };

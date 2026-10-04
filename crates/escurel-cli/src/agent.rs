@@ -31,7 +31,7 @@ pub struct SearchArgs {
     pub k: u32,
     /// "skill" | "instance" | "any" (default).
     #[arg(long, default_value = "any")]
-    pub page_type: String,
+    pub page_kind: String,
     /// Restrict to one skill.
     #[arg(long)]
     pub skill: Option<String>,
@@ -603,7 +603,7 @@ async fn search(client: &Client, a: SearchArgs) -> Result<Value> {
         .search(SearchRequest {
             q: a.q,
             k: a.k,
-            page_type: a.page_type,
+            page_kind: a.page_kind,
             skill: a.skill.unwrap_or_default(),
             ..Default::default()
         })
@@ -616,7 +616,7 @@ async fn search(client: &Client, a: SearchArgs) -> Result<Value> {
                 "page_id": h.page_id,
                 "slug": opt(&h.slug),
                 "skill": h.skill,
-                "page_type": h.page_type,
+                "page_kind": h.page_kind,
                 "anchor": opt(&h.anchor),
                 "snippet": h.snippet,
                 "score": h.score,
@@ -678,6 +678,39 @@ async fn list_skills(client: &Client) -> Result<Value> {
             }
             if let Some(v) = s.harness {
                 skill["harness"] = json!(v);
+            }
+            // The tree vocabulary (folder / role / tags / title / resource), as on the wire.
+            if let Some(v) = s.folder {
+                skill["folder"] = json!(v);
+            }
+            if let Some(v) = s.role {
+                skill["role"] = json!(v);
+            }
+            if !s.tags.is_empty() {
+                skill["tags"] = json!(s.tags);
+            }
+            if let Some(v) = s.title {
+                skill["title"] = json!(v);
+            }
+            if let Some(v) = s.resource {
+                skill["resource"] = json!(v);
+            }
+            // The OKF provenance keys and Peacock's viewer, as on the wire.
+            for (key, value) in [
+                ("generated", s.generated),
+                ("verified", s.verified),
+                ("status", s.status),
+                ("stale_after", s.stale_after),
+            ] {
+                if let Some(v) = value {
+                    skill[key] = json!(v);
+                }
+            }
+            if !s.sources.is_empty() {
+                skill["sources"] = json!(s.sources);
+            }
+            if let Some(v) = s.viewer {
+                skill["viewer"] = json!(v);
             }
             if !s.actions.is_empty() {
                 skill["actions"] = json!(s.actions);

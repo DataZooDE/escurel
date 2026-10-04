@@ -5,15 +5,15 @@ import '../theme/app_theme.dart';
 
 /// Tiny pill that calls out a page's kind (skill vs instance).
 class KindChip extends StatelessWidget {
-  const KindChip({super.key, required this.pageType});
+  const KindChip({super.key, required this.pageKind});
 
-  final md.PageType pageType;
+  final md.PageKind pageKind;
 
   @override
   Widget build(BuildContext context) {
-    final (bg, fg, label) = switch (pageType) {
-      md.PageType.skill => (kSecondaryContainer, kOnSecondaryContainer, 'skill'),
-      md.PageType.instance => (kSurfaceContainerHigh, kPrimary, 'instance'),
+    final (bg, fg, label) = switch (pageKind) {
+      md.PageKind.skill => (kSecondaryContainer, kOnSecondaryContainer, 'skill'),
+      md.PageKind.instance => (kSurfaceContainerHigh, kPrimary, 'instance'),
     };
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),

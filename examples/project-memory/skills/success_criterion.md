@@ -1,5 +1,5 @@
 ---
-type: skill
+kind: skill
 id: success_criterion
 description: A measurable bar that decides whether a goal is met (e.g. "churn AUC >= 0.80 on holdout").
 required_frontmatter: [name, threshold]

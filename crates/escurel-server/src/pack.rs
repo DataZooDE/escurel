@@ -123,8 +123,15 @@ pub fn stamp_layer(content: &str, layer: &str) -> Result<String, String> {
                 .to_owned(),
         );
     }
-    let parsed = escurel_md::parse(content)
-        .map_err(|e| format!("pack_malformed: page does not parse as escurel markdown: {e}"))?;
+    let parsed = escurel_md::parse(content).map_err(|e| match e {
+        // A signed pack cannot be rewritten locally (the signature pins its bytes), so the tenant
+        // migration command is the wrong advice here: the publisher has to re-export.
+        escurel_md::ParseError::LegacyTypeKey => "pack_malformed: page uses the removed `type:` \
+             page-kind key (it is `kind:` now); the pack publisher must re-export and re-sign the \
+             pack"
+            .to_owned(),
+        e => format!("pack_malformed: page does not parse as escurel markdown: {e}"),
+    })?;
     if parsed.frontmatter.fields.get("layer").is_some() {
         return Err(
             "pack_malformed: page already declares a `layer:` key — pack pages are \
@@ -252,16 +259,16 @@ mod tests {
 
     #[test]
     fn stamp_layer_inserts_once_and_refuses_predeclared() {
-        let page = "---\ntype: skill\nid: a\n---\nbody\n";
+        let page = "---\nkind: skill\nid: a\n---\nbody\n";
         let stamped = stamp_layer(page, "base@p@v1").unwrap();
         assert!(
-            stamped.starts_with("---\nlayer: base@p@v1\ntype: skill\nid: a\n---"),
+            stamped.starts_with("---\nlayer: base@p@v1\nkind: skill\nid: a\n---"),
             "{stamped}"
         );
         assert!(stamp_layer("no fence", "base@p@v1").is_err());
         assert!(
             stamp_layer(
-                "---\ntype: skill\nlayer: overlay\nid: a\n---\n",
+                "---\nkind: skill\nlayer: overlay\nid: a\n---\n",
                 "base@p@v1"
             )
             .is_err()
@@ -274,21 +281,21 @@ mod tests {
         // message; a `layer` key found by the PARSER (indented / quoted
         // variants a `starts_with` scan missed); a `\n---` inside a
         // multi-line frontmatter string does NOT truncate the check.
-        let bom = "\u{feff}---\ntype: skill\nid: a\n---\nbody\n";
+        let bom = "\u{feff}---\nkind: skill\nid: a\n---\nbody\n";
         assert!(stamp_layer(bom, "base@p@v1").is_ok(), "BOM is stripped");
 
-        let crlf = "---\r\ntype: skill\r\nid: a\r\n---\r\nbody\r\n";
+        let crlf = "---\r\nkind: skill\r\nid: a\r\n---\r\nbody\r\n";
         let err = stamp_layer(crlf, "base@p@v1").unwrap_err();
         assert!(err.contains("CRLF"), "{err}");
 
-        let quoted_layer = "---\ntype: skill\nid: a\n\"layer\": overlay\n---\n";
+        let quoted_layer = "---\nkind: skill\nid: a\n\"layer\": overlay\n---\n";
         assert!(
             stamp_layer(quoted_layer, "base@p@v1").is_err(),
             "a quoted layer key is still a layer key"
         );
 
         let embedded_fence =
-            "---\ntype: skill\nid: a\ndescription: |\n  looks like\n  ---\n  a fence\n---\nbody\n";
+            "---\nkind: skill\nid: a\ndescription: |\n  looks like\n  ---\n  a fence\n---\nbody\n";
         let stamped = stamp_layer(embedded_fence, "base@p@v1").unwrap();
         assert!(stamped.contains("looks like"), "{stamped}");
     }
@@ -319,6 +326,21 @@ mod tests {
         assert_eq!(
             build_tarball(&pages).unwrap(),
             build_tarball(&pages).unwrap()
+        );
+    }
+
+    #[test]
+    fn a_pack_page_with_the_removed_type_key_is_refused_naming_the_re_export() {
+        let err = stamp_layer("---\ntype: skill\nid: a\n---\nbody\n", "base@p@v1")
+            .expect_err("a legacy pack page must not land");
+        assert!(err.starts_with("pack_malformed:"), "{err}");
+        assert!(
+            err.contains("re-export and re-sign"),
+            "names the publisher's step: {err}"
+        );
+        assert!(
+            !err.contains("migrate-kind"),
+            "a signed pack cannot be migrated locally, so the tenant command is the wrong advice: {err}"
         );
     }
 }

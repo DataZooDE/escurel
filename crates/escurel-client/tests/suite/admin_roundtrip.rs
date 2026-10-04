@@ -25,7 +25,7 @@ use tempfile::TempDir;
 
 const TENANT: &str = "acme";
 
-const CUSTOMER_SKILL: &str = "---\ntype: skill\nid: customer\ndescription: x\n---\n# customer\n";
+const CUSTOMER_SKILL: &str = "---\nkind: skill\nid: customer\ndescription: x\n---\n# customer\n";
 
 /// The per-minute budget the quota-wired gateway starts with. A fresh
 /// tenant that has made no agent calls reports exactly these as

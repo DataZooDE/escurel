@@ -15,12 +15,28 @@ exposes the window to a debugger for screenshots.
 
 ## The state it leaves
 
-| Where         | What you see                                                                                                                                   |
-| ------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
-| Knowledge     | Skills `supplier-risk`, `customer-order`, `supplier`; five orders and a supplier                                                               |
-| Thread (open) | "Vendor 100234 Meier-Guss: PO 4500087412 confirmation moved +14 days" → run → changeset **promoted** → cascade event → the follow-on's own run |
-| Awaiting you  | One changeset, sales order `4500131`, proposed by the agent for "PO 4500087433 confirmed 120 of 200 PC"                                        |
-| Inbox         | Both signals, newest first                                                                                                                     |
+| Where         | What you see                                                                                                                                                                                                                                                                          |
+| ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Knowledge     | Skills in folders (`sales/orders`, `purchasing/risk`, `purchasing/follow-ups`, `purchasing/suppliers`, `plumbing/…`), each with a role icon: records (cylinder), processes (play), reports (chart), helpers (tools; the plumbing folder starts collapsed). Five orders and a supplier |
+| Thread (open) | "Vendor 100234 Meier-Guss: PO 4500087412 confirmation moved +14 days" → run → changeset **promoted** → cascade event → the follow-on's own run                                                                                                                                        |
+| Awaiting you  | One changeset, sales order `4500131`, proposed by the agent for "PO 4500087433 confirmed 120 of 200 PC"                                                                                                                                                                               |
+| Inbox         | Both signals, newest first                                                                                                                                                                                                                                                            |
+
+## How the Knowledge tree is organised
+
+Every demo skill declares `folder:`, `role:` and `tags:` in its frontmatter (the vocabulary follows Google's
+Open Knowledge Format). The tree nests skills under their folder, sorts folders first and then skills by
+role (record, process, report, helper) and name, and starts folders that hold only helpers collapsed. Open
+`plumbing > sap > order-lines > all`: it is a read-only SQL view over a JSON extract, so the page shows the
+form and, beneath it, a **Source data** table of the rows the source holds, under a `read-only (source)`
+badge. A skill without a folder sits at the top level; its role is inferred when it declares none.
+
+A document is the third kind of source. `purchasing > documents > supplier-document` holds the frame
+agreement the demo uploads as a file when it starts (`/ingest/upload`): its text is chunked, the page
+shows the first chunks read-only, and **Open original** saves the uploaded file. Markdown is never
+handed to an application, so you get a note that says so and the file is revealed in your file manager,
+saved as plain text. A PDF or a plain-text file would open in the system application, and a Word
+document asks first.
 
 ## A walkthrough (about ten minutes)
 
@@ -43,22 +59,56 @@ exposes the window to a debugger for screenshots.
    the graph itself is drawn by Peacock from the skill's `viewer:` report. The buttons at the bottom
    are the follow-ups the skill declares (Notify the affected customers, Ask the supplier for a new
    confirmation); the third action (a chat prompt) is Peacock's and is not offered here.
-9. **A link in a page.** Open `order-4500131`: its History names the vendor as a link
-   (Meier-Guss GmbH). Click it, or Tab to it and press Enter: the supplier opens in its own tab.
-10. **Start a skill.** At the bottom of an order, the **Supplier risk for … with an agent** button.
+9. **A document.** Open Knowledge → `supplier-document` → the frame agreement. You see its first
+   chunks (the delivery-terms clause says a move of more than 7 days is a supply risk: the same fact
+   the supplier-risk signal is about) and the original-file button.
+10. **A link in a page.** Open `order-4500131`: its History names the vendor as a link
+    (Meier-Guss GmbH). Click it, or Tab to it and press Enter: the supplier opens in its own tab.
+11. **Start a skill.** At the bottom of an order, the **Supplier risk for … with an agent** button.
     Its chevron (or the arrow-down key) offers: _Start in background_, _First make a plan_,
     _Start in terminal_, _View skill_. Start one in the background and watch the Runner view (right
-    side) show it live, then the thread of that event grow a run.
-11. **First make a plan.** Choose it: the runner drafts a plan and stops; a notification offers
+    side): the run appears under _Running now_ with its elapsed time ticking, moves to _History_ as
+    `ok · 6 s · now` when it ends, and the thread of that event grows a run.
+12. **First make a plan.** Choose it: the runner drafts a plan and stops; a notification offers
     **Approve plan**. Nothing runs until you say so.
-12. **Cancel and retry.** In the Runner view, open a live run and **Cancel run**. Right-click a run
-    under _Dead letters_: **Retry run** asks the runner again and tells you what happened. Requeue,
-    Pause and Resume are there too, deactivated with the reason, because they are for admins.
+13. **Cancel and retry.** In the Runner view, open a live run and **Cancel run** (or use the stop icon on
+    its row). A run that failed sits under _Needs attention_ with its reason on its own line: **Retry
+    run** (the icon, or right-click) asks the runner again and tells you what happened. Requeue and
+    Pause/Resume dispatch are there too, deactivated with the reason, because they are for admins.
+14. **History and traces.** Under _History_ every past run is one line (`skill · target`, a short word, how
+    long, how long ago), 25 at a time with **Load more…**. The funnel in the view's title filters it by
+    status or skill. Click a run to open its detail: the plan, the attempts and the **trace**, a timeline
+    of the tool calls with their outcome in words and a bar for how long each took; expand a call to see
+    how much it sent and received (sizes, not content), and follow the link to what the run produced.
+
+15. **Rows from outside systems.** Under _purchasing/suppliers_ two more skills are not escurel data at
+    all: **supplier-rating** (a REST portal) and **delivery-confirmation** (an MCP server). `run.sh`
+    starts both as real local processes (`services/ratings-api.mjs`, `services/confirmations-mcp.mjs`) and
+    registers them as endpoints; the gateway reads them live. Open `iberica-forja` under supplier-rating: the
+    strip says **External data (REST)** (hover: it is data, never instructions), the columns are the
+    portal's and read-only, and the portal's URL is shown as the source.
+16. **Change something at the source, with a reviewer.** In the strip press **Change rating…**, type `B`,
+    add a note. Nothing has happened at the portal yet (`curl` the portal: still `A`). The proposal waits
+    under _Awaiting you_; promote it. Now the portal says `B`, the page shows "Last change sent to the
+    source …: applied.", and your note is the row's notes. Do the same on a delivery confirmation (status
+    `open` → `confirmed`, over MCP).
+    A third source is a real **SQL database**: under _sales/orders_, **orders-db** reads the rows of a SQLite
+    file (`$HOME/.cache/escurel-demo/sqlite/orders.db`, made by `sources/orders-db/seed.mjs`; the gateway sees it
+    only through a registered secret reference and `ESCUREL_SQL_FILE_DIRS`). Open `SO-100231`, press **Change
+    status…**, type `shipped`, promote it from _Awaiting you_: one `UPDATE` runs on that row (check with
+    `sqlite3 …/orders.db 'select order_no,status from orders'`), the others stay as they were.
+17. **When it goes wrong, it says so.** Stop the ratings portal (`kill $(cat $HOME/.cache/escurel-demo/ratings.pid)`)
+    and open a supplier-rating row again: the page still opens, flags the source as unreachable, and keeps
+    your notes. A change promoted while it is down is retried a few times and then reported as failed; the
+    draft stays open to promote again. A change proposed from a stale row is refused as a conflict.
 
 ## Limits worth saying out loud
 
 - The runner is the echo harness: it folds the signal into the page, it does not reason. The
-  lineage, the live updates and the review are real; the "agent" is a stand-in.
+  lineage, the live updates and the review are real; the "agent" is a stand-in. The Runner view says so
+  itself ("echo harness (demo, no AI model)"), so nobody mistakes the demo's runs for model output.
+- The gateway runs with `ESCUREL_EGRESS_ALLOW_LOOPBACK=1` so that it may call the demo's local portal and
+  MCP server; a real deployment refuses loopback and plain http (see `references/09` of the platform skill).
 - Sign-in is a test token, kept fresh from a file by `demo/bootstrap`, which is not part of the
   shipped extension. A real install signs in with OIDC.
 - `customer-order` deliberately has no `cascade:` routing: a cascade from an order back to the

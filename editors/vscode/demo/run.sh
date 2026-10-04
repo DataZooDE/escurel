@@ -30,7 +30,7 @@ stop() {
   sleep 2
   # A window that has been up for hours ignores SIGTERM.
   pkill -9 -f -- "${HOME_DIR}/[p]rofile" 2>/dev/null || true
-  for f in code runner gateway; do
+  for f in code runner gateway ratings confirmations; do
     if [ -f "$HOME_DIR/$f.pid" ]; then
       kill "$(cat "$HOME_DIR/$f.pid")" 2>/dev/null || true
       rm -f "$HOME_DIR/$f.pid"
@@ -41,7 +41,7 @@ stop() {
 case "${1:-start}" in
   stop) stop; echo "demo stopped"; exit 0 ;;
   status)
-    for f in gateway runner code; do
+    for f in gateway runner code ratings confirmations; do
       if [ -f "$HOME_DIR/$f.pid" ] && kill -0 "$(cat "$HOME_DIR/$f.pid")" 2>/dev/null; then echo "$f: running"; else echo "$f: not running"; fi
     done
     exit 0 ;;
@@ -62,9 +62,39 @@ mkdir -p "$HOME_DIR/workspace" "$HOME_DIR/profile/User" "$HOME_DIR/ext"
 # resolves a relative glob against the server's cwd, so its skill page must carry an absolute path.
 cp -r "$HERE/seed" "$HOME_DIR/seed"
 sed -i "s|@ORDER_LINES_DIR@|$HERE/sources/order-lines|" "$HOME_DIR/seed/skills/order-lines.md"
+# The orders and the suppliers are `instances: rows` sql_views over SAP-shaped extracts (VBAK, LFA1):
+# one instance per row, no materialise step (the view is created on first read).
+sed -i "s|@VBAK_DIR@|$HERE/sources/vbak|" "$HOME_DIR/seed/skills/customer-order.md"
+sed -i "s|@LFA1_DIR@|$HERE/sources/lfa1|" "$HOME_DIR/seed/skills/supplier.md"
 
-# The gateway: verifies tokens, and keeps a fresh bearer in a file (a demo outlasts a token).
-setsid nohup "$GATEWAY_BIN" --tenant vsx --seed "$HOME_DIR/seed" --subject alice \
+# Two outside systems, as real local processes on real sockets: a REST portal (supplier ratings) and
+# an MCP server (delivery confirmations). escurel reads them like any external system.
+service() { # name script
+  setsid nohup node "$HERE/services/$2" > "$HOME_DIR/$1.json" 2> "$HOME_DIR/$1.log" < /dev/null &
+  echo $! > "$HOME_DIR/$1.pid"
+  for _ in $(seq 1 40); do [ -s "$HOME_DIR/$1.json" ] && break; sleep 0.25; done
+  [ -s "$HOME_DIR/$1.json" ] || { echo "$1 printed nothing; see $HOME_DIR/$1.log" >&2; exit 1; }
+}
+service ratings ratings-api.mjs
+service confirmations confirmations-mcp.mjs
+svc_port() { python3 -c "import json; print(json.loads(open('$HOME_DIR/$1.json').readline())['port'])"; }
+export ESCUREL_DEMO_RATINGS_URL="http://127.0.0.1:$(svc_port ratings)"
+export ESCUREL_DEMO_CONFIRMATIONS_URL="http://127.0.0.1:$(svc_port confirmations)/mcp"
+
+# The SQL database behind `orders-db`: a real SQLite file. A tenant never names a path: an admin
+# registers a credential that is a secret reference (a file under ESCUREL_SECRET_FILE_DIRS holding the
+# connection string), and the operator allows the directory the database file may live in. The
+# directory connectors (json_dir) read files too, so the demo's `sources/` is exposed the same way.
+# A tenant's secret files live under `<dir>/<tenant>/` (the demo's tenant is `vsx`).
+mkdir -p "$HOME_DIR/secrets/vsx" "$HOME_DIR/sqlite"
+node "$HERE/sources/orders-db/seed.mjs" "$HOME_DIR/sqlite/orders.db" 2>/dev/null
+printf '%s\n' "$HOME_DIR/sqlite/orders.db" > "$HOME_DIR/secrets/vsx/orders-db"
+export ESCUREL_DEMO_ORDERS_DB_SECRET="$HOME_DIR/secrets/vsx/orders-db"
+
+# The gateway: verifies tokens, and keeps a fresh bearer in a file (a demo outlasts a token). Its
+# outbound policy is strict by default (https, public addresses only); the demo's outside systems are
+# local, so loopback is opened for THIS process only.
+ESCUREL_EGRESS_ALLOW_LOOPBACK=1 ESCUREL_SECRET_FILE_DIRS="$HOME_DIR/secrets" ESCUREL_SQL_FILE_DIRS="$HOME_DIR/sqlite:$HERE/sources" setsid nohup "$GATEWAY_BIN" --tenant vsx --seed "$HOME_DIR/seed" --subject alice \
   --bearer-file "$HOME_DIR/bearer.json" > "$HOME_DIR/gateway.json" 2> "$HOME_DIR/gateway.log" < /dev/null &
 echo $! > "$HOME_DIR/gateway.pid"
 for _ in $(seq 1 120); do [ -s "$HOME_DIR/gateway.json" ] && break; sleep 0.5; done
@@ -97,6 +127,7 @@ cat > "$HOME_DIR/profile/User/settings.json" <<JSON
   "security.workspace.trust.enabled": false,
   "workbench.startupEditor": "none",
   "workbench.tips.enabled": false,
+  "workbench.tree.enableStickyScroll": false,
   "telemetry.telemetryLevel": "off",
   "update.mode": "none",
   "extensions.autoUpdate": false,

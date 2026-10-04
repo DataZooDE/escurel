@@ -1,0 +1,155 @@
+//! Shared scaffolding for the remote-connector tests: a real gateway over a real DuckDB + `FsStore`,
+//! `tools/call` over HTTP, and real upstream servers on loopback sockets.
+
+use std::net::SocketAddr;
+use std::sync::Arc;
+
+use axum::Router;
+use duckdb::Connection;
+use escurel_embed::{Embedder, ZeroEmbedder};
+use escurel_index::{Indexer, Migrator};
+use escurel_server::egress::EgressPolicy;
+use escurel_storage::{FsStore, LaneStore};
+use escurel_test_support::{AuthMode, ConfigOverrides, EscurelProcess, Opts, Role};
+use serde_json::{Value, json};
+use tempfile::TempDir;
+use tokio::net::TcpListener;
+
+pub const TENANT: &str = "acme";
+
+/// A gateway whose indexer already holds `skills` (id, markdown), with `egress` as its policy.
+pub async fn spawn_gateway(
+    skills: &[(&str, &str)],
+    egress: EgressPolicy,
+) -> (EscurelProcess, Vec<TempDir>) {
+    spawn_gateway_with(skills, egress, None).await
+}
+
+/// [`spawn_gateway`] with a bounded graceful-stop drain (`None` → the production default).
+pub async fn spawn_gateway_with(
+    skills: &[(&str, &str)],
+    egress: EgressPolicy,
+    shutdown_drain: Option<std::time::Duration>,
+) -> (EscurelProcess, Vec<TempDir>) {
+    let store_dir = TempDir::new().unwrap();
+    let db_dir = TempDir::new().unwrap();
+    let store: Arc<dyn LaneStore> = Arc::new(FsStore::new(store_dir.path().to_path_buf()));
+    let embedder: Arc<dyn Embedder> = Arc::new(ZeroEmbedder::default());
+    let conn = Connection::open(db_dir.path().join("escurel.duckdb")).unwrap();
+    Migrator::up(&conn).unwrap();
+    let indexer = Arc::new(Indexer::new(store, embedder, conn, TENANT).unwrap());
+    for (id, md) in skills {
+        indexer
+            .update_page(&format!("markdown/skills/{id}.md"), md)
+            .await
+            .unwrap();
+    }
+    let process = EscurelProcess::spawn(Opts {
+        auth: AuthMode::TestIssuer,
+        config_overrides: ConfigOverrides {
+            indexer: Some(indexer),
+            egress: Some(egress),
+            // So a test can mint a per-run agent token (`mint_agent_token`).
+            signing: true,
+            shutdown_drain,
+            ..Default::default()
+        },
+        ..Default::default()
+    })
+    .await;
+    (process, vec![store_dir, db_dir])
+}
+
+/// [`spawn_gateway`] plus a second connection to the SAME DuckDB instance (`try_clone`, the way the
+/// server clones its CRDT connection), so a test can break the store underneath a running gateway
+/// with real SQL (e.g. rename the `events` table) and provoke a genuine storage error.
+pub async fn spawn_gateway_breakable(
+    skills: &[(&str, &str)],
+    egress: EgressPolicy,
+) -> (EscurelProcess, Vec<TempDir>, Connection) {
+    let store_dir = TempDir::new().unwrap();
+    let db_dir = TempDir::new().unwrap();
+    let store: Arc<dyn LaneStore> = Arc::new(FsStore::new(store_dir.path().to_path_buf()));
+    let embedder: Arc<dyn Embedder> = Arc::new(ZeroEmbedder::default());
+    let conn = Connection::open(db_dir.path().join("escurel.duckdb")).unwrap();
+    Migrator::up(&conn).unwrap();
+    let breaker = conn.try_clone().unwrap();
+    let indexer = Arc::new(Indexer::new(store, embedder, conn, TENANT).unwrap());
+    for (id, md) in skills {
+        indexer
+            .update_page(&format!("markdown/skills/{id}.md"), md)
+            .await
+            .unwrap();
+    }
+    let process = EscurelProcess::spawn(Opts {
+        auth: AuthMode::TestIssuer,
+        config_overrides: ConfigOverrides {
+            indexer: Some(indexer),
+            egress: Some(egress),
+            signing: true,
+            ..Default::default()
+        },
+        ..Default::default()
+    })
+    .await;
+    (process, vec![store_dir, db_dir], breaker)
+}
+
+pub fn loopback_ok() -> EgressPolicy {
+    EgressPolicy {
+        allow_loopback: true,
+        ..EgressPolicy::default()
+    }
+}
+
+/// `tools/call` as `role`; returns the JSON-RPC envelope.
+pub async fn call_as(p: &EscurelProcess, role: Role, name: &str, args: Value) -> Value {
+    let token = p.mint_token(TENANT, role);
+    reqwest::Client::new()
+        .post(p.mcp_url())
+        .header("authorization", format!("Bearer {token}"))
+        .json(&json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                       "params": { "name": name, "arguments": args } }))
+        .send()
+        .await
+        .expect("post")
+        .json()
+        .await
+        .expect("json")
+}
+
+/// `tools/call` as admin; returns `result.structuredContent` (panics on a JSON-RPC error).
+pub async fn admin(p: &EscurelProcess, name: &str, args: Value) -> Value {
+    let v = call_as(p, Role::Admin, name, args).await;
+    assert!(v.get("error").is_none(), "{name}: {v}");
+    v["result"]["structuredContent"].clone()
+}
+
+pub async fn serve(app: Router) -> (String, tokio::task::JoinHandle<()>) {
+    let listener = TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], 0)))
+        .await
+        .unwrap();
+    let addr = listener.local_addr().unwrap();
+    let handle = tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    (format!("http://{addr}"), handle)
+}
+
+/// The value of one `/metrics` series (`name{labels}`) on this gateway's own metrics listener, or
+/// `None` when the series is absent. Each gateway has its OWN registry, so counts are per test.
+pub async fn metrics_text(p: &EscurelProcess) -> String {
+    reqwest::get(p.metrics_url().expect("metrics listener"))
+        .await
+        .expect("scrape")
+        .text()
+        .await
+        .expect("body")
+}
+
+/// One series of [`metrics_text`], parsed.
+pub async fn metric(p: &EscurelProcess, series: &str) -> Option<f64> {
+    let body = metrics_text(p).await;
+    body.lines()
+        .find_map(|l| l.strip_prefix(series)?.trim().parse::<f64>().ok())
+}

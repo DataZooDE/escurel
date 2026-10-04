@@ -1,5 +1,5 @@
 ---
-type: instance
+kind: instance
 skill: hypothesis
 id: gradient-boost
 at: 2026-01-20T11:00:00Z

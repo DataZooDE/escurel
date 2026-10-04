@@ -23,7 +23,7 @@ import '../theme/app_theme.dart';
 
 /// Structural frontmatter keys the form keeps read-only — they define
 /// the page's identity and must not be retyped by the operator.
-const _structuralKeys = {'type', 'skill', 'id'};
+const _structuralKeys = {'kind', 'skill', 'id'};
 
 /// Frontmatter fields with a closed value domain — rendered as a dropdown
 /// rather than a free-text box so only valid values can be entered.
@@ -40,7 +40,7 @@ const _enumFields = <String, List<String>>{
 /// (`[a, b]`), and the body follows after the closing `---`.
 String serializePage(Map<String, dynamic> frontmatter, String body) {
   final keys = <String>[
-    for (final k in ['type', 'skill', 'id']) if (frontmatter.containsKey(k)) k,
+    for (final k in ['kind', 'skill', 'id']) if (frontmatter.containsKey(k)) k,
     ...frontmatter.keys.where((k) => !_structuralKeys.contains(k)),
   ];
   final buf = StringBuffer('---\n');
@@ -209,7 +209,7 @@ class _PageEditFormState extends ConsumerState<PageEditForm> {
   String _buildContent({Map<String, dynamic>? overrideFrontmatter, String? overrideBody}) {
     final fm = overrideFrontmatter ?? _collectFrontmatter();
     // Ensure structural keys are present and coherent.
-    fm['type'] = 'instance';
+    fm['kind'] = 'instance';
     fm['skill'] = widget.skill.id;
     fm['id'] = widget.isNew ? _slug(_newId.text) : (fm['id'] as String? ?? '');
     return serializePage(fm, overrideBody ?? _body.text);
@@ -297,7 +297,7 @@ class _PageEditFormState extends ConsumerState<PageEditForm> {
 
     final client = ref.read(escurelClientProvider);
     final fm = _collectFrontmatter();
-    fm['type'] = 'instance';
+    fm['kind'] = 'instance';
     fm['skill'] = widget.skill.id;
     fm['status'] = 'erased';
     final content = serializePage(fm, _body.text);

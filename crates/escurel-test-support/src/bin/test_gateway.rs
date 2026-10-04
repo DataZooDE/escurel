@@ -14,7 +14,9 @@
 //!
 //! The seed directory holds `skills/*.md` and `instances/*.md`. Each file becomes the page
 //! `markdown/skills/<name>.md` / `markdown/instances/<name>.md` — FLAT, so an instance is
-//! `markdown/instances/<skill>__<id>.md`, which is how the shipped corpora lay them out.
+//! `markdown/instances/<skill>__<id>.md`, which is how the shipped corpora lay them out. One level of
+//! subdirectory is NESTED: `instances/<skill>/<id>.md` is `markdown/instances/<skill>/<id>.md` (the page
+//! id of a row of an `instances: rows` skill, and of its linked markdown).
 //!
 //! The `bearer` is a HUMAN's (role `agent`, the subject given by `--subject`): it can read,
 //! draft and promote, and it is what an editor under test signs in with. The `admin_bearer` is
@@ -109,21 +111,10 @@ fn pages(seed: &Path) -> Result<Vec<(String, String)>, String> {
         if !root.is_dir() {
             continue;
         }
-        let mut files: Vec<_> = std::fs::read_dir(&root)
-            .map_err(|e| format!("read {}: {e}", root.display()))?
-            .filter_map(Result::ok)
-            .map(|e| e.path())
-            .filter(|p| p.extension().is_some_and(|x| x == "md"))
-            .collect();
-        files.sort();
-        for path in files {
-            let name = path
-                .file_name()
-                .and_then(|n| n.to_str())
-                .ok_or_else(|| format!("non-utf8 file name {}", path.display()))?;
+        for (rel, path) in markdown_files(&root)? {
             let body = std::fs::read_to_string(&path)
                 .map_err(|e| format!("read {}: {e}", path.display()))?;
-            out.push((format!("markdown/{dir}/{name}"), body));
+            out.push((format!("markdown/{dir}/{rel}"), body));
         }
     }
     if out.is_empty() {
@@ -133,6 +124,45 @@ fn pages(seed: &Path) -> Result<Vec<(String, String)>, String> {
         ));
     }
     Ok(out)
+}
+
+/// The `.md` files directly under `root` (a flat page id) and one level down (`<skill>/<id>.md`, the
+/// NESTED page id an `instances: rows` skill gives a row and its linked markdown), sorted so a seed
+/// replays the same way every time. Returns `(relative path, absolute path)`.
+fn markdown_files(root: &Path) -> Result<Vec<(String, PathBuf)>, String> {
+    let mut found = Vec::new();
+    let mut entries: Vec<PathBuf> = std::fs::read_dir(root)
+        .map_err(|e| format!("read {}: {e}", root.display()))?
+        .filter_map(Result::ok)
+        .map(|e| e.path())
+        .collect();
+    entries.sort();
+    for path in entries {
+        let name = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .ok_or_else(|| format!("non-utf8 file name {}", path.display()))?
+            .to_owned();
+        if path.is_dir() {
+            let mut inner: Vec<PathBuf> = std::fs::read_dir(&path)
+                .map_err(|e| format!("read {}: {e}", path.display()))?
+                .filter_map(Result::ok)
+                .map(|e| e.path())
+                .filter(|p| p.is_file() && p.extension().is_some_and(|x| x == "md"))
+                .collect();
+            inner.sort();
+            for file in inner {
+                let leaf = file
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .ok_or_else(|| format!("non-utf8 file name {}", file.display()))?;
+                found.push((format!("{name}/{leaf}"), file));
+            }
+        } else if path.extension().is_some_and(|x| x == "md") {
+            found.push((name, path));
+        }
+    }
+    Ok(found)
 }
 
 #[tokio::main]
@@ -172,6 +202,9 @@ async fn main() {
             // A signing identity on the issuer's own key, so `mint_agent_token` works: starting
             // a skill in a terminal under a governed run needs it.
             signing: true,
+            // The demo's REST and MCP upstreams are local processes; `ESCUREL_EGRESS_*` (notably
+            // `ESCUREL_EGRESS_ALLOW_LOOPBACK=1`) opens loopback for them, strict otherwise.
+            egress: Some(escurel_test_support::EgressPolicy::from_env()),
             ..Default::default()
         },
     })

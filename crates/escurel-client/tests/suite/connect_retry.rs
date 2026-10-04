@@ -74,13 +74,15 @@ fn serve_after(port: u16, delay: Duration) -> Arc<AtomicUsize> {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_call_rides_out_a_gateway_restart() {
     let port = vacant_port().await;
+    // The gateway's 2 s clock starts HERE; measured from a later point, a slow `connect` on a loaded
+    // machine would eat into it and the "waited" assertion below would fail for no reason.
+    let started = Instant::now();
     let hits = serve_after(port, Duration::from_secs(2));
 
     let client = Client::connect(&format!("http://127.0.0.1:{port}"), SecretString::from("t"))
         .await
         .unwrap();
 
-    let started = Instant::now();
     let out = client.call_raw("list_skills", json!({})).await;
     assert!(
         out.is_ok(),

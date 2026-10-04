@@ -35,8 +35,8 @@ use tempfile::TempDir;
 use tokio::sync::Mutex;
 
 const TENANT: &str = "acme";
-const CUSTOMER: &str = "---\ntype: skill\nid: customer\ndescription: x\n---\n# customer\n";
-const C1: &str = "---\ntype: instance\nskill: customer\nid: c1\n---\n# Acme\n\nseed.\n";
+const CUSTOMER: &str = "---\nkind: skill\nid: customer\ndescription: x\n---\n# customer\n";
+const C1: &str = "---\nkind: instance\nskill: customer\nid: c1\n---\n# Acme\n\nseed.\n";
 const PAGE: &str = "markdown/instances/customer/c1.md";
 
 struct Harness {
@@ -120,7 +120,7 @@ async fn an_op_after_a_concurrent_update_page_gets_a_distinct_version() {
         &h,
         "update_page",
         json!({ "page_id": PAGE,
-                "content": "---\ntype: instance\nskill: customer\nid: c1\n---\n# Acme\n\nWHOLE-PAGE.\n" }),
+                "content": "---\nkind: instance\nskill: customer\nid: c1\n---\n# Acme\n\nWHOLE-PAGE.\n" }),
     )
     .await;
     assert_eq!(sc(&w)["ok"], true, "whole-page write must succeed: {w}");
@@ -170,7 +170,7 @@ async fn the_persisted_version_space_advances_past_both_writers() {
         &h,
         "update_page",
         json!({ "page_id": PAGE,
-                "content": "---\ntype: instance\nskill: customer\nid: c1\n---\n# Acme\n\nFIRST.\n" }),
+                "content": "---\nkind: instance\nskill: customer\nid: c1\n---\n# Acme\n\nFIRST.\n" }),
     )
     .await;
     let update_version = sc(&w)["new_version"]

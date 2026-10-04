@@ -39,24 +39,32 @@
 
 mod auth_gate;
 pub mod config;
+pub mod config_keys;
 mod config_probe;
+pub mod credential_policy;
+pub mod egress;
 mod health;
 mod live_dispatch;
 mod mcp;
 pub mod pack;
 mod remote_backend;
+mod remote_rows;
+pub mod secret_policy;
 pub mod selfpack;
 mod server;
 mod session;
 pub mod snapshot_publish;
 pub mod snapshot_refresh;
+mod sql_rows;
 mod tenant_archive;
 mod webhook;
+mod write_back;
+mod write_back_sql;
 mod ws;
 
 pub use config::{BootedServer, ConfigError, EscurelConfig};
 pub use health::{AlwaysReady, ReadinessProbe, ReadinessReport};
 pub use server::{
-    AutonomyLintMode, EmbedderFactory, EventAclMode, ServerConfig, ServerError, ServerHandle,
-    WriteAclMode, serve,
+    AutonomyLintMode, DEFAULT_SHUTDOWN_DRAIN, EmbedderFactory, EventAclMode, ServerConfig,
+    ServerError, ServerHandle, WriteAclMode, serve,
 };

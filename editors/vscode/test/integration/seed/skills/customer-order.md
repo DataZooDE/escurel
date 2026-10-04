@@ -1,10 +1,13 @@
 ---
-type: skill
+kind: skill
 id: customer-order
+folder: sales/orders
+role: record
+tags: [sap, sd]
 description: A customer order. A change to one is announced.
 autonomy: review
 actions:
-  - {name: assess-supplier-risk, kind: event, label: "Assess supplier risk", event: supplier-risk}
+  - { name: assess-supplier-risk, kind: event, label: 'Assess supplier risk', event: supplier-risk }
 cascade:
   target: produced
 ---

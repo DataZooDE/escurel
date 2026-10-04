@@ -1,0 +1,93 @@
+{
+  "skills": [
+    {
+      "id": "customer-order",
+      "description": "A customer order. A change to one is announced.",
+      "required_frontmatter": [],
+      "optional_frontmatter": [],
+      "is_event_typed": false,
+      "visibility": "public",
+      "owner_field": null,
+      "backend": {
+        "kind": "markdown"
+      },
+      "capabilities": {
+        "writable": true,
+        "granularity": "block",
+        "search": "hybrid",
+        "supports_crdt": true
+      },
+      "layer": "overlay",
+      "autonomy": "review",
+      "folder": "sales/orders",
+      "role": "record",
+      "tags": [
+        "sap",
+        "sd"
+      ],
+      "actions": [
+        {
+          "name": "assess-supplier-risk",
+          "kind": "event",
+          "label": "Assess supplier risk",
+          "event": "supplier-risk"
+        }
+      ],
+      "cascade": {
+        "target": "produced"
+      }
+    },
+    {
+      "id": "escurel",
+      "description": "How this knowledge base is organised and how to navigate it. Read this first when entering a new tenant.",
+      "required_frontmatter": [],
+      "optional_frontmatter": [],
+      "is_event_typed": false,
+      "visibility": "public",
+      "owner_field": null,
+      "backend": {
+        "kind": "markdown"
+      },
+      "capabilities": {
+        "writable": true,
+        "granularity": "block",
+        "search": "hybrid",
+        "supports_crdt": true
+      },
+      "layer": "overlay"
+    },
+    {
+      "id": "supplier-risk",
+      "description": "A supplier-risk signal, folded into the customer order it concerns.",
+      "required_frontmatter": [],
+      "optional_frontmatter": [],
+      "is_event_typed": false,
+      "visibility": "public",
+      "owner_field": null,
+      "backend": {
+        "kind": "markdown"
+      },
+      "capabilities": {
+        "writable": true,
+        "granularity": "block",
+        "search": "hybrid",
+        "supports_crdt": true
+      },
+      "layer": "overlay",
+      "autonomy": "review",
+      "folder": "sales/risk",
+      "role": "process",
+      "tags": [
+        "risk"
+      ],
+      "actions": [
+        {
+          "name": "review-order",
+          "kind": "event",
+          "label": "Review the order",
+          "event": "customer-order"
+        }
+      ]
+    }
+  ]
+}

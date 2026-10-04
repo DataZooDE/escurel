@@ -21,11 +21,11 @@ const TENANT: &str = "stuttgart-ai";
 const ALICE: &str = "consultant:alice";
 const BOB: &str = "consultant:bob";
 
-const MEMBER_SKILL: &str = "---\ntype: skill\nid: community_member\n\
+const MEMBER_SKILL: &str = "---\nkind: skill\nid: community_member\n\
     description: A member.\nvisibility: owner\nowner_field: credential\n---\n# community_member\n";
-const ALICE_MEMBER: &str = "---\ntype: instance\nskill: community_member\nid: alice\n\
+const ALICE_MEMBER: &str = "---\nkind: instance\nskill: community_member\nid: alice\n\
     credential: \"consultant:alice\"\n---\n# Alice\n";
-const BOB_MEMBER: &str = "---\ntype: instance\nskill: community_member\nid: bob\n\
+const BOB_MEMBER: &str = "---\nkind: instance\nskill: community_member\nid: bob\n\
     credential: \"consultant:bob\"\n---\n# Bob\n";
 
 const ALICE_PAGE: &str = "markdown/instances/community_member/alice.md";

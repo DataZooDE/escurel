@@ -1072,10 +1072,10 @@ fn build_instructions(
                 .and_then(|rest| rest.split_once('/'))
             {
                 Some((skill, id)) => format!(
-                    " `type: instance`, `skill: {skill}` and `id: {id}` (from that \
+                    " `kind: instance`, `skill: {skill}` and `id: {id}` (from that \
                      page id),"
                 ),
-                None => " `type: instance` and a `skill` and `id` matching that \
+                None => " `kind: instance` and a `skill` and `id` matching that \
                           page id,"
                     .to_owned(),
             };

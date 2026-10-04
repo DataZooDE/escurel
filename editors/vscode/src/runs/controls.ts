@@ -40,11 +40,23 @@ export function buildControlEvent(req: ControlRequest): CaptureEventRequest {
 }
 
 const CONTROL = {
-  cancel: { action: 'cancel', label: 'Cancel run' },
-  retry: { action: 'retry', label: 'Retry' },
-  requeue: { action: 'requeue', label: 'Requeue' },
-  approve: { action: 'approve', label: 'Approve plan' },
-  fix: { action: 'fix-skill', label: 'Fix skill' },
+  cancel: {
+    action: 'cancel',
+    label: 'Cancel run',
+    hint: 'Stops the run. Work already done is kept.',
+  },
+  retry: {
+    action: 'retry',
+    label: 'Retry',
+    hint: 'Starts a new run. This attempt stays in history.',
+  },
+  requeue: {
+    action: 'requeue',
+    label: 'Requeue',
+    hint: 'Puts the original event back in the queue for an agent.',
+  },
+  approve: { action: 'approve', label: 'Approve plan', hint: 'Runs the plan the agent wrote.' },
+  fix: { action: 'fix-skill', label: 'Fix skill', hint: 'Opens the skill so you can change it.' },
 } as const;
 
 /**
@@ -53,7 +65,7 @@ const CONTROL = {
  * unknown it stays enabled and the gateway decides.
  */
 export function runControls(status: string, admin: AdminState): RunControl[] {
-  const on = (c: { action: RunControl['action']; label: string }): RunControl => ({
+  const on = (c: { action: RunControl['action']; label: string; hint?: string }): RunControl => ({
     ...c,
     enabled: true,
   });

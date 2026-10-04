@@ -472,7 +472,7 @@ async fn fresh_duckdb_rebuilds_index_from_surviving_markdown() {
     std::fs::create_dir_all(&md).unwrap();
     std::fs::write(
         md.join("customer.md"),
-        "---\ntype: skill\nid: customer\ndescription: a buyer\n---\n# customer\n",
+        "---\nkind: skill\nid: customer\ndescription: a buyer\n---\n# customer\n",
     )
     .unwrap();
 
@@ -532,7 +532,7 @@ async fn rebuild_index_on_boot_always_recreates_the_derived_duckdb() {
     std::fs::create_dir_all(&md).unwrap();
     std::fs::write(
         md.join("customer.md"),
-        "---\ntype: skill\nid: customer\ndescription: a buyer\n---\n# customer\n",
+        "---\nkind: skill\nid: customer\ndescription: a buyer\n---\n# customer\n",
     )
     .unwrap();
     let db_path = data_dir

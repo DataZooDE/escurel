@@ -187,6 +187,9 @@ pub struct ServerConfig {
     /// Write-time enforcement mode for the `autonomy:` lint
     /// (`ESCUREL_AUTONOMY_LINT`).
     pub autonomy_lint: AutonomyLintMode,
+    /// What outbound calls to registered remote endpoints may do (`ESCUREL_EGRESS_*`). Strict by
+    /// default: https only, public addresses only, no redirects, capped and rate-limited.
+    pub egress: crate::egress::EgressPolicy,
     /// HTTP listener — `0.0.0.0:8080` in production; tests pass
     /// `127.0.0.1:0` to let the OS pick a free port.
     pub listen: String,
@@ -239,6 +242,10 @@ pub struct ServerConfig {
     /// How many `run-progress` snapshots a run keeps (`ESCUREL_RUN_PROGRESS_KEEP`,
     /// default 50); older ones are pruned at capture.
     pub run_progress_keep: usize,
+    /// How long a graceful stop waits for in-flight requests before it aborts them
+    /// (`ESCUREL_SHUTDOWN_DRAIN_SECS`, default [`DEFAULT_SHUTDOWN_DRAIN`]). Kept below the
+    /// orchestrator's own kill timeout, so a stuck request cannot get the process SIGKILLed mid-write.
+    pub shutdown_drain: std::time::Duration,
     /// Backing store for the admin tenant-CRUD RPCs. `None`
     /// means every tenant CRUD RPC returns
     /// `Status::failed_precondition` — useful for health-only
@@ -374,6 +381,7 @@ pub struct ServerHandle {
     metrics_shutdown_tx: Option<oneshot::Sender<()>>,
     evict_shutdown_tx: Option<oneshot::Sender<()>>,
     join: JoinHandle<()>,
+    shutdown_drain: std::time::Duration,
     metrics_join: Option<JoinHandle<()>>,
     evict_join: Option<JoinHandle<()>>,
     /// Telemetry guard. `Some` when this `serve()` call was the
@@ -406,7 +414,19 @@ impl ServerHandle {
         if let Some(tx) = self.evict_shutdown_tx.take() {
             let _ = tx.send(());
         }
-        let _ = self.join.await;
+        // Wait for in-flight requests, but not for ever: past the drain deadline the stragglers are
+        // aborted so the process can exit before the orchestrator kills it.
+        if tokio::time::timeout(self.shutdown_drain, &mut self.join)
+            .await
+            .is_err()
+        {
+            tracing::warn!(
+                drain_secs = self.shutdown_drain.as_secs_f32(),
+                "graceful stop timed out waiting for in-flight requests; aborting them"
+            );
+            self.join.abort();
+            let _ = (&mut self.join).await;
+        }
         if let Some(j) = self.metrics_join.take() {
             let _ = j.await;
         }
@@ -416,11 +436,15 @@ impl ServerHandle {
     }
 }
 
+/// The default graceful-stop drain: below the 30 s most orchestrators allow before SIGKILL.
+pub const DEFAULT_SHUTDOWN_DRAIN: std::time::Duration = std::time::Duration::from_secs(25);
+
 #[derive(Clone)]
 pub(crate) struct AppState {
     pub(crate) write_acl: WriteAclMode,
     pub(crate) event_acl: EventAclMode,
     pub(crate) autonomy_lint: AutonomyLintMode,
+    pub(crate) egress: Arc<crate::egress::Egress>,
     pub(crate) version: String,
     pub(crate) readiness: Arc<dyn ReadinessProbe>,
     /// The single tenant this instance serves. The auth gate compares
@@ -537,10 +561,24 @@ pub async fn serve(
             .as_ref()
             .map(|h| h.current().tenant().to_owned())
     });
+    // The operator's credential policy (secret references, attach-target checks) for every SQL source
+    // this gateway opens. Installed on the served indexer; `IndexerHandle::swap` carries it over.
+    if let Some(h) = config.indexer.as_ref() {
+        h.current().set_credential_resolver(Arc::new(
+            crate::credential_policy::ServerCredentialPolicy::new(
+                config.egress.clone(),
+                h.current().tenant(),
+            ),
+        ));
+    }
     let state = AppState {
         write_acl: config.write_acl,
         event_acl: config.event_acl,
         autonomy_lint: config.autonomy_lint,
+        egress: Arc::new(
+            crate::egress::Egress::new(config.egress.clone())
+                .with_metrics(Arc::clone(&metrics_registry)),
+        ),
         version: config.version.clone(),
         readiness: Arc::clone(&config.readiness),
         served_tenant,
@@ -677,6 +715,7 @@ pub async fn serve(
         metrics_shutdown_tx,
         evict_shutdown_tx: Some(evict_shutdown_tx),
         join,
+        shutdown_drain: config.shutdown_drain,
         metrics_join,
         evict_join: Some(evict_join),
         _telemetry: telemetry_guard,
@@ -719,6 +758,27 @@ async fn spawn_metrics(
 /// installer; every later call (this fn's own fallback in `serve`
 /// for a caller that bypassed `build`, or a test's own subscriber)
 /// silently keeps the existing global.
+/// The ONE refusal every door of a QUARANTINED tenant gives (the hard cut `type:` -> `kind:`): a
+/// tenant that booted with legacy pages is up so an operator can run `migrate_kind`, but its index is
+/// incomplete, so it must serve and accept nothing else. `POST /mcp` answers with a typed JSON-RPC
+/// error (see `mcp.rs`); the plain HTTP doors (`/ingest`, `/ingest/upload`, `/blob/*`, `/ws`) answer
+/// `503 {error: "tenant_quarantined", message}` carrying the remedy.
+pub(crate) fn quarantine_refusal(
+    indexer: &escurel_index::Indexer,
+) -> Option<axum::response::Response> {
+    let pages = indexer.legacy_quarantine()?;
+    Some(
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            axum::Json(json!({
+                "error": "tenant_quarantined",
+                "message": escurel_index::migrate_kind::legacy_kind_message(indexer.tenant(), &pages),
+            })),
+        )
+            .into_response(),
+    )
+}
+
 pub(crate) fn install_telemetry(version: &str) -> Option<escurel_obs::TelemetryGuard> {
     let env = std::env::var("ESCUREL_ENV").unwrap_or_else(|_| "dev".to_owned());
     let cfg = TelemetryConfig {
@@ -745,7 +805,22 @@ async fn healthz() -> impl IntoResponse {
 async fn readyz(State(state): State<AppState>) -> impl IntoResponse {
     let report: ReadinessReport = state.readiness.probe().await;
     if report.all_up() {
-        (StatusCode::OK, "OK").into_response()
+        let notices = report.notices();
+        if notices.is_empty() {
+            return (StatusCode::OK, "OK").into_response();
+        }
+        // Ready, but something an operator must know: 200 so a one-shot `migrate-kind` can still run
+        // against a quarantined tenant, with the state in the body and a header orchestrators and
+        // load-balancer rules can match on.
+        let body = json!({ "ready": true, "notices": notices, "components": report });
+        let mut resp = (StatusCode::OK, axum::Json(body)).into_response();
+        if report.quarantined {
+            resp.headers_mut().insert(
+                "x-escurel-quarantined",
+                axum::http::HeaderValue::from_static("1"),
+            );
+        }
+        resp
     } else {
         let body = json!({
             "ready": false,
@@ -775,6 +850,19 @@ async fn metrics(State(state): State<AppState>) -> impl IntoResponse {
     state
         .metrics
         .set_live_sessions(state.sessions.open_count() as i64);
+    // Operator-visible state that is not a request counter: sampled at scrape time.
+    let report = state.readiness.probe().await;
+    let tenant = state
+        .indexer
+        .as_ref()
+        .map_or_else(String::new, |h| h.current().tenant().to_owned());
+    state
+        .metrics
+        .set_tenant_quarantined(&tenant, report.quarantined);
+    state
+        .metrics
+        .set_migration_pending(report.migration_pending);
+    state.metrics.set_semantic_search(report.semantic_search);
     let body = state.metrics.render_prometheus();
     (
         StatusCode::OK,

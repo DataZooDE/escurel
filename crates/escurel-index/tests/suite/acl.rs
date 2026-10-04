@@ -19,38 +19,38 @@ const BOB: &str = "whatsapp:222";
 
 const SKILL_MEMBER: (&str, &str) = (
     "markdown/skills/community_member.md",
-    "---\ntype: skill\nid: community_member\ndescription: A member.\n\
+    "---\nkind: skill\nid: community_member\ndescription: A member.\n\
      visibility: owner\nowner_field: credential\n---\n# community_member\n",
 );
 const SKILL_EVENT_PROFILE: (&str, &str) = (
     "markdown/skills/event_profile.md",
-    "---\ntype: skill\nid: event_profile\ndescription: Per-event profile.\n\
+    "---\nkind: skill\nid: event_profile\ndescription: Per-event profile.\n\
      visibility: owner\nowner_field: member\n---\n# event_profile\n",
 );
 const SKILL_TALK: (&str, &str) = (
     "markdown/skills/talk.md",
-    "---\ntype: skill\nid: talk\ndescription: A program item.\n\
+    "---\nkind: skill\nid: talk\ndescription: A program item.\n\
      visibility: public\n---\n# talk\n",
 );
 
 const INST_ALICE: (&str, &str) = (
     "markdown/instances/community_member/alice.md",
-    "---\ntype: instance\nskill: community_member\nid: alice\n\
+    "---\nkind: instance\nskill: community_member\nid: alice\n\
      credential: \"whatsapp:111\"\n---\n# Alice\n",
 );
 const INST_BOB: (&str, &str) = (
     "markdown/instances/community_member/bob.md",
-    "---\ntype: instance\nskill: community_member\nid: bob\n\
+    "---\nkind: instance\nskill: community_member\nid: bob\n\
      credential: \"whatsapp:222\"\n---\n# Bob\n",
 );
 const INST_ALICE_PROFILE: (&str, &str) = (
     "markdown/instances/event_profile/alice-ki-gipfel.md",
-    "---\ntype: instance\nskill: event_profile\nid: alice-ki-gipfel\n\
+    "---\nkind: instance\nskill: event_profile\nid: alice-ki-gipfel\n\
      member: \"[[community_member::alice]]\"\nevent: ki-gipfel\n---\n# Alice @ KI-Gipfel\n",
 );
 const INST_TALK: (&str, &str) = (
     "markdown/instances/talk/keynote.md",
-    "---\ntype: instance\nskill: talk\nid: keynote\nevent: ki-gipfel\n---\n# Keynote\n",
+    "---\nkind: instance\nskill: talk\nid: keynote\nevent: ki-gipfel\n---\n# Keynote\n",
 );
 
 struct Harness {
@@ -139,13 +139,13 @@ async fn skill_info(h: &Harness, id: &str) -> SkillInfo {
 
 const SKILL_INCIDENT_ACL: (&str, &str) = (
     "markdown/skills/incident.md",
-    "---\ntype: skill\nid: incident\ndescription: A filed incident.\n\
+    "---\nkind: skill\nid: incident\ndescription: A filed incident.\n\
      owner_field: reporter\nacl:\n  read: [public]\n  create: [owner]\n\
      \x20 update: [owner, moderator]\n  delete: [admin]\n---\n# incident\n",
 );
 const SKILL_NO_POLICY: (&str, &str) = (
     "markdown/skills/legacy_widget.md",
-    "---\ntype: skill\nid: legacy_widget\ndescription: No acl, no visibility.\n\
+    "---\nkind: skill\nid: legacy_widget\ndescription: No acl, no visibility.\n\
      ---\n# legacy_widget\n",
 );
 
@@ -206,7 +206,7 @@ async fn neither_acl_nor_visibility_leaves_policy_unset() {
 #[tokio::test]
 async fn instance_level_acl_block_overrides_the_skill() {
     // #351 (was R5, "parsed-but-not-honoured in v1"): an `acl:` block on a
-    // `type: instance` page is now HONOURED and wins over the skill's. A
+    // `kind: instance` page is now HONOURED and wins over the skill's. A
     // public talk carrying a deny-all `acl:` is no longer readable.
     //
     // Positive controls in the same test: a sibling talk with NO block
@@ -215,7 +215,7 @@ async fn instance_level_acl_block_overrides_the_skill() {
     let h = fresh_harness();
     const INST_TALK_WITH_ACL: (&str, &str) = (
         "markdown/instances/talk/locked.md",
-        "---\ntype: instance\nskill: talk\nid: locked\nevent: ki-gipfel\n\
+        "---\nkind: instance\nskill: talk\nid: locked\nevent: ki-gipfel\n\
          acl:\n  read: []\n---\n# Locked talk\n",
     );
     seed(&h, &[SKILL_TALK, INST_TALK, INST_TALK_WITH_ACL]).await;
@@ -265,12 +265,12 @@ async fn instance_level_acl_resolves_per_verb() {
     let h = fresh_harness();
     const SKILL_NOTE: (&str, &str) = (
         "markdown/skills/note.md",
-        "---\ntype: skill\nid: note\ndescription: A note.\n\
+        "---\nkind: skill\nid: note\ndescription: A note.\n\
          acl:\n  read: [team-a, team-b]\n  update: [team-a, team-b]\n---\n# note\n",
     );
     const INST_NOTE: (&str, &str) = (
         "markdown/instances/note/n1.md",
-        "---\ntype: instance\nskill: note\nid: n1\n\
+        "---\nkind: instance\nskill: note\nid: n1\n\
          acl:\n  read: [team-a]\n---\n# n1\n",
     );
     seed(&h, &[SKILL_NOTE, INST_NOTE]).await;
@@ -305,17 +305,17 @@ async fn instance_level_acl_resolves_per_verb() {
 
 const SKILL_REPORT: (&str, &str) = (
     "markdown/skills/report.md",
-    "---\ntype: skill\nid: report\ndescription: A shared report.\n\
+    "---\nkind: skill\nid: report\ndescription: A shared report.\n\
      owner_field: author\nacl:\n  read: [owner, billing]\n  create: [owner]\n\
      \x20 update: [owner]\n  delete: [owner]\n---\n# report\n",
 );
 const INST_REPORT_ALICE: (&str, &str) = (
     "markdown/instances/report/q3.md",
-    "---\ntype: instance\nskill: report\nid: q3\nauthor: \"whatsapp:111\"\n---\n# Q3\n",
+    "---\nkind: instance\nskill: report\nid: q3\nauthor: \"whatsapp:111\"\n---\n# Q3\n",
 );
 const INST_INCIDENT_BOB: (&str, &str) = (
     "markdown/instances/incident/leak.md",
-    "---\ntype: instance\nskill: incident\nid: leak\nreporter: \"whatsapp:222\"\n---\n# Leak\n",
+    "---\nkind: instance\nskill: incident\nid: leak\nreporter: \"whatsapp:222\"\n---\n# Leak\n",
 );
 
 #[tokio::test]
@@ -470,13 +470,13 @@ async fn legacy_visibility_outcomes_identical() {
 
 const SKILL_DEAL_NOTE: (&str, &str) = (
     "markdown/skills/deal_note.md",
-    "---\ntype: skill\nid: deal_note\ndescription: A shared deal note.\n\
+    "---\nkind: skill\nid: deal_note\ndescription: A shared deal note.\n\
      owner_field: author\nacl:\n  read: [owner, team-acme]\n  create: [owner]\n\
      \x20 update: [owner]\n  delete: [owner]\n---\n# deal_note\n",
 );
 const INST_DEAL_ALICE: (&str, &str) = (
     "markdown/instances/deal_note/alice-q3.md",
-    "---\ntype: instance\nskill: deal_note\nid: alice-q3\nauthor: \"whatsapp:111\"\n---\n# Alice Q3\n",
+    "---\nkind: instance\nskill: deal_note\nid: alice-q3\nauthor: \"whatsapp:111\"\n---\n# Alice Q3\n",
 );
 
 #[tokio::test]

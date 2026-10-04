@@ -12,7 +12,7 @@ use serde_json::{Value, json};
 const TENANT: &str = "carl";
 const ACCOUNT: &str = "\
 ---
-type: skill
+kind: skill
 id: account
 description: A customer account.
 summary: One account per customer.
@@ -26,7 +26,7 @@ blocks:
 ---
 # account
 ";
-const NOTE: &str = "---\ntype: skill\nid: note\ndescription: d.\nsummary: s.\n\
+const NOTE: &str = "---\nkind: skill\nid: note\ndescription: d.\nsummary: s.\n\
 fields:\n  - {name: status, kind: string}\n---\n# note\n";
 
 async fn start() -> EscurelProcess {
@@ -61,7 +61,7 @@ async fn call(p: &EscurelProcess, token: &str, name: &str, args: Value) -> Value
 }
 
 fn skill(extra: &str) -> String {
-    format!("---\ntype: skill\nid: x\ndescription: d.\nsummary: s.\n{extra}---\n# x\n")
+    format!("---\nkind: skill\nid: x\ndescription: d.\nsummary: s.\n{extra}---\n# x\n")
 }
 
 fn issue<'a>(out: &'a Value, code: &str) -> Option<&'a Value> {

@@ -1,5 +1,5 @@
 ---
-type: instance
+kind: instance
 skill: project
 id: phase2-high-value
 title: Phase 2 — high-value churn cut

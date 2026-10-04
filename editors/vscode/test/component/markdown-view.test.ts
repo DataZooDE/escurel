@@ -72,4 +72,16 @@ describe('renderMarkdown', () => {
     link!.click();
     expect(heard).to.deep.equal(['[[supplier::meier-guss]]']);
   });
+
+  it('says where a link REALLY goes when its label looks like a different address', () => {
+    // A phishing shape: the words say one site, the target is another.
+    const host = mount(
+      '[https://sap.example/login](https://evil.example/steal) and [docs](https://sap.example/d)',
+    );
+    const [bad, ok] = Array.from(host.querySelectorAll('a'));
+    expect(bad!.getAttribute('title')).to.contain('evil.example');
+    expect(bad!.classList.contains('link-mismatch')).to.equal(true);
+    expect(ok!.getAttribute('title')).to.contain('sap.example');
+    expect(ok!.classList.contains('link-mismatch')).to.equal(false);
+  });
 });

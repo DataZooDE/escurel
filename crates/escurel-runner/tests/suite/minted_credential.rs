@@ -24,11 +24,11 @@ use serde_json::{Value, json};
 
 const TENANT: &str = "acme";
 const SKILL: &str = "customer";
-const SKILL_BODY: &str = "---\ntype: skill\nid: customer\nautonomy: auto\n---\n# customer\n\n\
+const SKILL_BODY: &str = "---\nkind: skill\nid: customer\nautonomy: auto\n---\n# customer\n\n\
 Fold the triggering event into the named customer instance.\n";
 const INSTANCE_ID: &str = "globex";
 const INSTANCE_BODY: &str =
-    "---\ntype: instance\nid: globex\nskill: customer\n---\n# Globex\n\nBASELINE account state.\n";
+    "---\nkind: instance\nid: globex\nskill: customer\n---\n# Globex\n\nBASELINE account state.\n";
 const MARKER: &str = "MINTED_CREDENTIAL_FOLD";
 
 struct ChildGuard(Child);
@@ -83,7 +83,7 @@ async fn spawn_stub_model(page_id: String) -> String {
                 { "functionCall": { "name": "update_page", "args": {
                     "page_id": page_id,
                     "content": format!(
-                        "---\ntype: instance\nid: {INSTANCE_ID}\nskill: {SKILL}\n---\n\
+                        "---\nkind: instance\nid: {INSTANCE_ID}\nskill: {SKILL}\n---\n\
                          # Globex\n\nBASELINE account state.\n\n{MARKER} {event_id}\n"
                     ),
                 } } },

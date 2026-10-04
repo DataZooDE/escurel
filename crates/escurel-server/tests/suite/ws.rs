@@ -18,7 +18,7 @@ use tokio_tungstenite::tungstenite::{self, handshake::client::Request as WsReque
 
 const TENANT: &str = "acme";
 
-const CUSTOMER_SKILL: &str = "---\ntype: skill\nid: customer\ndescription: x\n---\n# customer\n";
+const CUSTOMER_SKILL: &str = "---\nkind: skill\nid: customer\ndescription: x\n---\n# customer\n";
 
 async fn start_authed(quota: Option<Arc<QuotaManager>>) -> EscurelProcess {
     EscurelProcess::spawn(Opts {

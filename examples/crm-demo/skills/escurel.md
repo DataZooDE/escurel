@@ -1,5 +1,5 @@
 ---
-type: skill
+kind: skill
 id: escurel
 description: How this knowledge base is organised and how to navigate it. Read this first when entering a new tenant.
 required_frontmatter: []
@@ -10,10 +10,10 @@ optional_frontmatter: []
 
 This tenant is a small **CRM example**. Two kinds of pages live here:
 
-- **Skills** (`type: skill`) are *type declarations*. Each one names a
+- **Skills** (`kind: skill`) are *type declarations*. Each one names a
   conceptual entity (customer, contact, engagement, lead, ...) and
   declares which frontmatter fields its instances must carry.
-- **Instances** (`type: instance`) are *memories of a skill*. Each
+- **Instances** (`kind: instance`) are *memories of a skill*. Each
   instance cites its skill via `skill: <skill-id>` in frontmatter,
   carries the required fields, and may link to other pages with
   `[[skill::id]]` wikilinks.

@@ -1,5 +1,5 @@
 ---
-type: skill
+kind: skill
 id: meeting
 description: A meeting or call recording artifact with a captured transcript, from a calendar/conferencing source.
 required_frontmatter: [at, source, channel]

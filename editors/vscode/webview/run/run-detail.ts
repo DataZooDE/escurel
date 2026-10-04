@@ -1,3 +1,13 @@
+import { TRACE_RECORDED_NOTE, traceTimeline } from '../../src/shared/trace';
+import {
+  emptyAttempts,
+  emptyPlan,
+  runByline,
+  statusIconName,
+  statusWord,
+} from '../../src/runs/runWording';
+import { pageSlug } from '../../src/shared/pageId';
+import { checkIcon, crossIcon, syncIcon, warnIcon } from '../shared/icons';
 import { displayStepStatus, runHeading } from '../../src/runs/runTitle';
 import { LitElement, css, html, nothing } from 'lit';
 import type { PropertyValues } from 'lit';
@@ -5,12 +15,28 @@ import { property, state } from 'lit/decorators.js';
 import type { RunControl, RunView, RunWebviewToHost } from '../../src/shared/protocol';
 import { formatDateTime, formatDuration } from '../../src/shared/time';
 import { theme } from '../shared/theme.css';
+import { confirmRow, confirmStyles } from '../shared/confirm';
+import { confirmationFor } from '../../src/runs/controlWording';
 
 const glyphs = { completed: '✓', in_progress: '◐', pending: '○', blocked: '!', unfinished: '◌' };
+
+const statusIcon = (status: string) => {
+  switch (statusIconName(status)) {
+    case 'check':
+      return checkIcon();
+    case 'sync':
+      return syncIcon();
+    case 'cross':
+      return crossIcon();
+    default:
+      return warnIcon();
+  }
+};
 
 export class EscurelRunDetail extends LitElement {
   static styles = [
     theme,
+    confirmStyles,
     css`
       :host {
         padding: 12px 20px 40px;
@@ -73,17 +99,38 @@ export class EscurelRunDetail extends LitElement {
         font-size: 0.9em;
         color: var(--escurel-muted);
       }
+      /* An outlined chip on the page's own background: the badge fill made green text about 2.5:1 in
+         light themes. The colour is mixed with the foreground so it stays legible in every theme, and
+         an icon (a shape per state) says it without colour. */
       .status-chip {
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+        background: transparent;
         border: 1px solid currentColor;
-        color: var(--escurel-run);
+        color: color-mix(in srgb, var(--escurel-run) 60%, var(--vscode-foreground));
       }
       .status-chip.failed {
-        color: var(--escurel-run-failed);
+        color: color-mix(in srgb, var(--escurel-run-failed) 70%, var(--vscode-foreground));
       }
       .status-chip.neutral {
-        color: var(--escurel-muted);
+        color: var(--vscode-foreground);
+      }
+      .copy-run {
+        background: none;
+        border: 0;
+        padding: 0;
+        font: inherit;
+        cursor: pointer;
+        color: var(--vscode-textLink-foreground);
+        text-decoration: underline;
+      }
+      .copy-run:focus-visible {
+        outline: 1px solid var(--vscode-focusBorder);
+        outline-offset: 2px;
       }
       .link,
+      .jump,
       .copy-trace {
         /* Buttons that read as the links they are, not as boxed default buttons. */
         background: none;
@@ -95,22 +142,70 @@ export class EscurelRunDetail extends LitElement {
         text-decoration: underline;
       }
       .link:focus-visible,
+      .jump:focus-visible,
       .copy-trace:focus-visible {
         outline: 1px solid var(--vscode-focusBorder);
         outline-offset: 2px;
       }
       .link:hover,
+      .jump:hover,
       .copy-trace:hover {
         color: var(--vscode-textLink-activeForeground);
       }
       .attempt,
       .plan-step,
       .tool-call {
-        padding: 8px 0;
+        padding: 6px 0;
         border-bottom: 1px solid var(--escurel-border);
       }
-      .attempt-line,
-      .tool-call {
+      .tool-call summary {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px 10px;
+        align-items: baseline;
+        cursor: pointer;
+      }
+      .tool-call summary:focus-visible {
+        outline: 1px solid var(--vscode-focusBorder);
+        outline-offset: 2px;
+      }
+      .call-seq {
+        min-width: 1.5em;
+        opacity: 0.7;
+      }
+      .call-tool {
+        font-weight: 600;
+      }
+      .call-duration,
+      .call-offset {
+        opacity: 0.8;
+      }
+      .call-bar {
+        flex: 1 1 80px;
+        min-width: 60px;
+        height: 6px;
+        background: var(--escurel-border);
+        border-radius: 2px;
+        align-self: center;
+      }
+      .call-bar > span {
+        display: block;
+        height: 100%;
+        min-width: 4px;
+        background: var(--vscode-progressBar-background, currentColor);
+        border-radius: 2px;
+      }
+      .tool-call.failed .call-bar > span {
+        background: var(--vscode-errorForeground);
+      }
+      .call-sizes {
+        margin: 4px 0 0 1.5em;
+        opacity: 0.8;
+      }
+      button.open-produced {
+        margin: 4px 0;
+      }
+      .attempt-line {
         display: flex;
         flex-wrap: wrap;
         gap: 6px;
@@ -154,6 +249,22 @@ export class EscurelRunDetail extends LitElement {
       .summary {
         white-space: pre-wrap;
       }
+      .failure-banner {
+        margin: 8px 0 0;
+        padding: 8px 12px;
+        border: 1px solid var(--vscode-errorForeground);
+        border-left-width: 4px;
+        border-radius: 2px;
+        overflow-wrap: anywhere;
+      }
+      .failure-banner strong {
+        color: var(--vscode-errorForeground);
+      }
+      .timeline-note {
+        margin: 0 0 4px;
+        font-size: 0.85em;
+        color: var(--escurel-muted);
+      }
       .status-message {
         padding: 24px 0;
       }
@@ -179,11 +290,14 @@ export class EscurelRunDetail extends LitElement {
    * seconds in case it never does.
    */
   @state() private controlPending = false;
+  /** The control waiting for a yes: cancelling asks first, inline (a webview has no modal). */
+  @state() private confirming: string | undefined;
   private pendingTimer?: ReturnType<typeof setTimeout>;
 
   protected override willUpdate(changed: PropertyValues<this>): void {
     if (changed.has('view')) {
       this.loadingMore = false;
+      this.confirming = undefined;
       this.releaseControls();
     }
   }
@@ -202,6 +316,11 @@ export class EscurelRunDetail extends LitElement {
     // aria-disabled keeps a deactivated control reachable and announced, so the click is what is
     // refused here, not the focus.
     if (!control.enabled || this.controlPending) return;
+    if (confirmationFor(control.action) && this.confirming !== control.action) {
+      this.confirming = control.action;
+      return;
+    }
+    this.confirming = undefined;
     this.controlPending = true;
     clearTimeout(this.pendingTimer);
     this.pendingTimer = setTimeout(() => this.releaseControls(), 5_000);
@@ -251,11 +370,10 @@ export class EscurelRunDetail extends LitElement {
     if (!run) return html`<div class="status-message" role="status">Loading run…</div>`;
     return html`
       <header>
-        <h1>
-          ${runHeading(run).title}
-          <span class="run-id" title="Run id">${run.runId}</span>
-        </h1>
-        <span class="chip status-chip ${run.tone}">${run.status.replaceAll('_', ' ')}</span>
+        <h1>${runHeading(run).title}</h1>
+        <span class="chip status-chip ${run.tone}"
+          >${statusIcon(run.status)}${statusWord(run.status)}</span
+        >
         ${
           (run.controls ?? []).length > 0
             ? html`<div class="controls" role="group" aria-label="Run controls">
@@ -264,7 +382,7 @@ export class EscurelRunDetail extends LitElement {
                     <button
                       class="run-control ${control.action === 'approve' ? 'primary' : ''}"
                       aria-disabled=${!control.enabled || this.controlPending ? 'true' : nothing}
-                      title=${control.disabledReason ?? ''}
+                      title=${control.disabledReason ?? control.hint ?? ''}
                       aria-describedby=${
                         !control.enabled && control.disabledReason ? 'control-hint' : nothing
                       }
@@ -278,17 +396,57 @@ export class EscurelRunDetail extends LitElement {
             : nothing
         }
         ${this.controlHint(run)}
+        ${
+          this.confirming && confirmationFor(this.confirming)
+            ? confirmRow(
+                confirmationFor(this.confirming)!,
+                () => {
+                  const c = (run.controls ?? []).find((x) => x.action === this.confirming);
+                  if (c) this.onControl(run, c);
+                },
+                () => (this.confirming = undefined),
+              )
+            : nothing
+        }
       </header>
+      ${
+        run.failure
+          ? html`<div class="failure-banner" role="alert">
+              <strong>${run.status === 'dead_letter' ? 'Gave up:' : 'Failed:'}</strong>
+              ${run.failure}
+            </div>`
+          : nothing
+      }
       <div class="meta">
-        ${run.harness ? html`<span>Harness ${run.harness}</span>` : nothing}
-        ${run.model ? html`<span>· Model ${run.model}</span>` : nothing}
-        ${run.autonomy ? html`<span>· Autonomy ${run.autonomy}</span>` : nothing}
-        ${run.depth !== undefined ? html`<span>· Depth ${run.depth}</span>` : nothing}
+        <span>${runByline(run)}</span>
+        ${
+          run.skill
+            ? html`<button
+                class="jump view-skill"
+                @click=${() => this.send({ type: 'view-skill', skill: run.skill! })}
+              >
+                View skill: ${run.skill}
+              </button>`
+            : nothing
+        }
+        <button
+          class="jump open-thread"
+          @click=${() => this.send({ type: 'open-thread', rootEventId: '' })}
+        >
+          Open thread
+        </button>
+        <button
+          class="copy-run"
+          title=${run.runId}
+          @click=${() => this.send({ type: 'copy-run-id' })}
+        >
+          Copy run id
+        </button>
       </div>
       ${
         run.traceId
           ? html`<div class="trace">
-              Trace ${run.traceId}
+              Trace id ${run.traceId}
               <button
                 class="copy-trace"
                 title=${run.traceId}
@@ -302,13 +460,25 @@ export class EscurelRunDetail extends LitElement {
       ${
         run.targetPageId
           ? html`<div>
-              Target
+              Worked on
               <button
                 class="link"
-                title="Open the target page"
+                title=${`Open ${run.targetPageId}`}
                 @click=${() => this.send({ type: 'open-page', pageId: run.targetPageId! })}
               >
-                ${run.targetPageId}
+                ${pageSlug(run.targetPageId)}
+              </button>
+            </div>`
+          : nothing
+      }
+      ${
+        run.producedPageId
+          ? html`<div>
+              <button
+                class="link open-produced"
+                @click=${() => this.send({ type: 'open-produced' })}
+              >
+                Open what this run produced
               </button>
             </div>`
           : nothing
@@ -333,7 +503,7 @@ export class EscurelRunDetail extends LitElement {
                   </div>
                 `,
               )
-            : html`<p class="muted">No attempts reported.</p>`
+            : html`<p class="muted">${emptyAttempts(run.status)}</p>`
         }
       </section>
       <section aria-label="Plan">
@@ -353,33 +523,45 @@ export class EscurelRunDetail extends LitElement {
                   </div>
                 `;
               })
-            : html`<p class="muted">No plan reported.</p>`
+            : html`<p class="muted">${emptyPlan(run.status)}</p>`
         }
       </section>
-      <section aria-label="Tool calls">
-        <h2>Tool calls</h2>
+      <section aria-label="What the agent did">
+        <h2>What the agent did</h2>
         ${
           run.calls.length
-            ? run.calls.map(
-                (call) => html`
-                  <div class="tool-call">
-                    <span>${call.seq} · ${call.tool} ·</span
-                    ><span
-                      class=${call.status === 'error' || call.status === 'rejected' ? 'call-error' : ''}
-                      >${call.status}${call.errorCode ? html` · ${call.errorCode}` : nothing}</span
-                    ><span
-                      >· ${call.durationMs.toFixed(1)} ms · ${call.bytes.request} request bytes /
-                      ${call.bytes.response} response bytes</span
-                    >
-                  </div>
+            ? html`<p class="timeline-note">
+                Bars compare each step with the slowest one. ${TRACE_RECORDED_NOTE}
+              </p>`
+            : nothing
+        }
+        ${
+          run.calls.length
+            ? traceTimeline(run.calls, run.startedAt).map(
+                (row) => html`
+                  <details class="tool-call ${row.failed ? 'failed' : ''}">
+                    <summary>
+                      <span class="call-seq">${row.seq}</span>
+                      <span class="call-tool" title=${row.tool}>${row.label}</span>
+                      <span class="call-outcome ${row.failed ? 'call-error' : ''}"
+                        >${row.failed ? '✕ ' : '✓ '}${row.outcome}${row.detail ? html` · ${row.detail}` : nothing}</span
+                      >
+                      <span class="call-duration">${row.duration}</span>
+                      ${row.offset ? html`<span class="call-offset">${row.offset}</span>` : nothing}
+                      <span class="call-bar" aria-hidden="true"
+                        ><span style="width:${row.barPercent}%"></span
+                      ></span>
+                    </summary>
+                    <div class="call-sizes">${row.sizes}</div>
+                  </details>
                 `,
               )
             : run.toolCallCount && run.toolCallCount > 0
               ? html`<p class="calls-unavailable">
-                  ${run.toolCallCount} tool calls reported; per-call detail is not available for
-                  this run
+                  The agent made ${run.toolCallCount} calls; the details are not available for this
+                  run
                 </p>`
-              : html`<p class="muted">No tool calls reported.</p>`
+              : html`<p class="muted">The agent has not reported any steps.</p>`
         }
         ${typeof run.nextAfter === 'number' ? html`<button class="load-more" ?disabled=${this.loadingMore} @click=${() => this.loadMore(run.nextAfter!)}>Load more</button>` : nothing}
       </section>

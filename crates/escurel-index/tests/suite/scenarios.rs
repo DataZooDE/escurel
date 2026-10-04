@@ -18,25 +18,25 @@ const TENANT: &str = "acme";
 
 const SKILL_ENGAGEMENT: (&str, &str) = (
     "markdown/skills/engagement.md",
-    "---\ntype: skill\nid: engagement\ndescription: A delivery engagement.\n---\n# engagement\n",
+    "---\nkind: skill\nid: engagement\ndescription: A delivery engagement.\n---\n# engagement\n",
 );
 
 // Base spine: contract_value €350k, no scenario (shared base).
 const ENG_BASE: (&str, &str) = (
     "markdown/instances/engagement/spine.md",
-    "---\ntype: instance\nskill: engagement\nid: hoffmann-spine\ncontract_value: \"350k\"\n---\n# Spine (base)\n",
+    "---\nkind: instance\nskill: engagement\nid: hoffmann-spine\ncontract_value: \"350k\"\n---\n# Spine (base)\n",
 );
 // Scenario-B overlay of the SAME slug: contract_value €500k.
 const ENG_B: (&str, &str) = (
     "markdown/instances/engagement/spine.b.md",
-    "---\ntype: instance\nskill: engagement\nid: hoffmann-spine\nscenario: B\ncontract_value: \"500k\"\n---\n# Spine (scenario B)\n",
+    "---\nkind: instance\nskill: engagement\nid: hoffmann-spine\nscenario: B\ncontract_value: \"500k\"\n---\n# Spine (scenario B)\n",
 );
 // B-only instance (no base twin). Its body carries a unique search
 // term and an outbound link to the base spine, so it exercises the
 // scenario filter on search + neighbours too.
 const ENG_B_ONLY: (&str, &str) = (
     "markdown/instances/engagement/expansion.b.md",
-    "---\ntype: instance\nskill: engagement\nid: expansion\nscenario: B\ncontract_value: \"120k\"\n---\n# Expansion (B-only)\n\nThe zeppelin expansion case for [[engagement::hoffmann-spine]].\n",
+    "---\nkind: instance\nskill: engagement\nid: expansion\nscenario: B\ncontract_value: \"120k\"\n---\n# Expansion (B-only)\n\nThe zeppelin expansion case for [[engagement::hoffmann-spine]].\n",
 );
 
 struct Harness {

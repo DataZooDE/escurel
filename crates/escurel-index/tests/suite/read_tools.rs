@@ -15,7 +15,7 @@ const TENANT: &str = "acme";
 const SKILL_CUSTOMER: (&str, &str) = (
     "markdown/skills/customer.md",
     "---\n\
-     type: skill\n\
+     kind: skill\n\
      id: customer\n\
      description: A buying entity.\n\
      required_frontmatter:\n\
@@ -31,7 +31,7 @@ const SKILL_CUSTOMER: (&str, &str) = (
 const SKILL_MEETING: (&str, &str) = (
     "markdown/skills/meeting.md",
     "---\n\
-     type: skill\n\
+     kind: skill\n\
      id: meeting\n\
      description: An in-person or remote meeting.\n\
      required_frontmatter:\n\
@@ -46,7 +46,7 @@ const SKILL_MEETING: (&str, &str) = (
 const INSTANCE_ACME: (&str, &str) = (
     "markdown/instances/customer/acme-corp.md",
     "---\n\
-     type: instance\n\
+     kind: instance\n\
      skill: customer\n\
      id: acme-corp\n\
      tier: enterprise\n\
@@ -57,7 +57,7 @@ const INSTANCE_ACME: (&str, &str) = (
 const INSTANCE_GLOBEX: (&str, &str) = (
     "markdown/instances/customer/globex-llc.md",
     "---\n\
-     type: instance\n\
+     kind: instance\n\
      skill: customer\n\
      id: globex-llc\n\
      tier: mid-market\n\
@@ -68,7 +68,7 @@ const INSTANCE_GLOBEX: (&str, &str) = (
 const MEETING_APR: (&str, &str) = (
     "markdown/instances/meeting/2026-04-12-acme-qbr.md",
     "---\n\
-     type: instance\n\
+     kind: instance\n\
      skill: meeting\n\
      id: 2026-04-12-acme-qbr\n\
      at: 2026-04-12T10:00:00+02:00\n\
@@ -79,7 +79,7 @@ const MEETING_APR: (&str, &str) = (
 const MEETING_MAY: (&str, &str) = (
     "markdown/instances/meeting/2026-05-18-globex-renewal.md",
     "---\n\
-     type: instance\n\
+     kind: instance\n\
      skill: meeting\n\
      id: 2026-05-18-globex-renewal\n\
      at: 2026-05-18T14:30:00+02:00\n\
@@ -90,7 +90,7 @@ const MEETING_MAY: (&str, &str) = (
 const SKILL_EMAIL: (&str, &str) = (
     "markdown/skills/email.md",
     "---\n\
-     type: skill\n\
+     kind: skill\n\
      id: email\n\
      description: An email artifact.\n\
      required_frontmatter:\n\
@@ -103,7 +103,7 @@ const SKILL_EMAIL: (&str, &str) = (
 const EMAIL_GMAIL: (&str, &str) = (
     "markdown/instances/email/proposal.md",
     "---\n\
-     type: instance\n\
+     kind: instance\n\
      skill: email\n\
      id: proposal\n\
      at: 2026-04-02T09:00:00Z\n\
@@ -115,7 +115,7 @@ const EMAIL_GMAIL: (&str, &str) = (
 const EMAIL_FORM: (&str, &str) = (
     "markdown/instances/email/contact-form.md",
     "---\n\
-     type: instance\n\
+     kind: instance\n\
      skill: email\n\
      id: contact-form\n\
      at: 2026-03-15T12:00:00Z\n\
@@ -186,7 +186,7 @@ async fn list_skills_returns_one_per_skill_page() {
 const SKILL_MEMBER_OWNER: (&str, &str) = (
     "markdown/skills/community_member.md",
     "---\n\
-     type: skill\n\
+     kind: skill\n\
      id: community_member\n\
      description: A member.\n\
      visibility: owner\n\

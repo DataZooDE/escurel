@@ -49,11 +49,11 @@ const TENANT: &str = "stuttgart-ai";
 const ALICE: &str = "whatsapp:111";
 const BOB: &str = "whatsapp:222";
 
-const MEMBER_SKILL: &str = "---\ntype: skill\nid: community_member\n\
+const MEMBER_SKILL: &str = "---\nkind: skill\nid: community_member\n\
     description: A member.\nvisibility: owner\nowner_field: credential\n---\n# community_member\n";
-const ALICE_MEMBER: &str = "---\ntype: instance\nskill: community_member\nid: alice\n\
+const ALICE_MEMBER: &str = "---\nkind: instance\nskill: community_member\nid: alice\n\
     credential: \"whatsapp:111\"\n---\n# Alice\n\nSECRET-DIARY-LINE.\n";
-const BOB_MEMBER: &str = "---\ntype: instance\nskill: community_member\nid: bob\n\
+const BOB_MEMBER: &str = "---\nkind: instance\nskill: community_member\nid: bob\n\
     credential: \"whatsapp:222\"\n---\n# Bob\n";
 
 /// Alice's own page — owner-private, so Bob may not read it.

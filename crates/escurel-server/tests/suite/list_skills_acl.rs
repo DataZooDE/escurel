@@ -37,13 +37,13 @@ const ALPINA_GROUP: &str = "engagement-alpina";
 
 /// The unrestricted type: no `acl:` block at all. Falls through to the
 /// tenant default (`read: [public]`) and must stay in everyone's catalogue.
-const ENGAGEMENT_SKILL: &str = "---\ntype: skill\nid: engagement\n\
+const ENGAGEMENT_SKILL: &str = "---\nkind: skill\nid: engagement\n\
     description: A customer engagement.\nvisibility: public\n---\n# engagement\n";
 
 /// The shared type, granted to BOTH engagements. Visible to both — and the
 /// carrier of the disclosure: its grant list names both customers.
 const NOTE_SKILL: &str = r#"---
-type: skill
+kind: skill
 id: customer_note
 description: A note filed against an engagement.
 required_frontmatter: [engagement]
@@ -59,7 +59,7 @@ acl:
 /// A type deliberately restricted to ONE engagement. Carol may read it;
 /// Dave must not learn that it exists.
 const DOSSIER_SKILL: &str = r#"---
-type: skill
+kind: skill
 id: hoffmann_dossier
 description: The Hoffmann engagement's internal dossier.
 acl:
@@ -75,7 +75,7 @@ acl:
 /// structural group — a skill page has no owner — so scoping must not read
 /// it as a catalogue restriction, or every owner-visibility type in every
 /// shipped tenant would vanish for every non-admin caller.
-const JOURNAL_SKILL: &str = "---\ntype: skill\nid: private_journal\n\
+const JOURNAL_SKILL: &str = "---\nkind: skill\nid: private_journal\n\
     description: A member's own journal.\nvisibility: owner\nowner_field: credential\n\
     ---\n# private_journal\n";
 

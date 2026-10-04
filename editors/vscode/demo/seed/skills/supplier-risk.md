@@ -1,6 +1,10 @@
 ---
-type: skill
+kind: skill
 id: supplier-risk
+title: Supplier risk check
+folder: purchasing/risk
+role: process
+tags: [risk, agent]
 description: A supplier-risk signal from purchasing - a vendor's confirmation date moved, a quantity was cut, or its rating changed - folded into the sales orders it affects.
 autonomy: review
 actions:

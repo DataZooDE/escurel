@@ -1,439 +1,415 @@
 {
- "events": [
-  {
-   "event_id": "run:01M3Y7MD5XWKPB08508JGNBW6M:finished",
-   "at": "2026-10-02T11:57:42Z",
-   "source": "escurel-runner",
-   "mime": "application/json",
-   "label_skill": "escurel:run",
-   "instance_page_id": "markdown/instances/customer-order__order-4500152.md",
-   "status": "processed",
-   "title": "run-finished",
-   "body": "{\"attempts\":1,\"error\":\"harness \\\"refusing\\\" cannot run this task: the manual start asks for harness `no-such-harness`, which is not in this runner's ESCUREL_RUNNER_HARNESS_ALLOW; refusing rather than running the default harness in its place\",\"held\":false,\"plan\":null,\"produced_instance\":null,\"produced_version\":null,\"reason\":\"permanent\",\"status\":\"dead_letter\",\"summary\":\"\",\"tool_calls\":0,\"usage\":null}",
-   "provenance": {
-    "runner": {
-     "attempt": 1,
-     "depth": 0,
-     "event_id": "01M3Y7MD5FYFSDTTEM0WM64BCV",
-     "harness": "refusing",
-     "lineage_path": [
-      "01M3Y7MD5FYFSDTTEM0WM64BCV"
-     ],
-     "manual": {
-      "harness": "no-such-harness",
-      "mode": "run",
-      "requested_by": "alice"
-     },
-     "max_attempts": 3,
-     "root_event_id": "01M3Y7MD5FYFSDTTEM0WM64BCV",
-     "run_id": "01M3Y7MD5XWKPB08508JGNBW6M",
-     "target_page_id": "markdown/instances/customer-order__order-4500152.md",
-     "trace_id": "01a0fc7a353e36c43b5acbb89f08f9a9"
+  "events": [
+    {
+      "event_id": "run:01M3Y7MD5XWKPB08508JGNBW6M:finished",
+      "at": "2026-10-02T11:57:42Z",
+      "source": "escurel-runner",
+      "mime": "application/json",
+      "label_skill": "escurel:run",
+      "instance_page_id": "markdown/instances/customer-order__order-4500152.md",
+      "status": "processed",
+      "title": "run-finished",
+      "body": "{\"attempts\":1,\"error\":\"harness \\\"refusing\\\" cannot run this task: the manual start asks for harness `no-such-harness`, which is not in this runner's ESCUREL_RUNNER_HARNESS_ALLOW; refusing rather than running the default harness in its place\",\"held\":false,\"plan\":null,\"produced_instance\":null,\"produced_version\":null,\"reason\":\"permanent\",\"status\":\"dead_letter\",\"summary\":\"\",\"tool_calls\":0,\"usage\":null}",
+      "provenance": {
+        "runner": {
+          "attempt": 1,
+          "depth": 0,
+          "event_id": "01M3Y7MD5FYFSDTTEM0WM64BCV",
+          "harness": "refusing",
+          "lineage_path": ["01M3Y7MD5FYFSDTTEM0WM64BCV"],
+          "manual": {
+            "harness": "no-such-harness",
+            "mode": "run",
+            "requested_by": "alice"
+          },
+          "max_attempts": 3,
+          "root_event_id": "01M3Y7MD5FYFSDTTEM0WM64BCV",
+          "run_id": "01M3Y7MD5XWKPB08508JGNBW6M",
+          "target_page_id": "markdown/instances/customer-order__order-4500152.md",
+          "trace_id": "01a0fc7a353e36c43b5acbb89f08f9a9"
+        },
+        "captured_by": "escurel-runner"
+      },
+      "kind": "system",
+      "root_event_id": "01M3Y7MD5FYFSDTTEM0WM64BCV",
+      "run_id": "01M3Y7MD5XWKPB08508JGNBW6M"
     },
-    "captured_by": "escurel-runner"
-   },
-   "kind": "system",
-   "root_event_id": "01M3Y7MD5FYFSDTTEM0WM64BCV",
-   "run_id": "01M3Y7MD5XWKPB08508JGNBW6M"
-  },
-  {
-   "event_id": "run:01M3Y7MD5XWKPB08508JGNBW6M:attempt:1",
-   "at": "2026-10-02T11:57:42Z",
-   "source": "escurel-runner",
-   "mime": "application/json",
-   "label_skill": "escurel:run",
-   "instance_page_id": "markdown/instances/customer-order__order-4500152.md",
-   "status": "processed",
-   "title": "run-attempt",
-   "body": "{\"attempt\":1,\"ended_at\":\"2026-10-02 11:57:42.645858\",\"error\":\"permanent reconcile failure: harness \\\"refusing\\\" cannot run this task: the manual start asks for harness `no-such-harness`, which is not in this runner's ESCUREL_RUNNER_HARNESS_ALLOW; refusing rather than running the default harness in its place\",\"outcome\":\"failed\",\"started_at\":\"2026-10-02 11:57:42.618061\"}",
-   "provenance": {
-    "runner": {
-     "attempt": 1,
-     "depth": 0,
-     "event_id": "01M3Y7MD5FYFSDTTEM0WM64BCV",
-     "harness": "refusing",
-     "lineage_path": [
-      "01M3Y7MD5FYFSDTTEM0WM64BCV"
-     ],
-     "manual": {
-      "harness": "no-such-harness",
-      "mode": "run",
-      "requested_by": "alice"
-     },
-     "max_attempts": 3,
-     "root_event_id": "01M3Y7MD5FYFSDTTEM0WM64BCV",
-     "run_id": "01M3Y7MD5XWKPB08508JGNBW6M",
-     "target_page_id": "markdown/instances/customer-order__order-4500152.md",
-     "trace_id": "01a0fc7a353e36c43b5acbb89f08f9a9"
+    {
+      "event_id": "run:01M3Y7MD5XWKPB08508JGNBW6M:attempt:1",
+      "at": "2026-10-02T11:57:42Z",
+      "source": "escurel-runner",
+      "mime": "application/json",
+      "label_skill": "escurel:run",
+      "instance_page_id": "markdown/instances/customer-order__order-4500152.md",
+      "status": "processed",
+      "title": "run-attempt",
+      "body": "{\"attempt\":1,\"ended_at\":\"2026-10-02 11:57:42.645858\",\"error\":\"permanent reconcile failure: harness \\\"refusing\\\" cannot run this task: the manual start asks for harness `no-such-harness`, which is not in this runner's ESCUREL_RUNNER_HARNESS_ALLOW; refusing rather than running the default harness in its place\",\"outcome\":\"failed\",\"started_at\":\"2026-10-02 11:57:42.618061\"}",
+      "provenance": {
+        "runner": {
+          "attempt": 1,
+          "depth": 0,
+          "event_id": "01M3Y7MD5FYFSDTTEM0WM64BCV",
+          "harness": "refusing",
+          "lineage_path": ["01M3Y7MD5FYFSDTTEM0WM64BCV"],
+          "manual": {
+            "harness": "no-such-harness",
+            "mode": "run",
+            "requested_by": "alice"
+          },
+          "max_attempts": 3,
+          "root_event_id": "01M3Y7MD5FYFSDTTEM0WM64BCV",
+          "run_id": "01M3Y7MD5XWKPB08508JGNBW6M",
+          "target_page_id": "markdown/instances/customer-order__order-4500152.md",
+          "trace_id": "01a0fc7a353e36c43b5acbb89f08f9a9"
+        },
+        "captured_by": "escurel-runner"
+      },
+      "kind": "system",
+      "root_event_id": "01M3Y7MD5FYFSDTTEM0WM64BCV",
+      "run_id": "01M3Y7MD5XWKPB08508JGNBW6M"
     },
-    "captured_by": "escurel-runner"
-   },
-   "kind": "system",
-   "root_event_id": "01M3Y7MD5FYFSDTTEM0WM64BCV",
-   "run_id": "01M3Y7MD5XWKPB08508JGNBW6M"
-  },
-  {
-   "event_id": "run:01M3Y7MD5XWKPB08508JGNBW6M:started",
-   "at": "2026-10-02T11:57:42Z",
-   "source": "escurel-runner",
-   "mime": "application/json",
-   "label_skill": "escurel:run",
-   "instance_page_id": "markdown/instances/customer-order__order-4500152.md",
-   "status": "processed",
-   "title": "run-started",
-   "body": "{}",
-   "provenance": {
-    "runner": {
-     "attempt": 0,
-     "depth": 0,
-     "event_id": "01M3Y7MD5FYFSDTTEM0WM64BCV",
-     "harness": "refusing",
-     "lineage_path": [
-      "01M3Y7MD5FYFSDTTEM0WM64BCV"
-     ],
-     "manual": {
-      "harness": "no-such-harness",
-      "mode": "run",
-      "requested_by": "alice"
-     },
-     "max_attempts": 3,
-     "root_event_id": "01M3Y7MD5FYFSDTTEM0WM64BCV",
-     "run_id": "01M3Y7MD5XWKPB08508JGNBW6M",
-     "target_page_id": "markdown/instances/customer-order__order-4500152.md",
-     "trace_id": "01a0fc7a353e36c43b5acbb89f08f9a9"
+    {
+      "event_id": "run:01M3Y7MD5XWKPB08508JGNBW6M:started",
+      "at": "2026-10-02T11:57:42Z",
+      "source": "escurel-runner",
+      "mime": "application/json",
+      "label_skill": "escurel:run",
+      "instance_page_id": "markdown/instances/customer-order__order-4500152.md",
+      "status": "processed",
+      "title": "run-started",
+      "body": "{}",
+      "provenance": {
+        "runner": {
+          "attempt": 0,
+          "depth": 0,
+          "event_id": "01M3Y7MD5FYFSDTTEM0WM64BCV",
+          "harness": "refusing",
+          "lineage_path": ["01M3Y7MD5FYFSDTTEM0WM64BCV"],
+          "manual": {
+            "harness": "no-such-harness",
+            "mode": "run",
+            "requested_by": "alice"
+          },
+          "max_attempts": 3,
+          "root_event_id": "01M3Y7MD5FYFSDTTEM0WM64BCV",
+          "run_id": "01M3Y7MD5XWKPB08508JGNBW6M",
+          "target_page_id": "markdown/instances/customer-order__order-4500152.md",
+          "trace_id": "01a0fc7a353e36c43b5acbb89f08f9a9"
+        },
+        "captured_by": "escurel-runner"
+      },
+      "kind": "system",
+      "root_event_id": "01M3Y7MD5FYFSDTTEM0WM64BCV",
+      "run_id": "01M3Y7MD5XWKPB08508JGNBW6M"
     },
-    "captured_by": "escurel-runner"
-   },
-   "kind": "system",
-   "root_event_id": "01M3Y7MD5FYFSDTTEM0WM64BCV",
-   "run_id": "01M3Y7MD5XWKPB08508JGNBW6M"
-  },
-  {
-   "event_id": "run:01M3Y6XVQQ3S463NT9GEY702YD:finished",
-   "at": "2026-10-02T11:45:23Z",
-   "source": "escurel-runner",
-   "mime": "application/json",
-   "label_skill": "escurel:run",
-   "instance_page_id": "markdown/instances/customer-order__order-4500131.md",
-   "status": "processed",
-   "title": "run-finished",
-   "body": "{\"attempts\":1,\"held\":true,\"plan\":[{\"status\":\"completed\",\"step\":\"read the target page\"},{\"status\":\"in_progress\",\"step\":\"draft the fold for review\"}],\"produced_instance\":\"markdown/instances/customer-order__order-4500131.md\",\"produced_version\":\"98e0a2641ea1bd3b25e72b4873ff4f258f7fea769a7230a5f9bda51df2129aa3\",\"status\":\"processed\",\"summary\":\"drafted the fold of event 01M3Y6XVNR61MVP48E27MD9HZQ for markdown/instances/customer-order__order-4500131.md (draft 01M3Y6XVTH7E2RWPPNRYPPT4XY); awaiting a human\",\"tool_calls\":4,\"usage\":null}",
-   "provenance": {
-    "runner": {
-     "attempt": 1,
-     "autonomy": "review",
-     "depth": 0,
-     "event_id": "01M3Y6XVNR61MVP48E27MD9HZQ",
-     "harness": "echo",
-     "lineage_path": [
-      "01M3Y6XVNR61MVP48E27MD9HZQ"
-     ],
-     "max_attempts": 3,
-     "root_event_id": "01M3Y6XVNR61MVP48E27MD9HZQ",
-     "run_id": "01M3Y6XVQQ3S463NT9GEY702YD",
-     "target_page_id": "markdown/instances/customer-order__order-4500131.md",
-     "trace_id": "01a0fc6eef0a4721e362860f8c299ed7"
+    {
+      "event_id": "run:01M3Y6XVQQ3S463NT9GEY702YD:finished",
+      "at": "2026-10-02T11:45:23Z",
+      "source": "escurel-runner",
+      "mime": "application/json",
+      "label_skill": "escurel:run",
+      "instance_page_id": "markdown/instances/customer-order__order-4500131.md",
+      "status": "processed",
+      "title": "run-finished",
+      "body": "{\"attempts\":1,\"held\":true,\"plan\":[{\"status\":\"completed\",\"step\":\"read the target page\"},{\"status\":\"in_progress\",\"step\":\"draft the fold for review\"}],\"produced_instance\":\"markdown/instances/customer-order__order-4500131.md\",\"produced_version\":\"98e0a2641ea1bd3b25e72b4873ff4f258f7fea769a7230a5f9bda51df2129aa3\",\"status\":\"processed\",\"summary\":\"drafted the fold of event 01M3Y6XVNR61MVP48E27MD9HZQ for markdown/instances/customer-order__order-4500131.md (draft 01M3Y6XVTH7E2RWPPNRYPPT4XY); awaiting a human\",\"tool_calls\":4,\"usage\":null}",
+      "provenance": {
+        "runner": {
+          "attempt": 1,
+          "autonomy": "review",
+          "depth": 0,
+          "event_id": "01M3Y6XVNR61MVP48E27MD9HZQ",
+          "harness": "echo",
+          "lineage_path": ["01M3Y6XVNR61MVP48E27MD9HZQ"],
+          "max_attempts": 3,
+          "root_event_id": "01M3Y6XVNR61MVP48E27MD9HZQ",
+          "run_id": "01M3Y6XVQQ3S463NT9GEY702YD",
+          "target_page_id": "markdown/instances/customer-order__order-4500131.md",
+          "trace_id": "01a0fc6eef0a4721e362860f8c299ed7"
+        },
+        "captured_by": "escurel-runner"
+      },
+      "kind": "system",
+      "root_event_id": "01M3Y6XVNR61MVP48E27MD9HZQ",
+      "run_id": "01M3Y6XVQQ3S463NT9GEY702YD"
     },
-    "captured_by": "escurel-runner"
-   },
-   "kind": "system",
-   "root_event_id": "01M3Y6XVNR61MVP48E27MD9HZQ",
-   "run_id": "01M3Y6XVQQ3S463NT9GEY702YD"
-  },
-  {
-   "event_id": "run:01M3Y6XVQQ3S463NT9GEY702YD:attempt:1",
-   "at": "2026-10-02T11:45:23Z",
-   "source": "escurel-runner",
-   "mime": "application/json",
-   "label_skill": "escurel:run",
-   "instance_page_id": "markdown/instances/customer-order__order-4500131.md",
-   "status": "processed",
-   "title": "run-attempt",
-   "body": "{\"attempt\":1,\"ended_at\":\"2026-10-02 11:45:23.807630\",\"outcome\":\"ok\",\"started_at\":\"2026-10-02 11:45:23.743109\"}",
-   "provenance": {
-    "runner": {
-     "attempt": 1,
-     "depth": 0,
-     "event_id": "01M3Y6XVNR61MVP48E27MD9HZQ",
-     "harness": "echo",
-     "lineage_path": [
-      "01M3Y6XVNR61MVP48E27MD9HZQ"
-     ],
-     "max_attempts": 3,
-     "root_event_id": "01M3Y6XVNR61MVP48E27MD9HZQ",
-     "run_id": "01M3Y6XVQQ3S463NT9GEY702YD",
-     "target_page_id": "markdown/instances/customer-order__order-4500131.md",
-     "trace_id": "01a0fc6eef0a4721e362860f8c299ed7"
+    {
+      "event_id": "run:01M3Y6XVQQ3S463NT9GEY702YD:attempt:1",
+      "at": "2026-10-02T11:45:23Z",
+      "source": "escurel-runner",
+      "mime": "application/json",
+      "label_skill": "escurel:run",
+      "instance_page_id": "markdown/instances/customer-order__order-4500131.md",
+      "status": "processed",
+      "title": "run-attempt",
+      "body": "{\"attempt\":1,\"ended_at\":\"2026-10-02 11:45:23.807630\",\"outcome\":\"ok\",\"started_at\":\"2026-10-02 11:45:23.743109\"}",
+      "provenance": {
+        "runner": {
+          "attempt": 1,
+          "depth": 0,
+          "event_id": "01M3Y6XVNR61MVP48E27MD9HZQ",
+          "harness": "echo",
+          "lineage_path": ["01M3Y6XVNR61MVP48E27MD9HZQ"],
+          "max_attempts": 3,
+          "root_event_id": "01M3Y6XVNR61MVP48E27MD9HZQ",
+          "run_id": "01M3Y6XVQQ3S463NT9GEY702YD",
+          "target_page_id": "markdown/instances/customer-order__order-4500131.md",
+          "trace_id": "01a0fc6eef0a4721e362860f8c299ed7"
+        },
+        "captured_by": "escurel-runner"
+      },
+      "kind": "system",
+      "root_event_id": "01M3Y6XVNR61MVP48E27MD9HZQ",
+      "run_id": "01M3Y6XVQQ3S463NT9GEY702YD"
     },
-    "captured_by": "escurel-runner"
-   },
-   "kind": "system",
-   "root_event_id": "01M3Y6XVNR61MVP48E27MD9HZQ",
-   "run_id": "01M3Y6XVQQ3S463NT9GEY702YD"
-  },
-  {
-   "event_id": "run-progress:01M3Y6XVQQ3S463NT9GEY702YD:19ac7dbefbb46a8d",
-   "at": "2026-10-02T11:45:23Z",
-   "source": "report_progress",
-   "mime": "application/json",
-   "label_skill": "escurel:run",
-   "instance_page_id": "markdown/instances/customer-order__order-4500131.md",
-   "status": "processed",
-   "title": "run-progress",
-   "body": "{\"plan\":[{\"step\":\"read the target page\",\"status\":\"completed\"},{\"step\":\"draft the fold for review\",\"status\":\"in_progress\"}],\"current\":\"draft the fold for review\",\"note\":null}",
-   "provenance": {
-    "runner": {
-     "run_id": "01M3Y6XVQQ3S463NT9GEY702YD",
-     "reported_by": "agent:supplier-risk",
-     "root_event_id": "01M3Y6XVNR61MVP48E27MD9HZQ"
+    {
+      "event_id": "run-progress:01M3Y6XVQQ3S463NT9GEY702YD:19ac7dbefbb46a8d",
+      "at": "2026-10-02T11:45:23Z",
+      "source": "report_progress",
+      "mime": "application/json",
+      "label_skill": "escurel:run",
+      "instance_page_id": "markdown/instances/customer-order__order-4500131.md",
+      "status": "processed",
+      "title": "run-progress",
+      "body": "{\"plan\":[{\"step\":\"read the target page\",\"status\":\"completed\"},{\"step\":\"draft the fold for review\",\"status\":\"in_progress\"}],\"current\":\"draft the fold for review\",\"note\":null}",
+      "provenance": {
+        "runner": {
+          "run_id": "01M3Y6XVQQ3S463NT9GEY702YD",
+          "reported_by": "agent:supplier-risk",
+          "root_event_id": "01M3Y6XVNR61MVP48E27MD9HZQ"
+        },
+        "captured_by": "agent:supplier-risk"
+      },
+      "kind": "system",
+      "root_event_id": "01M3Y6XVNR61MVP48E27MD9HZQ",
+      "run_id": "01M3Y6XVQQ3S463NT9GEY702YD"
     },
-    "captured_by": "agent:supplier-risk"
-   },
-   "kind": "system",
-   "root_event_id": "01M3Y6XVNR61MVP48E27MD9HZQ",
-   "run_id": "01M3Y6XVQQ3S463NT9GEY702YD"
-  },
-  {
-   "event_id": "run:01M3Y6XVQQ3S463NT9GEY702YD:started",
-   "at": "2026-10-02T11:45:23Z",
-   "source": "escurel-runner",
-   "mime": "application/json",
-   "label_skill": "escurel:run",
-   "instance_page_id": "markdown/instances/customer-order__order-4500131.md",
-   "status": "processed",
-   "title": "run-started",
-   "body": "{}",
-   "provenance": {
-    "runner": {
-     "attempt": 0,
-     "depth": 0,
-     "event_id": "01M3Y6XVNR61MVP48E27MD9HZQ",
-     "harness": "echo",
-     "lineage_path": [
-      "01M3Y6XVNR61MVP48E27MD9HZQ"
-     ],
-     "max_attempts": 3,
-     "root_event_id": "01M3Y6XVNR61MVP48E27MD9HZQ",
-     "run_id": "01M3Y6XVQQ3S463NT9GEY702YD",
-     "target_page_id": "markdown/instances/customer-order__order-4500131.md",
-     "trace_id": "01a0fc6eef0a4721e362860f8c299ed7"
+    {
+      "event_id": "run:01M3Y6XVQQ3S463NT9GEY702YD:started",
+      "at": "2026-10-02T11:45:23Z",
+      "source": "escurel-runner",
+      "mime": "application/json",
+      "label_skill": "escurel:run",
+      "instance_page_id": "markdown/instances/customer-order__order-4500131.md",
+      "status": "processed",
+      "title": "run-started",
+      "body": "{}",
+      "provenance": {
+        "runner": {
+          "attempt": 0,
+          "depth": 0,
+          "event_id": "01M3Y6XVNR61MVP48E27MD9HZQ",
+          "harness": "echo",
+          "lineage_path": ["01M3Y6XVNR61MVP48E27MD9HZQ"],
+          "max_attempts": 3,
+          "root_event_id": "01M3Y6XVNR61MVP48E27MD9HZQ",
+          "run_id": "01M3Y6XVQQ3S463NT9GEY702YD",
+          "target_page_id": "markdown/instances/customer-order__order-4500131.md",
+          "trace_id": "01a0fc6eef0a4721e362860f8c299ed7"
+        },
+        "captured_by": "escurel-runner"
+      },
+      "kind": "system",
+      "root_event_id": "01M3Y6XVNR61MVP48E27MD9HZQ",
+      "run_id": "01M3Y6XVQQ3S463NT9GEY702YD"
     },
-    "captured_by": "escurel-runner"
-   },
-   "kind": "system",
-   "root_event_id": "01M3Y6XVNR61MVP48E27MD9HZQ",
-   "run_id": "01M3Y6XVQQ3S463NT9GEY702YD"
-  },
-  {
-   "event_id": "run:01M3Y6XV820FEEAERC8BC3G6PV:finished",
-   "at": "2026-10-02T11:45:23Z",
-   "source": "escurel-runner",
-   "mime": "application/json",
-   "label_skill": "escurel:run",
-   "instance_page_id": null,
-   "status": "inbox",
-   "title": "run-finished",
-   "body": "{\"attempts\":1,\"held\":false,\"plan\":null,\"produced_instance\":null,\"produced_version\":null,\"status\":\"processed\",\"summary\":\"no unassigned inbox event with a target instance\",\"tool_calls\":1,\"usage\":null}",
-   "provenance": {
-    "runner": {
-     "attempt": 1,
-     "autonomy": "review",
-     "depth": 1,
-     "event_id": "cascade:01M3Y6XTJNTQBQRVQFBM5QCY9X",
-     "harness": "echo",
-     "lineage_path": [
-      "01M3Y6XTC5QPWC2ZPJMNY6SD4Z"
-     ],
-     "max_attempts": 3,
-     "parent_run_id": "01M3Y6XTGNEPGM2WP76107VR4V",
-     "root_event_id": "01M3Y6XTC5QPWC2ZPJMNY6SD4Z",
-     "run_id": "01M3Y6XV820FEEAERC8BC3G6PV",
-     "trace_id": "01a0fc6eed19a0a8d1f816c440e2e17c"
+    {
+      "event_id": "run:01M3Y6XV820FEEAERC8BC3G6PV:finished",
+      "at": "2026-10-02T11:45:23Z",
+      "source": "escurel-runner",
+      "mime": "application/json",
+      "label_skill": "escurel:run",
+      "instance_page_id": null,
+      "status": "inbox",
+      "title": "run-finished",
+      "body": "{\"attempts\":1,\"held\":false,\"plan\":null,\"produced_instance\":null,\"produced_version\":null,\"status\":\"processed\",\"summary\":\"no unassigned inbox event with a target instance\",\"tool_calls\":1,\"usage\":null}",
+      "provenance": {
+        "runner": {
+          "attempt": 1,
+          "autonomy": "review",
+          "depth": 1,
+          "event_id": "cascade:01M3Y6XTJNTQBQRVQFBM5QCY9X",
+          "harness": "echo",
+          "lineage_path": ["01M3Y6XTC5QPWC2ZPJMNY6SD4Z"],
+          "max_attempts": 3,
+          "parent_run_id": "01M3Y6XTGNEPGM2WP76107VR4V",
+          "root_event_id": "01M3Y6XTC5QPWC2ZPJMNY6SD4Z",
+          "run_id": "01M3Y6XV820FEEAERC8BC3G6PV",
+          "trace_id": "01a0fc6eed19a0a8d1f816c440e2e17c"
+        },
+        "captured_by": "escurel-runner"
+      },
+      "kind": "system",
+      "root_event_id": "01M3Y6XTC5QPWC2ZPJMNY6SD4Z",
+      "run_id": "01M3Y6XV820FEEAERC8BC3G6PV"
     },
-    "captured_by": "escurel-runner"
-   },
-   "kind": "system",
-   "root_event_id": "01M3Y6XTC5QPWC2ZPJMNY6SD4Z",
-   "run_id": "01M3Y6XV820FEEAERC8BC3G6PV"
-  },
-  {
-   "event_id": "run:01M3Y6XV820FEEAERC8BC3G6PV:attempt:1",
-   "at": "2026-10-02T11:45:23Z",
-   "source": "escurel-runner",
-   "mime": "application/json",
-   "label_skill": "escurel:run",
-   "instance_page_id": null,
-   "status": "inbox",
-   "title": "run-attempt",
-   "body": "{\"attempt\":1,\"ended_at\":\"2026-10-02 11:45:23.261025\",\"error\":\"harness ran cleanly and the gateway reports no effect (no open draft for event cascade:01M3Y6XTJNTQBQRVQFBM5QCY9X yet)\",\"outcome\":\"converged\",\"started_at\":\"2026-10-02 11:45:23.237690\"}",
-   "provenance": {
-    "runner": {
-     "attempt": 1,
-     "depth": 1,
-     "event_id": "cascade:01M3Y6XTJNTQBQRVQFBM5QCY9X",
-     "harness": "echo",
-     "lineage_path": [
-      "01M3Y6XTC5QPWC2ZPJMNY6SD4Z"
-     ],
-     "max_attempts": 3,
-     "parent_run_id": "01M3Y6XTGNEPGM2WP76107VR4V",
-     "root_event_id": "01M3Y6XTC5QPWC2ZPJMNY6SD4Z",
-     "run_id": "01M3Y6XV820FEEAERC8BC3G6PV",
-     "trace_id": "01a0fc6eed19a0a8d1f816c440e2e17c"
+    {
+      "event_id": "run:01M3Y6XV820FEEAERC8BC3G6PV:attempt:1",
+      "at": "2026-10-02T11:45:23Z",
+      "source": "escurel-runner",
+      "mime": "application/json",
+      "label_skill": "escurel:run",
+      "instance_page_id": null,
+      "status": "inbox",
+      "title": "run-attempt",
+      "body": "{\"attempt\":1,\"ended_at\":\"2026-10-02 11:45:23.261025\",\"error\":\"harness ran cleanly and the gateway reports no effect (no open draft for event cascade:01M3Y6XTJNTQBQRVQFBM5QCY9X yet)\",\"outcome\":\"converged\",\"started_at\":\"2026-10-02 11:45:23.237690\"}",
+      "provenance": {
+        "runner": {
+          "attempt": 1,
+          "depth": 1,
+          "event_id": "cascade:01M3Y6XTJNTQBQRVQFBM5QCY9X",
+          "harness": "echo",
+          "lineage_path": ["01M3Y6XTC5QPWC2ZPJMNY6SD4Z"],
+          "max_attempts": 3,
+          "parent_run_id": "01M3Y6XTGNEPGM2WP76107VR4V",
+          "root_event_id": "01M3Y6XTC5QPWC2ZPJMNY6SD4Z",
+          "run_id": "01M3Y6XV820FEEAERC8BC3G6PV",
+          "trace_id": "01a0fc6eed19a0a8d1f816c440e2e17c"
+        },
+        "captured_by": "escurel-runner"
+      },
+      "kind": "system",
+      "root_event_id": "01M3Y6XTC5QPWC2ZPJMNY6SD4Z",
+      "run_id": "01M3Y6XV820FEEAERC8BC3G6PV"
     },
-    "captured_by": "escurel-runner"
-   },
-   "kind": "system",
-   "root_event_id": "01M3Y6XTC5QPWC2ZPJMNY6SD4Z",
-   "run_id": "01M3Y6XV820FEEAERC8BC3G6PV"
-  },
-  {
-   "event_id": "run:01M3Y6XV820FEEAERC8BC3G6PV:started",
-   "at": "2026-10-02T11:45:23Z",
-   "source": "escurel-runner",
-   "mime": "application/json",
-   "label_skill": "escurel:run",
-   "instance_page_id": null,
-   "status": "inbox",
-   "title": "run-started",
-   "body": "{}",
-   "provenance": {
-    "runner": {
-     "attempt": 0,
-     "depth": 1,
-     "event_id": "cascade:01M3Y6XTJNTQBQRVQFBM5QCY9X",
-     "harness": "echo",
-     "lineage_path": [
-      "01M3Y6XTC5QPWC2ZPJMNY6SD4Z"
-     ],
-     "max_attempts": 3,
-     "parent_run_id": "01M3Y6XTGNEPGM2WP76107VR4V",
-     "root_event_id": "01M3Y6XTC5QPWC2ZPJMNY6SD4Z",
-     "run_id": "01M3Y6XV820FEEAERC8BC3G6PV",
-     "trace_id": "01a0fc6eed19a0a8d1f816c440e2e17c"
+    {
+      "event_id": "run:01M3Y6XV820FEEAERC8BC3G6PV:started",
+      "at": "2026-10-02T11:45:23Z",
+      "source": "escurel-runner",
+      "mime": "application/json",
+      "label_skill": "escurel:run",
+      "instance_page_id": null,
+      "status": "inbox",
+      "title": "run-started",
+      "body": "{}",
+      "provenance": {
+        "runner": {
+          "attempt": 0,
+          "depth": 1,
+          "event_id": "cascade:01M3Y6XTJNTQBQRVQFBM5QCY9X",
+          "harness": "echo",
+          "lineage_path": ["01M3Y6XTC5QPWC2ZPJMNY6SD4Z"],
+          "max_attempts": 3,
+          "parent_run_id": "01M3Y6XTGNEPGM2WP76107VR4V",
+          "root_event_id": "01M3Y6XTC5QPWC2ZPJMNY6SD4Z",
+          "run_id": "01M3Y6XV820FEEAERC8BC3G6PV",
+          "trace_id": "01a0fc6eed19a0a8d1f816c440e2e17c"
+        },
+        "captured_by": "escurel-runner"
+      },
+      "kind": "system",
+      "root_event_id": "01M3Y6XTC5QPWC2ZPJMNY6SD4Z",
+      "run_id": "01M3Y6XV820FEEAERC8BC3G6PV"
     },
-    "captured_by": "escurel-runner"
-   },
-   "kind": "system",
-   "root_event_id": "01M3Y6XTC5QPWC2ZPJMNY6SD4Z",
-   "run_id": "01M3Y6XV820FEEAERC8BC3G6PV"
-  },
-  {
-   "event_id": "run:01M3Y6XTGNEPGM2WP76107VR4V:finished",
-   "at": "2026-10-02T11:45:22Z",
-   "source": "escurel-runner",
-   "mime": "application/json",
-   "label_skill": "escurel:run",
-   "instance_page_id": "markdown/instances/customer-order__order-4500123.md",
-   "status": "processed",
-   "title": "run-finished",
-   "body": "{\"attempts\":1,\"held\":true,\"plan\":[{\"status\":\"completed\",\"step\":\"read the target page\"},{\"status\":\"in_progress\",\"step\":\"draft the fold for review\"}],\"produced_instance\":\"markdown/instances/customer-order__order-4500123.md\",\"produced_version\":\"19c8edf77201be8cac9ee422c5ef263c490c8d36344740e6d04c285004d2d59e\",\"status\":\"processed\",\"summary\":\"drafted the fold of event 01M3Y6XTC5QPWC2ZPJMNY6SD4Z for markdown/instances/customer-order__order-4500123.md (draft 01M3Y6XTJNTQBQRVQFBM5QCY9X); awaiting a human\",\"tool_calls\":4,\"usage\":null}",
-   "provenance": {
-    "runner": {
-     "attempt": 1,
-     "autonomy": "review",
-     "depth": 0,
-     "event_id": "01M3Y6XTC5QPWC2ZPJMNY6SD4Z",
-     "harness": "echo",
-     "lineage_path": [
-      "01M3Y6XTC5QPWC2ZPJMNY6SD4Z"
-     ],
-     "max_attempts": 3,
-     "root_event_id": "01M3Y6XTC5QPWC2ZPJMNY6SD4Z",
-     "run_id": "01M3Y6XTGNEPGM2WP76107VR4V",
-     "target_page_id": "markdown/instances/customer-order__order-4500123.md",
-     "trace_id": "01a0fc6eea265a9eb5c8ac75a3c14df2"
+    {
+      "event_id": "run:01M3Y6XTGNEPGM2WP76107VR4V:finished",
+      "at": "2026-10-02T11:45:22Z",
+      "source": "escurel-runner",
+      "mime": "application/json",
+      "label_skill": "escurel:run",
+      "instance_page_id": "markdown/instances/customer-order__order-4500123.md",
+      "status": "processed",
+      "title": "run-finished",
+      "body": "{\"attempts\":1,\"held\":true,\"plan\":[{\"status\":\"completed\",\"step\":\"read the target page\"},{\"status\":\"in_progress\",\"step\":\"draft the fold for review\"}],\"produced_instance\":\"markdown/instances/customer-order__order-4500123.md\",\"produced_version\":\"19c8edf77201be8cac9ee422c5ef263c490c8d36344740e6d04c285004d2d59e\",\"status\":\"processed\",\"summary\":\"drafted the fold of event 01M3Y6XTC5QPWC2ZPJMNY6SD4Z for markdown/instances/customer-order__order-4500123.md (draft 01M3Y6XTJNTQBQRVQFBM5QCY9X); awaiting a human\",\"tool_calls\":4,\"usage\":null}",
+      "provenance": {
+        "runner": {
+          "attempt": 1,
+          "autonomy": "review",
+          "depth": 0,
+          "event_id": "01M3Y6XTC5QPWC2ZPJMNY6SD4Z",
+          "harness": "echo",
+          "lineage_path": ["01M3Y6XTC5QPWC2ZPJMNY6SD4Z"],
+          "max_attempts": 3,
+          "root_event_id": "01M3Y6XTC5QPWC2ZPJMNY6SD4Z",
+          "run_id": "01M3Y6XTGNEPGM2WP76107VR4V",
+          "target_page_id": "markdown/instances/customer-order__order-4500123.md",
+          "trace_id": "01a0fc6eea265a9eb5c8ac75a3c14df2"
+        },
+        "captured_by": "escurel-runner"
+      },
+      "kind": "system",
+      "root_event_id": "01M3Y6XTC5QPWC2ZPJMNY6SD4Z",
+      "run_id": "01M3Y6XTGNEPGM2WP76107VR4V"
     },
-    "captured_by": "escurel-runner"
-   },
-   "kind": "system",
-   "root_event_id": "01M3Y6XTC5QPWC2ZPJMNY6SD4Z",
-   "run_id": "01M3Y6XTGNEPGM2WP76107VR4V"
-  },
-  {
-   "event_id": "run:01M3Y6XTGNEPGM2WP76107VR4V:attempt:1",
-   "at": "2026-10-02T11:45:22Z",
-   "source": "escurel-runner",
-   "mime": "application/json",
-   "label_skill": "escurel:run",
-   "instance_page_id": "markdown/instances/customer-order__order-4500123.md",
-   "status": "processed",
-   "title": "run-attempt",
-   "body": "{\"attempt\":1,\"ended_at\":\"2026-10-02 11:45:22.538551\",\"outcome\":\"ok\",\"started_at\":\"2026-10-02 11:45:22.482130\"}",
-   "provenance": {
-    "runner": {
-     "attempt": 1,
-     "depth": 0,
-     "event_id": "01M3Y6XTC5QPWC2ZPJMNY6SD4Z",
-     "harness": "echo",
-     "lineage_path": [
-      "01M3Y6XTC5QPWC2ZPJMNY6SD4Z"
-     ],
-     "max_attempts": 3,
-     "root_event_id": "01M3Y6XTC5QPWC2ZPJMNY6SD4Z",
-     "run_id": "01M3Y6XTGNEPGM2WP76107VR4V",
-     "target_page_id": "markdown/instances/customer-order__order-4500123.md",
-     "trace_id": "01a0fc6eea265a9eb5c8ac75a3c14df2"
+    {
+      "event_id": "run:01M3Y6XTGNEPGM2WP76107VR4V:attempt:1",
+      "at": "2026-10-02T11:45:22Z",
+      "source": "escurel-runner",
+      "mime": "application/json",
+      "label_skill": "escurel:run",
+      "instance_page_id": "markdown/instances/customer-order__order-4500123.md",
+      "status": "processed",
+      "title": "run-attempt",
+      "body": "{\"attempt\":1,\"ended_at\":\"2026-10-02 11:45:22.538551\",\"outcome\":\"ok\",\"started_at\":\"2026-10-02 11:45:22.482130\"}",
+      "provenance": {
+        "runner": {
+          "attempt": 1,
+          "depth": 0,
+          "event_id": "01M3Y6XTC5QPWC2ZPJMNY6SD4Z",
+          "harness": "echo",
+          "lineage_path": ["01M3Y6XTC5QPWC2ZPJMNY6SD4Z"],
+          "max_attempts": 3,
+          "root_event_id": "01M3Y6XTC5QPWC2ZPJMNY6SD4Z",
+          "run_id": "01M3Y6XTGNEPGM2WP76107VR4V",
+          "target_page_id": "markdown/instances/customer-order__order-4500123.md",
+          "trace_id": "01a0fc6eea265a9eb5c8ac75a3c14df2"
+        },
+        "captured_by": "escurel-runner"
+      },
+      "kind": "system",
+      "root_event_id": "01M3Y6XTC5QPWC2ZPJMNY6SD4Z",
+      "run_id": "01M3Y6XTGNEPGM2WP76107VR4V"
     },
-    "captured_by": "escurel-runner"
-   },
-   "kind": "system",
-   "root_event_id": "01M3Y6XTC5QPWC2ZPJMNY6SD4Z",
-   "run_id": "01M3Y6XTGNEPGM2WP76107VR4V"
-  },
-  {
-   "event_id": "run-progress:01M3Y6XTGNEPGM2WP76107VR4V:19ac7dbefbb46a8d",
-   "at": "2026-10-02T11:45:22Z",
-   "source": "report_progress",
-   "mime": "application/json",
-   "label_skill": "escurel:run",
-   "instance_page_id": "markdown/instances/customer-order__order-4500123.md",
-   "status": "processed",
-   "title": "run-progress",
-   "body": "{\"plan\":[{\"step\":\"read the target page\",\"status\":\"completed\"},{\"step\":\"draft the fold for review\",\"status\":\"in_progress\"}],\"current\":\"draft the fold for review\",\"note\":null}",
-   "provenance": {
-    "runner": {
-     "run_id": "01M3Y6XTGNEPGM2WP76107VR4V",
-     "reported_by": "agent:supplier-risk",
-     "root_event_id": "01M3Y6XTC5QPWC2ZPJMNY6SD4Z"
+    {
+      "event_id": "run-progress:01M3Y6XTGNEPGM2WP76107VR4V:19ac7dbefbb46a8d",
+      "at": "2026-10-02T11:45:22Z",
+      "source": "report_progress",
+      "mime": "application/json",
+      "label_skill": "escurel:run",
+      "instance_page_id": "markdown/instances/customer-order__order-4500123.md",
+      "status": "processed",
+      "title": "run-progress",
+      "body": "{\"plan\":[{\"step\":\"read the target page\",\"status\":\"completed\"},{\"step\":\"draft the fold for review\",\"status\":\"in_progress\"}],\"current\":\"draft the fold for review\",\"note\":null}",
+      "provenance": {
+        "runner": {
+          "run_id": "01M3Y6XTGNEPGM2WP76107VR4V",
+          "reported_by": "agent:supplier-risk",
+          "root_event_id": "01M3Y6XTC5QPWC2ZPJMNY6SD4Z"
+        },
+        "captured_by": "agent:supplier-risk"
+      },
+      "kind": "system",
+      "root_event_id": "01M3Y6XTC5QPWC2ZPJMNY6SD4Z",
+      "run_id": "01M3Y6XTGNEPGM2WP76107VR4V"
     },
-    "captured_by": "agent:supplier-risk"
-   },
-   "kind": "system",
-   "root_event_id": "01M3Y6XTC5QPWC2ZPJMNY6SD4Z",
-   "run_id": "01M3Y6XTGNEPGM2WP76107VR4V"
-  },
-  {
-   "event_id": "run:01M3Y6XTGNEPGM2WP76107VR4V:started",
-   "at": "2026-10-02T11:45:22Z",
-   "source": "escurel-runner",
-   "mime": "application/json",
-   "label_skill": "escurel:run",
-   "instance_page_id": "markdown/instances/customer-order__order-4500123.md",
-   "status": "processed",
-   "title": "run-started",
-   "body": "{}",
-   "provenance": {
-    "runner": {
-     "attempt": 0,
-     "depth": 0,
-     "event_id": "01M3Y6XTC5QPWC2ZPJMNY6SD4Z",
-     "harness": "echo",
-     "lineage_path": [
-      "01M3Y6XTC5QPWC2ZPJMNY6SD4Z"
-     ],
-     "max_attempts": 3,
-     "root_event_id": "01M3Y6XTC5QPWC2ZPJMNY6SD4Z",
-     "run_id": "01M3Y6XTGNEPGM2WP76107VR4V",
-     "target_page_id": "markdown/instances/customer-order__order-4500123.md",
-     "trace_id": "01a0fc6eea265a9eb5c8ac75a3c14df2"
-    },
-    "captured_by": "escurel-runner"
-   },
-   "kind": "system",
-   "root_event_id": "01M3Y6XTC5QPWC2ZPJMNY6SD4Z",
-   "run_id": "01M3Y6XTGNEPGM2WP76107VR4V"
-  }
- ],
- "resume_cursor": "c2VxfDM"
+    {
+      "event_id": "run:01M3Y6XTGNEPGM2WP76107VR4V:started",
+      "at": "2026-10-02T11:45:22Z",
+      "source": "escurel-runner",
+      "mime": "application/json",
+      "label_skill": "escurel:run",
+      "instance_page_id": "markdown/instances/customer-order__order-4500123.md",
+      "status": "processed",
+      "title": "run-started",
+      "body": "{}",
+      "provenance": {
+        "runner": {
+          "attempt": 0,
+          "depth": 0,
+          "event_id": "01M3Y6XTC5QPWC2ZPJMNY6SD4Z",
+          "harness": "echo",
+          "lineage_path": ["01M3Y6XTC5QPWC2ZPJMNY6SD4Z"],
+          "max_attempts": 3,
+          "root_event_id": "01M3Y6XTC5QPWC2ZPJMNY6SD4Z",
+          "run_id": "01M3Y6XTGNEPGM2WP76107VR4V",
+          "target_page_id": "markdown/instances/customer-order__order-4500123.md",
+          "trace_id": "01a0fc6eea265a9eb5c8ac75a3c14df2"
+        },
+        "captured_by": "escurel-runner"
+      },
+      "kind": "system",
+      "root_event_id": "01M3Y6XTC5QPWC2ZPJMNY6SD4Z",
+      "run_id": "01M3Y6XTGNEPGM2WP76107VR4V"
+    }
+  ],
+  "next_cursor": "c2VxfDM"
 }

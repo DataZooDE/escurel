@@ -6,7 +6,7 @@
 use std::fs;
 use std::path::PathBuf;
 
-use escurel_md::{PageType, ParseError, parse};
+use escurel_md::{PageKind, ParseError, parse};
 
 fn fixture(name: &str) -> String {
     let path: PathBuf = [env!("CARGO_MANIFEST_DIR"), "tests", "fixtures", name]
@@ -20,7 +20,7 @@ fn parses_skill_page() {
     let input = fixture("skill_customer.md");
     let page = parse(&input).expect("skill fixture must parse");
 
-    assert_eq!(page.frontmatter.page_type, PageType::Skill);
+    assert_eq!(page.frontmatter.page_kind, PageKind::Skill);
 
     let fields = &page.frontmatter.fields;
     assert_eq!(fields["id"].as_str(), Some("customer"));
@@ -54,7 +54,7 @@ fn parses_instance_page() {
     let input = fixture("instance_acme.md");
     let page = parse(&input).expect("instance fixture must parse");
 
-    assert_eq!(page.frontmatter.page_type, PageType::Instance);
+    assert_eq!(page.frontmatter.page_kind, PageKind::Instance);
 
     let fields = &page.frontmatter.fields;
     assert_eq!(fields["skill"].as_str(), Some("customer"));
@@ -71,7 +71,7 @@ fn parses_event_typed_instance() {
     let input = fixture("event_meeting.md");
     let page = parse(&input).expect("event fixture must parse");
 
-    assert_eq!(page.frontmatter.page_type, PageType::Instance);
+    assert_eq!(page.frontmatter.page_kind, PageKind::Instance);
 
     let fields = &page.frontmatter.fields;
     assert_eq!(fields["skill"].as_str(), Some("meeting"));
@@ -112,7 +112,7 @@ fn input_without_leading_delimiter_errors() {
 
 #[test]
 fn unterminated_frontmatter_errors() {
-    let input = "---\ntype: skill\nid: customer\n\nstill no closing delimiter\n";
+    let input = "---\nkind: skill\nid: customer\n\nstill no closing delimiter\n";
     let err = parse(input).expect_err("unterminated frontmatter must fail");
     assert!(
         matches!(err, ParseError::UnterminatedFrontmatter),
@@ -143,7 +143,7 @@ fn missing_type_field_errors() {
 
 #[test]
 fn unknown_type_value_errors() {
-    let input = "---\ntype: gadget\nid: x\n---\n\nbody\n";
+    let input = "---\nkind: gadget\nid: x\n---\n\nbody\n";
     let err = parse(input).expect_err("unknown type must fail");
     assert!(
         matches!(err, ParseError::InvalidType),
@@ -155,12 +155,12 @@ fn unknown_type_value_errors() {
 fn set_frontmatter_bool_stamps_flag_and_preserves_body() {
     // #300: stamp `archived: true` onto an existing page; the flag round-trips
     // through parse and the body is preserved verbatim.
-    let input = "---\ntype: instance\nskill: customer\nid: acme\n---\n# Acme\n\nBody text.\n";
+    let input = "---\nkind: instance\nskill: customer\nid: acme\n---\n# Acme\n\nBody text.\n";
     let out =
         escurel_md::set_frontmatter_bool(input, "archived", true).expect("stamp archived flag");
 
     let page = parse(&out).expect("re-parse stamped page");
-    assert_eq!(page.frontmatter.page_type, PageType::Instance);
+    assert_eq!(page.frontmatter.page_kind, PageKind::Instance);
     assert_eq!(
         page.frontmatter.fields["archived"].as_bool(),
         Some(true),
@@ -178,4 +178,103 @@ fn set_frontmatter_bool_rejects_malformed_input() {
     let err = escurel_md::set_frontmatter_bool("no frontmatter here", "archived", true)
         .expect_err("malformed input must error");
     assert!(matches!(err, ParseError::MissingFrontmatter));
+}
+
+#[test]
+fn parses_the_kind_key() {
+    let skill = parse("---\nkind: skill\nid: customer\n---\nbody\n").expect("kind: skill parses");
+    assert_eq!(skill.frontmatter.page_kind, PageKind::Skill);
+    let instance = parse("---\nkind: instance\nskill: customer\nid: c1\n---\n")
+        .expect("kind: instance parses");
+    assert_eq!(instance.frontmatter.page_kind, PageKind::Instance);
+}
+
+#[test]
+fn a_legacy_type_page_kind_is_rejected_and_the_error_names_the_migration_tool() {
+    // The hard cut: `type: skill|instance` is no longer a page kind.
+    let err = parse("---\ntype: skill\nid: customer\n---\nbody\n")
+        .expect_err("the removed key must not parse");
+    assert!(matches!(err, ParseError::LegacyTypeKey), "{err:?}");
+    let msg = err.to_string();
+    assert!(msg.contains("kind:"), "names the replacement: {msg}");
+    assert!(
+        msg.contains("escurel admin migrate-kind"),
+        "names the tool: {msg}"
+    );
+
+    let err =
+        parse("---\ntype: instance\nskill: customer\nid: c1\n---\n").expect_err("instances too");
+    assert!(matches!(err, ParseError::LegacyTypeKey), "{err:?}");
+}
+
+#[test]
+fn a_page_with_a_kind_data_field_and_a_legacy_type_is_still_rejected_as_legacy() {
+    // The compile-first `issue` pages used to carry `type: instance` AND their own `kind:` data.
+    let err = parse("---\ntype: instance\nskill: issue\nid: i1\nkind: lint_summary\n---\n")
+        .expect_err("legacy page kind");
+    assert!(matches!(err, ParseError::LegacyTypeKey), "{err:?}");
+}
+
+#[test]
+fn a_users_own_type_data_field_is_just_data() {
+    // `type: invoice` is not the page kind; the page kind is `kind:`.
+    let page = parse("---\nkind: instance\nskill: doc\nid: inv1\ntype: invoice\n---\n")
+        .expect("a type data field is fine");
+    assert_eq!(page.frontmatter.page_kind, PageKind::Instance);
+    assert_eq!(page.frontmatter.fields["type"].as_str(), Some("invoice"));
+}
+
+#[test]
+fn a_page_with_neither_a_kind_nor_a_legacy_type_is_invalid() {
+    let err = parse("---\nid: a\ntype: invoice\n---\n").expect_err("no page kind");
+    assert!(matches!(err, ParseError::InvalidType), "{err:?}");
+}
+
+// Round-2 review: a page saved by a Windows editor (CRLF) or one with a UTF-8 BOM was accepted by
+// the legacy scan but refused by `parse`, so a rebuilt index (fresh volume, node loss) refused to
+// boot over it. Both are ordinary files; `parse` tolerates them and keeps the body bytes verbatim.
+#[test]
+fn a_crlf_page_parses_and_its_body_is_verbatim() {
+    let md = "---\r\nkind: instance\r\nskill: s0\r\nid: a\r\n---\r\n# A\r\n\r\nBody line.\r\n";
+    let page = escurel_md::parse(md).expect("CRLF page parses");
+    assert_eq!(page.frontmatter.page_kind, escurel_md::PageKind::Instance);
+    assert_eq!(page.body, "# A\r\n\r\nBody line.\r\n");
+}
+
+#[test]
+fn a_bom_prefixed_page_parses() {
+    let md = "\u{feff}---\nkind: skill\nid: s0\ndescription: d\n---\n# s0\n";
+    let page = escurel_md::parse(md).expect("BOM page parses");
+    assert_eq!(page.frontmatter.page_kind, escurel_md::PageKind::Skill);
+    assert_eq!(page.body, "# s0\n");
+}
+
+#[test]
+fn a_bom_and_crlf_page_parses() {
+    let md = "\u{feff}---\r\nkind: instance\r\nskill: s0\r\nid: a\r\n---\r\nbody\r\n";
+    assert!(escurel_md::parse(md).is_ok());
+}
+
+#[test]
+fn legacy_rewrite_handles_crlf_and_bom_and_keeps_the_eol() {
+    use escurel_md::legacy::{KindRewrite, rewrite_legacy_type_key};
+    let crlf = "---\r\ntype: instance\r\nskill: s0\r\nid: a\r\n---\r\n# A\r\n";
+    match rewrite_legacy_type_key(crlf) {
+        KindRewrite::Rewritten(out) => {
+            assert_eq!(
+                out,
+                "---\r\nkind: instance\r\nskill: s0\r\nid: a\r\n---\r\n# A\r\n"
+            );
+            assert!(escurel_md::parse(&out).is_ok());
+        }
+        other => panic!("expected a rewrite, got {other:?}"),
+    }
+    let bom = "\u{feff}---\ntype: skill\nid: s0\ndescription: d\n---\n# s0\n";
+    match rewrite_legacy_type_key(bom) {
+        KindRewrite::Rewritten(out) => {
+            assert!(out.starts_with("\u{feff}---\nkind: skill\n"));
+            assert!(escurel_md::parse(&out).is_ok());
+        }
+        other => panic!("expected a rewrite, got {other:?}"),
+    }
 }

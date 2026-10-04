@@ -1,5 +1,5 @@
 ---
-type: instance
+kind: instance
 skill: query
 id: analysis_orders
 target: "[[order-lines::all]]"

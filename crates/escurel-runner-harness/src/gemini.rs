@@ -385,8 +385,10 @@ impl GeminiHarness {
                 )
                 .await?;
                 let payload = result["result"]["structuredContent"].clone();
-                let landed = payload.get("ok").and_then(Value::as_bool) != Some(false)
-                    && result.get("error").is_none();
+                // A call landed unless the gateway refused it: `isError`, `ok: false`, or a
+                // JSON-RPC error. (`isError` alone, with no payload flag, used to count as landed.)
+                let landed = result.get("error").is_none()
+                    && escurel_types::call_result::refusal_of(&result["result"]).is_none();
                 if landed
                     && let Some(page) = args
                         .get("page_id")

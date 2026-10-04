@@ -171,6 +171,37 @@ suite('M2', () => {
     assert.equal(api.awaiting.badge?.value, rows.length);
   });
 
+  test('View skill opens the readable skill page, and Show Markdown opens the source', async () => {
+    await vscode.commands.executeCommand('escurel.viewSkill', 'customer-order');
+    const tab = await until(() => {
+      const active = vscode.window.tabGroups.activeTabGroup.activeTab;
+      return active?.input instanceof vscode.TabInputCustom &&
+        active.input.viewType === 'escurel.skillPage'
+        ? active
+        : undefined;
+    });
+    assert.match(tab.label, /customer-order/);
+
+    await vscode.commands.executeCommand('escurel.showRaw', 'markdown/skills/customer-order.md');
+    const raw = await until(() => {
+      const active = vscode.window.tabGroups.activeTabGroup.activeTab;
+      return active?.input instanceof vscode.TabInputText &&
+        active.input.uri.path === '/skills/customer-order.md'
+        ? active
+        : undefined;
+    });
+    assert.ok(raw, 'the Markdown source opens as text');
+  });
+
+  test('Explain this view opens a short plain-words page about how things connect', async () => {
+    await vscode.commands.executeCommand('escurel.explainView');
+    const doc = await until(() =>
+      vscode.workspace.textDocuments.find((d) => d.getText().startsWith('# How things connect')),
+    );
+    assert.match(doc.getText(), /Awaiting You/);
+    assert.ok(doc.lineCount <= 40, 'one screen of text');
+  });
+
   test('The review diff opens with base and proposed sides in escurel-review scheme', async () => {
     const { drafts: draftList, targets: targetList } = await ensureThreeDraftChangeset();
     const draft = draftList[0]!;
@@ -184,6 +215,25 @@ suite('M2', () => {
       return active?.input instanceof vscode.TabInputTextDiff ? active : undefined;
     });
     const diffInput = tab.input as vscode.TabInputTextDiff;
+
+    // The tab names the skill and the page the change is for.
+    assert.match(tab.label, /^[a-z-]+ · .+ — draft by /, `tab label: ${tab.label}`);
+
+    // The header offers the way to the instance and to the skill (the draft has no run behind it, so
+    // thread and run answer with a worded notice instead of doing nothing).
+    await vscode.commands.executeCommand('escurel.reviewOpenInstance');
+    await until(() => {
+      const label = vscode.window.tabGroups.activeTabGroup.activeTab?.label ?? '';
+      return label.includes(target.pageId.split('/').pop()!.replace(/\.md$/, '').split('__').pop()!)
+        ? label
+        : undefined;
+    });
+    await vscode.commands.executeCommand('escurel.openReview', draft);
+    await until(() =>
+      vscode.window.tabGroups.activeTabGroup.activeTab?.input instanceof vscode.TabInputTextDiff
+        ? true
+        : undefined,
+    );
 
     // Verify both sides use virtual review URIs rather than touching the local filesystem.
     assert.equal(diffInput.original.scheme, 'escurel-review');
@@ -337,7 +387,9 @@ suite('M2', () => {
       'already_decided',
       'review model must classify outcome as already_decided',
     );
-    assert.ok(outcome.message.includes(csId));
+    // In words, never with the changeset's id.
+    assert.equal(outcome.message, 'That set of changes was already handled.');
+    assert.ok(!outcome.message.includes(csId));
     assert.equal(outcome.closeDiff, true);
     assert.equal(outcome.refresh, true);
 

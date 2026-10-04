@@ -87,3 +87,78 @@ describe('resolvePageMessage: open-wikilink', () => {
     ).toBeUndefined();
   });
 });
+
+describe('resolvePageMessage: open-original', () => {
+  const docModel = {
+    ...model,
+    preview: { kind: 'document', readOnly: true, chunks: [], total: 0, truncated: false },
+  } as unknown as PageModel;
+
+  it('opens the original of THIS page, taken from the host model, only for a document page', () => {
+    expect(resolvePageMessage(docModel, { type: 'open-original' })).toEqual({
+      command: 'escurel.openOriginal',
+      args: [model.pageId],
+    });
+    expect(resolvePageMessage(model, { type: 'open-original' })).toBeUndefined();
+    expect(resolvePageMessage(undefined, { type: 'open-original' })).toBeUndefined();
+  });
+});
+
+describe('resolvePageMessage: propose-write-back', () => {
+  const rowModel = {
+    ...model,
+    source: {
+      sourceFields: ['tier'],
+      linked: { enabled: true, exists: false, orphan: false },
+      writableColumns: ['tier'],
+      etag: 'w1:abc',
+    },
+  } as unknown as PageModel;
+
+  it('accepts only a column the page itself said is writable, on THIS page', () => {
+    expect(resolvePageMessage(rowModel, { type: 'propose-write-back', field: 'tier' })).toEqual({
+      command: 'escurel.proposeWriteBack',
+      args: [{ pageId: rowModel.pageId, field: 'tier' }],
+    });
+  });
+
+  it('refuses a column that is not writable, and a page that is not a writable row', () => {
+    expect(
+      resolvePageMessage(rowModel, { type: 'propose-write-back', field: 'display_name' }),
+    ).toBeUndefined();
+    expect(
+      resolvePageMessage(model, { type: 'propose-write-back', field: 'tier' }),
+    ).toBeUndefined();
+    expect(
+      resolvePageMessage(undefined, { type: 'propose-write-back', field: 'tier' }),
+    ).toBeUndefined();
+  });
+});
+
+describe('resolvePageMessage: the report that draws this page', () => {
+  const withViewer = {
+    ...model,
+    viewer: { report: 'supplier-risk-report' },
+  } as unknown as PageModel;
+  it('may open the report skill the page names, and no other', () => {
+    expect(
+      resolvePageMessage(withViewer, { type: 'view-skill', skill: 'supplier-risk-report' }),
+    ).toEqual({
+      command: 'escurel.viewSkill',
+      args: ['supplier-risk-report'],
+    });
+    expect(
+      resolvePageMessage(model, { type: 'view-skill', skill: 'supplier-risk-report' }),
+    ).toBeUndefined();
+  });
+});
+
+describe('show-runs', () => {
+  it('filters the Runs view to the page the host built the model for, never to a webview id', () => {
+    expect(resolvePageMessage(model, { type: 'show-runs' })).toEqual({
+      command: 'escurel.runs.forPage',
+      args: [model.pageId],
+    });
+    expect(resolvePageMessage(undefined, { type: 'show-runs' })).toBeUndefined();
+  });
+});

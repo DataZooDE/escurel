@@ -5,8 +5,8 @@
 //! lets the gateway hold exactly one instance behind an `Arc`.
 
 use prometheus::{
-    CounterVec, Encoder, Gauge, HistogramOpts, HistogramVec, IntCounterVec, IntGauge, IntGaugeVec,
-    Opts, Registry, TextEncoder,
+    CounterVec, Encoder, Gauge, HistogramOpts, HistogramVec, IntCounter, IntCounterVec, IntGauge,
+    IntGaugeVec, Opts, Registry, TextEncoder,
 };
 
 /// Latency histogram buckets, in seconds. Chosen to straddle the
@@ -62,6 +62,22 @@ pub struct Metrics {
     /// events the gateway refused (best-effort projection; the run itself
     /// is unaffected).
     runner_run_events_failed: IntCounterVec,
+    /// `escurel_tenant_quarantined{tenant}` — 1 while the tenant is quarantined for legacy pages.
+    tenant_quarantined: IntGaugeVec,
+    /// `escurel_migration_pending` — 1 while a `migrate_kind` run started but has not finished.
+    migration_pending: IntGauge,
+    /// `escurel_semantic_search_enabled` — 0 when the zero-vector embedder is in use.
+    semantic_search: IntGauge,
+    /// `escurel_egress_total{outcome}` — outbound connector calls by outcome (`ok`, `refused`, ...).
+    egress: IntCounterVec,
+    /// `escurel_write_back_total{outcome}` — write-back promotions by outcome (`applied`, `failed`,
+    /// `conflict`, `dead_letter`).
+    write_back: IntCounterVec,
+    /// `escurel_source_unavailable_total{kind}` — a row's source could not be reached.
+    source_unavailable: IntCounterVec,
+    /// `escurel_log_lines_dropped_total` — log lines dropped because the log consumer (stdout's
+    /// reader) was not reading; the gateway drops lines rather than stall behind a full pipe.
+    log_dropped: IntCounter,
 }
 
 impl Metrics {
@@ -236,6 +252,69 @@ impl Metrics {
         registry
             .register(Box::new(runner_run_events_failed.clone()))
             .expect("register escurel_runner_run_events_failed_total");
+        let tenant_quarantined = IntGaugeVec::new(
+            Opts::new(
+                "escurel_tenant_quarantined",
+                "1 while the tenant is quarantined (legacy `type:` pages): it serves only migrate_kind.",
+            ),
+            &["tenant"],
+        )
+        .expect("valid gauge opts");
+        let migration_pending = IntGauge::with_opts(Opts::new(
+            "escurel_migration_pending",
+            "1 while a migrate_kind run has started and not finished.",
+        ))
+        .expect("valid gauge opts");
+        let semantic_search = IntGauge::with_opts(Opts::new(
+            "escurel_semantic_search_enabled",
+            "0 when only zero-vector embeddings are configured (lexical search only), else 1.",
+        ))
+        .expect("valid gauge opts");
+        let egress = IntCounterVec::new(
+            Opts::new(
+                "escurel_egress_total",
+                "Outbound connector calls by outcome (ok, refused, timeout, error).",
+            ),
+            &["outcome"],
+        )
+        .expect("valid counter opts");
+        let write_back = IntCounterVec::new(
+            Opts::new(
+                "escurel_write_back_total",
+                "Write-back promotions to a source system by outcome.",
+            ),
+            &["outcome"],
+        )
+        .expect("valid counter opts");
+        let source_unavailable = IntCounterVec::new(
+            Opts::new(
+                "escurel_source_unavailable_total",
+                "A row's source could not be reached, by backend kind.",
+            ),
+            &["kind"],
+        )
+        .expect("valid counter opts");
+        for c in [
+            Box::new(tenant_quarantined.clone()) as Box<dyn prometheus::core::Collector>,
+            Box::new(migration_pending.clone()),
+            Box::new(semantic_search.clone()),
+            Box::new(egress.clone()),
+            Box::new(write_back.clone()),
+            Box::new(source_unavailable.clone()),
+        ] {
+            registry.register(c).expect("register operator metric");
+        }
+        let log_dropped = IntCounter::new(
+            "escurel_log_lines_dropped_total",
+            "Log lines dropped because the log consumer was not reading stdout",
+        )
+        .expect("escurel_log_lines_dropped_total");
+        registry
+            .register(Box::new(log_dropped.clone()))
+            .expect("register escurel_log_lines_dropped_total");
+        // Semantic search is on until a scrape says otherwise.
+        semantic_search.set(1);
+
         registry
             .register(Box::new(runner_queue_depth.clone()))
             .expect("register escurel_runner_queue_depth");
@@ -260,6 +339,13 @@ impl Metrics {
             runner_run_events_failed,
             runner_queue_depth,
             runner_cascade_depth_max,
+            tenant_quarantined,
+            migration_pending,
+            semantic_search,
+            egress,
+            write_back,
+            source_unavailable,
+            log_dropped,
         }
     }
 
@@ -297,6 +383,36 @@ impl Metrics {
         self.tool_latency_ms
             .with_label_values(&[tenant, tool, transport])
             .observe(latency_ms);
+    }
+
+    /// Quarantine state of `tenant`, sampled at scrape time (a lifted quarantine reads 0).
+    pub fn set_tenant_quarantined(&self, tenant: &str, quarantined: bool) {
+        self.tenant_quarantined
+            .with_label_values(&[tenant])
+            .set(i64::from(quarantined));
+    }
+
+    pub fn set_migration_pending(&self, pending: bool) {
+        self.migration_pending.set(i64::from(pending));
+    }
+
+    pub fn set_semantic_search(&self, enabled: bool) {
+        self.semantic_search.set(i64::from(enabled));
+    }
+
+    /// Count one outbound connector call. HOOK for the egress path.
+    pub fn inc_egress(&self, outcome: &str) {
+        self.egress.with_label_values(&[outcome]).inc();
+    }
+
+    /// Count one write-back promotion outcome. HOOK for the write-back path.
+    pub fn inc_write_back(&self, outcome: &str) {
+        self.write_back.with_label_values(&[outcome]).inc();
+    }
+
+    /// Count a row whose source was unreachable. HOOK for the row/connector read path.
+    pub fn inc_source_unavailable(&self, kind: &str) {
+        self.source_unavailable.with_label_values(&[kind]).inc();
     }
 
     /// Set the open-live-sessions gauge (sampled at scrape time).
@@ -379,6 +495,11 @@ impl Metrics {
     pub fn render_prometheus(&self) -> String {
         let mut buf = Vec::new();
         let encoder = TextEncoder::new();
+        // The writer counts in a process-wide atomic (it has no handle on a registry): catch up.
+        let dropped = crate::nonblocking::dropped_log_lines();
+        if dropped > self.log_dropped.get() {
+            self.log_dropped.inc_by(dropped - self.log_dropped.get());
+        }
         let families = self.registry.gather();
         encoder
             .encode(&families, &mut buf)
@@ -395,6 +516,15 @@ impl Default for Metrics {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_dropped_log_lines_counter_is_exposed() {
+        let text = Metrics::new().render_prometheus();
+        assert!(
+            text.contains("escurel_log_lines_dropped_total"),
+            "operators must be able to see that log lines were lost:\n{text}"
+        );
+    }
+
     use super::*;
 
     #[test]
@@ -451,5 +581,42 @@ mod tests {
             && l.contains(r#"category="markdown_not_in_index""#)
             && l.trim_end().ends_with(" 3")));
         assert!(body.contains("escurel_live_sessions_open 2"));
+    }
+
+    #[test]
+    fn operator_visible_state_is_exposed() {
+        let m = Metrics::new();
+        m.set_tenant_quarantined("acme", true);
+        m.set_migration_pending(true);
+        m.set_semantic_search(false);
+        m.inc_egress("refused");
+        m.inc_egress("ok");
+        m.inc_write_back("dead_letter");
+        m.inc_source_unavailable("rest");
+        let body = m.render_prometheus();
+        assert!(
+            body.contains(r#"escurel_tenant_quarantined{tenant="acme"} 1"#),
+            "{body}"
+        );
+        assert!(body.contains("escurel_migration_pending 1"), "{body}");
+        assert!(body.contains("escurel_semantic_search_enabled 0"), "{body}");
+        assert!(
+            body.contains(r#"escurel_egress_total{outcome="refused"} 1"#),
+            "{body}"
+        );
+        assert!(
+            body.contains(r#"escurel_write_back_total{outcome="dead_letter"} 1"#),
+            "{body}"
+        );
+        assert!(
+            body.contains(r#"escurel_source_unavailable_total{kind="rest"} 1"#),
+            "{body}"
+        );
+        // A lifted quarantine reads 0, not absent: an alert on `== 1` must clear.
+        m.set_tenant_quarantined("acme", false);
+        assert!(
+            m.render_prometheus()
+                .contains(r#"escurel_tenant_quarantined{tenant="acme"} 0"#)
+        );
     }
 }

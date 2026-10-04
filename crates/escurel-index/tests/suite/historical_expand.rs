@@ -16,7 +16,7 @@ const SPINE: &str = "markdown/instances/engagement/spine.md";
 
 fn spine_md(contract_value: &str, phase: &str) -> String {
     format!(
-        "---\ntype: instance\nskill: engagement\nid: hoffmann-spine\nat: 2026-03-01T00:00:00Z\n\
+        "---\nkind: instance\nskill: engagement\nid: hoffmann-spine\nat: 2026-03-01T00:00:00Z\n\
          contract_value: \"{contract_value}\"\nphase: {phase}\n---\n# Spine\n\nThe lifecycle spine.\n"
     )
 }

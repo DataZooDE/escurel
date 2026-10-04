@@ -1,5 +1,5 @@
 ---
-type: instance
+kind: instance
 skill: engagement
 id: acme-spine
 at: 2026-01-15T09:00:00Z

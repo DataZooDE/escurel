@@ -39,6 +39,14 @@ export const theme = css`
     outline: 1px solid var(--vscode-focusBorder);
     outline-offset: 1px;
   }
+  /* The one thing to do on a page: the filled button of the VS Code theme. */
+  button.primary {
+    background: var(--vscode-button-background);
+    color: var(--vscode-button-foreground);
+  }
+  button.primary:hover {
+    background: var(--vscode-button-hoverBackground);
+  }
   .chip {
     display: inline-block;
     padding: 0 6px;
@@ -52,6 +60,26 @@ export const theme = css`
   }
   .muted {
     color: var(--escurel-muted);
+  }
+  /* For people who ask the system for less motion. */
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation: none !important;
+      transition: none !important;
+      scroll-behavior: auto !important;
+    }
+  }
+  /* When the system forces colours, state must not rest on fills: keep every chip, badge and button
+     outlined, in the system's own colours. */
+  @media (forced-colors: active) {
+    .chip,
+    .badge,
+    button {
+      border: 1px solid ButtonText;
+      forced-color-adjust: auto;
+    }
   }
 `;
 

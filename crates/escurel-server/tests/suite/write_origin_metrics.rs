@@ -13,7 +13,7 @@ use escurel_test_support::{AuthMode, EscurelProcess, FixtureBuilder, Opts, Role}
 use serde_json::{Value, json};
 
 const TENANT: &str = "acme";
-const SKILL: &str = "---\ntype: skill\nid: note\ndescription: x\n---\n# note\n";
+const SKILL: &str = "---\nkind: skill\nid: note\ndescription: x\n---\n# note\n";
 
 async fn call(p: &EscurelProcess, name: &str, args: Value) -> Value {
     let token = p.mint_token(TENANT, Role::Agent);
@@ -66,7 +66,7 @@ async fn confirmed_writes_count_by_origin() {
             "update_page",
             json!({
                 "page_id": format!("markdown/instances/note/h{i}.md"),
-                "content": format!("---\ntype: instance\nskill: note\nid: h{i}\n---\n# h{i}\n"),
+                "content": format!("---\nkind: instance\nskill: note\nid: h{i}\n---\n# h{i}\n"),
             }),
         )
         .await;
@@ -78,7 +78,7 @@ async fn confirmed_writes_count_by_origin() {
         "update_page",
         json!({
             "page_id": "markdown/instances/note/r0.md",
-            "content": "---\ntype: instance\nskill: note\nid: r0\n---\n# r0\n",
+            "content": "---\nkind: instance\nskill: note\nid: r0\n---\n# r0\n",
             "provenance": { "runner": { "run_id": "run-1" }, "workflow": null },
         }),
     )
@@ -92,7 +92,7 @@ async fn confirmed_writes_count_by_origin() {
         "update_page",
         json!({
             "page_id": "markdown/base/some-pack/skills/x.md",
-            "content": "---\ntype: skill\nid: x\ndescription: y\n---\n# x\n",
+            "content": "---\nkind: skill\nid: x\ndescription: y\n---\n# x\n",
         }),
     )
     .await;

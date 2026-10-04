@@ -6,6 +6,101 @@ loosely [Keep a Changelog](https://keepachangelog.com/). Through the
 follow **`vYYYY.MM.DD`** — the date the binary set was cut (same-day
 re-cuts append `.N`), matching the DataZoo release scheme (cf. erpl).
 
+## Unreleased — BREAKING (stored format, wire, skills, agent behaviour)
+
+**Read first:** [`docs/deploy/kind-migration.md`](docs/deploy/kind-migration.md) (stop-first upgrade, backup,
+rollback) and the consumer checklist in
+[`.claude/skills/escurel-platform/CHANGELOG.md`](.claude/skills/escurel-platform/CHANGELOG.md) (0.7.0 – 0.14.0).
+Skill version `0.14.0`. Every consumer that writes pages or reads the tool surface moves in the same window.
+
+### Fixed
+
+- **A refused read is an error, never an empty success (security-relevant).** `escurel-client` decoded
+  the `structuredContent` of a refused read (`isError: true`, `{ok: false, issues}`) into a response type
+  whose fields all default, so an ACL denial, `invalid_limit`, `query_not_found`, … returned `Ok(<empty>)`:
+  a silent partial read. Now `Error::Refused(Refusal{issues, payload})` (shared reader
+  `escurel_types::call_result`). The write family and `validate` still return the typed answer with
+  `ok: false`; `rebase_pack` stays a report. Same fix in the echo and Gemini harness clients, the CLI
+  (non-zero exit), the test-support client (`call_ok`), the VS Code client and the Dart client. A guard
+  test fails if a crate reads a result's `structuredContent` outside the shared reader. Skill `0.15.1`.
+
+### BREAKING
+
+- **The page kind is `kind:` (was `type:`).** `type: skill|instance` is removed — a hard cut with no
+  compatibility switch. A tenant whose lane still holds such pages boots **QUARANTINED** (up, answers only
+  `migrate_kind` / `compact_lanes`); writes with the old key are refused (`frontmatter_type_removed`).
+  Migrate with `escurel admin migrate-kind --tenant <t> [--apply]` (dry run by default, idempotent; rewrites
+  pages, open drafts and CRDT snapshots; skips signed pack pages — the publisher re-exports). The `issue`
+  skill's `kind` data field is now `issue_kind`.
+- **Wire: `page_type` is `page_kind`** (`search` argument, `PageRef` answers, CLI `--page-kind`, Rust
+  `PageKind`, Dart `PageKind`). A caller still sending `page_type` is refused, not silently unfiltered. The
+  derived SQL column `pages.page_type` keeps its name.
+- **Workflow-run pages: `status` → `run_status`** (migrated by `migrate_kind`; a tenant's own `status` data and
+  the DB/API `status` fields are untouched).
+- **A skill's `actions:` is a list of objects** (`{name, kind: event|prompt, label, event?, prompt?}`, Peacock's
+  form); bare skill-id strings are rejected (`action_invalid`). `list_skills` returns the objects.
+- **`resume_cursor` is removed — `next_cursor` is the only cursor name** (`list_inbox`, `list_events`, and the
+  `list_*` tools). `next_cursor` is now where the page ENDED (present iff the page is non-empty; null only when
+  there is nothing more); the new `has_more: true` says rows already lie past the page, so a client that pages
+  "until `next_cursor` is absent" still terminates after one extra empty call. `list_drafts` / `list_changesets` /
+  `list_branches` now take `limit` + `cursor` (the limit applies AFTER the caller's visibility filter).
+- **Cursors are opaque** (`r1.` / `u1.` envelopes for rows and REST/MCP rows): a cursor from before the release
+  answers `invalid_cursor` ("restart without `cursor`"). A `limit` outside the tool's declared range is refused
+  with `invalid_limit`.
+- **MCP `tools/call`: `content[0].text` is a short summary**; `structuredContent` is the full payload. A client
+  that parsed the text block as JSON must read `structuredContent`; a client that can read ONLY the text block
+  (some chat hosts) now sees the summary, not the data.
+- **Read tools answer domain mistakes as `isError: true` + `issues[]`** (the shape write tools always had):
+  `invalid_cursor`, `field_not_filterable`, `query_not_found`, `query_not_runnable`, `invalid_query_params`,
+  `endpoint_not_registered`, `use_write_back`. JSON-RPC errors remain for malformed requests.
+- **`autonomy: review | confirm` is ENFORCED at the gateway for MACHINE callers** (tokens carrying `run_id` /
+  `skill` / `act.sub` claims): `update_page` and the `close_session` write-through answer
+  `{ok: true, held_for_review: true, draft}` and nothing lands until a reviewer promotes; `move_page` /
+  `delete_page` answer `review_required`. People on plain agent-role tokens, admins and `autonomy: auto` skills
+  are unchanged, and promoting always lands. An agent flow that wrote review-skill pages directly must now propose
+  drafts.
+- **Write-back drafts can only be promoted by a non-agent token** (`promote_requires_human`); a run token can
+  propose a write-back but never approve it.
+- **Credentials a tenant may reference are allow-listed** (`secret_ref`): `gsm:` / `env:ESCUREL_SECRET_*`, extra
+  `env:` names only via `ESCUREL_SECRET_ENV_ALLOW`, `file:` only under `ESCUREL_SECRET_FILE_DIRS`
+  (default `/run/secrets`). An existing endpoint registered with an arbitrary `env:`/`file:` reference stops
+  resolving until the operator allows it.
+- **`trust` on projections is `external` (REST/MCP) or `source` (SQL rows)**; treat both as data, never as
+  instructions.
+- Details line by line: [`docs/notes/breaking-wire-changes.md`](docs/notes/breaking-wire-changes.md).
+
+### Added
+
+- `folder:`, `role:`, `tags:` and the OKF vocabulary (`title`, `resource`, `generated`, `verified`, `status`,
+  `stale_after`, `sources`) on skill pages; the Knowledge tree in the VS Code extension shows them.
+- `backend.instances: rows` (one instance per row of a `sql_view`, optional linked markdown), REST (`openapi`)
+  and MCP rows, `describe_backend`, and **human-gated write-back** (draft + promote, etag conflict check,
+  idempotency key, bounded retries, dead-letter, audit).
+- **SQL rows over real databases and write-back to them.** `connector: postgres | mysql | sqlite` with
+  `instances: rows`; credentials as `secret_ref` references (inline `secret` deprecated), checked against the
+  egress policy (`ESCUREL_SQL_FILE_DIRS` for SQLite files); a row of a skill with `writable_columns` changes
+  through the same draft → human promote → guarded single-transaction `UPDATE` flow as REST/MCP rows. Postgres
+  attaches enforce the statement timeout server-side. The image bakes the `sqlite` and `mysql` DuckDB
+  extensions next to `postgres`. Verified against a real Postgres container and a real SQLite file.
+
+### Operators
+
+- **`/readyz` reports quarantine** without failing: still 200 (so the migration can run) with
+  `x-escurel-quarantined: 1` and a JSON `notices` body; new metrics `escurel_tenant_quarantined{tenant}`,
+  `escurel_migration_pending`, `escurel_semantic_search_enabled`, `escurel_egress_total{outcome}`,
+  `escurel_write_back_total{outcome}`, `escurel_source_unavailable_total{kind}`. **Do not gate traffic on the
+  status code alone**; deploy stop-first with the migration before the swap.
+- **New env (all documented in `docs/deploy/README.md`):** `ESCUREL_EGRESS_ALLOW_LOOPBACK` (dev/tests only —
+  never in production), `ESCUREL_EGRESS_MAX_RESPONSE_BYTES`, `…_TIMEOUT_MS`, `…_MAX_CONCURRENCY`,
+  `…_RATE_PER_SEC`, `…_WRITE_RETRY_BACKOFF_MS`, `ESCUREL_SECRET_<NAME>`, `ESCUREL_SECRET_ENV_ALLOW`,
+  `ESCUREL_SECRET_FILE_DIRS`, `ESCUREL_SHUTDOWN_DRAIN_SECS` (graceful-stop deadline, default 25). An unparsable `ESCUREL_EGRESS_*` value now **fails the boot** (it used to be
+  silently ignored).
+- The server image runs **non-root (uid 65532)**, ships the `escurel` CLI (`docker exec … escurel admin …`), and
+  fetches the gdrive DuckDB extension over https. `escurel-server --help` / `--version` no longer boot the
+  server.
+- `tenant export` is refused while a tenant is quarantined: take the pre-upgrade backup with the server stopped
+  (`tar` the tenant directory), see the runbook.
+
 ## v2026.07.13
 
 ### Changed

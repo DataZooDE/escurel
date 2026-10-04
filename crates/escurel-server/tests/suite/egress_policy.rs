@@ -1,0 +1,817 @@
+//! The outbound policy of the remote (`openapi` / `mcp`) backends, over the real wire.
+//!
+//! A real gateway (`POST /mcp`, real OIDC, real DuckDB + `FsStore`) calls REAL upstream servers
+//! bound to loopback sockets. The upstreams COUNT what reaches them, so a refusal is proven by the
+//! upstream never having been called, not by an error string alone:
+//!
+//! - the strict default refuses a loopback upstream (the gateway must not be a way into the host);
+//! - a redirect is refused, never followed (a public host cannot bounce the gateway inward);
+//! - an oversize body and a slow upstream are bounded, not buffered or waited for;
+//! - hostile values in a path template are percent-encoded, never spliced into the path.
+
+use std::net::SocketAddr;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::Duration;
+
+use axum::extract::{Path, State};
+use axum::http::{HeaderMap, HeaderValue, StatusCode};
+use axum::response::{IntoResponse, Response};
+use axum::routing::get;
+use axum::{Json, Router};
+use duckdb::Connection;
+use escurel_embed::{Embedder, ZeroEmbedder};
+use escurel_index::{Indexer, Migrator};
+use escurel_server::egress::EgressPolicy;
+use escurel_storage::{FsStore, LaneStore};
+use escurel_test_support::{AuthMode, ConfigOverrides, EscurelProcess, Opts, Role};
+use serde_json::{Value, json};
+use tempfile::TempDir;
+use tokio::net::TcpListener;
+
+const TENANT: &str = "acme";
+
+const CUSTOMER_SKILL: &str = "---\n\
+     kind: skill\n\
+     id: customer\n\
+     description: CRM customers, proxied live over REST.\n\
+     backend:\n\
+    \x20 kind: openapi\n\
+    \x20 endpoint: crm_rest\n\
+    \x20 read: { path: \"/customers/{id}\" }\n\
+    \x20 write: { method: POST, path: \"/customers/{id}/orders/{order_id}\" }\n\
+    \x20 project: { display_name: $.name, tier: $.account_tier }\n\
+     ---\n\
+     # customer\n";
+
+async fn spawn_gateway(egress: EgressPolicy) -> (EscurelProcess, Vec<TempDir>) {
+    let store_dir = TempDir::new().unwrap();
+    let db_dir = TempDir::new().unwrap();
+    let store: Arc<dyn LaneStore> = Arc::new(FsStore::new(store_dir.path().to_path_buf()));
+    let embedder: Arc<dyn Embedder> = Arc::new(ZeroEmbedder::default());
+    let conn = Connection::open(db_dir.path().join("escurel.duckdb")).unwrap();
+    Migrator::up(&conn).unwrap();
+    let indexer = Arc::new(Indexer::new(store, embedder, conn, TENANT).unwrap());
+    indexer
+        .update_page("markdown/skills/customer.md", CUSTOMER_SKILL)
+        .await
+        .unwrap();
+    let process = EscurelProcess::spawn(Opts {
+        auth: AuthMode::TestIssuer,
+        config_overrides: ConfigOverrides {
+            indexer: Some(indexer),
+            egress: Some(egress),
+            ..Default::default()
+        },
+        ..Default::default()
+    })
+    .await;
+    (process, vec![store_dir, db_dir])
+}
+
+async fn call(p: &EscurelProcess, name: &str, args: Value) -> Value {
+    let token = p.mint_token(TENANT, Role::Admin);
+    reqwest::Client::new()
+        .post(p.mcp_url())
+        .header("authorization", format!("Bearer {token}"))
+        .json(&json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                       "params": { "name": name, "arguments": args } }))
+        .send()
+        .await
+        .expect("post")
+        .json()
+        .await
+        .expect("json")
+}
+
+async fn serve(app: Router) -> (String, tokio::task::JoinHandle<()>) {
+    let listener = TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], 0)))
+        .await
+        .unwrap();
+    let addr = listener.local_addr().unwrap();
+    let handle = tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    (format!("http://{addr}"), handle)
+}
+
+/// Register the endpoint, create the `acme` overlay, and `expand` it: the `backend_projection`.
+async fn projection(p: &EscurelProcess, base_url: &str) -> Value {
+    let reg = call(
+        p,
+        "register_endpoint",
+        json!({ "name": "crm_rest", "kind": "openapi", "base_url": base_url }),
+    )
+    .await;
+    assert!(reg.get("error").is_none(), "register: {reg}");
+    let created = call(
+        p,
+        "create_remote_instance",
+        json!({ "skill": "customer", "id": "acme" }),
+    )
+    .await;
+    assert!(created.get("error").is_none(), "create: {created}");
+    let page_id = created["result"]["structuredContent"]["page_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let body = call(p, "expand", json!({ "page_id": page_id })).await;
+    body["result"]["structuredContent"]["backend_projection"].clone()
+}
+
+/// Loopback allowed, and `dir` is the one directory a `file:` secret reference may live in.
+fn loopback_with_secrets(dir: &std::path::Path) -> EgressPolicy {
+    let mut p = loopback_ok();
+    p.secrets.file_dirs = vec![dir.to_path_buf()];
+    p
+}
+
+fn loopback_ok() -> EgressPolicy {
+    EgressPolicy {
+        allow_loopback: true,
+        ..EgressPolicy::default()
+    }
+}
+
+/// An upstream that counts every request it receives and answers a normal customer.
+async fn counting_crm() -> (String, Arc<AtomicUsize>, tokio::task::JoinHandle<()>) {
+    let hits = Arc::new(AtomicUsize::new(0));
+    async fn customer(State(h): State<Arc<AtomicUsize>>, Path(_id): Path<String>) -> Json<Value> {
+        h.fetch_add(1, Ordering::SeqCst);
+        Json(json!({ "name": "Acme Corp", "account_tier": "gold" }))
+    }
+    let app = Router::new()
+        .route("/customers/{id}", get(customer))
+        .with_state(Arc::clone(&hits));
+    let (base, handle) = serve(app).await;
+    (base, hits, handle)
+}
+
+#[tokio::test]
+async fn the_strict_default_refuses_a_loopback_upstream_and_never_calls_it() {
+    let (base, hits, _srv) = counting_crm().await;
+    let (process, _dirs) = spawn_gateway(EgressPolicy::default()).await;
+
+    let proj = projection(&process, &base).await;
+
+    let issue = proj["issue"].as_str().unwrap_or_default();
+    assert!(
+        issue.contains("egress policy"),
+        "a loopback upstream must be refused by the strict default, got: {proj}"
+    );
+    assert_eq!(
+        hits.load(Ordering::SeqCst),
+        0,
+        "the upstream must never have been called"
+    );
+    // And the refusal names no URL: the endpoint address is not for an agent to see.
+    assert!(
+        !issue.contains(&base),
+        "the URL leaked into the issue: {issue}"
+    );
+    process.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_redirect_is_refused_and_never_followed() {
+    // `inner` stands for the host a redirect would reach (the metadata service, in real life).
+    let (inner_base, inner_hits, _inner) = counting_crm().await;
+    let target = format!("{inner_base}/customers/acme");
+    let app = Router::new().route(
+        "/customers/{id}",
+        get(move || {
+            let t = target.clone();
+            async move {
+                let mut h = HeaderMap::new();
+                h.insert("location", HeaderValue::from_str(&t).unwrap());
+                (StatusCode::FOUND, h).into_response()
+            }
+        }),
+    );
+    let (front_base, _front) = serve(app).await;
+    let (process, _dirs) = spawn_gateway(loopback_ok()).await;
+
+    let proj = projection(&process, &front_base).await;
+
+    let issue = proj["issue"].as_str().unwrap_or_default();
+    assert!(
+        issue.contains("redirect"),
+        "a 3xx must be refused as a redirect, got: {proj}"
+    );
+    assert_eq!(
+        inner_hits.load(Ordering::SeqCst),
+        0,
+        "the redirect target must never be called"
+    );
+    process.shutdown().await;
+}
+
+#[tokio::test]
+async fn an_oversize_response_is_refused_not_buffered() {
+    let app = Router::new().route(
+        "/customers/{id}",
+        get(|| async {
+            let mut v = json!({ "name": "Acme" });
+            v["padding"] = Value::String("x".repeat(200_000));
+            Json(v)
+        }),
+    );
+    let (base, _srv) = serve(app).await;
+    let (process, _dirs) = spawn_gateway(EgressPolicy {
+        max_response_bytes: 4096,
+        ..loopback_ok()
+    })
+    .await;
+
+    let proj = projection(&process, &base).await;
+
+    let issue = proj["issue"].as_str().unwrap_or_default();
+    assert!(
+        issue.contains("larger than"),
+        "an oversize body must be refused, got: {proj}"
+    );
+    process.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_slow_upstream_times_out_instead_of_hanging_the_read() {
+    let app = Router::new().route(
+        "/customers/{id}",
+        get(|| async {
+            // Never answers: the policy's timeout is what ends the call, not the upstream.
+            std::future::pending::<()>().await;
+            Json(json!({ "name": "late" }))
+        }),
+    );
+    let (base, _srv) = serve(app).await;
+    let (process, _dirs) = spawn_gateway(EgressPolicy {
+        timeout: Duration::from_millis(300),
+        ..loopback_ok()
+    })
+    .await;
+
+    let proj = projection(&process, &base).await;
+
+    let issue = proj["issue"].as_str().unwrap_or_default();
+    assert!(
+        issue.contains("did not answer"),
+        "a slow upstream must time out, got: {proj}"
+    );
+    // The error KIND is the claim ("did not answer"); how long it took depends on the machine and on
+    // how many times a read is retried, so no elapsed-time assertion.
+    process.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_hostile_value_in_a_path_template_is_encoded_never_spliced() {
+    // The upstream records the RAW request paths it sees.
+    let seen: Arc<std::sync::Mutex<Vec<String>>> = Arc::default();
+    async fn any(
+        State(seen): State<Arc<std::sync::Mutex<Vec<String>>>>,
+        uri: axum::http::Uri,
+    ) -> Response {
+        seen.lock().unwrap().push(uri.path().to_owned());
+        Json(json!({ "ok": true })).into_response()
+    }
+    let app = Router::new().fallback(any).with_state(Arc::clone(&seen));
+    let (base, _srv) = serve(app).await;
+    let (process, _dirs) = spawn_gateway(loopback_ok()).await;
+    let reg = call(
+        &process,
+        "register_endpoint",
+        json!({ "name": "crm_rest", "kind": "openapi", "base_url": base }),
+    )
+    .await;
+    assert!(reg.get("error").is_none(), "register: {reg}");
+    let created = call(
+        &process,
+        "create_remote_instance",
+        json!({ "skill": "customer", "id": "acme" }),
+    )
+    .await;
+    assert!(created.get("error").is_none(), "create: {created}");
+
+    let _ = call(
+        &process,
+        "write_instance",
+        json!({ "ref": "customer::acme",
+                "payload": { "order_id": "../../admin/users?x=1#frag" } }),
+    )
+    .await;
+
+    for path in seen.lock().unwrap().iter() {
+        assert!(
+            !path.contains("..") && !path.contains("/admin/"),
+            "a hostile template value reached the upstream path unencoded: {path}"
+        );
+        assert!(
+            path.starts_with("/customers/acme/orders/"),
+            "the path must stay under its template: {path}"
+        );
+    }
+    process.shutdown().await;
+}
+
+// --- secrets: references, never material ------------------------------------------------------
+
+/// An upstream that REQUIRES `Authorization: Bearer <token>`, records the header it saw, and on a
+/// wrong token answers 401 with a body that ECHOES the credential it was sent (as careless
+/// upstreams do) — the gateway must not pass that text on.
+async fn authed_crm(token: &'static str) -> (String, Arc<std::sync::Mutex<Vec<String>>>) {
+    let seen: Arc<std::sync::Mutex<Vec<String>>> = Arc::default();
+    let app = Router::new()
+        .route(
+            "/customers/{id}",
+            get(
+                move |State(seen): State<Arc<std::sync::Mutex<Vec<String>>>>,
+                      headers: HeaderMap| async move {
+                    let got = headers
+                        .get("authorization")
+                        .and_then(|v| v.to_str().ok())
+                        .unwrap_or("")
+                        .to_owned();
+                    seen.lock().unwrap().push(got.clone());
+                    if got == format!("Bearer {token}") {
+                        Json(json!({ "name": "Acme Corp", "account_tier": "gold" })).into_response()
+                    } else {
+                        (StatusCode::UNAUTHORIZED, format!("bad credential: {got}")).into_response()
+                    }
+                },
+            ),
+        )
+        .with_state(Arc::clone(&seen));
+    let (base, _h) = serve(app).await;
+    (base, seen)
+}
+
+async fn register_bearer(p: &EscurelProcess, base: &str, secret_field: (&str, &str)) -> Value {
+    call(
+        p,
+        "register_endpoint",
+        json!({ "name": "crm_rest", "kind": "openapi", "base_url": base,
+                "auth": "bearer", secret_field.0: secret_field.1 }),
+    )
+    .await
+}
+
+async fn expand_acme(p: &EscurelProcess) -> Value {
+    let created = call(
+        p,
+        "create_remote_instance",
+        json!({ "skill": "customer", "id": "acme" }),
+    )
+    .await;
+    let page_id = created["result"]["structuredContent"]["page_id"]
+        .as_str()
+        .expect("page_id")
+        .to_owned();
+    let body = call(p, "expand", json!({ "page_id": page_id })).await;
+    body["result"]["structuredContent"]["backend_projection"].clone()
+}
+
+#[tokio::test]
+async fn a_secret_reference_is_resolved_at_call_time_and_never_stored_or_echoed() {
+    let token = "tok-7f3a9c-DO-NOT-LEAK";
+    let secret_dir = TempDir::new().unwrap();
+    // A tenant's secret files live under `<dir>/<tenant>/`.
+    std::fs::create_dir(secret_dir.path().join(TENANT)).unwrap();
+    let secret_file = secret_dir.path().join(TENANT).join("crm-token");
+    std::fs::write(&secret_file, format!("{token}\n")).unwrap();
+    let secret_ref = format!("file:{}", secret_file.display());
+    let (base, seen) = authed_crm(token).await;
+    let (process, _dirs) = spawn_gateway(loopback_with_secrets(secret_dir.path())).await;
+
+    let reg = register_bearer(&process, &base, ("secret_ref", secret_ref.as_str())).await;
+    assert!(reg.get("error").is_none(), "register: {reg}");
+    assert!(
+        !reg.to_string().contains(token),
+        "the token leaked into register: {reg}"
+    );
+
+    let proj = expand_acme(&process).await;
+    assert_eq!(
+        proj["fields"]["display_name"], "Acme Corp",
+        "authenticated read: {proj}"
+    );
+    assert_eq!(
+        seen.lock().unwrap().last().map(String::as_str),
+        Some(&*format!("Bearer {token}")),
+        "the upstream must have received the resolved token"
+    );
+
+    let list = call(&process, "list_endpoints", json!({})).await;
+    assert!(
+        !list.to_string().contains(token),
+        "the token leaked into list: {list}"
+    );
+    assert_eq!(
+        list["result"]["structuredContent"]["endpoints"][0]["secret_kind"], "ref",
+        "a reference is reported as such: {list}"
+    );
+    process.shutdown().await;
+}
+
+#[tokio::test]
+async fn an_unset_reference_degrades_naming_the_reference_not_a_value() {
+    let (base, seen) = authed_crm("whatever").await;
+    let secret_dir = TempDir::new().unwrap();
+    std::fs::create_dir(secret_dir.path().join(TENANT)).unwrap();
+    let missing = format!("file:{}/{TENANT}/never-set", secret_dir.path().display());
+    let (process, _dirs) = spawn_gateway(loopback_with_secrets(secret_dir.path())).await;
+    let reg = register_bearer(&process, &base, ("secret_ref", missing.as_str())).await;
+    assert!(reg.get("error").is_none(), "register: {reg}");
+
+    let proj = expand_acme(&process).await;
+
+    let issue = proj["issue"].as_str().unwrap_or_default();
+    assert!(
+        issue.contains(missing.as_str()) && issue.contains("not available"),
+        "the issue must name the missing reference: {proj}"
+    );
+    assert!(
+        seen.lock().unwrap().is_empty(),
+        "an unauthenticated call must not be made"
+    );
+    process.shutdown().await;
+}
+
+#[tokio::test]
+async fn an_inline_secret_still_works_but_is_flagged_deprecated_and_never_listed() {
+    let token = "inline-tok-91b2-DO-NOT-LEAK";
+    let (base, _seen) = authed_crm(token).await;
+    let (process, _dirs) = spawn_gateway(loopback_ok()).await;
+
+    let reg = register_bearer(&process, &base, ("secret", token)).await;
+    assert!(reg.get("error").is_none(), "register: {reg}");
+    assert!(
+        reg["result"]["structuredContent"]["warning"]
+            .as_str()
+            .is_some_and(|w| w.contains("secret_ref")),
+        "an inline secret must be flagged and point at secret_ref: {reg}"
+    );
+    assert!(!reg.to_string().contains(token), "{reg}");
+
+    let list = call(&process, "list_endpoints", json!({})).await;
+    assert_eq!(
+        list["result"]["structuredContent"]["endpoints"][0]["secret_kind"],
+        "inline"
+    );
+    assert!(
+        !list.to_string().contains(token),
+        "the token leaked into list: {list}"
+    );
+    let proj = expand_acme(&process).await;
+    assert_eq!(proj["fields"]["display_name"], "Acme Corp", "{proj}");
+    process.shutdown().await;
+}
+
+#[tokio::test]
+async fn an_upstream_that_echoes_the_credential_in_its_error_is_not_repeated() {
+    // The registered token is WRONG for this upstream, so it answers 401 echoing what it got.
+    let secret = "wrong-tok-55d1-DO-NOT-LEAK";
+    let secret_dir = TempDir::new().unwrap();
+    std::fs::create_dir(secret_dir.path().join(TENANT)).unwrap();
+    let secret_file = secret_dir.path().join(TENANT).join("wrong-token");
+    std::fs::write(&secret_file, secret).unwrap();
+    let secret_ref = format!("file:{}", secret_file.display());
+    let (base, _seen) = authed_crm("the-real-token").await;
+    let (process, _dirs) = spawn_gateway(loopback_with_secrets(secret_dir.path())).await;
+    let reg = register_bearer(&process, &base, ("secret_ref", secret_ref.as_str())).await;
+    assert!(reg.get("error").is_none(), "register: {reg}");
+
+    let proj = expand_acme(&process).await;
+
+    assert!(
+        proj["issue"].as_str().is_some_and(|i| i.contains("401")),
+        "{proj}"
+    );
+    assert!(
+        !proj.to_string().contains(secret),
+        "the upstream's echo leaked: {proj}"
+    );
+    process.shutdown().await;
+}
+
+// --- write_instance hardening (stage 4c) -------------------------------------------------------
+
+#[tokio::test]
+async fn write_instance_sends_a_stable_idempotency_key_and_caps_the_payload() {
+    let keys: Arc<std::sync::Mutex<Vec<String>>> = Arc::default();
+    async fn post_order(
+        State(keys): State<Arc<std::sync::Mutex<Vec<String>>>>,
+        Path((_id, _o)): Path<(String, String)>,
+        headers: HeaderMap,
+    ) -> Json<Value> {
+        keys.lock().unwrap().push(
+            headers
+                .get("idempotency-key")
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("")
+                .to_owned(),
+        );
+        Json(json!({ "ok": true }))
+    }
+    let app = Router::new()
+        .route(
+            "/customers/{id}/orders/{order_id}",
+            axum::routing::post(post_order),
+        )
+        .route(
+            "/customers/{id}",
+            get(|| async { Json(json!({ "name": "Acme" })) }),
+        )
+        .with_state(Arc::clone(&keys));
+    let (base, _srv) = serve(app).await;
+    let (process, _dirs) = spawn_gateway(loopback_ok()).await;
+    let reg = call(
+        &process,
+        "register_endpoint",
+        json!({ "name": "crm_rest", "kind": "openapi", "base_url": base }),
+    )
+    .await;
+    assert!(reg.get("error").is_none(), "register: {reg}");
+    let _ = call(
+        &process,
+        "create_remote_instance",
+        json!({ "skill": "customer", "id": "acme" }),
+    )
+    .await;
+
+    let same = json!({ "ref": "customer::acme", "payload": { "order_id": "o-1", "qty": 2 } });
+    let a = call(&process, "write_instance", same.clone()).await;
+    let b = call(&process, "write_instance", same).await;
+    assert!(
+        a.get("error").is_none() && b.get("error").is_none(),
+        "{a} {b}"
+    );
+
+    let sent = keys.lock().unwrap().clone();
+    assert_eq!(sent.len(), 2, "{sent:?}");
+    assert!(!sent[0].is_empty(), "a write carries an Idempotency-Key");
+    assert_eq!(
+        sent[0], sent[1],
+        "the SAME write has the SAME key, so an upstream can deduplicate it"
+    );
+
+    // A payload past the cap is refused before it goes anywhere.
+    let big = call(
+        &process,
+        "write_instance",
+        json!({ "ref": "customer::acme", "payload": { "order_id": "o-2", "blob": "x".repeat(200_000) } }),
+    )
+    .await;
+    assert!(
+        big.get("error").is_some(),
+        "an oversize payload is refused: {big}"
+    );
+    assert_eq!(
+        keys.lock().unwrap().len(),
+        2,
+        "the oversize write never reached the upstream"
+    );
+    process.shutdown().await;
+}
+
+// ---- secret references are a CONFINED way to name a credential ------------------------------------
+//
+// `secret_ref` used to read ANY env var or ANY file of the gateway host and send it, as a bearer
+// token, to whatever host an admin registered. The operator decides what a tenant may name.
+
+/// A real upstream that records the `Authorization` header of EVERY request it gets, whoever asks.
+async fn capture_any_auth() -> (String, Arc<std::sync::Mutex<Vec<String>>>) {
+    let seen: Arc<std::sync::Mutex<Vec<String>>> = Arc::default();
+    let app = Router::new()
+        .route(
+            "/customers/{id}",
+            get(
+                move |State(seen): State<Arc<std::sync::Mutex<Vec<String>>>>,
+                      headers: HeaderMap| async move {
+                    let got = headers
+                        .get("authorization")
+                        .and_then(|v| v.to_str().ok())
+                        .unwrap_or("")
+                        .to_owned();
+                    seen.lock().unwrap().push(got);
+                    Json(json!({ "name": "Acme Corp", "account_tier": "gold" }))
+                },
+            ),
+        )
+        .with_state(Arc::clone(&seen));
+    let (base, _handle) = serve(app).await;
+    (base, seen)
+}
+
+fn refused(reg: &Value) -> bool {
+    reg.get("error").is_some() || reg["result"]["isError"] == json!(true)
+}
+
+#[tokio::test]
+async fn a_secret_reference_cannot_name_an_arbitrary_file_or_environment_variable() {
+    let (base, seen) = capture_any_auth().await;
+    let (process, _dirs) = spawn_gateway(loopback_ok()).await;
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/root".to_owned());
+
+    for secret_ref in [
+        "file:/etc/hostname".to_owned(),
+        "file:/etc/../etc/hostname".to_owned(),
+        "file:/proc/self/environ".to_owned(),
+        "file:relative/secret".to_owned(),
+        "env:HOME".to_owned(),
+        "env:PATH".to_owned(),
+        "env:ESCUREL_SERVER_DATA_DIR".to_owned(),
+    ] {
+        let reg = register_bearer(&process, &base, ("secret_ref", secret_ref.as_str())).await;
+        assert!(
+            refused(&reg),
+            "`{secret_ref}` must be refused at registration, got {reg}"
+        );
+        // Even a registration that slipped through must never put the value on the wire.
+        if !refused(&reg) {
+            let _ = expand_acme(&process).await;
+        }
+    }
+    let leaked: Vec<String> = seen
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|h| h.contains(&home) || h.contains("/usr") || h.len() > "Bearer ".len())
+        .cloned()
+        .collect();
+    assert!(
+        leaked.is_empty(),
+        "a host secret reached the upstream: {leaked:?}"
+    );
+    process.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_refused_file_reference_is_not_an_oracle_for_which_files_exist() {
+    let (base, _seen) = capture_any_auth().await;
+    let (process, _dirs) = spawn_gateway(loopback_ok()).await;
+    let present = register_bearer(&process, &base, ("secret_ref", "file:/etc/hostname")).await;
+    let absent = register_bearer(
+        &process,
+        &base,
+        ("secret_ref", "file:/etc/escurel-no-such-file-xyz"),
+    )
+    .await;
+    let text = |v: &Value| {
+        v.to_string()
+            .replace("hostname", "X")
+            .replace("escurel-no-such-file-xyz", "X")
+    };
+    assert!(
+        refused(&present) && refused(&absent),
+        "{present} / {absent}"
+    );
+    assert_eq!(
+        text(&present),
+        text(&absent),
+        "the refusal must not differ for a file that exists and one that does not"
+    );
+    process.shutdown().await;
+}
+
+// ---- a row id can never change which upstream resource a path template names ----------------------
+
+/// A real upstream that records the PATH of every request it receives, whatever the path is.
+async fn path_recorder() -> (String, Arc<std::sync::Mutex<Vec<String>>>) {
+    let seen: Arc<std::sync::Mutex<Vec<String>>> = Arc::default();
+    let app =
+        Router::new()
+            .fallback(
+                move |State(seen): State<Arc<std::sync::Mutex<Vec<String>>>>,
+                      uri: axum::http::Uri| async move {
+                    seen.lock().unwrap().push(uri.path().to_owned());
+                    Json(json!({ "name": "SOME RESOURCE", "account_tier": "gold" }))
+                },
+            )
+            .with_state(Arc::clone(&seen));
+    let (base, _handle) = serve(app).await;
+    (base, seen)
+}
+
+#[tokio::test]
+async fn a_dot_segment_id_cannot_escape_the_path_template() {
+    let (base, seen) = path_recorder().await;
+    let (process, _dirs) = spawn_gateway(loopback_ok()).await;
+    let reg = call(
+        &process,
+        "register_endpoint",
+        json!({ "name": "crm_rest", "kind": "openapi", "base_url": format!("{base}/api/v1") }),
+    )
+    .await;
+    assert!(reg.get("error").is_none(), "register: {reg}");
+
+    for id in ["..", ".", "...", "%2e%2e", "a/../b"] {
+        let created = call(
+            &process,
+            "create_remote_instance",
+            json!({ "skill": "customer", "id": id }),
+        )
+        .await;
+        if let Some(page_id) = created["result"]["structuredContent"]["page_id"].as_str() {
+            let _ = call(&process, "expand", json!({ "page_id": page_id })).await;
+        }
+    }
+    let paths = seen.lock().unwrap().clone();
+    // Every request the upstream saw must stay UNDER /api/v1/customers/: a collapsed `..` would read
+    // the parent resource (`/api/v1/`) with the endpoint's credentials.
+    assert!(
+        paths
+            .iter()
+            .all(|p| p.starts_with("/api/v1/customers/") && !p.ends_with("/customers/")),
+        "the upstream saw a path outside the template: {paths:?}"
+    );
+    process.shutdown().await;
+}
+
+// ---- IPv6 forms that wrap a private or metadata IPv4 address are refused -------------------------
+
+#[tokio::test]
+async fn ipv6_forms_that_wrap_a_private_or_metadata_address_are_refused() {
+    let (process, _dirs) = spawn_gateway(EgressPolicy::default()).await;
+    let hostile = [
+        // NAT64 of 169.254.169.254 (the cloud metadata address) on a DNS64 network.
+        "https://[64:ff9b::a9fe:a9fe]/",
+        // IPv4-compatible (deprecated) 127.0.0.1.
+        "https://[::7f00:1]:1/",
+        // Site-local, deprecated but still routed by some stacks.
+        "https://[fec0::1]:1/",
+        // 6to4 of 10.0.0.1.
+        "https://[2002:0a00:0001::1]:1/",
+        // IPv4-mapped (already refused before this change: the control).
+        "https://[::ffff:7f00:1]:1/",
+    ];
+    for (i, url) in hostile.iter().enumerate() {
+        let name = format!("v6_{i}");
+        let reg = call(
+            &process,
+            "register_endpoint",
+            json!({ "name": name, "kind": "openapi", "base_url": url }),
+        )
+        .await;
+        assert!(reg.get("error").is_none(), "register {url}: {reg}");
+    }
+    let v = call(&process, "validate_endpoints", json!({})).await;
+    let eps = v["result"]["structuredContent"]["endpoints"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    assert_eq!(eps.len(), hostile.len(), "{v}");
+    for e in &eps {
+        let detail = e["detail"].as_str().unwrap_or("");
+        assert!(
+            detail.contains("non-public"),
+            "`{}` must be refused by the egress policy, got {e}",
+            e["name"]
+        );
+    }
+    process.shutdown().await;
+}
+
+/// A tenant names ITS secrets only. The namespace was global (`ESCUREL_SECRET_*`, any file under the
+/// secret directory), so one tenant's admin could register an endpoint that sends another tenant's
+/// secret, as a bearer token, to a host of the admin's choosing.
+#[tokio::test]
+async fn a_tenant_cannot_name_another_tenants_secret() {
+    let theirs = "tok-of-the-other-tenant-DO-NOT-LEAK";
+    let secret_dir = TempDir::new().unwrap();
+    std::fs::create_dir(secret_dir.path().join("globex")).unwrap();
+    let their_file = secret_dir.path().join("globex").join("crm-token");
+    std::fs::write(&their_file, theirs).unwrap();
+    let (base, seen) = capture_any_auth().await;
+    let (process, _dirs) = spawn_gateway(loopback_with_secrets(secret_dir.path())).await;
+    for secret_ref in [
+        format!("file:{}", their_file.display()),
+        "env:ESCUREL_SECRET_GLOBEX__CRM_TOKEN".to_owned(),
+        // the old global namespace
+        "env:ESCUREL_SECRET_CRM_TOKEN".to_owned(),
+    ] {
+        let reg = register_bearer(&process, &base, ("secret_ref", secret_ref.as_str())).await;
+        assert!(
+            refused(&reg),
+            "`{secret_ref}` must be refused for acme: {reg}"
+        );
+    }
+    let own = register_bearer(
+        &process,
+        &base,
+        ("secret_ref", "env:ESCUREL_SECRET_ACME__CRM_TOKEN"),
+    )
+    .await;
+    assert!(!refused(&own), "a tenant names its own namespace: {own}");
+    let gsm = register_bearer(&process, &base, ("secret_ref", "gsm:crm-token")).await;
+    assert!(
+        !refused(&gsm),
+        "gsm maps into the tenant's namespace: {gsm}"
+    );
+    // Another tenant's FILE secret is refused when it is resolved too (a registration that slipped
+    // through, e.g. an older registry row, still must not put the value on the wire).
+    let _ = expand_acme(&process).await;
+    assert!(
+        !seen.lock().unwrap().iter().any(|h| h.contains(theirs)),
+        "the other tenant's secret reached the upstream"
+    );
+    process.shutdown().await;
+}

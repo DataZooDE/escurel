@@ -2550,6 +2550,7 @@ dependencies = [
  "escurel-client",
  "escurel-embed",
  "escurel-index",
+ "escurel-md",
  "escurel-quota",
  "escurel-storage",
  "escurel-test-support",
@@ -2683,6 +2684,7 @@ dependencies = [
  "escurel-md",
  "escurel-storage",
  "escurel-types",
+ "hmac 0.12.1",
  "html-to-markdown-rs",
  "kreuzberg",
  "regex",
@@ -2696,6 +2698,7 @@ dependencies = [
  "tokio",
  "tokio-postgres",
  "ulid",
+ "url",
  "wiremock",
 ]
 
@@ -2810,6 +2813,7 @@ version = "1.0.0"
 dependencies = [
  "async-trait",
  "escurel-runner-core",
+ "escurel-types",
  "reqwest 0.12.28",
  "serde",
  "serde_json",
@@ -2869,6 +2873,7 @@ dependencies = [
  "testcontainers-modules",
  "thiserror 2.0.18",
  "tokio",
+ "tokio-postgres",
  "tokio-tungstenite 0.24.0",
  "toml 0.8.23",
  "tower",
@@ -2919,6 +2924,7 @@ dependencies = [
  "escurel-quota",
  "escurel-server",
  "escurel-storage",
+ "escurel-types",
  "jsonwebtoken 9.3.1",
  "loro",
  "rand 0.8.6",

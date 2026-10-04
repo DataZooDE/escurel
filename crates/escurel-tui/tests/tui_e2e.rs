@@ -15,7 +15,7 @@ use ratatui::backend::TestBackend;
 const TENANT: &str = "acme";
 
 const CUSTOMER_SKILL: &str = "---\n\
-type: skill\n\
+kind: skill\n\
 id: customer\n\
 description: A buying organisation.\n\
 required_frontmatter: [id, name]\n\
@@ -24,7 +24,7 @@ optional_frontmatter: [tier]\n\
 # customer\n";
 
 const ACME_INSTANCE: &str = "---\n\
-type: instance\n\
+kind: instance\n\
 skill: customer\n\
 id: acme\n\
 name: Acme Corp\n\
@@ -33,7 +33,7 @@ tier: gold\n\
 # Acme Corp\n\nKey account. See [[customer::initech]].\n";
 
 const INITECH_INSTANCE: &str = "---\n\
-type: instance\n\
+kind: instance\n\
 skill: customer\n\
 id: initech\n\
 name: Initech\n\

@@ -97,7 +97,7 @@ impl Reranker for KeywordReranker {
 // (visibility: owner) — the page-grain ACL that rides the overlay.
 const DEAL_SKILL: &str = "\
 ---
-type: skill
+kind: skill
 id: deal
 description: Owner-private deals mirrored from the CRM.
 backend:
@@ -113,7 +113,7 @@ owner_field: owner_principal
 ";
 
 // A public markdown skill, for the native-lane no-regression check.
-const NOTE_SKILL: &str = "---\ntype: skill\nid: note\ndescription: public notes\n---\n# note\n";
+const NOTE_SKILL: &str = "---\nkind: skill\nid: note\ndescription: public notes\n---\n# note\n";
 
 fn deal_dir_with_title(title: &str) -> TempDir {
     let d = TempDir::new().unwrap();
@@ -153,7 +153,7 @@ async fn seed_deal(
     // Overwrite the overlay with the owner set, keeping the backend_ref.view.
     let content = format!(
         "---\n\
-         type: instance\n\
+         kind: instance\n\
          skill: deal\n\
          id: {id}\n\
          owner_principal: {owner_principal}\n\
@@ -246,7 +246,7 @@ async fn fused_search_never_leaks_cross_owner_sql_hits() {
     indexer
         .update_page(
             "markdown/instances/note/public.md",
-            "---\ntype: instance\nskill: note\nid: public\n---\n# Public widget note\n",
+            "---\nkind: instance\nskill: note\nid: public\n---\n# Public widget note\n",
         )
         .await
         .unwrap();
@@ -358,14 +358,14 @@ async fn seed_rerank_world(indexer: &Arc<Indexer>, keep: &mut Vec<TempDir>) {
     indexer
         .update_page(
             "markdown/instances/note/public.md",
-            "---\ntype: instance\nskill: note\nid: public\n---\n# Public widget note\n",
+            "---\nkind: instance\nskill: note\nid: public\n---\n# Public widget note\n",
         )
         .await
         .unwrap();
     indexer
         .update_page(
             "markdown/instances/note/zebra.md",
-            "---\ntype: instance\nskill: note\nid: zebra\n---\n# Rollout\n\n\
+            "---\nkind: instance\nskill: note\nid: zebra\n---\n# Rollout\n\n\
              Planning the widget rollout across regions, vendors, budgets, \
              timelines, staffing, logistics and reviews. The zebra crossing \
              budget was approved alongside it.\n",

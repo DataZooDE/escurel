@@ -374,3 +374,57 @@ pub struct AdminLaneBlobResponse {
     pub bytes_base64: String,
     pub content_type: String,
 }
+
+/// `migrate_kind` request: rewrite a tenant's stored pages from the legacy `type:` page-kind key
+/// to `kind:`. `apply` defaults to `false`: the default is a dry run that changes nothing.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct MigrateKindRequest {
+    pub tenant_id: String,
+    pub apply: bool,
+}
+
+/// One open draft whose proposed bytes were rewritten (new `content_sha256`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct DraftKindMigration {
+    pub draft_id: String,
+    pub old_sha256: String,
+    pub new_sha256: String,
+}
+
+/// What `migrate_kind` found (dry run) or did (`applied`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct MigrateKindReport {
+    /// `false` = a dry run, nothing was written.
+    pub applied: bool,
+    pub pages_scanned: u64,
+    /// Pages that carried the legacy key: the ones that WOULD be rewritten (dry run) or WERE.
+    pub pages_to_migrate: Vec<String>,
+    /// Pages that already use `kind:`.
+    pub already_kind: u64,
+    /// Workflow-run board pages whose `status:` is/was renamed `run_status:` (the engine-owned key
+    /// that collided with OKF's `status`). A subset of `pages_to_migrate` when they also had `type:`.
+    pub run_status_renamed: Vec<String>,
+    /// Pages with BOTH `kind:` and a legacy page-kind `type:`; never auto-fixed.
+    pub conflicts: Vec<String>,
+    /// Pages with no page-kind key at all, or whose top-level `type:` is the page's own data.
+    pub not_a_page_kind: Vec<String>,
+    /// Signed pack pages (`markdown/base/...`): never rewritten here; the publisher re-exports.
+    pub skipped_pack_base: Vec<String>,
+    /// Open drafts rewritten in place (new content hash).
+    pub drafts: Vec<DraftKindMigration>,
+    /// Historical CRDT snapshots that carry the legacy key (counted in a dry run too).
+    pub snapshots_to_rewrite: u64,
+    /// Historical CRDT snapshots actually rewritten (`applied` only).
+    pub snapshots_rewritten: u64,
+    /// Pages with CRDT ops newer than their newest snapshot (a live session): `apply` refuses.
+    pub crdt_pages_with_live_ops: Vec<String>,
+    /// `true` while the tenant is still QUARANTINED (it booted with legacy pages and some remain: a
+    /// conflict, or a signed pack page the publisher has to re-export). A quarantined tenant serves
+    /// nothing but `migrate_kind` and `compact_lanes`.
+    pub tenant_quarantined: bool,
+    /// The `escurel:kind-migration` audit event, once applied.
+    pub audit_event_id: Option<String>,
+}

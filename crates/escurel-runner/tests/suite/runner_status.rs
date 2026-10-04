@@ -15,8 +15,8 @@ use escurel_test_support::{AuthMode, EscurelProcess, FixtureBuilder, Opts, Role,
 use serde_json::{Value, json};
 
 const TENANT: &str = "acme";
-const SKILL_BODY: &str = "---\ntype: skill\nid: renewal\nautonomy: auto\n---\n# renewal\n\nFold the event into the instance.\n";
-const INSTANCE_BODY: &str = "---\ntype: instance\nid: c1\nskill: renewal\n---\n# C1\n\nBASELINE.\n";
+const SKILL_BODY: &str = "---\nkind: skill\nid: renewal\nautonomy: auto\n---\n# renewal\n\nFold the event into the instance.\n";
+const INSTANCE_BODY: &str = "---\nkind: instance\nid: c1\nskill: renewal\n---\n# C1\n\nBASELINE.\n";
 const PAGE: &str = "markdown/instances/renewal/c1.md";
 
 struct ChildGuard(Child);

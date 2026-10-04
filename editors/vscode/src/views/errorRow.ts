@@ -6,7 +6,8 @@ export interface ErrorRowSpec {
   command: string;
 }
 
-export function errorRowSpec(message: string): ErrorRowSpec {
+export function errorRowSpec(message: string, detail?: string): ErrorRowSpec {
   const label = message.trim() || 'Could not load this view.';
-  return { label, tooltip: `${label}\n\nClick to try again.`, command: 'escurel.refresh' };
+  const extra = detail?.trim() ? `\n\n${detail.trim()}` : '';
+  return { label, tooltip: `${label}${extra}\n\nClick to try again.`, command: 'escurel.refresh' };
 }

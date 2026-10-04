@@ -7,7 +7,6 @@ import type { PropertyValues } from 'lit';
 import { property, state } from 'lit/decorators.js';
 import type {
   FocusGraph,
-  InspectorView,
   LaidOutNode,
   ThreadLayout,
   ThreadNode,
@@ -15,9 +14,16 @@ import type {
   ThreadWebviewToHost,
 } from '../../src/shared/protocol';
 import { theme } from '../shared/theme.css';
-import './inspector';
 import { fitToBounds, panToReveal, zoomAboutPoint } from './viewport';
-import { firstViewport, isLowZoom, pickTarget, scrollMetrics } from '../../src/thread/firstView';
+import { chipWords } from '../../src/thread/chipWords';
+import { checkIcon, clockIcon, crossIcon, syncIcon } from '../shared/icons';
+import {
+  columnsOffRight,
+  firstViewport,
+  isLowZoom,
+  pickTarget,
+  scrollMetrics,
+} from '../../src/thread/firstView';
 import type { ViewportState } from './viewport';
 
 /** Where a fitted graph starts: just under the 28px pinned column headers. */
@@ -72,13 +78,54 @@ export class EscurelThreadCanvas extends LitElement {
         text-align: center;
       }
       .zoom-hint {
-        font-size: 0.8em;
+        font-size: 0.85em;
         color: var(--escurel-muted);
         border: 1px solid var(--escurel-border);
         border-radius: 8px;
         padding: 0 6px;
         text-transform: uppercase;
         letter-spacing: 0.04em;
+      }
+      /* The icon of a state chip: small, inline with the word, never taller than the chip. */
+      .card .chip {
+        display: inline-flex;
+        align-items: center;
+        gap: 3px;
+        line-height: 1.5;
+      }
+      .card .chip svg {
+        flex: none;
+        width: 10px;
+        height: 10px;
+      }
+      /* More stages lie beyond the right edge: a fade and a chip that brings them in. */
+      .edge-fade {
+        position: absolute;
+        top: 0;
+        right: 0;
+        bottom: 8px;
+        width: 56px;
+        z-index: 5;
+        pointer-events: none;
+        background: linear-gradient(to right, transparent, var(--vscode-editor-background));
+      }
+      button.edge-more {
+        position: absolute;
+        z-index: 7;
+        right: 18px;
+        bottom: 20px;
+        padding: 4px 10px;
+        font: inherit;
+        font-size: 0.85em;
+        color: var(--vscode-button-secondaryForeground);
+        background: var(--vscode-button-secondaryBackground);
+        border: 1px solid var(--vscode-button-border, var(--vscode-contrastBorder, transparent));
+        border-radius: 11px;
+        cursor: pointer;
+      }
+      button.edge-more:focus-visible {
+        outline: 1px solid var(--vscode-focusBorder);
+        outline-offset: 1px;
       }
       .scroll-track {
         position: absolute;
@@ -120,11 +167,25 @@ export class EscurelThreadCanvas extends LitElement {
         left: 0;
         right: 0;
       }
-      /* Semantic zoom: below 70% a card keeps its icon, accent bar and state chip, and drops every
-         word. The box keeps its size, so wires and positions do not move; the full text is the
-         tooltip and the accessible name. */
-      .low-zoom .card .card-title,
-      .low-zoom .card .type-label,
+      /* Semantic zoom: below 85% a card keeps its icon, type word, title and state chip, and drops
+         the body (subtitle, meta, reason, draft list, buttons). The words are COUNTER-SCALED: the
+         canvas shrinks by --zoom, so their font is divided by it and they render at about 10.5px
+         whatever the zoom. The box keeps its size, so wires and positions do not move; the full
+         text stays in the tooltip and the accessible name. A title that does not fit is cut with an
+         ellipsis, never over a neighbour. */
+      .low-zoom .card,
+      .low-zoom .card.compact {
+        --lz: calc(10.5px / var(--zoom, 0.5));
+        justify-content: center;
+        gap: 0;
+        padding-top: 0;
+        padding-bottom: 0;
+      }
+      /* A row never shrinks: squeezed, it clipped its own text while its box still looked inside
+         the card. Line height 1 lets two counter-scaled rows fit the smallest card at 40%. */
+      .low-zoom .card > * {
+        flex-shrink: 0;
+      }
       .low-zoom .card .card-subtitle,
       .low-zoom .card .meta-lines,
       .low-zoom .card .needs-reason,
@@ -132,12 +193,71 @@ export class EscurelThreadCanvas extends LitElement {
       .low-zoom .card .changeset-author,
       .low-zoom .card .draft-list,
       .low-zoom .card .gate-actions,
-      .low-zoom .card .collapse-toggle,
-      .low-zoom .card .type-line {
+      .low-zoom .card .collapse-toggle {
         display: none;
       }
+      .low-zoom .card .card-title,
+      .low-zoom .card .type-label,
+      .low-zoom .card .chip,
+      .low-zoom .card .needs-badge {
+        font-size: var(--lz);
+        line-height: 1;
+      }
+      .low-zoom .card .type-icon svg {
+        width: var(--lz);
+        height: var(--lz);
+      }
+      .low-zoom .card .chip,
+      .low-zoom .card .type-label {
+        /* At counter-scaled size a word can be wider than the card: cut it, never spill over. */
+        min-width: 0;
+        flex: 0 1 auto;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
       .low-zoom .card .chip {
-        font-size: 1.05em;
+        padding: 0 calc(var(--lz) * 0.5);
+        border-width: 0;
+      }
+      /* The type word is what the colour and icon stand for, so it keeps its full width; the chip
+         (whose full text is in the tooltip) gives way first. */
+      .low-zoom .card .type-label {
+        flex: 0 0 auto;
+      }
+      .low-zoom .card .chip {
+        flex: 0 1 auto;
+        min-width: 0;
+      }
+      .low-zoom .card .card-header,
+      .low-zoom .card .type-line,
+      .low-zoom .card .compact-line,
+      .low-zoom .card .card-footer,
+      .low-zoom .card .needs-row {
+        flex-wrap: nowrap;
+        margin: 0;
+        line-height: 1;
+        gap: calc(var(--lz) * 0.4);
+        min-width: 0;
+        overflow: hidden;
+      }
+      /* The canvas scales a 2px outline to 0.8px at 40%: the ring that says where the keyboard is
+         counter-scales like the words, so it renders at about 2px at any zoom (Chrome floors an outline to whole pixels, hence 2.5). */
+      .low-zoom .card:focus-visible {
+        outline-width: calc(2.5px / var(--zoom, 0.5));
+        outline-offset: calc(1px / var(--zoom, 0.5));
+      }
+      .low-zoom .card.selected {
+        box-shadow: 0 0 0 calc(2px / var(--zoom, 0.5)) var(--vscode-focusBorder);
+      }
+      .low-zoom .card.needs-you.selected {
+        box-shadow:
+          0 0 0 calc(3px / var(--zoom, 0.5)) color-mix(in srgb, var(--accent) 24%, transparent),
+          0 0 0 calc(5px / var(--zoom, 0.5)) var(--vscode-focusBorder);
+      }
+      .low-zoom .card .card-title {
+        flex: 1;
+        min-width: 0;
       }
       .main-split {
         display: flex;
@@ -174,7 +294,7 @@ export class EscurelThreadCanvas extends LitElement {
       .column-header {
         position: absolute;
         top: 6px;
-        font-size: 0.8em;
+        font-size: 0.85em;
         font-weight: 600;
         text-transform: uppercase;
         letter-spacing: 0.05em;
@@ -259,8 +379,19 @@ export class EscurelThreadCanvas extends LitElement {
         flex-shrink: 0;
         color: var(--accent, var(--escurel-muted));
       }
+      .type-qualifier {
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        font-weight: 600;
+        color: var(--vscode-foreground);
+      }
+      .low-zoom .card .type-qualifier {
+        display: none;
+      }
       .type-label {
-        font-size: 0.75em;
+        font-size: 0.8em;
         font-weight: 600;
         text-transform: uppercase;
         letter-spacing: 0.06em;
@@ -349,7 +480,7 @@ export class EscurelThreadCanvas extends LitElement {
         border: 1px solid var(--accent);
         background: color-mix(in srgb, var(--accent) 30%, transparent);
         color: var(--vscode-foreground);
-        font-size: 0.75em;
+        font-size: 0.85em;
         font-weight: 700;
       }
       .needs-reason {
@@ -399,7 +530,7 @@ export class EscurelThreadCanvas extends LitElement {
         height: 20px;
         line-height: 20px;
         padding: 0 4px;
-        font-size: 0.8em;
+        font-size: 0.85em;
         color: var(--vscode-textLink-foreground);
         cursor: pointer;
       }
@@ -413,7 +544,7 @@ export class EscurelThreadCanvas extends LitElement {
         background: var(--vscode-button-secondaryBackground);
         color: var(--vscode-button-secondaryForeground, var(--vscode-foreground));
         border: 1px solid var(--vscode-button-border, var(--escurel-border));
-        font-size: 0.8em;
+        font-size: 0.85em;
         padding: 1px 6px;
         border-radius: 2px;
       }
@@ -423,7 +554,7 @@ export class EscurelThreadCanvas extends LitElement {
       }
       .gate-reason {
         flex-basis: 100%;
-        font-size: 0.75em;
+        font-size: 0.85em;
         color: var(--escurel-muted);
       }
       .gate-actions {
@@ -442,7 +573,7 @@ export class EscurelThreadCanvas extends LitElement {
       }
       .lane-caption {
         position: absolute;
-        font-size: 0.75em;
+        font-size: 0.85em;
         color: var(--escurel-muted);
         white-space: nowrap;
         pointer-events: none;
@@ -463,7 +594,7 @@ export class EscurelThreadCanvas extends LitElement {
         white-space: nowrap;
       }
       .collapse-toggle {
-        font-size: 0.75em;
+        font-size: 0.85em;
         padding: 0 4px;
         line-height: 1.2;
         border: 1px solid var(--escurel-border);
@@ -501,26 +632,53 @@ export class EscurelThreadCanvas extends LitElement {
       }
       .gate-actions {
         display: inline-flex;
-        gap: 4px;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 8px;
+      }
+      .gate-actions button {
+        min-height: 24px;
+        box-sizing: border-box;
+        cursor: pointer;
       }
       .promote-btn {
         /* charts.green is a LIGHT green in dark and high-contrast themes; white on it was 1.8:1. */
         background: color-mix(in srgb, var(--escurel-run) 55%, black);
         color: var(--vscode-button-foreground);
         border: 1px solid transparent;
-        font-size: 0.8em;
-        padding: 1px 6px;
+        font-size: 0.85em;
+        padding: 3px 10px;
+        border-radius: 2px;
+      }
+      .approve-btn {
+        background: var(--vscode-button-background);
+        color: var(--vscode-button-foreground);
+        border: 1px solid var(--vscode-button-border, transparent);
+        font-size: 0.85em;
+        padding: 3px 10px;
+        border-radius: 2px;
+      }
+      .retry-btn {
+        background: var(--vscode-button-secondaryBackground);
+        color: var(--vscode-button-secondaryForeground);
+        border: 1px solid var(--vscode-button-border, var(--vscode-contrastBorder, transparent));
+        font-size: 0.85em;
+        padding: 3px 10px;
         border-radius: 2px;
       }
       .discard-btn {
-        /* Red text needs a background it was meant for: the card's own, not the secondary button
-           colour (dark grey in light themes). */
-        background: var(--vscode-editorWidget-background, var(--vscode-editor-background));
+        /* Quiet on purpose: available, never competing with Promote. No fill, no border (the
+           wording and the red text are the cue), underlined on hover and focus. */
+        background: transparent;
         color: var(--vscode-errorForeground);
-        border: 1px solid var(--vscode-errorForeground);
-        font-size: 0.8em;
-        padding: 1px 6px;
+        border: 1px solid transparent;
+        font-size: 0.85em;
+        padding: 3px 8px;
         border-radius: 2px;
+      }
+      .discard-btn:hover,
+      .discard-btn:focus-visible {
+        text-decoration: underline;
       }
       .status-message {
         display: flex;
@@ -544,15 +702,6 @@ export class EscurelThreadCanvas extends LitElement {
       .reconnect:hover {
         background: var(--vscode-button-hoverBackground);
       }
-      .inspector-container {
-        width: 320px;
-        border-left: 1px solid var(--escurel-border);
-        overflow-y: auto;
-        background: var(--vscode-sideBar-background, var(--vscode-editor-background));
-        flex-shrink: 0;
-        padding: 12px;
-        box-sizing: border-box;
-      }
     `,
   ];
 
@@ -560,8 +709,9 @@ export class EscurelThreadCanvas extends LitElement {
   @property({ attribute: false }) layout?: ThreadLayout;
   // @ts-expect-error Specification requires property named 'focus' for FocusGraph
   @property({ attribute: false }) override focus?: FocusGraph;
-  @property({ attribute: false }) details?: Record<string, InspectorView>;
   @property({ attribute: false }) error?: { message: string; canReconnect: boolean };
+  /** The clock a card's age is measured against; a visual baseline pins it so it does not age. */
+  @property({ attribute: false }) clock: () => Date = () => new Date();
 
   @state() focusedNodeId = '';
   @state() selectedNodeId = '';
@@ -608,7 +758,7 @@ export class EscurelThreadCanvas extends LitElement {
     if (!area || !area.clientWidth) return; // not measurable yet (a hidden tab): the observer retries
     this.firstViewApplied = true;
     // A graph that fits opens as it is. A bigger one opens at 100% with the node that matters (the
-    // first that needs you, else the newest active) centred, and a scrollbar to reach the rest.
+    // first that needs you, else the root) at the left, and a scrollbar to reach the rest.
     // Fitting everything used to shrink big threads to 40-50%, where no card text was legible; Fit
     // still gives that overview on request.
     const viewport = firstViewport(this.layout, pickTarget(this.view, this.layout), {
@@ -657,11 +807,9 @@ export class EscurelThreadCanvas extends LitElement {
   public selectNode(nodeId: string): void {
     this.selectedNodeId = nodeId;
     this.focusedNodeId = nodeId;
+    // The details are a view of their own now (the panel area), so selecting takes no width from
+    // the canvas and one reveal is enough.
     this.panToFocusedNode();
-    // Selecting opens the inspector, which takes its share of the width from the canvas. The
-    // reveal above used the canvas as it was BEFORE that, so a card near the right edge could
-    // be clipped the moment it was selected; reveal again once the layout has settled.
-    void this.updateComplete.then(() => this.panToFocusedNode());
   }
 
   public focusNode(nodeId: string): void {
@@ -685,6 +833,22 @@ export class EscurelThreadCanvas extends LitElement {
     }
   }
 
+  /** A state chip: the icon's shape and a short word, so state is never colour alone. */
+  private renderChip(chip: { text: string; tone: string }) {
+    const words = chipWords(chip.text);
+    const icon =
+      words.icon === 'check'
+        ? checkIcon()
+        : words.icon === 'cross'
+          ? crossIcon()
+          : words.icon === 'sync'
+            ? syncIcon()
+            : words.icon === 'clock'
+              ? clockIcon()
+              : nothing;
+    return html`<span class="chip ${chip.tone}" title=${chip.text}>${icon}${words.text}</span>`;
+  }
+
   public fit(): void {
     if (!this.layout) return;
     const containerEl = this.shadowRoot?.querySelector('.canvas-area');
@@ -692,7 +856,8 @@ export class EscurelThreadCanvas extends LitElement {
       width: containerEl?.clientWidth || 800,
       height: containerEl?.clientHeight || 600,
     };
-    const fitted = fitToBounds(this.layout.bounds, containerSize, 20);
+    // Never above 100%: a small thread fitted to a big pane would blow every card up past readable.
+    const fitted = fitToBounds(this.layout.bounds, containerSize, 20, 1);
     // Start under the pinned column headers: a graph shorter than the pane used to float in the
     // middle with an empty band above it.
     this.viewport = { ...fitted, y: Math.min(fitted.y, FIT_TOP) };
@@ -851,7 +1016,7 @@ export class EscurelThreadCanvas extends LitElement {
   private renderChangesetDetails(node: ThreadNode) {
     const details = node.changeset;
     if (!details || node.emphasis !== 'needs-you') return nothing;
-    const age = formatAge(details.at);
+    const age = formatAge(details.at, this.clock());
     const who = [details.author, age].filter(Boolean).join(' · ');
     const listed = details.drafts.slice(0, MAX_LISTED_DRAFTS);
     const more = details.drafts.length - listed.length;
@@ -913,7 +1078,31 @@ export class EscurelThreadCanvas extends LitElement {
         ></div>
       </div>`;
     };
-    return html`${m.h ? thumb('h', m.h) : nothing}${m.v ? thumb('v', m.v) : nothing}`;
+    const off = columnsOffRight(this.layout, this.viewport, this.areaSize.width);
+    return html`${m.h ? thumb('h', m.h) : nothing}${m.v ? thumb('v', m.v) : nothing}${
+      off > 0
+        ? html`<div class="edge-fade" aria-hidden="true"></div>
+            <button
+              class="edge-more"
+              title="Show the rest of the thread"
+              @pointerdown=${(e: PointerEvent) => e.stopPropagation()}
+              @click=${() => this.panRight()}
+            >
+              ${off} more ${off === 1 ? 'stage' : 'stages'} →
+            </button>`
+        : nothing
+    }`;
+  }
+
+  /** One click on the 'more stages' chip: bring the next stretch of the graph in. */
+  private panRight(): void {
+    if (!this.layout) return;
+    const width = this.areaSize.width || 800;
+    const min = width - this.layout.bounds.width * this.viewport.zoom;
+    this.viewport = {
+      ...this.viewport,
+      x: Math.max(min, this.viewport.x - Math.round(width * 0.8)),
+    };
   }
 
   private startThumbDrag(e: PointerEvent, axis: 'h' | 'v'): void {
@@ -950,7 +1139,7 @@ export class EscurelThreadCanvas extends LitElement {
     const compact = node.emphasis === 'compact';
     const needs = node.needsYou;
     const accessibleName = [
-      `${described.label}: ${node.title}`,
+      `${described.label}: ${node.title}${described.qualifier ? ` (${described.qualifier})` : ''}`,
       node.subtitle,
       node.state,
       needs ? `needs you: ${needs.text}` : undefined,
@@ -961,7 +1150,7 @@ export class EscurelThreadCanvas extends LitElement {
     const tooltip =
       compact || lowZoom
         ? [
-            `${described.label}: ${node.title}`,
+            `${described.label}: ${node.title}${described.qualifier ? ` (${described.qualifier})` : ''}`,
             node.subtitle,
             node.state,
             needs?.text,
@@ -1023,10 +1212,24 @@ export class EscurelThreadCanvas extends LitElement {
           compact
             ? html`<div class="compact-line">
                 <span class="type-label">${described.label}</span>
-                ${node.chips.map((chip) => html`<span class="chip ${chip.tone}">${chip.text}</span>`)}
+                ${
+                  described.qualifier
+                    ? html`<span class="type-qualifier" title=${described.qualifier}
+                        >${described.qualifier}</span
+                      >`
+                    : nothing
+                }
+                ${node.chips.map((chip) => this.renderChip(chip))}
               </div>`
             : html`<div class="type-line">
                   <span class="type-label">${described.label}</span>
+                  ${
+                    described.qualifier
+                      ? html`<span class="type-qualifier" title=${described.qualifier}
+                          >${described.qualifier}</span
+                        >`
+                      : nothing
+                  }
                   ${
                     subtitle
                       ? html`<span class="card-subtitle" title="${subtitle}">${subtitle}</span>`
@@ -1058,7 +1261,34 @@ export class EscurelThreadCanvas extends LitElement {
           compact
             ? nothing
             : html`<div class="card-footer">
-                ${node.chips.map((chip) => html`<span class="chip ${chip.tone}">${chip.text}</span>`)}
+                ${node.chips.map((chip) => this.renderChip(chip))}
+                ${
+                  needs?.reason === 'approve-plan'
+                    ? html`<div class="gate-actions">
+                        <button
+                          class="approve-btn"
+                          @click=${(e: Event) => {
+                            e.stopPropagation();
+                            this.send({ type: 'run-control', action: 'approve', runId: node.id });
+                          }}
+                        >
+                          Approve plan
+                        </button>
+                      </div>`
+                    : needs?.reason === 'failed'
+                      ? html`<div class="gate-actions">
+                          <button
+                            class="retry-btn"
+                            @click=${(e: Event) => {
+                              e.stopPropagation();
+                              this.send({ type: 'run-control', action: 'retry', runId: node.id });
+                            }}
+                          >
+                            Retry
+                          </button>
+                        </div>`
+                      : nothing
+                }
                 ${
                   node.gate
                     ? html`<div class="gate-actions">
@@ -1151,7 +1381,7 @@ export class EscurelThreadCanvas extends LitElement {
       <div class="toolbar" role="group" aria-label="Thread canvas controls">
         <button aria-label="Zoom out" @click=${() => this.zoomBy(0.8)}>−</button>
         <span class="zoom-level" aria-live="polite">${Math.round(this.viewport.zoom * 100)}%</span>
-        ${lowZoom ? html`<span class="zoom-hint" title="Zoomed out: cards show icon, type colour and state only. Zoom in to 70% for text.">overview</span>` : nothing}
+        ${lowZoom ? html`<span class="zoom-hint" title="Zoomed out: cards show icon, type, title and state, without their details. Zoom in to 85% for the details.">overview</span>` : nothing}
         <button aria-label="Zoom in" @click=${() => this.zoomBy(1.25)}>+</button>
         <button aria-label="Fit graph to view" data-action="fit" @click=${() => this.fit()}>
           Fit
@@ -1168,6 +1398,7 @@ export class EscurelThreadCanvas extends LitElement {
       <div class="main-split">
         <div
           class="canvas-area ${this.isPanning ? 'panning' : ''} ${lowZoom ? 'low-zoom' : ''}"
+          style="--zoom: ${this.viewport.zoom}"
           role="tree"
           aria-label="Thread execution tree"
           @pointerdown=${this.handlePointerDown}
@@ -1237,17 +1468,6 @@ export class EscurelThreadCanvas extends LitElement {
           </div>
           ${this.renderScrollbars()}
         </div>
-
-        ${
-          this.selectedNodeId
-            ? html`<div class="inspector-container">
-                <escurel-thread-inspector
-                  .nodeId=${this.selectedNodeId}
-                  .detail=${this.details?.[this.selectedNodeId]}
-                ></escurel-thread-inspector>
-              </div>`
-            : nothing
-        }
       </div>
     `;
   }

@@ -117,7 +117,7 @@ class _PageView extends ConsumerWidget {
         children: [
           Row(
             children: [
-              KindChip(pageType: page.pageType),
+              KindChip(pageKind: page.pageKind),
               const SizedBox(width: 8),
               Expanded(
                 child: Text(

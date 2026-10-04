@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import { newNonce } from '../editors/nonce';
 
 /**
  * The shell every Escurel webview loads: one bundle from `dist/webview/`, a nonce-gated
@@ -15,9 +16,7 @@ export function webviewHtml(
   const script = webview.asWebviewUri(
     vscode.Uri.joinPath(extensionUri, 'dist', 'webview', `${bundle}.js`),
   );
-  const nonce = Array.from({ length: 16 }, () => Math.floor(Math.random() * 36).toString(36)).join(
-    '',
-  );
+  const nonce = newNonce();
   return `<!doctype html><html><head><meta charset="utf-8" />
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${webview.cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}';" />
 <style>html,body{margin:0;height:100%}</style></head>

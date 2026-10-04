@@ -13,7 +13,7 @@ use crate::null::null_as_default;
 
 // ── search ────────────────────────────────────────────────────────
 
-/// `search` tool arguments. MCP wire keys: `q`, `k`, `page_type`,
+/// `search` tool arguments. MCP wire keys: `q`, `k`, `page_kind`,
 /// `skill`, `granularity`, `filter`, `as_of`, `scenario`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 #[serde(default)]
@@ -21,7 +21,7 @@ pub struct SearchRequest {
     pub q: String,
     pub k: u32,
     pub granularity: String,
-    pub page_type: String,
+    pub page_kind: String,
     pub skill: String,
     /// Frontmatter post-filter (MCP `filter` object). Proto carried a
     /// `filter_json` string; the wire is a real JSON object.
@@ -34,7 +34,7 @@ pub struct SearchRequest {
 }
 
 /// One block-granularity hit. MCP wire keys: `page_id`, `slug`,
-/// `skill`, `page_type`, `anchor`, `snippet`, `score`,
+/// `skill`, `page_kind`, `anchor`, `snippet`, `score`,
 /// `frontmatter_excerpt`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 #[serde(default)]
@@ -42,7 +42,7 @@ pub struct SearchHit {
     pub page_id: String,
     pub slug: String,
     pub skill: String,
-    pub page_type: String,
+    pub page_kind: String,
     /// Block anchor of the hit. A page-grain hit (e.g. a `sql_view`
     /// candidate) has none — the wire emits an explicit `null`, which
     /// decodes to `""` here.
@@ -154,7 +154,12 @@ pub struct ExpandResponse {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub content: Option<String>,
     /// Backend overlay projection: for a `sql_view` instance the bounded
-    /// rows + projected source columns (REQ-SQL-06/REQ-OV-02); for a
+    /// rows + projected source columns (REQ-SQL-06/REQ-OV-02); for a ROW of
+    /// an `instances: rows` skill `{view, instances: "rows", read_only,
+    /// fetched_at, rows: [the row's columns], source: {projected fields},
+    /// columns: [{name, type, kind}], linked: {enabled, exists, orphan},
+    /// issue?}` (`issue.code = source_missing` when the row is gone but its
+    /// linked markdown is kept); for a
     /// remote (openapi/mcp) instance the LIVE upstream projection
     /// `{source, fields}` — or `{issue}` when the upstream failed.
     /// Absent for plain markdown pages.
@@ -338,6 +343,36 @@ pub struct SkillAcl {
 #[serde(default)]
 pub struct SkillBackend {
     pub kind: String,
+    /// `rows` (every row of the source is an instance) | `view` (the whole relation is ONE instance).
+    /// Absent for markdown/document skills.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub instances: Option<String>,
+    /// `rows` skills: the identity column(s) an instance id is built from.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub key: Vec<String>,
+    /// `rows` skills: what `list_instances` may filter by, as `{field, column}`.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub filterable: Vec<BackendField>,
+    /// `rows` skills: the extra display columns `search` matches (the key and `filterable` always are).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub searchable: Vec<BackendField>,
+    /// `rows` skills: the columns a `write_back` draft may change.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub writable_columns: Vec<BackendField>,
+    /// `write_back` when rows change only through a human-promoted `create_draft`; absent otherwise.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub writable_via: Option<String>,
+    /// `rows` skills: a row may carry linked markdown notes.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub linked: Option<bool>,
+}
+
+/// A source column under the frontmatter field name an agent sees it by.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct BackendField {
+    pub field: String,
+    pub column: String,
 }
 
 /// What a skill's backend can do — reported so a client learns
@@ -396,6 +431,17 @@ pub struct SkillCascade {
     /// The deepest hop this skill's cascades may reach.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_depth: Option<u32>,
+}
+
+/// Peacock's `viewer:` on a skill page: the report skill that renders the skill's instances and the
+/// parameter the instance id is passed in. Carried as written; escurel never interprets it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SkillViewer {
+    /// The report skill id (`supplier-risk-report`).
+    pub report: String,
+    /// The report parameter that takes the instance id (`analysis`). Absent = the report decides.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub param: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
@@ -463,6 +509,45 @@ pub struct Skill {
     /// runner honours it within its allow-list).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub harness: Option<String>,
+    /// `folder:` — where the skill sits in a knowledge tree, a `/`-separated path of slugs
+    /// (`sales/orders`). Absent = top level. OKF-style hierarchy for clients that render a tree.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub folder: Option<String>,
+    /// `role:` — what kind of thing this skill is: `record` | `process` | `report` | `helper`.
+    /// Typed as a string so a value a newer server adds still deserialises. Absent = undeclared
+    /// (a client may infer one).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role: Option<String>,
+    /// `tags:` — OKF tags, free labels. Absent = none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tags: Vec<String>,
+    /// `title:` — OKF display title; a client falls back to the id.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    /// `resource:` — OKF link to the external thing this skill describes (a table, an API).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resource: Option<String>,
+    /// `generated:` — OKF provenance: who or what wrote this skill (free text), or when.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub generated: Option<String>,
+    /// `verified:` — OKF: when a human last confirmed the skill (a date or RFC 3339 instant).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verified: Option<String>,
+    /// `status:` — OKF currency marker as the skill's author wrote it. Free text; a skill's own
+    /// `fields:` declaration and instance pages keep their own meaning of `status`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<String>,
+    /// `stale_after:` — OKF freshness: an RFC 3339 instant or an ISO-8601 duration (`P90D`)
+    /// counted from `verified`. A client decides whether the skill is stale.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stale_after: Option<String>,
+    /// `sources:` — OKF origin links: plain strings or `{title, url}` objects, as written.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sources: Vec<serde_json::Value>,
+    /// `viewer:` — Peacock's `{report, param}`: the report skill that charts this skill's
+    /// instances. escurel only carries it, so a client can link to where the data is rendered.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub viewer: Option<SkillViewer>,
     /// `actions:` — what a reader may do from this skill's pages, in Peacock's
     /// object form. The `event` skills of the `kind: event` entries are also the
     /// skills a run may cascade into. Absent = none declared (no restriction).
@@ -616,6 +701,14 @@ pub struct InstanceInfo {
     /// `null` on the wire when the instance carries no `at` timestamp.
     #[serde(deserialize_with = "null_as_default")]
     pub at: String,
+    /// `true` for a ROW of an `instances: rows` skill (a live read of the source, no stored page of its
+    /// own; its `frontmatter` is the projected columns). Absent on the wire for a stored page.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub row: bool,
+}
+
+fn is_false(b: &bool) -> bool {
+    !*b
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
@@ -766,6 +859,16 @@ pub struct UpdatePageResponse {
     /// (page absent), which decodes to `None`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub head_content: Option<String>,
+    /// The write did NOT land: the skill asks for human review (`autonomy: review | confirm`, or the
+    /// page configures agents) and the caller is a machine, so it was held as an open draft a person
+    /// promotes. `ok` is `true` — nothing is wrong — but `new_version` is empty and the page is
+    /// unchanged. A caller that treats `ok` as "landed" (marks an event processed, cascades) is wrong
+    /// when this is set. Absent on old servers ⇒ `false`.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub held_for_review: bool,
+    /// The open draft that holds the write, when [`Self::held_for_review`].
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub draft: Option<crate::drafts::Draft>,
 }
 
 /// `delete_page` arguments (#300). MCP wire keys: `page_id`, optional

@@ -23,13 +23,11 @@ export function connectThreadWebview(api: ThreadApi, el: EscurelThreadCanvas): (
       el.view = message.view;
       el.layout = message.layout;
       el.focus = message.focus;
-      el.details = message.details;
       el.error = undefined;
     } else if (message.type === 'thread-loading') {
       el.view = undefined;
       el.layout = undefined;
       el.focus = undefined;
-      el.details = undefined;
       el.error = undefined;
     } else if (message.type === 'thread-error') {
       el.error = { message: message.message, canReconnect: message.canReconnect };

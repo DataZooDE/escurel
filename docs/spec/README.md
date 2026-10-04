@@ -80,7 +80,7 @@ are the ones with the largest blast radius if changed later.
 | **2** | **Deployment** | **Single binary `escurel-server`, self-hosted; same binary scales to multi-tenant SaaS** | One process per node; multi-tenancy is in-process (see decision 8) |
 | 3 | Auth | Generic OIDC discovery; tenant id is one OIDC claim (`tenant` by default, configurable) | See [`platform.md`](platform.md#auth) |
 | 4 | Embedding model — default | **Gemini** (`gemini-embedding-001`) over HTTPS, 768d — the binary ships the `gemini` feature and the runtime default is `provider = gemini` | Hosted; needs `ESCUREL_GEMINI_API_KEY`. With no key it falls back to zero-vector embeddings (a warning is logged) so keyless dev/CI boots stay clean. **Not air-gappable** — see 4a |
-| 4a | Embedding model — air-gapped / local | A **BERT-family sentence-transformer** (default `BAAI/bge-base-en-v1.5`, 768d), via candle — `provider = embeddinggemma`. *(EmbeddingGemma (`google/embeddinggemma-300m`) is the intended target but candle-transformers has no `gemma3` embedding path yet, so it cannot load today — see #299.)* | Open weights, no cloud egress. Loads on first start, cached under `${ESCUREL_DATA_DIR}/cache/models/`. `provider = zero` is the offline stub (lexical search only). Set `ESCUREL_EMBEDDER_REQUIRED=1` to fail closed rather than degrade to zero-vector retrieval |
+| 4a | Embedding model — air-gapped / local | A **BERT-family sentence-transformer** (default `BAAI/bge-base-en-v1.5`, 768d), via candle — `provider = embeddinggemma`. *(EmbeddingGemma (`google/embeddinggemma-300m`) is the intended target but candle-transformers has no `gemma3` embedding path yet, so it cannot load today — see #299.)* | Open weights, no cloud egress. Loads on first start, cached under `${ESCUREL_SERVER_DATA_DIR}/cache/models/`. `provider = zero` is the offline stub (lexical search only). Set `ESCUREL_EMBEDDER_REQUIRED=1` to fail closed rather than degrade to zero-vector retrieval |
 | 5 | Embed/rerank runtime | **candle** (pure Rust) | No external runtime; CUDA/Metal feature flags; sidecar adapter exists as a trait impl for future use |
 | **6** | **Transports** | **MCP-over-HTTP** + **WebSocket** (live mode); HTTP is the sole transport | See [`protocol.md`](protocol.md) for each |
 | 7 | Storage backend | **Local FS for dev; S3 LaneStore is the production backend.** S3-compatible stores supported via `object_store::aws` (verified: AWS S3, MinIO, Hetzner Object Storage); FS retained as a dev-only convenience | DuckDB supports object-store URLs via `httpfs`, DuckLake natively; markdown ships through the same trait |
@@ -218,7 +218,7 @@ latency on writes acceptable.
   and `apply_op` reject with `embedding_unavailable` until the
   model loads. Manual `escurel-server reload-embedding` retries.
 - **S3 backend unavailable.** Server keeps a local write-ahead
-  copy in `${ESCUREL_DATA_DIR}/spool/<tenant>/`. Writes queue;
+  copy in `${ESCUREL_SERVER_DATA_DIR}/spool/<tenant>/`. Writes queue;
   reads fall back to the last cached lane snapshot. Quotas
   apply normally. The spool dir is **host-local** and never
   synced to the LaneStore. On a host recreate (the Volume
@@ -327,24 +327,19 @@ log_format = "json"               # "json" or "text" — NOTE: "text" is
 
 Environment variable overrides follow `ESCUREL_<UPPER_SNAKE>`
 derived from the TOML key path (e.g. `[server] data_dir` →
-`ESCUREL_SERVER_DATA_DIR`). The substrate Kamal deploy pins the
-sizing knobs explicitly so capacity planning is one place:
+`ESCUREL_SERVER_DATA_DIR`). The complete, code-generated list of the
+variables the binaries actually read is
+[`docs/deploy/env.md`](../deploy/env.md) (a test fails when it drifts).
 
-> **Not yet implemented.** The sizing knobs below are **not parsed by
-> the current binary** (`crates/escurel-server/src/config.rs` does not
-> read them). They belong to the pending multi-tenant
-> `TenantManager` / per-tenant `DuckdbPool` model (see
-> [`platform.md § Concurrency`](platform.md#concurrency)); today's
-> binary shares one `Indexer`/DuckDB across tenants. Setting them has
-> no effect until that model lands.
-
-| env var | TOML | default | what it bounds |
-|---|---|---|---|
-| `ESCUREL_TENANT_LRU_CAP` | `[concurrency] tenant_lru_cap` | 64 | TenantHandle LRU; idle eviction after 5 min |
-| `ESCUREL_DUCKDB_READ_POOL` | `[concurrency] duckdb_read_pool` | 16 | per-tenant DuckDB read connections |
-| `ESCUREL_EMBED_POOL` | `[concurrency] embed_pool` | 32 | per-tenant in-flight embed tasks |
-| `ESCUREL_WRITE_LOCK_TIMEOUT_MS` | `[concurrency] write_lock_timeout_ms` | 5000 | per-tenant write-lock acquisition timeout |
-| `ESCUREL_SPOOL_FLUSH_INTERVAL_MS` | `[storage] spool_flush_interval_ms` | 1000 | S3 spool flush cadence when LaneStore is reachable |
+> **Not implemented — and deliberately no variables.** The per-tenant
+> sizing knobs of the pending multi-tenant `TenantManager` /
+> per-tenant `DuckdbPool` model (a tenant-handle LRU, a DuckDB read
+> pool, an embed pool, a write-lock timeout, a spool flush interval;
+> see [`platform.md § Concurrency`](platform.md#concurrency)) are
+> design intent only: the current binary parses none of them, and this
+> document names no `ESCUREL_*` variable for them until the model
+> lands (a stale table of phantom variables sent operators tuning
+> settings that did nothing).
 
 Tenant-specific overrides live in the tenant manifest (see
 [`platform.md`](platform.md#tenant-lifecycle)); they can lift or

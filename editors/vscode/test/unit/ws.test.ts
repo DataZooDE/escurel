@@ -105,6 +105,20 @@ afterEach(async () => {
   for (const s of servers.splice(0)) await s.close();
 });
 
+/** Wait for a condition instead of a fixed time. */
+async function until(cond: () => boolean, ms = 5000): Promise<void> {
+  const deadline = Date.now() + ms;
+  while (!cond()) {
+    if (Date.now() > deadline) throw new Error('condition not reached');
+    await new Promise((r) => setTimeout(r, 5));
+  }
+}
+
+/** Let the event loop turn a few times: an 'error' that follows a close surfaces on a later tick. */
+async function settle(): Promise<void> {
+  for (let i = 0; i < 25; i += 1) await new Promise((r) => setImmediate(r));
+}
+
 describe('EventSocket', () => {
   it('sends the bearer on the upgrade, hello presence_only, then one event_subscribe with the filters', async () => {
     const srv = await startFakeWs();
@@ -167,7 +181,11 @@ describe('EventSocket', () => {
     // ("closed before the connection was established") on the next tick; the client used to
     // strip every listener first, so nothing handled it and it escaped as an uncaught exception
     // in the extension host (seen when a token change reconnected sockets).
-    const held = createTcpServer((c) => c.on('error', () => undefined));
+    let accepted = 0;
+    const held = createTcpServer((c) => {
+      accepted += 1;
+      c.on('error', () => undefined);
+    });
     await new Promise<void>((r) => held.listen(0, '127.0.0.1', r));
     const port = (held.address() as { port: number }).port;
     const escaped: unknown[] = [];
@@ -176,9 +194,9 @@ describe('EventSocket', () => {
     try {
       const s = new EventSocket(options(`http://127.0.0.1:${port}`));
       s.connect();
-      await new Promise((r) => setTimeout(r, 150)); // the handshake is under way
+      await until(() => accepted > 0); // the handshake is under way
       s.close();
-      await new Promise((r) => setTimeout(r, 150)); // the error, if there is one, fires here
+      await settle(); // the error, if there is one, fires here
       expect(escaped).toEqual([]);
     } finally {
       process.off('uncaughtException', onUncaught);
@@ -187,7 +205,11 @@ describe('EventSocket', () => {
   });
 
   it('a token change while connecting raises nothing either', async () => {
-    const held = createTcpServer((c) => c.on('error', () => undefined));
+    let accepted = 0;
+    const held = createTcpServer((c) => {
+      accepted += 1;
+      c.on('error', () => undefined);
+    });
     await new Promise<void>((r) => held.listen(0, '127.0.0.1', r));
     const port = (held.address() as { port: number }).port;
     const escaped: unknown[] = [];
@@ -206,9 +228,9 @@ describe('EventSocket', () => {
       const s = new EventSocket(o);
       sockets.push(s);
       s.connect();
-      await new Promise((r) => setTimeout(r, 150));
+      await until(() => accepted > 0);
       refresh('tok-2'); // reconnectNow() drops the half-open socket
-      await new Promise((r) => setTimeout(r, 150));
+      await settle();
       expect(escaped).toEqual([]);
     } finally {
       process.off('uncaughtException', onUncaught);

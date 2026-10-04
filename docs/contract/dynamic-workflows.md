@@ -117,7 +117,7 @@ express the same computation in the triad:
 
 | deep-research (JS) | escurel idiom | mechanism (existing unless noted) |
 |---|---|---|
-| the workflow script (`export const meta`, JS body) | a **workflow skill** — markdown plan + declarative frontmatter | a `type: skill, kind: workflow` page; steered by editing it |
+| the workflow script (`export const meta`, JS body) | a **workflow skill** — markdown plan + declarative frontmatter | a `kind: skill, kind: workflow` page; steered by editing it |
 | `args` (the invocation input) | a **`capture_event`** that starts a run | `capture_event` / inbox |
 | `agent(prompt, {schema})` | one **harness run** packaged from a step **event** | `Trigger` → `package` → `Harness::run` → `reconcile` |
 | calling a subagent | firing the **signed webhook** per step event | `POST /trigger` + HMAC (ADR-0003) |
@@ -150,7 +150,7 @@ a *new* frontmatter knob (§6), not an existing one.
 
 ```yaml
 ---
-type: skill
+kind: skill
 kind: workflow                 # NEW backend kind; markdown-file-backed
 id: deep-research
 description: Fan-out web search, adversarially verify claims, synthesize a

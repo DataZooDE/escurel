@@ -1,6 +1,10 @@
 ---
-type: skill
+kind: skill
 id: supplier-risk-analysis
+title: Supplier risk analysis
+folder: purchasing/risk
+role: record
+tags: [risk, analysis]
 description: The persisted result of one supplier-risk run - what was found about a supplier, the orders it puts at risk, how much, and what to do about it.
 autonomy: review
 required_frontmatter: [supplier, risk_level, risk_score, orders_affected, net_value_at_risk, currency]

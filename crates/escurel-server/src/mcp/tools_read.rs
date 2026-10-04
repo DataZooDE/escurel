@@ -6,6 +6,7 @@
 
 use super::backend_view::BackendView;
 use super::*;
+use escurel_index::backend::rows::{instance_page_id, split_instance_page_id};
 
 // --- per-tool handlers -----------------------------------------
 
@@ -41,100 +42,153 @@ pub(super) async fn tool_list_skills(
     let resp = ListSkillsResponse {
         skills: skills
             .into_iter()
-            .map(|s| TypesSkill {
-                id: s.id,
-                description: s.description,
-                required_frontmatter: s.required_frontmatter,
-                optional_frontmatter: s.optional_frontmatter,
-                is_event_typed: s.is_event_typed,
-                visibility: match s.visibility {
-                    Visibility::Public => "public".to_string(),
-                    Visibility::Owner => "owner".to_string(),
-                },
-                owner_field: s.owner_field,
-                // Admin-only. `None` is omitted from the wire, so a
-                // non-admin row is byte-identical to one for a skill that
-                // declares no block at all — the redaction is not an
-                // existence oracle either.
-                acl: s.acl.filter(|_| is_admin).map(|a| TypesSkillAcl {
-                    read: a.read,
-                    create: a.create,
-                    update: a.update,
-                    delete: a.delete,
-                }),
-                backend: TypesSkillBackend {
-                    kind: s.backend.kind.as_str().to_string(),
-                },
-                capabilities: {
-                    let c = Capabilities::for_kind(s.backend.kind);
-                    TypesSkillCapabilities {
-                        writable: c.writable,
-                        granularity: c.granularity.as_str().to_string(),
-                        search: c.search.as_str().to_string(),
-                        supports_crdt: c.supports_crdt,
-                    }
-                },
-                layer: s.layer.unwrap_or_else(|| "overlay".to_owned()),
-                shadows: s.shadows,
-                // `None` — absent or unrecognised — stays absent on the wire.
-                // It must not be defaulted to a policy here: the only value a
-                // consumer may act on permissively is an explicit `auto`.
-                autonomy: s.autonomy.map(|a| a.as_str().to_owned()),
-                summary: s.summary,
-                harness: s.harness,
-                actions: s.actions,
-                cascade: s.cascade.map(|c| escurel_types::SkillCascade {
-                    target: c.target,
-                    max_depth: c.max_depth,
-                }),
-                // Empty for every skill that declares no `params:`, and an
-                // empty vec is omitted from the wire — so those rows stay
-                // byte-identical to what they were before CR-7.
-                params: s
-                    .params
-                    .into_iter()
-                    .map(|p| TypesSkillParam {
-                        name: p.name,
-                        kind: p.kind.as_str().to_owned(),
-                        required: p.required,
-                        label: p.label,
-                        description: p.description,
-                    })
-                    .collect(),
-                // Same shape, same omission rule, for the INSTANCE schema
-                // (#508): a client builds an instance form from this exactly
-                // as it builds a run form from `params` above.
-                fields: s
-                    .fields
-                    .into_iter()
-                    .map(|f| TypesSkillField {
-                        name: f.name,
-                        kind: f.kind.as_str().to_owned(),
-                        required: f.required,
-                        values: f.values,
-                        target_skill: f.target_skill,
-                        min: f.min,
-                        max: f.max,
-                        label: f.label,
-                        description: f.description,
-                        render: f.render,
-                    })
-                    .collect(),
-                // The declared instance-body layout (P3-5): verbatim, in
-                // the author's order, omitted when undeclared.
-                blocks: s
-                    .blocks
-                    .into_iter()
-                    .map(|b| escurel_types::SkillBlock {
-                        anchor: b.anchor,
-                        title: b.title,
-                        kind: b.kind,
-                    })
-                    .collect(),
-            })
+            .map(|s| skill_to_wire(s, is_admin))
             .collect(),
     };
     to_value(resp)
+}
+
+/// What a skill's backend tells an agent: for a `rows` skill the key, what it may filter / search by
+/// and what a `write_back` draft may change, each column under the field name the rows show.
+fn backend_to_wire(b: &escurel_index::backend::BackendBinding) -> TypesSkillBackend {
+    let mut out = TypesSkillBackend {
+        kind: b.kind.as_str().to_string(),
+        ..TypesSkillBackend::default()
+    };
+    if b.rows.is_none() && b.kind == escurel_index::backend::BackendKind::SqlView {
+        out.instances = Some("view".to_owned());
+    }
+    let Some(rows) = b.rows.as_ref() else {
+        return out;
+    };
+    let project = b
+        .sql_view
+        .as_ref()
+        .map(|v| &v.project)
+        .or_else(|| b.remote.as_ref().map(|r| &r.project));
+    let field_of = |col: &String| TypesBackendField {
+        field: project
+            .and_then(|p| p.get(col))
+            .cloned()
+            .unwrap_or_else(|| col.clone()),
+        column: col.clone(),
+    };
+    out.instances = Some("rows".to_owned());
+    out.key = rows.key.clone();
+    out.filterable = rows.filterable.iter().map(field_of).collect();
+    out.searchable = rows.searchable.iter().map(field_of).collect();
+    out.writable_columns = rows.writable_columns.iter().map(field_of).collect();
+    if !rows.writable_columns.is_empty() {
+        out.writable_via = Some("write_back".to_owned());
+    }
+    out.linked = Some(rows.linked);
+    out
+}
+
+/// One skill row on the wire (`list_skills`). Pure: every redaction is decided here from the row and
+/// the caller's role. `acl` is admin-only, so a non-admin row is byte-identical to one for a skill that
+/// declares no block at all: the redaction is not an existence oracle either.
+fn skill_to_wire(s: escurel_index::SkillInfo, is_admin: bool) -> TypesSkill {
+    TypesSkill {
+        id: s.id,
+        description: s.description,
+        required_frontmatter: s.required_frontmatter,
+        optional_frontmatter: s.optional_frontmatter,
+        is_event_typed: s.is_event_typed,
+        visibility: match s.visibility {
+            Visibility::Public => "public".to_string(),
+            Visibility::Owner => "owner".to_string(),
+        },
+        owner_field: s.owner_field,
+        // Admin-only. `None` is omitted from the wire, so a
+        // non-admin row is byte-identical to one for a skill that
+        // declares no block at all — the redaction is not an
+        // existence oracle either.
+        acl: s.acl.filter(|_| is_admin).map(|a| TypesSkillAcl {
+            read: a.read,
+            create: a.create,
+            update: a.update,
+            delete: a.delete,
+        }),
+        backend: backend_to_wire(&s.backend),
+        capabilities: {
+            let c = Capabilities::for_kind(s.backend.kind);
+            TypesSkillCapabilities {
+                writable: c.writable,
+                granularity: c.granularity.as_str().to_string(),
+                search: c.search.as_str().to_string(),
+                supports_crdt: c.supports_crdt,
+            }
+        },
+        layer: s.layer.unwrap_or_else(|| "overlay".to_owned()),
+        shadows: s.shadows,
+        // `None` — absent or unrecognised — stays absent on the wire.
+        // It must not be defaulted to a policy here: the only value a
+        // consumer may act on permissively is an explicit `auto`.
+        autonomy: s.autonomy.map(|a| a.as_str().to_owned()),
+        summary: s.summary,
+        harness: s.harness,
+        folder: s.folder,
+        role: s.role,
+        tags: s.tags,
+        title: s.title,
+        resource: s.resource,
+        generated: s.generated,
+        verified: s.verified,
+        status: s.status,
+        stale_after: s.stale_after,
+        sources: s.sources,
+        viewer: s.viewer,
+        actions: s.actions,
+        cascade: s.cascade.map(|c| escurel_types::SkillCascade {
+            target: c.target,
+            max_depth: c.max_depth,
+        }),
+        // Empty for every skill that declares no `params:`, and an
+        // empty vec is omitted from the wire — so those rows stay
+        // byte-identical to what they were before CR-7.
+        params: s
+            .params
+            .into_iter()
+            .map(|p| TypesSkillParam {
+                name: p.name,
+                kind: p.kind.as_str().to_owned(),
+                required: p.required,
+                label: p.label,
+                description: p.description,
+            })
+            .collect(),
+        // Same shape, same omission rule, for the INSTANCE schema
+        // (#508): a client builds an instance form from this exactly
+        // as it builds a run form from `params` above.
+        fields: s
+            .fields
+            .into_iter()
+            .map(|f| TypesSkillField {
+                name: f.name,
+                kind: f.kind.as_str().to_owned(),
+                required: f.required,
+                values: f.values,
+                target_skill: f.target_skill,
+                min: f.min,
+                max: f.max,
+                label: f.label,
+                description: f.description,
+                render: f.render,
+            })
+            .collect(),
+        // The declared instance-body layout (P3-5): verbatim, in
+        // the author's order, omitted when undeclared.
+        blocks: s
+            .blocks
+            .into_iter()
+            .map(|b| escurel_types::SkillBlock {
+                anchor: b.anchor,
+                title: b.title,
+                kind: b.kind,
+            })
+            .collect(),
+    }
 }
 
 #[derive(Deserialize)]
@@ -167,10 +221,27 @@ pub(super) struct ListInstancesArgs {
 
 pub(super) async fn tool_list_instances(
     indexer: &Indexer,
+    egress: &crate::egress::Egress,
     caller: AclCaller<'_>,
     args: Value,
 ) -> Result<Value, JsonRpcError> {
     let a: ListInstancesArgs = parse_args(args, "list_instances")?;
+    // `instances: rows` skills (stage 3): every ROW of the source is an instance, listed lazily by
+    // keyset. Everything below is the stored-page path and is untouched.
+    if let Some(src) = indexer
+        .rows_source(&a.skill_id)
+        .await
+        .map_err(|e| rows_err("list_instances", e))?
+    {
+        return list_rows(indexer, caller, &src, &a).await;
+    }
+    // A REST/MCP `rows` skill (stage 4): the upstream's own listing, paged by its own cursor.
+    if let Some(src) = crate::remote_rows::source(indexer, &a.skill_id)
+        .await
+        .map_err(|e| remote_source_err("list_instances", e))?
+    {
+        return list_remote_rows(indexer, egress, caller, &src, &a).await;
+    }
     let order = match a.order_by.as_deref() {
         Some(s) => match s.to_ascii_lowercase().as_str() {
             "at asc" | "at_asc" => Some(OrderDir::Asc),
@@ -195,9 +266,7 @@ pub(super) async fn tool_list_instances(
         )
         .await
         .map_err(|e| match e {
-            escurel_index::IndexerError::InvalidCursor(msg) => {
-                JsonRpcError::invalid_params(format!("list_instances: cursor: {msg}"))
-            }
+            escurel_index::IndexerError::InvalidCursor(_) => invalid_cursor(),
             e => JsonRpcError::internal(format!("list_instances: {e}")),
         })?;
     // Deterministic ACL filter: drop owner-private instances the caller
@@ -216,6 +285,29 @@ pub(super) async fn tool_list_instances(
                 "frontmatter": i.frontmatter,
                 "at": i.at,
             }));
+        }
+    }
+    // An empty first page for a skill nobody ever declared is the caller's mistake, not "no
+    // instances": answer with the skills there are (the catalogue is public to every caller). A
+    // skill whose instances exist without a skill page still lists them, so this is checked only
+    // when nothing came back.
+    if instances.is_empty() && a.cursor.is_none() {
+        let known = indexer
+            .list_skills()
+            .await
+            .map_err(|e| JsonRpcError::internal(format!("list_instances: {e}")))?;
+        if !known.iter().any(|s| s.id == a.skill_id) {
+            let names: Vec<&str> = known.iter().map(|s| s.id.as_str()).take(30).collect();
+            return Err(JsonRpcError::domain(
+                "unknown_skill",
+                "skill_id",
+                format!(
+                    "no skill `{}`; known skills: {}",
+                    a.skill_id,
+                    names.join(", ")
+                ),
+                Some("`list_skills` is the catalogue; pass one of its `id`s as `skill_id`"),
+            ));
         }
     }
     // `next_cursor` stays PRESENT (null on the last page) for
@@ -257,7 +349,7 @@ pub(super) async fn tool_get_operation(
         .await
         .map_err(|e| JsonRpcError::internal(format!("get_operation acl: {e}")))?
     {
-        Some(e) if e.page.page_type == PageType::Instance => indexer
+        Some(e) if e.page.page_kind == PageKind::Instance => indexer
             .may_read_instance(&caller, &e.page.skill, &e.frontmatter)
             .await
             .map_err(|e| JsonRpcError::internal(format!("get_operation acl: {e}")))?,
@@ -346,6 +438,7 @@ pub(super) struct ResolveArgs {
 
 pub(super) async fn tool_resolve(
     indexer: &Indexer,
+    egress: &crate::egress::Egress,
     caller: AclCaller<'_>,
     args: Value,
 ) -> Result<Value, JsonRpcError> {
@@ -358,7 +451,7 @@ pub(super) async fn tool_resolve(
     // existence / page_id of an owner-private instance the caller cannot
     // read — resolve it to "not found", exactly as `expand` returns null.
     if let Some(p) = &resolved.page
-        && p.page_type == PageType::Instance
+        && p.page_kind == PageKind::Instance
     {
         let readable = match indexer
             .expand(&p.page_id, None, None)
@@ -375,9 +468,65 @@ pub(super) async fn tool_resolve(
             resolved.page = None;
         }
     }
+    // A wikilink to a ROW of an `instances: rows` skill resolves to the row's page id even though no
+    // page is stored for it.
+    if resolved.page.is_none()
+        && let (Some(skill), Some(id)) = (
+            resolved.parsed.skill.as_deref(),
+            resolved.parsed.id.as_deref(),
+        )
+        && let Some(src) = indexer
+            .rows_source(skill)
+            .await
+            .map_err(|e| rows_err("resolve", e))?
+        && let Some(row) = indexer
+            .rows_get(&src, id)
+            .await
+            .map_err(|e| rows_err("resolve", e))?
+        && indexer
+            .may_read_instance(&caller, skill, &Value::Object(row.fields.clone()))
+            .await
+            .map_err(|e| JsonRpcError::internal(format!("resolve acl: {e}")))?
+    {
+        resolved.page = Some(escurel_index::PageRef {
+            page_id: row.page_id,
+            slug: Some(row.id),
+            skill: skill.to_owned(),
+            page_kind: PageKind::Instance,
+        });
+    }
+    // The same for a row of a REMOTE `rows` skill (REST/MCP): resolved against the upstream.
+    if resolved.page.is_none()
+        && let (Some(skill), Some(id)) = (
+            resolved.parsed.skill.as_deref(),
+            resolved.parsed.id.as_deref(),
+        )
+        && let Some(src) = crate::remote_rows::source(indexer, skill)
+            .await
+            .map_err(|e| remote_source_err("resolve", e))?
+        && let Some(row) = crate::remote_rows::get(egress, &src, id)
+            .await
+            .map_err(|e| remote_source_err("resolve", e))?
+        && indexer
+            .may_read_instance(&caller, skill, &Value::Object(row.fields.clone()))
+            .await
+            .map_err(|e| JsonRpcError::internal(format!("resolve acl: {e}")))?
+    {
+        resolved.page = Some(escurel_index::PageRef {
+            page_id: row.page_id,
+            slug: Some(row.id),
+            skill: skill.to_owned(),
+            page_kind: PageKind::Instance,
+        });
+    }
+    Ok(resolved_json(&resolved))
+}
+
+/// `resolve` as the wire answers it: the parsed link, the target page when it exists, and `exists`.
+fn resolved_json(resolved: &escurel_index::ResolvedWikilink) -> Value {
     let exists = resolved.exists();
     let parsed = &resolved.parsed;
-    Ok(json!({
+    json!({
         "parsed": {
             "skill": parsed.skill,
             "id": parsed.id,
@@ -389,10 +538,10 @@ pub(super) async fn tool_resolve(
             "page_id": p.page_id,
             "slug": p.slug,
             "skill": p.skill,
-            "page_type": page_type_str(p.page_type),
+            "page_kind": page_kind_str(p.page_kind),
         })),
         "exists": exists,
-    }))
+    })
 }
 
 #[derive(Deserialize)]
@@ -423,6 +572,63 @@ pub(super) async fn tool_expand(
     caller: AclCaller<'_>,
     args: Value,
 ) -> Result<Value, JsonRpcError> {
+    // A row of an `instances: rows` skill (stage 3) has no stored page of its own: the stored page
+    // at its id, if any, is the row's LINKED MARKDOWN, and the two read as ONE instance.
+    // (`include_schema` is read from `args` by the two row expanders.)
+    let a: ExpandArgs = parse_args(args.clone(), "expand")?;
+    if let Some((skill, id)) = split_instance_page_id(&a.page_id)
+        && let Some(src) = indexer
+            .rows_source(skill)
+            .await
+            .map_err(|e| rows_err("expand", e))?
+    {
+        return expand_row(state, indexer, caller, args, &src, id).await;
+    }
+    if let Some((skill, id)) = split_instance_page_id(&a.page_id)
+        && let Some(src) = crate::remote_rows::source(indexer, skill)
+            .await
+            .map_err(|e| remote_source_err("expand", e))?
+    {
+        return expand_remote_row(state, indexer, caller, args, &src, id).await;
+    }
+    tool_expand_stored(state, indexer, caller, args).await
+}
+
+/// The stored page as `expand` answers it: identity, frontmatter, body, blocks and outbound links.
+/// Pure; the hash, version, shadow and backend enrichments are added by the caller.
+fn expanded_page_json(e: &escurel_index::ExpandedPage) -> Value {
+    json!({
+        "page": {
+            "page_id": e.page.page_id,
+            "slug": e.page.slug,
+            "skill": e.page.skill,
+            "page_kind": page_kind_str(e.page.page_kind),
+            // #357 (CR-6): the verified principal behind the page's
+            // most recent write. `null` for a page last written
+            // before the gateway recorded one, and on an `as_of`
+            // read (a CRDT snapshot carries bytes, not an author) —
+            // never a guess.
+            "last_written_by": e.last_written_by,
+        },
+        "frontmatter": e.frontmatter,
+        "body": e.body,
+        "blocks": e.blocks.iter().map(|b| json!({
+            "anchor": b.anchor,
+            "content": b.content,
+        })).collect::<Vec<_>>(),
+        "wikilinks_out": e.wikilinks_out.iter().map(|w| json!({
+            "skill": w.skill, "id": w.id, "anchor": w.anchor,
+            "version": w.version, "alias": w.alias,
+        })).collect::<Vec<_>>(),
+    })
+}
+
+async fn tool_expand_stored(
+    state: &crate::server::AppState,
+    indexer: &Indexer,
+    caller: AclCaller<'_>,
+    args: Value,
+) -> Result<Value, JsonRpcError> {
     let a: ExpandArgs = parse_args(args, "expand")?;
     let out = indexer
         .expand(&a.page_id, a.as_of.as_deref(), a.scenario.as_deref())
@@ -432,42 +638,21 @@ pub(super) async fn tool_expand(
     // reads as absent (null) — same shape as a missing page, so existence
     // is not leaked. Skill pages are the public catalogue, never gated.
     if let Some(e) = &out
-        && e.page.page_type == PageType::Instance
+        && e.page.page_kind == PageKind::Instance
         && !indexer
             .may_read_instance(&caller, &e.page.skill, &e.frontmatter)
             .await
             .map_err(|err| JsonRpcError::internal(format!("expand acl: {err}")))?
     {
-        return Ok(json!({ "page": Value::Null }));
+        // Byte-identical to a missing page, hint included: a denied read must not be tellable from an
+        // absent one.
+        return Ok(json!({ "page": Value::Null, "hint": missing_page_hint(&a.page_id) }));
     }
     match out {
-        None => Ok(json!({ "page": Value::Null })),
+        None => Ok(json!({ "page": Value::Null, "hint": missing_page_hint(&a.page_id) })),
         Some(e) => {
             let e_page_id = e.page.page_id.clone();
-            let mut page = json!({
-                "page": {
-                    "page_id": e.page.page_id,
-                    "slug": e.page.slug,
-                    "skill": e.page.skill,
-                    "page_type": page_type_str(e.page.page_type),
-                    // #357 (CR-6): the verified principal behind the page's
-                    // most recent write. `null` for a page last written
-                    // before the gateway recorded one, and on an `as_of`
-                    // read (a CRDT snapshot carries bytes, not an author) —
-                    // never a guess.
-                    "last_written_by": e.last_written_by,
-                },
-                "frontmatter": e.frontmatter,
-                "body": e.body,
-                "blocks": e.blocks.iter().map(|b| json!({
-                    "anchor": b.anchor,
-                    "content": b.content,
-                })).collect::<Vec<_>>(),
-                "wikilinks_out": e.wikilinks_out.iter().map(|w| json!({
-                    "skill": w.skill, "id": w.id, "anchor": w.anchor,
-                    "version": w.version, "alias": w.alias,
-                })).collect::<Vec<_>>(),
-            });
+            let mut page = expanded_page_json(&e);
             // The read half of the approve loop (#354/heron#30): publish
             // the hash of the STORED markdown bytes — exactly the value
             // `update_page`'s `base_sha256` guard compares against — so a
@@ -503,7 +688,7 @@ pub(super) async fn tool_expand(
             // the same drift-visibility discipline as the sql_view `source`
             // namespace: the overlay wins for display, the base value stays
             // visible, never silently masked.
-            if e.page.page_type == PageType::Skill
+            if e.page.page_kind == PageKind::Skill
                 && !e_page_id.starts_with(escurel_index::pack::RESERVED_BASE_PREFIX)
                 && let Some(slug) = e.page.slug.as_deref()
                 && let Some((base_page_id, pin, base_fm)) = indexer
@@ -528,6 +713,9 @@ pub(super) async fn tool_expand(
             if view == BackendView::SqlView
                 && let Some(proj) = sql_view_projection(indexer, &e).await
             {
+                if proj["issue"]["code"] == "source_unavailable" {
+                    state.metrics.inc_source_unavailable("sql_view");
+                }
                 page["backend_projection"] = proj;
             }
             // Document overlay: bound the chunks returned (REQ-DOC-05) — never
@@ -562,6 +750,7 @@ pub(super) async fn tool_expand(
             if view == BackendView::RemoteProxy {
                 page["backend_projection"] = crate::remote_backend::fetch_projection(
                     indexer,
+                    &state.egress,
                     &e.page.skill,
                     e.page.slug.as_deref(),
                 )
@@ -604,7 +793,7 @@ pub(super) async fn resolve_readable_blob(
     let Some(e) = out else {
         return Ok(None);
     };
-    if e.page.page_type == PageType::Instance
+    if e.page.page_kind == PageKind::Instance
         && !indexer
             .may_read_instance(caller, &e.page.skill, &e.frontmatter)
             .await
@@ -774,6 +963,376 @@ pub(super) async fn sql_view_projection(
     }))
 }
 
+/// The refusal an agent gets for a bad cursor: one wording everywhere, with the way out.
+fn invalid_cursor() -> JsonRpcError {
+    JsonRpcError::domain(
+        "invalid_cursor",
+        "cursor",
+        "cursor invalid or expired; restart without `cursor`",
+        Some("repeat the call without `cursor` to start from the first page"),
+    )
+}
+
+/// A failure to set up a REST/MCP `rows` source: an endpoint nobody registered is something an admin
+/// fixes, and an agent must be told to ask for exactly that (it used to be `-32603`).
+fn remote_source_err(ctx: &str, e: String) -> JsonRpcError {
+    if e.contains("is not registered") {
+        JsonRpcError::domain(
+            "endpoint_not_registered",
+            "backend.endpoint",
+            e,
+            Some("ask an admin to `register_endpoint` for this skill's backend, then retry"),
+        )
+    } else {
+        JsonRpcError::internal(format!("{ctx}: {e}"))
+    }
+}
+
+/// What to tell an agent when `expand` finds no page: a bare id is the usual mistake.
+fn missing_page_hint(page_id: &str) -> String {
+    if page_id.starts_with("markdown/") {
+        // The SAME words for "absent" and "not yours": no id echoed, nothing that tells them apart.
+        "no such page, or you may not read it; `list_instances` (per skill) or `search` find the \
+         ids that exist"
+            .to_owned()
+    } else {
+        format!(
+            "`{page_id}` is not a page id: a page id is the full path, e.g. \
+             `markdown/instances/<skill>/<id>.md` or `markdown/skills/<skill>.md`; use `resolve` \
+             with `[[<skill>::<id>]]`, or `list_instances`, to find it"
+        )
+    }
+}
+
+/// A typed error for a `rows` read: a bad cursor or a non-filterable field is the caller's mistake
+/// (a worded refusal an agent can act on); anything else is ours.
+fn rows_err(ctx: &str, e: escurel_index::SqlViewError) -> JsonRpcError {
+    match e {
+        escurel_index::SqlViewError::InvalidBinding(m) if m.contains("filterable") => {
+            JsonRpcError::domain(
+                "field_not_filterable",
+                "frontmatter_key",
+                m,
+                Some("`list_skills` shows each skill's `backend.filterable`"),
+            )
+        }
+        escurel_index::SqlViewError::InvalidBinding(m) if m.contains("cursor") => invalid_cursor(),
+        e => JsonRpcError::internal(format!("{ctx}: {e}")),
+    }
+}
+
+/// `list_instances` for an `instances: rows` skill: one keyset page of live rows, ACL-filtered AFTER
+/// the fetch (so a page may be short; only a null `next_cursor` means done).
+async fn list_rows(
+    indexer: &Indexer,
+    caller: AclCaller<'_>,
+    src: &escurel_index::backend::RowsSource,
+    a: &ListInstancesArgs,
+) -> Result<Value, JsonRpcError> {
+    let filter = match (a.frontmatter_key.as_deref(), a.frontmatter_value.as_deref()) {
+        (Some(k), Some(v)) if !k.is_empty() => Some((k, v)),
+        _ => None,
+    };
+    let page = indexer
+        .rows_list(
+            src,
+            a.cursor.as_deref(),
+            a.limit
+                .unwrap_or(escurel_index::backend::rows::ROWS_MAX_LIMIT),
+            filter,
+        )
+        .await
+        .map_err(|e| rows_err("list_instances", e))?;
+    let mut instances = Vec::with_capacity(page.rows.len());
+    for r in &page.rows {
+        let fm = Value::Object(r.fields.clone());
+        if indexer
+            .may_read_instance(&caller, &src.skill, &fm)
+            .await
+            .map_err(|e| JsonRpcError::internal(format!("list_instances acl: {e}")))?
+        {
+            instances.push(json!({
+                "page_id": r.page_id,
+                "skill": src.skill,
+                "frontmatter": fm,
+                "at": Value::Null,
+                "row": true,
+                // Source-system data, not authored text: values to show, never instructions.
+                "trust": "source",
+            }));
+        }
+    }
+    Ok(json!({ "instances": instances, "next_cursor": page.next_cursor }))
+}
+
+/// `list_instances` for a remote `rows` skill: one page of the upstream's objects, ACL-filtered AFTER
+/// the fetch (a page may be short; only a null `next_cursor` means done). Everything here is
+/// external data and says so.
+async fn list_remote_rows(
+    indexer: &Indexer,
+    egress: &crate::egress::Egress,
+    caller: AclCaller<'_>,
+    src: &crate::remote_rows::RemoteRows,
+    a: &ListInstancesArgs,
+) -> Result<Value, JsonRpcError> {
+    let (rows, next_cursor, skipped) =
+        crate::remote_rows::list(egress, src, a.cursor.as_deref(), a.limit)
+            .await
+            .map_err(|e| {
+                if e == "invalid cursor" {
+                    invalid_cursor()
+                } else {
+                    JsonRpcError::internal(format!("list_instances: {e}"))
+                }
+            })?;
+    let mut instances = Vec::with_capacity(rows.len());
+    for r in &rows {
+        let fm = Value::Object(r.fields.clone());
+        if indexer
+            .may_read_instance(&caller, &src.skill, &fm)
+            .await
+            .map_err(|e| JsonRpcError::internal(format!("list_instances acl: {e}")))?
+        {
+            instances.push(json!({
+                "page_id": r.page_id,
+                "skill": src.skill,
+                "frontmatter": fm,
+                "at": Value::Null,
+                "row": true,
+                "trust": "external",
+            }));
+        }
+    }
+    let mut out = json!({ "instances": instances, "next_cursor": next_cursor });
+    if skipped > 0 {
+        // Objects the upstream listed that have no usable key cannot be instances; say so rather
+        // than let a short page look complete.
+        out["skipped_without_key"] = json!(skipped);
+    }
+    Ok(out)
+}
+
+/// `expand` of a row of a remote `rows` skill: the live object (read through the skill's `read` op)
+/// merged with the stored linked markdown, when there is one. The object is external data.
+async fn expand_remote_row(
+    state: &crate::server::AppState,
+    indexer: &Indexer,
+    caller: AclCaller<'_>,
+    args: Value,
+    src: &crate::remote_rows::RemoteRows,
+    id: &str,
+) -> Result<Value, JsonRpcError> {
+    let page_id = instance_page_id(&src.skill, id);
+    let args_include_schema = args["include_schema"].as_bool().unwrap_or(false);
+    let stored = tool_expand_stored(state, indexer, caller, args).await?;
+    let has_stored = !stored["page"].is_null();
+    let fetched_at = escurel_index::now_rfc3339_micros();
+    let linked = |exists: bool, orphan: bool| json!({ "enabled": src.cfg.linked, "exists": exists, "orphan": orphan });
+    let kind = src.remote.kind.as_str();
+    let row = match crate::remote_rows::get(&state.egress, src, id).await {
+        Ok(r) => r,
+        Err(e) => {
+            // The upstream cannot be read right now. The page still opens: the linked notes (if any)
+            // come back, or an empty shell when there are none, with the failure named in words. Never
+            // a fabricated row, and nothing to propose a change against (no etag, no writable columns).
+            // The detail (which may carry the upstream's own words) goes to the log for operators; the
+            // page only says the source could not be reached, so upstream text never becomes page data.
+            tracing::warn!(skill = %src.skill, row = id, error = %e, "remote row could not be read");
+            state.metrics.inc_source_unavailable(kind);
+            let mut out = if has_stored {
+                stored
+            } else {
+                row_shell(&page_id, id, &src.skill)
+            };
+            out["backend_projection"] = json!({
+                "kind": kind, "instances": "rows", "read_only": true, "direct_write": false, "trust": "external",
+                "fetched_at": fetched_at, "rows": [], "source": {},
+                "linked": linked(has_stored, false),
+                "issue": { "code": "source_unavailable",
+                    "message": "the source could not be reached right now; showing what is known" },
+            });
+            return Ok(out);
+        }
+    };
+    let Some(row) = row else {
+        if !has_stored {
+            return Ok(row_hidden(&page_id));
+        }
+        let mut out = stored;
+        out["backend_projection"] = json!({
+            "kind": kind, "instances": "rows", "read_only": true, "direct_write": false, "trust": "external",
+            "fetched_at": fetched_at, "rows": [], "source": {}, "linked": linked(true, true),
+            "issue": { "code": "source_missing",
+                "message": "the upstream has no object with this key any more; the linked notes are kept" },
+        });
+        return Ok(out);
+    };
+    let fields = Value::Object(row.fields.clone());
+    if !indexer
+        .may_read_instance(&caller, &src.skill, &fields)
+        .await
+        .map_err(|e| JsonRpcError::internal(format!("expand acl: {e}")))?
+    {
+        return Ok(row_hidden(&page_id));
+    }
+    let mut projection = json!({
+        "kind": kind, "instances": "rows", "read_only": true, "direct_write": false, "trust": "external",
+        "fetched_at": fetched_at, "source": fields,
+        // The source's own fields as they appear in `frontmatter`: read-only there. Send only YOUR
+        // fields (the linked notes') to `update_page`; change these through a `write_back` draft.
+        "read_only_fields": row.fields.keys().collect::<Vec<_>>(),
+        "truncated": false, "linked": linked(has_stored && src.cfg.linked, false),
+        // What a reviewer saw: a write-back proposal names it as its `base_etag`.
+        "etag": crate::write_back::etag_of(&row.fields),
+    });
+    if args_include_schema {
+        projection["rows"] = json!([fields.clone()]);
+    }
+    // The columns a person may propose to change upstream (only when the skill can write at all).
+    if src.remote.write.is_some() && !src.cfg.writable_columns.is_empty() {
+        projection["writable_columns"] = json!(src.cfg.writable_columns);
+        // `read_only` means "not writable directly": the writable columns change only through a
+        // human-gated `write_back` draft. Said in the data so it does not read as a contradiction.
+        projection["writable_via"] = json!("write_back");
+    }
+    Ok(compose_row_page(
+        stored,
+        has_stored && src.cfg.linked,
+        (&page_id, id, &src.skill),
+        &fields,
+        projection,
+    ))
+}
+
+/// ONE instance from a live row and its linked notes: the companion's own page when it is used (else
+/// an identity-only shell), with the row's projected columns written over its frontmatter (the source
+/// of truth for those fields: the write guard keeps the companion from carrying them), and the
+/// projection attached. Shared by SQL rows and remote rows.
+fn compose_row_page(
+    stored: Value,
+    use_stored: bool,
+    (page_id, id, skill): (&str, &str, &str),
+    fields: &Value,
+    projection: Value,
+) -> Value {
+    let mut out = if use_stored {
+        stored
+    } else {
+        row_shell(page_id, id, skill)
+    };
+    if let (Some(fm), Value::Object(cols)) = (out["frontmatter"].as_object_mut(), fields) {
+        for (k, v) in cols {
+            fm.insert(k.clone(), v.clone());
+        }
+    }
+    out["backend_projection"] = projection;
+    out
+}
+
+/// The answer for a row the caller may not read, or that is not there: the same `null` page and hint
+/// either way, so the answer is not an existence oracle.
+fn row_hidden(page_id: &str) -> Value {
+    json!({ "page": Value::Null, "hint": missing_page_hint(page_id) })
+}
+
+/// The page of a row that has no stored notes: identity only, no columns.
+fn row_shell(page_id: &str, id: &str, skill: &str) -> Value {
+    json!({
+        "page": {
+            "page_id": page_id, "slug": id, "skill": skill,
+            "page_kind": "instance", "last_written_by": Value::Null,
+        },
+        "frontmatter": {}, "body": "", "blocks": [], "wikilinks_out": [],
+    })
+}
+
+/// `expand` of a row page: the live row (typed fields + a bounded read-only projection) merged with
+/// the stored linked markdown, when there is one.
+async fn expand_row(
+    state: &crate::server::AppState,
+    indexer: &Indexer,
+    caller: AclCaller<'_>,
+    args: Value,
+    src: &escurel_index::backend::RowsSource,
+    id: &str,
+) -> Result<Value, JsonRpcError> {
+    let page_id = instance_page_id(&src.skill, id);
+    let include_schema = args["include_schema"].as_bool().unwrap_or(false);
+    let stored = tool_expand_stored(state, indexer, caller, args).await?;
+    let has_stored = !stored["page"].is_null();
+    let row = indexer
+        .rows_get(src, id)
+        .await
+        .map_err(|e| rows_err("expand", e))?;
+    let fetched_at = escurel_index::now_rfc3339_micros();
+    let linked = |exists: bool, orphan: bool| json!({ "enabled": src.cfg.linked, "exists": exists, "orphan": orphan });
+
+    let Some(row) = row else {
+        // The row is gone from the source. The companion, if any, is KEPT and flagged: notes must
+        // not vanish with the row.
+        if !has_stored {
+            return Ok(row_hidden(&page_id));
+        }
+        let mut out = stored;
+        out["backend_projection"] = json!({
+            "view": src.view, "instances": "rows", "read_only": true, "direct_write": false, "trust": "source",
+            "fetched_at": fetched_at, "rows": [], "source": {}, "truncated": false,
+            "linked": linked(true, true),
+            "issue": { "code": "source_missing",
+                "message": "the source relation has no row with this key any more; \
+                            the linked notes are kept" },
+        });
+        return Ok(out);
+    };
+
+    let fields = Value::Object(row.fields.clone());
+    if !indexer
+        .may_read_instance(&caller, &src.skill, &fields)
+        .await
+        .map_err(|e| JsonRpcError::internal(format!("expand acl: {e}")))?
+    {
+        return Ok(row_hidden(&page_id));
+    }
+    let mut projection = json!({
+        "view": src.view, "instances": "rows", "read_only": true, "direct_write": false, "trust": "source",
+        "fetched_at": fetched_at, "source": fields,
+        // The source's own fields as they appear in `frontmatter`: read-only there. Send only YOUR
+        // fields (the linked notes') to `update_page`; change these through a `write_back` draft.
+        "read_only_fields": row.fields.keys().collect::<Vec<_>>(),
+        "truncated": false,
+        "linked": linked(has_stored && src.cfg.linked, false),
+    });
+    if include_schema {
+        // The DISCOVERED schema (DuckDB `DESCRIBE`; the skill's own `fields:` override kind and label)
+        // and the raw source row, columns as the source names them.
+        projection["rows"] = json!([row.columns]);
+        projection["columns"] = json!(
+            row.types
+                .iter()
+                .map(|(n, t)| json!({
+                    "name": n, "type": t,
+                    "kind": escurel_index::backend::rows::field_kind_for(t),
+                }))
+                .collect::<Vec<_>>()
+        );
+    }
+    if escurel_index::Indexer::rows_source_is_writable(src) {
+        // What a reviewer saw: a write-back proposal names it as its `base_etag`, and the columns
+        // that may be proposed. `read_only` means "not writable DIRECTLY": these change only through a
+        // human-gated `write_back` draft.
+        projection["etag"] = json!(crate::write_back::etag_of(&row.fields));
+        projection["writable_columns"] = json!(src.cfg.writable_columns);
+        projection["writable_via"] = json!("write_back");
+    }
+    Ok(compose_row_page(
+        stored,
+        has_stored && src.cfg.linked,
+        (&page_id, id, &src.skill),
+        &fields,
+        projection,
+    ))
+}
+
 #[derive(Deserialize)]
 pub(super) struct NeighboursArgs {
     page_id: String,
@@ -825,16 +1384,26 @@ pub(super) async fn tool_neighbours(
         } else {
             &e.src_page
         };
-        let readable = match indexer
-            .expand(neighbour, None, None)
-            .await
-            .map_err(|err| JsonRpcError::internal(format!("neighbours acl: {err}")))?
-        {
-            Some(ex) if ex.page.page_type == PageType::Instance => indexer
-                .may_read_instance(&caller, &ex.page.skill, &ex.frontmatter)
+        // A link into a ROW of an `instances: rows` skill points at a key, not a stored page: the
+        // row's own columns decide who may see it (the same rule as reading the row directly).
+        let row_verdict = if neighbour == &e.dst_page {
+            virtual_row_readable(indexer, &caller, &e.link_skill, &e.dst_page).await?
+        } else {
+            None
+        };
+        let readable = match row_verdict {
+            Some(v) => v,
+            None => match indexer
+                .expand(neighbour, None, None)
                 .await
-                .map_err(|err| JsonRpcError::internal(format!("neighbours acl: {err}")))?,
-            _ => true, // non-instance / absent → not owner-gated
+                .map_err(|err| JsonRpcError::internal(format!("neighbours acl: {err}")))?
+            {
+                Some(ex) if ex.page.page_kind == PageKind::Instance => indexer
+                    .may_read_instance(&caller, &ex.page.skill, &ex.frontmatter)
+                    .await
+                    .map_err(|err| JsonRpcError::internal(format!("neighbours acl: {err}")))?,
+                _ => true, // non-instance / absent → not owner-gated
+            },
         };
         if readable {
             out.push(json!({
@@ -847,6 +1416,32 @@ pub(super) async fn tool_neighbours(
         }
     }
     Ok(json!({ "edges": out }))
+}
+
+/// Whether `caller` may see row `id` of the rows-backed skill `skill`, judged by the row's own columns;
+/// `None` when `skill` is not a rows skill (the caller falls back to the stored-page rule). A row that
+/// is gone from its source gives `Some(true)`: a dangling link names nothing the caller cannot see.
+async fn virtual_row_readable(
+    indexer: &Indexer,
+    caller: &AclCaller<'_>,
+    skill: &str,
+    id: &str,
+) -> Result<Option<bool>, JsonRpcError> {
+    let Ok(Some(src)) = indexer.rows_source(skill).await else {
+        return Ok(None);
+    };
+    let Some(row) = indexer
+        .rows_get(&src, id)
+        .await
+        .map_err(|e| JsonRpcError::internal(format!("neighbours rows: {e}")))?
+    else {
+        return Ok(Some(true));
+    };
+    indexer
+        .may_read_instance(caller, &src.skill, &Value::Object(row.fields))
+        .await
+        .map(Some)
+        .map_err(|e| JsonRpcError::internal(format!("neighbours acl: {e}")))
 }
 
 /// Default hop depth when the caller omits `max_hops`.
@@ -944,7 +1539,7 @@ pub(super) async fn tool_provenance_ancestry(
                     match indexer.expand(pid, None, None).await.map_err(|e| {
                         JsonRpcError::internal(format!("provenance_ancestry acl: {e}"))
                     })? {
-                        Some(ex) if ex.page.page_type == PageType::Instance => indexer
+                        Some(ex) if ex.page.page_kind == PageKind::Instance => indexer
                             .may_read_instance(&caller, &ex.page.skill, &ex.frontmatter)
                             .await
                             .map_err(|e| {
@@ -995,7 +1590,7 @@ pub(super) async fn provenance_page_readable(
         .await
         .map_err(|e| JsonRpcError::internal(format!("provenance acl: {e}")))?
     {
-        Some(ex) if ex.page.page_type == PageType::Instance => indexer
+        Some(ex) if ex.page.page_kind == PageKind::Instance => indexer
             .may_read_instance(caller, &ex.page.skill, &ex.frontmatter)
             .await
             .map_err(|e| JsonRpcError::internal(format!("provenance acl: {e}"))),
@@ -1089,7 +1684,7 @@ pub(super) struct SearchArgs {
     #[serde(default = "default_k")]
     pub(super) k: usize,
     #[serde(default)]
-    pub(super) page_type: Option<String>,
+    pub(super) page_kind: Option<String>,
     #[serde(default, alias = "skill_id")]
     pub(super) skill: Option<String>,
     /// RFC 3339 time-travel cut; blocks born after it are excluded.
@@ -1153,14 +1748,24 @@ pub(crate) async fn tool_search(
     caller: AclCaller<'_>,
     args: Value,
 ) -> Result<Value, JsonRpcError> {
+    // The hard cut renamed the filter. `SearchArgs` ignores unknown keys, so a caller still sending
+    // the removed `page_type` would silently search every page instead of the kind it asked for.
+    if args.get("page_type").is_some() {
+        return Err(JsonRpcError::invalid_params(
+            "search: `page_type` was renamed `page_kind` (skill | instance | any)".to_owned(),
+        ));
+    }
     let a: SearchArgs = parse_args(args, "search")?;
-    let pt = match a.page_type.as_deref() {
+    let pt = match a.page_kind.as_deref() {
+        // Searching WITHIN a skill means its instances: the skill's own page matches its name and
+        // fields and used to come back as a hit (`any` still asks for both).
+        None if a.skill.as_deref().is_some_and(|s| !s.is_empty()) => Some(PageKind::Instance),
         None | Some("any") => None,
-        Some("skill") => Some(PageType::Skill),
-        Some("instance") => Some(PageType::Instance),
+        Some("skill") => Some(PageKind::Skill),
+        Some("instance") => Some(PageKind::Instance),
         Some(other) => {
             return Err(JsonRpcError::invalid_params(format!(
-                "search page_type `{other}`; expected skill|instance|any"
+                "search page_kind `{other}`; expected skill|instance|any"
             )));
         }
     };
@@ -1186,7 +1791,7 @@ pub(crate) async fn tool_search(
     // the constraints.
     let constrained =
         a.as_of.is_some() || a.scenario.is_some() || filter.is_some() || a.page_id.is_some();
-    let sql_lane_enabled = !matches!(pt, Some(PageType::Skill)) && !constrained;
+    let sql_lane_enabled = !matches!(pt, Some(PageKind::Skill)) && !constrained;
     let page_id = a.page_id.as_deref().filter(|s| !s.is_empty());
 
     // Run every variant through both lanes. INV-ACL-FUSION (spike S3):
@@ -1221,6 +1826,16 @@ pub(crate) async fn tool_search(
             if !sql_allowed.is_empty() {
                 lanes.push(sql_allowed);
             }
+            // The ROWS lane: rows of `instances: rows` skills match on their key and `filterable:`
+            // columns. Candidates only, ACL-filtered per row BEFORE fusion like every other lane.
+            let rows = indexer
+                .rows_search_candidates(q, a.skill.as_deref())
+                .await
+                .map_err(|e| JsonRpcError::internal(format!("search rows lane: {e}")))?;
+            let rows_allowed = acl_filter_hits(indexer, &caller, rows).await?;
+            if !rows_allowed.is_empty() {
+                lanes.push(rows_allowed);
+            }
         }
     }
 
@@ -1247,23 +1862,56 @@ pub(crate) async fn tool_search(
     let out: Vec<Value> = final_hits
         .iter()
         .map(|h| {
-            json!({
+            let mut hit = json!({
                 "page_id": h.page_id,
                 "slug": h.slug,
                 "skill": h.skill,
-                "page_type": page_type_str(h.page_type),
+                "page_kind": page_kind_str(h.page_kind),
                 "anchor": h.anchor,
                 "snippet": h.snippet,
                 "score": h.score,
-                "similarity": h.similarity,
                 "frontmatter_excerpt": h.frontmatter_excerpt,
-            })
+            });
+            // A cosine similarity is reported only when one was computed: `0.0` (a row or BM25-only
+            // hit) and `-1.0` (an unembedded query) are "not available", not a measured relevance.
+            if h.similarity.is_finite() && h.similarity > 0.0 {
+                hit["similarity"] = json!(h.similarity);
+            }
+            hit
         })
         .collect();
-    Ok(json!({
+    let mut result = json!({
         "hits": out,
         "granularity": granularity.as_str(),
-    }))
+    });
+    // Skills whose rows live in a REST/MCP source are not searched (the source is not ours to scan).
+    // Say so: silent emptiness reads as "no such record".
+    if sql_lane_enabled {
+        let mut unsearched = Vec::new();
+        for skill in indexer
+            .list_skills()
+            .await
+            .map_err(|e| JsonRpcError::internal(format!("search skills: {e}")))?
+        {
+            if a.skill.as_deref().is_some_and(|f| f != skill.id) {
+                continue;
+            }
+            if matches!(
+                crate::remote_rows::source(indexer, &skill.id).await,
+                Ok(Some(_))
+            ) {
+                unsearched.push(skill.id);
+            }
+        }
+        if !unsearched.is_empty() {
+            result["hint"] = json!(format!(
+                "search does not look inside REST/MCP-backed skills ({}): their rows live in the source \
+                 system. Use list_instances on the skill (with its filterable fields) to find rows there.",
+                unsearched.join(", ")
+            ));
+        }
+    }
+    Ok(result)
 }
 
 /// Apply the fail-closed per-instance read ACL to one lane's candidates,
@@ -1277,7 +1925,7 @@ pub(super) async fn acl_filter_hits(
 ) -> Result<Vec<escurel_index::SearchHit>, JsonRpcError> {
     let mut out = Vec::with_capacity(hits.len());
     for h in hits {
-        if h.page_type == PageType::Instance
+        if h.page_kind == PageKind::Instance
             && !indexer
                 .may_read_instance(caller, &h.skill, &h.frontmatter_excerpt)
                 .await
@@ -1360,6 +2008,34 @@ pub(super) fn normalize_query_ref(raw: &str) -> String {
     s.strip_prefix("query::").unwrap_or(s).to_owned()
 }
 
+/// A `query_instance` failure: the caller's mistakes (unknown query, wrong parameters, not allowed)
+/// are worded refusals an agent can act on; only the rest is an internal error.
+fn query_err(e: escurel_index::QueryError) -> JsonRpcError {
+    use escurel_index::QueryError as Q;
+    match &e {
+        Q::NotFound { .. } | Q::TargetNotFound { .. } => JsonRpcError::domain(
+            "query_not_found",
+            "ref",
+            e.to_string(),
+            Some("`search` with `skill: query` finds the authored query pages"),
+        ),
+        Q::WrongType { .. } | Q::TargetNotSqlView { .. } => JsonRpcError::domain(
+            "query_not_runnable",
+            "ref",
+            e.to_string(),
+            Some("`ref` must name a page of the `query` skill whose target is a sql_view instance"),
+        ),
+        Q::MissingParam { .. } | Q::UnknownParam { .. } => JsonRpcError::domain(
+            "invalid_query_params",
+            "params",
+            e.to_string(),
+            Some("`expand` the query page to see the parameters it declares"),
+        ),
+        Q::Forbidden { .. } => JsonRpcError::domain("forbidden", "ref", e.to_string(), None),
+        _ => JsonRpcError::internal(format!("query_instance: {e}")),
+    }
+}
+
 pub(super) async fn tool_query_instance(
     indexer: &Indexer,
     caller: AclCaller<'_>,
@@ -1370,7 +2046,7 @@ pub(super) async fn tool_query_instance(
     let out = indexer
         .query_instance(&query_id, &a.params, a.scenario.as_deref(), &caller)
         .await
-        .map_err(|e| JsonRpcError::internal(format!("query_instance: {e}")))?;
+        .map_err(query_err)?;
     Ok(json!({
         "rows": out.rows,
         "schema": out.schema.iter().map(|c| json!({

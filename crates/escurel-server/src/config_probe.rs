@@ -17,6 +17,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use escurel_embed::ReloadableEmbedder;
+use escurel_index::IndexerHandle;
 use escurel_storage::{Key, LaneStore};
 
 use crate::health::{ReadinessProbe, ReadinessReport};
@@ -26,6 +27,13 @@ pub struct DependencyProbe {
     store: Arc<dyn LaneStore>,
     embedder: Arc<ReloadableEmbedder>,
     tenant: String,
+    /// Where the quarantine state lives (it changes at runtime: `migrate_kind --apply` lifts it).
+    indexer: Option<IndexerHandle>,
+    /// Real (non-zero-vector) embeddings configured: see [`ReadinessReport::semantic_search`].
+    semantic_search: bool,
+    /// Auth is off while the listener is reachable beyond loopback: see
+    /// [`ReadinessReport::unauthenticated_exposed`].
+    unauthenticated_exposed: bool,
 }
 
 impl DependencyProbe {
@@ -39,7 +47,31 @@ impl DependencyProbe {
             store,
             embedder,
             tenant,
+            indexer: None,
+            semantic_search: true,
+            unauthenticated_exposed: false,
         }
+    }
+
+    /// Report the tenant's quarantine state (`/readyz`, `/metrics`) from this indexer.
+    #[must_use]
+    pub fn with_indexer(mut self, indexer: IndexerHandle) -> Self {
+        self.indexer = Some(indexer);
+        self
+    }
+
+    /// Flag a deployment that serves every caller as an admin on a non-loopback listener.
+    #[must_use]
+    pub fn with_unauthenticated_exposed(mut self, exposed: bool) -> Self {
+        self.unauthenticated_exposed = exposed;
+        self
+    }
+
+    /// Say whether real embeddings are configured (false for the zero-vector stand-in).
+    #[must_use]
+    pub fn with_semantic_search(mut self, enabled: bool) -> Self {
+        self.semantic_search = enabled;
+        self
     }
 }
 
@@ -67,6 +99,32 @@ impl ReadinessProbe for DependencyProbe {
             // `EscurelConfig::build`), so by the time this probe can be
             // asked at all, a snapshot has already been adopted.
             index_snapshot: true,
+            quarantined: self
+                .indexer
+                .as_ref()
+                .is_some_and(|h| h.current().legacy_quarantine().is_some()),
+            // The durable marker `migrate_kind` writes before its first rewrite and clears last: a
+            // crash in between leaves it behind, and /readyz + /metrics say so.
+            migration_pending: match Key::new(
+                self.tenant.as_str(),
+                escurel_index::migrate_kind::MIGRATION_MARKER_PATH,
+            ) {
+                Ok(k) => self.store.read(&k).await.is_ok(),
+                Err(_) => false,
+            },
+            semantic_search: self.semantic_search && self.embedder.is_loaded(),
+            skipped_pages: self
+                .indexer
+                .as_ref()
+                .map(|h| {
+                    h.current()
+                        .skipped_pages()
+                        .into_iter()
+                        .map(|(p, why)| format!("{p} ({why})"))
+                        .collect()
+                })
+                .unwrap_or_default(),
+            unauthenticated_exposed: self.unauthenticated_exposed,
         }
     }
 }

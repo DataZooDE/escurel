@@ -1,5 +1,5 @@
 ---
-type: skill
+kind: skill
 id: decision
 description: A committed choice. Motivated by expectations (why), justified by results (evidence), made by a stakeholder. The bridge between the expectation and knowledge graphs and the primary "why" record.
 required_frontmatter: [at, title, decided_by, status]

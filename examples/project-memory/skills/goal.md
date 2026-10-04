@@ -1,5 +1,5 @@
 ---
-type: skill
+kind: skill
 id: goal
 description: A desired outcome a stakeholder wants from the project. Refined by expectations, ranked by priority, judged by success-criteria.
 required_frontmatter: [at, title, held_by, status]

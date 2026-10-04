@@ -1,3 +1,4 @@
+import { checkSkillsCompatible } from './compat';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { McpError } from '@modelcontextprotocol/sdk/types.js';
 import type { ToolInfo } from '../auth/adminState';
@@ -19,6 +20,7 @@ import type {
   EventsPage,
   ExpandRequest,
   ExpandResponse,
+  FetchBlobResponse,
   GetRunToolCallsRequest,
   GetRunToolCallsResponse,
   ListEventsRequest,
@@ -108,10 +110,10 @@ export class EscurelClient {
     } catch (e) {
       throw this.mapError(tool, e);
     }
-    const payload = (result.structuredContent ?? {}) as Record<string, unknown>;
-    if (tool !== 'validate' && (result.isError || payload.ok === false))
-      throw EscurelError.fromPayload(tool, payload);
-    return payload as T;
+    const raw = result as { structuredContent?: unknown; content?: unknown; isError?: unknown };
+    const refused = refusalFor(tool, raw);
+    if (refused) throw EscurelError.fromPayload(tool, refused);
+    return payloadOf(raw) as T;
   }
 
   /**
@@ -165,7 +167,7 @@ export class EscurelClient {
   // ── catalogue + pages ────────────────────────────────────────────
 
   async listSkills(): Promise<Skill[]> {
-    return (await this.call<{ skills: Skill[] }>('list_skills', {})).skills;
+    return checkSkillsCompatible((await this.call<{ skills: Skill[] }>('list_skills', {})).skills);
   }
 
   listInstancesPage(req: ListInstancesRequest): Promise<ListInstancesResponse> {
@@ -185,6 +187,11 @@ export class EscurelClient {
 
   expand(req: ExpandRequest): Promise<ExpandResponse> {
     return this.call('expand', { ...req });
+  }
+
+  /** The ORIGINAL file behind a `document` page (base64), or `blob: null` when absent or hidden. */
+  fetchBlob(pageId: string): Promise<FetchBlobResponse> {
+    return this.call('fetch_blob', { page_id: pageId });
   }
 
   updatePage(req: UpdatePageRequest): Promise<UpdatePageResponse> {
@@ -289,4 +296,71 @@ export class EscurelClient {
   closeSession(req: CloseSessionRequest): Promise<CloseSessionResponse> {
     return this.call('close_session', { ...req });
   }
+}
+
+/**
+ * The payload of a tool result: `structuredContent` (the full result; current gateways put a short
+ * summary in the text block), else, for a LEGACY gateway that sent the payload only as JSON text,
+ * that text parsed.
+ */
+export function payloadOf(result: {
+  structuredContent?: unknown;
+  content?: unknown;
+}): Record<string, unknown> {
+  if (result.structuredContent && typeof result.structuredContent === 'object')
+    return result.structuredContent as Record<string, unknown>;
+  const first = Array.isArray(result.content)
+    ? (result.content[0] as { text?: unknown })
+    : undefined;
+  if (typeof first?.text === 'string') {
+    try {
+      const parsed: unknown = JSON.parse(first.text);
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed))
+        return parsed as Record<string, unknown>;
+    } catch {
+      /* a summary, not JSON */
+    }
+  }
+  return {};
+}
+
+/**
+ * The payload of a REFUSED tool result (`isError`, or `ok: false`), else `undefined`. A refusal is
+ * always an error to the caller, never data: the payload is guaranteed to carry at least one issue,
+ * built from the result's own text when the tool named none, so the person is told why.
+ */
+export function refusalFor(
+  tool: string,
+  result: { structuredContent?: unknown; content?: unknown; isError?: unknown },
+): Record<string, unknown> | undefined {
+  // `validate` reports problems with `ok: false` and is not an error: its caller reads the issues. But
+  // a validate that FAILED (isError, and no issues to read) is an error: returning its empty payload
+  // would read as "no issues" and show a skill clean that was never checked.
+  if (tool === 'validate') {
+    if (result.isError !== true) return undefined;
+    const issues = payloadOf(result).issues;
+    return Array.isArray(issues) && issues.length > 0 ? undefined : refusalOf(result);
+  }
+  return refusalOf(result);
+}
+
+export function refusalOf(result: {
+  structuredContent?: unknown;
+  content?: unknown;
+  isError?: unknown;
+}): Record<string, unknown> | undefined {
+  const payload = payloadOf(result);
+  if (result.isError !== true && payload.ok !== false) return undefined;
+  const issues = Array.isArray(payload.issues) ? payload.issues : [];
+  if (issues.length > 0) return payload;
+  const first = Array.isArray(result.content)
+    ? (result.content[0] as { text?: unknown })
+    : undefined;
+  const message =
+    typeof first?.text === 'string' && first.text ? first.text : 'the tool refused the call';
+  return {
+    ...payload,
+    ok: false,
+    issues: [{ severity: 'error', code: 'tool_error', location: '', message }],
+  };
 }

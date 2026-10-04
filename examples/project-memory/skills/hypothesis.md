@@ -1,5 +1,5 @@
 ---
-type: skill
+kind: skill
 id: hypothesis
 description: A falsifiable claim linking an expected outcome to data. Tests a goal/expectation; supported or refuted by results. Its status is the spine of project memory.
 required_frontmatter: [at, statement, tests, status]

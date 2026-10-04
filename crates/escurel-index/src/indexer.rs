@@ -18,7 +18,7 @@ use escurel_embed::{EmbedError, Embedder, NoopReranker, Reranker};
 use crate::retrieval::RetrievalConfig;
 use crate::schema::Migrator;
 use escurel_md::wikilink::parse_wikilinks;
-use escurel_md::{PageType, parse};
+use escurel_md::{PageKind, parse};
 use escurel_storage::{Key, LaneStore};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
@@ -54,7 +54,7 @@ pub const BLOCKS_DENSE_VEC_DIM: usize = 768;
 pub const DEFAULT_QUERY_TIMEOUT_MS: u64 = 60_000;
 
 pub struct Indexer {
-    store: Arc<dyn LaneStore>,
+    pub(crate) store: Arc<dyn LaneStore>,
     pub(crate) embedder: Arc<dyn Embedder>,
     pub(crate) conn: Mutex<Connection>,
     /// Write-serialization lock. Held across the whole
@@ -137,6 +137,23 @@ pub struct Indexer {
     /// boot step, so they always agree on which physical table is "the"
     /// shared CRDT store.
     crdt_pg_backend: std::sync::OnceLock<CrdtPgBackend>,
+    /// The legacy `type:` pages this tenant booted with (the hard cut), or `None`. While `Some`
+    /// the tenant is QUARANTINED: it must not serve, but it must stay up so an operator can run
+    /// `migrate_kind` against it (a boot that exits would make the migration unrunnable).
+    pub(crate) kind_quarantine: std::sync::RwLock<Option<Vec<String>>>,
+    /// Pages the last boot-time rebuild skipped as unparsable: `(page_id, reason)`.
+    skipped_pages: std::sync::RwLock<Vec<(String, String)>>,
+    /// Serialises `migrate_kind` runs (see there).
+    pub(crate) migration_lock: tokio::sync::Mutex<()>,
+    /// How long one `rows` list/get query may run before it is interrupted (the single DuckDB
+    /// connection is held for its duration, so an unbounded source query stalls every other read).
+    pub(crate) rows_query_timeout: std::time::Duration,
+    /// libpq `connect_timeout` applied to a network database source at ATTACH.
+    pub(crate) sql_connect_timeout: std::time::Duration,
+    /// Resolves a registered credential (a reference or an inline secret) and polices its target; the
+    /// server installs it. `None` (a bare indexer, most tests) uses the stored value as it is.
+    pub(crate) credential_resolver:
+        std::sync::RwLock<Option<crate::credential_resolver::SharedResolver>>,
 }
 
 /// Which physical tables [`Indexer::list_snapshots`] /
@@ -243,6 +260,32 @@ pub enum IndexerError {
          pages. If the corpus is genuinely empty, clear the index explicitly."
     )]
     RefusedEmptyRebuild { existing: i64 },
+
+    /// The tenant still holds pages that use the removed `type: skill|instance` page-kind key. It is
+    /// refused (not served degraded) so a search or a read is never silently incomplete.
+    #[error("{}", crate::migrate_kind::legacy_kind_message(tenant, pages))]
+    LegacyKindPages { tenant: String, pages: Vec<String> },
+
+    /// A rebuild found pages it cannot parse (no frontmatter at byte 0 because of a BOM or CRLF
+    /// line ends, broken YAML, not UTF-8...). Refused BEFORE anything is truncated, with every
+    /// offender named, because a rebuild that finds out half-way leaves an index that is part
+    /// rebuilt and part empty.
+    #[error(
+        "refused: {} page(s) cannot be parsed, so the index was left untouched: {}",
+        pages.len(),
+        pages.iter().take(20).map(|(p, why)| format!("{p} ({why})")).collect::<Vec<_>>().join(", ")
+    )]
+    UnparsablePages { pages: Vec<(String, String)> },
+
+    /// `migrate_kind(apply)` found pages with CRDT ops newer than their newest snapshot. The live
+    /// document would no longer line up with a rewritten snapshot, so nothing is written.
+    #[error(
+        "refusing to migrate: {} page(s) have live CRDT ops newer than their newest snapshot \
+         (close the sessions, or run `escurel admin compact-lanes` and retry): {}",
+        pages.len(),
+        pages.join(", ")
+    )]
+    KindMigrationRefused { pages: Vec<String> },
 
     #[error("duckdb error: {0}")]
     Duckdb(#[from] duckdb::Error),
@@ -379,6 +422,12 @@ impl Indexer {
             events_backend: std::sync::OnceLock::new(),
             drafts_backend: std::sync::OnceLock::new(),
             crdt_pg_backend: std::sync::OnceLock::new(),
+            kind_quarantine: std::sync::RwLock::new(None),
+            skipped_pages: std::sync::RwLock::new(Vec::new()),
+            migration_lock: tokio::sync::Mutex::new(()),
+            rows_query_timeout: crate::backend::rows::ROWS_QUERY_TIMEOUT,
+            sql_connect_timeout: crate::backend::SQL_CONNECT_TIMEOUT,
+            credential_resolver: std::sync::RwLock::new(None),
         })
     }
 
@@ -714,6 +763,37 @@ impl Indexer {
         self
     }
 
+    /// Install the operator's credential resolver (secret references, attach-target policy).
+    pub fn set_credential_resolver(&self, resolver: crate::credential_resolver::SharedResolver) {
+        *self
+            .credential_resolver
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(resolver);
+    }
+
+    pub(crate) fn credential_resolver(&self) -> Option<crate::credential_resolver::SharedResolver> {
+        self.credential_resolver
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    /// Bound one `instances: rows` source query (default [`crate::backend::rows::ROWS_QUERY_TIMEOUT`]).
+    #[must_use]
+    pub fn with_rows_query_timeout(mut self, timeout: std::time::Duration) -> Self {
+        self.rows_query_timeout = timeout;
+        self
+    }
+
+    /// Bound how long attaching a network database source may spend CONNECTING (libpq
+    /// `connect_timeout`; default 5 s). A black-holed host would otherwise hold the single index
+    /// connection for as long as the OS TCP timeout, and DuckDB's interrupt cannot cancel it.
+    #[must_use]
+    pub fn with_sql_connect_timeout(mut self, timeout: std::time::Duration) -> Self {
+        self.sql_connect_timeout = timeout;
+        self
+    }
+
     /// The document contextual-retrieval mode this indexer applies.
     #[must_use]
     pub fn contextualize_mode(&self) -> crate::backend::ContextualizeMode {
@@ -889,9 +969,9 @@ impl Indexer {
 
         let frontmatter_json = mapping_to_json(&parsed.frontmatter.fields)?;
         let body_hash = hash_body(content);
-        let page_type_str = match parsed.frontmatter.page_type {
-            PageType::Skill => "skill",
-            PageType::Instance => "instance",
+        let page_kind_str = match parsed.frontmatter.page_kind {
+            PageKind::Skill => "skill",
+            PageKind::Instance => "instance",
         };
         let skill = parsed
             .frontmatter
@@ -972,7 +1052,7 @@ impl Indexer {
             page_id,
             slug.as_deref(),
             &skill,
-            page_type_str,
+            page_kind_str,
             &frontmatter_json,
             &body_hash,
             at_ts.as_deref(),
@@ -1033,7 +1113,7 @@ impl Indexer {
             &tx,
             page_id,
             &skill,
-            page_type_str,
+            page_kind_str,
             at_ts.as_deref(),
             scenario.as_deref(),
             &[crate::materialise::BlockRow {
@@ -1746,7 +1826,39 @@ impl Indexer {
     /// tuple. Used by the `rebuild` admin tool to stream
     /// `RebuildProgress` chunks to the caller. `done` is `1` on
     /// the first emission and equal to `total` on the last.
-    pub async fn rebuild_with_progress<F>(&self, mut on_progress: F) -> Result<(), IndexerError>
+    pub async fn rebuild_with_progress<F>(&self, on_progress: F) -> Result<(), IndexerError>
+    where
+        F: FnMut(RebuildProgress<'_>),
+    {
+        self.rebuild_inner(on_progress, false).await
+    }
+
+    /// The BOOT-time rebuild (fresh volume, node loss): like [`Self::rebuild`] but a page that
+    /// cannot be parsed is SKIPPED and recorded ([`Self::skipped_pages`], surfaced as the
+    /// `pages_skipped` `/readyz` notice) instead of refusing the whole rebuild. One bad file must not
+    /// take a node offline; it stays in the lane untouched, and the explicit admin `rebuild` still
+    /// refuses and names every offender.
+    ///
+    /// # Errors
+    /// As [`Self::rebuild`], except for unparsable pages.
+    pub async fn rebuild_skipping_unparsable(&self) -> Result<(), IndexerError> {
+        self.rebuild_inner(|_| {}, true).await
+    }
+
+    /// Pages the last tolerant rebuild skipped, as `(page_id, reason)`.
+    #[must_use]
+    pub fn skipped_pages(&self) -> Vec<(String, String)> {
+        self.skipped_pages
+            .read()
+            .map(|g| g.clone())
+            .unwrap_or_default()
+    }
+
+    async fn rebuild_inner<F>(
+        &self,
+        mut on_progress: F,
+        skip_unparsable: bool,
+    ) -> Result<(), IndexerError>
     where
         F: FnMut(RebuildProgress<'_>),
     {
@@ -1757,6 +1869,47 @@ impl Indexer {
         // tooling) rely on this.
         sorted.sort();
         let total = sorted.len() as u64;
+        // The hard cut (`type:` -> `kind:`): a tenant that still holds legacy pages is REFUSED here,
+        // before anything is truncated, with ALL of them listed. Aborting at the first page that
+        // fails to parse (as the loop below would, after the truncate) would take the tenant offline
+        // one page at a time.
+        let legacy = self.legacy_kind_pages_in(&sorted).await?;
+        if !legacy.is_empty() {
+            return Err(IndexerError::LegacyKindPages {
+                tenant: self.tenant.clone(),
+                pages: legacy,
+            });
+        }
+
+        // Non-destructive: prove every page parses BEFORE the truncate below. Archived pages are
+        // kept out of the index, so they are not parsed here either.
+        let mut unparsable: Vec<(String, String)> = Vec::new();
+        for path in &sorted {
+            let key = Key::new(self.tenant.as_str(), path.clone())?;
+            let body = self.store.read(&key).await?;
+            match std::str::from_utf8(&body) {
+                Err(_) => unparsable.push((path.clone(), "not UTF-8".to_owned())),
+                Ok(content) if is_archived(content) => {}
+                Ok(content) => {
+                    if let Err(e) = escurel_md::parse(content) {
+                        unparsable.push((path.clone(), e.to_string()));
+                    }
+                }
+            }
+        }
+        if !unparsable.is_empty() {
+            if !skip_unparsable {
+                return Err(IndexerError::UnparsablePages { pages: unparsable });
+            }
+            let bad: std::collections::HashSet<&str> =
+                unparsable.iter().map(|(p, _)| p.as_str()).collect();
+            sorted.retain(|p| !bad.contains(p.as_str()));
+            if let Ok(mut g) = self.skipped_pages.write() {
+                *g = unparsable;
+            }
+        } else if let Ok(mut g) = self.skipped_pages.write() {
+            g.clear();
+        }
 
         // Attribution (escurel#357) is the one thing in `pages` that a
         // rebuild cannot re-derive: the markdown lane is the source of
@@ -1985,10 +2138,19 @@ impl Indexer {
         Ok(())
     }
 
-    async fn list_markdown_paths(&self) -> Result<HashSet<String>, IndexerError> {
+    pub(crate) async fn list_markdown_paths(&self) -> Result<HashSet<String>, IndexerError> {
         let prefix = Key::new(self.tenant.as_str(), "markdown/")?;
         let keys = self.store.list(&prefix).await?;
-        Ok(keys.into_iter().map(|k| k.path().to_owned()).collect())
+        // `FsStore` publishes a page by writing `<page>.md.tmp` and renaming it. A process killed
+        // between the two leaves the temp file behind, and it is NOT a page: indexing it would parse
+        // half-written bytes (or a duplicate of a sibling), and a rewrite of the sibling renames over
+        // it, so a later read of the listed path fails `not found`. (Found by the kill -9 sweep in
+        // `escurel-server/tests/suite/migrate_kind_sigkill.rs`.)
+        Ok(keys
+            .into_iter()
+            .map(|k| k.path().to_owned())
+            .filter(|p| !p.ends_with(".tmp"))
+            .collect())
     }
 
     async fn list_indexed_page_ids(&self) -> Result<HashSet<String>, IndexerError> {
@@ -2162,11 +2324,10 @@ fn collect_md(
     Ok(())
 }
 
-/// True if the markdown declares `type: skill` in its frontmatter.
-/// Cheap scan of the leading lines — enough to order skills before
-/// instances during a seed.
+/// True if the markdown declares `kind: skill` in its frontmatter. Cheap scan of the leading
+/// lines — enough to order skills before instances during a seed.
 fn is_skill(content: &str) -> bool {
-    content.lines().take(40).any(|l| l.trim() == "type: skill")
+    content.lines().take(40).any(|l| l.trim() == "kind: skill")
 }
 
 fn hash_body(content: &str) -> String {
@@ -2275,7 +2436,7 @@ fn render_yaml_markup(v: &escurel_md::YamlValue) -> String {
 /// LaneStore for audit but skipped by rebuild/seed so they stay out of the
 /// derived index. A parse failure is treated as not-archived (the normal
 /// index path will surface the error).
-fn is_archived(content: &str) -> bool {
+pub(crate) fn is_archived(content: &str) -> bool {
     parse(content)
         .ok()
         .and_then(|p| {
@@ -2313,4 +2474,19 @@ pub(crate) fn format_vector_literal(v: &[f32]) -> String {
     }
     out.push(']');
     out
+}
+
+#[cfg(test)]
+mod kind_scan_tests {
+    use super::is_skill;
+
+    #[test]
+    fn seed_ordering_recognises_a_skill_page_by_kind_only() {
+        assert!(is_skill("---\nkind: skill\nid: a\n---\n"));
+        assert!(
+            !is_skill("---\ntype: skill\nid: a\n---\n"),
+            "the removed key is not a skill"
+        );
+        assert!(!is_skill("---\nkind: instance\nskill: a\nid: b\n---\n"));
+    }
 }

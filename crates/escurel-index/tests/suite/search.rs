@@ -13,7 +13,7 @@ use bytes::Bytes;
 use duckdb::Connection;
 use escurel_embed::{Embedder, HashEmbedder};
 use escurel_index::{Granularity, Indexer, Migrator};
-use escurel_md::PageType;
+use escurel_md::PageKind;
 use escurel_storage::{FsStore, Key, LaneStore};
 use tempfile::TempDir;
 
@@ -22,7 +22,7 @@ const TENANT: &str = "acme";
 const SKILL_CUSTOMER: (&str, &str) = (
     "markdown/skills/customer.md",
     "---\n\
-     type: skill\n\
+     kind: skill\n\
      id: customer\n\
      description: A buying entity.\n\
      ---\n\
@@ -34,7 +34,7 @@ const SKILL_CUSTOMER: (&str, &str) = (
 const ACME: (&str, &str) = (
     "markdown/instances/customer/acme-corp.md",
     "---\n\
-     type: instance\n\
+     kind: instance\n\
      skill: customer\n\
      id: acme-corp\n\
      ---\n\
@@ -46,7 +46,7 @@ const ACME: (&str, &str) = (
 const GLOBEX: (&str, &str) = (
     "markdown/instances/customer/globex-llc.md",
     "---\n\
-     type: instance\n\
+     kind: instance\n\
      skill: customer\n\
      id: globex-llc\n\
      ---\n\
@@ -58,7 +58,7 @@ const GLOBEX: (&str, &str) = (
 const MEETING: (&str, &str) = (
     "markdown/instances/meeting/2026-04-12-acme-qbr.md",
     "---\n\
-     type: instance\n\
+     kind: instance\n\
      skill: meeting\n\
      id: 2026-04-12-acme-qbr\n\
      at: 2026-04-12T10:00:00+02:00\n\
@@ -174,26 +174,26 @@ async fn search_fts_ranks_keyword_match_above_unrelated() {
 }
 
 #[tokio::test]
-async fn search_filters_by_page_type() {
+async fn search_filters_by_page_kind() {
     let h = fresh_harness();
     seed(&h, &[SKILL_CUSTOMER, ACME, GLOBEX, MEETING]).await;
 
     let only_skills = h
         .indexer
-        .search("customer", 10, Some(PageType::Skill), None, None, None)
+        .search("customer", 10, Some(PageKind::Skill), None, None, None)
         .await
         .unwrap();
     for hit in &only_skills {
-        assert_eq!(hit.page_type, PageType::Skill);
+        assert_eq!(hit.page_kind, PageKind::Skill);
     }
 
     let only_instances = h
         .indexer
-        .search("customer", 10, Some(PageType::Instance), None, None, None)
+        .search("customer", 10, Some(PageKind::Instance), None, None, None)
         .await
         .unwrap();
     for hit in &only_instances {
-        assert_eq!(hit.page_type, PageType::Instance);
+        assert_eq!(hit.page_kind, PageKind::Instance);
     }
 
     // And the two together cover what the unfiltered call returns.
@@ -323,7 +323,7 @@ async fn search_scores_are_monotonic_decreasing() {
 const FOERDER: (&str, &str) = (
     "markdown/instances/customer/foerderprogramm.md",
     "---\n\
-     type: instance\n\
+     kind: instance\n\
      skill: customer\n\
      id: foerderprogramm\n\
      ---\n\

@@ -19,12 +19,17 @@
   ],
   "main": "./dist/extension.js",
   "activationEvents": [
-    "onFileSystem:escurel",
     "onAuthenticationRequest:escurel",
-    "onView:escurel.knowledge",
+    "onCommand:escurel.search",
+    "onCommand:escurel.showDetails",
+    "onCommand:escurel.showRunner",
+    "onFileSystem:escurel",
     "onView:escurel.awaiting",
+    "onView:escurel.details",
     "onView:escurel.inbox",
-    "onCommand:escurel.search"
+    "onView:escurel.knowledge",
+    "onView:escurel.runner",
+    "onView:escurel.threads"
   ],
   "contributes": {
     "configuration": {
@@ -94,13 +99,13 @@
       },
       {
         "command": "escurel.search",
-        "title": "Search\u2026",
+        "title": "Search…",
         "category": "Escurel",
         "icon": "$(search)"
       },
       {
         "command": "escurel.resolve",
-        "title": "Resolve wikilink",
+        "title": "Resolve wikilink…",
         "category": "Escurel"
       },
       {
@@ -127,7 +132,7 @@
       },
       {
         "command": "escurel.startSkill",
-        "title": "Start skill\u2026",
+        "title": "Start skill…",
         "category": "Escurel"
       },
       {
@@ -139,7 +144,8 @@
       {
         "command": "escurel.retryRun",
         "title": "Retry run",
-        "category": "Escurel"
+        "category": "Escurel",
+        "icon": "$(debug-restart)"
       },
       {
         "command": "escurel.requeue",
@@ -149,14 +155,14 @@
       },
       {
         "command": "escurel.pauseDispatch",
-        "title": "Pause dispatch",
+        "title": "Pause agents",
         "icon": "$(debug-pause)",
         "category": "Escurel",
         "enablement": "escurel.canAdmin"
       },
       {
         "command": "escurel.resumeDispatch",
-        "title": "Resume dispatch",
+        "title": "Resume agents",
         "icon": "$(debug-continue)",
         "category": "Escurel",
         "enablement": "escurel.canAdmin"
@@ -167,9 +173,15 @@
         "category": "Escurel"
       },
       {
+        "command": "escurel.openOriginal",
+        "title": "Open original document",
+        "category": "Escurel"
+      },
+      {
         "command": "escurel.approvePlan",
         "title": "Approve plan",
-        "category": "Escurel"
+        "category": "Escurel",
+        "icon": "$(check)"
       },
       {
         "command": "escurel.openThread",
@@ -207,6 +219,164 @@
       {
         "command": "escurel.knowledge.loadMore",
         "title": "Load more"
+      },
+      {
+        "command": "escurel.proposeWriteBack",
+        "title": "Propose a change to the source",
+        "category": "Escurel"
+      },
+      {
+        "command": "escurel.showDetails",
+        "title": "Show details panel",
+        "category": "Escurel"
+      },
+      {
+        "command": "escurel.showRunner",
+        "title": "Show runs",
+        "category": "Escurel"
+      },
+      {
+        "command": "escurel.focusCanvas",
+        "title": "Focus thread canvas",
+        "category": "Escurel"
+      },
+      {
+        "command": "escurel.filterKnowledgeByTag",
+        "title": "Filter knowledge by tag…",
+        "category": "Escurel",
+        "icon": "$(tag)"
+      },
+      {
+        "command": "escurel.filterKnowledge",
+        "title": "Filter knowledge by text…",
+        "category": "Escurel",
+        "icon": "$(filter)"
+      },
+      {
+        "command": "escurel.clearKnowledgeFilter",
+        "title": "Clear knowledge filter",
+        "category": "Escurel",
+        "icon": "$(clear-all)",
+        "enablement": "escurel.knowledgeFiltered"
+      },
+      {
+        "command": "escurel.openNodeThread",
+        "title": "Open thread",
+        "category": "Escurel"
+      },
+      {
+        "command": "escurel.openNodeRun",
+        "title": "Open run",
+        "category": "Escurel"
+      },
+      {
+        "command": "escurel.viewNodeSkill",
+        "title": "View skill",
+        "category": "Escurel"
+      },
+      {
+        "command": "escurel.showSkillThreads",
+        "title": "Show threads using this skill",
+        "category": "Escurel"
+      },
+      {
+        "command": "escurel.reviewOpenInstance",
+        "title": "Open instance",
+        "category": "Escurel",
+        "icon": "$(file)"
+      },
+      {
+        "command": "escurel.reviewOpenThread",
+        "title": "Open thread",
+        "category": "Escurel",
+        "icon": "$(type-hierarchy)"
+      },
+      {
+        "command": "escurel.reviewOpenRun",
+        "title": "Open run",
+        "category": "Escurel",
+        "icon": "$(play-circle)"
+      },
+      {
+        "command": "escurel.reviewViewSkill",
+        "title": "View skill",
+        "category": "Escurel",
+        "icon": "$(symbol-class)"
+      },
+      {
+        "command": "escurel.explainView",
+        "title": "Explain this view",
+        "category": "Escurel",
+        "icon": "$(question)"
+      },
+      {
+        "command": "escurel.runs.filter",
+        "title": "Filter runs…",
+        "icon": "$(filter)",
+        "category": "Escurel"
+      },
+      {
+        "command": "escurel.runs.clearFilter",
+        "title": "Clear run filter",
+        "icon": "$(clear-all)",
+        "category": "Escurel"
+      },
+      {
+        "command": "escurel.runs.refresh",
+        "title": "Refresh runs",
+        "icon": "$(refresh)",
+        "category": "Escurel"
+      },
+      {
+        "command": "escurel.runs.loadMore",
+        "title": "Load more runs",
+        "category": "Escurel"
+      },
+      {
+        "command": "escurel.runs.openThread",
+        "title": "Open thread of this run",
+        "category": "Escurel"
+      },
+      {
+        "command": "escurel.runs.openTarget",
+        "title": "Open the page this run worked on",
+        "category": "Escurel"
+      },
+      {
+        "command": "escurel.runs.copyRunId",
+        "title": "Copy run id",
+        "category": "Escurel"
+      },
+      {
+        "command": "escurel.runs.showFailed",
+        "title": "Show failed runs",
+        "category": "Escurel"
+      },
+      {
+        "command": "escurel.runs.forPage",
+        "title": "Runs for this record",
+        "category": "Escurel",
+        "icon": "$(history)"
+      },
+      {
+        "command": "escurel.focusRuns",
+        "title": "Focus runs",
+        "category": "Escurel"
+      },
+      {
+        "command": "escurel.focusAwaiting",
+        "title": "Focus awaiting you",
+        "category": "Escurel"
+      },
+      {
+        "command": "escurel.focusInbox",
+        "title": "Focus inbox",
+        "category": "Escurel"
+      },
+      {
+        "command": "escurel.focusKnowledge",
+        "title": "Focus knowledge",
+        "category": "Escurel"
       }
     ],
     "authentication": [
@@ -226,8 +396,15 @@
       "secondarySidebar": [
         {
           "id": "escurel-runner",
-          "title": "Runner",
+          "title": "Runs",
           "icon": "media/icon.svg"
+        }
+      ],
+      "panel": [
+        {
+          "id": "escurel-details",
+          "title": "Escurel Details",
+          "icon": "media/details.svg"
         }
       ]
     },
@@ -236,62 +413,153 @@
         {
           "id": "escurel.knowledge",
           "name": "Knowledge",
-          "contextualTitle": "Escurel"
+          "contextualTitle": "Escurel",
+          "initialSize": 5
         },
         {
           "id": "escurel.threads",
           "name": "Threads",
-          "icon": "$(git-branch)"
+          "icon": "$(git-branch)",
+          "initialSize": 3
         },
         {
           "id": "escurel.awaiting",
           "name": "Awaiting you",
-          "contextualTitle": "Escurel"
+          "contextualTitle": "Escurel",
+          "initialSize": 2
         },
         {
           "id": "escurel.inbox",
           "name": "Inbox",
-          "contextualTitle": "Escurel"
+          "contextualTitle": "Escurel",
+          "initialSize": 2
         }
       ],
       "escurel-runner": [
         {
           "id": "escurel.runner",
-          "name": "Runner"
+          "name": "Runs"
+        }
+      ],
+      "escurel-details": [
+        {
+          "id": "escurel.details",
+          "name": "Details",
+          "type": "webview"
         }
       ]
     },
     "viewsWelcome": [
       {
         "view": "escurel.knowledge",
-        "contents": "Not connected to the escurel gateway.\n[Reconnect](command:escurel.refresh)\n[Sign in](command:escurel.signIn)\n\nSet `escurel.gatewayUrl` in Settings.",
-        "when": "escurel.connected == false"
+        "contents": "Not connected to the escurel gateway.\n\n1. Set the gateway address.\n[Open the gateway setting](command:workbench.action.openSettings?%5B%22escurel.gatewayUrl%22%5D)\n\n2. Sign in, if your gateway asks for it.\n[Sign in](command:escurel.signIn)\n\n3. Try again.\n[Reconnect](command:escurel.refresh)\n\n[Get started](command:workbench.action.openWalkthrough?%7B%22category%22%3A%22datazoo.escurel%23escurel.start%22%7D)",
+        "when": "escurel.connected == false && escurel.connectionState != 'quarantined' && escurel.connectionState != 'incompatible' && escurel.connectionState != 'unauthorized' && escurel.connectionState != 'unreachable'"
+      },
+      {
+        "view": "escurel.knowledge",
+        "contents": "The gateway did not accept your sign-in, or it has expired.\n[Sign in](command:escurel.signIn)\n[Check the gateway address](command:workbench.action.openSettings?%5B%22escurel.gatewayUrl%22%5D)",
+        "when": "escurel.connected == false && escurel.connectionState == 'unauthorized'"
+      },
+      {
+        "view": "escurel.knowledge",
+        "contents": "The gateway could not be reached. Check that it is running and that the address is right (setting: escurel.gatewayUrl).\n[Open the gateway setting](command:workbench.action.openSettings?%5B%22escurel.gatewayUrl%22%5D)\n[Try again](command:escurel.refresh)",
+        "when": "escurel.connected == false && escurel.connectionState == 'unreachable'"
+      },
+      {
+        "view": "escurel.knowledge",
+        "contents": "Your administrator needs to finish an upgrade before this workspace can be used. Tell them: run `escurel admin migrate-kind`.\n[Check again](command:escurel.refresh)",
+        "when": "escurel.connected == false && escurel.connectionState == 'quarantined'"
+      },
+      {
+        "view": "escurel.knowledge",
+        "contents": "This gateway is older than this extension: it uses a data format the extension no longer reads. Update the gateway, or install an older extension.\n[Check again](command:escurel.refresh)",
+        "when": "escurel.connected == false && escurel.connectionState == 'incompatible'"
       },
       {
         "view": "escurel.awaiting",
-        "contents": "Not connected to the escurel gateway.\n[Reconnect](command:escurel.refresh)\n[Sign in](command:escurel.signIn)\n\nSet `escurel.gatewayUrl` in Settings.",
-        "when": "escurel.connected == false"
+        "contents": "Not connected to the escurel gateway.\n\n1. Set the gateway address.\n[Open the gateway setting](command:workbench.action.openSettings?%5B%22escurel.gatewayUrl%22%5D)\n\n2. Sign in, if your gateway asks for it.\n[Sign in](command:escurel.signIn)\n\n3. Try again.\n[Reconnect](command:escurel.refresh)\n\n[Get started](command:workbench.action.openWalkthrough?%7B%22category%22%3A%22datazoo.escurel%23escurel.start%22%7D)",
+        "when": "escurel.connected == false && escurel.connectionState != 'quarantined' && escurel.connectionState != 'incompatible' && escurel.connectionState != 'unauthorized' && escurel.connectionState != 'unreachable'"
+      },
+      {
+        "view": "escurel.awaiting",
+        "contents": "The gateway did not accept your sign-in, or it has expired.\n[Sign in](command:escurel.signIn)\n[Check the gateway address](command:workbench.action.openSettings?%5B%22escurel.gatewayUrl%22%5D)",
+        "when": "escurel.connected == false && escurel.connectionState == 'unauthorized'"
+      },
+      {
+        "view": "escurel.awaiting",
+        "contents": "The gateway could not be reached. Check that it is running and that the address is right (setting: escurel.gatewayUrl).\n[Open the gateway setting](command:workbench.action.openSettings?%5B%22escurel.gatewayUrl%22%5D)\n[Try again](command:escurel.refresh)",
+        "when": "escurel.connected == false && escurel.connectionState == 'unreachable'"
+      },
+      {
+        "view": "escurel.awaiting",
+        "contents": "Your administrator needs to finish an upgrade before this workspace can be used. Tell them: run `escurel admin migrate-kind`.\n[Check again](command:escurel.refresh)",
+        "when": "escurel.connected == false && escurel.connectionState == 'quarantined'"
+      },
+      {
+        "view": "escurel.awaiting",
+        "contents": "This gateway is older than this extension: it uses a data format the extension no longer reads. Update the gateway, or install an older extension.\n[Check again](command:escurel.refresh)",
+        "when": "escurel.connected == false && escurel.connectionState == 'incompatible'"
       },
       {
         "view": "escurel.inbox",
-        "contents": "Not connected to the escurel gateway.\n[Reconnect](command:escurel.refresh)\n[Sign in](command:escurel.signIn)\n\nSet `escurel.gatewayUrl` in Settings.",
-        "when": "escurel.connected == false"
+        "contents": "Not connected to the escurel gateway.\n\n1. Set the gateway address.\n[Open the gateway setting](command:workbench.action.openSettings?%5B%22escurel.gatewayUrl%22%5D)\n\n2. Sign in, if your gateway asks for it.\n[Sign in](command:escurel.signIn)\n\n3. Try again.\n[Reconnect](command:escurel.refresh)\n\n[Get started](command:workbench.action.openWalkthrough?%7B%22category%22%3A%22datazoo.escurel%23escurel.start%22%7D)",
+        "when": "escurel.connected == false && escurel.connectionState != 'quarantined' && escurel.connectionState != 'incompatible' && escurel.connectionState != 'unauthorized' && escurel.connectionState != 'unreachable'"
+      },
+      {
+        "view": "escurel.inbox",
+        "contents": "The gateway did not accept your sign-in, or it has expired.\n[Sign in](command:escurel.signIn)\n[Check the gateway address](command:workbench.action.openSettings?%5B%22escurel.gatewayUrl%22%5D)",
+        "when": "escurel.connected == false && escurel.connectionState == 'unauthorized'"
+      },
+      {
+        "view": "escurel.inbox",
+        "contents": "The gateway could not be reached. Check that it is running and that the address is right (setting: escurel.gatewayUrl).\n[Open the gateway setting](command:workbench.action.openSettings?%5B%22escurel.gatewayUrl%22%5D)\n[Try again](command:escurel.refresh)",
+        "when": "escurel.connected == false && escurel.connectionState == 'unreachable'"
+      },
+      {
+        "view": "escurel.inbox",
+        "contents": "Your administrator needs to finish an upgrade before this workspace can be used. Tell them: run `escurel admin migrate-kind`.\n[Check again](command:escurel.refresh)",
+        "when": "escurel.connected == false && escurel.connectionState == 'quarantined'"
+      },
+      {
+        "view": "escurel.inbox",
+        "contents": "This gateway is older than this extension: it uses a data format the extension no longer reads. Update the gateway, or install an older extension.\n[Check again](command:escurel.refresh)",
+        "when": "escurel.connected == false && escurel.connectionState == 'incompatible'"
       },
       {
         "view": "escurel.runner",
-        "contents": "Not connected to the escurel gateway.\n[Reconnect](command:escurel.refresh)\n[Sign in](command:escurel.signIn)\n\nSet `escurel.gatewayUrl` in Settings.",
-        "when": "escurel.connected == false"
+        "contents": "Not connected to the escurel gateway.\n\n1. Set the gateway address.\n[Open the gateway setting](command:workbench.action.openSettings?%5B%22escurel.gatewayUrl%22%5D)\n\n2. Sign in, if your gateway asks for it.\n[Sign in](command:escurel.signIn)\n\n3. Try again.\n[Reconnect](command:escurel.refresh)\n\n[Get started](command:workbench.action.openWalkthrough?%7B%22category%22%3A%22datazoo.escurel%23escurel.start%22%7D)",
+        "when": "escurel.connected == false && escurel.connectionState != 'quarantined' && escurel.connectionState != 'incompatible' && escurel.connectionState != 'unauthorized' && escurel.connectionState != 'unreachable'"
+      },
+      {
+        "view": "escurel.runner",
+        "contents": "The gateway did not accept your sign-in, or it has expired.\n[Sign in](command:escurel.signIn)\n[Check the gateway address](command:workbench.action.openSettings?%5B%22escurel.gatewayUrl%22%5D)",
+        "when": "escurel.connected == false && escurel.connectionState == 'unauthorized'"
+      },
+      {
+        "view": "escurel.runner",
+        "contents": "The gateway could not be reached. Check that it is running and that the address is right (setting: escurel.gatewayUrl).\n[Open the gateway setting](command:workbench.action.openSettings?%5B%22escurel.gatewayUrl%22%5D)\n[Try again](command:escurel.refresh)",
+        "when": "escurel.connected == false && escurel.connectionState == 'unreachable'"
+      },
+      {
+        "view": "escurel.runner",
+        "contents": "Your administrator needs to finish an upgrade before this workspace can be used. Tell them: run `escurel admin migrate-kind`.\n[Check again](command:escurel.refresh)",
+        "when": "escurel.connected == false && escurel.connectionState == 'quarantined'"
+      },
+      {
+        "view": "escurel.runner",
+        "contents": "This gateway is older than this extension: it uses a data format the extension no longer reads. Update the gateway, or install an older extension.\n[Check again](command:escurel.refresh)",
+        "when": "escurel.connected == false && escurel.connectionState == 'incompatible'"
       }
     ],
     "menus": {
       "commandPalette": [
         {
           "command": "escurel.cancelRun",
-          "when": "false"
+          "when": "escurel.connected"
         },
         {
           "command": "escurel.retryRun",
-          "when": "false"
+          "when": "escurel.connected"
         },
         {
           "command": "escurel.requeue",
@@ -318,16 +586,20 @@
           "when": "false"
         },
         {
-          "command": "escurel.approvePlan",
+          "command": "escurel.openOriginal",
           "when": "false"
+        },
+        {
+          "command": "escurel.approvePlan",
+          "when": "escurel.connected"
         },
         {
           "command": "escurel.openThread",
-          "when": "false"
+          "when": "escurel.connected"
         },
         {
           "command": "escurel.openReview",
-          "when": "false"
+          "when": "escurel.connected"
         },
         {
           "command": "escurel.promote",
@@ -344,6 +616,70 @@
         {
           "command": "escurel.openRun",
           "when": "escurel.connected"
+        },
+        {
+          "command": "escurel.proposeWriteBack",
+          "when": "false"
+        },
+        {
+          "command": "escurel.openNodeThread",
+          "when": "false"
+        },
+        {
+          "command": "escurel.openNodeRun",
+          "when": "false"
+        },
+        {
+          "command": "escurel.viewNodeSkill",
+          "when": "false"
+        },
+        {
+          "command": "escurel.showSkillThreads",
+          "when": "false"
+        },
+        {
+          "command": "escurel.reviewOpenInstance",
+          "when": "false"
+        },
+        {
+          "command": "escurel.reviewOpenThread",
+          "when": "false"
+        },
+        {
+          "command": "escurel.reviewOpenRun",
+          "when": "false"
+        },
+        {
+          "command": "escurel.reviewViewSkill",
+          "when": "false"
+        },
+        {
+          "command": "escurel.runs.loadMore",
+          "when": "false"
+        },
+        {
+          "command": "escurel.runs.openThread",
+          "when": "false"
+        },
+        {
+          "command": "escurel.runs.openTarget",
+          "when": "false"
+        },
+        {
+          "command": "escurel.runs.copyRunId",
+          "when": "false"
+        },
+        {
+          "command": "escurel.runs.clearFilter",
+          "when": "escurel.runs.filtered"
+        },
+        {
+          "command": "escurel.runs.showFailed",
+          "when": "false"
+        },
+        {
+          "command": "escurel.runs.forPage",
+          "when": "false"
         }
       ],
       "view/title": [
@@ -373,14 +709,59 @@
           "group": "navigation"
         },
         {
-          "command": "escurel.pauseDispatch",
-          "when": "view == escurel.runner",
-          "group": "navigation"
+          "command": "escurel.filterKnowledgeByTag",
+          "when": "view == escurel.knowledge",
+          "group": "navigation@3"
         },
         {
-          "command": "escurel.resumeDispatch",
+          "command": "escurel.filterKnowledge",
+          "when": "view == escurel.knowledge",
+          "group": "navigation@4"
+        },
+        {
+          "command": "escurel.clearKnowledgeFilter",
+          "when": "view == escurel.knowledge && escurel.knowledgeFiltered",
+          "group": "navigation@5"
+        },
+        {
+          "command": "escurel.explainView",
+          "when": "view == escurel.threads",
+          "group": "navigation@9"
+        },
+        {
+          "command": "escurel.explainView",
+          "when": "view == escurel.knowledge",
+          "group": "navigation@9"
+        },
+        {
+          "command": "escurel.runs.filter",
           "when": "view == escurel.runner",
-          "group": "navigation"
+          "group": "navigation@1"
+        },
+        {
+          "command": "escurel.runs.clearFilter",
+          "when": "view == escurel.runner && escurel.runs.filtered",
+          "group": "navigation@2"
+        },
+        {
+          "command": "escurel.runs.refresh",
+          "when": "view == escurel.runner",
+          "group": "navigation@3"
+        },
+        {
+          "command": "escurel.explainView",
+          "when": "view == escurel.awaiting",
+          "group": "navigation@9"
+        },
+        {
+          "command": "escurel.explainView",
+          "when": "view == escurel.inbox",
+          "group": "navigation@9"
+        },
+        {
+          "command": "escurel.explainView",
+          "when": "view == escurel.runner",
+          "group": "navigation@9"
         }
       ],
       "view/item/context": [
@@ -450,35 +831,125 @@
           "group": "navigation"
         },
         {
-          "command": "escurel.openThread",
-          "when": "view == escurel.inbox && viewItem =~ /escurel.event/",
-          "group": "navigation"
+          "command": "escurel.openNodeThread",
+          "when": "view == escurel.inbox && viewItem =~ /^event/",
+          "group": "0_trace@1"
+        },
+        {
+          "command": "escurel.viewNodeSkill",
+          "when": "view == escurel.inbox && viewItem =~ /^event/",
+          "group": "0_trace@2"
+        },
+        {
+          "command": "escurel.openNodeThread",
+          "when": "view == escurel.awaiting && viewItem =~ /^awaiting\\./",
+          "group": "2_trace@1"
+        },
+        {
+          "command": "escurel.openNodeRun",
+          "when": "view == escurel.awaiting && viewItem =~ /^awaiting\\.(changeset|draft|plan)$/",
+          "group": "2_trace@2"
+        },
+        {
+          "command": "escurel.viewNodeSkill",
+          "when": "view == escurel.awaiting && viewItem =~ /^awaiting\\./",
+          "group": "2_trace@3"
+        },
+        {
+          "command": "escurel.openNodeThread",
+          "when": "view == escurel.knowledge && viewItem == instance",
+          "group": "3_trace@1"
+        },
+        {
+          "command": "escurel.openNodeRun",
+          "when": "view == escurel.knowledge && viewItem == instance",
+          "group": "3_trace@2"
+        },
+        {
+          "command": "escurel.showSkillThreads",
+          "when": "view == escurel.knowledge && viewItem =~ /^skill/",
+          "group": "3_trace@1"
+        },
+        {
+          "command": "escurel.approvePlan",
+          "when": "view == escurel.awaiting && viewItem == awaiting.plan",
+          "group": "inline@1"
         },
         {
           "command": "escurel.cancelRun",
-          "when": "view == escurel.runner && viewItem == liveRun",
-          "group": "inline"
+          "when": "view == escurel.runner && viewItem == run.running",
+          "group": "inline@1"
+        },
+        {
+          "command": "escurel.approvePlan",
+          "when": "view == escurel.awaiting && viewItem == awaiting.plan",
+          "group": "1_review@1"
+        },
+        {
+          "command": "escurel.approvePlan",
+          "when": "view == escurel.runner && viewItem == run.planned",
+          "group": "inline@1"
         },
         {
           "command": "escurel.retryRun",
-          "when": "view == escurel.runner && viewItem == deadLetter",
-          "group": "1_control"
+          "when": "view == escurel.runner && viewItem == run.failed",
+          "group": "inline@1"
         },
         {
           "command": "escurel.requeue",
-          "when": "view == escurel.runner && viewItem == deadLetter",
-          "group": "1_control"
+          "when": "view == escurel.runner && viewItem == run.failed",
+          "group": "1_control@2"
+        },
+        {
+          "command": "escurel.pauseDispatch",
+          "when": "view == escurel.runner && viewItem == dispatch.running",
+          "group": "inline@1"
         },
         {
           "command": "escurel.resumeDispatch",
-          "when": "view == escurel.runner && viewItem == paused",
-          "group": "1_control"
+          "when": "view == escurel.runner && viewItem == dispatch.paused",
+          "group": "inline@1"
+        },
+        {
+          "command": "escurel.runs.openThread",
+          "when": "view == escurel.runner && viewItem =~ /^run\\./",
+          "group": "2_open@1"
+        },
+        {
+          "command": "escurel.runs.openTarget",
+          "when": "view == escurel.runner && viewItem =~ /^run\\./",
+          "group": "2_open@2"
+        },
+        {
+          "command": "escurel.runs.copyRunId",
+          "when": "view == escurel.runner && viewItem =~ /^run\\./",
+          "group": "3_copy@1"
+        },
+        {
+          "command": "escurel.cancelRun",
+          "when": "view == escurel.runner && viewItem == run.running",
+          "group": "1_control@1"
+        },
+        {
+          "command": "escurel.approvePlan",
+          "when": "view == escurel.runner && viewItem == run.planned",
+          "group": "1_control@1"
+        },
+        {
+          "command": "escurel.retryRun",
+          "when": "view == escurel.runner && viewItem == run.failed",
+          "group": "1_control@1"
+        },
+        {
+          "command": "escurel.runs.forPage",
+          "when": "view == escurel.knowledge && viewItem == instance",
+          "group": "3_trace@3"
         }
       ],
       "editor/title": [
         {
           "command": "escurel.showRaw",
-          "when": "resourceScheme == escurel && activeCustomEditorId == escurel.pageAsUi",
+          "when": "resourceScheme == escurel && (activeCustomEditorId == escurel.pageAsUi || activeCustomEditorId == escurel.skillPage)",
           "group": "navigation"
         },
         {
@@ -490,6 +961,26 @@
           "command": "escurel.discard",
           "when": "resourceScheme == escurel-review",
           "group": "navigation@2"
+        },
+        {
+          "command": "escurel.reviewOpenInstance",
+          "when": "resourceScheme == escurel-review",
+          "group": "navigation@3"
+        },
+        {
+          "command": "escurel.reviewOpenThread",
+          "when": "resourceScheme == escurel-review",
+          "group": "navigation@4"
+        },
+        {
+          "command": "escurel.reviewOpenRun",
+          "when": "resourceScheme == escurel-review",
+          "group": "navigation@5"
+        },
+        {
+          "command": "escurel.reviewViewSkill",
+          "when": "resourceScheme == escurel-review",
+          "group": "navigation@6"
         }
       ],
       "comments/commentThread/context": [
@@ -510,6 +1001,113 @@
           }
         ],
         "priority": "default"
+      },
+      {
+        "viewType": "escurel.skillPage",
+        "displayName": "Escurel Skill",
+        "selector": [
+          {
+            "filenamePattern": "escurel:/skills/**/*.md"
+          }
+        ],
+        "priority": "default"
+      }
+    ],
+    "walkthroughs": [
+      {
+        "id": "escurel.start",
+        "title": "Get started with Escurel",
+        "description": "Connect to your gateway, sign in, and review your first agent proposal.",
+        "steps": [
+          {
+            "id": "gateway",
+            "title": "Set your gateway",
+            "description": "Tell Escurel where your gateway runs.\n[Open the gateway setting](command:workbench.action.openSettings?%5B%22escurel.gatewayUrl%22%5D)",
+            "media": {
+              "markdown": "media/walkthrough/gateway.md"
+            },
+            "completionEvents": [
+              "onSettingChanged:escurel.gatewayUrl"
+            ]
+          },
+          {
+            "id": "signin",
+            "title": "Sign in",
+            "description": "Sign in if your gateway asks for it.\n[Sign in](command:escurel.signIn)",
+            "media": {
+              "markdown": "media/walkthrough/signin.md"
+            },
+            "completionEvents": [
+              "onCommand:escurel.signIn"
+            ]
+          },
+          {
+            "id": "review",
+            "title": "Review what an agent proposed",
+            "description": "Open the first item waiting for you.\n[Show Awaiting you](command:escurel.awaiting.focus)",
+            "media": {
+              "markdown": "media/walkthrough/review.md"
+            },
+            "completionEvents": [
+              "onView:escurel.awaiting"
+            ]
+          },
+          {
+            "id": "runs",
+            "title": "Watch and control agents",
+            "description": "See what is running, what needs attention, and past runs with their traces.\n[Show Runs](command:escurel.runner.focus)",
+            "media": {
+              "markdown": "media/walkthrough/runs.md"
+            },
+            "completionEvents": [
+              "onView:escurel.runner"
+            ]
+          },
+          {
+            "id": "explain",
+            "title": "Learn how things connect",
+            "description": "A one-screen explanation of events, skills, runs and changes.\n[Explain this view](command:escurel.explainView)",
+            "media": {
+              "markdown": "media/walkthrough/explain.md"
+            },
+            "completionEvents": [
+              "onCommand:escurel.explainView"
+            ]
+          }
+        ]
+      }
+    ],
+    "keybindings": [
+      {
+        "command": "escurel.search",
+        "key": "ctrl+alt+e",
+        "mac": "cmd+alt+e"
+      },
+      {
+        "command": "escurel.showDetails",
+        "key": "ctrl+alt+d",
+        "mac": "cmd+alt+d",
+        "when": "escurel.connected"
+      },
+      {
+        "command": "escurel.focusRuns",
+        "key": "ctrl+alt+r",
+        "mac": "cmd+alt+r"
+      },
+      {
+        "command": "escurel.focusAwaiting",
+        "key": "ctrl+alt+a",
+        "mac": "cmd+alt+a"
+      },
+      {
+        "command": "escurel.focusInbox",
+        "key": "ctrl+alt+i",
+        "mac": "cmd+alt+i"
+      },
+      {
+        "command": "escurel.focusKnowledge",
+        "key": "ctrl+alt+k",
+        "mac": "cmd+alt+k"
       }
     ]
   },

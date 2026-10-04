@@ -50,6 +50,10 @@ pub struct ConfigOverrides {
     /// `None` → `Off` (the production default): `validate` still reports an
     /// unrecognised value, `update_page` still writes it.
     pub autonomy_lint: Option<AutonomyLintMode>,
+    /// Outbound-call policy for remote (`openapi`/`mcp`) backends. `None` → the STRICT production
+    /// default (https, public addresses only); the many tests whose upstream is a loopback server
+    /// set `allow_loopback`.
+    pub egress: Option<escurel_server::egress::EgressPolicy>,
     /// Value returned by `GET /version`. Defaults to
     /// `"0.0.0-test"`.
     pub gateway_version: Option<String>,
@@ -89,6 +93,8 @@ pub struct ConfigOverrides {
     pub emit_edit_events: bool,
     /// `ESCUREL_RUN_PROGRESS_KEEP` for this gateway; `None` = the default (50).
     pub run_progress_keep: Option<usize>,
+    /// How long a graceful stop waits for in-flight requests (`None` → the 25 s default).
+    pub shutdown_drain: Option<std::time::Duration>,
     /// Replace the auto-built default indexer with a test-owned
     /// `Arc<Indexer>`. When `Some`, the support crate does *not*
     /// allocate its own tempdirs for the markdown lane / DuckDB
@@ -448,6 +454,15 @@ impl EscurelProcess {
             write_acl: overrides.write_acl.unwrap_or_default(),
             event_acl: overrides.event_acl.unwrap_or_default(),
             autonomy_lint: overrides.autonomy_lint.unwrap_or_default(),
+            // Tests keep their directory-connector fixtures in temp dirs, so the default policy of a
+            // TEST gateway exposes the temp dir (a production gateway exposes nothing until the
+            // operator sets ESCUREL_SQL_FILE_DIRS). A test of the confinement passes its own policy.
+            egress: overrides
+                .egress
+                .unwrap_or_else(|| escurel_server::egress::EgressPolicy {
+                    sql_file_dirs: vec![std::env::temp_dir()],
+                    ..Default::default()
+                }),
             listen: "127.0.0.1:0".to_owned(),
             version,
             readiness,
@@ -462,6 +477,9 @@ impl EscurelProcess {
             tenant_suspended: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             emit_edit_events: overrides.emit_edit_events,
             run_progress_keep: overrides.run_progress_keep.unwrap_or(50),
+            shutdown_drain: overrides
+                .shutdown_drain
+                .unwrap_or(escurel_server::DEFAULT_SHUTDOWN_DRAIN),
             tenant_store: overrides.tenant_store.clone(),
             crdt_backend: overrides.crdt_backend.clone().or(live_backend),
             embedder_reload: overrides.embedder_reload.clone(),

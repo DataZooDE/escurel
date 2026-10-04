@@ -178,11 +178,20 @@ pub(super) async fn tool_create_branch(
 }
 
 /// Every branch, newest first — including decided ones.
+#[derive(serde::Deserialize, Default)]
+struct ListBranchesArgs {
+    #[serde(default)]
+    limit: Option<usize>,
+    #[serde(default)]
+    cursor: Option<String>,
+}
+
 pub(super) async fn tool_list_branches(
     indexer: &Indexer,
     caller: AclCaller<'_>,
-    _args: Value,
+    args: Value,
 ) -> Result<Value, JsonRpcError> {
+    let a: ListBranchesArgs = super::parse_args(args, "list_branches")?;
     let branches = indexer
         .list_branches()
         .await
@@ -203,9 +212,20 @@ pub(super) async fn tool_list_branches(
         .filter(|b| caller.is_admin || b.author == caller.subject)
         .collect();
 
-    Ok(json!({
-        "branches": visible.into_iter().map(branch_to_json).collect::<Vec<_>>(),
-    }))
+    // Newest first by creation time (the name breaks ties), then the page.
+    let (page, next) = super::tools_drafts::page_newest_first(
+        visible,
+        |b| format!("{}|{}", b.created_at, b.name),
+        a.limit,
+        a.cursor.as_deref(),
+    )?;
+    let mut out = json!({
+        "branches": page.into_iter().map(branch_to_json).collect::<Vec<_>>(),
+    });
+    if let Some(c) = next {
+        out["next_cursor"] = json!(c);
+    }
+    Ok(out)
 }
 
 fn branch_to_json(b: &escurel_index::BranchInfo) -> Value {
@@ -262,6 +282,22 @@ pub(super) async fn tool_merge_branch(
                 "message": format!("branch `{}` carries no pages; nothing to merge", branch.name),
             }],
         }));
+    }
+
+    // A merge lands the branch's bytes on the BASE timeline through the ungated write below, so it is
+    // the way round the autonomy gate: a machine's branch write is only a view, but merging it is a
+    // direct write. A machine may not merge a branch that touches a review skill (or a skill page);
+    // a person merges it, which is the review.
+    if crate::mcp::tools_write::is_machine_caller(&caller) {
+        for page in &pages {
+            let probe = format!("markdown/instances/{}/{}.md", page.skill, page.slug);
+            if let Some(refused) =
+                crate::mcp::tools_write::refuse_machine_removal(indexer, &caller, &probe, "merge")
+                    .await?
+            {
+                return Ok(refused);
+            }
+        }
     }
 
     // ── Pre-flight. Nothing is written until every member could be. ──
@@ -369,8 +405,10 @@ pub(super) async fn tool_merge_branch(
                 if base_twin.is_some() && branch.base_version.starts_with('v') {
                     args["base_version"] = json!(branch.base_version);
                 }
-                crate::mcp::tools_write::tool_update_page(state, indexer, caller, write_acl, args)
-                    .await?
+                crate::mcp::tools_write::tool_update_page_ungated(
+                    state, indexer, caller, write_acl, args,
+                )
+                .await?
             }
             None => match &base_twin {
                 Some(base) => {
@@ -506,7 +544,7 @@ mod tests {
 
     #[test]
     fn the_scenario_stamp_is_server_owned_in_both_directions() {
-        let doc = "---\ntype: instance\nskill: note\nid: a\n---\n# a\nbody\n";
+        let doc = "---\nkind: instance\nskill: note\nid: a\n---\n# a\nbody\n";
         let stamped = stamp_scenario(doc, "wip");
         let fm = escurel_md::parse(&stamped)
             .expect("parses")
@@ -520,7 +558,7 @@ mod tests {
 
         // A caller-supplied scenario is REPLACED, not honoured: choosing it
         // would mean writing into somebody else's branch.
-        let forged = "---\ntype: instance\nskill: note\nid: a\nscenario: theirs\n---\n# a\n";
+        let forged = "---\nkind: instance\nskill: note\nid: a\nscenario: theirs\n---\n# a\n";
         let fm = escurel_md::parse(&stamp_scenario(forged, "mine"))
             .expect("parses")
             .frontmatter

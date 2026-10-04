@@ -1,5 +1,5 @@
 ---
-type: skill
+kind: skill
 id: priority
 description: A named priority level goals are ranked against (e.g. must-have, nice-to-have).
 required_frontmatter: [name, rank]

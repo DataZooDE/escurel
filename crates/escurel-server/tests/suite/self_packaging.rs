@@ -24,7 +24,7 @@ async fn pack_then_run_seeds_and_serves_the_bundled_corpus() {
     std::fs::create_dir_all(corpus.join("skills")).unwrap();
     std::fs::write(
         corpus.join("skills/demo.md"),
-        "---\ntype: skill\nid: demo\ndescription: seeded via self-packaging.\n---\n# demo\n",
+        "---\nkind: skill\nid: demo\ndescription: seeded via self-packaging.\n---\n# demo\n",
     )
     .unwrap();
 

@@ -231,6 +231,10 @@ pub(super) fn map_lane_err(e: StoreError) -> JsonRpcError {
 
 #[derive(Deserialize)]
 pub(super) struct AdminDeleteChatHistoryArgs {
+    /// Optional; when given it must name the tenant this gateway serves (a mismatch is refused,
+    /// never silently applied to the gateway's own tenant).
+    #[serde(default)]
+    tenant_id: String,
     #[serde(default)]
     chat_group_id: Option<String>,
     #[serde(default)]
@@ -244,6 +248,7 @@ pub(super) async fn tool_admin_delete_chat_history(
     args: Value,
 ) -> Result<Value, JsonRpcError> {
     let a: AdminDeleteChatHistoryArgs = parse_args(args, "admin_delete_chat_history")?;
+    ensure_tenant_matches(indexer, &a.tenant_id)?;
     let deleted = indexer
         .delete_chat_history(
             a.chat_group_id.as_deref(),
@@ -320,8 +325,13 @@ pub(super) struct RegisterCredentialArgs {
     name: String,
     /// Connector kind (`postgres`|`mysql`|`sqlite`|`erpl`|`s3`|…).
     connector: String,
-    /// Secret material (DSN / secret spec). Stored server-side only.
-    secret: String,
+    /// A REFERENCE to the connection string (`env:ESCUREL_SECRET_<NAME>`, `gsm:<name>` or a `file:`
+    /// under the operator's secret directories), resolved when the source is attached. Preferred.
+    #[serde(default)]
+    secret_ref: Option<String>,
+    /// Secret material (DSN / secret spec) stored server-side. DEPRECATED, for development only.
+    #[serde(default)]
+    secret: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -331,21 +341,62 @@ pub(super) struct CredentialNameArgs {
 
 pub(super) async fn tool_register_credential(
     indexer: &Indexer,
+    egress: &crate::egress::Egress,
     created_by: &str,
     args: Value,
 ) -> Result<Value, JsonRpcError> {
     let a: RegisterCredentialArgs = parse_args(args, "register_credential")?;
-    if a.name.is_empty() || a.connector.is_empty() || a.secret.is_empty() {
+    if a.name.is_empty() || a.connector.is_empty() {
         return Err(JsonRpcError::invalid_params(
-            "name, connector, and secret are all required".to_owned(),
+            "name and connector are required".to_owned(),
         ));
     }
+    let inline = a.secret.as_deref().filter(|s| !s.is_empty());
+    let reference = a.secret_ref.as_deref().filter(|s| !s.is_empty());
+    let stored = match (inline, reference) {
+        (Some(_), Some(_)) => {
+            return Err(JsonRpcError::invalid_params(
+                "give either secret_ref or secret, not both".to_owned(),
+            ));
+        }
+        (None, None) => {
+            return Err(JsonRpcError::invalid_params(
+                "secret_ref (or, deprecated, secret) is required".to_owned(),
+            ));
+        }
+        (None, Some(r)) => {
+            if !escurel_index::credential_resolver::is_secret_reference(r) {
+                return Err(JsonRpcError::invalid_params(
+                    "secret_ref must be env:NAME, gsm:NAME or file:/path".to_owned(),
+                ));
+            }
+            // What may be NAMED is the operator's call; lexical, so it answers the same for a file
+            // that exists and one that does not.
+            if !egress.policy().secrets.permits(indexer.tenant(), r) {
+                return Err(JsonRpcError::invalid_params(format!(
+                    "secret_ref `{r}` is not permitted by this gateway's secret policy: use \
+                     `gsm:NAME`, `env:ESCUREL_SECRET_<TENANT>__<NAME>` (or a name the operator \
+                     allow-lists for you), or a `file:` under the operator's secret directory for \
+                     your tenant (`<dir>/<tenant>/…`)"
+                )));
+            }
+            r
+        }
+        (Some(s), None) => s,
+    };
     indexer
-        .register_credential(&a.name, &a.connector, &a.secret, Some(created_by))
+        .register_credential(&a.name, &a.connector, stored, Some(created_by))
         .await
         .map_err(|e| JsonRpcError::internal(format!("register_credential: {e}")))?;
     // Never echo the secret back.
-    Ok(json!({ "ok": true, "name": a.name }))
+    let mut out = json!({ "ok": true, "name": a.name });
+    if inline.is_some() {
+        out["warning"] = json!(
+            "an inline `secret` is stored in the registry; it is deprecated and for development \
+             only - register a `secret_ref` (env:, gsm: or file:) instead"
+        );
+    }
+    Ok(out)
 }
 
 pub(super) async fn tool_list_credentials(indexer: &Indexer) -> Result<Value, JsonRpcError> {
@@ -454,13 +505,19 @@ pub(super) struct RegisterEndpointArgs {
     /// Header name when `auth = api_key` (default `X-API-Key`).
     #[serde(default)]
     auth_header: Option<String>,
-    /// Bearer token / api-key material; stored server-side, never echoed.
+    /// A REFERENCE to the credential, resolved at call time: `env:NAME`, `gsm:NAME` (read from
+    /// `ESCUREL_SECRET_<NAME>`) or `file:/path`. Preferred: no secret material is stored.
+    #[serde(default)]
+    secret_ref: Option<String>,
+    /// DEPRECATED: bearer token / api-key MATERIAL stored in the registry (development only);
+    /// never echoed. Use `secret_ref`.
     #[serde(default)]
     secret: Option<String>,
 }
 
 pub(super) async fn tool_register_endpoint(
     indexer: &Indexer,
+    egress: &crate::egress::Egress,
     created_by: &str,
     args: Value,
 ) -> Result<Value, JsonRpcError> {
@@ -491,10 +548,35 @@ pub(super) async fn tool_register_endpoint(
             )));
         }
     };
-    let has_secret = a.secret.as_deref().is_some_and(|s| !s.is_empty());
-    if !matches!(auth, escurel_index::endpoints::EndpointAuth::None) && !has_secret {
+    let inline = a.secret.as_deref().filter(|s| !s.is_empty());
+    let reference = a.secret_ref.as_deref().filter(|s| !s.is_empty());
+    if inline.is_some() && reference.is_some() {
         return Err(JsonRpcError::invalid_params(
-            "secret is required for bearer/api_key auth".to_owned(),
+            "give either secret_ref or secret, not both".to_owned(),
+        ));
+    }
+    if let Some(r) = reference {
+        if !(r.starts_with("env:") || r.starts_with("gsm:") || r.starts_with("file:")) {
+            return Err(JsonRpcError::invalid_params(
+                "secret_ref must start with env:, gsm: or file:".to_owned(),
+            ));
+        }
+        // What may be NAMED is the operator's call (never a tenant's): this check is lexical, so it
+        // answers the same for a file that exists and one that does not.
+        if !egress.policy().secrets.permits(indexer.tenant(), r) {
+            return Err(JsonRpcError::invalid_params(format!(
+                "secret_ref `{r}` is not permitted by this gateway's secret policy: use `gsm:NAME`, \
+                 `env:ESCUREL_SECRET_<TENANT>__<NAME>` (or a name the operator allow-lists for you), \
+                 or a `file:` under the operator's secret directory for your tenant (`<dir>/<tenant>/…`)"
+            )));
+        }
+    }
+    if !matches!(auth, escurel_index::endpoints::EndpointAuth::None)
+        && inline.is_none()
+        && reference.is_none()
+    {
+        return Err(JsonRpcError::invalid_params(
+            "secret_ref (or, deprecated, secret) is required for bearer/api_key auth".to_owned(),
         ));
     }
     indexer
@@ -503,13 +585,24 @@ pub(super) async fn tool_register_endpoint(
             &a.kind,
             &a.base_url,
             &auth,
-            a.secret.as_deref(),
+            reference.or(inline),
             Some(created_by),
         )
         .await
         .map_err(|e| JsonRpcError::internal(format!("register_endpoint: {e}")))?;
+    // Whatever session was established with the PREVIOUS definition of this name must never be sent
+    // to the new URL.
+    egress.drop_mcp_session(&format!("{}:{}", indexer.tenant(), a.name));
+    let warning = inline.map(|_| {
+        "an inline `secret` is stored in the registry; it is deprecated and for development only \
+         - register a `secret_ref` (env:, gsm: or file:) instead"
+    });
     // Never echo the secret back.
-    Ok(json!({ "ok": true, "name": a.name }))
+    let mut out = json!({ "ok": true, "name": a.name });
+    if let Some(w) = warning {
+        out["warning"] = json!(w);
+    }
+    Ok(out)
 }
 
 pub(super) async fn tool_list_endpoints(indexer: &Indexer) -> Result<Value, JsonRpcError> {
@@ -528,6 +621,7 @@ pub(super) async fn tool_list_endpoints(indexer: &Indexer) -> Result<Value, Json
                 "auth_scheme": e.auth_scheme,
                 "created_at": e.created_at,
                 "created_by": e.created_by,
+                "secret_kind": e.secret_kind,
             })
         })
         .collect();
@@ -536,6 +630,7 @@ pub(super) async fn tool_list_endpoints(indexer: &Indexer) -> Result<Value, Json
 
 pub(super) async fn tool_delete_endpoint(
     indexer: &Indexer,
+    egress: &crate::egress::Egress,
     args: Value,
 ) -> Result<Value, JsonRpcError> {
     #[derive(Deserialize)]
@@ -547,10 +642,14 @@ pub(super) async fn tool_delete_endpoint(
         .delete_endpoint(&a.name)
         .await
         .map_err(|e| JsonRpcError::internal(format!("delete_endpoint: {e}")))?;
+    egress.drop_mcp_session(&format!("{}:{}", indexer.tenant(), a.name));
     Ok(json!({ "ok": true }))
 }
 
-pub(super) async fn tool_validate_endpoints(indexer: &Indexer) -> Result<Value, JsonRpcError> {
+pub(super) async fn tool_validate_endpoints(
+    indexer: &Indexer,
+    egress: &crate::egress::Egress,
+) -> Result<Value, JsonRpcError> {
     let eps = indexer
         .list_endpoints()
         .await
@@ -563,7 +662,10 @@ pub(super) async fn tool_validate_endpoints(indexer: &Indexer) -> Result<Value, 
             .await
             .map_err(|err| JsonRpcError::internal(format!("validate_endpoints: {err}")))?;
         let (status, detail) = match rec {
-            Some(rec) => crate::remote_backend::probe(&rec).await,
+            Some(rec) => {
+                let key = format!("{}:{}", indexer.tenant(), rec.name);
+                crate::remote_backend::probe(egress, &key, &rec).await
+            }
             None => (
                 "unreachable".to_owned(),
                 Some("endpoint vanished".to_owned()),
@@ -627,10 +729,10 @@ pub(super) async fn tool_create_remote_instance(
         )));
     }
     let body = a.overlay_body.unwrap_or_else(|| format!("# {}\n", a.id));
-    let page_id = format!("markdown/instances/{}/{}.md", a.skill, a.id);
+    let page_id = escurel_index::backend::rows::instance_page_id(&a.skill, &a.id);
     let content = format!(
         "---\n\
-         type: instance\n\
+         kind: instance\n\
          skill: {skill}\n\
          id: {id}\n\
          backend_ref:\n\
@@ -661,12 +763,62 @@ pub(super) struct WriteInstanceArgs {
 /// Write-back to a remote instance's upstream (openapi/mcp). Gated by the
 /// target instance's `acl.update` (fail-closed; admin bypasses). A skill whose
 /// binding declares no `write` op is refused.
+/// The skill a `write_instance` ref names: `[[skill::id]]`, `skill::id` or an instance page path.
+fn skill_of_ref(r: &str) -> Option<String> {
+    let t = r.trim().trim_start_matches("[[").trim_end_matches("]]");
+    if let Some((skill, _)) = t.split_once("::") {
+        return Some(skill.trim().to_owned()).filter(|s| !s.is_empty());
+    }
+    t.strip_prefix("markdown/instances/")
+        .and_then(|rest| rest.split('/').next())
+        .map(str::to_owned)
+        .filter(|s| !s.is_empty())
+}
+
 pub(super) async fn tool_write_instance(
     indexer: &Indexer,
+    egress: &crate::egress::Egress,
     caller: AclCaller<'_>,
     args: Value,
 ) -> Result<Value, JsonRpcError> {
     let a: WriteInstanceArgs = parse_args(args, "write_instance")?;
+    // A ROW of a `rows` skill is not a stored instance, so the lookup below finds nothing for any ref
+    // form: say why, and what to do, before it fails with `no instance for ref`.
+    if let Some(skill) = skill_of_ref(&a.reference) {
+        let sql_rows = indexer
+            .rows_source(&skill)
+            .await
+            .map_err(|e| JsonRpcError::internal(format!("write_instance: {e}")))?
+            .is_some();
+        let remote_rows = crate::remote_rows::source(indexer, &skill)
+            .await
+            .map_err(|e| JsonRpcError::internal(format!("write_instance: {e}")))?
+            .is_some();
+        if remote_rows {
+            return Err(JsonRpcError::domain(
+                "use_write_back",
+                "ref",
+                format!(
+                    "the rows of `{skill}` are not written directly: propose a change with \
+                     `create_draft` carrying `write_back: {{patch: {{<column>: <value>}}, \
+                     base_etag: <etag>}}` (columns: `expand` -> `backend_projection.writable_columns`; \
+                     etag: `backend_projection.etag`); a human reviewer promotes it"
+                ),
+                Some("`expand` the row to see which columns are writable"),
+            ));
+        }
+        if sql_rows {
+            return Err(JsonRpcError::domain(
+                "use_write_back",
+                "ref",
+                format!(
+                    "the rows of `{skill}` are read-only source data; write your own notes to the \
+                     row's page with `update_page` (the linked markdown) instead"
+                ),
+                None,
+            ));
+        }
+    }
     let link = if a.reference.starts_with("[[") {
         a.reference.clone()
     } else {
@@ -680,6 +832,19 @@ pub(super) async fn tool_write_instance(
         .ok_or_else(|| {
             JsonRpcError::invalid_params(format!("no instance for ref `{}`", a.reference))
         })?;
+    // The rows of a `rows` skill are changed through human-gated write-back (a draft carrying a
+    // `write_back` intent), never by a direct write-through.
+    if crate::remote_rows::source(indexer, &page.skill)
+        .await
+        .map_err(|e| JsonRpcError::internal(format!("write_instance: {e}")))?
+        .is_some()
+    {
+        return Err(JsonRpcError::invalid_params(
+            "this skill's rows are changed through write-back: propose a draft with a \
+             `write_back` block and have a human promote it"
+                .to_owned(),
+        ));
+    }
     // Load the target's frontmatter (for the ACL decision) via expand.
     let expanded = indexer
         .expand(&page.page_id, None, None)
@@ -703,9 +868,31 @@ pub(super) async fn tool_write_instance(
             "not authorised to write this instance".to_owned(),
         ));
     }
-    crate::remote_backend::write_instance(indexer, &page.skill, page.slug.as_deref(), &a.payload)
-        .await
-        .map_err(|e| JsonRpcError::internal(format!("write_instance: {e}")))
+    // The autonomy gate: this forwards a write to an EXTERNAL system, with no draft in between, so a
+    // machine may not do it to an instance of a skill that asks for review.
+    if super::tools_write::is_machine_caller(&caller)
+        && super::tools_write::skill_requires_review(indexer, &page.skill).await?
+    {
+        return Err(JsonRpcError::domain(
+            "review_required",
+            "ref",
+            format!(
+                "`{}` asks for human review (`autonomy`): an agent run cannot write through to its \
+                 source on its own",
+                page.skill
+            ),
+            Some("ask a person to make the change"),
+        ));
+    }
+    crate::remote_backend::write_instance(
+        indexer,
+        egress,
+        &page.skill,
+        page.slug.as_deref(),
+        &a.payload,
+    )
+    .await
+    .map_err(|e| JsonRpcError::internal(format!("write_instance: {e}")))
 }
 
 // --- admin tenant CRUD + long-ops (admin-role gated) -----------
@@ -1143,7 +1330,7 @@ pub(super) async fn tool_import_pack(state: &AppState, args: Value) -> Result<Va
         let Ok(parsed) = escurel_md::parse(stamped) else {
             continue; // stamp_layer already parsed; defensive only
         };
-        if parsed.frontmatter.page_type != PageType::Skill {
+        if parsed.frontmatter.page_kind != PageKind::Skill {
             continue;
         }
         let skill_id = parsed
@@ -1478,7 +1665,7 @@ async fn check_skill_collisions(
         let Ok(parsed) = escurel_md::parse(stamped) else {
             continue;
         };
-        if parsed.frontmatter.page_type != PageType::Skill {
+        if parsed.frontmatter.page_kind != PageKind::Skill {
             continue;
         }
         let skill_id = parsed
@@ -1532,7 +1719,7 @@ async fn detect_shadow_conflicts(
         let Ok(new_page) = escurel_md::parse(stamped) else {
             continue;
         };
-        if new_page.frontmatter.page_type != PageType::Skill {
+        if new_page.frontmatter.page_kind != PageKind::Skill {
             continue;
         }
         let skill_id = new_page
@@ -1663,7 +1850,7 @@ async fn detect_orphaned_shadows(
         let Ok(orphan) = escurel_md::parse(&content) else {
             continue;
         };
-        if orphan.frontmatter.page_type != PageType::Skill {
+        if orphan.frontmatter.page_kind != PageKind::Skill {
             continue;
         }
         let skill_id = orphan
@@ -2178,6 +2365,36 @@ pub(super) async fn tool_publish_snapshot(state: &AppState) -> Result<Value, Jso
     })
 }
 
+/// Admin: rewrite the tenant's stored pages from the legacy `type:` page-kind key to `kind:`
+/// (stage 1 of the OKF program). `apply` defaults to false: a dry run that writes nothing.
+pub(super) async fn tool_migrate_kind(
+    state: &AppState,
+    args: Value,
+) -> Result<Value, JsonRpcError> {
+    let a: MigrateKindRequest = parse_args(args, "migrate_kind")?;
+    if !a.tenant_id.is_empty() {
+        validate_tenant_id(&a.tenant_id)
+            .map_err(|e| JsonRpcError::invalid_params(e.to_string()))?;
+    }
+    let indexer = admin_indexer(state)?;
+    ensure_tenant_matches(&indexer, &a.tenant_id)?;
+    // The apply runs in a SPAWNED task: a client that disconnects (a CLI timeout, a killed shell,
+    // a proxy cutting a long request) drops this handler future, and without the spawn that
+    // cancelled the migration half-way. The task finishes on its own; a retried `--apply` waits
+    // for it (the indexer serialises migrations) and finds nothing left to do.
+    let run = tokio::spawn(async move { indexer.migrate_kind(a.apply).await });
+    let outcome = run
+        .await
+        .map_err(|e| JsonRpcError::internal(format!("migrate_kind: task failed: {e}")))?;
+    match outcome {
+        Ok(report) => to_value(report),
+        Err(e @ escurel_index::indexer::IndexerError::KindMigrationRefused { .. }) => {
+            Err(JsonRpcError::invalid_params(format!("migrate_kind: {e}")))
+        }
+        Err(e) => Err(JsonRpcError::internal(format!("migrate_kind: {e}"))),
+    }
+}
+
 pub(super) async fn tool_compact_lanes(
     state: &AppState,
     args: Value,
@@ -2207,4 +2424,41 @@ pub(super) async fn tool_compact_lanes(
         ops_compacted,
         bytes_reclaimed,
     })
+}
+
+/// `describe_endpoint` — the tools of a registered MCP endpoint and their argument names, so an
+/// author can write a skill's `list:`/`read:` mapping. Only NAMES and a coarse type per argument
+/// are returned: a tool's `description` and the server's `instructions` are the upstream's own text
+/// and never reach this wire.
+pub(super) async fn tool_describe_endpoint(
+    indexer: &Indexer,
+    egress: &crate::egress::Egress,
+    args: Value,
+) -> Result<Value, JsonRpcError> {
+    #[derive(Deserialize)]
+    struct A {
+        endpoint: String,
+    }
+    let a: A = parse_args(args, "describe_endpoint")?;
+    let rec = indexer
+        .lookup_endpoint(&a.endpoint)
+        .await
+        .map_err(|e| JsonRpcError::internal(format!("describe_endpoint: {e}")))?
+        .ok_or_else(|| {
+            JsonRpcError::invalid_params(format!("endpoint `{}` is not registered", a.endpoint))
+        })?;
+    if rec.kind != "mcp" {
+        // An openapi endpoint is described by its own document: say what it is and where, not an error.
+        return Ok(json!({
+            "endpoint": rec.name, "kind": rec.kind, "base_url": rec.base_url, "tools": [],
+            "trust": "external",
+            "hint": "an openapi endpoint is described by its own OpenAPI document; a skill's `read:` \
+                     / `write:` name an HTTP method and path under this base URL",
+        }));
+    }
+    let key = format!("{}:{}", indexer.tenant(), rec.name);
+    let tools = crate::remote_backend::list_tools(egress, &key, &rec)
+        .await
+        .map_err(|e| JsonRpcError::internal(format!("describe_endpoint: {e}")))?;
+    Ok(json!({ "endpoint": rec.name, "kind": "mcp", "tools": tools, "trust": "external" }))
 }

@@ -6,7 +6,7 @@
 ///
 /// ```text
 /// ---
-/// type: skill        # required, "skill" or "instance"
+/// kind: skill        # required, "skill" or "instance"
 /// id: customer
 /// ... other yaml ...
 /// ---
@@ -18,14 +18,14 @@ library;
 import 'package:yaml/yaml.dart';
 
 /// The two kinds of pages an escurel tenant carries.
-enum PageType { skill, instance }
+enum PageKind { skill, instance }
 
 /// Parsed frontmatter — the typed `type:` plus the raw YAML mapping
 /// for arbitrary projection by consumers.
 class Frontmatter {
-  const Frontmatter({required this.pageType, required this.fields});
+  const Frontmatter({required this.pageKind, required this.fields});
 
-  final PageType pageType;
+  final PageKind pageKind;
   final Map<String, dynamic> fields;
 }
 
@@ -73,17 +73,18 @@ Page parse(String input) {
   }
   final fields = _normaliseMap(loaded);
 
-  final typeRaw = fields['type'];
-  final pageType = switch (typeRaw) {
-    'skill' => PageType.skill,
-    'instance' => PageType.instance,
+  // `kind:` is the page-kind key (it replaced `type:`, OKF alignment).
+  final kindRaw = fields['kind'];
+  final pageKind = switch (kindRaw) {
+    'skill' => PageKind.skill,
+    'instance' => PageKind.instance,
     _ => throw const ParseException(
-      'frontmatter missing or invalid "type" (expected "skill" or "instance")',
+      'frontmatter missing or invalid "kind" (expected "skill" or "instance")',
     ),
   };
 
   return Page(
-    frontmatter: Frontmatter(pageType: pageType, fields: fields),
+    frontmatter: Frontmatter(pageKind: pageKind, fields: fields),
     body: body,
   );
 }

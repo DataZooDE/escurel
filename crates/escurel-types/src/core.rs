@@ -5,14 +5,14 @@ use serde::{Deserialize, Serialize};
 use crate::null::null_as_default;
 
 /// A reference to a page. Mirrors the proto `PageRef` /
-/// escurel-index `PageRef`. `page_type` is `"skill"` | `"instance"`.
+/// escurel-index `PageRef`. `page_kind` is `"skill"` | `"instance"`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct PageRef {
     pub page_id: String,
     pub slug: String,
     pub skill: String,
-    pub page_type: String,
+    pub page_kind: String,
     /// The verified principal behind the page's most recent write (#357),
     /// where the server emits it (`expand`); `None` where it does not, or
     /// for a page last written before the gateway recorded one. Omitted

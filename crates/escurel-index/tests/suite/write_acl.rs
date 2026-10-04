@@ -20,32 +20,32 @@ const BOB: &str = "whatsapp:222";
 
 const SKILL_MEMBER: (&str, &str) = (
     "markdown/skills/community_member.md",
-    "---\ntype: skill\nid: community_member\ndescription: A member.\n\
+    "---\nkind: skill\nid: community_member\ndescription: A member.\n\
      visibility: owner\nowner_field: credential\n---\n# community_member\n",
 );
 const SKILL_EVENT_PROFILE: (&str, &str) = (
     "markdown/skills/event_profile.md",
-    "---\ntype: skill\nid: event_profile\ndescription: Per-event profile.\n\
+    "---\nkind: skill\nid: event_profile\ndescription: Per-event profile.\n\
      visibility: owner\nowner_field: member\n---\n# event_profile\n",
 );
 const SKILL_TALK: (&str, &str) = (
     "markdown/skills/talk.md",
-    "---\ntype: skill\nid: talk\ndescription: A program item.\n\
+    "---\nkind: skill\nid: talk\ndescription: A program item.\n\
      visibility: public\n---\n# talk\n",
 );
 const INST_ALICE: (&str, &str) = (
     "markdown/instances/community_member/alice.md",
-    "---\ntype: instance\nskill: community_member\nid: alice\n\
+    "---\nkind: instance\nskill: community_member\nid: alice\n\
      credential: \"whatsapp:111\"\n---\n# Alice\n",
 );
 const INST_ALICE_PROFILE: (&str, &str) = (
     "markdown/instances/event_profile/alice-ki-gipfel.md",
-    "---\ntype: instance\nskill: event_profile\nid: alice-ki-gipfel\n\
+    "---\nkind: instance\nskill: event_profile\nid: alice-ki-gipfel\n\
      member: \"[[community_member::alice]]\"\nevent: ki-gipfel\n---\n# Alice @ KI-Gipfel\n",
 );
 const INST_TALK: (&str, &str) = (
     "markdown/instances/talk/keynote.md",
-    "---\ntype: instance\nskill: talk\nid: keynote\nevent: ki-gipfel\n---\n# Keynote\n",
+    "---\nkind: instance\nskill: talk\nid: keynote\nevent: ki-gipfel\n---\n# Keynote\n",
 );
 
 struct Harness {
@@ -214,7 +214,7 @@ async fn owner_may_tombstone_own_instance() {
     .await;
     let existing = fm(&h, "event_profile", "alice-ki-gipfel").await;
     let tombstone = serde_json::json!({
-        "type": "instance",
+        "kind": "instance",
         "skill": "event_profile",
         "id": "alice-ki-gipfel",
         "member": "[[community_member::geloescht]]",
@@ -261,7 +261,7 @@ async fn owner_reclaims_own_orphaned_instance() {
 
     // The orphaned/erased existing page: owner wikilink → deleted placeholder.
     let orphaned = serde_json::json!({
-        "type": "instance",
+        "kind": "instance",
         "skill": "event_profile",
         "id": "alice-ki-gipfel",
         "member": "[[community_member::geloescht]]",
@@ -305,7 +305,7 @@ async fn owner_reclaims_own_blanked_direct_owner_instance() {
     seed(&h, &[SKILL_MEMBER, INST_ALICE]).await;
 
     let blanked = serde_json::json!({
-        "type": "instance",
+        "kind": "instance",
         "skill": "community_member",
         "id": "alice",
     });
@@ -341,7 +341,7 @@ async fn live_instance_owned_by_other_stays_protected() {
     let alice = fm(&h, "community_member", "alice").await;
     // bob attempts to overwrite, even claiming it for himself.
     let bobs = serde_json::json!({
-        "type": "instance",
+        "kind": "instance",
         "skill": "community_member",
         "id": "alice",
         "credential": BOB,
@@ -405,7 +405,7 @@ async fn owner_resolved_through_wikilink_for_write() {
 // ── async-ops: a workflow step writes its produced instance ────────────────
 const SKILL_WORKFLOW_RUN: (&str, &str) = (
     "markdown/skills/workflow-run.md",
-    "---\ntype: skill\nid: workflow-run\ndescription: run board.\n\
+    "---\nkind: skill\nid: workflow-run\ndescription: run board.\n\
      visibility: owner\nowner_field: requested_by\n\
      optional_frontmatter: [requested_by]\n---\n# workflow-run\n",
 );
@@ -414,17 +414,17 @@ const SKILL_WORKFLOW_RUN: (&str, &str) = (
 // the exact case that blocked the scoped (non-admin) workflow harness.
 const SKILL_SUPPLIER_WATCH: (&str, &str) = (
     "markdown/skills/supplier-watch.md",
-    "---\ntype: skill\nid: supplier-watch\ndescription: produced by a step.\n---\n# supplier-watch\n",
+    "---\nkind: skill\nid: supplier-watch\ndescription: produced by a step.\n---\n# supplier-watch\n",
 );
 // The run board `start_operation` created, owned by ALICE (its requester).
 const RUN_BOARD_ALICE: (&str, &str) = (
     "markdown/instances/workflow-run/op-abc.md",
-    "---\ntype: instance\nskill: workflow-run\nid: op-abc\n\
+    "---\nkind: instance\nskill: workflow-run\nid: op-abc\n\
      requested_by: \"whatsapp:111\"\n---\n# operation\n",
 );
 // The produced-instance page id a scope step mints (…/<run_slug>-<phase>-<hash12>.md).
 const PRODUCED_PAGE: &str = "markdown/instances/supplier-watch/op-abc-scope-0123456789ab.md";
-const PRODUCED_CONTENT: &str = "---\ntype: instance\nskill: supplier-watch\n\
+const PRODUCED_CONTENT: &str = "---\nkind: instance\nskill: supplier-watch\n\
     id: op-abc-scope-0123456789ab\n---\n# suppliers\n";
 
 /// The run's requester (the identity the per-run scoped token carries) may write

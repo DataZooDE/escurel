@@ -5,6 +5,7 @@ import type { EscurelApi } from '../../../src/extension';
 import { buildControlEvent } from '../../../src/runs/controls';
 import { matchResult } from '../../../src/runs/controlResult';
 import { activate, signInAsAdmin, until } from '../cascade/support';
+import { requireEnv } from '../requireEnv';
 
 const page = 'markdown/instances/customer-order__order-4500123.md';
 const results = (api: EscurelApi) =>
@@ -41,7 +42,7 @@ suite('real run controls', () => {
   let api: EscurelApi;
   suiteSetup(async function () {
     this.timeout(120_000);
-    if (!process.env.ESCUREL_TEST_RUNNER) this.skip();
+    requireEnv(this, 'ESCUREL_TEST_RUNNER');
     api = await activate();
   });
 

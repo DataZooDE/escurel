@@ -1,5 +1,5 @@
 ---
-type: skill
+kind: skill
 id: change_order
 description: A mid-delivery scope change against a project. Re-prices and re-baselines without spawning a new opportunity.
 required_frontmatter: [at, status, project]

@@ -14,8 +14,8 @@ const TENANT: &str = "acme";
 const PACK_SECRET: &str = "shared-pack-signing-secret";
 
 const BASE_SKILL: &str =
-    "---\ntype: skill\nid: pallet\ndescription: from the pack.\n---\n# pallet\n";
-const OVERLAY: &str = "---\ntype: skill\nid: pallet\ndescription: acme-special.\n---\n# pallet\n";
+    "---\nkind: skill\nid: pallet\ndescription: from the pack.\n---\n# pallet\n";
+const OVERLAY: &str = "---\nkind: skill\nid: pallet\ndescription: acme-special.\n---\n# pallet\n";
 
 async fn start(fixtures: FixtureBuilder) -> EscurelProcess {
     EscurelProcess::spawn(Opts {
@@ -158,7 +158,7 @@ async fn underscore_pack_ids_cannot_delete_a_siblings_pages() {
     for (pack, skill_id) in [("foo_bar", "alpha"), ("foo-bar", "beta")] {
         let pages = vec![(
             format!("skills/{skill_id}.md"),
-            format!("---\ntype: skill\nid: {skill_id}\ndescription: x\n---\n# {skill_id}\n"),
+            format!("---\nkind: skill\nid: {skill_id}\ndescription: x\n---\n# {skill_id}\n"),
         )];
         let tarball = escurel_server::pack::build_tarball(&pages).unwrap();
         let mut m = escurel_types::PackManifest {

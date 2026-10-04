@@ -3,13 +3,14 @@ import * as vscode from 'vscode';
 import type { EscurelApi } from '../../../src/extension';
 import type { LoadedThread } from '../../../src/thread/loadThread';
 import { activate, discardOpenDrafts, freeOrder, markProcessed, until } from './support';
+import { requireEnv } from '../requireEnv';
 
 suite('start a skill: background and plan, approve a plan', () => {
   let api: EscurelApi;
 
   suiteSetup(async function () {
     this.timeout(120_000);
-    if (!process.env.ESCUREL_TEST_RUNNER) this.skip();
+    requireEnv(this, 'ESCUREL_TEST_RUNNER');
     api = await activate();
   });
 
@@ -103,17 +104,41 @@ suite('start a skill: background and plan, approve a plan', () => {
         'a plan writes nothing',
       );
 
+      // The plan waits for a person, and that wait must not live only in a toast: Awaiting You lists
+      // it as 'Plan ready', naming the skill and the page, until somebody approves it.
+      const planRow = async () => {
+        const rows = await api.awaiting.getChildren();
+        for (const r of rows) if (r.kind === 'plan' && r.runId === planned.id) return r;
+        return undefined;
+      };
+      const waiting = await until(planRow, 30_000, `a 'Plan ready' row in Awaiting You`);
+      assert.match(waiting.label, /^Plan ready · customer-order on /);
+      assert.equal(waiting.description, 'Approve plan');
+
       // Approve it. What is the EXTENSION's to get right is the approval it sends: a user event for
       // the same skill on the same page, naming the plan run. (The echo harness then folds the
       // oldest inbox event with a target page, which is the plan's own, so a changeset under the
       // approval's thread is not something this harness can show; a real harness folds the event
       // it is given.)
       const before = loads.length;
-      await vscode.commands.executeCommand('escurel.approvePlan', {
-        runId: planned.id,
-        skill: 'customer-order',
-        pageId: page,
+      // The approval is confirmed in a modal; the test answers it, and counts how often it was asked.
+      let asked = 0;
+      const restore = api.setApprovalConfirm(async (m) => {
+        asked += 1;
+        assert.ok(m.includes('customer-order'), `the prompt names the skill: ${m}`);
+        assert.ok(m.includes(planned.id), 'the prompt names the run');
+        return true;
       });
+      try {
+        // A double click: both invocations name only the run; exactly one approval comes of it.
+        await Promise.all([
+          vscode.commands.executeCommand('escurel.approvePlan', { runId: planned.id }),
+          vscode.commands.executeCommand('escurel.approvePlan', { runId: planned.id }),
+        ]);
+      } finally {
+        api.setApprovalConfirm(restore);
+      }
+      assert.equal(asked, 1, 'one confirmation for a double invocation');
       const approvalRoot = await until(
         () => loads.slice(before).find((l) => l.rootEventId !== planRoot)?.rootEventId,
         30_000,
@@ -131,6 +156,12 @@ suite('start a skill: background and plan, approve a plan', () => {
       assert.equal(manual?.approved_plan_run_id, planned.id, 'it names the plan run it approves');
       assert.equal(manual?.mode, 'run', 'approving runs the skill for real');
       assert.ok(manual?.requested_by, 'the gateway stamped who asked');
+      // And the row goes away once the plan is approved.
+      await until(
+        async () => ((await planRow()) === undefined ? true : undefined),
+        30_000,
+        `the 'Plan ready' row to disappear after the approval`,
+      );
     } finally {
       sub.dispose();
       for (const id of cleanup) await markProcessed(id, page).catch(() => undefined);

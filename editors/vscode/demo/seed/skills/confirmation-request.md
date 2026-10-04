@@ -1,6 +1,10 @@
 ---
-type: skill
+kind: skill
 id: confirmation-request
+title: Confirmation request
+folder: purchasing/follow-ups
+role: process
+tags: [follow-up]
 description: A request to a supplier for a binding confirmation date for the purchase orders an analysis names.
 autonomy: review
 ---

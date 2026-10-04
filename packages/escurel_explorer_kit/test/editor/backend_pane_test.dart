@@ -18,7 +18,7 @@ ExpandResult _page({
 }) => ExpandResult(
   pageId: 'sql_view/skills/erp_customer/instances/c-1',
   skill: 'erp_customer',
-  pageType: PageType.instance,
+  pageKind: PageKind.instance,
   frontmatter: frontmatter,
   body: '',
   blocks: blocks,
@@ -114,7 +114,7 @@ void main() {
     const page = ExpandResult(
       pageId: 'document/skills/contract/instances/d-1',
       skill: 'contract',
-      pageType: PageType.instance,
+      pageKind: PageKind.instance,
       frontmatter: {
         'backend_ref': {
           'kind': 'document',
@@ -228,7 +228,7 @@ void main() {
     const page = ExpandResult(
       pageId: 'document/skills/contract/instances/d-2',
       skill: 'contract',
-      pageType: PageType.instance,
+      pageKind: PageKind.instance,
       frontmatter: {
         'backend_ref': {'kind': 'document', 'status': 'ok'},
       },

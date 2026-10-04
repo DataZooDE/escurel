@@ -1,5 +1,5 @@
 ---
-type: skill
+kind: skill
 id: engagement
 description: A first-touch interaction with a contact, or the continuous lifecycle spine for an account.
 required_frontmatter: [at, with, channel]

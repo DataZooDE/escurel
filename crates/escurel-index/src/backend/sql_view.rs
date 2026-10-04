@@ -109,7 +109,7 @@ impl SqlViewBackend {
         let view = view_name(skill, instance_id);
         let fingerprint = self.materialise_view(&view, binding).await?;
         let binding_hash = hash_binding(binding);
-        let page_id = format!("markdown/instances/{skill}/{instance_id}.md");
+        let page_id = crate::backend::rows::instance_page_id(skill, instance_id);
         let content = overlay_markdown(
             skill,
             instance_id,
@@ -187,6 +187,116 @@ pub(crate) async fn materialise_view_on(
     schema_fingerprint(&conn, view)
 }
 
+/// The attach alias and the RESOLVED, policy-checked, injection-safe connection string of a database
+/// binding: what write-back opens its own connection with. Never used for directory connectors.
+pub(crate) async fn resolve_attach(
+    indexer: &Indexer,
+    binding: &SqlViewBinding,
+) -> Result<(String, String), SqlViewError> {
+    let db = binding.connector;
+    let attach = binding
+        .attach
+        .as_deref()
+        .ok_or(SqlViewError::MissingAttach(db.as_str()))?;
+    let cred = indexer
+        .lookup_credential(attach)
+        .await?
+        .ok_or_else(|| SqlViewError::CredentialNotFound(attach.to_owned()))?;
+    let secret = resolve_attach_secret(indexer, db, &cred.secret)?;
+    if !is_safe_sql_fragment(&secret) {
+        return Err(SqlViewError::InvalidBinding(
+            "registered secret contains an unsafe character".to_owned(),
+        ));
+    }
+    if !is_valid_db_relation(&binding.relation) || !is_valid_identifier(attach) {
+        return Err(SqlViewError::InvalidBinding(
+            "relation or attach name is unsafe".to_owned(),
+        ));
+    }
+    Ok((attach.to_owned(), secret))
+}
+
+/// The connection string behind a registered credential, resolved through the operator's resolver
+/// (a reference is read now; an inline secret is returned as stored) and checked against its attach
+/// policy. A bare indexer with no resolver (most tests) uses the stored value as it is.
+pub(crate) fn resolve_attach_secret(
+    indexer: &Indexer,
+    connector: SqlConnector,
+    stored: &str,
+) -> Result<String, SqlViewError> {
+    let Some(resolver) = indexer.credential_resolver() else {
+        if crate::credential_resolver::is_secret_reference(stored) {
+            return Err(SqlViewError::InvalidBinding(
+                "backend_unavailable: the credential is a secret reference but no operator \
+                 policy is installed to resolve it"
+                    .to_owned(),
+            ));
+        }
+        return Ok(with_connect_timeout(
+            connector,
+            &with_server_statement_timeout(connector, stored, indexer.rows_query_timeout),
+            indexer.sql_connect_timeout,
+        ));
+    };
+    let secret = resolver
+        .resolve(stored)
+        .map_err(|m| SqlViewError::InvalidBinding(format!("backend_unavailable: {m}")))?;
+    // Judged AND pinned in one step: the string returned is the one to connect with.
+    let secret = resolver
+        .pin_target(connector.as_str(), &secret)
+        .map_err(|m| SqlViewError::InvalidBinding(format!("backend_unavailable: {m}")))?;
+    Ok(with_connect_timeout(
+        connector,
+        &with_server_statement_timeout(connector, &secret, indexer.rows_query_timeout),
+        indexer.sql_connect_timeout,
+    ))
+}
+
+/// Default libpq `connect_timeout` for a network database source (`ESCUREL_SQL_CONNECT_TIMEOUT_SECS`).
+pub const SQL_CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Bound the libpq CONNECT (`connect_timeout=<secs>`) of a Postgres source. DuckDB's interrupt cannot
+/// cancel a connect that is blocked in libpq, so a black-holed host would hold the tenant's single
+/// index connection for the OS TCP timeout (minutes). A DSN that already names its own
+/// `connect_timeout` keeps it. Other connectors are returned unchanged.
+pub(crate) fn with_connect_timeout(
+    connector: SqlConnector,
+    dsn: &str,
+    timeout: std::time::Duration,
+) -> String {
+    // Decided from the PARSED keys, and added with the same encoder as the statement timeout, so it is
+    // right for both the key/value and the URI spelling (and for a pinned `hostaddr=` string).
+    if connector != SqlConnector::Postgres || crate::dsn::has_key(dsn, "connect_timeout") {
+        return dsn.to_owned();
+    }
+    crate::dsn::with_param(
+        dsn,
+        "connect_timeout",
+        &timeout.as_secs().max(1).to_string(),
+    )
+}
+
+/// Make a Postgres server enforce the statement timeout itself.
+///
+/// DuckDB's interrupt cannot cancel a scan that is blocked inside the `postgres` extension's own
+/// libpq call (observed: a 2 s timeout let a slow view run for the full 60 s), so the limit is also
+/// passed to the server as the libpq `options` parameter, `-cstatement_timeout=<ms>` (no spaces or
+/// quotes, so it is safe in both DSN spellings). A DSN that already sets `options` is left alone: the
+/// operator's choice wins.
+pub(crate) fn with_server_statement_timeout(
+    connector: SqlConnector,
+    dsn: &str,
+    timeout: std::time::Duration,
+) -> String {
+    // Decided from the PARSED keys: a substring test took `application_name=options` for the option,
+    // and appending a bare `options=-c…=…` to a URI is a libpq error ("extra key/value separator").
+    if connector != SqlConnector::Postgres || crate::dsn::has_key(dsn, "options") {
+        return dsn.to_owned();
+    }
+    let ms = timeout.as_millis().max(1);
+    crate::dsn::with_param(dsn, "options", &format!("-cstatement_timeout={ms}"))
+}
+
 /// Resolve the FROM-clause source expression, performing any required
 /// INSTALL/LOAD + READ_ONLY ATTACH first. Directory connectors need no
 /// credential; DB connectors dereference the admin credential registry.
@@ -204,6 +314,15 @@ async fn prepare_source(
                 )));
             }
             let glob = directory_glob(binding.connector, &binding.relation);
+            // A directory connector reads whatever the gateway can: confine it to the directories the
+            // operator exposes (`ESCUREL_SQL_FILE_DIRS`), exactly as a file database is.
+            if let Some(resolver) = indexer.credential_resolver() {
+                resolver
+                    .check_directory(binding.connector.as_str(), &glob)
+                    .map_err(|m| {
+                        SqlViewError::InvalidBinding(format!("backend_unavailable: {m}"))
+                    })?;
+            }
             let func = match binding.connector {
                 SqlConnector::JsonDir => "read_json_auto",
                 SqlConnector::ParquetDir => "read_parquet",
@@ -223,7 +342,8 @@ async fn prepare_source(
             if matches!(db, SqlConnector::Erpl) && !allow_unsigned {
                 return Err(SqlViewError::UnsignedExtensionNotAllowed);
             }
-            if !is_safe_sql_fragment(&cred.secret) {
+            let secret = resolve_attach_secret(indexer, db, &cred.secret)?;
+            if !is_safe_sql_fragment(&secret) {
                 return Err(SqlViewError::InvalidBinding(
                     "registered secret contains an unsafe character".to_owned(),
                 ));
@@ -237,10 +357,22 @@ async fn prepare_source(
             if matches!(db, SqlConnector::Erpl) && allow_unsigned {
                 conn.execute_batch("SET allow_unsigned_extensions=true;")?;
             }
-            for stmt in install_load(db) {
-                conn.execute_batch(stmt)?;
-            }
-            conn.execute_batch(&attach_sql(db, attach, &cred.secret))?;
+            // INSTALL/LOAD/ATTACH talk to the network synchronously while the single connection is
+            // held: tell the runtime so it moves its other tasks off this worker meanwhile.
+            super::blocking_section(|| -> Result<(), SqlViewError> {
+                for stmt in install_load(db) {
+                    conn.execute_batch(stmt)?;
+                }
+                // The driver's own words can quote the connection string (and so the password): scrub.
+                conn.execute_batch(&attach_sql(db, attach, &secret))
+                    .map_err(|e| {
+                        SqlViewError::InvalidBinding(format!(
+                            "backend_unavailable: the source could not be attached: {}",
+                            crate::dsn::scrub(&e.to_string(), &secret)
+                        ))
+                    })?;
+                Ok(())
+            })?;
             // The postgres/mysql scanners cache the remote catalog at ATTACH
             // time. Because the Indexer's connection is persistent, a view
             // re-materialised by validate_bindings / reconstruct_views would
@@ -270,7 +402,7 @@ pub(crate) async fn search_candidates(
     q: &str,
     skill_filter: Option<&str>,
 ) -> Result<Vec<crate::search::SearchHit>, crate::IndexerError> {
-    use escurel_md::PageType;
+    use escurel_md::PageKind;
 
     // 1. Enumerate sql_view overlay pages (release the lock before the
     //    per-instance work, which re-locks for skill_backend + the match
@@ -360,7 +492,7 @@ pub(crate) async fn search_candidates(
                 page_id: row.page_id,
                 slug: row.slug,
                 skill: row.skill,
-                page_type: PageType::Instance,
+                page_kind: PageKind::Instance,
                 anchor: None,
                 snippet: format!("[sql_view {}] matched {count} row(s)", row.view),
                 score: count as f64,
@@ -424,6 +556,19 @@ pub(crate) fn project_view_rows(
     Ok(out)
 }
 
+/// The READ-WRITE `ATTACH` of the same source, used ONLY by write-back on its own short-lived
+/// connection (the indexer's persistent connection never holds a writable attachment).
+#[must_use]
+pub(crate) fn attach_sql_rw(connector: SqlConnector, alias: &str, secret: &str) -> String {
+    let ty = match connector {
+        SqlConnector::Postgres => "postgres",
+        SqlConnector::Mysql => "mysql",
+        SqlConnector::Sqlite => "sqlite",
+        _ => "",
+    };
+    format!("ATTACH '{secret}' AS {alias} (TYPE {ty})")
+}
+
 /// Build the READ_ONLY `ATTACH` for a database connector. Pure so the
 /// no-write-back invariant (REQ-SQL-04) is unit-testable without a live
 /// source. `alias` and `secret` are validated by the caller.
@@ -455,7 +600,7 @@ pub fn attach_sql(connector: SqlConnector, alias: &str, secret: &str) -> String 
 }
 
 /// The INSTALL/LOAD statements a DB connector needs before ATTACH.
-fn install_load(connector: SqlConnector) -> &'static [&'static str] {
+pub(crate) fn install_load(connector: SqlConnector) -> &'static [&'static str] {
     match connector {
         SqlConnector::Postgres => &["INSTALL postgres;", "LOAD postgres;"],
         SqlConnector::Mysql => &["INSTALL mysql;", "LOAD mysql;"],
@@ -486,7 +631,7 @@ fn view_name(skill: &str, id: &str) -> String {
     format!("vw_{}__{}", sanitize_ident(skill), sanitize_ident(id))
 }
 
-fn sanitize_ident(s: &str) -> String {
+pub(crate) fn sanitize_ident(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for ch in s.chars() {
         if ch.is_ascii_alphanumeric() || ch == '_' {
@@ -511,7 +656,7 @@ pub(crate) fn is_managed_view(view: &str) -> bool {
 }
 
 /// Whether `s` is a safe unquoted DuckDB identifier (view name / alias).
-fn is_valid_identifier(s: &str) -> bool {
+pub(crate) fn is_valid_identifier(s: &str) -> bool {
     !s.is_empty()
         && s.chars()
             .next()
@@ -533,7 +678,7 @@ pub(crate) fn is_safe_sql_fragment(s: &str) -> bool {
 
 /// Validate that a relation name is strictly a dot-separated sequence of
 /// valid unquoted identifiers.
-fn is_valid_db_relation(s: &str) -> bool {
+pub(crate) fn is_valid_db_relation(s: &str) -> bool {
     !s.is_empty() && s.split('.').all(is_valid_identifier)
 }
 
@@ -846,7 +991,10 @@ fn hash_binding(b: &SqlViewBinding) -> String {
 
 /// The view's result schema as `(column_name, column_type)` in order.
 /// `DESCRIBE` returns one row per column.
-fn describe(conn: &duckdb::Connection, view: &str) -> Result<Vec<(String, String)>, SqlViewError> {
+pub(crate) fn describe(
+    conn: &duckdb::Connection,
+    view: &str,
+) -> Result<Vec<(String, String)>, SqlViewError> {
     let mut stmt = conn.prepare(&format!("DESCRIBE {view}"))?;
     let mut rows = stmt.query([])?;
     let mut out = Vec::new();
@@ -897,7 +1045,7 @@ fn overlay_markdown(
     }
     format!(
         "---\n\
-         type: instance\n\
+         kind: instance\n\
          skill: {skill}\n\
          id: {id}\n\
          backend_ref:\n\
@@ -1225,5 +1373,135 @@ mod tests {
         assert!(!is_allowed_filter("1 = 1 OR name = 'x'"));
         assert!(!is_allowed_filter("score > 1 + 1"));
         assert!(!is_allowed_filter("col = 'unterminated"));
+    }
+}
+
+#[cfg(test)]
+mod statement_timeout_tests {
+    use super::*;
+    use std::time::Duration;
+
+    #[test]
+    fn a_postgres_dsn_gains_the_servers_statement_timeout_in_both_spellings() {
+        let t = Duration::from_secs(30);
+        assert_eq!(
+            with_server_statement_timeout(SqlConnector::Postgres, "host=h dbname=d ", t),
+            "host=h dbname=d options=-cstatement_timeout=30000"
+        );
+        assert_eq!(
+            with_server_statement_timeout(SqlConnector::Postgres, "postgres://u@h/d", t),
+            "postgres://u@h/d?options=-cstatement_timeout%3D30000"
+        );
+        assert_eq!(
+            with_server_statement_timeout(
+                SqlConnector::Postgres,
+                "postgres://u@h/d?sslmode=require",
+                t
+            ),
+            "postgres://u@h/d?sslmode=require&options=-cstatement_timeout%3D30000"
+        );
+    }
+
+    /// libpq refuses a literal `=` inside a URI query value ("extra key/value separator"), so the
+    /// appended option is percent-encoded; and `options` is found by KEY, not as a substring.
+    #[test]
+    fn the_option_is_found_by_key_and_encoded_in_a_uri() {
+        let t = Duration::from_secs(30);
+        assert!(
+            with_server_statement_timeout(
+                SqlConnector::Postgres,
+                "host=h application_name=options",
+                t
+            )
+            .ends_with("options=-cstatement_timeout=30000"),
+            "an application_name that spells `options` is not the option"
+        );
+        assert_eq!(
+            with_server_statement_timeout(
+                SqlConnector::Postgres,
+                "postgres://u@h/d?options=-cwork_mem%3D1MB",
+                t
+            ),
+            "postgres://u@h/d?options=-cwork_mem%3D1MB"
+        );
+    }
+
+    #[test]
+    fn an_operators_own_options_and_other_connectors_are_left_alone() {
+        let t = Duration::from_secs(30);
+        let own = "host=h options=-cstatement_timeout=5000";
+        assert_eq!(
+            with_server_statement_timeout(SqlConnector::Postgres, own, t),
+            own
+        );
+        assert_eq!(
+            with_server_statement_timeout(SqlConnector::Sqlite, "/data/x.db", t),
+            "/data/x.db"
+        );
+    }
+
+    #[test]
+    fn a_postgres_connect_is_bounded_in_both_dsn_spellings_and_an_own_value_wins() {
+        let t = Duration::from_secs(5);
+        assert_eq!(
+            with_connect_timeout(SqlConnector::Postgres, "host=h dbname=d ", t),
+            "host=h dbname=d connect_timeout=5"
+        );
+        assert_eq!(
+            with_connect_timeout(
+                SqlConnector::Postgres,
+                "postgres://u@h/d?sslmode=require",
+                t
+            ),
+            "postgres://u@h/d?sslmode=require&connect_timeout=5"
+        );
+        let own = "host=h connect_timeout=60";
+        assert_eq!(with_connect_timeout(SqlConnector::Postgres, own, t), own);
+        assert_eq!(
+            with_connect_timeout(SqlConnector::Sqlite, "/data/x.db", t),
+            "/data/x.db"
+        );
+    }
+}
+
+#[cfg(test)]
+mod connect_timeout_tests {
+    use super::*;
+    use std::time::Duration;
+
+    #[test]
+    fn connect_timeout_is_added_in_both_dsn_spellings_and_never_twice() {
+        let t = Duration::from_secs(7);
+        let kv = with_connect_timeout(SqlConnector::Postgres, "host=db dbname=x", t);
+        assert!(kv.contains("connect_timeout=7"), "{kv}");
+        let uri = with_connect_timeout(
+            SqlConnector::Postgres,
+            "postgresql://u:p@db/x?sslmode=require",
+            t,
+        );
+        assert!(
+            uri.contains("connect_timeout=7") && uri.contains("sslmode=require"),
+            "{uri}"
+        );
+        // The statement timeout and the connect timeout compose on a URI without a bare `options=`.
+        let both = with_connect_timeout(
+            SqlConnector::Postgres,
+            &with_server_statement_timeout(SqlConnector::Postgres, "postgresql://u:p@db/x", t),
+            t,
+        );
+        assert_eq!(both.matches('?').count(), 1, "{both}");
+        // An operator's own value wins, and `application_name=connect_timeout` is not the option.
+        assert_eq!(
+            with_connect_timeout(SqlConnector::Postgres, "host=db connect_timeout=2", t),
+            "host=db connect_timeout=2"
+        );
+        assert!(
+            with_connect_timeout(
+                SqlConnector::Postgres,
+                "host=db application_name=connect_timeout",
+                t
+            )
+            .ends_with("connect_timeout=7")
+        );
     }
 }

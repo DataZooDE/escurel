@@ -106,11 +106,12 @@ impl Mcp {
             return Err(format!("/mcp {name} tool error: {err}"));
         }
         let result = body.get("result").cloned().unwrap_or(Value::Null);
-        // The gateway MCP-shapes a `tools/call` success into a
-        // `CallToolResult` (`{content, structuredContent, isError}`);
-        // unwrap `structuredContent` (the raw payload) so the fold below
-        // reads `events` / `body` / `frontmatter` directly.
-        Ok(result.get("structuredContent").cloned().unwrap_or(result))
+        // The gateway MCP-shapes a `tools/call` result into a `CallToolResult`
+        // (content, the structured payload, isError). Open it through the ONE shared reader so a
+        // REFUSED call (`isError`, `ok: false`) is an error here, never a payload the fold below
+        // would read `events` / `body` / `frontmatter` out of as if it had succeeded.
+        escurel_types::call_result::unwrap_call_result(result)
+            .map_err(|refusal| format!("/mcp {name} refused: {refusal}"))
     }
 }
 
@@ -144,6 +145,28 @@ fn render_frontmatter(value: Option<&Value>) -> String {
     }
     out.push_str("---\n");
     out
+}
+
+/// The page's frontmatter without the row's source columns: for a `rows` instance, `expand` merges
+/// the row's projected columns (`backend_projection.source`) over the linked markdown's frontmatter,
+/// and only the markdown side may be written. Any other page is returned unchanged.
+fn without_source_columns(expanded: &Value) -> Option<Value> {
+    let mut fm = expanded.get("frontmatter")?.clone();
+    let projection = expanded
+        .get("backend_projection")
+        .cloned()
+        .unwrap_or(Value::Null);
+    if projection.get("instances").and_then(Value::as_str) == Some("rows")
+        && let (Some(map), Some(source)) = (
+            fm.as_object_mut(),
+            projection.get("source").and_then(Value::as_object),
+        )
+    {
+        for key in source.keys() {
+            map.remove(key);
+        }
+    }
+    Some(fm)
 }
 
 /// Upsert a scalar `key: value` into a rendered frontmatter block
@@ -240,7 +263,7 @@ fn derive_instance_frontmatter(page_id: &str, vote: Option<&VoteStamp>) -> Optio
     if skill.is_empty() || id.is_empty() {
         return None;
     }
-    let mut fm = format!("---\ntype: instance\nskill: {skill}\nid: {id}\n");
+    let mut fm = format!("---\nkind: instance\nskill: {skill}\nid: {id}\n");
     if let Some(v) = vote {
         // `claim` is the upstream item's slug (the tally's grouping key), or
         // the vote's own id when no `over` was routed — mirrors the Gemini
@@ -372,11 +395,29 @@ fn analyse(mcp: &Mcp, event: &Value, event_id: &str) -> Option<analysis::Built> 
         return None;
     }
     // A human id: supplier and day, with a counter when that day already has an analysis.
+    // An id is also TAKEN while an earlier analysis is still an open DRAFT (no stored page holds it
+    // yet): two runs for one supplier on one day must not both claim it, or the second dead-letters on
+    // "a draft is already open for this page".
+    let drafted: Vec<String> = mcp
+        .call("list_drafts", json!({}))
+        .ok()
+        .and_then(|d| d.get("drafts").and_then(Value::as_array).cloned())
+        .unwrap_or_default()
+        .iter()
+        .filter(|d| d.get("status").and_then(Value::as_str) == Some("open"))
+        .filter_map(|d| {
+            d.get("target_page_id")
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+        })
+        .collect();
     let id = analysis::analysis_id(&supplier.id, event_id, |candidate| {
         let page = format!("markdown/instances/supplier-risk-analysis__{candidate}.md");
-        mcp.call("expand", json!({ "page_id": page }))
-            .ok()
-            .is_some_and(|r| r.get("page").is_some_and(|p| !p.is_null()))
+        drafted.contains(&page)
+            || mcp
+                .call("expand", json!({ "page_id": page }))
+                .ok()
+                .is_some_and(|r| r.get("page").is_some_and(|p| !p.is_null()))
     });
     Some(analysis::build_analysis(
         &supplier, &signal, &lines, event_id, &id, title,
@@ -535,7 +576,11 @@ fn run(task: &HarnessTask) -> Result<HarnessOutcome, String> {
     // its `markdown/instances/<skill>/<id>.md` path. This lets the echo
     // harness stand in for a phase that produces a fresh typed instance (a
     // dynamic-workflow step), not only one that appends to an existing page.
-    let mut frontmatter = render_frontmatter(expanded.get("frontmatter"));
+    // A ROW instance (`instances: rows`) reads as the row's source columns MERGED with its linked
+    // markdown's own frontmatter. The write goes to the markdown side only, so the source columns are
+    // dropped before the page is written back (the gateway refuses a write that carries one).
+    let writable_frontmatter = without_source_columns(&expanded);
+    let mut frontmatter = render_frontmatter(writable_frontmatter.as_ref());
     if frontmatter.is_empty() {
         // A missing target is *created*. If the driving step is a barrier
         // vote, stamp the tally's coordinates (`§3.5`) so distinct skeptics
@@ -714,6 +759,24 @@ fn run(task: &HarnessTask) -> Result<HarnessOutcome, String> {
             updated.get("issues").cloned().unwrap_or_default()
         ));
     }
+    // A write the gateway HELD (`held_for_review`: the skill's autonomy changed under the run, or the
+    // page configures agents) did not land: `ok` is true but nothing moved. Marking the event processed
+    // would tell the inbox it was folded when it is waiting for a person; report it as drafted and stop,
+    // as the review path above does.
+    if let Some(draft_id) = held_draft(&updated) {
+        return Ok(HarnessOutcome {
+            result_ref: knob_result_ref(),
+            usage: None,
+            ok: true,
+            status: HarnessStatus::Ok,
+            summary: format!(
+                "the gateway held the fold of event {event_id} for {instance_page_id} \
+                 (draft {draft_id}); awaiting a human"
+            ),
+            tool_calls,
+            produced_instance: Some(instance_page_id),
+        });
+    }
     let new_version = updated
         .get("new_version")
         .and_then(Value::as_str)
@@ -737,6 +800,17 @@ fn run(task: &HarnessTask) -> Result<HarnessOutcome, String> {
         ),
         tool_calls,
         produced_instance: Some(instance_page_id),
+    })
+}
+
+/// The draft an `update_page` answer says it was HELD in (`held_for_review: true`), `None` when the
+/// write landed.
+fn held_draft(updated: &Value) -> Option<String> {
+    (updated.get("held_for_review") == Some(&json!(true))).then(|| {
+        updated["draft"]["draft_id"]
+            .as_str()
+            .unwrap_or_default()
+            .to_owned()
     })
 }
 
@@ -812,7 +886,7 @@ fn issue_md(
     id: &str,
 ) -> String {
     format!(
-        "---\ntype: instance\nskill: issue\nid: {id}\nkind: {kind}\nseverity: {severity}\n\
+        "---\nkind: instance\nskill: issue\nid: {id}\nissue_kind: {kind}\nseverity: {severity}\n\
          subject_page: {subject}\nmessage: {message}\nsource_run: {run}\n---\n# {kind} issue\n\n{message}\n"
     )
 }
@@ -1072,7 +1146,7 @@ fn curate_index(
 
     let index_id = run_slug(index_page);
     let content = format!(
-        "---\ntype: instance\nskill: index\nid: {index_id}\ngenerated_at: {at}\nsource_run: {run}\n---\n{body}"
+        "---\nkind: instance\nskill: index\nid: {index_id}\ngenerated_at: {at}\nsource_run: {run}\n---\n{body}"
     );
     mcp.call(
         "update_page",
@@ -1161,11 +1235,11 @@ fn eval_score(
     let result_id = run_slug(result_page);
     let content = if passed {
         format!(
-            "---\ntype: instance\nskill: eval-result\nid: {result_id}\ntask: {task_id}\nverdict: pass\n---\n# eval-result\n\nPASS: {implicated} answers the task.\n"
+            "---\nkind: instance\nskill: eval-result\nid: {result_id}\ntask: {task_id}\nverdict: pass\n---\n# eval-result\n\nPASS: {implicated} answers the task.\n"
         )
     } else {
         format!(
-            "---\ntype: instance\nskill: eval-result\nid: {result_id}\ntask: {task_id}\nverdict: fail\n\
+            "---\nkind: instance\nskill: eval-result\nid: {result_id}\ntask: {task_id}\nverdict: fail\n\
              target_page: {implicated}\nfix: {fix}\n---\n# eval-result\n\nFAIL: {implicated} is missing the expected content.\n"
         )
     };
@@ -1323,7 +1397,7 @@ mod tests {
 
     #[test]
     fn stamp_inserts_a_new_key_before_the_closing_fence() {
-        let fm = "---\ntype: instance\nskill: entity\nid: acme\n---\n";
+        let fm = "---\nkind: instance\nskill: entity\nid: acme\n---\n";
         let out = stamp_frontmatter(fm, "source_event", "EV1");
         assert!(out.contains("source_event: EV1\n"));
         assert!(out.contains("skill: entity\n"));
@@ -1333,7 +1407,7 @@ mod tests {
 
     #[test]
     fn stamp_replaces_an_existing_key() {
-        let fm = "---\ntype: instance\nsource_event: OLD\nid: acme\n---\n";
+        let fm = "---\nkind: instance\nsource_event: OLD\nid: acme\n---\n";
         let out = stamp_frontmatter(fm, "source_event", "NEW");
         assert!(out.contains("source_event: NEW\n"));
         assert!(!out.contains("OLD"));
@@ -1362,7 +1436,7 @@ mod tests {
                 .expect("instance path");
         assert_eq!(
             fm,
-            "---\ntype: instance\nskill: risk-signal\nid: r1-signals-9\n---\n"
+            "---\nkind: instance\nskill: risk-signal\nid: r1-signals-9\n---\n"
         );
     }
 
@@ -1410,5 +1484,18 @@ mod tests {
             fm.contains("claim: \"r1-verify-01\"\n"),
             "fallback to id: {fm}"
         );
+    }
+}
+
+#[cfg(test)]
+mod held_tests {
+    use super::*;
+
+    #[test]
+    fn a_held_update_is_not_a_landed_one() {
+        let held = json!({ "ok": true, "held_for_review": true, "draft": { "draft_id": "d1" } });
+        assert_eq!(held_draft(&held).as_deref(), Some("d1"));
+        let landed = json!({ "ok": true, "new_version": "v3" });
+        assert_eq!(held_draft(&landed), None);
     }
 }

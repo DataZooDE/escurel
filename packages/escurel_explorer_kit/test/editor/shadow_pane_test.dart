@@ -16,7 +16,7 @@ ExpandResult _page({
 }) => ExpandResult(
   pageId: 'markdown/skills/pallet-consolidation.md',
   skill: 'pallet-consolidation',
-  pageType: PageType.skill,
+  pageKind: PageKind.skill,
   frontmatter: frontmatter,
   body: '',
   blocks: const [],

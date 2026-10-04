@@ -1,5 +1,5 @@
 ---
-type: skill
+kind: skill
 id: dataset
 description: A data source an analysis consumes. The leaf of the knowledge graph's provenance chain.
 required_frontmatter: [name, grain]
