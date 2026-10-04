@@ -4,10 +4,15 @@ import { describeError } from '../errors';
 import { pageIdFromPath } from '../fs/read';
 import {
   buildSkillPageModel,
+  type SkillPageModel,
   type SkillPageToHost,
   type SkillPageToWebview,
 } from '../shared/skillPage';
+import { skillPageMessageAllowed } from '../shared/hostMessages';
 import { safePost } from '../shared/safePost';
+import { latestLoader } from '../shared/latestLoader';
+import { log } from '../log';
+import { newNonce } from './nonce';
 
 export const SKILL_VIEW_TYPE = 'escurel.skillPage';
 
@@ -54,16 +59,18 @@ export class SkillPageEditor implements vscode.CustomReadonlyEditorProvider {
     };
     panel.webview.html = this.html(panel.webview);
     const post = (m: SkillPageToWebview) => safePost(panel, m);
-    const load = async () => {
-      if (!skillId)
-        return post({ type: 'error', message: `not a skill page: ${doc.uri.toString()}` });
-      post({ type: 'loading' });
-      try {
+    // The model the host last posted: a webview message is judged against THIS, never against what
+    // the webview claims. Cleared when the gateway changes (it belongs to the old one).
+    let current: SkillPageModel | undefined;
+    const loader = latestLoader<{ message: SkillPageToWebview; model?: SkillPageModel }>(
+      async () => {
+        if (!skillId)
+          return { message: { type: 'error', message: `not a skill page: ${doc.uri.toString()}` } };
         const c = this.client();
         const skills = await c.listSkills();
         const skill = skills.find((s) => s.id === skillId);
         if (!skill)
-          return post({ type: 'error', message: `skill ${skillId} is not in the catalogue` });
+          return { message: { type: 'error', message: `skill ${skillId} is not in the catalogue` } };
         // The two lists are additions to the page: a failure in either degrades to empty, it must not
         // cost the person the skill itself.
         const [instances, events] = await Promise.all([
@@ -76,26 +83,50 @@ export class SkillPageEditor implements vscode.CustomReadonlyEditorProvider {
             .then((r) => r.events)
             .catch(() => []),
         ]);
-        post({ type: 'skill', model: buildSkillPageModel(skill, instances, events) });
-      } catch (err) {
-        post({ type: 'error', message: describeError(err) });
-      }
+        const model = buildSkillPageModel(skill, instances, events);
+        return { message: { type: 'skill', model }, model };
+      },
+      (result) => {
+        if (result.model) current = result.model;
+        post(result.message);
+      },
+      (err) => post({ type: 'error', message: describeError(err) }),
+    );
+    const load = async () => {
+      post({ type: 'loading' });
+      await loader.run();
     };
     const subs: vscode.Disposable[] = [
-      panel.webview.onDidReceiveMessage((m: SkillPageToHost) => this.onMessage(m, pageId, load)),
-      this.onDidChange(() => void load()),
+      panel.webview.onDidReceiveMessage((m: SkillPageToHost) =>
+        this.onMessage(m, pageId, current, load),
+      ),
+      this.onDidChange(() => {
+        loader.invalidate();
+        current = undefined;
+        void load();
+      }),
       panel.onDidChangeViewState((e) => {
         if (e.webviewPanel.active) void load();
       }),
     ];
-    panel.onDidDispose(() => subs.forEach((s) => s.dispose()));
+    panel.onDidDispose(() => {
+      loader.invalidate();
+      subs.forEach((s) => s.dispose());
+    });
   }
 
   private onMessage(
     m: SkillPageToHost,
     pageId: string | undefined,
+    model: SkillPageModel | undefined,
     load: () => Promise<void>,
   ): void {
+    if (!skillPageMessageAllowed(model, m)) {
+      log().warn(
+        `escurel: refused a skill page message of type ${String((m as { type?: unknown }).type)}`,
+      );
+      return;
+    }
     switch (m.type) {
       case 'ready':
       case 'refresh':
@@ -120,9 +151,7 @@ export class SkillPageEditor implements vscode.CustomReadonlyEditorProvider {
     const script = webview.asWebviewUri(
       vscode.Uri.joinPath(this.context.extensionUri, 'dist', 'webview', 'skill-page.js'),
     );
-    const nonce = Array.from({ length: 16 }, () =>
-      Math.floor(Math.random() * 36).toString(36),
-    ).join('');
+    const nonce = newNonce();
     return `<!doctype html><html><head><meta charset="utf-8" />
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${webview.cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}';" />
 <style>body{margin:0}</style></head>

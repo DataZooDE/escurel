@@ -64,7 +64,7 @@ describe('<escurel-skill-page>', () => {
     const raw = (await oneEvent(el, 'escurel-message')) as CustomEvent<SkillPageToHost>;
     expect(raw.detail).to.deep.equal({ type: 'show-raw' });
 
-    expect(text(q(el, '.follow-ups button'))).to.equal('Check credit');
+    expect(text(q(el, '.follow-ups button'))).to.equal('Check credit → credit-check');
     setTimeout(() => (q(el, '.follow-ups button') as HTMLButtonElement).click());
     const start = (await oneEvent(el, 'escurel-message')) as CustomEvent<SkillPageToHost>;
     expect(start.detail).to.deep.equal({ type: 'start-skill', skill: 'credit-check', mode: 'run' });
