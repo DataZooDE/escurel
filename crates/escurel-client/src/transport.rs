@@ -174,6 +174,13 @@ impl McpTransport {
         serde_json::from_value(result).map_err(|e| Error::Decode(format!("{tool}: {e}")))
     }
 
+    /// Like [`Self::call`] for the tools whose payload is a REPORT that may say `ok: false` (a pack
+    /// rebase with conflicts): the payload is returned whether or not the gateway flagged it.
+    pub(crate) async fn call_outcome(&self, tool: &str, arguments: Value) -> Result<Value, Error> {
+        let result = self.call_result(tool, arguments).await?;
+        Ok(escurel_types::call_result::payload_of(&result))
+    }
+
     /// Like [`Self::call_typed`] for the tools whose RESPONSE TYPE models `ok`/`issues` itself (the
     /// write family and `validate`): a refusal is the typed response with `ok: false`, which callers
     /// already branch on, not an `Err`.

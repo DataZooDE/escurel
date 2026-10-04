@@ -396,8 +396,9 @@ impl AdminClient {
         acknowledge_conflicts: bool,
         dry_run: bool,
     ) -> Result<Value, Error> {
+        // A conflicting rebase answers `ok: false` WITH the conflict report: a report, not a refusal.
         self.transport
-            .call(
+            .call_outcome(
                 "rebase_pack",
                 json!({
                     "tenant_id": tenant_id,

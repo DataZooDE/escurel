@@ -110,10 +110,11 @@ export class EscurelClient {
     } catch (e) {
       throw this.mapError(tool, e);
     }
-    const payload = payloadOf(result as { structuredContent?: unknown; content?: unknown });
-    if (tool !== 'validate' && (result.isError || payload.ok === false))
-      throw EscurelError.fromPayload(tool, payload);
-    return payload as T;
+    const raw = result as { structuredContent?: unknown; content?: unknown; isError?: unknown };
+    // `validate` reports problems with `ok: false` and is not an error: its caller reads the issues.
+    const refused = tool === 'validate' ? undefined : refusalOf(raw);
+    if (refused) throw EscurelError.fromPayload(tool, refused);
+    return payloadOf(raw) as T;
   }
 
   /**
@@ -322,4 +323,30 @@ export function payloadOf(result: {
     }
   }
   return {};
+}
+
+/**
+ * The payload of a REFUSED tool result (`isError`, or `ok: false`), else `undefined`. A refusal is
+ * always an error to the caller, never data: the payload is guaranteed to carry at least one issue,
+ * built from the result's own text when the tool named none, so the person is told why.
+ */
+export function refusalOf(result: {
+  structuredContent?: unknown;
+  content?: unknown;
+  isError?: unknown;
+}): Record<string, unknown> | undefined {
+  const payload = payloadOf(result);
+  if (result.isError !== true && payload.ok !== false) return undefined;
+  const issues = Array.isArray(payload.issues) ? payload.issues : [];
+  if (issues.length > 0) return payload;
+  const first = Array.isArray(result.content)
+    ? (result.content[0] as { text?: unknown })
+    : undefined;
+  const message =
+    typeof first?.text === 'string' && first.text ? first.text : 'the tool refused the call';
+  return {
+    ...payload,
+    ok: false,
+    issues: [{ severity: 'error', code: 'tool_error', location: '', message }],
+  };
 }

@@ -657,6 +657,81 @@ void main() {
       );
     });
 
+    // A REFUSED read is an `isError` result whose payload is `{ok: false, issues}`. Reading the
+    // payload blindly parsed it as an empty success (a silent partial read after a denial).
+    test('a refused read is an exception, not an empty result', () async {
+      mock.toolHandlers['search'] = (_) => {
+        'isError': true,
+        'content': [
+          {'type': 'text', 'text': 'refused: invalid_limit'},
+        ],
+        'structuredContent': {
+          'ok': false,
+          'issues': [
+            {
+              'severity': 'error',
+              'code': 'invalid_limit',
+              'location': 'arguments.k',
+              'message': 'k is an integer from 1 to 10000; got 99999',
+            },
+          ],
+        },
+      };
+      await expectLater(
+        client.search(q: 'x', k: 99999),
+        throwsA(
+          isA<EscurelToolException>()
+              .having((e) => e.code, 'code', 'invalid_limit')
+              .having((e) => e.message, 'message', contains('10000')),
+        ),
+      );
+    });
+
+    test(
+      'a refusal with no issue still carries the tool\u2019s own text',
+      () async {
+        mock.toolHandlers['list_skills'] = (_) => {
+          'isError': true,
+          'content': [
+            {'type': 'text', 'text': 'the source is down'},
+          ],
+        };
+        await expectLater(
+          client.listSkills(),
+          throwsA(
+            isA<EscurelToolException>()
+                .having((e) => e.code, 'code', 'tool_error')
+                .having(
+                  (e) => e.message,
+                  'message',
+                  contains('the source is down'),
+                ),
+          ),
+        );
+      },
+    );
+
+    // The write family models `ok`/`issues` itself: a refused write is a result, not an exception.
+    test('a refused write still returns its issues', () async {
+      mock.toolHandlers['update_page'] = (_) => {
+        'isError': true,
+        'structuredContent': {
+          'ok': false,
+          'issues': [
+            {
+              'severity': 'error',
+              'code': 'frontmatter_type_removed',
+              'location': 'frontmatter.type',
+              'message': 'rename `type:` to `kind:`',
+            },
+          ],
+        },
+      };
+      final r = await client.updatePage('markdown/instances/a/b.md', 'x');
+      expect(r.ok, isFalse);
+      expect(r.issues.single.code, 'frontmatter_type_removed');
+    });
+
     test('connection failure surfaces as EscurelTransportException', () async {
       final bad = HttpEscurelClient(baseUrl: 'http://127.0.0.1:1');
       await expectLater(
