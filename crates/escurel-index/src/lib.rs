@@ -24,6 +24,7 @@ pub mod branches;
 pub mod chat;
 pub mod citation;
 pub mod crdt_history;
+pub mod credential_resolver;
 pub mod creds;
 mod cursor;
 pub mod drafts;
@@ -59,6 +60,7 @@ pub use backend::{
 pub use branches::{BranchInfo, BranchPage};
 pub use chat::{AppendChatMessage, ChatMessage, ChatPage, ListChatMessages};
 pub use citation::IndexerCitationLookup;
+pub use credential_resolver::{CredentialResolver, SharedResolver};
 pub use creds::{CredentialInfo, CredentialRecord};
 pub use events::{
     EVENTS_MAX_LIMIT, EventInfo, EventKind, EventListFilter, EventPage, ExpiredGatewayRun,

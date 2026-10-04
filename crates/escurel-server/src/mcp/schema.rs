@@ -1167,11 +1167,12 @@ pub(crate) fn tool_defs() -> Vec<ToolDef> {
                  and NEVER in the markdown corpus (REQ-SQL-05).",
             json!({
                 "type": "object",
-                "required": ["name", "connector", "secret"],
+                "required": ["name", "connector"],
                 "properties": {
                     "name": { "type": "string", "description": "The `attach` name skills reference." },
                     "connector": { "type": "string", "description": "postgres|mysql|sqlite|erpl|s3|…" },
-                    "secret": { "type": "string", "description": "DSN / secret material (server-side only)." }
+                    "secret_ref": { "type": "string", "description": "A reference to the connection string, resolved when the source is attached and never stored resolved: `env:ESCUREL_SECRET_<NAME>`, `gsm:<name>` or a `file:` under the operator's secret directories. For `sqlite` the secret is the database FILE path, which must lie under the operator's ESCUREL_SQL_FILE_DIRS; for `postgres`/`mysql` the host must pass the egress policy. Preferred." },
+                    "secret": { "type": "string", "description": "DEPRECATED, development only: the connection string itself, stored server-side. Give `secret_ref` instead." }
                 }
             }),
         ),

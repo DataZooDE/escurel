@@ -144,6 +144,10 @@ pub struct Indexer {
     /// How long one `rows` list/get query may run before it is interrupted (the single DuckDB
     /// connection is held for its duration, so an unbounded source query stalls every other read).
     pub(crate) rows_query_timeout: std::time::Duration,
+    /// Resolves a registered credential (a reference or an inline secret) and polices its target; the
+    /// server installs it. `None` (a bare indexer, most tests) uses the stored value as it is.
+    pub(crate) credential_resolver:
+        std::sync::RwLock<Option<crate::credential_resolver::SharedResolver>>,
 }
 
 /// Which physical tables [`Indexer::list_snapshots`] /
@@ -414,6 +418,7 @@ impl Indexer {
             crdt_pg_backend: std::sync::OnceLock::new(),
             kind_quarantine: std::sync::RwLock::new(None),
             rows_query_timeout: crate::backend::rows::ROWS_QUERY_TIMEOUT,
+            credential_resolver: std::sync::RwLock::new(None),
         })
     }
 
@@ -747,6 +752,21 @@ impl Indexer {
     pub fn with_contextualize(mut self, mode: crate::backend::ContextualizeMode) -> Self {
         self.contextualize = mode;
         self
+    }
+
+    /// Install the operator's credential resolver (secret references, attach-target policy).
+    pub fn set_credential_resolver(&self, resolver: crate::credential_resolver::SharedResolver) {
+        *self
+            .credential_resolver
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(resolver);
+    }
+
+    pub(crate) fn credential_resolver(&self) -> Option<crate::credential_resolver::SharedResolver> {
+        self.credential_resolver
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
     }
 
     /// Bound one `instances: rows` source query (default [`crate::backend::rows::ROWS_QUERY_TIMEOUT`]).

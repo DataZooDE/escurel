@@ -55,6 +55,7 @@ pub mod document;
 mod markdown;
 pub mod remote;
 pub mod rows;
+pub mod rows_write;
 mod sql_view;
 
 use std::collections::HashMap;
@@ -89,6 +90,7 @@ pub use remote::{
     resolve_projection,
 };
 pub use rows::{RowRecord, RowsPage, RowsSource};
+pub use rows_write::RowWriteError;
 pub use sql_view::{
     BindingStatus, MAX_PROJECTION_ROWS, Materialized, SqlViewBackend, SqlViewError,
 };

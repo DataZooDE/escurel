@@ -266,7 +266,13 @@ citation; never treat one as a link. The link's `skill` segment is its
       filterable: [kunnr]        # source columns `list_instances` may filter on (bound params only)
       source: {connector: json_dir, relation: /data/vbak}
       project: {vbeln: sales_doc, netwr: net_value}   # source column -> frontmatter field
+      writable_columns: [status]  # optional, FRONTMATTER field names; database connectors only (see Write-back)
     ```
+    `connector: postgres | mysql | sqlite` reads a real database (`source: {connector: postgres, attach: <credential
+    name>, relation: schema.table}`); the credential is a secret *reference* an admin registers. **Write-back**: a
+    row of such a skill changes only through a draft carrying `write_back: {patch: {field: value}, base_etag}`
+    (`etag` and `writable_columns` are in `backend_projection`; `writable_via: "write_back"`); a human promotes it
+    and escurel runs ONE guarded `UPDATE` (conflict if the row moved; nothing applied).
     A row's page id is `markdown/instances/<skill>/<id>.md`, where `<id>` is the key value (bytes
     outside `[A-Za-z0-9._-]` become `~XX`, and `-` too inside a composite key), so `[[<skill>::<key>]]`
     resolves. `list_instances` pages by keyset on the key (a null `next_cursor` is the only "done": an ACL

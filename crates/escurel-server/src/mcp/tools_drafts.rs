@@ -388,6 +388,22 @@ pub(super) async fn tool_create_draft(
         }
     }
 
+    // A `write_back` intent against a row of a DATABASE `rows` skill: only a draft may carry it, only
+    // for writable columns.
+    if let Some(r) = crate::sql_rows::write_rejection(indexer, &a.target_page_id, &a.content, true)
+        .await
+        .map_err(|e| JsonRpcError::internal(format!("create_draft rows guard: {e}")))?
+    {
+        return Ok(json!({
+            "ok": false,
+            "issues": [{
+                "severity": "error",
+                "code": r.code,
+                "location": r.location,
+                "message": r.message,
+            }],
+        }));
+    }
     // `instances: rows` guard (stage 3): an agent's proposal against a row page is refused when it is
     // MADE — a draft that touches a source column could never be promoted.
     if let Some(r) = indexer

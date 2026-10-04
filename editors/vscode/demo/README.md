@@ -75,6 +75,11 @@ badge. A skill without a folder sits at the top level; its role is inferred when
     under _Awaiting you_; promote it. Now the portal says `B`, the page shows "Last change sent to the
     source …: applied.", and your note is the row's notes. Do the same on a delivery confirmation (status
     `open` → `confirmed`, over MCP).
+    A third source is a real **SQL database**: under _sales/orders_, **orders-db** reads the rows of a SQLite
+    file (`$HOME/.cache/escurel-demo/sqlite/orders.db`, made by `sources/orders-db/seed.mjs`; the gateway sees it
+    only through a registered secret reference and `ESCUREL_SQL_FILE_DIRS`). Open `SO-100231`, press **Change
+    status…**, type `shipped`, promote it from _Awaiting you_: one `UPDATE` runs on that row (check with
+    `sqlite3 …/orders.db 'select order_no,status from orders'`), the others stay as they were.
 15. **When it goes wrong, it says so.** Stop the ratings portal (`kill $(cat $HOME/.cache/escurel-demo/ratings.pid)`)
     and open a supplier-rating row again: the page still opens, flags the source as unreachable, and keeps
     your notes. A change promoted while it is down is retried a few times and then reported as failed; the

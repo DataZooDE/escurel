@@ -10,8 +10,8 @@ re-cuts append `.N`), matching the DataZoo release scheme (cf. erpl).
 
 **Read first:** [`docs/deploy/kind-migration.md`](docs/deploy/kind-migration.md) (stop-first upgrade, backup,
 rollback) and the consumer checklist in
-[`.claude/skills/escurel-platform/CHANGELOG.md`](.claude/skills/escurel-platform/CHANGELOG.md) (0.7.0 – 0.13.0).
-Skill version `0.13.0`. Every consumer that writes pages or reads the tool surface moves in the same window.
+[`.claude/skills/escurel-platform/CHANGELOG.md`](.claude/skills/escurel-platform/CHANGELOG.md) (0.7.0 – 0.14.0).
+Skill version `0.14.0`. Every consumer that writes pages or reads the tool surface moves in the same window.
 
 ### BREAKING
 
@@ -65,6 +65,12 @@ Skill version `0.13.0`. Every consumer that writes pages or reads the tool surfa
 - `backend.instances: rows` (one instance per row of a `sql_view`, optional linked markdown), REST (`openapi`)
   and MCP rows, `describe_backend`, and **human-gated write-back** (draft + promote, etag conflict check,
   idempotency key, bounded retries, dead-letter, audit).
+- **SQL rows over real databases and write-back to them.** `connector: postgres | mysql | sqlite` with
+  `instances: rows`; credentials as `secret_ref` references (inline `secret` deprecated), checked against the
+  egress policy (`ESCUREL_SQL_FILE_DIRS` for SQLite files); a row of a skill with `writable_columns` changes
+  through the same draft → human promote → guarded single-transaction `UPDATE` flow as REST/MCP rows. Postgres
+  attaches enforce the statement timeout server-side. The image bakes the `sqlite` and `mysql` DuckDB
+  extensions next to `postgres`. Verified against a real Postgres container and a real SQLite file.
 
 ### Operators
 

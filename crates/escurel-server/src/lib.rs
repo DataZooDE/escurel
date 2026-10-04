@@ -40,6 +40,7 @@
 mod auth_gate;
 pub mod config;
 mod config_probe;
+pub mod credential_policy;
 pub mod egress;
 mod health;
 mod live_dispatch;
@@ -53,9 +54,11 @@ mod server;
 mod session;
 pub mod snapshot_publish;
 pub mod snapshot_refresh;
+mod sql_rows;
 mod tenant_archive;
 mod webhook;
 mod write_back;
+mod write_back_sql;
 mod ws;
 
 pub use config::{BootedServer, ConfigError, EscurelConfig};

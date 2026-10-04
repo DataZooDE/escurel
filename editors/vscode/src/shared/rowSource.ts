@@ -42,8 +42,10 @@ export function rowSourceOf(projection: unknown): RowSource | undefined {
     },
   };
   if (typeof projection.fetched_at === 'string') out.fetchedAt = projection.fetched_at;
-  if (projection.trust === 'external') {
-    out.external = projection.kind === 'mcp' ? 'MCP' : 'REST';
+  if (projection.trust === 'external') out.external = projection.kind === 'mcp' ? 'MCP' : 'REST';
+  // A row that can be changed through a write-back draft, whatever its source: REST/MCP, and a SQL
+  // database whose skill declares writable columns (the gateway says so with `writable_via`).
+  if (projection.trust === 'external' || projection.writable_via === 'write_back') {
     if (typeof projection.etag === 'string') out.etag = projection.etag;
     if (Array.isArray(projection.writable_columns))
       out.writableColumns = projection.writable_columns.filter(

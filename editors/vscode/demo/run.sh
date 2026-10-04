@@ -81,10 +81,18 @@ svc_port() { python3 -c "import json; print(json.loads(open('$HOME_DIR/$1.json')
 export ESCUREL_DEMO_RATINGS_URL="http://127.0.0.1:$(svc_port ratings)"
 export ESCUREL_DEMO_CONFIRMATIONS_URL="http://127.0.0.1:$(svc_port confirmations)/mcp"
 
+# The SQL database behind `orders-db`: a real SQLite file. A tenant never names a path: an admin
+# registers a credential that is a secret reference (a file under ESCUREL_SECRET_FILE_DIRS holding the
+# connection string), and the operator allows the directory the database file may live in.
+mkdir -p "$HOME_DIR/secrets" "$HOME_DIR/sqlite"
+node "$HERE/sources/orders-db/seed.mjs" "$HOME_DIR/sqlite/orders.db" 2>/dev/null
+printf '%s\n' "$HOME_DIR/sqlite/orders.db" > "$HOME_DIR/secrets/orders-db"
+export ESCUREL_DEMO_ORDERS_DB_SECRET="$HOME_DIR/secrets/orders-db"
+
 # The gateway: verifies tokens, and keeps a fresh bearer in a file (a demo outlasts a token). Its
 # outbound policy is strict by default (https, public addresses only); the demo's outside systems are
 # local, so loopback is opened for THIS process only.
-ESCUREL_EGRESS_ALLOW_LOOPBACK=1 setsid nohup "$GATEWAY_BIN" --tenant vsx --seed "$HOME_DIR/seed" --subject alice \
+ESCUREL_EGRESS_ALLOW_LOOPBACK=1 ESCUREL_SECRET_FILE_DIRS="$HOME_DIR/secrets" ESCUREL_SQL_FILE_DIRS="$HOME_DIR/sqlite" setsid nohup "$GATEWAY_BIN" --tenant vsx --seed "$HOME_DIR/seed" --subject alice \
   --bearer-file "$HOME_DIR/bearer.json" > "$HOME_DIR/gateway.json" 2> "$HOME_DIR/gateway.log" < /dev/null &
 echo $! > "$HOME_DIR/gateway.pid"
 for _ in $(seq 1 120); do [ -s "$HOME_DIR/gateway.json" ] && break; sleep 0.5; done
