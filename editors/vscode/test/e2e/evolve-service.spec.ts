@@ -1,4 +1,5 @@
 import type { Page } from '@playwright/test';
+import { createHash } from 'node:crypto';
 import { expect, test, webviewWith } from './fixtures';
 
 test.use({ runnerHarness: 'gemini', evolveAgentBin: process.env.EVOLVE_AGENT_BIN });
@@ -213,11 +214,28 @@ test('native owner approval, seed run, and validation through Evolve', async ({ 
   const validationReport = validation!.report as Record<string, unknown>;
   expect(validationReport.evaluator).toBe('replenishment_decision_v2');
   expect(validationReport.winner_program_id).toBe(best.id);
+  expect(validationReport.winner_sql_sha256).toBe(createHash('sha256').update(seed).digest('hex'));
+  expect(validationReport.baseline_sql_sha256).toBe(createHash('sha256').update(baseline).digest('hex'));
+  expect(validationReport.holdout_sha256).toBe(holdout.holdout_sha256);
+  expect(validationReport.source_binding_kind).toBe('server_hashed_submitted_json');
   expect(validationReport.training_source_id).toBe(source.training_source_id);
   expect(validationReport.training_source_sha256).toBe(source.normalized_sha256);
   expect(validationReport.submitted_data_scope).toBe('operator_labeled_synthetic_fixture_engineering_only');
   expect(validationReport.outcomes_publicly_disclosed).toBe(true);
   expect(validationReport.comparisons).toHaveLength(2);
+  expect(validationReport.paired_replay_checks_pass).toBe(true);
+  expect(validationReport.cost_improved).toBe(true);
+  for (const comparison of validationReport.comparisons as Array<Record<string, unknown>>) {
+    expect(comparison.pass).toBe(true);
+    expect(comparison.cost_improved).toBe(true);
+    expect(comparison.violations).toEqual([]);
+    expect((comparison.terminal_comparison as Record<string, unknown>).violations).toEqual([]);
+    for (const policy of ['baseline', 'candidate']) {
+      const result = comparison[policy] as Record<string, unknown>;
+      expect((result.full_service as Record<string, unknown>).feasible).toBe(true);
+      expect((result.scored_service as Record<string, unknown>).feasible).toBe(true);
+    }
+  }
 
   let validationReceipt: EventRow | undefined;
   await expect.poll(async () => {
@@ -228,18 +246,28 @@ test('native owner approval, seed run, and validation through Evolve', async ({ 
     return validationReceipt?.event_id;
   }, { timeout: 60_000 }).toBeTruthy();
   expect(validationReceipt!.body).toContain('passed its predeclared checks');
-  expect(validationReceipt!.body).toContain('Published synthetic fixture: sandbox demo only');
+  expect(validationReceipt!.body).toContain('Publicly disclosed synthetic fixture: sandbox demo only');
   const reportPageId = `markdown/instances/evolve_validation_report/${experimentId}.md`;
+  let reportPage: Record<string, unknown> | undefined;
   await expect.poll(async () => {
     try {
       const page = await stack.call('expand', { page_id: reportPageId });
-      return (page.frontmatter as Record<string, unknown>)?.effective_passed;
+      reportPage = page.frontmatter as Record<string, unknown>;
+      return reportPage?.effective_passed;
     } catch { return undefined; }
   }, { timeout: 60_000 }).toBe(true);
+  expect(reportPage!.candidate_use).toBe('sandbox_demo_only');
+  expect(reportPage!.winner_program_id).toBe(best.id);
+  expect(reportPage!.winner_sql_sha256).toBe(validationReport.winner_sql_sha256);
+  expect(reportPage!.next_candidate_action).toBe('evolve_publish_candidate');
+  const finalStatus = await stack.evolveCall('evolve_status', { experiment: experimentId });
+  expect(finalStatus.operational_activation_available).toBe(false);
   const validationThread = await webviewWith(stack.page, 'escurel-thread-canvas');
   await validationThread.locator(`escurel-thread-canvas .card[data-node-id="${validationReceipt!.event_id}"]`).click();
   await validationThread.locator('escurel-thread-inspector .wikilink').nth(1).click();
   await expect(stack.page.getByRole('tab', { name: new RegExp(String(experimentId)), selected: true })).toBeVisible();
   const reportUi = await webviewWith(stack.page, 'escurel-page-as-ui');
-  await expect(reportUi.getByText('Published synthetic fixture', { exact: false })).toBeVisible();
+  await expect(reportUi.getByText(/State:\s*passed/)).toBeVisible();
+  await expect(reportUi.getByText('Publicly disclosed synthetic fixture', { exact: false })).toBeVisible();
+  await expect(reportUi.getByRole('button', { name: 'Create policy candidate', exact: true })).toBeVisible();
 });
