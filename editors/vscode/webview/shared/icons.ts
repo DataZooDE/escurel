@@ -19,3 +19,5 @@ export const syncIcon = () =>
     svg`<path d="M13 8a5 5 0 0 1-8.6 3.4M3 8a5 5 0 0 1 8.6-3.4" /><path d="M11.6 2v2.6H9M4.4 14v-2.6H7" />`,
     'sync',
   );
+export const clockIcon = () =>
+  frame(svg`<circle cx="8" cy="8" r="5.5" /><path d="M8 5v3.2l2 1.3" />`, 'clock');
