@@ -717,7 +717,7 @@ async fn content_text_is_a_short_summary_and_structured_content_is_the_full_resu
     let big = t.rpc("list_skills", json!({})).await;
     let text = big["result"]["content"][0]["text"].as_str().unwrap();
     let full = &big["result"]["structuredContent"];
-    assert!(full["skills"].as_array().unwrap().len() >= 1, "{big}");
+    assert!(!full["skills"].as_array().unwrap().is_empty(), "{big}");
     assert!(
         text.len() < 400,
         "a summary, not the payload ({} bytes): {text}",
