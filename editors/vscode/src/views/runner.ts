@@ -18,6 +18,7 @@ import {
   recordsFrom,
   refreshRunEvents,
   resolveSkills,
+  redrawNeeded,
   type RunsSnapshot,
 } from './runsLoader';
 import { registerRunsCommands } from './runsCommands';
@@ -79,6 +80,7 @@ export class RunnerTree implements vscode.TreeDataProvider<RunsNode>, vscode.Dis
   private isFetching = false;
   private pendingRefetch = false;
   private loaded = false;
+  private lastPausedContext: boolean | undefined;
   /** Retires a fetch that was started for a gateway or tenant the user has since left. */
   private readonly loads = latest();
 
@@ -103,13 +105,26 @@ export class RunnerTree implements vscode.TreeDataProvider<RunsNode>, vscode.Dis
       }),
     );
     this.rebuildSocket();
+    // Both timers do nothing for a view nobody is looking at: a hidden view or an unfocused window does
+    // not need its "last seen 12 s ago" or its running timers repainted, and it is not worth a gateway read.
     this.redrawTimer = setInterval(() => {
       if (this.isDisposed || !this.loaded) return;
-      this.rebuild();
+      const what = redrawNeeded({
+        visible: this.onScreen(),
+        focused: vscode.window.state.focused,
+        anyRunning: this.records.some((r) => r.state === 'running'),
+      });
+      if (what === 'tree') this.rebuild();
+      else if (what === 'header') this.decorate();
     }, REDRAW_MS);
     this.pollTimer = setInterval(() => {
-      if (!this.isDisposed && this.loaded) void this.refresh();
+      if (!this.isDisposed && this.loaded && this.onScreen()) void this.refresh();
     }, STATUS_POLL_MS);
+  }
+
+  /** A view that was never bound (a test) counts as visible; a bound one says. */
+  private onScreen(): boolean {
+    return this.treeView ? this.treeView.visible : true;
   }
 
   /** The sentence at the top of the view (runner health, active filter). Read by the integration suite. */
@@ -119,6 +134,12 @@ export class RunnerTree implements vscode.TreeDataProvider<RunsNode>, vscode.Dis
 
   bindView(treeView: vscode.TreeView<RunsNode>): void {
     this.treeView = treeView;
+    // The ticks skipped while hidden: catch up the moment the view is shown again.
+    this.disposables.push(
+      treeView.onDidChangeVisibility((e) => {
+        if (e.visible && this.loaded && !this.isDisposed) void this.refresh();
+      }),
+    );
     this.decorate();
   }
 
@@ -340,11 +361,12 @@ export class RunnerTree implements vscode.TreeDataProvider<RunsNode>, vscode.Dis
       isAdmin: this.adminState === 'admin',
       error: this.loadError,
     });
-    void vscode.commands.executeCommand(
-      'setContext',
-      'escurel.runs.dispatchPaused',
-      runner?.paused ?? false,
-    );
+    // Only when it changed: a context key write is a round trip to the workbench, and rebuild runs often.
+    const paused = runner?.paused ?? false;
+    if (paused !== this.lastPausedContext) {
+      this.lastPausedContext = paused;
+      void vscode.commands.executeCommand('setContext', 'escurel.runs.dispatchPaused', paused);
+    }
     this.decorate();
     this.changed.fire(undefined);
   }

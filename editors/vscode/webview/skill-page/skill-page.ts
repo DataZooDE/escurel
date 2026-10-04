@@ -228,7 +228,7 @@ export class EscurelSkillPage extends LitElement {
                       title=${`Starts skill ${a.skill}; you pick the record it works on`}
                       @click=${() => this.send({ type: 'start-skill', skill: a.skill, mode: 'run' })}
                     >
-                      ${a.label}
+                      ${a.label} → ${a.skill}
                     </button>`,
                 )}
               </div>

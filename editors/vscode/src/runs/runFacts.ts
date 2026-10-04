@@ -101,7 +101,7 @@ export function resolveControl(
       return facts.skill && facts.targetPageId !== undefined
         ? {
             command: 'escurel.approvePlan',
-            arg: { runId: facts.runId, skill: facts.skill, pageId: facts.targetPageId },
+            arg: { runId: facts.runId },
           }
         : undefined;
     case 'fix-skill':

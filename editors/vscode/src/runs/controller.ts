@@ -13,6 +13,7 @@ import { runControls } from './controls';
 import {
   acceptLoadMore,
   resolveRunAction,
+  pageToOpen,
   producedPageToOpen,
   traceIdToCopy,
   visibleRunControls,
@@ -87,14 +88,15 @@ export class RunController implements vscode.Disposable {
   }
 
   /** The panel and integration tests use this same guarded host path. */
-  async handleWebviewMessage(runId: string, message: unknown): Promise<void> {
+  async handleWebviewMessage(runId: string, message: unknown): Promise<boolean> {
     const view = this.views.get(runId);
     const action = view && resolveRunAction(view, message);
     if (!action) {
       log().warn('run detail: rejected invalid action');
-      return;
+      return false;
     }
     await vscode.commands.executeCommand(action.command, action.args);
+    return true;
   }
 
   private wire(runId: string, panel: vscode.WebviewPanel): void {
@@ -142,6 +144,18 @@ export class RunController implements vscode.Disposable {
     post({ type: 'run-loading', runId });
     const live = new LiveViewSocket(this.services, { run_id: runId }, schedule, () => void load());
     const adminSub = this.services.admin.onDidChange(schedule);
+    // A different gateway or tenant: this run, its controls and the ids the webview may name belong to
+    // the old one. Retire reads in flight, forget the view (so Cancel/Retry offered from it are refused)
+    // and read again with the new client.
+    const switchSub = this.services.onDidChange(() => {
+      loadSeq += 1;
+      clearTimeout(timer);
+      view = undefined;
+      rootEventId = undefined;
+      this.views.delete(runId);
+      post({ type: 'run-loading', runId });
+      void load();
+    });
 
     const sub = panel.webview.onDidReceiveMessage(async (m: RunWebviewToHost) => {
       switch (m.type) {
@@ -164,8 +178,13 @@ export class RunController implements vscode.Disposable {
           }
           return;
         }
-        case 'open-page':
-          return void vscode.commands.executeCommand('escurel.openPage', m.pageId);
+        case 'open-page': {
+          // Only this run's own target or product; a forged message must not open whatever page it names.
+          const page = pageToOpen(view, m.pageId);
+          if (page) void vscode.commands.executeCommand('escurel.openPage', page);
+          else log().warn('run detail: refused open-page for a page the run does not name');
+          return;
+        }
         case 'open-produced': {
           const page = producedPageToOpen(view);
           if (page) void vscode.commands.executeCommand('escurel.openPage', page);
@@ -203,6 +222,7 @@ export class RunController implements vscode.Disposable {
       clearTimeout(timer);
       live.dispose();
       adminSub.dispose();
+      switchSub.dispose();
       sub.dispose();
       this.panels.delete(runId);
       this.views.delete(runId);

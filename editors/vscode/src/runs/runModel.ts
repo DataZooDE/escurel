@@ -1,6 +1,7 @@
 import type { Event, GetRunToolCallsResponse, LineageNode } from '../client';
 import type { PlanStep, RunAttempt, RunView, ToolCallRow } from '../shared/protocol';
 import { parseGatewayTime, toIsoUtc } from '../shared/time';
+import { cleanBlock, cleanText, stripUnsafe } from '../shared/untrustedText';
 
 type Body = Record<string, unknown>;
 
@@ -15,8 +16,15 @@ function bodyOf(event: Event): Body {
   }
 }
 
+// Run events are written by whatever the runner ran: every string is cleaned and bounded here, once,
+// so no view downstream (tree, panel, thread) has to remember to.
 function stringValue(value: unknown): string | undefined {
-  return typeof value === 'string' ? value : undefined;
+  return typeof value === 'string' ? cleanText(value, 400) : undefined;
+}
+
+/** Free text that may legitimately span lines (an error, a summary). */
+function blockValue(value: unknown): string | undefined {
+  return typeof value === 'string' ? cleanBlock(value, 2000) : undefined;
 }
 
 function numberValue(value: unknown): number | undefined {
@@ -32,7 +40,7 @@ function planSteps(value: unknown): PlanStep[] | undefined {
     if (typeof row.step !== 'string' || !allowed.has(row.status as PlanStep['status'])) {
       return [];
     }
-    return [{ step: row.step, status: row.status as PlanStep['status'] }];
+    return [{ step: cleanText(row.step, 300), status: row.status as PlanStep['status'] }];
   });
   return steps.length ? steps : undefined;
 }
@@ -58,8 +66,10 @@ export function buildRunView(runNode: LineageNode | undefined, runEvents: Event[
           startedAt: toIsoUtc(body.started_at),
           endedAt: toIsoUtc(body.ended_at),
           outcome:
-            typeof body.outcome === 'string' && body.outcome.length > 0 ? body.outcome : 'unknown',
-          error: stringValue(body.error),
+            typeof body.outcome === 'string' && body.outcome.length > 0
+              ? stripUnsafe(body.outcome, 80)
+              : 'unknown',
+          error: blockValue(body.error),
         });
       }
     } else if (event.title === 'run-progress') {
@@ -76,7 +86,9 @@ export function buildRunView(runNode: LineageNode | undefined, runEvents: Event[
   }
 
   attempts.sort((a, b) => a.n - b.n);
-  const status = (stringValue(finished.status) ?? runNode?.state ?? 'running').trim().toLowerCase();
+  const status = (stringValue(finished.status) ?? stringValue(runNode?.state) ?? 'running')
+    .trim()
+    .toLowerCase();
   return {
     runId:
       runNode?.id ??
@@ -101,7 +113,7 @@ export function buildRunView(runNode: LineageNode | undefined, runEvents: Event[
     attempts,
     maxAttempts: numberValue(runNode?.max_attempts) ?? numberValue(finished.max_attempts),
     plan: planSteps(finished.plan) ?? progressPlan ?? planSteps(runNode?.plan) ?? [],
-    summary: stringValue(runNode?.summary) ?? stringValue(finished.summary),
+    summary: blockValue(runNode?.summary) ?? blockValue(finished.summary),
     toolCallCount: numberValue(runNode?.tool_calls) ?? numberValue(finished.tool_calls),
     calls: [],
     nextAfter: null,
@@ -111,9 +123,9 @@ export function buildRunView(runNode: LineageNode | undefined, runEvents: Event[
 function callRow(call: GetRunToolCallsResponse['calls'][number]): ToolCallRow {
   return {
     seq: call.seq,
-    tool: call.tool,
-    status: call.status,
-    errorCode: call.error_code,
+    tool: cleanText(String(call.tool ?? ''), 120),
+    status: cleanText(String(call.status ?? ''), 60),
+    errorCode: call.error_code == null ? call.error_code : cleanText(String(call.error_code), 80),
     durationMs: numberValue(call.duration_ms) ?? 0,
     bytes: {
       request: numberValue(call.request_bytes) ?? 0,

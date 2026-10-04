@@ -44,14 +44,48 @@ export async function loadPlanInputs(
     runEvents = uniqueById([...runEvents, ...lineage.filter((e) => e.kind === 'system')]);
     const triggers = lineage.filter((e) => e.kind !== 'system');
     const skills = [...new Set(triggers.map((e) => e.label_skill))];
-    const bySkill = await Promise.all(
-      skills.map((skill) =>
-        client.listEvents({ label_skill: skill, newest_first: true, limit: 100 }),
-      ),
+    // An approval is newer than its plan, so reading each skill back to the OLDEST waiting plan sees
+    // every approval that could matter, however busy the skill is (a fixed window of the newest events
+    // let a stale plan reappear once enough other events had pushed its approval out of view).
+    const oldestPlan = Math.min(
+      ...runEvents
+        .filter((e) => e.run_id && roots.includes(e.root_event_id ?? ''))
+        .map((e) => (e.at ? new Date(e.at).getTime() : 0)),
     );
-    userEvents = uniqueById([...triggers, ...bySkill.flatMap((p) => p.events)]);
+    const bySkill = await Promise.all(
+      skills.map((skill) => readSkillBack(client, skill, oldestPlan)),
+    );
+    userEvents = uniqueById([...triggers, ...bySkill.flat()]);
   } catch (e) {
     log().warn(`escurel: plan rows: ${describeError(e)}`);
   }
   return { runEvents, userEvents };
+}
+
+const SKILL_PAGE_CAP = 20;
+
+/** The skill's events, newest first, until a page reaches back past `since` (or the cap, or the end). */
+async function readSkillBack(
+  client: Pick<EscurelClient, 'listEvents'>,
+  skill: string,
+  since: number,
+): Promise<Event[]> {
+  const out: Event[] = [];
+  let cursor: string | undefined;
+  for (let i = 0; i < SKILL_PAGE_CAP; i += 1) {
+    const page = await client.listEvents({
+      label_skill: skill,
+      newest_first: true,
+      limit: 100,
+      ...(cursor ? { cursor } : {}),
+    });
+    out.push(...page.events);
+    const oldest = page.events.reduce(
+      (min, e) => Math.min(min, e.at ? new Date(e.at).getTime() : 0),
+      Infinity,
+    );
+    if (!page.has_more || !page.next_cursor || oldest <= since) break;
+    cursor = page.next_cursor;
+  }
+  return out;
 }

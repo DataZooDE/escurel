@@ -23,9 +23,20 @@ const instanceId = (pageId: string): string =>
     .split('/')
     .pop() ?? pageId;
 
-/** A YAML scalar that cannot break out of its line: strings are JSON-quoted (valid YAML), others verbatim. */
+/**
+ * A YAML double-quoted scalar. JSON.stringify output is valid YAML EXCEPT that YAML treats U+0085, U+2028
+ * and U+2029 as line breaks even inside quotes (they fold to a space and change the value), and
+ * JSON.stringify leaves them raw. They are written as \\u escapes, which YAML reads back to the character.
+ */
+const quote = (s: string): string =>
+  JSON.stringify(s).replace(
+    /[\u0085\u2028\u2029]/g,
+    (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`,
+  );
+
+/** A YAML scalar that cannot break out of its line: strings are quoted, others verbatim. */
 const scalar = (v: string | number | boolean): string =>
-  typeof v === 'string' ? JSON.stringify(v) : String(v);
+  typeof v === 'string' ? quote(v) : String(v);
 
 /** The row's current value as shown in a prompt: it comes from the source, so it is bounded and cleaned. */
 export function describeCurrent(current: unknown): string {
@@ -48,11 +59,11 @@ export function buildProposal(p: Proposal): string {
   return (
     '---\n' +
     'kind: instance\n' +
-    `id: ${JSON.stringify(instanceId(p.pageId))}\n` +
-    `skill: ${JSON.stringify(p.skill)}\n` +
+    `id: ${quote(instanceId(p.pageId))}\n` +
+    `skill: ${quote(p.skill)}\n` +
     'write_back:\n' +
-    `  patch: { ${JSON.stringify(p.field)}: ${scalar(p.value)} }\n` +
-    `  base_etag: ${JSON.stringify(p.baseEtag)}\n` +
+    `  patch: { ${quote(p.field)}: ${scalar(p.value)} }\n` +
+    `  base_etag: ${quote(p.baseEtag)}\n` +
     '---\n' +
     `${p.notes}\n`
   );
@@ -153,16 +164,22 @@ const MAX_VALUE = 2000;
 export function parseProposedValue(
   raw: string,
   current: unknown,
+  /** The column's declared kind (`int`, `float`, `bool`, …) for a column whose current value is empty. */
+  kind?: string,
 ): { ok: true; value: string | number | boolean } | { ok: false; error: string } {
   const text = raw.trim();
   if (text === '') return { ok: false, error: 'Enter a value.' };
   if (text.length > MAX_VALUE)
     return { ok: false, error: `That is too long (limit ${MAX_VALUE} characters).` };
-  if (typeof current === 'number') {
+  // An empty column has no current value to take its type from; the skill's declared kind says it.
+  const empty = current === undefined || current === null || current === '';
+  const asNumber = typeof current === 'number' || (empty && (kind === 'int' || kind === 'float'));
+  const asBoolean = typeof current === 'boolean' || (empty && kind === 'bool');
+  if (asNumber) {
     const n = Number(text);
     return Number.isFinite(n) ? { ok: true, value: n } : { ok: false, error: 'Enter a number.' };
   }
-  if (typeof current === 'boolean') {
+  if (asBoolean) {
     const v = text.toLowerCase();
     if (['true', 'yes', '1'].includes(v)) return { ok: true, value: true };
     if (['false', 'no', '0'].includes(v)) return { ok: true, value: false };

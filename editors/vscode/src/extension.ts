@@ -28,7 +28,7 @@ import { registerStartInTerminal } from './start/terminal';
 import { registerOpenOriginal } from './commands/openOriginal';
 import { registerStartSkill } from './start/startSkill';
 import { registerProposeWriteBack } from './editors/proposeWriteBack';
-import { registerApprovePlan } from './start/approvePlan';
+import { registerApprovePlan, setApprovalConfirm } from './start/approvePlan';
 import { registerNodeCommands } from './commands/nodeCommands';
 import { explainText } from './shared/explain';
 import { registerRunnerView, type RunnerTree } from './views/runner';
@@ -52,6 +52,8 @@ export interface EscurelApi {
    */
   canAdmin: () => boolean;
   runner: RunnerTree;
+  /** Test seam: replaces the modal that confirms a plan approval (a modal blocks a headless window). */
+  setApprovalConfirm: typeof setApprovalConfirm;
 }
 
 export function activate(context: vscode.ExtensionContext): EscurelApi | undefined {
@@ -246,6 +248,7 @@ export function activate(context: vscode.ExtensionContext): EscurelApi | undefin
     threadsTree,
     canAdmin: adminContextValue,
     runner,
+    setApprovalConfirm,
   });
 }
 

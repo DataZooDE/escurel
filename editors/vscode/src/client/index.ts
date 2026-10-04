@@ -111,8 +111,7 @@ export class EscurelClient {
       throw this.mapError(tool, e);
     }
     const raw = result as { structuredContent?: unknown; content?: unknown; isError?: unknown };
-    // `validate` reports problems with `ok: false` and is not an error: its caller reads the issues.
-    const refused = tool === 'validate' ? undefined : refusalOf(raw);
+    const refused = refusalFor(tool, raw);
     if (refused) throw EscurelError.fromPayload(tool, refused);
     return payloadOf(raw) as T;
   }
@@ -330,6 +329,21 @@ export function payloadOf(result: {
  * always an error to the caller, never data: the payload is guaranteed to carry at least one issue,
  * built from the result's own text when the tool named none, so the person is told why.
  */
+export function refusalFor(
+  tool: string,
+  result: { structuredContent?: unknown; content?: unknown; isError?: unknown },
+): Record<string, unknown> | undefined {
+  // `validate` reports problems with `ok: false` and is not an error: its caller reads the issues. But
+  // a validate that FAILED (isError, and no issues to read) is an error: returning its empty payload
+  // would read as "no issues" and show a skill clean that was never checked.
+  if (tool === 'validate') {
+    if (result.isError !== true) return undefined;
+    const issues = payloadOf(result).issues;
+    return Array.isArray(issues) && issues.length > 0 ? undefined : refusalOf(result);
+  }
+  return refusalOf(result);
+}
+
 export function refusalOf(result: {
   structuredContent?: unknown;
   content?: unknown;

@@ -20,6 +20,23 @@ export const emptySnapshot = (): RunsSnapshot => ({
 
 const PAGE = 100;
 
+/**
+ * The most run events held at once. Every "Load more" and every live refresh adds events, and the view
+ * refolds all of them: unbounded, a long session grew without limit. At the cap, older runs are
+ * reached by narrowing the filter, and `hasMoreOlder` says there is nothing further to load.
+ */
+export const MAX_LOADED_EVENTS = 3000;
+
+/** What the periodic redraw has to do: nothing off screen, the header when idle, the tree when a row ticks. */
+export function redrawNeeded(s: {
+  visible: boolean;
+  focused: boolean;
+  anyRunning: boolean;
+}): 'none' | 'header' | 'tree' {
+  if (!s.visible || !s.focused) return 'none';
+  return s.anyRunning ? 'tree' : 'header';
+}
+
 /** How many finished runs the loaded events describe. */
 function endedRuns(events: Iterable<Event>): number {
   let n = 0;
@@ -67,7 +84,24 @@ export async function refreshRunEvents(
     if (rows.length === 0 || !page.has_more || !page.next_cursor || enough) break;
     cursor = page.next_cursor;
   }
-  return { events, olderCursor, hasMoreOlder };
+  return capSnapshot({ events, olderCursor, hasMoreOlder });
+}
+
+/** Past the cap, the OLDEST events are dropped (a live session keeps adding at the new end). */
+function capSnapshot(snap: RunsSnapshot): RunsSnapshot {
+  if (snap.events.size <= MAX_LOADED_EVENTS) return snap;
+  const keep = [...snap.events.values()]
+    .sort(
+      (a, b) =>
+        Date.parse(b.at ?? '') - Date.parse(a.at ?? '') || b.event_id.localeCompare(a.event_id),
+    )
+    .slice(0, MAX_LOADED_EVENTS);
+  // What was dropped lies between the held events and the old cursor: do not offer a Load more that would skip it.
+  return {
+    events: new Map(keep.map((e) => [e.event_id, e])),
+    olderCursor: undefined,
+    hasMoreOlder: false,
+  };
 }
 
 /** Reads older run events until `more` more finished runs are loaded (or the gateway has no more). */
@@ -94,6 +128,11 @@ export async function loadOlderRunEvents(
     olderCursor = page.next_cursor ?? olderCursor;
     hasMoreOlder = !!page.has_more;
     cursor = page.has_more ? page.next_cursor : undefined;
+    if (events.size >= MAX_LOADED_EVENTS) {
+      // At the cap: stop, and say there is nothing further to load rather than leave a gap.
+      hasMoreOlder = false;
+      break;
+    }
     if (endedRuns(events.values()) >= target) break;
   }
   return { events, olderCursor, hasMoreOlder };

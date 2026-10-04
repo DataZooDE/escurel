@@ -2,7 +2,8 @@ import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { EscurelClient, ListLineageResponse, EventsPage } from '../../src/client';
-import { resolveApprovalSubject } from '../../src/start/approvePlan';
+import { approvePlanRun, resolveApprovalSubject } from '../../src/start/approvePlan';
+import { inFlight } from '../../src/runs/controlWait';
 
 const FIXTURES = join(__dirname, 'fixtures', 'lineage');
 const LINEAGE: ListLineageResponse = JSON.parse(
@@ -21,50 +22,13 @@ function makeClient(lineage: ListLineageResponse, events: EventsPage): EscurelCl
 }
 
 describe('resolveApprovalSubject', () => {
-  it('returns given skill and pageId directly when both are present', async () => {
-    const client = makeClient(LINEAGE, EVENTS);
-    const res = await resolveApprovalSubject(client, '01RUN', {
-      skill: 'custom-skill',
-      pageId: 'markdown/instances/order/o1.md',
-    });
-    expect(res).toEqual({
-      skill: 'custom-skill',
-      pageId: 'markdown/instances/order/o1.md',
-    });
-  });
+  const runId = '01M3SXRWFGX05T89EEJ038ZWHB';
 
-  it('resolves pageId and skill from run-detail fixtures when both are omitted', async () => {
+  it('derives pageId and skill from the run, never from the caller', async () => {
     const client = makeClient(LINEAGE, EVENTS);
-    const runId = '01M3SXRWFGX05T89EEJ038ZWHB';
-
     const res = await resolveApprovalSubject(client, runId);
-    // In run-detail-lineage.json:
-    // target_page_id is "markdown/instances/order/o1.md"
-    // root event "01M3SXRWDP8R2QZME546B380MV" has label_skill: "signal"
     expect(res.pageId).toBe('markdown/instances/order/o1.md');
     expect(res.skill).toBe('signal');
-  });
-
-  it('resolves skill from lineage root event when only pageId is provided', async () => {
-    const client = makeClient(LINEAGE, EVENTS);
-    const runId = '01M3SXRWFGX05T89EEJ038ZWHB';
-
-    const res = await resolveApprovalSubject(client, runId, {
-      pageId: 'markdown/instances/override.md',
-    });
-    expect(res.pageId).toBe('markdown/instances/override.md');
-    expect(res.skill).toBe('signal');
-  });
-
-  it('resolves pageId from run detail when only skill is provided', async () => {
-    const client = makeClient(LINEAGE, EVENTS);
-    const runId = '01M3SXRWFGX05T89EEJ038ZWHB';
-
-    const res = await resolveApprovalSubject(client, runId, {
-      skill: 'provided-skill',
-    });
-    expect(res.pageId).toBe('markdown/instances/order/o1.md');
-    expect(res.skill).toBe('provided-skill');
   });
 
   it('refuses to guess when target page cannot be resolved', async () => {
@@ -116,13 +80,76 @@ describe('resolveApprovalSubject', () => {
   });
 });
 
-describe('resolveApprovalSubject for a plan with no target', () => {
-  it('keeps an explicit empty page: the plan was started without one, it is not missing', async () => {
-    const client = { listLineage: async () => ({ nodes: [] }) } as never;
-    const res = await resolveApprovalSubject(client, '01RUN', {
-      skill: 'supplier-risk',
-      pageId: '',
+describe('approvePlanRun', () => {
+  const runId = '01M3SXRWFGX05T89EEJ038ZWHB';
+  const withStatus = (status: string): EventsPage => ({
+    ...EVENTS,
+    events: EVENTS.events.map((e) => {
+      if (e.title !== 'run-finished') return e;
+      const body = JSON.parse(e.body ?? '{}') as Record<string, unknown>;
+      return { ...e, body: JSON.stringify({ ...body, status }) };
+    }),
+  });
+  const captures: unknown[] = [];
+  const clientFor = (events: EventsPage) =>
+    ({
+      listLineage: async () => LINEAGE,
+      listEvents: async () => events,
+      getRunToolCalls: async () => ({ calls: [], next_after: null }),
+      captureEvent: async (req: unknown) => {
+        captures.push(req);
+        return { event_id: 'EV1' };
+      },
+    }) as unknown as EscurelClient;
+
+  it('asks first — naming skill, page and run — and captures nothing when declined', async () => {
+    captures.length = 0;
+    const asked: string[] = [];
+    const out = await approvePlanRun(clientFor(withStatus('planned')), runId, {
+      confirm: async (m) => (asked.push(m), false),
+      harness: '',
     });
-    expect(res).toEqual({ skill: 'supplier-risk', pageId: '' });
+    expect(out).toEqual({ kind: 'declined' });
+    expect(captures).toEqual([]);
+    expect(asked).toHaveLength(1);
+    expect(asked[0]).toContain('signal');
+    expect(asked[0]).toContain('markdown/instances/order/o1.md');
+    expect(asked[0]).toContain(runId);
+  });
+
+  it("captures the approval for the run's own skill and page once confirmed", async () => {
+    captures.length = 0;
+    const out = await approvePlanRun(clientFor(withStatus('planned')), runId, {
+      confirm: async () => true,
+      harness: '',
+    });
+    expect(out).toEqual({ kind: 'approved', eventId: 'EV1' });
+    expect(captures).toHaveLength(1);
+    expect(JSON.stringify(captures[0])).toContain(runId);
+  });
+
+  it('refuses a run that is no longer planned, without asking or capturing', async () => {
+    captures.length = 0;
+    let asked = 0;
+    const out = await approvePlanRun(clientFor(withStatus('processed')), runId, {
+      confirm: async () => (asked++, true),
+      harness: '',
+    });
+    expect(out).toEqual({ kind: 'not-planned', status: 'processed' });
+    expect(asked).toBe(0);
+    expect(captures).toEqual([]);
+  });
+});
+
+describe('inFlight on approvals', () => {
+  it('a double invocation for one run runs the task once', async () => {
+    const once = inFlight();
+    let runs = 0;
+    const task = async () => {
+      runs++;
+      await new Promise((r) => setTimeout(r, 10));
+    };
+    await Promise.all([once('RUN', task), once('RUN', task)]);
+    expect(runs).toBe(1);
   });
 });

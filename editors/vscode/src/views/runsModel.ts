@@ -1,6 +1,7 @@
 // The runs control center's model: pure, no `vscode`. Run lifecycle events in, rows and words out.
 import type { Event } from '../client';
 import { pageSlug } from '../shared/pageId';
+import { cleanBlock, cleanOpt } from '../shared/untrustedText';
 import { parseGatewayTime } from '../shared/time';
 import {
   deriveHealth,
@@ -65,6 +66,10 @@ function json(e: Event | undefined): Record<string, unknown> {
   }
 }
 
+/** Free text that may span lines (the reason row shows the first, the tooltip all): cleaned and capped. */
+const blockOpt = (v: unknown, max: number): string | undefined =>
+  typeof v === 'string' && v ? cleanBlock(v, max) || undefined : undefined;
+
 const str = (v: unknown): string | undefined => (typeof v === 'string' && v ? v : undefined);
 
 /** One record per run, newest first, from the `escurel:run` lifecycle events. */
@@ -122,17 +127,17 @@ export function foldRuns(events: readonly Event[], opts: FoldOptions): RunRecord
     out.push({
       runId: acc.runId,
       state,
-      skill: trigger ? opts.skillByEvent?.get(trigger) : undefined,
-      targetPageId: pageId,
+      skill: trigger ? cleanOpt(opts.skillByEvent?.get(trigger), 80) : undefined,
+      targetPageId: cleanOpt(pageId, 300) ?? null,
       rootEventId: src.root_event_id ?? str(runner.root_event_id) ?? null,
       triggerEventId: trigger,
-      harness: str(runner.harness),
+      harness: cleanOpt(runner.harness, 60),
       startedAtMs,
       finishedAtMs,
       durationMs,
-      reason: str(body.reason),
-      error: str(body.error),
-      summary: str(body.summary),
+      reason: blockOpt(body.reason, 1000),
+      error: blockOpt(body.error, 1000),
+      summary: blockOpt(body.summary, 1000),
       attempts: typeof body.attempts === 'number' ? body.attempts : undefined,
       toolCalls: typeof body.tool_calls === 'number' ? body.tool_calls : undefined,
     });

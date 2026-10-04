@@ -161,6 +161,40 @@ suite('a gateway switch retires the open threads and the details view', () => {
     }
   });
 
+  // A run panel is the same: its Cancel/Retry/Fix-skill were offered by the old tenant's run.
+  test('a run panel opened on the old tenant refuses its actions after a switch', async function () {
+    this.timeout(240_000);
+    const { runId } = await openThreadShowingRun('Gateway switch: run panel');
+    await new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error('the run panel did not load')), 30_000);
+      const sub = api.runs.onDidLoad(({ runId: id }) => {
+        if (id !== runId) return;
+        clearTimeout(timer);
+        sub.dispose();
+        resolve();
+      });
+      void vscode.commands.executeCommand('escurel.openRun', runId);
+    });
+    other = other ?? (await startOtherGateway());
+    const restore = await switchTo(other.url, other.bearer);
+    try {
+      await until(
+        async () =>
+          (await api.runs.handleWebviewMessage(runId, {
+            type: 'view-skill',
+            skill: 'supplier-risk',
+          }))
+            ? undefined
+            : true,
+        15_000,
+        'the run panel to refuse an action offered by the old tenant’s run',
+      );
+    } finally {
+      await vscode.commands.executeCommand('workbench.action.closeAllEditors');
+      await restore();
+    }
+  });
+
   // The hole the first test does not reach: the reload that follows a switch FAILS (the new gateway is
   // down). The failed load used to leave the old thread, the old inspectors and the selected node in
   // place, so the details view kept offering the old tenant's actions, and they passed the host's checks.

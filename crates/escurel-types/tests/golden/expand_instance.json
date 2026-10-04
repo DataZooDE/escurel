@@ -1,0 +1,26 @@
+{
+  "page": {
+    "page_id": "markdown/instances/customer-order__order-4500123.md",
+    "slug": "order-4500123",
+    "skill": "customer-order",
+    "page_kind": "instance",
+    "last_written_by": null
+  },
+  "frontmatter": {
+    "kind": "instance",
+    "skill": "customer-order",
+    "id": "order-4500123",
+    "customer": "Hoffmann Automotive GmbH",
+    "delivery_risk": "low"
+  },
+  "body": "\n# Order 4500123\n\nBaseline state, before any signal is folded in.\n",
+  "blocks": [
+    {
+      "anchor": "blk-0",
+      "content": "\n# Order 4500123\n\nBaseline state, before any signal is folded in.\n"
+    }
+  ],
+  "wikilinks_out": [],
+  "content_sha256": "4c9b0acd3a92abe33f88c23e18d0931ca0f5cc3f0aebfeae6e4fe97e8412debf",
+  "version": "v0"
+}

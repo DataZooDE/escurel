@@ -1,0 +1,19 @@
+{
+  "event": {
+    "event_id": "01M43QEQNBFMK20Z9BD3M7C3KS",
+    "at": "2026-10-04T15:10:25Z",
+    "source": "golden",
+    "mime": "text/plain",
+    "label_skill": "customer-order",
+    "instance_page_id": "markdown/instances/customer-order__order-4500124.md",
+    "status": "inbox",
+    "title": "Golden run",
+    "body": "Golden run.",
+    "provenance": {
+      "captured_by": "alice"
+    },
+    "kind": "user",
+    "root_event_id": "01M43QEQNBFMK20Z9BD3M7C3KS",
+    "run_id": null
+  }
+}

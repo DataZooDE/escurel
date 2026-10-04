@@ -1,5 +1,6 @@
 import type { SkillAction } from '../client/types';
 import type { ActionView } from './protocol';
+import { cleanText } from './untrustedText';
 
 /**
  * The Skill buttons a skill offers, from its `actions:` objects.
@@ -13,7 +14,9 @@ export function skillActionViews(actions: readonly SkillAction[] | undefined): A
   const out: ActionView[] = [];
   for (const a of actions ?? []) {
     if (a.kind !== 'event' || !a.event || !a.label.trim()) continue;
-    out.push({ skill: a.event, label: a.label });
+    // The label is the skill author's own words; the skill it starts is shown beside it, so a friendly
+    // label cannot hide what the button starts.
+    out.push({ skill: cleanText(a.event, 100), label: cleanText(a.label, 80) });
   }
   return out;
 }
