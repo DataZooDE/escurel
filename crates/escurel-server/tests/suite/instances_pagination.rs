@@ -119,7 +119,7 @@ async fn at_desc_ordering_pages_past_the_limit() {
 }
 
 #[tokio::test]
-async fn invalid_cursor_is_invalid_params() {
+async fn an_invalid_cursor_is_a_worded_refusal_not_a_bare_rpc_error() {
     let p = start().await;
     let token = p.mint_token(TENANT, Role::Agent);
     let out = call(
@@ -128,5 +128,16 @@ async fn invalid_cursor_is_invalid_params() {
         json!({ "skill_id": "note", "cursor": "!!definitely-not-base64!!" }),
     )
     .await;
-    assert_eq!(out["error"]["code"], json!(-32602), "{out}");
+    // A caller mistake an agent can act on: `isError` with `issues[]`, naming the way out.
+    assert!(out.get("error").is_none(), "{out}");
+    assert_eq!(out["result"]["isError"], json!(true), "{out}");
+    let issue = &out["result"]["structuredContent"]["issues"][0];
+    assert_eq!(issue["code"], json!("invalid_cursor"), "{out}");
+    assert!(
+        issue["message"]
+            .as_str()
+            .unwrap()
+            .contains("restart without `cursor`"),
+        "{out}"
+    );
 }

@@ -29,8 +29,8 @@ Standard **JSON-RPC 2.0** envelope; each tool call is `tools/call`:
 
 - **Discovery:** `tools/list` is **role-scoped**. Every entry carries a
   `scope: "agent" | "admin"` label; an agent-role token receives only
-  the `scope: "agent"` subset (~28 tools — the ones it can actually
-  call), while an admin token sees the whole surface (~69). Calling an
+  the `scope: "agent"` subset (44 tools — the ones it can actually
+  call), while an admin token sees the whole surface (86). Calling an
   admin tool without the role is still refused at dispatch (`-32001`).
 - **Errors:** JSON-RPC error envelope
   (`error: {code, message, data?}`). Branch on `error.data.code`

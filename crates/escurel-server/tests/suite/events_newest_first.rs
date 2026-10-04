@@ -157,7 +157,7 @@ async fn a_label_tail_never_loses_a_backdated_event() {
     cap("first", "2026-09-22T10:00:05Z").await;
     let page = call(&p, &admin, "list_events", json!({ "label_skill": "note" })).await;
     assert_eq!(titles(&page), ["first"]);
-    let cursor = page["resume_cursor"]
+    let cursor = page["next_cursor"]
         .as_str()
         .expect("resume cursor")
         .to_owned();

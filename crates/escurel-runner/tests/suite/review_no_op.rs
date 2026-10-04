@@ -61,12 +61,8 @@ async fn call_mcp(p: &EscurelProcess, name: &str, args: Value) -> Value {
         .await
         .expect("mcp call");
     let out: Value = res.json().await.expect("mcp json");
-    serde_json::from_str(
-        out["result"]["content"][0]["text"]
-            .as_str()
-            .unwrap_or("null"),
-    )
-    .unwrap_or(Value::Null)
+    // The full result is `structuredContent`; the text block is a short summary.
+    out["result"]["structuredContent"].clone()
 }
 
 /// A model that does its job and finds nothing to do.

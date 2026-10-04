@@ -98,6 +98,20 @@ class HttpEscurelClient implements EscurelClient {
     if (structured is Map<String, dynamic>) {
       return structured;
     }
+    // A LEGACY gateway sent the payload only as JSON text; current ones put a
+    // short summary there and the full result in `structuredContent`.
+    final content = result['content'];
+    if (content is List && content.isNotEmpty && content.first is Map) {
+      final text = (content.first as Map)['text'];
+      if (text is String) {
+        try {
+          final parsed = jsonDecode(text);
+          if (parsed is Map<String, dynamic>) return parsed;
+        } catch (_) {
+          // a summary, not JSON
+        }
+      }
+    }
     return result;
   }
 
@@ -606,14 +620,15 @@ class HttpEscurelClient implements EscurelClient {
     return _eventPage(result);
   }
 
-  /// `{events[], next_cursor?}` — the cursor is present iff more rows
-  /// remain; its ABSENCE (never a short page) means done.
+  /// `{events[], next_cursor?, has_more?}` — `next_cursor` is where the
+  /// page ended; `has_more` says rows already follow.
   EventPage _eventPage(Map<String, dynamic> result) => EventPage(
     events: (result['events'] as List? ?? const [])
         .cast<Map<String, dynamic>>()
         .map(Event.fromJson)
         .toList(),
     nextCursor: result['next_cursor'] as String?,
+    serverHasMore: result['has_more'] == true,
   );
 
   @override

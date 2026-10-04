@@ -77,7 +77,9 @@ describe('findThreadStrip', () => {
     const calls: (string | undefined)[] = [];
     const strip = await findThreadStrip(async (cursor) => {
       calls.push(cursor);
-      return cursor ? { events: [finished] } : { events: filler(50), next_cursor: 'page-2' };
+      return cursor
+        ? { events: [finished] }
+        : { events: filler(50), next_cursor: 'page-2', has_more: true };
     });
     expect(calls).toEqual([undefined, 'page-2']);
     expect(strip?.runId).toBe(finished.run_id);
@@ -87,7 +89,7 @@ describe('findThreadStrip', () => {
     let n = 0;
     const strip = await findThreadStrip(async () => {
       n += 1;
-      return { events: filler(3), next_cursor: `c${n}` };
+      return { events: filler(3), next_cursor: `c${n}`, has_more: true };
     }, 4);
     expect(n).toBe(4);
     expect(strip).toBeUndefined();

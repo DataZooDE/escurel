@@ -4,6 +4,64 @@ The skill version tracks the consumer-facing contract, not the Escurel
 binary version. The Escurel repo's checked-out git ref is the true version
 pin (see `SKILL.md` → "How this skill is installed").
 
+## 0.13.0 — BREAKING: `content[0].text` is a summary; `autonomy` is enforced for machine callers
+
+- **BREAKING — `tools/call` text block.** `result.content[0].text` is a one-or-two-line summary (what came
+  back, counts, "Full result in structuredContent."; for a refusal, the first issue's code and message).
+  `structuredContent` is unchanged and is the full result: read it. The text used to repeat the payload
+  as a JSON string, doubling the tokens of every call. `escurel-client`, the extension and the Dart client
+  prefer `structuredContent` and fall back to parsing the text only against a legacy gateway. A host that
+  can read only the text block sees the summary, not the data.
+- **BREAKING — `autonomy: review | confirm` is enforced** (an unrecognised value fails toward holding) for
+  MACHINE callers: tokens carrying `run_id`, `skill` or `act.sub` (a run's bearer, the runner, a narrowed
+  per-skill agent). Their `update_page` and `close_session` commit on an INSTANCE of such a skill do not
+  land: the answer is `{ok: true, held_for_review: true, draft, message}` (the `create_draft` shape,
+  status `open`). `move_page` / `delete_page` by a machine on such a skill answer `review_required` (no
+  draft can represent a removal). Unchanged: people on plain agent-role tokens (extension, CLI), admin
+  tokens, `autonomy: auto` skills, skills declaring nothing, skill pages. **Promoting a draft always
+  lands** (it re-enters the ungated write), including when the approver's token is a machine's.
+
+## 0.12.0 — agent-experience pass on the MCP surface (BREAKING: `resume_cursor` removed)
+
+Findings of an agent-usability review of the live `/mcp` surface. One breaking change, the rest additive.
+
+- **BREAKING — `list_inbox` / `list_events`: `resume_cursor` is gone.** `next_cursor` is now where the
+  page ENDED (present iff the page is non-empty; pass it back as `cursor` to continue or to tail), and
+  `has_more: true` says rows already follow. A client paging "until `next_cursor` is absent" still
+  terminates (one extra empty call); use `has_more` to skip it. The typed `ListInboxResponse` /
+  `ListEventsResponse` replace `resume_cursor` with `has_more`. Listed in `docs/notes/breaking-wire-changes.md`.
+- **Opaque cursors.** `list_instances` cursors on rows skills (SQL, REST, MCP) are versioned envelopes
+  (`r1.` / `u1.`), no longer the plain hex of the key. Any bad cursor -> `invalid_cursor`
+  ("cursor invalid or expired; restart without `cursor`").
+- **`limit` is enforced** against the bounds the tool's schema declares: `invalid_limit` with the range
+  (0, 10001, `"x"`, -3 used to be accepted silently or fail with a Rust type name).
+- **Read tools answer DOMAIN mistakes in the write-tool shape** (`isError: true`, `issues[{code,
+  location, message, suggestion?}]`) instead of a bare JSON-RPC string: `invalid_cursor`,
+  `field_not_filterable`, `query_not_found`, `query_not_runnable`, `invalid_query_params`,
+  `endpoint_not_registered` ("ask an admin to `register_endpoint`"), `use_write_back`. JSON-RPC errors
+  remain for malformed requests.
+- **`list_instances` filter** on a rows skill accepts a declared-`filterable` column by its column name
+  (`kunnr`) AND by the field the page shows (`sold_to`); the refusal lists the valid names.
+- **`tools/list`**: every description starts with a group tag (`[READ]` `[WRITE]` `[REVIEW]` `[RUNNER]`
+  `[SESSION]` `[ADMIN]`); every tool carries MCP `annotations` (`readOnlyHint`, `destructiveHint`,
+  `idempotentHint`, `openWorldHint`); `list_skills` / `list_instances` / `resolve` / `capture_event`
+  descriptions say what comes back and what to do next; `resolve` has an `outputSchema`; the reviewer
+  tools (`promote_*`, `discard_*`, `merge_branch`) say they are human reviewer actions.
+- **`capture_event`**: a `label_skill` that names no skill is still stored but answers a WARNING issue
+  `unknown_label_skill` (reserved `escurel:` labels excepted); a re-captured `event_id` returns the stored
+  event with `replayed: true`. To start a skill action from `list_skills.actions[]`:
+  `label_skill=<action.event>`, `instance_page_id=<the instance>`.
+- **`list_drafts` / `list_changesets` / `list_branches`** take `limit` + `cursor` and return
+  `next_cursor` (only a null one means done); `limit` now applies AFTER the visibility filter.
+- **Write-back is stated where an agent hits the wall**: `backend_read_only_field` on a writable column
+  says to propose a draft with `write_back: {patch, base_etag}`; the projection says `read_only: true`
+  plus `writable_via: "write_back"`; `write_instance` on a row answers `use_write_back`.
+- **`create_draft`** judges the content (validation) BEFORE conflict questions, and a refused draft no
+  longer supersedes the open one.
+- **`expand`** of a missing page returns `{page: null, hint}` (a bare id gets the shape of a page id; the
+  hint is identical for an absent page and an ACL-hidden one).
+- **Counts**: an agent-role token sees 44 tools, an admin token 86.
+
 ## 0.11.0 — REST and MCP sources as instances, with human-gated write-back; `ESCUREL_EGRESS_*`
 
 Additive (no break): skills without a remote backend are untouched.

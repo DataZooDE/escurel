@@ -46,7 +46,9 @@ const STRIP_PAGE_CAP = 10;
  * history; a failed read is no strip, because the strip is an addition to the page.
  */
 export async function findThreadStrip(
-  readPage: (cursor?: string) => Promise<{ events: Event[]; next_cursor?: string }>,
+  readPage: (
+    cursor?: string,
+  ) => Promise<{ events: Event[]; next_cursor?: string; has_more?: boolean }>,
   maxPages = STRIP_PAGE_CAP,
 ): Promise<ThreadStrip | undefined> {
   try {
@@ -55,7 +57,7 @@ export async function findThreadStrip(
       const page = await readPage(cursor);
       const strip = buildThreadStrip(page.events);
       if (strip) return strip;
-      if (!page.next_cursor) return undefined;
+      if (!page.has_more || !page.next_cursor) return undefined;
       cursor = page.next_cursor;
     }
   } catch {

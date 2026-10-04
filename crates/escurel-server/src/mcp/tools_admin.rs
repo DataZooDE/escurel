@@ -712,6 +712,18 @@ pub(super) struct WriteInstanceArgs {
 /// Write-back to a remote instance's upstream (openapi/mcp). Gated by the
 /// target instance's `acl.update` (fail-closed; admin bypasses). A skill whose
 /// binding declares no `write` op is refused.
+/// The skill a `write_instance` ref names: `[[skill::id]]`, `skill::id` or an instance page path.
+fn skill_of_ref(r: &str) -> Option<String> {
+    let t = r.trim().trim_start_matches("[[").trim_end_matches("]]");
+    if let Some((skill, _)) = t.split_once("::") {
+        return Some(skill.trim().to_owned()).filter(|s| !s.is_empty());
+    }
+    t.strip_prefix("markdown/instances/")
+        .and_then(|rest| rest.split('/').next())
+        .map(str::to_owned)
+        .filter(|s| !s.is_empty())
+}
+
 pub(super) async fn tool_write_instance(
     indexer: &Indexer,
     egress: &crate::egress::Egress,
@@ -719,6 +731,43 @@ pub(super) async fn tool_write_instance(
     args: Value,
 ) -> Result<Value, JsonRpcError> {
     let a: WriteInstanceArgs = parse_args(args, "write_instance")?;
+    // A ROW of a `rows` skill is not a stored instance, so the lookup below finds nothing for any ref
+    // form: say why, and what to do, before it fails with `no instance for ref`.
+    if let Some(skill) = skill_of_ref(&a.reference) {
+        let sql_rows = indexer
+            .rows_source(&skill)
+            .await
+            .map_err(|e| JsonRpcError::internal(format!("write_instance: {e}")))?
+            .is_some();
+        let remote_rows = crate::remote_rows::source(indexer, &skill)
+            .await
+            .map_err(|e| JsonRpcError::internal(format!("write_instance: {e}")))?
+            .is_some();
+        if remote_rows {
+            return Err(JsonRpcError::domain(
+                "use_write_back",
+                "ref",
+                format!(
+                    "the rows of `{skill}` are not written directly: propose a change with \
+                     `create_draft` carrying `write_back: {{patch: {{<column>: <value>}}, \
+                     base_etag: <etag>}}` (columns: `expand` -> `backend_projection.writable_columns`; \
+                     etag: `backend_projection.etag`); a human reviewer promotes it"
+                ),
+                Some("`expand` the row to see which columns are writable"),
+            ));
+        }
+        if sql_rows {
+            return Err(JsonRpcError::domain(
+                "use_write_back",
+                "ref",
+                format!(
+                    "the rows of `{skill}` are read-only source data; write your own notes to the \
+                     row's page with `update_page` (the linked markdown) instead"
+                ),
+                None,
+            ));
+        }
+    }
     let link = if a.reference.starts_with("[[") {
         a.reference.clone()
     } else {

@@ -214,8 +214,7 @@ async fn a_tool_error_degrades_to_a_bounded_message_without_the_servers_text_as_
     // An unreadable row still opens (an empty shell) and names the problem; it is not an error, and
     // no row is invented.
     assert!(v.get("error").is_none(), "an unreadable row degrades: {v}");
-    let page: Value =
-        serde_json::from_str(v["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+    let page: Value = v["result"]["structuredContent"].clone();
     assert_eq!(
         page["backend_projection"]["issue"]["code"], "source_unavailable",
         "{v}"

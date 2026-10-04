@@ -386,16 +386,22 @@ fn event_provenance_is_value() {
 }
 
 #[test]
-fn list_events_label_selector_and_resume_cursor() {
+fn list_events_label_selector_and_end_of_page_cursor() {
     let req: ListEventsRequest =
         serde_json::from_value(json!({ "label_skill": "escurel:review" })).unwrap();
     assert_eq!(req.label_skill, "escurel:review");
+    // `next_cursor` is where the page ended (a tail resumes from it); `has_more` says rows follow.
+    // `resume_cursor` no longer exists: an old field is ignored, never read.
     let page: ListEventsResponse =
+        serde_json::from_value(json!({ "events": [], "next_cursor": "r", "has_more": true }))
+            .unwrap();
+    assert_eq!(page.next_cursor.as_deref(), Some("r"));
+    assert!(page.has_more);
+    let legacy: ListEventsResponse =
         serde_json::from_value(json!({ "events": [], "resume_cursor": "r" })).unwrap();
-    assert_eq!(page.resume_cursor.as_deref(), Some("r"));
-    assert!(page.next_cursor.is_none());
+    assert!(legacy.next_cursor.is_none() && !legacy.has_more);
     let inbox: ListInboxResponse = serde_json::from_value(json!({ "events": [] })).unwrap();
-    assert!(inbox.resume_cursor.is_none());
+    assert!(inbox.next_cursor.is_none() && !inbox.has_more);
 }
 
 #[test]
@@ -560,8 +566,8 @@ fn query_instance_response_rows_and_column_type() {
 }
 
 #[test]
-fn event_listings_carry_the_resume_cursor() {
-    // v2026.08.14 wire: next_cursor present iff rows lie past the page.
+fn event_listings_carry_the_end_of_page_cursor() {
+    // `next_cursor` = where the page ended (a tail resumes from it); `has_more` = rows follow.
     // The typed client DROPPED this field at first (found by the peacock
     // downstream audit) — this pin keeps the wrapper honest.
     let wire = json!({ "events": [], "next_cursor": "b64cursor" });
@@ -817,7 +823,7 @@ fn roundtrip_events() {
     });
     rt(ListInboxResponse {
         next_cursor: None,
-        resume_cursor: None,
+        has_more: false,
         events: vec![Event::default()],
     });
     rt(AssignEventResponse {

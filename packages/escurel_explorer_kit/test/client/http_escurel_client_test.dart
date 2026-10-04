@@ -668,23 +668,25 @@ void main() {
   });
 
   group('cursor pagination', () {
-    test('list_inbox round-trips the cursor; absence means done', () async {
+    test('list_inbox round-trips the cursor; has_more says rows follow', () async {
       final sentArgs = <Map<String, dynamic>>[];
       mock.toolHandlers['list_inbox'] = (args) {
         sentArgs.add(args);
-        // First page carries next_cursor; the continuation page does not.
+        // `next_cursor` is where a page ENDED; `has_more` says rows follow.
         if (args['cursor'] == null) {
           return {
             'events': [
               {'event_id': 'ev-1'},
             ],
             'next_cursor': 'c-1',
+            'has_more': true,
           };
         }
         return {
           'events': [
             {'event_id': 'ev-2'},
           ],
+          'next_cursor': 'c-2',
         };
       };
 
@@ -698,8 +700,8 @@ void main() {
       final second = await client.listInbox(limit: 1, cursor: first.nextCursor);
       expect(sentArgs.last['cursor'], 'c-1');
       expect(second.events.single.eventId, 'ev-2');
-      // ABSENCE of next_cursor (never a short page) means done.
-      expect(second.nextCursor, isNull);
+      // The page ended at c-2 (a tail resumes there) and nothing follows it.
+      expect(second.nextCursor, 'c-2');
       expect(second.hasMore, isFalse);
     });
 

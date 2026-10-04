@@ -110,7 +110,7 @@ export class EscurelClient {
     } catch (e) {
       throw this.mapError(tool, e);
     }
-    const payload = (result.structuredContent ?? {}) as Record<string, unknown>;
+    const payload = payloadOf(result as { structuredContent?: unknown; content?: unknown });
     if (tool !== 'validate' && (result.isError || payload.ok === false))
       throw EscurelError.fromPayload(tool, payload);
     return payload as T;
@@ -296,4 +296,30 @@ export class EscurelClient {
   closeSession(req: CloseSessionRequest): Promise<CloseSessionResponse> {
     return this.call('close_session', { ...req });
   }
+}
+
+/**
+ * The payload of a tool result: `structuredContent` (the full result; current gateways put a short
+ * summary in the text block), else, for a LEGACY gateway that sent the payload only as JSON text,
+ * that text parsed.
+ */
+export function payloadOf(result: {
+  structuredContent?: unknown;
+  content?: unknown;
+}): Record<string, unknown> {
+  if (result.structuredContent && typeof result.structuredContent === 'object')
+    return result.structuredContent as Record<string, unknown>;
+  const first = Array.isArray(result.content)
+    ? (result.content[0] as { text?: unknown })
+    : undefined;
+  if (typeof first?.text === 'string') {
+    try {
+      const parsed: unknown = JSON.parse(first.text);
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed))
+        return parsed as Record<string, unknown>;
+    } catch {
+      /* a summary, not JSON */
+    }
+  }
+  return {};
 }

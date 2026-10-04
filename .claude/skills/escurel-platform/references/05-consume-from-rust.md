@@ -89,7 +89,9 @@ The read methods forward the optional-with-meaning wire fields: `as_of`
 `resolve`) are sent when non-empty — empty = current base state.
 `list_instances` paginates: pass `cursor` from the previous response's
 `next_cursor`; **only an absent `next_cursor` means done** (a string
-always means more rows, even on a short page).
+always means more rows, even on a short page). For `list_inbox` /
+`list_events` the cursor is where the page ENDED and `has_more` says
+rows follow (`resume_cursor` is gone).
 
 ### Guarded writes (the read→hash→approve loop)
 

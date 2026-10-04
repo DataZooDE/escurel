@@ -25,7 +25,8 @@ export async function loadRun(client: EscurelClient, runId: string): Promise<Loa
   for (let i = 0; i < EVENT_PAGE_CAP; i += 1) {
     const page = await client.listEvents({ run_id: runId, ...(cursor ? { cursor } : {}) });
     events.push(...page.events);
-    if (!page.next_cursor) break;
+    // `has_more` says rows follow; `next_cursor` alone is only where this page ended.
+    if (!page.has_more || !page.next_cursor) break;
     cursor = page.next_cursor;
   }
   const rootEventId = events.find((e) => e.root_event_id)?.root_event_id ?? undefined;

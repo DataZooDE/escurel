@@ -560,9 +560,10 @@ async fn a_malformed_cursor_gets_an_answer_not_a_dropped_connection() {
         .await
         .expect("the gateway must answer, not drop the connection");
     let body: Value = resp.json().await.expect("a JSON-RPC answer");
-    assert!(
-        body.get("error").is_some(),
-        "a bad cursor is an error: {body}"
+    // A worded refusal an agent can act on (restart without the cursor), never a dropped connection.
+    assert_eq!(
+        body["result"]["structuredContent"]["issues"][0]["code"], "invalid_cursor",
+        "a bad cursor is a refusal: {body}"
     );
     // The gateway is still healthy afterwards.
     let r = t

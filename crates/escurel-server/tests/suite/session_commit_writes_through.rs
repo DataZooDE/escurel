@@ -36,6 +36,12 @@ const TENANT: &str = "acme";
 const CUSTOMER: &str = "---\nkind: skill\nid: customer\ndescription: x\n---\n# customer\n";
 const C1: &str = "---\nkind: instance\nskill: customer\nid: c1\n---\n# Acme\n\nseed.\n";
 const PAGE: &str = "markdown/instances/customer/c1.md";
+const LEDGER: &str =
+    "---\nkind: skill\nid: ledger\ndescription: x\nautonomy: review\n---\n# ledger\n";
+// An EMPTY body: a session's text is the page body, and a seeded body would race (by CRDT tie-break) the
+// frontmatter the test inserts, making the merged text start with the body on some runs.
+const L1: &str = "---\nkind: instance\nskill: ledger\nid: l1\n---\n";
+const LEDGER_PAGE: &str = "markdown/instances/ledger/l1.md";
 
 struct Harness {
     process: EscurelProcess,
@@ -56,6 +62,8 @@ async fn start() -> Harness {
                 .tenant(TENANT)
                 .skill("customer", CUSTOMER)
                 .instance("customer", "c1", C1)
+                .skill("ledger", LEDGER)
+                .instance("ledger", "l1", L1)
                 .done(),
         ),
         config_overrides: ConfigOverrides {
@@ -200,4 +208,42 @@ async fn search_finds_a_committed_session_edit() {
         "a committed session edit must be retrievable; the indexer owns the \
          blocks that feed search: {hits}"
     );
+}
+
+/// The autonomy gate reaches the session path too: a MACHINE's `close_session(commit)` on a review
+/// skill does not write through; the merged body becomes an open draft, the page is untouched.
+#[tokio::test]
+async fn a_machine_session_commit_on_a_review_skill_becomes_a_draft_not_a_write() {
+    let h = start().await;
+    let token =
+        h.process
+            .mint_token_for_run(TENANT, Role::Agent, "agent:ledger", "run-9", "root-9");
+    let call_as = |name: &'static str, args: Value| {
+        let token = token.clone();
+        let url = h.process.mcp_url();
+        async move {
+            let v: Value = reqwest::Client::new()
+                .post(url)
+                .header("authorization", format!("Bearer {token}"))
+                .json(&json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                    "params": { "name": name, "arguments": args } }))
+                .send()
+                .await
+                .unwrap()
+                .json()
+                .await
+                .unwrap();
+            v["result"]["structuredContent"].clone()
+        }
+    };
+    let opened = call_as("open_session", json!({ "page_id": LEDGER_PAGE })).await;
+    let sid = opened["session"].as_str().expect("session").to_owned();
+    let closed = call_as("close_session", json!({ "session": sid, "commit": true })).await;
+    assert_eq!(closed["held_for_review"], true, "{closed}");
+    assert_eq!(closed["draft"]["status"], "open", "{closed}");
+    let page = call_as("expand", json!({ "page_id": LEDGER_PAGE })).await;
+    // The page is exactly what it was (nothing was written through).
+    assert_eq!(page["frontmatter"]["id"], "l1", "{page}");
+    let drafts = call_as("list_drafts", json!({})).await;
+    assert_eq!(drafts["drafts"].as_array().unwrap().len(), 1, "{drafts}");
 }

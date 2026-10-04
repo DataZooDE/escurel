@@ -253,10 +253,14 @@ export interface ListEventsRequest {
 
 export interface EventsPage {
   events: Event[];
-  /** Present iff more rows exist. */
+  /**
+   * Where THIS page ended; present iff the page is non-empty. Pass it back as `cursor` to continue
+   * or to tail. Only its absence means done: a client paging until it is absent makes one extra call
+   * that comes back empty. (`resume_cursor`, its old twin, no longer exists.)
+   */
   next_cursor?: string;
-  /** The cursor of this page's last row; present iff the page is non-empty. */
-  resume_cursor?: string;
+  /** True iff rows already lie past this page; absent otherwise. */
+  has_more?: boolean;
 }
 
 export interface ListInboxRequest {
