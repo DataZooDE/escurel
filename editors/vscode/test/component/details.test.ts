@@ -39,7 +39,8 @@ const inner = (el: Element) => q(el, 'escurel-thread-inspector')!;
 describe('<escurel-details>', () => {
   it('says what to do when nothing is selected', async () => {
     const el = await render();
-    expect(text(q(el, '.empty'))).to.equal('Select a node in a thread to see its details.');
+    expect(text(q(el, '.empty'))).to.contain('Select a node in a thread to see its details.');
+    expect(text(q(el, '.empty .hint'))).to.contain('Click a card');
     expect(q(el, 'escurel-thread-inspector')).to.equal(null);
   });
 

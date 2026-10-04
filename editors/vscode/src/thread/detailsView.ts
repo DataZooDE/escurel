@@ -5,6 +5,7 @@ import { webviewHtml, webviewOptions } from '../shared/webviewHtml';
 import { log } from '../log';
 import { acceptDetailsAction, type Shown } from './detailsRouting';
 import type { ThreadController } from './controller';
+import { isThreadViewType, shouldShowDetails } from './detailsFollowsEditor';
 
 /**
  * The details of the node selected in a thread, as a WebviewView in the PANEL area (SPEC §3.5).
@@ -28,6 +29,11 @@ export class DetailsViewProvider implements vscode.WebviewViewProvider, vscode.D
     private readonly context: vscode.ExtensionContext,
     private readonly threads: ThreadController,
   ) {
+    // It follows the editor in front: a node of a thread is meaningless beside an order page.
+    this.subs.push(
+      vscode.window.tabGroups.onDidChangeTabs(() => this.followEditor()),
+      vscode.window.tabGroups.onDidChangeTabGroups(() => this.followEditor()),
+    );
     this.subs.push(
       threads.onDidChangeDetails((e) => {
         if (e.nodeId !== undefined && e.detail) {
@@ -85,7 +91,11 @@ export class DetailsViewProvider implements vscode.WebviewViewProvider, vscode.D
     const m = raw as DetailsWebviewToHost | undefined;
     if (!m || typeof m !== 'object') return false;
     if (m.type === 'ready') {
-      this.post(this.shown ? { type: 'details', ...this.shown } : { type: 'details-empty' });
+      this.post(
+        this.shown && this.visibleNode
+          ? { type: 'details', ...this.shown }
+          : { type: 'details-empty' },
+      );
       return true;
     }
     if (m.type === 'focus-canvas') {
@@ -125,8 +135,31 @@ export class DetailsViewProvider implements vscode.WebviewViewProvider, vscode.D
     // follow the most recently SELECTED node.
     if (reason === 'refresh' && !same) return;
     this.shown = next;
+    this.visibleNode = true;
     this.post({ type: 'details', ...next });
     if (reason === 'select') void this.bringUp(next.rootEventId);
+  }
+
+  /** Whether the view is showing its node (false while another kind of editor is in front). */
+  private visibleNode = true;
+
+  private followEditor(): void {
+    const tab = vscode.window.tabGroups.activeTabGroup?.activeTab;
+    const input = tab?.input;
+    const show = shouldShowDetails({
+      hasSelection: this.shown !== undefined,
+      activeIsThread: input instanceof vscode.TabInputWebview && isThreadViewType(input.viewType),
+      activeIsNone: tab === undefined,
+    });
+    if (show === this.visibleNode) return;
+    this.visibleNode = show;
+    if (show && this.shown) this.post({ type: 'details', ...this.shown });
+    else this.post({ type: 'details-empty' });
+  }
+
+  /** Whether the view is currently showing its selected node (for the integration suite). */
+  showing(): boolean {
+    return this.visibleNode && this.shown !== undefined;
   }
 
   private clear(): void {

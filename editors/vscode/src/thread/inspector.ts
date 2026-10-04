@@ -4,6 +4,7 @@ import { pageSlug } from '../shared/pageId';
 import type { InspectorRow, InspectorView, ThreadNode, ThreadView } from '../shared/protocol';
 import { formatDateTime, formatDuration } from '../shared/time';
 import { buildNodeActions } from './inspectorActions';
+import { nodeSummary, type SummaryFacts } from './nodeSummary';
 
 function value(raw: unknown): string | undefined {
   if (raw === null || raw === undefined || raw === '') return undefined;
@@ -20,16 +21,22 @@ function tone(state: string): InspectorRow['tone'] {
   return undefined;
 }
 
-function row(k: string, raw: unknown, state = false): InspectorRow | undefined {
+function row(k: string, raw: unknown, state = false, tech = false): InspectorRow | undefined {
   const v = value(raw);
   if (v === undefined) return undefined;
   const row: InspectorRow = { k, v };
   if (state) row.tone = tone(v);
+  if (tech) row.tech = true;
   return row;
 }
 
 function rows(...items: (InspectorRow | undefined)[]): InspectorRow[] {
   return items.filter((item): item is InspectorRow => item !== undefined);
+}
+
+function summaryFields(f: SummaryFacts): Pick<InspectorView, 'summary' | 'needsYou'> {
+  const s = nodeSummary(f);
+  return { summary: s.text, ...(s.needsYou ? { needsYou: true } : {}) };
 }
 
 function stringAttr(node: LineageNode, key: string): string | undefined {
@@ -64,13 +71,15 @@ function eventDetail(
   const counts = eventCounts(node, byId);
   return {
     title: node.title,
+    kindLabel: 'Signal',
+    ...summaryFields({ kind: 'event', state: value(raw.state), runs: counts.runs }),
     rows: rows(
-      row('label_skill', raw.label_skill),
-      row('kind', raw.kind),
-      row('at', formatDateTime(raw.at)),
-      row('instance_page_id', raw.instance_page_id),
       row('state', raw.state, true),
-      row('depth', raw.depth),
+      row('at', formatDateTime(raw.at)),
+      row('label_skill', raw.label_skill, false, true),
+      row('kind', raw.kind, false, true),
+      row('instance_page_id', raw.instance_page_id, false, true),
+      row('depth', raw.depth, false, true),
     ),
     sideTitle: 'Thread',
     // Derived from the thread that was loaded, not fields of this node: the gateway sends no
@@ -99,18 +108,25 @@ function runDetail(node: ThreadNode, raw: LineageNode): InspectorView {
   const body = stringAttr(raw, 'summary');
   return {
     title: node.title,
+    kindLabel: 'Agent run',
+    ...summaryFields({
+      kind: 'run',
+      state: value(raw.state),
+      duration: formatDuration(raw.started_at, raw.finished_at),
+      reason: value(raw.reason),
+    }),
     rows: rows(
       row('state', raw.state, true),
-      row('harness', raw.harness),
-      row('model', raw.model),
-      row('autonomy', raw.autonomy),
-      row('attempts', attempts),
-      row('tool calls', raw.tool_calls),
-      row('failed calls', failedCalls),
-      row('trace_id', raw.trace_id),
-      row('produced', produced),
       row('reason', raw.reason),
       row('held', raw.held),
+      row('harness', raw.harness, false, true),
+      row('model', raw.model, false, true),
+      row('autonomy', raw.autonomy, false, true),
+      row('attempts', attempts, false, true),
+      row('tool calls', raw.tool_calls, false, true),
+      row('failed calls', failedCalls, false, true),
+      row('trace_id', raw.trace_id, false, true),
+      row('produced', produced, false, true),
     ),
     ...(body ? { bodyTitle: 'Summary', body } : {}),
     sideTitle: 'Timing',
@@ -130,11 +146,17 @@ function changesetDetail(
 ): InspectorView {
   return {
     title: node.title,
+    kindLabel: 'Proposed changes',
+    ...summaryFields({
+      kind: 'changeset',
+      state: value(raw.state),
+      drafts: typeof raw.drafts === 'number' ? raw.drafts : undefined,
+    }),
     rows: rows(
       row('state', raw.state, true),
       row('drafts', raw.drafts),
       row('author', raw.author),
-      row('run', raw.run_id),
+      row('run', raw.run_id, false, true),
     ),
     sideTitle: 'Drafts',
     side: node.children.flatMap((id) => {
@@ -151,10 +173,18 @@ function changesetDetail(
 function draftDetail(node: ThreadNode, raw: LineageNode): InspectorView {
   return {
     title: node.title,
+    kindLabel: 'Proposed change',
+    ...summaryFields({
+      kind: 'draft',
+      state: value(raw.state),
+      target: stringAttr(raw, 'target_page_id')
+        ? pageSlug(stringAttr(raw, 'target_page_id')!)
+        : undefined,
+    }),
     rows: rows(
-      row('target', raw.target_page_id),
       row('state', raw.state, true),
       row('author', raw.author),
+      row('target', raw.target_page_id, false, true),
     ),
     // Not an action: a table headed "Open page" looked clickable and was not, and repeated the
     // target already in the rows above.

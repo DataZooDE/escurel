@@ -243,6 +243,8 @@ export interface InspectorRow {
   k: string;
   v: string;
   tone?: 'ok' | 'warn' | 'error';
+  /** An identifier or setting only an engineer needs (trace id, harness...): shown under 'Technical details'. */
+  tech?: boolean;
 }
 
 /**
@@ -269,6 +271,12 @@ export interface InspectorActions {
 
 export interface InspectorView {
   title: string;
+  /** What kind of node this is, in a person's words ('Agent run', 'Proposed changes'...). */
+  kindLabel?: string;
+  /** One sentence: what happened and what (if anything) waits for the person. */
+  summary?: string;
+  /** The node waits for a person: the panel makes it stand out. */
+  needsYou?: boolean;
   actions?: InspectorActions;
   rows: InspectorRow[];
   bodyTitle?: string;
