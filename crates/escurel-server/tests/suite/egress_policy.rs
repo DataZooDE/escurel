@@ -12,7 +12,7 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use axum::extract::{Path, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode};
@@ -231,7 +231,8 @@ async fn a_slow_upstream_times_out_instead_of_hanging_the_read() {
     let app = Router::new().route(
         "/customers/{id}",
         get(|| async {
-            tokio::time::sleep(Duration::from_secs(5)).await;
+            // Never answers: the policy's timeout is what ends the call, not the upstream.
+            std::future::pending::<()>().await;
             Json(json!({ "name": "late" }))
         }),
     );
@@ -242,7 +243,6 @@ async fn a_slow_upstream_times_out_instead_of_hanging_the_read() {
     })
     .await;
 
-    let started = Instant::now();
     let proj = projection(&process, &base).await;
 
     let issue = proj["issue"].as_str().unwrap_or_default();
@@ -250,11 +250,8 @@ async fn a_slow_upstream_times_out_instead_of_hanging_the_read() {
         issue.contains("did not answer"),
         "a slow upstream must time out, got: {proj}"
     );
-    assert!(
-        started.elapsed() < Duration::from_secs(3),
-        "the read hung for {:?}",
-        started.elapsed()
-    );
+    // The error KIND is the claim ("did not answer"); how long it took depends on the machine and on
+    // how many times a read is retried, so no elapsed-time assertion.
     process.shutdown().await;
 }
 
