@@ -384,7 +384,8 @@ async fn mcp_inner(
                 agent_skill.as_deref(),
                 req.params,
             )
-            .await;
+            .await
+            .or_else(JsonRpcError::into_refusal);
             let rejected = matches!(&r, Ok(payload) if is_rejected_payload(&tool, payload));
             let r = r.map(|payload| wrap_tool_result(payload, rejected));
             let status = if r.is_err() {
@@ -858,6 +859,12 @@ async fn dispatch_tools_call(
             )
         ))
         .with_code("tenant_quarantined", false));
+    }
+
+    // `limit` is bounded in the tool's own schema; enforce what the schema says. A value outside it
+    // used to be accepted silently (0 and 10001 returned a page) or fail with a Rust type name.
+    if let Some(refusal) = schema::limit_refusal(&params.name, &params.arguments) {
+        return Ok(refusal);
     }
 
     // Session tools depend on `crdt_backend` + `sessions`, not on
@@ -1925,6 +1932,50 @@ struct JsonRpcError {
 }
 
 impl JsonRpcError {
+    /// A DOMAIN refusal from a read tool: the caller's mistake, not a protocol fault.
+    ///
+    /// Write tools answer a refusal as `isError: true` with `issues[{code, location, message,
+    /// suggestion?}]`, which an agent can branch on and act on. Read tools used to answer the same
+    /// kind of mistake as a bare JSON-RPC string (`-32602 …`, or `-32603` for what was really a
+    /// client error). Returning this from a read tool gives it the same shape; [`Self::into_refusal`]
+    /// converts it at the one dispatch point. JSON-RPC errors stay for malformed requests.
+    fn domain(
+        code: &str,
+        location: &str,
+        message: impl Into<String>,
+        suggestion: Option<&str>,
+    ) -> Self {
+        let message = message.into();
+        let mut issue = json!({
+            "severity": "error",
+            "code": code,
+            "location": location,
+            "message": message,
+        });
+        if let Some(s) = suggestion {
+            issue["suggestion"] = json!(s);
+        }
+        Self {
+            code: -32602,
+            message,
+            data: Some(json!({ "domain_issue": issue })),
+        }
+    }
+
+    /// The refusal payload (`{ok: false, issues: [..]}`) of a [`Self::domain`] error, or the error
+    /// itself when it is an ordinary protocol error.
+    fn into_refusal(self) -> Result<Value, Self> {
+        match self
+            .data
+            .as_ref()
+            .and_then(|d| d.get("domain_issue"))
+            .cloned()
+        {
+            Some(issue) => Ok(json!({ "ok": false, "issues": [issue] })),
+            None => Err(self),
+        }
+    }
+
     /// Attach the machine-readable `{code, retryable}` detail.
     fn with_code(mut self, code: &str, retryable: bool) -> Self {
         self.data = Some(json!({ "code": code, "retryable": retryable }));

@@ -96,22 +96,25 @@ fn row_from(src: &RemoteRows, item: &Value) -> Option<RemoteRow> {
     })
 }
 
-/// The client's cursor token is the upstream's cursor, hex-encoded: opaque to the client, and
-/// anything that is not valid hex is refused before it goes anywhere.
+/// The client's cursor token is an opaque, versioned envelope around the upstream's own cursor
+/// (`u1.` + base64url): not readable or forgeable as plain text, and anything else is refused before
+/// it goes anywhere.
 fn encode_cursor(upstream: &str) -> String {
-    upstream.bytes().map(|b| format!("{b:02x}")).collect()
+    use base64::Engine as _;
+    format!(
+        "u1.{}",
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(upstream.as_bytes())
+    )
 }
 
 fn decode_cursor(token: &str) -> Result<String, String> {
-    if !token.len().is_multiple_of(2) || !token.bytes().all(|b| b.is_ascii_hexdigit()) {
-        return Err("invalid cursor".to_owned());
-    }
-    let bytes: Result<Vec<u8>, _> = (0..token.len())
-        .step_by(2)
-        .map(|i| u8::from_str_radix(&token[i..i + 2], 16))
-        .collect();
-    String::from_utf8(bytes.map_err(|_| "invalid cursor".to_owned())?)
-        .map_err(|_| "invalid cursor".to_owned())
+    use base64::Engine as _;
+    let bad = || "invalid cursor".to_owned();
+    let body = token.strip_prefix("u1.").ok_or_else(bad)?;
+    let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(body.as_bytes())
+        .map_err(|_| bad())?;
+    String::from_utf8(bytes).map_err(|_| bad())
 }
 
 /// One page of the upstream's objects. `Err` carries a message that is safe to show (no URL, no

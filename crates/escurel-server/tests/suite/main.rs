@@ -76,6 +76,7 @@ mod list_lineage;
 mod list_skills_acl;
 mod mcp;
 mod mcp_admin_tools;
+mod mcp_agent_ux;
 mod mcp_lifecycle;
 mod mcp_session_tools;
 mod mcp_upstream;

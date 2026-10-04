@@ -218,9 +218,7 @@ pub(super) async fn tool_list_instances(
         )
         .await
         .map_err(|e| match e {
-            escurel_index::IndexerError::InvalidCursor(msg) => {
-                JsonRpcError::invalid_params(format!("list_instances: cursor: {msg}"))
-            }
+            escurel_index::IndexerError::InvalidCursor(_) => invalid_cursor(),
             e => JsonRpcError::internal(format!("list_instances: {e}")),
         })?;
     // Deterministic ACL filter: drop owner-private instances the caller
@@ -877,15 +875,29 @@ pub(super) async fn sql_view_projection(
     }))
 }
 
+/// The refusal an agent gets for a bad cursor: one wording everywhere, with the way out.
+fn invalid_cursor() -> JsonRpcError {
+    JsonRpcError::domain(
+        "invalid_cursor",
+        "cursor",
+        "cursor invalid or expired; restart without `cursor`",
+        Some("repeat the call without `cursor` to start from the first page"),
+    )
+}
+
 /// A typed error for a `rows` read: a bad cursor or a non-filterable field is the caller's mistake
-/// (`invalid_params`); anything else is ours.
+/// (a worded refusal an agent can act on); anything else is ours.
 fn rows_err(ctx: &str, e: escurel_index::SqlViewError) -> JsonRpcError {
     match e {
-        escurel_index::SqlViewError::InvalidBinding(m)
-            if m.contains("cursor") || m.contains("filterable") =>
-        {
-            JsonRpcError::invalid_params(format!("{ctx}: {m}"))
+        escurel_index::SqlViewError::InvalidBinding(m) if m.contains("filterable") => {
+            JsonRpcError::domain(
+                "field_not_filterable",
+                "frontmatter_key",
+                m,
+                Some("`list_skills` shows each skill's `backend.filterable`"),
+            )
         }
+        escurel_index::SqlViewError::InvalidBinding(m) if m.contains("cursor") => invalid_cursor(),
         e => JsonRpcError::internal(format!("{ctx}: {e}")),
     }
 }
@@ -946,7 +958,7 @@ async fn list_remote_rows(
         .await
         .map_err(|e| {
             if e == "invalid cursor" {
-                JsonRpcError::invalid_params(format!("list_instances: {e}"))
+                invalid_cursor()
             } else {
                 JsonRpcError::internal(format!("list_instances: {e}"))
             }

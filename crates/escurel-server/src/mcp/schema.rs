@@ -1651,6 +1651,53 @@ pub(crate) fn writes_index_tools() -> &'static std::collections::HashSet<&'stati
     })
 }
 
+/// `(min, max)` of the `limit` a tool's input schema declares, when it declares one.
+fn limit_bounds(name: &str) -> Option<(Option<i64>, Option<i64>)> {
+    static MAP: std::sync::OnceLock<
+        std::collections::HashMap<&'static str, (Option<i64>, Option<i64>)>,
+    > = std::sync::OnceLock::new();
+    MAP.get_or_init(|| {
+        tool_defs()
+            .iter()
+            .filter_map(|d| {
+                let l = d.value["inputSchema"]["properties"].get("limit")?;
+                Some((d.name, (l["minimum"].as_i64(), l["maximum"].as_i64())))
+            })
+            .collect()
+    })
+    .get(name)
+    .copied()
+}
+
+/// A worded refusal when a call's `limit` is not an integer inside the range the tool's schema
+/// declares; `None` when it is fine (or absent).
+pub(crate) fn limit_refusal(name: &str, args: &Value) -> Option<Value> {
+    let (min, max) = limit_bounds(name)?;
+    let v = args.get("limit").filter(|v| !v.is_null())?;
+    let ok = v
+        .as_i64()
+        .is_some_and(|n| min.is_none_or(|m| n >= m) && max.is_none_or(|m| n <= m));
+    if ok {
+        return None;
+    }
+    let range = match (min, max) {
+        (Some(a), Some(b)) => format!("an integer from {a} to {b}"),
+        (Some(a), None) => format!("an integer of at least {a}"),
+        (None, Some(b)) => format!("an integer of at most {b}"),
+        (None, None) => "an integer".to_owned(),
+    };
+    Some(json!({
+        "ok": false,
+        "issues": [{
+            "severity": "error",
+            "code": "invalid_limit",
+            "location": "limit",
+            "message": format!("`limit` must be {range}; got {v}"),
+            "suggestion": "omit `limit` for the default page size and page on with `next_cursor`",
+        }],
+    }))
+}
+
 /// What one tool touches, by name. `None` for an unknown name.
 ///
 /// The single lookup both reader-replica gates use, so neither can consult a

@@ -199,8 +199,8 @@ async fn a_hostile_cursor_is_refused_or_encoded_never_spliced_into_the_upstream_
         json!({ "skill_id": "customer", "cursor": "x&admin=1&limit=99999#frag" }),
     )
     .await;
-    assert!(
-        bad.get("error").is_some(),
+    assert_eq!(
+        bad["result"]["structuredContent"]["issues"][0]["code"], "invalid_cursor",
         "a forged cursor is refused: {bad}"
     );
     assert!(

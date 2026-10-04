@@ -206,13 +206,17 @@ impl Indexer {
         let mut params: Vec<String> = Vec::new();
         if let Some((field, value)) = filter {
             // The caller names a FRONTMATTER field; map it back to the source column.
-            let col = column_for_field(src, field).ok_or_else(|| {
-                SqlViewError::InvalidBinding(format!("`{field}` is not a filterable field"))
-            })?;
+            let not_filterable = || {
+                SqlViewError::InvalidBinding(format!(
+                    "`{field}` is not a filterable field of `{}`; filterable: {}; \
+                     use `search` for free text",
+                    src.skill,
+                    filterable_names(src)
+                ))
+            };
+            let col = column_for_field(src, field).ok_or_else(not_filterable)?;
             if !src.cfg.filterable.iter().any(|f| f == &col) || !names.contains(&col.as_str()) {
-                return Err(SqlViewError::InvalidBinding(format!(
-                    "`{field}` is not a filterable field"
-                )));
+                return Err(not_filterable());
             }
             wheres.push(format!("CAST(\"{col}\" AS VARCHAR) = ?"));
             params.push(value.to_owned());
@@ -308,10 +312,27 @@ fn column_for_field(src: &RowsSource, field: &str) -> Option<String> {
         .iter()
         .find(|(_, f)| f.as_str() == field)
         .map(|(c, _)| c.clone())
-        .or_else(|| {
-            (!src.project.contains_key(field) && is_valid_identifier(field))
-                .then(|| field.to_owned())
+        // The skill DECLARES `filterable` by column name (`kunnr`), while the page shows the projected
+        // field (`sold_to`): an agent reading either must be able to filter by the one it saw.
+        .or_else(|| is_valid_identifier(field).then(|| field.to_owned()))
+}
+
+/// The filterable columns as an agent can name them: `sold_to (column kunnr)`.
+fn filterable_names(src: &RowsSource) -> String {
+    let names: Vec<String> = src
+        .cfg
+        .filterable
+        .iter()
+        .map(|c| match src.project.get(c) {
+            Some(f) if f != c => format!("{f} (column {c})"),
+            _ => c.clone(),
         })
+        .collect();
+    if names.is_empty() {
+        "none declared".to_owned()
+    } else {
+        names.join(", ")
+    }
 }
 
 fn key_values(src: &RowsSource, columns: &Map<String, Value>) -> Vec<String> {
@@ -459,34 +480,32 @@ fn timestamp_to_iso(unit: duckdb::types::TimeUnit, t: i64) -> String {
     )
 }
 
-/// An opaque cursor: the last row's key values, hex-encoded, `.`-joined.
+/// An opaque, versioned cursor: `r1.` + base64url of the last row's key values (a JSON array). It
+/// used to be the plain hex of the key, which anyone could read and forge.
+const CURSOR_PREFIX: &str = "r1.";
+
 fn encode_cursor(values: &[String]) -> String {
-    values
-        .iter()
-        .map(|v| v.bytes().map(|b| format!("{b:02x}")).collect::<String>())
-        .collect::<Vec<_>>()
-        .join(".")
+    use base64::Engine as _;
+    let raw = serde_json::to_vec(values).unwrap_or_default();
+    format!(
+        "{CURSOR_PREFIX}{}",
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(raw)
+    )
 }
 
 fn decode_cursor(token: &str, arity: usize) -> Result<Vec<String>, SqlViewError> {
+    use base64::Engine as _;
     let bad = || SqlViewError::InvalidBinding("invalid cursor".to_owned());
-    let parts: Vec<&str> = token.split('.').collect();
-    if parts.len() != arity {
-        return Err(bad());
+    let body = token.strip_prefix(CURSOR_PREFIX).ok_or_else(bad)?;
+    let raw = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(body.as_bytes())
+        .map_err(|_| bad())?;
+    let values: Vec<String> = serde_json::from_slice(&raw).map_err(|_| bad())?;
+    if values.len() == arity {
+        Ok(values)
+    } else {
+        Err(bad())
     }
-    parts
-        .into_iter()
-        .map(|p| {
-            if p.len() % 2 != 0 {
-                return Err(bad());
-            }
-            let bytes: Result<Vec<u8>, _> = (0..p.len())
-                .step_by(2)
-                .map(|i| u8::from_str_radix(&p[i..i + 2], 16))
-                .collect();
-            String::from_utf8(bytes.map_err(|_| bad())?).map_err(|_| bad())
-        })
-        .collect()
 }
 
 /// Why a write to a row page was refused.
