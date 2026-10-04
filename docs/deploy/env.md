@@ -239,4 +239,4 @@ test knobs: never set in a deployment.
 | `ESCUREL_TEST_GDRIVE_EXTENSION` | — | path of a built gdrive extension for the duckvfs tests |
 | `ESCUREL_TEST_MIGRATE_KIND_PAGE_DELAY_MS` | — | sleep this long before each page of `migrate_kind`, to give a CI-sized tenant a long migration window |
 | `ESCUREL_SIGKILL_FULL` | — | `1`: run all ten kill points of the migrate-kind SIGKILL test (default: four) |
-| `ESCUREL_SECRET_SURELY_UNSET_X` | — | a name the secret-policy tests assert is NOT set |
+| `ESCUREL_SECRET_ACME__SURELY_UNSET_X` | — | a name the secret-policy tests assert is NOT set |

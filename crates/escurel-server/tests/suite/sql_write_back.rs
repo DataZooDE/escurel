@@ -419,14 +419,15 @@ async fn a_person_without_write_access_cannot_cause_a_database_change() {
     assert_eq!(db_row(&g.db, 7)["status"], "shipped");
 }
 
-// Round-2 review: "already applied" compared JSON renderings as strings, so a patch spelled `12.0`
-// over a stored integer 12 was a false conflict forever once the witness was lost. The database
+// Round-2 review: "already applied" compared JSON renderings as strings, so a patch spelled differently
+// from the stored value (here the text `"12"` over the integer 12; `12.0` is now refused at draft time
+// for a whole-number column) was a false conflict forever once the witness was lost. The database
 // compares, typed.
 #[tokio::test]
 async fn a_committed_change_in_another_spelling_is_applied_not_a_conflict() {
     let g = Gw::start().await;
     let e = etag(&g, 7).await;
-    let id = draft_id(&draft(&g, 7, &intent(7, "quantity: 12.0", &e, "n")).await);
+    let id = draft_id(&draft(&g, 7, &intent(7, "quantity: \"12\"", &e, "n")).await);
     // The crash window: the UPDATE committed, the witness was never written.
     db_exec(
         &g.db,

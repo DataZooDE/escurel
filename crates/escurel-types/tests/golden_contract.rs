@@ -129,9 +129,9 @@ fn validate_reports_ok_false_with_issues_as_data() {
 /// removed rather than forgotten.
 const KNOWN_GAPS: &[(&str, &[&str])] = &[(
     "update_page_held",
-    // UpdatePageResponse has no held_for_review / draft / message: a typed client reads a held write as
-    // landed (backend security fix: the autonomy gate).
-    &["$.draft", "$.held_for_review", "$.message"],
+    // `held_for_review` and `draft` are typed now (a typed client no longer reads a held write as
+    // landed). Still not carried: the human-readable `message` and the draft's `base_version`.
+    &["$.draft.base_version", "$.message"],
 )];
 
 #[test]

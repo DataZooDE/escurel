@@ -1044,7 +1044,7 @@ pub const CONFIG_KEYS: &[ConfigKey] = &[
         doc: "`1`: run all ten kill points of the migrate-kind SIGKILL test (default: four)",
     },
     ConfigKey {
-        name: "ESCUREL_SECRET_SURELY_UNSET_X",
+        name: "ESCUREL_SECRET_ACME__SURELY_UNSET_X",
         component: "TestOnly",
         default: "—",
         doc: "a name the secret-policy tests assert is NOT set",
