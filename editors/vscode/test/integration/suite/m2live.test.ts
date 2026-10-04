@@ -49,6 +49,8 @@ suite('M2 live', () => {
     // to cover the replay gap, and counting that as the live signal would make
     // this test pass without any event at all.
     for (let i = 0; i < 100 && api.live.socketState !== 'open'; i += 1) await wait(100);
+    // The connect itself refreshes both views (the replay gap); let that one land before the baseline.
+    await wait(300);
     const baseline = fired;
 
     // Without an open socket nothing below could be a live update, and a passing
