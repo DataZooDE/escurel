@@ -39,6 +39,9 @@ jobs:
       CARGO_PROFILE_TEST_DEBUG: "0"
       ESCUREL_REQUIRE_CASCADE: "1"
       ESCUREL_TEST_GREP: Evolve problem plan review
+      ESCUREL_SERVER_BIN: ${{ github.workspace }}/target/debug/escurel-server
+      ESCUREL_RUNNER_BIN: ${{ github.workspace }}/target/debug/escurel-runner
+      ESCUREL_TEST_GATEWAY_BIN: ${{ github.workspace }}/target/debug/escurel-test-gateway
     steps:
       - uses: actions/checkout@v4
       - name: Install Rust toolchain
@@ -65,7 +68,7 @@ jobs:
       - name: Install VS Code host dependencies
         run: npx playwright install --with-deps chromium
         working-directory: editors/vscode
-      - name: Verify plan review and approval in VS Code host
+      - name: Verify Evolve preflight and plan review in VS Code host
         run: npm run test:integration
         working-directory: editors/vscode
 
