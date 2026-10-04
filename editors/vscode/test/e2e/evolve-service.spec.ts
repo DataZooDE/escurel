@@ -63,15 +63,51 @@ test('native owner approval, two proposal generations, validation, and inactive 
     extracted_at: '2026-08-14T12:00:00Z', source_system: 'synthetic-native-e2e',
     quantity_unit: 'units', daily_demand_sha256: csvDigest,
   };
+  const sourceId = `${id}-source`;
+  const csvBase = join(stack.workspaceDir, 'training-demand');
+  writeFileSync(`${csvBase}.csv`, dailyCsv);
+  writeFileSync(`${csvBase}.manifest.json`, JSON.stringify(manifest));
+  writeFileSync(`${csvBase}.template.json`, JSON.stringify(sourceTemplate));
+  await expect(pane(stack.page, 'Runs')).toContainText('4 ok', { timeout: 30_000 });
+  await stack.page.keyboard.press('Control+P');
+  const quickInput = stack.page.locator('.quick-input-widget input');
+  await quickInput.fill(`${csvBase}.csv`);
+  await expect(stack.page.locator('.quick-input-list')).toContainText('training-demand.csv');
+  await quickInput.press('Enter');
+  await expect(stack.page.getByRole('tab', { name: 'training-demand.csv' })).toBeVisible();
+  await stack.page.keyboard.press('Control+Shift+P');
+  await expect(stack.page.locator('.quick-input-widget')).toBeVisible();
+  await quickInput.fill('>Prepare private Anofox Evolve training CSV');
+  await expect(stack.page.locator('.quick-input-list')).toContainText('Prepare private Anofox Evolve training CSV');
+  await quickInput.press('Enter');
+  await expect(stack.page.locator('.quick-input-widget')).toContainText('Unique training source ID');
+  await quickInput.fill(sourceId);
+  await quickInput.press('Enter');
+  await expect(stack.page.locator('.quick-input-list')).toContainText('Use active CSV and sibling files');
+  await quickInput.press('Enter');
+  const prepareDialog = stack.page.getByRole('dialog')
+    .filter({ hasText: `Prepare private training source ${sourceId}` });
+  await expect(prepareDialog).toContainText('physical CSV data lines: 26');
+  await expect(prepareDialog).toContainText(`CSV SHA-256: ${csvDigest}`);
+  await prepareDialog.getByRole('button', { name: 'Prepare private CSV' }).click();
+  const preparedDialog = stack.page.getByRole('dialog')
+    .filter({ hasText: `Training source ${sourceId} prepared from 26 dated rows.` });
+  await expect(preparedDialog).toBeVisible();
+  await stack.page.keyboard.press('Escape');
   const source = await stack.evolveCall('evolve_prepare_training_csv', {
-    source_id: `${id}-source`, manifest_json: JSON.stringify(manifest),
+    source_id: sourceId, manifest_json: JSON.stringify(manifest),
     template_json: JSON.stringify(sourceTemplate), daily_demand_csv: dailyCsv,
   });
+  expect(source.idempotent).toBe(true);
   expect(source.training_source_id).toBe(`${id}-source`);
   expect(source.normalized_sha256).toMatch(/^[a-f0-9]{64}$/);
   expect(source.raw_sha256).toMatch(/^[a-f0-9]{64}$/);
   expect(source.csv_sha256).toBe(csvDigest);
   expect(source.row_count).toBe(26);
+  const derived = await stack.evolveCall('evolve_training_csv_draft', { source_id: sourceId });
+  expect(derived.normalized_sha256).toBe(source.normalized_sha256);
+  const derivedSource = derived.source as Record<string, unknown>;
+  expect(derivedSource.skus).toEqual(sourcePayload.skus);
 
   const holdoutSku = { ...trainingSku, name: 'PRIVATE_HOLDOUT_OUTCOMES_SENTINEL_A' };
   const holdoutSkuB = { ...trainingSkuB, name: 'PRIVATE_HOLDOUT_OUTCOMES_SENTINEL_B' };
@@ -96,16 +132,17 @@ test('native owner approval, two proposal generations, validation, and inactive 
   };
   const holdoutFile = join(stack.workspaceDir, 'private-holdout.json');
   writeFileSync(holdoutFile, JSON.stringify(holdoutPayload, null, 2));
-  await expect(pane(stack.page, 'Runs')).toContainText('4 ok', { timeout: 30_000 });
   await stack.page.keyboard.press('Control+P');
-  const quickInput = stack.page.locator('.quick-input-widget input');
   await quickInput.fill(holdoutFile);
   await expect(stack.page.locator('.quick-input-list')).toContainText('private-holdout.json');
   await quickInput.press('Enter');
   await stack.page.getByRole('tab', { name: 'private-holdout.json' }).click();
   await expect(stack.page.locator('.tab.active')).toContainText('private-holdout.json');
-  await stack.page.keyboard.press('Control+P');
+  await stack.page.keyboard.press('Control+Shift+P');
+  await expect(stack.page.locator('.quick-input-widget')).toBeVisible();
+  await quickInput.click();
   await quickInput.fill('>Register private Anofox Evolve V2 holdout');
+  await expect(quickInput).toHaveValue('>Register private Anofox Evolve V2 holdout');
   await expect(stack.page.locator('.quick-input-list')).toContainText('Register private Anofox Evolve V2 holdout');
   await quickInput.press('Enter');
   await expect(stack.page.locator('.quick-input-list')).toContainText('Use active JSON file');
@@ -132,27 +169,70 @@ test('native owner approval, two proposal generations, validation, and inactive 
   });
   expect(JSON.stringify(beforeProblemEvents)).not.toContain('PRIVATE_HOLDOUT_OUTCOMES_SENTINEL_A');
 
-  const search = {
-    pilot: 'p1_decision', brain: 'llm', evaluator_version: 'replenishment_decision_v2',
-    seed_sql: baseline, baseline_sql: baseline, capacity: 9, skus: sourcePayload.skus,
+  const trainingFields = { ...derivedSource };
+  delete trainingFields.format_version;
+  delete trainingFields.daily_demand;
+  const trainingSpec = {
+    ...trainingFields, seed_sql: baseline, baseline_sql: baseline,
     service_targets: serviceTargets, planning_window_days: 1, scored_window_days: 3,
     unit_order_costs: { '1': 1, '2': 1 }, terminal_stock_tolerance: { '1': 0, '2': 0 },
-    holdout_id: `${id}-holdout`, training_source_id: source.training_source_id,
-    source_sha256: source.normalized_sha256,
-    training_start: '2026-08-01', training_end: '2026-08-12',
-    history_start: '2026-07-31', history_end: '2026-07-31',
-    inventory_as_of: '2026-08-01', demand_observation: 'true_demand',
+    training_source_id: source.training_source_id, source_sha256: source.normalized_sha256,
     max_generations: 2, budget: { max_evaluated: 3 },
+  };
+  const specFile = join(stack.workspaceDir, 'completed-training-spec.json');
+  writeFileSync(specFile, JSON.stringify(trainingSpec, null, 2));
+  await stack.page.keyboard.press('Control+P');
+  await quickInput.fill(specFile);
+  await expect(stack.page.locator('.quick-input-list')).toContainText('completed-training-spec.json');
+  await quickInput.press('Enter');
+  await expect(stack.page.getByRole('tab', { name: 'completed-training-spec.json' })).toBeVisible();
+  await stack.page.keyboard.press('Control+Shift+P');
+  await expect(stack.page.locator('.quick-input-widget')).toBeVisible();
+  await quickInput.fill('>Import Anofox Evolve V2 problem');
+  await expect(stack.page.locator('.quick-input-list')).toContainText('Import Anofox Evolve V2 problem');
+  await quickInput.press('Enter');
+  await expect(stack.page.locator('.quick-input-list')).toContainText('Import active completed training spec');
+  await quickInput.fill('Import active completed training spec');
+  await quickInput.press('Enter');
+  await expect(stack.page.locator('.quick-input-widget')).toContainText('Registered private holdout ID');
+  await quickInput.fill(`${id}-holdout`);
+  await quickInput.press('Enter');
+  await expect(stack.page.locator('.quick-input-widget')).toContainText('Problem page ID');
+  await quickInput.fill(id);
+  await quickInput.press('Enter');
+  await expect(stack.page.locator('.quick-input-widget')).toContainText('Short objective');
+  await quickInput.fill('Synthetic CSV mapped replenishment policy');
+  await quickInput.press('Enter');
+  const smokeDialog = stack.page.getByRole('dialog').filter({ hasText: 'This is a smoke-only problem' });
+  await smokeDialog.getByRole('button', { name: 'Import smoke fixture' }).click();
+  const importDialog = stack.page.getByRole('dialog').filter({ hasText: `Create ${id} for holdout ${id}-holdout` });
+  await importDialog.getByRole('button', { name: 'Import problem' }).click();
+  const pageId = `markdown/instances/evolve_problem/${id}.md`;
+  let imported: Record<string, unknown> | undefined;
+  await expect.poll(async () => {
+    imported = await stack.call('expand', { page_id: pageId });
+    return (imported.frontmatter as Record<string, unknown> | undefined)?.search_request;
+  }, { timeout: 30_000 }).toBeTruthy();
+  const importedSearch = (imported!.frontmatter as Record<string, unknown>).search_request as Record<string, unknown>;
+  expect(importedSearch.skus).toEqual(derivedSource.skus);
+  expect(importedSearch.training_source_id).toBe(source.training_source_id);
+  expect(importedSearch.source_sha256).toBe(source.normalized_sha256);
+
+  // The fixture-only proposal brain is deliberately unavailable in the normal
+  // Workbench import contract. Add it in this isolated synthetic test revision.
+  const search = {
+    ...importedSearch,
     synthetic_brain: 'batch_progression_v1',
   };
-  const pageId = `markdown/instances/evolve_problem/${id}.md`;
   const content = `---\nkind: instance\nskill: evolve_problem\nid: ${id}\nowner_subject: alice\npilot: p1_decision\nsearch_request: ${JSON.stringify(search)}\n---\n# Synthetic seed admission\n`;
   expect((await stack.call('update_page', { page_id: pageId,
-    content, base_sha256: '' })).ok).toBe(true);
+    content, base_sha256: imported!.content_sha256 })).ok).toBe(true);
   const revision = (await stack.call('expand', { page_id: pageId, raw: true })).content_sha256;
   expect(revision).toMatch(/^[a-f0-9]{64}$/);
   stack.setGeminiPlanTarget(pageId, revision as string);
 
+  await stack.page.getByRole('tab', { name: new RegExp(id) }).click();
+  await stack.page.keyboard.press('Control+W');
   await openRow(stack.page, 'evolve_problem', new RegExp(id));
   const pageUi = await webviewWith(stack.page, 'escurel-page-as-ui');
   await pageUi.getByRole('button', { name: 'Review experiment plan', exact: true }).click();

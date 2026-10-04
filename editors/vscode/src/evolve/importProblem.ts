@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import { createHash } from 'node:crypto';
 import type { Services } from '../services';
 import { readPageMarkdown } from '../fs/read';
 import { describeError } from '../errors';
@@ -15,10 +16,13 @@ export function registerImportEvolveProblem(
     try {
       const owner = await services.subject();
       if (!owner) throw new Error('Sign in before creating an owner-scoped Evolve problem.');
+      const active = vscode.window.activeTextEditor?.document;
+      const activeJson = active?.uri.scheme === 'file' && active.uri.fsPath.endsWith('.json') ? active : undefined;
       const source = await vscode.window.showQuickPick([
         { label: 'Prepare a training source', description: 'Create the private source page and receive its ID and digest' },
         { label: 'Register private holdout', description: 'Submit a local V2 holdout file directly to Anofox Evolve' },
         { label: 'Open starter training spec', description: 'Edit it locally, save as JSON, then import it' },
+        ...(activeJson ? [{ label: 'Import active completed training spec', description: activeJson.uri.fsPath }] : []),
         { label: 'Import completed training spec', description: 'Choose a local JSON file' },
       ], { placeHolder: 'Create an Anofox Evolve V2 problem' });
       if (!source) return;
@@ -37,14 +41,16 @@ export function registerImportEvolveProblem(
         await vscode.window.showTextDocument(document, { preview: false });
         return;
       }
-      const files = await vscode.window.showOpenDialog({
-        canSelectMany: false,
-        openLabel: 'Import V2 training spec JSON',
-        filters: { JSON: ['json'] },
-      });
-      const file = files?.[0];
+      const selectedActive = source.label === 'Import active completed training spec';
+      const file = selectedActive ? activeJson!.uri : (await vscode.window.showOpenDialog({
+        canSelectMany: false, openLabel: 'Import V2 training spec JSON', filters: { JSON: ['json'] },
+      }))?.[0];
       if (!file) return;
       const bytes = await vscode.workspace.fs.readFile(file);
+      const fileSha256 = createHash('sha256').update(bytes).digest('hex');
+      const visible = vscode.workspace.textDocuments.find((document) => document.uri.toString() === file.toString());
+      if (visible && (visible.isDirty || visible.getText() !== new TextDecoder().decode(bytes)))
+        throw new Error('The selected training spec has unsaved or stale editor content. Save and review it before import.');
       const trainingSpec: unknown = JSON.parse(new TextDecoder().decode(bytes));
       const specForLookup = trainingSpec as Record<string, unknown>;
       let recent: string | undefined;
@@ -98,6 +104,13 @@ export function registerImportEvolveProblem(
         { modal: true }, 'Import problem',
       );
       if (confirmed !== 'Import problem') return;
+      if (await services.subject() !== owner)
+        throw new Error('The signed-in owner changed during review. Sign in again before importing.');
+      const current = await vscode.workspace.fs.readFile(file);
+      if (createHash('sha256').update(current).digest('hex') !== fileSha256)
+        throw new Error('The selected training spec changed during review. Reopen and review the current file.');
+      if (visible && (visible.isDirty || visible.getText() !== new TextDecoder().decode(current)))
+        throw new Error('The selected training spec changed in the editor during review. Save and review it again.');
       const validation = await client.validate({ content, as_page_id: pageId });
       if (!validation.ok || validation.issues.some((issue) => issue.severity === 'error')) {
         const issues = validation.issues.map((issue) => issue.message).join('; ');
