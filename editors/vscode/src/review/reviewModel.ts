@@ -53,11 +53,13 @@ export function parseReviewParts(
 }
 
 /**
- * Formats the diff editor tab title as `<slug> — draft by <author>`.
+ * Formats the diff editor tab title as `<skill> · <slug> — draft by <author>`: the skill says what KIND of
+ * record the change is for, so an order and an analysis with similar names are told apart.
  */
 export function formatDraftDiffTitle(draft: Pick<Draft, 'target_page_id' | 'author'>): string {
   const slug = pageSlug(draft.target_page_id);
-  return `${slug} — draft by ${draft.author}`;
+  const skill = pageSkill(draft.target_page_id);
+  return `${skill ? `${skill} · ` : ''}${slug} — draft by ${draft.author}`;
 }
 
 export interface BaseMovedCheck {

@@ -76,18 +76,20 @@ describe('reviewModel', () => {
   });
 
   describe('formatDraftDiffTitle', () => {
-    it('formats title as <slug> — draft by <author>', () => {
+    // The tab says WHICH SKILL's record the change is for, not just a slug: an order and an analysis with
+    // similar names were indistinguishable.
+    it('formats title as <skill> · <slug> — draft by <author>', () => {
       const draft: Pick<Draft, 'target_page_id' | 'author'> = {
         target_page_id: 'markdown/instances/customer__alpina-biotech.md',
         author: 'anonymous',
       };
-      expect(formatDraftDiffTitle(draft)).toBe('alpina-biotech — draft by anonymous');
+      expect(formatDraftDiffTitle(draft)).toBe('customer · alpina-biotech — draft by anonymous');
 
       const draftSpine: Pick<Draft, 'target_page_id' | 'author'> = {
         target_page_id: 'markdown/instances/engagement__ha-spine.md',
         author: 'agt:echo',
       };
-      expect(formatDraftDiffTitle(draftSpine)).toBe('ha-spine — draft by agt:echo');
+      expect(formatDraftDiffTitle(draftSpine)).toBe('engagement · ha-spine — draft by agt:echo');
     });
   });
 

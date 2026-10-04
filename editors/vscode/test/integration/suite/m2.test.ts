@@ -185,6 +185,25 @@ suite('M2', () => {
     });
     const diffInput = tab.input as vscode.TabInputTextDiff;
 
+    // The tab names the skill and the page the change is for.
+    assert.match(tab.label, /^[a-z-]+ · .+ — draft by /, `tab label: ${tab.label}`);
+
+    // The header offers the way to the instance and to the skill (the draft has no run behind it, so
+    // thread and run answer with a worded notice instead of doing nothing).
+    await vscode.commands.executeCommand('escurel.reviewOpenInstance');
+    await until(() => {
+      const label = vscode.window.tabGroups.activeTabGroup.activeTab?.label ?? '';
+      return label.includes(target.pageId.split('/').pop()!.replace(/\.md$/, '').split('__').pop()!)
+        ? label
+        : undefined;
+    });
+    await vscode.commands.executeCommand('escurel.openReview', draft);
+    await until(() =>
+      vscode.window.tabGroups.activeTabGroup.activeTab?.input instanceof vscode.TabInputTextDiff
+        ? true
+        : undefined,
+    );
+
     // Verify both sides use virtual review URIs rather than touching the local filesystem.
     assert.equal(diffInput.original.scheme, 'escurel-review');
     assert.equal(diffInput.modified.scheme, 'escurel-review');

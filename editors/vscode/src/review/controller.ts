@@ -1,6 +1,6 @@
 import { notify } from '../commands/notify';
 import { nodeRefs } from '../commands/nodeRefs';
-import type { NoticeTarget } from '../shared/notice';
+import { noticeActions, type NoticeTarget } from '../shared/notice';
 import * as vscode from 'vscode';
 import type { DiffDraftResponse, Draft, EscurelClient } from '../client';
 import { EscurelError } from '../client/errors';
@@ -45,6 +45,17 @@ export class ReviewController implements vscode.Disposable {
       ),
       vscode.commands.registerCommand('escurel.promote', (arg?: unknown) => this.promote(arg)),
       vscode.commands.registerCommand('escurel.discard', (arg?: unknown) => this.discard(arg)),
+      // The header of a review diff: the way to what the change is about.
+      vscode.commands.registerCommand('escurel.reviewOpenInstance', () =>
+        this.openFromReview('page'),
+      ),
+      vscode.commands.registerCommand('escurel.reviewOpenThread', () =>
+        this.openFromReview('thread'),
+      ),
+      vscode.commands.registerCommand('escurel.reviewOpenRun', () => this.openFromReview('run')),
+      vscode.commands.registerCommand('escurel.reviewViewSkill', () =>
+        this.openFromReview('skill'),
+      ),
       vscode.workspace.onDidOpenTextDocument(async (doc) => {
         const decoded = decodeReviewUri(doc.uri);
         if (decoded && decoded.side === 'proposed') {
@@ -79,6 +90,46 @@ export class ReviewController implements vscode.Disposable {
     );
     context.subscriptions.push(controller);
     return controller;
+  }
+
+  /**
+   * From the header of the review diff that is in front: open the instance, thread or run the change
+   * belongs to, or its skill. The draft is found from the diff's own URI; when the change has no run or
+   * thread behind it (a person's draft) the answer is a worded notice, not silence.
+   */
+  private async openFromReview(what: 'page' | 'thread' | 'run' | 'skill'): Promise<void> {
+    const uri = vscode.window.activeTextEditor?.document.uri ?? this.activeReviewUri();
+    const decoded = uri ? decodeReviewUri(uri) : undefined;
+    const draft = decoded ? this.contentProvider.getDraft(decoded.draftId) : undefined;
+    if (!draft) {
+      void vscode.window.showInformationMessage('Open a change from Awaiting you first.');
+      return;
+    }
+    const refs = nodeRefs({ kind: 'draft', draft });
+    const target: NoticeTarget =
+      what === 'page'
+        ? { kind: 'page', pageId: refs.pageId }
+        : what === 'thread'
+          ? { kind: 'thread', rootEventId: refs.rootEventId }
+          : what === 'run'
+            ? { kind: 'run', runId: refs.runId }
+            : { kind: 'skill', skill: refs.skill };
+    const [action] = noticeActions([target]);
+    if (!action) {
+      void vscode.window.showInformationMessage(
+        what === 'page' || what === 'skill'
+          ? 'This change does not say which page it is for.'
+          : 'No agent run is behind this change: a person made it.',
+      );
+      return;
+    }
+    await vscode.commands.executeCommand(action.command, ...action.args);
+  }
+
+  /** The diff tab that is in front, when it is a review diff (the text editor is not the diff itself). */
+  private activeReviewUri(): vscode.Uri | undefined {
+    const input = vscode.window.tabGroups.activeTabGroup.activeTab?.input;
+    return input instanceof vscode.TabInputTextDiff ? input.modified : undefined;
   }
 
   /**

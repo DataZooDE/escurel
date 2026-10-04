@@ -277,6 +277,30 @@
         "command": "escurel.showSkillThreads",
         "title": "Show threads using this skill",
         "category": "Escurel"
+      },
+      {
+        "command": "escurel.reviewOpenInstance",
+        "title": "Open instance",
+        "category": "Escurel",
+        "icon": "$(file)"
+      },
+      {
+        "command": "escurel.reviewOpenThread",
+        "title": "Open thread",
+        "category": "Escurel",
+        "icon": "$(type-hierarchy)"
+      },
+      {
+        "command": "escurel.reviewOpenRun",
+        "title": "Open run",
+        "category": "Escurel",
+        "icon": "$(play-circle)"
+      },
+      {
+        "command": "escurel.reviewViewSkill",
+        "title": "View skill",
+        "category": "Escurel",
+        "icon": "$(symbol-class)"
       }
     ],
     "authentication": [
@@ -496,6 +520,22 @@
         {
           "command": "escurel.showSkillThreads",
           "when": "false"
+        },
+        {
+          "command": "escurel.reviewOpenInstance",
+          "when": "false"
+        },
+        {
+          "command": "escurel.reviewOpenThread",
+          "when": "false"
+        },
+        {
+          "command": "escurel.reviewOpenRun",
+          "when": "false"
+        },
+        {
+          "command": "escurel.reviewViewSkill",
+          "when": "false"
         }
       ],
       "view/title": [
@@ -702,6 +742,26 @@
           "command": "escurel.discard",
           "when": "resourceScheme == escurel-review",
           "group": "navigation@2"
+        },
+        {
+          "command": "escurel.reviewOpenInstance",
+          "when": "resourceScheme == escurel-review",
+          "group": "navigation@3"
+        },
+        {
+          "command": "escurel.reviewOpenThread",
+          "when": "resourceScheme == escurel-review",
+          "group": "navigation@4"
+        },
+        {
+          "command": "escurel.reviewOpenRun",
+          "when": "resourceScheme == escurel-review",
+          "group": "navigation@5"
+        },
+        {
+          "command": "escurel.reviewViewSkill",
+          "when": "resourceScheme == escurel-review",
+          "group": "navigation@6"
         }
       ],
       "comments/commentThread/context": [
