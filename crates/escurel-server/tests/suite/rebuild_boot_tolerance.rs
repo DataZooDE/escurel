@@ -223,7 +223,7 @@ async fn boot_sweeps_the_orphan_temp_files_a_killed_write_left() {
         "---\nkind: skill\nid: s0\ndescription: d\n---\n# s0\n",
     );
     write(
-        &dir.path(),
+        dir.path(),
         &format!("{lane}/instances/s0/half.md.tmp"),
         "half a write",
     );

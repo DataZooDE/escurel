@@ -101,7 +101,7 @@ fn run<W: Write>(rx: Receiver<Msg>, mut sink: W, inner: &Inner, notice: DropNoti
     let mut reported = 0u64;
     let mut last_report: Option<Instant> = None;
     // Report what was dropped, at most once per REPORT_EVERY.
-    let mut report = |sink: &mut W, reported: &mut u64, last_report: &mut Option<Instant>| {
+    let report = |sink: &mut W, reported: &mut u64, last_report: &mut Option<Instant>| {
         let dropped = inner.dropped.load(Ordering::Relaxed);
         if dropped > *reported && last_report.is_none_or(|t| t.elapsed() >= REPORT_EVERY) {
             let _ = sink
