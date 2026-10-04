@@ -38,12 +38,18 @@ describe('the manifest and the code agree', () => {
     const runner = entries.filter((entry) => entry.when?.includes('escurel.runner'));
     expect(runner.map((entry) => entry.command).sort()).toEqual(
       [
+        'escurel.approvePlan',
         'escurel.cancelRun',
         'escurel.pauseDispatch',
         'escurel.requeue',
         'escurel.resumeDispatch',
-        'escurel.resumeDispatch',
         'escurel.retryRun',
+        'escurel.runs.clearFilter',
+        'escurel.runs.copyRunId',
+        'escurel.runs.filter',
+        'escurel.runs.openTarget',
+        'escurel.runs.openThread',
+        'escurel.runs.refresh',
       ].sort(),
     );
   });

@@ -1,210 +1,235 @@
-import { latest } from '../shared/latest';
 import * as vscode from 'vscode';
 import type { AdminState } from '../auth/adminState';
-import type { EscurelClient, Event, EventsPage } from '../client';
+import type { Event } from '../client';
 import { EventSocket } from '../client/ws';
 import { describeError } from '../errors';
+import { latest } from '../shared/latest';
 import { log } from '../log';
 import type { Services } from '../services';
 import {
   ESCUREL_RUNNER_STATUS_INTERVAL_MS,
-  buildRunnerRows,
-  estimateHeartbeatIntervalMs,
-  extractDeadLetters,
   parseRunnerStatusBody,
-  type DeadLetterItem,
-  type RunnerRow,
   type RunnerStatusBody,
 } from './runnerModel';
+import {
+  emptySnapshot,
+  loadOlderRunEvents,
+  readRunnerStatus,
+  recordsFrom,
+  refreshRunEvents,
+  resolveSkills,
+  type RunsSnapshot,
+} from './runsLoader';
+import { registerRunsCommands } from './runsCommands';
+import {
+  buildRunsTree,
+  describeRunner,
+  insightLine,
+  groupRuns,
+  stateWord,
+  type RunRecord,
+  type RunState,
+  type RunsFilter,
+  type RunsNode,
+} from './runsModel';
 
-/** How often the health row is re-derived from what is held (it fetches nothing). */
-const HEALTH_REDRAW_MS = 5_000;
+/** The health sentence is re-derived from what is held (it fetches nothing); running rows tick. */
+const REDRAW_MS = 2_000;
+/** The runner's own heartbeat is the only thing that says it is still there: ask for it regularly. */
+const STATUS_POLL_MS = 15_000;
+const PAGE_OF_HISTORY = 25;
+
+const ICONS: Record<RunState, [string, string | undefined]> = {
+  running: ['sync~spin', 'charts.blue'],
+  planned: ['checklist', 'charts.yellow'],
+  succeeded: ['pass', 'testing.iconPassed'],
+  failed: ['error', 'testing.iconFailed'],
+  dead_letter: ['error', 'testing.iconFailed'],
+  cancelled: ['circle-slash', undefined],
+  unknown: ['question', undefined],
+};
 
 /**
- * Tree view for the Escurel Runner (SPEC §3.3, §3.9).
- * Placed in the secondary sidebar (on the right).
- *
- * Shows:
- * - Health (derived from heartbeat age and status)
- * - Runner identification & version
- * - Runs breakdown (live, processed, failed, dead letters, etc.)
- * - Live runs with drill-down to run detail
- * - Dead letters (newest 20) with drill-down to run detail
- * - Paused tenants and permit availability
+ * The runs control center (secondary sidebar): what is running and can be cancelled, what waits for
+ * you, what failed and can be retried, and the history of runs with their traces one click away.
+ * The rows come from `runsModel`; this class only fetches, ticks and maps rows to tree items.
  */
-export class RunnerTree implements vscode.TreeDataProvider<RunnerRow>, vscode.Disposable {
-  private readonly changed = new vscode.EventEmitter<RunnerRow | undefined>();
+export class RunnerTree implements vscode.TreeDataProvider<RunsNode>, vscode.Disposable {
+  private readonly changed = new vscode.EventEmitter<RunsNode | undefined>();
   readonly onDidChangeTreeData = this.changed.event;
 
-  private treeView?: vscode.TreeView<RunnerRow>;
+  private treeView?: vscode.TreeView<RunsNode>;
   private socket?: EventSocket;
   private focusSubscription?: vscode.Disposable;
-  private statusEvent?: Event;
-  private statusBody?: RunnerStatusBody | null;
-  private adminState: AdminState = 'unknown';
-  private deadLetters: DeadLetterItem[] = [];
-  private lastRunsJson?: string;
-  private refreshTimer?: NodeJS.Timeout;
-  private healthTimer?: NodeJS.Timeout;
+  private snapshot: RunsSnapshot = emptySnapshot();
+  private status: { at?: string | null; body?: RunnerStatusBody | null } | null = null;
   private intervalMs = ESCUREL_RUNNER_STATUS_INTERVAL_MS;
+  private adminState: AdminState = 'unknown';
+  private readonly skills = new Map<string, string>();
+  private records: RunRecord[] = [];
+  private roots: RunsNode[] = [];
+  private filter: RunsFilter = {};
+  private historyLimit = PAGE_OF_HISTORY;
+  private loadError: string | undefined;
+  private refreshTimer?: NodeJS.Timeout;
+  private redrawTimer?: NodeJS.Timeout;
+  private pollTimer?: NodeJS.Timeout;
   private readonly disposables: vscode.Disposable[] = [];
   private isDisposed = false;
   private isFetching = false;
   private pendingRefetch = false;
+  private loaded = false;
   /** Retires a fetch that was started for a gateway or tenant the user has since left. */
   private readonly loads = latest();
-  private cachedRows: RunnerRow[] = [];
 
   constructor(private readonly services: Services) {
-    // Listen to admin status changes to re-render (e.g. Quotas row visibility)
     this.disposables.push(
       this.services.admin.onDidChange(async () => {
         this.adminState = await this.services.admin.get().catch(() => 'unknown' as const);
-        this.rebuildRows();
-        this.changed.fire(undefined);
+        this.rebuild();
       }),
-    );
-
-    // Rebuild socket when auth/connection state changes
-    this.disposables.push(
       this.services.onDidChange(() => {
-        // A different gateway or tenant: nothing cached belongs to it. Left in place, the previous
-        // tenant's dead letters would show under the new runner whenever its run counts happened
-        // to match, because the dead letters are only refetched when the counts change.
-        this.statusEvent = undefined;
-        this.statusBody = undefined;
-        this.deadLetters = [];
-        this.lastRunsJson = undefined;
-        // A fetch already in flight asked the PREVIOUS gateway; its answer must not land here.
+        // A different gateway or tenant: nothing held belongs to it, and a fetch in flight asked the old one.
+        this.snapshot = emptySnapshot();
+        this.status = null;
+        this.skills.clear();
+        this.records = [];
+        this.historyLimit = PAGE_OF_HISTORY;
+        this.loadError = undefined;
+        this.loaded = false;
         this.loads.invalidate();
         this.rebuildSocket();
         void this.refresh();
       }),
     );
-
     this.rebuildSocket();
-
-    // Health is a function of NOW. A runner that dies after one good heartbeat sends nothing more,
-    // so without a redraw the row would say `ok` for ever. This only re-derives from what is
-    // already held; it fetches nothing.
-    this.healthTimer = setInterval(() => {
-      if (this.isDisposed || !this.statusEvent) return;
-      this.rebuildRows();
-      this.changed.fire(undefined);
-    }, HEALTH_REDRAW_MS);
+    this.redrawTimer = setInterval(() => {
+      if (this.isDisposed || !this.loaded) return;
+      this.rebuild();
+    }, REDRAW_MS);
+    this.pollTimer = setInterval(() => {
+      if (!this.isDisposed && this.loaded) void this.refresh();
+    }, STATUS_POLL_MS);
   }
 
-  bindView(treeView: vscode.TreeView<RunnerRow>): void {
+  /** The sentence at the top of the view (runner health, active filter). Read by the integration suite. */
+  get viewMessage(): string {
+    return this.treeView?.message ?? '';
+  }
+
+  bindView(treeView: vscode.TreeView<RunsNode>): void {
     this.treeView = treeView;
-    this.updateMessage();
+    this.decorate();
   }
 
-  getTreeItem(element: RunnerRow): vscode.TreeItem {
+  // --- tree ---------------------------------------------------------------------------------
+
+  getTreeItem(node: RunsNode): vscode.TreeItem {
     const collapsible =
-      element.collapsibleState === 'expanded'
-        ? vscode.TreeItemCollapsibleState.Expanded
-        : element.collapsibleState === 'collapsed'
-          ? vscode.TreeItemCollapsibleState.Collapsed
-          : vscode.TreeItemCollapsibleState.None;
+      node.kind === 'group'
+        ? node.expanded
+          ? vscode.TreeItemCollapsibleState.Expanded
+          : vscode.TreeItemCollapsibleState.Collapsed
+        : vscode.TreeItemCollapsibleState.None;
+    const item = new vscode.TreeItem(node.label, collapsible);
+    item.id = node.id;
+    if (node.description) item.description = node.description;
+    if (node.tooltip) item.tooltip = node.tooltip;
+    if (node.contextValue) item.contextValue = node.contextValue;
 
-    const item = new vscode.TreeItem(element.label, collapsible);
-    item.description = element.description;
-    if (element.tooltip) item.tooltip = element.tooltip;
-
-    // Apply specific icons and context values based on row kind
-    switch (element.kind) {
-      case 'health': {
-        const desc = element.description ?? '';
-        if (desc.includes('draining')) {
-          item.iconPath = new vscode.ThemeIcon('sync~spin', new vscode.ThemeColor('charts.yellow'));
-        } else if (desc.includes('stale')) {
-          item.iconPath = new vscode.ThemeIcon('warning', new vscode.ThemeColor('charts.yellow'));
-        } else if (desc.includes('ok')) {
-          item.iconPath = new vscode.ThemeIcon('pass', new vscode.ThemeColor('charts.green'));
-        } else {
-          item.iconPath = new vscode.ThemeIcon('circle-outline');
-        }
+    switch (node.kind) {
+      case 'dispatch':
+        item.iconPath = new vscode.ThemeIcon(
+          node.contextValue === 'dispatch.paused' ? 'debug-pause' : 'debug-start',
+          node.contextValue === 'dispatch.paused'
+            ? new vscode.ThemeColor('charts.yellow')
+            : undefined,
+        );
+        item.accessibilityInformation = {
+          label: `${node.label}. ${node.description ?? ''}`,
+          role: 'treeitem',
+        };
+        break;
+      case 'group':
+        item.accessibilityInformation = {
+          label: `${node.label}, ${node.description ?? '0'}`,
+          role: 'treeitem',
+        };
+        break;
+      case 'run': {
+        const state = node.state ?? 'unknown';
+        const [id, color] = ICONS[state];
+        item.iconPath = new vscode.ThemeIcon(id, color ? new vscode.ThemeColor(color) : undefined);
+        // The state is a WORD in the description and in the accessible name: never colour alone.
+        item.accessibilityInformation = {
+          label: `${stateWord(state)}: ${node.label}. ${node.description ?? ''}`,
+          role: 'treeitem',
+        };
+        item.command = { command: 'escurel.openRun', title: 'Open run', arguments: [node] };
         break;
       }
-
-      case 'runner':
-        item.iconPath = new vscode.ThemeIcon('server');
+      case 'more':
+        item.iconPath = new vscode.ThemeIcon('chevron-down');
+        item.command = { command: 'escurel.runs.loadMore', title: 'Load more' };
         break;
-
-      case 'runs':
-        item.iconPath = new vscode.ThemeIcon('play');
+      case 'error':
+        item.iconPath = new vscode.ThemeIcon('warning', new vscode.ThemeColor('errorForeground'));
+        item.command = { command: 'escurel.runs.refresh', title: 'Try again' };
         break;
-
-      case 'throttled':
-        item.iconPath = new vscode.ThemeIcon('dashboard', new vscode.ThemeColor('charts.yellow'));
-        break;
-
-      case 'paused':
-        item.iconPath = new vscode.ThemeIcon('debug-pause', new vscode.ThemeColor('charts.yellow'));
-        break;
-
-      case 'pausedTenant':
-        item.iconPath = new vscode.ThemeIcon('organization');
-        item.contextValue = 'paused';
-        break;
-
-      case 'permits':
-        item.iconPath = new vscode.ThemeIcon('key');
-        break;
-
-      case 'liveRuns':
-        item.iconPath = new vscode.ThemeIcon('pulse');
-        break;
-
-      case 'liveRun':
-        item.iconPath = new vscode.ThemeIcon('play-circle', new vscode.ThemeColor('charts.green'));
-        item.contextValue = 'liveRun';
-        if (element.runId) {
-          item.command = {
-            command: 'escurel.openRun',
-            title: 'Open Run',
-            arguments: [element.runId],
-          };
-        }
-        break;
-
-      case 'deadLetters':
-        item.iconPath = new vscode.ThemeIcon('mail');
-        break;
-
-      case 'deadLetter':
-        item.iconPath = new vscode.ThemeIcon('error', new vscode.ThemeColor('errorForeground'));
-        item.contextValue = 'deadLetter';
-        if (element.runId) {
-          item.command = {
-            command: 'escurel.openRun',
-            title: 'Open Run',
-            arguments: [element.runId],
-          };
-        }
-        break;
-
-      case 'quotas':
-        item.iconPath = new vscode.ThemeIcon('pie-chart');
+      case 'empty':
+        item.iconPath = new vscode.ThemeIcon('info');
         break;
     }
-
-    if (element.contextValue) {
-      item.contextValue = element.contextValue;
-    }
-
     return item;
   }
 
-  async getChildren(element?: RunnerRow): Promise<RunnerRow[]> {
-    if (element) {
-      return element.children ?? [];
-    }
+  async getChildren(node?: RunsNode): Promise<RunsNode[]> {
+    if (node) return node.children ?? [];
+    if (!this.loaded) await this.loadData();
+    return this.roots;
+  }
 
-    if (this.cachedRows.length === 0) {
-      await this.loadData();
+  // --- filter and paging (commands) ---------------------------------------------------------
+
+  getFilter(): RunsFilter {
+    return this.filter;
+  }
+
+  /** The skills seen in the loaded runs, for the filter's pick list. */
+  knownSkills(): string[] {
+    return [...new Set(this.records.map((r) => r.skill).filter((s): s is string => !!s))].sort();
+  }
+
+  async setFilter(filter: RunsFilter): Promise<void> {
+    this.filter = filter;
+    this.historyLimit = PAGE_OF_HISTORY;
+    await vscode.commands.executeCommand(
+      'setContext',
+      'escurel.runs.filtered',
+      !!(filter.states?.length || filter.skill || filter.text),
+    );
+    this.rebuild();
+  }
+
+  async loadMore(): Promise<void> {
+    // First show what is already loaded; only when that is shown, ask the gateway for older events.
+    const shown = this.historyLimit;
+    const have = groupRuns(this.records, Date.now()).history.length;
+    if (have > shown) {
+      this.historyLimit = shown + PAGE_OF_HISTORY;
+      this.rebuild();
+      return;
     }
-    return this.cachedRows;
+    const mine = this.loads.begin();
+    try {
+      const next = await loadOlderRunEvents(this.services.client, this.snapshot, PAGE_OF_HISTORY);
+      if (!this.loads.isCurrent(mine)) return;
+      this.snapshot = next;
+      this.historyLimit = shown + PAGE_OF_HISTORY;
+      await this.resolveAndRebuild(mine);
+    } catch (err) {
+      void vscode.window.showWarningMessage(`Couldn't load older runs: ${describeError(err)}`);
+    }
   }
 
   async refresh(): Promise<void> {
@@ -212,29 +237,7 @@ export class RunnerTree implements vscode.TreeDataProvider<RunnerRow>, vscode.Di
     this.changed.fire(undefined);
   }
 
-  private updateMessage(): void {
-    if (!this.treeView) return;
-    if (!this.statusBody) {
-      this.treeView.message = 'No runner has reported yet.';
-    } else {
-      this.treeView.message = undefined;
-    }
-  }
-
-  private rebuildRows(): void {
-    const admin = this.adminState;
-
-    // Quotas: as decided by owner, response shape for admin_quota numbers is not recorded
-    // in test fixtures (returns "no quota manager wired on this server" or "admin_required").
-    // We never invent numbers; omitting Quotas row when shape cannot be verified.
-    const quotas: Record<string, unknown> | undefined = undefined;
-
-    this.cachedRows = buildRunnerRows(this.statusEvent ?? this.statusBody, this.deadLetters, {
-      admin,
-      quotas,
-      intervalMs: this.intervalMs,
-    });
-  }
+  // --- data ---------------------------------------------------------------------------------
 
   private async loadData(): Promise<void> {
     if (this.isDisposed) return;
@@ -244,55 +247,34 @@ export class RunnerTree implements vscode.TreeDataProvider<RunnerRow>, vscode.Di
     }
     this.isFetching = true;
     const mine = this.loads.begin();
-
     try {
       const client = this.services.client;
-
-      // Update admin state
       try {
         this.adminState = await this.services.admin.get();
       } catch (err) {
-        log().debug(`runner view: error fetching admin state: ${describeError(err)}`);
+        log().debug(`runs view: error fetching admin state: ${describeError(err)}`);
       }
       if (!this.loads.isCurrent(mine)) return;
 
-      // 1. Fetch newest runner status event
-      let statusEvent: Event | undefined;
+      let error: string | undefined;
       try {
-        // Several rows, not one: the gaps between heartbeats show the runner's own interval.
-        const page = await client.listEvents({
-          label_skill: 'escurel:runner-status',
-          newest_first: true,
-          include_system: true,
-          limit: 8,
-        });
-        statusEvent = page.events?.[0];
-        this.intervalMs = estimateHeartbeatIntervalMs(page.events ?? []);
+        const [status, snapshot] = await Promise.all([
+          readRunnerStatus(client),
+          refreshRunEvents(client, this.snapshot),
+        ]);
+        if (!this.loads.isCurrent(mine)) return;
+        this.status = status.event
+          ? { at: status.event.at, body: parseRunnerStatusBody(status.event) }
+          : null;
+        this.intervalMs = status.intervalMs;
+        this.snapshot = snapshot;
       } catch (err) {
-        log().debug(`runner view: error fetching runner status: ${describeError(err)}`);
+        error = describeError(err);
+        log().debug(`runs view: error loading runs: ${error}`);
       }
-      if (!this.loads.isCurrent(mine)) return;
-
-      this.statusEvent = statusEvent;
-      this.statusBody = parseRunnerStatusBody(statusEvent);
-      this.updateMessage();
-
-      // 2. Check if runs counts changed, and refetch dead letters if needed
-      const currentRunsJson = JSON.stringify(this.statusBody?.runs ?? {});
-      const runsChanged = this.lastRunsJson !== currentRunsJson;
-      if (runsChanged || this.deadLetters.length === 0) {
-        this.lastRunsJson = currentRunsJson;
-        try {
-          const deadLetters = await this.fetchDeadLetters(client);
-          if (!this.loads.isCurrent(mine)) return;
-          this.deadLetters = deadLetters;
-        } catch (err) {
-          log().debug(`runner view: error fetching dead letters: ${describeError(err)}`);
-        }
-      }
-
-      // 3. Rebuild view rows
-      this.rebuildRows();
+      this.loadError = error;
+      this.loaded = true;
+      await this.resolveAndRebuild(mine);
     } finally {
       this.isFetching = false;
       if (this.pendingRefetch) {
@@ -302,51 +284,96 @@ export class RunnerTree implements vscode.TreeDataProvider<RunnerRow>, vscode.Di
     }
   }
 
-  /**
-   * Fetches the newest dead-lettered runs from escurel:run events.
-   * Keeps run-finished rows whose status is dead_letter.
-   * Scans up to 300 rows or until 20 dead letters are found (as per owner decision).
-   */
-  private async fetchDeadLetters(
-    client: EscurelClient,
-    targetCount = 20,
-    maxRows = 300,
-  ): Promise<DeadLetterItem[]> {
-    const collected: Event[] = [];
-    let cursor: string | undefined = undefined;
-    let inspected = 0;
-
-    while (inspected < maxRows) {
-      const pageSize = Math.min(50, maxRows - inspected);
-      const page: EventsPage = await client.listEvents({
-        label_skill: 'escurel:run',
-        newest_first: true,
-        include_system: true,
-        limit: pageSize,
-        cursor,
-      });
-
-      if (!page.events || page.events.length === 0) break;
-      collected.push(...page.events);
-      inspected += page.events.length;
-
-      const items = extractDeadLetters(collected, targetCount);
-      if (items.length >= targetCount) {
-        return items.slice(0, targetCount);
+  /** Folds the events, looks up the skills the rows are missing, and redraws. */
+  private async resolveAndRebuild(mine: number): Promise<void> {
+    this.records = this.fold();
+    this.rebuild();
+    const missing = this.records
+      .filter((r) => !r.skill && r.triggerEventId)
+      .map((r) => r.triggerEventId!);
+    if (missing.length === 0) return;
+    try {
+      const asked = await resolveSkills(this.services.client, missing, this.skills);
+      if (asked && this.loads.isCurrent(mine) && !this.isDisposed) {
+        this.records = this.fold();
+        this.rebuild();
       }
-
-      if (!page.has_more || !page.next_cursor) break;
-      cursor = page.next_cursor;
+    } catch (err) {
+      log().debug(`runs view: error resolving skills: ${describeError(err)}`);
     }
-
-    return extractDeadLetters(collected, targetCount);
   }
+
+  private fold(): RunRecord[] {
+    const live = this.status?.body?.live_runs;
+    return recordsFrom(
+      this.snapshot,
+      Date.now(),
+      live ? new Set(live.map((r) => r.run_id)) : undefined,
+      this.skills,
+    );
+  }
+
+  private rebuild(): void {
+    if (this.isDisposed) return;
+    const now = Date.now();
+    this.records = this.fold();
+    const runner = this.runnerDescription(now);
+    this.roots = buildRunsTree({
+      records: this.records,
+      filter: this.filter,
+      nowMs: now,
+      historyLimit: this.historyLimit,
+      hasMoreHistory: this.snapshot.hasMoreOlder,
+      runner,
+      isAdmin: this.adminState === 'admin',
+      error: this.loadError,
+    });
+    void vscode.commands.executeCommand(
+      'setContext',
+      'escurel.runs.dispatchPaused',
+      runner?.paused ?? false,
+    );
+    this.decorate();
+    this.changed.fire(undefined);
+  }
+
+  private runnerDescription(now: number) {
+    return describeRunner(this.status, now, {
+      isAdmin: this.adminState === 'admin',
+      tenant: this.status?.body?.tenant,
+      intervalMs: this.intervalMs,
+    });
+  }
+
+  /** The view's own header: the runner sentence, the filter note, the insight line, the attention badge. */
+  private decorate(): void {
+    const view = this.treeView;
+    if (!view) return;
+    const now = Date.now();
+    const d = this.runnerDescription(now);
+    const f = this.filter;
+    const note = [
+      ...(f.states ?? []).map((s) => stateWord(s)),
+      f.skill,
+      f.text ? `“${f.text}”` : undefined,
+    ]
+      .filter(Boolean)
+      .join(' · ');
+    view.message = [d.text, note ? `Filtered: ${note}` : undefined].filter(Boolean).join('\n');
+    view.description = insightLine(this.records, now);
+    const g = groupRuns(this.records, now);
+    const needs = g.waiting.length + g.attention.length;
+    view.badge =
+      needs > 0
+        ? { value: needs, tooltip: `${needs} run${needs === 1 ? '' : 's'} need you` }
+        : undefined;
+  }
+
+  // --- live ---------------------------------------------------------------------------------
 
   private scheduleRefresh(): void {
     if (this.refreshTimer) clearTimeout(this.refreshTimer);
-    this.refreshTimer = setTimeout(() => {
-      void this.refresh();
-    }, 300);
+    this.refreshTimer = setTimeout(() => void this.refresh(), 300);
   }
 
   private rebuildSocket(): void {
@@ -355,25 +382,19 @@ export class RunnerTree implements vscode.TreeDataProvider<RunnerRow>, vscode.Di
     this.socket = undefined;
     this.focusSubscription?.dispose();
     this.focusSubscription = undefined;
-
     if (!this.services.gatewayUrl) return;
 
-    // Connect EventSocket with filter { label_skill: 'escurel:runner-status' }.
-    // As confirmed by testing ws_event_filters.rs, include_system is not supported on /ws
-    // and omitting kind allows all kinds (including system events) to pass through.
+    // Run lifecycle events (`run-started`, `run-finished`, ...) carry the label `escurel:run`: a run
+    // starting or ending reaches the panel as it happens. The runner's heartbeat is polled instead.
     this.socket = new EventSocket({
       gatewayUrl: this.services.gatewayUrl,
       tokens: this.services.auth.refresher,
-      filters: { label_skill: 'escurel:runner-status' },
-      onEvent: () => {
-        this.scheduleRefresh();
-      },
-      onConnect: () => {
-        void this.refresh();
-      },
+      filters: { label_skill: 'escurel:run' },
+      onEvent: (_e: Event) => this.scheduleRefresh(),
+      onConnect: () => void this.refresh(),
       onWarning: (kind, message) => {
         if (kind === 'session_cap_reached') {
-          log().warn(`runner view: ${message}; falling back to refresh-on-focus`);
+          log().warn(`runs view: ${message}; falling back to refresh-on-focus`);
           this.socket?.close();
           this.focusSubscription ??= vscode.window.onDidChangeWindowState((s) => {
             if (s.focused) void this.refresh();
@@ -381,21 +402,19 @@ export class RunnerTree implements vscode.TreeDataProvider<RunnerRow>, vscode.Di
           this.disposables.push(this.focusSubscription);
           return;
         }
-        log().warn(`runner view: live warning: ${message}`);
+        log().warn(`runs view: live warning: ${message}`);
         void this.refresh();
       },
-      onError: (err) => {
-        log().warn(`runner view: live error: ${describeError(err)}`);
-      },
+      onError: (err) => log().warn(`runs view: live error: ${describeError(err)}`),
     });
-
     this.socket.connect();
   }
 
   dispose(): void {
     this.isDisposed = true;
     if (this.refreshTimer) clearTimeout(this.refreshTimer);
-    if (this.healthTimer) clearInterval(this.healthTimer);
+    if (this.redrawTimer) clearInterval(this.redrawTimer);
+    if (this.pollTimer) clearInterval(this.pollTimer);
     this.socket?.close();
     this.socket = undefined;
     this.focusSubscription?.dispose();
@@ -404,41 +423,34 @@ export class RunnerTree implements vscode.TreeDataProvider<RunnerRow>, vscode.Di
   }
 }
 
-/**
- * Registers the Runner tree view and associated commands.
- */
+/** Registers the runs tree view and the commands that work on its rows. */
 export function registerRunnerView(
   context: vscode.ExtensionContext,
   services: Services,
-  viewOrTree?: RunnerTree | vscode.TreeView<RunnerRow>,
+  viewOrTree?: RunnerTree | vscode.TreeView<RunsNode>,
 ): RunnerTree {
-  let runnerTree: RunnerTree;
-  let runnerView: vscode.TreeView<RunnerRow>;
-
+  let tree: RunnerTree;
+  let view: vscode.TreeView<RunsNode>;
   if (viewOrTree instanceof RunnerTree) {
-    runnerTree = viewOrTree;
-    runnerView = vscode.window.createTreeView('escurel.runner', {
-      treeDataProvider: runnerTree,
+    tree = viewOrTree;
+    view = vscode.window.createTreeView('escurel.runner', {
+      treeDataProvider: tree,
       showCollapseAll: false,
     });
-    runnerTree.bindView(runnerView);
-    context.subscriptions.push(runnerView);
+    context.subscriptions.push(view);
   } else if (viewOrTree) {
-    runnerView = viewOrTree;
-    runnerTree = new RunnerTree(services);
-    runnerTree.bindView(runnerView);
-    context.subscriptions.push(runnerTree);
+    view = viewOrTree;
+    tree = new RunnerTree(services);
+    context.subscriptions.push(tree);
   } else {
-    runnerTree = new RunnerTree(services);
-    runnerView = vscode.window.createTreeView('escurel.runner', {
-      treeDataProvider: runnerTree,
+    tree = new RunnerTree(services);
+    view = vscode.window.createTreeView('escurel.runner', {
+      treeDataProvider: tree,
       showCollapseAll: false,
     });
-    runnerTree.bindView(runnerView);
-    context.subscriptions.push(runnerView, runnerTree);
+    context.subscriptions.push(view, tree);
   }
-
-  context.subscriptions.push();
-
-  return runnerTree;
+  tree.bindView(view);
+  context.subscriptions.push(registerRunsCommands(tree));
+  return tree;
 }

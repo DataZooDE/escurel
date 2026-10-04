@@ -144,7 +144,8 @@
       {
         "command": "escurel.retryRun",
         "title": "Retry run",
-        "category": "Escurel"
+        "category": "Escurel",
+        "icon": "$(debug-restart)"
       },
       {
         "command": "escurel.requeue",
@@ -179,7 +180,8 @@
       {
         "command": "escurel.approvePlan",
         "title": "Approve plan",
-        "category": "Escurel"
+        "category": "Escurel",
+        "icon": "$(check)"
       },
       {
         "command": "escurel.openThread",
@@ -275,6 +277,44 @@
       {
         "command": "escurel.showSkillThreads",
         "title": "Show threads using this skill",
+        "category": "Escurel"
+      },
+      {
+        "command": "escurel.runs.filter",
+        "title": "Filter runs…",
+        "icon": "$(filter)",
+        "category": "Escurel"
+      },
+      {
+        "command": "escurel.runs.clearFilter",
+        "title": "Clear run filter",
+        "icon": "$(clear-all)",
+        "category": "Escurel"
+      },
+      {
+        "command": "escurel.runs.refresh",
+        "title": "Refresh runs",
+        "icon": "$(refresh)",
+        "category": "Escurel"
+      },
+      {
+        "command": "escurel.runs.loadMore",
+        "title": "Load more runs",
+        "category": "Escurel"
+      },
+      {
+        "command": "escurel.runs.openThread",
+        "title": "Open thread of this run",
+        "category": "Escurel"
+      },
+      {
+        "command": "escurel.runs.openTarget",
+        "title": "Open the page this run worked on",
+        "category": "Escurel"
+      },
+      {
+        "command": "escurel.runs.copyRunId",
+        "title": "Copy run id",
         "category": "Escurel"
       }
     ],
@@ -495,6 +535,26 @@
         {
           "command": "escurel.showSkillThreads",
           "when": "false"
+        },
+        {
+          "command": "escurel.runs.loadMore",
+          "when": "false"
+        },
+        {
+          "command": "escurel.runs.openThread",
+          "when": "false"
+        },
+        {
+          "command": "escurel.runs.openTarget",
+          "when": "false"
+        },
+        {
+          "command": "escurel.runs.copyRunId",
+          "when": "false"
+        },
+        {
+          "command": "escurel.runs.clearFilter",
+          "when": "escurel.runs.filtered"
         }
       ],
       "view/title": [
@@ -524,16 +584,6 @@
           "group": "navigation"
         },
         {
-          "command": "escurel.pauseDispatch",
-          "when": "view == escurel.runner",
-          "group": "navigation"
-        },
-        {
-          "command": "escurel.resumeDispatch",
-          "when": "view == escurel.runner",
-          "group": "navigation"
-        },
-        {
           "command": "escurel.filterKnowledgeByTag",
           "when": "view == escurel.knowledge",
           "group": "navigation@3"
@@ -547,6 +597,21 @@
           "command": "escurel.clearKnowledgeFilter",
           "when": "view == escurel.knowledge && escurel.knowledgeFiltered",
           "group": "navigation@5"
+        },
+        {
+          "command": "escurel.runs.filter",
+          "when": "view == escurel.runner",
+          "group": "navigation@1"
+        },
+        {
+          "command": "escurel.runs.clearFilter",
+          "when": "view == escurel.runner && escurel.runs.filtered",
+          "group": "navigation@2"
+        },
+        {
+          "command": "escurel.runs.refresh",
+          "when": "view == escurel.runner",
+          "group": "navigation@3"
         }
       ],
       "view/item/context": [
@@ -616,26 +681,6 @@
           "group": "navigation"
         },
         {
-          "command": "escurel.cancelRun",
-          "when": "view == escurel.runner && viewItem == liveRun",
-          "group": "inline"
-        },
-        {
-          "command": "escurel.retryRun",
-          "when": "view == escurel.runner && viewItem == deadLetter",
-          "group": "1_control"
-        },
-        {
-          "command": "escurel.requeue",
-          "when": "view == escurel.runner && viewItem == deadLetter",
-          "group": "1_control"
-        },
-        {
-          "command": "escurel.resumeDispatch",
-          "when": "view == escurel.runner && viewItem == paused",
-          "group": "1_control"
-        },
-        {
           "command": "escurel.openNodeThread",
           "when": "view == escurel.inbox && viewItem =~ /^event/",
           "group": "0_trace@1"
@@ -674,6 +719,51 @@
           "command": "escurel.showSkillThreads",
           "when": "view == escurel.knowledge && viewItem =~ /^skill/",
           "group": "3_trace@1"
+        },
+        {
+          "command": "escurel.cancelRun",
+          "when": "view == escurel.runner && viewItem == run.running",
+          "group": "inline@1"
+        },
+        {
+          "command": "escurel.approvePlan",
+          "when": "view == escurel.runner && viewItem == run.planned",
+          "group": "inline@1"
+        },
+        {
+          "command": "escurel.retryRun",
+          "when": "view == escurel.runner && viewItem == run.failed",
+          "group": "inline@1"
+        },
+        {
+          "command": "escurel.requeue",
+          "when": "view == escurel.runner && viewItem == run.failed",
+          "group": "1_control@2"
+        },
+        {
+          "command": "escurel.pauseDispatch",
+          "when": "view == escurel.runner && viewItem == dispatch.running",
+          "group": "inline@1"
+        },
+        {
+          "command": "escurel.resumeDispatch",
+          "when": "view == escurel.runner && viewItem == dispatch.paused",
+          "group": "inline@1"
+        },
+        {
+          "command": "escurel.runs.openThread",
+          "when": "view == escurel.runner && viewItem =~ /^run\\./",
+          "group": "2_open@1"
+        },
+        {
+          "command": "escurel.runs.openTarget",
+          "when": "view == escurel.runner && viewItem =~ /^run\\./",
+          "group": "2_open@2"
+        },
+        {
+          "command": "escurel.runs.copyRunId",
+          "when": "view == escurel.runner && viewItem =~ /^run\\./",
+          "group": "3_copy@1"
         }
       ],
       "editor/title": [
