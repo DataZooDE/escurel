@@ -48,11 +48,27 @@ describe('<escurel-page-as-ui>', () => {
     expect(q(el, '.field[data-name="notes"] .markdown')).to.exist;
   });
 
+  it('offers Runs for this record, and the host is asked to filter to THIS page', async () => {
+    const el = await fixture<EscurelPageAsUi>(
+      html`<escurel-page-as-ui .model=${orderPage}></escurel-page-as-ui>`,
+    );
+    await el.updateComplete;
+    const sent: WebviewToHost[] = [];
+    el.addEventListener('escurel-message', (e) =>
+      sent.push((e as CustomEvent<WebviewToHost>).detail),
+    );
+    (q(el, '.show-runs') as HTMLButtonElement).click();
+    // No id travels: the host filters to the page it built the model for.
+    expect(sent).to.deep.equal([{ type: 'show-runs' }]);
+  });
+
   it('shows the summary, the body and the gate for a review skill; the form is read-only and says how to edit', async () => {
     const el = await render();
     expect(text(q(el, '.summary'))).to.contain('Delivery at risk');
     expect(text(q(el, '.body'))).to.contain('Body text');
-    expect(text(q(el, '.gate'))).to.contain('review');
+    expect(text(q(el, '.gate'))).to.contain('need your approval');
+    // The setting's raw word is the tooltip, not the label.
+    expect(text(q(el, '.gate'))).not.to.contain('human gate');
     // The note must tell a reader what to DO. It used to say editing 'arrives with backend PR-1':
     // a ticket number nobody reading a form can act on, about work that has since shipped.
     const note = text(q(el, '.readonly-note'));
@@ -158,7 +174,7 @@ describe('<escurel-page-as-ui> thread strip', () => {
     const strip = q(el, '.thread-strip')!;
     expect(strip).to.exist;
     expect(text(strip)).to.contain('Thread');
-    expect(text(strip)).to.contain('processed');
+    expect(text(strip)).to.contain('done');
     const sent: WebviewToHost[] = [];
     el.addEventListener('escurel-message', (e) =>
       sent.push((e as CustomEvent<WebviewToHost>).detail),

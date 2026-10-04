@@ -179,9 +179,7 @@ export class EscurelSourcePreview extends LitElement {
           </p>`;
       case 'issue':
         return html`${this.head(p.source)}
-          <div role="alert">
-            The source could not be read: ${p.message} <span class="muted">(${p.code})</span>
-          </div>`;
+          <div role="alert" title=${p.code}>The source could not be read: ${p.message}</div>`;
     }
   }
 }

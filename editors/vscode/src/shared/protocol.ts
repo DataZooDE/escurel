@@ -107,6 +107,8 @@ export type WebviewToHost =
   | { type: 'open-wikilink'; wikilink: string }
   | { type: 'view-skill'; skill: string }
   | { type: 'show-raw' }
+  /** "Runs for this record": the host opens the Runs view filtered to THIS page. */
+  | { type: 'show-runs' }
   | { type: 'propose-write-back'; field: string }
   | { type: 'open-original' }
   | { type: 'refresh' }
