@@ -1684,6 +1684,18 @@ pub(super) async fn tool_capture_event(
     } else {
         None
     };
+    // The gateway's own write-back bookkeeping (`write-back:<draft>:applying|applied|failed`) is
+    // addressed by id, and a promotion trusts those ids: a caller must not be able to file one, or
+    // it could make a promote skip the upstream (a forged `applied`) or refuse it (`applying`).
+    if a.event_id
+        .as_deref()
+        .is_some_and(|id| id.starts_with(crate::write_back::RESERVED_EVENT_ID_PREFIX))
+    {
+        return Err(JsonRpcError::invalid_params(format!(
+            "capture_event: event ids starting with `{}` are reserved for the gateway",
+            crate::write_back::RESERVED_EVENT_ID_PREFIX
+        )));
+    }
     if a.label_skill.starts_with("escurel:")
         && !caller.is_admin
         && control.is_none()

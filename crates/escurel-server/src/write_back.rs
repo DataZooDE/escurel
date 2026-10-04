@@ -19,7 +19,9 @@
 //! Audit events carry the endpoint NAME, the column names and hashes; never a URL, a secret or a
 //! value.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
+use std::hash::{BuildHasher, RandomState};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 use escurel_index::backend::rows::split_instance_page_id;
@@ -134,15 +136,12 @@ fn refusal(code: &str, message: impl Into<String>) -> Value {
 }
 
 /// A short jittered pause: `base * 2^(attempt-1)` plus up to 25 %, so concurrent promotions do not
-/// retry in lock-step.
+/// retry in lock-step. The jitter comes from a randomly keyed hasher (not the clock's nanoseconds,
+/// which two promotions started in the same instant share).
 fn backoff(base: Duration, attempt: u32) -> Duration {
     let scaled = base.saturating_mul(1 << (attempt - 1).min(6));
-    let jitter_ns = u64::from(
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |d| d.subsec_nanos()),
-    ) % 1000;
-    scaled + scaled / 4 * u32::try_from(jitter_ns).unwrap_or(0) / 1000
+    let roll = RandomState::new().hash_one((attempt, std::time::Instant::now())) % 1000;
+    scaled + scaled / 4 * u32::try_from(roll).unwrap_or(0) / 1000
 }
 
 /// One audit event. Idempotent per `event_id`, so a retried promotion rewrites the same row.
@@ -154,7 +153,7 @@ async fn audit(
     title: &str,
     target_page_id: &str,
     body: &Value,
-) {
+) -> Result<(), String> {
     match indexer
         .capture_event(NewEvent {
             event_id: Some(event_id.to_owned()),
@@ -174,15 +173,157 @@ async fn audit(
     {
         Ok(stored) => {
             let _ = state.events_tx.send(std::sync::Arc::new(stored));
+            Ok(())
         }
-        Err(e) => tracing::warn!(event_id, error = %e, "write-back audit event not recorded"),
+        Err(e) => {
+            tracing::warn!(event_id, error = %e, "write-back audit event not recorded");
+            Err(e.to_string())
+        }
     }
+}
+
+/// The audit write that records an upstream call that ALREADY HAPPENED: the call cannot be taken
+/// back, so a failure is retried a few times and then logged loudly; the draft's own state stays
+/// the source of truth (a re-promote recognises a row that already holds the change).
+async fn audit_after_apply(
+    state: &crate::server::AppState,
+    indexer: &Indexer,
+    event_id: &str,
+    title: &str,
+    target_page_id: &str,
+    body: &Value,
+) {
+    for attempt in 1..=3u32 {
+        if audit(state, indexer, event_id, title, target_page_id, body)
+            .await
+            .is_ok()
+        {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(50 * u64::from(attempt))).await;
+    }
+    tracing::error!(
+        event_id,
+        "the upstream applied a write-back but its witness could not be recorded"
+    );
+}
+
+/// One lock per draft: promotions of the same draft run one after another, so two racing promotes
+/// cannot both reach the upstream (the second finds the first's witness and completes locally).
+fn draft_lock(draft_id: &str) -> Arc<tokio::sync::Mutex<()>> {
+    static LOCKS: OnceLock<Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>> = OnceLock::new();
+    let map = LOCKS.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut g = map
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    // Forget locks nobody holds or waits on, so the map does not grow with every draft ever made.
+    g.retain(|_, m| Arc::strong_count(m) > 1);
+    Arc::clone(g.entry(draft_id.to_owned()).or_default())
+}
+
+/// A caller must not be able to file the gateway's own bookkeeping ids.
+pub(crate) const RESERVED_EVENT_ID_PREFIX: &str = "write-back:";
+
+/// The audit event under `event_id`, but only if the GATEWAY wrote it: a system event under the
+/// reserved label from source `escurel`.
+async fn witness(
+    indexer: &Indexer,
+    event_id: &str,
+) -> Result<Option<escurel_index::EventInfo>, String> {
+    Ok(indexer
+        .get_event(event_id)
+        .await
+        .map_err(|e| e.to_string())?
+        .filter(|e| {
+            e.label_skill == AUDIT_LABEL && e.source == "escurel" && e.kind == EventKind::System
+        }))
+}
+
+/// Whether the recorded `failed` event says the upstream did NOT apply (it refused, or nothing was
+/// ever sent): only then may a call without an idempotency key be repeated.
+async fn definitely_not_applied(indexer: &Indexer, id_failed: &str) -> bool {
+    let Ok(Some(ev)) = witness(indexer, id_failed).await else {
+        return false;
+    };
+    let Ok(body) = serde_json::from_str::<Value>(&ev.body) else {
+        return false;
+    };
+    matches!(body["outcome"].as_str(), Some("rejected" | "conflict"))
+        || body["attempts"].as_u64() == Some(0)
 }
 
 /// The promote hook. Returns the content to commit as the row's notes (the draft's content without
 /// its intent), or the refusal to answer `promote_draft` with. A draft with no intent passes through
 /// untouched.
+///
+/// A promotion that carries an intent is SERIALISED per draft and runs in its own task: the upstream
+/// call and the witness that records it must not depend on the request that started them. A client
+/// that disconnects, or a proxy that times out, drops the request future; without this the upstream
+/// could apply the change and the witness never be written, leaving a draft that conflicts with its
+/// own already-applied change forever.
 pub(crate) async fn run(
+    state: &crate::server::AppState,
+    indexer: &Indexer,
+    draft_id: &str,
+    target_page_id: &str,
+    decided_by: &str,
+    content: &str,
+) -> Result<String, Value> {
+    // Cheap passthrough: no intent, nothing to serialise or spawn.
+    let Ok(parsed) = escurel_md::parse(content) else {
+        return Ok(content.to_owned());
+    };
+    if matches!(
+        parse_intent(&frontmatter_json(&parsed.frontmatter.fields)),
+        Ok(None)
+    ) {
+        return Ok(content.to_owned());
+    }
+    let Some(owned_indexer) = state
+        .indexer
+        .as_ref()
+        .map(escurel_index::IndexerHandle::current)
+    else {
+        return run_inner(
+            state,
+            indexer,
+            draft_id,
+            target_page_id,
+            decided_by,
+            content,
+        )
+        .await;
+    };
+    let lock = draft_lock(draft_id);
+    let state = state.clone();
+    let (draft_id, target_page_id, decided_by, content) = (
+        draft_id.to_owned(),
+        target_page_id.to_owned(),
+        decided_by.to_owned(),
+        content.to_owned(),
+    );
+    tokio::spawn(async move {
+        let _turn = lock.lock().await;
+        run_inner(
+            &state,
+            &owned_indexer,
+            &draft_id,
+            &target_page_id,
+            &decided_by,
+            &content,
+        )
+        .await
+    })
+    .await
+    .unwrap_or_else(|e| {
+        Err(refusal(
+            "write_back_failed",
+            format!("the write-back task did not complete: {e}"),
+        ))
+    })
+}
+
+async fn run_inner(
     state: &crate::server::AppState,
     indexer: &Indexer,
     draft_id: &str,
@@ -205,10 +346,9 @@ pub(crate) async fn run(
     let internal = |e: String| refusal("write_back_failed", e);
 
     // The witness: the upstream already applied this draft. Do not call it again.
-    if indexer
-        .get_event(&id_applied)
+    if witness(indexer, &id_applied)
         .await
-        .map_err(|e| internal(e.to_string()))?
+        .map_err(internal)?
         .is_some()
     {
         return Ok(stripped);
@@ -229,6 +369,21 @@ pub(crate) async fn run(
                 format!("skill `{skill}` is not a remote `rows` skill; nothing to write back to"),
             )
         })?;
+    // The allow-list is enforced HERE as well as at `create_draft`: a promoter's corrected content
+    // is a second way in, and it must not widen what the skill declared writable.
+    if let Some(f) = intent
+        .patch
+        .keys()
+        .find(|f| !src.cfg.writable_columns.contains(*f))
+    {
+        return Err(refusal(
+            "backend_read_only_field",
+            format!(
+                "`{f}` is not a writable column of `{skill}` (writable: {:?})",
+                src.cfg.writable_columns
+            ),
+        ));
+    }
     let Some(write) = src.remote.write.clone() else {
         return Err(refusal(
             "backend_read_only",
@@ -241,12 +396,13 @@ pub(crate) async fn run(
 
     // An `applying` event with no outcome is an upstream call whose result nobody saw. With an
     // idempotency key it is safe to repeat; without one, repeating could apply it twice.
-    let in_flight = indexer
-        .get_event(&id_applying)
+    let in_flight = witness(indexer, &id_applying)
         .await
-        .map_err(|e| internal(e.to_string()))?
+        .map_err(internal)?
         .is_some();
-    if in_flight && !idempotent {
+    // ...unless the recorded outcome says the upstream REFUSED (or nothing was ever sent): then it
+    // certainly did not apply, and a human who fixed the cause may promote again.
+    if in_flight && !idempotent && !definitely_not_applied(indexer, &id_failed).await {
         return Err(refusal(
             "write_back_unknown_outcome",
             "an earlier attempt may have reached the upstream and its outcome was not recorded; \
@@ -267,7 +423,7 @@ pub(crate) async fn run(
         Err(e) => {
             // Nothing was sent, but the person promoted a change and must be able to see that it did
             // not go through: record the dead-letter (no attempt was made) before refusing.
-            audit(
+            audit_after_apply(
                 state,
                 indexer,
                 &id_failed,
@@ -293,6 +449,36 @@ pub(crate) async fn run(
         }
     };
     let current = etag_of(&row.fields);
+    // The change is ALREADY there: an earlier call reached the upstream but its witness was lost (a
+    // crash between the call and the audit write, or a dropped request). The row now carries our
+    // own change, so its etag no longer matches the draft's base: that is not a conflict, it is
+    // "applied". Record the witness and let the caller finish its local half.
+    if intent.patch.iter().all(|(field, want)| {
+        row.fields
+            .get(field)
+            .is_some_and(|have| same_scalar(have, want))
+    }) {
+        audit_after_apply(
+            state,
+            indexer,
+            &id_applied,
+            "write-back-applied",
+            target_page_id,
+            &json!({
+                "draft_id": draft_id,
+                "endpoint": src.ep.name,
+                "skill": skill,
+                "key": row_id,
+                "columns": intent.patch.keys().collect::<Vec<_>>(),
+                "decided_by": decided_by,
+                "outcome": "applied",
+                "attempts": 0,
+                "note": "the row already held the change; no call was made",
+            }),
+        )
+        .await;
+        return Ok(stripped);
+    }
     if intent.base_etag.as_deref().is_some_and(|b| b != current) {
         return Err(refusal(
             "write_back_conflict",
@@ -336,8 +522,9 @@ pub(crate) async fn run(
         })
     };
 
-    // (2) Audit first.
-    audit(
+    // (2) Audit first, and FATAL: an upstream call with no record of intent is the one thing the
+    // audit trail exists to prevent, so when the record cannot be written nothing is sent.
+    if audit(
         state,
         indexer,
         &id_applying,
@@ -345,7 +532,14 @@ pub(crate) async fn run(
         target_page_id,
         &audit_body("applying", 0),
     )
-    .await;
+    .await
+    .is_err()
+    {
+        return Err(refusal(
+            "write_back_failed",
+            "the audit trail could not be written, so nothing was sent; try again",
+        ));
+    }
 
     // (3) Apply, with the draft id as the idempotency key.
     let mut last = String::new();
@@ -369,7 +563,7 @@ pub(crate) async fn run(
         {
             Ok(()) => {
                 // (4) The durable witness.
-                audit(
+                audit_after_apply(
                     state,
                     indexer,
                     &id_applied,
@@ -381,7 +575,7 @@ pub(crate) async fn run(
                 return Ok(stripped);
             }
             Err(WriteFail::Conflict) => {
-                audit(
+                audit_after_apply(
                     state,
                     indexer,
                     &id_failed,
@@ -410,7 +604,7 @@ pub(crate) async fn run(
     }
     // Dead-letter: recorded, the draft stays open, and a later promote may try again.
     let outcome = if rejected { "rejected" } else { "failed" };
-    audit(
+    audit_after_apply(
         state,
         indexer,
         &id_failed,
@@ -431,6 +625,17 @@ pub(crate) async fn run(
             format!("the upstream could not be reached after {attempt} attempts: {last}")
         },
     ))
+}
+
+/// Whether two scalars are the same value as a person would read them (`7` and `"7"` are).
+fn same_scalar(a: &Value, b: &Value) -> bool {
+    let text = |v: &Value| match v {
+        Value::String(s) => Some(s.clone()),
+        Value::Number(n) => Some(n.to_string()),
+        Value::Bool(b) => Some(b.to_string()),
+        _ => None,
+    };
+    matches!((text(a), text(b)), (Some(x), Some(y)) if x == y)
 }
 
 /// The upstream key for a projection path: `$.key` or a bare `key`. Nested paths are not writable.
