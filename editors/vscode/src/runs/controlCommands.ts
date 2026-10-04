@@ -1,3 +1,4 @@
+import { notify } from '../commands/notify';
 import { inFlight, pollControlResult } from './controlWait';
 import * as vscode from 'vscode';
 import type { Services } from '../services';
@@ -106,7 +107,13 @@ export function registerControlCommands(
               cancelled: () => cancellation.isCancellationRequested,
             });
             if (outcome.kind === 'result') {
-              void vscode.window.showInformationMessage(describeOutcome(outcome.result));
+              // The result may name a run (the one acted on, or the new one a retry started): offer to open it.
+              void notify('info', describeOutcome(outcome.result), [
+                {
+                  kind: 'run',
+                  runId: outcome.result.newRunId ?? outcome.result.runId ?? undefined,
+                },
+              ]);
             } else if (outcome.kind === 'timeout') {
               void vscode.window.showInformationMessage(
                 outcome.lookupFailed

@@ -430,6 +430,8 @@ test('a failed run can be retried from the Runner view, and the person is told w
   await expect(progress.or(answer).first()).toBeVisible({ timeout: 40_000 });
   await expect(answer).toBeVisible({ timeout: 40_000 });
   expect(await answer.innerText()).not.toMatch(/[0-9A-Z]{20,}/);
+  // A notice that names a run offers to open it.
+  await expect(answer.getByRole('button', { name: 'Open run' })).toBeVisible();
   await stack.shot('07b-retry-answer');
 });
 
