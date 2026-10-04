@@ -275,3 +275,150 @@ async fn a_row_is_findable_by_a_searchable_display_column() {
         "undeclared column: {none}"
     );
 }
+
+// ------------------------------------------------------- create_draft + write_back ---
+
+use super::sql_rows_db::{Gw, db_row, doc, row_page, skill_page};
+
+async fn etag_of(g: &Gw, n: usize) -> String {
+    let r = g.admin("expand", json!({ "page_id": row_page(n) })).await;
+    r["backend_projection"]["etag"].as_str().unwrap().to_owned()
+}
+
+/// `write_back` is a declared PARAMETER of `create_draft` (it used to be accepted only inside the
+/// markdown frontmatter, and as an argument it was silently dropped).
+#[tokio::test]
+async fn create_draft_takes_write_back_as_an_argument() {
+    let g = Gw::start().await;
+    let tools = g.admin("list_skills", json!({})).await; // warm
+    let _ = tools;
+    let listed: Value = reqwest::Client::new()
+        .post(g.p.mcp_url())
+        .header(
+            "authorization",
+            format!("Bearer {}", g.p.mint_token("acme", Role::Admin)),
+        )
+        .json(&json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/list" }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let cd = listed["result"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["name"] == "create_draft")
+        .cloned()
+        .unwrap();
+    assert!(
+        cd["inputSchema"]["properties"]["write_back"].is_object(),
+        "{cd}"
+    );
+    let d = cd["description"].as_str().unwrap();
+    assert!(
+        d.contains("write_back") && d.contains("only a human"),
+        "teaches it: {d}"
+    );
+
+    let e = etag_of(&g, 3).await;
+    let r = g
+        .admin(
+            "create_draft",
+            json!({
+                "target_page_id": row_page(3),
+                "write_back": { "patch": { "status": "shipped" }, "base_etag": e },
+            }),
+        )
+        .await;
+    assert_eq!(r["ok"], true, "no markdown needed: {r}");
+    let id = r["draft"]["draft_id"].as_str().unwrap().to_owned();
+    assert_eq!(
+        db_row(&g.db, 3)["status"],
+        "open",
+        "a draft touches nothing"
+    );
+    let done = g.admin("promote_draft", json!({ "draft_id": id })).await;
+    assert_eq!(done["ok"], true, "{done}");
+    assert_eq!(
+        db_row(&g.db, 3)["status"],
+        "shipped",
+        "the database applied it"
+    );
+    let _ = doc(3);
+}
+
+/// A value the skill's field cannot hold is refused when the draft is MADE, and costs nothing: no
+/// dead draft is left to block the next proposal on that page.
+#[tokio::test]
+async fn a_write_back_value_outside_the_field_is_refused_at_draft_time() {
+    let g = Gw::start().await;
+    let enum_skill = skill_page().replace(
+        "{name: status, kind: string, label: \"Status\"}",
+        "{name: status, kind: enum, values: [open, shipped, moved], label: \"Status\"}",
+    );
+    let r = g
+        .admin(
+            "update_page",
+            json!({ "page_id": "markdown/skills/shop-order.md", "content": enum_skill }),
+        )
+        .await;
+    assert_eq!(r["ok"], true, "{r}");
+    let e = etag_of(&g, 4).await;
+    let bad = g
+        .admin(
+            "create_draft",
+            json!({ "target_page_id": row_page(4),
+                    "write_back": { "patch": { "status": "bogus" }, "base_etag": e } }),
+        )
+        .await;
+    assert_eq!(bad["ok"], false, "{bad}");
+    assert_eq!(
+        bad["issues"][0]["code"], "write_back_invalid_value",
+        "{bad}"
+    );
+    let msg = bad["issues"][0]["message"].as_str().unwrap();
+    assert!(
+        msg.contains("status must be one of open|shipped|moved") && msg.contains("bogus"),
+        "{msg}"
+    );
+    let bad_int = g
+        .admin(
+            "create_draft",
+            json!({ "target_page_id": row_page(4),
+                    "write_back": { "patch": { "quantity": "many" }, "base_etag": e } }),
+        )
+        .await;
+    assert_eq!(
+        bad_int["issues"][0]["code"], "write_back_invalid_value",
+        "{bad_int}"
+    );
+
+    // Nothing was left behind: the next, valid proposal is not blocked by a dead draft.
+    let ok = g
+        .admin(
+            "create_draft",
+            json!({ "target_page_id": row_page(4),
+                    "write_back": { "patch": { "status": "moved" }, "base_etag": e } }),
+        )
+        .await;
+    assert_eq!(ok["ok"], true, "{ok}");
+
+    // A second open draft on the page conflicts, and the refusal says how to get out.
+    let again = g
+        .admin(
+            "create_draft",
+            json!({ "target_page_id": row_page(4),
+                    "write_back": { "patch": { "status": "shipped" }, "base_etag": e } }),
+        )
+        .await;
+    assert_eq!(again["issues"][0]["code"], "conflict", "{again}");
+    assert!(
+        again["issues"][0]["suggestion"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("discard_draft"),
+        "{again}"
+    );
+}

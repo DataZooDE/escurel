@@ -93,6 +93,48 @@ pub(crate) fn parse_intent(fields: &Map<String, Value>) -> Result<Option<Intent>
     }))
 }
 
+/// Put a `write_back` intent given as a tool ARGUMENT into the page's frontmatter, where the rest of
+/// the pipeline (guards, promotion, `strip_intent`) already reads it. `content` of `None` means "the
+/// change is all there is": a minimal row page is built from the target id. The block goes in as one
+/// line of JSON (a YAML flow mapping), which `strip_intent` removes whole.
+pub(crate) fn inject_intent(
+    target_page_id: &str,
+    content: Option<&str>,
+    intent: &Value,
+) -> Result<String, String> {
+    let line = format!(
+        "write_back: {}\n",
+        serde_json::to_string(intent).map_err(|e| e.to_string())?
+    );
+    let Some(content) = content else {
+        let (skill, id) = escurel_index::backend::rows::split_instance_page_id(target_page_id)
+            .ok_or_else(|| {
+                format!("`{target_page_id}` is not a row page (markdown/instances/<skill>/<id>.md)")
+            })?;
+        return Ok(format!(
+            "---\nkind: instance\nid: {id}\nskill: {skill}\n{line}---\n"
+        ));
+    };
+    let mut lines = content.split_inclusive('\n');
+    if lines.next().map(|l| l.trim_end_matches(['\r', '\n'])) != Some("---") {
+        return Err(
+            "`content` must start with a frontmatter block (`---\\nkind: instance\\nid: <id>\\nskill: \
+             <skill>\\n---`) when `write_back` is given, or omit `content`"
+                .to_owned(),
+        );
+    }
+    if escurel_md::parse(content).is_ok_and(|p| p.frontmatter.fields.contains_key("write_back")) {
+        return Err(
+            "give `write_back` once: as the argument or in the frontmatter of `content`, not both"
+                .to_owned(),
+        );
+    }
+    Ok(format!(
+        "---\n{line}{}",
+        &content[content.find('\n').map_or(content.len(), |i| i + 1)..]
+    ))
+}
+
 /// The page text without its top-level `write_back:` block (the intent is a one-shot instruction,
 /// not page content). Text-level so the author's own formatting survives.
 #[must_use]

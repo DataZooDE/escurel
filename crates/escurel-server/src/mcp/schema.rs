@@ -275,13 +275,27 @@ pub(crate) fn tool_defs() -> Vec<ToolDef> {
                  one that would refuse at promotion. A draft is not a page: it \
                  never appears in `expand`, `search`, `list_instances` or \
                  `neighbours`, and it does not cascade — nothing has landed. \
-                 Immutable; a revision is a new draft.",
+                 Immutable; a revision is a new draft. To change a column \
+                 of an external (sql/openapi/mcp) row set `write_back: {patch: {col: val}, \
+                 base_etag: <expand.backend_projection.etag>}` (columns: `list_skills` \
+                 `backend.writable_columns`; `content` is then optional); only a human can \
+                 promote it, and a value outside the field's kind/enum is refused here. ONE open \
+                 draft per page: `discard_draft` yours before drafting again.",
             json!({
                 "type": "object",
-                "required": ["target_page_id", "content"],
+                "required": ["target_page_id"],
                 "properties": {
                     "target_page_id": { "type": "string", "description": "The page this write is FOR, e.g. `markdown/instances/<skill>/<slug>.md`." },
-                    "content": { "type": "string" },
+                    "content": { "type": "string", "description": "The whole proposed markdown (starts with a `---` frontmatter block: `kind: instance`, `id`, `skill`). Required unless `write_back` is given." },
+                    "write_back": {
+                        "type": "object",
+                        "description": "A change to an external row: the server writes it into the frontmatter; a human promotes it.",
+                        "required": ["patch"],
+                        "properties": {
+                            "patch": { "type": "object", "description": "{column: scalar value} over the skill's writable columns." },
+                            "base_etag": { "type": "string", "description": "`expand.backend_projection.etag` of the row as you read it; a row that changed since conflicts." }
+                        }
+                    },
                     "base_sha256": { "type": "string", "description": "The target's content_sha256 when drafted, from `expand`; \"\" = approve-create (expect no page). Carried into `update_page`'s CAS at promotion." },
                     "event_id": { "type": "string", "description": "The inbox event this draft answers, when it answers one." },
                     "changeset_id": { "type": "string", "description": "Join the changeset a previous create_draft in this run returned (#509)." },

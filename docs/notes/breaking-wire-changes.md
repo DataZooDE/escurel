@@ -49,3 +49,8 @@ One line per change. Folded into the root `CHANGELOG.md` BREAKING entry and `doc
   `filterable` and the `searchable` columns (a customer is found by name). `search` with a `skill` filter
   defaults `page_kind` to `instance` (it used to return the skill's own page too; `any` restores that).
   `search` hits omit `similarity` when none was computed (it was `0.0` / `-1.0` sentinels).
+- `create_draft` takes `write_back: {patch, base_etag}` as a declared ARGUMENT (the server writes it into
+  the frontmatter; `content` is then optional and a minimal row page is built). A patch value outside
+  the skill field's kind/enum is refused at draft time (`write_back_invalid_value`) instead of leaving a
+  dead draft that blocks the page; the open-draft `conflict` now carries a `suggestion` naming
+  `discard_draft`.
