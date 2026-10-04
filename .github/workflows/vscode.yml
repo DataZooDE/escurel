@@ -91,7 +91,7 @@ jobs:
         env:
           ESCUREL_BIN_DIR: ${{ github.workspace }}/target/debug
           ESCUREL_DEMO_CODE: ${{ github.workspace }}/editors/vscode/.vscode-test/vscode-linux-x64-1.139.1/code
-        run: npm run test:e2e -- evolve.spec.ts
+        run: npm run test:e2e -- evolve.spec.ts evolve-gemini.spec.ts
         working-directory: editors/vscode
       - name: Show Evolve runner diagnostics on failure
         if: failure()

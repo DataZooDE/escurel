@@ -82,17 +82,29 @@ PORT="$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); p
 
 # The runner, MINTED mode: it signs a token per run, which is what lets the gateway tell which run
 # wrote what, so the thread shows a changeset under its run.
-env -u ESCUREL_RUNNER_TOKEN \
-  ESCUREL_RUNNER_GATEWAY_URL="$(field gateway_url)" ESCUREL_RUNNER_TENANT="$(field tenant)" \
-  ESCUREL_RUNNER_AUTH_ISSUER="$(field issuer_url)" ESCUREL_RUNNER_AUTH_KID="$(field kid)" \
-  ESCUREL_RUNNER_AUTH_SIGNING_KEY="$(field signing_key)" ESCUREL_RUNNER_HARNESS=echo \
-  ESCUREL_RUNNER_LISTEN="127.0.0.1:$PORT" ESCUREL_RUNNER_LEDGER_PATH="$HOME_DIR/ledger.duckdb" \
-  ESCUREL_RUNNER_POLL_INTERVAL=250ms \
-  setsid nohup "$RUNNER_BIN" > "$HOME_DIR/runner.log" 2>&1 < /dev/null &
-echo $! > "$HOME_DIR/runner.pid"
+start_runner() {
+  env -u ESCUREL_RUNNER_TOKEN \
+    ESCUREL_RUNNER_GATEWAY_URL="$(field gateway_url)" ESCUREL_RUNNER_TENANT="$(field tenant)" \
+    ESCUREL_RUNNER_AUTH_ISSUER="$(field issuer_url)" ESCUREL_RUNNER_AUTH_KID="$(field kid)" \
+    ESCUREL_RUNNER_AUTH_SIGNING_KEY="$(field signing_key)" ESCUREL_RUNNER_HARNESS="$1" \
+    ESCUREL_RUNNER_LISTEN="127.0.0.1:$PORT" ESCUREL_RUNNER_LEDGER_PATH="$HOME_DIR/ledger.duckdb" \
+    ESCUREL_RUNNER_POLL_INTERVAL=250ms \
+    setsid nohup "$RUNNER_BIN" > "$HOME_DIR/runner.log" 2>&1 < /dev/null &
+  echo $! > "$HOME_DIR/runner.pid"
+}
+start_runner echo
 
 echo "playing the story (a few seconds)..."
 node "$HERE/driver.mjs" "$HOME_DIR/gateway.json" "$HOME_DIR/bearer.json" > "$HOME_DIR/story.json"
+if [ "${ESCUREL_DEMO_RUNNER_HARNESS:-echo}" != echo ]; then
+  kill "$(cat "$HOME_DIR/runner.pid")"
+  for _ in $(seq 1 100); do
+    kill -0 "$(cat "$HOME_DIR/runner.pid")" 2>/dev/null || break
+    sleep 0.1
+  done
+  PORT="$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1])')"
+  start_runner "$ESCUREL_DEMO_RUNNER_HARNESS"
+fi
 
 cat > "$HOME_DIR/profile/User/settings.json" <<JSON
 {

@@ -9,7 +9,8 @@ import {
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
 import { mkdtempSync, readFileSync, mkdirSync } from 'node:fs';
 import { createServer } from 'node:net';
-import { homedir } from 'node:os';
+import { createServer as createHttpServer, type Server as HttpServer } from 'node:http';
+import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
 /**
@@ -55,13 +56,60 @@ export interface Stack {
   /** Console and page errors collected since the window opened. */
   errors: string[];
   shot: (name: string) => Promise<void>;
+  setGeminiPlanTarget: (pageId: string, revision: string) => void;
+  geminiRequests: Record<string, unknown>[];
 }
 
-export const test = base.extend<object, { stack: Stack }>({
+export const test = base.extend<object, {
+  stack: Stack;
+  runnerHarness: 'echo' | 'gemini';
+}>({
+  runnerHarness: ['echo', { scope: 'worker', option: true }],
   stack: [
-    // eslint-disable-next-line no-empty-pattern -- Playwright requires the fixtures argument to be a destructuring pattern.
-    async ({}, use) => {
-      const home = mkdtempSync(join(homedir(), '.cache', 'escurel-e2e-'));
+    async ({ runnerHarness }, use) => {
+      const home = mkdtempSync(join(tmpdir(), 'escurel-e2e-'));
+      let geminiPlanTarget: { pageId: string; revision: string } | undefined;
+      const geminiRequests: Record<string, unknown>[] = [];
+      let modelServer: HttpServer | undefined;
+      let modelBase: string | undefined;
+      if (runnerHarness === 'gemini') {
+        modelServer = createHttpServer(async (request, response) => {
+          let body = '';
+          for await (const chunk of request) body += String(chunk);
+          const prompt = JSON.parse(body) as Record<string, unknown>;
+          const contents = prompt.contents as unknown[] | undefined;
+          const isEvolve = !!geminiPlanTarget && JSON.stringify(prompt).includes('evolve_run');
+          let parts: unknown[] = [{ text: 'No page changes requested.' }];
+          if (isEvolve) {
+            geminiRequests.push(prompt);
+            if (contents?.length === 1) {
+              const firstRequest = JSON.stringify(prompt);
+              if (!firstRequest.includes(geminiPlanTarget.pageId) ||
+                  !firstRequest.includes(geminiPlanTarget.revision)) {
+                response.writeHead(422).end('Evolve plan prompt omitted the frozen problem page');
+                return;
+              }
+              parts = [{ functionCall: { name: 'expand', args: {
+                page_id: geminiPlanTarget.pageId, raw: true,
+              } } }];
+            } else if (contents?.length === 3) {
+              parts = [{ functionCall: { name: 'report_progress', args: { plan: [
+                { step: 'Review the frozen source, holdout and V2 budget', status: 'pending' },
+                { step: 'Run bounded DuckDB search after owner approval', status: 'pending' },
+              ] } } }];
+            } else {
+              parts = [{ text: 'Plan reported for the owner to review.' }];
+            }
+          }
+          response.setHeader('content-type', 'application/json');
+          response.end(JSON.stringify({ candidates: [{ content: { parts } }] }));
+        });
+        await new Promise<void>((resolveListen) =>
+          modelServer!.listen(0, '127.0.0.1', resolveListen));
+        const address = modelServer.address();
+        if (!address || typeof address === 'string') throw new Error('Gemini stub has no port');
+        modelBase = `http://127.0.0.1:${address.port}`;
+      }
       const artifacts = resolve(__dirname, 'artifacts');
       mkdirSync(artifacts, { recursive: true });
       const display = `:${90 + Math.floor(Math.random() * 9)}`;
@@ -91,9 +139,16 @@ export const test = base.extend<object, { stack: Stack }>({
         // approval text and deliberate human click are observable end to end.
         ESCUREL_DEMO_DIALOG_STYLE: 'custom',
         ESCUREL_DEMO_EVOLVE_SEED: '1',
+        ESCUREL_DEMO_RUNNER_HARNESS: runnerHarness,
+        ...(modelBase ? {
+          ESCUREL_GEMINI_API_KEY: 'deterministic-native-plan-key',
+          ESCUREL_RUNNER_GEMINI_BASE_URL: modelBase,
+        } : {}),
       };
       const run = join(EXT, 'demo', 'run.sh');
-      execFileSync(run, ['start'], { env, stdio: 'inherit', timeout: 240_000 });
+      let browser: Browser | undefined;
+      try {
+        execFileSync(run, ['start'], { env, stdio: 'inherit', timeout: 240_000 });
 
       const info = JSON.parse(readFileSync(join(home, 'gateway.json'), 'utf8').split('\n')[0]!);
       const story = JSON.parse(readFileSync(join(home, 'story.json'), 'utf8'));
@@ -103,7 +158,6 @@ export const test = base.extend<object, { stack: Stack }>({
           admin_bearer: string;
         };
 
-      let browser: Browser | undefined;
       for (let i = 0; i < 60 && !browser; i += 1) {
         try {
           browser = await chromium.connectOverCDP(`http://127.0.0.1:${cdpPort}`);
@@ -166,17 +220,19 @@ export const test = base.extend<object, { stack: Stack }>({
         shot: async (name) => {
           await page.screenshot({ path: join(artifacts, `${name}.png`) });
         },
+        setGeminiPlanTarget: (pageId, revision) => { geminiPlanTarget = { pageId, revision }; },
+        geminiRequests,
       };
-      try {
-        await use(stack);
+      await use(stack);
       } finally {
-        await browser.close().catch(() => undefined);
+        await browser?.close().catch(() => undefined);
         try {
           execFileSync(run, ['stop'], { env, stdio: 'ignore' });
         } catch {
           /* already gone */
         }
         xvfb.kill();
+        if (modelServer) await new Promise<void>((resolveClose) => modelServer!.close(() => resolveClose()));
       }
     },
     { scope: 'worker', timeout: 300_000 },

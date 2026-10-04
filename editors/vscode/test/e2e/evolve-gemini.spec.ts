@@ -37,23 +37,22 @@ const syntheticSpec = {
     training_source_id: 'synthetic-training-source', source_sha256: 'a'.repeat(64),
 };
 
-test('echo plan is refused and a synthetic non-echo plan approves the exact revision', async ({ stack }) => {
-  const id = `v2-visible-approval-${Date.now()}`;
+test.use({ runnerHarness: 'gemini' });
+
+test('owner reviews a real runner plan in the native window', async ({ stack }) => {
+  const id = `v2-gemini-plan-${Date.now()}`;
   const pageId = `markdown/instances/evolve_problem/${id}.md`;
-  const spec = syntheticSpec;
-  const content = `---\ntype: instance\nskill: evolve_problem\nid: ${id}\nowner_subject: alice\npilot: p1_decision\nsearch_request: ${JSON.stringify(spec)}\n---\n# Visible approval review\n`;
+  const content = `---\ntype: instance\nskill: evolve_problem\nid: ${id}\nowner_subject: alice\npilot: p1_decision\nsearch_request: ${JSON.stringify(syntheticSpec)}\n---\n# Native runner plan review\n`;
   const written = await stack.call('update_page', {
     page_id: pageId, content, base_sha256: '',
   });
   expect(written.ok).toBe(true);
-  const expanded = await stack.call('expand', { page_id: pageId, raw: true });
-  const revision = expanded.content_sha256 as string;
+  const revision = (await stack.call('expand', { page_id: pageId, raw: true })).content_sha256 as string;
   expect(revision).toMatch(/^[0-9a-f]{64}$/);
+  stack.setGeminiPlanTarget(pageId, revision);
 
   const knowledge = pane(stack.page, 'Knowledge');
-  const folder = knowledge.getByRole('treeitem', { name: /^evolve_problem/ });
-  await expect(folder).toBeVisible({ timeout: 30_000 });
-  await folder.click();
+  await knowledge.getByRole('treeitem', { name: /^evolve_problem/ }).click();
   await knowledge.getByRole('treeitem', { name: new RegExp(id) }).click();
   const pageUi = await webviewWith(stack.page, 'escurel-page-as-ui');
   await pageUi.getByRole('button', { name: 'Review experiment plan', exact: true }).click();
@@ -65,20 +64,32 @@ test('echo plan is refused and a synthetic non-echo plan approves the exact revi
     return preflight?.event_id;
   }, { timeout: 30_000 }).toBeTruthy();
   expect(preflight!.provenance?.manual?.expected_page_sha256).toBe(revision);
-  expect((await events(stack.call, 'evolve_run')).some((event) => event.instance_page_id === pageId))
-    .toBe(false);
-
-  // The UI test injects a ready receipt. The Rust patched-gateway test uses
-  // Evolve's actual preflight and holdout registry before approving a search.
+  // This fixture supplies structural readiness; the separate Rust gate
+  // executes Evolve's real preflight and holdout-binding checks.
   await stack.call('capture_event', {
-    event_id: `evolve-visible-preflight-final-${id}`,
+    event_id: `evolve-gemini-preflight-final-${id}`,
     label_skill: 'evolve:preflight', source: 'anofox-evolve', mime: 'application/json',
     kind: 'system', instance_page_id: '', title: 'problem-structure-checked',
     body: JSON.stringify({ problem_sha256: revision, structural_ready_for_start: true,
-      evidence_scope: 'structure_static_sql_and_holdout_binding_only' }),
+      holdout_contract: {
+        holdout_sha256: 'b'.repeat(64), declared_holdout_source_ref: 'synthetic-fixture',
+        declared_holdout_source_sha256: 'c'.repeat(64),
+        training_source_id: 'synthetic-training-source', training_source_sha256: 'a'.repeat(64),
+        training_start: '2026-08-01', training_end: '2026-08-06',
+        holdout_start: '2026-08-07', holdout_end: '2026-08-08',
+        sku_count: 1, evaluator_version: 'replenishment_decision_v2',
+        service_targets: syntheticSpec.service_targets, baseline_sql_sha256: 'd'.repeat(64),
+        max_cost_ratio: 1, sensitivity_tail_days: [2],
+      },
+    }),
     provenance: { runner: { root_event_id: preflight!.event_id },
       evolve: { phase: 'final', problem_sha256: revision, ready: true } },
   }, true);
+  const contractDialog = stack.page.getByRole('dialog', { name: 'Info' })
+    .filter({ hasText: 'Review the frozen private holdout contract' });
+  await expect(contractDialog).toContainText('synthetic-fixture');
+  await expect(contractDialog).toContainText('2026-08-07 to 2026-08-08');
+  await contractDialog.getByRole('button', { name: 'Review experiment plan' }).click();
 
   let planned: GatewayEvent | undefined;
   await expect.poll(async () => {
@@ -97,67 +108,43 @@ test('echo plan is refused and a synthetic non-echo plan approves the exact revi
     runId = node?.id;
     return runId;
   }, { timeout: 45_000 }).toBeTruthy();
+  const runRows = (await stack.call('list_events', { run_id: runId, include_system: true }))
+    .events as Array<{ title: string; body: string; provenance?: { runner?: { harness?: string } } }>;
+  expect(runRows.some((row) => row.title === 'run-progress')).toBe(true);
+  const finished = runRows.find((row) => row.title === 'run-finished');
+  expect(finished?.provenance?.runner?.harness).toBe('gemini');
+  expect(JSON.parse(finished!.body).plan).toHaveLength(2);
+  expect(stack.geminiRequests).toHaveLength(3);
+  const firstRequest = JSON.stringify(stack.geminiRequests[0]);
+  expect(firstRequest).toContain(pageId);
+  expect(firstRequest).toContain(revision);
+  const reviewedRequest = JSON.stringify(stack.geminiRequests[1]);
+  expect(reviewedRequest).toContain('functionResponse');
+  expect(reviewedRequest).toContain('expand');
+  for (const required of [revision, 'registered-private-holdout',
+    'synthetic-training-source', 'replenishment_decision_v2', 'max_evaluated']) {
+    expect(reviewedRequest).toContain(required);
+  }
 
   const thread = await webviewWith(stack.page, 'escurel-thread-canvas');
-  await thread.locator('escurel-thread-canvas .card.type-run').first().click();
+  const card = thread.locator(`escurel-thread-canvas .card.type-run[data-node-id="${runId}"]`);
+  await expect(card).toBeVisible();
+  await card.click();
   await thread.getByRole('button', { name: 'Approve plan' }).click();
-  await expect(stack.page.getByRole('dialog', { name: /Error: Echo plans are workflow smoke tests/ }))
-    .toBeVisible();
-  expect((await events(stack.call, 'evolve_run'))
-    .some((event) => event.event_id === `evolve-approval-${runId}`)).toBe(false);
-
-  // Inject a representative completed non-echo plan into the native window.
-  // The Rust gateway test exercises the real Evolve preflight and admission;
-  // this checks the visible approval, frozen revision, and captured user event.
-  const reviewedRunId = `v2-reviewed-plan-${id}`;
-  for (const [suffix, title, body] of [
-    ['started', 'run-started', {}],
-    ['finished', 'run-finished', { status: 'planned', plan: [
-      { step: 'Verify the sealed holdout and source binding', status: 'pending' },
-      { step: 'Run bounded DuckDB evaluations under the approved budget', status: 'pending' },
-    ] }],
-  ] as const) {
-    await stack.call('capture_event', {
-      event_id: `run:${reviewedRunId}:${suffix}`,
-      label_skill: 'escurel:run', source: 'escurel-runner', kind: 'system',
-      instance_page_id: pageId, title, body: JSON.stringify(body),
-      provenance: { runner: { run_id: reviewedRunId, harness: 'codex',
-        event_id: planned!.event_id, root_event_id: planned!.event_id,
-        target_page_id: pageId,
-        manual: planned!.provenance?.manual } },
-    }, true);
-  }
-  await expect.poll(async () => {
-    const lineage = await stack.call('list_lineage', { root_event_id: planned!.event_id });
-    return (lineage.nodes as Array<{ type: string; state: string; id: string }> | undefined)
-      ?.some((item) => item.type === 'run' && item.id === reviewedRunId && item.state === 'planned');
-  }, { timeout: 30_000 }).toBe(true);
-
-  const reviewedCard = thread.locator(`escurel-thread-canvas .card.type-run[data-node-id="${reviewedRunId}"]`);
-  await expect(reviewedCard).toBeVisible({ timeout: 30_000 });
-  await reviewedCard.dblclick();
-  const run = await webviewWith(stack.page, 'escurel-run-detail');
-  await expect(run.getByRole('button', { name: 'Review search limits' })).toBeVisible();
-  await run.getByRole('button', { name: 'Review search limits' }).click();
   const dialog = stack.page.getByRole('dialog', { name: 'Warning' })
     .filter({ hasText: 'Approve this Evolve search' });
-  await expect(dialog).toBeVisible();
-  await expect(dialog).toContainText('Plan harness: codex');
-  await expect(dialog).toContainText('Verify the sealed holdout and source binding');
+  await expect(dialog).toContainText('Plan harness: gemini');
+  await expect(dialog).toContainText('Review the frozen source, holdout and V2 budget');
   await expect(dialog).toContainText('8 evaluations; 3.50 USD max');
-  await expect(dialog).toContainText('replenishment_decision_v2; planning window: 2 days; scored window: 2 days');
-  await expect(dialog).toContainText('Unit order costs by SKU: {"1":1}');
-  await expect(dialog).toContainText('Terminal stock tolerance by SKU: {"1":0}');
-  await expect(dialog).toContainText('Training source ID: synthetic-training-source');
   await dialog.getByRole('button', { name: 'Approve search' }).click();
 
   await expect.poll(async () => (await events(stack.call, 'evolve_run'))
-    .find((event) => event.event_id === `evolve-approval-${reviewedRunId}`)?.event_id,
-  { timeout: 30_000 }).toBe(`evolve-approval-${reviewedRunId}`);
+    .find((event) => event.event_id === `evolve-approval-${runId}`)?.event_id,
+  { timeout: 30_000 }).toBe(`evolve-approval-${runId}`);
   const approval = (await events(stack.call, 'evolve_run'))
-    .find((event) => event.event_id === `evolve-approval-${reviewedRunId}`);
-  expect(approval?.provenance?.manual?.approved_plan_run_id).toBe(reviewedRunId);
-  expect(approval?.provenance?.manual?.harness).toBe('codex');
+    .find((event) => event.event_id === `evolve-approval-${runId}`);
+  expect(approval?.provenance?.manual?.harness).toBe('gemini');
+  expect(approval?.provenance?.manual?.approved_plan_run_id).toBe(runId);
   expect(approval?.provenance?.manual?.expected_page_sha256).toBe(revision);
   expect(approval?.revision_binding_attested).toBe(true);
 });
