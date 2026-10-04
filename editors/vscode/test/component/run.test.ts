@@ -469,4 +469,73 @@ describe('<escurel-run-detail> navigation', () => {
     const el = await render(noSkill);
     expect(q(el, '.meta .view-skill')).to.equal(null);
   });
+
+  describe('the trace', () => {
+    const view: RunView = {
+      ...recordedRunView,
+      startedAt: '2026-10-04T12:00:00.000Z',
+      producedPageId: 'markdown/instances/order/o1.md',
+      calls: [
+        {
+          seq: 1,
+          tool: 'read_page',
+          status: 'ok',
+          durationMs: 12.3,
+          bytes: { request: 100, response: 2048 },
+          at: '2026-10-04T12:00:01.000Z',
+        },
+        {
+          seq: 2,
+          tool: 'capture_event',
+          status: 'error',
+          errorCode: 'PERMISSION_DENIED',
+          durationMs: 1500,
+          bytes: { request: 300, response: 40 },
+          at: '2026-10-04T12:00:03.000Z',
+        },
+      ],
+    };
+
+    it('is a timeline: tool, outcome in words, offset, duration in human units', async () => {
+      const el = await render(view);
+      const rows = qa(el, '.tool-call');
+      expect(rows).to.have.length(2);
+      expect(text(rows[0]!)).to.contain('read_page');
+      expect(text(rows[0]!)).to.contain('ok');
+      expect(text(rows[0]!)).to.contain('+1 s');
+      expect(text(rows[0]!)).to.contain('12 ms');
+      expect(text(rows[1]!)).to.contain('failed');
+      expect(text(rows[1]!)).to.contain('PERMISSION_DENIED');
+      expect(text(rows[1]!)).to.contain('1.5 s');
+      expect(text(el.shadowRoot!.querySelector('section[aria-label="Tool calls"]'))).not.to.contain(
+        'request bytes',
+      );
+    });
+
+    it('expands a call to its sizes, and the summary row is keyboard operable', async () => {
+      const el = await render(view);
+      const first = qa(el, '.tool-call')[0] as HTMLDetailsElement;
+      expect(first.tagName).to.equal('DETAILS');
+      expect(first.open).to.equal(false);
+      expect(text(first.querySelector('summary'))).to.contain('read_page');
+      expect(text(first.querySelector('.call-sizes'))).to.equal('sent 100 B · received 2 KB');
+    });
+
+    it('links to the draft the run produced, by asking the host (no id on the wire)', async () => {
+      const el = await render(view);
+      const sent: RunWebviewToHost[] = [];
+      el.addEventListener('escurel-message', (event) =>
+        sent.push((event as CustomEvent<RunWebviewToHost>).detail),
+      );
+      const open = q(el, 'button.open-produced') as HTMLButtonElement;
+      expect(text(open)).to.contain('Open what this run produced');
+      open.click();
+      expect(sent).to.deep.equal([{ type: 'open-produced' }]);
+    });
+
+    it('has no produced link when the run produced nothing', async () => {
+      const el = await render({ ...view, producedPageId: undefined });
+      expect(q(el, 'button.open-produced')).to.equal(null);
+    });
+  });
 });

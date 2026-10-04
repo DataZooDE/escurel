@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { acceptLoadMore, traceIdToCopy } from '../../src/runs/runActions';
+import { acceptLoadMore, producedPageToOpen, traceIdToCopy } from '../../src/runs/runActions';
 import type { RunView } from '../../src/shared/protocol';
 
 const view = { runId: 'r', traceId: 'a1b2c3', nextAfter: 50, calls: [] } as unknown as RunView;
@@ -31,5 +31,17 @@ describe('loading more tool calls', () => {
 
   it('refuses when there is no next page', () => {
     expect(acceptLoadMore({ ...view, nextAfter: null }, 50)).toBe(false);
+  });
+});
+
+describe('opening what the run produced', () => {
+  it('opens the host’s own produced page, never one the webview names', () => {
+    const v = { ...view, producedPageId: 'markdown/instances/order/o1.md' };
+    expect(producedPageToOpen(v)).toBe('markdown/instances/order/o1.md');
+  });
+
+  it('opens nothing when the run produced nothing', () => {
+    expect(producedPageToOpen(view)).toBeUndefined();
+    expect(producedPageToOpen(undefined)).toBeUndefined();
   });
 });

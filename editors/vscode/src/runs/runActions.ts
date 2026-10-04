@@ -53,3 +53,8 @@ export function traceIdToCopy(view: RunView | undefined): string | undefined {
 export function acceptLoadMore(view: RunView, after: unknown): boolean {
   return typeof after === 'number' && Number.isInteger(after) && after === view.nextAfter;
 }
+
+/** The page to open for "what this run produced": the host's own, never an id the webview sends. */
+export function producedPageToOpen(view: RunView | undefined): string | undefined {
+  return view?.producedPageId || undefined;
+}

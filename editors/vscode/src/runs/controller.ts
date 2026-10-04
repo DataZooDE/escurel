@@ -13,6 +13,7 @@ import { runControls } from './controls';
 import {
   acceptLoadMore,
   resolveRunAction,
+  producedPageToOpen,
   traceIdToCopy,
   visibleRunControls,
   type ActionRunView,
@@ -165,6 +166,11 @@ export class RunController implements vscode.Disposable {
         }
         case 'open-page':
           return void vscode.commands.executeCommand('escurel.openPage', m.pageId);
+        case 'open-produced': {
+          const page = producedPageToOpen(view);
+          if (page) void vscode.commands.executeCommand('escurel.openPage', page);
+          return;
+        }
         case 'open-thread':
           // This run's own thread, from the host: the webview names no id (a forged message must not
           // open whatever thread it likes).
