@@ -167,7 +167,7 @@ export class EscurelThreadCanvas extends LitElement {
         left: 0;
         right: 0;
       }
-      /* Semantic zoom: below 70% a card keeps its icon, type word, title and state chip, and drops
+      /* Semantic zoom: below 85% a card keeps its icon, type word, title and state chip, and drops
          the body (subtitle, meta, reason, draft list, buttons). The words are COUNTER-SCALED: the
          canvas shrinks by --zoom, so their font is divided by it and they render at about 10.5px
          whatever the zoom. The box keeps its size, so wires and positions do not move; the full
@@ -1381,7 +1381,7 @@ export class EscurelThreadCanvas extends LitElement {
       <div class="toolbar" role="group" aria-label="Thread canvas controls">
         <button aria-label="Zoom out" @click=${() => this.zoomBy(0.8)}>−</button>
         <span class="zoom-level" aria-live="polite">${Math.round(this.viewport.zoom * 100)}%</span>
-        ${lowZoom ? html`<span class="zoom-hint" title="Zoomed out: cards show icon, type, title and state, without their details. Zoom in to 70% for the details.">overview</span>` : nothing}
+        ${lowZoom ? html`<span class="zoom-hint" title="Zoomed out: cards show icon, type, title and state, without their details. Zoom in to 85% for the details.">overview</span>` : nothing}
         <button aria-label="Zoom in" @click=${() => this.zoomBy(1.25)}>+</button>
         <button aria-label="Fit graph to view" data-action="fit" @click=${() => this.fit()}>
           Fit

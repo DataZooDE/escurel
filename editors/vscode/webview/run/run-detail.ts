@@ -255,7 +255,7 @@ export class EscurelRunDetail extends LitElement {
         border: 1px solid var(--vscode-errorForeground);
         border-left-width: 4px;
         border-radius: 2px;
-        white-space: pre-wrap;
+        overflow-wrap: anywhere;
       }
       .failure-banner strong {
         color: var(--vscode-errorForeground);

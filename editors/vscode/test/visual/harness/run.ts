@@ -58,5 +58,8 @@ el.view =
           tone: state === 'dead_letter' || state === 'failed' ? 'failed' : 'run',
           skill: 'supplier-risk',
           controls: runControls(state, 'not-admin'),
+          ...(state === 'dead_letter' || state === 'failed'
+            ? { failure: 'permanent — harness "refusing" is not allowed for this skill' }
+            : {}),
         }
       : recorded;

@@ -23,7 +23,7 @@ test('thread canvas with waiting work and lanes renders in the current theme', a
   });
 });
 
-// The same thread zoomed out to the overview (Fit): below 70% every card keeps its icon, accent bar,
+// The same thread zoomed out to the overview (Fit): below 85% every card keeps its icon, accent bar,
 // type word, title, state chip and the Needs-you icon, and drops its body.
 test('thread canvas zoomed out shows the low-zoom form in the current theme', async ({
   page,
