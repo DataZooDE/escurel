@@ -343,7 +343,15 @@ async fn run_inner(
     let id_applying = format!("write-back:{draft_id}:applying");
     let id_applied = format!("write-back:{draft_id}:applied");
     let id_failed = format!("write-back:{draft_id}:failed");
-    let internal = |e: String| refusal("write_back_failed", e);
+    // The audit trail is read before anything is sent (the witnesses): when that read fails the store
+    // is unhealthy, nothing was sent, and the person is told so in words, not with a SQL error.
+    let internal = |e: String| {
+        tracing::warn!(draft = draft_id, error = %e, "write-back audit trail unreadable");
+        refusal(
+            "write_back_failed",
+            "the audit trail could not be read, so nothing was sent; try again",
+        )
+    };
 
     // The witness: the upstream already applied this draft. Do not call it again.
     if witness(indexer, &id_applied)
