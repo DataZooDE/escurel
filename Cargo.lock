@@ -2550,6 +2550,7 @@ dependencies = [
  "escurel-client",
  "escurel-embed",
  "escurel-index",
+ "escurel-md",
  "escurel-quota",
  "escurel-storage",
  "escurel-test-support",
