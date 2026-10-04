@@ -187,7 +187,7 @@ pub(crate) async fn get(
             let fields = resolve_projection(&item, &src.remote.project);
             Some(RemoteRow {
                 id: id.to_owned(),
-                page_id: escurel_index::backend::rows::instance_page_id(&src.skill, &id),
+                page_id: escurel_index::backend::rows::instance_page_id(&src.skill, id),
                 fields,
             })
         })),
@@ -216,7 +216,7 @@ pub(crate) async fn get_with_etag(
             Ok(Some((
                 RemoteRow {
                     id: id.to_owned(),
-                    page_id: escurel_index::backend::rows::instance_page_id(&src.skill, &id),
+                    page_id: escurel_index::backend::rows::instance_page_id(&src.skill, id),
                     fields,
                 },
                 etag,

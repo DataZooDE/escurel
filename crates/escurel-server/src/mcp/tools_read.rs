@@ -1039,7 +1039,7 @@ async fn expand_remote_row(
     src: &crate::remote_rows::RemoteRows,
     id: &str,
 ) -> Result<Value, JsonRpcError> {
-    let page_id = instance_page_id(&src.skill, &id);
+    let page_id = instance_page_id(&src.skill, id);
     let stored = tool_expand_stored(state, indexer, caller, args).await?;
     let has_stored = !stored["page"].is_null();
     let fetched_at = escurel_index::now_rfc3339_micros();
@@ -1072,7 +1072,7 @@ async fn expand_remote_row(
     };
     let Some(row) = row else {
         if !has_stored {
-            return Ok(json!({ "page": Value::Null, "hint": missing_page_hint(&page_id) }));
+            return Ok(row_hidden(&page_id));
         }
         let mut out = stored;
         out["backend_projection"] = json!({
@@ -1089,7 +1089,7 @@ async fn expand_remote_row(
         .await
         .map_err(|e| JsonRpcError::internal(format!("expand acl: {e}")))?
     {
-        return Ok(json!({ "page": Value::Null, "hint": missing_page_hint(&page_id) }));
+        return Ok(row_hidden(&page_id));
     }
     let projection = json!({
         "kind": kind, "instances": "rows", "read_only": true, "trust": "external",
@@ -1106,18 +1106,44 @@ async fn expand_remote_row(
         // human-gated `write_back` draft. Said in the data so it does not read as a contradiction.
         projection["writable_via"] = json!("write_back");
     }
-    let mut out = if has_stored && src.cfg.linked {
+    Ok(compose_row_page(
+        stored,
+        has_stored && src.cfg.linked,
+        (&page_id, id, &src.skill),
+        &fields,
+        projection,
+    ))
+}
+
+/// ONE instance from a live row and its linked notes: the companion's own page when it is used (else
+/// an identity-only shell), with the row's projected columns written over its frontmatter (the source
+/// of truth for those fields: the write guard keeps the companion from carrying them), and the
+/// projection attached. Shared by SQL rows and remote rows.
+fn compose_row_page(
+    stored: Value,
+    use_stored: bool,
+    (page_id, id, skill): (&str, &str, &str),
+    fields: &Value,
+    projection: Value,
+) -> Value {
+    let mut out = if use_stored {
         stored
     } else {
-        row_shell(&page_id, id, &src.skill)
+        row_shell(page_id, id, skill)
     };
-    if let (Some(fm), Value::Object(cols)) = (out["frontmatter"].as_object_mut(), &fields) {
+    if let (Some(fm), Value::Object(cols)) = (out["frontmatter"].as_object_mut(), fields) {
         for (k, v) in cols {
             fm.insert(k.clone(), v.clone());
         }
     }
     out["backend_projection"] = projection;
-    Ok(out)
+    out
+}
+
+/// The answer for a row the caller may not read, or that is not there: the same `null` page and hint
+/// either way, so the answer is not an existence oracle.
+fn row_hidden(page_id: &str) -> Value {
+    json!({ "page": Value::Null, "hint": missing_page_hint(page_id) })
 }
 
 /// The page of a row that has no stored notes: identity only, no columns.
@@ -1141,7 +1167,7 @@ async fn expand_row(
     src: &escurel_index::backend::RowsSource,
     id: &str,
 ) -> Result<Value, JsonRpcError> {
-    let page_id = instance_page_id(&src.skill, &id);
+    let page_id = instance_page_id(&src.skill, id);
     let stored = tool_expand_stored(state, indexer, caller, args).await?;
     let has_stored = !stored["page"].is_null();
     let row = indexer
@@ -1155,7 +1181,7 @@ async fn expand_row(
         // The row is gone from the source. The companion, if any, is KEPT and flagged: notes must
         // not vanish with the row.
         if !has_stored {
-            return Ok(json!({ "page": Value::Null, "hint": missing_page_hint(&page_id) }));
+            return Ok(row_hidden(&page_id));
         }
         let mut out = stored;
         out["backend_projection"] = json!({
@@ -1175,7 +1201,7 @@ async fn expand_row(
         .await
         .map_err(|e| JsonRpcError::internal(format!("expand acl: {e}")))?
     {
-        return Ok(json!({ "page": Value::Null, "hint": missing_page_hint(&page_id) }));
+        return Ok(row_hidden(&page_id));
     }
     let projection = json!({
         "view": src.view, "instances": "rows", "read_only": true, "trust": "source",
@@ -1188,26 +1214,13 @@ async fn expand_row(
             "kind": escurel_index::backend::rows::field_kind_for(t),
         })).collect::<Vec<_>>(),
     });
-    let mut out = if has_stored && src.cfg.linked {
-        stored
-    } else {
-        json!({
-            "page": {
-                "page_id": page_id, "slug": id, "skill": src.skill,
-                "page_kind": "instance", "last_written_by": Value::Null,
-            },
-            "frontmatter": {}, "body": "", "blocks": [], "wikilinks_out": [],
-        })
-    };
-    // ONE instance: the companion's own frontmatter, with the row's projected columns on top (the
-    // source of truth for those fields — the write guard keeps the companion from carrying them).
-    if let (Some(fm), Value::Object(cols)) = (out["frontmatter"].as_object_mut(), &fields) {
-        for (k, v) in cols {
-            fm.insert(k.clone(), v.clone());
-        }
-    }
-    out["backend_projection"] = projection;
-    Ok(out)
+    Ok(compose_row_page(
+        stored,
+        has_stored && src.cfg.linked,
+        (&page_id, id, &src.skill),
+        &fields,
+        projection,
+    ))
 }
 
 #[derive(Deserialize)]
