@@ -576,4 +576,26 @@ describe('<escurel-page-as-ui> thread strip', () => {
       expect(q(el, '.source-strip') === null).to.equal(true);
     });
   });
+
+  it("shows the skill's provenance facts next to it, and a Stale badge when it has gone stale", async () => {
+    const fresh = await fixture<EscurelPageAsUi>(
+      html`<escurel-page-as-ui
+        .model=${{ ...orderPage, skill: { ...orderPage.skill, facts: ['verified 2026-09-30', 'stale after P90D'] } }}
+      ></escurel-page-as-ui>`,
+    );
+    await fresh.updateComplete;
+    expect(text(q(fresh, '.skill-facts'))).to.contain('verified 2026-09-30');
+    expect(q(fresh, '.skill-facts .stale-badge')).to.equal(null);
+
+    const stale = await fixture<EscurelPageAsUi>(
+      html`<escurel-page-as-ui
+        .model=${{ ...orderPage, skill: { ...orderPage.skill, stale: true, facts: ['stale', 'verified 2026-01-01'] } }}
+      ></escurel-page-as-ui>`,
+    );
+    await stale.updateComplete;
+    // The word is in the page, not only a colour.
+    expect(text(q(stale, '.skill-facts .stale-badge'))).to.equal('Stale');
+    // And a page whose skill declares nothing has no facts line at all.
+    expect(q(await render(), '.skill-facts')).to.equal(null);
+  });
 });

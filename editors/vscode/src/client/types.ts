@@ -61,6 +61,16 @@ export interface Skill {
   title?: string;
   /** OKF link to the external thing this skill describes (a table, an API). */
   resource?: string;
+  /** OKF provenance keys, as the skill's author wrote them; absent when undeclared. */
+  generated?: string;
+  verified?: string;
+  status?: string;
+  /** An RFC 3339 instant or an ISO-8601 duration (`P90D`) counted from `verified`. */
+  stale_after?: string;
+  /** Links or `{title, url}` objects. */
+  sources?: Array<string | { title?: string; url?: string }>;
+  /** Peacock's pointer to the report skill that charts this skill's instances. */
+  viewer?: { report: string; param?: string };
   /** What a follow-up from this skill can be: see `SkillAction`. Absent when none are declared. */
   actions?: SkillAction[];
   cascade?: { target?: string; max_depth?: number };

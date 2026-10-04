@@ -53,3 +53,14 @@ for (const variant of ['external', 'external-down', 'external-down-blank']) {
     });
   });
 }
+
+// A skill that declares its OKF provenance and has gone stale: the facts line and the Stale badge.
+test('a stale skill shows its provenance facts and the word Stale', async ({ page }, testInfo) => {
+  const theme = (testInfo.project.metadata as { theme: string }).theme;
+  await page.goto(`/test/visual/harness/index.html?theme=${theme}&variant=stale-facts`);
+  await page.locator('escurel-page-as-ui .skill-facts .stale-badge').waitFor();
+  await expect(page).toHaveScreenshot('page-as-ui-stale-facts.png', {
+    maxDiffPixelRatio: 0.01,
+    fullPage: true,
+  });
+});
