@@ -109,7 +109,7 @@ impl SqlViewBackend {
         let view = view_name(skill, instance_id);
         let fingerprint = self.materialise_view(&view, binding).await?;
         let binding_hash = hash_binding(binding);
-        let page_id = format!("markdown/instances/{skill}/{instance_id}.md");
+        let page_id = crate::backend::rows::instance_page_id(skill, instance_id);
         let content = overlay_markdown(
             skill,
             instance_id,

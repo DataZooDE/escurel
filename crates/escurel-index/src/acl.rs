@@ -398,7 +398,7 @@ impl Indexer {
         if caller.is_admin {
             return Ok(true);
         }
-        let page_id = format!("markdown/instances/{CHAT_OWNER_SKILL}/{chat_group_id}.md");
+        let page_id = crate::backend::rows::instance_page_id(CHAT_OWNER_SKILL, chat_group_id);
         let Some(expanded) = self.expand(&page_id, None, None).await? else {
             return Ok(true); // no owning instance → ungated (compat)
         };

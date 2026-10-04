@@ -185,6 +185,13 @@ fn decode_part(s: &str) -> Option<String> {
     String::from_utf8(out).ok()
 }
 
+/// The page id of instance `id` of `skill`: `markdown/instances/<skill>/<id>.md`. The one place the
+/// format is built; `split_instance_page_id` is its inverse.
+#[must_use]
+pub fn instance_page_id(skill: &str, id: &str) -> String {
+    format!("markdown/instances/{skill}/{id}.md")
+}
+
 /// `markdown/instances/<skill>/<id>.md`, parsed back; `None` for any other page id.
 #[must_use]
 pub fn split_instance_page_id(page_id: &str) -> Option<(&str, &str)> {
@@ -461,7 +468,7 @@ fn read_record(
         }
     }
     Ok(RowRecord {
-        page_id: format!("markdown/instances/{}/{id}.md", src.skill),
+        page_id: instance_page_id(&src.skill, &id),
         id,
         columns,
         fields,
@@ -727,6 +734,14 @@ mod tests {
     fn instance_page_ids_split() {
         assert_eq!(
             split_instance_page_id("markdown/instances/sales-order/0004500123.md"),
+            Some(("sales-order", "0004500123"))
+        );
+        assert_eq!(
+            instance_page_id("sales-order", "0004500123"),
+            "markdown/instances/sales-order/0004500123.md"
+        );
+        assert_eq!(
+            split_instance_page_id(&instance_page_id("sales-order", "0004500123")),
             Some(("sales-order", "0004500123"))
         );
         assert_eq!(split_instance_page_id("markdown/skills/x.md"), None);

@@ -6,7 +6,7 @@
 
 use super::backend_view::BackendView;
 use super::*;
-use escurel_index::backend::rows::split_instance_page_id;
+use escurel_index::backend::rows::{instance_page_id, split_instance_page_id};
 
 // --- per-tool handlers -----------------------------------------
 
@@ -1039,7 +1039,7 @@ async fn expand_remote_row(
     src: &crate::remote_rows::RemoteRows,
     id: &str,
 ) -> Result<Value, JsonRpcError> {
-    let page_id = format!("markdown/instances/{}/{id}.md", src.skill);
+    let page_id = instance_page_id(&src.skill, &id);
     let stored = tool_expand_stored(state, indexer, caller, args).await?;
     let has_stored = !stored["page"].is_null();
     let fetched_at = escurel_index::now_rfc3339_micros();
@@ -1141,7 +1141,7 @@ async fn expand_row(
     src: &escurel_index::backend::RowsSource,
     id: &str,
 ) -> Result<Value, JsonRpcError> {
-    let page_id = format!("markdown/instances/{}/{id}.md", src.skill);
+    let page_id = instance_page_id(&src.skill, &id);
     let stored = tool_expand_stored(state, indexer, caller, args).await?;
     let has_stored = !stored["page"].is_null();
     let row = indexer

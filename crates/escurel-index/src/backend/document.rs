@@ -699,7 +699,7 @@ impl DocumentIngestWorker {
         cfg: &ExtractConfig,
         extra: &serde_json::Value,
     ) -> Result<IngestOutcome, IndexerError> {
-        let page_id = format!("markdown/instances/{skill}/{instance_id}.md");
+        let page_id = crate::backend::rows::instance_page_id(skill, instance_id);
         let bytes = self.indexer.read_inbox_blob(blob_id).await?;
 
         // Extract + chunk OFF the write lock.

@@ -90,7 +90,7 @@ fn row_from(src: &RemoteRows, item: &Value) -> Option<RemoteRow> {
     let id = encode_row_id(&[key]);
     let fields = resolve_projection(item, &src.remote.project);
     Some(RemoteRow {
-        page_id: format!("markdown/instances/{}/{id}.md", src.skill),
+        page_id: escurel_index::backend::rows::instance_page_id(&src.skill, &id),
         id,
         fields,
     })
@@ -195,7 +195,7 @@ pub(crate) async fn get(
             let fields = resolve_projection(&item, &src.remote.project);
             Some(RemoteRow {
                 id: id.to_owned(),
-                page_id: format!("markdown/instances/{}/{id}.md", src.skill),
+                page_id: escurel_index::backend::rows::instance_page_id(&src.skill, &id),
                 fields,
             })
         })),
@@ -224,7 +224,7 @@ pub(crate) async fn get_with_etag(
             Ok(Some((
                 RemoteRow {
                     id: id.to_owned(),
-                    page_id: format!("markdown/instances/{}/{id}.md", src.skill),
+                    page_id: escurel_index::backend::rows::instance_page_id(&src.skill, &id),
                     fields,
                 },
                 etag,

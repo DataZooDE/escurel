@@ -678,7 +678,7 @@ pub(super) async fn tool_create_remote_instance(
         )));
     }
     let body = a.overlay_body.unwrap_or_else(|| format!("# {}\n", a.id));
-    let page_id = format!("markdown/instances/{}/{}.md", a.skill, a.id);
+    let page_id = escurel_index::backend::rows::instance_page_id(&a.skill, &a.id);
     let content = format!(
         "---\n\
          kind: instance\n\
