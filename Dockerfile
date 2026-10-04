@@ -48,7 +48,9 @@ ENV CARGO_BUILD_JOBS=1
 RUN --mount=type=cache,target=/build/target \
     --mount=type=cache,target=/usr/local/cargo/registry \
     cargo build --release -p escurel-server --features gemini,s3,gcs,duckvfs \
+    && cargo build --release -p escurel-cli \
     && cp target/release/escurel-server /usr/local/bin/escurel-server \
+    && cp target/release/escurel /usr/local/bin/escurel \
     && cp "$(find target -name libduckdb.so -print -quit)" /usr/local/lib/libduckdb.so
 
 # ---- extension cache ------------------------------------------------------
@@ -71,7 +73,10 @@ ARG DUCKDB_VERSION=v1.5.5
 # only exists in v2026.09.01 and the community repository still serves
 # v2026.08.07, whose credential_chain refuses external_account outright. Swap
 # once duckdb/community-extensions#2588 is merged and built.
-ARG GDRIVE_REPO=http://get.erpl.io
+ARG GDRIVE_REPO=https://get.erpl.io
+# Optional integrity pin for the (unsigned, moving) mirror artifact: when set, the build fails unless the
+# gz served at <repo>/<duckdb version>/linux_amd64/gdrive.duckdb_extension.gz has this sha256.
+ARG GDRIVE_SHA256=
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates curl unzip \
     && rm -rf /var/lib/apt/lists/*
@@ -81,6 +86,10 @@ RUN curl -sSfL "https://github.com/duckdb/duckdb/releases/download/${DUCKDB_VERS
  && chmod +x /usr/local/bin/duckdb \
  && rm /tmp/duckdb.zip
 ENV HOME=/opt/escurel
+RUN if [ -n "${GDRIVE_SHA256}" ]; then \
+      echo "${GDRIVE_SHA256}  -" > /tmp/gdrive.sha256 \
+      && curl -sSfL "${GDRIVE_REPO}/${DUCKDB_VERSION}/linux_amd64/gdrive.duckdb_extension.gz" | sha256sum -c /tmp/gdrive.sha256; \
+    fi
 RUN mkdir -p /opt/escurel \
  && duckdb -unsigned -c "INSTALL ducklake; INSTALL postgres; INSTALL httpfs; INSTALL fts; INSTALL vss; INSTALL gdrive FROM '${GDRIVE_REPO}';"
 # Fail the BUILD, not the pod, if anything did not land where DuckDB looks for
@@ -103,6 +112,10 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates curl libstdc++6 \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=builder /usr/local/bin/escurel-server /usr/local/bin/escurel-server
+# The operator CLI (6.7 MiB), so a breaking-release migration runs where the data is, with no admin API
+# exposed: `docker exec <c> escurel --server http://127.0.0.1:8080 admin migrate-kind --tenant <t>`
+# (docs/deploy/kind-migration.md). It is a pure HTTP client of the server above.
+COPY --from=builder /usr/local/bin/escurel /usr/local/bin/escurel
 # The dynamically-linked libduckdb.so (see the builder note). Land it in a
 # standard search dir and refresh the loader cache so the binary — which has
 # no rpath — finds it at startup.
@@ -114,6 +127,13 @@ RUN ldconfig
 # DuckDB looks: pointing it anywhere else silently reverts to downloading.
 COPY --from=extensions --chown=65532:65532 /opt/escurel/.duckdb /opt/escurel/.duckdb
 ENV HOME=/opt/escurel
+
+# Run as the uid the substrate chart already uses (securityContext.runAsUser 65532), NOT root, so a
+# plain `docker run` is as unprivileged as the cluster. /data is created and owned by that uid BEFORE
+# the VOLUME line, so a fresh (anonymous or empty named) volume mounted there is writable; a bind
+# mount or PersistentVolume must be owned by 65532 (the chart's fsGroup does this).
+RUN mkdir -p /data && chown 65532:65532 /data
+USER 65532:65532
 
 # Kamal (the substrate's deployer) asserts at deploy that the image carries a
 # `service` label exactly matching the Kamal service name, else it refuses to
