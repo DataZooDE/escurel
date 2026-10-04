@@ -724,3 +724,47 @@ async fn a_dot_segment_id_cannot_escape_the_path_template() {
     );
     process.shutdown().await;
 }
+
+// ---- IPv6 forms that wrap a private or metadata IPv4 address are refused -------------------------
+
+#[tokio::test]
+async fn ipv6_forms_that_wrap_a_private_or_metadata_address_are_refused() {
+    let (process, _dirs) = spawn_gateway(EgressPolicy::default()).await;
+    let hostile = [
+        // NAT64 of 169.254.169.254 (the cloud metadata address) on a DNS64 network.
+        "https://[64:ff9b::a9fe:a9fe]/",
+        // IPv4-compatible (deprecated) 127.0.0.1.
+        "https://[::7f00:1]:1/",
+        // Site-local, deprecated but still routed by some stacks.
+        "https://[fec0::1]:1/",
+        // 6to4 of 10.0.0.1.
+        "https://[2002:0a00:0001::1]:1/",
+        // IPv4-mapped (already refused before this change: the control).
+        "https://[::ffff:7f00:1]:1/",
+    ];
+    for (i, url) in hostile.iter().enumerate() {
+        let name = format!("v6_{i}");
+        let reg = call(
+            &process,
+            "register_endpoint",
+            json!({ "name": name, "kind": "openapi", "base_url": url }),
+        )
+        .await;
+        assert!(reg.get("error").is_none(), "register {url}: {reg}");
+    }
+    let v = call(&process, "validate_endpoints", json!({})).await;
+    let eps = v["result"]["structuredContent"]["endpoints"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    assert_eq!(eps.len(), hostile.len(), "{v}");
+    for e in &eps {
+        let detail = e["detail"].as_str().unwrap_or("");
+        assert!(
+            detail.contains("non-public"),
+            "`{}` must be refused by the egress policy, got {e}",
+            e["name"]
+        );
+    }
+    process.shutdown().await;
+}
