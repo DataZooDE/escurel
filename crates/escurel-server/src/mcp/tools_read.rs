@@ -88,6 +88,12 @@ pub(super) async fn tool_list_skills(
                 tags: s.tags,
                 title: s.title,
                 resource: s.resource,
+                generated: s.generated,
+                verified: s.verified,
+                status: s.status,
+                stale_after: s.stale_after,
+                sources: s.sources,
+                viewer: s.viewer,
                 actions: s.actions,
                 cascade: s.cascade.map(|c| escurel_types::SkillCascade {
                     target: c.target,

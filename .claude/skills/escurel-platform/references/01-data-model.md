@@ -39,6 +39,11 @@ optional; reported on `list_skills`, linted by `validate`):
 - `harness: echo | claude | codex | agy | muse | gemini | delegate` — the
   adapter the skill asks to run on; anything else is `harness_unknown`.
   The runner honours it within its own allow-list.
+- `generated:`, `verified:`, `status:`, `stale_after:`, `sources:` — the OKF provenance keys, all optional and
+  lint-only (a malformed one is a warning). They reach `list_skills` as written; `stale_after` is an
+  RFC 3339 instant or an ISO-8601 duration (`P90D`) counted from `verified`, and a client decides what
+  "stale" means. `viewer: {report, param}` (Peacock) is carried the same way. A skill's own `fields:`
+  declaration wins over an OKF key, and instance pages keep their own meaning of `status`.
 - `folder:`, `role:`, `tags:` — where the skill sits and what it is (OKF-aligned), all optional.
   `folder` is a `/`-separated path of lowercase slugs (`sales/orders`; anything else is `folder_invalid`);
   `role` is `record` (business data), `process` (something a runner executes), `report` (a rendered view)

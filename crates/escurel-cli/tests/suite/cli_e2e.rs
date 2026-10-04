@@ -213,7 +213,8 @@ async fn skill_list_emits_autonomy_and_the_contract_keys() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn skill_list_carries_the_tree_vocabulary() {
     const PLACED: &str = "---\nkind: skill\nid: placed\ndescription: d.\nautonomy: review\n\
-        folder: sales/orders\nrole: record\ntags: [sap, sd]\ntitle: Placed\nresource: https://sap.example/t\n---\n# placed\n";
+        folder: sales/orders\nrole: record\ntags: [sap, sd]\ntitle: Placed\nresource: https://sap.example/t\n\
+        verified: 2026-09-30\nstale_after: P90D\nviewer: {report: placed-report, param: placed}\n---\n# placed\n";
     let process = EscurelProcess::spawn(Opts {
         auth: AuthMode::TestIssuer,
         fixtures: Some(
@@ -257,8 +258,11 @@ async fn skill_list_carries_the_tree_vocabulary() {
     assert_eq!(placed["tags"], serde_json::json!(["sap", "sd"]), "{placed}");
     assert_eq!(placed["title"], "Placed", "{placed}");
     assert_eq!(placed["resource"], "https://sap.example/t", "{placed}");
+    assert_eq!(placed["verified"], "2026-09-30", "{placed}");
+    assert_eq!(placed["stale_after"], "P90D", "{placed}");
+    assert_eq!(placed["viewer"]["report"], "placed-report", "{placed}");
     let plain = row("customer");
-    for key in ["folder", "role", "tags", "title", "resource"] {
+    for key in ["folder", "role", "tags", "title", "resource", "verified", "stale_after", "viewer"] {
         assert!(plain.get(key).is_none(), "{key} on a plain skill: {plain}");
     }
     h.process.shutdown().await;

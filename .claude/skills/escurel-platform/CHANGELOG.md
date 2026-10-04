@@ -4,6 +4,20 @@ The skill version tracks the consumer-facing contract, not the Escurel
 binary version. The Escurel repo's checked-out git ref is the true version
 pin (see `SKILL.md` → "How this skill is installed").
 
+## 0.14.0 — `list_skills` carries the OKF provenance keys and Peacock's `viewer:`
+
+Additive (a client that ignores the new keys keeps working; rows of skills that declare none are
+byte-identical to before).
+
+- **New row keys, present only when declared:** `generated`, `verified`, `status`, `stale_after`
+  (strings, as written: a date or RFC 3339 instant; `stale_after` may be an ISO-8601 duration such as
+  `P90D`, counted from `verified` — the CLIENT decides whether the skill is stale), `sources` (a list of
+  links or `{title, url}` objects) and `viewer` (`{report, param?}`: Peacock's pointer to the report
+  skill that charts this skill's instances). The same keys appear in `escurel skill list`.
+- They stay optional and lint-only (`validate` warns about malformed ones, never rejects). A skill's own
+  `fields:` declaration still wins over an OKF key; INSTANCE pages keep their own meaning of `status`.
+- `expand` already returned a page's whole frontmatter, so nothing changes there.
+
 ## 0.13.0 — BREAKING: `content[0].text` is a summary; `autonomy` is enforced for machine callers
 
 - **BREAKING — `tools/call` text block.** `result.content[0].text` is a one-or-two-line summary (what came

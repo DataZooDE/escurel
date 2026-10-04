@@ -11,6 +11,10 @@ const TENANT: &str = "okf";
 const ORDER: &str = "---\nkind: skill\nid: customer-order\ndescription: d.\nautonomy: review\n\
 summary: A customer order.\nfolder: sales/orders\nrole: record\ntags: [sap, sd]\ntitle: Customer order\n\
 resource: https://sap.example/vbak\n---\n# customer-order\n";
+const CHECKED: &str = "---\nkind: skill\nid: analysis\ndescription: d.\nautonomy: review\nsummary: s.\n\
+generated: agent:supplier-risk\nverified: 2026-09-30\nstatus: draft\nstale_after: P90D\n\
+sources: [https://sap.example/doc, {title: SAP VBAK, url: https://sap.example/vbak}]\n\
+viewer: {report: supplier-risk-report, param: analysis}\n---\n# analysis\n";
 const PLAIN: &str =
     "---\nkind: skill\nid: plain\ndescription: d.\nautonomy: review\nsummary: s.\n---\n# plain\n";
 
@@ -22,6 +26,7 @@ async fn start() -> EscurelProcess {
                 .tenant(TENANT)
                 .skill("customer-order", ORDER)
                 .skill("plain", PLAIN)
+                .skill("analysis", CHECKED)
                 .done(),
         ),
         ..Default::default()
@@ -209,5 +214,39 @@ status: draft\nstale_after: {stale}\nsources: [https://a.example, https://b.exam
     .await;
     for code in ["tags_invalid", "stale_after_invalid", "sources_invalid"] {
         assert!(issue(&out, code).is_none(), "{code} on an instance: {out}");
+    }
+}
+
+#[tokio::test]
+async fn list_skills_reports_the_okf_provenance_keys_and_the_viewer() {
+    let p = start().await;
+    let token = p.mint_token(TENANT, Role::Agent);
+    let out = call(&p, &token, "list_skills", json!({})).await;
+    let rows = out["skills"].as_array().unwrap();
+    let find = |id: &str| {
+        rows.iter()
+            .find(|s| s["id"] == id)
+            .unwrap_or_else(|| panic!("{id}: {out}"))
+    };
+    let a = find("analysis");
+    assert_eq!(a["generated"], "agent:supplier-risk", "{a}");
+    assert_eq!(a["verified"], "2026-09-30", "{a}");
+    assert_eq!(a["status"], "draft", "{a}");
+    assert_eq!(a["stale_after"], "P90D", "{a}");
+    assert_eq!(
+        a["sources"],
+        json!(["https://sap.example/doc", {"title": "SAP VBAK", "url": "https://sap.example/vbak"}]),
+        "{a}"
+    );
+    // Peacock's `viewer:` rides along so a client can say where a skill's instances are charted.
+    assert_eq!(
+        a["viewer"],
+        json!({"report": "supplier-risk-report", "param": "analysis"}),
+        "{a}"
+    );
+    // Declared nothing, carries nothing: the other rows stay byte-identical to before.
+    let plain = find("plain");
+    for key in ["generated", "verified", "status", "stale_after", "sources", "viewer"] {
+        assert!(plain.get(key).is_none(), "{key} on a plain skill: {plain}");
     }
 }

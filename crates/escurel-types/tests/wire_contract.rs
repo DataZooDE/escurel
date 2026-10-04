@@ -351,6 +351,42 @@ fn skill_tree_vocabulary_round_trips_and_is_omitted_when_undeclared() {
 }
 
 #[test]
+fn skill_okf_provenance_and_viewer_round_trip_and_are_omitted_when_undeclared() {
+    // `generated` / `verified` / `status` / `stale_after` / `sources` / `viewer`: carried as written
+    // (a stale client simply ignores them); a skill that declares none emits none.
+    let wire = json!({
+        "id": "analysis",
+        "description": "d",
+        "generated": "agent:supplier-risk",
+        "verified": "2026-09-30",
+        "status": "draft",
+        "stale_after": "P90D",
+        "sources": ["https://sap.example/doc", {"title": "SAP", "url": "https://sap.example"}],
+        "viewer": {"report": "supplier-risk-report", "param": "analysis"},
+    });
+    let skill: Skill = serde_json::from_value(wire.clone()).unwrap();
+    assert_eq!(skill.verified.as_deref(), Some("2026-09-30"));
+    assert_eq!(skill.stale_after.as_deref(), Some("P90D"));
+    assert_eq!(skill.sources.len(), 2);
+    assert_eq!(skill.viewer.as_ref().unwrap().report, "supplier-risk-report");
+    let back = serde_json::to_value(&skill).unwrap();
+    for key in ["generated", "verified", "status", "stale_after", "sources", "viewer"] {
+        assert_eq!(back[key], wire[key], "{key}");
+    }
+    // A viewer without a param still deserialises (the report decides).
+    let bare_viewer: Skill = serde_json::from_value(
+        json!({ "id": "n", "description": "d", "viewer": {"report": "r"} }),
+    )
+    .unwrap();
+    assert!(bare_viewer.viewer.unwrap().param.is_none());
+    let bare: Skill = serde_json::from_value(json!({ "id": "n", "description": "d" })).unwrap();
+    let bare = serde_json::to_value(&bare).unwrap();
+    for key in ["generated", "verified", "status", "stale_after", "sources", "viewer"] {
+        assert!(bare.get(key).is_none(), "{key} on a bare skill");
+    }
+}
+
+#[test]
 fn skill_layer_defaults_to_overlay_on_old_servers() {
     // An old server that doesn't emit `layer` must parse to the overlay
     // default — pre-layer skills are tenant-authored and editable.
