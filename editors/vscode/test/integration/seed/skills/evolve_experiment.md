@@ -8,5 +8,7 @@ acl:
   create: [admin]
   update: [admin]
 required_frontmatter: [owner_subject, status]
+actions:
+  - {name: validate-winner, kind: event, label: Validate winner, event: evolve_validate}
 ---
 # Evolve experiment

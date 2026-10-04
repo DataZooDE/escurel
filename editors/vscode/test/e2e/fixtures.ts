@@ -7,7 +7,7 @@ import {
   type Page,
 } from '@playwright/test';
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
-import { mkdtempSync, readFileSync, mkdirSync } from 'node:fs';
+import { mkdtempSync, readFileSync, mkdirSync, openSync, closeSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { createServer as createHttpServer, type Server as HttpServer } from 'node:http';
 import { tmpdir } from 'node:os';
@@ -58,15 +58,19 @@ export interface Stack {
   shot: (name: string) => Promise<void>;
   setGeminiPlanTarget: (pageId: string, revision: string) => void;
   geminiRequests: Record<string, unknown>[];
+  /** Authenticated Anofox Evolve tool call when the cross-repository service fixture is enabled. */
+  evolveCall: (name: string, args: Record<string, unknown>) => Promise<ToolResult>;
 }
 
 export const test = base.extend<object, {
   stack: Stack;
   runnerHarness: 'echo' | 'gemini';
+  evolveAgentBin: string | undefined;
 }>({
   runnerHarness: ['echo', { scope: 'worker', option: true }],
+  evolveAgentBin: [undefined, { scope: 'worker', option: true }],
   stack: [
-    async ({ runnerHarness }, use) => {
+    async ({ runnerHarness, evolveAgentBin }, use) => {
       const home = mkdtempSync(join(tmpdir(), 'escurel-e2e-'));
       let geminiPlanTarget: { pageId: string; revision: string } | undefined;
       const geminiRequests: Record<string, unknown>[] = [];
@@ -147,6 +151,8 @@ export const test = base.extend<object, {
       };
       const run = join(EXT, 'demo', 'run.sh');
       let browser: Browser | undefined;
+      let evolveProcess: ChildProcess | undefined;
+      let evolveLogFd: number | undefined;
       try {
         execFileSync(run, ['start'], { env, stdio: 'inherit', timeout: 240_000 });
 
@@ -157,6 +163,36 @@ export const test = base.extend<object, {
           bearer: string;
           admin_bearer: string;
         };
+      let evolveUrl: string | undefined;
+      if (evolveAgentBin) {
+        const port = await freePort();
+        evolveUrl = `http://127.0.0.1:${port}`;
+        evolveLogFd = openSync(join(home, 'evolve.log'), 'w');
+        evolveProcess = spawn(evolveAgentBin, ['serve', '--addr', `127.0.0.1:${port}`,
+          '--db', join(home, 'evolve.duckdb')], {
+          env: {
+            ...process.env,
+            ESCUREL_ENDPOINT: info.gateway_url,
+            ESCUREL_TOKEN: bearer().admin_bearer,
+            ESCUREL_OIDC_ISSUER: info.issuer_url,
+            ESCUREL_OIDC_AUDIENCE: 'escurel',
+            ESCUREL_OIDC_JWKS_URI: `${info.issuer_url}/protocol/openid-connect/certs`,
+            EVOLVE_OIDC_ISSUER: info.issuer_url,
+            EVOLVE_OIDC_JWKS_URI: `${info.issuer_url}/protocol/openid-connect/certs`,
+            EVOLVE_OIDC_AUDIENCE: 'escurel',
+            EVOLVE_TENANT: 'vsx',
+            GEMINI_API_KEY: 'unused-seed-only-test-key',
+          },
+          stdio: ['ignore', evolveLogFd, evolveLogFd],
+        });
+        let up = false;
+        for (let i = 0; i < 100 && !up; i += 1) {
+          if (evolveProcess.exitCode !== null) break;
+          try { up = (await fetch(`${evolveUrl}/healthz`)).ok; } catch { /* starting */ }
+          if (!up) await new Promise((r) => setTimeout(r, 100));
+        }
+        if (!up) throw new Error(`Evolve service did not start: ${readFileSync(join(home, 'evolve.log'), 'utf8')}`);
+      }
 
       for (let i = 0; i < 60 && !browser; i += 1) {
         try {
@@ -222,10 +258,31 @@ export const test = base.extend<object, {
         },
         setGeminiPlanTarget: (pageId, revision) => { geminiPlanTarget = { pageId, revision }; },
         geminiRequests,
+        evolveCall: async (name, args) => {
+          if (!evolveUrl) throw new Error('Evolve service fixture is not enabled');
+          const res = await fetch(evolveUrl, {
+            method: 'POST', headers: { 'content-type': 'application/json',
+              authorization: `Bearer ${bearer().bearer}`, 'X-Triton-Tool': name },
+            body: JSON.stringify(args),
+          });
+          const body = await res.json() as ToolResult;
+          if (!res.ok) throw new Error(`${name}: HTTP ${res.status}: ${JSON.stringify(body)}`);
+          return body;
+        },
       };
       await use(stack);
       } finally {
         await browser?.close().catch(() => undefined);
+        if (evolveProcess && evolveProcess.exitCode === null && evolveProcess.signalCode === null) {
+          const child = evolveProcess;
+          child.kill('SIGTERM');
+          await Promise.race([
+            new Promise<void>((resolveExit) => child.once('exit', () => resolveExit())),
+            new Promise<void>((resolveTimeout) => setTimeout(resolveTimeout, 3_000)),
+          ]);
+          if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
+        }
+        if (evolveLogFd !== undefined) closeSync(evolveLogFd);
         try {
           execFileSync(run, ['stop'], { env, stdio: 'ignore' });
         } catch {
