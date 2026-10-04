@@ -2058,7 +2058,13 @@ impl EscurelConfig {
             // reason — refusing writes over a field that has been free-form
             // until now needs a dark rung and an observed rung first.
             autonomy_lint: crate::AutonomyLintMode::from_env(),
-            egress: crate::egress::EgressPolicy::from_env(),
+            egress: crate::egress::EgressPolicy::try_from_env().map_err(|e| {
+                ConfigError::InvalidValue {
+                    var: e.var,
+                    value: e.value,
+                    reason: e.reason,
+                }
+            })?,
             listen: self.listen_http.clone(),
             version: self.version.clone(),
             readiness,

@@ -29,12 +29,59 @@ async fn main() -> std::process::ExitCode {
     }
 }
 
+const HELP: &str = "\
+escurel-server: the escurel knowledge-base gateway (single binary, 12-factor).
+
+USAGE
+    escurel-server                  run the gateway (configured ONLY through the environment)
+    escurel-server pack|info|unpack  self-packaging: fold a markdown corpus into a copy of this binary
+    escurel-server --help | --version
+
+CONFIGURATION (environment; full table with defaults in docs/deploy/README.md)
+    ESCUREL_SERVER_DATA_DIR            data volume (default /data); lanes + index live under tenants/<tenant>/
+    ESCUREL_SERVER_LISTEN_HTTP         HTTP listen address (default 0.0.0.0:8080)
+    ESCUREL_OBSERVABILITY_METRICS_LISTEN  /metrics listen address (default 0.0.0.0:9090; empty disables)
+    ESCUREL_AUTH_OIDC_ISSUER           OIDC issuer; UNSET means unauthenticated dev mode
+    ESCUREL_EMBEDDING_PROVIDER         zero | gemini (default) | embeddinggemma
+    ESCUREL_EGRESS_*                   outbound connector policy (loopback opt-in, size/time/rate caps)
+
+OPERATIONS
+    GET /healthz   liveness (dependency-free)        GET /version   build version
+    GET /readyz    readiness (200 even while a tenant is QUARANTINED: read the body/header)
+    GET /metrics   Prometheus (on the metrics listener)
+
+UPGRADING ACROSS A BREAKING RELEASE
+    A tenant holding pages with the removed `type:` key boots QUARANTINED and serves only the
+    migration tool. See docs/deploy/kind-migration.md (`escurel admin migrate-kind`).
+";
+
 async fn run() -> Result<(), Box<dyn std::error::Error>> {
     // Self-packaging subcommands (ADR-0011). `pack` folds a markdown
     // corpus into a copy of this binary; `info` / `unpack` introspect the
     // bundle a bundled binary carries. Any other first arg (or none) falls
     // through to the server.
     let args: Vec<String> = std::env::args().collect();
+    // `--help` / `--version` must answer WITHOUT booting (it used to start the server and die on
+    // /data permissions). Any other flag-looking first argument is a usage error (exit 2), not an
+    // invitation to boot with the flag ignored.
+    match args.get(1).map(String::as_str) {
+        Some("--help" | "-h" | "help") => {
+            print!("{HELP}");
+            return Ok(());
+        }
+        Some("--version" | "-V") => {
+            let v = std::env::var("VERSION")
+                .or_else(|_| std::env::var("ESCUREL_VERSION"))
+                .unwrap_or_else(|_| "0.0.0-dev".to_owned());
+            println!("escurel-server {v}");
+            return Ok(());
+        }
+        Some(a) if a.starts_with('-') => {
+            eprintln!("escurel-server: unknown option `{a}` (try `escurel-server --help`)");
+            std::process::exit(2);
+        }
+        _ => {}
+    }
     match args.get(1).map(String::as_str) {
         Some("pack") => return cmd_pack(&args[2..]),
         Some("info") => return cmd_info(),

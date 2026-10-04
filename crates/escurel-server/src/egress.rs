@@ -63,34 +63,90 @@ impl Default for EgressPolicy {
     }
 }
 
+/// An `ESCUREL_EGRESS_*` value that cannot be used. The boot fails with this rather than silently
+/// keeping the default: an operator who sets `TIMEOUT_MS=5s` must not believe it applied.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("invalid value for {var}: {value:?} ({reason})")]
+pub struct EgressConfigError {
+    pub var: &'static str,
+    pub value: String,
+    pub reason: &'static str,
+}
+
 impl EgressPolicy {
-    /// The policy from `ESCUREL_EGRESS_*` (12-factor): `ALLOW_LOOPBACK` (`1`/`true`),
+    /// The policy from `ESCUREL_EGRESS_*` (12-factor): `ALLOW_LOOPBACK` (`1`/`true`/`0`/`false`),
     /// `MAX_RESPONSE_BYTES`, `TIMEOUT_MS` (clamped to [`MAX_TIMEOUT`]), `MAX_CONCURRENCY`,
-    /// `RATE_PER_SEC`. Anything unset or unparsable keeps the strict default.
-    #[must_use]
-    pub fn from_env() -> Self {
-        let mut p = Self::default();
-        let get = |k: &str| std::env::var(k).ok();
-        if let Some(v) = get("ESCUREL_EGRESS_ALLOW_LOOPBACK") {
-            p.allow_loopback = matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true");
+    /// `RATE_PER_SEC`, `WRITE_RETRY_BACKOFF_MS`. Unset keeps the strict default; a value that does not
+    /// parse (or a zero limit) is an ERROR, never silently ignored.
+    ///
+    /// # Errors
+    /// [`EgressConfigError`] naming the offending variable.
+    pub fn from_source(get: &dyn Fn(&str) -> Option<String>) -> Result<Self, EgressConfigError> {
+        fn num<T: std::str::FromStr + PartialOrd + Default>(
+            get: &dyn Fn(&str) -> Option<String>,
+            var: &'static str,
+            positive: bool,
+        ) -> Result<Option<T>, EgressConfigError> {
+            let Some(raw) = get(var) else { return Ok(None) };
+            let bad = |reason| EgressConfigError {
+                var,
+                value: raw.clone(),
+                reason,
+            };
+            let n: T = raw
+                .trim()
+                .parse()
+                .map_err(|_| bad("expected a whole number"))?;
+            if positive && n <= T::default() {
+                return Err(bad("must be at least 1"));
+            }
+            Ok(Some(n))
         }
-        if let Some(n) = get("ESCUREL_EGRESS_MAX_RESPONSE_BYTES").and_then(|v| v.parse().ok()) {
+        let mut p = Self::default();
+        if let Some(raw) = get("ESCUREL_EGRESS_ALLOW_LOOPBACK") {
+            p.allow_loopback = match raw.trim().to_ascii_lowercase().as_str() {
+                "1" | "true" => true,
+                "0" | "false" => false,
+                _ => {
+                    return Err(EgressConfigError {
+                        var: "ESCUREL_EGRESS_ALLOW_LOOPBACK",
+                        value: raw,
+                        reason: "expected 1, true, 0 or false",
+                    });
+                }
+            };
+        }
+        if let Some(n) = num(get, "ESCUREL_EGRESS_MAX_RESPONSE_BYTES", true)? {
             p.max_response_bytes = n;
         }
-        if let Some(ms) = get("ESCUREL_EGRESS_TIMEOUT_MS").and_then(|v| v.parse::<u64>().ok()) {
+        if let Some(ms) = num::<u64>(get, "ESCUREL_EGRESS_TIMEOUT_MS", true)? {
             p.timeout = Duration::from_millis(ms).min(MAX_TIMEOUT);
         }
-        if let Some(n) = get("ESCUREL_EGRESS_MAX_CONCURRENCY").and_then(|v| v.parse().ok()) {
+        if let Some(n) = num(get, "ESCUREL_EGRESS_MAX_CONCURRENCY", true)? {
             p.max_concurrency = n;
         }
-        if let Some(n) = get("ESCUREL_EGRESS_RATE_PER_SEC").and_then(|v| v.parse().ok()) {
+        if let Some(n) = num(get, "ESCUREL_EGRESS_RATE_PER_SEC", true)? {
             p.rate_per_sec = n;
         }
-        if let Some(ms) = get("ESCUREL_EGRESS_WRITE_RETRY_BACKOFF_MS").and_then(|v| v.parse().ok())
-        {
+        if let Some(ms) = num::<u64>(get, "ESCUREL_EGRESS_WRITE_RETRY_BACKOFF_MS", false)? {
             p.write_retry_backoff = Duration::from_millis(ms);
         }
-        p
+        Ok(p)
+    }
+
+    /// [`Self::from_source`] over the process environment.
+    ///
+    /// # Errors
+    /// [`EgressConfigError`] naming the offending variable.
+    pub fn try_from_env() -> Result<Self, EgressConfigError> {
+        Self::from_source(&|k| std::env::var(k).ok())
+    }
+
+    /// [`Self::try_from_env`] for callers with no error channel (test tooling): an unusable value is a
+    /// loud panic naming the variable, never a silent default.
+    #[must_use]
+    pub fn from_env() -> Self {
+        Self::try_from_env().unwrap_or_else(|e| panic!("{e}"))
     }
 }
 
@@ -378,6 +434,73 @@ fn sanitize(e: &reqwest::Error) -> String {
 
 #[cfg(test)]
 mod tests {
+    fn from(pairs: &[(&str, &str)]) -> Result<EgressPolicy, EgressConfigError> {
+        let map: std::collections::HashMap<String, String> = pairs
+            .iter()
+            .map(|(k, v)| ((*k).to_owned(), (*v).to_owned()))
+            .collect();
+        EgressPolicy::from_source(&|k| map.get(k).cloned())
+    }
+
+    /// `ESCUREL_EGRESS_TIMEOUT_MS=5s` and `ALLOW_LOOPBACK=yes` used to be IGNORED silently (strict
+    /// defaults kept), so an operator believed a setting applied that did not. They fail the boot
+    /// instead, naming the variable.
+    #[test]
+    fn an_unparsable_value_fails_fast_naming_the_variable() {
+        for (var, bad) in [
+            ("ESCUREL_EGRESS_TIMEOUT_MS", "5s"),
+            ("ESCUREL_EGRESS_ALLOW_LOOPBACK", "yes"),
+            ("ESCUREL_EGRESS_MAX_RESPONSE_BYTES", "4MiB"),
+            ("ESCUREL_EGRESS_MAX_CONCURRENCY", "-1"),
+            ("ESCUREL_EGRESS_RATE_PER_SEC", "fast"),
+            ("ESCUREL_EGRESS_WRITE_RETRY_BACKOFF_MS", "1.5"),
+        ] {
+            let err = from(&[(var, bad)]).expect_err(var);
+            assert_eq!(err.var, var, "{err}");
+            assert!(err.to_string().contains(var), "{err}");
+            assert!(err.to_string().contains(bad), "{err}");
+        }
+    }
+
+    /// A zero would silently disable the connector (no concurrency, no rate, no bytes, no time).
+    #[test]
+    fn zero_limits_are_refused() {
+        for var in [
+            "ESCUREL_EGRESS_TIMEOUT_MS",
+            "ESCUREL_EGRESS_MAX_RESPONSE_BYTES",
+            "ESCUREL_EGRESS_MAX_CONCURRENCY",
+            "ESCUREL_EGRESS_RATE_PER_SEC",
+        ] {
+            assert!(from(&[(var, "0")]).is_err(), "{var}=0 must be refused");
+        }
+    }
+
+    #[test]
+    fn valid_values_apply_and_the_defaults_stay_strict() {
+        let d = from(&[]).unwrap();
+        assert!(!d.allow_loopback, "the default must not allow loopback");
+        let p = from(&[
+            ("ESCUREL_EGRESS_ALLOW_LOOPBACK", "TRUE"),
+            ("ESCUREL_EGRESS_TIMEOUT_MS", "2500"),
+            ("ESCUREL_EGRESS_MAX_RESPONSE_BYTES", "1024"),
+        ])
+        .unwrap();
+        assert!(p.allow_loopback);
+        assert_eq!(p.timeout, Duration::from_millis(2500));
+        assert_eq!(p.max_response_bytes, 1024);
+        // The 0/false spellings are explicit "off", not an error.
+        assert!(
+            !from(&[("ESCUREL_EGRESS_ALLOW_LOOPBACK", "0")])
+                .unwrap()
+                .allow_loopback
+        );
+        assert!(
+            !from(&[("ESCUREL_EGRESS_ALLOW_LOOPBACK", "false")])
+                .unwrap()
+                .allow_loopback
+        );
+    }
+
     use super::*;
 
     fn ip(s: &str) -> IpAddr {

@@ -205,3 +205,77 @@ async fn keyless_gemini_reports_semantic_search_disabled() {
         "{metrics}"
     );
 }
+
+// --- the real binary -------------------------------------------------------------------------
+
+fn server_bin() -> std::process::Command {
+    let mut c = std::process::Command::new(env!("CARGO_BIN_EXE_escurel-server"));
+    c.env_remove("ESCUREL_CONFIG");
+    c
+}
+
+/// `ESCUREL_EGRESS_TIMEOUT_MS=5s` used to boot with the default and a silent shrug.
+#[test]
+fn the_binary_refuses_to_boot_on_an_unusable_egress_value() {
+    let dir = TempDir::new().unwrap();
+    let out = server_bin()
+        .env("ESCUREL_SERVER_DATA_DIR", dir.path())
+        .env("ESCUREL_SERVER_LISTEN_HTTP", "127.0.0.1:0")
+        .env("ESCUREL_OBSERVABILITY_METRICS_LISTEN", "127.0.0.1:0")
+        .env("ESCUREL_EMBEDDING_PROVIDER", "zero")
+        .env("ESCUREL_EGRESS_TIMEOUT_MS", "5s")
+        .output()
+        .unwrap();
+    assert!(!out.status.success(), "must fail fast");
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        err.contains("ESCUREL_EGRESS_TIMEOUT_MS"),
+        "names the variable: {err}"
+    );
+    assert!(err.contains("5s"), "shows the value: {err}");
+}
+
+/// `escurel-server --help` used to START BOOTING and die on /data permissions.
+#[test]
+fn help_and_version_do_not_boot() {
+    let dir = TempDir::new().unwrap();
+    for flag in ["--help", "-h", "--version", "-V"] {
+        let out = server_bin()
+            // A data dir that cannot exist: booting would fail loudly. These must not try.
+            .env("ESCUREL_SERVER_DATA_DIR", dir.path().join("nope/nope"))
+            .env("ESCUREL_VERSION", "9.9.9-test")
+            .arg(flag)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{flag} must exit 0: {out:?}");
+        let text = String::from_utf8_lossy(&out.stdout);
+        if flag.contains('V') || flag == "--version" {
+            assert!(text.contains("escurel-server"), "{flag}: {text}");
+        } else {
+            assert!(
+                text.contains("ESCUREL_SERVER_DATA_DIR"),
+                "help lists the config surface: {text}"
+            );
+            assert!(
+                text.contains("migrate-kind") || text.contains("/healthz"),
+                "help points at operations: {text}"
+            );
+        }
+    }
+}
+
+#[test]
+fn an_unknown_flag_is_an_error_not_a_boot() {
+    let dir = TempDir::new().unwrap();
+    let out = server_bin()
+        .env("ESCUREL_SERVER_DATA_DIR", dir.path().join("nope/nope"))
+        .arg("--frobnicate")
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(2), "usage errors exit 2: {out:?}");
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        err.contains("--frobnicate") && err.contains("--help"),
+        "{err}"
+    );
+}
