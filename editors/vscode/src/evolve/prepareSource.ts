@@ -51,8 +51,12 @@ export function registerPrepareEvolveTrainingSource(
         void vscode.window.showInformationMessage(`Preparation ${eventId} is still pending. Check again later.`);
       } else if (result.prepared === true) {
         const canReopen = pendingSources()[eventId]?.pageSha256 === pageSha;
+        const crosscheck = result.dated_demand_crosscheck as Record<string, unknown> | undefined;
+        const crosscheckText = crosscheck?.status === 'passed'
+          ? `${String(crosscheck.rows_checked)} dated demand rows crosschecked.`
+          : 'No dated demand rows supplied.';
         const action = await vscode.window.showInformationMessage(
-          `Source ${String(result.training_source_id)} prepared. Digest: ${String(result.normalized_sha256)}. Register a matching private holdout, then import a completed V2 spec.`,
+          `Source ${String(result.training_source_id)} prepared. Digest: ${String(result.normalized_sha256)}. ${crosscheckText} Register a matching private holdout, then import a completed V2 spec.`,
           ...(canReopen ? ['Open prepared V2 draft'] : []), 'Register private holdout',
         );
         if (action === 'Open prepared V2 draft') await openPreparedDraft(eventId, result, pageSha);
