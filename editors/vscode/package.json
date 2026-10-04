@@ -746,7 +746,7 @@
       "editor/title": [
         {
           "command": "escurel.showRaw",
-          "when": "resourceScheme == escurel && activeCustomEditorId == escurel.pageAsUi",
+          "when": "resourceScheme == escurel && (activeCustomEditorId == escurel.pageAsUi || activeCustomEditorId == escurel.skillPage)",
           "group": "navigation"
         },
         {
@@ -795,6 +795,16 @@
         "selector": [
           {
             "filenamePattern": "escurel:/instances/**/*.md"
+          }
+        ],
+        "priority": "default"
+      },
+      {
+        "viewType": "escurel.skillPage",
+        "displayName": "Escurel Skill",
+        "selector": [
+          {
+            "filenamePattern": "escurel:/skills/**/*.md"
           }
         ],
         "priority": "default"

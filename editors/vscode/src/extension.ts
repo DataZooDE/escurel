@@ -11,6 +11,7 @@ import { KnowledgeTree } from './views/knowledge';
 import { InboxTree } from './views/inbox';
 import { AwaitingTree } from './views/awaiting';
 import { PageAsUiEditor } from './editors/pageAsUi';
+import { SkillPageEditor } from './editors/skillPage';
 import { openPage, resolveCommand, searchCommand } from './commands/search';
 import { ReviewController } from './review';
 import { LiveCoordinator } from './live';
@@ -144,6 +145,7 @@ export function activate(context: vscode.ExtensionContext): EscurelApi | undefin
     }),
   );
   PageAsUiEditor.register(context, () => services.client, services.onDidChange);
+  SkillPageEditor.register(context, () => services.client, services.onDidChange);
 
   context.subscriptions.push(
     vscode.commands.registerCommand('escurel.signIn', async () => {

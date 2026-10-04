@@ -171,6 +171,28 @@ suite('M2', () => {
     assert.equal(api.awaiting.badge?.value, rows.length);
   });
 
+  test('View skill opens the readable skill page, and Show Markdown opens the source', async () => {
+    await vscode.commands.executeCommand('escurel.viewSkill', 'customer-order');
+    const tab = await until(() => {
+      const active = vscode.window.tabGroups.activeTabGroup.activeTab;
+      return active?.input instanceof vscode.TabInputCustom &&
+        active.input.viewType === 'escurel.skillPage'
+        ? active
+        : undefined;
+    });
+    assert.match(tab.label, /customer-order/);
+
+    await vscode.commands.executeCommand('escurel.showRaw', 'markdown/skills/customer-order.md');
+    const raw = await until(() => {
+      const active = vscode.window.tabGroups.activeTabGroup.activeTab;
+      return active?.input instanceof vscode.TabInputText &&
+        active.input.uri.path === '/skills/customer-order.md'
+        ? active
+        : undefined;
+    });
+    assert.ok(raw, 'the Markdown source opens as text');
+  });
+
   test('Explain this view opens a short plain-words page about how things connect', async () => {
     await vscode.commands.executeCommand('escurel.explainView');
     const doc = await until(() =>
