@@ -53,6 +53,7 @@ export function preparedV2Draft(input: unknown, source: Record<string, unknown>,
   const problemSource = { ...source };
   const problemInput = { ...full };
   delete problemSource.daily_demand;
+  delete problemSource.format_version;
   delete problemInput.daily_demand;
   if ('service_targets' in full && 'seed_sql' in full && 'baseline_sql' in full)
     return { ...v2TrainingStarter, ...problemInput, ...problemSource, training_source_id: sourceId, source_sha256: digest };

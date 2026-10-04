@@ -7,6 +7,13 @@ import {
 } from '../../src/evolve/sourceImport';
 
 describe('private V2 training source preparation', () => {
+  it('turns the server normalized CSV source into an importable V2 draft', () => {
+    const source = { ...trainingSourcePayload(v2TrainingStarter), format_version: 'decision_training_json_v1' };
+    const draft = preparedV2Draft(v2TrainingStarter, source, 'src_csv', 'b'.repeat(64));
+    expect(draft).not.toHaveProperty('format_version');
+    expect(draft).not.toHaveProperty('daily_demand');
+    expect(() => normalizeV2TrainingSpec(draft, 'private-holdout')).not.toThrow();
+  });
   it('keeps dated demand on the private source page and removes it from policy drafts', () => {
     const daily_demand = v2TrainingStarter.skus[0]!.demand.map((demand, index) => ({
       sku_id: 1, date: `2026-08-${String(index + 1).padStart(2, '0')}`, demand,
