@@ -2161,7 +2161,24 @@ impl EscurelConfig {
 
     async fn build_lane_store(&self) -> Result<Arc<dyn LaneStore>, ConfigError> {
         match self.storage_backend {
-            StorageBackend::Fs => Ok(Arc::new(FsStore::new(self.data_dir.clone()))),
+            StorageBackend::Fs => {
+                let store = FsStore::new(self.data_dir.clone());
+                // A write killed between its temp file and the rename leaves `<page>.md.tmp`
+                // behind. Nothing is writing yet: sweep and report.
+                match store.sweep_orphan_temp_files(&self.tenant) {
+                    Ok(0) => {}
+                    Ok(n) => tracing::warn!(
+                        target: "escurel",
+                        tenant = %self.tenant,
+                        swept = n,
+                        "removed {n} orphan *.md.tmp file(s) a killed write left in the lane"
+                    ),
+                    Err(e) => tracing::warn!(
+                        target: "escurel", error = %e, "could not sweep orphan temp files"
+                    ),
+                }
+                Ok(Arc::new(store))
+            }
             StorageBackend::S3 => self.build_s3_store().await,
             StorageBackend::Gcs => self.build_gcs_store().await,
             StorageBackend::DuckVfs => self.build_duckvfs_store(),

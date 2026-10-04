@@ -336,7 +336,11 @@ mod tests {
         log(&w, "{\"msg\":\"small\"}\n");
         w.flush_within(Duration::from_secs(5));
         let out = String::from_utf8(written.lock().unwrap().clone()).unwrap();
-        assert!(out.len() < 2 * MAX_LINE_BYTES, "the queue is bounded in bytes too: {}", out.len());
+        assert!(
+            out.len() < 2 * MAX_LINE_BYTES,
+            "the queue is bounded in bytes too: {}",
+            out.len()
+        );
         let first = out.lines().next().unwrap();
         let v: serde_json::Value = serde_json::from_str(first).expect("a valid JSON line");
         assert_eq!(v["original_bytes"], big.len());

@@ -212,3 +212,36 @@ async fn source_timeout_knobs_are_validated_at_boot() {
     assert_eq!(cfg.rows_query_timeout.as_secs(), 45);
     assert_eq!(cfg.sql_connect_timeout.as_secs(), 9);
 }
+
+#[tokio::test]
+async fn boot_sweeps_the_orphan_temp_files_a_killed_write_left() {
+    let dir = TempDir::new().unwrap();
+    let lane = "tenants/default/markdown";
+    write(
+        dir.path(),
+        &format!("{lane}/skills/s0.md"),
+        "---\nkind: skill\nid: s0\ndescription: d\n---\n# s0\n",
+    );
+    write(
+        &dir.path(),
+        &format!("{lane}/instances/s0/half.md.tmp"),
+        "half a write",
+    );
+    let pairs = [
+        ("ESCUREL_SERVER_DATA_DIR", dir.path().to_str().unwrap()),
+        ("ESCUREL_SERVER_LISTEN_HTTP", "127.0.0.1:0"),
+        ("ESCUREL_OBSERVABILITY_METRICS_LISTEN", "127.0.0.1:0"),
+        ("ESCUREL_EMBEDDING_PROVIDER", "zero"),
+    ];
+    let _server = EscurelConfig::from_source(&source(&pairs))
+        .unwrap()
+        .build()
+        .await
+        .unwrap();
+    assert!(
+        !dir.path()
+            .join(format!("{lane}/instances/s0/half.md.tmp"))
+            .exists(),
+        "the orphan temp file was swept at boot"
+    );
+}
