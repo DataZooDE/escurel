@@ -187,6 +187,8 @@ export interface UpdatePageResponse {
   issues: ValidationIssue[];
   new_version?: string;
   auto_merged?: boolean;
+  /** Accepted but HELD as a draft for a human (the skill's `autonomy: review`): not on the page yet. */
+  held_for_review?: boolean;
   [key: string]: unknown;
 }
 

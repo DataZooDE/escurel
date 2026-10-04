@@ -862,10 +862,19 @@ class ValidationResult {
 }
 
 class UpdateResult {
-  const UpdateResult({required this.ok, required this.issues, this.newVersion});
+  const UpdateResult({
+    required this.ok,
+    required this.issues,
+    this.newVersion,
+    this.heldForReview = false,
+  });
   final bool ok;
   final List<Issue> issues;
   final String? newVersion;
+
+  /// The write was accepted but HELD as a draft for a human (the skill's `autonomy: review`): it has
+  /// not landed on the page. `ok` alone would read as written.
+  final bool heldForReview;
 }
 
 // ── live mode (session) — stubs until M3 transport decided ──────
