@@ -155,6 +155,28 @@ pub fn data_type_fields(text: &str) -> Vec<String> {
     out
 }
 
+/// The value of the first top-level `<key>:` line in the frontmatter (comment and quotes stripped).
+fn top_level_value(text: &str, key: &str) -> Option<String> {
+    let prefix = format!("{key}:");
+    for line in text.split_inclusive('\n').skip(1) {
+        let content = line.trim_end_matches(['\r', '\n']);
+        if content == "---" {
+            break;
+        }
+        if let Some(rest) = content.strip_prefix(&prefix) {
+            return Some(
+                rest.split('#')
+                    .next()
+                    .unwrap_or("")
+                    .trim()
+                    .trim_matches(['"', '\''])
+                    .to_owned(),
+            );
+        }
+    }
+    None
+}
+
 /// `true` when a SKILL page still lists `actions:` as plain skill ids (the removed string form).
 /// They cannot be converted mechanically (an action needs a label), so they are only reported.
 #[must_use]
@@ -377,10 +399,18 @@ pub fn run(args: MigrateKindFilesArgs) -> Result<Value> {
                         legacy_string_actions.push(json!({"path": shown}));
                     }
                 }
-                Verdict::Conflict => conflicts.push(json!({
-                    "path": shown,
-                    "reason": "both `type:` and `kind:` are present; resolve by hand"
-                })),
+                Verdict::Conflict => {
+                    let value = top_level_value(&text, "kind").unwrap_or_default();
+                    conflicts.push(json!({
+                        "path": shown,
+                        "reason": format!(
+                            "both `type:` and `kind: {value}` are present. If `kind:` is your own data \
+                             field, rename it first (for example `skill_kind` / `system_kind`, as the \
+                             engine's own `issue` skill became `issue_kind`) and re-run; if it is a stale \
+                             page kind, delete one of the two keys"
+                        )
+                    }));
+                }
                 Verdict::NeedsManual(reason) => needs_manual.push(json!({
                     "path": shown,
                     "reason": reason,

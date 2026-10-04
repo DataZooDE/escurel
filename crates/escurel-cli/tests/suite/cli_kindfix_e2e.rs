@@ -196,6 +196,31 @@ fn a_page_with_both_keys_is_a_conflict_and_is_never_touched() {
 }
 
 #[test]
+fn a_data_field_named_kind_is_explained_so_the_owner_knows_what_to_rename() {
+    // Real finding from the consumer repos: herkules code skills carry `kind: code`, datazoo-loops
+    // `system` instances carry `kind: saas-api`. After the cut `kind:` IS the page kind, so the data
+    // field must be renamed first (the engine's own `issue` skill became `issue_kind`).
+    let d = TempDir::new().unwrap();
+    let p = write(
+        d.path(),
+        "skills/tabelle.md",
+        "---\ntype: skill\nid: tabelle\nkind: code\n---\n",
+    );
+    let (code, v, err) = run(&["--path", d.path().to_str().unwrap(), "--apply"]);
+    assert_eq!(code, 0, "{err}");
+    let reason = v["conflicts"][0]["reason"].as_str().unwrap();
+    assert!(
+        reason.contains("kind: code"),
+        "names the colliding value: {reason}"
+    );
+    assert!(
+        reason.contains("rename") && reason.contains("_kind"),
+        "says what to do: {reason}"
+    );
+    assert_eq!(read(&p), "---\ntype: skill\nid: tabelle\nkind: code\n---\n");
+}
+
+#[test]
 fn a_user_data_field_named_type_is_never_rewritten_and_is_listed() {
     let d = TempDir::new().unwrap();
     let inst = "---\nkind: instance\nskill: invoice\nid: i1\ntype: credit-note\n---\n";
