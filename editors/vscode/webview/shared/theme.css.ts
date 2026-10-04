@@ -53,6 +53,26 @@ export const theme = css`
   .muted {
     color: var(--escurel-muted);
   }
+  /* For people who ask the system for less motion. */
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation: none !important;
+      transition: none !important;
+      scroll-behavior: auto !important;
+    }
+  }
+  /* When the system forces colours, state must not rest on fills: keep every chip, badge and button
+     outlined, in the system's own colours. */
+  @media (forced-colors: active) {
+    .chip,
+    .badge,
+    button {
+      border: 1px solid ButtonText;
+      forced-color-adjust: auto;
+    }
+  }
 `;
 
 /** A split button: a primary segment plus a chevron opening a menu; coloured per noun. */

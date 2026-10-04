@@ -18,14 +18,18 @@ describe('buildInspectors', () => {
     const run = view.nodes.find((node) => node.kind === 'run')!;
     const detail = buildInspectors(view, nodes)[run.id];
     expect(detail?.title).toBe(run.title);
-    expect(detail?.rows).toContainEqual({ k: 'harness', v: 'echo' });
-    expect(detail?.rows).toContainEqual({ k: 'attempts', v: '1/3' });
-    expect(detail?.rows).toContainEqual({ k: 'trace_id', v: '01a0eb194a26f1510f9b86c9f8a6cd96' });
+    expect(detail?.rows).toContainEqual({ k: 'harness', v: 'echo', tech: true });
+    expect(detail?.rows).toContainEqual({ k: 'attempts', v: '1/3', tech: true });
+    expect(detail?.rows).toContainEqual({
+      k: 'trace_id',
+      v: '01a0eb194a26f1510f9b86c9f8a6cd96',
+      tech: true,
+    });
     expect(detail?.bodyTitle).toBe('Summary');
     expect(detail?.body).toContain('awaiting a human');
     expect(detail?.sideTitle).toBe('Timing');
     expect(detail?.side).toContainEqual({ k: 'duration', v: '0 ms' });
-    expect(detail?.rows).toContainEqual({ k: 'failed calls', v: '0' });
+    expect(detail?.rows).toContainEqual({ k: 'failed calls', v: '0', tech: true });
     expect(detail?.rows.some((row) => row.k === 'reason')).toBe(false);
   });
 
@@ -65,7 +69,7 @@ describe('real data is never dropped for want of its companion', () => {
 
   it('shows attempts when the maximum is absent', () => {
     const detail = asRun({ attempts: 2, max_attempts: null });
-    expect(detail.rows).toContainEqual({ k: 'attempts', v: '2' });
+    expect(detail.rows).toContainEqual({ k: 'attempts', v: '2', tech: true });
   });
 
   it('shows the produced page when its version is absent', () => {
@@ -73,7 +77,11 @@ describe('real data is never dropped for want of its companion', () => {
       produced_instance: 'markdown/instances/order__o1.md',
       produced_version: null,
     });
-    expect(detail.rows).toContainEqual({ k: 'produced', v: 'markdown/instances/order__o1.md' });
+    expect(detail.rows).toContainEqual({
+      k: 'produced',
+      v: 'markdown/instances/order__o1.md',
+      tech: true,
+    });
   });
 });
 
@@ -104,5 +112,22 @@ describe('labels say what they are', () => {
     const hop = view.nodes.find((n) => n.kind === 'event' && n.parent !== null)!;
     const d = buildInspectors(view, nodes)[hop.id]!;
     expect([...d.rows, ...d.side].filter((r) => r.k === 'depth').length).toBeLessThanOrEqual(1);
+  });
+});
+
+describe('buildInspectors: what a person reads first', () => {
+  it('every node opens with a sentence and a kind label, and engineer fields are marked technical', () => {
+    const view = toThreadView(foldLineage([lineage as ListLineageResponse]));
+    const details = buildInspectors(view, [
+      ...foldLineage([lineage as ListLineageResponse]).nodes.values(),
+    ]);
+    const run = view.nodes.find((n) => n.kind === 'run')!;
+    const d = details[run.id]!;
+    expect(d.kindLabel).toBe('Agent run');
+    expect((d.summary ?? '').length > 10).toBe(true);
+    const tech = d.rows.filter((r) => r.tech).map((r) => r.k);
+    expect(tech).toContain('trace_id');
+    expect(tech).toContain('harness');
+    expect(d.rows.find((r) => r.k === 'state')?.tech).toBeUndefined();
   });
 });

@@ -137,3 +137,57 @@ describe('buildPreview', () => {
     expect(p).toMatchObject({ rows: [['{"x":"<script>"}']] });
   });
 });
+
+// The projection is whatever an upstream returned. The host bounds it before it reaches a webview: a
+// hostile or buggy source must not be able to send a million cells or a page-long cell, and what it sends
+// is text (no bidi overrides, no control characters).
+describe('buildPreview bounds untrusted data', () => {
+  it('caps rows, columns and the length of a cell, and says the rows were cut', () => {
+    const rows = Array.from({ length: 600 }, (_, i) => ({ id: i, big: 'x'.repeat(10_000) }));
+    const wide = Object.fromEntries(Array.from({ length: 100 }, (_, i) => [`c${i}`, i]));
+    const m = buildPreview(
+      expand({ backend_projection: { view: 'v', rows: [...rows, wide] } }),
+      'sql_view',
+    );
+    if (m?.kind !== 'rows') throw new Error('rows expected');
+    expect(m.rows.length).toBeLessThanOrEqual(200);
+    expect(m.truncated).toBe(true);
+    expect(m.columns.length).toBeLessThanOrEqual(40);
+    for (const r of m.rows) for (const c of r) expect(c.length).toBeLessThanOrEqual(500);
+  });
+
+  it('strips bidi overrides and control characters from every cell, field and issue', () => {
+    const evil = 'inv\u202Eexe.pdf\u0007';
+    const r = buildPreview(
+      expand({ backend_projection: { view: 'v', rows: [{ a: evil }] } }),
+      'sql_view',
+    );
+    if (r?.kind !== 'rows') throw new Error('rows expected');
+    expect(r.rows[0]![0]).toBe('invexe.pdf');
+    const f = buildPreview(
+      expand({ backend_projection: { source: 's', fields: { name: evil } } }),
+      'openapi',
+    );
+    if (f?.kind !== 'fields') throw new Error('fields expected');
+    expect(f.fields[0]!.value).toBe('invexe.pdf');
+    const i = buildPreview(
+      expand({ backend_projection: { view: 'v', issue: { code: 'x', message: evil } } }),
+      'sql_view',
+    );
+    if (i?.kind !== 'issue') throw new Error('issue expected');
+    expect(i.message).toBe('invexe.pdf');
+  });
+
+  it('keeps line breaks in a document chunk but bounds its length and strips controls', () => {
+    const m = buildPreview(
+      expand({
+        blocks: [{ anchor: 'a', content: `line one\nline two\u202E${'y'.repeat(9000)}` }] as never,
+      }),
+      'document',
+    );
+    if (m?.kind !== 'document') throw new Error('document expected');
+    expect(m.chunks[0]!.text.startsWith('line one\nline two')).toBe(true);
+    expect(m.chunks[0]!.text).not.toContain('\u202E');
+    expect(m.chunks[0]!.text.length).toBeLessThanOrEqual(4000);
+  });
+});

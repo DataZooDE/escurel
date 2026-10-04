@@ -2,13 +2,14 @@ import * as assert from 'node:assert/strict';
 import * as vscode from 'vscode';
 import type { EscurelApi } from '../../../src/extension';
 import { activate, discardOpenDrafts, freeOrder, until } from './support';
+import { requireEnv } from '../requireEnv';
 
 suite('runner view in cascade', () => {
   let api: EscurelApi;
 
   suiteSetup(async function () {
     this.timeout(120_000);
-    if (!process.env.ESCUREL_TEST_RUNNER) this.skip();
+    requireEnv(this, 'ESCUREL_TEST_RUNNER');
     api = await activate();
   });
 

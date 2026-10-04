@@ -337,7 +337,9 @@ suite('M2', () => {
       'already_decided',
       'review model must classify outcome as already_decided',
     );
-    assert.ok(outcome.message.includes(csId));
+    // In words, never with the changeset's id.
+    assert.equal(outcome.message, 'That set of changes was already handled.');
+    assert.ok(!outcome.message.includes(csId));
     assert.equal(outcome.closeDiff, true);
     assert.equal(outcome.refresh, true);
 

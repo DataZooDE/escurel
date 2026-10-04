@@ -67,10 +67,14 @@ export function pickTarget(view: ThreadView, layout: ThreadLayout): string | und
 
 const clamp = (v: number, lo: number, hi: number): number => Math.min(hi, Math.max(lo, v));
 
+const LEFT_MARGIN = 24;
+
 /**
  * The first viewport. A graph that fits the canvas at 100% opens as it is. A bigger one opens at 100%
- * with the target centred, clamped so the view never scrolls past the graph. A container height of 0
- * means "not measured yet" and is not treated as overflow.
+ * with the target at the LEFT (with a margin), starting one column earlier when the neighbour and the
+ * target both fit, so the card to its left is whole and nothing is cut at the left edge (centring the
+ * target cut the first card in half). Clamped so the view never scrolls past the graph. A container
+ * height of 0 means "not measured yet" and is not treated as overflow.
  */
 export function firstViewport(
   layout: ThreadLayout,
@@ -83,9 +87,22 @@ export function firstViewport(
   const target = targetId ? layout.nodes.find((n) => n.id === targetId) : undefined;
   if (!target || (!overflowX && !overflowY)) return { x: 0, y: 0, zoom: 1 };
 
-  const cx = target.x + target.width / 2;
+  let x = 0;
+  if (overflowX) {
+    const before = layout.nodes
+      .filter((n) => !n.hidden && n.x < target.x)
+      .reduce<number | undefined>(
+        (best, n) => (best === undefined || n.x > best ? n.x : best),
+        undefined,
+      );
+    const fromTarget = target.x - LEFT_MARGIN;
+    const fromNeighbour = before !== undefined ? before - LEFT_MARGIN : undefined;
+    const fits =
+      fromNeighbour !== undefined &&
+      target.x + target.width + LEFT_MARGIN - fromNeighbour <= container.width;
+    x = clamp(-(fits ? fromNeighbour : fromTarget), container.width - width, 0);
+  }
   const cy = target.y + target.height / 2;
-  const x = overflowX ? clamp(container.width / 2 - cx, container.width - width, 0) : 0;
   const y = overflowY ? clamp(container.height / 2 - cy, container.height - height, 0) : 0;
   return { x, y, zoom: 1 };
 }
@@ -113,4 +130,20 @@ export function scrollMetrics(
     h: axis(bounds.width, container.width, viewport.x),
     v: axis(bounds.height, container.height, viewport.y),
   };
+}
+
+/**
+ * How many stages (columns) start beyond the right edge of the canvas: the cue that "there is more
+ * this way". Columns are the distinct `x` positions of the visible cards.
+ */
+export function columnsOffRight(
+  layout: ThreadLayout,
+  viewport: Viewport,
+  areaWidth: number,
+): number {
+  if (areaWidth <= 0) return 0;
+  const xs = new Set(layout.nodes.filter((n) => !n.hidden).map((n) => n.x));
+  let off = 0;
+  for (const x of xs) if (x * viewport.zoom + viewport.x >= areaWidth) off += 1;
+  return off;
 }

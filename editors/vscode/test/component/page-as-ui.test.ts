@@ -42,14 +42,9 @@ describe('<escurel-page-as-ui>', () => {
       q(el, '.field[data-name="customer"] .instance-button .primary')!.getAttribute('title'),
     ).to.equal('Open instance');
     expect(text(q(el, '.field[data-name="value_eur"] .value'))).to.equal('184,200.00');
-    expect(q(el, '.field[data-name="urgent"] input[type="checkbox"]')).to.have.property(
-      'checked',
-      true,
-    );
-    expect(q(el, '.field[data-name="urgent"] input[type="checkbox"]')).to.have.property(
-      'disabled',
-      true,
-    );
+    // A disabled checkbox looked like a bug in light themes: a read-only yes/no is just words.
+    expect(q(el, '.field[data-name="urgent"] input[type="checkbox"]') === null).to.equal(true);
+    expect(text(q(el, '.field[data-name="urgent"] .value'))).to.equal('Yes');
     expect(q(el, '.field[data-name="notes"] .markdown')).to.exist;
   });
 
@@ -194,8 +189,11 @@ describe('<escurel-page-as-ui> thread strip', () => {
     expect(q(el, '.thread-strip')).to.equal(null);
   });
 
-  it('names a checkbox field, so a screen reader hears more than "checkbox, checked"', async () => {
-    const el = await render();
+  it('names an editable checkbox field, so a screen reader hears more than "checkbox, checked"', async () => {
+    const el = await fixture<EscurelPageAsUi>(
+      html`<escurel-page-as-ui .model=${{ ...orderPage, editable: true }}></escurel-page-as-ui>`,
+    );
+    await el.updateComplete;
     // <escurel-field> renders into the light DOM.
     const box = qa(el, 'escurel-field')
       .map((f) => f.querySelector('input[type="checkbox"]'))
@@ -303,7 +301,7 @@ describe('<escurel-page-as-ui> thread strip', () => {
     expect(text(preview.shadowRoot!.querySelector('.badge'))).to.contain('read-only (source)');
     // A markdown page has no such section.
     const plain = await render();
-    expect(q(plain, 'escurel-source-preview')).to.equal(null);
+    expect(q(plain, 'escurel-source-preview') === null).to.equal(true);
   });
 
   it('asks the host for the original when a document page offers it', async () => {
@@ -351,10 +349,10 @@ describe('<escurel-page-as-ui> thread strip', () => {
       });
       const strip = q(el, '.source-strip')!;
       expect(strip !== null).to.equal(true);
-      expect(text(strip)).to.contain('Source row');
-      expect(text(strip)).to.contain('read-only');
+      expect(text(strip)).to.contain('Read-only copy from');
       expect(text(strip)).to.contain('12:03');
-      expect(text(strip)).to.contain('notes');
+      expect(text(strip)).to.contain('Markdown tab');
+      expect(strip.querySelector('.lock') !== null, 'a lock icon, not only words').to.equal(true);
       expect(strip.getAttribute('role')).to.equal('note');
     });
 
@@ -364,6 +362,53 @@ describe('<escurel-page-as-ui> thread strip', () => {
         linked: { enabled: true, exists: false, orphan: false },
       });
       expect(text(q(el, '.source-strip'))).to.contain('No notes yet');
+      // One clear action instead of 'switch to Markdown to write some'.
+      const add = q(el, '.source-strip button.add-note') as HTMLButtonElement;
+      expect(text(add)).to.equal('Add note');
+      const sent: WebviewToHost[] = [];
+      el.addEventListener('escurel-message', (e) =>
+        sent.push((e as CustomEvent<WebviewToHost>).detail),
+      );
+      add.click();
+      expect(sent).to.deep.equal([{ type: 'show-raw' }]);
+    });
+
+    it('hides the "this form is read-only, switch to Markdown" note: the banner already says so', async () => {
+      const el = await withSource({
+        sourceFields: [],
+        linked: { enabled: true, exists: true, orphan: false },
+      });
+      expect(q(el, '.readonly-note') === null).to.equal(true);
+    });
+
+    it('puts the page id and backend behind a collapsed Page details, not in the header', async () => {
+      const el = await render();
+      const d = q(el, 'details.page-meta') as HTMLDetailsElement;
+      expect(d.open).to.equal(false);
+      expect(text(d)).to.contain('markdown/instances/customer-order/4500123.md');
+      expect(text(q(el, '.subline'))).to.not.contain('page id');
+    });
+
+    it('titles the source table with a lock, as part of the section name', async () => {
+      const el = await fixture<EscurelPageAsUi>(
+        html`<escurel-page-as-ui
+          .model=${{
+            ...orderPage,
+            preview: {
+              kind: 'rows',
+              readOnly: true,
+              source: 'vw_x',
+              columns: ['a'],
+              rows: [['1']],
+              truncated: false,
+            },
+          }}
+        ></escurel-page-as-ui>`,
+      );
+      await el.updateComplete;
+      const h2 = qa(el, 'h2').find((h) => text(h).startsWith('Source data'))!;
+      expect(text(h2)).to.contain('read-only');
+      expect(h2.querySelector('svg.lock') !== null).to.equal(true);
     });
 
     it('flags an orphan: the source row is gone but the notes are kept', async () => {
@@ -405,6 +450,9 @@ describe('<escurel-page-as-ui> thread strip', () => {
         expect(text(strip)).to.contain('External data (REST)');
         const badge = strip.querySelector('.external')!;
         expect(badge.getAttribute('title')).to.contain('data');
+        // A chip of its own (not a clause in a sentence), with a lock: it is a trust label.
+        expect(badge.classList.contains('chip')).to.equal(true);
+        expect(badge.querySelector('svg.lock') !== null).to.equal(true);
       });
 
       it('offers a change for each writable column, and posts which column was chosen', async () => {
@@ -442,6 +490,9 @@ describe('<escurel-page-as-ui> thread strip', () => {
         await el.updateComplete;
         const line = q(el, '.write-back')!;
         expect(text(line)).to.contain('could not be sent after 3 attempts');
+        // Never colour alone: an icon AND a bold lead word, the same shape for every outcome.
+        expect(text(line.querySelector('.lead'))).to.equal('Failed');
+        expect(line.querySelector('.lead svg') !== null).to.equal(true);
         expect(line.classList.contains('problem')).to.equal(true);
         expect(line.getAttribute('role')).to.equal('status');
       });
@@ -452,14 +503,44 @@ describe('<escurel-page-as-ui> thread strip', () => {
           issue: { code: 'source_unavailable', message: 'upstream status 503' },
         });
         const strip = q(el, '.source-strip')!;
-        expect(text(strip)).to.contain('upstream status 503');
+        expect(text(strip)).to.contain('could not be reached right now');
+        expect(text(strip)).to.not.contain('showing what is known');
+        expect(text(strip)).to.not.contain('source_unavailable');
+        expect(strip.querySelector('.issue')!.getAttribute('title')).to.contain(
+          'upstream status 503',
+        );
         expect(strip.classList.contains('problem')).to.equal(true);
+        const sent: WebviewToHost[] = [];
+        el.addEventListener('escurel-message', (e) =>
+          sent.push((e as CustomEvent<WebviewToHost>).detail),
+        );
+        (strip.querySelector('button.retry') as HTMLButtonElement).click();
+        expect(sent).to.deep.equal([{ type: 'refresh' }]);
+      });
+
+      it('a value the source did not give shows as a dash, not a blank that looks broken', async () => {
+        const blank = {
+          ...orderPage.fields[0]!,
+          name: 'rating',
+          label: 'Rating',
+          value: '',
+          display: '',
+        };
+        const el = await fixture<EscurelPageAsUi>(
+          html`<escurel-page-as-ui
+            .model=${{ ...orderPage, fields: [blank], source: { ...external, sourceFields: ['rating'], issue: { code: 'source_unavailable', message: 'x' } } }}
+          ></escurel-page-as-ui>`,
+        );
+        await el.updateComplete;
+        const cell = q(el, '.field[data-name="rating"]')!;
+        expect(text(cell)).to.contain('—');
+        expect(cell.querySelector('.badge') === null).to.equal(true);
       });
     });
 
     it('has no strip for an ordinary page', async () => {
       const el = await render();
-      expect(q(el, '.source-strip')).to.equal(null);
+      expect(q(el, '.source-strip') === null).to.equal(true);
     });
   });
 });

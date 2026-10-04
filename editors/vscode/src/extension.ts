@@ -1,3 +1,4 @@
+import { quietly } from './shared/quiet';
 import { exposedApi } from './shared/apiExposure';
 import * as vscode from 'vscode';
 import { log } from './log';
@@ -151,14 +152,14 @@ export function activate(context: vscode.ExtensionContext): EscurelApi | undefin
       }
       try {
         const s = await vscode.authentication.getSession('escurel', [], { createIfNone: true });
-        void vscode.window.showInformationMessage(`Signed in as ${s.account.label}`);
+        quietly(`Signed in as ${s.account.label}`);
       } catch (e) {
         void vscode.window.showErrorMessage(`Sign-in failed — ${(e as Error).message}`);
       }
     }),
     vscode.commands.registerCommand('escurel.signOut', async () => {
       await services.auth.removeSession();
-      void vscode.window.showInformationMessage('Signed out');
+      quietly('Signed out');
     }),
     vscode.commands.registerCommand('escurel.refresh', () => services.onDidChangeEmit()),
     vscode.commands.registerCommand('escurel.search', () => searchCommand(() => services.client)),
@@ -198,6 +199,18 @@ export function activate(context: vscode.ExtensionContext): EscurelApi | undefin
       },
     ),
 
+    vscode.commands.registerCommand('escurel.showDetails', () =>
+      vscode.commands.executeCommand('escurel.details.focus'),
+    ),
+    vscode.commands.registerCommand('escurel.showRunner', () =>
+      vscode.commands.executeCommand('escurel.runner.focus'),
+    ),
+    vscode.commands.registerCommand('escurel.focusCanvas', () => {
+      const shown = details.current();
+      if (shown) threads.focusCanvas(shown.rootEventId);
+      else
+        void vscode.window.showInformationMessage('Open a thread first, then select a node in it.');
+    }),
     registerStartSkill(context, services),
     registerProposeWriteBack(services),
     registerApprovePlan(context, services),

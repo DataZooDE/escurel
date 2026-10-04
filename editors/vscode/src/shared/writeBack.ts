@@ -1,4 +1,5 @@
 import type { Event } from '../client/types';
+import { cleanText } from './untrustedText';
 
 // Write-back: a change to a row of a remote source is PROPOSED as a draft carrying a reserved
 // `write_back` block; a human promotes it; only then does the gateway change the source. These are the
@@ -26,15 +27,31 @@ const instanceId = (pageId: string): string =>
 const scalar = (v: string | number | boolean): string =>
   typeof v === 'string' ? JSON.stringify(v) : String(v);
 
+/** The row's current value as shown in a prompt: it comes from the source, so it is bounded and cleaned. */
+export function describeCurrent(current: unknown): string {
+  if (current === undefined || current === null || current === '') return '(empty)';
+  if (typeof current === 'string') return cleanText(current, 120);
+  return cleanText(JSON.stringify(current) ?? String(current), 120);
+}
+
+/** A column name from the gateway. Only a plain identifier is put into the YAML key position. */
+const COLUMN = /^[A-Za-z0-9_.-]+$/;
+
 /** The draft's markdown: the person's notes plus the reserved `write_back` block. */
 export function buildProposal(p: Proposal): string {
+  // Every name here comes from the gateway: a hostile column such as `a, b: x` must not add a key to the
+  // reserved block, and a skill or id with a newline must not add a line. Quote or refuse.
+  if (!COLUMN.test(p.field))
+    throw new Error(
+      `refusing to propose a change to column ${JSON.stringify(p.field)}: not a plain column name`,
+    );
   return (
     '---\n' +
     'kind: instance\n' +
-    `id: ${instanceId(p.pageId)}\n` +
-    `skill: ${p.skill}\n` +
+    `id: ${JSON.stringify(instanceId(p.pageId))}\n` +
+    `skill: ${JSON.stringify(p.skill)}\n` +
     'write_back:\n' +
-    `  patch: { ${p.field}: ${scalar(p.value)} }\n` +
+    `  patch: { ${JSON.stringify(p.field)}: ${scalar(p.value)} }\n` +
     `  base_etag: ${JSON.stringify(p.baseEtag)}\n` +
     '---\n' +
     `${p.notes}\n`

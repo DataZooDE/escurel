@@ -1,3 +1,4 @@
+import { threadTabTitle } from './threadTabTitle';
 import { latest } from '../shared/latest';
 import * as vscode from 'vscode';
 import type { AdminState } from '../auth/adminState';
@@ -171,7 +172,7 @@ export class ThreadController implements vscode.Disposable {
   open(arg: unknown): void {
     const rootEventId = rootEventIdOf(arg);
     if (!rootEventId) {
-      void vscode.window.showInformationMessage('Pick an event to open its thread.');
+      void vscode.window.showInformationMessage('Select an event in the Inbox to open its thread.');
       return;
     }
     const existing = this.panels.get(rootEventId);
@@ -274,7 +275,7 @@ export class ThreadController implements vscode.Disposable {
       // The event's own title when it has one. `title` is the skill label, which every thread
       // from that skill shares: two open threads were both 'Thread · supplier-risk' and could
       // not be told apart in the tab bar.
-      panel.title = `Thread · ${root?.subtitle || root?.title || rootEventId.slice(-6)}`;
+      panel.title = threadTabTitle(root?.subtitle || root?.title || rootEventId.slice(-6));
     };
     const toggleCollapse = (nodeId: string) => {
       if (!collapsed.delete(nodeId)) collapsed.add(nodeId);
@@ -321,6 +322,23 @@ export class ThreadController implements vscode.Disposable {
       if (disposed) return;
       cachedAdmin = admin;
       render();
+    });
+
+    // A different gateway or tenant: everything this panel holds (the thread, the cached skills and
+    // admin state, the node the details view shows, the details built from it) belongs to the old one.
+    // Retire the reads in flight and start over, so an action offered from the old state can never be
+    // run against the new client.
+    const switchSub = this.services.onDidChange(() => {
+      loads.invalidate();
+      clearTimeout(timer);
+      current = undefined;
+      cachedSkills = undefined;
+      cachedAdmin = 'unknown';
+      lastDetails = {};
+      selectedNodeId = undefined;
+      this.detailsChanged.fire({ rootEventId, reason: 'refresh' });
+      post({ type: 'thread-loading', rootEventId });
+      void load();
     });
 
     post({ type: 'thread-loading', rootEventId });
@@ -399,6 +417,7 @@ export class ThreadController implements vscode.Disposable {
         this.detailsChanged.fire({ rootEventId, reason: 'refresh' });
         clearTimeout(timer);
         adminSub.dispose();
+        switchSub.dispose();
         live.dispose();
         sub.dispose();
       },

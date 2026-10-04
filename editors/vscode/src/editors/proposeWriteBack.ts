@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
 import { describeError } from '../errors';
 import { rowSourceOf } from '../shared/rowSource';
-import { buildProposal, parseProposedValue } from '../shared/writeBack';
+import { buildProposal, describeCurrent, parseProposedValue } from '../shared/writeBack';
 import type { Services } from '../services';
 
 /**
@@ -31,7 +31,7 @@ export function registerProposeWriteBack(services: Services): vscode.Disposable 
         const current = page.frontmatter[field];
         const raw = await vscode.window.showInputBox({
           title: `Change ${field} in the source`,
-          prompt: `Currently ${String(current ?? '(empty)')}. A reviewer approves the change before the source is touched.`,
+          prompt: `Currently ${describeCurrent(current)}. A reviewer approves the change before the source is touched.`,
           validateInput: (v) => {
             const r = parseProposedValue(v, current);
             return r.ok ? undefined : r.error;
@@ -57,7 +57,7 @@ export function registerProposeWriteBack(services: Services): vscode.Disposable 
           }),
         });
         void vscode.window.showInformationMessage(
-          `Proposed: ${field} to ${String(parsed.value)}. A reviewer approves it from Awaiting You.`,
+          `Proposed: ${field} to ${describeCurrent(parsed.value)}. A reviewer approves it from Awaiting You.`,
         );
         void vscode.commands.executeCommand('escurel.refresh');
       } catch (e) {

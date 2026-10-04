@@ -65,11 +65,25 @@ export const test = base.extend<object, { stack: Stack }>({
       const home = mkdtempSync(join(homedir(), '.cache', 'escurel-e2e-'));
       const artifacts = resolve(__dirname, 'artifacts');
       mkdirSync(artifacts, { recursive: true });
-      const display = `:${90 + Math.floor(Math.random() * 9)}`;
-      const xvfb: ChildProcess = spawn('Xvfb', [display, '-screen', '0', '1700x1000x24'], {
-        stdio: 'ignore',
+      // Xvfb picks a FREE display itself and writes its number to fd 3 once it is ready to accept
+      // connections: no random display number that can collide with a parallel run, and no sleep.
+      const xvfb: ChildProcess = spawn(
+        'Xvfb',
+        ['-displayfd', '3', '-screen', '0', '1700x1000x24'],
+        { stdio: ['ignore', 'ignore', 'ignore', 'pipe'] },
+      );
+      const display = await new Promise<string>((resolveDisplay, reject) => {
+        let buf = '';
+        const timer = setTimeout(() => reject(new Error('Xvfb did not report a display')), 20_000);
+        xvfb.stdio[3]!.on('data', (d: Buffer) => {
+          buf += d.toString();
+          if (buf.includes('\n')) {
+            clearTimeout(timer);
+            resolveDisplay(`:${buf.trim()}`);
+          }
+        });
+        xvfb.on('exit', (code) => reject(new Error(`Xvfb exited (${code})`)));
       });
-      await new Promise((r) => setTimeout(r, 1200));
       const cdpPort = await freePort();
       const bin = process.env.ESCUREL_BIN_DIR ?? join(REPO, 'target', 'release');
       const env = {

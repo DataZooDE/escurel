@@ -171,6 +171,13 @@ async function main(): Promise<void> {
   let gateway: ChildProcess | undefined;
   try {
     if (!existsSync(gatewayBin) || !existsSync(runnerBin)) {
+      // Locally a missing binary skips the cascade pass (convenient on a machine that only built the
+      // server). In CI it would turn a misconfigured run green with most suites never executed.
+      if (process.env.CI) {
+        throw new Error(
+          `CI needs the cascade binaries: missing ${[gatewayBin, runnerBin].filter((b) => !existsSync(b)).join(', ')}`,
+        );
+      }
       console.warn(
         `no ${existsSync(gatewayBin) ? '' : `${gatewayBin} `}${existsSync(runnerBin) ? '' : runnerBin}: the cascade suites will skip themselves`,
       );

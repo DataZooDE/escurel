@@ -9,6 +9,7 @@ import type {
   StartMode,
   ThreadWebviewToHost,
 } from '../../src/shared/protocol';
+import { middleTruncate } from '../../src/shared/middleTruncate';
 import { START_ITEMS } from '../shared/skill-button';
 import '../shared/skill-button';
 import { splitButton, theme } from '../shared/theme.css';
@@ -27,11 +28,81 @@ export class EscurelThreadInspector extends LitElement {
     splitButton,
     css`
       :host {
+        display: block;
         padding: 12px 16px;
+      }
+      .kind {
+        display: block;
+        color: var(--escurel-muted);
+        font-size: 0.85em;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
       }
       h2 {
         font-size: 1.2em;
+        margin: 2px 0 8px;
+      }
+      .summary {
         margin: 0 0 12px;
+        padding: 8px 10px;
+        border-left: 3px solid var(--vscode-focusBorder);
+        background: var(--vscode-editorWidget-background, transparent);
+      }
+      .summary.needs-you {
+        border-left-color: var(--vscode-editorWarning-foreground);
+      }
+      .summary .needs {
+        display: inline-block;
+        margin-right: 8px;
+        padding: 0 8px;
+        border: 1px solid var(--vscode-editorWarning-foreground);
+        border-radius: 9px;
+        color: var(--vscode-editorWarning-foreground);
+        font-size: 0.85em;
+        font-weight: 600;
+      }
+      /* A wide, short panel: sections sit side by side instead of one long column. */
+      .cols {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+        gap: 4px 28px;
+        align-items: start;
+      }
+      .cols > section {
+        margin-top: 8px;
+      }
+      details.tech {
+        margin-top: 14px;
+        color: var(--escurel-muted);
+      }
+      details.tech summary {
+        cursor: pointer;
+      }
+      details.tech summary:focus-visible {
+        outline: 1px solid var(--vscode-focusBorder);
+        outline-offset: 2px;
+      }
+      details.tech dl {
+        margin-top: 8px;
+      }
+      .id {
+        font-family: var(--vscode-editor-font-family, monospace);
+      }
+      button.copy {
+        margin-left: 8px;
+        padding: 0 6px;
+        height: 20px;
+        font: inherit;
+        font-size: 0.85em;
+        color: var(--vscode-button-secondaryForeground);
+        background: var(--vscode-button-secondaryBackground);
+        border: 1px solid var(--vscode-button-border, var(--vscode-contrastBorder, transparent));
+        border-radius: 2px;
+        cursor: pointer;
+      }
+      button.copy:focus-visible {
+        outline: 1px solid var(--vscode-focusBorder);
+        outline-offset: 1px;
       }
       h3 {
         font-size: 1em;
@@ -99,7 +170,7 @@ export class EscurelThreadInspector extends LitElement {
       }
       dl {
         display: grid;
-        grid-template-columns: minmax(90px, 1fr) minmax(0, 2fr);
+        grid-template-columns: minmax(70px, 140px) minmax(0, 1fr);
         gap: 6px 12px;
         margin: 0;
       }
@@ -213,12 +284,36 @@ export class EscurelThreadInspector extends LitElement {
     `;
   }
 
+  private copy(key: string, value: string): void {
+    // A webview may refuse the clipboard; the full value is always in the tooltip too.
+    void navigator.clipboard?.writeText(value).catch(() => undefined);
+    this.dispatchEvent(
+      new CustomEvent('escurel-copied', { detail: key, bubbles: true, composed: true }),
+    );
+  }
+
+  private renderValue(row: InspectorRow) {
+    // Identifiers are cut in the middle (both ends are what a person compares); the whole value
+    // is the tooltip and the Copy button's payload.
+    const long = row.tech && row.v.length > 24;
+    if (!long) return html`${row.v}`;
+    return html`<span class="id" title=${row.v}>${middleTruncate(row.v, 24)}</span
+      ><button
+        type="button"
+        class="copy"
+        aria-label=${`Copy ${row.k}`}
+        @click=${() => this.copy(row.k, row.v)}
+      >
+        Copy
+      </button>`;
+  }
+
   private renderRows(rows: InspectorRow[]) {
     return html`<dl>
       ${rows.map(
         (row) =>
           html`<dt>${row.k}</dt>
-            <dd class=${row.tone ? `tone-${row.tone}` : ''}>${row.v}</dd>`,
+            <dd class=${row.tone ? `tone-${row.tone}` : ''}>${this.renderValue(row)}</dd>`,
       )}
     </dl>`;
   }
@@ -226,23 +321,44 @@ export class EscurelThreadInspector extends LitElement {
   protected override render() {
     const detail = this.detail;
     if (!detail) return nothing;
+    const plain = detail.rows.filter((r) => !r.tech);
+    const tech = detail.rows.filter((r) => r.tech);
     return html`
+      ${detail.kindLabel ? html`<span class="kind">${detail.kindLabel}</span>` : nothing}
       <h2>${detail.title}</h2>
-      ${this.renderActions(detail.actions)} ${this.renderRows(detail.rows)}
       ${
-        detail.body
-          ? html`<section>
-              <h3>${detail.bodyTitle}</h3>
-              <div class="body">${detail.body}</div>
-            </section>`
+        detail.summary
+          ? html`<p class="summary ${detail.needsYou ? 'needs-you' : ''}">
+              ${detail.needsYou ? html`<span class="needs">Needs you</span>` : nothing}${detail.summary}
+            </p>`
           : nothing
       }
+      ${this.renderActions(detail.actions)}
+      <div class="cols">
+        ${plain.length ? html`<section>${this.renderRows(plain)}</section>` : nothing}
+        ${
+          detail.side.length
+            ? html`<section class="side">
+                <h3>${detail.sideTitle}</h3>
+                ${this.renderRows(detail.side)}
+              </section>`
+            : nothing
+        }
+        ${
+          detail.body
+            ? html`<section>
+                <h3>${detail.bodyTitle}</h3>
+                <div class="body">${detail.body}</div>
+              </section>`
+            : nothing
+        }
+      </div>
       ${
-        detail.side.length
-          ? html`<section class="side">
-              <h3>${detail.sideTitle}</h3>
-              ${this.renderRows(detail.side)}
-            </section>`
+        tech.length
+          ? html`<details class="tech">
+              <summary>Technical details</summary>
+              ${this.renderRows(tech)}
+            </details>`
           : nothing
       }
     `;

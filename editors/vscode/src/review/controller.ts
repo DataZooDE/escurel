@@ -7,6 +7,7 @@ import { ReviewCommentsController } from './commentsController';
 import { ReviewContentProvider } from './contentProvider';
 import {
   buildChangesetQuickPickItems,
+  changesetPickTitle,
   checkBaseMoved,
   formatDraftDiffTitle,
   interpretDiscardError,
@@ -18,7 +19,6 @@ import {
   type ChangesetQuickPickItem,
   type DecisionOutcome,
 } from './reviewModel';
-import { pluralise } from '../shared/text';
 import { decodeReviewUri, encodeReviewUri } from './uri';
 
 /**
@@ -108,7 +108,7 @@ export class ReviewController implements vscode.Disposable {
       return;
     }
 
-    void vscode.window.showInformationMessage('Select an item awaiting review.');
+    void vscode.window.showInformationMessage('Pick an item in Awaiting you to review it.');
   }
 
   /**
@@ -121,7 +121,9 @@ export class ReviewController implements vscode.Disposable {
       const csDrafts = drafts.filter((d) => d.changeset_id === changesetId);
 
       if (csDrafts.length === 0) {
-        void vscode.window.showInformationMessage(`Changeset ${changesetId} has no open drafts.`);
+        void vscode.window.showInformationMessage(
+          'There is nothing left to review in that set of changes.',
+        );
         return;
       }
 
@@ -140,7 +142,7 @@ export class ReviewController implements vscode.Disposable {
 
       const items = buildChangesetQuickPickItems(changesetId, csDrafts, diffMap);
       const selected = await vscode.window.showQuickPick<ChangesetQuickPickItem>(items, {
-        placeHolder: `Changeset ${changesetId} (${pluralise(csDrafts.length, 'draft')})`,
+        placeHolder: changesetPickTitle(csDrafts),
       });
 
       if (!selected) return;
@@ -154,7 +156,7 @@ export class ReviewController implements vscode.Disposable {
       }
     } catch (err) {
       void vscode.window.showErrorMessage(
-        `Failed to load changeset ${changesetId} — ${describeError(err)}`,
+        `Could not open that set of changes: ${describeError(err)}`,
       );
     }
   }
@@ -183,8 +185,7 @@ export class ReviewController implements vscode.Disposable {
     }
 
     if (!draft) {
-      const id = typeof draftOrId === 'string' ? draftOrId : 'unknown';
-      void vscode.window.showErrorMessage(`Draft ${id} not found or no longer open.`);
+      void vscode.window.showErrorMessage('That change was already handled or removed.');
       return;
     }
 
@@ -221,7 +222,7 @@ export class ReviewController implements vscode.Disposable {
     const target = resolveReviewTarget(arg, activeUri);
 
     if (!target) {
-      void vscode.window.showErrorMessage('No active review or item selected to promote.');
+      void vscode.window.showErrorMessage('Open a change from Awaiting you first, then apply it.');
       return;
     }
 
@@ -295,7 +296,7 @@ export class ReviewController implements vscode.Disposable {
     const target = resolveReviewTarget(arg, activeUri);
 
     if (!target) {
-      void vscode.window.showErrorMessage('No active review or item selected to discard.');
+      void vscode.window.showErrorMessage('Open a change from Awaiting you first, then reject it.');
       return;
     }
 

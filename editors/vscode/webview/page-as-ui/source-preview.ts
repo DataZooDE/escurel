@@ -1,5 +1,6 @@
 import { LitElement, css, html, nothing } from 'lit';
 import type { PreviewModel } from '../../src/shared/preview';
+import { lockIcon } from '../shared/icons';
 import { theme } from '../shared/theme.css';
 
 const isNumeric = (v: string): boolean => /^-?\d+([.,]\d+)?$/.test(v);
@@ -59,6 +60,24 @@ export class EscurelSourcePreview extends LitElement {
         background: var(--vscode-editor-inactiveSelectionBackground, transparent);
         font-weight: 600;
       }
+      /* The first column (the row's key) stays in view while the rest scrolls sideways. */
+      th:first-child,
+      td:first-child {
+        position: sticky;
+        left: 0;
+        background: var(--vscode-editor-background);
+        box-shadow: 1px 0 0 var(--escurel-border);
+      }
+      th:first-child {
+        background: var(
+          --vscode-editor-inactiveSelectionBackground,
+          var(--vscode-editor-background)
+        );
+      }
+      .badge .lock {
+        vertical-align: -1px;
+        margin-right: 3px;
+      }
       dl {
         display: grid;
         grid-template-columns: minmax(120px, 200px) 1fr;
@@ -101,7 +120,7 @@ export class EscurelSourcePreview extends LitElement {
   private head(source: string) {
     return html`<header>
       <span class="badge" title="This data lives in the source system; edit it there"
-        >read-only (source)</span
+        >${lockIcon()}read-only (source)</span
       >
       ${source ? html`<span class="source">${source}</span>` : nothing}
       ${

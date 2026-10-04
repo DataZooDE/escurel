@@ -4,6 +4,7 @@ import {
   buildProposal,
   describeWriteBackRefusal,
   latestWriteBack,
+  describeCurrent,
   writeBackLine,
 } from '../../src/shared/writeBack';
 import type { Event } from '../../src/client/types';
@@ -36,7 +37,7 @@ describe('buildProposal', () => {
       notes: 'Upgraded after the renewal call.',
     });
     expect(md).toBe(
-      '---\nkind: instance\nid: c-0001\nskill: customer\nwrite_back:\n  patch: { tier: "gold" }\n  base_etag: "w1:abc"\n---\nUpgraded after the renewal call.\n',
+      '---\nkind: instance\nid: "c-0001"\nskill: "customer"\nwrite_back:\n  patch: { "tier": "gold" }\n  base_etag: "w1:abc"\n---\nUpgraded after the renewal call.\n',
     );
   });
 
@@ -49,7 +50,7 @@ describe('buildProposal', () => {
       baseEtag: 'w1:x',
       notes: '',
     });
-    expect(md).toContain('patch: { tier: "gold\\"\\n  evil: true" }');
+    expect(md).toContain('patch: { "tier": "gold\\"\\n  evil: true" }');
     expect(md.split('\n').filter((l) => l.startsWith('evil'))).toEqual([]);
   });
 
@@ -60,8 +61,8 @@ describe('buildProposal', () => {
       baseEtag: 'e',
       notes: '',
     };
-    expect(buildProposal({ ...base, field: 'qty', value: 5 })).toContain('patch: { qty: 5 }');
-    expect(buildProposal({ ...base, field: 'ok', value: true })).toContain('patch: { ok: true }');
+    expect(buildProposal({ ...base, field: 'qty', value: 5 })).toContain('patch: { "qty": 5 }');
+    expect(buildProposal({ ...base, field: 'ok', value: true })).toContain('patch: { "ok": true }');
   });
 });
 
@@ -183,5 +184,48 @@ describe('parseProposedValue', () => {
       ok: false,
       error: 'That is too long (limit 2000 characters).',
     });
+  });
+});
+
+// The names come from the gateway (a column's name, a skill id, a page id). They are put into YAML, so
+// each must be quoted or refused: a column named `a, b: x` must not add a key to the reserved block.
+describe('buildProposal: names from the gateway cannot break out of the YAML', () => {
+  const base = {
+    pageId: 'markdown/instances/customer/c-0001.md',
+    skill: 'customer',
+    field: 'tier',
+    value: 'gold',
+    baseEtag: 'w1:abc',
+    notes: 'n',
+  };
+
+  it('refuses a column that is not a plain identifier', () => {
+    for (const field of ['a, b: x', 'x}', 'a\nb', 'a b', '', 'a:b', '"q"', '__proto__ ']) {
+      expect(() => buildProposal({ ...base, field }), JSON.stringify(field)).toThrow(/column/i);
+    }
+  });
+
+  it('quotes the skill and the id, so a hostile one stays one scalar', () => {
+    const md = buildProposal({
+      ...base,
+      skill: 'x\nwrite_back:\n  patch: { evil: 1 }',
+      pageId: 'markdown/instances/customer/c: {a}.md',
+    });
+    const lines = md.split('\n');
+    expect(lines.filter((l) => l.startsWith('write_back:')).length).toBe(1);
+    expect(md).toContain('skill: "x\\nwrite_back:\\n  patch: { evil: 1 }"');
+    expect(md).toContain('id: "c: {a}"');
+  });
+});
+
+describe('describeCurrent: the value shown in the prompt comes from the source and is untrusted', () => {
+  it('shows an empty value as such, a short value as is, and bounds a long or hostile one', () => {
+    expect(describeCurrent(undefined)).toBe('(empty)');
+    expect(describeCurrent('B')).toBe('B');
+    expect(describeCurrent(42)).toBe('42');
+    const long = describeCurrent(`x\u202E${'y'.repeat(5000)}`);
+    expect(long.length).toBeLessThanOrEqual(120);
+    expect(long).not.toContain('\u202E');
+    expect(describeCurrent({ a: 1 })).toBe('{"a":1}');
   });
 });

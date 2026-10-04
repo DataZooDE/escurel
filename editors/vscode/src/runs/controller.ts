@@ -1,3 +1,4 @@
+import { quietly } from '../shared/quiet';
 import { runTabTitle } from './runTitle';
 import * as vscode from 'vscode';
 import type { RunHostToWebview, RunView, RunWebviewToHost } from '../shared/protocol';
@@ -60,7 +61,7 @@ export class RunController implements vscode.Disposable {
   open(arg: unknown): void {
     const runId = runIdOf(arg);
     if (!runId) {
-      void vscode.window.showInformationMessage('Pick a run to open its detail.');
+      void vscode.window.showInformationMessage('Select a run in the Runner view to open it.');
       return;
     }
     const existing = this.panels.get(runId);
@@ -176,7 +177,13 @@ export class RunController implements vscode.Disposable {
           const traceId = traceIdToCopy(view);
           if (!traceId) return;
           await vscode.env.clipboard.writeText(traceId);
-          void vscode.window.showInformationMessage('Trace id copied.');
+          quietly('Trace id copied');
+          return;
+        }
+        case 'copy-run-id': {
+          // The panel's own run id (the host holds it): nothing the webview sent is copied.
+          await vscode.env.clipboard.writeText(runId);
+          quietly('Run id copied');
           return;
         }
         case 'run-control':

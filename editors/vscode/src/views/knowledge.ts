@@ -1,9 +1,11 @@
 import { errorRowSpec } from './errorRow';
+import { InstancePager } from './instancePager';
+import { autonomyMeaning, backendIcon, backendMeaning, countSkills } from './skillMeaning';
 import * as vscode from 'vscode';
 import type { EscurelClient, Instance } from '../client';
 import { uriForPage } from '../fs/provider';
 import { log } from '../log';
-import { describeError } from '../errors';
+import { connectionStateOf, describeError } from '../errors';
 import { instanceRow, type InstanceRow, type SkillRow } from './knowledgeModel';
 import {
   ROLE_ICONS,
@@ -18,7 +20,7 @@ type Node =
   | SkillRow
   | InstanceRow
   | { kind: 'more'; skill: string; cursor: string }
-  | { kind: 'error'; message: string };
+  | { kind: 'error'; message: string; detail?: string };
 
 const PAGE = 100;
 
@@ -31,9 +33,17 @@ const PAGE = 100;
 export class KnowledgeTree implements vscode.TreeDataProvider<Node> {
   private readonly changed = new vscode.EventEmitter<Node | undefined>();
   readonly onDidChangeTreeData = this.changed.event;
-  private readonly pages = new Map<string, { rows: InstanceRow[]; cursor: string | null }>();
+  private readonly pager: InstancePager<InstanceRow>;
 
-  constructor(private readonly client: () => EscurelClient) {}
+  constructor(private readonly client: () => EscurelClient) {
+    this.pager = new InstancePager<InstanceRow>(
+      async (skill, cursor) => {
+        const res = await this.client().listInstancesPage({ skill_id: skill, limit: PAGE, cursor });
+        return { rows: res.instances.map((i: Instance) => instanceRow(i)), next: res.next_cursor };
+      },
+      (row) => row.pageId,
+    );
+  }
 
   static register(context: vscode.ExtensionContext, client: () => EscurelClient): KnowledgeTree {
     const tree = new KnowledgeTree(client);
@@ -53,7 +63,8 @@ export class KnowledgeTree implements vscode.TreeDataProvider<Node> {
   }
 
   refresh(): void {
-    this.pages.clear();
+    // Retires every fetch in flight: a slow old result must not repopulate the cache.
+    this.pager.reset();
     this.changed.fire(undefined);
   }
 
@@ -68,7 +79,9 @@ export class KnowledgeTree implements vscode.TreeDataProvider<Node> {
         );
         item.id = `folder:${n.path}`;
         item.iconPath = new vscode.ThemeIcon('folder');
-        item.tooltip = n.path;
+        const count = countSkills(n);
+        item.description = `${count} ${count === 1 ? 'skill' : 'skills'}`;
+        item.tooltip = `${n.path} · ${item.description}`;
         item.contextValue = 'folder';
         item.accessibilityInformation = { label: `folder ${n.path}`, role: 'treeitem' };
         return item;
@@ -81,11 +94,20 @@ export class KnowledgeTree implements vscode.TreeDataProvider<Node> {
         item.description = n.description;
         const where = n.skill.folder ? `\n\nfolder \`${n.skill.folder}\`` : '';
         const tags = n.skill.tags?.length ? `\n\ntags: ${n.skill.tags.join(', ')}` : '';
+        // Compact on purpose: a tooltip covers the rows below it. One line for role, layer and what the
+        // gate means; the data source only when it is not plain markdown.
+        const gate = `${n.skill.autonomy ?? 'review'}: ${autonomyMeaning(n.skill.autonomy)}`;
+        const source =
+          n.skill.backend.kind === 'markdown'
+            ? ''
+            : `\n\ndata: ${backendMeaning(n.skill.backend.kind)}`;
         item.tooltip = new vscode.MarkdownString(
-          `**${n.skill.title ?? n.skill.id}** — ${n.skill.summary ?? n.skill.description}\n\nrole **${role}**${inferred ? ' (inferred)' : ''} · ${n.readOnly ? '_read-only (' + n.skill.layer + ')_' : 'layer ' + n.skill.layer}${where}${tags}`,
+          `**${n.skill.title ?? n.skill.id}** — ${n.skill.summary ?? n.skill.description}\n\nrole **${role}**${inferred ? ' (inferred)' : ''} · ${n.readOnly ? '_read-only (' + n.skill.layer + ')_' : 'layer ' + n.skill.layer} · ${gate}${source}${where}${tags}`,
         );
+        // Data that lives outside the knowledge base gets an icon of its own (cloud, plug, table):
+        // where the data comes from matters more at a glance than the role.
         item.iconPath = new vscode.ThemeIcon(
-          ROLE_ICONS[role],
+          backendIcon(n.skill.backend.kind) ?? ROLE_ICONS[role],
           new vscode.ThemeColor('charts.purple'),
         );
         item.contextValue = n.readOnly ? 'skill.readonly' : 'skill';
@@ -121,7 +143,7 @@ export class KnowledgeTree implements vscode.TreeDataProvider<Node> {
         return item;
       }
       case 'error': {
-        const spec = errorRowSpec(n.message);
+        const spec = errorRowSpec(n.message, n.detail);
         const item = new vscode.TreeItem(spec.label, vscode.TreeItemCollapsibleState.None);
         item.iconPath = new vscode.ThemeIcon('warning', new vscode.ThemeColor('errorForeground'));
         item.tooltip = spec.tooltip;
@@ -137,17 +159,31 @@ export class KnowledgeTree implements vscode.TreeDataProvider<Node> {
       if (!n) {
         const skills = await this.client().listSkills();
         await vscode.commands.executeCommand('setContext', 'escurel.connected', true);
+        await vscode.commands.executeCommand('setContext', 'escurel.connectionState', 'ok');
         return buildSkillTree(skills);
       }
       if (n.kind === 'folder') return n.children;
       if (n.kind === 'skill') {
-        const page = this.pages.get(n.skill.id) ?? (await this.fetch(n.skill.id, undefined));
-        return this.rows(page);
+        try {
+          return this.rows(await this.pager.first(n.skill.id));
+        } catch (e) {
+          // A failure to list ONE skill's rows is a row under that skill, not the whole tree's failure.
+          log().warn(`escurel: knowledge tree: instances of ${n.skill.id}: ${describeError(e)}`);
+          return [{ kind: 'error', message: "Couldn't load instances.", detail: describeError(e) }];
+        }
       }
       return [];
     } catch (e) {
       log().warn(`escurel: knowledge tree: ${describeError(e)}`);
-      if (!n) await vscode.commands.executeCommand('setContext', 'escurel.connected', false);
+      if (!n) {
+        await vscode.commands.executeCommand('setContext', 'escurel.connected', false);
+        // WHY it is not connected decides which welcome text the empty views show.
+        await vscode.commands.executeCommand(
+          'setContext',
+          'escurel.connectionState',
+          connectionStateOf(e),
+        );
+      }
       return [{ kind: 'error', message: describeError(e) }];
     }
   }
@@ -159,19 +195,14 @@ export class KnowledgeTree implements vscode.TreeDataProvider<Node> {
     return out;
   }
 
-  private async fetch(skill: string, cursor: string | undefined) {
-    const res = await this.client().listInstancesPage({ skill_id: skill, limit: PAGE, cursor });
-    const prev = this.pages.get(skill)?.rows ?? [];
-    const page = {
-      rows: [...prev, ...res.instances.map((i: Instance) => instanceRow(i))],
-      cursor: res.next_cursor,
-    };
-    this.pages.set(skill, page);
-    return page;
-  }
-
   private async loadMore(skill: string, cursor: string): Promise<void> {
-    await this.fetch(skill, cursor);
+    try {
+      await this.pager.more(skill, cursor);
+    } catch (e) {
+      // A 401 or 429 here used to escape as an unhandled command rejection.
+      log().warn(`escurel: knowledge tree: load more of ${skill}: ${describeError(e)}`);
+      void vscode.window.showErrorMessage("Couldn't load more instances. Try again in a moment.");
+    }
     this.changed.fire(undefined);
   }
 }

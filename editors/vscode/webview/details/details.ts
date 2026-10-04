@@ -31,9 +31,23 @@ export class EscurelDetails extends LitElement {
         box-sizing: border-box;
       }
       .empty {
+        display: flex;
+        align-items: center;
+        gap: 14px;
         margin: 0;
-        padding: 16px;
+        padding: 20px 16px;
         color: var(--escurel-muted);
+      }
+      .empty svg {
+        flex: none;
+        width: 28px;
+        height: 28px;
+      }
+      .empty p {
+        margin: 0;
+      }
+      .empty .hint {
+        font-size: 0.9em;
       }
     `,
   ];
@@ -81,7 +95,23 @@ export class EscurelDetails extends LitElement {
   override render() {
     const shown = this.shown;
     if (!shown) {
-      return html`<p class="empty">Select a node in a thread to see its details.</p>`;
+      return html`<div class="empty">
+        <svg
+          viewBox="0 0 16 16"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.2"
+          aria-hidden="true"
+        >
+          <rect x="1.5" y="2.5" width="5" height="4" rx="0.8" />
+          <rect x="9.5" y="9.5" width="5" height="4" rx="0.8" />
+          <path d="M6.5 4.5h3v7h0" />
+        </svg>
+        <div>
+          <p>Select a node in a thread to see its details.</p>
+          <p class="hint">Click a card on the canvas, or press Enter on it.</p>
+        </div>
+      </div>`;
     }
     return html`<escurel-thread-inspector
       .nodeId=${shown.nodeId}

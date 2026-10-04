@@ -12,6 +12,8 @@ export type ErrorKind =
   | 'forbidden'
   | 'admin_required'
   | 'tenant_suspended'
+  | 'tenant_quarantined'
+  | 'server_incompatible'
   | 'quota_exhausted'
   | 'session_cap_reached'
   | 'read_only_replica'
@@ -93,6 +95,7 @@ export class EscurelError extends Error {
       case 'forbidden':
       case 'admin_required':
       case 'tenant_suspended':
+      case 'tenant_quarantined':
       case 'quota_exhausted':
       case 'session_cap_reached':
       case 'read_only_replica':
@@ -116,12 +119,15 @@ export class EscurelError extends Error {
     const message = body?.message ?? `HTTP ${status}`;
     const extra = { httpStatus: status, data: body };
     if (status === 401) return new EscurelError('unauthorized', message, extra);
-    if (status === 403)
-      return new EscurelError(
-        body?.error === 'tenant_suspended' ? 'tenant_suspended' : 'forbidden',
-        message,
-        extra,
-      );
+    if (status === 403) {
+      const kind =
+        body?.error === 'tenant_suspended'
+          ? 'tenant_suspended'
+          : body?.error === 'tenant_quarantined'
+            ? 'tenant_quarantined'
+            : 'forbidden';
+      return new EscurelError(kind, message, extra);
+    }
     if (status === 429) {
       const kind =
         body?.error === 'session_cap_reached' ? 'session_cap_reached' : 'quota_exhausted';

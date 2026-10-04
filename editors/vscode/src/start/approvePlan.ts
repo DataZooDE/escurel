@@ -84,7 +84,9 @@ export function registerApprovePlan(
     async (arg?: unknown) => {
       const req = (typeof arg === 'object' && arg !== null ? arg : {}) as Partial<ApprovePlanArgs>;
       if (!req.runId || typeof req.runId !== 'string') {
-        void vscode.window.showErrorMessage('Cannot approve plan: missing run ID');
+        void vscode.window.showInformationMessage(
+          'Open the run that is waiting for approval (in its thread or in the Runner view), then approve its plan there.',
+        );
         return;
       }
 
