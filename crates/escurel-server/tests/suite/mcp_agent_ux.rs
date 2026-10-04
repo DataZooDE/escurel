@@ -410,3 +410,58 @@ async fn the_entry_point_descriptions_say_what_the_tool_returns_and_what_to_do_n
     // `resolve` finally has an output contract.
     assert!(tool(&all, "resolve")["outputSchema"].is_object());
 }
+
+// ---- (5) capture_event ------------------------------------------------------------------------
+
+#[tokio::test]
+async fn an_event_for_a_label_no_skill_answers_to_is_stored_with_a_warning_that_says_so() {
+    let t = Rows::start().await;
+    // Known skill: no warning.
+    let ok = t
+        .call(
+            "capture_event",
+            json!({ "label_skill": "sales-order", "body": "hello", "mime": "text/plain" }),
+        )
+        .await;
+    assert!(
+        ok.get("issues").is_none(),
+        "a known label carries no warning: {ok}"
+    );
+    // Unknown label: it used to become a silent dead inbox event.
+    let dead = t
+        .call(
+            "capture_event",
+            json!({ "label_skill": "no-such-skill", "body": "hello", "mime": "text/plain" }),
+        )
+        .await;
+    assert!(
+        dead["event_id"].is_string(),
+        "the event is still stored: {dead}"
+    );
+    let w = &dead["issues"][0];
+    assert_eq!(w["severity"], "warning", "{dead}");
+    assert_eq!(w["code"], "unknown_label_skill", "{dead}");
+    assert!(
+        w["suggestion"].as_str().unwrap().contains("list_skills"),
+        "{dead}"
+    );
+    // The reserved namespace is the runner's and never warned about.
+    let sys = t
+        .call(
+            "capture_event",
+            json!({ "label_skill": "escurel:run-control", "body": "{\"action\":\"pause\"}", "mime": "application/json" }),
+        )
+        .await;
+    assert!(sys.get("issues").is_none() || sys["issues"][0]["code"] != "unknown_label_skill");
+}
+
+#[tokio::test]
+async fn re_capturing_an_event_id_says_it_was_a_replay() {
+    let t = Rows::start().await;
+    let args = json!({ "label_skill": "sales-order", "event_id": "evt-replay-1", "body": "x", "mime": "text/plain" });
+    let first = t.call("capture_event", args.clone()).await;
+    assert!(first.get("replayed").is_none(), "{first}");
+    let second = t.call("capture_event", args).await;
+    assert_eq!(second["event_id"], first["event_id"]);
+    assert_eq!(second["replayed"], true, "{second}");
+}

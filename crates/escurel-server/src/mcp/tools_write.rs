@@ -1809,6 +1809,28 @@ pub(super) async fn tool_capture_event(
         root_event_id,
         run_id,
     };
+    // A re-capture of a known `event_id` is a REPLAY: the stored first-writer event comes back, and
+    // the caller is told so (an agent retrying after a timeout must be able to tell "stored now" from
+    // "was already stored").
+    let replayed = match requested.event_id.as_deref() {
+        Some(id) => indexer
+            .get_event(id)
+            .await
+            .map_err(|e| JsonRpcError::internal(format!("capture_event: {e}")))?
+            .is_some(),
+        None => false,
+    };
+    // A label no skill answers to is stored (the caller may be ahead of the corpus), but nothing will
+    // process it: say so, with the way out, instead of minting a silent dead inbox event.
+    let unknown_label = if requested.label_skill.starts_with("escurel:") {
+        false
+    } else {
+        indexer
+            .read_page_markdown(&format!("markdown/skills/{}.md", requested.label_skill))
+            .await
+            .map_err(|e| JsonRpcError::internal(format!("capture_event: {e}")))?
+            .is_none()
+    };
     let stored = indexer
         .capture_event(requested.clone())
         .await
@@ -1845,11 +1867,27 @@ pub(super) async fn tool_capture_event(
             "event-ACL would hide this idempotent read-back (log mode) — showing"
         );
     }
-    let event = if visible || event_acl == crate::server::EventAclMode::Log {
+    let mut event = if visible || event_acl == crate::server::EventAclMode::Log {
         event_to_json(&stored)
     } else {
         event_to_json(&echoed_event(&stored, &requested))
     };
+    if replayed {
+        event["replayed"] = json!(true);
+    }
+    if unknown_label {
+        event["issues"] = json!([{
+            "severity": "warning",
+            "code": "unknown_label_skill",
+            "location": "label_skill",
+            "message": format!(
+                "no skill `{}` exists in this tenant, so nothing will process this event",
+                requested.label_skill
+            ),
+            "suggestion": "call `list_skills` for the valid ids; to start a skill action use \
+                           `label_skill=<action.event>` from `list_skills.actions[]`",
+        }]);
+    }
     // Notify any external processor of the new inbox item (opt-in,
     // fire-and-forget; never fails the capture). The gateway is
     // single-tenant per indexer, so `indexer.tenant()` is the
