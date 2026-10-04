@@ -154,6 +154,9 @@ suite('a gateway switch retires the open threads and the details view', () => {
     try {
       await assertOldNodeIsGone(rootEventId);
     } finally {
+      // Close the thread panels BEFORE switching back: restoring the URL and the token are two steps, and
+      // a panel still open reloads in between with the other gateway's (valid, real) token.
+      await vscode.commands.executeCommand('workbench.action.closeAllEditors');
       await restore();
     }
   });
@@ -169,6 +172,9 @@ suite('a gateway switch retires the open threads and the details view', () => {
     try {
       await assertOldNodeIsGone(rootEventId);
     } finally {
+      // Close the thread panels BEFORE switching back: restoring the URL and the token are two steps, and
+      // a panel still open reloads in between with the other gateway's (valid, real) token.
+      await vscode.commands.executeCommand('workbench.action.closeAllEditors');
       await restore();
     }
   });

@@ -415,11 +415,12 @@ test('a failed run can be retried from the Runner view, and the person is told w
   await page.getByRole('menuitem', { name: /Retry run/ }).hover();
   await page.keyboard.press('Enter');
   // The request goes out as an event; the runner answers it; the person is told the outcome in words.
-  // First the person is told the request is out, then what the runner answered, in words and with no id.
-  await expect(
-    page.locator('.notification-toast', { hasText: /Waiting for runner to retry/ }),
-  ).toBeVisible();
+  // The person is told the request is out (a progress toast) and then what the runner answered, in words
+  // and with no id. The progress toast lives only as long as the runner takes to answer, which can be
+  // shorter than a poll: it is accepted when seen, but only the answer is required.
+  const progress = page.locator('.notification-toast', { hasText: /Waiting for runner to retry/ });
   const answer = page.locator('.notification-toast', { hasText: /Retried; a new run has started/ });
+  await expect(progress.or(answer).first()).toBeVisible({ timeout: 40_000 });
   await expect(answer).toBeVisible({ timeout: 40_000 });
   expect(await answer.innerText()).not.toMatch(/[0-9A-Z]{20,}/);
   await stack.shot('07b-retry-answer');

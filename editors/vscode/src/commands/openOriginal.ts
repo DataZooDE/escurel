@@ -8,7 +8,23 @@ import { planOriginal } from './originalFile';
  * storage and opened with the system's own application (a PDF viewer, Word). The page id comes from the
  * host's own page model (see `resolvePageMessage`), never from a webview.
  */
+/**
+ * Remove the originals a previous session wrote. They are untrusted uploads handed to another
+ * application, and there is no reason to keep them: the folder is emptied when the extension starts.
+ */
+export async function clearOriginals(storageUri: vscode.Uri): Promise<void> {
+  try {
+    await vscode.workspace.fs.delete(vscode.Uri.joinPath(storageUri, 'originals'), {
+      recursive: true,
+      useTrash: false,
+    });
+  } catch {
+    // Not there (first run) or not removable: nothing worth stopping for.
+  }
+}
+
 export function registerOpenOriginal(context: vscode.ExtensionContext, services: Services): void {
+  void clearOriginals(context.globalStorageUri);
   context.subscriptions.push(
     vscode.commands.registerCommand('escurel.openOriginal', async (pageId?: unknown) => {
       if (typeof pageId !== 'string' || pageId === '') return;
