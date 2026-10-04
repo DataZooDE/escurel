@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Page } from '@playwright/test';
 import { expect, test, webviewWith, type Stack } from './fixtures';
@@ -20,7 +20,10 @@ async function scanForRow(page: Page, name: RegExp) {
   const k = pane(page, 'Knowledge');
   const row = k.getByRole('treeitem', { name });
   const list = k.locator('.monaco-list').first();
-  await list.hover();
+  // The pointer rests on the list's scrollbar column, not on a row: a row's tooltip captures the wheel,
+  // and a taller tree lost that race (index 0 never rendered, or the first step never scrolled).
+  const box = (await list.boundingBox())!;
+  await page.mouse.move(box.x + box.width - 3, box.y + box.height / 2);
   // To the top by the list's own keyboard handling: Home focuses the first row and scrolls it into
   // view. A mouse wheel does it too, but animated, and a taller tree lost the race against the
   // downward steps below, which then walked past the first rows.
@@ -566,6 +569,45 @@ async function answerQuickInput(page: Page, title: RegExp, text: string) {
   await input.fill(text);
   await page.keyboard.press('Enter');
 }
+
+test('a document is chunked and previewed, and its original is saved as plain text, never run', async ({
+  stack,
+}) => {
+  const { page } = stack;
+  await expect(await skillRow(page, 'supplier-document')).toBeVisible();
+  await openRow(page, 'supplier-document', /frame agreement/i);
+  const wv = await webviewWith(page, 'escurel-page-as-ui', 'Frame agreement');
+  const preview = wv.locator('escurel-source-preview');
+  await expect(preview).toContainText('read-only (source)');
+  // The extracted text, chunk by chunk, as the source holds it.
+  await expect(preview.locator('.chunk').first()).toBeVisible();
+  await expect(preview).toContainText(/delivery terms|7 days/i);
+  await expect(preview).toContainText(/Showing \d+ of \d+ chunks/);
+  await stack.shot('06e-document-preview');
+
+  // The uploaded file is untrusted: markdown is never handed to an application. The person is told
+  // so, the file lands in the extension's storage as `.txt`, and nothing else is opened.
+  await preview.getByRole('button', { name: 'Open original' }).click();
+  await expect(
+    page.locator('.notification-toast', { hasText: /not opened from here/ }),
+  ).toBeVisible({ timeout: 20_000 });
+  const originals = join(
+    stack.home,
+    'profile',
+    'User',
+    'globalStorage',
+    'datazoo.escurel',
+    'originals',
+  );
+  await expect
+    .poll(() => (existsSync(originals) ? readdirSync(originals) : []), {
+      message: `the original was saved under ${originals}`,
+    })
+    .toEqual([expect.stringMatching(/^[a-z0-9._-]+-[0-9a-f]{12}\.txt$/)]);
+  const saved = readFileSync(join(originals, readdirSync(originals)[0]!), 'utf8');
+  expect(saved).toContain('Frame agreement Meier-Guss GmbH');
+  await stack.shot('06f-document-original-saved');
+});
 
 test('the two outside systems are in the tree, and a REST row says it is external data', async ({
   stack,

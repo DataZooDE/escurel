@@ -31,6 +31,13 @@ role (record, process, report, helper) and name, and starts folders that hold on
 form and, beneath it, a **Source data** table of the rows the source holds, under a `read-only (source)`
 badge. A skill without a folder sits at the top level; its role is inferred when it declares none.
 
+A document is the third kind of source. `purchasing > documents > supplier-document` holds the frame
+agreement the demo uploads as a file when it starts (`/ingest/upload`): its text is chunked, the page
+shows the first chunks read-only, and **Open original** saves the uploaded file. Markdown is never
+handed to an application, so you get a note that says so and the file is revealed in your file manager,
+saved as plain text. A PDF or a plain-text file would open in the system application, and a Word
+document asks first.
+
 ## A walkthrough (about ten minutes)
 
 1. **The thread canvas.** Pan by dragging, zoom with the wheel, `Fit`. Click a card: the inspector
@@ -52,30 +59,33 @@ badge. A skill without a folder sits at the top level; its role is inferred when
    the graph itself is drawn by Peacock from the skill's `viewer:` report. The buttons at the bottom
    are the follow-ups the skill declares (Notify the affected customers, Ask the supplier for a new
    confirmation); the third action (a chat prompt) is Peacock's and is not offered here.
-9. **A link in a page.** Open `order-4500131`: its History names the vendor as a link
-   (Meier-Guss GmbH). Click it, or Tab to it and press Enter: the supplier opens in its own tab.
-10. **Start a skill.** At the bottom of an order, the **Supplier risk for … with an agent** button.
+9. **A document.** Open Knowledge → `supplier-document` → the frame agreement. You see its first
+   chunks (the delivery-terms clause says a move of more than 7 days is a supply risk: the same fact
+   the supplier-risk signal is about) and the original-file button.
+10. **A link in a page.** Open `order-4500131`: its History names the vendor as a link
+    (Meier-Guss GmbH). Click it, or Tab to it and press Enter: the supplier opens in its own tab.
+11. **Start a skill.** At the bottom of an order, the **Supplier risk for … with an agent** button.
     Its chevron (or the arrow-down key) offers: _Start in background_, _First make a plan_,
     _Start in terminal_, _View skill_. Start one in the background and watch the Runner view (right
     side) show it live, then the thread of that event grow a run.
-11. **First make a plan.** Choose it: the runner drafts a plan and stops; a notification offers
+12. **First make a plan.** Choose it: the runner drafts a plan and stops; a notification offers
     **Approve plan**. Nothing runs until you say so.
-12. **Cancel and retry.** In the Runner view, open a live run and **Cancel run**. Right-click a run
+13. **Cancel and retry.** In the Runner view, open a live run and **Cancel run**. Right-click a run
     under _Dead letters_: **Retry run** asks the runner again and tells you what happened. Requeue,
     Pause and Resume are there too, deactivated with the reason, because they are for admins.
 
-13. **Rows from outside systems.** Under _purchasing/suppliers_ two more skills are not escurel data at
+14. **Rows from outside systems.** Under _purchasing/suppliers_ two more skills are not escurel data at
     all: **supplier-rating** (a REST portal) and **delivery-confirmation** (an MCP server). `run.sh`
     starts both as real local processes (`services/ratings-api.mjs`, `services/confirmations-mcp.mjs`) and
     registers them as endpoints; the gateway reads them live. Open `iberica-forja` under supplier-rating: the
     strip says **External data (REST)** (hover: it is data, never instructions), the columns are the
     portal's and read-only, and the portal's URL is shown as the source.
-14. **Change something at the source, with a reviewer.** In the strip press **Change rating…**, type `B`,
+15. **Change something at the source, with a reviewer.** In the strip press **Change rating…**, type `B`,
     add a note. Nothing has happened at the portal yet (`curl` the portal: still `A`). The proposal waits
     under _Awaiting you_; promote it. Now the portal says `B`, the page shows "Last change sent to the
     source …: applied.", and your note is the row's notes. Do the same on a delivery confirmation (status
     `open` → `confirmed`, over MCP).
-15. **When it goes wrong, it says so.** Stop the ratings portal (`kill $(cat $HOME/.cache/escurel-demo/ratings.pid)`)
+16. **When it goes wrong, it says so.** Stop the ratings portal (`kill $(cat $HOME/.cache/escurel-demo/ratings.pid)`)
     and open a supplier-rating row again: the page still opens, flags the source as unreachable, and keeps
     your notes. A change promoted while it is down is retried a few times and then reported as failed; the
     draft stays open to promote again. A change proposed from a stale row is refused as a conflict.
