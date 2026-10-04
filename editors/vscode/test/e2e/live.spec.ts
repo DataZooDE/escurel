@@ -1,64 +1,13 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import type { Page } from '@playwright/test';
+import type { FrameLocator, Page } from '@playwright/test';
 import { expect, test, webviewWith, type Stack } from './fixtures';
+import { chooseMenuItem, knowledgeRow, openRow, pane, skillRow } from './helpers';
 
 // One window for the whole file, played in order: each scenario leaves the stack as the next one can
 // use it. Every one asserts what a person would SEE and leaves a screenshot in artifacts/ for a human
 // to look at, because "the assertion passed" says nothing about whether it looks right.
 test.describe.configure({ mode: 'serial' });
-
-const pane = (page: Page, title: string) =>
-  page.locator('.pane', { has: page.locator('.pane-header', { hasText: title }) });
-
-/**
- * The tree views only render the rows in view (the list is virtualised), and the Knowledge tree now
- * holds folders, so a row may not exist until it is scrolled to. Scroll from the top, a step at a time,
- * until the row is rendered; no test depends on how tall the window happens to be.
- */
-async function scanForRow(page: Page, name: RegExp) {
-  const k = pane(page, 'Knowledge');
-  const row = k.getByRole('treeitem', { name });
-  const list = k.locator('.monaco-list').first();
-  await list.hover();
-  // To the top by the list's own keyboard handling: Home focuses the first row and scrolls it into
-  // view. A mouse wheel does it too, but animated, and a taller tree lost the race against the
-  // downward steps below, which then walked past the first rows.
-  await list.focus();
-  await page.keyboard.press('Home');
-  await page.mouse.wheel(0, -10_000);
-  // At the top when the first row (index 0) is rendered: a condition, not a sleep.
-  await expect(list.locator('.monaco-list-row[data-index="0"]')).toHaveCount(1);
-  const rendered = () =>
-    list.evaluate((el) =>
-      Array.from(el.querySelectorAll('.monaco-list-row'))
-        .map((r) => r.getAttribute('data-index'))
-        .join(','),
-    );
-  for (let i = 0; i < 40 && (await row.count()) === 0; i += 1) {
-    const before = await rendered();
-    await page.mouse.wheel(0, 120);
-    // Scrolled when the set of rendered rows changed; at the bottom it never does (hence the cap).
-    await expect
-      .poll(rendered, { timeout: 1_500 })
-      .not.toBe(before)
-      .catch(() => undefined);
-  }
-  return (await row.count()) > 0 ? row.first() : undefined;
-}
-
-async function knowledgeRow(page: Page, name: RegExp) {
-  // A tooltip left by the last hover would cover the rows below it.
-  await page.mouse.move(1000, 700);
-  const row =
-    (await scanForRow(page, name)) ??
-    pane(page, 'Knowledge').getByRole('treeitem', { name }).first();
-  await expect(row).toBeVisible();
-  return row;
-}
-
-/** A skill row by what a screen reader hears: its role, then its id. */
-const skillRow = (page: Page, id: string) => knowledgeRow(page, new RegExp(`skill ${id},`));
 
 test('the story is on screen: knowledge, threads, awaiting, inbox and the runner', async ({
   stack,
@@ -118,7 +67,7 @@ test('the thread shows the cascade, and an instance offers a skill to start', as
 
   // The instance a draft proposes a change to: select it, and the DETAILS view, a view of its own in
   // the bottom panel (VS Code lays it out), shows the node and offers its skill's actions.
-  await canvas.getByRole('treeitem', { name: /order-4500123/ }).click();
+  await canvas.getByRole('treeitem', { name: /^page: order-4500123/ }).click();
   const details = await webviewWith(page, 'escurel-details');
   await expect(details.locator('escurel-details')).toContainText('order-4500123');
   const start = details.getByRole('group', { name: 'Skills' }).locator('.primary').first();
@@ -148,7 +97,7 @@ test('run detail opens from the canvas with its plan and tool calls', async ({ s
   const { page } = stack;
   // Scenario 2 started a skill, which opened that event's thread in a NEW tab. Go back to the story's
   // thread, the one with a finished run, as a person would.
-  await page.locator('.tab', { hasText: 'Vendor 100234 Meier-Guss' }).first().click();
+  await page.locator('.tab', { hasText: 'PO 4500087412 confirmation' }).first().click();
   const wv = await webviewWith(page, 'escurel-thread-canvas');
   // The canvas is panned to whatever was selected last; Fit brings every card back into view.
   await wv.getByRole('button', { name: 'Fit' }).click();
@@ -156,7 +105,7 @@ test('run detail opens from the canvas with its plan and tool calls', async ({ s
   await wv.locator('escurel-thread-canvas').locator('.card.type-run').first().dblclick();
   await expect(page.locator('.tab .label-name', { hasText: /^Run / })).toBeVisible();
   const run = await webviewWith(page, 'escurel-run-detail');
-  await expect(run.locator('escurel-run-detail h1')).toContainText('Run ');
+  await expect(run.locator('escurel-run-detail h1')).toContainText('supplier-risk on ');
   await expect(run.getByText('Tool calls')).toBeVisible();
   // Plain words, and the 26-character id stays behind Copy run id.
   await expect(run.locator('escurel-run-detail .meta')).toContainText('Run by the');
@@ -493,31 +442,6 @@ const outside = (home: string, name: 'ratings' | 'confirmations'): string => {
   return `http://127.0.0.1:${port}`;
 };
 
-/**
- * Open one row of a skill. The tree refreshes whenever something live happens (the runner is still
- * settling right after the window opens), and a refresh collapses what was just expanded, so the skill
- * is re-expanded and the row looked for again rather than trusting a single click.
- */
-async function openRow(page: Page, skill: string, row: RegExp) {
-  for (let attempt = 0; attempt < 6; attempt += 1) {
-    const skillItem = await skillRow(page, skill);
-    if ((await skillItem.getAttribute('aria-expanded')) !== 'true') await skillItem.click();
-    await page.mouse.move(1000, 700);
-    // The children are fetched from the outside system: wait for the row, not for a duration.
-    const found = await expect
-      .poll(async () => (await scanForRow(page, row)) !== undefined, { timeout: 10_000 })
-      .toBe(true)
-      .then(() => true)
-      .catch(() => false);
-    const item = found ? await scanForRow(page, row) : undefined;
-    if (item) {
-      await item.click();
-      return;
-    }
-  }
-  throw new Error(`the row ${row} never appeared under ${skill}`);
-}
-
 type DraftRef = { draft_id: string; target_page_id: string };
 
 /** The proposal for a page, once it exists: a toast from an earlier step may still be on screen. */
@@ -696,6 +620,136 @@ test('when the portal is down a promoted change is refused, recorded as failed, 
     await expect(cell.locator('.badge'), `${name}: no empty pill`).toHaveCount(0);
   }
   await stack.shot('13-write-back-failed');
+});
+
+// The journeys, in every direction: from the Inbox, from Awaiting You, from Knowledge and from the
+// thread itself, a person can reach the skill, the page, the run and the thread of whatever they are
+// looking at. Each step asserts the destination, not just that a link exists.
+
+async function menuItems(page: Page): Promise<string[]> {
+  const items = page.locator('.monaco-menu .action-item .action-label');
+  await expect(items.first()).toBeVisible();
+  return (await items.allInnerTexts()).map((t) => t.trim()).filter(Boolean);
+}
+const tabNames = (page: Page) => page.locator('.tab .label-name').allInnerTexts();
+
+test('journey: from the Inbox to the thread, the skill and the records the run proposed', async ({
+  stack,
+}) => {
+  const { page } = stack;
+  const rows = pane(page, 'Inbox').getByRole('treeitem', { name: /order-4500131/ });
+  await rows.first().click({ button: 'right' });
+  const menu = await menuItems(page);
+  expect(menu).toContain('Open thread');
+  expect(menu).toContain('View skill');
+  await stack.shot('journeys/J1-inbox-menu');
+  await page.keyboard.press('Escape');
+  // Earlier scenarios may have filed more signals about this order (a plan waiting for approval, which
+  // has proposed nothing yet). Open them in turn and keep the thread whose run proposed records.
+  let wv: FrameLocator | undefined;
+  for (let i = 0; i < (await rows.count()); i += 1) {
+    await rows.nth(i).click();
+    // While VS Code switches tabs the outgoing webview still covers the incoming one for a moment:
+    // resolve the frame afresh on every try.
+    await expect(async () => {
+      wv = await webviewWith(page, 'escurel-thread-canvas', 'order-4500131');
+      await wv.getByRole('button', { name: 'Fit' }).click({ timeout: 3_000 });
+    }).toPass({ timeout: 20_000 });
+    const pages = await wv
+      .locator('escurel-thread-canvas .card.type-page')
+      .count()
+      .catch(() => 0);
+    if (pages >= 2) break;
+  }
+  if (!wv) throw new Error('no Inbox row for order-4500131 opened a thread');
+  const canvas = wv.locator('escurel-thread-canvas');
+  // The records the run proposed are cards of the thread, and each says which skill's record it is:
+  // an order is not an analysis.
+  const order = canvas.locator('.card.type-page').filter({ hasText: 'order-4500131' });
+  const analysis = canvas.locator('.card.type-page').filter({ hasText: 'supplier-risk-analysis' });
+  await expect(order.locator('.type-qualifier')).toHaveText('customer-order');
+  await expect(analysis.locator('.type-qualifier')).toHaveText('supplier-risk-analysis');
+  await expect(canvas.locator('.card.type-run .type-qualifier')).toContainText('on order-4500131');
+  await stack.shot('journeys/J2-cards-name-their-skill');
+  // Select the analysis card: the details panel offers its skill and the run behind it.
+  await analysis.click({ position: { x: 12, y: 8 } });
+  const details = await webviewWith(page, 'escurel-details');
+  await expect(
+    details.getByRole('button', { name: 'View skill: supplier-risk-analysis' }),
+  ).toBeVisible();
+  await expect(details.getByRole('button', { name: 'Open the run behind it' })).toBeVisible();
+  await stack.shot('journeys/J3-details-links');
+  await details.getByRole('button', { name: 'View skill: supplier-risk-analysis' }).click();
+  await expect(page.locator('.tab.active .label-name')).toContainText('supplier-risk-analysis');
+});
+
+test('journey: from a record back to the thread and run that wrote it, and to its report', async ({
+  stack,
+}) => {
+  const { page } = stack;
+  // The analysis of the story's FIRST thread was promoted: its page exists.
+  await openRow(page, 'supplier-risk-analysis', /^meier-guss-\d{4}-\d{2}-\d{2}/);
+  const wv = await webviewWith(page, 'escurel-page-as-ui');
+  const el = wv.locator('escurel-page-as-ui');
+  // It carries the thread strip even though no run-finished row sits on this page: the review rows of
+  // the promoted draft name the run.
+  await expect(el.locator('.thread-strip .open-thread')).toBeVisible();
+  await expect(el.locator('.thread-strip .open-run')).toBeVisible();
+  // And it says which report draws it: a report is a definition, never a node of a thread.
+  await expect(el.locator('.viewer')).toContainText('Chart: supplier-risk-report');
+  await expect(el.locator('.viewer')).toContainText('Peacock');
+  await stack.shot('journeys/J4-record-provenance-and-report');
+  await el.locator('.thread-strip .open-run').click();
+  // The run opens under a name a person recognises: the skill and the page, not an id.
+  await expect(page.locator('.tab.active .label-name')).toContainText(/Run · supplier-risk · /);
+  const run = await webviewWith(page, 'escurel-run-detail');
+  await expect(run.locator('escurel-run-detail h1')).toContainText('supplier-risk on ');
+  await expect(run.getByRole('button', { name: 'View skill: supplier-risk' })).toBeVisible();
+  await expect(run.getByRole('button', { name: 'Open thread' })).toBeVisible();
+  await stack.shot('journeys/J5-run-detail-links');
+  await run.getByRole('button', { name: 'Open thread' }).click();
+  await expect(page.locator('.tab.active .label-name')).toContainText('Thread ·');
+});
+
+test('journey: Knowledge and Awaiting You rows lead to threads, runs and skills', async ({
+  stack,
+}) => {
+  const { page } = stack;
+  const aw = pane(page, 'Awaiting You').getByRole('treeitem').first();
+  await aw.click({ button: 'right' });
+  const awaitingMenu = await menuItems(page);
+  for (const want of ['Open thread', 'Open run', 'View skill', 'Promote', 'Discard']) {
+    expect(awaitingMenu).toContain(want);
+  }
+  await page.keyboard.press('Escape');
+
+  // A skill leads to the threads it started.
+  const skill = await skillRow(page, 'supplier-risk');
+  await skill.click({ button: 'right' });
+  expect(await menuItems(page)).toContain('Show threads using this skill');
+  await chooseMenuItem(page, 'Show threads using this skill');
+  const picker = page.locator('.quick-input-widget');
+  await expect(picker).toBeVisible();
+  await expect(picker.locator('.quick-input-list .monaco-list-row').first()).toBeVisible();
+  await stack.shot('journeys/J6-threads-of-a-skill');
+  const before = await tabNames(page);
+  await picker.locator('.quick-input-list .monaco-list-row').first().click();
+  await expect.poll(async () => (await tabNames(page)).length >= before.length).toBe(true);
+
+  // A report is never run: say so, instead of an empty list.
+  const report = await skillRow(page, 'supplier-risk-report');
+  await report.click({ button: 'right' });
+  await chooseMenuItem(page, 'Show threads using this skill');
+  await expect(page.locator('.notification-toast', { hasText: 'is a report' })).toBeVisible();
+  await stack.shot('journeys/J7-a-report-is-not-run');
+
+  // A record leads to the thread and the run that wrote it.
+  const instance = await knowledgeRow(page, /^meier-guss-\d{4}-\d{2}-\d{2}/);
+  await instance.click({ button: 'right' });
+  const instanceMenu = await menuItems(page);
+  expect(instanceMenu).toContain('Open thread');
+  expect(instanceMenu).toContain('Open run');
+  await page.keyboard.press('Escape');
 });
 
 test('nothing in the extension threw while all of that happened', async ({ stack }) => {
