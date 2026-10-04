@@ -559,3 +559,72 @@ async fn an_outage_before_anything_is_sent_is_still_audited_and_leaves_the_draft
     assert_eq!(c.tier("c-0001"), "gold");
     p.shutdown().await;
 }
+
+// ---- the human gate is a rule, not a convention ----------------------------------------------------
+
+async fn call_with_token(
+    p: &escurel_test_support::EscurelProcess,
+    token: &str,
+    name: &str,
+    args: Value,
+) -> Value {
+    reqwest::Client::new()
+        .post(p.mcp_url())
+        .header("authorization", format!("Bearer {token}"))
+        .json(&json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                       "params": { "name": name, "arguments": args } }))
+        .send()
+        .await
+        .expect("post")
+        .json()
+        .await
+        .expect("json")
+}
+
+#[tokio::test]
+async fn an_agent_run_token_cannot_promote_a_write_back_draft_it_can_only_propose_one() {
+    // Anyone who could SEE a draft could promote it, so a prompt-injected agent could propose a
+    // write-back and approve it itself: the "human gate" was only a convention.
+    let c = crm();
+    let (p, _d) = gateway_over(&c, 5).await;
+    let etag = etag_of_row(&p).await;
+    let minted = admin(
+        &p,
+        "mint_agent_token",
+        json!({ "skill": "customer", "target_page_id": PAGE }),
+    )
+    .await["token"]
+        .as_str()
+        .expect("a minted run token")
+        .to_owned();
+
+    let created = call_with_token(
+        &p,
+        &minted,
+        "create_draft",
+        json!({ "target_page_id": PAGE, "content": intent_content("tier: gold", &etag, "n") }),
+    )
+    .await;
+    let id = draft_id(&created);
+
+    let own = call_with_token(&p, &minted, "promote_draft", json!({ "draft_id": id })).await;
+    let out = own["result"]["structuredContent"].clone();
+    assert_eq!(
+        out["ok"], false,
+        "the agent must not approve its own write-back: {own}"
+    );
+    assert!(
+        issue_codes(&out).contains(&"promote_requires_human".to_owned()),
+        "{own}"
+    );
+    assert!(
+        c.patches.lock().unwrap().is_empty(),
+        "nothing may reach the upstream on an agent's say-so"
+    );
+
+    // A person (a token that is not a minted run token) still can, and it goes through.
+    let done = promote(&p, &id).await;
+    assert_eq!(done["ok"], true, "{done}");
+    assert_eq!(c.patches.lock().unwrap().len(), 1);
+    p.shutdown().await;
+}

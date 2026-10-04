@@ -40,6 +40,8 @@ pub async fn spawn_gateway(
         config_overrides: ConfigOverrides {
             indexer: Some(indexer),
             egress: Some(egress),
+            // So a test can mint a per-run agent token (`mint_agent_token`).
+            signing: true,
             ..Default::default()
         },
         ..Default::default()
