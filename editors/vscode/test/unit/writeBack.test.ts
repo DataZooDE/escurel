@@ -229,3 +229,25 @@ describe('describeCurrent: the value shown in the prompt comes from the source a
     expect(describeCurrent({ a: 1 })).toBe('{"a":1}');
   });
 });
+
+describe('write-back YAML hardening', () => {
+  const base = {
+    pageId: 'markdown/instances/customer/c-0001.md',
+    skill: 'customer',
+    baseEtag: 'e',
+    notes: '',
+  };
+  it('writes U+0085, U+2028 and U+2029 as escapes (YAML would fold them as line breaks)', () => {
+    const md = buildProposal({ ...base, field: 'tier', value: 'a\u2028b\u0085c\u2029d' });
+    expect(md).toContain('"a\\u2028b\\u0085c\\u2029d"');
+    expect(/[\u0085\u2028\u2029]/.test(md)).toBe(false);
+  });
+  it('types an empty numeric or boolean column by its declared kind', () => {
+    expect(parseProposedValue('42', '', 'int')).toEqual({ ok: true, value: 42 });
+    expect(parseProposedValue('4.5', null, 'float')).toEqual({ ok: true, value: 4.5 });
+    expect(parseProposedValue('yes', undefined, 'bool')).toEqual({ ok: true, value: true });
+    expect(parseProposedValue('abc', '', 'int')).toEqual({ ok: false, error: 'Enter a number.' });
+    expect(parseProposedValue('42', '', 'string')).toEqual({ ok: true, value: '42' });
+    expect(parseProposedValue('42', 'text-now', 'int')).toEqual({ ok: true, value: '42' });
+  });
+});

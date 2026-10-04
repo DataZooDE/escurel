@@ -30,16 +30,21 @@ export function registerProposeWriteBack(services: Services): vscode.Disposable 
           return;
         }
         const current = page.frontmatter[field];
+        // The declared kind types a column that is empty right now (a number would otherwise go as text).
+        const skill = (await client.listSkills().catch(() => [])).find(
+          (s) => s.id === page.page!.skill,
+        );
+        const kind = skill?.fields?.find((f) => f.name === field)?.kind;
         const raw = await vscode.window.showInputBox({
           title: `Change ${field} in the source`,
           prompt: `Currently ${describeCurrent(current)}. A reviewer approves the change before the source is touched.`,
           validateInput: (v) => {
-            const r = parseProposedValue(v, current);
+            const r = parseProposedValue(v, current, kind);
             return r.ok ? undefined : r.error;
           },
         });
         if (raw === undefined) return;
-        const parsed = parseProposedValue(raw, current);
+        const parsed = parseProposedValue(raw, current, kind);
         if (!parsed.ok) return;
         const notes = await vscode.window.showInputBox({
           title: 'Note for the reviewer (optional)',
