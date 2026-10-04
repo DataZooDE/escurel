@@ -681,7 +681,7 @@ pub const CONFIG_KEYS: &[ConfigKey] = &[
         name: "ESCUREL_RUNNER_LISTEN",
         component: "Runner",
         default: "0.0.0.0:8088",
-        doc: "address of the runner's own HTTP server (`/healthz`, `/version`, `POST /trigger`)",
+        doc: "address of the runner's own HTTP server (`/healthz`, `/readyz`, `/version`, `POST /trigger`)",
     },
     ConfigKey {
         name: "ESCUREL_RUNNER_GATEWAY_URL",
@@ -1098,7 +1098,18 @@ const GROUPS: &[(&str, &str)] = &[
     ("Server", "escurel-server"),
     ("Server / Runner", "read by both the server and the runner"),
     ("Server / Runner / Loader", "read by several binaries"),
-    ("Runner", "escurel-runner (the agent runner)"),
+    (
+        "Runner",
+        "escurel-runner (the agent runner). For an Evolve/Workbench deployment, probe\n\
+         `GET /readyz` and admit planning work only after it returns 200. It becomes\n\
+         ready after a successful reserved `escurel:runner-status` system-event write\n\
+         and becomes unready when that write is refused, fails, goes stale, or the\n\
+         runner starts draining. Give the runner service credential `escurel:admin`\n\
+         scope; keep per-run harness credentials caller-scoped. `GET /healthz` remains\n\
+         a dependency-free liveness probe. Webhook-only runners without a configured\n\
+         tenant/token can process `/trigger` but deliberately report unready at\n\
+         `/readyz`, so do not use that probe as their traffic gate",
+    ),
     ("Cli", "the `escurel` CLI"),
     ("Harness", "set by the runner for a harness subprocess"),
     (

@@ -140,14 +140,14 @@ read by several binaries.
 ## Runner
 
 escurel-runner (the agent runner). For an Evolve/Workbench deployment, probe
-`GET /readyz` on the runner and admit planning work only after it returns 200.
-It becomes ready after a successful reserved `escurel:runner-status` system
-event write and becomes unready when that write is refused, fails, goes stale,
-or the runner starts draining. Give the runner service credential
-`escurel:admin` scope; keep per-run harness credentials caller-scoped.
-`GET /healthz` remains a dependency-free liveness probe. Webhook-only runners
-without a configured tenant/token can process `/trigger` but deliberately
-report unready at `/readyz`, so do not use that probe as their traffic gate.
+`GET /readyz` and admit planning work only after it returns 200. It becomes
+ready after a successful reserved `escurel:runner-status` system-event write
+and becomes unready when that write is refused, fails, goes stale, or the
+runner starts draining. Give the runner service credential `escurel:admin`
+scope; keep per-run harness credentials caller-scoped. `GET /healthz` remains
+a dependency-free liveness probe. Webhook-only runners without a configured
+tenant/token can process `/trigger` but deliberately report unready at
+`/readyz`, so do not use that probe as their traffic gate.
 
 | var | default | meaning |
 |---|---|---|
