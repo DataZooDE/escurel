@@ -20,7 +20,10 @@ an `authorization` header and lets the server enforce its own policy
 `--format json` (default) emits the stable JSON contract on stdout;
 `--format table` renders a human table. It's global — put it anywhere.
 Errors go to **stderr** as JSON with a non-zero exit, so a calling agent
-can branch on them.
+can branch on them. A **refused** call (an access denial, `invalid_limit`, `query_not_found`, …) is an
+error too: stderr carries `{"error": "refused: <code> at <location>: <message> (<suggestion>)"}` and the
+exit is non-zero. It is never an empty list on exit 0, so `escurel … || handle` is safe; check the exit
+status, not only whether stdout is empty (`references/03` § Errors).
 
 ## Command shape
 

@@ -13,6 +13,17 @@ rollback) and the consumer checklist in
 [`.claude/skills/escurel-platform/CHANGELOG.md`](.claude/skills/escurel-platform/CHANGELOG.md) (0.7.0 – 0.14.0).
 Skill version `0.14.0`. Every consumer that writes pages or reads the tool surface moves in the same window.
 
+### Fixed
+
+- **A refused read is an error, never an empty success (security-relevant).** `escurel-client` decoded
+  the `structuredContent` of a refused read (`isError: true`, `{ok: false, issues}`) into a response type
+  whose fields all default, so an ACL denial, `invalid_limit`, `query_not_found`, … returned `Ok(<empty>)`:
+  a silent partial read. Now `Error::Refused(Refusal{issues, payload})` (shared reader
+  `escurel_types::call_result`). The write family and `validate` still return the typed answer with
+  `ok: false`; `rebase_pack` stays a report. Same fix in the echo and Gemini harness clients, the CLI
+  (non-zero exit), the test-support client (`call_ok`), the VS Code client and the Dart client. A guard
+  test fails if a crate reads a result's `structuredContent` outside the shared reader. Skill `0.15.1`.
+
 ### BREAKING
 
 - **The page kind is `kind:` (was `type:`).** `type: skill|instance` is removed — a hard cut with no

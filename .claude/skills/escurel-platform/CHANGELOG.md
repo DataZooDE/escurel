@@ -4,6 +4,18 @@ The skill version tracks the consumer-facing contract, not the Escurel
 binary version. The Escurel repo's checked-out git ref is the true version
 pin (see `SKILL.md` → "How this skill is installed").
 
+## 0.15.1 — a refused call is an error in every client (PATCH, behaviour fix)
+
+- **Fix:** the Rust client (`escurel-client`) decoded a refused READ (`isError: true`, payload `{ok: false,
+  issues}`) into its response type, whose fields all default, so an access denial, `invalid_limit`,
+  `field_not_filterable`, `query_not_found` or `endpoint_not_registered` came back as `Ok(<empty>)`: a silent
+  partial read. It is now `Error::Refused` carrying the issues (code, location, message, suggestion).
+  Successful results are unchanged. The write tools and `validate` still return their typed answer with
+  `ok: false`. The same hole is closed in the echo/Gemini harness clients, the test-support MCP client
+  (`call_ok`), the CLI (non-zero exit), the VS Code client and the Dart client.
+- **If you wrote your own `tools/call` reader:** check `isError` / `ok === false` BEFORE you use
+  `structuredContent` (`references/03` § Errors). A `Result` that is `Ok` no longer means "the tool agreed".
+
 ## 0.15.0 — `list_skills` carries the OKF provenance keys and Peacock's `viewer:`
 
 Additive (a client that ignores the new keys keeps working; rows of skills that declare none are
