@@ -236,8 +236,9 @@ In:
   `at:` denormalised to an indexed column on both the DuckDB
   `pages` and `blocks` tables; `list_instances` accepts
   `order_by` and the operator-wrapped `FilterClause` syntax
-- **External instance backends** — the `InstanceBackend` trait with three
-  impls (`markdown` | `sql_view` | `document`). `sql_view`: read-only DuckDB
+- **External instance backends** — three backend kinds
+  (`markdown` | `sql_view` | `document`), dispatched by probe in the read tools (the `InstanceBackend`
+  trait of the original plan was never wired and has been deleted). `sql_view`: read-only DuckDB
   views over postgres/mysql/sqlite/erpl/json_dir/parquet_dir, server-side
   credential registry, `validate_bindings`, ACL-before-fusion search.
   `document`: PDF/DOCX/PPTX/XLSX + text uploaded via `/ingest` /

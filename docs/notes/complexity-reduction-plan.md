@@ -104,7 +104,7 @@ schema and labels are all derived, so adding a tool is one entry.
 *Risk: medium. Touches discovery, admin gating and execution labels. The
 `cli_parity` test already ratchets tool→CLI coverage and will catch omissions.*
 
-### R3 — Route the four external backends through `InstanceBackend`
+### R3 — Route the four external backends through `InstanceBackend` (SUPERSEDED: the seam was deleted, see the status update at the end)
 
 Verified: `grep -rn "impl .*InstanceBackend for"` returns **exactly one hit**
 (`backend/markdown.rs:33`). The other four backends — `sql_view`, `document`,
@@ -343,15 +343,11 @@ answered `status: "ok"`. It failed a docs-only PR and passed every local
 `--workspace` run. Now uses port 0 directly: nothing can ever listen on it,
 so the race is gone by construction rather than narrowed.
 
-## Status update (2026-10-04): R3 is still open, and the code went the other way
+## Status update (2026-10-04, later): R3 is closed by deleting the seam
 
-`InstanceBackend` / `BackendRegistry` still have exactly one implementation (markdown) and **no
-caller in the server**. The backends added since (`rows`, remote `openapi`/`mcp` rows, write-back)
-were dispatched by probe in the read tools (`rows_source`, `remote_rows::source`,
-`escurel-server/src/mcp/backend_view.rs`, whose header argues the trait is the wrong home because
-its `expand` return type cannot carry the row projection). R3 above ("do not delete the trait, route
-the others through it") was therefore NOT done and is now doubtful: a dispatcher that must carry
-rows, remote rows, projections, write-back and trust markers would need a different trait than the
-PR-1 one. The seam is kept and now says so in its module docs. The decision to make, before any
-further backend: either redesign the trait around the row/projection model and route everything
-through it, or delete the seam. Do not add a new backend to the registry in the meantime.
+The owner decided to delete the dead seam. `InstanceBackend`, `BackendRegistry`, `BackendCtx` and
+`MarkdownBackend` (one implementation, no caller in the server) are gone, with their test suite. The
+backends added since (`rows`, remote `openapi`/`mcp` rows, SQL/REST/MCP write-back) are dispatched by
+probe in the read tools (`rows_source`, `remote_rows::source`, the `BackendView` classifier in
+`escurel-server/src/mcp/backend_view.rs`). If a common interface is ever wanted again it has to carry
+rows, projections, write-back and trust markers, which the PR-1 trait could not: design it then.

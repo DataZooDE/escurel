@@ -12,7 +12,6 @@
 mod acl;
 mod append_lake_probe;
 mod as_of;
-mod backend_registry;
 mod chat_messages;
 mod citation_lookup;
 mod contextual_retrieval;

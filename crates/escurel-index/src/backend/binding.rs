@@ -1,7 +1,6 @@
 //! Parsing the per-skill `backend:` frontmatter block.
 //!
-//! A skill page MAY declare a `backend:` block selecting which
-//! [`InstanceBackend`](super::InstanceBackend) materialises and reads its
+//! A skill page MAY declare a `backend:` block selecting which backend materialises and reads its
 //! instances. A skill with no `backend:` block — every skill in the corpus
 //! today — defaults to [`BackendKind::Markdown`], so this is fully
 //! backward-compatible (REQ-BK-01).
