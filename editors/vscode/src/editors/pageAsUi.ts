@@ -6,6 +6,8 @@ import { describeError } from '../errors';
 import { pageIdFromPath } from '../fs/read';
 import { log } from '../log';
 import { buildPageModel } from '../shared/page';
+import { latestLoader } from '../shared/latestLoader';
+import { newNonce } from './nonce';
 import { safePost } from '../shared/safePost';
 import { findThreadStrip } from '../shared/threadStrip';
 import type { HostToWebview, PageModel, WebviewToHost } from '../shared/protocol';
@@ -60,21 +62,28 @@ export class PageAsUiEditor implements vscode.CustomReadonlyEditorProvider {
     // reloads the page) replaces the content quietly: flashing it to "loading" each time swallowed
     // clicks and reset the reader's place.
     let shown = false;
-    const load = async () => {
-      if (!pageId)
-        return post({ type: 'error', message: `not an escurel page: ${doc.uri.toString()}` });
-      if (!shown) post({ type: 'loading' });
-      try {
+    // Reads overlap (every event, view-state change and gateway change starts one, each several awaits):
+    // only the newest is applied, so a slow old read cannot replace the model the host validates against.
+    const loader = latestLoader<{ message: HostToWebview; model?: PageModel }>(
+      async () => {
+        if (!pageId)
+          return {
+            message: { type: 'error', message: `not an escurel page: ${doc.uri.toString()}` },
+          };
         const c = this.client();
         const [e, skills] = await Promise.all([c.expand({ page_id: pageId }), c.listSkills()]);
         if (!e.page)
-          return post({
-            type: 'error',
-            message: 'This page does not exist, or you may not read it.',
-          });
+          return {
+            message: {
+              type: 'error',
+              message: 'This page does not exist, or you may not read it.',
+            },
+          };
         const skill = skills.find((s) => s.id === e.page!.skill);
         if (!skill)
-          return post({ type: 'error', message: `skill ${e.page.skill} is not in the catalogue` });
+          return {
+            message: { type: 'error', message: `skill ${e.page.skill} is not in the catalogue` },
+          };
         const model = buildPageModel(e, skill);
         // Where the page came from. A failure here must not cost the user the page: the strip
         // is an addition to it, so it degrades to absent.
@@ -105,23 +114,42 @@ export class PageAsUiEditor implements vscode.CustomReadonlyEditorProvider {
           }
         }
         const base = strip ? { ...model, thread: strip } : model;
-        current = writeBack ? { ...base, writeBack } : base;
-        shown = true;
-        post({ type: 'page', model: current });
-      } catch (err) {
-        post({ type: 'error', message: describeError(err) });
-      }
+        const built = writeBack ? { ...base, writeBack } : base;
+        return { message: { type: 'page', model: built }, model: built };
+      },
+      (result) => {
+        if (result.model) {
+          current = result.model;
+          shown = true;
+        }
+        post(result.message);
+      },
+      (err) => post({ type: 'error', message: describeError(err) }),
+    );
+    const load = async () => {
+      if (!shown) post({ type: 'loading' });
+      await loader.run();
     };
     const subs: vscode.Disposable[] = [
       panel.webview.onDidReceiveMessage((m: WebviewToHost) =>
         this.onMessage(m, pageId, current, load),
       ),
-      this.onDidChange(() => void load()),
+      // A different gateway or tenant: what is on screen (and what messages are judged against) belongs
+      // to the old one. Retire the reads in flight and start over.
+      this.onDidChange(() => {
+        loader.invalidate();
+        current = undefined;
+        shown = false;
+        void load();
+      }),
       panel.onDidChangeViewState((e) => {
         if (e.webviewPanel.active) void load();
       }),
     ];
-    panel.onDidDispose(() => subs.forEach((s) => s.dispose()));
+    panel.onDidDispose(() => {
+      loader.invalidate();
+      subs.forEach((s) => s.dispose());
+    });
   }
 
   private onMessage(
@@ -156,9 +184,7 @@ export class PageAsUiEditor implements vscode.CustomReadonlyEditorProvider {
     const script = webview.asWebviewUri(
       vscode.Uri.joinPath(this.context.extensionUri, 'dist', 'webview', 'page-as-ui.js'),
     );
-    const nonce = Array.from({ length: 16 }, () =>
-      Math.floor(Math.random() * 36).toString(36),
-    ).join('');
+    const nonce = newNonce();
     return `<!doctype html><html><head><meta charset="utf-8" />
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${webview.cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}';" />
 <style>body{margin:0}</style></head>

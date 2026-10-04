@@ -26,15 +26,24 @@ const instanceId = (pageId: string): string =>
 const scalar = (v: string | number | boolean): string =>
   typeof v === 'string' ? JSON.stringify(v) : String(v);
 
+/** A column name from the gateway. Only a plain identifier is put into the YAML key position. */
+const COLUMN = /^[A-Za-z0-9_.-]+$/;
+
 /** The draft's markdown: the person's notes plus the reserved `write_back` block. */
 export function buildProposal(p: Proposal): string {
+  // Every name here comes from the gateway: a hostile column such as `a, b: x` must not add a key to the
+  // reserved block, and a skill or id with a newline must not add a line. Quote or refuse.
+  if (!COLUMN.test(p.field))
+    throw new Error(
+      `refusing to propose a change to column ${JSON.stringify(p.field)}: not a plain column name`,
+    );
   return (
     '---\n' +
     'kind: instance\n' +
-    `id: ${instanceId(p.pageId)}\n` +
-    `skill: ${p.skill}\n` +
+    `id: ${JSON.stringify(instanceId(p.pageId))}\n` +
+    `skill: ${JSON.stringify(p.skill)}\n` +
     'write_back:\n' +
-    `  patch: { ${p.field}: ${scalar(p.value)} }\n` +
+    `  patch: { ${JSON.stringify(p.field)}: ${scalar(p.value)} }\n` +
     `  base_etag: ${JSON.stringify(p.baseEtag)}\n` +
     '---\n' +
     `${p.notes}\n`

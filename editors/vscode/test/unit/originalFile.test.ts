@@ -1,30 +1,68 @@
 import { describe, expect, it } from 'vitest';
-import { originalFileName } from '../../src/commands/originalFile';
+import { planOriginal } from '../../src/commands/originalFile';
 
-// The original of a document page is written to a temp file and opened with the system's own app, so
-// the file needs the right extension, and a name that cannot escape the folder it is written to.
-describe('originalFileName', () => {
-  it('names the file after the page and gives it the extension its content type implies', () => {
-    expect(originalFileName('markdown/instances/contract__nda-2026.md', 'application/pdf')).toBe(
-      'nda-2026.pdf',
+const scope = 'https://gw.example/acme';
+
+// The original of a document page is UNTRUSTED bytes someone else uploaded. It is written to the
+// extension's storage and, only if its type is passive, handed to the system's own application. Active
+// content (HTML, SVG, scripts) must never reach a handler: a `file://` HTML page opens in the browser
+// with script enabled.
+describe('planOriginal: what is written and what happens with it', () => {
+  it('opens a PDF or an image straight away, under a name that is a hash, not the upload', () => {
+    const pdf = planOriginal(scope, 'markdown/instances/contract__nda-2026.md', 'application/pdf');
+    expect(pdf.handling).toBe('open');
+    expect(pdf.fileName).toMatch(/^nda-2026-[0-9a-f]{12}\.pdf$/);
+    expect(planOriginal(scope, 'markdown/instances/x__y.md', 'image/png').handling).toBe('open');
+    expect(planOriginal(scope, 'markdown/instances/x__y.md', 'image/jpeg').fileName).toMatch(
+      /\.jpg$/,
     );
-    expect(
-      originalFileName(
-        'markdown/instances/contract__nda-2026.md',
-        'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-      ),
-    ).toBe('nda-2026.docx');
-    expect(originalFileName('markdown/instances/memo__m1.md', 'text/plain')).toBe('m1.txt');
+    expect(planOriginal(scope, 'markdown/instances/x__y.md', 'text/plain').handling).toBe('open');
   });
 
-  it('falls back to .bin for a type it does not know', () => {
-    expect(originalFileName('markdown/instances/x__y.md', 'application/x-weird')).toBe('y.bin');
+  it('asks first for an office document, because the system app may run what it contains', () => {
+    for (const type of [
+      'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+    ]) {
+      expect(planOriginal(scope, 'markdown/instances/x__y.md', type).handling).toBe('confirm');
+    }
+  });
+
+  it('never gives active content an extension a handler would run: it is saved as text and only revealed', () => {
+    for (const type of [
+      'text/html',
+      'application/xhtml+xml',
+      'image/svg+xml',
+      'application/javascript',
+      'text/javascript',
+      'application/x-msdownload',
+      'application/x-weird',
+      'text/html; charset=utf-8',
+    ]) {
+      const plan = planOriginal(scope, 'markdown/instances/x__y.md', type);
+      expect(plan.handling, type).toBe('reveal');
+      expect(plan.fileName, type).toMatch(/\.(txt|bin)$/);
+    }
+  });
+
+  it('gives two documents with the same slug in different tenants different files', () => {
+    const a = planOriginal('https://gw/acme', 'markdown/instances/c__nda.md', 'application/pdf');
+    const b = planOriginal('https://gw/globex', 'markdown/instances/c__nda.md', 'application/pdf');
+    expect(a.fileName).not.toBe(b.fileName);
+    expect(
+      planOriginal('https://gw/acme', 'markdown/instances/c__nda.md', 'application/pdf'),
+    ).toEqual(a);
   });
 
   it('keeps the name a plain file name: no separators, no dots at the start', () => {
-    const name = originalFileName('markdown/instances/x__../../etc/passwd.md', 'application/pdf');
-    expect(name).not.toContain('/');
-    expect(name.startsWith('.')).toBe(false);
-    expect(name.endsWith('.pdf')).toBe(true);
+    const { fileName } = planOriginal(
+      scope,
+      'markdown/instances/x__../../etc/passwd.md',
+      'application/pdf',
+    );
+    expect(fileName).not.toContain('/');
+    expect(fileName.startsWith('.')).toBe(false);
+    expect(fileName.endsWith('.pdf')).toBe(true);
   });
 });
