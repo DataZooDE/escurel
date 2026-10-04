@@ -40,9 +40,8 @@ class EventPane extends ConsumerWidget {
           _SectionHeader(
             label: 'EVENTS',
             trailing: events.maybeWhen(
-              data: (e) => '${e.length}${historyHasMore ? '+' : ''}',
-              orElse: () => null,
-            ),
+                data: (e) => '${e.length}${historyHasMore ? '+' : ''}',
+                orElse: () => null),
           ),
           Expanded(
             flex: 5,
@@ -65,11 +64,8 @@ class EventPane extends ConsumerWidget {
                             ? _EventTile(
                                 event: list[i],
                                 selected: list[i].eventId == open,
-                                onTap: () =>
-                                    ref.read(openEventProvider.notifier).state =
-                                        list[i].eventId,
-                                onSkill: () =>
-                                    focusSkill(ref, list[i].labelSkill),
+                                onTap: () => ref.read(openEventProvider.notifier).state = list[i].eventId,
+                                onSkill: () => focusSkill(ref, list[i].labelSkill),
                               )
                             : _LoadMoreTile(
                                 semanticsLabel: 'load-more-events',
@@ -98,10 +94,9 @@ class EventPane extends ConsumerWidget {
                   _SectionHeader(
                     label: 'INBOX',
                     trailing: inbox.maybeWhen(
-                      data: (page) =>
-                          '${page.events.length}${page.hasMore ? '+' : ''}',
-                      orElse: () => null,
-                    ),
+                        data: (page) =>
+                            '${page.events.length}${page.hasMore ? '+' : ''}',
+                        orElse: () => null),
                     background: kSurfaceContainerHighest,
                   ),
                   Expanded(
@@ -118,20 +113,15 @@ class EventPane extends ConsumerWidget {
                           return ListView.separated(
                             padding: EdgeInsets.zero,
                             itemCount: list.length + (page.hasMore ? 1 : 0),
-                            separatorBuilder: (_, _) =>
-                                const Divider(height: 1),
+                            separatorBuilder: (_, _) => const Divider(height: 1),
                             itemBuilder: (_, i) => i < list.length
                                 ? _EventTile(
                                     event: list[i],
                                     selected: list[i].eventId == open,
                                     inbox: true,
                                     onTap: () =>
-                                        ref
-                                            .read(openEventProvider.notifier)
-                                            .state = list[i]
-                                            .eventId,
-                                    onSkill: () =>
-                                        focusSkill(ref, list[i].labelSkill),
+                                        ref.read(openEventProvider.notifier).state = list[i].eventId,
+                                    onSkill: () => focusSkill(ref, list[i].labelSkill),
                                   )
                                 : _LoadMoreTile(
                                     semanticsLabel: 'load-more-inbox',
@@ -179,9 +169,7 @@ class _SourcesFilter extends ConsumerWidget {
               _SourceChip(
                 source: s,
                 active: selected == s,
-                onTap: () =>
-                    ref.read(eventSourceFilterProvider.notifier).state =
-                        selected == s ? null : s,
+                onTap: () => ref.read(eventSourceFilterProvider.notifier).state = selected == s ? null : s,
               ),
           ],
         ),
@@ -191,11 +179,7 @@ class _SourcesFilter extends ConsumerWidget {
 }
 
 class _SourceChip extends StatelessWidget {
-  const _SourceChip({
-    required this.source,
-    required this.active,
-    required this.onTap,
-  });
+  const _SourceChip({required this.source, required this.active, required this.onTap});
   final String source;
   final bool active;
   final VoidCallback onTap;
@@ -221,18 +205,14 @@ class _SourceChip extends StatelessWidget {
           child: Row(
             mainAxisSize: MainAxisSize.min,
             children: [
-              Icon(
-                icon,
-                size: 13,
-                color: active ? kSurface : kOnSurfaceVariant,
-              ),
+              Icon(icon, size: 13, color: active ? kSurface : kOnSurfaceVariant),
               const SizedBox(width: 4),
               Text(
                 label,
-                style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                  color: active ? kSurface : kOnSurfaceVariant,
-                  fontWeight: FontWeight.w600,
-                ),
+                style: Theme.of(context)
+                    .textTheme
+                    .labelSmall
+                    ?.copyWith(color: active ? kSurface : kOnSurfaceVariant, fontWeight: FontWeight.w600),
               ),
             ],
           ),
@@ -290,47 +270,36 @@ class _EventTile extends StatelessWidget {
     final (icon, label) = sourceFace(event.source, event.labelSkill);
     final prov = (event.provenance['provenance'] as String?) ?? '';
     final tile = Container(
-      // Inbox tiles sit on the darker band, so their selected tint
-      // steps one shade darker than the processed-event tiles'.
-      color: selected
-          ? (inbox ? kSurfaceContainerHighest : kSurfaceContainerHigh)
-          : null,
-      padding: const EdgeInsets.fromLTRB(14, 9, 12, 9),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
+          // Inbox tiles sit on the darker band, so their selected tint
+          // steps one shade darker than the processed-event tiles'.
+          color: selected ? (inbox ? kSurfaceContainerHighest : kSurfaceContainerHigh) : null,
+          padding: const EdgeInsets.fromLTRB(14, 9, 12, 9),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Icon(icon, size: 14, color: kPrimary),
-              const SizedBox(width: 4),
-              Text(
-                label,
-                style: text.labelSmall?.copyWith(
-                  color: kPrimary,
-                  fontWeight: FontWeight.w600,
-                ),
+              Row(
+                children: [
+                  Icon(icon, size: 14, color: kPrimary),
+                  const SizedBox(width: 4),
+                  Text(label, style: text.labelSmall?.copyWith(color: kPrimary, fontWeight: FontWeight.w600)),
+                  const Spacer(),
+                  Text(shortWhen(event.at), style: text.labelSmall?.copyWith(color: kOutline)),
+                ],
               ),
-              const Spacer(),
+              const SizedBox(height: 5),
               Text(
-                shortWhen(event.at),
-                style: text.labelSmall?.copyWith(color: kOutline),
+                event.title.isEmpty ? event.eventId : event.title,
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+                style: text.bodyMedium?.copyWith(color: kOnSurface, fontWeight: FontWeight.w500),
               ),
+              if (prov.isNotEmpty) ...[
+                const SizedBox(height: 5),
+                _Badge(prov),
+              ],
             ],
           ),
-          const SizedBox(height: 5),
-          Text(
-            event.title.isEmpty ? event.eventId : event.title,
-            maxLines: 2,
-            overflow: TextOverflow.ellipsis,
-            style: text.bodyMedium?.copyWith(
-              color: kOnSurface,
-              fontWeight: FontWeight.w500,
-            ),
-          ),
-          if (prov.isNotEmpty) ...[const SizedBox(height: 5), _Badge(prov)],
-        ],
-      ),
-    );
+        );
 
     // Uniform with the wikilink pills: default tap opens the event;
     // shift-click / the hover chip → its processing skill (label_skill).
@@ -381,10 +350,8 @@ class _LoadMoreTile extends StatelessWidget {
               const SizedBox(width: 4),
               Text(
                 'load more',
-                style: text.labelSmall?.copyWith(
-                  color: kPrimary,
-                  fontWeight: FontWeight.w600,
-                ),
+                style: text.labelSmall
+                    ?.copyWith(color: kPrimary, fontWeight: FontWeight.w600),
               ),
             ],
           ),
@@ -415,33 +382,15 @@ class _EventDetail extends ConsumerWidget {
                     children: [
                       _Chip(sourceFace(e.source, e.labelSkill).$2),
                       const SizedBox(width: 6),
-                      Text(
-                        e.mime,
-                        style: text.labelSmall?.copyWith(color: kOutline),
-                      ),
+                      Text(e.mime, style: text.labelSmall?.copyWith(color: kOutline)),
                       const Spacer(),
-                      Text(
-                        shortWhen(e.at),
-                        style: text.labelSmall?.copyWith(color: kOutline),
-                      ),
+                      Text(shortWhen(e.at), style: text.labelSmall?.copyWith(color: kOutline)),
                     ],
                   ),
                   const SizedBox(height: 8),
-                  Text(
-                    e.title,
-                    style: text.titleMedium?.copyWith(
-                      color: kOnSurface,
-                      fontWeight: FontWeight.w700,
-                    ),
-                  ),
+                  Text(e.title, style: text.titleMedium?.copyWith(color: kOnSurface, fontWeight: FontWeight.w700)),
                   const SizedBox(height: 8),
-                  Text(
-                    e.body,
-                    style: text.bodyMedium?.copyWith(
-                      color: kOnSurfaceVariant,
-                      height: 1.4,
-                    ),
-                  ),
+                  Text(e.body, style: text.bodyMedium?.copyWith(color: kOnSurfaceVariant, height: 1.4)),
                 ],
               ),
             ),
@@ -450,11 +399,7 @@ class _EventDetail extends ConsumerWidget {
 }
 
 class _SectionHeader extends StatelessWidget {
-  const _SectionHeader({
-    required this.label,
-    this.trailing,
-    this.background = kSurfaceContainerLow,
-  });
+  const _SectionHeader({required this.label, this.trailing, this.background = kSurfaceContainerLow});
   final String label;
   final String? trailing;
   final Color background;
@@ -467,12 +412,8 @@ class _SectionHeader extends StatelessWidget {
       child: Row(
         mainAxisAlignment: MainAxisAlignment.spaceBetween,
         children: [
-          Text(
-            label,
-            style: text.labelSmall?.copyWith(color: kOutline, letterSpacing: 1),
-          ),
-          if (trailing != null)
-            Text(trailing!, style: text.labelSmall?.copyWith(color: kOutline)),
+          Text(label, style: text.labelSmall?.copyWith(color: kOutline, letterSpacing: 1)),
+          if (trailing != null) Text(trailing!, style: text.labelSmall?.copyWith(color: kOutline)),
         ],
       ),
     );
@@ -488,18 +429,15 @@ class _Badge extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
       decoration: BoxDecoration(
-        color: promoted
-            ? kSecondaryContainer
-            : kSuccess.withValues(alpha: 0.14),
+        color: promoted ? kSecondaryContainer : kSuccess.withValues(alpha: 0.14),
         borderRadius: BorderRadius.circular(6),
       ),
       child: Text(
         text.toUpperCase(),
-        style: Theme.of(context).textTheme.labelSmall?.copyWith(
-          color: promoted ? kOnSecondaryContainer : kSuccess,
-          fontSize: 9,
-          fontWeight: FontWeight.w700,
-        ),
+        style: Theme.of(context)
+            .textTheme
+            .labelSmall
+            ?.copyWith(color: promoted ? kOnSecondaryContainer : kSuccess, fontSize: 9, fontWeight: FontWeight.w700),
       ),
     );
   }
@@ -510,24 +448,17 @@ class _Chip extends StatelessWidget {
   final String text;
   @override
   Widget build(BuildContext context) => Container(
-    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-    decoration: BoxDecoration(
-      color: kSecondaryContainer,
-      borderRadius: BorderRadius.circular(6),
-    ),
-    child: Text(
-      text,
-      style: Theme.of(context).textTheme.labelSmall
-          ?.copyWith(color: kOnSecondaryContainer, fontSize: 9),
-    ),
-  );
+        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+        decoration: BoxDecoration(color: kSecondaryContainer, borderRadius: BorderRadius.circular(6)),
+        child: Text(text,
+            style: Theme.of(context).textTheme.labelSmall?.copyWith(color: kOnSecondaryContainer, fontSize: 9)),
+      );
 }
 
 class _Loading extends StatelessWidget {
   const _Loading();
   @override
-  Widget build(BuildContext context) =>
-      const Center(child: CircularProgressIndicator(strokeWidth: 2));
+  Widget build(BuildContext context) => const Center(child: CircularProgressIndicator(strokeWidth: 2));
 }
 
 class _Error extends StatelessWidget {
@@ -535,12 +466,9 @@ class _Error extends StatelessWidget {
   final String msg;
   @override
   Widget build(BuildContext context) => Padding(
-    padding: const EdgeInsets.all(16),
-    child: Text(
-      'error: $msg',
-      style: Theme.of(context).textTheme.bodySmall?.copyWith(color: kError),
-    ),
-  );
+        padding: const EdgeInsets.all(16),
+        child: Text('error: $msg', style: Theme.of(context).textTheme.bodySmall?.copyWith(color: kError)),
+      );
 }
 
 class _Empty extends StatelessWidget {
@@ -548,9 +476,6 @@ class _Empty extends StatelessWidget {
   final String msg;
   @override
   Widget build(BuildContext context) => Center(
-    child: Text(
-      msg,
-      style: Theme.of(context).textTheme.bodySmall?.copyWith(color: kOutline),
-    ),
-  );
+        child: Text(msg, style: Theme.of(context).textTheme.bodySmall?.copyWith(color: kOutline)),
+      );
 }

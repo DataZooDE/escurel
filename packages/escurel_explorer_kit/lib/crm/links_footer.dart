@@ -19,11 +19,8 @@ class LinksFooter extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final backlinks =
-        ref.watch(currentBacklinksProvider).valueOrNull ?? const <Neighbour>[];
-    final outgoing =
-        ref.watch(currentOutgoingLinksProvider).valueOrNull ??
-        const <Neighbour>[];
+    final backlinks = ref.watch(currentBacklinksProvider).valueOrNull ?? const <Neighbour>[];
+    final outgoing = ref.watch(currentOutgoingLinksProvider).valueOrNull ?? const <Neighbour>[];
     if (backlinks.isEmpty && outgoing.isEmpty) return const SizedBox.shrink();
 
     return Semantics(
@@ -35,21 +32,10 @@ class LinksFooter extends ConsumerWidget {
         children: [
           const Divider(height: 32, color: kOutlineVariant),
           if (backlinks.isNotEmpty)
-            _Section(
-              title: 'BACKLINKS',
-              prefix: 'backlink',
-              links: backlinks,
-              incoming: true,
-            ),
-          if (backlinks.isNotEmpty && outgoing.isNotEmpty)
-            const SizedBox(height: 20),
+            _Section(title: 'BACKLINKS', prefix: 'backlink', links: backlinks, incoming: true),
+          if (backlinks.isNotEmpty && outgoing.isNotEmpty) const SizedBox(height: 20),
           if (outgoing.isNotEmpty)
-            _Section(
-              title: 'OUTGOING LINKS',
-              prefix: 'outlink',
-              links: outgoing,
-              incoming: false,
-            ),
+            _Section(title: 'OUTGOING LINKS', prefix: 'outlink', links: outgoing, incoming: false),
         ],
       ),
     );
@@ -85,7 +71,9 @@ class _Section extends ConsumerWidget {
         Wrap(
           spacing: 8,
           runSpacing: 8,
-          children: [for (final n in links) _chip(ref, n)],
+          children: [
+            for (final n in links) _chip(ref, n),
+          ],
         ),
       ],
     );

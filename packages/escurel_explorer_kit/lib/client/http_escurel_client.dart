@@ -47,8 +47,10 @@ class HttpEscurelClient implements EscurelClient {
 
   // ── tool dispatch (MCP-over-HTTP envelope) ──────────────────
 
-  Future<Map<String, dynamic>> _call(String tool, Map<String, dynamic> args) =>
-      _rpc('tools/call', {'name': tool, 'arguments': args});
+  Future<Map<String, dynamic>> _call(
+    String tool,
+    Map<String, dynamic> args,
+  ) => _rpc('tools/call', {'name': tool, 'arguments': args});
 
   /// One raw JSON-RPC round-trip over `/mcp`. [_call] wraps it for
   /// `tools/call`; `tools/list` (a method-level request, no tool
@@ -612,7 +614,7 @@ class HttpEscurelClient implements EscurelClient {
         .map(Event.fromJson)
         .toList(),
     nextCursor: result['next_cursor'] as String?,
-    hasMore: result['has_more'] == true,
+    serverHasMore: result['has_more'] == true,
   );
 
   @override

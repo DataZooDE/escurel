@@ -756,15 +756,16 @@ class Event {
 /// a client paging until then makes one extra empty call — [hasMore]
 /// avoids it. (`resume_cursor` no longer exists.)
 class EventPage {
-  const EventPage({required this.events, this.nextCursor, bool? hasMore})
-    : _hasMore = hasMore;
+  const EventPage({required this.events, this.nextCursor, this.serverHasMore});
   final List<Event> events;
   final String? nextCursor;
-  final bool? _hasMore;
 
-  /// Whether another page can be fetched. A fixture built without the
-  /// wire flag falls back to the cursor's presence.
-  bool get hasMore => _hasMore ?? (nextCursor != null);
+  /// The wire's `has_more`, when the server sent the contract (null for a
+  /// fixture built without it).
+  final bool? serverHasMore;
+
+  /// Whether another page can be fetched.
+  bool get hasMore => serverHasMore ?? (nextCursor != null);
 }
 
 // ── tools/list (scope labels) ───────────────────────────────────

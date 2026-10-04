@@ -57,28 +57,16 @@ class _SkillsPanel extends ConsumerWidget {
             error: (e, _) => _PanelError('$e'),
             data: (list) {
               int byId(SkillSummary a, SkillSummary b) => a.id.compareTo(b.id);
-              final entity = list.where((s) => !s.isEventTyped).toList()
-                ..sort(byId);
-              final event = list.where((s) => s.isEventTyped).toList()
-                ..sort(byId);
+              final entity = list.where((s) => !s.isEventTyped).toList()..sort(byId);
+              final event = list.where((s) => s.isEventTyped).toList()..sort(byId);
               return ListView(
                 padding: EdgeInsets.zero,
                 shrinkWrap: true,
                 children: [
-                  if (entity.isNotEmpty)
-                    MenuSectionHeader(
-                      label: 'ENTITY-BOUND',
-                      count: entity.length,
-                    ),
-                  for (final s in entity)
-                    _SkillRow(skill: s, onTap: () => _open(ref, s.id)),
-                  if (event.isNotEmpty)
-                    MenuSectionHeader(
-                      label: 'EVENT-TYPED',
-                      count: event.length,
-                    ),
-                  for (final s in event)
-                    _SkillRow(skill: s, onTap: () => _open(ref, s.id)),
+                  if (entity.isNotEmpty) MenuSectionHeader(label: 'ENTITY-BOUND', count: entity.length),
+                  for (final s in entity) _SkillRow(skill: s, onTap: () => _open(ref, s.id)),
+                  if (event.isNotEmpty) MenuSectionHeader(label: 'EVENT-TYPED', count: event.length),
+                  for (final s in event) _SkillRow(skill: s, onTap: () => _open(ref, s.id)),
                 ],
               );
             },
@@ -127,10 +115,7 @@ class _SkillRow extends StatelessWidget {
                   children: [
                     Text(
                       skill.id,
-                      style: text.bodyMedium?.copyWith(
-                        color: kOnSurface,
-                        fontWeight: FontWeight.w700,
-                      ),
+                      style: text.bodyMedium?.copyWith(color: kOnSurface, fontWeight: FontWeight.w700),
                     ),
                     if (skill.description.isNotEmpty) ...[
                       const SizedBox(height: 2),
@@ -138,9 +123,7 @@ class _SkillRow extends StatelessWidget {
                         skill.description,
                         maxLines: 2,
                         overflow: TextOverflow.ellipsis,
-                        style: text.bodySmall?.copyWith(
-                          color: kOnSurfaceVariant,
-                        ),
+                        style: text.bodySmall?.copyWith(color: kOnSurfaceVariant),
                       ),
                     ],
                   ],
@@ -158,9 +141,9 @@ class _PanelLoading extends StatelessWidget {
   const _PanelLoading();
   @override
   Widget build(BuildContext context) => const Padding(
-    padding: EdgeInsets.all(24),
-    child: Center(child: CircularProgressIndicator(strokeWidth: 2)),
-  );
+        padding: EdgeInsets.all(24),
+        child: Center(child: CircularProgressIndicator(strokeWidth: 2)),
+      );
 }
 
 class _PanelError extends StatelessWidget {
@@ -168,7 +151,7 @@ class _PanelError extends StatelessWidget {
   final String msg;
   @override
   Widget build(BuildContext context) => Padding(
-    padding: const EdgeInsets.all(16),
-    child: Text('error: $msg', style: const TextStyle(color: kError)),
-  );
+        padding: const EdgeInsets.all(16),
+        child: Text('error: $msg', style: const TextStyle(color: kError)),
+      );
 }

@@ -468,29 +468,26 @@ void main() {
       },
     );
 
-    test(
-      'runStoredQuery delegates to query_instance and parses the schema',
-      () async {
-        // The server emits `schema: [{name, type}]` (mcp.rs
-        // tool_run_stored_query) — the client used to read a
-        // non-existent `columns` key and silently dropped all column
-        // metadata.
-        mock.toolHandlers['query_instance'] = (_) => {
-          'rows': [
-            {'customer': 'acme', 'total': 12000},
-          ],
-          'schema': [
-            {'name': 'customer', 'type': 'VARCHAR'},
-            {'name': 'total', 'type': 'BIGINT'},
-          ],
-        };
-        final r = await client.runStoredQuery('sales_by_customer');
-        expect(r.rows, hasLength(1));
-        expect(r.columns, hasLength(2), reason: 'schema must not be dropped');
-        expect(r.columns.first.name, 'customer');
-        expect(r.columns.first.dartType, 'VARCHAR');
-      },
-    );
+    test('runStoredQuery delegates to query_instance and parses the schema', () async {
+      // The server emits `schema: [{name, type}]` (mcp.rs
+      // tool_run_stored_query) — the client used to read a
+      // non-existent `columns` key and silently dropped all column
+      // metadata.
+      mock.toolHandlers['query_instance'] = (_) => {
+        'rows': [
+          {'customer': 'acme', 'total': 12000},
+        ],
+        'schema': [
+          {'name': 'customer', 'type': 'VARCHAR'},
+          {'name': 'total', 'type': 'BIGINT'},
+        ],
+      };
+      final r = await client.runStoredQuery('sales_by_customer');
+      expect(r.rows, hasLength(1));
+      expect(r.columns, hasLength(2), reason: 'schema must not be dropped');
+      expect(r.columns.first.name, 'customer');
+      expect(r.columns.first.dartType, 'VARCHAR');
+    });
 
     test('list_packs parses the subscription pins', () async {
       mock.toolHandlers['list_packs'] = (_) => {
@@ -671,48 +668,42 @@ void main() {
   });
 
   group('cursor pagination', () {
-    test(
-      'list_inbox round-trips the cursor; has_more says rows follow',
-      () async {
-        final sentArgs = <Map<String, dynamic>>[];
-        mock.toolHandlers['list_inbox'] = (args) {
-          sentArgs.add(args);
-          // `next_cursor` is where a page ENDED; `has_more` says rows follow.
-          if (args['cursor'] == null) {
-            return {
-              'events': [
-                {'event_id': 'ev-1'},
-              ],
-              'next_cursor': 'c-1',
-              'has_more': true,
-            };
-          }
+    test('list_inbox round-trips the cursor; has_more says rows follow', () async {
+      final sentArgs = <Map<String, dynamic>>[];
+      mock.toolHandlers['list_inbox'] = (args) {
+        sentArgs.add(args);
+        // `next_cursor` is where a page ENDED; `has_more` says rows follow.
+        if (args['cursor'] == null) {
           return {
             'events': [
-              {'event_id': 'ev-2'},
+              {'event_id': 'ev-1'},
             ],
-            'next_cursor': 'c-2',
+            'next_cursor': 'c-1',
+            'has_more': true,
           };
+        }
+        return {
+          'events': [
+            {'event_id': 'ev-2'},
+          ],
+          'next_cursor': 'c-2',
         };
+      };
 
-        final first = await client.listInbox(limit: 1);
-        expect(first.events.single.eventId, 'ev-1');
-        expect(first.nextCursor, 'c-1');
-        expect(first.hasMore, isTrue);
-        // No cursor on the first request.
-        expect(sentArgs.first.containsKey('cursor'), isFalse);
+      final first = await client.listInbox(limit: 1);
+      expect(first.events.single.eventId, 'ev-1');
+      expect(first.nextCursor, 'c-1');
+      expect(first.hasMore, isTrue);
+      // No cursor on the first request.
+      expect(sentArgs.first.containsKey('cursor'), isFalse);
 
-        final second = await client.listInbox(
-          limit: 1,
-          cursor: first.nextCursor,
-        );
-        expect(sentArgs.last['cursor'], 'c-1');
-        expect(second.events.single.eventId, 'ev-2');
-        // The page ended at c-2 (a tail resumes there) and nothing follows it.
-        expect(second.nextCursor, 'c-2');
-        expect(second.hasMore, isFalse);
-      },
-    );
+      final second = await client.listInbox(limit: 1, cursor: first.nextCursor);
+      expect(sentArgs.last['cursor'], 'c-1');
+      expect(second.events.single.eventId, 'ev-2');
+      // The page ended at c-2 (a tail resumes there) and nothing follows it.
+      expect(second.nextCursor, 'c-2');
+      expect(second.hasMore, isFalse);
+    });
 
     test('list_events round-trips the cursor', () async {
       Map<String, dynamic>? sent;

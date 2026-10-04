@@ -931,10 +931,9 @@ class FixtureEscurelClient implements EscurelClient {
   }
 
   @override
-  Future<List<GroupMember>> listGroupMembers(String groupId) async =>
-      [...?_groups[groupId]]
-          .map((s) => GroupMember(groupId: groupId, subject: s))
-          .toList();
+  Future<List<GroupMember>> listGroupMembers(String groupId) async => [
+    ...?_groups[groupId],
+  ].map((s) => GroupMember(groupId: groupId, subject: s)).toList();
 
   @override
   Future<List<LaneSummary>> adminListLanes() async =>

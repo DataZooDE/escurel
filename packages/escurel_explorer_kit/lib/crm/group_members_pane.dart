@@ -39,8 +39,7 @@ class _GroupMembersPaneState extends ConsumerState<GroupMembersPane> {
           .listGroupMembers(groupId);
       if (mounted) setState(() => _members = members);
     } catch (e) {
-      if (mounted)
-        setState(() => _status = 'error: ${humanizeEscurelError(e)}');
+      if (mounted) setState(() => _status = 'error: ${humanizeEscurelError(e)}');
     }
   }
 

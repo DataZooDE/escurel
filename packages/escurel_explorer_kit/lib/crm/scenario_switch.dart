@@ -33,10 +33,7 @@ class ScenarioSwitch extends ConsumerWidget {
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Text(
-            'SCENARIO',
-            style: text.labelSmall?.copyWith(color: kOutline, letterSpacing: 1),
-          ),
+          Text('SCENARIO', style: text.labelSmall?.copyWith(color: kOutline, letterSpacing: 1)),
           const SizedBox(width: 8),
           for (final (label, value) in _options)
             _ScenarioChip(

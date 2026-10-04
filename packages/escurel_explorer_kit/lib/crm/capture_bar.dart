@@ -33,9 +33,7 @@ class _CaptureBarState extends ConsumerState<CaptureBar> {
       _status = 'capturing…';
     });
     try {
-      final ev = await ref
-          .read(escurelClientProvider)
-          .captureEvent(
+      final ev = await ref.read(escurelClientProvider).captureEvent(
             source: 'manual',
             mime: 'text/plain',
             labelSkill: 'note',
@@ -75,10 +73,7 @@ class _CaptureBarState extends ConsumerState<CaptureBar> {
         children: [
           const Icon(Icons.add_circle_outline, size: 18, color: kPrimary),
           const SizedBox(width: 10),
-          Text(
-            'CAPTURE',
-            style: text.labelSmall?.copyWith(color: kOutline, letterSpacing: 1),
-          ),
+          Text('CAPTURE', style: text.labelSmall?.copyWith(color: kOutline, letterSpacing: 1)),
           const SizedBox(width: 12),
           Expanded(
             child: Semantics(
@@ -100,10 +95,7 @@ class _CaptureBarState extends ConsumerState<CaptureBar> {
           if (_status.isNotEmpty) ...[
             Semantics(
               label: 'capture-status',
-              child: Text(
-                _status,
-                style: text.labelSmall?.copyWith(color: kOutline),
-              ),
+              child: Text(_status, style: text.labelSmall?.copyWith(color: kOutline)),
             ),
             const SizedBox(width: 12),
           ],

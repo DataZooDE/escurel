@@ -126,7 +126,7 @@ class EntityEventHistory extends AsyncNotifier<EventPage> {
       EventPage(
         events: [...current.events, ...next.events],
         nextCursor: next.nextCursor,
-        hasMore: next.hasMore,
+        serverHasMore: next.serverHasMore,
       ),
     );
   }
@@ -192,7 +192,7 @@ class InboxEvents extends AsyncNotifier<EventPage> {
       EventPage(
         events: [...current.events, ...next.events],
         nextCursor: next.nextCursor,
-        hasMore: next.hasMore,
+        serverHasMore: next.serverHasMore,
       ),
     );
   }

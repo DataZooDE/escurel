@@ -127,9 +127,7 @@ abstract class EscurelClient {
   Future<void> assignEvent(String eventId, String instancePageId);
 
   /// Execute a `[[query::*]]` stored query with bound parameters.
-  @Deprecated(
-    'run_stored_query was retired; use queryInstance (this now delegates)',
-  )
+  @Deprecated('run_stored_query was retired; use queryInstance (this now delegates)')
   Future<QueryResult> runStoredQuery(
     String queryId, {
     Map<String, Object?> params = const {},
