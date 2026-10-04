@@ -1133,7 +1133,9 @@ async fn dispatch_tools_call(
         // Remote-backend endpoint registry (admin-only). Base URL + auth live
         // server-side in kb.duckdb; the secret is never echoed. This is the
         // SSRF guard — a remote instance can only reach a registered endpoint.
-        "register_endpoint" => tool_register_endpoint(indexer, subject, params.arguments).await,
+        "register_endpoint" => {
+            tool_register_endpoint(indexer, &state.egress, subject, params.arguments).await
+        }
         "list_endpoints" => tool_list_endpoints(indexer).await,
         "delete_endpoint" => tool_delete_endpoint(indexer, params.arguments).await,
         "validate_endpoints" => tool_validate_endpoints(indexer, &state.egress).await,

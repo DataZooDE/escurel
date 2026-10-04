@@ -395,7 +395,7 @@ them is `escurel:admin`-gated and so not part of the normal agent surface:
   `binding_degraded` view reads fail-closed.
 - `register_endpoint(name, kind, base_url, [secret_ref | secret])` / `list_endpoints()` — the REST / MCP
   endpoint registry that `openapi` / `mcp` skills point at by name. Give the credential as a **reference**
-  (`secret_ref`: `env:NAME`, `gsm:NAME` = `ESCUREL_SECRET_<NAME>`, or `file:/path`); an inline `secret` is
+  (`secret_ref`: `gsm:NAME` = `ESCUREL_SECRET_<NAME>`, `env:ESCUREL_SECRET_<NAME>` (or a name in the operator's `ESCUREL_SECRET_ENV_ALLOW`), or `file:/path` under the operator's `ESCUREL_SECRET_FILE_DIRS`, default `/run/secrets`; anything else is refused at registration - the operator, not the tenant, decides what is nameable); an inline `secret` is
   accepted but flagged in the result, and neither is ever echoed (`list_endpoints` shows only the
   `secret_kind`). `validate_endpoints()` probes each endpoint through the egress policy and reports
   `refused` for a policy violation. `describe_backend(skill)` shows what a remote skill's calls would be —

@@ -466,6 +466,7 @@ pub(super) struct RegisterEndpointArgs {
 
 pub(super) async fn tool_register_endpoint(
     indexer: &Indexer,
+    egress: &crate::egress::Egress,
     created_by: &str,
     args: Value,
 ) -> Result<Value, JsonRpcError> {
@@ -503,12 +504,21 @@ pub(super) async fn tool_register_endpoint(
             "give either secret_ref or secret, not both".to_owned(),
         ));
     }
-    if let Some(r) = reference
-        && !(r.starts_with("env:") || r.starts_with("gsm:") || r.starts_with("file:"))
-    {
-        return Err(JsonRpcError::invalid_params(
-            "secret_ref must start with env:, gsm: or file:".to_owned(),
-        ));
+    if let Some(r) = reference {
+        if !(r.starts_with("env:") || r.starts_with("gsm:") || r.starts_with("file:")) {
+            return Err(JsonRpcError::invalid_params(
+                "secret_ref must start with env:, gsm: or file:".to_owned(),
+            ));
+        }
+        // What may be NAMED is the operator's call (never a tenant's): this check is lexical, so it
+        // answers the same for a file that exists and one that does not.
+        if !egress.policy().secrets.permits(r) {
+            return Err(JsonRpcError::invalid_params(format!(
+                "secret_ref `{r}` is not permitted by this gateway's secret policy: use `gsm:NAME`, \
+                 `env:ESCUREL_SECRET_<NAME>` (or a name the operator allow-lists), or a `file:` \
+                 under the operator's secret directories"
+            )));
+        }
     }
     if !matches!(auth, escurel_index::endpoints::EndpointAuth::None)
         && inline.is_none()

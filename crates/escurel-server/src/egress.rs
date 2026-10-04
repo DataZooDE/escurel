@@ -48,6 +48,8 @@ pub struct EgressPolicy {
     pub rate_per_sec: u32,
     /// The pause between the attempts of a write-back (jittered, doubled each time).
     pub write_retry_backoff: Duration,
+    /// What a tenant may name as a credential (`secret_ref`): see [`crate::secret_policy`].
+    pub secrets: crate::secret_policy::SecretPolicy,
 }
 
 impl Default for EgressPolicy {
@@ -59,6 +61,7 @@ impl Default for EgressPolicy {
             max_concurrency: DEFAULT_MAX_CONCURRENCY,
             rate_per_sec: DEFAULT_RATE_PER_SEC,
             write_retry_backoff: Duration::from_millis(500),
+            secrets: crate::secret_policy::SecretPolicy::default(),
         }
     }
 }
@@ -90,6 +93,7 @@ impl EgressPolicy {
         {
             p.write_retry_backoff = Duration::from_millis(ms);
         }
+        p.secrets = crate::secret_policy::SecretPolicy::from_env();
         p
     }
 }

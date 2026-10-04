@@ -119,6 +119,13 @@ async fn projection(p: &EscurelProcess, base_url: &str) -> Value {
     body["result"]["structuredContent"]["backend_projection"].clone()
 }
 
+/// Loopback allowed, and `dir` is the one directory a `file:` secret reference may live in.
+fn loopback_with_secrets(dir: &std::path::Path) -> EgressPolicy {
+    let mut p = loopback_ok();
+    p.secrets.file_dirs = vec![dir.to_path_buf()];
+    p
+}
+
 fn loopback_ok() -> EgressPolicy {
     EgressPolicy {
         allow_loopback: true,
@@ -373,7 +380,7 @@ async fn a_secret_reference_is_resolved_at_call_time_and_never_stored_or_echoed(
     std::fs::write(&secret_file, format!("{token}\n")).unwrap();
     let secret_ref = format!("file:{}", secret_file.display());
     let (base, seen) = authed_crm(token).await;
-    let (process, _dirs) = spawn_gateway(loopback_ok()).await;
+    let (process, _dirs) = spawn_gateway(loopback_with_secrets(secret_dir.path())).await;
 
     let reg = register_bearer(&process, &base, ("secret_ref", secret_ref.as_str())).await;
     assert!(reg.get("error").is_none(), "register: {reg}");
@@ -408,20 +415,17 @@ async fn a_secret_reference_is_resolved_at_call_time_and_never_stored_or_echoed(
 #[tokio::test]
 async fn an_unset_reference_degrades_naming_the_reference_not_a_value() {
     let (base, seen) = authed_crm("whatever").await;
-    let (process, _dirs) = spawn_gateway(loopback_ok()).await;
-    let reg = register_bearer(
-        &process,
-        &base,
-        ("secret_ref", "file:/nonexistent/escurel/never-set"),
-    )
-    .await;
+    let secret_dir = TempDir::new().unwrap();
+    let missing = format!("file:{}/never-set", secret_dir.path().display());
+    let (process, _dirs) = spawn_gateway(loopback_with_secrets(secret_dir.path())).await;
+    let reg = register_bearer(&process, &base, ("secret_ref", missing.as_str())).await;
     assert!(reg.get("error").is_none(), "register: {reg}");
 
     let proj = expand_acme(&process).await;
 
     let issue = proj["issue"].as_str().unwrap_or_default();
     assert!(
-        issue.contains("file:/nonexistent/escurel/never-set") && issue.contains("not available"),
+        issue.contains(missing.as_str()) && issue.contains("not available"),
         "the issue must name the missing reference: {proj}"
     );
     assert!(
@@ -470,7 +474,7 @@ async fn an_upstream_that_echoes_the_credential_in_its_error_is_not_repeated() {
     std::fs::write(&secret_file, secret).unwrap();
     let secret_ref = format!("file:{}", secret_file.display());
     let (base, _seen) = authed_crm("the-real-token").await;
-    let (process, _dirs) = spawn_gateway(loopback_ok()).await;
+    let (process, _dirs) = spawn_gateway(loopback_with_secrets(secret_dir.path())).await;
     let reg = register_bearer(&process, &base, ("secret_ref", secret_ref.as_str())).await;
     assert!(reg.get("error").is_none(), "register: {reg}");
 
@@ -563,6 +567,106 @@ async fn write_instance_sends_a_stable_idempotency_key_and_caps_the_payload() {
         keys.lock().unwrap().len(),
         2,
         "the oversize write never reached the upstream"
+    );
+    process.shutdown().await;
+}
+
+// ---- secret references are a CONFINED way to name a credential ------------------------------------
+//
+// `secret_ref` used to read ANY env var or ANY file of the gateway host and send it, as a bearer
+// token, to whatever host an admin registered. The operator decides what a tenant may name.
+
+/// A real upstream that records the `Authorization` header of EVERY request it gets, whoever asks.
+async fn capture_any_auth() -> (String, Arc<std::sync::Mutex<Vec<String>>>) {
+    let seen: Arc<std::sync::Mutex<Vec<String>>> = Arc::default();
+    let app = Router::new()
+        .route(
+            "/customers/{id}",
+            get(
+                move |State(seen): State<Arc<std::sync::Mutex<Vec<String>>>>,
+                      headers: HeaderMap| async move {
+                    let got = headers
+                        .get("authorization")
+                        .and_then(|v| v.to_str().ok())
+                        .unwrap_or("")
+                        .to_owned();
+                    seen.lock().unwrap().push(got);
+                    Json(json!({ "name": "Acme Corp", "account_tier": "gold" }))
+                },
+            ),
+        )
+        .with_state(Arc::clone(&seen));
+    let (base, _handle) = serve(app).await;
+    (base, seen)
+}
+
+fn refused(reg: &Value) -> bool {
+    reg.get("error").is_some() || reg["result"]["isError"] == json!(true)
+}
+
+#[tokio::test]
+async fn a_secret_reference_cannot_name_an_arbitrary_file_or_environment_variable() {
+    let (base, seen) = capture_any_auth().await;
+    let (process, _dirs) = spawn_gateway(loopback_ok()).await;
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/root".to_owned());
+
+    for secret_ref in [
+        "file:/etc/hostname".to_owned(),
+        "file:/etc/../etc/hostname".to_owned(),
+        "file:/proc/self/environ".to_owned(),
+        "file:relative/secret".to_owned(),
+        "env:HOME".to_owned(),
+        "env:PATH".to_owned(),
+        "env:ESCUREL_SERVER_DATA_DIR".to_owned(),
+    ] {
+        let reg = register_bearer(&process, &base, ("secret_ref", secret_ref.as_str())).await;
+        assert!(
+            refused(&reg),
+            "`{secret_ref}` must be refused at registration, got {reg}"
+        );
+        // Even a registration that slipped through must never put the value on the wire.
+        if !refused(&reg) {
+            let _ = expand_acme(&process).await;
+        }
+    }
+    let leaked: Vec<String> = seen
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|h| h.contains(&home) || h.contains("/usr") || h.len() > "Bearer ".len())
+        .cloned()
+        .collect();
+    assert!(
+        leaked.is_empty(),
+        "a host secret reached the upstream: {leaked:?}"
+    );
+    process.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_refused_file_reference_is_not_an_oracle_for_which_files_exist() {
+    let (base, _seen) = capture_any_auth().await;
+    let (process, _dirs) = spawn_gateway(loopback_ok()).await;
+    let present = register_bearer(&process, &base, ("secret_ref", "file:/etc/hostname")).await;
+    let absent = register_bearer(
+        &process,
+        &base,
+        ("secret_ref", "file:/etc/escurel-no-such-file-xyz"),
+    )
+    .await;
+    let text = |v: &Value| {
+        v.to_string()
+            .replace("hostname", "X")
+            .replace("escurel-no-such-file-xyz", "X")
+    };
+    assert!(
+        refused(&present) && refused(&absent),
+        "{present} / {absent}"
+    );
+    assert_eq!(
+        text(&present),
+        text(&absent),
+        "the refusal must not differ for a file that exists and one that does not"
     );
     process.shutdown().await;
 }
