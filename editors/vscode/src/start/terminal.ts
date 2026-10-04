@@ -66,7 +66,7 @@ export function registerStartInTerminal(
         // An error after mint may carry the bearer. Never surface it in a notice.
         const message = describeError(error);
         void vscode.window.showErrorMessage(
-          `Could not start in terminal — ${token ? message.split(token).join('[redacted]') : message}`,
+          `Could not start in a terminal: ${token ? message.split(token).join('[redacted]') : message}`,
         );
         return;
       }
