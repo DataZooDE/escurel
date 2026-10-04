@@ -246,7 +246,14 @@ async fn list_skills_reports_the_okf_provenance_keys_and_the_viewer() {
     );
     // Declared nothing, carries nothing: the other rows stay byte-identical to before.
     let plain = find("plain");
-    for key in ["generated", "verified", "status", "stale_after", "sources", "viewer"] {
+    for key in [
+        "generated",
+        "verified",
+        "status",
+        "stale_after",
+        "sources",
+        "viewer",
+    ] {
         assert!(plain.get(key).is_none(), "{key} on a plain skill: {plain}");
     }
 }

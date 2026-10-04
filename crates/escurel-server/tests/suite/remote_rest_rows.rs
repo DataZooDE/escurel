@@ -709,7 +709,12 @@ async fn search_does_not_look_inside_a_rest_skill_and_says_so() {
     let base = start(crm).await;
     let (p, _dirs) = gateway_over(&base).await;
 
-    let r = admin(&p, "search", json!({ "q": "Customer 0007", "page_kind": "instance", "k": 10 })).await;
+    let r = admin(
+        &p,
+        "search",
+        json!({ "q": "Customer 0007", "page_kind": "instance", "k": 10 }),
+    )
+    .await;
     assert!(
         r["hits"]
             .as_array()
@@ -729,8 +734,12 @@ async fn search_does_not_look_inside_a_rest_skill_and_says_so() {
     );
 
     // Restricting to skill pages is a search of the catalogue: no hint, nothing to explain.
-    let skills_only = admin(&p, "search", json!({ "q": "customer", "page_kind": "skill" })).await;
+    let skills_only = admin(
+        &p,
+        "search",
+        json!({ "q": "customer", "page_kind": "skill" }),
+    )
+    .await;
     assert!(skills_only.get("hint").is_none(), "{skills_only}");
     p.shutdown().await;
 }
-

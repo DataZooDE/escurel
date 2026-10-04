@@ -262,7 +262,16 @@ async fn skill_list_carries_the_tree_vocabulary() {
     assert_eq!(placed["stale_after"], "P90D", "{placed}");
     assert_eq!(placed["viewer"]["report"], "placed-report", "{placed}");
     let plain = row("customer");
-    for key in ["folder", "role", "tags", "title", "resource", "verified", "stale_after", "viewer"] {
+    for key in [
+        "folder",
+        "role",
+        "tags",
+        "title",
+        "resource",
+        "verified",
+        "stale_after",
+        "viewer",
+    ] {
         assert!(plain.get(key).is_none(), "{key} on a plain skill: {plain}");
     }
     h.process.shutdown().await;

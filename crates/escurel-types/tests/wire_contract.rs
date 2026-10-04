@@ -368,20 +368,36 @@ fn skill_okf_provenance_and_viewer_round_trip_and_are_omitted_when_undeclared() 
     assert_eq!(skill.verified.as_deref(), Some("2026-09-30"));
     assert_eq!(skill.stale_after.as_deref(), Some("P90D"));
     assert_eq!(skill.sources.len(), 2);
-    assert_eq!(skill.viewer.as_ref().unwrap().report, "supplier-risk-report");
+    assert_eq!(
+        skill.viewer.as_ref().unwrap().report,
+        "supplier-risk-report"
+    );
     let back = serde_json::to_value(&skill).unwrap();
-    for key in ["generated", "verified", "status", "stale_after", "sources", "viewer"] {
+    for key in [
+        "generated",
+        "verified",
+        "status",
+        "stale_after",
+        "sources",
+        "viewer",
+    ] {
         assert_eq!(back[key], wire[key], "{key}");
     }
     // A viewer without a param still deserialises (the report decides).
-    let bare_viewer: Skill = serde_json::from_value(
-        json!({ "id": "n", "description": "d", "viewer": {"report": "r"} }),
-    )
-    .unwrap();
+    let bare_viewer: Skill =
+        serde_json::from_value(json!({ "id": "n", "description": "d", "viewer": {"report": "r"} }))
+            .unwrap();
     assert!(bare_viewer.viewer.unwrap().param.is_none());
     let bare: Skill = serde_json::from_value(json!({ "id": "n", "description": "d" })).unwrap();
     let bare = serde_json::to_value(&bare).unwrap();
-    for key in ["generated", "verified", "status", "stale_after", "sources", "viewer"] {
+    for key in [
+        "generated",
+        "verified",
+        "status",
+        "stale_after",
+        "sources",
+        "viewer",
+    ] {
         assert!(bare.get(key).is_none(), "{key} on a bare skill");
     }
 }

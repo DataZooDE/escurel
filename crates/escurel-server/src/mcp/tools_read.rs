@@ -1771,7 +1771,10 @@ pub(crate) async fn tool_search(
             if a.skill.as_deref().is_some_and(|f| f != skill.id) {
                 continue;
             }
-            if matches!(crate::remote_rows::source(indexer, &skill.id).await, Ok(Some(_))) {
+            if matches!(
+                crate::remote_rows::source(indexer, &skill.id).await,
+                Ok(Some(_))
+            ) {
                 unsearched.push(skill.id);
             }
         }

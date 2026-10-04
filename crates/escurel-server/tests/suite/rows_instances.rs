@@ -727,13 +727,19 @@ async fn neighbours_follow_links_from_a_rows_notes_and_into_a_row_without_a_stor
         doc(12)
     );
     let w = t
-        .call("update_page", json!({ "page_id": row_page(11), "content": notes }))
+        .call(
+            "update_page",
+            json!({ "page_id": row_page(11), "content": notes }),
+        )
         .await;
     assert_eq!(w["ok"], true, "{w}");
 
     // OUT of the notes: the row they point at.
     let out = t
-        .call("neighbours", json!({ "page_id": row_page(11), "direction": "out" }))
+        .call(
+            "neighbours",
+            json!({ "page_id": row_page(11), "direction": "out" }),
+        )
         .await;
     let edges = out["edges"].as_array().unwrap();
     assert!(
@@ -745,7 +751,10 @@ async fn neighbours_follow_links_from_a_rows_notes_and_into_a_row_without_a_stor
 
     // INTO a row that has no stored page: who points at it.
     let into = t
-        .call("neighbours", json!({ "page_id": row_page(12), "direction": "in" }))
+        .call(
+            "neighbours",
+            json!({ "page_id": row_page(12), "direction": "in" }),
+        )
         .await;
     let edges = into["edges"].as_array().unwrap();
     assert!(
@@ -802,7 +811,11 @@ async fn neighbours_do_not_reveal_a_link_to_a_row_the_caller_may_not_read() {
         doc(5),
         doc(6)
     );
-    let w = post("update_page", json!({ "page_id": page, "content": content })).await;
+    let w = post(
+        "update_page",
+        json!({ "page_id": page, "content": content }),
+    )
+    .await;
     assert_eq!(w["ok"], true, "{w}");
     let out = post("neighbours", json!({ "page_id": page, "direction": "out" })).await;
     let dsts: Vec<&str> = out["edges"]
@@ -811,10 +824,12 @@ async fn neighbours_do_not_reveal_a_link_to_a_row_the_caller_may_not_read() {
         .iter()
         .filter_map(|e| e["dst_page"].as_str())
         .collect();
-    assert!(dsts.contains(&doc(5).as_str()), "her own row is linked: {out}");
+    assert!(
+        dsts.contains(&doc(5).as_str()),
+        "her own row is linked: {out}"
+    );
     assert!(
         !dsts.contains(&doc(6).as_str()),
         "a foreign row's link is not revealed: {out}"
     );
 }
-
