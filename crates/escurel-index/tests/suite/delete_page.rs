@@ -19,15 +19,15 @@ const TENANT: &str = "acme";
 
 const SKILL: (&str, &str) = (
     "markdown/skills/customer.md",
-    "---\ntype: skill\nid: customer\ndescription: A buying entity.\n---\n# customer\n",
+    "---\nkind: skill\nid: customer\ndescription: A buying entity.\n---\n# customer\n",
 );
 const ACME: (&str, &str) = (
     "markdown/instances/customer/acme-corp.md",
-    "---\ntype: instance\nskill: customer\nid: acme-corp\n---\n# Acme\n\nSee [[customer::globex-llc]].\n",
+    "---\nkind: instance\nskill: customer\nid: acme-corp\n---\n# Acme\n\nSee [[customer::globex-llc]].\n",
 );
 const GLOBEX: (&str, &str) = (
     "markdown/instances/customer/globex-llc.md",
-    "---\ntype: instance\nskill: customer\nid: globex-llc\n---\n# Globex\n",
+    "---\nkind: instance\nskill: customer\nid: globex-llc\n---\n# Globex\n",
 );
 const ACME_PAGE: &str = "markdown/instances/customer/acme-corp.md";
 

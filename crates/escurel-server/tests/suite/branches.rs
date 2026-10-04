@@ -30,7 +30,7 @@ use escurel_test_support::{AuthMode, ConfigOverrides, EscurelProcess, FixtureBui
 use serde_json::{Value, json};
 
 const TENANT: &str = "stuttgart-ai";
-const NOTE_SKILL: &str = "---\ntype: skill\nid: note\ndescription: A note.\n\
+const NOTE_SKILL: &str = "---\nkind: skill\nid: note\ndescription: A note.\n\
     visibility: public\n---\n# note\n";
 
 fn page_id(id: &str) -> String {
@@ -38,7 +38,7 @@ fn page_id(id: &str) -> String {
 }
 
 fn note(id: &str, body: &str) -> String {
-    format!("---\ntype: instance\nskill: note\nid: {id}\n---\n# {id}\n{body}\n")
+    format!("---\nkind: instance\nskill: note\nid: {id}\n---\n# {id}\n{body}\n")
 }
 
 /// Two base pages, so "the branch touched one of them" is expressible.
@@ -428,7 +428,7 @@ async fn a_branch_whose_base_moved_on_the_same_key_blocks_entirely() {
         "update_page",
         json!({
             "page_id": page_id("beta"),
-            "content": "---\ntype: instance\nskill: note\nid: beta\nstatus: won\n---\n# beta\nbase beta.\n",
+            "content": "---\nkind: instance\nskill: note\nid: beta\nstatus: won\n---\n# beta\nbase beta.\n",
             "branch": "stale",
         }),
     )
@@ -441,7 +441,7 @@ async fn a_branch_whose_base_moved_on_the_same_key_blocks_entirely() {
         "update_page",
         json!({
             "page_id": page_id("beta"),
-            "content": "---\ntype: instance\nskill: note\nid: beta\nstatus: lost\n---\n# beta\nbase beta.\n",
+            "content": "---\nkind: instance\nskill: note\nid: beta\nstatus: lost\n---\n# beta\nbase beta.\n",
         }),
     )
     .await;
@@ -579,7 +579,7 @@ async fn nothing_that_ignores_branches_changes() {
         "update_page",
         json!({
             "page_id": "markdown/instances/note/alpha@legacy.md",
-            "content": "---\ntype: instance\nskill: note\nid: alpha\n\
+            "content": "---\nkind: instance\nskill: note\nid: alpha\n\
                         scenario: legacy\n---\n# alpha\nLEGACY alpha.\n",
         }),
     )

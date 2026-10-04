@@ -14,7 +14,10 @@
 //!   on the wire;
 //! * every backticked argument in a table's *inputs* column must be a
 //!   property of that tool's live `inputSchema`;
-//! * the "exposes N tools" count claim must equal the live count.
+//! * the "exposes N tools" count claim must equal the live count;
+//! * every live tool is NAMED in the reference (the operator surface is
+//!   listed, not just the application tables), and `references/03`'s
+//!   "agent subset (N tools" matches what an agent-role token is served.
 //!
 //! It cannot check prose. The human half of the obligation stays human.
 
@@ -25,6 +28,11 @@ use std::collections::BTreeMap;
 const SKILL_REF_02: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../.claude/skills/escurel-platform/references/02-tool-surface.md"
+);
+
+const SKILL_REF_03: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../.claude/skills/escurel-platform/references/03-consume-over-http-mcp.md"
 );
 
 /// Live `tools/list`: tool name → set of inputSchema property names.
@@ -163,6 +171,56 @@ async fn skill_tool_tables_match_the_live_surface() {
              'the server exposes N tools' claim"
                 .to_owned(),
         ),
+    }
+
+    // Coverage: a tool the reference never names is one an agent cannot learn about from the skill.
+    // Deliberate omissions go here, each with its reason (none today).
+    const NOT_NAMED: &[&str] = &[];
+    for name in live.keys() {
+        if !NOT_NAMED.contains(&name.as_str()) && !doc.contains(&format!("`{name}`")) {
+            errors.push(format!(
+                "tool `{name}` is served but 02-tool-surface.md never names it"
+            ));
+        }
+    }
+
+    // The agent-role subset count `references/03` states.
+    let doc3 = std::fs::read_to_string(SKILL_REF_03)
+        .unwrap_or_else(|e| panic!("read {SKILL_REF_03}: {e}"));
+    let claimed_agent: Option<usize> = doc3
+        .split("subset (")
+        .nth(1)
+        .and_then(|rest| rest.split_whitespace().next())
+        .and_then(|n| n.parse().ok());
+    let agent_live = {
+        let ta = EscurelProcess::spawn(Opts {
+            auth: AuthMode::TestIssuer,
+            fixtures: Some(
+                escurel_test_support::FixtureBuilder::new()
+                    .tenant("parity")
+                    .done(),
+            ),
+            config_overrides: Default::default(),
+        })
+        .await;
+        let token = ta.mint_token("parity", escurel_test_support::Role::Agent);
+        let body: Value = reqwest::Client::new()
+            .post(ta.mcp_url())
+            .header("authorization", format!("Bearer {token}"))
+            .json(&json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/list" }))
+            .send()
+            .await
+            .expect("POST tools/list as agent")
+            .json()
+            .await
+            .expect("decode");
+        body["result"]["tools"].as_array().map_or(0, Vec::len)
+    };
+    match claimed_agent {
+        Some(n) if n == agent_live => {}
+        other => errors.push(format!(
+            "03-consume-over-http-mcp.md claims an agent subset of {other:?} tools; an agent token is served {agent_live}"
+        )),
     }
 
     assert!(

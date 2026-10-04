@@ -36,11 +36,11 @@ pub use escurel_types::{
     AttachExternalRequest, AttachExternalResponse, AuditRequest, AuditResponse,
     CompactLanesRequest, CompactProgress, DeleteChatHistoryRequest, DeleteChatHistoryResponse,
     EmbeddingReloadRequest, EmbeddingReloadResponse, ExportPackRequest, HealthRequest,
-    HealthResponse, PackManifest, QuotaGetRequest, QuotaGetResponse, RebuildProgress,
-    RebuildRequest, TenantCreateRequest, TenantCreateResponse, TenantDeleteRequest,
-    TenantDeleteResponse, TenantExportRequest, TenantGetRequest, TenantGetResponse,
-    TenantImportResponse, TenantListRequest, TenantListResponse, TenantUpdateRequest,
-    TenantUpdateResponse,
+    HealthResponse, MigrateKindReport, MigrateKindRequest, PackManifest, QuotaGetRequest,
+    QuotaGetResponse, RebuildProgress, RebuildRequest, TenantCreateRequest, TenantCreateResponse,
+    TenantDeleteRequest, TenantDeleteResponse, TenantExportRequest, TenantGetRequest,
+    TenantGetResponse, TenantImportResponse, TenantListRequest, TenantListResponse,
+    TenantUpdateRequest, TenantUpdateResponse,
 };
 
 /// Typed MCP-over-HTTP client for the Escurel v1 **admin** surface.
@@ -72,6 +72,14 @@ impl AdminClient {
         Ok(Self {
             transport: McpTransport::new(endpoint, token)?,
         })
+    }
+
+    /// Replace the total per-request deadline of this client (default 60 s; `None` = none). Use
+    /// it for the operator calls that run for minutes, e.g. `migrate_kind --apply` on a big tenant.
+    #[must_use]
+    pub fn with_timeout(mut self, timeout: Option<std::time::Duration>) -> Self {
+        self.transport = self.transport.with_timeout(timeout);
+        self
     }
 
     /// Substrate liveness probe. The MCP surface has no `health` tool;
@@ -232,6 +240,17 @@ impl AdminClient {
             .await
     }
 
+    /// Rewrite a tenant's pages, open drafts and historical CRDT snapshots from the removed `type:`
+    /// page-kind key to `kind:`. A dry run unless `apply` is set.
+    pub async fn migrate_kind(&self, req: MigrateKindRequest) -> Result<MigrateKindReport, Error> {
+        self.transport
+            .call_typed(
+                "migrate_kind",
+                json!({ "tenant_id": req.tenant_id, "apply": req.apply }),
+            )
+            .await
+    }
+
     /// Export a tenant as a tar+gz archive. The MCP tool returns the
     /// tarball base64-encoded under `tarball_b64`; this method decodes
     /// it and hands back the raw bytes.
@@ -385,8 +404,9 @@ impl AdminClient {
         acknowledge_conflicts: bool,
         dry_run: bool,
     ) -> Result<Value, Error> {
+        // A conflicting rebase answers `ok: false` WITH the conflict report: a report, not a refusal.
         self.transport
-            .call(
+            .call_outcome(
                 "rebase_pack",
                 json!({
                     "tenant_id": tenant_id,

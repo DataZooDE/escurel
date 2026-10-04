@@ -60,14 +60,14 @@ async fn seed(h: &Harness, pages: &[(String, String)]) {
 fn skill() -> (String, String) {
     (
         "markdown/skills/note.md".to_owned(),
-        "---\ntype: skill\nid: note\ndescription: notes\n---\n# note\n".to_owned(),
+        "---\nkind: skill\nid: note\ndescription: notes\n---\n# note\n".to_owned(),
     )
 }
 
 fn note(id: &str, body: &str) -> (String, String) {
     (
         format!("markdown/instances/note/{id}.md"),
-        format!("---\ntype: instance\nskill: note\nid: {id}\n---\n# {id}\n\n{body}\n"),
+        format!("---\nkind: instance\nskill: note\nid: {id}\n---\n# {id}\n\n{body}\n"),
     )
 }
 

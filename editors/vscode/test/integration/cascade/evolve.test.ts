@@ -43,7 +43,7 @@ suite('Evolve problem plan review from the extension host', () => {
     const pageId = `markdown/instances/evolve_problem/${id}.md`;
     const written = await api.services.client.updatePage({
       page_id: pageId,
-      content: `---\ntype: instance\nskill: evolve_problem\nid: ${id}\nowner_subject: alice\npilot: p1_decision\nsearch_request: {pilot: p1_decision}\n---\n# Integration review\n`,
+      content: `---\nkind: instance\nskill: evolve_problem\nid: ${id}\nowner_subject: alice\npilot: p1_decision\nsearch_request: {pilot: p1_decision}\n---\n# Integration review\n`,
       base_sha256: '',
     });
     assert.equal(written.ok, true, JSON.stringify(written.issues));
@@ -101,7 +101,7 @@ suite('Evolve problem plan review from the extension host', () => {
     const pageId = `markdown/instances/evolve_problem/${id}.md`;
     const written = await api.services.client.updatePage({
       page_id: pageId,
-      content: `---\ntype: instance\nskill: evolve_problem\nid: ${id}\nowner_subject: alice\npilot: p1_decision\nsearch_request: {pilot: p1_decision}\n---\n# Blocked review\n`,
+      content: `---\nkind: instance\nskill: evolve_problem\nid: ${id}\nowner_subject: alice\npilot: p1_decision\nsearch_request: {pilot: p1_decision}\n---\n# Blocked review\n`,
       base_sha256: '',
     });
     assert.equal(written.ok, true, JSON.stringify(written.issues));

@@ -401,7 +401,7 @@ impl Indexer {
                 escurel_md::parse(&content).map_err(|_| IndexerError::PromotionNotEligible {
                     reason: format!("`{page_id}` does not parse as escurel markdown"),
                 })?;
-            if parsed.frontmatter.page_type != escurel_md::PageType::Skill {
+            if parsed.frontmatter.page_kind != escurel_md::PageKind::Skill {
                 return Err(IndexerError::PromotionNotEligible {
                     reason: format!(
                         "`{page_id}` is not a skill page — raw instance data never \

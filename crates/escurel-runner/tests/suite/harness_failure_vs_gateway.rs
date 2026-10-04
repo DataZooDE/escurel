@@ -31,10 +31,10 @@ const SKILL: &str = "customer";
 const INSTANCE_ID: &str = "globex";
 
 /// `review`, so the run's confirmable effect is a DRAFT.
-const SKILL_BODY: &str = "---\ntype: skill\nid: customer\nautonomy: review\n---\n# customer\n\n\
+const SKILL_BODY: &str = "---\nkind: skill\nid: customer\nautonomy: review\n---\n# customer\n\n\
 Fold the triggering event into the named customer instance.\n";
 const INSTANCE_BODY: &str =
-    "---\ntype: instance\nid: globex\nskill: customer\n---\n# Globex\n\nBASELINE.\n";
+    "---\nkind: instance\nid: globex\nskill: customer\n---\n# Globex\n\nBASELINE.\n";
 
 struct ChildGuard(Child);
 impl Drop for ChildGuard {
@@ -92,7 +92,7 @@ async fn spawn_stub_model(page_id: String, draft: bool) -> String {
 
         let parts = if turn == 1 && draft {
             let content = format!(
-                "---\ntype: instance\nid: {INSTANCE_ID}\nskill: {SKILL}\n---\n\
+                "---\nkind: instance\nid: {INSTANCE_ID}\nskill: {SKILL}\n---\n\
                  # Globex\n\nBASELINE.\n\nDRAFTED_THEN_RAN_OUT {event_id}\n"
             );
             json!([{ "functionCall": { "name": "create_draft", "args": {
@@ -114,7 +114,7 @@ async fn spawn_stub_model(page_id: String, draft: bool) -> String {
             // the cheapest round trip available and needs no corpus.
             json!([{ "functionCall": { "name": "create_draft", "args": {
                 "target_page_id": page_id,
-                "content": "---\ntype: instance\nid: globex\nskill: customer\n\
+                "content": "---\nkind: instance\nid: globex\nskill: customer\n\
                             subject: Re: this colon makes it invalid\n---\nBody.\n",
             } } }])
         };

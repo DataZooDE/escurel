@@ -81,6 +81,8 @@ const harness = {
     harness: 'test/visual/harness/main.ts',
     'run-harness': 'test/visual/harness/run.ts',
     'thread-harness': 'test/visual/harness/thread.ts',
+    'details-harness': 'test/visual/harness/details.ts',
+    'skill-harness': 'test/visual/harness/skill.ts',
   },
   bundle: true,
   platform: 'browser',

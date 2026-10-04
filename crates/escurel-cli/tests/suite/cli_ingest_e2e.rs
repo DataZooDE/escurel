@@ -16,7 +16,7 @@ const TENANT: &str = "acme";
 
 // A `document`-backend skill that accepts text/plain and chunks small.
 const MEMO_SKILL: &str = "---\n\
-type: skill\n\
+kind: skill\n\
 id: memo\n\
 description: Text memos ingested as documents.\n\
 backend:\n\

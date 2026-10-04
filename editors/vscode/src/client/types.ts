@@ -51,6 +51,26 @@ export interface Skill {
   autonomy?: string;
   summary?: string;
   harness?: string;
+  /** `/`-separated path of slugs placing the skill in a tree (`sales/orders`); absent = top level. */
+  folder?: string;
+  /** `record | process | report | helper`; typed as a string so a newer server's value still parses. */
+  role?: string;
+  /** OKF tags. */
+  tags?: string[];
+  /** OKF display title. */
+  title?: string;
+  /** OKF link to the external thing this skill describes (a table, an API). */
+  resource?: string;
+  /** OKF provenance keys, as the skill's author wrote them; absent when undeclared. */
+  generated?: string;
+  verified?: string;
+  status?: string;
+  /** An RFC 3339 instant or an ISO-8601 duration (`P90D`) counted from `verified`. */
+  stale_after?: string;
+  /** Links or `{title, url}` objects. */
+  sources?: Array<string | { title?: string; url?: string }>;
+  /** Peacock's pointer to the report skill that charts this skill's instances. */
+  viewer?: { report: string; param?: string };
   /** What a follow-up from this skill can be: see `SkillAction`. Absent when none are declared. */
   actions?: SkillAction[];
   cascade?: { target?: string; max_depth?: number };
@@ -98,7 +118,7 @@ export interface PageRef {
   page_id: string;
   slug: string | null;
   skill: string;
-  page_type: 'skill' | 'instance' | string;
+  page_kind: 'skill' | 'instance' | string;
   last_written_by?: string | null;
 }
 
@@ -119,6 +139,10 @@ export interface WikilinkParsed {
   alias: string | null;
 }
 
+export interface FetchBlobResponse {
+  blob: { content_type: string; size: number; bytes_base64: string } | null;
+}
+
 export interface ExpandResponse {
   /** `null` when the page does not exist or the caller may not read it (absence, never a leak). */
   page: PageRef | null;
@@ -133,7 +157,11 @@ export interface ExpandResponse {
   /** Only on a gateway with a live CRDT backend. */
   version?: string;
   shadow?: unknown;
+  /** `sql_view`: `{view, rows, source, truncated?, issue?}`; `openapi`/`mcp`: `{source, fields}` or `{issue}`. */
   backend_projection?: unknown;
+  /** `document` pages: how many chunks the document has, and whether `blocks` holds only the lead. */
+  chunks_total?: number;
+  chunks_truncated?: boolean;
 }
 
 export interface ValidationIssue {
@@ -159,6 +187,12 @@ export interface UpdatePageResponse {
   issues: ValidationIssue[];
   new_version?: string;
   auto_merged?: boolean;
+  /**
+   * The write did NOT land: the skill asks for human review and the caller is a machine, so it was
+   * held as an open draft. `ok` is still true; `new_version` is absent and the page is unchanged.
+   */
+  held_for_review?: boolean;
+  draft?: { draft_id: string; target_page_id: string; status: string };
   [key: string]: unknown;
 }
 
@@ -176,7 +210,7 @@ export interface SearchRequest {
   q: string;
   k?: number;
   granularity?: 'block' | 'page';
-  page_type?: 'skill' | 'instance' | 'any';
+  page_kind?: 'skill' | 'instance' | 'any';
   skill?: string;
   filter?: Record<string, unknown>;
 }
@@ -185,7 +219,7 @@ export interface SearchHit {
   page_id: string;
   slug: string | null;
   skill: string;
-  page_type: string;
+  page_kind: string;
   anchor: string | null;
   snippet: string;
   score: number;
@@ -237,10 +271,14 @@ export interface ListEventsRequest {
 
 export interface EventsPage {
   events: Event[];
-  /** Present iff more rows exist. */
+  /**
+   * Where THIS page ended; present iff the page is non-empty. Pass it back as `cursor` to continue
+   * or to tail. Only its absence means done: a client paging until it is absent makes one extra call
+   * that comes back empty. (`resume_cursor`, its old twin, no longer exists.)
+   */
   next_cursor?: string;
-  /** The cursor of this page's last row; present iff the page is non-empty. */
-  resume_cursor?: string;
+  /** True iff rows already lie past this page; absent otherwise. */
+  has_more?: boolean;
 }
 
 export interface ListInboxRequest {

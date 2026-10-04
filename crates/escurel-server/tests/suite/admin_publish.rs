@@ -25,7 +25,7 @@ fn page(n: usize) -> (String, String) {
     (
         format!("markdown/instances/customer/c{n}.md"),
         format!(
-            "---\ntype: instance\nskill: customer\nid: c{n}\n---\n# Customer {n}\n\nRevenue unit {n}.\n"
+            "---\nkind: instance\nskill: customer\nid: c{n}\n---\n# Customer {n}\n\nRevenue unit {n}.\n"
         ),
     )
 }
@@ -33,7 +33,7 @@ fn page(n: usize) -> (String, String) {
 const CUSTOMER_SKILL: (&str, &str) = (
     "markdown/skills/customer.md",
     "---\n\
-     type: skill\n\
+     kind: skill\n\
      id: customer\n\
      description: a customer\n\
      ---\n\

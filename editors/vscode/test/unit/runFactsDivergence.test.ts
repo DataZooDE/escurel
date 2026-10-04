@@ -64,7 +64,7 @@ describe('approve needs the page the run targeted, not a guess', () => {
     expect(controlsOf(t)).toContain('approve');
     expect(resolve(t, 'approve')).toEqual({
       command: 'escurel.approvePlan',
-      args: [{ runId: t.runNode.id, skill: 'note', pageId: 'markdown/instances/note/plan.md' }],
+      args: [{ runId: t.runNode.id }],
     });
   });
 });

@@ -186,17 +186,13 @@ export class EscurelAuthProvider implements vscode.AuthenticationProvider, vscod
             vscode.Uri.parse(device.verification_uri_complete ?? device.verification_uri),
           );
       });
+    // ONE notification carries the code; the waiting itself is a spinner in the status bar.
     return vscode.window.withProgress(
       {
-        location: vscode.ProgressLocation.Notification,
-        title: `escurel: waiting for code ${device.user_code} to be approved…`,
-        cancellable: true,
+        location: vscode.ProgressLocation.Window,
+        title: `Waiting for you to approve the sign-in (code ${device.user_code})`,
       },
-      (_p, ct) => {
-        const ac = new AbortController();
-        ct.onCancellationRequested(() => ac.abort());
-        return pollDeviceToken(meta, { clientId, device, signal: ac.signal });
-      },
+      () => pollDeviceToken(meta, { clientId, device, signal: new AbortController().signal }),
     );
   }
 }

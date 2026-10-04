@@ -10,14 +10,14 @@ use serde_json::{Value, json};
 
 const SKILL_CUSTOMER_ID: &str = "customer";
 const SKILL_CUSTOMER_BODY: &str = "---\n\
-     type: skill\n\
+     kind: skill\n\
      id: customer\n\
      description: A buying entity.\n\
      ---\n\
      # customer\n";
 
 const SKILL_MEETING_BODY: &str = "---\n\
-     type: skill\n\
+     kind: skill\n\
      id: meeting\n\
      description: An in-person or remote meeting.\n\
      required_frontmatter:\n\
@@ -26,7 +26,7 @@ const SKILL_MEETING_BODY: &str = "---\n\
      # meeting\n";
 
 const SKILL_QUERY_BODY: &str = "---\n\
-     type: skill\n\
+     kind: skill\n\
      id: query\n\
      description: SQL view over the indexed corpus.\n\
      ---\n\
@@ -39,7 +39,7 @@ const SKILL_QUERY_BODY: &str = "---\n\
 // `escurel-runner-workflow` reducer (PR-2), not the index; PR-1 only needs the
 // kind to surface through `list_skills`.
 const SKILL_DEEP_RESEARCH_BODY: &str = "---\n\
-     type: skill\n\
+     kind: skill\n\
      id: deep-research\n\
      description: Fan-out web search, adversarially verify, synthesize a report.\n\
      backend: {kind: workflow}\n\
@@ -48,14 +48,14 @@ const SKILL_DEEP_RESEARCH_BODY: &str = "---\n\
      # deep-research\n";
 
 const MEETING_OLD_BODY: &str = "---\n\
-     type: instance\n\
+     kind: instance\n\
      skill: meeting\n\
      id: kickoff\n\
      at: 2026-01-10T10:00:00Z\n\
      ---\n\
      # Kickoff\n";
 const MEETING_NEW_BODY: &str = "---\n\
-     type: instance\n\
+     kind: instance\n\
      skill: meeting\n\
      id: qbr\n\
      at: 2026-04-12T10:00:00Z\n\
@@ -64,7 +64,7 @@ const MEETING_NEW_BODY: &str = "---\n\
 
 // A scenario-B-only customer: hidden in the base view, visible under B.
 const INSTANCE_FUTURE_B_BODY: &str = "---\n\
-     type: instance\n\
+     kind: instance\n\
      skill: customer\n\
      id: future-corp\n\
      scenario: B\n\
@@ -73,7 +73,7 @@ const INSTANCE_FUTURE_B_BODY: &str = "---\n\
 
 const INSTANCE_ACME_PATH: &str = "markdown/instances/customer/acme-corp.md";
 const INSTANCE_ACME_BODY: &str = "---\n\
-     type: instance\n\
+     kind: instance\n\
      skill: customer\n\
      id: acme-corp\n\
      ---\n\
@@ -82,14 +82,14 @@ const INSTANCE_ACME_BODY: &str = "---\n\
      Comparable: [[customer::globex-llc]].\n";
 
 const INSTANCE_GLOBEX_BODY: &str = "---\n\
-     type: instance\n\
+     kind: instance\n\
      skill: customer\n\
      id: globex-llc\n\
      ---\n\
      # Globex\n";
 
 const QUERY_COUNT_BODY: &str = "---\n\
-     type: instance\n\
+     kind: instance\n\
      skill: query\n\
      id: count-by-skill\n\
      db: relational\n\
@@ -484,7 +484,7 @@ async fn unknown_method_returns_jsonrpc_method_not_found() {
 async fn update_page_round_trips_through_http() {
     let p = start_with_seeded_indexer().await;
     let body = "---\n\
-                type: instance\n\
+                kind: instance\n\
                 skill: customer\n\
                 id: brand-new\n\
                 ---\n\

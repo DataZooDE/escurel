@@ -11,14 +11,14 @@ use escurel_test_support::{
 use serde_json::{Value, json};
 
 const TENANT: &str = "acme";
-const RENEWAL: &str = "---\ntype: skill\nid: renewal\ndescription: d.\n\
+const RENEWAL: &str = "---\nkind: skill\nid: renewal\ndescription: d.\n\
 acl:\n  create: [ops]\n  update: [ops]\n---\n# renewal\n";
 /// Grants the SAME group — the case the skill claim exists for.
-const BILLING: &str = "---\ntype: skill\nid: billing\ndescription: d.\n\
+const BILLING: &str = "---\nkind: skill\nid: billing\ndescription: d.\n\
 acl:\n  create: [ops]\n  update: [ops]\n---\n# billing\n";
 
 fn instance(skill: &str, note: &str) -> String {
-    format!("---\ntype: instance\nid: c1\nskill: {skill}\n---\n# C1\n\n{note}\n")
+    format!("---\nkind: instance\nid: c1\nskill: {skill}\n---\n# C1\n\n{note}\n")
 }
 
 fn page(skill: &str) -> String {

@@ -1,5 +1,5 @@
 ---
-type: instance
+kind: instance
 skill: project
 id: hoffmann-pilot
 at: 2026-04-26T09:00:00Z

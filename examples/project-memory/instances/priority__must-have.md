@@ -1,5 +1,5 @@
 ---
-type: instance
+kind: instance
 skill: priority
 id: must-have
 name: must-have

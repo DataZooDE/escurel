@@ -76,7 +76,7 @@ class _SkillTile extends ConsumerWidget {
                       padding: const EdgeInsets.symmetric(vertical: 6),
                       child: Row(
                         children: [
-                          const KindChip(pageType: md.PageType.skill),
+                          const KindChip(pageKind: md.PageKind.skill),
                           const SizedBox(width: 8),
                           Expanded(
                             child: Text(skill.id, style: text.titleSmall),
@@ -222,7 +222,7 @@ class _SkillTile extends ConsumerWidget {
     // Seed a blank draft: every required/optional field empty, body a
     // bare `# <id>` heading the operator fills in.
     final fm = <String, dynamic>{
-      'type': 'instance',
+      'kind': 'instance',
       'skill': skill.id,
       'id': '',
       for (final k in skill.requiredFrontmatter) k: '',

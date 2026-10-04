@@ -21,7 +21,7 @@ import 'package:flutter_test/flutter_test.dart';
 
 const _noteSkill =
     '---\n'
-    'type: skill\n'
+    'kind: skill\n'
     'id: note\n'
     'description: A free-form note.\n'
     'required_frontmatter: [title]\n'
@@ -30,7 +30,7 @@ const _noteSkill =
 
 const _noteWelcome =
     '---\n'
-    'type: instance\n'
+    'kind: instance\n'
     'skill: note\n'
     'id: welcome\n'
     'title: Welcome\n'
@@ -40,7 +40,7 @@ const _noteWelcome =
 // operator-editable, mirroring private_profile.
 const _profileSkill =
     '---\n'
-    'type: skill\n'
+    'kind: skill\n'
     'id: private_profile\n'
     'description: An owner-bound profile.\n'
     'visibility: owner\n'
@@ -50,7 +50,7 @@ const _profileSkill =
 
 const _profileInstance =
     '---\n'
-    'type: instance\n'
+    'kind: instance\n'
     'skill: private_profile\n'
     'id: secret\n'
     'owner: "whatsapp:123"\n'
@@ -61,7 +61,7 @@ const _profileInstance =
 // read-only; admin/group-writable ⇒ editable.
 const _ticketSkill =
     '---\n'
-    'type: skill\n'
+    'kind: skill\n'
     'id: ticket\n'
     'description: An owner-scoped ticket (acl, no owner_field).\n'
     'owner_field: reporter\n'
@@ -73,7 +73,7 @@ const _ticketSkill =
 
 const _ticketInstance =
     '---\n'
-    'type: instance\n'
+    'kind: instance\n'
     'skill: ticket\n'
     'id: t1\n'
     'reporter: "whatsapp:999"\n'
@@ -81,7 +81,7 @@ const _ticketInstance =
 
 const _bulletinSkill =
     '---\n'
-    'type: skill\n'
+    'kind: skill\n'
     'id: bulletin\n'
     'description: An admin-writable bulletin (acl).\n'
     'acl:\n'
@@ -340,7 +340,7 @@ void main() {
         skillFiles: {
           'widget.md':
               '---\n'
-              'type: skill\n'
+              'kind: skill\n'
               'id: widget\n'
               'description: A public widget.\n'
               'required_frontmatter: [title]\n'
@@ -350,7 +350,7 @@ void main() {
         instanceFiles: {
           'widget__w1.md':
               '---\n'
-              'type: instance\n'
+              'kind: instance\n'
               'skill: widget\n'
               'id: w1\n'
               'title: W1\n'
@@ -402,7 +402,7 @@ void main() {
         'note.md': _noteSkill,
         'rubric.md':
             '---\n'
-            'type: skill\n'
+            'kind: skill\n'
             'id: rubric\n'
             'description: A tunable rubric page.\n'
             'required_frontmatter: [title]\n'
@@ -412,7 +412,7 @@ void main() {
         'note__welcome.md': _noteWelcome,
         'rubric__r1.md':
             '---\n'
-            'type: instance\nskill: rubric\nid: r1\ntitle: R1\n---\n\n# r1\n',
+            'kind: instance\nskill: rubric\nid: r1\ntitle: R1\n---\n\n# r1\n',
       },
     );
     tester.view.physicalSize = const Size(1400, 1000);

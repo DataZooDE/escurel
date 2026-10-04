@@ -60,7 +60,7 @@ fn harness_without_links_table() -> Harness {
 }
 
 const SKILL_CUSTOMER: &str = "---\n\
-     type: skill\n\
+     kind: skill\n\
      id: customer\n\
      description: A buying entity.\n\
      required_frontmatter: []\n\
@@ -69,7 +69,7 @@ const SKILL_CUSTOMER: &str = "---\n\
      # customer\n";
 
 const INSTANCE_ACME: &str = "---\n\
-     type: instance\n\
+     kind: instance\n\
      skill: customer\n\
      id: acme-corp\n\
      ---\n\
@@ -78,7 +78,7 @@ const INSTANCE_ACME: &str = "---\n\
 /// A note instance that cites `[[customer::acme-corp]]` so the
 /// `links` table grows a row with `dst_page = 'acme-corp'`.
 const INSTANCE_NOTE_CITING_ACME: &str = "---\n\
-     type: instance\n\
+     kind: instance\n\
      skill: customer\n\
      id: acme-meeting-note\n\
      ---\n\

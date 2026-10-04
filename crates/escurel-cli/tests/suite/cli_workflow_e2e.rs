@@ -13,7 +13,7 @@ use serde_json::Value;
 const TENANT: &str = "acme";
 
 const WF_SKILL_BODY: &str = "---\n\
-type: skill\n\
+kind: skill\n\
 id: deep-research\n\
 description: Two-phase workflow test plan.\n\
 backend: {kind: workflow}\n\
@@ -22,9 +22,9 @@ phases: [{id: scope, produces: research-angle, fan_out: 1}, {id: synthesize, pro
 ---\n\
 # deep-research\n\nFan out, then synthesize.\n";
 
-const ANGLE_SKILL_BODY: &str = "---\ntype: skill\nid: research-angle\n---\n# research-angle\n";
-const REPORT_SKILL_BODY: &str = "---\ntype: skill\nid: research-report\n---\n# research-report\n";
-const RUN_SKILL_BODY: &str = "---\ntype: skill\nid: workflow-run\n---\n# workflow-run\n";
+const ANGLE_SKILL_BODY: &str = "---\nkind: skill\nid: research-angle\n---\n# research-angle\n";
+const REPORT_SKILL_BODY: &str = "---\nkind: skill\nid: research-report\n---\n# research-report\n";
+const RUN_SKILL_BODY: &str = "---\nkind: skill\nid: workflow-run\n---\n# workflow-run\n";
 
 struct Harness {
     process: EscurelProcess,
@@ -118,6 +118,24 @@ async fn workflow_run_status_stop_round_trips() {
         invoked["event_id"].as_str().is_some_and(|s| !s.is_empty()),
         "invocation returns an event id: {invoked}"
     );
+
+    // The board records the run's lifecycle under `run_status`, not `status`: `status` is an OKF
+    // key with its own meaning, and an engine-owned board must not collide with it.
+    let board = json(
+        &run(
+            &h,
+            vec![
+                "--format".into(),
+                "json".into(),
+                "page".into(),
+                "expand".into(),
+                "markdown/instances/workflow-run/cli1.md".into(),
+            ],
+        )
+        .await,
+    );
+    assert_eq!(board["frontmatter"]["run_status"], "running", "{board}");
+    assert!(board["frontmatter"].get("status").is_none(), "{board}");
 
     // status: the plan's phases render with zero produced (no runner ran).
     let status = json(

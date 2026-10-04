@@ -1,3 +1,5 @@
+import { notify } from '../commands/notify';
+import { quietly } from '../shared/quiet';
 import * as vscode from 'vscode';
 import { EscurelError } from '../client';
 import { readConfig } from '../config';
@@ -276,8 +278,11 @@ export function registerStartSkill(
       if (action.type === 'terminal') {
         try {
           await vscode.commands.executeCommand(action.command, action.args);
-        } catch {
-          void vscode.window.showInformationMessage('Could not start in a terminal.');
+        } catch (error) {
+          // Say why: the person's next step depends on it (not signed in, no permission, a bad setting).
+          void vscode.window.showWarningMessage(
+            `Could not start in a terminal: ${describeError(error)}`,
+          );
         }
         return;
       }
@@ -377,7 +382,7 @@ export function registerStartSkill(
         await vscode.commands.executeCommand('escurel.openThread', event.event_id);
 
         if (action.mode === 'background') {
-          void vscode.window.showInformationMessage(startedMessage(skill, pageId));
+          quietly(startedMessage(skill, pageId));
           return;
         }
 
@@ -412,6 +417,7 @@ export function registerStartSkill(
               const choice = await vscode.window.showInformationMessage(
                 planReadyMessage(startedSkill, startedPage),
                 approveChoice,
+                'Open thread',
               );
               if (choice === approveChoice) {
                 await vscode.commands.executeCommand('escurel.approvePlan', {
@@ -419,11 +425,25 @@ export function registerStartSkill(
                   skill,
                   pageId,
                 });
+              } else if (choice === 'Open thread') {
+                await vscode.commands.executeCommand('escurel.openThread', event.event_id);
               }
             } else if (res.state === 'failed') {
-              void vscode.window.showErrorMessage(`Plan failed: ${res.reason}`);
+              void notify('error', `Plan failed: ${res.reason}`, [
+                { kind: 'thread', rootEventId: event.event_id },
+                { kind: 'run', runId: res.runId },
+              ]);
             } else if (res.state === 'timeout') {
-              void vscode.window.showWarningMessage(`Timed out waiting for plan for ${skill}`);
+              void vscode.window
+                .showWarningMessage(
+                  `The plan for ${skill} is not ready yet. Open the thread to see where it is.`,
+                  'Open thread',
+                )
+                .then((pick) => {
+                  if (pick === 'Open thread') {
+                    void vscode.commands.executeCommand('escurel.openThread', event.event_id);
+                  }
+                });
             }
           } catch (err) {
             void vscode.window.showErrorMessage(formatStartError(err));

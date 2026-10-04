@@ -30,7 +30,7 @@ EscurelClient _buildCorpus() {
   return FixtureEscurelClient.fromSources(
     skillFiles: const {
       'customer.md': '''---
-type: skill
+kind: skill
 id: customer
 description: A buying organisation.
 required_frontmatter: [name, country]
@@ -39,7 +39,7 @@ required_frontmatter: [name, country]
 # customer
 ''',
       'contact.md': '''---
-type: skill
+kind: skill
 id: contact
 description: An individual at a customer.
 required_frontmatter: [name, customer]
@@ -50,7 +50,7 @@ required_frontmatter: [name, customer]
     },
     instanceFiles: const {
       'customer__acme.md': '''---
-type: instance
+kind: instance
 skill: customer
 id: acme
 name: Acme Ltd
@@ -62,7 +62,7 @@ country: DE
 Primary champion: [[contact::dora]].
 ''',
       'contact__dora.md': '''---
-type: instance
+kind: instance
 skill: contact
 id: dora
 name: Dora Doe

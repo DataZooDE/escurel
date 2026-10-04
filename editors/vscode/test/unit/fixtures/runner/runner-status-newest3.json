@@ -1,69 +1,69 @@
 {
- "events": [
-  {
-   "event_id": "01M3Y7MDN9PTC4WYBHV1F9W149",
-   "at": "2026-10-02T11:57:42Z",
-   "source": "escurel-runner",
-   "mime": "application/json",
-   "label_skill": "escurel:runner-status",
-   "instance_page_id": null,
-   "status": "inbox",
-   "title": "changed",
-   "body": "{\"draining\":false,\"harness\":\"echo\",\"harness_permits_available\":16,\"last_poll_age_ms\":4,\"live_runs\":[],\"paused_tenants\":[],\"runner_id\":\"runner:1150355\",\"runs\":{\"cancelled\":0,\"dead_letter\":1,\"failed\":0,\"pending\":0,\"planned\":0,\"processed\":3,\"total\":4},\"tenant\":\"vsx\",\"throttled\":{\"max_concurrent\":0,\"paused\":0,\"runs_per_min\":0},\"uptime_s\":740,\"version\":\"1.0.0\"}",
-   "provenance": {
-    "runner_status": {
-     "runner_id": "runner:1150355",
-     "tenant": "vsx"
+  "events": [
+    {
+      "event_id": "01M3Y7MDN9PTC4WYBHV1F9W149",
+      "at": "2026-10-02T11:57:42Z",
+      "source": "escurel-runner",
+      "mime": "application/json",
+      "label_skill": "escurel:runner-status",
+      "instance_page_id": null,
+      "status": "inbox",
+      "title": "changed",
+      "body": "{\"draining\":false,\"harness\":\"echo\",\"harness_permits_available\":16,\"last_poll_age_ms\":4,\"live_runs\":[],\"paused_tenants\":[],\"runner_id\":\"runner:1150355\",\"runs\":{\"cancelled\":0,\"dead_letter\":1,\"failed\":0,\"pending\":0,\"planned\":0,\"processed\":3,\"total\":4},\"tenant\":\"vsx\",\"throttled\":{\"max_concurrent\":0,\"paused\":0,\"runs_per_min\":0},\"uptime_s\":740,\"version\":\"1.0.0\"}",
+      "provenance": {
+        "runner_status": {
+          "runner_id": "runner:1150355",
+          "tenant": "vsx"
+        },
+        "captured_by": "escurel-runner"
+      },
+      "kind": "system",
+      "root_event_id": "01M3Y7MDN9PTC4WYBHV1F9W149",
+      "run_id": null
     },
-    "captured_by": "escurel-runner"
-   },
-   "kind": "system",
-   "root_event_id": "01M3Y7MDN9PTC4WYBHV1F9W149",
-   "run_id": null
-  },
-  {
-   "event_id": "01M3Y7MDEEVZ7RZ7JP42RHQ06A",
-   "at": "2026-10-02T11:57:42Z",
-   "source": "escurel-runner",
-   "mime": "application/json",
-   "label_skill": "escurel:runner-status",
-   "instance_page_id": null,
-   "status": "inbox",
-   "title": "changed",
-   "body": "{\"draining\":false,\"harness\":\"echo\",\"harness_permits_available\":15,\"last_poll_age_ms\":4,\"live_runs\":[],\"paused_tenants\":[],\"runner_id\":\"runner:1150355\",\"runs\":{\"cancelled\":0,\"dead_letter\":1,\"failed\":0,\"pending\":0,\"planned\":0,\"processed\":3,\"total\":4},\"tenant\":\"vsx\",\"throttled\":{\"max_concurrent\":0,\"paused\":0,\"runs_per_min\":0},\"uptime_s\":740,\"version\":\"1.0.0\"}",
-   "provenance": {
-    "runner_status": {
-     "runner_id": "runner:1150355",
-     "tenant": "vsx"
+    {
+      "event_id": "01M3Y7MDEEVZ7RZ7JP42RHQ06A",
+      "at": "2026-10-02T11:57:42Z",
+      "source": "escurel-runner",
+      "mime": "application/json",
+      "label_skill": "escurel:runner-status",
+      "instance_page_id": null,
+      "status": "inbox",
+      "title": "changed",
+      "body": "{\"draining\":false,\"harness\":\"echo\",\"harness_permits_available\":15,\"last_poll_age_ms\":4,\"live_runs\":[],\"paused_tenants\":[],\"runner_id\":\"runner:1150355\",\"runs\":{\"cancelled\":0,\"dead_letter\":1,\"failed\":0,\"pending\":0,\"planned\":0,\"processed\":3,\"total\":4},\"tenant\":\"vsx\",\"throttled\":{\"max_concurrent\":0,\"paused\":0,\"runs_per_min\":0},\"uptime_s\":740,\"version\":\"1.0.0\"}",
+      "provenance": {
+        "runner_status": {
+          "runner_id": "runner:1150355",
+          "tenant": "vsx"
+        },
+        "captured_by": "escurel-runner"
+      },
+      "kind": "system",
+      "root_event_id": "01M3Y7MDEEVZ7RZ7JP42RHQ06A",
+      "run_id": null
     },
-    "captured_by": "escurel-runner"
-   },
-   "kind": "system",
-   "root_event_id": "01M3Y7MDEEVZ7RZ7JP42RHQ06A",
-   "run_id": null
-  },
-  {
-   "event_id": "01M3Y7M0YZ6CJ17WESGAKP2V1M",
-   "at": "2026-10-02T11:57:29Z",
-   "source": "escurel-runner",
-   "mime": "application/json",
-   "label_skill": "escurel:runner-status",
-   "instance_page_id": null,
-   "status": "inbox",
-   "title": "heartbeat",
-   "body": "{\"draining\":false,\"harness\":\"echo\",\"harness_permits_available\":16,\"last_poll_age_ms\":3,\"live_runs\":[],\"paused_tenants\":[],\"runner_id\":\"runner:1150355\",\"runs\":{\"cancelled\":0,\"dead_letter\":0,\"failed\":0,\"pending\":0,\"planned\":0,\"processed\":3,\"total\":3},\"tenant\":\"vsx\",\"throttled\":{\"max_concurrent\":0,\"paused\":0,\"runs_per_min\":0},\"uptime_s\":727,\"version\":\"1.0.0\"}",
-   "provenance": {
-    "runner_status": {
-     "runner_id": "runner:1150355",
-     "tenant": "vsx"
-    },
-    "captured_by": "escurel-runner"
-   },
-   "kind": "system",
-   "root_event_id": "01M3Y7M0YZ6CJ17WESGAKP2V1M",
-   "run_id": null
-  }
- ],
- "next_cursor": "c2VxfDQ2",
- "resume_cursor": "c2VxfDQ2"
+    {
+      "event_id": "01M3Y7M0YZ6CJ17WESGAKP2V1M",
+      "at": "2026-10-02T11:57:29Z",
+      "source": "escurel-runner",
+      "mime": "application/json",
+      "label_skill": "escurel:runner-status",
+      "instance_page_id": null,
+      "status": "inbox",
+      "title": "heartbeat",
+      "body": "{\"draining\":false,\"harness\":\"echo\",\"harness_permits_available\":16,\"last_poll_age_ms\":3,\"live_runs\":[],\"paused_tenants\":[],\"runner_id\":\"runner:1150355\",\"runs\":{\"cancelled\":0,\"dead_letter\":0,\"failed\":0,\"pending\":0,\"planned\":0,\"processed\":3,\"total\":3},\"tenant\":\"vsx\",\"throttled\":{\"max_concurrent\":0,\"paused\":0,\"runs_per_min\":0},\"uptime_s\":727,\"version\":\"1.0.0\"}",
+      "provenance": {
+        "runner_status": {
+          "runner_id": "runner:1150355",
+          "tenant": "vsx"
+        },
+        "captured_by": "escurel-runner"
+      },
+      "kind": "system",
+      "root_event_id": "01M3Y7M0YZ6CJ17WESGAKP2V1M",
+      "run_id": null
+    }
+  ],
+  "next_cursor": "c2VxfDQ2",
+  "has_more": true
 }

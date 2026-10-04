@@ -25,11 +25,11 @@ const TENANT: &str = "stuttgart-ai";
 const ALICE: &str = "consultant:alice";
 const BOB: &str = "consultant:bob";
 
-const NOTE_SKILL: &str = "---\ntype: skill\nid: note\ndescription: A note.\n---\n# note\n";
+const NOTE_SKILL: &str = "---\nkind: skill\nid: note\ndescription: A note.\n---\n# note\n";
 const NOTE_PAGE: &str = "markdown/instances/note/n1.md";
 
 fn note_markdown(body: &str) -> String {
-    format!("---\ntype: instance\nskill: note\nid: n1\n---\n# n1\n\n{body}\n")
+    format!("---\nkind: instance\nskill: note\nid: n1\n---\n# n1\n\n{body}\n")
 }
 
 async fn start() -> EscurelProcess {
@@ -64,7 +64,7 @@ const HOFFMANN_GROUP: &str = "engagement-hoffmann";
 const ALPINA_GROUP: &str = "engagement-alpina";
 
 const ACL_NOTE_SKILL: &str = r#"---
-type: skill
+kind: skill
 id: customer_note
 description: A note filed against an engagement.
 acl:
@@ -75,7 +75,7 @@ acl:
 "#;
 
 const ALPINA_NOTE: &str = r#"---
-type: instance
+kind: instance
 skill: customer_note
 id: alpina-1
 acl:
@@ -245,7 +245,7 @@ async fn caller_supplied_attribution_cannot_override_the_stamp() {
     let alice = p.mint_token_with_sub(TENANT, Role::Agent, ALICE);
     let bob = p.mint_token_with_sub(TENANT, Role::Agent, BOB);
 
-    let forged = "---\ntype: instance\nskill: note\nid: n1\n\
+    let forged = "---\nkind: instance\nskill: note\nid: n1\n\
         last_written_by: \"consultant:mallory\"\nprincipal: \"consultant:mallory\"\n\
         ---\n# n1\n\nforged\n";
 
@@ -256,10 +256,9 @@ async fn caller_supplied_attribution_cannot_override_the_stamp() {
         json!({
             "page_id": NOTE_PAGE,
             "content": forged,
-            // Every caller-controlled channel that could plausibly be read
-            // as attribution, all naming someone else.
-            "last_written_by": "consultant:mallory",
-            "principal": "consultant:mallory",
+            // The remaining caller-controlled channel that could plausibly be
+            // read as attribution, naming someone else (undeclared top-level
+            // arguments are refused outright — see the last assertion).
             "provenance": { "last_written_by": "consultant:mallory",
                             "principal": "consultant:mallory" },
         }),
@@ -280,7 +279,6 @@ async fn caller_supplied_attribution_cannot_override_the_stamp() {
         json!({
             "page_id": NOTE_PAGE,
             "content": forged,
-            "last_written_by": "consultant:mallory",
             "provenance": { "last_written_by": "consultant:mallory" },
         }),
     )
@@ -290,6 +288,20 @@ async fn caller_supplied_attribution_cannot_override_the_stamp() {
         last_written_by(&p, &alice, NOTE_PAGE).await.as_deref(),
         Some(BOB),
         "positive control: the stamp tracks the token, not the payload"
+    );
+
+    // An attribution argument is not a declared parameter: refused, not ignored.
+    let r = call(
+        &p,
+        &alice,
+        "update_page",
+        json!({ "page_id": NOTE_PAGE, "content": forged, "last_written_by": "consultant:mallory" }),
+    )
+    .await;
+    assert_eq!(r["result"]["isError"], true, "{r}");
+    assert_eq!(
+        r["result"]["structuredContent"]["issues"][0]["code"],
+        "invalid_argument"
     );
 
     p.shutdown().await;
@@ -377,12 +389,22 @@ async fn caller_supplied_op_principal_is_ignored() {
         json!({
             "session": session,
             "op": peer.insert("x"),
-            "principal": "consultant:mallory",
-            "author": "consultant:mallory",
         }),
     )
     .await;
     assert_eq!(r["ok"], true, "the op must still apply: {r}");
+    // A `principal` argument is not declared: refused, never trusted.
+    let forged = call(
+        &p,
+        &alice,
+        "apply_op",
+        json!({ "session": session, "op": peer.insert("z"), "principal": "consultant:mallory" }),
+    )
+    .await;
+    assert_eq!(
+        forged["result"]["structuredContent"]["issues"][0]["code"],
+        "invalid_argument"
+    );
 
     let r = call_ok(
         &p,
@@ -391,7 +413,6 @@ async fn caller_supplied_op_principal_is_ignored() {
         json!({
             "session": session,
             "op": peer.insert("y"),
-            "principal": ALICE,
         }),
     )
     .await;

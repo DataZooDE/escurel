@@ -1,5 +1,5 @@
 ---
-type: instance
+kind: instance
 skill: customer
 id: broken
 this is: not valid

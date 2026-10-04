@@ -57,7 +57,7 @@ impl Embedder for SlowEmbedder {
 }
 
 fn skill_md(id: &str) -> String {
-    format!("---\ntype: skill\nid: {id}\ndescription: d\n---\n# {id}\n")
+    format!("---\nkind: skill\nid: {id}\ndescription: d\n---\n# {id}\n")
 }
 
 #[tokio::test]

@@ -1,5 +1,5 @@
 ---
-type: skill
+kind: skill
 id: customer
 description: A buying organisation tracked by the sales team.
 ---

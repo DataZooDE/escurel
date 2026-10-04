@@ -19,11 +19,11 @@ use serde_json::{Value, json};
 
 const TENANT: &str = "acme";
 /// Grants its writes to the `ops` group: a narrowed agent carries `ops`.
-const RENEWAL: &str = "---\ntype: skill\nid: renewal\nautonomy: auto\n\
+const RENEWAL: &str = "---\nkind: skill\nid: renewal\nautonomy: auto\n\
 acl:\n  create: [ops]\n  update: [ops]\n---\n# renewal\n\nFold the event into the instance.\n";
 /// Declares no write grant: admin-write-only under the tenant default.
 const AUDIT: &str =
-    "---\ntype: skill\nid: audit\nautonomy: auto\n---\n# audit\n\nFold the event.\n";
+    "---\nkind: skill\nid: audit\nautonomy: auto\n---\n# audit\n\nFold the event.\n";
 
 struct ChildGuard(Child);
 impl Drop for ChildGuard {
@@ -34,7 +34,7 @@ impl Drop for ChildGuard {
 }
 
 fn instance_body(skill: &str) -> String {
-    format!("---\ntype: instance\nid: c1\nskill: {skill}\n---\n# C1\n\nBASELINE.\n")
+    format!("---\nkind: instance\nid: c1\nskill: {skill}\n---\n# C1\n\nBASELINE.\n")
 }
 
 fn page_id(skill: &str) -> String {

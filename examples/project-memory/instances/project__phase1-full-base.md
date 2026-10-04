@@ -1,5 +1,5 @@
 ---
-type: instance
+kind: instance
 skill: project
 id: phase1-full-base
 title: Phase 1 — full-base churn model

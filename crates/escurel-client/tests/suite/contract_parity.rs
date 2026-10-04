@@ -19,7 +19,7 @@ use escurel_test_support::{AuthMode, ConfigOverrides, EscurelProcess, FixtureBui
 const TENANT: &str = "acme";
 
 const CUSTOMER_SKILL: &str = "---\n\
-type: skill\n\
+kind: skill\n\
 id: customer\n\
 description: A buying organisation.\n\
 required_frontmatter: [id, name]\n\
@@ -31,7 +31,7 @@ optional_frontmatter: [tier, at]\n\
 // cut keys on it (`at_ts <= as_of`; UNTIMED pages always remain — they
 // are not events on the timeline). A cut before `at` hides them.
 const ACME_INSTANCE: &str = "---\n\
-type: instance\n\
+kind: instance\n\
 skill: customer\n\
 id: acme\n\
 name: Acme Corp\n\
@@ -41,7 +41,7 @@ at: 2024-06-01T00:00:00Z\n\
 # Acme Corp\n\nKey account. See [[customer::initech]].\n";
 
 const INITECH_INSTANCE: &str = "---\n\
-type: instance\n\
+kind: instance\n\
 skill: customer\n\
 id: initech\n\
 name: Initech\n\
@@ -221,7 +221,7 @@ async fn search_forwards_as_of() {
     let past = client
         .search(SearchRequest {
             q: "acme".to_owned(),
-            page_type: "instance".to_owned(),
+            page_kind: "instance".to_owned(),
             as_of: BEFORE_EVERYTHING.to_owned(),
             ..Default::default()
         })
@@ -246,7 +246,7 @@ async fn list_instances_paginates_to_exhaustion() {
         .skill("customer", CUSTOMER_SKILL);
     for i in 0..5 {
         let body = format!(
-            "---\ntype: instance\nskill: customer\nid: c{i}\nname: Customer {i}\n---\n# C{i}\n"
+            "---\nkind: instance\nskill: customer\nid: c{i}\nname: Customer {i}\n---\n# C{i}\n"
         );
         fx = fx.instance("customer", &format!("c{i}"), body.as_str());
     }
@@ -326,7 +326,7 @@ async fn expand_hash_feeds_guarded_update_and_stale_hash_conflicts() {
 
     // Guarded write against the hash we just read: succeeds.
     let updated = "---\n\
-type: instance\n\
+kind: instance\n\
 skill: customer\n\
 id: acme\n\
 name: Acme Corp\n\
@@ -354,7 +354,7 @@ tier: platinum\n\
         .update_page(UpdatePageRequest {
             page_id: page_id.clone(),
             content:
-                "---\ntype: instance\nskill: customer\nid: acme\nname: Acme Corp\n---\n# stale\n"
+                "---\nkind: instance\nskill: customer\nid: acme\nname: Acme Corp\n---\n# stale\n"
                     .to_owned(),
             base_sha256: Some(sha),
             ..Default::default()
@@ -403,7 +403,7 @@ async fn stale_base_version_with_require_exact_base_conflicts() {
     let base = read.version.expect("live-CRDT gateway publishes version");
 
     // Advance the head past the base we hold.
-    let advance = "---\ntype: instance\nskill: customer\nid: initech\nname: Initech\ntier: silver\n---\n# Initech\n";
+    let advance = "---\nkind: instance\nskill: customer\nid: initech\nname: Initech\ntier: silver\n---\n# Initech\n";
     let first = client
         .update_page(UpdatePageRequest {
             page_id: page_id.clone(),
@@ -420,7 +420,7 @@ async fn stale_base_version_with_require_exact_base_conflicts() {
     let stale = client
         .update_page(UpdatePageRequest {
             page_id: page_id.clone(),
-            content: "---\ntype: instance\nskill: customer\nid: initech\nname: Initech\n---\n# strict loser\n".to_owned(),
+            content: "---\nkind: instance\nskill: customer\nid: initech\nname: Initech\n---\n# strict loser\n".to_owned(),
             base_version: Some(base),
             require_exact_base: true,
             ..Default::default()

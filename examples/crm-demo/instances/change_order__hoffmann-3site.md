@@ -1,5 +1,5 @@
 ---
-type: instance
+kind: instance
 skill: change_order
 id: hoffmann-3site
 at: 2026-06-04T11:30:00Z

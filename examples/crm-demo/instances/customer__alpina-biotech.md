@@ -1,5 +1,5 @@
 ---
-type: instance
+kind: instance
 skill: customer
 id: alpina-biotech
 name: Alpina Biotech SA

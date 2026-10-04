@@ -2,7 +2,8 @@ import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { EscurelClient, ListLineageResponse, EventsPage } from '../../src/client';
-import { evolveApprovalRevision, existingEvolveApproval, resolveApprovalSubject } from '../../src/start/approvePlan';
+import { approvePlanRun, evolveApprovalRevision, existingEvolveApproval, resolveApprovalSubject } from '../../src/start/approvePlan';
+import { inFlight } from '../../src/runs/controlWait';
 
 const FIXTURES = join(__dirname, 'fixtures', 'lineage');
 const LINEAGE: ListLineageResponse = JSON.parse(
@@ -21,50 +22,13 @@ function makeClient(lineage: ListLineageResponse, events: EventsPage): EscurelCl
 }
 
 describe('resolveApprovalSubject', () => {
-  it('returns given skill and pageId directly when both are present', async () => {
-    const client = makeClient(LINEAGE, EVENTS);
-    const res = await resolveApprovalSubject(client, '01RUN', {
-      skill: 'custom-skill',
-      pageId: 'markdown/instances/order/o1.md',
-    });
-    expect(res).toEqual({
-      skill: 'custom-skill',
-      pageId: 'markdown/instances/order/o1.md',
-    });
-  });
+  const runId = '01M3SXRWFGX05T89EEJ038ZWHB';
 
-  it('resolves pageId and skill from run-detail fixtures when both are omitted', async () => {
+  it('derives pageId and skill from the run, never from the caller', async () => {
     const client = makeClient(LINEAGE, EVENTS);
-    const runId = '01M3SXRWFGX05T89EEJ038ZWHB';
-
     const res = await resolveApprovalSubject(client, runId);
-    // In run-detail-lineage.json:
-    // target_page_id is "markdown/instances/order/o1.md"
-    // root event "01M3SXRWDP8R2QZME546B380MV" has label_skill: "signal"
     expect(res.pageId).toBe('markdown/instances/order/o1.md');
     expect(res.skill).toBe('signal');
-  });
-
-  it('resolves skill from lineage root event when only pageId is provided', async () => {
-    const client = makeClient(LINEAGE, EVENTS);
-    const runId = '01M3SXRWFGX05T89EEJ038ZWHB';
-
-    const res = await resolveApprovalSubject(client, runId, {
-      pageId: 'markdown/instances/override.md',
-    });
-    expect(res.pageId).toBe('markdown/instances/override.md');
-    expect(res.skill).toBe('signal');
-  });
-
-  it('resolves pageId from run detail when only skill is provided', async () => {
-    const client = makeClient(LINEAGE, EVENTS);
-    const runId = '01M3SXRWFGX05T89EEJ038ZWHB';
-
-    const res = await resolveApprovalSubject(client, runId, {
-      skill: 'provided-skill',
-    });
-    expect(res.pageId).toBe('markdown/instances/order/o1.md');
-    expect(res.skill).toBe('provided-skill');
   });
 
   it('refuses to guess when target page cannot be resolved', async () => {
@@ -116,20 +80,85 @@ describe('resolveApprovalSubject', () => {
   });
 });
 
-describe('resolveApprovalSubject for a plan with no target', () => {
-  it('keeps an explicit empty page: the plan was started without one, it is not missing', async () => {
-    const client = { listLineage: async () => ({ nodes: [] }) } as never;
-    const res = await resolveApprovalSubject(client, '01RUN', {
-      skill: 'supplier-risk',
-      pageId: '',
+describe('approvePlanRun', () => {
+  const runId = '01M3SXRWFGX05T89EEJ038ZWHB';
+  const withStatus = (status: string): EventsPage => ({
+    ...EVENTS,
+    events: EVENTS.events.map((e) => {
+      if (e.title !== 'run-finished') return e;
+      const body = JSON.parse(e.body ?? '{}') as Record<string, unknown>;
+      return { ...e, body: JSON.stringify({ ...body, status }) };
+    }),
+  });
+  const captures: unknown[] = [];
+  const clientFor = (events: EventsPage) =>
+    ({
+      listLineage: async () => LINEAGE,
+      listEvents: async () => events,
+      getRunToolCalls: async () => ({ calls: [], next_after: null }),
+      captureEvent: async (req: unknown) => {
+        captures.push(req);
+        return { event_id: 'EV1' };
+      },
+    }) as unknown as EscurelClient;
+
+  it('asks first — naming skill, page and run — and captures nothing when declined', async () => {
+    captures.length = 0;
+    const asked: string[] = [];
+    const out = await approvePlanRun(clientFor(withStatus('planned')), runId, {
+      confirm: async (m) => (asked.push(m), false),
+      harness: '',
     });
-    expect(res).toEqual({ skill: 'supplier-risk', pageId: '' });
+    expect(out).toEqual({ kind: 'declined' });
+    expect(captures).toEqual([]);
+    expect(asked).toHaveLength(1);
+    expect(asked[0]).toContain('signal');
+    expect(asked[0]).toContain('markdown/instances/order/o1.md');
+    expect(asked[0]).toContain(runId);
+  });
+
+  it("captures the approval for the run's own skill and page once confirmed", async () => {
+    captures.length = 0;
+    const out = await approvePlanRun(clientFor(withStatus('planned')), runId, {
+      confirm: async () => true,
+      harness: '',
+    });
+    expect(out).toEqual({ kind: 'approved', eventId: 'EV1' });
+    expect(captures).toHaveLength(1);
+    expect(JSON.stringify(captures[0])).toContain(runId);
+  });
+
+  it('refuses a run that is no longer planned, without asking or capturing', async () => {
+    captures.length = 0;
+    let asked = 0;
+    const out = await approvePlanRun(clientFor(withStatus('processed')), runId, {
+      confirm: async () => (asked++, true),
+      harness: '',
+    });
+    expect(out).toEqual({ kind: 'not-planned', status: 'processed' });
+    expect(asked).toBe(0);
+    expect(captures).toEqual([]);
+  });
+});
+
+describe('inFlight on approvals', () => {
+  it('a double invocation for one run runs the task once', async () => {
+    const once = inFlight();
+    let runs = 0;
+    const task = async () => {
+      runs++;
+      await new Promise((r) => setTimeout(r, 10));
+    };
+    await Promise.all([once('RUN', task), once('RUN', task)]);
+    expect(runs).toBe(1);
   });
 });
 
 describe('Evolve plan revision binding', () => {
   const hash = 'a'.repeat(64);
   const pageId = 'markdown/instances/evolve_problem/reorder.md';
+  const runId = '01M3SXRWFGX05T89EEJ038ZWHB';
+  const rootId = '01M3SXRWDP8R2QZME546B380MV';
   function client(currentHash: string, mode = 'plan'): EscurelClient {
     return {
       listEvents: async () => ({ events: [{
@@ -180,5 +209,56 @@ describe('Evolve plan revision binding', () => {
       .resolves.toBe('evolve-approval-01RUN');
     await expect(existingEvolveApproval(approved, 'evolve-approval-01RUN', pageId, 'DIFFERENT'))
       .resolves.toBeUndefined();
+  });
+
+  it('keeps the run-derived target and Evolve revision review in the merged approval path', async () => {
+    const lineage = structuredClone(LINEAGE);
+    const root = lineage.nodes.find((node) => node.id === rootId)!;
+    root.label_skill = 'evolve_run';
+    const run = lineage.nodes.find((node) => node.id === runId)!;
+    run.target_page_id = pageId;
+    run.harness = 'gemini';
+    const events = structuredClone(EVENTS);
+    for (const event of events.events) {
+      if (event.title === 'run-finished') {
+        const body = JSON.parse(event.body ?? '{}') as Record<string, unknown>;
+        event.body = JSON.stringify({ ...body, status: 'planned' });
+      }
+    }
+    const captured: unknown[] = [];
+    const client = {
+      listEvents: async (req: { event_id?: string }) => req.event_id === rootId
+        ? { events: [{ event_id: rootId, kind: 'user', label_skill: 'evolve_run',
+          instance_page_id: pageId, revision_binding_attested: true,
+          provenance: { manual: { mode: 'plan', target_page_sha256: hash } } }] }
+        : req.event_id ? { events: [] } : events,
+      listLineage: async () => lineage,
+      getRunToolCalls: async () => ({ calls: [], next_after: null }),
+      expand: async () => ({ page: { page_id: pageId, skill: 'evolve_problem', page_kind: 'instance' },
+        content: '# Reviewed problem', content_sha256: hash,
+        frontmatter: { search_request: { pilot: 'p1_decision', holdout_id: 'sealed-1' } },
+        body: '# Reviewed problem', blocks: [], wikilinks_out: [] }),
+      captureEvent: async (request: unknown) => { captured.push(request); return { event_id: 'approved-1' }; },
+    } as unknown as EscurelClient;
+    const asked: Array<{ message: string; action?: string }> = [];
+    const result = await approvePlanRun(client, runId, {
+      harness: 'local-default-changed',
+      confirm: async (message, action) => { asked.push({ message, action }); return true; },
+    });
+    expect(result).toEqual({ kind: 'approved', eventId: 'approved-1' });
+    expect(asked).toHaveLength(1);
+    expect(asked[0]).toMatchObject({ action: 'Approve search' });
+    expect(asked[0]!.message).toContain('holdout ID: sealed-1');
+    expect(asked[0]!.message).toContain(`Page SHA-256: ${hash}`);
+    expect(captured).toHaveLength(1);
+    expect(captured[0]).toMatchObject({ label_skill: 'evolve_run', instance_page_id: pageId,
+      provenance: { manual: { harness: 'gemini', expected_page_sha256: hash } } });
+
+    run.harness = 'echo';
+    captured.length = 0;
+    await expect(approvePlanRun(client, runId, {
+      harness: 'gemini', confirm: async () => true,
+    })).rejects.toThrow(/cannot authorize Evolve search/);
+    expect(captured).toHaveLength(0);
   });
 });

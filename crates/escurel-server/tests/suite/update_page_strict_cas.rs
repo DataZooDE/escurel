@@ -17,12 +17,12 @@ use escurel_test_support::{AuthMode, ConfigOverrides, EscurelProcess, FixtureBui
 use serde_json::{Value, json};
 
 const TENANT: &str = "acme";
-const CUSTOMER: &str = "---\ntype: skill\nid: customer\ndescription: x\n---\n# customer\n";
-const C1: &str = "---\ntype: instance\nskill: customer\nid: c1\n---\n# Acme\n\nseed.\n";
+const CUSTOMER: &str = "---\nkind: skill\nid: customer\ndescription: x\n---\n# customer\n";
+const C1: &str = "---\nkind: instance\nskill: customer\nid: c1\n---\n# Acme\n\nseed.\n";
 const PAGE: &str = "markdown/instances/customer/c1.md";
 
 fn page(body: &str) -> String {
-    format!("---\ntype: instance\nskill: customer\nid: c1\n---\n# Acme\n\n{body}\n")
+    format!("---\nkind: instance\nskill: customer\nid: c1\n---\n# Acme\n\n{body}\n")
 }
 
 async fn start(live_crdt: bool) -> EscurelProcess {

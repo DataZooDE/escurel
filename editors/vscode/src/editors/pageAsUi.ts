@@ -1,3 +1,4 @@
+import { latestWriteBack, type WriteBackStatus } from '../shared/writeBack';
 import { resolvePageMessage } from './pageMessages';
 import * as vscode from 'vscode';
 import type { EscurelClient } from '../client';
@@ -5,8 +6,11 @@ import { describeError } from '../errors';
 import { pageIdFromPath } from '../fs/read';
 import { log } from '../log';
 import { buildPageModel } from '../shared/page';
+import { latestLoader } from '../shared/latestLoader';
+import { newNonce } from './nonce';
 import { safePost } from '../shared/safePost';
 import { findThreadStrip } from '../shared/threadStrip';
+import { parseViewer } from '../shared/viewer';
 import type { HostToWebview, PageModel, WebviewToHost } from '../shared/protocol';
 
 export const VIEW_TYPE = 'escurel.pageAsUi';
@@ -55,22 +59,40 @@ export class PageAsUiEditor implements vscode.CustomReadonlyEditorProvider {
     // The model the host last built: a webview message is judged against THIS, never against what
     // the webview claims.
     let current: PageModel | undefined;
-    const load = async () => {
-      if (!pageId)
-        return post({ type: 'error', message: `not an escurel page: ${doc.uri.toString()}` });
-      post({ type: 'loading' });
-      try {
+    // The loading state is for the FIRST load only. A reload caused by something live (every event
+    // reloads the page) replaces the content quietly: flashing it to "loading" each time swallowed
+    // clicks and reset the reader's place.
+    let shown = false;
+    // Reads overlap (every event, view-state change and gateway change starts one, each several awaits):
+    // only the newest is applied, so a slow old read cannot replace the model the host validates against.
+    const loader = latestLoader<{ message: HostToWebview; model?: PageModel }>(
+      async () => {
+        if (!pageId)
+          return {
+            message: { type: 'error', message: `not an escurel page: ${doc.uri.toString()}` },
+          };
         const c = this.client();
         const [e, skills] = await Promise.all([c.expand({ page_id: pageId }), c.listSkills()]);
         if (!e.page)
-          return post({
-            type: 'error',
-            message: 'This page does not exist, or you may not read it.',
-          });
+          return {
+            message: {
+              type: 'error',
+              message: 'This page does not exist, or you may not read it.',
+            },
+          };
         const skill = skills.find((s) => s.id === e.page!.skill);
         if (!skill)
-          return post({ type: 'error', message: `skill ${e.page.skill} is not in the catalogue` });
-        const model = buildPageModel(e, skill);
+          return {
+            message: { type: 'error', message: `skill ${e.page.skill} is not in the catalogue` },
+          };
+        const fromPage = buildPageModel(e, skill);
+        // The report that draws this skill's records is declared on the skill PAGE, not in the
+        // catalogue row; a failed read just means no chart line.
+        const skillPage = await c
+          .expand({ page_id: `markdown/skills/${skill.id}.md` })
+          .catch(() => undefined);
+        const viewer = parseViewer(skillPage?.frontmatter);
+        const model = viewer ? { ...fromPage, viewer } : fromPage;
         // Where the page came from. A failure here must not cost the user the page: the strip
         // is an addition to it, so it degrades to absent.
         const strip = await findThreadStrip((cursor) =>
@@ -82,22 +104,61 @@ export class PageAsUiEditor implements vscode.CustomReadonlyEditorProvider {
             ...(cursor ? { cursor } : {}),
           }),
         );
-        current = strip ? { ...model, thread: strip } : model;
-        post({ type: 'page', model: current });
-      } catch (err) {
-        post({ type: 'error', message: describeError(err) });
-      }
+        // What the last change sent to the source did. Like the thread strip it is an addition: a
+        // failure here must not cost the user the page.
+        let writeBack: WriteBackStatus | undefined;
+        // A row that can be written back to: REST/MCP, or a SQL database with writable columns.
+        if (model.source?.external || model.source?.writableColumns?.length) {
+          try {
+            const evs = await c.listEvents({
+              instance_page_id: pageId,
+              label_skill: 'escurel:write-back',
+              include_system: true,
+              newest_first: true,
+              limit: 20,
+            });
+            writeBack = latestWriteBack(evs.events);
+          } catch {
+            writeBack = undefined;
+          }
+        }
+        const base = strip ? { ...model, thread: strip } : model;
+        const built = writeBack ? { ...base, writeBack } : base;
+        return { message: { type: 'page', model: built }, model: built };
+      },
+      (result) => {
+        if (result.model) {
+          current = result.model;
+          shown = true;
+        }
+        post(result.message);
+      },
+      (err) => post({ type: 'error', message: describeError(err) }),
+    );
+    const load = async () => {
+      if (!shown) post({ type: 'loading' });
+      await loader.run();
     };
     const subs: vscode.Disposable[] = [
       panel.webview.onDidReceiveMessage((m: WebviewToHost) =>
         this.onMessage(m, pageId, current, load),
       ),
-      this.onDidChange(() => void load()),
+      // A different gateway or tenant: what is on screen (and what messages are judged against) belongs
+      // to the old one. Retire the reads in flight and start over.
+      this.onDidChange(() => {
+        loader.invalidate();
+        current = undefined;
+        shown = false;
+        void load();
+      }),
       panel.onDidChangeViewState((e) => {
         if (e.webviewPanel.active) void load();
       }),
     ];
-    panel.onDidDispose(() => subs.forEach((s) => s.dispose()));
+    panel.onDidDispose(() => {
+      loader.invalidate();
+      subs.forEach((s) => s.dispose());
+    });
   }
 
   private onMessage(
@@ -132,9 +193,7 @@ export class PageAsUiEditor implements vscode.CustomReadonlyEditorProvider {
     const script = webview.asWebviewUri(
       vscode.Uri.joinPath(this.context.extensionUri, 'dist', 'webview', 'page-as-ui.js'),
     );
-    const nonce = Array.from({ length: 16 }, () =>
-      Math.floor(Math.random() * 36).toString(36),
-    ).join('');
+    const nonce = newNonce();
     return `<!doctype html><html><head><meta charset="utf-8" />
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${webview.cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}';" />
 <style>body{margin:0}</style></head>

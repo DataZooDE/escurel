@@ -15,20 +15,20 @@ use escurel_test_support::{AuthMode, ConfigOverrides, EscurelProcess, FixtureBui
 use serde_json::{Value, json};
 
 const TENANT: &str = "stuttgart-ai";
-const NOTE_SKILL: &str = "---\ntype: skill\nid: note\ndescription: A note.\n\
+const NOTE_SKILL: &str = "---\nkind: skill\nid: note\ndescription: A note.\n\
     visibility: public\n---\n# note\n";
-const NOTE_A: &str = "---\ntype: instance\nskill: note\nid: a\n---\n# A\n";
-const EVOLVE_PROBLEM_SKILL: &str = "---\ntype: skill\nid: evolve_problem\ndescription: Evolve problem.\nvisibility: public\n---\n# Evolve problem\n";
-const EVOLVE_PROBLEM_A: &str = "---\ntype: instance\nskill: evolve_problem\nid: a\n---\n# A\n";
-const PRIVATE_EVOLVE_PROBLEM_SKILL: &str = "---\ntype: skill\nid: evolve_problem\ndescription: Owner problem.\nowner_field: owner_subject\nacl:\n  read: [owner]\n  create: [owner]\n  update: [owner]\n---\n# Evolve problem\n";
+const NOTE_A: &str = "---\nkind: instance\nskill: note\nid: a\n---\n# A\n";
+const EVOLVE_PROBLEM_SKILL: &str = "---\nkind: skill\nid: evolve_problem\ndescription: Evolve problem.\nvisibility: public\n---\n# Evolve problem\n";
+const EVOLVE_PROBLEM_A: &str = "---\nkind: instance\nskill: evolve_problem\nid: a\n---\n# A\n";
+const PRIVATE_EVOLVE_PROBLEM_SKILL: &str = "---\nkind: skill\nid: evolve_problem\ndescription: Owner problem.\nowner_field: owner_subject\nacl:\n  read: [owner]\n  create: [owner]\n  update: [owner]\n---\n# Evolve problem\n";
 const PRIVATE_EVOLVE_PROBLEM_A: &str =
-    "---\ntype: instance\nskill: evolve_problem\nid: a\nowner_subject: test-subject\n---\n# A\n";
-const PRIVATE_EVOLVE_SOURCE_SKILL: &str = "---\ntype: skill\nid: evolve_training_source\ndescription: Private training source.\nowner_field: owner_subject\nacl:\n  read: [owner]\n  create: [owner]\n  update: [owner]\n---\n# Source\n";
-const PRIVATE_EVOLVE_SOURCE_A: &str = "---\ntype: instance\nskill: evolve_training_source\nid: a\nowner_subject: test-subject\n---\n```json\n{\"capacity\":10}\n```\n";
-const EVOLVE_EXPERIMENT_SKILL: &str = "---\ntype: skill\nid: evolve_experiment\ndescription: Evolve experiment.\nowner_field: owner_subject\nacl:\n  read: [owner]\n  create: [admin]\n  update: [admin]\n---\n# Evolve experiment\n";
-const EVOLVE_EXPERIMENT_A: &str = "---\ntype: instance\nskill: evolve_experiment\nid: a\nowner_subject: test-subject\nstatus: completed\nbest_program_id: 7\nnext_validation_action: evolve_validate_winner\n---\n# A\n";
-const EVOLVE_REPORT_SKILL: &str = "---\ntype: skill\nid: evolve_validation_report\ndescription: Evolve private report.\nowner_field: owner_subject\nacl:\n  read: [owner]\n  create: [admin]\n  update: [admin]\n---\n# Evolve report\n";
-const EVOLVE_REPORT_A: &str = "---\ntype: instance\nskill: evolve_validation_report\nid: a\nowner_subject: test-subject\nstatus: passed\neffective_passed: true\nwinner_program_id: 7\nreport_sha256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\nnext_candidate_action: evolve_publish_candidate\n---\n# Report\n";
+    "---\nkind: instance\nskill: evolve_problem\nid: a\nowner_subject: test-subject\n---\n# A\n";
+const PRIVATE_EVOLVE_SOURCE_SKILL: &str = "---\nkind: skill\nid: evolve_training_source\ndescription: Private training source.\nowner_field: owner_subject\nacl:\n  read: [owner]\n  create: [owner]\n  update: [owner]\n---\n# Source\n";
+const PRIVATE_EVOLVE_SOURCE_A: &str = "---\nkind: instance\nskill: evolve_training_source\nid: a\nowner_subject: test-subject\n---\n```json\n{\"capacity\":10}\n```\n";
+const EVOLVE_EXPERIMENT_SKILL: &str = "---\nkind: skill\nid: evolve_experiment\ndescription: Evolve experiment.\nowner_field: owner_subject\nacl:\n  read: [owner]\n  create: [admin]\n  update: [admin]\n---\n# Evolve experiment\n";
+const EVOLVE_EXPERIMENT_A: &str = "---\nkind: instance\nskill: evolve_experiment\nid: a\nowner_subject: test-subject\nstatus: completed\nbest_program_id: 7\nnext_validation_action: evolve_validate_winner\n---\n# A\n";
+const EVOLVE_REPORT_SKILL: &str = "---\nkind: skill\nid: evolve_validation_report\ndescription: Evolve private report.\nowner_field: owner_subject\nacl:\n  read: [owner]\n  create: [admin]\n  update: [admin]\n---\n# Evolve report\n";
+const EVOLVE_REPORT_A: &str = "---\nkind: instance\nskill: evolve_validation_report\nid: a\nowner_subject: test-subject\nstatus: passed\neffective_passed: true\nwinner_program_id: 7\nreport_sha256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\nnext_candidate_action: evolve_publish_candidate\n---\n# Report\n";
 
 async fn start() -> EscurelProcess {
     EscurelProcess::spawn(Opts {
@@ -174,7 +174,15 @@ async fn evolve_run_capture_checks_and_stamps_the_exact_problem_revision() {
     let mut collided = request(&hash);
     collided["event_id"] = json!("EVOLVE-PREEMPTED");
     let collided = call(&p, &token, "capture_event", collided).await;
-    assert!(collided.get("error").is_none(), "{collided}");
+    assert_eq!(collided["error"]["code"], json!(-32602), "{collided}");
+    let mut wrong_review = request(&hash);
+    wrong_review["provenance"]["manual"]["harness"] = json!("changed-after-review");
+    let wrong_review = call(&p, &token, "capture_event", wrong_review).await;
+    assert_eq!(
+        wrong_review["error"]["code"],
+        json!(-32602),
+        "{wrong_review}"
+    );
     let row = call(
         &p,
         &token,

@@ -1,0 +1,27 @@
+{
+  "instances": [
+    {
+      "page_id": "markdown/instances/customer-order/golden-1.md",
+      "skill": "customer-order",
+      "frontmatter": {
+        "kind": "instance",
+        "skill": "customer-order",
+        "id": "golden-1"
+      },
+      "at": null
+    },
+    {
+      "page_id": "markdown/instances/customer-order__order-4500123.md",
+      "skill": "customer-order",
+      "frontmatter": {
+        "kind": "instance",
+        "skill": "customer-order",
+        "id": "order-4500123",
+        "customer": "Hoffmann Automotive GmbH",
+        "delivery_risk": "low"
+      },
+      "at": null
+    }
+  ],
+  "next_cursor": "fG1hcmtkb3duL2luc3RhbmNlcy9jdXN0b21lci1vcmRlcl9fb3JkZXItNDUwMDEyMy5tZA"
+}

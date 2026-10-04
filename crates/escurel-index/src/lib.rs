@@ -24,9 +24,11 @@ pub mod branches;
 pub mod chat;
 pub mod citation;
 pub mod crdt_history;
+pub mod credential_resolver;
 pub mod creds;
-mod cursor;
+pub mod cursor;
 pub mod drafts;
+pub mod dsn;
 pub mod endpoints;
 pub mod events;
 pub mod filter;
@@ -35,6 +37,7 @@ pub mod groups;
 pub mod indexer;
 mod materialise;
 pub mod meta_skill;
+pub mod migrate_kind;
 pub mod pack;
 pub mod quack_policy;
 pub mod quack_session;
@@ -51,13 +54,14 @@ pub mod validate;
 
 pub use acl::{AclCaller, CAPTURED_BY_FIELD, CAPTURED_VIA_FIELD, captured_by};
 pub use backend::{
-    BackendBinding, BackendCtx, BackendKind, BackendRegistry, BindingStatus, Capabilities,
-    InstanceBackend, MarkdownBackend, Materialized, RemoteBinding, RemoteKind, RemoteOp,
-    SearchMode, SqlConnector, SqlViewBackend, SqlViewBinding, SqlViewError,
+    BackendBinding, BackendKind, BindingStatus, Capabilities, Materialized, ROWS_QUERY_TIMEOUT,
+    RemoteBinding, RemoteKind, RemoteOp, SQL_CONNECT_TIMEOUT, SearchMode, SqlConnector,
+    SqlViewBackend, SqlViewBinding, SqlViewError,
 };
 pub use branches::{BranchInfo, BranchPage};
 pub use chat::{AppendChatMessage, ChatMessage, ChatPage, ListChatMessages};
 pub use citation::IndexerCitationLookup;
+pub use credential_resolver::{CredentialResolver, SharedResolver};
 pub use creds::{CredentialInfo, CredentialRecord};
 pub use events::{
     EVENTS_MAX_LIMIT, EventInfo, EventKind, EventListFilter, EventPage, ExpiredGatewayRun,

@@ -1,5 +1,5 @@
 ---
-type: instance
+kind: instance
 skill: success_criterion
 id: churn-auc-80
 name: churn-auc-80

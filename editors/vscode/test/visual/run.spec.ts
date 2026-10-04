@@ -23,3 +23,15 @@ for (const state of ['running', 'planned', 'dead_letter']) {
     });
   });
 }
+
+// The trace is the point of run detail for an engineer: tool, outcome in words, duration, bar, and the
+// link to what the run produced. A failed call is marked with a word and a cross, not colour alone.
+test('run detail trace', async ({ page }, testInfo) => {
+  const theme = (testInfo.project.metadata as { theme: string }).theme;
+  await page.goto(`/test/visual/harness/run.html?theme=${theme}&state=trace`);
+  await page.locator('escurel-run-detail .tool-call').first().waitFor();
+  await expect(page).toHaveScreenshot('run-detail-trace.png', {
+    maxDiffPixelRatio: 0.01,
+    fullPage: true,
+  });
+});

@@ -1,5 +1,5 @@
 ---
-type: skill
+kind: skill
 id: opportunity
 description: A named, valued sales motion. The MEDDPICC stage of the funnel.
 required_frontmatter: [opened, status, customer, value_eur]

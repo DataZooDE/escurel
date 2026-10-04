@@ -8,9 +8,11 @@
 
 mod log_fields;
 mod metrics;
+mod nonblocking;
 mod telemetry;
 mod trace_ctx;
 
 pub use metrics::Metrics;
+pub use nonblocking::{NonBlockingWriter, dropped_log_lines};
 pub use telemetry::{Error, TelemetryConfig, TelemetryGuard, init_telemetry, json_log_layer};
 pub use trace_ctx::{OpenTelemetrySpanExt, attach_run_trace, remote_run_context};

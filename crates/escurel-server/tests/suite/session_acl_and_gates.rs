@@ -40,11 +40,11 @@ const BOB: &str = "whatsapp:222";
 
 // Same owner-private shape as `write_acl.rs`: only the resolved owner (or
 // admin) may write an instance of `community_member`.
-const MEMBER_SKILL: &str = "---\ntype: skill\nid: community_member\n\
+const MEMBER_SKILL: &str = "---\nkind: skill\nid: community_member\n\
     description: A member.\nvisibility: owner\nowner_field: credential\n---\n# community_member\n";
-const ALICE_MEMBER: &str = "---\ntype: instance\nskill: community_member\nid: alice\n\
+const ALICE_MEMBER: &str = "---\nkind: instance\nskill: community_member\nid: alice\n\
     credential: \"whatsapp:111\"\n---\n# Alice\n";
-const BOB_MEMBER: &str = "---\ntype: instance\nskill: community_member\nid: bob\n\
+const BOB_MEMBER: &str = "---\nkind: instance\nskill: community_member\nid: bob\n\
     credential: \"whatsapp:222\"\n---\n# Bob\n";
 
 const ALICE_PAGE: &str = "markdown/instances/community_member/alice.md";
@@ -167,7 +167,7 @@ async fn acl_change_mid_session_denies_the_close_commit() {
     assert_eq!(applied["ok"], json!(true), "seed op must apply: {applied}");
 
     // The page changes hands while the session is open (admin transfer).
-    let transferred = "---\ntype: instance\nskill: community_member\nid: alice\n\
+    let transferred = "---\nkind: instance\nskill: community_member\nid: alice\n\
         credential: \"whatsapp:222\"\n---\n# Alice\n\nNow bob's record.\n";
     let r = call_ok(
         &p,
@@ -386,9 +386,9 @@ async fn suspended_tenant_is_rejected_at_the_ws_upgrade() {
 // carried by which groups a token claims. `update_page` enforces exactly this;
 // §1 above proved `open_session` mirrors `update_page` for OWNER-private
 // pages, and that turned out not to generalise.
-const NOTE_SKILL: &str = "---\ntype: skill\nid: note\ndescription: A note.\n\
+const NOTE_SKILL: &str = "---\nkind: skill\nid: note\ndescription: A note.\n\
     acl:\n  read: [public]\n  create: [team-red]\n  update: [team-red]\n---\n# note\n";
-const RED_NOTE: &str = "---\ntype: instance\nskill: note\nid: red-1\nteam: team-red\n\
+const RED_NOTE: &str = "---\nkind: instance\nskill: note\nid: red-1\nteam: team-red\n\
     acl:\n  read: [team-red]\n  update: [team-red]\n---\n# Red\nBody.\n";
 const RED_PAGE: &str = "markdown/instances/note/red-1.md";
 

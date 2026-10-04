@@ -16,9 +16,9 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
 const TENANT: &str = "carl";
-const NOTE_SKILL: &str = "---\ntype: skill\nid: note\ndescription: A note.\n\
+const NOTE_SKILL: &str = "---\nkind: skill\nid: note\ndescription: A note.\n\
     visibility: public\n---\n# note\n";
-const BASE: &str = "---\ntype: instance\nskill: note\nid: plan\n---\n# Plan\nv1 body.\n";
+const BASE: &str = "---\nkind: instance\nskill: note\nid: plan\n---\n# Plan\nv1 body.\n";
 const PAGE: &str = "markdown/instances/note/plan.md";
 const ROOT: &str = "01HROOT";
 const RUN1: &str = "01HRUN1";
@@ -119,7 +119,7 @@ async fn seed_thread(p: &EscurelProcess) -> (String, String) {
     }
     let mut args = json!({
         "target_page_id": PAGE,
-        "content": "---\ntype: instance\nskill: note\nid: plan\n---\n# Plan\nv2 from run 1.\n",
+        "content": "---\nkind: instance\nskill: note\nid: plan\n---\n# Plan\nv2 from run 1.\n",
         "base_sha256": format!("{:x}", Sha256::digest(BASE.as_bytes())),
         "new_changeset": true,
     });
@@ -278,8 +278,8 @@ async fn a_denied_event_prunes_its_subtree() {
 
 #[tokio::test]
 async fn owner_can_follow_an_admission_receipt_without_exposing_it_to_other_agents() {
-    let skill = "---\ntype: skill\nid: evolve_problem\ndescription: Evolve problem.\nowner_field: owner_subject\nacl:\n  read: [public]\n  create: [owner]\n  update: [owner]\n---\n# Evolve problem\n";
-    let problem = "---\ntype: instance\nskill: evolve_problem\nid: synthetic\nowner_subject: alice\n---\n# Synthetic problem\n";
+    let skill = "---\nkind: skill\nid: evolve_problem\ndescription: Evolve problem.\nowner_field: owner_subject\nacl:\n  read: [public]\n  create: [owner]\n  update: [owner]\n---\n# Evolve problem\n";
+    let problem = "---\nkind: instance\nskill: evolve_problem\nid: synthetic\nowner_subject: alice\n---\n# Synthetic problem\n";
     let target = "markdown/instances/evolve_problem/synthetic.md";
     let p = EscurelProcess::spawn(Opts {
         auth: AuthMode::TestIssuer,
@@ -347,9 +347,9 @@ async fn owner_can_follow_an_admission_receipt_without_exposing_it_to_other_agen
 
 #[tokio::test]
 async fn owner_can_follow_a_candidate_receipt_without_exposing_it_to_other_agents() {
-    let skill = "---\ntype: skill\nid: evolve_validation_report\ndescription: Private report.\nowner_field: owner_subject\nacl:\n  read: [owner]\n  create: [admin]\n  update: [admin]\n---\n# Report\n";
+    let skill = "---\nkind: skill\nid: evolve_validation_report\ndescription: Private report.\nowner_field: owner_subject\nacl:\n  read: [owner]\n  create: [admin]\n  update: [admin]\n---\n# Report\n";
     let report = format!(
-        "---\ntype: instance\nskill: evolve_validation_report\nid: synthetic\nowner_subject: alice\nstatus: passed\neffective_passed: true\nnext_candidate_action: evolve_publish_candidate\nwinner_program_id: 1\nreport_sha256: {}\n---\n# Synthetic report\n",
+        "---\nkind: instance\nskill: evolve_validation_report\nid: synthetic\nowner_subject: alice\nstatus: passed\neffective_passed: true\nnext_candidate_action: evolve_publish_candidate\nwinner_program_id: 1\nreport_sha256: {}\n---\n# Synthetic report\n",
         "a".repeat(64)
     );
     let target = "markdown/instances/evolve_validation_report/synthetic.md";

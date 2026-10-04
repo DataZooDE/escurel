@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto';
 import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { expect, test, webviewWith } from './fixtures';
+import { openRow } from './helpers';
 
 test.use({ runnerHarness: 'gemini', evolveAgentBin: process.env.EVOLVE_AGENT_BIN });
 test.skip(!process.env.EVOLVE_AGENT_BIN, 'Set EVOLVE_AGENT_BIN to test the joined Evolve service');
@@ -74,7 +75,7 @@ test('native owner approval, two proposal generations, validation, and inactive 
   };
   const holdoutFile = join(stack.workspaceDir, 'private-holdout.json');
   writeFileSync(holdoutFile, JSON.stringify(holdoutPayload, null, 2));
-  await expect(pane(stack.page, 'Runner')).toContainText('3 processed', { timeout: 30_000 });
+  await expect(pane(stack.page, 'Runs')).toContainText('4 ok', { timeout: 30_000 });
   await stack.page.keyboard.press('Control+P');
   const quickInput = stack.page.locator('.quick-input-widget input');
   await quickInput.fill(holdoutFile);
@@ -124,16 +125,14 @@ test('native owner approval, two proposal generations, validation, and inactive 
     synthetic_brain: 'batch_progression_v1',
   };
   const pageId = `markdown/instances/evolve_problem/${id}.md`;
-  const content = `---\ntype: instance\nskill: evolve_problem\nid: ${id}\nowner_subject: alice\npilot: p1_decision\nsearch_request: ${JSON.stringify(search)}\n---\n# Synthetic seed admission\n`;
+  const content = `---\nkind: instance\nskill: evolve_problem\nid: ${id}\nowner_subject: alice\npilot: p1_decision\nsearch_request: ${JSON.stringify(search)}\n---\n# Synthetic seed admission\n`;
   expect((await stack.call('update_page', { page_id: pageId,
     content, base_sha256: '' })).ok).toBe(true);
   const revision = (await stack.call('expand', { page_id: pageId, raw: true })).content_sha256;
   expect(revision).toMatch(/^[a-f0-9]{64}$/);
   stack.setGeminiPlanTarget(pageId, revision as string);
 
-  const knowledge = pane(stack.page, 'Knowledge');
-  await knowledge.getByRole('treeitem', { name: /^evolve_problem/ }).click();
-  await knowledge.getByRole('treeitem', { name: new RegExp(id) }).click();
+  await openRow(stack.page, 'evolve_problem', new RegExp(id));
   const pageUi = await webviewWith(stack.page, 'escurel-page-as-ui');
   await pageUi.getByRole('button', { name: 'Review experiment plan', exact: true }).click();
 
@@ -255,7 +254,8 @@ test('native owner approval, two proposal generations, validation, and inactive 
   }, { timeout: 60_000 }).toBe('completed');
   const approvalThread = await webviewWith(stack.page, 'escurel-thread-canvas');
   await approvalThread.locator(`escurel-thread-canvas .card[data-node-id="${admission!.event_id}"]`).click();
-  await approvalThread.locator('escurel-thread-inspector .wikilink').click();
+  const admissionDetails = await webviewWith(stack.page, 'escurel-details');
+  await admissionDetails.locator('escurel-thread-inspector .wikilink').click();
   await expect(stack.page.getByRole('tab', { name: new RegExp(String(experimentId)), selected: true })).toBeVisible();
   const experimentUi = await webviewWith(stack.page, 'escurel-page-as-ui');
   await expect(experimentUi.getByText('completed', { exact: true })).toBeVisible();
@@ -329,7 +329,8 @@ test('native owner approval, two proposal generations, validation, and inactive 
   expect(finalStatus.operational_activation_available).toBe(false);
   const validationThread = await webviewWith(stack.page, 'escurel-thread-canvas');
   await validationThread.locator(`escurel-thread-canvas .card[data-node-id="${validationReceipt!.event_id}"]`).click();
-  await validationThread.locator('escurel-thread-inspector .wikilink').nth(1).click();
+  const validationDetails = await webviewWith(stack.page, 'escurel-details');
+  await validationDetails.locator('escurel-thread-inspector .wikilink').nth(1).click();
   await expect(stack.page.getByRole('tab', { name: new RegExp(String(experimentId)), selected: true })).toBeVisible();
   const reportUi = await webviewWith(stack.page, 'escurel-page-as-ui');
   await expect(reportUi.getByText(/State:\s*passed/)).toBeVisible();
@@ -382,7 +383,8 @@ test('native owner approval, two proposal generations, validation, and inactive 
   expect(policyPage.body).toContain(winnerSql);
   const candidateThread = await webviewWith(stack.page, 'escurel-thread-canvas');
   await candidateThread.locator(`escurel-thread-canvas .card[data-node-id="${candidateReceipt!.event_id}"]`).click();
-  await candidateThread.locator('escurel-thread-inspector .wikilink').click();
+  const candidateDetails = await webviewWith(stack.page, 'escurel-details');
+  await candidateDetails.locator('escurel-thread-inspector .wikilink').click();
   await expect(stack.page.getByRole('tab', { name: new RegExp(String(policyId)), selected: true })).toBeVisible();
   const policyUi = await webviewWith(stack.page, 'escurel-page-as-ui');
   await expect(policyUi.getByText('Publicly disclosed synthetic fixture', { exact: false })).toBeVisible();

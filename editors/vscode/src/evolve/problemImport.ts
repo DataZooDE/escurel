@@ -147,7 +147,7 @@ export function v2ProblemPage(args: {
   if (!owner.trim()) throw new Error('Sign in before importing an owner-scoped Evolve problem.');
   const searchRequest = normalizeV2TrainingSpec(trainingSpec, holdoutId);
   const frontmatter = stringify({
-    type: 'instance', skill: 'evolve_problem', id, owner_subject: owner,
+    kind: 'instance', skill: 'evolve_problem', id, owner_subject: owner,
     pilot: 'p1_decision', holdout_id: holdoutId, search_request: searchRequest,
   }, { lineWidth: 0 }).trimEnd();
   const heading = objective.trim() || 'V2 replenishment decision search';

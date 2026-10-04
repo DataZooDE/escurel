@@ -22,7 +22,7 @@ fn vhead(h: f32) -> Vec<f32> {
 
 fn overlay(id: &str) -> String {
     format!(
-        "---\ntype: instance\nskill: memo\nid: {id}\nbackend_ref: {{ kind: document }}\n---\n# {id}\n"
+        "---\nkind: instance\nskill: memo\nid: {id}\nbackend_ref: {{ kind: document }}\n---\n# {id}\n"
     )
 }
 

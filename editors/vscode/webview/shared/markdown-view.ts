@@ -1,4 +1,5 @@
 import { css, html, type TemplateResult } from 'lit';
+import { hostOf, labelClaimsOtherSite } from '../../src/shared/links';
 import { parseMarkdown, type Block, type Inline } from '../../src/shared/markdown';
 
 /**
@@ -9,6 +10,22 @@ import { parseMarkdown, type Block, type Inline } from '../../src/shared/markdow
  */
 export function renderMarkdown(src: string): TemplateResult {
   return html`${parseMarkdown(src).map(block)}`;
+}
+
+function plainText(nodes: Inline[]): string {
+  return nodes
+    .map((n) => {
+      switch (n.t) {
+        case 'text':
+        case 'code':
+          return n.v;
+        case 'wikilink':
+          return n.label ?? n.target;
+        default:
+          return plainText(n.c);
+      }
+    })
+    .join('');
 }
 
 function inline(nodes: Inline[]): TemplateResult[] {
@@ -23,8 +40,15 @@ function inline(nodes: Inline[]): TemplateResult[] {
       case 'code':
         return html`<code>${n.v}</code>`;
       case 'link':
-        // A webview hands a click on an http(s) link to the system browser.
-        return html`<a href=${n.href} rel="noopener noreferrer">${inline(n.c)}</a>`;
+        // A webview hands a click on an http(s) link to the system browser. The tooltip says where it
+        // REALLY goes, and a label that reads as a different address is marked.
+        return html`<a
+          href=${n.href}
+          rel="noopener noreferrer"
+          class=${labelClaimsOtherSite(plainText(n.c), n.href) ? 'link-mismatch' : ''}
+          title=${`Opens ${hostOf(n.href) || n.href}`}
+          >${inline(n.c)}</a
+        >`;
       case 'wikilink':
         // The webview cannot resolve `[[skill::id]]` (that needs the gateway, and guessing a page id
         // would open the wrong page in a nested corpus), so it says which link was chosen and the
@@ -183,6 +207,10 @@ export const markdownStyles = css`
   }
   .md a:hover {
     color: var(--vscode-textLink-activeForeground);
+  }
+  .md a.link-mismatch {
+    outline: 1px dashed var(--vscode-editorWarning-foreground);
+    outline-offset: 2px;
   }
   .md a:focus-visible {
     outline: 1px solid var(--vscode-focusBorder);

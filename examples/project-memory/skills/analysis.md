@@ -1,5 +1,5 @@
 ---
-type: skill
+kind: skill
 id: analysis
 description: A unit of analytical work over one or more datasets. Produces results; its provenance is derived_from / uses.
 required_frontmatter: [at, title, uses, status]

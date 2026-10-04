@@ -30,7 +30,7 @@ const PACK_SECRET: &str = "shared-pack-signing-secret";
 /// A curated, promotable, firm-authored skill — the one thing that MAY
 /// leave the spoke.
 const PROMOTABLE_SKILL: &str = "---\n\
-type: skill\n\
+kind: skill\n\
 id: pallet-consolidation\n\
 description: Consolidate partial pallets (firm-authored, reusable).\n\
 promotable: true\n\
@@ -39,7 +39,7 @@ promotable: true\n\
 
 /// Tenant-authored skill WITHOUT the curator marker — default-deny.
 const UNMARKED_SKILL: &str = "---\n\
-type: skill\n\
+kind: skill\n\
 id: local-notes\n\
 description: Tenant-local notes skill.\n\
 ---\n\
@@ -48,7 +48,7 @@ description: Tenant-local notes skill.\n\
 /// Customer data. Never promotes — not even when someone tags the
 /// instance itself `promotable: true` (eligibility is skills-only).
 const CUSTOMER_INSTANCE: &str = "---\n\
-type: instance\n\
+kind: instance\n\
 skill: pallet-consolidation\n\
 id: acme-shipment-4711\n\
 promotable: true\n\
@@ -58,7 +58,7 @@ customer: ACME GmbH\n\
 
 /// A promotable skill that trips the deterministic scrubber.
 const LEAKY_PROMOTABLE_SKILL: &str = "---\n\
-type: skill\n\
+kind: skill\n\
 id: leaky-skill\n\
 description: promotable but carries a credential.\n\
 promotable: true\n\
@@ -241,7 +241,7 @@ async fn base_layer_pages_never_promote() {
     // with a DIFFERENT id).
     let pages = vec![(
         "skills/pack-skill.md".to_owned(),
-        "---\ntype: skill\nid: pack-skill\ndescription: from the pack.\npromotable: true\n---\n# pack-skill\n"
+        "---\nkind: skill\nid: pack-skill\ndescription: from the pack.\npromotable: true\n---\n# pack-skill\n"
             .to_owned(),
     )];
     let tarball = escurel_server::pack::build_tarball(&pages).unwrap();
@@ -290,7 +290,7 @@ async fn agents_cannot_set_the_promotable_marker() {
     // two-role model) — never by an agent, never by default.
     let p = start().await;
     let draft = "---\n\
-        type: skill\n\
+        kind: skill\n\
         id: local-notes\n\
         description: agent tries to self-promote.\n\
         promotable: true\n\
@@ -403,7 +403,7 @@ async fn the_auto_merge_path_cannot_launder_the_promotable_marker() {
 
     let page_id = "markdown/skills/curated.md";
     // v1: an UNMARKED page — this is the base the agent will branch from.
-    let unmarked = "---\ntype: skill\nid: curated\ndescription: curated.\n---\n# curated\n\nbody\n";
+    let unmarked = "---\nkind: skill\nid: curated\ndescription: curated.\n---\n# curated\n\nbody\n";
     let w = call(
         &p,
         Role::Admin,
@@ -419,7 +419,7 @@ async fn the_auto_merge_path_cannot_launder_the_promotable_marker() {
     // v2: the head GAINS the marker (stands in for the CRDT-injection
     // shape — however the marker got into the head, the merged output
     // of an agent write will carry it).
-    let marked = "---\ntype: skill\nid: curated\ndescription: curated.\npromotable: true\n---\n# curated\n\nbody\n";
+    let marked = "---\nkind: skill\nid: curated\ndescription: curated.\npromotable: true\n---\n# curated\n\nbody\n";
     let w = call(
         &p,
         Role::Admin,
@@ -435,7 +435,7 @@ async fn the_auto_merge_path_cannot_launder_the_promotable_marker() {
     // carries `promotable: true` into the merged output. That output
     // must never persist from an agent call.
     let clean_draft =
-        "---\ntype: skill\nid: curated\ndescription: curated.\n---\n# curated\n\nbody agent-edit\n";
+        "---\nkind: skill\nid: curated\ndescription: curated.\n---\n# curated\n\nbody agent-edit\n";
     let w = call(
         &p,
         Role::Agent,

@@ -12,7 +12,7 @@ use serde_json::{Value, json};
 
 const TENANT: &str = "acme";
 
-const CUSTOMER_SKILL: &str = "---\ntype: skill\nid: customer\ndescription: x\n---\n# customer\n";
+const CUSTOMER_SKILL: &str = "---\nkind: skill\nid: customer\ndescription: x\n---\n# customer\n";
 
 async fn start_authed(quota: Option<Arc<QuotaManager>>) -> EscurelProcess {
     EscurelProcess::spawn(Opts {
@@ -133,7 +133,7 @@ async fn write_tool_debits_writes_dimension_independently() {
     let p = start_authed(Some(Arc::new(QuotaManager::new(q)))).await;
     let t = p.mint_token(TENANT, Role::Agent);
 
-    let write_body = "---\ntype: instance\nskill: customer\nid: one\n---\n# One\n";
+    let write_body = "---\nkind: instance\nskill: customer\nid: one\n---\n# One\n";
     let write_call = json!({
         "jsonrpc": "2.0", "id": 1, "method": "tools/call",
         "params": { "name": "update_page", "arguments": {

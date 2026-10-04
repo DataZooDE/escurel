@@ -3,6 +3,7 @@ import * as vscode from 'vscode';
 import type { EscurelApi } from '../../../src/extension';
 import type { RunView } from '../../../src/shared/protocol';
 import { activate, freeOrder, until } from './support';
+import { requireEnv } from '../requireEnv';
 
 suite('start in terminal', () => {
   let api: EscurelApi;
@@ -11,7 +12,7 @@ suite('start in terminal', () => {
 
   suiteSetup(async function () {
     this.timeout(120_000);
-    if (!process.env.ESCUREL_TEST_RUNNER) this.skip();
+    requireEnv(this, 'ESCUREL_TEST_RUNNER');
     api = await activate();
   });
 

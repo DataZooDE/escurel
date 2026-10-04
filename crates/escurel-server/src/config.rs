@@ -21,75 +21,11 @@
 //!
 //! ## Environment variables
 //!
-//! | var | default | meaning |
-//! |---|---|---|
-//! | `ESCUREL_CONFIG` | — | path to a TOML base file; env vars override it |
-//! | `VERSION` / `ESCUREL_VERSION` | `0.0.0-dev` | body of `GET /version` |
-//! | `ENV` / `ESCUREL_ENV` | `dev` | log field `env` |
-//! | `ESCUREL_SERVER_DATA_DIR` | `/data` | host-volume root for DuckDB + FsStore + tenants |
-//! | `ESCUREL_SEED_DIR` | — | markdown corpus seeded into the tenant at boot (idempotent), e.g. `examples/crm-demo` |
-//! | `ESCUREL_WEBHOOK_URL` | — | outbound capture webhook; fire-and-forget POST of each new `capture_event` (M7) |
-//! | `ESCUREL_WEBHOOK_SECRET` | — | shared secret; when set the webhook body is HMAC-SHA256-signed via `X-Escurel-Webhook-Signature: sha256=<hex>` |
-//! | `ESCUREL_SERVER_LISTEN_HTTP` | `0.0.0.0:8080` | HTTP listener (MCP/WS/REST) |
-//! | `ESCUREL_TENANT` | `default` | single-tenant indexer's tenant id |
-//! | `ESCUREL_REBUILD_INDEX_ON_BOOT` | `if-missing` | derived-index boot policy: `if-missing` (reuse an existing DuckDB; rebuild only when absent, and the default everywhere including the container) or `always` (drop + rebuild from the markdown LaneStore each start — re-embeds the whole corpus, so expect minutes) |
-//! | `ESCUREL_STORAGE_BACKEND` | `fs` | `fs`, `s3`, `gcs` or `duckvfs` |
-//! | `ESCUREL_STORAGE_DUCKVFS_ROOT` | — | root URL, e.g. `gdrive://escurel/lanes` (backend=duckvfs); its scheme picks the filesystem |
-//! | `ESCUREL_STORAGE_DUCKVFS_EXTENSION` | — | path to a built `gdrive.duckdb_extension` (backend=duckvfs); needed for every scheme, not only `gdrive://`. Prefer `…_EXTENSION_REPO` — a path is a local build a container does not have |
-//! | `ESCUREL_STORAGE_DUCKVFS_EXTENSION_REPO` | — | `community` (the DuckDB community repository) or a repository URL, used when `…_EXTENSION` is unset. Setting NEITHER skips the load rather than failing, so the store opens and the first WRITE fails on a missing `write_blob` |
-//! | `ESCUREL_STORAGE_DUCKVFS_DRIVE_ID` | — | Shared Drive id `0A…`; REQUIRED for a `gdrive://` root, else the store would silently target the credential's My Drive |
-//! | `ESCUREL_STORAGE_DUCKVFS_DRIVE_SCOPE` | `…/auth/drive` | OAuth scope; the default is read/write because the extension's own `drive.readonly` default cannot serve a lane store |
-//! | `ESCUREL_STORAGE_GCS_BUCKET` | — | GCS bucket (backend=gcs) |
-//! | `ESCUREL_STORAGE_GCS_PREFIX` | `` | GCS key prefix (backend=gcs) |
-//! | `ESCUREL_STORAGE_GCS_CREDENTIALS_PATH` | — | service-account key file (backend=gcs); unset = ADC, i.e. the metadata server on GCP |
-//! | `ESCUREL_STORAGE_GCS_ENDPOINT` | — | GCS endpoint override (backend=gcs); emulator/tests only |
-//! | `ESCUREL_STORAGE_S3_BUCKET` | — | S3 bucket (backend=s3) |
-//! | `ESCUREL_STORAGE_S3_ENDPOINT` | — | S3 endpoint URL (backend=s3) |
-//! | `ESCUREL_STORAGE_S3_PREFIX` | `` | S3 key prefix (backend=s3) |
-//! | `ESCUREL_STORAGE_S3_REGION` | `us-east-1` | S3 region label (backend=s3) |
-//! | `ESCUREL_STORAGE_S3_PATH_STYLE` | `true` | path-style addressing (informational; the S3 store always uses path-style) |
-//! | `ESCUREL_STORAGE_S3_ACCESS_KEY_ID` | — | S3 access key (backend=s3) |
-//! | `ESCUREL_STORAGE_S3_SECRET_ACCESS_KEY` | — | S3 secret key (backend=s3) |
-//! | `ESCUREL_AUTH_OIDC_ISSUER` | — | OIDC issuer; unset → unauthenticated dev mode |
-//! | `ESCUREL_AUTH_OIDC_AUDIENCE` | `escurel` | OIDC audience |
-//! | `ESCUREL_AUTH_TENANT_CLAIM` | `tenant` | JWT claim carrying the tenant id |
-//! | `ESCUREL_WRITE_ACL` | `off` | per-instance write ACL: `off` (no check) \| `log` (warn but allow) \| `enforce` (reject). Symmetric to the read ACL: owner-or-admin writes; public/no-owner instances are admin-write-only. |
-//! | `ESCUREL_AUTH_ADMIN_ROLE_CLAIM` | `roles` | JWT claim listing roles |
-//! | `ESCUREL_AUTH_ADMIN_ROLE_VALUE` | `escurel:admin` | role value granting admin |
-//! | `ESCUREL_AUTH_JWKS_REFRESH_SECS` | `300` | JWKS cache TTL (seconds) |
-//! | `ESCUREL_AUTH_JWKS_URI` | derived from issuer | explicit JWKS URL (e.g. Triton's `<issuer>/.well-known/jwks.json`) |
-//! | `ESCUREL_RUN_PROGRESS_KEEP` | `50` | how many `run-progress` snapshots a run keeps (pruned at capture) |
-//! | `ESCUREL_AUTH_SIGNING_KEY` | — | RSA private key (PKCS#8 or PKCS#1 PEM) the gateway signs `mint_agent_token` bearers with; unset → the tool refuses `unsupported` |
-//! | `ESCUREL_AUTH_SIGNING_KID` | derived | the `kid` those bearers carry (must be in a trusted JWKS) |
-//! | `ESCUREL_AUTH_SIGNING_ISSUER` | the OIDC issuer | the `iss` those bearers carry (must be a trusted issuer) |
-//! | `ESCUREL_AUTH_OIDC_ISSUER_2` | — | optional SECOND trusted issuer (e.g. Carl, for the dashboard's self-minted token); shares the audience + tenant claim |
-//! | `ESCUREL_AUTH_JWKS_URI_2` | derived from issuer #2 | explicit JWKS URL for the second issuer (e.g. Carl's `<issuer>/jwks.json`) |
-//! | `ESCUREL_AUTH_OIDC_ISSUER_3` (… `_N`) | — | further trusted issuers, read as a contiguous `_2.._N` sequence (e.g. `_3` = the escurel-explore BFF's browser auth bridge); a gap stops the scan |
-//! | `ESCUREL_AUTH_JWKS_URI_3` (… `_N`) | derived from issuer #N | explicit JWKS URL for the Nth issuer |
-//! | `ESCUREL_EMBEDDING_PROVIDER` | `gemini` | `zero`, `gemini`, or `embeddinggemma` (a candle BERT-family sentence-transformer; gemini with no key → zero fallback) |
-//! | `ESCUREL_EMBEDDING_MODEL` | provider default | model id (candle default: `BAAI/bge-base-en-v1.5`, a BERT sentence-transformer — the candle backend has no Gemma3 path yet, see #299) |
-//! | `ESCUREL_EMBEDDING_DEVICE` | `cpu` | candle device (informational; CPU only today) |
-//! | `ESCUREL_EMBEDDING_DIM` | `768` | vector dimension |
-//! | `ESCUREL_EMBEDDER_REQUIRED` | `false` | when `true`, a failed real-embedder load aborts boot instead of silently degrading to zero-vector (FTS-only) retrieval (#299) |
-//! | `ESCUREL_GEMINI_API_KEY` | — | Gemini API key (provider=gemini; unset → zero fallback) |
-//! | `ESCUREL_INDEX_BACKEND` | `single-file` | `single-file` or `ducklake` — selects the [`escurel_index::snapshot::IndexStore`] backend (DuckLake PR 6) |
-//! | `ESCUREL_ROLE` | `writer` | `writer` or `reader` — `reader` requires `ESCUREL_INDEX_BACKEND=ducklake`; a reader boots with NO local single-file DuckDB, adopting the lake's newest published snapshot instead |
-//! | `ESCUREL_DUCKLAKE_CATALOG_DSN` | — | DuckLake catalog DSN — a Postgres key/value DSN (contains `=`) or a DuckDB-file catalog path; required when `ESCUREL_INDEX_BACKEND=ducklake` |
-//! | `ESCUREL_DUCKLAKE_DATA_PATH` | — | DuckLake `DATA_PATH` — `gs://…`, `s3://…`, `gdrive://…`, or a local directory; required when `ESCUREL_INDEX_BACKEND=ducklake` |
-//! | `ESCUREL_CHAT_BACKEND` | `postgres` | `postgres` or `ducklake` — where chat history lives when `ESCUREL_INDEX_BACKEND=ducklake` and the catalog is Postgres |
-//! | `ESCUREL_EVENTS_BACKEND` | `postgres` | as above, for the event bus |
-//! | `ESCUREL_CRDT_PG_DSN` | the catalog DSN | Postgres holding `crdt_ops`/`crdt_snapshots`. Separate knob from the catalog because it holds customer document bytes, not lake metadata |
-//! | `ESCUREL_DUCKLAKE_GCS_KEY_ID` / `ESCUREL_DUCKLAKE_GCS_SECRET` | — | GCS HMAC key pair; required when `ESCUREL_DUCKLAKE_DATA_PATH` starts with `gs://` |
-//! | `ESCUREL_DUCKLAKE_S3_ENDPOINT` / `_S3_ACCESS_KEY_ID` / `_S3_SECRET_ACCESS_KEY` / `_S3_REGION` | — / — / — / `us-east-1` | S3 (or MinIO) credentials; required when `ESCUREL_DUCKLAKE_DATA_PATH` starts with `s3://` |
-//! | `ESCUREL_DUCKLAKE_S3_USE_SSL` | `true` | whether the S3/MinIO endpoint above is TLS |
-//! | `ESCUREL_DUCKLAKE_GDRIVE_DRIVE_ID` | — | Shared Drive id `0A…`; required when `ESCUREL_DUCKLAKE_DATA_PATH` starts with `gdrive://`. Expect this to be SLOW — DuckLake writes many small files and Drive charges a round trip per file, with no atomic overwrite |
-//! | `ESCUREL_DUCKLAKE_GDRIVE_SCOPE` | `…/auth/drive` | OAuth scope for the lake's Drive secret; credentials themselves come from ADC |
-//! | `ESCUREL_DUCKLAKE_GDRIVE_EXTENSION` | — | path to a built `gdrive.duckdb_extension`; omit once it is installable by name from the community repository |
-//! | `ESCUREL_ALLOW_UNSIGNED_EXTENSIONS` | `false` | permit `LOAD` of a locally-built, unsigned DuckDB extension. Required for the `gdrive` paths above. Off by default: an unsigned extension is arbitrary native code in-process |
-//! | `ESCUREL_SNAPSHOT_REFRESH_SECS` | `30` | a reader's background lake-poll interval (seconds); see `escurel_server::snapshot_refresh::RefreshTask` |
-//! | `ESCUREL_SNAPSHOT_PUBLISH_SECS` | unset | a writer's optional periodic publish interval (seconds); an explicit `0` disables it (manual-only, via the `publish_snapshot` admin tool). Unset: disabled, UNLESS chat/events are lake-backed (`ESCUREL_CHAT_BACKEND` / `ESCUREL_EVENTS_BACKEND` = `ducklake`), where the task doubles as append-table compaction and unset defaults to `300` — see `resolve_publish_secs` / `escurel_server::snapshot_publish::PublishTask` |
-//! | `ESCUREL_SNAPSHOT_KEEP` | `5` | how many DuckLake snapshots to retain after a successful publish; the GC pass never touches the current snapshot |
-//! | `ESCUREL_WRITER_LEASE` | `on` | ducklake-writer single-writer boot guard (#371): a catalog advisory lock refused when another live writer holds it; `off` disables — only if you guarantee a single writer yourself |
+//! The complete table (every `ESCUREL_*` variable the binaries read, with its default and meaning) is
+//! GENERATED from [`crate::config_keys::CONFIG_KEYS`] into
+//! [`docs/deploy/env.md`](../../../docs/deploy/env.md) by `escurel-server --print-config-keys`; a test
+//! (`tests/suite/config_keys.rs`) fails when a variable is read but not registered, registered but not
+//! read, or when that file is stale. Add a new variable to the registry in the same change that reads it.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -383,12 +319,12 @@ impl From<SnapshotError> for ConfigError {
             // unreachable from an IndexStore open. Mapped so the conversion
             // stays total.
             SnapshotError::RefusedEmptyPublish { lake_pages } => ConfigError::InvalidValue {
-                var: "ESCUREL_LAKE",
+                var: "ESCUREL_DUCKLAKE_CATALOG_DSN",
                 value: lake_pages.to_string(),
                 reason: "refused to publish an empty corpus over a populated lake",
             },
             SnapshotError::InvalidLakeConfig(value) => ConfigError::InvalidValue {
-                var: "ESCUREL_LAKE",
+                var: "ESCUREL_DUCKLAKE_CATALOG_DSN",
                 value,
                 reason: "invalid lake config",
             },
@@ -397,7 +333,7 @@ impl From<SnapshotError> for ConfigError {
                 source,
             },
             SnapshotError::LakeIncompatible(value) => ConfigError::InvalidValue {
-                var: "ESCUREL_LAKE",
+                var: "ESCUREL_DUCKLAKE_CATALOG_DSN",
                 value,
                 reason: "lake incompatible with this reader",
             },
@@ -685,6 +621,12 @@ pub struct EscurelConfig {
     /// `[<title> › <heading path> › p.<page>]` context (stored beside the
     /// verbatim body; feeds the dense/FTS/rerank representations only).
     pub ingest_contextualize: ContextualizeMode,
+    /// How long one `instances: rows` source query may run (`ESCUREL_ROWS_QUERY_TIMEOUT_SECS`,
+    /// default 30): interrupted past it, and enforced by a Postgres server itself.
+    pub rows_query_timeout: std::time::Duration,
+    /// libpq `connect_timeout` for a network database source (`ESCUREL_SQL_CONNECT_TIMEOUT_SECS`,
+    /// default 5): a black-holed host must not hold the tenant's index connection for minutes.
+    pub sql_connect_timeout: std::time::Duration,
     /// Whether to drop + rebuild the derived DuckDB index at boot
     /// (`ESCUREL_REBUILD_INDEX_ON_BOOT`; default `if-missing`). The container
     /// image sets `always` to sidestep the HNSW-persistence-reload segfault.
@@ -1150,6 +1092,33 @@ impl EscurelConfig {
             "structural",
         ));
 
+        let secs_knob = |var: &'static str,
+                         default: std::time::Duration|
+         -> Result<std::time::Duration, ConfigError> {
+            match env.get(var) {
+                Some(raw) => raw
+                    .trim()
+                    .parse::<u64>()
+                    .ok()
+                    .filter(|n| *n >= 1)
+                    .map(std::time::Duration::from_secs)
+                    .ok_or(ConfigError::InvalidValue {
+                        var,
+                        value: raw,
+                        reason: "expected a positive number of seconds",
+                    }),
+                None => Ok(default),
+            }
+        };
+        let rows_query_timeout = secs_knob(
+            "ESCUREL_ROWS_QUERY_TIMEOUT_SECS",
+            escurel_index::ROWS_QUERY_TIMEOUT,
+        )?;
+        let sql_connect_timeout = secs_knob(
+            "ESCUREL_SQL_CONNECT_TIMEOUT_SECS",
+            escurel_index::SQL_CONNECT_TIMEOUT,
+        )?;
+
         // --- retrieval (rerank) ---
         // Default-on where built: a `--features rerank` binary defaults to the
         // bge cross-encoder; a default (rerank-less) binary defaults to `off`.
@@ -1386,6 +1355,8 @@ impl EscurelConfig {
             operation_slug_secret,
             metrics_listen,
             ingest_contextualize,
+            rows_query_timeout,
+            sql_connect_timeout,
             rebuild_index_on_boot,
             index_backend,
             role,
@@ -1532,6 +1503,13 @@ impl EscurelConfig {
     /// the build's features can't satisfy). Embedder *load* failure is
     /// recoverable and does not error here.
     pub async fn build(&self) -> Result<BootedServer, ConfigError> {
+        // List cursors are signed. Unset, the key is random per process (a cursor does not survive a
+        // restart and answers `invalid_cursor`); replicas of one deployment share it through this.
+        if let Ok(key) = std::env::var("ESCUREL_CURSOR_KEY")
+            && !key.trim().is_empty()
+        {
+            escurel_index::cursor::set_key(key.trim());
+        }
         // 0. Telemetry, before ANYTHING else. This used to be the last
         // thing `serve` did, at the very end of boot — meaning every
         // log line from the rest of this function (DuckLake attach,
@@ -1599,7 +1577,12 @@ impl EscurelConfig {
         let attach_cfg = self.clone();
         let attach: AttachRetrievalFn = Arc::new(move |base: Indexer| {
             let cfg = attach_cfg.clone();
-            Box::pin(async move { cfg.attach_retrieval(base).await })
+            Box::pin(async move {
+                let base = base
+                    .with_rows_query_timeout(cfg.rows_query_timeout)
+                    .with_sql_connect_timeout(cfg.sql_connect_timeout);
+                cfg.attach_retrieval(base).await
+            })
         });
 
         let single_file = SingleFileStore {
@@ -1790,6 +1773,27 @@ impl EscurelConfig {
                 (backend, _writer_role) => {
                     let opened = single_file.open().await?;
                     let indexer = opened.indexer;
+                    if let Some(pages) = indexer.legacy_quarantine() {
+                        tracing::error!(
+                            target: "escurel",
+                            tenant = %indexer.tenant(),
+                            legacy_pages = pages.len(),
+                            "tenant QUARANTINED: it holds pages with the removed `type:` page-kind key \
+                             and serves nothing but `migrate_kind`; run `escurel admin migrate-kind \
+                             --tenant {} --apply`",
+                            indexer.tenant()
+                        );
+                    }
+                    for (page, why) in indexer.skipped_pages() {
+                        tracing::warn!(
+                            target: "escurel",
+                            tenant = %indexer.tenant(),
+                            page = %page,
+                            reason = %why,
+                            "boot rebuild SKIPPED an unparsable page (left untouched in the lane; \
+                             fix or remove it, then run `escurel admin rebuild`)"
+                        );
+                    }
                     let crdt_conn = opened
                         .crdt_conn
                         .expect("SingleFileStore::open always returns a CRDT connection");
@@ -2015,11 +2019,38 @@ impl EscurelConfig {
         )));
 
         // 7. Readiness probe over the live dependencies.
-        let readiness = Arc::new(DependencyProbe::new(
-            Arc::clone(&store),
-            Arc::clone(&embedder),
-            self.tenant.clone(),
-        ));
+        // Zero-vector embeddings (explicit `zero`, or `gemini` without a key) leave lexical search
+        // working and semantic search inert: say so on /readyz and /metrics instead of only in a
+        // boot log line.
+        let semantic_search = match self.embedding_provider {
+            EmbeddingProvider::Zero => false,
+            EmbeddingProvider::Gemini => self
+                .gemini_api_key
+                .as_deref()
+                .is_some_and(|k| !k.is_empty()),
+            _ => true,
+        };
+        let unauthenticated_exposed =
+            self.auth.is_none() && !listener_is_loopback(&self.listen_http);
+        if unauthenticated_exposed {
+            tracing::warn!(
+                target: "escurel",
+                listen = %self.listen_http,
+                "AUTHENTICATION IS DISABLED and the HTTP listener is not loopback: every caller who \
+                 can reach it is a tenant ADMIN (read, write, run). Set ESCUREL_AUTH_OIDC_ISSUER, \
+                 or bind to 127.0.0.1 behind an authenticating proxy"
+            );
+        }
+        let readiness = Arc::new(
+            DependencyProbe::new(
+                Arc::clone(&store),
+                Arc::clone(&embedder),
+                self.tenant.clone(),
+            )
+            .with_indexer(indexer_handle.clone())
+            .with_semantic_search(semantic_search)
+            .with_unauthenticated_exposed(unauthenticated_exposed),
+        );
 
         let server_config = ServerConfig {
             // Per-instance write ACL (`ESCUREL_WRITE_ACL`): off (default) |
@@ -2032,6 +2063,13 @@ impl EscurelConfig {
             // reason — refusing writes over a field that has been free-form
             // until now needs a dark rung and an observed rung first.
             autonomy_lint: crate::AutonomyLintMode::from_env(),
+            egress: crate::egress::EgressPolicy::try_from_env().map_err(|e| {
+                ConfigError::InvalidValue {
+                    var: e.var,
+                    value: e.value,
+                    reason: e.reason,
+                }
+            })?,
             listen: self.listen_http.clone(),
             version: self.version.clone(),
             readiness,
@@ -2083,6 +2121,18 @@ impl EscurelConfig {
                 }
                 _ => crate::mcp::DEFAULT_RUN_PROGRESS_KEEP,
             },
+            shutdown_drain: match std::env::var("ESCUREL_SHUTDOWN_DRAIN_SECS") {
+                Ok(raw) if !raw.trim().is_empty() => std::time::Duration::from_secs(
+                    raw.trim().parse::<u64>().ok().filter(|n| *n >= 1).ok_or(
+                        ConfigError::InvalidValue {
+                            var: "ESCUREL_SHUTDOWN_DRAIN_SECS",
+                            value: raw,
+                            reason: "expected a positive number of seconds",
+                        },
+                    )?,
+                ),
+                _ => crate::server::DEFAULT_SHUTDOWN_DRAIN,
+            },
             demo_dir: self.demo_dir.clone(),
             webhook_url: self.webhook_url.clone(),
             webhook_secret: self.webhook_secret.clone(),
@@ -2118,7 +2168,24 @@ impl EscurelConfig {
 
     async fn build_lane_store(&self) -> Result<Arc<dyn LaneStore>, ConfigError> {
         match self.storage_backend {
-            StorageBackend::Fs => Ok(Arc::new(FsStore::new(self.data_dir.clone()))),
+            StorageBackend::Fs => {
+                let store = FsStore::new(self.data_dir.clone());
+                // A write killed between its temp file and the rename leaves `<page>.md.tmp`
+                // behind. Nothing is writing yet: sweep and report.
+                match store.sweep_orphan_temp_files(&self.tenant) {
+                    Ok(0) => {}
+                    Ok(n) => tracing::warn!(
+                        target: "escurel",
+                        tenant = %self.tenant,
+                        swept = n,
+                        "removed {n} orphan *.md.tmp file(s) a killed write left in the lane"
+                    ),
+                    Err(e) => tracing::warn!(
+                        target: "escurel", error = %e, "could not sweep orphan temp files"
+                    ),
+                }
+                Ok(Arc::new(store))
+            }
             StorageBackend::S3 => self.build_s3_store().await,
             StorageBackend::Gcs => self.build_gcs_store().await,
             StorageBackend::DuckVfs => self.build_duckvfs_store(),
@@ -2711,5 +2778,13 @@ mod rerank_config_tests {
                 ..
             }
         ));
+    }
+}
+
+/// Whether the listen address (`host:port`) only accepts connections from this machine.
+fn listener_is_loopback(listen: &str) -> bool {
+    match listen.parse::<std::net::SocketAddr>() {
+        Ok(addr) => addr.ip().is_loopback(),
+        Err(_) => listen.starts_with("localhost:"),
     }
 }

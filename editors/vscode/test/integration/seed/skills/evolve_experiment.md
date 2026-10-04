@@ -1,5 +1,5 @@
 ---
-type: skill
+kind: skill
 id: evolve_experiment
 description: Owner-scoped synthetic Evolve experiment projection for native tests.
 owner_field: owner_subject

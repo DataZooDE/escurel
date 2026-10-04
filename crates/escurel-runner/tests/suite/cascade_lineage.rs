@@ -44,15 +44,15 @@ use serde_json::{Value, json};
 const TENANT: &str = "acme";
 
 const MEETING_SKILL: &str = "meeting";
-const MEETING_SKILL_BODY: &str = "---\ntype: skill\nid: meeting\nautonomy: auto\n---\n# meeting\n\n\
+const MEETING_SKILL_BODY: &str = "---\nkind: skill\nid: meeting\nautonomy: auto\n---\n# meeting\n\n\
      Fold the meeting note into the decision-record instance it concerns.\n";
 
 const DECISION_SKILL: &str = "decision-record";
-const DECISION_SKILL_BODY: &str = "---\ntype: skill\nid: decision-record\nautonomy: auto\n---\n# decision-record\n\n\
+const DECISION_SKILL_BODY: &str = "---\nkind: skill\nid: decision-record\nautonomy: auto\n---\n# decision-record\n\n\
      Maintain the running decision record.\n";
 
 const DECISION_INSTANCE_ID: &str = "q3-roadmap";
-const DECISION_INSTANCE_BODY: &str = "---\ntype: instance\nid: q3-roadmap\nskill: decision-record\n---\n# Q3 Roadmap\n\n\
+const DECISION_INSTANCE_BODY: &str = "---\nkind: instance\nid: q3-roadmap\nskill: decision-record\n---\n# Q3 Roadmap\n\n\
      BASELINE decision record.\n";
 
 /// Kills the spawned runner on drop so a test failure never orphans it.

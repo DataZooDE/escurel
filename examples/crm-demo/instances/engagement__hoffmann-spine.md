@@ -1,5 +1,5 @@
 ---
-type: instance
+kind: instance
 skill: engagement
 id: hoffmann-spine
 at: 2026-03-12T14:20:00Z

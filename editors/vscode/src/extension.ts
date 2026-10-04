@@ -1,3 +1,4 @@
+import { quietly } from './shared/quiet';
 import { exposedApi } from './shared/apiExposure';
 import * as vscode from 'vscode';
 import { log } from './log';
@@ -10,6 +11,7 @@ import { KnowledgeTree } from './views/knowledge';
 import { InboxTree } from './views/inbox';
 import { AwaitingTree } from './views/awaiting';
 import { PageAsUiEditor } from './editors/pageAsUi';
+import { SkillPageEditor } from './editors/skillPage';
 import { openPage, resolveCommand, searchCommand } from './commands/search';
 import { ReviewController } from './review';
 import { LiveCoordinator } from './live';
@@ -17,17 +19,24 @@ import { RunController } from './runs/controller';
 import { registerControlCommands } from './runs/controlCommands';
 import { adminContextValue } from './runs/adminContext';
 import { ThreadController } from './thread/controller';
+import { DetailsViewProvider } from './thread/detailsView';
 import { buildInspectors } from './thread/inspector';
 import { toThreadView } from './thread/threadModel';
 import { ThreadsTree } from './views/threads';
 import { expandableRows, type OutlineRow } from './views/threadsModel';
 import { registerStartInTerminal } from './start/terminal';
+import { registerOpenOriginal } from './commands/openOriginal';
 import { registerStartSkill } from './start/startSkill';
-import { registerApprovePlan } from './start/approvePlan';
+import { registerProposeWriteBack } from './editors/proposeWriteBack';
+import { registerApprovePlan, setApprovalConfirm } from './start/approvePlan';
+import { registerNodeCommands } from './commands/nodeCommands';
+import { explainText } from './shared/explain';
 import { registerRunnerView, type RunnerTree } from './views/runner';
 import { registerImportEvolveProblem } from './evolve/importProblem';
 import { registerPrepareEvolveTrainingSource } from './evolve/prepareSource';
 import { registerEvolveHoldout } from './evolve/registerHoldout';
+
+const EXPLAIN_SCHEME = 'escurel-explain';
 
 /** What `activate` returns — the integration suite drives the extension through it. */
 export interface EscurelApi {
@@ -38,6 +47,8 @@ export interface EscurelApi {
   review: ReviewController;
   live: LiveCoordinator;
   threads: ThreadController;
+  /** The bottom-panel details view of the node selected in a thread. */
+  details: DetailsViewProvider;
   runs: RunController;
   threadsTree: ThreadsTree;
   /**
@@ -46,16 +57,20 @@ export interface EscurelApi {
    */
   canAdmin: () => boolean;
   runner: RunnerTree;
+  /** Test seam: replaces the modal that confirms a plan approval (a modal blocks a headless window). */
+  setApprovalConfirm: typeof setApprovalConfirm;
 }
 
 export function activate(context: vscode.ExtensionContext): EscurelApi | undefined {
   const services = new Services(context);
   registerControlCommands(context, services);
+  registerNodeCommands(context, services);
   context.subscriptions.push(services);
   registerStartInTerminal(context, services);
   registerImportEvolveProblem(context, services);
   registerPrepareEvolveTrainingSource(context, services);
   registerEvolveHoldout(context, services);
+  registerOpenOriginal(context, services);
   registerSkillDiagnostics(context, () => services.client);
   WikilinkProvider.register(context);
   const knowledge = KnowledgeTree.register(context, () => services.client);
@@ -130,6 +145,7 @@ export function activate(context: vscode.ExtensionContext): EscurelApi | undefin
       if (row && outlineRoot) threads.select(outlineRoot, row.id);
     }),
   );
+  const details = DetailsViewProvider.register(context, threads);
   const runs = RunController.register(context, services);
   context.subscriptions.push(
     services.onDidChange(() => {
@@ -139,6 +155,7 @@ export function activate(context: vscode.ExtensionContext): EscurelApi | undefin
     }),
   );
   PageAsUiEditor.register(context, () => services.client, services.onDidChange);
+  SkillPageEditor.register(context, () => services.client, services.onDidChange);
 
   context.subscriptions.push(
     vscode.commands.registerCommand('escurel.signIn', async () => {
@@ -150,14 +167,17 @@ export function activate(context: vscode.ExtensionContext): EscurelApi | undefin
       }
       try {
         const s = await vscode.authentication.getSession('escurel', [], { createIfNone: true });
-        void vscode.window.showInformationMessage(`Signed in as ${s.account.label}`);
+        quietly(`Signed in as ${s.account.label}`);
       } catch (e) {
-        void vscode.window.showErrorMessage(`Sign-in failed — ${(e as Error).message}`);
+        log().warn(`escurel: sign-in failed: ${(e as Error).message}`);
+        void vscode.window.showErrorMessage(
+          'Sign-in did not work. Check the gateway address and the sign-in provider, then try again. Details are in the Escurel output log.',
+        );
       }
     }),
     vscode.commands.registerCommand('escurel.signOut', async () => {
       await services.auth.removeSession();
-      void vscode.window.showInformationMessage('Signed out');
+      quietly('Signed out');
     }),
     vscode.commands.registerCommand('escurel.refresh', () => services.onDidChangeEmit()),
     vscode.commands.registerCommand('escurel.search', () => searchCommand(() => services.client)),
@@ -197,7 +217,44 @@ export function activate(context: vscode.ExtensionContext): EscurelApi | undefin
       },
     ),
 
+    vscode.commands.registerCommand('escurel.showDetails', () =>
+      vscode.commands.executeCommand('escurel.details.focus'),
+    ),
+    vscode.commands.registerCommand('escurel.showRunner', () =>
+      vscode.commands.executeCommand('escurel.runner.focus'),
+    ),
+    vscode.commands.registerCommand('escurel.focusCanvas', () => {
+      const shown = details.current();
+      if (shown) threads.focusCanvas(shown.rootEventId);
+      else
+        void vscode.window.showInformationMessage('Open a thread first, then select a node in it.');
+    }),
+    // 'Explain this view': how events, skills, runs, changesets and instances connect, in plain words.
+    // A named document, so the preview tab is titled for what it is and not 'Preview Untitled-1'.
+    vscode.workspace.registerTextDocumentContentProvider(EXPLAIN_SCHEME, {
+      provideTextDocumentContent: () => explainText(),
+    }),
+    vscode.commands.registerCommand('escurel.explainView', async () => {
+      await vscode.commands.executeCommand(
+        'markdown.showPreviewToSide',
+        vscode.Uri.from({ scheme: EXPLAIN_SCHEME, path: '/How things connect in Escurel.md' }),
+      );
+    }),
+    vscode.commands.registerCommand('escurel.focusRuns', () =>
+      vscode.commands.executeCommand('escurel.runner.focus'),
+    ),
+    vscode.commands.registerCommand('escurel.focusAwaiting', () =>
+      vscode.commands.executeCommand('escurel.awaiting.focus'),
+    ),
+    vscode.commands.registerCommand('escurel.focusInbox', () =>
+      vscode.commands.executeCommand('escurel.inbox.focus'),
+    ),
+    vscode.commands.registerCommand('escurel.focusKnowledge', () =>
+      vscode.commands.executeCommand('escurel.knowledge.focus'),
+    ),
+
     registerStartSkill(context, services),
+    registerProposeWriteBack(services),
     registerApprovePlan(context, services),
   );
   log().info('escurel: activated');
@@ -212,10 +269,12 @@ export function activate(context: vscode.ExtensionContext): EscurelApi | undefin
     review,
     live,
     threads,
+    details,
     runs,
     threadsTree,
     canAdmin: adminContextValue,
     runner,
+    setApprovalConfirm,
   });
 }
 

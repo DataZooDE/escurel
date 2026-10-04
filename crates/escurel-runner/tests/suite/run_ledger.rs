@@ -95,7 +95,7 @@ async fn same_event_twice_yields_exactly_one_terminal_run() {
                 .tenant(TENANT)
                 .skill(
                     "note",
-                    "---\ntype: skill\nid: note\n---\n# note\n\nFold the note.\n",
+                    "---\nkind: skill\nid: note\n---\n# note\n\nFold the note.\n",
                 )
                 .done(),
         ),

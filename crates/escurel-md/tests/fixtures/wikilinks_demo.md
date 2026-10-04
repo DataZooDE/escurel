@@ -1,5 +1,5 @@
 ---
-type: instance
+kind: instance
 skill: weekly-review
 id: 2026-w20
 at: 2026-05-18T17:00:00+02:00

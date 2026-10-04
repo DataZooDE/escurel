@@ -42,7 +42,7 @@ test.use({ runnerHarness: 'gemini' });
 test('owner reviews a real runner plan in the native window', async ({ stack }) => {
   const id = `v2-gemini-plan-${Date.now()}`;
   const pageId = `markdown/instances/evolve_problem/${id}.md`;
-  const content = `---\ntype: instance\nskill: evolve_problem\nid: ${id}\nowner_subject: alice\npilot: p1_decision\nsearch_request: ${JSON.stringify(syntheticSpec)}\n---\n# Native runner plan review\n`;
+  const content = `---\nkind: instance\nskill: evolve_problem\nid: ${id}\nowner_subject: alice\npilot: p1_decision\nsearch_request: ${JSON.stringify(syntheticSpec)}\n---\n# Native runner plan review\n`;
   const written = await stack.call('update_page', {
     page_id: pageId, content, base_sha256: '',
   });
@@ -151,7 +151,7 @@ test('owner reviews a real runner plan in the native window', async ({ stack }) 
   // This isolated VS Code fixture has no Evolve service. Supply its receipt and
   // page projection to verify the owner's visible navigation after approval.
   const experimentPageId = `markdown/instances/evolve_experiment/${id}.md`;
-  const experimentPage = `---\ntype: instance\nskill: evolve_experiment\nid: ${id}\nowner_subject: alice\nstatus: running\nevidence_scope: synthetic_ui_fixture\n---\n# Synthetic experiment ${id}\n`;
+  const experimentPage = `---\nkind: instance\nskill: evolve_experiment\nid: ${id}\nowner_subject: alice\nstatus: running\nevidence_scope: synthetic_ui_fixture\n---\n# Synthetic experiment ${id}\n`;
   const projected = await stack.call('update_page', {
     page_id: experimentPageId, content: experimentPage, base_sha256: '',
   }, true);

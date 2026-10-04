@@ -1,5 +1,5 @@
 ---
-type: skill
+kind: skill
 id: renewal
 description: A renewal cycle on a delivered engagement. Qualifies with priors instead of starting cold.
 required_frontmatter: [at, status, project]

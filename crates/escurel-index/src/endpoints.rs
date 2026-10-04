@@ -87,6 +87,9 @@ pub struct EndpointInfo {
     pub created_at: String,
     /// Admin `sub` who registered it, when recorded.
     pub created_by: Option<String>,
+    /// How the credential is held: `none`, `ref` (a `env:`/`gsm:`/`file:` reference resolved at
+    /// call time) or `inline` (material stored in the registry; deprecated, development only).
+    pub secret_kind: String,
 }
 
 impl Indexer {
@@ -164,7 +167,10 @@ impl Indexer {
     pub async fn list_endpoints(&self) -> Result<Vec<EndpointInfo>, IndexerError> {
         let conn = self.conn.lock().await;
         let mut stmt = conn.prepare(
-            "SELECT name, kind, base_url, auth_scheme, created_at::VARCHAR, created_by \
+            "SELECT name, kind, base_url, auth_scheme, created_at::VARCHAR, created_by, \
+                    CASE WHEN secret IS NULL OR secret = '' THEN 'none' \
+                         WHEN secret LIKE 'env:%' OR secret LIKE 'gsm:%' OR secret LIKE 'file:%' \
+                              THEN 'ref' ELSE 'inline' END \
              FROM external_endpoints ORDER BY created_at, name",
         )?;
         let rows = stmt.query_map([], |r| {
@@ -175,6 +181,7 @@ impl Indexer {
                 auth_scheme: r.get(3)?,
                 created_at: r.get(4)?,
                 created_by: r.get(5)?,
+                secret_kind: r.get(6)?,
             })
         })?;
         let mut out = Vec::new();

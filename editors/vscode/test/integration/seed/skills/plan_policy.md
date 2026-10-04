@@ -1,5 +1,5 @@
 ---
-type: skill
+kind: skill
 id: plan_policy
 description: An inactive policy candidate linked to exact validation evidence.
 required_frontmatter: [experiment, program_id, combined_score, status]

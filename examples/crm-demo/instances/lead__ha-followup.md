@@ -1,5 +1,5 @@
 ---
-type: instance
+kind: instance
 skill: lead
 id: ha-followup
 opened: 2026-04-22

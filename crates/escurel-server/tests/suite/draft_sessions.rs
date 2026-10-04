@@ -33,9 +33,9 @@ use tempfile::TempDir;
 use tokio::sync::Mutex;
 
 const TENANT: &str = "acme";
-const NOTE: &str = "---\ntype: skill\nid: note\ndescription: A note.\n\
+const NOTE: &str = "---\nkind: skill\nid: note\ndescription: A note.\n\
     visibility: public\n---\n# note\n";
-const BASE: &str = "---\ntype: instance\nskill: note\nid: plan\n---\n# Plan\n\nv1 body.\n";
+const BASE: &str = "---\nkind: instance\nskill: note\nid: plan\n---\n# Plan\n\nv1 body.\n";
 const PAGE: &str = "markdown/instances/note/plan.md";
 const AUTHOR: &str = "ada";
 const STRANGER: &str = "grace";
@@ -143,14 +143,14 @@ async fn page_sha(h: &Harness, token: &str) -> Option<String> {
 async fn a_session_on_a_draft_edits_the_draft_and_leaves_the_page_alone() {
     let h = start().await;
     let token = author_token(&h);
-    let first = "---\ntype: instance\nskill: note\nid: plan\n---\n# Plan\n\nv2 draft.\n";
+    let first = "---\nkind: instance\nskill: note\nid: plan\n---\n# Plan\n\nv2 draft.\n";
     let draft_id = draft_of(&h, first).await;
     let before = page_sha(&h, &token).await;
 
     let opened = call(&h, &token, "open_session", json!({ "draft_id": draft_id })).await;
     let sid = opened["session"].as_str().expect("session").to_owned();
 
-    let edited = "---\ntype: instance\nskill: note\nid: plan\n---\n# Plan\n\nEDITED-LIVE.\n";
+    let edited = "---\nkind: instance\nskill: note\nid: plan\n---\n# Plan\n\nEDITED-LIVE.\n";
     let applied = raw(
         &h,
         &token,
@@ -239,7 +239,7 @@ async fn a_session_on_a_draft_edits_the_draft_and_leaves_the_page_alone() {
 #[tokio::test]
 async fn another_subject_may_not_open_a_session_on_someone_elses_draft() {
     let h = start().await;
-    let content = "---\ntype: instance\nskill: note\nid: plan\n---\n# Plan\n\nmine.\n";
+    let content = "---\nkind: instance\nskill: note\nid: plan\n---\n# Plan\n\nmine.\n";
     let draft_id = draft_of(&h, content).await;
 
     let stranger = h.process.mint_token_with_sub(TENANT, Role::Agent, STRANGER);
@@ -275,7 +275,7 @@ async fn another_subject_may_not_open_a_session_on_someone_elses_draft() {
 async fn a_decided_draft_has_no_session() {
     let h = start().await;
     let token = author_token(&h);
-    let content = "---\ntype: instance\nskill: note\nid: plan\n---\n# Plan\n\ndone.\n";
+    let content = "---\nkind: instance\nskill: note\nid: plan\n---\n# Plan\n\ndone.\n";
     let draft_id = draft_of(&h, content).await;
     let promoted = call(&h, &token, "promote_draft", json!({ "draft_id": draft_id })).await;
     assert_eq!(promoted["ok"], json!(true), "promote_draft: {promoted}");
@@ -294,7 +294,7 @@ async fn a_decided_draft_has_no_session() {
 async fn open_session_names_exactly_one_target() {
     let h = start().await;
     let token = author_token(&h);
-    let content = "---\ntype: instance\nskill: note\nid: plan\n---\n# Plan\n\nboth.\n";
+    let content = "---\nkind: instance\nskill: note\nid: plan\n---\n# Plan\n\nboth.\n";
     let draft_id = draft_of(&h, content).await;
 
     let neither = raw(&h, &token, "open_session", json!({})).await;
@@ -327,7 +327,7 @@ async fn open_session_names_exactly_one_target() {
 async fn a_session_id_does_not_let_another_subject_touch_a_personal_draft() {
     let h = start().await;
     let token = author_token(&h);
-    let content = "---\ntype: instance\nskill: note\nid: plan\n---\n# Plan\n\nmine.\n";
+    let content = "---\nkind: instance\nskill: note\nid: plan\n---\n# Plan\n\nmine.\n";
     let draft_id = draft_of(&h, content).await;
     let opened = call(&h, &token, "open_session", json!({ "draft_id": draft_id })).await;
     let sid = opened["session"].as_str().expect("session").to_owned();
@@ -395,7 +395,7 @@ async fn a_draft_that_creates_a_page_can_still_be_edited() {
     let h = start().await;
     let token = author_token(&h);
     let fresh = "markdown/instances/note/brand-new.md";
-    let proposed = "---\ntype: instance\nskill: note\nid: brand-new\n---\n# New\n\nfirst.\n";
+    let proposed = "---\nkind: instance\nskill: note\nid: brand-new\n---\n# New\n\nfirst.\n";
     let created = call(
         &h,
         &token,
@@ -423,7 +423,7 @@ async fn a_draft_that_creates_a_page_can_still_be_edited() {
 async fn a_draft_decided_under_an_open_session_does_not_wedge_it() {
     let h = start().await;
     let token = author_token(&h);
-    let content = "---\ntype: instance\nskill: note\nid: plan\n---\n# Plan\n\nracing.\n";
+    let content = "---\nkind: instance\nskill: note\nid: plan\n---\n# Plan\n\nracing.\n";
     let draft_id = draft_of(&h, content).await;
     let opened = call(&h, &token, "open_session", json!({ "draft_id": draft_id })).await;
     let sid = opened["session"].as_str().expect("session").to_owned();
@@ -480,7 +480,7 @@ async fn a_draft_decided_under_an_open_session_does_not_wedge_it() {
 async fn a_stranger_cannot_close_an_empty_draft_session_or_learn_its_draft() {
     let h = start().await;
     let token = author_token(&h);
-    let content = "---\ntype: instance\nskill: note\nid: plan\n---\n# Plan\n\nuntouched.\n";
+    let content = "---\nkind: instance\nskill: note\nid: plan\n---\n# Plan\n\nuntouched.\n";
     let draft_id = draft_of(&h, content).await;
     let opened = call(&h, &token, "open_session", json!({ "draft_id": draft_id })).await;
     let sid = opened["session"].as_str().expect("session").to_owned();
@@ -525,7 +525,7 @@ async fn a_stranger_cannot_close_an_empty_draft_session_or_learn_its_draft() {
 async fn a_draft_key_cannot_be_forged_through_page_id() {
     let h = start().await;
     let token = author_token(&h);
-    let content = "---\ntype: instance\nskill: note\nid: plan\n---\n# Plan\n\nmine.\n";
+    let content = "---\nkind: instance\nskill: note\nid: plan\n---\n# Plan\n\nmine.\n";
     let draft_id = draft_of(&h, content).await;
 
     let stranger = h.process.mint_token_with_sub(TENANT, Role::Agent, STRANGER);
@@ -602,7 +602,7 @@ async fn recv_frame(sock: &mut Sock) -> Value {
 async fn the_author_may_attach_to_their_own_draft_session_over_ws() {
     let h = start().await;
     let token = author_token(&h);
-    let content = "---\ntype: instance\nskill: note\nid: plan\n---\n# Plan\n\nlive.\n";
+    let content = "---\nkind: instance\nskill: note\nid: plan\n---\n# Plan\n\nlive.\n";
     let draft_id = draft_of(&h, content).await;
     let opened = call(&h, &token, "open_session", json!({ "draft_id": draft_id })).await;
     let sid = opened["session"].as_str().expect("session").to_owned();
@@ -631,7 +631,7 @@ async fn the_author_may_attach_to_their_own_draft_session_over_ws() {
 async fn another_subject_may_not_attach_to_a_draft_session_over_ws() {
     let h = start().await;
     let token = author_token(&h);
-    let content = "---\ntype: instance\nskill: note\nid: plan\n---\n# Plan\n\nprivate.\n";
+    let content = "---\nkind: instance\nskill: note\nid: plan\n---\n# Plan\n\nprivate.\n";
     let draft_id = draft_of(&h, content).await;
     let opened = call(&h, &token, "open_session", json!({ "draft_id": draft_id })).await;
     let sid = opened["session"].as_str().expect("session").to_owned();
@@ -670,7 +670,7 @@ async fn another_subject_may_not_attach_to_a_draft_session_over_ws() {
 async fn open_session_hands_back_a_snapshot_a_client_can_build_an_op_on() {
     let h = start().await;
     let token = author_token(&h);
-    let seeded = "---\ntype: instance\nskill: note\nid: plan\n---\n# Plan\n\nseeded body.\n";
+    let seeded = "---\nkind: instance\nskill: note\nid: plan\n---\n# Plan\n\nseeded body.\n";
     let draft_id = draft_of(&h, seeded).await;
 
     let opened = call(&h, &token, "open_session", json!({ "draft_id": draft_id })).await;
@@ -757,7 +757,7 @@ async fn a_page_session_also_hands_back_its_snapshot() {
 async fn an_unparseable_draft_is_still_visible_to_its_author() {
     let h = start().await;
     let token = author_token(&h);
-    let seeded = "---\ntype: instance\nskill: note\nid: plan\n---\n# Plan\n\nvalid for now.\n";
+    let seeded = "---\nkind: instance\nskill: note\nid: plan\n---\n# Plan\n\nvalid for now.\n";
     let draft_id = draft_of(&h, seeded).await;
 
     // Break the frontmatter the way a half-typed edit does, through the session.

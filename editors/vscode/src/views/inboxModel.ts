@@ -1,5 +1,6 @@
 import type { Event } from '../client';
 import { pageSlug } from '../shared/pageId';
+import { cleanText } from '../shared/untrustedText';
 
 /**
  * An event's age matters more than its clock time in a queue you scan, so
@@ -47,14 +48,15 @@ export interface InboxRow {
  * dimmed secondary text. The full sentence is the tooltip.
  */
 export function inboxRow(event: Event, now?: number): InboxRow {
-  const title = event.title?.trim();
+  const title = cleanText(event.title ?? '', 160);
   const slug = event.instance_page_id ? pageSlug(event.instance_page_id) : '';
+  const skill = cleanText(event.label_skill, 80);
   const label = slug || title || event.event_id;
 
   const time = formatRelativeTime(event.at, now);
-  const description = [event.label_skill, time].filter(Boolean).join(' · ');
+  const description = [skill, time].filter(Boolean).join(' · ');
 
-  const headline = `${event.label_skill} · ${title || event.event_id}`;
+  const headline = `${skill} · ${title || event.event_id}`;
   const where = [slug, time].filter(Boolean).join(' · ');
 
   return {

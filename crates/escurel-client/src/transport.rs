@@ -132,6 +132,18 @@ impl McpTransport {
         Some((run.clone(), format!("{run}.{seq}")))
     }
 
+    /// Replace the total per-request deadline (`None` = no deadline). For the operator calls that
+    /// legitimately run for minutes (`migrate_kind` on a tenant with thousands of pages), where the
+    /// default would cut the request while the server is still working.
+    pub(crate) fn with_timeout(mut self, timeout: Option<std::time::Duration>) -> Self {
+        let mut b = reqwest::Client::builder();
+        if let Some(t) = timeout {
+            b = b.timeout(t);
+        }
+        self.http = b.build().unwrap_or_default();
+        self
+    }
+
     pub(crate) fn new(endpoint: &str, token: SecretString) -> Result<Self, Error> {
         let base = endpoint.trim_end_matches('/').to_owned();
         if !(base.starts_with("http://") || base.starts_with("https://")) {
@@ -174,6 +186,26 @@ impl McpTransport {
         serde_json::from_value(result).map_err(|e| Error::Decode(format!("{tool}: {e}")))
     }
 
+    /// Like [`Self::call`] for the tools whose payload is a REPORT that may say `ok: false` (a pack
+    /// rebase with conflicts): the payload is returned whether or not the gateway flagged it.
+    pub(crate) async fn call_outcome(&self, tool: &str, arguments: Value) -> Result<Value, Error> {
+        let result = self.call_result(tool, arguments).await?;
+        Ok(escurel_types::call_result::payload_of(&result))
+    }
+
+    /// Like [`Self::call_typed`] for the tools whose RESPONSE TYPE models `ok`/`issues` itself (the
+    /// write family and `validate`): a refusal is the typed response with `ok: false`, which callers
+    /// already branch on, not an `Err`.
+    pub(crate) async fn call_typed_outcome<T: serde::de::DeserializeOwned>(
+        &self,
+        tool: &str,
+        arguments: Value,
+    ) -> Result<T, Error> {
+        let result = self.call_result(tool, arguments).await?;
+        serde_json::from_value(escurel_types::call_result::payload_of(&result))
+            .map_err(|e| Error::Decode(format!("{tool}: {e}")))
+    }
+
     /// Low-level JSON-RPC `tools/call` driver. Returns the tool's
     /// payload, or maps the JSON-RPC error envelope to
     /// [`Error::JsonRpc`] and a non-success HTTP status to
@@ -185,6 +217,14 @@ impl McpTransport {
     /// every typed/raw consumer sees the payload directly, falling back
     /// to the whole `result` for back-compat with any non-wrapped shape.
     pub(crate) async fn call(&self, tool: &str, arguments: Value) -> Result<Value, Error> {
+        let result = self.call_result(tool, arguments).await?;
+        // A refusal is an error here, never a payload: see `Error::Refused`.
+        escurel_types::call_result::unwrap_call_result(result).map_err(Error::Refused)
+    }
+
+    /// The whole `CallToolResult` (`{content, structuredContent, isError}`), unopened. Everything
+    /// that reads a payload goes through [`Self::call`] or [`Self::call_typed_outcome`].
+    async fn call_result(&self, tool: &str, arguments: Value) -> Result<Value, Error> {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let envelope = json!({
             "jsonrpc": "2.0",
@@ -290,9 +330,7 @@ impl McpTransport {
         let result = body.get("result").cloned().ok_or_else(|| {
             Error::Decode(format!("response missing `result` field: {body_text}"))
         })?;
-        // Unwrap the MCP `CallToolResult.structuredContent` payload when
-        // the gateway wrapped it; otherwise return the result as-is.
-        Ok(result.get("structuredContent").cloned().unwrap_or(result))
+        Ok(result)
     }
 
     /// GET a plain-text endpoint relative to the base (e.g.

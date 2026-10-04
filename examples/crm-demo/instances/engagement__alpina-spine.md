@@ -1,5 +1,5 @@
 ---
-type: instance
+kind: instance
 skill: engagement
 id: alpina-spine
 at: 2026-05-12T09:30:00Z

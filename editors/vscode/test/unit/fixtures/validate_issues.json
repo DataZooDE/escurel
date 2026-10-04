@@ -7,7 +7,7 @@
     "params": {
       "name": "validate",
       "arguments": {
-        "content": "---\ntype: skill\nid: x\ndescription: d.\nfields:\n  - {name: a, render: sparkle}\nblocks: nope\n---\n# x\n",
+        "content": "---\nkind: skill\nid: x\ndescription: d.\nfields:\n  - {name: a, render: sparkle}\nblocks: nope\n---\n# x\n",
         "as_page_id": "markdown/skills/x.md"
       }
     }

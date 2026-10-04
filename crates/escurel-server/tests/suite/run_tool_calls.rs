@@ -17,7 +17,7 @@ use tempfile::TempDir;
 const TENANT: &str = "carl";
 const RUN: &str = "01HRUNTOOLCALLS00000000000";
 const ROOT: &str = "01HROOTTOOLCALLS0000000000";
-const SKILL: &str = "---\ntype: skill\nid: note\ndescription: d.\n---\n# note\n";
+const SKILL: &str = "---\nkind: skill\nid: note\ndescription: d.\n---\n# note\n";
 
 async fn rpc(p: &EscurelProcess, token: &str, name: &str, args: Value) -> Value {
     reqwest::Client::new()

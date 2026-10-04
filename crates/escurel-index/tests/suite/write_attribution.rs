@@ -17,10 +17,10 @@ const TENANT: &str = "acme";
 const ALICE: &str = "consultant:alice";
 const NOTE: &str = "markdown/instances/note/n1.md";
 
-const NOTE_SKILL: &str = "---\ntype: skill\nid: note\ndescription: A note.\n---\n# note\n";
+const NOTE_SKILL: &str = "---\nkind: skill\nid: note\ndescription: A note.\n---\n# note\n";
 
 fn note_md(body: &str) -> String {
-    format!("---\ntype: instance\nskill: note\nid: n1\n---\n# n1\n\n{body}\n")
+    format!("---\nkind: instance\nskill: note\nid: n1\n---\n# n1\n\n{body}\n")
 }
 
 fn column_exists(conn: &Connection, table: &str, column: &str) -> bool {

@@ -112,7 +112,7 @@ let spoke = EscurelProcess::spawn(Opts { auth: AuthMode::TestIssuer,
 ```
 
 Worked, assertion-complete version:
-`crates/escurel-server/tests/pack_import.rs` (import, tamper rejection,
+`crates/escurel-server/tests/suite/pack_import.rs` (import, tamper rejection,
 version pinning, vertical guard, the reserved `markdown/base/` prefix,
 and the admin gate).
 

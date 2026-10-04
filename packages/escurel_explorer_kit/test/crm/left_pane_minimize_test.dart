@@ -8,10 +8,10 @@ import 'package:escurel_explorer_kit/state/providers.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-ExpandResult _page(PageType type) => ExpandResult(
+ExpandResult _page(PageKind type) => ExpandResult(
       pageId: 'p',
       skill: 'customer',
-      pageType: type,
+      pageKind: type,
       frontmatter: const {},
       body: '',
       blocks: const [],
@@ -22,7 +22,7 @@ void main() {
   test('skill auto-minimizes by default, but an explicit choice always wins', () async {
     // Skill focused, no explicit choice → auto-minimized.
     final skillC = ProviderContainer(
-      overrides: [currentPageProvider.overrideWith((ref) async => _page(PageType.skill))],
+      overrides: [currentPageProvider.overrideWith((ref) async => _page(PageKind.skill))],
     );
     addTearDown(skillC.dispose);
     await skillC.read(currentPageProvider.future);
@@ -37,7 +37,7 @@ void main() {
 
     // Instance focused, no explicit choice → events shown.
     final instC = ProviderContainer(
-      overrides: [currentPageProvider.overrideWith((ref) async => _page(PageType.instance))],
+      overrides: [currentPageProvider.overrideWith((ref) async => _page(PageKind.instance))],
     );
     addTearDown(instC.dispose);
     await instC.read(currentPageProvider.future);

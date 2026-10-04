@@ -33,9 +33,7 @@
           "root_event_id": "01M3NHJJCWP2TXH9TQT46F70R1",
           "event_id": "01M3NHJJCWP2TXH9TQT46F70R1",
           "depth": 0,
-          "lineage_path": [
-            "01M3NHJJCWP2TXH9TQT46F70R1"
-          ],
+          "lineage_path": ["01M3NHJJCWP2TXH9TQT46F70R1"],
           "harness": "echo",
           "max_attempts": 3,
           "trace_id": "01a0eb194a26f1510f9b86c9f8a6cd96",
@@ -112,9 +110,7 @@
           "root_event_id": "01M3NHJJCWP2TXH9TQT46F70R1",
           "event_id": "01M3NHJJCWP2TXH9TQT46F70R1",
           "depth": 0,
-          "lineage_path": [
-            "01M3NHJJCWP2TXH9TQT46F70R1"
-          ],
+          "lineage_path": ["01M3NHJJCWP2TXH9TQT46F70R1"],
           "harness": "echo",
           "max_attempts": 3,
           "trace_id": "01a0eb194a26f1510f9b86c9f8a6cd96",
@@ -143,9 +139,7 @@
           "root_event_id": "01M3NHJJCWP2TXH9TQT46F70R1",
           "event_id": "01M3NHJJCWP2TXH9TQT46F70R1",
           "depth": 0,
-          "lineage_path": [
-            "01M3NHJJCWP2TXH9TQT46F70R1"
-          ],
+          "lineage_path": ["01M3NHJJCWP2TXH9TQT46F70R1"],
           "harness": "echo",
           "max_attempts": 3,
           "trace_id": "01a0eb194a26f1510f9b86c9f8a6cd96",
@@ -227,12 +221,8 @@
           "parent_event_id": "01M3NHJJCWP2TXH9TQT46F70R1",
           "parent_run_id": "01M3NHJJGJ1WWAV26F5Z8Y4XKT",
           "depth": 1,
-          "lineage_path": [
-            "01M3NHJJCWP2TXH9TQT46F70R1"
-          ],
-          "instance_path": [
-            "markdown/instances/order/o1.md"
-          ],
+          "lineage_path": ["01M3NHJJCWP2TXH9TQT46F70R1"],
+          "instance_path": ["markdown/instances/order/o1.md"],
           "cause": "instance-updated:signal",
           "changed_instance": "markdown/instances/order/o1.md",
           "changed_version": "promoted"
@@ -244,5 +234,5 @@
       "run_id": null
     }
   ],
-  "resume_cursor": "c2VxfDEx"
+  "next_cursor": "c2VxfDEx"
 }

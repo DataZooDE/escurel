@@ -1,0 +1,22 @@
+{
+  "ok": true,
+  "draft": {
+    "draft_id": "01M43QEQE2C0FQY76G5WVMJ23Z",
+    "target_page_id": "markdown/instances/customer-order/golden-1.md",
+    "content": "---\nkind: instance\nskill: customer-order\nid: golden-1\n---\n# golden-1\n\nBaseline.\n\n\nGolden probe.\n",
+    "content_sha256": "99fe1d19661e0b6c32508903724ff50c06ca5ab9fc7e51eeaa38ce0cc513ab00",
+    "base_sha256": "eab510e90278c546cac9deff4282a96607cec14a69a516c151c8983f9277baf6",
+    "author": "alice",
+    "event_id": null,
+    "status": "open",
+    "reason": "",
+    "decided_by": "",
+    "created_at": "2026-10-04T15:10:25Z",
+    "changeset_id": null,
+    "base_version": "v0",
+    "run_id": "01M43QEQA0W8WAS3TQZ8VV1ZBH",
+    "root_event_id": "01M43QEQA0W8WAS3TQZ8VV1ZBH"
+  },
+  "held_for_review": true,
+  "message": "`customer-order` asks for human review (`autonomy`), so this write was held as an open draft; nothing changed on the page until a reviewer promotes it"
+}

@@ -17,7 +17,7 @@ use tempfile::TempDir;
 const TENANT: &str = "acme";
 const MEMO_SKILL: &str = "\
 ---
-type: skill
+kind: skill
 id: memo
 description: Text memos ingested as documents.
 backend:
@@ -425,7 +425,7 @@ async fn update_page_on_document_instance_rejected() {
     let resp = post_ingest(&s.process, &token, blob.as_str(), "text/plain").await;
     let page_id = resp["page_id"].as_str().unwrap().to_owned();
 
-    let content = "---\ntype: instance\nskill: memo\nid: doc-x\nbackend_ref:\n  kind: document\n---\n# edited\n";
+    let content = "---\nkind: instance\nskill: memo\nid: doc-x\nbackend_ref:\n  kind: document\n---\n# edited\n";
     let body = call(
         &s.process,
         &token,
@@ -466,7 +466,7 @@ async fn ingest_is_idempotent_on_content_hash() {
 
 const REPORT_SKILL: &str = "\
 ---
-type: skill
+kind: skill
 id: report
 description: PDF reports.
 backend:
@@ -527,7 +527,7 @@ async fn ingest_pdf_without_kreuzberg_feature_fails_gracefully() {
 const DOCX_MIME: &str = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
 const DOCX_SKILL: &str = "\
 ---
-type: skill
+kind: skill
 id: worddoc
 description: Word documents.
 backend:
@@ -580,7 +580,7 @@ async fn ingest_docx_end_to_end_materialises_searchable_instance() {
 const PPTX_MIME: &str = "application/vnd.openxmlformats-officedocument.presentationml.presentation";
 const DECK_SKILL: &str = "\
 ---
-type: skill
+kind: skill
 id: deck
 description: Uploaded presentations (QBRs, proposals, review decks).
 backend:

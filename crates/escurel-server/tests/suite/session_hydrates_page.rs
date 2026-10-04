@@ -32,18 +32,18 @@ use tokio::sync::Mutex;
 
 const TENANT: &str = "stuttgart-ai";
 
-const NOTE_SKILL: &str = "---\ntype: skill\nid: note\ndescription: A note.\n\
+const NOTE_SKILL: &str = "---\nkind: skill\nid: note\ndescription: A note.\n\
     acl:\n  read: [public]\n  create: [team-red]\n  update: [team-red]\n---\n# note\n";
 
 /// The page a room opens. Its body is the thing that must survive.
-const RED_NOTE: &str = "---\ntype: instance\nskill: note\nid: red-1\nteam: team-red\n---\n\
+const RED_NOTE: &str = "---\nkind: instance\nskill: note\nid: red-1\nteam: team-red\n---\n\
     # Red\n\nThe minutes of a long meeting nobody wants to lose.\n";
 const RED_PAGE: &str = "markdown/instances/note/red-1.md";
 
 /// What a client might send that happens to be a valid page. This is the whole
 /// point of the fixture: a well-formed document does NOT trip the validator, so
 /// nothing stands between it and the stored page.
-const PLAUSIBLE: &str = "---\ntype: instance\nskill: note\nid: red-1\nteam: team-red\n---\n\
+const PLAUSIBLE: &str = "---\nkind: instance\nskill: note\nid: red-1\nteam: team-red\n---\n\
     # Red\n\nJust this line.\n";
 
 async fn start() -> EscurelProcess {

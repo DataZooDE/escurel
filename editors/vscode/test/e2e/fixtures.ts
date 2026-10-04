@@ -52,6 +52,8 @@ export interface Stack {
   /** What the demo driver left behind: the root events and changesets of the story. */
   story: { rootA: string; rootB: string; promoted: string; awaiting: string };
   gatewayUrl: string;
+  /** The demo's home directory: pid files and the ports of the demo's outside systems. */
+  home: string;
   /** Call a gateway tool as the signed-in human (alice), for setting up or checking state. */
   call: (name: string, args: Record<string, unknown>, admin?: boolean) => Promise<ToolResult>;
   /** Console and page errors collected since the window opened. */
@@ -117,11 +119,25 @@ export const test = base.extend<object, {
       }
       const artifacts = resolve(__dirname, 'artifacts');
       mkdirSync(artifacts, { recursive: true });
-      const display = `:${90 + Math.floor(Math.random() * 9)}`;
-      const xvfb: ChildProcess = spawn('Xvfb', [display, '-screen', '0', '1700x1000x24'], {
-        stdio: 'ignore',
+      // Xvfb picks a FREE display itself and writes its number to fd 3 once it is ready to accept
+      // connections: no random display number that can collide with a parallel run, and no sleep.
+      const xvfb: ChildProcess = spawn(
+        'Xvfb',
+        ['-displayfd', '3', '-screen', '0', '1700x1000x24'],
+        { stdio: ['ignore', 'ignore', 'ignore', 'pipe'] },
+      );
+      const display = await new Promise<string>((resolveDisplay, reject) => {
+        let buf = '';
+        const timer = setTimeout(() => reject(new Error('Xvfb did not report a display')), 20_000);
+        xvfb.stdio[3]!.on('data', (d: Buffer) => {
+          buf += d.toString();
+          if (buf.includes('\n')) {
+            clearTimeout(timer);
+            resolveDisplay(`:${buf.trim()}`);
+          }
+        });
+        xvfb.on('exit', (code) => reject(new Error(`Xvfb exited (${code})`)));
       });
-      await new Promise((r) => setTimeout(r, 1200));
       const cdpPort = await freePort();
       const evolvePort = evolveAgentBin ? await freePort() : undefined;
       const configuredEvolveUrl = evolvePort ? `http://127.0.0.1:${evolvePort}` : undefined;
@@ -236,6 +252,7 @@ export const test = base.extend<object, {
         display,
         story,
         gatewayUrl: info.gateway_url,
+        home,
         errors,
         call: async (name, args, admin = false) => {
           const tok = bearer();
@@ -311,26 +328,42 @@ export { expect };
  * `visibility: hidden`, so a plain `iframe.webview` also matches the tab you are not looking at,
  * and a click on it lands on whatever is on top.
  */
-export async function webviewWith(page: Page, selector: string): Promise<FrameLocator> {
+export async function webviewWith(
+  page: Page,
+  selector: string,
+  /** Text the wanted page shows (its page id): tells two page webviews apart. */
+  contains?: string,
+): Promise<FrameLocator> {
+  // A tooltip left by hovering a tree row floats over the editor and intercepts clicks on the page
+  // (seen over the Change-rating button): leave the sidebar, and let it go, before touching a webview.
+  await page.mouse.move(760, 520);
+  await expect(page.locator('.context-view .monaco-hover')).toHaveCount(0);
   const outer = page.locator('iframe.webview:visible');
   let found: FrameLocator | undefined;
   await expect
     .poll(
       async () => {
+        // While VS Code switches editor tabs the outgoing webview is still visible for a moment, and
+        // an index-based locator picked it (and shifted as webviews came and went). Take the most
+        // recent matching webview and pin it by its own name, which does not move.
         const n = await outer.count();
-        for (let i = 0; i < n; i += 1) {
+        for (let i = n - 1; i >= 0; i -= 1) {
+          const name = await outer.nth(i).getAttribute('name');
+          if (!name) continue;
           const inner = page
-            .frameLocator('iframe.webview:visible')
-            .nth(i)
+            .frameLocator(`iframe.webview[name="${name}"]`)
             .frameLocator('iframe#active-frame');
-          if ((await inner.locator(selector).count()) > 0) {
+          const wanted = contains
+            ? inner.locator(selector).filter({ hasText: contains })
+            : inner.locator(selector);
+          if ((await wanted.count()) > 0) {
             found = inner;
             return true;
           }
         }
         return false;
       },
-      { message: `a webview containing ${selector}` },
+      { message: `a webview containing ${selector}${contains ? ` with ${contains}` : ''}` },
     )
     .toBe(true);
   return found!;

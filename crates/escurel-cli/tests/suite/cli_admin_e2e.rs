@@ -19,7 +19,7 @@ const TENANT: &str = "acme";
 // `promotable: true` lets the same fixture drive the pack-export AND
 // the promotion-harvest e2e (a curator-marked, firm-authored skill).
 const CUSTOMER_SKILL: &str =
-    "---\ntype: skill\nid: customer\ndescription: x\npromotable: true\n---\n# customer\n";
+    "---\nkind: skill\nid: customer\ndescription: x\npromotable: true\n---\n# customer\n";
 
 struct Harness {
     process: EscurelProcess,

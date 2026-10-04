@@ -1,0 +1,20 @@
+{
+  "content": [
+    {
+      "type": "text",
+      "text": "Refused: frontmatter_parse: missing frontmatter: input does not start with '---'. Full result in structuredContent."
+    }
+  ],
+  "structuredContent": {
+    "ok": false,
+    "issues": [
+      {
+        "severity": "error",
+        "code": "frontmatter_parse",
+        "location": "frontmatter",
+        "message": "missing frontmatter: input does not start with '---'"
+      }
+    ]
+  },
+  "isError": true
+}

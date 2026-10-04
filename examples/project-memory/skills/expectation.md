@@ -1,5 +1,5 @@
 ---
-type: skill
+kind: skill
 id: expectation
 description: A concrete, revisable statement of what a stakeholder expects to be true or delivered. Its supersession chain is the primary record of how expectations evolved.
 required_frontmatter: [at, statement, refines, status]

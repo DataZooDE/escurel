@@ -1,5 +1,5 @@
 ---
-type: skill
+kind: skill
 id: evolve_validation_report
 description: Owner-scoped evidence from the synthetic holdout replay.
 owner_field: owner_subject

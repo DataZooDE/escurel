@@ -1,5 +1,5 @@
 ---
-type: skill
+kind: skill
 id: evolve_preflight
 description: Private Evolve problem preflight for extension-host integration tests.
 owner_field: owner_subject

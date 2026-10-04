@@ -30,7 +30,7 @@ String generateUploadEventId() {
 }
 
 /// Restrict a search to pages of a particular kind.
-enum PageTypeFilter { skill, instance, any }
+enum PageKindFilter { skill, instance, any }
 
 /// Block-level vs page-level [search] hits.
 enum SearchGranularity { block, page }
@@ -91,7 +91,7 @@ class ResolveResult {
   const ResolveResult({
     required this.pageId,
     required this.skill,
-    required this.pageType,
+    required this.pageKind,
     required this.exists,
     this.description,
     this.error,
@@ -99,7 +99,7 @@ class ResolveResult {
 
   final String pageId;
   final String skill;
-  final PageType pageType;
+  final PageKind pageKind;
   final bool exists;
   final String? description;
   final String? error;
@@ -117,7 +117,7 @@ class ExpandResult {
   const ExpandResult({
     required this.pageId,
     required this.skill,
-    required this.pageType,
+    required this.pageKind,
     required this.frontmatter,
     required this.body,
     required this.blocks,
@@ -131,7 +131,7 @@ class ExpandResult {
 
   final String pageId;
   final String skill;
-  final PageType pageType;
+  final PageKind pageKind;
   final Map<String, dynamic> frontmatter;
   final String body;
   final List<Block> blocks;
@@ -750,15 +750,22 @@ class Event {
 }
 
 /// One page of [Event]s plus the opaque cursor for the next page.
-/// `list_inbox` / `list_events` emit `next_cursor` iff more rows remain
-/// — its ABSENCE (never a short page) means the listing is exhausted.
+/// `list_inbox` / `list_events`: `next_cursor` is where THIS page ended
+/// (present iff the page is non-empty); `has_more` says rows already lie
+/// past it. Only a null `next_cursor` means the listing is exhausted, and
+/// a client paging until then makes one extra empty call — [hasMore]
+/// avoids it. (`resume_cursor` no longer exists.)
 class EventPage {
-  const EventPage({required this.events, this.nextCursor});
+  const EventPage({required this.events, this.nextCursor, this.serverHasMore});
   final List<Event> events;
   final String? nextCursor;
 
+  /// The wire's `has_more`, when the server sent the contract (null for a
+  /// fixture built without it).
+  final bool? serverHasMore;
+
   /// Whether another page can be fetched.
-  bool get hasMore => nextCursor != null;
+  bool get hasMore => serverHasMore ?? (nextCursor != null);
 }
 
 // ── tools/list (scope labels) ───────────────────────────────────
@@ -855,10 +862,19 @@ class ValidationResult {
 }
 
 class UpdateResult {
-  const UpdateResult({required this.ok, required this.issues, this.newVersion});
+  const UpdateResult({
+    required this.ok,
+    required this.issues,
+    this.newVersion,
+    this.heldForReview = false,
+  });
   final bool ok;
   final List<Issue> issues;
   final String? newVersion;
+
+  /// The write did NOT land: the skill asks for human review and the caller is a machine, so it was
+  /// held as an open draft. [ok] is still true; the page is unchanged.
+  final bool heldForReview;
 }
 
 // ── live mode (session) — stubs until M3 transport decided ──────

@@ -214,7 +214,7 @@ void main() {
           'q': 'hoffmann',
           'k': 5,
           'granularity': 'block',
-          'page_type': 'any',
+          'page_kind': 'any',
           'skill': 'contact',
         });
         expect(r.hits.map((h) => h.pageId).toList(), [
@@ -225,18 +225,18 @@ void main() {
       },
     );
 
-    test('resolve unmarshals page_type into the md.PageType enum', () async {
+    test('resolve unmarshals page_kind into the md.PageKind enum', () async {
       mock.toolHandlers['resolve'] = (args) => {
         'page_id': args['wikilink'],
         'skill': 'opportunity',
-        'page_type': 'instance',
+        'page_kind': 'instance',
         'exists': true,
         'description': 'pilot opportunity',
       };
 
       final r = await client.resolve('[[opportunity::hoffmann-pilot]]');
       expect(r.exists, isTrue);
-      expect(r.pageType, md.PageType.instance);
+      expect(r.pageKind, md.PageKind.instance);
       expect(r.description, 'pilot opportunity');
     });
 
@@ -246,7 +246,7 @@ void main() {
         mock.toolHandlers['expand'] = (args) => {
           'page_id': args['page_id'],
           'skill': 'opportunity',
-          'page_type': 'instance',
+          'page_kind': 'instance',
           'frontmatter': {'value_eur': 60000, 'status': 'negotiating'},
           'body': '# Pilot\n\nMünchner Pharma',
           'blocks': [
@@ -419,7 +419,7 @@ void main() {
           'page': {
             'page_id': 'markdown/skills/pallet-consolidation.md',
             'skill': 'pallet-consolidation',
-            'page_type': 'skill',
+            'page_kind': 'skill',
           },
           'frontmatter': {
             'id': 'pallet-consolidation',
@@ -456,7 +456,7 @@ void main() {
           'page': {
             'page_id': 'markdown/skills/local-notes.md',
             'skill': 'local-notes',
-            'page_type': 'skill',
+            'page_kind': 'skill',
           },
           'frontmatter': {'id': 'local-notes'},
           'body': '',
@@ -657,6 +657,81 @@ void main() {
       );
     });
 
+    // A REFUSED read is an `isError` result whose payload is `{ok: false, issues}`. Reading the
+    // payload blindly parsed it as an empty success (a silent partial read after a denial).
+    test('a refused read is an exception, not an empty result', () async {
+      mock.toolHandlers['search'] = (_) => {
+        'isError': true,
+        'content': [
+          {'type': 'text', 'text': 'refused: invalid_limit'},
+        ],
+        'structuredContent': {
+          'ok': false,
+          'issues': [
+            {
+              'severity': 'error',
+              'code': 'invalid_limit',
+              'location': 'arguments.k',
+              'message': 'k is an integer from 1 to 10000; got 99999',
+            },
+          ],
+        },
+      };
+      await expectLater(
+        client.search(q: 'x', k: 99999),
+        throwsA(
+          isA<EscurelToolException>()
+              .having((e) => e.code, 'code', 'invalid_limit')
+              .having((e) => e.message, 'message', contains('10000')),
+        ),
+      );
+    });
+
+    test(
+      'a refusal with no issue still carries the tool\u2019s own text',
+      () async {
+        mock.toolHandlers['list_skills'] = (_) => {
+          'isError': true,
+          'content': [
+            {'type': 'text', 'text': 'the source is down'},
+          ],
+        };
+        await expectLater(
+          client.listSkills(),
+          throwsA(
+            isA<EscurelToolException>()
+                .having((e) => e.code, 'code', 'tool_error')
+                .having(
+                  (e) => e.message,
+                  'message',
+                  contains('the source is down'),
+                ),
+          ),
+        );
+      },
+    );
+
+    // The write family models `ok`/`issues` itself: a refused write is a result, not an exception.
+    test('a refused write still returns its issues', () async {
+      mock.toolHandlers['update_page'] = (_) => {
+        'isError': true,
+        'structuredContent': {
+          'ok': false,
+          'issues': [
+            {
+              'severity': 'error',
+              'code': 'frontmatter_type_removed',
+              'location': 'frontmatter.type',
+              'message': 'rename `type:` to `kind:`',
+            },
+          ],
+        },
+      };
+      final r = await client.updatePage('markdown/instances/a/b.md', 'x');
+      expect(r.ok, isFalse);
+      expect(r.issues.single.code, 'frontmatter_type_removed');
+    });
+
     test('connection failure surfaces as EscurelTransportException', () async {
       final bad = HttpEscurelClient(baseUrl: 'http://127.0.0.1:1');
       await expectLater(
@@ -668,23 +743,25 @@ void main() {
   });
 
   group('cursor pagination', () {
-    test('list_inbox round-trips the cursor; absence means done', () async {
+    test('list_inbox round-trips the cursor; has_more says rows follow', () async {
       final sentArgs = <Map<String, dynamic>>[];
       mock.toolHandlers['list_inbox'] = (args) {
         sentArgs.add(args);
-        // First page carries next_cursor; the continuation page does not.
+        // `next_cursor` is where a page ENDED; `has_more` says rows follow.
         if (args['cursor'] == null) {
           return {
             'events': [
               {'event_id': 'ev-1'},
             ],
             'next_cursor': 'c-1',
+            'has_more': true,
           };
         }
         return {
           'events': [
             {'event_id': 'ev-2'},
           ],
+          'next_cursor': 'c-2',
         };
       };
 
@@ -698,8 +775,8 @@ void main() {
       final second = await client.listInbox(limit: 1, cursor: first.nextCursor);
       expect(sentArgs.last['cursor'], 'c-1');
       expect(second.events.single.eventId, 'ev-2');
-      // ABSENCE of next_cursor (never a short page) means done.
-      expect(second.nextCursor, isNull);
+      // The page ended at c-2 (a tail resumes there) and nothing follows it.
+      expect(second.nextCursor, 'c-2');
       expect(second.hasMore, isFalse);
     });
 
@@ -1019,7 +1096,7 @@ void main() {
         'page': {
           'page_id': 'customers__eu',
           'skill': 'customers',
-          'page_type': 'instance',
+          'page_kind': 'instance',
         },
         'frontmatter': {
           'backend_ref': {'kind': 'sql_view', 'view': 'vw_customers__eu'},
@@ -1048,7 +1125,7 @@ void main() {
         'page': {
           'page_id': 'customers__eu',
           'skill': 'customers',
-          'page_type': 'instance',
+          'page_kind': 'instance',
         },
         'frontmatter': {
           'backend_ref': {'kind': 'sql_view', 'view': 'vw_customers__eu'},
@@ -1076,7 +1153,7 @@ void main() {
         'page': {
           'page_id': 'quote__aapl',
           'skill': 'quote',
-          'page_type': 'instance',
+          'page_kind': 'instance',
         },
         'frontmatter': {
           'backend_ref': {'kind': 'openapi', 'endpoint': 'yahoo_finance'},
@@ -1109,7 +1186,7 @@ void main() {
         'page': {
           'page_id': 'quote__aapl',
           'skill': 'quote',
-          'page_type': 'instance',
+          'page_kind': 'instance',
         },
         'frontmatter': {
           'backend_ref': {'kind': 'openapi', 'endpoint': 'yahoo_finance'},

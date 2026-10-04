@@ -17,7 +17,7 @@ const B1: &str = "markdown/instances/mid/b1.md";
 const C1: &str = "markdown/instances/pub_node/c1.md";
 
 fn skill(id: &str, extra: &str) -> String {
-    format!("---\ntype: skill\nid: {id}\ndescription: {id}.\n{extra}---\n# {id}\n")
+    format!("---\nkind: skill\nid: {id}\ndescription: {id}.\n{extra}---\n# {id}\n")
 }
 
 fn fixtures(mid_private: bool) -> FixtureBuilder {
@@ -27,10 +27,10 @@ fn fixtures(mid_private: bool) -> FixtureBuilder {
         skill("mid", "visibility: public\n")
     };
     let b1 = if mid_private {
-        "---\ntype: instance\nskill: mid\nid: b1\nowner: \"owner-x\"\n\
+        "---\nkind: instance\nskill: mid\nid: b1\nowner: \"owner-x\"\n\
          derived_from: \"[[pub_node::c1]]\"\n---\n# b1\n"
     } else {
-        "---\ntype: instance\nskill: mid\nid: b1\n\
+        "---\nkind: instance\nskill: mid\nid: b1\n\
          derived_from: \"[[pub_node::c1]]\"\n---\n# b1\n"
     };
 
@@ -41,14 +41,14 @@ fn fixtures(mid_private: bool) -> FixtureBuilder {
         .instance(
             "pub_node",
             "a1",
-            "---\ntype: instance\nskill: pub_node\nid: a1\n\
+            "---\nkind: instance\nskill: pub_node\nid: a1\n\
              derived_from: \"[[mid::b1]]\"\n---\n# a1\n",
         )
         .instance("mid", "b1", b1)
         .instance(
             "pub_node",
             "c1",
-            "---\ntype: instance\nskill: pub_node\nid: c1\n---\n# c1\n",
+            "---\nkind: instance\nskill: pub_node\nid: c1\n---\n# c1\n",
         )
         .done()
 }

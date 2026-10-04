@@ -51,7 +51,7 @@ use base64::engine::general_purpose::STANDARD as B64;
 use escurel_auth::Role;
 use escurel_crdt::Op;
 use escurel_index::{AclCaller, IndexerHandle};
-use escurel_md::PageType;
+use escurel_md::PageKind;
 use escurel_quota::{Dimension, QuotaError, SessionGuard};
 use serde_json::{Value, json};
 
@@ -99,6 +99,16 @@ pub async fn ws_upgrade(
             })),
         )
             .into_response();
+    }
+
+    // A QUARANTINED tenant has a half-built index: no live sessions or searches until it is
+    // migrated (a live CRDT session would also make `migrate_kind --apply` refuse).
+    if let Some(resp) = state
+        .indexer
+        .as_ref()
+        .and_then(|h| crate::server::quarantine_refusal(&h.current()))
+    {
+        return resp;
     }
 
     // Quota gate — debit a session slot. The guard is moved into
@@ -702,7 +712,7 @@ async fn event_push_allowed(
 
 /// Whether `caller` may attach to a session on `page_id`.
 ///
-/// Mirrors the HTTP read path: only `type: instance` pages carry an instance
+/// Mirrors the HTTP read path: only `kind: instance` pages carry an instance
 /// ACL, and `may_read_instance` is the same predicate `expand` applies to the
 /// same bytes.
 ///
@@ -712,7 +722,7 @@ async fn event_push_allowed(
 /// * **No indexer.** A session-only gateway (`indexer = None`) has no page
 ///   corpus, so no ACL exists. `tool_open_session`'s layer guard reasons the
 ///   same way about the same deployment.
-/// * **The page is not an instance.** Only `type: instance` pages carry an
+/// * **The page is not an instance.** Only `kind: instance` pages carry an
 ///   instance ACL; skill pages are readable by any tenant member on the HTTP
 ///   path too, so refusing here would be stricter than `expand`, not safer.
 ///
@@ -749,7 +759,7 @@ async fn may_attach(state: &AppState, caller: &WsCaller, page_id: &str) -> bool 
         );
     }
     match indexer.expand(page_id, None, None).await {
-        Ok(Some(e)) if e.page.page_type == PageType::Instance => indexer
+        Ok(Some(e)) if e.page.page_kind == PageKind::Instance => indexer
             .may_read_instance(&caller.acl(), &e.page.skill, &e.frontmatter)
             .await
             .unwrap_or(false),

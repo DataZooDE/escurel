@@ -351,7 +351,7 @@ mod tests {
 
     fn deep_research_fm() -> Value {
         json!({
-            "type": "skill",
+            "kind": "skill",
             "id": "deep-research",
             "run_skill": "workflow-run",
             "harness": "claude",
@@ -460,7 +460,7 @@ mod tests {
     #[test]
     fn non_workflow_frontmatter_is_none() {
         assert_eq!(
-            WorkflowSkill::parse(&json!({ "type": "skill", "id": "customer" })),
+            WorkflowSkill::parse(&json!({ "kind": "skill", "id": "customer" })),
             None
         );
     }

@@ -1,5 +1,5 @@
 ---
-type: instance
+kind: instance
 skill: contact
 id: keller
 name: Frau Keller

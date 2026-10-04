@@ -35,17 +35,17 @@ fn write_corpus() -> TempDir {
 
     std::fs::write(
         p.join("skills/email.md"),
-        "---\ntype: skill\nid: email\ndescription: An email event.\nrequired_frontmatter:\n  - at\n---\n# email\n",
+        "---\nkind: skill\nid: email\ndescription: An email event.\nrequired_frontmatter:\n  - at\n---\n# email\n",
     )
     .unwrap();
     std::fs::write(
         p.join("skills/engagement.md"),
-        "---\ntype: skill\nid: engagement\ndescription: A delivery engagement.\n---\n# engagement\n",
+        "---\nkind: skill\nid: engagement\ndescription: A delivery engagement.\n---\n# engagement\n",
     )
     .unwrap();
     std::fs::write(
         p.join("instances/engagement__spine.md"),
-        "---\ntype: instance\nskill: engagement\nid: spine\nat: 2026-03-01T00:00:00Z\ncontract_value: \"620k\"\n---\n# Spine\n",
+        "---\nkind: instance\nskill: engagement\nid: spine\nat: 2026-03-01T00:00:00Z\ncontract_value: \"620k\"\n---\n# Spine\n",
     )
     .unwrap();
 
@@ -80,9 +80,9 @@ fn write_corpus() -> TempDir {
                 "page_id": SPINE,
                 "states": [
                     { "taken_at": "2026-03-10T00:00:00Z",
-                      "markdown": "---\ntype: instance\nskill: engagement\nid: spine\nat: 2026-03-01T00:00:00Z\ncontract_value: \"350k\"\n---\n# Spine\n" },
+                      "markdown": "---\nkind: instance\nskill: engagement\nid: spine\nat: 2026-03-01T00:00:00Z\ncontract_value: \"350k\"\n---\n# Spine\n" },
                     { "taken_at": "2026-05-10T00:00:00Z",
-                      "markdown": "---\ntype: instance\nskill: engagement\nid: spine\nat: 2026-03-01T00:00:00Z\ncontract_value: \"620k\"\n---\n# Spine\n" }
+                      "markdown": "---\nkind: instance\nskill: engagement\nid: spine\nat: 2026-03-01T00:00:00Z\ncontract_value: \"620k\"\n---\n# Spine\n" }
                 ]
             }
         ]))

@@ -148,7 +148,7 @@ async fn no_customer_bytes_land_in_the_catalog() {
     indexer
         .update_page(
             "markdown/skills/customer.md",
-            "---\ntype: skill\nid: customer\ndescription: a customer\n---\n# customer\n",
+            "---\nkind: skill\nid: customer\ndescription: a customer\n---\n# customer\n",
         )
         .await
         .unwrap();
@@ -156,7 +156,7 @@ async fn no_customer_bytes_land_in_the_catalog() {
         .update_page(
             "markdown/instances/customer/acme.md",
             &format!(
-                "---\ntype: instance\nskill: customer\nid: acme\n---\n# Acme\n\n{PAGE_SENTINEL}\n"
+                "---\nkind: instance\nskill: customer\nid: acme\n---\n# Acme\n\n{PAGE_SENTINEL}\n"
             ),
         )
         .await

@@ -63,7 +63,7 @@ fn fresh_harness() -> Harness {
 
 const PAGE: (&str, &str) = (
     "markdown/instances/note/alpha.md",
-    "---\ntype: instance\nskill: note\nid: alpha\n---\n# Alpha\n\nBody.\n",
+    "---\nkind: instance\nskill: note\nid: alpha\n---\n# Alpha\n\nBody.\n",
 );
 
 /// An empty corpus must not be allowed to erase a populated index.

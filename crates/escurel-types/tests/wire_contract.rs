@@ -22,7 +22,7 @@ fn search_hit_wire_shape() {
         "page_id": "instances/customer/acme",
         "slug": "acme",
         "skill": "customer",
-        "page_type": "instance",
+        "page_kind": "instance",
         "anchor": "overview",
         "snippet": "Acme is a customer",
         "score": 0.87,
@@ -31,7 +31,7 @@ fn search_hit_wire_shape() {
     });
     let hit: SearchHit = serde_json::from_value(wire.clone()).unwrap();
     assert_eq!(hit.page_id, "instances/customer/acme");
-    assert_eq!(hit.page_type, "instance");
+    assert_eq!(hit.page_kind, "instance");
     assert_eq!(hit.score, 0.87);
     // frontmatter_excerpt is a real JSON object, not a string
     assert_eq!(hit.frontmatter_excerpt["tier"], "gold");
@@ -57,7 +57,7 @@ fn expand_response_frontmatter_is_object() {
             "page_id": "instances/customer/acme",
             "slug": "acme",
             "skill": "customer",
-            "page_type": "instance"
+            "page_kind": "instance"
         },
         "frontmatter": { "tier": "gold", "at": "2026-01-01" },
         "body": "# Acme",
@@ -121,7 +121,7 @@ fn resolve_response_wire_shape() {
             "page_id": "instances/customer/acme",
             "slug": "acme",
             "skill": "customer",
-            "page_type": "instance"
+            "page_kind": "instance"
         },
         "exists": true
     });
@@ -165,6 +165,39 @@ fn instance_info_frontmatter_is_object() {
     assert_eq!(info.page_id, "instances/customer/acme");
     assert_eq!(info.frontmatter["tier"], "gold");
     assert_eq!(serde_json::to_value(&info).unwrap(), wire);
+}
+
+/// An `instances: rows` skill's list entry is a live ROW, not a stored page: it says so (`row: true`)
+/// and has no `at` timestamp. The typed client must keep that flag (a field it drops is one a
+/// consumer can never see), and an ordinary stored instance must not grow one.
+#[test]
+fn instance_info_row_flag_round_trips_and_is_absent_for_stored_pages() {
+    let row = json!({
+        "page_id": "markdown/instances/customer-order/order-4500131.md",
+        "skill": "customer-order",
+        "frontmatter": { "sales_doc": 4500131 },
+        "at": null,
+        "row": true
+    });
+    let info: InstanceInfo = serde_json::from_value(row.clone()).unwrap();
+    assert!(info.row, "the typed client keeps `row`");
+    assert_eq!(info.at, "");
+    let back = serde_json::to_value(&info).unwrap();
+    assert_eq!(back["row"], true, "{back}");
+
+    let stored = json!({
+        "page_id": "instances/customer/acme",
+        "skill": "customer",
+        "frontmatter": {},
+        "at": "2026-01-01"
+    });
+    let info: InstanceInfo = serde_json::from_value(stored.clone()).unwrap();
+    assert!(!info.row);
+    assert_eq!(
+        serde_json::to_value(&info).unwrap(),
+        stored,
+        "a stored page's wire shape is unchanged: no `row` key"
+    );
 }
 
 #[test]
@@ -284,6 +317,92 @@ fn skill_actions_are_peacock_style_objects_and_omitted_when_undeclared() {
 }
 
 #[test]
+fn skill_tree_vocabulary_round_trips_and_is_omitted_when_undeclared() {
+    // `folder` / `role` / `tags` / `title` / `resource` (OKF alignment): a skill that declares
+    // them carries them; one that declares none emits none (the rows of old skills stay as they were).
+    let wire = json!({
+        "id": "customer-order",
+        "description": "d",
+        "folder": "sales/orders",
+        "role": "record",
+        "tags": ["sap", "sd"],
+        "title": "Customer order",
+        "resource": "https://sap.example/vbak",
+    });
+    let skill: Skill = serde_json::from_value(wire.clone()).unwrap();
+    assert_eq!(skill.folder.as_deref(), Some("sales/orders"));
+    assert_eq!(skill.role.as_deref(), Some("record"));
+    assert_eq!(skill.tags, ["sap", "sd"]);
+    assert_eq!(skill.title.as_deref(), Some("Customer order"));
+    assert_eq!(skill.resource.as_deref(), Some("https://sap.example/vbak"));
+    let back = serde_json::to_value(&skill).unwrap();
+    for key in ["folder", "role", "tags", "title", "resource"] {
+        assert_eq!(back[key], wire[key], "{key}");
+    }
+    // A role a newer server adds still deserialises: it is a string, not an enum.
+    let newer: Skill =
+        serde_json::from_value(json!({ "id": "n", "description": "d", "role": "agent" })).unwrap();
+    assert_eq!(newer.role.as_deref(), Some("agent"));
+    let bare: Skill = serde_json::from_value(json!({ "id": "n", "description": "d" })).unwrap();
+    let bare = serde_json::to_value(&bare).unwrap();
+    for key in ["folder", "role", "tags", "title", "resource"] {
+        assert!(bare.get(key).is_none(), "{key} on a bare skill");
+    }
+}
+
+#[test]
+fn skill_okf_provenance_and_viewer_round_trip_and_are_omitted_when_undeclared() {
+    // `generated` / `verified` / `status` / `stale_after` / `sources` / `viewer`: carried as written
+    // (a stale client simply ignores them); a skill that declares none emits none.
+    let wire = json!({
+        "id": "analysis",
+        "description": "d",
+        "generated": "agent:supplier-risk",
+        "verified": "2026-09-30",
+        "status": "draft",
+        "stale_after": "P90D",
+        "sources": ["https://sap.example/doc", {"title": "SAP", "url": "https://sap.example"}],
+        "viewer": {"report": "supplier-risk-report", "param": "analysis"},
+    });
+    let skill: Skill = serde_json::from_value(wire.clone()).unwrap();
+    assert_eq!(skill.verified.as_deref(), Some("2026-09-30"));
+    assert_eq!(skill.stale_after.as_deref(), Some("P90D"));
+    assert_eq!(skill.sources.len(), 2);
+    assert_eq!(
+        skill.viewer.as_ref().unwrap().report,
+        "supplier-risk-report"
+    );
+    let back = serde_json::to_value(&skill).unwrap();
+    for key in [
+        "generated",
+        "verified",
+        "status",
+        "stale_after",
+        "sources",
+        "viewer",
+    ] {
+        assert_eq!(back[key], wire[key], "{key}");
+    }
+    // A viewer without a param still deserialises (the report decides).
+    let bare_viewer: Skill =
+        serde_json::from_value(json!({ "id": "n", "description": "d", "viewer": {"report": "r"} }))
+            .unwrap();
+    assert!(bare_viewer.viewer.unwrap().param.is_none());
+    let bare: Skill = serde_json::from_value(json!({ "id": "n", "description": "d" })).unwrap();
+    let bare = serde_json::to_value(&bare).unwrap();
+    for key in [
+        "generated",
+        "verified",
+        "status",
+        "stale_after",
+        "sources",
+        "viewer",
+    ] {
+        assert!(bare.get(key).is_none(), "{key} on a bare skill");
+    }
+}
+
+#[test]
 fn skill_layer_defaults_to_overlay_on_old_servers() {
     // An old server that doesn't emit `layer` must parse to the overlay
     // default — pre-layer skills are tenant-authored and editable.
@@ -319,16 +438,22 @@ fn event_provenance_is_value() {
 }
 
 #[test]
-fn list_events_label_selector_and_resume_cursor() {
+fn list_events_label_selector_and_end_of_page_cursor() {
     let req: ListEventsRequest =
         serde_json::from_value(json!({ "label_skill": "escurel:review" })).unwrap();
     assert_eq!(req.label_skill, "escurel:review");
+    // `next_cursor` is where the page ended (a tail resumes from it); `has_more` says rows follow.
+    // `resume_cursor` no longer exists: an old field is ignored, never read.
     let page: ListEventsResponse =
+        serde_json::from_value(json!({ "events": [], "next_cursor": "r", "has_more": true }))
+            .unwrap();
+    assert_eq!(page.next_cursor.as_deref(), Some("r"));
+    assert!(page.has_more);
+    let legacy: ListEventsResponse =
         serde_json::from_value(json!({ "events": [], "resume_cursor": "r" })).unwrap();
-    assert_eq!(page.resume_cursor.as_deref(), Some("r"));
-    assert!(page.next_cursor.is_none());
+    assert!(legacy.next_cursor.is_none() && !legacy.has_more);
     let inbox: ListInboxResponse = serde_json::from_value(json!({ "events": [] })).unwrap();
-    assert!(inbox.resume_cursor.is_none());
+    assert!(inbox.next_cursor.is_none() && !inbox.has_more);
 }
 
 #[test]
@@ -493,8 +618,8 @@ fn query_instance_response_rows_and_column_type() {
 }
 
 #[test]
-fn event_listings_carry_the_resume_cursor() {
-    // v2026.08.14 wire: next_cursor present iff rows lie past the page.
+fn event_listings_carry_the_end_of_page_cursor() {
+    // `next_cursor` = where the page ended (a tail resumes from it); `has_more` = rows follow.
     // The typed client DROPPED this field at first (found by the peacock
     // downstream audit) — this pin keeps the wrapper honest.
     let wire = json!({ "events": [], "next_cursor": "b64cursor" });
@@ -587,7 +712,7 @@ fn search_hit_tolerates_null_anchor() {
         "page_id": "markdown/instances/customers/eu.md",
         "slug": "eu",
         "skill": "customers",
-        "page_type": "instance",
+        "page_kind": "instance",
         "anchor": null,
         "snippet": "matched 2 rows",
         "score": 0.5,
@@ -616,7 +741,7 @@ fn roundtrip_core() {
         page_id: "p".into(),
         slug: "s".into(),
         skill: "sk".into(),
-        page_type: "instance".into(),
+        page_kind: "instance".into(),
         last_written_by: Some("agent:sk".into()),
     });
     // Absent on the wire (every non-`expand` PageRef) decodes to None and
@@ -700,6 +825,19 @@ fn roundtrip_agent() {
         head_version: None,
         head_sha256: None,
         head_content: None,
+        held_for_review: false,
+        draft: None,
+    });
+    rt(UpdatePageResponse {
+        ok: true,
+        held_for_review: true,
+        draft: Some(Draft {
+            draft_id: "d1".into(),
+            target_page_id: "markdown/instances/s/a.md".into(),
+            status: "open".into(),
+            ..Default::default()
+        }),
+        ..Default::default()
     });
     rt(ListSkillsResponse {
         skills: vec![Skill {
@@ -750,7 +888,7 @@ fn roundtrip_events() {
     });
     rt(ListInboxResponse {
         next_cursor: None,
-        resume_cursor: None,
+        has_more: false,
         events: vec![Event::default()],
     });
     rt(AssignEventResponse {
@@ -914,7 +1052,7 @@ fn expand_response_guard_fields_wire_shape() {
     let wire = json!({
         "page": {
             "page_id": "p", "slug": "s", "skill": "sk",
-            "page_type": "instance", "last_written_by": null,
+            "page_kind": "instance", "last_written_by": null,
         },
         "frontmatter": {},
         "body": "b",
@@ -922,13 +1060,13 @@ fn expand_response_guard_fields_wire_shape() {
         "wikilinks_out": [],
         "version": "v12",
         "content_sha256": "cd".repeat(32),
-        "content": "---\ntype: instance\n---\nb\n",
+        "content": "---\nkind: instance\n---\nb\n",
     });
     let resp: ExpandResponse = serde_json::from_value(wire).unwrap();
     assert_eq!(resp.version.as_deref(), Some("v12"));
     assert_eq!(
         resp.content.as_deref(),
-        Some("---\ntype: instance\n---\nb\n"),
+        Some("---\nkind: instance\n---\nb\n"),
         "the stored markdown rides as `content` when asked for (raw: true)"
     );
     assert_eq!(

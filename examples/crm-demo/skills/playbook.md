@@ -1,5 +1,5 @@
 ---
-type: skill
+kind: skill
 id: playbook
 description: Demo-specialised engagement playbook (shadows crm-essentials v1).
 required_frontmatter: [name]

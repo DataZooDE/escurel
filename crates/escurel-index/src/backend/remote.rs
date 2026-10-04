@@ -115,6 +115,52 @@ pub fn fill_template(template: &str, vars: &BTreeMap<String, String>) -> String 
     out
 }
 
+/// Percent-encode one value for use as (part of) a URL path segment: everything except the RFC 3986
+/// unreserved characters is encoded, so `/`, `?`, `#`, `%`, spaces and control characters can never
+/// change the shape of the path. A value made of dots (`.`, `..`, or containing `..`) has its dots
+/// encoded too, so it cannot become a dot-segment after the upstream decodes it.
+#[must_use]
+pub fn encode_segment(value: &str) -> String {
+    let encode_dots = value == "." || value.contains("..");
+    let mut out = String::with_capacity(value.len());
+    for b in value.bytes() {
+        let keep = b.is_ascii_alphanumeric()
+            || matches!(b, b'-' | b'_' | b'~')
+            || (b == b'.' && !encode_dots);
+        if keep {
+            out.push(b as char);
+        } else {
+            out.push_str(&format!("%{b:02X}"));
+        }
+    }
+    out
+}
+
+/// Does `path` contain a `.` or `..` segment, in ANY spelling? The URL parser a client uses treats
+/// `%2E%2E` / `%2e` exactly like `..` and collapses it, so an id of `..` would turn
+/// `/customers/{id}` into the PARENT resource and the endpoint's credentials would read it. A
+/// percent-encoded dot is not safe against that; only refusing the segment is.
+#[must_use]
+pub fn has_dot_segment(path: &str) -> bool {
+    path.split(['/', '\\']).any(|seg| {
+        let decoded = seg.replace("%2E", ".").replace("%2e", ".");
+        decoded == "." || decoded == ".."
+    })
+}
+
+/// [`fill_template`] for URL PATHS: every substituted value is percent-encoded with
+/// [`encode_segment`], so a caller-supplied value (an id, a payload field) is data, never path
+/// syntax. A placeholder with no value is left as written, for the caller's fail-closed
+/// unfilled-placeholder check.
+#[must_use]
+pub fn fill_path_template(template: &str, vars: &BTreeMap<String, String>) -> String {
+    let encoded: BTreeMap<String, String> = vars
+        .iter()
+        .map(|(k, v)| (k.clone(), encode_segment(v)))
+        .collect();
+    fill_template(template, &encoded)
+}
+
 /// Build the `{name}` template variables for a path / URI: the overlay instance
 /// id (`{id}`) plus every **scalar** leaf of the write `payload`, flattened to
 /// dotted keys (`{order_id}`, `{customer.tier}`). Reads pass `payload = None`,
@@ -286,6 +332,50 @@ pub fn unfilled_placeholders(filled: &str) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn path_values_are_percent_encoded_never_spliced() {
+        let mut vars = BTreeMap::new();
+        vars.insert("id".to_owned(), "acme".to_owned());
+        vars.insert("o".to_owned(), "../../admin/users?x=1#f".to_owned());
+        let out = fill_path_template("/customers/{id}/orders/{o}", &vars);
+        assert_eq!(
+            out,
+            "/customers/acme/orders/%2E%2E%2F%2E%2E%2Fadmin%2Fusers%3Fx%3D1%23f"
+        );
+        assert!(!out.contains("/admin"), "{out}");
+        assert!(!out.contains('?') && !out.contains('#'), "{out}");
+    }
+
+    #[test]
+    fn a_dot_segment_value_is_neutralised() {
+        let mut vars = BTreeMap::new();
+        vars.insert("id".to_owned(), "..".to_owned());
+        assert_eq!(fill_path_template("/c/{id}", &vars), "/c/%2E%2E");
+        assert!(
+            has_dot_segment("/c/%2E%2E"),
+            "an encoded dot-dot is still a dot segment"
+        );
+        vars.insert("id".to_owned(), ".".to_owned());
+        assert_eq!(fill_path_template("/c/{id}", &vars), "/c/%2E");
+    }
+
+    #[test]
+    fn plain_slugs_and_unicode_survive_encoding() {
+        let mut vars = BTreeMap::new();
+        vars.insert("id".to_owned(), "order-4500123_v2.1".to_owned());
+        vars.insert("n".to_owned(), "Müller".to_owned());
+        assert_eq!(
+            fill_path_template("/o/{id}/{n}", &vars),
+            "/o/order-4500123_v2.1/M%C3%BCller"
+        );
+    }
+
+    #[test]
+    fn unresolved_placeholders_are_left_for_the_fail_closed_check() {
+        let vars = BTreeMap::new();
+        assert_eq!(fill_path_template("/o/{id}", &vars), "/o/{id}");
+    }
+
     use super::*;
     use serde_json::json;
 

@@ -17,7 +17,7 @@ const A1: &str = "markdown/instances/pub_node/a1.md";
 const C1: &str = "markdown/instances/pub_node/c1.md";
 
 fn skill(id: &str, extra: &str) -> String {
-    format!("---\ntype: skill\nid: {id}\ndescription: {id}.\n{extra}---\n# {id}\n")
+    format!("---\nkind: skill\nid: {id}\ndescription: {id}.\n{extra}---\n# {id}\n")
 }
 
 /// The provenance_path chain fixture: a1 → b1 → c1 over `derived_from`.
@@ -29,19 +29,19 @@ fn fixtures() -> FixtureBuilder {
         .instance(
             "pub_node",
             "a1",
-            "---\ntype: instance\nskill: pub_node\nid: a1\n\
+            "---\nkind: instance\nskill: pub_node\nid: a1\n\
              derived_from: \"[[mid::b1]]\"\n---\n# a1\n",
         )
         .instance(
             "mid",
             "b1",
-            "---\ntype: instance\nskill: mid\nid: b1\n\
+            "---\nkind: instance\nskill: mid\nid: b1\n\
              derived_from: \"[[pub_node::c1]]\"\n---\n# b1\n",
         )
         .instance(
             "pub_node",
             "c1",
-            "---\ntype: instance\nskill: pub_node\nid: c1\n---\n# c1\n",
+            "---\nkind: instance\nskill: pub_node\nid: c1\n---\n# c1\n",
         )
         .done()
 }
@@ -120,8 +120,10 @@ async fn the_retired_tools_are_gone_from_the_surface() {
         json!({ "query_id": "x" }),
     )
     .await;
+    // A refusal either way: a protocol error, or (since read tools answer domain mistakes as
+    // `isError` + `issues[]`) a worded refusal. What it must never be is a silent success.
     assert!(
-        out.get("error").is_some(),
+        out.get("error").is_some() || out["result"]["isError"] == json!(true),
         "calling the retired tool must refuse: {out}"
     );
 }

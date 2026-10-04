@@ -13,6 +13,11 @@
 # via ESCUREL_EMBEDDING_PROVIDER, but `embeddinggemma` needs its own feature
 # build + a baked model, so it is intentionally not compiled in here.
 
+# The DuckDB release the image bakes extensions for. It must be the one libduckdb-sys links (Cargo.lock):
+# extensions resolve under <version>/<platform>, so a mismatch is a silent 137 MB download at boot, or an
+# extension that refuses to load. The builder stage asserts the two agree.
+ARG DUCKDB_VERSION=v1.5.5
+
 # ---- builder -------------------------------------------------------------
 # Pinned to the workspace toolchain (rust-toolchain.toml: 1.91.0).
 # libduckdb-sys downloads the precompiled libduckdb release instead of
@@ -23,6 +28,14 @@
 FROM rust:1.91-bookworm AS builder
 WORKDIR /build
 COPY . .
+# Fail the build, not the pod, when the pinned DuckDB release drifts from the linked one.
+# libduckdb-sys 1.<MMPP>.x is DuckDB 1.<MM>.<PP> (1.10505.0 -> v1.5.5).
+ARG DUCKDB_VERSION
+RUN set -eu; \
+    n="$(grep -A1 '^name = "libduckdb-sys"$' Cargo.lock | sed -n 's/^version = "1\.\([0-9]*\)\..*/\1/p' | head -n1)"; \
+    [ -n "$n" ] || { echo "libduckdb-sys not found in Cargo.lock"; exit 1; }; \
+    want="v1.$((n / 100 % 100)).$((n % 100))"; \
+    [ "$want" = "${DUCKDB_VERSION}" ] || { echo "DUCKDB_VERSION=${DUCKDB_VERSION} but Cargo.lock links libduckdb-sys for DuckDB ${want}: bump the ARG (the baked extensions would not match)"; exit 1; }
 # Serialise codegen/link: linking the release binary against libduckdb is
 # memory-hungry and OOMs a default-parallelism release+LTO build on a 7 GB CI
 # runner (the CI workflow caps this the same way). Release profile already
@@ -48,7 +61,9 @@ ENV CARGO_BUILD_JOBS=1
 RUN --mount=type=cache,target=/build/target \
     --mount=type=cache,target=/usr/local/cargo/registry \
     cargo build --release -p escurel-server --features gemini,s3,gcs,duckvfs \
+    && cargo build --release -p escurel-cli \
     && cp target/release/escurel-server /usr/local/bin/escurel-server \
+    && cp target/release/escurel /usr/local/bin/escurel \
     && cp "$(find target -name libduckdb.so -print -quit)" /usr/local/lib/libduckdb.so
 
 # ---- extension cache ------------------------------------------------------
@@ -66,12 +81,15 @@ RUN --mount=type=cache,target=/build/target \
 # extensions under <version>/<platform>, so a mismatch silently downloads
 # again at runtime. Both are asserted below rather than assumed.
 FROM debian:bookworm-slim AS extensions
-ARG DUCKDB_VERSION=v1.5.5
+ARG DUCKDB_VERSION
 # gdrive from the erpl.io mirror, NOT `community`: workload identity federation
 # only exists in v2026.09.01 and the community repository still serves
 # v2026.08.07, whose credential_chain refuses external_account outright. Swap
 # once duckdb/community-extensions#2588 is merged and built.
-ARG GDRIVE_REPO=http://get.erpl.io
+ARG GDRIVE_REPO=https://get.erpl.io
+# Optional integrity pin for the (unsigned, moving) mirror artifact: when set, the build fails unless the
+# gz served at <repo>/<duckdb version>/linux_amd64/gdrive.duckdb_extension.gz has this sha256.
+ARG GDRIVE_SHA256=
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates curl unzip \
     && rm -rf /var/lib/apt/lists/*
@@ -81,16 +99,21 @@ RUN curl -sSfL "https://github.com/duckdb/duckdb/releases/download/${DUCKDB_VERS
  && chmod +x /usr/local/bin/duckdb \
  && rm /tmp/duckdb.zip
 ENV HOME=/opt/escurel
+RUN if [ -n "${GDRIVE_SHA256}" ]; then \
+      echo "${GDRIVE_SHA256}  -" > /tmp/gdrive.sha256 \
+      && curl -sSfL "${GDRIVE_REPO}/${DUCKDB_VERSION}/linux_amd64/gdrive.duckdb_extension.gz" | sha256sum -c /tmp/gdrive.sha256; \
+    fi
 RUN mkdir -p /opt/escurel \
- && duckdb -unsigned -c "INSTALL ducklake; INSTALL postgres; INSTALL httpfs; INSTALL fts; INSTALL vss; INSTALL gdrive FROM '${GDRIVE_REPO}';"
+ && duckdb -unsigned -c "INSTALL ducklake; INSTALL postgres; INSTALL sqlite; INSTALL mysql; INSTALL httpfs; INSTALL fts; INSTALL vss; INSTALL gdrive FROM '${GDRIVE_REPO}';"
 # Fail the BUILD, not the pod, if anything did not land where DuckDB looks for
 # it. A missing extension here is a silent 137MB download at boot.
 RUN set -eu; \
     d="/opt/escurel/.duckdb/extensions/${DUCKDB_VERSION}/linux_amd64"; \
+    # sqlite_scanner / mysql_scanner (SQL rows connectors, `docs/spec` backends) are baked for the same reason.
     # postgres_scanner, not postgres: `INSTALL postgres` is an ALIAS and the
     # artifact it lands is postgres_scanner.duckdb_extension. Checking the
-    # alias name failed the build while all six were present.
-    for e in ducklake postgres_scanner httpfs fts vss gdrive; do \
+    # alias name failed the build while all six were present (now eight).
+    for e in ducklake postgres_scanner sqlite_scanner mysql_scanner httpfs fts vss gdrive; do \
       test -s "$d/$e.duckdb_extension" || { echo "MISSING: $e in $d"; ls -la "$d" || true; exit 1; }; \
     done; \
     echo "baked $(ls "$d"/*.duckdb_extension | wc -l) extensions, $(du -sh /opt/escurel/.duckdb | cut -f1)"
@@ -103,6 +126,12 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates curl libstdc++6 \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=builder /usr/local/bin/escurel-server /usr/local/bin/escurel-server
+# The operator CLI (6.7 MiB), so a breaking-release migration runs where the data is, with no admin API
+# exposed: `docker exec <c> escurel --server http://127.0.0.1:8080 admin migrate-kind --tenant <t>`
+# (docs/deploy/kind-migration.md). It is a pure HTTP client of the server above.
+COPY --from=builder /usr/local/bin/escurel /usr/local/bin/escurel
+# The one-shot migration job (exits non-zero unless the tenant ends migrated and un-quarantined).
+COPY --from=builder /build/scripts/migrate-kind-job.sh /usr/local/bin/migrate-kind-job
 # The dynamically-linked libduckdb.so (see the builder note). Land it in a
 # standard search dir and refresh the loader cache so the binary — which has
 # no rpath — finds it at startup.
@@ -114,6 +143,13 @@ RUN ldconfig
 # DuckDB looks: pointing it anywhere else silently reverts to downloading.
 COPY --from=extensions --chown=65532:65532 /opt/escurel/.duckdb /opt/escurel/.duckdb
 ENV HOME=/opt/escurel
+
+# Run as the uid the substrate chart already uses (securityContext.runAsUser 65532), NOT root, so a
+# plain `docker run` is as unprivileged as the cluster. /data is created and owned by that uid BEFORE
+# the VOLUME line, so a fresh (anonymous or empty named) volume mounted there is writable; a bind
+# mount or PersistentVolume must be owned by 65532 (the chart's fsGroup does this).
+RUN mkdir -p /data && chown 65532:65532 /data
+USER 65532:65532
 
 # Kamal (the substrate's deployer) asserts at deploy that the image carries a
 # `service` label exactly matching the Kamal service name, else it refuses to

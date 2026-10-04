@@ -32,18 +32,18 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
 const TENANT: &str = "stuttgart-ai";
-const NOTE_SKILL: &str = "---\ntype: skill\nid: note\ndescription: A note.\n\
+const NOTE_SKILL: &str = "---\nkind: skill\nid: note\ndescription: A note.\n\
     visibility: public\n---\n# note\n";
 const PAGE: &str = "markdown/instances/note/plan.md";
 
 /// The base the draft is taken against: two independent frontmatter keys, so
 /// "a different key moved" is expressible.
-const BASE: &str = "---\ntype: instance\nskill: note\nid: plan\n\
+const BASE: &str = "---\nkind: instance\nskill: note\nid: plan\n\
     owner: mara\nstatus: open\n---\n# Plan\nv1 body.\n";
 
 fn note(owner: &str, status: &str, body: &str) -> String {
     format!(
-        "---\ntype: instance\nskill: note\nid: plan\n\
+        "---\nkind: instance\nskill: note\nid: plan\n\
          owner: {owner}\nstatus: {status}\n---\n# Plan\n{body}\n"
     )
 }
@@ -252,7 +252,7 @@ async fn an_auto_merged_artifact_cannot_launder_a_curator_marker() {
         "update_page",
         json!({
             "page_id": PAGE,
-            "content": "---\ntype: instance\nskill: note\nid: plan\n\
+            "content": "---\nkind: instance\nskill: note\nid: plan\n\
                         owner: mara\nstatus: open\npromotable: true\n---\n# Plan\nv1 body.\n",
         }),
     )

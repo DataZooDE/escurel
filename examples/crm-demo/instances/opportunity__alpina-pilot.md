@@ -1,5 +1,5 @@
 ---
-type: instance
+kind: instance
 skill: opportunity
 id: alpina-pilot
 opened: 2026-05-20

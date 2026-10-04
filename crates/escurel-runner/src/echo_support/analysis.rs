@@ -186,7 +186,7 @@ pub fn build_analysis(
     };
 
     let mut fm = format!(
-        "---\ntype: instance\nskill: supplier-risk-analysis\nid: {id}\nsupplier: \"[[supplier::{}]]\"\nvendor: {}\n",
+        "---\nkind: instance\nskill: supplier-risk-analysis\nid: {id}\nsupplier: \"[[supplier::{}]]\"\nvendor: {}\n",
         supplier.id, supplier.vendor
     );
     if let Some(m) = &signal.material {
@@ -391,7 +391,7 @@ mod tests {
             "markdown/instances/supplier-risk-analysis__meier-guss-2026-10-03.md"
         );
         assert!(b.content.starts_with(
-            "---\ntype: instance\nskill: supplier-risk-analysis\nid: meier-guss-2026-10-03\n"
+            "---\nkind: instance\nskill: supplier-risk-analysis\nid: meier-guss-2026-10-03\n"
         ));
     }
 

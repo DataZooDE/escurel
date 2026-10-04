@@ -1,6 +1,10 @@
 ---
-type: skill
+kind: skill
 id: customer-notice
+title: Customer notice
+folder: purchasing/follow-ups
+role: process
+tags: [follow-up]
 description: A notice to the customers of the orders an analysis puts at risk (delivery date at risk, new date, apology).
 autonomy: review
 ---

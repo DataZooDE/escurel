@@ -11,13 +11,14 @@ import type { EscurelApi } from '../../../src/extension';
 import type { RunView } from '../../../src/shared/protocol';
 import type { LoadedThread } from '../../../src/thread/loadThread';
 import { activate, discardOpenDrafts, freeOrder, until } from './support';
+import { requireEnv } from '../requireEnv';
 
 suite('a real cascade', () => {
   let api: EscurelApi;
 
   suiteSetup(async function () {
     this.timeout(120_000);
-    if (!process.env.ESCUREL_TEST_RUNNER) this.skip();
+    requireEnv(this, 'ESCUREL_TEST_RUNNER');
     api = await activate();
   });
 

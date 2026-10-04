@@ -14,8 +14,8 @@ use tempfile::TempDir;
 use tokio::sync::Mutex;
 
 const TENANT: &str = "acme";
-const CUSTOMER: &str = "---\ntype: skill\nid: customer\ndescription: x\n---\n# customer\n";
-const C1: &str = "---\ntype: instance\nskill: customer\nid: c1\n---\n# Acme\n\nv0 body.\n";
+const CUSTOMER: &str = "---\nkind: skill\nid: customer\ndescription: x\n---\n# customer\n";
+const C1: &str = "---\nkind: instance\nskill: customer\nid: c1\n---\n# Acme\n\nv0 body.\n";
 
 struct Harness {
     process: EscurelProcess,
@@ -73,7 +73,7 @@ fn structured(env: &Value) -> Value {
 const C1_PAGE: &str = "markdown/instances/customer/c1.md";
 
 fn body(v: &str) -> String {
-    format!("---\ntype: instance\nskill: customer\nid: c1\n---\n# Acme\n\n{v}\n")
+    format!("---\nkind: instance\nskill: customer\nid: c1\n---\n# Acme\n\n{v}\n")
 }
 
 #[tokio::test]
@@ -220,7 +220,7 @@ async fn simultaneous_stale_writes_serialize_under_the_gate() {
                     "params": { "name": "update_page", "arguments": {
                         "page_id": C1_PAGE,
                         "content": format!(
-                            "---\ntype: instance\nskill: customer\nid: c1\n---\n# Acme\n\nwriter {i} body.\n"
+                            "---\nkind: instance\nskill: customer\nid: c1\n---\n# Acme\n\nwriter {i} body.\n"
                         ),
                         "base_version": base,
                     } } }))

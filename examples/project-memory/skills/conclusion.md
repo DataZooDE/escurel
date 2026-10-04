@@ -1,5 +1,5 @@
 ---
-type: skill
+kind: skill
 id: conclusion
 description: The durable takeaway that closes a project — what was learned, the evidence, what was decided, and what is reusable. A first-class node later work links via `builds_on`; a parent conclusion `synthesizes` its sub-conclusions.
 required_frontmatter: [at, concludes, statement]

@@ -12,7 +12,7 @@ EscurelClient _buildCorpus() {
   return FixtureEscurelClient.fromSources(
     skillFiles: const {
       'customer.md': '''---
-type: skill
+kind: skill
 id: customer
 description: A buying organisation.
 ---
@@ -22,7 +22,7 @@ description: A buying organisation.
     },
     instanceFiles: const {
       'customer__acme.md': '''---
-type: instance
+kind: instance
 skill: customer
 id: acme
 name: Acme Ltd

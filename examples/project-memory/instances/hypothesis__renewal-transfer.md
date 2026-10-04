@@ -1,5 +1,5 @@
 ---
-type: instance
+kind: instance
 skill: hypothesis
 id: renewal-transfer
 at: 2026-05-01T00:00:00Z

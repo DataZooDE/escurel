@@ -19,7 +19,7 @@ const TENANT: &str = "acme";
 
 const SKILL_CUSTOMERS: &str = "\
 ---
-type: skill
+kind: skill
 id: customers
 description: EU customers, mirrored read-only.
 backend:
@@ -32,7 +32,7 @@ backend:
 
 const SKILL_QUERY: &str = "\
 ---
-type: skill
+kind: skill
 id: query
 description: Reusable parameterised reads.
 ---
@@ -43,7 +43,7 @@ description: Reusable parameterised reads.
 /// and `{{target}}` resolves to the managed view identifier.
 const QUERY_BY_NAME: &str = "\
 ---
-type: instance
+kind: instance
 skill: query
 id: customers-by-name
 target: \"[[customers::eu]]\"

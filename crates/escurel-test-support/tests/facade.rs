@@ -13,14 +13,14 @@ use escurel_client::{ListSkillsRequest, ResolveRequest, SearchRequest};
 use escurel_test_support::{AuthMode, EscurelProcess, FixtureBuilder, Opts, Role};
 
 const CUSTOMER_SKILL: &str = "---\n\
-type: skill\n\
+kind: skill\n\
 id: customer\n\
 description: A buying organisation.\n\
 ---\n\
 # customer\n";
 
 const ACME_INSTANCE: &str = "---\n\
-type: instance\n\
+kind: instance\n\
 skill: customer\n\
 id: acme\n\
 ---\n\

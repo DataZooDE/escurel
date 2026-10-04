@@ -38,7 +38,7 @@ const CHUNK_BODY: &str = "Wind speeds were measured across three coastal station
 
 const MEMO_SKILL: &str = "\
 ---
-type: skill
+kind: skill
 id: memo
 description: text memos
 backend:

@@ -26,7 +26,7 @@ describe('<escurel-thread-inspector>', () => {
     const run = view.nodes.find((node) => node.kind === 'run')!;
     const el = await render(details[run.id]);
     expect(el.shadowRoot!.querySelector('h2')?.textContent).to.equal(run.title);
-    expect(el.shadowRoot!.querySelector('dl')?.textContent).to.contain('echo');
+    expect(el.shadowRoot!.querySelector('details.tech')?.textContent).to.contain('echo');
     expect(el.shadowRoot!.querySelector('.body')?.textContent).to.contain('awaiting a human');
     expect(el.shadowRoot!.querySelector('.side')?.textContent).to.contain('Timing');
   });
@@ -35,7 +35,7 @@ describe('<escurel-thread-inspector>', () => {
     const changeset = view.nodes.find((node) => node.kind === 'changeset')!;
     const el = await render(details[changeset.id]);
     const toned = el.shadowRoot!.querySelector('.tone-ok');
-    expect(toned?.textContent).to.equal('promoted');
+    expect(toned?.textContent).to.equal('Applied');
   });
 
   it('renders nothing without detail', async () => {
@@ -300,5 +300,102 @@ describe('<escurel-thread-inspector>', () => {
       n.getAttribute('role'),
     );
     expect(roles.every((r) => r === 'group')).to.equal(true);
+  });
+
+  describe('what a person reads first', () => {
+    const detail: InspectorView = {
+      title: 'supplier-risk',
+      kindLabel: 'Agent run',
+      summary: 'The agent finished in 6 s.',
+      rows: [
+        { k: 'state', v: 'processed' },
+        {
+          k: 'trace_id',
+          v: '01a0eb194a26f1510f9b86c9f8a6cd96aabbccddeeff00112233445566778899',
+          tech: true,
+        },
+        { k: 'harness', v: 'echo', tech: true },
+      ],
+      sideTitle: 'Timing',
+      side: [{ k: 'duration', v: '6 s' }],
+    };
+
+    it('opens with the kind, the title and ONE sentence, before any field', async () => {
+      const el = await render(detail, 'run-1');
+      const root = el.shadowRoot!;
+      expect(root.querySelector('.kind')?.textContent?.trim()).to.equal('Agent run');
+      expect(root.querySelector('h2')?.textContent?.trim()).to.equal('supplier-risk');
+      const summary = root.querySelector('.summary') as HTMLElement;
+      expect(summary.textContent).to.contain('The agent finished in 6 s.');
+      const order = (a: Element, b: Element) =>
+        !!(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING);
+      expect(order(summary, root.querySelector('dl')!)).to.equal(true);
+    });
+
+    it('a node that needs the person says so in words, not only in colour', async () => {
+      const el = await render(
+        { ...detail, needsYou: true, summary: '2 changes are waiting for your review.' },
+        'cs',
+      );
+      const badge = el.shadowRoot!.querySelector('.summary .needs');
+      expect(badge?.textContent?.trim()).to.equal('Needs you');
+    });
+
+    it('keeps engineer fields (trace id, harness) under a collapsed Technical details', async () => {
+      const el = await render(detail, 'run-1');
+      const tech = el.shadowRoot!.querySelector('details.tech') as HTMLDetailsElement;
+      expect(tech.open).to.equal(false);
+      expect(tech.querySelector('summary')?.textContent?.trim()).to.equal('Technical details');
+      const keys = Array.from(tech.querySelectorAll('dt')).map((n) => n.textContent?.trim());
+      expect(keys).to.deep.equal(['trace_id', 'harness']);
+      // The plain fields stay out of it.
+      const plain = Array.from(el.shadowRoot!.querySelectorAll('.cols dt')).map((n) =>
+        n.textContent?.trim(),
+      );
+      expect(plain).to.include('state');
+      expect(plain).to.not.include('trace_id');
+    });
+
+    it('cuts the middle of a long id, keeps the whole value in the tooltip, and offers Copy', async () => {
+      const el = await render(detail, 'run-1');
+      const dd = el.shadowRoot!.querySelector('details.tech dd') as HTMLElement;
+      const text = dd.querySelector('.id')!.textContent!.trim();
+      expect(text.length < 40).to.equal(true);
+      expect(text).to.contain('…');
+      expect(dd.querySelector('.id')!.getAttribute('title')).to.contain('01a0eb194a26f151');
+      const copy = dd.querySelector('button.copy') as HTMLButtonElement;
+      expect(copy.getAttribute('aria-label')).to.equal('Copy trace_id');
+    });
+  });
+});
+
+describe('cancelling from the Details panel asks first, inline', () => {
+  it('shows the question and posts nothing until it is confirmed', async () => {
+    const el = await fixture<EscurelThreadInspector>(
+      html`<escurel-thread-inspector
+        .detail=${
+          {
+            title: 'supplier-risk',
+            rows: [],
+            side: [],
+            sideTitle: '',
+            actions: {
+              controls: [{ action: 'cancel', label: 'Cancel run', enabled: true }],
+              skill: 's',
+            },
+          } as InspectorView
+        }
+        .nodeId=${'run-1'}
+      ></escurel-thread-inspector>`,
+    );
+    await el.updateComplete;
+    const sent: unknown[] = [];
+    el.addEventListener('escurel-message', (e) => sent.push((e as CustomEvent).detail));
+    (el.shadowRoot!.querySelector('.control-button') as HTMLButtonElement).click();
+    await el.updateComplete;
+    expect(el.shadowRoot!.querySelector('.confirm')!.textContent).to.contain('Cancel this run?');
+    expect(sent).to.deep.equal([]);
+    (el.shadowRoot!.querySelector('.confirm-yes') as HTMLButtonElement).click();
+    expect(sent).to.deep.equal([{ type: 'run-control', action: 'cancel', runId: 'run-1' }]);
   });
 });

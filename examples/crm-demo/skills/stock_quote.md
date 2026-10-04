@@ -1,5 +1,5 @@
 ---
-type: skill
+kind: skill
 id: stock_quote
 description: Live market quote for a listed customer/peer, proxied read-only through an openapi backend against the Yahoo Finance chart API. The instance id is the ticker symbol.
 backend:

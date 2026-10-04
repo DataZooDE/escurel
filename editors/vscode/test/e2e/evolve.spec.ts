@@ -41,7 +41,7 @@ test('echo plan is refused and a synthetic non-echo plan approves the exact revi
   const id = `v2-visible-approval-${Date.now()}`;
   const pageId = `markdown/instances/evolve_problem/${id}.md`;
   const spec = syntheticSpec;
-  const content = `---\ntype: instance\nskill: evolve_problem\nid: ${id}\nowner_subject: alice\npilot: p1_decision\nsearch_request: ${JSON.stringify(spec)}\n---\n# Visible approval review\n`;
+  const content = `---\nkind: instance\nskill: evolve_problem\nid: ${id}\nowner_subject: alice\npilot: p1_decision\nsearch_request: ${JSON.stringify(spec)}\n---\n# Visible approval review\n`;
   const written = await stack.call('update_page', {
     page_id: pageId, content, base_sha256: '',
   });

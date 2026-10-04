@@ -1,5 +1,5 @@
 ---
-type: skill
+kind: skill
 id: workstream
 description: A parallel stream of delivery work inside a project or engagement — the unit a delivery team actually plans and tracks against.
 required_frontmatter: [name, status, project]

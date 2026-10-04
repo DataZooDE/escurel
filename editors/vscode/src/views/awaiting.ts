@@ -1,9 +1,11 @@
 import { errorRowSpec } from './errorRow';
 import * as vscode from 'vscode';
 import type { EscurelClient } from '../client';
-import { describeError } from '../errors';
+import { connectionStateOf, describeError } from '../errors';
 import { log } from '../log';
-import { accessibleLabel, buildAwaitingRows, type AwaitingRow } from './awaitingModel';
+import { loadPlanInputs } from './planInputs';
+import { buildAwaitingRows, type AwaitingRow } from './awaitingModel';
+import { awaitingDisplay } from './awaitingDisplay';
 
 export interface ErrorRow {
   kind: 'error';
@@ -45,12 +47,13 @@ export class AwaitingTree implements vscode.TreeDataProvider<Node> {
   }
 
   getTreeItem(n: Node): vscode.TreeItem {
+    const shown = n.kind === 'error' ? undefined : awaitingDisplay(n, Date.now());
     switch (n.kind) {
       case 'changeset': {
-        const item = new vscode.TreeItem(n.label, vscode.TreeItemCollapsibleState.None);
-        item.description = n.description;
-        item.tooltip = `Changeset ${n.changeset.changeset_id}: ${n.description}`;
-        item.accessibilityInformation = { label: accessibleLabel(n) };
+        const item = new vscode.TreeItem(shown!.label, vscode.TreeItemCollapsibleState.None);
+        item.description = shown!.description;
+        item.tooltip = `${shown!.kind}\n${n.label} · ${shown!.description}`;
+        item.accessibilityInformation = { label: `${shown!.label}. ${shown!.description}` };
         item.iconPath = new vscode.ThemeIcon(
           'git-pull-request',
           new vscode.ThemeColor('charts.orange'),
@@ -64,10 +67,10 @@ export class AwaitingTree implements vscode.TreeDataProvider<Node> {
         return item;
       }
       case 'draft': {
-        const item = new vscode.TreeItem(n.label, vscode.TreeItemCollapsibleState.None);
-        item.description = n.description;
-        item.tooltip = `Draft on ${n.label} by ${n.description}`;
-        item.accessibilityInformation = { label: accessibleLabel(n) };
+        const item = new vscode.TreeItem(shown!.label, vscode.TreeItemCollapsibleState.None);
+        item.description = shown!.description;
+        item.tooltip = `${shown!.kind}\n${n.label} · ${shown!.description}`;
+        item.accessibilityInformation = { label: `${shown!.label}. ${shown!.description}` };
         item.iconPath = new vscode.ThemeIcon('edit', new vscode.ThemeColor('charts.orange'));
         item.contextValue = 'awaiting.draft';
         item.command = {
@@ -78,16 +81,31 @@ export class AwaitingTree implements vscode.TreeDataProvider<Node> {
         return item;
       }
       case 'confirm_gate': {
-        const item = new vscode.TreeItem(n.label, vscode.TreeItemCollapsibleState.None);
-        item.description = n.description;
-        item.tooltip = `Confirm gate: ${n.label} (${n.description})`;
-        item.accessibilityInformation = { label: accessibleLabel(n) };
+        const item = new vscode.TreeItem(shown!.label, vscode.TreeItemCollapsibleState.None);
+        item.description = shown!.description;
+        item.tooltip = `${shown!.kind}\n${n.label} · ${shown!.description}`;
+        item.accessibilityInformation = { label: `${shown!.label}. ${shown!.description}` };
         item.iconPath = new vscode.ThemeIcon('bell', new vscode.ThemeColor('charts.orange'));
         item.contextValue = 'awaiting.confirm_gate';
         item.command = {
           command: 'escurel.openReview',
           title: 'Open Review',
           arguments: [n],
+        };
+        return item;
+      }
+      case 'plan': {
+        const item = new vscode.TreeItem(shown!.label, vscode.TreeItemCollapsibleState.None);
+        item.description = shown!.description;
+        item.tooltip = `${shown!.kind}.`;
+        item.accessibilityInformation = { label: `${shown!.label}. ${shown!.description}` };
+        item.iconPath = new vscode.ThemeIcon('checklist', new vscode.ThemeColor('charts.orange'));
+        item.contextValue = 'awaiting.plan';
+        item.command = {
+          // Opening is safe; approving is the inline button, and asks for confirmation.
+          command: 'escurel.openRun',
+          title: 'Open run',
+          arguments: [{ runId: n.runId }],
         };
         return item;
       }
@@ -106,14 +124,24 @@ export class AwaitingTree implements vscode.TreeDataProvider<Node> {
   async getChildren(n?: Node): Promise<Node[]> {
     try {
       if (!n) {
-        const [changesets, drafts, inboxPage, skills] = await Promise.all([
+        const [changesets, drafts, inboxPage, skills, plans] = await Promise.all([
           this.client().listChangesets(),
           this.client().listDrafts(),
           this.client().listInbox(),
           this.client().listSkills(),
+          // Plans waiting for approval; a failure here must not empty the whole queue.
+          loadPlanInputs(this.client()),
         ]);
         await vscode.commands.executeCommand('setContext', 'escurel.connected', true);
-        const rows = buildAwaitingRows({ changesets, drafts, events: inboxPage.events, skills });
+        await vscode.commands.executeCommand('setContext', 'escurel.connectionState', 'ok');
+        const rows = buildAwaitingRows({
+          changesets,
+          drafts,
+          events: inboxPage.events,
+          skills,
+          runEvents: plans.runEvents,
+          userEvents: plans.userEvents,
+        });
         if (this.treeView) {
           this.treeView.badge =
             rows.length > 0
@@ -128,7 +156,14 @@ export class AwaitingTree implements vscode.TreeDataProvider<Node> {
       if (this.treeView) {
         this.treeView.badge = undefined;
       }
-      if (!n) await vscode.commands.executeCommand('setContext', 'escurel.connected', false);
+      if (!n) {
+        await vscode.commands.executeCommand('setContext', 'escurel.connected', false);
+        await vscode.commands.executeCommand(
+          'setContext',
+          'escurel.connectionState',
+          connectionStateOf(e),
+        );
+      }
       return [{ kind: 'error', message: describeError(e) }];
     }
   }

@@ -28,6 +28,7 @@
 mod admin;
 mod agent;
 mod convert;
+mod kindfix;
 mod output;
 mod workflow;
 
@@ -144,8 +145,16 @@ async fn run(cli: Cli) -> Result<()> {
         Command::Admin(admin::AdminCmd::Pack(admin::PackCmd::Verify { input, manifest })) => {
             admin::verify_pack_local(&input, manifest)?
         }
+        // `migrate-kind-files` is purely LOCAL too (a file tree, no gateway).
+        Command::Admin(admin::AdminCmd::MigrateKindFiles(args)) => kindfix::run(args)?,
         Command::Admin(cmd) => {
-            let client = AdminClient::connect(&cli.server, token).await?;
+            let mut client = AdminClient::connect(&cli.server, token).await?;
+            // `migrate-kind` can legitimately run for minutes on a big tenant: no default total
+            // deadline (the 60 s default cut an 8,000-page migration mid-way); `--timeout-secs`
+            // opts back in.
+            if let admin::AdminCmd::MigrateKind { timeout_secs, .. } = &cmd {
+                client = client.with_timeout(timeout_secs.map(std::time::Duration::from_secs));
+            }
             admin::run(&client, cmd).await?
         }
         Command::Workflow(cmd) => {

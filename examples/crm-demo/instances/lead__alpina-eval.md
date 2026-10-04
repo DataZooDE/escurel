@@ -1,5 +1,5 @@
 ---
-type: instance
+kind: instance
 skill: lead
 id: alpina-eval
 opened: 2026-05-14

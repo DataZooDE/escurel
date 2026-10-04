@@ -21,8 +21,6 @@
 //! surfaces hide it unless asked (`include_system`). `root_event_id` and
 //! `run_id` are indexed columns so a lineage is one equality read.
 
-use base64::Engine;
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use duckdb::params;
 use ulid::Ulid;
 
@@ -115,17 +113,17 @@ const SEQ_CURSOR_TAG: &str = "seq";
 impl EventCursor {
     fn encode_at(at: Option<&str>, event_id: &str) -> String {
         let raw = format!("{}|{}", at.unwrap_or(""), event_id);
-        URL_SAFE_NO_PAD.encode(raw.as_bytes())
+        crate::cursor::seal(raw.as_bytes())
     }
 
     fn encode_seq(seq: i64) -> String {
-        URL_SAFE_NO_PAD.encode(format!("{SEQ_CURSOR_TAG}|{seq}").as_bytes())
+        crate::cursor::seal(format!("{SEQ_CURSOR_TAG}|{seq}").as_bytes())
     }
 
     fn decode(raw: &str) -> Result<Self, IndexerError> {
-        let bytes = URL_SAFE_NO_PAD
-            .decode(raw.as_bytes())
-            .map_err(|e| IndexerError::InvalidCursor(format!("base64: {e}")))?;
+        let bytes = crate::cursor::unseal(raw).ok_or_else(|| {
+            IndexerError::InvalidCursor("not a cursor this server issued".to_owned())
+        })?;
         let s = std::str::from_utf8(&bytes)
             .map_err(|e| IndexerError::InvalidCursor(format!("utf-8: {e}")))?;
         let (head, tail) = s

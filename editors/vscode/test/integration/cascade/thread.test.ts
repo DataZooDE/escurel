@@ -8,6 +8,7 @@ import type { EscurelApi } from '../../../src/extension';
 import type { RunView } from '../../../src/shared/protocol';
 import type { LoadedThread } from '../../../src/thread/loadThread';
 import { activate, discardOpenDrafts, freeOrder, until, wait } from './support';
+import { requireEnv } from '../requireEnv';
 
 function once<T>(event: vscode.Event<T>, ms = 30_000): Promise<T> {
   return new Promise((resolve, reject) => {
@@ -28,7 +29,7 @@ suite('thread and run detail', () => {
 
   suiteSetup(async function () {
     this.timeout(120_000);
-    if (!process.env.ESCUREL_TEST_RUNNER) this.skip();
+    requireEnv(this, 'ESCUREL_TEST_RUNNER');
     api = await activate();
   });
 

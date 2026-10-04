@@ -4,6 +4,7 @@ import type { Event } from '../../../src/client/types';
 import type { RunView } from '../../../src/shared/protocol';
 import type { EscurelApi } from '../../../src/extension';
 import { activate, signInAsAdmin, until } from '../cascade/support';
+import { requireEnv } from '../requireEnv';
 
 const page = 'markdown/instances/customer-order__order-4500123.md';
 
@@ -51,7 +52,7 @@ suite('run detail control host path', () => {
   let api: EscurelApi;
   suiteSetup(async function () {
     this.timeout(120_000);
-    if (!process.env.ESCUREL_TEST_RUNNER) this.skip();
+    requireEnv(this, 'ESCUREL_TEST_RUNNER');
     api = await activate();
   });
 

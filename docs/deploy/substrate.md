@@ -100,7 +100,8 @@ env:
 | S3 keys (only if `STORAGE_BACKEND=s3`) | `ESCUREL_STORAGE_S3_ACCESS_KEY_ID` / `_SECRET_ACCESS_KEY` |
 
 Air-gap note: an air-gapped env sets `ESCUREL_EMBEDDING_PROVIDER=embeddinggemma`
-(local weights, no egress) or `zero`; only the `gemini` provider needs a key +
+(local weights, no egress; needs an image built with `--features embeddinggemma` — the
+default image refuses to boot with it) or `zero`; only the `gemini` provider needs a key +
 cloud egress.
 
 ## §3 — Observability (GCP backplane)

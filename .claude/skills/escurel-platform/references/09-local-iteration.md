@@ -103,6 +103,21 @@ honest. Also there: `escurel_tool_calls`, `escurel_tool_latency_ms`,
 
 ## The three env-var namespaces (don't mix them up)
 
+- **SQL databases as rows** (`sql_view` + `instances: rows` over `sqlite` / `postgres` / `mysql`): the credential is a
+  secret reference (per tenant: a file under `<ESCUREL_SECRET_FILE_DIRS>/<tenant>/`, or `ESCUREL_SECRET_<TENANT>__<NAME>`);
+  a SQLite file and every `json_dir` / `parquet_dir` source must live under `ESCUREL_SQL_FILE_DIRS` (a gateway
+  with it unset serves no file sources; `escurel-test-support` gateways expose the temp dir),
+  a Postgres/MySQL host must be public
+  unless `ESCUREL_EGRESS_ALLOW_LOOPBACK=1` (local dev only). Tests that need Postgres run a real container
+  (`--features live-postgres`).
+- **Outbound calls to REST / MCP sources** (`openapi` / `mcp` skills; `ESCUREL_EGRESS_*`): the gateway
+  refuses plain http and any loopback / private address by default. For a LOCAL outside system (a mock,
+  a service on `127.0.0.1`) start the gateway with `ESCUREL_EGRESS_ALLOW_LOOPBACK=1`; never in
+  production. Tunables: `ESCUREL_EGRESS_MAX_RESPONSE_BYTES` (4 MiB), `_TIMEOUT_MS` (10 000, max 30 000),
+  `_MAX_CONCURRENCY` (8), `_RATE_PER_SEC` (50, per tenant+endpoint), `_WRITE_RETRY_BACKOFF_MS` (500).
+  Secrets for an endpoint are referenced (`secret_ref`), e.g. `gsm:CRM_TOKEN` reads
+  `ESCUREL_SECRET_<TENANT>__CRM_TOKEN` (tenant `acme` → `ESCUREL_SECRET_ACME__CRM_TOKEN`). In Rust tests, `escurel_test_support::ConfigOverrides.egress` takes an
+  `EgressPolicy` (set `allow_loopback`).
 - **CLI** (`crates/escurel-cli`): `ESCUREL_SERVER` (HTTP MCP URL, default
   `http://127.0.0.1:8080`), `ESCUREL_TOKEN`.
 - **Your app's client** (your choice; the example uses):
@@ -161,6 +176,10 @@ escurel-test-gateway --tenant vsx --seed path/to/seed [--subject alice]
 # {"gateway_url":"http://127.0.0.1:…","issuer_url":"http://127.0.0.1:…","kid":"…",
 #  "signing_key":"-----BEGIN RSA PRIVATE KEY-----…","bearer":"eyJ…","admin_bearer":"eyJ…","tenant":"vsx"}
 ```
+
+The seed holds `skills/*.md` and `instances/*.md` (a FLAT page id, `markdown/instances/<name>.md`) and, one level
+down, `instances/<skill>/<id>.md`, which becomes the NESTED page id `markdown/instances/<skill>/<id>.md` — the
+id of a row of an `instances: rows` skill and of its linked markdown.
 
 It is the same in-process gateway and OIDC issuer the Rust suites use, so the claims cannot
 drift from what the gateway expects. `--seed` is a directory of `skills/*.md` and

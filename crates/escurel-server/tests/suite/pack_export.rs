@@ -35,21 +35,21 @@ const TENANT: &str = "acme";
 const PACK_SECRET: &str = "test-pack-signing-secret";
 
 const PALLET_SKILL: &str = "---\n\
-type: skill\n\
+kind: skill\n\
 id: pallet-consolidation\n\
 description: Consolidate partial pallets.\n\
 ---\n\
 # pallet-consolidation\n\nFirm-authored canonical procedure.\n";
 
 const PALLET_EDGE: &str = "---\n\
-type: instance\n\
+kind: instance\n\
 skill: pallet-consolidation\n\
 id: edge-mixed-carrier\n\
 ---\n\
 # Edge case: mixed carrier\n\nTemplate.\n";
 
 const OTHER_SKILL: &str = "---\n\
-type: skill\n\
+kind: skill\n\
 id: unrelated\n\
 description: Not part of the pack.\n\
 ---\n\
@@ -229,7 +229,7 @@ async fn export_pack_rejects_credential_shaped_content() {
                 .instance(
                     "pallet-consolidation",
                     "leaky",
-                    "---\ntype: instance\nskill: pallet-consolidation\nid: leaky\n---\n\
+                    "---\nkind: instance\nskill: pallet-consolidation\nid: leaky\n---\n\
                      # leaky\n\nConnect via postgres://svc:hunter2@db.internal/prod\n",
                 )
                 .done(),

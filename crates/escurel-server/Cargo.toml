@@ -18,6 +18,9 @@ name = "escurel-server"
 path = "src/main.rs"
 
 [features]
+# Opt-in: tests that need Docker (a real Postgres container) for the SQL rows / write-back
+# connectors: `cargo test -p escurel-server --features live-postgres --test suite sql_rows_postgres`.
+live-postgres = []
 # Default-on:
 #   `kreuzberg` — PDF/DOCX/PPTX/XLSX uploads through /ingest work out of the
 #     box (ELv2 + bundled pdfium; needs rust-version >= 1.91).
@@ -125,6 +128,8 @@ opentelemetry_sdk = { version = "0.32", features = ["rt-tokio", "testing"] }
 # Live Postgres testcontainer for the `live-ducklake` chat re-homing test
 # (tests/reader_role_chat.rs, DuckLake PR 8).
 testcontainers-modules = { version = "0.15", features = ["postgres"] }
+# Seed / mutate / observe the live Postgres of `sql_rows_postgres` with a real libpq-protocol client.
+tokio-postgres = "0.7"
 
 [lints]
 workspace = true

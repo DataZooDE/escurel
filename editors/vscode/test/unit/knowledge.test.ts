@@ -29,7 +29,7 @@ describe('knowledge model', () => {
     expect(chipsForSkill(row.skill)).toEqual([
       'review',
       'event-typed',
-      'sql_view',
+      'SQL table',
       'base@supply-essentials@v3',
     ]);
   });

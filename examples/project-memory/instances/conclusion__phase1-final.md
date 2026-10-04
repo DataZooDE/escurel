@@ -1,5 +1,5 @@
 ---
-type: instance
+kind: instance
 skill: conclusion
 id: phase1-final
 at: 2026-02-10T00:00:00Z

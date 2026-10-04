@@ -215,7 +215,7 @@ pub(crate) fn materialize_snapshot(
         .get("id")
         .and_then(escurel_md::YamlValue::as_str)
         .map(str::to_owned);
-    let page_type = parsed.frontmatter.page_type;
+    let page_kind = parsed.frontmatter.page_kind;
 
     let body = parsed.body.to_owned();
     let wikilinks_out = parse_wikilinks(&body);
@@ -229,7 +229,7 @@ pub(crate) fn materialize_snapshot(
             page_id: page_id.to_owned(),
             slug,
             skill,
-            page_type,
+            page_kind,
         },
         frontmatter,
         body,

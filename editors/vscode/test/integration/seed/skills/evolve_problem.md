@@ -1,5 +1,5 @@
 ---
-type: skill
+kind: skill
 id: evolve_problem
 description: Owner-scoped Evolve problem for extension-host integration tests.
 owner_field: owner_subject

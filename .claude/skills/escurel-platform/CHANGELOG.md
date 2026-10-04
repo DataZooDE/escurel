@@ -4,6 +4,287 @@ The skill version tracks the consumer-facing contract, not the Escurel
 binary version. The Escurel repo's checked-out git ref is the true version
 pin (see `SKILL.md` → "How this skill is installed").
 
+## 0.17.0 — the autonomy gate holds against machines; secrets and file sources are scoped (BREAKING behaviour)
+
+Round-2 security review. Behaviour changes a consumer can see:
+
+- **A machine is gated even with an admin token** (the runner's run tokens are admin). Its edits of SKILL
+  pages are held; `move_page` gates the destination too; `merge_branch`, `/ingest` (409) and `write_instance`
+  answer `review_required` for a review skill. A skill page that does not parse holds.
+- **Only a person promotes.** `promote_draft` / `promote_changeset` answer `promote_requires_human` to any run
+  token; a machine may `discard_draft` only its own run's drafts. `mint_agent_token` never carries admin.
+- **`UpdatePageResponse.held_for_review` / `draft` are typed** (Rust, TS, Dart): `ok: true` + `held_for_review`
+  means NOTHING landed. The echo harness no longer marks an event processed on a held write.
+- **`secret_ref` is per tenant**: `ESCUREL_SECRET_<TENANT>__<NAME>`, files under `<dir>/<tenant>/`,
+  `ESCUREL_SECRET_ENV_ALLOW=tenant:NAME`. Re-register credentials that used the global names.
+- **File sources need `ESCUREL_SQL_FILE_DIRS`**: `json_dir` / `parquet_dir` globs must lie under it (it was
+  only `sqlite`); Postgres/MySQL DSNs accept a short key list, all hosts are judged, a host name is pinned.
+- `query_instance` enforces the query page's own `acl.read`.
+
+## 0.16.0 — the tool surface tells an agent what it can do (MINOR; behaviour changes listed)
+
+Agent-usability pass over the MCP surface (second crew review). Additive unless marked.
+
+- **BEHAVIOUR: unknown arguments are refused** (`invalid_argument`, with a did-you-mean and the valid list).
+  Previously a typo or another tool's spelling was dropped and the call ran with defaults. Schema gaps this
+  exposed are now declared (`promote_draft.decided_by/content`, `delete_page.branch`, `search.page_id`, ...).
+- **`list_skills.backend`** carries `instances`, `key`, `filterable[{field,column}]`,
+  `searchable[{field,column}]`, `writable_columns`, `writable_via`, `linked` for a rows skill. A rows skill
+  may declare `backend.searchable:` (display columns `search` matches: a customer by name).
+- **`create_draft` takes `write_back` as an argument** (the server writes it into the frontmatter); bad values
+  are refused at draft time (`write_back_invalid_value`); the open-draft `conflict` suggests `discard_draft`.
+- **`list_instances` of an unknown skill** is `unknown_skill` (was an empty success).
+- **`expand` of a row** returns each value once; schema + raw row behind `include_schema`;
+  `read_only_fields`; `direct_write: false` (`read_only` deprecated, kept one release).
+- **Cursors are signed** (`invalid_cursor` for anything the server did not issue, on every list);
+  `ESCUREL_CURSOR_KEY` shares the key across replicas.
+- **`search` with a `skill` filter defaults to instances**; `similarity` is omitted when not computed.
+- **`describe_backend` is `describe_endpoint`** (old name accepted); `tools/list` is grouped and sorted.
+- **Text summaries** carry `next_cursor=...`, "Not found", whole refusals; a minted token is not repeated.
+- **Docs:** `references/02` now names every tool (provenance, operator surface) and is pinned by the parity
+  test (count + coverage).
+
+## 0.15.1 — a refused call is an error in every client (PATCH, behaviour fix)
+
+- **Fix:** the Rust client (`escurel-client`) decoded a refused READ (`isError: true`, payload `{ok: false,
+  issues}`) into its response type, whose fields all default, so an access denial, `invalid_limit`,
+  `field_not_filterable`, `query_not_found` or `endpoint_not_registered` came back as `Ok(<empty>)`: a silent
+  partial read. It is now `Error::Refused` carrying the issues (code, location, message, suggestion).
+  Successful results are unchanged. The write tools and `validate` still return their typed answer with
+  `ok: false`. The same hole is closed in the echo/Gemini harness clients, the test-support MCP client
+  (`call_ok`), the CLI (non-zero exit), the VS Code client and the Dart client.
+- **If you wrote your own `tools/call` reader:** check `isError` / `ok === false` BEFORE you use
+  `structuredContent` (`references/03` § Errors). A `Result` that is `Ok` no longer means "the tool agreed".
+
+## 0.15.0 — `list_skills` carries the OKF provenance keys and Peacock's `viewer:`
+
+Additive (a client that ignores the new keys keeps working; rows of skills that declare none are
+byte-identical to before).
+
+- **New row keys, present only when declared:** `generated`, `verified`, `status`, `stale_after`
+  (strings, as written: a date or RFC 3339 instant; `stale_after` may be an ISO-8601 duration such as
+  `P90D`, counted from `verified` — the CLIENT decides whether the skill is stale), `sources` (a list of
+  links or `{title, url}` objects) and `viewer` (`{report, param?}`: Peacock's pointer to the report
+  skill that charts this skill's instances). The same keys appear in `escurel skill list`.
+- They stay optional and lint-only (`validate` warns about malformed ones, never rejects). A skill's own
+  `fields:` declaration still wins over an OKF key; INSTANCE pages keep their own meaning of `status`.
+- `expand` already returned a page's whole frontmatter, so nothing changes there.
+- **`search` and `neighbours` now reach rows of `instances: rows` skills** (DuckDB sources): `search`
+  matches the key and the declared `filterable:` columns (capped: 20 per skill, 50 in all; ACL per row;
+  nothing else is searchable), and `neighbours` follows a row's notes and finds links INTO a row without
+  notes (an edge to an unreadable row is dropped). A REST/MCP-backed skill is not searched: the `search`
+  answer carries a `hint` naming it.
+
+## 0.14.0 — SQL rows: database connectors and human-gated write-back (additive)
+
+- **`sql_view` rows over a real database.** `connector: postgres | mysql | sqlite` with `instances: rows` pages
+  by keyset exactly as before (typed keys, NULL keys skipped). The credential is a **reference**:
+  `register_credential {name, connector, secret_ref}` (`file:` / `env:` / `gsm:`, allow-listed by the operator;
+  the inline `secret` is deprecated and answers with a warning). A Postgres/MySQL host and a SQLite file path are
+  checked against the operator's egress policy (`ESCUREL_SQL_FILE_DIRS`) and refused by name: ask the operator.
+- **Write-back to a database row.** A skill lists `writable_columns: [<frontmatter field>]`; `expand` then carries
+  `backend_projection.{etag, writable_columns, writable_via: "write_back"}` for a `sql_view` row too (it did
+  for REST/MCP). Propose with `create_draft {target_page_id, content}` whose frontmatter has
+  `write_back: {patch: {field: value}, base_etag}`; a human promotes it. At promote the row is re-read: it already
+  holds the change → applied; the etag moved → `write_back_conflict` and the database is NOT written; otherwise ONE
+  `UPDATE` runs in one transaction with bound parameters, guarded by the values the reviewer saw. Unreachable or
+  locked database → bounded retries, then `write_back_failed` (dead letter; the draft stays open, promote again);
+  a constraint/type error → `write_back_rejected`. `update_page` with a `write_back` block is refused
+  (`write_back_requires_draft`); a non-writable field `backend_read_only_field`; a `json_dir`/`parquet_dir`
+  source `backend_read_only` (no `writable_via` is promised for it). Values are scalars (string, number, bool).
+- Writes reuse the read credential: tell the operator which columns you intend to write so the database user is
+  granted exactly those.
+
+## 0.13.2 — `escurel admin migrate-kind-files`: the offline `type:` -> `kind:` migration for repos of page files
+
+- **New CLI command (no gateway, no wire change).** `escurel admin migrate-kind-files --path <dir>` rewrites
+  the removed `type: skill|instance` page-kind line to `kind:` in a directory tree of `*.md` pages (and a
+  workflow-run page's `status:` to `run_status:`), with the engine's own text edit. Dry run by default (a diff
+  hunk per page); `--apply` refuses a dirty git tree unless `--allow-dirty`; idempotent. It reports and never
+  rewrites: pages with both keys, a user data field named `type:`, signed pack `base/` pages, BOM / CRLF-opening
+  pages the engine cannot parse, files over `--max-bytes`; it never follows symlinks and never enters a nested
+  git repository or submodule (`--include-nested-repos` opts in). String-form `actions:` is reported, not
+  converted. See `references/07` § "Migrating a repo of page files" and `docs/deploy/consumer-rollout.md`.
+- **Known collision, now explained by the tool:** a data field named `kind` (`type: skill` + `kind: code`) is a
+  conflict; rename the field first (`skill_kind`).
+
+## 0.13.1 — docs only
+
+- A query page's SQL keeps `WHERE page_type = 'instance'` although the frontmatter says `kind:`.
+- Virtual rows of an `instances: rows` skill were invisible to `search` and `neighbours` (their stored
+  notes page is not) — superseded in 0.15.0, which makes rows searchable by key and `filterable:` columns.
+
+## 0.13.0 — BREAKING: `content[0].text` is a summary; `autonomy` is enforced for machine callers
+
+- **BREAKING — `tools/call` text block.** `result.content[0].text` is a one-or-two-line summary (what came
+  back, counts, "Full result in structuredContent."; for a refusal, the first issue's code and message).
+  `structuredContent` is unchanged and is the full result: read it. The text used to repeat the payload
+  as a JSON string, doubling the tokens of every call. `escurel-client`, the extension and the Dart client
+  prefer `structuredContent` and fall back to parsing the text only against a legacy gateway. A host that
+  can read only the text block sees the summary, not the data.
+- **BREAKING — `autonomy: review | confirm` is enforced** (an unrecognised value fails toward holding) for
+  MACHINE callers: tokens carrying `run_id`, `skill` or `act.sub` (a run's bearer, the runner, a narrowed
+  per-skill agent). Their `update_page` and `close_session` commit on an INSTANCE of such a skill do not
+  land: the answer is `{ok: true, held_for_review: true, draft, message}` (the `create_draft` shape,
+  status `open`). `move_page` / `delete_page` by a machine on such a skill answer `review_required` (no
+  draft can represent a removal). Unchanged: people on plain agent-role tokens (extension, CLI), admin
+  tokens, `autonomy: auto` skills, skills declaring nothing, skill pages. **Promoting a draft always
+  lands** (it re-enters the ungated write), including when the approver's token is a machine's.
+
+## 0.12.0 — agent-experience pass on the MCP surface (BREAKING: `resume_cursor` removed)
+
+Findings of an agent-usability review of the live `/mcp` surface. One breaking change, the rest additive.
+
+- **BREAKING — `list_inbox` / `list_events`: `resume_cursor` is gone.** `next_cursor` is now where the
+  page ENDED (present iff the page is non-empty; pass it back as `cursor` to continue or to tail), and
+  `has_more: true` says rows already follow. A client paging "until `next_cursor` is absent" still
+  terminates (one extra empty call); use `has_more` to skip it. The typed `ListInboxResponse` /
+  `ListEventsResponse` replace `resume_cursor` with `has_more`. Listed in `docs/notes/breaking-wire-changes.md`.
+- **Opaque cursors.** `list_instances` cursors on rows skills (SQL, REST, MCP) are versioned envelopes
+  (`r1.` / `u1.`), no longer the plain hex of the key. Any bad cursor -> `invalid_cursor`
+  ("cursor invalid or expired; restart without `cursor`").
+- **`limit` is enforced** against the bounds the tool's schema declares: `invalid_limit` with the range
+  (0, 10001, `"x"`, -3 used to be accepted silently or fail with a Rust type name).
+- **Read tools answer DOMAIN mistakes in the write-tool shape** (`isError: true`, `issues[{code,
+  location, message, suggestion?}]`) instead of a bare JSON-RPC string: `invalid_cursor`,
+  `field_not_filterable`, `query_not_found`, `query_not_runnable`, `invalid_query_params`,
+  `endpoint_not_registered` ("ask an admin to `register_endpoint`"), `use_write_back`. JSON-RPC errors
+  remain for malformed requests.
+- **`list_instances` filter** on a rows skill accepts a declared-`filterable` column by its column name
+  (`kunnr`) AND by the field the page shows (`sold_to`); the refusal lists the valid names.
+- **`tools/list`**: every description starts with a group tag (`[READ]` `[WRITE]` `[REVIEW]` `[RUNNER]`
+  `[SESSION]` `[ADMIN]`); every tool carries MCP `annotations` (`readOnlyHint`, `destructiveHint`,
+  `idempotentHint`, `openWorldHint`); `list_skills` / `list_instances` / `resolve` / `capture_event`
+  descriptions say what comes back and what to do next; `resolve` has an `outputSchema`; the reviewer
+  tools (`promote_*`, `discard_*`, `merge_branch`) say they are human reviewer actions.
+- **`capture_event`**: a `label_skill` that names no skill is still stored but answers a WARNING issue
+  `unknown_label_skill` (reserved `escurel:` labels excepted); a re-captured `event_id` returns the stored
+  event with `replayed: true`. To start a skill action from `list_skills.actions[]`:
+  `label_skill=<action.event>`, `instance_page_id=<the instance>`.
+- **`list_drafts` / `list_changesets` / `list_branches`** take `limit` + `cursor` and return
+  `next_cursor` (only a null one means done); `limit` now applies AFTER the visibility filter.
+- **Write-back is stated where an agent hits the wall**: `backend_read_only_field` on a writable column
+  says to propose a draft with `write_back: {patch, base_etag}`; the projection says `read_only: true`
+  plus `writable_via: "write_back"`; `write_instance` on a row answers `use_write_back`.
+- **`create_draft`** judges the content (validation) BEFORE conflict questions, and a refused draft no
+  longer supersedes the open one.
+- **`expand`** of a missing page returns `{page: null, hint}` (a bare id gets the shape of a page id; the
+  hint is identical for an absent page and an ACL-hidden one).
+- **Counts**: an agent-role token sees 44 tools, an admin token 86.
+
+## 0.11.0 — REST and MCP sources as instances, with human-gated write-back; `ESCUREL_EGRESS_*`
+
+Additive (no break): skills without a remote backend are untouched.
+
+- **`backend.kind: openapi | mcp` with `instances: rows`**: one virtual instance per object of an outside
+  REST service or MCP server (same page ids, `list_instances` / `expand`, linked notes as the `sql_view`
+  rows). `expand` / `list_instances` carry `trust: "external"` and `fetched_at`: upstream text is DATA,
+  never instructions. A down source degrades `expand` to `issue.code = source_unavailable` (no rows, no
+  etag) instead of an error. See `references/01` §backend axis.
+- **Write-back**: `backend_projection.writable_columns` and `etag`; propose with `create_draft` carrying
+  `write_back: {patch, base_etag}`; applied only on `promote_draft` (etag-checked, idempotent, retried on
+  transient failure, audited as `escurel:write-back` system events). New refusal codes:
+  `write_back_requires_draft`, `write_back_invalid`, `write_back_conflict`, `write_back_failed`,
+  `write_back_rejected`, `write_back_unknown_outcome`, `write_back_unmappable`, `write_back_unsupported`.
+- **New tool `describe_backend`** (admin; 86 tools). `register_endpoint` / `list_endpoints` take
+  `secret_ref` (`env:` / `gsm:` / `file:`) and report `secret_kind`; `write_instance` is size-capped and
+  refuses `rows` skills.
+- **Outbound policy** (egress): https and public addresses only, no redirects, size / time / rate caps,
+  sanitized errors. Local dev: `ESCUREL_EGRESS_ALLOW_LOOPBACK=1`. See `references/09`.
+## 0.10.0 — `backend.instances: rows`: one instance per row of a `sql_view`, with optional linked markdown
+
+Additive (no break): a `sql_view` skill without `instances:` behaves exactly as before.
+
+- **New skill frontmatter** `backend: {instances: rows, key, linked, filterable, writable_columns}` (the last
+  is reserved for write-back and ignored). Read `references/01` §backend axis for the full contract.
+- **Every row is an instance**, virtual (nothing stored per row, no `create_sql_instance`): page id
+  `markdown/instances/<skill>/<id>.md` with the key as the id; `[[<skill>::<key>]]` resolves.
+- **`list_instances`** on such a skill pages by keyset over the key (ACL after the fetch: pages can be
+  short, only a null `next_cursor` is done); entries carry `row: true` (the typed `InstanceInfo` gains
+  `row`) and the projected, typed columns as `frontmatter`; a `frontmatter_key` filter works on
+  `filterable:` columns only (bound parameter; anything else is `invalid_params`).
+- **`expand`** returns the row's fields plus `backend_projection {instances: "rows", read_only, fetched_at,
+  rows, columns, linked{enabled,exists,orphan}, issue?}`; reads are live.
+- **Linked markdown**: the stored page at the row's id is the notes, created by the first write and merged
+  into one instance on read; drafts/promotion apply to it only. New write refusals:
+  `backend_read_only_field` (the write carries a source column), `row_not_found`; `backend_ref` in a
+  companion is `backend_read_only`. A vanished row keeps its notes (`source_missing`).
+- `validate` no longer reports a projected field as missing on a row's companion.
+- **Test gateway**: `escurel-test-gateway --seed` now seeds `instances/<skill>/<id>.md` as the nested page id.
+## 0.9.0 — skills can place and describe themselves: `folder`, `role`, `tags` and the OKF keys
+
+Additive (no consumer breaks). Aligns skill pages with the Open Knowledge Format's frontmatter vocabulary.
+
+- **New optional skill keys, reported on `list_skills`** (omitted when undeclared, so old rows are
+  unchanged): `folder` (a `/`-separated path of lowercase slugs, e.g. `sales/orders`; places the skill in
+  a tree), `role` (`record` | `process` | `report` | `helper`), `tags` (OKF tags, a list of strings),
+  `title` (display title) and `resource` (OKF link to the external thing the skill describes). The CLI's
+  `skill list` carries the same keys.
+- **`validate` errors:** `folder_invalid` (not a `/`-separated slug path) and `role_unknown` (not one of the
+  four roles).
+- **`validate` warnings only** (never an error, never a reason to refuse a write): `tags_invalid`,
+  `sources_invalid`, `generated_invalid`, `verified_invalid`, `stale_after_invalid`. `stale_after` accepts an
+  RFC 3339 instant or an ISO-8601 duration (`P90D`). `generated`, `verified`, `status` and `sources` are
+  recognised on skill pages but are not on the `list_skills` row yet. **Unknown keys are never rejected**
+  (OKF: "extra keys must not break consumers"); on instance pages `status`, `tags` etc. keep whatever
+  meaning the skill gives them and are not linted.
+- Consumers: nothing to do. A client that renders a tree should group by `folder` and sort by `role`.
+
+## 0.8.0 — BREAKING: the page kind is `kind:` (was `type:`); the wire says `page_kind`; run boards use `run_status`
+
+Hard cut, no compatibility window, no environment switch. Aligns escurel with the Open Knowledge Format,
+where `type` means the concept's own kind. Read references/01 ("The page kind is `kind:`").
+
+- **`type: skill|instance` is removed.** The page-kind key is `kind: skill|instance`. A page with the old
+  key is refused: `validate` / `update_page` / `create_draft` return `frontmatter_type_removed`
+  (location `frontmatter.type`, suggestion = the migration command); a tenant whose lane still holds such
+  pages is **QUARANTINED at boot** (up, but every MCP tool except `migrate_kind` / `compact_lanes` answers
+  `tenant_quarantined` with the command) and `rebuild` refuses, listing every offending page; a signed
+  pack page with the old key is refused with an error naming the publisher's re-export. A page's own data
+  field named `type` (`type: invoice`) is just data. A page that needs the old key rewritten AND has its
+  own `kind:` data field is a migration **conflict** (never auto-fixed); the built-in compile-first `issue`
+  skill's data field `kind` is now `issue_kind` for this reason (`list_instances(issue,
+  {frontmatter_key: issue_kind})`).
+- **New admin tool `migrate_kind`** (CLI: `escurel admin migrate-kind --tenant <t> [--apply]`; client:
+  `AdminClient::migrate_kind`). Dry run unless `apply`. Rewrites stored pages (text edit of the one key),
+  OPEN drafts in place (new `content_sha256`, recorded in an `escurel:kind-migration` audit event) and
+  historical CRDT snapshots; skips signed pack pages (`markdown/base/**`); reports conflicts; refuses
+  `apply` while a page has a live CRDT session (close it or `compact-lanes`); never touches a user's own
+  `type` data field; idempotent. The lane store has no compare-and-swap: each page is re-read right
+  before it is written and reported as a conflict if it moved.
+- **Wire: `page_type` is `page_kind`.** `search`'s argument and the `page_kind` field on `search` / `resolve`
+  / `expand` (PageRef) answers; the Rust types are `PageKind` / `page_kind`; the CLI flag is
+  `--page-kind`. A caller still sending `page_type` to `search` is refused ("renamed `page_kind`"), not
+  silently searched unfiltered. The derived `pages.page_type` SQL column keeps its name (ADR-0001).
+- **The `workflow-run` board's `status` is `run_status`** (OKF's `status` has its own meaning). `migrate_kind`
+  renames existing boards (only pages whose skill is `workflow-run`); a tenant's own `status` data and the
+  DB/API `status` fields are untouched. `last_verified` keeps its name.
+- `Frontmatter.page_type` / `PageType` in `escurel-md` are `page_kind` / `PageKind`; the Dart explorer kit's
+  `PageType` is `PageKind`.
+
+**Consumer checklist (the release is a hard cut: every consumer moves in the same window):**
+1. Deploy the new engine; each un-migrated tenant boots QUARANTINED. Run `escurel admin migrate-kind --tenant
+   <t>` (dry run), review the conflicts, then `--apply`: it rewrites the lane, rebuilds the index and lifts the
+   quarantine. (Do not wait for traffic to tell you: a quarantined tenant answers `tenant_quarantined`.) Seeds, fixtures and
+   examples in your repo: rewrite `type: skill|instance` to `kind:` (the same rule; a `sed` on the
+   frontmatter line is enough when you have no data field named `kind`).
+2. Change every writer: templates, scaffolds, page-writing code, and **agent prompts and skills that teach
+   an agent to write `type: instance`** — an un-updated agent's writes are refused with
+   `frontmatter_type_removed`.
+3. Wire clients: send `page_kind` to `search`; read `page_kind` from answers (`resolve`, `expand`, `search`).
+4. Pages with their own `kind:` data field: rename that field first (`migrate_kind` reports them).
+5. Signed packs: re-export and re-sign every pack (the importer refuses legacy pages; the migration cannot
+   rewrite `markdown/base/**`), then `escurel admin pack rebase`.
+6. Workflow run boards: nothing to do by hand (`migrate_kind` renames `status` -> `run_status`); code that
+   reads a board's `status` frontmatter reads `run_status`.
+7. Bump the pin / submodule to this release and smoke one write + read through the gateway.
+
+Repos known to need step 1-2 (counts of `type: skill|instance` files at the time of writing): peacock (8:
+the report scaffold, saved reports, test corpora, its skill docs), heron (55 + a `page_type` wire read),
+datazoo-loops (149 skill/instance pages), datazoo-agent-template (29), datazoo-ai-engineering (44),
+hetzner-agent-substrate (61), agt-wt-tenant (23), anofox-evolve (5). The herkules backend repo was not
+found next to these checkouts: locate it before the cut. triton and herkules-ui have none.
+
 ## 0.7.0 — BREAKING: a skill's `actions:` is a list of objects (Peacock's form)
 
 - `actions:` entries are `{name, kind: event|prompt, label, event|prompt}` objects; a bare skill id is
@@ -1091,7 +1372,7 @@ pin (see `SKILL.md` → "How this skill is installed").
   export|import|list|rebase|unsubscribe|submit-promotion` subcommands +
   map rows. `06`: the hub↔spoke two-process pack-test recipe
   (`ConfigOverrides.pack_secret`; worked version in
-  `crates/escurel-server/tests/pack_import.rs`). `09`: the
+  `crates/escurel-server/tests/suite/pack_import.rs`). `09`: the
   `escurel_writes_total{tenant,origin}` absorption metric.
 - `SKILL.md` + `10`: the cross-tenant prohibition re-scoped — runtime
   calls never span tenants; curated pack publish/subscribe is the
@@ -1106,7 +1387,7 @@ pin (see `SKILL.md` → "How this skill is installed").
   `session open|apply|close`, and `ingest` (POST `/ingest/upload`) — plus a
   CLI→tool map, the `--format` flag, stdin-body list, and the create-ACL
   gotcha on `ingest --skill`.
-- Noted the **parity guard** (`crates/escurel-cli/tests/cli_parity.rs`):
+- Noted the **parity guard** (`crates/escurel-cli/tests/suite/cli_parity.rs`):
   every agent-role tool must have a CLI command, so the map can't drift;
   the admin/ops provisioning MCP-twins are deliberately CLI-less.
 - Fixed the same stale flat-command style in `references/06`, `07`, `09`.

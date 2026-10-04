@@ -57,7 +57,7 @@ export function trainingSourcePage(args: {
   if (!owner.trim()) throw new Error('Sign in before preparing an owner-private source.');
   const payload = trainingSourcePayload(value);
   const frontmatter = stringify({
-    type: 'instance', skill: 'evolve_training_source', id, owner_subject: owner,
+    kind: 'instance', skill: 'evolve_training_source', id, owner_subject: owner,
   }, { lineWidth: 0 }).trimEnd();
   const content = `---\n${frontmatter}\n---\n\`\`\`json\n${JSON.stringify(payload, null, 2)}\n\`\`\`\n`;
   return { pageId: `markdown/instances/evolve_training_source/${id}.md`, content, payload };

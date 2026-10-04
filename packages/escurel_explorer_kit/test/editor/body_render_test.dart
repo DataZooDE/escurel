@@ -19,7 +19,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:escurel_explorer_kit/client/fixture_escurel_client.dart';
 
 const _docSkill = '---\n'
-    'type: skill\n'
+    'kind: skill\n'
     'id: doc\n'
     'description: A free-form document.\n'
     '---\n\n# doc\n';
@@ -27,7 +27,7 @@ const _docSkill = '---\n'
 // One instance whose body exercises every inline construct the renderer
 // must handle, including a code span nested inside a link label.
 const _richDoc = '---\n'
-    'type: instance\n'
+    'kind: instance\n'
     'skill: doc\n'
     'id: rich\n'
     '---\n\n'
@@ -140,11 +140,11 @@ void main() {
     final client = FixtureEscurelClient.fromSources(
       skillFiles: {
         'doc.md': _docSkill,
-        'event.md': '---\ntype: skill\nid: event\n'
+        'event.md': '---\nkind: skill\nid: event\n'
             'description: Ein Event.\n---\n\n# event\n\nEVENTBODYMARKER\n',
       },
       instanceFiles: {
-        'doc__venueish.md': '---\ntype: instance\nskill: doc\nid: venueish\n---\n\n'
+        'doc__venueish.md': '---\nkind: instance\nskill: doc\nid: venueish\n---\n\n'
             '# venueish\n\n'
             'Das Feld `event:` verweist auf das `event`, optional `name`.\n',
       },
@@ -181,12 +181,12 @@ void main() {
     final client = FixtureEscurelClient.fromSources(
       skillFiles: {
         'doc.md': _docSkill,
-        'event.md': '---\ntype: skill\nid: event\ndescription: Ein Event.\n---\n\n# event\n',
+        'event.md': '---\nkind: skill\nid: event\ndescription: Ein Event.\n---\n\n# event\n',
       },
       instanceFiles: {
         // `ref` is a SCALAR skill id (reproduces the event skill's
         // `id: event` row); `label` is a plain word.
-        'doc__fm.md': '---\ntype: instance\nskill: doc\nid: fm\n'
+        'doc__fm.md': '---\nkind: instance\nskill: doc\nid: fm\n'
             'ref: event\nlabel: name\n---\n\n# fm\n',
       },
     );

@@ -1,5 +1,5 @@
 ---
-type: skill
+kind: skill
 id: contact
 description: An individual person at a customer. The unit of human relationship.
 required_frontmatter: [name, customer]

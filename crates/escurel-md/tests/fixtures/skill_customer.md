@@ -1,5 +1,5 @@
 ---
-type: skill
+kind: skill
 id: customer
 description: A buying entity (organisation or individual) that may have
   one or more contacts, deals and account-owning interactions.

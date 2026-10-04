@@ -10,7 +10,7 @@
 use escurel_test_support::{AuthMode, ConfigOverrides, EscurelProcess, FixtureBuilder, Opts};
 use serde_json::json;
 
-const CUSTOMER_SKILL: &str = "---\ntype: skill\nid: customer\n\
+const CUSTOMER_SKILL: &str = "---\nkind: skill\nid: customer\n\
 description: A buyer.\nrequired_frontmatter: [id]\n---\n# customer\n";
 
 #[tokio::test]

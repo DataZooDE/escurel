@@ -20,7 +20,10 @@ an `authorization` header and lets the server enforce its own policy
 `--format json` (default) emits the stable JSON contract on stdout;
 `--format table` renders a human table. It's global — put it anywhere.
 Errors go to **stderr** as JSON with a non-zero exit, so a calling agent
-can branch on them.
+can branch on them. A **refused** call (an access denial, `invalid_limit`, `query_not_found`, …) is an
+error too: stderr carries `{"error": "refused: <code> at <location>: <message> (<suggestion>)"}` and the
+exit is non-zero. It is never an empty list on exit 0, so `escurel … || handle` is safe; check the exit
+status, not only whether stdout is empty (`references/03` § Errors).
 
 ## Command shape
 
@@ -30,7 +33,7 @@ Commands are grouped **gh/aws-style by resource noun** (`escurel <noun>
 
 ```sh
 # search + resolve (top-level verbs)
-escurel search "acme churn" --k 5 --page-type instance --skill customer
+escurel search "acme churn" --k 5 --page-kind instance --skill customer
 escurel resolve '[[customer::acme-corp]]'
 
 # skills + instances
@@ -57,7 +60,7 @@ escurel provenance abandoned                # nodes retired by supersession/aban
 # workflows (against a `kind: workflow` plan skill)
 escurel workflow run    <skill>             # create the run board + capture the run event
 escurel workflow status <run>               # per-phase progress (produced instances)
-escurel workflow stop   <run>               # mark the board `status: stopped`
+escurel workflow stop   <run>               # mark the board `run_status: stopped`
 
 # interactive
 escurel ui                                  # k9s-style terminal browser
@@ -90,6 +93,9 @@ escurel admin health
 escurel admin tenant create --id acme --name "Acme Corp"
 escurel admin quota  --tenant acme
 escurel admin rebuild --tenant acme
+escurel admin migrate-kind --tenant acme            # DRY RUN: rewrite legacy `type:` -> `kind:` (references/01)
+escurel admin migrate-kind --tenant acme --apply    # write; refuses while a page has a live CRDT session
+escurel admin migrate-kind-files --path ./repo          # OFFLINE, no gateway: the same rewrite over a directory of page files (DRY RUN; --apply, --allow-dirty; references/07)
 
 # skill packs (admin-role token; references/02 §Skill packs)
 escurel admin pack export --tenant hub --id logistics --version 3 \
@@ -130,7 +136,7 @@ escurel admin pack submit-promotion --tenant acme --candidate-id acme-candidate 
 | `admin …` | the EscurelAdmin surface |
 
 The mapping is enforced by a **parity guard test**
-(`crates/escurel-cli/tests/cli_parity.rs`): every agent-role tool the
+(`crates/escurel-cli/tests/suite/cli_parity.rs`): every agent-role tool the
 gateway advertises in `tools/list` must have a CLI command, so this table
 can't silently drift as new tools land. The admin/ops *provisioning*
 MCP-twins (credential/endpoint/group management, `create_sql_instance`,
@@ -153,7 +159,7 @@ drive them over MCP/gRPC or the BFF.
   ```
 - `--params` for `query instance` is a JSON object string
   (default `{}`).
-- `--page-type` is `skill` | `instance` | `any` (default `any`);
+- `--page-kind` is `skill` | `instance` | `any` (default `any`);
   `--direction` is `in` | `out` | `both` (default `both`); `limit 0`
   means no limit.
 - `ingest --skill <id>` pins a specific `document`-backend skill and

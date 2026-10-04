@@ -33,11 +33,11 @@ fn skill_body(id: &str, autonomy: Option<&str>) -> String {
     let line = autonomy
         .map(|a| format!("autonomy: {a}\n"))
         .unwrap_or_default();
-    format!("---\ntype: skill\nid: {id}\n{line}---\n# {id}\n\nFold the event in.\n")
+    format!("---\nkind: skill\nid: {id}\n{line}---\n# {id}\n\nFold the event in.\n")
 }
 
 fn instance_body(skill: &str) -> String {
-    format!("---\ntype: instance\nid: {INSTANCE_ID}\nskill: {skill}\n---\n# Globex\n\nBASELINE.\n")
+    format!("---\nkind: instance\nid: {INSTANCE_ID}\nskill: {skill}\n---\n# Globex\n\nBASELINE.\n")
 }
 
 struct ChildGuard(Child);
@@ -118,7 +118,7 @@ async fn spawn_stub_model(page_id: String, seen: Arc<Mutex<Seen>>) -> String {
             .unwrap_or_default()
             .to_owned();
         let content = format!(
-            "---\ntype: instance\nid: {INSTANCE_ID}\nskill: {}\n---\n# Globex\n\nBASELINE.\n\n\
+            "---\nkind: instance\nid: {INSTANCE_ID}\nskill: {}\n---\n# Globex\n\nBASELINE.\n\n\
              {WRITTEN_MARKER} {event_id}\n",
             st.page_id.split('/').nth(2).unwrap_or_default()
         );

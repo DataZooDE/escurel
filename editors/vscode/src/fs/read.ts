@@ -1,5 +1,6 @@
 import { stringify } from 'yaml';
 import type { EscurelClient } from '../client';
+import { rowSourceOf } from '../shared/rowSource';
 
 export type PathKind =
   'root' | 'skills-root' | 'instances-root' | 'instances-skill' | 'skill' | 'instance';
@@ -45,7 +46,7 @@ export interface PageMarkdown {
   degraded: boolean;
   frontmatter: Record<string, unknown>;
   skill: string;
-  pageType: string;
+  pageKind: string;
   lastWrittenBy?: string | null;
 }
 
@@ -61,6 +62,23 @@ export async function readPageMarkdown(
 ): Promise<PageMarkdown | undefined> {
   const e = await client.expand({ page_id: pageId, raw: true });
   if (!e.page) return undefined;
+  // A ROW of an `instances: rows` skill: the Markdown view is the row's linked NOTES, never the row. The
+  // stored bytes (when notes exist) are exactly that; with none yet it is an empty skeleton to write
+  // into, and the first save creates the companion. The source columns are read-only and are refused
+  // if a write carries them.
+  if (rowSourceOf(e.backend_projection)) {
+    const slug = e.page.page_id.split('/').pop()!.replace(/\.md$/, '');
+    const skeleton = reassemble({ kind: 'instance', id: slug, skill: e.page.skill }, '');
+    return {
+      text: typeof e.content === 'string' ? e.content : skeleton,
+      sha256: e.content_sha256,
+      degraded: false,
+      frontmatter: e.frontmatter,
+      skill: e.page.skill,
+      pageKind: e.page.page_kind,
+      lastWrittenBy: e.page.last_written_by,
+    };
+  }
   const degraded = typeof e.content !== 'string';
   const text = degraded ? reassemble(e.frontmatter, e.body) : e.content!;
   return {
@@ -69,7 +87,7 @@ export async function readPageMarkdown(
     degraded,
     frontmatter: e.frontmatter,
     skill: e.page.skill,
-    pageType: e.page.page_type,
+    pageKind: e.page.page_kind,
     lastWrittenBy: e.page.last_written_by,
   };
 }

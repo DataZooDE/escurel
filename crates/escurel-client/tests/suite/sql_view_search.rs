@@ -25,7 +25,7 @@ const TENANT: &str = "acme";
 fn skill_md(data_dir: &str) -> String {
     format!(
         "---\n\
-         type: skill\n\
+         kind: skill\n\
          id: customers\n\
          description: EU customers, mirrored read-only.\n\
          backend:\n\

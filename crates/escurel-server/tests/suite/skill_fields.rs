@@ -23,13 +23,13 @@ const TENANT: &str = "stuttgart-ai";
 
 /// The control: no `fields:` at all. Every skill page in every existing
 /// tenant looks like this, and must keep behaving exactly as it did.
-const NOTE_SKILL: &str = "---\ntype: skill\nid: note\ndescription: A note.\n\
+const NOTE_SKILL: &str = "---\nkind: skill\nid: note\ndescription: A note.\n\
     required_frontmatter: [status]\n---\n# note\n";
 
 /// The article's showcase, declared.
 const ACCOUNT_SKILL: &str = "\
 ---
-type: skill
+kind: skill
 id: account
 description: A customer account.
 fields:
@@ -41,7 +41,7 @@ fields:
 ";
 
 fn account(body: &str) -> String {
-    format!("---\ntype: instance\nskill: account\nid: globex\n{body}---\n# Globex\n")
+    format!("---\nkind: instance\nskill: account\nid: globex\n{body}---\n# Globex\n")
 }
 
 async fn start() -> EscurelProcess {
@@ -214,7 +214,7 @@ async fn a_skill_without_fields_accepts_what_it_always_accepted() {
         "update_page",
         json!({
             "page_id": "markdown/instances/note/n1.md",
-            "content": "---\ntype: instance\nskill: note\nid: n1\n\
+            "content": "---\nkind: instance\nskill: note\nid: n1\n\
                         status: 5-Cold-ish\nhotness: whatever\n---\n# n1\n",
         }),
     )

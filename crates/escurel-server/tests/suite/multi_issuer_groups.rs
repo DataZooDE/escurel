@@ -23,11 +23,11 @@ use serde_json::{Value, json};
 const TENANT: &str = "acme";
 const GROUPS_CLAIM: &str = "triton_sender_groups";
 
-const DEAL_SKILL: &str = "---\ntype: skill\nid: deal\n\
+const DEAL_SKILL: &str = "---\nkind: skill\nid: deal\n\
     description: A sales deal, readable by the sales group.\n\
     acl:\n  read: [sales]\n\
     ---\n# deal\n";
-const DEAL: &str = "---\ntype: instance\nskill: deal\nid: q3-renewal\n---\n\
+const DEAL: &str = "---\nkind: instance\nskill: deal\nid: q3-renewal\n---\n\
     # Q3 renewal\nBeverages GmbH renewal.\n";
 const DEAL_PAGE: &str = "markdown/instances/deal/q3-renewal.md";
 

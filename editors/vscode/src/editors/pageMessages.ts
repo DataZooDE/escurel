@@ -32,9 +32,27 @@ export function resolvePageMessage(
     }
     case 'view-skill': {
       if (!model || !nonEmpty(m.skill)) return undefined;
-      const known = m.skill === model.skill.id || model.actions.some((a) => a.skill === m.skill);
+      const known =
+        m.skill === model.skill.id ||
+        m.skill === model.viewer?.report ||
+        model.actions.some((a) => a.skill === m.skill);
       return known ? { command: 'escurel.viewSkill', args: [m.skill] } : undefined;
     }
+    case 'open-original':
+      // The page is the host's own, never the webview's; only a document page has an original.
+      return model?.preview?.kind === 'document'
+        ? { command: 'escurel.openOriginal', args: [model.pageId] }
+        : undefined;
+    case 'propose-write-back': {
+      // Only a column THIS page's own source said is writable.
+      if (!model?.source?.writableColumns?.includes(m.field)) return undefined;
+      return {
+        command: 'escurel.proposeWriteBack',
+        args: [{ pageId: model.pageId, field: m.field }],
+      };
+    }
+    case 'show-runs':
+      return model ? { command: 'escurel.runs.forPage', args: [model.pageId] } : undefined;
     case 'open-run':
       return nonEmpty(m.runId) ? { command: 'escurel.openRun', args: [m.runId] } : undefined;
     case 'open-thread':

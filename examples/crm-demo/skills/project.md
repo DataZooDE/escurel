@@ -1,5 +1,5 @@
 ---
-type: skill
+kind: skill
 id: project
 description: A delivery engagement spawned at commercial close. Inherits opportunity context as live obligations.
 required_frontmatter: [opened, status, customer, opportunity]

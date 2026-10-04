@@ -1,5 +1,5 @@
 ---
-type: instance
+kind: instance
 skill: workstream
 id: mp-provisioning
 name: First-unit provisioning

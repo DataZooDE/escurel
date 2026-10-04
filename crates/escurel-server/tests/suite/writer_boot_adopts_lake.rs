@@ -23,7 +23,7 @@ const TENANT: &str = "acme";
 fn instance(id: &str) -> (String, String) {
     (
         format!("markdown/instances/customer/{id}.md"),
-        format!("---\ntype: instance\nskill: customer\nid: {id}\n---\n# {id}\n\nA customer.\n"),
+        format!("---\nkind: instance\nskill: customer\nid: {id}\n---\n# {id}\n\nA customer.\n"),
     )
 }
 

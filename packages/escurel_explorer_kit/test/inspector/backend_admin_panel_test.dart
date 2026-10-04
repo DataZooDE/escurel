@@ -19,9 +19,9 @@ import 'package:flutter_test/flutter_test.dart';
 FixtureEscurelClient _client() => FixtureEscurelClient.fromSources(
   skillFiles: {
     'erp_customer.md':
-        '---\ntype: skill\nid: erp_customer\ndescription: ERP.\nbackend:\n  kind: sql_view\n---\n\n# erp_customer',
+        '---\nkind: skill\nid: erp_customer\ndescription: ERP.\nbackend:\n  kind: sql_view\n---\n\n# erp_customer',
     'contract.md':
-        '---\ntype: skill\nid: contract\ndescription: Docs.\nbackend:\n  kind: document\n---\n\n# contract',
+        '---\nkind: skill\nid: contract\ndescription: Docs.\nbackend:\n  kind: document\n---\n\n# contract',
   },
   instanceFiles: const {},
 );
@@ -31,9 +31,9 @@ FixtureEscurelClient _client() => FixtureEscurelClient.fromSources(
 FixtureEscurelClient _subscribedClient() => FixtureEscurelClient.fromSources(
   skillFiles: {
     'erp_customer.md':
-        '---\ntype: skill\nid: erp_customer\ndescription: ERP.\nbackend:\n  kind: sql_view\n---\n\n# erp_customer',
+        '---\nkind: skill\nid: erp_customer\ndescription: ERP.\nbackend:\n  kind: sql_view\n---\n\n# erp_customer',
     'base/crm-essentials/skills/playbook.md':
-        '---\ntype: skill\nid: playbook\ndescription: Firm playbook.\nlayer: base@crm-essentials@v1\n---\n\n# playbook',
+        '---\nkind: skill\nid: playbook\ndescription: Firm playbook.\nlayer: base@crm-essentials@v1\n---\n\n# playbook',
   },
   instanceFiles: const {},
 );
@@ -91,9 +91,9 @@ Future<void> _pump(WidgetTester tester, EscurelClient client) async {
 FixtureEscurelClient _remoteClient() => FixtureEscurelClient.fromSources(
   skillFiles: {
     'erp_customer.md':
-        '---\ntype: skill\nid: erp_customer\ndescription: ERP.\nbackend:\n  kind: sql_view\n---\n\n# erp_customer',
+        '---\nkind: skill\nid: erp_customer\ndescription: ERP.\nbackend:\n  kind: sql_view\n---\n\n# erp_customer',
     'quote.md':
-        '---\ntype: skill\nid: quote\ndescription: Live quotes.\nbackend:\n  kind: openapi\n  endpoint: yahoo_finance\n  read:\n    path: /v8/finance/chart/{symbol}\n---\n\n# quote',
+        '---\nkind: skill\nid: quote\ndescription: Live quotes.\nbackend:\n  kind: openapi\n  endpoint: yahoo_finance\n  read:\n    path: /v8/finance/chart/{symbol}\n---\n\n# quote',
   },
   instanceFiles: const {},
 );
@@ -105,13 +105,13 @@ FixtureEscurelClient _remoteClient() => FixtureEscurelClient.fromSources(
 FixtureEscurelClient _queryClient() => FixtureEscurelClient.fromSources(
   skillFiles: {
     'erp_customer.md':
-        '---\ntype: skill\nid: erp_customer\ndescription: ERP.\nbackend:\n  kind: sql_view\n---\n\n# erp_customer',
+        '---\nkind: skill\nid: erp_customer\ndescription: ERP.\nbackend:\n  kind: sql_view\n---\n\n# erp_customer',
     'query.md':
-        '---\ntype: skill\nid: query\ndescription: Reusable reads.\n---\n\n# query',
+        '---\nkind: skill\nid: query\ndescription: Reusable reads.\n---\n\n# query',
   },
   instanceFiles: {
     'customers-by-name.md':
-        '---\ntype: instance\nskill: query\nid: customers-by-name\ntarget: "[[erp_customer::eu]]"\n---\n\n# customers-by-name',
+        '---\nkind: instance\nskill: query\nid: customers-by-name\ntarget: "[[erp_customer::eu]]"\n---\n\n# customers-by-name',
   },
 );
 

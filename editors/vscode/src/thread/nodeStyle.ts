@@ -1,3 +1,4 @@
+import { pageSlug } from '../shared/pageId';
 import type { ThreadNode } from '../shared/protocol';
 
 /** The kinds of card a person tells apart. A cascade event is not the same thing as the root event. */
@@ -11,6 +12,11 @@ export interface NodeTypeDescriptor {
   icon: NodeType;
   /** Which theme colour the accent bar uses; the webview maps it to a --vscode-* token. */
   accent: NodeType;
+  /**
+   * What tells two cards of one type apart: the SKILL a page belongs to (an order is not an analysis),
+   * the page a run worked on. Absent when the title already says it.
+   */
+  qualifier?: string;
 }
 
 export function describeNodeType(node: ThreadNode, rootEventId: string): NodeTypeDescriptor {
@@ -19,7 +25,13 @@ export function describeNodeType(node: ThreadNode, rootEventId: string): NodeTyp
   else if (node.kind === 'changeset') type = 'changeset';
   else if (node.kind === 'draft') type = 'page';
   else type = node.id === rootEventId ? 'event' : 'cascade';
-  return { type, label: type, icon: type, accent: type };
+  const qualifier =
+    type === 'page'
+      ? node.skill
+      : type === 'run' && node.pageId
+        ? `on ${pageSlug(node.pageId, node.skill)}`
+        : undefined;
+  return { type, label: type, icon: type, accent: type, ...(qualifier ? { qualifier } : {}) };
 }
 
 const DECIDED = new Set(['promoted', 'discarded']);

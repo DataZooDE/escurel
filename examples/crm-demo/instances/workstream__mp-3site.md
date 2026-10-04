@@ -1,5 +1,5 @@
 ---
-type: instance
+kind: instance
 skill: workstream
 id: mp-3site
 name: 3-site data model

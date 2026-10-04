@@ -45,7 +45,7 @@ use tempfile::TempDir;
 use tokio::sync::Mutex;
 
 const TENANT: &str = "acme";
-const CUSTOMER: &str = "---\ntype: skill\nid: customer\ndescription: x\n---\n# customer\n";
+const CUSTOMER: &str = "---\nkind: skill\nid: customer\ndescription: x\n---\n# customer\n";
 
 fn env_count(key: &str, default: usize) -> usize {
     std::env::var(key)
@@ -65,7 +65,7 @@ fn body(i: usize, rev: usize) -> String {
         .map(|n| format!("- note {n} for customer {i}\n"))
         .collect();
     format!(
-        "---\ntype: instance\nskill: customer\nid: c{i}\nrev: {rev}\n---\n\
+        "---\nkind: instance\nskill: customer\nid: c{i}\nrev: {rev}\n---\n\
          # Customer {i}\n\nRevision {rev} of a page that keeps being rewritten.\n\n\
          {bullets}\nTrailing paragraph {rev}, so the tail moves too.\n"
     )

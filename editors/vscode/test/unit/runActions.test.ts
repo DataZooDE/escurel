@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { RunView } from '../../src/shared/protocol';
 import { runControls } from '../../src/runs/controls';
-import { resolveRunAction, visibleRunControls } from '../../src/runs/runActions';
+import { pageToOpen, resolveRunAction, visibleRunControls } from '../../src/runs/runActions';
 import { loadRun } from '../../src/runs/loadRun';
 import type { EscurelClient } from '../../src/client';
 import events from './fixtures/lineage/run-detail-events.json';
@@ -160,7 +160,7 @@ describe('run detail actions', () => {
       }),
     ).toEqual({
       command: 'escurel.approvePlan',
-      args: { runId: base.runId, skill, pageId: base.targetPageId },
+      args: { runId: base.runId },
     });
     expect(
       resolveRunAction(view('failed'), {
@@ -195,5 +195,19 @@ describe('run detail actions', () => {
       [view('failed'), { type: 'view-skill', skill, runId: 'other' }],
     ] as const;
     for (const [run, message] of forged) expect(resolveRunAction(run, message)).toBeUndefined();
+  });
+});
+
+describe('pageToOpen', () => {
+  const v = {
+    targetPageId: 'markdown/instances/a.md',
+    producedPageId: 'markdown/instances/b.md',
+  } as never;
+  it('opens only the run’s own target or product', () => {
+    expect(pageToOpen(v, 'markdown/instances/a.md')).toBe('markdown/instances/a.md');
+    expect(pageToOpen(v, 'markdown/instances/b.md')).toBe('markdown/instances/b.md');
+    expect(pageToOpen(v, 'markdown/skills/secret.md')).toBeUndefined();
+    expect(pageToOpen(v, 42)).toBeUndefined();
+    expect(pageToOpen(undefined, 'markdown/instances/a.md')).toBeUndefined();
   });
 });

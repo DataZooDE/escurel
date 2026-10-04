@@ -1,3 +1,4 @@
+import { pageSlug } from '../../src/shared/pageId';
 import { expect, fixture, html } from '@open-wc/testing';
 import type { RunView, RunWebviewToHost } from '../../src/shared/protocol';
 import { buildRunView, mergeToolCallPage } from '../../src/runs/runModel';
@@ -189,14 +190,16 @@ describe('<escurel-run-detail>', () => {
     expect(qa(el, '.plan-step').map((row) => text(row))).to.satisfy((rows: string[]) =>
       rows.some((row) => row.includes('read the target page') && row.includes('completed')),
     );
-    expect(text(q(el, '.tool-call'))).to.contain('list_inbox');
+    expect(text(q(el, '.tool-call'))).to.contain('Read the inbox');
+    // The raw tool name is for the tooltip.
+    expect(q(el, '.call-tool')?.getAttribute('title')).to.equal('list_inbox');
   });
 
   it('uses tone for a humanised dead letter status', async () => {
     // This failure state is hand-written because the recorded run completed.
     const el = await render({ ...recordedRunView, status: 'dead_letter', tone: 'failed' });
     expect(q(el, '.status-chip')?.classList.contains('failed')).to.equal(true);
-    expect(text(q(el, '.status-chip'))).to.equal('dead letter');
+    expect(text(q(el, '.status-chip'))).to.equal('gave up');
   });
 
   it('shows an error code on a failed tool call', async () => {
@@ -241,7 +244,7 @@ describe('<escurel-run-detail>', () => {
       sent.push((event as CustomEvent<RunWebviewToHost>).detail),
     );
     // The visible text is the accessible name; the id is a tooltip, never read aloud in place of it.
-    expect(text(q(el, '.link'))).to.equal(recordedRunView.targetPageId);
+    expect(text(q(el, '.link'))).to.equal(pageSlug(recordedRunView.targetPageId!));
     expect(q(el, '.link')?.getAttribute('aria-label')).to.equal(null);
     expect(text(q(el, '.copy-trace'))).to.equal('Copy trace id');
     expect(q(el, '.copy-trace')?.getAttribute('aria-label')).to.equal(null);
@@ -324,7 +327,8 @@ describe('<escurel-run-detail>', () => {
     } as RunView);
     const h1 = q(el, 'h1')!;
     expect(text(h1)).to.contain('supplier-risk on order-4500123');
-    expect(text(q(el, 'h1 .run-id'))).to.equal(recordedRunView.runId);
+    // The id is not in the heading at all: it is the tooltip of Copy run id.
+    expect(q(el, 'button.copy-run')!.getAttribute('title')).to.equal(recordedRunView.runId);
   });
 
   it('does not show a step as in progress under a finished run', async () => {
@@ -350,5 +354,285 @@ describe('<escurel-run-detail>', () => {
       plan: [{ step: 'draft the fold', status: 'in_progress' }],
     });
     expect(qa(el, '.plan-step').map(text).join(' ')).to.contain('in progress');
+  });
+
+  describe('wording and legibility', () => {
+    it('keeps the 26-character run id out of the heading: it sits behind a Copy run id button', async () => {
+      const el = await render({ ...recordedRunView, skill: 'supplier-risk' } as RunView);
+      expect(text(q(el, 'h1')).includes(recordedRunView.runId)).to.equal(false);
+      const copy = q(el, 'button.copy-run') as HTMLButtonElement;
+      expect(text(copy)).to.equal('Copy run id');
+      const sent: RunWebviewToHost[] = [];
+      el.addEventListener('escurel-message', (e) =>
+        sent.push((e as CustomEvent<RunWebviewToHost>).detail),
+      );
+      copy.click();
+      expect(sent).to.deep.equal([{ type: 'copy-run-id' }]);
+    });
+
+    it('describes who ran it as a sentence, not "Harness echo · Autonomy review · Depth 0"', async () => {
+      const el = await render({
+        ...recordedRunView,
+        harness: 'echo',
+        autonomy: 'review',
+        depth: 0,
+      });
+      const meta = text(q(el, '.meta'));
+      expect(meta).to.contain('Run by the echo agent');
+      expect(meta).to.not.contain('Harness');
+      expect(meta).to.not.contain('Depth 0');
+    });
+
+    it('a run that has just begun says it is starting, not that nothing was reported', async () => {
+      const el = await render({ ...recordedRunView, status: 'running', attempts: [], plan: [] });
+      const muted = qa(el, '.muted').map(text).join(' | ');
+      expect(muted).to.contain('Starting…');
+      expect(muted).to.contain('has not reported a plan yet');
+      expect(muted).to.not.contain('No attempts reported');
+    });
+
+    it('every status chip carries an icon of its own shape', async () => {
+      for (const status of ['processed', 'running', 'failed', 'dead_letter']) {
+        const el = await render({ ...recordedRunView, status });
+        expect(q(el, '.status-chip svg') !== null, status).to.equal(true);
+      }
+    });
+
+    // The pill was grey with green text (about 2.5:1 in light themes, 3:1 on dark teal).
+    const themes: Record<string, string> = {
+      light:
+        '--vscode-editor-background:#ffffff;--vscode-foreground:#3b3b3b;--vscode-charts-green:#388a34;--vscode-errorForeground:#a1260d;--vscode-badge-background:#c4c4c4;--vscode-badge-foreground:#333',
+      dark: '--vscode-editor-background:#1e1e1e;--vscode-foreground:#cccccc;--vscode-charts-green:#89d185;--vscode-errorForeground:#f48771;--vscode-badge-background:#4d4d4d;--vscode-badge-foreground:#fff',
+    };
+    for (const [name, tokens] of Object.entries(themes)) {
+      it(`keeps the status text above 4.5:1 in ${name} (processed and failed)`, async () => {
+        for (const status of ['processed', 'dead_letter']) {
+          const host = await fixture<HTMLElement>(
+            html`<div style=${tokens + ';background:var(--vscode-editor-background)'}>
+              <escurel-run-detail
+                .view=${{ ...recordedRunView, status, tone: status === 'processed' ? 'ok' : 'failed' }}
+              ></escurel-run-detail>
+            </div>`,
+          );
+          const el = host.querySelector('escurel-run-detail') as EscurelRunDetail;
+          await el.updateComplete;
+          const chip = el.shadowRoot!.querySelector('.status-chip') as HTMLElement;
+          const cs = getComputedStyle(chip);
+          const bg =
+            cs.backgroundColor === 'rgba(0, 0, 0, 0)'
+              ? getComputedStyle(host).backgroundColor
+              : cs.backgroundColor;
+          const ratio = contrast(cs.color, bg);
+          expect(
+            ratio >= 4.5,
+            `${name} ${status}: ${cs.color} on ${bg} = ${ratio.toFixed(2)}`,
+          ).to.equal(true);
+        }
+      });
+    }
+  });
+});
+
+function channel(v: number): number {
+  const c = v / 255;
+  return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
+}
+function luminance(rgb: string): number {
+  // color-mix() computes to `color(srgb 0.64 0.81 0.63)` (0..1), plain colours to `rgb(r, g, b)` (0..255).
+  const scale = rgb.startsWith('color(') ? 255 : 1;
+  const [r, g, b] = (rgb.match(/[\d.]+/g) ?? []).slice(0, 3).map((n) => Number(n) * scale);
+  return 0.2126 * channel(r!) + 0.7152 * channel(g!) + 0.0722 * channel(b!);
+}
+function contrast(a: string, b: string): number {
+  const [hi, lo] = [luminance(a), luminance(b)].sort((x, y) => y - x);
+  return (hi! + 0.05) / (lo! + 0.05);
+}
+
+describe('<escurel-run-detail> navigation', () => {
+  it('leads to the skill that ran and to the thread it belongs to', async () => {
+    const el = await render({ ...recordedRunView, skill: 'supplier-risk' } as RunView);
+    const sent: RunWebviewToHost[] = [];
+    el.addEventListener('escurel-message', (event) =>
+      sent.push((event as CustomEvent<RunWebviewToHost>).detail),
+    );
+    const skill = q(el, '.meta .view-skill') as HTMLButtonElement;
+    expect(text(skill)).to.equal('View skill: supplier-risk');
+    skill.click();
+    (q(el, '.meta .open-thread') as HTMLButtonElement).click();
+    // The thread button names no id: the host knows which thread this run belongs to.
+    expect(sent).to.deep.equal([
+      { type: 'view-skill', skill: 'supplier-risk' },
+      { type: 'open-thread', rootEventId: '' },
+    ]);
+  });
+
+  it('offers no skill link when the run does not know its skill', async () => {
+    const noSkill: RunView = { ...recordedRunView };
+    delete noSkill.skill;
+    const el = await render(noSkill);
+    expect(q(el, '.meta .view-skill')).to.equal(null);
+  });
+
+  describe('the trace', () => {
+    const view: RunView = {
+      ...recordedRunView,
+      startedAt: '2026-10-04T12:00:00.000Z',
+      producedPageId: 'markdown/instances/order/o1.md',
+      calls: [
+        {
+          seq: 1,
+          tool: 'read_page',
+          status: 'ok',
+          durationMs: 12.3,
+          bytes: { request: 100, response: 2048 },
+          at: '2026-10-04T12:00:01.000Z',
+        },
+        {
+          seq: 2,
+          tool: 'capture_event',
+          status: 'error',
+          errorCode: 'PERMISSION_DENIED',
+          durationMs: 1500,
+          bytes: { request: 300, response: 40 },
+          at: '2026-10-04T12:00:03.000Z',
+        },
+      ],
+    };
+
+    it('is a timeline: tool, outcome in words, offset, duration in human units', async () => {
+      const el = await render(view);
+      const rows = qa(el, '.tool-call');
+      expect(rows).to.have.length(2);
+      expect(text(rows[0]!)).to.contain('Read a page');
+      expect(text(rows[0]!)).to.contain('ok');
+      expect(text(rows[0]!)).to.contain('+1 s');
+      expect(text(rows[0]!)).to.contain('12 ms');
+      expect(text(rows[1]!)).to.contain('failed');
+      expect(text(rows[1]!)).to.contain('PERMISSION_DENIED');
+      expect(text(rows[1]!)).to.contain('1.5 s');
+      expect(
+        text(el.shadowRoot!.querySelector('section[aria-label="What the agent did"]')),
+      ).not.to.contain('request bytes');
+    });
+
+    it('expands a call to its sizes, and the summary row is keyboard operable', async () => {
+      const el = await render(view);
+      const first = qa(el, '.tool-call')[0] as HTMLDetailsElement;
+      expect(first.tagName).to.equal('DETAILS');
+      expect(first.open).to.equal(false);
+      expect(text(first.querySelector('summary'))).to.contain('Read a page');
+      expect(text(first.querySelector('.call-sizes'))).to.equal('sent 100 B · received 2 KB');
+    });
+
+    it('links to the draft the run produced, by asking the host (no id on the wire)', async () => {
+      const el = await render(view);
+      const sent: RunWebviewToHost[] = [];
+      el.addEventListener('escurel-message', (event) =>
+        sent.push((event as CustomEvent<RunWebviewToHost>).detail),
+      );
+      const open = q(el, 'button.open-produced') as HTMLButtonElement;
+      expect(text(open)).to.contain('Open what this run produced');
+      open.click();
+      expect(sent).to.deep.equal([{ type: 'open-produced' }]);
+    });
+
+    it('has no produced link when the run produced nothing', async () => {
+      const el = await render({ ...view, producedPageId: undefined });
+      expect(q(el, 'button.open-produced')).to.equal(null);
+    });
+  });
+});
+
+describe('a failed run', () => {
+  it('says why at the top, in full, and not only in a tooltip', async () => {
+    const el = await fixture<EscurelRunDetail>(
+      html`<escurel-run-detail
+        .view=${{
+          ...recordedRunView,
+          status: 'dead_letter',
+          tone: 'failed',
+          failure: 'permanent — harness "refusing" is not allowed',
+        }}
+      ></escurel-run-detail>`,
+    );
+    await el.updateComplete;
+    const banner = el.shadowRoot!.querySelector('.failure-banner') as HTMLElement;
+    expect(banner.getAttribute('role')).to.equal('alert');
+    expect(banner.textContent).to.contain('Gave up:');
+    expect(banner.textContent).to.contain('harness "refusing" is not allowed');
+  });
+  it('has no banner for a run that did not fail', async () => {
+    const el = await fixture<EscurelRunDetail>(
+      html`<escurel-run-detail .view=${recordedRunView}></escurel-run-detail>`,
+    );
+    await el.updateComplete;
+    expect(el.shadowRoot!.querySelector('.failure-banner')).to.equal(null);
+  });
+  it('is honest about what the trace records', async () => {
+    const el = await fixture<EscurelRunDetail>(
+      html`<escurel-run-detail .view=${recordedRunView}></escurel-run-detail>`,
+    );
+    await el.updateComplete;
+    expect(el.shadowRoot!.querySelector('.timeline-note')!.textContent).to.contain(
+      'not its arguments or its result',
+    );
+  });
+});
+
+describe('cancelling a run asks first, inline', () => {
+  const running = (): RunView => ({
+    ...recordedRunView,
+    status: 'running',
+    controls: [{ action: 'cancel', label: 'Cancel run', enabled: true, hint: 'Stops the run.' }],
+  });
+  it('shows the question and the consequence, and sends nothing until it is confirmed', async () => {
+    const el = await fixture<EscurelRunDetail>(
+      html`<escurel-run-detail .view=${running()}></escurel-run-detail>`,
+    );
+    await el.updateComplete;
+    const sent: RunWebviewToHost[] = [];
+    el.addEventListener('escurel-message', (e) =>
+      sent.push((e as CustomEvent<RunWebviewToHost>).detail),
+    );
+    (el.shadowRoot!.querySelector('.run-control') as HTMLButtonElement).click();
+    await el.updateComplete;
+    const confirm = el.shadowRoot!.querySelector('.confirm')!;
+    expect(confirm.textContent).to.contain('Cancel this run?');
+    expect(confirm.textContent).to.contain('Work already done is kept');
+    expect(sent).to.deep.equal([]);
+    (el.shadowRoot!.querySelector('.confirm-no') as HTMLButtonElement).click();
+    await el.updateComplete;
+    expect(el.shadowRoot!.querySelector('.confirm')).to.equal(null);
+    expect(sent).to.deep.equal([]);
+    (el.shadowRoot!.querySelector('.run-control') as HTMLButtonElement).click();
+    await el.updateComplete;
+    (el.shadowRoot!.querySelector('.confirm-yes') as HTMLButtonElement).click();
+    expect(sent).to.deep.equal([
+      { type: 'run-control', action: 'cancel', runId: recordedRunView.runId },
+    ]);
+  });
+  it('does not ask before a retry, and the retry says what it does', async () => {
+    const el = await fixture<EscurelRunDetail>(
+      html`<escurel-run-detail
+        .view=${{
+          ...recordedRunView,
+          status: 'failed',
+          controls: [
+            {
+              action: 'retry',
+              label: 'Retry',
+              enabled: true,
+              hint: 'Starts a new run. This attempt stays in history.',
+            },
+          ],
+        }}
+      ></escurel-run-detail>`,
+    );
+    await el.updateComplete;
+    const btn = el.shadowRoot!.querySelector('.run-control') as HTMLButtonElement;
+    expect(btn.getAttribute('title')).to.contain('stays in history');
+    btn.click();
+    await el.updateComplete;
+    expect(el.shadowRoot!.querySelector('.confirm')).to.equal(null);
   });
 });
