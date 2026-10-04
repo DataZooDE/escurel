@@ -362,7 +362,10 @@ export class RunnerTree implements vscode.TreeDataProvider<RunsNode>, vscode.Dis
     const f = this.filter;
     const note = filterNote(f);
     // The insight line lives in the message: a view's description is not shown in this header.
-    view.message = [d.text, note ? `Filtered: ${note}` : undefined].filter(Boolean).join(' · ');
+    // The dispatch row below already says "Agents are running"; the message only adds how recent that is.
+    const health =
+      d.health === 'ok' && !d.paused ? d.text.replace(/^Agents are running · /, 'Agents ') : d.text;
+    view.message = [health, note ? `Filtered: ${note}` : undefined].filter(Boolean).join(' · ');
     const g = groupRuns(this.records, now);
     const needs = g.waiting.length + g.attention.length;
     view.badge =

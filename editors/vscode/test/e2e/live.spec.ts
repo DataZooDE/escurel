@@ -39,7 +39,7 @@ test('the story is on screen: knowledge, threads, awaiting, inbox and the runner
   await expect(pane(page, 'Awaiting You').getByRole('treeitem').first()).toBeVisible();
   await expect(pane(page, 'Inbox').getByRole('treeitem').first()).toBeVisible();
   // The agents are described in plain words (no 'harness'), and Pause/Resume is a row of its own.
-  await expect(pane(page, 'Runs').getByText(/Agents are running · last seen/)).toBeVisible();
+  await expect(pane(page, 'Runs').getByText(/^Agents last seen/)).toBeVisible();
   await expect(pane(page, 'Runs').getByText(/harness/i)).toHaveCount(0);
   await expect(
     pane(page, 'Runs').getByRole('treeitem', { name: /Agents are running/ }),
@@ -617,9 +617,9 @@ test('a rating change is proposed from the page, approved by a reviewer, and the
   await wv.getByRole('button', { name: 'Change rating…' }).click();
   await answerQuickInput(page, /^Change \w+ in the source$/, 'B');
   await answerQuickInput(page, /^Note for the reviewer/, 'Three late deliveries in Q3.');
-  await expect(
-    page.locator('.notification-toast', { hasText: /Proposed: rating to B/ }),
-  ).toBeVisible({ timeout: 20_000 });
+  await expect(page.locator('.statusbar', { hasText: /Proposed: rating to B/ })).toBeVisible({
+    timeout: 20_000,
+  });
 
   // Proposing touched nothing: the portal still says A.
   const base = outside(stack.home, 'ratings');
@@ -652,7 +652,7 @@ test('an MCP row works the same way: external data, a proposed change, applied o
   await answerQuickInput(page, /^Change \w+ in the source$/, 'confirmed');
   await answerQuickInput(page, /^Note for the reviewer/, 'Supplier confirmed by phone.');
   await expect(
-    page.locator('.notification-toast', { hasText: /Proposed: status to confirmed/ }),
+    page.locator('.statusbar', { hasText: /Proposed: status to confirmed/ }),
   ).toBeVisible({ timeout: 20_000 });
   const mine = await waitForDraft(stack, 'delivery-confirmation');
   const done = await stack.call('promote_draft', { draft_id: mine.draft_id });
@@ -674,9 +674,9 @@ test('a change based on a row that has moved is refused, and the portal is not t
   await wv.getByRole('button', { name: 'Change rating…' }).click();
   await answerQuickInput(page, /^Change \w+ in the source$/, 'A');
   await answerQuickInput(page, /^Note for the reviewer/, 'Upgrade after the audit.');
-  await expect(
-    page.locator('.notification-toast', { hasText: /Proposed: rating to A/ }),
-  ).toBeVisible({ timeout: 20_000 });
+  await expect(page.locator('.statusbar', { hasText: /Proposed: rating to A/ })).toBeVisible({
+    timeout: 20_000,
+  });
 
   // Someone else changes the supplier at the portal while the proposal waits for a reviewer.
   const base = outside(stack.home, 'ratings');
@@ -707,9 +707,9 @@ test('when the portal is down a promoted change is refused, recorded as failed, 
   await wv.getByRole('button', { name: 'Change rating…' }).click();
   await answerQuickInput(page, /^Change \w+ in the source$/, 'A');
   await answerQuickInput(page, /^Note for the reviewer/, 'Strong quarter.');
-  await expect(
-    page.locator('.notification-toast', { hasText: /Proposed: rating to A/ }),
-  ).toBeVisible({ timeout: 20_000 });
+  await expect(page.locator('.statusbar', { hasText: /Proposed: rating to A/ })).toBeVisible({
+    timeout: 20_000,
+  });
 
   // The portal goes away (a real process, killed): nothing can be sent.
   const mine = await waitForDraft(stack, 'nordform.md');
@@ -774,9 +774,9 @@ test('a row of a SQL database is changed through a proposal, only after a review
   await wv.getByRole('button', { name: 'Change status…' }).click();
   await answerQuickInput(page, /^Change \w+ in the source$/, 'shipped');
   await answerQuickInput(page, /^Note for the reviewer/, 'Left the warehouse today.');
-  await expect(
-    page.locator('.notification-toast', { hasText: /Proposed: status to shipped/ }),
-  ).toBeVisible({ timeout: 20_000 });
+  await expect(page.locator('.statusbar', { hasText: /Proposed: status to shipped/ })).toBeVisible({
+    timeout: 20_000,
+  });
 
   // Proposing touched nothing: the database file still says open.
   expect(orderInDb(stack.home, 'SO-100231')).toEqual({ status: 'open', qty: 40 });
@@ -935,9 +935,11 @@ test('a skill opens as a readable page, and Show Markdown opens its source', asy
   await chooseMenuItem(page, 'View skill');
   const wv = await webviewWith(page, 'escurel-skill-page');
   await expect(wv.locator('escurel-skill-page h1')).toContainText(/supplier/i);
-  for (const heading of ['About', 'Fields', 'Records', 'Recent runs']) {
+  for (const heading of ['About', 'Records', 'Recent runs']) {
     await expect(wv.getByRole('heading', { name: new RegExp(`^${heading}`) })).toBeVisible();
   }
+  // A section with nothing in it is not drawn; one line says so.
+  await expect(wv.locator('escurel-skill-page .nothing-yet')).toContainText(/no fields declared/i);
   await stack.shot('09-skill-page');
   await wv.getByRole('button', { name: 'Show Markdown' }).click();
   await expect(page.locator('.tab.active', { hasText: 'supplier-risk.md' })).toBeVisible();
