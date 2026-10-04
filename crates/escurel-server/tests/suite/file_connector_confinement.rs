@@ -76,8 +76,10 @@ async fn a_directory_connector_reads_only_what_the_operator_exposes() {
     let conn = Connection::open(db_dir.path().join("escurel.duckdb")).unwrap();
     Migrator::up(&conn).unwrap();
     let indexer = Arc::new(Indexer::new(store, embedder, conn, TENANT).unwrap());
-    let mut policy = EgressPolicy::default();
-    policy.sql_file_dirs = vec![exposed.path().to_path_buf()];
+    let policy = EgressPolicy {
+        sql_file_dirs: vec![exposed.path().to_path_buf()],
+        ..EgressPolicy::default()
+    };
     let p = EscurelProcess::spawn(Opts {
         auth: AuthMode::TestIssuer,
         config_overrides: ConfigOverrides {

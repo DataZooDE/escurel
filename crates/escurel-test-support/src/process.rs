@@ -457,11 +457,12 @@ impl EscurelProcess {
             // Tests keep their directory-connector fixtures in temp dirs, so the default policy of a
             // TEST gateway exposes the temp dir (a production gateway exposes nothing until the
             // operator sets ESCUREL_SQL_FILE_DIRS). A test of the confinement passes its own policy.
-            egress: overrides.egress.unwrap_or_else(|| {
-                let mut p = escurel_server::egress::EgressPolicy::default();
-                p.sql_file_dirs = vec![std::env::temp_dir()];
-                p
-            }),
+            egress: overrides
+                .egress
+                .unwrap_or_else(|| escurel_server::egress::EgressPolicy {
+                    sql_file_dirs: vec![std::env::temp_dir()],
+                    ..Default::default()
+                }),
             listen: "127.0.0.1:0".to_owned(),
             version,
             readiness,
