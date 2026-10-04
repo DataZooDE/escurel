@@ -85,6 +85,7 @@ pub fn create_events_pg_table_sql() -> String {
             kind              VARCHAR    DEFAULT 'user', \
             root_event_id     VARCHAR, \
             run_id            VARCHAR, \
+            revision_binding_sha256 VARCHAR, \
             PRIMARY KEY (tenant, event_id)\
         );"
     )
@@ -106,6 +107,7 @@ pub fn migrate_events_pg_lineage_sql() -> Vec<String> {
         "root_event_id VARCHAR",
         "run_id VARCHAR",
         "seq BIGINT",
+        "revision_binding_sha256 VARCHAR",
     ]
     .into_iter()
     .map(|col| {

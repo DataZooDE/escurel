@@ -64,6 +64,9 @@ function eventDetail(
   const counts = eventCounts(node, byId);
   return {
     title: node.title,
+    ...(raw.label_skill === 'evolve:validation' && stringAttr(raw, 'body')
+      ? { bodyTitle: 'Validation evidence', body: stringAttr(raw, 'body') }
+      : {}),
     rows: rows(
       row('label_skill', raw.label_skill),
       row('kind', raw.kind),

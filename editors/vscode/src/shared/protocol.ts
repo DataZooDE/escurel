@@ -39,6 +39,8 @@ export interface ThreadStrip {
 
 export interface PageModel {
   pageId: string;
+  /** Stored bytes displayed by this page view. Used for revision-bound actions. */
+  contentSha256?: string;
   title: string;
   skill: {
     id: string;
@@ -279,6 +281,7 @@ export type ThreadHostToWebview =
 
 export type ThreadWebviewToHost =
   | { type: 'ready' }
+  | { type: 'open-wikilink'; wikilink: string }
   | { type: 'open-node'; nodeId: string }
   | { type: 'select-node'; nodeId: string }
   | { type: 'promote'; changesetId?: string; draftId?: string }

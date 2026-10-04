@@ -109,7 +109,8 @@ pub fn create_events_lake_table_sql() -> String {
             provenance       VARCHAR, \
             kind             VARCHAR, \
             root_event_id    VARCHAR, \
-            run_id           VARCHAR\
+            run_id           VARCHAR, \
+            revision_binding_sha256 VARCHAR\
         );"
     )
 }
@@ -190,6 +191,7 @@ pub fn attach_events_lake(conn: &Connection, cfg: &LakeConfig) -> Result<(), Sna
         "root_event_id VARCHAR",
         "run_id VARCHAR",
         "seq BIGINT",
+        "revision_binding_sha256 VARCHAR",
     ] {
         conn.execute_batch(&format!(
             "ALTER TABLE {APPEND_LAKE_ALIAS}.{EVENTS_PG_TABLE_NAME} \

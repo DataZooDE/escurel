@@ -126,6 +126,11 @@
         "icon": "$(code)"
       },
       {
+        "command": "escurel.importEvolveProblem",
+        "title": "Import Anofox Evolve V2 problem…",
+        "category": "Escurel"
+      },
+      {
         "command": "escurel.startSkill",
         "title": "Start skill\u2026",
         "category": "Escurel"

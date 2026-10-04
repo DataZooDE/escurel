@@ -604,7 +604,17 @@ fn gate_and_enqueue(
     // path does not, which is why this is the single chokepoint both routes
     // pass through. (`OPERATION_STATUS_LABEL` is `escurel:run-status`, one
     // member of the namespace.)
-    if trigger.is_system || trigger.label_skill.starts_with("escurel:") {
+    if trigger.is_system
+        || trigger.label_skill.starts_with("escurel:")
+        || trigger.label_skill == "evolve_preflight"
+        || trigger.label_skill == "evolve_validate"
+        || trigger.label_skill == "evolve_publish_candidate"
+        || (trigger.label_skill == "evolve_run"
+            && trigger
+                .manual
+                .as_ref()
+                .is_none_or(|manual| manual.mode != "plan"))
+    {
         tracing::debug!(
             target: "escurel_runner",
             via,
@@ -3695,6 +3705,62 @@ mod tests {
             0,
             "a status event must create no ledger row"
         );
+    }
+
+    #[test]
+    fn evolve_validation_control_event_creates_no_runner_run() {
+        let (ledger, queue, limits, governor, metrics, inflight, _consumer) = gate_deps();
+        let preflight = gate_and_enqueue(
+            &ledger,
+            &queue,
+            &limits,
+            &governor,
+            &metrics,
+            &inflight,
+            trigger_with_label("evt-preflight-1", "evolve_preflight"),
+            "webhook",
+        );
+        assert!(!preflight);
+        let admitted = gate_and_enqueue(
+            &ledger,
+            &queue,
+            &limits,
+            &governor,
+            &metrics,
+            &inflight,
+            trigger_with_label("evt-validation-1", "evolve_validate"),
+            "webhook",
+        );
+        assert!(!admitted);
+        assert_eq!(ledger.count_all_runs().unwrap(), 0);
+    }
+
+    #[test]
+    fn evolve_execution_approval_is_handled_by_evolve_but_plan_is_dispatchable() {
+        let (ledger, queue, limits, governor, metrics, inflight, _consumer) = gate_deps();
+        let mut approval = trigger_with_label("evt-evolve-approval", "evolve_run");
+        approval.manual = Some(escurel_runner_core::ManualStart {
+            harness: None,
+            mode: "run".into(),
+            requested_by: Some("dev-user".into()),
+            approved_plan_run_id: Some("plan-1".into()),
+        });
+        assert!(!gate_and_enqueue(
+            &ledger, &queue, &limits, &governor, &metrics, &inflight, approval, "webhook"
+        ));
+        assert_eq!(ledger.count_all_runs().unwrap(), 0);
+
+        let mut plan = trigger_with_label("evt-evolve-plan", "evolve_run");
+        plan.manual = Some(escurel_runner_core::ManualStart {
+            harness: None,
+            mode: "plan".into(),
+            requested_by: Some("dev-user".into()),
+            approved_plan_run_id: None,
+        });
+        assert!(gate_and_enqueue(
+            &ledger, &queue, &limits, &governor, &metrics, &inflight, plan, "webhook"
+        ));
+        assert_eq!(ledger.count_all_runs().unwrap(), 1);
     }
 
     /// Phase 1 (`/trigger` binding): a single-tenant runner takes its OWN

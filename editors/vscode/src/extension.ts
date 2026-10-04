@@ -25,6 +25,7 @@ import { registerStartInTerminal } from './start/terminal';
 import { registerStartSkill } from './start/startSkill';
 import { registerApprovePlan } from './start/approvePlan';
 import { registerRunnerView, type RunnerTree } from './views/runner';
+import { registerImportEvolveProblem } from './evolve/importProblem';
 
 /** What `activate` returns — the integration suite drives the extension through it. */
 export interface EscurelApi {
@@ -50,6 +51,7 @@ export function activate(context: vscode.ExtensionContext): EscurelApi | undefin
   registerControlCommands(context, services);
   context.subscriptions.push(services);
   registerStartInTerminal(context, services);
+  registerImportEvolveProblem(context, services);
   registerSkillDiagnostics(context, () => services.client);
   WikilinkProvider.register(context);
   const knowledge = KnowledgeTree.register(context, () => services.client);

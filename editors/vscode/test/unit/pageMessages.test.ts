@@ -24,6 +24,21 @@ describe('resolvePageMessage: start-skill', () => {
     });
   });
 
+  it('passes the host-rendered revision to a contextual Evolve action', () => {
+    const reviewed = {
+      ...model,
+      contentSha256: 'a'.repeat(64),
+      actions: [{ skill: 'evolve_run', label: 'Plan experiment' }],
+    };
+    expect(resolvePageMessage(reviewed, {
+      type: 'start-skill', skill: 'evolve_run', mode: 'plan',
+    })).toEqual({
+      command: 'escurel.startSkill',
+      args: [{ skill: 'evolve_run', pageId: model.pageId, mode: 'plan',
+        expectedPageSha256: 'a'.repeat(64) }],
+    });
+  });
+
   it('refuses a skill the page does not offer', () => {
     expect(
       resolvePageMessage(model, {

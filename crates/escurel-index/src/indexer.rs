@@ -120,6 +120,9 @@ pub struct Indexer {
     /// [`Self::attach_events_pg`] runs. Mirrors [`Self::chat_backend`]
     /// exactly, including the `OnceLock` rationale.
     events_backend: std::sync::OnceLock<EventsBackend>,
+    /// Lazy in-place upgrade for local event files created before the
+    /// server-owned Evolve revision column existed.
+    pub(crate) evolve_revision_column_ready: std::sync::OnceLock<()>,
     /// Which physical table [`crate::drafts`]'s held-write methods read
     /// and write. Unset (→ `DraftsBackend::Local`) until
     /// [`Self::attach_drafts_pg`] runs. Mirrors [`Self::events_backend`].
@@ -377,6 +380,7 @@ impl Indexer {
             contextualize: crate::backend::ContextualizeMode::default(),
             chat_backend: std::sync::OnceLock::new(),
             events_backend: std::sync::OnceLock::new(),
+            evolve_revision_column_ready: std::sync::OnceLock::new(),
             drafts_backend: std::sync::OnceLock::new(),
             crdt_pg_backend: std::sync::OnceLock::new(),
         })

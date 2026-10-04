@@ -13,6 +13,17 @@ function recorded() {
 }
 
 describe('buildInspectors', () => {
+  it('shows only validation receipt body in an event inspector', () => {
+    const { view, nodes } = recorded();
+    const event = view.nodes.find((node) => node.kind === 'event')!;
+    const patched = nodes.map((node) =>
+      node.id === event.id
+        ? { ...node, label_skill: 'evolve:validation', body: 'Open [[evolve_validation_report::run-1]]' }
+        : node,
+    );
+    const detail = buildInspectors(view, patched)[event.id];
+    expect(detail?.body).toBe('Open [[evolve_validation_report::run-1]]');
+  });
   it('uses recorded run data for rows, summary and timing', () => {
     const { view, nodes } = recorded();
     const run = view.nodes.find((node) => node.kind === 'run')!;

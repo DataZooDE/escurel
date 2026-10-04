@@ -18,6 +18,15 @@ const TENANT: &str = "stuttgart-ai";
 const NOTE_SKILL: &str = "---\ntype: skill\nid: note\ndescription: A note.\n\
     visibility: public\n---\n# note\n";
 const NOTE_A: &str = "---\ntype: instance\nskill: note\nid: a\n---\n# A\n";
+const EVOLVE_PROBLEM_SKILL: &str = "---\ntype: skill\nid: evolve_problem\ndescription: Evolve problem.\nvisibility: public\n---\n# Evolve problem\n";
+const EVOLVE_PROBLEM_A: &str = "---\ntype: instance\nskill: evolve_problem\nid: a\n---\n# A\n";
+const PRIVATE_EVOLVE_PROBLEM_SKILL: &str = "---\ntype: skill\nid: evolve_problem\ndescription: Owner problem.\nowner_field: owner_subject\nacl:\n  read: [owner]\n  create: [owner]\n  update: [owner]\n---\n# Evolve problem\n";
+const PRIVATE_EVOLVE_PROBLEM_A: &str =
+    "---\ntype: instance\nskill: evolve_problem\nid: a\nowner_subject: test-subject\n---\n# A\n";
+const EVOLVE_EXPERIMENT_SKILL: &str = "---\ntype: skill\nid: evolve_experiment\ndescription: Evolve experiment.\nowner_field: owner_subject\nacl:\n  read: [owner]\n  create: [admin]\n  update: [admin]\n---\n# Evolve experiment\n";
+const EVOLVE_EXPERIMENT_A: &str = "---\ntype: instance\nskill: evolve_experiment\nid: a\nowner_subject: test-subject\nstatus: completed\nbest_program_id: 7\nnext_validation_action: evolve_validate_winner\n---\n# A\n";
+const EVOLVE_REPORT_SKILL: &str = "---\ntype: skill\nid: evolve_validation_report\ndescription: Evolve private report.\nowner_field: owner_subject\nacl:\n  read: [owner]\n  create: [admin]\n  update: [admin]\n---\n# Evolve report\n";
+const EVOLVE_REPORT_A: &str = "---\ntype: instance\nskill: evolve_validation_report\nid: a\nowner_subject: test-subject\nstatus: passed\neffective_passed: true\nwinner_program_id: 7\nreport_sha256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\nnext_candidate_action: evolve_publish_candidate\n---\n# Report\n";
 
 async fn start() -> EscurelProcess {
     EscurelProcess::spawn(Opts {
@@ -72,6 +81,362 @@ async fn capture_event_requires_a_label_skill() {
     )
     .await;
     assert!(ok.get("error").is_none(), "a labelled capture lands: {ok}");
+}
+
+#[tokio::test]
+async fn evolve_run_capture_checks_and_stamps_the_exact_problem_revision() {
+    use sha2::{Digest, Sha256};
+
+    let p = EscurelProcess::spawn(Opts {
+        auth: AuthMode::TestIssuer,
+        config_overrides: ConfigOverrides::default(),
+        fixtures: Some(
+            FixtureBuilder::new()
+                .tenant(TENANT)
+                .skill("note", NOTE_SKILL)
+                .instance("note", "a", NOTE_A)
+                .skill("evolve_problem", EVOLVE_PROBLEM_SKILL)
+                .instance("evolve_problem", "a", EVOLVE_PROBLEM_A)
+                .done(),
+        ),
+    })
+    .await;
+    let token = p.mint_token(TENANT, Role::Admin);
+    let catalog = call(&p, &token, "list_skills", json!({})).await;
+    assert_eq!(
+        catalog["result"]["structuredContent"]["evolve_revision_binding"],
+        "gateway-owned-v2"
+    );
+    let target = "markdown/instances/evolve_problem/a.md";
+    let hash = format!("{:x}", Sha256::digest(EVOLVE_PROBLEM_A.as_bytes()));
+    let page = call(&p, &token, "expand", json!({"page_id": target})).await;
+    assert!(page.get("error").is_none(), "{page}");
+    assert_eq!(page["result"]["structuredContent"]["content_sha256"], hash);
+    let request = |expected: &str| {
+        json!({
+            "label_skill": "evolve_run",
+            "event_id": "EVOLVE-ACTION-1",
+            "instance_page_id": target,
+            "source": "workbench",
+            "provenance": {"manual": {
+                "mode": "run",
+                "expected_page_sha256": expected,
+                "target_page_sha256": "forged",
+                "target_page_sha256_gateway_verified": false
+            }}
+        })
+    };
+
+    let stale = call(&p, &token, "capture_event", request(&"0".repeat(64))).await;
+    assert_eq!(stale["error"]["code"], json!(-32602), "{stale}");
+
+    let mut wrong_type = request(&format!("{:x}", Sha256::digest(NOTE_A.as_bytes())));
+    wrong_type["instance_page_id"] = json!("markdown/instances/note/a.md");
+    let wrong_type = call(&p, &token, "capture_event", wrong_type).await;
+    assert_eq!(wrong_type["error"]["code"], json!(-32602), "{wrong_type}");
+
+    let accepted = call(&p, &token, "capture_event", request(&hash)).await;
+    assert!(accepted.get("error").is_none(), "{accepted}");
+    assert_eq!(
+        accepted["result"]["structuredContent"]["provenance"]["manual"]["target_page_sha256"],
+        hash
+    );
+    assert_eq!(
+        accepted["result"]["structuredContent"]["provenance"]["manual"]["target_page_sha256_gateway_verified"],
+        true
+    );
+    assert_eq!(
+        accepted["result"]["structuredContent"]["provenance"]["manual"]["requested_by"],
+        "test-subject"
+    );
+    let attested = call(
+        &p,
+        &token,
+        "list_events",
+        json!({"event_id": "EVOLVE-ACTION-1"}),
+    )
+    .await;
+    assert_eq!(
+        attested["result"]["structuredContent"]["events"][0]["revision_binding_attested"],
+        true
+    );
+    let preempted = call(
+        &p,
+        &token,
+        "capture_event",
+        json!({"event_id": "EVOLVE-PREEMPTED", "label_skill": "note",
+               "instance_page_id": "markdown/instances/note/a.md"}),
+    )
+    .await;
+    assert!(preempted.get("error").is_none(), "{preempted}");
+    let mut collided = request(&hash);
+    collided["event_id"] = json!("EVOLVE-PREEMPTED");
+    let collided = call(&p, &token, "capture_event", collided).await;
+    assert!(collided.get("error").is_none(), "{collided}");
+    let row = call(
+        &p,
+        &token,
+        "list_events",
+        json!({"event_id": "EVOLVE-PREEMPTED"}),
+    )
+    .await;
+    assert_eq!(
+        row["result"]["structuredContent"]["events"][0]["label_skill"],
+        "note"
+    );
+    let changed = call(
+        &p,
+        &token,
+        "update_page",
+        json!({
+            "page_id": target,
+            "content": format!("{EVOLVE_PROBLEM_A}\nEdited after capture.\n"),
+            "base_sha256": hash
+        }),
+    )
+    .await;
+    assert!(changed.get("error").is_none(), "{changed}");
+    let edited_page = call(&p, &token, "expand", json!({"page_id": target})).await;
+    assert!(edited_page.get("error").is_none(), "{edited_page}");
+    let retry = call(&p, &token, "capture_event", request(&hash)).await;
+    assert!(retry.get("error").is_none(), "{retry}");
+    assert_eq!(
+        retry["result"]["structuredContent"]["event_id"],
+        "EVOLVE-ACTION-1"
+    );
+}
+
+#[tokio::test]
+async fn evolve_preflight_capture_is_private_and_revision_bound() {
+    use sha2::{Digest, Sha256};
+
+    let p = EscurelProcess::spawn(Opts {
+        auth: AuthMode::TestIssuer,
+        fixtures: Some(
+            FixtureBuilder::new()
+                .tenant(TENANT)
+                .skill("evolve_problem", PRIVATE_EVOLVE_PROBLEM_SKILL)
+                .instance("evolve_problem", "a", PRIVATE_EVOLVE_PROBLEM_A)
+                .done(),
+        ),
+        ..Default::default()
+    })
+    .await;
+    let owner = p.mint_token(TENANT, Role::Agent);
+    let other = p.mint_token_with_sub(TENANT, Role::Agent, "other-user");
+    let catalog = call(&p, &owner, "list_skills", json!({})).await;
+    assert_eq!(
+        catalog["result"]["structuredContent"]["evolve_preflight_revision_binding"],
+        "gateway-owned-v1"
+    );
+    let target = "markdown/instances/evolve_problem/a.md";
+    let hash = format!("{:x}", Sha256::digest(PRIVATE_EVOLVE_PROBLEM_A.as_bytes()));
+    let request = |revision: &str| {
+        json!({
+            "label_skill": "evolve_preflight", "event_id": "EVOLVE-PREFLIGHT-A",
+            "instance_page_id": target, "source": "workbench",
+            "provenance": {"manual": {"mode": "run", "expected_page_sha256": revision}}
+        })
+    };
+    let stale = call(&p, &owner, "capture_event", request(&"0".repeat(64))).await;
+    assert_eq!(stale["error"]["code"], -32602, "{stale}");
+    let denied = call(&p, &other, "capture_event", request(&hash)).await;
+    assert_eq!(denied["error"]["code"], -32602, "{denied}");
+    let accepted = call(&p, &owner, "capture_event", request(&hash)).await;
+    assert!(accepted.get("error").is_none(), "{accepted}");
+    let row = call(
+        &p,
+        &owner,
+        "list_events",
+        json!({"event_id": "EVOLVE-PREFLIGHT-A"}),
+    )
+    .await;
+    assert_eq!(
+        row["result"]["structuredContent"]["events"][0]["revision_binding_attested"],
+        true
+    );
+    assert_eq!(
+        row["result"]["structuredContent"]["events"][0]["status"],
+        "processed"
+    );
+    let hidden = call(
+        &p,
+        &other,
+        "list_events",
+        json!({"event_id": "EVOLVE-PREFLIGHT-A"}),
+    )
+    .await;
+    assert!(
+        hidden["result"]["structuredContent"]["events"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    let inbox = call(&p, &owner, "list_inbox", json!({})).await;
+    assert!(
+        inbox["result"]["structuredContent"]["events"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[tokio::test]
+async fn evolve_validation_capture_binds_the_displayed_winner_and_revision() {
+    use sha2::{Digest, Sha256};
+
+    let p = EscurelProcess::spawn(Opts {
+        auth: AuthMode::TestIssuer,
+        fixtures: Some(
+            FixtureBuilder::new()
+                .tenant(TENANT)
+                .skill("evolve_experiment", EVOLVE_EXPERIMENT_SKILL)
+                .instance("evolve_experiment", "a", EVOLVE_EXPERIMENT_A)
+                .done(),
+        ),
+        ..Default::default()
+    })
+    .await;
+    let token = p.mint_token(TENANT, Role::Agent);
+    let catalog = call(&p, &token, "list_skills", json!({})).await;
+    assert_eq!(
+        catalog["result"]["structuredContent"]["evolve_validation_revision_binding"],
+        "gateway-owned-v1"
+    );
+    let target = "markdown/instances/evolve_experiment/a.md";
+    let hash = format!("{:x}", Sha256::digest(EVOLVE_EXPERIMENT_A.as_bytes()));
+    let request = |winner: u64, revision: &str| {
+        json!({
+            "label_skill": "evolve_validate", "event_id": "EVOLVE-VALIDATE-A",
+            "instance_page_id": target, "source": "workbench",
+            "provenance": {"manual": {"mode": "run", "expected_page_sha256": revision,
+                "expected_winner_program_id": winner}}
+        })
+    };
+    let wrong_winner = call(&p, &token, "capture_event", request(8, &hash)).await;
+    assert_eq!(wrong_winner["error"]["code"], -32602, "{wrong_winner}");
+    let stale = call(&p, &token, "capture_event", request(7, &"0".repeat(64))).await;
+    assert_eq!(stale["error"]["code"], -32602, "{stale}");
+    let accepted = call(&p, &token, "capture_event", request(7, &hash)).await;
+    assert!(accepted.get("error").is_none(), "{accepted}");
+    let stored = call(
+        &p,
+        &token,
+        "list_events",
+        json!({"event_id": "EVOLVE-VALIDATE-A"}),
+    )
+    .await;
+    assert_eq!(
+        stored["result"]["structuredContent"]["events"][0]["revision_binding_attested"],
+        true
+    );
+    assert_eq!(
+        stored["result"]["structuredContent"]["events"][0]["provenance"]["manual"]["target_page_sha256"],
+        hash
+    );
+    assert_eq!(
+        stored["result"]["structuredContent"]["events"][0]["status"],
+        "processed"
+    );
+    let inbox = call(&p, &token, "list_inbox", json!({})).await;
+    assert!(
+        inbox["result"]["structuredContent"]["events"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    let other_token = p.mint_token_with_sub(TENANT, Role::Agent, "other-user");
+    let mut other_request = request(7, &hash);
+    other_request["event_id"] = json!("EVOLVE-VALIDATE-OTHER");
+    let denied = call(&p, &other_token, "capture_event", other_request).await;
+    assert_eq!(denied["error"]["code"], -32602, "{denied}");
+    let mut collided = request(7, &hash);
+    collided["event_id"] = json!("EVOLVE-VALIDATE-A");
+    let denied_collision = call(&p, &other_token, "capture_event", collided).await;
+    assert_eq!(
+        denied_collision["error"]["code"], -32602,
+        "{denied_collision}"
+    );
+}
+
+#[tokio::test]
+async fn evolve_candidate_capture_requires_owner_confirmation_and_exact_report() {
+    use sha2::{Digest, Sha256};
+
+    let p = EscurelProcess::spawn(Opts {
+        auth: AuthMode::TestIssuer,
+        fixtures: Some(
+            FixtureBuilder::new()
+                .tenant(TENANT)
+                .skill("evolve_validation_report", EVOLVE_REPORT_SKILL)
+                .instance("evolve_validation_report", "a", EVOLVE_REPORT_A)
+                .done(),
+        ),
+        ..Default::default()
+    })
+    .await;
+    let token = p.mint_token(TENANT, Role::Agent);
+    let catalog = call(&p, &token, "list_skills", json!({})).await;
+    assert_eq!(
+        catalog["result"]["structuredContent"]["evolve_candidate_revision_binding"],
+        "gateway-owned-v1"
+    );
+    let target = "markdown/instances/evolve_validation_report/a.md";
+    let hash = format!("{:x}", Sha256::digest(EVOLVE_REPORT_A.as_bytes()));
+    let request = |winner: u64, revision: &str, report_hash: &str, confirm: bool| {
+        json!({
+            "label_skill": "evolve_publish_candidate", "event_id": "EVOLVE-CANDIDATE-A",
+            "instance_page_id": target, "source": "workbench",
+            "provenance": {"manual": {"mode": "run", "expected_page_sha256": revision,
+                "expected_winner_program_id": winner,
+                "expected_validation_report_sha256": report_hash,
+                "confirm": confirm, "review_note": "reviewed two tails"}}
+        })
+    };
+    for rejected in [
+        request(8, &hash, &"a".repeat(64), true),
+        request(7, &"0".repeat(64), &"a".repeat(64), true),
+        request(7, &hash, &"b".repeat(64), true),
+        request(7, &hash, &"a".repeat(64), false),
+    ] {
+        let response = call(&p, &token, "capture_event", rejected).await;
+        assert_eq!(response["error"]["code"], -32602, "{response}");
+    }
+    let accepted = call(
+        &p,
+        &token,
+        "capture_event",
+        request(7, &hash, &"a".repeat(64), true),
+    )
+    .await;
+    assert!(accepted.get("error").is_none(), "{accepted}");
+    let stored = call(
+        &p,
+        &token,
+        "list_events",
+        json!({"event_id": "EVOLVE-CANDIDATE-A"}),
+    )
+    .await;
+    assert_eq!(
+        stored["result"]["structuredContent"]["events"][0]["revision_binding_attested"],
+        true
+    );
+    assert_eq!(
+        stored["result"]["structuredContent"]["events"][0]["status"],
+        "processed"
+    );
+    let inbox = call(&p, &token, "list_inbox", json!({})).await;
+    assert!(
+        inbox["result"]["structuredContent"]["events"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    let other = p.mint_token_with_sub(TENANT, Role::Agent, "other-user");
+    let mut other_request = request(7, &hash, &"a".repeat(64), true);
+    other_request["event_id"] = json!("EVOLVE-CANDIDATE-OTHER");
+    let denied = call(&p, &other, "capture_event", other_request).await;
+    assert_eq!(denied["error"]["code"], -32602, "{denied}");
 }
 
 /// `search` filters by `skill`, `list_instances` by `skill_id` — real

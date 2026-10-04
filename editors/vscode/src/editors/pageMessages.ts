@@ -27,7 +27,7 @@ export function resolvePageMessage(
       if (!model.actions.some((a) => a.skill === m.skill)) return undefined;
       return {
         command: 'escurel.startSkill',
-        args: [{ skill: m.skill, pageId: model.pageId, mode: m.mode }],
+        args: [{ skill: m.skill, pageId: model.pageId, mode: m.mode, expectedPageSha256: model.contentSha256 }],
       };
     }
     case 'view-skill': {

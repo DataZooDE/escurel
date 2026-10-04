@@ -10,6 +10,7 @@ import type {
   ThreadWebviewToHost,
 } from '../../src/shared/protocol';
 import { START_ITEMS } from '../shared/skill-button';
+import { renderMarkdown } from '../shared/markdown-view';
 import '../shared/skill-button';
 import { splitButton, theme } from '../shared/theme.css';
 
@@ -233,7 +234,11 @@ export class EscurelThreadInspector extends LitElement {
         detail.body
           ? html`<section>
               <h3>${detail.bodyTitle}</h3>
-              <div class="body">${detail.body}</div>
+              <div
+                class="body"
+                @escurel-wikilink=${(event: CustomEvent<string>) =>
+                  this.send({ type: 'open-wikilink', wikilink: event.detail })}
+              >${renderMarkdown(detail.body)}</div>
             </section>`
           : nothing
       }

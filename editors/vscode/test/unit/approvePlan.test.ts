@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { EscurelClient, ListLineageResponse, EventsPage } from '../../src/client';
-import { resolveApprovalSubject } from '../../src/start/approvePlan';
+import { evolveApprovalRevision, existingEvolveApproval, resolveApprovalSubject } from '../../src/start/approvePlan';
 
 const FIXTURES = join(__dirname, 'fixtures', 'lineage');
 const LINEAGE: ListLineageResponse = JSON.parse(
@@ -124,5 +124,61 @@ describe('resolveApprovalSubject for a plan with no target', () => {
       pageId: '',
     });
     expect(res).toEqual({ skill: 'supplier-risk', pageId: '' });
+  });
+});
+
+describe('Evolve plan revision binding', () => {
+  const hash = 'a'.repeat(64);
+  const pageId = 'markdown/instances/evolve_problem/reorder.md';
+  function client(currentHash: string, mode = 'plan'): EscurelClient {
+    return {
+      listEvents: async () => ({ events: [{
+        kind: 'user', label_skill: 'evolve_run', instance_page_id: pageId,
+        revision_binding_attested: true,
+        provenance: { manual: { mode, target_page_sha256: hash } },
+      }] }),
+      expand: async () => ({
+        page: { page_id: pageId, skill: 'evolve_problem', page_type: 'instance' },
+        content: '# Reviewed problem', content_sha256: currentHash,
+        frontmatter: {}, body: '# Reviewed problem', blocks: [], wikilinks_out: [],
+      }),
+    } as unknown as EscurelClient;
+  }
+
+  it('approves only the page revision frozen by the plan event', async () => {
+    await expect(evolveApprovalRevision(client(hash), 'ROOT', pageId)).resolves.toBe(hash);
+    await expect(evolveApprovalRevision(client('b'.repeat(64)), 'ROOT', pageId))
+      .rejects.toThrow(/changed after planning/);
+  });
+
+  it('rejects an execution event masquerading as a plan', async () => {
+    await expect(evolveApprovalRevision(client(hash, 'run'), 'ROOT', pageId))
+      .rejects.toThrow(/not bound/);
+  });
+
+  it('rejects a pre-upgrade plan with no server attestation', async () => {
+    const old = client(hash);
+    const original = old.listEvents.bind(old);
+    old.listEvents = async (...args) => {
+      const page = await original(...args);
+      page.events[0]!.revision_binding_attested = false;
+      return page;
+    };
+    await expect(evolveApprovalRevision(old, 'ROOT', pageId)).rejects.toThrow(/not bound/);
+  });
+
+  it('recovers the same approval event after a response is lost, without reading the edited page', async () => {
+    const approved = {
+      listEvents: async () => ({ events: [{
+        event_id: 'evolve-approval-01RUN', kind: 'user', label_skill: 'evolve_run',
+        instance_page_id: pageId, revision_binding_attested: true,
+        provenance: { manual: { approved_plan_run_id: '01RUN' } },
+      }] }),
+      expand: async () => { throw new Error('must not read a newly edited page on retry'); },
+    } as unknown as EscurelClient;
+    await expect(existingEvolveApproval(approved, 'evolve-approval-01RUN', pageId, '01RUN'))
+      .resolves.toBe('evolve-approval-01RUN');
+    await expect(existingEvolveApproval(approved, 'evolve-approval-01RUN', pageId, 'DIFFERENT'))
+      .resolves.toBeUndefined();
   });
 });

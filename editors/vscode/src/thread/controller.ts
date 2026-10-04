@@ -306,6 +306,18 @@ export class ThreadController implements vscode.Disposable {
           if (cmd) void vscode.commands.executeCommand(cmd.command, ...cmd.args);
           return;
         }
+        case 'open-wikilink': {
+          const link = m.wikilink;
+          if (!/^\[\[evolve_validation_report::[^\]\s]+\]\]$/.test(link)) return;
+          const details = current && this.details(current, {
+            admin: cachedAdmin,
+            skills: cachedSkills,
+          });
+          if (!details || !Object.values(details).some((detail) => detail.body?.includes(link))) {
+            return;
+          }
+          return void vscode.commands.executeCommand('escurel.resolve', link);
+        }
         case 'promote':
         case 'discard': {
           // Checked against the thread this host loaded, never trusted from the message: a

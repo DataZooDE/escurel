@@ -67,14 +67,14 @@ async fn readable(
     mode: crate::server::EventAclMode,
     e: &EventInfo,
 ) -> Result<bool, JsonRpcError> {
-    if mode == crate::server::EventAclMode::Off {
+    if mode == crate::server::EventAclMode::Off && !e.is_private_evolve_event() {
         return Ok(true);
     }
     let allowed = indexer
         .may_read_event(caller, e)
         .await
         .map_err(|err| JsonRpcError::internal(format!("list_lineage acl: {err}")))?;
-    if !allowed && mode == crate::server::EventAclMode::Log {
+    if !allowed && mode == crate::server::EventAclMode::Log && !e.is_private_evolve_event() {
         tracing::warn!(
             subject = %caller.subject, event_id = %e.event_id,
             "event-ACL would prune this lineage node (log mode) — showing"
@@ -241,6 +241,7 @@ pub(super) async fn tool_list_lineage(
                 "at": e.at,
                 "kind": e.kind.as_str(),
                 "instance_page_id": e.instance_page_id,
+                "body": if e.label_skill == "evolve:validation" { Some(e.body.as_str()) } else { None },
                 "parent_event_id": runner["parent_event_id"],
                 "depth": runner["depth"],
             }),

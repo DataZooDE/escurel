@@ -51,6 +51,27 @@ describe('<escurel-thread-inspector>', () => {
     expect(el.shadowRoot!.querySelector('.body b')).to.not.exist;
   });
 
+  it('opens a validation report link from the final receipt', async () => {
+    const el = await render({
+      title: 'Winner validation',
+      rows: [],
+      sideTitle: '',
+      side: [],
+      bodyTitle: 'Validation evidence',
+      body: 'Open [[evolve_validation_report::run-1]] for full evidence.',
+    });
+    const sent: ThreadWebviewToHost[] = [];
+    el.addEventListener('escurel-message', (event) =>
+      sent.push((event as CustomEvent<ThreadWebviewToHost>).detail),
+    );
+    const link = el.shadowRoot!.querySelector('.wikilink') as HTMLButtonElement;
+    expect(link).to.exist;
+    link.click();
+    expect(sent).to.deep.equal([
+      { type: 'open-wikilink', wikilink: '[[evolve_validation_report::run-1]]' },
+    ]);
+  });
+
   it('shows skill buttons for an instance and posts start-skill and view-skill', async () => {
     const instanceDetail: InspectorView = {
       title: 'Order 4500123',
