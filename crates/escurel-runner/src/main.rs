@@ -74,6 +74,9 @@ const WEBHOOK_SIGNATURE_HEADER: &str = "X-Escurel-Webhook-Signature";
 /// cloneable dispatch-queue producer handle).
 #[derive(Clone)]
 struct AppState {
+    /// Last result of the runner's reserved system-event write. A readable
+    /// gateway alone cannot make Workbench plan review operational.
+    control_plane_write: Arc<std::sync::atomic::AtomicU8>,
     /// Optional shared secret required on `POST /trigger`. When `Some`,
     /// the request must carry a valid HMAC-SHA256 signature of the body.
     webhook_secret: Option<Arc<str>>,
@@ -357,6 +360,13 @@ async fn main() -> anyhow::Result<()> {
 
     let version = config.version.clone();
     let state = AppState {
+        control_plane_write: Arc::new(std::sync::atomic::AtomicU8::new(
+            if config.tenant.is_some() && tokens.is_some() {
+                1
+            } else {
+                0
+            },
+        )),
         webhook_secret: config.webhook_secret.clone().map(Arc::from),
         queue: queue.clone(),
         ledger,
@@ -398,6 +408,7 @@ async fn main() -> anyhow::Result<()> {
     }
     let app = Router::new()
         .route("/healthz", get(healthz))
+        .route("/readyz", get(readyz))
         .route("/version", get(move || version_handler(version.clone())))
         .route("/metrics", get(metrics_handler))
         .route("/trigger", post(trigger))
@@ -458,6 +469,34 @@ async fn metrics_handler(State(state): State<AppState>) -> impl IntoResponse {
 /// Liveness probe. Dependency-free per CLAUDE.md principle 4.
 async fn healthz() -> impl IntoResponse {
     (StatusCode::OK, "OK")
+}
+
+/// Operational readiness for the Workbench control plane. The status loop
+/// proves that the configured credential can actually write a reserved
+/// system event; a non-admin static bearer may still read and run jobs while
+/// silently losing the plan and progress record needed by Evolve approval.
+async fn readyz(State(state): State<AppState>) -> impl IntoResponse {
+    use std::sync::atomic::Ordering;
+    let (status, reason) = match state.control_plane_write.load(Ordering::Relaxed) {
+        2 => (StatusCode::OK, "ready"),
+        0 => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "runner_tenant_or_token_missing",
+        ),
+        3 => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "system_event_write_refused",
+        ),
+        4 => (StatusCode::SERVICE_UNAVAILABLE, "system_event_write_failed"),
+        _ => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "awaiting_system_event_write",
+        ),
+    };
+    (
+        status,
+        axum::Json(json!({ "ready": status == StatusCode::OK, "reason": reason })),
+    )
 }
 
 /// Reports the build version string.
@@ -3473,6 +3512,9 @@ async fn status_loop(
             continue;
         };
         let Some(client) = connect_now(&gateway_url, &tokens).await else {
+            state
+                .control_plane_write
+                .store(4, std::sync::atomic::Ordering::Relaxed);
             continue;
         };
         let written = client
@@ -3489,15 +3531,36 @@ async fn status_loop(
             .await;
         match written {
             Ok(_) => {
+                state
+                    .control_plane_write
+                    .store(2, std::sync::atomic::Ordering::Relaxed);
                 last_stable = Some(stable);
                 last_sent = Instant::now();
             }
-            Err(e) => tracing::warn!(
-                target: "escurel_runner",
-                error = %e,
-                title,
-                "runner-status: write failed (will retry)"
-            ),
+            Err(e) => {
+                let refused = matches!(
+                    &e,
+                    escurel_client::Error::Refused(_)
+                        | escurel_client::Error::JsonRpc {
+                            code: -32602 | -32001,
+                            ..
+                        }
+                        | escurel_client::Error::Http {
+                            status: 401 | 403,
+                            ..
+                        }
+                );
+                state.control_plane_write.store(
+                    if refused { 3 } else { 4 },
+                    std::sync::atomic::Ordering::Relaxed,
+                );
+                tracing::warn!(
+                    target: "escurel_runner",
+                    error = %e,
+                    title,
+                    "runner-status: system-event write failed (readiness degraded; will retry)"
+                );
+            }
         }
         if draining {
             return;
