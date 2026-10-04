@@ -190,7 +190,7 @@ pub(super) async fn tool_list_instances(
     // A REST/MCP `rows` skill (stage 4): the upstream's own listing, paged by its own cursor.
     if let Some(src) = crate::remote_rows::source(indexer, &a.skill_id)
         .await
-        .map_err(|e| JsonRpcError::internal(format!("list_instances: {e}")))?
+        .map_err(|e| remote_source_err("list_instances", e))?
     {
         return list_remote_rows(indexer, egress, caller, &src, &a).await;
     }
@@ -432,10 +432,10 @@ pub(super) async fn tool_resolve(
         )
         && let Some(src) = crate::remote_rows::source(indexer, skill)
             .await
-            .map_err(|e| JsonRpcError::internal(format!("resolve: {e}")))?
+            .map_err(|e| remote_source_err("resolve", e))?
         && let Some(row) = crate::remote_rows::get(egress, &src, id)
             .await
-            .map_err(|e| JsonRpcError::internal(format!("resolve: {e}")))?
+            .map_err(|e| remote_source_err("resolve", e))?
         && indexer
             .may_read_instance(&caller, skill, &Value::Object(row.fields.clone()))
             .await
@@ -510,7 +510,7 @@ pub(super) async fn tool_expand(
     if let Some((skill, id)) = split_instance_page_id(&a.page_id)
         && let Some(src) = crate::remote_rows::source(indexer, skill)
             .await
-            .map_err(|e| JsonRpcError::internal(format!("expand: {e}")))?
+            .map_err(|e| remote_source_err("expand", e))?
     {
         return expand_remote_row(state, indexer, caller, args, &src, id).await;
     }
@@ -538,10 +538,12 @@ async fn tool_expand_stored(
             .await
             .map_err(|err| JsonRpcError::internal(format!("expand acl: {err}")))?
     {
-        return Ok(json!({ "page": Value::Null }));
+        // Byte-identical to a missing page, hint included: a denied read must not be tellable from an
+        // absent one.
+        return Ok(json!({ "page": Value::Null, "hint": missing_page_hint(&a.page_id) }));
     }
     match out {
-        None => Ok(json!({ "page": Value::Null })),
+        None => Ok(json!({ "page": Value::Null, "hint": missing_page_hint(&a.page_id) })),
         Some(e) => {
             let e_page_id = e.page.page_id.clone();
             let mut page = json!({
@@ -885,6 +887,37 @@ fn invalid_cursor() -> JsonRpcError {
     )
 }
 
+/// A failure to set up a REST/MCP `rows` source: an endpoint nobody registered is something an admin
+/// fixes, and an agent must be told to ask for exactly that (it used to be `-32603`).
+fn remote_source_err(ctx: &str, e: String) -> JsonRpcError {
+    if e.contains("is not registered") {
+        JsonRpcError::domain(
+            "endpoint_not_registered",
+            "backend.endpoint",
+            e,
+            Some("ask an admin to `register_endpoint` for this skill's backend, then retry"),
+        )
+    } else {
+        JsonRpcError::internal(format!("{ctx}: {e}"))
+    }
+}
+
+/// What to tell an agent when `expand` finds no page: a bare id is the usual mistake.
+fn missing_page_hint(page_id: &str) -> String {
+    if page_id.starts_with("markdown/") {
+        // The SAME words for "absent" and "not yours": no id echoed, nothing that tells them apart.
+        "no such page, or you may not read it; `list_instances` (per skill) or `search` find the \
+         ids that exist"
+            .to_owned()
+    } else {
+        format!(
+            "`{page_id}` is not a page id: a page id is the full path, e.g. \
+             `markdown/instances/<skill>/<id>.md` or `markdown/skills/<skill>.md`; use `resolve` \
+             with `[[<skill>::<id>]]`, or `list_instances`, to find it"
+        )
+    }
+}
+
 /// A typed error for a `rows` read: a bad cursor or a non-filterable field is the caller's mistake
 /// (a worded refusal an agent can act on); anything else is ours.
 fn rows_err(ctx: &str, e: escurel_index::SqlViewError) -> JsonRpcError {
@@ -1026,7 +1059,7 @@ async fn expand_remote_row(
     };
     let Some(row) = row else {
         if !has_stored {
-            return Ok(json!({ "page": Value::Null }));
+            return Ok(json!({ "page": Value::Null, "hint": missing_page_hint(&page_id) }));
         }
         let mut out = stored;
         out["backend_projection"] = json!({
@@ -1043,7 +1076,7 @@ async fn expand_remote_row(
         .await
         .map_err(|e| JsonRpcError::internal(format!("expand acl: {e}")))?
     {
-        return Ok(json!({ "page": Value::Null }));
+        return Ok(json!({ "page": Value::Null, "hint": missing_page_hint(&page_id) }));
     }
     let projection = json!({
         "kind": kind, "instances": "rows", "read_only": true, "trust": "external",
@@ -1106,7 +1139,7 @@ async fn expand_row(
         // The row is gone from the source. The companion, if any, is KEPT and flagged: notes must
         // not vanish with the row.
         if !has_stored {
-            return Ok(json!({ "page": Value::Null }));
+            return Ok(json!({ "page": Value::Null, "hint": missing_page_hint(&page_id) }));
         }
         let mut out = stored;
         out["backend_projection"] = json!({
@@ -1126,7 +1159,7 @@ async fn expand_row(
         .await
         .map_err(|e| JsonRpcError::internal(format!("expand acl: {e}")))?
     {
-        return Ok(json!({ "page": Value::Null }));
+        return Ok(json!({ "page": Value::Null, "hint": missing_page_hint(&page_id) }));
     }
     let projection = json!({
         "view": src.view, "instances": "rows", "read_only": true,
@@ -1754,6 +1787,34 @@ pub(super) fn normalize_query_ref(raw: &str) -> String {
     s.strip_prefix("query::").unwrap_or(s).to_owned()
 }
 
+/// A `query_instance` failure: the caller's mistakes (unknown query, wrong parameters, not allowed)
+/// are worded refusals an agent can act on; only the rest is an internal error.
+fn query_err(e: escurel_index::QueryError) -> JsonRpcError {
+    use escurel_index::QueryError as Q;
+    match &e {
+        Q::NotFound { .. } | Q::TargetNotFound { .. } => JsonRpcError::domain(
+            "query_not_found",
+            "ref",
+            e.to_string(),
+            Some("`search` with `skill: query` finds the authored query pages"),
+        ),
+        Q::WrongType { .. } | Q::TargetNotSqlView { .. } => JsonRpcError::domain(
+            "query_not_runnable",
+            "ref",
+            e.to_string(),
+            Some("`ref` must name a page of the `query` skill whose target is a sql_view instance"),
+        ),
+        Q::MissingParam { .. } | Q::UnknownParam { .. } => JsonRpcError::domain(
+            "invalid_query_params",
+            "params",
+            e.to_string(),
+            Some("`expand` the query page to see the parameters it declares"),
+        ),
+        Q::Forbidden { .. } => JsonRpcError::domain("forbidden", "ref", e.to_string(), None),
+        _ => JsonRpcError::internal(format!("query_instance: {e}")),
+    }
+}
+
 pub(super) async fn tool_query_instance(
     indexer: &Indexer,
     caller: AclCaller<'_>,
@@ -1764,7 +1825,7 @@ pub(super) async fn tool_query_instance(
     let out = indexer
         .query_instance(&query_id, &a.params, a.scenario.as_deref(), &caller)
         .await
-        .map_err(|e| JsonRpcError::internal(format!("query_instance: {e}")))?;
+        .map_err(query_err)?;
     Ok(json!({
         "rows": out.rows,
         "schema": out.schema.iter().map(|c| json!({

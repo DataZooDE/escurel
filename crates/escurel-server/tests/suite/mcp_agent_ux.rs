@@ -465,3 +465,81 @@ async fn re_capturing_an_event_id_says_it_was_a_replay() {
     assert_eq!(second["event_id"], first["event_id"]);
     assert_eq!(second["replayed"], true, "{second}");
 }
+
+// ---- (6) domain errors on read tools ----------------------------------------------------------
+
+#[tokio::test]
+async fn query_instance_with_an_unknown_query_is_a_not_found_refusal_not_an_internal_error() {
+    let t = Rows::start().await;
+    let body = t
+        .rpc("query_instance", json!({ "ref": "[[query::nope]]" }))
+        .await;
+    let issue = refusal_issue(&body);
+    assert_eq!(issue["code"], "query_not_found", "{issue}");
+    assert!(
+        issue["message"].as_str().unwrap().contains("nope"),
+        "{issue}"
+    );
+}
+
+#[tokio::test]
+async fn expand_of_a_page_that_is_not_there_says_what_a_page_id_looks_like() {
+    let t = Rows::start().await;
+    // A bare id is the common mistake: {page: null} with no hint made an agent guess.
+    let bare = t.call("expand", json!({ "page_id": "0004500001" })).await;
+    assert!(bare["page"].is_null(), "{bare}");
+    let hint = bare["hint"].as_str().expect("a hint for a bare id");
+    assert!(
+        hint.contains("markdown/instances/") && hint.contains("list_instances"),
+        "{hint}"
+    );
+    // A well-formed id that simply does not exist gets the plain explanation.
+    let missing = t
+        .call(
+            "expand",
+            json!({ "page_id": "markdown/instances/sales-order/9999999999.md" }),
+        )
+        .await;
+    assert!(missing["page"].is_null(), "{missing}");
+    assert!(missing["hint"].is_string(), "{missing}");
+    // A page that exists has no hint.
+    let found = t
+        .call(
+            "expand",
+            json!({ "page_id": "markdown/instances/sales-order/0004500001.md" }),
+        )
+        .await;
+    assert!(
+        found["page"].is_object() && found.get("hint").is_none(),
+        "{found}"
+    );
+}
+
+#[tokio::test]
+async fn a_rows_skill_whose_endpoint_is_not_registered_says_to_ask_an_admin() {
+    let t = Rows::start().await;
+    let skill = "---\nkind: skill\nid: ghost\ndescription: rows over an endpoint nobody registered\n\
+backend:\n  kind: openapi\n  endpoint: ghost_api\n  instances: rows\n  key: $.id\n  \
+list:\n    path: /things\n    items: $.data\n  read: { path: \"/things/{id}\" }\n---\n# ghost\n";
+    let r = t
+        .call(
+            "update_page",
+            json!({ "page_id": "markdown/skills/ghost.md", "content": skill }),
+        )
+        .await;
+    assert_eq!(r["ok"], true, "{r}");
+    let body = t
+        .rpc("list_instances", json!({ "skill_id": "ghost" }))
+        .await;
+    let issue = refusal_issue(&body);
+    assert_eq!(issue["code"], "endpoint_not_registered", "{issue}");
+    let msg = issue["message"].as_str().unwrap();
+    assert!(msg.contains("ghost_api"), "{msg}");
+    assert!(
+        issue["suggestion"]
+            .as_str()
+            .unwrap()
+            .contains("register_endpoint"),
+        "{issue}"
+    );
+}

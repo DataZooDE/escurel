@@ -120,8 +120,10 @@ async fn the_retired_tools_are_gone_from_the_surface() {
         json!({ "query_id": "x" }),
     )
     .await;
+    // A refusal either way: a protocol error, or (since read tools answer domain mistakes as
+    // `isError` + `issues[]`) a worded refusal. What it must never be is a silent success.
     assert!(
-        out.get("error").is_some(),
+        out.get("error").is_some() || out["result"]["isError"] == json!(true),
         "calling the retired tool must refuse: {out}"
     );
 }
