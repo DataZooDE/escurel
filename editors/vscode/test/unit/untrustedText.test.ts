@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { cleanText } from '../../src/shared/untrustedText';
+import { cleanBlock, cleanText } from '../../src/shared/untrustedText';
 
 // Text from a REST/MCP/SQL source or another person's page ends up in tree labels, tooltips and
 // notifications. It is data: no bidi overrides (a filename that reads backwards), no control characters,
@@ -22,5 +22,12 @@ describe('cleanText', () => {
 
   it('leaves ordinary text alone', () => {
     expect(cleanText('Müller & Söhne GmbH — Pforzheim')).toBe('Müller & Söhne GmbH — Pforzheim');
+  });
+});
+
+describe('cleanBlock', () => {
+  it('keeps line breaks and tabs, strips the rest, and caps the length', () => {
+    expect(cleanBlock('a\n\tb\u202Ec\u0000')).toBe('a\n\tbc');
+    expect(cleanBlock('z'.repeat(100), 10)).toHaveLength(10);
   });
 });

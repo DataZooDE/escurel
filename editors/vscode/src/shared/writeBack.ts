@@ -1,4 +1,5 @@
 import type { Event } from '../client/types';
+import { cleanText } from './untrustedText';
 
 // Write-back: a change to a row of a remote source is PROPOSED as a draft carrying a reserved
 // `write_back` block; a human promotes it; only then does the gateway change the source. These are the
@@ -25,6 +26,13 @@ const instanceId = (pageId: string): string =>
 /** A YAML scalar that cannot break out of its line: strings are JSON-quoted (valid YAML), others verbatim. */
 const scalar = (v: string | number | boolean): string =>
   typeof v === 'string' ? JSON.stringify(v) : String(v);
+
+/** The row's current value as shown in a prompt: it comes from the source, so it is bounded and cleaned. */
+export function describeCurrent(current: unknown): string {
+  if (current === undefined || current === null || current === '') return '(empty)';
+  if (typeof current === 'string') return cleanText(current, 120);
+  return cleanText(JSON.stringify(current) ?? String(current), 120);
+}
 
 /** A column name from the gateway. Only a plain identifier is put into the YAML key position. */
 const COLUMN = /^[A-Za-z0-9_.-]+$/;

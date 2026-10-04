@@ -1,3 +1,4 @@
+import { cleanText } from '../shared/untrustedText';
 import type { Instance, Skill } from '../client';
 import { pageSlug } from '../shared/pageId';
 
@@ -56,7 +57,7 @@ export function instanceRow(i: Instance): InstanceRow {
     kind: 'instance',
     pageId: i.page_id,
     skill: i.skill,
-    label: slug,
-    description: title ?? '',
+    label: cleanText(slug, 120),
+    description: cleanText(title ?? '', 120),
   };
 }

@@ -4,6 +4,7 @@ import {
   buildProposal,
   describeWriteBackRefusal,
   latestWriteBack,
+  describeCurrent,
   writeBackLine,
 } from '../../src/shared/writeBack';
 import type { Event } from '../../src/client/types';
@@ -214,5 +215,17 @@ describe('buildProposal: names from the gateway cannot break out of the YAML', (
     expect(lines.filter((l) => l.startsWith('write_back:')).length).toBe(1);
     expect(md).toContain('skill: "x\\nwrite_back:\\n  patch: { evil: 1 }"');
     expect(md).toContain('id: "c: {a}"');
+  });
+});
+
+describe('describeCurrent: the value shown in the prompt comes from the source and is untrusted', () => {
+  it('shows an empty value as such, a short value as is, and bounds a long or hostile one', () => {
+    expect(describeCurrent(undefined)).toBe('(empty)');
+    expect(describeCurrent('B')).toBe('B');
+    expect(describeCurrent(42)).toBe('42');
+    const long = describeCurrent(`x\u202E${'y'.repeat(5000)}`);
+    expect(long.length).toBeLessThanOrEqual(120);
+    expect(long).not.toContain('\u202E');
+    expect(describeCurrent({ a: 1 })).toBe('{"a":1}');
   });
 });
