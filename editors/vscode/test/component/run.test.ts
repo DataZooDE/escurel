@@ -1,3 +1,4 @@
+import { pageSlug } from '../../src/shared/pageId';
 import { expect, fixture, html } from '@open-wc/testing';
 import type { RunView, RunWebviewToHost } from '../../src/shared/protocol';
 import { buildRunView, mergeToolCallPage } from '../../src/runs/runModel';
@@ -189,14 +190,16 @@ describe('<escurel-run-detail>', () => {
     expect(qa(el, '.plan-step').map((row) => text(row))).to.satisfy((rows: string[]) =>
       rows.some((row) => row.includes('read the target page') && row.includes('completed')),
     );
-    expect(text(q(el, '.tool-call'))).to.contain('list_inbox');
+    expect(text(q(el, '.tool-call'))).to.contain('Read the inbox');
+    // The raw tool name is for the tooltip.
+    expect(q(el, '.call-tool')?.getAttribute('title')).to.equal('list_inbox');
   });
 
   it('uses tone for a humanised dead letter status', async () => {
     // This failure state is hand-written because the recorded run completed.
     const el = await render({ ...recordedRunView, status: 'dead_letter', tone: 'failed' });
     expect(q(el, '.status-chip')?.classList.contains('failed')).to.equal(true);
-    expect(text(q(el, '.status-chip'))).to.equal('dead letter');
+    expect(text(q(el, '.status-chip'))).to.equal('gave up');
   });
 
   it('shows an error code on a failed tool call', async () => {
@@ -241,7 +244,7 @@ describe('<escurel-run-detail>', () => {
       sent.push((event as CustomEvent<RunWebviewToHost>).detail),
     );
     // The visible text is the accessible name; the id is a tooltip, never read aloud in place of it.
-    expect(text(q(el, '.link'))).to.equal(recordedRunView.targetPageId);
+    expect(text(q(el, '.link'))).to.equal(pageSlug(recordedRunView.targetPageId!));
     expect(q(el, '.link')?.getAttribute('aria-label')).to.equal(null);
     expect(text(q(el, '.copy-trace'))).to.equal('Copy trace id');
     expect(q(el, '.copy-trace')?.getAttribute('aria-label')).to.equal(null);
@@ -500,16 +503,16 @@ describe('<escurel-run-detail> navigation', () => {
       const el = await render(view);
       const rows = qa(el, '.tool-call');
       expect(rows).to.have.length(2);
-      expect(text(rows[0]!)).to.contain('read_page');
+      expect(text(rows[0]!)).to.contain('Read a page');
       expect(text(rows[0]!)).to.contain('ok');
       expect(text(rows[0]!)).to.contain('+1 s');
       expect(text(rows[0]!)).to.contain('12 ms');
       expect(text(rows[1]!)).to.contain('failed');
       expect(text(rows[1]!)).to.contain('PERMISSION_DENIED');
       expect(text(rows[1]!)).to.contain('1.5 s');
-      expect(text(el.shadowRoot!.querySelector('section[aria-label="Tool calls"]'))).not.to.contain(
-        'request bytes',
-      );
+      expect(
+        text(el.shadowRoot!.querySelector('section[aria-label="What the agent did"]')),
+      ).not.to.contain('request bytes');
     });
 
     it('expands a call to its sizes, and the summary row is keyboard operable', async () => {
@@ -517,7 +520,7 @@ describe('<escurel-run-detail> navigation', () => {
       const first = qa(el, '.tool-call')[0] as HTMLDetailsElement;
       expect(first.tagName).to.equal('DETAILS');
       expect(first.open).to.equal(false);
-      expect(text(first.querySelector('summary'))).to.contain('read_page');
+      expect(text(first.querySelector('summary'))).to.contain('Read a page');
       expect(text(first.querySelector('.call-sizes'))).to.equal('sent 100 B · received 2 KB');
     });
 
@@ -537,5 +540,41 @@ describe('<escurel-run-detail> navigation', () => {
       const el = await render({ ...view, producedPageId: undefined });
       expect(q(el, 'button.open-produced')).to.equal(null);
     });
+  });
+});
+
+describe('a failed run', () => {
+  it('says why at the top, in full, and not only in a tooltip', async () => {
+    const el = await fixture<EscurelRunDetail>(
+      html`<escurel-run-detail
+        .view=${{
+          ...recordedRunView,
+          status: 'dead_letter',
+          tone: 'failed',
+          failure: 'permanent — harness "refusing" is not allowed',
+        }}
+      ></escurel-run-detail>`,
+    );
+    await el.updateComplete;
+    const banner = el.shadowRoot!.querySelector('.failure-banner') as HTMLElement;
+    expect(banner.getAttribute('role')).to.equal('alert');
+    expect(banner.textContent).to.contain('Gave up:');
+    expect(banner.textContent).to.contain('harness "refusing" is not allowed');
+  });
+  it('has no banner for a run that did not fail', async () => {
+    const el = await fixture<EscurelRunDetail>(
+      html`<escurel-run-detail .view=${recordedRunView}></escurel-run-detail>`,
+    );
+    await el.updateComplete;
+    expect(el.shadowRoot!.querySelector('.failure-banner')).to.equal(null);
+  });
+  it('is honest about what the trace records', async () => {
+    const el = await fixture<EscurelRunDetail>(
+      html`<escurel-run-detail .view=${recordedRunView}></escurel-run-detail>`,
+    );
+    await el.updateComplete;
+    expect(el.shadowRoot!.querySelector('.timeline-note')!.textContent).to.contain(
+      'not its arguments or its result',
+    );
   });
 });

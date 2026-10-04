@@ -422,6 +422,8 @@ export interface RunView {
   maxAttempts?: number;
   plan: PlanStep[];
   summary?: string;
+  /** Why a failed run failed, in full: the reason the runner gave, else the last attempt's error. */
+  failure?: string;
   /**
    * The run's own count, from `run-finished`. Not the same thing as `calls.length`:
    * per-call rows are attributed by the run-bound token, so a run can honestly

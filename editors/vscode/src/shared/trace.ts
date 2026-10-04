@@ -18,9 +18,43 @@ export function callDuration(ms: number): string {
   return `${Math.floor(whole / 60)} min ${whole % 60} s`;
 }
 
+const TOOL_WORDS: Record<string, string> = {
+  list_inbox: 'Read the inbox',
+  list_events: 'Read events',
+  list_instances: 'Looked up records',
+  list_skills: 'Read the skills',
+  query_instance: 'Queried records',
+  expand: 'Opened a page',
+  read_page: 'Read a page',
+  search: 'Searched',
+  resolve: 'Followed a link',
+  neighbours: 'Looked at related pages',
+  create_draft: 'Proposed a change',
+  update_page: 'Changed a page',
+  capture_event: 'Filed an event',
+  assign_event: 'Handed an event on',
+  apply_op: 'Edited a page',
+  close_session: 'Saved its edits',
+  report_progress: 'Reported progress',
+};
+
+/** What a tool call did, in words ("Read the inbox"); the raw tool name stays in the tooltip. */
+export function toolWords(tool: string): string {
+  const known = TOOL_WORDS[tool];
+  if (known) return known;
+  const spaced = tool.replace(/[_-]+/g, ' ').trim();
+  return spaced ? spaced.charAt(0).toUpperCase() + spaced.slice(1) : 'Tool call';
+}
+
+/** The gateway records how long each call took and how much it moved, not what was in it. */
+export const TRACE_RECORDED_NOTE =
+  'The gateway records the size and timing of each call, not its arguments or its result.';
+
 export interface TraceRow {
   seq: number;
   tool: string;
+  /** What it did, in words. */
+  label: string;
   /** `ok`, `failed`, `rejected`: a word, never colour alone. */
   outcome: string;
   failed: boolean;
@@ -46,6 +80,7 @@ export function traceTimeline(
     return {
       seq: c.seq,
       tool: c.tool,
+      label: toolWords(c.tool),
       outcome: c.status === 'error' ? 'failed' : c.status,
       failed,
       detail: c.errorCode ?? '',

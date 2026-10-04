@@ -67,3 +67,15 @@ describe('traceTimeline', () => {
     expect(traceTimeline([call(1, { durationMs: 0 })], undefined)[0]!.barPercent).toBe(0);
   });
 });
+
+describe('toolWords', () => {
+  it('says what a call did, and keeps the raw name for the tooltip', async () => {
+    const { toolWords } = await import('../../src/shared/trace');
+    expect(toolWords('list_inbox')).toBe('Read the inbox');
+    expect(toolWords('list_instances')).toBe('Looked up records');
+    expect(toolWords('expand')).toBe('Opened a page');
+    expect(toolWords('something_new')).toBe('Something new');
+    const [row] = traceTimeline([call(1, { tool: 'list_inbox' })], undefined);
+    expect(row).toMatchObject({ tool: 'list_inbox', label: 'Read the inbox' });
+  });
+});

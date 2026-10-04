@@ -77,6 +77,15 @@ export function buildRunView(runNode: LineageNode | undefined, runEvents: Event[
 
   attempts.sort((a, b) => a.n - b.n);
   const status = (stringValue(finished.status) ?? runNode?.state ?? 'running').trim().toLowerCase();
+  const failure = ['failed', 'dead_letter'].includes(status)
+    ? [
+        ...new Set(
+          [stringValue(finished.reason), stringValue(finished.error), attempts.at(-1)?.error]
+            .map((x) => x?.trim() ?? '')
+            .filter(Boolean),
+        ),
+      ].join(' — ') || undefined
+    : undefined;
   return {
     runId:
       runNode?.id ??
@@ -102,6 +111,7 @@ export function buildRunView(runNode: LineageNode | undefined, runEvents: Event[
     maxAttempts: numberValue(runNode?.max_attempts) ?? numberValue(finished.max_attempts),
     plan: planSteps(finished.plan) ?? progressPlan ?? planSteps(runNode?.plan) ?? [],
     summary: stringValue(runNode?.summary) ?? stringValue(finished.summary),
+    ...(failure ? { failure } : {}),
     toolCallCount: numberValue(runNode?.tool_calls) ?? numberValue(finished.tool_calls),
     calls: [],
     nextAfter: null,
