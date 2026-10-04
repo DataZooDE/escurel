@@ -30,6 +30,7 @@ mod agent_skill_claim;
 mod atomic_approve;
 mod auth_quota;
 mod autonomy;
+mod autonomy_gate;
 mod backend_read_limits;
 mod binary_boots;
 mod blob_route;

@@ -833,9 +833,10 @@ pub(super) async fn tool_promote_draft(
     // answers with `head_version`, not the `head_sha256` the old detection
     // read off the refusal.
     let already_landed = head_markdown.as_deref() == Some(promoted.as_str());
-    let mut result =
-        crate::mcp::tools_write::tool_update_page(state, indexer, caller, write_acl, write_args)
-            .await?;
+    let mut result = crate::mcp::tools_write::tool_update_page_ungated(
+        state, indexer, caller, write_acl, write_args,
+    )
+    .await?;
 
     // **The interrupted promotion.**
     //

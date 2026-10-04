@@ -251,7 +251,148 @@ pub(super) fn blocking_issues<'a>(
         .collect()
 }
 
+/// Whether the caller is a MACHINE: a token minted for an agent run, a narrowed per-skill agent, or one
+/// acting for a runner (`run_id` / `skill` / `act.sub` claims). A person on a plain agent-role token
+/// (the extension, the CLI) is not: they write directly.
+fn is_machine_caller(caller: &AclCaller<'_>) -> bool {
+    caller.run_id.is_some() || caller.agent_skill.is_some() || caller.actor.is_some()
+}
+
+/// The skill an INSTANCE page id belongs to (`markdown/instances/<skill>/<id>.md`).
+fn instance_skill_of(page_id: &str) -> Option<&str> {
+    page_id
+        .strip_prefix("markdown/instances/")?
+        .split('/')
+        .next()
+        .filter(|s| !s.is_empty())
+}
+
+/// Does `skill` ask for human review of what a machine writes? `autonomy: review | confirm` do, and so
+/// does ANY value that is not recognised (a typo must never read as `auto`); only an explicit `auto`,
+/// or no `autonomy:` at all, lands directly.
+async fn skill_requires_review(indexer: &Indexer, skill: &str) -> Result<bool, JsonRpcError> {
+    let Some(md) = indexer
+        .read_page_markdown(&format!("markdown/skills/{skill}.md"))
+        .await
+        .map_err(|e| JsonRpcError::internal(format!("autonomy gate: {e}")))?
+    else {
+        return Ok(false);
+    };
+    let Ok(parsed) = escurel_md::parse(&md) else {
+        return Ok(false);
+    };
+    Ok(match parsed.frontmatter.fields.get("autonomy") {
+        None => false,
+        Some(v) => v
+            .as_str()
+            .and_then(escurel_index::Autonomy::parse)
+            .is_none_or(|a| a != escurel_index::Autonomy::Auto),
+    })
+}
+
+/// The autonomy gate (owner decision 2026-10-04): a MACHINE caller's direct write to an instance of a
+/// skill that asks for review does not land; it becomes an open draft and the answer says so, in the
+/// shape `create_draft` answers. `Ok(None)` = not held, go on and write.
+///
+/// Admin tokens, people on plain agent-role tokens and `autonomy: auto` skills are untouched. PROMOTING a
+/// draft never comes through here (it re-enters the ungated write), or an approver would hold their own
+/// approval for ever.
+pub(super) async fn hold_if_review_required(
+    state: &crate::server::AppState,
+    indexer: &Indexer,
+    caller: &AclCaller<'_>,
+    write_acl: crate::server::WriteAclMode,
+    page_id: &str,
+    content: &str,
+) -> Result<Option<Value>, JsonRpcError> {
+    if caller.is_admin || !is_machine_caller(caller) {
+        return Ok(None);
+    }
+    let Some(skill) = instance_skill_of(page_id) else {
+        return Ok(None);
+    };
+    if !skill_requires_review(indexer, skill).await? {
+        return Ok(None);
+    }
+    use sha2::{Digest, Sha256};
+    let base = indexer
+        .read_page_markdown(page_id)
+        .await
+        .map_err(|e| JsonRpcError::internal(format!("autonomy gate: {e}")))?
+        .map(|m| format!("{:x}", Sha256::digest(m.as_bytes())))
+        .unwrap_or_default();
+    let mut held = crate::mcp::tools_drafts::tool_create_draft(
+        state,
+        indexer,
+        AclCaller { ..*caller },
+        write_acl,
+        json!({ "target_page_id": page_id, "content": content, "base_sha256": base }),
+    )
+    .await?;
+    if held.get("ok") == Some(&json!(true)) {
+        held["held_for_review"] = json!(true);
+        held["message"] = json!(format!(
+            "`{skill}` asks for human review (`autonomy`), so this write was held as an open draft; \
+             nothing changed on the page until a reviewer promotes it"
+        ));
+    }
+    Ok(Some(held))
+}
+
+/// A MOVE or DELETE cannot be held as a draft (a draft carries the proposed bytes of ONE page, and a
+/// removal has none), so a machine's attempt on a review skill is refused with a code that says whom to
+/// ask, instead of landing unreviewed.
+pub(super) async fn refuse_machine_removal(
+    indexer: &Indexer,
+    caller: &AclCaller<'_>,
+    page_id: &str,
+    what: &str,
+) -> Result<Option<Value>, JsonRpcError> {
+    if caller.is_admin || !is_machine_caller(caller) {
+        return Ok(None);
+    }
+    let Some(skill) = instance_skill_of(page_id) else {
+        return Ok(None);
+    };
+    if !skill_requires_review(indexer, skill).await? {
+        return Ok(None);
+    }
+    Ok(Some(json!({
+        "ok": false,
+        "issues": [{
+            "severity": "error",
+            "code": "review_required",
+            "location": "page_id",
+            "message": format!(
+                "`{skill}` asks for human review (`autonomy`): an agent run cannot {what} `{page_id}` \
+                 on its own, and a removal cannot be held as a draft. Propose the change in a draft of \
+                 the page, or ask a person to do it"
+            ),
+        }],
+    })))
+}
+
+/// `update_page` as a caller reaches it: the autonomy gate first, then the write.
 pub(super) async fn tool_update_page(
+    state: &crate::server::AppState,
+    indexer: &Indexer,
+    caller: AclCaller<'_>,
+    write_acl: crate::server::WriteAclMode,
+    args: Value,
+) -> Result<Value, JsonRpcError> {
+    if let (Some(page_id), Some(content), None) = (
+        args.get("page_id").and_then(Value::as_str),
+        args.get("content").and_then(Value::as_str),
+        args.get("branch").filter(|b| !b.is_null()),
+    ) && let Some(held) =
+        hold_if_review_required(state, indexer, &caller, write_acl, page_id, content).await?
+    {
+        return Ok(held);
+    }
+    tool_update_page_ungated(state, indexer, caller, write_acl, args).await
+}
+
+pub(super) async fn tool_update_page_ungated(
     state: &crate::server::AppState,
     indexer: &Indexer,
     caller: AclCaller<'_>,
@@ -818,6 +959,9 @@ pub(super) async fn tool_move_page(
     args: Value,
 ) -> Result<Value, JsonRpcError> {
     let a: MovePageArgs = parse_args(args, "move_page")?;
+    if let Some(refused) = refuse_machine_removal(indexer, &caller, &a.from, "move").await? {
+        return Ok(refused);
+    }
 
     let Some(existing) = indexer
         .read_page_markdown(&a.from)
@@ -950,6 +1094,12 @@ pub(super) async fn tool_delete_page(
     args: Value,
 ) -> Result<Value, JsonRpcError> {
     let a: DeletePageArgs = parse_args(args, "delete_page")?;
+    if a.branch.is_none()
+        && let Some(refused) =
+            refuse_machine_removal(indexer, &caller, &a.page_id, "delete").await?
+    {
+        return Ok(refused);
+    }
 
     // ── A branch delete is a TOMBSTONE, not a retraction (#512 §3). ──
     //
@@ -992,7 +1142,7 @@ pub(super) async fn tool_delete_page(
                 }));
             };
             let stamped = crate::mcp::tools_branches::stamp_scenario(&base, &branch);
-            let wrote = tool_update_page(
+            let wrote = tool_update_page_ungated(
                 state,
                 indexer,
                 caller,

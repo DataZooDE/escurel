@@ -1873,6 +1873,27 @@ async fn tool_close_session(
                     }));
                 }
             }
+            // The autonomy gate: a MACHINE's commit to a review skill becomes an open draft carrying the
+            // session's merged body. The session is closed without a write-through; the page is untouched.
+            if let Some(mut held) = tools_write::hold_if_review_required(
+                state,
+                ix,
+                &caller,
+                state.write_acl,
+                &page_id,
+                &body,
+            )
+            .await?
+            {
+                if held.get("ok") == Some(&Value::Bool(true)) {
+                    let v = sessions
+                        .close(&a.session, false)
+                        .await
+                        .map_err(|e| session_error_to_jsonrpc(&e, "close_session"))?;
+                    held["final_version"] = json!(v.as_str());
+                }
+                return Ok(held);
+            }
             let _gate = state.update_page_gate.lock().await;
             // The commit is a page write, so it carries the same stamp an
             // `update_page` would (#357): the caller that closed the

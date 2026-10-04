@@ -389,8 +389,10 @@ pub(super) async fn tool_merge_branch(
                 if base_twin.is_some() && branch.base_version.starts_with('v') {
                     args["base_version"] = json!(branch.base_version);
                 }
-                crate::mcp::tools_write::tool_update_page(state, indexer, caller, write_acl, args)
-                    .await?
+                crate::mcp::tools_write::tool_update_page_ungated(
+                    state, indexer, caller, write_acl, args,
+                )
+                .await?
             }
             None => match &base_twin {
                 Some(base) => {
