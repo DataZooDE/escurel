@@ -545,3 +545,52 @@ async fn row_acl_filters_after_the_fetch_so_pages_are_short_but_nothing_leaks() 
     .await;
     assert_eq!(link["exists"], false, "no existence oracle: {link}");
 }
+
+#[tokio::test]
+async fn a_malformed_cursor_gets_an_answer_not_a_dropped_connection() {
+    // `aéb` is an even number of BYTES but cuts a multi-byte character: slicing it as hex used to
+    // panic inside the handler and the client saw a dead connection instead of an error.
+    let t = Rows::start().await;
+    let resp = reqwest::Client::new()
+        .post(t.p.mcp_url())
+        .json(&json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                       "params": { "name": "list_instances",
+                                   "arguments": { "skill": "sales-order", "cursor": "aéb" } } }))
+        .send()
+        .await
+        .expect("the gateway must answer, not drop the connection");
+    let body: Value = resp.json().await.expect("a JSON-RPC answer");
+    assert!(
+        body.get("error").is_some(),
+        "a bad cursor is an error: {body}"
+    );
+    // The gateway is still healthy afterwards.
+    let r = t
+        .call(
+            "list_instances",
+            json!({ "skill": "sales-order", "limit": 2 }),
+        )
+        .await;
+    assert_eq!(r["instances"].as_array().map(Vec::len), Some(2), "{r}");
+}
+
+#[tokio::test]
+async fn source_rows_say_where_their_values_came_from() {
+    // SQL rows are not instructions either: every list item and every projection is marked `source`
+    // (the REST/MCP rows are marked `external`), so an agent can tell record data from authored text.
+    let t = Rows::start().await;
+    let listed = t
+        .call(
+            "list_instances",
+            json!({ "skill": "sales-order", "limit": 3 }),
+        )
+        .await;
+    for i in listed["instances"].as_array().expect("instances") {
+        assert_eq!(i["trust"], "source", "a listed row is marked: {i}");
+    }
+    let page = t.call("expand", json!({ "page_id": row_page(7) })).await;
+    assert_eq!(
+        page["backend_projection"]["trust"], "source",
+        "an expanded row's projection is marked: {page}"
+    );
+}

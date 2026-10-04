@@ -48,6 +48,8 @@ pub struct EgressPolicy {
     pub rate_per_sec: u32,
     /// The pause between the attempts of a write-back (jittered, doubled each time).
     pub write_retry_backoff: Duration,
+    /// What a tenant may name as a credential (`secret_ref`): see [`crate::secret_policy`].
+    pub secrets: crate::secret_policy::SecretPolicy,
 }
 
 impl Default for EgressPolicy {
@@ -59,6 +61,7 @@ impl Default for EgressPolicy {
             max_concurrency: DEFAULT_MAX_CONCURRENCY,
             rate_per_sec: DEFAULT_RATE_PER_SEC,
             write_retry_backoff: Duration::from_millis(500),
+            secrets: crate::secret_policy::SecretPolicy::default(),
         }
     }
 }
@@ -115,6 +118,12 @@ impl EgressPolicy {
                     });
                 }
             };
+            if p.allow_loopback {
+                tracing::warn!(
+                    "ESCUREL_EGRESS_ALLOW_LOOPBACK is ON: outbound calls to loopback addresses are \
+                     allowed. This is for development and tests, never for production."
+                );
+            }
         }
         if let Some(n) = num(get, "ESCUREL_EGRESS_MAX_RESPONSE_BYTES", true)? {
             p.max_response_bytes = n;
@@ -131,6 +140,7 @@ impl EgressPolicy {
         if let Some(ms) = num::<u64>(get, "ESCUREL_EGRESS_WRITE_RETRY_BACKOFF_MS", false)? {
             p.write_retry_backoff = Duration::from_millis(ms);
         }
+        p.secrets = crate::secret_policy::SecretPolicy::from_env();
         Ok(p)
     }
 
@@ -180,9 +190,11 @@ pub fn is_public_ip(ip: IpAddr) -> bool {
     match ip {
         IpAddr::V4(v4) => is_public_v4(v4),
         IpAddr::V6(v6) => {
-            // An IPv4-mapped / -compatible address is judged as the IPv4 address it wraps, so
-            // `::ffff:169.254.169.254` cannot slip through.
-            if let Some(v4) = v6.to_ipv4_mapped() {
+            // An IPv6 address that WRAPS an IPv4 one is judged as that IPv4 address, in every
+            // spelling: mapped (`::ffff:a.b.c.d`), compatible (`::a.b.c.d`), NAT64
+            // (`64:ff9b::a.b.c.d`, how an IPv6-only cluster reaches the metadata address) and 6to4
+            // (`2002:aabb:ccdd::/48`). Otherwise `::ffff:169.254.169.254` and its cousins slip through.
+            if let Some(v4) = embedded_ipv4(v6) {
                 return is_public_v4(v4);
             }
             is_public_v6(v6)
@@ -206,9 +218,35 @@ fn is_public_v4(ip: Ipv4Addr) -> bool {
         || o[0] >= 240) // reserved
 }
 
+/// The IPv4 address an IPv6 address wraps, if it wraps one.
+fn embedded_ipv4(ip: Ipv6Addr) -> Option<Ipv4Addr> {
+    let s = ip.segments();
+    let from =
+        |hi: u16, lo: u16| Ipv4Addr::new((hi >> 8) as u8, hi as u8, (lo >> 8) as u8, lo as u8);
+    if let Some(v4) = ip.to_ipv4_mapped() {
+        return Some(v4);
+    }
+    // IPv4-compatible `::a.b.c.d` (deprecated). `::` and `::1` are handled as unspecified/loopback.
+    if s[..6].iter().all(|&x| x == 0) && (s[6] != 0 || s[7] > 1) {
+        return Some(from(s[6], s[7]));
+    }
+    // NAT64 well-known prefix 64:ff9b::/96.
+    if s[0] == 0x0064 && s[1] == 0xff9b && s[2..6].iter().all(|&x| x == 0) {
+        return Some(from(s[6], s[7]));
+    }
+    // 6to4 2002::/16 embeds the IPv4 address in bits 16..48.
+    if s[0] == 0x2002 {
+        return Some(from(s[1], s[2]));
+    }
+    None
+}
+
 fn is_public_v6(ip: Ipv6Addr) -> bool {
     let s = ip.segments();
     !(ip.is_unspecified()
+        || (s[0] & 0xffc0) == 0xfec0 // site-local fec0::/10 (deprecated, still routed by some stacks)
+        || (s[0] == 0x0064 && s[1] == 0xff9b) // NAT64 prefixes that did not embed a public IPv4
+        || (s[0] == 0x2001 && s[1] == 0x0000) // Teredo 2001::/32
         || ip.is_loopback()
         || ip.is_multicast()
         || (s[0] & 0xfe00) == 0xfc00 // unique local fc00::/7
@@ -239,6 +277,25 @@ pub struct McpSession {
 }
 
 /// The outbound runtime: the policy, the per-endpoint limiters and the MCP session cache.
+/// How long the host's name may take to resolve before the call is refused.
+const DNS_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Calls the policy has refused since boot (an address, scheme or URL the policy does not allow).
+static REFUSALS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// The number of outbound calls the egress policy has refused since boot, for `/metrics`.
+#[must_use]
+pub fn egress_refusals() -> u64 {
+    REFUSALS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+fn refuse(host: &str, reason: &str, e: EgressError) -> EgressError {
+    REFUSALS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    // Host and reason only: never a URL query, header or secret.
+    tracing::warn!(%host, %reason, "egress policy refused an outbound call");
+    e
+}
+
 pub struct Egress {
     policy: EgressPolicy,
     limiters: Mutex<HashMap<String, Arc<Limiter>>>,
@@ -346,8 +403,9 @@ impl Egress {
         {
             vec![SocketAddr::new(ip, port)]
         } else {
-            tokio::net::lookup_host((host.as_str(), port))
+            tokio::time::timeout(DNS_TIMEOUT, tokio::net::lookup_host((host.as_str(), port)))
                 .await
+                .map_err(|_| EgressError::Unresolvable)?
                 .map_err(|_| EgressError::Unresolvable)?
                 .collect()
         };
@@ -358,16 +416,29 @@ impl Egress {
             let ip = a.ip();
             let loopback_ok = self.policy.allow_loopback && ip.is_loopback();
             if !loopback_ok && !is_public_ip(ip) {
-                return Err(EgressError::AddressNotAllowed);
+                return Err(refuse(
+                    &host,
+                    "non-public address",
+                    EgressError::AddressNotAllowed,
+                ));
             }
         }
         // Scheme last, so an http URL to a private host is reported as the address problem it is.
         match parsed.scheme() {
             "https" => {}
             "http" if self.policy.allow_loopback && addrs.iter().all(|a| a.ip().is_loopback()) => {}
-            _ => return Err(EgressError::SchemeNotAllowed),
+            _ => {
+                return Err(refuse(
+                    &host,
+                    "scheme not allowed",
+                    EgressError::SchemeNotAllowed,
+                ));
+            }
         }
+        // `no_proxy`: an HTTPS_PROXY in the environment would send the request to the proxy with the
+        // hostname, bypassing the addresses we checked and pinned.
         let mut builder = reqwest::Client::builder()
+            .no_proxy()
             .timeout(self.policy.timeout)
             .redirect(reqwest::redirect::Policy::none());
         // Pin the connection to what was checked: a DNS answer that changes between the check and

@@ -101,6 +101,16 @@ pub async fn ws_upgrade(
             .into_response();
     }
 
+    // A QUARANTINED tenant has a half-built index: no live sessions or searches until it is
+    // migrated (a live CRDT session would also make `migrate_kind --apply` refuse).
+    if let Some(resp) = state
+        .indexer
+        .as_ref()
+        .and_then(|h| crate::server::quarantine_refusal(&h.current()))
+    {
+        return resp;
+    }
+
     // Quota gate — debit a session slot. The guard is moved into
     // the upgraded socket task and released on drop.
     let session_guard = match (state.quota.as_ref(), auth_ctx.as_ref()) {

@@ -724,6 +724,27 @@ async fn spawn_metrics(
 /// installer; every later call (this fn's own fallback in `serve`
 /// for a caller that bypassed `build`, or a test's own subscriber)
 /// silently keeps the existing global.
+/// The ONE refusal every door of a QUARANTINED tenant gives (the hard cut `type:` -> `kind:`): a
+/// tenant that booted with legacy pages is up so an operator can run `migrate_kind`, but its index is
+/// incomplete, so it must serve and accept nothing else. `POST /mcp` answers with a typed JSON-RPC
+/// error (see `mcp.rs`); the plain HTTP doors (`/ingest`, `/ingest/upload`, `/blob/*`, `/ws`) answer
+/// `503 {error: "tenant_quarantined", message}` carrying the remedy.
+pub(crate) fn quarantine_refusal(
+    indexer: &escurel_index::Indexer,
+) -> Option<axum::response::Response> {
+    let pages = indexer.legacy_quarantine()?;
+    Some(
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            axum::Json(json!({
+                "error": "tenant_quarantined",
+                "message": escurel_index::migrate_kind::legacy_kind_message(indexer.tenant(), &pages),
+            })),
+        )
+            .into_response(),
+    )
+}
+
 pub(crate) fn install_telemetry(version: &str) -> Option<escurel_obs::TelemetryGuard> {
     let env = std::env::var("ESCUREL_ENV").unwrap_or_else(|_| "dev".to_owned());
     let cfg = TelemetryConfig {

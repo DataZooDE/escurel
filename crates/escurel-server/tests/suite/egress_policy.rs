@@ -119,6 +119,13 @@ async fn projection(p: &EscurelProcess, base_url: &str) -> Value {
     body["result"]["structuredContent"]["backend_projection"].clone()
 }
 
+/// Loopback allowed, and `dir` is the one directory a `file:` secret reference may live in.
+fn loopback_with_secrets(dir: &std::path::Path) -> EgressPolicy {
+    let mut p = loopback_ok();
+    p.secrets.file_dirs = vec![dir.to_path_buf()];
+    p
+}
+
 fn loopback_ok() -> EgressPolicy {
     EgressPolicy {
         allow_loopback: true,
@@ -373,7 +380,7 @@ async fn a_secret_reference_is_resolved_at_call_time_and_never_stored_or_echoed(
     std::fs::write(&secret_file, format!("{token}\n")).unwrap();
     let secret_ref = format!("file:{}", secret_file.display());
     let (base, seen) = authed_crm(token).await;
-    let (process, _dirs) = spawn_gateway(loopback_ok()).await;
+    let (process, _dirs) = spawn_gateway(loopback_with_secrets(secret_dir.path())).await;
 
     let reg = register_bearer(&process, &base, ("secret_ref", secret_ref.as_str())).await;
     assert!(reg.get("error").is_none(), "register: {reg}");
@@ -408,20 +415,17 @@ async fn a_secret_reference_is_resolved_at_call_time_and_never_stored_or_echoed(
 #[tokio::test]
 async fn an_unset_reference_degrades_naming_the_reference_not_a_value() {
     let (base, seen) = authed_crm("whatever").await;
-    let (process, _dirs) = spawn_gateway(loopback_ok()).await;
-    let reg = register_bearer(
-        &process,
-        &base,
-        ("secret_ref", "file:/nonexistent/escurel/never-set"),
-    )
-    .await;
+    let secret_dir = TempDir::new().unwrap();
+    let missing = format!("file:{}/never-set", secret_dir.path().display());
+    let (process, _dirs) = spawn_gateway(loopback_with_secrets(secret_dir.path())).await;
+    let reg = register_bearer(&process, &base, ("secret_ref", missing.as_str())).await;
     assert!(reg.get("error").is_none(), "register: {reg}");
 
     let proj = expand_acme(&process).await;
 
     let issue = proj["issue"].as_str().unwrap_or_default();
     assert!(
-        issue.contains("file:/nonexistent/escurel/never-set") && issue.contains("not available"),
+        issue.contains(missing.as_str()) && issue.contains("not available"),
         "the issue must name the missing reference: {proj}"
     );
     assert!(
@@ -470,7 +474,7 @@ async fn an_upstream_that_echoes_the_credential_in_its_error_is_not_repeated() {
     std::fs::write(&secret_file, secret).unwrap();
     let secret_ref = format!("file:{}", secret_file.display());
     let (base, _seen) = authed_crm("the-real-token").await;
-    let (process, _dirs) = spawn_gateway(loopback_ok()).await;
+    let (process, _dirs) = spawn_gateway(loopback_with_secrets(secret_dir.path())).await;
     let reg = register_bearer(&process, &base, ("secret_ref", secret_ref.as_str())).await;
     assert!(reg.get("error").is_none(), "register: {reg}");
 
@@ -564,5 +568,203 @@ async fn write_instance_sends_a_stable_idempotency_key_and_caps_the_payload() {
         2,
         "the oversize write never reached the upstream"
     );
+    process.shutdown().await;
+}
+
+// ---- secret references are a CONFINED way to name a credential ------------------------------------
+//
+// `secret_ref` used to read ANY env var or ANY file of the gateway host and send it, as a bearer
+// token, to whatever host an admin registered. The operator decides what a tenant may name.
+
+/// A real upstream that records the `Authorization` header of EVERY request it gets, whoever asks.
+async fn capture_any_auth() -> (String, Arc<std::sync::Mutex<Vec<String>>>) {
+    let seen: Arc<std::sync::Mutex<Vec<String>>> = Arc::default();
+    let app = Router::new()
+        .route(
+            "/customers/{id}",
+            get(
+                move |State(seen): State<Arc<std::sync::Mutex<Vec<String>>>>,
+                      headers: HeaderMap| async move {
+                    let got = headers
+                        .get("authorization")
+                        .and_then(|v| v.to_str().ok())
+                        .unwrap_or("")
+                        .to_owned();
+                    seen.lock().unwrap().push(got);
+                    Json(json!({ "name": "Acme Corp", "account_tier": "gold" }))
+                },
+            ),
+        )
+        .with_state(Arc::clone(&seen));
+    let (base, _handle) = serve(app).await;
+    (base, seen)
+}
+
+fn refused(reg: &Value) -> bool {
+    reg.get("error").is_some() || reg["result"]["isError"] == json!(true)
+}
+
+#[tokio::test]
+async fn a_secret_reference_cannot_name_an_arbitrary_file_or_environment_variable() {
+    let (base, seen) = capture_any_auth().await;
+    let (process, _dirs) = spawn_gateway(loopback_ok()).await;
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/root".to_owned());
+
+    for secret_ref in [
+        "file:/etc/hostname".to_owned(),
+        "file:/etc/../etc/hostname".to_owned(),
+        "file:/proc/self/environ".to_owned(),
+        "file:relative/secret".to_owned(),
+        "env:HOME".to_owned(),
+        "env:PATH".to_owned(),
+        "env:ESCUREL_SERVER_DATA_DIR".to_owned(),
+    ] {
+        let reg = register_bearer(&process, &base, ("secret_ref", secret_ref.as_str())).await;
+        assert!(
+            refused(&reg),
+            "`{secret_ref}` must be refused at registration, got {reg}"
+        );
+        // Even a registration that slipped through must never put the value on the wire.
+        if !refused(&reg) {
+            let _ = expand_acme(&process).await;
+        }
+    }
+    let leaked: Vec<String> = seen
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|h| h.contains(&home) || h.contains("/usr") || h.len() > "Bearer ".len())
+        .cloned()
+        .collect();
+    assert!(
+        leaked.is_empty(),
+        "a host secret reached the upstream: {leaked:?}"
+    );
+    process.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_refused_file_reference_is_not_an_oracle_for_which_files_exist() {
+    let (base, _seen) = capture_any_auth().await;
+    let (process, _dirs) = spawn_gateway(loopback_ok()).await;
+    let present = register_bearer(&process, &base, ("secret_ref", "file:/etc/hostname")).await;
+    let absent = register_bearer(
+        &process,
+        &base,
+        ("secret_ref", "file:/etc/escurel-no-such-file-xyz"),
+    )
+    .await;
+    let text = |v: &Value| {
+        v.to_string()
+            .replace("hostname", "X")
+            .replace("escurel-no-such-file-xyz", "X")
+    };
+    assert!(
+        refused(&present) && refused(&absent),
+        "{present} / {absent}"
+    );
+    assert_eq!(
+        text(&present),
+        text(&absent),
+        "the refusal must not differ for a file that exists and one that does not"
+    );
+    process.shutdown().await;
+}
+
+// ---- a row id can never change which upstream resource a path template names ----------------------
+
+/// A real upstream that records the PATH of every request it receives, whatever the path is.
+async fn path_recorder() -> (String, Arc<std::sync::Mutex<Vec<String>>>) {
+    let seen: Arc<std::sync::Mutex<Vec<String>>> = Arc::default();
+    let app =
+        Router::new()
+            .fallback(
+                move |State(seen): State<Arc<std::sync::Mutex<Vec<String>>>>,
+                      uri: axum::http::Uri| async move {
+                    seen.lock().unwrap().push(uri.path().to_owned());
+                    Json(json!({ "name": "SOME RESOURCE", "account_tier": "gold" }))
+                },
+            )
+            .with_state(Arc::clone(&seen));
+    let (base, _handle) = serve(app).await;
+    (base, seen)
+}
+
+#[tokio::test]
+async fn a_dot_segment_id_cannot_escape_the_path_template() {
+    let (base, seen) = path_recorder().await;
+    let (process, _dirs) = spawn_gateway(loopback_ok()).await;
+    let reg = call(
+        &process,
+        "register_endpoint",
+        json!({ "name": "crm_rest", "kind": "openapi", "base_url": format!("{base}/api/v1") }),
+    )
+    .await;
+    assert!(reg.get("error").is_none(), "register: {reg}");
+
+    for id in ["..", ".", "...", "%2e%2e", "a/../b"] {
+        let created = call(
+            &process,
+            "create_remote_instance",
+            json!({ "skill": "customer", "id": id }),
+        )
+        .await;
+        if let Some(page_id) = created["result"]["structuredContent"]["page_id"].as_str() {
+            let _ = call(&process, "expand", json!({ "page_id": page_id })).await;
+        }
+    }
+    let paths = seen.lock().unwrap().clone();
+    // Every request the upstream saw must stay UNDER /api/v1/customers/: a collapsed `..` would read
+    // the parent resource (`/api/v1/`) with the endpoint's credentials.
+    assert!(
+        paths
+            .iter()
+            .all(|p| p.starts_with("/api/v1/customers/") && !p.ends_with("/customers/")),
+        "the upstream saw a path outside the template: {paths:?}"
+    );
+    process.shutdown().await;
+}
+
+// ---- IPv6 forms that wrap a private or metadata IPv4 address are refused -------------------------
+
+#[tokio::test]
+async fn ipv6_forms_that_wrap_a_private_or_metadata_address_are_refused() {
+    let (process, _dirs) = spawn_gateway(EgressPolicy::default()).await;
+    let hostile = [
+        // NAT64 of 169.254.169.254 (the cloud metadata address) on a DNS64 network.
+        "https://[64:ff9b::a9fe:a9fe]/",
+        // IPv4-compatible (deprecated) 127.0.0.1.
+        "https://[::7f00:1]:1/",
+        // Site-local, deprecated but still routed by some stacks.
+        "https://[fec0::1]:1/",
+        // 6to4 of 10.0.0.1.
+        "https://[2002:0a00:0001::1]:1/",
+        // IPv4-mapped (already refused before this change: the control).
+        "https://[::ffff:7f00:1]:1/",
+    ];
+    for (i, url) in hostile.iter().enumerate() {
+        let name = format!("v6_{i}");
+        let reg = call(
+            &process,
+            "register_endpoint",
+            json!({ "name": name, "kind": "openapi", "base_url": url }),
+        )
+        .await;
+        assert!(reg.get("error").is_none(), "register {url}: {reg}");
+    }
+    let v = call(&process, "validate_endpoints", json!({})).await;
+    let eps = v["result"]["structuredContent"]["endpoints"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    assert_eq!(eps.len(), hostile.len(), "{v}");
+    for e in &eps {
+        let detail = e["detail"].as_str().unwrap_or("");
+        assert!(
+            detail.contains("non-public"),
+            "`{}` must be refused by the egress policy, got {e}",
+            e["name"]
+        );
+    }
     process.shutdown().await;
 }

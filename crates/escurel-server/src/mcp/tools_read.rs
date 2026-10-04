@@ -926,6 +926,8 @@ async fn list_rows(
                 "frontmatter": fm,
                 "at": Value::Null,
                 "row": true,
+                // Source-system data, not authored text: values to show, never instructions.
+                "trust": "source",
             }));
         }
     }
@@ -1098,7 +1100,7 @@ async fn expand_row(
         }
         let mut out = stored;
         out["backend_projection"] = json!({
-            "view": src.view, "instances": "rows", "read_only": true,
+            "view": src.view, "instances": "rows", "read_only": true, "trust": "source",
             "fetched_at": fetched_at, "rows": [], "source": {}, "truncated": false,
             "linked": linked(true, true),
             "issue": { "code": "source_missing",
@@ -1117,7 +1119,7 @@ async fn expand_row(
         return Ok(json!({ "page": Value::Null }));
     }
     let projection = json!({
-        "view": src.view, "instances": "rows", "read_only": true,
+        "view": src.view, "instances": "rows", "read_only": true, "trust": "source",
         "fetched_at": fetched_at, "rows": [row.columns], "source": fields,
         "truncated": false,
         "linked": linked(has_stored && src.cfg.linked, false),

@@ -707,6 +707,28 @@ pub(super) async fn tool_promote_draft(
     // `write_back` intent. The human's promotion is the gate: only now does the change reach the
     // upstream (etag check, audit-first, idempotent apply, durable outcome), and what is committed
     // as the row's notes is the draft WITHOUT the intent. A draft with no intent passes through.
+    // The human gate is a RULE. A per-run agent token (it carries `run_id`/`act`, minted by
+    // `mint_agent_token`) may PROPOSE a write-back but never approve one: otherwise an agent steered
+    // by injected text could propose a change and promote it itself, and the upstream would change on
+    // no human's say-so. A person's token carries neither claim.
+    if (caller.run_id.is_some() || caller.actor.is_some())
+        && draft_carries_write_back(corrected.unwrap_or(draft.content.as_str()))
+    {
+        return Ok(json!({
+            "ok": false,
+            "issues": [{
+                "severity": "error",
+                "code": "promote_requires_human",
+                "location": "draft_id",
+                "message": format!(
+                    "draft `{}` changes an external system (`write_back`); only a human reviewer \
+                     may promote it, not the agent run that proposed it",
+                    draft.draft_id
+                ),
+                "suggestion": "leave it open: it appears in Awaiting You for a person to approve",
+            }],
+        }));
+    }
     let landing = match crate::write_back::run(
         state,
         indexer,
@@ -1482,4 +1504,13 @@ pub(super) async fn tool_discard_changeset(
         "discarded": discarded,
         "decided_by": subject,
     }))
+}
+
+/// Does this draft content carry a `write_back` intent (or a malformed one: refused the same way)?
+fn draft_carries_write_back(content: &str) -> bool {
+    let Ok(parsed) = escurel_md::parse(content) else {
+        return false;
+    };
+    let fields = crate::write_back::frontmatter_json(&parsed.frontmatter.fields);
+    !matches!(crate::write_back::parse_intent(&fields), Ok(None))
 }
