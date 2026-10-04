@@ -256,10 +256,9 @@ async fn caller_supplied_attribution_cannot_override_the_stamp() {
         json!({
             "page_id": NOTE_PAGE,
             "content": forged,
-            // Every caller-controlled channel that could plausibly be read
-            // as attribution, all naming someone else.
-            "last_written_by": "consultant:mallory",
-            "principal": "consultant:mallory",
+            // The remaining caller-controlled channel that could plausibly be
+            // read as attribution, naming someone else (undeclared top-level
+            // arguments are refused outright — see the last assertion).
             "provenance": { "last_written_by": "consultant:mallory",
                             "principal": "consultant:mallory" },
         }),
@@ -280,7 +279,6 @@ async fn caller_supplied_attribution_cannot_override_the_stamp() {
         json!({
             "page_id": NOTE_PAGE,
             "content": forged,
-            "last_written_by": "consultant:mallory",
             "provenance": { "last_written_by": "consultant:mallory" },
         }),
     )
@@ -290,6 +288,20 @@ async fn caller_supplied_attribution_cannot_override_the_stamp() {
         last_written_by(&p, &alice, NOTE_PAGE).await.as_deref(),
         Some(BOB),
         "positive control: the stamp tracks the token, not the payload"
+    );
+
+    // An attribution argument is not a declared parameter: refused, not ignored.
+    let r = call(
+        &p,
+        &alice,
+        "update_page",
+        json!({ "page_id": NOTE_PAGE, "content": forged, "last_written_by": "consultant:mallory" }),
+    )
+    .await;
+    assert_eq!(r["result"]["isError"], true, "{r}");
+    assert_eq!(
+        r["result"]["structuredContent"]["issues"][0]["code"],
+        "invalid_argument"
     );
 
     p.shutdown().await;
@@ -377,12 +389,22 @@ async fn caller_supplied_op_principal_is_ignored() {
         json!({
             "session": session,
             "op": peer.insert("x"),
-            "principal": "consultant:mallory",
-            "author": "consultant:mallory",
         }),
     )
     .await;
     assert_eq!(r["ok"], true, "the op must still apply: {r}");
+    // A `principal` argument is not declared: refused, never trusted.
+    let forged = call(
+        &p,
+        &alice,
+        "apply_op",
+        json!({ "session": session, "op": peer.insert("z"), "principal": "consultant:mallory" }),
+    )
+    .await;
+    assert_eq!(
+        forged["result"]["structuredContent"]["issues"][0]["code"],
+        "invalid_argument"
+    );
 
     let r = call_ok(
         &p,
@@ -391,7 +413,6 @@ async fn caller_supplied_op_principal_is_ignored() {
         json!({
             "session": session,
             "op": peer.insert("y"),
-            "principal": ALICE,
         }),
     )
     .await;

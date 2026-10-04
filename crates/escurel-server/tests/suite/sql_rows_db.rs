@@ -319,7 +319,12 @@ async fn rows_over_a_real_sqlite_file_page_exactly_once_and_skip_null_keys() {
 #[tokio::test]
 async fn a_row_reads_as_typed_fields_with_the_discovered_schema_and_a_source_marker() {
     let g = Gw::start().await;
-    let r = g.admin("expand", json!({ "page_id": row_page(7) })).await;
+    let r = g
+        .admin(
+            "expand",
+            json!({ "page_id": row_page(7), "include_schema": true }),
+        )
+        .await;
     assert_eq!(r["frontmatter"]["sales_doc"], doc(7), "{r}");
     // What the gateway shows is what the database holds (read straight from the file).
     let truth = db_row(&g.db, 7);

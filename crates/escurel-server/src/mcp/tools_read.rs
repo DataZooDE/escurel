@@ -48,6 +48,43 @@ pub(super) async fn tool_list_skills(
     to_value(resp)
 }
 
+/// What a skill's backend tells an agent: for a `rows` skill the key, what it may filter / search by
+/// and what a `write_back` draft may change, each column under the field name the rows show.
+fn backend_to_wire(b: &escurel_index::backend::BackendBinding) -> TypesSkillBackend {
+    let mut out = TypesSkillBackend {
+        kind: b.kind.as_str().to_string(),
+        ..TypesSkillBackend::default()
+    };
+    if b.rows.is_none() && b.kind == escurel_index::backend::BackendKind::SqlView {
+        out.instances = Some("view".to_owned());
+    }
+    let Some(rows) = b.rows.as_ref() else {
+        return out;
+    };
+    let project = b
+        .sql_view
+        .as_ref()
+        .map(|v| &v.project)
+        .or_else(|| b.remote.as_ref().map(|r| &r.project));
+    let field_of = |col: &String| TypesBackendField {
+        field: project
+            .and_then(|p| p.get(col))
+            .cloned()
+            .unwrap_or_else(|| col.clone()),
+        column: col.clone(),
+    };
+    out.instances = Some("rows".to_owned());
+    out.key = rows.key.clone();
+    out.filterable = rows.filterable.iter().map(field_of).collect();
+    out.searchable = rows.searchable.iter().map(field_of).collect();
+    out.writable_columns = rows.writable_columns.iter().map(field_of).collect();
+    if !rows.writable_columns.is_empty() {
+        out.writable_via = Some("write_back".to_owned());
+    }
+    out.linked = Some(rows.linked);
+    out
+}
+
 /// One skill row on the wire (`list_skills`). Pure: every redaction is decided here from the row and
 /// the caller's role. `acl` is admin-only, so a non-admin row is byte-identical to one for a skill that
 /// declares no block at all: the redaction is not an existence oracle either.
@@ -73,9 +110,7 @@ fn skill_to_wire(s: escurel_index::SkillInfo, is_admin: bool) -> TypesSkill {
             update: a.update,
             delete: a.delete,
         }),
-        backend: TypesSkillBackend {
-            kind: s.backend.kind.as_str().to_string(),
-        },
+        backend: backend_to_wire(&s.backend),
         capabilities: {
             let c = Capabilities::for_kind(s.backend.kind);
             TypesSkillCapabilities {
@@ -250,6 +285,29 @@ pub(super) async fn tool_list_instances(
                 "frontmatter": i.frontmatter,
                 "at": i.at,
             }));
+        }
+    }
+    // An empty first page for a skill nobody ever declared is the caller's mistake, not "no
+    // instances": answer with the skills there are (the catalogue is public to every caller). A
+    // skill whose instances exist without a skill page still lists them, so this is checked only
+    // when nothing came back.
+    if instances.is_empty() && a.cursor.is_none() {
+        let known = indexer
+            .list_skills()
+            .await
+            .map_err(|e| JsonRpcError::internal(format!("list_instances: {e}")))?;
+        if !known.iter().any(|s| s.id == a.skill_id) {
+            let names: Vec<&str> = known.iter().map(|s| s.id.as_str()).take(30).collect();
+            return Err(JsonRpcError::domain(
+                "unknown_skill",
+                "skill_id",
+                format!(
+                    "no skill `{}`; known skills: {}",
+                    a.skill_id,
+                    names.join(", ")
+                ),
+                Some("`list_skills` is the catalogue; pass one of its `id`s as `skill_id`"),
+            ));
         }
     }
     // `next_cursor` stays PRESENT (null on the last page) for
@@ -516,6 +574,7 @@ pub(super) async fn tool_expand(
 ) -> Result<Value, JsonRpcError> {
     // A row of an `instances: rows` skill (stage 3) has no stored page of its own: the stored page
     // at its id, if any, is the row's LINKED MARKDOWN, and the two read as ONE instance.
+    // (`include_schema` is read from `args` by the two row expanders.)
     let a: ExpandArgs = parse_args(args.clone(), "expand")?;
     if let Some((skill, id)) = split_instance_page_id(&a.page_id)
         && let Some(src) = indexer
@@ -1064,6 +1123,7 @@ async fn expand_remote_row(
     id: &str,
 ) -> Result<Value, JsonRpcError> {
     let page_id = instance_page_id(&src.skill, id);
+    let args_include_schema = args["include_schema"].as_bool().unwrap_or(false);
     let stored = tool_expand_stored(state, indexer, caller, args).await?;
     let has_stored = !stored["page"].is_null();
     let fetched_at = escurel_index::now_rfc3339_micros();
@@ -1085,7 +1145,7 @@ async fn expand_remote_row(
                 row_shell(&page_id, id, &src.skill)
             };
             out["backend_projection"] = json!({
-                "kind": kind, "instances": "rows", "read_only": true, "trust": "external",
+                "kind": kind, "instances": "rows", "read_only": true, "direct_write": false, "trust": "external",
                 "fetched_at": fetched_at, "rows": [], "source": {},
                 "linked": linked(has_stored, false),
                 "issue": { "code": "source_unavailable",
@@ -1100,7 +1160,7 @@ async fn expand_remote_row(
         }
         let mut out = stored;
         out["backend_projection"] = json!({
-            "kind": kind, "instances": "rows", "read_only": true, "trust": "external",
+            "kind": kind, "instances": "rows", "read_only": true, "direct_write": false, "trust": "external",
             "fetched_at": fetched_at, "rows": [], "source": {}, "linked": linked(true, true),
             "issue": { "code": "source_missing",
                 "message": "the upstream has no object with this key any more; the linked notes are kept" },
@@ -1115,15 +1175,20 @@ async fn expand_remote_row(
     {
         return Ok(row_hidden(&page_id));
     }
-    let projection = json!({
-        "kind": kind, "instances": "rows", "read_only": true, "trust": "external",
-        "fetched_at": fetched_at, "rows": [fields.clone()], "source": fields,
+    let mut projection = json!({
+        "kind": kind, "instances": "rows", "read_only": true, "direct_write": false, "trust": "external",
+        "fetched_at": fetched_at, "source": fields,
+        // The source's own fields as they appear in `frontmatter`: read-only there. Send only YOUR
+        // fields (the linked notes') to `update_page`; change these through a `write_back` draft.
+        "read_only_fields": row.fields.keys().collect::<Vec<_>>(),
         "truncated": false, "linked": linked(has_stored && src.cfg.linked, false),
         // What a reviewer saw: a write-back proposal names it as its `base_etag`.
         "etag": crate::write_back::etag_of(&row.fields),
     });
+    if args_include_schema {
+        projection["rows"] = json!([fields.clone()]);
+    }
     // The columns a person may propose to change upstream (only when the skill can write at all).
-    let mut projection = projection;
     if src.remote.write.is_some() && !src.cfg.writable_columns.is_empty() {
         projection["writable_columns"] = json!(src.cfg.writable_columns);
         // `read_only` means "not writable directly": the writable columns change only through a
@@ -1192,6 +1257,7 @@ async fn expand_row(
     id: &str,
 ) -> Result<Value, JsonRpcError> {
     let page_id = instance_page_id(&src.skill, id);
+    let include_schema = args["include_schema"].as_bool().unwrap_or(false);
     let stored = tool_expand_stored(state, indexer, caller, args).await?;
     let has_stored = !stored["page"].is_null();
     let row = indexer
@@ -1209,7 +1275,7 @@ async fn expand_row(
         }
         let mut out = stored;
         out["backend_projection"] = json!({
-            "view": src.view, "instances": "rows", "read_only": true, "trust": "source",
+            "view": src.view, "instances": "rows", "read_only": true, "direct_write": false, "trust": "source",
             "fetched_at": fetched_at, "rows": [], "source": {}, "truncated": false,
             "linked": linked(true, true),
             "issue": { "code": "source_missing",
@@ -1227,18 +1293,29 @@ async fn expand_row(
     {
         return Ok(row_hidden(&page_id));
     }
-    let projection = json!({
-        "view": src.view, "instances": "rows", "read_only": true, "trust": "source",
-        "fetched_at": fetched_at, "rows": [row.columns], "source": fields,
+    let mut projection = json!({
+        "view": src.view, "instances": "rows", "read_only": true, "direct_write": false, "trust": "source",
+        "fetched_at": fetched_at, "source": fields,
+        // The source's own fields as they appear in `frontmatter`: read-only there. Send only YOUR
+        // fields (the linked notes') to `update_page`; change these through a `write_back` draft.
+        "read_only_fields": row.fields.keys().collect::<Vec<_>>(),
         "truncated": false,
         "linked": linked(has_stored && src.cfg.linked, false),
-        // The DISCOVERED schema (DuckDB `DESCRIBE`); the skill's own `fields:` override kind and label.
-        "columns": row.types.iter().map(|(n, t)| json!({
-            "name": n, "type": t,
-            "kind": escurel_index::backend::rows::field_kind_for(t),
-        })).collect::<Vec<_>>(),
     });
-    let mut projection = projection;
+    if include_schema {
+        // The DISCOVERED schema (DuckDB `DESCRIBE`; the skill's own `fields:` override kind and label)
+        // and the raw source row, columns as the source names them.
+        projection["rows"] = json!([row.columns]);
+        projection["columns"] = json!(
+            row.types
+                .iter()
+                .map(|(n, t)| json!({
+                    "name": n, "type": t,
+                    "kind": escurel_index::backend::rows::field_kind_for(t),
+                }))
+                .collect::<Vec<_>>()
+        );
+    }
     if escurel_index::Indexer::rows_source_is_writable(src) {
         // What a reviewer saw: a write-back proposal names it as its `base_etag`, and the columns
         // that may be proposed. `read_only` means "not writable DIRECTLY": these change only through a
@@ -1680,6 +1757,9 @@ pub(crate) async fn tool_search(
     }
     let a: SearchArgs = parse_args(args, "search")?;
     let pt = match a.page_kind.as_deref() {
+        // Searching WITHIN a skill means its instances: the skill's own page matches its name and
+        // fields and used to come back as a hit (`any` still asks for both).
+        None if a.skill.as_deref().is_some_and(|s| !s.is_empty()) => Some(PageKind::Instance),
         None | Some("any") => None,
         Some("skill") => Some(PageKind::Skill),
         Some("instance") => Some(PageKind::Instance),
@@ -1782,7 +1862,7 @@ pub(crate) async fn tool_search(
     let out: Vec<Value> = final_hits
         .iter()
         .map(|h| {
-            json!({
+            let mut hit = json!({
                 "page_id": h.page_id,
                 "slug": h.slug,
                 "skill": h.skill,
@@ -1790,9 +1870,14 @@ pub(crate) async fn tool_search(
                 "anchor": h.anchor,
                 "snippet": h.snippet,
                 "score": h.score,
-                "similarity": h.similarity,
                 "frontmatter_excerpt": h.frontmatter_excerpt,
-            })
+            });
+            // A cosine similarity is reported only when one was computed: `0.0` (a row or BM25-only
+            // hit) and `-1.0` (an unembedded query) are "not available", not a measured relevance.
+            if h.similarity.is_finite() && h.similarity > 0.0 {
+                hit["similarity"] = json!(h.similarity);
+            }
+            hit
         })
         .collect();
     let mut result = json!({

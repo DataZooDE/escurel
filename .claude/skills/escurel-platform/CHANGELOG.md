@@ -4,7 +4,7 @@ The skill version tracks the consumer-facing contract, not the Escurel
 binary version. The Escurel repo's checked-out git ref is the true version
 pin (see `SKILL.md` → "How this skill is installed").
 
-## 0.16.0 — the autonomy gate holds against machines; secrets and file sources are scoped (BREAKING behaviour)
+## 0.17.0 — the autonomy gate holds against machines; secrets and file sources are scoped (BREAKING behaviour)
 
 Round-2 security review. Behaviour changes a consumer can see:
 
@@ -20,6 +20,29 @@ Round-2 security review. Behaviour changes a consumer can see:
 - **File sources need `ESCUREL_SQL_FILE_DIRS`**: `json_dir` / `parquet_dir` globs must lie under it (it was
   only `sqlite`); Postgres/MySQL DSNs accept a short key list, all hosts are judged, a host name is pinned.
 - `query_instance` enforces the query page's own `acl.read`.
+
+## 0.16.0 — the tool surface tells an agent what it can do (MINOR; behaviour changes listed)
+
+Agent-usability pass over the MCP surface (second crew review). Additive unless marked.
+
+- **BEHAVIOUR: unknown arguments are refused** (`invalid_argument`, with a did-you-mean and the valid list).
+  Previously a typo or another tool's spelling was dropped and the call ran with defaults. Schema gaps this
+  exposed are now declared (`promote_draft.decided_by/content`, `delete_page.branch`, `search.page_id`, ...).
+- **`list_skills.backend`** carries `instances`, `key`, `filterable[{field,column}]`,
+  `searchable[{field,column}]`, `writable_columns`, `writable_via`, `linked` for a rows skill. A rows skill
+  may declare `backend.searchable:` (display columns `search` matches: a customer by name).
+- **`create_draft` takes `write_back` as an argument** (the server writes it into the frontmatter); bad values
+  are refused at draft time (`write_back_invalid_value`); the open-draft `conflict` suggests `discard_draft`.
+- **`list_instances` of an unknown skill** is `unknown_skill` (was an empty success).
+- **`expand` of a row** returns each value once; schema + raw row behind `include_schema`;
+  `read_only_fields`; `direct_write: false` (`read_only` deprecated, kept one release).
+- **Cursors are signed** (`invalid_cursor` for anything the server did not issue, on every list);
+  `ESCUREL_CURSOR_KEY` shares the key across replicas.
+- **`search` with a `skill` filter defaults to instances**; `similarity` is omitted when not computed.
+- **`describe_backend` is `describe_endpoint`** (old name accepted); `tools/list` is grouped and sorted.
+- **Text summaries** carry `next_cursor=...`, "Not found", whole refusals; a minted token is not repeated.
+- **Docs:** `references/02` now names every tool (provenance, operator surface) and is pinned by the parity
+  test (count + coverage).
 
 ## 0.15.1 — a refused call is an error in every client (PATCH, behaviour fix)
 

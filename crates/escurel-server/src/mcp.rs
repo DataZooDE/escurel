@@ -49,14 +49,14 @@ use escurel_md::PageKind;
 use escurel_quota::{Dimension, QuotaError, QuotaManager};
 use escurel_storage::{Key, StoreError};
 use escurel_types::{
-    AdminLaneBlobResponse, AttachExternalResponse, CompactProgress, EmbeddingReloadResponse,
-    ListSkillsResponse, MigrateKindRequest, PublishSnapshotResponse, QuotaGetResponse,
-    RebuildProgress, Skill as TypesSkill, SkillAcl as TypesSkillAcl,
-    SkillBackend as TypesSkillBackend, SkillCapabilities as TypesSkillCapabilities,
-    SkillField as TypesSkillField, SkillParam as TypesSkillParam, TenantCreateResponse,
-    TenantDeleteResponse, TenantGetResponse, TenantImportResponse, TenantListResponse,
-    TenantSpec as TypesTenantSpec, TenantUpdateResponse, WebhookDeliveriesResponse,
-    WebhookDelivery,
+    AdminLaneBlobResponse, AttachExternalResponse, BackendField as TypesBackendField,
+    CompactProgress, EmbeddingReloadResponse, ListSkillsResponse, MigrateKindRequest,
+    PublishSnapshotResponse, QuotaGetResponse, RebuildProgress, Skill as TypesSkill,
+    SkillAcl as TypesSkillAcl, SkillBackend as TypesSkillBackend,
+    SkillCapabilities as TypesSkillCapabilities, SkillField as TypesSkillField,
+    SkillParam as TypesSkillParam, TenantCreateResponse, TenantDeleteResponse, TenantGetResponse,
+    TenantImportResponse, TenantListResponse, TenantSpec as TypesTenantSpec, TenantUpdateResponse,
+    WebhookDeliveriesResponse, WebhookDelivery,
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -743,10 +743,38 @@ fn summarise_payload(payload: &Value) -> String {
         } else {
             String::new()
         };
+        // The whole guidance: a refusal is cut where it says what to DO (a `write_back` hint was
+        // truncated at "in the frontmatter"). Only an absurdly long message is shortened.
+        let suggestion = issue["suggestion"]
+            .as_str()
+            .filter(|s| !s.is_empty())
+            .map_or(String::new(), |s| format!(" Suggestion: {}", short(s, 600)));
         return format!(
-            "Refused: {}: {}{more}. {MORE}",
+            "Refused: {}: {}{suggestion}{more}. {MORE}",
             issue["code"].as_str().unwrap_or("error"),
-            short(issue["message"].as_str().unwrap_or(""), 220),
+            short(issue["message"].as_str().unwrap_or(""), 1200),
+        );
+    }
+    // Absent: say so in words (it used to read "2 keys"). Covers `expand` / `resolve`.
+    if obj.get("page") == Some(&Value::Null) {
+        let why = obj
+            .get("hint")
+            .and_then(Value::as_str)
+            .unwrap_or("no such page, or you may not read it");
+        return format!("Not found (page: null): {}. {MORE}", short(why, 400));
+    }
+    // A minted token is announced, never repeated: the text lands in transcripts and logs.
+    if obj.get("token").is_some_and(Value::is_string) {
+        let expires = obj
+            .get("expires_at")
+            .and_then(Value::as_str)
+            .map_or(String::new(), |e| format!(", expires {e}"));
+        let run = obj
+            .get("run_id")
+            .and_then(Value::as_str)
+            .map_or(String::new(), |r| format!(", run_id {r}"));
+        return format!(
+            "Agent token minted (secret: read it from structuredContent.token){expires}{run}."
         );
     }
     let mut parts: Vec<String> = Vec::new();
@@ -761,7 +789,11 @@ fn summarise_payload(payload: &Value) -> String {
                     parts.push(k.clone());
                 }
             }
-            _ if k == "next_cursor" => parts.push("more via next_cursor".to_owned()),
+            Value::String(c) if k == "next_cursor" => {
+                parts.push(format!(
+                    "next_cursor={c} (pass it as `cursor` for the next page)"
+                ));
+            }
             _ => {}
         }
     }
@@ -966,6 +998,11 @@ async fn dispatch_tools_call(
     // `limit` is bounded in the tool's own schema; enforce what the schema says. A value outside it
     // used to be accepted silently (0 and 10001 returned a page) or fail with a Rust type name.
     if let Some(refusal) = schema::limit_refusal(&params.name, &params.arguments) {
+        return Ok(refusal);
+    }
+    // An argument the tool does not declare is a typo or another tool's spelling; dropping it ran
+    // the call with default behaviour (`limt: 5`, `filter: {..}`).
+    if let Some(refusal) = schema::unknown_args_refusal(&params.name, &params.arguments) {
         return Ok(refusal);
     }
 
@@ -1250,7 +1287,9 @@ async fn dispatch_tools_call(
         "list_endpoints" => tool_list_endpoints(indexer).await,
         "delete_endpoint" => tool_delete_endpoint(indexer, &state.egress, params.arguments).await,
         "validate_endpoints" => tool_validate_endpoints(indexer, &state.egress).await,
-        "describe_backend" => tool_describe_backend(indexer, &state.egress, params.arguments).await,
+        "describe_endpoint" => {
+            tool_describe_endpoint(indexer, &state.egress, params.arguments).await
+        }
         // Materialise a remote (openapi/mcp) overlay page from a skill that
         // declares a remote backend. Admin-only, mirroring create_sql_instance.
         "create_remote_instance" => tool_create_remote_instance(indexer, params.arguments).await,

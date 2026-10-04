@@ -993,11 +993,14 @@ impl Indexer {
                 // A parse failure short-circuits: there is no
                 // frontmatter / body to run the remaining checks
                 // against. One structured error rather than a panic.
-                return Ok(vec![Issue::error(
-                    "frontmatter_parse",
-                    "frontmatter",
-                    e.to_string(),
-                )]);
+                return Ok(vec![
+                    Issue::error("frontmatter_parse", "frontmatter", e.to_string()).with_suggestion(
+                        "start the page with a frontmatter block, e.g. \"---\\nkind: instance\\nid: \
+                         <slug>\\nskill: <skill>\\n---\\n<body>\" (a skill page: `kind: skill`, \
+                         `id`, `description`); the page-kind key is `kind:` — the old `type:` is no \
+                         longer accepted",
+                    ),
+                ]);
             }
         };
 
@@ -1543,6 +1546,42 @@ impl Indexer {
             |row| row.get(0),
         )?;
         Ok(declared > 0)
+    }
+
+    /// Why `value` could not be written to `field` of `skill`, in words an agent can act on; `None`
+    /// when it fits the skill's declared `fields:` (or the skill declares nothing about it). Used to
+    /// refuse a `write_back` proposal at draft time, where a bad value would otherwise surface only
+    /// when the upstream rejects it at promotion and leave a dead draft behind.
+    ///
+    /// # Errors
+    /// [`IndexerError`] when the skill catalogue cannot be read.
+    pub async fn field_value_problem(
+        &self,
+        skill: &str,
+        field: &str,
+        value: &serde_json::Value,
+    ) -> Result<Option<String>, IndexerError> {
+        let skills = self.list_skills().await?;
+        let Some(f) = skills
+            .iter()
+            .find(|s| s.id == skill)
+            .and_then(|s| s.fields.iter().find(|f| f.name == field))
+        else {
+            return Ok(None);
+        };
+        let Ok(yaml) = serde_json::from_value::<YamlValue>(value.clone()) else {
+            return Ok(None);
+        };
+        let issues = check_field_value(f, &yaml);
+        if issues.is_empty() {
+            return Ok(None);
+        }
+        let got = value.to_string();
+        Ok(Some(if f.kind == crate::FieldKind::Enum {
+            format!("{field} must be one of {}; got {got}", f.values.join("|"))
+        } else {
+            issues[0].message.clone()
+        }))
     }
 
     /// Resolve a set of skill slugs in a single locked DuckDB pass.

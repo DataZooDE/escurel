@@ -98,7 +98,12 @@ async fn a_caller_supplied_run_id_argument_is_ignored() {
     let mut args = draft_args("v2 forged.");
     args["run_id"] = json!("forged-run");
     args["root_event_id"] = json!("forged-root");
+    // Not a declared parameter: refused outright rather than quietly ignored.
     let r = call(&p, &human, "create_draft", args).await;
+    assert_eq!(r["ok"], false, "{r}");
+    assert_eq!(r["issues"][0]["code"], "invalid_argument", "{r}");
+    // Without the forged arguments the draft carries no lineage at all.
+    let r = call(&p, &human, "create_draft", draft_args("v2 plain.")).await;
     assert_eq!(r["ok"], true, "{r}");
     assert!(r["draft"]["run_id"].is_null(), "{r}");
     assert!(r["draft"]["root_event_id"].is_null(), "{r}");

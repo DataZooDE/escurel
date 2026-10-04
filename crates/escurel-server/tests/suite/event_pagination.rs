@@ -163,8 +163,8 @@ async fn invalid_cursor_is_invalid_params() {
     )
     .await;
     assert_eq!(
-        out["error"]["code"],
-        json!(-32602),
-        "an undecodable cursor must be invalid_params: {out}"
+        out["result"]["structuredContent"]["issues"][0]["code"],
+        json!("invalid_cursor"),
+        "an undecodable cursor is a typed `invalid_cursor` refusal: {out}"
     );
 }

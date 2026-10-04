@@ -478,7 +478,7 @@ fn like_contains(q: &str) -> String {
 }
 
 impl Indexer {
-    /// Up to `limit` rows whose KEY or one of whose `filterable:` columns contains `q`
+    /// Up to `limit` rows whose KEY or one of whose `filterable:` / `searchable:` columns contains `q`
     /// (case-insensitive), in key order. Only those columns are searched: a column the skill did not
     /// declare is never matched, so a search cannot be used to probe data the skill keeps back. `q` is
     /// a bound parameter (a LIKE pattern with its wildcards escaped), never spliced into the SQL.
@@ -499,7 +499,7 @@ impl Indexer {
         let names: Vec<&str> = cols.iter().map(|(n, _)| n.as_str()).collect();
         let key_exprs = key_exprs(src, &names)?;
         let mut searchable: Vec<&str> = src.cfg.key.iter().map(String::as_str).collect();
-        for c in &src.cfg.filterable {
+        for c in src.cfg.filterable.iter().chain(&src.cfg.searchable) {
             if names.contains(&c.as_str()) && !searchable.contains(&c.as_str()) {
                 searchable.push(c.as_str());
             }
@@ -580,7 +580,12 @@ impl Indexer {
 /// shown under its frontmatter name (`sold_to = 1000007`).
 fn matched_snippet(src: &RowsSource, rec: &RowRecord, q: &str) -> String {
     let needle = q.trim().to_lowercase();
-    let searched = src.cfg.key.iter().chain(src.cfg.filterable.iter());
+    let searched = src
+        .cfg
+        .key
+        .iter()
+        .chain(src.cfg.filterable.iter())
+        .chain(src.cfg.searchable.iter());
     for col in searched {
         let Some(v) = rec.columns.get(col) else {
             continue;
@@ -806,22 +811,14 @@ const CURSOR_PREFIX: &str = "r1.";
 /// (`r1.`) and the remote rows (`u1.`) so the envelope exists once.
 #[must_use]
 pub fn seal_cursor(prefix: &str, raw: &[u8]) -> String {
-    use base64::Engine as _;
-    format!(
-        "{prefix}{}",
-        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(raw)
-    )
+    format!("{prefix}{}", crate::cursor::seal(raw))
 }
 
 /// The bytes inside a token made by [`seal_cursor`] with the same `prefix`; `None` for anything else
-/// (wrong prefix, not base64url).
+/// (wrong prefix, not signed by this server).
 #[must_use]
 pub fn open_cursor(prefix: &str, token: &str) -> Option<Vec<u8>> {
-    use base64::Engine as _;
-    let body = token.strip_prefix(prefix)?;
-    base64::engine::general_purpose::URL_SAFE_NO_PAD
-        .decode(body.as_bytes())
-        .ok()
+    crate::cursor::unseal(token.strip_prefix(prefix)?)
 }
 
 fn encode_cursor(values: &[String]) -> String {

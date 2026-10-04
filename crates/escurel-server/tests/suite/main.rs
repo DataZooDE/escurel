@@ -83,6 +83,7 @@ mod list_skills_acl;
 mod mcp;
 mod mcp_admin_tools;
 mod mcp_agent_ux;
+mod mcp_ax_round2;
 mod mcp_lifecycle;
 mod mcp_session_tools;
 mod mcp_upstream;

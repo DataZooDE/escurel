@@ -22,11 +22,11 @@ section below.
 
 | tool | inputs (key ones) | output | what for |
 |---|---|---|---|
-| `search` | `q`, `k=10`, `granularity='block'\|'page'`, `page_kind?`, `skill?` | ranked hits `{page_id, anchor, snippet, skill, page_kind, score}` | natural-language vector + FTS hybrid; the cold-start primitive |
+| `search` | `q`, `k=10`, `granularity='block'\|'page'`, `page_kind?` (default any; instance when `skill` is given), `skill?` | ranked hits `{page_id, anchor, snippet, skill, page_kind, score}` | natural-language vector + FTS hybrid; the cold-start primitive |
 | `resolve` | `wikilink` | `{parsed, page (PageRef), exists}` | parse + look up a `[[wikilink]]`; reports validity without raising |
-| `expand` | `page_id`, `as_of?`, `scenario?`, `full?` (all chunks of a document instance), `raw?` (also return the stored markdown) | `{page, frontmatter, body, blocks[], wikilinks_out[], content_sha256?, content?}` (`content_sha256` = the stored-bytes hash, i.e. the value `update_page.base_sha256` guards against; `content` = those bytes verbatim, only with `raw: true` — for an editor that must show and re-save the author's own text; both plain reads only) (+ `shadow` on an overlay that shadows a base skill: `{base_page_id, pack, base: {…base frontmatter…}}`) | the body fetch — the **most expensive** primitive; use sparingly |
+| `expand` | `page_id`, `as_of?`, `scenario?`, `full?` (all chunks of a document instance), `raw?` (also return the stored markdown), `include_schema?` (row pages: also the column schema and raw source row) | `{page, frontmatter, body, blocks[], wikilinks_out[], content_sha256?, content?}` (`content_sha256` = the stored-bytes hash, i.e. the value `update_page.base_sha256` guards against; `content` = those bytes verbatim, only with `raw: true` — for an editor that must show and re-save the author's own text; both plain reads only) (+ `shadow` on an overlay that shadows a base skill: `{base_page_id, pack, base: {…base frontmatter…}}`) | the body fetch — the **most expensive** primitive; use sparingly |
 | `neighbours` | `page_id`, `direction='in'\|'out'\|'both'`, `link_skill?` | list of `Edge {src_page, dst_page, link_skill, link_version?, dst_anchor?}` | typed link-graph traversal (backlinks + forward links) |
-| `list_skills` | — | list of `{id, description, required_frontmatter, optional_frontmatter, is_event_typed, visibility, owner_field?, autonomy?, layer, shadows?}` | the Tier-1 catalogue, **scoped to the caller**; `layer` is `"overlay"` (default) or the `base@<pack>@v<N>` pin; a shadowing overlay is ONE entry carrying `shadows: base@<pack>@v<N>`; `autonomy` is the declared human-in-the-loop policy — see the note below; `summary`, `harness`, `actions`, `cascade` are the workbench's skill-contract keys, present only when declared (see references/01); `folder`, `role`, `tags`, `title`, `resource` place and describe the skill in a tree (OKF-aligned), also only when declared; `generated`, `verified`, `status`, `stale_after`, `sources` are the optional OKF provenance keys as written (a client decides what "stale" means), and `viewer` is Peacock's `{report, param?}` pointer to the report skill that charts the skill's instances; `actions` is `[{name, kind: event|prompt, label, event?, prompt?}]` Rows carry `params` (what one RUN takes) and `fields` (the typed shape of the INSTANCES — `{name, kind, required, values?, target_skill?, min?, max?, label?, description?, render?}`; `render` is a display hint, see references/01) and `blocks` (the declared instance-body layout, `[{anchor, title?, kind?}]`, verbatim); each is omitted entirely for a skill that declares none |
+| `list_skills` | — | list of `{id, description, required_frontmatter, optional_frontmatter, is_event_typed, visibility, owner_field?, autonomy?, layer, shadows?}` | the Tier-1 catalogue, **scoped to the caller**; `backend` is `{kind}` plus, for an `instances: rows` skill, `{instances: "rows", key[], filterable[{field,column}], searchable[{field,column}], writable_columns[{field,column}], writable_via: "write_back", linked}` (`instances: "view"` for a whole-relation sql_view): everything an agent needs to list, filter, search and propose changes to its rows; `layer` is `"overlay"` (default) or the `base@<pack>@v<N>` pin; a shadowing overlay is ONE entry carrying `shadows: base@<pack>@v<N>`; `autonomy` is the declared human-in-the-loop policy — see the note below; `summary`, `harness`, `actions`, `cascade` are the workbench's skill-contract keys, present only when declared (see references/01); `folder`, `role`, `tags`, `title`, `resource` place and describe the skill in a tree (OKF-aligned), also only when declared; `generated`, `verified`, `status`, `stale_after`, `sources` are the optional OKF provenance keys as written (a client decides what "stale" means), and `viewer` is Peacock's `{report, param?}` pointer to the report skill that charts the skill's instances; `actions` is `[{name, kind: event|prompt, label, event?, prompt?}]` Rows carry `params` (what one RUN takes) and `fields` (the typed shape of the INSTANCES — `{name, kind, required, values?, target_skill?, min?, max?, label?, description?, render?}`; `render` is a display hint, see references/01) and `blocks` (the declared instance-body layout, `[{anchor, title?, kind?}]`, verbatim); each is omitted entirely for a skill that declares none |
 | `list_instances` | `cursor?` (pass back the response next-cursor; ONLY a null one means done), `skill_id`, `order_by='at asc'\|'at desc'?`, `limit?`, `frontmatter_key?`+`frontmatter_value?`, `as_of?`, `scenario?` | list of `{page_id, skill, frontmatter, at, row?}` (`row: true` for a live row of an `instances: rows` skill: `at` is null and `frontmatter` the projected columns; the filter field must be one of the skill's `filterable:` columns) | enumerate instances of a skill (event-log scans, chain heads, the rows of a SAP extract); NB the filter param is `skill_id` here but `skill` on `search` |
 | `fetch_blob` | `page_id` (a document instance) | `{blob: {page_id, content_type, size, bytes_base64} \| null}` | the raw bytes behind a document/RAG instance; capped at 25 MiB. For browsers/large files prefer `GET /blob/{page_id}` — same ACL, raw bytes, real `Content-Type`, no cap |
 | `query_instance` | `ref` (a query-page id; `query_id` accepted as an alias), `params` (typed object), `scenario?` (read an overlay instead of the base timeline — corpus traversals only) | `{rows, schema[], truncated}` | **the one query surface**: execute an authored `[[query::<id>]]` page — `{{target}}` substituted with its allow-listed managed view, `:params` bound as prepared statements, ACL checked on the TARGET per caller, rows capped server-side. (The legacy admin-gated `run_stored_query` was removed in the 2026-08-14 surface consolidation.) A page whose `target:` is the literal `corpus` declares a bounded **traversal** over the markdown link graph instead of SQL (`start` + `steps` of `{relation, direction, as}` + `where`/`return`, mandatory `max_depth` ≤ 12); ACL is enforced per traversed instance, fail-closed, so one unreadable hop drops the whole path |
@@ -210,7 +210,7 @@ privately, which put consumer-shaped objects in the knowledge base and made
 
 | tool | what it does |
 |---|---|
-| `create_draft` | Hold the whole proposed markdown for `target_page_id` (which need not exist yet), with the `base_sha256` it was drafted against (`""` = expect no page). Returns the draft with its `draft_id` and `content_sha256` — and, when the caller's bearer is a per-run agent token, the `run_id` / `root_event_id` the server stamped from it (never an argument; `null` for a human's draft). |
+| `create_draft` | Hold the whole proposed markdown for `target_page_id` (which need not exist yet), with the `base_sha256` it was drafted against (`""` = expect no page). Returns the draft with its `draft_id` and `content_sha256` — and, when the caller's bearer is a per-run agent token, the `run_id` / `root_event_id` the server stamped from it (never an argument; `null` for a human's draft). **`write_back: {patch: {column: value}, base_etag}`** is a declared argument for changing an external (sql/openapi/mcp) row: the server writes it into the frontmatter (`content` is then optional); a human promotes it; a value outside the field's kind/enum is refused at draft time (`write_back_invalid_value`); ONE open draft per page (`conflict`, `discard_draft` yours first). |
 | `list_drafts` | Everything still waiting, newest first — the answer to "what is waiting for me?". |
 | `create_branch` | `name` | `{ok, branch:{name, base_version, author, status, created_at}}` | open a BRANCH — an isolated workspace whose writes never touch the base timeline (#512). Records who opened it and what it forked from; the name is also the `scenario` its pages carry. Opening an existing name is refused, never joined |
 | `list_branches` | — | `{branches:[{name, base_version, author, status, reason, decided_by, created_at}]}` | every branch, newest first, including decided ones |
@@ -403,7 +403,7 @@ them is `escurel:admin`-gated and so not part of the normal agent surface:
   (`secret_ref`: `gsm:NAME` = `ESCUREL_SECRET_<TENANT>__<NAME>`, `env:ESCUREL_SECRET_<TENANT>__<NAME>` (or a name the operator lists in `ESCUREL_SECRET_ENV_ALLOW`), or `file:/path` under `<ESCUREL_SECRET_FILE_DIRS>/<tenant>/` (default dir `/run/secrets`); `<TENANT>` is your tenant id upper-cased, non-alphanumerics as `_`; anything else is refused at registration - the operator, not the tenant, decides what is nameable, and a tenant cannot name another tenant's secret); an inline `secret` is
   accepted but flagged in the result, and neither is ever echoed (`list_endpoints` shows only the
   `secret_kind`). `validate_endpoints()` probes each endpoint through the egress policy and reports
-  `refused` for a policy violation. `describe_backend(skill)` shows what a remote skill's calls would be —
+  `refused` for a policy violation. `describe_endpoint(endpoint)` (was `describe_backend`) shows what a remote skill's calls would be —
   names and argument names only, never a URL or a value.
 - `write_instance` is for `openapi` / `mcp` skills that are NOT `rows` (whole-object push): bounded to
   64 KiB, sent with a deterministic `Idempotency-Key`. A `rows` skill refuses it — change a row through the
@@ -447,6 +447,50 @@ Refusal codes you may see in operator tooling:
 CLI twins: `escurel admin pack export|import|list|rebase|unsubscribe|
 submit-promotion` (`references/04`).
 
+## Provenance (read)
+
+| tool | inputs (key ones) | output | what for |
+|---|---|---|---|
+| `provenance_ancestry` | `page_id`, `to_page?`, `direction='up'\|'down'`, `relations?`, `max_hops?`, `as_of?` | `{nodes[]}` (or `{reachable, path, depth}` with `to_page`) | what a page rests on (`up`) or what derives from it (`down`); bounded multi-hop |
+| `provenance_report` | `kind` (drift or abandoned), `skill?` | `{rows[]}` | corpus-wide: decisions resting on a superseded expectation; dead-ended branches |
+
+## Operator surface (admin tokens)
+
+An `escurel:admin` token also sees these (`tools/list` is role-scoped; an agent token does not). They are
+the operator's, not an application's, but the names are listed so nothing is a surprise:
+
+| tool | inputs (key ones) | what for |
+|---|---|---|
+| `tenant_create` | `tenant_id`, `display_name?`, `status?`, `quotas?`, `embedding_provider?` | provision a tenant |
+| `tenant_get` | `tenant_id` | fetch one tenant's spec |
+| `tenant_list` | — | list the tenants |
+| `tenant_update` | `tenant_id`, `display_name?`, `status?`, `quotas?`, `embedding_provider?` | partial update (changing the embedding provider needs a rebuild) |
+| `tenant_delete` | `tenant_id`, `confirm` (= the tenant id) | delete a tenant and its on-disk state |
+| `tenant_export` | `tenant_id` | the tenant's canonical markdown as a base64 tar+gz |
+| `tenant_import` | `tenant_id`, `tarball_b64` | import such a tarball into an existing tenant |
+| `admin_quota` | `tenant_id?` | quota snapshot |
+| `admin_audit` | `tenant_id?` | drift between markdown and the index |
+| `admin_webhook_deliveries` | `limit?` | recent outbound capture-webhook outcomes |
+| `admin_index_query` | `table`, `limit?` | read rows of an allow-listed index table (not SQL) |
+| `admin_list_lanes` | — | enumerate the LaneStores |
+| `admin_lane_keys` | `lane`, `prefix?`, `limit?` | list keys under a prefix in a lane |
+| `admin_lane_blob` | `lane`, `key` | fetch one blob from a lane (1 MiB cap) |
+| `admin_delete_chat_history` | `chat_group_id?`, `author?`, `before_ts?` | erase chat history (GDPR / retention) |
+| `add_group_member` | `group_id`, `subject` | add a principal to a custom RBAC group |
+| `remove_group_member` | `group_id`, `subject` | remove one |
+| `list_group_members` | `group_id` | list a group's members |
+| `register_credential` | `name`, `connector`, `secret_ref` | a named external-source credential (secrets never in markdown) |
+| `list_credentials` | — | list them without secrets |
+| `delete_credential` | `name` | remove one |
+| `delete_endpoint` | `name` | remove a registered REST or MCP endpoint |
+| `validate_endpoints` | — | probe every registered endpoint for reachability |
+| `describe_endpoint` | `endpoint` | an MCP endpoint's tools and argument names (was `describe_backend`, still accepted) |
+| `validate_bindings` | — | re-probe every SQL-view binding (schema drift, unreachable sources) |
+| `create_remote_instance` | `skill`, `id`, `overlay_body?` | materialise a remote instance from the skill's `backend:` block |
+| `compact_lanes` | `tenant_id` | compact the CRDT op lanes |
+| `publish_snapshot` | — | trigger a DuckLake publish and prune old snapshots |
+| `embedding_reload` | — | hot-reload the embedding model |
+
 ## Not exposed (by design)
 
 No direct SQL, no raw vector/embedding access, no cross-tenant calls.
@@ -466,6 +510,15 @@ of the normal app surface — see `references/08` and `references/10`.
   `issues[{code, location, message, suggestion?}]`; JSON-RPC errors are for malformed requests. Codes
   you will meet on reads: `invalid_cursor`, `invalid_limit`, `field_not_filterable`, `query_not_found`,
   `query_not_runnable`, `invalid_query_params`, `endpoint_not_registered`, `use_write_back`.
+- **Unknown arguments are refused.** A top-level argument a tool's `inputSchema` does not declare answers
+  `invalid_argument` with a "did you mean" and the valid parameter list (it used to be dropped silently, so
+  `limt: 5` ran with defaults). The sibling spellings stay (`skill` / `skill_id`, `from_page` /
+  `from_page_id`, `query_id`, `pack_id`).
+- **Text-only clients.** `content[0].text` is a short summary that carries the control data: the next
+  `next_cursor=...`, "Not found (page: null)", a refusal's whole message and `suggestion`, and for
+  `mint_agent_token` that a token was minted (the token itself is only in `structuredContent.token`).
+- **Cursors are signed.** One the server did not issue (made up, edited, or issued before a restart)
+  answers `invalid_cursor`; restart the listing without `cursor`.
 - **Paging.** `limit` is bounded (see each schema); `cursor` is opaque; ONLY a null `next_cursor` means
   done. `list_instances`, `list_drafts`, `list_changesets`, `list_branches`: `next_cursor` present iff
   rows follow. `list_inbox` / `list_events`: `next_cursor` is where the page ended and `has_more` says

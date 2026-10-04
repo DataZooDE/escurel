@@ -53,3 +53,45 @@ One line per change. Folded into the root `CHANGELOG.md` BREAKING entry and `doc
   `ESCUREL_SQL_FILE_DIRS` (unset = no directory sources; set it on a gateway that serves them).
   `query_instance` enforces the query page's own `acl.read`.
 
+- Unknown arguments are REFUSED on every tool: a top-level argument the tool's `inputSchema` does not
+  declare (a typo like `limt`, another tool's spelling like `filter` on `list_instances`) answers
+  `isError: true`, `issues[{code: "invalid_argument"}]` with a "did you mean" and the valid parameter list,
+  instead of being dropped (the call ran with defaults). The documented sibling spellings (`skill` /
+  `skill_id`, `from_page` / `from_page_id` / `to_page_id`, `query_id`, `pack_id`) still work. Undeclared
+  attribution/lineage arguments (`principal`, `last_written_by`, `run_id`, ...) are refused, not ignored.
+  Schema gaps this exposed are declared now: `promote_draft`/`discard_draft` (`decided_by`, `content`,
+  `reason`), `delete_page.branch`, `search.page_id`, `admin_quota`/`admin_audit.tenant_id`,
+  `register_endpoint.secret_ref`, `tenant_create` (`status`, `quotas`, `embedding_provider`).
+- `list_skills` rows now carry what the description always promised for a `rows` backend:
+  `backend.{instances: rows|view, key[], filterable[{field,column}], searchable[{field,column}],
+  writable_columns[{field,column}], writable_via: "write_back", linked}` (all omitted when not applicable).
+  A rows skill may declare `backend.searchable: [<display columns>]`; `search` matches the key, the
+  `filterable` and the `searchable` columns (a customer is found by name). `search` with a `skill` filter
+  defaults `page_kind` to `instance` (it used to return the skill's own page too; `any` restores that).
+  `search` hits omit `similarity` when none was computed (it was `0.0` / `-1.0` sentinels).
+- `create_draft` takes `write_back: {patch, base_etag}` as a declared ARGUMENT (the server writes it into
+  the frontmatter; `content` is then optional and a minimal row page is built). A patch value outside
+  the skill field's kind/enum is refused at draft time (`write_back_invalid_value`) instead of leaving a
+  dead draft that blocks the page; the open-draft `conflict` now carries a `suggestion` naming
+  `discard_draft`.
+- `list_instances` of a skill that does not exist answers `isError` + `unknown_skill` (naming the known
+  skills) instead of an empty success. Summary text (`content[0].text`): `expand`/`resolve` of an absent
+  page reads "Not found (page: null): ..."; a page names its cursor (`next_cursor=<value>`); a
+  refusal carries its whole message and `suggestion` (no mid-sentence "…"); `mint_agent_token` says the
+  token was minted (and when it expires) WITHOUT repeating the secret (read `structuredContent.token`).
+- List cursors (`next_cursor`) are SIGNED (HMAC; every family: instances, rows, events/inbox, chat,
+  drafts). A cursor the server did not issue, or edited, answers `invalid_cursor` — on every paged list,
+  in the typed shape (`list_inbox` / `list_events` / `list_messages` used to answer a bare JSON-RPC
+  `-32602` carrying a decoder message). The key is random per process: a cursor does not survive a restart
+  (restart the listing); replicas of one deployment share `ESCUREL_CURSOR_KEY` so paging works across them.
+- `expand` of a ROW page (`instances: rows`) returns each value once: the projected values are in
+  `backend_projection.source` (and the frontmatter); the discovered `columns` schema and the raw `rows`
+  are behind the new `include_schema: true`. `backend_projection.read_only_fields` names the
+  source-owned frontmatter fields (send only your own fields to `update_page`), and `direct_write: false`
+  says what `read_only: true` meant (rows change through a `write_back` draft); `read_only` stays for one
+  release and is deprecated.
+- `describe_backend` is renamed `describe_endpoint` (the old name still answers for one release); for an
+  `openapi` endpoint it answers `{kind, base_url, hint}` instead of an `invalid_params` error. `tools/list`
+  is sorted by group tag (READ, WRITE, REVIEW, RUNNER, SESSION, ADMIN) and then by name.
+- A write whose page has no frontmatter (or none `kind:`) is refused `frontmatter_parse` WITH a
+  `suggestion` holding a minimal frontmatter example and the `type:` -> `kind:` rename.

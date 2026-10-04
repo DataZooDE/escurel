@@ -231,6 +231,10 @@ pub(super) fn map_lane_err(e: StoreError) -> JsonRpcError {
 
 #[derive(Deserialize)]
 pub(super) struct AdminDeleteChatHistoryArgs {
+    /// Optional; when given it must name the tenant this gateway serves (a mismatch is refused,
+    /// never silently applied to the gateway's own tenant).
+    #[serde(default)]
+    tenant_id: String,
     #[serde(default)]
     chat_group_id: Option<String>,
     #[serde(default)]
@@ -244,6 +248,7 @@ pub(super) async fn tool_admin_delete_chat_history(
     args: Value,
 ) -> Result<Value, JsonRpcError> {
     let a: AdminDeleteChatHistoryArgs = parse_args(args, "admin_delete_chat_history")?;
+    ensure_tenant_matches(indexer, &a.tenant_id)?;
     let deleted = indexer
         .delete_chat_history(
             a.chat_group_id.as_deref(),
@@ -2421,11 +2426,11 @@ pub(super) async fn tool_compact_lanes(
     })
 }
 
-/// `describe_backend` — the tools of a registered MCP endpoint and their argument names, so an
+/// `describe_endpoint` — the tools of a registered MCP endpoint and their argument names, so an
 /// author can write a skill's `list:`/`read:` mapping. Only NAMES and a coarse type per argument
 /// are returned: a tool's `description` and the server's `instructions` are the upstream's own text
 /// and never reach this wire.
-pub(super) async fn tool_describe_backend(
+pub(super) async fn tool_describe_endpoint(
     indexer: &Indexer,
     egress: &crate::egress::Egress,
     args: Value,
@@ -2434,24 +2439,26 @@ pub(super) async fn tool_describe_backend(
     struct A {
         endpoint: String,
     }
-    let a: A = parse_args(args, "describe_backend")?;
+    let a: A = parse_args(args, "describe_endpoint")?;
     let rec = indexer
         .lookup_endpoint(&a.endpoint)
         .await
-        .map_err(|e| JsonRpcError::internal(format!("describe_backend: {e}")))?
+        .map_err(|e| JsonRpcError::internal(format!("describe_endpoint: {e}")))?
         .ok_or_else(|| {
             JsonRpcError::invalid_params(format!("endpoint `{}` is not registered", a.endpoint))
         })?;
     if rec.kind != "mcp" {
-        return Err(JsonRpcError::invalid_params(
-            "describe_backend supports mcp endpoints; an openapi endpoint is described by its \
-             OpenAPI document"
-                .to_owned(),
-        ));
+        // An openapi endpoint is described by its own document: say what it is and where, not an error.
+        return Ok(json!({
+            "endpoint": rec.name, "kind": rec.kind, "base_url": rec.base_url, "tools": [],
+            "trust": "external",
+            "hint": "an openapi endpoint is described by its own OpenAPI document; a skill's `read:` \
+                     / `write:` name an HTTP method and path under this base URL",
+        }));
     }
     let key = format!("{}:{}", indexer.tenant(), rec.name);
     let tools = crate::remote_backend::list_tools(egress, &key, &rec)
         .await
-        .map_err(|e| JsonRpcError::internal(format!("describe_backend: {e}")))?;
+        .map_err(|e| JsonRpcError::internal(format!("describe_endpoint: {e}")))?;
     Ok(json!({ "endpoint": rec.name, "kind": "mcp", "tools": tools, "trust": "external" }))
 }

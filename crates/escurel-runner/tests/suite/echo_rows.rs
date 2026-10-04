@@ -187,7 +187,7 @@ async fn a_run_over_row_instances_drafts_into_the_markdown_side_and_never_the_ro
         "the note landed in the companion: {page}"
     );
     assert_eq!(
-        page["backend_projection"]["rows"][0]["netwr"].as_f64(),
+        page["backend_projection"]["source"]["net_value"].as_f64(),
         Some(62_400.0)
     );
 }

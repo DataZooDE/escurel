@@ -221,7 +221,12 @@ async fn a_filterable_column_narrows_the_list_with_a_bound_parameter() {
 #[tokio::test]
 async fn a_row_expands_as_typed_fields_with_a_read_only_projection() {
     let t = Rows::start().await;
-    let r = t.call("expand", json!({ "page_id": row_page(7) })).await;
+    let r = t
+        .call(
+            "expand",
+            json!({ "page_id": row_page(7), "include_schema": true }),
+        )
+        .await;
     assert_eq!(r["page"]["skill"], "sales-order", "{r}");
     assert_eq!(r["page"]["page_kind"], "instance");
     let fm = &r["frontmatter"];
@@ -400,7 +405,7 @@ async fn a_draft_and_its_promotion_change_only_the_markdown_side() {
     );
     // The row itself is exactly as the source has it.
     assert_eq!(
-        after["backend_projection"]["rows"], before["backend_projection"]["rows"],
+        after["backend_projection"]["source"], before["backend_projection"]["source"],
         "the source row never changes"
     );
     assert_eq!(

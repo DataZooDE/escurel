@@ -1503,6 +1503,13 @@ impl EscurelConfig {
     /// the build's features can't satisfy). Embedder *load* failure is
     /// recoverable and does not error here.
     pub async fn build(&self) -> Result<BootedServer, ConfigError> {
+        // List cursors are signed. Unset, the key is random per process (a cursor does not survive a
+        // restart and answers `invalid_cursor`); replicas of one deployment share it through this.
+        if let Ok(key) = std::env::var("ESCUREL_CURSOR_KEY")
+            && !key.trim().is_empty()
+        {
+            escurel_index::cursor::set_key(key.trim());
+        }
         // 0. Telemetry, before ANYTHING else. This used to be the last
         // thing `serve` did, at the very end of boot — meaning every
         // log line from the rest of this function (DuckLake attach,

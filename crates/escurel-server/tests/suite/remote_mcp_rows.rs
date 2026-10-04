@@ -323,12 +323,17 @@ async fn another_escurel_gateway_is_a_valid_mcp_upstream_an_independent_implemen
 }
 
 #[tokio::test]
-async fn describe_backend_lists_tools_and_argument_names_but_never_the_servers_text() {
+async fn describe_endpoint_lists_tools_and_argument_names_but_never_the_servers_text() {
     let up = Upstream::new(5);
     let url = start(&up).await;
     let (p, _dirs) = gateway_over(&url).await;
 
-    let d = admin(&p, "describe_backend", json!({ "endpoint": "upstream_kb" })).await;
+    let d = admin(
+        &p,
+        "describe_endpoint",
+        json!({ "endpoint": "upstream_kb" }),
+    )
+    .await;
 
     let tools = d["tools"].as_array().expect("tools");
     let names: Vec<&str> = tools.iter().filter_map(|t| t["name"].as_str()).collect();
@@ -358,7 +363,7 @@ async fn describe_backend_lists_tools_and_argument_names_but_never_the_servers_t
     let other = call_as(
         &p,
         Role::Admin,
-        "describe_backend",
+        "describe_endpoint",
         json!({ "endpoint": "nope" }),
     )
     .await;

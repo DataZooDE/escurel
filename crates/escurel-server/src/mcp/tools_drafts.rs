@@ -31,7 +31,14 @@ use escurel_index::{EventKind, NewEvent};
 #[derive(Deserialize)]
 pub(super) struct CreateDraftArgs {
     target_page_id: String,
+    /// The whole proposed markdown. Optional only with `write_back` (the change is then all there is).
+    #[serde(default)]
     content: String,
+    /// A change to an external row: `{patch: {column: value}, base_etag}`. The server writes it into
+    /// the frontmatter of `content` (or builds a minimal row page when there is none); a human's
+    /// promotion is what sends it.
+    #[serde(default)]
+    write_back: Option<Value>,
     /// The target's `content_sha256` when the draft was written, as published
     /// by `expand`; `""` means "no page yet" (the create case). Carried
     /// verbatim into `update_page`'s CAS at promotion, so a target that moved
@@ -74,7 +81,6 @@ pub(super) fn page_newest_first<T>(
     limit: Option<usize>,
     cursor: Option<&str>,
 ) -> Result<(Vec<T>, Option<String>), JsonRpcError> {
-    use base64::Engine as _;
     const PREFIX: &str = "k1.";
     items.sort_by_key(|i| std::cmp::Reverse(key(i)));
     if let Some(token) = cursor {
@@ -87,9 +93,7 @@ pub(super) fn page_newest_first<T>(
             )
         };
         let body = token.strip_prefix(PREFIX).ok_or_else(bad)?;
-        let raw = base64::engine::general_purpose::URL_SAFE_NO_PAD
-            .decode(body.as_bytes())
-            .map_err(|_| bad())?;
+        let raw = escurel_index::cursor::unseal(body).ok_or_else(bad)?;
         let after = String::from_utf8(raw).map_err(|_| bad())?;
         items.retain(|i| key(i) < after);
     }
@@ -100,12 +104,9 @@ pub(super) fn page_newest_first<T>(
         return Ok((items, None));
     }
     items.truncate(limit);
-    let next = items.last().map(|i| {
-        format!(
-            "{PREFIX}{}",
-            base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(key(i).as_bytes())
-        )
-    });
+    let next = items
+        .last()
+        .map(|i| format!("{PREFIX}{}", escurel_index::cursor::seal(key(i).as_bytes())));
     Ok((items, next))
 }
 
@@ -354,7 +355,24 @@ pub(super) async fn tool_create_draft(
     write_acl: crate::server::WriteAclMode,
     args: Value,
 ) -> Result<Value, JsonRpcError> {
-    let a: CreateDraftArgs = parse_args(args, "create_draft")?;
+    let content_given = args.get("content").is_some_and(|c| !c.is_null());
+    let mut a: CreateDraftArgs = parse_args(args, "create_draft")?;
+    if let Some(intent) = a.write_back.take() {
+        match crate::write_back::inject_intent(
+            &a.target_page_id,
+            content_given.then_some(a.content.as_str()),
+            &intent,
+        ) {
+            Ok(c) => a.content = c,
+            Err(m) => return Ok(crate::write_back::refusal("write_back_invalid", m)),
+        }
+    } else if !content_given {
+        return Err(JsonRpcError::invalid_params(
+            "create_draft: missing `content` (the whole proposed page), or give `write_back` for \
+             a change to an external row"
+                .to_owned(),
+        ));
+    }
 
     // Rule 1. Same call, same arguments and same three modes as
     // `update_page`'s — a draft is a write in waiting, and the authority to
@@ -441,6 +459,36 @@ pub(super) async fn tool_create_draft(
                 "message": r.message,
             }],
         }));
+    }
+
+    // A `write_back` value the skill's field cannot hold (an enum outside its values, text for an
+    // int) is refused HERE: otherwise only the upstream's refusal at promotion would say so, and the
+    // dead draft would block the next proposal on this page.
+    if let Ok(parsed) = escurel_md::parse(&a.content)
+        && let Ok(Some(intent)) = crate::write_back::parse_intent(
+            &crate::write_back::frontmatter_json(&parsed.frontmatter.fields),
+        )
+        && let Some((skill, _)) =
+            escurel_index::backend::rows::split_instance_page_id(&a.target_page_id)
+    {
+        for (field, value) in &intent.patch {
+            if let Some(problem) = indexer
+                .field_value_problem(skill, field, value)
+                .await
+                .map_err(|e| JsonRpcError::internal(format!("create_draft value check: {e}")))?
+            {
+                return Ok(json!({
+                    "ok": false,
+                    "issues": [{
+                        "severity": "error",
+                        "code": "write_back_invalid_value",
+                        "location": format!("write_back.patch.{field}"),
+                        "message": problem,
+                        "suggestion": "`list_skills` shows each field's kind and allowed values",
+                    }],
+                }));
+            }
+        }
     }
 
     // Validate at DRAFT time, FIRST: the content is judged before any conflict question, and before a
@@ -569,6 +617,11 @@ pub(super) async fn tool_create_draft(
                          could never be applied after the first one is: decide \
                          that one, then draft against the head it leaves.",
                         open.draft_id, a.target_page_id
+                    ),
+                    "suggestion": format!(
+                        "`discard_draft` `{}` (your own proposal) or wait for its reviewer, then \
+                         draft again",
+                        open.draft_id
                     ),
                 }],
             }));
