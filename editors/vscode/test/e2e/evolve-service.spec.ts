@@ -45,12 +45,33 @@ test('native owner approval, two proposal generations, validation, and inactive 
     history_end: '2026-07-31', inventory_as_of: '2026-08-01',
     demand_observation: 'true_demand',
   };
-  const source = await stack.evolveCall('evolve_prepare_training_source', {
-    source_id: `${id}-source`, source_json: JSON.stringify(sourcePayload),
+  const sourceTemplate = { ...sourcePayload, skus: sourcePayload.skus.map(({ history: _history,
+    demand: _demand, ...sku }) => sku) };
+  const csvRows = ['sku_id,date,true_demand,fulfilled,stockout,measurement_method,estimate_ref,recorded_at,quantity_unit'];
+  for (const sku of sourcePayload.skus) {
+    const amounts = [...sku.history, ...sku.demand];
+    amounts.forEach((amount, index) => {
+      const day = new Date(Date.UTC(2026, 6, 31 + index));
+      const recorded = new Date(day.getTime() + 86_400_000);
+      csvRows.push(`${sku.sku_id},${day.toISOString().slice(0, 10)},${amount},${amount},false,observed,,${recorded.toISOString().slice(0, 10)}T12:00:00Z,units`);
+    });
+  }
+  const dailyCsv = csvRows.join('\n') + '\n';
+  const csvDigest = createHash('sha256').update(dailyCsv).digest('hex');
+  const manifest = {
+    format_version: 'training_demand_csv_v1', extract_id: `${id}-extract`,
+    extracted_at: '2026-08-14T12:00:00Z', source_system: 'synthetic-native-e2e',
+    quantity_unit: 'units', daily_demand_sha256: csvDigest,
+  };
+  const source = await stack.evolveCall('evolve_prepare_training_csv', {
+    source_id: `${id}-source`, manifest_json: JSON.stringify(manifest),
+    template_json: JSON.stringify(sourceTemplate), daily_demand_csv: dailyCsv,
   });
   expect(source.training_source_id).toBe(`${id}-source`);
   expect(source.normalized_sha256).toMatch(/^[a-f0-9]{64}$/);
   expect(source.raw_sha256).toMatch(/^[a-f0-9]{64}$/);
+  expect(source.csv_sha256).toBe(csvDigest);
+  expect(source.row_count).toBe(26);
 
   const holdoutSku = { ...trainingSku, name: 'PRIVATE_HOLDOUT_OUTCOMES_SENTINEL_A' };
   const holdoutSkuB = { ...trainingSkuB, name: 'PRIVATE_HOLDOUT_OUTCOMES_SENTINEL_B' };
@@ -284,6 +305,11 @@ test('native owner approval, two proposal generations, validation, and inactive 
   expect(validationReport.source_binding_kind).toBe('server_hashed_submitted_json');
   expect(validationReport.training_source_id).toBe(source.training_source_id);
   expect(validationReport.training_source_sha256).toBe(source.normalized_sha256);
+  const csvLineage = validationReport.training_csv_lineage as Record<string, unknown>;
+  expect(csvLineage.csv_sha256).toBe(csvDigest);
+  expect(csvLineage.mapping_sha256).toBe(source.mapping_sha256);
+  expect(csvLineage.normalized_sha256).toBe(source.normalized_sha256);
+  expect(csvLineage.row_count).toBe(26);
   expect(validationReport.submitted_data_scope).toBe('operator_labeled_synthetic_fixture_engineering_only');
   expect(validationReport.outcomes_publicly_disclosed).toBe(true);
   expect(validationReport.comparisons).toHaveLength(2);
