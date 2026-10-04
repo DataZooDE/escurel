@@ -42,105 +42,112 @@ pub(super) async fn tool_list_skills(
     let resp = ListSkillsResponse {
         skills: skills
             .into_iter()
-            .map(|s| TypesSkill {
-                id: s.id,
-                description: s.description,
-                required_frontmatter: s.required_frontmatter,
-                optional_frontmatter: s.optional_frontmatter,
-                is_event_typed: s.is_event_typed,
-                visibility: match s.visibility {
-                    Visibility::Public => "public".to_string(),
-                    Visibility::Owner => "owner".to_string(),
-                },
-                owner_field: s.owner_field,
-                // Admin-only. `None` is omitted from the wire, so a
-                // non-admin row is byte-identical to one for a skill that
-                // declares no block at all — the redaction is not an
-                // existence oracle either.
-                acl: s.acl.filter(|_| is_admin).map(|a| TypesSkillAcl {
-                    read: a.read,
-                    create: a.create,
-                    update: a.update,
-                    delete: a.delete,
-                }),
-                backend: TypesSkillBackend {
-                    kind: s.backend.kind.as_str().to_string(),
-                },
-                capabilities: {
-                    let c = Capabilities::for_kind(s.backend.kind);
-                    TypesSkillCapabilities {
-                        writable: c.writable,
-                        granularity: c.granularity.as_str().to_string(),
-                        search: c.search.as_str().to_string(),
-                        supports_crdt: c.supports_crdt,
-                    }
-                },
-                layer: s.layer.unwrap_or_else(|| "overlay".to_owned()),
-                shadows: s.shadows,
-                // `None` — absent or unrecognised — stays absent on the wire.
-                // It must not be defaulted to a policy here: the only value a
-                // consumer may act on permissively is an explicit `auto`.
-                autonomy: s.autonomy.map(|a| a.as_str().to_owned()),
-                summary: s.summary,
-                harness: s.harness,
-                folder: s.folder,
-                role: s.role,
-                tags: s.tags,
-                title: s.title,
-                resource: s.resource,
-                actions: s.actions,
-                cascade: s.cascade.map(|c| escurel_types::SkillCascade {
-                    target: c.target,
-                    max_depth: c.max_depth,
-                }),
-                // Empty for every skill that declares no `params:`, and an
-                // empty vec is omitted from the wire — so those rows stay
-                // byte-identical to what they were before CR-7.
-                params: s
-                    .params
-                    .into_iter()
-                    .map(|p| TypesSkillParam {
-                        name: p.name,
-                        kind: p.kind.as_str().to_owned(),
-                        required: p.required,
-                        label: p.label,
-                        description: p.description,
-                    })
-                    .collect(),
-                // Same shape, same omission rule, for the INSTANCE schema
-                // (#508): a client builds an instance form from this exactly
-                // as it builds a run form from `params` above.
-                fields: s
-                    .fields
-                    .into_iter()
-                    .map(|f| TypesSkillField {
-                        name: f.name,
-                        kind: f.kind.as_str().to_owned(),
-                        required: f.required,
-                        values: f.values,
-                        target_skill: f.target_skill,
-                        min: f.min,
-                        max: f.max,
-                        label: f.label,
-                        description: f.description,
-                        render: f.render,
-                    })
-                    .collect(),
-                // The declared instance-body layout (P3-5): verbatim, in
-                // the author's order, omitted when undeclared.
-                blocks: s
-                    .blocks
-                    .into_iter()
-                    .map(|b| escurel_types::SkillBlock {
-                        anchor: b.anchor,
-                        title: b.title,
-                        kind: b.kind,
-                    })
-                    .collect(),
-            })
+            .map(|s| skill_to_wire(s, is_admin))
             .collect(),
     };
     to_value(resp)
+}
+
+/// One skill row on the wire (`list_skills`). Pure: every redaction is decided here from the row and
+/// the caller's role. `acl` is admin-only, so a non-admin row is byte-identical to one for a skill that
+/// declares no block at all: the redaction is not an existence oracle either.
+fn skill_to_wire(s: escurel_index::SkillInfo, is_admin: bool) -> TypesSkill {
+    TypesSkill {
+        id: s.id,
+        description: s.description,
+        required_frontmatter: s.required_frontmatter,
+        optional_frontmatter: s.optional_frontmatter,
+        is_event_typed: s.is_event_typed,
+        visibility: match s.visibility {
+            Visibility::Public => "public".to_string(),
+            Visibility::Owner => "owner".to_string(),
+        },
+        owner_field: s.owner_field,
+        // Admin-only. `None` is omitted from the wire, so a
+        // non-admin row is byte-identical to one for a skill that
+        // declares no block at all — the redaction is not an
+        // existence oracle either.
+        acl: s.acl.filter(|_| is_admin).map(|a| TypesSkillAcl {
+            read: a.read,
+            create: a.create,
+            update: a.update,
+            delete: a.delete,
+        }),
+        backend: TypesSkillBackend {
+            kind: s.backend.kind.as_str().to_string(),
+        },
+        capabilities: {
+            let c = Capabilities::for_kind(s.backend.kind);
+            TypesSkillCapabilities {
+                writable: c.writable,
+                granularity: c.granularity.as_str().to_string(),
+                search: c.search.as_str().to_string(),
+                supports_crdt: c.supports_crdt,
+            }
+        },
+        layer: s.layer.unwrap_or_else(|| "overlay".to_owned()),
+        shadows: s.shadows,
+        // `None` — absent or unrecognised — stays absent on the wire.
+        // It must not be defaulted to a policy here: the only value a
+        // consumer may act on permissively is an explicit `auto`.
+        autonomy: s.autonomy.map(|a| a.as_str().to_owned()),
+        summary: s.summary,
+        harness: s.harness,
+        folder: s.folder,
+        role: s.role,
+        tags: s.tags,
+        title: s.title,
+        resource: s.resource,
+        actions: s.actions,
+        cascade: s.cascade.map(|c| escurel_types::SkillCascade {
+            target: c.target,
+            max_depth: c.max_depth,
+        }),
+        // Empty for every skill that declares no `params:`, and an
+        // empty vec is omitted from the wire — so those rows stay
+        // byte-identical to what they were before CR-7.
+        params: s
+            .params
+            .into_iter()
+            .map(|p| TypesSkillParam {
+                name: p.name,
+                kind: p.kind.as_str().to_owned(),
+                required: p.required,
+                label: p.label,
+                description: p.description,
+            })
+            .collect(),
+        // Same shape, same omission rule, for the INSTANCE schema
+        // (#508): a client builds an instance form from this exactly
+        // as it builds a run form from `params` above.
+        fields: s
+            .fields
+            .into_iter()
+            .map(|f| TypesSkillField {
+                name: f.name,
+                kind: f.kind.as_str().to_owned(),
+                required: f.required,
+                values: f.values,
+                target_skill: f.target_skill,
+                min: f.min,
+                max: f.max,
+                label: f.label,
+                description: f.description,
+                render: f.render,
+            })
+            .collect(),
+        // The declared instance-body layout (P3-5): verbatim, in
+        // the author's order, omitted when undeclared.
+        blocks: s
+            .blocks
+            .into_iter()
+            .map(|b| escurel_types::SkillBlock {
+                anchor: b.anchor,
+                title: b.title,
+                kind: b.kind,
+            })
+            .collect(),
+    }
 }
 
 #[derive(Deserialize)]
@@ -448,9 +455,14 @@ pub(super) async fn tool_resolve(
             page_kind: PageKind::Instance,
         });
     }
+    Ok(resolved_json(&resolved))
+}
+
+/// `resolve` as the wire answers it: the parsed link, the target page when it exists, and `exists`.
+fn resolved_json(resolved: &escurel_index::ResolvedWikilink) -> Value {
     let exists = resolved.exists();
     let parsed = &resolved.parsed;
-    Ok(json!({
+    json!({
         "parsed": {
             "skill": parsed.skill,
             "id": parsed.id,
@@ -465,7 +477,7 @@ pub(super) async fn tool_resolve(
             "page_kind": page_kind_str(p.page_kind),
         })),
         "exists": exists,
-    }))
+    })
 }
 
 #[derive(Deserialize)]
@@ -517,6 +529,35 @@ pub(super) async fn tool_expand(
     tool_expand_stored(state, indexer, caller, args).await
 }
 
+/// The stored page as `expand` answers it: identity, frontmatter, body, blocks and outbound links.
+/// Pure; the hash, version, shadow and backend enrichments are added by the caller.
+fn expanded_page_json(e: &escurel_index::ExpandedPage) -> Value {
+    json!({
+        "page": {
+            "page_id": e.page.page_id,
+            "slug": e.page.slug,
+            "skill": e.page.skill,
+            "page_kind": page_kind_str(e.page.page_kind),
+            // #357 (CR-6): the verified principal behind the page's
+            // most recent write. `null` for a page last written
+            // before the gateway recorded one, and on an `as_of`
+            // read (a CRDT snapshot carries bytes, not an author) —
+            // never a guess.
+            "last_written_by": e.last_written_by,
+        },
+        "frontmatter": e.frontmatter,
+        "body": e.body,
+        "blocks": e.blocks.iter().map(|b| json!({
+            "anchor": b.anchor,
+            "content": b.content,
+        })).collect::<Vec<_>>(),
+        "wikilinks_out": e.wikilinks_out.iter().map(|w| json!({
+            "skill": w.skill, "id": w.id, "anchor": w.anchor,
+            "version": w.version, "alias": w.alias,
+        })).collect::<Vec<_>>(),
+    })
+}
+
 async fn tool_expand_stored(
     state: &crate::server::AppState,
     indexer: &Indexer,
@@ -546,30 +587,7 @@ async fn tool_expand_stored(
         None => Ok(json!({ "page": Value::Null, "hint": missing_page_hint(&a.page_id) })),
         Some(e) => {
             let e_page_id = e.page.page_id.clone();
-            let mut page = json!({
-                "page": {
-                    "page_id": e.page.page_id,
-                    "slug": e.page.slug,
-                    "skill": e.page.skill,
-                    "page_kind": page_kind_str(e.page.page_kind),
-                    // #357 (CR-6): the verified principal behind the page's
-                    // most recent write. `null` for a page last written
-                    // before the gateway recorded one, and on an `as_of`
-                    // read (a CRDT snapshot carries bytes, not an author) —
-                    // never a guess.
-                    "last_written_by": e.last_written_by,
-                },
-                "frontmatter": e.frontmatter,
-                "body": e.body,
-                "blocks": e.blocks.iter().map(|b| json!({
-                    "anchor": b.anchor,
-                    "content": b.content,
-                })).collect::<Vec<_>>(),
-                "wikilinks_out": e.wikilinks_out.iter().map(|w| json!({
-                    "skill": w.skill, "id": w.id, "anchor": w.anchor,
-                    "version": w.version, "alias": w.alias,
-                })).collect::<Vec<_>>(),
-            });
+            let mut page = expanded_page_json(&e);
             // The read half of the approve loop (#354/heron#30): publish
             // the hash of the STORED markdown bytes — exactly the value
             // `update_page`'s `base_sha256` guard compares against — so a
