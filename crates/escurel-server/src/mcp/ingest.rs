@@ -103,14 +103,20 @@ async fn ingest_gate(
     // the whole ingest runs against one consistent indexer even if a
     // snapshot adoption swaps mid-flight.
     match state.indexer.as_ref() {
-        Some(h) => Ok((
-            h.current(),
-            IngestCaller {
-                subject,
-                groups,
-                is_admin,
-            },
-        )),
+        Some(h) => {
+            let indexer = h.current();
+            if let Some(resp) = crate::server::quarantine_refusal(&indexer) {
+                return Err(resp);
+            }
+            Ok((
+                indexer,
+                IngestCaller {
+                    subject,
+                    groups,
+                    is_admin,
+                },
+            ))
+        }
         None => Err((
             StatusCode::SERVICE_UNAVAILABLE,
             Json(json!({ "error": "no indexer wired" })),
@@ -767,6 +773,9 @@ async fn blob_get_inner(
             .into_response();
     };
     let indexer = handle.current();
+    if let Some(resp) = crate::server::quarantine_refusal(&indexer) {
+        return resp;
+    }
     let caller = AclCaller {
         subject: &subject,
         is_admin,

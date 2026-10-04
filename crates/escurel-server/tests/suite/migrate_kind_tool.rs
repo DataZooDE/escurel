@@ -334,3 +334,90 @@ async fn a_quarantined_tenant_serves_nothing_but_the_migration_until_it_is_migra
     let found = call(p, Role::Agent, "search", json!({ "q": "Acme" })).await;
     assert!(found.get("error").is_none(), "{found}");
 }
+
+// ---- the quarantine covers EVERY door, not only POST /mcp tools/call -------------------------------
+//
+// A quarantined tenant has a half-built index. It used to refuse MCP tools but still took writes on
+// /ingest, /ingest/upload and a live /ws, and served /blob.
+
+async fn quarantined_status(
+    p: &EscurelProcess,
+    method: &str,
+    path: &str,
+    body: Option<Value>,
+) -> (u16, Value) {
+    let token = p.mint_token(TENANT, Role::Agent);
+    let url = format!("{}{path}", p.base_url());
+    let client = reqwest::Client::new();
+    let req = if method == "GET" {
+        client.get(url)
+    } else {
+        client.post(url).json(&body.unwrap_or(Value::Null))
+    };
+    let resp = req
+        .header("authorization", format!("Bearer {token}"))
+        .send()
+        .await
+        .expect("request");
+    let status = resp.status().as_u16();
+    let json = resp.json::<Value>().await.unwrap_or(Value::Null);
+    (status, json)
+}
+
+#[tokio::test]
+async fn a_quarantined_tenant_refuses_ingest_upload_and_blob_reads() {
+    let h = start_with_legacy_lane_quarantined(true).await;
+    let p = &h.process;
+    let cases = [
+        (
+            "POST",
+            "/ingest",
+            Some(json!({ "blob_id": "b1", "content_type": "text/plain" })),
+        ),
+        (
+            "POST",
+            "/ingest/upload",
+            Some(json!({ "content_type": "text/plain", "bytes_b64": "aGVsbG8=" })),
+        ),
+        (
+            "GET",
+            "/blob/markdown/instances/customer/acme-corp.md",
+            None,
+        ),
+    ];
+    for (method, path, body) in cases {
+        let (status, json) = quarantined_status(p, method, path, body).await;
+        assert_eq!(
+            status, 503,
+            "{method} {path} must be refused while quarantined, got {status} {json}"
+        );
+        assert_eq!(
+            json["error"], "tenant_quarantined",
+            "{method} {path}: {json}"
+        );
+        assert!(
+            json["message"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("escurel admin migrate-kind"),
+            "the refusal names the remedy: {json}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_quarantined_tenant_refuses_a_live_websocket() {
+    use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+    let h = start_with_legacy_lane_quarantined(true).await;
+    let p = &h.process;
+    let token = p.mint_token(TENANT, Role::Agent);
+    let mut req = p.ws_url().into_client_request().unwrap();
+    req.headers_mut()
+        .insert("authorization", format!("Bearer {token}").parse().unwrap());
+    match tokio_tungstenite::connect_async(req).await {
+        Err(tokio_tungstenite::tungstenite::Error::Http(resp)) => {
+            assert_eq!(resp.status().as_u16(), 503, "the upgrade is refused");
+        }
+        other => panic!("a quarantined tenant must refuse the socket, got {other:?}"),
+    }
+}
