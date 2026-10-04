@@ -10,61 +10,6 @@ import { chooseMenuItem, knowledgeRow, openRow, pane, skillRow } from './helpers
 // to look at, because "the assertion passed" says nothing about whether it looks right.
 test.describe.configure({ mode: 'serial' });
 
-const pane = (page: Page, title: string) =>
-  page.locator('.pane', { has: page.locator('.pane-header', { hasText: title }) });
-
-/**
- * The tree views only render the rows in view (the list is virtualised), and the Knowledge tree now
- * holds folders, so a row may not exist until it is scrolled to. Scroll from the top, a step at a time,
- * until the row is rendered; no test depends on how tall the window happens to be.
- */
-async function scanForRow(page: Page, name: RegExp) {
-  const k = pane(page, 'Knowledge');
-  const row = k.getByRole('treeitem', { name });
-  const list = k.locator('.monaco-list').first();
-  // The pointer rests on the list's scrollbar column, not on a row: a row's tooltip captures the wheel,
-  // and a taller tree lost that race (index 0 never rendered, or the first step never scrolled).
-  const box = (await list.boundingBox())!;
-  await page.mouse.move(box.x + box.width - 3, box.y + box.height / 2);
-  // To the top by the list's own keyboard handling: Home focuses the first row and scrolls it into
-  // view. A mouse wheel does it too, but animated, and a taller tree lost the race against the
-  // downward steps below, which then walked past the first rows.
-  await list.focus();
-  await page.keyboard.press('Home');
-  await page.mouse.wheel(0, -10_000);
-  // At the top when the first row (index 0) is rendered: a condition, not a sleep.
-  await expect(list.locator('.monaco-list-row[data-index="0"]')).toHaveCount(1);
-  const rendered = () =>
-    list.evaluate((el) =>
-      Array.from(el.querySelectorAll('.monaco-list-row'))
-        .map((r) => r.getAttribute('data-index'))
-        .join(','),
-    );
-  for (let i = 0; i < 40 && (await row.count()) === 0; i += 1) {
-    const before = await rendered();
-    await page.mouse.wheel(0, 120);
-    // Scrolled when the set of rendered rows changed; at the bottom it never does (hence the cap).
-    await expect
-      .poll(rendered, { timeout: 1_500 })
-      .not.toBe(before)
-      .catch(() => undefined);
-  }
-  return (await row.count()) > 0 ? row.first() : undefined;
-}
-
-async function knowledgeRow(page: Page, name: RegExp) {
-  // A tooltip left by the last hover would cover the rows below it.
-  await page.mouse.move(1000, 700);
-  const row =
-    (await scanForRow(page, name)) ??
-    pane(page, 'Knowledge').getByRole('treeitem', { name }).first();
-  await expect(row).toBeVisible();
-  return row;
-}
-
-/** A skill row by what a screen reader hears: its role, then its id. */
-const skillRow = (page: Page, id: string) => knowledgeRow(page, new RegExp(`skill ${id},`));
-
 test('the story is on screen: knowledge, threads, awaiting, inbox and the runner', async ({
   stack,
 }) => {
