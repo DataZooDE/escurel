@@ -4,14 +4,17 @@
 //! lake, so the legacy quarantine (a writer-boot scan of the lane) cannot protect it directly. What
 //! protects it is that a quarantined writer must not publish: its index was never, or only partly,
 //! derived from the lane, and a snapshot of it would hand readers an empty or stale corpus that looks
-//! healthy. Two REAL `escurel-server` processes over a real DuckDB-file catalog and a local Parquet
-//! DATA_PATH (the offline DuckLake shape; no Docker, no mocks):
+//! healthy. Two REAL `escurel-server` processes over a REAL Postgres catalog (testcontainer: a DuckDB-file
+//! catalog takes an exclusive file lock, so two processes can only share a Postgres one) and a local
+//! Parquet DATA_PATH; no mocks. Opt-in like every DuckLake live test: `--features live-ducklake` (Docker).
 //!
 //! 1. the quarantined writer ticks its periodic publish for several seconds and publishes NOTHING:
 //!    a reader pointed at the lake refuses to boot ("never been published") instead of serving an
 //!    empty corpus;
 //! 2. after `migrate_kind --apply` the writer publishes the migrated corpus and the reader serves
 //!    exactly that, none of it quarantined.
+
+#![cfg(feature = "live-ducklake")]
 
 use std::io::{BufRead, BufReader, Read as _};
 use std::path::Path;
@@ -20,6 +23,8 @@ use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 use tempfile::TempDir;
+use testcontainers_modules::postgres::Postgres;
+use testcontainers_modules::testcontainers::runners::AsyncRunner;
 
 const SKILLS: usize = 3;
 const INSTANCES: usize = 60;
@@ -60,7 +65,12 @@ impl Drop for Server {
 }
 
 /// Spawn the real binary; `Err(stderr)` when it exits before it listens (a refused boot).
-fn try_spawn(data_dir: &Path, role: &str, lake: &Path) -> Result<Server, String> {
+fn try_spawn(
+    data_dir: &Path,
+    role: &str,
+    catalog_dsn: &str,
+    lake: &Path,
+) -> Result<Server, String> {
     use assert_cmd::cargo::CommandCargoExt as _;
     let mut child = Command::cargo_bin("escurel-server")
         .expect("locate escurel-server")
@@ -70,10 +80,7 @@ fn try_spawn(data_dir: &Path, role: &str, lake: &Path) -> Result<Server, String>
         .env("ESCUREL_EMBEDDING_PROVIDER", "zero")
         .env("ESCUREL_INDEX_BACKEND", "ducklake")
         .env("ESCUREL_ROLE", role)
-        .env(
-            "ESCUREL_DUCKLAKE_CATALOG_DSN",
-            lake.join("catalog.ducklake"),
-        )
+        .env("ESCUREL_DUCKLAKE_CATALOG_DSN", catalog_dsn)
         .env("ESCUREL_DUCKLAKE_DATA_PATH", lake.join("data"))
         .env("ESCUREL_SNAPSHOT_PUBLISH_SECS", "1")
         .stdout(Stdio::piped())
@@ -161,11 +168,16 @@ async fn a_quarantined_writer_publishes_nothing_so_a_reader_never_serves_an_empt
     let reader_dir = TempDir::new().unwrap();
     let lake = TempDir::new().unwrap();
     std::fs::create_dir_all(lake.path().join("data")).unwrap();
+    let pg = Postgres::default().start().await.expect("start postgres");
+    let pg_port = pg.get_host_port_ipv4(5432).await.expect("pg port");
+    let dsn =
+        format!("host=127.0.0.1 port={pg_port} user=postgres password=postgres dbname=postgres");
+    let dsn = dsn.as_str();
     seed_legacy_lane(writer_dir.path());
 
     // The writer boots over the legacy lane: quarantined, and its periodic publish (every second)
     // starts ticking.
-    let writer = try_spawn(writer_dir.path(), "writer", lake.path())
+    let writer = try_spawn(writer_dir.path(), "writer", dsn, lake.path())
         .unwrap_or_else(|e| panic!("the writer must boot (quarantined): {e}"));
     let ready: Value = reqwest::get(format!("{}/readyz", writer.base))
         .await
@@ -180,7 +192,7 @@ async fn a_quarantined_writer_publishes_nothing_so_a_reader_never_serves_an_empt
 
     // Let several publish ticks pass. A reader must still find NOTHING to adopt.
     tokio::time::sleep(Duration::from_secs(6)).await;
-    match try_spawn(reader_dir.path(), "reader", lake.path()) {
+    match try_spawn(reader_dir.path(), "reader", dsn, lake.path()) {
         Ok(reader) => {
             let counts = served_counts(&reader.base).await;
             panic!(
@@ -202,7 +214,7 @@ async fn a_quarantined_writer_publishes_nothing_so_a_reader_never_serves_an_empt
 
     let deadline = Instant::now() + Duration::from_secs(120);
     let reader = loop {
-        match try_spawn(reader_dir.path(), "reader", lake.path()) {
+        match try_spawn(reader_dir.path(), "reader", dsn, lake.path()) {
             Ok(r) => break r,
             Err(e) => {
                 assert!(
