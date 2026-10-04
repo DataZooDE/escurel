@@ -4,6 +4,19 @@ The skill version tracks the consumer-facing contract, not the Escurel
 binary version. The Escurel repo's checked-out git ref is the true version
 pin (see `SKILL.md` → "How this skill is installed").
 
+## 0.13.2 — `escurel admin migrate-kind-files`: the offline `type:` -> `kind:` migration for repos of page files
+
+- **New CLI command (no gateway, no wire change).** `escurel admin migrate-kind-files --path <dir>` rewrites
+  the removed `type: skill|instance` page-kind line to `kind:` in a directory tree of `*.md` pages (and a
+  workflow-run page's `status:` to `run_status:`), with the engine's own text edit. Dry run by default (a diff
+  hunk per page); `--apply` refuses a dirty git tree unless `--allow-dirty`; idempotent. It reports and never
+  rewrites: pages with both keys, a user data field named `type:`, signed pack `base/` pages, BOM / CRLF-opening
+  pages the engine cannot parse, files over `--max-bytes`; it never follows symlinks and never enters a nested
+  git repository or submodule (`--include-nested-repos` opts in). String-form `actions:` is reported, not
+  converted. See `references/07` § "Migrating a repo of page files" and `docs/deploy/consumer-rollout.md`.
+- **Known collision, now explained by the tool:** a data field named `kind` (`type: skill` + `kind: code`) is a
+  conflict; rename the field first (`skill_kind`).
+
 ## 0.13.1 — docs only
 
 - A query page's SQL keeps `WHERE page_type = 'instance'` although the frontmatter says `kind:`.

@@ -6,6 +6,8 @@ still holds pages with the old key boots **QUARANTINED**: the server is up, but 
 `migrate_kind` and `compact_lanes` answers `tenant_quarantined`, and `rebuild` refuses. The migration runs
 against that tenant, from inside the same image.
 
+Consumers (repos of page files, services that write pages): [`consumer-rollout.md`](consumer-rollout.md). A repository's own files migrate offline with `escurel admin migrate-kind-files` (no gateway).
+
 Every command below was run against the real binaries on a throwaway store (a legacy tenant with two pages);
 the transcript summary is at the end.
 

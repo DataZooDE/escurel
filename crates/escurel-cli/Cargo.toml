@@ -26,6 +26,9 @@ escurel-tui = { path = "../escurel-tui" }
 # signing/verification primitives (escurel_types::pack) — the CLI must
 # NOT depend on escurel-server for this.
 escurel-types = { path = "../escurel-types" }
+# `admin migrate-kind-files` reuses the engine's own text edits for the type: -> kind: rewrite, so a
+# repository of page files migrates exactly the way a tenant does.
+escurel-md = { path = "../escurel-md" }
 # preserve_order keeps emitted JSON / table columns in the order the
 # command authored them, not alphabetised.
 serde_json = { version = "1", features = ["preserve_order"] }

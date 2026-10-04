@@ -92,6 +92,7 @@ escurel admin quota  --tenant acme
 escurel admin rebuild --tenant acme
 escurel admin migrate-kind --tenant acme            # DRY RUN: rewrite legacy `type:` -> `kind:` (references/01)
 escurel admin migrate-kind --tenant acme --apply    # write; refuses while a page has a live CRDT session
+escurel admin migrate-kind-files --path ./repo          # OFFLINE, no gateway: the same rewrite over a directory of page files (DRY RUN; --apply, --allow-dirty; references/07)
 
 # skill packs (admin-role token; references/02 §Skill packs)
 escurel admin pack export --tenant hub --id logistics --version 3 \

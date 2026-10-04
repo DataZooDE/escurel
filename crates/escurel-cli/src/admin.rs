@@ -71,6 +71,11 @@ pub enum AdminCmd {
         #[arg(long)]
         apply: bool,
     },
+    /// OFFLINE `type:` -> `kind:` migration of a directory tree of page files (skills/instances
+    /// kept as markdown in git). The file twin of `migrate-kind`: a dry run unless `--apply`, one
+    /// frontmatter line changes per page, conflicts and pages the engine cannot parse are
+    /// reported and never rewritten. Needs no gateway.
+    MigrateKindFiles(crate::kindfix::MigrateKindFilesArgs),
     /// Skill packs — the versioned, signed unit of distribution
     /// between escurel nodes.
     #[command(subcommand)]
@@ -431,6 +436,7 @@ pub async fn run(client: &AdminClient, cmd: AdminCmd) -> Result<Value> {
         // Normally intercepted in main.rs BEFORE any client exists (the
         // command is purely local); kept here so the dispatch stays total.
         AdminCmd::Pack(PackCmd::Verify { input, manifest }) => verify_pack_local(&input, manifest),
+        AdminCmd::MigrateKindFiles(args) => crate::kindfix::run(args),
         AdminCmd::Pack(PackCmd::Unsubscribe { tenant, id }) => client
             .call_raw(
                 "unsubscribe_pack",

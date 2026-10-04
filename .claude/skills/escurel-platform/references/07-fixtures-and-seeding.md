@@ -105,3 +105,35 @@ An `openapi` / `mcp` skill is seeded like any skill (a markdown page under `skil
 small axum / node server; do NOT mock the HTTP client), start the gateway with
 `ESCUREL_EGRESS_ALLOW_LOOPBACK=1`, then `register_endpoint {name, kind, base_url}` as the admin. The demo
 at `editors/vscode/demo/` does exactly this with a REST portal and an MCP server (`services/`).
+
+## Migrating a repo of page files (`type:` -> `kind:`)
+
+A repository that keeps skills/instances as markdown files (seeds, fixtures, a git-managed knowledge base)
+migrates OFFLINE with the file twin of `admin migrate-kind` (the tenant migration). It needs no gateway:
+
+```sh
+escurel admin migrate-kind-files --path .                 # DRY RUN: a diff hunk per page, JSON report
+escurel admin migrate-kind-files --path . --apply         # rewrite in place (refuses a dirty git tree)
+escurel admin migrate-kind-files --path . --apply --allow-dirty    # you accept an unclean tree
+# repeatable --path; --max-bytes N (skip bigger files); --include-nested-repos (see below)
+```
+
+What it does, exactly: only the top-level frontmatter line `type: skill|instance` of a `*.md` file becomes
+`kind:` (the engine's own text edit: trailing comments and CRLF on that line are kept, every other byte is
+preserved), and a workflow-run page's `status:` becomes `run_status:`. Idempotent: a second run finds
+nothing to do. It **never** rewrites: a user data field named `type:` (listed under `untouched_type_fields`),
+a page with BOTH keys (`conflicts`), signed pack pages `markdown/base/**` (the publisher re-exports), files
+over `--max-bytes`, symlinks, `.git` / `node_modules` / `target` / `.dart_tool` / `.venv`, and **nested git
+repositories and submodules** (their pages belong to another history; bump the pin instead). Pages the engine
+cannot parse today (a BOM or CRLF `---` opening line) are reported under `needs_manual` and never rewritten:
+changing their key would not make them valid. String-form `actions:` on a skill is reported
+(`legacy_string_actions`) but not converted: an action needs a label a human must write.
+
+**A data field named `kind` is a conflict** (`type: skill` plus `kind: code`): `kind:` is the page kind now.
+Rename the field first (for example `skill_kind`, as the engine's own `issue` skill became `issue_kind`),
+then re-run.
+
+The tool does not touch what ELSE changes in lock-step: code and prompts that write `type: instance`,
+`page_type` -> `page_kind`, `resume_cursor` -> `next_cursor`, vendored pins. The order of a whole rollout
+(prepare repos, then one stop-first window per environment) is in `docs/deploy/consumer-rollout.md`.
+
