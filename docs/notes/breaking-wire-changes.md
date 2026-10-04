@@ -2,6 +2,10 @@
 
 One line per change. Folded into the root `CHANGELOG.md` BREAKING entry and `docs/deploy/README.md`.
 
+- `ESCUREL_WRITE_ACL` defaults to `enforce` (was `off`); an unrecognised value also means `enforce`. A deployment
+  that never set it now refuses writes by callers who are neither the instance owner nor an admin (`forbidden`).
+  Opt out with `ESCUREL_WRITE_ACL=off`; `log` warns and allows. Skill 0.17.1.
+
 - `list_inbox` / `list_events`: `resume_cursor` is REMOVED. `next_cursor` is now where the page ENDED
   (present iff the page is non-empty; null only when there is nothing more to read), and a new
   `has_more: true` says rows already lie past the page. A client that paged "until `next_cursor` is

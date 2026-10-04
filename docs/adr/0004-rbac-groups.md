@@ -136,7 +136,7 @@ Two constraints kept from the v1 threat model:
   unchanged. That is what makes this backward compatible without a
   rollout flag: no page in the shipped fixtures carried an inert block,
   so nothing silently starts being enforced. (The write path remains
-  behind `ESCUREL_WRITE_ACL`, still defaulting to `Off`.)
+  behind `ESCUREL_WRITE_ACL`, which defaulted to `Off` when this ADR was written and has defaulted to `enforce` since the OKF release.)
 
 ## Code map
 

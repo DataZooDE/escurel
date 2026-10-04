@@ -451,7 +451,11 @@ impl EscurelProcess {
         let cfg = ServerConfig {
             signer,
             minted_run_sweep: overrides.minted_run_sweep,
-            write_acl: overrides.write_acl.unwrap_or_default(),
+            // The PRODUCT default is `enforce`; a test gateway stays open unless the test asks, because
+            // most fixtures write public (no-owner) instances through a non-admin agent token, which
+            // `enforce` refuses by design. A test of the gate passes `Some(WriteAclMode::Enforce)`
+            // (or `Some(WriteAclMode::default())` to pin the shipped default).
+            write_acl: overrides.write_acl.unwrap_or(WriteAclMode::Off),
             event_acl: overrides.event_acl.unwrap_or_default(),
             autonomy_lint: overrides.autonomy_lint.unwrap_or_default(),
             // Tests keep their directory-connector fixtures in temp dirs, so the default policy of a

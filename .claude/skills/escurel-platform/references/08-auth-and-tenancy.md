@@ -38,7 +38,7 @@ runs write unstamped.
 Its **authority** is the runner's own — `roles: [escurel:admin]` — by
 default. With `ESCUREL_RUNNER_AGENT_NARROW=1` on the runner it is instead
 NARROWED to the target skill: `roles: [escurel:agent, <the skill's
-acl.create ∪ acl.update groups>]`, so under `ESCUREL_WRITE_ACL=enforce`
+acl.create ∪ acl.update groups>]`, so under `ESCUREL_WRITE_ACL=enforce` (the default)
 the harness may write that skill's instances and nothing else, while the
 runner keeps admin for its own bookkeeping (run events, cascades). The
 groups come from the skill page, so — as for a run board — every

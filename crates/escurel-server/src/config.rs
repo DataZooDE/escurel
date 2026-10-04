@@ -2053,9 +2053,9 @@ impl EscurelConfig {
         );
 
         let server_config = ServerConfig {
-            // Per-instance write ACL (`ESCUREL_WRITE_ACL`): off (default) |
-            // log | enforce. Read straight from env so it can be flipped at
-            // deploy without a config-file change (safe dark→log→enforce rollout).
+            // Per-instance write ACL (`ESCUREL_WRITE_ACL`): enforce (default) |
+            // log | off. Read straight from env so it can be flipped at
+            // deploy without a config-file change.
             write_acl: crate::WriteAclMode::from_env(),
             event_acl: crate::EventAclMode::from_env(),
             // Skill-page `autonomy:` lint (`ESCUREL_AUTONOMY_LINT`): off

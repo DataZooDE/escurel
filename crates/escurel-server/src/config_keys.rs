@@ -206,8 +206,8 @@ pub const CONFIG_KEYS: &[ConfigKey] = &[
     ConfigKey {
         name: "ESCUREL_WRITE_ACL",
         component: "Server",
-        default: "off",
-        doc: "per-instance write ACL: `off` (no check) | `log` (warn but allow) | `enforce` (reject). Symmetric to the read ACL: owner-or-admin writes; public/no-owner instances are admin-write-only.",
+        default: "enforce",
+        doc: "per-instance write ACL: `enforce` (reject; the default, also for an unrecognised value) | `log` (warn but allow) | `off` (no check, explicit opt-out). Symmetric to the read ACL: owner-or-admin writes; public/no-owner instances are admin-write-only.",
     },
     ConfigKey {
         name: "ESCUREL_AUTH_ADMIN_ROLE_CLAIM",
