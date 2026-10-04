@@ -6,7 +6,7 @@
 //! bounds are advisory only, cursors are guessable hex, domain errors on read tools are bare
 //! JSON-RPC strings, `capture_event` accepts a label no skill answers to, and so on.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
 
 use duckdb::Connection;
@@ -19,14 +19,10 @@ use tempfile::TempDir;
 
 const TENANT: &str = "acme";
 const SKILL: &str = "markdown/skills/sales-order.md";
-const ROWS: usize = 60;
 
 /// The id of generated row `n` (a SAP-style zero-padded document number).
 fn doc(n: usize) -> String {
     format!("{:010}", 4_500_000 + n)
-}
-fn row_page(n: usize) -> String {
-    format!("markdown/instances/sales-order/{}.md", doc(n))
 }
 
 /// Write `ROWS` rows as five JSON files of an array each (the shape `read_json_auto` infers a typed
