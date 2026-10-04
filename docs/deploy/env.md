@@ -139,11 +139,19 @@ read by several binaries.
 
 ## Runner
 
-escurel-runner (the agent runner).
+escurel-runner (the agent runner). For an Evolve/Workbench deployment, probe
+`GET /readyz` on the runner and admit planning work only after it returns 200.
+It becomes ready after a successful reserved `escurel:runner-status` system
+event write and becomes unready when that write is refused, fails, goes stale,
+or the runner starts draining. Give the runner service credential
+`escurel:admin` scope; keep per-run harness credentials caller-scoped.
+`GET /healthz` remains a dependency-free liveness probe. Webhook-only runners
+without a configured tenant/token can process `/trigger` but deliberately
+report unready at `/readyz`, so do not use that probe as their traffic gate.
 
 | var | default | meaning |
 |---|---|---|
-| `ESCUREL_RUNNER_LISTEN` | 0.0.0.0:8088 | address of the runner's own HTTP server (`/healthz`, `/version`, `POST /trigger`) |
+| `ESCUREL_RUNNER_LISTEN` | 0.0.0.0:8088 | address of the runner's own HTTP server (`/healthz`, `/readyz`, `/version`, `POST /trigger`) |
 | `ESCUREL_RUNNER_GATEWAY_URL` | http://127.0.0.1:8080 | base URL of the escurel gateway exposing `/mcp` |
 | `ESCUREL_RUNNER_ENV` | dev | deployment environment stamped on every log record |
 | `ESCUREL_RUNNER_TENANT` | — | tenant whose inbox the poller drains; the poller is off when this or the token is absent |

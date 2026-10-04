@@ -77,6 +77,10 @@ struct AppState {
     /// Last result of the runner's reserved system-event write. A readable
     /// gateway alone cannot make Workbench plan review operational.
     control_plane_write: Arc<std::sync::atomic::AtomicU8>,
+    /// Last successful system write, used to avoid reporting a stale green
+    /// control plane when its status task has stopped making progress.
+    control_plane_written_at: Arc<std::sync::Mutex<Option<Instant>>>,
+    control_plane_max_age: std::time::Duration,
     /// Optional shared secret required on `POST /trigger`. When `Some`,
     /// the request must carry a valid HMAC-SHA256 signature of the body.
     webhook_secret: Option<Arc<str>>,
@@ -367,6 +371,9 @@ async fn main() -> anyhow::Result<()> {
                 0
             },
         )),
+        control_plane_written_at: Arc::new(std::sync::Mutex::new(None)),
+        control_plane_max_age: config.status_interval.saturating_mul(2)
+            + std::time::Duration::from_secs(5),
         webhook_secret: config.webhook_secret.clone().map(Arc::from),
         queue: queue.clone(),
         ledger,
@@ -478,7 +485,22 @@ async fn healthz() -> impl IntoResponse {
 async fn readyz(State(state): State<AppState>) -> impl IntoResponse {
     use std::sync::atomic::Ordering;
     let (status, reason) = match state.control_plane_write.load(Ordering::Relaxed) {
-        2 => (StatusCode::OK, "ready"),
+        _ if state.draining.load(Ordering::Relaxed) => {
+            (StatusCode::SERVICE_UNAVAILABLE, "draining")
+        }
+        2 => {
+            let fresh = state
+                .control_plane_written_at
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .as_ref()
+                .is_some_and(|at| at.elapsed() <= state.control_plane_max_age);
+            if fresh {
+                (StatusCode::OK, "ready")
+            } else {
+                (StatusCode::SERVICE_UNAVAILABLE, "system_event_write_stale")
+            }
+        }
         0 => (
             StatusCode::SERVICE_UNAVAILABLE,
             "runner_tenant_or_token_missing",
@@ -3531,6 +3553,10 @@ async fn status_loop(
             .await;
         match written {
             Ok(_) => {
+                *state
+                    .control_plane_written_at
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner()) = Some(Instant::now());
                 state
                     .control_plane_write
                     .store(2, std::sync::atomic::Ordering::Relaxed);
