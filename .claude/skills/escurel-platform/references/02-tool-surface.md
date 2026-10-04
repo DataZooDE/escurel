@@ -477,3 +477,9 @@ of the normal app surface — see `references/08` and `references/10`.
   `backend_projection.writable_columns` changes only through `create_draft` with
   `write_back: {patch: {col: val}, base_etag}` (etag: `backend_projection.etag`), promoted by a human.
   `write_instance` is for per-instance remote bindings, never for rows.
+
+- **Summary text, full structuredContent (0.13.0).** `content[0].text` is a short summary; read
+  `structuredContent` for the result.
+- **Autonomy is enforced for machine tokens (0.13.0).** A run's write to a `review|confirm` skill's
+  instance is held as a draft (`held_for_review: true`); `move_page` / `delete_page` answer
+  `review_required`; people, admins and `autonomy: auto` skills write directly; promoting always lands.

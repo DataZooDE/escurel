@@ -487,7 +487,9 @@ pub(crate) fn tool_defs() -> Vec<ToolDef> {
             Execution::Orchestration,
             Scope::Agent,
             Touches::INDEX,
-            "Upsert a markdown page (whole-body write). Optional \
+            "Upsert a markdown page (whole-body write). A MACHINE token (a run's bearer) writing an \
+                 instance of a skill with `autonomy: review|confirm` does not land: the answer is \
+                 `held_for_review: true` with an open draft a human promotes. Optional \
                  `base_version` (from a prior read's `version`) enables \
                  optimistic concurrency with CRDT auto-merge: a stale write is \
                  three-way-merged against concurrent head edits (`ok:true, \

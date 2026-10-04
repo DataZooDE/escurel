@@ -4,6 +4,23 @@ The skill version tracks the consumer-facing contract, not the Escurel
 binary version. The Escurel repo's checked-out git ref is the true version
 pin (see `SKILL.md` → "How this skill is installed").
 
+## 0.13.0 — BREAKING: `content[0].text` is a summary; `autonomy` is enforced for machine callers
+
+- **BREAKING — `tools/call` text block.** `result.content[0].text` is a one-or-two-line summary (what came
+  back, counts, "Full result in structuredContent."; for a refusal, the first issue's code and message).
+  `structuredContent` is unchanged and is the full result: read it. The text used to repeat the payload
+  as a JSON string, doubling the tokens of every call. `escurel-client`, the extension and the Dart client
+  prefer `structuredContent` and fall back to parsing the text only against a legacy gateway. A host that
+  can read only the text block sees the summary, not the data.
+- **BREAKING — `autonomy: review | confirm` is enforced** (an unrecognised value fails toward holding) for
+  MACHINE callers: tokens carrying `run_id`, `skill` or `act.sub` (a run's bearer, the runner, a narrowed
+  per-skill agent). Their `update_page` and `close_session` commit on an INSTANCE of such a skill do not
+  land: the answer is `{ok: true, held_for_review: true, draft, message}` (the `create_draft` shape,
+  status `open`). `move_page` / `delete_page` by a machine on such a skill answer `review_required` (no
+  draft can represent a removal). Unchanged: people on plain agent-role tokens (extension, CLI), admin
+  tokens, `autonomy: auto` skills, skills declaring nothing, skill pages. **Promoting a draft always
+  lands** (it re-enters the ungated write), including when the approver's token is a machine's.
+
 ## 0.12.0 — agent-experience pass on the MCP surface (BREAKING: `resume_cursor` removed)
 
 Findings of an agent-usability review of the live `/mcp` surface. One breaking change, the rest additive.
