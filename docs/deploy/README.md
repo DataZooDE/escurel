@@ -81,6 +81,17 @@ The single-writer pet means an upgrade is **stop-first**. For a release that cha
    container and swap traffic.
 4. Rollback = restore the tarball and run the previous image.
 
+This release also changes **behaviour agents and integrations rely on**, so roll those out in the same window
+(full list: [`CHANGELOG`](../../CHANGELOG.md), BREAKING): `resume_cursor` is gone (`next_cursor` + `has_more`),
+MCP `content[0].text` is only a summary (read `structuredContent`), `autonomy: review|confirm` is enforced for
+machine tokens (`held_for_review` / `review_required`), write-back drafts need a non-agent promoter
+(`promote_requires_human`), and `secret_ref` is allow-listed (`ESCUREL_SECRET_ENV_ALLOW`,
+`ESCUREL_SECRET_FILE_DIRS`; set them before a connector that used `env:`/`file:` references is expected to work
+again). New operator knobs: `ESCUREL_SHUTDOWN_DRAIN_SECS`, the `ESCUREL_EGRESS_*` family (never enable
+`ALLOW_LOOPBACK` in production). New metrics to alert on: `escurel_tenant_quarantined`,
+`escurel_migration_pending`, `escurel_egress_total{outcome="refused"}`, `escurel_write_back_total{outcome="dead_letter"}`,
+`escurel_source_unavailable_total`.
+
 The full, command-verified procedure, the dry-run report, timing (the rebuild dominates: a real embedder
 re-embeds the corpus) and rollback are in [`kind-migration.md`](kind-migration.md). Consumers (agents that write
 pages, other repos' skill pages) must change in the same release: see the [`CHANGELOG`](../../CHANGELOG.md).

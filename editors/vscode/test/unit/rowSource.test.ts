@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { companionFrontmatter, rowSourceOf } from '../../src/shared/rowSource';
+import { companionFrontmatter, isSourceField, rowSourceOf } from '../../src/shared/rowSource';
 
 // An `instances: rows` skill's page is ONE row of a read-only source plus an optional linked markdown.
 // `expand` merges them for reading; the extension must show the row as the read-only thing it is and
@@ -108,5 +108,27 @@ describe('rowSourceOf: rows from a remote (REST/MCP) upstream', () => {
   it('a SQL rows projection is not external', () => {
     expect(rowSourceOf(projection)?.external).toBeUndefined();
     expect(rowSourceOf(projection)?.writableColumns).toBeUndefined();
+  });
+});
+
+describe('isSourceField', () => {
+  const down = {
+    sourceFields: [],
+    linked: { enabled: true, exists: false, orphan: false },
+    issue: { code: 'source_unavailable', message: 'x' },
+  };
+  it('names a column the projection lists', () => {
+    const row = { ...down, sourceFields: ['rating'], issue: undefined };
+    expect(isSourceField(row, { name: 'rating', value: 'A', display: 'A' })).toBe(true);
+    expect(isSourceField(row, { name: 'notes', value: 'n', display: 'n' })).toBe(false);
+  });
+  it('treats a BLANK field of a source-down row as a source column, but not one with a value', () => {
+    expect(isSourceField(down, { name: 'rating', value: undefined, display: '' })).toBe(true);
+    expect(isSourceField(down, { name: 'delivery_risk', value: 'low', display: 'low' })).toBe(
+      false,
+    );
+  });
+  it('is false for a page that is not a row', () => {
+    expect(isSourceField(undefined, { name: 'a', value: undefined, display: '' })).toBe(false);
   });
 });

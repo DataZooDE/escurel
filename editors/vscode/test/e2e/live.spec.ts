@@ -688,6 +688,13 @@ test('when the portal is down a promoted change is refused, recorded as failed, 
   await expect(down.locator('.source-strip')).toBeVisible({ timeout: 20_000 });
   await expect(down.locator('.source-strip.problem')).toBeVisible();
   await expect(down.locator('.write-back.problem')).toContainText('did not go through');
+  // The banner promises "its values show as —": every source field shows the dash, none is blank, and
+  // there is no empty pill where the rating badge was.
+  for (const name of ['display_name', 'rating', 'on_time_pct', 'region']) {
+    const cell = down.locator(`.field[data-name="${name}"]`);
+    await expect(cell, name).toContainText('—');
+    await expect(cell.locator('.badge'), `${name}: no empty pill`).toHaveCount(0);
+  }
   await stack.shot('13-write-back-failed');
 });
 

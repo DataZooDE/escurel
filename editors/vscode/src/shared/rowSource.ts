@@ -66,3 +66,20 @@ export function companionFrontmatter(
   for (const f of row.sourceFields) delete out[f];
   return out;
 }
+
+/**
+ * Whether a form field is a column of the read-only SOURCE row, so a value the source did not give
+ * shows as a dash. Normally the projection names its columns; when the source is DOWN it carries none,
+ * so a blank field of a source-down row is a source column too (it is the source that did not answer),
+ * never a blank that looks broken or an empty pill.
+ */
+export function isSourceField(
+  row: RowSource | undefined,
+  field: { name: string; value: unknown; display: string },
+): boolean {
+  if (!row) return false;
+  if (row.sourceFields.includes(field.name)) return true;
+  const down = row.issue?.code === 'source_unavailable' && row.sourceFields.length === 0;
+  const blank = field.value === undefined || field.value === null || field.display === '';
+  return down && blank;
+}

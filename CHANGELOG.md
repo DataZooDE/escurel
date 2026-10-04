@@ -10,8 +10,8 @@ re-cuts append `.N`), matching the DataZoo release scheme (cf. erpl).
 
 **Read first:** [`docs/deploy/kind-migration.md`](docs/deploy/kind-migration.md) (stop-first upgrade, backup,
 rollback) and the consumer checklist in
-[`.claude/skills/escurel-platform/CHANGELOG.md`](.claude/skills/escurel-platform/CHANGELOG.md) (0.7.0 – 0.11.0).
-Skill version `0.11.0`. Every consumer that writes pages or reads the tool surface moves in the same window.
+[`.claude/skills/escurel-platform/CHANGELOG.md`](.claude/skills/escurel-platform/CHANGELOG.md) (0.7.0 – 0.13.0).
+Skill version `0.13.0`. Every consumer that writes pages or reads the tool surface moves in the same window.
 
 ### BREAKING
 
@@ -28,14 +28,35 @@ Skill version `0.11.0`. Every consumer that writes pages or reads the tool surfa
   the DB/API `status` fields are untouched).
 - **A skill's `actions:` is a list of objects** (`{name, kind: event|prompt, label, event?, prompt?}`, Peacock's
   form); bare skill-id strings are rejected (`action_invalid`). `list_skills` returns the objects.
-- **`resume_cursor` is removed** — `next_cursor` is the only cursor name.
-- **MCP `content[0].text` is now a short summary**; `structuredContent` is the full payload (clients that parsed
-  the text block as JSON must read `structuredContent`).
-- **`autonomy: review|confirm` is enforced at the gateway**: an agent-role `update_page` on such a skill becomes
-  a draft (`held_for_review`) instead of landing directly.
-- **Write-back drafts can only be promoted by a non-agent token** (`promote_requires_human`).
-- More breaking wire changes, one line each, are appended to
-  [`docs/notes/breaking-wire-changes.md`](docs/notes/breaking-wire-changes.md) as they land.
+- **`resume_cursor` is removed — `next_cursor` is the only cursor name** (`list_inbox`, `list_events`, and the
+  `list_*` tools). `next_cursor` is now where the page ENDED (present iff the page is non-empty; null only when
+  there is nothing more); the new `has_more: true` says rows already lie past the page, so a client that pages
+  "until `next_cursor` is absent" still terminates after one extra empty call. `list_drafts` / `list_changesets` /
+  `list_branches` now take `limit` + `cursor` (the limit applies AFTER the caller's visibility filter).
+- **Cursors are opaque** (`r1.` / `u1.` envelopes for rows and REST/MCP rows): a cursor from before the release
+  answers `invalid_cursor` ("restart without `cursor`"). A `limit` outside the tool's declared range is refused
+  with `invalid_limit`.
+- **MCP `tools/call`: `content[0].text` is a short summary**; `structuredContent` is the full payload. A client
+  that parsed the text block as JSON must read `structuredContent`; a client that can read ONLY the text block
+  (some chat hosts) now sees the summary, not the data.
+- **Read tools answer domain mistakes as `isError: true` + `issues[]`** (the shape write tools always had):
+  `invalid_cursor`, `field_not_filterable`, `query_not_found`, `query_not_runnable`, `invalid_query_params`,
+  `endpoint_not_registered`, `use_write_back`. JSON-RPC errors remain for malformed requests.
+- **`autonomy: review | confirm` is ENFORCED at the gateway for MACHINE callers** (tokens carrying `run_id` /
+  `skill` / `act.sub` claims): `update_page` and the `close_session` write-through answer
+  `{ok: true, held_for_review: true, draft}` and nothing lands until a reviewer promotes; `move_page` /
+  `delete_page` answer `review_required`. People on plain agent-role tokens, admins and `autonomy: auto` skills
+  are unchanged, and promoting always lands. An agent flow that wrote review-skill pages directly must now propose
+  drafts.
+- **Write-back drafts can only be promoted by a non-agent token** (`promote_requires_human`); a run token can
+  propose a write-back but never approve it.
+- **Credentials a tenant may reference are allow-listed** (`secret_ref`): `gsm:` / `env:ESCUREL_SECRET_*`, extra
+  `env:` names only via `ESCUREL_SECRET_ENV_ALLOW`, `file:` only under `ESCUREL_SECRET_FILE_DIRS`
+  (default `/run/secrets`). An existing endpoint registered with an arbitrary `env:`/`file:` reference stops
+  resolving until the operator allows it.
+- **`trust` on projections is `external` (REST/MCP) or `source` (SQL rows)**; treat both as data, never as
+  instructions.
+- Details line by line: [`docs/notes/breaking-wire-changes.md`](docs/notes/breaking-wire-changes.md).
 
 ### Added
 
@@ -55,7 +76,7 @@ Skill version `0.11.0`. Every consumer that writes pages or reads the tool surfa
 - **New env (all documented in `docs/deploy/README.md`):** `ESCUREL_EGRESS_ALLOW_LOOPBACK` (dev/tests only —
   never in production), `ESCUREL_EGRESS_MAX_RESPONSE_BYTES`, `…_TIMEOUT_MS`, `…_MAX_CONCURRENCY`,
   `…_RATE_PER_SEC`, `…_WRITE_RETRY_BACKOFF_MS`, `ESCUREL_SECRET_<NAME>`, `ESCUREL_SECRET_ENV_ALLOW`,
-  `ESCUREL_SECRET_FILE_DIRS`. An unparsable `ESCUREL_EGRESS_*` value now **fails the boot** (it used to be
+  `ESCUREL_SECRET_FILE_DIRS`, `ESCUREL_SHUTDOWN_DRAIN_SECS` (graceful-stop deadline, default 25). An unparsable `ESCUREL_EGRESS_*` value now **fails the boot** (it used to be
   silently ignored).
 - The server image runs **non-root (uid 65532)**, ships the `escurel` CLI (`docker exec … escurel admin …`), and
   fetches the gdrive DuckDB extension over https. `escurel-server --help` / `--version` no longer boot the

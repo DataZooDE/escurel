@@ -538,6 +538,39 @@ describe('<escurel-page-as-ui> thread strip', () => {
       });
     });
 
+    it('when the source is DOWN (no source columns known) every blank field shows a dash and no empty pill', async () => {
+      // The real case: the projection's `source` is {} so NO field is flagged as a source column, and
+      // the page used to render blank rows plus an empty circle where the rating pill was.
+      const blank = (name: string, label: string, render: string) => ({
+        ...orderPage.fields[0]!,
+        name,
+        label,
+        render,
+        value: undefined,
+        display: '',
+      });
+      const el = await fixture<EscurelPageAsUi>(
+        html`<escurel-page-as-ui
+          .model=${{
+            ...orderPage,
+            fields: [blank('supplier', 'Supplier', 'text'), blank('rating', 'Rating', 'badge')],
+            source: {
+              external: 'REST' as const,
+              sourceFields: [],
+              linked: { enabled: true, exists: false, orphan: false },
+              issue: { code: 'source_unavailable', message: 'x' },
+            },
+          }}
+        ></escurel-page-as-ui>`,
+      );
+      await el.updateComplete;
+      for (const name of ['supplier', 'rating']) {
+        const cell = q(el, `.field[data-name="${name}"]`)!;
+        expect(text(cell), name).to.contain('—');
+        expect(cell.querySelector('.badge') === null, `${name}: no empty pill`).to.equal(true);
+      }
+    });
+
     it('has no strip for an ordinary page', async () => {
       const el = await render();
       expect(q(el, '.source-strip') === null).to.equal(true);

@@ -1,3 +1,4 @@
+import { isSourceField } from '../../src/shared/rowSource';
 import { sourceBanner } from '../../src/shared/sourceBanner';
 import { writeBackLine } from '../../src/shared/writeBack';
 import { writeBackLead } from '../../src/shared/writeBackLead';
@@ -428,7 +429,7 @@ export class EscurelPageAsUi extends LitElement {
       ${m.writeBack ? this.writeBackLine(m.writeBack) : nothing}
 
       <section class="fields">
-        ${m.fields.map((f) => html`<escurel-field .field=${f} ?editable=${m.editable} ?source=${m.source?.sourceFields.includes(f.name) ?? false}></escurel-field>`)}
+        ${m.fields.map((f) => html`<escurel-field .field=${f} ?editable=${m.editable} ?source=${isSourceField(m.source, f)}></escurel-field>`)}
         ${
           m.source
             ? nothing

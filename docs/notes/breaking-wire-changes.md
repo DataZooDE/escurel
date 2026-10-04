@@ -1,6 +1,6 @@
 # Breaking wire changes (this release)
 
-One line per change. Stream C turns this into the root `CHANGELOG.md` BREAKING entry.
+One line per change. Folded into the root `CHANGELOG.md` BREAKING entry and `docs/deploy/README.md`.
 
 - `list_inbox` / `list_events`: `resume_cursor` is REMOVED. `next_cursor` is now where the page ENDED
   (present iff the page is non-empty; null only when there is nothing more to read), and a new
