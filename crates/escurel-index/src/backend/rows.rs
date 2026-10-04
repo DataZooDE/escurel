@@ -24,6 +24,48 @@ use crate::Indexer;
 /// Hard cap on one list page (the same ceiling `list_instances` has for stored pages).
 pub const ROWS_MAX_LIMIT: usize = 10_000;
 
+/// A page also stops at this many bytes of row data (at least one row is always returned), so a
+/// wide table cannot make one request hold every column of 10,000 rows in memory.
+pub const ROWS_MAX_PAGE_BYTES: usize = 8 * 1024 * 1024;
+
+/// How long one source query may run before it is interrupted.
+pub const ROWS_QUERY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Runs `f` with a watchdog that interrupts the connection's running statement after `timeout`. The
+/// watchdog is joined before this returns, so a late interrupt can never hit the NEXT statement.
+fn with_statement_timeout<T>(
+    conn: &duckdb::Connection,
+    timeout: std::time::Duration,
+    f: impl FnOnce() -> Result<T, SqlViewError>,
+) -> Result<T, SqlViewError> {
+    let handle = conn.interrupt_handle();
+    let (done, wait) = std::sync::mpsc::channel::<()>();
+    let fired = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let fired_in = std::sync::Arc::clone(&fired);
+    let watchdog = std::thread::spawn(move || {
+        if wait
+            .recv_timeout(timeout)
+            .is_err_and(|e| e == std::sync::mpsc::RecvTimeoutError::Timeout)
+        {
+            fired_in.store(true, std::sync::atomic::Ordering::SeqCst);
+            handle.interrupt();
+        }
+    });
+    let result = f();
+    let _ = done.send(());
+    let _ = watchdog.join();
+    match result {
+        Err(_) if fired.load(std::sync::atomic::Ordering::SeqCst) => {
+            Err(SqlViewError::InvalidBinding(format!(
+                "backend_unavailable: the source query did not answer within {}s and was \
+                 interrupted; narrow the list with a filter or ask the source's owner",
+                timeout.as_secs().max(1)
+            )))
+        }
+        other => other,
+    }
+}
+
 /// A `rows` skill's resolved binding.
 #[derive(Debug, Clone)]
 pub struct RowsSource {
@@ -217,6 +259,11 @@ impl Indexer {
             wheres.push(format!("CAST(\"{col}\" AS VARCHAR) = ?"));
             params.push(value.to_owned());
         }
+        // A row with a NULL key has no identity (its id would be empty): it is not an instance, and
+        // keeping it out of the listing is what stops a cursor from ever being built from one.
+        for k in &src.cfg.key {
+            wheres.push(format!("\"{k}\" IS NOT NULL"));
+        }
         if let Some(token) = cursor {
             let after = decode_cursor(token, key_exprs.len())?;
             let tuple = key_exprs.join(", ");
@@ -230,22 +277,42 @@ impl Indexer {
             format!(" WHERE {}", wheres.join(" AND "))
         };
         let sql = format!(
-            "SELECT * FROM {}{where_sql} ORDER BY {} LIMIT {}",
+            "SELECT {} FROM {}{where_sql} ORDER BY {} LIMIT {}",
+            select_with_keys(&key_exprs),
             src.view,
             key_exprs.join(", "),
             limit + 1
         );
-        let mut stmt = conn.prepare(&sql)?;
-        let mut rows = stmt.query(duckdb::params_from_iter(params.iter()))?;
-        let mut out: Vec<RowRecord> = Vec::new();
-        while let Some(row) = rows.next()? {
-            out.push(read_record(src, row, &cols)?);
-        }
-        let more = out.len() > limit;
-        out.truncate(limit);
+        let timeout = self.rows_query_timeout;
+        let (out, cast_keys_seen, more) = with_statement_timeout(&conn, timeout, || {
+            let mut stmt = conn.prepare(&sql)?;
+            let mut rows = stmt.query(duckdb::params_from_iter(params.iter()))?;
+            let mut out: Vec<RowRecord> = Vec::new();
+            // The key of each row as `CAST(.. AS VARCHAR)` renders it: the SAME text the ORDER BY and
+            // the `>` comparison use (see `select_with_keys`).
+            let mut cast_keys_seen: Vec<Vec<String>> = Vec::new();
+            let mut bytes = 0usize;
+            let mut more = false;
+            while let Some(row) = rows.next()? {
+                if out.len() == limit {
+                    more = true;
+                    break;
+                }
+                let keys = cast_keys(row, cols.len(), src.cfg.key.len())?;
+                let rec = read_record(src, row, &cols, &keys)?;
+                bytes += serde_json::to_string(&rec.columns).map_or(0, |s| s.len());
+                out.push(rec);
+                cast_keys_seen.push(keys);
+                // Stop on bytes (not just rows), but never return an empty page.
+                if bytes >= ROWS_MAX_PAGE_BYTES {
+                    more = rows.next()?.is_some();
+                    break;
+                }
+            }
+            Ok((out, cast_keys_seen, more))
+        })?;
         let next_cursor = if more {
-            out.last()
-                .map(|r| encode_cursor(&key_values(src, &r.columns)))
+            cast_keys_seen.last().map(|k| encode_cursor(k))
         } else {
             None
         };
@@ -271,17 +338,52 @@ impl Indexer {
         let exprs = key_exprs(src, &names)?;
         let wheres: Vec<String> = exprs.iter().map(|e| format!("{e} = ?")).collect();
         let sql = format!(
-            "SELECT * FROM {} WHERE {} LIMIT 1",
+            "SELECT {} FROM {} WHERE {} LIMIT 1",
+            select_with_keys(&exprs),
             src.view,
             wheres.join(" AND ")
         );
         let mut stmt = conn.prepare(&sql)?;
         let mut rows = stmt.query(duckdb::params_from_iter(values.iter()))?;
         match rows.next()? {
-            Some(row) => Ok(Some(read_record(src, row, &cols)?)),
+            Some(row) => {
+                let keys = cast_keys(row, cols.len(), src.cfg.key.len())?;
+                Ok(Some(read_record(src, row, &cols, &keys)?))
+            }
             None => Ok(None),
         }
     }
+}
+
+/// `SELECT` list: every column, then each key as DuckDB's own `CAST(.. AS VARCHAR)` text under the
+/// alias `__escurel_key<j>`. The id of a row and the cursor after it are built from THESE texts, so
+/// they are exactly what the ORDER BY, the `>` comparison and a lookup (`CAST(col AS VARCHAR) = ?`)
+/// see, whatever the key's type (a TIMESTAMP or DECIMAL has no other faithful text form).
+fn select_with_keys(key_exprs: &[String]) -> String {
+    let keys: Vec<String> = key_exprs
+        .iter()
+        .enumerate()
+        .map(|(j, e)| format!("{e} AS \"__escurel_key{j}\""))
+        .collect();
+    format!("*, {}", keys.join(", "))
+}
+
+/// The cast key texts [`select_with_keys`] appended after the `ncols` view columns. A NULL key has
+/// no identity and is filtered out by the caller; it reads as an error here, never as an empty id.
+fn cast_keys(
+    row: &duckdb::Row<'_>,
+    ncols: usize,
+    nkeys: usize,
+) -> Result<Vec<String>, SqlViewError> {
+    (0..nkeys)
+        .map(|j| {
+            row.get::<_, Option<String>>(ncols + j)?.ok_or_else(|| {
+                SqlViewError::InvalidBinding(
+                    "a row has a NULL key and cannot be an instance".to_owned(),
+                )
+            })
+        })
+        .collect()
 }
 
 /// `CAST("<key>" AS VARCHAR)` per key column, validated against the view's real columns.
@@ -314,33 +416,17 @@ fn column_for_field(src: &RowsSource, field: &str) -> Option<String> {
         })
 }
 
-fn key_values(src: &RowsSource, columns: &Map<String, Value>) -> Vec<String> {
-    src.cfg
-        .key
-        .iter()
-        .map(|k| render_scalar(columns.get(k).unwrap_or(&Value::Null)))
-        .collect()
-}
-
-/// A scalar as the string `CAST(col AS VARCHAR)` would produce, so cursor and id round-trip.
-fn render_scalar(v: &Value) -> String {
-    match v {
-        Value::String(s) => s.clone(),
-        Value::Null => String::new(),
-        other => other.to_string(),
-    }
-}
-
 fn read_record(
     src: &RowsSource,
     row: &duckdb::Row<'_>,
     cols: &[(String, String)],
+    keys: &[String],
 ) -> Result<RowRecord, SqlViewError> {
     let mut columns = Map::new();
     for (i, (name, _ty)) in cols.iter().enumerate() {
         columns.insert(name.clone(), value_to_json(row.get_ref(i)?));
     }
-    let id = encode_row_id(&key_values_from_cast(src, row, cols)?);
+    let id = encode_row_id(keys);
     let mut fields = Map::new();
     if src.project.is_empty() {
         for (c, v) in &columns {
@@ -360,29 +446,6 @@ fn read_record(
         fields,
         types: cols.to_vec(),
     })
-}
-
-/// The key values as `CAST(.. AS VARCHAR)` renders them — computed by DuckDB, not by us, so the id
-/// of a row is exactly what a lookup (`CAST(col AS VARCHAR) = ?`) matches.
-fn key_values_from_cast(
-    src: &RowsSource,
-    row: &duckdb::Row<'_>,
-    cols: &[(String, String)],
-) -> Result<Vec<String>, SqlViewError> {
-    src.cfg
-        .key
-        .iter()
-        .map(|k| {
-            let i = cols.iter().position(|(n, _)| n == k).ok_or_else(|| {
-                SqlViewError::InvalidBinding(format!("key column `{k}` is not in the source"))
-            })?;
-            Ok(match row.get_ref(i)? {
-                ValueRef::Null => String::new(),
-                ValueRef::Text(t) => String::from_utf8_lossy(t).into_owned(),
-                other => render_scalar(&value_to_json(other)),
-            })
-        })
-        .collect()
 }
 
 /// A DuckDB value as JSON, keeping dates and timestamps as ISO strings (the generic fall-through of
@@ -477,7 +540,9 @@ fn decode_cursor(token: &str, arity: usize) -> Result<Vec<String>, SqlViewError>
     parts
         .into_iter()
         .map(|p| {
-            if p.len() % 2 != 0 {
+            // Hex digits only: a caller-supplied token with a multi-byte character would otherwise
+            // be sliced inside it and panic while the connection lock is held.
+            if p.len() % 2 != 0 || !p.bytes().all(|b| b.is_ascii_hexdigit()) {
                 return Err(bad());
             }
             let bytes: Result<Vec<u8>, _> = (0..p.len())

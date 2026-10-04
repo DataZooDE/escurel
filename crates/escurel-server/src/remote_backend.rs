@@ -143,7 +143,7 @@ pub(crate) fn endpoint_key(indexer: &Indexer, endpoint: &str) -> String {
 /// One page of a remote `instances: rows` skill: call the `list:` op with the upstream's own cursor
 /// and page size, and return the parsed response. A cursor is a query parameter VALUE (REST) or a
 /// tool argument (MCP), never part of the path, so it cannot change the shape of the request.
-pub(crate) async fn call_list(
+async fn call_list_once(
     egress: &Egress,
     key: &str,
     ep: &EndpointRecord,
@@ -202,7 +202,7 @@ pub(crate) async fn call_list(
 }
 
 /// Read ONE object of a remote rows skill by its (decoded) key, through the skill's `read` op.
-pub(crate) async fn call_read(
+async fn call_read_once(
     egress: &Egress,
     key: &str,
     ep: &EndpointRecord,
@@ -376,7 +376,7 @@ pub(crate) async fn call_write(
 }
 
 /// Read ONE object and, for REST, the upstream's own `ETag` header (the `If-Match` of a later write).
-pub(crate) async fn call_read_etag(
+async fn call_read_etag_once(
     egress: &Egress,
     key: &str,
     ep: &EndpointRecord,
@@ -403,8 +403,76 @@ pub(crate) async fn call_read_etag(
                 .map_err(|_| "invalid JSON from the upstream read call".to_owned())?;
             Ok((body, etag))
         }
-        _ => Ok((call_read(egress, key, ep, remote, id).await?, None)),
+        _ => Ok((call_read_once(egress, key, ep, remote, id).await?, None)),
     }
+}
+
+/// How many times a READ is tried before its failure is reported. Writes have their own policy
+/// (idempotency key, at-most-once without one) in `write_back`; a read can always be repeated.
+const READ_ATTEMPTS: u32 = 3;
+
+/// Is a read failure one that asking again could cure: a transport error, a timeout, our own rate
+/// limit, a 429 or a 5xx. A 4xx (a caller mistake), a policy refusal or a bad body is not.
+fn read_transient(msg: &str) -> bool {
+    transient(msg) || msg == "upstream status 429" || msg.starts_with("upstream status 5")
+}
+
+/// Run a read, retrying a transient failure with jittered exponential backoff.
+async fn retry_read<T, Fut>(egress: &Egress, mut attempt: impl FnMut() -> Fut) -> Result<T, String>
+where
+    Fut: std::future::Future<Output = Result<T, String>>,
+{
+    let base = egress.policy().write_retry_backoff;
+    let mut n = 0;
+    loop {
+        n += 1;
+        match attempt().await {
+            Err(e) if n < READ_ATTEMPTS && read_transient(&e) => {
+                tokio::time::sleep(crate::write_back::backoff(base, n)).await;
+            }
+            other => return other,
+        }
+    }
+}
+
+/// One page of a remote `instances: rows` skill (see [`call_list_once`]), retried on a transient
+/// failure.
+pub(crate) async fn call_list(
+    egress: &Egress,
+    key: &str,
+    ep: &EndpointRecord,
+    remote: &RemoteBinding,
+    list: &escurel_index::backend::RemoteList,
+    cursor: Option<&str>,
+    limit: usize,
+) -> Result<Value, String> {
+    retry_read(egress, || {
+        call_list_once(egress, key, ep, remote, list, cursor, limit)
+    })
+    .await
+}
+
+/// Read ONE object of a remote rows skill by its (decoded) key, through the skill's `read` op,
+/// retried on a transient failure.
+pub(crate) async fn call_read(
+    egress: &Egress,
+    key: &str,
+    ep: &EndpointRecord,
+    remote: &RemoteBinding,
+    id: &str,
+) -> Result<Value, String> {
+    retry_read(egress, || call_read_once(egress, key, ep, remote, id)).await
+}
+
+/// Like [`call_read`], plus the upstream's own `ETag` for REST (the `If-Match` of a later write).
+pub(crate) async fn call_read_etag(
+    egress: &Egress,
+    key: &str,
+    ep: &EndpointRecord,
+    remote: &RemoteBinding,
+    id: &str,
+) -> Result<(Value, Option<String>), String> {
+    retry_read(egress, || call_read_etag_once(egress, key, ep, remote, id)).await
 }
 
 /// Reachability probe for `validate_endpoints`: an `mcp` endpoint answers a
@@ -720,6 +788,13 @@ async fn ensure_session(
     if let Some(s) = egress.mcp_session(key) {
         return Ok(s);
     }
+    // One handshake at a time: callers racing for the first session wait here, and find the
+    // session the winner established instead of each running `initialize` themselves.
+    let lock = egress.session_lock(key);
+    let _turn = lock.lock().await;
+    if let Some(s) = egress.mcp_session(key) {
+        return Ok(s);
+    }
     let init = json!({
         "protocolVersion": MCP_PROTOCOL,
         "capabilities": {},
@@ -797,7 +872,7 @@ async fn mcp_call(
         )
         .await?;
         if r.status == reqwest::StatusCode::NOT_FOUND && session.id.is_some() && attempt == 0 {
-            egress.drop_mcp_session(key);
+            egress.drop_mcp_session_if(key, &session);
             continue;
         }
         if !r.status.is_success() {

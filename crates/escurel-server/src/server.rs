@@ -242,6 +242,10 @@ pub struct ServerConfig {
     /// How many `run-progress` snapshots a run keeps (`ESCUREL_RUN_PROGRESS_KEEP`,
     /// default 50); older ones are pruned at capture.
     pub run_progress_keep: usize,
+    /// How long a graceful stop waits for in-flight requests before it aborts them
+    /// (`ESCUREL_SHUTDOWN_DRAIN_SECS`, default [`DEFAULT_SHUTDOWN_DRAIN`]). Kept below the
+    /// orchestrator's own kill timeout, so a stuck request cannot get the process SIGKILLed mid-write.
+    pub shutdown_drain: std::time::Duration,
     /// Backing store for the admin tenant-CRUD RPCs. `None`
     /// means every tenant CRUD RPC returns
     /// `Status::failed_precondition` — useful for health-only
@@ -377,6 +381,7 @@ pub struct ServerHandle {
     metrics_shutdown_tx: Option<oneshot::Sender<()>>,
     evict_shutdown_tx: Option<oneshot::Sender<()>>,
     join: JoinHandle<()>,
+    shutdown_drain: std::time::Duration,
     metrics_join: Option<JoinHandle<()>>,
     evict_join: Option<JoinHandle<()>>,
     /// Telemetry guard. `Some` when this `serve()` call was the
@@ -409,7 +414,19 @@ impl ServerHandle {
         if let Some(tx) = self.evict_shutdown_tx.take() {
             let _ = tx.send(());
         }
-        let _ = self.join.await;
+        // Wait for in-flight requests, but not for ever: past the drain deadline the stragglers are
+        // aborted so the process can exit before the orchestrator kills it.
+        if tokio::time::timeout(self.shutdown_drain, &mut self.join)
+            .await
+            .is_err()
+        {
+            tracing::warn!(
+                drain_secs = self.shutdown_drain.as_secs_f32(),
+                "graceful stop timed out waiting for in-flight requests; aborting them"
+            );
+            self.join.abort();
+            let _ = (&mut self.join).await;
+        }
         if let Some(j) = self.metrics_join.take() {
             let _ = j.await;
         }
@@ -418,6 +435,9 @@ impl ServerHandle {
         }
     }
 }
+
+/// The default graceful-stop drain: below the 30 s most orchestrators allow before SIGKILL.
+pub const DEFAULT_SHUTDOWN_DRAIN: std::time::Duration = std::time::Duration::from_secs(25);
 
 #[derive(Clone)]
 pub(crate) struct AppState {
@@ -682,6 +702,7 @@ pub async fn serve(
         metrics_shutdown_tx,
         evict_shutdown_tx: Some(evict_shutdown_tx),
         join,
+        shutdown_drain: config.shutdown_drain,
         metrics_join,
         evict_join: Some(evict_join),
         _telemetry: telemetry_guard,

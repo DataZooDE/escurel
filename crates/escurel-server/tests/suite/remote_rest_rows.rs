@@ -44,6 +44,10 @@ struct Crm {
     /// The raw query string of every list request.
     list_queries: Arc<Mutex<Vec<String>>>,
     list_fail: Arc<std::sync::atomic::AtomicBool>,
+    /// Answer 503 to the next N list requests, then recover.
+    list_fail_next: Arc<std::sync::atomic::AtomicUsize>,
+    /// Answer 400 to every list request (a caller mistake no retry can cure).
+    list_bad: Arc<std::sync::atomic::AtomicBool>,
 }
 
 async fn list(
@@ -57,6 +61,19 @@ async fn list(
         .push(raw.query().unwrap_or_default().to_owned());
     if c.list_fail.load(std::sync::atomic::Ordering::SeqCst) {
         return (StatusCode::SERVICE_UNAVAILABLE, "down: do-not-repeat-this").into_response();
+    }
+    if c.list_bad.load(std::sync::atomic::Ordering::SeqCst) {
+        return (StatusCode::BAD_REQUEST, "bad request").into_response();
+    }
+    if c.list_fail_next
+        .fetch_update(
+            std::sync::atomic::Ordering::SeqCst,
+            std::sync::atomic::Ordering::SeqCst,
+            |n| n.checked_sub(1),
+        )
+        .is_ok()
+    {
+        return (StatusCode::SERVICE_UNAVAILABLE, "try later").into_response();
     }
     let limit: usize = q
         .get("limit")
@@ -474,5 +491,139 @@ async fn notes_written_before_an_outage_are_still_there_when_the_source_goes_dow
     assert_eq!(page["backend_projection"]["rows"], json!([]), "{page}");
     // And a change cannot be proposed against a row that cannot be read: no etag to base it on.
     assert!(page["backend_projection"].get("etag").is_none(), "{page}");
+    p.shutdown().await;
+}
+
+// ── Crew review: rows must never be lost silently ─────────────────────────────────────────────
+
+/// An upstream that IGNORES the limit hint and mixes objects without an id in: one page of 6 items
+/// (4 keyed, 2 not) whose `paging.next` points PAST all six. Truncating to the requested limit and
+/// dropping the keyless ones used to lose real rows with nothing saying so.
+async fn limit_ignoring_upstream() -> String {
+    let items = json!([
+        { "id": "c-0001", "name": "One", "account_tier": "gold" },
+        { "name": "No id A", "account_tier": "silver" },
+        { "id": "c-0002", "name": "Two", "account_tier": "gold" },
+        { "id": "c-0003", "name": "Three", "account_tier": "silver" },
+        { "name": "No id B", "account_tier": "silver" },
+        { "id": "c-0004", "name": "Four", "account_tier": "gold" },
+    ]);
+    let app = Router::new().route(
+        "/customers",
+        get(move || {
+            let items = items.clone();
+            async move { Json(json!({ "data": items, "paging": { "next": "after-six" } })) }
+        }),
+    );
+    serve(app).await.0
+}
+
+#[tokio::test]
+async fn an_upstream_that_ignores_the_limit_does_not_lose_rows_and_keyless_items_are_counted() {
+    let base = limit_ignoring_upstream().await;
+    let (p, _dirs) = gateway_over(&base).await;
+
+    let page = admin(
+        &p,
+        "list_instances",
+        json!({ "skill_id": "customer", "limit": 2 }),
+    )
+    .await;
+
+    let ids: Vec<&str> = page["instances"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|i| i["page_id"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        ids.len(),
+        4,
+        "all four keyed objects arrive: the cursor points past the whole page, so nothing the \
+         upstream sent may be thrown away: {ids:?}"
+    );
+    assert_eq!(
+        page["skipped_without_key"], 2,
+        "the objects that cannot be instances (no id) are counted, not silently dropped: {page}"
+    );
+    p.shutdown().await;
+}
+
+async fn gateway_fast_retries(
+    base: &str,
+) -> (escurel_test_support::EscurelProcess, Vec<tempfile::TempDir>) {
+    let (p, dirs) = spawn_gateway(
+        &[("customer", CUSTOMER_SKILL)],
+        escurel_test_support::EgressPolicy {
+            allow_loopback: true,
+            write_retry_backoff: std::time::Duration::from_millis(5),
+            ..escurel_test_support::EgressPolicy::default()
+        },
+    )
+    .await;
+    admin(
+        &p,
+        "register_endpoint",
+        json!({ "name": "crm_rest", "kind": "openapi", "base_url": base }),
+    )
+    .await;
+    (p, dirs)
+}
+
+#[tokio::test]
+async fn a_read_that_hits_a_transient_failure_is_retried_with_backoff_and_succeeds() {
+    let crm = crm_with(10);
+    crm.list_fail_next
+        .store(2, std::sync::atomic::Ordering::SeqCst);
+    let queries = Arc::clone(&crm.list_queries);
+    let base = start(crm).await;
+    let (p, _dirs) = gateway_fast_retries(&base).await;
+
+    let page = admin(
+        &p,
+        "list_instances",
+        json!({ "skill_id": "customer", "limit": 10 }),
+    )
+    .await;
+
+    assert_eq!(
+        page["instances"].as_array().map(Vec::len),
+        Some(10),
+        "{page}"
+    );
+    assert_eq!(
+        queries.lock().unwrap().len(),
+        3,
+        "two 503s were retried, the third attempt answered"
+    );
+    p.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_caller_mistake_is_not_retried() {
+    let crm = crm_with(10);
+    crm.list_bad
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let queries = Arc::clone(&crm.list_queries);
+    let base = start(crm).await;
+    let (p, _dirs) = gateway_fast_retries(&base).await;
+
+    let r = call_as(
+        &p,
+        Role::Admin,
+        "list_instances",
+        json!({ "skill_id": "customer", "limit": 10 }),
+    )
+    .await;
+
+    assert!(
+        r.get("error").is_some() || r["result"]["isError"] == json!(true),
+        "{r}"
+    );
+    assert_eq!(
+        queries.lock().unwrap().len(),
+        1,
+        "a 400 cannot be cured by asking again"
+    );
     p.shutdown().await;
 }

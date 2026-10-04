@@ -59,6 +59,8 @@ struct Crm {
     down: std::sync::atomic::AtomicBool,
     /// Answer 503 to every GET (the portal is unreachable before anything is sent).
     read_down: std::sync::atomic::AtomicBool,
+    /// Hold every PATCH this long before answering (a slow portal).
+    patch_delay_ms: AtomicUsize,
 }
 
 impl Crm {
@@ -111,6 +113,10 @@ async fn patch(
     };
     let key = hv("idempotency-key");
     let if_match = hv("if-match");
+    let delay = c.patch_delay_ms.load(Ordering::SeqCst);
+    if delay > 0 {
+        tokio::time::sleep(std::time::Duration::from_millis(delay as u64)).await;
+    }
     c.patches
         .lock()
         .unwrap()
@@ -557,6 +563,197 @@ async fn an_outage_before_anything_is_sent_is_still_audited_and_leaves_the_draft
     let again = promote(&p, &id).await;
     assert_eq!(again["ok"], true, "{again}");
     assert_eq!(c.tier("c-0001"), "gold");
+    p.shutdown().await;
+}
+
+// ── Crew review (robustness/security), reproduced through the real gateway ────────────────────
+
+/// `tools/call` as `role` with a client-side deadline: when it fires the request is DROPPED, which
+/// is what a disconnecting browser or a proxy timeout does to the handler future.
+async fn call_with_deadline(
+    p: &escurel_test_support::EscurelProcess,
+    role: Role,
+    name: &str,
+    args: Value,
+    deadline: std::time::Duration,
+) {
+    let token = p.mint_token(super::remote_support::TENANT, role);
+    let _ = reqwest::Client::builder()
+        .timeout(deadline)
+        .build()
+        .unwrap()
+        .post(p.mcp_url())
+        .header("authorization", format!("Bearer {token}"))
+        .json(&json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                       "params": { "name": name, "arguments": args } }))
+        .send()
+        .await;
+}
+
+#[tokio::test]
+async fn an_agent_cannot_forge_the_applied_witness_to_make_a_promote_skip_the_upstream() {
+    let c = crm();
+    let (p, _d) = gateway_over(&c, 5).await;
+    let etag = etag_of_row(&p).await;
+    let id = draft_id(&draft(&p, &intent_content("tier: gold", &etag, "n")).await);
+
+    // Any agent can see the draft and file an event: it must not be able to file the WITNESS.
+    let forged = call_as(
+        &p,
+        Role::Agent,
+        "capture_event",
+        json!({
+            "event_id": format!("write-back:{id}:applied"),
+            "label_skill": "note",
+            "source": "agent",
+            "mime": "text/plain",
+            "title": "looks applied",
+            "body": "trust me",
+        }),
+    )
+    .await;
+    let refused = forged.get("error").is_some()
+        || forged["result"]["isError"] == json!(true)
+        || forged["result"]["structuredContent"]["ok"] == json!(false);
+    assert!(
+        refused,
+        "a caller-supplied write-back: event id must be refused: {forged}"
+    );
+
+    let done = promote(&p, &id).await;
+    assert_eq!(done["ok"], true, "{done}");
+    assert_eq!(
+        c.patches.lock().unwrap().len(),
+        1,
+        "the promote reached the upstream: nothing a caller filed could stand in for the witness"
+    );
+    assert_eq!(c.tier("c-0001"), "gold");
+    p.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_promoter_cannot_write_a_column_the_skill_does_not_declare_writable() {
+    let c = crm();
+    let (p, _d) = gateway_over(&c, 5).await;
+    let etag = etag_of_row(&p).await;
+    let id = draft_id(&draft(&p, &intent_content("tier: gold", &etag, "n")).await);
+
+    // The approver's "correction" swaps the patch for a PROJECTED but not writable column.
+    let corrected = intent_content("display_name: Evil Corp", &etag, "n");
+    let done = call_as(
+        &p,
+        Role::Admin,
+        "promote_draft",
+        json!({ "draft_id": id, "content": corrected }),
+    )
+    .await["result"]["structuredContent"]
+        .clone();
+
+    assert_eq!(done["ok"], false, "{done}");
+    assert!(
+        issue_codes(&done).contains(&"backend_read_only_field".to_owned()),
+        "{done}"
+    );
+    assert_eq!(
+        c.patches.lock().unwrap().len(),
+        0,
+        "writable_columns is enforced at promote time too: nothing reached the upstream"
+    );
+    p.shutdown().await;
+}
+
+#[tokio::test]
+async fn two_promotes_racing_on_one_draft_reach_the_upstream_once() {
+    let c = crm();
+    c.patch_delay_ms.store(400, Ordering::SeqCst);
+    let (p, _d) = gateway_over(&c, 5).await;
+    let etag = etag_of_row(&p).await;
+    let id = draft_id(&draft(&p, &intent_content("tier: gold", &etag, "n")).await);
+
+    let (a, b) = tokio::join!(promote(&p, &id), promote(&p, &id));
+
+    // The second promote waits for the first, finds its witness and only completes the local half
+    // (or is told the draft was already decided): either way it never reaches the upstream.
+    assert_eq!(
+        c.patches.lock().unwrap().len(),
+        1,
+        "the upstream is called once however many promotes race: {a} / {b}"
+    );
+    p.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_dropped_promote_request_still_applies_and_records_its_witness() {
+    let c = crm();
+    c.patch_delay_ms.store(700, Ordering::SeqCst);
+    let (p, _d) = gateway_over(&c, 5).await;
+    let etag = etag_of_row(&p).await;
+    let id = draft_id(&draft(&p, &intent_content("tier: gold", &etag, "n")).await);
+
+    // The client gives up long before the slow upstream answers.
+    call_with_deadline(
+        &p,
+        Role::Admin,
+        "promote_draft",
+        json!({ "draft_id": id }),
+        std::time::Duration::from_millis(150),
+    )
+    .await;
+
+    // The apply must not depend on the request that started it: the upstream applied, so the
+    // witness has to exist, and a retry must not call the upstream again.
+    let mut witnessed = false;
+    for _ in 0..40 {
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        if events(&p).await.iter().any(|e| {
+            e["event_id"]
+                .as_str()
+                .is_some_and(|i| i.ends_with(":applied"))
+        }) {
+            witnessed = true;
+            break;
+        }
+    }
+    assert!(
+        witnessed,
+        "the applied witness was lost with the dropped request"
+    );
+    assert_eq!(c.tier("c-0001"), "gold");
+    let again = promote(&p, &id).await;
+    assert_eq!(
+        again["ok"], true,
+        "the retry completes the local half: {again}"
+    );
+    assert_eq!(
+        c.patches.lock().unwrap().len(),
+        1,
+        "and does not call the upstream a second time"
+    );
+    p.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_row_that_already_holds_the_change_counts_as_applied_not_as_a_conflict() {
+    // The upstream applied the change but its witness was lost (a crash between the call and the
+    // audit write): the row now carries OUR change, so its etag no longer matches the draft's base.
+    let c = crm();
+    let (p, _d) = gateway_over(&c, 5).await;
+    let etag = etag_of_row(&p).await;
+    let id = draft_id(&draft(&p, &intent_content("tier: gold", &etag, "n")).await);
+    c.rows.lock().unwrap().get_mut("c-0001").unwrap()["account_tier"] = json!("gold");
+    c.bump();
+
+    let done = promote(&p, &id).await;
+
+    assert_eq!(
+        done["ok"], true,
+        "a row already equal to the patch is applied, not stuck in conflict forever: {done}"
+    );
+    assert_eq!(
+        c.patches.lock().unwrap().len(),
+        0,
+        "and the upstream is not asked to do it again"
+    );
     p.shutdown().await;
 }
 

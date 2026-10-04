@@ -93,6 +93,8 @@ pub struct ConfigOverrides {
     pub emit_edit_events: bool,
     /// `ESCUREL_RUN_PROGRESS_KEEP` for this gateway; `None` = the default (50).
     pub run_progress_keep: Option<usize>,
+    /// How long a graceful stop waits for in-flight requests (`None` → the 25 s default).
+    pub shutdown_drain: Option<std::time::Duration>,
     /// Replace the auto-built default indexer with a test-owned
     /// `Arc<Indexer>`. When `Some`, the support crate does *not*
     /// allocate its own tempdirs for the markdown lane / DuckDB
@@ -467,6 +469,9 @@ impl EscurelProcess {
             tenant_suspended: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             emit_edit_events: overrides.emit_edit_events,
             run_progress_keep: overrides.run_progress_keep.unwrap_or(50),
+            shutdown_drain: overrides
+                .shutdown_drain
+                .unwrap_or(escurel_server::DEFAULT_SHUTDOWN_DRAIN),
             tenant_store: overrides.tenant_store.clone(),
             crdt_backend: overrides.crdt_backend.clone().or(live_backend),
             embedder_reload: overrides.embedder_reload.clone(),

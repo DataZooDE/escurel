@@ -141,6 +141,9 @@ pub struct Indexer {
     /// the tenant is QUARANTINED: it must not serve, but it must stay up so an operator can run
     /// `migrate_kind` against it (a boot that exits would make the migration unrunnable).
     pub(crate) kind_quarantine: std::sync::RwLock<Option<Vec<String>>>,
+    /// How long one `rows` list/get query may run before it is interrupted (the single DuckDB
+    /// connection is held for its duration, so an unbounded source query stalls every other read).
+    pub(crate) rows_query_timeout: std::time::Duration,
 }
 
 /// Which physical tables [`Indexer::list_snapshots`] /
@@ -252,6 +255,17 @@ pub enum IndexerError {
     /// refused (not served degraded) so a search or a read is never silently incomplete.
     #[error("{}", crate::migrate_kind::legacy_kind_message(tenant, pages))]
     LegacyKindPages { tenant: String, pages: Vec<String> },
+
+    /// A rebuild found pages it cannot parse (no frontmatter at byte 0 because of a BOM or CRLF
+    /// line ends, broken YAML, not UTF-8...). Refused BEFORE anything is truncated, with every
+    /// offender named, because a rebuild that finds out half-way leaves an index that is part
+    /// rebuilt and part empty.
+    #[error(
+        "refused: {} page(s) cannot be parsed, so the index was left untouched: {}",
+        pages.len(),
+        pages.iter().take(20).map(|(p, why)| format!("{p} ({why})")).collect::<Vec<_>>().join(", ")
+    )]
+    UnparsablePages { pages: Vec<(String, String)> },
 
     /// `migrate_kind(apply)` found pages with CRDT ops newer than their newest snapshot. The live
     /// document would no longer line up with a rewritten snapshot, so nothing is written.
@@ -399,6 +413,7 @@ impl Indexer {
             drafts_backend: std::sync::OnceLock::new(),
             crdt_pg_backend: std::sync::OnceLock::new(),
             kind_quarantine: std::sync::RwLock::new(None),
+            rows_query_timeout: crate::backend::rows::ROWS_QUERY_TIMEOUT,
         })
     }
 
@@ -731,6 +746,13 @@ impl Indexer {
     #[must_use]
     pub fn with_contextualize(mut self, mode: crate::backend::ContextualizeMode) -> Self {
         self.contextualize = mode;
+        self
+    }
+
+    /// Bound one `instances: rows` source query (default [`crate::backend::rows::ROWS_QUERY_TIMEOUT`]).
+    #[must_use]
+    pub fn with_rows_query_timeout(mut self, timeout: std::time::Duration) -> Self {
+        self.rows_query_timeout = timeout;
         self
     }
 
@@ -1787,6 +1809,26 @@ impl Indexer {
                 tenant: self.tenant.clone(),
                 pages: legacy,
             });
+        }
+
+        // Non-destructive: prove every page parses BEFORE the truncate below. Archived pages are
+        // kept out of the index, so they are not parsed here either.
+        let mut unparsable: Vec<(String, String)> = Vec::new();
+        for path in &sorted {
+            let key = Key::new(self.tenant.as_str(), path.clone())?;
+            let body = self.store.read(&key).await?;
+            match std::str::from_utf8(&body) {
+                Err(_) => unparsable.push((path.clone(), "not UTF-8".to_owned())),
+                Ok(content) if is_archived(content) => {}
+                Ok(content) => {
+                    if let Err(e) = escurel_md::parse(content) {
+                        unparsable.push((path.clone(), e.to_string()));
+                    }
+                }
+            }
+        }
+        if !unparsable.is_empty() {
+            return Err(IndexerError::UnparsablePages { pages: unparsable });
         }
 
         // Attribution (escurel#357) is the one thing in `pages` that a

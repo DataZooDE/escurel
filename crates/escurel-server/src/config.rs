@@ -59,6 +59,7 @@
 //! | `ESCUREL_AUTH_JWKS_REFRESH_SECS` | `300` | JWKS cache TTL (seconds) |
 //! | `ESCUREL_AUTH_JWKS_URI` | derived from issuer | explicit JWKS URL (e.g. Triton's `<issuer>/.well-known/jwks.json`) |
 //! | `ESCUREL_RUN_PROGRESS_KEEP` | `50` | how many `run-progress` snapshots a run keeps (pruned at capture) |
+//! | `ESCUREL_SHUTDOWN_DRAIN_SECS` | `25` | how long a graceful stop waits for in-flight requests before aborting them (keep below the orchestrator's kill timeout) |
 //! | `ESCUREL_AUTH_SIGNING_KEY` | — | RSA private key (PKCS#8 or PKCS#1 PEM) the gateway signs `mint_agent_token` bearers with; unset → the tool refuses `unsupported` |
 //! | `ESCUREL_AUTH_SIGNING_KID` | derived | the `kid` those bearers carry (must be in a trusted JWKS) |
 //! | `ESCUREL_AUTH_SIGNING_ISSUER` | the OIDC issuer | the `iss` those bearers carry (must be a trusted issuer) |
@@ -2124,6 +2125,18 @@ impl EscurelConfig {
                     )?
                 }
                 _ => crate::mcp::DEFAULT_RUN_PROGRESS_KEEP,
+            },
+            shutdown_drain: match std::env::var("ESCUREL_SHUTDOWN_DRAIN_SECS") {
+                Ok(raw) if !raw.trim().is_empty() => std::time::Duration::from_secs(
+                    raw.trim().parse::<u64>().ok().filter(|n| *n >= 1).ok_or(
+                        ConfigError::InvalidValue {
+                            var: "ESCUREL_SHUTDOWN_DRAIN_SECS",
+                            value: raw,
+                            reason: "expected a positive number of seconds",
+                        },
+                    )?,
+                ),
+                _ => crate::server::DEFAULT_SHUTDOWN_DRAIN,
             },
             demo_dir: self.demo_dir.clone(),
             webhook_url: self.webhook_url.clone(),

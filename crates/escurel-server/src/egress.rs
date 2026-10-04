@@ -260,6 +260,29 @@ struct Limiter {
     bucket: Mutex<(f64, Instant)>,
 }
 
+/// Whether `body` (the bytes of an event stream so far) holds a COMPLETE event whose `data:` is a
+/// JSON-RPC response (`result` or `error`): complete means the blank line that ends an event has
+/// arrived, so a half-received event is never mistaken for it.
+fn sse_has_response(body: &[u8]) -> bool {
+    let Ok(text) = std::str::from_utf8(body) else {
+        return false;
+    };
+    let text = text.replace("\r\n", "\n");
+    let Some(end) = text.rfind("\n\n") else {
+        return false;
+    };
+    text[..end].split("\n\n").any(|event| {
+        let data: String = event
+            .lines()
+            .filter_map(|l| l.strip_prefix("data:"))
+            .map(|d| d.strip_prefix(' ').unwrap_or(d))
+            .collect::<Vec<_>>()
+            .join("\n");
+        serde_json::from_str::<serde_json::Value>(&data)
+            .is_ok_and(|v| v.get("result").is_some() || v.get("error").is_some())
+    })
+}
+
 /// A response read within the policy: status, headers and the capped body.
 pub struct Capped {
     pub status: reqwest::StatusCode,
@@ -300,6 +323,8 @@ pub struct Egress {
     policy: EgressPolicy,
     limiters: Mutex<HashMap<String, Arc<Limiter>>>,
     mcp_sessions: Mutex<HashMap<String, McpSession>>,
+    /// One handshake at a time per endpoint (see [`Self::session_lock`]).
+    session_locks: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
     rpc_id: AtomicU64,
 }
 
@@ -310,6 +335,7 @@ impl Egress {
             policy,
             limiters: Mutex::new(HashMap::new()),
             mcp_sessions: Mutex::new(HashMap::new()),
+            session_locks: Mutex::new(HashMap::new()),
             rpc_id: AtomicU64::new(1),
         }
     }
@@ -334,6 +360,23 @@ impl Egress {
     /// Forget a session (it expired, or the endpoint was re-registered).
     pub fn drop_mcp_session(&self, key: &str) {
         self.mcp_sessions.lock().expect("sessions").remove(key);
+    }
+
+    /// Forget a session only if it is still the one the caller failed with: a task that got a 404 on
+    /// the OLD session must not discard the fresh one another task has just established.
+    pub fn drop_mcp_session_if(&self, key: &str, failed: &McpSession) {
+        let mut g = self.mcp_sessions.lock().expect("sessions");
+        if g.get(key) == Some(failed) {
+            g.remove(key);
+        }
+    }
+
+    /// The lock that serialises the `initialize` handshake with one endpoint, so callers racing for
+    /// the first session share ONE handshake instead of each opening a session of their own.
+    #[must_use]
+    pub fn session_lock(&self, key: &str) -> Arc<tokio::sync::Mutex<()>> {
+        let mut g = self.session_locks.lock().expect("session locks");
+        Arc::clone(g.entry(key.to_owned()).or_default())
     }
 
     /// A fresh JSON-RPC request id.
@@ -364,21 +407,23 @@ impl Egress {
     /// [`EgressError::RateLimited`] when the bucket is empty or every concurrency slot is busy.
     pub fn admit(&self, endpoint: &str) -> Result<tokio::sync::OwnedSemaphorePermit, EgressError> {
         let lim = self.limiter(endpoint);
-        {
-            let rate = f64::from(self.policy.rate_per_sec.max(1));
-            let mut b = lim.bucket.lock().expect("bucket");
-            let now = Instant::now();
-            let refill = now.duration_since(b.1).as_secs_f64() * rate;
-            b.0 = (b.0 + refill).min(rate);
-            b.1 = now;
-            if b.0 < 1.0 {
-                return Err(EgressError::RateLimited);
-            }
-            b.0 -= 1.0;
-        }
-        Arc::clone(&lim.sem)
+        // The slot first: a call refused because every slot is busy must not spend a token it never
+        // used, or a burst of refusals would empty the bucket for the calls that follow.
+        let permit = Arc::clone(&lim.sem)
             .try_acquire_owned()
-            .map_err(|_| EgressError::RateLimited)
+            .map_err(|_| EgressError::RateLimited)?;
+        let rate = f64::from(self.policy.rate_per_sec.max(1));
+        let mut b = lim.bucket.lock().expect("bucket");
+        let now = Instant::now();
+        let refill = now.duration_since(b.1).as_secs_f64() * rate;
+        b.0 = (b.0 + refill).min(rate);
+        b.1 = now;
+        if b.0 < 1.0 {
+            // `permit` is dropped here: the slot is released, the bucket untouched.
+            return Err(EgressError::RateLimited);
+        }
+        b.0 -= 1.0;
+        Ok(permit)
     }
 
     /// Validate `url` against the policy, resolve it, and return a client PINNED to the checked
@@ -467,12 +512,23 @@ impl Egress {
         if resp.content_length().is_some_and(|n| n as usize > cap) {
             return Err(EgressError::TooLarge(cap));
         }
+        let streaming = headers
+            .get("content-type")
+            .and_then(|v| v.to_str().ok())
+            .is_some_and(|c| c.to_ascii_lowercase().contains("text/event-stream"));
         let mut body = Vec::new();
         while let Some(chunk) = resp.chunk().await.map_err(|e| self.map_err(&e))? {
             if body.len() + chunk.len() > cap {
                 return Err(EgressError::TooLarge(cap));
             }
             body.extend_from_slice(&chunk);
+            // A server may answer on an event stream and never close it. The caller wants the
+            // JSON-RPC response, so stop as soon as one COMPLETE event carries it, instead of
+            // waiting for the stream to end (which, past the timeout, reports a failure for a
+            // request the upstream may already have applied).
+            if streaming && sse_has_response(&body) {
+                break;
+            }
         }
         Ok(Capped {
             status,
@@ -677,6 +733,44 @@ mod tests {
         // Another endpoint has its own bucket.
         assert!(e.admit("t:other").is_ok());
         drop(held);
+    }
+
+    #[test]
+    fn a_call_refused_for_concurrency_does_not_burn_a_rate_token() {
+        let e = Egress::new(EgressPolicy {
+            rate_per_sec: 3,
+            max_concurrency: 1,
+            ..EgressPolicy::default()
+        });
+        let held = e.admit("t:ep").expect("the first call is admitted");
+        // Every attempt while the only slot is busy is refused, and must not spend a token.
+        for _ in 0..10 {
+            assert!(e.admit("t:ep").is_err());
+        }
+        drop(held);
+        // The bucket still holds the burst minus the one real call (3 - 1 = 2).
+        assert!(e.admit("t:ep").is_ok(), "token left after the refusals");
+        // The slot is held again by the previous permit being dropped above; free it each time.
+    }
+
+    #[test]
+    fn a_session_is_dropped_only_if_it_is_still_the_one_that_failed() {
+        let e = Egress::new(EgressPolicy::default());
+        let old = McpSession {
+            id: Some("old".to_owned()),
+            protocol: None,
+        };
+        let fresh = McpSession {
+            id: Some("fresh".to_owned()),
+            protocol: None,
+        };
+        e.set_mcp_session("k", fresh.clone());
+        // A task that failed with the OLD session must not throw away the session another task has
+        // just established.
+        e.drop_mcp_session_if("k", &old);
+        assert_eq!(e.mcp_session("k"), Some(fresh.clone()));
+        e.drop_mcp_session_if("k", &fresh);
+        assert_eq!(e.mcp_session("k"), None);
     }
 
     #[test]

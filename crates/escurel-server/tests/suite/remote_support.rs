@@ -22,6 +22,15 @@ pub async fn spawn_gateway(
     skills: &[(&str, &str)],
     egress: EgressPolicy,
 ) -> (EscurelProcess, Vec<TempDir>) {
+    spawn_gateway_with(skills, egress, None).await
+}
+
+/// [`spawn_gateway`] with a bounded graceful-stop drain (`None` → the production default).
+pub async fn spawn_gateway_with(
+    skills: &[(&str, &str)],
+    egress: EgressPolicy,
+    shutdown_drain: Option<std::time::Duration>,
+) -> (EscurelProcess, Vec<TempDir>) {
     let store_dir = TempDir::new().unwrap();
     let db_dir = TempDir::new().unwrap();
     let store: Arc<dyn LaneStore> = Arc::new(FsStore::new(store_dir.path().to_path_buf()));
@@ -42,6 +51,7 @@ pub async fn spawn_gateway(
             egress: Some(egress),
             // So a test can mint a per-run agent token (`mint_agent_token`).
             signing: true,
+            shutdown_drain,
             ..Default::default()
         },
         ..Default::default()
