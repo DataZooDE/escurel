@@ -171,6 +171,15 @@ suite('M2', () => {
     assert.equal(api.awaiting.badge?.value, rows.length);
   });
 
+  test('Explain this view opens a short plain-words page about how things connect', async () => {
+    await vscode.commands.executeCommand('escurel.explainView');
+    const doc = await until(() =>
+      vscode.workspace.textDocuments.find((d) => d.getText().startsWith('# How things connect')),
+    );
+    assert.match(doc.getText(), /Awaiting You/);
+    assert.ok(doc.lineCount <= 40, 'one screen of text');
+  });
+
   test('The review diff opens with base and proposed sides in escurel-review scheme', async () => {
     const { drafts: draftList, targets: targetList } = await ensureThreeDraftChangeset();
     const draft = draftList[0]!;

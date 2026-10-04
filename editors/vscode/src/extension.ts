@@ -29,6 +29,7 @@ import { registerStartSkill } from './start/startSkill';
 import { registerProposeWriteBack } from './editors/proposeWriteBack';
 import { registerApprovePlan } from './start/approvePlan';
 import { registerNodeCommands } from './commands/nodeCommands';
+import { explainText } from './shared/explain';
 import { registerRunnerView, type RunnerTree } from './views/runner';
 
 /** What `activate` returns — the integration suite drives the extension through it. */
@@ -213,6 +214,15 @@ export function activate(context: vscode.ExtensionContext): EscurelApi | undefin
       else
         void vscode.window.showInformationMessage('Open a thread first, then select a node in it.');
     }),
+    // 'Explain this view': how events, skills, runs, changesets and instances connect, in plain words.
+    vscode.commands.registerCommand('escurel.explainView', async () => {
+      const doc = await vscode.workspace.openTextDocument({
+        content: explainText(),
+        language: 'markdown',
+      });
+      await vscode.commands.executeCommand('markdown.showPreview', doc.uri);
+    }),
+
     registerStartSkill(context, services),
     registerProposeWriteBack(services),
     registerApprovePlan(context, services),

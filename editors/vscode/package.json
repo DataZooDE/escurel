@@ -301,6 +301,12 @@
         "title": "View skill",
         "category": "Escurel",
         "icon": "$(symbol-class)"
+      },
+      {
+        "command": "escurel.explainView",
+        "title": "Explain this view",
+        "category": "Escurel",
+        "icon": "$(question)"
       }
     ],
     "authentication": [
@@ -588,6 +594,16 @@
           "command": "escurel.clearKnowledgeFilter",
           "when": "view == escurel.knowledge && escurel.knowledgeFiltered",
           "group": "navigation@5"
+        },
+        {
+          "command": "escurel.explainView",
+          "when": "view == escurel.threads",
+          "group": "navigation@9"
+        },
+        {
+          "command": "escurel.explainView",
+          "when": "view == escurel.knowledge",
+          "group": "navigation@9"
         }
       ],
       "view/item/context": [
