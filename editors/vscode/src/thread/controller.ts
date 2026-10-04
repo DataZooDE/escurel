@@ -323,6 +323,23 @@ export class ThreadController implements vscode.Disposable {
       render();
     });
 
+    // A different gateway or tenant: everything this panel holds (the thread, the cached skills and
+    // admin state, the node the details view shows, the details built from it) belongs to the old one.
+    // Retire the reads in flight and start over, so an action offered from the old state can never be
+    // run against the new client.
+    const switchSub = this.services.onDidChange(() => {
+      loads.invalidate();
+      clearTimeout(timer);
+      current = undefined;
+      cachedSkills = undefined;
+      cachedAdmin = 'unknown';
+      lastDetails = {};
+      selectedNodeId = undefined;
+      this.detailsChanged.fire({ rootEventId, reason: 'refresh' });
+      post({ type: 'thread-loading', rootEventId });
+      void load();
+    });
+
     post({ type: 'thread-loading', rootEventId });
     const live = new LiveViewSocket(
       this.services,
@@ -399,6 +416,7 @@ export class ThreadController implements vscode.Disposable {
         this.detailsChanged.fire({ rootEventId, reason: 'refresh' });
         clearTimeout(timer);
         adminSub.dispose();
+        switchSub.dispose();
         live.dispose();
         sub.dispose();
       },
