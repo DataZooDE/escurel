@@ -279,3 +279,45 @@ fn an_unknown_flag_is_an_error_not_a_boot() {
         "{err}"
     );
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_unfinished_migration_is_visible_on_readyz_and_metrics() {
+    // The durable marker `migrate_kind` writes before its first rewrite (and clears last): a crash in
+    // between leaves it behind, and an operator must be able to SEE that without reading logs.
+    let dir = TempDir::new().unwrap();
+    write(
+        dir.path(),
+        "tenants/default/markdown/skills/customer.md",
+        "---\nkind: skill\nid: customer\ndescription: x\n---\n# customer\n",
+    );
+    write(
+        dir.path(),
+        "tenants/default/meta/migrate-kind.pending",
+        "migrate-kind in progress\n",
+    );
+    let pairs = [
+        ("ESCUREL_SERVER_DATA_DIR", dir.path().to_str().unwrap()),
+        ("ESCUREL_SERVER_LISTEN_HTTP", "127.0.0.1:0"),
+        ("ESCUREL_OBSERVABILITY_METRICS_LISTEN", "127.0.0.1:0"),
+        ("ESCUREL_EMBEDDING_PROVIDER", "zero"),
+    ];
+    let cfg = EscurelConfig::from_source(&source(&pairs)).unwrap();
+    let server = cfg.build().await.expect("boots");
+    let base = format!("http://{}", server.handle.local_addr);
+    let metrics = format!("http://{}", server.handle.metrics_addr.expect("metrics"));
+
+    let ready: serde_json::Value = reqwest::get(format!("{base}/readyz"))
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(ready["components"]["migration_pending"], true, "{ready}");
+    let body = reqwest::get(format!("{metrics}/metrics"))
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    assert!(body.contains("escurel_migration_pending 1"), "{body}");
+}

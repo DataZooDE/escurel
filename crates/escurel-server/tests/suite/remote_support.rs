@@ -100,3 +100,21 @@ pub async fn serve(app: Router) -> (String, tokio::task::JoinHandle<()>) {
     });
     (format!("http://{addr}"), handle)
 }
+
+/// The value of one `/metrics` series (`name{labels}`) on this gateway's own metrics listener, or
+/// `None` when the series is absent. Each gateway has its OWN registry, so counts are per test.
+pub async fn metrics_text(p: &EscurelProcess) -> String {
+    reqwest::get(p.metrics_url().expect("metrics listener"))
+        .await
+        .expect("scrape")
+        .text()
+        .await
+        .expect("body")
+}
+
+/// One series of [`metrics_text`], parsed.
+pub async fn metric(p: &EscurelProcess, series: &str) -> Option<f64> {
+    let body = metrics_text(p).await;
+    body.lines()
+        .find_map(|l| l.strip_prefix(series)?.trim().parse::<f64>().ok())
+}

@@ -565,7 +565,10 @@ pub async fn serve(
         write_acl: config.write_acl,
         event_acl: config.event_acl,
         autonomy_lint: config.autonomy_lint,
-        egress: Arc::new(crate::egress::Egress::new(config.egress.clone())),
+        egress: Arc::new(
+            crate::egress::Egress::new(config.egress.clone())
+                .with_metrics(Arc::clone(&metrics_registry)),
+        ),
         version: config.version.clone(),
         readiness: Arc::clone(&config.readiness),
         served_tenant,

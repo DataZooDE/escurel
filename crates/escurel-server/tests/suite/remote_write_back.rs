@@ -825,3 +825,50 @@ async fn an_agent_run_token_cannot_promote_a_write_back_draft_it_can_only_propos
     assert_eq!(c.patches.lock().unwrap().len(), 1);
     p.shutdown().await;
 }
+
+// ── Operators can SEE write-back outcomes: `escurel_write_back_total{outcome}` ────────────────
+
+#[tokio::test]
+async fn an_applied_write_back_is_counted() {
+    let c = crm();
+    let (p, _d) = gateway_over(&c, 5).await;
+    let etag = etag_of_row(&p).await;
+    let id = draft_id(&draft(&p, &intent_content("tier: gold", &etag, "n")).await);
+    assert_eq!(promote(&p, &id).await["ok"], true);
+    assert_eq!(
+        super::remote_support::metric(&p, r#"escurel_write_back_total{outcome="applied"}"#).await,
+        Some(1.0)
+    );
+    p.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_conflicting_write_back_is_counted() {
+    let c = crm();
+    let (p, _d) = gateway_over(&c, 5).await;
+    let etag = etag_of_row(&p).await;
+    let id = draft_id(&draft(&p, &intent_content("tier: gold", &etag, "n")).await);
+    c.rows.lock().unwrap().get_mut("c-0001").unwrap()["account_tier"] = json!("platinum");
+    assert_eq!(promote(&p, &id).await["ok"], false);
+    assert_eq!(
+        super::remote_support::metric(&p, r#"escurel_write_back_total{outcome="conflict"}"#).await,
+        Some(1.0)
+    );
+    p.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_dead_lettered_write_back_is_counted() {
+    let c = crm();
+    let (p, _d) = gateway_over(&c, 5).await;
+    let etag = etag_of_row(&p).await;
+    let id = draft_id(&draft(&p, &intent_content("tier: gold", &etag, "n")).await);
+    c.down.store(true, Ordering::SeqCst);
+    assert_eq!(promote(&p, &id).await["ok"], false);
+    assert_eq!(
+        super::remote_support::metric(&p, r#"escurel_write_back_total{outcome="dead_letter"}"#)
+            .await,
+        Some(1.0)
+    );
+    p.shutdown().await;
+}

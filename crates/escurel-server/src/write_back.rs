@@ -442,6 +442,7 @@ async fn run_inner(
             )
             .await;
             tracing::warn!(skill, row = row_id, draft = draft_id, error = %e, "write-back pre-read failed");
+            state.metrics.inc_write_back("failed");
             return Err(refusal(
                 "write_back_failed",
                 "the source could not be reached to check the row before changing it; nothing was sent",
@@ -477,9 +478,11 @@ async fn run_inner(
             }),
         )
         .await;
+        state.metrics.inc_write_back("applied");
         return Ok(stripped);
     }
     if intent.base_etag.as_deref().is_some_and(|b| b != current) {
+        state.metrics.inc_write_back("conflict");
         return Err(refusal(
             "write_back_conflict",
             "the row changed upstream since this change was proposed; re-read it and propose again",
@@ -572,6 +575,7 @@ async fn run_inner(
                     &audit_body("applied", attempt),
                 )
                 .await;
+                state.metrics.inc_write_back("applied");
                 return Ok(stripped);
             }
             Err(WriteFail::Conflict) => {
@@ -584,6 +588,7 @@ async fn run_inner(
                     &audit_body("conflict", attempt),
                 )
                 .await;
+                state.metrics.inc_write_back("conflict");
                 return Err(refusal(
                     "write_back_conflict",
                     "the upstream refused the change: the row changed since it was read",
@@ -603,6 +608,7 @@ async fn run_inner(
         }
     }
     // Dead-letter: recorded, the draft stays open, and a later promote may try again.
+    state.metrics.inc_write_back("dead_letter");
     let outcome = if rejected { "rejected" } else { "failed" };
     audit_after_apply(
         state,

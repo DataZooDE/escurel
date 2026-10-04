@@ -630,6 +630,9 @@ async fn tool_expand_stored(
             if view == BackendView::SqlView
                 && let Some(proj) = sql_view_projection(indexer, &e).await
             {
+                if proj["issue"]["code"] == "source_unavailable" {
+                    state.metrics.inc_source_unavailable("sql_view");
+                }
                 page["backend_projection"] = proj;
             }
             // Document overlay: bound the chunks returned (REQ-DOC-05) — never
@@ -1006,6 +1009,7 @@ async fn expand_remote_row(
             // The detail (which may carry the upstream's own words) goes to the log for operators; the
             // page only says the source could not be reached, so upstream text never becomes page data.
             tracing::warn!(skill = %src.skill, row = id, error = %e, "remote row could not be read");
+            state.metrics.inc_source_unavailable(kind);
             let mut out = if has_stored {
                 stored
             } else {

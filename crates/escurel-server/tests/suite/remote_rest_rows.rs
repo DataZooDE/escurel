@@ -627,3 +627,71 @@ async fn a_caller_mistake_is_not_retried() {
     );
     p.shutdown().await;
 }
+
+// ── Operators can SEE connector behaviour: `/metrics` ────────────────────────────────────────
+
+#[tokio::test]
+async fn an_outbound_call_is_counted_as_ok() {
+    let base = start(crm_with(3)).await;
+    let (p, _dirs) = gateway_over(&base).await;
+    let page = admin(
+        &p,
+        "list_instances",
+        json!({ "skill_id": "customer", "limit": 5 }),
+    )
+    .await;
+    assert_eq!(
+        page["instances"].as_array().map(Vec::len),
+        Some(3),
+        "{page}"
+    );
+    let ok = super::remote_support::metric(&p, r#"escurel_egress_total{outcome="ok"}"#).await;
+    assert!(ok.is_some_and(|n| n >= 1.0), "{ok:?}");
+    p.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_refused_outbound_call_is_counted_and_never_reaches_the_upstream() {
+    // The default policy refuses loopback: the call is stopped before it is made.
+    let base = start(crm_with(3)).await;
+    let (p, _dirs) = spawn_gateway(
+        &[("customer", CUSTOMER_SKILL)],
+        escurel_server::egress::EgressPolicy::default(),
+    )
+    .await;
+    admin(
+        &p,
+        "register_endpoint",
+        json!({ "name": "crm_rest", "kind": "openapi", "base_url": base }),
+    )
+    .await;
+    let _ = call_as(
+        &p,
+        escurel_test_support::Role::Admin,
+        "list_instances",
+        json!({ "skill_id": "customer", "limit": 5 }),
+    )
+    .await;
+    let refused =
+        super::remote_support::metric(&p, r#"escurel_egress_total{outcome="refused"}"#).await;
+    assert!(refused.is_some_and(|n| n >= 1.0), "{refused:?}");
+    p.shutdown().await;
+}
+
+#[tokio::test]
+async fn an_unreachable_source_is_counted() {
+    let (p, _dirs) = gateway_over(&dead_base().await).await;
+    let _ = admin(
+        &p,
+        "expand",
+        json!({ "page_id": "markdown/instances/customer/c-0001.md" }),
+    )
+    .await;
+    let body = super::remote_support::metrics_text(&p).await;
+    assert!(
+        body.lines()
+            .any(|l| l.starts_with("escurel_source_unavailable_total{kind=") && l.ends_with(" 1")),
+        "{body}"
+    );
+    p.shutdown().await;
+}

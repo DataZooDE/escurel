@@ -312,11 +312,10 @@ pub fn egress_refusals() -> u64 {
     REFUSALS.load(std::sync::atomic::Ordering::Relaxed)
 }
 
-fn refuse(host: &str, reason: &str, e: EgressError) -> EgressError {
+fn log_refusal(host: &str, reason: &str) {
     REFUSALS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     // Host and reason only: never a URL query, header or secret.
     tracing::warn!(%host, %reason, "egress policy refused an outbound call");
-    e
 }
 
 pub struct Egress {
@@ -326,17 +325,34 @@ pub struct Egress {
     /// One handshake at a time per endpoint (see [`Self::session_lock`]).
     session_locks: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
     rpc_id: AtomicU64,
+    /// Where outcomes are counted (`escurel_egress_total{outcome}`); `None` in tools that build an
+    /// `Egress` without a registry.
+    metrics: Option<Arc<escurel_obs::Metrics>>,
 }
 
 impl Egress {
     #[must_use]
     pub fn new(policy: EgressPolicy) -> Self {
         Self {
+            metrics: None,
             policy,
             limiters: Mutex::new(HashMap::new()),
             mcp_sessions: Mutex::new(HashMap::new()),
             session_locks: Mutex::new(HashMap::new()),
             rpc_id: AtomicU64::new(1),
+        }
+    }
+
+    /// Count this runtime's outbound outcomes on `metrics` (`escurel_egress_total{outcome}`).
+    #[must_use]
+    pub fn with_metrics(mut self, metrics: Arc<escurel_obs::Metrics>) -> Self {
+        self.metrics = Some(metrics);
+        self
+    }
+
+    fn count(&self, outcome: &str) {
+        if let Some(m) = &self.metrics {
+            m.inc_egress(outcome);
         }
     }
 
@@ -409,9 +425,10 @@ impl Egress {
         let lim = self.limiter(endpoint);
         // The slot first: a call refused because every slot is busy must not spend a token it never
         // used, or a burst of refusals would empty the bucket for the calls that follow.
-        let permit = Arc::clone(&lim.sem)
-            .try_acquire_owned()
-            .map_err(|_| EgressError::RateLimited)?;
+        let permit = Arc::clone(&lim.sem).try_acquire_owned().map_err(|_| {
+            self.count("limited");
+            EgressError::RateLimited
+        })?;
         let rate = f64::from(self.policy.rate_per_sec.max(1));
         let mut b = lim.bucket.lock().expect("bucket");
         let now = Instant::now();
@@ -420,6 +437,7 @@ impl Egress {
         b.1 = now;
         if b.0 < 1.0 {
             // `permit` is dropped here: the slot is released, the bucket untouched.
+            self.count("limited");
             return Err(EgressError::RateLimited);
         }
         b.0 -= 1.0;
@@ -461,11 +479,9 @@ impl Egress {
             let ip = a.ip();
             let loopback_ok = self.policy.allow_loopback && ip.is_loopback();
             if !loopback_ok && !is_public_ip(ip) {
-                return Err(refuse(
-                    &host,
-                    "non-public address",
-                    EgressError::AddressNotAllowed,
-                ));
+                log_refusal(&host, "non-public address");
+                self.count("refused");
+                return Err(EgressError::AddressNotAllowed);
             }
         }
         // Scheme last, so an http URL to a private host is reported as the address problem it is.
@@ -473,11 +489,9 @@ impl Egress {
             "https" => {}
             "http" if self.policy.allow_loopback && addrs.iter().all(|a| a.ip().is_loopback()) => {}
             _ => {
-                return Err(refuse(
-                    &host,
-                    "scheme not allowed",
-                    EgressError::SchemeNotAllowed,
-                ));
+                log_refusal(&host, "scheme not allowed");
+                self.count("refused");
+                return Err(EgressError::SchemeNotAllowed);
             }
         }
         // `no_proxy`: an HTTPS_PROXY in the environment would send the request to the proxy with the
@@ -502,6 +516,17 @@ impl Egress {
     /// # Errors
     /// Any [`EgressError`]: transport, redirect, timeout, or an oversize body.
     pub async fn send_capped(&self, req: reqwest::RequestBuilder) -> Result<Capped, EgressError> {
+        let out = self.send_capped_inner(req).await;
+        self.count(match &out {
+            Ok(_) => "ok",
+            Err(EgressError::Timeout(_)) => "timeout",
+            Err(EgressError::Redirect(_)) => "refused",
+            Err(_) => "error",
+        });
+        out
+    }
+
+    async fn send_capped_inner(&self, req: reqwest::RequestBuilder) -> Result<Capped, EgressError> {
         let mut resp = req.send().await.map_err(|e| self.map_err(&e))?;
         let status = resp.status();
         let headers = resp.headers().clone();

@@ -92,9 +92,15 @@ impl ReadinessProbe for DependencyProbe {
                 .indexer
                 .as_ref()
                 .is_some_and(|h| h.current().legacy_quarantine().is_some()),
-            // TODO(stream B): read the durable "migration in progress" marker once it exists
-            // (fix/robustness); until then a half-finished migration is not distinguishable here.
-            migration_pending: false,
+            // The durable marker `migrate_kind` writes before its first rewrite and clears last: a
+            // crash in between leaves it behind, and /readyz + /metrics say so.
+            migration_pending: match Key::new(
+                self.tenant.as_str(),
+                escurel_index::migrate_kind::MIGRATION_MARKER_PATH,
+            ) {
+                Ok(k) => self.store.read(&k).await.is_ok(),
+                Err(_) => false,
+            },
             semantic_search: self.semantic_search && self.embedder.is_loaded(),
         }
     }
