@@ -64,6 +64,7 @@ cp -r "$HERE/seed" "$HOME_DIR/seed"
 sed -i "s|@ORDER_LINES_DIR@|$HERE/sources/order-lines|" "$HOME_DIR/seed/skills/order-lines.md"
 if [ "${ESCUREL_DEMO_EVOLVE_SEED:-0}" = "1" ]; then
   cp "$EXT"/test/integration/seed/skills/evolve_*.md "$HOME_DIR/seed/skills/"
+  cp "$EXT"/test/integration/seed/skills/plan_policy.md "$HOME_DIR/seed/skills/"
 fi
 
 # The gateway: verifies tokens, and keeps a fresh bearer in a file (a demo outlasts a token).

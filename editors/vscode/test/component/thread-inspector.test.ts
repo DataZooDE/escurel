@@ -87,6 +87,21 @@ describe('<escurel-thread-inspector>', () => {
     ]);
   });
 
+  it('opens an inactive policy link from the candidate receipt', async () => {
+    const el = await render({
+      title: 'Candidate publication', rows: [], sideTitle: '', side: [],
+      bodyTitle: 'Inactive policy candidate',
+      body: 'Inactive candidate: [[plan_policy::synthetic-run-1]]',
+    });
+    const sent: ThreadWebviewToHost[] = [];
+    el.addEventListener('escurel-message', (event) =>
+      sent.push((event as CustomEvent<ThreadWebviewToHost>).detail));
+    (el.shadowRoot!.querySelector('.wikilink') as HTMLButtonElement).click();
+    expect(sent).to.deep.equal([
+      { type: 'open-wikilink', wikilink: '[[plan_policy::synthetic-run-1]]' },
+    ]);
+  });
+
   it('shows skill buttons for an instance and posts start-skill and view-skill', async () => {
     const instanceDetail: InspectorView = {
       title: 'Order 4500123',

@@ -13,7 +13,7 @@ function recorded() {
 }
 
 describe('buildInspectors', () => {
-  it('shows Evolve validation and admission receipts in event inspectors', () => {
+  it('shows Evolve validation, admission, and candidate receipts in event inspectors', () => {
     const { view, nodes } = recorded();
     const event = view.nodes.find((node) => node.kind === 'event')!;
     const patched = nodes.map((node) =>
@@ -30,6 +30,12 @@ describe('buildInspectors', () => {
     const admission = buildInspectors(view, admitted)[event.id];
     expect(admission?.bodyTitle).toBe('Experiment admission');
     expect(admission?.body).toBe('Experiment accepted: [[evolve_experiment::run-1]]');
+    const published = patched.map((node) => node.id === event.id
+      ? { ...node, label_skill: 'evolve:candidate',
+        body: 'Inactive candidate: [[plan_policy::run-1-7]]' } : node);
+    const candidate = buildInspectors(view, published)[event.id];
+    expect(candidate?.bodyTitle).toBe('Inactive policy candidate');
+    expect(candidate?.body).toBe('Inactive candidate: [[plan_policy::run-1-7]]');
   });
   it('uses recorded run data for rows, summary and timing', () => {
     const { view, nodes } = recorded();

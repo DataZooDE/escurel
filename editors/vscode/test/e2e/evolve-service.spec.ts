@@ -19,7 +19,7 @@ type EventRow = {
   provenance?: { manual?: Record<string, unknown>; evolve?: Record<string, unknown> };
 };
 
-test('native owner approval, seed run, and validation through Evolve', async ({ stack }) => {
+test('native owner approval, seed run, validation, and inactive candidate through Evolve', async ({ stack }) => {
   const id = `native-service-${Date.now()}`;
   const baseline = 'SELECT sku_id, 1::BIGINT AS order_qty FROM p1_observation';
   const seed = 'SELECT sku_id, CASE WHEN period % 3 = 0 THEN 2 WHEN period % 3 = 2 THEN 1 ELSE 0 END::BIGINT AS order_qty FROM p1_observation';
@@ -259,6 +259,7 @@ test('native owner approval, seed run, and validation through Evolve', async ({ 
   expect(reportPage!.candidate_use).toBe('sandbox_demo_only');
   expect(reportPage!.winner_program_id).toBe(best.id);
   expect(reportPage!.winner_sql_sha256).toBe(validationReport.winner_sql_sha256);
+  expect(reportPage!.report_sha256).toBe(validation!.report_sha256);
   expect(reportPage!.next_candidate_action).toBe('evolve_publish_candidate');
   const finalStatus = await stack.evolveCall('evolve_status', { experiment: experimentId });
   expect(finalStatus.operational_activation_available).toBe(false);
@@ -270,4 +271,57 @@ test('native owner approval, seed run, and validation through Evolve', async ({ 
   await expect(reportUi.getByText(/State:\s*passed/)).toBeVisible();
   await expect(reportUi.getByText('Publicly disclosed synthetic fixture', { exact: false })).toBeVisible();
   await expect(reportUi.getByRole('button', { name: 'Create policy candidate', exact: true })).toBeVisible();
+  await reportUi.getByRole('button', { name: 'Create policy candidate', exact: true }).click();
+  const candidateDialog = stack.page.getByRole('dialog', { name: 'Warning' })
+    .filter({ hasText: 'Create an inactive policy candidate' });
+  await expect(candidateDialog).toContainText(`winner ${best.id}`);
+  await expect(candidateDialog).toContainText('This does not activate a policy');
+  await expect(candidateDialog).toContainText('sandbox use only');
+  await expect(candidateDialog).toContainText('must never be activated as an operational policy');
+  await candidateDialog.getByRole('button', { name: 'Create candidate' }).click();
+  const reviewNote = stack.page.locator('.quick-input-widget input').first();
+  await expect(reviewNote).toBeVisible();
+  await reviewNote.fill('Reviewed disclosed synthetic evidence for integration only');
+  await stack.page.keyboard.press('Enter');
+
+  let candidateEvent: EventRow | undefined;
+  await expect.poll(async () => {
+    const result = await stack.call('list_events', { label_skill: 'evolve_publish_candidate', limit: 100 });
+    candidateEvent = (result.events as EventRow[]).find((event) =>
+      event.instance_page_id === reportPageId);
+    return candidateEvent?.event_id;
+  }, { timeout: 30_000 }).toBeTruthy();
+  let candidateReceipt: EventRow | undefined;
+  await expect.poll(async () => {
+    const result = await stack.call('list_events', { root_event_id: candidateEvent!.event_id,
+      label_skill: 'evolve:candidate', include_system: true });
+    candidateReceipt = (result.events as EventRow[]).find((event) =>
+      event.title === 'candidate-publication-final');
+    return candidateReceipt?.event_id;
+  }, { timeout: 60_000 }).toBeTruthy();
+  expect(candidateReceipt!.body).toContain('inactive candidate');
+  expect(candidateReceipt!.body).toContain('sandbox demo only');
+  const policyId = candidateReceipt!.body.match(/\[\[plan_policy::([^\]]+)\]\]/)?.[1];
+  expect(policyId).toBe(`${experimentId}-${best.id}`);
+  const policyPageId = `markdown/instances/plan_policy/${policyId}.md`;
+  const policyPage = await stack.call('expand', { page_id: policyPageId });
+  const policy = policyPage.frontmatter as Record<string, unknown>;
+  expect(policy.status).toBe('candidate');
+  expect(policy.candidate_use).toBe('sandbox_demo_only');
+  expect(policy.activation_status).toBe('not_activated');
+  expect((policy.acl as Record<string, unknown>).read).toEqual(['owner']);
+  expect(policy.program_id).toBe(best.id);
+  expect(policy.validation_report_sha256).toBe(reportPage!.report_sha256);
+  expect(policy.validation_ref).toBe(`decision-validation::${experimentId}`);
+  expect(policy.candidate_kind).toBe('synthetic_sandbox_candidate');
+  expect(policy.validation_evidence_scope).toBe('disclosed_synthetic_replay_two_nested_tails');
+  expect(policyPage.body).toContain(seed);
+  const candidateThread = await webviewWith(stack.page, 'escurel-thread-canvas');
+  await candidateThread.locator(`escurel-thread-canvas .card[data-node-id="${candidateReceipt!.event_id}"]`).click();
+  await candidateThread.locator('escurel-thread-inspector .wikilink').click();
+  await expect(stack.page.getByRole('tab', { name: new RegExp(String(policyId)), selected: true })).toBeVisible();
+  const policyUi = await webviewWith(stack.page, 'escurel-page-as-ui');
+  await expect(policyUi.getByText('Publicly disclosed synthetic fixture', { exact: false })).toBeVisible();
+  await expect(policyUi.getByText('not_activated', { exact: true })).toBeVisible();
+  await expect(policyUi.getByText('Reviewed disclosed synthetic evidence for integration only')).toBeVisible();
 });

@@ -357,8 +357,11 @@ export function registerStartSkill(
               || typeof reportHash !== 'string' || !/^[a-f0-9]{64}$/i.test(reportHash)) {
             throw new Error('This report does not support candidate publication.');
           }
+          const sandboxWarning = page.frontmatter.candidate_use === 'sandbox_demo_only'
+            ? ' This disclosed synthetic candidate is for sandbox use only and must never be activated as an operational policy.'
+            : '';
           const confirmed = await vscode.window.showWarningMessage(
-            `Create an inactive policy candidate for winner ${winner} from this exact report? This does not activate a policy.`,
+            `Create an inactive policy candidate for winner ${winner} from this exact report? This does not activate a policy.${sandboxWarning}`,
             { modal: true },
             'Create candidate',
           );

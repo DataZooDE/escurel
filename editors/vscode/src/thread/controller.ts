@@ -308,7 +308,7 @@ export class ThreadController implements vscode.Disposable {
         }
         case 'open-wikilink': {
           const link = m.wikilink;
-          if (!/^\[\[(?:evolve_validation_report|evolve_experiment)::[^\]\s]+\]\]$/.test(link)) return;
+          if (!/^\[\[(?:evolve_validation_report|evolve_experiment|plan_policy)::[^\]\s]+\]\]$/.test(link)) return;
           const details = current && this.details(current, {
             admin: cachedAdmin,
             skills: cachedSkills,
