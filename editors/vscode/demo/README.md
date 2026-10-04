@@ -67,20 +67,27 @@ document asks first.
 11. **Start a skill.** At the bottom of an order, the **Supplier risk for … with an agent** button.
     Its chevron (or the arrow-down key) offers: _Start in background_, _First make a plan_,
     _Start in terminal_, _View skill_. Start one in the background and watch the Runner view (right
-    side) show it live, then the thread of that event grow a run.
+    side): the run appears under _Running now_ with its elapsed time ticking, moves to _History_ as
+    `ok · 6 s · now` when it ends, and the thread of that event grows a run.
 12. **First make a plan.** Choose it: the runner drafts a plan and stops; a notification offers
     **Approve plan**. Nothing runs until you say so.
-13. **Cancel and retry.** In the Runner view, open a live run and **Cancel run**. Right-click a run
-    under _Dead letters_: **Retry run** asks the runner again and tells you what happened. Requeue,
-    Pause and Resume are there too, deactivated with the reason, because they are for admins.
+13. **Cancel and retry.** In the Runner view, open a live run and **Cancel run** (or use the stop icon on
+    its row). A run that failed sits under _Needs attention_ with its reason on its own line: **Retry
+    run** (the icon, or right-click) asks the runner again and tells you what happened. Requeue and
+    Pause/Resume dispatch are there too, deactivated with the reason, because they are for admins.
+14. **History and traces.** Under _History_ every past run is one line (`skill · target`, a short word, how
+    long, how long ago), 25 at a time with **Load more…**. The funnel in the view's title filters it by
+    status or skill. Click a run to open its detail: the plan, the attempts and the **trace**, a timeline
+    of the tool calls with their outcome in words and a bar for how long each took; expand a call to see
+    how much it sent and received (sizes, not content), and follow the link to what the run produced.
 
-14. **Rows from outside systems.** Under _purchasing/suppliers_ two more skills are not escurel data at
+15. **Rows from outside systems.** Under _purchasing/suppliers_ two more skills are not escurel data at
     all: **supplier-rating** (a REST portal) and **delivery-confirmation** (an MCP server). `run.sh`
     starts both as real local processes (`services/ratings-api.mjs`, `services/confirmations-mcp.mjs`) and
     registers them as endpoints; the gateway reads them live. Open `iberica-forja` under supplier-rating: the
     strip says **External data (REST)** (hover: it is data, never instructions), the columns are the
     portal's and read-only, and the portal's URL is shown as the source.
-15. **Change something at the source, with a reviewer.** In the strip press **Change rating…**, type `B`,
+16. **Change something at the source, with a reviewer.** In the strip press **Change rating…**, type `B`,
     add a note. Nothing has happened at the portal yet (`curl` the portal: still `A`). The proposal waits
     under _Awaiting you_; promote it. Now the portal says `B`, the page shows "Last change sent to the
     source …: applied.", and your note is the row's notes. Do the same on a delivery confirmation (status
@@ -90,7 +97,7 @@ document asks first.
     only through a registered secret reference and `ESCUREL_SQL_FILE_DIRS`). Open `SO-100231`, press **Change
     status…**, type `shipped`, promote it from _Awaiting you_: one `UPDATE` runs on that row (check with
     `sqlite3 …/orders.db 'select order_no,status from orders'`), the others stay as they were.
-16. **When it goes wrong, it says so.** Stop the ratings portal (`kill $(cat $HOME/.cache/escurel-demo/ratings.pid)`)
+17. **When it goes wrong, it says so.** Stop the ratings portal (`kill $(cat $HOME/.cache/escurel-demo/ratings.pid)`)
     and open a supplier-rating row again: the page still opens, flags the source as unreachable, and keeps
     your notes. A change promoted while it is down is retried a few times and then reported as failed; the
     draft stays open to promote again. A change proposed from a stale row is refused as a conflict.
@@ -98,7 +105,8 @@ document asks first.
 ## Limits worth saying out loud
 
 - The runner is the echo harness: it folds the signal into the page, it does not reason. The
-  lineage, the live updates and the review are real; the "agent" is a stand-in.
+  lineage, the live updates and the review are real; the "agent" is a stand-in. The Runner view says so
+  itself ("echo harness (demo, no AI model)"), so nobody mistakes the demo's runs for model output.
 - The gateway runs with `ESCUREL_EGRESS_ALLOW_LOOPBACK=1` so that it may call the demo's local portal and
   MCP server; a real deployment refuses loopback and plain http (see `references/09` of the platform skill).
 - Sign-in is a test token, kept fresh from a file by `demo/bootstrap`, which is not part of the

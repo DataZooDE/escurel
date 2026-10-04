@@ -13,9 +13,12 @@ degradations are tracked in `docs/BACKEND_GAPS.md`.
   run's plan, attempts and tool calls, live, without reload.
 - **Start a skill** from an instance or a thread node: in the background, *first make a plan* and approve it,
   or in a terminal (a token minted for that one run; the run still shows up in the thread as a governed run).
-- **Run the runner**: the Runner view (secondary sidebar) shows its health, live runs and dead letters; cancel
-  or retry a run; an admin can also requeue a dead letter and pause or resume dispatch. A human sees those
-  admin controls deactivated, with the reason, not hidden.
+- **Control agents and read their history**: the Runner view (secondary sidebar) is a runs control center:
+  what is running now (cancel it), what waits for you (approve the plan), what needs attention (the reason on
+  its own line; retry it), and the history of past runs, paged and filterable, with a day's summary on top.
+  One click opens a run: its plan, attempts and a readable trace of every tool call, with a link to what the
+  run produced. An admin can also requeue a dead letter and pause or resume dispatch; a human sees those
+  controls deactivated, with the reason, not hidden.
 
 ## Security model
 
