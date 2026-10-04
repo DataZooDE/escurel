@@ -499,9 +499,16 @@ async fn hostile_values_are_data_and_the_table_survives() {
         .unwrap()
         .get(0);
     assert_eq!(n as usize, ROWS, "the table is intact");
-    // A value that does not fit the column is the database's refusal, not a crash.
     let e8 = g.etag(8).await;
-    let bad = draft_id(&g.draft(8, "quantity: \"not a number\"", &e8).await);
+    // A value the SKILL's kind rejects never becomes a draft (draft-time validation)...
+    let refused = g.draft(8, "quantity: \"not a number\"", &e8).await;
+    assert_eq!(refused["ok"], false, "{refused}");
+    assert!(
+        codes(&refused).contains(&"write_back_invalid_value".to_owned()),
+        "{refused}"
+    );
+    // ...and one the skill accepts but the COLUMN cannot hold is the database's refusal, not a crash.
+    let bad = draft_id(&g.draft(8, "quantity: 99999999999", &e8).await);
     let done = g.promote(&bad).await;
     assert_eq!(done["ok"], false, "{done}");
     assert!(
@@ -829,7 +836,9 @@ async fn a_blackholed_database_host_is_bounded_and_does_not_starve_the_runtime()
     let store_dir = TempDir::new().unwrap();
     let db_dir = TempDir::new().unwrap();
     let secret_dir = TempDir::new().unwrap();
-    let secret: PathBuf = secret_dir.path().join("shop-pg");
+    // A tenant's secret files live under `<dir>/<tenant>/`.
+    std::fs::create_dir(secret_dir.path().join(TENANT)).unwrap();
+    let secret: PathBuf = secret_dir.path().join(TENANT).join("shop-pg");
     std::fs::write(
         &secret,
         format!(
