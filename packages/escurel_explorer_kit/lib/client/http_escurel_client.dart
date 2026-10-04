@@ -98,6 +98,20 @@ class HttpEscurelClient implements EscurelClient {
     if (structured is Map<String, dynamic>) {
       return structured;
     }
+    // A LEGACY gateway sent the payload only as JSON text; current ones put a
+    // short summary there and the full result in `structuredContent`.
+    final content = result['content'];
+    if (content is List && content.isNotEmpty && content.first is Map) {
+      final text = (content.first as Map)['text'];
+      if (text is String) {
+        try {
+          final parsed = jsonDecode(text);
+          if (parsed is Map<String, dynamic>) return parsed;
+        } catch (_) {
+          // a summary, not JSON
+        }
+      }
+    }
     return result;
   }
 

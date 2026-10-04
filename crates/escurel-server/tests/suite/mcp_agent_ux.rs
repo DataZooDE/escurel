@@ -708,3 +708,54 @@ async fn drafts_changesets_and_branches_page_with_limit_and_next_cursor() {
         );
     }
 }
+
+// ---- (B) a short text summary; structuredContent stays the full payload -----------------------
+
+#[tokio::test]
+async fn content_text_is_a_short_summary_and_structured_content_is_the_full_result() {
+    let t = Rows::start().await;
+    let big = t.rpc("list_skills", json!({})).await;
+    let text = big["result"]["content"][0]["text"].as_str().unwrap();
+    let full = &big["result"]["structuredContent"];
+    assert!(full["skills"].as_array().unwrap().len() >= 1, "{big}");
+    assert!(
+        text.len() < 400,
+        "a summary, not the payload ({} bytes): {text}",
+        text.len()
+    );
+    assert!(
+        text.contains("structuredContent"),
+        "says where the rest is: {text}"
+    );
+    assert!(text.contains("skills"), "names what came back: {text}");
+    assert!(
+        serde_json::from_str::<Value>(text).is_err(),
+        "the text is no longer the JSON: {text}"
+    );
+
+    let page = t
+        .rpc(
+            "list_instances",
+            json!({ "skill_id": "sales-order", "limit": 3 }),
+        )
+        .await;
+    let ptext = page["result"]["content"][0]["text"].as_str().unwrap();
+    assert!(
+        ptext.contains("3 instances") && ptext.contains("next_cursor"),
+        "{ptext}"
+    );
+
+    // A refusal's summary carries the code and message: a text-only client must still see WHY.
+    let bad = t
+        .rpc(
+            "list_instances",
+            json!({ "skill_id": "sales-order", "limit": 0 }),
+        )
+        .await;
+    let btext = bad["result"]["content"][0]["text"].as_str().unwrap();
+    assert!(
+        btext.contains("invalid_limit") && btext.contains("limit"),
+        "{btext}"
+    );
+    assert_eq!(bad["result"]["isError"], true);
+}

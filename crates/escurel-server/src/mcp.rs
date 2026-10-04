@@ -674,20 +674,85 @@ fn to_value<T: serde::Serialize>(resp: T) -> Result<Value, JsonRpcError> {
 /// }
 /// ```
 ///
-/// `content[0].text` is the payload serialised to a JSON string — that
-/// is what a text-only MCP client (Claude Code) reads. `structuredContent`
-/// carries the raw payload object for programmatic clients (escurel-client
-/// decodes this). `isError` is true when the payload is a refusal (see
+/// `content[0].text` is a SHORT SUMMARY (what came back, counts, and where the rest is; a refusal's
+/// code and message) — it no longer repeats the payload. `structuredContent` carries the full payload
+/// object (escurel-client and every in-repo consumer decode this). `isError` is true when the payload is a refusal (see
 /// [`is_rejected_payload`]). Applied to the SUCCESS value of `tools/call`
 /// ONLY; tool errors keep the JSON-RPC error envelope, and `initialize` /
 /// `ping` / `tools/list` are returned raw (they are not `CallToolResult`s).
 fn wrap_tool_result(payload: Value, rejected: bool) -> Value {
-    let text = serde_json::to_string(&payload).unwrap_or_else(|_| payload.to_string());
     json!({
-        "content": [ { "type": "text", "text": text } ],
+        "content": [ { "type": "text", "text": summarise_payload(&payload) } ],
         "structuredContent": payload,
         "isError": rejected,
     })
+}
+
+/// The one-or-two-line text of a tool result: what came back and where the rest is. The full payload is
+/// `structuredContent` alone (it used to be sent twice, once as a JSON string here, doubling the tokens
+/// of every call). A refusal's summary carries its first issue's code and message, so a client that
+/// reads only the text still learns WHY.
+fn summarise_payload(payload: &Value) -> String {
+    const MORE: &str = "Full result in structuredContent.";
+    let Some(obj) = payload.as_object() else {
+        return format!("{} {MORE}", short(&payload.to_string(), 200));
+    };
+    if obj.get("ok") == Some(&Value::Bool(false))
+        && let Some(issue) = obj.get("issues").and_then(|i| i.get(0))
+    {
+        let n = obj["issues"].as_array().map_or(1, Vec::len);
+        let more = if n > 1 {
+            format!(" (+{} more issues)", n - 1)
+        } else {
+            String::new()
+        };
+        return format!(
+            "Refused: {}: {}{more}. {MORE}",
+            issue["code"].as_str().unwrap_or("error"),
+            short(issue["message"].as_str().unwrap_or(""), 220),
+        );
+    }
+    let mut parts: Vec<String> = Vec::new();
+    for (k, v) in obj {
+        match v {
+            Value::Array(a) => parts.push(format!("{} {k}", a.len())),
+            Value::Null => {}
+            Value::Bool(b)
+                if k == "ok" || k == "has_more" || k == "held_for_review" || k == "replayed" =>
+            {
+                if *b {
+                    parts.push(k.clone());
+                }
+            }
+            _ if k == "next_cursor" => parts.push("more via next_cursor".to_owned()),
+            _ => {}
+        }
+    }
+    let mut head = if parts.is_empty() {
+        format!("{} keys", obj.len())
+    } else {
+        parts.join(", ")
+    };
+    if let Some(w) = obj
+        .get("issues")
+        .and_then(Value::as_array)
+        .filter(|a| !a.is_empty())
+    {
+        head.push_str(&format!(
+            ", {} issue(s): {}",
+            w.len(),
+            w[0]["code"].as_str().unwrap_or("?")
+        ));
+    }
+    format!("{} {MORE}", short(&head, 240))
+}
+
+fn short(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        s.to_owned()
+    } else {
+        format!("{}…", s.chars().take(max).collect::<String>())
+    }
 }
 
 /// Whether a tool's `Ok` payload is a REFUSAL — the call ran, nothing was

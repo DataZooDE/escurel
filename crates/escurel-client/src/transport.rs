@@ -290,9 +290,7 @@ impl McpTransport {
         let result = body.get("result").cloned().ok_or_else(|| {
             Error::Decode(format!("response missing `result` field: {body_text}"))
         })?;
-        // Unwrap the MCP `CallToolResult.structuredContent` payload when
-        // the gateway wrapped it; otherwise return the result as-is.
-        Ok(result.get("structuredContent").cloned().unwrap_or(result))
+        Ok(unwrap_call_result(result))
     }
 
     /// GET a plain-text endpoint relative to the base (e.g.
@@ -498,4 +496,44 @@ fn http_header_value(
 /// `tokio-stream` for the one wrapper we need.
 fn tokio_stream_from<T>(mut rx: tokio::sync::mpsc::UnboundedReceiver<T>) -> impl Stream<Item = T> {
     futures_util::stream::poll_fn(move |cx| rx.poll_recv(cx))
+}
+
+/// The payload of an MCP `CallToolResult`: `structuredContent` (the full result; what every current
+/// gateway sends, with a short summary in `content[0].text`), else — for a LEGACY gateway that only put
+/// the payload in the text block as JSON — that text parsed, else the result as it is.
+fn unwrap_call_result(result: serde_json::Value) -> serde_json::Value {
+    if let Some(sc) = result.get("structuredContent") {
+        return sc.clone();
+    }
+    if let Some(text) = result["content"][0]["text"].as_str()
+        && let Ok(parsed @ serde_json::Value::Object(_)) = serde_json::from_str(text)
+    {
+        return parsed;
+    }
+    result
+}
+
+#[cfg(test)]
+mod call_result_tests {
+    use super::unwrap_call_result;
+    use serde_json::json;
+
+    #[test]
+    fn structured_content_wins_over_a_summary_text() {
+        let r = json!({ "content": [{ "type": "text", "text": "3 events. Full result in structuredContent." }],
+                        "structuredContent": { "events": [1, 2, 3] } });
+        assert_eq!(unwrap_call_result(r), json!({ "events": [1, 2, 3] }));
+    }
+
+    #[test]
+    fn a_legacy_gateway_with_json_text_only_still_decodes() {
+        let r = json!({ "content": [{ "type": "text", "text": "{\"events\":[1]}" }] });
+        assert_eq!(unwrap_call_result(r), json!({ "events": [1] }));
+    }
+
+    #[test]
+    fn a_summary_text_without_structured_content_is_not_mistaken_for_a_payload() {
+        let r = json!({ "content": [{ "type": "text", "text": "3 events" }] });
+        assert_eq!(unwrap_call_result(r.clone()), r);
+    }
 }
