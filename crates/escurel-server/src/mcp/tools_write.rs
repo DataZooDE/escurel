@@ -254,7 +254,7 @@ pub(super) fn blocking_issues<'a>(
 /// Whether the caller is a MACHINE: a token minted for an agent run, a narrowed per-skill agent, or one
 /// acting for a runner (`run_id` / `skill` / `act.sub` claims). A person on a plain agent-role token
 /// (the extension, the CLI) is not: they write directly.
-fn is_machine_caller(caller: &AclCaller<'_>) -> bool {
+pub(super) fn is_machine_caller(caller: &AclCaller<'_>) -> bool {
     caller.run_id.is_some() || caller.agent_skill.is_some() || caller.actor.is_some()
 }
 
@@ -270,7 +270,10 @@ fn instance_skill_of(page_id: &str) -> Option<&str> {
 /// Does `skill` ask for human review of what a machine writes? `autonomy: review | confirm` do, and so
 /// does ANY value that is not recognised (a typo must never read as `auto`); only an explicit `auto`,
 /// or no `autonomy:` at all, lands directly.
-async fn skill_requires_review(indexer: &Indexer, skill: &str) -> Result<bool, JsonRpcError> {
+pub(super) async fn skill_requires_review(
+    indexer: &Indexer,
+    skill: &str,
+) -> Result<bool, JsonRpcError> {
     let Some(md) = indexer
         .read_page_markdown(&format!("markdown/skills/{skill}.md"))
         .await
@@ -278,16 +281,28 @@ async fn skill_requires_review(indexer: &Indexer, skill: &str) -> Result<bool, J
     else {
         return Ok(false);
     };
-    let Ok(parsed) = escurel_md::parse(&md) else {
-        return Ok(false);
+    Ok(autonomy_requires_review(&md))
+}
+
+/// The gate's decision from a skill page's bytes. A page that does not parse cannot say it is `auto`,
+/// so it holds: failing OPEN here would let anything that corrupts a skill page switch the gate off.
+fn autonomy_requires_review(skill_page_markdown: &str) -> bool {
+    let Ok(parsed) = escurel_md::parse(skill_page_markdown) else {
+        return true;
     };
-    Ok(match parsed.frontmatter.fields.get("autonomy") {
+    match parsed.frontmatter.fields.get("autonomy") {
         None => false,
         Some(v) => v
             .as_str()
             .and_then(escurel_index::Autonomy::parse)
             .is_none_or(|a| a != escurel_index::Autonomy::Auto),
-    })
+    }
+}
+
+/// Whether `page_id` is a SKILL page (`markdown/skills/<id>.md`): the page that carries the gate's own
+/// configuration (`autonomy`, `actions`, `backend`, `writable_columns`, `acl`, …).
+fn is_skill_page(page_id: &str) -> bool {
+    page_id.starts_with("markdown/skills/")
 }
 
 /// The autonomy gate (owner decision 2026-10-04): a MACHINE caller's direct write to an instance of a
@@ -305,15 +320,26 @@ pub(super) async fn hold_if_review_required(
     page_id: &str,
     content: &str,
 ) -> Result<Option<Value>, JsonRpcError> {
-    if caller.is_admin || !is_machine_caller(caller) {
+    // A MACHINE is gated even when its token is admin: the runner mints its agents' run tokens with the
+    // admin role, and a gate that waved admins through would not apply to the one caller it exists for.
+    // A PERSON who is admin, or on a plain agent token, is not a machine and writes directly.
+    if !is_machine_caller(caller) {
         return Ok(None);
     }
-    let Some(skill) = instance_skill_of(page_id) else {
-        return Ok(None);
+    // A skill page is the gate's own configuration: a run that could edit it could write
+    // `autonomy: auto` for itself and then land everything unreviewed. Every machine edit of a skill
+    // page is held, whatever the skill says about its instances.
+    let skill = if is_skill_page(page_id) {
+        "a skill page"
+    } else {
+        let Some(skill) = instance_skill_of(page_id) else {
+            return Ok(None);
+        };
+        if !skill_requires_review(indexer, skill).await? {
+            return Ok(None);
+        }
+        skill
     };
-    if !skill_requires_review(indexer, skill).await? {
-        return Ok(None);
-    }
     use sha2::{Digest, Sha256};
     let base = indexer
         .read_page_markdown(page_id)
@@ -331,10 +357,16 @@ pub(super) async fn hold_if_review_required(
     .await?;
     if held.get("ok") == Some(&json!(true)) {
         held["held_for_review"] = json!(true);
-        held["message"] = json!(format!(
-            "`{skill}` asks for human review (`autonomy`), so this write was held as an open draft; \
-             nothing changed on the page until a reviewer promotes it"
-        ));
+        held["message"] = json!(if is_skill_page(page_id) {
+            "a skill page configures what agents may do, so an agent's edit of it was held as an open \
+             draft; nothing changed until a person promotes it"
+                .to_owned()
+        } else {
+            format!(
+                "`{skill}` asks for human review (`autonomy`), so this write was held as an open draft; \
+                 nothing changed on the page until a reviewer promotes it"
+            )
+        });
     }
     Ok(Some(held))
 }
@@ -348,15 +380,20 @@ pub(super) async fn refuse_machine_removal(
     page_id: &str,
     what: &str,
 ) -> Result<Option<Value>, JsonRpcError> {
-    if caller.is_admin || !is_machine_caller(caller) {
+    if !is_machine_caller(caller) {
         return Ok(None);
     }
-    let Some(skill) = instance_skill_of(page_id) else {
-        return Ok(None);
+    let skill = if is_skill_page(page_id) {
+        "a skill page"
+    } else {
+        let Some(skill) = instance_skill_of(page_id) else {
+            return Ok(None);
+        };
+        if !skill_requires_review(indexer, skill).await? {
+            return Ok(None);
+        }
+        skill
     };
-    if !skill_requires_review(indexer, skill).await? {
-        return Ok(None);
-    }
     Ok(Some(json!({
         "ok": false,
         "issues": [{
@@ -367,6 +404,48 @@ pub(super) async fn refuse_machine_removal(
                 "`{skill}` asks for human review (`autonomy`): an agent run cannot {what} `{page_id}` \
                  on its own, and a removal cannot be held as a draft. Propose the change in a draft of \
                  the page, or ask a person to do it"
+            ),
+        }],
+    })))
+}
+
+/// The per-instance WRITE ACL as one decision, shared by `update_page` and by promotion (which must
+/// ask it BEFORE a write-back touches an external system). `Off` skips; `Log` records a would-be
+/// denial and allows; `Enforce` answers the `forbidden` refusal. `Ok(None)` = go on.
+pub(super) async fn write_acl_refusal(
+    indexer: &Indexer,
+    caller: &AclCaller<'_>,
+    write_acl: crate::server::WriteAclMode,
+    page_id: &str,
+    content: &str,
+) -> Result<Option<Value>, JsonRpcError> {
+    if write_acl == crate::server::WriteAclMode::Off {
+        return Ok(None);
+    }
+    let allowed = indexer
+        .may_write_page(caller, page_id, content)
+        .await
+        .map_err(|e| JsonRpcError::internal(format!("update_page acl: {e}")))?;
+    if allowed {
+        return Ok(None);
+    }
+    if write_acl == crate::server::WriteAclMode::Log {
+        tracing::warn!(
+            subject = %caller.subject,
+            page_id = %page_id,
+            "write-ACL would deny this write (log mode) — allowing"
+        );
+        return Ok(None);
+    }
+    Ok(Some(json!({
+        "ok": false,
+        "issues": [{
+            "severity": "error",
+            "code": "forbidden",
+            "location": "frontmatter",
+            "message": format!(
+                "write denied: caller `{}` does not own instance `{}`",
+                caller.subject, page_id
             ),
         }],
     })))
@@ -593,33 +672,10 @@ pub(super) async fn tool_update_page_ungated(
     // only the resolved owner (or admin) may mutate an owner-private
     // instance; public/no-owner instances are admin-write-only. `Off`
     // skips; `Log` records a would-be denial but allows; `Enforce` rejects.
-    if write_acl != crate::server::WriteAclMode::Off {
-        let allowed = indexer
-            .may_write_page(&caller, &a.page_id, &a.content)
-            .await
-            .map_err(|e| JsonRpcError::internal(format!("update_page acl: {e}")))?;
-        if !allowed {
-            if write_acl == crate::server::WriteAclMode::Log {
-                tracing::warn!(
-                    subject = %caller.subject,
-                    page_id = %a.page_id,
-                    "write-ACL would deny this write (log mode) — allowing"
-                );
-            } else {
-                return Ok(json!({
-                    "ok": false,
-                    "issues": [{
-                        "severity": "error",
-                        "code": "forbidden",
-                        "location": "frontmatter",
-                        "message": format!(
-                            "write denied: caller `{}` does not own instance `{}`",
-                            caller.subject, a.page_id
-                        ),
-                    }],
-                }));
-            }
-        }
+    if let Some(refused) =
+        write_acl_refusal(indexer, &caller, write_acl, &a.page_id, &a.content).await?
+    {
+        return Ok(refused);
     }
 
     // #246 optimistic concurrency + monotonic versions + CRDT auto-merge. The
@@ -974,8 +1030,12 @@ pub(super) async fn tool_move_page(
     args: Value,
 ) -> Result<Value, JsonRpcError> {
     let a: MovePageArgs = parse_args(args, "move_page")?;
-    if let Some(refused) = refuse_machine_removal(indexer, &caller, &a.from, "move").await? {
-        return Ok(refused);
+    // A move writes BOTH ids: it removes `from` and creates `to`, so a machine may not move a page out
+    // of a review skill, nor INTO one (that would land bytes in the namespace unreviewed).
+    for id in [&a.from, &a.to] {
+        if let Some(refused) = refuse_machine_removal(indexer, &caller, id, "move").await? {
+            return Ok(refused);
+        }
     }
 
     let Some(existing) = indexer
@@ -3025,6 +3085,24 @@ pub(super) async fn tool_purge_page(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_skill_page_that_does_not_parse_asks_for_review() {
+        // Failing OPEN here would let a corrupt skill page switch the gate off.
+        assert!(autonomy_requires_review(
+            "---\nkind: skill\nid: x\nautonomy: [review\n---\n# x\n"
+        ));
+        assert!(autonomy_requires_review("no frontmatter at all"));
+        assert!(!autonomy_requires_review(
+            "---\nkind: skill\nid: x\nautonomy: auto\n---\n# x\n"
+        ));
+        assert!(!autonomy_requires_review(
+            "---\nkind: skill\nid: x\n---\n# x\n"
+        ));
+        assert!(autonomy_requires_review(
+            "---\nkind: skill\nid: x\nautonomy: atuo\n---\n# x\n"
+        ));
+    }
 
     /// F-4 hardening: with a server secret the operation slug is an HMAC — a
     /// peer who knows the (guessable) subject, plan and key STILL cannot compute

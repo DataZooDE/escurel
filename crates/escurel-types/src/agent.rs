@@ -829,6 +829,16 @@ pub struct UpdatePageResponse {
     /// (page absent), which decodes to `None`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub head_content: Option<String>,
+    /// The write did NOT land: the skill asks for human review (`autonomy: review | confirm`, or the
+    /// page configures agents) and the caller is a machine, so it was held as an open draft a person
+    /// promotes. `ok` is `true` — nothing is wrong — but `new_version` is empty and the page is
+    /// unchanged. A caller that treats `ok` as "landed" (marks an event processed, cascades) is wrong
+    /// when this is set. Absent on old servers ⇒ `false`.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub held_for_review: bool,
+    /// The open draft that holds the write, when [`Self::held_for_review`].
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub draft: Option<crate::drafts::Draft>,
 }
 
 /// `delete_page` arguments (#300). MCP wire keys: `page_id`, optional

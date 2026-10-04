@@ -787,27 +787,28 @@ pub(super) async fn tool_promote_draft(
     // `write_back` intent. The human's promotion is the gate: only now does the change reach the
     // upstream (etag check, audit-first, idempotent apply, durable outcome), and what is committed
     // as the row's notes is the draft WITHOUT the intent. A draft with no intent passes through.
-    // The human gate is a RULE. A per-run agent token (it carries `run_id`/`act`, minted by
-    // `mint_agent_token`) may PROPOSE a write-back but never approve one: otherwise an agent steered
-    // by injected text could propose a change and promote it itself, and the upstream would change on
-    // no human's say-so. A person's token carries neither claim.
-    if (caller.run_id.is_some() || caller.actor.is_some())
-        && draft_carries_write_back(corrected.unwrap_or(draft.content.as_str()))
+    // The human gate is a RULE, for EVERY draft. A machine (a per-run agent token: it carries
+    // `run_id` / `act`, minted by the runner or by `mint_agent_token`) may PROPOSE a change but never
+    // approve one: otherwise an agent steered by injected text could be held for review, promote its
+    // own draft, and the review would be a formality (and, for a write-back draft, the upstream would
+    // change on no human's say-so). A person's token carries neither claim.
+    if crate::mcp::tools_write::is_machine_caller(&caller) {
+        return Ok(promote_requires_human(&draft.draft_id));
+    }
+    // The page's WRITE ACL, asked BEFORE anything reaches the source. Promotion only used to check
+    // that the caller may SEE the draft, and the ACL was asked later by the page write: after
+    // `write_back::run` had already changed the upstream. A person who may read a row but not write it
+    // must not be able to cause a change in the system behind it.
+    if let Some(refused) = crate::mcp::tools_write::write_acl_refusal(
+        indexer,
+        &caller,
+        write_acl,
+        &draft.target_page_id,
+        corrected.unwrap_or(draft.content.as_str()),
+    )
+    .await?
     {
-        return Ok(json!({
-            "ok": false,
-            "issues": [{
-                "severity": "error",
-                "code": "promote_requires_human",
-                "location": "draft_id",
-                "message": format!(
-                    "draft `{}` changes an external system (`write_back`); only a human reviewer \
-                     may promote it, not the agent run that proposed it",
-                    draft.draft_id
-                ),
-                "suggestion": "leave it open: it appears in Awaiting You for a person to approve",
-            }],
-        }));
+        return Ok(refused);
     }
     let landing = match crate::write_back::run(
         state,
@@ -1030,6 +1031,14 @@ pub(super) async fn tool_discard_draft(
         && !may_see(indexer, &caller, d).await?
     {
         return Ok(not_found());
+    }
+    // A machine may withdraw what ITS OWN run proposed (it must, to re-draft a page that already has
+    // an open draft), never another run's or a person's: that is a decision on someone else's work.
+    if let Some(d) = &draft
+        && crate::mcp::tools_write::is_machine_caller(&caller)
+        && (d.run_id.is_none() || d.run_id.as_deref() != caller.run_id)
+    {
+        return Ok(promote_requires_human(&d.draft_id));
     }
     let decided_by = decided_by_or_caller(a.decided_by.as_deref(), &caller)?;
     let closed = indexer
@@ -1401,6 +1410,9 @@ pub(super) async fn tool_promote_changeset(
         Ok(m) => m,
         Err(refusal) => return Ok(refusal),
     };
+    if crate::mcp::tools_write::is_machine_caller(&caller) {
+        return Ok(promote_requires_human(&a.changeset_id));
+    }
     let subject = decided_by_or_caller(a.decided_by.as_deref(), &caller)?;
 
     // Already decided: a retry after a timeout the client never saw an answer
@@ -1552,6 +1564,13 @@ pub(super) async fn tool_discard_changeset(
         Ok(m) => m,
         Err(refusal) => return Ok(refusal),
     };
+    if crate::mcp::tools_write::is_machine_caller(&caller)
+        && members
+            .iter()
+            .any(|m| m.run_id.is_none() || m.run_id.as_deref() != caller.run_id)
+    {
+        return Ok(promote_requires_human(&a.changeset_id));
+    }
     let subject = decided_by_or_caller(a.decided_by.as_deref(), &caller)?;
     let mut discarded = 0usize;
     for m in members.iter().filter(|m| m.status == "open") {
@@ -1600,10 +1619,19 @@ pub(super) async fn tool_discard_changeset(
 }
 
 /// Does this draft content carry a `write_back` intent (or a malformed one: refused the same way)?
-fn draft_carries_write_back(content: &str) -> bool {
-    let Ok(parsed) = escurel_md::parse(content) else {
-        return false;
-    };
-    let fields = crate::write_back::frontmatter_json(&parsed.frontmatter.fields);
-    !matches!(crate::write_back::parse_intent(&fields), Ok(None))
+/// The refusal a machine gets when it tries to promote: the decision is a person's.
+fn promote_requires_human(id: &str) -> Value {
+    json!({
+        "ok": false,
+        "issues": [{
+            "severity": "error",
+            "code": "promote_requires_human",
+            "location": "draft_id",
+            "message": format!(
+                "`{id}` is waiting for a person: an agent run may propose a change but never approve \
+                 one, whatever it changes"
+            ),
+            "suggestion": "leave it open: it appears in Awaiting You for a person to approve",
+        }],
+    })
 }

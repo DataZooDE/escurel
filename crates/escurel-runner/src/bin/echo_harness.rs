@@ -759,6 +759,24 @@ fn run(task: &HarnessTask) -> Result<HarnessOutcome, String> {
             updated.get("issues").cloned().unwrap_or_default()
         ));
     }
+    // A write the gateway HELD (`held_for_review`: the skill's autonomy changed under the run, or the
+    // page configures agents) did not land: `ok` is true but nothing moved. Marking the event processed
+    // would tell the inbox it was folded when it is waiting for a person; report it as drafted and stop,
+    // as the review path above does.
+    if let Some(draft_id) = held_draft(&updated) {
+        return Ok(HarnessOutcome {
+            result_ref: knob_result_ref(),
+            usage: None,
+            ok: true,
+            status: HarnessStatus::Ok,
+            summary: format!(
+                "the gateway held the fold of event {event_id} for {instance_page_id} \
+                 (draft {draft_id}); awaiting a human"
+            ),
+            tool_calls,
+            produced_instance: Some(instance_page_id),
+        });
+    }
     let new_version = updated
         .get("new_version")
         .and_then(Value::as_str)
@@ -782,6 +800,17 @@ fn run(task: &HarnessTask) -> Result<HarnessOutcome, String> {
         ),
         tool_calls,
         produced_instance: Some(instance_page_id),
+    })
+}
+
+/// The draft an `update_page` answer says it was HELD in (`held_for_review: true`), `None` when the
+/// write landed.
+fn held_draft(updated: &Value) -> Option<String> {
+    (updated.get("held_for_review") == Some(&json!(true))).then(|| {
+        updated["draft"]["draft_id"]
+            .as_str()
+            .unwrap_or_default()
+            .to_owned()
     })
 }
 
@@ -1455,5 +1484,18 @@ mod tests {
             fm.contains("claim: \"r1-verify-01\"\n"),
             "fallback to id: {fm}"
         );
+    }
+}
+
+#[cfg(test)]
+mod held_tests {
+    use super::*;
+
+    #[test]
+    fn a_held_update_is_not_a_landed_one() {
+        let held = json!({ "ok": true, "held_for_review": true, "draft": { "draft_id": "d1" } });
+        assert_eq!(held_draft(&held).as_deref(), Some("d1"));
+        let landed = json!({ "ok": true, "new_version": "v3" });
+        assert_eq!(held_draft(&landed), None);
     }
 }

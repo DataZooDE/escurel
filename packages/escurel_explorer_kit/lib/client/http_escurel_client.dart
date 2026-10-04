@@ -823,6 +823,7 @@ class HttpEscurelClient implements EscurelClient {
       ok: (result['ok'] as bool?) ?? true,
       issues: _issuesFromJson(result['issues']),
       newVersion: result['new_version'] as String?,
+      heldForReview: (result['held_for_review'] as bool?) ?? false,
     );
   }
 

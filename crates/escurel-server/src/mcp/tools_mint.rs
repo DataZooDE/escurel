@@ -117,7 +117,12 @@ pub(super) async fn tool_mint_agent_token(
             caller.subject,
             &a.skill,
             caller.token_groups,
-            caller.is_admin,
+            // NEVER admin, whoever minted it: the token is an AGENT's. It carries the minter's groups
+            // (what the person may read and write) and names them as `act.sub` for the audit trail,
+            // but an agent steered by injected text must not hold the admin tools or the exemptions an
+            // admin has (it is the one caller the autonomy gate exists for). An admin who wants admin
+            // authority uses their own token.
+            false,
             ttl,
             Some(&run),
         )

@@ -39,6 +39,12 @@ struct IngestCaller {
     /// RBAC token groups (admin role value already stripped).
     groups: Vec<String>,
     is_admin: bool,
+    /// The token's delegation / run / narrowing claims. An upload is made by whoever presented the
+    /// bearer, and a MACHINE (`run_id` / `act` / `skill`) is gated like it is on `update_page`.
+    actor: Option<String>,
+    run_id: Option<String>,
+    root_event_id: Option<String>,
+    agent_skill: Option<String>,
 }
 
 /// Auth (REQ-NF-07) + per-tenant Writes rate-limit gate shared by `/ingest`
@@ -90,6 +96,14 @@ async fn ingest_gate(
         Some(c) => matches!(c.role, Role::Admin),
         None => true,
     };
+    let actor = auth_ctx.as_ref().and_then(|c| c.actor.clone());
+    let run_id = auth_ctx
+        .as_ref()
+        .and_then(|c| c.run.as_ref().map(|r| r.run_id.clone()));
+    let root_event_id = auth_ctx
+        .as_ref()
+        .and_then(|c| c.run.as_ref().and_then(|r| r.root_event_id.clone()));
+    let agent_skill = auth_ctx.as_ref().and_then(|c| c.agent_skill.clone());
     if let (Some(quota), Some(ctx)) = (state.quota.as_ref(), auth_ctx.as_ref())
         && let Err(err) = quota.try_consume(&ctx.tenant_id, Dimension::Writes)
     {
@@ -114,6 +128,10 @@ async fn ingest_gate(
                     subject,
                     groups,
                     is_admin,
+                    actor,
+                    run_id,
+                    root_event_id,
+                    agent_skill,
                 },
             ))
         }
@@ -405,11 +423,10 @@ async fn record_and_dispatch_ingest(
                 subject,
                 is_admin: caller.is_admin,
                 token_groups: &caller.groups,
-                // /ingest is a direct upload, not a delegated run (#510).
-                actor: None,
-                run_id: None,
-                root_event_id: None,
-                agent_skill: None,
+                actor: caller.actor.as_deref(),
+                run_id: caller.run_id.as_deref(),
+                root_event_id: caller.root_event_id.as_deref(),
+                agent_skill: caller.agent_skill.as_deref(),
             };
             let may_create = indexer
                 .may_write_instance(&acl_caller, sk, None, &Value::Object(incoming))
@@ -438,6 +455,37 @@ async fn record_and_dispatch_ingest(
             }
         },
     };
+    // The autonomy gate. This door materialises an instance without `update_page`, so a machine's
+    // upload (explicit skill or routed by MIME) into a skill that asks for review must not land here
+    // either; a blob cannot be held as a draft, so it is refused with whom to ask.
+    if let Some(sk) = handler.as_deref() {
+        let machine = AclCaller {
+            subject,
+            is_admin: caller.is_admin,
+            token_groups: &caller.groups,
+            actor: caller.actor.as_deref(),
+            run_id: caller.run_id.as_deref(),
+            root_event_id: caller.root_event_id.as_deref(),
+            agent_skill: caller.agent_skill.as_deref(),
+        };
+        if super::tools_write::is_machine_caller(&machine)
+            && super::tools_write::skill_requires_review(indexer, sk)
+                .await
+                .unwrap_or(true)
+        {
+            return (
+                StatusCode::CONFLICT,
+                Json(json!({
+                    "error": "review_required",
+                    "message": format!(
+                        "`{sk}` asks for human review (`autonomy`): an agent run cannot add \
+                         documents to it on its own. Ask a person to upload it"
+                    ),
+                })),
+            )
+                .into_response();
+        }
+    }
     let label_skill = handler.clone().unwrap_or_else(|| "ingest".to_owned());
     // GH #369: the Event consumes `title` (falling back to the blob id), but the
     // materialised instance needs it too — keep the caller's *own* title, so an

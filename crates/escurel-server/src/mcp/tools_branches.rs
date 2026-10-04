@@ -284,6 +284,22 @@ pub(super) async fn tool_merge_branch(
         }));
     }
 
+    // A merge lands the branch's bytes on the BASE timeline through the ungated write below, so it is
+    // the way round the autonomy gate: a machine's branch write is only a view, but merging it is a
+    // direct write. A machine may not merge a branch that touches a review skill (or a skill page);
+    // a person merges it, which is the review.
+    if crate::mcp::tools_write::is_machine_caller(&caller) {
+        for page in &pages {
+            let probe = format!("markdown/instances/{}/{}.md", page.skill, page.slug);
+            if let Some(refused) =
+                crate::mcp::tools_write::refuse_machine_removal(indexer, &caller, &probe, "merge")
+                    .await?
+            {
+                return Ok(refused);
+            }
+        }
+    }
+
     // ── Pre-flight. Nothing is written until every member could be. ──
     let mut issues = Vec::new();
     let mut plan = Vec::new();

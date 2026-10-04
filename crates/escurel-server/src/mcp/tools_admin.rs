@@ -862,6 +862,22 @@ pub(super) async fn tool_write_instance(
             "not authorised to write this instance".to_owned(),
         ));
     }
+    // The autonomy gate: this forwards a write to an EXTERNAL system, with no draft in between, so a
+    // machine may not do it to an instance of a skill that asks for review.
+    if super::tools_write::is_machine_caller(&caller)
+        && super::tools_write::skill_requires_review(indexer, &page.skill).await?
+    {
+        return Err(JsonRpcError::domain(
+            "review_required",
+            "ref",
+            format!(
+                "`{}` asks for human review (`autonomy`): an agent run cannot write through to its \
+                 source on its own",
+                page.skill
+            ),
+            Some("ask a person to make the change"),
+        ));
+    }
     crate::remote_backend::write_instance(
         indexer,
         egress,

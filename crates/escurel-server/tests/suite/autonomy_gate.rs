@@ -120,7 +120,7 @@ async fn a_machine_write_to_a_review_skill_is_held_as_a_draft_and_the_page_does_
 }
 
 #[tokio::test]
-async fn a_person_an_admin_auto_unset_and_skill_pages_keep_landing_directly() {
+async fn a_person_an_admin_auto_and_unset_skills_keep_landing_directly() {
     let p = start().await;
     let agent = machine(&p);
     let admin = p.mint_token(TENANT, Role::Admin);
@@ -149,10 +149,11 @@ async fn a_person_an_admin_auto_unset_and_skill_pages_keep_landing_directly() {
         assert!(r.get("held_for_review").is_none(), "{sk}: {r}");
         assert!(r["new_version"].is_string(), "{sk}: it landed: {r}");
     }
-    // Writing a SKILL page is not an instance write.
+    // A SKILL page is the gate's own configuration: a machine's edit of it is held too (a person's
+    // lands). See `autonomy_hardening`.
     let s = call(
         &p,
-        &agent,
+        &human(&p),
         "update_page",
         json!({ "page_id": "markdown/skills/fresh.md", "content": skill("fresh", Some("review")) }),
     )
@@ -178,7 +179,7 @@ async fn an_unrecognised_autonomy_value_fails_toward_holding() {
 }
 
 #[tokio::test]
-async fn promoting_a_held_draft_lands_it_even_when_the_approver_is_a_machine_token() {
+async fn promoting_a_held_draft_lands_it_when_a_person_approves_and_never_when_the_agent_does() {
     let p = start().await;
     let agent = machine(&p);
     let held = call(
@@ -189,8 +190,11 @@ async fn promoting_a_held_draft_lands_it_even_when_the_approver_is_a_machine_tok
     )
     .await;
     let id = held["draft"]["draft_id"].as_str().unwrap().to_owned();
-    // Promotion re-enters the write path and must LAND, not be held a second time.
-    let done = call(&p, &agent, "promote_draft", json!({ "draft_id": id })).await;
+    // The agent cannot approve its own held write ...
+    let own = call(&p, &agent, "promote_draft", json!({ "draft_id": id })).await;
+    assert_eq!(own["ok"], false, "{own}");
+    // ... and a person's promotion re-enters the write path and must LAND, not be held again.
+    let done = call(&p, &human(&p), "promote_draft", json!({ "draft_id": id })).await;
     assert_eq!(done["ok"], true, "{done}");
     let now = call(
         &p,

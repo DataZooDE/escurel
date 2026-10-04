@@ -187,6 +187,12 @@ export interface UpdatePageResponse {
   issues: ValidationIssue[];
   new_version?: string;
   auto_merged?: boolean;
+  /**
+   * The write did NOT land: the skill asks for human review and the caller is a machine, so it was
+   * held as an open draft. `ok` is still true; `new_version` is absent and the page is unchanged.
+   */
+  held_for_review?: boolean;
+  draft?: { draft_id: string; target_page_id: string; status: string };
   [key: string]: unknown;
 }
 

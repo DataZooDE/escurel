@@ -825,6 +825,19 @@ fn roundtrip_agent() {
         head_version: None,
         head_sha256: None,
         head_content: None,
+        held_for_review: false,
+        draft: None,
+    });
+    rt(UpdatePageResponse {
+        ok: true,
+        held_for_review: true,
+        draft: Some(Draft {
+            draft_id: "d1".into(),
+            target_page_id: "markdown/instances/s/a.md".into(),
+            status: "open".into(),
+            ..Default::default()
+        }),
+        ..Default::default()
     });
     rt(ListSkillsResponse {
         skills: vec![Skill {

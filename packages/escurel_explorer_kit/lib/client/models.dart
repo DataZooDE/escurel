@@ -862,10 +862,19 @@ class ValidationResult {
 }
 
 class UpdateResult {
-  const UpdateResult({required this.ok, required this.issues, this.newVersion});
+  const UpdateResult({
+    required this.ok,
+    required this.issues,
+    this.newVersion,
+    this.heldForReview = false,
+  });
   final bool ok;
   final List<Issue> issues;
   final String? newVersion;
+
+  /// The write did NOT land: the skill asks for human review and the caller is a machine, so it was
+  /// held as an open draft. [ok] is still true; the page is unchanged.
+  final bool heldForReview;
 }
 
 // ── live mode (session) — stubs until M3 transport decided ──────
