@@ -69,7 +69,7 @@ pub use document::{
 };
 pub use markdown::MarkdownBackend;
 pub use remote::{
-    RemoteError, encode_segment, fill_path_template, fill_template, json_path_get,
+    RemoteError, encode_segment, fill_path_template, fill_template, has_dot_segment, json_path_get,
     resolve_projection,
 };
 pub use rows::{RowRecord, RowsPage, RowsSource};

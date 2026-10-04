@@ -464,6 +464,10 @@ async fn send_path(
     path: &str,
     build: impl FnOnce(&reqwest::Client, &str) -> reqwest::RequestBuilder,
 ) -> Result<Capped, String> {
+    // An id such as `..` must never change WHICH resource the template names (see `has_dot_segment`).
+    if escurel_index::backend::has_dot_segment(path) {
+        return Err("the request path contains a dot segment, which is not allowed".to_owned());
+    }
     let _permit = egress.admit(key).map_err(|e| e.to_string())?;
     let full = join_url(&ep.base_url, path);
     let (client, _url) = egress.client_for(&full).await.map_err(|e| e.to_string())?;

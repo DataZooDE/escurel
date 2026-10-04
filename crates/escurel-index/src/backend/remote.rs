@@ -136,6 +136,18 @@ pub fn encode_segment(value: &str) -> String {
     out
 }
 
+/// Does `path` contain a `.` or `..` segment, in ANY spelling? The URL parser a client uses treats
+/// `%2E%2E` / `%2e` exactly like `..` and collapses it, so an id of `..` would turn
+/// `/customers/{id}` into the PARENT resource and the endpoint's credentials would read it. A
+/// percent-encoded dot is not safe against that; only refusing the segment is.
+#[must_use]
+pub fn has_dot_segment(path: &str) -> bool {
+    path.split(['/', '\\']).any(|seg| {
+        let decoded = seg.replace("%2E", ".").replace("%2e", ".");
+        decoded == "." || decoded == ".."
+    })
+}
+
 /// [`fill_template`] for URL PATHS: every substituted value is percent-encoded with
 /// [`encode_segment`], so a caller-supplied value (an id, a payload field) is data, never path
 /// syntax. A placeholder with no value is left as written, for the caller's fail-closed
@@ -339,6 +351,10 @@ mod tests {
         let mut vars = BTreeMap::new();
         vars.insert("id".to_owned(), "..".to_owned());
         assert_eq!(fill_path_template("/c/{id}", &vars), "/c/%2E%2E");
+        assert!(
+            has_dot_segment("/c/%2E%2E"),
+            "an encoded dot-dot is still a dot segment"
+        );
         vars.insert("id".to_owned(), ".".to_owned());
         assert_eq!(fill_path_template("/c/{id}", &vars), "/c/%2E");
     }

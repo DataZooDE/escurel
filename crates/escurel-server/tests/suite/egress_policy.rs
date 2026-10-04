@@ -670,3 +670,57 @@ async fn a_refused_file_reference_is_not_an_oracle_for_which_files_exist() {
     );
     process.shutdown().await;
 }
+
+// ---- a row id can never change which upstream resource a path template names ----------------------
+
+/// A real upstream that records the PATH of every request it receives, whatever the path is.
+async fn path_recorder() -> (String, Arc<std::sync::Mutex<Vec<String>>>) {
+    let seen: Arc<std::sync::Mutex<Vec<String>>> = Arc::default();
+    let app =
+        Router::new()
+            .fallback(
+                move |State(seen): State<Arc<std::sync::Mutex<Vec<String>>>>,
+                      uri: axum::http::Uri| async move {
+                    seen.lock().unwrap().push(uri.path().to_owned());
+                    Json(json!({ "name": "SOME RESOURCE", "account_tier": "gold" }))
+                },
+            )
+            .with_state(Arc::clone(&seen));
+    let (base, _handle) = serve(app).await;
+    (base, seen)
+}
+
+#[tokio::test]
+async fn a_dot_segment_id_cannot_escape_the_path_template() {
+    let (base, seen) = path_recorder().await;
+    let (process, _dirs) = spawn_gateway(loopback_ok()).await;
+    let reg = call(
+        &process,
+        "register_endpoint",
+        json!({ "name": "crm_rest", "kind": "openapi", "base_url": format!("{base}/api/v1") }),
+    )
+    .await;
+    assert!(reg.get("error").is_none(), "register: {reg}");
+
+    for id in ["..", ".", "...", "%2e%2e", "a/../b"] {
+        let created = call(
+            &process,
+            "create_remote_instance",
+            json!({ "skill": "customer", "id": id }),
+        )
+        .await;
+        if let Some(page_id) = created["result"]["structuredContent"]["page_id"].as_str() {
+            let _ = call(&process, "expand", json!({ "page_id": page_id })).await;
+        }
+    }
+    let paths = seen.lock().unwrap().clone();
+    // Every request the upstream saw must stay UNDER /api/v1/customers/: a collapsed `..` would read
+    // the parent resource (`/api/v1/`) with the endpoint's credentials.
+    assert!(
+        paths
+            .iter()
+            .all(|p| p.starts_with("/api/v1/customers/") && !p.ends_with("/customers/")),
+        "the upstream saw a path outside the template: {paths:?}"
+    );
+    process.shutdown().await;
+}
