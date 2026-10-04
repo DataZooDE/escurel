@@ -93,7 +93,7 @@ again). New operator knobs: `ESCUREL_SHUTDOWN_DRAIN_SECS`, the `ESCUREL_EGRESS_*
 `escurel_source_unavailable_total`.
 
 The full, command-verified procedure, the dry-run report, timing (the rebuild dominates: a real embedder
-re-embeds the corpus) and rollback are in [`kind-migration.md`](kind-migration.md). Consumers (agents that write
+re-embeds the corpus) and rollback are in [`kind-migration.md`](kind-migration.md). The order for the repositories and services that depend on the engine (prepare on branches, then one stop-first window) is [`consumer-rollout.md`](consumer-rollout.md). Consumers (agents that write
 pages, other repos' skill pages) must change in the same release: see the [`CHANGELOG`](../../CHANGELOG.md).
 
 ---
