@@ -439,8 +439,6 @@ describe('inspectorActions', () => {
         args: [
           {
             runId: runNode.id,
-            skill: 'note',
-            pageId: 'markdown/instances/note/plan.md',
           },
         ],
       });

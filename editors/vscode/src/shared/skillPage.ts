@@ -6,6 +6,7 @@ import { skillFacts } from './freshness';
 import { titleCase } from './page';
 import { pageSlug } from './pageId';
 import type { ActionView } from './protocol';
+import { cleanText } from './untrustedText';
 
 export const SKILL_PAGE_INSTANCES = 10;
 export const SKILL_PAGE_RUNS = 8;
@@ -73,9 +74,9 @@ export type SkillPageToWebview =
 
 function fieldDetail(f: SkillField): string {
   const parts: string[] = [];
-  if (f.kind === 'link') parts.push(f.target_skill ? `link to ${f.target_skill}` : 'link');
-  else if (f.kind === 'enum' && f.values?.length) parts.push(`one of ${f.values.join(', ')}`);
-  else parts.push(f.kind);
+  if (f.kind === 'link') parts.push(f.target_skill ? `link to ${cleanText(f.target_skill, 80)}` : 'link');
+  else if (f.kind === 'enum' && f.values?.length) parts.push(`one of ${f.values.slice(0, 50).map((v) => cleanText(String(v), 60)).join(', ')}`);
+  else parts.push(cleanText(String(f.kind), 40));
   if (f.min !== undefined || f.max !== undefined) {
     parts.push(`${f.min ?? ''}…${f.max ?? ''}`);
   }
@@ -85,17 +86,17 @@ function fieldDetail(f: SkillField): string {
 function fieldViews(skill: Skill): SkillFieldView[] {
   if (skill.fields?.length) {
     return skill.fields.map((f) => ({
-      name: f.name,
-      label: f.label?.trim() || titleCase(f.name),
+      name: cleanText(f.name, 80),
+      label: cleanText(f.label?.trim() || titleCase(f.name), 80),
       required: f.required,
       detail: fieldDetail(f),
-      ...(f.description ? { description: f.description } : {}),
+      ...(f.description ? { description: cleanText(f.description, 600) } : {}),
     }));
   }
   const required = new Set(skill.required_frontmatter);
   return [...skill.required_frontmatter, ...skill.optional_frontmatter].map((name) => ({
-    name,
-    label: titleCase(name),
+    name: cleanText(name, 80),
+    label: cleanText(titleCase(name), 80),
     required: required.has(name),
     detail: 'text',
   }));
@@ -105,7 +106,7 @@ function instanceTitle(i: Instance): string {
   const fm = i.frontmatter ?? {};
   for (const k of ['title', 'name', 'subject', 'label']) {
     const v = fm[k];
-    if (typeof v === 'string' && v.trim()) return v.trim();
+    if (typeof v === 'string' && v.trim()) return cleanText(v, 160);
   }
   return pageSlug(i.page_id);
 }
@@ -129,16 +130,16 @@ export function buildSkillPageModel(
 ): SkillPageModel {
   const provenance = skillFacts(skill, now);
   const facts: SkillFactView[] = [];
-  if (skill.role) facts.push({ label: 'Role', value: skill.role });
-  if (skill.folder) facts.push({ label: 'Folder', value: skill.folder });
-  if (skill.tags?.length) facts.push({ label: 'Tags', value: skill.tags.join(', ') });
-  facts.push({ label: 'Backend', value: skill.backend.kind });
+  if (skill.role) facts.push({ label: 'Role', value: cleanText(skill.role, 80) });
+  if (skill.folder) facts.push({ label: 'Folder', value: cleanText(skill.folder, 200) });
+  if (skill.tags?.length) facts.push({ label: 'Tags', value: cleanText(skill.tags.slice(0, 30).join(', '), 300) });
+  facts.push({ label: 'Backend', value: cleanText(String(skill.backend.kind), 40) });
   facts.push({
     label: 'Autonomy',
     value: skill.autonomy === 'auto' || skill.autonomy === 'confirm' ? skill.autonomy : 'review',
   });
-  facts.push({ label: 'Layer', value: skill.layer });
-  if (skill.resource) facts.push({ label: 'Describes', value: skill.resource });
+  facts.push({ label: 'Layer', value: cleanText(String(skill.layer), 40) });
+  if (skill.resource) facts.push({ label: 'Describes', value: cleanText(skill.resource, 300) });
 
   const runs = [...events]
     .sort((a, b) => time(b) - time(a) || b.event_id.localeCompare(a.event_id))
@@ -146,18 +147,18 @@ export function buildSkillPageModel(
     .map<SkillRunView>((e) => ({
       rootEventId: e.root_event_id ?? e.event_id,
       ...(e.run_id ? { runId: e.run_id } : {}),
-      title: e.title?.trim() || 'Untitled event',
+      title: cleanText(e.title ?? '', 160) || 'Untitled event',
       at: e.at,
-      state: runState(e.status),
+      state: cleanText(runState(e.status), 40),
       ...(e.instance_page_id ? { pageId: e.instance_page_id } : {}),
     }));
 
   return {
     id: skill.id,
     pageId: `markdown/skills/${skill.id}.md`,
-    title: skill.title?.trim() || titleCase(skill.id),
-    description: skill.description,
-    ...(skill.summary ? { summary: skill.summary } : {}),
+    title: cleanText(skill.title?.trim() || titleCase(skill.id), 160),
+    description: cleanText(skill.description ?? '', 1000),
+    ...(skill.summary ? { summary: cleanText(skill.summary, 1000) } : {}),
     readOnly: skill.layer !== 'overlay',
     stale: provenance.stale,
     provenance: provenance.facts,

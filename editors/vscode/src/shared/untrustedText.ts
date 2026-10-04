@@ -24,6 +24,8 @@ function strip(text: string, keepLines: boolean): string {
 
 /** One line of display text: unsafe characters removed, whitespace collapsed, length capped with an ellipsis. */
 export function cleanText(text: string, max = 400): string {
+  // An 8 MB string is not scanned to keep 400 characters of it.
+  if (text.length > max * 8) text = text.slice(0, max * 8);
   // Line breaks and tabs are whitespace to collapse, not characters to drop (`a\nb` is two words).
   const flat = strip(text.replace(/[\t\n\r]+/g, ' '), false)
     .replace(/\s+/g, ' ')
@@ -34,6 +36,17 @@ export function cleanText(text: string, max = 400): string {
 
 /** Multi-line text (a document chunk): line breaks and tabs stay, the rest is stripped, the length capped. */
 export function cleanBlock(text: string, max = 4000): string {
+  if (text.length > max * 4) text = text.slice(0, max * 4);
   const chars = [...strip(text.replace(/\r\n?/g, '\n'), true)];
   return chars.length <= max ? chars.join('') : chars.slice(0, max).join('');
+}
+
+/** Unsafe characters removed and the length capped; spacing is left exactly as it was. */
+export function stripUnsafe(text: string, max = 400): string {
+  return [...strip(text.length > max * 4 ? text.slice(0, max * 4) : text, false)].slice(0, max).join('');
+}
+
+/** `cleanText` for a value that may be absent or not a string. */
+export function cleanOpt(value: unknown, max = 400): string | undefined {
+  return typeof value === 'string' && value ? cleanText(value, max) || undefined : undefined;
 }

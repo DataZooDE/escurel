@@ -133,7 +133,7 @@ describe('run detail actions', () => {
       }),
     ).toEqual({
       command: 'escurel.approvePlan',
-      args: { runId: base.runId, skill, pageId: base.targetPageId },
+      args: { runId: base.runId },
     });
     expect(
       resolveRunAction(view('failed'), {

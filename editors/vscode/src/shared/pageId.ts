@@ -7,6 +7,8 @@
  * depends on whether the skill is known, so both rules live here.
  */
 
+import { cleanText } from './untrustedText';
+
 /** The file name of a page id, without its directories or `.md`. */
 export function pageFile(pageId: string): string {
   return pageId.split('/').pop()!.replace(/\.md$/, '');
@@ -20,9 +22,10 @@ export function pageFile(pageId: string): string {
  */
 export function pageSlug(pageId: string, skill?: string): string {
   const file = pageFile(pageId);
-  if (skill) return file.startsWith(`${skill}__`) ? file.slice(skill.length + 2) : file;
+  // Display text from a page id someone else chose: no bidi or control characters, bounded.
+  if (skill) return cleanText(file.startsWith(`${skill}__`) ? file.slice(skill.length + 2) : file, 160);
   const sep = file.indexOf('__');
-  return sep >= 0 ? file.slice(sep + 2) : file;
+  return cleanText(sep >= 0 ? file.slice(sep + 2) : file, 160);
 }
 
 /**

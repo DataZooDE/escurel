@@ -1,4 +1,5 @@
 import type { Skill } from '../client';
+import { cleanText } from './untrustedText';
 
 type Okf = Pick<Skill, 'verified' | 'generated' | 'status' | 'stale_after' | 'sources'>;
 
@@ -49,10 +50,12 @@ export interface SkillFacts {
  */
 export function skillFacts(skill: Okf, now: number): SkillFacts {
   const facts: string[] = [];
-  const verified = typeof skill.verified === 'string' ? skill.verified.trim() : '';
-  const generated = typeof skill.generated === 'string' ? skill.generated.trim() : '';
-  const status = typeof skill.status === 'string' ? skill.status.trim() : '';
-  const staleAfter = typeof skill.stale_after === 'string' ? skill.stale_after.trim() : '';
+  // Skill pages are authored by people; these short phrases end up in tooltips and headers.
+  const word = (v: unknown): string => (typeof v === 'string' ? cleanText(v, 80) : '');
+  const verified = word(skill.verified);
+  const generated = word(skill.generated);
+  const status = word(skill.status);
+  const staleAfter = word(skill.stale_after);
 
   let stale = false;
   if (staleAfter) {

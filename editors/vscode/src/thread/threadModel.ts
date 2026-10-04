@@ -3,6 +3,7 @@ import type { LineageNode, ListLineageResponse } from '../client/types';
 import { pageSkill, pageSlug } from '../shared/pageId';
 import type { ThreadNode, ThreadView } from '../shared/protocol';
 import { pluralise } from '../shared/text';
+import { cleanText } from '../shared/untrustedText';
 import { formatClock, formatDuration, parseGatewayTime } from '../shared/time';
 
 /** Immutable lineage store keyed by id for paging and parent lookup. */
@@ -78,7 +79,8 @@ export function foldLineage(pages: ListLineageResponse[]): FoldedLineage {
 /** Read string attributes from the gateway's open attribute bag in one place. */
 function stringAttr(node: LineageNode | undefined, key: string): string | undefined {
   const value = node?.[key];
-  return typeof value === 'string' ? value : undefined;
+  // Titles, skills and summaries on a card are other people's text: cleaned and bounded here.
+  return typeof value === 'string' ? cleanText(value, 400) : undefined;
 }
 
 function shortId(id: string): string {
