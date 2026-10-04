@@ -1670,6 +1670,16 @@ pub(crate) async fn tool_search(
             if !sql_allowed.is_empty() {
                 lanes.push(sql_allowed);
             }
+            // The ROWS lane: rows of `instances: rows` skills match on their key and `filterable:`
+            // columns. Candidates only, ACL-filtered per row BEFORE fusion like every other lane.
+            let rows = indexer
+                .rows_search_candidates(q, a.skill.as_deref())
+                .await
+                .map_err(|e| JsonRpcError::internal(format!("search rows lane: {e}")))?;
+            let rows_allowed = acl_filter_hits(indexer, &caller, rows).await?;
+            if !rows_allowed.is_empty() {
+                lanes.push(rows_allowed);
+            }
         }
     }
 

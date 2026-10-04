@@ -595,3 +595,124 @@ async fn source_rows_say_where_their_values_came_from() {
         "an expanded row's projection is marked: {page}"
     );
 }
+
+/// `search` reaches into rows-backed skills, honestly and bounded: a query matches the KEY and the
+/// declared `filterable:` columns (never an undeclared column), a bound parameter does the matching,
+/// the page is capped, and the ACL runs after the fetch. Rows were invisible to `search` before.
+#[tokio::test]
+async fn search_finds_rows_by_key_and_by_a_filterable_column_and_nothing_else() {
+    let t = Rows::start().await;
+
+    // By the KEY: one row, a page id the rest of the surface can open.
+    let by_key = t
+        .call(
+            "search",
+            json!({ "q": "4501234", "page_kind": "instance", "k": 10 }),
+        )
+        .await;
+    let hits = by_key["hits"].as_array().unwrap();
+    assert_eq!(hits.len(), 1, "{by_key}");
+    assert_eq!(hits[0]["page_id"], row_page(1234), "{by_key}");
+    assert_eq!(hits[0]["skill"], "sales-order", "{by_key}");
+    assert_eq!(hits[0]["page_kind"], "instance", "{by_key}");
+
+    // By a FILTERABLE column (`kunnr`, shown as `sold_to`): 62 rows match; the page is capped at `k`.
+    let by_col = t
+        .call(
+            "search",
+            json!({ "q": "1000007", "page_kind": "instance", "k": 5 }),
+        )
+        .await;
+    let hits = by_col["hits"].as_array().unwrap();
+    assert_eq!(hits.len(), 5, "capped at k: {by_col}");
+    for h in hits {
+        assert_eq!(h["skill"], "sales-order", "{h}");
+        assert_eq!(h["frontmatter_excerpt"]["sold_to"], "1000007", "{h}");
+    }
+
+    // A column the skill did NOT declare searchable never matches, and never leaks.
+    let hidden = t
+        .call(
+            "search",
+            json!({ "q": "never on the wire", "page_kind": "instance", "k": 10 }),
+        )
+        .await;
+    assert!(
+        hidden["hits"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|h| h["skill"] != "sales-order"),
+        "an undeclared column is not searchable: {hidden}"
+    );
+
+    // Restricting to skills, or to another skill, brings no rows.
+    for args in [
+        json!({ "q": "4501234", "page_kind": "skill", "k": 10 }),
+        json!({ "q": "4501234", "skill": "other-skill", "k": 10 }),
+    ] {
+        let none = t.call("search", args.clone()).await;
+        assert!(
+            none["hits"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|h| h["page_kind"] != "instance" || h["skill"] != "sales-order"),
+            "{args}: {none}"
+        );
+    }
+}
+
+/// The same lookup for an owner-private skill: the row ACL runs AFTER the fetch, so a caller finds
+/// only their own rows however they phrase the query.
+#[tokio::test]
+async fn search_over_rows_never_returns_a_row_the_caller_may_not_read() {
+    use escurel_test_support::{FixtureBuilder, Role};
+    let src_dir = TempDir::new().unwrap();
+    let src = src_dir.path().join("vbak");
+    write_source(&src, None);
+    let p = EscurelProcess::spawn(Opts {
+        auth: AuthMode::TestIssuer,
+        fixtures: Some(
+            FixtureBuilder::new()
+                .tenant("acme")
+                .skill(ACL_SKILL, acl_skill_page(&src))
+                .done(),
+        ),
+        ..Default::default()
+    })
+    .await;
+    let tok = p.mint_token_with_sub("acme", Role::Agent, "1000005");
+    let search = |q: &'static str| {
+        let url = p.mcp_url();
+        let tok = tok.clone();
+        async move {
+            let body: Value = reqwest::Client::new()
+                .post(url)
+                .header("authorization", format!("Bearer {tok}"))
+                .json(&json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                    "params": { "name": "search",
+                                "arguments": { "q": q, "page_kind": "instance", "k": 50 } } }))
+                .send()
+                .await
+                .unwrap()
+                .json()
+                .await
+                .unwrap();
+            assert!(body.get("error").is_none(), "search: {body}");
+            body["result"]["structuredContent"]["hits"].clone()
+        }
+    };
+    // Someone else's customer number finds nothing of hers; hers finds only hers.
+    assert!(
+        search("1000006").await.as_array().unwrap().is_empty(),
+        "no foreign row"
+    );
+    let mine = search("1000005").await;
+    let mine = mine.as_array().unwrap();
+    assert!(!mine.is_empty(), "her own rows are found");
+    for h in mine {
+        assert_eq!(h["frontmatter_excerpt"]["sold_to"], "1000005", "{h}");
+    }
+}
+
