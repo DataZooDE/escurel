@@ -1,3 +1,4 @@
+import { quietly } from './shared/quiet';
 import { exposedApi } from './shared/apiExposure';
 import * as vscode from 'vscode';
 import { log } from './log';
@@ -151,14 +152,14 @@ export function activate(context: vscode.ExtensionContext): EscurelApi | undefin
       }
       try {
         const s = await vscode.authentication.getSession('escurel', [], { createIfNone: true });
-        void vscode.window.showInformationMessage(`Signed in as ${s.account.label}`);
+        quietly(`Signed in as ${s.account.label}`);
       } catch (e) {
         void vscode.window.showErrorMessage(`Sign-in failed — ${(e as Error).message}`);
       }
     }),
     vscode.commands.registerCommand('escurel.signOut', async () => {
       await services.auth.removeSession();
-      void vscode.window.showInformationMessage('Signed out');
+      quietly('Signed out');
     }),
     vscode.commands.registerCommand('escurel.refresh', () => services.onDidChangeEmit()),
     vscode.commands.registerCommand('escurel.search', () => searchCommand(() => services.client)),

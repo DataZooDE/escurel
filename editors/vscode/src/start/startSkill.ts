@@ -1,3 +1,4 @@
+import { quietly } from '../shared/quiet';
 import * as vscode from 'vscode';
 import { EscurelError } from '../client';
 import { readConfig } from '../config';
@@ -261,7 +262,7 @@ export function registerStartSkill(
         await vscode.commands.executeCommand('escurel.openThread', event.event_id);
 
         if (action.mode === 'background') {
-          void vscode.window.showInformationMessage(startedMessage(skill, pageId));
+          quietly(startedMessage(skill, pageId));
           return;
         }
 
@@ -306,7 +307,16 @@ export function registerStartSkill(
             } else if (res.state === 'failed') {
               void vscode.window.showErrorMessage(`Plan failed: ${res.reason}`);
             } else if (res.state === 'timeout') {
-              void vscode.window.showWarningMessage(`Timed out waiting for plan for ${skill}`);
+              void vscode.window
+                .showWarningMessage(
+                  `The plan for ${skill} is not ready yet. Open the thread to see where it is.`,
+                  'Open thread',
+                )
+                .then((pick) => {
+                  if (pick === 'Open thread') {
+                    void vscode.commands.executeCommand('escurel.openThread', event.event_id);
+                  }
+                });
             }
           } catch (err) {
             void vscode.window.showErrorMessage(formatStartError(err));

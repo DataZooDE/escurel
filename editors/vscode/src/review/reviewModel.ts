@@ -330,13 +330,12 @@ export interface DecisionOutcome {
  * Translates errors from draft promotion into user-facing outcomes.
  * `already_decided` is handled gracefully without treating it as an operational failure.
  */
-export function interpretPromoteDraftError(err: unknown, draftId: string): DecisionOutcome {
+export function interpretPromoteDraftError(err: unknown, _draftId: string): DecisionOutcome {
   if (err instanceof EscurelError) {
     if (err.kind === 'already_decided') {
-      const status = err.draft?.status ? ` (${err.draft.status})` : '';
       return {
         kind: 'already_decided',
-        message: `Draft ${draftId} was already decided${status}.`,
+        message: 'That change was already handled.',
         closeDiff: true,
         refresh: true,
       };
@@ -344,7 +343,7 @@ export function interpretPromoteDraftError(err: unknown, draftId: string): Decis
     if (err.kind === 'conflict') {
       return {
         kind: 'conflict',
-        message: `Conflict: target page moved under draft ${draftId}. Re-draft required.`,
+        message: 'The page changed after this was proposed. Ask the agent to propose it again.',
         closeDiff: false,
         refresh: false,
       };
@@ -375,10 +374,10 @@ export function interpretPromoteDraftError(err: unknown, draftId: string): Decis
   };
 }
 
-export function interpretPromoteDraftSuccess(draftId: string): DecisionOutcome {
+export function interpretPromoteDraftSuccess(_draftId: string): DecisionOutcome {
   return {
     kind: 'success',
-    message: `Promoted draft ${draftId}.`,
+    message: 'Applied the change.',
     closeDiff: true,
     refresh: true,
   };
@@ -391,47 +390,44 @@ export function interpretPromoteChangesetResult(res: PromoteChangesetResponse): 
   if (res.already_decided) {
     return {
       kind: 'already_decided',
-      message: `Changeset ${res.changeset_id} was already decided.`,
+      message: 'That set of changes was already handled.',
       closeDiff: true,
       refresh: true,
     };
   }
 
-  const summaries = res.results.map((r) => {
-    const slug = pageSlug(r.page_id);
-    const status = r.already_applied
-      ? 'already applied'
-      : r.ok
-        ? 'applied'
-        : (r.status ?? 'failed');
-    return `${slug}: ${status}`;
-  });
-
+  const names = res.results.map((r) => ({
+    slug: pageSlug(r.page_id),
+    ok: r.ok !== false && !r.status,
+    already: Boolean(r.already_applied),
+    status: r.status ?? 'failed',
+  }));
+  const total = names.length;
   const hasFailures = res.partial || res.results.some((r) => r.ok === false);
   if (hasFailures) {
-    const okCount = res.results.filter((r) => r.ok).length;
-    const failCount = res.results.length - okCount;
+    const applied = names.filter((n) => n.ok).length;
+    const notApplied = names.filter((n) => !n.ok).map((n) => `${n.slug} (${n.status})`);
     return {
       kind: 'partial',
-      message: `Changeset ${res.changeset_id} partially promoted (${okCount} succeeded, ${failCount} failed): ${summaries.join(', ')}`,
+      message: `Applied ${applied} of ${total} ${total === 1 ? 'change' : 'changes'}. Not applied: ${notApplied.join(', ')}.`,
       closeDiff: false,
       refresh: true,
     };
   }
 
+  const list = names.map((n) => (n.already ? `${n.slug} (already applied)` : n.slug)).join(', ');
   return {
     kind: 'success',
-    message: `Promoted changeset ${res.changeset_id}: ${summaries.join(', ')}`,
+    message: `Applied ${total} ${total === 1 ? 'change' : 'changes'}: ${list}.`,
     closeDiff: true,
     refresh: true,
   };
 }
 
-export function interpretDiscardResult(kind: 'draft' | 'changeset', id: string): DecisionOutcome {
-  const noun = kind === 'draft' ? 'draft' : 'changeset';
+export function interpretDiscardResult(kind: 'draft' | 'changeset', _id: string): DecisionOutcome {
   return {
     kind: 'success',
-    message: `Discarded ${noun} ${id}.`,
+    message: kind === 'draft' ? 'Rejected the change.' : 'Rejected the changes.',
     closeDiff: true,
     refresh: true,
   };
@@ -440,13 +436,15 @@ export function interpretDiscardResult(kind: 'draft' | 'changeset', id: string):
 export function interpretDiscardError(
   err: unknown,
   action: 'draft' | 'changeset',
-  id: string,
+  _id: string,
 ): DecisionOutcome {
   if (err instanceof EscurelError && err.kind === 'already_decided') {
-    const noun = action === 'draft' ? 'Draft' : 'Changeset';
     return {
       kind: 'already_decided',
-      message: `${noun} ${id} was already decided.`,
+      message:
+        action === 'draft'
+          ? 'That change was already handled.'
+          : 'That set of changes was already handled.',
       closeDiff: true,
       refresh: true,
     };

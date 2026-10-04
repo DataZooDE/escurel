@@ -514,7 +514,7 @@ describe('reviewModel', () => {
         expect(outcome.kind).toBe('already_decided');
         expect(outcome.closeDiff).toBe(true);
         expect(outcome.refresh).toBe(true);
-        expect(outcome.message).toContain('already decided');
+        expect(outcome.message).toBe('That change was already handled.');
       });
 
       it('treats conflict as error, leaves diff open and does not close diff', () => {
@@ -526,7 +526,9 @@ describe('reviewModel', () => {
         expect(outcome.kind).toBe('conflict');
         expect(outcome.closeDiff).toBe(false);
         expect(outcome.refresh).toBe(false);
-        expect(outcome.message).toContain('Conflict');
+        expect(outcome.message).toBe(
+          'The page changed after this was proposed. Ask the agent to propose it again.',
+        );
       });
 
       it('explains a write-back refusal in plain words and keeps the draft open for another try', () => {
@@ -565,7 +567,8 @@ describe('reviewModel', () => {
         expect(outcome.kind).toBe('success');
         expect(outcome.closeDiff).toBe(true);
         expect(outcome.refresh).toBe(true);
-        expect(outcome.message).toContain('Promoted draft d-1');
+        expect(outcome.message).toBe('Applied the change.');
+        expect(outcome.message).not.toContain('d-1');
       });
     });
 
@@ -582,7 +585,7 @@ describe('reviewModel', () => {
         expect(outcome.kind).toBe('already_decided');
         expect(outcome.closeDiff).toBe(true);
         expect(outcome.refresh).toBe(true);
-        expect(outcome.message).toContain('already decided');
+        expect(outcome.message).toBe('That set of changes was already handled.');
       });
 
       it('handles full success reporting per-draft outcome', () => {
@@ -604,9 +607,8 @@ describe('reviewModel', () => {
         expect(outcome.kind).toBe('success');
         expect(outcome.closeDiff).toBe(true);
         expect(outcome.refresh).toBe(true);
-        expect(outcome.message).toContain('Promoted changeset cs-1');
-        expect(outcome.message).toContain('alpina: applied');
-        expect(outcome.message).toContain('acme: already applied');
+        expect(outcome.message).toBe('Applied 2 changes: alpina, acme (already applied).');
+        expect(outcome.message).not.toContain('cs-1');
       });
 
       it('handles partial changeset result reporting failed vs ok drafts and leaves diff open', () => {
@@ -629,20 +631,22 @@ describe('reviewModel', () => {
         expect(outcome.kind).toBe('partial');
         expect(outcome.closeDiff).toBe(false);
         expect(outcome.refresh).toBe(true);
-        expect(outcome.message).toContain('partially promoted');
-        expect(outcome.message).toContain('1 succeeded, 1 failed');
-        expect(outcome.message).toContain('acme: conflict');
+        expect(outcome.message).toContain('Applied 1 of 2 changes');
+        expect(outcome.message).toContain('Not applied: acme (conflict)');
+        expect(outcome.message).not.toContain('cs-1');
       });
     });
 
     describe('interpretDiscardResult and interpretDiscardError', () => {
       it('returns success for discard', () => {
         const dOut = interpretDiscardResult('draft', 'd-1');
+        expect(dOut.message).toBe('Rejected the change.');
         expect(dOut.kind).toBe('success');
         expect(dOut.closeDiff).toBe(true);
         expect(dOut.refresh).toBe(true);
 
         const csOut = interpretDiscardResult('changeset', 'cs-1');
+        expect(csOut.message).toBe('Rejected the changes.');
         expect(csOut.kind).toBe('success');
         expect(csOut.closeDiff).toBe(true);
         expect(csOut.refresh).toBe(true);

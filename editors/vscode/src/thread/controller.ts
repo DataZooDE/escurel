@@ -171,7 +171,7 @@ export class ThreadController implements vscode.Disposable {
   open(arg: unknown): void {
     const rootEventId = rootEventIdOf(arg);
     if (!rootEventId) {
-      void vscode.window.showInformationMessage('Pick an event to open its thread.');
+      void vscode.window.showInformationMessage('Select an event in the Inbox to open its thread.');
       return;
     }
     const existing = this.panels.get(rootEventId);
