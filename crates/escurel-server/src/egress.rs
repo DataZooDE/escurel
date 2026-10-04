@@ -50,6 +50,11 @@ pub struct EgressPolicy {
     pub write_retry_backoff: Duration,
     /// What a tenant may name as a credential (`secret_ref`): see [`crate::secret_policy`].
     pub secrets: crate::secret_policy::SecretPolicy,
+    /// The directories a tenant admin may attach SQLite / DuckDB database FILES from
+    /// (`ESCUREL_SQL_FILE_DIRS`, `:`-separated). Empty (the default) means file databases are not
+    /// attachable at all: a path in a credential is a server file, and which ones are exposed is the
+    /// operator's decision.
+    pub sql_file_dirs: Vec<std::path::PathBuf>,
 }
 
 impl Default for EgressPolicy {
@@ -62,6 +67,7 @@ impl Default for EgressPolicy {
             rate_per_sec: DEFAULT_RATE_PER_SEC,
             write_retry_backoff: Duration::from_millis(500),
             secrets: crate::secret_policy::SecretPolicy::default(),
+            sql_file_dirs: Vec::new(),
         }
     }
 }
@@ -141,6 +147,13 @@ impl EgressPolicy {
             p.write_retry_backoff = Duration::from_millis(ms);
         }
         p.secrets = crate::secret_policy::SecretPolicy::from_env();
+        if let Some(v) = get("ESCUREL_SQL_FILE_DIRS") {
+            p.sql_file_dirs = v
+                .split(':')
+                .filter(|s| !s.trim().is_empty())
+                .map(|s| std::path::PathBuf::from(s.trim()))
+                .collect();
+        }
         Ok(p)
     }
 

@@ -136,6 +136,7 @@ mod skill_render_and_blocks;
 mod skill_vocabulary;
 mod snapshot_refresh;
 mod sql_creds;
+mod sql_rows_db;
 mod sql_validate;
 mod sql_view_tools;
 mod surface_consolidation;

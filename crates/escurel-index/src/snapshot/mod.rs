@@ -221,6 +221,10 @@ impl IndexerHandle {
 
     /// Swap `next` in and return the previously served indexer.
     pub fn swap(&self, next: Arc<Indexer>) -> Arc<Indexer> {
+        // The operator's credential policy belongs to the gateway, not to one snapshot's indexer.
+        if let Some(resolver) = self.current().credential_resolver() {
+            next.set_credential_resolver(resolver);
+        }
         self.0.swap(next)
     }
 }

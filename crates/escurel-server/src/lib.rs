@@ -40,6 +40,7 @@
 mod auth_gate;
 pub mod config;
 mod config_probe;
+pub mod credential_policy;
 pub mod egress;
 mod health;
 mod live_dispatch;

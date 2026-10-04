@@ -320,8 +320,13 @@ pub(super) struct RegisterCredentialArgs {
     name: String,
     /// Connector kind (`postgres`|`mysql`|`sqlite`|`erpl`|`s3`|…).
     connector: String,
-    /// Secret material (DSN / secret spec). Stored server-side only.
-    secret: String,
+    /// A REFERENCE to the connection string (`env:ESCUREL_SECRET_<NAME>`, `gsm:<name>` or a `file:`
+    /// under the operator's secret directories), resolved when the source is attached. Preferred.
+    #[serde(default)]
+    secret_ref: Option<String>,
+    /// Secret material (DSN / secret spec) stored server-side. DEPRECATED, for development only.
+    #[serde(default)]
+    secret: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -331,21 +336,61 @@ pub(super) struct CredentialNameArgs {
 
 pub(super) async fn tool_register_credential(
     indexer: &Indexer,
+    egress: &crate::egress::Egress,
     created_by: &str,
     args: Value,
 ) -> Result<Value, JsonRpcError> {
     let a: RegisterCredentialArgs = parse_args(args, "register_credential")?;
-    if a.name.is_empty() || a.connector.is_empty() || a.secret.is_empty() {
+    if a.name.is_empty() || a.connector.is_empty() {
         return Err(JsonRpcError::invalid_params(
-            "name, connector, and secret are all required".to_owned(),
+            "name and connector are required".to_owned(),
         ));
     }
+    let inline = a.secret.as_deref().filter(|s| !s.is_empty());
+    let reference = a.secret_ref.as_deref().filter(|s| !s.is_empty());
+    let stored = match (inline, reference) {
+        (Some(_), Some(_)) => {
+            return Err(JsonRpcError::invalid_params(
+                "give either secret_ref or secret, not both".to_owned(),
+            ));
+        }
+        (None, None) => {
+            return Err(JsonRpcError::invalid_params(
+                "secret_ref (or, deprecated, secret) is required".to_owned(),
+            ));
+        }
+        (None, Some(r)) => {
+            if !escurel_index::credential_resolver::is_secret_reference(r) {
+                return Err(JsonRpcError::invalid_params(
+                    "secret_ref must be env:NAME, gsm:NAME or file:/path".to_owned(),
+                ));
+            }
+            // What may be NAMED is the operator's call; lexical, so it answers the same for a file
+            // that exists and one that does not.
+            if !egress.policy().secrets.permits(r) {
+                return Err(JsonRpcError::invalid_params(format!(
+                    "secret_ref `{r}` is not permitted by this gateway's secret policy: use \
+                     `gsm:NAME`, `env:ESCUREL_SECRET_<NAME>` (or a name the operator allow-lists), or \
+                     a `file:` under the operator's secret directories"
+                )));
+            }
+            r
+        }
+        (Some(s), None) => s,
+    };
     indexer
-        .register_credential(&a.name, &a.connector, &a.secret, Some(created_by))
+        .register_credential(&a.name, &a.connector, stored, Some(created_by))
         .await
         .map_err(|e| JsonRpcError::internal(format!("register_credential: {e}")))?;
     // Never echo the secret back.
-    Ok(json!({ "ok": true, "name": a.name }))
+    let mut out = json!({ "ok": true, "name": a.name });
+    if inline.is_some() {
+        out["warning"] = json!(
+            "an inline `secret` is stored in the registry; it is deprecated and for development \
+             only - register a `secret_ref` (env:, gsm: or file:) instead"
+        );
+    }
+    Ok(out)
 }
 
 pub(super) async fn tool_list_credentials(indexer: &Indexer) -> Result<Value, JsonRpcError> {

@@ -561,6 +561,13 @@ pub async fn serve(
             .as_ref()
             .map(|h| h.current().tenant().to_owned())
     });
+    // The operator's credential policy (secret references, attach-target checks) for every SQL source
+    // this gateway opens. Installed on the served indexer; `IndexerHandle::swap` carries it over.
+    if let Some(h) = config.indexer.as_ref() {
+        h.current().set_credential_resolver(Arc::new(
+            crate::credential_policy::ServerCredentialPolicy::new(config.egress.clone()),
+        ));
+    }
     let state = AppState {
         write_acl: config.write_acl,
         event_acl: config.event_acl,

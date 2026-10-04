@@ -187,6 +187,33 @@ pub(crate) async fn materialise_view_on(
     schema_fingerprint(&conn, view)
 }
 
+/// The connection string behind a registered credential, resolved through the operator's resolver
+/// (a reference is read now; an inline secret is returned as stored) and checked against its attach
+/// policy. A bare indexer with no resolver (most tests) uses the stored value as it is.
+pub(crate) fn resolve_attach_secret(
+    indexer: &Indexer,
+    connector: SqlConnector,
+    stored: &str,
+) -> Result<String, SqlViewError> {
+    let Some(resolver) = indexer.credential_resolver() else {
+        if crate::credential_resolver::is_secret_reference(stored) {
+            return Err(SqlViewError::InvalidBinding(
+                "backend_unavailable: the credential is a secret reference but no operator \
+                 policy is installed to resolve it"
+                    .to_owned(),
+            ));
+        }
+        return Ok(stored.to_owned());
+    };
+    let secret = resolver
+        .resolve(stored)
+        .map_err(|m| SqlViewError::InvalidBinding(format!("backend_unavailable: {m}")))?;
+    resolver
+        .check_target(connector.as_str(), &secret)
+        .map_err(|m| SqlViewError::InvalidBinding(format!("backend_unavailable: {m}")))?;
+    Ok(secret)
+}
+
 /// Resolve the FROM-clause source expression, performing any required
 /// INSTALL/LOAD + READ_ONLY ATTACH first. Directory connectors need no
 /// credential; DB connectors dereference the admin credential registry.
@@ -223,7 +250,8 @@ async fn prepare_source(
             if matches!(db, SqlConnector::Erpl) && !allow_unsigned {
                 return Err(SqlViewError::UnsignedExtensionNotAllowed);
             }
-            if !is_safe_sql_fragment(&cred.secret) {
+            let secret = resolve_attach_secret(indexer, db, &cred.secret)?;
+            if !is_safe_sql_fragment(&secret) {
                 return Err(SqlViewError::InvalidBinding(
                     "registered secret contains an unsafe character".to_owned(),
                 ));
@@ -240,7 +268,7 @@ async fn prepare_source(
             for stmt in install_load(db) {
                 conn.execute_batch(stmt)?;
             }
-            conn.execute_batch(&attach_sql(db, attach, &cred.secret))?;
+            conn.execute_batch(&attach_sql(db, attach, &secret))?;
             // The postgres/mysql scanners cache the remote catalog at ATTACH
             // time. Because the Indexer's connection is persistent, a view
             // re-materialised by validate_bindings / reconstruct_views would

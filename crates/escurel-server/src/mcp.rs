@@ -1209,7 +1209,9 @@ async fn dispatch_tools_call(
         "list_group_members" => tool_list_group_members(indexer, params.arguments).await,
         // SQL-view credential registry (admin-only). Secrets live
         // server-side in kb.duckdb, never in the markdown corpus (REQ-SQL-05).
-        "register_credential" => tool_register_credential(indexer, subject, params.arguments).await,
+        "register_credential" => {
+            tool_register_credential(indexer, &state.egress, subject, params.arguments).await
+        }
         "list_credentials" => tool_list_credentials(indexer).await,
         "delete_credential" => tool_delete_credential(indexer, params.arguments).await,
         "validate_bindings" => tool_validate_bindings(indexer).await,
