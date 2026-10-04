@@ -256,6 +256,26 @@
         "category": "Escurel",
         "icon": "$(clear-all)",
         "enablement": "escurel.knowledgeFiltered"
+      },
+      {
+        "command": "escurel.openNodeThread",
+        "title": "Open thread",
+        "category": "Escurel"
+      },
+      {
+        "command": "escurel.openNodeRun",
+        "title": "Open run",
+        "category": "Escurel"
+      },
+      {
+        "command": "escurel.viewNodeSkill",
+        "title": "View skill",
+        "category": "Escurel"
+      },
+      {
+        "command": "escurel.showSkillThreads",
+        "title": "Show threads using this skill",
+        "category": "Escurel"
       }
     ],
     "authentication": [
@@ -459,6 +479,22 @@
         {
           "command": "escurel.proposeWriteBack",
           "when": "false"
+        },
+        {
+          "command": "escurel.openNodeThread",
+          "when": "false"
+        },
+        {
+          "command": "escurel.openNodeRun",
+          "when": "false"
+        },
+        {
+          "command": "escurel.viewNodeSkill",
+          "when": "false"
+        },
+        {
+          "command": "escurel.showSkillThreads",
+          "when": "false"
         }
       ],
       "view/title": [
@@ -580,11 +616,6 @@
           "group": "navigation"
         },
         {
-          "command": "escurel.openThread",
-          "when": "view == escurel.inbox && viewItem =~ /escurel.event/",
-          "group": "navigation"
-        },
-        {
           "command": "escurel.cancelRun",
           "when": "view == escurel.runner && viewItem == liveRun",
           "group": "inline"
@@ -603,6 +634,46 @@
           "command": "escurel.resumeDispatch",
           "when": "view == escurel.runner && viewItem == paused",
           "group": "1_control"
+        },
+        {
+          "command": "escurel.openNodeThread",
+          "when": "view == escurel.inbox && viewItem =~ /^event/",
+          "group": "0_trace@1"
+        },
+        {
+          "command": "escurel.viewNodeSkill",
+          "when": "view == escurel.inbox && viewItem =~ /^event/",
+          "group": "0_trace@2"
+        },
+        {
+          "command": "escurel.openNodeThread",
+          "when": "view == escurel.awaiting && viewItem =~ /^awaiting\\./",
+          "group": "2_trace@1"
+        },
+        {
+          "command": "escurel.openNodeRun",
+          "when": "view == escurel.awaiting && viewItem =~ /^awaiting\\.(changeset|draft)$/",
+          "group": "2_trace@2"
+        },
+        {
+          "command": "escurel.viewNodeSkill",
+          "when": "view == escurel.awaiting && viewItem =~ /^awaiting\\./",
+          "group": "2_trace@3"
+        },
+        {
+          "command": "escurel.openNodeThread",
+          "when": "view == escurel.knowledge && viewItem == instance",
+          "group": "3_trace@1"
+        },
+        {
+          "command": "escurel.openNodeRun",
+          "when": "view == escurel.knowledge && viewItem == instance",
+          "group": "3_trace@2"
+        },
+        {
+          "command": "escurel.showSkillThreads",
+          "when": "view == escurel.knowledge && viewItem =~ /^skill/",
+          "group": "3_trace@1"
         }
       ],
       "editor/title": [

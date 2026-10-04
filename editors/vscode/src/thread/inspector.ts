@@ -4,6 +4,7 @@ import { pageSlug } from '../shared/pageId';
 import type { InspectorRow, InspectorView, ThreadNode, ThreadView } from '../shared/protocol';
 import { formatDateTime, formatDuration } from '../shared/time';
 import { buildNodeActions } from './inspectorActions';
+import { nodeLinks } from './nodeLinks';
 import { nodeSummary, type SummaryFacts } from './nodeSummary';
 
 function value(raw: unknown): string | undefined {
@@ -229,6 +230,10 @@ export function buildInspectors(
     } else {
       continue;
     }
+
+    // Where this node leads: its skill, its page, its run, its thread, its review.
+    const links = nodeLinks(node, view.rootEventId);
+    if (links.length) detail.links = links;
 
     const actions = buildNodeActions(node, raw, {
       admin: extras?.admin,

@@ -39,7 +39,7 @@ export async function loadRun(client: EscurelClient, runId: string): Promise<Loa
     try {
       const lineage = await client.listLineage({
         root_event_id: rootEventId,
-        include: ['runs', 'tool_calls'],
+        include: ['events', 'runs', 'tool_calls'],
       });
       node = lineage.nodes.find((n) => n.type === 'run' && n.id === runId);
       skill = triggerSkill(lineage.nodes, runId);

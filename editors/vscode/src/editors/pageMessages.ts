@@ -32,7 +32,10 @@ export function resolvePageMessage(
     }
     case 'view-skill': {
       if (!model || !nonEmpty(m.skill)) return undefined;
-      const known = m.skill === model.skill.id || model.actions.some((a) => a.skill === m.skill);
+      const known =
+        m.skill === model.skill.id ||
+        m.skill === model.viewer?.report ||
+        model.actions.some((a) => a.skill === m.skill);
       return known ? { command: 'escurel.viewSkill', args: [m.skill] } : undefined;
     }
     case 'open-original':

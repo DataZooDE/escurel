@@ -444,3 +444,29 @@ function contrast(a: string, b: string): number {
   const [hi, lo] = [luminance(a), luminance(b)].sort((x, y) => y - x);
   return (hi! + 0.05) / (lo! + 0.05);
 }
+
+describe('<escurel-run-detail> navigation', () => {
+  it('leads to the skill that ran and to the thread it belongs to', async () => {
+    const el = await render({ ...recordedRunView, skill: 'supplier-risk' } as RunView);
+    const sent: RunWebviewToHost[] = [];
+    el.addEventListener('escurel-message', (event) =>
+      sent.push((event as CustomEvent<RunWebviewToHost>).detail),
+    );
+    const skill = q(el, '.meta .view-skill') as HTMLButtonElement;
+    expect(text(skill)).to.equal('View skill: supplier-risk');
+    skill.click();
+    (q(el, '.meta .open-thread') as HTMLButtonElement).click();
+    // The thread button names no id: the host knows which thread this run belongs to.
+    expect(sent).to.deep.equal([
+      { type: 'view-skill', skill: 'supplier-risk' },
+      { type: 'open-thread', rootEventId: '' },
+    ]);
+  });
+
+  it('offers no skill link when the run does not know its skill', async () => {
+    const noSkill: RunView = { ...recordedRunView };
+    delete noSkill.skill;
+    const el = await render(noSkill);
+    expect(q(el, '.meta .view-skill')).to.equal(null);
+  });
+});

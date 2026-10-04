@@ -240,13 +240,14 @@ describe('reviewModel', () => {
       expect(items[2]).toEqual({
         action: 'draft',
         label: 'alpina-biotech',
-        description: '1 block',
+        // Which skill's record it is comes first: two pages with similar names are not the same thing.
+        description: 'customer · 1 block',
         draft: draftA,
       });
       expect(items[3]).toEqual({
         action: 'draft',
         label: 'acme',
-        description: 'no diff available',
+        description: 'customer · no diff available',
         draft: draftB,
       });
     });
@@ -583,6 +584,21 @@ describe('reviewModel', () => {
         expect(outcome.closeDiff).toBe(true);
         expect(outcome.refresh).toBe(true);
         expect(outcome.message).toBe('That set of changes was already handled.');
+      });
+
+      it('names the pages that were applied, so the notice can offer to open them', () => {
+        const res: PromoteChangesetResponse = {
+          ok: true,
+          changeset_id: 'cs-1',
+          results: [
+            { draft_id: 'd1', page_id: 'markdown/instances/customer__alpina.md', ok: true },
+            { draft_id: 'd2', page_id: 'markdown/instances/customer__acme.md', ok: false },
+          ],
+          partial: true,
+        };
+        expect(interpretPromoteChangesetResult(res).pages).toEqual([
+          'markdown/instances/customer__alpina.md',
+        ]);
       });
 
       it('handles full success reporting per-draft outcome', () => {

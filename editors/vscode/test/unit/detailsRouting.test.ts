@@ -98,4 +98,23 @@ describe('acceptDetailsAction: only the node being shown', () => {
     expect(ok({ type: 'view-skill', skill: 'supplier-risk' })).toBeDefined();
     expect(ok({ type: 'view-skill', skill: 'something-else' })).toBeUndefined();
   });
+
+  it('accepts an open-link for the node on show, and refuses one for any other node', () => {
+    const link = (nodeId: string) => ({
+      type: 'details-action',
+      rootEventId: 'root-A',
+      message: { type: 'open-link', nodeId, link: 'skill' },
+    });
+    expect(acceptDetailsAction(shown, open(['root-A']), link('run-1'))).toBeDefined();
+    expect(acceptDetailsAction(shown, open(['root-A']), link('run-2'))).toBeUndefined();
+  });
+
+  it('refuses an open-link whose kind is not one of the five', () => {
+    const bad = {
+      type: 'details-action',
+      rootEventId: 'root-A',
+      message: { type: 'open-link', nodeId: 'run-1', link: 'rm -rf' },
+    };
+    expect(acceptDetailsAction(shown, open(['root-A']), bad)).toBeUndefined();
+  });
 });

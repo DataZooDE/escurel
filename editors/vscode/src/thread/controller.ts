@@ -1,5 +1,6 @@
 import { threadTabTitle } from './threadTabTitle';
 import { latest } from '../shared/latest';
+import { resolveNodeLink } from './nodeLinks';
 import * as vscode from 'vscode';
 import type { AdminState } from '../auth/adminState';
 import type { Skill } from '../client/types';
@@ -154,6 +155,16 @@ export class ThreadController implements vscode.Disposable {
     }
 
     const view = toThreadView(current);
+    if (message.type === 'open-link') {
+      // The message names a node and a KIND; what it opens comes from the host's own thread.
+      const link = resolveNodeLink(view, rootEventId, message.nodeId, message.link);
+      if (!link) {
+        log().warn('thread: refused a link the node does not offer');
+        return false;
+      }
+      await vscode.commands.executeCommand(link.command, ...link.args);
+      return true;
+    }
     const resolved = resolveThreadAction(view, message, {
       admin: open.getAdmin(),
       skills: open.getSkills(),
@@ -383,6 +394,7 @@ export class ThreadController implements vscode.Disposable {
             gate,
           );
         }
+        case 'open-link':
         case 'start-skill':
         case 'run-control':
         case 'view-skill':

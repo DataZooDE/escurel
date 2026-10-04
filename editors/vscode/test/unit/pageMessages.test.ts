@@ -134,3 +134,21 @@ describe('resolvePageMessage: propose-write-back', () => {
     ).toBeUndefined();
   });
 });
+
+describe('resolvePageMessage: the report that draws this page', () => {
+  const withViewer = {
+    ...model,
+    viewer: { report: 'supplier-risk-report' },
+  } as unknown as PageModel;
+  it('may open the report skill the page names, and no other', () => {
+    expect(
+      resolvePageMessage(withViewer, { type: 'view-skill', skill: 'supplier-risk-report' }),
+    ).toEqual({
+      command: 'escurel.viewSkill',
+      args: ['supplier-risk-report'],
+    });
+    expect(
+      resolvePageMessage(model, { type: 'view-skill', skill: 'supplier-risk-report' }),
+    ).toBeUndefined();
+  });
+});

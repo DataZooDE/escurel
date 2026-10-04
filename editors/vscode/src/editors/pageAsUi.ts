@@ -10,6 +10,7 @@ import { latestLoader } from '../shared/latestLoader';
 import { newNonce } from './nonce';
 import { safePost } from '../shared/safePost';
 import { findThreadStrip } from '../shared/threadStrip';
+import { parseViewer } from '../shared/viewer';
 import type { HostToWebview, PageModel, WebviewToHost } from '../shared/protocol';
 
 export const VIEW_TYPE = 'escurel.pageAsUi';
@@ -84,7 +85,14 @@ export class PageAsUiEditor implements vscode.CustomReadonlyEditorProvider {
           return {
             message: { type: 'error', message: `skill ${e.page.skill} is not in the catalogue` },
           };
-        const model = buildPageModel(e, skill);
+        const fromPage = buildPageModel(e, skill);
+        // The report that draws this skill's records is declared on the skill PAGE, not in the
+        // catalogue row; a failed read just means no chart line.
+        const skillPage = await c
+          .expand({ page_id: `markdown/skills/${skill.id}.md` })
+          .catch(() => undefined);
+        const viewer = parseViewer(skillPage?.frontmatter);
+        const model = viewer ? { ...fromPage, viewer } : fromPage;
         // Where the page came from. A failure here must not cost the user the page: the strip
         // is an addition to it, so it degrades to absent.
         const strip = await findThreadStrip((cursor) =>
