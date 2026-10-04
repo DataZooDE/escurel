@@ -1,4 +1,5 @@
 import { errorRowSpec } from './errorRow';
+import { InstancePager } from './instancePager';
 import * as vscode from 'vscode';
 import type { EscurelClient, Instance } from '../client';
 import { uriForPage } from '../fs/provider';
@@ -18,7 +19,7 @@ type Node =
   | SkillRow
   | InstanceRow
   | { kind: 'more'; skill: string; cursor: string }
-  | { kind: 'error'; message: string };
+  | { kind: 'error'; message: string; detail?: string };
 
 const PAGE = 100;
 
@@ -31,9 +32,17 @@ const PAGE = 100;
 export class KnowledgeTree implements vscode.TreeDataProvider<Node> {
   private readonly changed = new vscode.EventEmitter<Node | undefined>();
   readonly onDidChangeTreeData = this.changed.event;
-  private readonly pages = new Map<string, { rows: InstanceRow[]; cursor: string | null }>();
+  private readonly pager: InstancePager<InstanceRow>;
 
-  constructor(private readonly client: () => EscurelClient) {}
+  constructor(private readonly client: () => EscurelClient) {
+    this.pager = new InstancePager<InstanceRow>(
+      async (skill, cursor) => {
+        const res = await this.client().listInstancesPage({ skill_id: skill, limit: PAGE, cursor });
+        return { rows: res.instances.map((i: Instance) => instanceRow(i)), next: res.next_cursor };
+      },
+      (row) => row.pageId,
+    );
+  }
 
   static register(context: vscode.ExtensionContext, client: () => EscurelClient): KnowledgeTree {
     const tree = new KnowledgeTree(client);
@@ -53,7 +62,8 @@ export class KnowledgeTree implements vscode.TreeDataProvider<Node> {
   }
 
   refresh(): void {
-    this.pages.clear();
+    // Retires every fetch in flight: a slow old result must not repopulate the cache.
+    this.pager.reset();
     this.changed.fire(undefined);
   }
 
@@ -121,7 +131,7 @@ export class KnowledgeTree implements vscode.TreeDataProvider<Node> {
         return item;
       }
       case 'error': {
-        const spec = errorRowSpec(n.message);
+        const spec = errorRowSpec(n.message, n.detail);
         const item = new vscode.TreeItem(spec.label, vscode.TreeItemCollapsibleState.None);
         item.iconPath = new vscode.ThemeIcon('warning', new vscode.ThemeColor('errorForeground'));
         item.tooltip = spec.tooltip;
@@ -141,8 +151,13 @@ export class KnowledgeTree implements vscode.TreeDataProvider<Node> {
       }
       if (n.kind === 'folder') return n.children;
       if (n.kind === 'skill') {
-        const page = this.pages.get(n.skill.id) ?? (await this.fetch(n.skill.id, undefined));
-        return this.rows(page);
+        try {
+          return this.rows(await this.pager.first(n.skill.id));
+        } catch (e) {
+          // A failure to list ONE skill's rows is a row under that skill, not the whole tree's failure.
+          log().warn(`escurel: knowledge tree: instances of ${n.skill.id}: ${describeError(e)}`);
+          return [{ kind: 'error', message: "Couldn't load instances.", detail: describeError(e) }];
+        }
       }
       return [];
     } catch (e) {
@@ -159,19 +174,14 @@ export class KnowledgeTree implements vscode.TreeDataProvider<Node> {
     return out;
   }
 
-  private async fetch(skill: string, cursor: string | undefined) {
-    const res = await this.client().listInstancesPage({ skill_id: skill, limit: PAGE, cursor });
-    const prev = this.pages.get(skill)?.rows ?? [];
-    const page = {
-      rows: [...prev, ...res.instances.map((i: Instance) => instanceRow(i))],
-      cursor: res.next_cursor,
-    };
-    this.pages.set(skill, page);
-    return page;
-  }
-
   private async loadMore(skill: string, cursor: string): Promise<void> {
-    await this.fetch(skill, cursor);
+    try {
+      await this.pager.more(skill, cursor);
+    } catch (e) {
+      // A 401 or 429 here used to escape as an unhandled command rejection.
+      log().warn(`escurel: knowledge tree: load more of ${skill}: ${describeError(e)}`);
+      void vscode.window.showErrorMessage("Couldn't load more instances. Try again in a moment.");
+    }
     this.changed.fire(undefined);
   }
 }
