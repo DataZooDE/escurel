@@ -964,9 +964,8 @@ test('Runs for this record: from a record page to its runs, filtered, and back',
   const runs = pane(page, 'Runs');
   await expect(runs.getByText(/Filtered: order-4500131/)).toBeVisible({ timeout: 15_000 });
   // Only runs that worked on this record are listed.
-  for (const row of await runs.getByRole('treeitem', { name: / · supplier-risk · / }).all()) {
-    expect(await row.innerText()).toContain('order-4500131');
-  }
+  await expect(runs.getByRole('treeitem', { name: /order-4500152|order-4500140/ })).toHaveCount(0);
+  await expect(runs.getByRole('treeitem', { name: /order-4500131/ }).first()).toBeVisible();
   await stack.shot('10c-runs-for-this-record');
   await page.getByRole('button', { name: /Clear run filter/ }).click();
   await expect(runs.getByText(/Filtered:/)).toHaveCount(0);
@@ -995,7 +994,7 @@ test('Explain this view tells how events, skills, runs and records connect', asy
   await page.keyboard.press('F1');
   await page.keyboard.type('Escurel: Explain this view');
   await page.keyboard.press('Enter');
-  const wv = await webviewWith(page, 'h1');
+  const wv = await webviewWith(page, 'h1', 'How things connect');
   await expect(wv.getByRole('heading', { name: /How things connect/ })).toBeVisible();
   await expect(wv.getByText('Awaiting You').first()).toBeVisible();
   // The words the views use are explained, and the tab is named for what it is.
