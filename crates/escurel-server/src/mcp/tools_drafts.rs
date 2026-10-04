@@ -377,6 +377,23 @@ pub(super) async fn tool_create_draft(
         }));
     }
 
+    // Validate at DRAFT time, FIRST: the content is judged before any conflict question, and before a
+    // stale predecessor is superseded (a refused draft must not have cost the open one its place).
+    // Same blocking set promotion will
+    // apply. A draft that cannot be promoted is worse than a refused write:
+    // it costs a human a review before anyone finds out.
+    let issues = indexer
+        .validate(Some(&a.target_page_id), &a.content)
+        .await
+        .map_err(|e| JsonRpcError::internal(format!("create_draft validate: {e}")))?;
+    let blocking = draft_blocking_issues(state, &issues);
+    if !blocking.is_empty() {
+        return Ok(json!({
+            "ok": false,
+            "issues": issues.iter().map(issue_to_json).collect::<Vec<_>>(),
+        }));
+    }
+
     // **An empty base means "no page here yet". Check that it is true.**
     //
     // `base_sha256: ""` is the approve-CREATE sentinel: promotion passes it
@@ -551,21 +568,6 @@ pub(super) async fn tool_create_draft(
         }
         None => None,
     };
-
-    // Validate at DRAFT time, with the same blocking set promotion will
-    // apply. A draft that cannot be promoted is worse than a refused write:
-    // it costs a human a review before anyone finds out.
-    let issues = indexer
-        .validate(Some(&a.target_page_id), &a.content)
-        .await
-        .map_err(|e| JsonRpcError::internal(format!("create_draft validate: {e}")))?;
-    let blocking = draft_blocking_issues(state, &issues);
-    if !blocking.is_empty() {
-        return Ok(json!({
-            "ok": false,
-            "issues": issues.iter().map(issue_to_json).collect::<Vec<_>>(),
-        }));
-    }
 
     let stored = indexer
         .create_draft(NewDraft {

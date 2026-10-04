@@ -543,3 +543,59 @@ list:\n    path: /things\n    items: $.data\n  read: { path: \"/things/{id}\" }\
         "{issue}"
     );
 }
+
+// ---- (8) create_draft validates before it judges conflicts --------------------------------------
+
+#[tokio::test]
+async fn a_draft_with_invalid_content_gets_the_validation_error_not_a_conflict() {
+    let t = Rows::start().await;
+    let skill = "---\nkind: skill\nid: note\ndescription: a note\nautonomy: review\n---\n# note\n";
+    let r = t
+        .call(
+            "update_page",
+            json!({ "page_id": "markdown/skills/note.md", "content": skill }),
+        )
+        .await;
+    assert_eq!(r["ok"], true, "{r}");
+    let page = "markdown/instances/note/n1.md";
+    let v0 = "---\nkind: instance\nskill: note\nid: n1\n---\n# n1\n";
+    let r = t
+        .call("update_page", json!({ "page_id": page, "content": v0 }))
+        .await;
+    assert_eq!(r["ok"], true, "{r}");
+    let head = t.call("expand", json!({ "page_id": page })).await;
+    let base = head["content_sha256"]
+        .as_str()
+        .unwrap_or_else(|| panic!("content_sha256: {head}"))
+        .to_owned();
+    // A first draft is open.
+    let first = t
+        .call(
+            "create_draft",
+            json!({ "target_page_id": page, "content": format!("{v0}more\n"), "base_sha256": base }),
+        )
+        .await;
+    assert_eq!(first["ok"], true, "{first}");
+    // A second, INVALID one (legacy `type:`) used to be answered with "a draft is already open".
+    let legacy = "---\ntype: instance\nskill: note\nid: n1\n---\n# n1\n";
+    let second = t
+        .rpc(
+            "create_draft",
+            json!({ "target_page_id": page, "content": legacy, "base_sha256": base }),
+        )
+        .await;
+    let codes: Vec<String> = second["result"]["structuredContent"]["issues"]
+        .as_array()
+        .unwrap_or_else(|| panic!("issues: {second}"))
+        .iter()
+        .map(|i| i["code"].as_str().unwrap().to_owned())
+        .collect();
+    assert!(
+        codes.contains(&"frontmatter_type_removed".to_owned()),
+        "the content is judged first: {codes:?}"
+    );
+    assert!(!codes.contains(&"conflict".to_owned()), "{codes:?}");
+    // And the invalid attempt must not have disturbed the open draft.
+    let open = t.call("list_drafts", json!({})).await;
+    assert_eq!(open["drafts"].as_array().unwrap().len(), 1, "{open}");
+}
