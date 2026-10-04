@@ -11,9 +11,9 @@ import { foldLineage, toThreadView } from '../../src/thread/threadModel';
 
 // Text from a run, a skill or a page is data from another person. Every model that feeds a label, a
 // tooltip or a webview must hand out text with no bidi/zero-width/control characters and a bounded size.
-const EVIL = `‮exe.txt​\u0000⁦x⁩${'A'.repeat(2_000_000)}`;
+const EVIL = `\u202Eexe.txt\u200B\u0000\u2066x\u2069${'A'.repeat(2_000_000)}`;
 // eslint-disable-next-line no-control-regex
-const UNSAFE = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f​-‏‪-‮⁠-⁤⁦-⁩﻿]/;
+const UNSAFE = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f\u200b-\u200f\u202a-\u202e\u2060-\u2064\u2066-\u2069\ufeff]/;
 
 function walk(v: unknown, out: string[] = []): string[] {
   if (typeof v === 'string') out.push(v);
