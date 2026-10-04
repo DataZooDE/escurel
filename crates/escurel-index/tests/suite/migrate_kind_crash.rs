@@ -260,3 +260,67 @@ async fn a_bom_or_crlf_page_is_named_and_keeps_the_tenant_quarantined_instead_of
         "still quarantined: the marker stays until the rebuild succeeds"
     );
 }
+
+/// `FsStore` publishes a page by writing `<page>.md.tmp` and renaming it. A kill -9 between the two
+/// leaves the temp file behind. The literal-SIGKILL test in `escurel-server` found that such an orphan
+/// was listed as if it were a page: the migration read it (it vanished when the SIBLING page's rewrite
+/// renamed over it, so the read failed `not found`), and a rebuild tried to parse it.
+async fn lane_with_orphans(rig: &Rig) {
+    put(rig, SKILL, SKILL_LEGACY).await;
+    for i in 0..3 {
+        let (p, md) = legacy_page(i);
+        put(rig, &p, &md).await;
+    }
+    let dir = rig
+        .dir
+        .path()
+        .join("lane/tenants")
+        .join(TENANT)
+        .join("markdown/instances/note");
+    // A truncated half-write (cannot parse) and a complete copy of a sibling (would be a duplicate).
+    std::fs::write(dir.join("n1.md.tmp"), "---\ntype: inst").unwrap();
+    std::fs::write(dir.join("n2.md.tmp"), legacy_page(2).1).unwrap();
+}
+
+#[tokio::test]
+async fn an_orphaned_atomic_write_temp_file_is_not_a_page_and_does_not_break_the_migration() {
+    let rig = rig();
+    lane_with_orphans(&rig).await;
+    let ix = indexer(&rig, "a.duckdb");
+    assert!(ix.quarantine_legacy_kind_pages().await.unwrap());
+
+    let dry = ix.migrate_kind(false).await.unwrap();
+    assert!(
+        dry.pages_to_migrate.iter().all(|p| !p.ends_with(".tmp")),
+        "a temp file is not a page: {dry:?}"
+    );
+
+    let report = ix
+        .migrate_kind(true)
+        .await
+        .expect("an orphaned temp file must not fail the migration");
+    assert!(!report.tenant_quarantined, "{report:?}");
+    assert!(
+        report.not_a_page_kind.iter().all(|p| !p.ends_with(".tmp")),
+        "{report:?}"
+    );
+
+    // Booted again over the same lane: healthy, and the index holds the four real pages only.
+    let after = indexer(&rig, "b.duckdb");
+    assert!(!after.quarantine_legacy_kind_pages().await.unwrap());
+    after.rebuild().await.expect("a rebuild ignores orphans");
+    for orphan in [
+        "markdown/instances/note/n1.md.tmp",
+        "markdown/instances/note/n2.md.tmp",
+    ] {
+        assert!(
+            after.read_page_markdown(orphan).await.unwrap().is_none(),
+            "{orphan} was indexed as a page"
+        );
+    }
+    let instances = after
+        .list_instances("note", None, None, None, None, None)
+        .await
+        .unwrap();
+    assert_eq!(instances.len(), 3, "{instances:?}");
+}
