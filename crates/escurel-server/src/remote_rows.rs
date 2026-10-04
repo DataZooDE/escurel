@@ -100,20 +100,12 @@ fn row_from(src: &RemoteRows, item: &Value) -> Option<RemoteRow> {
 /// (`u1.` + base64url): not readable or forgeable as plain text, and anything else is refused before
 /// it goes anywhere.
 fn encode_cursor(upstream: &str) -> String {
-    use base64::Engine as _;
-    format!(
-        "u1.{}",
-        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(upstream.as_bytes())
-    )
+    escurel_index::backend::rows::seal_cursor("u1.", upstream.as_bytes())
 }
 
 fn decode_cursor(token: &str) -> Result<String, String> {
-    use base64::Engine as _;
     let bad = || "invalid cursor".to_owned();
-    let body = token.strip_prefix("u1.").ok_or_else(bad)?;
-    let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
-        .decode(body.as_bytes())
-        .map_err(|_| bad())?;
+    let bytes = escurel_index::backend::rows::open_cursor("u1.", token).ok_or_else(bad)?;
     String::from_utf8(bytes).map_err(|_| bad())
 }
 

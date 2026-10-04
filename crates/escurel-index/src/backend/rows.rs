@@ -554,22 +554,38 @@ fn timestamp_to_iso(unit: duckdb::types::TimeUnit, t: i64) -> String {
 /// used to be the plain hex of the key, which anyone could read and forge.
 const CURSOR_PREFIX: &str = "r1.";
 
-fn encode_cursor(values: &[String]) -> String {
+/// Seal `raw` into an opaque, versioned cursor token: `<prefix>` + base64url. Shared by the SQL rows
+/// (`r1.`) and the remote rows (`u1.`) so the envelope exists once.
+#[must_use]
+pub fn seal_cursor(prefix: &str, raw: &[u8]) -> String {
     use base64::Engine as _;
-    let raw = serde_json::to_vec(values).unwrap_or_default();
     format!(
-        "{CURSOR_PREFIX}{}",
+        "{prefix}{}",
         base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(raw)
     )
 }
 
-fn decode_cursor(token: &str, arity: usize) -> Result<Vec<String>, SqlViewError> {
+/// The bytes inside a token made by [`seal_cursor`] with the same `prefix`; `None` for anything else
+/// (wrong prefix, not base64url).
+#[must_use]
+pub fn open_cursor(prefix: &str, token: &str) -> Option<Vec<u8>> {
     use base64::Engine as _;
-    let bad = || SqlViewError::InvalidBinding("invalid cursor".to_owned());
-    let body = token.strip_prefix(CURSOR_PREFIX).ok_or_else(bad)?;
-    let raw = base64::engine::general_purpose::URL_SAFE_NO_PAD
+    let body = token.strip_prefix(prefix)?;
+    base64::engine::general_purpose::URL_SAFE_NO_PAD
         .decode(body.as_bytes())
-        .map_err(|_| bad())?;
+        .ok()
+}
+
+fn encode_cursor(values: &[String]) -> String {
+    seal_cursor(
+        CURSOR_PREFIX,
+        &serde_json::to_vec(values).unwrap_or_default(),
+    )
+}
+
+fn decode_cursor(token: &str, arity: usize) -> Result<Vec<String>, SqlViewError> {
+    let bad = || SqlViewError::InvalidBinding("invalid cursor".to_owned());
+    let raw = open_cursor(CURSOR_PREFIX, token).ok_or_else(bad)?;
     let values: Vec<String> = serde_json::from_slice(&raw).map_err(|_| bad())?;
     if values.len() == arity {
         Ok(values)
@@ -746,5 +762,15 @@ mod tests {
         );
         assert_eq!(split_instance_page_id("markdown/skills/x.md"), None);
         assert_eq!(split_instance_page_id("markdown/instances/a/b/c.md"), None);
+    }
+
+    #[test]
+    fn a_sealed_cursor_opens_only_with_its_own_prefix() {
+        let token = seal_cursor("r1.", b"[\"a\"]");
+        assert!(token.starts_with("r1."));
+        assert_eq!(open_cursor("r1.", &token).as_deref(), Some(&b"[\"a\"]"[..]));
+        assert_eq!(open_cursor("u1.", &token), None);
+        assert_eq!(open_cursor("r1.", "r1.not base64 !!"), None);
+        assert_eq!(open_cursor("r1.", "plain"), None);
     }
 }
