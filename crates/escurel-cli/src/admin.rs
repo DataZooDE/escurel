@@ -75,6 +75,10 @@ pub enum AdminCmd {
         /// re-run the command to wait for it, or watch `/readyz`.
         #[arg(long)]
         timeout_secs: Option<u64>,
+        /// Print every page path (default: the first 10 of each long list plus its total; at 20,000
+        /// pages the full list is megabytes). `conflicts` is always printed in full.
+        #[arg(long)]
+        verbose: bool,
     },
     /// OFFLINE `type:` -> `kind:` migration of a directory tree of page files (skills/instances
     /// kept as markdown in git). The file twin of `migrate-kind`: a dry run unless `--apply`, one
@@ -381,6 +385,7 @@ pub async fn run(client: &AdminClient, cmd: AdminCmd) -> Result<Value> {
             tenant,
             apply,
             timeout_secs,
+            verbose,
         } => {
             let started = std::time::Instant::now();
             let call = client.migrate_kind(MigrateKindRequest {
@@ -400,7 +405,13 @@ pub async fn run(client: &AdminClient, cmd: AdminCmd) -> Result<Value> {
                 }
             };
             match r {
-                Ok(r) => Ok(serde_json::to_value(r)?),
+                Ok(r) => {
+                    let mut v = serde_json::to_value(r)?;
+                    if !verbose {
+                        summarise_lists(&mut v, 10);
+                    }
+                    Ok(v)
+                }
                 Err(escurel_client::Error::Transport(e)) if apply && e.is_timeout() => {
                     anyhow::bail!(
                         "migrate-kind: gave up waiting after {}s; the migration is still running \
@@ -635,5 +646,35 @@ async fn tenant(client: &AdminClient, cmd: TenantCmd) -> Result<Value> {
             let imported = client.tenant_import(&id, bytes).await?;
             Ok(json!({ "bytes_imported": imported }))
         }
+    }
+}
+
+/// Keep the first `keep` entries of the report's long path lists and say how many there are:
+/// `<key>_total` and `<key>_more` accompany a truncated list. `conflicts` is never truncated.
+fn summarise_lists(report: &mut serde_json::Value, keep: usize) {
+    const LISTS: [&str; 5] = [
+        "pages_to_migrate",
+        "run_status_renamed",
+        "not_a_page_kind",
+        "skipped_pack_base",
+        "drafts",
+    ];
+    let Some(obj) = report.as_object_mut() else {
+        return;
+    };
+    for key in LISTS {
+        let Some(list) = obj.get_mut(key).and_then(serde_json::Value::as_array_mut) else {
+            continue;
+        };
+        let total = list.len();
+        if total <= keep {
+            continue;
+        }
+        list.truncate(keep);
+        obj.insert(format!("{key}_total"), json!(total));
+        obj.insert(
+            format!("{key}_more"),
+            json!(format!("{} more not shown (use --verbose)", total - keep)),
+        );
     }
 }

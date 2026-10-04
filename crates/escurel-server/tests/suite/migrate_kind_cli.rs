@@ -106,19 +106,24 @@ fn spawn_server(data_dir: &Path) -> (Child, String) {
     }
 }
 
-/// The compiled `escurel` CLI: it lives next to `escurel-server` in the same target dir.
+/// The compiled `escurel` CLI: it lives next to `escurel-server` in the same target dir. It is a
+/// different package, so `cargo test -p escurel-server` does not rebuild it: build it here (a no-op
+/// when fresh, once per process) rather than trust a stale binary left by an earlier build.
 fn cli_path() -> PathBuf {
     use assert_cmd::cargo::CommandCargoExt as _;
-    let server = Command::cargo_bin("escurel-server").unwrap();
-    let dir = Path::new(server.get_program()).parent().unwrap().to_owned();
-    let cli = dir.join("escurel");
-    if !cli.exists() {
+    static BUILT: std::sync::Once = std::sync::Once::new();
+    BUILT.call_once(|| {
         let status = Command::new(std::env::var("CARGO").unwrap_or_else(|_| "cargo".into()))
             .args(["build", "-p", "escurel-cli", "--bin", "escurel"])
             .status()
             .expect("cargo build escurel-cli");
         assert!(status.success(), "building the escurel CLI failed");
-    }
+    });
+    let server = Command::cargo_bin("escurel-server").unwrap();
+    let cli = Path::new(server.get_program())
+        .parent()
+        .unwrap()
+        .join("escurel");
     assert!(cli.exists(), "escurel CLI not found at {}", cli.display());
     cli
 }
@@ -152,6 +157,7 @@ fn cli(base: &str, args: &[&str]) -> Command {
 
 #[tokio::test]
 async fn a_client_that_gives_up_does_not_cancel_the_migration() {
+    let _ = cli_path(); // build the CLI BEFORE the clock starts
     let dir = TempDir::new().unwrap();
     seed_legacy_lane(dir.path());
     let (mut server, base) = spawn_server(dir.path());
@@ -213,6 +219,62 @@ async fn a_slow_tenant_needs_no_timeout_flag() {
         String::from_utf8_lossy(&out.stderr)
     );
     assert!(String::from_utf8_lossy(&out.stdout).contains("\"tenant_quarantined\": false"));
+    let _ = server.kill();
+    let _ = server.wait();
+}
+
+fn dry_run(base: &str, extra: &[&str]) -> std::process::Output {
+    let mut c = Command::new(cli_path());
+    c.env("ESCUREL_SERVER", base)
+        .env_remove("ESCUREL_TOKEN")
+        .args(["admin", "migrate-kind", "--tenant", TENANT])
+        .args(extra);
+    c.output().unwrap()
+}
+
+// Round-2 review: a dry run printed every page path (megabytes at 20k pages) and `--tenant nope`
+// must be an error, never a quiet success on the single tenant.
+#[tokio::test]
+async fn a_dry_run_summarises_long_lists_unless_verbose_and_an_unknown_tenant_is_an_error() {
+    let dir = TempDir::new().unwrap();
+    seed_legacy_lane(dir.path());
+    let (mut server, base) = spawn_server(dir.path());
+
+    let out = dry_run(&base, &[]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["pages_to_migrate_total"], PAGES + 1, "{v}");
+    assert!(
+        v["pages_to_migrate"].as_array().unwrap().len() <= 10,
+        "a summary, not every path: {v}"
+    );
+    assert!(
+        v["pages_to_migrate_more"]
+            .as_str()
+            .unwrap()
+            .contains("--verbose"),
+        "{v}"
+    );
+
+    let full = dry_run(&base, &["--verbose"]);
+    let v: serde_json::Value = serde_json::from_slice(&full.stdout).unwrap();
+    assert_eq!(
+        v["pages_to_migrate"].as_array().unwrap().len(),
+        PAGES + 1,
+        "--verbose lists all"
+    );
+
+    let mut bad = Command::new(cli_path());
+    bad.env("ESCUREL_SERVER", &base)
+        .env_remove("ESCUREL_TOKEN")
+        .args(["admin", "migrate-kind", "--tenant", "nope"]);
+    let out = bad.output().unwrap();
+    assert!(!out.status.success(), "an unknown tenant must fail");
+    assert!(String::from_utf8_lossy(&out.stderr).contains("does not match"));
     let _ = server.kill();
     let _ = server.wait();
 }

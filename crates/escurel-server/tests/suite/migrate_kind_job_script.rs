@@ -15,16 +15,18 @@ fn repo_root() -> PathBuf {
 
 fn bin_dir() -> PathBuf {
     use assert_cmd::cargo::CommandCargoExt as _;
-    let server = Command::cargo_bin("escurel-server").unwrap();
-    let dir = Path::new(server.get_program()).parent().unwrap().to_owned();
-    if !dir.join("escurel").exists() {
+    // A different package: `cargo test -p escurel-server` does not rebuild the CLI, and a stale
+    // binary left by an earlier build would be tested instead. Build it (a no-op when fresh).
+    static BUILT: std::sync::Once = std::sync::Once::new();
+    BUILT.call_once(|| {
         let st = Command::new(std::env::var("CARGO").unwrap_or_else(|_| "cargo".into()))
             .args(["build", "-p", "escurel-cli", "--bin", "escurel"])
             .status()
             .unwrap();
         assert!(st.success());
-    }
-    dir
+    });
+    let server = Command::cargo_bin("escurel-server").unwrap();
+    Path::new(server.get_program()).parent().unwrap().to_owned()
 }
 
 fn free_port() -> u16 {
