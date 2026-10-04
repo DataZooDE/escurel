@@ -46,6 +46,7 @@ export type ToolResult = Record<string, unknown>;
 
 export interface Stack {
   page: Page;
+  display: string;
   /** What the demo driver left behind: the root events and changesets of the story. */
   story: { rootA: string; rootB: string; promoted: string; awaiting: string };
   gatewayUrl: string;
@@ -74,16 +75,18 @@ export const test = base.extend<object, { stack: Stack }>({
         ...process.env,
         DISPLAY: display,
         WAYLAND_DISPLAY: '',
+        XDG_SESSION_TYPE: 'x11',
         ESCUREL_DEMO_HOME: home,
         ESCUREL_DEMO_CDP_PORT: String(cdpPort),
         ESCUREL_DEMO_CODE_ARGS:
-          '--disable-site-isolation-trials --disable-features=IsolateOrigins,site-per-process',
+          '--ozone-platform=x11 --disable-site-isolation-trials --disable-features=IsolateOrigins,site-per-process',
         ESCUREL_TEST_GATEWAY_BIN: join(bin, 'escurel-test-gateway'),
         ESCUREL_RUNNER_BIN: join(bin, 'escurel-runner'),
         ESCUREL_ECHO_SLEEP_MS: '6000',
         // No zoom: Playwright maps clicks into a nested webview with the page's own scale, and a zoomed
         // window (the demo's default) puts them on the wrong element.
         ESCUREL_DEMO_ZOOM: '0',
+        ESCUREL_DEMO_EVOLVE_SEED: '1',
       };
       const run = join(EXT, 'demo', 'run.sh');
       execFileSync(run, ['start'], { env, stdio: 'inherit', timeout: 240_000 });
@@ -124,6 +127,7 @@ export const test = base.extend<object, { stack: Stack }>({
 
       const stack: Stack = {
         page,
+        display,
         story,
         gatewayUrl: info.gateway_url,
         errors,

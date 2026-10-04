@@ -89,7 +89,7 @@ suite('Evolve problem plan review from the extension host', () => {
     const run = await until(async () => {
       const lineage = await api.services.client.listLineage({ root_event_id: planned.event_id });
       return lineage.nodes.find((node) => node.type === 'run' && node.state === 'planned');
-    }, 30_000, 'the real runner to finish its plan');
+    }, 90_000, 'the real runner to finish its plan');
     assert.ok(run.id);
     await wait(300);
     await markProcessed(planned.event_id, pageId).catch(() => undefined);

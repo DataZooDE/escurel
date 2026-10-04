@@ -62,6 +62,9 @@ mkdir -p "$HOME_DIR/workspace" "$HOME_DIR/profile/User" "$HOME_DIR/ext"
 # resolves a relative glob against the server's cwd, so its skill page must carry an absolute path.
 cp -r "$HERE/seed" "$HOME_DIR/seed"
 sed -i "s|@ORDER_LINES_DIR@|$HERE/sources/order-lines|" "$HOME_DIR/seed/skills/order-lines.md"
+if [ "${ESCUREL_DEMO_EVOLVE_SEED:-0}" = "1" ]; then
+  cp "$EXT"/test/integration/seed/skills/evolve_*.md "$HOME_DIR/seed/skills/"
+fi
 
 # The gateway: verifies tokens, and keeps a fresh bearer in a file (a demo outlasts a token).
 setsid nohup "$GATEWAY_BIN" --tenant vsx --seed "$HOME_DIR/seed" --subject alice \

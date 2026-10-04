@@ -72,6 +72,15 @@ jobs:
       - name: Verify Evolve preflight and plan review in VS Code host
         run: npm run test:integration
         working-directory: editors/vscode
+      - name: Show Evolve runner diagnostics on failure
+        if: failure()
+        run: |
+          for log in /tmp/escurel-vsx-runner-*/runner.log; do
+            if [ -f "$log" ]; then
+              echo "Runner log: $log"
+              tail -120 "$log"
+            fi
+          done
 
   build-test-package:
     runs-on: ubuntu-latest
