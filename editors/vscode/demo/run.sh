@@ -105,6 +105,7 @@ cat > "$HOME_DIR/profile/User/settings.json" <<JSON
   "extensions.autoUpdate": false,
   "window.restoreWindows": "none",
   "window.zoomLevel": ${ESCUREL_DEMO_ZOOM:-1},
+  "window.dialogStyle": "${ESCUREL_DEMO_DIALOG_STYLE:-native}",
   "chat.disableAIFeatures": true,
   "workbench.secondarySideBar.defaultVisibility": "visible",
   "workbench.layoutControl.enabled": false,

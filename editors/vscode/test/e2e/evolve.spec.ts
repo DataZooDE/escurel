@@ -19,11 +19,11 @@ async function events(
   return (result.events ?? []) as GatewayEvent[];
 }
 
-test('an echo plan cannot approve a spend-capable Evolve search', async ({ stack }) => {
+test('echo plan is refused and a synthetic non-echo plan approves the exact revision', async ({ stack }) => {
   const id = `v2-visible-approval-${Date.now()}`;
   const pageId = `markdown/instances/evolve_problem/${id}.md`;
   const spec = {
-    pilot: 'p1_decision', version: 2, holdout_id: 'registered-private-holdout',
+    pilot: 'p1_decision', version: 2, evaluator_version: 'replenishment_decision_v2', holdout_id: 'registered-private-holdout',
     max_generations: 2, budget: { max_evaluated: 8, max_usd: 3.5 },
     capacity: 10,
     skus: [{ sku_id: 1, name: 'Synthetic training SKU', initial_stock: 1,
@@ -37,7 +37,7 @@ test('an echo plan cannot approve a spend-capable Evolve search', async ({ stack
     unit_order_costs: { '1': 1 }, terminal_stock_tolerance: { '1': 0 },
     training_start: '2026-08-01', training_end: '2026-08-06',
     history_start: '2026-07-30', history_end: '2026-07-31',
-    source_sha256: 'a'.repeat(64),
+    training_source_id: 'synthetic-training-source', source_sha256: 'a'.repeat(64),
   };
   const content = `---\ntype: instance\nskill: evolve_problem\nid: ${id}\nowner_subject: alice\npilot: p1_decision\nsearch_request: ${JSON.stringify(spec)}\n---\n# Visible approval review\n`;
   const written = await stack.call('update_page', {
@@ -103,4 +103,59 @@ test('an echo plan cannot approve a spend-capable Evolve search', async ({ stack
     .toBeVisible();
   expect((await events(stack.call, 'evolve_run'))
     .some((event) => event.event_id === `evolve-approval-${runId}`)).toBe(false);
+
+  // Inject a representative completed non-echo plan into the native window.
+  // The Rust gateway test exercises the real Evolve preflight and admission;
+  // this checks the visible approval, frozen revision, and captured user event.
+  const reviewedRunId = `v2-reviewed-plan-${id}`;
+  for (const [suffix, title, body] of [
+    ['started', 'run-started', {}],
+    ['finished', 'run-finished', { status: 'planned', plan: [
+      { step: 'Verify the sealed holdout and source binding', status: 'pending' },
+      { step: 'Run bounded DuckDB evaluations under the approved budget', status: 'pending' },
+    ] }],
+  ] as const) {
+    await stack.call('capture_event', {
+      event_id: `run:${reviewedRunId}:${suffix}`,
+      label_skill: 'escurel:run', source: 'escurel-runner', kind: 'system',
+      instance_page_id: pageId, title, body: JSON.stringify(body),
+      provenance: { runner: { run_id: reviewedRunId, harness: 'codex',
+        event_id: planned!.event_id, root_event_id: planned!.event_id,
+        target_page_id: pageId,
+        manual: planned!.provenance?.manual } },
+    }, true);
+  }
+  await expect.poll(async () => {
+    const lineage = await stack.call('list_lineage', { root_event_id: planned!.event_id });
+    return (lineage.nodes as Array<{ type: string; state: string; id: string }> | undefined)
+      ?.some((item) => item.type === 'run' && item.id === reviewedRunId && item.state === 'planned');
+  }, { timeout: 30_000 }).toBe(true);
+
+  const reviewedCard = thread.locator(`escurel-thread-canvas .card.type-run[data-node-id="${reviewedRunId}"]`);
+  await expect(reviewedCard).toBeVisible({ timeout: 30_000 });
+  await reviewedCard.dblclick();
+  const run = await webviewWith(stack.page, 'escurel-run-detail');
+  await expect(run.getByRole('button', { name: 'Review search limits' })).toBeVisible();
+  await run.getByRole('button', { name: 'Review search limits' }).click();
+  const dialog = stack.page.getByRole('dialog', { name: 'Warning' })
+    .filter({ hasText: 'Approve this Evolve search' });
+  await expect(dialog).toBeVisible();
+  await expect(dialog).toContainText('Plan harness: codex');
+  await expect(dialog).toContainText('Verify the sealed holdout and source binding');
+  await expect(dialog).toContainText('8 evaluations; 3.50 USD max');
+  await expect(dialog).toContainText('replenishment_decision_v2; planning window: 2 days; scored window: 2 days');
+  await expect(dialog).toContainText('Unit order costs by SKU: {"1":1}');
+  await expect(dialog).toContainText('Terminal stock tolerance by SKU: {"1":0}');
+  await expect(dialog).toContainText('Training source ID: synthetic-training-source');
+  await dialog.getByRole('button', { name: 'Approve search' }).click();
+
+  await expect.poll(async () => (await events(stack.call, 'evolve_run'))
+    .find((event) => event.event_id === `evolve-approval-${reviewedRunId}`)?.event_id,
+  { timeout: 30_000 }).toBe(`evolve-approval-${reviewedRunId}`);
+  const approval = (await events(stack.call, 'evolve_run'))
+    .find((event) => event.event_id === `evolve-approval-${reviewedRunId}`);
+  expect(approval?.provenance?.manual?.approved_plan_run_id).toBe(reviewedRunId);
+  expect(approval?.provenance?.manual?.harness).toBe('codex');
+  expect(approval?.provenance?.manual?.expected_page_sha256).toBe(revision);
+  expect(approval?.revision_binding_attested).toBe(true);
 });

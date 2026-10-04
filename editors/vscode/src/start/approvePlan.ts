@@ -181,7 +181,11 @@ export function registerApprovePlan(
           );
           if (confirmed !== 'Approve search') return;
           const provenance = eventReq.provenance as Record<string, unknown>;
-          (provenance.manual as Record<string, unknown>).expected_page_sha256 = frozen;
+          const manual = provenance.manual as Record<string, unknown>;
+          // The reviewed run is authoritative; the local default may have changed
+          // since planning and must not give this approval a different harness.
+          manual.harness = view.harness;
+          manual.expected_page_sha256 = frozen;
         }
 
         const captured = await client.captureEvent(eventReq);

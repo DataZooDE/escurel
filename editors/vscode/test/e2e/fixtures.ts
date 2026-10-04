@@ -87,6 +87,9 @@ export const test = base.extend<object, { stack: Stack }>({
         // No zoom: Playwright maps clicks into a nested webview with the page's own scale, and a zoomed
         // window (the demo's default) puts them on the wrong element.
         ESCUREL_DEMO_ZOOM: '0',
+        // Keep VS Code's modal confirmation inside the CDP window so the
+        // approval text and deliberate human click are observable end to end.
+        ESCUREL_DEMO_DIALOG_STYLE: 'custom',
         ESCUREL_DEMO_EVOLVE_SEED: '1',
       };
       const run = join(EXT, 'demo', 'run.sh');

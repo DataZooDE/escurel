@@ -10,11 +10,17 @@ describe('Evolve approval summary', () => {
       pilot: 'p1_decision', holdout_id: 'private-1', source_sha256: 'b'.repeat(64),
       max_generations: 3, budget: { max_evaluated: 8, max_usd: 2.5 },
       service_targets: { aggregate_min_fill_rate: 0.95 }, seed_sql: seed, baseline_sql: baseline,
+      evaluator_version: 'replenishment_decision_v2', planning_window_days: 7,
+      scored_window_days: 14, unit_order_costs: { '1': 1.5 },
+      terminal_stock_tolerance: { '1': 2 },
     });
     expect(summary).toContain('a'.repeat(64));
     expect(summary).toContain('private-1');
     expect(summary).toContain('3 generations; 8 evaluations; 2.50 USD max');
     expect(summary).toContain('aggregate_min_fill_rate');
+    expect(summary).toContain('replenishment_decision_v2; planning window: 7 days; scored window: 14 days');
+    expect(summary).toContain('Unit order costs by SKU: {"1":1.5}');
+    expect(summary).toContain('Terminal stock tolerance by SKU: {"1":2}');
     expect(summary).toContain(createHash('sha256').update(seed).digest('hex'));
     expect(summary).toContain(createHash('sha256').update(baseline).digest('hex'));
     expect(summary).not.toContain(seed);
