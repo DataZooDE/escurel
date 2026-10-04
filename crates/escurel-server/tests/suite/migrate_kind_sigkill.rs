@@ -109,6 +109,9 @@ fn user_data_page_legacy_with_data_field() -> &'static str {
      # Reseller\n\nA prose line that says type: instance must stay.\n"
 }
 
+// The child is handed back to the caller, which reaps it in `sigkill` / `sigterm`; clippy cannot see
+// across the return.
+#[allow(clippy::zombie_processes)]
 fn spawn_server(data_dir: &Path) -> (Child, String) {
     use assert_cmd::cargo::CommandCargoExt as _;
     let mut child = Command::cargo_bin("escurel-server")
@@ -127,7 +130,10 @@ fn spawn_server(data_dir: &Path) -> (Child, String) {
     loop {
         line.clear();
         let n = reader.read_line(&mut line).expect("read server stdout");
-        assert!(n != 0, "escurel-server exited before it listened");
+        if n == 0 {
+            let status = child.wait().expect("reap the exited server");
+            panic!("escurel-server exited before it listened ({status})");
+        }
         if let Some(rest) = line.trim().strip_prefix("escurel-server listening http=") {
             // Keep draining stdout so the child never blocks on a full pipe.
             std::thread::spawn(move || {
