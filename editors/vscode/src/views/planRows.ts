@@ -91,3 +91,22 @@ export function planRows(runEvents: Event[], userEvents: Event[]): PlanRow[] {
     return tb - ta || b.id.localeCompare(a.id);
   });
 }
+
+/**
+ * The root events of the runs that ended `planned`, newest first, one per run, at most `max`. The Awaiting
+ * view reads each root's lineage (the gateway's `list_events` needs a selector, it cannot list "every user
+ * event") to learn which skill the plan was for and whether it was approved.
+ */
+export function plannedRunRoots(runEvents: Event[], max = 20): string[] {
+  const seen = new Set<string>();
+  const roots: { root: string; at: number }[] = [];
+  for (const e of runEvents) {
+    if (!isPlanned(e) || !e.run_id || !e.root_event_id || seen.has(e.run_id)) continue;
+    seen.add(e.run_id);
+    roots.push({ root: e.root_event_id, at: e.at ? new Date(e.at).getTime() : 0 });
+  }
+  return roots
+    .sort((a, b) => b.at - a.at)
+    .slice(0, max)
+    .map((r) => r.root);
+}

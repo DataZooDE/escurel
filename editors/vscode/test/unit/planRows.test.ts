@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { Event } from '../../src/client/types';
-import { planRows } from '../../src/views/planRows';
+import { planRows, plannedRunRoots } from '../../src/views/planRows';
 
 function ev(over: Partial<Event>): Event {
   return {
@@ -114,5 +114,32 @@ describe('planRows', () => {
 
   it('survives a body that is not JSON', () => {
     expect(planRows([planFinished('R7', { body: 'not json' })], [])).toEqual([]);
+  });
+});
+
+// The gateway's list_events needs a selector (page, root, run or label), so the Awaiting view cannot ask
+// for "all user events". It asks per plan: the root's lineage gives the trigger (and so the skill).
+describe('plannedRunRoots', () => {
+  it('names the root event of each planned run, newest first, once, capped', () => {
+    const runs = [
+      planFinished('A', { at: '2026-10-04T10:00:00Z' }),
+      planFinished('B', { at: '2026-10-04T11:00:00Z' }),
+      planFinished('A', { event_id: 'dup', at: '2026-10-04T10:00:01Z' }),
+      ev({
+        event_id: 'x',
+        run_id: 'C',
+        title: 'run-finished',
+        body: JSON.stringify({ status: 'processed' }),
+      }),
+    ];
+    expect(plannedRunRoots(runs)).toEqual(['root-B', 'root-A']);
+    const many = Array.from({ length: 40 }, (_, i) =>
+      planFinished(`R${i}`, { at: `2026-10-04T10:${String(i).padStart(2, '0')}:00Z` }),
+    );
+    expect(plannedRunRoots(many, 20)).toHaveLength(20);
+  });
+
+  it('ignores a planned run without a root', () => {
+    expect(plannedRunRoots([planFinished('A', { root_event_id: null })])).toEqual([]);
   });
 });

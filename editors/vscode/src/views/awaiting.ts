@@ -3,6 +3,7 @@ import * as vscode from 'vscode';
 import type { EscurelClient } from '../client';
 import { connectionStateOf, describeError } from '../errors';
 import { log } from '../log';
+import { loadPlanInputs } from './planInputs';
 import { accessibleLabel, buildAwaitingRows, type AwaitingRow } from './awaitingModel';
 
 export interface ErrorRow {
@@ -120,24 +121,13 @@ export class AwaitingTree implements vscode.TreeDataProvider<Node> {
   async getChildren(n?: Node): Promise<Node[]> {
     try {
       if (!n) {
-        const [changesets, drafts, inboxPage, skills, runPage, userPage] = await Promise.all([
+        const [changesets, drafts, inboxPage, skills, plans] = await Promise.all([
           this.client().listChangesets(),
           this.client().listDrafts(),
           this.client().listInbox(),
           this.client().listSkills(),
-          // Plans waiting for approval: the run lifecycle (a run that ended `planned`) and the user events
-          // (the triggers, and any approval). Bounded; a failure here must not empty the whole queue.
-          this.client()
-            .listEvents({
-              label_skill: 'escurel:run',
-              include_system: true,
-              newest_first: true,
-              limit: 100,
-            })
-            .catch(() => undefined),
-          this.client()
-            .listEvents({ newest_first: true, limit: 200 })
-            .catch(() => undefined),
+          // Plans waiting for approval; a failure here must not empty the whole queue.
+          loadPlanInputs(this.client()),
         ]);
         await vscode.commands.executeCommand('setContext', 'escurel.connected', true);
         await vscode.commands.executeCommand('setContext', 'escurel.connectionState', 'ok');
@@ -146,8 +136,8 @@ export class AwaitingTree implements vscode.TreeDataProvider<Node> {
           drafts,
           events: inboxPage.events,
           skills,
-          runEvents: runPage?.events ?? [],
-          userEvents: userPage?.events ?? [],
+          runEvents: plans.runEvents,
+          userEvents: plans.userEvents,
         });
         if (this.treeView) {
           this.treeView.badge =
