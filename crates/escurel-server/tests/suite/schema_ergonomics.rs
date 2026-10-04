@@ -272,6 +272,47 @@ async fn evolve_preflight_capture_is_private_and_revision_bound() {
             .unwrap()
             .is_empty()
     );
+    let admin = p.mint_token(TENANT, Role::Admin);
+    let receipt = call(
+        &p,
+        &admin,
+        "capture_event",
+        json!({
+            "event_id": "EVOLVE-PREFLIGHT-RESULT-A",
+            "label_skill": "evolve:preflight", "source": "anofox-evolve",
+            "kind": "system", "mime": "application/json",
+            "title": "problem-structure-blocked",
+            "body": "{\"holdout_binding_issue\":\"private source metadata\"}",
+            "provenance": {"runner": {"root_event_id": "EVOLVE-PREFLIGHT-A"}}
+        }),
+    )
+    .await;
+    assert!(receipt.get("error").is_none(), "{receipt}");
+    let owner_receipt = call(
+        &p,
+        &owner,
+        "list_events",
+        json!({"event_id": "EVOLVE-PREFLIGHT-RESULT-A"}),
+    )
+    .await;
+    assert_eq!(
+        owner_receipt["result"]["structuredContent"]["events"][0]["body"],
+        "{\"holdout_binding_issue\":\"private source metadata\"}"
+    );
+    let other_receipt = call(
+        &p,
+        &other,
+        "list_events",
+        json!({"event_id": "EVOLVE-PREFLIGHT-RESULT-A"}),
+    )
+    .await;
+    assert!(
+        other_receipt["result"]["structuredContent"]["events"]
+            .as_array()
+            .unwrap()
+            .is_empty(),
+        "a final private preflight receipt must stay in the requester's thread"
+    );
     let inbox = call(&p, &owner, "list_inbox", json!({})).await;
     assert!(
         inbox["result"]["structuredContent"]["events"]
