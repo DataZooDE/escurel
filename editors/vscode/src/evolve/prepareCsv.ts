@@ -5,6 +5,7 @@ import { readConfig } from '../config';
 import { describeError } from '../errors';
 import { evolveOrigin } from './holdoutClient';
 import { preparedV2Draft } from './problemImport';
+import { callPrivateTrainingTool } from './trainingCsvClient';
 
 function digest(value: Uint8Array): string {
   return createHash('sha256').update(value).digest('hex');
@@ -69,33 +70,14 @@ export function registerPrepareEvolveTrainingCsv(
         if (digest(await vscode.workspace.fs.readFile(selected.uri)) !== selected.sha256)
           throw new Error('A selected file changed after review. Reopen the current files and retry.');
       }
-      const call = async (tool: string, body: Record<string, unknown>) => {
-        const token = await services.auth.refresher.get();
-        if (!token) throw new Error('Sign in with an OIDC token accepted by Evolve.');
-        const response = await fetch(endpoint + '/', {
-          method: 'POST', redirect: 'error', signal: AbortSignal.timeout(30_000),
-          headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json', 'X-Triton-Tool': tool },
-          body: JSON.stringify(body),
-        });
-        if (response.status === 409)
-          throw new Error('This source ID is already frozen with different files. Use a new ID for the changed extract.');
-        if (response.status === 403)
-          throw new Error('This source belongs to another signed-in owner. Use the original owner or a new source ID.');
-        if (response.status === 422)
-          throw new Error('Evolve rejected the CSV schema or measurements. Fix the selected files and retry the same ID.');
-        if (response.status === 401)
-          throw new Error('Evolve rejected the OIDC token. Sign in again and check its audience.');
-        if (!response.ok) throw new Error(`Evolve rejected ${tool} (HTTP ${response.status}). Retry the same files and ID if the result is uncertain.`);
-        return object(await response.json());
-      };
-      const receipt = await call('evolve_prepare_training_csv', {
+      const receipt = await callPrivateTrainingTool(endpoint, services.auth.refresher, 'evolve_prepare_training_csv', {
         source_id: sourceId, manifest_json: manifest.text,
         template_json: template.text, daily_demand_csv: csv.text,
       });
       if (receipt.training_source_id !== sourceId || typeof receipt.normalized_sha256 !== 'string'
           || !/^[a-f0-9]{64}$/.test(receipt.normalized_sha256))
         throw new Error('Evolve returned an invalid training CSV receipt.');
-      const draft = await call('evolve_training_csv_draft', { source_id: sourceId });
+      const draft = await callPrivateTrainingTool(endpoint, services.auth.refresher, 'evolve_training_csv_draft', { source_id: sourceId });
       if (draft.training_source_id !== sourceId || draft.normalized_sha256 !== receipt.normalized_sha256)
         throw new Error('The owner-private draft differs from the sealed receipt.');
       if (await services.subject() !== owner)
