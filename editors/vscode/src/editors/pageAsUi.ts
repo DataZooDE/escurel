@@ -99,7 +99,8 @@ export class PageAsUiEditor implements vscode.CustomReadonlyEditorProvider {
         // What the last change sent to the source did. Like the thread strip it is an addition: a
         // failure here must not cost the user the page.
         let writeBack: WriteBackStatus | undefined;
-        if (model.source?.external) {
+        // A row that can be written back to: REST/MCP, or a SQL database with writable columns.
+        if (model.source?.external || model.source?.writableColumns?.length) {
           try {
             const evs = await c.listEvents({
               instance_page_id: pageId,

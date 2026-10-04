@@ -4,6 +4,26 @@ The skill version tracks the consumer-facing contract, not the Escurel
 binary version. The Escurel repo's checked-out git ref is the true version
 pin (see `SKILL.md` → "How this skill is installed").
 
+## 0.14.0 — SQL rows: database connectors and human-gated write-back (additive)
+
+- **`sql_view` rows over a real database.** `connector: postgres | mysql | sqlite` with `instances: rows` pages
+  by keyset exactly as before (typed keys, NULL keys skipped). The credential is a **reference**:
+  `register_credential {name, connector, secret_ref}` (`file:` / `env:` / `gsm:`, allow-listed by the operator;
+  the inline `secret` is deprecated and answers with a warning). A Postgres/MySQL host and a SQLite file path are
+  checked against the operator's egress policy (`ESCUREL_SQL_FILE_DIRS`) and refused by name: ask the operator.
+- **Write-back to a database row.** A skill lists `writable_columns: [<frontmatter field>]`; `expand` then carries
+  `backend_projection.{etag, writable_columns, writable_via: "write_back"}` for a `sql_view` row too (it did
+  for REST/MCP). Propose with `create_draft {target_page_id, content}` whose frontmatter has
+  `write_back: {patch: {field: value}, base_etag}`; a human promotes it. At promote the row is re-read: it already
+  holds the change → applied; the etag moved → `write_back_conflict` and the database is NOT written; otherwise ONE
+  `UPDATE` runs in one transaction with bound parameters, guarded by the values the reviewer saw. Unreachable or
+  locked database → bounded retries, then `write_back_failed` (dead letter; the draft stays open, promote again);
+  a constraint/type error → `write_back_rejected`. `update_page` with a `write_back` block is refused
+  (`write_back_requires_draft`); a non-writable field `backend_read_only_field`; a `json_dir`/`parquet_dir`
+  source `backend_read_only` (no `writable_via` is promised for it). Values are scalars (string, number, bool).
+- Writes reuse the read credential: tell the operator which columns you intend to write so the database user is
+  granted exactly those.
+
 ## 0.13.0 — BREAKING: `content[0].text` is a summary; `autonomy` is enforced for machine callers
 
 - **BREAKING — `tools/call` text block.** `result.content[0].text` is a one-or-two-line summary (what came

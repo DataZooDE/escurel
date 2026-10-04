@@ -100,6 +100,7 @@
 //! | `ESCUREL_SECRET_<NAME>` | — | a connector credential, referenced from an endpoint as `secret_ref: gsm:<name>` (the substrate injects GCP Secret Manager secrets as env). Never put a secret in a page |
 //! | `ESCUREL_SECRET_ENV_ALLOW` | — | comma list of extra env var names a tenant may reference as `env:NAME` (names starting `ESCUREL_SECRET_` are always allowed) — the *security* policy: stream "secret_ref allow-list" |
 //! | `ESCUREL_SECRET_FILE_DIRS` | `/run/secrets` | `:`-separated directories a tenant may reference as `file:/path` (canonicalised; never `/proc`, `/sys`, `/dev`) |
+//! | `ESCUREL_SQL_FILE_DIRS` | — | `:`-separated directories a `sqlite` credential's database FILE may live under (canonicalised). Unset = file databases are refused. Postgres/MySQL hosts follow the egress rules (public addresses only; loopback with `ESCUREL_EGRESS_ALLOW_LOOPBACK`) |
 
 use std::path::PathBuf;
 use std::sync::Arc;

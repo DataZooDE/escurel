@@ -388,9 +388,11 @@ them is `escurel:admin`-gated and so not part of the normal agent surface:
 
 - `create_sql_instance(skill, id, [overlay_body])` — materialise a read-only
   view-backed instance.
-- `register_credential(name, connector, secret)` / `list_credentials()` /
+- `register_credential(name, connector, secret_ref | secret)` / `list_credentials()` /
   `delete_credential(name)` — the `sql_view` source-secret registry (secrets
-  never echoed back).
+  never echoed back). Give the connection string as a **reference** (`secret_ref`: `file:` / `env:` / `gsm:`, same
+  allow-list as `register_endpoint`); inline `secret` is deprecated and flagged. `postgres` / `mysql` hosts and
+  `sqlite` file paths are checked against the operator's egress policy (`ESCUREL_SQL_FILE_DIRS`) when first used.
 - `validate_bindings()` — re-probe every `sql_view` for schema drift; a
   `binding_degraded` view reads fail-closed.
 - `register_endpoint(name, kind, base_url, [secret_ref | secret])` / `list_endpoints()` — the REST / MCP
@@ -474,7 +476,7 @@ of the normal app surface — see `references/08` and `references/10`.
   `expand` of a bare id answers `{page: null, hint}` explaining the shape.
 - **Writing to a row.** The source columns are read-only. Notes go to the row's page with
   `update_page` (the linked markdown). A REST/MCP column the skill lists in
-  `backend_projection.writable_columns` changes only through `create_draft` with
+  `backend_projection.writable_columns` (REST/MCP, and a `sql_view` rows skill over postgres/mysql/sqlite that declares `writable_columns`) changes only through `create_draft` with
   `write_back: {patch: {col: val}, base_etag}` (etag: `backend_projection.etag`), promoted by a human.
   `write_instance` is for per-instance remote bindings, never for rows.
 

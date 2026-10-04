@@ -103,5 +103,5 @@ An `openapi` / `mcp` skill is seeded like any skill (a markdown page under `skil
 **endpoint** that only an admin can register, after boot: seeding writes markdown, it does not call
 `register_endpoint`. In a fixture: seed the skill, start your outside system on a real loopback socket (a
 small axum / node server; do NOT mock the HTTP client), start the gateway with
-`ESCUREL_EGRESS_ALLOW_LOOPBACK=1`, then `register_endpoint {name, kind, base_url}` as the admin. The demo
+`ESCUREL_EGRESS_ALLOW_LOOPBACK=1`, then `register_endpoint {name, kind, base_url}` as the admin. A SQL-database fixture (`orders-db` in the demo: a SQLite file) needs a secret file holding the DSN under `ESCUREL_SECRET_FILE_DIRS`, the database directory in `ESCUREL_SQL_FILE_DIRS`, and `register_credential {name, connector: sqlite, secret_ref: file:<path>}` as the admin. The demo
 at `editors/vscode/demo/` does exactly this with a REST portal and an MCP server (`services/`).

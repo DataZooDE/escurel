@@ -63,7 +63,17 @@ operator, not by the tenant:
 | `ESCUREL_SECRET_<NAME>` | — | a credential an endpoint references as `secret_ref: gsm:<name>` (injected from GCP Secret Manager) |
 | `ESCUREL_SECRET_ENV_ALLOW` | — | extra env var names a tenant may name as `env:NAME` |
 | `ESCUREL_SECRET_FILE_DIRS` | `/run/secrets` | directories a tenant may name as `file:/path` |
+| `ESCUREL_SQL_FILE_DIRS` | — | directories a `sqlite` credential's database file may live under; unset refuses file databases. Postgres/MySQL credentials are checked like an endpoint: the DSN host must resolve to public addresses (loopback only with `ESCUREL_EGRESS_ALLOW_LOOPBACK`) |
 | `ESCUREL_SHUTDOWN_DRAIN_SECS` | `25` | how long a graceful stop (SIGTERM) waits for in-flight requests (a long write-back, an open stream) before aborting them, so a stuck request cannot hold the host past the orchestrator's kill timeout |
+
+**SQL row connectors (Postgres / MySQL / SQLite).** A `sql_view` credential is registered as a **reference**
+(`register_credential {name, connector, secret_ref}`; an inline `secret` still works but is deprecated and flagged),
+resolved by the same allow-list as endpoint secrets and checked against the egress policy before any connection
+(a private/metadata host, an unlisted file directory, a unix socket: refused by name). The image bakes the
+`postgres`, `sqlite` and `mysql` DuckDB extensions (build-time assertion). **Write-back to a database uses the
+SAME credential**, opened read-write on a short-lived connection only when a human promotes a draft: grant that
+database user `UPDATE` on the writable columns of the tables you expose and nothing else. Postgres attaches carry
+the server-side `statement_timeout`; watch `escurel_write_back_total{outcome}` (`dead_letter`, `conflict`).
 
 A value that does not parse (`ESCUREL_EGRESS_TIMEOUT_MS=5s`, `…ALLOW_LOOPBACK=yes`) or a zero limit **fails the
 boot** with the variable named; it is never silently ignored. Secrets live in env or mounted files, never in

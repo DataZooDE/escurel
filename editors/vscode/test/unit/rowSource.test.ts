@@ -111,6 +111,27 @@ describe('rowSourceOf: rows from a remote (REST/MCP) upstream', () => {
   });
 });
 
+describe('rowSourceOf: a SQL row whose skill declares writable columns', () => {
+  it('can be changed through a write-back draft, and is still not external data', () => {
+    const sql = {
+      ...projection,
+      etag: 'w1:def',
+      writable_columns: ['status'],
+      writable_via: 'write_back',
+    };
+    const row = rowSourceOf(sql);
+    expect(row?.external).toBeUndefined();
+    expect(row?.etag).toBe('w1:def');
+    expect(row?.writableColumns).toEqual(['status']);
+  });
+
+  it("offers nothing without the gateway's promise (writable_via)", () => {
+    const row = rowSourceOf({ ...projection, etag: 'w1:def', writable_columns: ['status'] });
+    expect(row?.etag).toBeUndefined();
+    expect(row?.writableColumns).toBeUndefined();
+  });
+});
+
 describe('isSourceField', () => {
   const down = {
     sourceFields: [],

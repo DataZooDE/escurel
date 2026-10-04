@@ -1,4 +1,5 @@
 import { readFileSync } from 'node:fs';
+import { DatabaseSync } from 'node:sqlite';
 import { join } from 'node:path';
 import type { Page } from '@playwright/test';
 import { expect, test, webviewWith, type Stack } from './fixtures';
@@ -696,6 +697,61 @@ test('when the portal is down a promoted change is refused, recorded as failed, 
     await expect(cell.locator('.badge'), `${name}: no empty pill`).toHaveCount(0);
   }
   await stack.shot('13-write-back-failed');
+});
+
+/** One row of the demo's real SQLite database, read straight from the file (not through escurel). */
+const orderInDb = (home: string, orderNo: string): { status: string; qty: number } => {
+  const db = new DatabaseSync(join(home, 'sqlite', 'orders.db'), { readOnly: true });
+  try {
+    return db.prepare('SELECT status, qty FROM orders WHERE order_no = ?').get(orderNo) as never;
+  } finally {
+    db.close();
+  }
+};
+
+test('a row of a SQL database is changed through a proposal, only after a reviewer approves it', async ({
+  stack,
+}) => {
+  const { page } = stack;
+  await expect(await skillRow(page, 'orders-db')).toBeVisible();
+  await openRow(page, 'orders-db', /SO-100231/);
+  const wv = await webviewWith(page, 'escurel-page-as-ui', 'SO-100231');
+  const strip = wv.locator('.source-strip');
+  await expect(strip).toContainText('a SQL source');
+  await expect(strip).not.toContainText('External data');
+  await expect(wv.locator('.field[data-name="customer"]')).toContainText('Meier Gussteile');
+  await expect(wv.locator('.field[data-name="status"]')).toContainText('open');
+  await expect(strip.getByRole('button', { name: 'Change status…' })).toBeVisible();
+  await expect(strip.getByRole('button', { name: 'Change quantity…' })).toBeVisible();
+  // A column the skill does not list is not offered.
+  await expect(strip.getByRole('button', { name: 'Change customer…' })).toHaveCount(0);
+  await stack.shot('14-sql-row');
+
+  await wv.getByRole('button', { name: 'Change status…' }).click();
+  await answerQuickInput(page, /^Change \w+ in the source$/, 'shipped');
+  await answerQuickInput(page, /^Note for the reviewer/, 'Left the warehouse today.');
+  await expect(
+    page.locator('.notification-toast', { hasText: /Proposed: status to shipped/ }),
+  ).toBeVisible({ timeout: 20_000 });
+
+  // Proposing touched nothing: the database file still says open.
+  expect(orderInDb(stack.home, 'SO-100231')).toEqual({ status: 'open', qty: 40 });
+
+  const mine = await waitForDraft(stack, 'SO-100231.md');
+  const done = await stack.call('promote_draft', { draft_id: mine.draft_id });
+  expect(done.ok, JSON.stringify(done)).toBe(true);
+
+  // NOW the database has the change (one row), the other rows are as they were, and the page says so.
+  expect(orderInDb(stack.home, 'SO-100231')).toEqual({ status: 'shipped', qty: 40 });
+  expect(orderInDb(stack.home, 'SO-100232').status).toBe('open');
+  await openRow(page, 'orders-db', /SO-100232/);
+  await openRow(page, 'orders-db', /SO-100231/);
+  const again = await webviewWith(page, 'escurel-page-as-ui', 'SO-100231');
+  await expect(again.locator('.field[data-name="status"]')).toContainText('shipped', {
+    timeout: 20_000,
+  });
+  await expect(again.locator('.write-back')).toContainText('applied');
+  await stack.shot('15-sql-write-back-applied');
 });
 
 test('nothing in the extension threw while all of that happened', async ({ stack }) => {

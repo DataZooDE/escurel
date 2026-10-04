@@ -103,6 +103,10 @@ honest. Also there: `escurel_tool_calls`, `escurel_tool_latency_ms`,
 
 ## The three env-var namespaces (don't mix them up)
 
+- **SQL databases as rows** (`sql_view` + `instances: rows` over `sqlite` / `postgres` / `mysql`): the credential is a
+  secret reference; a SQLite file must live under `ESCUREL_SQL_FILE_DIRS`, a Postgres/MySQL host must be public
+  unless `ESCUREL_EGRESS_ALLOW_LOOPBACK=1` (local dev only). Tests that need Postgres run a real container
+  (`--features live-postgres`).
 - **Outbound calls to REST / MCP sources** (`openapi` / `mcp` skills; `ESCUREL_EGRESS_*`): the gateway
   refuses plain http and any loopback / private address by default. For a LOCAL outside system (a mock,
   a service on `127.0.0.1`) start the gateway with `ESCUREL_EGRESS_ALLOW_LOOPBACK=1`; never in

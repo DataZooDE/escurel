@@ -37,6 +37,15 @@ if (process.env.ESCUREL_DEMO_CONFIRMATIONS_URL) {
   });
 }
 
+// The SQL database of `orders-db`: the credential is a REFERENCE to a secret file, never the string.
+if (process.env.ESCUREL_DEMO_ORDERS_DB_SECRET) {
+  await call('register_credential', {
+    name: 'orders_db',
+    connector: 'sqlite',
+    secret_ref: `file:${process.env.ESCUREL_DEMO_ORDERS_DB_SECRET}`,
+  });
+}
+
 await call('create_sql_instance', {
   skill: 'order-lines',
   id: 'all',
