@@ -121,7 +121,7 @@ describe('command titles', () => {
   // run"); the palette and the menus used to mix it with Title Case ("Open Page" next to "Open
   // instance"). One style, so the same action reads the same on every surface.
   it('are in sentence case: no word after the first starts with a capital, bar proper nouns', () => {
-    const proper = new Set(['Markdown', 'Escurel']);
+    const proper = new Set(['Markdown', 'Escurel', 'Anofox', 'Evolve']);
     const bad = (manifest.contributes.commands as unknown as { title: string }[])
       .map((c) => c.title)
       .filter((title: string) =>

@@ -47,7 +47,8 @@ describe('V2 problem import', () => {
       expect(() => normalizeV2TrainingSpec({ ...training, [key]: 'forbidden' }, 'private-1'))
         .toThrow(/Unsupported training-spec key/);
     }
-    const { seed_sql: _seed, ...missing } = training;
+    const missing: Record<string, unknown> = { ...training };
+    delete missing.seed_sql;
     expect(() => normalizeV2TrainingSpec(missing, 'private-1')).toThrow(/seed_sql/);
     expect(() => normalizeV2TrainingSpec({ ...training,
       skus: [{ ...training.skus[0], holdout_demand: [9] }] }, 'private-1'))

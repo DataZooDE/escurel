@@ -46,7 +46,8 @@ export const v2TrainingStarter = {
 export function normalizeV2TrainingSpec(value: unknown, holdoutId: string): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value))
     throw new Error('Training spec must be one JSON object.');
-  if (!holdoutId.trim() || holdoutId.length > 128 || /[\r\n\x00-\x1f]/.test(holdoutId))
+  if (!holdoutId.trim() || holdoutId.length > 128
+      || [...holdoutId].some((char) => char.charCodeAt(0) < 32))
     throw new Error('Enter the registered private holdout ID.');
   const input = value as Record<string, unknown>;
   for (const key of Object.keys(input)) {

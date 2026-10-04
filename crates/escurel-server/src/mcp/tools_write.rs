@@ -1872,24 +1872,22 @@ pub(super) async fn tool_capture_event(
                 "capture_event: Evolve preflight must run in the background".to_owned(),
             ));
         }
-        if a.label_skill == "evolve_validate" {
-            if manual.get("mode").and_then(Value::as_str) != Some("run")
+        if a.label_skill == "evolve_validate"
+            && (manual.get("mode").and_then(Value::as_str) != Some("run")
                 || !matches!(
                     expanded.frontmatter["status"].as_str(),
                     Some("completed" | "finished")
                 )
                 || expanded.frontmatter["next_validation_action"] != "evolve_validate_winner"
                 || manual.get("expected_winner_program_id")
-                    != expanded.frontmatter.get("best_program_id")
-            {
-                return Err(JsonRpcError::invalid_params(
-                    "capture_event: evolve validation needs the current completed winner"
-                        .to_owned(),
-                ));
-            }
+                    != expanded.frontmatter.get("best_program_id"))
+        {
+            return Err(JsonRpcError::invalid_params(
+                "capture_event: evolve validation needs the current completed winner".to_owned(),
+            ));
         }
-        if a.label_skill == "evolve_publish_candidate" {
-            if manual.get("mode").and_then(Value::as_str) != Some("run")
+        if a.label_skill == "evolve_publish_candidate"
+            && (manual.get("mode").and_then(Value::as_str) != Some("run")
                 || manual.get("confirm") != Some(&json!(true))
                 || expanded.frontmatter["effective_passed"] != true
                 || expanded.frontmatter["status"] != "passed"
@@ -1897,13 +1895,12 @@ pub(super) async fn tool_capture_event(
                 || manual.get("expected_winner_program_id")
                     != expanded.frontmatter.get("winner_program_id")
                 || manual.get("expected_validation_report_sha256")
-                    != expanded.frontmatter.get("report_sha256")
-            {
-                return Err(JsonRpcError::invalid_params(
+                    != expanded.frontmatter.get("report_sha256"))
+        {
+            return Err(JsonRpcError::invalid_params(
                     "capture_event: candidate publication needs the current passed report and explicit confirmation"
                         .to_owned(),
                 ));
-            }
         }
         manual.remove("target_page_sha256");
         manual.remove("target_page_sha256_gateway_verified");
