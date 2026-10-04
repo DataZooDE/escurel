@@ -539,6 +539,9 @@ pub(super) async fn tool_register_endpoint(
         )
         .await
         .map_err(|e| JsonRpcError::internal(format!("register_endpoint: {e}")))?;
+    // Whatever session was established with the PREVIOUS definition of this name must never be sent
+    // to the new URL.
+    egress.drop_mcp_session(&format!("{}:{}", indexer.tenant(), a.name));
     let warning = inline.map(|_| {
         "an inline `secret` is stored in the registry; it is deprecated and for development only \
          - register a `secret_ref` (env:, gsm: or file:) instead"
@@ -576,6 +579,7 @@ pub(super) async fn tool_list_endpoints(indexer: &Indexer) -> Result<Value, Json
 
 pub(super) async fn tool_delete_endpoint(
     indexer: &Indexer,
+    egress: &crate::egress::Egress,
     args: Value,
 ) -> Result<Value, JsonRpcError> {
     #[derive(Deserialize)]
@@ -587,6 +591,7 @@ pub(super) async fn tool_delete_endpoint(
         .delete_endpoint(&a.name)
         .await
         .map_err(|e| JsonRpcError::internal(format!("delete_endpoint: {e}")))?;
+    egress.drop_mcp_session(&format!("{}:{}", indexer.tenant(), a.name));
     Ok(json!({ "ok": true }))
 }
 

@@ -1149,7 +1149,7 @@ async fn dispatch_tools_call(
             tool_register_endpoint(indexer, &state.egress, subject, params.arguments).await
         }
         "list_endpoints" => tool_list_endpoints(indexer).await,
-        "delete_endpoint" => tool_delete_endpoint(indexer, params.arguments).await,
+        "delete_endpoint" => tool_delete_endpoint(indexer, &state.egress, params.arguments).await,
         "validate_endpoints" => tool_validate_endpoints(indexer, &state.egress).await,
         "describe_backend" => tool_describe_backend(indexer, &state.egress, params.arguments).await,
         // Materialise a remote (openapi/mcp) overlay page from a skill that

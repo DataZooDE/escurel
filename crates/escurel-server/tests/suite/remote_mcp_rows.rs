@@ -500,3 +500,63 @@ async fn a_non_idempotent_mcp_write_is_attempted_at_most_once_and_never_repeated
     );
     p.shutdown().await;
 }
+
+#[tokio::test]
+async fn re_registering_an_endpoint_never_sends_the_old_session_to_the_new_url() {
+    // The session cache was keyed by tenant:endpoint-name only, so after an admin pointed the same
+    // name at another server, the OLD server's session id was sent to the NEW one.
+    let old = Upstream::new(5);
+    let new = Upstream::new(5);
+    let old_url = start(&old).await;
+    let new_url = start(&new).await;
+    let (p, _dirs) = gateway_over(&old_url).await;
+    assert_eq!(list_all(&p, 50).await.len(), 5);
+    assert_eq!(old.initializes.load(Ordering::SeqCst), 1);
+
+    admin(
+        &p,
+        "register_endpoint",
+        json!({ "name": "upstream_kb", "kind": "mcp", "base_url": new_url }),
+    )
+    .await;
+    assert_eq!(list_all(&p, 50).await.len(), 5);
+
+    let first = new
+        .seen
+        .lock()
+        .unwrap()
+        .first()
+        .cloned()
+        .expect("a request");
+    assert_eq!(
+        first.method, "initialize",
+        "the new server must be met with a fresh handshake, not the old session: {first:?}"
+    );
+    assert!(
+        first.session.is_none(),
+        "no session id may travel to the new URL: {first:?}"
+    );
+    p.shutdown().await;
+}
+
+#[tokio::test]
+async fn deleting_an_endpoint_forgets_its_session() {
+    let up = Upstream::new(3);
+    let url = start(&up).await;
+    let (p, _dirs) = gateway_over(&url).await;
+    assert_eq!(list_all(&p, 50).await.len(), 3);
+    admin(&p, "delete_endpoint", json!({ "name": "upstream_kb" })).await;
+    admin(
+        &p,
+        "register_endpoint",
+        json!({ "name": "upstream_kb", "kind": "mcp", "base_url": url }),
+    )
+    .await;
+    assert_eq!(list_all(&p, 50).await.len(), 3);
+    assert_eq!(
+        up.initializes.load(Ordering::SeqCst),
+        2,
+        "a deleted and re-created endpoint starts a new session"
+    );
+    p.shutdown().await;
+}
