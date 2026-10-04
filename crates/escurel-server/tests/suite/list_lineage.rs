@@ -277,6 +277,75 @@ async fn a_denied_event_prunes_its_subtree() {
 }
 
 #[tokio::test]
+async fn owner_can_follow_an_admission_receipt_without_exposing_it_to_other_agents() {
+    let skill = "---\ntype: skill\nid: evolve_problem\ndescription: Evolve problem.\nowner_field: owner_subject\nacl:\n  read: [public]\n  create: [owner]\n  update: [owner]\n---\n# Evolve problem\n";
+    let problem = "---\ntype: instance\nskill: evolve_problem\nid: synthetic\nowner_subject: alice\n---\n# Synthetic problem\n";
+    let target = "markdown/instances/evolve_problem/synthetic.md";
+    let p = EscurelProcess::spawn(Opts {
+        auth: AuthMode::TestIssuer,
+        config_overrides: ConfigOverrides {
+            event_acl: Some(EventAclMode::Enforce),
+            ..Default::default()
+        },
+        fixtures: Some(
+            FixtureBuilder::new()
+                .tenant(TENANT)
+                .skill("evolve_problem", skill)
+                .instance("evolve_problem", "synthetic", problem)
+                .done(),
+        ),
+    })
+    .await;
+    let alice = p.mint_token_with_sub(TENANT, Role::Agent, "alice");
+    let bob = p.mint_token_with_sub(TENANT, Role::Agent, "bob");
+    let admin = p.mint_token(TENANT, Role::Admin);
+    result(
+        &call(
+            &p,
+            &alice,
+            "capture_event",
+            json!({
+                "event_id": ROOT, "label_skill": "evolve_run", "title": "approved search",
+                "kind": "user", "source": "workbench", "instance_page_id": target,
+                "provenance": {"manual": {"mode": "run", "expected_page_sha256":
+                    format!("{:x}", Sha256::digest(problem.as_bytes()))}},
+            }),
+        )
+        .await,
+    );
+    let link = "Experiment accepted: [[evolve_experiment::synthetic-run]]";
+    result(
+        &call(
+            &p,
+            &admin,
+            "capture_event",
+            json!({
+                "event_id": "admission-receipt", "label_skill": "evolve:admission",
+                "source": "anofox-evolve", "kind": "system", "title": "experiment-admitted",
+                "body": link, "provenance": {"runner": {"root_event_id": ROOT}},
+            }),
+        )
+        .await,
+    );
+    let owner = call(&p, &alice, "list_lineage", json!({"root_event_id": ROOT})).await;
+    assert_eq!(
+        node(
+            result(&owner)["nodes"].as_array().unwrap(),
+            "admission-receipt"
+        )["body"],
+        link
+    );
+    let stranger = call(&p, &bob, "list_lineage", json!({"root_event_id": ROOT})).await;
+    let stranger_nodes = result(&stranger)["nodes"].as_array().unwrap();
+    assert_eq!(
+        stranger_nodes.len(),
+        1,
+        "Bob can read the public root only: {stranger}"
+    );
+    assert_eq!(stranger_nodes[0]["id"], ROOT);
+}
+
+#[tokio::test]
 async fn include_filters_node_types_and_pagination_carries_the_cursor() {
     let p = start_with(EventAclMode::Off).await;
     seed_thread(&p).await;

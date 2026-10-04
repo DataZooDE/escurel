@@ -64,8 +64,10 @@ function eventDetail(
   const counts = eventCounts(node, byId);
   return {
     title: node.title,
-    ...(raw.label_skill === 'evolve:validation' && stringAttr(raw, 'body')
-      ? { bodyTitle: 'Validation evidence', body: stringAttr(raw, 'body') }
+    ...((raw.label_skill === 'evolve:validation' || raw.label_skill === 'evolve:admission')
+      && stringAttr(raw, 'body')
+      ? { bodyTitle: raw.label_skill === 'evolve:validation'
+        ? 'Validation evidence' : 'Experiment admission', body: stringAttr(raw, 'body') }
       : {}),
     rows: rows(
       row('label_skill', raw.label_skill),

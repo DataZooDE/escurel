@@ -241,7 +241,13 @@ pub(super) async fn tool_list_lineage(
                 "at": e.at,
                 "kind": e.kind.as_str(),
                 "instance_page_id": e.instance_page_id,
-                "body": if e.label_skill == "evolve:validation" { Some(e.body.as_str()) } else { None },
+                // These owner-scoped receipts contain the navigable report or experiment link.
+                // The same event ACL that governs this node is applied before it reaches the caller.
+                "body": if matches!(e.label_skill.as_str(), "evolve:validation" | "evolve:admission") {
+                    Some(e.body.as_str())
+                } else {
+                    None
+                },
                 "parent_event_id": runner["parent_event_id"],
                 "depth": runner["depth"],
             }),

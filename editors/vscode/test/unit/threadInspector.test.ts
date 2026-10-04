@@ -13,7 +13,7 @@ function recorded() {
 }
 
 describe('buildInspectors', () => {
-  it('shows only validation receipt body in an event inspector', () => {
+  it('shows Evolve validation and admission receipts in event inspectors', () => {
     const { view, nodes } = recorded();
     const event = view.nodes.find((node) => node.kind === 'event')!;
     const patched = nodes.map((node) =>
@@ -23,6 +23,13 @@ describe('buildInspectors', () => {
     );
     const detail = buildInspectors(view, patched)[event.id];
     expect(detail?.body).toBe('Open [[evolve_validation_report::run-1]]');
+    expect(detail?.bodyTitle).toBe('Validation evidence');
+    const admitted = patched.map((node) => node.id === event.id
+      ? { ...node, label_skill: 'evolve:admission',
+        body: 'Experiment accepted: [[evolve_experiment::run-1]]' } : node);
+    const admission = buildInspectors(view, admitted)[event.id];
+    expect(admission?.bodyTitle).toBe('Experiment admission');
+    expect(admission?.body).toBe('Experiment accepted: [[evolve_experiment::run-1]]');
   });
   it('uses recorded run data for rows, summary and timing', () => {
     const { view, nodes } = recorded();

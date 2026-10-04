@@ -76,10 +76,10 @@ test('owner reviews a real runner plan in the native window', async ({ stack }) 
         declared_holdout_source_sha256: 'c'.repeat(64),
         training_source_id: 'synthetic-training-source', training_source_sha256: 'a'.repeat(64),
         training_start: '2026-08-01', training_end: '2026-08-06',
-        holdout_start: '2026-08-07', holdout_end: '2026-08-08',
+        holdout_start: '2026-09-01', holdout_end: '2026-09-06',
         sku_count: 1, evaluator_version: 'replenishment_decision_v2',
         service_targets: syntheticSpec.service_targets, baseline_sql_sha256: 'd'.repeat(64),
-        max_cost_ratio: 1, sensitivity_tail_days: [2],
+        max_cost_ratio: 1, sensitivity_tail_days: [1, 4],
       },
     }),
     provenance: { runner: { root_event_id: preflight!.event_id },
@@ -88,7 +88,7 @@ test('owner reviews a real runner plan in the native window', async ({ stack }) 
   const contractDialog = stack.page.getByRole('dialog', { name: 'Info' })
     .filter({ hasText: 'Review the frozen private holdout contract' });
   await expect(contractDialog).toContainText('synthetic-fixture');
-  await expect(contractDialog).toContainText('2026-08-07 to 2026-08-08');
+  await expect(contractDialog).toContainText('2026-09-01 to 2026-09-06');
   await contractDialog.getByRole('button', { name: 'Review experiment plan' }).click();
 
   let planned: GatewayEvent | undefined;
@@ -147,4 +147,34 @@ test('owner reviews a real runner plan in the native window', async ({ stack }) 
   expect(approval?.provenance?.manual?.approved_plan_run_id).toBe(runId);
   expect(approval?.provenance?.manual?.expected_page_sha256).toBe(revision);
   expect(approval?.revision_binding_attested).toBe(true);
+
+  // This isolated VS Code fixture has no Evolve service. Supply its receipt and
+  // page projection to verify the owner's visible navigation after approval.
+  const experimentPageId = `markdown/instances/evolve_experiment/${id}.md`;
+  const experimentPage = `---\ntype: instance\nskill: evolve_experiment\nid: ${id}\nowner_subject: alice\nstatus: running\nevidence_scope: synthetic_ui_fixture\n---\n# Synthetic experiment ${id}\n`;
+  const projected = await stack.call('update_page', {
+    page_id: experimentPageId, content: experimentPage, base_sha256: '',
+  }, true);
+  expect(projected.ok).toBe(true);
+  const receiptId = `synthetic-admission-${id}`;
+  await stack.call('capture_event', {
+    event_id: receiptId, label_skill: 'evolve:admission', source: 'anofox-evolve',
+    mime: 'text/markdown', kind: 'system', instance_page_id: '',
+    title: 'experiment-admitted',
+    body: `Experiment accepted: [[evolve_experiment::${id}]].`,
+    provenance: { runner: { root_event_id: `evolve-approval-${runId}` },
+      evolve: { approval_event_id: `evolve-approval-${runId}`, experiment_id: id,
+        problem_sha256: revision } },
+  }, true);
+  const approvalThread = await webviewWith(stack.page, 'escurel-thread-canvas');
+  const receiptCard = approvalThread.locator(`escurel-thread-canvas .card[data-node-id="${receiptId}"]`);
+  await expect(receiptCard).toBeVisible();
+  await receiptCard.click();
+  const experimentLink = approvalThread.locator('escurel-thread-inspector .wikilink');
+  await expect(experimentLink).toContainText(id);
+  await experimentLink.click();
+  await expect(stack.page.getByRole('tab', { name: new RegExp(id), selected: true })).toBeVisible();
+  const experimentUi = await webviewWith(stack.page, 'escurel-page-as-ui');
+  await expect(experimentUi.getByText('Synthetic experiment ' + id)).toBeVisible();
+  await expect(experimentUi.getByText('running', { exact: true })).toBeVisible();
 });
