@@ -943,6 +943,11 @@ async fn dispatch_tools_call(
     if let Some(refusal) = schema::limit_refusal(&params.name, &params.arguments) {
         return Ok(refusal);
     }
+    // An argument the tool does not declare is a typo or another tool's spelling; dropping it ran
+    // the call with default behaviour (`limt: 5`, `filter: {..}`).
+    if let Some(refusal) = schema::unknown_args_refusal(&params.name, &params.arguments) {
+        return Ok(refusal);
+    }
 
     // Session tools depend on `crdt_backend` + `sessions`, not on
     // the indexer. Route them before the indexer gate.

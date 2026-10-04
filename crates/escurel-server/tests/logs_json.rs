@@ -323,7 +323,7 @@ async fn a_failed_tool_call_records_why_it_failed() {
             "jsonrpc": "2.0", "id": 1, "method": "tools/call",
             "params": {
                 "name": "query_instance",
-                "arguments": { "query_ref": "[[query::does_not_exist]]", "params": {} }
+                "arguments": { "params": {} }
             }
         }))
         .send()

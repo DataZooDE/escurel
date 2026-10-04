@@ -33,3 +33,12 @@ One line per change. Folded into the root `CHANGELOG.md` BREAKING entry and `doc
   plain agent-role tokens, admins and `autonomy: auto` skills are unchanged; promoting always lands.
   A runner/agent flow that wrote review-skill pages directly must now propose drafts.
 
+- Unknown arguments are REFUSED on every tool: a top-level argument the tool's `inputSchema` does not
+  declare (a typo like `limt`, another tool's spelling like `filter` on `list_instances`) answers
+  `isError: true`, `issues[{code: "invalid_argument"}]` with a "did you mean" and the valid parameter list,
+  instead of being dropped (the call ran with defaults). The documented sibling spellings (`skill` /
+  `skill_id`, `from_page` / `from_page_id` / `to_page_id`, `query_id`, `pack_id`) still work. Undeclared
+  attribution/lineage arguments (`principal`, `last_written_by`, `run_id`, ...) are refused, not ignored.
+  Schema gaps this exposed are declared now: `promote_draft`/`discard_draft` (`decided_by`, `content`,
+  `reason`), `delete_page.branch`, `search.page_id`, `admin_quota`/`admin_audit.tenant_id`,
+  `register_endpoint.secret_ref`, `tenant_create` (`status`, `quotas`, `embedding_provider`).

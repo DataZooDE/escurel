@@ -217,7 +217,8 @@ pub(crate) fn tool_defs() -> Vec<ToolDef> {
                     "skill": { "type": "string" },
                     "filter": { "type": "object", "description": "Frontmatter post-filter; clauses are ANDed, e.g. {\"tier\": \"gold\", \"at\": {\">=\": \"2026-04-01\"}}." },
                     "as_of": { "type": "string", "description": "RFC 3339 time-travel cut; blocks born after it are excluded." },
-                    "scenario": { "type": "string", "description": "What-if overlay; base-only when absent." }
+                    "scenario": { "type": "string", "description": "What-if overlay; base-only when absent." },
+                    "page_id": { "type": "string", "description": "Restrict the search to this one page's blocks (relevance heatmap)." }
                 }
             }),
         ),
@@ -322,6 +323,7 @@ pub(crate) fn tool_defs() -> Vec<ToolDef> {
                 "required": ["changeset_id"],
                 "properties": {
                     "changeset_id": { "type": "string" },
+                    "reason": { "type": "string", "description": "Ignored on promote; used by `discard_changeset`." },
                     "decided_by": { "type": "string", "description": "the HUMAN who approved, when a gateway decides on their behalf (admin only)" }
                 }
             }),
@@ -393,7 +395,7 @@ pub(crate) fn tool_defs() -> Vec<ToolDef> {
             json!({
                 "type": "object",
                 "required": ["name"],
-                "properties": { "name": { "type": "string" } }
+                "properties": { "name": { "type": "string" }, "reason": { "type": "string", "description": "Ignored on merge; used by `abandon_branch`." } }
             }),
         ),
         tool_entry(
@@ -469,7 +471,12 @@ pub(crate) fn tool_defs() -> Vec<ToolDef> {
             json!({
                 "type": "object",
                 "required": ["draft_id"],
-                "properties": { "draft_id": { "type": "string" } }
+                "properties": {
+                    "draft_id": { "type": "string" },
+                    "reason": { "type": "string", "description": "Ignored on promote; used by `discard_draft`." },
+                    "content": { "type": "string", "description": "Approve-with-an-edit: the corrected bytes to land INSTEAD of the stored draft (validated like `create_draft`, against the draft's own base_sha256)." },
+                    "decided_by": { "type": "string", "description": "the HUMAN who approved, when a gateway decides on their behalf (admin only)" }
+                }
             }),
         ),
         tool_entry(
@@ -485,7 +492,8 @@ pub(crate) fn tool_defs() -> Vec<ToolDef> {
                 "required": ["draft_id"],
                 "properties": {
                     "draft_id": { "type": "string" },
-                    "reason": { "type": "string" }
+                    "reason": { "type": "string" },
+                    "decided_by": { "type": "string", "description": "the HUMAN who decided, when a gateway decides on their behalf (admin only)" }
                 }
             }),
         ),
@@ -541,7 +549,8 @@ pub(crate) fn tool_defs() -> Vec<ToolDef> {
                 "required": ["page_id"],
                 "properties": {
                     "page_id": { "type": "string", "description": "Repo-relative page path, e.g. `markdown/instances/<skill>/<slug>.md` (skills live under `markdown/skills/<id>.md`)." },
-                    "base_version": { "type": "string" }
+                    "base_version": { "type": "string" },
+                    "branch": { "type": "string", "description": "Delete on this branch (a tombstone; lands as a real delete when the branch merges)." }
                 }
             }),
         ),
@@ -719,7 +728,8 @@ pub(crate) fn tool_defs() -> Vec<ToolDef> {
                     "wf_skill": { "type": "string", "description": "The kind:workflow plan skill id to run." },
                     "input": { "type": "string", "description": "The invocation body handed to the plan's first step." },
                     "idempotency_key": { "type": "string", "description": "Retry key: same key (same caller) → one operation, not a second run." },
-                    "conversation_ref": { "type": "object", "description": "Opaque channel reference stored for terminal delivery (Phase 3); not interpreted." }
+                    "conversation_ref": { "type": "object", "description": "Opaque channel reference stored for terminal delivery (Phase 3); not interpreted." },
+                    "channel_tenant": { "type": "string", "description": "The tenant a terminal delivery is addressed to, fixed when the operation starts." }
                 }
             }),
         ),
@@ -1003,7 +1013,7 @@ pub(crate) fn tool_defs() -> Vec<ToolDef> {
             Touches::READ,
             "Admin: per-tenant quota snapshot (remaining query/write/embed \
                  budget + concurrent sessions in use).",
-            json!({ "type": "object", "properties": {} }),
+            json!({ "type": "object", "properties": { "tenant_id": { "type": "string", "description": "Must be the tenant this token is bound to; optional." } } }),
         ),
         tool_entry(
             "admin_audit",
@@ -1012,7 +1022,7 @@ pub(crate) fn tool_defs() -> Vec<ToolDef> {
             Touches::READ,
             "Admin: drift between canonical markdown and the DuckDB index \
                  (markdown_not_in_duckdb / indexed_but_no_markdown).",
-            json!({ "type": "object", "properties": {} }),
+            json!({ "type": "object", "properties": { "tenant_id": { "type": "string", "description": "Must be the tenant this token is bound to; optional." } } }),
         ),
         tool_entry(
             "admin_webhook_deliveries",
@@ -1248,7 +1258,8 @@ pub(crate) fn tool_defs() -> Vec<ToolDef> {
                     "base_url": { "type": "string", "description": "REST base URL (openapi) or /mcp URL (mcp)." },
                     "auth": { "type": "string", "enum": ["none", "bearer", "api_key"], "description": "Default none." },
                     "auth_header": { "type": "string", "description": "Header name when auth=api_key (default X-API-Key)." },
-                    "secret": { "type": "string", "description": "Bearer/api-key material (server-side only)." }
+                    "secret": { "type": "string", "description": "Bearer/api-key material (server-side only)." },
+                    "secret_ref": { "type": "string", "description": "Name of an allow-listed `ESCUREL_SECRET_*` environment secret holding the bearer/api-key material; preferred over `secret`." }
                 }
             }),
         ),
@@ -1347,7 +1358,10 @@ pub(crate) fn tool_defs() -> Vec<ToolDef> {
                 "required": ["tenant_id"],
                 "properties": {
                     "tenant_id": { "type": "string" },
-                    "display_name": { "type": "string" }
+                    "display_name": { "type": "string" },
+                    "status": { "type": "string", "enum": ["active", "suspended"] },
+                    "quotas": { "type": "object", "description": "Per-tenant quota overrides (same shape as `tenant_update`)." },
+                    "embedding_provider": { "type": "object", "description": "Per-tenant embedding provider (same shape as `tenant_update`)." }
                 }
             }),
         ),
@@ -1864,6 +1878,98 @@ pub(crate) fn limit_refusal(name: &str, args: &Value) -> Option<Value> {
             "suggestion": "omit `limit` for the default page size and page on with `next_cursor`",
         }],
     }))
+}
+
+/// Argument spellings a tool still accepts besides its schema's: the sibling tool's spelling of the
+/// same concept (`skill` vs `skill_id`, `from_page` vs `from`, ...). Documented in the consumer skill;
+/// everything else outside the schema is refused.
+const ARG_ALIASES: &[(&str, &str)] = &[
+    ("skill", "skill_id"),
+    ("skill_id", "skill"),
+    ("from_page", "from"),
+    ("from_page_id", "from"),
+    ("to_page", "to"),
+    ("to_page_id", "to"),
+    ("query_id", "ref"),
+    ("from_page", "page_id"),
+    ("from_page_id", "page_id"),
+    ("to_page_id", "to_page"),
+    ("pack_id", "id"),
+    ("id", "pack_id"),
+];
+
+fn input_properties(name: &str) -> Option<&'static Vec<String>> {
+    static MAP: std::sync::OnceLock<std::collections::HashMap<&'static str, Vec<String>>> =
+        std::sync::OnceLock::new();
+    MAP.get_or_init(|| {
+        tool_defs()
+            .iter()
+            .filter_map(|d| {
+                let props = d.value["inputSchema"]["properties"].as_object()?;
+                Some((d.name, props.keys().cloned().collect()))
+            })
+            .collect()
+    })
+    .get(name)
+}
+
+fn edit_distance(a: &str, b: &str) -> usize {
+    let b: Vec<char> = b.chars().collect();
+    let mut prev: Vec<usize> = (0..=b.len()).collect();
+    for (i, ca) in a.chars().enumerate() {
+        let mut cur = vec![i + 1];
+        for (j, cb) in b.iter().enumerate() {
+            let cost = usize::from(ca != *cb);
+            cur.push((prev[j] + cost).min(prev[j + 1] + 1).min(cur[j] + 1));
+        }
+        prev = cur;
+    }
+    prev[b.len()]
+}
+
+/// A worded refusal when a call carries an argument the tool's schema does not declare (a typo, or
+/// another tool's spelling): silently dropping it ran the call with default behaviour, so `limt: 5`
+/// or `filter: {..}` "succeeded" with the wrong answer. `None` when every argument is known.
+pub(crate) fn unknown_args_refusal(name: &str, args: &Value) -> Option<Value> {
+    let props = input_properties(name)?;
+    let given = args.as_object()?;
+    let unknown: Vec<&String> = given
+        .keys()
+        .filter(|k| {
+            // `page_type` has its own refusal (it names the rename) in `search`.
+            k.as_str() != "page_type"
+                && !props.contains(k)
+                && !ARG_ALIASES
+                    .iter()
+                    .any(|(alias, canon)| alias == k && props.iter().any(|p| p == canon))
+        })
+        .collect();
+    if unknown.is_empty() {
+        return None;
+    }
+    let issues: Vec<Value> = unknown
+        .iter()
+        .map(|k| {
+            let near = props
+                .iter()
+                .filter(|p| edit_distance(k, p) <= 2 || p.contains(k.as_str()) || k.contains(p.as_str()))
+                .min_by_key(|p| edit_distance(k, p));
+            let hint = near.map_or(String::new(), |n| format!(" Did you mean `{n}`?"));
+            let valid = if props.is_empty() {
+                "this tool takes no arguments".to_owned()
+            } else {
+                format!("valid arguments: {}", props.join(", "))
+            };
+            json!({
+                "severity": "error",
+                "code": "invalid_argument",
+                "location": k,
+                "message": format!("`{name}` has no argument `{k}`.{hint} ({valid})"),
+                "suggestion": "fix the spelling or drop the argument; `tools/list` shows each tool's inputSchema",
+            })
+        })
+        .collect();
+    Some(json!({ "ok": false, "issues": issues }))
 }
 
 /// What one tool touches, by name. `None` for an unknown name.
