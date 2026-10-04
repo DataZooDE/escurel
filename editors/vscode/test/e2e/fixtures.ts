@@ -201,6 +201,10 @@ export async function webviewWith(
   /** Text the wanted page shows (its page id): tells two page webviews apart. */
   contains?: string,
 ): Promise<FrameLocator> {
+  // A tooltip left by hovering a tree row floats over the editor and intercepts clicks on the page
+  // (seen over the Change-rating button): leave the sidebar, and let it go, before touching a webview.
+  await page.mouse.move(760, 520);
+  await expect(page.locator('.context-view .monaco-hover')).toHaveCount(0);
   const outer = page.locator('iframe.webview:visible');
   let found: FrameLocator | undefined;
   await expect
