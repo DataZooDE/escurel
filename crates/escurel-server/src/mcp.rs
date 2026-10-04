@@ -24,6 +24,7 @@
 //! / WebSocket transports for the same CRDT session arrive in
 //! M4.3 and M4.4 respectively.
 
+use futures_util::FutureExt;
 use std::sync::Arc;
 
 use axum::Json;
@@ -373,7 +374,9 @@ async fn mcp_inner(
             // the outer `match result`) — only the success value is
             // wrapped. `initialize` / `ping` / `tools/list` are NOT
             // CallToolResults and are returned raw above.
-            let r = dispatch_tools_call(
+            // A panic inside one tool (a malformed argument reaching a slice, say) must cost that
+            // CALL, not the connection: the caller gets a JSON-RPC error and the gateway lives on.
+            let r = std::panic::AssertUnwindSafe(dispatch_tools_call(
                 &state,
                 &tenant_id,
                 role,
@@ -383,8 +386,17 @@ async fn mcp_inner(
                 run.as_ref(),
                 agent_skill.as_deref(),
                 req.params,
-            )
-            .await;
+            ))
+            .catch_unwind()
+            .await
+            .unwrap_or_else(|_| {
+                tracing::error!(%tool, "a tool handler panicked; the call was answered with an error");
+                Err(JsonRpcError::internal(
+                    "the tool failed unexpectedly (invalid input reached an internal error); \
+                     the failure was logged"
+                        .to_owned(),
+                ))
+            });
             let rejected = matches!(&r, Ok(payload) if is_rejected_payload(&tool, payload));
             let r = r.map(|payload| wrap_tool_result(payload, rejected));
             let status = if r.is_err() {

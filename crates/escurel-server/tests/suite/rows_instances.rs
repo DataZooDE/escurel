@@ -545,3 +545,31 @@ async fn row_acl_filters_after_the_fetch_so_pages_are_short_but_nothing_leaks() 
     .await;
     assert_eq!(link["exists"], false, "no existence oracle: {link}");
 }
+
+#[tokio::test]
+async fn a_malformed_cursor_gets_an_answer_not_a_dropped_connection() {
+    // `aéb` is an even number of BYTES but cuts a multi-byte character: slicing it as hex used to
+    // panic inside the handler and the client saw a dead connection instead of an error.
+    let t = Rows::start().await;
+    let resp = reqwest::Client::new()
+        .post(t.p.mcp_url())
+        .json(&json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                       "params": { "name": "list_instances",
+                                   "arguments": { "skill": "sales-order", "cursor": "aéb" } } }))
+        .send()
+        .await
+        .expect("the gateway must answer, not drop the connection");
+    let body: Value = resp.json().await.expect("a JSON-RPC answer");
+    assert!(
+        body.get("error").is_some(),
+        "a bad cursor is an error: {body}"
+    );
+    // The gateway is still healthy afterwards.
+    let r = t
+        .call(
+            "list_instances",
+            json!({ "skill": "sales-order", "limit": 2 }),
+        )
+        .await;
+    assert_eq!(r["instances"].as_array().map(Vec::len), Some(2), "{r}");
+}
