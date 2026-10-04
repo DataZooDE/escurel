@@ -13,7 +13,7 @@ describe('Evolve approval summary', () => {
     });
     expect(summary).toContain('a'.repeat(64));
     expect(summary).toContain('private-1');
-    expect(summary).toContain('3 generations; 8 evaluations; 2.5');
+    expect(summary).toContain('3 generations; 8 evaluations; 2.50 USD max');
     expect(summary).toContain('aggregate_min_fill_rate');
     expect(summary).toContain(createHash('sha256').update(seed).digest('hex'));
     expect(summary).toContain(createHash('sha256').update(baseline).digest('hex'));
@@ -23,5 +23,14 @@ describe('Evolve approval summary', () => {
   it('states when the search has no USD cap', () => {
     expect(evolveApprovalSummary('a'.repeat(64), { budget: { max_evaluated: 1 } }))
       .toContain('NO USD CAP');
+  });
+
+  it('shows the actual plan steps and marks an echo plan as a workflow smoke test', () => {
+    const summary = evolveApprovalSummary('a'.repeat(64), { pilot: 'p1_decision' }, {
+      harness: 'echo', steps: [{ step: 'Fold the event; no policy reasoning.' }],
+    });
+    expect(summary).toContain('Plan harness: echo');
+    expect(summary).toContain('1. Fold the event; no policy reasoning.');
+    expect(summary).toContain('Echo plans are workflow smoke tests');
   });
 });

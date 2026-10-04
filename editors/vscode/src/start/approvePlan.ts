@@ -159,15 +159,17 @@ export function registerApprovePlan(
             await vscode.commands.executeCommand('escurel.openThread', priorEventId);
             return;
           }
-          const { rootEventId } = await loadRun(client, req.runId);
+          const { rootEventId, view } = await loadRun(client, req.runId);
           if (!rootEventId) throw new Error('The Evolve plan has no initiating event. Make a new plan.');
+          if (view.plan.length === 0) throw new Error('The Evolve plan has no reviewable steps. Make a new plan.');
           const frozen = await evolveApprovalRevision(client, rootEventId, subject.pageId);
           const page = await readPageMarkdown(client, subject.pageId);
           if (!page || page.sha256 !== frozen || page.degraded) {
             throw new Error('The Evolve problem changed during approval. Review it and make a new plan.');
           }
           const confirmed = await vscode.window.showWarningMessage(
-            evolveApprovalSummary(frozen, page.frontmatter.search_request),
+            evolveApprovalSummary(frozen, page.frontmatter.search_request,
+              { harness: view.harness, steps: view.plan }),
             { modal: true },
             'Approve search',
           );

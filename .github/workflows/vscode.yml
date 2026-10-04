@@ -15,10 +15,24 @@ on:
     branches: [main]
     paths:
       - 'editors/vscode/**'
+      - 'crates/escurel-server/**'
+      - 'crates/escurel-runner/**'
+      - 'crates/escurel-test-support/**'
+      - 'crates/escurel-index/**'
+      - 'crates/escurel-types/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
       - '.github/workflows/vscode.yml'
   pull_request:
     paths:
       - 'editors/vscode/**'
+      - 'crates/escurel-server/**'
+      - 'crates/escurel-runner/**'
+      - 'crates/escurel-test-support/**'
+      - 'crates/escurel-index/**'
+      - 'crates/escurel-types/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
       - '.github/workflows/vscode.yml'
 
 concurrency:
@@ -71,6 +85,14 @@ jobs:
         working-directory: editors/vscode
       - name: Verify Evolve preflight and plan review in VS Code host
         run: npm run test:integration
+        working-directory: editors/vscode
+      - name: Install native dialog test support
+        run: sudo apt-get install -y python3-xlib python3-pil
+      - name: Verify Evolve approval in a real VS Code window
+        env:
+          ESCUREL_BIN_DIR: ${{ github.workspace }}/target/debug
+          ESCUREL_DEMO_CODE: ${{ github.workspace }}/editors/vscode/.vscode-test/vscode-linux-x64-1.139.1/code
+        run: npm run test:e2e -- evolve.spec.ts
         working-directory: editors/vscode
       - name: Show Evolve runner diagnostics on failure
         if: failure()

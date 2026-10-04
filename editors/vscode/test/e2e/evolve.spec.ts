@@ -27,9 +27,19 @@ test('a person reviews Evolve search limits before approving the frozen plan', a
   const spec = {
     pilot: 'p1_decision', version: 2, holdout_id: 'registered-private-holdout',
     max_generations: 2, budget: { max_evaluated: 8, max_usd: 3.5 },
-    service_targets: { min_fill_rate: 0.95, min_sku_fill_rate: 0.9 },
-    source_sha256: 'a'.repeat(64), seed_sql: 'SELECT 1 AS order_qty',
-    baseline_sql: 'SELECT 1 AS order_qty',
+    capacity: 10,
+    skus: [{ sku_id: 1, name: 'Synthetic training SKU', initial_stock: 1,
+      initial_pipeline: [0, 0, 0, 0, 0, 0], history: [1, 1], demand: [1, 1, 1, 1, 1, 2],
+      lead_time: 1, case_pack: 1, min_order: 0, holding_cost: 0,
+      shortage_cost: 10, fixed_order_cost: 5 }],
+    service_targets: { aggregate_min_fill_rate: 0.8, per_sku_min_fill_rate: { '1': 0.8 } },
+    seed_sql: 'SELECT sku_id, 1::BIGINT AS order_qty FROM p1_observation',
+    baseline_sql: 'SELECT sku_id, 1::BIGINT AS order_qty FROM p1_observation',
+    planning_window_days: 2, scored_window_days: 2,
+    unit_order_costs: { '1': 1 }, terminal_stock_tolerance: { '1': 0 },
+    training_start: '2026-08-01', training_end: '2026-08-06',
+    history_start: '2026-07-30', history_end: '2026-07-31',
+    source_sha256: 'a'.repeat(64),
   };
   const content = `---\ntype: instance\nskill: evolve_problem\nid: ${id}\nowner_subject: alice\npilot: p1_decision\nsearch_request: ${JSON.stringify(spec)}\n---\n# Visible approval review\n`;
   const written = await stack.call('update_page', {
@@ -58,6 +68,8 @@ test('a person reviews Evolve search limits before approving the frozen plan', a
   expect((await events(stack.call, 'evolve_run')).some((event) => event.instance_page_id === pageId))
     .toBe(false);
 
+  // The UI test injects a ready receipt. The Rust patched-gateway test uses
+  // Evolve's actual preflight and holdout registry before approving a search.
   await stack.call('capture_event', {
     event_id: `evolve-visible-preflight-final-${id}`,
     label_skill: 'evolve:preflight', source: 'anofox-evolve', mime: 'application/json',
