@@ -25,7 +25,7 @@ as the acceptance baseline for indexer behaviour.
 ## Per-tenant directory layout
 
 ```
-${ESCUREL_DATA_DIR}/tenants/<tenant_id>/
+${ESCUREL_SERVER_DATA_DIR}/tenants/<tenant_id>/
 ├── manifest.toml              # tenant metadata, quotas, embedding provider
 ├── markdown/                  # canonical source
 │   ├── skills/
@@ -117,7 +117,7 @@ key.
 
 Three implementations ship:
 
-- **`FsStore`**. `${ESCUREL_DATA_DIR}/tenants/<tenant>/<rest>`.
+- **`FsStore`**. `${ESCUREL_SERVER_DATA_DIR}/tenants/<tenant>/<rest>`.
   Writes go to `<rest>.tmp` and `rename(2)` to publish (atomic
   on POSIX same-filesystem). `url()` returns `file://...`.
 - **`S3Store`**. Backed by the official `aws-sdk-s3` crate (not
@@ -739,7 +739,7 @@ behaviour).
 | External edit mid-session (live mode) | Two-stage reconciler: for cited pages the CRDT snapshot wins; for new or uncited pages the external edit wins |
 | DuckDB file corruption (rare) | Auto-suspend tenant (`status: suspended_corrupt`); admin runs `rebuild --tenant <id>` to recreate from canonical markdown |
 | `vss` or `fts` index corruption | `PRAGMA drop_index` plus rebuild — the index is derivable from `blocks.dense_vec` and `blocks.body` without re-embedding |
-| S3 backend timeout | Local spool under `${ESCUREL_DATA_DIR}/spool/<tenant>/` — **host-local, not synced to the LaneStore**; queue flushes on reconnect. On a host recreate the previous host's spool is lost; the markdown source-of-truth is preserved (writes only enter the spool after a successful DuckDB commit per the row above), so recovery is a client re-submit |
+| S3 backend timeout | Local spool under `${ESCUREL_SERVER_DATA_DIR}/spool/<tenant>/` — **host-local, not synced to the LaneStore**; queue flushes on reconnect. On a host recreate the previous host's spool is lost; the markdown source-of-truth is preserved (writes only enter the spool after a successful DuckDB commit per the row above), so recovery is a client re-submit |
 | Cattle node destroyed; `escurel.duckdb` gone; markdown intact on LaneStore | First request to the tenant triggers automatic `rebuild` from canonical markdown on the LaneStore (~32 ms/page; ~32 s for 1000 pages); transparent to agent except for one-time first-request latency |
 
 The two recovery primitives (`audit`, `rebuild`) are the full

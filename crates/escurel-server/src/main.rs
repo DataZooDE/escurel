@@ -36,13 +36,15 @@ USAGE
     escurel-server                  run the gateway (configured ONLY through the environment)
     escurel-server pack|info|unpack  self-packaging: fold a markdown corpus into a copy of this binary
     escurel-server --help | --version
+    escurel-server --print-config-keys   print the generated environment table (docs/deploy/env.md)
 
-CONFIGURATION (environment; full table with defaults in docs/deploy/README.md)
+CONFIGURATION (environment; the full table with defaults is docs/deploy/env.md, generated from the code)
     ESCUREL_SERVER_DATA_DIR            data volume (default /data); lanes + index live under tenants/<tenant>/
     ESCUREL_SERVER_LISTEN_HTTP         HTTP listen address (default 0.0.0.0:8080)
     ESCUREL_OBSERVABILITY_METRICS_LISTEN  /metrics listen address (default 0.0.0.0:9090; empty disables)
     ESCUREL_AUTH_OIDC_ISSUER           OIDC issuer; UNSET means unauthenticated dev mode
-    ESCUREL_EMBEDDING_PROVIDER         zero | gemini (default) | embeddinggemma
+    ESCUREL_EMBEDDING_PROVIDER         zero | gemini (default; no key = zero) | embeddinggemma (ONLY in a build with the
+                                       `embeddinggemma` cargo feature: the default binary and the image refuse to boot with it)
     ESCUREL_EGRESS_*                   outbound connector policy (loopback opt-in, size/time/rate caps)
 
 OPERATIONS
@@ -67,6 +69,10 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     match args.get(1).map(String::as_str) {
         Some("--help" | "-h" | "help") => {
             print!("{HELP}");
+            return Ok(());
+        }
+        Some("--print-config-keys") => {
+            print!("{}", escurel_server::config_keys::render_markdown());
             return Ok(());
         }
         Some("--version" | "-V") => {

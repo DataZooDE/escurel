@@ -21,86 +21,11 @@
 //!
 //! ## Environment variables
 //!
-//! | var | default | meaning |
-//! |---|---|---|
-//! | `ESCUREL_CONFIG` | — | path to a TOML base file; env vars override it |
-//! | `VERSION` / `ESCUREL_VERSION` | `0.0.0-dev` | body of `GET /version` |
-//! | `ENV` / `ESCUREL_ENV` | `dev` | log field `env` |
-//! | `ESCUREL_SERVER_DATA_DIR` | `/data` | host-volume root for DuckDB + FsStore + tenants |
-//! | `ESCUREL_SEED_DIR` | — | markdown corpus seeded into the tenant at boot (idempotent), e.g. `examples/crm-demo` |
-//! | `ESCUREL_WEBHOOK_URL` | — | outbound capture webhook; fire-and-forget POST of each new `capture_event` (M7) |
-//! | `ESCUREL_WEBHOOK_SECRET` | — | shared secret; when set the webhook body is HMAC-SHA256-signed via `X-Escurel-Webhook-Signature: sha256=<hex>` |
-//! | `ESCUREL_SERVER_LISTEN_HTTP` | `0.0.0.0:8080` | HTTP listener (MCP/WS/REST) |
-//! | `ESCUREL_TENANT` | `default` | single-tenant indexer's tenant id |
-//! | `ESCUREL_REBUILD_INDEX_ON_BOOT` | `if-missing` | derived-index boot policy: `if-missing` (reuse an existing DuckDB; rebuild only when absent, and the default everywhere including the container) or `always` (drop + rebuild from the markdown LaneStore each start — re-embeds the whole corpus, so expect minutes) |
-//! | `ESCUREL_STORAGE_BACKEND` | `fs` | `fs`, `s3`, `gcs` or `duckvfs` |
-//! | `ESCUREL_STORAGE_DUCKVFS_ROOT` | — | root URL, e.g. `gdrive://escurel/lanes` (backend=duckvfs); its scheme picks the filesystem |
-//! | `ESCUREL_STORAGE_DUCKVFS_EXTENSION` | — | path to a built `gdrive.duckdb_extension` (backend=duckvfs); needed for every scheme, not only `gdrive://`. Prefer `…_EXTENSION_REPO` — a path is a local build a container does not have |
-//! | `ESCUREL_STORAGE_DUCKVFS_EXTENSION_REPO` | — | `community` (the DuckDB community repository) or a repository URL, used when `…_EXTENSION` is unset. Setting NEITHER skips the load rather than failing, so the store opens and the first WRITE fails on a missing `write_blob` |
-//! | `ESCUREL_STORAGE_DUCKVFS_DRIVE_ID` | — | Shared Drive id `0A…`; REQUIRED for a `gdrive://` root, else the store would silently target the credential's My Drive |
-//! | `ESCUREL_STORAGE_DUCKVFS_DRIVE_SCOPE` | `…/auth/drive` | OAuth scope; the default is read/write because the extension's own `drive.readonly` default cannot serve a lane store |
-//! | `ESCUREL_STORAGE_GCS_BUCKET` | — | GCS bucket (backend=gcs) |
-//! | `ESCUREL_STORAGE_GCS_PREFIX` | `` | GCS key prefix (backend=gcs) |
-//! | `ESCUREL_STORAGE_GCS_CREDENTIALS_PATH` | — | service-account key file (backend=gcs); unset = ADC, i.e. the metadata server on GCP |
-//! | `ESCUREL_STORAGE_GCS_ENDPOINT` | — | GCS endpoint override (backend=gcs); emulator/tests only |
-//! | `ESCUREL_STORAGE_S3_BUCKET` | — | S3 bucket (backend=s3) |
-//! | `ESCUREL_STORAGE_S3_ENDPOINT` | — | S3 endpoint URL (backend=s3) |
-//! | `ESCUREL_STORAGE_S3_PREFIX` | `` | S3 key prefix (backend=s3) |
-//! | `ESCUREL_STORAGE_S3_REGION` | `us-east-1` | S3 region label (backend=s3) |
-//! | `ESCUREL_STORAGE_S3_PATH_STYLE` | `true` | path-style addressing (informational; the S3 store always uses path-style) |
-//! | `ESCUREL_STORAGE_S3_ACCESS_KEY_ID` | — | S3 access key (backend=s3) |
-//! | `ESCUREL_STORAGE_S3_SECRET_ACCESS_KEY` | — | S3 secret key (backend=s3) |
-//! | `ESCUREL_AUTH_OIDC_ISSUER` | — | OIDC issuer; unset → unauthenticated dev mode |
-//! | `ESCUREL_AUTH_OIDC_AUDIENCE` | `escurel` | OIDC audience |
-//! | `ESCUREL_AUTH_TENANT_CLAIM` | `tenant` | JWT claim carrying the tenant id |
-//! | `ESCUREL_WRITE_ACL` | `off` | per-instance write ACL: `off` (no check) \| `log` (warn but allow) \| `enforce` (reject). Symmetric to the read ACL: owner-or-admin writes; public/no-owner instances are admin-write-only. |
-//! | `ESCUREL_AUTH_ADMIN_ROLE_CLAIM` | `roles` | JWT claim listing roles |
-//! | `ESCUREL_AUTH_ADMIN_ROLE_VALUE` | `escurel:admin` | role value granting admin |
-//! | `ESCUREL_AUTH_JWKS_REFRESH_SECS` | `300` | JWKS cache TTL (seconds) |
-//! | `ESCUREL_AUTH_JWKS_URI` | derived from issuer | explicit JWKS URL (e.g. Triton's `<issuer>/.well-known/jwks.json`) |
-//! | `ESCUREL_RUN_PROGRESS_KEEP` | `50` | how many `run-progress` snapshots a run keeps (pruned at capture) |
-//! | `ESCUREL_SHUTDOWN_DRAIN_SECS` | `25` | how long a graceful stop waits for in-flight requests before aborting them (keep below the orchestrator's kill timeout) |
-//! | `ESCUREL_AUTH_SIGNING_KEY` | — | RSA private key (PKCS#8 or PKCS#1 PEM) the gateway signs `mint_agent_token` bearers with; unset → the tool refuses `unsupported` |
-//! | `ESCUREL_AUTH_SIGNING_KID` | derived | the `kid` those bearers carry (must be in a trusted JWKS) |
-//! | `ESCUREL_AUTH_SIGNING_ISSUER` | the OIDC issuer | the `iss` those bearers carry (must be a trusted issuer) |
-//! | `ESCUREL_AUTH_OIDC_ISSUER_2` | — | optional SECOND trusted issuer (e.g. Carl, for the dashboard's self-minted token); shares the audience + tenant claim |
-//! | `ESCUREL_AUTH_JWKS_URI_2` | derived from issuer #2 | explicit JWKS URL for the second issuer (e.g. Carl's `<issuer>/jwks.json`) |
-//! | `ESCUREL_AUTH_OIDC_ISSUER_3` (… `_N`) | — | further trusted issuers, read as a contiguous `_2.._N` sequence (e.g. `_3` = the escurel-explore BFF's browser auth bridge); a gap stops the scan |
-//! | `ESCUREL_AUTH_JWKS_URI_3` (… `_N`) | derived from issuer #N | explicit JWKS URL for the Nth issuer |
-//! | `ESCUREL_EMBEDDING_PROVIDER` | `gemini` | `zero`, `gemini`, or `embeddinggemma` (a candle BERT-family sentence-transformer; gemini with no key → zero fallback) |
-//! | `ESCUREL_EMBEDDING_MODEL` | provider default | model id (candle default: `BAAI/bge-base-en-v1.5`, a BERT sentence-transformer — the candle backend has no Gemma3 path yet, see #299) |
-//! | `ESCUREL_EMBEDDING_DEVICE` | `cpu` | candle device (informational; CPU only today) |
-//! | `ESCUREL_EMBEDDING_DIM` | `768` | vector dimension |
-//! | `ESCUREL_EMBEDDER_REQUIRED` | `false` | when `true`, a failed real-embedder load aborts boot instead of silently degrading to zero-vector (FTS-only) retrieval (#299) |
-//! | `ESCUREL_GEMINI_API_KEY` | — | Gemini API key (provider=gemini; unset → zero fallback) |
-//! | `ESCUREL_INDEX_BACKEND` | `single-file` | `single-file` or `ducklake` — selects the [`escurel_index::snapshot::IndexStore`] backend (DuckLake PR 6) |
-//! | `ESCUREL_ROLE` | `writer` | `writer` or `reader` — `reader` requires `ESCUREL_INDEX_BACKEND=ducklake`; a reader boots with NO local single-file DuckDB, adopting the lake's newest published snapshot instead |
-//! | `ESCUREL_DUCKLAKE_CATALOG_DSN` | — | DuckLake catalog DSN — a Postgres key/value DSN (contains `=`) or a DuckDB-file catalog path; required when `ESCUREL_INDEX_BACKEND=ducklake` |
-//! | `ESCUREL_DUCKLAKE_DATA_PATH` | — | DuckLake `DATA_PATH` — `gs://…`, `s3://…`, `gdrive://…`, or a local directory; required when `ESCUREL_INDEX_BACKEND=ducklake` |
-//! | `ESCUREL_CHAT_BACKEND` | `postgres` | `postgres` or `ducklake` — where chat history lives when `ESCUREL_INDEX_BACKEND=ducklake` and the catalog is Postgres |
-//! | `ESCUREL_EVENTS_BACKEND` | `postgres` | as above, for the event bus |
-//! | `ESCUREL_CRDT_PG_DSN` | the catalog DSN | Postgres holding `crdt_ops`/`crdt_snapshots`. Separate knob from the catalog because it holds customer document bytes, not lake metadata |
-//! | `ESCUREL_DUCKLAKE_GCS_KEY_ID` / `ESCUREL_DUCKLAKE_GCS_SECRET` | — | GCS HMAC key pair; required when `ESCUREL_DUCKLAKE_DATA_PATH` starts with `gs://` |
-//! | `ESCUREL_DUCKLAKE_S3_ENDPOINT` / `_S3_ACCESS_KEY_ID` / `_S3_SECRET_ACCESS_KEY` / `_S3_REGION` | — / — / — / `us-east-1` | S3 (or MinIO) credentials; required when `ESCUREL_DUCKLAKE_DATA_PATH` starts with `s3://` |
-//! | `ESCUREL_DUCKLAKE_S3_USE_SSL` | `true` | whether the S3/MinIO endpoint above is TLS |
-//! | `ESCUREL_DUCKLAKE_GDRIVE_DRIVE_ID` | — | Shared Drive id `0A…`; required when `ESCUREL_DUCKLAKE_DATA_PATH` starts with `gdrive://`. Expect this to be SLOW — DuckLake writes many small files and Drive charges a round trip per file, with no atomic overwrite |
-//! | `ESCUREL_DUCKLAKE_GDRIVE_SCOPE` | `…/auth/drive` | OAuth scope for the lake's Drive secret; credentials themselves come from ADC |
-//! | `ESCUREL_DUCKLAKE_GDRIVE_EXTENSION` | — | path to a built `gdrive.duckdb_extension`; omit once it is installable by name from the community repository |
-//! | `ESCUREL_ALLOW_UNSIGNED_EXTENSIONS` | `false` | permit `LOAD` of a locally-built, unsigned DuckDB extension. Required for the `gdrive` paths above. Off by default: an unsigned extension is arbitrary native code in-process |
-//! | `ESCUREL_SNAPSHOT_REFRESH_SECS` | `30` | a reader's background lake-poll interval (seconds); see `escurel_server::snapshot_refresh::RefreshTask` |
-//! | `ESCUREL_SNAPSHOT_PUBLISH_SECS` | unset | a writer's optional periodic publish interval (seconds); an explicit `0` disables it (manual-only, via the `publish_snapshot` admin tool). Unset: disabled, UNLESS chat/events are lake-backed (`ESCUREL_CHAT_BACKEND` / `ESCUREL_EVENTS_BACKEND` = `ducklake`), where the task doubles as append-table compaction and unset defaults to `300` — see `resolve_publish_secs` / `escurel_server::snapshot_publish::PublishTask` |
-//! | `ESCUREL_SNAPSHOT_KEEP` | `5` | how many DuckLake snapshots to retain after a successful publish; the GC pass never touches the current snapshot |
-//! | `ESCUREL_WRITER_LEASE` | `on` | ducklake-writer single-writer boot guard (#371): a catalog advisory lock refused when another live writer holds it; `off` disables — only if you guarantee a single writer yourself |
-//! | `ESCUREL_EGRESS_ALLOW_LOOPBACK` | `false` | outbound connector calls (REST/MCP rows, write-back) may reach `127.0.0.1`. `1`/`true`/`0`/`false` only. **Dev and tests only** — never in production (SSRF guard); any other value fails the boot |
-//! | `ESCUREL_EGRESS_MAX_RESPONSE_BYTES` | `4194304` | cap on one upstream response (streamed; over the cap → the call fails). Whole number ≥ 1 |
-//! | `ESCUREL_EGRESS_TIMEOUT_MS` | `10000` | total timeout of one upstream call; clamped to 30000. Whole number ≥ 1 |
-//! | `ESCUREL_EGRESS_MAX_CONCURRENCY` | `8` | simultaneous upstream calls per endpoint. Whole number ≥ 1 |
-//! | `ESCUREL_EGRESS_RATE_PER_SEC` | `50` | upstream calls per second per endpoint (token bucket). Whole number ≥ 1 |
-//! | `ESCUREL_EGRESS_WRITE_RETRY_BACKOFF_MS` | `500` | base backoff between write-back retries (a test knob; leave unset in production). Whole number ≥ 0 |
-//! | `ESCUREL_SECRET_<NAME>` | — | a connector credential, referenced from an endpoint as `secret_ref: gsm:<name>` (the substrate injects GCP Secret Manager secrets as env). Never put a secret in a page |
-//! | `ESCUREL_SECRET_ENV_ALLOW` | — | comma list of extra env var names a tenant may reference as `env:NAME` (names starting `ESCUREL_SECRET_` are always allowed) — the *security* policy: stream "secret_ref allow-list" |
-//! | `ESCUREL_SECRET_FILE_DIRS` | `/run/secrets` | `:`-separated directories a tenant may reference as `file:/path` (canonicalised; never `/proc`, `/sys`, `/dev`) |
-//! | `ESCUREL_SQL_FILE_DIRS` | — | `:`-separated directories a `sqlite` credential's database FILE may live under (canonicalised). Unset = file databases are refused. Postgres/MySQL hosts follow the egress rules (public addresses only; loopback with `ESCUREL_EGRESS_ALLOW_LOOPBACK`) |
+//! The complete table (every `ESCUREL_*` variable the binaries read, with its default and meaning) is
+//! GENERATED from [`crate::config_keys::CONFIG_KEYS`] into
+//! [`docs/deploy/env.md`](../../../docs/deploy/env.md) by `escurel-server --print-config-keys`; a test
+//! (`tests/suite/config_keys.rs`) fails when a variable is read but not registered, registered but not
+//! read, or when that file is stale. Add a new variable to the registry in the same change that reads it.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -394,12 +319,12 @@ impl From<SnapshotError> for ConfigError {
             // unreachable from an IndexStore open. Mapped so the conversion
             // stays total.
             SnapshotError::RefusedEmptyPublish { lake_pages } => ConfigError::InvalidValue {
-                var: "ESCUREL_LAKE",
+                var: "ESCUREL_DUCKLAKE_CATALOG_DSN",
                 value: lake_pages.to_string(),
                 reason: "refused to publish an empty corpus over a populated lake",
             },
             SnapshotError::InvalidLakeConfig(value) => ConfigError::InvalidValue {
-                var: "ESCUREL_LAKE",
+                var: "ESCUREL_DUCKLAKE_CATALOG_DSN",
                 value,
                 reason: "invalid lake config",
             },
@@ -408,7 +333,7 @@ impl From<SnapshotError> for ConfigError {
                 source,
             },
             SnapshotError::LakeIncompatible(value) => ConfigError::InvalidValue {
-                var: "ESCUREL_LAKE",
+                var: "ESCUREL_DUCKLAKE_CATALOG_DSN",
                 value,
                 reason: "lake incompatible with this reader",
             },

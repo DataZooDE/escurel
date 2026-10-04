@@ -29,8 +29,10 @@ agnostic; the files here bind it to concrete targets.
 One TOML file (`${ESCUREL_CONFIG:-/etc/escurel/server.toml}`), with
 `ESCUREL_<UPPER_SNAKE>` env overrides for any field (the env name is
 the TOML key path upper-snake-cased: `[server] data_dir` →
-`ESCUREL_SERVER_DATA_DIR`). The full table is in
-[`../spec/README.md § Configuration`](../spec/README.md#configuration).
+`ESCUREL_SERVER_DATA_DIR`). The full table of every variable the binaries
+read — generated from the code, so it cannot drift — is
+[`env.md`](env.md) (`escurel-server --print-config-keys`); the TOML shape
+is in [`../spec/README.md § Configuration`](../spec/README.md#configuration).
 Everything below is expressed as env vars so each target is copy-paste
 runnable.
 
@@ -150,6 +152,12 @@ export ESCUREL_SERVER_LISTEN_HTTP=127.0.0.1:8080
 # Filesystem LaneStore — no S3, no spool-to-cloud.
 export ESCUREL_STORAGE_BACKEND=fs
 
+# BUILD REQUIREMENT: `embeddinggemma` (the local candle embedder) is only in a binary
+# built with `cargo build --release -p escurel-server --features embeddinggemma`.
+# The default build and the published image do NOT have it and refuse to boot
+# with `ESCUREL_EMBEDDING_PROVIDER=embeddinggemma` ("requires the embeddinggemma
+# cargo feature"); use `gemini` (needs ESCUREL_GEMINI_API_KEY) or `zero` (FTS-only)
+# with those.
 # A BERT-family sentence-transformer via candle; on a laptop, let it
 # fetch to the HF cache under $ESCUREL_SERVER_DATA_DIR/cache/models/ on
 # first start. NOTE: the candle backend is BERT-only today — it cannot
@@ -172,9 +180,7 @@ export ESCUREL_AUTH_OIDC_AUDIENCE=escurel
 # No OTLP: leave ESCUREL_OBSERVABILITY_OTLP_ENDPOINT unset → tracing is
 # a no-op. (Bare ESCUREL_OTLP_ENDPOINT is a deprecated alias, still
 # honoured as a fallback.) Logs still go to stdout as JSON.
-# NOTE: ESCUREL_OBSERVABILITY_LOG_FORMAT is not yet implemented — JSON is
-# always emitted regardless of this value.
-export ESCUREL_OBSERVABILITY_LOG_FORMAT=json
+# Logs are always JSON on stdout (there is no log-format switch).
 
 mkdir -p "$ESCUREL_SERVER_DATA_DIR"
 escurel-server
@@ -231,6 +237,8 @@ ESCUREL_SERVER_LISTEN_HTTP=0.0.0.0:8080
 
 ESCUREL_STORAGE_BACKEND=fs
 
+# Needs a binary built with `--features embeddinggemma` (NOT the default build or the
+# published image: they refuse to boot with this value). Otherwise use `gemini` or `zero`.
 ESCUREL_EMBEDDING_PROVIDER=embeddinggemma
 # Staged onto the VM once — absolute local path, loaded via from_local
 # (no egress). Must be a BERT-family sentence-transformer (candle is
@@ -251,8 +259,7 @@ ESCUREL_AUTH_ADMIN_ROLE_VALUE=escurel:admin
 # (Bare ESCUREL_OTLP_ENDPOINT is a deprecated alias for the OTLP endpoint.)
 ESCUREL_OBSERVABILITY_OTLP_ENDPOINT=http://127.0.0.1:4317
 ESCUREL_OBSERVABILITY_METRICS_LISTEN=0.0.0.0:9090
-# ESCUREL_OBSERVABILITY_LOG_FORMAT is not yet implemented — JSON is always emitted.
-ESCUREL_OBSERVABILITY_LOG_FORMAT=json
+# Logs are always JSON on stdout (there is no log-format switch).
 ```
 
 ```sh

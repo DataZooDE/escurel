@@ -69,7 +69,7 @@ impl EscurelProcess {
 
 Invariants the contract commits to:
 
-1. **No external dependencies.** No docker, no testcontainers, no network. The process binds `127.0.0.1:0`, uses a `tempfile::TempDir` for `${ESCUREL_DATA_DIR}`, and tears down on `shutdown()` or `Drop`.
+1. **No external dependencies.** No docker, no testcontainers, no network. The process binds `127.0.0.1:0`, uses a `tempfile::TempDir` for `${ESCUREL_SERVER_DATA_DIR}`, and tears down on `shutdown()` or `Drop`.
 2. **Parallel-safe.** Concurrent `EscurelProcess::spawn` calls in `cargo test` (each test gets its own port + temp dir).
 3. **No race on bind.** `spawn` returns only once the HTTP listener is bound, exactly like `serve()` does today ([`crates/escurel-server/src/server.rs`](../../crates/escurel-server/src/server.rs) — bind happens before `ServerHandle` is returned).
 4. **No global state.** Multiple instances co-exist in one process.
