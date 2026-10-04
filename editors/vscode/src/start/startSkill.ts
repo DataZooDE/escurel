@@ -396,11 +396,12 @@ export function registerStartSkill(
             });
 
             if (res.state === 'planned') {
+              const approveChoice = startedSkill === 'evolve_run' ? 'Review search limits' : 'Approve plan';
               const choice = await vscode.window.showInformationMessage(
                 planReadyMessage(startedSkill, startedPage),
-                'Approve plan',
+                approveChoice,
               );
-              if (choice === 'Approve plan') {
+              if (choice === approveChoice) {
                 await vscode.commands.executeCommand('escurel.approvePlan', {
                   runId: res.runId,
                   skill,

@@ -139,6 +139,11 @@ async function main(): Promise<void> {
   const gatewayBin =
     process.env.ESCUREL_TEST_GATEWAY_BIN ?? join(repo, 'target', 'release', 'escurel-test-gateway');
   const grep = process.env.ESCUREL_TEST_GREP ?? '';
+  if (process.env.ESCUREL_REQUIRE_CASCADE === '1') {
+    for (const required of [bin, runnerBin, gatewayBin]) {
+      if (!existsSync(required)) throw new Error(`required integration binary is missing: ${required}`);
+    }
+  }
   const basePort = 18000 + Math.floor(Math.random() * 900);
 
   // ── the corpus run ───────────────────────────────────────────────
@@ -209,6 +214,7 @@ async function main(): Promise<void> {
         ESCUREL_TEST_GATEWAY: info?.gateway_url ?? '',
         ESCUREL_TEST_GREP: grep,
         ESCUREL_TEST_RUNNER: runner ? '1' : '',
+        ESCUREL_REQUIRE_CASCADE: process.env.ESCUREL_REQUIRE_CASCADE ?? '',
         // The suite hands this to the extension through its API (`useStaticToken`); nothing in
         // the shipped extension reads it, so a running install cannot be given a credential.
         ESCUREL_TEST_BEARER: info?.bearer ?? '',

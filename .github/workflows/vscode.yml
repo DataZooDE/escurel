@@ -4,9 +4,8 @@
 # editors/vscode/ never sets up Node. Every push and PR touching the
 # extension: typecheck, lint (incl. the no-literal-colours check on
 # webview/), unit + component tests, build, Playwright visual checks in
-# light / dark / high-contrast, and a VSIX artifact. The integration suite
-# (a real escurel-server) needs a built binary and is run locally /
-# by workflow_dispatch — see editors/vscode/README.md.
+# light / dark / high-contrast, a VSIX artifact, and the Evolve extension-host
+# review path against the verifying gateway and real runner.
 
 name: vscode
 
@@ -30,6 +29,46 @@ permissions:
   contents: read
 
 jobs:
+  evolve-extension-host:
+    name: Evolve plan review in VS Code host
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      CARGO_BUILD_JOBS: "1"
+      CARGO_PROFILE_DEV_DEBUG: "0"
+      CARGO_PROFILE_TEST_DEBUG: "0"
+      ESCUREL_REQUIRE_CASCADE: "1"
+      ESCUREL_TEST_GREP: Evolve problem plan review
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust toolchain
+        run: rustup show active-toolchain || rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: vscode-evolve-host
+          cache-directories: target/duckdb-download
+          cache-on-failure: true
+      - name: Ensure libduckdb is present
+        run: |
+          if ! ls target/duckdb-download/*/*/libduckdb.so >/dev/null 2>&1; then
+            cargo clean -p libduckdb-sys || true
+          fi
+      - name: Build real gateway and runner
+        run: cargo build -p escurel-server -p escurel-runner -p escurel-test-support --bin escurel-server --bin escurel-runner --bin escurel-test-gateway
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: editors/vscode/.nvmrc
+          cache: npm
+          cache-dependency-path: editors/vscode/package-lock.json
+      - run: npm ci
+        working-directory: editors/vscode
+      - name: Install VS Code host dependencies
+        run: npx playwright install --with-deps chromium
+        working-directory: editors/vscode
+      - name: Verify plan review and approval in VS Code host
+        run: npm run test:integration
+        working-directory: editors/vscode
+
   build-test-package:
     runs-on: ubuntu-latest
     timeout-minutes: 20

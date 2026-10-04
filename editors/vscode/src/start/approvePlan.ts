@@ -6,6 +6,7 @@ import { readPageMarkdown } from '../fs/read';
 import { loadRun } from '../runs/loadRun';
 import type { Services } from '../services';
 import { buildApprovalEvent } from './startEvent';
+import { evolveApprovalSummary } from '../evolve/approvalSummary';
 
 export interface ApprovePlanArgs {
   runId: string;
@@ -161,6 +162,16 @@ export function registerApprovePlan(
           const { rootEventId } = await loadRun(client, req.runId);
           if (!rootEventId) throw new Error('The Evolve plan has no initiating event. Make a new plan.');
           const frozen = await evolveApprovalRevision(client, rootEventId, subject.pageId);
+          const page = await readPageMarkdown(client, subject.pageId);
+          if (!page || page.sha256 !== frozen || page.degraded) {
+            throw new Error('The Evolve problem changed during approval. Review it and make a new plan.');
+          }
+          const confirmed = await vscode.window.showWarningMessage(
+            evolveApprovalSummary(frozen, page.frontmatter.search_request),
+            { modal: true },
+            'Approve search',
+          );
+          if (confirmed !== 'Approve search') return;
           const provenance = eventReq.provenance as Record<string, unknown>;
           (provenance.manual as Record<string, unknown>).expected_page_sha256 = frozen;
         }
