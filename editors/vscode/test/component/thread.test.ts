@@ -540,6 +540,35 @@ describe('<escurel-thread-canvas>', () => {
       ).to.equal(true);
     });
 
+    it('says when more stages lie beyond the right edge, and one click brings them in', async () => {
+      const el = await inBox(420);
+      const more = el.shadowRoot!.querySelector('button.edge-more') as HTMLButtonElement | null;
+      expect(more !== null, 'a cue that more exists').to.equal(true);
+      expect(/\d+ more stage/.test(text(more))).to.equal(true);
+      const before = el.viewport.x;
+      more!.click();
+      await el.updateComplete;
+      expect(el.viewport.x < before, `x ${before} -> ${el.viewport.x}`).to.equal(true);
+    });
+
+    it('shows no such cue when everything is in view', async () => {
+      const el = await inBox(4000);
+      expect(el.shadowRoot!.querySelector('button.edge-more') === null).to.equal(true);
+    });
+
+    it('opens with no card cut in half at the left edge', async () => {
+      const el = await inBox(900);
+      const area = el.shadowRoot!.querySelector('.canvas-area') as HTMLElement;
+      const a = area.getBoundingClientRect();
+      const cut = (Array.from(el.shadowRoot!.querySelectorAll('.card')) as HTMLElement[]).filter(
+        (c) => {
+          const r = c.getBoundingClientRect();
+          return r.left < a.left - 1 && r.right > a.left + 1;
+        },
+      );
+      expect(cut.map((c) => c.getAttribute('aria-label'))).to.deep.equal([]);
+    });
+
     it('a small thread opens as is: 100%, nothing scrolled', async () => {
       const el = await inBox(4000);
       expect(el.viewport).to.deep.equal({ x: 0, y: 0, zoom: 1 });
@@ -994,6 +1023,52 @@ describe('<escurel-thread-canvas>', () => {
           `${card.getAttribute('aria-label')}: content ${card.scrollHeight}px in ${card.clientHeight}px`,
         ).to.equal(true);
       }
+    });
+
+    it('a planned run offers Approve plan ON ITS CARD, so a dismissed toast is not the only way', async () => {
+      const el = await branching();
+      const card = qa(el, '.card.needs-you').find((c) =>
+        text(c.querySelector('.needs-reason')).includes('plan'),
+      )!;
+      const btn = card.querySelector('button.approve-btn') as HTMLButtonElement;
+      expect(text(btn)).to.equal('Approve plan');
+      const sent: ThreadWebviewToHost[] = [];
+      el.addEventListener('escurel-message', (e) =>
+        sent.push((e as CustomEvent<ThreadWebviewToHost>).detail),
+      );
+      btn.click();
+      expect(sent.length).to.equal(1);
+      expect(sent[0]).to.include({ type: 'run-control', action: 'approve' });
+      expect(typeof (sent[0] as { runId?: string }).runId).to.equal('string');
+    });
+
+    it('a failed run offers Retry on its card', async () => {
+      const el = await branching();
+      const card = qa(el, '.card.needs-you').find((c) =>
+        /fail|dead|stopped/i.test(text(c.querySelector('.needs-reason'))),
+      )!;
+      expect(text(card.querySelector('button.retry-btn'))).to.equal('Retry');
+    });
+
+    it('only Promote is a filled button; Discard is quiet, with a gap and a 24px hit area', async () => {
+      const el = await branching();
+      // The theme tokens the card's fill is built from (a real webview gets them from VS Code).
+      el.style.setProperty('--escurel-run', '#89d185');
+      await el.updateComplete;
+      const card = q(el, '.card.type-changeset.needs-you')!;
+      const promote = card.querySelector('.promote-btn') as HTMLElement;
+      const discard = card.querySelector('.discard-btn') as HTMLElement;
+      expect(getComputedStyle(promote).backgroundColor).to.not.equal('rgba(0, 0, 0, 0)');
+      // No fill, no heavy border: the destructive action is available but never competes with Promote.
+      expect(getComputedStyle(discard).backgroundColor).to.equal('rgba(0, 0, 0, 0)');
+      for (const b of [promote, discard, card.querySelector('.review-btn') as HTMLElement]) {
+        expect(
+          b.getBoundingClientRect().height >= 24,
+          `${b.className}: ${b.getBoundingClientRect().height}px`,
+        ).to.equal(true);
+      }
+      const gap = discard.getBoundingClientRect().left - promote.getBoundingClientRect().right;
+      expect(gap >= 6, `gap ${gap}px`).to.equal(true);
     });
 
     it('shows who proposed an open changeset and how long ago', async () => {

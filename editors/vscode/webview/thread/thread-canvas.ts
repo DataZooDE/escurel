@@ -15,7 +15,13 @@ import type {
 } from '../../src/shared/protocol';
 import { theme } from '../shared/theme.css';
 import { fitToBounds, panToReveal, zoomAboutPoint } from './viewport';
-import { firstViewport, isLowZoom, pickTarget, scrollMetrics } from '../../src/thread/firstView';
+import {
+  columnsOffRight,
+  firstViewport,
+  isLowZoom,
+  pickTarget,
+  scrollMetrics,
+} from '../../src/thread/firstView';
 import type { ViewportState } from './viewport';
 
 /** Where a fitted graph starts: just under the 28px pinned column headers. */
@@ -77,6 +83,36 @@ export class EscurelThreadCanvas extends LitElement {
         padding: 0 6px;
         text-transform: uppercase;
         letter-spacing: 0.04em;
+      }
+      /* More stages lie beyond the right edge: a fade and a chip that brings them in. */
+      .edge-fade {
+        position: absolute;
+        top: 0;
+        right: 0;
+        bottom: 8px;
+        width: 56px;
+        z-index: 5;
+        pointer-events: none;
+        background: linear-gradient(to right, transparent, var(--vscode-editor-background));
+      }
+      button.edge-more {
+        position: absolute;
+        z-index: 7;
+        right: 14px;
+        top: 50%;
+        transform: translateY(-50%);
+        padding: 4px 10px;
+        font: inherit;
+        font-size: 0.85em;
+        color: var(--vscode-button-secondaryForeground);
+        background: var(--vscode-button-secondaryBackground);
+        border: 1px solid var(--vscode-button-border, var(--vscode-contrastBorder, transparent));
+        border-radius: 11px;
+        cursor: pointer;
+      }
+      button.edge-more:focus-visible {
+        outline: 1px solid var(--vscode-focusBorder);
+        outline-offset: 1px;
       }
       .scroll-track {
         position: absolute;
@@ -572,26 +608,53 @@ export class EscurelThreadCanvas extends LitElement {
       }
       .gate-actions {
         display: inline-flex;
-        gap: 4px;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 8px;
+      }
+      .gate-actions button {
+        min-height: 24px;
+        box-sizing: border-box;
+        cursor: pointer;
       }
       .promote-btn {
         /* charts.green is a LIGHT green in dark and high-contrast themes; white on it was 1.8:1. */
         background: color-mix(in srgb, var(--escurel-run) 55%, black);
         color: var(--vscode-button-foreground);
         border: 1px solid transparent;
-        font-size: 0.8em;
-        padding: 1px 6px;
+        font-size: 0.85em;
+        padding: 3px 10px;
+        border-radius: 2px;
+      }
+      .approve-btn {
+        background: var(--vscode-button-background);
+        color: var(--vscode-button-foreground);
+        border: 1px solid var(--vscode-button-border, transparent);
+        font-size: 0.85em;
+        padding: 3px 10px;
+        border-radius: 2px;
+      }
+      .retry-btn {
+        background: var(--vscode-button-secondaryBackground);
+        color: var(--vscode-button-secondaryForeground);
+        border: 1px solid var(--vscode-button-border, var(--vscode-contrastBorder, transparent));
+        font-size: 0.85em;
+        padding: 3px 10px;
         border-radius: 2px;
       }
       .discard-btn {
-        /* Red text needs a background it was meant for: the card's own, not the secondary button
-           colour (dark grey in light themes). */
-        background: var(--vscode-editorWidget-background, var(--vscode-editor-background));
+        /* Quiet on purpose: available, never competing with Promote. No fill, no border (the
+           wording and the red text are the cue), underlined on hover and focus. */
+        background: transparent;
         color: var(--vscode-errorForeground);
-        border: 1px solid var(--vscode-errorForeground);
-        font-size: 0.8em;
-        padding: 1px 6px;
+        border: 1px solid transparent;
+        font-size: 0.85em;
+        padding: 3px 8px;
         border-radius: 2px;
+      }
+      .discard-btn:hover,
+      .discard-btn:focus-visible {
+        text-decoration: underline;
       }
       .status-message {
         display: flex;
@@ -974,7 +1037,31 @@ export class EscurelThreadCanvas extends LitElement {
         ></div>
       </div>`;
     };
-    return html`${m.h ? thumb('h', m.h) : nothing}${m.v ? thumb('v', m.v) : nothing}`;
+    const off = columnsOffRight(this.layout, this.viewport, this.areaSize.width);
+    return html`${m.h ? thumb('h', m.h) : nothing}${m.v ? thumb('v', m.v) : nothing}${
+      off > 0
+        ? html`<div class="edge-fade" aria-hidden="true"></div>
+            <button
+              class="edge-more"
+              title="Show the rest of the thread"
+              @pointerdown=${(e: PointerEvent) => e.stopPropagation()}
+              @click=${() => this.panRight()}
+            >
+              ${off} more ${off === 1 ? 'stage' : 'stages'} →
+            </button>`
+        : nothing
+    }`;
+  }
+
+  /** One click on the 'more stages' chip: bring the next stretch of the graph in. */
+  private panRight(): void {
+    if (!this.layout) return;
+    const width = this.areaSize.width || 800;
+    const min = width - this.layout.bounds.width * this.viewport.zoom;
+    this.viewport = {
+      ...this.viewport,
+      x: Math.max(min, this.viewport.x - Math.round(width * 0.8)),
+    };
   }
 
   private startThumbDrag(e: PointerEvent, axis: 'h' | 'v'): void {
@@ -1120,6 +1207,33 @@ export class EscurelThreadCanvas extends LitElement {
             ? nothing
             : html`<div class="card-footer">
                 ${node.chips.map((chip) => html`<span class="chip ${chip.tone}">${chip.text}</span>`)}
+                ${
+                  needs?.reason === 'approve-plan'
+                    ? html`<div class="gate-actions">
+                        <button
+                          class="approve-btn"
+                          @click=${(e: Event) => {
+                            e.stopPropagation();
+                            this.send({ type: 'run-control', action: 'approve', runId: node.id });
+                          }}
+                        >
+                          Approve plan
+                        </button>
+                      </div>`
+                    : needs?.reason === 'failed'
+                      ? html`<div class="gate-actions">
+                          <button
+                            class="retry-btn"
+                            @click=${(e: Event) => {
+                              e.stopPropagation();
+                              this.send({ type: 'run-control', action: 'retry', runId: node.id });
+                            }}
+                          >
+                            Retry
+                          </button>
+                        </div>`
+                      : nothing
+                }
                 ${
                   node.gate
                     ? html`<div class="gate-actions">

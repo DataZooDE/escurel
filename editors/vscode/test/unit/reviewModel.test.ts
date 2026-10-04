@@ -12,6 +12,7 @@ import type { AwaitingRow } from '../../src/views/awaitingModel';
 import {
   REVIEW_SCHEME,
   buildChangesetQuickPickItems,
+  changesetPickTitle,
   buildReviewCommentThreads,
   checkBaseMoved,
   parseReviewParts,
@@ -228,13 +229,13 @@ describe('reviewModel', () => {
 
       expect(items[0]).toEqual({
         action: 'promote_all',
-        label: '$(check) Promote all',
-        description: 'Land all 2 drafts in changeset cs-1',
+        label: '$(check) Apply all changes',
+        description: 'Apply all 2 changes: alpina-biotech, acme',
       });
       expect(items[1]).toEqual({
         action: 'discard_all',
-        label: '$(trash) Discard all',
-        description: 'Refuse all 2 drafts in changeset cs-1',
+        label: '$(trash) Reject all changes',
+        description: 'Reject all 2 changes',
       });
       expect(items[2]).toEqual({
         action: 'draft',
@@ -271,12 +272,8 @@ describe('reviewModel', () => {
       const diffs = new Map<string, DiffDraftResponse>();
       const items = buildChangesetQuickPickItems('01M3CAHP14HT8AGG0CH60H73HM', [draftA], diffs);
 
-      expect(items[0]!.description).toBe(
-        'Land all 1 draft in changeset 01M3CAHP14HT8AGG0CH60H73HM',
-      );
-      expect(items[1]!.description).toBe(
-        'Refuse all 1 draft in changeset 01M3CAHP14HT8AGG0CH60H73HM',
-      );
+      expect(items[0]!.description).toBe('Apply the change: alpina-biotech');
+      expect(items[1]!.description).toBe('Reject the change');
     });
   });
 
@@ -724,5 +721,19 @@ describe('against fixtures recorded from a live gateway', () => {
 
     // A comment about another draft on the same page is not this draft's.
     expect(extractReviewComments(events, 'some-other-draft')).toEqual([]);
+  });
+});
+
+describe('changesetPickTitle', () => {
+  // The picker said 'Changeset 01M41QQB0QYAYPPVK6ERX3FFK0 (2 drafts)': an id, not a decision.
+  const d = (author: string) => ({ author }) as Draft;
+  it('names the decision and who proposed it, with no id', () => {
+    expect(changesetPickTitle([d('agent:supplier-risk'), d('agent:supplier-risk')])).toBe(
+      'Review 2 changes from agent:supplier-risk',
+    );
+    expect(changesetPickTitle([d('alice')])).toBe('Review 1 change from alice');
+  });
+  it('says so plainly when there is no author', () => {
+    expect(changesetPickTitle([d('')])).toBe('Review 1 change');
   });
 });

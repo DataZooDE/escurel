@@ -7,6 +7,7 @@ import { ReviewCommentsController } from './commentsController';
 import { ReviewContentProvider } from './contentProvider';
 import {
   buildChangesetQuickPickItems,
+  changesetPickTitle,
   checkBaseMoved,
   formatDraftDiffTitle,
   interpretDiscardError,
@@ -18,7 +19,6 @@ import {
   type ChangesetQuickPickItem,
   type DecisionOutcome,
 } from './reviewModel';
-import { pluralise } from '../shared/text';
 import { decodeReviewUri, encodeReviewUri } from './uri';
 
 /**
@@ -142,7 +142,7 @@ export class ReviewController implements vscode.Disposable {
 
       const items = buildChangesetQuickPickItems(changesetId, csDrafts, diffMap);
       const selected = await vscode.window.showQuickPick<ChangesetQuickPickItem>(items, {
-        placeHolder: `Changeset ${changesetId} (${pluralise(csDrafts.length, 'draft')})`,
+        placeHolder: changesetPickTitle(csDrafts),
       });
 
       if (!selected) return;

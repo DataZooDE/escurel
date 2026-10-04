@@ -119,20 +119,22 @@ export interface ChangesetQuickPickItem {
  * first so reviewers can land or reject the entire set without clicking through each draft.
  */
 export function buildChangesetQuickPickItems(
-  changesetId: string,
+  _changesetId: string,
   drafts: Draft[],
   diffs: Map<string, DiffDraftResponse>,
 ): ChangesetQuickPickItem[] {
+  const n = drafts.length;
+  const pages = drafts.map((d) => pageSlug(d.target_page_id)).join(', ');
   const items: ChangesetQuickPickItem[] = [
     {
       action: 'promote_all',
-      label: '$(check) Promote all',
-      description: `Land all ${pluralise(drafts.length, 'draft')} in changeset ${changesetId}`,
+      label: '$(check) Apply all changes',
+      description: n === 1 ? `Apply the change: ${pages}` : `Apply all ${n} changes: ${pages}`,
     },
     {
       action: 'discard_all',
-      label: '$(trash) Discard all',
-      description: `Refuse all ${pluralise(drafts.length, 'draft')} in changeset ${changesetId}`,
+      label: '$(trash) Reject all changes',
+      description: n === 1 ? 'Reject the change' : `Reject all ${n} changes`,
     },
   ];
 
@@ -456,4 +458,11 @@ export function interpretDiscardError(
     closeDiff: false,
     refresh: false,
   };
+}
+
+/** The picker's title: the decision and who proposed it, never the changeset id. */
+export function changesetPickTitle(drafts: Draft[]): string {
+  const n = drafts.length;
+  const author = drafts.find((d) => d.author)?.author;
+  return `Review ${n} ${n === 1 ? 'change' : 'changes'}${author ? ` from ${author}` : ''}`;
 }

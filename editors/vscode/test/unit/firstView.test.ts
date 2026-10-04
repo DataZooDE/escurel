@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   LOW_ZOOM_BELOW,
+  columnsOffRight,
   firstViewport,
   isLowZoom,
   pickTarget,
@@ -139,11 +140,50 @@ describe('firstViewport', () => {
     });
   });
 
-  it('a wider graph opens at 100% with the target centred', () => {
+  it('a wider graph opens at 100% with the target at the left, with a margin (not centred, so no card is cut at the left edge)', () => {
     const v = firstViewport(layout(3000, 300, 2000, 100), 't', box(1000, 700));
     expect(v.zoom).toBe(1);
-    // target centre (2100, 140) lands at the container centre (500, ...): x = 500 - 2100
-    expect(v.x).toBe(-1600);
+    expect(v.x).toBe(-(2000 - 24));
+  });
+
+  describe('columns: the card to the left of the target is in view, whole', () => {
+    const columns = (xs: number[]) =>
+      ({
+        nodes: xs.map((x, i) => ({
+          id: `c${i}`,
+          column: i,
+          x,
+          y: 40,
+          width: 240,
+          height: 80,
+          hidden: false,
+        })),
+        wires: [],
+        bounds: { width: xs[xs.length - 1]! + 240, height: 300 },
+        columnHeaders: [],
+        lanes: [],
+      }) as ThreadLayout;
+    const straddlesLeft = (l: ThreadLayout, x: number) =>
+      l.nodes.filter((n) => n.x + x < 0 && n.x + n.width + x > 0).map((n) => n.id);
+
+    it('starts at the left neighbour column when both fit, so nothing is cut at the left edge', () => {
+      const l = columns([0, 290, 580, 870, 1160, 1450, 1740]);
+      const v = firstViewport(l, 'c3', box(1000, 700));
+      expect(v.x).toBe(-(580 - 24));
+      expect(straddlesLeft(l, v.x)).toEqual([]);
+      // the neighbour and the target are both fully visible
+      for (const id of ['c2', 'c3']) {
+        const n = l.nodes.find((c) => c.id === id)!;
+        expect(n.x + v.x >= 0 && n.x + n.width + v.x <= 1000).toBe(true);
+      }
+    });
+
+    it('starts at the target itself when the neighbour and the target do not fit together', () => {
+      const l = columns([0, 290, 580, 870, 1160, 1450, 1740]);
+      const v = firstViewport(l, 'c3', box(400, 700));
+      expect(v.x).toBe(-(870 - 24));
+      expect(straddlesLeft(l, v.x)).toEqual([]);
+    });
   });
 
   it('is clamped to the graph: a target near the right edge does not scroll past it', () => {
@@ -264,5 +304,38 @@ describe('scrollMetrics: the thumb stays on its track', () => {
     );
     expect(m.h!.pos).toBe(0.5);
     expect(m.h!.pos + m.h!.size <= 1).toBe(true);
+  });
+});
+
+// The graph is wider than the window and nothing said so: a cut-off edge with no cue that more exists.
+describe('columnsOffRight', () => {
+  const nodes = [0, 290, 580, 870, 1160].map((x, i) => ({
+    id: `c${i}`,
+    column: i,
+    x,
+    y: 0,
+    width: 240,
+    height: 80,
+    hidden: false,
+  }));
+  const layout = {
+    nodes,
+    wires: [],
+    bounds: { width: 1400, height: 300 },
+    columnHeaders: [],
+    lanes: [],
+  } as ThreadLayout;
+
+  it('counts the stages that start beyond the right edge', () => {
+    expect(columnsOffRight(layout, { x: 0, y: 0, zoom: 1 }, 700)).toBe(2); // 870 and 1160
+    expect(columnsOffRight(layout, { x: -400, y: 0, zoom: 1 }, 700)).toBe(1); // only 1160
+    expect(columnsOffRight(layout, { x: -600, y: 0, zoom: 1 }, 700)).toBe(0);
+  });
+  it('is zero when everything starts inside the window, or the size is unknown', () => {
+    expect(columnsOffRight(layout, { x: 0, y: 0, zoom: 1 }, 1500)).toBe(0);
+    expect(columnsOffRight(layout, { x: 0, y: 0, zoom: 1 }, 0)).toBe(0);
+  });
+  it('accounts for zoom', () => {
+    expect(columnsOffRight(layout, { x: 0, y: 0, zoom: 0.5 }, 700)).toBe(0); // 1160*.5 = 580
   });
 });
