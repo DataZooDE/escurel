@@ -1,3 +1,4 @@
+import { threadTabTitle } from './threadTabTitle';
 import { latest } from '../shared/latest';
 import * as vscode from 'vscode';
 import type { AdminState } from '../auth/adminState';
@@ -274,7 +275,7 @@ export class ThreadController implements vscode.Disposable {
       // The event's own title when it has one. `title` is the skill label, which every thread
       // from that skill shares: two open threads were both 'Thread · supplier-risk' and could
       // not be told apart in the tab bar.
-      panel.title = `Thread · ${root?.subtitle || root?.title || rootEventId.slice(-6)}`;
+      panel.title = threadTabTitle(root?.subtitle || root?.title || rootEventId.slice(-6));
     };
     const toggleCollapse = (nodeId: string) => {
       if (!collapsed.delete(nodeId)) collapsed.add(nodeId);

@@ -1,5 +1,6 @@
 import { errorRowSpec } from './errorRow';
 import { InstancePager } from './instancePager';
+import { autonomyMeaning, backendIcon, backendMeaning, countSkills } from './skillMeaning';
 import * as vscode from 'vscode';
 import type { EscurelClient, Instance } from '../client';
 import { uriForPage } from '../fs/provider';
@@ -78,7 +79,9 @@ export class KnowledgeTree implements vscode.TreeDataProvider<Node> {
         );
         item.id = `folder:${n.path}`;
         item.iconPath = new vscode.ThemeIcon('folder');
-        item.tooltip = n.path;
+        const count = countSkills(n);
+        item.description = `${count} ${count === 1 ? 'skill' : 'skills'}`;
+        item.tooltip = `${n.path} · ${item.description}`;
         item.contextValue = 'folder';
         item.accessibilityInformation = { label: `folder ${n.path}`, role: 'treeitem' };
         return item;
@@ -91,11 +94,14 @@ export class KnowledgeTree implements vscode.TreeDataProvider<Node> {
         item.description = n.description;
         const where = n.skill.folder ? `\n\nfolder \`${n.skill.folder}\`` : '';
         const tags = n.skill.tags?.length ? `\n\ntags: ${n.skill.tags.join(', ')}` : '';
+        const meaning = `\n\n**${n.skill.autonomy ?? 'review'}**: ${autonomyMeaning(n.skill.autonomy)}\n\n**${n.skill.backend.kind}**: data in ${backendMeaning(n.skill.backend.kind)}`;
         item.tooltip = new vscode.MarkdownString(
-          `**${n.skill.title ?? n.skill.id}** — ${n.skill.summary ?? n.skill.description}\n\nrole **${role}**${inferred ? ' (inferred)' : ''} · ${n.readOnly ? '_read-only (' + n.skill.layer + ')_' : 'layer ' + n.skill.layer}${where}${tags}`,
+          `**${n.skill.title ?? n.skill.id}** — ${n.skill.summary ?? n.skill.description}\n\nrole **${role}**${inferred ? ' (inferred)' : ''} · ${n.readOnly ? '_read-only (' + n.skill.layer + ')_' : 'layer ' + n.skill.layer}${meaning}${where}${tags}`,
         );
+        // Data that lives outside the knowledge base gets an icon of its own (cloud, plug, table):
+        // where the data comes from matters more at a glance than the role.
         item.iconPath = new vscode.ThemeIcon(
-          ROLE_ICONS[role],
+          backendIcon(n.skill.backend.kind) ?? ROLE_ICONS[role],
           new vscode.ThemeColor('charts.purple'),
         );
         item.contextValue = n.readOnly ? 'skill.readonly' : 'skill';

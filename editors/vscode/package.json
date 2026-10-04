@@ -273,22 +273,26 @@
         {
           "id": "escurel.knowledge",
           "name": "Knowledge",
-          "contextualTitle": "Escurel"
+          "contextualTitle": "Escurel",
+          "initialSize": 5
         },
         {
           "id": "escurel.threads",
           "name": "Threads",
-          "icon": "$(git-branch)"
+          "icon": "$(git-branch)",
+          "initialSize": 3
         },
         {
           "id": "escurel.awaiting",
           "name": "Awaiting you",
-          "contextualTitle": "Escurel"
+          "contextualTitle": "Escurel",
+          "initialSize": 2
         },
         {
           "id": "escurel.inbox",
           "name": "Inbox",
-          "contextualTitle": "Escurel"
+          "contextualTitle": "Escurel",
+          "initialSize": 2
         }
       ],
       "escurel-runner": [
