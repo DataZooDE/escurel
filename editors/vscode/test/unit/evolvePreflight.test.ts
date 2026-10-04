@@ -39,6 +39,8 @@ describe('Evolve problem preflight', () => {
     const ready = receipt({ problem_sha256: sha, structural_ready_for_start: true,
       holdout_contract: {
         holdout_sha256: 'c'.repeat(64), training_source_id: 'source-1',
+        declared_holdout_source_ref: 'synthetic:holdout',
+        declared_holdout_source_sha256: 'f'.repeat(64),
         training_source_sha256: 'd'.repeat(64), training_start: '2026-08-01',
         training_end: '2026-08-06', holdout_start: '2026-09-01',
         holdout_end: '2026-09-06', sku_count: 1,
@@ -50,6 +52,7 @@ describe('Evolve problem preflight', () => {
     const result = parsePreflightReceipt(ready, 'root', sha);
     expect(result?.holdoutContract).toContain('Holdout dates: 2026-09-01 to 2026-09-06');
     expect(result?.holdoutContract).toContain('Maximum cost ratio: 0.9');
+    expect(result?.holdoutContract).toContain('Operator-declared holdout source: synthetic:holdout');
     expect(result?.holdoutContract).not.toContain('demand');
   });
 

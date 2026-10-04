@@ -53,6 +53,7 @@ export function describeHoldoutContract(contract: Record<string, unknown>): stri
     ? contract.sensitivity_tail_days.map(String).join(', ') : 'missing';
   return [
     `Private holdout SHA-256: ${value('holdout_sha256')}`,
+    `Operator-declared holdout source: ${value('declared_holdout_source_ref')} (${value('declared_holdout_source_sha256')})`,
     `Training source: ${value('training_source_id')} (${value('training_source_sha256')})`,
     `Training dates: ${value('training_start')} to ${value('training_end')}`,
     `Holdout dates: ${value('holdout_start')} to ${value('holdout_end')}`,
