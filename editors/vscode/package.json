@@ -105,7 +105,7 @@
       },
       {
         "command": "escurel.resolve",
-        "title": "Resolve wikilink\u2026",
+        "title": "Resolve wikilink…",
         "category": "Escurel"
       },
       {
@@ -237,6 +237,25 @@
         "command": "escurel.focusCanvas",
         "title": "Focus thread canvas",
         "category": "Escurel"
+      },
+      {
+        "command": "escurel.filterKnowledgeByTag",
+        "title": "Filter knowledge by tag…",
+        "category": "Escurel",
+        "icon": "$(tag)"
+      },
+      {
+        "command": "escurel.filterKnowledge",
+        "title": "Filter knowledge by text…",
+        "category": "Escurel",
+        "icon": "$(filter)"
+      },
+      {
+        "command": "escurel.clearKnowledgeFilter",
+        "title": "Clear knowledge filter",
+        "category": "Escurel",
+        "icon": "$(clear-all)",
+        "enablement": "escurel.knowledgeFiltered"
       }
     ],
     "authentication": [
@@ -477,6 +496,21 @@
           "command": "escurel.resumeDispatch",
           "when": "view == escurel.runner",
           "group": "navigation"
+        },
+        {
+          "command": "escurel.filterKnowledgeByTag",
+          "when": "view == escurel.knowledge",
+          "group": "navigation@3"
+        },
+        {
+          "command": "escurel.filterKnowledge",
+          "when": "view == escurel.knowledge",
+          "group": "navigation@4"
+        },
+        {
+          "command": "escurel.clearKnowledgeFilter",
+          "when": "view == escurel.knowledge && escurel.knowledgeFiltered",
+          "group": "navigation@5"
         }
       ],
       "view/item/context": [

@@ -98,6 +98,28 @@ test('the story is on screen: knowledge, threads, awaiting, inbox and the runner
   await stack.shot('01-overview');
 });
 
+test('the Knowledge tree can be narrowed by a tag and cleared again', async ({ stack }) => {
+  const { page } = stack;
+  const knowledge = pane(page, 'Knowledge');
+  // View title actions show while the pointer is over the view's header.
+  await knowledge.locator('.pane-header').hover();
+  await knowledge.getByRole('button', { name: /Filter knowledge by tag/ }).click();
+  const picker = page.locator('.quick-input-widget');
+  await expect(picker).toBeVisible();
+  await page.keyboard.type('sap');
+  await expect(picker.getByRole('option', { name: /sap/ }).first()).toBeVisible();
+  await page.keyboard.press('Enter');
+  // The view says what narrows it and how much is left, in words.
+  await expect(knowledge.getByText(/Filtered by tag: sap — \d+ skills?/)).toBeVisible();
+  await expect(await skillRow(page, 'customer-order')).toBeVisible();
+  await expect(knowledge.getByRole('treeitem', { name: /skill supplier-risk,/ })).toHaveCount(0);
+  await stack.shot('01c-knowledge-filtered');
+  await knowledge.locator('.pane-header').hover();
+  await knowledge.getByRole('button', { name: /Clear knowledge filter/ }).click();
+  await expect(knowledge.getByText(/Filtered by/)).toHaveCount(0);
+  await expect(await skillRow(page, 'supplier-risk')).toBeVisible();
+});
+
 test('the thread shows the cascade, and an instance offers a skill to start', async ({ stack }) => {
   const { page } = stack;
   // The previous scenario left the pointer over a Knowledge row; its tooltip would cover the canvas.

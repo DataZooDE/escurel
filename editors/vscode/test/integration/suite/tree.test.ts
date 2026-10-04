@@ -90,4 +90,42 @@ suite('Knowledge tree: folders, roles, previews', () => {
     const rows = await kids(order);
     assert.ok(Array.isArray(rows));
   });
+
+  // The filter narrows the SKILL level only (tags and text come from the real list_skills rows);
+  // folders with nothing left disappear, and clearing it brings everything back.
+  suite('filter', () => {
+    teardown(() => api.knowledge.setFilter({}));
+
+    const skillIds = async (): Promise<string[]> => {
+      const out: string[] = [];
+      const walk = async (rows: Row[]): Promise<void> => {
+        for (const r of rows) {
+          if (r.kind === 'folder') await walk(await kids(r));
+          else if (r.kind === 'skill') out.push(r.label);
+        }
+      };
+      await walk(await kids());
+      return out.sort();
+    };
+
+    test('by tag: only the skills carrying it stay, with the folders that lead to them', async () => {
+      const all = await skillIds();
+      assert.ok(all.includes('customer-order') && all.includes('supplier-risk'), all.join(','));
+      api.knowledge.setFilter({ tag: 'sap' });
+      const sap = await skillIds();
+      assert.deepEqual(sap, ['customer-order']);
+      const roots = await kids();
+      assert.ok(find(roots, 'folder', 'sales'), 'the sales folder is kept for customer-order');
+      assert.ok(!find(roots, 'skill', 'customer'), 'an untagged skill is filtered out');
+    });
+
+    test('by text, combined with a tag, and cleared again', async () => {
+      api.knowledge.setFilter({ text: 'risk' });
+      assert.deepEqual(await skillIds(), ['supplier-risk']);
+      api.knowledge.setFilter({ tag: 'sap', text: 'risk' });
+      assert.deepEqual(await skillIds(), [], 'tag AND text have to match');
+      api.knowledge.setFilter({});
+      assert.ok((await skillIds()).length >= 3, 'clearing brings every skill back');
+    });
+  });
 });
