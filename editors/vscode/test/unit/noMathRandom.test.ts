@@ -17,7 +17,9 @@ describe('no Math.random in the extension host or the webviews', () => {
   it('finds none in src/ or webview/', () => {
     const root = join(__dirname, '..', '..');
     const hits = [...files(join(root, 'src')), ...files(join(root, 'webview'))].filter((f) =>
-      /Math\s*\.\s*random\s*\(/.test(readFileSync(f, 'utf8').replace(/\/\/.*$|\/\*[\s\S]*?\*\//gm, '')),
+      /Math\s*\.\s*random\s*\(/.test(
+        readFileSync(f, 'utf8').replace(/\/\/.*$|\/\*[\s\S]*?\*\//gm, ''),
+      ),
     );
     expect(hits).toEqual([]);
   });

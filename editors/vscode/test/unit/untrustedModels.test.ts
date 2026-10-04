@@ -13,7 +13,8 @@ import { foldLineage, toThreadView } from '../../src/thread/threadModel';
 // tooltip or a webview must hand out text with no bidi/zero-width/control characters and a bounded size.
 const EVIL = `\u202Eexe.txt\u200B\u0000\u2066x\u2069${'A'.repeat(2_000_000)}`;
 // eslint-disable-next-line no-control-regex
-const UNSAFE = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f\u200b-\u200f\u202a-\u202e\u2060-\u2064\u2066-\u2069\ufeff]/;
+const UNSAFE =
+  /[\u0000-\u0008\u000b-\u001f\u007f-\u009f\u200b-\u200f\u202a-\u202e\u2060-\u2064\u2066-\u2069\ufeff]/;
 
 function walk(v: unknown, out: string[] = []): string[] {
   if (typeof v === 'string') out.push(v);
@@ -43,10 +44,14 @@ const sys = (title: string, body: unknown, extra: Partial<Event> = {}): Event =>
 describe('untrusted text is cleaned where it enters the models', () => {
   it('foldRuns: reason, error, summary, skill, page, harness', () => {
     const events = [
-      sys('run-started', {}, {
-        instance_page_id: `instances/x/${EVIL}.md`,
-        provenance: { runner: { event_id: 'T1', harness: EVIL } },
-      }),
+      sys(
+        'run-started',
+        {},
+        {
+          instance_page_id: `instances/x/${EVIL}.md`,
+          provenance: { runner: { event_id: 'T1', harness: EVIL } },
+        },
+      ),
       sys('run-finished', { status: 'failed', reason: EVIL, error: EVIL, summary: EVIL }),
     ];
     const recs = foldRuns(events, { nowMs: 0, skillByEvent: new Map([['T1', EVIL]]) });
@@ -100,23 +105,55 @@ describe('untrusted text is cleaned where it enters the models', () => {
       layer: 'overlay',
       required_frontmatter: [],
       optional_frontmatter: [],
-      fields: [{ name: 'f', kind: 'enum', values: [EVIL], required: false, description: EVIL, label: EVIL }],
+      fields: [
+        {
+          name: 'f',
+          kind: 'enum',
+          values: [EVIL],
+          required: false,
+          description: EVIL,
+          label: EVIL,
+        },
+      ],
     } as unknown as Skill;
     expectClean(skillFacts(skill, 0).facts, 700);
     expectClean(buildSkillPageModel(skill, [], []), 5000);
   });
 
   it('inbox, awaiting and slugs', () => {
-    const ev = { event_id: 'E', label_skill: EVIL, title: EVIL, instance_page_id: `i/${EVIL}.md`, status: 'inbox' } as Event;
+    const ev = {
+      event_id: 'E',
+      label_skill: EVIL,
+      title: EVIL,
+      instance_page_id: `i/${EVIL}.md`,
+      status: 'inbox',
+    } as Event;
     // Display fields only: the row also carries the raw event, which commands address by id.
-    const shown = (r: { label: string; description: string; tooltip?: string }) => [r.label, r.description, r.tooltip ?? ''];
+    const shown = (r: { label: string; description: string; tooltip?: string }) => [
+      r.label,
+      r.description,
+      r.tooltip ?? '',
+    ];
     expectClean(shown(inboxRow(ev)), 3000);
     expectClean(shown(confirmGateRow(ev)), 3000);
     expectClean(
       [
-        changesetRow({ changeset_id: 'C', target_page_ids: [EVIL], drafts: 1, author: EVIL, status: 'open' } as never).label,
-        changesetRow({ changeset_id: 'C', target_page_ids: [EVIL], drafts: 1, author: EVIL, status: 'open' } as never).description,
-        draftRow({ draft_id: 'D', target_page_id: EVIL, author: EVIL, status: 'open' } as never).description,
+        changesetRow({
+          changeset_id: 'C',
+          target_page_ids: [EVIL],
+          drafts: 1,
+          author: EVIL,
+          status: 'open',
+        } as never).label,
+        changesetRow({
+          changeset_id: 'C',
+          target_page_ids: [EVIL],
+          drafts: 1,
+          author: EVIL,
+          status: 'open',
+        } as never).description,
+        draftRow({ draft_id: 'D', target_page_id: EVIL, author: EVIL, status: 'open' } as never)
+          .description,
         pageSlug(EVIL),
       ],
       700,
@@ -128,8 +165,24 @@ describe('untrusted text is cleaned where it enters the models', () => {
       {
         root_event_id: 'R',
         nodes: [
-          { id: 'R', type: 'event', label_skill: EVIL, title: EVIL, parent: null, state: 'processed', instance_page_id: EVIL },
-          { id: 'RUN', type: 'run', parent: 'R', state: 'failed', summary: EVIL, harness: EVIL, target_page_id: EVIL },
+          {
+            id: 'R',
+            type: 'event',
+            label_skill: EVIL,
+            title: EVIL,
+            parent: null,
+            state: 'processed',
+            instance_page_id: EVIL,
+          },
+          {
+            id: 'RUN',
+            type: 'run',
+            parent: 'R',
+            state: 'failed',
+            summary: EVIL,
+            harness: EVIL,
+            target_page_id: EVIL,
+          },
         ],
       } as never,
     ]);

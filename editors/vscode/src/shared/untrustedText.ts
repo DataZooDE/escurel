@@ -43,7 +43,9 @@ export function cleanBlock(text: string, max = 4000): string {
 
 /** Unsafe characters removed and the length capped; spacing is left exactly as it was. */
 export function stripUnsafe(text: string, max = 400): string {
-  return [...strip(text.length > max * 4 ? text.slice(0, max * 4) : text, false)].slice(0, max).join('');
+  return [...strip(text.length > max * 4 ? text.slice(0, max * 4) : text, false)]
+    .slice(0, max)
+    .join('');
 }
 
 /** `cleanText` for a value that may be absent or not a string. */

@@ -7,12 +7,20 @@ const ev = (o: Partial<Event> & { event_id: string }): Event =>
   ({ kind: 'user', at: '2026-01-01T00:00:00Z', ...o }) as Event;
 
 /** A tiny paging gateway: newest first, 100 per page, opaque cursor = offset. */
-function gateway(all: { runs: Event[]; byRoot: Record<string, Event[]>; bySkill: Record<string, Event[]> }) {
+function gateway(all: {
+  runs: Event[];
+  byRoot: Record<string, Event[]>;
+  bySkill: Record<string, Event[]>;
+}) {
   const page = (rows: Event[], cursor?: string, limit = 100): EventsPage => {
     const from = cursor ? Number(cursor) : 0;
     const slice = rows.slice(from, from + limit);
     const more = from + limit < rows.length;
-    return { events: slice, has_more: more, next_cursor: more ? String(from + limit) : null } as EventsPage;
+    return {
+      events: slice,
+      has_more: more,
+      next_cursor: more ? String(from + limit) : null,
+    } as EventsPage;
   };
   return {
     listEvents: async (q: Record<string, unknown>) => {

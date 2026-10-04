@@ -86,7 +86,9 @@ export function buildRunView(runNode: LineageNode | undefined, runEvents: Event[
   }
 
   attempts.sort((a, b) => a.n - b.n);
-  const status = (stringValue(finished.status) ?? stringValue(runNode?.state) ?? 'running').trim().toLowerCase();
+  const status = (stringValue(finished.status) ?? stringValue(runNode?.state) ?? 'running')
+    .trim()
+    .toLowerCase();
   return {
     runId:
       runNode?.id ??

@@ -74,8 +74,15 @@ export type SkillPageToWebview =
 
 function fieldDetail(f: SkillField): string {
   const parts: string[] = [];
-  if (f.kind === 'link') parts.push(f.target_skill ? `link to ${cleanText(f.target_skill, 80)}` : 'link');
-  else if (f.kind === 'enum' && f.values?.length) parts.push(`one of ${f.values.slice(0, 50).map((v) => cleanText(String(v), 60)).join(', ')}`);
+  if (f.kind === 'link')
+    parts.push(f.target_skill ? `link to ${cleanText(f.target_skill, 80)}` : 'link');
+  else if (f.kind === 'enum' && f.values?.length)
+    parts.push(
+      `one of ${f.values
+        .slice(0, 50)
+        .map((v) => cleanText(String(v), 60))
+        .join(', ')}`,
+    );
   else parts.push(cleanText(String(f.kind), 40));
   if (f.min !== undefined || f.max !== undefined) {
     parts.push(`${f.min ?? ''}…${f.max ?? ''}`);
@@ -132,7 +139,8 @@ export function buildSkillPageModel(
   const facts: SkillFactView[] = [];
   if (skill.role) facts.push({ label: 'Role', value: cleanText(skill.role, 80) });
   if (skill.folder) facts.push({ label: 'Folder', value: cleanText(skill.folder, 200) });
-  if (skill.tags?.length) facts.push({ label: 'Tags', value: cleanText(skill.tags.slice(0, 30).join(', '), 300) });
+  if (skill.tags?.length)
+    facts.push({ label: 'Tags', value: cleanText(skill.tags.slice(0, 30).join(', '), 300) });
   facts.push({ label: 'Backend', value: cleanText(String(skill.backend.kind), 40) });
   facts.push({
     label: 'Autonomy',

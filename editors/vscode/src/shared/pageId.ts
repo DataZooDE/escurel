@@ -23,7 +23,8 @@ export function pageFile(pageId: string): string {
 export function pageSlug(pageId: string, skill?: string): string {
   const file = pageFile(pageId);
   // Display text from a page id someone else chose: no bidi or control characters, bounded.
-  if (skill) return cleanText(file.startsWith(`${skill}__`) ? file.slice(skill.length + 2) : file, 160);
+  if (skill)
+    return cleanText(file.startsWith(`${skill}__`) ? file.slice(skill.length + 2) : file, 160);
   const sep = file.indexOf('__');
   return cleanText(sep >= 0 ? file.slice(sep + 2) : file, 160);
 }

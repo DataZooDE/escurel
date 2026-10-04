@@ -15,8 +15,7 @@ export function skillPageMessageAllowed(
       return true;
     case 'start-skill':
       return (
-        (m.mode === 'run' || m.mode === 'plan') &&
-        !!model?.actions.some((a) => a.skill === m.skill)
+        (m.mode === 'run' || m.mode === 'plan') && !!model?.actions.some((a) => a.skill === m.skill)
       );
     case 'open-page':
       return (

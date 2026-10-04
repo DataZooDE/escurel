@@ -52,7 +52,9 @@ export async function loadPlanInputs(
         .filter((e) => e.run_id && roots.includes(e.root_event_id ?? ''))
         .map((e) => (e.at ? new Date(e.at).getTime() : 0)),
     );
-    const bySkill = await Promise.all(skills.map((skill) => readSkillBack(client, skill, oldestPlan)));
+    const bySkill = await Promise.all(
+      skills.map((skill) => readSkillBack(client, skill, oldestPlan)),
+    );
     userEvents = uniqueById([...triggers, ...bySkill.flat()]);
   } catch (e) {
     log().warn(`escurel: plan rows: ${describeError(e)}`);

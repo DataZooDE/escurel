@@ -80,7 +80,6 @@ describe('resolveApprovalSubject', () => {
   });
 });
 
-
 describe('approvePlanRun', () => {
   const runId = '01M3SXRWFGX05T89EEJ038ZWHB';
   const withStatus = (status: string): EventsPage => ({
@@ -118,7 +117,7 @@ describe('approvePlanRun', () => {
     expect(asked[0]).toContain(runId);
   });
 
-  it('captures the approval for the run\'s own skill and page once confirmed', async () => {
+  it("captures the approval for the run's own skill and page once confirmed", async () => {
     captures.length = 0;
     const out = await approvePlanRun(clientFor(withStatus('planned')), runId, {
       confirm: async () => true,

@@ -70,7 +70,9 @@ export class SkillPageEditor implements vscode.CustomReadonlyEditorProvider {
         const skills = await c.listSkills();
         const skill = skills.find((s) => s.id === skillId);
         if (!skill)
-          return { message: { type: 'error', message: `skill ${skillId} is not in the catalogue` } };
+          return {
+            message: { type: 'error', message: `skill ${skillId} is not in the catalogue` },
+          };
         // The two lists are additions to the page: a failure in either degrades to empty, it must not
         // cost the person the skill itself.
         const [instances, events] = await Promise.all([
