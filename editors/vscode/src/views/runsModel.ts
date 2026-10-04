@@ -539,7 +539,12 @@ export function buildRunsTree(input: TreeInput): RunsNode[] {
       },
     ];
   }
-  const groups = groupRuns(input.records, input.nowMs);
+  // "Runs for this record" narrows EVERY section to that page (the other filters only narrow History: what
+  // is running or needs you is never hidden by a state or a day).
+  const records = input.filter.pageId
+    ? input.records.filter((r) => r.targetPageId === input.filter.pageId)
+    : input.records;
+  const groups = groupRuns(records, input.nowMs);
   const out: RunsNode[] = [];
 
   if (input.runner && input.runner.health !== 'none') {
@@ -556,9 +561,9 @@ export function buildRunsTree(input: TreeInput): RunsNode[] {
     });
   }
 
-  const insight = insightLines(input.records, input.nowMs);
+  const insight = insightLines(records, input.nowMs);
   if (insight) {
-    const full = insightLine(input.records, input.nowMs);
+    const full = insightLine(records, input.nowMs);
     out.push({ id: 'insight', kind: 'insight', label: insight[0], tooltip: full });
     if (insight[1])
       out.push({ id: 'insight:detail', kind: 'insight', label: insight[1], tooltip: full });

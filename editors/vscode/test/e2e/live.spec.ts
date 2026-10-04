@@ -150,7 +150,7 @@ test('work that waits on a person stands out: a Needs-you changeset with its dra
   await expect(canvas.locator('.card.type-changeset.needs-you')).toBeInViewport({ ratio: 1 });
   await expect(canvas.locator('.zoom-level')).toHaveText('100%');
   await stack.shot('02a-first-view');
-  await wv.getByRole('button', { name: 'Fit' }).click();
+  // Still at 100%: Fit would zoom out into the overview form, which drops the in-card buttons.
   const card = canvas.locator('.card.type-changeset.needs-you');
   await expect(card).toBeVisible();
   await expect(card.locator('.needs-badge')).toContainText('Needs you');
@@ -606,6 +606,9 @@ test('the two outside systems are in the tree, and a REST row says it is externa
   await expect(wv.locator('.field[data-name="display_name"]')).toContainText('Ibérica Forja S.L.');
   await expect(wv.locator('.field[data-name="rating"]')).toContainText('A');
   await expect(strip.getByRole('button', { name: 'Change rating…' })).toBeVisible();
+  // No agent wrote this record, so it has no thread: the page says so, and where the runs that read it are.
+  await expect(wv.locator('.no-thread-note')).toContainText(/no agent wrote it/);
+  await expect(wv.getByRole('button', { name: 'Runs for this record' })).toBeVisible();
   await stack.shot('10-rest-row');
 });
 
@@ -935,11 +938,13 @@ test('a skill opens as a readable page, and Show Markdown opens its source', asy
   await chooseMenuItem(page, 'View skill');
   const wv = await webviewWith(page, 'escurel-skill-page');
   await expect(wv.locator('escurel-skill-page h1')).toContainText(/supplier/i);
-  for (const heading of ['About', 'Records', 'Recent runs']) {
+  for (const heading of ['About', 'What it can start', 'Recent runs']) {
     await expect(wv.getByRole('heading', { name: new RegExp(`^${heading}`) })).toBeVisible();
   }
   // A section with nothing in it is not drawn; one line says so.
-  await expect(wv.locator('escurel-skill-page .nothing-yet')).toContainText(/no fields declared/i);
+  await expect(wv.locator('escurel-skill-page .nothing-yet')).toContainText(
+    /no fields declared and no records yet/i,
+  );
   await stack.shot('09-skill-page');
   await wv.getByRole('button', { name: 'Show Markdown' }).click();
   await expect(page.locator('.tab.active', { hasText: 'supplier-risk.md' })).toBeVisible();
@@ -955,10 +960,6 @@ test('Runs for this record: from a record page to its runs, filtered, and back',
   await (await knowledgeRow(page, /order-4500131/)).click();
   const wv = await webviewWith(page, 'escurel-page-as-ui');
   const order = wv.locator('escurel-page-as-ui');
-  // A record that comes from a source says why it has no thread of its own, on the page.
-  await expect(order.locator('.no-thread-note')).toContainText(
-    /no agent wrote it|Runs for this record/,
-  );
   await order.getByRole('button', { name: 'Runs for this record' }).click();
   const runs = pane(page, 'Runs');
   await expect(runs.getByText(/Filtered: order-4500131/)).toBeVisible({ timeout: 15_000 });

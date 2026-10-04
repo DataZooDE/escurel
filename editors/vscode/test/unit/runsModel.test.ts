@@ -821,3 +821,36 @@ describe('filtering by day and by record', () => {
     });
   });
 });
+
+describe('Runs for this record narrows every section', () => {
+  const NOW2 = NOW;
+  const mk = (id: string, page: string, status: string) =>
+    ev(
+      id,
+      'run-finished',
+      iso(60),
+      { status },
+      { instance_page_id: `markdown/instances/customer-order__${page}.md` },
+    );
+  it('keeps only that page in Needs attention and History, not just History', () => {
+    const records = foldRuns(
+      [mk('a', 'order-1', 'dead_letter'), mk('b', 'order-2', 'dead_letter')],
+      {
+        nowMs: NOW2,
+      },
+    );
+    const tree = buildRunsTree({
+      records,
+      filter: { pageId: 'markdown/instances/customer-order__order-1.md' },
+      nowMs: NOW2,
+      historyLimit: 25,
+      hasMoreHistory: false,
+      runner: undefined,
+      isAdmin: false,
+    });
+    const attention = tree.find((n) => n.id === 'group:attention')!;
+    expect(attention.children!.map((c) => c.runId)).toEqual(['a']);
+    const history = tree.find((n) => n.id === 'group:history')!;
+    expect(history.children!.map((c) => c.runId)).toEqual(['a']);
+  });
+});
