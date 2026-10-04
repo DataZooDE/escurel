@@ -2081,7 +2081,16 @@ impl Indexer {
     pub(crate) async fn list_markdown_paths(&self) -> Result<HashSet<String>, IndexerError> {
         let prefix = Key::new(self.tenant.as_str(), "markdown/")?;
         let keys = self.store.list(&prefix).await?;
-        Ok(keys.into_iter().map(|k| k.path().to_owned()).collect())
+        // `FsStore` publishes a page by writing `<page>.md.tmp` and renaming it. A process killed
+        // between the two leaves the temp file behind, and it is NOT a page: indexing it would parse
+        // half-written bytes (or a duplicate of a sibling), and a rewrite of the sibling renames over
+        // it, so a later read of the listed path fails `not found`. (Found by the kill -9 sweep in
+        // `escurel-server/tests/suite/migrate_kind_sigkill.rs`.)
+        Ok(keys
+            .into_iter()
+            .map(|k| k.path().to_owned())
+            .filter(|p| !p.ends_with(".tmp"))
+            .collect())
     }
 
     async fn list_indexed_page_ids(&self) -> Result<HashSet<String>, IndexerError> {

@@ -400,6 +400,19 @@ pub async fn publish_lake(
     let _write = ix.write_guard().await;
     let mut conn = ix.conn.lock().await;
     let epoch = ix.mutation_epoch();
+    // A QUARANTINED tenant (legacy `type:` pages, awaiting `migrate_kind`) has an index that was never,
+    // or only partly, derived from its lane. Publishing it would hand every reader an empty or stale
+    // corpus that looks healthy (a reader adopts the newest snapshot and never sees the lane): found
+    // by `escurel-server/tests/suite/reader_legacy_lake.rs`. Skip until the migration lifts it.
+    if ix.legacy_quarantine().is_some() {
+        return Ok(PublishReport {
+            snapshot_id: -1,
+            epoch,
+            pages: 0,
+            blocks: 0,
+            skipped: true,
+        });
+    }
     if last_published_epoch == Some(epoch) {
         return Ok(PublishReport {
             snapshot_id: -1,

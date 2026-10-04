@@ -121,10 +121,23 @@ mounts the data PVC, then roll the Deployment.
 `--apply` is idempotent (a second run reports nothing to migrate), records an `escurel:kind-migration` system
 event (the audit trail for rewritten drafts) and returns its id.
 
-**How long it takes.** Reading the lane is O(pages) (it is also paid at every boot); the rewrite is quick
-(3 pages: 0.14 s). `--apply` then **rebuilds the whole index**: with the zero-vector embedder that is seconds,
-with a real embedder it **re-embeds the entire corpus** (the repo's own measurement: ~16 minutes for a
-production-sized corpus, budgeted at 29). Plan the window for the rebuild, not for the rewrite.
+**How long it takes.** Measured on a real `escurel-server` over a generated legacy tenant (20,020 lane pages,
+2,000 open drafts, 500 historical CRDT snapshots, 83 MB on disk; zero-vector embedder; a shared, heavily loaded
+dev machine with load average ~45, so read these as upper bounds):
+
+| step | time | peak RSS |
+|---|---|---|
+| boot over the legacy tenant (quarantined; the lane scan) | 1.0 s | 95 MB |
+| `migrate_kind` dry run | 0.8 s | 108 MB |
+| `migrate_kind --apply` (rewrite + drafts + snapshots + full index rebuild) | **648 s (~11 min)** | 406 MB |
+| boot over the migrated tenant | 4.2 s | 60 MB |
+
+The rewrite itself is quick; the time is the **full index rebuild** that `--apply` ends with (it is not "seconds":
+about 30 ms per page even with the zero-vector embedder, i.e. ~50-120 s per 2,000 pages). With a real embedder it
+also **re-embeds the entire corpus** (the repo's own measurement: ~16 minutes for a production-sized corpus,
+budgeted at 29), so size the window for the rebuild, not for the rewrite. Memory stays flat (the apply peaks at
+~0.4 GB for this size) because pages, drafts and snapshots are streamed one at a time. Reproduce with
+`cargo run --release -p escurel-index --example gen_legacy_tenant -- <data_dir> default 20000 2000 500`.
 
 ## 4. Verify, then swap
 

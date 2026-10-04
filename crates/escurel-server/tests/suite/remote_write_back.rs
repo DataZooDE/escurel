@@ -23,7 +23,7 @@ use axum::{Json, Router};
 use escurel_test_support::{EgressPolicy, Role};
 use serde_json::{Value, json};
 
-use super::remote_support::{admin, call_as, serve, spawn_gateway};
+use super::remote_support::{admin, call_as, serve, spawn_gateway, spawn_gateway_breakable};
 
 const CUSTOMER_SKILL: &str = "---\n\
      kind: skill\n\
@@ -564,6 +564,107 @@ async fn an_outage_before_anything_is_sent_is_still_audited_and_leaves_the_draft
     assert_eq!(again["ok"], true, "{again}");
     assert_eq!(c.tier("c-0001"), "gold");
     p.shutdown().await;
+}
+
+/// How to break the `events` table underneath a running gateway (real SQL on the same DuckDB instance).
+#[derive(Clone, Copy)]
+enum EventsFault {
+    /// The table is gone: the witness LOOKUP (a read) fails first.
+    Dropped,
+    /// Reads still work but nothing can be written (a view cannot be inserted into): the
+    /// audit-first INSERT itself fails.
+    ReadOnly,
+}
+
+fn break_events(breaker: &duckdb::Connection, fault: EventsFault) {
+    // DuckDB refuses to rename or drop a table that has indexes: drop them first.
+    let indexes: Vec<String> = {
+        let mut stmt = breaker
+            .prepare("SELECT index_name FROM duckdb_indexes() WHERE table_name = 'events'")
+            .unwrap();
+        stmt.query_map([], |r| r.get::<_, String>(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap()
+    };
+    if matches!(fault, EventsFault::ReadOnly) {
+        breaker
+            .execute_batch("CREATE TABLE events_copy AS SELECT * FROM events")
+            .unwrap();
+    }
+    for ix in &indexes {
+        breaker.execute_batch(&format!("DROP INDEX {ix}")).unwrap();
+    }
+    breaker.execute_batch("DROP TABLE events").unwrap();
+    if matches!(fault, EventsFault::ReadOnly) {
+        breaker
+            .execute_batch("CREATE VIEW events AS SELECT * FROM events_copy")
+            .unwrap();
+    }
+}
+
+/// The audit-first rule (write_back.rs): an upstream call with no record of intent is the one thing
+/// the trail exists to prevent, so when the trail cannot be read or written NOTHING is sent. The store
+/// failures are REAL: a second connection to the same DuckDB instance breaks the `events` table
+/// underneath the running gateway, so its own SQL fails with a genuine DuckDB error.
+async fn promote_with_broken_events(fault: EventsFault) {
+    let c = crm();
+    let app = Router::new()
+        .route("/customers", get(list))
+        .route("/customers/{id}", get(get_one).patch(patch))
+        .with_state(Arc::clone(&c));
+    let (base, _h) = serve(app).await;
+    let (p, _dirs, breaker) = spawn_gateway_breakable(
+        &[("customer", CUSTOMER_SKILL)],
+        EgressPolicy {
+            allow_loopback: true,
+            write_retry_backoff: std::time::Duration::from_millis(5),
+            ..EgressPolicy::default()
+        },
+    )
+    .await;
+    admin(
+        &p,
+        "register_endpoint",
+        json!({ "name": "crm_rest", "kind": "openapi", "base_url": base }),
+    )
+    .await;
+    let etag = etag_of_row(&p).await;
+    let id = draft_id(&draft(&p, &intent_content("tier: gold", &etag, "n")).await);
+
+    break_events(&breaker, fault);
+    let broken = promote(&p, &id).await;
+
+    assert_eq!(broken["ok"], false, "{broken}");
+    assert!(
+        issue_codes(&broken).contains(&"write_back_failed".to_owned()),
+        "{broken}"
+    );
+    let text = broken.to_string();
+    assert!(
+        text.contains("audit trail could not be"),
+        "worded for a person: {broken}"
+    );
+    assert!(
+        !text.contains("DuckDB") && !text.contains("Catalog") && !text.contains("events"),
+        "no storage internals reach the person: {broken}"
+    );
+    assert!(
+        c.patches.lock().unwrap().is_empty(),
+        "the upstream was called although the intent could not be recorded"
+    );
+    assert_eq!(c.tier("c-0001"), "silver");
+    p.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_promote_whose_audit_trail_cannot_be_read_sends_nothing_and_leaks_no_storage_error() {
+    promote_with_broken_events(EventsFault::Dropped).await;
+}
+
+#[tokio::test]
+async fn a_promote_whose_audit_record_cannot_be_written_sends_nothing_to_the_upstream() {
+    promote_with_broken_events(EventsFault::ReadOnly).await;
 }
 
 // ── Crew review (robustness/security), reproduced through the real gateway ────────────────────

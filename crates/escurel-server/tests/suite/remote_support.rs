@@ -60,6 +60,41 @@ pub async fn spawn_gateway_with(
     (process, vec![store_dir, db_dir])
 }
 
+/// [`spawn_gateway`] plus a second connection to the SAME DuckDB instance (`try_clone`, the way the
+/// server clones its CRDT connection), so a test can break the store underneath a running gateway
+/// with real SQL (e.g. rename the `events` table) and provoke a genuine storage error.
+pub async fn spawn_gateway_breakable(
+    skills: &[(&str, &str)],
+    egress: EgressPolicy,
+) -> (EscurelProcess, Vec<TempDir>, Connection) {
+    let store_dir = TempDir::new().unwrap();
+    let db_dir = TempDir::new().unwrap();
+    let store: Arc<dyn LaneStore> = Arc::new(FsStore::new(store_dir.path().to_path_buf()));
+    let embedder: Arc<dyn Embedder> = Arc::new(ZeroEmbedder::default());
+    let conn = Connection::open(db_dir.path().join("escurel.duckdb")).unwrap();
+    Migrator::up(&conn).unwrap();
+    let breaker = conn.try_clone().unwrap();
+    let indexer = Arc::new(Indexer::new(store, embedder, conn, TENANT).unwrap());
+    for (id, md) in skills {
+        indexer
+            .update_page(&format!("markdown/skills/{id}.md"), md)
+            .await
+            .unwrap();
+    }
+    let process = EscurelProcess::spawn(Opts {
+        auth: AuthMode::TestIssuer,
+        config_overrides: ConfigOverrides {
+            indexer: Some(indexer),
+            egress: Some(egress),
+            signing: true,
+            ..Default::default()
+        },
+        ..Default::default()
+    })
+    .await;
+    (process, vec![store_dir, db_dir], breaker)
+}
+
 pub fn loopback_ok() -> EgressPolicy {
     EgressPolicy {
         allow_loopback: true,
