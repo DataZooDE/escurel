@@ -47,6 +47,14 @@ test('native owner approval, two proposal generations, validation, and inactive 
   };
   const sourceTemplate = { ...sourcePayload, skus: sourcePayload.skus.map(({ history: _history,
     demand: _demand, ...sku }) => sku) };
+  const serviceTargets = { aggregate_min_fill_rate: 0.8,
+    per_sku_min_fill_rate: { '1': 0.8, '2': 0.8 } };
+  const policyTerms = {
+    seed_sql: baseline, baseline_sql: baseline, service_targets: serviceTargets,
+    planning_window_days: 1, scored_window_days: 3,
+    unit_order_costs: { '1': 1, '2': 1 }, terminal_stock_tolerance: { '1': 0, '2': 0 },
+    max_generations: 2, budget: { max_evaluated: 3 },
+  };
   const csvRows = ['sku_id,date,true_demand,fulfilled,stockout,measurement_method,estimate_ref,recorded_at,quantity_unit'];
   for (const sku of sourcePayload.skus) {
     const amounts = [...sku.history, ...sku.demand];
@@ -68,6 +76,7 @@ test('native owner approval, two proposal generations, validation, and inactive 
   writeFileSync(`${csvBase}.csv`, dailyCsv);
   writeFileSync(`${csvBase}.manifest.json`, JSON.stringify(manifest));
   writeFileSync(`${csvBase}.template.json`, JSON.stringify(sourceTemplate));
+  writeFileSync(`${csvBase}.policy.json`, JSON.stringify(policyTerms));
   await expect(pane(stack.page, 'Runs')).toContainText('4 ok', { timeout: 30_000 });
   await stack.page.keyboard.press('Control+P');
   const quickInput = stack.page.locator('.quick-input-widget input');
@@ -89,11 +98,22 @@ test('native owner approval, two proposal generations, validation, and inactive 
     .filter({ hasText: `Prepare private training source ${sourceId}` });
   await expect(prepareDialog).toContainText('physical CSV data lines: 26');
   await expect(prepareDialog).toContainText(`CSV SHA-256: ${csvDigest}`);
+  await expect(prepareDialog).toContainText('Policy SHA-256:');
   await prepareDialog.getByRole('button', { name: 'Prepare private CSV' }).click();
   const preparedDialog = stack.page.getByRole('dialog')
     .filter({ hasText: `Training source ${sourceId} prepared from 26 dated rows.` });
   await expect(preparedDialog).toBeVisible();
   await stack.page.keyboard.press('Escape');
+  await stack.page.keyboard.press('Control+End');
+  await expect(stack.page.locator('.monaco-editor .view-lines').last()).toContainText('max_generations');
+  await stack.page.keyboard.press('Control+A');
+  await stack.page.keyboard.press('Control+C');
+  await stack.page.context().grantPermissions(['clipboard-read']);
+  const preparedDraftText = await stack.page.evaluate(() => navigator.clipboard.readText());
+  const preparedDraft = JSON.parse(preparedDraftText) as Record<string, unknown>;
+  expect(preparedDraft.training_source_id).toBe(sourceId);
+  expect(preparedDraft.seed_sql).toBe(policyTerms.seed_sql);
+  expect(preparedDraft.max_generations).toBe(2);
   const source = await stack.evolveCall('evolve_prepare_training_csv', {
     source_id: sourceId, manifest_json: JSON.stringify(manifest),
     template_json: JSON.stringify(sourceTemplate), daily_demand_csv: dailyCsv,
@@ -111,8 +131,6 @@ test('native owner approval, two proposal generations, validation, and inactive 
 
   const holdoutSku = { ...trainingSku, name: 'PRIVATE_HOLDOUT_OUTCOMES_SENTINEL_A' };
   const holdoutSkuB = { ...trainingSkuB, name: 'PRIVATE_HOLDOUT_OUTCOMES_SENTINEL_B' };
-  const serviceTargets = { aggregate_min_fill_rate: 0.8,
-    per_sku_min_fill_rate: { '1': 0.8, '2': 0.8 } };
   const holdoutPayload = {
     holdout_id: `${id}-holdout`, source_sha256: 'c'.repeat(64),
     training_source_id: source.training_source_id,
@@ -169,18 +187,10 @@ test('native owner approval, two proposal generations, validation, and inactive 
   });
   expect(JSON.stringify(beforeProblemEvents)).not.toContain('PRIVATE_HOLDOUT_OUTCOMES_SENTINEL_A');
 
-  const trainingFields = { ...derivedSource };
-  delete trainingFields.format_version;
-  delete trainingFields.daily_demand;
-  const trainingSpec = {
-    ...trainingFields, seed_sql: baseline, baseline_sql: baseline,
-    service_targets: serviceTargets, planning_window_days: 1, scored_window_days: 3,
-    unit_order_costs: { '1': 1, '2': 1 }, terminal_stock_tolerance: { '1': 0, '2': 0 },
-    training_source_id: source.training_source_id, source_sha256: source.normalized_sha256,
-    max_generations: 2, budget: { max_evaluated: 3 },
-  };
+  expect(preparedDraft.skus).toEqual(derivedSource.skus);
+  expect(preparedDraft.source_sha256).toBe(source.normalized_sha256);
   const specFile = join(stack.workspaceDir, 'completed-training-spec.json');
-  writeFileSync(specFile, JSON.stringify(trainingSpec, null, 2));
+  writeFileSync(specFile, preparedDraftText);
   await stack.page.keyboard.press('Control+P');
   await quickInput.fill(specFile);
   await expect(stack.page.locator('.quick-input-list')).toContainText('completed-training-spec.json');

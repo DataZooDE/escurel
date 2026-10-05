@@ -67,6 +67,39 @@ export function preparedV2Draft(input: unknown, source: Record<string, unknown>,
   };
 }
 
+const POLICY_TERMS = new Set([
+  'service_targets', 'seed_sql', 'baseline_sql', 'planning_window_days',
+  'scored_window_days', 'unit_order_costs', 'terminal_stock_tolerance',
+  'max_generations', 'budget', 'num_islands', 'migration_interval',
+  'operator', 'model_tier', 'model_ensemble', 'model_ensemble_strong_every',
+  'capture_rationale',
+]);
+const REQUIRED_POLICY_TERMS = [
+  'service_targets', 'seed_sql', 'baseline_sql', 'planning_window_days',
+  'scored_window_days', 'unit_order_costs', 'terminal_stock_tolerance',
+  'max_generations', 'budget',
+] as const;
+
+/** Check the companion file before the private source is uploaded. */
+export function validateV2PolicyTerms(terms: unknown): Record<string, unknown> {
+  onlyKeys(terms, POLICY_TERMS, 'policy terms');
+  for (const key of REQUIRED_POLICY_TERMS) {
+    if (!(key in (terms as Record<string, unknown>)))
+      throw new Error(`Policy terms need ${key}.`);
+  }
+  return terms as Record<string, unknown>;
+}
+
+/** Merge only authored policy terms; the server-derived source remains authoritative. */
+export function preparedV2DraftWithPolicyTerms(
+  terms: unknown, source: Record<string, unknown>, sourceId: string, digest: string,
+): Record<string, unknown> {
+  const policy = validateV2PolicyTerms(terms);
+  const draft = preparedV2Draft(policy, source, sourceId, digest);
+  normalizeV2TrainingSpec(draft, 'pending-private-holdout');
+  return draft;
+}
+
 export function normalizeV2TrainingSpec(value: unknown, holdoutId: string): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value))
     throw new Error('Training spec must be one JSON object.');

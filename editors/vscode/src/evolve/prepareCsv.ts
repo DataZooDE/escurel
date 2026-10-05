@@ -5,7 +5,7 @@ import type { Services } from '../services';
 import { readConfig } from '../config';
 import { describeError } from '../errors';
 import { evolveOrigin } from './holdoutClient';
-import { preparedV2Draft } from './problemImport';
+import { preparedV2Draft, preparedV2DraftWithPolicyTerms, validateV2PolicyTerms } from './problemImport';
 import { callPrivateTrainingTool } from './trainingCsvClient';
 import { requireSavedVisibleFile } from './localFileReview';
 
@@ -23,6 +23,7 @@ export function registerPrepareEvolveTrainingCsv(
   context: vscode.ExtensionContext, services: Services,
 ): vscode.Disposable {
   const command = vscode.commands.registerCommand('escurel.prepareEvolveTrainingCsv', async () => {
+    let preparedSourceId: string | undefined;
     try {
       const owner = await services.subject();
       if (!owner) throw new Error('Sign in before preparing a private training CSV.');
@@ -74,6 +75,26 @@ export function registerPrepareEvolveTrainingCsv(
         ? await read(activeCsv!.uri, 'Dated training demand CSV', 1024 * 1024)
         : await choose('Choose dated training demand CSV', 'csv', 1024 * 1024);
       if (!csv) return;
+      let policy: Awaited<ReturnType<typeof read>> | undefined;
+      if (paired) {
+        const policyUri = vscode.Uri.file(join(dirname(base), `${basename(base)}.policy.json`));
+        try {
+          await vscode.workspace.fs.stat(policyUri);
+          policy = await read(policyUri, 'Policy terms JSON', 64 * 1024);
+        } catch (error) {
+          if (!(error instanceof vscode.FileSystemError && error.code === 'FileNotFound')) throw error;
+        }
+      } else {
+        const policyChoice = await vscode.window.showQuickPick([
+          { label: 'Choose policy terms JSON', description: 'Merge reviewed SQL, service targets, costs, windows and budget' },
+          { label: 'Open incomplete policy draft', description: 'Fill all policy fields before problem import' },
+        ], { placeHolder: 'Choose how to author the V2 policy' });
+        if (!policyChoice) return;
+        if (policyChoice.label === 'Choose policy terms JSON')
+          policy = await choose('Choose policy terms JSON', 'json', 64 * 1024);
+        if (policyChoice.label === 'Choose policy terms JSON' && !policy) return;
+      }
+      const policyTerms = policy ? validateV2PolicyTerms(JSON.parse(policy.text)) : undefined;
       const declared = object(JSON.parse(manifest.text));
       const source = object(JSON.parse(template.text));
       const skus = Array.isArray(source.skus) ? source.skus.map(object) : [];
@@ -87,13 +108,13 @@ export function registerPrepareEvolveTrainingCsv(
         throw new Error('Manifest daily_demand_sha256 does not match the selected CSV bytes.');
       const confirmed = await vscode.window.showWarningMessage(
         `Prepare private training source ${sourceId} in Anofox Evolve?`,
-        { modal: true, detail: `${scope}\n\nManifest SHA-256: ${manifest.sha256}\nTemplate SHA-256: ${template.sha256}\nCSV SHA-256: ${csv.sha256}\n\nThe raw CSV goes directly to Evolve under your signed-in identity. Derived training demand enters the Escurel problem page if you import the opened draft and may then be read by the planning model. Opening stock and lost-sales estimates remain operator attestations.` },
+        { modal: true, detail: `${scope}\n\nManifest SHA-256: ${manifest.sha256}\nTemplate SHA-256: ${template.sha256}\nCSV SHA-256: ${csv.sha256}${policy ? `\nPolicy terms: ${policy.uri.fsPath}\nPolicy SHA-256: ${policy.sha256}` : '\nPolicy terms: incomplete draft'}\n\nThe raw CSV goes directly to Evolve under your signed-in identity. Derived training demand enters the Escurel problem page if you import the opened draft and may then be read by the planning model. Opening stock and lost-sales estimates remain operator attestations.` },
         'Prepare private CSV',
       );
       if (confirmed !== 'Prepare private CSV') return;
       if (await services.subject() !== owner)
         throw new Error('The signed-in owner changed during review.');
-      for (const selected of [manifest, template, csv]) {
+      for (const selected of [manifest, template, csv, ...(policy ? [policy] : [])]) {
         const current = await read(selected.uri, 'Selected training file', selected.bytes.length);
         if (current.sha256 !== selected.sha256)
           throw new Error('A selected file changed after review. Reopen the current files and retry.');
@@ -105,12 +126,13 @@ export function registerPrepareEvolveTrainingCsv(
       if (receipt.training_source_id !== sourceId || typeof receipt.normalized_sha256 !== 'string'
           || !/^[a-f0-9]{64}$/.test(receipt.normalized_sha256))
         throw new Error('Evolve returned an invalid training CSV receipt.');
+      preparedSourceId = sourceId;
       const draft = await callPrivateTrainingTool(endpoint, services.auth.refresher, 'evolve_training_csv_draft', { source_id: sourceId });
       if (draft.training_source_id !== sourceId || draft.normalized_sha256 !== receipt.normalized_sha256)
         throw new Error('The owner-private draft differs from the sealed receipt.');
       if (await services.subject() !== owner)
         throw new Error('The signed-in owner changed during preparation.');
-      for (const selected of [manifest, template, csv]) {
+      for (const selected of [manifest, template, csv, ...(policy ? [policy] : [])]) {
         const visible = vscode.workspace.textDocuments.find((document) =>
           document.uri.toString() === selected.uri.toString());
         requireSavedVisibleFile(selected.uri.toString(), selected.text,
@@ -119,12 +141,15 @@ export function registerPrepareEvolveTrainingCsv(
       }
       const document = await vscode.workspace.openTextDocument({
         language: 'json',
-        content: JSON.stringify(preparedV2Draft({}, object(draft.source), sourceId,
-          receipt.normalized_sha256 as string), null, 2) + '\n',
+        content: JSON.stringify(policyTerms
+          ? preparedV2DraftWithPolicyTerms(policyTerms, object(draft.source), sourceId,
+            receipt.normalized_sha256 as string)
+          : preparedV2Draft({}, object(draft.source), sourceId,
+            receipt.normalized_sha256 as string), null, 2) + '\n',
       });
       await vscode.window.showTextDocument(document, { preview: false });
       const action = await vscode.window.showInformationMessage(
-        `Training source ${sourceId} prepared from ${String(receipt.row_count)} dated rows. Complete the opened V2 policy draft, save it locally, register a matching private holdout, then import the problem.`,
+        `Training source ${sourceId} prepared from ${String(receipt.row_count)} dated rows. ${policy ? 'Review the merged V2 policy draft' : 'Complete the opened V2 policy draft'}, save it locally, register a matching private holdout, then import the problem.`,
         'Register private holdout',
       );
       if (action === 'Register private holdout') await vscode.commands.executeCommand(
@@ -135,7 +160,9 @@ export function registerPrepareEvolveTrainingCsv(
         },
       );
     } catch (error) {
-      void vscode.window.showErrorMessage(`Evolve CSV preparation failed: ${describeError(error)}`);
+      void vscode.window.showErrorMessage(preparedSourceId
+        ? `Training source ${preparedSourceId} is sealed. The draft could not be opened: ${describeError(error)}. Correct the local files and retry the same source ID.`
+        : `Evolve CSV preparation failed: ${describeError(error)}`);
     }
   });
   context.subscriptions.push(command);

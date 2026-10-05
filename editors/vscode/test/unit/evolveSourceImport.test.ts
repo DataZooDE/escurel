@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { Event } from '../../src/client';
-import { normalizeV2TrainingSpec, preparedV2Draft, v2TrainingStarter } from '../../src/evolve/problemImport';
+import { normalizeV2TrainingSpec, preparedV2Draft, preparedV2DraftWithPolicyTerms, v2TrainingStarter } from '../../src/evolve/problemImport';
 import {
   parsePreparationReceipt, preparationEvent, preparationReceiptId,
   trainingSourcePage, trainingSourcePayload,
@@ -41,6 +41,21 @@ describe('private V2 training source preparation', () => {
     expect(draft.unit_order_costs).toEqual({});
     expect(draft.seed_sql).toBe('REPLACE_WITH_SEED_SQL');
     expect(() => normalizeV2TrainingSpec(draft, 'private-holdout')).toThrow(/Fill seed_sql/);
+  });
+  it('merges reviewed policy terms with server-derived demand without accepting source overrides', () => {
+    const source = { ...trainingSourcePayload(v2TrainingStarter),
+      skus: [{ ...v2TrainingStarter.skus[0], demand: [2, 2, 2, 2, 2, 2] }] };
+    const { service_targets, seed_sql, baseline_sql, planning_window_days, scored_window_days,
+      unit_order_costs, terminal_stock_tolerance, max_generations, budget } = v2TrainingStarter;
+    const terms = { service_targets, seed_sql, baseline_sql, planning_window_days,
+      scored_window_days, unit_order_costs, terminal_stock_tolerance, max_generations, budget };
+    const draft = preparedV2DraftWithPolicyTerms(terms, source, 'src_csv', 'b'.repeat(64));
+    expect((draft.skus as typeof source.skus)[0]?.demand).toEqual([2, 2, 2, 2, 2, 2]);
+    expect(() => normalizeV2TrainingSpec(draft, 'private-holdout')).not.toThrow();
+    expect(() => preparedV2DraftWithPolicyTerms({ ...terms, skus: v2TrainingStarter.skus },
+      source, 'src_csv', 'b'.repeat(64))).toThrow(/Unsupported policy terms key skus/);
+    expect(() => preparedV2DraftWithPolicyTerms({ ...terms, baseline_sql: '' },
+      source, 'src_csv', 'b'.repeat(64))).toThrow(/baseline_sql/);
   });
   it('extracts only training inputs from a full spec and binds the event to stored bytes', () => {
     const page = trainingSourcePage({ id: 'august-training', owner: 'alice', value: v2TrainingStarter });
