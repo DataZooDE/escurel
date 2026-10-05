@@ -662,8 +662,8 @@ Two deliberate limits:
 
 An instance with **no** `acl:` block resolves exactly as before, so every
 page authored before this existed is unaffected and the change needs no
-rollout flag of its own. The write half remains gated by
-`ESCUREL_WRITE_ACL`.
+rollout flag of its own. The write half is gated by
+`ESCUREL_WRITE_ACL`, which defaults to `enforce`.
 
 #### `list_instances`
 

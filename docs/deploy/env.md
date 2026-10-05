@@ -42,7 +42,7 @@ escurel-server.
 | `ESCUREL_AUTH_OIDC_ISSUER` | — | OIDC issuer; unset → unauthenticated dev mode |
 | `ESCUREL_AUTH_OIDC_AUDIENCE` | escurel | OIDC audience |
 | `ESCUREL_AUTH_TENANT_CLAIM` | tenant | JWT claim carrying the tenant id |
-| `ESCUREL_WRITE_ACL` | off | per-instance write ACL: `off` (no check) \| `log` (warn but allow) \| `enforce` (reject). Symmetric to the read ACL: owner-or-admin writes; public/no-owner instances are admin-write-only. |
+| `ESCUREL_WRITE_ACL` | enforce | per-instance write ACL: `enforce` (reject; the default, also for an unrecognised value) \| `log` (warn but allow) \| `off` (no check, explicit opt-out). Symmetric to the read ACL: owner-or-admin writes; public/no-owner instances are admin-write-only. |
 | `ESCUREL_AUTH_ADMIN_ROLE_CLAIM` | roles | JWT claim listing roles |
 | `ESCUREL_AUTH_ADMIN_ROLE_VALUE` | escurel:admin | role value granting admin |
 | `ESCUREL_AUTH_JWKS_REFRESH_SECS` | 300 | JWKS cache TTL (seconds) |

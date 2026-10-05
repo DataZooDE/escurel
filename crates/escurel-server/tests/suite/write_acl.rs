@@ -29,10 +29,20 @@ const ALICE_PAGE: &str = "markdown/instances/community_member/alice.md";
 const KEYNOTE_PAGE: &str = "markdown/instances/talk/keynote.md";
 
 async fn start(mode: WriteAclMode) -> EscurelProcess {
+    start_with_mode(Some(mode)).await
+}
+
+/// The mode the product ships with (`WriteAclMode::default()`, what an unset `ESCUREL_WRITE_ACL`
+/// parses to). The test gateway itself stays open unless a test passes a mode.
+async fn start_default() -> EscurelProcess {
+    start_with_mode(Some(WriteAclMode::default())).await
+}
+
+async fn start_with_mode(mode: Option<WriteAclMode>) -> EscurelProcess {
     EscurelProcess::spawn(Opts {
         auth: AuthMode::TestIssuer,
         config_overrides: ConfigOverrides {
-            write_acl: Some(mode),
+            write_acl: mode,
             ..Default::default()
         },
         fixtures: Some(
@@ -199,4 +209,28 @@ async fn off_mode_does_not_gate_writes() {
         json!(true),
         "off mode allows the legacy write: {r}"
     );
+}
+
+/// The out-of-the-box mode (no `ESCUREL_WRITE_ACL`, no override) must ENFORCE: a deployment that
+/// never heard of the knob must not let any token rewrite someone else's instance.
+#[tokio::test]
+async fn the_default_mode_enforces() {
+    let p = start_default().await;
+    let bob = p.mint_token_with_sub(TENANT, Role::Agent, BOB);
+    let r = update(&p, &bob, ALICE_PAGE, ALICE_MEMBER_EDIT).await;
+    assert_eq!(
+        r["ok"],
+        json!(false),
+        "default must refuse a non-owner write: {r}"
+    );
+    assert_eq!(r["issues"][0]["code"], json!("forbidden"), "{r}");
+}
+
+#[test]
+fn an_unset_or_unknown_env_value_means_enforce() {
+    assert_eq!(WriteAclMode::default(), WriteAclMode::Enforce);
+    assert_eq!(WriteAclMode::parse(""), WriteAclMode::Enforce);
+    assert_eq!(WriteAclMode::parse("nonsense"), WriteAclMode::Enforce);
+    assert_eq!(WriteAclMode::parse("off"), WriteAclMode::Off);
+    assert_eq!(WriteAclMode::parse(" LOG "), WriteAclMode::Log);
 }

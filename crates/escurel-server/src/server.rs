@@ -57,32 +57,33 @@ pub type EmbedderFactory = Arc<
 /// (`ESCUREL_WRITE_ACL`). Symmetric to the read ACL: a caller may mutate
 /// an instance only if it owns it (token `sub` == resolved owner) or is
 /// admin; public/no-owner instances are admin-write-only. The mode lets
-/// the gate be deployed dark (`Off`), observed (`Log`), then enforced.
+/// the gate be switched off (`Off`, explicit opt-out) or observed (`Log`) before enforcing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum WriteAclMode {
-    /// No write-ACL check (legacy behaviour; safe rollout default).
-    #[default]
+    /// No write-ACL check (legacy behaviour; an explicit opt-out).
     Off,
     /// Run the check; on a denial log a warning but ALLOW the write.
     Log,
-    /// Run the check; on a denial REJECT the write.
+    /// Run the check; on a denial REJECT the write. The default.
+    #[default]
     Enforce,
 }
 
 impl WriteAclMode {
-    /// Parse `ESCUREL_WRITE_ACL` (`off` | `log` | `enforce`); unknown or
-    /// unset → [`WriteAclMode::Off`].
+    /// Parse `ESCUREL_WRITE_ACL` (`off` | `log` | `enforce`); unset or
+    /// unknown → [`WriteAclMode::Enforce`] (fail closed: a typo must not switch the gate off).
     #[must_use]
     pub fn from_env() -> Self {
-        match std::env::var("ESCUREL_WRITE_ACL")
-            .unwrap_or_default()
-            .trim()
-            .to_ascii_lowercase()
-            .as_str()
-        {
-            "enforce" => Self::Enforce,
+        Self::parse(&std::env::var("ESCUREL_WRITE_ACL").unwrap_or_default())
+    }
+
+    /// One mode from its textual form (case/space-insensitive).
+    #[must_use]
+    pub fn parse(raw: &str) -> Self {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "off" => Self::Off,
             "log" => Self::Log,
-            _ => Self::Off,
+            _ => Self::Enforce,
         }
     }
 }

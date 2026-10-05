@@ -26,6 +26,10 @@ Skill version `0.14.0`. Every consumer that writes pages or reads the tool surfa
 
 ### BREAKING
 
+- **`ESCUREL_WRITE_ACL` defaults to `enforce`** (was `off`; an unrecognised value also enforces). Writes by a
+  caller who is neither the instance's owner nor an admin are refused with `forbidden`. Set
+  `ESCUREL_WRITE_ACL=off` to keep the old behaviour, or `log` to find the callers first. Skill `0.17.1`.
+
 - **The page kind is `kind:` (was `type:`).** `type: skill|instance` is removed — a hard cut with no
   compatibility switch. A tenant whose lane still holds such pages boots **QUARANTINED** (up, answers only
   `migrate_kind` / `compact_lanes`); writes with the old key are refused (`frontmatter_type_removed`).

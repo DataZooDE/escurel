@@ -4,6 +4,17 @@ The skill version tracks the consumer-facing contract, not the Escurel
 binary version. The Escurel repo's checked-out git ref is the true version
 pin (see `SKILL.md` → "How this skill is installed").
 
+## 0.17.1 — `ESCUREL_WRITE_ACL` defaults to `enforce` (BREAKING behaviour)
+
+- **The per-instance write ACL is ON by default.** Unset (or an unrecognised value) now means `enforce`: only the
+  resolved owner or an admin may write an owner-private instance, public / no-`owner_field` instances are
+  admin-write-only, and `update_page`, `delete_page`, `move_page`, drafts and promotion refuse a caller who may
+  not write with `forbidden`. It was `off`. Consumers that wrote through a non-owner, non-admin token must grant
+  access (`acl.create` / `acl.update` on the skill, an `owner_field`) or set `ESCUREL_WRITE_ACL=off` explicitly
+  (`log` warns and allows, for finding such callers first). Test gateways follow the same default: seed the
+  users you write as, or pass `ConfigOverrides { write_acl: Some(WriteAclMode::Off) }`.
+  See `references/08-auth-and-tenancy.md`.
+
 ## 0.17.0 — the autonomy gate holds against machines; secrets and file sources are scoped (BREAKING behaviour)
 
 Round-2 security review. Behaviour changes a consumer can see:
