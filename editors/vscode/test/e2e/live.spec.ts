@@ -732,8 +732,8 @@ test('when the portal is down a promoted change is refused, recorded as failed, 
   // change did not go through. It keeps the page; it does not go blank or show a stack trace.
   // Its tab is still open; the tree cannot list a dead source's rows, so the person goes back to it.
   // (Switching away and back is what reloads a page; it is already the active tab.)
-  await page.getByRole('tab', { name: /^stahl-ag\.md/ }).click();
-  await page.getByRole('tab', { name: /^nordform\.md/ }).click();
+  await page.getByRole('tab', { name: /^supplier-rating · stahl-ag/ }).click();
+  await page.getByRole('tab', { name: /^supplier-rating · nordform/ }).click();
   const down = await webviewWith(page, 'escurel-page-as-ui', 'nordform');
   await expect(down.locator('.source-strip')).toBeVisible({ timeout: 20_000 });
   await expect(down.locator('.source-strip.problem')).toBeVisible();
