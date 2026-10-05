@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import { createHash } from 'node:crypto';
+import { basename, dirname, join } from 'node:path';
 import type { Services } from '../services';
 import { readConfig } from '../config';
 import { describeError } from '../errors';
@@ -67,11 +68,53 @@ export function registerEvolveHoldoutCsv(
           )?.[0];
           return uri ? read(uri, label, limit) : undefined;
         };
-        const manifest = await pick('Choose holdout manifest JSON', 'json', 16_384);
+        const activeEditor = vscode.window.activeTextEditor?.document;
+        const activeCsv =
+          activeEditor?.uri.scheme === 'file' && activeEditor.uri.fsPath.endsWith('.csv')
+            ? activeEditor
+            : undefined;
+        const fileMode = await vscode.window.showQuickPick(
+          [
+            ...(activeCsv
+              ? [
+                  {
+                    label: 'Use active CSV and sibling files',
+                    description:
+                      'Read <name>.manifest.json and <name>.template.json beside the saved CSV',
+                  },
+                ]
+              : []),
+            {
+              label: 'Choose three files',
+              description: 'Select manifest, metadata template, and demand CSV',
+            },
+          ],
+          { placeHolder: 'Choose the private holdout CSV files' },
+        );
+        if (!fileMode) return;
+        const paired = fileMode.label === 'Use active CSV and sibling files';
+        if (paired && activeCsv?.isDirty)
+          throw new Error('Save the active CSV before registering the holdout.');
+        const base = paired ? activeCsv!.uri.fsPath.slice(0, -4) : '';
+        const manifest = paired
+          ? await read(
+              vscode.Uri.file(join(dirname(base), `${basename(base)}.manifest.json`)),
+              'Holdout manifest JSON',
+              16_384,
+            )
+          : await pick('Choose holdout manifest JSON', 'json', 16_384);
         if (!manifest) return;
-        const template = await pick('Choose metadata-only holdout template JSON', 'json', 524_288);
+        const template = paired
+          ? await read(
+              vscode.Uri.file(join(dirname(base), `${basename(base)}.template.json`)),
+              'Metadata-only holdout template JSON',
+              524_288,
+            )
+          : await pick('Choose metadata-only holdout template JSON', 'json', 524_288);
         if (!template) return;
-        const csv = await pick('Choose dated holdout demand CSV', 'csv', 1_048_576);
+        const csv = paired
+          ? await read(activeCsv!.uri, 'Dated holdout demand CSV', 1_048_576)
+          : await pick('Choose dated holdout demand CSV', 'csv', 1_048_576);
         if (!csv) return;
         let manifestValue: Record<string, unknown>;
         let templateValue: unknown;

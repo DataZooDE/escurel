@@ -131,31 +131,59 @@ test('native owner approval, two proposal generations, validation, and inactive 
 
   const holdoutSku = { ...trainingSku, name: 'PRIVATE_HOLDOUT_OUTCOMES_SENTINEL_A' };
   const holdoutSkuB = { ...trainingSkuB, name: 'PRIVATE_HOLDOUT_OUTCOMES_SENTINEL_B' };
-  const holdoutPayload = {
-    holdout_id: `${id}-holdout`, source_sha256: 'c'.repeat(64),
+  const holdoutTemplate = {
+    holdout_id: `${id}-holdout`,
     training_source_id: source.training_source_id,
     training_source_sha256: source.normalized_sha256,
     source_ref: `synthetic:${id}:holdout`, training_source_ref: `synthetic:${id}:training`,
     training_start: '2026-08-01', training_end: '2026-08-12',
-    history_start: '2026-08-31', history_end: '2026-08-31',
+    history_start: '2026-08-05', history_end: '2026-08-31',
     inventory_as_of: '2026-09-01', holdout_start: '2026-09-01',
     holdout_end: '2026-09-12', outcomes_sealed_before_search: true,
     outcomes_publicly_disclosed: true, demand_observation: 'true_demand',
-    problem: { capacity: 9, skus: [holdoutSku, holdoutSkuB] }, service_targets: serviceTargets,
+    problem: { capacity: 9, skus: [holdoutSku, holdoutSkuB].map(({ history: _history,
+      demand: _demand, ...sku }) => sku) }, service_targets: serviceTargets,
     baseline_sql: baseline, max_cost_ratio: 0.9,
     evaluator_version: 'replenishment_decision_v2',
     planning_window_days: 1, scored_window_days: 3,
     sensitivity_tail_days: [3, 9], unit_order_costs: { '1': 1, '2': 1 },
     terminal_stock_tolerance: { '1': 0, '2': 0 },
   };
-  const holdoutFile = join(stack.workspaceDir, 'private-holdout.json');
-  writeFileSync(holdoutFile, JSON.stringify(holdoutPayload, null, 2));
+  const holdoutLines = ['sku_id,date,true_demand,fulfilled,stockout,measurement_method,estimate_ref,recorded_at,quantity_unit'];
+  const historyStart = Date.UTC(2026, 7, 5);
+  const holdoutStart = Date.UTC(2026, 8, 1);
+  for (const sku of sourcePayload.skus) {
+    const stock = sku.sku_id === 1 ? 1 : 2;
+    for (let day = 0; day < 27; day += 1) {
+      const current = new Date(historyStart + day * 86_400_000);
+      const date = current.toISOString().slice(0, 10);
+      const trainIndex = Math.round((current.getTime() - Date.UTC(2026, 7, 1)) / 86_400_000);
+      const amount = trainIndex >= 0 && trainIndex < sku.demand.length ? sku.demand[trainIndex] : stock;
+      const recorded = new Date(current.getTime() + 86_400_000).toISOString().slice(0, 10);
+      holdoutLines.push(`${sku.sku_id},${date},${amount},${amount},false,observed,,${recorded}T12:00:00Z,units`);
+    }
+    for (let day = 0; day < 12; day += 1) {
+      const current = new Date(holdoutStart + day * 86_400_000);
+      const date = current.toISOString().slice(0, 10);
+      const recorded = new Date(current.getTime() + 86_400_000).toISOString().slice(0, 10);
+      holdoutLines.push(`${sku.sku_id},${date},${stock},${stock},false,observed,,${recorded}T12:00:00Z,units`);
+    }
+  }
+  const holdoutCsv = holdoutLines.join('\n') + '\n';
+  const holdoutManifest = {
+    format_version: 'holdout_demand_csv_v1', extract_id: `${id}-holdout-extract`,
+    extracted_at: '2026-09-14T12:00:00Z', source_system: 'synthetic-native-e2e',
+    quantity_unit: 'units', daily_demand_sha256: createHash('sha256').update(holdoutCsv).digest('hex'),
+  };
+  const holdoutBase = join(stack.workspaceDir, 'private-holdout');
+  writeFileSync(`${holdoutBase}.csv`, holdoutCsv);
+  writeFileSync(`${holdoutBase}.manifest.json`, JSON.stringify(holdoutManifest, null, 2) + '\n');
+  writeFileSync(`${holdoutBase}.template.json`, JSON.stringify(holdoutTemplate, null, 2) + '\n');
   await stack.page.keyboard.press('Control+P');
-  await quickInput.fill(holdoutFile);
-  await expect(stack.page.locator('.quick-input-list')).toContainText('private-holdout.json');
+  await quickInput.fill(`${holdoutBase}.csv`);
+  await expect(stack.page.locator('.quick-input-list')).toContainText('private-holdout.csv');
   await quickInput.press('Enter');
-  await stack.page.getByRole('tab', { name: 'private-holdout.json' }).click();
-  await expect(stack.page.locator('.tab.active')).toContainText('private-holdout.json');
+  await expect(stack.page.getByRole('tab', { name: 'private-holdout.csv' })).toBeVisible();
   await stack.page.keyboard.press('Control+Shift+P');
   await expect(stack.page.locator('.quick-input-widget')).toBeVisible();
   await quickInput.click();
@@ -163,25 +191,29 @@ test('native owner approval, two proposal generations, validation, and inactive 
   await expect(quickInput).toHaveValue('>Register private Anofox Evolve V2 holdout');
   await expect(stack.page.locator('.quick-input-list')).toContainText('Register private Anofox Evolve V2 holdout');
   await quickInput.press('Enter');
-  await expect(stack.page.locator('.quick-input-list')).toContainText('Use active JSON file');
+  await expect(stack.page.locator('.quick-input-list')).toContainText('Full JSON declaration');
+  await quickInput.fill('Metadata template plus dated CSV');
   await quickInput.press('Enter');
-  await expect(stack.page.locator('.quick-input-widget')).toContainText('Registered Evolve training-source ID');
-  await quickInput.fill(String(source.training_source_id));
+  await expect(stack.page.locator('.quick-input-list')).toContainText('Use active CSV and sibling files');
   await quickInput.press('Enter');
-  await expect(stack.page.locator('.quick-input-widget')).toContainText('Server-computed normalized training-source SHA-256');
-  await quickInput.fill(String(source.normalized_sha256));
-  await quickInput.press('Enter');
-  const sealDialog = stack.page.getByRole('dialog').filter({ hasText: `Seal private V2 holdout ${id}-holdout` });
+  const sealDialog = stack.page.getByRole('dialog').filter({ hasText: `Seal dated CSV holdout ${id}-holdout` });
   await expect(sealDialog).toBeVisible();
-  await expect(sealDialog).toContainText('Publicly disclosed synthetic fixture');
+  await expect(sealDialog).toContainText('Outcomes sealed before search: true');
+  await expect(sealDialog).toContainText('Unit order costs');
+  await expect(sealDialog).toContainText('terminal stock tolerances');
   await expect(sealDialog).not.toContainText('PRIVATE_HOLDOUT_OUTCOMES_SENTINEL_A');
-  await sealDialog.getByRole('button', { name: 'Seal private holdout' }).click();
+  await sealDialog.getByRole('button', { name: 'Seal private CSV holdout' }).click();
   await expect(stack.page.getByRole('dialog')
-    .filter({ hasText: `Private holdout ${id}-holdout sealed in Evolve.` })).toBeVisible();
+    .filter({ hasText: `Private CSV holdout ${id}-holdout sealed in Evolve from 78 dated rows across 2 SKUs.` })).toBeVisible();
   await stack.page.keyboard.press('Escape');
-  const holdout = await stack.evolveCall('evolve_register_holdout', holdoutPayload);
+  const holdout = await stack.evolveCall('evolve_register_holdout_csv', {
+    manifest_json: JSON.stringify(holdoutManifest, null, 2) + '\n',
+    template_json: JSON.stringify(holdoutTemplate, null, 2) + '\n',
+    daily_demand_csv: holdoutCsv,
+  });
   expect(holdout.idempotent).toBe(true);
   expect(holdout.holdout_sha256).toMatch(/^[a-f0-9]{64}$/);
+  expect(holdout.row_count).toBe(78);
   const beforeProblemEvents = await stack.call('list_events', {
     label_skill: 'evolve_run', limit: 100, include_system: true,
   });
@@ -205,7 +237,7 @@ test('native owner approval, two proposal generations, validation, and inactive 
   await quickInput.fill('Import active completed training spec');
   await quickInput.press('Enter');
   await expect(stack.page.locator('.quick-input-widget')).toContainText('Registered private holdout ID');
-  await quickInput.fill(`${id}-holdout`);
+  await expect(quickInput).toHaveValue(`${id}-holdout`);
   await quickInput.press('Enter');
   await expect(stack.page.locator('.quick-input-widget')).toContainText('Problem page ID');
   await quickInput.fill(id);
