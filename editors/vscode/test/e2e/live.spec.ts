@@ -132,6 +132,10 @@ test('run detail opens from the canvas with its plan and tool calls', async ({ s
   // Plain words, and the 26-character id stays behind Copy run id.
   await expect(run.locator('escurel-run-detail .meta')).toContainText('Run by the');
   await expect(run.getByRole('button', { name: 'Copy run id' })).toBeVisible();
+  // The gateway kept what the agent's calls asked and got back; opening a step shows it.
+  await run.locator('escurel-run-detail .tool-call summary').first().click();
+  await expect(run.locator('escurel-run-detail .call-detail').first()).toContainText('Asked');
+  await expect(run.locator('escurel-run-detail .call-detail').first()).toContainText('Got back');
   await stack.shot('05-run-detail');
 });
 
