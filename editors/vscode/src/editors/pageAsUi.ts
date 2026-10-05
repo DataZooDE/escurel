@@ -10,10 +10,20 @@ import { latestLoader } from '../shared/latestLoader';
 import { newNonce } from './nonce';
 import { safePost } from '../shared/safePost';
 import { findThreadStrip } from '../shared/threadStrip';
+import { pageTabTitle } from '../shared/tabTitle';
 import { parseViewer } from '../shared/viewer';
 import type { HostToWebview, PageModel, WebviewToHost } from '../shared/protocol';
 
 export const VIEW_TYPE = 'escurel.pageAsUi';
+
+/** Name the tab; a panel that was closed while the page loaded is not worth an error. */
+function setTitle(panel: vscode.WebviewPanel, parts: Parameters<typeof pageTabTitle>[0]): void {
+  try {
+    panel.title = pageTabTitle(parts);
+  } catch {
+    // disposed
+  }
+}
 
 /**
  * Page as UI (SPEC §3.4) as a CustomReadonlyEditor on `escurel:` instance
@@ -93,6 +103,12 @@ export class PageAsUiEditor implements vscode.CustomReadonlyEditorProvider {
           .catch(() => undefined);
         const viewer = parseViewer(skillPage?.frontmatter);
         const model = viewer ? { ...fromPage, viewer } : fromPage;
+        // The tab is named after the URI's last segment (`all.md`) unless the host says otherwise.
+        setTitle(panel, {
+          title: model.title,
+          skill: skill.id,
+          slug: e.page.slug ?? e.page.page_id.split('/').pop()?.replace(/\.md$/, '') ?? '',
+        });
         // Where the page came from. A failure here must not cost the user the page: the strip
         // is an addition to it, so it degrades to absent.
         const strip = await findThreadStrip((cursor) =>

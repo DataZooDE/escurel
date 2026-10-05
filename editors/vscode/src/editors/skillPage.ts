@@ -1,3 +1,4 @@
+import { skillTabTitle } from '../shared/tabTitle';
 import * as vscode from 'vscode';
 import type { EscurelClient } from '../client';
 import { describeError } from '../errors';
@@ -58,6 +59,7 @@ export class SkillPageEditor implements vscode.CustomReadonlyEditorProvider {
       localResourceRoots: [vscode.Uri.joinPath(this.context.extensionUri, 'dist', 'webview')],
     };
     panel.webview.html = this.html(panel.webview);
+    if (skillId) panel.title = skillTabTitle(skillId);
     const post = (m: SkillPageToWebview) => safePost(panel, m);
     // The model the host last posted: a webview message is judged against THIS, never against what
     // the webview claims. Cleared when the gateway changes (it belongs to the old one).

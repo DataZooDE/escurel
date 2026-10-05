@@ -383,6 +383,8 @@ test('a SQL-view page previews the rows the source holds, read-only, under its f
   const wv = await webviewWith(page, 'escurel-source-preview');
   const preview = wv.locator('escurel-page-as-ui escurel-source-preview');
   await expect(preview.locator('.badge')).toContainText('read-only (source)');
+  // The tab says what the page is, not the URI's last segment (`all.md`).
+  await expect(page.locator('.tab.active .label-name')).toContainText('order-lines · all');
   // The rows come from the real gateway's `expand` (the sql_view over the JSON extract).
   await expect(preview.locator('thead th')).toContainText(['order_id', 'item', 'customer']);
   await expect(preview.locator('tbody tr')).toHaveCount(6);
@@ -938,6 +940,7 @@ test('a skill opens as a readable page, and Show Markdown opens its source', asy
   await chooseMenuItem(page, 'View skill');
   const wv = await webviewWith(page, 'escurel-skill-page');
   await expect(wv.locator('escurel-skill-page h1')).toContainText(/supplier/i);
+  await expect(page.locator('.tab.active .label-name')).toContainText('Skill · supplier-risk');
   for (const heading of ['About', 'What it can start', 'Recent runs']) {
     await expect(wv.getByRole('heading', { name: new RegExp(`^${heading}`) })).toBeVisible();
   }
