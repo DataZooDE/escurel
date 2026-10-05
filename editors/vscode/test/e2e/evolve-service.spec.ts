@@ -196,6 +196,12 @@ test('native owner approval, two proposal generations, validation, and inactive 
   await quickInput.press('Enter');
   await expect(stack.page.locator('.quick-input-list')).toContainText('Use active CSV and sibling files');
   await quickInput.press('Enter');
+  await expect(stack.page.locator('.quick-input-widget')).toContainText('Registered Evolve training-source ID');
+  await quickInput.fill(sourceId);
+  await quickInput.press('Enter');
+  await expect(stack.page.locator('.quick-input-widget')).toContainText('Server-computed normalized training-source SHA-256');
+  await quickInput.fill(String(source.normalized_sha256));
+  await quickInput.press('Enter');
   const sealDialog = stack.page.getByRole('dialog').filter({ hasText: `Seal dated CSV holdout ${id}-holdout` });
   await expect(sealDialog).toBeVisible();
   await expect(sealDialog).toContainText('Outcomes sealed before search: true');
