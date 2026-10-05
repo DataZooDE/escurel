@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import type { ToolCallRow } from '../../src/shared/protocol';
-import { axisLabel, callDuration, formatBytes, traceAxis, traceTimeline } from '../../src/shared/trace';
+import {
+  axisLabel,
+  callDuration,
+  formatBytes,
+  traceAxis,
+  traceTimeline,
+} from '../../src/shared/trace';
 
 const call = (seq: number, over: Partial<ToolCallRow> = {}): ToolCallRow => ({
   seq,

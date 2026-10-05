@@ -599,9 +599,7 @@ export class EscurelRunDetail extends LitElement {
                       <span class="call-duration">${row.duration}</span>
                       ${row.offset ? html`<span class="call-offset">${row.offset}</span>` : nothing}
                       <span class="call-bar" aria-hidden="true"
-                        ><span
-                          style="left:${row.leftPercent}%;width:${row.widthPercent}%"
-                        ></span
+                        ><span style="left:${row.leftPercent}%;width:${row.widthPercent}%"></span
                       ></span>
                     </summary>
                     <div class="call-sizes">${row.sizes}</div>
