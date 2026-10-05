@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { createHash } from 'node:crypto';
 import {
   EvolveRegistrationError,
   evolveOrigin,
@@ -76,11 +77,22 @@ describe('direct private V2 holdout intake', () => {
       outcomes_sealed_before_search: true,
       outcomes_publicly_disclosed: true,
       demand_observation: 'true_demand',
+      service_targets: { aggregate_min_fill_rate: 0.8 },
+      max_cost_ratio: 0.9,
+      baseline_sql: 'SELECT 1',
+      planning_window_days: 2,
+      scored_window_days: 2,
+      sensitivity_tail_days: [1, 4],
+      unit_order_costs: { '1': 1 },
+      terminal_stock_tolerance: { '1': 0 },
       problem: { capacity: 10, skus: [{ sku_id: 1, initial_stock: 2 }] },
     };
     const result = prepareHoldoutCsv(template, source);
     expect(result.template).toEqual(template);
     expect(result.summary).toContain('SKUs: 1');
+    expect(result.summary).toContain('Unit order costs');
+    expect(result.summary).toContain('terminal stock tolerances');
+    expect(result.summary).toContain('Outcomes sealed before search: true');
     expect(result.summary).not.toContain('987654321');
     expect(() => prepareHoldoutCsv({ ...template, source_sha256: 'a'.repeat(64) }, source)).toThrow(
       /Omit source_sha256/,
@@ -110,9 +122,14 @@ describe('direct private V2 holdout intake', () => {
   it('posts manifest, template, and CSV directly and validates the sealed receipt', async () => {
     const payload = {
       manifest_json: '{"format_version":"holdout_demand_csv_v1"}',
-      template_json: '{"holdout_id":"csv-case-1"}',
+      template_json: JSON.stringify({
+        holdout_id: 'csv-case-1',
+        training_source_id: source.sourceId,
+        training_source_sha256: source.digest,
+      }),
       daily_demand_csv: 'private,demand,rows',
     };
+    const digest = (text: string) => createHash('sha256').update(text).digest('hex');
     const fetcher = vi.fn(async (_url: string, init: RequestInit) => {
       expect(init.redirect).toBe('error');
       expect((init.headers as Record<string, string>)['X-Triton-Tool']).toBe(
@@ -127,6 +144,13 @@ describe('direct private V2 holdout intake', () => {
           holdout_sha256: 'd'.repeat(64),
           state: 'sealed',
           idempotent: false,
+          training_source_id: source.sourceId,
+          training_source_sha256: source.digest,
+          row_count: 33,
+          sku_count: 1,
+          manifest_sha256: digest(payload.manifest_json),
+          template_sha256: digest(payload.template_json),
+          csv_sha256: digest(payload.daily_demand_csv),
         }),
       } as Response;
     });
@@ -137,8 +161,38 @@ describe('direct private V2 holdout intake', () => {
     } as TokenRefresher;
     await expect(
       registerHoldoutCsvAtEvolve('https://evolve.example', refresher, payload),
-    ).resolves.toEqual({ holdoutId: 'csv-case-1', holdoutSha256: 'd'.repeat(64) });
+    ).resolves.toEqual({
+      holdoutId: 'csv-case-1',
+      holdoutSha256: 'd'.repeat(64),
+      rowCount: 33,
+      skuCount: 1,
+    });
     expect(fetcher).toHaveBeenCalledOnce();
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        async () =>
+          ({
+            ok: true,
+            status: 200,
+            json: async () => ({
+              holdout_id: 'csv-case-1',
+              holdout_sha256: 'd'.repeat(64),
+              state: 'sealed',
+              training_source_id: source.sourceId,
+              training_source_sha256: source.digest,
+              row_count: 33,
+              sku_count: 1,
+              manifest_sha256: digest(payload.manifest_json),
+              template_sha256: 'f'.repeat(64),
+              csv_sha256: digest(payload.daily_demand_csv),
+            }),
+          }) as Response,
+      ),
+    );
+    await expect(
+      registerHoldoutCsvAtEvolve('https://evolve.example', refresher, payload),
+    ).rejects.toThrow(/does not match the exact submitted files/);
   });
 
   it('rejects insecure or redirectable endpoint configurations', () => {

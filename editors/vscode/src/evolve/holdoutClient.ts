@@ -269,7 +269,8 @@ export function prepareHoldoutCsv(
     `SKUs: ${ids.join(', ')}; capacity: ${String(problem.capacity)}; opening stock, pipeline, constraints and costs: ${JSON.stringify(skuState)}`,
     `Baseline SQL SHA-256: ${createHash('sha256').update(baseline).digest('hex')}; preview: ${baseline.replace(/\s+/g, ' ').slice(0, 240)}${baseline.length > 240 ? '…' : ''}`,
     `Service targets: ${JSON.stringify(template.service_targets)}; max cost ratio: ${String(template.max_cost_ratio)}; planning/scored days: ${String(template.planning_window_days)}/${String(template.scored_window_days)}; tails: ${JSON.stringify(template.sensitivity_tail_days)}`,
-    `Publicly disclosed outcomes: ${String(template.outcomes_publicly_disclosed)}; demand observation: ${String(template.demand_observation)}`,
+    `Unit order costs: ${JSON.stringify(template.unit_order_costs)}; terminal stock tolerances: ${JSON.stringify(template.terminal_stock_tolerance)}`,
+    `Outcomes sealed before search: ${String(template.outcomes_sealed_before_search)}; publicly disclosed outcomes: ${String(template.outcomes_publicly_disclosed)}; demand observation: ${String(template.demand_observation)}`,
     'Holdout outcomes come from the selected CSV and are never shown in this review dialog.',
   ].join('\n');
   const templateJson = JSON.stringify(template, null, 2) + '\n';
@@ -280,7 +281,7 @@ export async function registerHoldoutAtEvolve(
   endpoint: string,
   refresher: TokenRefresher,
   payload: Record<string, unknown>,
-): Promise<{ holdoutId: string; holdoutSha256: string }> {
+): Promise<{ holdoutId: string; holdoutSha256: string; rowCount: number; skuCount: number }> {
   const origin = evolveOrigin(endpoint);
   const body = JSON.stringify(payload);
   let lastStatus = 0;
@@ -357,7 +358,12 @@ export async function registerHoldoutAtEvolve(
       !/^[a-f0-9]{64}$/.test(result.holdout_sha256)
     )
       throw new Error('Evolve returned an invalid holdout registration receipt.');
-    return { holdoutId: result.holdout_id as string, holdoutSha256: result.holdout_sha256 };
+    return {
+      holdoutId: result.holdout_id as string,
+      holdoutSha256: result.holdout_sha256 as string,
+      rowCount: result.row_count as number,
+      skuCount: result.sku_count as number,
+    };
   }
   throw new Error(
     'Evolve registration did not complete. Retry the same local file and holdout ID.',
@@ -368,7 +374,7 @@ export async function registerHoldoutCsvAtEvolve(
   endpoint: string,
   refresher: TokenRefresher,
   payload: { manifest_json: string; template_json: string; daily_demand_csv: string },
-): Promise<{ holdoutId: string; holdoutSha256: string }> {
+): Promise<{ holdoutId: string; holdoutSha256: string; rowCount: number; skuCount: number }> {
   const origin = evolveOrigin(endpoint);
   const body = JSON.stringify(payload);
   let lastStatus = 0;
@@ -444,14 +450,36 @@ export async function registerHoldoutCsvAtEvolve(
       );
     }
     const result = object(await response.json());
+    const template = object(JSON.parse(payload.template_json));
+    const expected = {
+      manifest_sha256: createHash('sha256').update(payload.manifest_json).digest('hex'),
+      template_sha256: createHash('sha256').update(payload.template_json).digest('hex'),
+      csv_sha256: createHash('sha256').update(payload.daily_demand_csv).digest('hex'),
+    };
     if (
-      result.holdout_id !== object(JSON.parse(payload.template_json)).holdout_id ||
+      result.holdout_id !== template.holdout_id ||
       result.state !== 'sealed' ||
       typeof result.holdout_sha256 !== 'string' ||
-      !/^[a-f0-9]{64}$/.test(result.holdout_sha256)
+      !/^[a-f0-9]{64}$/.test(result.holdout_sha256) ||
+      result.training_source_id !== template.training_source_id ||
+      result.training_source_sha256 !== template.training_source_sha256 ||
+      result.manifest_sha256 !== expected.manifest_sha256 ||
+      result.template_sha256 !== expected.template_sha256 ||
+      result.csv_sha256 !== expected.csv_sha256 ||
+      !Number.isSafeInteger(result.row_count) ||
+      (result.row_count as number) <= 0 ||
+      !Number.isSafeInteger(result.sku_count) ||
+      (result.sku_count as number) <= 0
     )
-      throw new Error('Evolve returned an invalid holdout CSV registration receipt.');
-    return { holdoutId: result.holdout_id as string, holdoutSha256: result.holdout_sha256 };
+      throw new Error(
+        'Evolve returned a holdout receipt that does not match the exact submitted files. Check the selected files and retry the same bundle.',
+      );
+    return {
+      holdoutId: result.holdout_id as string,
+      holdoutSha256: result.holdout_sha256 as string,
+      rowCount: result.row_count as number,
+      skuCount: result.sku_count as number,
+    };
   }
   throw new Error(
     'Evolve registration did not complete. Retry the same local files and holdout ID.',

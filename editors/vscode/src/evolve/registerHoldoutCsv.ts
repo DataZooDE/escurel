@@ -230,7 +230,7 @@ export function registerEvolveHoldoutCsv(
           ].slice(0, 20),
         );
         const action = await vscode.window.showInformationMessage(
-          `Private CSV holdout ${receipt.holdoutId} sealed in Evolve. Declaration SHA-256: ${receipt.holdoutSha256}. Registration records submitted evidence; it does not independently validate unseen outcomes or operational performance.`,
+          `Private CSV holdout ${receipt.holdoutId} sealed in Evolve from ${receipt.rowCount} dated rows across ${receipt.skuCount} SKUs. Declaration SHA-256: ${receipt.holdoutSha256}. Registration records submitted evidence; it does not independently validate unseen outcomes or operational performance.`,
           'Import V2 problem',
         );
         if (action === 'Import V2 problem')
