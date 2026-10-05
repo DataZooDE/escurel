@@ -99,3 +99,10 @@ One line per change. Folded into the root `CHANGELOG.md` BREAKING entry and `doc
   is sorted by group tag (READ, WRITE, REVIEW, RUNNER, SESSION, ADMIN) and then by name.
 - A write whose page has no frontmatter (or none `kind:`) is refused `frontmatter_parse` WITH a
   `suggestion` holding a minimal frontmatter example and the `type:` -> `kind:` rename.
+
+## Run tool calls keep a redacted summary (additive)
+
+- `get_run_tool_calls` rows carry optional `args_summary` / `result_summary` (bounded to 2 KB, credentials
+  redacted). New config `ESCUREL_TOOLCALL_DETAIL=summary|off` (default `summary`). Nothing is removed or
+  renamed; the `run_tool_calls` table gains two nullable columns in place. Operators who do not want call
+  arguments stored at all set `ESCUREL_TOOLCALL_DETAIL=off`.

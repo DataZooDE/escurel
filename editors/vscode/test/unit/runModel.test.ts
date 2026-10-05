@@ -239,3 +239,49 @@ describe('why a run failed', () => {
     ).toBeUndefined();
   });
 });
+
+describe('what a call asked and got back', () => {
+  const base = buildRunView(runNode, runEvents);
+  const page = (call: Record<string, unknown>): GetRunToolCallsResponse =>
+    ({
+      run_id: 'r',
+      calls: [
+        {
+          seq: 1,
+          tool: 'expand',
+          status: 'ok',
+          error_code: null,
+          duration_ms: 1,
+          request_bytes: 1,
+          response_bytes: 1,
+          subject: 'agent:x',
+          at: '2026-10-04T12:00:00Z',
+          ...call,
+        },
+      ],
+      next_after: null,
+    }) as GetRunToolCallsResponse;
+
+  it('carries the gateway summaries onto the row', () => {
+    const [row] = mergeToolCallPage(
+      base,
+      page({ args_summary: '{"page_id":"p"}', result_summary: '{"ok":true}' }),
+    ).calls;
+    expect(row).toMatchObject({ argsSummary: '{"page_id":"p"}', resultSummary: '{"ok":true}' });
+  });
+
+  it('has none when the gateway recorded none (older calls, detail off)', () => {
+    const [row] = mergeToolCallPage(base, page({ args_summary: null })).calls;
+    expect(row!.argsSummary).toBeUndefined();
+    expect(row!.resultSummary).toBeUndefined();
+  });
+
+  it('cleans and caps what an agent wrote, like every other untrusted string', () => {
+    const [row] = mergeToolCallPage(
+      base,
+      page({ args_summary: `{"name":"a‮exe.txt"}${'x'.repeat(10_000)}` }),
+    ).calls;
+    expect(row!.argsSummary).not.toContain('‮');
+    expect(row!.argsSummary!.length).toBeLessThanOrEqual(2300);
+  });
+});

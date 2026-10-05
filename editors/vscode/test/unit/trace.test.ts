@@ -79,3 +79,29 @@ describe('toolWords', () => {
     expect(row).toMatchObject({ tool: 'list_inbox', label: 'Read the inbox' });
   });
 });
+
+describe('what a call asked and got back', () => {
+  it('shows the summaries as readable JSON, and nothing when there are none', () => {
+    const [withDetail, without] = traceTimeline(
+      [
+        call(1, { argsSummary: '{"page_id":"markdown/p.md"}', resultSummary: 'not json at all' }),
+        call(2),
+      ],
+      undefined,
+    );
+    expect(withDetail!.args).toBe('{\n  "page_id": "markdown/p.md"\n}');
+    expect(withDetail!.result).toBe('not json at all');
+    expect(without).toMatchObject({ args: '', result: '' });
+  });
+
+  it('keeps a cut summary as it is: pretty-printing a truncated string would hide the cut', () => {
+    const [row] = traceTimeline([call(1, { argsSummary: '{"k":"v"…[truncated]' })], undefined);
+    expect(row!.args).toBe('{"k":"v"…[truncated]');
+  });
+
+  it('says which kind of trace this is', async () => {
+    const { traceNote } = await import('../../src/shared/trace');
+    expect(traceNote([call(1)])).toContain('not its arguments or its result');
+    expect(traceNote([call(1, { argsSummary: '{}' })])).toContain('credentials');
+  });
+});

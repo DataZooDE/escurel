@@ -337,6 +337,10 @@ export interface RunToolCall {
   response_bytes: number;
   subject: string;
   at: string;
+  /** A bounded, redacted summary of what was asked; absent when the gateway kept none. */
+  args_summary?: string | null;
+  /** The same for the result, or the failure's reason. */
+  result_summary?: string | null;
 }
 
 export interface GetRunToolCallsResponse {

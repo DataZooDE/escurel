@@ -1,4 +1,4 @@
-import { TRACE_RECORDED_NOTE, traceTimeline } from '../../src/shared/trace';
+import { traceNote, traceTimeline } from '../../src/shared/trace';
 import {
   emptyAttempts,
   emptyPlan,
@@ -201,6 +201,26 @@ export class EscurelRunDetail extends LitElement {
       .call-sizes {
         margin: 4px 0 0 1.5em;
         opacity: 0.8;
+      }
+      .call-detail {
+        margin: 6px 0 2px 1.5em;
+      }
+      .call-detail-label {
+        color: var(--escurel-muted);
+        font-size: 0.85em;
+        margin-top: 4px;
+      }
+      .call-detail-text {
+        margin: 2px 0 0;
+        padding: 4px 8px;
+        max-height: 14em;
+        overflow: auto;
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+        font-family: var(--vscode-editor-font-family, monospace);
+        font-size: 0.9em;
+        background: var(--vscode-textCodeBlock-background);
+        border-radius: 2px;
       }
       button.open-produced {
         margin: 4px 0;
@@ -531,7 +551,7 @@ export class EscurelRunDetail extends LitElement {
         ${
           run.calls.length
             ? html`<p class="timeline-note">
-                Bars compare each step with the slowest one. ${TRACE_RECORDED_NOTE}
+                Bars compare each step with the slowest one. ${traceNote(run.calls)}
               </p>`
             : nothing
         }
@@ -553,6 +573,26 @@ export class EscurelRunDetail extends LitElement {
                       ></span>
                     </summary>
                     <div class="call-sizes">${row.sizes}</div>
+                    ${
+                      row.args || row.result
+                        ? html`<div class="call-detail">
+                            ${
+                              row.args
+                                ? html`<div class="call-detail-label">Asked</div>
+                                    <pre class="call-detail-text">${row.args}</pre>`
+                                : nothing
+                            }
+                            ${
+                              row.result
+                                ? html`<div class="call-detail-label">
+                                      ${row.failed ? 'Failed with' : 'Got back'}
+                                    </div>
+                                    <pre class="call-detail-text">${row.result}</pre>`
+                                : nothing
+                            }
+                          </div>`
+                        : nothing
+                    }
                   </details>
                 `,
               )
