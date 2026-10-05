@@ -155,6 +155,7 @@ mod sql_view_tools;
 mod sql_write_back;
 mod surface_consolidation;
 mod synchronous_lake_durability;
+mod tool_call_detail;
 mod tool_execution_labels;
 mod tool_label_map;
 mod tool_registry_conformance;

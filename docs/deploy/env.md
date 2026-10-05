@@ -98,6 +98,7 @@ escurel-server.
 | `ESCUREL_SQL_CONNECT_TIMEOUT_SECS` | 5 | libpq `connect_timeout` for a network database source (Postgres), so a black-holed host cannot hold the tenant's index connection for the OS TCP timeout. Whole number of seconds ≥ 1 |
 | `ESCUREL_QUERY_TIMEOUT_MS` | see `escurel_index::DEFAULT_QUERY_TIMEOUT_MS` | per-query wall-clock bound on retrieval queries (#455); `0` disables the bound |
 | `ESCUREL_EVENT_ACL` | off | per-event ACL on the event bus: `off` \\| `log` \\| `enforce` |
+| `ESCUREL_TOOLCALL_DETAIL` | summary | what a run's recorded tool calls keep beyond sizes: `summary` (a bounded, redacted summary of each call's arguments and result, readable only by whoever may read the run) \\| `off` (sizes and timing only). An unrecognised value means `off` |
 | `ESCUREL_AUTONOMY_LINT` | off | write-time lint of a skill page's `autonomy:` value: `off` \\| `log` \\| `enforce` |
 | `ESCUREL_EMIT_EDIT_EVENTS` | false | `1`/`true`: emit an event per page edit (the eager per-edit improvement loop, #246) |
 | `ESCUREL_INGEST_CONTEXTUALIZE` | structural | contextual-retrieval mode of ingested document chunks: `structural` or `off`; `llm` situates chunks with the endpoint below |

@@ -662,6 +662,38 @@ const STAGE_20_RUN_TOOL_CALLS: &str = include_str!("../sql/0019_run_tool_calls.s
 #[cfg(test)]
 mod tests {
     use super::*;
+    // A tenant provisioned before the tool-call summaries existed has `run_tool_calls` WITHOUT the
+    // `args_summary` / `result_summary` columns; the reopen chain must add them in place and keep
+    // the old rows readable.
+    #[test]
+    fn run_tool_calls_gains_its_summary_columns_on_an_existing_table() {
+        let conn = Connection::open_in_memory().expect("open");
+        conn.execute_batch(
+            "CREATE TABLE run_tool_calls (seq BIGINT PRIMARY KEY, run_id VARCHAR NOT NULL, \
+             root_event_id VARCHAR, tool VARCHAR NOT NULL, status VARCHAR NOT NULL, \
+             error_code VARCHAR, duration_ms DOUBLE NOT NULL, request_bytes BIGINT NOT NULL DEFAULT 0, \
+             response_bytes BIGINT NOT NULL DEFAULT 0, subject VARCHAR NOT NULL DEFAULT '', \
+             at_ts TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP); \
+             INSERT INTO run_tool_calls (seq, run_id, tool, status, duration_ms) \
+             VALUES (1, 'r', 'expand', 'ok', 1.0);",
+        )
+        .expect("old table");
+        Migrator::ensure_run_tool_calls(&conn).expect("first ensure");
+        Migrator::ensure_run_tool_calls(&conn).expect("idempotent");
+        conn.execute_batch(
+            "INSERT INTO run_tool_calls (seq, run_id, tool, status, duration_ms, args_summary, \
+             result_summary) VALUES (2, 'r', 'expand', 'ok', 1.0, '{}', '{}');",
+        )
+        .expect("new columns exist");
+        let old: Option<String> = conn
+            .query_row(
+                "SELECT args_summary FROM run_tool_calls WHERE seq = 1",
+                [],
+                |r| r.get(0),
+            )
+            .expect("old row");
+        assert_eq!(old, None);
+    }
 
     // Regression (DataZooDE/escurel): a restart against an EXISTING db is
     // non-fresh, so the server skips `up` and only runs `load_extensions`.
