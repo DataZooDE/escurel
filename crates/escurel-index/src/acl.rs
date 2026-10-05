@@ -452,6 +452,38 @@ impl Indexer {
         if caller.is_admin {
             return Ok(true);
         }
+        // Evolve receipts are lineage-scoped, not page-targeted: the source
+        // page can be deleted or change owner after the user action.
+        // Let only the gateway-stamped capturer of the action read them.
+        if event.kind == crate::EventKind::User
+            && matches!(
+                event.label_skill.as_str(),
+                "evolve_preflight"
+                    | "evolve_prepare_source"
+                    | "evolve_validate"
+                    | "evolve_publish_candidate"
+            )
+        {
+            return Ok(event.provenance["captured_by"].as_str() == Some(caller.subject));
+        }
+        if event.is_private_evolve_event() {
+            let Some(root_id) = event.root_event_id.as_deref() else {
+                return Ok(false);
+            };
+            let Some(root) = self.get_event(root_id).await? else {
+                return Ok(false);
+            };
+            let expected_root = match event.label_skill.as_str() {
+                "evolve:preflight" => "evolve_preflight",
+                "evolve:training-source" => "evolve_prepare_source",
+                "evolve:validation" => "evolve_validate",
+                "evolve:candidate" => "evolve_publish_candidate",
+                _ => "evolve_run",
+            };
+            return Ok(root.kind == crate::EventKind::User
+                && root.label_skill == expected_root
+                && root.provenance["captured_by"].as_str() == Some(caller.subject));
+        }
         // (2) Filed into an instance → that instance's ACL decides. A named
         // page that does not exist falls through rather than deciding on a
         // dangling pointer.

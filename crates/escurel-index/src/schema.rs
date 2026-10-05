@@ -32,7 +32,7 @@ impl Migrator {
     /// artifact manifest and a DuckDB→DuckDB transfer refuses an artifact
     /// whose `SCHEMA_VERSION` differs from the live tenant's (the row shapes
     /// wouldn't line up).
-    pub const SCHEMA_VERSION: u32 = 9;
+    pub const SCHEMA_VERSION: u32 = 10;
 
     /// Load the per-connection extension/session state Escurel relies on:
     /// auto-install/-load plus `INSTALL`+`LOAD` of `vss`+`fts`

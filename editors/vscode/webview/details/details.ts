@@ -88,7 +88,8 @@ export class EscurelDetails extends LitElement {
       m.type !== 'start-skill' &&
       m.type !== 'view-skill' &&
       m.type !== 'run-control' &&
-      m.type !== 'open-link'
+      m.type !== 'open-link' &&
+      m.type !== 'open-wikilink'
     )
       return;
     this.emit({

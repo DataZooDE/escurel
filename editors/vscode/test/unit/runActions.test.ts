@@ -34,14 +34,41 @@ const view = (status: string, admin: 'admin' | 'not-admin' = 'admin') => ({
 
 describe('run detail actions', () => {
   it('loads the root skill and trigger event from recorded run data', async () => {
+    let requestedInclude: string[] | undefined;
     const client = {
       listEvents: async () => events,
-      listLineage: async () => lineage,
+      listLineage: async (request: { include?: string[] }) => {
+        requestedInclude = request.include;
+        return lineage;
+      },
       getRunToolCalls: async () => calls,
     } as unknown as EscurelClient;
     const loaded = await loadRun(client, base.runId);
+    expect(requestedInclude).toContain('events');
     expect(loaded.view.skill).toBe(skill);
     expect((loaded.view as typeof base).triggerEventId).toBe(triggerEventId);
+  });
+
+  it('finds a planned run after the first 500 lineage events', async () => {
+    const cursors: Array<string | undefined> = [];
+    const client = {
+      listEvents: async () => events,
+      listLineage: async (request: { cursor?: string }) => {
+        cursors.push(request.cursor);
+        return request.cursor
+          ? { ...lineage, nodes: lineage.nodes.filter((node) => node.type === 'run') }
+          : { ...lineage, nodes: [
+              ...lineage.nodes.filter((node) => node.type === 'event'),
+              ...Array.from({ length: 500 }, (_, i) => ({
+                id: `older-${i}`, type: 'event', parent: null, state: 'completed',
+              })),
+            ], next_cursor: 'after-500-events' };
+      },
+      getRunToolCalls: async () => calls,
+    } as unknown as EscurelClient;
+    const loaded = await loadRun(client, base.runId);
+    expect(cursors).toEqual([undefined, 'after-500-events']);
+    expect(loaded.view.skill).toBe(skill);
   });
 
   it('uses the recorded dead-letter trigger rather than the run-started row id', async () => {

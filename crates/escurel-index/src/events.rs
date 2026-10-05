@@ -244,6 +244,31 @@ pub struct EventInfo {
     pub run_id: Option<String>,
 }
 
+impl EventInfo {
+    /// Evolve validation clicks and outcomes are private to the requester's event lineage
+    /// even when the general event ACL is still in rollout mode.
+    pub fn is_private_evolve_event(&self) -> bool {
+        (self.kind == EventKind::User
+            && matches!(
+                self.label_skill.as_str(),
+                "evolve_preflight"
+                    | "evolve_prepare_source"
+                    | "evolve_validate"
+                    | "evolve_publish_candidate"
+            ))
+            || (self.kind == EventKind::System
+                && matches!(
+                    self.label_skill.as_str(),
+                    "evolve:admission"
+                        | "evolve:preflight"
+                        | "evolve:training-source"
+                        | "evolve:validation"
+                        | "evolve:candidate"
+                )
+                && self.instance_page_id.is_none())
+    }
+}
+
 /// Hard cap on `limit` for the event list surfaces.
 pub const EVENTS_MAX_LIMIT: usize = 10_000;
 
@@ -320,6 +345,25 @@ impl Indexer {
     /// `INSERT … ON CONFLICT DO NOTHING` + follow-up `SELECT` shape
     /// already avoids it.
     pub async fn capture_event(&self, input: NewEvent) -> Result<EventInfo, IndexerError> {
+        self.capture_event_with_revision(input, None).await
+    }
+
+    /// Capture and attest a new Evolve event in one serialized indexer call.
+    /// A first-writer collision never gains an attestation.
+    pub async fn capture_evolve_event(
+        &self,
+        input: NewEvent,
+        revision_sha256: &str,
+    ) -> Result<EventInfo, IndexerError> {
+        self.capture_event_with_revision(input, Some(revision_sha256))
+            .await
+    }
+
+    async fn capture_event_with_revision(
+        &self,
+        input: NewEvent,
+        revision_sha256: Option<&str>,
+    ) -> Result<EventInfo, IndexerError> {
         let event_id = input
             .event_id
             .clone()
@@ -340,6 +384,14 @@ impl Indexer {
             .unwrap_or_else(|| event_id.clone());
 
         let conn = self.conn.lock().await;
+        if matches!(self.events_backend(), EventsBackend::Local)
+            && self.evolve_revision_column_ready.get().is_none()
+        {
+            conn.execute_batch(
+                "ALTER TABLE events ADD COLUMN IF NOT EXISTS revision_binding_sha256 VARCHAR",
+            )?;
+            let _ = self.evolve_revision_column_ready.set(());
+        }
         let table = self.events_table();
         // DuckLake enforces no PRIMARY KEY and supports no `ON CONFLICT`,
         // so the lake backend cannot lean on the schema for the
@@ -360,9 +412,9 @@ impl Indexer {
             (None, _) => format!(
                 "INSERT INTO {table} \
                  (event_id, at_ts, source, mime, label_skill, instance_page_id, status, title, body, provenance, \
-                  kind, root_event_id, run_id, seq) \
+                  kind, root_event_id, run_id, seq, revision_binding_sha256) \
                  SELECT ?, TRY_CAST(? AS TIMESTAMP), ?, ?, ?, ?, ?, ?, ?, ?::JSON, ?, ?, ?, \
-                        COALESCE((SELECT MAX(seq) FROM {table}), 0) + 1 \
+                        COALESCE((SELECT MAX(seq) FROM {table}), 0) + 1, ? \
                  ON CONFLICT (event_id) DO NOTHING"
             ),
             // `created_at` is written EXPLICITLY here, unlike the local
@@ -378,43 +430,42 @@ impl Indexer {
             (Some(_), false) => format!(
                 "INSERT INTO {table} \
                  (tenant, event_id, at_ts, source, mime, label_skill, instance_page_id, status, title, body, provenance, created_at, \
-                  kind, root_event_id, run_id, seq) \
+                  kind, root_event_id, run_id, seq, revision_binding_sha256) \
                  SELECT ?, ?, TRY_CAST(? AS TIMESTAMP), ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP::TIMESTAMP, ?, ?, ?, \
-                        COALESCE((SELECT MAX(seq) FROM {table} WHERE tenant = ?), 0) + 1 \
+                        COALESCE((SELECT MAX(seq) FROM {table} WHERE tenant = ?), 0) + 1, ? \
                  ON CONFLICT (tenant, event_id) DO NOTHING"
             ),
             (Some(_), true) => format!(
                 "INSERT INTO {table} \
                  (tenant, event_id, at_ts, source, mime, label_skill, instance_page_id, status, title, body, provenance, \
-                  kind, root_event_id, run_id, seq) \
+                  kind, root_event_id, run_id, seq, revision_binding_sha256) \
                  SELECT ?, ?, TRY_CAST(? AS TIMESTAMP), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, \
-                        COALESCE((SELECT MAX(seq) FROM {table} WHERE tenant = ?), 0) + 1 \
+                        COALESCE((SELECT MAX(seq) FROM {table} WHERE tenant = ?), 0) + 1, ? \
                  WHERE NOT EXISTS (\
                      SELECT 1 FROM {table} WHERE tenant = ? AND event_id = ?\
                  )"
             ),
         };
-        match self.events_tenant_scope() {
-            None => {
-                conn.execute(
-                    &sql,
-                    params![
-                        event_id,
-                        input.at,
-                        input.source,
-                        input.mime,
-                        input.label_skill,
-                        input.instance_page_id,
-                        status,
-                        input.title,
-                        input.body,
-                        provenance_json,
-                        kind,
-                        root_event_id,
-                        input.run_id,
-                    ],
-                )?;
-            }
+        let inserted = match self.events_tenant_scope() {
+            None => conn.execute(
+                &sql,
+                params![
+                    event_id,
+                    input.at,
+                    input.source,
+                    input.mime,
+                    input.label_skill,
+                    input.instance_page_id,
+                    status,
+                    input.title,
+                    input.body,
+                    provenance_json,
+                    kind,
+                    root_event_id,
+                    input.run_id,
+                    revision_sha256,
+                ],
+            )?,
             Some(tenant) if lake => {
                 // Two extra binds for the anti-join's WHERE NOT EXISTS.
                 conn.execute(
@@ -436,10 +487,11 @@ impl Indexer {
                         input.run_id,
                         // `MAX(seq) WHERE tenant = ?` — the next position.
                         tenant,
+                        revision_sha256,
                         tenant,
                         event_id,
                     ],
-                )?;
+                )?
             }
             Some(tenant) => {
                 conn.execute(
@@ -461,10 +513,12 @@ impl Indexer {
                         input.run_id,
                         // `MAX(seq) WHERE tenant = ?` — the next position.
                         tenant,
+                        revision_sha256,
                     ],
-                )?;
+                )?
             }
-        }
+        };
+        let _ = inserted; // first-writer collisions preserve the stored proof
 
         // Read the *stored* row back so a conflicting re-capture returns the
         // authoritative first-writer event (not the discarded second input),
@@ -487,6 +541,41 @@ impl Indexer {
         }
         .map_err(IndexerError::from)?;
         event_from_row(row)
+    }
+
+    /// Server-owned attestation for events captured after this gateway
+    /// revision. Historical provenance can never create one retroactively.
+    pub async fn evolve_revision_attested(
+        &self,
+        event_id: &str,
+        sha256: &str,
+    ) -> Result<bool, IndexerError> {
+        let conn = self.conn.lock().await;
+        if matches!(self.events_backend(), EventsBackend::Local)
+            && self.evolve_revision_column_ready.get().is_none()
+        {
+            conn.execute_batch(
+                "ALTER TABLE events ADD COLUMN IF NOT EXISTS revision_binding_sha256 VARCHAR",
+            )?;
+            let _ = self.evolve_revision_column_ready.set(());
+        }
+        let table = self.events_table();
+        let tenant = self.events_tenant_scope();
+        let sql = if tenant.is_some() {
+            format!(
+                "SELECT EXISTS (SELECT 1 FROM {table} WHERE tenant = ? AND event_id = ? AND revision_binding_sha256 = ?)"
+            )
+        } else {
+            format!(
+                "SELECT EXISTS (SELECT 1 FROM {table} WHERE event_id = ? AND revision_binding_sha256 = ?)"
+            )
+        };
+        Ok(match tenant {
+            Some(tenant) => {
+                conn.query_row(&sql, params![tenant, event_id, sha256], |row| row.get(0))?
+            }
+            None => conn.query_row(&sql, params![event_id, sha256], |row| row.get(0))?,
+        })
     }
 
     /// Unprocessed `user` events (the inbox), newest first. System rows

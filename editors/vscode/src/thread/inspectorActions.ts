@@ -102,7 +102,10 @@ export function buildNodeActions(
       return undefined;
     }
 
-    const actions: ActionView[] = skillActionViews(skill.actions);
+    // Validation requires the displayed experiment revision and winner;
+    // the thread inspector does not hold either verified page snapshot.
+    const actions: ActionView[] = skillActionViews(skill.actions)
+      .filter((action) => !['evolve_validate', 'evolve_publish_candidate'].includes(action.skill));
     if (actions.length === 0) return undefined;
 
     return {
@@ -177,7 +180,8 @@ export function resolveThreadAction(
     if (!offersSkill && ctx.skills && message.pageId) {
       const pageSkillName = skillFromPageId(message.pageId);
       const pageSkill = ctx.skills.find((s) => s.id === pageSkillName);
-      if (skillActionViews(pageSkill?.actions).some((a) => a.skill === message.skill)) {
+      if (message.skill !== 'evolve_validate' && message.skill !== 'evolve_publish_candidate'
+          && skillActionViews(pageSkill?.actions).some((a) => a.skill === message.skill)) {
         offersSkill = true;
       }
     }

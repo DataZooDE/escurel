@@ -252,6 +252,8 @@ export interface Event {
   kind: 'user' | 'system' | string;
   root_event_id: string | null;
   run_id: string | null;
+  /** Server-owned Evolve revision attestation; absent on older gateways. */
+  revision_binding_attested?: boolean;
 }
 
 export interface ListEventsRequest {

@@ -50,6 +50,84 @@ fn gmail_event() -> NewEvent {
 }
 
 #[tokio::test]
+async fn preupgrade_evolve_event_cannot_gain_attestation_on_replay() {
+    let h = fresh_harness();
+    let revision = "a".repeat(64);
+    let old = NewEvent {
+        event_id: Some("old-evolve-approval".into()),
+        label_skill: "evolve_run".into(),
+        provenance: Some(serde_json::json!({"manual": {
+            "target_page_sha256": revision,
+            "target_page_sha256_gateway_verified": true
+        }})),
+        ..Default::default()
+    };
+    h.indexer.capture_event(old.clone()).await.unwrap();
+    assert!(
+        !h.indexer
+            .evolve_revision_attested("old-evolve-approval", &revision)
+            .await
+            .unwrap()
+    );
+    h.indexer
+        .capture_evolve_event(old, &revision)
+        .await
+        .unwrap();
+    assert!(
+        !h.indexer
+            .evolve_revision_attested("old-evolve-approval", &revision)
+            .await
+            .unwrap()
+    );
+
+    let fresh = NewEvent {
+        event_id: Some("new-evolve-approval".into()),
+        label_skill: "evolve_run".into(),
+        ..Default::default()
+    };
+    h.indexer
+        .capture_evolve_event(fresh, &revision)
+        .await
+        .unwrap();
+    assert!(
+        h.indexer
+            .evolve_revision_attested("new-evolve-approval", &revision)
+            .await
+            .unwrap()
+    );
+    assert!(
+        !h.indexer
+            .evolve_revision_attested("new-evolve-approval", &"b".repeat(64))
+            .await
+            .unwrap()
+    );
+    let duckdb_path = h._db_dir.path().join("escurel.duckdb");
+    drop(h.indexer);
+    let conn = Connection::open(&duckdb_path).unwrap();
+    Migrator::load_extensions(&conn).unwrap();
+    Migrator::enable_hnsw_persistence(&conn).unwrap();
+    let reopened = Indexer::new(
+        Arc::new(FsStore::new(h._store_dir.path().to_path_buf())),
+        Arc::new(ZeroEmbedder::default()),
+        conn,
+        TENANT,
+    )
+    .unwrap();
+    assert!(
+        reopened
+            .evolve_revision_attested("new-evolve-approval", &revision)
+            .await
+            .unwrap()
+    );
+    assert!(
+        !reopened
+            .evolve_revision_attested("old-evolve-approval", &revision)
+            .await
+            .unwrap()
+    );
+}
+
+#[tokio::test]
 async fn capture_with_explicit_event_id_is_idempotent() {
     // The dynamic-workflows keystone (§3.6): a reducer that re-runs (or two
     // reduce passes racing) emits the *same* content-addressed step id. So

@@ -3,6 +3,7 @@ import * as vscode from 'vscode';
 /** The settings the extension reads (SPEC §1: one gateway, one tenant). */
 export interface EscurelConfig {
   gatewayUrl: string;
+  evolveEndpoint: string;
   auth: { issuer: string; clientId: string; scopes: string[] };
   shellHarness: string;
   harness: string;
@@ -12,6 +13,7 @@ export function readConfig(): EscurelConfig {
   const c = vscode.workspace.getConfiguration('escurel');
   return {
     gatewayUrl: (c.get<string>('gatewayUrl') ?? '').replace(/\/+$/, ''),
+    evolveEndpoint: (c.get<string>('evolveEndpoint') ?? '').replace(/\/+$/, ''),
     auth: {
       issuer: c.get<string>('auth.issuer') ?? '',
       clientId: c.get<string>('auth.clientId') ?? '',

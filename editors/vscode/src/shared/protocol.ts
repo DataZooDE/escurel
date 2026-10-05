@@ -46,6 +46,8 @@ export interface ThreadStrip {
 
 export interface PageModel {
   pageId: string;
+  /** Stored bytes displayed by this page view. Used for revision-bound actions. */
+  contentSha256?: string;
   title: string;
   skill: {
     id: string;
@@ -336,6 +338,7 @@ export type ThreadHostToWebview =
 
 export type ThreadWebviewToHost =
   | { type: 'ready' }
+  | { type: 'open-wikilink'; wikilink: string }
   | { type: 'open-node'; nodeId: string }
   | { type: 'select-node'; nodeId: string }
   | { type: 'promote'; changesetId?: string; draftId?: string }
@@ -356,7 +359,7 @@ export type ThreadWebviewToHost =
 /** The inspector actions a details view may send; everything else a thread offers stays on the canvas. */
 export type DetailsAction = Extract<
   ThreadWebviewToHost,
-  { type: 'start-skill' | 'view-skill' | 'run-control' | 'open-link' }
+  { type: 'start-skill' | 'view-skill' | 'run-control' | 'open-link' | 'open-wikilink' }
 >;
 
 /** What the details view shows: one node of one open thread. */

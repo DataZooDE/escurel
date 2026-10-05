@@ -2,11 +2,13 @@ import * as vscode from 'vscode';
 import { EscurelError, type EscurelClient } from '../client';
 import { readConfig } from '../config';
 import { describeError } from '../errors';
+import { readPageMarkdown } from '../fs/read';
 import { inFlight } from '../runs/controlWait';
 import { loadRun, type LoadedRun } from '../runs/loadRun';
 import { cleanText } from '../shared/untrustedText';
 import type { Services } from '../services';
 import { buildApprovalEvent } from './startEvent';
+import { evolveApprovalSummary } from '../evolve/approvalSummary';
 
 export interface ApprovePlanArgs {
   runId: string;
@@ -63,7 +65,7 @@ export type ApprovalOutcome =
   | { kind: 'declined' };
 
 export interface ApprovalDeps {
-  confirm: (message: string) => Promise<boolean>;
+  confirm: (message: string, action?: string) => Promise<boolean>;
   harness: string;
 }
 
@@ -78,35 +80,62 @@ export async function approvePlanRun(
   deps: ApprovalDeps,
 ): Promise<ApprovalOutcome> {
   const loaded = await loadRun(client, runId);
+  const subject = await resolveApprovalSubject(client, runId, loaded);
+  const eventReq = buildApprovalEvent({
+    skill: subject.skill,
+    pageId: subject.pageId,
+    planRunId: runId,
+    harness: deps.harness,
+  });
+  if (subject.skill === 'evolve_run') {
+    if (!eventReq.event_id) throw new Error('The Evolve approval has no retry key.');
+    const prior = await existingEvolveApproval(client, eventReq.event_id, subject.pageId, runId);
+    if (prior) return { kind: 'approved', eventId: prior };
+  }
   if (loaded.view.status !== 'planned') {
     return { kind: 'not-planned', status: loaded.view.status };
   }
-  const subject = await resolveApprovalSubject(client, runId, loaded);
-  const where = subject.pageId ? ` on ${cleanText(subject.pageId, 120)}` : '';
-  const ok = await deps.confirm(
-    `Approve the plan and run ${cleanText(subject.skill, 80)}${where}? Run ${cleanText(runId, 40)}. This starts the skill for real.`,
-  );
+  let ok: boolean;
+  if (subject.skill === 'evolve_run') {
+    const { rootEventId, view } = loaded;
+    if (!rootEventId || view.plan.length === 0) {
+      throw new Error('The Evolve plan has no reviewable steps. Make a new plan.');
+    }
+    if (!view.harness || view.harness === 'echo') {
+      throw new Error('Echo or unlabelled plans cannot authorize Evolve search. Configure a planning harness and make a new plan.');
+    }
+    const frozen = await evolveApprovalRevision(client, rootEventId, subject.pageId);
+    const page = await readPageMarkdown(client, subject.pageId);
+    if (!page || page.sha256 !== frozen || page.degraded) {
+      throw new Error('The Evolve problem changed during approval. Review it and make a new plan.');
+    }
+    ok = await deps.confirm(evolveApprovalSummary(frozen, page.frontmatter.search_request,
+      { harness: view.harness, steps: view.plan }), 'Approve search');
+    if (ok) {
+      const provenance = eventReq.provenance as Record<string, unknown>;
+      const manual = provenance.manual as Record<string, unknown>;
+      manual.harness = view.harness;
+      manual.expected_page_sha256 = frozen;
+    }
+  } else {
+    const where = subject.pageId ? ` on ${cleanText(subject.pageId, 120)}` : '';
+    ok = await deps.confirm(
+      `Approve the plan and run ${cleanText(subject.skill, 80)}${where}? Run ${cleanText(runId, 40)}. This starts the skill for real.`,
+    );
+  }
   if (!ok) return { kind: 'declined' };
-  const captured = await client.captureEvent(
-    buildApprovalEvent({
-      skill: subject.skill,
-      pageId: subject.pageId,
-      planRunId: runId,
-      harness: deps.harness,
-    }),
-  );
+  const captured = await client.captureEvent(eventReq);
   return { kind: 'approved', eventId: captured.event_id };
 }
 
 /** Asks in a modal; a test replaces it through the extension API (a modal blocks a headless window). */
-let confirmApproval = async (message: string): Promise<boolean> =>
-  (await vscode.window.showWarningMessage(message, { modal: true }, 'Approve and run')) ===
-  'Approve and run';
+let confirmApproval = async (message: string, action = 'Approve and run'): Promise<boolean> =>
+  (await vscode.window.showWarningMessage(message, { modal: true }, action)) === action;
 
 /** Test seam: swap the confirmation; returns the previous one. */
 export function setApprovalConfirm(
-  fn: (message: string) => Promise<boolean>,
-): (message: string) => Promise<boolean> {
+  fn: (message: string, action?: string) => Promise<boolean>,
+): (message: string, action?: string) => Promise<boolean> {
   const prev = confirmApproval;
   confirmApproval = fn;
   return prev;
@@ -117,6 +146,52 @@ function formatApprovalError(err: unknown): string {
     return 'You are not allowed to start this skill here.';
   }
   return describeError(err);
+}
+
+/** The approval may spend only against the bytes captured when this plan began. */
+export async function evolveApprovalRevision(
+  client: EscurelClient,
+  rootEventId: string,
+  pageId: string,
+): Promise<string> {
+  if (!rootEventId) throw new Error('The Evolve plan has no initiating event. Make a new plan.');
+  const root = (await client.listEvents({ event_id: rootEventId })).events[0];
+  const manual = root?.provenance?.manual;
+  const plan = typeof manual === 'object' && manual !== null
+    ? (manual as Record<string, unknown>) : undefined;
+  const frozen = plan?.target_page_sha256;
+  if (root?.kind !== 'user' || root.label_skill !== 'evolve_run' ||
+      root.instance_page_id !== pageId || plan?.mode !== 'plan' ||
+      root.revision_binding_attested !== true ||
+      typeof frozen !== 'string' || !/^[0-9a-f]{64}$/.test(frozen)) {
+    throw new Error('The Evolve plan is not bound to this problem revision. Make a new plan.');
+  }
+  const page = await readPageMarkdown(client, pageId);
+  if (page?.skill !== 'evolve_problem' || page.sha256 !== frozen || page.degraded) {
+    throw new Error('The Evolve problem changed after planning. Review it and make a new plan.');
+  }
+  return frozen;
+}
+
+/** Recover a previously accepted approval before considering a new page revision. */
+export async function existingEvolveApproval(
+  client: EscurelClient,
+  eventId: string,
+  pageId: string,
+  planRunId: string,
+): Promise<string | undefined> {
+  const prior = (await client.listEvents({ event_id: eventId })).events[0];
+  const manual = prior?.provenance?.manual;
+  if (prior?.kind === 'user' && prior.label_skill === 'evolve_run' &&
+      prior.instance_page_id === pageId &&
+      typeof manual === 'object' && manual !== null &&
+      (manual as Record<string, unknown>).approved_plan_run_id === planRunId) {
+    if (prior.revision_binding_attested !== true) {
+      throw new Error('This approval predates gateway revision attestation. Make a new plan.');
+    }
+    return prior.event_id;
+  }
+  return undefined;
 }
 
 /**
@@ -142,7 +217,7 @@ export function registerApprovePlan(
         // One approval per plan run at a time: a double click must not ask twice or approve twice.
         await once(req.runId, async () => {
           const outcome = await approvePlanRun(services.client, req.runId!, {
-            confirm: (m) => confirmApproval(m),
+            confirm: (m, action) => confirmApproval(m, action),
             harness: readConfig().harness,
           });
           if (outcome.kind === 'not-planned') {

@@ -62,6 +62,10 @@ mkdir -p "$HOME_DIR/workspace" "$HOME_DIR/profile/User" "$HOME_DIR/ext"
 # resolves a relative glob against the server's cwd, so its skill page must carry an absolute path.
 cp -r "$HERE/seed" "$HOME_DIR/seed"
 sed -i "s|@ORDER_LINES_DIR@|$HERE/sources/order-lines|" "$HOME_DIR/seed/skills/order-lines.md"
+if [ "${ESCUREL_DEMO_EVOLVE_SEED:-0}" = "1" ]; then
+  cp "$EXT"/test/integration/seed/skills/evolve_*.md "$HOME_DIR/seed/skills/"
+  cp "$EXT"/test/integration/seed/skills/plan_policy.md "$HOME_DIR/seed/skills/"
+fi
 # The orders and the suppliers are `instances: rows` sql_views over SAP-shaped extracts (VBAK, LFA1):
 # one instance per row, no materialise step (the view is created on first read).
 sed -i "s|@VBAK_DIR@|$HERE/sources/vbak|" "$HOME_DIR/seed/skills/customer-order.md"
@@ -109,21 +113,34 @@ PORT="$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); p
 
 # The runner, MINTED mode: it signs a token per run, which is what lets the gateway tell which run
 # wrote what, so the thread shows a changeset under its run.
-env -u ESCUREL_RUNNER_TOKEN \
-  ESCUREL_RUNNER_GATEWAY_URL="$(field gateway_url)" ESCUREL_RUNNER_TENANT="$(field tenant)" \
-  ESCUREL_RUNNER_AUTH_ISSUER="$(field issuer_url)" ESCUREL_RUNNER_AUTH_KID="$(field kid)" \
-  ESCUREL_RUNNER_AUTH_SIGNING_KEY="$(field signing_key)" ESCUREL_RUNNER_HARNESS=echo \
-  ESCUREL_RUNNER_LISTEN="127.0.0.1:$PORT" ESCUREL_RUNNER_LEDGER_PATH="$HOME_DIR/ledger.duckdb" \
-  ESCUREL_RUNNER_POLL_INTERVAL=250ms \
-  setsid nohup "$RUNNER_BIN" > "$HOME_DIR/runner.log" 2>&1 < /dev/null &
-echo $! > "$HOME_DIR/runner.pid"
+start_runner() {
+  env -u ESCUREL_RUNNER_TOKEN \
+    ESCUREL_RUNNER_GATEWAY_URL="$(field gateway_url)" ESCUREL_RUNNER_TENANT="$(field tenant)" \
+    ESCUREL_RUNNER_AUTH_ISSUER="$(field issuer_url)" ESCUREL_RUNNER_AUTH_KID="$(field kid)" \
+    ESCUREL_RUNNER_AUTH_SIGNING_KEY="$(field signing_key)" ESCUREL_RUNNER_HARNESS="$1" \
+    ESCUREL_RUNNER_LISTEN="127.0.0.1:$PORT" ESCUREL_RUNNER_LEDGER_PATH="$HOME_DIR/ledger.duckdb" \
+    ESCUREL_RUNNER_POLL_INTERVAL=250ms \
+    setsid nohup "$RUNNER_BIN" > "$HOME_DIR/runner.log" 2>&1 < /dev/null &
+  echo $! > "$HOME_DIR/runner.pid"
+}
+start_runner echo
 
 echo "playing the story (a few seconds)..."
 node "$HERE/driver.mjs" "$HOME_DIR/gateway.json" "$HOME_DIR/bearer.json" > "$HOME_DIR/story.json"
+if [ "${ESCUREL_DEMO_RUNNER_HARNESS:-echo}" != echo ]; then
+  kill "$(cat "$HOME_DIR/runner.pid")"
+  for _ in $(seq 1 100); do
+    kill -0 "$(cat "$HOME_DIR/runner.pid")" 2>/dev/null || break
+    sleep 0.1
+  done
+  PORT="$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1])')"
+  start_runner "$ESCUREL_DEMO_RUNNER_HARNESS"
+fi
 
 cat > "$HOME_DIR/profile/User/settings.json" <<JSON
 {
   "escurel.gatewayUrl": "$(field gateway_url)",
+  "escurel.evolveEndpoint": "${ESCUREL_DEMO_EVOLVE_ENDPOINT:-}",
   "security.workspace.trust.enabled": false,
   "workbench.startupEditor": "none",
   "workbench.tips.enabled": false,
@@ -133,6 +150,7 @@ cat > "$HOME_DIR/profile/User/settings.json" <<JSON
   "extensions.autoUpdate": false,
   "window.restoreWindows": "none",
   "window.zoomLevel": ${ESCUREL_DEMO_ZOOM:-1},
+  "window.dialogStyle": "${ESCUREL_DEMO_DIALOG_STYLE:-native}",
   "chat.disableAIFeatures": true,
   "workbench.secondarySideBar.defaultVisibility": "visible",
   "workbench.layoutControl.enabled": false,

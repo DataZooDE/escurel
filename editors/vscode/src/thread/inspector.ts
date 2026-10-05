@@ -92,6 +92,13 @@ function eventDetail(
   const counts = eventCounts(node, byId);
   return {
     title: node.title,
+    ...((raw.label_skill === 'evolve:validation' || raw.label_skill === 'evolve:admission'
+      || raw.label_skill === 'evolve:candidate')
+      && stringAttr(raw, 'body')
+      ? { bodyTitle: raw.label_skill === 'evolve:validation'
+        ? 'Validation evidence' : raw.label_skill === 'evolve:admission'
+          ? 'Experiment admission' : 'Inactive policy candidate', body: stringAttr(raw, 'body') }
+      : {}),
     kindLabel: 'Signal',
     ...summaryFields({ kind: 'event', state: value(raw.state), runs: counts.runs }),
     rows: rows(

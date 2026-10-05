@@ -123,7 +123,8 @@ export class RunController implements vscode.Disposable {
         next.controls = visibleRunControls({
           ...next,
           controls: runControls(next.status, await this.services.admin.get()),
-        });
+        }).map((control) => control.action === 'approve' && next.skill === 'evolve_run'
+          ? { ...control, label: 'Review search limits' } : control);
         if (disposed || mine !== loadSeq) return;
         view = next;
         this.views.set(runId, next);

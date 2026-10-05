@@ -35,10 +35,29 @@ export function buildPageModel(
   const summary = typeof fm.summary === 'string' ? fm.summary : undefined;
   const autonomy =
     skill.autonomy === 'auto' || skill.autonomy === 'confirm' ? skill.autonomy : 'review';
-  const actions: ActionView[] = skillActionViews(skill.actions);
+  const actions: ActionView[] = skillActionViews(skill.actions).filter((action) => {
+    if (action.skill === 'evolve_validate') {
+      return fm.next_validation_action === 'evolve_validate_winner'
+        && (fm.status === 'completed' || fm.status === 'finished')
+        && typeof fm.best_program_id === 'number'
+        && Number.isSafeInteger(fm.best_program_id)
+        && !!e.content_sha256;
+    }
+    if (action.skill === 'evolve_publish_candidate') {
+      return fm.next_candidate_action === 'evolve_publish_candidate'
+        && fm.status === 'passed' && fm.effective_passed === true
+        && typeof fm.winner_program_id === 'number'
+        && Number.isSafeInteger(fm.winner_program_id)
+        && typeof fm.report_sha256 === 'string'
+        && /^[a-f0-9]{64}$/i.test(fm.report_sha256)
+        && !!e.content_sha256;
+    }
+    return true;
+  });
   const source = rowSourceOf(e.backend_projection);
   return {
     pageId: e.page?.page_id ?? '',
+    contentSha256: e.content_sha256,
     title,
     skill: {
       id: skill.id,

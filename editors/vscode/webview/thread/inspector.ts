@@ -11,6 +11,7 @@ import type {
 } from '../../src/shared/protocol';
 import { middleTruncate } from '../../src/shared/middleTruncate';
 import { START_ITEMS } from '../shared/skill-button';
+import { renderMarkdown } from '../shared/markdown-view';
 import '../shared/skill-button';
 import { splitButton, theme } from '../shared/theme.css';
 import { confirmRow, confirmStyles } from '../shared/confirm';
@@ -369,6 +370,18 @@ export class EscurelThreadInspector extends LitElement {
     return html`
       ${detail.kindLabel ? html`<span class="kind">${detail.kindLabel}</span>` : nothing}
       <h2>${detail.title}</h2>
+      ${
+        detail.body
+          ? html`<section>
+              <h3>${detail.bodyTitle}</h3>
+              <div
+                class="body"
+                @escurel-wikilink=${(event: CustomEvent<string>) =>
+                  this.send({ type: 'open-wikilink', wikilink: event.detail })}
+              >${renderMarkdown(detail.body)}</div>
+            </section>`
+          : nothing
+      }
       ${
         detail.summary
           ? html`<p class="summary ${detail.needsYou ? 'needs-you' : ''}">

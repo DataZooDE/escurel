@@ -32,6 +32,11 @@ import { registerApprovePlan, setApprovalConfirm } from './start/approvePlan';
 import { registerNodeCommands } from './commands/nodeCommands';
 import { explainText } from './shared/explain';
 import { registerRunnerView, type RunnerTree } from './views/runner';
+import { registerImportEvolveProblem } from './evolve/importProblem';
+import { registerPrepareEvolveTrainingSource } from './evolve/prepareSource';
+import { registerEvolveHoldout } from './evolve/registerHoldout';
+import { registerEvolveHoldoutCsv } from './evolve/registerHoldoutCsv';
+import { registerPrepareEvolveTrainingCsv } from './evolve/prepareCsv';
 
 const EXPLAIN_SCHEME = 'escurel-explain';
 
@@ -64,6 +69,11 @@ export function activate(context: vscode.ExtensionContext): EscurelApi | undefin
   registerNodeCommands(context, services);
   context.subscriptions.push(services);
   registerStartInTerminal(context, services);
+  registerImportEvolveProblem(context, services);
+  registerPrepareEvolveTrainingSource(context, services);
+  registerPrepareEvolveTrainingCsv(context, services);
+  registerEvolveHoldout(context, services);
+  registerEvolveHoldoutCsv(context, services);
   registerOpenOriginal(context, services);
   registerSkillDiagnostics(context, () => services.client);
   WikilinkProvider.register(context);

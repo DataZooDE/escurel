@@ -4,21 +4,24 @@ import * as vscode from 'vscode';
 import { EscurelError } from '../client';
 import { readConfig } from '../config';
 import { describeError } from '../errors';
+import { readPageMarkdown } from '../fs/read';
 import { pageSlug } from '../shared/pageId';
 import type { StartMode } from '../shared/protocol';
 import type { Services } from '../services';
 import { pickTarget } from './pickTarget';
 import { watchPlan } from './planWatch';
-import { buildStartEvent } from './startEvent';
+import { bindCandidateSelection, bindValidationSelection, buildStartEvent } from './startEvent';
+import { preflightRequest, waitForPreflight } from '../evolve/preflight';
 
 export interface StartSkillParams {
   skill?: string;
   pageId?: string;
   mode?: StartMode;
+  expectedPageSha256?: string;
 }
 
 export type StartSkillInput =
-  | { skill: string; pageId: string; mode: StartMode }
+  | { skill: string; pageId: string; mode: StartMode; expectedPageSha256?: string }
   | { kind: 'skill'; skill: { id: string } }
   | { kind: 'instance'; pageId: string; skill?: string }
   | StartSkillParams
@@ -82,11 +85,14 @@ export function parseStartSkillInput(arg: unknown): StartSkillParams {
     typeof obj.mode === 'string' && ['background', 'plan', 'terminal'].includes(obj.mode)
       ? (obj.mode as StartMode)
       : undefined;
+  const expectedPageSha256 = typeof obj.expectedPageSha256 === 'string'
+    ? obj.expectedPageSha256 : undefined;
 
   return {
     skill: skill ?? (pageId ? skillFromPageId(pageId) : undefined),
     pageId,
     mode,
+    expectedPageSha256,
   };
 }
 
@@ -171,6 +177,7 @@ export function registerStartSkill(
       let skill = parsed.skill;
       let pageId = parsed.pageId;
       let mode = parsed.mode;
+      const reviewedPageSha256 = parsed.expectedPageSha256;
 
       const client = services.client;
 
@@ -212,8 +219,28 @@ export function registerStartSkill(
       }
 
       // 3. Ask for mode if missing
+      if (skill === 'evolve_run' && mode && mode !== 'plan') {
+        void vscode.window.showErrorMessage(
+          'Evolve requires a reviewed plan. Choose “Make a plan first”, then approve the completed plan.',
+        );
+        return;
+      }
+      if ((skill === 'evolve_validate' || skill === 'evolve_publish_candidate') && mode && mode !== 'background') {
+        void vscode.window.showErrorMessage('This Evolve review action runs in the background after the evidence is reviewed.');
+        return;
+      }
       if (!mode) {
-        const modeItems: ModeQuickPickItem[] = [
+        const modeItems: ModeQuickPickItem[] = skill === 'evolve_publish_candidate'
+          ? [{ label: 'Create policy candidate', description: 'Confirm publication of an inactive candidate', mode: 'background' }]
+          : skill === 'evolve_validate'
+          ? [{ label: 'Validate winner', description: 'Run one operator-attested finite-horizon replay', mode: 'background' }]
+          : skill === 'evolve_run'
+          ? [{
+              label: 'Make a plan first',
+              description: 'Review the exact problem revision before approving a search',
+              mode: 'plan',
+            }]
+          : [
           {
             label: 'Start in background',
             description: 'Run the skill with an agent',
@@ -262,6 +289,95 @@ export function registerStartSkill(
 
       // 5. Capture event and open thread
       try {
+        if (action.event.label_skill === 'evolve_run') {
+          const page = await readPageMarkdown(client, pageId);
+          if (page?.skill !== 'evolve_problem' || !page.sha256 || page.degraded) {
+            throw new Error('The Evolve problem page is unavailable or has no verified revision.');
+          }
+          if (!reviewedPageSha256) {
+            throw new Error('Open the Evolve problem page and review its current revision before starting.');
+          }
+          if (page.sha256 !== reviewedPageSha256) {
+            throw new Error('The Evolve problem changed since it was displayed. Refresh the page and review it again.');
+          }
+          const provenance = action.event.provenance as Record<string, unknown>;
+          const manual = provenance.manual as Record<string, unknown>;
+          manual.expected_page_sha256 = reviewedPageSha256;
+          const check = await client.captureEvent(preflightRequest(pageId, reviewedPageSha256));
+          const result = await vscode.window.withProgress({
+            location: vscode.ProgressLocation.Notification,
+            title: 'Checking Evolve problem and private holdout binding',
+            cancellable: true,
+          }, async (_progress, token) => waitForPreflight({
+            rootEventId: check.event_id,
+            pageSha256: reviewedPageSha256,
+            isCancelled: () => token.isCancellationRequested,
+            listEvents: () => client.listEvents({
+              root_event_id: check.event_id,
+              label_skill: 'evolve:preflight',
+              include_system: true,
+            }),
+          }));
+          if (!result.ready) {
+            await vscode.commands.executeCommand('escurel.openThread', check.event_id);
+            throw new Error(`Evolve problem preflight found issues: ${result.issue} Re-import a corrected training spec, then review the new page revision.`);
+          }
+          if (result.holdoutContract) {
+            const reviewed = await vscode.window.showInformationMessage(
+              `Review the frozen private holdout contract before planning:\n${result.holdoutContract}\n\n`
+              + 'Structural and binding checks passed. Baseline, seed, and provider readiness are checked during durable search.',
+              { modal: true }, 'Review experiment plan',
+            );
+            if (reviewed !== 'Review experiment plan') return;
+          } else {
+            void vscode.window.showInformationMessage(
+              'Structural and holdout-binding checks passed. Baseline, seed, and provider readiness are checked during the durable search; this is ready for plan review.',
+            );
+          }
+        }
+        if (action.event.label_skill === 'evolve_validate') {
+          const page = await readPageMarkdown(client, pageId);
+          if (page?.skill !== 'evolve_experiment' || !page.sha256 || page.degraded
+              || !reviewedPageSha256 || page.sha256 !== reviewedPageSha256) {
+            throw new Error('The experiment changed since it was displayed. Refresh and review its winner.');
+          }
+          const winner = page.frontmatter.best_program_id;
+          if (page.frontmatter.next_validation_action !== 'evolve_validate_winner'
+              || !Number.isSafeInteger(winner) || typeof winner !== 'number') {
+            throw new Error('This experiment has no winner ready for the declared holdout replay.');
+          }
+          action.event = bindValidationSelection(action.event, reviewedPageSha256, winner);
+        }
+        if (action.event.label_skill === 'evolve_publish_candidate') {
+          const page = await readPageMarkdown(client, pageId);
+          if (page?.skill !== 'evolve_validation_report' || !page.sha256 || page.degraded
+              || !reviewedPageSha256 || page.sha256 !== reviewedPageSha256) {
+            throw new Error('The validation report changed since it was displayed. Refresh and review it again.');
+          }
+          const winner = page.frontmatter.winner_program_id;
+          const reportHash = page.frontmatter.report_sha256;
+          if (page.frontmatter.next_candidate_action !== 'evolve_publish_candidate'
+              || page.frontmatter.effective_passed !== true || page.frontmatter.status !== 'passed'
+              || !Number.isSafeInteger(winner) || typeof winner !== 'number'
+              || typeof reportHash !== 'string' || !/^[a-f0-9]{64}$/i.test(reportHash)) {
+            throw new Error('This report does not support candidate publication.');
+          }
+          const sandboxWarning = page.frontmatter.candidate_use === 'sandbox_demo_only'
+            ? ' This disclosed synthetic candidate is for sandbox use only and must never be activated as an operational policy.'
+            : '';
+          const confirmed = await vscode.window.showWarningMessage(
+            `Create an inactive policy candidate for winner ${winner} from this exact report? This does not activate a policy.${sandboxWarning}`,
+            { modal: true },
+            'Create candidate',
+          );
+          if (confirmed !== 'Create candidate') return;
+          const note = await vscode.window.showInputBox({
+            prompt: 'Optional reviewer note for the candidate page',
+            validateInput: (value) => value.length > 1000 ? 'Keep the note under 1000 characters.' : undefined,
+          });
+          if (note === undefined) return;
+          action.event = bindCandidateSelection(action.event, reviewedPageSha256, winner, reportHash, note);
+        }
         const event = await client.captureEvent(action.event);
         await vscode.commands.executeCommand('escurel.openThread', event.event_id);
 
@@ -297,12 +413,13 @@ export function registerStartSkill(
             });
 
             if (res.state === 'planned') {
+              const approveChoice = startedSkill === 'evolve_run' ? 'Review search limits' : 'Approve plan';
               const choice = await vscode.window.showInformationMessage(
                 planReadyMessage(startedSkill, startedPage),
-                'Approve plan',
+                approveChoice,
                 'Open thread',
               );
-              if (choice === 'Approve plan') {
+              if (choice === approveChoice) {
                 await vscode.commands.executeCommand('escurel.approvePlan', {
                   runId: res.runId,
                   skill,
