@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { ToolCallRow } from '../../src/shared/protocol';
-import { callDuration, formatBytes, traceTimeline } from '../../src/shared/trace';
+import { axisLabel, callDuration, formatBytes, traceAxis, traceTimeline } from '../../src/shared/trace';
 
 const call = (seq: number, over: Partial<ToolCallRow> = {}): ToolCallRow => ({
   seq,
@@ -77,5 +77,58 @@ describe('toolWords', () => {
     expect(toolWords('something_new')).toBe('Something new');
     const [row] = traceTimeline([call(1, { tool: 'list_inbox' })], undefined);
     expect(row).toMatchObject({ tool: 'list_inbox', label: 'Read the inbox' });
+  });
+});
+
+describe('traceAxis', () => {
+  it('labels ticks in the unit a person reads', () => {
+    expect(axisLabel(0)).toBe('0');
+    expect(axisLabel(250)).toBe('250 ms');
+    expect(axisLabel(1000)).toBe('1 s');
+    expect(axisLabel(1500)).toBe('1.5 s');
+    expect(axisLabel(60_000)).toBe('1 min');
+    expect(axisLabel(90_000)).toBe('1 min 30 s');
+  });
+
+  it('spans the run from its start to the end of its last call, with round ticks', () => {
+    const calls = [call(1, { durationMs: 100 }), call(2, { durationMs: 400 })];
+    const axis = traceAxis(calls, '2026-10-04T12:00:00.000Z')!;
+    // the last call starts at +2 s and takes 400 ms
+    expect(axis.totalMs).toBe(2400);
+    expect(axis.ticks[0]).toEqual({ percent: 0, label: '0' });
+    expect(axis.ticks.map((t) => t.label)).toEqual(['0', '500 ms', '1 s', '1.5 s', '2 s']);
+    expect(axis.ticks.at(-1)!.percent).toBeCloseTo((2000 / 2400) * 100, 5);
+    expect(axis.endLabel).toBe('2.4 s');
+  });
+
+  it('puts each bar where its call ran on that scale and never lets a short call vanish', () => {
+    const rows = traceTimeline(
+      [call(1, { durationMs: 100 }), call(2, { durationMs: 400 })],
+      '2026-10-04T12:00:00.000Z',
+    );
+    expect(rows[0]!.leftPercent).toBeCloseTo((1000 / 2400) * 100, 5);
+    expect(rows[1]!.leftPercent).toBeCloseTo((2000 / 2400) * 100, 5);
+    expect(rows[1]!.widthPercent).toBeCloseTo((400 / 2400) * 100, 5);
+    const tiny = traceTimeline(
+      [call(1, { durationMs: 0 }), call(2, { durationMs: 5000 })],
+      '2026-10-04T12:00:00.000Z',
+    );
+    expect(tiny[0]!.widthPercent).toBeGreaterThanOrEqual(1);
+  });
+
+  it('starts at the first call when the run start is unknown, and has no axis without times', () => {
+    const calls = [call(1), call(2)];
+    const axis = traceAxis(calls, undefined)!;
+    expect(axis.totalMs).toBe(1010);
+    expect(traceAxis([call(1, { at: 'not a time' })], undefined)).toBeUndefined();
+    expect(traceAxis([], undefined)).toBeUndefined();
+    const rows = traceTimeline([call(1, { at: 'not a time' })], undefined);
+    expect(rows[0]!.leftPercent).toBe(0);
+    expect(rows[0]!.widthPercent).toBe(100);
+  });
+
+  it('keeps the bars inside the track however long the run took', () => {
+    const rows = traceTimeline([call(1, { durationMs: 90_000 })], '2026-10-04T11:58:00.000Z');
+    for (const r of rows) expect(r.leftPercent + r.widthPercent).toBeLessThanOrEqual(100.0001);
   });
 });

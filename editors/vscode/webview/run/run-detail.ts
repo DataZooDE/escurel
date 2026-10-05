@@ -1,4 +1,4 @@
-import { TRACE_RECORDED_NOTE, traceTimeline } from '../../src/shared/trace';
+import { TRACE_RECORDED_NOTE, traceAxis, traceTimeline } from '../../src/shared/trace';
 import {
   emptyAttempts,
   emptyPlan,
@@ -10,7 +10,7 @@ import { pageSlug } from '../../src/shared/pageId';
 import { checkIcon, crossIcon, syncIcon, warnIcon } from '../shared/icons';
 import { displayStepStatus, runHeading } from '../../src/runs/runTitle';
 import { LitElement, css, html, nothing } from 'lit';
-import type { PropertyValues } from 'lit';
+import type { PropertyValues, TemplateResult } from 'lit';
 import { property, state } from 'lit/decorators.js';
 import type { RunControl, RunView, RunWebviewToHost } from '../../src/shared/protocol';
 import { formatDateTime, formatDuration } from '../../src/shared/time';
@@ -181,19 +181,53 @@ export class EscurelRunDetail extends LitElement {
         opacity: 0.8;
       }
       .call-bar {
-        flex: 1 1 80px;
-        min-width: 60px;
+        position: relative;
+        flex: 1 1 100%;
         height: 6px;
         background: var(--escurel-border);
         border-radius: 2px;
-        align-self: center;
       }
       .call-bar > span {
-        display: block;
+        position: absolute;
+        top: 0;
         height: 100%;
         min-width: 4px;
         background: var(--vscode-progressBar-background, currentColor);
         border-radius: 2px;
+      }
+      .trace-axis {
+        position: relative;
+        height: 1.6em;
+        margin: 0 0 2px;
+        border-bottom: 1px solid var(--escurel-border);
+        font-size: 0.8em;
+        color: var(--escurel-muted);
+      }
+      .trace-axis .tick,
+      .trace-axis .axis-end {
+        position: absolute;
+        bottom: 2px;
+        white-space: nowrap;
+        transform: translateX(-50%);
+      }
+      .trace-axis .tick.first {
+        transform: none;
+      }
+      .trace-axis .tick::after {
+        content: '';
+        position: absolute;
+        left: 50%;
+        bottom: -3px;
+        height: 3px;
+        border-left: 1px solid var(--escurel-border);
+      }
+      .trace-axis .tick.first::after {
+        left: 0;
+      }
+      .trace-axis .axis-end {
+        right: 0;
+        left: auto;
+        transform: none;
       }
       .tool-call.failed .call-bar > span {
         background: var(--vscode-errorForeground);
@@ -310,6 +344,21 @@ export class EscurelRunDetail extends LitElement {
   private releaseControls(): void {
     clearTimeout(this.pendingTimer);
     this.controlPending = false;
+  }
+
+  /** The time scale the bars below sit on: round marks along the run, and how long it took. */
+  private axis(run: RunView): TemplateResult | typeof nothing {
+    const axis = traceAxis(run.calls, run.startedAt);
+    if (!axis) return nothing;
+    return html`<div class="trace-axis" aria-hidden="true">
+      ${axis.ticks.map(
+        (t, i) =>
+          html`<span class="tick ${i === 0 ? 'first' : ''}" style="left:${t.percent}%"
+            >${t.label}</span
+          >`,
+      )}
+      <span class="axis-end">${axis.endLabel}</span>
+    </div>`;
   }
 
   private onControl(run: RunView, control: RunControl): void {
@@ -531,10 +580,11 @@ export class EscurelRunDetail extends LitElement {
         ${
           run.calls.length
             ? html`<p class="timeline-note">
-                Bars compare each step with the slowest one. ${TRACE_RECORDED_NOTE}
+                Each bar shows when a step ran and how long it took. ${TRACE_RECORDED_NOTE}
               </p>`
             : nothing
         }
+        ${this.axis(run)}
         ${
           run.calls.length
             ? traceTimeline(run.calls, run.startedAt).map(
@@ -549,7 +599,9 @@ export class EscurelRunDetail extends LitElement {
                       <span class="call-duration">${row.duration}</span>
                       ${row.offset ? html`<span class="call-offset">${row.offset}</span>` : nothing}
                       <span class="call-bar" aria-hidden="true"
-                        ><span style="width:${row.barPercent}%"></span
+                        ><span
+                          style="left:${row.leftPercent}%;width:${row.widthPercent}%"
+                        ></span
                       ></span>
                     </summary>
                     <div class="call-sizes">${row.sizes}</div>
