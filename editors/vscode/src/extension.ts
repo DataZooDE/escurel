@@ -35,6 +35,7 @@ import { registerRunnerView, type RunnerTree } from './views/runner';
 import { registerImportEvolveProblem } from './evolve/importProblem';
 import { registerPrepareEvolveTrainingSource } from './evolve/prepareSource';
 import { registerEvolveHoldout } from './evolve/registerHoldout';
+import { registerEvolveHoldoutCsv } from './evolve/registerHoldoutCsv';
 import { registerPrepareEvolveTrainingCsv } from './evolve/prepareCsv';
 
 const EXPLAIN_SCHEME = 'escurel-explain';
@@ -72,6 +73,7 @@ export function activate(context: vscode.ExtensionContext): EscurelApi | undefin
   registerPrepareEvolveTrainingSource(context, services);
   registerPrepareEvolveTrainingCsv(context, services);
   registerEvolveHoldout(context, services);
+  registerEvolveHoldoutCsv(context, services);
   registerOpenOriginal(context, services);
   registerSkillDiagnostics(context, () => services.client);
   WikilinkProvider.register(context);

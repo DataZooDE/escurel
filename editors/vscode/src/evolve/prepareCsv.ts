@@ -37,6 +37,8 @@ export function registerPrepareEvolveTrainingCsv(
       const read = async (uri: vscode.Uri, label: string, maxBytes: number) => {
         const bytes = await vscode.workspace.fs.readFile(uri);
         if (bytes.length > maxBytes) throw new Error(`${label} exceeds its intake size limit.`);
+        if (bytes.length >= 3 && bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf)
+          throw new Error(`${label} has a UTF-8 BOM. Remove the BOM so the reviewed bytes match the submitted digest.`);
         const text = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
         const visible = vscode.workspace.textDocuments.find((document) => document.uri.toString() === uri.toString());
         requireSavedVisibleFile(uri.toString(), text, visible ? [{

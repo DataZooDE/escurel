@@ -157,6 +157,11 @@
         "category": "Escurel"
       },
       {
+        "command": "escurel.registerEvolveHoldoutCsv",
+        "title": "Register private Anofox Evolve holdout from dated CSV…",
+        "category": "Escurel"
+      },
+      {
         "command": "escurel.checkEvolveTrainingSource",
         "title": "Check Anofox Evolve source preparation…",
         "category": "Escurel"
