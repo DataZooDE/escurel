@@ -5,6 +5,9 @@
 // ready for a click on "Compute comparison".
 //
 //   bin-packing  a scripted search finds a better packing; compared against the seed.
+//   replenishment  a scripted search moves a replenishment policy from a batch every 6 days to a
+//                batch every 3 days (sealed synthetic holdout registered first); compared against the
+//                seed, per SKU and day.
 //   assortment   a scripted search proposes the classical top-N shelf (which delists the whole
 //                Household category) and then a substitution-aware assortment; compared against
 //                the top-N program, the winner's parent.
@@ -31,6 +34,13 @@ export const SCENARIOS = [
     spec: 'p5-assortment.json',
     comparison: 'demo-assortment-vs-top-n',
     baseline: 'parent',
+  },
+  {
+    id: 'replenishment',
+    experiment: 'demo-replenishment',
+    spec: 'p1-replenishment.json',
+    comparison: 'demo-replenishment-vs-seed',
+    baseline: 'seed',
   },
 ];
 
@@ -75,7 +85,25 @@ export async function playScenarios({ evolveCall, gatewayCall, owner, scenarios 
   const played = [];
   for (const s of scenarios) {
     const spec = JSON.parse(readFileSync(join(HERE, 'evolve', s.spec), 'utf8'));
-    await evolveCall('evolve_start', { ...spec, experiment: s.experiment });
+    let start = spec;
+    if (spec.setup) {
+      // Replenishment needs a prepared training source and a sealed holdout before it can start.
+      const source = await evolveCall('evolve_prepare_training_source', {
+        source_id: spec.setup.training_source.source_id,
+        source_json: JSON.stringify(spec.setup.training_source.payload),
+      });
+      await evolveCall('evolve_register_holdout', {
+        ...spec.setup.holdout,
+        training_source_id: source.training_source_id,
+        training_source_sha256: source.normalized_sha256,
+      });
+      start = {
+        ...spec.search,
+        training_source_id: source.training_source_id,
+        source_sha256: source.normalized_sha256,
+      };
+    }
+    await evolveCall('evolve_start', { ...start, experiment: s.experiment });
     await waitForCompletion(evolveCall, s.experiment);
     const page = `markdown/instances/evolve_comparison/${s.comparison}.md`;
     const written = await gatewayCall('update_page', {

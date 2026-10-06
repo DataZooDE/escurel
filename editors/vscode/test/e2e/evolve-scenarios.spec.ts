@@ -35,7 +35,7 @@ test('the owner computes a scenario comparison and reads it in the Scenarios vie
     gatewayCall: (name, args) => stack.call(name, args),
     owner: 'alice',
   });
-  expect(played.map((p) => p.scenario)).toEqual(['bin-packing', 'assortment']);
+  expect(played.map((p) => p.scenario)).toEqual(['bin-packing', 'assortment', 'replenishment']);
 
   const assortment = played.find((p) => p.scenario === 'assortment')!;
   const pageContent = async () =>
@@ -110,15 +110,36 @@ test('the owner computes a scenario comparison and reads it in the Scenarios vie
   ).toBeVisible();
   await stack.shot('evolve-scenarios-bin-packing-diff');
 
+  // Replenishment: both policies replayed on the training problem, diffed per SKU and day. The
+  // sealed holdout is registered for the search but a comparison never reads it.
+  const replen = played.find((p) => p.scenario === 'replenishment')!;
+  await openRow(stack.page, 'evolve_comparison', new RegExp(replen.comparison));
+  const replenUi = await webviewWith(stack.page, 'escurel-page-as-ui');
+  await replenUi.getByRole('button', { name: 'Compute comparison', exact: true }).click();
+  await expect(
+    scenarios.getByRole('treeitem', { name: new RegExp(replen.comparison) }),
+  ).toContainText('completed', { timeout: 90_000 });
+  await scenarios.getByRole('treeitem', { name: new RegExp(replen.comparison) }).click();
+  await scenarios.getByRole('treeitem', { name: /p1d_sku_day/ }).click();
+  await expect(
+    stack.page.getByRole('tab', { name: /p1d_sku_day: baseline ↔ candidate/ }),
+  ).toBeVisible();
+  const replenRecord = await stack.evolveCall('evolve_comparison', {
+    comparison: replen.comparison,
+  });
+  expect(replenRecord.state).toBe('completed');
+  expect(JSON.stringify(replenRecord)).not.toContain('holdout_sha256');
+  await stack.shot('evolve-scenarios-replenishment-diff');
+
   // A page that only claims to be completed is not a result: the view shows nothing from Evolve.
-  const forged = 'markdown/instances/evolve_comparison/forged.md';
+  const forged = 'markdown/instances/evolve_comparison/aaa-forged.md';
   const written = await stack.call('update_page', {
     page_id: forged,
     content: [
       '---',
       'kind: instance',
       'skill: evolve_comparison',
-      'id: forged',
+      'id: aaa-forged',
       'owner_subject: "alice"',
       `experiment: ${assortment.experiment}`,
       'baseline: seed',
@@ -136,7 +157,10 @@ test('the owner computes a scenario comparison and reads it in the Scenarios vie
   // The title actions only appear while the pane header is hovered.
   await scenarios.locator('.pane-header').hover();
   await scenarios.getByRole('button', { name: /Refresh scenario/ }).click();
-  const forgedRow = scenarios.getByRole('treeitem', { name: /forged/ });
+  // The pane is small and the list virtualised: jump to the top, where the forged id sorts, so the row is rendered.
+  await scenarios.getByRole('treeitem').first().click();
+  await stack.page.keyboard.press('Home');
+  const forgedRow = scenarios.getByRole('treeitem', { name: /aaa-forged/ });
   await forgedRow.click();
   await expect(scenarios.getByRole('treeitem', { name: /Unverified/ })).toBeVisible();
   // VS Code's own extension host prints a Node deprecation warning; anything else is ours.

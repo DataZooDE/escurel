@@ -118,7 +118,7 @@ ANOFOX_EXTENSION_DIR=~/.anofox/profiles/duckdb-1.5.6-linux_amd64 \
 The window opens on the assortment comparison page, and the Scenarios view is already wired to the demo's
 Evolve service (no setting to change).
 
-`run.sh` starts Evolve in OIDC mode against the demo gateway's issuer, runs the two searches as the demo
+`run.sh` starts Evolve in OIDC mode against the demo gateway's issuer, runs the three searches as the demo
 user (`evolve-scenarios.mjs`), and leaves one comparison page for each under the `evolve_comparison`
 skill. In the window:
 
@@ -129,6 +129,11 @@ skill. In the window:
    whole Household category; the substitution-aware winner keeps four of its products and captures
    about 29% more margin on the training data. The comparison is against the winner's parent (the top-N
    program), so the diff shows exactly what the smarter assortment changed.
+3. **Replenishment** (`demo-replenishment-vs-seed`): a scripted search moves a two-SKU policy from a
+   batch every 6 days to a batch every 3 days, on a made-up sealed holdout. The comparison replays both
+   policies on the training problem and diffs per SKU and day (`p1d_sku_day`: orders, arrivals, stock,
+   cost) plus per-SKU service and totals. The sealed holdout is never read by a comparison, and nothing
+   here validates a policy or says anything about real demand.
 
 How it fits together: the page is the request and a readable summary (owner-private); Evolve keeps the
 immutable result and the row-level changes. The page carries the result's hash, and the Scenarios view

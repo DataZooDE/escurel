@@ -8,7 +8,7 @@
 #
 # Evolve scenarios (optional): set ESCUREL_DEMO_EVOLVE_AGENT_BIN to an `evolve-agent` built with
 # `--features synthetic-brain`, and ANOFOX_EXTENSION_DIR to a DuckDB 1.5.6 extension profile. The demo
-# then starts Evolve against this gateway, runs two scripted searches (no model spend; synthetic
+# then starts Evolve against this gateway, runs three scripted searches (no model spend; synthetic
 # data) as the demo user, and leaves one comparison page for each, ready for "Compute comparison".
 #
 # Binaries (override with the env vars): ESCUREL_TEST_GATEWAY_BIN, ESCUREL_RUNNER_BIN, under
@@ -167,7 +167,7 @@ if [ -n "${ESCUREL_DEMO_EVOLVE_AGENT_BIN:-}" ]; then
   export ESCUREL_DEMO_EVOLVE_ENDPOINT="http://127.0.0.1:$EVOLVE_PORT"
   # Land on the first comparison instead of the CRM story: a visitor should see the Evolve demo first.
   export ESCUREL_DEMO_OPEN_PAGE="${ESCUREL_DEMO_OPEN_PAGE:-markdown/instances/evolve_comparison/demo-assortment-vs-top-n.md}"
-  echo "running the Evolve scenarios (two scripted searches)..."
+  echo "running the Evolve scenarios (three scripted searches)..."
   node "$HERE/evolve-scenarios.mjs" "$HOME_DIR/gateway.json" "$HOME_DIR/bearer.json" "$ESCUREL_DEMO_EVOLVE_ENDPOINT" \
     > "$HOME_DIR/evolve-scenarios.json" || { echo "the Evolve scenarios failed; see $HOME_DIR/evolve.log" >&2; exit 1; }
 fi
