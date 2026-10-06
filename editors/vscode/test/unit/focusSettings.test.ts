@@ -16,6 +16,8 @@ describe('focus mode settings', () => {
     expect(FOCUS_SETTINGS['editor.minimap.enabled']).toBe(false);
     expect(FOCUS_SETTINGS['workbench.activityBar.location']).toBe('top');
     expect(FOCUS_SETTINGS['window.title']).toBe('Escurel');
+    // A person's zoom is theirs: focus mode never changes the size of everything.
+    expect(FOCUS_SETTINGS['window.zoomLevel']).toBeUndefined();
     expect(FOCUS_SETTINGS['workbench.colorTheme']).toBe(FOCUS_THEME);
   });
 
@@ -27,26 +29,26 @@ describe('focus mode settings', () => {
 
   it('remembers what the person had, including the keys they had never set', () => {
     const plan = planEnter(
-      { 'window.zoomLevel': 2, 'workbench.colorTheme': 'Default Dark Modern' },
+      { 'window.title': 'My window', 'workbench.colorTheme': 'Default Dark Modern' },
       undefined,
     );
-    expect(plan.saved['window.zoomLevel']).toEqual({ set: true, value: 2 });
+    expect(plan.saved['window.title']).toEqual({ set: true, value: 'My window' });
     expect(plan.saved['workbench.colorTheme']).toEqual({ set: true, value: 'Default Dark Modern' });
     expect(plan.saved['workbench.statusBar.visible']).toEqual({ set: false });
     expect(plan.writes).toEqual(FOCUS_SETTINGS);
   });
 
   it('a second enter keeps the FIRST originals', () => {
-    const first = planEnter({ 'window.zoomLevel': 2 }, undefined);
+    const first = planEnter({ 'window.title': 'My window' }, undefined);
     // Now the window already shows the focus values; entering again must not save THOSE as the originals.
     const second = planEnter({ ...FOCUS_SETTINGS }, first.saved);
     expect(second.saved).toEqual(first.saved);
   });
 
   it('exit puts every value back, and removes a key that was never set', () => {
-    const { saved } = planEnter({ 'window.zoomLevel': 2 }, undefined);
+    const { saved } = planEnter({ 'window.title': 'My window' }, undefined);
     const back = planExit(saved);
-    expect(back['window.zoomLevel']).toBe(2);
+    expect(back['window.title']).toBe('My window');
     expect(back['workbench.statusBar.visible']).toBeUndefined();
     expect(Object.keys(back).sort()).toEqual(Object.keys(FOCUS_SETTINGS).sort());
   });

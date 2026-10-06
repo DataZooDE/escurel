@@ -13,7 +13,6 @@ export const FOCUS_SETTINGS: Readonly<Record<string, unknown>> = {
   'window.menuBarVisibility': 'hidden',
   'window.commandCenter': false,
   'window.title': 'Escurel',
-  'window.zoomLevel': 1,
   'workbench.statusBar.visible': false,
   'workbench.activityBar.location': 'top',
   'workbench.layoutControl.enabled': false,
