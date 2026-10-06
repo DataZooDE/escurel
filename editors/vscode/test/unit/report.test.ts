@@ -9,7 +9,13 @@ const IMPACT = {
   data: { totals: '[[query::delay_impact_summary]]', orders: '[[query::delay_impact]]' },
   views: [
     { kind: 'kpi', data: 'totals', agg: 'sum', field: 'orders_late', label: 'Orders late' },
-    { kind: 'kpi', data: 'totals', agg: 'sum', field: 'penalty_exposure_eur', label: 'Penalty exposure (EUR)' },
+    {
+      kind: 'kpi',
+      data: 'totals',
+      agg: 'sum',
+      field: 'penalty_exposure_eur',
+      label: 'Penalty exposure (EUR)',
+    },
     { kind: 'vega', data: 'orders', spec: 'days_late' },
     { kind: 'table', data: 'orders' },
   ],
@@ -29,7 +35,10 @@ describe('parseReport', () => {
   });
 
   it('refuses a query reference that is not a plain [[query::id]]', () => {
-    const def = parseReport({ ...IMPACT, data: { a: '[[query::../../x]]', b: 'delay_impact', c: '[[query::ok_1]]' } })!;
+    const def = parseReport({
+      ...IMPACT,
+      data: { a: '[[query::../../x]]', b: 'delay_impact', c: '[[query::ok_1]]' },
+    })!;
     expect(def.queries).toEqual({ c: 'ok_1' });
   });
 
@@ -43,7 +52,14 @@ describe('parseReport', () => {
 describe('reportParams', () => {
   const def = parseReport(IMPACT)!;
   it('takes each param from the record by name, a number as a number', () => {
-    expect(reportParams(def, { supplier: 'baltic-components', lot: 'L-24117', delay_days: '21', extra: 1 })).toEqual({
+    expect(
+      reportParams(def, {
+        supplier: 'baltic-components',
+        lot: 'L-24117',
+        delay_days: '21',
+        extra: 1,
+      }),
+    ).toEqual({
       supplier: 'baltic-components',
       lot: 'L-24117',
       delay_days: 21,
@@ -68,7 +84,11 @@ describe('buildReport', () => {
 
   it('turns a kpi into a labelled figure, summed over the rows, with thousands separators', () => {
     expect(model.views[0]).toEqual({ kind: 'kpi', label: 'Orders late', value: '4' });
-    expect(model.views[1]).toEqual({ kind: 'kpi', label: 'Penalty exposure (EUR)', value: '132,400' });
+    expect(model.views[1]).toEqual({
+      kind: 'kpi',
+      label: 'Penalty exposure (EUR)',
+      value: '132,400',
+    });
   });
 
   it('turns a table into plain-worded columns and string cells', () => {
@@ -89,7 +109,9 @@ describe('buildReport', () => {
 
   it('cleans untrusted cell text and caps a long table', () => {
     const many = Array.from({ length: 80 }, (_, i) => ({ id: `r${i}`, label: 'a‮b' }));
-    const m = buildReport(parseReport({ ...IMPACT, views: [{ kind: 'table', data: 'orders' }] })!, { orders: many });
+    const m = buildReport(parseReport({ ...IMPACT, views: [{ kind: 'table', data: 'orders' }] })!, {
+      orders: many,
+    });
     const t = m.views[0] as { rows: string[][]; more?: number };
     expect(t.rows).toHaveLength(30);
     expect(t.more).toBe(50);

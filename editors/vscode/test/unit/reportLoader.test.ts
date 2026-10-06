@@ -16,7 +16,8 @@ function fakeClient(opts: { fm?: unknown; fail?: string } = {}) {
   const asked: Array<{ ref: string; params?: Record<string, unknown> }> = [];
   const client = {
     expand: async (r: { page_id: string }) => {
-      if (r.page_id !== 'markdown/skills/exception-impact-report.md') throw new Error('unexpected page');
+      if (r.page_id !== 'markdown/skills/exception-impact-report.md')
+        throw new Error('unexpected page');
       return { frontmatter: opts.fm ?? REPORT };
     },
     queryInstance: async (r: { ref: string; params?: Record<string, unknown> }) => {
@@ -32,13 +33,14 @@ function fakeClient(opts: { fm?: unknown; fail?: string } = {}) {
 const RECORD = { supplier: 'baltic-components', lot: 'L-24117', delay_days: 21 };
 
 describe('loadReport', () => {
-  it('runs each query of the report with the record\'s own values and builds the figures', async () => {
+  it("runs each query of the report with the record's own values and builds the figures", async () => {
     const { client, asked } = fakeClient();
     const model = await loadReport(client, 'exception-impact-report', RECORD);
     expect(model?.title).toBe('Impact of a supplier delay');
     expect(model?.views[0]).toEqual({ kind: 'kpi', label: 'Orders late', value: '4' });
     expect(asked.map((a) => a.ref).sort()).toEqual(['delay_impact', 'delay_impact_summary']);
-    for (const a of asked) expect(a.params).toEqual({ supplier: 'baltic-components', lot: 'L-24117', delay_days: 21 });
+    for (const a of asked)
+      expect(a.params).toEqual({ supplier: 'baltic-components', lot: 'L-24117', delay_days: 21 });
   });
 
   it('shows nothing, and asks nothing, when the record lacks a param of the report', async () => {

@@ -59,12 +59,16 @@ export function parseReport(fm: unknown): ReportDef | undefined {
     ...(typeof v.field === 'string' ? { field: v.field } : {}),
     ...(typeof v.label === 'string' ? { label: v.label } : {}),
   }));
-  const title = typeof fm.title === 'string' && fm.title.trim() ? fm.title : String(fm.id ?? 'Report');
+  const title =
+    typeof fm.title === 'string' && fm.title.trim() ? fm.title : String(fm.id ?? 'Report');
   return { title: cleanText(title, 80), params, queries, views };
 }
 
 /** The report's params read from the record by name; undefined when one is missing or not a number where one is needed. */
-export function reportParams(def: ReportDef, record: Record<string, unknown>): Record<string, string | number> | undefined {
+export function reportParams(
+  def: ReportDef,
+  record: Record<string, unknown>,
+): Record<string, string | number> | undefined {
   const out: Record<string, string | number> = {};
   for (const p of def.params) {
     const v = record[p.name];
@@ -117,7 +121,11 @@ export function buildReport(def: ReportDef, results: Record<string, Row[]>): Rep
     const rows = v.data ? (results[v.data] ?? []) : [];
     if (v.kind === 'kpi' && v.field) {
       const n = aggregate(rows, v.field, v.agg ?? 'sum');
-      views.push({ kind: 'kpi', label: cleanText(v.label ?? humanise(v.field), 60), value: format(n) });
+      views.push({
+        kind: 'kpi',
+        label: cleanText(v.label ?? humanise(v.field), 60),
+        value: format(n),
+      });
     } else if (v.kind === 'table') {
       if (rows.length === 0) continue;
       const keys = Object.keys(rows[0] ?? {}).slice(0, MAX_COLUMNS);
