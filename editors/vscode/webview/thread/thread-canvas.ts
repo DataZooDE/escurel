@@ -15,7 +15,7 @@ import type {
 } from '../../src/shared/protocol';
 import { theme } from '../shared/theme.css';
 import { fitToBounds, panToReveal, zoomAboutPoint } from './viewport';
-import { chipWords } from '../../src/thread/chipWords';
+import { chipTone, chipWords } from '../../src/thread/chipWords';
 import { checkIcon, clockIcon, crossIcon, syncIcon } from '../shared/icons';
 import {
   columnsOffRight,
@@ -92,6 +92,32 @@ export class EscurelThreadCanvas extends LitElement {
         align-items: center;
         gap: 3px;
         line-height: 1.5;
+      }
+      /* The fill of a badge (a strong teal in the calm theme) made every state look alike. A chip is an
+         outline in the colour of what it says, mixed with the foreground so it stays readable on any
+         card: finished is green, pending is amber, gone wrong is red. The icon and the word say it too. */
+      .card .chip.state-ok,
+      .card .chip.state-wait,
+      .card .chip.state-bad,
+      .card .chip.state-neutral {
+        background: transparent;
+        border: 1px solid currentColor;
+      }
+      .card .chip.state-ok {
+        color: color-mix(in srgb, var(--vscode-charts-green) 60%, var(--vscode-foreground));
+      }
+      .card .chip.state-wait {
+        color: color-mix(
+          in srgb,
+          var(--vscode-editorWarning-foreground, var(--vscode-charts-orange)) 70%,
+          var(--vscode-foreground)
+        );
+      }
+      .card .chip.state-bad {
+        color: color-mix(in srgb, var(--vscode-errorForeground) 70%, var(--vscode-foreground));
+      }
+      .card .chip.state-neutral {
+        color: var(--vscode-foreground);
       }
       .card .chip svg {
         flex: none;
@@ -317,12 +343,24 @@ export class EscurelThreadCanvas extends LitElement {
       }
       .wire {
         fill: none;
-        /* The theme's widget border nearly vanished on the canvas once the cards had real borders. */
+        /* A line that carries meaning (what led to what) needs 3:1 against the canvas (WCAG 1.4.11). A
+           40% tint of the foreground reached only about 2.3:1 on a white canvas, and a theme that sets
+           contrastBorder to a pale rule (the calm one did) made the connectors vanish. 70% reads at
+           3:1 or better on the light, dark and calm canvases; high contrast keeps its own border. */
         stroke: var(
           --vscode-contrastBorder,
-          color-mix(in srgb, var(--vscode-foreground) 40%, transparent)
+          color-mix(in srgb, var(--vscode-foreground) 70%, var(--vscode-editor-background))
         );
         stroke-width: 1.5px;
+      }
+      .wire-head {
+        fill: var(
+          --vscode-contrastBorder,
+          color-mix(in srgb, var(--vscode-foreground) 70%, var(--vscode-editor-background))
+        );
+      }
+      .wire-head.emphasised {
+        fill: var(--vscode-focusBorder);
       }
       .wire.solid {
         stroke-dasharray: none;
@@ -567,7 +605,7 @@ export class EscurelThreadCanvas extends LitElement {
         border-top: 1px dashed
           var(
             --vscode-contrastBorder,
-            color-mix(in srgb, var(--vscode-foreground) 30%, transparent)
+            color-mix(in srgb, var(--vscode-foreground) 40%, var(--vscode-editor-background))
           );
         pointer-events: none;
       }
@@ -846,7 +884,9 @@ export class EscurelThreadCanvas extends LitElement {
             : words.icon === 'clock'
               ? clockIcon()
               : nothing;
-    return html`<span class="chip ${chip.tone}" title=${chip.text}>${icon}${words.text}</span>`;
+    return html`<span class="chip ${chip.tone} state-${chipTone(chip.text)}" title=${chip.text}
+      >${icon}${words.text}</span
+    >`;
   }
 
   public fit(): void {
@@ -1430,6 +1470,31 @@ export class EscurelThreadCanvas extends LitElement {
               width="${this.layout.bounds.width}"
               height="${this.layout.bounds.height}"
             >
+              <defs>
+                <!-- The arrowhead at the end of a connector: what the line leads to. -->
+                <marker
+                  id="wire-head"
+                  viewBox="0 0 10 10"
+                  refX="9"
+                  refY="5"
+                  markerWidth="6"
+                  markerHeight="6"
+                  orient="auto"
+                >
+                  <path class="wire-head" d="M0 1 L10 5 L0 9 z" />
+                </marker>
+                <marker
+                  id="wire-head-emphasised"
+                  viewBox="0 0 10 10"
+                  refX="9"
+                  refY="5"
+                  markerWidth="5"
+                  markerHeight="5"
+                  orient="auto"
+                >
+                  <path class="wire-head emphasised" d="M0 1 L10 5 L0 9 z" />
+                </marker>
+              </defs>
               ${this.layout.wires.map((wire) => {
                 const isEmphasised =
                   wire.from === this.selectedNodeId ||
@@ -1439,6 +1504,7 @@ export class EscurelThreadCanvas extends LitElement {
                 return svg`<path
                   d="${wire.path}"
                   class="wire ${wire.style} ${isEmphasised ? 'emphasised' : ''}"
+                  marker-end="url(#${isEmphasised ? 'wire-head-emphasised' : 'wire-head'})"
                 />`;
               })}
             </svg>

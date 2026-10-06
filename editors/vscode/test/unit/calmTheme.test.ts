@@ -35,6 +35,12 @@ const c = (key: string): string => {
 };
 
 describe('the Escurel Calm theme', () => {
+  it('does not set contrastBorder, the high-contrast border: webviews read it as "high contrast is on"', () => {
+    // The thread canvas drew its connectors and card borders with contrastBorder when a theme set it. The
+    // calm theme set a pale rule there, and the connectors all but vanished on the white canvas.
+    expect(theme.colors).not.toHaveProperty('contrastBorder');
+  });
+
   it('is shipped as a light theme named in the manifest', () => {
     expect(entry?.uiTheme).toBe('vs');
     expect(theme.type).toBe('light');

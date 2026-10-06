@@ -136,6 +136,7 @@ cat > "$HOME_DIR/profile/User/settings.json" <<JSON
   "chat.disableAIFeatures": true,
   "workbench.secondarySideBar.defaultVisibility": "visible",
   "workbench.layoutControl.enabled": false,
+  ${ESCUREL_DEMO_THEME:+"workbench.colorTheme": "$ESCUREL_DEMO_THEME",}
   "workbench.welcomePage.walkthroughs.openOnInstall": false
 }
 JSON
