@@ -52,6 +52,12 @@ export function buildPageModel(
         && /^[a-f0-9]{64}$/i.test(fm.report_sha256)
         && !!e.content_sha256;
     }
+    if (action.skill === 'evolve_compare') {
+      return fm.status === 'requested'
+        && fm.next_comparison_action === 'evolve_compare'
+        && typeof fm.experiment === 'string' && fm.experiment !== ''
+        && !!e.content_sha256;
+    }
     return true;
   });
   const source = rowSourceOf(e.backend_projection);

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { bindCandidateSelection, bindValidationSelection, buildApprovalEvent, buildStartEvent, manualModeFor } from '../../src/start/startEvent';
+import { bindCandidateSelection, bindComparisonSelection,
+  bindValidationSelection, buildApprovalEvent, buildStartEvent, manualModeFor } from '../../src/start/startEvent';
 
 const PAGE = 'markdown/instances/customer-order__order-4500123.md';
 
@@ -86,6 +87,26 @@ describe('bindValidationSelection', () => {
     expect(JSON.stringify(first)).not.toContain('requested_by');
     expect(() => bindValidationSelection(start, 'bad', 7)).toThrow(/reviewed/);
     expect(() => bindValidationSelection(start, 'a'.repeat(64), -1)).toThrow(/winner/);
+  });
+});
+
+describe('bindComparisonSelection', () => {
+  it('uses a stable event ID per page revision and freezes that revision', () => {
+    const start = buildStartEvent({ skill: 'evolve_compare', pageId: PAGE, mode: 'run' });
+    const first = bindComparisonSelection(start, 'a'.repeat(64));
+    const retry = bindComparisonSelection(start, 'a'.repeat(64));
+    // A retry of the same click converges on one event; another revision is another request.
+    expect(first.event_id).toBe(retry.event_id);
+    expect(bindComparisonSelection(start, 'b'.repeat(64)).event_id).not.toBe(first.event_id);
+    expect(first.provenance).toEqual({ manual: { mode: 'run', expected_page_sha256: 'a'.repeat(64) } });
+    expect(JSON.stringify(first)).not.toContain('requested_by');
+  });
+
+  it('refuses another label or a revision that is not a SHA-256', () => {
+    const start = buildStartEvent({ skill: 'evolve_compare', pageId: PAGE, mode: 'run' });
+    expect(() => bindComparisonSelection(start, 'bad')).toThrow(/reviewed/);
+    const other = buildStartEvent({ skill: 'evolve_validate', pageId: PAGE, mode: 'run' });
+    expect(() => bindComparisonSelection(other, 'a'.repeat(64))).toThrow(/reviewed/);
   });
 });
 

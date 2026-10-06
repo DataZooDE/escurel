@@ -1,0 +1,354 @@
+{
+  "_comment": "Synthetic replenishment demo. A scripted search (no model) walks a batch-every-6-days policy to a batch-every-3-days policy. The sealed holdout is a made-up synthetic declaration; nothing here is evidence about real demand.",
+  "setup": {
+    "training_source": {
+      "source_id": "demo-replenishment-training",
+      "payload": {
+        "capacity": 9,
+        "skus": [
+          {
+            "sku_id": 1,
+            "name": "A",
+            "initial_stock": 1,
+            "initial_pipeline": [
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "history": [
+              1
+            ],
+            "demand": [
+              1,
+              1,
+              1,
+              1,
+              1,
+              1,
+              1,
+              1,
+              1,
+              1,
+              1,
+              1
+            ],
+            "lead_time": 1,
+            "case_pack": 1,
+            "min_order": 0,
+            "holding_cost": 0.0,
+            "shortage_cost": 100.0,
+            "fixed_order_cost": 5.0
+          },
+          {
+            "sku_id": 2,
+            "name": "B",
+            "initial_stock": 2,
+            "initial_pipeline": [
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "history": [
+              2
+            ],
+            "demand": [
+              2,
+              2,
+              2,
+              2,
+              2,
+              2,
+              2,
+              2,
+              2,
+              2,
+              2,
+              2
+            ],
+            "lead_time": 1,
+            "case_pack": 1,
+            "min_order": 0,
+            "holding_cost": 0.0,
+            "shortage_cost": 100.0,
+            "fixed_order_cost": 5.0
+          }
+        ],
+        "training_start": "2026-08-01",
+        "training_end": "2026-08-12",
+        "history_start": "2026-07-31",
+        "history_end": "2026-07-31",
+        "inventory_as_of": "2026-08-01",
+        "demand_observation": "true_demand"
+      }
+    },
+    "holdout": {
+      "holdout_id": "demo-replenishment-holdout",
+      "source_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "source_ref": "export:demo-holdout",
+      "training_source_ref": "export:demo-training",
+      "training_start": "2026-08-01",
+      "training_end": "2026-08-12",
+      "history_start": "2026-08-31",
+      "history_end": "2026-08-31",
+      "inventory_as_of": "2026-09-01",
+      "holdout_start": "2026-09-01",
+      "holdout_end": "2026-09-12",
+      "outcomes_sealed_before_search": true,
+      "demand_observation": "true_demand",
+      "problem": {
+        "capacity": 9,
+        "skus": [
+          {
+            "sku_id": 1,
+            "name": "A",
+            "initial_stock": 1,
+            "initial_pipeline": [
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "history": [
+              1
+            ],
+            "demand": [
+              1,
+              1,
+              1,
+              1,
+              1,
+              1,
+              1,
+              1,
+              1,
+              1,
+              1,
+              2
+            ],
+            "lead_time": 1,
+            "case_pack": 1,
+            "min_order": 0,
+            "holding_cost": 0.0,
+            "shortage_cost": 100.0,
+            "fixed_order_cost": 5.0
+          },
+          {
+            "sku_id": 2,
+            "name": "B",
+            "initial_stock": 2,
+            "initial_pipeline": [
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "history": [
+              2
+            ],
+            "demand": [
+              2,
+              2,
+              2,
+              2,
+              2,
+              2,
+              2,
+              2,
+              2,
+              2,
+              2,
+              2
+            ],
+            "lead_time": 1,
+            "case_pack": 1,
+            "min_order": 0,
+            "holding_cost": 0.0,
+            "shortage_cost": 100.0,
+            "fixed_order_cost": 5.0
+          }
+        ]
+      },
+      "service_targets": {
+        "aggregate_min_fill_rate": 1.0,
+        "per_sku_min_fill_rate": {
+          "1": 1.0,
+          "2": 1.0
+        }
+      },
+      "baseline_sql": "SELECT sku_id, (CASE WHEN period % 6 = 0 THEN 2 WHEN period % 6 IN (1, 2, 3, 4) THEN 1 ELSE 0 END * CASE WHEN sku_id = 1 THEN 1 ELSE 2 END)::BIGINT AS order_qty FROM p1_observation",
+      "max_cost_ratio": 0.95,
+      "evaluator_version": "replenishment_decision_v2",
+      "planning_window_days": 3,
+      "scored_window_days": 9,
+      "sensitivity_tail_days": [
+        1,
+        3
+      ],
+      "unit_order_costs": {
+        "1": 1.0,
+        "2": 1.0
+      },
+      "terminal_stock_tolerance": {
+        "1": 0,
+        "2": 0
+      }
+    }
+  },
+  "search": {
+    "pilot": "p1_decision",
+    "brain": "llm",
+    "synthetic_brain": "batch_progression_v1",
+    "evaluator_version": "replenishment_decision_v2",
+    "seed_sql": "SELECT sku_id, (CASE WHEN period % 6 = 0 THEN 2 WHEN period % 6 IN (1, 2, 3, 4) THEN 1 ELSE 0 END * CASE WHEN sku_id = 1 THEN 1 ELSE 2 END)::BIGINT AS order_qty FROM p1_observation",
+    "baseline_sql": "SELECT sku_id, (CASE WHEN period % 6 = 0 THEN 2 WHEN period % 6 IN (1, 2, 3, 4) THEN 1 ELSE 0 END * CASE WHEN sku_id = 1 THEN 1 ELSE 2 END)::BIGINT AS order_qty FROM p1_observation",
+    "capacity": 9,
+    "skus": [
+      {
+        "sku_id": 1,
+        "name": "A",
+        "initial_stock": 1,
+        "initial_pipeline": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "history": [
+          1
+        ],
+        "demand": [
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1
+        ],
+        "lead_time": 1,
+        "case_pack": 1,
+        "min_order": 0,
+        "holding_cost": 0.0,
+        "shortage_cost": 100.0,
+        "fixed_order_cost": 5.0
+      },
+      {
+        "sku_id": 2,
+        "name": "B",
+        "initial_stock": 2,
+        "initial_pipeline": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "history": [
+          2
+        ],
+        "demand": [
+          2,
+          2,
+          2,
+          2,
+          2,
+          2,
+          2,
+          2,
+          2,
+          2,
+          2,
+          2
+        ],
+        "lead_time": 1,
+        "case_pack": 1,
+        "min_order": 0,
+        "holding_cost": 0.0,
+        "shortage_cost": 100.0,
+        "fixed_order_cost": 5.0
+      }
+    ],
+    "service_targets": {
+      "aggregate_min_fill_rate": 1.0,
+      "per_sku_min_fill_rate": {
+        "1": 1.0,
+        "2": 1.0
+      }
+    },
+    "planning_window_days": 3,
+    "scored_window_days": 9,
+    "unit_order_costs": {
+      "1": 1.0,
+      "2": 1.0
+    },
+    "terminal_stock_tolerance": {
+      "1": 0,
+      "2": 0
+    },
+    "holdout_id": "demo-replenishment-holdout",
+    "training_start": "2026-08-01",
+    "training_end": "2026-08-12",
+    "history_start": "2026-07-31",
+    "history_end": "2026-07-31",
+    "inventory_as_of": "2026-08-01",
+    "demand_observation": "true_demand",
+    "max_generations": 2,
+    "budget": {
+      "max_evaluated": 3
+    }
+  }
+}

@@ -77,6 +77,25 @@ export function bindValidationSelection(
   };
 }
 
+/**
+ * Bind a Compute-comparison click to the page revision the owner reviewed. The event id is
+ * stable per revision: a retried click converges on one request, and an edited page is a new one.
+ */
+export function bindComparisonSelection(
+  event: CaptureEventRequest,
+  pageSha256: string,
+): CaptureEventRequest {
+  if (event.label_skill !== 'evolve_compare' || !/^[a-f0-9]{64}$/i.test(pageSha256)) {
+    throw new Error('A comparison needs a reviewed comparison page.');
+  }
+  const manual = (event.provenance as { manual: Record<string, unknown> }).manual;
+  return {
+    ...event,
+    event_id: `evolve-comparison-${pageSha256.toLowerCase()}`,
+    provenance: { manual: { ...manual, expected_page_sha256: pageSha256 } },
+  };
+}
+
 /** Bind an owner-confirmed candidate request to the displayed private report. */
 export function bindCandidateSelection(
   event: CaptureEventRequest,

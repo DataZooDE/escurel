@@ -126,6 +126,9 @@ export class LiveCoordinator implements vscode.Disposable {
   private focusSubscription?: vscode.Disposable;
   private readonly disposables: vscode.Disposable[] = [];
   private disposed = false;
+  private readonly received = new vscode.EventEmitter<Event>();
+  /** Every event that arrives on the live socket, for views that route on their own labels. */
+  readonly onDidReceiveEvent = this.received.event;
 
   /**
    * The socket's state, so a test can tell a view that refreshed because an
@@ -164,6 +167,7 @@ export class LiveCoordinator implements vscode.Disposable {
 
   handleEvent(event: Event): void {
     this.refresher.handleEvent(event);
+    this.received.fire(event);
   }
 
   refreshBoth(): void {
@@ -183,7 +187,7 @@ export class LiveCoordinator implements vscode.Disposable {
       gatewayUrl: this.services.gatewayUrl,
       tokens: this.services.auth.refresher,
       onEvent: (event) => {
-        this.refresher.handleEvent(event);
+        this.handleEvent(event);
       },
       onConnect: () => {
         // Replay after a reconnect is inbox-only; review transitions that occurred
@@ -228,5 +232,6 @@ export class LiveCoordinator implements vscode.Disposable {
     this.focusSubscription?.dispose();
     this.focusSubscription = undefined;
     for (const d of this.disposables) d.dispose();
+    this.received.dispose();
   }
 }

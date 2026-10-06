@@ -1,0 +1,6 @@
+{
+  "pilot": "p0",
+  "capacity": 10,
+  "items_csv": "6,5,4,7,2,3,8,1,9,4",
+  "max_generations": 3
+}

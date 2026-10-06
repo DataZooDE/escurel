@@ -102,6 +102,46 @@ document asks first.
     your notes. A change promoted while it is down is retried a few times and then reported as failed; the
     draft stays open to promote again. A change proposed from a stale row is refused as a conflict.
 
+## Evolve scenarios (optional)
+
+Two scripted Anofox Evolve searches and the comparison pages that explain them. Everything is
+synthetic and the proposals are scripted (no model, no spend); a comparison is a search-time replay on
+the training instance. It explains what changed. It is not validation and says nothing about unseen data.
+
+```
+# evolve-agent must be built with --features synthetic-brain
+ESCUREL_DEMO_EVOLVE_AGENT_BIN=/path/to/evolve-agent \
+ANOFOX_EXTENSION_DIR=~/.anofox/profiles/duckdb-1.5.6-linux_amd64 \
+  demo/run.sh start
+```
+
+The window opens on the assortment comparison page, and the Scenarios view is already wired to the demo's
+Evolve service (no setting to change).
+
+`run.sh` starts Evolve in OIDC mode against the demo gateway's issuer, runs the three searches as the demo
+user (`evolve-scenarios.mjs`), and leaves one comparison page for each under the `evolve_comparison`
+skill. In the window:
+
+1. **Bin-packing** (`demo-bin-packing-vs-seed`): a scripted search finds a better packing. Open the page,
+   click **Compute comparison**, then open the **Scenarios** view: `p0_bin_assignment` shows which items
+   moved bins relative to the seed. Click the table to open the native diff.
+2. **Assortment** (`demo-assortment-vs-top-n`): the classical "rank by margin × volume" shelf delists the
+   whole Household category; the substitution-aware winner keeps four of its products and captures
+   about 29% more margin on the training data. The comparison is against the winner's parent (the top-N
+   program), so the diff shows exactly what the smarter assortment changed.
+3. **Replenishment** (`demo-replenishment-vs-seed`): a scripted search moves a two-SKU policy from a
+   batch every 6 days to a batch every 3 days, on a made-up sealed holdout. The comparison replays both
+   policies on the training problem and diffs per SKU and day (`p1d_sku_day`: orders, arrivals, stock,
+   cost) plus per-SKU service and totals. The sealed holdout is never read by a comparison, and nothing
+   here validates a policy or says anything about real demand.
+
+How it fits together: the page is the request and a readable summary (owner-private); Evolve keeps the
+immutable result and the row-level changes. The page carries the result's hash, and the Scenarios view
+shows a comparison only when that hash matches Evolve's record, so a page that merely claims to be
+completed is shown as *unverified*. Create more with **New scenario comparison** in the view.
+
+The same flow is tested in a real window by `test/e2e/evolve-scenarios.spec.ts` (set `EVOLVE_AGENT_BIN`).
+
 ## Limits worth saying out loud
 
 - The runner is the echo harness: it folds the signal into the page, it does not reason. The

@@ -28,6 +28,7 @@
     "onView:escurel.details",
     "onView:escurel.inbox",
     "onView:escurel.knowledge",
+    "onView:escurel.scenarios",
     "onView:escurel.runner",
     "onView:escurel.threads"
   ],
@@ -413,6 +414,23 @@
         "command": "escurel.focusKnowledge",
         "title": "Focus knowledge",
         "category": "Escurel"
+      },
+      {
+        "command": "escurel.scenarios.refresh",
+        "title": "Refresh scenario diffs",
+        "category": "Escurel",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "escurel.scenarios.compare",
+        "title": "Compare baseline and candidate",
+        "category": "Escurel"
+      },
+      {
+        "command": "escurel.scenarios.new",
+        "title": "New scenario comparison",
+        "category": "Escurel",
+        "icon": "$(add)"
       }
     ],
     "authentication": [
@@ -461,6 +479,12 @@
         {
           "id": "escurel.awaiting",
           "name": "Awaiting you",
+          "contextualTitle": "Escurel",
+          "initialSize": 2
+        },
+        {
+          "id": "escurel.scenarios",
+          "name": "Scenarios",
           "contextualTitle": "Escurel",
           "initialSize": 2
         },
@@ -716,9 +740,18 @@
         {
           "command": "escurel.runs.forPage",
           "when": "false"
+        },
+        {
+          "command": "escurel.scenarios.compare",
+          "when": "false"
         }
       ],
       "view/title": [
+        {
+          "command": "escurel.scenarios.new",
+          "when": "view == escurel.scenarios",
+          "group": "navigation@0"
+        },
         {
           "command": "escurel.search",
           "when": "view == escurel.knowledge",
@@ -798,6 +831,11 @@
           "command": "escurel.explainView",
           "when": "view == escurel.runner",
           "group": "navigation@9"
+        },
+        {
+          "command": "escurel.scenarios.refresh",
+          "when": "view == escurel.scenarios",
+          "group": "navigation@1"
         }
       ],
       "view/item/context": [
