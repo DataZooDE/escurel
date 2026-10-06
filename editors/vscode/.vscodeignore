@@ -1,5 +1,7 @@
 **
 !dist/**
+# Test and visual-harness bundles are build outputs of the test suites, not part of the extension.
+dist/test/**
 !media/**
 !docs/SPEC.md
 !docs/BACKEND_GAPS.md

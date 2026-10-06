@@ -1,0 +1,33 @@
+# TLS in front of the workbench: a minimal Caddy reverse proxy (automatic certificates).
+#
+#   docker compose -f compose.yaml -f compose.proxy.yaml up --build -d
+#   (set WORKBENCH_DOMAIN=workbench.example.com and WORKBENCH_TRUSTED_ORIGINS=https://workbench.example.com
+#    in .env; for a local trial use WORKBENCH_DOMAIN=localhost: Caddy issues a local, untrusted certificate)
+#
+# The workbench then needs no published port: only Caddy listens on the host.
+services:
+  workbench:
+    ports: !reset []
+  proxy:
+    image: caddy:2.10-alpine
+    restart: unless-stopped
+    ports:
+      - "${PROXY_HTTP_PORT:-80}:80"
+      - "${PROXY_HTTPS_PORT:-443}:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    environment:
+      WORKBENCH_DOMAIN: ${WORKBENCH_DOMAIN:?set WORKBENCH_DOMAIN}
+    depends_on: [workbench]
+    read_only: true
+    cap_drop: [ALL]
+    cap_add: [NET_BIND_SERVICE]
+    security_opt: ["no-new-privileges:true"]
+    tmpfs: [/tmp]
+    networks: [internal, default]
+
+volumes:
+  caddy-data:
+  caddy-config:

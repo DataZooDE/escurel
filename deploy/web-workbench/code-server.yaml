@@ -1,0 +1,5 @@
+# Baked defaults. Everything security-relevant is also passed as a flag by entrypoint.sh, and the
+# password never lives in this file (it comes from $PASSWORD / $HASHED_PASSWORD at start).
+auth: password
+disable-telemetry: true
+disable-update-check: true
