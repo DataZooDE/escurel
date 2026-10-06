@@ -36,9 +36,23 @@ const read = (p) => readFileSync(p, 'utf8');
 const files = (dir) => readdirSync(join(builtDir, 'pages', dir)).filter((f) => f.endsWith('.md'));
 
 // 1. The pages: skills (data views, records), reports, queries.
-for (const f of files('skills')) await call(admin, 'update_page', { page_id: SKILLS(f.slice(0, -3)), content: read(join(builtDir, 'pages/skills', f)) });
-for (const f of files('reports')) await call(admin, 'update_page', { page_id: SKILLS(f.slice(0, -3)), content: read(join(builtDir, 'pages/reports', f)) });
-for (const f of files('queries')) await call(admin, 'update_page', { page_id: INSTANCE('query', f.slice(0, -3)), content: read(join(builtDir, 'pages/queries', f)) });
+// The seed grows on the hetzner side (new queries and reports): the pages the stories rely on must load,
+// anything else that does not is warned about and left out, never a reason to lose the whole demo.
+const CORE = new Set(['exception_exposure', 'sourcing_options', 'outbound_transports', 'spare_parts', 'supplier_exception',
+  'exception_resolution', 'transport_plan', 'ltb_decision', 'exception-impact-report', 'resolution-options-report',
+  'consolidation-plan-report', 'ltb-report', 'delay_impact', 'delay_impact_summary', 'resolution_options',
+  'consolidation_plan', 'consolidation_candidates', 'ltb_parts', 'ltb_whatif', 'ltb_profile', 'ltb_warehouse_split', 'ltb_quantity']);
+async function load(pageId, content, id) {
+  try {
+    await call(admin, 'update_page', { page_id: pageId, content });
+  } catch (e) {
+    if (CORE.has(id)) throw e;
+    console.error(`s2d: WARNING skipped ${pageId}: ${String(e.message).slice(0, 200)}`);
+  }
+}
+for (const f of files('skills')) await load(SKILLS(f.slice(0, -3)), read(join(builtDir, 'pages/skills', f)), f.slice(0, -3));
+for (const f of files('reports')) await load(SKILLS(f.slice(0, -3)), read(join(builtDir, 'pages/reports', f)), f.slice(0, -3));
+for (const f of files('queries')) await load(INSTANCE('query', f.slice(0, -3)), read(join(builtDir, 'pages/queries', f)), f.slice(0, -3));
 for (const skill of ['exception_exposure', 'sourcing_options', 'outbound_transports', 'spare_parts']) {
   await call(admin, 'create_sql_instance', { skill, id: 'all', overlay_body: `# ${skill}\nIllustrative demo data (synthetic).` });
 }

@@ -112,7 +112,9 @@ export ESCUREL_DEMO_ORDERS_DB_SECRET="$HOME_DIR/secrets/vsx/orders-db"
 # The gateway: verifies tokens, and keeps a fresh bearer in a file (a demo outlasts a token). Its
 # outbound policy is strict by default (https, public addresses only); the demo's outside systems are
 # local, so loopback is opened for THIS process only.
-ESCUREL_EGRESS_ALLOW_LOOPBACK=1 ESCUREL_SECRET_FILE_DIRS="$HOME_DIR/secrets" ESCUREL_SQL_FILE_DIRS="$HOME_DIR/sqlite:$HERE/sources${S2D_DIR:+:$S2D_DIR/data}" setsid nohup "$GATEWAY_BIN" --tenant vsx --seed "$HOME_DIR/seed" --subject alice \
+# Extensions some S2D query pages need (see s2d/optional.py); empty unless the build is there.
+INDEX_EXT=""; [ -n "$S2D_DIR" ] && [ -s "$S2D_DIR/index-extensions" ] && INDEX_EXT="$(head -1 "$S2D_DIR/index-extensions")"
+ESCUREL_INDEX_EXTENSIONS="$INDEX_EXT" ESCUREL_EGRESS_ALLOW_LOOPBACK=1 ESCUREL_SECRET_FILE_DIRS="$HOME_DIR/secrets" ESCUREL_SQL_FILE_DIRS="$HOME_DIR/sqlite:$HERE/sources${S2D_DIR:+:$S2D_DIR/data}" setsid nohup "$GATEWAY_BIN" --tenant vsx --seed "$HOME_DIR/seed" --subject alice \
   --bearer-file "$HOME_DIR/bearer.json" > "$HOME_DIR/gateway.json" 2> "$HOME_DIR/gateway.log" < /dev/null &
 echo $! > "$HOME_DIR/gateway.pid"
 for _ in $(seq 1 120); do [ -s "$HOME_DIR/gateway.json" ] && break; sleep 0.5; done
