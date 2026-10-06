@@ -255,6 +255,7 @@ impl EventInfo {
                     | "evolve_prepare_source"
                     | "evolve_validate"
                     | "evolve_publish_candidate"
+                    | "evolve_compare"
             ))
             || (self.kind == EventKind::System
                 && matches!(

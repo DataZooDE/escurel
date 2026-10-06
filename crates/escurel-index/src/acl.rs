@@ -462,6 +462,7 @@ impl Indexer {
                     | "evolve_prepare_source"
                     | "evolve_validate"
                     | "evolve_publish_candidate"
+                    | "evolve_compare"
             )
         {
             return Ok(event.provenance["captured_by"].as_str() == Some(caller.subject));
