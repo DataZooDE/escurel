@@ -146,4 +146,13 @@ describe('buildReport', () => {
     })!;
     expect(buildReport(def, { totals: [{ x: 0.5 }] }).views[0]).toMatchObject({ value: '0.5' });
   });
+
+  it('words a column the way a planner reads it: units in brackets, acronyms upper case', () => {
+    const def = parseReport({ ...IMPACT, views: [{ kind: 'table', data: 'orders' }] })!;
+    const t = buildReport(def, { orders: [{ stock_value_eur: 1, sla_target: 2, est_cost_eur: 3 }] })
+      .views[0] as {
+      columns: string[];
+    };
+    expect(t.columns).toEqual(['Stock value (EUR)', 'SLA target', 'Est cost (EUR)']);
+  });
 });

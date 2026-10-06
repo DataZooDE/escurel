@@ -59,3 +59,43 @@ test('S2D: approving the proposal records the decision and resolves the exceptio
   await expect(wv.locator('.field[data-name="status"] .value')).toHaveText(/resolved/);
   await stack.shot('s2d-05-approved');
 });
+
+test('S2D: the transport proposal consolidates three shipments and keeps the one with a duty', async ({ stack }) => {
+  const { page } = stack;
+  await approve(stack, /tp-stuttgart-lyon/);
+  await expect
+    .poll(async () => (await expandPage(stack, 'transport_plan', 'tp-stuttgart-lyon-fr-2026-10-08')).frontmatter?.status)
+    .toBe('approved');
+  const fm = (await expandPage(stack, 'transport_plan', 'tp-stuttgart-lyon-fr-2026-10-08')).frontmatter!;
+  expect(fm.shipments).toEqual(['SH-77001', 'SH-77002', 'SH-77003']);
+  expect(fm.pallets).toBe(23);
+  expect(fm.held_pallets).toBe(14);
+  await openRow(page, 'transport_plan', /tp-stuttgart-lyon/);
+  const wv = await webviewWith(page, 'escurel-page-as-ui');
+  const rows = wv.locator('.report tbody tr');
+  await expect(rows.first()).toBeVisible();
+  const text = (await rows.allTextContents()).join('\n');
+  // The three that ship together on Thursday, the one whose delivery duty is 2026-10-09 stays.
+  for (const id of ['SH-77001', 'SH-77002', 'SH-77003', 'SH-77004', 'SH-77005']) expect(text).toContain(id);
+  expect(text).toContain('would miss delivery duty 2026-10-09');
+  await stack.shot('s2d-06-transport-plan');
+});
+
+test('S2D: the last-time-buy proposal holds the service level with 640 units', async ({ stack }) => {
+  const { page } = stack;
+  await approve(stack, /ltb-sp-3307/);
+  await expect
+    .poll(async () => (await expandPage(stack, 'ltb_decision', 'ltb-sp-3307')).frontmatter?.status)
+    .toBe('approved');
+  const fm = (await expandPage(stack, 'ltb_decision', 'ltb-sp-3307')).frontmatter!;
+  expect(fm.qty).toBe(640);
+  expect(fm.part).toBe('SP-3307');
+  await openRow(page, 'ltb_decision', /ltb-sp-3307/);
+  const wv = await webviewWith(page, 'escurel-page-as-ui');
+  await expect(wv.locator('.report .kpi').first()).toContainText('96%');
+  await expect(wv.locator('.report .kpi').first()).toContainText('Probability it lasts');
+  const body = await wv.locator('.report').innerText();
+  // The warehouse split of the 640 units.
+  for (const n of ['352', '160', '128']) expect(body).toContain(n);
+  await stack.shot('s2d-07-last-time-buy');
+});

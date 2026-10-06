@@ -83,8 +83,15 @@ export function reportParams(
 }
 
 function humanise(key: string): string {
-  const s = key.replace(/[_-]+/g, ' ').trim();
-  return cleanText(s.charAt(0).toUpperCase() + s.slice(1), 40);
+  // Units go in brackets and acronyms stay acronyms: "stock_value_eur" reads "Stock value (EUR)".
+  const unit = /_(eur|usd|pct|kg|pcs)$/i.exec(key);
+  const base = unit ? key.slice(0, unit.index) : key;
+  const s = base
+    .replace(/[_-]+/g, ' ')
+    .trim()
+    .replace(/\b(sla|sku|po|erp|id)\b/gi, (m) => m.toUpperCase());
+  const word = s.charAt(0).toUpperCase() + s.slice(1);
+  return cleanText(unit ? `${word} (${unit[1]?.toUpperCase()})` : word, 40);
 }
 
 function format(v: unknown): string {

@@ -174,5 +174,8 @@ function displayOf(kind: string, render: string, value: unknown): string {
     }).format(value);
   if (typeof value === 'number') return String(value);
   if (typeof value === 'string') return render === 'markdown' && kind !== 'string' ? value : value;
+  // A list of plain values reads as a list: "SH-77001, SH-77002", not ["SH-77001","SH-77002"].
+  if (Array.isArray(value) && value.every((v) => typeof v === 'string' || typeof v === 'number'))
+    return value.join(', ');
   return JSON.stringify(value);
 }
