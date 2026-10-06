@@ -6,20 +6,27 @@ import { log } from '../log';
 import type { Services } from '../services';
 import {
   ComparisonNotFoundError,
-  comparisonSummary,
   comparisonTexts,
+  evolveReachable,
   fetchComparison,
   matchesPage,
+  tableSummary,
   type Comparison,
 } from '../evolve/scenarioDiff';
 import {
   SCENARIO_SCHEME,
+  UNVERIFIED_MISMATCH,
+  UNVERIFIED_NO_RECORD,
+  collectInstances,
+  comparisonId,
   comparisonPageRows,
   comparisonRequestPage,
   comparisonUri,
+  endpointProblem,
   parseComparisonUri,
   shouldPoll,
   tableRows,
+  verifiedBlockedLabel,
   type ComparisonPageRow,
   type EmptyRow,
   type TableRow,
@@ -51,6 +58,7 @@ const BASELINES = [
     description: 'the program the winner was derived from',
     value: 'parent',
   },
+  { label: 'A specific program…', description: 'enter a program id', value: 'program' },
 ];
 
 /**
@@ -146,7 +154,7 @@ export class ScenariosTree
       const { comparison: result, verified } = await this.load(comparison, pageResultSha256);
       if (!verified) {
         void vscode.window.showWarningMessage(
-          'This comparison page does not match Evolve’s record, so nothing from it is shown.',
+          `${UNVERIFIED_MISMATCH}, so nothing from it is shown. Refresh the page and try again.`,
         );
         return;
       }
@@ -159,8 +167,7 @@ export class ScenariosTree
         vscode.Uri.parse(comparisonUri(comparison, table, 'candidate')),
         `${comparison} · ${table}: baseline ↔ candidate`,
       );
-      const lines = comparisonSummary(result);
-      void vscode.window.setStatusBarMessage(lines[lines.length - 1] ?? '', 8000);
+      void vscode.window.setStatusBarMessage(tableSummary(result, table), 8000);
     } catch (e) {
       void vscode.window.showErrorMessage(describeError(e));
     }
@@ -185,11 +192,11 @@ export class ScenariosTree
     try {
       const owner = await this.services.subject();
       if (!owner) throw new Error('Sign in before requesting a comparison.');
-      const experiments = await this.client().listInstancesPage({
-        skill_id: 'evolve_experiment',
-        limit: 100,
-      });
-      const choices = experiments.instances.map((instance) => {
+      const experiments = await collectInstances(
+        this.client().listInstances({ skill_id: 'evolve_experiment', limit: 100 }),
+        1000,
+      );
+      const choices = experiments.map((instance) => {
         const id =
           typeof instance.frontmatter.id === 'string' && instance.frontmatter.id
             ? instance.frontmatter.id
@@ -206,19 +213,26 @@ export class ScenariosTree
         placeHolder: 'Which experiment’s winner should be compared?',
       });
       if (!experiment) return;
-      const baseline = await vscode.window.showQuickPick(BASELINES, {
+      const picked = await vscode.window.showQuickPick(BASELINES, {
         placeHolder: 'Compare the winner against…',
       });
-      if (!baseline) return;
-      const id = `cmp-${experiment.label}-${baseline.value}-${Date.now().toString(36)}`.slice(
-        0,
-        128,
-      );
+      if (!picked) return;
+      let baseline = picked.value;
+      if (baseline === 'program') {
+        const entered = await vscode.window.showInputBox({
+          prompt: 'Program id to compare the winner against',
+          validateInput: (value) =>
+            /^\d{1,12}$/.test(value) ? undefined : 'Enter a program id (digits only).',
+        });
+        if (!entered) return;
+        baseline = entered;
+      }
+      const id = comparisonId(experiment.label, baseline, Date.now());
       const content = comparisonRequestPage({
         id,
         owner,
         experiment: experiment.label,
-        baseline: baseline.value,
+        baseline,
       });
       const pageId = `markdown/instances/evolve_comparison/${id}.md`;
       const written = await this.client().updatePage({
@@ -234,7 +248,7 @@ export class ScenariosTree
       this.refresh();
       await vscode.commands.executeCommand('escurel.openPage', pageId);
       void vscode.window.showInformationMessage(
-        'Comparison requested. Click Compute comparison on the page to run it.',
+        'Comparison page created, not computed yet. Click Compute comparison on the page.',
       );
     } catch (e) {
       void vscode.window.showErrorMessage(describeError(e));
@@ -291,11 +305,13 @@ export class ScenariosTree
   async getChildren(n?: Node): Promise<Node[]> {
     try {
       if (!n) {
-        if (!readConfig().evolveEndpoint)
+        const endpoint = readConfig().evolveEndpoint;
+        const problem = endpointProblem(endpoint);
+        if (problem)
           return [
             {
               kind: 'message',
-              label: 'Set escurel.evolveEndpoint to see scenario comparisons.',
+              label: problem,
               command: {
                 command: 'workbench.action.openSettings',
                 title: 'Open setting',
@@ -303,11 +319,11 @@ export class ScenariosTree
               },
             },
           ];
-        const page = await this.client().listInstancesPage({
-          skill_id: 'evolve_comparison',
-          limit: 100,
-        });
-        const rows = comparisonPageRows(page.instances);
+        const instances = await collectInstances(
+          this.client().listInstances({ skill_id: 'evolve_comparison', limit: 100 }),
+          1000,
+        );
+        const rows = comparisonPageRows(instances);
         this.schedulePoll(rows);
         if (!rows.length)
           return [
@@ -321,23 +337,48 @@ export class ScenariosTree
       }
       if (n.kind !== 'comparison') return [];
       const pageId = `markdown/instances/evolve_comparison/${n.comparison}.md`;
-      if (n.status === 'requested')
+      const openPage = { command: 'escurel.openPage', title: 'Open page', arguments: [pageId] };
+      if (n.status === 'requested') {
+        // Waiting looks the same whether Evolve is slow or down, so ask it.
+        if (!(await evolveReachable(readConfig().evolveEndpoint)))
+          return [
+            {
+              kind: 'message',
+              label:
+                'Evolve is not reachable. The comparison will be computed when the service is back.',
+              command: {
+                command: 'workbench.action.openSettings',
+                title: 'Open setting',
+                arguments: ['escurel.evolveEndpoint'],
+              },
+            },
+          ];
         return [
           {
             kind: 'message',
-            label: 'Waiting to be computed. Open the page and click Compute comparison.',
-            command: { command: 'escurel.openPage', title: 'Open page', arguments: [pageId] },
+            label:
+              'Waiting for Evolve. If you edited the page after clicking, click Compute comparison again.',
+            command: openPage,
           },
         ];
-      if (n.status === 'blocked')
-        return [
-          {
-            kind: 'message',
-            label: `Blocked: ${n.reason ?? 'Evolve could not compute this comparison.'}`,
-          },
-        ];
+      }
+      if (n.status === 'blocked') {
+        // The page's own `reason` is whatever its author wrote; only Evolve's record counts.
+        const { comparison } = await this.load(n.comparison, undefined);
+        const label = verifiedBlockedLabel(comparison);
+        return label
+          ? [{ kind: 'message', label }]
+          : [{ kind: 'unverified', label: UNVERIFIED_MISMATCH, description: '' }];
+      }
       if (n.status !== 'completed')
-        return [{ kind: 'message', label: 'This page is not a recognizable comparison.' }];
+        return [
+          {
+            kind: 'message',
+            label:
+              'Not a recognizable comparison. Open the page and set status to requested, completed or blocked.',
+            command: openPage,
+          },
+        ];
       const { comparison, verified } = await this.load(n.comparison, n.pageResultSha256);
       return tableRows(comparison, verified).map((row) =>
         row.kind === 'table'
@@ -345,15 +386,9 @@ export class ScenariosTree
           : row,
       );
     } catch (e) {
-      // A page that says "completed" with no record behind it proves nothing.
+      // A page that says it is finished, with no record behind it, proves nothing.
       if (e instanceof ComparisonNotFoundError)
-        return [
-          {
-            kind: 'unverified',
-            label: 'Unverified: Evolve has no record of this comparison',
-            description: '',
-          },
-        ];
+        return [{ kind: 'unverified', label: UNVERIFIED_NO_RECORD, description: '' }];
       log().warn(`escurel: scenarios tree: ${describeError(e)}`);
       return [{ kind: 'message', label: describeError(e) }];
     }

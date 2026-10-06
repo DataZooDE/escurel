@@ -3,7 +3,11 @@ import {
   SCENARIO_SCHEME,
   comparisonPageRows,
   comparisonRequestPage,
+  collectInstances,
+  comparisonId,
   comparisonUri,
+  endpointProblem,
+  verifiedBlockedLabel,
   shouldPoll,
   parseComparisonUri,
   tableRows,
@@ -170,5 +174,78 @@ describe('shouldPoll', () => {
 
   it('never polls a view nobody is looking at', () => {
     expect(shouldPoll(rows('requested'), false)).toBe(false);
+  });
+});
+
+describe('comparisonId', () => {
+  it('keeps the unique suffix even for a very long experiment id', () => {
+    const long = 'e'.repeat(128);
+    const a = comparisonId(long, 'seed', 1_000);
+    const b = comparisonId(long, 'parent', 2_000);
+    expect(a.length).toBeLessThanOrEqual(128);
+    expect(a).not.toBe(b);
+    expect(a).toMatch(/-seed-/);
+    expect(a.endsWith((1_000).toString(36))).toBe(true);
+  });
+
+  it('is a plain token for ordinary input', () => {
+    expect(comparisonId('exp-1', 'parent', 5)).toBe(`cmp-exp-1-parent-${(5).toString(36)}`);
+    expect(comparisonId('exp-1', '42', 5)).toMatch(/^cmp-exp-1-42-/);
+  });
+});
+
+describe('endpointProblem', () => {
+  it('is undefined for an allowed endpoint and explains a bad one', () => {
+    expect(endpointProblem('http://127.0.0.1:8099')).toBeUndefined();
+    expect(endpointProblem('https://evolve.example.com')).toBeUndefined();
+    expect(endpointProblem('http://evolve.example.com')).toMatch(/HTTPS/);
+    expect(endpointProblem('not a url')).toBeTruthy();
+    expect(endpointProblem('')).toMatch(/escurel.evolveEndpoint/);
+  });
+});
+
+describe('collectInstances', () => {
+  const page = (...ids: string[]) => ({
+    instances: ids.map((id) => instance(id, { experiment: 'e', status: 'requested' })),
+    next_cursor: null,
+  });
+
+  it('follows every page, so the 101st comparison is reachable', async () => {
+    async function* pages() {
+      yield page(...Array.from({ length: 100 }, (_, i) => `c${i}`));
+      yield page('c100');
+    }
+    const all = await collectInstances(pages(), 1000);
+    expect(all).toHaveLength(101);
+    expect(all.at(-1)?.page_id).toContain('c100');
+  });
+
+  it('stops at the cap rather than reading without limit', async () => {
+    async function* endless() {
+      for (;;) yield page('a', 'b', 'c');
+    }
+    expect((await collectInstances(endless(), 7)).length).toBe(7);
+  });
+});
+
+describe('verifiedBlockedLabel', () => {
+  it('shows the reason from Evolve’s record, never the page’s own claim', () => {
+    const record = parseComparison({
+      comparison: 'c',
+      experiment: 'e',
+      state: 'blocked',
+      reason: 'no scenario state tables',
+      tables: [],
+      rows: [],
+    });
+    expect(verifiedBlockedLabel(record)).toBe('Blocked: no scenario state tables');
+    const completed = parseComparison({
+      comparison: 'c',
+      experiment: 'e',
+      state: 'completed',
+      tables: [],
+      rows: [],
+    });
+    expect(verifiedBlockedLabel(completed)).toBeUndefined();
   });
 });

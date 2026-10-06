@@ -423,7 +423,7 @@
       },
       {
         "command": "escurel.scenarios.compare",
-        "title": "Compare seed and winner",
+        "title": "Compare baseline and candidate",
         "category": "Escurel"
       },
       {

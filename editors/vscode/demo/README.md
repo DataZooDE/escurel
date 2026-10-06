@@ -109,10 +109,14 @@ synthetic and the proposals are scripted (no model, no spend); a comparison is a
 the training instance. It explains what changed. It is not validation and says nothing about unseen data.
 
 ```
-ESCUREL_DEMO_EVOLVE_AGENT_BIN=/path/to/evolve-agent \   # built with --features synthetic-brain
+# evolve-agent must be built with --features synthetic-brain
+ESCUREL_DEMO_EVOLVE_AGENT_BIN=/path/to/evolve-agent \
 ANOFOX_EXTENSION_DIR=~/.anofox/profiles/duckdb-1.5.6-linux_amd64 \
   demo/run.sh start
 ```
+
+The window opens on the assortment comparison page, and the Scenarios view is already wired to the demo's
+Evolve service (no setting to change).
 
 `run.sh` starts Evolve in OIDC mode against the demo gateway's issuer, runs the two searches as the demo
 user (`evolve-scenarios.mjs`), and leaves one comparison page for each under the `evolve_comparison`

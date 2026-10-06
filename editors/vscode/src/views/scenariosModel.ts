@@ -1,5 +1,6 @@
 import type { Instance } from '../client/types';
 import type { Comparison } from '../evolve/scenarioDiff';
+import { evolveOrigin } from '../evolve/holdoutClient';
 
 /** Virtual documents for the baseline-vs-candidate diff are served under this scheme. */
 export const SCENARIO_SCHEME = 'escurel-scenario';
@@ -30,6 +31,10 @@ export interface EmptyRow {
   label: string;
   description: string;
 }
+
+/** One wording per situation, so a user can tell a forged page from a stale one. */
+export const UNVERIFIED_MISMATCH = 'Unverified: this page does not match Evolve’s record';
+export const UNVERIFIED_NO_RECORD = 'Unverified: Evolve has no record of this comparison';
 
 export interface UnverifiedRow {
   kind: 'unverified';
@@ -171,4 +176,47 @@ export function comparisonRequestPage(request: {
  */
 export function shouldPoll(rows: ComparisonPageRow[], visible: boolean): boolean {
   return visible && rows.some((row) => row.status === 'requested');
+}
+
+/**
+ * A new comparison id that stays unique and within 128 characters: the unique suffix is built first
+ * and the experiment part is shortened to fit, instead of cutting the suffix off a long id.
+ */
+export function comparisonId(experiment: string, baseline: string, nowMs: number): string {
+  const suffix = `-${baseline}-${nowMs.toString(36)}`;
+  return `cmp-${experiment.slice(0, Math.max(1, 128 - 4 - suffix.length))}${suffix}`;
+}
+
+/** Why the configured Evolve endpoint cannot be used, or undefined when it can. */
+export function endpointProblem(endpoint: string): string | undefined {
+  if (!endpoint)
+    return 'Set escurel.evolveEndpoint to the Evolve service to see scenario comparisons.';
+  try {
+    evolveOrigin(endpoint);
+    return undefined;
+  } catch (e) {
+    return e instanceof Error ? e.message : 'The Evolve endpoint is not usable.';
+  }
+}
+
+/** Every page of a listing, up to `max` rows, so item 101 is reachable. */
+export async function collectInstances(
+  pages: AsyncIterable<{ instances: Instance[] }>,
+  max: number,
+): Promise<Instance[]> {
+  const out: Instance[] = [];
+  for await (const page of pages) {
+    for (const instance of page.instances) {
+      if (out.length >= max) return out;
+      out.push(instance);
+    }
+    if (out.length >= max) break;
+  }
+  return out;
+}
+
+/** The reason of a blocked comparison, taken from Evolve's record (never from the page's claim). */
+export function verifiedBlockedLabel(comparison: Comparison): string | undefined {
+  if (comparison.state !== 'blocked') return undefined;
+  return `Blocked: ${comparison.reason ?? 'Evolve could not compute this comparison.'}`;
 }

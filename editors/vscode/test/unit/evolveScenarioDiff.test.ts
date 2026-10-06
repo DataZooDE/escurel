@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   comparisonSummary,
+  evolveReachable,
+  tableSummary,
   comparisonTexts,
   ComparisonNotFoundError,
   fetchComparison,
@@ -214,5 +216,88 @@ describe('fetchComparison', () => {
     await expect(
       fetchComparison('http://evolve.example.com', refresher('tok'), 'cmp-1'),
     ).rejects.toThrow(/HTTPS/);
+  });
+});
+
+describe('crew review fixes', () => {
+  it('never prints a literal null: an empty cell reads as (empty)', () => {
+    const c = parseComparison({
+      ...body,
+      rows: [
+        {
+          table: 'p0_bin_assignment',
+          item_id: 2,
+          change_type: 'modified',
+          column_name: 'bin_id',
+          old_value: null,
+          new_value: '1',
+        },
+      ],
+    });
+    const { baseline, candidate } = comparisonTexts(c, 'p0_bin_assignment');
+    expect(baseline).toContain('bin_id = (empty)');
+    expect(baseline).not.toContain('null');
+    expect(candidate).toContain('bin_id = 1');
+  });
+
+  it('marks the comparison truncated when stored rows remain after the page cap', async () => {
+    const page = (n: number) =>
+      new Response(
+        JSON.stringify({
+          ...body,
+          rows: body.rows.slice(0, 1),
+          next_cursor: String(n + 1),
+          truncated: false,
+        }),
+        { status: 200 },
+      );
+    let calls = 0;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => page(calls++)),
+    );
+    const c = await fetchComparison('http://127.0.0.1:8099', refresher('tok'), 'cmp-1');
+    expect(c.truncated).toBe(true);
+  });
+
+  it('summarises the table that was opened, not the disclaimer', () => {
+    const c = parseComparison(body);
+    expect(tableSummary(c, 'p0_bin_assignment')).toBe(
+      'p0_bin_assignment: 2 modified, 0 added, 1 removed',
+    );
+    expect(tableSummary(c, 'missing')).toBe('missing: no changes');
+  });
+});
+
+describe('evolveReachable', () => {
+  it('is true when the service answers its health check, without sending a token', async () => {
+    const fetchMock = vi.fn(async () => new Response('ok', { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+    expect(await evolveReachable('http://127.0.0.1:8099')).toBe(true);
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toBe('http://127.0.0.1:8099/healthz');
+    expect(JSON.stringify(init)).not.toMatch(/authorization/i);
+  });
+
+  it('is false when the service is down or answers an error', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        throw new Error('ECONNREFUSED');
+      }),
+    );
+    expect(await evolveReachable('http://127.0.0.1:8099')).toBe(false);
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response('', { status: 503 })),
+    );
+    expect(await evolveReachable('http://127.0.0.1:8099')).toBe(false);
+  });
+
+  it('is false for an endpoint that is not allowed, instead of calling it', async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    expect(await evolveReachable('http://evolve.example.com')).toBe(false);
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });

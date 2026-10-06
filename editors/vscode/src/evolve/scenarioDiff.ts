@@ -125,6 +125,11 @@ export function matchesPage(comparison: Comparison, pageResultSha256: string | u
   );
 }
 
+/** An empty cell reads as (empty): a literal `null` looks like data. */
+function cell(value: string | null): string {
+  return value === null ? '(empty)' : value;
+}
+
 function keyLabel(key: Record<string, unknown>): string {
   const parts = Object.entries(key).map(([name, v]) => `${name}=${String(v)}`);
   return parts.join(', ') || '(row)';
@@ -144,8 +149,8 @@ export function comparisonTexts(
     if (row.table !== table) continue;
     const key = keyLabel(row.key);
     if (row.changeType === 'modified') {
-      baseline.push(`${key} · ${row.columnName} = ${row.oldValue}`);
-      candidate.push(`${key} · ${row.columnName} = ${row.newValue}`);
+      baseline.push(`${key} · ${row.columnName} = ${cell(row.oldValue)}`);
+      candidate.push(`${key} · ${row.columnName} = ${cell(row.newValue)}`);
     } else if (row.changeType === 'removed') {
       baseline.push(`${key} · (row)`);
     } else {
@@ -163,6 +168,35 @@ export function comparisonTexts(
     candidate:
       [header('candidate', comparison.candidateProgramId), ...candidate, ...note].join('\n') + '\n',
   };
+}
+
+/** The one-line counts for the table that was opened (what a status message should say). */
+export function tableSummary(comparison: Comparison, table: string): string {
+  const t = comparison.tables.find((entry) => entry.table === table);
+  if (!t) return `${table}: no changes`;
+  return `${t.table}: ${t.rowsModified} modified, ${t.rowsAdded} added, ${t.rowsRemoved} removed`;
+}
+
+/**
+ * Whether Evolve answers its (unauthenticated) health check. A comparison that waits forever with
+ * the service down looks exactly like a slow one, so the view asks.
+ */
+export async function evolveReachable(endpoint: string): Promise<boolean> {
+  let origin: string;
+  try {
+    origin = evolveOrigin(endpoint);
+  } catch {
+    return false;
+  }
+  try {
+    const response = await fetch(origin + '/healthz', {
+      redirect: 'error',
+      signal: AbortSignal.timeout(3_000),
+    });
+    return response.ok;
+  } catch {
+    return false;
+  }
 }
 
 /** Plain-language lines for a tooltip or status message; always says what the comparison is not. */
@@ -244,7 +278,8 @@ export async function fetchComparison(
     result = { ...result, rows: [...result.rows, ...more.rows] };
     next = more.nextCursor;
   }
-  const { nextCursor, ...complete } = result;
-  void nextCursor;
+  // Stored rows remained after the page cap: say so rather than present a short list as complete.
+  const complete: Comparison = { ...result, truncated: result.truncated || next !== undefined };
+  delete complete.nextCursor;
   return complete;
 }
