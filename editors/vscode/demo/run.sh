@@ -77,6 +77,14 @@ fi
 sed -i "s|@VBAK_DIR@|$HERE/sources/vbak|" "$HOME_DIR/seed/skills/customer-order.md"
 sed -i "s|@LFA1_DIR@|$HERE/sources/lfa1|" "$HOME_DIR/seed/skills/supplier.md"
 
+# The Source-to-Deliver (S2D) demo: data, skills and reports from the hetzner-agent-substrate seed (the
+# single source), built locally by s2d/sync.sh. ESCUREL_DEMO_S2D=0 leaves it out.
+S2D_DIR=""
+if [ "${ESCUREL_DEMO_S2D:-1}" = "1" ]; then
+  S2D_DIR="$HOME_DIR/s2d"
+  ESCUREL_CLI_BIN="${ESCUREL_CLI_BIN:-$REPO/target/release/escurel}" "$HERE/s2d/sync.sh" "$S2D_DIR"
+fi
+
 # Two outside systems, as real local processes on real sockets: a REST portal (supplier ratings) and
 # an MCP server (delivery confirmations). escurel reads them like any external system.
 service() { # name script
@@ -104,7 +112,7 @@ export ESCUREL_DEMO_ORDERS_DB_SECRET="$HOME_DIR/secrets/vsx/orders-db"
 # The gateway: verifies tokens, and keeps a fresh bearer in a file (a demo outlasts a token). Its
 # outbound policy is strict by default (https, public addresses only); the demo's outside systems are
 # local, so loopback is opened for THIS process only.
-ESCUREL_EGRESS_ALLOW_LOOPBACK=1 ESCUREL_SECRET_FILE_DIRS="$HOME_DIR/secrets" ESCUREL_SQL_FILE_DIRS="$HOME_DIR/sqlite:$HERE/sources" setsid nohup "$GATEWAY_BIN" --tenant vsx --seed "$HOME_DIR/seed" --subject alice \
+ESCUREL_EGRESS_ALLOW_LOOPBACK=1 ESCUREL_SECRET_FILE_DIRS="$HOME_DIR/secrets" ESCUREL_SQL_FILE_DIRS="$HOME_DIR/sqlite:$HERE/sources${S2D_DIR:+:$S2D_DIR/data}" setsid nohup "$GATEWAY_BIN" --tenant vsx --seed "$HOME_DIR/seed" --subject alice \
   --bearer-file "$HOME_DIR/bearer.json" > "$HOME_DIR/gateway.json" 2> "$HOME_DIR/gateway.log" < /dev/null &
 echo $! > "$HOME_DIR/gateway.pid"
 for _ in $(seq 1 120); do [ -s "$HOME_DIR/gateway.json" ] && break; sleep 0.5; done
@@ -133,6 +141,11 @@ start_runner echo
 
 echo "playing the story (a few seconds)..."
 node "$HERE/driver.mjs" "$HOME_DIR/gateway.json" "$HOME_DIR/bearer.json" > "$HOME_DIR/story.json"
+# The S2D stories: three agent proposals waiting for a planner (see s2d/REHEARSAL.md).
+if [ -n "$S2D_DIR" ]; then
+  echo "loading the S2D demo (hetzner seed $(cat "$S2D_DIR/STAMP"))..."
+  node "$HERE/s2d/seed.mjs" "$HOME_DIR/gateway.json" "$HOME_DIR/bearer.json" "$S2D_DIR" > "$HOME_DIR/s2d-story.json"
+fi
 if [ "${ESCUREL_DEMO_RUNNER_HARNESS:-echo}" != echo ]; then
   kill "$(cat "$HOME_DIR/runner.pid")"
   for _ in $(seq 1 100); do

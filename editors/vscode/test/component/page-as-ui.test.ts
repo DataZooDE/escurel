@@ -655,3 +655,66 @@ describe('<escurel-page-as-ui> thread strip', () => {
     expect(q(el, '.viewer')).to.equal(null);
   });
 });
+
+describe('<escurel-page-as-ui> report figures', () => {
+  const withReport: PageModel = {
+    ...orderPage,
+    viewer: { report: 'exception-impact-report' },
+    report: {
+      title: 'Impact of a supplier delay',
+      chartsNote: true,
+      views: [
+        { kind: 'kpi', label: 'Orders late', value: '4' },
+        { kind: 'kpi', label: 'Penalty exposure (EUR)', value: '132,400' },
+        {
+          kind: 'table',
+          columns: ['Customer order', 'Days late'],
+          rows: [
+            ['SO-1', '18'],
+            ['SO-2', '13'],
+          ],
+          more: 3,
+        },
+      ],
+    },
+  };
+  async function renderWith(model: PageModel): Promise<EscurelPageAsUi> {
+    const el = await fixture<EscurelPageAsUi>(
+      html`<escurel-page-as-ui .model=${model}></escurel-page-as-ui>`,
+    );
+    await el.updateComplete;
+    return el;
+  }
+
+  it('draws the report KPIs as labelled figures and its tables as tables', async () => {
+    const el = await renderWith(withReport);
+    expect(text(q(el, '.report h2'))).to.equal('Impact of a supplier delay');
+    expect(qa(el, '.report .kpi').map(text)).to.deep.equal([
+      '4 Orders late',
+      '132,400 Penalty exposure (EUR)',
+    ]);
+    expect(qa(el, '.report th').map(text)).to.deep.equal(['Customer order', 'Days late']);
+    expect(
+      qa(el, '.report tbody tr').map((tr) => Array.from(tr.querySelectorAll('td')).map(text)),
+    ).to.deep.equal([
+      ['SO-1', '18'],
+      ['SO-2', '13'],
+    ]);
+    expect(text(q(el, '.report .more'))).to.contain('3 more');
+  });
+
+  it('says plainly that a chart is not drawn here, instead of dropping it silently', async () => {
+    const el = await renderWith(withReport);
+    expect(text(q(el, '.report .charts-note'))).to.contain('chart');
+  });
+
+  it('draws nothing when the record has no report to show', async () => {
+    const el = await renderWith({ ...orderPage });
+    expect(q(el, '.report')).to.equal(null);
+  });
+
+  it('does not call the report "rendered by Peacock" to a person who is not a developer', async () => {
+    const el = await renderWith(withReport);
+    expect(text(q(el, '.viewer'))).not.to.contain('Peacock');
+  });
+});

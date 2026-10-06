@@ -1,3 +1,4 @@
+import type { ReportModel } from '../../src/shared/report';
 import { isSourceField } from '../../src/shared/rowSource';
 import { isEvolveReviewControl } from '../../src/shared/evolveControls';
 import { sourceBanner } from '../../src/shared/sourceBanner';
@@ -291,6 +292,42 @@ export class EscurelPageAsUi extends LitElement {
         text-decoration: underline;
         cursor: pointer;
       }
+      .report .kpis {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 12px;
+        margin: 6px 0 12px;
+      }
+      .report .kpi {
+        min-width: 140px;
+        padding: 8px 14px;
+        border: 1px solid var(--vscode-widget-border, var(--vscode-panel-border));
+        border-radius: 4px;
+        background: var(--vscode-editorWidget-background, transparent);
+      }
+      .report .kpi-value {
+        font-size: 1.6em;
+        font-weight: 600;
+        line-height: 1.2;
+      }
+      .report .kpi-label {
+        color: var(--escurel-muted);
+      }
+      .report table {
+        border-collapse: collapse;
+        margin: 6px 0;
+        width: 100%;
+      }
+      .report th,
+      .report td {
+        text-align: left;
+        padding: 4px 10px;
+        border-bottom: 1px solid var(--vscode-widget-border, var(--vscode-panel-border));
+      }
+      .report th {
+        color: var(--escurel-muted);
+        font-weight: 600;
+      }
       .thread-strip {
         display: flex;
         flex-wrap: wrap;
@@ -375,6 +412,33 @@ export class EscurelPageAsUi extends LitElement {
   }
 
   /** What a row of an `instances: rows` skill is: read-only data from a source, plus the person's notes. */
+  private reportSection(r: ReportModel) {
+    const kpis = r.views.filter((v) => v.kind === 'kpi');
+    const tables = r.views.filter((v) => v.kind === 'table');
+    return html`<section class="report">
+      <h2>${r.title}</h2>
+      ${kpis.length
+        ? html`<div class="kpis">
+            ${kpis.map(
+              (k) =>
+                html`<div class="kpi">
+                  <div class="kpi-value">${k.value}</div>
+                  <div class="kpi-label">${k.label}</div>
+                </div>`,
+            )}
+          </div>`
+        : nothing}
+      ${tables.map(
+        (t) => html`<table>
+            <thead><tr>${t.columns.map((c) => html`<th scope="col">${c}</th>`)}</tr></thead>
+            <tbody>${t.rows.map((row) => html`<tr>${row.map((c) => html`<td>${c}</td>`)}</tr>`)}</tbody>
+          </table>
+          ${t.more ? html`<p class="muted more">${t.more} more not shown</p>` : nothing}`,
+      )}
+      ${r.chartsNote ? html`<p class="muted charts-note">The chart for this report is not drawn in this view.</p>` : nothing}
+    </section>`;
+  }
+
   private sourceStrip(
     source: NonNullable<PageModel['source']>,
     writeBack: NonNullable<PageModel['writeBack']> | undefined,
@@ -503,14 +567,14 @@ export class EscurelPageAsUi extends LitElement {
       ${
         m.viewer
           ? html`<div class="viewer">
-              Chart:
+              ${m.report ? 'Figures from' : 'Chart:'}
               <button
                 class="open-report"
                 @click=${() => this.send({ type: 'view-skill', skill: m.viewer!.report })}
               >
                 ${m.viewer.report}
               </button>
-              (rendered by Peacock)
+              ${m.report ? nothing : '(rendered by Peacock)'}
             </div>`
           : nothing
       }
@@ -562,6 +626,8 @@ export class EscurelPageAsUi extends LitElement {
               </p>`
         }
       </section>
+
+      ${m.report ? this.reportSection(m.report) : nothing}
 
       ${
         m.preview

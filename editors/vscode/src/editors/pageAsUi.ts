@@ -11,6 +11,7 @@ import { newNonce } from './nonce';
 import { safePost } from '../shared/safePost';
 import { findThreadStrip } from '../shared/threadStrip';
 import { parseViewer } from '../shared/viewer';
+import { loadReport } from './reportLoader';
 import type { HostToWebview, PageModel, WebviewToHost } from '../shared/protocol';
 
 export const VIEW_TYPE = 'escurel.pageAsUi';
@@ -92,7 +93,10 @@ export class PageAsUiEditor implements vscode.CustomReadonlyEditorProvider {
           .expand({ page_id: `markdown/skills/${skill.id}.md` })
           .catch(() => undefined);
         const viewer = parseViewer(skillPage?.frontmatter);
-        const model = viewer ? { ...fromPage, viewer } : fromPage;
+        // The figures that report draws for THIS record (KPIs and tables); none when it cannot be shown.
+        const report = viewer ? await loadReport(c, viewer.report, e.frontmatter ?? {}) : undefined;
+        const withViewer = viewer ? { ...fromPage, viewer } : fromPage;
+        const model = report ? { ...withViewer, report } : withViewer;
         // Where the page came from. A failure here must not cost the user the page: the strip
         // is an addition to it, so it degrades to absent.
         const strip = await findThreadStrip((cursor) =>
