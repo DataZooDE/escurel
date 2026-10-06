@@ -163,3 +163,11 @@ export function comparisonRequestPage(request: {
     '',
   ].join('\n');
 }
+
+/**
+ * Whether the view should look again soon: a comparison is waiting for Evolve to fill it in and
+ * someone is looking at the view. Once nothing is waiting, or the view is hidden, it stops.
+ */
+export function shouldPoll(rows: ComparisonPageRow[], visible: boolean): boolean {
+  return visible && rows.some((row) => row.status === 'requested');
+}

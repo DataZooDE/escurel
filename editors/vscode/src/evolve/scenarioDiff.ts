@@ -177,6 +177,14 @@ export function comparisonSummary(comparison: Comparison): string[] {
   return lines;
 }
 
+/** Evolve has no record of the comparison (or it is another owner's: the answer is the same). */
+export class ComparisonNotFoundError extends Error {
+  constructor() {
+    super('Evolve does not know this comparison (not found).');
+    this.name = 'ComparisonNotFoundError';
+  }
+}
+
 function rejectionMessage(status: number): string {
   if (status === 401)
     return 'Evolve rejected the signed-in token. Check its OIDC audience and sign in again.';
@@ -213,6 +221,7 @@ async function fetchPage(
     }
     lastStatus = response.status;
     if (response.status === 401 && attempt === 0) continue;
+    if (response.status === 404) throw new ComparisonNotFoundError();
     if (!response.ok) throw new Error(rejectionMessage(response.status));
     return response.json();
   }

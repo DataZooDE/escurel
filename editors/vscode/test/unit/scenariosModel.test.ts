@@ -4,6 +4,7 @@ import {
   comparisonPageRows,
   comparisonRequestPage,
   comparisonUri,
+  shouldPoll,
   parseComparisonUri,
   tableRows,
 } from '../../src/views/scenariosModel';
@@ -154,5 +155,20 @@ describe('comparisonRequestPage', () => {
       /baseline/,
     );
     expect(() => comparisonRequestPage({ ...ok, owner: '' })).toThrow(/owner/);
+  });
+});
+
+describe('shouldPoll', () => {
+  const rows = (...statuses: ('requested' | 'completed' | 'blocked' | 'unknown')[]) =>
+    comparisonPageRows(statuses.map((status, i) => instance(`c${i}`, { experiment: 'e', status })));
+
+  it('keeps looking only while a comparison is waiting for Evolve and the view is open', () => {
+    expect(shouldPoll(rows('requested', 'completed'), true)).toBe(true);
+    expect(shouldPoll(rows('completed', 'blocked'), true)).toBe(false);
+    expect(shouldPoll(rows(), true)).toBe(false);
+  });
+
+  it('never polls a view nobody is looking at', () => {
+    expect(shouldPoll(rows('requested'), false)).toBe(false);
   });
 });

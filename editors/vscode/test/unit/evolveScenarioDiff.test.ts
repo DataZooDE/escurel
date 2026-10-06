@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   comparisonSummary,
   comparisonTexts,
+  ComparisonNotFoundError,
   fetchComparison,
   matchesPage,
   parseComparison,
@@ -203,7 +204,7 @@ describe('fetchComparison', () => {
     );
     await expect(
       fetchComparison('http://127.0.0.1:8099', refresher('tok'), 'cmp-1'),
-    ).rejects.toThrow(/not found|does not know/i);
+    ).rejects.toBeInstanceOf(ComparisonNotFoundError);
   });
 
   it('rejects a non-loopback http endpoint', async () => {

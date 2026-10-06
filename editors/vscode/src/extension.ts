@@ -94,7 +94,13 @@ export function activate(context: vscode.ExtensionContext): EscurelApi | undefin
     () => awaiting.refresh(),
   );
   const live = LiveCoordinator.register(context, services, { inbox, awaiting });
-  ScenariosTree.register(context, () => services.client, services);
+  const scenarios = ScenariosTree.register(context, () => services.client, services);
+  // A comparison click (or any other Evolve event) is the moment the Scenarios view may have moved.
+  context.subscriptions.push(
+    live.onDidReceiveEvent((event) => {
+      if (event.label_skill.startsWith('evolve')) scenarios.refresh();
+    }),
+  );
   const threadsTree = new ThreadsTree();
   const threadsView = vscode.window.createTreeView('escurel.threads', {
     treeDataProvider: threadsTree,

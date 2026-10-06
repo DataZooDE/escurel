@@ -5,6 +5,7 @@ import { describeError } from '../errors';
 import { log } from '../log';
 import type { Services } from '../services';
 import {
+  ComparisonNotFoundError,
   comparisonSummary,
   comparisonTexts,
   fetchComparison,
@@ -17,6 +18,7 @@ import {
   comparisonRequestPage,
   comparisonUri,
   parseComparisonUri,
+  shouldPoll,
   tableRows,
   type ComparisonPageRow,
   type EmptyRow,
@@ -66,6 +68,8 @@ export class ScenariosTree
   private readonly changed = new vscode.EventEmitter<Node | undefined>();
   readonly onDidChangeTreeData = this.changed.event;
   private readonly loaded = new Map<string, Promise<Loaded>>();
+  private view: vscode.TreeView<Node> | undefined;
+  private timer: ReturnType<typeof setTimeout> | undefined;
 
   constructor(
     private readonly client: () => EscurelClient,
@@ -78,8 +82,17 @@ export class ScenariosTree
     services: Services,
   ): ScenariosTree {
     const tree = new ScenariosTree(client, services);
+    const view = vscode.window.createTreeView('escurel.scenarios', { treeDataProvider: tree });
+    tree.view = view;
     context.subscriptions.push(
-      vscode.window.createTreeView('escurel.scenarios', { treeDataProvider: tree }),
+      view,
+      // Signing in, a gateway change, or `Escurel: Refresh` reloads this view like the others.
+      services.onDidChange(() => tree.refresh()),
+      // Becoming visible is the moment a stale list matters.
+      view.onDidChangeVisibility((e) => {
+        if (e.visible) tree.refresh();
+      }),
+      { dispose: () => tree.stopPolling() },
       vscode.workspace.registerTextDocumentContentProvider(SCENARIO_SCHEME, tree),
       vscode.commands.registerCommand('escurel.scenarios.refresh', () => tree.refresh()),
       vscode.commands.registerCommand(
@@ -95,6 +108,21 @@ export class ScenariosTree
   refresh(): void {
     this.loaded.clear();
     this.changed.fire(undefined);
+  }
+
+  stopPolling(): void {
+    if (this.timer) clearTimeout(this.timer);
+    this.timer = undefined;
+  }
+
+  /** Look again shortly while a comparison is waiting for Evolve; stop once nothing is. */
+  private schedulePoll(rows: ComparisonPageRow[]): void {
+    this.stopPolling();
+    if (!shouldPoll(rows, this.view?.visible ?? false)) return;
+    this.timer = setTimeout(() => {
+      this.timer = undefined;
+      this.refresh();
+    }, 5_000);
   }
 
   private load(comparison: string, pageResultSha256: string | undefined): Promise<Loaded> {
@@ -122,6 +150,9 @@ export class ScenariosTree
         );
         return;
       }
+      // Before the diff opens: VS Code asks for the documents' content immediately, and the
+      // provider serves only comparisons it was told were verified against this page hash.
+      this.pageHash.set(comparison, pageResultSha256);
       await vscode.commands.executeCommand(
         'vscode.diff',
         vscode.Uri.parse(comparisonUri(comparison, table, 'baseline')),
@@ -130,7 +161,6 @@ export class ScenariosTree
       );
       const lines = comparisonSummary(result);
       void vscode.window.setStatusBarMessage(lines[lines.length - 1] ?? '', 8000);
-      this.pageHash.set(comparison, pageResultSha256);
     } catch (e) {
       void vscode.window.showErrorMessage(describeError(e));
     }
@@ -278,6 +308,7 @@ export class ScenariosTree
           limit: 100,
         });
         const rows = comparisonPageRows(page.instances);
+        this.schedulePoll(rows);
         if (!rows.length)
           return [
             {
@@ -314,6 +345,15 @@ export class ScenariosTree
           : row,
       );
     } catch (e) {
+      // A page that says "completed" with no record behind it proves nothing.
+      if (e instanceof ComparisonNotFoundError)
+        return [
+          {
+            kind: 'unverified',
+            label: 'Unverified: Evolve has no record of this comparison',
+            description: '',
+          },
+        ];
       log().warn(`escurel: scenarios tree: ${describeError(e)}`);
       return [{ kind: 'message', label: describeError(e) }];
     }
