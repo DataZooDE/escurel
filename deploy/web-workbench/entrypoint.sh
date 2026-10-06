@@ -13,7 +13,11 @@ if [ -n "${HASHED_PASSWORD:-}" ]; then
     *) fail "HASHED_PASSWORD is not an argon2 hash (generate one: echo -n 'secret' | npx argon2-cli -e)" ;;
   esac
 elif [ -n "${PASSWORD:-}" ]; then
-  [ "${#PASSWORD}" -ge 12 ] || fail "PASSWORD must be at least 12 characters"
+  # Default minimum 12; an operator may lower it (never below 8) with MIN_PASSWORD_LENGTH.
+  min="${MIN_PASSWORD_LENGTH:-12}"
+  case "$min" in ''|*[!0-9]*) fail "MIN_PASSWORD_LENGTH must be a number" ;; esac
+  [ "$min" -ge 8 ] || fail "MIN_PASSWORD_LENGTH may not be below 8"
+  [ "${#PASSWORD}" -ge "$min" ] || fail "PASSWORD must be at least $min characters"
   case "$(printf %s "$PASSWORD" | tr '[:upper:]' '[:lower:]')" in
     *change*me*|*changeme*|*password*|*escurel*|*secret*|*12345*) fail "PASSWORD is a placeholder; set a real one" ;;
   esac

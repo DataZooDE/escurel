@@ -37,7 +37,7 @@ person who holds the password can use Escurel and nothing else. What is enforced
 
 | Control | How | Strength |
 |---|---|---|
-| Password | `PASSWORD` (>= 12 chars, no placeholder) or `HASHED_PASSWORD` (argon2). The entrypoint **refuses to start** without one. code-server rate-limits login attempts. | Real gate. Prefer the hash: the secret is then not in the environment. |
+| Password | `PASSWORD` (>= 12 chars by default, `MIN_PASSWORD_LENGTH` may lower it to 8; no placeholder) or `HASHED_PASSWORD` (argon2). The entrypoint **refuses to start** without one. code-server rate-limits login attempts. | Real gate. Prefer the hash: the secret is then not in the environment. |
 | No terminal | The image **deletes `node-pty`'s native module**: the pty host cannot spawn a process. Verified in a browser: "Terminal: Create New Terminal" opens an empty tab, the server logs `No ptyHost response to createProcess`, and a typed command is never executed. The settings (`terminal.integrated.profiles` = `/bin/false`, terminal keybindings unbound) are defence in depth only; the keybinding removals were not tested. | Hard. Does not depend on a setting a person can edit. Re-applied (and asserted by the smoke test) on every code-server bump. |
 | No process-spawning extensions | git, GitHub/Microsoft sign-in, Copilot, the JS debugger, task providers (npm, grunt, gulp, jake) removed from the image. | Hard (files are gone). |
 | No marketplace | `EXTENSIONS_GALLERY={}`; the extensions directory is in the image and root-owned, so installing a local VSIX should fail on permissions (not attempted: a VSIX cannot be authored in the editor and uploads are off). Verified in a browser: the Extensions view offers nothing installable. | Hard. |
