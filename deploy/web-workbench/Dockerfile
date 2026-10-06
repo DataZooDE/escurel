@@ -21,6 +21,12 @@ WORKDIR /bootstrap
 RUN /src/editors/vscode/node_modules/.bin/vsce package --allow-missing-repository --skip-license \
       -o /escurel-web-bootstrap.vsix
 
+# ---- the login page must be the Calm theme's colours: fail the build if login/global.css has drifted -----
+FROM node:22-bookworm-slim AS logincheck
+COPY editors/vscode/themes /repo/editors/vscode/themes
+COPY deploy/web-workbench/login /repo/deploy/web-workbench/login
+RUN node /repo/deploy/web-workbench/login/gen-global-css.mjs --check && touch /login-in-sync
+
 # ---- the workbench ----------------------------------------------------------------------------------
 # Pinned. The extension needs VS Code >= 1.104 (engines.vscode); code-server 4.140.0 carries 1.140.0.
 FROM codercom/code-server:4.140.0
@@ -42,6 +48,7 @@ RUN set -eux; \
     find / -xdev -perm /6000 -type f -exec chmod a-s {} + 2>/dev/null || true
 
 COPY --from=vsix /escurel.vsix /escurel-web-bootstrap.vsix /tmp/
+COPY --from=logincheck /login-in-sync /tmp/login-in-sync
 COPY deploy/web-workbench/ /opt/escurel/
 # Extensions live in the image, not in a volume: what is installed is what was built.
 RUN set -eux; mkdir -p /opt/escurel/extensions /opt/escurel/ud; \
@@ -49,7 +56,7 @@ RUN set -eux; mkdir -p /opt/escurel/extensions /opt/escurel/ud; \
       --install-extension /tmp/escurel.vsix --install-extension /tmp/escurel-web-bootstrap.vsix; \
     HOME=/tmp /usr/bin/code-server --user-data-dir /opt/escurel/ud --extensions-dir /opt/escurel/extensions --list-extensions --show-versions \
       | grep -q '^datazoo.escurel@'; \
-    rm -rf /opt/escurel/ud /tmp/*.vsix /opt/escurel/bootstrap /opt/escurel/Dockerfile* \
+    rm -rf /opt/escurel/ud /tmp/*.vsix /tmp/login-in-sync /opt/escurel/bootstrap /opt/escurel/Dockerfile* \
     && chown -R root:root /opt/escurel && chmod -R a+rX,go-w /opt/escurel \
     && chmod +x /opt/escurel/entrypoint.sh
 

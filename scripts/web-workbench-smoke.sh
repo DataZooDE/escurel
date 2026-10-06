@@ -26,6 +26,10 @@ if [ "$BUILD" = 1 ]; then
   DOCKER_BUILDKIT=1 docker build -q -f "$REPO/deploy/web-workbench/Dockerfile" -t "$IMAGE" "$REPO" >/dev/null
 fi
 
+# 0. The login/error pages are still generated from the Escurel Calm theme (and hold WCAG AA).
+node --test "$REPO/deploy/web-workbench/login/login-tokens.test.mjs" >/dev/null || fail "login tokens drifted from the Calm theme"
+pass "login/error CSS is in sync with the Calm theme"
+
 # 1. It refuses to start without a real password (and says why).
 for env in "" "PASSWORD=change-me-before-first-start" "PASSWORD=short" "HASHED_PASSWORD=not-a-hash"; do
   if out=$(docker run --rm ${env:+-e "$env"} -e WORKBENCH_GATEWAY_URL=http://gw:8080 "$IMAGE" 2>&1); then

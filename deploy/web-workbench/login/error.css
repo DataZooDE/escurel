@@ -5,15 +5,15 @@
 }
 
 .error-display > .header {
-  color: var(--accent);
-  font-size: 4.5rem;
-  font-weight: 650;
+  color: var(--w-accent);
+  font-size: 48px;
+  font-weight: 400;
   margin: 0;
 }
 
 .error-display > .body {
-  color: var(--muted);
-  font-size: 1.125rem;
+  color: var(--w-muted);
+  font-size: 14px;
 }
 
 .error-display > .links {
@@ -21,7 +21,6 @@
 }
 
 .error-display > .links > .link {
-  color: var(--link);
   text-decoration: none;
 }
 
@@ -30,5 +29,5 @@
 }
 
 .error-display .success {
-  color: var(--accent);
+  color: var(--w-accent);
 }

@@ -70,8 +70,15 @@ SSH tunnel or a VPN.
 
 ## The login page
 
-The sign-in page is code-server's own, re-skinned in the extension's "Escurel Calm" palette (light, with a dark
-variant that follows the browser's `prefers-color-scheme`). The files live in `deploy/web-workbench/login/` and the
+The sign-in page is code-server's own, re-skinned to look like the Escurel Calm window that opens after login: the
+page uses the same `--vscode-*` colour names as the extension's webviews (editor surface, a title bar with the
+Escurel glyph, a centred workbench widget with a 1px border, 13px system UI font, 2px control radius, the Calm teal
+button and focus ring). It is always the light Calm look, whatever the browser prefers, because the workbench behind
+it applies the Calm theme. The colours are not copied by hand: `deploy/web-workbench/login/gen-global-css.mjs`
+writes `login/global.css` from `editors/vscode/themes/escurel-calm-color-theme.json`; `node --test
+deploy/web-workbench/login/login-tokens.test.mjs` (also run by the smoke script) and an image build stage fail when
+the committed file drifts from the theme or a text/button colour drops below WCAG AA. After editing the theme, run
+`node deploy/web-workbench/login/gen-global-css.mjs`. The files live in `deploy/web-workbench/login/` and the
 Dockerfile installs them over code-server's `login.html`, `login.css`, `global.css`, `error.css` and its icons; the
 build fails if a pinned code-server version moves those files or if the template loses `{{ERROR}}` or the
 `password` field. The form posts exactly as before, so login, the error message ("Incorrect password"), rate
@@ -82,7 +89,8 @@ no inline styles, no external fonts.
 
 Not overridable: the text of code-server's error strings (they come from its locale files; only the page chrome is
 ours), `--welcome-text` is deprecated upstream (it still works on 4.140.0; the login template could hard-code it
-instead), and the workbench itself keeps VS Code's own theme (set by the baked settings, not by this page).
+instead), and the workbench itself takes its theme from the baked settings, not from this page. The unfocused input border is the
+theme's own `input.border` (about 1.7:1 on the widget): the field is autofocused and shows the 5.8:1 focus ring.
 
 ## TLS
 
