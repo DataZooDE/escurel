@@ -58,10 +58,11 @@ export interface Stack {
   shot: (name: string) => Promise<void>;
 }
 
-export const test = base.extend<object, { stack: Stack }>({
+export const test = base.extend<object, { stack: Stack; focus: boolean }>({
+  /** Whether the window opens in the calm focus view (the demo's default). Off: the classic IDE look the view tests drive. */
+  focus: [false, { option: true, scope: 'worker' }],
   stack: [
-    // eslint-disable-next-line no-empty-pattern -- Playwright requires the fixtures argument to be a destructuring pattern.
-    async ({}, use) => {
+    async ({ focus }, use) => {
       const home = mkdtempSync(join(homedir(), '.cache', 'escurel-e2e-'));
       const artifacts = resolve(__dirname, 'artifacts');
       mkdirSync(artifacts, { recursive: true });
@@ -100,6 +101,7 @@ export const test = base.extend<object, { stack: Stack }>({
         // No zoom: Playwright maps clicks into a nested webview with the page's own scale, and a zoomed
         // window (the demo's default) puts them on the wrong element.
         ESCUREL_DEMO_ZOOM: '0',
+        ESCUREL_DEMO_FOCUS: focus ? '1' : '0',
       };
       const run = join(EXT, 'demo', 'run.sh');
       execFileSync(run, ['start'], { env, stdio: 'inherit', timeout: 240_000 });

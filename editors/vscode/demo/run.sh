@@ -140,8 +140,27 @@ cat > "$HOME_DIR/profile/User/settings.json" <<JSON
 }
 JSON
 
+# The calm window is the demo's default (ESCUREL_DEMO_FOCUS=0 keeps the classic IDE look, which is what the
+# end-to-end tests of the individual views run in). The stock Explorer / Search / Source Control / Run /
+# Extensions icons cannot be hidden by a setting: VS Code keeps which activity-bar icons are pinned in its
+# state database, so a throwaway profile is given one in which they are not. The shipped Focus mode does not
+# do this (it does not own a person's profile); it only moves the activity bar to the top.
+FOCUS="${ESCUREL_DEMO_FOCUS:-1}"
+if [ "$FOCUS" != "0" ]; then
+  mkdir -p "$HOME_DIR/profile/User/globalStorage"
+  python3 - "$HOME_DIR/profile/User/globalStorage/state.vscdb" <<'PY'
+import json, sqlite3, sys
+db = sqlite3.connect(sys.argv[1])
+db.execute("CREATE TABLE IF NOT EXISTS ItemTable (key TEXT UNIQUE ON CONFLICT REPLACE, value BLOB)")
+stock = ["explorer", "search", "scm", "debug", "remote", "extensions"]
+pins = [{"id": f"workbench.view.{v}", "pinned": False, "visible": False, "order": i} for i, v in enumerate(stock)]
+db.execute("INSERT INTO ItemTable VALUES ('workbench.activity.pinnedViewlets2', ?)", (json.dumps(pins),))
+db.commit()
+PY
+fi
+
 # The window. ESCUREL_DEMO_* tell the bootstrap extension where the bearer and the story are.
-ESCUREL_DEMO_BEARER_FILE="$HOME_DIR/bearer.json" ESCUREL_DEMO_STORY="$HOME_DIR/story.json" \
+ESCUREL_DEMO_FOCUS="$FOCUS" ESCUREL_DEMO_BEARER_FILE="$HOME_DIR/bearer.json" ESCUREL_DEMO_STORY="$HOME_DIR/story.json" \
   setsid nohup "$CODE" --user-data-dir "$HOME_DIR/profile" --extensions-dir "$HOME_DIR/ext" \
   --extensionDevelopmentPath="$EXT" --extensionDevelopmentPath="$HERE/bootstrap" \
   ${ESCUREL_DEMO_CDP_PORT:+--remote-debugging-port=$ESCUREL_DEMO_CDP_PORT} ${ESCUREL_DEMO_CODE_ARGS:-} \

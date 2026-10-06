@@ -13,6 +13,11 @@ throwaway VS Code profile (your own settings and extensions are untouched). A be
 fresh, so the window stays signed in however long the demo runs. `ESCUREL_DEMO_CDP_PORT=9350`
 exposes the window to a debugger for screenshots.
 
+The window opens in the **calm focus view**: no menu bar, command center or status bar, the Escurel Calm
+theme, only Escurel's icon in the activity bar, and the **Overview** board as the first screen.
+`ESCUREL_DEMO_FOCUS=0 demo/run.sh start` keeps the classic IDE look (what the end-to-end tests of the
+individual views run in). "Leave focus view" on the board (or the palette) switches back.
+
 ## The state it leaves
 
 | Where         | What you see                                                                                                                                                                                                                                                                          |
@@ -40,6 +45,9 @@ document asks first.
 
 ## A walkthrough (about ten minutes)
 
+0. **The overview.** The window opens on _Today_: decisions waiting (the sales order 4500131 changeset),
+   agent activity, anything that failed, open records per kind of work, what just finished. Click a
+   line to open what it names, or a tile's title for the whole view.
 1. **The thread canvas.** Pan by dragging, zoom with the wheel, `Fit`. Click a card: the inspector
    shows what the gateway really said, and the Threads outline follows. Arrow keys walk the graph.
 2. **The outline.** Collapse the run's card on the canvas: its row collapses in the Threads view.
@@ -104,6 +112,10 @@ document asks first.
 
 ## Limits worth saying out loud
 
+- The title bar reads "[Extension Development Host] Escurel": a window started with
+  `--extensionDevelopmentPath` always carries that prefix. VS Code has no setting that hides the stock
+  Explorer / Search / Source Control icons, so `demo/run.sh` pre-seeds the throwaway profile's state with
+  them unpinned; the shipped focus mode does not do that.
 - The runner is the echo harness: it folds the signal into the page, it does not reason. The
   lineage, the live updates and the review are real; the "agent" is a stand-in. The Runner view says so
   itself ("echo harness (demo, no AI model)"), so nobody mistakes the demo's runs for model output.
