@@ -116,6 +116,9 @@ describe('comparisonTexts', () => {
     expect(candidate).not.toContain('item_id=4');
     expect(baseline).toContain('program 2');
     expect(candidate).toContain('program 3');
+    // A row that did not change is absent on both sides; the header says so.
+    expect(baseline.split('\n')[0]).toContain('changed rows only');
+    expect(candidate.split('\n')[0]).toContain('changed rows only');
   });
 
   it('is deterministic', () => {

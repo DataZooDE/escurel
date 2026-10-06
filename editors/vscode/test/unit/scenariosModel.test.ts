@@ -35,7 +35,7 @@ describe('comparisonPageRows', () => {
     expect(rows[0]).toMatchObject({
       kind: 'comparison',
       status: 'completed',
-      description: 'exp-1 · completed',
+      description: 'completed · exp-1',
     });
   });
 

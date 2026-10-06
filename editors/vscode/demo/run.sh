@@ -165,6 +165,8 @@ if [ -n "${ESCUREL_DEMO_EVOLVE_AGENT_BIN:-}" ]; then
   done
   curl -fs "http://127.0.0.1:$EVOLVE_PORT/healthz" >/dev/null 2>&1 || { echo "Evolve did not start; see $HOME_DIR/evolve.log" >&2; exit 1; }
   export ESCUREL_DEMO_EVOLVE_ENDPOINT="http://127.0.0.1:$EVOLVE_PORT"
+  # Land on the first comparison instead of the CRM story: a visitor should see the Evolve demo first.
+  export ESCUREL_DEMO_OPEN_PAGE="${ESCUREL_DEMO_OPEN_PAGE:-markdown/instances/evolve_comparison/demo-assortment-vs-top-n.md}"
   echo "running the Evolve scenarios (two scripted searches)..."
   node "$HERE/evolve-scenarios.mjs" "$HOME_DIR/gateway.json" "$HOME_DIR/bearer.json" "$ESCUREL_DEMO_EVOLVE_ENDPOINT" \
     > "$HOME_DIR/evolve-scenarios.json" || { echo "the Evolve scenarios failed; see $HOME_DIR/evolve.log" >&2; exit 1; }

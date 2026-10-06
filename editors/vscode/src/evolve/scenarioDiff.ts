@@ -156,7 +156,7 @@ export function comparisonTexts(
     ? ['', '# Rows were truncated: the counts are exact, this list is not complete.']
     : [];
   const header = (side: string, program: number): string =>
-    `# ${table} · ${side} program ${program}`;
+    `# ${table} · ${side} program ${program} · changed rows only`;
   return {
     baseline:
       [header('baseline', comparison.baselineProgramId), ...baseline, ...note].join('\n') + '\n',

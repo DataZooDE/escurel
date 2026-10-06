@@ -55,6 +55,16 @@ test('the owner computes a scenario comparison and reads it in the Scenarios vie
     })
     .toBe(true);
   const page = await pageContent();
+  // The click opened the event thread; open the page itself to see what Evolve filled in.
+  await openRow(stack.page, 'evolve_comparison', new RegExp(assortment.comparison));
+  // The open editor reloads when it becomes active: it must show what Evolve filled in, and no
+  // longer offer a click the gateway would refuse.
+  const donePage = await webviewWith(stack.page, 'escurel-page-as-ui');
+  await expect(donePage.getByText('search_time_training_replay')).toBeVisible({ timeout: 20_000 });
+  await expect(
+    donePage.getByRole('button', { name: 'Compute comparison', exact: true }),
+  ).toHaveCount(0);
+  await stack.shot('evolve-scenarios-completed-page');
   expect(page).toContain('evidence_scope: search_time_training_replay');
   expect(page).toContain('baseline: parent');
   expect(page).not.toContain('next_comparison_action');
@@ -84,6 +94,21 @@ test('the owner computes a scenario comparison and reads it in the Scenarios vie
     timeout: 20_000,
   });
   await stack.shot('evolve-scenarios-diff');
+
+  // The bin-packing scenario, computed the same way, with its own diff.
+  const packing = played.find((p) => p.scenario === 'bin-packing')!;
+  await openRow(stack.page, 'evolve_comparison', new RegExp(packing.comparison));
+  const packingUi = await webviewWith(stack.page, 'escurel-page-as-ui');
+  await packingUi.getByRole('button', { name: 'Compute comparison', exact: true }).click();
+  await expect(
+    scenarios.getByRole('treeitem', { name: new RegExp(packing.comparison) }),
+  ).toContainText('completed', { timeout: 60_000 });
+  await scenarios.getByRole('treeitem', { name: new RegExp(packing.comparison) }).click();
+  await scenarios.getByRole('treeitem', { name: /p0_bin_assignment/ }).click();
+  await expect(
+    stack.page.getByRole('tab', { name: /p0_bin_assignment: baseline ↔ candidate/ }),
+  ).toBeVisible();
+  await stack.shot('evolve-scenarios-bin-packing-diff');
 
   // A page that only claims to be completed is not a result: the view shows nothing from Evolve.
   const forged = 'markdown/instances/evolve_comparison/forged.md';

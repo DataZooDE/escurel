@@ -58,7 +58,8 @@ export function comparisonPageRows(instances: Instance[]): ComparisonPageRow[] {
         kind: 'comparison',
         comparison: id,
         label: id,
-        description: [experiment, status === 'unknown' ? '' : status].filter(Boolean).join(' · '),
+        // Status first: a narrow view truncates from the right, and the status is what a glance needs.
+        description: [status === 'unknown' ? '' : status, experiment].filter(Boolean).join(' · '),
         status,
         experiment,
         ...(typeof fm.result_sha256 === 'string' && fm.result_sha256
