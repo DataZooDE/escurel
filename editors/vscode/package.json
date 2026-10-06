@@ -20,6 +20,10 @@
   "main": "./dist/extension.js",
   "activationEvents": [
     "onAuthenticationRequest:escurel",
+    "onCommand:escurel.focusMode.enter",
+    "onCommand:escurel.focusMode.exit",
+    "onCommand:escurel.focusMode.toggle",
+    "onCommand:escurel.openOverview",
     "onCommand:escurel.search",
     "onCommand:escurel.showDetails",
     "onCommand:escurel.showRunner",
@@ -377,6 +381,29 @@
         "command": "escurel.focusKnowledge",
         "title": "Focus knowledge",
         "category": "Escurel"
+      },
+      {
+        "command": "escurel.openOverview",
+        "title": "Open overview",
+        "category": "Escurel",
+        "icon": "$(home)"
+      },
+      {
+        "command": "escurel.focusMode.enter",
+        "title": "Switch to focus view",
+        "category": "Escurel",
+        "icon": "$(eye)"
+      },
+      {
+        "command": "escurel.focusMode.exit",
+        "title": "Leave focus view",
+        "category": "Escurel",
+        "icon": "$(eye-closed)"
+      },
+      {
+        "command": "escurel.focusMode.toggle",
+        "title": "Toggle focus view",
+        "category": "Escurel"
       }
     ],
     "authentication": [
@@ -680,6 +707,14 @@
         {
           "command": "escurel.runs.forPage",
           "when": "false"
+        },
+        {
+          "command": "escurel.focusMode.enter",
+          "when": "!escurel.focusMode"
+        },
+        {
+          "command": "escurel.focusMode.exit",
+          "when": "escurel.focusMode"
         }
       ],
       "view/title": [
@@ -762,6 +797,21 @@
           "command": "escurel.explainView",
           "when": "view == escurel.runner",
           "group": "navigation@9"
+        },
+        {
+          "command": "escurel.openOverview",
+          "when": "view == escurel.knowledge",
+          "group": "navigation@0"
+        },
+        {
+          "command": "escurel.focusMode.enter",
+          "when": "view == escurel.knowledge && !escurel.focusMode",
+          "group": "navigation@8"
+        },
+        {
+          "command": "escurel.focusMode.exit",
+          "when": "view == escurel.knowledge && escurel.focusMode",
+          "group": "navigation@8"
         }
       ],
       "view/item/context": [
@@ -1108,6 +1158,13 @@
         "command": "escurel.focusKnowledge",
         "key": "ctrl+alt+k",
         "mac": "cmd+alt+k"
+      }
+    ],
+    "themes": [
+      {
+        "label": "Escurel Calm",
+        "uiTheme": "vs",
+        "path": "./themes/escurel-calm-color-theme.json"
       }
     ]
   },

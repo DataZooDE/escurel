@@ -32,6 +32,7 @@ import { registerApprovePlan, setApprovalConfirm } from './start/approvePlan';
 import { registerNodeCommands } from './commands/nodeCommands';
 import { explainText } from './shared/explain';
 import { registerRunnerView, type RunnerTree } from './views/runner';
+import { FocusMode } from './focus/focusMode';
 
 const EXPLAIN_SCHEME = 'escurel-explain';
 
@@ -54,12 +55,14 @@ export interface EscurelApi {
    */
   canAdmin: () => boolean;
   runner: RunnerTree;
+  focus: FocusMode;
   /** Test seam: replaces the modal that confirms a plan approval (a modal blocks a headless window). */
   setApprovalConfirm: typeof setApprovalConfirm;
 }
 
 export function activate(context: vscode.ExtensionContext): EscurelApi | undefined {
   const services = new Services(context);
+  const focus = FocusMode.register(context);
   registerControlCommands(context, services);
   registerNodeCommands(context, services);
   context.subscriptions.push(services);
@@ -268,6 +271,7 @@ export function activate(context: vscode.ExtensionContext): EscurelApi | undefin
     threadsTree,
     canAdmin: adminContextValue,
     runner,
+    focus,
     setApprovalConfirm,
   });
 }
