@@ -121,6 +121,9 @@ echo $! > "$HOME_DIR/runner.pid"
 echo "playing the story (a few seconds)..."
 node "$HERE/driver.mjs" "$HOME_DIR/gateway.json" "$HOME_DIR/bearer.json" > "$HOME_DIR/story.json"
 
+# ESCUREL_DEMO_THEME: a colour theme for the window (a themed tour of every screen).
+THEME_LINE=""
+[ -n "${ESCUREL_DEMO_THEME:-}" ] && THEME_LINE="\"workbench.colorTheme\": \"$ESCUREL_DEMO_THEME\","
 cat > "$HOME_DIR/profile/User/settings.json" <<JSON
 {
   "escurel.gatewayUrl": "$(field gateway_url)",
@@ -136,7 +139,7 @@ cat > "$HOME_DIR/profile/User/settings.json" <<JSON
   "chat.disableAIFeatures": true,
   "workbench.secondarySideBar.defaultVisibility": "visible",
   "workbench.layoutControl.enabled": false,
-  ${ESCUREL_DEMO_THEME:+"workbench.colorTheme": "$ESCUREL_DEMO_THEME",}
+  $THEME_LINE
   "workbench.welcomePage.walkthroughs.openOnInstall": false
 }
 JSON

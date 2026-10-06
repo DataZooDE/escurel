@@ -48,6 +48,7 @@
     "panelTitle.activeForeground": "#2b3036",
     "panelTitle.inactiveForeground": "#58626c",
     "button.background": "#1f6f78",
+    "button.border": "#1f6f78",
     "button.foreground": "#ffffff",
     "button.hoverBackground": "#195b63",
     "button.secondaryBackground": "#e4e0d8",

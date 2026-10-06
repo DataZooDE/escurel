@@ -61,6 +61,8 @@ describe('the Escurel Calm theme', () => {
     ['charts.purple', 'editor.background', 4.5],
     ['list.activeSelectionForeground', 'list.activeSelectionBackground', 4.5],
     ['focusBorder', 'editor.background', 3],
+    // The outline of a button: without it a quiet button on the white page is a bare word.
+    ['button.border', 'editor.background', 3],
   ])('%s on %s reads at %s:1 or better', (fg, bg, min) => {
     expect(contrast(c(fg), c(bg))).toBeGreaterThanOrEqual(min);
   });
