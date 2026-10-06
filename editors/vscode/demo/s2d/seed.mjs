@@ -133,7 +133,7 @@ const excHead = await call(user, 'expand', { page_id: excPage });
 await agentRun('supplier_exception', mailEv, resPage, async (agent) => {
   const summaryRow = (await q(agent, 'delay_impact_summary', DELAY))[0];
   const orders = await q(agent, 'delay_impact', DELAY);
-  const opts = await q(agent, 'resolution_options', { material: 'CB-7', delay_days: 21, qty_needed: 1160 });
+  await q(agent, 'resolution_options', { material: 'CB-7', delay_days: 21, qty_needed: 1160 });
   const late = orders.filter((o) => o.status === 'late');
   const penalty = Number(summaryRow.penalty_exposure_eur);
   const recommended = 'Reallocate 250 from the Central Europe warehouse, expedite 910 from the supplier';

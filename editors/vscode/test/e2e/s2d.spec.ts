@@ -1,4 +1,4 @@
-import { expect, test, webviewWith } from './fixtures';
+import { expect, test, webviewWith, type Stack } from './fixtures';
 import { knowledgeRow, openRow, pane } from './helpers';
 
 // The Source-to-Deliver demo (the hetzner seed) in a real window: three agent proposals wait for a
@@ -8,11 +8,11 @@ test.use({ s2d: true });
 test.describe.configure({ mode: 'serial' });
 
 type Page = { frontmatter?: Record<string, unknown>; page?: unknown };
-const expandPage = async (stack: import('./fixtures').Stack, skill: string, id: string) =>
+const expandPage = async (stack: Stack, skill: string, id: string) =>
   (await stack.call('expand', { page_id: `markdown/instances/${skill}/${id}.md` })) as Page;
 
 /** Approve what is waiting for the planner: open its row in Awaiting you and apply all of it. */
-async function approve(stack: import('./fixtures').Stack, row: RegExp) {
+async function approve(stack: Stack, row: RegExp) {
   const { page } = stack;
   const item = pane(page, 'Awaiting You').getByRole('treeitem', { name: row }).first();
   await item.hover();
