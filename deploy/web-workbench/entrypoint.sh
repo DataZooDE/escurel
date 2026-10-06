@@ -21,7 +21,7 @@ else
   fail "set PASSWORD (at least 12 characters) or HASHED_PASSWORD (argon2): the workbench will not start unauthenticated"
 fi
 
-DATA="${ESCUREL_WEB_DATA_DIR:-/home/coder/data}"
+DATA="${WORKBENCH_DATA_DIR:-/home/coder/data}"
 mkdir -p "$DATA" /home/coder/workspace
 
 NODE=/usr/lib/code-server/lib/node

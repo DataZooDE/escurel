@@ -16,7 +16,7 @@
 #   demo-init / demo-story   one-shot jobs: lay out the demo data, then play the story into the gateway.
 #
 # For a real deployment point the workbench at your own gateway instead (see docs/deploy/web-workbench.md):
-# remove everything but `workbench`, set ESCUREL_URL (+ ESCUREL_AUTH_ISSUER/CLIENT_ID for sign-in) and put
+# remove everything but `workbench`, set WORKBENCH_GATEWAY_URL (+ WORKBENCH_AUTH_ISSUER/CLIENT_ID for sign-in) and put
 # TLS in front (compose.proxy.yaml is a Caddy example).
 
 name: escurel-web
@@ -26,7 +26,7 @@ x-demo-node: &demo-node
   volumes:
     - demo-data:/demo
     - ../../editors/vscode/demo:/demo-src:ro
-    - ./demo:/demo-scripts:ro
+    - ../../editors/vscode/demo/web:/demo-scripts:ro
 
 services:
   workbench:
@@ -39,7 +39,7 @@ services:
       # Prefer HASHED_PASSWORD (an argon2 hash) over a plain PASSWORD; set one of them in .env.
       PASSWORD: ${WORKBENCH_PASSWORD:-}
       HASHED_PASSWORD: ${WORKBENCH_HASHED_PASSWORD:-}
-      ESCUREL_URL: http://escurel:8080
+      WORKBENCH_GATEWAY_URL: http://escurel:8080
       CODE_SERVER_TRUSTED_ORIGINS: ${WORKBENCH_TRUSTED_ORIGINS:-}
     ports:
       - "${WORKBENCH_BIND:-127.0.0.1}:${WORKBENCH_PORT:-8080}:8080"

@@ -27,7 +27,7 @@ const check = (name, ok, detail = '') => {
 const browser = await chromium.launch({
   executablePath: process.env.CHROMIUM || '/usr/bin/chromium',
   headless: true,
-  args: ['--no-sandbox'],
+  args: ['--no-sandbox', ...(process.env.PROBE_IGNORE_CERT_ERRORS ? ['--ignore-certificate-errors'] : [])],
 });
 const ctx = await browser.newContext({ viewport: { width: 1600, height: 1000 }, ignoreHTTPSErrors: true });
 const page = await ctx.newPage();
@@ -60,6 +60,28 @@ check('no menu bar', !chrome.menubar);
 check('no status bar', !chrome.statusbar);
 check('no activity bar (no Explorer/Search/SCM/Run/Extensions icons)', !chrome.activitybar);
 console.log(`      title: ${chrome.title}`);
+
+// 3b. The tour (--tour): the Overview board, a thread, a run's trace. Screenshots only; read them.
+if (flags.includes('--tour')) {
+  await page.waitForTimeout(6000);
+  await page.screenshot({ path: `${out}/10-overview.png` });
+  const clickRow = async (re) => {
+    const row = page.locator('.monaco-list-row', { hasText: re }).first();
+    if (await row.count()) {
+      await row.click();
+      return true;
+    }
+    return false;
+  };
+  const gotInbox = await clickRow(/supplier-risk.*(ago|now)|(ago|now).*supplier-risk/);
+  await page.waitForTimeout(6000);
+  await page.screenshot({ path: `${out}/11-thread.png` });
+  check('a thread opens from the Inbox', gotInbox);
+  const gotRun = await clickRow(/Done · supplier-risk/);
+  await page.waitForTimeout(5000);
+  await page.screenshot({ path: `${out}/12-run.png` });
+  check('a run opens from the Runs panel', gotRun);
+}
 
 // 4. The command palette cannot open a terminal.
 async function palette(text) {

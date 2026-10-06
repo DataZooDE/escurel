@@ -30,11 +30,11 @@ function fail(msg) {
   process.exit(64);
 }
 
-settings['escurel.gatewayUrl'] = url('ESCUREL_URL', process.env.ESCUREL_URL, { required: true });
-const issuer = url('ESCUREL_AUTH_ISSUER', process.env.ESCUREL_AUTH_ISSUER, { required: false });
+settings['escurel.gatewayUrl'] = url('WORKBENCH_GATEWAY_URL', process.env.WORKBENCH_GATEWAY_URL, { required: true });
+const issuer = url('WORKBENCH_AUTH_ISSUER', process.env.WORKBENCH_AUTH_ISSUER, { required: false });
 if (issuer) {
   settings['escurel.auth.issuer'] = issuer;
-  if (process.env.ESCUREL_AUTH_CLIENT_ID) settings['escurel.auth.clientId'] = process.env.ESCUREL_AUTH_CLIENT_ID;
+  if (process.env.WORKBENCH_AUTH_CLIENT_ID) settings['escurel.auth.clientId'] = process.env.WORKBENCH_AUTH_CLIENT_ID;
 }
 
 const user = join(userDataDir, 'User');

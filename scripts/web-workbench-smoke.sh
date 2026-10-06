@@ -28,7 +28,7 @@ fi
 
 # 1. It refuses to start without a real password (and says why).
 for env in "" "PASSWORD=change-me-before-first-start" "PASSWORD=short" "HASHED_PASSWORD=not-a-hash"; do
-  if out=$(docker run --rm ${env:+-e "$env"} -e ESCUREL_URL=http://gw:8080 "$IMAGE" 2>&1); then
+  if out=$(docker run --rm ${env:+-e "$env"} -e WORKBENCH_GATEWAY_URL=http://gw:8080 "$IMAGE" 2>&1); then
     fail "started with [$env]"
   fi
   echo "$out" | grep -q 'escurel-web:' || fail "no explanation for [$env]: $out"
@@ -39,7 +39,7 @@ pass "refuses an empty, placeholder, short or malformed password"
 docker run -d --name "$NAME" --read-only --cap-drop ALL --security-opt no-new-privileges:true \
   --tmpfs /tmp --tmpfs /home/coder/data:uid=1000,gid=1000 --tmpfs /home/coder/.config:uid=1000,gid=1000 \
   --tmpfs /home/coder/workspace:uid=1000,gid=1000 \
-  -e PASSWORD="$PASSWORD_OK" -e ESCUREL_URL=http://gw:8080 -p "127.0.0.1:$PORT:8080" "$IMAGE" >/dev/null
+  -e PASSWORD="$PASSWORD_OK" -e WORKBENCH_GATEWAY_URL=http://gw:8080 -p "127.0.0.1:$PORT:8080" "$IMAGE" >/dev/null
 for _ in $(seq 1 60); do curl -fsS "http://127.0.0.1:$PORT/healthz" >/dev/null 2>&1 && break; sleep 1; done
 curl -fsS "http://127.0.0.1:$PORT/healthz" >/dev/null || { docker logs "$NAME" >&2; fail "/healthz never answered"; }
 pass "/healthz answers with a read-only root filesystem and no capabilities"

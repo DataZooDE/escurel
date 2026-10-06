@@ -53,10 +53,14 @@ RUN set -eux; mkdir -p /opt/escurel/extensions /opt/escurel/ud; \
     && chown -R root:root /opt/escurel && chmod -R a+rX,go-w /opt/escurel \
     && chmod +x /opt/escurel/entrypoint.sh
 
+# The data directory exists and belongs to `coder` BEFORE it becomes a volume, so a fresh named volume
+# inherits that ownership (a root-owned volume would stop the non-root process from starting).
+RUN mkdir -p /home/coder/data /home/coder/workspace && chown coder:coder /home/coder/data /home/coder/workspace
+
 USER coder
 ENV EXTENSIONS_GALLERY="{}" \
     PORT=8080 \
-    ESCUREL_WEB_DATA_DIR=/home/coder/data
+    WORKBENCH_DATA_DIR=/home/coder/data
 EXPOSE 8080
 VOLUME ["/home/coder/data"]
 HEALTHCHECK --interval=15s --timeout=3s --start-period=20s --retries=5 \
