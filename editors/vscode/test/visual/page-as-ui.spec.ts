@@ -64,3 +64,14 @@ test('a stale skill shows its provenance facts and the word Stale', async ({ pag
     fullPage: true,
   });
 });
+
+// A record whose skill names a report: the KPI figures and the table the report draws for it.
+test('a record draws its report figures in the current theme', async ({ page }, testInfo) => {
+  const theme = (testInfo.project.metadata as { theme: string }).theme;
+  await page.goto(`/test/visual/harness/index.html?theme=${theme}&variant=report`);
+  await page.locator('escurel-page-as-ui .report .kpi').first().waitFor();
+  await expect(page).toHaveScreenshot('page-as-ui-report.png', {
+    maxDiffPixelRatio: 0.01,
+    fullPage: true,
+  });
+});
