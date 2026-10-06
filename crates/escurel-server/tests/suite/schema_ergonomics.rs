@@ -30,6 +30,10 @@ const EVOLVE_EXPERIMENT_A: &str = "---\nkind: instance\nskill: evolve_experiment
 const EVOLVE_REPORT_SKILL: &str = "---\nkind: skill\nid: evolve_validation_report\ndescription: Evolve private report.\nowner_field: owner_subject\nacl:\n  read: [owner]\n  create: [admin]\n  update: [admin]\n---\n# Evolve report\n";
 const EVOLVE_REPORT_A: &str = "---\nkind: instance\nskill: evolve_validation_report\nid: a\nowner_subject: test-subject\nstatus: passed\neffective_passed: true\nwinner_program_id: 7\nreport_sha256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\nnext_candidate_action: evolve_publish_candidate\n---\n# Report\n";
 
+const EVOLVE_COMPARISON_SKILL: &str = "---\nkind: skill\nid: evolve_comparison\ndescription: Evolve scenario comparison.\nowner_field: owner_subject\nacl:\n  read: [owner]\n  create: [owner]\n  update: [admin]\n---\n# Evolve comparison\n";
+const EVOLVE_COMPARISON_A: &str = "---\nkind: instance\nskill: evolve_comparison\nid: a\nowner_subject: test-subject\nexperiment: exp-1\nbaseline: previous_best\ncandidate: winner\nstatus: requested\nnext_comparison_action: evolve_compare\n---\n# Comparison\n";
+const EVOLVE_COMPARISON_DONE: &str = "---\nkind: instance\nskill: evolve_comparison\nid: done\nowner_subject: test-subject\nexperiment: exp-1\nbaseline: seed\ncandidate: winner\nstatus: completed\n---\n# Comparison\n";
+
 async fn start() -> EscurelProcess {
     EscurelProcess::spawn(Opts {
         auth: AuthMode::TestIssuer,
@@ -518,6 +522,124 @@ async fn evolve_validation_capture_binds_the_displayed_winner_and_revision() {
         denied_collision["error"]["code"], -32602,
         "{denied_collision}"
     );
+}
+
+#[tokio::test]
+async fn evolve_comparison_capture_binds_the_requested_page_revision() {
+    use sha2::{Digest, Sha256};
+
+    let p = EscurelProcess::spawn(Opts {
+        auth: AuthMode::TestIssuer,
+        fixtures: Some(
+            FixtureBuilder::new()
+                .tenant(TENANT)
+                .skill("evolve_comparison", EVOLVE_COMPARISON_SKILL)
+                .instance("evolve_comparison", "a", EVOLVE_COMPARISON_A)
+                .instance("evolve_comparison", "done", EVOLVE_COMPARISON_DONE)
+                .done(),
+        ),
+        ..Default::default()
+    })
+    .await;
+    let token = p.mint_token(TENANT, Role::Agent);
+    let catalog = call(&p, &token, "list_skills", json!({})).await;
+    assert_eq!(
+        catalog["result"]["structuredContent"]["evolve_comparison_revision_binding"],
+        "gateway-owned-v1"
+    );
+    let target = "markdown/instances/evolve_comparison/a.md";
+    let hash = format!("{:x}", Sha256::digest(EVOLVE_COMPARISON_A.as_bytes()));
+    let request = |page: &str, revision: &str, mode: &str| {
+        json!({
+            "label_skill": "evolve_compare", "event_id": "EVOLVE-COMPARE-A",
+            "instance_page_id": page, "source": "workbench",
+            "provenance": {"manual": {"mode": mode, "expected_page_sha256": revision}}
+        })
+    };
+
+    // A stale page revision, a plan-mode click and a page that is not awaiting a
+    // comparison are all refused before anything is recorded.
+    let stale = call(
+        &p,
+        &token,
+        "capture_event",
+        request(target, &"0".repeat(64), "run"),
+    )
+    .await;
+    assert_eq!(stale["error"]["code"], -32602, "{stale}");
+    let plan = call(&p, &token, "capture_event", request(target, &hash, "plan")).await;
+    assert_eq!(plan["error"]["code"], -32602, "{plan}");
+    let done_page = "markdown/instances/evolve_comparison/done.md";
+    let done_hash = format!("{:x}", Sha256::digest(EVOLVE_COMPARISON_DONE.as_bytes()));
+    let done = call(
+        &p,
+        &token,
+        "capture_event",
+        request(done_page, &done_hash, "run"),
+    )
+    .await;
+    assert_eq!(
+        done["error"]["code"], -32602,
+        "an already completed comparison is not recomputed: {done}"
+    );
+
+    let accepted = call(&p, &token, "capture_event", request(target, &hash, "run")).await;
+    assert!(accepted.get("error").is_none(), "{accepted}");
+    let stored = call(
+        &p,
+        &token,
+        "list_events",
+        json!({"event_id": "EVOLVE-COMPARE-A"}),
+    )
+    .await;
+    let event = &stored["result"]["structuredContent"]["events"][0];
+    assert_eq!(event["revision_binding_attested"], true, "{stored}");
+    assert_eq!(event["provenance"]["manual"]["target_page_sha256"], hash);
+    assert_eq!(
+        event["status"], "processed",
+        "the click never reaches the runner"
+    );
+    let inbox = call(&p, &token, "list_inbox", json!({})).await;
+    assert!(
+        inbox["result"]["structuredContent"]["events"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+
+    // Another user cannot request a comparison of this owner's page, and cannot take over
+    // the event id either.
+    let other = p.mint_token_with_sub(TENANT, Role::Agent, "other-user");
+    let mut other_request = request(target, &hash, "run");
+    other_request["event_id"] = json!("EVOLVE-COMPARE-OTHER");
+    let denied = call(&p, &other, "capture_event", other_request).await;
+    assert_eq!(denied["error"]["code"], -32602, "{denied}");
+    let collided = call(&p, &other, "capture_event", request(target, &hash, "run")).await;
+    assert_eq!(collided["error"]["code"], -32602, "{collided}");
+
+    // The same owner replaying the same id with a different page is a different request.
+    let replay = call(
+        &p,
+        &token,
+        "capture_event",
+        request(done_page, &done_hash, "run"),
+    )
+    .await;
+    assert_eq!(replay["error"]["code"], -32602, "{replay}");
+
+    // The click is private to its author: another user cannot read it back.
+    let seen_by_other = call(
+        &p,
+        &other,
+        "list_events",
+        json!({"event_id": "EVOLVE-COMPARE-A"}),
+    )
+    .await;
+    let leaked = seen_by_other["result"]["structuredContent"]["events"]
+        .as_array()
+        .map(|events| !events.is_empty())
+        .unwrap_or(false);
+    assert!(!leaked, "{seen_by_other}");
 }
 
 #[tokio::test]

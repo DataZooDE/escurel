@@ -671,6 +671,7 @@ fn gate_and_enqueue(
         || trigger.label_skill == "evolve_prepare_source"
         || trigger.label_skill == "evolve_validate"
         || trigger.label_skill == "evolve_publish_candidate"
+        || trigger.label_skill == "evolve_compare"
         || (trigger.label_skill == "evolve_run"
             && trigger
                 .manual
@@ -3833,6 +3834,17 @@ mod tests {
             "webhook",
         );
         assert!(!admitted);
+        let comparison = gate_and_enqueue(
+            &ledger,
+            &queue,
+            &limits,
+            &governor,
+            &metrics,
+            &inflight,
+            trigger_with_label("evt-comparison-1", "evolve_compare"),
+            "webhook",
+        );
+        assert!(!comparison);
         assert_eq!(ledger.count_all_runs().unwrap(), 0);
     }
 

@@ -2021,6 +2021,7 @@ pub(super) async fn tool_capture_event(
         "evolve_prepare_source" => Some("evolve_training_source"),
         "evolve_validate" => Some("evolve_experiment"),
         "evolve_publish_candidate" => Some("evolve_validation_report"),
+        "evolve_compare" => Some("evolve_comparison"),
         _ => None,
     };
     let existing_evolve_event = if evolve_target_skill.is_some() {
@@ -2041,6 +2042,7 @@ pub(super) async fn tool_capture_event(
             | "evolve_prepare_source"
             | "evolve_validate"
             | "evolve_publish_candidate"
+            | "evolve_compare"
     ) && let Some(existing) = existing_evolve_event.as_ref()
     {
         let requested_manual = a.provenance.as_ref().and_then(|p| p.get("manual"));
@@ -2100,6 +2102,7 @@ pub(super) async fn tool_capture_event(
                 | "evolve_prepare_source"
                 | "evolve_validate"
                 | "evolve_publish_candidate"
+                | "evolve_compare"
         ) {
             expanded.frontmatter["owner_subject"] == caller.subject
                 && indexer
@@ -2169,6 +2172,19 @@ pub(super) async fn tool_capture_event(
         {
             return Err(JsonRpcError::invalid_params(
                 "capture_event: evolve validation needs the current completed winner".to_owned(),
+            ));
+        }
+        // The comparison page is both the request and, later, the result. Only a page that
+        // is still waiting for its comparison can be clicked, so a finished (or forged
+        // "completed") page is never recomputed.
+        if a.label_skill == "evolve_compare"
+            && (manual.get("mode").and_then(Value::as_str) != Some("run")
+                || expanded.frontmatter["status"] != "requested"
+                || expanded.frontmatter["next_comparison_action"] != "evolve_compare")
+        {
+            return Err(JsonRpcError::invalid_params(
+                "capture_event: evolve comparison needs a page that is awaiting its comparison"
+                    .to_owned(),
             ));
         }
         if a.label_skill == "evolve_publish_candidate"
@@ -2267,6 +2283,7 @@ pub(super) async fn tool_capture_event(
             | "evolve_prepare_source"
             | "evolve_validate"
             | "evolve_publish_candidate"
+            | "evolve_compare"
     ) && stored.label_skill == requested.label_skill
     {
         // This is an Evolve control request, not a runnable skill. Keep it
@@ -3070,6 +3087,7 @@ pub(super) async fn tool_list_events(
                     | "evolve_prepare_source"
                     | "evolve_validate"
                     | "evolve_publish_candidate"
+                    | "evolve_compare"
             )
         {
             let sha = event.provenance["manual"]["target_page_sha256"]

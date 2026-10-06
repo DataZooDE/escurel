@@ -53,6 +53,7 @@ pub(super) async fn tool_list_skills(
     value["evolve_preflight_revision_binding"] = json!("gateway-owned-v1");
     value["evolve_source_revision_binding"] = json!("gateway-owned-v1");
     value["evolve_candidate_revision_binding"] = json!("gateway-owned-v1");
+    value["evolve_comparison_revision_binding"] = json!("gateway-owned-v1");
     Ok(value)
 }
 
