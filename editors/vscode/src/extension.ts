@@ -37,6 +37,7 @@ import { registerPrepareEvolveTrainingSource } from './evolve/prepareSource';
 import { registerEvolveHoldout } from './evolve/registerHoldout';
 import { registerEvolveHoldoutCsv } from './evolve/registerHoldoutCsv';
 import { registerPrepareEvolveTrainingCsv } from './evolve/prepareCsv';
+import { ScenariosTree } from './views/scenarios';
 
 const EXPLAIN_SCHEME = 'escurel-explain';
 
@@ -93,6 +94,7 @@ export function activate(context: vscode.ExtensionContext): EscurelApi | undefin
     () => awaiting.refresh(),
   );
   const live = LiveCoordinator.register(context, services, { inbox, awaiting });
+  ScenariosTree.register(context, () => services.client, services);
   const threadsTree = new ThreadsTree();
   const threadsView = vscode.window.createTreeView('escurel.threads', {
     treeDataProvider: threadsTree,
