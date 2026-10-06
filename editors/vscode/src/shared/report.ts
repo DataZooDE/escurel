@@ -121,11 +121,13 @@ export function buildReport(def: ReportDef, results: Record<string, Row[]>): Rep
     const rows = v.data ? (results[v.data] ?? []) : [];
     if (v.kind === 'kpi' && v.field) {
       const n = aggregate(rows, v.field, v.agg ?? 'sum');
-      views.push({
-        kind: 'kpi',
-        label: cleanText(v.label ?? humanise(v.field), 60),
-        value: format(n),
-      });
+      const label = cleanText(v.label ?? humanise(v.field), 60);
+      // A probability is read as a percentage: 0.957 is "96%".
+      const value =
+        n !== undefined && n >= 0 && n <= 1 && /probab|percent|share/i.test(label)
+          ? `${Math.round(n * 100)}%`
+          : format(n);
+      views.push({ kind: 'kpi', label, value });
     } else if (v.kind === 'table') {
       if (rows.length === 0) continue;
       const keys = Object.keys(rows[0] ?? {}).slice(0, MAX_COLUMNS);

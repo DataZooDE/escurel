@@ -124,4 +124,26 @@ describe('buildReport', () => {
     });
     expect((m.views[0] as { rows: string[][] }).rows[0]).toEqual(['—', '1']);
   });
+
+  it('shows a probability as a percentage, not 0.96', () => {
+    const def = parseReport({
+      ...IMPACT,
+      views: [
+        { kind: 'kpi', data: 'totals', agg: 'max', field: 'p', label: 'Probability it lasts' },
+      ],
+    })!;
+    expect(buildReport(def, { totals: [{ p: 0.957 }, { p: 0.4 }] }).views[0]).toEqual({
+      kind: 'kpi',
+      label: 'Probability it lasts',
+      value: '96%',
+    });
+  });
+
+  it('leaves a plain number alone even when it is a fraction, unless the label says probability', () => {
+    const def = parseReport({
+      ...IMPACT,
+      views: [{ kind: 'kpi', data: 'totals', agg: 'sum', field: 'x', label: 'Average lead' }],
+    })!;
+    expect(buildReport(def, { totals: [{ x: 0.5 }] }).views[0]).toMatchObject({ value: '0.5' });
+  });
 });

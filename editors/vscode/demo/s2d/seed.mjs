@@ -155,18 +155,20 @@ const tpMail = await mail('transport_plan', 'Weekly outbound review: part loads 
   'Which part-load shipments can we consolidate this week, without breaking a delivery duty or the shelf space at the destination?');
 const tpPage = INSTANCE('transport_plan', 'tp-stuttgart-lyon-fr-2026-10-08');
 await agentRun('transport_plan', tpMail, tpPage, async (agent) => {
-  const lanes = await q(agent, 'consolidation_candidates', {});
+  await q(agent, 'consolidation_candidates', {});
   const plan = await q(agent, 'consolidation_plan', { lane: 'Stuttgart -> Lyon (FR)', ship_on: '2026-10-08' });
   const together = plan.filter((x) => x.decision === 'consolidate');
   const kept = plan.filter((x) => x.decision !== 'consolidate');
   const pallets = together.reduce((n, x) => n + Number(x.pallets), 0);
-  const saving = Number(together[0]?.saving_eur ?? lanes.find((l) => String(l.lane).startsWith('Stuttgart -> Lyon'))?.potential_saving_eur ?? 0);
+  const saving = Number(together[0]?.lane_saving_eur ?? 0);
+  const held = Number(together[0]?.held_pallets_total ?? 0);
+  const planCols = [['shipment_id', 'Shipment'], ['customer', 'Customer'], ['planned_ship_date', 'Planned'], ['ship_on', 'Ships together on'], ['delivery_duty_date', 'Delivery duty'], ['pallets', 'Pallets']];
   const doc =
     frontmatter('instance', 'transport_plan', 'tp-stuttgart-lyon-fr-2026-10-08', {
       status: 'approved', lane: 'Stuttgart -> Lyon (FR)', ship_on: '2026-10-08', shipments: together.map((x) => x.shipment_id),
-      pallets, held_pallets: 14, saving_eur: saving,
+      pallets, held_pallets: held, saving_eur: saving,
     }) +
-    `# Consolidation: Stuttgart to Lyon, Thursday 2026-10-08\n\n${NOTE}\n\n## Plan\n\n${table(together, Object.keys(together[0] ?? {}).map((k) => [k, k.replaceAll('_', ' ')]))}\n\n## Not consolidated\n\n${kept.map((x) => `- ${x.shipment_id}: ${x.reason ?? x.decision}`).join('\n')}\n\n## Checks\n\n- Every delivery duty is met.\n- The held pallets fit the free shelf slots at the destination.\n\nApproving records the plan for execution; the carrier booking is a separate step.\n`;
+    `# Consolidation: Stuttgart to Lyon, Thursday 2026-10-08\n\n${NOTE}\n\n## Plan\n\n${table(together, planCols)}\n\n## Not consolidated\n\n${kept.map((x) => `- ${x.shipment_id} (${x.customer}): ${x.decision}`).join('\n')}\n\n## Checks\n\n- Every delivery duty of the consolidated shipments is met.\n- The ${held} held pallets fit the ${together[0]?.free_pallet_slots ?? held} free shelf slots at the destination.\n\nApproving records the plan for execution; the carrier booking is a separate step.\n`;
   await call(agent, 'create_draft', { target_page_id: tpPage, content: doc, new_changeset: true, event_id: tpMail.event_id });
   return `Checked ${plan.length} shipments on the lane and proposed shipping ${together.length} together.`;
 });
