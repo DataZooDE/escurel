@@ -145,7 +145,7 @@ await agentRun('supplier_exception', mailEv, resPage, async (agent) => {
     }) +
     `# Resolution for lot L-24117\n\n${NOTE}\n\n## Situation\n\nLot L-24117 (controller board CB-7) arrives ${DELAY.delay_days} days late. Of the ${orders.length} customer orders it feeds, ${late.length} go late (${late.map((o) => `${o.days_late} days`).join(', ')}); ${orders.length - late.length} absorb the delay.\n\n## Proposal\n\n| Option | Units | Lead time | Cost | Risk |\n|---|---|---|---|---|\n| Reallocate from the Central Europe warehouse | 250 | 2 days | EUR 1,050 | low |\n| Partial expedite at the supplier | 910 | 8 days | EUR 2,100 | medium |\n\nTogether 1,160 units: every late order is covered. Estimated cost EUR 3,150 against a penalty exposure of EUR ${penalty.toLocaleString('en-US')}.\n\n## Changes on approval\n\n- Split the purchase order: 910 units expedited.\n- Transfer 250 units from the Central Europe warehouse.\n- Keep the promised delivery dates of the late orders.\n\nApproving records the decision for execution. Nothing in the planning or ERP system is changed by this page.\n`;
   // ONE changeset holds both pages, so approving it records the decision AND resolves the exception.
-  const first = await call(agent, 'create_draft', { target_page_id: resPage, content: resolution, base_sha256: '', new_changeset: true, event_id: mailEv.event_id });
+  const first = await call(agent, 'create_draft', { target_page_id: resPage, content: resolution, new_changeset: true, event_id: mailEv.event_id });
   await call(agent, 'create_draft', { target_page_id: excPage, content: exceptionDoc('resolved'), base_sha256: excHead.content_sha256, changeset_id: first.changeset_id ?? first.draft?.changeset_id, event_id: mailEv.event_id });
   return `Read the supplier message, projected the impact (${late.length} of ${orders.length} orders late) and proposed a resolution.`;
 });
@@ -167,7 +167,7 @@ await agentRun('transport_plan', tpMail, tpPage, async (agent) => {
       pallets, held_pallets: 14, saving_eur: saving,
     }) +
     `# Consolidation: Stuttgart to Lyon, Thursday 2026-10-08\n\n${NOTE}\n\n## Plan\n\n${table(together, Object.keys(together[0] ?? {}).map((k) => [k, k.replaceAll('_', ' ')]))}\n\n## Not consolidated\n\n${kept.map((x) => `- ${x.shipment_id}: ${x.reason ?? x.decision}`).join('\n')}\n\n## Checks\n\n- Every delivery duty is met.\n- The held pallets fit the free shelf slots at the destination.\n\nApproving records the plan for execution; the carrier booking is a separate step.\n`;
-  await call(agent, 'create_draft', { target_page_id: tpPage, content: doc, base_sha256: '', new_changeset: true, event_id: tpMail.event_id });
+  await call(agent, 'create_draft', { target_page_id: tpPage, content: doc, new_changeset: true, event_id: tpMail.event_id });
   return `Checked ${plan.length} shipments on the lane and proposed shipping ${together.length} together.`;
 });
 
@@ -187,7 +187,7 @@ await agentRun('ltb_decision', ltbMail, ltbPage, async (agent) => {
       expected_runout_year: String(w640.expected_runout_year), stock_value_eur: 755200,
     }) +
     `# Last-time-buy: SP-3307 (servo drive module)\n\n${NOTE}\n\n## Recommendation\n\nBuy 640 units: they hold the 95% service level to the end of service.\n\n## Alternatives considered\n\n- 400 units: about ${(Number(w400.probability_covers_lifetime) * 100).toFixed(0)}% chance to last; expected run-out ${w400.expected_runout_year}.\n- 640 units: about ${(Number(w640.probability_covers_lifetime) * 100).toFixed(0)}% chance to last.\n\n## Warehouse split\n\n${table(split, Object.keys(split[0] ?? {}).map((k) => [k, k.replaceAll('_', ' ')]))}\n\nApproving records the decision for execution; the purchase order is a separate step.\n`;
-  await call(agent, 'create_draft', { target_page_id: ltbPage, content: doc, base_sha256: '', new_changeset: true, event_id: ltbMail.event_id });
+  await call(agent, 'create_draft', { target_page_id: ltbPage, content: doc, new_changeset: true, event_id: ltbMail.event_id });
   return `Compared ${parts.length} parts reaching end of production and proposed a last-time-buy for SP-3307.`;
 });
 

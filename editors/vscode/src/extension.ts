@@ -91,7 +91,12 @@ export function activate(context: vscode.ExtensionContext): EscurelApi | undefin
   const review = ReviewController.register(
     context,
     () => services.client,
-    () => awaiting.refresh(),
+    // A decision changes pages as well as the queue: the record that was waiting for the planner is
+    // open in an editor, and it must show its new state, not the one it had before the decision.
+    () => {
+      awaiting.refresh();
+      services.onDidChangeEmit();
+    },
   );
   const live = LiveCoordinator.register(context, services, { inbox, awaiting });
   const scenarios = ScenariosTree.register(context, () => services.client, services);
