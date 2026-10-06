@@ -7,6 +7,11 @@ name: publish-image
 # and :<12-char-sha> (immutable, what a substrate PR pins).
 on:
   workflow_dispatch:
+    inputs:
+      extra_tag:
+        description: "Optional additional immutable tag for ghcr.io/datazoode/escurel (e.g. 0fb7f015-opt1)"
+        required: false
+        default: ""
   push:
     branches: [main]
     # Only rebuild the image when something that affects the binary changes.
@@ -51,8 +56,18 @@ jobs:
         run: |
           set -euo pipefail
           SHA="$(echo "${{ github.sha }}" | cut -c1-12)"
-          echo "tags=ghcr.io/datazoode/escurel:main,ghcr.io/datazoode/escurel:${SHA}" >> "$GITHUB_OUTPUT"
-          echo "::notice title=Publish::ghcr.io/datazoode/escurel :main + :${SHA}"
+          # Only main moves :main. A dispatch from a release branch
+          # (release/0fb7f015-anofox-optimize) pushes ONLY its immutable
+          # :<sha>, plus the optional extra_tag input.
+          TAGS="ghcr.io/datazoode/escurel:${SHA}"
+          if [ "${{ github.ref }}" = "refs/heads/main" ]; then
+            TAGS="ghcr.io/datazoode/escurel:main,${TAGS}"
+          fi
+          if [ -n "${{ inputs.extra_tag }}" ]; then
+            TAGS="${TAGS},ghcr.io/datazoode/escurel:${{ inputs.extra_tag }}"
+          fi
+          echo "tags=${TAGS}" >> "$GITHUB_OUTPUT"
+          echo "::notice title=Publish::${TAGS}"
 
       - name: Build + push
         uses: docker/build-push-action@v6
@@ -71,6 +86,9 @@ jobs:
 
   publish-runner:
     name: build + push escurel-runner → ghcr
+    # Only main publishes the runner (it would otherwise move :main from a
+    # release-branch dispatch).
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     # Runner release build links libduckdb dynamically (DuckDB-backed ledger);
     # runtime stage packages libduckdb.so and libstdc++6.

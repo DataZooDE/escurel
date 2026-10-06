@@ -95,6 +95,29 @@ RUN set -eu; \
     done; \
     echo "baked $(ls "$d"/*.duckdb_extension | wc -l) extensions, $(du -sh /opt/escurel/.duckdb | cut -f1)"
 
+# anofox_optimize, baked by DIGEST and loaded by absolute path -- never
+# installed by name. escurel LOADs it only when the deployment sets
+# ESCUREL_INDEX_EXTENSIONS=/opt/escurel/extensions/anofox_optimize.duckdb_extension
+# AND ESCUREL_ALLOW_UNSIGNED_EXTENSIONS=true (the erpl.io build is not signed
+# by DuckDB's keys). Without both, the image behaves exactly like the plain
+# build. Source: the anofox-optimize CI deploy of tag v2026.09.26 (commit
+# 5ea8943), DuckDB v1.5.5, linux_amd64 -- the versioned, non-"latest" path.
+ARG ANOFOX_OPTIMIZE_URL=https://get.erpl.io/anofox_optimize/v2026.09.26/v1.5.5/linux_amd64/anofox_optimize.duckdb_extension.gz
+ARG ANOFOX_OPTIMIZE_GZ_SHA256=a68efa18d7d9085dd79a805e3e460f3ec75fd686b67eea6c12eae131fba1a70b
+ARG ANOFOX_OPTIMIZE_SHA256=de9ab99aa4330b6ccf6b5359e596ba85751cba49beb4d6623a31c71999fe08fe
+RUN set -eu; \
+    mkdir -p /opt/escurel/extensions; \
+    curl -sSfL "${ANOFOX_OPTIMIZE_URL}" -o /tmp/anofox_optimize.gz; \
+    echo "${ANOFOX_OPTIMIZE_GZ_SHA256}  /tmp/anofox_optimize.gz" | sha256sum -c -; \
+    gunzip -c /tmp/anofox_optimize.gz > /opt/escurel/extensions/anofox_optimize.duckdb_extension; \
+    rm /tmp/anofox_optimize.gz; \
+    echo "${ANOFOX_OPTIMIZE_SHA256}  /opt/escurel/extensions/anofox_optimize.duckdb_extension" | sha256sum -c -; \
+    # Fail the build if it does not load in THIS DuckDB version or lacks the
+    # functions the lab query pages call.
+    duckdb -unsigned -c "LOAD '/opt/escurel/extensions/anofox_optimize.duckdb_extension'; \
+      SELECT CASE WHEN count(DISTINCT function_name) = 3 THEN 'ok' ELSE error('anofox_optimize: missing opt_* functions') END \
+      FROM duckdb_functions() WHERE function_name IN ('opt_knapsack_exact','opt_pack_best_of','opt_wave_best_of');"
+
 # ---- runtime -------------------------------------------------------------
 FROM debian:bookworm-slim AS runtime
 # libstdc++6: the downloaded libduckdb links it dynamically and debian-slim
@@ -113,6 +136,7 @@ RUN ldconfig
 # root filesystem. HOME is set to match, because HOME is what decides where
 # DuckDB looks: pointing it anywhere else silently reverts to downloading.
 COPY --from=extensions --chown=65532:65532 /opt/escurel/.duckdb /opt/escurel/.duckdb
+COPY --from=extensions --chown=65532:65532 /opt/escurel/extensions /opt/escurel/extensions
 ENV HOME=/opt/escurel
 
 # Kamal (the substrate's deployer) asserts at deploy that the image carries a
