@@ -1,0 +1,65 @@
+body {
+  min-width: 320px;
+}
+
+.login-form {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.login-form > .user {
+  display: none;
+}
+
+.login-form > .label {
+  color: var(--text);
+  font-size: 0.875rem;
+  font-weight: 600;
+}
+
+.login-form > .field {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  width: 100%;
+}
+
+.login-form > .field > .password {
+  background-color: var(--surface);
+  border: 1px solid var(--input-border);
+  border-radius: 6px;
+  box-sizing: border-box;
+  color: var(--text);
+  padding: 11px 12px;
+  width: 100%;
+}
+
+.login-form > .field > .password::placeholder {
+  color: var(--muted);
+}
+
+.login-form > .field > .password:focus {
+  border-color: var(--focus);
+  outline: 2px solid var(--focus);
+  outline-offset: 1px;
+}
+
+.login-form > .field > .submit {
+  width: 100%;
+}
+
+.login-form > .error {
+  background: var(--error-bg);
+  border-left: 3px solid var(--error-border);
+  border-radius: 4px;
+  color: var(--error);
+  font-size: 0.9375rem;
+  margin-top: 8px;
+  padding: 10px 12px;
+}
+
+input {
+  -webkit-appearance: none;
+  appearance: none;
+}

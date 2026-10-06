@@ -39,7 +39,7 @@ set -- --auth password \
   --disable-telemetry --disable-update-check --disable-workspace-trust \
   --disable-file-downloads --disable-file-uploads --disable-proxy \
   --disable-getting-started-override \
-  --app-name Escurel
+  --app-name Escurel --welcome-text "${WORKBENCH_WELCOME_TEXT:-Sign in to Escurel}"
 
 # TLS terminated here instead of by a proxy (optional): both files, or neither.
 if [ -n "${CODE_SERVER_CERT:-}" ] || [ -n "${CODE_SERVER_CERT_KEY:-}" ]; then

@@ -41,6 +41,7 @@ services:
       HASHED_PASSWORD: ${WORKBENCH_HASHED_PASSWORD:-}
       # Shortest accepted plain PASSWORD (default 12, floor 8). Lowering it weakens the one gate.
       MIN_PASSWORD_LENGTH: ${WORKBENCH_MIN_PASSWORD_LENGTH:-12}
+      WORKBENCH_WELCOME_TEXT: ${WORKBENCH_WELCOME_TEXT:-Sign in to Escurel}
       WORKBENCH_GATEWAY_URL: http://escurel:8080
       CODE_SERVER_TRUSTED_ORIGINS: ${WORKBENCH_TRUSTED_ORIGINS:-}
     ports:

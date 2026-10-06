@@ -53,6 +53,23 @@ RUN set -eux; mkdir -p /opt/escurel/extensions /opt/escurel/ud; \
     && chown -R root:root /opt/escurel && chmod -R a+rX,go-w /opt/escurel \
     && chmod +x /opt/escurel/entrypoint.sh
 
+# The Escurel skin for code-server's own pages (login, error) and its icons. These are template/asset files of
+# the pinned code-server version: assert they exist first, so an upgrade that moves them fails the build instead
+# of silently shipping the stock page. The login template keeps every placeholder the server fills in
+# ({{ERROR}}, {{BASE}}, {{WELCOME_TEXT}}, ...) and the form's field names, so login itself is unchanged.
+RUN set -eux; \
+    SRC=/usr/lib/code-server/src/browser; \
+    for f in pages/login.html pages/login.css pages/global.css pages/error.css \
+             media/favicon.svg media/favicon-dark-support.svg media/favicon.ico \
+             media/pwa-icon-192.png media/pwa-icon-512.png media/pwa-icon-maskable-192.png media/pwa-icon-maskable-512.png; do \
+      test -f "$SRC/$f"; \
+    done; \
+    cd /opt/escurel/login; \
+    install -m 0644 login.html login.css global.css error.css "$SRC/pages/"; \
+    install -m 0644 favicon.svg favicon-dark-support.svg favicon.ico pwa-icon-192.png pwa-icon-512.png \
+                    pwa-icon-maskable-192.png pwa-icon-maskable-512.png "$SRC/media/"; \
+    grep -q '{{ERROR}}' "$SRC/pages/login.html" && grep -q 'name="password"' "$SRC/pages/login.html"
+
 # The data directory exists and belongs to `coder` BEFORE it becomes a volume, so a fresh named volume
 # inherits that ownership (a root-owned volume would stop the non-root process from starting).
 RUN mkdir -p /home/coder/data /home/coder/workspace && chown coder:coder /home/coder/data /home/coder/workspace

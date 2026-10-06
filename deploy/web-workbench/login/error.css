@@ -1,0 +1,34 @@
+.error-display {
+  box-sizing: border-box;
+  padding: 20px;
+  text-align: center;
+}
+
+.error-display > .header {
+  color: var(--accent);
+  font-size: 4.5rem;
+  font-weight: 650;
+  margin: 0;
+}
+
+.error-display > .body {
+  color: var(--muted);
+  font-size: 1.125rem;
+}
+
+.error-display > .links {
+  margin-top: 16px;
+}
+
+.error-display > .links > .link {
+  color: var(--link);
+  text-decoration: none;
+}
+
+.error-display > .links > .link:hover {
+  text-decoration: underline;
+}
+
+.error-display .success {
+  color: var(--accent);
+}

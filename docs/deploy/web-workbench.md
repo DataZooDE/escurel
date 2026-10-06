@@ -68,6 +68,22 @@ person who holds the password can use Escurel and nothing else. What is enforced
 If that is not acceptable, do not expose the workbench: keep `WORKBENCH_BIND=127.0.0.1` and reach it over an
 SSH tunnel or a VPN.
 
+## The login page
+
+The sign-in page is code-server's own, re-skinned in the extension's "Escurel Calm" palette (light, with a dark
+variant that follows the browser's `prefers-color-scheme`). The files live in `deploy/web-workbench/login/` and the
+Dockerfile installs them over code-server's `login.html`, `login.css`, `global.css`, `error.css` and its icons; the
+build fails if a pinned code-server version moves those files or if the template loses `{{ERROR}}` or the
+`password` field. The form posts exactly as before, so login, the error message ("Incorrect password"), rate
+limiting and the `base`/`href` path handling are unchanged. The page title, welcome text (`WORKBENCH_WELCOME_TEXT`,
+default "Sign in to Escurel") and favicon say Escurel. The stock "check ~/.config/code-server/config.yaml for the
+password" hint is dropped from the page. The pages' CSP is `style-src 'self'`, so the skin is plain CSS files:
+no inline styles, no external fonts.
+
+Not overridable: the text of code-server's error strings (they come from its locale files; only the page chrome is
+ours), `--welcome-text` is deprecated upstream (it still works on 4.140.0; the login template could hard-code it
+instead), and the workbench itself keeps VS Code's own theme (set by the baked settings, not by this page).
+
 ## TLS
 
 Put a TLS-terminating reverse proxy in front. `compose.proxy.yaml` is a minimal Caddy example with

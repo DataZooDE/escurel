@@ -1,0 +1,161 @@
+/* Escurel skin for code-server's own pages (login, error). Same tokens as the extension's "Escurel Calm"
+   theme (editors/vscode/themes/escurel-calm-color-theme.json); the dark block follows a dark VS Code.
+   The CSP of these pages is `style-src 'self'`: no inline styles, no external fonts. */
+:root {
+  color-scheme: light dark;
+  --bg: #fbfaf8;
+  --surface: #ffffff;
+  --surface-alt: #f3f1ec;
+  --border: #d8d4cb;
+  --input-border: #8a929a; /* >= 3:1 against both the page and the input */
+  --text: #2b3036;
+  --muted: #58626c;
+  --accent: #1f6f78;
+  --accent-hover: #195b63;
+  --accent-text: #ffffff;
+  --link: #17606a;
+  --focus: #1f6f78;
+  --error: #8c1d18;
+  --error-bg: #fbeceb;
+  --error-border: #b3261e;
+  --shadow: 0 1px 2px rgba(43, 48, 54, 0.06), 0 8px 24px rgba(43, 48, 54, 0.08);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #181a1b;
+    --surface: #202325;
+    --surface-alt: #1a1d1e;
+    --border: #353a3d;
+    --input-border: #7d868d;
+    --text: #e3e6e8;
+    --muted: #a3adb5;
+    --accent: #1f6f78;
+    --accent-hover: #26838e;
+    --accent-text: #ffffff;
+    --link: #6cc3cd;
+    --focus: #6cc3cd;
+    --error: #ffb4ab;
+    --error-bg: #3a1f1d;
+    --error-border: #e5736b;
+    --shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 8px 24px rgba(0, 0, 0, 0.5);
+  }
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  width: 100%;
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  margin: 0;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Inter", Roboto, "Helvetica Neue", Arial, sans-serif;
+  line-height: 1.45;
+  overflow: auto;
+}
+
+input,
+button {
+  font-family: inherit;
+  font-size: 1rem;
+  line-height: 1.25rem;
+}
+
+.-button {
+  background-color: var(--accent);
+  border: 1px solid var(--accent);
+  border-radius: 6px;
+  box-sizing: border-box;
+  color: var(--accent-text);
+  cursor: pointer;
+  padding: 11px 20px;
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.-button:hover {
+  background-color: var(--accent-hover);
+  border-color: var(--accent-hover);
+}
+
+.-button:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+.center-container {
+  align-items: center;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  min-height: 100%;
+  padding: 24px 16px;
+  width: 100%;
+}
+
+.card-box {
+  background-color: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: var(--shadow);
+  max-width: 420px;
+  width: 100%;
+}
+
+.card-box > .header {
+  padding: 32px 32px 0;
+}
+
+.card-box > .header > .brand {
+  align-items: center;
+  color: var(--link); /* teal that holds >= 3:1 on the card in both schemes */
+  display: flex;
+  gap: 10px;
+  margin-bottom: 20px;
+}
+
+.card-box > .header > .brand > svg {
+  height: 28px;
+  width: 28px;
+}
+
+.card-box > .header > .brand > .wordmark {
+  color: var(--text);
+  font-size: 1.125rem;
+  font-weight: 650;
+  letter-spacing: 0.01em;
+}
+
+.card-box > .header > .main {
+  font-size: 1.5rem;
+  font-weight: 650;
+  line-height: 1.25;
+  margin: 0;
+}
+
+.card-box > .header > .sub {
+  color: var(--muted);
+  margin-top: 8px;
+}
+
+.card-box > .content {
+  padding: 24px 32px 32px;
+}
+
+.card-box > .content > .none {
+  margin: 2px 0;
+}
+
+.card-box + .card-box {
+  margin-top: 26px;
+}
+
+canvas {
+  top: 0;
+  left: 0;
+}
