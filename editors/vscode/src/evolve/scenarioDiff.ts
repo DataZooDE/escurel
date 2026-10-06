@@ -1,7 +1,7 @@
 import type { TokenRefresher } from '../auth/refresher';
 import { evolveOrigin } from './holdoutClient';
 
-/** One table's exact change counts, as Evolve's `evolve_scenario_diff` reports them. */
+/** One table's exact change counts, as Evolve's comparison record reports them. */
 export interface ScenarioTableDiff {
   table: string;
   rowsAdded: number;
@@ -19,21 +19,29 @@ export interface ScenarioDiffRow {
   key: Record<string, unknown>;
 }
 
-export interface ScenarioDiff {
+/** An immutable comparison result read from Evolve. */
+export interface Comparison {
+  comparison: string;
   experiment: string;
-  pilot: string;
+  state: 'completed' | 'blocked';
+  reason: string | null;
   baselineProgramId: number;
-  winnerProgramId: number;
+  candidateProgramId: number;
   tables: ScenarioTableDiff[];
   rows: ScenarioDiffRow[];
   truncated: boolean;
   evidenceNote: string;
+  resultSha256: string;
+  /** Set while Evolve has more stored rows to return for this comparison. */
+  nextCursor?: string;
 }
 
 const FIXED = new Set(['table', 'change_type', 'column_name', 'old_value', 'new_value']);
+/** Pages of stored rows read for one comparison; the stored result is already capped. */
+const MAX_PAGES = 10;
 
 function bad(): never {
-  throw new Error('Evolve did not return a scenario diff. Check the Evolve endpoint and version.');
+  throw new Error('Evolve did not return a comparison. Check the Evolve endpoint and version.');
 }
 
 function record(value: unknown): Record<string, unknown> {
@@ -45,13 +53,34 @@ function text(value: unknown): string | null {
   return typeof value === 'string' ? value : null;
 }
 
-export function parseScenarioDiff(value: unknown): ScenarioDiff {
+function parseRow(entry: unknown): ScenarioDiffRow {
+  const r = record(entry);
+  const changeType = r.change_type;
+  if (
+    typeof r.table !== 'string' ||
+    !['added', 'removed', 'modified'].includes(changeType as string)
+  )
+    bad();
+  const key: Record<string, unknown> = {};
+  for (const [name, v] of Object.entries(r)) if (!FIXED.has(name)) key[name] = v;
+  return {
+    table: r.table,
+    changeType: changeType as ScenarioDiffRow['changeType'],
+    columnName: text(r.column_name),
+    oldValue: text(r.old_value),
+    newValue: text(r.new_value),
+    key,
+  };
+}
+
+export function parseComparison(value: unknown): Comparison {
   const body = record(value);
   if (
+    typeof body.comparison !== 'string' ||
     typeof body.experiment !== 'string' ||
+    (body.state !== 'completed' && body.state !== 'blocked') ||
     !Array.isArray(body.tables) ||
-    !Array.isArray(body.rows) ||
-    typeof body.winner_program_id !== 'number'
+    !Array.isArray(body.rows)
   )
     bad();
   const tables = (body.tables as unknown[]).map((entry) => {
@@ -65,35 +94,35 @@ export function parseScenarioDiff(value: unknown): ScenarioDiff {
       rowsModified: count('rows_modified'),
     };
   });
-  const rows = (body.rows as unknown[]).map((entry): ScenarioDiffRow => {
-    const r = record(entry);
-    const changeType = r.change_type;
-    if (
-      typeof r.table !== 'string' ||
-      !['added', 'removed', 'modified'].includes(changeType as string)
-    )
-      bad();
-    const key: Record<string, unknown> = {};
-    for (const [name, v] of Object.entries(r)) if (!FIXED.has(name)) key[name] = v;
-    return {
-      table: r.table,
-      changeType: changeType as ScenarioDiffRow['changeType'],
-      columnName: text(r.column_name),
-      oldValue: text(r.old_value),
-      newValue: text(r.new_value),
-      key,
-    };
-  });
+  const id = (k: string): number => (typeof body[k] === 'number' ? (body[k] as number) : 0);
   return {
+    comparison: body.comparison,
     experiment: body.experiment,
-    pilot: typeof body.pilot === 'string' ? body.pilot : '',
-    baselineProgramId: typeof body.baseline_program_id === 'number' ? body.baseline_program_id : 0,
-    winnerProgramId: body.winner_program_id as number,
+    state: body.state,
+    reason: text(body.reason),
+    baselineProgramId: id('baseline_program_id'),
+    candidateProgramId: id('candidate_program_id'),
     tables,
-    rows,
+    rows: (body.rows as unknown[]).map(parseRow),
     truncated: body.truncated === true,
     evidenceNote: typeof body.evidence_note === 'string' ? body.evidence_note : '',
+    resultSha256: typeof body.result_sha256 === 'string' ? body.result_sha256 : '',
+    ...(typeof body.next_cursor === 'string' ? { nextCursor: body.next_cursor } : {}),
   };
+}
+
+/**
+ * A comparison page is a request plus a readable summary; Evolve's record is the result. The
+ * page may only be trusted to describe a result when it carries that record's hash, so a page
+ * that merely claims to be completed (an owner can write any frontmatter when creating one)
+ * never vouches for anything.
+ */
+export function matchesPage(comparison: Comparison, pageResultSha256: string | undefined): boolean {
+  return (
+    comparison.state === 'completed' &&
+    !!pageResultSha256 &&
+    comparison.resultSha256 === pageResultSha256
+  );
 }
 
 function keyLabel(key: Record<string, unknown>): string {
@@ -103,43 +132,45 @@ function keyLabel(key: Record<string, unknown>): string {
 
 /**
  * Two virtual documents for the native diff editor. A line is one changed cell (or one whole
- * row that exists on one side only), so the editor highlights exactly what the winner changed.
- * Output is sorted by the order Evolve returned, which is deterministic.
+ * row that exists on one side only), so the editor highlights exactly what changed.
  */
-export function scenarioDiffTexts(
-  diff: ScenarioDiff,
+export function comparisonTexts(
+  comparison: Comparison,
   table: string,
-): { seed: string; winner: string } {
-  const seed: string[] = [];
-  const winner: string[] = [];
-  for (const row of diff.rows) {
+): { baseline: string; candidate: string } {
+  const baseline: string[] = [];
+  const candidate: string[] = [];
+  for (const row of comparison.rows) {
     if (row.table !== table) continue;
     const key = keyLabel(row.key);
     if (row.changeType === 'modified') {
-      seed.push(`${key} · ${row.columnName} = ${row.oldValue}`);
-      winner.push(`${key} · ${row.columnName} = ${row.newValue}`);
+      baseline.push(`${key} · ${row.columnName} = ${row.oldValue}`);
+      candidate.push(`${key} · ${row.columnName} = ${row.newValue}`);
     } else if (row.changeType === 'removed') {
-      seed.push(`${key} · (row)`);
+      baseline.push(`${key} · (row)`);
     } else {
-      winner.push(`${key} · (row)`);
+      candidate.push(`${key} · (row)`);
     }
   }
-  const header = `# ${table} · seed program ${diff.baselineProgramId} vs winner ${diff.winnerProgramId}`;
-  const note = diff.truncated
+  const note = comparison.truncated
     ? ['', '# Rows were truncated: the counts are exact, this list is not complete.']
     : [];
+  const header = (side: string, program: number): string =>
+    `# ${table} · ${side} program ${program}`;
   return {
-    seed: [header, ...seed, ...note].join('\n') + '\n',
-    winner: [header, ...winner, ...note].join('\n') + '\n',
+    baseline:
+      [header('baseline', comparison.baselineProgramId), ...baseline, ...note].join('\n') + '\n',
+    candidate:
+      [header('candidate', comparison.candidateProgramId), ...candidate, ...note].join('\n') + '\n',
   };
 }
 
-/** Plain-language lines for a summary panel or tooltip; always says what the diff is not. */
-export function scenarioDiffSummary(diff: ScenarioDiff): string[] {
-  const lines = diff.tables.map(
+/** Plain-language lines for a tooltip or status message; always says what the comparison is not. */
+export function comparisonSummary(comparison: Comparison): string[] {
+  const lines = comparison.tables.map(
     (t) => `${t.table}: ${t.rowsModified} modified, ${t.rowsAdded} added, ${t.rowsRemoved} removed`,
   );
-  if (!lines.length) lines.push('The winner wrote exactly the same state as the seed.');
+  if (!lines.length) lines.push('The candidate wrote exactly the same state as the baseline.');
   lines.push(
     'Search-time replay on the training instance: an explanation of what changed, not independent validation.',
   );
@@ -149,19 +180,15 @@ export function scenarioDiffSummary(diff: ScenarioDiff): string[] {
 function rejectionMessage(status: number): string {
   if (status === 401)
     return 'Evolve rejected the signed-in token. Check its OIDC audience and sign in again.';
-  if (status === 403) return 'This experiment belongs to another owner.';
-  if (status === 404) return 'Evolve does not know this experiment.';
-  if (status === 422)
-    return 'Scenario diffs are not available for this experiment yet (this pilot does not support them).';
-  return `Evolve could not produce the scenario diff (HTTP ${status}).`;
+  if (status === 404) return 'Evolve does not know this comparison (not found).';
+  return `Evolve could not return the comparison (HTTP ${status}).`;
 }
 
-export async function fetchScenarioDiff(
-  endpoint: string,
+async function fetchPage(
+  origin: string,
   refresher: TokenRefresher,
-  experiment: string,
-): Promise<ScenarioDiff> {
-  const origin = evolveOrigin(endpoint);
+  body: Record<string, unknown>,
+): Promise<unknown> {
   let lastStatus = 0;
   for (let attempt = 0; attempt < 2; attempt++) {
     const token =
@@ -177,9 +204,9 @@ export async function fetchScenarioDiff(
         headers: {
           authorization: `Bearer ${token}`,
           'content-type': 'application/json',
-          'X-Triton-Tool': 'evolve_scenario_diff',
+          'X-Triton-Tool': 'evolve_comparison',
         },
-        body: JSON.stringify({ experiment }),
+        body: JSON.stringify(body),
       });
     } catch {
       throw new Error('Evolve did not answer. Check that the service is running and reachable.');
@@ -187,7 +214,28 @@ export async function fetchScenarioDiff(
     lastStatus = response.status;
     if (response.status === 401 && attempt === 0) continue;
     if (!response.ok) throw new Error(rejectionMessage(response.status));
-    return parseScenarioDiff(await response.json());
+    return response.json();
   }
   throw new Error(rejectionMessage(lastStatus));
+}
+
+/** Read one comparison from Evolve, following the cursor through every stored row. */
+export async function fetchComparison(
+  endpoint: string,
+  refresher: TokenRefresher,
+  comparisonId: string,
+): Promise<Comparison> {
+  const origin = evolveOrigin(endpoint);
+  let result = parseComparison(await fetchPage(origin, refresher, { comparison: comparisonId }));
+  let next = result.nextCursor;
+  for (let page = 1; next !== undefined && page < MAX_PAGES; page++) {
+    const more = parseComparison(
+      await fetchPage(origin, refresher, { comparison: comparisonId, cursor: next }),
+    );
+    result = { ...result, rows: [...result.rows, ...more.rows] };
+    next = more.nextCursor;
+  }
+  const { nextCursor, ...complete } = result;
+  void nextCursor;
+  return complete;
 }

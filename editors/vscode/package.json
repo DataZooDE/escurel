@@ -425,6 +425,12 @@
         "command": "escurel.scenarios.compare",
         "title": "Compare seed and winner",
         "category": "Escurel"
+      },
+      {
+        "command": "escurel.scenarios.new",
+        "title": "New scenario comparison",
+        "category": "Escurel",
+        "icon": "$(add)"
       }
     ],
     "authentication": [
@@ -741,6 +747,11 @@
         }
       ],
       "view/title": [
+        {
+          "command": "escurel.scenarios.new",
+          "when": "view == escurel.scenarios",
+          "group": "navigation@0"
+        },
         {
           "command": "escurel.search",
           "when": "view == escurel.knowledge",

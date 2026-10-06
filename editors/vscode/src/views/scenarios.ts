@@ -5,20 +5,23 @@ import { describeError } from '../errors';
 import { log } from '../log';
 import type { Services } from '../services';
 import {
-  fetchScenarioDiff,
-  scenarioDiffSummary,
-  scenarioDiffTexts,
-  type ScenarioDiff,
+  comparisonSummary,
+  comparisonTexts,
+  fetchComparison,
+  matchesPage,
+  type Comparison,
 } from '../evolve/scenarioDiff';
 import {
   SCENARIO_SCHEME,
-  experimentRows,
-  parseScenarioUri,
-  scenarioUri,
+  comparisonPageRows,
+  comparisonRequestPage,
+  comparisonUri,
+  parseComparisonUri,
   tableRows,
+  type ComparisonPageRow,
   type EmptyRow,
-  type ExperimentRow,
   type TableRow,
+  type UnverifiedRow,
 } from './scenariosModel';
 
 interface MessageRow {
@@ -28,17 +31,33 @@ interface MessageRow {
 }
 
 type Node =
-  | (ExperimentRow & { experimentId: string })
-  | (TableRow & { experiment: string })
+  | ComparisonPageRow
+  | (TableRow & { comparison: string; pageResultSha256: string | undefined })
   | EmptyRow
+  | UnverifiedRow
   | MessageRow;
 
+interface Loaded {
+  comparison: Comparison;
+  verified: boolean;
+}
+
+const BASELINES = [
+  { label: 'Seed', description: 'the initial program', value: 'seed' },
+  {
+    label: 'Parent of the winner',
+    description: 'the program the winner was derived from',
+    value: 'parent',
+  },
+];
+
 /**
- * Scenarios: what an Evolve winner changed against its seed, per state table.
+ * Scenarios: what an Evolve candidate changed against its baseline, per state table.
  *
- * Experiments come from Escurel (so the usual owner ACL applies); the diff itself is read from
- * Evolve over the signed-in token, the same direct path the holdout commands use. Opening a table
- * shows the seed and the winner side by side in the native diff editor. This view only reads: it
+ * Each comparison is an owner-private Escurel page. The owner requests it, Evolve computes it
+ * and fills the page in, and the row-level changes stay in Evolve's immutable record. This view
+ * lists the pages, reads the record from Evolve over the signed-in token, and shows it only when
+ * the page carries the record's hash; anything else is shown as unverified. It only reads: it
  * never applies a scenario to anything.
  */
 export class ScenariosTree
@@ -46,9 +65,7 @@ export class ScenariosTree
 {
   private readonly changed = new vscode.EventEmitter<Node | undefined>();
   readonly onDidChangeTreeData = this.changed.event;
-  private readonly contentChanged = new vscode.EventEmitter<vscode.Uri>();
-  readonly onDidChange = this.contentChanged.event;
-  private readonly diffs = new Map<string, Promise<ScenarioDiff>>();
+  private readonly loaded = new Map<string, Promise<Loaded>>();
 
   constructor(
     private readonly client: () => EscurelClient,
@@ -67,65 +84,143 @@ export class ScenariosTree
       vscode.commands.registerCommand('escurel.scenarios.refresh', () => tree.refresh()),
       vscode.commands.registerCommand(
         'escurel.scenarios.compare',
-        (experiment: string, table: string) => tree.compare(experiment, table),
+        (comparison: string, table: string, pageResultSha256?: string) =>
+          tree.compare(comparison, table, pageResultSha256),
       ),
+      vscode.commands.registerCommand('escurel.scenarios.new', () => tree.create()),
     );
     return tree;
   }
 
   refresh(): void {
-    this.diffs.clear();
+    this.loaded.clear();
     this.changed.fire(undefined);
   }
 
-  private diff(experiment: string): Promise<ScenarioDiff> {
-    let pending = this.diffs.get(experiment);
+  private load(comparison: string, pageResultSha256: string | undefined): Promise<Loaded> {
+    const key = `${comparison}:${pageResultSha256 ?? ''}`;
+    let pending = this.loaded.get(key);
     if (!pending) {
-      pending = fetchScenarioDiff(
+      pending = fetchComparison(
         readConfig().evolveEndpoint,
         this.services.auth.refresher,
-        experiment,
-      );
+        comparison,
+      ).then((result) => ({ comparison: result, verified: matchesPage(result, pageResultSha256) }));
       // A failure must not be cached: the next click retries.
-      pending.catch(() => this.diffs.delete(experiment));
-      this.diffs.set(experiment, pending);
+      pending.catch(() => this.loaded.delete(key));
+      this.loaded.set(key, pending);
     }
     return pending;
   }
 
-  async compare(experiment: string, table: string): Promise<void> {
+  async compare(comparison: string, table: string, pageResultSha256?: string): Promise<void> {
     try {
-      const diff = await this.diff(experiment);
-      const lines = scenarioDiffSummary(diff);
-      const seed = vscode.Uri.parse(scenarioUri(experiment, table, 'seed'));
-      const winner = vscode.Uri.parse(scenarioUri(experiment, table, 'winner'));
+      const { comparison: result, verified } = await this.load(comparison, pageResultSha256);
+      if (!verified) {
+        void vscode.window.showWarningMessage(
+          'This comparison page does not match Evolve’s record, so nothing from it is shown.',
+        );
+        return;
+      }
       await vscode.commands.executeCommand(
         'vscode.diff',
-        seed,
-        winner,
-        `${experiment} · ${table}: seed ↔ winner`,
+        vscode.Uri.parse(comparisonUri(comparison, table, 'baseline')),
+        vscode.Uri.parse(comparisonUri(comparison, table, 'candidate')),
+        `${comparison} · ${table}: baseline ↔ candidate`,
       );
+      const lines = comparisonSummary(result);
       void vscode.window.setStatusBarMessage(lines[lines.length - 1] ?? '', 8000);
+      this.pageHash.set(comparison, pageResultSha256);
     } catch (e) {
       void vscode.window.showErrorMessage(describeError(e));
     }
   }
 
+  /** The page hash a comparison was opened with, so the diff documents serve only verified content. */
+  private readonly pageHash = new Map<string, string | undefined>();
+
   async provideTextDocumentContent(uri: vscode.Uri): Promise<string> {
-    const parsed = parseScenarioUri(uri.toString());
-    if (!parsed) return '';
-    const texts = scenarioDiffTexts(await this.diff(parsed.experiment), parsed.table);
-    return parsed.side === 'seed' ? texts.seed : texts.winner;
+    const parsed = parseComparisonUri(uri.toString());
+    if (!parsed || !this.pageHash.has(parsed.comparison)) return '';
+    const { comparison, verified } = await this.load(
+      parsed.comparison,
+      this.pageHash.get(parsed.comparison),
+    );
+    if (!verified) return '';
+    const texts = comparisonTexts(comparison, parsed.table);
+    return parsed.side === 'baseline' ? texts.baseline : texts.candidate;
+  }
+
+  async create(): Promise<void> {
+    try {
+      const owner = await this.services.subject();
+      if (!owner) throw new Error('Sign in before requesting a comparison.');
+      const experiments = await this.client().listInstancesPage({
+        skill_id: 'evolve_experiment',
+        limit: 100,
+      });
+      const choices = experiments.instances.map((instance) => {
+        const id =
+          typeof instance.frontmatter.id === 'string' && instance.frontmatter.id
+            ? instance.frontmatter.id
+            : (instance.page_id.split('/').pop() ?? '').replace(/\.md$/, '');
+        const status =
+          typeof instance.frontmatter.status === 'string' ? instance.frontmatter.status : '';
+        return { label: id, description: status };
+      });
+      if (!choices.length) {
+        void vscode.window.showInformationMessage('No Evolve experiments to compare yet.');
+        return;
+      }
+      const experiment = await vscode.window.showQuickPick(choices, {
+        placeHolder: 'Which experiment’s winner should be compared?',
+      });
+      if (!experiment) return;
+      const baseline = await vscode.window.showQuickPick(BASELINES, {
+        placeHolder: 'Compare the winner against…',
+      });
+      if (!baseline) return;
+      const id = `cmp-${experiment.label}-${baseline.value}-${Date.now().toString(36)}`.slice(
+        0,
+        128,
+      );
+      const content = comparisonRequestPage({
+        id,
+        owner,
+        experiment: experiment.label,
+        baseline: baseline.value,
+      });
+      const pageId = `markdown/instances/evolve_comparison/${id}.md`;
+      const written = await this.client().updatePage({
+        page_id: pageId,
+        content,
+        base_sha256: '',
+      });
+      if (!written.ok) {
+        throw new Error(
+          `Escurel did not accept the comparison page: ${JSON.stringify(written.issues ?? [])}`,
+        );
+      }
+      this.refresh();
+      await vscode.commands.executeCommand('escurel.openPage', pageId);
+      void vscode.window.showInformationMessage(
+        'Comparison requested. Click Compute comparison on the page to run it.',
+      );
+    } catch (e) {
+      void vscode.window.showErrorMessage(describeError(e));
+    }
   }
 
   getTreeItem(n: Node): vscode.TreeItem {
     switch (n.kind) {
-      case 'experiment': {
+      case 'comparison': {
         const item = new vscode.TreeItem(n.label, vscode.TreeItemCollapsibleState.Collapsed);
         item.description = n.description;
-        item.iconPath = new vscode.ThemeIcon('beaker');
-        item.contextValue = 'scenarios.experiment';
-        item.accessibilityInformation = { label: `Experiment ${n.label}. ${n.description}` };
+        item.iconPath = new vscode.ThemeIcon(
+          n.status === 'completed' ? 'check' : n.status === 'blocked' ? 'error' : 'clock',
+        );
+        item.contextValue = `scenarios.comparison.${n.status}`;
+        item.accessibilityInformation = { label: `Comparison ${n.label}. ${n.description}` };
         return item;
       }
       case 'table': {
@@ -139,14 +234,19 @@ export class ScenariosTree
         };
         item.command = {
           command: 'escurel.scenarios.compare',
-          title: 'Compare seed and winner',
-          arguments: [n.experiment, n.table],
+          title: 'Compare baseline and candidate',
+          arguments: [n.comparison, n.table, n.pageResultSha256],
         };
         return item;
       }
       case 'empty': {
         const item = new vscode.TreeItem(n.label, vscode.TreeItemCollapsibleState.None);
         item.iconPath = new vscode.ThemeIcon('check');
+        return item;
+      }
+      case 'unverified': {
+        const item = new vscode.TreeItem(n.label, vscode.TreeItemCollapsibleState.None);
+        item.iconPath = new vscode.ThemeIcon('warning');
         return item;
       }
       case 'message': {
@@ -165,7 +265,7 @@ export class ScenariosTree
           return [
             {
               kind: 'message',
-              label: 'Set escurel.evolveEndpoint to see scenario diffs.',
+              label: 'Set escurel.evolveEndpoint to see scenario comparisons.',
               command: {
                 command: 'workbench.action.openSettings',
                 title: 'Open setting',
@@ -174,20 +274,45 @@ export class ScenariosTree
             },
           ];
         const page = await this.client().listInstancesPage({
-          skill_id: 'evolve_experiment',
+          skill_id: 'evolve_comparison',
           limit: 100,
         });
-        const rows = experimentRows(page.instances);
-        if (!rows.length) return [{ kind: 'message', label: 'No Evolve experiments yet.' }];
-        return rows.map((row) => ({ ...row, experimentId: row.experiment }));
+        const rows = comparisonPageRows(page.instances);
+        if (!rows.length)
+          return [
+            {
+              kind: 'message',
+              label: 'No comparisons yet. Use “New scenario comparison” above.',
+              command: { command: 'escurel.scenarios.new', title: 'New scenario comparison' },
+            },
+          ];
+        return rows;
       }
-      if (n.kind === 'experiment') {
-        const diff = await this.diff(n.experimentId);
-        return tableRows(diff).map((row) =>
-          row.kind === 'table' ? { ...row, experiment: n.experimentId } : row,
-        );
-      }
-      return [];
+      if (n.kind !== 'comparison') return [];
+      const pageId = `markdown/instances/evolve_comparison/${n.comparison}.md`;
+      if (n.status === 'requested')
+        return [
+          {
+            kind: 'message',
+            label: 'Waiting to be computed. Open the page and click Compute comparison.',
+            command: { command: 'escurel.openPage', title: 'Open page', arguments: [pageId] },
+          },
+        ];
+      if (n.status === 'blocked')
+        return [
+          {
+            kind: 'message',
+            label: `Blocked: ${n.reason ?? 'Evolve could not compute this comparison.'}`,
+          },
+        ];
+      if (n.status !== 'completed')
+        return [{ kind: 'message', label: 'This page is not a recognizable comparison.' }];
+      const { comparison, verified } = await this.load(n.comparison, n.pageResultSha256);
+      return tableRows(comparison, verified).map((row) =>
+        row.kind === 'table'
+          ? { ...row, comparison: n.comparison, pageResultSha256: n.pageResultSha256 }
+          : row,
+      );
     } catch (e) {
       log().warn(`escurel: scenarios tree: ${describeError(e)}`);
       return [{ kind: 'message', label: describeError(e) }];

@@ -10,7 +10,13 @@ import type { StartMode } from '../shared/protocol';
 import type { Services } from '../services';
 import { pickTarget } from './pickTarget';
 import { watchPlan } from './planWatch';
-import { bindCandidateSelection, bindValidationSelection, buildStartEvent } from './startEvent';
+import {
+  bindCandidateSelection,
+  bindComparisonSelection,
+  bindValidationSelection,
+  buildStartEvent,
+} from './startEvent';
+import { isEvolveReviewControl } from '../shared/evolveControls';
 import { preflightRequest, waitForPreflight } from '../evolve/preflight';
 
 export interface StartSkillParams {
@@ -225,13 +231,15 @@ export function registerStartSkill(
         );
         return;
       }
-      if ((skill === 'evolve_validate' || skill === 'evolve_publish_candidate') && mode && mode !== 'background') {
+      if (isEvolveReviewControl(skill) && mode && mode !== 'background') {
         void vscode.window.showErrorMessage('This Evolve review action runs in the background after the evidence is reviewed.');
         return;
       }
       if (!mode) {
         const modeItems: ModeQuickPickItem[] = skill === 'evolve_publish_candidate'
           ? [{ label: 'Create policy candidate', description: 'Confirm publication of an inactive candidate', mode: 'background' }]
+          : skill === 'evolve_compare'
+          ? [{ label: 'Compute comparison', description: 'Replay both programs on the training instance (no model spend)', mode: 'background' }]
           : skill === 'evolve_validate'
           ? [{ label: 'Validate winner', description: 'Run one operator-attested finite-horizon replay', mode: 'background' }]
           : skill === 'evolve_run'
@@ -347,6 +355,19 @@ export function registerStartSkill(
             throw new Error('This experiment has no winner ready for the declared holdout replay.');
           }
           action.event = bindValidationSelection(action.event, reviewedPageSha256, winner);
+        }
+        if (action.event.label_skill === 'evolve_compare') {
+          const page = await readPageMarkdown(client, pageId);
+          if (page?.skill !== 'evolve_comparison' || !page.sha256 || page.degraded
+              || !reviewedPageSha256 || page.sha256 !== reviewedPageSha256) {
+            throw new Error('The comparison page changed since it was displayed. Refresh and review it again.');
+          }
+          if (page.frontmatter.status !== 'requested'
+              || page.frontmatter.next_comparison_action !== 'evolve_compare'
+              || typeof page.frontmatter.experiment !== 'string') {
+            throw new Error('This comparison is not waiting to be computed.');
+          }
+          action.event = bindComparisonSelection(action.event, reviewedPageSha256);
         }
         if (action.event.label_skill === 'evolve_publish_candidate') {
           const page = await readPageMarkdown(client, pageId);

@@ -1,4 +1,5 @@
 import { isSourceField } from '../../src/shared/rowSource';
+import { isEvolveReviewControl } from '../../src/shared/evolveControls';
 import { sourceBanner } from '../../src/shared/sourceBanner';
 import { writeBackLine } from '../../src/shared/writeBack';
 import { writeBackLead } from '../../src/shared/writeBackLead';
@@ -604,7 +605,7 @@ export class EscurelPageAsUi extends LitElement {
                         : `Starts skill ${a.skill} with an agent on this page`}
                       .header=${`skill ${a.skill}`}
                       .items=${a.skill === 'evolve_run' ? EVOLVE_PLAN_ITEMS
-                        : a.skill === 'evolve_validate' || a.skill === 'evolve_publish_candidate'
+                        : isEvolveReviewControl(a.skill)
                         ? EVOLVE_CONTROL_ITEMS : START_ITEMS}
                       @primary=${() => this.start(a.skill, a.skill === 'evolve_run' ? 'plan' : 'background')}
                       @select=${(e: CustomEvent<string>) => this.start(a.skill, e.detail)}

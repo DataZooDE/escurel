@@ -1,17 +1,23 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
-  fetchScenarioDiff,
-  parseScenarioDiff,
-  scenarioDiffSummary,
-  scenarioDiffTexts,
+  comparisonSummary,
+  comparisonTexts,
+  fetchComparison,
+  matchesPage,
+  parseComparison,
 } from '../../src/evolve/scenarioDiff';
 import type { TokenRefresher } from '../../src/auth/refresher';
 
+const HASH = 'd'.repeat(64);
 const body = {
+  comparison: 'cmp-1',
   experiment: 'exp-1',
-  pilot: 'p0',
-  baseline_program_id: 1,
-  winner_program_id: 2,
+  state: 'completed',
+  reason: null,
+  baseline_program_id: 2,
+  candidate_program_id: 3,
+  baseline_code_sha256: 'b'.repeat(64),
+  candidate_code_sha256: 'c'.repeat(64),
   tables: [{ table: 'p0_bin_assignment', rows_added: 0, rows_removed: 1, rows_modified: 2 }],
   rows: [
     {
@@ -39,94 +45,142 @@ const body = {
       new_value: null,
     },
   ],
+  next_cursor: null,
   truncated: false,
-  diff_ref: 'scenario_diffs/exp-1.duckdb#winner',
-  evidence_note: 'Search-time replay of the seed and the winner on the training instance.',
+  evidence_note: 'Search-time replay of the baseline and the candidate on the training instance.',
+  result_sha256: HASH,
 };
 
 const refresher = (token: string | undefined): TokenRefresher =>
-  ({
-    get: async () => token,
-    invalidate: async () => token,
-  }) as unknown as TokenRefresher;
+  ({ get: async () => token, invalidate: async () => token }) as unknown as TokenRefresher;
 
 afterEach(() => vi.unstubAllGlobals());
 
-describe('parseScenarioDiff', () => {
-  it('accepts the Evolve response and keeps the evidence note', () => {
-    const diff = parseScenarioDiff(body);
-    expect(diff.winnerProgramId).toBe(2);
-    expect(diff.tables[0]).toEqual({
+describe('parseComparison', () => {
+  it('accepts Evolve’s comparison and keeps the hash and evidence note', () => {
+    const c = parseComparison(body);
+    expect(c).toMatchObject({
+      comparison: 'cmp-1',
+      experiment: 'exp-1',
+      state: 'completed',
+      candidateProgramId: 3,
+      resultSha256: HASH,
+    });
+    expect(c.tables[0]).toEqual({
       table: 'p0_bin_assignment',
       rowsAdded: 0,
       rowsRemoved: 1,
       rowsModified: 2,
     });
-    expect(diff.evidenceNote).toContain('Search-time replay');
+    expect(c.evidenceNote).toContain('Search-time replay');
   });
 
-  it('refuses a response that is not a scenario diff', () => {
-    expect(() => parseScenarioDiff({ experiment: 'x' })).toThrow(/scenario diff/i);
-    expect(() => parseScenarioDiff({ ...body, tables: 'nope' })).toThrow(/scenario diff/i);
-    expect(() => parseScenarioDiff(null)).toThrow(/scenario diff/i);
+  it('accepts a blocked comparison with its reason', () => {
+    const c = parseComparison({
+      ...body,
+      state: 'blocked',
+      reason: 'no scenario state tables',
+      tables: [],
+      rows: [],
+    });
+    expect(c.state).toBe('blocked');
+    expect(c.reason).toContain('no scenario');
+  });
+
+  it('refuses a response that is not a comparison', () => {
+    expect(() => parseComparison({ experiment: 'x' })).toThrow(/comparison/i);
+    expect(() => parseComparison({ ...body, tables: 'nope' })).toThrow(/comparison/i);
+    expect(() => parseComparison({ ...body, state: 'weird' })).toThrow(/comparison/i);
+    expect(() => parseComparison(null)).toThrow(/comparison/i);
   });
 });
 
-describe('scenarioDiffTexts', () => {
+describe('matchesPage', () => {
+  it('trusts a comparison only when the page carries the same result hash', () => {
+    const c = parseComparison(body);
+    expect(matchesPage(c, HASH)).toBe(true);
+    expect(matchesPage(c, 'e'.repeat(64))).toBe(false);
+    expect(matchesPage(c, undefined)).toBe(false);
+    // A forged "completed" page with no hash cannot vouch for anything.
+    expect(matchesPage(c, '')).toBe(false);
+  });
+});
+
+describe('comparisonTexts', () => {
   it('renders both sides so the native diff shows only what changed', () => {
-    const { seed, winner } = scenarioDiffTexts(parseScenarioDiff(body), 'p0_bin_assignment');
-    expect(seed).toContain('item_id=2 · bin_id = 2');
-    expect(winner).toContain('item_id=2 · bin_id = 1');
-    // A removed row exists only on the seed side.
-    expect(seed).toContain('item_id=4 · (row)');
-    expect(winner).not.toContain('item_id=4');
+    const { baseline, candidate } = comparisonTexts(parseComparison(body), 'p0_bin_assignment');
+    expect(baseline).toContain('item_id=2 · bin_id = 2');
+    expect(candidate).toContain('item_id=2 · bin_id = 1');
+    expect(baseline).toContain('item_id=4 · (row)');
+    expect(candidate).not.toContain('item_id=4');
+    expect(baseline).toContain('program 2');
+    expect(candidate).toContain('program 3');
   });
 
-  it('is deterministic: the same diff renders the same text', () => {
-    const diff = parseScenarioDiff(body);
-    expect(scenarioDiffTexts(diff, 'p0_bin_assignment')).toEqual(
-      scenarioDiffTexts(diff, 'p0_bin_assignment'),
+  it('is deterministic', () => {
+    const c = parseComparison(body);
+    expect(comparisonTexts(c, 'p0_bin_assignment')).toEqual(
+      comparisonTexts(c, 'p0_bin_assignment'),
     );
   });
 
   it('says when rows were cut, so a short diff is never mistaken for a complete one', () => {
-    const { seed, winner } = scenarioDiffTexts(
-      parseScenarioDiff({ ...body, truncated: true }),
+    const { baseline, candidate } = comparisonTexts(
+      parseComparison({ ...body, truncated: true }),
       'p0_bin_assignment',
     );
-    expect(seed).toMatch(/truncated/i);
-    expect(winner).toMatch(/truncated/i);
+    expect(baseline).toMatch(/truncated/i);
+    expect(candidate).toMatch(/truncated/i);
   });
 });
 
-describe('scenarioDiffSummary', () => {
-  it('uses exact counts and states what the diff is not', () => {
-    const lines = scenarioDiffSummary(parseScenarioDiff(body));
-    expect(lines.join('\n')).toContain('p0_bin_assignment');
-    expect(lines.join('\n')).toContain('2 modified');
-    expect(lines.join('\n')).toContain('1 removed');
-    expect(lines.join('\n')).toMatch(/not independent validation/i);
+describe('comparisonSummary', () => {
+  it('uses exact counts and states what the comparison is not', () => {
+    const text = comparisonSummary(parseComparison(body)).join('\n');
+    expect(text).toContain('p0_bin_assignment');
+    expect(text).toContain('2 modified');
+    expect(text).toContain('1 removed');
+    expect(text).toMatch(/not independent validation/i);
   });
 });
 
-describe('fetchScenarioDiff', () => {
-  it('calls the Evolve tool with the signed-in bearer and the experiment id', async () => {
+describe('fetchComparison', () => {
+  it('calls the Evolve tool with the signed-in bearer and the comparison id', async () => {
     const fetchMock = vi.fn(async () => new Response(JSON.stringify(body), { status: 200 }));
     vi.stubGlobal('fetch', fetchMock);
-    const diff = await fetchScenarioDiff('http://127.0.0.1:8099', refresher('tok'), 'exp-1');
-    expect(diff.experiment).toBe('exp-1');
+    const c = await fetchComparison('http://127.0.0.1:8099', refresher('tok'), 'cmp-1');
+    expect(c.comparison).toBe('cmp-1');
     const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
     expect(url).toBe('http://127.0.0.1:8099/');
-    expect((init.headers as Record<string, string>)['X-Triton-Tool']).toBe('evolve_scenario_diff');
-    expect((init.headers as Record<string, string>).authorization).toBe('Bearer tok');
-    expect(JSON.parse(init.body as string)).toEqual({ experiment: 'exp-1' });
+    const headers = init.headers as Record<string, string>;
+    expect(headers['X-Triton-Tool']).toBe('evolve_comparison');
+    expect(headers.authorization).toBe('Bearer tok');
+    expect(JSON.parse(init.body as string)).toEqual({ comparison: 'cmp-1' });
+  });
+
+  it('follows the cursor until every stored row is read', async () => {
+    const first = { ...body, rows: body.rows.slice(0, 2), next_cursor: '2' };
+    const second = { ...body, rows: body.rows.slice(2), next_cursor: null };
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify(first), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify(second), { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+    const c = await fetchComparison('http://127.0.0.1:8099', refresher('tok'), 'cmp-1');
+    expect(c.rows).toHaveLength(3);
+    expect(
+      JSON.parse((fetchMock.mock.calls[1] as unknown as [string, RequestInit])[1].body as string),
+    ).toEqual({
+      comparison: 'cmp-1',
+      cursor: '2',
+    });
   });
 
   it('refuses to call without a token instead of sending an anonymous request', async () => {
     const fetchMock = vi.fn();
     vi.stubGlobal('fetch', fetchMock);
     await expect(
-      fetchScenarioDiff('http://127.0.0.1:8099', refresher(undefined), 'exp-1'),
+      fetchComparison('http://127.0.0.1:8099', refresher(undefined), 'cmp-1'),
     ).rejects.toThrow(/sign in/i);
     expect(fetchMock).not.toHaveBeenCalled();
   });
@@ -137,32 +191,24 @@ describe('fetchScenarioDiff', () => {
       .mockResolvedValueOnce(new Response('{}', { status: 401 }))
       .mockResolvedValueOnce(new Response(JSON.stringify(body), { status: 200 }));
     vi.stubGlobal('fetch', fetchMock);
-    const diff = await fetchScenarioDiff('http://127.0.0.1:8099', refresher('tok'), 'exp-1');
-    expect(diff.winnerProgramId).toBe(2);
+    const c = await fetchComparison('http://127.0.0.1:8099', refresher('tok'), 'cmp-1');
+    expect(c.candidateProgramId).toBe(3);
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
-  it('turns an unsupported pilot into a message a person can act on', async () => {
+  it('says "not found" the same way for a missing and a foreign comparison', async () => {
     vi.stubGlobal(
       'fetch',
-      vi.fn(
-        async () =>
-          new Response(
-            JSON.stringify({ error: '`evolve_scenario_diff` only supports pilot ...' }),
-            {
-              status: 422,
-            },
-          ),
-      ),
+      vi.fn(async () => new Response('{}', { status: 404 })),
     );
     await expect(
-      fetchScenarioDiff('http://127.0.0.1:8099', refresher('tok'), 'exp-1'),
-    ).rejects.toThrow(/does not support|not available/i);
+      fetchComparison('http://127.0.0.1:8099', refresher('tok'), 'cmp-1'),
+    ).rejects.toThrow(/not found|does not know/i);
   });
 
   it('rejects a non-loopback http endpoint', async () => {
     await expect(
-      fetchScenarioDiff('http://evolve.example.com', refresher('tok'), 'exp-1'),
+      fetchComparison('http://evolve.example.com', refresher('tok'), 'cmp-1'),
     ).rejects.toThrow(/HTTPS/);
   });
 });

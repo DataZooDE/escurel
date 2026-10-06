@@ -1,3 +1,4 @@
+import { isEvolveReviewControl } from '../shared/evolveControls';
 import type { AdminState } from '../auth/adminState';
 import type { LineageNode, Skill } from '../client/types';
 import { factsFromLineage, offeredControls, resolveControl, type RunFacts } from '../runs/runFacts';
@@ -105,7 +106,7 @@ export function buildNodeActions(
     // Validation requires the displayed experiment revision and winner;
     // the thread inspector does not hold either verified page snapshot.
     const actions: ActionView[] = skillActionViews(skill.actions)
-      .filter((action) => !['evolve_validate', 'evolve_publish_candidate'].includes(action.skill));
+      .filter((action) => !isEvolveReviewControl(action.skill));
     if (actions.length === 0) return undefined;
 
     return {
@@ -180,7 +181,7 @@ export function resolveThreadAction(
     if (!offersSkill && ctx.skills && message.pageId) {
       const pageSkillName = skillFromPageId(message.pageId);
       const pageSkill = ctx.skills.find((s) => s.id === pageSkillName);
-      if (message.skill !== 'evolve_validate' && message.skill !== 'evolve_publish_candidate'
+      if (!isEvolveReviewControl(message.skill)
           && skillActionViews(pageSkill?.actions).some((a) => a.skill === message.skill)) {
         offersSkill = true;
       }
