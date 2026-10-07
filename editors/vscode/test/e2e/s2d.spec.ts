@@ -42,12 +42,23 @@ test('S2D: the supplier mail is in the inbox and its record shows the impact', a
 test('S2D: the proposal can be read before it is approved, tables and all', async ({ stack }) => {
   const { page } = stack;
   const awaiting = pane(page, 'Awaiting You');
-  const row = awaiting.getByRole('treeitem', { name: /tp-stuttgart-lyon/ }).first();
-  await row.click();
-  await page.keyboard.press('ArrowRight');
-  const draft = awaiting.getByRole('treeitem', { name: /tp-stuttgart-lyon/ }).nth(1);
-  await draft.click();
+  await awaiting.getByRole('treeitem', { name: /tp-stuttgart-lyon/ }).first().click();
+  const picker = page.locator('.quick-input-widget');
+  await expect(picker).toBeVisible();
+  await stack.shot('s2d-03a-review-picker');
+  // The proposal itself: the draft opens as the page it would create.
+  await picker.getByRole('option', { name: /tp-stuttgart-lyon-fr-2026-10-08.*new page/ }).click();
+  await expect(page.locator('.monaco-editor, .monaco-diff-editor').first()).toBeVisible();
   await stack.shot('s2d-03b-review-before-approval');
+  // The review editor offers a rendered preview: the proposal as the page it would create, tables and all.
+  await page.getByRole('button', { name: 'Preview the proposal' }).first().click();
+  const preview = await webviewWith(page, 'h1', 'Consolidation: Stuttgart to Lyon');
+  await expect(preview.getByRole('heading', { name: /Consolidation: Stuttgart to Lyon/ })).toBeVisible();
+  await expect(preview.getByRole('cell', { name: 'SH-77003' }).last()).toBeVisible();
+  await stack.shot('s2d-03c-review-preview');
+  // Leave the window as the next scenario expects it: the preview and the draft closed.
+  await page.keyboard.press('Control+w');
+  await page.keyboard.press('Control+w');
 });
 
 test('S2D: approving the proposal records the decision and resolves the exception', async ({ stack }) => {

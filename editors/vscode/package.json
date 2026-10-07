@@ -89,6 +89,11 @@
     },
     "commands": [
       {
+        "command": "escurel.reviewPreview",
+        "title": "Preview the proposal",
+        "icon": "$(open-preview)"
+      },
+      {
         "command": "escurel.signIn",
         "title": "Sign in",
         "category": "Escurel"
@@ -662,6 +667,10 @@
           "when": "escurel.connected"
         },
         {
+          "command": "escurel.reviewPreview",
+          "when": "resourceScheme == escurel-review"
+        },
+        {
           "command": "escurel.promote",
           "when": "resourceScheme == escurel-review"
         },
@@ -1021,6 +1030,11 @@
         }
       ],
       "editor/title": [
+        {
+          "command": "escurel.reviewPreview",
+          "when": "resourceScheme == escurel-review",
+          "group": "navigation@0"
+        },
         {
           "command": "escurel.showRaw",
           "when": "resourceScheme == escurel && (activeCustomEditorId == escurel.pageAsUi || activeCustomEditorId == escurel.skillPage)",

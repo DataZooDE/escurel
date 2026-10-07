@@ -197,6 +197,10 @@ export function activate(context: vscode.ExtensionContext): EscurelApi | undefin
       quietly('Signed out');
     }),
     vscode.commands.registerCommand('escurel.refresh', () => services.onDidChangeEmit()),
+    // A proposal is read as the page it would create: VS Code's own Markdown preview renders its tables.
+    vscode.commands.registerCommand('escurel.reviewPreview', () =>
+      vscode.commands.executeCommand('markdown.showPreviewToSide'),
+    ),
     vscode.commands.registerCommand('escurel.search', () => searchCommand(() => services.client)),
     vscode.commands.registerCommand('escurel.resolve', (link?: string) =>
       resolveCommand(() => services.client, link),
