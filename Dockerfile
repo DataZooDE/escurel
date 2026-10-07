@@ -16,7 +16,7 @@
 # The DuckDB release the image bakes extensions for. It must be the one libduckdb-sys links (Cargo.lock):
 # extensions resolve under <version>/<platform>, so a mismatch is a silent 137 MB download at boot, or an
 # extension that refuses to load. The builder stage asserts the two agree.
-ARG DUCKDB_VERSION=v1.5.5
+ARG DUCKDB_VERSION=v1.5.6
 
 # ---- builder -------------------------------------------------------------
 # Pinned to the workspace toolchain (rust-toolchain.toml: 1.91.0).
@@ -29,7 +29,7 @@ FROM rust:1.91-bookworm AS builder
 WORKDIR /build
 COPY . .
 # Fail the build, not the pod, when the pinned DuckDB release drifts from the linked one.
-# libduckdb-sys 1.<MMPP>.x is DuckDB 1.<MM>.<PP> (1.10505.0 -> v1.5.5).
+# libduckdb-sys 1.<MMPP>.x is DuckDB 1.<MM>.<PP> (1.10506.0 -> v1.5.6).
 ARG DUCKDB_VERSION
 RUN set -eu; \
     n="$(grep -A1 '^name = "libduckdb-sys"$' Cargo.lock | sed -n 's/^version = "1\.\([0-9]*\)\..*/\1/p' | head -n1)"; \
@@ -103,8 +103,23 @@ RUN if [ -n "${GDRIVE_SHA256}" ]; then \
       echo "${GDRIVE_SHA256}  -" > /tmp/gdrive.sha256 \
       && curl -sSfL "${GDRIVE_REPO}/${DUCKDB_VERSION}/linux_amd64/gdrive.duckdb_extension.gz" | sha256sum -c /tmp/gdrive.sha256; \
     fi
+# gdrive comes from the erpl.io mirror (WIF-capable, v2026.09.01+) and the mirror lags each DuckDB release:
+# when it has no artifact for this DuckDB version the image is built WITHOUT gdrive, LOUDLY, rather than
+# substituting the older community build (its credential_chain refuses external_account, so WIF would
+# break silently at runtime). Consequence: ESCUREL_STORAGE_BACKEND=duckvfs (Google Drive lane store) is
+# unavailable in such an image. Set REQUIRE_GDRIVE=1 to make a missing artifact fail the build instead.
+ARG REQUIRE_GDRIVE=0
 RUN mkdir -p /opt/escurel \
- && duckdb -unsigned -c "INSTALL ducklake; INSTALL postgres; INSTALL sqlite; INSTALL mysql; INSTALL httpfs; INSTALL fts; INSTALL vss; INSTALL gdrive FROM '${GDRIVE_REPO}';"
+ && duckdb -unsigned -c "INSTALL ducklake; INSTALL postgres; INSTALL sqlite; INSTALL mysql; INSTALL httpfs; INSTALL fts; INSTALL vss;" \
+ && if curl -sfI "${GDRIVE_REPO}/${DUCKDB_VERSION}/linux_amd64/gdrive.duckdb_extension.gz" >/dev/null; then \
+      duckdb -unsigned -c "INSTALL gdrive FROM '${GDRIVE_REPO}';"; \
+    else \
+      echo "################################################################################"; \
+      echo "WARNING: ${GDRIVE_REPO} has no gdrive artifact for DuckDB ${DUCKDB_VERSION}: building WITHOUT gdrive."; \
+      echo "         The duckvfs (Google Drive) lane store is unavailable in this image."; \
+      echo "################################################################################"; \
+      [ "${REQUIRE_GDRIVE}" = "0" ] || { echo "REQUIRE_GDRIVE=${REQUIRE_GDRIVE}: failing the build"; exit 1; }; \
+    fi
 # Fail the BUILD, not the pod, if anything did not land where DuckDB looks for
 # it. A missing extension here is a silent 137MB download at boot.
 RUN set -eu; \
@@ -113,7 +128,10 @@ RUN set -eu; \
     # postgres_scanner, not postgres: `INSTALL postgres` is an ALIAS and the
     # artifact it lands is postgres_scanner.duckdb_extension. Checking the
     # alias name failed the build while all six were present (now eight).
-    for e in ducklake postgres_scanner sqlite_scanner mysql_scanner httpfs fts vss gdrive; do \
+    want="ducklake postgres_scanner sqlite_scanner mysql_scanner httpfs fts vss"; \
+    # gdrive is expected only when the mirror had it (see the install step above); a REQUIRE_GDRIVE build never gets here without it.
+    if curl -sfI "${GDRIVE_REPO}/${DUCKDB_VERSION}/linux_amd64/gdrive.duckdb_extension.gz" >/dev/null; then want="$want gdrive"; fi; \
+    for e in $want; do \
       test -s "$d/$e.duckdb_extension" || { echo "MISSING: $e in $d"; ls -la "$d" || true; exit 1; }; \
     done; \
     echo "baked $(ls "$d"/*.duckdb_extension | wc -l) extensions, $(du -sh /opt/escurel/.duckdb | cut -f1)"
