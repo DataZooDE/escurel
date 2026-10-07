@@ -101,6 +101,13 @@ function humanise(key: string): string {
   return cleanText(unit ? `${word} (${unit[1]?.toUpperCase()})` : word, 40);
 }
 
+/** A column named for a year holds 2034, which reads as a year, not as the number 2,034. */
+function isYear(key: string, v: unknown): boolean {
+  return (
+    /(^|_)year$/i.test(key) && Number.isInteger(Number(v)) && Number(v) > 1000 && Number(v) < 3000
+  );
+}
+
 function format(v: unknown): string {
   if (v === null || v === undefined || v === '') return '—';
   if (typeof v === 'number' || typeof v === 'bigint') {
@@ -148,7 +155,9 @@ export function buildReport(def: ReportDef, results: Record<string, Row[]>): Rep
       if (rows.length === 0) continue;
       const keys = Object.keys(rows[0] ?? {}).slice(0, MAX_COLUMNS);
       const shown = rows.slice(0, MAX_ROWS);
-      const cells = shown.map((r) => keys.map((k) => format(r[k])));
+      const cells = shown.map((r) =>
+        keys.map((k) => (isYear(k, r[k]) ? String(r[k]) : format(r[k]))),
+      );
       // A column that says the same on every row says it once, under the table: the rest fits the page.
       const constant = new Set<number>();
       if (cells.length >= 2) {

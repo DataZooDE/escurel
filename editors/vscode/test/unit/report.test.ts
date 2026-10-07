@@ -193,4 +193,12 @@ describe('buildReport', () => {
     }).views[0] as { columns: string[] };
     expect(same.columns).toEqual(['A', 'B']);
   });
+
+  it('writes a year as 2034, not 2,034', () => {
+    const def = parseReport({ ...IMPACT, views: [{ kind: 'table', data: 'orders' }] })!;
+    const t = buildReport(def, {
+      orders: [{ part: 'SP-1', end_of_service_year: 2034, qty: 12345 }],
+    }).views[0] as { rows: string[][] };
+    expect(t.rows[0]).toEqual(['SP-1', '2034', '12,345']);
+  });
 });
