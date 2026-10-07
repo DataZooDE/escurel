@@ -313,10 +313,47 @@ export class EscurelPageAsUi extends LitElement {
       .report .kpi-label {
         color: var(--escurel-muted);
       }
+      .report {
+        container-type: inline-size;
+      }
       .report table {
         border-collapse: collapse;
         margin: 6px 0;
         width: 100%;
+      }
+      .report .constants {
+        color: var(--escurel-muted);
+        margin: 2px 0 8px;
+      }
+      /* On a narrow page a row would run off the edge: each row becomes a small card, a column's name
+         above its value, laid out as many to a line as fit. */
+      @container (max-width: 760px) {
+        .report table,
+        .report tbody,
+        .report tr,
+        .report td {
+          display: block;
+        }
+        .report thead {
+          display: none;
+        }
+        .report tr {
+          display: grid;
+          grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+          gap: 2px 12px;
+          padding: 8px 4px;
+          border-bottom: 1px solid var(--vscode-widget-border, var(--vscode-panel-border));
+        }
+        .report td {
+          border: 0;
+          padding: 2px 6px;
+        }
+        .report td::before {
+          content: attr(data-label);
+          display: block;
+          color: var(--escurel-muted);
+          font-size: 0.85em;
+        }
       }
       .report th,
       .report td {
@@ -431,8 +468,20 @@ export class EscurelPageAsUi extends LitElement {
       ${tables.map(
         (t) => html`<table>
             <thead><tr>${t.columns.map((c) => html`<th scope="col">${c}</th>`)}</tr></thead>
-            <tbody>${t.rows.map((row) => html`<tr>${row.map((c) => html`<td>${c}</td>`)}</tr>`)}</tbody>
+            <tbody>
+              ${t.rows.map(
+                (row) =>
+                  html`<tr>
+                    ${row.map((c, i) => html`<td data-label=${t.columns[i] ?? ''}>${c}</td>`)}
+                  </tr>`,
+              )}
+            </tbody>
           </table>
+          ${t.constants?.length
+            ? html`<p class="muted constants">
+                Same on every row: ${t.constants.map(([k, v]) => `${k} ${v}`).join(' · ')}
+              </p>`
+            : nothing}
           ${t.more ? html`<p class="muted more">${t.more} more not shown</p>` : nothing}`,
       )}
       ${r.chartsNote ? html`<p class="muted charts-note">The chart for this report is not drawn in this view.</p>` : nothing}

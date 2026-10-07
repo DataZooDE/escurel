@@ -674,6 +674,7 @@ describe('<escurel-page-as-ui> report figures', () => {
             ['SO-2', '13'],
           ],
           more: 3,
+          constants: [['Free pallet slots', '14']],
         },
       ],
     },
@@ -716,5 +717,16 @@ describe('<escurel-page-as-ui> report figures', () => {
   it('does not call the report "rendered by Peacock" to a person who is not a developer', async () => {
     const el = await renderWith(withReport);
     expect(text(q(el, '.viewer'))).not.to.contain('Peacock');
+  });
+
+  it('labels every cell with its column, so a narrow page can stack a row as a card', async () => {
+    const el = await renderWith(withReport);
+    const cells = qa(el, '.report tbody tr:first-child td');
+    expect(cells.map((c) => c.getAttribute('data-label'))).to.deep.equal(['Customer order', 'Days late']);
+  });
+
+  it('says once what is the same on every row', async () => {
+    const el = await renderWith(withReport);
+    expect(text(q(el, '.report .constants'))).to.contain('Free pallet slots 14');
   });
 });

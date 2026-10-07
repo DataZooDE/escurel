@@ -155,4 +155,42 @@ describe('buildReport', () => {
     };
     expect(t.columns).toEqual(['Stock value (EUR)', 'SLA target', 'Est cost (EUR)']);
   });
+
+  it('hoists a column that holds the same value on every row into a line under the table', () => {
+    const def = parseReport({ ...IMPACT, views: [{ kind: 'table', data: 'orders' }] })!;
+    const t = buildReport(def, {
+      orders: [
+        { shipment_id: 'SH-1', pallets: 6, free_pallet_slots: 14, shelf_space_ok: true },
+        { shipment_id: 'SH-2', pallets: 8, free_pallet_slots: 14, shelf_space_ok: true },
+        { shipment_id: 'SH-3', pallets: 9, free_pallet_slots: 14, shelf_space_ok: true },
+      ],
+    }).views[0] as { columns: string[]; rows: string[][]; constants?: Array<[string, string]> };
+    expect(t.columns).toEqual(['Shipment ID', 'Pallets']);
+    expect(t.rows).toEqual([
+      ['SH-1', '6'],
+      ['SH-2', '8'],
+      ['SH-3', '9'],
+    ]);
+    expect(t.constants).toEqual([
+      ['Free pallet slots', '14'],
+      ['Shelf space ok', 'true'],
+    ]);
+  });
+
+  it('keeps every column of a one-row table, and the first column always', () => {
+    const def = parseReport({ ...IMPACT, views: [{ kind: 'table', data: 'orders' }] })!;
+    const one = buildReport(def, { orders: [{ a: 1, b: 2 }] }).views[0] as {
+      columns: string[];
+      constants?: unknown;
+    };
+    expect(one.columns).toEqual(['A', 'B']);
+    expect(one.constants).toBeUndefined();
+    const same = buildReport(def, {
+      orders: [
+        { a: 1, b: 2 },
+        { a: 1, b: 3 },
+      ],
+    }).views[0] as { columns: string[] };
+    expect(same.columns).toEqual(['A', 'B']);
+  });
 });

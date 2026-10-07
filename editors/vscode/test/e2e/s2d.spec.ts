@@ -39,6 +39,17 @@ test('S2D: the supplier mail is in the inbox and its record shows the impact', a
   await stack.shot('s2d-02-exception-impact');
 });
 
+test('S2D: the proposal can be read before it is approved, tables and all', async ({ stack }) => {
+  const { page } = stack;
+  const awaiting = pane(page, 'Awaiting You');
+  const row = awaiting.getByRole('treeitem', { name: /tp-stuttgart-lyon/ }).first();
+  await row.click();
+  await page.keyboard.press('ArrowRight');
+  const draft = awaiting.getByRole('treeitem', { name: /tp-stuttgart-lyon/ }).nth(1);
+  await draft.click();
+  await stack.shot('s2d-03b-review-before-approval');
+});
+
 test('S2D: approving the proposal records the decision and resolves the exception', async ({ stack }) => {
   const { page } = stack;
   // Awaiting you holds three proposals from the three agents; the supplier one is the first story.

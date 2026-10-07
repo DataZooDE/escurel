@@ -21,7 +21,14 @@ export interface ReportViewDef {
 
 export type ReportView =
   | { kind: 'kpi'; label: string; value: string }
-  | { kind: 'table'; columns: string[]; rows: string[][]; more?: number };
+  | {
+      kind: 'table';
+      columns: string[];
+      rows: string[][];
+      more?: number;
+      /** Columns that hold the same value on every row, said once under the table: [label, value]. */
+      constants?: Array<[string, string]>;
+    };
 export interface ReportModel {
   title: string;
   views: ReportView[];
@@ -139,11 +146,29 @@ export function buildReport(def: ReportDef, results: Record<string, Row[]>): Rep
       if (rows.length === 0) continue;
       const keys = Object.keys(rows[0] ?? {}).slice(0, MAX_COLUMNS);
       const shown = rows.slice(0, MAX_ROWS);
+      const cells = shown.map((r) => keys.map((k) => format(r[k])));
+      // A column that says the same on every row says it once, under the table: the rest fits the page.
+      const constant = new Set<number>();
+      if (cells.length >= 2) {
+        for (let c = 1; c < keys.length && keys.length - constant.size > 2; c += 1) {
+          const first = cells[0]?.[c];
+          if (first !== '—' && cells.every((row) => row[c] === first)) constant.add(c);
+        }
+      }
+      const kept = keys.map((_, c) => c).filter((c) => !constant.has(c));
       views.push({
         kind: 'table',
-        columns: keys.map(humanise),
-        rows: shown.map((r) => keys.map((k) => format(r[k]))),
+        columns: kept.map((c) => humanise(keys[c] ?? '')),
+        rows: cells.map((row) => kept.map((c) => row[c] ?? '—')),
         ...(rows.length > shown.length ? { more: rows.length - shown.length } : {}),
+        ...(constant.size
+          ? {
+              constants: [...constant].map((c): [string, string] => [
+                humanise(keys[c] ?? ''),
+                cells[0]?.[c] ?? '—',
+              ]),
+            }
+          : {}),
       });
     } else if (v.kind === 'vega') chartsNote = true;
   }
