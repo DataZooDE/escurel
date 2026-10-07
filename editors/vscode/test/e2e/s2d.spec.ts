@@ -35,9 +35,16 @@ test('S2D: the supplier mail is in the inbox and its record shows the impact', a
   const wv = await webviewWith(page, 'escurel-page-as-ui');
   const kpis = wv.locator('.report .kpi');
   await expect(kpis).toHaveCount(2);
-  await expect(kpis.nth(0)).toContainText('4');
+  // The figures are whatever the data says (the shared seed owns them); the page shows exactly them.
+  const summary = (await stack.call('query_instance', {
+    ref: 'delay_impact_summary',
+    params: { supplier: 'baltic-components', lot: 'L-24117', delay_days: 21 },
+  })) as { rows: Array<{ penalty_exposure_eur: number; orders_late: number }> };
+  await expect(kpis.nth(0)).toContainText(String(summary.rows[0]?.orders_late));
   await expect(kpis.nth(0)).toContainText('Orders late');
-  await expect(kpis.nth(1)).toContainText('132,400');
+  await expect(kpis.nth(1)).toContainText(
+    Number(summary.rows[0]?.penalty_exposure_eur).toLocaleString('en-US'),
+  );
   // The orders that go late, worst first: 18, 13, 9 and 4 days.
   const days = await wv
     .locator('.report tbody tr')
