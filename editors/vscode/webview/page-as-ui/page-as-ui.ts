@@ -734,7 +734,9 @@ export class EscurelPageAsUi extends LitElement {
 
       <section>
         <h2>Body</h2>
-        <div class="body md">${renderMarkdown(m.body)}</div>
+        <div class="body md">
+          ${renderMarkdown(m.body, m.charts ? new Map(Object.entries(m.charts)) : undefined)}
+        </div>
       </section>
 
       ${

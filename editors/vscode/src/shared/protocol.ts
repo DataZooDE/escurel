@@ -89,6 +89,11 @@ export interface PageModel {
   augment?: PageAugmentView;
   /** The skill declares `chat: {page_bound: true}`: the page offers "Ask about this record". */
   chat?: true;
+  /**
+   * Charts the host fetched and checked for this body, by `<comparison>/<chart>`. The body only names
+   * them; a name with no entry here is shown as its description.
+   */
+  charts?: Record<string, { src: string; alt: string }>;
 }
 
 export type HostToWebview =

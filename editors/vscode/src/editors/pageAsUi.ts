@@ -2,6 +2,7 @@ import { latestWriteBack, type WriteBackStatus } from '../shared/writeBack';
 import { resolvePageMessage } from './pageMessages';
 import * as vscode from 'vscode';
 import type { EscurelClient } from '../client';
+import { resolvePageCharts, type FetchedChart } from '../evolve/chartImage';
 import { describeError } from '../errors';
 import { pageIdFromPath } from '../fs/read';
 import { log } from '../log';
@@ -49,6 +50,8 @@ export class PageAsUiEditor implements vscode.CustomReadonlyEditorProvider {
     private readonly client: () => EscurelClient,
     private readonly onDidChange: vscode.Event<void>,
     private readonly contributions?: PageContributions,
+    /** Reads one stored chart from Evolve as the signed-in user; absent when Evolve is not set up. */
+    private readonly fetchChart?: (comparison: string, chart: string) => Promise<FetchedChart>,
   ) {}
 
   static register(
@@ -56,11 +59,12 @@ export class PageAsUiEditor implements vscode.CustomReadonlyEditorProvider {
     client: () => EscurelClient,
     onDidChange: vscode.Event<void>,
     contributions?: PageContributions,
+    fetchChart?: (comparison: string, chart: string) => Promise<FetchedChart>,
   ): void {
     context.subscriptions.push(
       vscode.window.registerCustomEditorProvider(
         VIEW_TYPE,
-        new PageAsUiEditor(context, client, onDidChange, contributions),
+        new PageAsUiEditor(context, client, onDidChange, contributions, fetchChart),
         {
           webviewOptions: { retainContextWhenHidden: true },
           supportsMultipleEditorsPerDocument: true,
@@ -169,6 +173,19 @@ export class PageAsUiEditor implements vscode.CustomReadonlyEditorProvider {
         }
         const base = strip ? { ...model, thread: strip } : model;
         const withWriteBack = writeBack ? { ...base, writeBack } : base;
+        // Charts a completed comparison page names. Only the host fetches them, with the user's own
+        // token, and only what passes every check reaches the webview; a failure just leaves the
+        // chart's description in place, so it never costs the user the page.
+        const fetchOne = this.fetchChart;
+        let withCharts = withWriteBack;
+        if (fetchOne) {
+          const { charts, problems } = await resolvePageCharts(
+            { skill: e.page.skill, body: model.body, frontmatter: e.frontmatter },
+            fetchOne,
+          ).catch(() => ({ charts: {}, problems: [] as string[] }));
+          for (const problem of problems) log().warn(`escurel: chart not shown: ${problem}`);
+          if (Object.keys(charts).length) withCharts = { ...withWriteBack, charts };
+        }
         // What companions add is read last and is an addition like the strip: a failure costs the
         // additions, never the page.
         const loaded = this.contributions?.augments?.has(skill.id)
@@ -179,7 +196,7 @@ export class PageAsUiEditor implements vscode.CustomReadonlyEditorProvider {
               client: this.contributions.gateway,
             }).catch(() => undefined)
           : undefined;
-        const built = loaded ? { ...withWriteBack, augment: loaded.view } : withWriteBack;
+        const built = loaded ? { ...withCharts, augment: loaded.view } : withCharts;
         return {
           message: { type: 'page', model: built },
           model: built,
@@ -327,7 +344,7 @@ export class PageAsUiEditor implements vscode.CustomReadonlyEditorProvider {
     );
     const nonce = newNonce();
     return `<!doctype html><html><head><meta charset="utf-8" />
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${webview.cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}';" />
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${webview.cspSource} 'unsafe-inline'; img-src data:; script-src 'nonce-${nonce}';" />
 <style>body{margin:0}</style></head>
 <body><escurel-page-as-ui></escurel-page-as-ui><script type="module" nonce="${nonce}" src="${script}"></script></body></html>`;
   }

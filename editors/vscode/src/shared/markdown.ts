@@ -4,7 +4,8 @@
  *
  * It produces a TREE, and the webview builds elements from it. There is no HTML string anywhere,
  * so there is nothing to sanitise: raw HTML in the source is literal text, an image is its alt
- * text, and a link survives only with an http(s) or mailto target. No `vscode` import, so it is
+ * text (the one exception is a reference to a stored Evolve chart, see `CHART_REF`, which the host
+ * resolves itself), and a link survives only with an http(s) or mailto target. No `vscode` import, so it is
  * tested without one.
  *
  * Not CommonMark. Deliberately a subset (SPEC §9: render plain markdown tables, defer rich
@@ -17,7 +18,8 @@ export type Inline =
   | { t: 'em'; c: Inline[] }
   | { t: 'code'; v: string }
   | { t: 'link'; href: string; c: Inline[] }
-  | { t: 'wikilink'; target: string; label?: string };
+  | { t: 'wikilink'; target: string; label?: string }
+  | { t: 'chart'; comparison: string; chart: string; alt: string };
 
 export type Align = 'left' | 'right' | 'center' | null;
 
@@ -31,6 +33,61 @@ export type Block =
   | { t: 'table'; align: Align[]; head: Inline[][]; rows: Inline[][][] };
 
 const MAX_QUOTE_DEPTH = 6;
+
+/**
+ * The only image target the parser keeps: `evolve-chart:<comparison>/<chart>`. It names a chart
+ * stored in Evolve; it is not a URL and nothing is loaded from it. Whether and how it is drawn is
+ * the host's decision (it fetches the chart itself and checks it), so a page cannot make the
+ * viewer load anything. Any other image stays its alt text.
+ */
+export const CHART_REF = /^evolve-chart:([A-Za-z0-9_.-]{1,128})\/([a-z0-9_]{1,64})$/;
+
+/** The key a resolved chart is filed under. */
+export function chartKey(comparison: string, chart: string): string {
+  return `${comparison}/${chart}`;
+}
+
+/** Every chart reference in a body, in order and without repeats. */
+export function chartRefs(src: string): { comparison: string; chart: string }[] {
+  const seen = new Set<string>();
+  const found: { comparison: string; chart: string }[] = [];
+  const walkInline = (nodes: Inline[]): void => {
+    for (const n of nodes) {
+      if (n.t === 'chart') {
+        const key = chartKey(n.comparison, n.chart);
+        if (!seen.has(key)) {
+          seen.add(key);
+          found.push({ comparison: n.comparison, chart: n.chart });
+        }
+      } else if ('c' in n) walkInline(n.c);
+    }
+  };
+  const walk = (blocks: Block[]): void => {
+    for (const b of blocks) {
+      switch (b.t) {
+        case 'h':
+        case 'p':
+          walkInline(b.c);
+          break;
+        case 'ul':
+        case 'ol':
+          b.items.forEach(walkInline);
+          break;
+        case 'quote':
+          walk(b.c);
+          break;
+        case 'table':
+          b.head.forEach(walkInline);
+          b.rows.forEach((row) => row.forEach(walkInline));
+          break;
+        default:
+          break;
+      }
+    }
+  };
+  walk(parseMarkdown(src));
+  return found;
+}
 
 export function parseMarkdown(src: string): Block[] {
   return parseBlocks(src.replace(/\r\n?/g, '\n').split('\n'), 0);
@@ -276,8 +333,13 @@ export function parseInline(src: string): Inline[] {
               .trim()
               .split(/\s+/)[0] ?? '';
           if (image) {
-            // An image would load a URL on its own; show what it says instead.
-            text(label);
+            const ref = CHART_REF.exec(href);
+            if (ref) {
+              push(out, { t: 'chart', comparison: ref[1]!, chart: ref[2]!, alt: label });
+            } else {
+              // An image would load a URL on its own; show what it says instead.
+              text(label);
+            }
             i = paren + 1;
             continue;
           }
