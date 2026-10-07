@@ -5,7 +5,11 @@ ship together, and a last-time buy. Everything on screen is **illustrative demo 
 anonymised industrial manufacturer): not customer data, and no figure is a customer result.
 
 Start it: `editors/vscode/demo/run.sh start` (the S2D data is on by default; `ESCUREL_DEMO_S2D=0`
-leaves it out). The line `s2d: built from hetzner-agent-substrate <sha>` names the version of the
+leaves it out). The two optimizer pages (cheapest recovery plan, truck packing) need the local
+`anofox_optimize` DuckDB build at `~/Projects/datazoo/anofox-optimize/build/release/extension/anofox_optimize/`
+(`ESCUREL_DEMO_OPTIMIZE_EXT` overrides the path). It was built for DuckDB v1.5.5, so `run.sh` starts the
+gateway against the pinned libduckdb the build downloaded (`target/duckdb-download/…/1.5.5`); if the
+versions still differ it says so, leaves those two pages out and the stories use the plain options. The line `s2d: built from hetzner-agent-substrate <sha>` names the version of the
 shared seed it was built from. Reset between rehearsals: `run.sh start` again.
 
 ## What is real and what is scripted
@@ -26,14 +30,18 @@ steps.
 
 1. **Inbox**: "Delivery delay PO-4500182 / lot L-24117" (the supplier's mail). Open it: a capacity
    bottleneck at the supplier, lot L-24117 (controller board CB-7, 2,400 pieces), about three weeks late.
-2. **Knowledge** > logistics > source > supplier_exception > **l-24117**: the exception record. Under the
+2. **Knowledge** > logistics > source > Supplier exception > **l-24117**: the exception record. Under the
    fields, **Impact of a supplier delay**: **4 orders late**, **132,400 penalty exposure (EUR)**, and
    the table of the 12 orders the lot feeds, worst first: 18, 13, 9 and 4 days late; the other 8 absorb
    the delay. (Say: "12 orders depend on this lot, 4 of them go late.")
 3. **Awaiting you** > "res-l-24117 +1 — Proposed changes": two pages in ONE proposal: the resolution and the
    exception. Open it to review the diff: the proposal table is two options, **250 units from the Central
    Europe warehouse (2 days, low risk, EUR 1,050)** and **910 units expedited at the supplier (8 days,
-   medium risk, EUR 2,100)**: together the 1,160 units on late orders, EUR 3,150 against 132,400.
+   medium risk, EUR 2,100)**: together the 1,160 units on late orders, EUR 3,150 against 132,400. With
+   the optimizer loaded the text says the combination was chosen by an exact optimisation (the cheapest
+   that covers every late unit). **Preview the proposal** (the first button of the review editor) shows it
+   as a formatted page next to the source. The expedited part can join the inbound groupage Gdansk to
+   Stuttgart on 2026-10-13 (18 of 33 pallets booked).
 4. **Approve** (the check mark on the Awaiting row). "Applied 2 changes": the resolution is recorded as
    approved and the exception shows **resolved**, together. The open record updates at once.
 5. Optional: the thread behind it (Open thread / Open run): the mail, the run of the agent, what it read.
@@ -42,16 +50,18 @@ steps.
 
 1. Inbox: "Weekly outbound review: part loads on the Stuttgart lanes".
 2. **Awaiting you** > "tp-stuttgart-lyon-fr-2026-10-08": approve it.
-3. Knowledge > logistics > deliver > transport_plan > the plan: **Consolidation plan** table.
+   Before approving, **Preview the proposal** on the draft shows the plan table.
+3. Knowledge > logistics > deliver > Transport plan > the plan: **Consolidation plan**, one card per shipment
+   on a narrow window (a table on a wide one); what is the same on every row is said once under it.
    **SH-77001, SH-77002 and SH-77003 ship together on Thursday 2026-10-08** (23 pallets; 14 held pallets fit the
-   14 free slots; EUR 1,140 saved). **SH-77004 stays**: holding it would miss its delivery duty of 2026-10-09.
+   14 free slots; EUR 1,140 saved; with the optimizer: **packed into 1 truck**). **SH-77004 stays**: holding it would miss its delivery duty of 2026-10-09.
    **SH-77005 is not ready** before 2026-10-12.
 
 ## Story 3: how many to buy before production ends (After-sales)
 
 1. Inbox: "Spare parts reaching end of production".
 2. **Awaiting you** > "ltb-sp-3307": approve it.
-3. Knowledge > logistics > after-sales > ltb_decision > the record. **Probability it lasts: 96%**.
+3. Knowledge > logistics > after-sales > Last-time-buy decision > the record. **Probability it lasts: 96%**.
    Buying **640 units** holds the 95% service level to end of service (expected lifetime demand 509);
    the table shows the stock value (EUR 755,200) and the **warehouse split: EMEA 352, Americas 160,
    APAC 128**. The alternative of 400 units is in the proposal's text: about an 8% chance, running out
