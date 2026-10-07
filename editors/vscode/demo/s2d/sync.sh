@@ -49,10 +49,9 @@ python3 "$SEED/build_data.py" "$OUT/data" >/dev/null
 sed -i "s|$S3_PREFIX|$OUT/data/|" "$OUT"/pages/skills/*.md
 
 # Query pages that call the anofox_optimize functions (opt_*) need that DuckDB extension in the gateway.
-# With the extension build present they are kept and the gateway is told to load it
-# (`index-extensions`); without it they are SKIPPED with a warning: the core stories never depend on them.
-OPT_EXT="${ESCUREL_DEMO_OPTIMIZE_EXT:-$HOME/Projects/datazoo/anofox-optimize/build/release/extension/anofox_optimize/anofox_optimize.duckdb_extension}"
-python3 "$HERE/optional.py" "$OUT" "$OPT_EXT"
+# With an extension build for the gateway's DuckDB version they are kept and the gateway is told to load
+# it (`index-extensions`); without one they are SKIPPED with a warning: the core stories never depend on them.
+python3 "$HERE/optional.py" "$OUT" "${ESCUREL_DEMO_DUCKDB_VERSION:-}"
 
 python3 "$HERE/overlay.py" "$OUT/pages"
 cp "$SEED/check_queries.py" "$SEED/build_data.py" "$OUT/"

@@ -77,12 +77,34 @@ fi
 sed -i "s|@VBAK_DIR@|$HERE/sources/vbak|" "$HOME_DIR/seed/skills/customer-order.md"
 sed -i "s|@LFA1_DIR@|$HERE/sources/lfa1|" "$HOME_DIR/seed/skills/supplier.md"
 
+# A DuckDB extension is built for ONE DuckDB version. The gateway links libduckdb.so: the copy the build
+# downloaded for the version it is pinned to (target/duckdb-download/<triple>/<version>/), or whatever
+# the system has, which may be another version. When an extension is to be loaded, prefer the pinned copy
+# (override with ESCUREL_DEMO_LIBDUCKDB_DIR).
+libduckdb_dir() {
+  [ -n "${ESCUREL_DEMO_LIBDUCKDB_DIR:-}" ] && { echo "$ESCUREL_DEMO_LIBDUCKDB_DIR"; return; }
+  local d
+  for d in "$(dirname "$GATEWAY_BIN")"/../duckdb-download/*/*/; do
+    [ -f "${d}libduckdb.so" ] && { echo "${d%/}"; return; }
+  done
+}
+# The DuckDB version the gateway will run: the pinned copy's directory name, else what the system's
+# libduckdb.so says. Empty when it cannot be told.
+gateway_duckdb_version() {
+  local d so
+  d="$(libduckdb_dir)"
+  if [ -n "$d" ]; then basename "$d"; return; fi
+  so="$(ldd "$GATEWAY_BIN" 2>/dev/null | awk '/libduckdb/ {print $3}' | head -1)"
+  [ -n "$so" ] && strings "$so" 2>/dev/null | grep -m1 -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sed 's/^v//'
+  return 0
+}
+
 # The Source-to-Deliver (S2D) demo: data, skills and reports from the hetzner-agent-substrate seed (the
 # single source), built locally by s2d/sync.sh. ESCUREL_DEMO_S2D=0 leaves it out.
 S2D_DIR=""
 if [ "${ESCUREL_DEMO_S2D:-1}" = "1" ]; then
   S2D_DIR="$HOME_DIR/s2d"
-  ESCUREL_CLI_BIN="${ESCUREL_CLI_BIN:-$REPO/target/release/escurel}" "$HERE/s2d/sync.sh" "$S2D_DIR"
+  ESCUREL_DEMO_DUCKDB_VERSION="$(gateway_duckdb_version)" ESCUREL_CLI_BIN="${ESCUREL_CLI_BIN:-$REPO/target/release/escurel}" "$HERE/s2d/sync.sh" "$S2D_DIR"
 fi
 
 # Two outside systems, as real local processes on real sockets: a REST portal (supplier ratings) and
@@ -114,17 +136,6 @@ export ESCUREL_DEMO_ORDERS_DB_SECRET="$HOME_DIR/secrets/vsx/orders-db"
 # local, so loopback is opened for THIS process only.
 # Extensions some S2D query pages need (see s2d/optional.py); empty unless the build is there.
 INDEX_EXT=""; [ -n "$S2D_DIR" ] && [ -s "$S2D_DIR/index-extensions" ] && INDEX_EXT="$(head -1 "$S2D_DIR/index-extensions")"
-# A DuckDB extension is built for ONE DuckDB version. The gateway links libduckdb.so: the copy the build
-# downloaded for the version it is pinned to (target/duckdb-download/<triple>/<version>/), or whatever
-# the system has, which may be another version. When an extension is to be loaded, prefer the pinned copy
-# (override with ESCUREL_DEMO_LIBDUCKDB_DIR).
-libduckdb_dir() {
-  [ -n "${ESCUREL_DEMO_LIBDUCKDB_DIR:-}" ] && { echo "$ESCUREL_DEMO_LIBDUCKDB_DIR"; return; }
-  local d
-  for d in "$(dirname "$GATEWAY_BIN")"/../duckdb-download/*/*/; do
-    [ -f "${d}libduckdb.so" ] && { echo "${d%/}"; return; }
-  done
-}
 start_gateway() {
   local ld="${LD_LIBRARY_PATH:-}"
   if [ -n "$INDEX_EXT" ] && [ -n "$(libduckdb_dir)" ]; then ld="$(libduckdb_dir)${ld:+:$ld}"; fi
