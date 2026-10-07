@@ -454,35 +454,45 @@ export class EscurelPageAsUi extends LitElement {
     const tables = r.views.filter((v) => v.kind === 'table');
     return html`<section class="report">
       <h2>${r.title}</h2>
-      ${kpis.length
-        ? html`<div class="kpis">
-            ${kpis.map(
-              (k) =>
-                html`<div class="kpi">
-                  <div class="kpi-value">${k.value}</div>
-                  <div class="kpi-label">${k.label}</div>
-                </div>`,
-            )}
-          </div>`
-        : nothing}
-      ${tables.map(
-        (t) => html`<table>
-            <thead><tr>${t.columns.map((c) => html`<th scope="col">${c}</th>`)}</tr></thead>
-            <tbody>
-              ${t.rows.map(
-                (row) =>
-                  html`<tr>
-                    ${row.map((c, i) => html`<td data-label=${t.columns[i] ?? ''}>${c}</td>`)}
-                  </tr>`,
+      ${
+        kpis.length
+          ? html`<div class="kpis">
+              ${kpis.map(
+                (k) =>
+                  html`<div class="kpi">
+                    <div class="kpi-value">${k.value}</div>
+                    <div class="kpi-label">${k.label}</div>
+                  </div>`,
               )}
-            </tbody>
-          </table>
-          ${t.constants?.length
-            ? html`<p class="muted constants">
-                Same on every row: ${t.constants.map(([k, v]) => `${k} ${v}`).join(' · ')}
-              </p>`
-            : nothing}
-          ${t.more ? html`<p class="muted more">${t.more} more not shown</p>` : nothing}`,
+            </div>`
+          : nothing
+      }
+      ${tables.map(
+        (t) =>
+          html`${
+              t.constants?.length
+                ? html`<p class="muted constants">
+                    Same on every row: ${t.constants.map(([k, v]) => `${k} ${v}`).join(' · ')}
+                  </p>`
+                : nothing
+            }
+            <table>
+              <thead>
+                <tr>
+                  ${t.columns.map((c) => html`<th scope="col">${c}</th>`)}
+                </tr>
+              </thead>
+              <tbody>
+                ${t.rows.map(
+                  (row) =>
+                    html`<tr>
+                      ${row.map((c, i) => html`<td data-label=${t.columns[i] ?? ''}>${c}</td>`)}
+                    </tr>`,
+                )}
+              </tbody>
+            </table>
+
+            ${t.more ? html`<p class="muted more">${t.more} more not shown</p>` : nothing}`,
       )}
       ${r.chartsNote ? html`<p class="muted charts-note">The chart for this report is not drawn in this view.</p>` : nothing}
     </section>`;
@@ -677,7 +687,6 @@ export class EscurelPageAsUi extends LitElement {
       </section>
 
       ${m.report ? this.reportSection(m.report) : nothing}
-
       ${
         m.preview
           ? html`<section>
@@ -715,13 +724,19 @@ export class EscurelPageAsUi extends LitElement {
                       class="skill-button"
                       noun="skill"
                       .label=${a.label}
-                      title=${a.skill === 'evolve_run'
-                        ? 'Review the problem revision and make an experiment plan'
-                        : `Starts skill ${a.skill} with an agent on this page`}
+                      title=${
+                        a.skill === 'evolve_run'
+                          ? 'Review the problem revision and make an experiment plan'
+                          : `Starts skill ${a.skill} with an agent on this page`
+                      }
                       .header=${`skill ${a.skill}`}
-                      .items=${a.skill === 'evolve_run' ? EVOLVE_PLAN_ITEMS
-                        : isEvolveReviewControl(a.skill)
-                        ? EVOLVE_CONTROL_ITEMS : START_ITEMS}
+                      .items=${
+                        a.skill === 'evolve_run'
+                          ? EVOLVE_PLAN_ITEMS
+                          : isEvolveReviewControl(a.skill)
+                            ? EVOLVE_CONTROL_ITEMS
+                            : START_ITEMS
+                      }
                       @primary=${() => this.start(a.skill, a.skill === 'evolve_run' ? 'plan' : 'background')}
                       @select=${(e: CustomEvent<string>) => this.start(a.skill, e.detail)}
                     ></escurel-split-button>`,

@@ -52,7 +52,8 @@ steps.
 2. **Awaiting you** > "tp-stuttgart-lyon-fr-2026-10-08": approve it.
    Before approving, **Preview the proposal** on the draft shows the plan table.
 3. Knowledge > logistics > deliver > Transport plan > the plan: **Consolidation plan**, one card per shipment
-   on a narrow window (a table on a wide one); what is the same on every row is said once under it.
+   on a narrow window (a table on a wide one); what is the same on every row is said once, above the rows:
+   ships together on 2026-10-08, **arrives 2026-10-10**, so each card's delivery duty reads against one arrival date.
    **SH-77001, SH-77002 and SH-77003 ship together on Thursday 2026-10-08** (23 pallets; 14 held pallets fit the
    14 free slots; EUR 1,140 saved; with the optimizer: **packed into 1 truck**). **SH-77004 stays**: holding it would miss its delivery duty of 2026-10-09.
    **SH-77005 is not ready** before 2026-10-12.

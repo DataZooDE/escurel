@@ -433,6 +433,8 @@ await agentRun('transport_plan', tpMail, tpPage, async (agent) => {
     ['customer', 'Customer'],
     ['planned_ship_date', 'Planned'],
     ['ship_on', 'Ships together on'],
+    // Added by the shared seed after the first version: only when this one has it.
+    ...(together[0] && 'arrival_date' in together[0] ? [['arrival_date', 'Arrives']] : []),
     ['delivery_duty_date', 'Delivery duty'],
     ['pallets', 'Pallets'],
   ];
