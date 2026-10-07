@@ -32,7 +32,8 @@ export function skillRow(skill: Skill): SkillRow {
   return {
     kind: 'skill',
     skill,
-    label: skill.id,
+    // A person reads the title the skill's author gave it; the id stays in the accessible name and tooltip.
+    label: cleanText(skill.title?.trim() || skill.id, 80),
     description: chipsForSkill(skill).join(' · '),
     readOnly: isReadOnlySkill(skill),
   };
