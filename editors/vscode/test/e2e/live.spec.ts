@@ -8,6 +8,8 @@ import { chooseMenuItem, knowledgeRow, openRow, pane, skillRow } from './helpers
 // One window for the whole file, played in order: each scenario leaves the stack as the next one can
 // use it. Every one asserts what a person would SEE and leaves a screenshot in artifacts/ for a human
 // to look at, because "the assertion passed" says nothing about whether it looks right.
+// Its own window: the Evolve files before it leave plans and runs behind that change what this file counts.
+test.use({ suite: 'live' });
 test.describe.configure({ mode: 'serial' });
 
 test('the story is on screen: knowledge, threads, awaiting, inbox and the runner', async ({

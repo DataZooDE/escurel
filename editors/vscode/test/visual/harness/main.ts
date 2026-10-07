@@ -110,6 +110,7 @@ el.model =
                   ['CO-310070', 'Distributor France', '0', 'absorbed', '0'],
                 ],
                 more: 7,
+                constants: [['Free pallet slots', '14']],
               },
             ],
           },

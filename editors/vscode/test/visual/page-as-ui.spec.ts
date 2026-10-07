@@ -75,3 +75,15 @@ test('a record draws its report figures in the current theme', async ({ page }, 
     fullPage: true,
   });
 });
+
+// The same page on a narrow editor: a row of the table stacks as a small card instead of running off the edge.
+test('a narrow page stacks the report rows as cards', async ({ page }, testInfo) => {
+  const theme = (testInfo.project.metadata as { theme: string }).theme;
+  await page.setViewportSize({ width: 560, height: 900 });
+  await page.goto(`/test/visual/harness/index.html?theme=${theme}&variant=report`);
+  await page.locator('escurel-page-as-ui .report .kpi').first().waitFor();
+  await expect(page).toHaveScreenshot('page-as-ui-report-narrow.png', {
+    maxDiffPixelRatio: 0.01,
+    fullPage: true,
+  });
+});

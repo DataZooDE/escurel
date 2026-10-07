@@ -73,7 +73,10 @@ export const test = base.extend<object, {
   evolveAgentBin: string | undefined;
   /** Load the Source-to-Deliver demo (hetzner seed) too; the other scenarios count rows and must not see it. */
   s2d: boolean;
+  /** Names the file's window: files that set different values never share one (state of an earlier file leaked into a later one). */
+  suite: string;
 }>({
+  suite: ['', { scope: 'worker', option: true }],
   s2d: [false, { scope: 'worker', option: true }],
   runnerHarness: ['echo', { scope: 'worker', option: true }],
   evolveAgentBin: [undefined, { scope: 'worker', option: true }],
