@@ -99,9 +99,11 @@ test('S2D: approving the proposal records the decision and resolves the exceptio
         (await expandPage(stack, 'exception_resolution', 'res-l-24117')).frontmatter?.status,
     )
     .toBe('approved');
-  expect((await expandPage(stack, 'supplier_exception', 'l-24117')).frontmatter?.status).toBe(
-    'resolved',
-  );
+  await expect
+    .poll(
+      async () => (await expandPage(stack, 'supplier_exception', 'l-24117')).frontmatter?.status,
+    )
+    .toBe('resolved');
   await expect(
     pane(page, 'Awaiting You').getByRole('treeitem', { name: /res-l-24117/ }),
   ).toHaveCount(0);
