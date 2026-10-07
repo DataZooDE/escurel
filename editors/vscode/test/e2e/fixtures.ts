@@ -67,6 +67,9 @@ export interface Stack {
   evolveCall: (name: string, args: Record<string, unknown>) => Promise<ToolResult>;
 }
 
+// See playwright.config.ts: ESCUREL_E2E_SLOW stretches every wait on an overloaded machine.
+const SLOW = Number(process.env.ESCUREL_E2E_SLOW) || 1;
+
 export const test = base.extend<
   object,
   {
@@ -223,7 +226,7 @@ export const test = base.extend<
       let evolveProcess: ChildProcess | undefined;
       let evolveLogFd: number | undefined;
       try {
-        execFileSync(run, ['start'], { env, stdio: 'inherit', timeout: 240_000 });
+        execFileSync(run, ['start'], { env, stdio: 'inherit', timeout: 240_000 * SLOW });
 
         const info = JSON.parse(readFileSync(join(home, 'gateway.json'), 'utf8').split('\n')[0]!);
         const story = JSON.parse(readFileSync(join(home, 'story.json'), 'utf8'));
@@ -301,7 +304,7 @@ export const test = base.extend<
           if (!page) await new Promise((r) => setTimeout(r, 500));
         }
         if (!page) throw new Error('the VS Code window never showed a workbench page');
-        await page.waitForSelector('.monaco-workbench', { timeout: 60_000 });
+        await page.waitForSelector('.monaco-workbench', { timeout: 60_000 * SLOW });
         const errors: string[] = [];
         page.on('pageerror', (e) => errors.push(`pageerror: ${e.message}`));
         page.on('console', (m) => {
@@ -385,7 +388,7 @@ export const test = base.extend<
           await new Promise<void>((resolveClose) => modelServer!.close(() => resolveClose()));
       }
     },
-    { scope: 'worker', timeout: 300_000 },
+    { scope: 'worker', timeout: 300_000 * SLOW },
   ],
 });
 
