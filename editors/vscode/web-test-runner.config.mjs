@@ -18,6 +18,10 @@ export default {
   ...(process.env.ESCUREL_WTR_TIMEOUT_MS
     ? { testFramework: { config: { timeout: Number(process.env.ESCUREL_WTR_TIMEOUT_MS) } } }
     : {}),
+  // ... and the whole run may take longer than the runner's default 120 s (ESCUREL_WTR_FINISH_MS).
+  ...(process.env.ESCUREL_WTR_FINISH_MS
+    ? { testsFinishTimeout: Number(process.env.ESCUREL_WTR_FINISH_MS) }
+    : {}),
   browsers: [
     playwrightLauncher({
       product: 'chromium',
