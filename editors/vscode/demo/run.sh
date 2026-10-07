@@ -114,11 +114,43 @@ export ESCUREL_DEMO_ORDERS_DB_SECRET="$HOME_DIR/secrets/vsx/orders-db"
 # local, so loopback is opened for THIS process only.
 # Extensions some S2D query pages need (see s2d/optional.py); empty unless the build is there.
 INDEX_EXT=""; [ -n "$S2D_DIR" ] && [ -s "$S2D_DIR/index-extensions" ] && INDEX_EXT="$(head -1 "$S2D_DIR/index-extensions")"
-ESCUREL_INDEX_EXTENSIONS="$INDEX_EXT" ESCUREL_EGRESS_ALLOW_LOOPBACK=1 ESCUREL_SECRET_FILE_DIRS="$HOME_DIR/secrets" ESCUREL_SQL_FILE_DIRS="$HOME_DIR/sqlite:$HERE/sources${S2D_DIR:+:$S2D_DIR/data}" setsid nohup "$GATEWAY_BIN" --tenant vsx --seed "$HOME_DIR/seed" --subject alice \
-  --bearer-file "$HOME_DIR/bearer.json" > "$HOME_DIR/gateway.json" 2> "$HOME_DIR/gateway.log" < /dev/null &
-echo $! > "$HOME_DIR/gateway.pid"
-for _ in $(seq 1 120); do [ -s "$HOME_DIR/gateway.json" ] && break; sleep 0.5; done
-[ -s "$HOME_DIR/gateway.json" ] || { echo "the gateway printed nothing; see $HOME_DIR/gateway.log" >&2; exit 1; }
+# A DuckDB extension is built for ONE DuckDB version. The gateway links libduckdb.so: the copy the build
+# downloaded for the version it is pinned to (target/duckdb-download/<triple>/<version>/), or whatever
+# the system has, which may be another version. When an extension is to be loaded, prefer the pinned copy
+# (override with ESCUREL_DEMO_LIBDUCKDB_DIR).
+libduckdb_dir() {
+  [ -n "${ESCUREL_DEMO_LIBDUCKDB_DIR:-}" ] && { echo "$ESCUREL_DEMO_LIBDUCKDB_DIR"; return; }
+  local d
+  for d in "$(dirname "$GATEWAY_BIN")"/../duckdb-download/*/*/; do
+    [ -f "${d}libduckdb.so" ] && { echo "${d%/}"; return; }
+  done
+}
+start_gateway() {
+  local ld="${LD_LIBRARY_PATH:-}"
+  if [ -n "$INDEX_EXT" ] && [ -n "$(libduckdb_dir)" ]; then ld="$(libduckdb_dir)${ld:+:$ld}"; fi
+  LD_LIBRARY_PATH="$ld" ESCUREL_INDEX_EXTENSIONS="$INDEX_EXT" ESCUREL_EGRESS_ALLOW_LOOPBACK=1 ESCUREL_SECRET_FILE_DIRS="$HOME_DIR/secrets" ESCUREL_SQL_FILE_DIRS="$HOME_DIR/sqlite:$HERE/sources${S2D_DIR:+:$S2D_DIR/data}" setsid nohup "$GATEWAY_BIN" --tenant vsx --seed "$HOME_DIR/seed" --subject alice \
+    --bearer-file "$HOME_DIR/bearer.json" > "$HOME_DIR/gateway.json" 2> "$HOME_DIR/gateway.log" < /dev/null &
+  echo $! > "$HOME_DIR/gateway.pid"
+  for _ in $(seq 1 120); do
+    [ -s "$HOME_DIR/gateway.json" ] && return 0
+    kill -0 "$(cat "$HOME_DIR/gateway.pid")" 2>/dev/null || return 1
+    sleep 0.5
+  done
+  return 1
+}
+if ! start_gateway; then
+  # An extension built for another DuckDB version stops the gateway at boot. The optimizer pages are an
+  # extra: say so, leave them out and start again; anything else that stopped it is still an error.
+  if [ -n "$INDEX_EXT" ] && grep -q "built specifically for DuckDB" "$HOME_DIR/gateway.log" 2>/dev/null; then
+    echo "s2d: WARNING $INDEX_EXT was built for another DuckDB version than the gateway's ($(grep -o "this version of DuckDB is '[^']*'" "$HOME_DIR/gateway.log" | head -1)): leaving the optimizer pages out" >&2
+    INDEX_EXT=""
+    python3 "$HERE/s2d/optional.py" "$S2D_DIR" /nonexistent
+    rm -f "$S2D_DIR/index-extensions"
+    start_gateway || { echo "the gateway printed nothing; see $HOME_DIR/gateway.log" >&2; exit 1; }
+  else
+    echo "the gateway printed nothing; see $HOME_DIR/gateway.log" >&2; exit 1
+  fi
+fi
 
 field() { python3 -c "import json,sys; print(json.loads(open('$HOME_DIR/gateway.json').readline())['$1'])"; }
 
