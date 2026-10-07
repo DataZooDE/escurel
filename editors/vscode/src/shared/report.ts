@@ -132,6 +132,8 @@ export function buildReport(def: ReportDef, results: Record<string, Row[]>): Rep
   const views: ReportView[] = [];
   let chartsNote = false;
   for (const v of def.views) {
+    // A view whose query is not in `results` (it failed) is left out.
+    if (v.data && results[v.data] === undefined) continue;
     const rows = v.data ? (results[v.data] ?? []) : [];
     if (v.kind === 'kpi' && v.field) {
       const n = aggregate(rows, v.field, v.agg ?? 'sum');

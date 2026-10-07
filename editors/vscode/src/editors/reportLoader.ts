@@ -25,11 +25,21 @@ export async function loadReport(
     const params = reportParams(def, record);
     if (!params) return undefined;
     const ids = [...new Set(Object.values(def.queries))];
-    const answers = await Promise.all(ids.map((ref) => client.queryInstance({ ref, params })));
-    const byId = new Map(ids.map((id, i) => [id, answers[i]?.rows ?? []]));
-    const results = Object.fromEntries(
-      Object.entries(def.queries).map(([name, id]) => [name, byId.get(id) ?? []]),
+    const answers = await Promise.allSettled(
+      ids.map((ref) => client.queryInstance({ ref, params })),
     );
+    // A query that failed (or needs something this gateway lacks) leaves out ITS views; the rest is shown.
+    const byId = new Map<string, Array<Record<string, unknown>>>();
+    ids.forEach((id, i) => {
+      const a = answers[i];
+      if (a?.status === 'fulfilled') byId.set(id, a.value.rows ?? []);
+    });
+    if (byId.size === 0) return undefined;
+    const results: Record<string, Array<Record<string, unknown>>> = {};
+    for (const [name, id] of Object.entries(def.queries)) {
+      const rows = byId.get(id);
+      if (rows) results[name] = rows;
+    }
     return buildReport(def, results);
   } catch {
     return undefined;

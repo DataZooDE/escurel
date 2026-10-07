@@ -12,7 +12,7 @@ const REPORT = {
   ],
 };
 
-function fakeClient(opts: { fm?: unknown; fail?: string } = {}) {
+function fakeClient(opts: { fm?: unknown; fail?: string; failAll?: boolean } = {}) {
   const asked: Array<{ ref: string; params?: Record<string, unknown> }> = [];
   const client = {
     expand: async (r: { page_id: string }) => {
@@ -22,7 +22,7 @@ function fakeClient(opts: { fm?: unknown; fail?: string } = {}) {
     },
     queryInstance: async (r: { ref: string; params?: Record<string, unknown> }) => {
       asked.push(r);
-      if (opts.fail && r.ref === opts.fail) throw new Error('boom');
+      if (opts.failAll || (opts.fail && r.ref === opts.fail)) throw new Error('boom');
       return r.ref === 'delay_impact_summary'
         ? { rows: [{ orders_late: 4 }] }
         : { rows: [{ customer_order: 'SO-1', days_late: 18 }] };
@@ -49,8 +49,14 @@ describe('loadReport', () => {
     expect(asked).toEqual([]);
   });
 
-  it('shows nothing when one query fails, instead of half a figure', async () => {
+  it('leaves out the views of a query that failed and shows the rest', async () => {
     const { client } = fakeClient({ fail: 'delay_impact' });
+    const model = await loadReport(client, 'exception-impact-report', RECORD);
+    expect(model?.views.map((v) => v.kind)).toEqual(['kpi']);
+  });
+
+  it('shows nothing when every query failed', async () => {
+    const { client } = fakeClient({ failAll: true });
     expect(await loadReport(client, 'exception-impact-report', RECORD)).toBeUndefined();
   });
 

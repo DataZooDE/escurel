@@ -59,6 +59,16 @@ for (const skill of ['exception_exposure', 'sourcing_options', 'outbound_transpo
 
 const rowsOf = (r) => r.rows ?? r.result ?? r.data ?? [];
 const q = async (token, ref, params) => rowsOf(await call(token, 'query_instance', { ref, params }));
+// The optimizer queries need the anofox_optimize extension in the gateway; without it they are absent
+// or fail, and the stories fall back to the plain options. Never a reason to lose the demo.
+const tryQ = async (token, ref, params) => {
+  try {
+    const rows = await q(token, ref, params);
+    return rows.length ? rows : null;
+  } catch {
+    return null;
+  }
+};
 
 // 2. The oracle: the facts the rehearsal script relies on, asserted against THIS gateway.
 function expect(what, ok, got) {
@@ -75,6 +85,20 @@ const DELAY = { supplier: 'baltic-components', lot: 'L-24117', delay_days: 21 };
   const plan = await q(user, 'consolidation_plan', { lane: 'Stuttgart -> Lyon (FR)', ship_on: '2026-10-08' });
   const ship = plan.filter((x) => x.decision === 'consolidate').map((x) => x.shipment_id);
   expect('SH-77001..3 consolidate', JSON.stringify(ship) === '["SH-77001","SH-77002","SH-77003"]', ship);
+  // The inbound groupage lane: 18 pallets consolidate on 2026-10-13 (IN-55101 and IN-55102).
+  const inbound = await tryQ(user, 'consolidation_plan', { lane: 'Gdansk -> Stuttgart (inbound groupage)', ship_on: '2026-10-13' });
+  if (inbound) {
+    const pallets = inbound.filter((x) => x.decision === 'consolidate').reduce((n, x) => n + Number(x.pallets), 0);
+    expect('18 inbound pallets consolidate', pallets === 18, inbound);
+  } else console.error('s2d: WARNING the inbound lane is not in this version of the seed');
+  const rec = await tryQ(user, 'recovery_plan', { material: 'CB-7', delay_days: 21, qty_needed: 1160 });
+  if (rec) {
+    const picked = rec.filter((x) => x.chosen && Number(x.use_qty) > 0).map((x) => `${x.option_id}:${x.use_qty}`).sort();
+    expect('the optimizer picks the 250 reallocation and the 910 expedite', JSON.stringify(picked) === '["partial-expedite:910","realloc-wh-mid:250"]', picked);
+    expect('at EUR 3,150', rec.reduce((n, x) => n + Number(x.cost_eur), 0) === 3150, rec);
+  } else console.error('s2d: WARNING the optimizer pages are not loaded (no anofox_optimize extension): the stories use the plain options');
+  const trucks = await tryQ(user, 'consolidation_trucks', { lane: 'Stuttgart -> Lyon (FR)', ship_on: '2026-10-08' });
+  if (trucks) expect('one truck and EUR 1,140 saved', Number(trucks[0].trucks_needed) === 1 && Number(trucks[0].lane_saving_eur) === 1140, trucks);
   const w640 = (await q(user, 'ltb_whatif', { part: 'SP-3307', qty: 640 }))[0];
   const w400 = (await q(user, 'ltb_whatif', { part: 'SP-3307', qty: 400 }))[0];
   expect('640 covers the lifetime, 400 does not', Number(w640.probability_covers_lifetime) >= 0.94 && Number(w400.probability_covers_lifetime) < 0.2, [w640, w400]);
@@ -136,14 +160,25 @@ await agentRun('supplier_exception', mailEv, resPage, async (agent) => {
   await q(agent, 'resolution_options', { material: 'CB-7', delay_days: 21, qty_needed: 1160 });
   const late = orders.filter((o) => o.status === 'late');
   const penalty = Number(summaryRow.penalty_exposure_eur);
-  const recommended = 'Reallocate 250 from the Central Europe warehouse, expedite 910 from the supplier';
+  // The cheapest combination that covers every late unit, solved exactly by the optimizer when it is loaded.
+  const rec = await tryQ(agent, 'recovery_plan', { material: 'CB-7', delay_days: 21, qty_needed: 1160 });
+  const chosen = rec?.filter((x) => x.chosen && Number(x.use_qty) > 0);
+  const recommended = chosen
+    ? chosen.map((x) => `${x.source} ${x.use_qty}`).join(' + ')
+    : 'Reallocate 250 from the Central Europe warehouse, expedite 910 from the supplier';
+  const estCost = chosen ? chosen.reduce((n, x) => n + Number(x.cost_eur), 0) : 3150;
+  const proposalTable = chosen
+    ? table(chosen.map((x) => ({ ...x, lead: `${x.lead_days} days`, cost: `EUR ${Number(x.cost_eur).toLocaleString('en-US')}` })),
+        [['source', 'Option'], ['use_qty', 'Units'], ['lead', 'Lead time'], ['cost', 'Cost'], ['risk', 'Risk']])
+    : '| Option | Units | Lead time | Cost | Risk |\n|---|---|---|---|---|\n| Reallocate from the Central Europe warehouse | 250 | 2 days | EUR 1,050 | low |\n| Partial expedite at the supplier | 910 | 8 days | EUR 2,100 | medium |';
+  const method = chosen ? 'Chosen by an exact optimisation (the cheapest combination that covers every late unit). ' : '';
   const resolution =
     frontmatter('instance', 'exception_resolution', 'res-l-24117', {
       status: 'approved', exception: 'l-24117', supplier: 'baltic-components', lot: 'L-24117', material: 'CB-7',
       delay_days: 21, orders_late: late.length, penalty_exposure_eur: penalty, qty_needed: 1160,
-      recommended_option: recommended, est_cost_eur: 3150, risk: 'medium',
+      recommended_option: recommended, est_cost_eur: estCost, risk: 'medium',
     }) +
-    `# Resolution for lot L-24117\n\n${NOTE}\n\n## Situation\n\nLot L-24117 (controller board CB-7) arrives ${DELAY.delay_days} days late. Of the ${orders.length} customer orders it feeds, ${late.length} go late (${late.map((o) => `${o.days_late} days`).join(', ')}); ${orders.length - late.length} absorb the delay.\n\n## Proposal\n\n| Option | Units | Lead time | Cost | Risk |\n|---|---|---|---|---|\n| Reallocate from the Central Europe warehouse | 250 | 2 days | EUR 1,050 | low |\n| Partial expedite at the supplier | 910 | 8 days | EUR 2,100 | medium |\n\nTogether 1,160 units: every late order is covered. Estimated cost EUR 3,150 against a penalty exposure of EUR ${penalty.toLocaleString('en-US')}.\n\n## Changes on approval\n\n- Split the purchase order: 910 units expedited.\n- Transfer 250 units from the Central Europe warehouse.\n- Keep the promised delivery dates of the late orders.\n\nApproving records the decision for execution. Nothing in the planning or ERP system is changed by this page.\n`;
+    `# Resolution for lot L-24117\n\n${NOTE}\n\n## Situation\n\nLot L-24117 (controller board CB-7) arrives ${DELAY.delay_days} days late. Of the ${orders.length} customer orders it feeds, ${late.length} go late (${late.map((o) => `${o.days_late} days`).join(', ')}); ${orders.length - late.length} absorb the delay.\n\n## Proposal\n\n${proposalTable}\n\n${method}Together 1,160 units: every late order is covered. Estimated cost EUR ${estCost.toLocaleString('en-US')} against a penalty exposure of EUR ${penalty.toLocaleString('en-US')}.\n\n## Changes on approval\n\n- Split the purchase order: 910 units expedited.\n- Transfer 250 units from the Central Europe warehouse.\n- Keep the promised delivery dates of the late orders.\n- The expedited part can join the inbound groupage from Gdansk to Stuttgart on 2026-10-13 (18 of 33 pallets are booked).\n\nApproving records the decision for execution. Nothing in the planning or ERP system is changed by this page.\n`;
   // ONE changeset holds both pages, so approving it records the decision AND resolves the exception.
   const first = await call(agent, 'create_draft', { target_page_id: resPage, content: resolution, new_changeset: true, event_id: mailEv.event_id });
   await call(agent, 'create_draft', { target_page_id: excPage, content: exceptionDoc('resolved'), base_sha256: excHead.content_sha256, changeset_id: first.changeset_id ?? first.draft?.changeset_id, event_id: mailEv.event_id });
@@ -160,7 +195,9 @@ await agentRun('transport_plan', tpMail, tpPage, async (agent) => {
   const together = plan.filter((x) => x.decision === 'consolidate');
   const kept = plan.filter((x) => x.decision !== 'consolidate');
   const pallets = together.reduce((n, x) => n + Number(x.pallets), 0);
-  const saving = Number(together[0]?.lane_saving_eur ?? 0);
+  // Packed into trucks by the optimizer, when it is loaded.
+  const trucks = await tryQ(agent, 'consolidation_trucks', { lane: 'Stuttgart -> Lyon (FR)', ship_on: '2026-10-08' });
+  const saving = Number(trucks?.[0]?.lane_saving_eur ?? together[0]?.lane_saving_eur ?? 0);
   const held = Number(together[0]?.held_pallets_total ?? 0);
   const planCols = [['shipment_id', 'Shipment'], ['customer', 'Customer'], ['planned_ship_date', 'Planned'], ['ship_on', 'Ships together on'], ['delivery_duty_date', 'Delivery duty'], ['pallets', 'Pallets']];
   const doc =
@@ -168,7 +205,7 @@ await agentRun('transport_plan', tpMail, tpPage, async (agent) => {
       status: 'approved', lane: 'Stuttgart -> Lyon (FR)', ship_on: '2026-10-08', shipments: together.map((x) => x.shipment_id),
       pallets, held_pallets: held, saving_eur: saving,
     }) +
-    `# Consolidation: Stuttgart to Lyon, Thursday 2026-10-08\n\n${NOTE}\n\n## Plan\n\n${table(together, planCols)}\n\n## Not consolidated\n\n${kept.map((x) => `- ${x.shipment_id} (${x.customer}): ${x.decision}`).join('\n')}\n\n## Checks\n\n- Every delivery duty of the consolidated shipments is met.\n- The ${held} held pallets fit the ${together[0]?.free_pallet_slots ?? held} free shelf slots at the destination.\n\nApproving records the plan for execution; the carrier booking is a separate step.\n`;
+    `# Consolidation: Stuttgart to Lyon, Thursday 2026-10-08\n\n${NOTE}\n\n## Plan\n\n${table(together, planCols)}\n\n## Not consolidated\n\n${kept.map((x) => `- ${x.shipment_id} (${x.customer}): ${x.decision}`).join('\n')}\n\n## Checks\n\n- Every delivery duty of the consolidated shipments is met.\n${trucks ? `- Packed by an optimiser into ${trucks[0].trucks_needed} truck(s): EUR ${saving.toLocaleString('en-US')} saved against sending them separately.\n` : ''}- The ${held} held pallets fit the ${together[0]?.free_pallet_slots ?? held} free shelf slots at the destination.\n\nApproving records the plan for execution; the carrier booking is a separate step.\n`;
   await call(agent, 'create_draft', { target_page_id: tpPage, content: doc, new_changeset: true, event_id: tpMail.event_id });
   return `Checked ${plan.length} shipments on the lane and proposed shipping ${together.length} together.`;
 });
