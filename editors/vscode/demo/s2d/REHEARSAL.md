@@ -36,12 +36,12 @@ steps.
    the delay. (Say: "12 orders depend on this lot, 4 of them go late.")
 3. **Awaiting you** > "res-l-24117 +1 — Proposed changes": two pages in ONE proposal: the resolution and the
    exception. Open it to review the diff: the proposal table is two options, **250 units from the Central
-   Europe warehouse (2 days, low risk, EUR 1,050)** and **910 units expedited at the supplier (8 days,
-   medium risk, EUR 2,100)**: together the 1,160 units on late orders, EUR 3,150 against 132,400. With
+   Europe warehouse (2 days, low risk, EUR 1,050)** and **740 units expedited at the supplier (8 days,
+   medium risk, EUR 2,100)**: together the 990 units on late orders, EUR 3,150 against 132,400. With
    the optimizer loaded the text says the combination was chosen by an exact optimisation (the cheapest
    that covers every late unit). **Preview the proposal** (the first button of the review editor) shows it
    as a formatted page next to the source. The expedited part can join the inbound groupage Gdansk to
-   Stuttgart on 2026-10-13 (18 of 33 pallets booked).
+   Stuttgart on 2026-10-12 (18 pallets consolidate).
 4. **Approve** (the check mark on the Awaiting row). "Applied 2 changes": the resolution is recorded as
    approved and the exception shows **resolved**, together. The open record updates at once.
 5. Optional: the thread behind it (Open thread / Open run): the mail, the run of the agent, what it read.
