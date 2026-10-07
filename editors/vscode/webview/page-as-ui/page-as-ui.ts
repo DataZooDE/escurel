@@ -325,6 +325,16 @@ export class EscurelPageAsUi extends LitElement {
         color: var(--escurel-muted);
         margin: 2px 0 8px;
       }
+      .report th,
+      .report td {
+        text-align: left;
+        padding: 4px 10px;
+        border-bottom: 1px solid var(--vscode-widget-border, var(--vscode-panel-border));
+      }
+      .report th {
+        color: var(--escurel-muted);
+        font-weight: 600;
+      }
       /* On a narrow page a row would run off the edge: each row becomes a small card, a column's name
          above its value, laid out as many to a line as fit. */
       @container (max-width: 760px) {
@@ -354,16 +364,6 @@ export class EscurelPageAsUi extends LitElement {
           color: var(--escurel-muted);
           font-size: 0.85em;
         }
-      }
-      .report th,
-      .report td {
-        text-align: left;
-        padding: 4px 10px;
-        border-bottom: 1px solid var(--vscode-widget-border, var(--vscode-panel-border));
-      }
-      .report th {
-        color: var(--escurel-muted);
-        font-weight: 600;
       }
       .thread-strip {
         display: flex;
