@@ -9,5 +9,16 @@ export default {
   plugins: [
     esbuildPlugin({ ts: true, json: true, target: 'es2022', tsconfig: 'tsconfig.webview.json' }),
   ],
-  browsers: [playwrightLauncher({ product: 'chromium' })],
+  // On a machine where Playwright's own Chromium never delivers an animation frame (seen with a wedged
+  // GPU driver: `requestAnimationFrame` callbacks never run, so every test that awaits one times out),
+  // ESCUREL_WTR_CHROME points the runner at an installed Chrome. Unset, nothing changes: CI uses the
+  // bundled browser.
+  browsers: [
+    playwrightLauncher({
+      product: 'chromium',
+      ...(process.env.ESCUREL_WTR_CHROME
+        ? { launchOptions: { executablePath: process.env.ESCUREL_WTR_CHROME } }
+        : {}),
+    }),
+  ],
 };
