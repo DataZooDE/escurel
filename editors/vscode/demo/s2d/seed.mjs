@@ -17,7 +17,14 @@ const gw = JSON.parse(readFileSync(gatewayFile, 'utf8').split('\n')[0]);
 const user = JSON.parse(readFileSync(bearerFile, 'utf8')).bearer;
 const admin = gw.admin_bearer;
 
+// An agent thinks between its calls: the scripted agents pause a moment before each call, so a run's trace has a
+// realistic spread (the gateway keeps a call's time to the second; calls made back to back would all share one).
+const agentTokens = new Set();
+const AGENT_PAUSE_MS = Number(process.env.ESCUREL_DEMO_AGENT_PAUSE_MS ?? 1100);
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
 async function call(token, name, args) {
+  if (agentTokens.has(token)) await sleep(AGENT_PAUSE_MS);
   const res = await fetch(`${gw.gateway_url}/mcp`, {
     method: 'POST',
     headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
@@ -269,6 +276,7 @@ async function agentRun(skill, event, targetPage, work) {
     ttl_secs: 14400,
   });
   const agent = run.token;
+  agentTokens.add(agent);
   const summary = await work(agent);
   await call(admin, 'capture_event', {
     event_id: `run:${run.run_id}:finished`,
