@@ -147,7 +147,8 @@ RUN --mount=type=cache,target=/build/target \
     cargo build --release -p escurel-test-support --bin escurel-test-gateway \
     && cp target/release/escurel-test-gateway /usr/local/bin/escurel-test-gateway
 
-FROM debian:bookworm-slim AS demo-gateway
+# trixie, not bookworm: the optimizer extension is built against a newer glibc (GLIBC_2.38) than bookworm ships (2.36).
+FROM debian:trixie-slim AS demo-gateway
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates curl libstdc++6 \
     && rm -rf /var/lib/apt/lists/*

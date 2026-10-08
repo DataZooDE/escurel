@@ -9,19 +9,14 @@
 #               trace, the proposals held for a planner). It listens on a random loopback port; the forwarder
 #               in demo-services makes it reachable as escurel:8080. Still compose-network only.
 #   runner      MINTED mode (a token per run), in the gateway's network namespace.
-#   demo-story  plays the story, then loads the S2D demo (from S2D_DIR, built on the host by s2d/sync.sh).
-#   workbench   reads a USER bearer (never the admin bearer or the signing key) from a read-only volume, so the
-#               extension is signed in without anyone typing a token.
+#   demo-services  also plays the story and loads the S2D demo (from S2D_DIR, built on the host by s2d/sync.sh)
+#               whenever the gateway is new (a fresh test gateway starts empty).
+#   demo-services  also runs the front door: a reverse proxy escurel:8080 that signs every call in as the demo USER,
+#               so the extension runs in its plain "no token" mode and no credential ever enters the workbench.
 # The S2D dir and the optimizer extension's directory are bind-mounted READ-ONLY at their host paths, so the
 # parquet relations written by sync.sh resolve unchanged inside the containers.
 
 services:
-  workbench:
-    environment:
-      WORKBENCH_BEARER_FILE: /bearer-pub/bearer.json
-    volumes:
-      - bearer-pub:/bearer-pub:ro
-
   escurel:
     build:
       target: demo-gateway
@@ -43,14 +38,11 @@ services:
       retries: 20
     volumes:
       - ../../editors/vscode/demo/web:/demo-scripts:ro
-      - bearer-pub:/bearer-pub
       - "${S2D_DIR}:${S2D_DIR}:ro"
       - "${S2D_EXT_DIR:?run s2d-up.sh}:${S2D_EXT_DIR}:ro"
 
   demo-init:
     command: !override ["sh", "/demo-scripts/init-s2d.sh"]
-    volumes:
-      - bearer-pub:/bearer-pub
 
   runner:
     network_mode: "service:escurel"
@@ -68,12 +60,21 @@ services:
       retries: 30
 
   demo-services:
+    # The outside systems, the forwarder, and the story: a loop that plays the story (and loads the S2D demo)
+    # whenever the gateway is new, because a fresh gateway starts EMPTY (its data lives in its container). So a
+    # restart of the gateway replays the demo by itself. The story is idempotent per gateway (a marker file).
     command: !override
       - sh
       - -c
-      - "node /demo-src/services/ratings-api.mjs 9101 & node /demo-src/services/confirmations-mcp.mjs 9102 & node /demo-scripts/forward.mjs 8080 /demo/state/gateway.json & wait"
+      - "node /demo-src/services/ratings-api.mjs 9101 & node /demo-src/services/confirmations-mcp.mjs 9102 & node /demo-scripts/forward.mjs 8080 /demo/state/gateway.json /demo/state/bearer.json & while true; do [ -f /demo/state/story.done ] || sh /demo-scripts/story-s2d.sh || echo 'story failed; trying again in a minute'; sleep 20; done"
+    environment:
+      S2D_DIR: "${S2D_DIR}"
+    volumes:
+      - "${S2D_DIR}:${S2D_DIR}:ro"
 
+  # Not used here: demo-services plays the story (above). Kept out of `up` by a profile.
   demo-story:
+    profiles: ["manual"]
     network_mode: "service:escurel"
     networks: !reset []
     command: !override ["sh", "/demo-scripts/story-s2d.sh"]
@@ -83,5 +84,3 @@ services:
       - "${S2D_DIR}:${S2D_DIR}:ro"
     restart: "no"
 
-volumes:
-  bearer-pub:

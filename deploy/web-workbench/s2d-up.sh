@@ -52,20 +52,17 @@ export S2D_INDEX_EXT S2D_EXT_DIR S2D_ALLOW_UNSIGNED
 
 cd "$HERE"
 echo "s2d-up: rebuilding the gateway side from scratch (the workbench's own data is kept)"
-"${COMPOSE[@]}" rm -sf escurel runner demo-init demo-services demo-story >/dev/null 2>&1 || true
-for v in demo-data bearer-pub runner-data escurel-data; do docker volume rm -f "${PROJECT}_$v" >/dev/null 2>&1 || true; done
+"${COMPOSE[@]}" rm -sf escurel runner demo-init demo-services >/dev/null 2>&1 || true
+for v in demo-data runner-data escurel-data; do docker volume rm -f "${PROJECT}_$v" >/dev/null 2>&1 || true; done
 "${COMPOSE[@]}" up --build -d
 
 echo "s2d-up: waiting for the workbench and for the story to be played (the first build can take long) ..."
 deadline=$(( $(date +%s) + ${S2D_UP_TIMEOUT_SECS:-1500} ))
 while :; do
-  story="$("${COMPOSE[@]}" ps -a demo-story --format '{{.State}} {{.ExitCode}}' 2>/dev/null | head -1)"
-  wb="$("${COMPOSE[@]}" ps workbench --format '{{.Health}}' 2>/dev/null | head -1)"
-  case "$story" in
-    "exited 0") echo "s2d-up: story played; workbench $wb"; break ;;
-    exited*) echo "s2d-up: the story container failed ($story); see: ${COMPOSE[*]} logs demo-story" >&2; exit 1 ;;
-  esac
-  [ "$(date +%s)" -lt "$deadline" ] || { echo "s2d-up: timed out (story: ${story:-none}, workbench: ${wb:-none})" >&2; exit 1; }
+  if "${COMPOSE[@]}" exec -T demo-services test -f /demo/state/story.done 2>/dev/null; then
+    echo "s2d-up: story played"; break
+  fi
+  [ "$(date +%s)" -lt "$deadline" ] || { echo "s2d-up: timed out waiting for the story; see: ${COMPOSE[*]} logs demo-services" >&2; exit 1; }
   sleep 5
 done
 "${COMPOSE[@]}" ps --format 'table {{.Name}}\t{{.State}}\t{{.Health}}'
