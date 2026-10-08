@@ -1,0 +1,86 @@
+# The Source-to-Deliver (S2D) demo behind the web workbench. Use it through `s2d-up.sh` (which prepares the S2D
+# data on the host and sets the variables below); the base compose.yaml stays generic.
+#
+#   cd deploy/web-workbench && ./s2d-up.sh
+#
+# What changes against compose.yaml
+#   escurel     the demo gateway: escurel-test-gateway (escurel-server + a built-in token issuer), because the
+#               demo needs a gateway that VERIFIES tokens and can tell which run wrote what (the thread, the run
+#               trace, the proposals held for a planner). It listens on a random loopback port; the forwarder
+#               in demo-services makes it reachable as escurel:8080. Still compose-network only.
+#   runner      MINTED mode (a token per run), in the gateway's network namespace.
+#   demo-services  also plays the story and loads the S2D demo (from S2D_DIR, built on the host by s2d/sync.sh)
+#               whenever the gateway is new (a fresh test gateway starts empty).
+#   demo-services  also runs the front door: a reverse proxy escurel:8080 that signs every call in as the demo USER,
+#               so the extension runs in its plain "no token" mode and no credential ever enters the workbench.
+# The S2D dir and the optimizer extension's directory are bind-mounted READ-ONLY at their host paths, so the
+# parquet relations written by sync.sh resolve unchanged inside the containers.
+
+services:
+  escurel:
+    build:
+      target: demo-gateway
+    image: escurel-demo-gateway:s2d
+    entrypoint: !override ["sh", "/demo-scripts/s2d-gateway.sh"]
+    environment: !override
+      ESCUREL_EGRESS_ALLOW_LOOPBACK: "1"
+      ESCUREL_SECRET_FILE_DIRS: /demo/secrets
+      ESCUREL_SQL_FILE_DIRS: "/demo/sqlite:/demo/sources:${S2D_DIR:?run s2d-up.sh}/data"
+      ESCUREL_INDEX_EXTENSIONS: "${S2D_INDEX_EXT:-}"
+      ESCUREL_ALLOW_UNSIGNED_EXTENSIONS: "${S2D_ALLOW_UNSIGNED:-false}"
+    healthcheck: !override
+      test:
+        - CMD-SHELL
+        - 'p=$$(sed -n "s/.*\"gateway_url\":\"http:\/\/127.0.0.1:\([0-9]*\)\".*/\1/p" /demo/state/gateway.json | head -1); [ -n "$$p" ] && curl -fsS "http://127.0.0.1:$$p/healthz"'
+      interval: 10s
+      timeout: 3s
+      start_period: 60s
+      retries: 20
+    volumes:
+      - ../../editors/vscode/demo/web:/demo-scripts:ro
+      - "${S2D_DIR}:${S2D_DIR}:ro"
+      - "${S2D_EXT_DIR:?run s2d-up.sh}:${S2D_EXT_DIR}:ro"
+
+  demo-init:
+    command: !override ["sh", "/demo-scripts/init-s2d.sh"]
+
+  runner:
+    network_mode: "service:escurel"
+    networks: !reset []
+    entrypoint: !override ["sh", "/demo-scripts/runner-s2d.sh"]
+    environment: !override {}
+    volumes:
+      - demo-data:/demo:ro
+      - ../../editors/vscode/demo/web:/demo-scripts:ro
+    healthcheck: !override
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8088/healthz"]
+      interval: 10s
+      timeout: 3s
+      start_period: 30s
+      retries: 30
+
+  demo-services:
+    # The outside systems, the forwarder, and the story: a loop that plays the story (and loads the S2D demo)
+    # whenever the gateway is new, because a fresh gateway starts EMPTY (its data lives in its container). So a
+    # restart of the gateway replays the demo by itself. The story is idempotent per gateway (a marker file).
+    command: !override
+      - sh
+      - -c
+      - "node /demo-src/services/ratings-api.mjs 9101 & node /demo-src/services/confirmations-mcp.mjs 9102 & node /demo-scripts/forward.mjs 8080 /demo/state/gateway.json /demo/state/bearer.json & while true; do [ -f /demo/state/story.done ] || sh /demo-scripts/story-s2d.sh || echo 'story failed; trying again in a minute'; sleep 20; done"
+    environment:
+      S2D_DIR: "${S2D_DIR}"
+    volumes:
+      - "${S2D_DIR}:${S2D_DIR}:ro"
+
+  # Not used here: demo-services plays the story (above). Kept out of `up` by a profile.
+  demo-story:
+    profiles: ["manual"]
+    network_mode: "service:escurel"
+    networks: !reset []
+    command: !override ["sh", "/demo-scripts/story-s2d.sh"]
+    environment:
+      S2D_DIR: "${S2D_DIR}"
+    volumes:
+      - "${S2D_DIR}:${S2D_DIR}:ro"
+    restart: "no"
+

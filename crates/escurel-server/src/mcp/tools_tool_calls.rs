@@ -101,7 +101,7 @@ pub(super) async fn tool_get_run_tool_calls(
         .calls
         .iter()
         .map(|c| {
-            json!({
+            let mut row = json!({
                 "seq": c.seq,
                 "tool": c.tool,
                 "status": c.status,
@@ -111,7 +111,15 @@ pub(super) async fn tool_get_run_tool_calls(
                 "response_bytes": c.response_bytes,
                 "subject": c.subject,
                 "at": c.at,
-            })
+            });
+            // Present only when the gateway recorded them (`ESCUREL_TOOLCALL_DETAIL=summary`).
+            if let Some(a) = &c.args_summary {
+                row["args_summary"] = json!(a);
+            }
+            if let Some(r) = &c.result_summary {
+                row["result_summary"] = json!(r);
+            }
+            row
         })
         .collect();
     Ok(json!({ "run_id": a.run_id, "calls": calls, "next_after": page.next_after }))

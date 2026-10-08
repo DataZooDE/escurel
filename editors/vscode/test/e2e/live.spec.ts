@@ -8,6 +8,8 @@ import { chooseMenuItem, knowledgeRow, openRow, pane, skillRow } from './helpers
 // One window for the whole file, played in order: each scenario leaves the stack as the next one can
 // use it. Every one asserts what a person would SEE and leaves a screenshot in artifacts/ for a human
 // to look at, because "the assertion passed" says nothing about whether it looks right.
+// Its own window: the Evolve files before it leave plans and runs behind that change what this file counts.
+test.use({ suite: 'live' });
 test.describe.configure({ mode: 'serial' });
 
 test('the story is on screen: knowledge, threads, awaiting, inbox and the runner', async ({
@@ -132,6 +134,10 @@ test('run detail opens from the canvas with its plan and tool calls', async ({ s
   // Plain words, and the 26-character id stays behind Copy run id.
   await expect(run.locator('escurel-run-detail .meta')).toContainText('Run by the');
   await expect(run.getByRole('button', { name: 'Copy run id' })).toBeVisible();
+  // The gateway kept what the agent's calls asked and got back; opening a step shows it.
+  await run.locator('escurel-run-detail .tool-call summary').first().click();
+  await expect(run.locator('escurel-run-detail .call-detail').first()).toContainText('Asked');
+  await expect(run.locator('escurel-run-detail .call-detail').first()).toContainText('Got back');
   await stack.shot('05-run-detail');
 });
 
@@ -383,6 +389,8 @@ test('a SQL-view page previews the rows the source holds, read-only, under its f
   const wv = await webviewWith(page, 'escurel-source-preview');
   const preview = wv.locator('escurel-page-as-ui escurel-source-preview');
   await expect(preview.locator('.badge')).toContainText('read-only (source)');
+  // The tab says what the page is, not the URI's last segment (`all.md`).
+  await expect(page.locator('.tab.active .label-name')).toContainText('order-lines · all');
   // The rows come from the real gateway's `expand` (the sql_view over the JSON extract).
   await expect(preview.locator('thead th')).toContainText(['order_id', 'item', 'customer']);
   await expect(preview.locator('tbody tr')).toHaveCount(6);
@@ -730,8 +738,8 @@ test('when the portal is down a promoted change is refused, recorded as failed, 
   // change did not go through. It keeps the page; it does not go blank or show a stack trace.
   // Its tab is still open; the tree cannot list a dead source's rows, so the person goes back to it.
   // (Switching away and back is what reloads a page; it is already the active tab.)
-  await page.getByRole('tab', { name: /^stahl-ag\.md/ }).click();
-  await page.getByRole('tab', { name: /^nordform\.md/ }).click();
+  await page.getByRole('tab', { name: /^supplier-rating · stahl-ag/ }).click();
+  await page.getByRole('tab', { name: /^supplier-rating · nordform/ }).click();
   const down = await webviewWith(page, 'escurel-page-as-ui', 'nordform');
   await expect(down.locator('.source-strip')).toBeVisible({ timeout: 20_000 });
   await expect(down.locator('.source-strip.problem')).toBeVisible();
@@ -938,6 +946,7 @@ test('a skill opens as a readable page, and Show Markdown opens its source', asy
   await chooseMenuItem(page, 'View skill');
   const wv = await webviewWith(page, 'escurel-skill-page');
   await expect(wv.locator('escurel-skill-page h1')).toContainText(/supplier/i);
+  await expect(page.locator('.tab.active .label-name')).toContainText('Skill · supplier-risk');
   for (const heading of ['About', 'What it can start', 'Recent runs']) {
     await expect(wv.getByRole('heading', { name: new RegExp(`^${heading}`) })).toBeVisible();
   }

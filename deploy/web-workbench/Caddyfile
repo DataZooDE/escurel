@@ -1,0 +1,9 @@
+{$WORKBENCH_DOMAIN} {
+	# code-server speaks WebSockets on the same port; Caddy proxies them without extra configuration.
+	reverse_proxy workbench:8080
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options nosniff
+		Referrer-Policy no-referrer
+	}
+}

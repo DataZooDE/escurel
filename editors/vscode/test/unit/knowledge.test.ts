@@ -14,6 +14,20 @@ const skills = (
 ).result.structuredContent.skills;
 const customer = skills.find((s) => s.id === 'customer')!;
 
+describe('knowledge model: a skill reads by its title', () => {
+  it('shows the OKF title when the skill has one, and the id when it does not', () => {
+    expect(skillRow({ ...customer, id: 'supplier_exception', title: 'Supplier exception' }).label).toBe(
+      'Supplier exception',
+    );
+    expect(skillRow({ ...customer, id: 'supplier_exception', title: undefined }).label).toBe(
+      'supplier_exception',
+    );
+  });
+  it('cleans a title that carries control characters', () => {
+    expect(skillRow({ ...customer, title: 'Orders\u202eevil' }).label).toBe('Ordersevil');
+  });
+});
+
 describe('knowledge model', () => {
   it("a skill row: id as label, description, chips in the mock's order (autonomy, event-typed, backend, layer, shadows)", () => {
     const row = skillRow({

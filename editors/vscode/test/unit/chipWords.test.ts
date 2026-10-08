@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { chipWords } from '../../src/thread/chipWords';
+import { chipTone, chipWords } from '../../src/thread/chipWords';
 
 describe('chipWords', () => {
   it('gives every state a short word and a shape, never the wire word', () => {
@@ -11,5 +11,23 @@ describe('chipWords', () => {
   });
   it('shows an unknown state as sent, without an icon', () => {
     expect(chipWords('on_hold')).toEqual({ text: 'on hold', icon: 'none' });
+  });
+});
+
+describe('chipTone', () => {
+  it.each([
+    ['processed', 'ok'],
+    ['promoted', 'ok'],
+    ['failed', 'bad'],
+    ['dead_letter', 'bad'],
+    ['cancelled', 'bad'],
+    ['discarded', 'bad'],
+    ['inbox', 'wait'],
+    ['open', 'wait'],
+    ['planned', 'wait'],
+    ['running', 'wait'],
+    ['something_new', 'neutral'],
+  ])('%s is %s, so a failed card does not look like a finished one', (state, tone) => {
+    expect(chipTone(state)).toBe(tone);
   });
 });

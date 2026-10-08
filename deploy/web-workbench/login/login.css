@@ -1,0 +1,54 @@
+.login-form {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.login-form > .user {
+  display: none;
+}
+
+.login-form > .label {
+  color: var(--w-fg);
+}
+
+.login-form > .field {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  width: 100%;
+}
+
+.login-form > .field > .password {
+  background-color: var(--vscode-input-background);
+  border: 1px solid var(--vscode-input-border);
+  border-radius: 2px;
+  box-sizing: border-box;
+  color: var(--vscode-input-foreground);
+  padding: 5px 8px;
+  width: 100%;
+}
+
+.login-form > .field > .password:focus {
+  border-color: var(--vscode-focusBorder);
+  outline: 1px solid var(--vscode-focusBorder);
+  outline-offset: -1px;
+}
+
+.login-form > .field > .submit {
+  width: 100%;
+}
+
+.login-form > .error {
+  background: color-mix(in srgb, var(--vscode-errorForeground) 10%, transparent);
+  border: 1px solid color-mix(in srgb, var(--vscode-errorForeground) 55%, transparent);
+  border-radius: 2px;
+  color: var(--vscode-errorForeground);
+  margin-top: 8px;
+  padding: 6px 8px;
+}
+
+input {
+  -webkit-appearance: none;
+  appearance: none;
+}

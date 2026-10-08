@@ -1,0 +1,148 @@
+# Escurel web workbench + a full demo behind it: ONE command, one URL.
+#
+#   cd deploy/web-workbench
+#   cp .env.example .env            # then set WORKBENCH_PASSWORD (the stack refuses to start without it)
+#   docker compose up --build -d
+#   open http://localhost:8080       # log in with the password
+#
+# What runs
+#   workbench  VS Code in the browser (code-server) + the Escurel extension, locked down. The ONLY service
+#              with a published port. Its extension host talks to the gateway on the compose network.
+#   escurel    the gateway (repo Dockerfile). UNAUTHENTICATED on purpose, because it is only reachable from
+#              this compose network: the workbench's password is the access control. Do not publish it.
+#   runner     the agent runner with the echo harness (a stand-in that folds a signal into a page).
+#   demo-services  a REST ratings API and an MCP confirmations server, sharing the gateway's network
+#              namespace (they listen on its loopback, which is why the demo gateway allows loopback egress).
+#   demo-init / demo-story   one-shot jobs: lay out the demo data, then play the story into the gateway.
+#
+# For a real deployment point the workbench at your own gateway instead (see docs/deploy/web-workbench.md):
+# remove everything but `workbench`, set WORKBENCH_GATEWAY_URL (+ WORKBENCH_AUTH_ISSUER/CLIENT_ID for sign-in) and put
+# TLS in front (compose.proxy.yaml is a Caddy example).
+
+name: escurel-web
+
+x-demo-node: &demo-node
+  image: node:24-bookworm-slim
+  volumes:
+    - demo-data:/demo
+    - ../../editors/vscode/demo:/demo-src:ro
+    - ../../editors/vscode/demo/web:/demo-scripts:ro
+
+services:
+  workbench:
+    build:
+      context: ../..
+      dockerfile: deploy/web-workbench/Dockerfile
+    restart: on-failure:3
+    environment:
+      # Required. At least 12 characters, no placeholder: the entrypoint refuses to start otherwise.
+      # Prefer HASHED_PASSWORD (an argon2 hash) over a plain PASSWORD; set one of them in .env.
+      PASSWORD: ${WORKBENCH_PASSWORD:-}
+      HASHED_PASSWORD: ${WORKBENCH_HASHED_PASSWORD:-}
+      # Shortest accepted plain PASSWORD (default 12, floor 8). Lowering it weakens the one gate.
+      MIN_PASSWORD_LENGTH: ${WORKBENCH_MIN_PASSWORD_LENGTH:-12}
+      WORKBENCH_WELCOME_TEXT: ${WORKBENCH_WELCOME_TEXT:-Sign in to Escurel}
+      WORKBENCH_GATEWAY_URL: http://escurel:8080
+      CODE_SERVER_TRUSTED_ORIGINS: ${WORKBENCH_TRUSTED_ORIGINS:-}
+    ports:
+      - "${WORKBENCH_BIND:-127.0.0.1}:${WORKBENCH_PORT:-8080}:8080"
+    depends_on:
+      escurel: { condition: service_healthy }
+    # Lock-down (docs/deploy/web-workbench.md § Security model).
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    tmpfs:
+      - /tmp
+      - /home/coder/.config:uid=1000,gid=1000
+      - /home/coder/workspace:uid=1000,gid=1000
+    volumes:
+      - workbench-data:/home/coder/data
+    mem_limit: 2g
+    pids_limit: 512
+    networks: [internal]
+
+  escurel:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      ESCUREL_TENANT: demo
+      ESCUREL_SEED_DIR: /demo/seed
+      ESCUREL_EMBEDDING_PROVIDER: zero
+      ESCUREL_EMBEDDING_DIM: "768"
+      # No ESCUREL_AUTH_OIDC_ISSUER: unauthenticated, compose-network only (the workbench's password is the gate).
+      # Everyone is then the same anonymous caller, so the per-instance write ACL has nobody to enforce against.
+      ESCUREL_WRITE_ACL: "off"
+      # The demo's REST and MCP servers listen on THIS container's loopback (shared network namespace).
+      ESCUREL_EGRESS_ALLOW_LOOPBACK: "1"
+      ESCUREL_SECRET_FILE_DIRS: /demo/secrets
+      ESCUREL_SQL_FILE_DIRS: /demo/sqlite:/demo/sources
+    volumes:
+      - escurel-data:/data
+      - demo-data:/demo
+    depends_on:
+      demo-init: { condition: service_completed_successfully }
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/healthz"]
+      interval: 10s
+      timeout: 3s
+      start_period: 30s
+      retries: 10
+    stop_grace_period: 30s
+    networks: [internal]
+
+  runner:
+    build:
+      context: ../..
+      dockerfile: Dockerfile.runner
+    restart: unless-stopped
+    environment:
+      ESCUREL_RUNNER_GATEWAY_URL: http://escurel:8080
+      ESCUREL_RUNNER_TENANT: demo
+      # The gateway runs without a verifier, so the token is not checked; the runner wants one set.
+      ESCUREL_RUNNER_TOKEN: unauthenticated-demo
+      ESCUREL_RUNNER_HARNESS: echo
+      ESCUREL_RUNNER_POLL_INTERVAL: 500ms
+      ESCUREL_RUNNER_LEDGER_PATH: /data/ledger.duckdb
+    volumes:
+      - runner-data:/data
+    depends_on:
+      escurel: { condition: service_healthy }
+    networks: [internal]
+
+  demo-init:
+    <<: *demo-node
+    user: "0:0"
+    command: ["sh", "/demo-scripts/init.sh"]
+    networks: [internal]
+
+  demo-services:
+    <<: *demo-node
+    # Same network namespace as the gateway: the services bind 127.0.0.1 and the gateway reaches them there.
+    network_mode: "service:escurel"
+    restart: unless-stopped
+    command:
+      - sh
+      - -c
+      - "node /demo-src/services/ratings-api.mjs 9101 & node /demo-src/services/confirmations-mcp.mjs 9102 & wait"
+    depends_on:
+      escurel: { condition: service_healthy }
+
+  demo-story:
+    <<: *demo-node
+    command: ["sh", "/demo-scripts/story.sh"]
+    depends_on:
+      runner: { condition: service_started }
+      demo-services: { condition: service_started }
+    networks: [internal]
+
+networks:
+  internal: {}
+
+volumes:
+  workbench-data:
+  escurel-data:
+  runner-data:
+  demo-data:

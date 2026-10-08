@@ -2058,6 +2058,7 @@ impl EscurelConfig {
             // deploy without a config-file change.
             write_acl: crate::WriteAclMode::from_env(),
             event_acl: crate::EventAclMode::from_env(),
+            toolcall_detail: crate::ToolcallDetailMode::from_env(),
             // Skill-page `autonomy:` lint (`ESCUREL_AUTONOMY_LINT`): off
             // (default) | log | enforce. Same env-only rollout, for the same
             // reason — refusing writes over a field that has been free-form

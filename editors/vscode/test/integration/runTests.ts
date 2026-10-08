@@ -130,6 +130,11 @@ function corpusSeed(repo: string, root: string): string {
  */
 const VSCODE_VERSION = process.env.ESCUREL_VSCODE_VERSION ?? '1.139.1';
 
+/** Extra VS Code arguments for a machine that needs them (`ESCUREL_TEST_EXTRA_LAUNCH_ARGS=--disable-gpu`); none by default. */
+function extraLaunchArgs(): string[] {
+  return (process.env.ESCUREL_TEST_EXTRA_LAUNCH_ARGS ?? '').split(/\s+/).filter(Boolean);
+}
+
 async function main(): Promise<void> {
   const root = resolve(__dirname, '..', '..', '..');
   const repo = resolve(root, '..', '..');
@@ -158,6 +163,7 @@ async function main(): Promise<void> {
         ...workspaceArgs(corpus.url),
         '--disable-extensions',
         '--disable-workspace-trust',
+        ...extraLaunchArgs(),
       ],
       extensionTestsEnv: { ESCUREL_TEST_GATEWAY: corpus.url, ESCUREL_TEST_GREP: grep },
     });
@@ -216,6 +222,7 @@ async function main(): Promise<void> {
         ...workspaceArgs(info?.gateway_url ?? 'http://127.0.0.1:1'),
         '--disable-extensions',
         '--disable-workspace-trust',
+        ...extraLaunchArgs(),
       ],
       extensionTestsEnv: {
         ESCUREL_TEST_GATEWAY: info?.gateway_url ?? '',
@@ -267,6 +274,7 @@ async function main(): Promise<void> {
         ...workspaceArgs(info?.gateway_url ?? 'http://127.0.0.1:1'),
         '--disable-extensions',
         '--disable-workspace-trust',
+        ...extraLaunchArgs(),
       ],
       extensionTestsEnv: {
         ESCUREL_TEST_GATEWAY: info?.gateway_url ?? '',

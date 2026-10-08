@@ -88,53 +88,85 @@ el.model =
           ],
         },
       }
-    : variant === 'row'
-      ? { ...base, source: rowSource }
-      : variant === 'external'
-        ? {
-            ...base,
-            source: { ...rowSource, external: 'REST', etag: 'w1:abc', writableColumns: ['status'] },
-            writeBack: {
-              outcome: 'applied',
-              at: '2026-10-03T12:05:00.000000Z',
-              draftId: 'd1',
-              attempts: 1,
-            },
-          }
-        : variant === 'external-down-blank'
+    : variant === 'report'
+      ? {
+          // A record whose skill names a report: the figures it draws for THIS record (KPIs, a table).
+          ...base,
+          viewer: { report: 'exception-impact-report' },
+          report: {
+            title: 'Impact of a supplier delay',
+            chartsNote: true as const,
+            views: [
+              { kind: 'kpi' as const, label: 'Orders late', value: '4' },
+              { kind: 'kpi' as const, label: 'Penalty exposure (EUR)', value: '132,400' },
+              {
+                kind: 'table' as const,
+                columns: ['Customer order', 'Customer', 'Days late', 'Status', 'Penalty (EUR)'],
+                rows: [
+                  ['CO-310045', 'Automotive OEM, plant south', '18', 'late', '81,000'],
+                  ['CO-310052', 'Tier-1 brake systems supplier', '13', 'late', '28,600'],
+                  ['CO-310061', 'Agricultural machinery OEM', '9', 'late', '10,800'],
+                  ['CO-310066', 'Rail vehicle OEM', '4', 'late', '12,000'],
+                  ['CO-310070', 'Distributor France', '0', 'absorbed', '0'],
+                ],
+                more: 7,
+                constants: [['Free pallet slots', '14']],
+              },
+            ],
+          },
+        }
+      : variant === 'row'
+        ? { ...base, source: rowSource }
+        : variant === 'external'
           ? {
-              // The real shape of a page whose source did not answer: NO source column is known and
-              // every source field is blank. Each shows a dash, never a blank row or an empty pill.
               ...base,
-              fields: base.fields.map((f) => ({ ...f, value: undefined, display: '' })),
               source: {
-                fetchedAt: '2026-10-03T12:03:44.000000Z',
-                sourceFields: [],
-                linked: { enabled: true, exists: false, orphan: false },
-                external: 'REST' as const,
-                issue: {
-                  code: 'source_unavailable',
-                  message: 'the source could not be reached right now; its values show as —',
-                },
+                ...rowSource,
+                external: 'REST',
+                etag: 'w1:abc',
+                writableColumns: ['status'],
+              },
+              writeBack: {
+                outcome: 'applied',
+                at: '2026-10-03T12:05:00.000000Z',
+                draftId: 'd1',
+                attempts: 1,
               },
             }
-          : variant === 'external-down'
+          : variant === 'external-down-blank'
             ? {
+                // The real shape of a page whose source did not answer: NO source column is known and
+                // every source field is blank. Each shows a dash, never a blank row or an empty pill.
                 ...base,
+                fields: base.fields.map((f) => ({ ...f, value: undefined, display: '' })),
                 source: {
-                  ...rowSource,
-                  external: 'MCP',
+                  fetchedAt: '2026-10-03T12:03:44.000000Z',
+                  sourceFields: [],
+                  linked: { enabled: true, exists: false, orphan: false },
+                  external: 'REST' as const,
                   issue: {
                     code: 'source_unavailable',
-                    message:
-                      'the source could not be reached right now (transport error); showing what is known',
+                    message: 'the source could not be reached right now; its values show as —',
                   },
                 },
-                writeBack: {
-                  outcome: 'failed',
-                  at: '2026-10-03T12:05:00.000000Z',
-                  draftId: 'd1',
-                  attempts: 0,
-                },
               }
-            : base;
+            : variant === 'external-down'
+              ? {
+                  ...base,
+                  source: {
+                    ...rowSource,
+                    external: 'MCP',
+                    issue: {
+                      code: 'source_unavailable',
+                      message:
+                        'the source could not be reached right now (transport error); showing what is known',
+                    },
+                  },
+                  writeBack: {
+                    outcome: 'failed',
+                    at: '2026-10-03T12:05:00.000000Z',
+                    draftId: 'd1',
+                    attempts: 0,
+                  },
+                }
+              : base;

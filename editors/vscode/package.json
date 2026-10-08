@@ -20,6 +20,10 @@
   "main": "./dist/extension.js",
   "activationEvents": [
     "onAuthenticationRequest:escurel",
+    "onCommand:escurel.focusMode.enter",
+    "onCommand:escurel.focusMode.exit",
+    "onCommand:escurel.focusMode.toggle",
+    "onCommand:escurel.openOverview",
     "onCommand:escurel.search",
     "onCommand:escurel.showDetails",
     "onCommand:escurel.showRunner",
@@ -88,6 +92,11 @@
       }
     },
     "commands": [
+      {
+        "command": "escurel.reviewPreview",
+        "title": "Preview the proposal",
+        "icon": "$(open-preview)"
+      },
       {
         "command": "escurel.signIn",
         "title": "Sign in",
@@ -431,6 +440,35 @@
         "title": "New scenario comparison",
         "category": "Escurel",
         "icon": "$(add)"
+      },
+      {
+        "command": "escurel.previewQuery",
+        "title": "Preview with parameters…",
+        "category": "Escurel",
+        "icon": "$(play)"
+      },
+      {
+        "command": "escurel.openOverview",
+        "title": "Open overview",
+        "category": "Escurel",
+        "icon": "$(home)"
+      },
+      {
+        "command": "escurel.focusMode.enter",
+        "title": "Switch to focus view",
+        "category": "Escurel",
+        "icon": "$(eye)"
+      },
+      {
+        "command": "escurel.focusMode.exit",
+        "title": "Leave focus view",
+        "category": "Escurel",
+        "icon": "$(eye-closed)"
+      },
+      {
+        "command": "escurel.focusMode.toggle",
+        "title": "Toggle focus view",
+        "category": "Escurel"
       }
     ],
     "authentication": [
@@ -486,7 +524,8 @@
           "id": "escurel.scenarios",
           "name": "Scenarios",
           "contextualTitle": "Escurel",
-          "initialSize": 2
+          "initialSize": 2,
+          "when": "!escurel.hideScenarios"
         },
         {
           "id": "escurel.inbox",
@@ -662,6 +701,10 @@
           "when": "escurel.connected"
         },
         {
+          "command": "escurel.reviewPreview",
+          "when": "resourceScheme == escurel-review"
+        },
+        {
           "command": "escurel.promote",
           "when": "resourceScheme == escurel-review"
         },
@@ -744,6 +787,14 @@
         {
           "command": "escurel.scenarios.compare",
           "when": "false"
+        },
+        {
+          "command": "escurel.focusMode.enter",
+          "when": "!escurel.focusMode"
+        },
+        {
+          "command": "escurel.focusMode.exit",
+          "when": "escurel.focusMode"
         }
       ],
       "view/title": [
@@ -836,6 +887,21 @@
           "command": "escurel.scenarios.refresh",
           "when": "view == escurel.scenarios",
           "group": "navigation@1"
+        },
+        {
+          "command": "escurel.openOverview",
+          "when": "view == escurel.knowledge",
+          "group": "navigation@0"
+        },
+        {
+          "command": "escurel.focusMode.enter",
+          "when": "view == escurel.knowledge && !escurel.focusMode",
+          "group": "navigation@8"
+        },
+        {
+          "command": "escurel.focusMode.exit",
+          "when": "view == escurel.knowledge && escurel.focusMode",
+          "group": "navigation@8"
         }
       ],
       "view/item/context": [
@@ -1018,9 +1084,24 @@
           "command": "escurel.runs.forPage",
           "when": "view == escurel.knowledge && viewItem == instance",
           "group": "3_trace@3"
+        },
+        {
+          "command": "escurel.previewQuery",
+          "when": "view == escurel.knowledge && viewItem == instance.query",
+          "group": "navigation@1"
+        },
+        {
+          "command": "escurel.previewQuery",
+          "when": "view == escurel.knowledge && viewItem == instance.query",
+          "group": "inline@1"
         }
       ],
       "editor/title": [
+        {
+          "command": "escurel.reviewPreview",
+          "when": "resourceScheme == escurel-review",
+          "group": "navigation@0"
+        },
         {
           "command": "escurel.showRaw",
           "when": "resourceScheme == escurel && (activeCustomEditorId == escurel.pageAsUi || activeCustomEditorId == escurel.skillPage)",
@@ -1182,6 +1263,13 @@
         "command": "escurel.focusKnowledge",
         "key": "ctrl+alt+k",
         "mac": "cmd+alt+k"
+      }
+    ],
+    "themes": [
+      {
+        "label": "Escurel Calm",
+        "uiTheme": "vs",
+        "path": "./themes/escurel-calm-color-theme.json"
       }
     ]
   },

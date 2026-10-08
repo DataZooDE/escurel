@@ -4,6 +4,15 @@ The skill version tracks the consumer-facing contract, not the Escurel
 binary version. The Escurel repo's checked-out git ref is the true version
 pin (see `SKILL.md` → "How this skill is installed").
 
+## 0.18.0 — run tool calls keep what was asked and what came back
+
+- `get_run_tool_calls` rows gain `args_summary` and `result_summary` (additive, optional): a bounded (2 KB),
+  redacted summary of the call's arguments and of its result or failure reason. Identifying values are kept,
+  content bodies become sizes, credentials are removed by key and by pattern. Absent when the gateway runs
+  with `ESCUREL_TOOLCALL_DETAIL=off` (default `summary`; an unrecognised value means `off`) and for calls
+  recorded before this release. Readable by whoever may read the run, as before.
+  See `references/02-tool-surface.md` and `references/11-event-driven-agents.md`.
+
 ## 0.17.1 — `ESCUREL_WRITE_ACL` defaults to `enforce` (BREAKING behaviour)
 
 - **The per-instance write ACL is ON by default.** Unset (or an unrecognised value) now means `enforce`: only the

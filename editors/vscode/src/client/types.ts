@@ -339,6 +339,10 @@ export interface RunToolCall {
   response_bytes: number;
   subject: string;
   at: string;
+  /** A bounded, redacted summary of what was asked; absent when the gateway kept none. */
+  args_summary?: string | null;
+  /** The same for the result, or the failure's reason. */
+  result_summary?: string | null;
 }
 
 export interface GetRunToolCallsResponse {
@@ -353,6 +357,18 @@ export interface MintAgentTokenRequest {
   target_page_id?: string;
   ttl_secs?: number;
   trace_id?: string;
+}
+
+export interface QueryInstanceRequest {
+  /** A query id or its `[[query::id]]` wikilink. */
+  ref: string;
+  /** Values bound to the query's `:param` placeholders (never interpolated into SQL). */
+  params?: Record<string, string | number | boolean>;
+}
+
+/** The rows a stored query returned. The gateway names the list `rows`. */
+export interface QueryInstanceResponse {
+  rows?: Array<Record<string, unknown>>;
 }
 
 export interface MintAgentTokenResponse {

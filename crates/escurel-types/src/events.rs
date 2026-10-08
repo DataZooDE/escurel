@@ -211,6 +211,19 @@ pub struct RunToolCall {
     pub response_bytes: u64,
     pub subject: String,
     pub at: String,
+    /// A bounded, redacted summary of the arguments (`None` = not recorded: older calls, or
+    /// the gateway runs with `ESCUREL_TOOLCALL_DETAIL=off`).
+    #[serde(
+        deserialize_with = "null_as_default",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub args_summary: Option<String>,
+    /// A bounded, redacted summary of the result, or of the failure's reason.
+    #[serde(
+        deserialize_with = "null_as_default",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub result_summary: Option<String>,
 }
 
 /// `get_run_tool_calls` result.

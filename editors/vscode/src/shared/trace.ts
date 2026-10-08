@@ -50,6 +50,27 @@ export function toolWords(tool: string): string {
 export const TRACE_RECORDED_NOTE =
   'The gateway records the size and timing of each call, not its arguments or its result.';
 
+/** When the gateway kept a summary of what each call asked and got back. */
+export const TRACE_DETAIL_NOTE =
+  'Open a step to see what it asked and what came back. Both are shortened, and credentials are removed.';
+
+/** The note under the trace heading: which of the two the gateway recorded for these calls. */
+export function traceNote(calls: readonly ToolCallRow[]): string {
+  return calls.some((c) => c.argsSummary || c.resultSummary)
+    ? TRACE_DETAIL_NOTE
+    : TRACE_RECORDED_NOTE;
+}
+
+/** A summary for reading: pretty-printed when it is whole JSON, as written when it was cut. */
+export function readableSummary(summary: string | undefined): string {
+  if (!summary) return '';
+  try {
+    return JSON.stringify(JSON.parse(summary), null, 2);
+  } catch {
+    return summary;
+  }
+}
+
 export interface TraceRow {
   seq: number;
   tool: string;
@@ -65,18 +86,139 @@ export interface TraceRow {
   duration: string;
   /** 0-100, the call's duration against the slowest call of the run. */
   barPercent: number;
+  /** 0-100, where the call began on the run's time axis (0 when the run has no usable times). */
+  leftPercent: number;
+  /** 0-100, how much of the axis the call took; never so thin that it disappears. */
+  widthPercent: number;
   sizes: string;
+  /** What the call asked, readable; empty when the gateway kept none. */
+  args: string;
+  /** What came back (or why it failed), readable; empty when the gateway kept none. */
+  result: string;
+}
+
+/** A tick or an end of the axis in the unit a person reads: "0", "250 ms", "1.5 s", "1 min 30 s". */
+export function axisLabel(ms: number): string {
+  if (ms <= 0) return '0';
+  if (ms < 1000) return `${Math.round(ms)} ms`;
+  if (ms < 60_000) return `${Math.round(ms / 100) / 10} s`;
+  const whole = Math.round(ms / 1000);
+  const min = Math.floor(whole / 60);
+  const sec = whole % 60;
+  return sec === 0 ? `${min} min` : `${min} min ${sec} s`;
+}
+
+export interface TraceAxis {
+  /** From the run's start (or its first call) to the end of its last call. */
+  totalMs: number;
+  /** Round marks along the span, the first at 0. */
+  ticks: { percent: number; label: string }[];
+  endLabel: string;
+}
+
+const MIN_BAR_PERCENT = 1;
+const MAX_TICK_PERCENT = 90;
+const TICK_STEPS_MS = [
+  1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10_000, 15_000, 30_000, 60_000, 120_000,
+  300_000, 600_000, 1_800_000, 3_600_000,
+];
+
+interface Span {
+  zero: number;
+  totalMs: number;
+}
+
+/**
+ * A run start further than this before its first call is not "the run took that long to begin": it is a clock
+ * that is off (a zone-less time read as UTC puts it hours away) or a run that was claimed long before it
+ * worked. The axis then starts at the first call instead of stretching over empty time.
+ */
+const FAR_START_MS = 10_000;
+const FAR_START_FACTOR = 5;
+
+/** The call start times, or undefined when there are no calls or one has no usable time. */
+function callStarts(calls: readonly ToolCallRow[]): number[] | undefined {
+  const starts = calls.map((c) => parseGatewayTime(c.at)?.getTime());
+  if (calls.length === 0 || starts.some((t) => t === undefined)) return undefined;
+  return starts as number[];
+}
+
+/** Every call carries one and the same time (the gateway keeps seconds): no scale can be drawn from that. */
+function sharedTime(starts: readonly number[]): boolean {
+  return starts.length > 1 && starts.every((t) => t === starts[0]);
+}
+
+/** Where the time axis begins: the run start, unless it lies far before the first call. */
+function traceZero(
+  starts: readonly number[],
+  calls: readonly ToolCallRow[],
+  startedAt: string | undefined,
+): number {
+  const first = Math.min(...starts);
+  const runStart = parseGatewayTime(startedAt)?.getTime();
+  if (runStart === undefined || runStart >= first) return first;
+  const end = Math.max(...calls.map((c, i) => (starts[i] as number) + c.durationMs));
+  const lag = first - runStart;
+  return lag > Math.max(FAR_START_MS, (end - first) * FAR_START_FACTOR) ? first : runStart;
+}
+
+/** The span the calls cover; undefined when no call carries a usable time or all share one. */
+function traceSpan(calls: readonly ToolCallRow[], startedAt: string | undefined): Span | undefined {
+  const starts = callStarts(calls);
+  if (!starts || sharedTime(starts)) return undefined;
+  const zero = traceZero(starts, calls, startedAt);
+  const end = Math.max(...calls.map((c, i) => (starts[i] as number) + c.durationMs));
+  return { zero, totalMs: Math.max(end - zero, 1) };
+}
+
+/** One line for a trace whose calls all share one time (no axis to draw), else undefined. */
+export function traceSameTimeNote(calls: readonly ToolCallRow[]): string | undefined {
+  const starts = callStarts(calls);
+  return starts && sharedTime(starts)
+    ? `All ${calls.length} steps ran within the same second.`
+    : undefined;
+}
+
+/** The time axis above a run's calls: how long the run took and round marks along it. */
+export function traceAxis(
+  calls: readonly ToolCallRow[],
+  startedAt: string | undefined,
+): TraceAxis | undefined {
+  const span = traceSpan(calls, startedAt);
+  if (!span) return undefined;
+  const step = TICK_STEPS_MS.find((s) => span.totalMs / s <= 5) ?? TICK_STEPS_MS.at(-1)!;
+  const ticks: TraceAxis['ticks'] = [];
+  // A mark close to the right end would sit on top of the end label.
+  for (let t = 0; t <= span.totalMs; t += step) {
+    const percent = (t / span.totalMs) * 100;
+    if (percent <= MAX_TICK_PERCENT) ticks.push({ percent, label: axisLabel(t) });
+  }
+  return { totalMs: span.totalMs, ticks, endLabel: axisLabel(span.totalMs) };
 }
 
 export function traceTimeline(
   calls: readonly ToolCallRow[],
   startedAt: string | undefined,
 ): TraceRow[] {
-  const start = parseGatewayTime(startedAt)?.getTime();
+  const starts = callStarts(calls);
+  // Offsets count from the same origin as the axis: the run start, or the first call when that is far away.
+  const runStart = parseGatewayTime(startedAt)?.getTime();
+  const start =
+    runStart !== undefined && starts && !sharedTime(starts)
+      ? traceZero(starts, calls, startedAt)
+      : runStart;
   const slowest = calls.reduce((m, c) => Math.max(m, c.durationMs), 0);
+  const span = traceSpan(calls, startedAt);
   return calls.map((c) => {
     const at = parseGatewayTime(c.at)?.getTime();
     const failed = c.status === 'error' || c.status === 'rejected';
+    const barPercent = slowest > 0 ? Math.round((c.durationMs / slowest) * 100) : 0;
+    let leftPercent = 0;
+    let widthPercent = barPercent;
+    if (span && at !== undefined) {
+      widthPercent = Math.min(100, Math.max((c.durationMs / span.totalMs) * 100, MIN_BAR_PERCENT));
+      leftPercent = Math.min(((at - span.zero) / span.totalMs) * 100, 100 - widthPercent);
+    }
     return {
       seq: c.seq,
       tool: c.tool,
@@ -89,8 +231,12 @@ export function traceTimeline(
           ? `+${callDuration(Math.max(0, at - start))}`.replace('+< 1 ms', '+0 ms')
           : '',
       duration: callDuration(c.durationMs),
-      barPercent: slowest > 0 ? Math.round((c.durationMs / slowest) * 100) : 0,
+      barPercent,
+      leftPercent,
+      widthPercent,
       sizes: `sent ${formatBytes(c.bytes.request)} · received ${formatBytes(c.bytes.response)}`,
+      args: readableSummary(c.argsSummary),
+      result: readableSummary(c.resultSummary),
     };
   });
 }

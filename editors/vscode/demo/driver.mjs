@@ -73,7 +73,7 @@ async function uploadDocument(title, text, eventId) {
   return body.page_id;
 }
 
-async function until(what, f, ms = 120_000) {
+async function until(what, f, ms = Number(process.env.ESCUREL_DEMO_WAIT_MS ?? 120_000)) {
   const end = Date.now() + ms;
   for (;;) {
     const v = await f();

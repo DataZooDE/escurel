@@ -35,3 +35,14 @@ test('run detail trace', async ({ page }, testInfo) => {
     fullPage: true,
   });
 });
+
+// What a step asked and what came back, opened on the first and the failed step.
+test('run detail trace with what each call asked and got back', async ({ page }, testInfo) => {
+  const theme = (testInfo.project.metadata as { theme: string }).theme;
+  await page.goto(`/test/visual/harness/run.html?theme=${theme}&state=trace-detail`);
+  await page.locator('escurel-run-detail .call-detail').first().waitFor();
+  await expect(page).toHaveScreenshot('run-detail-trace-detail.png', {
+    maxDiffPixelRatio: 0.01,
+    fullPage: true,
+  });
+});

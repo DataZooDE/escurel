@@ -1,0 +1,13 @@
+{
+  "name": "escurel-web-bootstrap",
+  "displayName": "Escurel web workbench bootstrap",
+  "description": "Opens the Escurel views and the Overview board when the web workbench loads. Carries no credentials.",
+  "publisher": "datazoo",
+  "version": "0.0.1",
+  "license": "UNLICENSED",
+  "private": true,
+  "engines": { "vscode": "^1.104.0" },
+  "main": "./extension.js",
+  "activationEvents": ["onStartupFinished"],
+  "extensionDependencies": ["datazoo.escurel"]
+}

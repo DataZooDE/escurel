@@ -789,8 +789,10 @@ pub(crate) fn tool_defs() -> Vec<ToolDef> {
             Scope::Agent,
             Touches::shared(Surface::Events),
             "A run's `/mcp` calls, oldest first: tool, ok/error (+ error_code), \
-                 duration_ms, request/response bytes, subject, at. Paged by `after` \
-                 (a call's `seq`). A run you may not read, or none, answers empty.",
+                 duration_ms, request/response bytes, subject, at, and \
+                 `args_summary` / `result_summary` (what was asked and what came back: bounded, \
+                 secrets redacted; absent when the operator turned detail off). Paged by \
+                 `after` (a call's `seq`). A run you may not read, or none, answers empty.",
             json!({
                 "type": "object",
                 "required": ["run_id"],

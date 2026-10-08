@@ -1,0 +1,164 @@
+/* The Escurel skin for code-server's own pages (login, error): the page is built from the SAME `--vscode-*`
+   colour names the extension's webviews use, so it reads as part of the Calm-themed window that opens after
+   sign-in (flat surfaces, 1px borders, 13px UI font, 2px control radius, the Calm teal accent).
+   The tokens above this line are generated (gen-global-css.mjs); only the layout lives here. The CSP of these
+   pages is `style-src 'self'`: no inline styles, no external fonts. */
+:root {
+  /* VS Code's own webview font settings (a workbench on Linux/web uses the system UI font at 13px). */
+  --vscode-font-family: system-ui, "Segoe UI", "Ubuntu", "Droid Sans", sans-serif;
+  --vscode-font-size: 13px;
+
+  /* Short names for the colours the pages use. */
+  --w-bg: var(--vscode-editor-background);
+  --w-fg: var(--vscode-foreground);
+  --w-muted: var(--vscode-descriptionForeground);
+  --w-widget-bg: var(--vscode-editorWidget-background, var(--vscode-sideBar-background));
+  --w-border: var(--vscode-widget-border);
+  --w-titlebar-bg: var(--vscode-titleBar-activeBackground, var(--vscode-sideBar-background));
+  --w-titlebar-fg: var(--vscode-titleBar-activeForeground, var(--vscode-foreground));
+  --w-titlebar-border: var(--vscode-titleBar-border, var(--vscode-widget-border));
+  --w-accent: var(--vscode-activityBar-foreground, var(--vscode-focusBorder));
+  --w-btn-border: var(--vscode-button-border, var(--vscode-button-background));
+  --w-btn-hover: var(
+    --vscode-button-hoverBackground,
+    color-mix(in srgb, var(--vscode-button-background) 85%, black)
+  );
+  --w-link-hover: var(--vscode-textLink-activeForeground, var(--vscode-textLink-foreground));
+  --w-shadow: 0 0 8px 2px rgba(0, 0, 0, 0.14);
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  width: 100%;
+}
+
+body {
+  background: var(--w-bg);
+  color: var(--w-fg);
+  display: flex;
+  flex-direction: column;
+  font-family: var(--vscode-font-family);
+  font-size: var(--vscode-font-size);
+  line-height: 1.4;
+  margin: 0;
+  min-width: 320px;
+  overflow: auto;
+}
+
+input,
+button {
+  font-family: inherit;
+  font-size: inherit;
+  line-height: 18px;
+}
+
+a {
+  color: var(--vscode-textLink-foreground);
+}
+
+a:hover {
+  color: var(--w-link-hover);
+}
+
+/* The window title bar, as in the app: Escurel's glyph and name centred on the title-bar surface. */
+.titlebar {
+  align-items: center;
+  background: var(--w-titlebar-bg);
+  border-bottom: 1px solid var(--w-titlebar-border);
+  box-sizing: border-box;
+  color: var(--w-titlebar-fg);
+  display: flex;
+  flex: none;
+  gap: 8px;
+  height: 35px;
+  justify-content: center;
+}
+
+.titlebar > svg {
+  color: var(--w-accent);
+  height: 16px;
+  width: 16px;
+}
+
+.-button {
+  background-color: var(--vscode-button-background);
+  border: 1px solid var(--w-btn-border);
+  border-radius: 2px;
+  box-sizing: border-box;
+  color: var(--vscode-button-foreground);
+  cursor: pointer;
+  padding: 5px 12px;
+  text-align: center;
+  text-decoration: none;
+}
+
+.-button:hover {
+  background-color: var(--w-btn-hover);
+  border-color: var(--w-btn-hover);
+}
+
+.-button:focus-visible {
+  outline: 1px solid var(--vscode-focusBorder);
+  outline-offset: 2px;
+}
+
+.center-container {
+  align-items: center;
+  box-sizing: border-box;
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  justify-content: center;
+  padding: 24px 16px 64px;
+  width: 100%;
+}
+
+/* A centred workbench widget, like the quick pick: widget surface, 1px widget border, soft shadow. */
+.card-box {
+  background-color: var(--w-widget-bg);
+  border: 1px solid var(--w-border);
+  border-radius: 6px;
+  box-shadow: var(--w-shadow);
+  box-sizing: border-box;
+  max-width: 360px;
+  width: 100%;
+}
+
+.card-box > .header {
+  padding: 24px 24px 0;
+}
+
+.card-box > .header > .brand {
+  display: none; /* the title bar above carries the name */
+}
+
+.card-box > .header > .main {
+  font-size: 20px;
+  font-weight: 400;
+  line-height: 1.25;
+  margin: 0;
+}
+
+.card-box > .header > .sub {
+  color: var(--w-muted);
+  margin-top: 6px;
+}
+
+.card-box > .content {
+  padding: 20px 24px 24px;
+}
+
+.card-box > .content > .none {
+  margin: 2px 0;
+}
+
+.card-box + .card-box {
+  margin-top: 24px;
+}
+
+canvas {
+  top: 0;
+  left: 0;
+}

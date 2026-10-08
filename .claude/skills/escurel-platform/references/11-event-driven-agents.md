@@ -435,8 +435,14 @@ Every `/mcp` call made with a run-bound bearer — the runner's per-run
 agent token, or one from `mint_agent_token` — is recorded on the gateway
 in `run_tool_calls`: the tool, its status — `ok`, `rejected` (the gateway
 answered `ok: false`, e.g. a refused write) or `error` (a JSON-RPC error,
-with its `data.code`) — duration, request and response sizes in bytes (never the
-payloads), the subject and the time. An ordinary bearer records nothing.
+with its `data.code`) — duration, request and response sizes in bytes, the subject
+and the time, plus (`ESCUREL_TOOLCALL_DETAIL=summary`, the default) `args_summary` and
+`result_summary`: a bounded (2 KB), redacted summary of what was asked and what came
+back or why it failed — identifying values (page ids, skills, filters) are kept,
+content bodies are reduced to a size, and credentials are removed by key name
+(`*token*`, `*secret*`, `*password*`, `authorization`, …) and by pattern (`Bearer …`,
+JWTs). `ESCUREL_TOOLCALL_DETAIL=off` records sizes only. Whoever may read the run may
+read its summaries. An ordinary bearer records nothing.
 Rows live as long as the run's record does. Read them with
 `get_run_tool_calls { run_id, limit?, after? }` — oldest first, `after` =
 the last `seq` seen; a run you may not read (its `run-started` is the

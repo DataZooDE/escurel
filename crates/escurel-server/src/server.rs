@@ -133,6 +133,39 @@ impl EventAclMode {
     }
 }
 
+/// What the gateway records of a run's tool calls beyond sizes and timing
+/// (`ESCUREL_TOOLCALL_DETAIL`).
+///
+/// `summary` (the default) stores a BOUNDED, REDACTED summary of each call's
+/// arguments and result with the call row, so a run's trace can answer "what
+/// did the agent ask, and what did it get back". `off` stores nothing but the
+/// sizes, as before. The summary is only ever readable by someone who may read
+/// the run (`get_run_tool_calls` already gates on that).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ToolcallDetailMode {
+    /// Record a bounded, redacted args/result summary per call.
+    #[default]
+    Summary,
+    /// Record sizes and timing only.
+    Off,
+}
+
+impl ToolcallDetailMode {
+    /// Parse `ESCUREL_TOOLCALL_DETAIL` (`summary` | `off`). Unset → `summary`;
+    /// an unrecognised value → `off`, because the safe reading of a value the
+    /// operator meant as a restriction is to record less, never more.
+    #[must_use]
+    pub fn from_env() -> Self {
+        match std::env::var("ESCUREL_TOOLCALL_DETAIL") {
+            Err(_) => Self::Summary,
+            Ok(v) => match v.trim().to_ascii_lowercase().as_str() {
+                "" | "summary" => Self::Summary,
+                _ => Self::Off,
+            },
+        }
+    }
+}
+
 /// Enforcement mode for the skill-page `autonomy:` lint
 /// (`ESCUREL_AUTONOMY_LINT`).
 ///
@@ -185,6 +218,9 @@ pub struct ServerConfig {
     /// Per-event ACL enforcement mode for the event bus
     /// (`ESCUREL_EVENT_ACL`).
     pub event_acl: EventAclMode,
+    /// What a run's recorded tool calls keep beyond sizes
+    /// (`ESCUREL_TOOLCALL_DETAIL`).
+    pub toolcall_detail: ToolcallDetailMode,
     /// Write-time enforcement mode for the `autonomy:` lint
     /// (`ESCUREL_AUTONOMY_LINT`).
     pub autonomy_lint: AutonomyLintMode,
@@ -444,6 +480,7 @@ pub const DEFAULT_SHUTDOWN_DRAIN: std::time::Duration = std::time::Duration::fro
 pub(crate) struct AppState {
     pub(crate) write_acl: WriteAclMode,
     pub(crate) event_acl: EventAclMode,
+    pub(crate) toolcall_detail: ToolcallDetailMode,
     pub(crate) autonomy_lint: AutonomyLintMode,
     pub(crate) egress: Arc<crate::egress::Egress>,
     pub(crate) version: String,
@@ -575,6 +612,7 @@ pub async fn serve(
     let state = AppState {
         write_acl: config.write_acl,
         event_acl: config.event_acl,
+        toolcall_detail: config.toolcall_detail,
         autonomy_lint: config.autonomy_lint,
         egress: Arc::new(
             crate::egress::Egress::new(config.egress.clone())

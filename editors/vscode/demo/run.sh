@@ -76,6 +76,49 @@ fi
 # one instance per row, no materialise step (the view is created on first read).
 sed -i "s|@VBAK_DIR@|$HERE/sources/vbak|" "$HOME_DIR/seed/skills/customer-order.md"
 sed -i "s|@LFA1_DIR@|$HERE/sources/lfa1|" "$HOME_DIR/seed/skills/supplier.md"
+# With the S2D demo the query pages are the METHODS behind its numbers (the teaser opens one): they sit under
+# logistics, where the story is, not under plumbing.
+if [ "${ESCUREL_DEMO_S2D:-1}" = "1" ]; then
+  sed -i 's|^folder: plumbing$|folder: logistics/methods|; s|^title: Query$|title: Methods|' "$HOME_DIR/seed/skills/query.md"
+fi
+
+# A DuckDB extension is built for ONE DuckDB version. The gateway links libduckdb.so: the copy the build
+# downloaded for the version it is pinned to (target/duckdb-download/<triple>/<version>/), or whatever
+# the system has, which may be another version. When an extension is to be loaded, prefer the pinned copy
+# (override with ESCUREL_DEMO_LIBDUCKDB_DIR).
+libduckdb_dir() {
+  [ -n "${ESCUREL_DEMO_LIBDUCKDB_DIR:-}" ] && { echo "$ESCUREL_DEMO_LIBDUCKDB_DIR"; return; }
+  local d want
+  # The DuckDB version the build is pinned to, from libduckdb-sys in Cargo.lock (1.10506.0 -> 1.5.6):
+  # a target/ dir can hold older downloads too, and the first one found is not necessarily the pinned one.
+  want="$(python3 "$HERE/s2d/pinned_duckdb.py" "$REPO/Cargo.lock" 2>/dev/null || true)"
+  if [ -n "$want" ]; then
+    for d in "$(dirname "$GATEWAY_BIN")"/../duckdb-download/*/"$want"/; do
+      [ -f "${d}libduckdb.so" ] && { echo "${d%/}"; return; }
+    done
+  fi
+  for d in $(ls -d "$(dirname "$GATEWAY_BIN")"/../duckdb-download/*/*/ 2>/dev/null | sort -V -r); do
+    [ -f "${d}libduckdb.so" ] && { echo "${d%/}"; return; }
+  done
+}
+# The DuckDB version the gateway will run: the pinned copy's directory name, else what the system's
+# libduckdb.so says. Empty when it cannot be told.
+gateway_duckdb_version() {
+  local d so
+  d="$(libduckdb_dir)"
+  if [ -n "$d" ]; then basename "$d"; return; fi
+  so="$(ldd "$GATEWAY_BIN" 2>/dev/null | awk '/libduckdb/ {print $3}' | head -1)"
+  [ -n "$so" ] && strings "$so" 2>/dev/null | grep -m1 -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sed 's/^v//'
+  return 0
+}
+
+# The Source-to-Deliver (S2D) demo: data, skills and reports from the hetzner-agent-substrate seed (the
+# single source), built locally by s2d/sync.sh. ESCUREL_DEMO_S2D=0 leaves it out.
+S2D_DIR=""
+if [ "${ESCUREL_DEMO_S2D:-1}" = "1" ]; then
+  S2D_DIR="$HOME_DIR/s2d"
+  ESCUREL_DEMO_DUCKDB_VERSION="$(gateway_duckdb_version)" ESCUREL_CLI_BIN="${ESCUREL_CLI_BIN:-$REPO/target/release/escurel}" "$HERE/s2d/sync.sh" "$S2D_DIR"
+fi
 
 # Two outside systems, as real local processes on real sockets: a REST portal (supplier ratings) and
 # an MCP server (delivery confirmations). escurel reads them like any external system.
@@ -104,11 +147,34 @@ export ESCUREL_DEMO_ORDERS_DB_SECRET="$HOME_DIR/secrets/vsx/orders-db"
 # The gateway: verifies tokens, and keeps a fresh bearer in a file (a demo outlasts a token). Its
 # outbound policy is strict by default (https, public addresses only); the demo's outside systems are
 # local, so loopback is opened for THIS process only.
-ESCUREL_EGRESS_ALLOW_LOOPBACK=1 ESCUREL_SECRET_FILE_DIRS="$HOME_DIR/secrets" ESCUREL_SQL_FILE_DIRS="$HOME_DIR/sqlite:$HERE/sources" setsid nohup "$GATEWAY_BIN" --tenant vsx --seed "$HOME_DIR/seed" --subject alice \
-  --bearer-file "$HOME_DIR/bearer.json" > "$HOME_DIR/gateway.json" 2> "$HOME_DIR/gateway.log" < /dev/null &
-echo $! > "$HOME_DIR/gateway.pid"
-for _ in $(seq 1 120); do [ -s "$HOME_DIR/gateway.json" ] && break; sleep 0.5; done
-[ -s "$HOME_DIR/gateway.json" ] || { echo "the gateway printed nothing; see $HOME_DIR/gateway.log" >&2; exit 1; }
+# Extensions some S2D query pages need (see s2d/optional.py); empty unless the build is there.
+INDEX_EXT=""; [ -n "$S2D_DIR" ] && [ -s "$S2D_DIR/index-extensions" ] && INDEX_EXT="$(head -1 "$S2D_DIR/index-extensions")"
+start_gateway() {
+  local ld="${LD_LIBRARY_PATH:-}"
+  if [ -n "$INDEX_EXT" ] && [ -n "$(libduckdb_dir)" ]; then ld="$(libduckdb_dir)${ld:+:$ld}"; fi
+  LD_LIBRARY_PATH="$ld" ESCUREL_INDEX_EXTENSIONS="$INDEX_EXT" ESCUREL_EGRESS_ALLOW_LOOPBACK=1 ESCUREL_SECRET_FILE_DIRS="$HOME_DIR/secrets" ESCUREL_SQL_FILE_DIRS="$HOME_DIR/sqlite:$HERE/sources${S2D_DIR:+:$S2D_DIR/data}" setsid nohup "$GATEWAY_BIN" --tenant vsx --seed "$HOME_DIR/seed" --subject alice \
+    --bearer-file "$HOME_DIR/bearer.json" > "$HOME_DIR/gateway.json" 2> "$HOME_DIR/gateway.log" < /dev/null &
+  echo $! > "$HOME_DIR/gateway.pid"
+  for _ in $(seq 1 120); do
+    [ -s "$HOME_DIR/gateway.json" ] && return 0
+    kill -0 "$(cat "$HOME_DIR/gateway.pid")" 2>/dev/null || return 1
+    sleep 0.5
+  done
+  return 1
+}
+if ! start_gateway; then
+  # An extension built for another DuckDB version stops the gateway at boot. The optimizer pages are an
+  # extra: say so, leave them out and start again; anything else that stopped it is still an error.
+  if [ -n "$INDEX_EXT" ] && grep -q "built specifically for DuckDB" "$HOME_DIR/gateway.log" 2>/dev/null; then
+    echo "s2d: WARNING $INDEX_EXT was built for another DuckDB version than the gateway's ($(grep -o "this version of DuckDB is '[^']*'" "$HOME_DIR/gateway.log" | head -1)): leaving the optimizer pages out" >&2
+    INDEX_EXT=""
+    python3 "$HERE/s2d/optional.py" "$S2D_DIR" /nonexistent
+    rm -f "$S2D_DIR/index-extensions"
+    start_gateway || { echo "the gateway printed nothing; see $HOME_DIR/gateway.log" >&2; exit 1; }
+  else
+    echo "the gateway printed nothing; see $HOME_DIR/gateway.log" >&2; exit 1
+  fi
+fi
 
 field() { python3 -c "import json,sys; print(json.loads(open('$HOME_DIR/gateway.json').readline())['$1'])"; }
 
@@ -133,6 +199,11 @@ start_runner echo
 
 echo "playing the story (a few seconds)..."
 node "$HERE/driver.mjs" "$HOME_DIR/gateway.json" "$HOME_DIR/bearer.json" > "$HOME_DIR/story.json"
+# The S2D stories: three agent proposals waiting for a planner (see s2d/REHEARSAL.md).
+if [ -n "$S2D_DIR" ]; then
+  echo "loading the S2D demo (hetzner seed $(cat "$S2D_DIR/STAMP"))..."
+  node "$HERE/s2d/seed.mjs" "$HOME_DIR/gateway.json" "$HOME_DIR/bearer.json" "$S2D_DIR" > "$HOME_DIR/s2d-story.json"
+fi
 if [ "${ESCUREL_DEMO_RUNNER_HARNESS:-echo}" != echo ]; then
   kill "$(cat "$HOME_DIR/runner.pid")"
   for _ in $(seq 1 100); do
@@ -172,6 +243,9 @@ if [ -n "${ESCUREL_DEMO_EVOLVE_AGENT_BIN:-}" ]; then
     > "$HOME_DIR/evolve-scenarios.json" || { echo "the Evolve scenarios failed; see $HOME_DIR/evolve.log" >&2; exit 1; }
 fi
 
+# ESCUREL_DEMO_THEME: a colour theme for the window (a themed tour of every screen).
+THEME_LINE=""
+[ -n "${ESCUREL_DEMO_THEME:-}" ] && THEME_LINE="\"workbench.colorTheme\": \"$ESCUREL_DEMO_THEME\","
 cat > "$HOME_DIR/profile/User/settings.json" <<JSON
 {
   "escurel.gatewayUrl": "$(field gateway_url)",
@@ -189,12 +263,32 @@ cat > "$HOME_DIR/profile/User/settings.json" <<JSON
   "chat.disableAIFeatures": true,
   "workbench.secondarySideBar.defaultVisibility": "visible",
   "workbench.layoutControl.enabled": false,
+  $THEME_LINE
   "workbench.welcomePage.walkthroughs.openOnInstall": false
 }
 JSON
 
+# The calm window is the demo's default (ESCUREL_DEMO_FOCUS=0 keeps the classic IDE look, which is what the
+# end-to-end tests of the individual views run in). The stock Explorer / Search / Source Control / Run /
+# Extensions icons cannot be hidden by a setting: VS Code keeps which activity-bar icons are pinned in its
+# state database, so a throwaway profile is given one in which they are not. The shipped Focus mode does not
+# do this (it does not own a person's profile); it only moves the activity bar to the top.
+FOCUS="${ESCUREL_DEMO_FOCUS:-1}"
+if [ "$FOCUS" != "0" ]; then
+  mkdir -p "$HOME_DIR/profile/User/globalStorage"
+  python3 - "$HOME_DIR/profile/User/globalStorage/state.vscdb" <<'PY'
+import json, sqlite3, sys
+db = sqlite3.connect(sys.argv[1])
+db.execute("CREATE TABLE IF NOT EXISTS ItemTable (key TEXT UNIQUE ON CONFLICT REPLACE, value BLOB)")
+stock = ["explorer", "search", "scm", "debug", "remote", "extensions"]
+pins = [{"id": f"workbench.view.{v}", "pinned": False, "visible": False, "order": i} for i, v in enumerate(stock)]
+db.execute("INSERT INTO ItemTable VALUES ('workbench.activity.pinnedViewlets2', ?)", (json.dumps(pins),))
+db.commit()
+PY
+fi
+
 # The window. ESCUREL_DEMO_* tell the bootstrap extension where the bearer and the story are.
-ESCUREL_DEMO_BEARER_FILE="$HOME_DIR/bearer.json" ESCUREL_DEMO_STORY="$HOME_DIR/story.json" \
+ESCUREL_DEMO_FOCUS="$FOCUS" ESCUREL_DEMO_BEARER_FILE="$HOME_DIR/bearer.json" ESCUREL_DEMO_STORY="$HOME_DIR/story.json" \
   setsid nohup "$CODE" --user-data-dir "$HOME_DIR/profile" --extensions-dir "$HOME_DIR/ext" \
   --extensionDevelopmentPath="$EXT" --extensionDevelopmentPath="$HERE/bootstrap" \
   ${ESCUREL_DEMO_CDP_PORT:+--remote-debugging-port=$ESCUREL_DEMO_CDP_PORT} ${ESCUREL_DEMO_CODE_ARGS:-} \

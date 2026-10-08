@@ -546,6 +546,12 @@ pub const CONFIG_KEYS: &[ConfigKey] = &[
         doc: "per-event ACL on the event bus: `off` \\| `log` \\| `enforce`",
     },
     ConfigKey {
+        name: "ESCUREL_TOOLCALL_DETAIL",
+        component: "Server",
+        default: "summary",
+        doc: "what a run's recorded tool calls keep beyond sizes: `summary` (a bounded, redacted summary of each call's arguments and result, readable only by whoever may read the run) \\| `off` (sizes and timing only). An unrecognised value means `off`",
+    },
+    ConfigKey {
         name: "ESCUREL_AUTONOMY_LINT",
         component: "Server",
         default: "off",

@@ -1,3 +1,4 @@
+import type { ReportModel } from './report';
 import type { WriteBackStatus } from './writeBack';
 import type { RowSource } from './rowSource';
 // The host ↔ webview contract (SPEC §5): typed postMessage both ways.
@@ -77,6 +78,8 @@ export interface PageModel {
   thread?: ThreadStrip;
   /** The report skill that draws this skill's records (its `viewer:`), if it names one. */
   viewer?: { report: string };
+  /** The figures that report draws for THIS record (KPI and tables), when it can be shown. */
+  report?: ReportModel;
   /** Present when the page is a ROW of an `instances: rows` skill: read-only source data plus notes. */
   source?: RowSource;
   /** The last write-back to the source, from the page's `escurel:write-back` events. */
@@ -407,6 +410,10 @@ export interface ToolCallRow {
   durationMs: number;
   bytes: { request: number; response: number };
   at: string;
+  /** What the call asked, summarised and redacted by the gateway (absent when not kept). */
+  argsSummary?: string;
+  /** What came back, or why it failed, summarised and redacted by the gateway. */
+  resultSummary?: string;
 }
 
 export interface RunView {
@@ -464,3 +471,53 @@ export type RunWebviewToHost =
   | { type: 'run-control'; action: RunControlAction; runId: string; eventId?: string }
   | { type: 'view-skill'; skill: string }
   | { type: 'refresh' };
+
+// ── overview board ───────────────────────────────────────────────────
+
+/** How a line reads: needs a person, went well, or is just information. Never colour alone: the tile says it in words. */
+export type OverviewTone = 'attention' | 'ok' | 'neutral';
+
+/**
+ * One line of a tile. It names no page, run or command: `key` is only a handle the host handed out and
+ * can resolve against what it last sent, so a forged message opens nothing it did not offer.
+ */
+export interface OverviewItem {
+  key: string;
+  label: string;
+  detail?: string;
+  tone: OverviewTone;
+}
+
+export interface OverviewTile {
+  id: 'decisions' | 'agents' | 'attention' | 'open' | 'recent';
+  title: string;
+  /** The answer in a sentence: "3 waiting for you", "All clear". */
+  headline: string;
+  tone: OverviewTone;
+  items: OverviewItem[];
+  /** How many more there are than the items show. */
+  more?: number;
+  /** What to say when there are no items. */
+  empty: string;
+}
+
+export interface OverviewView {
+  tiles: OverviewTile[];
+  /** Whether the calm focus view is on (the board offers the way out, or in). */
+  focusOn: boolean;
+  /** When the board was read, as the host's clock saw it. */
+  updatedAt: string;
+}
+
+export type OverviewHostToWebview =
+  | { type: 'overview-loading' }
+  | { type: 'overview'; view: OverviewView }
+  | { type: 'overview-error'; message: string };
+
+export type OverviewWebviewToHost =
+  | { type: 'ready' }
+  | { type: 'refresh' }
+  | { type: 'open'; key: string }
+  /** The view a tile belongs to (Awaiting, Runs, Knowledge): the host maps the tile id, nothing is named. */
+  | { type: 'open-tile'; tile: OverviewTile['id'] }
+  | { type: 'toggle-focus' };

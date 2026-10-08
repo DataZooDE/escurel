@@ -32,9 +32,26 @@ exports.activate = async () => {
   await vscode.commands.executeCommand('escurel.refresh');
   setInterval(apply, 30_000);
 
+  // The Scenarios view (Anofox Evolve) is not part of this demo's story and, unconfigured, only says it
+  // needs an endpoint: leave it out unless the demo starts Evolve (ESCUREL_DEMO_EVOLVE_ENDPOINT).
+  await vscode.commands.executeCommand(
+    'setContext',
+    'escurel.hideScenarios',
+    !process.env.ESCUREL_DEMO_EVOLVE_ENDPOINT,
+  );
+
   // The Runner view lives in the right-hand (secondary) sidebar: show it, then the left one.
   await vscode.commands.executeCommand('workbench.view.extension.escurel-runner');
   await vscode.commands.executeCommand('workbench.view.extension.escurel');
+  // The calm window (ESCUREL_DEMO_FOCUS=0 keeps the classic look): focus mode on without asking, and the
+  // overview board as the first screen instead of one thread.
+  if (process.env.ESCUREL_DEMO_FOCUS !== '0') {
+    await vscode.commands.executeCommand('escurel.focusMode.enter', {
+      silent: true,
+      overview: true,
+    });
+    return;
+  }
   if (storyFile) {
     try {
       const story = JSON.parse(fs.readFileSync(storyFile, 'utf8'));

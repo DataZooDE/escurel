@@ -34,3 +34,27 @@ export function chipWords(state: string): ChipWords {
       return { text: state.replaceAll('_', ' '), icon: 'none' };
   }
 }
+
+export type ChipTone = 'ok' | 'wait' | 'bad' | 'neutral';
+
+/** What a state means for the person looking: finished well, still pending, or went wrong. The icon and
+ * the word say it without colour; the tone only keeps a failed card from looking like a finished one. */
+export function chipTone(state: string): ChipTone {
+  switch (state) {
+    case 'processed':
+    case 'promoted':
+      return 'ok';
+    case 'failed':
+    case 'dead_letter':
+    case 'cancelled':
+    case 'discarded':
+      return 'bad';
+    case 'inbox':
+    case 'open':
+    case 'planned':
+    case 'running':
+      return 'wait';
+    default:
+      return 'neutral';
+  }
+}

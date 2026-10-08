@@ -71,7 +71,10 @@ export const skillRow = (page: Page, id: string) =>
 export async function openRow(page: Page, skill: string, row: RegExp) {
   for (let attempt = 0; attempt < 6; attempt += 1) {
     const skillItem = await skillRow(page, skill);
-    if ((await skillItem.getAttribute('aria-expanded')) !== 'true') await skillItem.click();
+    // A live refresh can leave a stale row over this one for a moment (the click is then refused as
+    // intercepted): a short wait and another attempt, not a 30 s timeout that fails the scenario.
+    if ((await skillItem.getAttribute('aria-expanded')) !== 'true')
+      await skillItem.click({ timeout: 5_000 }).catch(() => undefined);
     await page.mouse.move(1000, 700);
     // The children are fetched from the outside system: wait for the row, not for a duration.
     const found = await expect

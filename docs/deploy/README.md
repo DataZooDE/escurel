@@ -8,6 +8,7 @@ agnostic; the files here bind it to concrete targets.
 |---|---|
 | [`substrate.md`](substrate.md) | The DataZoo Hetzner substrate binding (Kamal/ghcr/OpenTofu/GCP) — naming, identity, secrets, storage-as-a-pet, exposure, backup. Read this for the substrate target. |
 | [`../../Dockerfile`](../../Dockerfile) | The `escurel-server` container image (build → slim runtime). Published to private ghcr by [`../../.github/workflows/publish-image.yml`](../../.github/workflows/publish-image.yml). |
+| [`web-workbench.md`](web-workbench.md) | VS Code in the browser (code-server) with the Escurel extension, locked down behind a password, plus a one-command demo stack. |
 | [`../../deny.toml`](../../deny.toml) | `cargo-deny` config — the machine-enforced license + advisory + source gate. See [§ License + advisory audit](#license--advisory-audit-cargo-deny). |
 
 > **Deployment is the DataZoo substrate (ADR-0013): Kamal on Hetzner cattle

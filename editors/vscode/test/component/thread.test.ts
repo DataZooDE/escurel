@@ -310,6 +310,51 @@ describe('<escurel-thread-canvas>', () => {
     }
   });
 
+  // A connector says what led to what: it is a graphical object that carries meaning, so it needs 3:1
+  // against the canvas (WCAG 1.4.11). It once read 2.3:1 on a white canvas, and in the calm theme a pale
+  // contrastBorder made it vanish. Checked under the stock light and dark colours and the calm theme's.
+  const themes: [string, { foreground: string; background: string }][] = [
+    ['stock light', { foreground: '#616161', background: '#ffffff' }],
+    ['stock dark', { foreground: '#cccccc', background: '#1e1e1e' }],
+    ['escurel calm', { foreground: '#2b3036', background: '#fbfaf8' }],
+  ];
+  const rgbOf = (css: string): [number, number, number] => {
+    const nums = (css.match(/[\d.]+/g) ?? []).map(Number);
+    // `rgb(r, g, b)` is 0-255; `color(srgb r g b)` is 0-1.
+    return css.startsWith('color(')
+      ? [nums[0]! * 255, nums[1]! * 255, nums[2]! * 255]
+      : [nums[0]!, nums[1]!, nums[2]!];
+  };
+  const luminance = ([r, g, b]: [number, number, number]) => {
+    const ch = (v: number) => {
+      const s = v / 255;
+      return s <= 0.03928 ? s / 12.92 : ((s + 0.055) / 1.055) ** 2.4;
+    };
+    return 0.2126 * ch(r) + 0.7152 * ch(g) + 0.0722 * ch(b);
+  };
+  for (const [name, t] of themes) {
+    it(`draws its connectors at 3:1 or better against the canvas (${name})`, async () => {
+      const el = await renderCanvas();
+      el.style.setProperty('--vscode-foreground', t.foreground);
+      el.style.setProperty('--vscode-editor-background', t.background);
+      await el.updateComplete;
+      const wire = q(el, '.wire') as SVGPathElement;
+      const stroke = rgbOf(getComputedStyle(wire).stroke);
+      const n = parseInt(t.background.slice(1), 16);
+      const bg: [number, number, number] = [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+      const [hi, lo] = [luminance(stroke), luminance(bg)].sort((a, b) => b - a);
+      expect((hi! + 0.05) / (lo! + 0.05)).to.be.at.least(3);
+    });
+  }
+
+  it('ends every connector in an arrowhead', async () => {
+    const el = await renderCanvas();
+    for (const wire of qa(el, '.wire')) {
+      expect(wire.getAttribute('marker-end')).to.match(/^url\(#wire-head/);
+    }
+    expect(q(el, 'marker#wire-head')).to.exist;
+  });
+
   it('emphasises wires when connected nodes are hovered or selected', async () => {
     const el = await renderCanvas();
     const runId = '01M3NHJJGJ1WWAV26F5Z8Y4XKT';
