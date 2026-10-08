@@ -163,7 +163,7 @@ test('S2D: the transport proposal consolidates three shipments and keeps the one
   await stack.shot('s2d-06-transport-plan');
 });
 
-test('S2D: the last-time-buy proposal holds the service level with 640 units', async ({
+test('S2D: the last-time-buy proposal holds the 95% service level with 634 units', async ({
   stack,
 }) => {
   const { page } = stack;
@@ -172,14 +172,14 @@ test('S2D: the last-time-buy proposal holds the service level with 640 units', a
     .poll(async () => (await expandPage(stack, 'ltb_decision', 'ltb-sp-3307')).frontmatter?.status)
     .toBe('approved');
   const fm = (await expandPage(stack, 'ltb_decision', 'ltb-sp-3307')).frontmatter!;
-  expect(fm.qty).toBe(640);
+  expect(fm.qty).toBe(634);
   expect(fm.part).toBe('SP-3307');
   await openRow(page, 'ltb_decision', /ltb-sp-3307/);
   const wv = await webviewWith(page, 'escurel-page-as-ui');
-  await expect(wv.locator('.report .kpi').first()).toContainText('96%');
+  await expect(wv.locator('.report .kpi').first()).toContainText('95%');
   await expect(wv.locator('.report .kpi').first()).toContainText('Probability it lasts');
   const body = await wv.locator('.report').innerText();
-  // The warehouse split of the 640 units.
-  for (const n of ['352', '160', '128']) expect(body).toContain(n);
+  // The warehouse split of the 634 units, as the chat agents answer it.
+  for (const n of ['349', '159', '127']) expect(body).toContain(n);
   await stack.shot('s2d-07-last-time-buy');
 });

@@ -48,7 +48,7 @@ steps.
 
 ## Story 2: part loads that can ship together (Deliver)
 
-1. Inbox: "Weekly outbound review: part loads on the Stuttgart lanes".
+1. Inbox: the carrier mail "Booking cut-off week 41, Stuttgart outbound" (the same mail the chat demos use: confirm part-load bookings by 14:00; full-truck capacity Stuttgart -> Lyon on Thursday 08 Oct).
 2. **Awaiting you** > "tp-stuttgart-lyon-fr-2026-10-08": approve it.
    Before approving, **Preview the proposal** on the draft shows the plan table.
 3. Knowledge > logistics > deliver > Transport plan > the plan: **Consolidation plan**, one card per shipment
@@ -60,12 +60,12 @@ steps.
 
 ## Story 3: how many to buy before production ends (After-sales)
 
-1. Inbox: "Spare parts reaching end of production".
+1. Inbox: the supplier notice "Product discontinuation notice: servo drive module SD-40" (SP-3307; last production date 31 December 2026; place last-time-buy orders before the production stop).
 2. **Awaiting you** > "ltb-sp-3307": approve it.
-3. Knowledge > logistics > after-sales > Last-time-buy decision > the record. **Probability it lasts: 96%**.
-   Buying **640 units** holds the 95% service level to end of service (expected lifetime demand 509);
-   the table shows the stock value (EUR 755,200) and the **warehouse split: EMEA 352, Americas 160,
-   APAC 128**. The alternative of 400 units is in the proposal's text: about an 8% chance, running out
+3. Knowledge > logistics > after-sales > Last-time-buy decision > the record. **Probability it lasts: 95%** (0.949).
+   Buying **634 units** holds the 95% service level to end of service (expected lifetime demand 509);
+   the table shows the stock value (EUR 748,120) and the **warehouse split: EMEA 349, Americas 159,
+   APAC 127**. The alternative of 400 units is in the proposal's text: about an 8% chance, running out
    in 2032, two years before the end of service in 2034.
 
 ## Mapping to the talk (min-by-min, Part 3 and assembly)

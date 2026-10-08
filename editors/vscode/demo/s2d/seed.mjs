@@ -196,14 +196,18 @@ const UNITS = Number(SUMMARY.units_on_late_orders);
       Number(trucks[0].trucks_needed) === 1 && Number(trucks[0].lane_saving_eur) === 1140,
       trucks,
     );
-  const w640 = (await q(user, 'ltb_whatif', { part: 'SP-3307', qty: 640 }))[0];
+  const need = (await q(user, 'ltb_quantity', { part: 'SP-3307', service_level: '0.95' }))[0];
+  const buy = Number(need.ltb_qty);
+  narrate('634 units hold the 95% service level', buy === 634, need);
+  const wBuy = (await q(user, 'ltb_whatif', { part: 'SP-3307', qty: buy }))[0];
   const w400 = (await q(user, 'ltb_whatif', { part: 'SP-3307', qty: 400 }))[0];
   narrate(
-    '640 covers the lifetime, 400 does not',
-    Number(w640.probability_covers_lifetime) >= 0.94 &&
+    `${buy} covers the lifetime (about 95%), 400 does not`,
+    Number(wBuy.probability_covers_lifetime) >= 0.94 &&
       Number(w400.probability_covers_lifetime) < 0.2,
-    [w640, w400],
+    [wBuy, w400],
   );
+  narrate('stock value EUR 748,120', Number(need.stock_value_eur) === 748120, need);
 }
 // The inbound groupage lane (Gdansk to Stuttgart): the first date on which its shipments consolidate.
 let inbound = null;
@@ -406,11 +410,10 @@ await agentRun('supplier_exception', mailEv, resPage, async (agent) => {
 });
 
 // 3b. Deliver: part loads that can ship together.
-const tpMail = await mail(
-  'transport_plan',
-  'Weekly outbound review: part loads on the Stuttgart lanes',
-  'Which part-load shipments can we consolidate this week, without breaking a delivery duty or the shelf space at the destination?',
-);
+const TP_MAIL = `Subject: Booking cut-off week 41, Stuttgart outbound
+
+Dear shipping team, please confirm your part-load bookings for this week by 14:00 today. Unconfirmed loads move to next week's schedule. We can offer full-truck capacity Stuttgart -> Lyon on Thursday 08 Oct if you want to combine shipments. Kind regards, carrier dispatch Stuttgart`;
+const tpMail = await mail('transport_plan', 'Booking cut-off week 41, Stuttgart outbound', TP_MAIL);
 const tpPage = INSTANCE('transport_plan', 'tp-stuttgart-lyon-fr-2026-10-08');
 await agentRun('transport_plan', tpMail, tpPage, async (agent) => {
   await q(agent, 'consolidation_candidates', {});
@@ -459,28 +462,35 @@ await agentRun('transport_plan', tpMail, tpPage, async (agent) => {
 });
 
 // 3c. After-sales: how much to buy before production of a spare part ends.
+const LTB_MAIL = `Subject: Product discontinuation notice: servo drive module SD-40
+
+Dear customer, we regret to inform you that the servo drive module SD-40 (your part number SP-3307) will be discontinued. Last production date: 31 December 2026. Please place any last-time-buy orders before the production stop; no further deliveries are possible afterwards. Kind regards, drive systems supplier, product lifecycle management`;
 const ltbMail = await mail(
   'ltb_decision',
-  'Spare parts reaching end of production',
-  'Which spare parts reach end of production, and how many of SP-3307 should we buy to keep the service level?',
+  'Product discontinuation notice: servo drive module SD-40',
+  LTB_MAIL,
 );
 const ltbPage = INSTANCE('ltb_decision', 'ltb-sp-3307');
 await agentRun('ltb_decision', ltbMail, ltbPage, async (agent) => {
   const parts = await q(agent, 'ltb_parts', {});
-  const w640 = (await q(agent, 'ltb_whatif', { part: 'SP-3307', qty: 640 }))[0];
+  // The quantity that holds the 95% service level comes from the data (634 in the shared seed).
+  const need = (await q(agent, 'ltb_quantity', { part: 'SP-3307', service_level: '0.95' }))[0];
+  const QTY = Number(need.ltb_qty);
+  const wBuy = (await q(agent, 'ltb_whatif', { part: 'SP-3307', qty: QTY }))[0];
   const w400 = (await q(agent, 'ltb_whatif', { part: 'SP-3307', qty: 400 }))[0];
-  const split = await q(agent, 'ltb_warehouse_split', { part: 'SP-3307', qty: 640 });
+  const split = await q(agent, 'ltb_warehouse_split', { part: 'SP-3307', qty: QTY });
+  const stockValue = Number(need.stock_value_eur);
   const doc =
     frontmatter('instance', 'ltb_decision', 'ltb-sp-3307', {
       status: 'approved',
       part: 'SP-3307',
-      qty: 640,
+      qty: QTY,
       service_level: 0.95,
-      probability_covers_lifetime: Number(Number(w640.probability_covers_lifetime).toFixed(3)),
-      expected_runout_year: String(w640.expected_runout_year),
-      stock_value_eur: 755200,
+      probability_covers_lifetime: Number(Number(wBuy.probability_covers_lifetime).toFixed(3)),
+      expected_runout_year: String(wBuy.expected_runout_year),
+      stock_value_eur: stockValue,
     }) +
-    `# Last-time-buy: SP-3307 (servo drive module)\n\n${NOTE}\n\n## Recommendation\n\nBuy 640 units: they hold the 95% service level to the end of service.\n\n## Alternatives considered\n\n- 400 units: about ${(Number(w400.probability_covers_lifetime) * 100).toFixed(0)}% chance to last; expected run-out ${w400.expected_runout_year}.\n- 640 units: about ${(Number(w640.probability_covers_lifetime) * 100).toFixed(0)}% chance to last.\n\n## Warehouse split\n\n${table(
+    `# Last-time-buy: SP-3307 (servo drive module SD-40)\n\n${NOTE}\n\n## Recommendation\n\nBuy ${QTY} units: they hold the 95% service level to the end of service (expected demand ${Number(need.expected_lifetime_demand)} units). Stock value EUR ${stockValue.toLocaleString('en-US')}.\n\n## Alternatives considered\n\n- 400 units: about ${(Number(w400.probability_covers_lifetime) * 100).toFixed(0)}% chance to last; expected run-out ${w400.expected_runout_year}.\n- ${QTY} units: about ${(Number(wBuy.probability_covers_lifetime) * 100).toFixed(0)}% chance to last.\n\n## Warehouse split\n\n${table(
       split,
       Object.keys(split[0] ?? {}).map((k) => [k, k.replaceAll('_', ' ')]),
     )}\n\nApproving records the decision for execution; the purchase order is a separate step.\n`;
@@ -490,7 +500,7 @@ await agentRun('ltb_decision', ltbMail, ltbPage, async (agent) => {
     new_changeset: true,
     event_id: ltbMail.event_id,
   });
-  return `Compared ${parts.length} parts reaching end of production and proposed a last-time-buy for SP-3307.`;
+  return `Compared ${parts.length} parts reaching end of production and proposed a last-time-buy of ${QTY} for SP-3307.`;
 });
 
 if (drift)
