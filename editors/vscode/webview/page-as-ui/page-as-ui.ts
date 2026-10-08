@@ -1,3 +1,4 @@
+import type { ReportModel } from '../../src/shared/report';
 import { isSourceField } from '../../src/shared/rowSource';
 import { isEvolveReviewControl } from '../../src/shared/evolveControls';
 import { sourceBanner } from '../../src/shared/sourceBanner';
@@ -291,6 +292,79 @@ export class EscurelPageAsUi extends LitElement {
         text-decoration: underline;
         cursor: pointer;
       }
+      .report .kpis {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 12px;
+        margin: 6px 0 12px;
+      }
+      .report .kpi {
+        min-width: 140px;
+        padding: 8px 14px;
+        border: 1px solid var(--vscode-widget-border, var(--vscode-panel-border));
+        border-radius: 4px;
+        background: var(--vscode-editorWidget-background, transparent);
+      }
+      .report .kpi-value {
+        font-size: 1.6em;
+        font-weight: 600;
+        line-height: 1.2;
+      }
+      .report .kpi-label {
+        color: var(--escurel-muted);
+      }
+      .report {
+        container-type: inline-size;
+      }
+      .report table {
+        border-collapse: collapse;
+        margin: 6px 0;
+        width: 100%;
+      }
+      .report .constants {
+        color: var(--escurel-muted);
+        margin: 2px 0 8px;
+      }
+      .report th,
+      .report td {
+        text-align: left;
+        padding: 4px 10px;
+        border-bottom: 1px solid var(--vscode-widget-border, var(--vscode-panel-border));
+      }
+      .report th {
+        color: var(--escurel-muted);
+        font-weight: 600;
+      }
+      /* On a narrow page a row would run off the edge: each row becomes a small card, a column's name
+         above its value, laid out as many to a line as fit. */
+      @container (max-width: 760px) {
+        .report table,
+        .report tbody,
+        .report tr,
+        .report td {
+          display: block;
+        }
+        .report thead {
+          display: none;
+        }
+        .report tr {
+          display: grid;
+          grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+          gap: 2px 12px;
+          padding: 8px 4px;
+          border-bottom: 1px solid var(--vscode-widget-border, var(--vscode-panel-border));
+        }
+        .report td {
+          border: 0;
+          padding: 2px 6px;
+        }
+        .report td::before {
+          content: attr(data-label);
+          display: block;
+          color: var(--escurel-muted);
+          font-size: 0.85em;
+        }
+      }
       .thread-strip {
         display: flex;
         flex-wrap: wrap;
@@ -375,6 +449,55 @@ export class EscurelPageAsUi extends LitElement {
   }
 
   /** What a row of an `instances: rows` skill is: read-only data from a source, plus the person's notes. */
+  private reportSection(r: ReportModel) {
+    const kpis = r.views.filter((v) => v.kind === 'kpi');
+    const tables = r.views.filter((v) => v.kind === 'table');
+    return html`<section class="report">
+      <h2>${r.title}</h2>
+      ${
+        kpis.length
+          ? html`<div class="kpis">
+              ${kpis.map(
+                (k) =>
+                  html`<div class="kpi">
+                    <div class="kpi-value">${k.value}</div>
+                    <div class="kpi-label">${k.label}</div>
+                  </div>`,
+              )}
+            </div>`
+          : nothing
+      }
+      ${tables.map(
+        (t) =>
+          html`${
+              t.constants?.length
+                ? html`<p class="muted constants">
+                    Same on every row: ${t.constants.map(([k, v]) => `${k} ${v}`).join(' · ')}
+                  </p>`
+                : nothing
+            }
+            <table>
+              <thead>
+                <tr>
+                  ${t.columns.map((c) => html`<th scope="col">${c}</th>`)}
+                </tr>
+              </thead>
+              <tbody>
+                ${t.rows.map(
+                  (row) =>
+                    html`<tr>
+                      ${row.map((c, i) => html`<td data-label=${t.columns[i] ?? ''}>${c}</td>`)}
+                    </tr>`,
+                )}
+              </tbody>
+            </table>
+
+            ${t.more ? html`<p class="muted more">${t.more} more not shown</p>` : nothing}`,
+      )}
+      ${r.chartsNote ? html`<p class="muted charts-note">The chart for this report is not drawn in this view.</p>` : nothing}
+    </section>`;
+  }
+
   private sourceStrip(
     source: NonNullable<PageModel['source']>,
     writeBack: NonNullable<PageModel['writeBack']> | undefined,
@@ -503,14 +626,14 @@ export class EscurelPageAsUi extends LitElement {
       ${
         m.viewer
           ? html`<div class="viewer">
-              Chart:
+              ${m.report ? 'Figures from' : 'Chart:'}
               <button
                 class="open-report"
                 @click=${() => this.send({ type: 'view-skill', skill: m.viewer!.report })}
               >
                 ${m.viewer.report}
               </button>
-              (rendered by Peacock)
+              ${m.report ? nothing : '(rendered by Peacock)'}
             </div>`
           : nothing
       }
@@ -563,6 +686,7 @@ export class EscurelPageAsUi extends LitElement {
         }
       </section>
 
+      ${m.report ? this.reportSection(m.report) : nothing}
       ${
         m.preview
           ? html`<section>
@@ -600,13 +724,19 @@ export class EscurelPageAsUi extends LitElement {
                       class="skill-button"
                       noun="skill"
                       .label=${a.label}
-                      title=${a.skill === 'evolve_run'
-                        ? 'Review the problem revision and make an experiment plan'
-                        : `Starts skill ${a.skill} with an agent on this page`}
+                      title=${
+                        a.skill === 'evolve_run'
+                          ? 'Review the problem revision and make an experiment plan'
+                          : `Starts skill ${a.skill} with an agent on this page`
+                      }
                       .header=${`skill ${a.skill}`}
-                      .items=${a.skill === 'evolve_run' ? EVOLVE_PLAN_ITEMS
-                        : isEvolveReviewControl(a.skill)
-                        ? EVOLVE_CONTROL_ITEMS : START_ITEMS}
+                      .items=${
+                        a.skill === 'evolve_run'
+                          ? EVOLVE_PLAN_ITEMS
+                          : isEvolveReviewControl(a.skill)
+                            ? EVOLVE_CONTROL_ITEMS
+                            : START_ITEMS
+                      }
                       @primary=${() => this.start(a.skill, a.skill === 'evolve_run' ? 'plan' : 'background')}
                       @select=${(e: CustomEvent<string>) => this.start(a.skill, e.detail)}
                     ></escurel-split-button>`,

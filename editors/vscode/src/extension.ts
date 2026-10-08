@@ -27,6 +27,7 @@ import { expandableRows, type OutlineRow } from './views/threadsModel';
 import { registerStartInTerminal } from './start/terminal';
 import { registerOpenOriginal } from './commands/openOriginal';
 import { registerStartSkill } from './start/startSkill';
+import { registerQueryPreview } from './commands/queryPreview';
 import { registerProposeWriteBack } from './editors/proposeWriteBack';
 import { registerApprovePlan, setApprovalConfirm } from './start/approvePlan';
 import { registerNodeCommands } from './commands/nodeCommands';
@@ -97,7 +98,12 @@ export function activate(context: vscode.ExtensionContext): EscurelApi | undefin
   const review = ReviewController.register(
     context,
     () => services.client,
-    () => awaiting.refresh(),
+    // A decision changes pages as well as the queue: the record that was waiting for the planner is
+    // open in an editor, and it must show its new state, not the one it had before the decision.
+    () => {
+      awaiting.refresh();
+      services.onDidChangeEmit();
+    },
   );
   const live = LiveCoordinator.register(context, services, { inbox, awaiting });
   const scenarios = ScenariosTree.register(context, () => services.client, services);
@@ -198,6 +204,10 @@ export function activate(context: vscode.ExtensionContext): EscurelApi | undefin
       quietly('Signed out');
     }),
     vscode.commands.registerCommand('escurel.refresh', () => services.onDidChangeEmit()),
+    // A proposal is read as the page it would create: VS Code's own Markdown preview renders its tables.
+    vscode.commands.registerCommand('escurel.reviewPreview', () =>
+      vscode.commands.executeCommand('markdown.showPreviewToSide'),
+    ),
     vscode.commands.registerCommand('escurel.search', () => searchCommand(() => services.client)),
     vscode.commands.registerCommand('escurel.resolve', (link?: string) =>
       resolveCommand(() => services.client, link),
@@ -275,6 +285,7 @@ export function activate(context: vscode.ExtensionContext): EscurelApi | undefin
     registerProposeWriteBack(services),
     registerApprovePlan(context, services),
   );
+  registerQueryPreview(context, services);
   log().info('escurel: activated');
   // Other extensions can read an extension's `exports`, and this object holds the token store. A
   // production install hands out nothing; the test, e2e and demo harnesses (Test / Development mode)

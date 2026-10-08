@@ -176,7 +176,8 @@ export class KnowledgeTree implements vscode.TreeDataProvider<Node> {
         item.id = `instance:${n.pageId}`;
         item.description = n.description;
         item.iconPath = new vscode.ThemeIcon('symbol-field', new vscode.ThemeColor('charts.blue'));
-        item.contextValue = 'instance';
+        // A query page is a method, not a record: it gets its own menu (Preview with parameters).
+        item.contextValue = n.pageId.includes('/instances/query/') ? 'instance.query' : 'instance';
         item.resourceUri = uriForPage(n.pageId);
         item.command = {
           command: 'escurel.openInstance',

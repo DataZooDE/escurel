@@ -24,6 +24,8 @@ import type {
   GetRunToolCallsRequest,
   GetRunToolCallsResponse,
   ListEventsRequest,
+  QueryInstanceRequest,
+  QueryInstanceResponse,
   ListInboxRequest,
   ListInstancesRequest,
   ListInstancesResponse,
@@ -211,6 +213,10 @@ export class EscurelClient {
   }
 
   // ── events ───────────────────────────────────────────────────────
+
+  queryInstance(req: QueryInstanceRequest): Promise<QueryInstanceResponse> {
+    return this.call('query_instance', { ...req });
+  }
 
   listEvents(req: ListEventsRequest): Promise<EventsPage> {
     return this.call('list_events', { ...req });

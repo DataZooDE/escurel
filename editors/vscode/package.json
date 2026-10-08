@@ -93,6 +93,11 @@
     },
     "commands": [
       {
+        "command": "escurel.reviewPreview",
+        "title": "Preview the proposal",
+        "icon": "$(open-preview)"
+      },
+      {
         "command": "escurel.signIn",
         "title": "Sign in",
         "category": "Escurel"
@@ -458,6 +463,12 @@
         "title": "New scenario comparison",
         "category": "Escurel",
         "icon": "$(add)"
+      },
+      {
+        "command": "escurel.previewQuery",
+        "title": "Preview with parameters…",
+        "category": "Escurel",
+        "icon": "$(play)"
       }
     ],
     "authentication": [
@@ -687,6 +698,10 @@
         {
           "command": "escurel.openReview",
           "when": "escurel.connected"
+        },
+        {
+          "command": "escurel.reviewPreview",
+          "when": "resourceScheme == escurel-review"
         },
         {
           "command": "escurel.promote",
@@ -1068,9 +1083,24 @@
           "command": "escurel.runs.forPage",
           "when": "view == escurel.knowledge && viewItem == instance",
           "group": "3_trace@3"
+        },
+        {
+          "command": "escurel.previewQuery",
+          "when": "view == escurel.knowledge && viewItem == instance.query",
+          "group": "navigation@1"
+        },
+        {
+          "command": "escurel.previewQuery",
+          "when": "view == escurel.knowledge && viewItem == instance.query",
+          "group": "inline@1"
         }
       ],
       "editor/title": [
+        {
+          "command": "escurel.reviewPreview",
+          "when": "resourceScheme == escurel-review",
+          "group": "navigation@0"
+        },
         {
           "command": "escurel.showRaw",
           "when": "resourceScheme == escurel && (activeCustomEditorId == escurel.pageAsUi || activeCustomEditorId == escurel.skillPage)",

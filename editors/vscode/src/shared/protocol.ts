@@ -1,3 +1,4 @@
+import type { ReportModel } from './report';
 import type { WriteBackStatus } from './writeBack';
 import type { RowSource } from './rowSource';
 // The host ↔ webview contract (SPEC §5): typed postMessage both ways.
@@ -77,6 +78,8 @@ export interface PageModel {
   thread?: ThreadStrip;
   /** The report skill that draws this skill's records (its `viewer:`), if it names one. */
   viewer?: { report: string };
+  /** The figures that report draws for THIS record (KPI and tables), when it can be shown. */
+  report?: ReportModel;
   /** Present when the page is a ROW of an `instances: rows` skill: read-only source data plus notes. */
   source?: RowSource;
   /** The last write-back to the source, from the page's `escurel:write-back` events. */

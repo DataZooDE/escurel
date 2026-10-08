@@ -355,6 +355,18 @@ export interface MintAgentTokenRequest {
   trace_id?: string;
 }
 
+export interface QueryInstanceRequest {
+  /** A query id or its `[[query::id]]` wikilink. */
+  ref: string;
+  /** Values bound to the query's `:param` placeholders (never interpolated into SQL). */
+  params?: Record<string, string | number | boolean>;
+}
+
+/** The rows a stored query returned. The gateway names the list `rows`. */
+export interface QueryInstanceResponse {
+  rows?: Array<Record<string, unknown>>;
+}
+
 export interface MintAgentTokenResponse {
   token: string;
   run_id: string;

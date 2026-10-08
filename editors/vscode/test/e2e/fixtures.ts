@@ -51,6 +51,8 @@ export interface Stack {
   display: string;
   /** What the demo driver left behind: the root events and changesets of the story. */
   story: { rootA: string; rootB: string; promoted: string; awaiting: string };
+  /** The S2D stories' root events (only with the `s2d` option). */
+  s2dStory?: { exception: string; transport: string; ltb: string };
   gatewayUrl: string;
   /** The demo's home directory: pid files and the ports of the demo's outside systems. */
   home: string;
@@ -71,12 +73,18 @@ export const test = base.extend<object, {
   focus: boolean;
   runnerHarness: 'echo' | 'gemini';
   evolveAgentBin: string | undefined;
+  /** Load the Source-to-Deliver demo (hetzner seed) too; the other scenarios count rows and must not see it. */
+  s2d: boolean;
+  /** Names the file's window: files that set different values never share one (state of an earlier file leaked into a later one). */
+  suite: string;
 }>({
   focus: [false, { option: true, scope: 'worker' }],
+  suite: ['', { scope: 'worker', option: true }],
+  s2d: [false, { scope: 'worker', option: true }],
   runnerHarness: ['echo', { scope: 'worker', option: true }],
   evolveAgentBin: [undefined, { scope: 'worker', option: true }],
   stack: [
-    async ({ focus, runnerHarness, evolveAgentBin }, use) => {
+    async ({ focus, runnerHarness, evolveAgentBin, s2d }, use) => {
       const home = mkdtempSync(join(homedir(), '.cache', 'escurel-e2e-'));
       let geminiPlanTarget: { pageId: string; revision: string } | undefined;
       const geminiRequests: Record<string, unknown>[] = [];
@@ -154,9 +162,13 @@ export const test = base.extend<object, {
         ESCUREL_DEMO_CDP_PORT: String(cdpPort),
         ESCUREL_DEMO_CODE_ARGS:
           '--ozone-platform=x11 --disable-site-isolation-trials --disable-features=IsolateOrigins,site-per-process' +
-          (process.env.CI ? ' --no-sandbox' : ''),
+          (process.env.CI ? ' --no-sandbox' : '') +
+          // A machine whose GPU is wedged hangs Electron before it paints: ESCUREL_E2E_EXTRA_CODE_ARGS=--disable-gpu.
+          (process.env.ESCUREL_E2E_EXTRA_CODE_ARGS ? ` ${process.env.ESCUREL_E2E_EXTRA_CODE_ARGS}` : ''),
         ESCUREL_TEST_GATEWAY_BIN: join(bin, 'escurel-test-gateway'),
         ESCUREL_RUNNER_BIN: join(bin, 'escurel-runner'),
+        ESCUREL_CLI_BIN: join(bin, 'escurel'),
+        ESCUREL_DEMO_S2D: s2d ? '1' : '0',
         ESCUREL_ECHO_SLEEP_MS: '6000',
         // No zoom: Playwright maps clicks into a nested webview with the page's own scale, and a zoomed
         // window (the demo's default) puts them on the wrong element.
@@ -182,6 +194,9 @@ export const test = base.extend<object, {
 
       const info = JSON.parse(readFileSync(join(home, 'gateway.json'), 'utf8').split('\n')[0]!);
       const story = JSON.parse(readFileSync(join(home, 'story.json'), 'utf8'));
+      const s2dStory = s2d
+        ? (JSON.parse(readFileSync(join(home, 's2d-story.json'), 'utf8')) as Stack['s2dStory'])
+        : undefined;
       const bearer = () =>
         JSON.parse(readFileSync(join(home, 'bearer.json'), 'utf8')) as {
           bearer: string;
@@ -255,6 +270,7 @@ export const test = base.extend<object, {
         workspaceDir: join(home, 'workspace'),
         display,
         story,
+        s2dStory,
         gatewayUrl: info.gateway_url,
         home,
         errors,

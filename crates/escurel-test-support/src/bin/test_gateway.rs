@@ -205,6 +205,18 @@ async fn main() {
             // The demo's REST and MCP upstreams are local processes; `ESCUREL_EGRESS_*` (notably
             // `ESCUREL_EGRESS_ALLOW_LOOPBACK=1`) opens loopback for them, strict otherwise.
             egress: Some(escurel_test_support::EgressPolicy::from_env()),
+            // Locally-built DuckDB extensions to LOAD (comma-separated absolute paths), as in
+            // production: an unsigned one is allowed at open time when any is named. The S2D demo
+            // uses it for the optimizer pages.
+            index_extensions: std::env::var("ESCUREL_INDEX_EXTENSIONS")
+                .map(|v| {
+                    v.split(',')
+                        .map(str::trim)
+                        .filter(|p| !p.is_empty())
+                        .map(str::to_owned)
+                        .collect()
+                })
+                .unwrap_or_default(),
             ..Default::default()
         },
     })
