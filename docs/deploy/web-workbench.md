@@ -140,6 +140,41 @@ engine settings and are not in [`env.md`](env.md).
 
 The scripts are `editors/vscode/demo/web/*.sh`; the data is the desktop demo's (`editors/vscode/demo`).
 
+## The Source-to-Deliver (S2D) demo stack
+
+For the Bosch live part the workbench carries the S2D demo (three agent proposals waiting for a planner, the brain-teasers):
+data, skills and reports come from the `hetzner-agent-substrate` seed (the single source), built on the host, nothing of it is committed
+here. It adds `compose.s2d.yaml` to the base stack:
+
+```sh
+cd deploy/web-workbench
+./s2d-up.sh        # builds, (re)seeds, plays the story; the .env next to compose.yaml holds WORKBENCH_PASSWORD
+./s2d-reset.sh     # back to the STARTING STATE: the three proposals open in "Awaiting you", nothing promoted
+./s2d-compose.sh ps | logs -f demo-services | down     # docker compose with the variables s2d-up.sh recorded
+```
+
+What is different from the generic demo stack, and why:
+
+* **The gateway verifies tokens** (`escurel-test-gateway`, the `demo-gateway` target of the Dockerfile: escurel-server plus a built-in issuer),
+  because the demo shows which run wrote what (the thread, the run trace, the proposals held for a person). It is reachable only on the compose
+  network. The **runner mints a token per run**. The optimizer extension (anofox_optimize) is loaded when a build for the gateway's DuckDB
+  version exists on the host (otherwise those two query pages are left out, with a warning from the sync).
+* **The workbench holds no credential.** A small reverse proxy (`editors/vscode/demo/web/forward.mjs`, in `demo-services`) is `escurel:8080`: it
+  signs every call in as the demo user. The extension runs in its plain "no token" mode; no token, admin bearer or signing key enters the
+  workbench container.
+* **A new gateway starts empty.** Its data lives in its container, so `demo-services` plays the story (and loads the S2D demo) whenever the
+  gateway is new, and the runner's ledger is wiped at its start. A `docker compose restart`, `./s2d-reset.sh` or a reboot therefore brings the demo
+  back in its STARTING STATE (everything promoted on stage is gone: that is the reset). After a reboot, if the demo is not back within two
+  minutes, run `./s2d-reset.sh` (or `./s2d-up.sh`): the runner and the services share the gateway's network namespace, so they must start after it.
+* `./s2d-up.sh` rebuilds the gateway-side volumes from scratch (a replay on old data would duplicate the story); the workbench's own volume
+  (VS Code settings) is kept.
+
+The click path (stories, brain-teasers, expected numbers) is `editors/vscode/demo/s2d/REHEARSAL.md`;
+`deploy/web-workbench/probe/s2d-tour.mjs <url> <password-file> <out-dir>` walks it in a headless browser and takes a screenshot per step
+(it approves the proposals: run it on a throwaway instance, e.g. `WORKBENCH_PROJECT=escurel-web-test WORKBENCH_PORT=18090 ./s2d-up.sh`).
+Rollback to the generic stack: check out the previous commit and run `docker compose up --build -d` (the S2D volumes can be removed with
+`docker compose down -v`, which also removes the workbench's own data).
+
 ## Operating it
 
 - **Upgrade**: change the pinned `codercom/code-server` tag in the Dockerfile, check that its bundled VS
