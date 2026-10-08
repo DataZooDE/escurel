@@ -195,6 +195,35 @@ describe('<escurel-run-detail>', () => {
     expect(q(el, '.call-tool')?.getAttribute('title')).to.equal('list_inbox');
   });
 
+  it('draws a time axis over the calls and places each bar on it', async () => {
+    const at = (secs: number) => `2026-09-29T04:59:${String(secs).padStart(2, '0')}Z`;
+    const calls: RunView['calls'] = [
+      { ...recordedRunView.calls[0]!, seq: 1, at: at(10), durationMs: 500 },
+      { ...recordedRunView.calls[0]!, seq: 2, at: at(12), durationMs: 2000 },
+    ];
+    const el = await render({ ...recordedRunView, startedAt: at(10), calls });
+    const axis = q(el, '.trace-axis');
+    expect(axis, 'axis').to.not.equal(null);
+    expect(axis!.getAttribute('aria-hidden')).to.equal('true');
+    const labels = qa(el, '.trace-axis .tick').map((t) => text(t));
+    expect(labels).to.deep.equal(['0', '1 s', '2 s', '3 s']);
+    expect(text(q(el, '.trace-axis .axis-end'))).to.equal('4 s');
+    const bars = qa(el, '.call-bar > span') as HTMLElement[];
+    // the second call starts half-way and takes half of the 4 s
+    expect(parseFloat(bars[1]!.style.left)).to.be.closeTo(50, 0.1);
+    expect(parseFloat(bars[1]!.style.width)).to.be.closeTo(50, 0.1);
+    expect(parseFloat(bars[0]!.style.left)).to.be.closeTo(0, 0.1);
+  });
+
+  it('shows no axis when the run has no timed calls', async () => {
+    const el = await render({
+      ...recordedRunView,
+      calls: [{ ...recordedRunView.calls[0]!, at: 'not a time' }],
+    });
+    expect(q(el, '.trace-axis')).to.equal(null);
+    expect(q(el, '.call-bar > span')).to.not.equal(null);
+  });
+
   it('uses tone for a humanised dead letter status', async () => {
     // This failure state is hand-written because the recorded run completed.
     const el = await render({ ...recordedRunView, status: 'dead_letter', tone: 'failed' });

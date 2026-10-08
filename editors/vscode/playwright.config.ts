@@ -1,6 +1,6 @@
 import { defineConfig } from '@playwright/test';
 
-// The three VS Code theme kinds are injected as --vscode-* token sheets by
+// The three VS Code theme kinds and the Escurel Calm theme are injected as --vscode-* token sheets by
 // the harness; one project per kind so screenshots are compared per theme.
 export default defineConfig({
   testDir: 'test/visual',
@@ -16,5 +16,7 @@ export default defineConfig({
     { name: 'light', metadata: { theme: 'light' } },
     { name: 'dark', metadata: { theme: 'dark' } },
     { name: 'high-contrast', metadata: { theme: 'high-contrast' } },
+    // The theme the calm focus view applies (themes/escurel-calm-color-theme.json).
+    { name: 'calm', metadata: { theme: 'calm' } },
   ],
 });

@@ -39,6 +39,8 @@ import { registerEvolveHoldout } from './evolve/registerHoldout';
 import { registerEvolveHoldoutCsv } from './evolve/registerHoldoutCsv';
 import { registerPrepareEvolveTrainingCsv } from './evolve/prepareCsv';
 import { ScenariosTree } from './views/scenarios';
+import { FocusMode } from './focus/focusMode';
+import { OverviewController } from './overview/controller';
 
 const EXPLAIN_SCHEME = 'escurel-explain';
 
@@ -61,15 +63,19 @@ export interface EscurelApi {
    */
   canAdmin: () => boolean;
   runner: RunnerTree;
+  focus: FocusMode;
+  overview: OverviewController;
   /** Test seam: replaces the modal that confirms a plan approval (a modal blocks a headless window). */
   setApprovalConfirm: typeof setApprovalConfirm;
 }
 
 export function activate(context: vscode.ExtensionContext): EscurelApi | undefined {
   const services = new Services(context);
+  const focus = FocusMode.register(context);
   registerControlCommands(context, services);
   registerNodeCommands(context, services);
   context.subscriptions.push(services);
+  const overview = OverviewController.register(context, services, focus);
   registerStartInTerminal(context, services);
   registerImportEvolveProblem(context, services);
   registerPrepareEvolveTrainingSource(context, services);
@@ -297,6 +303,8 @@ export function activate(context: vscode.ExtensionContext): EscurelApi | undefin
     threadsTree,
     canAdmin: adminContextValue,
     runner,
+    focus,
+    overview,
     setApprovalConfirm,
   });
 }

@@ -1,0 +1,24 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>escurel overview visual harness</title>
+    <script>
+      const theme = new URLSearchParams(location.search).get('theme') ?? 'dark';
+      document.write(`<link rel="stylesheet" href="../tokens/${theme}.css" />`);
+      document.documentElement.dataset.theme = theme;
+    </script>
+    <style>
+      body {
+        margin: 0;
+        background: var(--vscode-editor-background);
+        color: var(--vscode-foreground);
+        font-family: var(--vscode-font-family);
+      }
+    </style>
+  </head>
+  <body>
+    <escurel-overview></escurel-overview>
+    <script type="module" src="../../../dist/test/visual/overview-harness.js"></script>
+  </body>
+</html>

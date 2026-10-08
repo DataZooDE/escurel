@@ -385,6 +385,8 @@ test('a SQL-view page previews the rows the source holds, read-only, under its f
   const wv = await webviewWith(page, 'escurel-source-preview');
   const preview = wv.locator('escurel-page-as-ui escurel-source-preview');
   await expect(preview.locator('.badge')).toContainText('read-only (source)');
+  // The tab says what the page is, not the URI's last segment (`all.md`).
+  await expect(page.locator('.tab.active .label-name')).toContainText('order-lines · all');
   // The rows come from the real gateway's `expand` (the sql_view over the JSON extract).
   await expect(preview.locator('thead th')).toContainText(['order_id', 'item', 'customer']);
   await expect(preview.locator('tbody tr')).toHaveCount(6);
@@ -732,8 +734,8 @@ test('when the portal is down a promoted change is refused, recorded as failed, 
   // change did not go through. It keeps the page; it does not go blank or show a stack trace.
   // Its tab is still open; the tree cannot list a dead source's rows, so the person goes back to it.
   // (Switching away and back is what reloads a page; it is already the active tab.)
-  await page.getByRole('tab', { name: /^stahl-ag\.md/ }).click();
-  await page.getByRole('tab', { name: /^nordform\.md/ }).click();
+  await page.getByRole('tab', { name: /^supplier-rating · stahl-ag/ }).click();
+  await page.getByRole('tab', { name: /^supplier-rating · nordform/ }).click();
   const down = await webviewWith(page, 'escurel-page-as-ui', 'nordform');
   await expect(down.locator('.source-strip')).toBeVisible({ timeout: 20_000 });
   await expect(down.locator('.source-strip.problem')).toBeVisible();
@@ -940,6 +942,7 @@ test('a skill opens as a readable page, and Show Markdown opens its source', asy
   await chooseMenuItem(page, 'View skill');
   const wv = await webviewWith(page, 'escurel-skill-page');
   await expect(wv.locator('escurel-skill-page h1')).toContainText(/supplier/i);
+  await expect(page.locator('.tab.active .label-name')).toContainText('Skill · supplier-risk');
   for (const heading of ['About', 'What it can start', 'Recent runs']) {
     await expect(wv.getByRole('heading', { name: new RegExp(`^${heading}`) })).toBeVisible();
   }

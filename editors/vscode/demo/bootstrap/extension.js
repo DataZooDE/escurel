@@ -35,6 +35,15 @@ exports.activate = async () => {
   // The Runner view lives in the right-hand (secondary) sidebar: show it, then the left one.
   await vscode.commands.executeCommand('workbench.view.extension.escurel-runner');
   await vscode.commands.executeCommand('workbench.view.extension.escurel');
+  // The calm window (ESCUREL_DEMO_FOCUS=0 keeps the classic look): focus mode on without asking, and the
+  // overview board as the first screen instead of one thread.
+  if (process.env.ESCUREL_DEMO_FOCUS !== '0') {
+    await vscode.commands.executeCommand('escurel.focusMode.enter', {
+      silent: true,
+      overview: true,
+    });
+    return;
+  }
   if (storyFile) {
     try {
       const story = JSON.parse(fs.readFileSync(storyFile, 'utf8'));
