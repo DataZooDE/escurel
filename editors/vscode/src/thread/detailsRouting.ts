@@ -8,9 +8,10 @@ export interface Shown {
   pageId?: string | undefined;
   /** The skills the node offers: its Skill buttons, and the skill a run executes (Fix skill). */
   skills?: readonly string[] | undefined;
+  body?: string | undefined;
 }
 
-const ACTIONS = new Set<string>(['start-skill', 'view-skill', 'run-control', 'open-link']);
+const ACTIONS = new Set<string>(['start-skill', 'view-skill', 'run-control', 'open-link', 'open-wikilink']);
 const LINKS = new Set<string>(['skill', 'page', 'run', 'thread', 'review']);
 
 const isRecord = (v: unknown): v is Record<string, unknown> =>
@@ -51,6 +52,13 @@ export function acceptDetailsAction(
       // Held to the node on show, and to the five kinds: what each opens is the host's to decide.
       if (message.nodeId !== shown.nodeId) return undefined;
       if (typeof message.link !== 'string' || !LINKS.has(message.link)) return undefined;
+      break;
+    case 'open-wikilink':
+      if (typeof message.wikilink !== 'string'
+        || !/^\[\[(?:evolve_validation_report|evolve_experiment|plan_policy)::[^\]\s]+\]\]$/.test(message.wikilink)
+        || !shown.body?.includes(message.wikilink)) {
+        return undefined;
+      }
       break;
     case 'view-skill':
       if (typeof message.skill !== 'string' || !shown.skills?.includes(message.skill)) {

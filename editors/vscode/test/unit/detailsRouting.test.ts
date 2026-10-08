@@ -6,6 +6,7 @@ const shown = {
   nodeId: 'run-1',
   pageId: 'markdown/instances/customer-order__order-1.md',
   skills: ['supplier-risk'],
+  body: 'Experiment accepted: [[evolve_experiment::ep_123]].',
 };
 const open = (ids: string[]) => (id: string) => ids.includes(id);
 const action = {
@@ -116,5 +117,10 @@ describe('acceptDetailsAction: only the node being shown', () => {
       message: { type: 'open-link', nodeId: 'run-1', link: 'rm -rf' },
     };
     expect(acceptDetailsAction(shown, open(['root-A']), bad)).toBeUndefined();
+  });
+
+  it('opens only a wikilink displayed in the selected node', () => {
+    expect(ok({ type: 'open-wikilink', wikilink: '[[evolve_experiment::ep_123]]' })).toBeDefined();
+    expect(ok({ type: 'open-wikilink', wikilink: '[[evolve_experiment::ep_other]]' })).toBeUndefined();
   });
 });

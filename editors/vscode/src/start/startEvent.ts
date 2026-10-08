@@ -1,4 +1,5 @@
 import type { CaptureEventRequest } from '../client';
+import { randomUUID } from 'node:crypto';
 import type { StartMode } from '../shared/protocol';
 import { pageSlug } from '../shared/pageId';
 
@@ -54,6 +55,80 @@ export function buildStartEvent(req: StartRequest): CaptureEventRequest {
   return capture(req.skill, req.pageId, manual(req.mode, req.harness));
 }
 
+/** Bind a Workbench validation click to the reviewed page and winner. */
+export function bindValidationSelection(
+  event: CaptureEventRequest,
+  pageSha256: string,
+  winnerProgramId: number,
+): CaptureEventRequest {
+  if (event.label_skill !== 'evolve_validate' || !/^[a-f0-9]{64}$/i.test(pageSha256)
+      || !Number.isSafeInteger(winnerProgramId) || winnerProgramId < 0) {
+    throw new Error('Validation needs a reviewed experiment page and exact winner.');
+  }
+  const manual = (event.provenance as { manual: Record<string, unknown> }).manual;
+  return {
+    ...event,
+    event_id: `evolve-validation-${pageSha256.toLowerCase()}-${winnerProgramId}`,
+    provenance: { manual: {
+      ...manual,
+      expected_page_sha256: pageSha256,
+      expected_winner_program_id: winnerProgramId,
+    } },
+  };
+}
+
+/**
+ * Bind a Compute-comparison click to the page revision the owner reviewed. The event id is
+ * stable per revision: a retried click converges on one request, and an edited page is a new one.
+ */
+export function bindComparisonSelection(
+  event: CaptureEventRequest,
+  pageSha256: string,
+): CaptureEventRequest {
+  if (event.label_skill !== 'evolve_compare' || !/^[a-f0-9]{64}$/i.test(pageSha256)) {
+    throw new Error('A comparison needs a reviewed comparison page.');
+  }
+  const manual = (event.provenance as { manual: Record<string, unknown> }).manual;
+  return {
+    ...event,
+    event_id: `evolve-comparison-${pageSha256.toLowerCase()}`,
+    provenance: { manual: { ...manual, expected_page_sha256: pageSha256 } },
+  };
+}
+
+/** Bind an owner-confirmed candidate request to the displayed private report. */
+export function bindCandidateSelection(
+  event: CaptureEventRequest,
+  pageSha256: string,
+  winnerProgramId: number,
+  reportSha256: string,
+  note: string,
+): CaptureEventRequest {
+  if (event.label_skill !== 'evolve_publish_candidate'
+      || !/^[a-f0-9]{64}$/i.test(pageSha256)
+      || !/^[a-f0-9]{64}$/i.test(reportSha256)
+      || !Number.isSafeInteger(winnerProgramId) || winnerProgramId < 0
+      || note.length > 1000) {
+    throw new Error('Candidate publication needs a reviewed passed report and exact winner.');
+  }
+  const manual = (event.provenance as { manual: Record<string, unknown> }).manual;
+  return {
+    ...event,
+    // A fresh human confirmation gets a new thread. The captured event object
+    // keeps this ID stable for transport retry; the domain intent stays
+    // single-writer for the experiment.
+    event_id: `evolve-candidate-${randomUUID()}`,
+    provenance: { manual: {
+      ...manual,
+      expected_page_sha256: pageSha256,
+      expected_winner_program_id: winnerProgramId,
+      expected_validation_report_sha256: reportSha256,
+      confirm: true,
+      review_note: note,
+    } },
+  };
+}
+
 /**
  * Approve a plan: run the skill again, carrying the plan-mode run whose plan the runner
  * should execute (`provenance.manual.approved_plan_run_id`).
@@ -66,5 +141,9 @@ export function buildApprovalEvent(req: {
 }): CaptureEventRequest {
   const plan = req.planRunId.trim();
   if (!plan) throw new Error('approving a plan needs the plan run it approves');
-  return capture(req.skill, req.pageId, manual('run', req.harness, { approved_plan_run_id: plan }));
+  const event = capture(req.skill, req.pageId, manual('run', req.harness, { approved_plan_run_id: plan }));
+  // A lost capture response followed by another click or editor restart must
+  // reattach to the same approval. Escurel scopes event IDs to the tenant.
+  if (req.skill === 'evolve_run') event.event_id = `evolve-approval-${plan}`;
+  return event;
 }

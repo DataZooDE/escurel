@@ -1,7 +1,7 @@
 //! P1 no-mock end-to-end: a baked anofox DuckDB extension reached through a
 //! curator-authored query page.
 //!
-//! Real DuckDB (v1.5.5), a REAL `anofox_inventory.duckdb_extension` loaded via
+//! Real DuckDB (v1.5.6), a REAL `anofox_inventory.duckdb_extension` loaded via
 //! the production `ESCUREL_INDEX_EXTENSIONS` hook, a real `vw_` sql_view over
 //! on-disk SKU rows, a real `[[query::*]]` page whose SQL calls the real
 //! `inv_optimize_qr(...)` reorder-policy function, and the real per-instance
@@ -77,10 +77,74 @@ struct Harness {
     data_dir: TempDir,
 }
 
-/// Absolute path to the prebuilt v1.5.5 extension (sibling repo build output).
+/// Absolute path to the prebuilt v1.5.6 extension (sibling repo build output).
 fn inventory_extension_path() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../../../anofox-inventory/build/release/extension/anofox_inventory/anofox_inventory.duckdb_extension")
+}
+
+/// The DuckDB release a built extension targets, read from its 256-byte footer (fields are 32-byte
+/// NUL-padded strings; one is the platform, one the DuckDB version `v1.x.y`, one the extension's own
+/// version, which may also look like `v2026.09.26`). Only a `v1.<minor>.<patch>` token is a DuckDB
+/// version, so the extension's own calendar version is never mistaken for it.
+fn extension_duckdb_version(bytes: &[u8]) -> Option<String> {
+    let tail = &bytes[bytes.len().saturating_sub(512)..];
+    tail.split(|b| *b == 0)
+        .filter_map(|f| std::str::from_utf8(f).ok())
+        .find(|t| {
+            let mut parts = t.strip_prefix("v1.").map(|r| r.split('.')).into_iter().flatten();
+            let (a, b) = (parts.next(), parts.next());
+            matches!((a, b, parts.next()), (Some(a), Some(b), None)
+                if !a.is_empty() && !b.is_empty()
+                    && a.bytes().all(|c| c.is_ascii_digit()) && b.bytes().all(|c| c.is_ascii_digit()))
+        })
+        .map(str::to_owned)
+}
+
+/// `Some(reason)` when `ext` cannot load into this DuckDB: an extension is locked to the exact release it
+/// was built for, so a 1.5.5 build FAILS (it does not skip) under a 1.5.6 library.
+fn extension_mismatch(ext_bytes: &[u8], duckdb_version: &str) -> Option<String> {
+    match extension_duckdb_version(ext_bytes) {
+        Some(v) if v == duckdb_version => None,
+        Some(v) => Some(format!(
+            "built for DuckDB {v}, this build links {duckdb_version}"
+        )),
+        None => Some("no DuckDB version in the extension footer".to_owned()),
+    }
+}
+
+#[cfg(test)]
+mod footer {
+    use super::*;
+
+    fn footer(fields: &[&str]) -> Vec<u8> {
+        let mut b = vec![0u8; 4096];
+        for f in fields {
+            let mut field = [0u8; 32];
+            field[..f.len()].copy_from_slice(f.as_bytes());
+            b.extend_from_slice(&field);
+        }
+        b
+    }
+
+    #[test]
+    fn reads_the_duckdb_release_not_the_extension_calendar_version() {
+        let b = footer(&["4", "", "", "", "", "v2026.09.26", "linux_amd64", "v1.5.5"]);
+        assert_eq!(extension_duckdb_version(&b).as_deref(), Some("v1.5.5"));
+    }
+
+    #[test]
+    fn a_build_for_another_release_is_a_mismatch_with_a_clear_reason() {
+        let b = footer(&["4", "", "", "", "", "v2026.09.26", "linux_amd64", "v1.5.5"]);
+        let why = extension_mismatch(&b, "v1.5.6").expect("1.5.5 build must not load into 1.5.6");
+        assert!(why.contains("v1.5.5") && why.contains("v1.5.6"), "{why}");
+        assert!(extension_mismatch(&b, "v1.5.5").is_none());
+    }
+
+    #[test]
+    fn a_file_without_a_footer_is_a_mismatch() {
+        assert!(extension_mismatch(&[0u8; 100], "v1.5.6").is_some());
+    }
 }
 
 fn fresh_harness() -> Harness {
@@ -174,6 +238,19 @@ async fn reorder_proposal_e2e_through_query_page_and_acl() {
         "{} not built — run `make release` in anofox-inventory (this test was asked for with --ignored)",
         ext.display()
     );
+
+    // A local extension build is locked to the DuckDB release it was built for. Skip with a clear message
+    // on a mismatch (a 1.5.5 build fails to LOAD into 1.5.6) instead of failing for a reason that is not ours.
+    let linked: String = Connection::open_in_memory()
+        .and_then(|c| c.query_row("SELECT version()", [], |r| r.get(0)))
+        .expect("DuckDB version");
+    if let Some(why) = extension_mismatch(&std::fs::read(&ext).expect("read extension"), &linked) {
+        eprintln!(
+            "SKIP {}: {why}: rebuild anofox-inventory against DuckDB {linked}",
+            ext.display()
+        );
+        return;
+    }
 
     let h = fresh_harness();
     seed(

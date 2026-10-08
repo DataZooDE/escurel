@@ -57,6 +57,52 @@ const expanded: ExpandResponse = {
 };
 
 describe('page model', () => {
+  it('shows validation only on the exact ready experiment projection', () => {
+    const validationSkill = { ...skill, id: 'evolve_experiment', actions: [
+      { name: 'validate-winner', kind: 'event' as const, label: 'Validate winner', event: 'evolve_validate' },
+    ] };
+    const ready = { ...expanded, frontmatter: { ...expanded.frontmatter,
+      status: 'completed', best_program_id: 7,
+      next_validation_action: 'evolve_validate_winner',
+    } };
+    expect(buildPageModel(ready, validationSkill).actions).toHaveLength(1);
+    expect(buildPageModel({ ...ready, frontmatter: { ...ready.frontmatter,
+      next_validation_action: null,
+    } }, validationSkill).actions).toHaveLength(0);
+    expect(buildPageModel({ ...ready, content_sha256: undefined }, validationSkill).actions).toHaveLength(0);
+  });
+  it('offers the comparison only on a page that is still awaiting it', () => {
+    const comparisonSkill = { ...skill, id: 'evolve_comparison', actions: [
+      { name: 'compute-comparison', kind: 'event' as const, label: 'Compute comparison', event: 'evolve_compare' },
+    ] };
+    const requested = { ...expanded, frontmatter: { ...expanded.frontmatter,
+      experiment: 'exp-1', status: 'requested', next_comparison_action: 'evolve_compare',
+    } };
+    expect(buildPageModel(requested, comparisonSkill).actions).toHaveLength(1);
+    // A finished (or forged "completed") page, a page that names no experiment, and a page
+    // without a revision to bind the click to must not offer a click the gateway would refuse.
+    expect(buildPageModel({ ...requested, frontmatter: { ...requested.frontmatter,
+      status: 'completed', next_comparison_action: null } }, comparisonSkill).actions).toHaveLength(0);
+    expect(buildPageModel({ ...requested, frontmatter: { ...requested.frontmatter,
+      experiment: undefined } }, comparisonSkill).actions).toHaveLength(0);
+    expect(buildPageModel({ ...requested, content_sha256: undefined }, comparisonSkill).actions).toHaveLength(0);
+  });
+  it('offers candidate publication only on a passed private report with exact bindings', () => {
+    const reportSkill = { ...skill, id: 'evolve_validation_report', actions: [
+      { name: 'create-policy-candidate', kind: 'event' as const, label: 'Create policy candidate', event: 'evolve_publish_candidate' },
+    ] };
+    const ready = { ...expanded, frontmatter: { ...expanded.frontmatter,
+      status: 'passed', effective_passed: true, winner_program_id: 7,
+      report_sha256: 'a'.repeat(64), next_candidate_action: 'evolve_publish_candidate',
+    } };
+    expect(buildPageModel(ready, reportSkill).actions).toHaveLength(1);
+    expect(buildPageModel({ ...ready, frontmatter: { ...ready.frontmatter,
+      effective_passed: false,
+    } }, reportSkill).actions).toHaveLength(0);
+    expect(buildPageModel({ ...ready, frontmatter: { ...ready.frontmatter,
+      status: 'conflicted',
+    } }, reportSkill).actions).toHaveLength(0);
+  });
   it('folds expand + the skill into fields, summary, body, gate and actions', () => {
     const m = buildPageModel(expanded, skill);
     expect(m.title).toBe('Customer order 4500123 — Hoffmann Automotive');

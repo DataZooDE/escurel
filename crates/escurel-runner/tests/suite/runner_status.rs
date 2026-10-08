@@ -76,6 +76,59 @@ async fn wait_for(
 }
 
 #[tokio::test]
+async fn readiness_requires_a_successful_system_event_write() {
+    let gw = EscurelProcess::spawn(Opts {
+        auth: AuthMode::TestIssuer,
+        fixtures: Some(FixtureBuilder::new().tenant(TENANT).done()),
+        ..Default::default()
+    })
+    .await;
+    let listen = format!("127.0.0.1:{}", free_port());
+    let ledger_dir = tempfile::tempdir().expect("tempdir");
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_escurel-runner"));
+    cmd.env("ESCUREL_RUNNER_LISTEN", &listen)
+        .env("ESCUREL_RUNNER_GATEWAY_URL", gw.base_url())
+        .env("ESCUREL_RUNNER_TENANT", TENANT)
+        .env("ESCUREL_RUNNER_TOKEN", gw.mint_token(TENANT, Role::Agent))
+        .env(
+            "ESCUREL_RUNNER_LEDGER_PATH",
+            ledger_dir.path().join("ledger.sqlite"),
+        )
+        .env("ESCUREL_RUNNER_STATUS_INTERVAL", "1s");
+    let _runner = ChildGuard(cmd.spawn().expect("spawn runner"));
+    let client = reqwest::Client::new();
+    let ready_url = format!("http://{listen}/readyz");
+    let health_url = format!("http://{listen}/healthz");
+    let deadline = Instant::now() + Duration::from_secs(15);
+    loop {
+        if let Ok(resp) = client.get(&ready_url).send().await {
+            let status = resp.status();
+            let body: Value = resp.json().await.expect("readiness JSON");
+            if body["reason"] == "system_event_write_refused" {
+                assert_eq!(status.as_u16(), 503, "{body}");
+                break;
+            }
+        }
+        assert!(
+            Instant::now() < deadline,
+            "runner did not report denied system writes"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert_eq!(
+        client
+            .get(&health_url)
+            .send()
+            .await
+            .unwrap()
+            .status()
+            .as_u16(),
+        200,
+        "the process remains live while its control plane is unready"
+    );
+}
+
+#[tokio::test]
 async fn the_runner_heartbeats_and_reports_a_change_at_once() {
     let gw = EscurelProcess::spawn(Opts {
         auth: AuthMode::TestIssuer,
@@ -111,6 +164,24 @@ async fn the_runner_heartbeats_and_reports_a_change_at_once() {
 
     // Boot: the first status says who and what, idle.
     let (e, body) = wait_for(&gw, &admin, "the runner has booted", |_, _| true).await;
+    let ready_by = Instant::now() + Duration::from_secs(5);
+    loop {
+        let readiness: Value = reqwest::get(format!("http://{listen}/readyz"))
+            .await
+            .expect("GET runner readiness")
+            .json()
+            .await
+            .expect("readiness JSON");
+        if readiness["ready"] == true {
+            assert_eq!(readiness["reason"], "ready");
+            break;
+        }
+        assert!(
+            Instant::now() < ready_by,
+            "runner stayed unready: {readiness}"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
     assert_eq!(e["kind"], "system", "{e}");
     assert_eq!(
         e["status"], "inbox",

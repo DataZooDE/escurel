@@ -11,7 +11,7 @@ use bytes::Bytes;
 use duckdb::Connection;
 use escurel_embed::{Embedder, ZeroEmbedder};
 use escurel_index::drafts::{NewDraft, content_hash};
-use escurel_index::{Indexer, Migrator};
+use escurel_index::{AclCaller, Indexer, Migrator};
 use escurel_storage::{FsStore, Key, LaneStore};
 use tempfile::TempDir;
 
@@ -190,6 +190,84 @@ async fn apply_preserves_who_wrote_each_page() {
     );
     let page = h.indexer.expand(C1, None, None).await.unwrap().unwrap();
     assert_eq!(page.last_written_by.as_deref(), Some("agent:alice"));
+}
+
+#[tokio::test]
+async fn migrate_legacy_evolve_evidence_keeps_owner_acl_and_exact_bindings() {
+    let h = fresh();
+    let skill = "---\nkind: skill\nid: evolve_validation_report\ndescription: Private validation evidence.\nowner_field: owner_subject\nacl:\n  read: [owner]\n---\n# report\n";
+    let policy_skill = "---\nkind: skill\nid: plan_policy\ndescription: Inactive candidate.\nowner_field: owner_subject\nacl:\n  read: [owner]\n---\n# policy\n";
+    put(&h, "markdown/skills/evolve_validation_report.md", skill).await;
+    put(&h, "markdown/skills/plan_policy.md", policy_skill).await;
+    let report_path = "markdown/instances/evolve_validation_report/ep_123.md";
+    let policy_path = "markdown/instances/plan_policy/ep_123.md";
+    let report = "---\ntype: instance\nskill: evolve_validation_report\nid: ep_123\nowner_subject: alice\nacl:\n  read: [owner]\nwinner_sql_sha256: abc123\nreport_sha256: def456\n---\n# Sealed synthetic report\n";
+    let policy = "---\ntype: instance\nskill: plan_policy\nid: ep_123\nowner_subject: alice\nacl:\n  read: [owner]\nstatus: synthetic_sandbox_candidate\nwinner_sql_sha256: abc123\nreport_sha256: def456\n---\n# Inactive candidate\n";
+    put(&h, report_path, report).await;
+    put(&h, policy_path, policy).await;
+
+    let migrated = h.indexer.migrate_kind(true).await.unwrap();
+    assert!(migrated.pages_to_migrate.contains(&report_path.to_owned()));
+    assert!(migrated.pages_to_migrate.contains(&policy_path.to_owned()));
+    for (path, before, skill) in [
+        (report_path, report, "evolve_validation_report"),
+        (policy_path, policy, "plan_policy"),
+    ] {
+        assert_eq!(
+            lane(&h, path).await,
+            before.replacen("type: instance", "kind: instance", 1)
+        );
+        let page = h.indexer.expand(path, None, None).await.unwrap().unwrap();
+        assert_eq!(page.page.page_kind, escurel_md::PageKind::Instance);
+        let frontmatter = h
+            .indexer
+            .list_instances(skill, None, None, None, None, None)
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|item| item.frontmatter["id"] == "ep_123")
+            .unwrap()
+            .frontmatter;
+        assert_eq!(frontmatter["owner_subject"], "alice");
+        assert_eq!(frontmatter["winner_sql_sha256"], "abc123");
+        assert_eq!(frontmatter["report_sha256"], "def456");
+        assert!(
+            h.indexer
+                .may_read_instance(
+                    &AclCaller {
+                        subject: "alice",
+                        is_admin: false,
+                        token_groups: &[],
+                        actor: None,
+                        run_id: None,
+                        root_event_id: None,
+                        agent_skill: None
+                    },
+                    skill,
+                    &frontmatter
+                )
+                .await
+                .unwrap()
+        );
+        assert!(
+            !h.indexer
+                .may_read_instance(
+                    &AclCaller {
+                        subject: "bob",
+                        is_admin: false,
+                        token_groups: &[],
+                        actor: None,
+                        run_id: None,
+                        root_event_id: None,
+                        agent_skill: None
+                    },
+                    skill,
+                    &frontmatter
+                )
+                .await
+                .unwrap()
+        );
+    }
 }
 
 #[tokio::test]

@@ -687,7 +687,7 @@ async fn event_push_allowed(
     caller: &WsCaller,
     event: &escurel_index::EventInfo,
 ) -> bool {
-    if state.event_acl == crate::server::EventAclMode::Off {
+    if state.event_acl == crate::server::EventAclMode::Off && !event.is_private_evolve_event() {
         return true;
     }
     let Some(indexer) = state.indexer.as_ref().map(IndexerHandle::current) else {
@@ -697,7 +697,10 @@ async fn event_push_allowed(
         .may_read_event(&caller.acl(), event)
         .await
         .unwrap_or(false);
-    if !allowed && state.event_acl == crate::server::EventAclMode::Log {
+    if !allowed
+        && state.event_acl == crate::server::EventAclMode::Log
+        && !event.is_private_evolve_event()
+    {
         tracing::warn!(
             subject = %caller.subject(), event_id = %event.event_id,
             "event-ACL would withhold this push (log mode) — delivering"

@@ -1,4 +1,5 @@
 import { isSourceField } from '../../src/shared/rowSource';
+import { isEvolveReviewControl } from '../../src/shared/evolveControls';
 import { sourceBanner } from '../../src/shared/sourceBanner';
 import { writeBackLine } from '../../src/shared/writeBack';
 import { writeBackLead } from '../../src/shared/writeBackLead';
@@ -19,6 +20,14 @@ const START_ITEMS = [
   { id: 'background', label: 'Start in background' },
   { id: 'plan', label: 'First make a plan' },
   { id: 'terminal', label: 'Start in terminal' },
+  { id: 'skill', label: 'View skill' },
+];
+const EVOLVE_PLAN_ITEMS = [
+  { id: 'plan', label: 'Review experiment plan' },
+  { id: 'skill', label: 'View skill' },
+];
+const EVOLVE_CONTROL_ITEMS = [
+  { id: 'background', label: 'Start in background' },
   { id: 'skill', label: 'View skill' },
 ];
 
@@ -591,10 +600,14 @@ export class EscurelPageAsUi extends LitElement {
                       class="skill-button"
                       noun="skill"
                       .label=${a.label}
-                      title=${`Starts skill ${a.skill} with an agent on this page`}
+                      title=${a.skill === 'evolve_run'
+                        ? 'Review the problem revision and make an experiment plan'
+                        : `Starts skill ${a.skill} with an agent on this page`}
                       .header=${`skill ${a.skill}`}
-                      .items=${START_ITEMS}
-                      @primary=${() => this.start(a.skill, 'background')}
+                      .items=${a.skill === 'evolve_run' ? EVOLVE_PLAN_ITEMS
+                        : isEvolveReviewControl(a.skill)
+                        ? EVOLVE_CONTROL_ITEMS : START_ITEMS}
+                      @primary=${() => this.start(a.skill, a.skill === 'evolve_run' ? 'plan' : 'background')}
                       @select=${(e: CustomEvent<string>) => this.start(a.skill, e.detail)}
                     ></escurel-split-button>`,
                 )}

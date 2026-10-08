@@ -2012,6 +2012,206 @@ pub(super) async fn tool_capture_event(
         obj.insert("mode".to_owned(), json!(mode));
         obj.insert("requested_by".to_owned(), json!(caller.subject));
     }
+    // An Evolve run spends a budget against an owner-authored problem page.
+    // Bind the click to the stored bytes at capture time. The expected hash
+    // comes from Workbench's displayed page; the stored hash is gateway-owned.
+    let evolve_target_skill = match a.label_skill.as_str() {
+        "evolve_run" => Some("evolve_problem"),
+        "evolve_preflight" => Some("evolve_problem"),
+        "evolve_prepare_source" => Some("evolve_training_source"),
+        "evolve_validate" => Some("evolve_experiment"),
+        "evolve_publish_candidate" => Some("evolve_validation_report"),
+        "evolve_compare" => Some("evolve_comparison"),
+        _ => None,
+    };
+    let existing_evolve_event = if evolve_target_skill.is_some() {
+        if let Some(event_id) = a.event_id.as_deref() {
+            indexer.get_event(event_id).await.map_err(|e| {
+                JsonRpcError::internal(format!("capture_event evolve_run retry: {e}"))
+            })?
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+    if matches!(
+        a.label_skill.as_str(),
+        "evolve_run"
+            | "evolve_preflight"
+            | "evolve_prepare_source"
+            | "evolve_validate"
+            | "evolve_publish_candidate"
+            | "evolve_compare"
+    ) && let Some(existing) = existing_evolve_event.as_ref()
+    {
+        let requested_manual = a.provenance.as_ref().and_then(|p| p.get("manual"));
+        let stored_manual = &existing.provenance["manual"];
+        if existing.kind != escurel_index::EventKind::User
+            || existing.label_skill != a.label_skill
+            || existing.instance_page_id.as_deref() != a.instance_page_id.as_deref()
+            || existing.provenance["captured_by"] != caller.subject
+            || requested_manual.and_then(|m| m.get("mode")) != stored_manual.get("mode")
+            || requested_manual.and_then(|m| m.get("harness")) != stored_manual.get("harness")
+            || requested_manual.and_then(|m| m.get("approved_plan_run_id"))
+                != stored_manual.get("approved_plan_run_id")
+            || requested_manual.and_then(|m| m.get("expected_page_sha256"))
+                != stored_manual.get("expected_page_sha256")
+            || requested_manual.and_then(|m| m.get("expected_winner_program_id"))
+                != stored_manual.get("expected_winner_program_id")
+            || requested_manual.and_then(|m| m.get("expected_validation_report_sha256"))
+                != stored_manual.get("expected_validation_report_sha256")
+            || requested_manual.and_then(|m| m.get("confirm")) != stored_manual.get("confirm")
+            || requested_manual.and_then(|m| m.get("review_note"))
+                != stored_manual.get("review_note")
+        {
+            return Err(JsonRpcError::invalid_params(
+                "capture_event: Evolve event ID belongs to another request".to_owned(),
+            ));
+        }
+    }
+    let mut verified_revision = None;
+    if let Some(expected_skill) = evolve_target_skill.filter(|_| existing_evolve_event.is_none()) {
+        let target = a
+            .instance_page_id
+            .as_deref()
+            .filter(|id| !id.is_empty())
+            .ok_or_else(|| {
+                JsonRpcError::invalid_params(
+                    "capture_event: evolve_run needs a target problem page".to_owned(),
+                )
+            })?;
+        let expanded = indexer
+            .expand(target, None, None)
+            .await
+            .map_err(|e| JsonRpcError::internal(format!("capture_event evolve_run type: {e}")))?
+            .ok_or_else(|| {
+                JsonRpcError::invalid_params(
+                    "capture_event: target problem page unavailable".to_owned(),
+                )
+            })?;
+        if expanded.page.page_kind != PageKind::Instance || expanded.page.skill != expected_skill {
+            return Err(JsonRpcError::invalid_params(format!(
+                "capture_event: {} target must be an {expected_skill} instance",
+                a.label_skill
+            )));
+        }
+        let allowed = if matches!(
+            a.label_skill.as_str(),
+            "evolve_preflight"
+                | "evolve_prepare_source"
+                | "evolve_validate"
+                | "evolve_publish_candidate"
+                | "evolve_compare"
+        ) {
+            expanded.frontmatter["owner_subject"] == caller.subject
+                && indexer
+                    .may_read_instance(&caller, &expanded.page.skill, &expanded.frontmatter)
+                    .await
+                    .map_err(|e| {
+                        JsonRpcError::internal(format!(
+                            "capture_event evolve validation read acl: {e}"
+                        ))
+                    })?
+        } else {
+            indexer
+                .may_assign_event_target(&caller, target)
+                .await
+                .map_err(|e| JsonRpcError::internal(format!("capture_event evolve run acl: {e}")))?
+        };
+        if !allowed {
+            return Err(JsonRpcError::invalid_params(
+                "capture_event: target page unavailable to requester".to_owned(),
+            ));
+        }
+        let content = indexer
+            .read_page_markdown(target)
+            .await
+            .map_err(|e| JsonRpcError::internal(format!("capture_event evolve_run page: {e}")))?
+            .ok_or_else(|| {
+                JsonRpcError::invalid_params(
+                    "capture_event: target problem page unavailable".to_owned(),
+                )
+            })?;
+        use sha2::{Digest, Sha256};
+        let current_hash = format!("{:x}", Sha256::digest(content.as_bytes()));
+        let manual = a
+            .provenance
+            .as_mut()
+            .and_then(|p| p.get_mut("manual"))
+            .and_then(Value::as_object_mut)
+            .ok_or_else(|| {
+                JsonRpcError::invalid_params(
+                    "capture_event: evolve_run needs provenance.manual".to_owned(),
+                )
+            })?;
+        if manual.get("expected_page_sha256").and_then(Value::as_str) != Some(current_hash.as_str())
+        {
+            return Err(JsonRpcError::invalid_params(
+                "capture_event: problem page changed since review".to_owned(),
+            ));
+        }
+        if matches!(
+            a.label_skill.as_str(),
+            "evolve_preflight" | "evolve_prepare_source"
+        ) && manual.get("mode").and_then(Value::as_str) != Some("run")
+        {
+            return Err(JsonRpcError::invalid_params(
+                "capture_event: Evolve preflight must run in the background".to_owned(),
+            ));
+        }
+        if a.label_skill == "evolve_validate"
+            && (manual.get("mode").and_then(Value::as_str) != Some("run")
+                || !matches!(
+                    expanded.frontmatter["status"].as_str(),
+                    Some("completed" | "finished")
+                )
+                || expanded.frontmatter["next_validation_action"] != "evolve_validate_winner"
+                || manual.get("expected_winner_program_id")
+                    != expanded.frontmatter.get("best_program_id"))
+        {
+            return Err(JsonRpcError::invalid_params(
+                "capture_event: evolve validation needs the current completed winner".to_owned(),
+            ));
+        }
+        // The comparison page is both the request and, later, the result. Only a page that
+        // is still waiting for its comparison can be clicked, so a finished (or forged
+        // "completed") page is never recomputed.
+        if a.label_skill == "evolve_compare"
+            && (manual.get("mode").and_then(Value::as_str) != Some("run")
+                || expanded.frontmatter["status"] != "requested"
+                || expanded.frontmatter["next_comparison_action"] != "evolve_compare")
+        {
+            return Err(JsonRpcError::invalid_params(
+                "capture_event: evolve comparison needs a page that is awaiting its comparison"
+                    .to_owned(),
+            ));
+        }
+        if a.label_skill == "evolve_publish_candidate"
+            && (manual.get("mode").and_then(Value::as_str) != Some("run")
+                || manual.get("confirm") != Some(&json!(true))
+                || expanded.frontmatter["effective_passed"] != true
+                || expanded.frontmatter["status"] != "passed"
+                || expanded.frontmatter["next_candidate_action"] != "evolve_publish_candidate"
+                || manual.get("expected_winner_program_id")
+                    != expanded.frontmatter.get("winner_program_id")
+                || manual.get("expected_validation_report_sha256")
+                    != expanded.frontmatter.get("report_sha256"))
+        {
+            return Err(JsonRpcError::invalid_params(
+                    "capture_event: candidate publication needs the current passed report and explicit confirmation"
+                        .to_owned(),
+                ));
+        }
+        manual.remove("target_page_sha256");
+        manual.remove("target_page_sha256_gateway_verified");
+        manual.insert("target_page_sha256".to_owned(), json!(current_hash));
+        manual.insert(
+            "target_page_sha256_gateway_verified".to_owned(),
+            json!(true),
+        );
+        verified_revision = Some(current_hash);
+    }
     // #390: `event_id` is the idempotency key, so "" would make EVERY
     // id-less capture the same event — first writer wins, each later one
     // silently discarded with a success receipt. An empty/whitespace key
@@ -2068,10 +2268,44 @@ pub(super) async fn tool_capture_event(
             .map_err(|e| JsonRpcError::internal(format!("capture_event: {e}")))?
             .is_none()
     };
-    let stored = indexer
-        .capture_event(requested.clone())
-        .await
-        .map_err(|e| JsonRpcError::internal(format!("capture_event: {e}")))?;
+    let mut stored = match verified_revision.as_deref() {
+        Some(sha256) => {
+            indexer
+                .capture_evolve_event(requested.clone(), sha256)
+                .await
+        }
+        None => indexer.capture_event(requested.clone()).await,
+    }
+    .map_err(|e| JsonRpcError::internal(format!("capture_event: {e}")))?;
+    if matches!(
+        requested.label_skill.as_str(),
+        "evolve_preflight"
+            | "evolve_prepare_source"
+            | "evolve_validate"
+            | "evolve_publish_candidate"
+            | "evolve_compare"
+    ) && stored.label_skill == requested.label_skill
+    {
+        // This is an Evolve control request, not a runnable skill. Keep it
+        // in event history and lineage while removing it from the runner's
+        // work inbox before webhook notification.
+        let target = requested.instance_page_id.as_deref().ok_or_else(|| {
+            JsonRpcError::internal("validation event has no target after capture".to_owned())
+        })?;
+        indexer
+            .assign_event(&stored.event_id, target)
+            .await
+            .map_err(|e| {
+                JsonRpcError::internal(format!("capture_event validation routing: {e}"))
+            })?;
+        stored = indexer
+            .get_event(&stored.event_id)
+            .await
+            .map_err(|e| JsonRpcError::internal(format!("capture_event validation readback: {e}")))?
+            .ok_or_else(|| {
+                JsonRpcError::internal("validation event missing after routing".to_owned())
+            })?;
+    }
     // A runner's heartbeat is unbounded by construction; keep the tail that
     // answers "what is the runner's state now?" (workbench backend P2-4).
     if requested.label_skill == RUNNER_STATUS_LABEL
@@ -2613,18 +2847,19 @@ async fn acl_filter_events(
     tool: &str,
     events: Vec<EventInfo>,
 ) -> Result<Vec<EventInfo>, JsonRpcError> {
-    if mode == crate::server::EventAclMode::Off {
-        return Ok(events);
-    }
     let mut out = Vec::with_capacity(events.len());
     for e in events {
+        if mode == crate::server::EventAclMode::Off && !e.is_private_evolve_event() {
+            out.push(e);
+            continue;
+        }
         let allowed = indexer
             .may_read_event(caller, &e)
             .await
             .map_err(|err| JsonRpcError::internal(format!("{tool} acl: {err}")))?;
         if allowed {
             out.push(e);
-        } else if mode == crate::server::EventAclMode::Log {
+        } else if mode == crate::server::EventAclMode::Log && !e.is_private_evolve_event() {
             tracing::warn!(
                 subject = %caller.subject, event_id = %e.event_id, tool,
                 "event-ACL would hide this event (log mode) — showing"
@@ -2842,7 +3077,31 @@ pub(super) async fn tool_list_events(
     // event that does not exist, which is what this surface already
     // returns for a miss, so no existence is disclosed here either.
     let events = acl_filter_events(indexer, &caller, event_acl, "list_events", events).await?;
-    Ok(events_page_json(events, next_cursor, resume_cursor))
+    let mut result = events_page_json(events.clone(), next_cursor, resume_cursor);
+    for (i, event) in events.iter().enumerate() {
+        if event.kind == escurel_index::EventKind::User
+            && matches!(
+                event.label_skill.as_str(),
+                "evolve_run"
+                    | "evolve_preflight"
+                    | "evolve_prepare_source"
+                    | "evolve_validate"
+                    | "evolve_publish_candidate"
+                    | "evolve_compare"
+            )
+        {
+            let sha = event.provenance["manual"]["target_page_sha256"]
+                .as_str()
+                .unwrap_or_default();
+            result["events"][i]["revision_binding_attested"] = json!(
+                indexer
+                    .evolve_revision_attested(&event.event_id, sha)
+                    .await
+                    .map_err(|e| JsonRpcError::internal(format!("list_events attestation: {e}")))?
+            );
+        }
+    }
+    Ok(result)
 }
 
 #[derive(Deserialize)]

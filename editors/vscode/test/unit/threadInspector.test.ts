@@ -13,6 +13,30 @@ function recorded() {
 }
 
 describe('buildInspectors', () => {
+  it('shows Evolve validation, admission, and candidate receipts in event inspectors', () => {
+    const { view, nodes } = recorded();
+    const event = view.nodes.find((node) => node.kind === 'event')!;
+    const patched = nodes.map((node) =>
+      node.id === event.id
+        ? { ...node, label_skill: 'evolve:validation', body: 'Open [[evolve_validation_report::run-1]]' }
+        : node,
+    );
+    const detail = buildInspectors(view, patched)[event.id];
+    expect(detail?.body).toBe('Open [[evolve_validation_report::run-1]]');
+    expect(detail?.bodyTitle).toBe('Validation evidence');
+    const admitted = patched.map((node) => node.id === event.id
+      ? { ...node, label_skill: 'evolve:admission',
+        body: 'Experiment accepted: [[evolve_experiment::run-1]]' } : node);
+    const admission = buildInspectors(view, admitted)[event.id];
+    expect(admission?.bodyTitle).toBe('Experiment admission');
+    expect(admission?.body).toBe('Experiment accepted: [[evolve_experiment::run-1]]');
+    const published = patched.map((node) => node.id === event.id
+      ? { ...node, label_skill: 'evolve:candidate',
+        body: 'Inactive candidate: [[plan_policy::run-1-7]]' } : node);
+    const candidate = buildInspectors(view, published)[event.id];
+    expect(candidate?.bodyTitle).toBe('Inactive policy candidate');
+    expect(candidate?.body).toBe('Inactive candidate: [[plan_policy::run-1-7]]');
+  });
   it('uses recorded run data for rows, summary and timing', () => {
     const { view, nodes } = recorded();
     const run = view.nodes.find((node) => node.kind === 'run')!;

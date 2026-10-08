@@ -6,6 +6,11 @@
 #   demo/run.sh stop      stop it all (the window is left to you to close)
 #   demo/run.sh status
 #
+# Evolve scenarios (optional): set ESCUREL_DEMO_EVOLVE_AGENT_BIN to an `evolve-agent` built with
+# `--features synthetic-brain`, and ANOFOX_EXTENSION_DIR to a DuckDB 1.5.6 extension profile. The demo
+# then starts Evolve against this gateway, runs three scripted searches (no model spend; synthetic
+# data) as the demo user, and leaves one comparison page for each, ready for "Compute comparison".
+#
 # Binaries (override with the env vars): ESCUREL_TEST_GATEWAY_BIN, ESCUREL_RUNNER_BIN, under
 # <repo>/target/release by default. Everything lives in $ESCUREL_DEMO_HOME (default
 # ~/.cache/escurel-demo, on the real disk) and uses a throwaway VS Code profile, so your own
@@ -30,7 +35,7 @@ stop() {
   sleep 2
   # A window that has been up for hours ignores SIGTERM.
   pkill -9 -f -- "${HOME_DIR}/[p]rofile" 2>/dev/null || true
-  for f in code runner gateway ratings confirmations; do
+  for f in code evolve runner gateway ratings confirmations; do
     if [ -f "$HOME_DIR/$f.pid" ]; then
       kill "$(cat "$HOME_DIR/$f.pid")" 2>/dev/null || true
       rm -f "$HOME_DIR/$f.pid"
@@ -41,7 +46,7 @@ stop() {
 case "${1:-start}" in
   stop) stop; echo "demo stopped"; exit 0 ;;
   status)
-    for f in gateway runner code ratings confirmations; do
+    for f in gateway runner evolve code ratings confirmations; do
       if [ -f "$HOME_DIR/$f.pid" ] && kill -0 "$(cat "$HOME_DIR/$f.pid")" 2>/dev/null; then echo "$f: running"; else echo "$f: not running"; fi
     done
     exit 0 ;;
@@ -62,6 +67,11 @@ mkdir -p "$HOME_DIR/workspace" "$HOME_DIR/profile/User" "$HOME_DIR/ext"
 # resolves a relative glob against the server's cwd, so its skill page must carry an absolute path.
 cp -r "$HERE/seed" "$HOME_DIR/seed"
 sed -i "s|@ORDER_LINES_DIR@|$HERE/sources/order-lines|" "$HOME_DIR/seed/skills/order-lines.md"
+if [ -n "${ESCUREL_DEMO_EVOLVE_AGENT_BIN:-}" ]; then ESCUREL_DEMO_EVOLVE_SEED=1; fi
+if [ "${ESCUREL_DEMO_EVOLVE_SEED:-0}" = "1" ]; then
+  cp "$EXT"/test/integration/seed/skills/evolve_*.md "$HOME_DIR/seed/skills/"
+  cp "$EXT"/test/integration/seed/skills/plan_policy.md "$HOME_DIR/seed/skills/"
+fi
 # The orders and the suppliers are `instances: rows` sql_views over SAP-shaped extracts (VBAK, LFA1):
 # one instance per row, no materialise step (the view is created on first read).
 sed -i "s|@VBAK_DIR@|$HERE/sources/vbak|" "$HOME_DIR/seed/skills/customer-order.md"
@@ -109,17 +119,58 @@ PORT="$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); p
 
 # The runner, MINTED mode: it signs a token per run, which is what lets the gateway tell which run
 # wrote what, so the thread shows a changeset under its run.
-env -u ESCUREL_RUNNER_TOKEN \
-  ESCUREL_RUNNER_GATEWAY_URL="$(field gateway_url)" ESCUREL_RUNNER_TENANT="$(field tenant)" \
-  ESCUREL_RUNNER_AUTH_ISSUER="$(field issuer_url)" ESCUREL_RUNNER_AUTH_KID="$(field kid)" \
-  ESCUREL_RUNNER_AUTH_SIGNING_KEY="$(field signing_key)" ESCUREL_RUNNER_HARNESS=echo \
-  ESCUREL_RUNNER_LISTEN="127.0.0.1:$PORT" ESCUREL_RUNNER_LEDGER_PATH="$HOME_DIR/ledger.duckdb" \
-  ESCUREL_RUNNER_POLL_INTERVAL=250ms \
-  setsid nohup "$RUNNER_BIN" > "$HOME_DIR/runner.log" 2>&1 < /dev/null &
-echo $! > "$HOME_DIR/runner.pid"
+start_runner() {
+  env -u ESCUREL_RUNNER_TOKEN \
+    ESCUREL_RUNNER_GATEWAY_URL="$(field gateway_url)" ESCUREL_RUNNER_TENANT="$(field tenant)" \
+    ESCUREL_RUNNER_AUTH_ISSUER="$(field issuer_url)" ESCUREL_RUNNER_AUTH_KID="$(field kid)" \
+    ESCUREL_RUNNER_AUTH_SIGNING_KEY="$(field signing_key)" ESCUREL_RUNNER_HARNESS="$1" \
+    ESCUREL_RUNNER_LISTEN="127.0.0.1:$PORT" ESCUREL_RUNNER_LEDGER_PATH="$HOME_DIR/ledger.duckdb" \
+    ESCUREL_RUNNER_POLL_INTERVAL=250ms \
+    setsid nohup "$RUNNER_BIN" > "$HOME_DIR/runner.log" 2>&1 < /dev/null &
+  echo $! > "$HOME_DIR/runner.pid"
+}
+start_runner echo
 
 echo "playing the story (a few seconds)..."
 node "$HERE/driver.mjs" "$HOME_DIR/gateway.json" "$HOME_DIR/bearer.json" > "$HOME_DIR/story.json"
+if [ "${ESCUREL_DEMO_RUNNER_HARNESS:-echo}" != echo ]; then
+  kill "$(cat "$HOME_DIR/runner.pid")"
+  for _ in $(seq 1 100); do
+    kill -0 "$(cat "$HOME_DIR/runner.pid")" 2>/dev/null || break
+    sleep 0.1
+  done
+  PORT="$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1])')"
+  start_runner "$ESCUREL_DEMO_RUNNER_HARNESS"
+fi
+
+# The Evolve scenarios: a real Evolve service in OIDC mode against this gateway's token issuer, then
+# two scripted searches and their comparison pages (see evolve-scenarios.mjs).
+if [ -n "${ESCUREL_DEMO_EVOLVE_AGENT_BIN:-}" ]; then
+  [ -x "$ESCUREL_DEMO_EVOLVE_AGENT_BIN" ] || { echo "missing $ESCUREL_DEMO_EVOLVE_AGENT_BIN" >&2; exit 1; }
+  EVOLVE_PORT="$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1])')"
+  ISSUER="$(field issuer_url)"
+  ADMIN_BEARER="$(python3 -c "import json; print(json.load(open('$HOME_DIR/bearer.json'))['admin_bearer'])")"
+  ESCUREL_ENDPOINT="$(field gateway_url)" ESCUREL_TOKEN="$ADMIN_BEARER" \
+    ESCUREL_OIDC_ISSUER="$ISSUER" ESCUREL_OIDC_AUDIENCE=escurel \
+    ESCUREL_OIDC_JWKS_URI="$ISSUER/protocol/openid-connect/certs" \
+    EVOLVE_OIDC_ISSUER="$ISSUER" EVOLVE_OIDC_AUDIENCE=escurel \
+    EVOLVE_OIDC_JWKS_URI="$ISSUER/protocol/openid-connect/certs" EVOLVE_TENANT="$(field tenant)" \
+    GEMINI_API_KEY=unused-scripted-demo-key EVOLVE_ALLOW_SYNTHETIC_BRAIN=1 \
+    setsid nohup "$ESCUREL_DEMO_EVOLVE_AGENT_BIN" serve --addr "127.0.0.1:$EVOLVE_PORT" \
+    --db "$HOME_DIR/evolve.duckdb" > "$HOME_DIR/evolve.log" 2>&1 < /dev/null &
+  echo $! > "$HOME_DIR/evolve.pid"
+  for _ in $(seq 1 120); do
+    curl -fs "http://127.0.0.1:$EVOLVE_PORT/healthz" >/dev/null 2>&1 && break
+    sleep 0.25
+  done
+  curl -fs "http://127.0.0.1:$EVOLVE_PORT/healthz" >/dev/null 2>&1 || { echo "Evolve did not start; see $HOME_DIR/evolve.log" >&2; exit 1; }
+  export ESCUREL_DEMO_EVOLVE_ENDPOINT="http://127.0.0.1:$EVOLVE_PORT"
+  # Land on the first comparison instead of the CRM story: a visitor should see the Evolve demo first.
+  export ESCUREL_DEMO_OPEN_PAGE="${ESCUREL_DEMO_OPEN_PAGE:-markdown/instances/evolve_comparison/demo-assortment-vs-top-n.md}"
+  echo "running the Evolve scenarios (three scripted searches)..."
+  node "$HERE/evolve-scenarios.mjs" "$HOME_DIR/gateway.json" "$HOME_DIR/bearer.json" "$ESCUREL_DEMO_EVOLVE_ENDPOINT" \
+    > "$HOME_DIR/evolve-scenarios.json" || { echo "the Evolve scenarios failed; see $HOME_DIR/evolve.log" >&2; exit 1; }
+fi
 
 # ESCUREL_DEMO_THEME: a colour theme for the window (a themed tour of every screen).
 THEME_LINE=""
@@ -127,6 +178,7 @@ THEME_LINE=""
 cat > "$HOME_DIR/profile/User/settings.json" <<JSON
 {
   "escurel.gatewayUrl": "$(field gateway_url)",
+  "escurel.evolveEndpoint": "${ESCUREL_DEMO_EVOLVE_ENDPOINT:-}",
   "security.workspace.trust.enabled": false,
   "workbench.startupEditor": "none",
   "workbench.tips.enabled": false,
@@ -136,6 +188,7 @@ cat > "$HOME_DIR/profile/User/settings.json" <<JSON
   "extensions.autoUpdate": false,
   "window.restoreWindows": "none",
   "window.zoomLevel": ${ESCUREL_DEMO_ZOOM:-1},
+  "window.dialogStyle": "${ESCUREL_DEMO_DIALOG_STYLE:-native}",
   "chat.disableAIFeatures": true,
   "workbench.secondarySideBar.defaultVisibility": "visible",
   "workbench.layoutControl.enabled": false,

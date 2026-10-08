@@ -1,3 +1,4 @@
+import { isEvolveReviewControl } from '../shared/evolveControls';
 import type { AdminState } from '../auth/adminState';
 import type { LineageNode, Skill } from '../client/types';
 import { factsFromLineage, offeredControls, resolveControl, type RunFacts } from '../runs/runFacts';
@@ -102,7 +103,10 @@ export function buildNodeActions(
       return undefined;
     }
 
-    const actions: ActionView[] = skillActionViews(skill.actions);
+    // Validation requires the displayed experiment revision and winner;
+    // the thread inspector does not hold either verified page snapshot.
+    const actions: ActionView[] = skillActionViews(skill.actions)
+      .filter((action) => !isEvolveReviewControl(action.skill));
     if (actions.length === 0) return undefined;
 
     return {
@@ -177,7 +181,8 @@ export function resolveThreadAction(
     if (!offersSkill && ctx.skills && message.pageId) {
       const pageSkillName = skillFromPageId(message.pageId);
       const pageSkill = ctx.skills.find((s) => s.id === pageSkillName);
-      if (skillActionViews(pageSkill?.actions).some((a) => a.skill === message.skill)) {
+      if (!isEvolveReviewControl(message.skill)
+          && skillActionViews(pageSkill?.actions).some((a) => a.skill === message.skill)) {
         offersSkill = true;
       }
     }

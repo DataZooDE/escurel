@@ -60,7 +60,8 @@ export async function knowledgeRow(page: Page, name: RegExp) {
 }
 
 /** A skill row by what a screen reader hears: its role, then its id. */
-export const skillRow = (page: Page, id: string) => knowledgeRow(page, new RegExp(`skill ${id},`));
+export const skillRow = (page: Page, id: string) =>
+  knowledgeRow(page, new RegExp(`skill (?:\\(inferred\\) )?${id},`));
 
 /**
  * Open one row of a skill. The tree refreshes whenever something live happens (the runner is still

@@ -10,6 +10,7 @@ export interface LoadedRun {
 }
 
 const EVENT_PAGE_CAP = 20;
+const LINEAGE_PAGE_CAP = 100;
 const CALLS_PAGE = 50;
 
 /**
@@ -37,12 +38,22 @@ export async function loadRun(client: EscurelClient, runId: string): Promise<Loa
   let skill: string | undefined;
   if (rootEventId) {
     try {
-      const lineage = await client.listLineage({
-        root_event_id: rootEventId,
-        include: ['events', 'runs', 'tool_calls'],
-      });
-      node = lineage.nodes.find((n) => n.type === 'run' && n.id === runId);
-      skill = triggerSkill(lineage.nodes, runId);
+      const nodes = new Map<string, LineageNode>();
+      let lineageCursor: string | undefined;
+      for (let i = 0; i < LINEAGE_PAGE_CAP; i += 1) {
+        const page = await client.listLineage({
+          root_event_id: rootEventId,
+          // The trigger is an event node and the run may be on a later page.
+          include: ['events', 'runs', 'tool_calls'],
+          ...(lineageCursor ? { cursor: lineageCursor } : {}),
+        });
+        for (const entry of page.nodes) nodes.set(entry.id, entry);
+        node = nodes.get(runId)?.type === 'run' ? nodes.get(runId) : undefined;
+        skill = triggerSkill(nodes.values(), runId);
+        if (node && skill) break;
+        if (!page.next_cursor || page.next_cursor === lineageCursor) break;
+        lineageCursor = page.next_cursor;
+      }
     } catch {
       // A denied root does not prevent showing the run's own events.
     }

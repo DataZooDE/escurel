@@ -110,6 +110,10 @@ export class DetailsViewProvider implements vscode.WebviewViewProvider, vscode.D
       log().warn('details: refused a message for a thread that is not the one shown');
       return false;
     }
+    if (accepted.message.type === 'open-wikilink') {
+      await vscode.commands.executeCommand('escurel.resolve', accepted.message.wikilink);
+      return true;
+    }
     return this.threads.handleWebviewMessage(accepted.rootEventId, accepted.message);
   }
 
@@ -122,6 +126,7 @@ export class DetailsViewProvider implements vscode.WebviewViewProvider, vscode.D
       rootEventId: shown.rootEventId,
       nodeId: shown.nodeId,
       pageId: actions?.skills?.pageId,
+      body: shown.detail.body,
       skills: [
         ...(actions?.skills?.actions.map((a) => a.skill) ?? []),
         ...(actions?.skill ? [actions.skill] : []),

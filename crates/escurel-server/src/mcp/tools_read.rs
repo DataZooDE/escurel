@@ -45,7 +45,16 @@ pub(super) async fn tool_list_skills(
             .map(|s| skill_to_wire(s, is_admin))
             .collect(),
     };
-    to_value(resp)
+    let mut value = to_value(resp)?;
+    // Downstream Evolve may admit budget only when this gateway owns the
+    // revision marker written by capture_event. Older gateways lack this.
+    value["evolve_revision_binding"] = json!("gateway-owned-v2");
+    value["evolve_validation_revision_binding"] = json!("gateway-owned-v1");
+    value["evolve_preflight_revision_binding"] = json!("gateway-owned-v1");
+    value["evolve_source_revision_binding"] = json!("gateway-owned-v1");
+    value["evolve_candidate_revision_binding"] = json!("gateway-owned-v1");
+    value["evolve_comparison_revision_binding"] = json!("gateway-owned-v1");
+    Ok(value)
 }
 
 /// What a skill's backend tells an agent: for a `rows` skill the key, what it may filter / search by
@@ -668,6 +677,15 @@ async fn tool_expand_stored(
                     .await
                     .map_err(|err| JsonRpcError::internal(format!("expand hash: {err}")))?
             {
+                // `indexer.expand` and the blob read are separate operations.
+                // A concurrent edit can otherwise pair an old rendered Evolve
+                // problem with the NEW blob hash, authorizing bytes nobody saw.
+                if matches!(
+                    e.page.skill.as_str(),
+                    "evolve_problem" | "evolve_training_source"
+                ) {
+                    ensure_evolve_problem_projection_matches(&stored, &page)?;
+                }
                 use sha2::{Digest, Sha256};
                 page["content_sha256"] = json!(format!("{:x}", Sha256::digest(stored.as_bytes())));
                 if a.raw {
@@ -758,6 +776,55 @@ async fn tool_expand_stored(
             }
             Ok(page)
         }
+    }
+}
+
+fn ensure_evolve_problem_projection_matches(
+    stored: &str,
+    projected: &Value,
+) -> Result<(), JsonRpcError> {
+    let parsed = escurel_md::parse(stored)
+        .map_err(|err| JsonRpcError::internal(format!("expand problem parse: {err}")))?;
+    let parsed_frontmatter = serde_json::to_value(&parsed.frontmatter.fields)
+        .map_err(|err| JsonRpcError::internal(format!("expand problem frontmatter: {err}")))?;
+    if parsed.body != projected["body"].as_str().unwrap_or("")
+        || parsed_frontmatter != projected["frontmatter"]
+    {
+        return Err(JsonRpcError::internal(
+            "expand: evolve_problem changed during read; retry".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod evolve_projection_tests {
+    use super::ensure_evolve_problem_projection_matches;
+    use serde_json::json;
+
+    #[test]
+    fn refuses_a_new_blob_hash_next_to_old_displayed_problem_content() {
+        let stored = "---\nkind: instance\nskill: evolve_problem\nid: a\n---\n# New budget\n";
+        let old_projection = json!({
+            "frontmatter": {"kind": "instance", "skill": "evolve_problem", "id": "a"},
+            "body": "# Old budget\n"
+        });
+        assert!(ensure_evolve_problem_projection_matches(stored, &old_projection).is_err());
+        let current_projection = json!({
+            "frontmatter": {"kind": "instance", "skill": "evolve_problem", "id": "a"},
+            "body": "# New budget\n"
+        });
+        assert!(ensure_evolve_problem_projection_matches(stored, &current_projection).is_ok());
+    }
+
+    #[test]
+    fn refuses_a_new_source_blob_hash_next_to_old_training_json() {
+        let stored = "---\nkind: instance\nskill: evolve_training_source\nid: a\nowner_subject: owner\n---\n```json\n{\"capacity\": 20}\n```\n";
+        let old_projection = json!({
+            "frontmatter": {"kind": "instance", "skill": "evolve_training_source", "id": "a", "owner_subject": "owner"},
+            "body": "```json\n{\"capacity\": 10}\n```\n"
+        });
+        assert!(ensure_evolve_problem_projection_matches(stored, &old_projection).is_err());
     }
 }
 

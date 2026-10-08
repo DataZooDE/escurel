@@ -32,6 +32,7 @@
     "onView:escurel.details",
     "onView:escurel.inbox",
     "onView:escurel.knowledge",
+    "onView:escurel.scenarios",
     "onView:escurel.runner",
     "onView:escurel.threads"
   ],
@@ -44,6 +45,12 @@
           "scope": "application",
           "default": "http://127.0.0.1:8080",
           "description": "The one escurel gateway this window talks to (its /mcp and /ws live under this origin)."
+        },
+        "escurel.evolveEndpoint": {
+          "type": "string",
+          "scope": "application",
+          "default": "",
+          "description": "Anofox Evolve HTTPS origin for direct owner-private holdout registration. Loopback HTTP is allowed for local development. The signed-in Escurel token must also be accepted by Evolve's configured OIDC audience."
         },
         "escurel.auth.issuer": {
           "type": "string",
@@ -133,6 +140,36 @@
         "title": "Show Markdown",
         "category": "Escurel",
         "icon": "$(code)"
+      },
+      {
+        "command": "escurel.importEvolveProblem",
+        "title": "Import Anofox Evolve V2 problem…",
+        "category": "Escurel"
+      },
+      {
+        "command": "escurel.prepareEvolveTrainingSource",
+        "title": "Prepare Anofox Evolve V2 training source…",
+        "category": "Escurel"
+      },
+      {
+        "command": "escurel.prepareEvolveTrainingCsv",
+        "title": "Prepare private Anofox Evolve training CSV…",
+        "category": "Escurel"
+      },
+      {
+        "command": "escurel.registerEvolveHoldout",
+        "title": "Register private Anofox Evolve V2 holdout…",
+        "category": "Escurel"
+      },
+      {
+        "command": "escurel.registerEvolveHoldoutCsv",
+        "title": "Register private Anofox Evolve holdout from dated CSV…",
+        "category": "Escurel"
+      },
+      {
+        "command": "escurel.checkEvolveTrainingSource",
+        "title": "Check Anofox Evolve source preparation…",
+        "category": "Escurel"
       },
       {
         "command": "escurel.startSkill",
@@ -404,6 +441,23 @@
         "command": "escurel.focusMode.toggle",
         "title": "Toggle focus view",
         "category": "Escurel"
+      },
+      {
+        "command": "escurel.scenarios.refresh",
+        "title": "Refresh scenario diffs",
+        "category": "Escurel",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "escurel.scenarios.compare",
+        "title": "Compare baseline and candidate",
+        "category": "Escurel"
+      },
+      {
+        "command": "escurel.scenarios.new",
+        "title": "New scenario comparison",
+        "category": "Escurel",
+        "icon": "$(add)"
       }
     ],
     "authentication": [
@@ -452,6 +506,12 @@
         {
           "id": "escurel.awaiting",
           "name": "Awaiting you",
+          "contextualTitle": "Escurel",
+          "initialSize": 2
+        },
+        {
+          "id": "escurel.scenarios",
+          "name": "Scenarios",
           "contextualTitle": "Escurel",
           "initialSize": 2
         },
@@ -715,9 +775,18 @@
         {
           "command": "escurel.focusMode.exit",
           "when": "escurel.focusMode"
+      },
+      {
+          "command": "escurel.scenarios.compare",
+          "when": "false"
         }
       ],
       "view/title": [
+        {
+          "command": "escurel.scenarios.new",
+          "when": "view == escurel.scenarios",
+          "group": "navigation@0"
+        },
         {
           "command": "escurel.search",
           "when": "view == escurel.knowledge",
@@ -812,6 +881,11 @@
           "command": "escurel.focusMode.exit",
           "when": "view == escurel.knowledge && escurel.focusMode",
           "group": "navigation@8"
+      },
+      {
+          "command": "escurel.scenarios.refresh",
+          "when": "view == escurel.scenarios",
+          "group": "navigation@1"
         }
       ],
       "view/item/context": [
@@ -1220,6 +1294,7 @@
       "description": "The extension only talks to the configured escurel gateway. In a Restricted Mode window the gateway and sign-in settings come from your user settings, never from the folder.",
       "restrictedConfigurations": [
         "escurel.gatewayUrl",
+        "escurel.evolveEndpoint",
         "escurel.auth.issuer",
         "escurel.auth.clientId",
         "escurel.auth.scopes",

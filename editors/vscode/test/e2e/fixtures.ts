@@ -7,8 +7,9 @@ import {
   type Page,
 } from '@playwright/test';
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
-import { mkdtempSync, readFileSync, mkdirSync } from 'node:fs';
+import { mkdtempSync, readFileSync, mkdirSync, openSync, closeSync } from 'node:fs';
 import { createServer } from 'node:net';
+import { createServer as createHttpServer, type Server as HttpServer } from 'node:http';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 
@@ -46,6 +47,8 @@ export type ToolResult = Record<string, unknown>;
 
 export interface Stack {
   page: Page;
+  workspaceDir: string;
+  display: string;
   /** What the demo driver left behind: the root events and changesets of the story. */
   story: { rootA: string; rootB: string; promoted: string; awaiting: string };
   gatewayUrl: string;
@@ -56,14 +59,67 @@ export interface Stack {
   /** Console and page errors collected since the window opened. */
   errors: string[];
   shot: (name: string) => Promise<void>;
+  setGeminiPlanTarget: (pageId: string, revision: string) => void;
+  geminiRequests: Record<string, unknown>[];
+  /** Authenticated Anofox Evolve tool call when the cross-repository service fixture is enabled. */
+  evolveCall: (name: string, args: Record<string, unknown>) => Promise<ToolResult>;
 }
 
-export const test = base.extend<object, { stack: Stack; focus: boolean }>({
+export const test = base.extend<object, {
+  stack: Stack;
   /** Whether the window opens in the calm focus view (the demo's default). Off: the classic IDE look the view tests drive. */
+  focus: boolean;
+  runnerHarness: 'echo' | 'gemini';
+  evolveAgentBin: string | undefined;
+}>({
   focus: [false, { option: true, scope: 'worker' }],
+  runnerHarness: ['echo', { scope: 'worker', option: true }],
+  evolveAgentBin: [undefined, { scope: 'worker', option: true }],
   stack: [
-    async ({ focus }, use) => {
+    async ({ focus, runnerHarness, evolveAgentBin }, use) => {
       const home = mkdtempSync(join(homedir(), '.cache', 'escurel-e2e-'));
+      let geminiPlanTarget: { pageId: string; revision: string } | undefined;
+      const geminiRequests: Record<string, unknown>[] = [];
+      let modelServer: HttpServer | undefined;
+      let modelBase: string | undefined;
+      if (runnerHarness === 'gemini') {
+        modelServer = createHttpServer(async (request, response) => {
+          let body = '';
+          for await (const chunk of request) body += String(chunk);
+          const prompt = JSON.parse(body) as Record<string, unknown>;
+          const contents = prompt.contents as unknown[] | undefined;
+          const isEvolve = !!geminiPlanTarget && JSON.stringify(prompt).includes('evolve_run');
+          let parts: unknown[] = [{ text: 'No page changes requested.' }];
+          if (isEvolve) {
+            geminiRequests.push(prompt);
+            if (contents?.length === 1) {
+              const firstRequest = JSON.stringify(prompt);
+              if (!firstRequest.includes(geminiPlanTarget.pageId) ||
+                  !firstRequest.includes(geminiPlanTarget.revision)) {
+                response.writeHead(422).end('Evolve plan prompt omitted the frozen problem page');
+                return;
+              }
+              parts = [{ functionCall: { name: 'expand', args: {
+                page_id: geminiPlanTarget.pageId, raw: true,
+              } } }];
+            } else if (contents?.length === 3) {
+              parts = [{ functionCall: { name: 'report_progress', args: { plan: [
+                { step: 'Review the frozen source, holdout and V2 budget', status: 'pending' },
+                { step: 'Run bounded DuckDB search after owner approval', status: 'pending' },
+              ] } } }];
+            } else {
+              parts = [{ text: 'Plan reported for the owner to review.' }];
+            }
+          }
+          response.setHeader('content-type', 'application/json');
+          response.end(JSON.stringify({ candidates: [{ content: { parts } }] }));
+        });
+        await new Promise<void>((resolveListen) =>
+          modelServer!.listen(0, '127.0.0.1', resolveListen));
+        const address = modelServer.address();
+        if (!address || typeof address === 'string') throw new Error('Gemini stub has no port');
+        modelBase = `http://127.0.0.1:${address.port}`;
+      }
       const artifacts = resolve(__dirname, 'artifacts');
       mkdirSync(artifacts, { recursive: true });
       // Xvfb picks a FREE display itself and writes its number to fd 3 once it is ready to accept
@@ -86,15 +142,19 @@ export const test = base.extend<object, { stack: Stack; focus: boolean }>({
         xvfb.on('exit', (code) => reject(new Error(`Xvfb exited (${code})`)));
       });
       const cdpPort = await freePort();
+      const evolvePort = evolveAgentBin ? await freePort() : undefined;
+      const configuredEvolveUrl = evolvePort ? `http://127.0.0.1:${evolvePort}` : undefined;
       const bin = process.env.ESCUREL_BIN_DIR ?? join(REPO, 'target', 'release');
       const env = {
         ...process.env,
         DISPLAY: display,
         WAYLAND_DISPLAY: '',
+        XDG_SESSION_TYPE: 'x11',
         ESCUREL_DEMO_HOME: home,
         ESCUREL_DEMO_CDP_PORT: String(cdpPort),
         ESCUREL_DEMO_CODE_ARGS:
-          '--disable-site-isolation-trials --disable-features=IsolateOrigins,site-per-process',
+          '--ozone-platform=x11 --disable-site-isolation-trials --disable-features=IsolateOrigins,site-per-process' +
+          (process.env.CI ? ' --no-sandbox' : ''),
         ESCUREL_TEST_GATEWAY_BIN: join(bin, 'escurel-test-gateway'),
         ESCUREL_RUNNER_BIN: join(bin, 'escurel-runner'),
         ESCUREL_ECHO_SLEEP_MS: '6000',
@@ -102,9 +162,23 @@ export const test = base.extend<object, { stack: Stack; focus: boolean }>({
         // window (the demo's default) puts them on the wrong element.
         ESCUREL_DEMO_ZOOM: '0',
         ESCUREL_DEMO_FOCUS: focus ? '1' : '0',
+        // Keep VS Code's modal confirmation inside the CDP window so the
+        // approval text and deliberate human click are observable end to end.
+        ESCUREL_DEMO_DIALOG_STYLE: 'custom',
+        ESCUREL_DEMO_EVOLVE_SEED: '1',
+        ESCUREL_DEMO_RUNNER_HARNESS: runnerHarness,
+        ...(configuredEvolveUrl ? { ESCUREL_DEMO_EVOLVE_ENDPOINT: configuredEvolveUrl } : {}),
+        ...(modelBase ? {
+          ESCUREL_GEMINI_API_KEY: 'deterministic-native-plan-key',
+          ESCUREL_RUNNER_GEMINI_BASE_URL: modelBase,
+        } : {}),
       };
       const run = join(EXT, 'demo', 'run.sh');
-      execFileSync(run, ['start'], { env, stdio: 'inherit', timeout: 240_000 });
+      let browser: Browser | undefined;
+      let evolveProcess: ChildProcess | undefined;
+      let evolveLogFd: number | undefined;
+      try {
+        execFileSync(run, ['start'], { env, stdio: 'inherit', timeout: 240_000 });
 
       const info = JSON.parse(readFileSync(join(home, 'gateway.json'), 'utf8').split('\n')[0]!);
       const story = JSON.parse(readFileSync(join(home, 'story.json'), 'utf8'));
@@ -113,8 +187,38 @@ export const test = base.extend<object, { stack: Stack; focus: boolean }>({
           bearer: string;
           admin_bearer: string;
         };
+      let evolveUrl: string | undefined;
+      if (evolveAgentBin) {
+        const port = evolvePort!;
+        evolveUrl = configuredEvolveUrl;
+        evolveLogFd = openSync(join(home, 'evolve.log'), 'w');
+        evolveProcess = spawn(evolveAgentBin, ['serve', '--addr', `127.0.0.1:${port}`,
+          '--db', join(home, 'evolve.duckdb')], {
+          env: {
+            ...process.env,
+            ESCUREL_ENDPOINT: info.gateway_url,
+            ESCUREL_TOKEN: bearer().admin_bearer,
+            ESCUREL_OIDC_ISSUER: info.issuer_url,
+            ESCUREL_OIDC_AUDIENCE: 'escurel',
+            ESCUREL_OIDC_JWKS_URI: `${info.issuer_url}/protocol/openid-connect/certs`,
+            EVOLVE_OIDC_ISSUER: info.issuer_url,
+            EVOLVE_OIDC_JWKS_URI: `${info.issuer_url}/protocol/openid-connect/certs`,
+            EVOLVE_OIDC_AUDIENCE: 'escurel',
+            EVOLVE_TENANT: 'vsx',
+            GEMINI_API_KEY: 'unused-seed-only-test-key',
+            EVOLVE_ALLOW_SYNTHETIC_BRAIN: '1',
+          },
+          stdio: ['ignore', evolveLogFd, evolveLogFd],
+        });
+        let up = false;
+        for (let i = 0; i < 100 && !up; i += 1) {
+          if (evolveProcess.exitCode !== null) break;
+          try { up = (await fetch(`${evolveUrl}/healthz`)).ok; } catch { /* starting */ }
+          if (!up) await new Promise((r) => setTimeout(r, 100));
+        }
+        if (!up) throw new Error(`Evolve service did not start: ${readFileSync(join(home, 'evolve.log'), 'utf8')}`);
+      }
 
-      let browser: Browser | undefined;
       for (let i = 0; i < 60 && !browser; i += 1) {
         try {
           browser = await chromium.connectOverCDP(`http://127.0.0.1:${cdpPort}`);
@@ -122,7 +226,13 @@ export const test = base.extend<object, { stack: Stack; focus: boolean }>({
           await new Promise((r) => setTimeout(r, 500));
         }
       }
-      if (!browser) throw new Error('could not attach to the VS Code window');
+      if (!browser) {
+        const codeLog = readFileSync(join(home, 'code.log'), 'utf8');
+        throw new Error(
+          `could not attach to the VS Code window (display=${display}, xvfbExit=${xvfb.exitCode}, ` +
+            `codeLog=${codeLog.slice(-6000)})`,
+        );
+      }
       // The window may not have a page yet when the debugger first answers.
       let page: Page | undefined;
       for (let i = 0; i < 120 && !page; i += 1) {
@@ -142,6 +252,8 @@ export const test = base.extend<object, { stack: Stack; focus: boolean }>({
 
       const stack: Stack = {
         page,
+        workspaceDir: join(home, 'workspace'),
+        display,
         story,
         gatewayUrl: info.gateway_url,
         home,
@@ -171,17 +283,40 @@ export const test = base.extend<object, { stack: Stack; focus: boolean }>({
         shot: async (name) => {
           await page.screenshot({ path: join(artifacts, `${name}.png`) });
         },
+        setGeminiPlanTarget: (pageId, revision) => { geminiPlanTarget = { pageId, revision }; },
+        geminiRequests,
+        evolveCall: async (name, args) => {
+          if (!evolveUrl) throw new Error('Evolve service fixture is not enabled');
+          const res = await fetch(evolveUrl, {
+            method: 'POST', headers: { 'content-type': 'application/json',
+              authorization: `Bearer ${bearer().bearer}`, 'X-Triton-Tool': name },
+            body: JSON.stringify(args),
+          });
+          const body = await res.json() as ToolResult;
+          if (!res.ok) throw new Error(`${name}: HTTP ${res.status}: ${JSON.stringify(body)}`);
+          return body;
+        },
       };
-      try {
-        await use(stack);
+      await use(stack);
       } finally {
-        await browser.close().catch(() => undefined);
+        await browser?.close().catch(() => undefined);
+        if (evolveProcess && evolveProcess.exitCode === null && evolveProcess.signalCode === null) {
+          const child = evolveProcess;
+          child.kill('SIGTERM');
+          await Promise.race([
+            new Promise<void>((resolveExit) => child.once('exit', () => resolveExit())),
+            new Promise<void>((resolveTimeout) => setTimeout(resolveTimeout, 3_000)),
+          ]);
+          if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
+        }
+        if (evolveLogFd !== undefined) closeSync(evolveLogFd);
         try {
           execFileSync(run, ['stop'], { env, stdio: 'ignore' });
         } catch {
           /* already gone */
         }
         xvfb.kill();
+        if (modelServer) await new Promise<void>((resolveClose) => modelServer!.close(() => resolveClose()));
       }
     },
     { scope: 'worker', timeout: 300_000 },

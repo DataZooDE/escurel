@@ -51,7 +51,7 @@ cargo build --release -p escurel-server -p escurel-runner -p escurel-test-suppor
 npm run test:integration
 ```
 
-Two passes run: the corpus suite against `escurel-server` (no verifier, no runner), and the cascade suite against `escurel-test-gateway` (a gateway that verifies tokens, so a minted-mode runner can prove which run wrote what) plus a real runner. A missing binary skips the cascade pass with a warning. Override the paths with `ESCUREL_SERVER_BIN`, `ESCUREL_RUNNER_BIN` and `ESCUREL_TEST_GATEWAY_BIN`.
+The corpus suite uses `escurel-server` without a runner; the cascade and controls suites use `escurel-test-gateway` with a verifying issuer and a real runner. A missing binary skips the cascade pass for local exploratory runs. Set `ESCUREL_REQUIRE_CASCADE=1` to make missing binaries or a missing runner fail; the VS Code CI job sets this for the Evolve plan review suite. Override binary paths with `ESCUREL_SERVER_BIN`, `ESCUREL_RUNNER_BIN` and `ESCUREL_TEST_GATEWAY_BIN`.
 
 Live end-to-end tests drive a real VS Code window by clicking: `npm run test:e2e`. They bring up their
 own stack (a gateway that verifies tokens, a runner whose echo harness idles about 6 s so a run is still

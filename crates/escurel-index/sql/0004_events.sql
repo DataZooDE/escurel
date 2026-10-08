@@ -33,7 +33,8 @@ CREATE TABLE events (
     run_id            VARCHAR,                         -- the run this system event belongs to
     -- Ingestion position (see 0018_events_seq.sql): label / lineage / run
     -- listings page by it, so a backdated event still follows a cursor.
-    seq               BIGINT
+    seq               BIGINT,
+    revision_binding_sha256 VARCHAR                   -- gateway-owned Evolve proof; NULL for legacy/user events
 );
 
 CREATE INDEX events_status_at   ON events (status, at_ts);

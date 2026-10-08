@@ -57,6 +57,31 @@ describe('inspectorActions', () => {
       ]);
     });
 
+    it('never offers the Evolve review controls: the inspector has no verified page snapshot', () => {
+      const comparisonSkill = {
+        id: 'evolve_comparison',
+        description: 'Comparison',
+        actions: [
+          { name: 'compute-comparison', kind: 'event', label: 'Compute comparison', event: 'evolve_compare' },
+        ],
+      } as unknown as Skill;
+      const instanceNode: ThreadNode = {
+        id: 'inst-2',
+        kind: 'draft',
+        parent: null,
+        children: [],
+        state: null,
+        tone: 'neutral',
+        title: 'cmp-1',
+        meta: [],
+        chips: [],
+        target: { open: 'page', pageId: 'markdown/instances/evolve_comparison/cmp-1.md' },
+        collapsible: false,
+      };
+      // The click must carry the page revision the user reviewed; the inspector has none.
+      expect(buildNodeActions(instanceNode, undefined, { skills: [comparisonSkill] })).toBeUndefined();
+    });
+
     it('no skills loaded => none (never guess a skill)', () => {
       const instanceNode: ThreadNode = {
         id: 'inst-1',

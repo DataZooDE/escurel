@@ -74,6 +74,13 @@ const WEBHOOK_SIGNATURE_HEADER: &str = "X-Escurel-Webhook-Signature";
 /// cloneable dispatch-queue producer handle).
 #[derive(Clone)]
 struct AppState {
+    /// Last result of the runner's reserved system-event write. A readable
+    /// gateway alone cannot make Workbench plan review operational.
+    control_plane_write: Arc<std::sync::atomic::AtomicU8>,
+    /// Last successful system write, used to avoid reporting a stale green
+    /// control plane when its status task has stopped making progress.
+    control_plane_written_at: Arc<std::sync::Mutex<Option<Instant>>>,
+    control_plane_max_age: std::time::Duration,
     /// Optional shared secret required on `POST /trigger`. When `Some`,
     /// the request must carry a valid HMAC-SHA256 signature of the body.
     webhook_secret: Option<Arc<str>>,
@@ -357,6 +364,16 @@ async fn main() -> anyhow::Result<()> {
 
     let version = config.version.clone();
     let state = AppState {
+        control_plane_write: Arc::new(std::sync::atomic::AtomicU8::new(
+            if config.tenant.is_some() && tokens.is_some() {
+                1
+            } else {
+                0
+            },
+        )),
+        control_plane_written_at: Arc::new(std::sync::Mutex::new(None)),
+        control_plane_max_age: config.status_interval.saturating_mul(2)
+            + std::time::Duration::from_secs(5),
         webhook_secret: config.webhook_secret.clone().map(Arc::from),
         queue: queue.clone(),
         ledger,
@@ -398,6 +415,7 @@ async fn main() -> anyhow::Result<()> {
     }
     let app = Router::new()
         .route("/healthz", get(healthz))
+        .route("/readyz", get(readyz))
         .route("/version", get(move || version_handler(version.clone())))
         .route("/metrics", get(metrics_handler))
         .route("/trigger", post(trigger))
@@ -458,6 +476,49 @@ async fn metrics_handler(State(state): State<AppState>) -> impl IntoResponse {
 /// Liveness probe. Dependency-free per CLAUDE.md principle 4.
 async fn healthz() -> impl IntoResponse {
     (StatusCode::OK, "OK")
+}
+
+/// Operational readiness for the Workbench control plane. The status loop
+/// proves that the configured credential can actually write a reserved
+/// system event; a non-admin static bearer may still read and run jobs while
+/// silently losing the plan and progress record needed by Evolve approval.
+async fn readyz(State(state): State<AppState>) -> impl IntoResponse {
+    use std::sync::atomic::Ordering;
+    let (status, reason) = match state.control_plane_write.load(Ordering::Relaxed) {
+        _ if state.draining.load(Ordering::Relaxed) => {
+            (StatusCode::SERVICE_UNAVAILABLE, "draining")
+        }
+        2 => {
+            let fresh = state
+                .control_plane_written_at
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .as_ref()
+                .is_some_and(|at| at.elapsed() <= state.control_plane_max_age);
+            if fresh {
+                (StatusCode::OK, "ready")
+            } else {
+                (StatusCode::SERVICE_UNAVAILABLE, "system_event_write_stale")
+            }
+        }
+        0 => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "runner_tenant_or_token_missing",
+        ),
+        3 => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "system_event_write_refused",
+        ),
+        4 => (StatusCode::SERVICE_UNAVAILABLE, "system_event_write_failed"),
+        _ => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "awaiting_system_event_write",
+        ),
+    };
+    (
+        status,
+        axum::Json(json!({ "ready": status == StatusCode::OK, "reason": reason })),
+    )
 }
 
 /// Reports the build version string.
@@ -604,7 +665,19 @@ fn gate_and_enqueue(
     // path does not, which is why this is the single chokepoint both routes
     // pass through. (`OPERATION_STATUS_LABEL` is `escurel:run-status`, one
     // member of the namespace.)
-    if trigger.is_system || trigger.label_skill.starts_with("escurel:") {
+    if trigger.is_system
+        || trigger.label_skill.starts_with("escurel:")
+        || trigger.label_skill == "evolve_preflight"
+        || trigger.label_skill == "evolve_prepare_source"
+        || trigger.label_skill == "evolve_validate"
+        || trigger.label_skill == "evolve_publish_candidate"
+        || trigger.label_skill == "evolve_compare"
+        || (trigger.label_skill == "evolve_run"
+            && trigger
+                .manual
+                .as_ref()
+                .is_none_or(|manual| manual.mode != "plan"))
+    {
         tracing::debug!(
             target: "escurel_runner",
             via,
@@ -3462,6 +3535,9 @@ async fn status_loop(
             continue;
         };
         let Some(client) = connect_now(&gateway_url, &tokens).await else {
+            state
+                .control_plane_write
+                .store(4, std::sync::atomic::Ordering::Relaxed);
             continue;
         };
         let written = client
@@ -3478,15 +3554,40 @@ async fn status_loop(
             .await;
         match written {
             Ok(_) => {
+                *state
+                    .control_plane_written_at
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner()) = Some(Instant::now());
+                state
+                    .control_plane_write
+                    .store(2, std::sync::atomic::Ordering::Relaxed);
                 last_stable = Some(stable);
                 last_sent = Instant::now();
             }
-            Err(e) => tracing::warn!(
-                target: "escurel_runner",
-                error = %e,
-                title,
-                "runner-status: write failed (will retry)"
-            ),
+            Err(e) => {
+                let refused = matches!(
+                    &e,
+                    escurel_client::Error::Refused(_)
+                        | escurel_client::Error::JsonRpc {
+                            code: -32602 | -32001,
+                            ..
+                        }
+                        | escurel_client::Error::Http {
+                            status: 401 | 403,
+                            ..
+                        }
+                );
+                state.control_plane_write.store(
+                    if refused { 3 } else { 4 },
+                    std::sync::atomic::Ordering::Relaxed,
+                );
+                tracing::warn!(
+                    target: "escurel_runner",
+                    error = %e,
+                    title,
+                    "runner-status: system-event write failed (readiness degraded; will retry)"
+                );
+            }
         }
         if draining {
             return;
@@ -3695,6 +3796,84 @@ mod tests {
             0,
             "a status event must create no ledger row"
         );
+    }
+
+    #[test]
+    fn evolve_validation_control_event_creates_no_runner_run() {
+        let (ledger, queue, limits, governor, metrics, inflight, _consumer) = gate_deps();
+        let preflight = gate_and_enqueue(
+            &ledger,
+            &queue,
+            &limits,
+            &governor,
+            &metrics,
+            &inflight,
+            trigger_with_label("evt-preflight-1", "evolve_preflight"),
+            "webhook",
+        );
+        assert!(!preflight);
+        let source = gate_and_enqueue(
+            &ledger,
+            &queue,
+            &limits,
+            &governor,
+            &metrics,
+            &inflight,
+            trigger_with_label("evt-source-1", "evolve_prepare_source"),
+            "webhook",
+        );
+        assert!(!source);
+        let admitted = gate_and_enqueue(
+            &ledger,
+            &queue,
+            &limits,
+            &governor,
+            &metrics,
+            &inflight,
+            trigger_with_label("evt-validation-1", "evolve_validate"),
+            "webhook",
+        );
+        assert!(!admitted);
+        let comparison = gate_and_enqueue(
+            &ledger,
+            &queue,
+            &limits,
+            &governor,
+            &metrics,
+            &inflight,
+            trigger_with_label("evt-comparison-1", "evolve_compare"),
+            "webhook",
+        );
+        assert!(!comparison);
+        assert_eq!(ledger.count_all_runs().unwrap(), 0);
+    }
+
+    #[test]
+    fn evolve_execution_approval_is_handled_by_evolve_but_plan_is_dispatchable() {
+        let (ledger, queue, limits, governor, metrics, inflight, _consumer) = gate_deps();
+        let mut approval = trigger_with_label("evt-evolve-approval", "evolve_run");
+        approval.manual = Some(escurel_runner_core::ManualStart {
+            harness: None,
+            mode: "run".into(),
+            requested_by: Some("dev-user".into()),
+            approved_plan_run_id: Some("plan-1".into()),
+        });
+        assert!(!gate_and_enqueue(
+            &ledger, &queue, &limits, &governor, &metrics, &inflight, approval, "webhook"
+        ));
+        assert_eq!(ledger.count_all_runs().unwrap(), 0);
+
+        let mut plan = trigger_with_label("evt-evolve-plan", "evolve_run");
+        plan.manual = Some(escurel_runner_core::ManualStart {
+            harness: None,
+            mode: "plan".into(),
+            requested_by: Some("dev-user".into()),
+            approved_plan_run_id: None,
+        });
+        assert!(gate_and_enqueue(
+            &ledger, &queue, &limits, &governor, &metrics, &inflight, plan, "webhook"
+        ));
+        assert_eq!(ledger.count_all_runs().unwrap(), 1);
     }
 
     /// Phase 1 (`/trigger` binding): a single-tenant runner takes its OWN
