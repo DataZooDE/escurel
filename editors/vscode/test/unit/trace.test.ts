@@ -5,6 +5,7 @@ import {
   callDuration,
   formatBytes,
   traceAxis,
+  traceSameTimeNote,
   traceTimeline,
 } from '../../src/shared/trace';
 
@@ -162,5 +163,34 @@ describe('what a call asked and got back', () => {
     const { traceNote } = await import('../../src/shared/trace');
     expect(traceNote([call(1)])).toContain('not its arguments or its result');
     expect(traceNote([call(1, { argsSummary: '{}' })])).toContain('credentials');
+  });
+});
+
+describe('a run start that is far from its calls, and calls that share one time', () => {
+  it('starts the axis at the first call when the run start lies hours before it (a clock that is two hours off)', () => {
+    const calls = [call(1, { durationMs: 100 }), call(2, { durationMs: 400 })];
+    const farStart = '2026-10-04T10:00:00.000Z'; // two hours before the first call
+    const axis = traceAxis(calls, farStart)!;
+    expect(axis.totalMs).toBe(1400); // first call at +0, the last ends 1 s later + 400 ms
+    expect(axis.ticks[0]).toEqual({ percent: 0, label: '0' });
+    const rows = traceTimeline(calls, farStart);
+    expect(rows[0]!.offset).toBe('+0 ms');
+    expect(rows[0]!.leftPercent).toBe(0);
+    expect(rows[1]!.offset).toBe('+1 s');
+    // an ordinary lag between the run start and its first call still counts
+    const near = traceAxis(calls, '2026-10-04T11:59:58.000Z')!;
+    expect(near.totalMs).toBe(4400); // 3 s of lead-in, then the same 1.4 s
+  });
+
+  it('has no axis when every call carries the same time, and says so in one line instead', () => {
+    const same = [1, 2, 3].map((n) => call(n, { at: '2026-10-04T12:00:01Z', durationMs: 20 * n }));
+    expect(traceAxis(same, '2026-10-04T12:00:00Z')).toBeUndefined();
+    expect(traceSameTimeNote(same)).toBe('All 3 steps ran within the same second.');
+    const rows = traceTimeline(same, '2026-10-04T12:00:00Z');
+    // without a scale the bars compare how long each took, side by side from the left
+    expect(rows.map((r) => r.leftPercent)).toEqual([0, 0, 0]);
+    expect(rows.map((r) => r.widthPercent)).toEqual([33, 67, 100]);
+    expect(traceSameTimeNote([call(1), call(2)])).toBeUndefined();
+    expect(traceSameTimeNote([call(1)])).toBeUndefined();
   });
 });

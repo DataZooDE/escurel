@@ -14,6 +14,10 @@ sed -i "s|@ORDER_LINES_DIR@|$D/sources/order-lines|" "$D/seed/skills/order-lines
 sed -i "s|@VBAK_DIR@|$D/sources/vbak|"             "$D/seed/skills/customer-order.md"
 sed -i "s|@LFA1_DIR@|$D/sources/lfa1|"             "$D/seed/skills/supplier.md"
 
+# With the S2D demo the query pages are the METHODS behind its numbers (the teaser opens one): they sit under
+# logistics, where the story is, not under plumbing (run.sh does the same for the desktop demo).
+sed -i 's|^folder: plumbing$|folder: logistics/methods|; s|^title: Query$|title: Methods|' "$D/seed/skills/query.md"
+
 # The tenant of this stack is `demo`: a tenant's secret files live under <secrets>/<tenant>/.
 mkdir -p "$D/sqlite" "$D/secrets/demo" "$D/state"
 node "$D/sources/orders-db/seed.mjs" "$D/sqlite/orders.db" 2>/dev/null

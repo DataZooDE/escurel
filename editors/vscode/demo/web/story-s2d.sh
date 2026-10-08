@@ -22,5 +22,7 @@ if [ -n "${S2D_DIR:-}" ] && [ -d "$S2D_DIR/pages" ]; then
   echo "loading the S2D demo (hetzner seed $(cat "$S2D_DIR/STAMP"))..."
   node s2d/seed.mjs "$S/gateway.json" "$S/bearer.json" "$S2D_DIR" > "$S/s2d-story.json"
 fi
+# What waits for the planner right now (the stage starts with the three S2D proposals open, nothing promoted).
+node s2d/check-awaiting.mjs "$S/gateway.json" "$S/bearer.json" | tee "$S/awaiting.txt"
 touch "$S/story.done"
 echo "story played"

@@ -128,15 +128,55 @@ interface Span {
   totalMs: number;
 }
 
-/** The span the calls cover; undefined when no call carries a usable time. */
-function traceSpan(calls: readonly ToolCallRow[], startedAt: string | undefined): Span | undefined {
+/**
+ * A run start further than this before its first call is not "the run took that long to begin": it is a clock
+ * that is off (a zone-less time read as UTC puts it hours away) or a run that was claimed long before it
+ * worked. The axis then starts at the first call instead of stretching over empty time.
+ */
+const FAR_START_MS = 10_000;
+const FAR_START_FACTOR = 5;
+
+/** The call start times, or undefined when there are no calls or one has no usable time. */
+function callStarts(calls: readonly ToolCallRow[]): number[] | undefined {
   const starts = calls.map((c) => parseGatewayTime(c.at)?.getTime());
   if (calls.length === 0 || starts.some((t) => t === undefined)) return undefined;
-  const first = Math.min(...(starts as number[]));
+  return starts as number[];
+}
+
+/** Every call carries one and the same time (the gateway keeps seconds): no scale can be drawn from that. */
+function sharedTime(starts: readonly number[]): boolean {
+  return starts.length > 1 && starts.every((t) => t === starts[0]);
+}
+
+/** Where the time axis begins: the run start, unless it lies far before the first call. */
+function traceZero(
+  starts: readonly number[],
+  calls: readonly ToolCallRow[],
+  startedAt: string | undefined,
+): number {
+  const first = Math.min(...starts);
   const runStart = parseGatewayTime(startedAt)?.getTime();
-  const zero = runStart === undefined ? first : Math.min(runStart, first);
+  if (runStart === undefined || runStart >= first) return first;
+  const end = Math.max(...calls.map((c, i) => (starts[i] as number) + c.durationMs));
+  const lag = first - runStart;
+  return lag > Math.max(FAR_START_MS, (end - first) * FAR_START_FACTOR) ? first : runStart;
+}
+
+/** The span the calls cover; undefined when no call carries a usable time or all share one. */
+function traceSpan(calls: readonly ToolCallRow[], startedAt: string | undefined): Span | undefined {
+  const starts = callStarts(calls);
+  if (!starts || sharedTime(starts)) return undefined;
+  const zero = traceZero(starts, calls, startedAt);
   const end = Math.max(...calls.map((c, i) => (starts[i] as number) + c.durationMs));
   return { zero, totalMs: Math.max(end - zero, 1) };
+}
+
+/** One line for a trace whose calls all share one time (no axis to draw), else undefined. */
+export function traceSameTimeNote(calls: readonly ToolCallRow[]): string | undefined {
+  const starts = callStarts(calls);
+  return starts && sharedTime(starts)
+    ? `All ${calls.length} steps ran within the same second.`
+    : undefined;
 }
 
 /** The time axis above a run's calls: how long the run took and round marks along it. */
@@ -160,7 +200,13 @@ export function traceTimeline(
   calls: readonly ToolCallRow[],
   startedAt: string | undefined,
 ): TraceRow[] {
-  const start = parseGatewayTime(startedAt)?.getTime();
+  const starts = callStarts(calls);
+  // Offsets count from the same origin as the axis: the run start, or the first call when that is far away.
+  const runStart = parseGatewayTime(startedAt)?.getTime();
+  const start =
+    runStart !== undefined && starts && !sharedTime(starts)
+      ? traceZero(starts, calls, startedAt)
+      : runStart;
   const slowest = calls.reduce((m, c) => Math.max(m, c.durationMs), 0);
   const span = traceSpan(calls, startedAt);
   return calls.map((c) => {

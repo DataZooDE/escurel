@@ -1,4 +1,4 @@
-import { traceAxis, traceNote, traceTimeline } from '../../src/shared/trace';
+import { traceAxis, traceNote, traceSameTimeNote, traceTimeline } from '../../src/shared/trace';
 import {
   emptyAttempts,
   emptyPlan,
@@ -195,6 +195,11 @@ export class EscurelRunDetail extends LitElement {
         background: var(--vscode-progressBar-background, currentColor);
         border-radius: 2px;
       }
+      .trace-same-time {
+        margin: 4px 0 6px;
+        color: var(--vscode-descriptionForeground);
+        font-size: 12px;
+      }
       .trace-axis {
         position: relative;
         height: 1.6em;
@@ -369,7 +374,10 @@ export class EscurelRunDetail extends LitElement {
   /** The time scale the bars below sit on: round marks along the run, and how long it took. */
   private axis(run: RunView): TemplateResult | typeof nothing {
     const axis = traceAxis(run.calls, run.startedAt);
-    if (!axis) return nothing;
+    if (!axis) {
+      const note = traceSameTimeNote(run.calls);
+      return note ? html`<p class="trace-same-time">${note}</p>` : nothing;
+    }
     return html`<div class="trace-axis" aria-hidden="true">
       ${axis.ticks.map(
         (t, i) =>
