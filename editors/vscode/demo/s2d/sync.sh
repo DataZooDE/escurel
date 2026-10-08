@@ -17,11 +17,11 @@ set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="$(cd "$HERE/../../../.." && pwd)"
 OUT="${1:?usage: sync.sh <out_dir>}"
-SRC_REPO="${ESCUREL_DEMO_S2D_REPO:-$HOME/Projects/datazoo/hetzner-agent-substrate}"
-CLI="${ESCUREL_CLI_BIN:-$REPO/target/release/escurel}"
+SRC_REPO="${S2D_HETZNER_REPO:-${ESCUREL_DEMO_S2D_REPO:-$HOME/Projects/datazoo/hetzner-agent-substrate}}"
+CLI="${S2D_CLI_BIN:-${ESCUREL_CLI_BIN:-$REPO/target/release/escurel}}"
 S3_PREFIX='s3://datazoo-substrate-app-lab/demo/s2d/'
 
-[ -d "$SRC_REPO/.git" ] || { echo "s2d: no hetzner-agent-substrate checkout at $SRC_REPO (set ESCUREL_DEMO_S2D_REPO)" >&2; exit 1; }
+[ -d "$SRC_REPO/.git" ] || { echo "s2d: no hetzner-agent-substrate checkout at $SRC_REPO (set S2D_HETZNER_REPO)" >&2; exit 1; }
 [ -x "$CLI" ] || { echo "s2d: missing $CLI (cargo build --release -p escurel-cli)" >&2; exit 1; }
 
 # Read-only: a fetch, then `git archive` of main. The checkout's working tree is never touched.
@@ -51,7 +51,7 @@ sed -i "s|$S3_PREFIX|$OUT/data/|" "$OUT"/pages/skills/*.md
 # Query pages that call the anofox_optimize functions (opt_*) need that DuckDB extension in the gateway.
 # With an extension build for the gateway's DuckDB version they are kept and the gateway is told to load
 # it (`index-extensions`); without one they are SKIPPED with a warning: the core stories never depend on them.
-python3 "$HERE/optional.py" "$OUT" "${ESCUREL_DEMO_DUCKDB_VERSION:-}"
+python3 "$HERE/optional.py" "$OUT" "${S2D_GATEWAY_DUCKDB:-${ESCUREL_DEMO_DUCKDB_VERSION:-}}"
 
 python3 "$HERE/overlay.py" "$OUT/pages"
 cp "$SEED/check_queries.py" "$SEED/build_data.py" "$OUT/"
