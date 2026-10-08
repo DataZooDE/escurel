@@ -49,6 +49,8 @@ if [ -s "$OUT/index-extensions" ]; then
   chmod a+rX "$S2D_EXT_DIR" "$S2D_INDEX_EXT" 2>/dev/null || true
 fi
 export S2D_INDEX_EXT S2D_EXT_DIR S2D_ALLOW_UNSIGNED
+# What later `docker compose` calls need (s2d-compose.sh reads it). No secrets in it.
+{ echo "S2D_DIR=$S2D_DIR"; echo "S2D_INDEX_EXT=$S2D_INDEX_EXT"; echo "S2D_EXT_DIR=$S2D_EXT_DIR"; echo "S2D_ALLOW_UNSIGNED=$S2D_ALLOW_UNSIGNED"; echo "WORKBENCH_COMPOSE_PROJECT=$PROJECT"; } > "$HERE/.s2d.env"
 
 cd "$HERE"
 echo "s2d-up: rebuilding the gateway side from scratch (the workbench's own data is kept)"
