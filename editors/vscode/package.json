@@ -524,7 +524,8 @@
           "id": "escurel.scenarios",
           "name": "Scenarios",
           "contextualTitle": "Escurel",
-          "initialSize": 2
+          "initialSize": 2,
+          "when": "!escurel.hideScenarios"
         },
         {
           "id": "escurel.inbox",

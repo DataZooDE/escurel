@@ -112,7 +112,19 @@ export function queryPreviewMarkdown(input: {
   if (fixed.length)
     lines.push(fixed.map((n) => `**${label(n)}** ${cell(runs[0]?.params[n])}`).join(' · '), '');
   const first = runs.find((r) => r.rows.length > 0)?.rows[0];
-  const cols = first ? Object.keys(first) : [];
+  const all = runs.flatMap((r) => r.rows);
+  // A column that only repeats a parameter (part, service_level) is already said by the parameters.
+  const named = (first ? Object.keys(first) : []).filter((c) => !paramNames.includes(c));
+  // What is the same on every row is said once, above the table; the numbers lead the table.
+  const constant =
+    all.length >= 2
+      ? named.filter((c) => new Set(all.map((row) => JSON.stringify(row[c] ?? null))).size === 1)
+      : [];
+  const isNumber = (c: string) => typeof first?.[c] === 'number';
+  const rest = named.filter((c) => !constant.includes(c));
+  const cols = [...rest.filter(isNumber), ...rest.filter((c) => !isNumber(c))];
+  if (constant.length)
+    lines.push(constant.map((c) => `**${label(c)}** ${cell(first![c])}`).join(' · '), '');
   const head = [...varying, ...cols].map(label);
   lines.push(`| ${head.join(' | ')} |`, `|${head.map(() => '---').join('|')}|`);
   let any = false;

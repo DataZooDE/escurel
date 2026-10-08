@@ -89,4 +89,27 @@ describe('query preview', () => {
     });
     expect(md).toContain('no rows');
   });
+  it('says what is the same on every row once, and puts the numbers first', () => {
+    const rows = (q: number, v: number) => ({
+      service_level: 'repeats the parameter',
+      part_name: 'Servo drive module',
+      eos_date: '2034-12-31',
+      stock_value_eur: v,
+      ltb_qty: q,
+    });
+    const md = queryPreviewMarkdown({
+      title: 't',
+      id: 'x',
+      description: '',
+      runs: [
+        { params: { service_level: '0.95' }, rows: [rows(634, 748120)] },
+        { params: { service_level: '0.98' }, rows: [rows(666, 785880)] },
+      ],
+    });
+    expect(md).toContain('**part name** Servo drive module');
+    expect(md).toContain('**eos date** 2034-12-31');
+    const header = md.split('\n').find((l) => l.startsWith('| service level'))!;
+    expect(header).toBe('| service level | stock value eur | ltb qty |');
+    expect(md).not.toContain('repeats the parameter');
+  });
 });

@@ -32,6 +32,14 @@ exports.activate = async () => {
   await vscode.commands.executeCommand('escurel.refresh');
   setInterval(apply, 30_000);
 
+  // The Scenarios view (Anofox Evolve) is not part of this demo's story and, unconfigured, only says it
+  // needs an endpoint: leave it out unless the demo starts Evolve (ESCUREL_DEMO_EVOLVE_ENDPOINT).
+  await vscode.commands.executeCommand(
+    'setContext',
+    'escurel.hideScenarios',
+    !process.env.ESCUREL_DEMO_EVOLVE_ENDPOINT,
+  );
+
   // The Runner view lives in the right-hand (secondary) sidebar: show it, then the left one.
   await vscode.commands.executeCommand('workbench.view.extension.escurel-runner');
   await vscode.commands.executeCommand('workbench.view.extension.escurel');

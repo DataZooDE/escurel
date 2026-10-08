@@ -76,6 +76,11 @@ fi
 # one instance per row, no materialise step (the view is created on first read).
 sed -i "s|@VBAK_DIR@|$HERE/sources/vbak|" "$HOME_DIR/seed/skills/customer-order.md"
 sed -i "s|@LFA1_DIR@|$HERE/sources/lfa1|" "$HOME_DIR/seed/skills/supplier.md"
+# With the S2D demo the query pages are the METHODS behind its numbers (the teaser opens one): they sit under
+# logistics, where the story is, not under plumbing.
+if [ "${ESCUREL_DEMO_S2D:-1}" = "1" ]; then
+  sed -i 's|^folder: plumbing$|folder: logistics/methods|; s|^title: Query$|title: Methods|' "$HOME_DIR/seed/skills/query.md"
+fi
 
 # A DuckDB extension is built for ONE DuckDB version. The gateway links libduckdb.so: the copy the build
 # downloaded for the version it is pinned to (target/duckdb-download/<triple>/<version>/), or whatever
