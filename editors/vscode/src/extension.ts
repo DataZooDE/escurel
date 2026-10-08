@@ -27,6 +27,7 @@ import { expandableRows, type OutlineRow } from './views/threadsModel';
 import { registerStartInTerminal } from './start/terminal';
 import { registerOpenOriginal } from './commands/openOriginal';
 import { registerStartSkill } from './start/startSkill';
+import { registerQueryPreview } from './commands/queryPreview';
 import { registerProposeWriteBack } from './editors/proposeWriteBack';
 import { registerApprovePlan, setApprovalConfirm } from './start/approvePlan';
 import { registerNodeCommands } from './commands/nodeCommands';
@@ -278,6 +279,7 @@ export function activate(context: vscode.ExtensionContext): EscurelApi | undefin
     registerProposeWriteBack(services),
     registerApprovePlan(context, services),
   );
+  registerQueryPreview(context, services);
   log().info('escurel: activated');
   // Other extensions can read an extension's `exports`, and this object holds the token store. A
   // production install hands out nothing; the test, e2e and demo harnesses (Test / Development mode)

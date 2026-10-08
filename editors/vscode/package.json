@@ -436,6 +436,12 @@
         "title": "New scenario comparison",
         "category": "Escurel",
         "icon": "$(add)"
+      },
+      {
+        "command": "escurel.previewQuery",
+        "title": "Preview with parameters…",
+        "category": "Escurel",
+        "icon": "$(play)"
       }
     ],
     "authentication": [
@@ -1027,6 +1033,16 @@
           "command": "escurel.runs.forPage",
           "when": "view == escurel.knowledge && viewItem == instance",
           "group": "3_trace@3"
+        },
+        {
+          "command": "escurel.previewQuery",
+          "when": "view == escurel.knowledge && viewItem == instance.query",
+          "group": "navigation@1"
+        },
+        {
+          "command": "escurel.previewQuery",
+          "when": "view == escurel.knowledge && viewItem == instance.query",
+          "group": "inline@1"
         }
       ],
       "editor/title": [

@@ -183,3 +183,54 @@ test('S2D: the last-time-buy proposal holds the 95% service level with 634 units
   for (const n of ['349', '159', '127']) expect(body).toContain(n);
   await stack.shot('s2d-07-last-time-buy');
 });
+
+// The continuation after the chat demos: the organisation sees the decisions together, and the method
+// behind a number is a page a person can read, change and preview.
+test('S2D: the approved decisions sit together in Knowledge, with the chat ids', async ({
+  stack,
+}) => {
+  const { page } = stack;
+  for (const [skill, id, status] of [
+    ['supplier_exception', 'l-24117', 'resolved'],
+    ['exception_resolution', 'res-l-24117', 'approved'],
+    ['transport_plan', 'tp-stuttgart-lyon-fr-2026-10-08', 'approved'],
+    ['ltb_decision', 'ltb-sp-3307', 'approved'],
+  ] as const)
+    expect((await expandPage(stack, skill, id)).frontmatter?.status).toBe(status);
+  await expect(await knowledgeRow(page, /^folder logistics\/after-sales$/)).toBeVisible();
+  await stack.shot('s2d-08-decisions-together');
+});
+
+test('S2D: the price of the last percent: preview a query page at three service levels', async ({
+  stack,
+}) => {
+  const { page } = stack;
+  await openRow(page, 'query', /Ltb quantity/);
+  await page.keyboard.press('F1');
+  await page.keyboard.type('Escurel: Preview with parameters');
+  await page.keyboard.press('Enter');
+  const input = page.locator('.quick-input-widget input.input').first();
+  await expect(input).toBeVisible();
+  await input.fill('SP-3307');
+  await page.keyboard.press('Enter');
+  await expect(input).toBeVisible();
+  await input.fill('0.95, 0.98, 0.99');
+  await page.keyboard.press('Enter');
+  const wv = await webviewWith(page, 'h1', 'Ltb quantity');
+  // 634 / 666 / 688 units and what they cost: the data says it, the page is the method.
+  for (const n of ['634', '666', '688', '748,120', '785,880', '811,840'])
+    await expect(wv.locator('table')).toContainText(n);
+  await expect(wv.getByText(/nothing is saved/)).toBeVisible();
+  await stack.shot('s2d-09-price-of-the-last-percent');
+});
+
+test('S2D: one warehouse, two decisions: search finds both records', async ({ stack }) => {
+  const { page } = stack;
+  await page.keyboard.press('Control+Alt+e');
+  await page.keyboard.type('Central Europe');
+  const picker = page.locator('.quick-input-widget');
+  await expect(picker.getByRole('option', { name: /res-l-24117/ }).first()).toBeVisible();
+  await expect(picker.getByRole('option', { name: /ltb-sp-3307/ }).first()).toBeVisible();
+  await stack.shot('s2d-10-one-warehouse-two-decisions');
+  await page.keyboard.press('Escape');
+});
