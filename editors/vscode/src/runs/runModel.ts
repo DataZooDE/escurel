@@ -130,6 +130,22 @@ export function buildRunView(runNode: LineageNode | undefined, runEvents: Event[
   };
 }
 
+/** The gateway caps a summary at 2 KB; allow for the characters cleaning may add or keep. */
+const SUMMARY_MAX = 2200;
+
+function summaryFields(
+  call: GetRunToolCallsResponse['calls'][number],
+): Pick<ToolCallRow, 'argsSummary' | 'resultSummary'> {
+  const clean = (v: unknown): string | undefined =>
+    typeof v === 'string' && v !== '' ? cleanBlock(v, SUMMARY_MAX) : undefined;
+  const argsSummary = clean(call.args_summary);
+  const resultSummary = clean(call.result_summary);
+  return {
+    ...(argsSummary !== undefined ? { argsSummary } : {}),
+    ...(resultSummary !== undefined ? { resultSummary } : {}),
+  };
+}
+
 function callRow(call: GetRunToolCallsResponse['calls'][number]): ToolCallRow {
   return {
     seq: call.seq,
@@ -142,6 +158,7 @@ function callRow(call: GetRunToolCallsResponse['calls'][number]): ToolCallRow {
       response: numberValue(call.response_bytes) ?? 0,
     },
     at: toIsoUtc(call.at) ?? call.at,
+    ...summaryFields(call),
   };
 }
 

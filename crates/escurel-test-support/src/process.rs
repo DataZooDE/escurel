@@ -20,6 +20,7 @@ use escurel_embed::{Embedder, ZeroEmbedder};
 use escurel_index::{Indexer, IndexerHandle, Migrator};
 use escurel_quota::QuotaManager;
 use escurel_server::EventAclMode;
+use escurel_server::ToolcallDetailMode;
 use escurel_server::{
     AlwaysReady, AutonomyLintMode, EmbedderFactory, ReadinessProbe, ServerConfig, ServerHandle,
     WriteAclMode, serve,
@@ -46,6 +47,9 @@ pub struct ConfigOverrides {
     /// Per-event ACL enforcement mode for the event bus. `None` → `Off`
     /// (the production default); event-ACL tests set `Enforce`.
     pub event_acl: Option<EventAclMode>,
+    /// What a run's recorded tool calls keep beyond sizes. `None` → the
+    /// production default (`Summary`).
+    pub toolcall_detail: Option<ToolcallDetailMode>,
     /// Write-time enforcement mode for the skill-page `autonomy:` lint.
     /// `None` → `Off` (the production default): `validate` still reports an
     /// unrecognised value, `update_page` still writes it.
@@ -186,6 +190,7 @@ impl std::fmt::Debug for ConfigOverrides {
         f.debug_struct("ConfigOverrides")
             .field("write_acl", &self.write_acl)
             .field("event_acl", &self.event_acl)
+            .field("toolcall_detail", &self.toolcall_detail)
             .field("gateway_version", &self.gateway_version)
             .field("readiness_overridden", &self.readiness.is_some())
             .field("quota_overridden", &self.quota.is_some())
@@ -457,6 +462,7 @@ impl EscurelProcess {
             // (or `Some(WriteAclMode::default())` to pin the shipped default).
             write_acl: overrides.write_acl.unwrap_or(WriteAclMode::Off),
             event_acl: overrides.event_acl.unwrap_or_default(),
+            toolcall_detail: overrides.toolcall_detail.unwrap_or_default(),
             autonomy_lint: overrides.autonomy_lint.unwrap_or_default(),
             // Tests keep their directory-connector fixtures in temp dirs, so the default policy of a
             // TEST gateway exposes the temp dir (a production gateway exposes nothing until the

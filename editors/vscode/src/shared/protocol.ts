@@ -410,6 +410,10 @@ export interface ToolCallRow {
   durationMs: number;
   bytes: { request: number; response: number };
   at: string;
+  /** What the call asked, summarised and redacted by the gateway (absent when not kept). */
+  argsSummary?: string;
+  /** What came back, or why it failed, summarised and redacted by the gateway. */
+  resultSummary?: string;
 }
 
 export interface RunView {

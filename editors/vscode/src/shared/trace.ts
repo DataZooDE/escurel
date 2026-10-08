@@ -50,6 +50,27 @@ export function toolWords(tool: string): string {
 export const TRACE_RECORDED_NOTE =
   'The gateway records the size and timing of each call, not its arguments or its result.';
 
+/** When the gateway kept a summary of what each call asked and got back. */
+export const TRACE_DETAIL_NOTE =
+  'Open a step to see what it asked and what came back. Both are shortened, and credentials are removed.';
+
+/** The note under the trace heading: which of the two the gateway recorded for these calls. */
+export function traceNote(calls: readonly ToolCallRow[]): string {
+  return calls.some((c) => c.argsSummary || c.resultSummary)
+    ? TRACE_DETAIL_NOTE
+    : TRACE_RECORDED_NOTE;
+}
+
+/** A summary for reading: pretty-printed when it is whole JSON, as written when it was cut. */
+export function readableSummary(summary: string | undefined): string {
+  if (!summary) return '';
+  try {
+    return JSON.stringify(JSON.parse(summary), null, 2);
+  } catch {
+    return summary;
+  }
+}
+
 export interface TraceRow {
   seq: number;
   tool: string;
@@ -70,6 +91,10 @@ export interface TraceRow {
   /** 0-100, how much of the axis the call took; never so thin that it disappears. */
   widthPercent: number;
   sizes: string;
+  /** What the call asked, readable; empty when the gateway kept none. */
+  args: string;
+  /** What came back (or why it failed), readable; empty when the gateway kept none. */
+  result: string;
 }
 
 /** A tick or an end of the axis in the unit a person reads: "0", "250 ms", "1.5 s", "1 min 30 s". */
@@ -164,6 +189,8 @@ export function traceTimeline(
       leftPercent,
       widthPercent,
       sizes: `sent ${formatBytes(c.bytes.request)} · received ${formatBytes(c.bytes.response)}`,
+      args: readableSummary(c.argsSummary),
+      result: readableSummary(c.resultSummary),
     };
   });
 }
