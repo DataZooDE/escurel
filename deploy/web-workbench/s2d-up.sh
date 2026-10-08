@@ -54,8 +54,13 @@ export S2D_INDEX_EXT S2D_EXT_DIR S2D_ALLOW_UNSIGNED
 
 cd "$HERE"
 echo "s2d-up: rebuilding the gateway side from scratch (the workbench's own data is kept)"
-"${COMPOSE[@]}" rm -sf escurel runner demo-init demo-services >/dev/null 2>&1 || true
-for v in demo-data runner-data escurel-data; do docker volume rm -f "${PROJECT}_$v" >/dev/null 2>&1 || true; done
+"${COMPOSE[@]}" rm -sf escurel runner demo-init demo-services demo-story >/dev/null 2>&1 || true
+for v in demo-data runner-data escurel-data; do
+  # A stopped container of an earlier layout (e.g. demo-story) still holds the volume: remove those too.
+  docker ps -aq --filter "volume=${PROJECT}_$v" | xargs -r docker rm -f >/dev/null 2>&1 || true
+  docker volume rm -f "${PROJECT}_$v" >/dev/null 2>&1 || true
+  if docker volume inspect "${PROJECT}_$v" >/dev/null 2>&1; then echo "s2d-up: could not remove the volume ${PROJECT}_$v (is something still using it?)" >&2; exit 1; fi
+done
 "${COMPOSE[@]}" up --build -d
 
 echo "s2d-up: waiting for the workbench and for the story to be played (the first build can take long) ..."

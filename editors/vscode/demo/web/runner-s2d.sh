@@ -15,5 +15,8 @@ export ESCUREL_RUNNER_HARNESS=echo
 export ESCUREL_RUNNER_LISTEN=127.0.0.1:8088
 export ESCUREL_RUNNER_POLL_INTERVAL=250ms
 export ESCUREL_RUNNER_LEDGER_PATH=/data/ledger.duckdb
+# The demo gateway is NEW every time it starts (its data lives in its container), so a ledger and cursors persisted
+# from an earlier gateway describe events that no longer exist and would make the runner skip the replayed story.
+rm -f /data/ledger.duckdb /data/ledger.duckdb.wal
 unset ESCUREL_RUNNER_TOKEN
 exec /usr/local/bin/escurel-runner

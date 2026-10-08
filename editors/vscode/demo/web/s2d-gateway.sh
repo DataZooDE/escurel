@@ -10,7 +10,7 @@ set -eu
 S=/demo/state
 mkdir -p "$S"
 # A fresh gateway starts EMPTY (its data lives in this container, not a volume): the story must be played again.
-rm -f "$S/gateway.json" "$S/bearer.json" "$S/signing.pem" "$S/story.done" "$S/gateway.pid"
+rm -f "$S/gateway.json" "$S/bearer.json" "$S/signing.pem" "$S/story.done" "$S/gateway.pid" "$S/live.json"
 # stdout = the one JSON line first, then log lines: only the first line goes to the file (it would otherwise grow without
 # bound and every reader would re-read it); the rest goes to the container's log.
 {
