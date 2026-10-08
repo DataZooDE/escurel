@@ -48,18 +48,45 @@ const traceView = {
     },
   ],
 };
+// `?state=trace-detail` is the same run where the gateway kept what each call asked and got back,
+// with the first and the failed step opened.
+const detailView = {
+  ...traceView,
+  calls: traceView.calls.map((c) => ({
+    ...c,
+    argsSummary:
+      c.seq === 1
+        ? '{"page_id":"markdown/instances/customer-order/order-4500123.md"}'
+        : c.seq === 3
+          ? '{"source":"agent","label_skill":"supplier-risk","instance_page_id":"markdown/instances/customer-order/order-4500123.md","title":"risk report","body":"[2210 bytes]","provenance":{"api_token":"[redacted]"}}'
+          : '{"query":"supplier risk Hoffmann","granularity":"page","limit":5}',
+    resultSummary:
+      c.seq === 3
+        ? 'forbidden: you may not write this page'
+        : '{"page":{"skill":"customer-order","id":"order-4500123"},"frontmatter":{"status":"open","sold_to":"Hoffmann GmbH"}}',
+  })),
+};
 el.view =
-  state === 'trace'
-    ? traceView
-    : state
-      ? {
-          ...recorded,
-          status: state,
-          tone: state === 'dead_letter' || state === 'failed' ? 'failed' : 'run',
-          skill: 'supplier-risk',
-          controls: runControls(state, 'not-admin'),
-          ...(state === 'dead_letter' || state === 'failed'
-            ? { failure: 'permanent — harness "refusing" is not allowed for this skill' }
-            : {}),
-        }
-      : recorded;
+  state === 'trace-detail'
+    ? detailView
+    : state === 'trace'
+      ? traceView
+      : state
+        ? {
+            ...recorded,
+            status: state,
+            tone: state === 'dead_letter' || state === 'failed' ? 'failed' : 'run',
+            skill: 'supplier-risk',
+            controls: runControls(state, 'not-admin'),
+            ...(state === 'dead_letter' || state === 'failed'
+              ? { failure: 'permanent — harness "refusing" is not allowed for this skill' }
+              : {}),
+          }
+        : recorded;
+if (state === 'trace-detail') {
+  void el.updateComplete.then(() => {
+    const rows = el.shadowRoot!.querySelectorAll<HTMLDetailsElement>('.tool-call');
+    rows[0]!.open = true;
+    rows[2]!.open = true;
+  });
+}

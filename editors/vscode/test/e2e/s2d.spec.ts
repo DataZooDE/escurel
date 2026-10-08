@@ -205,18 +205,25 @@ test('S2D: the price of the last percent: preview a query page at three service 
   stack,
 }) => {
   const { page } = stack;
+  // The methods sit in a folder of helpers, which starts collapsed: open it, then the query skill.
+  const methods = await knowledgeRow(page, /^folder logistics\/methods$/);
+  if ((await methods.getAttribute('aria-expanded')) !== 'true') await methods.click();
   await openRow(page, 'query', /Ltb quantity/);
-  await page.keyboard.press('F1');
-  await page.keyboard.type('Escurel: Preview with parameters');
-  await page.keyboard.press('Enter');
+  // The play button on the query's own row in Knowledge: "Preview with parameters".
+  const row = await knowledgeRow(page, /ltb_quantity/);
+  await row.hover();
+  await row.getByRole('button', { name: /Preview with parameters/ }).click();
+  // Each parameter is asked in turn: wait for ITS prompt (the palette's own box is still on screen for a
+  // moment after Enter, and typing into it would answer nothing).
   const input = page.locator('.quick-input-widget input.input').first();
-  await expect(input).toBeVisible();
+  const quickInput = page.locator('.quick-input-widget');
+  await expect(quickInput.getByText(/^part \(text, required\)/)).toBeVisible();
   await input.fill('SP-3307');
   await page.keyboard.press('Enter');
-  await expect(input).toBeVisible();
+  await expect(quickInput.getByText(/^service level \(text, required\)/)).toBeVisible();
   await input.fill('0.95, 0.98, 0.99');
   await page.keyboard.press('Enter');
-  const wv = await webviewWith(page, 'h1', 'Ltb quantity');
+  const wv = await webviewWith(page, 'table', '748,120');
   // 634 / 666 / 688 units and what they cost: the data says it, the page is the method.
   for (const n of ['634', '666', '688', '748,120', '785,880', '811,840'])
     await expect(wv.locator('table')).toContainText(n);
@@ -224,13 +231,22 @@ test('S2D: the price of the last percent: preview a query page at three service 
   await stack.shot('s2d-09-price-of-the-last-percent');
 });
 
-test('S2D: one warehouse, two decisions: search finds both records', async ({ stack }) => {
+test('S2D: one warehouse, two decisions: both records name Central Europe, side by side', async ({
+  stack,
+}) => {
   const { page } = stack;
-  await page.keyboard.press('Control+Alt+e');
-  await page.keyboard.type('Central Europe');
-  const picker = page.locator('.quick-input-widget');
-  await expect(picker.getByRole('option', { name: /res-l-24117/ }).first()).toBeVisible();
-  await expect(picker.getByRole('option', { name: /ltb-sp-3307/ }).first()).toBeVisible();
+  // Warehouse Central Europe gives boards to the recovery plan and receives the drives of the last-time buy.
+  for (const [skill, id] of [
+    ['exception_resolution', 'res-l-24117'],
+    ['ltb_decision', 'ltb-sp-3307'],
+  ] as const) {
+    const e = (await stack.call('expand', {
+      page_id: `markdown/instances/${skill}/${id}.md`,
+    })) as { body?: string };
+    expect(e.body ?? '').toContain('Central Europe');
+  }
+  await openRow(page, 'exception_resolution', /res-l-24117/);
+  await page.keyboard.press('Control+\\');
+  await openRow(page, 'ltb_decision', /ltb-sp-3307/);
   await stack.shot('s2d-10-one-warehouse-two-decisions');
-  await page.keyboard.press('Escape');
 });

@@ -67,24 +67,27 @@ export interface Stack {
   evolveCall: (name: string, args: Record<string, unknown>) => Promise<ToolResult>;
 }
 
-export const test = base.extend<object, {
-  stack: Stack;
-  /** Whether the window opens in the calm focus view (the demo's default). Off: the classic IDE look the view tests drive. */
-  focus: boolean;
-  runnerHarness: 'echo' | 'gemini';
-  evolveAgentBin: string | undefined;
-  /** Load the Source-to-Deliver demo (hetzner seed) too; the other scenarios count rows and must not see it. */
-  s2d: boolean;
-  /** Names the file's window: files that set different values never share one (state of an earlier file leaked into a later one). */
-  suite: string;
-}>({
-  focus: [false, { option: true, scope: 'worker' }],
+export const test = base.extend<
+  object,
+  {
+    stack: Stack;
+    runnerHarness: 'echo' | 'gemini';
+    evolveAgentBin: string | undefined;
+    /** Load the Source-to-Deliver demo (hetzner seed) too; the other scenarios count rows and must not see it. */
+    s2d: boolean;
+    /** Names the file's window: files that set different values never share one (state of an earlier file leaked into a later one). */
+    suite: string;
+    /** Whether the window opens in the calm focus view (the demo's default). Off: the classic IDE look the view tests drive. */
+    focus: boolean;
+  }
+>({
   suite: ['', { scope: 'worker', option: true }],
+  focus: [false, { option: true, scope: 'worker' }],
   s2d: [false, { scope: 'worker', option: true }],
   runnerHarness: ['echo', { scope: 'worker', option: true }],
   evolveAgentBin: [undefined, { scope: 'worker', option: true }],
   stack: [
-    async ({ focus, runnerHarness, evolveAgentBin, s2d }, use) => {
+    async ({ runnerHarness, evolveAgentBin, s2d, focus }, use) => {
       const home = mkdtempSync(join(homedir(), '.cache', 'escurel-e2e-'));
       let geminiPlanTarget: { pageId: string; revision: string } | undefined;
       const geminiRequests: Record<string, unknown>[] = [];
@@ -102,19 +105,44 @@ export const test = base.extend<object, {
             geminiRequests.push(prompt);
             if (contents?.length === 1) {
               const firstRequest = JSON.stringify(prompt);
-              if (!firstRequest.includes(geminiPlanTarget.pageId) ||
-                  !firstRequest.includes(geminiPlanTarget.revision)) {
+              if (
+                !firstRequest.includes(geminiPlanTarget.pageId) ||
+                !firstRequest.includes(geminiPlanTarget.revision)
+              ) {
                 response.writeHead(422).end('Evolve plan prompt omitted the frozen problem page');
                 return;
               }
-              parts = [{ functionCall: { name: 'expand', args: {
-                page_id: geminiPlanTarget.pageId, raw: true,
-              } } }];
+              parts = [
+                {
+                  functionCall: {
+                    name: 'expand',
+                    args: {
+                      page_id: geminiPlanTarget.pageId,
+                      raw: true,
+                    },
+                  },
+                },
+              ];
             } else if (contents?.length === 3) {
-              parts = [{ functionCall: { name: 'report_progress', args: { plan: [
-                { step: 'Review the frozen source, holdout and V2 budget', status: 'pending' },
-                { step: 'Run bounded DuckDB search after owner approval', status: 'pending' },
-              ] } } }];
+              parts = [
+                {
+                  functionCall: {
+                    name: 'report_progress',
+                    args: {
+                      plan: [
+                        {
+                          step: 'Review the frozen source, holdout and V2 budget',
+                          status: 'pending',
+                        },
+                        {
+                          step: 'Run bounded DuckDB search after owner approval',
+                          status: 'pending',
+                        },
+                      ],
+                    },
+                  },
+                },
+              ];
             } else {
               parts = [{ text: 'Plan reported for the owner to review.' }];
             }
@@ -123,7 +151,8 @@ export const test = base.extend<object, {
           response.end(JSON.stringify({ candidates: [{ content: { parts } }] }));
         });
         await new Promise<void>((resolveListen) =>
-          modelServer!.listen(0, '127.0.0.1', resolveListen));
+          modelServer!.listen(0, '127.0.0.1', resolveListen),
+        );
         const address = modelServer.address();
         if (!address || typeof address === 'string') throw new Error('Gemini stub has no port');
         modelBase = `http://127.0.0.1:${address.port}`;
@@ -164,7 +193,9 @@ export const test = base.extend<object, {
           '--ozone-platform=x11 --disable-site-isolation-trials --disable-features=IsolateOrigins,site-per-process' +
           (process.env.CI ? ' --no-sandbox' : '') +
           // A machine whose GPU is wedged hangs Electron before it paints: ESCUREL_E2E_EXTRA_CODE_ARGS=--disable-gpu.
-          (process.env.ESCUREL_E2E_EXTRA_CODE_ARGS ? ` ${process.env.ESCUREL_E2E_EXTRA_CODE_ARGS}` : ''),
+          (process.env.ESCUREL_E2E_EXTRA_CODE_ARGS
+            ? ` ${process.env.ESCUREL_E2E_EXTRA_CODE_ARGS}`
+            : ''),
         ESCUREL_TEST_GATEWAY_BIN: join(bin, 'escurel-test-gateway'),
         ESCUREL_RUNNER_BIN: join(bin, 'escurel-runner'),
         ESCUREL_CLI_BIN: join(bin, 'escurel'),
@@ -173,17 +204,19 @@ export const test = base.extend<object, {
         // No zoom: Playwright maps clicks into a nested webview with the page's own scale, and a zoomed
         // window (the demo's default) puts them on the wrong element.
         ESCUREL_DEMO_ZOOM: '0',
-        ESCUREL_DEMO_FOCUS: focus ? '1' : '0',
         // Keep VS Code's modal confirmation inside the CDP window so the
         // approval text and deliberate human click are observable end to end.
         ESCUREL_DEMO_DIALOG_STYLE: 'custom',
         ESCUREL_DEMO_EVOLVE_SEED: '1',
         ESCUREL_DEMO_RUNNER_HARNESS: runnerHarness,
         ...(configuredEvolveUrl ? { ESCUREL_DEMO_EVOLVE_ENDPOINT: configuredEvolveUrl } : {}),
-        ...(modelBase ? {
-          ESCUREL_GEMINI_API_KEY: 'deterministic-native-plan-key',
-          ESCUREL_RUNNER_GEMINI_BASE_URL: modelBase,
-        } : {}),
+        ...(modelBase
+          ? {
+              ESCUREL_GEMINI_API_KEY: 'deterministic-native-plan-key',
+              ESCUREL_RUNNER_GEMINI_BASE_URL: modelBase,
+            }
+          : {}),
+        ESCUREL_DEMO_FOCUS: focus ? '1' : '0',
       };
       const run = join(EXT, 'demo', 'run.sh');
       let browser: Browser | undefined;
@@ -192,128 +225,144 @@ export const test = base.extend<object, {
       try {
         execFileSync(run, ['start'], { env, stdio: 'inherit', timeout: 240_000 });
 
-      const info = JSON.parse(readFileSync(join(home, 'gateway.json'), 'utf8').split('\n')[0]!);
-      const story = JSON.parse(readFileSync(join(home, 'story.json'), 'utf8'));
-      const s2dStory = s2d
-        ? (JSON.parse(readFileSync(join(home, 's2d-story.json'), 'utf8')) as Stack['s2dStory'])
-        : undefined;
-      const bearer = () =>
-        JSON.parse(readFileSync(join(home, 'bearer.json'), 'utf8')) as {
-          bearer: string;
-          admin_bearer: string;
-        };
-      let evolveUrl: string | undefined;
-      if (evolveAgentBin) {
-        const port = evolvePort!;
-        evolveUrl = configuredEvolveUrl;
-        evolveLogFd = openSync(join(home, 'evolve.log'), 'w');
-        evolveProcess = spawn(evolveAgentBin, ['serve', '--addr', `127.0.0.1:${port}`,
-          '--db', join(home, 'evolve.duckdb')], {
-          env: {
-            ...process.env,
-            ESCUREL_ENDPOINT: info.gateway_url,
-            ESCUREL_TOKEN: bearer().admin_bearer,
-            ESCUREL_OIDC_ISSUER: info.issuer_url,
-            ESCUREL_OIDC_AUDIENCE: 'escurel',
-            ESCUREL_OIDC_JWKS_URI: `${info.issuer_url}/protocol/openid-connect/certs`,
-            EVOLVE_OIDC_ISSUER: info.issuer_url,
-            EVOLVE_OIDC_JWKS_URI: `${info.issuer_url}/protocol/openid-connect/certs`,
-            EVOLVE_OIDC_AUDIENCE: 'escurel',
-            EVOLVE_TENANT: 'vsx',
-            GEMINI_API_KEY: 'unused-seed-only-test-key',
-            EVOLVE_ALLOW_SYNTHETIC_BRAIN: '1',
-          },
-          stdio: ['ignore', evolveLogFd, evolveLogFd],
-        });
-        let up = false;
-        for (let i = 0; i < 100 && !up; i += 1) {
-          if (evolveProcess.exitCode !== null) break;
-          try { up = (await fetch(`${evolveUrl}/healthz`)).ok; } catch { /* starting */ }
-          if (!up) await new Promise((r) => setTimeout(r, 100));
-        }
-        if (!up) throw new Error(`Evolve service did not start: ${readFileSync(join(home, 'evolve.log'), 'utf8')}`);
-      }
-
-      for (let i = 0; i < 60 && !browser; i += 1) {
-        try {
-          browser = await chromium.connectOverCDP(`http://127.0.0.1:${cdpPort}`);
-        } catch {
-          await new Promise((r) => setTimeout(r, 500));
-        }
-      }
-      if (!browser) {
-        const codeLog = readFileSync(join(home, 'code.log'), 'utf8');
-        throw new Error(
-          `could not attach to the VS Code window (display=${display}, xvfbExit=${xvfb.exitCode}, ` +
-            `codeLog=${codeLog.slice(-6000)})`,
-        );
-      }
-      // The window may not have a page yet when the debugger first answers.
-      let page: Page | undefined;
-      for (let i = 0; i < 120 && !page; i += 1) {
-        page = browser
-          .contexts()[0]
-          ?.pages()
-          .find((p) => /workbench/.test(p.url()));
-        if (!page) await new Promise((r) => setTimeout(r, 500));
-      }
-      if (!page) throw new Error('the VS Code window never showed a workbench page');
-      await page.waitForSelector('.monaco-workbench', { timeout: 60_000 });
-      const errors: string[] = [];
-      page.on('pageerror', (e) => errors.push(`pageerror: ${e.message}`));
-      page.on('console', (m) => {
-        if (m.type() === 'error') errors.push(`console: ${m.text()}`);
-      });
-
-      const stack: Stack = {
-        page,
-        workspaceDir: join(home, 'workspace'),
-        display,
-        story,
-        s2dStory,
-        gatewayUrl: info.gateway_url,
-        home,
-        errors,
-        call: async (name, args, admin = false) => {
-          const tok = bearer();
-          const res = await fetch(`${info.gateway_url}/mcp`, {
-            method: 'POST',
-            headers: {
-              'content-type': 'application/json',
-              authorization: `Bearer ${admin ? tok.admin_bearer : tok.bearer}`,
-            },
-            body: JSON.stringify({
-              jsonrpc: '2.0',
-              id: 1,
-              method: 'tools/call',
-              params: { name, arguments: args },
-            }),
-          });
-          const body = (await res.json()) as {
-            error?: unknown;
-            result: { structuredContent: ToolResult };
+        const info = JSON.parse(readFileSync(join(home, 'gateway.json'), 'utf8').split('\n')[0]!);
+        const story = JSON.parse(readFileSync(join(home, 'story.json'), 'utf8'));
+        const s2dStory = s2d
+          ? (JSON.parse(readFileSync(join(home, 's2d-story.json'), 'utf8')) as Stack['s2dStory'])
+          : undefined;
+        const bearer = () =>
+          JSON.parse(readFileSync(join(home, 'bearer.json'), 'utf8')) as {
+            bearer: string;
+            admin_bearer: string;
           };
-          if (body.error) throw new Error(`${name}: ${JSON.stringify(body.error)}`);
-          return body.result.structuredContent;
-        },
-        shot: async (name) => {
-          await page.screenshot({ path: join(artifacts, `${name}.png`) });
-        },
-        setGeminiPlanTarget: (pageId, revision) => { geminiPlanTarget = { pageId, revision }; },
-        geminiRequests,
-        evolveCall: async (name, args) => {
-          if (!evolveUrl) throw new Error('Evolve service fixture is not enabled');
-          const res = await fetch(evolveUrl, {
-            method: 'POST', headers: { 'content-type': 'application/json',
-              authorization: `Bearer ${bearer().bearer}`, 'X-Triton-Tool': name },
-            body: JSON.stringify(args),
-          });
-          const body = await res.json() as ToolResult;
-          if (!res.ok) throw new Error(`${name}: HTTP ${res.status}: ${JSON.stringify(body)}`);
-          return body;
-        },
-      };
-      await use(stack);
+        let evolveUrl: string | undefined;
+        if (evolveAgentBin) {
+          const port = evolvePort!;
+          evolveUrl = configuredEvolveUrl;
+          evolveLogFd = openSync(join(home, 'evolve.log'), 'w');
+          evolveProcess = spawn(
+            evolveAgentBin,
+            ['serve', '--addr', `127.0.0.1:${port}`, '--db', join(home, 'evolve.duckdb')],
+            {
+              env: {
+                ...process.env,
+                ESCUREL_ENDPOINT: info.gateway_url,
+                ESCUREL_TOKEN: bearer().admin_bearer,
+                ESCUREL_OIDC_ISSUER: info.issuer_url,
+                ESCUREL_OIDC_AUDIENCE: 'escurel',
+                ESCUREL_OIDC_JWKS_URI: `${info.issuer_url}/protocol/openid-connect/certs`,
+                EVOLVE_OIDC_ISSUER: info.issuer_url,
+                EVOLVE_OIDC_JWKS_URI: `${info.issuer_url}/protocol/openid-connect/certs`,
+                EVOLVE_OIDC_AUDIENCE: 'escurel',
+                EVOLVE_TENANT: 'vsx',
+                GEMINI_API_KEY: 'unused-seed-only-test-key',
+                EVOLVE_ALLOW_SYNTHETIC_BRAIN: '1',
+              },
+              stdio: ['ignore', evolveLogFd, evolveLogFd],
+            },
+          );
+          let up = false;
+          for (let i = 0; i < 100 && !up; i += 1) {
+            if (evolveProcess.exitCode !== null) break;
+            try {
+              up = (await fetch(`${evolveUrl}/healthz`)).ok;
+            } catch {
+              /* starting */
+            }
+            if (!up) await new Promise((r) => setTimeout(r, 100));
+          }
+          if (!up)
+            throw new Error(
+              `Evolve service did not start: ${readFileSync(join(home, 'evolve.log'), 'utf8')}`,
+            );
+        }
+
+        for (let i = 0; i < 60 && !browser; i += 1) {
+          try {
+            browser = await chromium.connectOverCDP(`http://127.0.0.1:${cdpPort}`);
+          } catch {
+            await new Promise((r) => setTimeout(r, 500));
+          }
+        }
+        if (!browser) {
+          const codeLog = readFileSync(join(home, 'code.log'), 'utf8');
+          throw new Error(
+            `could not attach to the VS Code window (display=${display}, xvfbExit=${xvfb.exitCode}, ` +
+              `codeLog=${codeLog.slice(-6000)})`,
+          );
+        }
+        // The window may not have a page yet when the debugger first answers.
+        let page: Page | undefined;
+        for (let i = 0; i < 120 && !page; i += 1) {
+          page = browser
+            .contexts()[0]
+            ?.pages()
+            .find((p) => /workbench/.test(p.url()));
+          if (!page) await new Promise((r) => setTimeout(r, 500));
+        }
+        if (!page) throw new Error('the VS Code window never showed a workbench page');
+        await page.waitForSelector('.monaco-workbench', { timeout: 60_000 });
+        const errors: string[] = [];
+        page.on('pageerror', (e) => errors.push(`pageerror: ${e.message}`));
+        page.on('console', (m) => {
+          if (m.type() === 'error') errors.push(`console: ${m.text()}`);
+        });
+
+        const stack: Stack = {
+          page,
+          workspaceDir: join(home, 'workspace'),
+          display,
+          story,
+          s2dStory,
+          gatewayUrl: info.gateway_url,
+          home,
+          errors,
+          call: async (name, args, admin = false) => {
+            const tok = bearer();
+            const res = await fetch(`${info.gateway_url}/mcp`, {
+              method: 'POST',
+              headers: {
+                'content-type': 'application/json',
+                authorization: `Bearer ${admin ? tok.admin_bearer : tok.bearer}`,
+              },
+              body: JSON.stringify({
+                jsonrpc: '2.0',
+                id: 1,
+                method: 'tools/call',
+                params: { name, arguments: args },
+              }),
+            });
+            const body = (await res.json()) as {
+              error?: unknown;
+              result: { structuredContent: ToolResult };
+            };
+            if (body.error) throw new Error(`${name}: ${JSON.stringify(body.error)}`);
+            return body.result.structuredContent;
+          },
+          shot: async (name) => {
+            await page.screenshot({ path: join(artifacts, `${name}.png`) });
+          },
+          setGeminiPlanTarget: (pageId, revision) => {
+            geminiPlanTarget = { pageId, revision };
+          },
+          geminiRequests,
+          evolveCall: async (name, args) => {
+            if (!evolveUrl) throw new Error('Evolve service fixture is not enabled');
+            const res = await fetch(evolveUrl, {
+              method: 'POST',
+              headers: {
+                'content-type': 'application/json',
+                authorization: `Bearer ${bearer().bearer}`,
+                'X-Triton-Tool': name,
+              },
+              body: JSON.stringify(args),
+            });
+            const body = (await res.json()) as ToolResult;
+            if (!res.ok) throw new Error(`${name}: HTTP ${res.status}: ${JSON.stringify(body)}`);
+            return body;
+          },
+        };
+        await use(stack);
       } finally {
         await browser?.close().catch(() => undefined);
         if (evolveProcess && evolveProcess.exitCode === null && evolveProcess.signalCode === null) {
@@ -332,7 +381,8 @@ export const test = base.extend<object, {
           /* already gone */
         }
         xvfb.kill();
-        if (modelServer) await new Promise<void>((resolveClose) => modelServer!.close(() => resolveClose()));
+        if (modelServer)
+          await new Promise<void>((resolveClose) => modelServer!.close(() => resolveClose()));
       }
     },
     { scope: 'worker', timeout: 300_000 },

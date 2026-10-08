@@ -1,7 +1,8 @@
 //! `run_tool_calls` — one row per `/mcp` call a run made (knowledge-
 //! workbench backend P3-1). The gateway records a row for every call whose
 //! bearer carries run claims: what tool, how it went, how long, how big
-//! (bytes only, never payloads). The workbench reads them per run.
+//! (bytes), and — when the gateway is told to — a bounded, redacted summary of
+//! the arguments and the result. The workbench reads them per run.
 //!
 //! Retention is the run's (owner decision 2026-09-23): no sweep here.
 
@@ -22,6 +23,10 @@ pub struct NewToolCall {
     pub request_bytes: u64,
     pub response_bytes: u64,
     pub subject: String,
+    /// A bounded, redacted summary of the arguments (`None` = not recorded).
+    pub args_summary: Option<String>,
+    /// A bounded, redacted summary of the result or the failure's reason.
+    pub result_summary: Option<String>,
 }
 
 /// One recorded call.
@@ -37,6 +42,8 @@ pub struct ToolCallRow {
     pub request_bytes: u64,
     pub response_bytes: u64,
     pub subject: String,
+    pub args_summary: Option<String>,
+    pub result_summary: Option<String>,
     /// RFC 3339, seconds.
     pub at: String,
 }
@@ -76,8 +83,8 @@ impl Indexer {
         conn.execute(
             "INSERT INTO run_tool_calls \
              (seq, run_id, root_event_id, tool, status, error_code, duration_ms, \
-              request_bytes, response_bytes, subject) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+              request_bytes, response_bytes, subject, args_summary, result_summary) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             params![
                 seq,
                 call.run_id,
@@ -89,6 +96,8 @@ impl Indexer {
                 call.request_bytes as i64,
                 call.response_bytes as i64,
                 call.subject,
+                call.args_summary,
+                call.result_summary,
             ],
         )?;
         Ok(seq)
@@ -146,7 +155,8 @@ impl Indexer {
         let conn = self.conn.lock().await;
         let mut stmt = conn.prepare(
             "SELECT seq, run_id, root_event_id, tool, status, error_code, duration_ms, \
-                    request_bytes, response_bytes, subject, strftime(at_ts, '%Y-%m-%dT%H:%M:%SZ') \
+                    request_bytes, response_bytes, subject, strftime(at_ts, '%Y-%m-%dT%H:%M:%SZ'), \
+                    args_summary, result_summary \
              FROM run_tool_calls WHERE run_id = ? AND seq > ? ORDER BY seq LIMIT ?",
         )?;
         let mut rows: Vec<ToolCallRow> = stmt
@@ -165,6 +175,8 @@ impl Indexer {
                         response_bytes: r.get::<_, i64>(8)?.max(0) as u64,
                         subject: r.get(9)?,
                         at: r.get::<_, Option<String>>(10)?.unwrap_or_default(),
+                        args_summary: r.get(11)?,
+                        result_summary: r.get(12)?,
                     })
                 },
             )?

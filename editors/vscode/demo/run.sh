@@ -76,6 +76,11 @@ fi
 # one instance per row, no materialise step (the view is created on first read).
 sed -i "s|@VBAK_DIR@|$HERE/sources/vbak|" "$HOME_DIR/seed/skills/customer-order.md"
 sed -i "s|@LFA1_DIR@|$HERE/sources/lfa1|" "$HOME_DIR/seed/skills/supplier.md"
+# With the S2D demo the query pages are the METHODS behind its numbers (the teaser opens one): they sit under
+# logistics, where the story is, not under plumbing.
+if [ "${ESCUREL_DEMO_S2D:-1}" = "1" ]; then
+  sed -i 's|^folder: plumbing$|folder: logistics/methods|; s|^title: Query$|title: Methods|' "$HOME_DIR/seed/skills/query.md"
+fi
 
 # A DuckDB extension is built for ONE DuckDB version. The gateway links libduckdb.so: the copy the build
 # downloaded for the version it is pinned to (target/duckdb-download/<triple>/<version>/), or whatever
@@ -83,8 +88,16 @@ sed -i "s|@LFA1_DIR@|$HERE/sources/lfa1|" "$HOME_DIR/seed/skills/supplier.md"
 # (override with ESCUREL_DEMO_LIBDUCKDB_DIR).
 libduckdb_dir() {
   [ -n "${ESCUREL_DEMO_LIBDUCKDB_DIR:-}" ] && { echo "$ESCUREL_DEMO_LIBDUCKDB_DIR"; return; }
-  local d
-  for d in "$(dirname "$GATEWAY_BIN")"/../duckdb-download/*/*/; do
+  local d want
+  # The DuckDB version the build is pinned to, from libduckdb-sys in Cargo.lock (1.10506.0 -> 1.5.6):
+  # a target/ dir can hold older downloads too, and the first one found is not necessarily the pinned one.
+  want="$(python3 "$HERE/s2d/pinned_duckdb.py" "$REPO/Cargo.lock" 2>/dev/null || true)"
+  if [ -n "$want" ]; then
+    for d in "$(dirname "$GATEWAY_BIN")"/../duckdb-download/*/"$want"/; do
+      [ -f "${d}libduckdb.so" ] && { echo "${d%/}"; return; }
+    done
+  fi
+  for d in $(ls -d "$(dirname "$GATEWAY_BIN")"/../duckdb-download/*/*/ 2>/dev/null | sort -V -r); do
     [ -f "${d}libduckdb.so" ] && { echo "${d%/}"; return; }
   done
 }

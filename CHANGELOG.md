@@ -86,6 +86,9 @@ Skill version `0.14.0`. Every consumer that writes pages or reads the tool surfa
   through the same draft → human promote → guarded single-transaction `UPDATE` flow as REST/MCP rows. Postgres
   attaches enforce the statement timeout server-side. The image bakes the `sqlite` and `mysql` DuckDB
   extensions next to `postgres`. Verified against a real Postgres container and a real SQLite file.
+- **Run traces keep what each tool call asked and got back.** `get_run_tool_calls` rows gain optional
+  `args_summary` / `result_summary` (2 KB, credentials redacted by key and by pattern, content bodies reduced
+  to sizes); the VS Code run detail shows them per step. `ESCUREL_TOOLCALL_DETAIL=off` records sizes only.
 
 ### Operators
 

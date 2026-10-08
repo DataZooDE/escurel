@@ -72,6 +72,7 @@ mod tools_drafts;
 mod tools_lineage;
 mod tools_mint;
 pub(crate) use tools_mint::sweep_expired_minted_runs;
+mod tool_detail;
 mod tools_progress;
 mod tools_tool_calls;
 pub use tools_progress::DEFAULT_RUN_PROGRESS_KEEP;
@@ -392,6 +393,14 @@ async fn mcp_inner(
                 .get("arguments")
                 .map(|a| a.to_string().len())
                 .unwrap_or(0);
+            // What was asked, summarised for the run's record (bounded and redacted: see
+            // `tool_detail`). Only a run-bound call is recorded, and only when the operator has not
+            // switched the detail off (`ESCUREL_TOOLCALL_DETAIL`).
+            let args_summary = (run.is_some()
+                && state.toolcall_detail == crate::server::ToolcallDetailMode::Summary)
+                .then(|| {
+                    tool_detail::summarise(req.params.get("arguments").unwrap_or(&Value::Null))
+                });
             // MCP-shape the SUCCESS payload into a `CallToolResult`
             // (`content` + `structuredContent` + `isError:false`) so real
             // MCP clients (Claude Code) can READ the tool output. Tool
@@ -522,6 +531,21 @@ async fn mcp_inner(
                         request_bytes: request_bytes as u64,
                         response_bytes: response_bytes as u64,
                         subject: subject.clone(),
+                        result_summary: args_summary.as_ref().map(|_| match &r {
+                            Ok(v) => {
+                                tool_detail::summarise(v.get("structuredContent").unwrap_or(v))
+                            }
+                            Err(e) => tool_detail::summarise_message(&match e
+                                .data
+                                .as_ref()
+                                .and_then(|d| d.get("code"))
+                                .and_then(Value::as_str)
+                            {
+                                Some(code) => format!("{code}: {}", e.message),
+                                None => e.message.clone(),
+                            }),
+                        }),
+                        args_summary,
                     })
                     .await
                 {

@@ -553,6 +553,29 @@ describe('<escurel-run-detail> navigation', () => {
       expect(text(first.querySelector('.call-sizes'))).to.equal('sent 100 B · received 2 KB');
     });
 
+    it('shows what the call asked and what came back when the gateway kept it', async () => {
+      const el = await render({
+        ...view,
+        calls: view.calls.map((c, i) =>
+          i === 0
+            ? {
+                ...c,
+                argsSummary: '{"page_id":"markdown/instances/note/n1.md"}',
+                resultSummary: '{"page":{"skill":"note"}}',
+              }
+            : c,
+        ),
+      });
+      const [first, second] = qa(el, '.tool-call');
+      const detail = first!.querySelector('.call-detail')!;
+      expect(text(detail)).to.contain('Asked');
+      expect(text(detail)).to.contain('markdown/instances/note/n1.md');
+      expect(text(detail)).to.contain('Got back');
+      expect(text(detail)).to.contain('"skill": "note"');
+      expect(second!.querySelector('.call-detail')).to.equal(null);
+      expect(text(el.shadowRoot!.querySelector('.timeline-note'))).to.contain('credentials');
+    });
+
     it('links to the draft the run produced, by asking the host (no id on the wire)', async () => {
       const el = await render(view);
       const sent: RunWebviewToHost[] = [];

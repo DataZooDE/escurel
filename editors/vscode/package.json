@@ -425,29 +425,6 @@
         "category": "Escurel"
       },
       {
-        "command": "escurel.openOverview",
-        "title": "Open overview",
-        "category": "Escurel",
-        "icon": "$(home)"
-      },
-      {
-        "command": "escurel.focusMode.enter",
-        "title": "Switch to focus view",
-        "category": "Escurel",
-        "icon": "$(eye)"
-      },
-      {
-        "command": "escurel.focusMode.exit",
-        "title": "Leave focus view",
-        "category": "Escurel",
-        "icon": "$(eye-closed)"
-      },
-      {
-        "command": "escurel.focusMode.toggle",
-        "title": "Toggle focus view",
-        "category": "Escurel"
-      },
-      {
         "command": "escurel.scenarios.refresh",
         "title": "Refresh scenario diffs",
         "category": "Escurel",
@@ -469,6 +446,29 @@
         "title": "Preview with parameters…",
         "category": "Escurel",
         "icon": "$(play)"
+      },
+      {
+        "command": "escurel.openOverview",
+        "title": "Open overview",
+        "category": "Escurel",
+        "icon": "$(home)"
+      },
+      {
+        "command": "escurel.focusMode.enter",
+        "title": "Switch to focus view",
+        "category": "Escurel",
+        "icon": "$(eye)"
+      },
+      {
+        "command": "escurel.focusMode.exit",
+        "title": "Leave focus view",
+        "category": "Escurel",
+        "icon": "$(eye-closed)"
+      },
+      {
+        "command": "escurel.focusMode.toggle",
+        "title": "Toggle focus view",
+        "category": "Escurel"
       }
     ],
     "authentication": [
@@ -524,7 +524,8 @@
           "id": "escurel.scenarios",
           "name": "Scenarios",
           "contextualTitle": "Escurel",
-          "initialSize": 2
+          "initialSize": 2,
+          "when": "!escurel.hideScenarios"
         },
         {
           "id": "escurel.inbox",
@@ -784,16 +785,16 @@
           "when": "false"
         },
         {
+          "command": "escurel.scenarios.compare",
+          "when": "false"
+        },
+        {
           "command": "escurel.focusMode.enter",
           "when": "!escurel.focusMode"
         },
         {
           "command": "escurel.focusMode.exit",
           "when": "escurel.focusMode"
-      },
-      {
-          "command": "escurel.scenarios.compare",
-          "when": "false"
         }
       ],
       "view/title": [
@@ -883,6 +884,11 @@
           "group": "navigation@9"
         },
         {
+          "command": "escurel.scenarios.refresh",
+          "when": "view == escurel.scenarios",
+          "group": "navigation@1"
+        },
+        {
           "command": "escurel.openOverview",
           "when": "view == escurel.knowledge",
           "group": "navigation@0"
@@ -896,11 +902,6 @@
           "command": "escurel.focusMode.exit",
           "when": "view == escurel.knowledge && escurel.focusMode",
           "group": "navigation@8"
-      },
-      {
-          "command": "escurel.scenarios.refresh",
-          "when": "view == escurel.scenarios",
-          "group": "navigation@1"
         }
       ],
       "view/item/context": [

@@ -66,5 +66,5 @@ pub use config::{BootedServer, ConfigError, EscurelConfig};
 pub use health::{AlwaysReady, ReadinessProbe, ReadinessReport};
 pub use server::{
     AutonomyLintMode, DEFAULT_SHUTDOWN_DRAIN, EmbedderFactory, EventAclMode, ServerConfig,
-    ServerError, ServerHandle, WriteAclMode, serve,
+    ServerError, ServerHandle, ToolcallDetailMode, WriteAclMode, serve,
 };

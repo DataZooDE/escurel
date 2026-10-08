@@ -4,13 +4,26 @@ Three agent proposals wait for a planner in **Awaiting you**: a late supplier lo
 ship together, and a last-time buy. Everything on screen is **illustrative demo data** (synthetic, one
 anonymised industrial manufacturer): not customer data, and no figure is a customer result.
 
-Start it: `editors/vscode/demo/run.sh start` (the S2D data is on by default; `ESCUREL_DEMO_S2D=0`
-leaves it out). The two optimizer pages (cheapest recovery plan, truck packing) need the local
-`anofox_optimize` DuckDB build at `~/Projects/datazoo/anofox-optimize/build/release/extension/anofox_optimize/`
-(`ESCUREL_DEMO_OPTIMIZE_EXT` overrides the path). It was built for DuckDB v1.5.5, so `run.sh` starts the
-gateway against the pinned libduckdb the build downloaded (`target/duckdb-download/…/1.5.5`); if the
-versions still differ it says so, leaves those two pages out and the stories use the plain options. The line `s2d: built from hetzner-agent-substrate <sha>` names the version of the
-shared seed it was built from. Reset between rehearsals: `run.sh start` again.
+Start it (desktop window, calm focus layout, Overview board first):
+
+```sh
+cd editors/vscode/demo
+DISPLAY=:0 WAYLAND_DISPLAY=wayland-1 ESCUREL_DEMO_CDP_PORT=9350 ESCUREL_DEMO_ZOOM=0 \
+  ESCUREL_DEMO_CODE_ARGS="--ozone-platform=x11 --disable-gpu" ./run.sh start
+```
+
+The S2D data is on by default (`ESCUREL_DEMO_S2D=0` leaves it out; `ESCUREL_DEMO_FOCUS=0` gives the classic
+IDE look). The window is then at the debugging port 9350 (`http://127.0.0.1:9350`). It replays the story
+from scratch, so a start is also the reset between rehearsals. Everything runs on DuckDB **1.5.6**
+(libduckdb-sys pinned in `Cargo.lock`; `run.sh` runs the gateway against the pinned libduckdb).
+
+The two optimizer pages (cheapest recovery plan, truck packing) need the `anofox_optimize` DuckDB extension
+built for the gateway's DuckDB version: the v1.5.6 build at
+`~/.cache/escurel-scratch/ext-1.5.6/anofox_optimize.duckdb_extension` is used when its footer matches
+(`ESCUREL_DEMO_OPT_EXT` overrides the path; the v1.5.5 build under `~/Projects/datazoo/anofox-optimize`
+is the fallback). With no matching build `run.sh` says so, leaves those two pages out, and the stories use
+the plain options. The line `s2d: built from hetzner-agent-substrate <sha>` names the version of the shared
+seed it was built from.
 
 ## What is real and what is scripted
 
@@ -84,3 +97,27 @@ steps.
 * Awaiting you is empty: the demo was started with `ESCUREL_DEMO_S2D=0`, or a proposal was already
   approved. Restart with `run.sh start`.
 * The window looks like an IDE: Focus mode (a separate branch) hides the chrome.
+
+## Continuation: the brain-teasers (about 4 minutes, after the three approvals)
+
+The chat demos (Teams, Gemini Enterprise) end with the planner's approval. Here the organisation sees the
+same decisions together, and the method behind a number is a page a person can read, change and review.
+Approve the three proposals first (the check mark on each Awaiting row); the click paths are above.
+
+1. **Where did it go?** Knowledge > logistics: the four records with the same ids as in chat:
+   `l-24117` (resolved), `res-l-24117`, `tp-stuttgart-lyon-fr-2026-10-08`, `ltb-sp-3307` (each approved).
+   Open one and use **Open thread** / **Open run**: what the agent read, what it wrote, who approved.
+2. **The price of the last percent.** Knowledge > logistics > methods (a folder of helpers: click to open it) >
+   **Methods** > **ltb_quantity** (the method, a page a person can read). Hover its row and press the
+   **play button** (Preview with parameters; the same command is in the palette, `F1`, with the query page
+   open). Part `SP-3307`, service level `0.95, 0.98, 0.99`. The preview shows **634 / 666 / 688 units** and
+   **EUR 748,120 / 785,880 / 811,840**. Ask the room: *is the 99th percent worth EUR 63,720?* The agent uses
+   whatever the reviewed page says; change the page, review it, and the agents follow. (The other end: the
+   same on **ltb_whatif**, part `SP-3307`, qty `500`: about a coin flip, running out in 2034.)
+3. **One warehouse, two decisions.** Warehouse Central Europe gives **250 CB-7 boards** (`res-l-24117`) and
+   receives **349 SD-40 drives** (`ltb-sp-3307`). No single agent saw both; the knowledge base does. Open both
+   records from Knowledge > logistics (source > Exception resolution; after-sales > Last-time-buy decision)
+   and drag one tab to the side: both name the Central Europe warehouse. (Search is not the route in the
+   demo: its embedder is a stand-in, so a free-text search ranks arbitrarily.)
+4. Close: *"The planner approved decisions in chat; here the organisation sees them together, and can change
+   the rules the agents work by."*

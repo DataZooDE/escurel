@@ -33,14 +33,14 @@ import { registerApprovePlan, setApprovalConfirm } from './start/approvePlan';
 import { registerNodeCommands } from './commands/nodeCommands';
 import { explainText } from './shared/explain';
 import { registerRunnerView, type RunnerTree } from './views/runner';
-import { FocusMode } from './focus/focusMode';
-import { OverviewController } from './overview/controller';
 import { registerImportEvolveProblem } from './evolve/importProblem';
 import { registerPrepareEvolveTrainingSource } from './evolve/prepareSource';
 import { registerEvolveHoldout } from './evolve/registerHoldout';
 import { registerEvolveHoldoutCsv } from './evolve/registerHoldoutCsv';
 import { registerPrepareEvolveTrainingCsv } from './evolve/prepareCsv';
 import { ScenariosTree } from './views/scenarios';
+import { FocusMode } from './focus/focusMode';
+import { OverviewController } from './overview/controller';
 
 const EXPLAIN_SCHEME = 'escurel-explain';
 
