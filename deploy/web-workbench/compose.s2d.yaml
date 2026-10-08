@@ -1,0 +1,87 @@
+# The Source-to-Deliver (S2D) demo behind the web workbench. Use it through `s2d-up.sh` (which prepares the S2D
+# data on the host and sets the variables below); the base compose.yaml stays generic.
+#
+#   cd deploy/web-workbench && ./s2d-up.sh
+#
+# What changes against compose.yaml
+#   escurel     the demo gateway: escurel-test-gateway (escurel-server + a built-in token issuer), because the
+#               demo needs a gateway that VERIFIES tokens and can tell which run wrote what (the thread, the run
+#               trace, the proposals held for a planner). It listens on a random loopback port; the forwarder
+#               in demo-services makes it reachable as escurel:8080. Still compose-network only.
+#   runner      MINTED mode (a token per run), in the gateway's network namespace.
+#   demo-story  plays the story, then loads the S2D demo (from S2D_DIR, built on the host by s2d/sync.sh).
+#   workbench   reads a USER bearer (never the admin bearer or the signing key) from a read-only volume, so the
+#               extension is signed in without anyone typing a token.
+# The S2D dir and the optimizer extension's directory are bind-mounted READ-ONLY at their host paths, so the
+# parquet relations written by sync.sh resolve unchanged inside the containers.
+
+services:
+  workbench:
+    environment:
+      WORKBENCH_BEARER_FILE: /bearer-pub/bearer.json
+    volumes:
+      - bearer-pub:/bearer-pub:ro
+
+  escurel:
+    build:
+      target: demo-gateway
+    image: escurel-demo-gateway:s2d
+    entrypoint: !override ["sh", "/demo-scripts/s2d-gateway.sh"]
+    environment: !override
+      ESCUREL_EGRESS_ALLOW_LOOPBACK: "1"
+      ESCUREL_SECRET_FILE_DIRS: /demo/secrets
+      ESCUREL_SQL_FILE_DIRS: "/demo/sqlite:/demo/sources:${S2D_DIR:?run s2d-up.sh}/data"
+      ESCUREL_INDEX_EXTENSIONS: "${S2D_INDEX_EXT:-}"
+      ESCUREL_ALLOW_UNSIGNED_EXTENSIONS: "${S2D_ALLOW_UNSIGNED:-false}"
+    healthcheck: !override
+      test:
+        - CMD-SHELL
+        - 'p=$$(sed -n "s/.*\"gateway_url\":\"http:\/\/127.0.0.1:\([0-9]*\)\".*/\1/p" /demo/state/gateway.json | head -1); [ -n "$$p" ] && curl -fsS "http://127.0.0.1:$$p/healthz"'
+      interval: 10s
+      timeout: 3s
+      start_period: 60s
+      retries: 20
+    volumes:
+      - ../../editors/vscode/demo/web:/demo-scripts:ro
+      - bearer-pub:/bearer-pub
+      - "${S2D_DIR}:${S2D_DIR}:ro"
+      - "${S2D_EXT_DIR:?run s2d-up.sh}:${S2D_EXT_DIR}:ro"
+
+  demo-init:
+    command: !override ["sh", "/demo-scripts/init-s2d.sh"]
+    volumes:
+      - bearer-pub:/bearer-pub
+
+  runner:
+    network_mode: "service:escurel"
+    networks: !reset []
+    entrypoint: !override ["sh", "/demo-scripts/runner-s2d.sh"]
+    environment: !override {}
+    volumes:
+      - demo-data:/demo:ro
+      - ../../editors/vscode/demo/web:/demo-scripts:ro
+    healthcheck: !override
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8088/healthz"]
+      interval: 10s
+      timeout: 3s
+      start_period: 30s
+      retries: 30
+
+  demo-services:
+    command: !override
+      - sh
+      - -c
+      - "node /demo-src/services/ratings-api.mjs 9101 & node /demo-src/services/confirmations-mcp.mjs 9102 & node /demo-scripts/forward.mjs 8080 /demo/state/gateway.json & wait"
+
+  demo-story:
+    network_mode: "service:escurel"
+    networks: !reset []
+    command: !override ["sh", "/demo-scripts/story-s2d.sh"]
+    environment:
+      S2D_DIR: "${S2D_DIR}"
+    volumes:
+      - "${S2D_DIR}:${S2D_DIR}:ro"
+    restart: "no"
+
+volumes:
+  bearer-pub:

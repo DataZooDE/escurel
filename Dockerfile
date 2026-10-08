@@ -136,6 +136,31 @@ RUN set -eu; \
     done; \
     echo "baked $(ls "$d"/*.duckdb_extension | wc -l) extensions, $(du -sh /opt/escurel/.duckdb | cut -f1)"
 
+# ---- demo gateway (web workbench demo only; NOT the default target) -------
+# The demo stack needs a gateway that VERIFIES tokens and can tell which run wrote what (the thread, the
+# trace, the held proposals): that is `escurel-test-gateway` (escurel-server + a built-in token issuer).
+# It is built into its own stage, placed BEFORE `runtime` so `runtime` stays the Dockerfile's last stage
+# (the default target the published image uses). Select it with `target: demo-gateway`.
+FROM builder AS demo-builder
+RUN --mount=type=cache,target=/build/target \
+    --mount=type=cache,target=/usr/local/cargo/registry \
+    cargo build --release -p escurel-test-support --bin escurel-test-gateway \
+    && cp target/release/escurel-test-gateway /usr/local/bin/escurel-test-gateway
+
+FROM debian:bookworm-slim AS demo-gateway
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates curl libstdc++6 \
+    && rm -rf /var/lib/apt/lists/*
+COPY --from=demo-builder /usr/local/bin/escurel-test-gateway /usr/local/bin/escurel-test-gateway
+COPY --from=builder /usr/local/bin/escurel /usr/local/bin/escurel
+COPY --from=builder /usr/local/lib/libduckdb.so /usr/lib/libduckdb.so
+RUN ldconfig
+COPY --from=extensions --chown=65532:65532 /opt/escurel/.duckdb /opt/escurel/.duckdb
+ENV HOME=/opt/escurel
+RUN mkdir -p /data && chown 65532:65532 /data
+USER 65532:65532
+ENTRYPOINT ["/usr/local/bin/escurel-test-gateway"]
+
 # ---- runtime -------------------------------------------------------------
 FROM debian:bookworm-slim AS runtime
 # libstdc++6: the downloaded libduckdb links it dynamically and debian-slim
