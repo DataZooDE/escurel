@@ -110,7 +110,7 @@ RUN if [ -n "${GDRIVE_SHA256}" ]; then \
 # unavailable in such an image. Set REQUIRE_GDRIVE=1 to make a missing artifact fail the build instead.
 ARG REQUIRE_GDRIVE=0
 RUN mkdir -p /opt/escurel \
- && duckdb -unsigned -c "INSTALL ducklake; INSTALL postgres; INSTALL sqlite; INSTALL mysql; INSTALL httpfs; INSTALL fts; INSTALL vss;" \
+ && duckdb -unsigned -c "INSTALL ducklake; INSTALL postgres; INSTALL sqlite; INSTALL httpfs; INSTALL fts; INSTALL vss;" \
  && if curl -sfI "${GDRIVE_REPO}/${DUCKDB_VERSION}/linux_amd64/gdrive.duckdb_extension.gz" >/dev/null; then \
       duckdb -unsigned -c "INSTALL gdrive FROM '${GDRIVE_REPO}';"; \
     else \
@@ -124,11 +124,12 @@ RUN mkdir -p /opt/escurel \
 # it. A missing extension here is a silent 137MB download at boot.
 RUN set -eu; \
     d="/opt/escurel/.duckdb/extensions/${DUCKDB_VERSION}/linux_amd64"; \
-    # sqlite_scanner / mysql_scanner (SQL rows connectors, `docs/spec` backends) are baked for the same reason.
+    # sqlite_scanner (SQL rows connector, `docs/spec` backends) is baked for the same reason. mysql_scanner is
+    # NOT baked: MySQL is off the advertised surface until it has a test (CHANGELOG, 2026-10-09).
     # postgres_scanner, not postgres: `INSTALL postgres` is an ALIAS and the
     # artifact it lands is postgres_scanner.duckdb_extension. Checking the
-    # alias name failed the build while all six were present (now eight).
-    want="ducklake postgres_scanner sqlite_scanner mysql_scanner httpfs fts vss"; \
+    # alias name failed the build while all six were present (now seven, eight with gdrive).
+    want="ducklake postgres_scanner sqlite_scanner httpfs fts vss"; \
     # gdrive is expected only when the mirror had it (see the install step above); a REQUIRE_GDRIVE build never gets here without it.
     if curl -sfI "${GDRIVE_REPO}/${DUCKDB_VERSION}/linux_amd64/gdrive.duckdb_extension.gz" >/dev/null; then want="$want gdrive"; fi; \
     for e in $want; do \

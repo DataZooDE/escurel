@@ -4,6 +4,15 @@ The skill version tracks the consumer-facing contract, not the Escurel
 binary version. The Escurel repo's checked-out git ref is the true version
 pin (see `SKILL.md` → "How this skill is installed").
 
+## 0.18.1 — MySQL leaves the advertised surface; conflict detection is etag-only (docs only)
+
+- **`mysql` is no longer an advertised `sql_view` connector.** The name is still accepted by the gateway, but it
+  has no integration test and no CI job, and the server image no longer bakes `mysql_scanner` (DuckDB would
+  fetch it on first use). Design against `postgres` and `sqlite`; ask before relying on MySQL.
+- **SQL write-back conflicts are etag-only**: the etag is the row's values at read time; a `version_column:`
+  option was considered and dropped (2026-10-09). No wire change.
+- The repo's root `CHANGELOG.md` now lists everything since v2026.08.15 under Unreleased.
+
 ## 0.18.0 — run tool calls keep what was asked and what came back
 
 - `get_run_tool_calls` rows gain `args_summary` and `result_summary` (additive, optional): a bounded (2 KB),

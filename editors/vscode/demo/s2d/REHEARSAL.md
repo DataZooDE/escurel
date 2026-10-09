@@ -96,7 +96,7 @@ steps.
   without it; reload with the refresh button in the Knowledge title.
 * Awaiting you is empty: the demo was started with `ESCUREL_DEMO_S2D=0`, or a proposal was already
   approved. Restart with `run.sh start`.
-* The window looks like an IDE: Focus mode (a separate branch) hides the chrome.
+* The window opens in Focus mode (`ESCUREL_DEMO_FOCUS=0` keeps the classic IDE look).
 
 ## Continuation: the brain-teasers (about 4 minutes, after the three approvals)
 

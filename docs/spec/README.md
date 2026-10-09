@@ -365,7 +365,7 @@ The cut line for v1 (the binary you can run in production):
   attach_external
 - **External instance backends** ([`protocol.md`](protocol.md#instance-backends)):
   besides native markdown, instances may be backed by a read-only `sql_view`
-  (DuckDB view over postgres/mysql/sqlite/erpl/json_dir/parquet_dir, with a
+  (DuckDB view over postgres/sqlite/erpl/json_dir/parquet_dir (mysql accepted, untested), with a
   server-side credential registry + `validate_bindings`) or a `document`
   (PDF/DOCX/PPTX/XLSX + text uploaded via `/ingest`, extracted by the
   in-process kreuzberg extractor and chunked/embedded). Each external instance

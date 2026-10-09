@@ -334,8 +334,8 @@ The layout matters: it must be `tests/suite/main.rs`, not
 `tests/suite.rs`. A test target's root file resolves `mod x;` against
 its *own* directory, so `tests/suite.rs` would look for `tests/x.rs`.
 
-Two `escurel-server` files stay standalone on purpose —
-`tests/logs_json.rs` and `tests/telemetry_filter.rs` both assert on the
+Three `escurel-server` files stay standalone on purpose —
+`tests/logs_json.rs`, `tests/telemetry_filter.rs` and `tests/tool_spans.rs` assert on the
 process-global `tracing` subscriber and are mutually exclusive inside
 one process. See the header of
 `crates/escurel-server/tests/suite/main.rs`.
