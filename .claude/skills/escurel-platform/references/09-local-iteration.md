@@ -103,11 +103,11 @@ honest. Also there: `escurel_tool_calls`, `escurel_tool_latency_ms`,
 
 ## The three env-var namespaces (don't mix them up)
 
-- **SQL databases as rows** (`sql_view` + `instances: rows` over `sqlite` / `postgres` / `mysql`): the credential is a
+- **SQL databases as rows** (`sql_view` + `instances: rows` over `sqlite` / `postgres`; `mysql` is accepted but untested): the credential is a
   secret reference (per tenant: a file under `<ESCUREL_SECRET_FILE_DIRS>/<tenant>/`, or `ESCUREL_SECRET_<TENANT>__<NAME>`);
   a SQLite file and every `json_dir` / `parquet_dir` source must live under `ESCUREL_SQL_FILE_DIRS` (a gateway
   with it unset serves no file sources; `escurel-test-support` gateways expose the temp dir),
-  a Postgres/MySQL host must be public
+  a Postgres host must be public
   unless `ESCUREL_EGRESS_ALLOW_LOOPBACK=1` (local dev only). Tests that need Postgres run a real container
   (`--features live-postgres`).
 - **Outbound calls to REST / MCP sources** (`openapi` / `mcp` skills; `ESCUREL_EGRESS_*`): the gateway

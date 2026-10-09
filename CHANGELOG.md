@@ -10,8 +10,8 @@ re-cuts append `.N`), matching the DataZoo release scheme (cf. erpl).
 
 **Read first:** [`docs/deploy/kind-migration.md`](docs/deploy/kind-migration.md) (stop-first upgrade, backup,
 rollback) and the consumer checklist in
-[`.claude/skills/escurel-platform/CHANGELOG.md`](.claude/skills/escurel-platform/CHANGELOG.md) (0.7.0 – 0.14.0).
-Skill version `0.14.0`. Every consumer that writes pages or reads the tool surface moves in the same window.
+[`.claude/skills/escurel-platform/CHANGELOG.md`](.claude/skills/escurel-platform/CHANGELOG.md) (0.7.0 – 0.18.1).
+Skill version `0.18.1`. Every consumer that writes pages or reads the tool surface moves in the same window.
 
 ### Fixed
 
@@ -75,6 +75,53 @@ Skill version `0.14.0`. Every consumer that writes pages or reads the tool surfa
 
 ### Added
 
+- **Migration tooling (#654).** `escurel admin migrate-kind` runs the apply in a spawned server task (a client
+  that disconnects or is killed no longer cancels it; `--timeout-secs` is opt-in, progress is printed every
+  30 s); a durable marker `meta/migrate-kind.pending` keeps a tenant QUARANTINED across a `kill -9` mid-apply
+  and the re-apply is idempotent; `escurel admin migrate-kind-files --apply <dir>` rewrites a checkout
+  offline (temp files are created `O_EXCL`, a planted symlink is never followed); BOM / CRLF pages parse and
+  migrate; `scripts/migrate-kind-job.sh` is the stop-first one-shot job (non-zero on a conflict or a boot
+  failure). Measured: 20k pages ≈ 11 min, 406 MB peak.
+- **Operator safety (#654).** `config_keys` registers every `ESCUREL_*` variable and generates
+  `docs/deploy/env.md` (a test fails on an undocumented or phantom key); the structured log goes through a
+  bounded non-blocking writer (a stalled reader can no longer freeze the gateway; dropped lines are counted
+  in `escurel_log_lines_dropped_total`, lines are capped at 16 KB); a non-loopback listener with no OIDC
+  issuer logs a loud warning and a `/readyz` notice; Postgres attaches carry `connect_timeout`
+  (`ESCUREL_SQL_CONNECT_TIMEOUT_SECS`) and the rows query bound is `ESCUREL_ROWS_QUERY_TIMEOUT_SECS`;
+  orphan `*.md.tmp` files are swept at boot; CI runs the live-postgres suites nightly, the full ten-point
+  SIGKILL test, a PR-time Docker image build, and tests that used to skip silently are `#[ignore]`d.
+- **Typed-client refusals (#654).** `escurel-client`, the VS Code client and the Dart client treat
+  `isError: true` as an error (`Error::Refused`), never as an empty result; `held_for_review` and `draft`
+  are typed on `update_page`.
+- **Anofox Evolve (#653, #657, #658).** Owner-scoped Evolve controls: `evolve_validate` and the new
+  `evolve_compare` control labels target an owner-private `evolve_comparison` page, are stamped and attested
+  by the gateway, never dispatched by the runner; prepared training sources and private holdout terms are
+  reviewed from the Workbench. The VS Code extension gains a **Scenarios** view (seed-vs-winner diffs over the
+  signed-in token, a page is trusted only if it carries the record's result hash), "New scenario comparison"
+  and the Compute comparison action, plus Evolve plan review in the native window.
+- **DuckDB 1.5.6 (#659).** `duckdb` / `libduckdb-sys 1.10506.0`; the image's `DUCKDB_VERSION=v1.5.6`.
+  DuckDB extensions are version-locked, so `anofox_optimize` and `gdrive` were rebuilt for 1.5.6 (the erpl
+  mirror now serves both). The `gdrive` bake is conditional: when the mirror has no artifact for the pinned
+  DuckDB the image is built WITHOUT gdrive with a loud warning (`REQUIRE_GDRIVE=1` fails the build instead);
+  the `anofox_inventory` extension test skips with a clear message on a DuckDB-version mismatch.
+- **VS Code workbench (#660).** **Focus mode** (`Switch to focus view` / `Leave focus view`: a calm window
+  without menu bar, command center, status bar, breadcrumbs or minimap; the person's own settings are
+  remembered and restored exactly) and the **Overview board** ("Today": decisions waiting, agent activity,
+  needs attention, open items per skill, recently finished) as the first screen; the light **Escurel Calm**
+  theme with WCAG contrast guards (thread connectors have arrowheads and ≥ 3:1 contrast, outlined state chips,
+  button borders); editor tabs name the page or skill; the run trace has a time axis and each step opens to
+  what it asked and got back; records whose skill names a report show that report's KPI figures and tables;
+  "Preview with parameters" on query pages; "Explain this view" on every view; keybindings `ctrl+alt+r/a/i/k`.
+- **Source-to-Deliver demo (#660).** `editors/vscode/demo/s2d/`: the three S2D stories (supplier exception,
+  transport consolidation, aftermarket last-time-buy) synced from the shared seed, rehearsal script, held
+  proposals in "Awaiting you", optimizer pages when the `anofox_optimize` extension matches the gateway's
+  DuckDB. Anonymised, illustrative data.
+- **Web workbench (#660).** `deploy/web-workbench/`: a code-server image with the VSIX preinstalled, the
+  calm layout baked in, an Escurel-skinned login page generated from the Calm theme tokens, a password gate
+  (12 characters by default, `MIN_PASSWORD_LENGTH` may lower it to 8, placeholders refused), no terminal
+  (`node-pty` removed), no marketplace, non-root, read-only root filesystem; `compose.yaml` +
+  `compose.s2d.yaml` give the full S2D demo in one command, `compose.proxy.yaml` a Caddy TLS front;
+  `s2d-up.sh` / `s2d-reset.sh`; `scripts/web-workbench-smoke.sh`. See `docs/deploy/web-workbench.md`.
 - `folder:`, `role:`, `tags:` and the OKF vocabulary (`title`, `resource`, `generated`, `verified`, `status`,
   `stale_after`, `sources`) on skill pages; the Knowledge tree in the VS Code extension shows them.
 - `backend.instances: rows` (one instance per row of a `sql_view`, optional linked markdown), REST (`openapi`)
@@ -84,8 +131,12 @@ Skill version `0.14.0`. Every consumer that writes pages or reads the tool surfa
   `instances: rows`; credentials as `secret_ref` references (inline `secret` deprecated), checked against the
   egress policy (`ESCUREL_SQL_FILE_DIRS` for SQLite files); a row of a skill with `writable_columns` changes
   through the same draft → human promote → guarded single-transaction `UPDATE` flow as REST/MCP rows. Postgres
-  attaches enforce the statement timeout server-side. The image bakes the `sqlite` and `mysql` DuckDB
-  extensions next to `postgres`. Verified against a real Postgres container and a real SQLite file.
+  attaches enforce the statement timeout server-side. The image bakes the `sqlite` DuckDB extension next to
+  `postgres`. Verified against a real Postgres container and a real SQLite file. Conflict detection is
+  etag-only (the row's values at read time); a `version_column:` option was considered and dropped (2026-10-09).
+  **MySQL is removed from the advertised connector list until it is tested**: the `mysql` connector name is
+  still accepted by the code, but it has no integration test, no CI job and the image no longer bakes
+  `mysql_scanner` (DuckDB fetches it on first use when a tenant insists).
 - **Run traces keep what each tool call asked and got back.** `get_run_tool_calls` rows gain optional
   `args_summary` / `result_summary` (2 KB, credentials redacted by key and by pattern, content bodies reduced
   to sizes); the VS Code run detail shows them per step. `ESCUREL_TOOLCALL_DETAIL=off` records sizes only.
@@ -97,7 +148,7 @@ Skill version `0.14.0`. Every consumer that writes pages or reads the tool surfa
   `escurel_migration_pending`, `escurel_semantic_search_enabled`, `escurel_egress_total{outcome}`,
   `escurel_write_back_total{outcome}`, `escurel_source_unavailable_total{kind}`. **Do not gate traffic on the
   status code alone**; deploy stop-first with the migration before the swap.
-- **New env (all documented in `docs/deploy/README.md`):** `ESCUREL_EGRESS_ALLOW_LOOPBACK` (dev/tests only —
+- **New env (every key is in the generated table [`docs/deploy/env.md`](docs/deploy/env.md), the source of truth; `docs/deploy/README.md` explains the groups):** `ESCUREL_EGRESS_ALLOW_LOOPBACK` (dev/tests only —
   never in production), `ESCUREL_EGRESS_MAX_RESPONSE_BYTES`, `…_TIMEOUT_MS`, `…_MAX_CONCURRENCY`,
   `…_RATE_PER_SEC`, `…_WRITE_RETRY_BACKOFF_MS`, `ESCUREL_SECRET_<NAME>`, `ESCUREL_SECRET_ENV_ALLOW`,
   `ESCUREL_SECRET_FILE_DIRS`, `ESCUREL_SHUTDOWN_DRAIN_SECS` (graceful-stop deadline, default 25). An unparsable `ESCUREL_EGRESS_*` value now **fails the boot** (it used to be
