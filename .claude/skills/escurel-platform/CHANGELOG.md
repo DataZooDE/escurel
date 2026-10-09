@@ -4,6 +4,12 @@ The skill version tracks the consumer-facing contract, not the Escurel
 binary version. The Escurel repo's checked-out git ref is the true version
 pin (see `SKILL.md` → "How this skill is installed").
 
+## 0.18.2 — the demo launcher's knobs are documented (docs only)
+
+- `references/09-local-iteration.md` names the `ESCUREL_DEMO_*` knobs of `editors/vscode/demo/run.sh` (full table
+  in `editors/vscode/demo/README.md`) and the naming trap: the Evolve agent's `ESCUREL_OIDC_*` are not gateway
+  keys (`ESCUREL_AUTH_OIDC_*` are); they become `ESCUREL_EVOLVE_OIDC_*` in 0.19.0 with a deprecated alias.
+
 ## 0.18.1 — MySQL leaves the advertised surface; conflict detection is etag-only (docs only)
 
 - **`mysql` is no longer an advertised `sql_view` connector.** The name is still accepted by the gateway, but it

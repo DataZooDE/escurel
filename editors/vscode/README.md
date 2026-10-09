@@ -53,6 +53,20 @@ npm run test:integration
 
 The corpus suite uses `escurel-server` without a runner; the cascade and controls suites use `escurel-test-gateway` with a verifying issuer and a real runner. A missing binary skips the cascade pass for local exploratory runs. Set `ESCUREL_REQUIRE_CASCADE=1` to make missing binaries or a missing runner fail; the VS Code CI job sets this for the Evolve plan review suite. Override binary paths with `ESCUREL_SERVER_BIN`, `ESCUREL_RUNNER_BIN` and `ESCUREL_TEST_GATEWAY_BIN`.
 
+Knobs the test harnesses read (none is an engine setting; unset, the defaults apply and CI is unchanged):
+
+| Variable | Used by | What it does |
+| --- | --- | --- |
+| `ESCUREL_WTR_TIMEOUT_MS` | component tests (`web-test-runner.config.mjs`) | Raises mocha's per-test timeout (default 2 s) on a loaded machine. |
+| `ESCUREL_WTR_FINISH_MS` | component tests | Raises the runner's whole-run limit (default 120 s). |
+| `ESCUREL_WTR_CHROME` | component tests | Path of an installed Chrome when Playwright's bundled Chromium cannot paint (wedged GPU). |
+| `ESCUREL_E2E_EXTRA_CODE_ARGS` | live e2e (`test/e2e/fixtures.ts`) | Extra VS Code arguments, e.g. `--disable-gpu`. |
+| `ESCUREL_TEST_EXTRA_LAUNCH_ARGS` | integration (`test/integration/runTests.ts`) | The same for the integration host. |
+| `ESCUREL_BIN_DIR` | live e2e | Directory of the release binaries (default `target/release`). |
+
+See `docs/notes/discovered/2026-10-09-component-tests-time-out-on-a-loaded-machine.md` and
+`docs/notes/discovered/2026-10-09-electron-e2e-needs-disable-gpu-when-the-gpu-is-wedged.md`.
+
 Live end-to-end tests drive a real VS Code window by clicking: `npm run test:e2e`. They bring up their
 own stack (a gateway that verifies tokens, a runner whose echo harness idles about 6 s so a run is still
 live long enough to be clicked, the story from `demo/`) on a virtual display (Xvfb), attach Playwright over

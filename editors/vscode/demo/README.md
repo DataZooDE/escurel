@@ -177,3 +177,39 @@ The same flow is tested in a real window by `test/e2e/evolve-scenarios.spec.ts` 
   requires. The query finds an analysis's orders by its id prefix (`meier-guss-…` takes the lines whose
   supplier is `meier-guss`), so the id scheme must keep the supplier slug first. Checked for real:
   `peacock author preview supplier-risk-report.md` against this demo renders 2 rows, 1 chart, rasterized.
+
+## Knobs (environment variables of the demo launcher)
+
+None of these is an engine setting (they are not in `docs/deploy/env.md`); they only steer `demo/run.sh`,
+the story driver and the S2D sync. Unset, every one has the default shown.
+
+| Variable | Default | What it does |
+| --- | --- | --- |
+| `ESCUREL_DEMO_HOME` | `~/.cache/escurel-demo` | Where everything lives (gateway data, runner ledger, VS Code profile, bearer file). One demo per home; `stop` only stops the demo under this home. |
+| `ESCUREL_DEMO_CODE` | `code` | The VS Code binary to launch. |
+| `ESCUREL_DEMO_CODE_ARGS` | — | Extra VS Code arguments (`--ozone-platform=x11 --disable-gpu` on a machine with a wedged GPU). |
+| `ESCUREL_DEMO_CDP_PORT` | — | Exposes the window's DevTools protocol on this port (screenshots, the e2e driver). |
+| `ESCUREL_DEMO_FOCUS` | `1` | `0` keeps the classic IDE look instead of the calm focus view. |
+| `ESCUREL_DEMO_ZOOM` | `1` | `window.zoomLevel` of the demo profile (`0` gives a wider Runs panel at 1600×1000). |
+| `ESCUREL_DEMO_THEME` | — | A colour theme for the window (a themed tour of every screen). |
+| `ESCUREL_DEMO_DIALOG_STYLE` | `native` | `window.dialogStyle` of the demo profile. |
+| `ESCUREL_DEMO_OPEN_PAGE` | the Evolve comparison page when Evolve is seeded | A page id the bootstrap opens after sign-in. |
+| `ESCUREL_DEMO_RUNNER_HARNESS` | `echo` | The runner harness; anything else is started as a second runner (needs the matching keys). |
+| `ESCUREL_DEMO_EVOLVE_AGENT_BIN` | — | Path to an `evolve-agent`; set, it also turns on `ESCUREL_DEMO_EVOLVE_SEED`. |
+| `ESCUREL_DEMO_EVOLVE_SEED` | `0` | `1` seeds the Evolve experiment / comparison pages. |
+| `ESCUREL_DEMO_EVOLVE_ENDPOINT` | — | The Evolve endpoint the extension is configured with (left out unless the demo starts Evolve). |
+| `ESCUREL_DEMO_SUBJECT` | `alice` | The owner subject the Evolve seed writes pages as. |
+| `ESCUREL_DEMO_S2D` | `1` | `0` skips the Source-to-Deliver stories. |
+| `ESCUREL_DEMO_S2D_REPO` (alias `S2D_HETZNER_REPO`) | `~/Projects/datazoo/hetzner-agent-substrate` | The checkout the S2D sync reads `ops/seed/s2d-demo` from (read-only). |
+| `ESCUREL_DEMO_OPT_EXT` (alias `ESCUREL_DEMO_OPTIMIZE_EXT`) | the local builds `s2d/optional.py` knows | One `anofox_optimize.duckdb_extension` to load; used only when its footer matches the gateway's DuckDB. |
+| `ESCUREL_DEMO_LIBDUCKDB_DIR` | the `target/` copy matching `Cargo.lock` | Directory of the `libduckdb.so` the gateway loads (see `docs/notes/discovered/2026-10-09-demo-run-sh-picked-a-stale-libduckdb.md`). |
+| `ESCUREL_DEMO_AGENT_PAUSE_MS` | `1100` | Pause between the scripted agents' calls, so a seeded run's trace has a realistic spread. |
+| `ESCUREL_DEMO_WAIT_MS` | `120000` | How long the story driver waits for a step (the first changeset, a run) before giving up. |
+| `ESCUREL_CLI_BIN` (alias `S2D_CLI_BIN`) | `target/release/escurel` | The `escurel` CLI used for `migrate-kind-files` on the synced seed. |
+| `ESCUREL_DEMO_RATINGS_URL`, `ESCUREL_DEMO_CONFIRMATIONS_URL`, `ESCUREL_DEMO_ORDERS_DB_SECRET` | set by `run.sh` | Where the demo's REST ratings API, MCP confirmations server and SQLite orders file are; `materialise.mjs` reads them. |
+| `ESCUREL_DEMO_BEARER_FILE`, `ESCUREL_DEMO_STORY`, `ESCUREL_DEMO_DUCKDB_VERSION`, `S2D_GATEWAY_DUCKDB` | set by `run.sh` | Internal hand-offs to the bootstrap extension and the S2D sync; not meant to be set by hand. |
+
+**Naming trap.** The Evolve agent the demo can start reads `ESCUREL_OIDC_ISSUER` / `_AUDIENCE` / `_JWKS_URI`
+(and `EVOLVE_OIDC_*`). Those are the *agent's* verifier settings, not gateway keys: the gateway's are
+`ESCUREL_AUTH_OIDC_*`. The agent-side names are planned to become `ESCUREL_EVOLVE_OIDC_*` in skill 0.19.0
+(with the old names kept as a deprecated alias for one release).

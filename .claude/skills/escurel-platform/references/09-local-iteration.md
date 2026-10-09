@@ -118,6 +118,14 @@ honest. Also there: `escurel_tool_calls`, `escurel_tool_latency_ms`,
   Secrets for an endpoint are referenced (`secret_ref`), e.g. `gsm:CRM_TOKEN` reads
   `ESCUREL_SECRET_<TENANT>__CRM_TOKEN` (tenant `acme` → `ESCUREL_SECRET_ACME__CRM_TOKEN`). In Rust tests, `escurel_test_support::ConfigOverrides.egress` takes an
   `EgressPolicy` (set `allow_loopback`).
+- **The VS Code demo launcher** (`editors/vscode/demo/run.sh`, `ESCUREL_DEMO_*`): a self-contained
+  gateway + runner + signed-in window for a consumer to look at the workbench. `ESCUREL_DEMO_HOME`
+  (one demo per home), `ESCUREL_DEMO_CDP_PORT` (screenshots), `ESCUREL_DEMO_FOCUS=0` (classic IDE look),
+  `ESCUREL_DEMO_S2D=0` (skip the Source-to-Deliver stories), `ESCUREL_DEMO_CODE_ARGS` (`--disable-gpu`).
+  The full table is `editors/vscode/demo/README.md`. **Naming trap:** the Evolve agent's
+  `ESCUREL_OIDC_ISSUER` / `_AUDIENCE` / `_JWKS_URI` are the AGENT's verifier settings, not gateway keys
+  (those are `ESCUREL_AUTH_OIDC_*`); they become `ESCUREL_EVOLVE_OIDC_*` in 0.19.0 with the old names as a
+  deprecated alias for one release.
 - **CLI** (`crates/escurel-cli`): `ESCUREL_SERVER` (HTTP MCP URL, default
   `http://127.0.0.1:8080`), `ESCUREL_TOKEN`.
 - **Your app's client** (your choice; the example uses):
