@@ -230,3 +230,61 @@ async fn skill_tool_tables_match_the_live_surface() {
         errors.join("\n  - ")
     );
 }
+
+const SKILL_DIR: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../.claude/skills/escurel-platform"
+);
+
+/// `SKILL.md`'s frontmatter `version:` must equal the `VERSION` file: consumers read the former, the
+/// changelog and the repo track the latter (the 2026-10-09 crew found 0.17.0 vs 0.18.0).
+#[test]
+fn skill_md_version_equals_the_version_file() {
+    let version = std::fs::read_to_string(format!("{SKILL_DIR}/VERSION")).expect("VERSION");
+    let skill = std::fs::read_to_string(format!("{SKILL_DIR}/SKILL.md")).expect("SKILL.md");
+    let front = skill
+        .lines()
+        .skip(1)
+        .take_while(|l| *l != "---")
+        .find_map(|l| l.strip_prefix("version:"))
+        .expect("SKILL.md frontmatter has a version: line")
+        .trim();
+    assert_eq!(
+        front,
+        version.trim(),
+        "SKILL.md `version:` must match the VERSION file"
+    );
+}
+
+/// A removed argument name may be MENTIONED in a reference only to say it is gone: a line that teaches an
+/// agent to pass `resume_cursor` (removed in 0.12.0, replaced by `next_cursor` + `has_more`) is an agent
+/// confidently doing the wrong thing.
+#[test]
+fn references_do_not_teach_removed_names() {
+    const REMOVED: &[&str] = &["resume_cursor"];
+    let dir = format!("{SKILL_DIR}/references");
+    let mut bad = Vec::new();
+    for entry in std::fs::read_dir(&dir).expect("references dir") {
+        let path = entry.expect("entry").path();
+        if path.extension().is_none_or(|e| e != "md") {
+            continue;
+        }
+        let text = std::fs::read_to_string(&path).expect("read reference");
+        for (n, line) in text.lines().enumerate() {
+            let low = line.to_lowercase();
+            let says_gone = ["gone", "removed", "->", "\u{2192}", "replaced"]
+                .iter()
+                .any(|w| low.contains(w));
+            for name in REMOVED {
+                if line.contains(name) && !says_gone {
+                    bad.push(format!("{}:{}: {}", path.display(), n + 1, line.trim()));
+                }
+            }
+        }
+    }
+    assert!(
+        bad.is_empty(),
+        "references teach removed names:\n{}",
+        bad.join("\n")
+    );
+}
