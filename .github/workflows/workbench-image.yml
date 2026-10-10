@@ -42,7 +42,7 @@ jobs:
         run: |
           set -euo pipefail
           node deploy/web-workbench/login/gen-global-css.mjs --check
-          node --test deploy/web-workbench/login/
+          node --test deploy/web-workbench/login/login-tokens.test.mjs
 
       # Builds the image from deploy/web-workbench/Dockerfile and checks it over HTTP (see the script header).
       - name: Build and smoke the workbench image
