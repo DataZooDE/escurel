@@ -106,3 +106,9 @@ One line per change. Folded into the root `CHANGELOG.md` BREAKING entry and `doc
   redacted). New config `ESCUREL_TOOLCALL_DETAIL=summary|off` (default `summary`). Nothing is removed or
   renamed; the `run_tool_calls` table gains two nullable columns in place. Operators who do not want call
   arguments stored at all set `ESCUREL_TOOLCALL_DETAIL=off`.
+
+- `tools/list`: the top-level `execution: "deterministic" | "orchestration"` string is MOVED to
+  `_meta.escurel.execution` (the MCP spec's `Tool.execution` is an object; the official SDK's `listTools()`
+  failed validation on the string, so a stock MCP client could not list escurel's tools: BACKEND_GAPS PR-6).
+  A client that read `tool.execution` must read `tool._meta.escurel.execution`. `scope` stays top-level.
+  Skill 0.19.0.

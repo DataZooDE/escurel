@@ -24,8 +24,9 @@ two document-ingest routes `POST /ingest` + `POST /ingest/upload`
 (see [Instance backends](#instance-backends)).
 
 **Execution labels (WI-8 / REQ-LABEL-01).** Every `tools/list` entry
-carries an additive `execution: "deterministic" | "orchestration"`
-label. `deterministic` = the result is a pure function of KB state +
+carries an additive execution label, `_meta.escurel.execution`:
+`"deterministic" | "orchestration"` (not the top-level `execution` field: the MCP spec
+defines that as an object, and the official SDK's `listTools()` rejects a string there). `deterministic` = the result is a pure function of KB state +
 arguments (reads, queries, validation, bundle builds); `orchestration`
 = the call advances loop state (writes, events, sessions, lifecycle).
 The default for a new tool is `orchestration` (fail-closed: nothing
@@ -1366,7 +1367,7 @@ update_page      → method = "tools/call", name = "update_page"
 
 Tool discovery is the usual MCP `tools/list` response; every entry
 carries its JSON Schema input definition plus two additive labels:
-`execution: "deterministic" | "orchestration"` and
+`_meta.escurel.execution: "deterministic" | "orchestration"` and
 `scope: "agent" | "admin"`. **`tools/list` is role-scoped**: an
 agent-role token receives only the `scope: "agent"` subset (28 tools it
 can actually call); an admin token — and verifier-less dev mode —

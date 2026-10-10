@@ -4,6 +4,15 @@ The skill version tracks the consumer-facing contract, not the Escurel
 binary version. The Escurel repo's checked-out git ref is the true version
 pin (see `SKILL.md` → "How this skill is installed").
 
+## 0.19.0 — `tools/list`: the execution label moves to `_meta.escurel.execution` (BREAKING for readers of `tool.execution`)
+
+- The top-level `execution: "deterministic" | "orchestration"` string on each `tools/list` entry is gone; the
+  label is `_meta.escurel.execution`. The MCP spec's `Tool.execution` is an object (`{taskSupport}`), and the
+  official MCP SDK's `listTools()` rejected the string, so stock clients could not list escurel's tools.
+  They can now (verified against SDK 1.30.1 with a real gateway: 44 tools parse). `scope` stays top-level.
+  Listed in `docs/notes/breaking-wire-changes.md`; `references/02` updated.
+- `SKILL.md` frontmatter `version` corrected (it still said 0.17.0).
+
 ## 0.18.2 — the demo launcher's knobs are documented (docs only)
 
 - `references/09-local-iteration.md` names the `ESCUREL_DEMO_*` knobs of `editors/vscode/demo/run.sh` (full table
