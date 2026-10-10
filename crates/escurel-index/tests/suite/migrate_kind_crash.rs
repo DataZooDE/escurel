@@ -32,11 +32,22 @@ impl LaneStore for FaultStore {
         self.inner.read(key).await
     }
     async fn write(&self, key: &Key, body: Bytes) -> escurel_storage::Result<Version> {
-        if self
-            .allow
-            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
-            .is_err()
-        {
+        // A compare_exchange loop, not `fetch_update`: newer rustc deprecates that name (`try_update`),
+        // and the older pinned toolchain has no `try_update`.
+        let granted = loop {
+            let n = self.allow.load(Ordering::SeqCst);
+            if n == 0 {
+                break false;
+            }
+            if self
+                .allow
+                .compare_exchange(n, n - 1, Ordering::SeqCst, Ordering::SeqCst)
+                .is_ok()
+            {
+                break true;
+            }
+        };
+        if !granted {
             return Err(StoreError::Io(std::io::Error::other(
                 "injected store fault",
             )));
