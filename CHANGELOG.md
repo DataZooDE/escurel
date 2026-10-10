@@ -15,6 +15,17 @@ Skill version `0.18.1`. Every consumer that writes pages or reads the tool surfa
 
 ### Fixed
 
+- **Write-back: at-most-once unless the skill declares idempotency; `base_etag` is required (security / data
+  integrity).** Every REST write used to count as repeatable, so an upstream that ignored `Idempotency-Key` could
+  apply a change up to three times after a lost answer; an optional `base_etag` meant a proposal without one
+  silently overwrote an upstream edit. A REST write is now retried only with `write: {…, idempotent: true}` (or
+  `PUT`); a proposal without `base_etag` is refused `write_back_base_etag_required`.
+- **Reading one row had no statement timeout (availability).** `expand` of a row page (`rows_get`) was the only
+  rows read outside the watchdog, so a slow source held the tenant's single DuckDB connection (and every search
+  and write behind it) as long as it liked. It now runs under the same `ESCUREL_ROWS_QUERY_TIMEOUT_SECS` interrupt
+  as listing and search.
+- **An unlistable directory failed the symlink check open (security).** `links_escape` (`json_dir` / `parquet_dir`
+  sources, secret files) treated a directory it could not read as "nothing escapes"; it now fails closed.
 - **A tenant could name another tenant's secret (security).** `ESCUREL_SECRET_<TENANT>__*` was matched by
   prefix over a lossy tenant encoding: tenant `a` matched `ESCUREL_SECRET_A__B__X` of tenant `a__b`, and
   `a-b` / `a_b` shared one namespace. The secret name may no longer contain `__`, an id whose token holds
