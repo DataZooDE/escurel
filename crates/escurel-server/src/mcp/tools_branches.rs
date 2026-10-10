@@ -290,9 +290,19 @@ pub(super) async fn tool_merge_branch(
     // a person merges it, which is the review.
     if crate::mcp::tools_write::is_machine_caller(&caller) {
         for page in &pages {
-            let probe = format!("markdown/instances/{}/{}.md", page.skill, page.slug);
+            // The page the merge would WRITE: the base twin when there is one, else the id the overlay
+            // strips back to. A skill page (an edit of one, or a brand-new one) must be judged as a skill
+            // page, not as an instance that happens to share its name.
+            let target = match indexer
+                .base_twin(&page.skill, &page.slug)
+                .await
+                .map_err(|e| JsonRpcError::internal(format!("merge_branch: {e}")))?
+            {
+                Some(base) => base,
+                None => base_page_id(&page.page_id, &branch.name),
+            };
             if let Some(refused) =
-                crate::mcp::tools_write::refuse_machine_removal(indexer, &caller, &probe, "merge")
+                crate::mcp::tools_write::refuse_machine_removal(indexer, &caller, &target, "merge")
                     .await?
             {
                 return Ok(refused);

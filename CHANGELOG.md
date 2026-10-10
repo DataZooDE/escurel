@@ -15,6 +15,12 @@ Skill version `0.18.1`. Every consumer that writes pages or reads the tool surfa
 
 ### Fixed
 
+- **A machine could land a skill page through a branch (security).** `merge_branch` judged each page of a
+  machine's branch by an INSTANCE-shaped probe id, so a branch edit of an `autonomy: auto` skill's page, or a
+  brand-new skill page, merged unreviewed (the skill page carries the gate's own configuration). The probe is
+  now the page the merge would actually write; a machine's merge touching a skill page or a review skill is
+  refused `review_required`, a person's merge is the review.
+
 - **A refused read is an error, never an empty success (security-relevant).** `escurel-client` decoded
   the `structuredContent` of a refused read (`isError: true`, `{ok: false, issues}`) into a response type
   whose fields all default, so an ACL denial, `invalid_limit`, `query_not_found`, … returned `Ok(<empty>)`:
