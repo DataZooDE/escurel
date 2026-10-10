@@ -370,22 +370,26 @@ impl Indexer {
             src.view,
             wheres.join(" AND ")
         );
-        let mut stmt = conn.prepare(&sql)?;
-        let mut rows = stmt.query(duckdb::params_from_iter(values.iter()))?;
-        match rows.next()? {
-            Some(row) => {
-                let keys = cast_keys(row, cols.len(), src.cfg.key.len())?;
-                let mut rec = read_record(src, row, &cols, &keys)?;
-                let base = cols.len() + src.cfg.key.len();
-                rec.source_texts = cols
-                    .iter()
-                    .enumerate()
-                    .map(|(i, (n, _))| Ok((n.clone(), text_lossy(row, base + i)?)))
-                    .collect::<Result<_, SqlViewError>>()?;
-                Ok(Some(rec))
+        // The same watchdog as every other rows read: a slow source must not hold the tenant's single
+        // connection (and with it every search and write) for as long as it likes.
+        with_statement_timeout::<_, SqlViewError>(&conn, self.rows_query_timeout, || {
+            let mut stmt = conn.prepare(&sql)?;
+            let mut rows = stmt.query(duckdb::params_from_iter(values.iter()))?;
+            match rows.next()? {
+                Some(row) => {
+                    let keys = cast_keys(row, cols.len(), src.cfg.key.len())?;
+                    let mut rec = read_record(src, row, &cols, &keys)?;
+                    let base = cols.len() + src.cfg.key.len();
+                    rec.source_texts = cols
+                        .iter()
+                        .enumerate()
+                        .map(|(i, (n, _))| Ok((n.clone(), text_lossy(row, base + i)?)))
+                        .collect::<Result<_, SqlViewError>>()?;
+                    Ok(Some(rec))
+                }
+                None => Ok(None),
             }
-            None => Ok(None),
-        }
+        })
     }
 }
 
