@@ -272,7 +272,7 @@ pub(crate) async fn write_rejection(
         )) {
             Err(m) => {
                 return Ok(Some(RowsWriteRejection {
-                    code: "write_back_invalid",
+                    code: crate::write_back::intent_error_code(&m),
                     location: "frontmatter.write_back".to_owned(),
                     message: m,
                 }));

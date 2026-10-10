@@ -295,10 +295,10 @@ pub(crate) fn tool_defs() -> Vec<ToolDef> {
                     "write_back": {
                         "type": "object",
                         "description": "A change to an external row: the server writes it into the frontmatter; a human promotes it.",
-                        "required": ["patch"],
+                        "required": ["patch", "base_etag"],
                         "properties": {
                             "patch": { "type": "object", "description": "{column: scalar value} over the skill's writable columns." },
-                            "base_etag": { "type": "string", "description": "`expand.backend_projection.etag` of the row as you read it; a row that changed since conflicts." }
+                            "base_etag": { "type": "string", "description": "REQUIRED: `expand.backend_projection.etag` of the row as you read it; a row that changed since conflicts (a proposal without it is refused `write_back_base_etag_required`)." }
                         }
                     },
                     "base_sha256": { "type": "string", "description": "The target's content_sha256 when drafted, from `expand`; \"\" = approve-create (expect no page). Carried into `update_page`'s CAS at promotion." },

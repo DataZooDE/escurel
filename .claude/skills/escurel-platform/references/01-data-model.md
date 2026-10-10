@@ -357,7 +357,9 @@ citation; never treat one as a link. The link's `skill` segment is its
       (`write_back_conflict`), and sends the change (REST: `Idempotency-Key` = the draft id and
       `If-Match` from the upstream's `ETag`; MCP: the write tool, with `idempotency_arg` when declared),
       retrying transient failures (5xx / network / 429, a few times) but never a 4xx. A write endpoint
-      without idempotency is attempted ONCE and never repeated blind. Every step leaves a system event
+      is repeated only when the skill DECLARES it safe (`write: {…, idempotent: true}` for REST, `idempotency_arg`
+      for MCP; a `PUT` is repeatable by contract); otherwise it is attempted ONCE and never repeated blind.
+      `base_etag` is REQUIRED: a proposal without it is refused `write_back_base_etag_required`. Every step leaves a system event
       (`label_skill: escurel:write-back`, ids `write-back:<draft>:applying|applied|failed`; body has
       `outcome`, `attempts`, `columns`, `before_etag`, never the values). `update_page` can NOT carry a
       `write_back` block (`write_back_requires_draft`). Refusals, as `issues[].code`:

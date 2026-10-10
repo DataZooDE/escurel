@@ -62,6 +62,20 @@ pub(crate) fn etag_of(fields: &Map<String, Value>) -> String {
     format!("w1:{}", escurel_index::drafts::content_hash(&json))
 }
 
+/// Prefix of the `parse_intent` error that means "no `base_etag`": [`intent_error_code`] turns it into its own
+/// refusal code so a client can tell it from a malformed patch.
+const BASE_ETAG_REQUIRED_MSG: &str = "`write_back.base_etag` is required: copy `backend_projection.etag` from \
+     `expand` of the row, so a change made upstream since you read it is detected instead of overwritten";
+
+/// The refusal code for a `parse_intent` error message.
+pub(crate) fn intent_error_code(message: &str) -> &'static str {
+    if message == BASE_ETAG_REQUIRED_MSG {
+        "write_back_base_etag_required"
+    } else {
+        "write_back_invalid"
+    }
+}
+
 /// Read the `write_back` block out of a page's frontmatter fields. `Ok(None)` when absent;
 /// `Err` when present but malformed (a patch that is not an object of scalars).
 pub(crate) fn parse_intent(fields: &Map<String, Value>) -> Result<Option<Intent>, String> {
@@ -84,12 +98,18 @@ pub(crate) fn parse_intent(fields: &Map<String, Value>) -> Result<Option<Intent>
             "`write_back.patch.{k}` must be a string, number or boolean"
         ));
     }
+    // A proposal that does not say which version of the row it was based on cannot be checked for an
+    // upstream edit made since: the apply would silently overwrite it. The reviewer's `expand` shows the
+    // etag (`backend_projection.etag`), so asking for it costs the proposer nothing.
+    let base_etag = obj
+        .get("base_etag")
+        .and_then(Value::as_str)
+        .filter(|e| !e.trim().is_empty())
+        .ok_or_else(|| BASE_ETAG_REQUIRED_MSG.to_owned())?
+        .to_owned();
     Ok(Some(Intent {
         patch: patch.clone(),
-        base_etag: obj
-            .get("base_etag")
-            .and_then(Value::as_str)
-            .map(str::to_owned),
+        base_etag: Some(base_etag),
     }))
 }
 
@@ -379,7 +399,7 @@ async fn run_inner(
     let intent = match parse_intent(&frontmatter_json(&parsed.frontmatter.fields)) {
         Ok(None) => return Ok(content.to_owned()),
         Ok(Some(i)) => i,
-        Err(e) => return Err(refusal("write_back_invalid", e)),
+        Err(e) => return Err(refusal(intent_error_code(&e), e)),
     };
     let stripped = strip_intent(content);
     let id_applying = format!("write-back:{draft_id}:applying");
@@ -463,8 +483,16 @@ async fn run_inner(
         ));
     };
     let egress: &Egress = &state.egress;
-    let idempotent = matches!(write, escurel_index::RemoteOp::Http { .. })
-        || src.remote.write_idempotency_arg.is_some();
+    // Repeating a write is only safe when the upstream is known to honour the Idempotency-Key (the skill
+    // says so: `write.idempotent: true` / an MCP `idempotency_arg`) or the method is repeatable by contract
+    // (`PUT`). Anything else is sent AT MOST ONCE: a change that applied but whose answer was lost must
+    // not apply twice.
+    let idempotent = match &write {
+        escurel_index::RemoteOp::Http { method, .. } => {
+            method.eq_ignore_ascii_case("PUT") || src.remote.write_idempotent
+        }
+        _ => src.remote.write_idempotency_arg.is_some(),
+    };
 
     // An `applying` event with no outcome is an upstream call whose result nobody saw. With an
     // idempotency key it is safe to repeat; without one, repeating could apply it twice.

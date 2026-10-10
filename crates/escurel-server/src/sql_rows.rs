@@ -60,7 +60,7 @@ pub(crate) async fn write_rejection(
     match crate::write_back::parse_intent(&crate::write_back::frontmatter_json(
         &parsed.frontmatter.fields,
     )) {
-        Err(m) => reject("write_back_invalid", m),
+        Err(m) => reject(crate::write_back::intent_error_code(&m), m),
         Ok(None) => Ok(None),
         Ok(Some(intent)) => {
             for f in intent.patch.keys() {
