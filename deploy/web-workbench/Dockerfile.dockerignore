@@ -11,3 +11,11 @@ editors/vscode/test-results
 editors/vscode/playwright-report
 editors/vscode/test/e2e/artifacts
 editors/vscode/test/visual/__screenshots__
+# Never into any image: an operator's secrets and local files live next to the Dockerfile.
+deploy/web-workbench/.env*
+deploy/web-workbench/compose*
+deploy/web-workbench/*.local
+deploy/web-workbench/probe
+deploy/web-workbench/s2d-*.sh
+**/.env
+**/.env.*

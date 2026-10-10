@@ -33,7 +33,7 @@ services:
     build:
       context: ../..
       dockerfile: deploy/web-workbench/Dockerfile
-    restart: on-failure:3
+    restart: unless-stopped
     environment:
       # Required. At least 12 characters, no placeholder: the entrypoint refuses to start otherwise.
       # Prefer HASHED_PASSWORD (an argon2 hash) over a plain PASSWORD; set one of them in .env.
@@ -55,6 +55,8 @@ services:
     tmpfs:
       - /tmp
       - /home/coder/.config:uid=1000,gid=1000
+      # code-server/VS Code write under ~/.local (shared state); the root filesystem is read-only.
+      - /home/coder/.local:uid=1000,gid=1000
       - /home/coder/workspace:uid=1000,gid=1000
     volumes:
       - workbench-data:/home/coder/data
