@@ -18,7 +18,7 @@ type Played = { scenario: string; experiment: string; comparison: string; page: 
 test('the owner computes a scenario comparison and reads it in the Scenarios view', async ({
   stack,
 }) => {
-  test.setTimeout(240_000);
+  test.setTimeout(240_000 * (Number(process.env.ESCUREL_E2E_SLOW) || 1));
   const demo = (await import('../../demo/evolve-scenarios.mjs')) as {
     playScenarios: (args: {
       evolveCall: typeof stack.evolveCall;
