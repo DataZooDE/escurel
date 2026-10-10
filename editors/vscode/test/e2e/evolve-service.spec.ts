@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto';
 import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { expect, test, webviewWith } from './fixtures';
-import { openRow } from './helpers';
+import { filterCommandPalette, openRow } from './helpers';
 
 test.use({ runnerHarness: 'gemini', evolveAgentBin: process.env.EVOLVE_AGENT_BIN });
 test.skip(!process.env.EVOLVE_AGENT_BIN, 'Set EVOLVE_AGENT_BIN to test the joined Evolve service');
@@ -84,10 +84,7 @@ test('native owner approval, two proposal generations, validation, and inactive 
   await expect(stack.page.locator('.quick-input-list')).toContainText('training-demand.csv');
   await quickInput.press('Enter');
   await expect(stack.page.getByRole('tab', { name: 'training-demand.csv' })).toBeVisible();
-  await stack.page.keyboard.press('Control+Shift+P');
-  await expect(stack.page.locator('.quick-input-widget')).toBeVisible();
-  await quickInput.fill('>Prepare private Anofox Evolve training CSV');
-  await expect(stack.page.locator('.quick-input-list')).toContainText('Prepare private Anofox Evolve training CSV');
+  await filterCommandPalette(stack.page, 'Prepare private Anofox Evolve training CSV', 'Prepare private Anofox Evolve training CSV');
   await quickInput.press('Enter');
   await expect(stack.page.locator('.quick-input-widget')).toContainText('Unique training source ID');
   await quickInput.fill(sourceId);
@@ -184,12 +181,7 @@ test('native owner approval, two proposal generations, validation, and inactive 
   await expect(stack.page.locator('.quick-input-list')).toContainText('private-holdout.csv');
   await quickInput.press('Enter');
   await expect(stack.page.getByRole('tab', { name: 'private-holdout.csv' })).toBeVisible();
-  await stack.page.keyboard.press('Control+Shift+P');
-  await expect(stack.page.locator('.quick-input-widget')).toBeVisible();
-  await quickInput.click();
-  await quickInput.fill('>Register private Anofox Evolve V2 holdout');
-  await expect(quickInput).toHaveValue('>Register private Anofox Evolve V2 holdout');
-  await expect(stack.page.locator('.quick-input-list')).toContainText('Register private Anofox Evolve V2 holdout');
+  await filterCommandPalette(stack.page, 'Register private Anofox Evolve V2 holdout', 'Register private Anofox Evolve V2 holdout');
   await quickInput.press('Enter');
   await expect(stack.page.locator('.quick-input-list')).toContainText('Full JSON declaration');
   await quickInput.fill('Metadata template plus dated CSV');
@@ -234,10 +226,7 @@ test('native owner approval, two proposal generations, validation, and inactive 
   await expect(stack.page.locator('.quick-input-list')).toContainText('completed-training-spec.json');
   await quickInput.press('Enter');
   await expect(stack.page.getByRole('tab', { name: 'completed-training-spec.json' })).toBeVisible();
-  await stack.page.keyboard.press('Control+Shift+P');
-  await expect(stack.page.locator('.quick-input-widget')).toBeVisible();
-  await quickInput.fill('>Import Anofox Evolve V2 problem');
-  await expect(stack.page.locator('.quick-input-list')).toContainText('Import Anofox Evolve V2 problem');
+  await filterCommandPalette(stack.page, 'Import Anofox Evolve V2 problem', 'Import Anofox Evolve V2 problem');
   await quickInput.press('Enter');
   await expect(stack.page.locator('.quick-input-list')).toContainText('Import active completed training spec');
   await quickInput.fill('Import active completed training spec');
