@@ -65,14 +65,26 @@ async fn list(
     if c.list_bad.load(std::sync::atomic::Ordering::SeqCst) {
         return (StatusCode::BAD_REQUEST, "bad request").into_response();
     }
-    if c.list_fail_next
-        .fetch_update(
-            std::sync::atomic::Ordering::SeqCst,
-            std::sync::atomic::Ordering::SeqCst,
-            |n| n.checked_sub(1),
-        )
-        .is_ok()
-    {
+    // A compare_exchange loop, not `fetch_update`: newer rustc deprecates that name (`try_update`), and
+    // the older pinned toolchain has no `try_update`.
+    let fail_now = loop {
+        let n = c.list_fail_next.load(std::sync::atomic::Ordering::SeqCst);
+        if n == 0 {
+            break false;
+        }
+        if c.list_fail_next
+            .compare_exchange(
+                n,
+                n - 1,
+                std::sync::atomic::Ordering::SeqCst,
+                std::sync::atomic::Ordering::SeqCst,
+            )
+            .is_ok()
+        {
+            break true;
+        }
+    };
+    if fail_now {
         return (StatusCode::SERVICE_UNAVAILABLE, "try later").into_response();
     }
     let limit: usize = q
