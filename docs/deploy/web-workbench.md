@@ -123,10 +123,30 @@ Drop everything but `workbench` from the compose file and set:
 | `CODE_SERVER_TRUSTED_ORIGINS` | Extra origins accepted behind a proxy. |
 | `CODE_SERVER_ABS_PROXY_BASE_PATH` | Passed through; path-prefix serving is untested. |
 
-Compose-level variables (`.env`): `WORKBENCH_PASSWORD`, `WORKBENCH_HASHED_PASSWORD`, `WORKBENCH_BIND`
-(default `127.0.0.1`), `WORKBENCH_PORT`, `WORKBENCH_TRUSTED_ORIGINS`, `WORKBENCH_DOMAIN`,
-`PROXY_HTTP_PORT`, `PROXY_HTTPS_PORT`. These belong to the image and the compose example; they are not
-engine settings and are not in [`env.md`](env.md).
+Compose-level and script variables (`.env` next to `compose.yaml`, or the shell). They belong to the
+image, the compose example and the helper scripts; they are not engine settings and are not in
+[`env.md`](env.md).
+
+| Variable | Default | What it does |
+| --- | --- | --- |
+| `WORKBENCH_PASSWORD` / `WORKBENCH_HASHED_PASSWORD` | — (required, one of them) | The one shared password (plain, or an argon2 hash: preferred, the secret then never sits in the environment). |
+| `WORKBENCH_MIN_PASSWORD_LENGTH` | `12` | Shortest plain password accepted; may be lowered to `8`, never below. Lowering it weakens the only gate. |
+| `WORKBENCH_BIND` / `WORKBENCH_PORT` | `127.0.0.1` / `8080` | Where the workbench port is published. `0.0.0.0` is every interface: only behind TLS. |
+| `WORKBENCH_TRUSTED_ORIGINS` | — | The browser's origin when a reverse proxy sits on another origin. |
+| `WORKBENCH_DOMAIN`, `PROXY_HTTP_PORT`, `PROXY_HTTPS_PORT` | — / `80` / `443` | The Caddy TLS front of `compose.proxy.yaml`. |
+| `WORKBENCH_WELCOME_TEXT` | `Sign in to Escurel` | The login page's heading. |
+| `WORKBENCH_GATEWAY_URL`, `WORKBENCH_AUTH_ISSUER`, `WORKBENCH_AUTH_CLIENT_ID`, `WORKBENCH_DATA_DIR` | see "Your own gateway" | Image-level settings written into the extension's configuration. |
+| `WORKBENCH_COMPOSE_PROJECT` | `escurel-web` | The compose project `s2d-compose.sh` operates on. |
+| `WORKBENCH_PROJECT` | the compose default | The project `s2d-up.sh` creates (a throwaway instance: `WORKBENCH_PROJECT=escurel-web-test WORKBENCH_PORT=18090`). |
+| `WORKBENCH_S2D_DIR` | `~/.cache/escurel-web-s2d` | Where `s2d-up.sh` puts the synced S2D data the gateway container mounts. |
+| `S2D_HETZNER_REPO` | `~/Projects/datazoo/hetzner-agent-substrate` | The checkout the S2D sync reads the seed from (read-only). |
+| `S2D_CLI_BIN` | `target/release/escurel` | The `escurel` CLI for `migrate-kind-files` on the synced seed. |
+| `S2D_UP_TIMEOUT_SECS` | `1500` (`s2d-up.sh`) / `600` (`s2d-reset.sh`) | How long the scripts wait for the story to be played. |
+| `S2D_DIR`, `S2D_INDEX_EXT`, `S2D_EXT_DIR`, `S2D_ALLOW_UNSIGNED`, `S2D_GATEWAY_DUCKDB` | recorded by `s2d-up.sh` | Hand-offs from `s2d-up.sh` to `compose.s2d.yaml` (the data dir, the optimizer extension and its unsigned-load switch); not meant to be set by hand. |
+| `WORKBENCH_IMAGE`, `WORKBENCH_SMOKE_PORT`, `WORKBENCH_SMOKE_OUT` | `escurel-web-smoke/workbench:dev` / a free port / `/tmp/escurel-web-smoke` | `scripts/web-workbench-smoke.sh`: the image it builds and probes, the host port, where the browser probe writes its screenshots. |
+
+The desktop demo launcher's own knobs are listed in `editors/vscode/demo/README.md` (its variable names carry the
+demo prefix and are deliberately not named here: this file is scanned for engine settings).
 
 ## The demo stack (and why its gateway is open)
 
