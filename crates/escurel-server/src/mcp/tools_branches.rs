@@ -69,14 +69,33 @@ pub(super) fn stamp_scenario(content: &str, branch: &str) -> String {
 /// A write naming a branch that was never opened is REFUSED rather than
 /// silently creating one: a typo must not conjure an isolated workspace
 /// nobody knows about, which is the failure the registry exists to prevent.
+/// What a caller wants a branch for: to WRITE into it, or to DECIDE it (merge / abandon).
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum BranchUse {
+    Write,
+    Decide,
+}
+
 pub(super) async fn require_open_branch(
     indexer: &Indexer,
+    caller: &AclCaller<'_>,
     name: &str,
+    purpose: BranchUse,
 ) -> Result<Result<escurel_index::BranchInfo, Value>, JsonRpcError> {
+    // A branch is its author's workspace (the listing scopes the same way; admin sees all): nobody
+    // else writes into it, and another MACHINE cannot merge or abandon it. A PERSON may still decide
+    // it, because merging a machine's branch is the review. Someone else's branch answers exactly like
+    // a name that does not exist, so a name probe learns nothing.
+    let may = |b: &escurel_index::BranchInfo| {
+        caller.is_admin
+            || b.author == caller.subject
+            || (purpose == BranchUse::Decide && !crate::mcp::tools_write::is_machine_caller(caller))
+    };
     let found = indexer
         .get_branch(name)
         .await
-        .map_err(|e| JsonRpcError::internal(format!("branch: {e}")))?;
+        .map_err(|e| JsonRpcError::internal(format!("branch: {e}")))?
+        .filter(|b| may(b));
     let Some(branch) = found else {
         return Ok(Err(json!({
             "ok": false,
@@ -263,7 +282,7 @@ pub(super) async fn tool_merge_branch(
     args: Value,
 ) -> Result<Value, JsonRpcError> {
     let a: DecideBranchArgs = parse_args(args, "merge_branch")?;
-    let branch = match require_open_branch(indexer, &a.name).await? {
+    let branch = match require_open_branch(indexer, &caller, &a.name, BranchUse::Decide).await? {
         Ok(b) => b,
         Err(refusal) => return Ok(refusal),
     };
@@ -485,7 +504,7 @@ pub(super) async fn tool_abandon_branch(
     args: Value,
 ) -> Result<Value, JsonRpcError> {
     let a: DecideBranchArgs = parse_args(args, "abandon_branch")?;
-    match require_open_branch(indexer, &a.name).await? {
+    match require_open_branch(indexer, &caller, &a.name, BranchUse::Decide).await? {
         Ok(_) => {}
         Err(refusal) => return Ok(refusal),
     }
