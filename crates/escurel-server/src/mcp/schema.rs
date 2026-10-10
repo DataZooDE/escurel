@@ -2388,7 +2388,10 @@ fn tool_entry(
         "inputSchema": input_schema,
         // WI-8 (REQ-LABEL-01): additive execution label. Declared here, at the
         // tool, rather than in a remote list keyed by name — see [`Execution`].
-        "execution": execution.as_str(),
+        // It lives under `_meta.escurel`, NOT in the top-level `execution` field: the MCP spec's
+        // `Tool.execution` is an object (`{taskSupport}`) and the official SDK's `listTools()`
+        // rejects a string there (BACKEND_GAPS PR-6).
+        "_meta": { "escurel": { "execution": execution.as_str() } },
         // Additive scope label (2026-08-14 API review): which role can
         // actually call this tool. Declared at the definition site like
         // `execution` — and ratcheted against the dispatch arms by

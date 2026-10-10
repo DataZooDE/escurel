@@ -8,8 +8,9 @@ Wire shapes per transport: `references/03` (HTTP/MCP) and
 
 Design rule: **read OR write, never both in one call.** All read tools
 are safe to call speculatively; all writes go through validation. Every
-`tools/list` entry also carries an `execution: "deterministic" |
-"orchestration"` label — `deterministic` = a pure function of KB state +
+`tools/list` entry also carries an execution label,
+`_meta.escurel.execution` (`"deterministic" | "orchestration"`; since 0.19.0 — the top-level `execution`
+field is the MCP spec's object and stock SDKs reject a string there) — `deterministic` = a pure function of KB state +
 arguments (reads, queries, validation); `orchestration` = the call
 advances loop state (writes, events, sessions). New tools default to
 `orchestration` (fail-closed), so a client can hand a compute step

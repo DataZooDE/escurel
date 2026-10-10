@@ -144,7 +144,7 @@ async fn the_complete_tool_label_map_is_unchanged() {
             format!(
                 "{}:{}",
                 t["name"].as_str().unwrap_or("?"),
-                t["execution"].as_str().unwrap_or("?")
+                t["_meta"]["escurel"]["execution"].as_str().unwrap_or("?")
             )
         })
         .collect();

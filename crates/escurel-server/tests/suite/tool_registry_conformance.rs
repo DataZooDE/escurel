@@ -108,7 +108,7 @@ async fn every_execution_label_is_a_known_value() {
     let mut bad = Vec::new();
     for t in advertised(&p).await {
         let name = t["name"].as_str().unwrap_or_default().to_owned();
-        match t["execution"].as_str() {
+        match t["_meta"]["escurel"]["execution"].as_str() {
             Some("deterministic") | Some("orchestration") => {}
             other => bad.push(format!("{name}: {other:?}")),
         }

@@ -36,7 +36,9 @@ async fn every_tool_carries_an_execution_label() {
 
     for t in tools {
         let name = t["name"].as_str().unwrap_or("?");
-        let exec = t["execution"].as_str().unwrap_or_default();
+        let exec = t["_meta"]["escurel"]["execution"]
+            .as_str()
+            .unwrap_or_default();
         assert!(
             exec == "deterministic" || exec == "orchestration",
             "tool `{name}` must carry an execution label, got `{exec}`"
@@ -47,7 +49,12 @@ async fn every_tool_carries_an_execution_label() {
         tools
             .iter()
             .find(|t| t["name"] == name)
-            .map(|t| t["execution"].as_str().unwrap_or_default().to_owned())
+            .map(|t| {
+                t["_meta"]["escurel"]["execution"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_owned()
+            })
             .unwrap_or_default()
     };
     // Spot-checks of the split: reproducible compute vs loop state.
@@ -69,5 +76,37 @@ async fn every_tool_carries_an_execution_label() {
         assert_eq!(exec_of(orch), "orchestration", "{orch}");
     }
 
+    p.shutdown().await;
+}
+
+/// The MCP spec's `Tool.execution` is an object (`{taskSupport}`), and the official SDK's `listTools()`
+/// validates it as one: a string there made every stock MCP client fail on `tools/list` (BACKEND_GAPS PR-6).
+/// Escurel's own label lives under `_meta.escurel.execution`; the spec field is absent or an object.
+#[tokio::test]
+async fn tools_list_has_no_string_execution_field_for_stock_mcp_clients() {
+    let p = EscurelProcess::spawn(Opts {
+        auth: AuthMode::Disabled,
+        ..Default::default()
+    })
+    .await;
+    let body: serde_json::Value = reqwest::Client::new()
+        .post(p.mcp_url())
+        .json(&serde_json::json!({"jsonrpc":"2.0","id":1,"method":"tools/list"}))
+        .send()
+        .await
+        .expect("post")
+        .json()
+        .await
+        .expect("json");
+    let tools = body["result"]["tools"].as_array().expect("tools array");
+    let bad: Vec<&str> = tools
+        .iter()
+        .filter(|t| t.get("execution").is_some_and(|e| !e.is_object()))
+        .map(|t| t["name"].as_str().unwrap_or("?"))
+        .collect();
+    assert!(
+        bad.is_empty(),
+        "tools with a non-object `execution` (breaks the official SDK): {bad:?}"
+    );
     p.shutdown().await;
 }
