@@ -99,13 +99,13 @@ fn row_from(src: &RemoteRows, item: &Value) -> Option<RemoteRow> {
 /// The client's cursor token is an opaque, versioned envelope around the upstream's own cursor
 /// (`u1.` + base64url): not readable or forgeable as plain text, and anything else is refused before
 /// it goes anywhere.
-fn encode_cursor(upstream: &str) -> String {
-    escurel_index::backend::rows::seal_cursor("u1.", upstream.as_bytes())
+fn encode_cursor(scope: &str, upstream: &str) -> String {
+    escurel_index::backend::rows::seal_cursor("u1.", scope, upstream.as_bytes())
 }
 
-fn decode_cursor(token: &str) -> Result<String, String> {
+fn decode_cursor(scope: &str, token: &str) -> Result<String, String> {
     let bad = || "invalid cursor".to_owned();
-    let bytes = escurel_index::backend::rows::open_cursor("u1.", token).ok_or_else(bad)?;
+    let bytes = escurel_index::backend::rows::open_cursor("u1.", scope, token).ok_or_else(bad)?;
     String::from_utf8(bytes).map_err(|_| bad())
 }
 
@@ -113,11 +113,13 @@ fn decode_cursor(token: &str) -> Result<String, String> {
 /// upstream body); `invalid cursor` is the only caller mistake.
 pub(crate) async fn list(
     egress: &Egress,
+    tenant: &str,
     src: &RemoteRows,
     cursor: Option<&str>,
     limit: Option<usize>,
 ) -> Result<(Vec<RemoteRow>, Option<String>, usize), String> {
-    let upstream_cursor = cursor.map(decode_cursor).transpose()?;
+    let scope = format!("remote:{tenant}:{}", src.skill);
+    let upstream_cursor = cursor.map(|c| decode_cursor(&scope, c)).transpose()?;
     let limit = limit
         .unwrap_or(REMOTE_DEFAULT_LIMIT)
         .clamp(1, REMOTE_MAX_LIMIT.min(ROWS_MAX_LIMIT));
@@ -159,7 +161,7 @@ pub(crate) async fn list(
             Value::Number(n) => Some(n.to_string()),
             _ => None,
         })
-        .map(|c| encode_cursor(&c));
+        .map(|c| encode_cursor(&scope, &c));
     Ok((rows, next, skipped_without_key))
 }
 
@@ -363,10 +365,10 @@ mod tests {
     #[test]
     fn a_cursor_round_trips_and_garbage_is_refused() {
         for raw in ["c-0199", "a&b=1#x", "ünï", "eyJhIjoxfQ=="] {
-            assert_eq!(decode_cursor(&encode_cursor(raw)).unwrap(), raw);
+            assert_eq!(decode_cursor("s", &encode_cursor("s", raw)).unwrap(), raw);
         }
         for bad in ["zz", "abc", "x&y", "1g"] {
-            assert!(decode_cursor(bad).is_err(), "{bad}");
+            assert!(decode_cursor("s", bad).is_err(), "{bad}");
         }
     }
 }

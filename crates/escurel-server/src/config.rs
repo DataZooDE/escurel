@@ -1508,7 +1508,11 @@ impl EscurelConfig {
         if let Ok(key) = std::env::var("ESCUREL_CURSOR_KEY")
             && !key.trim().is_empty()
         {
-            escurel_index::cursor::set_key(key.trim());
+            escurel_index::cursor::set_key(key.trim()).map_err(|_| ConfigError::InvalidValue {
+                var: "ESCUREL_CURSOR_KEY",
+                value: "<redacted>".to_owned(),
+                reason: "at least 32 bytes are required (try `openssl rand -hex 32`)",
+            })?;
         }
         // 0. Telemetry, before ANYTHING else. This used to be the last
         // thing `serve` did, at the very end of boot — meaning every

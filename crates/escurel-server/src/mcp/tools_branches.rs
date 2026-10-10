@@ -214,6 +214,7 @@ pub(super) async fn tool_list_branches(
 
     // Newest first by creation time (the name breaks ties), then the page.
     let (page, next) = super::tools_drafts::page_newest_first(
+        &format!("branches:{}", indexer.tenant()),
         visible,
         |b| format!("{}|{}", b.created_at, b.name),
         a.limit,

@@ -111,17 +111,17 @@ enum EventCursor {
 const SEQ_CURSOR_TAG: &str = "seq";
 
 impl EventCursor {
-    fn encode_at(at: Option<&str>, event_id: &str) -> String {
+    fn encode_at(scope: &str, at: Option<&str>, event_id: &str) -> String {
         let raw = format!("{}|{}", at.unwrap_or(""), event_id);
-        crate::cursor::seal(raw.as_bytes())
+        crate::cursor::seal(scope, raw.as_bytes())
     }
 
-    fn encode_seq(seq: i64) -> String {
-        crate::cursor::seal(format!("{SEQ_CURSOR_TAG}|{seq}").as_bytes())
+    fn encode_seq(scope: &str, seq: i64) -> String {
+        crate::cursor::seal(scope, format!("{SEQ_CURSOR_TAG}|{seq}").as_bytes())
     }
 
-    fn decode(raw: &str) -> Result<Self, IndexerError> {
-        let bytes = crate::cursor::unseal(raw).ok_or_else(|| {
+    fn decode(scope: &str, raw: &str) -> Result<Self, IndexerError> {
+        let bytes = crate::cursor::unseal(scope, raw).ok_or_else(|| {
             IndexerError::InvalidCursor("not a cursor this server issued".to_owned())
         })?;
         let s = std::str::from_utf8(&bytes)
@@ -690,8 +690,9 @@ impl Indexer {
         cursor: Option<&str>,
     ) -> Result<EventPage, IndexerError> {
         let limit = limit.clamp(1, EVENTS_MAX_LIMIT);
+        let cursor_scope = format!("events:{}", self.tenant());
         let cursor = match cursor {
-            Some(raw) => Some(EventCursor::decode(raw)?),
+            Some(raw) => Some(EventCursor::decode(&cursor_scope, raw)?),
             None => None,
         };
         // A page's history and the inbox are chronological (`at`); a label,
@@ -820,8 +821,8 @@ impl Indexer {
         let more = rows.len() > limit;
         rows.truncate(limit);
         let resume_cursor = rows.last().map(|(r, at_full, seq)| match (by_seq, seq) {
-            (true, Some(seq)) => EventCursor::encode_seq(*seq),
-            _ => EventCursor::encode_at(at_full.as_deref(), &r.0),
+            (true, Some(seq)) => EventCursor::encode_seq(&cursor_scope, *seq),
+            _ => EventCursor::encode_at(&cursor_scope, at_full.as_deref(), &r.0),
         });
         let next_cursor = if more { resume_cursor.clone() } else { None };
         let events = rows
