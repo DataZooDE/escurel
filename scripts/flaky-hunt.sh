@@ -27,8 +27,9 @@ declare -A CRATE=(
   [rows_paging_keys]=escurel-server
   [binary_boots]=escurel-server
   [connect_retry]=escurel-client
+  [gateway_not_ready]=escurel-runner
 )
-ORDER=(promotion_cascades runner_status agent_token_narrowing rows_paging_keys binary_boots connect_retry)
+ORDER=(promotion_cascades runner_status agent_token_narrowing gateway_not_ready rows_paging_keys binary_boots connect_retry)
 if [ "$#" -gt 0 ]; then
   ORDER=("$@")
   for t in "${ORDER[@]}"; do [ -n "${CRATE[$t]:-}" ] || { echo "unknown test file: $t (known: ${!CRATE[*]})" >&2; exit 2; }; done
