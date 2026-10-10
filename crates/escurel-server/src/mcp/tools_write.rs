@@ -1923,8 +1923,12 @@ pub(super) async fn tool_capture_event(
             crate::write_back::RESERVED_EVENT_ID_PREFIX
         )));
     }
+    // Bookkeeping rights belong to the runner's and the gateway's own admin identity, NOT to a token
+    // bound to a run: the runner mints its harnesses ADMIN run tokens, so `is_admin` alone let an
+    // agent run file `escurel:run-status`, a system `run-finished`, or a `provenance.workflow` step.
+    let bookkeeper = caller.is_admin && !is_machine_caller(&caller);
     if a.label_skill.starts_with("escurel:")
-        && !caller.is_admin
+        && !bookkeeper
         && control.is_none()
         && comment.is_none()
     {
@@ -1947,7 +1951,7 @@ pub(super) async fn tool_capture_event(
         })?,
     };
     if kind == escurel_index::EventKind::System
-        && !caller.is_admin
+        && !bookkeeper
         && control.is_none()
         && comment.is_none()
     {
@@ -1967,7 +1971,7 @@ pub(super) async fn tool_capture_event(
     // rejected — a caller's `provenance.runner` lineage block still survives, as
     // the capture contract (and `event_acl::caller_supplied_captured_by_is_overwritten`)
     // has always allowed.
-    if !caller.is_admin
+    if !bookkeeper
         && a.provenance
             .as_ref()
             .and_then(Value::as_object)
