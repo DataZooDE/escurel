@@ -28,6 +28,6 @@ not reproduced at 10/10.
   keeps the failing runs' output; run it while the machine is busy (that is the point). `FLAKY_REPO=<checkout>`
   uses a checkout whose `target/` is already built.
 - Component tests on a loaded machine: `ESCUREL_WTR_TIMEOUT_MS` / `ESCUREL_WTR_FINISH_MS` (see
-  `editors/vscode/demo/README.md`); e2e: `ESCUREL_E2E_SLOW=4`.
+  `editors/vscode/README.md`); e2e: `ESCUREL_E2E_SLOW=4`.
 - Do not widen a timeout in the test to make the number go away unless the hunt shows it failing on an idle
   machine.
