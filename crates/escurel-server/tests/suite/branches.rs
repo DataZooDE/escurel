@@ -655,3 +655,110 @@ async fn an_agent_sees_only_the_branches_it_authored() {
 
     p.shutdown().await;
 }
+
+/// A branch is its author's workspace: nobody else writes into it, and another MACHINE can neither
+/// merge nor abandon it (the listing already hides it). A person may still decide it, because merging
+/// a machine's branch is the review. The refusal is the one an unknown branch gets, so it does not
+/// confirm that the name exists. The author and an admin always can.
+#[tokio::test]
+async fn a_branch_belongs_to_its_author_for_writes_and_to_people_and_its_author_for_decisions() {
+    let p = start().await;
+    let alice = p.mint_token_for_run(TENANT, Role::Agent, "agent:alice", "run-a", "root-a");
+    let bob = p.mint_token_for_run(TENANT, Role::Agent, "agent:bob", "run-b", "root-b");
+    let person = p.mint_token_with_groups(TENANT, "user:carol", &[], false);
+    let admin = p.mint_token(TENANT, Role::Admin);
+    for name in ["agent/alice-ws", "agent/alice-two"] {
+        let made = call(&p, &alice, "create_branch", json!({ "name": name })).await;
+        assert_eq!(made["ok"], json!(true), "{made}");
+    }
+    let wrote = call(
+        &p,
+        &alice,
+        "update_page",
+        json!({ "page_id": page_id("alpha"), "content": note("alpha", "ALICE."), "branch": "agent/alice-ws" }),
+    )
+    .await;
+    assert_eq!(
+        wrote["ok"],
+        json!(true),
+        "premise: alice writes on her branch: {wrote}"
+    );
+
+    let code = |v: &Value| {
+        v["issues"][0]["code"]
+            .as_str()
+            .unwrap_or_default()
+            .to_owned()
+    };
+    // Another machine cannot write into it,
+    let w = call(
+        &p,
+        &bob,
+        "update_page",
+        json!({ "page_id": page_id("beta"), "content": note("beta", "BOB."), "branch": "agent/alice-ws" }),
+    )
+    .await;
+    assert_eq!(w["ok"], json!(false), "bob wrote into alice's branch: {w}");
+    assert_eq!(code(&w), "unknown_branch", "{w}");
+    // nor can a person (the workspace is the author's),
+    let w = call(
+        &p,
+        &person,
+        "update_page",
+        json!({ "page_id": page_id("beta"), "content": note("beta", "CAROL."), "branch": "agent/alice-ws" }),
+    )
+    .await;
+    assert_eq!(
+        w["ok"],
+        json!(false),
+        "a person wrote into alice's branch: {w}"
+    );
+    // nor abandon or merge it.
+    let ab = call(
+        &p,
+        &bob,
+        "abandon_branch",
+        json!({ "name": "agent/alice-ws", "reason": "mine now" }),
+    )
+    .await;
+    assert_eq!(ab["ok"], json!(false), "bob abandoned alice's branch: {ab}");
+    assert_eq!(code(&ab), "unknown_branch", "{ab}");
+    let mg = call(
+        &p,
+        &bob,
+        "merge_branch",
+        json!({ "name": "agent/alice-ws" }),
+    )
+    .await;
+    assert_eq!(mg["ok"], json!(false), "bob merged alice's branch: {mg}");
+    assert_eq!(code(&mg), "unknown_branch", "{mg}");
+    // The answer is the same as for a name that does not exist.
+    let none = call(
+        &p,
+        &bob,
+        "abandon_branch",
+        json!({ "name": "agent/nobody", "reason": "x" }),
+    )
+    .await;
+    assert_eq!(code(&none), "unknown_branch", "{none}");
+
+    // A person decides a machine's branch (the review); an admin and the author can too.
+    let by_person = call(
+        &p,
+        &person,
+        "abandon_branch",
+        json!({ "name": "agent/alice-two", "reason": "no" }),
+    )
+    .await;
+    assert_eq!(by_person["ok"], json!(true), "{by_person}");
+    let by_admin = call(
+        &p,
+        &admin,
+        "abandon_branch",
+        json!({ "name": "agent/alice-ws", "reason": "tidy" }),
+    )
+    .await;
+    assert_eq!(by_admin["ok"], json!(true), "{by_admin}");
+
+    p.shutdown().await;
+}
