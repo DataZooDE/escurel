@@ -1277,7 +1277,7 @@
     "build": "node esbuild.mjs --production",
     "watch": "node esbuild.mjs --watch",
     "typecheck": "tsc -p tsconfig.json && tsc -p tsconfig.webview.json",
-    "lint": "eslint . && node scripts/lint-hex.mjs",
+    "lint": "eslint . && node scripts/lint-hex.mjs && node scripts/gen-calm-tokens.mjs --check",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "test:unit": "vitest run",
