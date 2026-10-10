@@ -215,5 +215,9 @@ Rollback to the generic stack: check out the previous commit and run `docker com
 - Serving under a URL path prefix is untested.
 - Single shared password; no per-user identity or audit at the workbench layer.
 - Removing `node-pty` is a patch on the upstream image, not a supported VS Code option.
-- No CI job builds this image yet; run the smoke script after changing `deploy/web-workbench/` or the
-  extension.
+- No CI job builds this image yet; run `scripts/web-workbench-smoke.sh` after changing `deploy/web-workbench/` or the
+  extension. The smoke script also asserts that no `.env`, compose file or password variable is inside the image.
+- The S2D demo gateway behind the workbench is unauthenticated and runs with `ESCUREL_WRITE_ACL=off`: the one
+  workbench password is the only gate, so anyone who logs in can act as the demo user on every page.
+- The calm layout is applied once per browser profile (first-run flag in the workbench data volume); leaving focus
+  mode sticks.

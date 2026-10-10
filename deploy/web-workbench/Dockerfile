@@ -49,14 +49,20 @@ RUN set -eux; \
 
 COPY --from=vsix /escurel.vsix /escurel-web-bootstrap.vsix /tmp/
 COPY --from=logincheck /login-in-sync /tmp/login-in-sync
-COPY deploy/web-workbench/ /opt/escurel/
+# Only what the running image needs, by name. The build context is the repo checkout, and an operator's `.env`,
+# compose overrides or scratch files sit next to the Dockerfile: a wholesale `COPY deploy/web-workbench/` once
+# put the workbench password into the image (docs/notes/discovered/2026-10-10-web-workbench-image-carried-env.md).
+COPY deploy/web-workbench/entrypoint.sh deploy/web-workbench/render-settings.mjs deploy/web-workbench/settings.base.json \
+     deploy/web-workbench/keybindings.json deploy/web-workbench/code-server.yaml /opt/escurel/
+COPY deploy/web-workbench/login /opt/escurel/login
 # Extensions live in the image, not in a volume: what is installed is what was built.
 RUN set -eux; mkdir -p /opt/escurel/extensions /opt/escurel/ud; \
     HOME=/tmp /usr/bin/code-server --user-data-dir /opt/escurel/ud --extensions-dir /opt/escurel/extensions \
       --install-extension /tmp/escurel.vsix --install-extension /tmp/escurel-web-bootstrap.vsix; \
     HOME=/tmp /usr/bin/code-server --user-data-dir /opt/escurel/ud --extensions-dir /opt/escurel/extensions --list-extensions --show-versions \
       | grep -q '^datazoo.escurel@'; \
-    rm -rf /opt/escurel/ud /tmp/*.vsix /tmp/login-in-sync /opt/escurel/bootstrap /opt/escurel/Dockerfile* \
+    rm -rf /opt/escurel/ud /tmp/*.vsix /tmp/login-in-sync \
+    && ! find /opt/escurel \( -name '.env*' -o -name 'compose*' -o -name '*.local' -o -name 'Dockerfile*' \) | grep . \
     && chown -R root:root /opt/escurel && chmod -R a+rX,go-w /opt/escurel \
     && chmod +x /opt/escurel/entrypoint.sh
 
