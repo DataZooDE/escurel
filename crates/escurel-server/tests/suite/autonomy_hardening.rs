@@ -301,6 +301,54 @@ async fn a_machine_cannot_land_a_branch_onto_a_review_skill() {
     );
 }
 
+/// The probe `merge_branch` runs for a machine used to be an INSTANCE id (`markdown/instances/<skill>/<slug>.md`),
+/// so a skill page on a branch was judged by whatever skill happened to share its name: refused by luck for
+/// a review skill, landed for an `auto` one (and for a brand-new skill page).
+#[tokio::test]
+async fn a_machine_cannot_land_a_skill_page_through_a_branch() {
+    let p = start().await;
+    let agent = machine(&p);
+    call(&p, &agent, "create_branch", json!({ "name": "wip" })).await;
+    // An EDIT of the `auto` skill's page and a brand-new skill page, both only a view on the branch.
+    for (id, body) in [
+        ("open", skill("open", Some("auto"))),
+        ("evil", skill("evil", Some("auto"))),
+    ] {
+        let wrote = call(
+            &p,
+            &agent,
+            "update_page",
+            json!({ "page_id": format!("markdown/skills/{id}.md"), "branch": "wip", "content": body }),
+        )
+        .await;
+        assert_ne!(wrote["ok"], false, "{wrote}");
+    }
+    // Merging is the direct write: a machine's merge must be refused as a whole.
+    let merged = call(&p, &agent, "merge_branch", json!({ "name": "wip" })).await;
+    assert_eq!(
+        merged["ok"], false,
+        "a machine merged skill pages: {merged}"
+    );
+    assert!(
+        codes(&merged).contains(&"review_required".to_owned()),
+        "{merged}"
+    );
+    let landed = rpc(
+        &p,
+        &human(&p),
+        "expand",
+        json!({ "page_id": "markdown/skills/evil.md" }),
+    )
+    .await;
+    assert!(
+        landed["result"]["structuredContent"]["page"].is_null(),
+        "a brand-new skill page landed from a machine's branch: {landed}"
+    );
+    // A person may merge the same branch: that is the review.
+    let by_person = call(&p, &human(&p), "merge_branch", json!({ "name": "wip" })).await;
+    assert_ne!(by_person["ok"], false, "{by_person}");
+}
+
 #[tokio::test]
 async fn a_held_write_is_typed_in_the_update_page_answer() {
     let p = start().await;
