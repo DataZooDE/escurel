@@ -1,0 +1,49 @@
+name: workbench-image
+
+# The web workbench image (deploy/web-workbench): build it, then run scripts/web-workbench-smoke.sh against it.
+#
+# Until this workflow nothing built that image in CI: the smoke test (a password is required, a wrong one is
+# refused, no terminal can spawn, no .env or compose file is inside the image) and the Escurel-skinned login
+# page's token test ran only when someone remembered to. Path-filtered (the image bakes the VSIX too, but a
+# VSIX change is covered nightly) so an unrelated PR pays nothing.
+on:
+  pull_request:
+    paths:
+      - "deploy/web-workbench/**"
+      - "scripts/web-workbench-smoke.sh"
+      - "editors/vscode/demo/settings.common.json"
+      - ".github/workflows/workbench-image.yml"
+  schedule:
+    # 03:30 UTC daily: the extension or the base image may have moved under the image.
+    - cron: "30 3 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: workbench-image-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    name: web workbench image + smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: editors/vscode/.nvmrc
+
+      # The login/error pages are generated from the Calm theme; the token test and the --check keep them honest.
+      - name: Login page tokens stay in step with the Calm theme
+        run: |
+          set -euo pipefail
+          node deploy/web-workbench/login/gen-global-css.mjs --check
+          node --test deploy/web-workbench/login/
+
+      # Builds the image from deploy/web-workbench/Dockerfile and checks it over HTTP (see the script header).
+      - name: Build and smoke the workbench image
+        run: scripts/web-workbench-smoke.sh

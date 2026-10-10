@@ -150,6 +150,18 @@ completed is shown as *unverified*. Create more with **New scenario comparison**
 
 The same flow is tested in a real window by `test/e2e/evolve-scenarios.spec.ts` (set `EVOLVE_AGENT_BIN`).
 
+## What CI runs, and what it cannot
+
+- `vscode.yml`: typecheck, lint, unit, component, visual, the integration suite, and the Evolve plan-review e2e
+  (`evolve.spec.ts`, `evolve-gemini.spec.ts`).
+- `workbench-image.yml`: builds the web workbench image and runs `scripts/web-workbench-smoke.sh` and the login-page
+  token test (path-filtered, and nightly).
+- `image-build.yml`: builds the gateway image, the runner image and the `demo-gateway` target.
+- NOT run in CI: `evolve-scenarios.spec.ts` and `evolve-service.spec.ts`. They need `EVOLVE_AGENT_BIN`, an
+  `evolve-agent` built with `--features synthetic-brain` from the anofox-evolve repo, which this repo's CI does not
+  build; without it they skip (they say so). Run them by hand: `EVOLVE_AGENT_BIN=... npm run test:e2e -- evolve-scenarios.spec.ts`.
+  On a loaded machine set `ESCUREL_E2E_SLOW=4` to stretch every wait.
+
 ## Limits worth saying out loud
 
 - The title bar reads "[Extension Development Host] Escurel": a window started with
