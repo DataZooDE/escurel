@@ -946,7 +946,8 @@ pub(super) fn ensure_tenant_matches(
 /// (already-exists, I/O, duckdb) → internal.
 pub(super) fn map_admin_err(e: escurel_admin::AdminError) -> JsonRpcError {
     match e {
-        escurel_admin::AdminError::InvalidTenantId(_) => {
+        escurel_admin::AdminError::InvalidTenantId(_)
+        | escurel_admin::AdminError::SecretNamespace { .. } => {
             JsonRpcError::invalid_params(e.to_string())
         }
         other => JsonRpcError::internal(other.to_string()),

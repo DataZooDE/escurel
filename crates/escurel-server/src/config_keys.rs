@@ -495,7 +495,7 @@ pub const CONFIG_KEYS: &[ConfigKey] = &[
         name: "ESCUREL_SECRET_<TENANT>__<NAME>",
         component: "Server",
         default: "—",
-        doc: "a TENANT's credential, referenced as `secret_ref: gsm:<name>` or `env:ESCUREL_SECRET_<TENANT>__<NAME>` (injected from GCP Secret Manager). `<TENANT>` is the tenant id upper-cased, non-alphanumerics as `_` (`stuttgart-ai` → `STUTTGART_AI`). The namespace used to be global (`ESCUREL_SECRET_<NAME>`), so one tenant's admin could name another's secret",
+        doc: "a TENANT's credential, referenced as `secret_ref: gsm:<name>` or `env:ESCUREL_SECRET_<TENANT>__<NAME>` (injected from GCP Secret Manager). `<TENANT>` is the tenant id upper-cased, non-alphanumerics as `_` (`stuttgart-ai` → `STUTTGART_AI`); `<NAME>` holds no `__`, an id whose token holds `__` (`a--b`) has no env namespace, and two tenants may not share a token (`a-b` / `a_b`: refused at tenant creation). The namespace used to be global (`ESCUREL_SECRET_<NAME>`), so one tenant's admin could name another's secret",
     },
     ConfigKey {
         name: "ESCUREL_SECRET_ENV_ALLOW",

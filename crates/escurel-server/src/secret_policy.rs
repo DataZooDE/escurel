@@ -12,6 +12,8 @@
 //!   (`:`-separated, default `/run/secrets`), after the path is canonicalised (no `..`, no symlink
 //!   out of the directory, never `/proc`, `/sys` or `/dev`).
 //!
+//! The secret NAME after the prefix holds no `__` (the delimiter is single, so a variable can only ever
+//! belong to one tenant), and an id whose token holds `__` (`a__b`, `a--b`) has no environment namespace.
 //! `<TENANT>` is the tenant id upper-cased with every character that is not a letter or digit turned
 //! into `_` (`stuttgart-ai` → `STUTTGART_AI`). The namespace used to be global (`ESCUREL_SECRET_*`),
 //! so one tenant's admin could name another tenant's secret.
@@ -70,11 +72,13 @@ impl SecretPolicy {
                 && name
                     .chars()
                     .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
-                && (name.starts_with(&tenant_env_prefix(tenant))
-                    || self.env_allowed(tenant, name));
+                && (tenant_env_prefix(tenant).is_some_and(|prefix| {
+                    name.strip_prefix(&prefix)
+                        .is_some_and(|rest| !rest.is_empty() && !rest.contains("__"))
+                }) || self.env_allowed(tenant, name));
         }
         if let Some(name) = raw.strip_prefix("gsm:") {
-            return !name.is_empty();
+            return !name.is_empty() && tenant_env_prefix(tenant).is_some();
         }
         if let Some(path) = raw.strip_prefix("file:") {
             let path = Path::new(path);
@@ -128,9 +132,11 @@ impl SecretPolicy {
                 return non_empty(std::env::var(name).ok());
             }
             if let Some(name) = raw.strip_prefix("gsm:") {
+                let Some(prefix) = tenant_env_prefix(tenant) else {
+                    return Err(unavailable());
+                };
                 let var = format!(
-                    "{}{}",
-                    tenant_env_prefix(tenant),
+                    "{prefix}{}",
                     name.chars()
                         .map(|c| if c.is_ascii_alphanumeric() {
                             c.to_ascii_uppercase()
@@ -153,19 +159,10 @@ impl SecretPolicy {
     }
 }
 
-/// `ESCUREL_SECRET_<TENANT>__`: the environment namespace of one tenant's secrets.
-fn tenant_env_prefix(tenant: &str) -> String {
-    let t: String = tenant
-        .chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() {
-                c.to_ascii_uppercase()
-            } else {
-                '_'
-            }
-        })
-        .collect();
-    format!("{ENV_PREFIX}{t}__")
+/// `ESCUREL_SECRET_<TENANT>__`: the environment namespace of one tenant's secrets, `None` for an id
+/// that cannot have one (its token holds the `__` delimiter: see [`escurel_admin::secret_env_namespace`]).
+fn tenant_env_prefix(tenant: &str) -> Option<String> {
+    escurel_admin::secret_env_namespace(tenant).map(|t| format!("{ENV_PREFIX}{t}__"))
 }
 
 /// The sub-directory of one tenant's secret files; `None` for an id that is not a plain name (so a
@@ -217,6 +214,22 @@ mod tests {
         assert!(!p.permits(T, "env:ONLY_GLOBEX"));
         // A tenant id with punctuation maps to one namespace.
         assert!(p.permits("stuttgart-ai", "env:ESCUREL_SECRET_STUTTGART_AI__X"));
+    }
+
+    #[test]
+    fn one_tenant_can_never_name_another_tenants_namespace() {
+        let p = policy(Path::new("/run/secrets"));
+        // `a__b` encodes to `A__B`, whose variables start with `ESCUREL_SECRET_A__`: tenant `a`'s own prefix.
+        assert!(
+            !p.permits("a", "env:ESCUREL_SECRET_A__B__TOKEN"),
+            "tenant `a` named tenant `a__b`'s secret"
+        );
+        // ... and a tenant whose encoding holds the delimiter has no env namespace at all.
+        assert!(!p.permits("a__b", "env:ESCUREL_SECRET_A__B__TOKEN"));
+        assert!(!p.permits("a--b", "env:ESCUREL_SECRET_A__B__TOKEN"));
+        assert!(p.resolve("a__b", "gsm:token").is_err());
+        // An ordinary hyphenated id still has its namespace.
+        assert!(p.permits("a-b", "env:ESCUREL_SECRET_A_B__TOKEN"));
     }
 
     #[test]

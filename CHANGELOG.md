@@ -15,6 +15,10 @@ Skill version `0.18.1`. Every consumer that writes pages or reads the tool surfa
 
 ### Fixed
 
+- **A tenant could name another tenant's secret (security).** `ESCUREL_SECRET_<TENANT>__*` was matched by
+  prefix over a lossy tenant encoding: tenant `a` matched `ESCUREL_SECRET_A__B__X` of tenant `a__b`, and
+  `a-b` / `a_b` shared one namespace. The secret name may no longer contain `__`, an id whose token holds
+  `__` has no env namespace, and `tenant_create` refuses a second tenant with the same token. Skill `0.19.2`.
 - **A machine could land a skill page through a branch (security).** `merge_branch` judged each page of a
   machine's branch by an INSTANCE-shaped probe id, so a branch edit of an `autonomy: auto` skill's page, or a
   brand-new skill page, merged unreviewed (the skill page carries the gate's own configuration). The probe is
