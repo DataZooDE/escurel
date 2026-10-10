@@ -17,7 +17,7 @@ use serde_json::{Map, Value};
 
 use super::binding::{RowsConfig, SqlViewBinding};
 use super::sql_view::{
-    SqlViewError, describe, is_valid_identifier, materialise_view_on, sanitize_ident,
+    SqlViewError, describe, is_valid_identifier, materialise_view_on, quote_ident, sanitize_ident,
 };
 use crate::Indexer;
 
@@ -275,13 +275,13 @@ impl Indexer {
             if !src.cfg.filterable.iter().any(|f| f == &col) || !names.contains(&col.as_str()) {
                 return Err(not_filterable());
             }
-            wheres.push(format!("CAST(\"{col}\" AS VARCHAR) = ?"));
+            wheres.push(format!("CAST({} AS VARCHAR) = ?", quote_ident(&col)));
             params.push(value.to_owned());
         }
         // A row with a NULL key has no identity (its id would be empty): it is not an instance, and
         // keeping it out of the listing is what stops a cursor from ever being built from one.
         for k in &src.cfg.key {
-            wheres.push(format!("\"{k}\" IS NOT NULL"));
+            wheres.push(format!("{} IS NOT NULL", quote_ident(k)));
         }
         if let Some(token) = cursor {
             let after = decode_cursor(token, key_exprs.len())?;
@@ -361,7 +361,7 @@ impl Indexer {
         let texts: Vec<String> = cols
             .iter()
             .enumerate()
-            .map(|(i, (n, _))| format!("CAST(\"{n}\" AS VARCHAR) AS \"__escurel_v{i}\""))
+            .map(|(i, (n, _))| format!("CAST({} AS VARCHAR) AS \"__escurel_v{i}\"", quote_ident(n)))
             .collect();
         let sql = format!(
             "SELECT {}, {} FROM {} WHERE {} LIMIT 1",
@@ -436,7 +436,8 @@ impl Indexer {
                 return Ok(false);
             };
             wheres.push(format!(
-                "CAST(\"{column}\" AS VARCHAR) IS NOT DISTINCT FROM CAST(CAST(? AS {ty}) AS VARCHAR)"
+                "CAST({} AS VARCHAR) IS NOT DISTINCT FROM CAST(CAST(? AS {ty}) AS VARCHAR)",
+                quote_ident(&column)
             ));
             params.push(text);
         }
@@ -510,12 +511,12 @@ impl Indexer {
         }
         let ors: Vec<String> = searchable
             .iter()
-            .map(|c| format!("CAST(\"{c}\" AS VARCHAR) ILIKE ? ESCAPE '\\'"))
+            .map(|c| format!("CAST({} AS VARCHAR) ILIKE ? ESCAPE '\\'", quote_ident(c)))
             .collect();
         let params: Vec<String> = searchable.iter().map(|_| like_contains(q)).collect();
         let mut wheres = vec![format!("({})", ors.join(" OR "))];
         for k in &src.cfg.key {
-            wheres.push(format!("\"{k}\" IS NOT NULL"));
+            wheres.push(format!("{} IS NOT NULL", quote_ident(k)));
         }
         let sql = format!(
             "SELECT {} FROM {} WHERE {} ORDER BY {} LIMIT {limit}",
@@ -660,7 +661,7 @@ fn key_exprs(src: &RowsSource, names: &[&str]) -> Result<Vec<String>, SqlViewErr
         .iter()
         .map(|k| {
             if is_valid_identifier(k) && names.contains(&k.as_str()) {
-                Ok(format!("CAST(\"{k}\" AS VARCHAR)"))
+                Ok(format!("CAST({} AS VARCHAR)", quote_ident(k)))
             } else {
                 Err(SqlViewError::InvalidBinding(format!(
                     "key column `{k}` is not a column of the source relation"

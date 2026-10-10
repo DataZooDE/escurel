@@ -25,7 +25,7 @@ use super::binding::SqlConnector;
 use super::rows::{RowRecord, RowsSource, decode_row_id};
 use super::sql_view::{
     SqlViewError, attach_sql_rw, describe, install_load, is_valid_db_relation, is_valid_identifier,
-    resolve_attach,
+    quote_ident, resolve_attach,
 };
 use crate::Indexer;
 
@@ -259,7 +259,7 @@ impl Job {
                     "`{col}` is not a column of the source relation any more"
                 )));
             };
-            set_sql.push(format!("\"{col}\" = CAST(? AS {ty})"));
+            set_sql.push(format!("{} = CAST(? AS {ty})", quote_ident(col)));
             params.push(Some(text.clone()));
         }
         let mut where_sql = Vec::new();
@@ -269,7 +269,7 @@ impl Job {
                     "key column `{key}` is not in the source"
                 )));
             }
-            where_sql.push(format!("CAST(\"{key}\" AS VARCHAR) = ?"));
+            where_sql.push(format!("CAST({} AS VARCHAR) = ?", quote_ident(key)));
             params.push(Some(value.clone()));
         }
         for (col, text) in &self.basis {
@@ -277,7 +277,10 @@ impl Job {
                 // The source's shape moved since the row was read: that is a conflict, not a guess.
                 return Err(Outcome::Conflict);
             }
-            where_sql.push(format!("CAST(\"{col}\" AS VARCHAR) IS NOT DISTINCT FROM ?"));
+            where_sql.push(format!(
+                "CAST({} AS VARCHAR) IS NOT DISTINCT FROM ?",
+                quote_ident(col)
+            ));
             params.push(text.clone());
         }
         let sql = format!(
