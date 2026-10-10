@@ -4,6 +4,12 @@ The skill version tracks the consumer-facing contract, not the Escurel
 binary version. The Escurel repo's checked-out git ref is the true version
 pin (see `SKILL.md` → "How this skill is installed").
 
+## 0.19.2 — a tenant's secret namespace is unambiguous (security)
+
+- `secret_ref` names under `ESCUREL_SECRET_<TENANT>__<NAME>`: `<NAME>` may not contain `__`; a tenant id whose
+  token holds `__` (`a--b`, `a__b`) has no environment namespace, and the gateway refuses to create a tenant
+  whose token equals another tenant's (`a-b` / `a_b` both give `A_B`): `tenant_create` answers invalid params.
+  Before, tenant `a` could name `ESCUREL_SECRET_A__B__X` of tenant `a__b`.
 ## 0.19.1 — the docs match the code (docs + two guards)
 
 - `references/03`: the sample response shows the real MCP envelope (`result.structuredContent` is the typed

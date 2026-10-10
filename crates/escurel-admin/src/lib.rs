@@ -61,6 +61,11 @@ pub enum AdminError {
     #[error("tenant `{0}` already exists")]
     AlreadyExists(String),
 
+    /// The id cannot have a private `ESCUREL_SECRET_<TENANT>__*` namespace: its encoding contains the
+    /// `__` delimiter, or another tenant already owns the same encoding (`a-b` and `a_b`).
+    #[error("tenant id `{tenant}` has no private secret namespace: {reason}")]
+    SecretNamespace { tenant: String, reason: String },
+
     #[error("io error at {path}: {source}")]
     Io {
         path: PathBuf,
@@ -184,6 +189,29 @@ pub fn validate_tenant_id(id: &str) -> Result<(), AdminError> {
     Ok(())
 }
 
+/// The tenant's token in the secret environment namespace `ESCUREL_SECRET_<TOKEN>__<NAME>`: the id
+/// upper-cased with every character that is not a letter or digit turned into `_` (`stuttgart-ai` →
+/// `STUTTGART_AI`).
+///
+/// `None` when the token contains the `__` delimiter (`a__b`, `a--b`, a trailing `-`): such an id would
+/// start with ANOTHER tenant's prefix (`a`'s `ESCUREL_SECRET_A__` covers `A__B__…`), so it gets no
+/// environment namespace at all. The encoding is not injective (`a-b` and `a_b` both give `A_B`), which
+/// is why [`FsTenantStore::create`] refuses a second tenant with the same token.
+#[must_use]
+pub fn secret_env_namespace(id: &str) -> Option<String> {
+    let token: String = id
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() {
+                c.to_ascii_uppercase()
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    (!token.is_empty() && !token.contains("__") && !token.ends_with('_')).then_some(token)
+}
+
 #[async_trait]
 impl TenantStore for FsTenantStore {
     async fn list(&self) -> Result<Vec<TenantSpec>, AdminError> {
@@ -231,6 +259,27 @@ impl TenantStore for FsTenantStore {
 
     async fn create(&self, spec: &TenantSpec) -> Result<(), AdminError> {
         validate_tenant_id(&spec.tenant_id)?;
+        let Some(token) = secret_env_namespace(&spec.tenant_id) else {
+            return Err(AdminError::SecretNamespace {
+                tenant: spec.tenant_id.clone(),
+                reason: "its secret-namespace token holds the `__` delimiter or ends in `_`; \
+                         use letters, digits and single hyphens"
+                    .to_owned(),
+            });
+        };
+        for other in self.list().await? {
+            if other.tenant_id != spec.tenant_id
+                && secret_env_namespace(&other.tenant_id).as_deref() == Some(token.as_str())
+            {
+                return Err(AdminError::SecretNamespace {
+                    tenant: spec.tenant_id.clone(),
+                    reason: format!(
+                        "tenant `{}` already owns ESCUREL_SECRET_{token}__*; two tenants may not share a namespace",
+                        other.tenant_id
+                    ),
+                });
+            }
+        }
         let dir = self.tenant_dir_path(&spec.tenant_id);
         if tokio::fs::try_exists(&dir).await.unwrap_or(false) {
             return Err(AdminError::AlreadyExists(spec.tenant_id.clone()));
@@ -380,6 +429,24 @@ mod tests {
         let store = FsTenantStore::new("/nonexistent-escurel-admin-root-xyz");
         let v = store.list().await.unwrap();
         assert!(v.is_empty());
+    }
+
+    #[tokio::test]
+    async fn two_tenants_cannot_share_a_secret_environment_namespace() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = FsTenantStore::new(dir.path());
+        let spec = |id: &str| TenantSpec {
+            tenant_id: id.to_owned(),
+            ..Default::default()
+        };
+        store.create(&spec("a-b")).await.unwrap();
+        // `a_b` encodes to the same `ESCUREL_SECRET_A_B__` prefix as `a-b`.
+        let err = store.create(&spec("a_b")).await.unwrap_err();
+        assert!(matches!(err, AdminError::SecretNamespace { .. }), "{err:?}");
+        // An id whose encoding holds the `__` delimiter has no namespace to give.
+        let err = store.create(&spec("a--b")).await.unwrap_err();
+        assert!(matches!(err, AdminError::SecretNamespace { .. }), "{err:?}");
+        store.create(&spec("other")).await.unwrap();
     }
 
     #[tokio::test]

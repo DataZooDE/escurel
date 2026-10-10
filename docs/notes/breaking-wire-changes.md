@@ -112,3 +112,4 @@ One line per change. Folded into the root `CHANGELOG.md` BREAKING entry and `doc
   failed validation on the string, so a stock MCP client could not list escurel's tools: BACKEND_GAPS PR-6).
   A client that read `tool.execution` must read `tool._meta.escurel.execution`. `scope` stays top-level.
   Skill 0.19.0.
+- `tenant_create` refuses a tenant whose secret-namespace token (`ESCUREL_SECRET_<TOKEN>__`) holds `__` or equals another tenant's (`a-b` / `a_b`); `<NAME>` of an env/gsm secret holds no `__`.
