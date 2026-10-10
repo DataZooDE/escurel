@@ -238,3 +238,29 @@ async fn a_source_query_that_runs_too_long_is_interrupted_and_does_not_hold_the_
     assert!(skills.get("error").is_none(), "{skills}");
     t.p.shutdown().await;
 }
+
+#[tokio::test]
+async fn reading_one_row_is_under_the_same_statement_timeout_as_listing() {
+    // `rows_get` (what `expand` of a row page runs) used to be the only rows read WITHOUT the watchdog: a
+    // slow source held the tenant's single DuckDB connection for as long as it liked. A 1 ms budget over a
+    // 2M-row source must end in a worded error, and the connection must be free again.
+    let t = rig_with(
+        "SELECT 'k' || lpad(CAST(i AS VARCHAR), 9, '0') AS k FROM range(2000000) t(i)",
+        Some(std::time::Duration::from_millis(1)),
+    )
+    .await;
+    let r = call(
+        &t.p,
+        "expand",
+        json!({ "page_id": "markdown/instances/thing/k000001999.md" }),
+    )
+    .await;
+    let msg = r.to_string();
+    assert!(
+        msg.contains("interrupted") || msg.contains("did not answer"),
+        "a slow single-row read must be interrupted with a worded error, not wait it out: {msg}"
+    );
+    let skills = call(&t.p, "list_skills", json!({})).await;
+    assert!(skills.get("error").is_none(), "{skills}");
+    t.p.shutdown().await;
+}
