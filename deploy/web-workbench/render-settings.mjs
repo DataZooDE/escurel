@@ -1,6 +1,6 @@
 // Writes the workbench's user settings and keybindings at container start.
 //
-//   settings.base.json  (baked into the image)  +  the few values that come from the environment
+//   settings.common.json + settings.base.json  (baked into the image)  +  the few values that come from the environment
 //
 // The environment may only carry the gateway address and, for a gateway that verifies tokens, the
 // OIDC issuer and client id. There is no token variable on purpose: the extension takes a bearer only
@@ -8,8 +8,9 @@
 import { copyFileSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
-const [base, keybindings, userDataDir] = process.argv.slice(2);
-const settings = JSON.parse(readFileSync(base, 'utf8'));
+// settings.common.json (shared with the desktop demo) first, then the web-only base on top.
+const [common, base, keybindings, userDataDir] = process.argv.slice(2);
+const settings = { ...JSON.parse(readFileSync(common, 'utf8')), ...JSON.parse(readFileSync(base, 'utf8')) };
 
 function url(name, value, { required }) {
   if (!value) {

@@ -53,6 +53,7 @@ COPY --from=logincheck /login-in-sync /tmp/login-in-sync
 # compose overrides or scratch files sit next to the Dockerfile: a wholesale `COPY deploy/web-workbench/` once
 # put the workbench password into the image (docs/notes/discovered/2026-10-10-web-workbench-image-carried-env.md).
 COPY deploy/web-workbench/entrypoint.sh deploy/web-workbench/render-settings.mjs deploy/web-workbench/settings.base.json \
+     editors/vscode/demo/settings.common.json \
      deploy/web-workbench/keybindings.json deploy/web-workbench/code-server.yaml /opt/escurel/
 COPY deploy/web-workbench/login /opt/escurel/login
 # Extensions live in the image, not in a volume: what is installed is what was built.

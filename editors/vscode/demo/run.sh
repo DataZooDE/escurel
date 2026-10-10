@@ -243,30 +243,10 @@ if [ -n "${ESCUREL_DEMO_EVOLVE_AGENT_BIN:-}" ]; then
     > "$HOME_DIR/evolve-scenarios.json" || { echo "the Evolve scenarios failed; see $HOME_DIR/evolve.log" >&2; exit 1; }
 fi
 
-# ESCUREL_DEMO_THEME: a colour theme for the window (a themed tour of every screen).
-THEME_LINE=""
-[ -n "${ESCUREL_DEMO_THEME:-}" ] && THEME_LINE="\"workbench.colorTheme\": \"$ESCUREL_DEMO_THEME\","
-cat > "$HOME_DIR/profile/User/settings.json" <<JSON
-{
-  "escurel.gatewayUrl": "$(field gateway_url)",
-  "escurel.evolveEndpoint": "${ESCUREL_DEMO_EVOLVE_ENDPOINT:-}",
-  "security.workspace.trust.enabled": false,
-  "workbench.startupEditor": "none",
-  "workbench.tips.enabled": false,
-  "workbench.tree.enableStickyScroll": false,
-  "telemetry.telemetryLevel": "off",
-  "update.mode": "none",
-  "extensions.autoUpdate": false,
-  "window.restoreWindows": "none",
-  "window.zoomLevel": ${ESCUREL_DEMO_ZOOM:-1},
-  "window.dialogStyle": "${ESCUREL_DEMO_DIALOG_STYLE:-native}",
-  "chat.disableAIFeatures": true,
-  "workbench.secondarySideBar.defaultVisibility": "visible",
-  "workbench.layoutControl.enabled": false,
-  $THEME_LINE
-  "workbench.welcomePage.walkthroughs.openOnInstall": false
-}
-JSON
+# The user settings: the keys every demo window shares (settings.common.json, which the web workbench image
+# bakes too) plus the desktop-only ones (render-demo-settings.mjs; ESCUREL_DEMO_THEME themes the window).
+ESCUREL_DEMO_GATEWAY_URL="$(field gateway_url)" \
+  node "$HERE/render-demo-settings.mjs" "$HERE/settings.common.json" "$HOME_DIR/profile/User/settings.json"
 
 # The calm window is the demo's default (ESCUREL_DEMO_FOCUS=0 keeps the classic IDE look, which is what the
 # end-to-end tests of the individual views run in). The stock Explorer / Search / Source Control / Run /

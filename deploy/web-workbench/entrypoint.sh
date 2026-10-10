@@ -29,7 +29,7 @@ DATA="${WORKBENCH_DATA_DIR:-/home/coder/data}"
 mkdir -p "$DATA" /home/coder/workspace
 
 NODE=/usr/lib/code-server/lib/node
-"$NODE" /opt/escurel/render-settings.mjs /opt/escurel/settings.base.json /opt/escurel/keybindings.json "$DATA"
+"$NODE" /opt/escurel/render-settings.mjs /opt/escurel/settings.common.json /opt/escurel/settings.base.json /opt/escurel/keybindings.json "$DATA"
 
 set -- --auth password \
   --bind-addr "0.0.0.0:${PORT:-8080}" \
