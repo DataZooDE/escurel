@@ -283,8 +283,9 @@ impl Indexer {
         for k in &src.cfg.key {
             wheres.push(format!("\"{k}\" IS NOT NULL"));
         }
+        let cursor_scope = format!("rows:{}:{}", self.tenant(), src.skill);
         if let Some(token) = cursor {
-            let after = decode_cursor(token, key_exprs.len())?;
+            let after = decode_cursor(&cursor_scope, token, key_exprs.len())?;
             let tuple = key_exprs.join(", ");
             let marks = vec!["?"; key_exprs.len()].join(", ");
             wheres.push(format!("({tuple}) > ({marks})"));
@@ -332,7 +333,9 @@ impl Indexer {
                 Ok((out, cast_keys_seen, more))
             })?;
         let next_cursor = if more {
-            cast_keys_seen.last().map(|k| encode_cursor(k))
+            cast_keys_seen
+                .last()
+                .map(|k| encode_cursor(&cursor_scope, k))
         } else {
             None
         };
@@ -814,27 +817,28 @@ const CURSOR_PREFIX: &str = "r1.";
 /// Seal `raw` into an opaque, versioned cursor token: `<prefix>` + base64url. Shared by the SQL rows
 /// (`r1.`) and the remote rows (`u1.`) so the envelope exists once.
 #[must_use]
-pub fn seal_cursor(prefix: &str, raw: &[u8]) -> String {
-    format!("{prefix}{}", crate::cursor::seal(raw))
+pub fn seal_cursor(prefix: &str, scope: &str, raw: &[u8]) -> String {
+    format!("{prefix}{}", crate::cursor::seal(scope, raw))
 }
 
 /// The bytes inside a token made by [`seal_cursor`] with the same `prefix`; `None` for anything else
 /// (wrong prefix, not signed by this server).
 #[must_use]
-pub fn open_cursor(prefix: &str, token: &str) -> Option<Vec<u8>> {
-    crate::cursor::unseal(token.strip_prefix(prefix)?)
+pub fn open_cursor(prefix: &str, scope: &str, token: &str) -> Option<Vec<u8>> {
+    crate::cursor::unseal(scope, token.strip_prefix(prefix)?)
 }
 
-fn encode_cursor(values: &[String]) -> String {
+fn encode_cursor(scope: &str, values: &[String]) -> String {
     seal_cursor(
         CURSOR_PREFIX,
+        scope,
         &serde_json::to_vec(values).unwrap_or_default(),
     )
 }
 
-fn decode_cursor(token: &str, arity: usize) -> Result<Vec<String>, SqlViewError> {
+fn decode_cursor(scope: &str, token: &str, arity: usize) -> Result<Vec<String>, SqlViewError> {
     let bad = || SqlViewError::InvalidBinding("invalid cursor".to_owned());
-    let raw = open_cursor(CURSOR_PREFIX, token).ok_or_else(bad)?;
+    let raw = open_cursor(CURSOR_PREFIX, scope, token).ok_or_else(bad)?;
     let values: Vec<String> = serde_json::from_slice(&raw).map_err(|_| bad())?;
     if values.len() == arity {
         Ok(values)
@@ -967,9 +971,9 @@ mod tests {
     #[test]
     fn cursors_round_trip() {
         let v = vec!["0004500123".to_owned(), "a b".to_owned()];
-        assert_eq!(decode_cursor(&encode_cursor(&v), 2).unwrap(), v);
-        assert!(decode_cursor("zz", 1).is_err());
-        assert!(decode_cursor("00", 2).is_err());
+        assert_eq!(decode_cursor("s", &encode_cursor("s", &v), 2).unwrap(), v);
+        assert!(decode_cursor("s", "zz", 1).is_err());
+        assert!(decode_cursor("s", "00", 2).is_err());
     }
 
     #[test]
@@ -1015,11 +1019,14 @@ mod tests {
 
     #[test]
     fn a_sealed_cursor_opens_only_with_its_own_prefix() {
-        let token = seal_cursor("r1.", b"[\"a\"]");
+        let token = seal_cursor("r1.", "s", b"[\"a\"]");
         assert!(token.starts_with("r1."));
-        assert_eq!(open_cursor("r1.", &token).as_deref(), Some(&b"[\"a\"]"[..]));
-        assert_eq!(open_cursor("u1.", &token), None);
-        assert_eq!(open_cursor("r1.", "r1.not base64 !!"), None);
-        assert_eq!(open_cursor("r1.", "plain"), None);
+        assert_eq!(
+            open_cursor("r1.", "s", &token).as_deref(),
+            Some(&b"[\"a\"]"[..])
+        );
+        assert_eq!(open_cursor("u1.", "s", &token), None);
+        assert_eq!(open_cursor("r1.", "s", "r1.not base64 !!"), None);
+        assert_eq!(open_cursor("r1.", "s", "plain"), None);
     }
 }

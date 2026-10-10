@@ -1143,7 +1143,7 @@ async fn list_remote_rows(
     a: &ListInstancesArgs,
 ) -> Result<Value, JsonRpcError> {
     let (rows, next_cursor, skipped) =
-        crate::remote_rows::list(egress, src, a.cursor.as_deref(), a.limit)
+        crate::remote_rows::list(egress, indexer.tenant(), src, a.cursor.as_deref(), a.limit)
             .await
             .map_err(|e| {
                 if e == "invalid cursor" {

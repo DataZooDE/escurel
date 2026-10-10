@@ -519,7 +519,7 @@ pub const CONFIG_KEYS: &[ConfigKey] = &[
         name: "ESCUREL_CURSOR_KEY",
         component: "Server",
         default: "random per process",
-        doc: "signing key of the list cursors (`next_cursor`). A cursor the server did not issue (forged, edited, issued before a restart) answers `invalid_cursor`. Set the SAME value on every replica (writer + readers) of one deployment so a client may page across them",
+        doc: "signing key of the list cursors (`next_cursor`), at least 32 bytes (`openssl rand -hex 32`); a shorter one stops the server at boot. A cursor the server did not issue (forged, edited, issued before a restart) or issued for another tenant, skill or list answers `invalid_cursor`. Set the SAME value on every replica (writer + readers) of one deployment so a client may page across them",
     },
     ConfigKey {
         name: "ESCUREL_ROWS_QUERY_TIMEOUT_SECS",

@@ -76,6 +76,7 @@ pub(super) struct ListDraftsArgs {
 /// list ends. No `limit` returns everything, as these tools always have. `next_cursor` is present iff
 /// rows follow.
 pub(super) fn page_newest_first<T>(
+    scope: &str,
     mut items: Vec<T>,
     key: impl Fn(&T) -> String,
     limit: Option<usize>,
@@ -93,7 +94,7 @@ pub(super) fn page_newest_first<T>(
             )
         };
         let body = token.strip_prefix(PREFIX).ok_or_else(bad)?;
-        let raw = escurel_index::cursor::unseal(body).ok_or_else(bad)?;
+        let raw = escurel_index::cursor::unseal(scope, body).ok_or_else(bad)?;
         let after = String::from_utf8(raw).map_err(|_| bad())?;
         items.retain(|i| key(i) < after);
     }
@@ -104,9 +105,12 @@ pub(super) fn page_newest_first<T>(
         return Ok((items, None));
     }
     items.truncate(limit);
-    let next = items
-        .last()
-        .map(|i| format!("{PREFIX}{}", escurel_index::cursor::seal(key(i).as_bytes())));
+    let next = items.last().map(|i| {
+        format!(
+            "{PREFIX}{}",
+            escurel_index::cursor::seal(scope, key(i).as_bytes())
+        )
+    });
     Ok((items, next))
 }
 
@@ -752,6 +756,7 @@ pub(super) async fn tool_list_drafts(
         }
     }
     let (page, next) = page_newest_first(
+        &format!("drafts:{}", indexer.tenant()),
         visible,
         |d| format!("{}|{}", d.created_at, d.draft_id),
         a.limit,
@@ -1397,7 +1402,13 @@ pub(super) async fn tool_list_changesets(
             }),
         ));
     }
-    let (page, next) = page_newest_first(out, |(k, _)| k.clone(), a.limit, a.cursor.as_deref())?;
+    let (page, next) = page_newest_first(
+        &format!("changesets:{}", indexer.tenant()),
+        out,
+        |(k, _)| k.clone(),
+        a.limit,
+        a.cursor.as_deref(),
+    )?;
     let mut res = json!({ "changesets": page.into_iter().map(|(_, v)| v).collect::<Vec<_>>() });
     if let Some(c) = next {
         res["next_cursor"] = json!(c);
