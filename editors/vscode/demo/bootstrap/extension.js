@@ -9,7 +9,6 @@ const fs = require('node:fs');
 
 exports.activate = async () => {
   const file = process.env.ESCUREL_DEMO_BEARER_FILE;
-  const storyFile = process.env.ESCUREL_DEMO_STORY;
   if (!file) return;
   const api = await vscode.extensions.getExtension('datazoo.escurel').activate();
 
@@ -43,28 +42,29 @@ exports.activate = async () => {
   // The Runner view lives in the right-hand (secondary) sidebar: show it, then the left one.
   await vscode.commands.executeCommand('workbench.view.extension.escurel-runner');
   await vscode.commands.executeCommand('workbench.view.extension.escurel');
-  // The calm window (ESCUREL_DEMO_FOCUS=0 keeps the classic look): focus mode on without asking, and the
-  // overview board as the first screen instead of one thread.
-  if (process.env.ESCUREL_DEMO_FOCUS !== '0') {
+  await openStart(vscode, process.env, fs);
+};
+
+// What the window opens on. The calm window (ESCUREL_DEMO_FOCUS=0 keeps the classic look): focus mode on without
+// asking, and the overview board as the first screen instead of one thread. ESCUREL_DEMO_OPEN_PAGE opens one
+// page on top in either look (to land the walkthrough on it, or to look at it).
+async function openStart(vscode, env, fs) {
+  if (env.ESCUREL_DEMO_FOCUS !== '0') {
     await vscode.commands.executeCommand('escurel.focusMode.enter', {
       silent: true,
       overview: true,
     });
-    return;
-  }
-  if (storyFile) {
+  } else if (env.ESCUREL_DEMO_STORY) {
     try {
-      const story = JSON.parse(fs.readFileSync(storyFile, 'utf8'));
+      const story = JSON.parse(fs.readFileSync(env.ESCUREL_DEMO_STORY, 'utf8'));
       if (story.rootA) await vscode.commands.executeCommand('escurel.openThread', story.rootA);
-      // Optional: also open one page, to land the walkthrough on it (or to look at it).
-      if (process.env.ESCUREL_DEMO_OPEN_PAGE) {
-        await vscode.commands.executeCommand(
-          'escurel.openInstance',
-          process.env.ESCUREL_DEMO_OPEN_PAGE,
-        );
-      }
     } catch {
       /* no story yet: the window is still usable */
     }
   }
-};
+  if (env.ESCUREL_DEMO_OPEN_PAGE) {
+    await vscode.commands.executeCommand('escurel.openInstance', env.ESCUREL_DEMO_OPEN_PAGE);
+  }
+}
+
+exports.openStart = openStart;

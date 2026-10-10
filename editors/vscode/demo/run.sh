@@ -24,6 +24,8 @@ HOME_DIR="${ESCUREL_DEMO_HOME:-$HOME/.cache/escurel-demo}"
 GATEWAY_BIN="${ESCUREL_TEST_GATEWAY_BIN:-$REPO/target/release/escurel-test-gateway}"
 RUNNER_BIN="${ESCUREL_RUNNER_BIN:-$REPO/target/release/escurel-runner}"
 CODE="${ESCUREL_DEMO_CODE:-code}"
+# shellcheck source=lib.sh
+. "$HERE/lib.sh"
 
 stop() {
   # The launcher's pid is not the window's: Electron forks, and its MAIN process lists
@@ -60,8 +62,13 @@ done
 if [ ! -f "$EXT/dist/extension.js" ]; then (cd "$EXT" && npm run build >/dev/null); fi
 
 stop
+demo_home_resettable "$HOME_DIR" || {
+  echo "refusing to wipe $HOME_DIR: it is not an empty or demo-made directory (ESCUREL_DEMO_HOME must name one)" >&2
+  exit 1
+}
 rm -rf "$HOME_DIR"
 mkdir -p "$HOME_DIR/workspace" "$HOME_DIR/profile/User" "$HOME_DIR/ext"
+: > "$HOME_DIR/.escurel-demo-home"
 
 # The seed, with one placeholder resolved: the `order-lines` sql_view reads a JSON extract, and DuckDB
 # resolves a relative glob against the server's cwd, so its skill page must carry an absolute path.
@@ -82,25 +89,6 @@ if [ "${ESCUREL_DEMO_S2D:-1}" = "1" ]; then
   sed -i 's|^folder: plumbing$|folder: logistics/methods|; s|^title: Query$|title: Methods|' "$HOME_DIR/seed/skills/query.md"
 fi
 
-# A DuckDB extension is built for ONE DuckDB version. The gateway links libduckdb.so: the copy the build
-# downloaded for the version it is pinned to (target/duckdb-download/<triple>/<version>/), or whatever
-# the system has, which may be another version. When an extension is to be loaded, prefer the pinned copy
-# (override with ESCUREL_DEMO_LIBDUCKDB_DIR).
-libduckdb_dir() {
-  [ -n "${ESCUREL_DEMO_LIBDUCKDB_DIR:-}" ] && { echo "$ESCUREL_DEMO_LIBDUCKDB_DIR"; return; }
-  local d want
-  # The DuckDB version the build is pinned to, from libduckdb-sys in Cargo.lock (1.10506.0 -> 1.5.6):
-  # a target/ dir can hold older downloads too, and the first one found is not necessarily the pinned one.
-  want="$(python3 "$HERE/s2d/pinned_duckdb.py" "$REPO/Cargo.lock" 2>/dev/null || true)"
-  if [ -n "$want" ]; then
-    for d in "$(dirname "$GATEWAY_BIN")"/../duckdb-download/*/"$want"/; do
-      [ -f "${d}libduckdb.so" ] && { echo "${d%/}"; return; }
-    done
-  fi
-  for d in $(ls -d "$(dirname "$GATEWAY_BIN")"/../duckdb-download/*/*/ 2>/dev/null | sort -V -r); do
-    [ -f "${d}libduckdb.so" ] && { echo "${d%/}"; return; }
-  done
-}
 # The DuckDB version the gateway will run: the pinned copy's directory name, else what the system's
 # libduckdb.so says. Empty when it cannot be told.
 gateway_duckdb_version() {
@@ -151,7 +139,11 @@ export ESCUREL_DEMO_ORDERS_DB_SECRET="$HOME_DIR/secrets/vsx/orders-db"
 INDEX_EXT=""; [ -n "$S2D_DIR" ] && [ -s "$S2D_DIR/index-extensions" ] && INDEX_EXT="$(head -1 "$S2D_DIR/index-extensions")"
 start_gateway() {
   local ld="${LD_LIBRARY_PATH:-}"
-  if [ -n "$INDEX_EXT" ] && [ -n "$(libduckdb_dir)" ]; then ld="$(libduckdb_dir)${ld:+:$ld}"; fi
+  if [ -n "$INDEX_EXT" ]; then
+    # An extension loads only on the DuckDB it was built for: no pinned libduckdb copy means no demo, not a stale one.
+    [ -n "$(libduckdb_dir)" ] || { echo "no libduckdb copy for the pinned DuckDB under $(dirname "$GATEWAY_BIN")/../duckdb-download (build escurel-test-support, or set ESCUREL_DEMO_LIBDUCKDB_DIR)" >&2; return 1; }
+    ld="$(libduckdb_dir)${ld:+:$ld}"
+  fi
   LD_LIBRARY_PATH="$ld" ESCUREL_INDEX_EXTENSIONS="$INDEX_EXT" ESCUREL_EGRESS_ALLOW_LOOPBACK=1 ESCUREL_SECRET_FILE_DIRS="$HOME_DIR/secrets" ESCUREL_SQL_FILE_DIRS="$HOME_DIR/sqlite:$HERE/sources${S2D_DIR:+:$S2D_DIR/data}" setsid nohup "$GATEWAY_BIN" --tenant vsx --seed "$HOME_DIR/seed" --subject alice \
     --bearer-file "$HOME_DIR/bearer.json" > "$HOME_DIR/gateway.json" 2> "$HOME_DIR/gateway.log" < /dev/null &
   echo $! > "$HOME_DIR/gateway.pid"
