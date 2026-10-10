@@ -144,9 +144,10 @@ Skill version `0.18.1`. Every consumer that writes pages or reads the tool surfa
   attaches enforce the statement timeout server-side. The image bakes the `sqlite` DuckDB extension next to
   `postgres`. Verified against a real Postgres container and a real SQLite file. Conflict detection is
   etag-only (the row's values at read time); a `version_column:` option was considered and dropped (2026-10-09).
-  **MySQL is removed from the advertised connector list until it is tested**: the `mysql` connector name is
-  still accepted by the code, but it has no integration test, no CI job and the image no longer bakes
-  `mysql_scanner` (DuckDB fetches it on first use when a tenant insists).
+  **MySQL / MariaDB are refused (skill `0.19.3`)**: it has no integration test, no CI job, no timeouts and was never
+  DNS-pinned like Postgres, so `register_credential` answers `connector_not_supported`, a skill page with
+  `backend.source.connector: mysql` fails `validate` and is not stored, and the image does not bake
+  `mysql_scanner`.
 - **Run traces keep what each tool call asked and got back.** `get_run_tool_calls` rows gain optional
   `args_summary` / `result_summary` (2 KB, credentials redacted by key and by pattern, content bodies reduced
   to sizes); the VS Code run detail shows them per step. `ESCUREL_TOOLCALL_DETAIL=off` records sizes only.

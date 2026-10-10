@@ -74,7 +74,7 @@ operator, not by the tenant:
 (`register_credential {name, connector, secret_ref}`; an inline `secret` still works but is deprecated and flagged),
 resolved by the same allow-list as endpoint secrets and checked against the egress policy before any connection
 (a private/metadata host, an unlisted file directory, a unix socket: refused by name). **Rotation:** re-registering an existing credential NAME with a new secret does not re-point a source that is already attached: reads keep using the old connection string until the server restarts (a deleted credential is effective at once: the source answers `backend_unavailable`). Rotate by restarting the gateway (or register under a new name and rebind the skill). Network connects are bounded by `ESCUREL_SQL_CONNECT_TIMEOUT_SECS` (default 5) and a source query by `ESCUREL_ROWS_QUERY_TIMEOUT_SECS` (default 30). The image bakes the
-`postgres` and `sqlite` DuckDB extensions (build-time assertion; `mysql` is accepted by the code but neither tested nor baked: off the advertised surface until it has a test). **Write-back to a database uses the
+`postgres` and `sqlite` DuckDB extensions (build-time assertion; `mysql` / `mariadb` are REFUSED (`connector_not_supported`): untested and not baked). **Write-back to a database uses the
 SAME credential**, opened read-write on a short-lived connection only when a human promotes a draft: grant that
 database user `UPDATE` on the writable columns of the tables you expose and nothing else. Postgres attaches carry
 the server-side `statement_timeout`; watch `escurel_write_back_total{outcome}` (`dead_letter`, `conflict`).

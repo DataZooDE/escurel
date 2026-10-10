@@ -273,7 +273,7 @@ citation; never treat one as a link. The link's `skill` segment is its
       project: {vbeln: sales_doc, netwr: net_value}   # source column -> frontmatter field
       writable_columns: [status]  # optional, FRONTMATTER field names; database connectors only (see Write-back)
     ```
-    `connector: postgres | sqlite` reads a real database (`mysql` is accepted but untested: off the advertised surface) (`source: {connector: postgres, attach: <credential
+    `connector: postgres | sqlite` reads a real database (`mysql` / `mariadb` are refused with `connector_not_supported`) (`source: {connector: postgres, attach: <credential
     name>, relation: schema.table}`); the credential is a secret *reference* an admin registers. **Write-back**: a
     row of such a skill changes only through a draft carrying `write_back: {patch: {field: value}, base_etag}`
     (`etag` and `writable_columns` are in `backend_projection`; `writable_via: "write_back"`); a human promotes it

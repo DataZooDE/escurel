@@ -42,7 +42,8 @@ use crate::{Indexer, IndexerError};
 
 pub use binding::{
     BackendBinding, DocumentBinding, MimeClaim, RemoteBinding, RemoteCursor, RemoteKind,
-    RemoteList, RemoteOp, RowsConfig, SqlConnector, SqlViewBinding, mime_claim,
+    RemoteList, RemoteOp, RowsConfig, SqlConnector, SqlViewBinding, is_unsupported_connector,
+    mime_claim,
 };
 #[cfg(feature = "kreuzberg")]
 pub use document::KreuzbergExtractor;
