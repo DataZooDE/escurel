@@ -4,6 +4,20 @@ The skill version tracks the consumer-facing contract, not the Escurel
 binary version. The Escurel repo's checked-out git ref is the true version
 pin (see `SKILL.md` → "How this skill is installed").
 
+## 0.19.4 — cursors are bound to their list; bookkeeping and branches belong to their owners (security)
+
+- List cursors (`next_cursor`: instances, events, inbox, chat, rows, remote rows, drafts, changesets, branches)
+  are valid only for the tenant and list they were issued for; replayed anywhere else they answer
+  `invalid_cursor` ("restart without `cursor`"). `ESCUREL_CURSOR_KEY` under 32 bytes stops the server at boot.
+- `capture_event` refuses `escurel:`-prefixed labels, `kind: system` and `provenance.workflow` from a token bound
+  to a run (`run_id` / `act` / `skill` claim), even an admin one: that is bookkeeping for the runner's own admin
+  identity and the gateway. A person or the runner's own token is unaffected.
+- A branch belongs to its author: `update_page(branch)` needs the author or an admin; `merge_branch` and
+  `abandon_branch` need the author, an admin or a person (merging a machine's branch is the review), not another
+  machine. A refused caller gets `unknown_branch`, the same answer as a name that does not exist.
+- A column named with a `"` in a rows source no longer breaks reading, searching or writing its rows (one
+  `quote_ident` helper); `list_instances`/`expand`/`search` over such a source work.
+
 ## 0.19.3 — MySQL / MariaDB are refused (security)
 
 - `register_credential` with `connector: mysql | mariadb` answers `connector_not_supported` (and stores nothing);

@@ -11,9 +11,21 @@ re-cuts append `.N`), matching the DataZoo release scheme (cf. erpl).
 **Read first:** [`docs/deploy/kind-migration.md`](docs/deploy/kind-migration.md) (stop-first upgrade, backup,
 rollback) and the consumer checklist in
 [`.claude/skills/escurel-platform/CHANGELOG.md`](.claude/skills/escurel-platform/CHANGELOG.md) (0.7.0 – 0.18.1).
-Skill version `0.18.1`. Every consumer that writes pages or reads the tool surface moves in the same window.
+Skill version `0.19.4`. Every consumer that writes pages or reads the tool surface moves in the same window.
 
 ### Fixed
+
+- **List cursors are bound to their tenant and list; `ESCUREL_CURSOR_KEY` needs 32 bytes** (#684): a cursor issued
+  for one skill/list no longer opens on another (it used to return a silently empty page); a shorter key stops
+  the server at boot.
+- **One `quote_ident` helper for every column spliced into rows SQL** (#685): a column named `we"ird` made
+  `expand` a syntax error and `search` find nothing; a hostile name could close the identifier.
+- **A run-bound token cannot file `escurel:` events, system events or workflow steps** (#686): the runner mints
+  ADMIN run tokens, and the guard was `!is_admin`. The runner's own admin identity is unaffected.
+- **A branch is its author's workspace** (#687): another machine can no longer write into, merge or abandon it;
+  people and admins still decide it (the review).
+- Links that escape the exposed directories fail closed when the directory cannot be read (#681); the
+  `rows_get` timeout test is deterministic (#683).
 
 - **Write-back: at-most-once unless the skill declares idempotency; `base_etag` is required (security / data
   integrity).** Every REST write used to count as repeatable, so an upstream that ignored `Idempotency-Key` could
