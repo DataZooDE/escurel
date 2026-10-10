@@ -12,7 +12,6 @@ import { createServer } from 'node:net';
 import { createServer as createHttpServer, type Server as HttpServer } from 'node:http';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { evolveAgentEnv } from '../../demo/evolve-env.mjs';
 
 /**
  * A live stack for end-to-end tests, per worker:
@@ -238,6 +237,8 @@ export const test = base.extend<
           };
         let evolveUrl: string | undefined;
         if (evolveAgentBin) {
+          // A dynamic import: Playwright loads this file as CommonJS and the shared module is an ES module.
+          const { evolveAgentEnv } = await import('../../demo/evolve-env.mjs');
           const port = evolvePort!;
           evolveUrl = configuredEvolveUrl;
           evolveLogFd = openSync(join(home, 'evolve.log'), 'w');
