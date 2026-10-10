@@ -375,3 +375,54 @@ async fn a_machine_cannot_write_through_to_a_review_skill_s_source() {
     let text = body.to_string();
     assert!(text.contains("review_required"), "{text}");
 }
+
+/// The `escurel:` label namespace and `kind: system` are the runner's and the gateway's own
+/// bookkeeping (a forged `run-finished` is a forged run). The guard was `!is_admin`, and a run-bound
+/// token is ADMIN today (what the runner mints for a harness), so an agent run could file them. A
+/// token bound to a run (or acting for a runner, or narrowed to a skill) is a machine whatever its
+/// role; the runner's own admin identity is not.
+#[tokio::test]
+async fn a_run_bound_admin_token_cannot_file_escurel_events_or_system_events() {
+    let p = start().await;
+    let agent = machine_admin(&p);
+    for (label, kind) in [
+        ("escurel:run-status", None),
+        ("escurel:run-lifecycle", Some("system")),
+        ("triage", Some("system")),
+    ] {
+        let mut args = json!({ "label_skill": label, "body": "{\"forged\":true}" });
+        if let Some(k) = kind {
+            args["kind"] = json!(k);
+        }
+        let r = rpc(&p, &agent, "capture_event", args).await;
+        assert!(
+            r.get("error").is_some() || r["result"]["isError"] == json!(true),
+            "a machine must not file `{label}` (kind {kind:?}): {r}"
+        );
+    }
+
+    // The runner's own admin identity (no run, no actor, no skill claim) still can.
+    let runner = p.mint_token(TENANT, Role::Admin);
+    let r = rpc(
+        &p,
+        &runner,
+        "capture_event",
+        json!({ "label_skill": "escurel:run-status", "kind": "system", "body": "{}" }),
+    )
+    .await;
+    assert!(
+        r.get("error").is_none() && r["result"]["isError"] != json!(true),
+        "the runner's own admin token keeps its bookkeeping rights: {r}"
+    );
+
+    // And a person files ordinary user events as before.
+    let person = human(&p);
+    let r = rpc(
+        &p,
+        &person,
+        "capture_event",
+        json!({ "label_skill": "triage", "body": "a note" }),
+    )
+    .await;
+    assert!(r.get("error").is_none(), "{r}");
+}
