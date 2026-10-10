@@ -4,6 +4,12 @@ The skill version tracks the consumer-facing contract, not the Escurel
 binary version. The Escurel repo's checked-out git ref is the true version
 pin (see `SKILL.md` → "How this skill is installed").
 
+## 0.19.3 — MySQL / MariaDB are refused (security)
+
+- `register_credential` with `connector: mysql | mariadb` answers `connector_not_supported` (and stores nothing);
+  a skill page whose `backend.source.connector` is `mysql` fails `validate` with the same code and is not
+  stored. Before, MySQL was only unadvertised. Design against `postgres` and `sqlite`, or a REST/MCP endpoint.
+
 ## 0.19.2 — a tenant's secret namespace is unambiguous (security)
 
 - `secret_ref` names under `ESCUREL_SECRET_<TENANT>__<NAME>`: `<NAME>` may not contain `__`; a tenant id whose

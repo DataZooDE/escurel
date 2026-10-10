@@ -233,13 +233,21 @@ pub enum SqlConnector {
     ParquetDir,
 }
 
+/// The connector values the gateway refuses outright (case-insensitive): see [`SqlConnector::from_wire`].
+#[must_use]
+pub fn is_unsupported_connector(s: &str) -> bool {
+    matches!(s.trim().to_ascii_lowercase().as_str(), "mysql" | "mariadb")
+}
+
 impl SqlConnector {
     /// Parse the `connector:` wire value.
     #[must_use]
     pub fn from_wire(s: &str) -> Option<Self> {
         Some(match s {
             "postgres" => Self::Postgres,
-            "mysql" => Self::Mysql,
+            // MySQL / MariaDB are NOT a supported connector (owner decision 2026-10-09: no test, no
+            // timeouts, never DNS-pinned): the wire value parses to nothing, so no binding forms and
+            // nothing attaches. The `Mysql` variant stays only so removing it later is one deletion.
             "sqlite" => Self::Sqlite,
             "erpl" => Self::Erpl,
             "json_dir" => Self::JsonDir,

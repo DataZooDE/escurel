@@ -351,6 +351,21 @@ pub(super) async fn tool_register_credential(
             "name and connector are required".to_owned(),
         ));
     }
+    if escurel_index::backend::is_unsupported_connector(&a.connector) {
+        return Ok(json!({
+            "ok": false,
+            "issues": [{
+                "severity": "error",
+                "code": "connector_not_supported",
+                "location": "connector",
+                "message": format!(
+                    "connector `{}` is not supported: MySQL / MariaDB is not tested and is refused",
+                    a.connector
+                ),
+                "suggestion": "use `postgres` or `sqlite`, or a REST/MCP endpoint (`register_endpoint`)",
+            }],
+        }));
+    }
     let inline = a.secret.as_deref().filter(|s| !s.is_empty());
     let reference = a.secret_ref.as_deref().filter(|s| !s.is_empty());
     let stored = match (inline, reference) {
