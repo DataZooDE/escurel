@@ -133,6 +133,10 @@ pub struct RemoteBinding {
     /// `None`: the tool is not idempotent, so a write-back to it is at-most-once. (REST always sends
     /// an `Idempotency-Key` header.)
     pub write_idempotency_arg: Option<String>,
+    /// A REST write op the skill DECLARES safe to repeat (`write: {…, idempotent: true}`): the upstream honours
+    /// the `Idempotency-Key` header (or the call is naturally repeatable). Without it a write-back is
+    /// at-most-once; a `PUT` is repeatable by the HTTP contract and needs no declaration.
+    pub write_idempotent: bool,
 }
 
 /// The `list:` op of a remote `instances: rows` skill (stage 4a/4b): which call enumerates the
@@ -464,6 +468,12 @@ fn parse_remote(
         .and_then(|w| w.get("idempotency_arg"))
         .and_then(serde_json::Value::as_str)
         .map(str::to_owned);
+    let write_idempotent = block
+        .get("write")
+        .and_then(serde_json::Value::as_object)
+        .and_then(|w| w.get("idempotent"))
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
     Some(RemoteBinding {
         kind,
         endpoint,
@@ -472,6 +482,7 @@ fn parse_remote(
         project,
         list,
         write_idempotency_arg,
+        write_idempotent,
     })
 }
 

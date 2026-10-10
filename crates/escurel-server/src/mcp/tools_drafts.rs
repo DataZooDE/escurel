@@ -364,7 +364,12 @@ pub(super) async fn tool_create_draft(
             &intent,
         ) {
             Ok(c) => a.content = c,
-            Err(m) => return Ok(crate::write_back::refusal("write_back_invalid", m)),
+            Err(m) => {
+                return Ok(crate::write_back::refusal(
+                    crate::write_back::intent_error_code(&m),
+                    m,
+                ));
+            }
         }
     } else if !content_given {
         return Err(JsonRpcError::invalid_params(

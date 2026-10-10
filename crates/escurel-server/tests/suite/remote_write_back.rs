@@ -38,7 +38,7 @@ const CUSTOMER_SKILL: &str = "---\n\
     \x20 writable_columns: [tier]\n\
     \x20 list: { path: /customers, items: $.data }\n\
     \x20 read: { path: \"/customers/{id}\" }\n\
-    \x20 write: { method: PATCH, path: \"/customers/{id}\" }\n\
+    \x20 write: { method: PATCH, path: \"/customers/{id}\", idempotent: true }\n\
     \x20 project: { display_name: $.name, tier: $.account_tier }\n\
      ---\n\
      # customer\n";
@@ -61,6 +61,12 @@ struct Crm {
     read_down: std::sync::atomic::AtomicBool,
     /// Hold every PATCH this long before answering (a slow portal).
     patch_delay_ms: AtomicUsize,
+    /// Ignore the Idempotency-Key altogether (an upstream that never heard of it): every PATCH applies.
+    ignore_keys: std::sync::atomic::AtomicBool,
+    /// How many PATCHes were actually APPLIED to a row (whatever the answer was).
+    applies: AtomicUsize,
+    /// Apply the next N PATCHes and THEN answer 503: the change happened, the caller never learns.
+    apply_then_fail: AtomicUsize,
 }
 
 impl Crm {
@@ -135,7 +141,7 @@ async fn patch(
         return (StatusCode::BAD_REQUEST, "Idempotency-Key required").into_response();
     }
     // A key already applied answers success WITHOUT applying again.
-    if c.applied_keys.lock().unwrap().contains(&key) {
+    if !c.ignore_keys.load(Ordering::SeqCst) && c.applied_keys.lock().unwrap().contains(&key) {
         return Json(json!({ "ok": true, "replayed": true })).into_response();
     }
     if !if_match.is_empty() && if_match != c.etag() {
@@ -153,6 +159,15 @@ async fn patch(
     c.applied_keys.lock().unwrap().push(key);
     drop(rows);
     c.bump();
+    c.applies.fetch_add(1, Ordering::SeqCst);
+    if c.apply_then_fail.load(Ordering::SeqCst) > 0 {
+        c.apply_then_fail.fetch_sub(1, Ordering::SeqCst);
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "applied, but the answer was lost",
+        )
+            .into_response();
+    }
     Json(json!({ "ok": true })).into_response()
 }
 
@@ -1039,5 +1054,93 @@ async fn write_instance_on_a_row_points_at_the_write_back_draft_instead_of_faili
         0,
         "nothing reached the upstream"
     );
+    p.shutdown().await;
+}
+
+/// The same skill, but the write op does NOT declare that the upstream honours `Idempotency-Key`.
+const UNDECLARED_SKILL: &str = "---\n\
+     kind: skill\n\
+     id: customer\n\
+     description: CRM customers; `tier` may be changed through a human-gated write-back.\n\
+     backend:\n\
+    \x20 kind: openapi\n\
+    \x20 endpoint: crm_rest\n\
+    \x20 instances: rows\n\
+    \x20 key: $.id\n\
+    \x20 linked: true\n\
+    \x20 writable_columns: [tier]\n\
+    \x20 list: { path: /customers, items: $.data }\n\
+    \x20 read: { path: \"/customers/{id}\" }\n\
+    \x20 write: { method: PATCH, path: \"/customers/{id}\" }\n\
+    \x20 project: { display_name: $.name, tier: $.account_tier }\n\
+     ---\n\
+     # customer\n";
+
+#[tokio::test]
+async fn a_write_that_does_not_declare_idempotency_is_sent_at_most_once() {
+    let c = crm();
+    c.ignore_keys.store(true, Ordering::SeqCst);
+    c.apply_then_fail.store(1, Ordering::SeqCst);
+    let app = Router::new()
+        .route("/customers", get(list))
+        .route("/customers/{id}", get(get_one).patch(patch))
+        .with_state(Arc::clone(&c));
+    let (base, _h) = serve(app).await;
+    let (p, _d) = spawn_gateway(
+        &[("customer", UNDECLARED_SKILL)],
+        EgressPolicy {
+            allow_loopback: true,
+            write_retry_backoff: std::time::Duration::from_millis(5),
+            ..EgressPolicy::default()
+        },
+    )
+    .await;
+    admin(
+        &p,
+        "register_endpoint",
+        json!({ "name": "crm_rest", "kind": "openapi", "base_url": base }),
+    )
+    .await;
+    let etag = etag_of_row(&p).await;
+    let id = draft_id(&draft(&p, &intent_content("tier: gold", &etag, "n")).await);
+
+    let done = promote(&p, &id).await;
+
+    assert_eq!(done["ok"], false, "{done}");
+    assert_eq!(
+        c.applies.load(Ordering::SeqCst),
+        1,
+        "an upstream that may not honour Idempotency-Key must not be retried after an applied-then-lost answer"
+    );
+    assert_eq!(
+        c.patches.lock().unwrap().len(),
+        1,
+        "one request, no retries"
+    );
+    // ... and a later promote refuses rather than risk applying twice.
+    let again = promote(&p, &id).await;
+    assert!(
+        issue_codes(&again).contains(&"write_back_unknown_outcome".to_owned()),
+        "{again}"
+    );
+    p.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_write_back_without_a_base_etag_is_refused_before_it_can_overwrite_an_upstream_edit() {
+    let c = crm();
+    let (p, _d) = gateway_over(&c, 5).await;
+    let no_etag = "---\nkind: instance\nid: c-0001\nskill: customer\nwrite_back:\n  patch: { tier: gold }\n---\nn\n";
+    let d = draft(&p, no_etag).await;
+    let r = &d["result"]["structuredContent"];
+    assert_eq!(
+        r["ok"], false,
+        "a proposal without base_etag must be refused: {d}"
+    );
+    assert!(
+        issue_codes(r).contains(&"write_back_base_etag_required".to_owned()),
+        "{d}"
+    );
+    assert_eq!(c.patches.lock().unwrap().len(), 0);
     p.shutdown().await;
 }

@@ -10,6 +10,10 @@ its etag (`w1:<sha256 of the projected columns>`; moved means `write_back_confli
 failures (5xx, transport, 429) are retried a few times with jittered backoff; a 4xx is final
 (`write_back_rejected`). The `applied` event is the witness that it happened.
 
+A REST write op counts as repeatable only when the skill declares `write: {…, idempotent: true}` (or the method is
+`PUT`); before 2026-10-10 every HTTP write was assumed idempotent, so an upstream that ignored `Idempotency-Key`
+could apply a change up to three times after a lost answer.
+
 An endpoint WITHOUT idempotency support is attempted once, and if an `applying` event exists with no
 outcome the write is refused as `write_back_unknown_outcome` rather than repeated: a human reconciles.
 
