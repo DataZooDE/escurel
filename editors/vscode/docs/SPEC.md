@@ -1,6 +1,6 @@
 # escurel VS Code extension — implementation spec
 
-**Date:** 2026-09-23 · **Status:** Ready for implementation · **Target:** `DataZooDE/escurel`, `editors/vscode/`
+**Date:** 2026-09-23 · **Status:** Implemented (M1–M4 and the Runs/Focus/S2D work are on `main`); open backend items are tracked in `BACKEND_GAPS.md` · **Target:** `DataZooDE/escurel`, `editors/vscode/`
 **Inputs:** `../2026-09-19-escurel-vscode-workbench/` (concept), `../2026-09-22-escurel-workbench-backend/` (BRD/HLD, implemented on `main`), `mock/Escurel Workbench Hi-fi.dc.html` (interactive hi-fi reference; open in a browser).
 **Depth:** Lean. Boundaries, contracts and acceptance criteria are fixed here. Internal structure is up to the implementer.
 
@@ -63,7 +63,7 @@ The activity-bar container `escurel` holds the views below. Tab and label wordin
 - **Overview board** (`escurel.openOverview`, webview panel "Overview", the first screen of the demo): five tiles built from data the other views already read, so the board adds no gateway surface: **Decisions waiting** (the same queue as Awaiting you), **Agent activity** (runner sentence + what is running), **Needs attention** (failed or dead-lettered runs nobody retried since), **Open items** (records per skill: one page of 50, "50+" when there are more; records and processes only), **Recently finished** (finished runs and the 24 h sentence). A tile's title opens the full view; a line opens the thing it names. A line carries only a key the host handed out (`OverviewItem.key`): the host resolves it against the view it last sent, so a forged message opens nothing it did not offer. It reloads every 20 s while visible, on a gateway change and on Refresh; it is not on the live socket. The board's header offers the way out of (or into) the focus view.
 - **Not built:** a "delayed shipments" tile. Delay is domain data the generic engine does not know; it needs a skill-declared hook (a status field and a threshold) and is a follow-up.
 
-Controls (§3.3, §3.6) are `capture_event(label_skill: escurel:run-control, body {action, run_id|event_id|tenant, reason})`. A `permission_denied` result shows the reason and does not reveal anything.
+Controls (§3.3, §3.6) are `capture_event(label_skill: escurel:run-control, body {action, run_id|event_id|tenant, reason})`. A `forbidden` refusal shows the reason and does not reveal anything.
 
 ## 4. Commands (minimum)
 
@@ -88,7 +88,7 @@ The host ↔ webview protocol is typed postMessage. Webviews never hold tokens; 
 
 ## 6. Tests (required)
 
-- **vitest:** the typed wrapper against recorded JSON-RPC fixtures, covering cursor paging, `already_decided`, `base_moved`, `permission_denied`, `session_cap_reached` and WS resume.
+- **vitest:** the typed wrapper against recorded JSON-RPC fixtures, covering cursor paging, `already_decided`, `base_moved`, `forbidden`, `session_cap_reached` and WS resume.
 - **web-test-runner:** page-as-UI (field types, summary, actions), thread folding from a `list_lineage` fixture (including pruned subtrees) and run detail (plan states, tool-call paging).
 - **Playwright visual checks** of the three webviews in light, dark and high-contrast, with no hard-coded colours (lint: no hex in `webview/`).
 
@@ -97,8 +97,8 @@ The host ↔ webview protocol is typed postMessage. Webviews never hold tokens; 
 Most of the BRD is already on `main`: `list_lineage`, `report_progress`, `get_run_tool_calls`, `mint_agent_token`, `kind: system`, `event_subscribe` filters, `autonomy: confirm`, `summary_missing`, `harness:`, `cascade:`, run-control and runner-status. The extension additionally needs:
 
 - **PR‑1 Live personal drafts (blocks M1 editing).** A human needs a mutable, personal draft of an instance that is edited live over CRDT ops and landed by the existing promote path, with all its guards (write ACL, validate, `base_sha256` CAS, `already_decided`). Only the author can read or write it before promotion. It shows up in `list_drafts` / review like any draft, and `diff_draft` works on its current state. Shape is up to the backend implementer (e.g. a session on a draft vs a draft-targeting `open_session`). Until PR‑1 lands, the extension ships with editing disabled in page-as-UI (read-only form + "Start skill" only).
-- **PR‑2 Action labels.** `actions:` is currently a string list of cascade-target skills. For contextual Skill-button labels the skill needs an optional label (and default mode) per action, e.g. `actions: [{skill, label?, mode?}]`, keeping the string form valid. Until then the extension derives labels: `"<Skill title> for <instance title> with an agent"`.
-- **PR‑3 Review-comment events.** Confirm that `capture_event(label_skill: review-comment, instance_page_id: <draft target>, provenance.review {draft_id, line?})` is accepted for non-admin users (kind `user`) and filtered by page ACL. If it isn't, add it.
+- **PR‑2 Action labels (closed in skill 0.7.0: `actions:` entries are objects).** `actions:` was a string list of cascade-target skills. For contextual Skill-button labels the skill needs an optional label (and default mode) per action, e.g. `actions: [{skill, label?, mode?}]`, keeping the string form valid. Until then the extension derives labels: `"<Skill title> for <instance title> with an agent"`.
+- **PR‑3 Review-comment events.** Confirm that `capture_event(label_skill: escurel:review-comment, instance_page_id: <draft target>, provenance.review {draft_id, line?})` is accepted for non-admin users (kind `user`) and filtered by page ACL. If it isn't, add it.
 - **PR‑4 Field render hints (optional, M3+).** `fields[].render` pass-through. The extension falls back to `fields[].type`.
 
 ## 8. Milestones

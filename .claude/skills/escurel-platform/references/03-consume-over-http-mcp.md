@@ -24,8 +24,15 @@ Standard **JSON-RPC 2.0** envelope; each tool call is `tools/call`:
 
 ```jsonc
 // ← 200 OK
-{ "jsonrpc": "2.0", "id": 1, "result": { "hits": [ … ], "granularity": "block" } }
+{ "jsonrpc": "2.0", "id": 1, "result": {
+    "content": [ { "type": "text", "text": "10 hits for \"acme churn\" …" } ],   // short human summary
+    "structuredContent": { "hits": [ … ], "granularity": "block" },               // the typed payload
+    "isError": false } }
 ```
+
+Read **`result.structuredContent`**: it is the tool's typed payload; `content[0].text` is only a short
+summary for text-only clients. A refusal answers `isError: true` with `structuredContent.issues[]`
+(`code`, `message`, `suggestion?`) — never an empty success.
 
 - **Discovery:** `tools/list` is **role-scoped**. Every entry carries a
   `scope: "agent" | "admin"` label; an agent-role token receives only
@@ -67,8 +74,9 @@ objects/arrays on the wire**, not encoded strings. (Early versions carried
 second parse.)
 
 A minimal client is just an HTTP client that POSTs that envelope and reads
-`result`. If your runtime has an MCP SDK, point it at `/mcp` and call the
-tools by name. For an agent harness, this is the surface the in-tenant
+`result.structuredContent`. If your runtime has an MCP SDK, point it at `/mcp` and call the
+tools by name (stock SDKs' `listTools()` work since skill 0.19.0; against an older gateway the
+`execution` string on each tool fails the SDK's validation — hand-roll the POST there). For an agent harness, this is the surface the in-tenant
 `escurel` meta-skill (`references/01`) describes to the model.
 
 ## Which surface?

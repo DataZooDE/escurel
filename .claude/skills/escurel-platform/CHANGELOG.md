@@ -4,6 +4,18 @@ The skill version tracks the consumer-facing contract, not the Escurel
 binary version. The Escurel repo's checked-out git ref is the true version
 pin (see `SKILL.md` → "How this skill is installed").
 
+## 0.19.1 — the docs match the code (docs + two guards)
+
+- `references/03`: the sample response shows the real MCP envelope (`result.structuredContent` is the typed
+  payload; `content[0].text` a short summary; refusals are `isError: true` with `issues[]`), and the stock-SDK
+  advice is now accurate (works since 0.19.0).
+- `SKILL.md`: external instance backends are described as sources with human-gated `write_back` (they are not
+  "read-only"); frontmatter `version` equals `VERSION`.
+- Guards in `skill_doc_parity.rs`: `SKILL.md` version == `VERSION`; no reference teaches a removed argument name
+  (`resume_cursor`).
+- `editors/vscode/docs/SPEC.md`: status is "Implemented"; `forbidden` (not `permission_denied`),
+  `escurel:review-comment`, PR-2 closed.
+
 ## 0.19.0 — `tools/list`: the execution label moves to `_meta.escurel.execution` (BREAKING for readers of `tool.execution`)
 
 - The top-level `execution: "deterministic" | "orchestration"` string on each `tools/list` entry is gone; the
