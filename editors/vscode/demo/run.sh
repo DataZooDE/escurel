@@ -213,13 +213,9 @@ if [ -n "${ESCUREL_DEMO_EVOLVE_AGENT_BIN:-}" ]; then
   EVOLVE_PORT="$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1])')"
   ISSUER="$(field issuer_url)"
   ADMIN_BEARER="$(python3 -c "import json; print(json.load(open('$HOME_DIR/bearer.json'))['admin_bearer'])")"
-  ESCUREL_ENDPOINT="$(field gateway_url)" ESCUREL_TOKEN="$ADMIN_BEARER" \
-    ESCUREL_OIDC_ISSUER="$ISSUER" ESCUREL_OIDC_AUDIENCE=escurel \
-    ESCUREL_OIDC_JWKS_URI="$ISSUER/protocol/openid-connect/certs" \
-    EVOLVE_OIDC_ISSUER="$ISSUER" EVOLVE_OIDC_AUDIENCE=escurel \
-    EVOLVE_OIDC_JWKS_URI="$ISSUER/protocol/openid-connect/certs" EVOLVE_TENANT="$(field tenant)" \
-    GEMINI_API_KEY=unused-scripted-demo-key EVOLVE_ALLOW_SYNTHETIC_BRAIN=1 \
-    setsid nohup "$ESCUREL_DEMO_EVOLVE_AGENT_BIN" serve --addr "127.0.0.1:$EVOLVE_PORT" \
+  # The agent's environment comes from evolve-env.mjs, which the end-to-end fixtures use too.
+  mapfile -t EVOLVE_ENV < <(node "$HERE/evolve-env.mjs" lines "$(field gateway_url)" "$ADMIN_BEARER" "$ISSUER" "$(field tenant)")
+  env "${EVOLVE_ENV[@]}" setsid nohup "$ESCUREL_DEMO_EVOLVE_AGENT_BIN" serve --addr "127.0.0.1:$EVOLVE_PORT" \
     --db "$HOME_DIR/evolve.duckdb" > "$HOME_DIR/evolve.log" 2>&1 < /dev/null &
   echo $! > "$HOME_DIR/evolve.pid"
   for _ in $(seq 1 120); do
