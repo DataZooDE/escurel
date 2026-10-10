@@ -67,6 +67,9 @@ export interface Stack {
   evolveCall: (name: string, args: Record<string, unknown>) => Promise<ToolResult>;
 }
 
+// See playwright.config.ts: ESCUREL_E2E_SLOW stretches every wait on an overloaded machine.
+const SLOW = Number(process.env.ESCUREL_E2E_SLOW) || 1;
+
 export const test = base.extend<
   object,
   {
@@ -223,7 +226,7 @@ export const test = base.extend<
       let evolveProcess: ChildProcess | undefined;
       let evolveLogFd: number | undefined;
       try {
-        execFileSync(run, ['start'], { env, stdio: 'inherit', timeout: 240_000 });
+        execFileSync(run, ['start'], { env, stdio: 'inherit', timeout: 240_000 * SLOW });
 
         const info = JSON.parse(readFileSync(join(home, 'gateway.json'), 'utf8').split('\n')[0]!);
         const story = JSON.parse(readFileSync(join(home, 'story.json'), 'utf8'));
@@ -237,6 +240,8 @@ export const test = base.extend<
           };
         let evolveUrl: string | undefined;
         if (evolveAgentBin) {
+          // A dynamic import: Playwright loads this file as CommonJS and the shared module is an ES module.
+          const { evolveAgentEnv } = await import('../../demo/evolve-env.mjs');
           const port = evolvePort!;
           evolveUrl = configuredEvolveUrl;
           evolveLogFd = openSync(join(home, 'evolve.log'), 'w');
@@ -246,17 +251,13 @@ export const test = base.extend<
             {
               env: {
                 ...process.env,
-                ESCUREL_ENDPOINT: info.gateway_url,
-                ESCUREL_TOKEN: bearer().admin_bearer,
-                ESCUREL_OIDC_ISSUER: info.issuer_url,
-                ESCUREL_OIDC_AUDIENCE: 'escurel',
-                ESCUREL_OIDC_JWKS_URI: `${info.issuer_url}/protocol/openid-connect/certs`,
-                EVOLVE_OIDC_ISSUER: info.issuer_url,
-                EVOLVE_OIDC_JWKS_URI: `${info.issuer_url}/protocol/openid-connect/certs`,
-                EVOLVE_OIDC_AUDIENCE: 'escurel',
-                EVOLVE_TENANT: 'vsx',
+                ...evolveAgentEnv({
+                  gatewayUrl: info.gateway_url,
+                  adminBearer: bearer().admin_bearer,
+                  issuerUrl: info.issuer_url,
+                  tenant: 'vsx',
+                }),
                 GEMINI_API_KEY: 'unused-seed-only-test-key',
-                EVOLVE_ALLOW_SYNTHETIC_BRAIN: '1',
               },
               stdio: ['ignore', evolveLogFd, evolveLogFd],
             },
@@ -301,7 +302,7 @@ export const test = base.extend<
           if (!page) await new Promise((r) => setTimeout(r, 500));
         }
         if (!page) throw new Error('the VS Code window never showed a workbench page');
-        await page.waitForSelector('.monaco-workbench', { timeout: 60_000 });
+        await page.waitForSelector('.monaco-workbench', { timeout: 60_000 * SLOW });
         const errors: string[] = [];
         page.on('pageerror', (e) => errors.push(`pageerror: ${e.message}`));
         page.on('console', (m) => {
@@ -385,7 +386,7 @@ export const test = base.extend<
           await new Promise<void>((resolveClose) => modelServer!.close(() => resolveClose()));
       }
     },
-    { scope: 'worker', timeout: 300_000 },
+    { scope: 'worker', timeout: 300_000 * SLOW },
   ],
 });
 

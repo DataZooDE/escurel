@@ -102,3 +102,36 @@ export async function chooseMenuItem(page: Page, name: string) {
   await expect(item).toHaveClass(/focused/);
   await page.keyboard.press('Enter');
 }
+
+/**
+ * Opens the command palette and filters it to `filter`, waiting until `listed` is shown. A palette typed
+ * into the moment it opens can drop the text: the real windows of a loaded CI machine have shown the
+ * UNFILTERED command list for 30 s after `fill('>...')` (anofox-evolve PR #27, native Evolve job; the
+ * holdout journey in evolve-service.spec.ts had already needed a click and a value check for the same
+ * reason). So: type, confirm the box holds what was typed AND the list shows the command, and otherwise
+ * close the palette and start over (a few times) instead of waiting on a list that will not change.
+ */
+export async function filterCommandPalette(page: Page, filter: string, listed: string) {
+  const widget = page.locator('.quick-input-widget');
+  const input = widget.locator('.quick-input-box input');
+  const list = page.locator('.quick-input-list');
+  let last: unknown;
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    await page.keyboard.press('Control+Shift+P');
+    await expect(widget).toBeVisible();
+    await input.click();
+    await input.fill(`>${filter}`);
+    try {
+      await expect(input).toHaveValue(`>${filter}`, { timeout: 5_000 });
+      await expect(list).toContainText(listed, { timeout: 10_000 });
+      return;
+    } catch (error) {
+      last = error;
+      await page.keyboard.press('Escape');
+      await expect(widget)
+        .toBeHidden({ timeout: 5_000 })
+        .catch(() => undefined);
+    }
+  }
+  throw last;
+}

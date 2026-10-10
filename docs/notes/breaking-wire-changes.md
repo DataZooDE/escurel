@@ -113,3 +113,5 @@ One line per change. Folded into the root `CHANGELOG.md` BREAKING entry and `doc
   A client that read `tool.execution` must read `tool._meta.escurel.execution`. `scope` stays top-level.
   Skill 0.19.0.
 - `tenant_create` refuses a tenant whose secret-namespace token (`ESCUREL_SECRET_<TOKEN>__`) holds `__` or equals another tenant's (`a-b` / `a_b`); `<NAME>` of an env/gsm secret holds no `__`.
+- `write_back.base_etag` is REQUIRED (`write_back_base_etag_required`); a REST write op is retried only when the skill declares `write: {..., idempotent: true}` (or the method is `PUT`).
+- `register_credential` with `connector: mysql | mariadb` and a skill whose `backend.source.connector` is `mysql` are refused (`connector_not_supported`).

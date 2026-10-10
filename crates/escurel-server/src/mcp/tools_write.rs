@@ -246,6 +246,8 @@ pub(super) fn blocking_issues<'a>(
             // no `values:` accepts everything — it fails OPEN, which is the
             // shape of mistake nobody notices from the outside.
             "fields_malformed" => true,
+            // A source nobody can attach (MySQL / MariaDB are refused) must not be stored as configured.
+            "connector_not_supported" => true,
             _ => false,
         })
         .collect()

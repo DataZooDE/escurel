@@ -104,6 +104,33 @@ impl Issue {
     }
 }
 
+/// A skill whose `backend.source.connector` is one the gateway refuses (MySQL / MariaDB: no test, no
+/// timeouts, never DNS-pinned). An error, so the page is not stored: a source nobody can attach should not
+/// look configured.
+fn check_connector(page_kind: PageKind, fields: &YamlMapping) -> Option<Issue> {
+    if page_kind != PageKind::Skill {
+        return None;
+    }
+    let connector = fields
+        .get("backend")?
+        .as_mapping()?
+        .get("source")?
+        .as_mapping()?
+        .get("connector")?
+        .as_str()?;
+    crate::backend::is_unsupported_connector(connector).then(|| {
+        Issue::error(
+            "connector_not_supported",
+            "frontmatter.backend.source.connector",
+            format!(
+                "connector `{connector}` is not supported: MySQL / MariaDB is not tested and is refused; \
+                 use postgres, sqlite or a REST/MCP endpoint"
+            ),
+        )
+        .with_suggestion("connector: postgres | sqlite | json_dir | parquet_dir | erpl")
+    })
+}
+
 /// The `autonomy:` check (heron#5 / CR-1), on SKILL pages only.
 ///
 /// Scoped to skill pages because that is where the key is declared: the
@@ -1035,6 +1062,8 @@ impl Indexer {
                 }
             }
         }
+        // A connector the gateway refuses (MySQL / MariaDB): said at validate time, BLOCKING at write time.
+        issues.extend(check_connector(parsed.frontmatter.page_kind, fields));
         // The invocation-parameter block a skill declares (heron#11 / CR-7).
         issues.extend(check_params(parsed.frontmatter.page_kind, fields));
         // The instance-shape block a skill declares (#508). Checked on the

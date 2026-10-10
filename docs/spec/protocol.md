@@ -986,7 +986,7 @@ while every escurel invariant holds — single referent space, markdown-canonica
 derivable index, fail-closed ACL, single-writer:
 
 - **`sql_view`** — a read-only DuckDB `VIEW` over an external relational source
-  (postgres / sqlite / erpl / json_dir / parquet_dir; `mysql` is accepted but untested and not baked into the image).
+  (postgres / sqlite / erpl / json_dir / parquet_dir; `mysql` / `mariadb` are refused: `connector_not_supported`).
 - **`document`** — an uploaded file (PDF / DOCX / PPTX / XLSX, or text)
   extracted, chunked, and embedded into one page-with-blocks.
 - **`openapi`** / **`mcp`** — *live remote (proxy)* instances: the body/data is

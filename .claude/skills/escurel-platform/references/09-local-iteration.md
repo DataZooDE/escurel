@@ -103,7 +103,7 @@ honest. Also there: `escurel_tool_calls`, `escurel_tool_latency_ms`,
 
 ## The three env-var namespaces (don't mix them up)
 
-- **SQL databases as rows** (`sql_view` + `instances: rows` over `sqlite` / `postgres`; `mysql` is accepted but untested): the credential is a
+- **SQL databases as rows** (`sql_view` + `instances: rows` over `sqlite` / `postgres`; `mysql` / `mariadb` are refused: `connector_not_supported`): the credential is a
   secret reference (per tenant: a file under `<ESCUREL_SECRET_FILE_DIRS>/<tenant>/`, or `ESCUREL_SECRET_<TENANT>__<NAME>`);
   a SQLite file and every `json_dir` / `parquet_dir` source must live under `ESCUREL_SQL_FILE_DIRS` (a gateway
   with it unset serves no file sources; `escurel-test-support` gateways expose the temp dir),

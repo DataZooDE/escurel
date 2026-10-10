@@ -14,6 +14,7 @@ on:
   pull_request:
     paths:
       - "Dockerfile"
+      - "Dockerfile.runner"
       - "Cargo.lock"
       - "Cargo.toml"
       - "rust-toolchain.toml"
@@ -65,3 +66,39 @@ jobs:
         run: |
           set -euo pipefail
           docker run --rm --entrypoint sh escurel-pr-check:latest -c 'command -v migrate-kind-job && command -v escurel'
+
+  # The two other images built from this repo. They were built only on `main` (publish-image.yml), so a change
+  # that broke them was found after the merge.
+  runner:
+    name: docker build runner (no push)
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Build the runner image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.runner
+          push: false
+          tags: escurel-runner-pr-check:latest
+          cache-from: type=gha,scope=image-build-runner
+          cache-to: type=gha,scope=image-build-runner,mode=max
+
+  demo-gateway:
+    name: docker build demo-gateway target (no push)
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Build the demo-gateway target (the web workbench demo stack's gateway)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          target: demo-gateway
+          push: false
+          tags: escurel-demo-gateway-pr-check:latest
+          cache-from: type=gha,scope=image-build-demo-gateway
+          cache-to: type=gha,scope=image-build-demo-gateway,mode=max
