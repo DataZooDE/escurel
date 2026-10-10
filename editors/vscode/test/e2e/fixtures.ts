@@ -12,6 +12,7 @@ import { createServer } from 'node:net';
 import { createServer as createHttpServer, type Server as HttpServer } from 'node:http';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
+import { evolveAgentEnv } from '../../demo/evolve-env.mjs';
 
 /**
  * A live stack for end-to-end tests, per worker:
@@ -246,17 +247,13 @@ export const test = base.extend<
             {
               env: {
                 ...process.env,
-                ESCUREL_ENDPOINT: info.gateway_url,
-                ESCUREL_TOKEN: bearer().admin_bearer,
-                ESCUREL_OIDC_ISSUER: info.issuer_url,
-                ESCUREL_OIDC_AUDIENCE: 'escurel',
-                ESCUREL_OIDC_JWKS_URI: `${info.issuer_url}/protocol/openid-connect/certs`,
-                EVOLVE_OIDC_ISSUER: info.issuer_url,
-                EVOLVE_OIDC_JWKS_URI: `${info.issuer_url}/protocol/openid-connect/certs`,
-                EVOLVE_OIDC_AUDIENCE: 'escurel',
-                EVOLVE_TENANT: 'vsx',
+                ...evolveAgentEnv({
+                  gatewayUrl: info.gateway_url,
+                  adminBearer: bearer().admin_bearer,
+                  issuerUrl: info.issuer_url,
+                  tenant: 'vsx',
+                }),
                 GEMINI_API_KEY: 'unused-seed-only-test-key',
-                EVOLVE_ALLOW_SYNTHETIC_BRAIN: '1',
               },
               stdio: ['ignore', evolveLogFd, evolveLogFd],
             },

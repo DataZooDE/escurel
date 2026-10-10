@@ -211,5 +211,8 @@ the story driver and the S2D sync. Unset, every one has the default shown.
 
 **Naming trap.** The Evolve agent the demo can start reads `ESCUREL_OIDC_ISSUER` / `_AUDIENCE` / `_JWKS_URI`
 (and `EVOLVE_OIDC_*`). Those are the *agent's* verifier settings, not gateway keys: the gateway's are
-`ESCUREL_AUTH_OIDC_*`. The agent-side names are planned to become `ESCUREL_EVOLVE_OIDC_*` in skill 0.19.0
-(with the old names kept as a deprecated alias for one release).
+`ESCUREL_AUTH_OIDC_*`. The agent-side names are being renamed `ESCUREL_EVOLVE_OIDC_*` in the agent (anofox-evolve),
+with the old names kept as a deprecated alias for one release. The demo and the e2e fixtures already pass BOTH
+spellings (`demo/evolve-env.mjs`), so they work with an agent build of either generation; once the agent only reads
+the new names the old ones can be dropped there. What the agent repo must change: read `ESCUREL_EVOLVE_OIDC_*` first,
+fall back to `ESCUREL_OIDC_*` with a one-time warning (`crates/evolve-agent/src/cli.rs`, and its tests that set them).
