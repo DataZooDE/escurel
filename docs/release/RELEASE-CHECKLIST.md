@@ -65,8 +65,8 @@ git push origin "$TAG"          # if SSH is unavailable: git push https://github
 
 ## Known deltas and decisions
 
-- Shipped binaries are built with `--features s3,gcs,duckvfs` (+ default `kreuzberg`, `gemini`); the container
-  image with `gemini,s3,gcs,duckvfs`. The only difference left is `kreuzberg` (default-on in the binaries;
-  see `Dockerfile` for the image).
+- Shipped binaries and the container image carry the same optional backends: `--features s3,gcs,duckvfs`
+  on top of the default features (`kreuzberg`, `gemini`). Keep the two lists in step
+  (`.github/workflows/release.yml` and `Dockerfile`).
 - No `libduckdb`/extension signing: extensions from the erpl mirror load unsigned
   (`ESCUREL_ALLOW_UNSIGNED_EXTENSIONS`), as today.
