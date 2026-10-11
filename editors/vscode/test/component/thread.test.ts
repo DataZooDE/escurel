@@ -765,6 +765,29 @@ describe('<escurel-thread-canvas>', () => {
     }
     const visible = (e: Element | null) => !!e && getComputedStyle(e).display !== 'none';
 
+    for (const zoom of [0.84, 0.69, 0.5, 0.4]) {
+      it(`keeps column headers readable and separate at ${zoom * 100}%`, async () => {
+        const el = await at(zoom);
+        const headers = qa(el, '.column-header');
+        expect(headers.length).to.be.greaterThan(1);
+        for (const [index, header] of headers.entries()) {
+          expect(header.getAttribute('aria-label')).to.equal(
+            branchingLayout.columnHeaders[index]!.label,
+          );
+          const box = header.getBoundingClientRect();
+          expect(box.width, 'visible header width').to.be.greaterThan(0);
+          expect(box.height, 'visible header height').to.be.greaterThan(0);
+          expect(parseFloat(getComputedStyle(header).fontSize)).to.be.at.least(10);
+          const next = headers[index + 1];
+          if (next) {
+            expect(box.right, `${text(header)} before ${text(next)} at ${zoom}`).to.be.at.most(
+              next.getBoundingClientRect().left - 4,
+            );
+          }
+        }
+      });
+    }
+
     it('below 85% a card keeps icon, type word, title and state chip, and drops the body', async () => {
       const el = await at(0.5);
       expect(q(el, '.canvas-area')!.classList.contains('low-zoom')).to.equal(true);
@@ -807,44 +830,53 @@ describe('<escurel-thread-canvas>', () => {
       }
     });
 
-    it('fits the words in the card: nothing spills out of a box at the lowest zoom', async () => {
-      const el = await at(0.4);
-      // A row squeezed by flex-shrink clips its own text while its box still looks inside the card:
-      // each row must hold its own text.
-      for (const card of qa(el, '.card') as HTMLElement[]) {
-        for (const row of [...card.children] as HTMLElement[]) {
-          if (getComputedStyle(row).display === 'none') continue;
+    for (const zoom of [0.84, 0.69, 0.5, 0.4]) {
+      it(`fits the words in the card at ${zoom * 100}% without spilling`, async () => {
+        const el = await at(zoom);
+        // A row squeezed by flex-shrink clips its own text while its box still looks inside the card:
+        // each row must hold its own text.
+        for (const card of qa(el, '.card') as HTMLElement[]) {
+          for (const row of [...card.children] as HTMLElement[]) {
+            if (getComputedStyle(row).display === 'none') continue;
+            expect(
+              row.scrollHeight <= row.clientHeight + 1,
+              `row ${row.className} of ${card.dataset.nodeId}: text ${row.scrollHeight} in ${row.clientHeight}`,
+            ).to.equal(true);
+          }
+        }
+        // scrollHeight/scrollWidth are in layout px and count clipped content: a row cut off by the
+        // card's own overflow:hidden (what the 40% baseline showed) is still caught.
+        for (const card of qa(el, '.card') as HTMLElement[]) {
           expect(
-            row.scrollHeight <= row.clientHeight + 1,
-            `row ${row.className} of ${card.dataset.nodeId}: text ${row.scrollHeight} in ${row.clientHeight}`,
+            card.scrollHeight <= card.clientHeight + 1,
+            `card ${card.dataset.nodeId} content ${card.scrollHeight} > box ${card.clientHeight}`,
+          ).to.equal(true);
+          expect(
+            card.scrollWidth <= card.clientWidth + 1,
+            `card ${card.dataset.nodeId} content wider than box`,
           ).to.equal(true);
         }
-      }
-      // scrollHeight/scrollWidth are in layout px and count clipped content: a row cut off by the
-      // card's own overflow:hidden (what the 40% baseline showed) is still caught.
-      for (const card of qa(el, '.card') as HTMLElement[]) {
-        expect(
-          card.scrollHeight <= card.clientHeight + 1,
-          `card ${card.dataset.nodeId} content ${card.scrollHeight} > box ${card.clientHeight}`,
-        ).to.equal(true);
-        expect(
-          card.scrollWidth <= card.clientWidth + 1,
-          `card ${card.dataset.nodeId} content wider than box`,
-        ).to.equal(true);
-      }
-      for (const card of qa(el, '.card') as HTMLElement[]) {
-        const box = card.getBoundingClientRect();
-        for (const sel of ['.card-title', '.type-label', '.chip']) {
-          const n = card.querySelector(sel);
-          if (!n) continue;
-          const r = n.getBoundingClientRect();
-          expect(
-            r.right <= box.right + 1 && r.bottom <= box.bottom + 1,
-            `${sel} inside its card`,
-          ).to.equal(true);
+        for (const card of qa(el, '.card') as HTMLElement[]) {
+          const box = card.getBoundingClientRect();
+          for (const sel of ['.type-icon', '.card-title', '.type-label', '.chip']) {
+            const n = card.querySelector(sel);
+            expect(n, `${sel} exists`).to.exist;
+            if (!n) continue;
+            expect(visible(n), `${sel} visible`).to.equal(true);
+            const r = n.getBoundingClientRect();
+            expect(r.width, `${sel} has width`).to.be.greaterThan(0);
+            expect(r.height, `${sel} has height`).to.be.greaterThan(0);
+            expect(
+              r.left >= box.left - 1 &&
+                r.top >= box.top - 1 &&
+                r.right <= box.right + 1 &&
+                r.bottom <= box.bottom + 1,
+              `${sel} inside its card`,
+            ).to.equal(true);
+          }
         }
-      }
-    });
+      });
+    }
 
     it('keeps the focus ring visible when zoomed out: it renders at least 1.5px at any zoom', async () => {
       // A 2px outline on a card scaled to 40% is 0.8px: a keyboard user loses where they are.
@@ -878,6 +910,9 @@ describe('<escurel-thread-canvas>', () => {
       expect(q(el, '.canvas-area')!.classList.contains('low-zoom')).to.equal(false);
       expect(visible(q(el, '.card-title'))).to.equal(true);
       expect(q(el, '.zoom-hint') === null).to.equal(true);
+      expect(qa(el, '.column-header').map(text)).to.deep.equal(
+        branchingLayout.columnHeaders.map((col) => col.label),
+      );
     });
 
     it('says "overview" next to the zoom percentage while in the low-zoom form', async () => {
