@@ -1454,8 +1454,16 @@ export class EscurelThreadCanvas extends LitElement {
             >
               ${this.layout.columnHeaders.map(
                 (col) =>
-                  html`<div class="column-header" style="left: ${col.x * this.viewport.zoom}px;">
-                    ${col.label}
+                  // Header positions shrink with the graph, but their font stays full size.
+                  // Keep only the leading stage at low zoom so compound labels cannot collide.
+                  html`<div
+                    class="column-header"
+                    role="heading"
+                    aria-level="2"
+                    aria-label=${col.label}
+                    style="left: ${col.x * this.viewport.zoom}px;"
+                  >
+                    ${lowZoom ? col.label.split('·')[0]!.trim() : col.label}
                   </div>`,
               )}
             </div>

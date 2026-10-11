@@ -20,7 +20,15 @@ Calm theme forced (screenshots in ~/.cache/escurel-scratch/calm-audit/tour/, 42 
 5. Overview board (overview-morning/quiet): good. Copy nit, not skin: the quiet board says "All clear" for
    "Recently finished" and "Open items" even when there is nothing yet. NOT FIXED (wording).
 6. Zoomed-out overview at 40% (02d): column headers "RUN . CHANGESET" and "INSTANCES . DRAFTS" run together and
-   the cards are illegible. Not Calm-specific (same in the other themes). NOT FIXED.
+   the cards are illegible. Not Calm-specific (same in the other themes).
+   Header fix (2026-10-11): positions scaled with zoom but compound labels stayed full size. Below
+   LOW_ZOOM_BELOW (85%), headers now show their leading stage only (RUN, INSTANCES, etc.); full labels
+   remain accessible names. Card rendering is unchanged: icon, counter-scaled type/title/state words
+   and title ellipsis stay, with no body. Regression coverage checks header separation and extends
+   card containment (all four edges, visible icons and words, row overflow) at 84%, 69%, 50% and 40%.
+   Browser verification remains pending: both red-first and post-fix component runs were blocked by sandbox
+   listen EPERM. Card clipping therefore could not be confirmed or ruled out locally.
+   Regenerate thread-overview, thread-overview-40 and fitted thread-canvas baselines in all four themes.
 7. Details panel (thread-inspector-run): key/value pairs of the two columns sit at different baselines and a
    "Summary" label has an empty value. Not Calm-specific. NOT FIXED.
 8. Bottom panel tabs (Problems / Output / Debug Console / Terminal / Ports) are still shown in the classic
