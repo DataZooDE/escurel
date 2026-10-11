@@ -68,7 +68,7 @@ services:
     command: !override
       - sh
       - -c
-      - "node /demo-src/services/ratings-api.mjs 9101 & node /demo-src/services/confirmations-mcp.mjs 9102 & node /demo-scripts/forward.mjs 8080 /demo/state/gateway.json /demo/state/bearer.json & while true; do [ -f /demo/state/story.done ] || sh /demo-scripts/story-s2d.sh || echo 'story failed; trying again in a minute'; sleep 20; done"
+      - "node /demo-src/services/ratings-api.mjs 9101 & node /demo-src/services/confirmations-mcp.mjs 9102 & node /demo-scripts/forward.mjs 8080 /demo/state/gateway.json /demo/state/bearer.json & while true; do [ -f /demo/state/story.done ] || DEMO_STORY_MODE=s2d sh /demo-scripts/story.sh || echo 'story failed; trying again in a minute'; sleep 20; done"
     environment:
       S2D_DIR: "${S2D_DIR}"
     volumes:
@@ -79,9 +79,10 @@ services:
     profiles: ["manual"]
     network_mode: "service:escurel"
     networks: !reset []
-    command: !override ["sh", "/demo-scripts/story-s2d.sh"]
+    command: !override ["sh", "/demo-scripts/story.sh"]
     environment:
       S2D_DIR: "${S2D_DIR}"
+      DEMO_STORY_MODE: s2d
     volumes:
       - "${S2D_DIR}:${S2D_DIR}:ro"
     restart: "no"
