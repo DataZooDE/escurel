@@ -48,7 +48,18 @@ pub(crate) fn with_statement_timeout<T, E: From<SqlViewError>>(
             .is_err_and(|e| e == std::sync::mpsc::RecvTimeoutError::Timeout)
         {
             fired_in.store(true, std::sync::atomic::Ordering::SeqCst);
-            handle.interrupt();
+            // An interrupt only reaches a statement that is RUNNING: one that lands while the closure is still
+            // binding (`prepare`) is lost, and the statement would then run to the end. Repeat it until the
+            // closure returns (the join below bounds this to one more tick).
+            loop {
+                handle.interrupt();
+                if !matches!(
+                    wait.recv_timeout(std::time::Duration::from_millis(2)),
+                    Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+                ) {
+                    break;
+                }
+            }
         }
     });
     let started = std::time::Instant::now();

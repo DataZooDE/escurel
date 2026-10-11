@@ -251,17 +251,24 @@ fn links_escape(
     allowed: &[std::path::PathBuf],
     budget: &mut usize,
 ) -> bool {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return false;
+    let entries = match std::fs::read_dir(dir) {
+        Ok(e) => e,
+        // Nothing there, so nothing links anywhere.
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return false,
+        // A directory that cannot be listed may hold any link at all: fail CLOSED, as the doc says.
+        Err(_) => return true,
     };
-    for e in entries.flatten() {
+    for e in entries {
         if *budget == 0 {
             return true;
         }
         *budget -= 1;
+        let Ok(e) = e else {
+            return true;
+        };
         let path = e.path();
         let Ok(meta) = std::fs::symlink_metadata(&path) else {
-            continue;
+            return true;
         };
         if meta.file_type().is_symlink() {
             match path.canonicalize() {
@@ -278,6 +285,44 @@ fn links_escape(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_directory_that_cannot_be_listed_counts_as_escaping() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = tempfile::tempdir().unwrap();
+        let hidden = root.path().join("hidden");
+        std::fs::create_dir(&hidden).unwrap();
+        std::fs::set_permissions(&hidden, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let allowed = [root.path().canonicalize().unwrap()];
+        let mut budget = 100;
+        let escaped = links_escape(root.path(), 4, &allowed, &mut budget);
+        std::fs::set_permissions(&hidden, std::fs::Permissions::from_mode(0o755)).unwrap();
+        // As root the directory is listable anyway: nothing to assert.
+        if running_as_root() {
+            return;
+        }
+        assert!(
+            escaped,
+            "an unreadable directory may hide a link out: fail closed"
+        );
+        // A missing directory has nothing to link anywhere.
+        let mut budget = 100;
+        assert!(!links_escape(
+            &root.path().join("absent"),
+            4,
+            &allowed,
+            &mut budget
+        ));
+    }
+
+    fn running_as_root() -> bool {
+        std::fs::read_to_string("/proc/self/status")
+            .map(|s| {
+                s.lines()
+                    .any(|l| l.starts_with("Uid:") && l.split_whitespace().nth(1) == Some("0"))
+            })
+            .unwrap_or(false)
+    }
 
     fn policy(f: impl FnOnce(&mut EgressPolicy)) -> ServerCredentialPolicy {
         let mut p = EgressPolicy::default();
