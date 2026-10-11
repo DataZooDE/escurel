@@ -19,6 +19,8 @@ export interface EnterOptions {
  * changes anything of theirs.
  */
 export class FocusMode implements vscode.Disposable {
+  /** Set synchronously, before entering can yield to a connection callback. */
+  silentBootstrap = false;
   constructor(private readonly memento: vscode.Memento) {
     void this.publish();
   }
@@ -43,6 +45,7 @@ export class FocusMode implements vscode.Disposable {
   }
 
   async enter(options: EnterOptions = {}): Promise<boolean> {
+    if (options.silent) this.silentBootstrap = true;
     if (!options.silent && !this.isOn()) {
       const pick = await vscode.window.showInformationMessage(
         'Switch this window to the calm focus view? Menus, status bar and the developer chrome are hidden; you can switch back any time.',

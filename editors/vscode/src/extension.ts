@@ -40,6 +40,7 @@ import { registerEvolveHoldoutCsv } from './evolve/registerHoldoutCsv';
 import { registerPrepareEvolveTrainingCsv } from './evolve/prepareCsv';
 import { ScenariosTree } from './views/scenarios';
 import { FocusMode } from './focus/focusMode';
+import { registerFocusSuggestion } from './focus/registerSuggestion';
 import { OverviewController } from './overview/controller';
 
 const EXPLAIN_SCHEME = 'escurel-explain';
@@ -106,6 +107,7 @@ export function activate(context: vscode.ExtensionContext): EscurelApi | undefin
     },
   );
   const live = LiveCoordinator.register(context, services, { inbox, awaiting });
+  registerFocusSuggestion(context, focus, services, live);
   const scenarios = ScenariosTree.register(context, () => services.client, services);
   // A comparison click (or any other Evolve event) is the moment the Scenarios view may have moved.
   context.subscriptions.push(

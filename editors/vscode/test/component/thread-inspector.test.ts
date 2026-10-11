@@ -399,3 +399,27 @@ describe('cancelling from the Details panel asks first, inline', () => {
     expect(sent).to.deep.equal([{ type: 'run-control', action: 'cancel', runId: 'run-1' }]);
   });
 });
+
+describe('Details field layout', () => {
+  it('omits empty and whitespace-only values from both columns and technical details', async () => {
+    const el = await render({ title: 'Run', rows: [
+      { k: 'Summary', v: '' }, { k: 'Trace', v: '  ', tech: true },
+      { k: 'State', v: 'Finished' },
+    ], sideTitle: 'Timing', side: [{ k: 'Duration', v: '  ' }],
+      bodyTitle: 'Summary', body: ' \n ', summary: '   ' });
+    expect(Array.from(el.shadowRoot!.querySelectorAll('dt')).map(n => n.textContent)).to.deep.equal(['State']);
+    expect(el.shadowRoot!.querySelector('.side')).to.equal(null);
+    expect(el.shadowRoot!.querySelector('details.tech')).to.equal(null);
+    expect(el.shadowRoot!.querySelector('h3, .body, .summary')).to.equal(null);
+  });
+
+  it('aligns the first key/value rows across the two sections', async () => {
+    const el = await render({ title: 'Run', rows: [{ k: 'State', v: 'Finished' }],
+      sideTitle: 'Timing', side: [{ k: 'Duration', v: '6 s' }] });
+    el.style.width = '800px';
+    await el.updateComplete;
+    const fields = Array.from(el.shadowRoot!.querySelectorAll('.cols dt, .cols dd'));
+    const tops = fields.map(n => n.getBoundingClientRect().top);
+    expect(Math.max(...tops) - Math.min(...tops)).to.be.lessThan(1);
+  });
+});

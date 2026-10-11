@@ -171,7 +171,7 @@ export function buildOverview(input: OverviewInputs): Overview {
       ),
     ),
     more: input.open.length > TILE_LINES ? input.open.length - TILE_LINES : undefined,
-    empty: 'There are no records yet.',
+    empty: 'No records yet',
   });
 
   // 5. Recently finished.
@@ -181,7 +181,7 @@ export function buildOverview(input: OverviewInputs): Overview {
     title: 'Recently finished',
     headline:
       insightLine(input.runs, input.nowMs)?.replace('Last 24 h: ', 'Last 24 h · ') ??
-      'Nothing finished yet',
+      'Nothing has finished yet',
     tone: 'neutral',
     items: done.shown.map((r, i) =>
       line(
@@ -192,7 +192,7 @@ export function buildOverview(input: OverviewInputs): Overview {
       ),
     ),
     more: done.more,
-    empty: 'No agent has finished anything yet.',
+    empty: 'Nothing has finished yet',
   });
 
   return {
