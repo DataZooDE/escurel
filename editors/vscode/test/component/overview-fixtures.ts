@@ -1,3 +1,4 @@
+import { buildOverview } from '../../src/overview/model';
 import type { OverviewView } from '../../src/shared/protocol';
 
 /** A morning on the demo tenant: one decision waiting, one agent running, one failure, orders and suppliers open. */
@@ -61,7 +62,7 @@ export const morning: OverviewView = {
       title: 'Records by area',
       headline: '3 record areas',
       tone: 'neutral',
-      empty: 'There are no records yet.',
+      empty: 'No records yet',
       more: 1,
       items: [
         { key: 'open:0', label: 'Customer order', detail: '50+ records', tone: 'neutral' },
@@ -74,7 +75,7 @@ export const morning: OverviewView = {
       title: 'Recently finished',
       headline: 'Last 24 h · 8 runs',
       tone: 'neutral',
-      empty: 'No agent has finished anything yet.',
+      empty: 'Nothing has finished yet',
       items: [
         {
           key: 'recent:0',
@@ -88,13 +89,7 @@ export const morning: OverviewView = {
 };
 
 /** All quiet: every tile at its empty state. */
-export const quiet: OverviewView = {
-  focusOn: false,
-  updatedAt: '2026-10-06T08:15:00.000Z',
-  tiles: morning.tiles.map(({ more: _more, ...t }) => ({
-    ...t,
-    items: [],
-    tone: 'ok' as const,
-    headline: 'All clear',
-  })),
-};
+export const quiet: OverviewView = buildOverview({
+  nowMs: Date.parse('2026-10-06T08:15:00.000Z'), focusOn: false,
+  awaiting: [], runs: [], runner: undefined, open: [],
+}).view;

@@ -63,6 +63,10 @@ describe('<escurel-overview>', () => {
 
   it('says what is empty, and how many more there are than it shows', async () => {
     const quietEl = await render(quiet);
+    expect(qa(quietEl, '.headline').map(text)).to.deep.equal([
+      'Nothing is waiting for you', 'No agents have reported yet.', 'All clear',
+      'No records yet', 'Nothing has finished yet',
+    ]);
     expect(qa(quietEl, '.empty').map(text)).to.have.length(5);
     expect(text(qa(quietEl, '.empty')[0])).to.equal('Nothing needs your decision right now.');
     const el = await render();

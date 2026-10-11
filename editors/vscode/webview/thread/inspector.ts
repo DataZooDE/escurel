@@ -78,6 +78,15 @@ export class EscurelThreadInspector extends LitElement {
       .cols > section {
         margin-top: 8px;
       }
+      .cols > .fields {
+        display: grid;
+        grid-template-rows: subgrid;
+        grid-row: span 2;
+      }
+      .fields dl {
+        grid-row: 2;
+        align-self: start;
+      }
       details.tech {
         margin-top: 14px;
         color: var(--escurel-muted);
@@ -201,6 +210,7 @@ export class EscurelThreadInspector extends LitElement {
       dl {
         display: grid;
         grid-template-columns: minmax(70px, 140px) minmax(0, 1fr);
+        align-items: baseline;
         gap: 6px 12px;
         margin: 0;
       }
@@ -365,13 +375,14 @@ export class EscurelThreadInspector extends LitElement {
   protected override render() {
     const detail = this.detail;
     if (!detail) return nothing;
-    const plain = detail.rows.filter((r) => !r.tech);
-    const tech = detail.rows.filter((r) => r.tech);
+    const plain = detail.rows.filter((r) => !r.tech && r.v.trim());
+    const tech = detail.rows.filter((r) => r.tech && r.v.trim());
+    const side = detail.side.filter((r) => r.v.trim());
     return html`
       ${detail.kindLabel ? html`<span class="kind">${detail.kindLabel}</span>` : nothing}
       <h2>${detail.title}</h2>
       ${
-        detail.body
+        detail.body?.trim()
           ? html`<section>
               <h3>${detail.bodyTitle}</h3>
               <div
@@ -383,7 +394,7 @@ export class EscurelThreadInspector extends LitElement {
           : nothing
       }
       ${
-        detail.summary
+        detail.summary?.trim()
           ? html`<p class="summary ${detail.needsYou ? 'needs-you' : ''}">
               ${detail.needsYou ? html`<span class="needs">Needs you</span>` : nothing}${detail.summary}
             </p>`
@@ -407,17 +418,17 @@ export class EscurelThreadInspector extends LitElement {
       }
       ${this.renderActions(detail.actions)}
       <div class="cols">
-        ${plain.length ? html`<section>${this.renderRows(plain)}</section>` : nothing}
+        ${plain.length ? html`<section class="fields">${this.renderRows(plain)}</section>` : nothing}
         ${
-          detail.side.length
-            ? html`<section class="side">
+          side.length
+            ? html`<section class="side fields">
                 <h3>${detail.sideTitle}</h3>
-                ${this.renderRows(detail.side)}
+                ${this.renderRows(side)}
               </section>`
             : nothing
         }
         ${
-          detail.body
+          detail.body?.trim()
             ? html`<section>
                 <h3>${detail.bodyTitle}</h3>
                 <div class="body">${detail.body}</div>

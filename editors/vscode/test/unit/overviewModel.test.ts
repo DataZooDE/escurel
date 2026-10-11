@@ -40,6 +40,14 @@ const tile = (v: ReturnType<typeof buildOverview>, id: string) =>
   v.view.tiles.find((t) => t.id === id)!;
 
 describe('the overview board model', () => {
+  it('gives each quiet tile an honest empty state', () => {
+    const out = buildOverview(base());
+    expect(tile(out, 'recent').headline).toBe('Nothing has finished yet');
+    expect(tile(out, 'recent').empty).toBe('Nothing has finished yet');
+    expect(tile(out, 'open').headline).toBe('No records yet');
+    expect(tile(out, 'open').empty).toBe('No records yet');
+    expect(tile(out, 'attention').empty).toBe('No run has failed.');
+  });
   it('calls the count records by area because it does not filter by status', () => {
     const out = buildOverview(base({ open: [{ skill: 'supplier_exception', title: 'Supplier exceptions', count: 2, more: false }] }));
     expect(tile(out, 'open').title).toBe('Records by area');

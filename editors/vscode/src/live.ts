@@ -127,6 +127,8 @@ export class LiveCoordinator implements vscode.Disposable {
   private readonly disposables: vscode.Disposable[] = [];
   private disposed = false;
   private readonly received = new vscode.EventEmitter<Event>();
+  private readonly connected = new vscode.EventEmitter<void>();
+  readonly onDidConnect = this.connected.event;
   /** Every event that arrives on the live socket, for views that route on their own labels. */
   readonly onDidReceiveEvent = this.received.event;
 
@@ -193,6 +195,7 @@ export class LiveCoordinator implements vscode.Disposable {
         // Replay after a reconnect is inbox-only; review transitions that occurred
         // while disconnected are never replayed. Re-query both views once on connect.
         this.refresher.refreshBoth();
+        this.connected.fire();
       },
       onWarning: (kind, message) => {
         if (kind === 'lagged') {
@@ -233,5 +236,6 @@ export class LiveCoordinator implements vscode.Disposable {
     this.focusSubscription = undefined;
     for (const d of this.disposables) d.dispose();
     this.received.dispose();
+    this.connected.dispose();
   }
 }
