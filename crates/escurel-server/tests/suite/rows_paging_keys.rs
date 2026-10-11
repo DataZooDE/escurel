@@ -33,6 +33,15 @@ async fn rig(select_sql: &str) -> Rig {
 }
 
 async fn rig_with(select_sql: &str, timeout: Option<std::time::Duration>) -> Rig {
+    rig_full(select_sql, timeout, "").await
+}
+
+/// `extra_backend` is appended under `backend:` (e.g. a `filterable:` line).
+async fn rig_full(
+    select_sql: &str,
+    timeout: Option<std::time::Duration>,
+    extra_backend: &str,
+) -> Rig {
     let store_dir = TempDir::new().unwrap();
     let db_dir = TempDir::new().unwrap();
     let src_dir = TempDir::new().unwrap();
@@ -63,7 +72,7 @@ async fn rig_with(select_sql: &str, timeout: Option<std::time::Duration>) -> Rig
         ..Default::default()
     })
     .await;
-    let skill = skill_page(src_dir.path());
+    let skill = skill_page(src_dir.path(), extra_backend);
     let r = call(
         &p,
         "update_page",
@@ -77,10 +86,10 @@ async fn rig_with(select_sql: &str, timeout: Option<std::time::Duration>) -> Rig
     }
 }
 
-fn skill_page(src: &Path) -> String {
+fn skill_page(src: &Path, extra_backend: &str) -> String {
     format!(
         "---\nkind: skill\nid: thing\ndescription: Rows with a typed key.\nbackend:\n  kind: sql_view\n  \
-         instances: rows\n  key: k\n  source: {{connector: parquet_dir, relation: \"{}\"}}\n---\n# thing\n",
+         instances: rows\n  key: k\n  source: {{connector: parquet_dir, relation: \"{}\"}}\n{extra_backend}---\n# thing\n",
         src.display()
     )
 }
@@ -263,4 +272,63 @@ async fn reading_one_row_is_under_the_same_statement_timeout_as_listing() {
     let skills = call(&t.p, "list_skills", json!({})).await;
     assert!(skills.get("error").is_none(), "{skills}");
     t.p.shutdown().await;
+}
+
+// ----------------------------------------------------------------- hostile column names ---
+
+/// A column name is data from the source (DESCRIBE) or the skill page, and it is spliced into SQL as
+/// a quoted identifier: a `"` in it must be doubled, or reading the row is a syntax error (and a name
+/// built for it is an injection).
+const HOSTILE_COLUMNS: &str =
+    r#"SELECT 1 AS k, 'v1' AS "we""ird", 'v2' AS "a"" ; DROP VIEW x; --""#;
+
+#[tokio::test]
+async fn a_column_with_a_double_quote_in_its_name_does_not_break_reading_a_row() {
+    let r = rig(HOSTILE_COLUMNS).await;
+    let listed = call(&r.p, "list_instances", json!({ "skill": "thing" })).await;
+    assert_eq!(
+        listed["result"]["isError"],
+        json!(false),
+        "listing survives: {listed}"
+    );
+    let got = call(
+        &r.p,
+        "expand",
+        json!({ "page_id": "markdown/instances/thing/1.md" }),
+    )
+    .await;
+    assert_eq!(
+        got["result"]["isError"],
+        json!(false),
+        "expanding the row survives a hostile column name: {got}"
+    );
+    assert!(
+        got["result"]["structuredContent"]["page"].is_object(),
+        "the row is there: {got}"
+    );
+    assert!(
+        got.to_string().contains("v1"),
+        "the odd column's value is read back: {got}"
+    );
+}
+
+#[tokio::test]
+async fn a_searchable_column_with_a_double_quote_in_its_name_is_searched_with_a_bound_parameter() {
+    let r = rig_full(
+        r#"SELECT 1 AS k, 'needle-one' AS "we""ird" UNION ALL SELECT 2, 'other'"#,
+        None,
+        "  searchable: ['we\"ird']\n",
+    )
+    .await;
+    let found = call(
+        &r.p,
+        "search",
+        json!({ "q": "needle", "page_kind": "instance", "k": 10 }),
+    )
+    .await;
+    let hits = found["result"]["structuredContent"]["hits"]
+        .as_array()
+        .unwrap_or_else(|| panic!("search answered: {found}"));
+    let ids: Vec<&str> = hits.iter().filter_map(|h| h["page_id"].as_str()).collect();
+    assert_eq!(ids, ["markdown/instances/thing/1.md"], "{found}");
 }

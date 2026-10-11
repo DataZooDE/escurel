@@ -655,6 +655,13 @@ pub(crate) fn is_managed_view(view: &str) -> bool {
     is_valid_identifier(view) && view.starts_with("vw_")
 }
 
+/// `name` as a DuckDB quoted identifier: wrapped in `"` with every embedded `"` doubled, so a column
+/// name taken from the source or a skill page can only ever be one identifier. The ONE way a column
+/// is spliced into rows SQL; values are always bound.
+pub(crate) fn quote_ident(name: &str) -> String {
+    format!("\"{}\"", name.replace('"', "\"\""))
+}
+
 /// Whether `s` is a safe unquoted DuckDB identifier (view name / alias).
 pub(crate) fn is_valid_identifier(s: &str) -> bool {
     !s.is_empty()
@@ -1210,6 +1217,19 @@ fn hex(bytes: &[u8]) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn quote_ident_makes_any_name_exactly_one_identifier() {
+        use super::quote_ident;
+        assert_eq!(quote_ident("kunnr"), "\"kunnr\"");
+        assert_eq!(quote_ident("we\"ird"), "\"we\"\"ird\"");
+        assert_eq!(
+            quote_ident("a\"; DROP VIEW x; --"),
+            "\"a\"\"; DROP VIEW x; --\""
+        );
+        assert_eq!(quote_ident("\""), "\"\"\"\"");
+        assert_eq!(quote_ident("with space"), "\"with space\"");
+    }
+
     use super::*;
 
     /// A binding covering every field the hash consumes, including the
