@@ -199,6 +199,7 @@ suite('M2', () => {
       vscode.workspace.textDocuments.find((d) => d.getText().startsWith('# How things connect')),
     );
     assert.match(doc.getText(), /Awaiting You/);
+    assert.match(doc.getText(), /Scenarios/);
     assert.ok(doc.lineCount <= 40, 'one screen of text');
   });
 

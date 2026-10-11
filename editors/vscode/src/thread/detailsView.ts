@@ -98,6 +98,10 @@ export class DetailsViewProvider implements vscode.WebviewViewProvider, vscode.D
       );
       return true;
     }
+    if (m.type === 'explain-view') {
+      await vscode.commands.executeCommand('escurel.explainView');
+      return true;
+    }
     if (m.type === 'focus-canvas') {
       if (typeof m.rootEventId !== 'string' || m.rootEventId !== this.shown?.rootEventId) {
         return false;

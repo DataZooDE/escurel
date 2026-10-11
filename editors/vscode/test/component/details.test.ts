@@ -37,6 +37,17 @@ const text = (n: Element | null | undefined) => (n?.textContent ?? '').replace(/
 const inner = (el: Element) => q(el, 'escurel-thread-inspector')!;
 
 describe('<escurel-details>', () => {
+  it('offers Explain this view with a stable accessible name, even when empty', async () => {
+    const el = await render();
+    const sent: DetailsWebviewToHost[] = [];
+    el.addEventListener('escurel-message', (e) =>
+      sent.push((e as CustomEvent<DetailsWebviewToHost>).detail),
+    );
+    const button = q(el, 'button.explain') as HTMLButtonElement;
+    expect(button.getAttribute('aria-label')).to.equal('Explain this view');
+    button.click();
+    expect(sent).to.deep.equal([{ type: 'explain-view' }]);
+  });
   it('says what to do when nothing is selected', async () => {
     const el = await render();
     expect(text(q(el, '.empty'))).to.contain('Select a node in a thread to see its details.');

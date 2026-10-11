@@ -164,6 +164,16 @@ describe('the details view', () => {
   });
 });
 
+describe('explain access', () => {
+  it('contributes the explain command to every Escurel view title', () => {
+    const views = Object.values(manifest.contributes.views).flatMap((entries) => entries.map((v) => v.id));
+    const explained = new Set((manifest.contributes.menus['view/title'] ?? [])
+      .filter((entry) => entry.command === 'escurel.explainView')
+      .map((entry) => entry.when?.match(/view == (escurel\.\w+)/)?.[1]));
+    expect(views.filter((view) => !explained.has(view))).toEqual([]);
+  });
+});
+
 describe('the empty views say WHY they are empty', () => {
   // `Not connected` for every failure left a person with a quarantined tenant or an outdated gateway
   // clicking Reconnect. The host publishes `escurel.connectionState`; each state has its own words.

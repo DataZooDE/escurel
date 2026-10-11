@@ -38,6 +38,12 @@ export class EscurelDetails extends LitElement {
         padding: 20px 16px;
         color: var(--escurel-muted);
       }
+      .explain {
+        display: block;
+        margin: 6px 8px 4px auto;
+        padding: 2px 6px;
+        color: var(--vscode-textLink-foreground);
+      }
       .empty svg {
         flex: none;
         width: 28px;
@@ -101,8 +107,14 @@ export class EscurelDetails extends LitElement {
 
   override render() {
     const shown = this.shown;
+    const explain = html`<button
+      class="explain"
+      aria-label="Explain this view"
+      title="Explain this view"
+      @click=${() => this.emit({ type: 'explain-view' })}
+    >Explain this view</button>`;
     if (!shown) {
-      return html`<div class="empty">
+      return html`${explain}<div class="empty">
         <svg
           viewBox="0 0 16 16"
           fill="none"
@@ -125,7 +137,7 @@ export class EscurelDetails extends LitElement {
         </div>
       </div>`;
     }
-    return html`<escurel-thread-inspector
+    return html`${explain}<escurel-thread-inspector
       .nodeId=${shown.nodeId}
       .detail=${shown.detail}
       @escurel-message=${this.onInspectorMessage}
