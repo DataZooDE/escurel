@@ -248,20 +248,32 @@ async fn a_source_query_that_runs_too_long_is_interrupted_and_does_not_hold_the_
     t.p.shutdown().await;
 }
 
+/// A source whose keys are a permutation of 0..2M (`i * 7919 mod 2000003`, a bijection: 2000003 is prime and
+/// 7919 is coprime to it). Consecutive rows jump around the whole key range, so every parquet row group
+/// holds keys spread over (almost) the entire range: no row group can be skipped by its min/max, and no
+/// ordering lets a point lookup stop early.
+const PERMUTED_KEYS: &str = "SELECT 'k' || lpad(CAST((i * 7919) % 2000003 AS VARCHAR), 9, '0') AS k FROM range(2000000) t(i)";
+
+/// The key of the LAST row written (`i = 1_999_999`): `LIMIT 1` finds it only after reading the whole file.
+fn last_permuted_key() -> String {
+    format!("k{:09}", (1_999_999_u64 * 7919) % 2_000_003)
+}
+
 #[tokio::test]
 async fn reading_one_row_is_under_the_same_statement_timeout_as_listing() {
     // `rows_get` (what `expand` of a row page runs) used to be the only rows read WITHOUT the watchdog: a
-    // slow source held the tenant's single DuckDB connection for as long as it liked. A 1 ms budget over a
-    // 2M-row source must end in a worded error, and the connection must be free again.
-    let t = rig_with(
-        "SELECT 'k' || lpad(CAST(i AS VARCHAR), 9, '0') AS k FROM range(2000000) t(i)",
-        Some(std::time::Duration::from_millis(1)),
-    )
-    .await;
+    // slow source held the tenant's single DuckDB connection for as long as it liked. A 1 ms budget must end
+    // in a worded error, and the connection must be free again.
+    //
+    // The lookup must be slow BY CONSTRUCTION. The first version asked for the ~2,000th key of 2M ASCENDING
+    // keys: the parquet min/max pruned all but the first row group and `LIMIT 1` stopped there, a few ms of
+    // work that finished before the watchdog's interrupt landed on a slow core (53 of 100 runs failed pinned
+    // to one CPU). With permuted keys and the last-written key, the statement must scan every row group.
+    let t = rig_with(PERMUTED_KEYS, Some(std::time::Duration::from_millis(1))).await;
     let r = call(
         &t.p,
         "expand",
-        json!({ "page_id": "markdown/instances/thing/k000001999.md" }),
+        json!({ "page_id": format!("markdown/instances/thing/{}.md", last_permuted_key()) }),
     )
     .await;
     let msg = r.to_string();
