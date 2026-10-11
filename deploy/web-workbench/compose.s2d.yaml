@@ -42,7 +42,9 @@ services:
       - "${S2D_EXT_DIR:?run s2d-up.sh}:${S2D_EXT_DIR}:ro"
 
   demo-init:
-    command: !override ["sh", "/demo-scripts/init-s2d.sh"]
+    command: !override ["sh", "/demo-scripts/init.sh"]
+    environment: !override
+      DEMO_INIT_MODE: s2d
 
   runner:
     network_mode: "service:escurel"
