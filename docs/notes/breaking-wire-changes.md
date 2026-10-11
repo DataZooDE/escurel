@@ -115,3 +115,7 @@ One line per change. Folded into the root `CHANGELOG.md` BREAKING entry and `doc
 - `tenant_create` refuses a tenant whose secret-namespace token (`ESCUREL_SECRET_<TOKEN>__`) holds `__` or equals another tenant's (`a-b` / `a_b`); `<NAME>` of an env/gsm secret holds no `__`.
 - `write_back.base_etag` is REQUIRED (`write_back_base_etag_required`); a REST write op is retried only when the skill declares `write: {..., idempotent: true}` (or the method is `PUT`).
 - `register_credential` with `connector: mysql | mariadb` and a skill whose `backend.source.connector` is `mysql` are refused (`connector_not_supported`).
+
+- List cursors are bound to the tenant and list that issued them (`invalid_cursor` elsewhere); `ESCUREL_CURSOR_KEY` shorter than 32 bytes stops the server at boot. Skill 0.19.4.
+- `capture_event`: a token bound to a run (`run_id` / `act` / `skill` claim) is refused `escurel:` labels, `kind: system` and `provenance.workflow`, even with the admin role.
+- `update_page(branch)`, `merge_branch`, `abandon_branch`: only the branch's author or an admin may write into it; merge/abandon also allow a person (not another machine). A refused caller gets `unknown_branch`.
