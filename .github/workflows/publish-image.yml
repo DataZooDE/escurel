@@ -3,12 +3,18 @@ name: publish-image
 # Build the escurel-server container and publish it to the org GHCR registry
 # so the DataZoo Kamal substrate can deploy it (ADR-0013: "apps push their
 # images to the central registry"; the substrate pulls ghcr.io/datazoode/escurel
-# with a read token and `kamal deploy --skip-push`). Tags pushed: :main (moving)
-# and :<12-char-sha> (immutable, what a substrate PR pins).
+# with a read token and `kamal deploy --skip-push`). Tags pushed on main: :main (moving)
+# and :<12-char-sha> (immutable, what a substrate PR pins). On a `v*` release tag the
+# image is published as :<tag> and :<12-char-sha> instead (no moving :main from a tag),
+# and the server image is built with REQUIRE_GDRIVE=1: a release image must carry the
+# gdrive extension (WIF-capable build from the erpl mirror), so a missing mirror
+# artifact FAILS the release instead of silently dropping it (main builds keep the
+# loud-warning behaviour). `paths` filters do not apply to tag pushes.
 on:
   workflow_dispatch:
   push:
     branches: [main]
+    tags: ["v*"]
     # Only rebuild the image when something that affects the binary changes.
     paths:
       - "crates/**"
@@ -46,13 +52,20 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Image tags (:main + :<sha>)
+      - name: Image tags (:main or :<tag>, plus :<sha>)
         id: tags
         run: |
           set -euo pipefail
           SHA="$(echo "${{ github.sha }}" | cut -c1-12)"
-          echo "tags=ghcr.io/datazoode/escurel:main,ghcr.io/datazoode/escurel:${SHA}" >> "$GITHUB_OUTPUT"
-          echo "::notice title=Publish::ghcr.io/datazoode/escurel :main + :${SHA}"
+          if [[ "${{ github.ref_type }}" == "tag" ]]; then
+            FIRST="${{ github.ref_name }}"
+            echo "require_gdrive=1" >> "$GITHUB_OUTPUT"
+          else
+            FIRST="main"
+            echo "require_gdrive=0" >> "$GITHUB_OUTPUT"
+          fi
+          echo "tags=ghcr.io/datazoode/escurel:${FIRST},ghcr.io/datazoode/escurel:${SHA}" >> "$GITHUB_OUTPUT"
+          echo "::notice title=Publish::ghcr.io/datazoode/escurel :${FIRST} + :${SHA}"
 
       - name: Build + push
         uses: docker/build-push-action@v6
@@ -60,6 +73,9 @@ jobs:
           context: .
           push: true
           tags: ${{ steps.tags.outputs.tags }}
+          # A release tag must ship gdrive (see the header): fail the build if the mirror lacks it.
+          build-args: |
+            REQUIRE_GDRIVE=${{ steps.tags.outputs.require_gdrive }}
           # Scoped. Both this workflow and the other image build in this repo
           # used a bare `type=gha`, which is ONE shared scope — the Rust gateway image
           # and the other were overwriting each other's layer cache, so
@@ -87,13 +103,14 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Image tags (:main + :<sha>)
+      - name: Image tags (:main or :<tag>, plus :<sha>)
         id: tags
         run: |
           set -euo pipefail
           SHA="$(echo "${{ github.sha }}" | cut -c1-12)"
-          echo "tags=ghcr.io/datazoode/escurel-runner:main,ghcr.io/datazoode/escurel-runner:${SHA}" >> "$GITHUB_OUTPUT"
-          echo "::notice title=Publish::ghcr.io/datazoode/escurel-runner :main + :${SHA}"
+          if [[ "${{ github.ref_type }}" == "tag" ]]; then FIRST="${{ github.ref_name }}"; else FIRST="main"; fi
+          echo "tags=ghcr.io/datazoode/escurel-runner:${FIRST},ghcr.io/datazoode/escurel-runner:${SHA}" >> "$GITHUB_OUTPUT"
+          echo "::notice title=Publish::ghcr.io/datazoode/escurel-runner :${FIRST} + :${SHA}"
 
       - name: Build + push
         uses: docker/build-push-action@v6
