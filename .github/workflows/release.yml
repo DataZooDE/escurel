@@ -114,8 +114,28 @@ jobs:
           print("workspace.package version ->", v)
           PY
 
+      # `--locked` below needs a lockfile that matches the manifests. The version injection above
+      # changes the workspace members' version, which Cargo.lock records, so on tag builds refresh
+      # ONLY those (`cargo update --workspace --offline`: no registry access, no dependency moves)
+      # and fail if anything but `version = "..."` lines changed (a moved dependency would mean the
+      # release is not built from the reviewed lockfile).
+      - name: Refresh workspace versions in Cargo.lock (tag builds only)
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo update --workspace --offline
+          other="$(git diff -U0 -- Cargo.lock | grep -E '^[-+]' | grep -v -E '^(\+\+\+|---)' | grep -v -E '^[-+]version = "' || true)"
+          if [[ -n "$other" ]]; then
+            echo "ERROR: Cargo.lock changed beyond workspace versions:"; echo "$other" | head -20; exit 1
+          fi
+          git diff --stat -- Cargo.lock
+
+      # Feature set: the shipped binaries carry the same optional backends as the container image
+      # (Dockerfile: `gemini,s3,gcs,duckvfs`); `gemini` and `kreuzberg` are default features, so the
+      # explicit list adds s3, gcs and duckvfs (the DuckDB-virtual-filesystem lane store, gdrive://).
       - name: Build release binaries
-        run: cargo build --release --features s3,gcs --bin escurel --bin escurel-server
+        run: cargo build --locked --release --features s3,gcs,duckvfs --bin escurel --bin escurel-server
 
       # Stage both binaries, bundle the dynamic libduckdb next to the server,
       # and fix the rpath so the server loads libduckdb from its own dir.
@@ -369,10 +389,45 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      checks: read
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+
+      # A release is cut from a commit whose CI is green. The tag push itself runs no CI, so look the
+      # required check up on the tagged commit (it ran when that commit reached main). Emergency
+      # escape: set the repository variable RELEASE_SKIP_CI_GATE=1 (and unset it afterwards).
+      - name: Require green CI on the tagged commit
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SKIP: ${{ vars.RELEASE_SKIP_CI_GATE }}
+        run: |
+          set -euo pipefail
+          if [[ "${SKIP:-}" == "1" ]]; then echo "::warning::RELEASE_SKIP_CI_GATE=1: CI gate skipped"; exit 0; fi
+          conclusion="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}/check-runs?per_page=100" \
+            --jq '[.check_runs[] | select(.name == "fmt + clippy + test")] | sort_by(.completed_at) | last | .conclusion // "missing"')"
+          echo "fmt + clippy + test on ${GITHUB_SHA}: ${conclusion}"
+          if [[ "$conclusion" != "success" ]]; then
+            echo "::error::the tagged commit has no green 'fmt + clippy + test' check (${conclusion}); fix CI or tag a green commit"; exit 1
+          fi
+
+      # The tag message is the release notes. If the CHANGELOG section for this tag is marked BREAKING
+      # the annotated tag body must say so, and the section must exist (renamed from Unreleased).
+      - name: Check CHANGELOG section and tag message
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF#refs/tags/}"
+          git fetch --force origin "refs/tags/${TAG}:refs/tags/${TAG}"
+          MSG="$(git for-each-ref "refs/tags/${TAG}" --format='%(contents)')"
+          SECTION="$(awk -v t="## ${TAG}" 'index($0, t) == 1 {p=1; print; next} /^## / {p=0} p' CHANGELOG.md)"
+          if [[ -z "${SECTION//[[:space:]]/}" ]]; then
+            echo "::error::CHANGELOG.md has no '## ${TAG}' section (rename '## Unreleased' at tag time: docs/release/RELEASE-CHECKLIST.md)"; exit 1
+          fi
+          if grep -q 'BREAKING' <<<"$SECTION" && ! grep -q 'BREAKING' <<<"$MSG"; then
+            echo "::error::the CHANGELOG section for ${TAG} is BREAKING but the annotated tag message does not say BREAKING"; exit 1
+          fi
+          echo "CHANGELOG section and tag message OK"
 
       - uses: actions/download-artifact@v4
         with:
@@ -382,6 +437,14 @@ jobs:
 
       - name: List assets
         run: ls -R dist
+
+      # Checksums for every shipped asset, attached to the release beside them.
+      - name: SHA256SUMS
+        run: |
+          set -euo pipefail
+          cd dist
+          sha256sum ./*.tar.gz ./*.zip ./*.vsix | sed "s# \./# #" > SHA256SUMS
+          cat SHA256SUMS
 
       - name: Create Release
         env:
@@ -402,7 +465,7 @@ jobs:
           PRE=""
           case "$TAG" in *-rc*|*-alpha*|*-beta*) PRE="--prerelease" ;; esac
           gh release create "$TAG" \
-            dist/*.tar.gz dist/*.zip dist/*.vsix \
+            dist/*.tar.gz dist/*.zip dist/*.vsix dist/SHA256SUMS \
             --title "$TAG" \
             --notes "$MSG" \
             $PRE
