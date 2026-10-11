@@ -27,14 +27,14 @@ describe('<escurel-overview>', () => {
       'Decisions waiting',
       'Agent activity',
       'Needs attention',
-      'Open items',
+      'Records by area',
       'Recently finished',
     ]);
     expect(qa(el, '.headline').map(text)).to.deep.equal([
       '2 waiting for you',
       'Agents are running · last seen just now',
       '1 needs a look',
-      '3 kinds of work',
+      '3 record areas',
       'Last 24 h · 8 runs',
     ]);
   });

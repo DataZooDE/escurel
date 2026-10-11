@@ -32,7 +32,7 @@ test('the window opens calm: no menu bar, command center or status bar, and the 
     'Decisions waiting',
     'Agent activity',
     'Needs attention',
-    'Open items',
+    'Records by area',
     'Recently finished',
   ]);
   await expect(board.locator('section.tile .headline').first()).toContainText('waiting for you');

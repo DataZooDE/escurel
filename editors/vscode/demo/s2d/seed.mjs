@@ -205,7 +205,7 @@ const UNITS = Number(SUMMARY.units_on_late_orders);
     );
   const need = (await q(user, 'ltb_quantity', { part: 'SP-3307', service_level: '0.95' }))[0];
   const buy = Number(need.ltb_qty);
-  narrate('634 units hold the 95% service level', buy === 634, need);
+  narrate('634 units target 95% modelled stock coverage', buy === 634, need);
   const wBuy = (await q(user, 'ltb_whatif', { part: 'SP-3307', qty: buy }))[0];
   const w400 = (await q(user, 'ltb_whatif', { part: 'SP-3307', qty: 400 }))[0];
   narrate(
@@ -399,7 +399,7 @@ await agentRun('supplier_exception', mailEv, resPage, async (agent) => {
       ...(chosen ? { recommended_option: recommended, est_cost_eur: estCost } : {}),
       risk: 'medium',
     }) +
-    `# Resolution for lot L-24117\n\n${NOTE}\n\n## Situation\n\nLot L-24117 (controller board CB-7) arrives ${DELAY.delay_days} days late. Of the ${orders.length} customer orders it feeds, ${late.length} go late (${late.map((o) => `${o.days_late} days`).join(', ')}); ${orders.length - late.length} absorb the delay.\n\n## Proposal\n\n${proposalTable}\n\n${method}${chosen ? `Together ${UNITS.toLocaleString('en-US')} units: every late order is covered. Estimated cost EUR ${estCost.toLocaleString('en-US')} against` : `${UNITS.toLocaleString('en-US')} units are on late orders, against`} a penalty exposure of EUR ${penalty.toLocaleString('en-US')}.\n\n## Changes on approval\n\n${chosen ? chosen.map((x) => `- ${x.option_type === 'stock_reallocation' ? `Transfer ${x.use_qty} units from ${x.source}.` : `Order ${x.use_qty} units through: ${x.source}.`}`).join('\n') : '- To be decided from the options above.'}\n- Keep the promised delivery dates of the late orders.\n${inbound ? `- The expedited part can join the inbound groupage from Gdansk to Stuttgart on ${inbound.ship_on} (${inbound.pallets} pallets consolidate).\n` : ''}\nApproving records the decision for execution. Nothing in the planning or ERP system is changed by this page.\n`;
+    `# Resolution for lot L-24117\n\n${NOTE}\n\n## Situation\n\nThe supplier reports shipping lot L-24117 (controller board CB-7) about ${DELAY.delay_days} days later than confirmed. Of the ${orders.length} customer orders it feeds, ${late.length} go late (${late.map((o) => `${o.days_late} days`).join(', ')}); ${orders.length - late.length} absorb the delay.\n\n## Proposal\n\n${proposalTable}\n\n${method}${chosen ? `Together ${UNITS.toLocaleString('en-US')} units cover the modelled late-order quantity, subject to stock and supplier confirmation. Estimated cost EUR ${estCost.toLocaleString('en-US')} against` : `${UNITS.toLocaleString('en-US')} units are on late orders, against`} a modelled penalty exposure of EUR ${penalty.toLocaleString('en-US')}.\n\n## Actions after approval\n\n${chosen ? chosen.map((x) => `- ${x.option_type === 'stock_reallocation' ? `Ask inventory control to release ${x.use_qty} units from ${x.source}; confirm available stock before transfer.` : `Ask purchasing to confirm capacity and lead time for ${x.use_qty} expedited units from ${x.source}.`}`).join('\n') : '- Planning and purchasing must choose and confirm a feasible mix from the options above.'}\n- Planning must confirm the supplier's revised ship date, recalculate affected order dates and notify customer-facing teams of any remaining shortfall.\n${inbound ? `- The expedited part can join the inbound groupage from Gdansk to Stuttgart on ${inbound.ship_on} (${inbound.pallets} pallets consolidate).\n` : ''}\nApproving records the decision for execution. Nothing in the planning or ERP system is changed by this page.\n`;
   // ONE changeset holds both pages, so approving it records the decision AND resolves the exception.
   const first = await call(agent, 'create_draft', {
     target_page_id: resPage,
@@ -459,7 +459,7 @@ await agentRun('transport_plan', tpMail, tpPage, async (agent) => {
       held_pallets: held,
       saving_eur: saving,
     }) +
-    `# Consolidation: Stuttgart to Lyon, Thursday 2026-10-08\n\n${NOTE}\n\n## Plan\n\n${table(together, planCols)}\n\n## Not consolidated\n\n${kept.map((x) => `- ${x.shipment_id} (${x.customer}): ${x.decision}`).join('\n')}\n\n## Checks\n\n- Every delivery duty of the consolidated shipments is met.\n${trucks ? `- Packed by an optimiser into ${trucks[0].trucks_needed} truck(s): EUR ${saving.toLocaleString('en-US')} saved against sending them separately.\n` : ''}- The ${held} held pallets fit the ${together[0]?.free_pallet_slots ?? held} free shelf slots at the destination.\n\nApproving records the plan for execution; the carrier booking is a separate step.\n`;
+    `# Consolidation: Stuttgart to Lyon, Thursday 2026-10-08\n\n${NOTE}\n\n## Plan\n\n${table(together, planCols)}\n\n## Not consolidated\n\n${kept.map((x) => `- ${x.shipment_id} (${x.customer}): ${x.decision}`).join('\n')}\n\n## Checks before booking\n\n- Shipping must confirm each load is ready, the carrier still has capacity before the cut-off, and the proposed arrival meets each delivery duty.\n${trucks ? `- The model packs these loads into ${trucks[0].trucks_needed} truck(s), with estimated savings of EUR ${saving.toLocaleString('en-US')} against separate shipments.\n` : ''}- The ${held} held pallets fit the ${together[0]?.free_pallet_slots ?? held} free slots at the destination in the plan; warehouse staff must confirm space.\n\nApproving records the plan for execution. Shipping must confirm the carrier booking and notify the affected teams; no booking is placed here.\n`;
   await call(agent, 'create_draft', {
     target_page_id: tpPage,
     content: doc,
@@ -481,7 +481,7 @@ const ltbMail = await mail(
 const ltbPage = INSTANCE('ltb_decision', 'ltb-sp-3307');
 await agentRun('ltb_decision', ltbMail, ltbPage, async (agent) => {
   const parts = await q(agent, 'ltb_parts', {});
-  // The quantity that holds the 95% service level comes from the data (634 in the shared seed).
+  // The quantity targeting 95% modelled stock coverage comes from the data (634 in the shared seed).
   const need = (await q(agent, 'ltb_quantity', { part: 'SP-3307', service_level: '0.95' }))[0];
   const QTY = Number(need.ltb_qty);
   const wBuy = (await q(agent, 'ltb_whatif', { part: 'SP-3307', qty: QTY }))[0];
@@ -498,10 +498,10 @@ await agentRun('ltb_decision', ltbMail, ltbPage, async (agent) => {
       expected_runout_year: String(wBuy.expected_runout_year),
       stock_value_eur: stockValue,
     }) +
-    `# Last-time-buy: SP-3307 (servo drive module SD-40)\n\n${NOTE}\n\n## Recommendation\n\nBuy ${QTY} units: they hold the 95% service level to the end of service (expected demand ${Number(need.expected_lifetime_demand)} units). Stock value EUR ${stockValue.toLocaleString('en-US')}.\n\n## Alternatives considered\n\n- 400 units: about ${(Number(w400.probability_covers_lifetime) * 100).toFixed(0)}% chance to last; expected run-out ${w400.expected_runout_year}.\n- ${QTY} units: about ${(Number(wBuy.probability_covers_lifetime) * 100).toFixed(0)}% chance to last.\n\n## Warehouse split\n\n${table(
+    `# Last-time-buy: SP-3307 (servo drive module SD-40)\n\n${NOTE}\n\n## Recommendation\n\nPropose buying ${QTY} units: the model estimates about ${(Number(wBuy.probability_covers_lifetime) * 100).toFixed(0)}% probability that stock lasts to the end of service (expected lifetime demand ${Number(need.expected_lifetime_demand)} units). This is a stock-coverage estimate, not a delivery promise. Stock value EUR ${stockValue.toLocaleString('en-US')}.\n\n## Alternatives considered\n\n- 400 units: about ${(Number(w400.probability_covers_lifetime) * 100).toFixed(0)}% chance to last; expected run-out ${w400.expected_runout_year}.\n- ${QTY} units: about ${(Number(wBuy.probability_covers_lifetime) * 100).toFixed(0)}% chance to last.\n\n## Warehouse split\n\n${table(
       split,
       Object.keys(split[0] ?? {}).map((k) => [k, k.replaceAll('_', ' ')]),
-    )}\n\nApproving records the decision for execution; the purchase order is a separate step.\n`;
+    )}\n\nApproving records the decision for execution. After-sales must confirm the service horizon and warehouse allocation with inventory control; purchasing must place the purchase order before the supplier cut-off. No order is placed here.\n`;
   await call(agent, 'create_draft', {
     target_page_id: ltbPage,
     content: doc,
