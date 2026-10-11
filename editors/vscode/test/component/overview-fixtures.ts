@@ -58,8 +58,8 @@ export const morning: OverviewView = {
     },
     {
       id: 'open',
-      title: 'Open items',
-      headline: '3 kinds of work',
+      title: 'Records by area',
+      headline: '3 record areas',
       tone: 'neutral',
       empty: 'There are no records yet.',
       more: 1,

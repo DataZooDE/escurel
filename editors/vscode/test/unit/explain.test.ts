@@ -24,6 +24,13 @@ describe('explainText', () => {
     expect(text).toContain('Awaiting You');
   });
 
+  it('explains Scenarios and the selected node in Details', () => {
+    expect(text).toMatch(/Scenarios/);
+    expect(text).toMatch(/comparison/);
+    expect(text).toMatch(/selected (?:node|card)/i);
+    expect(text).toMatch(/technical details/i);
+  });
+
   it('explains the words the views use: gate, draft vs changeset, cascade, engine, autonomy, source, dead letter, trace', () => {
     for (const word of [
       'Needs you',

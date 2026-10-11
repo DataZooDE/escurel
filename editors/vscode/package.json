@@ -884,6 +884,16 @@
           "group": "navigation@9"
         },
         {
+          "command": "escurel.explainView",
+          "when": "view == escurel.scenarios",
+          "group": "navigation@9"
+        },
+        {
+          "command": "escurel.explainView",
+          "when": "view == escurel.details",
+          "group": "navigation@9"
+        },
+        {
           "command": "escurel.scenarios.refresh",
           "when": "view == escurel.scenarios",
           "group": "navigation@1"

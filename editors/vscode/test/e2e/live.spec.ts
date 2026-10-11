@@ -100,6 +100,7 @@ test('the thread shows the cascade, and an instance offers a skill to start', as
   await expect(canvas.locator('escurel-thread-inspector')).toHaveCount(0);
   await expect(page.getByRole('tab', { name: /Escurel Details/ })).toBeVisible();
   // The panel opens with a SENTENCE, not a key/value dump, and the engineer fields are collapsed.
+  await expect(details.getByRole('button', { name: 'Explain this view' })).toBeVisible();
   await expect(details.locator('escurel-thread-inspector .summary')).toBeVisible();
   await expect(details.locator('escurel-thread-inspector .kind')).toBeVisible();
   await stack.shot('03-thread-inspector-instance');
@@ -1008,6 +1009,7 @@ test('Explain this view tells how events, skills, runs and records connect', asy
   await expect(wv.getByText('Awaiting You').first()).toBeVisible();
   // The words the views use are explained, and the tab is named for what it is.
   await expect(wv.getByText('Dead letter').first()).toBeVisible();
+  await expect(wv.getByText('Scenarios').first()).toBeVisible();
   await expect(page.locator('.tab', { hasText: /Preview How things connect/ })).toBeVisible();
   await stack.shot('10-explain-this-view');
 });

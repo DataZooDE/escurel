@@ -380,6 +380,7 @@ export type DetailsHostToWebview =
 
 export type DetailsWebviewToHost =
   | { type: 'ready' }
+  | { type: 'explain-view' }
   /** An inspector button, wrapped with the thread it was shown for. The host re-validates it. */
   | { type: 'details-action'; rootEventId: string; message: DetailsAction }
   /** Esc in the details view: give the focus back to that thread's canvas. */

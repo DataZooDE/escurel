@@ -40,6 +40,11 @@ const tile = (v: ReturnType<typeof buildOverview>, id: string) =>
   v.view.tiles.find((t) => t.id === id)!;
 
 describe('the overview board model', () => {
+  it('calls the count records by area because it does not filter by status', () => {
+    const out = buildOverview(base({ open: [{ skill: 'supplier_exception', title: 'Supplier exceptions', count: 2, more: false }] }));
+    expect(tile(out, 'open').title).toBe('Records by area');
+    expect(tile(out, 'open').headline).toBe('1 record area');
+  });
   it('always offers the same five tiles, in the order a day starts: decisions first', () => {
     const { view } = buildOverview(base());
     expect(view.tiles.map((t) => t.id)).toEqual([

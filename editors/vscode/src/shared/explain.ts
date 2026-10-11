@@ -17,7 +17,8 @@ The **Threads** view and the thread canvas show this chain for one event. A card
 ## Where things are
 
 - **Knowledge**: the skills, grouped in folders, and their records. Each skill has a role: a record type, a process, a report, or a helper.
-- **Escurel Details** (bottom panel): what the selected card is, in words, with the next step.
+- **Escurel Details** (bottom panel): the selected card's summary, where its information came from, its technical details and any next step.
+- **Scenarios**: try different plans against the same starting situation. A scenario is one set of choices; a comparison shows how the outcomes differ. An Evolve run works through those choices and records what it found. Check the assumptions and figures before acting on a result.
 - **Runs** (right-hand side bar): what is running now, what needs attention, and past runs with their traces.
 - **Inbox**: new events nobody has dealt with yet. **Awaiting you**: changes and plans that wait for your decision.
 

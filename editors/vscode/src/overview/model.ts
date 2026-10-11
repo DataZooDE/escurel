@@ -149,14 +149,14 @@ export function buildOverview(input: OverviewInputs): Overview {
     empty: 'No run has failed.',
   });
 
-  // 4. Open items per skill.
+  // 4. Records per skill. The gateway does not tell this tile which records are open.
   const openTile = tile({
     id: 'open',
-    title: 'Open items',
+    title: 'Records by area',
     headline:
       input.open.length === 0
         ? 'No records yet'
-        : `${input.open.length} ${plural(input.open.length, 'kind', 'kinds')} of work`,
+        : `${input.open.length} ${plural(input.open.length, 'record area', 'record areas')}`,
     tone: 'neutral',
     items: input.open.slice(0, TILE_LINES).map((o, i) =>
       line(

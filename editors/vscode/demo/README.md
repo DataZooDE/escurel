@@ -1,5 +1,7 @@
 # Demo of the escurel VS Code extension
 
+The optional Source-to-Deliver sequence has a [short guide](s2d/README.md), [rehearsal](s2d/REHEARSAL.md) and [realism review](s2d/REALISM-REVIEW.md). Its data and three incoming mails come from the shared hetzner seed. A script stages the proposals; approval is recorded in Escurel for execution and does not place orders, move stock or book freight.
+
 ```sh
 cargo build --release -p escurel-test-support -p escurel-runner   # once
 cd editors/vscode && npm ci && npm run build                       # once
