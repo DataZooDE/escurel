@@ -7,7 +7,7 @@
 #                    into the pre-written gateway state. Re-running it on the same data duplicates the
 #                    story (`docker compose down -v` starts clean).
 #   s2d              the S2D stack (escurel-test-gateway, which VERIFIES tokens): waits for the gateway
-#                    and the runner, refreshes the Bearer [REDACTED] the live tokens, plays the story and loads
+#                    and the runner, refreshes the live bearer tokens, plays the story and loads
 #                    the S2D demo on top, and reports what waits for the planner. Idempotent via a
 #                    story.done marker: a fresh gateway starts empty, so compose replays this whenever the
 #                    gateway is new.
@@ -53,7 +53,7 @@ if [ "$MODE" = s2d ]; then
   port="$(sed -n 's/.*"gateway_url":"http:\/\/127.0.0.1:\([0-9]*\)".*/\1/p' "$S/gateway.json" 2>/dev/null | head -1)"
   spin "node -e \"fetch('http://127.0.0.1:$port/healthz').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))\""
   spin "node -e \"fetch('http://127.0.0.1:8088/healthz').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))\""
-  # The tokens the gateway printed at start expire within minutes; the Bearer [REDACTED] is kept fresh. The scripts take their
+  # The tokens the gateway printed at start expire within minutes; the bearer file is kept fresh. The scripts take their
   # bearers from the gateway file, so build a copy that carries the current ones.
   run node -e "
 const fs = require('fs');

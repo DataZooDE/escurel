@@ -47,7 +47,7 @@ cat > "$T/bin/node" <<'EOF'
 exit 0
 EOF
 chmod +x "$T/bin/node"
-# Lays out a demo dir: the gateway/bearer [REDACTED] the s2d waits need, plus an S2D fixture.
+# Lays out a demo dir: the gateway and bearer state files the s2d waits need, plus an S2D fixture.
 mkdemo() {
   mkdir -p "$1/state" "$1/s2d/pages"
   printf '{"gateway_url":"http://127.0.0.1:45451","admin_bearer":"adm0","tenant":"demo"}\n' > "$1/state/gateway.json"
@@ -104,7 +104,7 @@ grep -q "fetch('http://127.0.0.1:45451/healthz')" "$T/ns1.norm" \
   && grep -q "fetch('http://127.0.0.1:8088/healthz')" "$T/ns1.norm" \
   && ok "s2d waits on the gateway port and the runner" || bad "s2d waits on the gateway port and the runner"
 grep -q "fs.writeFileSync('@D/state/live.json'" "$T/ns1.norm" \
-  && ok "s2d refreshes the live Bearer [REDACTED]" || bad "s2d refreshes the live Bearer [REDACTED]"
+  && ok "s2d refreshes the live bearer tokens" || bad "s2d refreshes the live bearer tokens"
 grep -q '^args: materialise.mjs @D/state/live.json$' "$T/ns1.norm" \
   && grep -q '^args: driver.mjs @D/state/live.json @D/state/bearer.json$' "$T/ns1.norm" \
   && ok "s2d plays the story into the live state" || bad "s2d plays the story into the live state"
