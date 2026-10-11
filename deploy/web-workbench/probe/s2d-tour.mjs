@@ -146,7 +146,7 @@ check('story 3: approved', (await pane('Awaiting').getByRole('treeitem', { name:
 check('story 3: the decision opens', await openRow('ltb_decision', /ltb-sp-3307/));
 const ltb = await webviewText(['634'], 40_000);
 await shot('09-s3-decision');
-check('story 3: 634 units, EUR 748,120, split 349 / 159 / 127', ['634', '748,120', '349', '159', '127'].every((n) => ltb.includes(n)));
+check('story 3: 634 units, EUR 748,120, split 349 / 158 / 127', ['634', '748,120', '349', '158', '127'].every((n) => ltb.includes(n)));
 
 // Teaser 1: the price of the last percent (Preview with parameters on the query page).
 const methods = await knowledgeRow(/^folder logistics\/methods$/);

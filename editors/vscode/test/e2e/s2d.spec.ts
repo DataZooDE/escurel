@@ -180,7 +180,7 @@ test('S2D: the last-time-buy proposal holds the 95% service level with 634 units
   await expect(wv.locator('.report .kpi').first()).toContainText('Probability it lasts');
   const body = await wv.locator('.report').innerText();
   // The warehouse split of the 634 units, as the chat agents answer it.
-  for (const n of ['349', '159', '127']) expect(body).toContain(n);
+  for (const n of ['349', '158', '127']) expect(body).toContain(n);
   await stack.shot('s2d-07-last-time-buy');
 });
 
