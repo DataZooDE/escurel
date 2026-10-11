@@ -6,4 +6,4 @@ This demo follows three illustrative decisions: a supplier delay, an outbound lo
 
 Approval records a decision in Escurel for execution. It does not confirm supplier capacity, reserve stock, place a purchase order, book a carrier or update an ERP or transport system. A planner, shipping coordinator or after-sales owner must complete and confirm those steps separately. The data is synthetic and anonymised; its screens retain the “Illustrative demo data” label.
 
-Before presenting the last-time-buy warehouse allocation as executable, reconcile the source snapshot's recommended quantity with the displayed regional allocation. The rehearsal calls out that discrepancy.
+The last-time-buy warehouse split sums to the recommended quantity (634 = 349 + 158 + 127; largest-remainder allocation, hetzner #929). Approval still only records the decision for execution: inventory control confirms the regional allocation before purchasing places the order.

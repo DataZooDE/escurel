@@ -76,8 +76,8 @@ steps.
 2. **Awaiting you** > "ltb-sp-3307": approve it.
 3. Knowledge > logistics > after-sales > Last-time-buy decision > the record. **Modelled chance stock lasts to end of service: 94.9%** (0.949, rounded to a 95% target).
    A proposed buy of **634 units** targets that stock coverage (expected lifetime demand 509);
-   the table shows the stock value (EUR 748,120) and the **warehouse split as shown: EMEA 349, Americas 159,
-   APAC 127**. Those three displayed allocations sum to 635, while the recommended buy is 634; do not present the allocation as approved for execution until inventory control reconciles it. The alternative of 400 units is in the proposal's text: about an 8% chance, running out
+   the table shows the stock value (EUR 748,120) and the **warehouse split: EMEA 349, Americas 158,
+   APAC 127** (sums to the 634 recommended; a largest-remainder allocation, fixed upstream in hetzner #929). Approving records the decision for execution; inventory control still confirms the regional allocation before purchasing places the order. The alternative of 400 units is in the proposal's text: about an 8% chance, running out
    in 2032, two years before the end of service in 2034.
 
 ## Mapping to the talk (min-by-min, Part 3 and assembly)

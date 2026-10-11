@@ -12,9 +12,9 @@ The shared hetzner `ops/seed/s2d-demo` remains the single source for data, ident
 - **The demonstration could blur scripted work with live work.** [`README.md`](README.md) and [`REHEARSAL.md`](REHEARSAL.md) now give an explicit stage disclosure: data queries and the approval gate run live; a script writes the agent proposals and run traces. The supplier and carrier mail text was left unchanged.
 - **An anonymised talk track named a specific manufacturer.** [`REHEARSAL.md`](REHEARSAL.md) now uses a generic manufacturer. Technical record IDs remain in click paths so the presenter can find the right record, but they should be read as navigation aids, not business language.
 
-## Source-data issue to resolve before operational use
+## Source-data issue: RESOLVED (hetzner #929)
 
-The shared snapshot's last-time-buy recommendation is 634 units while the displayed regional allocation is 349 + 159 + 127 = 635. The demo cannot alter either figure under the single-source rule. [`REHEARSAL.md`](REHEARSAL.md) instructs the presenter to flag this discrepancy and withhold any claim that the allocation is ready for execution. Reconcile the allocation upstream, then refresh the synced snapshot and rehearsal figures.
+The shared snapshot's last-time-buy recommendation was 634 units while the displayed regional allocation was 349 + 159 + 127 = 635: `ltb_warehouse_split` rounded each warehouse separately. Fixed upstream in hetzner-agent-substrate #929 (largest-remainder allocation): the split is now Central Europe 349, Americas 158, Asia-Pacific 127 = 634; the stock value is unchanged at EUR 748,120. The demo reads the split from the data, so a re-sync picks it up; [`REHEARSAL.md`](REHEARSAL.md) quotes the new figures. Approval still only records the decision for execution.
 
 ## Recommendations outside this extension and demo layer
 
