@@ -767,3 +767,71 @@ async fn describe_endpoint_replaces_describe_backend_and_answers_for_openapi() {
         );
     }
 }
+
+/// A cursor is bound to the list it was issued for: one issued for skill `note` does not open on
+/// skill `memo`, nor as an event or inbox cursor.
+#[tokio::test]
+async fn a_cursor_is_bound_to_the_list_it_was_issued_for() {
+    let p = start().await;
+    let admin = p.mint_token(TENANT, Role::Admin);
+    let memo_skill =
+        "---\nkind: skill\nid: memo\ndescription: A memo.\nvisibility: public\n---\n# memo\n";
+    let w = call(
+        &p,
+        &admin,
+        "update_page",
+        json!({ "page_id": "markdown/skills/memo.md", "content": memo_skill }),
+    )
+    .await;
+    assert_eq!(w["result"]["structuredContent"]["ok"], true, "{w}");
+    for (skill, id) in [("note", "b"), ("note", "c"), ("memo", "x"), ("memo", "y")] {
+        let c = format!("---\nkind: instance\nskill: {skill}\nid: {id}\n---\n# {id}\n");
+        let w = call(
+            &p,
+            &admin,
+            "update_page",
+            json!({ "page_id": format!("markdown/instances/{skill}/{id}.md"), "content": c }),
+        )
+        .await;
+        assert_eq!(w["result"]["structuredContent"]["ok"], true, "{w}");
+    }
+    let first = call(
+        &p,
+        &admin,
+        "list_instances",
+        json!({ "skill_id": "note", "limit": 1 }),
+    )
+    .await;
+    let real = first["result"]["structuredContent"]["next_cursor"]
+        .as_str()
+        .expect("cursor")
+        .to_owned();
+
+    let on_memo = call(
+        &p,
+        &admin,
+        "list_instances",
+        json!({ "skill_id": "memo", "limit": 1, "cursor": real }),
+    )
+    .await;
+    assert!(is_invalid_cursor(&on_memo), "another skill: {on_memo}");
+    for (tool, args) in [
+        (
+            "list_events",
+            json!({ "label_skill": "note", "cursor": real }),
+        ),
+        ("list_inbox", json!({ "cursor": real })),
+    ] {
+        let r = call(&p, &admin, tool, args).await;
+        assert!(is_invalid_cursor(&r), "{tool}: {r}");
+    }
+    // It still opens where it was issued.
+    let ok = call(
+        &p,
+        &admin,
+        "list_instances",
+        json!({ "skill_id": "note", "limit": 1, "cursor": real }),
+    )
+    .await;
+    assert_eq!(ok["result"]["isError"], json!(false), "{ok}");
+}

@@ -921,3 +921,24 @@ fn unknown_append_backend_is_an_error() {
         "must list the accepted values: {msg}"
     );
 }
+
+/// A cursor-signing key under 32 bytes is refused at boot, naming the variable, instead of signing
+/// with a guessable secret.
+#[test]
+fn a_short_cursor_key_stops_the_server_at_boot() {
+    let data_dir = TempDir::new().unwrap();
+    let out = cargo_bin("escurel-server")
+        .env("ESCUREL_SERVER_DATA_DIR", data_dir.path())
+        .env("ESCUREL_SERVER_LISTEN_HTTP", "127.0.0.1:0")
+        .env("ESCUREL_OBSERVABILITY_METRICS_LISTEN", "127.0.0.1:0")
+        .env("ESCUREL_CURSOR_KEY", "too-short")
+        .output()
+        .expect("run escurel-server");
+    assert!(!out.status.success(), "a short key must not boot");
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(text.contains("ESCUREL_CURSOR_KEY"), "{text}");
+}

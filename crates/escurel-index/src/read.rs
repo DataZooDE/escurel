@@ -959,8 +959,9 @@ impl Indexer {
         cursor: Option<&str>,
     ) -> Result<(Vec<InstanceInfo>, Option<String>), IndexerError> {
         let limit = limit.clamp(1, 10_000);
+        let cursor_scope = format!("instances:{}:{skill}", self.tenant());
         let cursor = match cursor {
-            Some(raw) => Some(crate::cursor::decode(raw)?),
+            Some(raw) => Some(crate::cursor::decode(&cursor_scope, raw)?),
             None => None,
         };
 
@@ -1075,8 +1076,9 @@ impl Indexer {
 
         let next_cursor = if raw.len() > limit {
             raw.truncate(limit);
-            raw.last()
-                .map(|(page_id, _, _, at_full)| crate::cursor::encode(at_full.as_deref(), page_id))
+            raw.last().map(|(page_id, _, _, at_full)| {
+                crate::cursor::encode(&cursor_scope, at_full.as_deref(), page_id)
+            })
         } else {
             None
         };

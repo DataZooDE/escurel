@@ -153,13 +153,13 @@ struct Cursor {
 }
 
 impl Cursor {
-    fn encode(&self) -> String {
+    fn encode(&self, scope: &str) -> String {
         let raw = format!("{}|{}", self.ts, self.msg_id);
-        crate::cursor::seal(raw.as_bytes())
+        crate::cursor::seal(scope, raw.as_bytes())
     }
 
-    fn decode(raw: &str) -> Result<Self, IndexerError> {
-        let bytes = crate::cursor::unseal(raw).ok_or_else(|| {
+    fn decode(scope: &str, raw: &str) -> Result<Self, IndexerError> {
+        let bytes = crate::cursor::unseal(scope, raw).ok_or_else(|| {
             IndexerError::InvalidCursor("not a cursor this server issued".to_owned())
         })?;
         let s = std::str::from_utf8(&bytes)
@@ -522,8 +522,9 @@ impl Indexer {
     ) -> Result<ChatPage, IndexerError> {
         let limit = input.limit.clamp(1, ChatPage::MAX_LIMIT);
 
+        let cursor_scope = format!("chat:{}:{}", self.tenant(), input.chat_group_id);
         let cursor = match input.cursor {
-            Some(raw) => Some(Cursor::decode(raw)?),
+            Some(raw) => Some(Cursor::decode(&cursor_scope, raw)?),
             None => None,
         };
 
@@ -634,7 +635,7 @@ impl Indexer {
                     ts: cursor_ts.last().cloned().unwrap_or_else(|| m.ts.clone()),
                     msg_id: m.msg_id.clone(),
                 }
-                .encode()
+                .encode(&cursor_scope)
             })
         } else {
             None
