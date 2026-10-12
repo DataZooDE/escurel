@@ -444,6 +444,16 @@ pub struct SkillViewer {
     pub param: Option<String>,
 }
 
+/// A skill-authored Overview tile. The engine carries this declaration without interpreting its domain.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SkillOverview {
+    pub tile: String,
+    pub status_field: String,
+    pub delayed_when: Vec<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sort_field: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct Skill {
@@ -548,6 +558,8 @@ pub struct Skill {
     /// instances. escurel only carries it, so a client can link to where the data is rendered.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub viewer: Option<SkillViewer>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub overview: Option<SkillOverview>,
     /// `actions:` — what a reader may do from this skill's pages, in Peacock's
     /// object form. The `event` skills of the `kind: event` entries are also the
     /// skills a run may cascade into. Absent = none declared (no restriction).

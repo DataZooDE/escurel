@@ -10,7 +10,8 @@ use serde_json::{Value, json};
 const TENANT: &str = "okf";
 const ORDER: &str = "---\nkind: skill\nid: customer-order\ndescription: d.\nautonomy: review\n\
 summary: A customer order.\nfolder: sales/orders\nrole: record\ntags: [sap, sd]\ntitle: Customer order\n\
-resource: https://sap.example/vbak\n---\n# customer-order\n";
+resource: https://sap.example/vbak\nfields:\n  - {name: status, kind: string}\n\
+overview:\n  tile: Delayed shipments\n  status_field: status\n  delayed_when: [late, delayed]\n  sort_field: days_late\n---\n# customer-order\n";
 const CHECKED: &str = "---\nkind: skill\nid: analysis\ndescription: d.\nautonomy: review\nsummary: s.\n\
 generated: agent:supplier-risk\nverified: 2026-09-30\nstatus: draft\nstale_after: P90D\n\
 sources: [https://sap.example/doc, {title: SAP VBAK, url: https://sap.example/vbak}]\n\
@@ -81,11 +82,35 @@ async fn list_skills_reports_folder_role_tags_title_and_resource() {
     assert_eq!(o["tags"], json!(["sap", "sd"]), "{o}");
     assert_eq!(o["title"], "Customer order", "{o}");
     assert_eq!(o["resource"], "https://sap.example/vbak", "{o}");
+    assert_eq!(
+        o["overview"],
+        json!({"tile": "Delayed shipments", "status_field": "status", "delayed_when": ["late", "delayed"], "sort_field": "days_late"}),
+        "{o}"
+    );
     // A skill that declares none of them carries none of them: the rows stay as they were.
     let plain = find("plain");
     for key in ["folder", "role", "tags", "title", "resource"] {
         assert!(plain.get(key).is_none(), "{key} on a plain skill: {plain}");
     }
+}
+
+#[tokio::test]
+async fn overview_validation_warns_without_refusing_the_skill() {
+    let p = start().await;
+    let token = p.mint_token(TENANT, Role::Agent);
+    let content = skill(
+        "fields:\n  - {name: status, kind: string}\noverview:\n  tile: Delayed shipments\n  status_field: missing\n  delayed_when: []\n",
+    );
+    let out = call(&p, &token, "validate", json!({"content": content})).await;
+    assert_eq!(out["ok"], true, "{out}");
+    assert_eq!(
+        issue(&out, "overview_status_field_unknown").unwrap()["severity"],
+        "warning"
+    );
+    assert_eq!(
+        issue(&out, "overview_delayed_when_invalid").unwrap()["severity"],
+        "warning"
+    );
 }
 
 #[tokio::test]

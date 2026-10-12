@@ -76,6 +76,45 @@ async fn seed(h: &Harness, pages: &[(&str, &'static str)]) {
     }
 }
 
+#[tokio::test]
+async fn overview_hook_is_lint_only_and_requires_a_declared_status_field() {
+    let h = fresh_harness();
+    let good = "---\nkind: skill\nid: shipment\ndescription: Shipments\nfields:\n  status:\n    kind: string\noverview:\n  tile: Delayed shipments\n  status_field: status\n  delayed_when: [late, delayed]\n---\n# Shipments\n";
+    assert!(
+        !h.indexer
+            .validate(None, good)
+            .await
+            .unwrap()
+            .iter()
+            .any(|i| i.code.starts_with("overview_"))
+    );
+    let bad = good.replace("status_field: status", "status_field: missing");
+    let issues = h.indexer.validate(None, &bad).await.unwrap();
+    assert!(
+        issues
+            .iter()
+            .any(|i| i.code == "overview_status_field_unknown" && i.severity == Severity::Warning)
+    );
+    let invalid = good.replace("delayed_when: [late, delayed]", "delayed_when: []");
+    assert!(
+        h.indexer
+            .validate(None, &invalid)
+            .await
+            .unwrap()
+            .iter()
+            .any(|i| i.code == "overview_delayed_when_invalid")
+    );
+    let backend_column = "---\nkind: skill\nid: shipment\ndescription: Shipments\nbackend:\n  kind: sql_view\n  instances: rows\n  filterable: status\noverview:\n  tile: Delayed shipments\n  status_field: status\n  delayed_when: [late]\n---\n# Shipments\n";
+    assert!(
+        !h.indexer
+            .validate(None, backend_column)
+            .await
+            .unwrap()
+            .iter()
+            .any(|i| i.code == "overview_status_field_unknown")
+    );
+}
+
 /// A skill page is not an instance of itself.
 ///
 /// `required_frontmatter` says what a skill's INSTANCES must carry. The skill
