@@ -1,5 +1,5 @@
 // The overview board's model: pure, no `vscode`. What needs a person today, what the agents are doing,
-// what is open, what just finished: five small answers built from data the other views already read.
+// what is open, what just finished: five core answers plus skill-declared tiles.
 import type { OverviewItem, OverviewTile, OverviewTone, OverviewView } from '../shared/protocol';
 import { cleanText } from '../shared/untrustedText';
 import type { AwaitingRow } from '../views/awaitingModel';
@@ -39,6 +39,16 @@ export interface OverviewInputs {
   runs: readonly RunRecord[];
   runner: Pick<RunnerDescription, 'text' | 'paused' | 'health'> | undefined;
   open: readonly OpenSkillCount[];
+  delayed?: readonly DelayedSkillCount[];
+}
+
+export interface DelayedSkillCount {
+  skill: string;
+  title: string;
+  count: number;
+  /** The read stopped at its page budget: `count` is a floor, shown as "N+". */
+  truncated?: boolean;
+  instances: readonly { pageId: string; title: string; sort?: string }[];
 }
 
 export interface Overview {
@@ -197,7 +207,20 @@ export function buildOverview(input: OverviewInputs): Overview {
 
   return {
     view: {
-      tiles: [decisions, agents, attention, openTile, recent],
+      tiles: [decisions, agents, attention, openTile, ...(input.delayed ?? []).map((d) => {
+        const id = `declared:${d.skill}` as const;
+        return tile({
+          id,
+          title: cleanText(d.title, 60),
+          headline: d.count === 0 ? 'None delayed' : `${d.count}${d.truncated ? '+' : ''} delayed`,
+          tone: d.count === 0 ? 'ok' : 'attention',
+          items: d.instances.slice(0, 3).map((r, i) => line(id, i,
+            { label: cleanText(r.title, 160), detail: r.sort && cleanText(r.sort, 80), tone: 'attention' },
+            { command: 'escurel.openInstance', args: [r.pageId] })),
+          more: d.count > d.instances.slice(0, 3).length ? d.count - d.instances.slice(0, 3).length : undefined,
+          empty: 'No delayed records.',
+        });
+      }), recent],
       focusOn: input.focusOn,
       updatedAt: new Date(input.nowMs).toISOString(),
     },

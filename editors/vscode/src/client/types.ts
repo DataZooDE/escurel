@@ -42,7 +42,7 @@ export interface Skill {
   owner_field: string | null;
   /** Admin callers only; absent for everyone else. */
   acl?: { read?: string[]; create?: string[]; update?: string[]; delete?: string[] };
-  backend: { kind: string };
+  backend: { kind: string; instances?: string; filterable?: Array<{ field: string; column: string }> };
   capabilities: { writable: boolean; granularity: string; search: string; supports_crdt: boolean };
   /** `overlay` (tenant-authored, editable) or `base@<pack>@<version>` (read-only at this node). */
   layer: string;
@@ -71,6 +71,7 @@ export interface Skill {
   sources?: Array<string | { title?: string; url?: string }>;
   /** Peacock's pointer to the report skill that charts this skill's instances. */
   viewer?: { report: string; param?: string };
+  overview?: { tile: string; status_field: string; delayed_when: Array<string | number | boolean>; sort_field?: string };
   /** What a follow-up from this skill can be: see `SkillAction`. Absent when none are declared. */
   actions?: SkillAction[];
   cascade?: { target?: string; max_depth?: number };

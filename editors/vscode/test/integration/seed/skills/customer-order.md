@@ -10,6 +10,14 @@ actions:
   - { name: assess-supplier-risk, kind: event, label: 'Assess supplier risk', event: supplier-risk }
 cascade:
   target: produced
+fields:
+  - { name: status, kind: enum, values: [open, late, delayed, delivered] }
+  - { name: days_late, kind: int }
+overview:
+  tile: Delayed shipments
+  status_field: status
+  delayed_when: [late, delayed]
+  sort_field: days_late
 ---
 
 # customer-order

@@ -33,6 +33,8 @@ omitted, never as `auto` (see `02-tool-surface.md`).
 A skill page may also declare the **workbench contract keys** (all
 optional; reported on `list_skills`, linted by `validate`):
 
+- `overview: {tile, status_field, delayed_when, sort_field?}` declares an Overview tile. `tile` is a non-empty title of at most 60 characters; `status_field` names a declared `fields:` entry or a backend `filterable:` field; `delayed_when` is a non-empty list of scalar values. `sort_field` optionally orders the tile's top lines descending. Invalid declarations produce warning issues (`overview_tile_invalid`, `overview_status_field_unknown`, `overview_delayed_when_invalid`) and never refuse a write. A rows-backed skill's status field must also be filterable for the tile to appear.
+
 - `summary: <one line>` — the purpose a skill list shows. Missing is a
   warning (`summary_missing`; the workbench shows `description` instead);
   over 200 characters is an error (`summary_too_long`).

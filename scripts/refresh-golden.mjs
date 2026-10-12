@@ -71,7 +71,13 @@ const info = await startGateway();
 const human = info.bearer;
 const page = 'markdown/instances/customer-order__order-4500123.md';
 
-save('list_skills', (await call(info, human, 'list_skills', {})).structuredContent);
+// The Evolve built-in skills (evolve_*, plan_policy) carry keys the typed Rust `Skill` does not model yet
+// (evolve_*_revision_binding...): the lossless-decode contract test would fail on them for a reason that has
+// nothing to do with the wire pieces this file pins. Keep the golden to the seed's own skills + `escurel`.
+const skills = (await call(info, human, 'list_skills', {})).structuredContent;
+skills.skills = skills.skills.filter((s) => !/^(evolve_|plan_policy$)/.test(s.id));
+for (const k of Object.keys(skills)) if (k.startsWith('evolve_')) delete skills[k]; // same reason: unmodelled top-level bindings
+save('list_skills', skills);
 save('expand_instance', (await call(info, human, 'expand', { page_id: page })).structuredContent);
 save('list_instances', (await call(info, human, 'list_instances', { skill_id: 'customer-order', limit: 2 })).structuredContent);
 

@@ -148,6 +148,7 @@ fn skill_to_wire(s: escurel_index::SkillInfo, is_admin: bool) -> TypesSkill {
         stale_after: s.stale_after,
         sources: s.sources,
         viewer: s.viewer,
+        overview: s.overview,
         actions: s.actions,
         cascade: s.cascade.map(|c| escurel_types::SkillCascade {
             target: c.target,

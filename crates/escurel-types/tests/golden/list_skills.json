@@ -25,6 +25,15 @@
         "sap",
         "sd"
       ],
+      "overview": {
+        "tile": "Delayed shipments",
+        "status_field": "status",
+        "delayed_when": [
+          "late",
+          "delayed"
+        ],
+        "sort_field": "days_late"
+      },
       "actions": [
         {
           "name": "assess-supplier-risk",
@@ -35,7 +44,25 @@
       ],
       "cascade": {
         "target": "produced"
-      }
+      },
+      "fields": [
+        {
+          "name": "status",
+          "kind": "enum",
+          "required": false,
+          "values": [
+            "open",
+            "late",
+            "delayed",
+            "delivered"
+          ]
+        },
+        {
+          "name": "days_late",
+          "kind": "int",
+          "required": false
+        }
+      ]
     },
     {
       "id": "escurel",

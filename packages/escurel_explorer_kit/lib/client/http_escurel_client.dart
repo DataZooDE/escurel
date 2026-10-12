@@ -381,6 +381,7 @@ class HttpEscurelClient implements EscurelClient {
             // overlay (tenant-authored, editable).
             layer: (s['layer'] as String?) ?? 'overlay',
             shadows: s['shadows'] as String?,
+            overview: SkillOverview.fromJson(s['overview']),
           ),
         )
         .toList();

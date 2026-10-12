@@ -153,4 +153,21 @@ describe('the overview board model', () => {
   it('carries the focus state so the board can offer the way out', () => {
     expect(buildOverview(base({ focusOn: true })).view.focusOn).toBe(true);
   });
+
+  it('shows a declared delayed tile with bounded lines and host-owned open actions', () => {
+    const delayed = [{ skill: 'shipments', title: 'Delayed shipments', count: 4,
+      instances: Array.from({ length: 4 }, (_, i) => ({ pageId: `markdown/instances/shipments/${i}.md`, title: `Order ${i}`, sort: String(4 - i) })) }];
+    const out = buildOverview(base({ delayed }));
+    const shown = out.view.tiles.find((t) => t.title === 'Delayed shipments')!;
+    expect(shown.headline).toBe('4 delayed');
+    expect(shown.tone).toBe('attention');
+    expect(shown.items[0]?.detail).toBe('4');
+    expect(shown.items).toHaveLength(3);
+    expect(out.actions.get(shown.items[0]!.key)).toEqual({ command: 'escurel.openInstance', args: ['markdown/instances/shipments/0.md'] });
+    expect(shown.more).toBe(1);
+    const empty = buildOverview(base({ delayed: [{ skill: 'shipments', title: 'Delayed shipments', count: 0, instances: [] }] }));
+    expect(empty.view.tiles.find((t) => t.title === 'Delayed shipments')?.headline).toBe('None delayed');
+    const floor = buildOverview(base({ delayed: [{ skill: 'shipments', title: 'Delayed shipments', count: 500, truncated: true, instances: [] }] }));
+    expect(floor.view.tiles.find((t) => t.title === 'Delayed shipments')?.headline).toBe('500+ delayed');
+  });
 });
