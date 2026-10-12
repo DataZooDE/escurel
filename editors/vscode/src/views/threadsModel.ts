@@ -1,10 +1,17 @@
 import type { NodeTarget, ThreadNode, ThreadView } from '../shared/protocol';
+import { describeClosedThread, type ClosedThread } from './closedThreads';
 
 export interface OutlineRow {
   id: string;
   label: string;
   description: string;
-  contextValue: 'escurel.run' | 'escurel.event' | 'escurel.changeset' | 'escurel.draft';
+  contextValue:
+    | 'escurel.run'
+    | 'escurel.event'
+    | 'escurel.changeset'
+    | 'escurel.draft'
+    | 'escurel.closedThreads'
+    | 'escurel.closedThread';
   kind: ThreadNode['kind'];
   /** The gateway's state, verbatim. A row's colour comes from THIS, not from its text. */
   state: string | null;
@@ -41,6 +48,36 @@ export function outlineRows(view: ThreadView, collapsed: ReadonlySet<string>): O
   }
   const root = byId.get(view.rootEventId);
   return root ? [visit(root)] : [];
+}
+
+/**
+ * The collapsed "Closed" group at the end of the outline: one row per closed thread (title,
+ * who closed it, when), opening the thread on click. Absent while nothing is closed, so the
+ * outline of a thread that never closes never mentions it.
+ */
+export function closedGroupRow(closed: ClosedThread[]): OutlineRow | undefined {
+  if (!closed.length) return undefined;
+  return {
+    id: 'escurel.closed-threads',
+    label: 'Closed',
+    description: `${closed.length} thread${closed.length === 1 ? '' : 's'}`,
+    contextValue: 'escurel.closedThreads',
+    kind: 'event',
+    state: null,
+    collapsibleState: 'collapsed',
+    target: { open: 'nothing' },
+    children: closed.map((thread) => ({
+      id: `closed:${thread.rootEventId}`,
+      label: thread.title,
+      description: describeClosedThread(thread),
+      contextValue: 'escurel.closedThread',
+      kind: 'event',
+      state: null,
+      collapsibleState: 'none',
+      target: { open: 'thread', rootEventId: thread.rootEventId },
+      children: [],
+    })),
+  };
 }
 
 /**

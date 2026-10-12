@@ -24,6 +24,8 @@ import { buildInspectors } from './thread/inspector';
 import { toThreadView } from './thread/threadModel';
 import { ThreadsTree } from './views/threads';
 import { expandableRows, type OutlineRow } from './views/threadsModel';
+import { THREAD_CLOSED_LABEL, foldClosedThreads } from './views/closedThreads';
+import { registerThreadCloseCommands } from './views/threadCloseCommands';
 import { registerStartInTerminal } from './start/terminal';
 import { registerOpenOriginal } from './commands/openOriginal';
 import { registerStartSkill } from './start/startSkill';
@@ -173,11 +175,31 @@ export function activate(context: vscode.ExtensionContext): EscurelApi | undefin
   );
   const details = DetailsViewProvider.register(context, threads);
   const runs = RunController.register(context, services);
+  // The Closed group is folded from the `escurel:thread-closed` label listing (no new tool):
+  // on reconnect, live when a close lands, and after this window's own close/reopen.
+  const refreshClosed = (): void => {
+    services.client
+      .listEvents({ label_skill: THREAD_CLOSED_LABEL, limit: 200 })
+      .then(
+        (page) => threadsTree.setClosedThreads(foldClosedThreads(page.events)),
+        () => undefined,
+      );
+  };
+  registerThreadCloseCommands(context, services, {
+    getOutlineRoot: () => outlineRoot,
+    refreshClosed,
+  });
+  context.subscriptions.push(
+    live.onDidReceiveEvent((event) => {
+      if (event.label_skill === THREAD_CLOSED_LABEL) refreshClosed();
+    }),
+  );
   context.subscriptions.push(
     services.onDidChange(() => {
       knowledge.refresh();
       inbox.refresh();
       awaiting.refresh();
+      refreshClosed();
     }),
   );
   PageAsUiEditor.register(context, () => services.client, services.onDidChange);

@@ -1,7 +1,8 @@
 import * as vscode from 'vscode';
 import type { NodeTarget, ThreadView } from '../shared/protocol';
 import { commandForTarget } from '../thread/nodeTarget';
-import { outlineRows, type OutlineRow } from './threadsModel';
+import type { ClosedThread } from './closedThreads';
+import { closedGroupRow, outlineRows, type OutlineRow } from './threadsModel';
 
 /**
  * What the tree shows when no thread is open. A tree-view MESSAGE, not a row: an empty-state
@@ -51,6 +52,8 @@ export class ThreadsTree implements vscode.TreeDataProvider<OutlineRow> {
   private collapsed: ReadonlySet<string> = new Set();
   /** The rows last handed to the tree. `reveal` needs the SAME objects, not rebuilt ones. */
   private rows: OutlineRow[] = [];
+  private threadRows: OutlineRow[] = [];
+  private closedGroup: OutlineRow | undefined;
   private readonly parents = new Map<string, OutlineRow | undefined>();
 
   /** Set as the tree view's `message`: shown only while there is nothing to list. */
@@ -66,7 +69,22 @@ export class ThreadsTree implements vscode.TreeDataProvider<OutlineRow> {
   setThread(view: ThreadView | undefined, collapsed: ReadonlySet<string> = new Set()): void {
     this.view = view;
     this.collapsed = collapsed;
-    this.rows = view ? outlineRows(view, this.collapsed) : [];
+    this.threadRows = view ? outlineRows(view, this.collapsed) : [];
+    this.rebuild();
+  }
+
+  /**
+   * The closed threads, folded elsewhere from the `escurel:thread-closed` label listing.
+   * Shown as one collapsed "Closed" group AFTER the open thread's rows; closing changes
+   * nothing in any thread, so the open outline keeps its rows either way.
+   */
+  setClosedThreads(closed: ClosedThread[]): void {
+    this.closedGroup = closedGroupRow(closed);
+    this.rebuild();
+  }
+
+  private rebuild(): void {
+    this.rows = this.closedGroup ? [...this.threadRows, this.closedGroup] : [...this.threadRows];
     this.parents.clear();
     const index = (rows: OutlineRow[], parent?: OutlineRow) => {
       for (const r of rows) {
