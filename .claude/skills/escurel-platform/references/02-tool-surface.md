@@ -34,6 +34,7 @@ section below.
 | `get_operation` | `operation_id` (the run-board page id start_operation returned) | `{operation_id, found, status?}` where `status` ∈ `pending\|running\|succeeded\|failed\|awaiting_human` | poll an async operation's current status, derived from its run board by precedence (a `failed` outranks a stale `running`); an ACL'd read — an unknown or unreadable operation is `{found: false}` (denial as absence) |
 
 Notes:
+- **`list_skills.overview`** carries a skill-authored `{tile, status_field, delayed_when, sort_field?}` declaration when valid; consumers can build a filtered Overview tile with existing `list_instances` calls. The engine assigns no meaning to delay values.
 - **`list_skills` is caller-scoped, and never carries group names.** A
   skill whose declared `acl.read` does not intersect your effective groups
   is **absent** from the catalogue — denial as absence, exactly like
