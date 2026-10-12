@@ -179,8 +179,9 @@ Every event carries three more fields on the wire: `kind`, `root_event_id`,
   `escurel:run-control` for a human's control requests, `escurel:runner-status`
   for runner health; the pre-existing `escurel:run-status` is a workflow
   *operation's* status and stays as it is). Admin-only to capture — a forged
-  `run-finished` would be a forged run — with one carve-out, `escurel:run-control`
-  (below). A system event captured with an
+  `run-finished` would be a forged run — with three carve-outs,
+  `escurel:run-control` (below), `escurel:review-comment` and
+  `escurel:thread-closed` (both below). A system event captured with an
   `instance_page_id` is stored `processed` on that page at once (no
   `assign_event`: it was never inbox work); without one it sits unassigned.
   **The runner never dispatches a system event, nor anything under an
@@ -347,6 +348,41 @@ reaches an `event_subscribe` filtered on that page or lineage. The
 reserved prefix is also what keeps the runner out: every
 `escurel:`-prefixed event is dropped at its gate, whereas a plain
 `review-comment` label names no skill and its run would dead-letter.
+
+## Closing a thread (`escurel:thread-closed`)
+
+A human dismisses a thread by capturing an event under the reserved
+`escurel:thread-closed` label, with a JSON body naming the thread's root:
+
+```json
+{ "label_skill": "escurel:thread-closed", "title": "close",
+  "source": "workbench", "mime": "application/json",
+  "body": "{\"action\":\"close\",\"root_event_id\":\"01H…\",\"reason\":\"done\"}" }
+```
+
+The body is JSON `{action: close|reopen, root_event_id, reason?}`. Like
+`escurel:run-control`, this is a carve-out of the reserved `escurel:`
+namespace: a NON-admin may write it, authorised by the root's own
+readability (whoever may see a thread may close or reopen it; an unknown
+or unreadable root is refused as `event_not_found`, the same answer
+either way, so the surface confirms no thread's existence). A run-bound
+machine token is refused the same way. A malformed request is a plain
+`invalid_params`. Re-asking for the state the thread already has is a
+no-op answer (`already: true`), not an error.
+
+It is stored `kind: system` on the root's page — a close is not inbox
+work — with `provenance.thread = {action, root_event_id, root_title,
+reason?, requested_by}` stamped from the token (a block you supply is
+replaced). Read which threads are closed with
+`list_events { label_skill: "escurel:thread-closed" }` (an `escurel:`
+label implies `include_system`); the latest mark per root wins, so a
+reopen removes the thread from the closed set. Closing writes nothing to
+the thread's pages, and a closed thread still opens normally.
+Closing is shared and visible: it hides the thread from the Threads list of
+everyone who can see it, the Closed group shows who closed it and when, and
+anyone who can read the thread can reopen it. `reason` is at most 200
+characters; the stored `root_title` is cut to 200; every other `provenance`
+key the caller sends is dropped (only the server's own `thread` block is kept).
 
 ## What the runner reads off a skill page
 
