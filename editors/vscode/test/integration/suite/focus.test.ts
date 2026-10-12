@@ -56,6 +56,7 @@ suite('Focus mode', () => {
     // Forged messages: a key it never offered, a path, a tile that is not one, a prototype name.
     assert.equal(await api.overview.onMessage({ type: 'open', key: 'decisions:999' }), false);
     assert.equal(await api.overview.onMessage({ type: 'open', key: '../../etc/passwd' }), false);
+    assert.equal(await api.overview.onMessage({ type: 'open', key: 'declared:shipments:0' }), false);
     assert.equal(await api.overview.onMessage({ type: 'open', key: 42 }), false);
     assert.equal(await api.overview.onMessage({ type: 'open-tile', tile: '__proto__' }), false);
     assert.equal(await api.overview.onMessage({ type: 'open-tile', tile: 'constructor' }), false);

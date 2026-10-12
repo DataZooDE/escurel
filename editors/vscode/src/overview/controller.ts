@@ -4,7 +4,6 @@ import type { FocusMode } from '../focus/focusMode';
 import { log } from '../log';
 import type {
   OverviewHostToWebview,
-  OverviewTile,
   OverviewWebviewToHost,
 } from '../shared/protocol';
 import { safePost } from '../shared/safePost';
@@ -16,7 +15,7 @@ import { buildOverview, type OverviewAction } from './model';
 const REFRESH_MS = 20_000;
 
 /** The full view each tile belongs to: a fixed table, so a message can name a tile and nothing else. */
-const TILE_VIEW: Readonly<Record<OverviewTile['id'], string>> = {
+const TILE_VIEW: Readonly<Record<string, string>> = {
   decisions: 'escurel.focusAwaiting',
   agents: 'escurel.focusRuns',
   attention: 'escurel.focusRuns',
@@ -32,6 +31,7 @@ const TILE_VIEW: Readonly<Record<OverviewTile['id'], string>> = {
 export class OverviewController implements vscode.Disposable {
   private panel: vscode.WebviewPanel | undefined;
   private actions = new Map<string, OverviewAction>();
+  private declaredTiles = new Map<string, string>();
   private readonly skillCache = new Map<string, string>();
   private timer: NodeJS.Timeout | undefined;
   private loadSeq = 0;
@@ -46,6 +46,7 @@ export class OverviewController implements vscode.Disposable {
       services.onDidChange(() => {
         this.skillCache.clear();
         this.actions = new Map();
+        this.declaredTiles = new Map();
         void this.load();
       }),
     );
@@ -101,6 +102,7 @@ export class OverviewController implements vscode.Disposable {
       viewSub.dispose();
       this.panel = undefined;
       this.actions = new Map();
+      this.declaredTiles = new Map();
       this.loadSeq += 1;
     });
   }
@@ -125,6 +127,11 @@ export class OverviewController implements vscode.Disposable {
       }
       case 'open-tile': {
         const command = Object.hasOwn(TILE_VIEW, m.tile) ? TILE_VIEW[m.tile] : undefined;
+        const skill = this.declaredTiles.get(m.tile);
+        if (skill) {
+          await vscode.commands.executeCommand('escurel.viewSkill', skill);
+          return true;
+        }
         if (!command) return false;
         await vscode.commands.executeCommand(command);
         return true;
@@ -152,10 +159,12 @@ export class OverviewController implements vscode.Disposable {
       if (!this.panel || mine !== this.loadSeq) return;
       const out = buildOverview({ ...inputs, nowMs: Date.now(), focusOn: this.focus.isOn() });
       this.actions = out.actions;
+      this.declaredTiles = new Map((inputs.delayed ?? []).map((d) => [`declared:${d.skill}`, d.skill]));
       this.post({ type: 'overview', view: out.view });
     } catch (err) {
       if (!this.panel || mine !== this.loadSeq) return;
       this.actions = new Map();
+      this.declaredTiles = new Map();
       this.post({ type: 'overview-error', message: describeError(err) });
     }
   }

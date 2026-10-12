@@ -28,6 +28,7 @@ describe('golden wire files', () => {
   it('list_skills: every skill decodes, and the actions are objects the host can read', () => {
     const { skills } = golden<{ skills: Skill[] }>('list_skills');
     expect(skills.length).toBeGreaterThan(0);
+    expect(skills[0]?.overview).toEqual({ tile: 'Delayed shipments', status_field: 'status', delayed_when: ['late', 'delayed'], sort_field: 'days_late' });
     for (const s of skills) {
       expect(typeof s.id).toBe('string');
       expect(Array.isArray(s.required_frontmatter)).toBe(true);

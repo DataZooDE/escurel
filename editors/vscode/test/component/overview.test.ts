@@ -21,6 +21,17 @@ async function sent(el: Element, click: () => void): Promise<OverviewWebviewToHo
 }
 
 describe('<escurel-overview>', () => {
+  it('renders a skill-declared tile and sends only the offered line key', async () => {
+    const view = structuredClone(morning);
+    view.tiles.push({ id: 'declared:shipments', title: 'Delayed shipments', headline: '1 delayed',
+      tone: 'attention', empty: 'No delayed records.', items: [
+        { key: 'declared:shipments:0', label: 'Order A', detail: '4', tone: 'attention' },
+      ] });
+    const el = await render(view);
+    expect(text(qa(el, 'section.tile h2').at(-1))).to.equal('Delayed shipments');
+    const line = q(el, '[data-key="declared:shipments:0"]') as HTMLButtonElement;
+    expect(await sent(el, () => line.click())).to.deep.equal({ type: 'open', key: 'declared:shipments:0' });
+  });
   it('shows the five tiles in the order a day starts, each with its answer in words', async () => {
     const el = await render();
     expect(qa(el, 'section.tile h2').map(text)).to.deep.equal([
