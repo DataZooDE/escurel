@@ -410,14 +410,21 @@ what it reports changes (a run starts or ends, a tenant is paused),
 { "label_skill": "escurel:runner-status", "newest_first": true, "limit": 1 }
 ```
 
-The body: `runner_id`, `version`, `harness`, `tenant`, `live_runs`
+The body: `runner_id`, `version`, `harness` (the default), `harness_allow`
+(the published allow-list: the harness names a manual start may ask for,
+sorted, names only), `tenant`, `live_runs`
 (`[{run_id, event_id, instance_page_id}]`), `paused_tenants`, `runs`
 (`{pending, processed, failed, dead_letter, cancelled, total}` from the
 ledger), `throttled` (`{runs_per_min, max_concurrent, paused}` counters),
 `harness_permits_available`, `draining`, `uptime_s`, `last_poll_age_ms`
 (`null` until the first poll). A runner that has gone quiet is one whose
 latest row's `at` is older than its interval. The gateway keeps a tenant's
-last 50 rows, so the label never grows.
+last 50 rows, so the label never grows. A workbench with no `harness`
+configured offers `harness_allow` as a picker when it holds more than one
+name (`Use default` first, nothing remembered) and never sends a name
+outside it (a configured name that is not on the list gets a warning and a
+choice: start with the runner default, open the setting, or cancel); with no
+published list it sends none.
 
 ### Tails page by ingestion order
 

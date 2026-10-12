@@ -10,6 +10,11 @@ import type { StartMode } from '../shared/protocol';
 import type { Services } from '../services';
 import { pickTarget } from './pickTarget';
 import { watchPlan } from './planWatch';
+import { chooseHarness } from './chooseHarness';
+import { cleanText } from '../shared/untrustedText';
+import type { EscurelClient } from '../client';
+import { parseRunnerStatusBody, type RunnerStatusBody } from '../views/runnerModel';
+import { readRunnerStatus } from '../views/runsLoader';
 import {
   bindCandidateSelection,
   bindComparisonSelection,
@@ -169,6 +174,68 @@ interface ModeQuickPickItem extends vscode.QuickPickItem {
   mode: StartMode;
 }
 
+interface HarnessQuickPickItem extends vscode.QuickPickItem {
+  /** Absent for the 'Use default' row, which sends no harness. */
+  harness?: string | undefined;
+}
+
+export type HarnessPick = { cancelled: true } | { cancelled: false; harness?: string };
+
+/**
+ * The harness a start sends (BACKEND_GAPS PR-10): the `escurel.harness` setting when it names a
+ * harness the runner allows; a QuickPick of the published allow-list when the setting is blank
+ * and the list has more than one entry ('Use default' first and preselected, nothing remembered);
+ * otherwise none, and the runner runs its default. Never sends a harness outside the published
+ * list; with an unknown status (an old runner, or a read that failed) it keeps today's behaviour.
+ */
+export async function pickHarness(
+  client: EscurelClient,
+  settingsHarness: string,
+): Promise<HarnessPick> {
+  let status: RunnerStatusBody | null = null;
+  try {
+    const read = await readRunnerStatus(client);
+    status = read.event ? parseRunnerStatusBody(read.event) : null;
+  } catch {
+    status = null;
+  }
+  const choice = chooseHarness(settingsHarness, status);
+  if (choice.kind === 'send') return { cancelled: false, harness: choice.harness };
+  if (choice.kind === 'none') return { cancelled: false };
+  if (choice.kind === 'refused') {
+    // The user named a harness this runner does not offer. Say so; never send the unlisted name.
+    const allowed = choice.allowed.map((h) => cleanText(h, 40)).join(', ');
+    const answer = await vscode.window.showWarningMessage(
+      `The setting escurel.harness is "${cleanText(choice.configured, 40)}", but this runner only allows: ${allowed}. Start with the runner default, or cancel?`,
+      'Start with default',
+      'Cancel',
+      'Open settings',
+    );
+    if (answer === 'Start with default') return { cancelled: false };
+    if (answer === 'Open settings') {
+      void vscode.commands.executeCommand('workbench.action.openSettings', 'escurel.harness');
+    }
+    return { cancelled: true };
+  }
+  const items: HarnessQuickPickItem[] = [
+    {
+      label: 'Use default',
+      description: choice.defaultHarness
+        ? `Runner default (${choice.defaultHarness})`
+        : 'Runner default',
+    },
+    ...choice.harnesses.map((harness) => ({ label: harness, harness })),
+  ];
+  const picked = await vscode.window.showQuickPick(items, {
+    placeHolder: 'Choose the agent engine for this run',
+  });
+  if (!picked) return { cancelled: true };
+  if (picked.harness === undefined) return { cancelled: false };
+  // The rows came from the published list, but the check is the point: never send outside it.
+  if (!choice.harnesses.includes(picked.harness)) return { cancelled: false };
+  return { cancelled: false, harness: picked.harness };
+}
+
 /**
  * Registers `escurel.startSkill`.
  */
@@ -276,11 +343,20 @@ export function registerStartSkill(
 
       // 4. Resolve action
       const config = readConfig();
+      // The terminal runs the configured shell command, not a runner harness: no pick there.
+      let harness: string | undefined;
+      if (mode !== 'terminal') {
+        const pick = await pickHarness(client, config.harness);
+        if (pick.cancelled) {
+          return; // cancelled
+        }
+        harness = pick.harness;
+      }
       const action = resolveStartAction({
         skill,
         pageId,
         mode,
-        harness: config.harness,
+        harness,
       });
 
       if (action.type === 'terminal') {

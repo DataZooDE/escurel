@@ -409,6 +409,7 @@ async fn main() -> anyhow::Result<()> {
                 runner_id: config.runner_id.clone(),
                 version: config.version.clone(),
                 harness: config.harness.clone(),
+                harness_allow: config.harness_allow.clone(),
             },
             config.status_interval,
         ));
@@ -3431,6 +3432,9 @@ struct StatusIdentity {
     runner_id: String,
     version: String,
     harness: String,
+    /// The harness names a manual start may ask for (`ESCUREL_RUNNER_HARNESS_ALLOW`).
+    /// Names only — never paths, commands, env or secrets.
+    harness_allow: Vec<String>,
 }
 
 /// The runner's health as one JSON body (workbench backend P2-4). Split
@@ -3457,10 +3461,16 @@ fn status_snapshot(
         })
         .collect();
     live.sort_by(|a, b| a["run_id"].as_str().cmp(&b["run_id"].as_str()));
+    // Names only, sorted, so the workbench can offer exactly the harnesses a
+    // manual start may ask for (BACKEND_GAPS PR-10). The allow-list holds no
+    // paths, commands, env or secrets — only the selectable names.
+    let mut harness_allow = who.harness_allow.clone();
+    harness_allow.sort();
     let stable = json!({
         "runner_id": who.runner_id,
         "version": who.version,
         "harness": who.harness,
+        "harness_allow": harness_allow,
         "tenant": tenant,
         "live_runs": live,
         "paused_tenants": state.governor.paused_tenants(),
