@@ -203,6 +203,171 @@ pub(super) struct ReviewComment {
     pub review: Value,
 }
 
+/// The label a thread close/reopen request is captured under (VS Code
+/// workbench PR-9). One label with a body `{action: close|reopen, ...}`,
+/// like `escurel:run-control`'s one label with `{action: cancel|retry|…}`:
+/// the runner drops every `escurel:`-prefixed event, so a close is never
+/// mistaken for work to dispatch.
+pub(super) const THREAD_CLOSED_LABEL: &str = "escurel:thread-closed";
+
+/// The actions a thread request may carry.
+const THREAD_ACTIONS: [&str; 2] = ["close", "reopen"];
+
+/// The longest `reason` a close may carry, and the longest `root_title` stamped, in characters.
+const THREAD_TEXT_MAX: usize = 200;
+
+/// How many of the thread's own label rows to scan for the latest
+/// close/reopen. Closes are rare per root; the scan is newest-first, so
+/// the first readable row with a `thread.action` is the current state.
+const THREAD_SCAN: usize = 8;
+
+/// What `capture_event` stores for an authorised thread close/reopen.
+pub(super) struct ThreadClose {
+    /// The root's page: the request is filed into the thread's own record.
+    pub instance_page_id: Option<String>,
+    pub root_event_id: String,
+    /// The `provenance.thread` block, requester stamped.
+    pub thread: Value,
+    /// The latest close/reopen row for this root the caller may read, if
+    /// any — so re-asking for the state it already has is a no-op answer.
+    pub current: Option<escurel_index::EventInfo>,
+}
+
+fn thread_mistake(msg: impl std::fmt::Display) -> JsonRpcError {
+    JsonRpcError::invalid_params(format!("capture_event: `{THREAD_CLOSED_LABEL}`: {msg}"))
+}
+
+/// One message for "no such thread", "not yours to see" and "a machine
+/// asked": a thread the caller may not read must not be confirmed to
+/// exist, and a run-bound token learns nothing either.
+fn thread_denied() -> JsonRpcError {
+    JsonRpcError::invalid_params(
+        "capture_event: `escurel:thread-closed`: no such thread, or not yours to see".to_owned(),
+    )
+    .with_code("event_not_found", false)
+}
+
+/// Authorise a thread close/reopen against the caller and the root it names.
+///
+/// The gate is the root's own readability — whoever may SEE a thread may
+/// close or reopen it — and a root the caller may not see is refused
+/// exactly as a missing one is. A machine caller (a run-bound token, a
+/// narrowed agent, one acting for a runner) is refused the same way even
+/// when the root is readable: closing is a human dismissal, and #686's
+/// bookkeeper bar already keeps that whole class off `escurel:` labels.
+/// A malformed request (no action, an unknown one, no root, a body that
+/// is not JSON) is a caller mistake: plain `invalid_params`, no
+/// `event_not_found`.
+pub(super) async fn authorise_thread_close(
+    indexer: &Indexer,
+    caller: &AclCaller<'_>,
+    body: &str,
+) -> Result<ThreadClose, JsonRpcError> {
+    let req: Value = serde_json::from_str(body).map_err(|e| {
+        thread_mistake(format!(
+            "the body is JSON `{{action, root_event_id, reason?}}` ({e})"
+        ))
+    })?;
+    let Some(action) = text(&req["action"]) else {
+        return Err(thread_mistake(format!(
+            "`action` is one of {}",
+            THREAD_ACTIONS.join("|")
+        )));
+    };
+    if !THREAD_ACTIONS.contains(&action) {
+        return Err(thread_mistake(format!(
+            "unknown action `{action}`; one of {}",
+            THREAD_ACTIONS.join("|")
+        )));
+    }
+    let Some(root_id) = text(&req["root_event_id"]) else {
+        return Err(thread_mistake(format!(
+            "`{action}` names a `root_event_id`"
+        )));
+    };
+    if super::tools_write::is_machine_caller(caller) {
+        return Err(thread_denied());
+    }
+    let root = indexer
+        .get_event(root_id)
+        .await
+        .map_err(|e| JsonRpcError::internal(format!("capture_event thread-closed: {e}")))?
+        .ok_or_else(thread_denied)?;
+    if !indexer
+        .may_read_event(caller, &root)
+        .await
+        .map_err(|e| JsonRpcError::internal(format!("capture_event thread-closed acl: {e}")))?
+    {
+        return Err(thread_denied());
+    }
+    let mut thread = json!({
+        "action": action,
+        "root_event_id": root.event_id,
+        "requested_by": caller.subject,
+    });
+    if let Some(reason) = text(&req["reason"]) {
+        // A human's free text, shown in other people's outlines: bounded here.
+        if reason.chars().count() > THREAD_TEXT_MAX {
+            return Err(thread_mistake(format!(
+                "`reason` is at most {THREAD_TEXT_MAX} characters"
+            )));
+        }
+        thread["reason"] = json!(reason);
+    }
+    // The root's title at close time, so the outline's "Closed" group reads
+    // it off the label listing instead of fetching every closed root (event
+    // rows are immutable, so it cannot go stale).
+    if !root.title.is_empty() {
+        // The server's own data, but unbounded: stamped cut on a character boundary.
+        let title: String = root.title.chars().take(THREAD_TEXT_MAX).collect();
+        thread["root_title"] = json!(title);
+    }
+    // The current state, newest first: the first row this caller may read
+    // that carries a close/reopen action. Rows on pages the caller may not
+    // read are skipped, not trusted — the state a caller sees is the state
+    // it may see.
+    let page = indexer
+        .list_events_filtered_page(
+            &EventListFilter {
+                root_event_id: Some(root.event_id.clone()),
+                label_skill: Some(THREAD_CLOSED_LABEL.to_owned()),
+                include_system: true,
+                ..Default::default()
+            },
+            false,
+            THREAD_SCAN,
+            None,
+        )
+        .await
+        .map_err(|e| JsonRpcError::internal(format!("capture_event thread-closed: {e}")))?;
+    let mut current = None;
+    for e in &page.events {
+        let action = e
+            .provenance
+            .get("thread")
+            .and_then(|t| t.get("action"))
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        if !THREAD_ACTIONS.contains(&action) {
+            continue;
+        }
+        let readable = indexer
+            .may_read_event(caller, e)
+            .await
+            .map_err(|e| JsonRpcError::internal(format!("capture_event thread-closed acl: {e}")))?;
+        if readable {
+            current = Some(e.clone());
+            break;
+        }
+    }
+    Ok(ThreadClose {
+        instance_page_id: root.instance_page_id.clone(),
+        root_event_id: root.event_id.clone(),
+        thread,
+        current,
+    })
+}
+
 /// Authorise a review comment against the draft it is about.
 ///
 /// The gate is the draft's own visibility — a reviewer who may SEE a draft

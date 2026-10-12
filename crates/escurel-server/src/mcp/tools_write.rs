@@ -1878,7 +1878,7 @@ pub(super) async fn tool_capture_event(
     // terminal status). Enforced unconditionally, independent of the event ACL
     // mode (which defaults Off): the runner records status with its own admin
     // identity, so only a non-admin caller is refused.
-    // The one carve-out (workbench backend P2-2): `escurel:run-control` is
+    // The first carve-out (workbench backend P2-2): `escurel:run-control` is
     // how a human asks the runner to cancel/retry/pause/resume/requeue.
     // Authorised per action against the run's target page (see
     // `tools_control`), then stored as bookkeeping on that page with the
@@ -1903,7 +1903,37 @@ pub(super) async fn tool_capture_event(
     } else {
         None
     };
-    // The second carve-out (VS Code workbench PR-3): `escurel:review-comment`
+    // The second carve-out (VS Code workbench PR-9): `escurel:thread-closed`
+    // is how a human dismisses a thread (or reopens it). Authorised by the
+    // root's own readability, then stored as bookkeeping on the root's page
+    // with the requester stamped — the caller's own kind/target/thread
+    // block are replaced, never merged. Re-asking for the state the thread
+    // already has answers the stored row with `already: true` and files
+    // nothing, so closing a closed thread is a no-op, not an error.
+    let thread_close = if a.label_skill == super::tools_control::THREAD_CLOSED_LABEL {
+        let t = super::tools_control::authorise_thread_close(indexer, &caller, &a.body).await?;
+        if t.current.as_ref().is_some_and(|c| {
+            c.provenance.get("thread").and_then(|th| th.get("action")) == t.thread.get("action")
+        }) {
+            let mut event = event_to_json(t.current.as_ref().expect("checked above"));
+            event["already"] = json!(true);
+            return Ok(event);
+        }
+        a.kind = Some("system".to_owned());
+        a.instance_page_id = t.instance_page_id.clone();
+        // Same tail-cursor reason as a control request above: a close
+        // backdated by its caller could sort before a subscriber's cursor.
+        a.at = Some(escurel_index::now_rfc3339_micros());
+        // Only the server's own `thread` block survives: whatever else the
+        // caller sent in `provenance` (a runner lineage, a review or control
+        // block, another requester) is dropped, because downstream readers
+        // interpret those keys and a human's close request must not forge them.
+        a.provenance = Some(json!({ "thread": t.thread.clone() }));
+        Some(t)
+    } else {
+        None
+    };
+    // The third carve-out (VS Code workbench PR-3): `escurel:review-comment`
     // is how a reviewer says something about a draft. Authorised by the
     // draft's own visibility, then filed as bookkeeping on the draft's target
     // page — a comment is not inbox work, and the reserved prefix is what
@@ -1945,6 +1975,7 @@ pub(super) async fn tool_capture_event(
         && !bookkeeper
         && control.is_none()
         && comment.is_none()
+        && thread_close.is_none()
     {
         return Err(JsonRpcError::invalid_params(
             "capture_event: the `escurel:` label namespace is reserved".to_owned(),
@@ -1968,6 +1999,7 @@ pub(super) async fn tool_capture_event(
         && !bookkeeper
         && control.is_none()
         && comment.is_none()
+        && thread_close.is_none()
     {
         return Err(JsonRpcError::invalid_params(
             "capture_event: `kind: system` events are written by the runner and the \
@@ -2248,9 +2280,10 @@ pub(super) async fn tool_capture_event(
     if a.at.as_deref().is_none_or(|s| s.trim().is_empty()) {
         a.at = Some(escurel_index::now_rfc3339_micros());
     }
-    let (root_event_id, run_id) = match &control {
-        Some(c) => (c.root_event_id.clone(), c.run_id.clone()),
-        None => lineage_from_provenance(a.provenance.as_ref()),
+    let (root_event_id, run_id) = match (&control, &thread_close) {
+        (Some(c), _) => (c.root_event_id.clone(), c.run_id.clone()),
+        (_, Some(t)) => (Some(t.root_event_id.clone()), None),
+        _ => lineage_from_provenance(a.provenance.as_ref()),
     };
     let requested = NewEvent {
         event_id: a.event_id,
