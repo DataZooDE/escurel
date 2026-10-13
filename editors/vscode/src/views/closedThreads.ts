@@ -1,4 +1,4 @@
-import type { CaptureEventRequest, Event } from '../client/types';
+import type { CaptureEventRequest, Event, EventsPage, ListEventsRequest } from '../client/types';
 import { formatAge } from '../shared/time';
 import { cleanText } from '../shared/untrustedText';
 
@@ -91,6 +91,43 @@ export function foldClosedThreads(events: Event[]): ClosedThread[] {
       closedAt: mark.at,
       ...(mark.reason ? { reason: mark.reason } : {}),
     }));
+}
+
+export interface LoadedClosedThreads {
+  threads: ClosedThread[];
+  /** True when the page budget ran out before the history did: older closes may be missing. */
+  truncated: boolean;
+}
+
+/**
+ * The closed threads of a tenant, read from the `escurel:thread-closed` listing NEWEST FIRST so the
+ * latest mark per root is always among the pages read (oldest-first, a window of the first N marks
+ * misses every later reopen and every recent close of a long history). Bounded: at most `maxPages`
+ * pages of `pageSize`; `truncated` says when older marks were left unread. A failing page rejects, so
+ * the caller decides whether to keep or clear what it showed.
+ */
+export async function loadClosedThreads(
+  listEvents: (req: ListEventsRequest) => Promise<EventsPage>,
+  options: { pageSize?: number; maxPages?: number } = {},
+): Promise<LoadedClosedThreads> {
+  const pageSize = options.pageSize ?? 200;
+  const maxPages = options.maxPages ?? 5;
+  const events: Event[] = [];
+  let cursor: string | undefined;
+  let more = false;
+  for (let page = 0; page < maxPages; page += 1) {
+    const got = await listEvents({
+      label_skill: THREAD_CLOSED_LABEL,
+      newest_first: true,
+      limit: pageSize,
+      ...(cursor ? { cursor } : {}),
+    });
+    events.push(...got.events);
+    more = got.has_more === true && !!got.next_cursor;
+    if (!more) break;
+    cursor = got.next_cursor;
+  }
+  return { threads: foldClosedThreads(events), truncated: more };
 }
 
 /** `Closed by <who> · <age>`, with the reason when the closer left one. */

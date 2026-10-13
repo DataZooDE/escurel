@@ -5,6 +5,7 @@ import {
   buildThreadCloseEvent,
   describeClosedThread,
   foldClosedThreads,
+  loadClosedThreads,
   resolveThreadRoot,
 } from '../../src/views/closedThreads';
 import { closedGroupRow } from '../../src/views/threadsModel';
@@ -218,5 +219,76 @@ describe('untrusted text on a closed row', () => {
     const e = mark('E2', 'R2', 'close', '2026-10-12T10:00:00Z', { title: 'R9999 open me' });
     const row = closedGroupRow(foldClosedThreads([e]))!;
     expect(row.children[0]!.target).toEqual({ open: 'thread', rootEventId: 'R2' });
+  });
+});
+
+
+describe('loadClosedThreads', () => {
+  /** A fake listing over `all` (oldest first, as the gateway stores them): serves newest_first pages by cursor. */
+  function listing(all: Event[]) {
+    const calls: Array<{ newest_first?: boolean; cursor?: string; limit?: number }> = [];
+    const list = async (req: { newest_first?: boolean; cursor?: string; limit?: number; label_skill?: string }) => {
+      calls.push({ newest_first: req.newest_first, cursor: req.cursor, limit: req.limit });
+      const ordered = req.newest_first ? [...all].reverse() : [...all];
+      const start = req.cursor ? Number(req.cursor) : 0;
+      const limit = req.limit ?? 50;
+      const events = ordered.slice(start, start + limit);
+      const end = start + events.length;
+      return {
+        events,
+        ...(events.length ? { next_cursor: String(end) } : {}),
+        ...(end < ordered.length ? { has_more: true } : {}),
+      };
+    };
+    return { list, calls };
+  }
+
+  /** `n` marks: every thread t0..t(n-1) closed once, in order. */
+  function closes(n: number): Event[] {
+    return Array.from({ length: n }, (_, i) =>
+      mark(`e${String(i).padStart(5, '0')}`, `t${i}`, 'close', `2026-10-12T10:${String(Math.floor(i / 60)).padStart(2, '0')}:${String(i % 60).padStart(2, '0')}Z`),
+    );
+  }
+
+  it('asks newest first, so the most recent marks are never the ones cut off', async () => {
+    const { list, calls } = listing(closes(5));
+    await loadClosedThreads(list);
+    expect(calls[0]?.newest_first).toBe(true);
+  });
+
+  it('sees a reopen that lies beyond the first 200 marks (the oldest-first window missed it)', async () => {
+    // 300 closes, then thread t0 (the OLDEST mark) is reopened last: oldest-first limit 200 never reads the reopen.
+    const all = [...closes(300), mark('e99999', 't0', 'reopen', '2026-10-12T23:00:00Z')];
+    const { list } = listing(all);
+    const { threads } = await loadClosedThreads(list);
+    expect(threads.map((t) => t.rootEventId)).not.toContain('t0');
+    expect(threads).toHaveLength(299);
+  });
+
+  it('shows the newest closes of a long history', async () => {
+    const { list } = listing(closes(450));
+    const { threads } = await loadClosedThreads(list, { pageSize: 200, maxPages: 5 });
+    expect(threads[0]?.rootEventId).toBe('t449');
+    expect(threads).toHaveLength(450);
+  });
+
+  it('stops after maxPages and says it was cut off', async () => {
+    const { list, calls } = listing(closes(1000));
+    const out = await loadClosedThreads(list, { pageSize: 100, maxPages: 3 });
+    expect(calls).toHaveLength(3);
+    expect(out.threads).toHaveLength(300);
+    expect(out.truncated).toBe(true);
+  });
+
+  it('a short history is complete and not truncated', async () => {
+    const { list, calls } = listing(closes(3));
+    const out = await loadClosedThreads(list);
+    expect(out.truncated).toBe(false);
+    expect(out.threads).toHaveLength(3);
+    expect(calls).toHaveLength(1);
+  });
+
+  it('a failing page rejects (the caller keeps what it had, or clears it for another tenant)', async () => {
+    await expect(loadClosedThreads(async () => { throw new Error('gateway down'); })).rejects.toThrow('gateway down');
   });
 });
