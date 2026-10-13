@@ -489,14 +489,7 @@ pub(super) async fn tool_update_page_ungated(
     // `scenario`, so every check below must see the rewritten write rather
     // than the caller's base-timeline version of it.
     if let Some(branch) = a.branch.clone() {
-        match crate::mcp::tools_branches::require_open_branch(
-            indexer,
-            &caller,
-            &branch,
-            crate::mcp::tools_branches::BranchUse::Write,
-        )
-        .await?
-        {
+        match crate::mcp::tools_branches::require_open_branch(indexer, &caller, &branch).await? {
             Ok(_) => {}
             Err(refusal) => return Ok(refusal),
         }
@@ -522,13 +515,8 @@ pub(super) async fn tool_update_page_ungated(
         // A hand-written `scenario:` naming a REGISTERED branch is a write into that branch: it
         // answers to the same ownership rule as the `branch:` argument (the merge selects by
         // scenario, so a planted page would land). An unregistered name stays the legacy overlay.
-        if let Err(refusal) = crate::mcp::tools_branches::require_open_branch(
-            indexer,
-            &caller,
-            &name,
-            crate::mcp::tools_branches::BranchUse::Write,
-        )
-        .await?
+        if let Err(refusal) =
+            crate::mcp::tools_branches::require_open_branch(indexer, &caller, &name).await?
         {
             return Ok(refusal);
         }
@@ -1221,14 +1209,7 @@ pub(super) async fn tool_delete_page(
     // IS the branch's statement about the slug, and deleting the row would
     // make the branch fall back to the base twin instead of hiding it.
     if let Some(branch) = a.branch.clone() {
-        match crate::mcp::tools_branches::require_open_branch(
-            indexer,
-            &caller,
-            &branch,
-            crate::mcp::tools_branches::BranchUse::Write,
-        )
-        .await?
-        {
+        match crate::mcp::tools_branches::require_open_branch(indexer, &caller, &branch).await? {
             Ok(_) => {}
             Err(refusal) => return Ok(refusal),
         }

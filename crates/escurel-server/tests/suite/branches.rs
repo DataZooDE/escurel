@@ -61,6 +61,33 @@ async fn start() -> EscurelProcess {
     .await
 }
 
+/// [`start`] with a signing identity, so a person can mint a per-run agent token (`mint_agent_token`).
+async fn start_signing() -> EscurelProcess {
+    EscurelProcess::spawn(Opts {
+        auth: AuthMode::TestIssuer,
+        config_overrides: ConfigOverrides {
+            live_crdt: true,
+            signing: true,
+            ..Default::default()
+        },
+        fixtures: Some(
+            FixtureBuilder::new()
+                .tenant(TENANT)
+                .skill("note", NOTE_SKILL)
+                .instance("note", "alpha", note("alpha", "base alpha.").as_str())
+                .instance("note", "beta", note("beta", "base beta.").as_str())
+                .done(),
+        ),
+    })
+    .await
+}
+
+/// The agent token a person mints for a run: the machine acts FOR that person.
+async fn mint_machine(p: &EscurelProcess, person: &str) -> String {
+    let minted = call(p, person, "mint_agent_token", json!({ "skill": "note" })).await;
+    minted["token"].as_str().expect("a minted token").to_owned()
+}
+
 async fn call(p: &EscurelProcess, token: &str, tool: &str, args: Value) -> Value {
     let body: Value = reqwest::Client::new()
         .post(p.mcp_url())
@@ -656,12 +683,11 @@ async fn an_agent_sees_only_the_branches_it_authored() {
     p.shutdown().await;
 }
 
-/// A branch is its author's workspace: nobody else writes into it, and another MACHINE can neither
-/// merge nor abandon it (the listing already hides it). A person may still decide it, because merging
-/// a machine's branch is the review. The refusal is the one an unknown branch gets, so it does not
-/// confirm that the name exists. The author and an admin always can.
+/// A branch is its author's workspace: nobody else writes into it, merges it or abandons it (the
+/// listing already hides it). The refusal is the one an unknown branch gets, so it does not confirm
+/// that the name exists. The author and an admin always can.
 #[tokio::test]
-async fn a_branch_belongs_to_its_author_for_writes_and_to_people_and_its_author_for_decisions() {
+async fn a_branch_belongs_to_its_author_for_writes_and_decisions() {
     let p = start().await;
     let alice = p.mint_token_for_run(TENANT, Role::Agent, "agent:alice", "run-a", "root-a");
     let bob = p.mint_token_for_run(TENANT, Role::Agent, "agent:bob", "run-b", "root-b");
@@ -742,7 +768,8 @@ async fn a_branch_belongs_to_its_author_for_writes_and_to_people_and_its_author_
     .await;
     assert_eq!(code(&none), "unknown_branch", "{none}");
 
-    // A person decides a machine's branch (the review); an admin and the author can too.
+    // A person who is neither the author nor an admin cannot decide it either (owner decision
+    // 2026-10-13); the refusal is the unknown-branch one. An admin and the author can.
     let by_person = call(
         &p,
         &person,
@@ -750,7 +777,16 @@ async fn a_branch_belongs_to_its_author_for_writes_and_to_people_and_its_author_
         json!({ "name": "agent/alice-two", "reason": "no" }),
     )
     .await;
-    assert_eq!(by_person["ok"], json!(true), "{by_person}");
+    assert_eq!(by_person["ok"], json!(false), "{by_person}");
+    assert_eq!(code(&by_person), "unknown_branch", "{by_person}");
+    let by_author = call(
+        &p,
+        &alice,
+        "abandon_branch",
+        json!({ "name": "agent/alice-two", "reason": "done" }),
+    )
+    .await;
+    assert_eq!(by_author["ok"], json!(true), "{by_author}");
     let by_admin = call(
         &p,
         &admin,
@@ -812,4 +848,115 @@ async fn a_hand_written_scenario_cannot_write_into_another_agents_branch() {
     assert_eq!(own["ok"], json!(true), "the author may: {own}");
     let by_admin = call(&p, &admin, "update_page", stamped("beta", "ADMIN")).await;
     assert_eq!(by_admin["ok"], json!(true), "admin may: {by_admin}");
+
+    p.shutdown().await;
+}
+
+/// A machine's branch belongs to the PERSON it acts for: the author of a branch opened by a minted agent
+/// token is that person, so they can see it, write into it, merge it (the review) or abandon it, and so
+/// can an admin; another person or another person's machine cannot, and is told "no such branch".
+#[tokio::test]
+async fn a_machines_branch_belongs_to_the_person_it_acts_for() {
+    let p = start_signing().await;
+    let alice = p.mint_token_with_groups(TENANT, "user:alice", &[], false);
+    let bob = p.mint_token_with_groups(TENANT, "user:bob", &[], false);
+    let admin = p.mint_token(TENANT, Role::Admin);
+    let alice_m = mint_machine(&p, &alice).await;
+    let bob_m = mint_machine(&p, &bob).await;
+    let code = |v: &Value| {
+        v["issues"][0]["code"]
+            .as_str()
+            .unwrap_or_default()
+            .to_owned()
+    };
+
+    // Alice's machine opens a branch and writes into it.
+    let made = call(&p, &alice_m, "create_branch", json!({ "name": "agent/ws" })).await;
+    assert_eq!(made["ok"], json!(true), "{made}");
+    let wrote = call(
+        &p,
+        &alice_m,
+        "update_page",
+        json!({ "page_id": page_id("alpha"), "content": note("alpha", "BY ALICE'S MACHINE."), "branch": "agent/ws" }),
+    )
+    .await;
+    assert_eq!(wrote["ok"], json!(true), "the machine writes: {wrote}");
+
+    // The branch is recorded as ALICE's: she sees it in her list.
+    let mine = call(&p, &alice, "list_branches", json!({})).await;
+    let rows = mine["branches"].as_array().expect("branches");
+    let row = rows
+        .iter()
+        .find(|b| b["name"] == json!("agent/ws"))
+        .unwrap_or_else(|| panic!("alice does not see her machine's branch: {mine}"));
+    assert_eq!(row["author"], json!("user:alice"), "{row}");
+
+    // Bob and bob's machine learn nothing and decide nothing.
+    for (who, token) in [("bob", &bob), ("bob's machine", &bob_m)] {
+        for (tool, args) in [
+            ("merge_branch", json!({ "name": "agent/ws" })),
+            (
+                "abandon_branch",
+                json!({ "name": "agent/ws", "reason": "mine now" }),
+            ),
+        ] {
+            let r = call(&p, token, tool, args).await;
+            assert_eq!(r["ok"], json!(false), "{who} {tool}: {r}");
+            assert_eq!(code(&r), "unknown_branch", "{who} {tool}: {r}");
+        }
+    }
+    let theirs = call(&p, &bob, "list_branches", json!({})).await;
+    assert!(
+        theirs["branches"]
+            .as_array()
+            .expect("branches")
+            .iter()
+            .all(|b| b["name"] != json!("agent/ws")),
+        "bob sees alice's branch: {theirs}"
+    );
+
+    // Alice writes into it herself and merges it (the review); the base gets the machine's page.
+    let by_alice = call(
+        &p,
+        &alice,
+        "update_page",
+        json!({ "page_id": page_id("beta"), "content": note("beta", "BY ALICE."), "branch": "agent/ws" }),
+    )
+    .await;
+    assert_eq!(
+        by_alice["ok"],
+        json!(true),
+        "alice writes into it: {by_alice}"
+    );
+    let merged = call(&p, &alice, "merge_branch", json!({ "name": "agent/ws" })).await;
+    assert_eq!(merged["ok"], json!(true), "alice merges: {merged}");
+    assert!(
+        base_body(&p, &alice, "alpha")
+            .await
+            .unwrap_or_default()
+            .contains("BY ALICE'S MACHINE."),
+        "the merge landed"
+    );
+
+    // Another branch: an admin can abandon it, a person who is not its author cannot.
+    let second = call(&p, &alice, "create_branch", json!({ "name": "alice/two" })).await;
+    assert_eq!(second["ok"], json!(true), "{second}");
+    let by_bob = call(
+        &p,
+        &bob,
+        "abandon_branch",
+        json!({ "name": "alice/two", "reason": "x" }),
+    )
+    .await;
+    assert_eq!(code(&by_bob), "unknown_branch", "{by_bob}");
+    let by_admin = call(
+        &p,
+        &admin,
+        "abandon_branch",
+        json!({ "name": "alice/two", "reason": "tidy" }),
+    )
+    .await;
+    assert_eq!(by_admin["ok"], json!(true), "{by_admin}");
+
+    p.shutdown().await;
 }
