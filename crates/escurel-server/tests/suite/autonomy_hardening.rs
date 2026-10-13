@@ -344,9 +344,21 @@ async fn a_machine_cannot_land_a_skill_page_through_a_branch() {
         landed["result"]["structuredContent"]["page"].is_null(),
         "a brand-new skill page landed from a machine's branch: {landed}"
     );
-    // A person may merge the same branch: that is the review.
+    // A person who is neither the author nor an admin cannot even see it; an admin merges it: that is the review.
     let by_person = call(&p, &human(&p), "merge_branch", json!({ "name": "wip" })).await;
-    assert_ne!(by_person["ok"], false, "{by_person}");
+    assert_eq!(
+        codes(&by_person),
+        vec!["unknown_branch".to_owned()],
+        "{by_person}"
+    );
+    let by_admin = call(
+        &p,
+        &p.mint_token(TENANT, Role::Admin),
+        "merge_branch",
+        json!({ "name": "wip" }),
+    )
+    .await;
+    assert_ne!(by_admin["ok"], false, "{by_admin}");
 }
 
 #[tokio::test]
