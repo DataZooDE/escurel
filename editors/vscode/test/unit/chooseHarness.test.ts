@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { chooseHarness } from '../../src/start/chooseHarness';
+import { approvalHarness, chooseHarness } from '../../src/start/chooseHarness';
 
 const MULTI = { harness: 'echo', harness_allow: ['claude', 'echo', 'gemini'] };
 
@@ -76,5 +76,19 @@ describe('chooseHarness', () => {
       // eslint-disable-next-line no-control-regex
       expect(name).not.toMatch(/[\u0000-\u001f\u202a-\u202e]/);
     }
+  });
+});
+
+describe('approvalHarness', () => {
+  it('never sends a configured harness the runner does not allow (the plan approval uses the runner default)', () => {
+    expect(approvalHarness('codex', MULTI)).toBe('');
+  });
+  it('sends an allowed one, and keeps today’s behaviour when the list is unknown', () => {
+    expect(approvalHarness('claude', MULTI)).toBe('claude');
+    expect(approvalHarness('codex', { harness: 'echo' })).toBe('codex');
+    expect(approvalHarness('codex', null)).toBe('codex');
+  });
+  it('never asks: a blank setting sends none even with a multi-entry list', () => {
+    expect(approvalHarness('', MULTI)).toBe('');
   });
 });

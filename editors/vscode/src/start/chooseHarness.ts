@@ -41,3 +41,16 @@ export function chooseHarness(
       status?.harness && allow.includes(status.harness) ? status.harness : fallback,
   };
 }
+
+/**
+ * The harness a plan APPROVAL sends. It never asks (the person already chose when starting) and never
+ * sends a harness outside the runner's published allow-list: an unlisted setting falls back to the
+ * runner default (blank), the same refusal `chooseHarness` makes for a start.
+ */
+export function approvalHarness(
+  settingsHarness: string | undefined,
+  status: RunnerStatusBody | null | undefined,
+): string {
+  const choice = chooseHarness(settingsHarness, status);
+  return choice.kind === 'send' ? choice.harness : '';
+}
