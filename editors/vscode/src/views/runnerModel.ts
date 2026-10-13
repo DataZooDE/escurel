@@ -1,4 +1,5 @@
 import type { Event } from '../client';
+import { cleanText } from '../shared/untrustedText';
 
 /**
  * Runner status heartbeat interval assumption:
@@ -32,6 +33,8 @@ export interface RunnerThrottled {
 
 export interface RunnerStatusBody {
   draining?: boolean;
+  /** The harness names a manual start may ask for (BACKEND_GAPS PR-10). Absent on an old runner. */
+  harness_allow?: string[];
   harness?: string;
   harness_permits_available?: number;
   last_poll_age_ms?: number;
@@ -61,6 +64,37 @@ export function parseRunnerStatusBody(
   } catch {
     return null;
   }
+}
+
+/** The most harness names the picker ever offers, each at most this long. */
+export const MAX_HARNESS_NAMES = 20;
+export const MAX_HARNESS_NAME_LENGTH = 40;
+
+/**
+ * The published allow-list as displayable names. Text from the status is untrusted, so every name
+ * goes through `cleanText` and over-long ones are dropped, never truncated into a different name.
+ * `undefined` means the runner did not publish a list (unknown status, or a runner from before
+ * PR-10) — not an empty allow-list.
+ */
+export function allowedHarnesses(
+  body: RunnerStatusBody | null | undefined,
+): string[] | undefined {
+  const raw = body?.harness_allow;
+  if (raw === undefined || raw === null) return undefined;
+  if (!Array.isArray(raw)) return undefined;
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const entry of raw) {
+    if (typeof entry !== 'string') continue;
+    const name = entry.trim();
+    if (!name || name.length > MAX_HARNESS_NAME_LENGTH) continue;
+    const clean = cleanText(name, MAX_HARNESS_NAME_LENGTH);
+    if (!clean || seen.has(clean)) continue;
+    seen.add(clean);
+    out.push(clean);
+    if (out.length >= MAX_HARNESS_NAMES) break;
+  }
+  return out;
 }
 
 /**

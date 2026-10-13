@@ -4,6 +4,7 @@ import { pageSlug } from '../shared/pageId';
 import { cleanBlock, cleanOpt } from '../shared/untrustedText';
 import { parseGatewayTime } from '../shared/time';
 import {
+  allowedHarnesses,
   deriveHealth,
   ESCUREL_RUNNER_STATUS_INTERVAL_MS,
   type RunnerStatusBody,
@@ -365,6 +366,8 @@ export interface RunnerDescription {
   paused: boolean;
   /** Which engine runs the agents, for a tooltip; never in the sentence. */
   engine?: string | undefined;
+  /** The published harness allow-list, for the dispatch tooltip; never in the sentence. */
+  harnessAllow?: string | undefined;
   /** What the dispatch row offers: the action, or why the person cannot take it. */
   dispatchHint: string;
   health: 'ok' | 'stale' | 'draining' | 'none';
@@ -412,10 +415,12 @@ export function describeRunner(
       ? 'Agent engine: echo (demo, no AI model)'
       : `Agent engine: ${body.harness}`
     : undefined;
+  const allow = allowedHarnesses(body);
   return {
     text: parts.join(' · '),
     paused,
     engine,
+    harnessAllow: allow && allow.length > 0 ? `Harnesses: ${allow.join(', ')}` : undefined,
     dispatchHint: opts.isAdmin
       ? `${verb} agents`
       : `Only an admin can ${verb.toLowerCase()} agents.`,
@@ -559,7 +564,12 @@ export function buildRunsTree(input: TreeInput): RunsNode[] {
       label: input.runner.paused ? 'Agents are paused' : 'Agents are running',
       // The button is there for an admin; for anyone else the short reason, and the sentence on hover.
       description: input.isAdmin ? undefined : input.runner.paused ? 'admins only' : 'admins only',
-      tooltip: [input.runner.text, input.runner.engine, input.runner.dispatchHint]
+      tooltip: [
+        input.runner.text,
+        input.runner.engine,
+        input.runner.harnessAllow,
+        input.runner.dispatchHint,
+      ]
         .filter(Boolean)
         .join('\n'),
       contextValue: input.runner.paused ? 'dispatch.paused' : 'dispatch.running',

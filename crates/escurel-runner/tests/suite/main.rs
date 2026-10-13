@@ -37,6 +37,7 @@ mod gateway_not_ready;
 mod gemini_end_to_end;
 mod gemini_live;
 mod gemini_malformed_call;
+mod harness_allow_status;
 mod harness_failure_vs_gateway;
 mod healthz;
 mod inbox_poll;

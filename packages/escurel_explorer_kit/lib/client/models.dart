@@ -574,6 +574,7 @@ class SkillSummary {
     this.capabilities = const SkillCapabilities(),
     this.layer = 'overlay',
     this.shadows,
+    this.overview,
   });
 
   /// The backend a skill's instances live in (`markdown` | `sql_view` |
@@ -624,6 +625,9 @@ class SkillSummary {
   /// overlay — carrying this pin.
   final String? shadows;
 
+  /// Skill-authored Overview tile declaration, when one is present.
+  final SkillOverview? overview;
+
   /// Whether this skill was imported from a subscribed pack (its layer
   /// is a `base@<pack>@<version>` pin). Base skills are read-only: the
   /// server rejects writes with `layer_read_only`.
@@ -646,6 +650,33 @@ class SkillSummary {
     final update = acl?.update;
     if (update == null) return ownerField == null;
     return !update.contains('owner');
+  }
+}
+
+class SkillOverview {
+  const SkillOverview({
+    required this.tile,
+    required this.statusField,
+    required this.delayedWhen,
+    this.sortField,
+  });
+  final String tile;
+  final String statusField;
+  final List<Object> delayedWhen;
+  final String? sortField;
+
+  static SkillOverview? fromJson(Object? raw) {
+    if (raw is! Map) return null;
+    final title = raw['tile'];
+    final field = raw['status_field'];
+    final values = raw['delayed_when'];
+    if (title is! String || field is! String || values is! List) return null;
+    return SkillOverview(
+      tile: title,
+      statusField: field,
+      delayedWhen: values.whereType<Object>().toList(),
+      sortField: raw['sort_field'] as String?,
+    );
   }
 }
 

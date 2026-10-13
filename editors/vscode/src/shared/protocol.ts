@@ -490,7 +490,7 @@ export interface OverviewItem {
 }
 
 export interface OverviewTile {
-  id: 'decisions' | 'agents' | 'attention' | 'open' | 'recent';
+  id: 'decisions' | 'agents' | 'attention' | 'open' | 'recent' | `declared:${string}`;
   title: string;
   /** The answer in a sentence: "3 waiting for you", "All clear". */
   headline: string;

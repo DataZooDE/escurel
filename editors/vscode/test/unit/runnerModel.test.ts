@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { Event } from '../../src/client';
 import {
+  allowedHarnesses,
   estimateHeartbeatIntervalMs,
   deriveHealth,
   type RunnerStatusBody,
@@ -68,6 +69,41 @@ describe('runnerModel', () => {
       );
       expect(health.status).toBe('draining');
       expect(health.label).toBe('draining');
+    });
+  });
+
+  describe('allowedHarnesses', () => {
+    it('returns undefined when the runner published no list (old runner)', () => {
+      expect(allowedHarnesses(null)).toBeUndefined();
+      expect(allowedHarnesses(undefined)).toBeUndefined();
+      expect(allowedHarnesses({ harness: 'echo' })).toBeUndefined();
+      expect(allowedHarnesses({ harness_allow: 'echo' as unknown as string[] })).toBeUndefined();
+    });
+
+    it('passes the published names through, deduped', () => {
+      expect(
+        allowedHarnesses({ harness: 'echo', harness_allow: ['claude', 'echo', 'claude'] }),
+      ).toEqual(['claude', 'echo']);
+    });
+
+    it('treats status text as untrusted: cleans, drops the over-long, caps at 20', () => {
+      const allow = [
+        '  claude  ',
+        'bad\u202Aname',
+        'x'.repeat(41),
+        7,
+        '',
+        ...Array.from({ length: 25 }, (_, i) => `h${i}`),
+      ] as string[];
+      const names = allowedHarnesses({ harness_allow: allow })!;
+      expect(names.length).toBeLessThanOrEqual(20);
+      expect(names).toContain('claude');
+      expect(names).toContain('badname');
+      for (const name of names) {
+        expect(name.length).toBeLessThanOrEqual(40);
+        // eslint-disable-next-line no-control-regex
+        expect(name).not.toMatch(/[\u0000-\u001f\u202a-\u202e]/);
+      }
     });
   });
 });

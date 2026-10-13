@@ -94,6 +94,7 @@ pub struct SkillInfo {
     pub sources: Vec<serde_json::Value>,
     /// `viewer:` — Peacock's `{report, param}` as written.
     pub viewer: Option<escurel_types::SkillViewer>,
+    pub overview: Option<escurel_types::SkillOverview>,
     /// `actions:` — the object-form actions this skill declares (see
     /// `escurel_types::SkillAction`). Empty when undeclared: no restriction on cascades.
     pub actions: Vec<escurel_types::SkillAction>,
@@ -769,6 +770,9 @@ impl Indexer {
                 stale_after: scalar_text(&fm, "stale_after"),
                 sources: sources_field(&fm),
                 viewer: parse_viewer(&fm),
+                overview: fm
+                    .get("overview")
+                    .and_then(|v| serde_json::from_value(v.clone()).ok()),
                 actions: parse_actions(&fm),
                 cascade: parse_cascade(&fm),
                 params: parse_params(&fm),

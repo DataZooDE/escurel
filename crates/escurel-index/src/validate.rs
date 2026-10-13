@@ -273,6 +273,84 @@ fn check_role(page_kind: PageKind, fields: &YamlMapping) -> Option<Issue> {
     }
 }
 
+/// Overview is a presentation hint: malformed declarations warn, but never refuse a skill write.
+fn check_overview(page_kind: PageKind, fields: &YamlMapping) -> Vec<Issue> {
+    if page_kind != PageKind::Skill {
+        return Vec::new();
+    }
+    let Some(raw) = fields.get("overview") else {
+        return Vec::new();
+    };
+    let Some(map) = raw.as_mapping() else {
+        return vec![Issue::warning(
+            "overview_invalid",
+            "frontmatter.overview",
+            "`overview:` must be a mapping",
+        )];
+    };
+    let mut issues = Vec::new();
+    match map.get("tile").and_then(YamlValue::as_str) {
+        Some(title) if !title.trim().is_empty() && title.chars().count() <= 60 => {}
+        _ => issues.push(Issue::warning(
+            "overview_tile_invalid",
+            "frontmatter.overview.tile",
+            "`tile:` must be a non-empty title of at most 60 characters",
+        )),
+    }
+    let declared = |name: &str| {
+        fields.get("fields").is_some_and(|f| {
+            f.as_mapping().is_some_and(|m| m.contains_key(name))
+                || f.as_sequence().is_some_and(|s| {
+                    s.iter().any(|v| {
+                        v.as_mapping()
+                            .and_then(|m| m.get("name"))
+                            .and_then(YamlValue::as_str)
+                            == Some(name)
+                    })
+                })
+        }) || fields
+            .get("backend")
+            .and_then(YamlValue::as_mapping)
+            .and_then(|b| b.get("filterable"))
+            .is_some_and(|raw| {
+                raw.as_str() == Some(name)
+                    || raw.as_sequence().is_some_and(|s| {
+                        s.iter().any(|v| {
+                            v.as_str() == Some(name)
+                                || v.as_mapping()
+                                    .and_then(|m| m.get("field"))
+                                    .and_then(YamlValue::as_str)
+                                    == Some(name)
+                        })
+                    })
+            })
+    };
+    match map.get("status_field").and_then(YamlValue::as_str) {
+        Some(name) if declared(name) => {}
+        _ => issues.push(Issue::warning(
+            "overview_status_field_unknown",
+            "frontmatter.overview.status_field",
+            "`status_field:` must name a declared field or filterable backend column",
+        )),
+    }
+    if !map
+        .get("delayed_when")
+        .and_then(YamlValue::as_sequence)
+        .is_some_and(|s| {
+            !s.is_empty()
+                && s.iter()
+                    .all(|v| v.is_string() || v.is_number() || v.is_bool())
+        })
+    {
+        issues.push(Issue::warning(
+            "overview_delayed_when_invalid",
+            "frontmatter.overview.delayed_when",
+            "`delayed_when:` must be a non-empty list of scalars",
+        ));
+    }
+    issues
+}
+
 /// Whether `s` is an ISO-8601 duration such as `P90D`, `P1Y2M`, `PT36H` or `P1W`.
 fn is_iso_duration(s: &str) -> bool {
     let Some(rest) = s.strip_prefix('P') else {
@@ -1044,6 +1122,7 @@ impl Indexer {
         // Where a skill sits and what it is (OKF-aligned tree vocabulary), then the optional OKF keys.
         issues.extend(check_folder(parsed.frontmatter.page_kind, fields));
         issues.extend(check_role(parsed.frontmatter.page_kind, fields));
+        issues.extend(check_overview(parsed.frontmatter.page_kind, fields));
         issues.extend(check_okf_keys(parsed.frontmatter.page_kind, fields));
         if parsed.frontmatter.page_kind == PageKind::Skill
             && let Some(raw) = fields.get("actions")

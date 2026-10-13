@@ -15,11 +15,15 @@ import 'package:flutter_test/flutter_test.dart';
 Directory _goldenDir() {
   var dir = Directory.current;
   for (var i = 0; i < 6; i += 1) {
-    final candidate = Directory('${dir.path}/crates/escurel-types/tests/golden');
+    final candidate = Directory(
+      '${dir.path}/crates/escurel-types/tests/golden',
+    );
     if (candidate.existsSync()) return candidate;
     dir = dir.parent;
   }
-  throw StateError('crates/escurel-types/tests/golden not found from ${Directory.current.path}');
+  throw StateError(
+    'crates/escurel-types/tests/golden not found from ${Directory.current.path}',
+  );
 }
 
 Map<String, dynamic> _golden(String name) =>
@@ -38,8 +42,9 @@ class _Gateway {
     final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
     final gw = _Gateway(server, 'http://${server.address.host}:${server.port}');
     server.listen((req) async {
-      final body =
-          jsonDecode(await utf8.decoder.bind(req).join()) as Map<String, dynamic>;
+      final body = jsonDecode(
+        await utf8.decoder.bind(req).join(),
+      ) as Map<String, dynamic>;
       req.response.headers.contentType = ContentType.json;
       req.response.write(
         jsonEncode({'jsonrpc': '2.0', 'id': body['id'], 'result': gw.result}),
@@ -77,7 +82,12 @@ void main() {
     final golden = _golden('list_skills');
     gw.serveStructured(golden);
     final skills = await client.listSkills();
-    expect(skills.map((s) => s.id), (golden['skills'] as List).map((s) => (s as Map)['id']));
+    expect(skills.first.overview?.tile, 'Delayed shipments');
+    expect(skills.first.overview?.delayedWhen, ['late', 'delayed']);
+    expect(
+      skills.map((s) => s.id),
+      (golden['skills'] as List).map((s) => (s as Map)['id']),
+    );
     for (final s in skills) {
       expect(s.id, isNotEmpty);
       expect(s.requiredFrontmatter, isA<List<String>>());

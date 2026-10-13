@@ -305,6 +305,23 @@ describe('describeRunner', () => {
       describeRunner(old, NOW, { isAdmin: true, tenant: 'vsx', intervalMs: 30_000 }).text,
     ).toMatch(/^Agents are not responding/);
   });
+
+  it('lists the published allow-list for the tooltip, never in the sentence', () => {
+    const d = describeRunner(
+      {
+        at: iso(3),
+        body: { ...fresh.body, harness_allow: ['claude', 'echo', 'gemini'] },
+      },
+      NOW,
+      { isAdmin: true, tenant: 'vsx' },
+    );
+    expect(d.text).not.toMatch(/claude|gemini/i);
+    expect(d.harnessAllow).toBe('Harnesses: claude, echo, gemini');
+  });
+
+  it('has no allow-list line on an old runner', () => {
+    expect(describeRunner(fresh, NOW, { isAdmin: true, tenant: 'vsx' }).harnessAllow).toBeUndefined();
+  });
 });
 
 import { buildRunsTree, shortAgo, tooltipFor, type RunsNode } from '../../src/views/runsModel';
@@ -388,6 +405,19 @@ describe('buildRunsTree', () => {
       description: 'admins only',
     });
     expect(row.tooltip).toContain('Only an admin can resume agents.');
+  });
+
+  it('the dispatch tooltip lists the allowed harnesses when the runner publishes them', () => {
+    const withAllow = describeRunner(
+      { at: iso(3), body: { harness: 'echo', tenant: 'vsx', harness_allow: ['claude', 'echo'] } },
+      NOW,
+      { isAdmin: true, tenant: 'vsx' },
+    );
+    const row = find(
+      buildRunsTree({ ...base, runner: withAllow, records: [] }),
+      'dispatch',
+    )!;
+    expect(row.tooltip).toContain('Harnesses: claude, echo');
   });
 
   it('an empty section says so in words; waiting and attention hide when empty', () => {
