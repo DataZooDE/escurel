@@ -120,6 +120,9 @@ RUN mkdir -p /opt/escurel \
       echo "################################################################################"; \
       [ "${REQUIRE_GDRIVE}" = "0" ] || { echo "REQUIRE_GDRIVE=${REQUIRE_GDRIVE}: failing the build"; exit 1; }; \
     fi
+# anofox_optimize (the optimizer extension the lab loads via ESCUREL_INDEX_EXTENSIONS) comes from the same erpl.io
+# mirror and is version-locked like gdrive: the build fails if the mirror has no artifact for this DuckDB release.
+RUN duckdb -unsigned -c "INSTALL anofox_optimize FROM '${GDRIVE_REPO}';"
 # Fail the BUILD, not the pod, if anything did not land where DuckDB looks for
 # it. A missing extension here is a silent 137MB download at boot.
 RUN set -eu; \
@@ -129,7 +132,7 @@ RUN set -eu; \
     # postgres_scanner, not postgres: `INSTALL postgres` is an ALIAS and the
     # artifact it lands is postgres_scanner.duckdb_extension. Checking the
     # alias name failed the build while all six were present (now seven, eight with gdrive).
-    want="ducklake postgres_scanner sqlite_scanner httpfs fts vss"; \
+    want="ducklake postgres_scanner sqlite_scanner httpfs fts vss anofox_optimize"; \
     # gdrive is expected only when the mirror had it (see the install step above); a REQUIRE_GDRIVE build never gets here without it.
     if curl -sfI "${GDRIVE_REPO}/${DUCKDB_VERSION}/linux_amd64/gdrive.duckdb_extension.gz" >/dev/null; then want="$want gdrive"; fi; \
     for e in $want; do \
