@@ -156,6 +156,7 @@ mod sql_view_tools;
 mod sql_write_back;
 mod surface_consolidation;
 mod synchronous_lake_durability;
+mod thread_closed_events;
 mod tool_call_detail;
 mod tool_execution_labels;
 mod tool_label_map;

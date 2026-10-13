@@ -235,6 +235,16 @@
         "category": "Escurel"
       },
       {
+        "command": "escurel.closeThread",
+        "title": "Close thread",
+        "category": "Escurel"
+      },
+      {
+        "command": "escurel.reopenThread",
+        "title": "Reopen thread",
+        "category": "Escurel"
+      },
+      {
         "command": "escurel.openRun",
         "title": "Open run",
         "category": "Escurel"
@@ -697,6 +707,14 @@
           "when": "escurel.connected"
         },
         {
+          "command": "escurel.closeThread",
+          "when": "escurel.connected"
+        },
+        {
+          "command": "escurel.reopenThread",
+          "when": "escurel.connected"
+        },
+        {
           "command": "escurel.openReview",
           "when": "escurel.connected"
         },
@@ -979,6 +997,14 @@
           "command": "escurel.openRun",
           "when": "view == escurel.threads && viewItem == escurel.run",
           "group": "navigation"
+        },
+        {
+          "command": "escurel.closeThread",
+          "when": "view == escurel.threads && viewItem =~ /^escurel\\.(event|run|changeset|draft)$/"
+        },
+        {
+          "command": "escurel.reopenThread",
+          "when": "view == escurel.threads && viewItem == escurel.closedThread"
         },
         {
           "command": "escurel.openNodeThread",
