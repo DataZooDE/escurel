@@ -14,6 +14,7 @@ use std::sync::Arc;
 
 use duckdb::Connection;
 use escurel_embed::{Embedder, ZeroEmbedder};
+use escurel_index::backend::{SqlConnector, SqlViewBackend, SqlViewBinding};
 use escurel_index::snapshot::{
     LakeConfig, ObjectStoreSecret, attach_sql, install_load_sql, publish_lake, secret_sql,
 };
@@ -117,6 +118,40 @@ fn reader_conn(cfg: &LakeConfig) -> Connection {
     }
     conn.execute_batch(&attach_sql(cfg, true).unwrap()).unwrap();
     conn
+}
+
+#[tokio::test]
+async fn parquet_directory_reads_minio_with_the_lake_secret() {
+    let lake = live_lake().await;
+    // Write a real object through httpfs. The directory connector uses the same
+    // S3 secret installed when the indexer attaches the lake.
+    let writer = Connection::open_in_memory().unwrap();
+    writer.execute_batch(&install_load_sql(&lake.cfg)).unwrap();
+    writer
+        .execute_batch(&secret_sql(&lake.cfg).unwrap().unwrap())
+        .unwrap();
+    writer
+        .execute_batch(&format!(
+            "COPY (SELECT 'Acme' AS name) TO 's3://{BUCKET}/demo/rows.parquet' (FORMAT parquet)"
+        ))
+        .unwrap();
+    lake.indexer.attach_lake(&lake.cfg).await.unwrap();
+    let binding = SqlViewBinding {
+        connector: SqlConnector::ParquetDir,
+        attach: None,
+        relation: format!("s3://{BUCKET}/demo/"),
+        filter: None,
+        project: Default::default(),
+        search_text: Vec::new(),
+    };
+    let backend = SqlViewBackend::new(Arc::clone(&lake.indexer));
+    let materialized = backend
+        .create_instance("customer", &binding, "remote", "# Remote")
+        .await
+        .unwrap();
+    let rows = backend.project_rows(&materialized.view, 10).await.unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["name"], "Acme");
 }
 
 #[tokio::test]

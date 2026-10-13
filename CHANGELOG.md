@@ -15,6 +15,12 @@ Skill version `0.20.0`. Every consumer that writes pages or reads the tool surfa
 
 ### Fixed
 
+- **Object-store directory connectors can be operator-authorized.** `json_dir` and `parquet_dir`
+  sources under `s3://` / `gs://` now pass the gateway policy when their URL lies beneath an
+  `ESCUREL_SQL_OBJECT_PREFIXES` entry. The default remains deny. Consumers with remote directory
+  sources must set this variable before upgrading (`s3://bucket/demo/` for that directory); DuckDB
+  still needs object-store credentials and endpoint access.
+
 - **List cursors are bound to their tenant and list; `ESCUREL_CURSOR_KEY` needs 32 bytes** (#684): a cursor issued
   for one skill/list no longer opens on another (it used to return a silently empty page); a shorter key stops
   the server at boot.

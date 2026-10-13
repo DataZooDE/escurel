@@ -56,6 +56,11 @@ One line per change. Folded into the root `CHANGELOG.md` BREAKING entry and `doc
   checked host name to its address, and `json_dir` / `parquet_dir` globs must lie under
   `ESCUREL_SQL_FILE_DIRS` (unset = no directory sources; set it on a gateway that serves them).
   `query_instance` enforces the query page's own `acl.read`.
+  Consumers with `s3://` or `gs://` `json_dir` / `parquet_dir` sources MUST set
+  `ESCUREL_SQL_OBJECT_PREFIXES` to the allowed comma-separated bucket/directory prefixes before
+  upgrading; `ESCUREL_SQL_FILE_DIRS` only covers local files. For sources under `s3://bucket/demo/`,
+  set `ESCUREL_SQL_OBJECT_PREFIXES=s3://bucket/demo/`. The gateway still needs DuckDB httpfs
+  credentials and endpoint access for that object store.
 
 - Unknown arguments are REFUSED on every tool: a top-level argument the tool's `inputSchema` does not
   declare (a typo like `limt`, another tool's spelling like `filter` on `list_instances`) answers

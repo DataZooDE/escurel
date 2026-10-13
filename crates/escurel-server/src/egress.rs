@@ -55,6 +55,8 @@ pub struct EgressPolicy {
     /// attachable at all: a path in a credential is a server file, and which ones are exposed is the
     /// operator's decision.
     pub sql_file_dirs: Vec<std::path::PathBuf>,
+    /// Object-store directories a directory connector may read.
+    pub sql_object_prefixes: Vec<String>,
 }
 
 impl Default for EgressPolicy {
@@ -68,6 +70,7 @@ impl Default for EgressPolicy {
             write_retry_backoff: Duration::from_millis(500),
             secrets: crate::secret_policy::SecretPolicy::default(),
             sql_file_dirs: Vec::new(),
+            sql_object_prefixes: Vec::new(),
         }
     }
 }
@@ -154,6 +157,19 @@ impl EgressPolicy {
                 .map(|s| std::path::PathBuf::from(s.trim()))
                 .collect();
         }
+        if let Some(v) = get("ESCUREL_SQL_OBJECT_PREFIXES") {
+            for raw in v.split(',').map(str::trim).filter(|s| !s.is_empty()) {
+                if !valid_object_url(raw, false) {
+                    return Err(EgressConfigError {
+                        var: "ESCUREL_SQL_OBJECT_PREFIXES",
+                        value: "<invalid object prefix>".to_owned(),
+                        reason: "expected an s3:// or gs:// bucket and literal directory path",
+                    });
+                }
+                p.sql_object_prefixes
+                    .push(format!("{}/", raw.trim_end_matches('/')));
+            }
+        }
         Ok(p)
     }
 
@@ -171,6 +187,35 @@ impl EgressPolicy {
     pub fn from_env() -> Self {
         Self::try_from_env().unwrap_or_else(|e| panic!("{e}"))
     }
+}
+
+/// Check the exact spelling DuckDB will receive, without URL decoding or path cleanup.
+/// Reject encoded paths entirely: DuckDB/httpfs may decode them differently from this policy.
+pub(crate) fn valid_object_url(raw: &str, allow_glob: bool) -> bool {
+    let Some((scheme, rest)) = raw.split_once("://") else {
+        return false;
+    };
+    if !matches!(scheme, "s3" | "gs") {
+        return false;
+    }
+    let Some((bucket, path)) = rest.split_once('/') else {
+        return false;
+    };
+    if bucket.is_empty()
+        || !bucket
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b'_'))
+        || raw.contains(['%', '?', '#', '\\'])
+        || raw.chars().any(char::is_control)
+    {
+        return false;
+    }
+    let segments: Vec<&str> = path.split('/').collect();
+    segments.iter().enumerate().all(|(i, segment)| {
+        (i == segments.len() - 1 && segment.is_empty()
+            || !segment.is_empty() && *segment != "." && *segment != "..")
+            && (allow_glob || !segment.contains(['*', '[', ']', '{', '}']))
+    })
 }
 
 /// Why an outbound call was refused or failed. The messages are safe to hand to an agent: no URL
@@ -599,12 +644,44 @@ fn sanitize(e: &reqwest::Error) -> String {
 
 #[cfg(test)]
 mod tests {
+    use super::{EgressConfigError, EgressPolicy};
+
     fn from(pairs: &[(&str, &str)]) -> Result<EgressPolicy, EgressConfigError> {
         let map: std::collections::HashMap<String, String> = pairs
             .iter()
             .map(|(k, v)| ((*k).to_owned(), (*v).to_owned()))
             .collect();
         EgressPolicy::from_source(&|k| map.get(k).cloned())
+    }
+
+    #[test]
+    fn object_prefix_configuration_is_normalized_and_rejects_ambiguous_urls() {
+        let p = from(&[(
+            "ESCUREL_SQL_OBJECT_PREFIXES",
+            " s3://bucket/demo,gs://other/data/ ",
+        )])
+        .unwrap();
+        assert_eq!(
+            p.sql_object_prefixes,
+            ["s3://bucket/demo/", "gs://other/data/"]
+        );
+        for bad in [
+            "s3://bucket/demo-evil/../demo",
+            "s3://bucket/demo/%2e%2e/",
+            "s3://bucket/demo?x/",
+            "s3://user@bucket/demo/",
+            "s3://bucket:9000/demo/",
+            "s3://bucket/de*/",
+            "https://bucket/demo/",
+        ] {
+            assert_eq!(
+                from(&[("ESCUREL_SQL_OBJECT_PREFIXES", bad)])
+                    .unwrap_err()
+                    .var,
+                "ESCUREL_SQL_OBJECT_PREFIXES",
+                "{bad}"
+            );
+        }
     }
 
     /// `ESCUREL_EGRESS_TIMEOUT_MS=5s` and `ALLOW_LOOPBACK=yes` used to be IGNORED silently (strict
