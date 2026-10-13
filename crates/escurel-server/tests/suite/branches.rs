@@ -762,3 +762,54 @@ async fn a_branch_belongs_to_its_author_for_writes_and_to_people_and_its_author_
 
     p.shutdown().await;
 }
+
+/// A hand-written `scenario:` that names a REGISTERED branch is a write into that branch, and the
+/// registry's ownership rule (#687) must hold for it exactly as for the `branch:` argument: another
+/// agent cannot plant a page in somebody's workspace by stamping the name itself, because a later
+/// `merge_branch` selects by scenario and would land it.
+#[tokio::test]
+async fn a_hand_written_scenario_cannot_write_into_another_agents_branch() {
+    let p = start().await;
+    let alice = p.mint_token_with_groups(TENANT, "agent:alice", &[], false);
+    let bob = p.mint_token_with_groups(TENANT, "agent:bob", &[], false);
+    let admin = p.mint_token(TENANT, Role::Admin);
+    let made = call(
+        &p,
+        &alice,
+        "create_branch",
+        json!({ "name": "agent/alice-ws" }),
+    )
+    .await;
+    assert_eq!(made["ok"], json!(true), "premise: {made}");
+    let stamped = |id: &str, body: &str| {
+        json!({
+            "page_id": format!("markdown/instances/note/{id}@agent-alice-ws.md"),
+            "content": format!(
+                "---\nkind: instance\nskill: note\nid: {id}\nscenario: agent/alice-ws\n---\n# {id}\n{body}\n"
+            ),
+        })
+    };
+
+    let planted = call(&p, &bob, "update_page", stamped("alpha", "BOB PLANT")).await;
+    assert_eq!(
+        planted["ok"],
+        json!(false),
+        "another agent is refused: {planted}"
+    );
+    assert_eq!(
+        planted["issues"][0]["code"],
+        json!("unknown_branch"),
+        "{planted}"
+    );
+    assert!(
+        branch_body(&p, &alice, "alpha", "agent/alice-ws")
+            .await
+            .is_none_or(|b| !b.contains("BOB PLANT")),
+        "nothing of bob's reached alice's branch"
+    );
+
+    let own = call(&p, &alice, "update_page", stamped("alpha", "ALICE OWN")).await;
+    assert_eq!(own["ok"], json!(true), "the author may: {own}");
+    let by_admin = call(&p, &admin, "update_page", stamped("beta", "ADMIN")).await;
+    assert_eq!(by_admin["ok"], json!(true), "admin may: {by_admin}");
+}

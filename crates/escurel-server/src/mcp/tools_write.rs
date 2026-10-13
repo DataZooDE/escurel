@@ -507,6 +507,31 @@ pub(super) async fn tool_update_page_ungated(
         // it would refuse every first write on a branch, and honouring it
         // silently against the wrong page would be worse.
         a.base_sha256 = None;
+    } else if let Some(name) = escurel_md::parse(&a.content).ok().and_then(|d| {
+        d.frontmatter
+            .fields
+            .get("scenario")
+            .and_then(escurel_md::YamlValue::as_str)
+            .map(str::to_owned)
+    }) && indexer
+        .get_branch(&name)
+        .await
+        .map_err(|e| JsonRpcError::internal(format!("branch: {e}")))?
+        .is_some()
+    {
+        // A hand-written `scenario:` naming a REGISTERED branch is a write into that branch: it
+        // answers to the same ownership rule as the `branch:` argument (the merge selects by
+        // scenario, so a planted page would land). An unregistered name stays the legacy overlay.
+        if let Err(refusal) = crate::mcp::tools_branches::require_open_branch(
+            indexer,
+            &caller,
+            &name,
+            crate::mcp::tools_branches::BranchUse::Write,
+        )
+        .await?
+        {
+            return Ok(refusal);
+        }
     }
 
     // `require_exact_base` without a base is a caller bug, and the harmless
