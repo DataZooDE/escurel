@@ -4,6 +4,23 @@ The skill version tracks the consumer-facing contract, not the Escurel
 binary version. The Escurel repo's checked-out git ref is the true version
 pin (see `SKILL.md` → "How this skill is installed").
 
+## 0.20.0 — a skill declares an Overview tile; the runner publishes its harness allow-list; threads can be closed
+
+All additive; nothing a consumer does today changes.
+
+- **`overview:` frontmatter** (`01-data-model.md`): `{tile, status_field, delayed_when, sort_field?}` names the
+  status values that count as delayed. Lint-only (`overview_invalid`, `overview_tile_invalid`,
+  `overview_status_field_unknown`, `overview_delayed_when_invalid` are warnings); `list_skills` rows carry it as
+  `overview` when it is valid and omit the key otherwise (`02-tool-surface.md`). A rows skill whose status field is not `filterable` simply gets no tile.
+- **`harness_allow`** in the `escurel:runner-status` body (`11-event-driven-agents.md`): sorted harness names a
+  manual start may ask for. Absent on an older runner: send no harness, as before. A name outside the list is
+  refused by the runner (`harness not allowed`) and the workbench no longer sends one.
+- **`escurel:thread-closed`** (`02-tool-surface.md`, `11-event-driven-agents.md` "Closing a thread"): a third
+  `escurel:` carve-out for `capture_event`, body `{action: close|reopen, root_event_id, reason?}`. Allowed for a
+  person who may read the root; machine tokens are refused; unknown and unreadable roots both answer
+  `event_not_found`; re-asking the current state returns the stored row with `already: true`. `reason` max 200
+  characters. Closed threads: `list_events {label_skill: "escurel:thread-closed"}`; no new tool.
+
 ## 0.19.4 — cursors are bound to their list; bookkeeping and branches belong to their owners (security)
 
 - List cursors (`next_cursor`: instances, events, inbox, chat, rows, remote rows, drafts, changesets, branches)

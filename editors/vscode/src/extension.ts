@@ -24,7 +24,7 @@ import { buildInspectors } from './thread/inspector';
 import { toThreadView } from './thread/threadModel';
 import { ThreadsTree } from './views/threads';
 import { expandableRows, type OutlineRow } from './views/threadsModel';
-import { THREAD_CLOSED_LABEL, foldClosedThreads } from './views/closedThreads';
+import { THREAD_CLOSED_LABEL, loadClosedThreads } from './views/closedThreads';
 import { registerThreadCloseCommands } from './views/threadCloseCommands';
 import { registerStartInTerminal } from './start/terminal';
 import { registerOpenOriginal } from './commands/openOriginal';
@@ -175,15 +175,23 @@ export function activate(context: vscode.ExtensionContext): EscurelApi | undefin
   );
   const details = DetailsViewProvider.register(context, threads);
   const runs = RunController.register(context, services);
-  // The Closed group is folded from the `escurel:thread-closed` label listing (no new tool):
-  // on reconnect, live when a close lands, and after this window's own close/reopen.
+  // The Closed group is folded from the `escurel:thread-closed` label listing (no new tool), newest
+  // first and bounded (loadClosedThreads): when the live socket connects (at start, and again after every
+  // reconnect; NOT a bare call at activation: it would reach the gateway before the token is set, and the
+  // 401 closes the shared client under the first real call),
+  // live when a close lands, and after this window's own close/reopen. A newer refresh wins over an
+  // older one still in flight; a failed refresh keeps what the outline showed (same tenant), and a
+  // gateway/auth change clears it first so another tenant's list is never kept.
+  let closedSeq = 0;
   const refreshClosed = (): void => {
-    services.client
-      .listEvents({ label_skill: THREAD_CLOSED_LABEL, limit: 200 })
-      .then(
-        (page) => threadsTree.setClosedThreads(foldClosedThreads(page.events)),
-        () => undefined,
-      );
+    const mine = ++closedSeq;
+    loadClosedThreads((req) => services.client.listEvents(req)).then(
+      (loaded) => {
+        if (mine !== closedSeq) return;
+        threadsTree.setClosedThreads(loaded.threads);
+      },
+      () => undefined,
+    );
   };
   registerThreadCloseCommands(context, services, {
     getOutlineRoot: () => outlineRoot,
@@ -193,12 +201,16 @@ export function activate(context: vscode.ExtensionContext): EscurelApi | undefin
     live.onDidReceiveEvent((event) => {
       if (event.label_skill === THREAD_CLOSED_LABEL) refreshClosed();
     }),
+    live.onDidConnect(() => refreshClosed()),
   );
   context.subscriptions.push(
     services.onDidChange(() => {
       knowledge.refresh();
       inbox.refresh();
       awaiting.refresh();
+      // Another gateway or identity: drop the old tenant's closed list before loading the new one.
+      closedSeq += 1;
+      threadsTree.setClosedThreads([]);
       refreshClosed();
     }),
   );

@@ -36,6 +36,22 @@ derives its version from the tag (`vYYYY.MM.DD` → `YYYY.M.D`, leading zeros dr
 - **Scenarios view** (#658): Evolve seed-vs-winner diffs and comparison pages, "New scenario comparison",
   the Compute comparison action.
 - **Welcome states** for quarantined, old-server, 401 and unreachable gateways; a first-run walkthrough.
+- **Delayed-items tile on the Overview board** (#700): a skill that declares `overview:` in its frontmatter gets
+  a tile ("N delayed", the top three by the declared sort field, each line opens the instance). Reads are
+  bounded (5 pages x 100): a spent budget reads "N+ delayed"; a rows skill whose status field is not
+  `filterable` gets no tile.
+- **Harness picker on Start** (#701): when `escurel.harness` is unset and the runner publishes more than one
+  allowed harness (`harness_allow`), Start asks which one ("Use default" first). A configured name that the
+  runner does not allow shows a warning (Start with default / Open settings / Cancel); nothing outside the
+  published list is ever sent. An older runner behaves as before. The Runs tooltip lists the allowed harnesses.
+- **Close and reopen a thread** (#702): `Close thread` (asks first, reason optional) and `Reopen thread` in the
+  palette and the outline menu; the Threads outline ends in a collapsed **Closed** group (title, who closed it,
+  when, reason). Closing is shared and visible: anyone who can read the thread can reopen it. Nothing in the
+  thread is deleted; Overview, Awaiting you and Inbox are unaffected.
+- **Explain this view** also on the Scenarios view and inside the Details panel (#690).
+- **First-connect suggestion** (#698): the first time the extension connects, and not in focus mode, it offers
+  once to switch to the calm focus view (never in the demo and web workbench windows, which enter it
+  themselves, nor in untrusted or virtual workspaces).
 
 ### Changed
 
@@ -44,6 +60,11 @@ derives its version from the tag (`vYYYY.MM.DD` → `YYYY.M.D`, leading zeros dr
 - Untrusted text (run reasons, skill facts, OKF strings, labels) is cleaned and capped at the model
   boundary (#654).
 - Approving a plan opens the run first; Approve is an explicit, confirmed action (#654).
+- The quiet Overview board says what is actually true per tile ("Nothing has finished yet", "No records yet")
+  instead of "All clear" everywhere; the Details panel aligns its key/value pairs on one baseline and omits a
+  label whose value is empty (#698).
+- In the zoomed-out thread overview the column headers no longer run together: below 85% zoom a header shows
+  only its leading stage name (full label stays in the accessible name); cards keep icon and text (#699).
 
 ### Demo
 

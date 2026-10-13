@@ -8,6 +8,9 @@ import { loadRun, type LoadedRun } from '../runs/loadRun';
 import { cleanText } from '../shared/untrustedText';
 import type { Services } from '../services';
 import { buildApprovalEvent } from './startEvent';
+import { approvalHarness } from './chooseHarness';
+import { parseRunnerStatusBody } from '../views/runnerModel';
+import { readRunnerStatus } from '../views/runsLoader';
 import { evolveApprovalSummary } from '../evolve/approvalSummary';
 
 export interface ApprovePlanArgs {
@@ -194,6 +197,16 @@ export async function existingEvolveApproval(
   return undefined;
 }
 
+/** The configured harness, unless the runner's published allow-list does not name it (then blank). */
+async function approvedHarness(client: EscurelClient): Promise<string> {
+  try {
+    const read = await readRunnerStatus(client);
+    return approvalHarness(readConfig().harness, read.event ? parseRunnerStatusBody(read.event) : null);
+  } catch {
+    return approvalHarness(readConfig().harness, null);
+  }
+}
+
 /**
  * Registers the `escurel.approvePlan` command.
  */
@@ -218,7 +231,7 @@ export function registerApprovePlan(
         await once(req.runId, async () => {
           const outcome = await approvePlanRun(services.client, req.runId!, {
             confirm: (m, action) => confirmApproval(m, action),
-            harness: readConfig().harness,
+            harness: await approvedHarness(services.client),
           });
           if (outcome.kind === 'not-planned') {
             void vscode.window.showInformationMessage(

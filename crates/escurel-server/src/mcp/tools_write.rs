@@ -1980,7 +1980,7 @@ pub(super) async fn tool_capture_event(
     } else {
         None
     };
-    // The gateway's own write-back bookkeeping (`write-back:<draft>:applying|applied|failed`) is
+    // The gateway's own write-back bookkeeping (`write-back:<draft>:applied`, `write-back:<draft>:<n>:applying|failed`) is
     // addressed by id, and a promotion trusts those ids: a caller must not be able to file one, or
     // it could make a promote skip the upstream (a forged `applied`) or refuse it (`applying`).
     if a.event_id

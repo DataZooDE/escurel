@@ -516,6 +516,12 @@ pub const CONFIG_KEYS: &[ConfigKey] = &[
         doc: "directories a `sqlite` credential's database file, and every `json_dir` / `parquet_dir` source's files, may live under (canonicalised; `..`, a symlink out and a glob reaching outside are refused). Unset refuses file databases AND directory sources. Postgres/MySQL credentials are checked like an endpoint: the connection string is parsed with libpq's grammar, only `host`, `hostaddr`, `port`, `dbname`, `user`, `password`, `sslmode`, `options`, `application_name`, `connect_timeout` are accepted (`service=`, `passfile=`, `sslrootcert=` … are refused), EVERY host/`hostaddr` must resolve to public addresses (loopback only with `ESCUREL_EGRESS_ALLOW_LOOPBACK`), and a host named by NAME is pinned to the address that was checked",
     },
     ConfigKey {
+        name: "ESCUREL_SQL_OBJECT_PREFIXES",
+        component: "Server",
+        default: "—",
+        doc: "comma-separated s3:// or gs:// bucket/directory prefixes allowed for json_dir and parquet_dir sources. A trailing slash is added to each prefix, so s3://bucket/demo permits only keys beneath demo/. Unset refuses remote directory sources. The setting authorises paths; DuckDB httpfs still needs its own credentials and endpoint (a DuckLake S3/GCS secret on the same connection, or DuckDB credential-chain configuration)",
+    },
+    ConfigKey {
         name: "ESCUREL_CURSOR_KEY",
         component: "Server",
         default: "random per process",

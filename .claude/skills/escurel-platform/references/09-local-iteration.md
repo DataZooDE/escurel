@@ -105,8 +105,12 @@ honest. Also there: `escurel_tool_calls`, `escurel_tool_latency_ms`,
 
 - **SQL databases as rows** (`sql_view` + `instances: rows` over `sqlite` / `postgres`; `mysql` / `mariadb` are refused: `connector_not_supported`): the credential is a
   secret reference (per tenant: a file under `<ESCUREL_SECRET_FILE_DIRS>/<tenant>/`, or `ESCUREL_SECRET_<TENANT>__<NAME>`);
-  a SQLite file and every `json_dir` / `parquet_dir` source must live under `ESCUREL_SQL_FILE_DIRS` (a gateway
-  with it unset serves no file sources; `escurel-test-support` gateways expose the temp dir),
+  a SQLite file and local `json_dir` / `parquet_dir` source must live under `ESCUREL_SQL_FILE_DIRS`
+  (a gateway with it unset serves no local file sources; `escurel-test-support` gateways expose the temp dir).
+  Remote `s3://` / `gs://` directory sources need `ESCUREL_SQL_OBJECT_PREFIXES`, for example
+  `ESCUREL_SQL_OBJECT_PREFIXES=s3://bucket/demo/`. DuckDB must also have httpfs credentials and
+  endpoint access: DuckLake configures them on its index connection; the storage backend's S3
+  settings alone do not configure DuckDB,
   a Postgres host must be public
   unless `ESCUREL_EGRESS_ALLOW_LOOPBACK=1` (local dev only). Tests that need Postgres run a real container
   (`--features live-postgres`).

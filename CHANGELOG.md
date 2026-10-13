@@ -11,9 +11,15 @@ re-cuts append `.N`), matching the DataZoo release scheme (cf. erpl).
 **Read first:** [`docs/deploy/kind-migration.md`](docs/deploy/kind-migration.md) (stop-first upgrade, backup,
 rollback) and the consumer checklist in
 [`.claude/skills/escurel-platform/CHANGELOG.md`](.claude/skills/escurel-platform/CHANGELOG.md) (0.7.0 – 0.18.1).
-Skill version `0.19.4`. Every consumer that writes pages or reads the tool surface moves in the same window.
+Skill version `0.20.0`. Every consumer that writes pages or reads the tool surface moves in the same window.
 
 ### Fixed
+
+- **Object-store directory connectors can be operator-authorized.** `json_dir` and `parquet_dir`
+  sources under `s3://` / `gs://` now pass the gateway policy when their URL lies beneath an
+  `ESCUREL_SQL_OBJECT_PREFIXES` entry. The default remains deny. Consumers with remote directory
+  sources must set this variable before upgrading (`s3://bucket/demo/` for that directory); DuckDB
+  still needs object-store credentials and endpoint access.
 
 - **List cursors are bound to their tenant and list; `ESCUREL_CURSOR_KEY` needs 32 bytes** (#684): a cursor issued
   for one skill/list no longer opens on another (it used to return a silently empty page); a shorter key stops
@@ -107,6 +113,30 @@ Skill version `0.19.4`. Every consumer that writes pages or reads the tool surfa
 - Details line by line: [`docs/notes/breaking-wire-changes.md`](docs/notes/breaking-wire-changes.md).
 
 ### Added
+
+- **A skill can declare an Overview tile (#700).** `overview: {tile, status_field, delayed_when, sort_field?}` in a
+  skill's frontmatter names a status field and the values that count as delayed; the VS Code Overview board shows
+  one tile per declaring skill ("N delayed", the top three by `sort_field`, each opening the instance). It is
+  lint-only: a malformed declaration yields a warning (`overview_invalid`, `overview_tile_invalid`,
+  `overview_status_field_unknown`, `overview_delayed_when_invalid`), never a refusal. `list_skills` rows carry the
+  declaration as `overview` (additive; omitted when the skill declares none or the declaration is invalid). Counting is bounded
+  (5 pages x 100): when the budget is spent the tile reads "N+ delayed"; a rows skill whose status field is not
+  `filterable` gets no tile. No new tool. Skill `0.20.0`.
+- **The runner publishes its harness allow-list (#701; BACKEND_GAPS PR-10).** The `escurel:runner-status` body
+  carries `harness_allow` (sorted names only, from `ESCUREL_RUNNER_HARNESS_ALLOW`) next to the default `harness`.
+  The extension's Start offers a picker when `escurel.harness` is unset and the list has more than one entry, and
+  never sends a harness outside it: a configured name that is not on the list shows a warning (Start with
+  default / Open settings / Cancel) instead of silently running another engine. An older runner (field absent)
+  behaves as before. Additive. Skill `0.20.0`.
+- **Close thread (#702; BACKEND_GAPS PR-9).** A thread can be closed and reopened with a durable event:
+  `capture_event` label `escurel:thread-closed`, body `{action: close|reopen, root_event_id, reason?}`. Whoever
+  may read the root event may close or reopen (closing is shared and visible: the Closed group shows who and
+  when); run-bound and other machine tokens are refused, an unknown or unreadable root answers `event_not_found`
+  (no existence oracle), re-asking the current state is a no-op answer (`already: true`, nothing filed or
+  broadcast). Stored `kind: system` with a server-stamped `provenance.thread` (a caller's own `provenance` is
+  dropped; `reason` is capped at 200 characters, the stamped `root_title` is cut to 200). Read closed threads with
+  `list_events {label_skill: "escurel:thread-closed"}`. Additive: one label, one response flag. The Threads outline
+  ends in a collapsed Closed group with Close / Reopen commands. Skill `0.20.0`.
 
 - **Migration tooling (#654).** `escurel admin migrate-kind` runs the apply in a spawned server task (a client
   that disconnects or is killed no longer cancels it; `--timeout-secs` is opt-in, progress is printed every

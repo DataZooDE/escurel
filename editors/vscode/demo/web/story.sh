@@ -43,7 +43,14 @@ out() {
 # spin waits until COND (a shell condition string) holds, printing it as a dry run (where the state
 # files it waits on may not exist yet, so waiting would never end).
 spin() {
-  if [ "$DRY" = 1 ]; then printf '+ until %s; do sleep 1; done\n' "$1"; else eval "$1"; fi
+  if [ "$DRY" = 1 ]; then printf '+ until %s; do sleep 1; done\n' "$1"; return 0; fi
+  limit=${DEMO_STORY_WAIT_SECS:-300}; waited=0
+  until eval "$1" >/dev/null 2>&1; do
+    if [ "$waited" -ge "$limit" ]; then
+      echo "story: gave up after ${limit}s waiting for: $1" >&2; exit 1
+    fi
+    sleep 1; waited=$((waited + 1))
+  done
 }
 run cd "$SRC"
 if [ "$MODE" = s2d ] && [ -f "$S/story.done" ]; then echo "story already played"; exit 0; fi

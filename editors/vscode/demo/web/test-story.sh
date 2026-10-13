@@ -185,6 +185,41 @@ else
   bad "s2d dry run honours the marker"
 fi
 
+# --- s2d WAITS for the gateway state instead of checking once (the manual demo-story service starts before
+# the gateway has written gateway.json/bearer.json; a single check made the whole story fail outright).
+# The scratch dir lives inside $T, which the EXIT trap already removes.
+W="$T/wait"
+mkdir -p "$W/s2d/pages"; printf 'hetzner-2026-10-11\n' > "$W/s2d/STAMP"
+(
+  sleep 2
+  mkdir -p "$W/state"
+  printf '{"gateway_url":"http://127.0.0.1:45451","admin_bearer":"adm0","tenant":"demo"}\n' > "$W/state/gateway.json"
+  printf '{"bearer":"b0","admin_bearer":"adm0"}\n' > "$W/state/bearer.json"
+) &
+start=$(date +%s)
+rc=0
+PATH="$T/bin:$PATH" NODE_LOG="$T/wait.log" DEMO_SRC="$SRC" DEMO_DIR="$W" DEMO_STORY_MODE=s2d S2D_DIR="$W/s2d" \
+  DEMO_STORY_WAIT_SECS=30 sh "$STORY" > "$T/wait.out" 2>&1 || rc=$?
+wait
+elapsed=$(( $(date +%s) - start ))
+if [ "$rc" = 0 ] && [ -f "$W/state/story.done" ] && [ "$elapsed" -ge 2 ]; then
+  ok "s2d waits for the gateway state to appear (rc=0 after ${elapsed}s)"
+else
+  bad "s2d waits for the gateway state to appear (rc=$rc elapsed=${elapsed}s: $(tail -1 "$T/wait.out" 2>/dev/null))"
+fi
+# ... and gives up with a clear message, instead of hanging forever, when it never appears.
+mv "$W/state" "$W/state.moved"
+start=$(date +%s)
+rc=0
+PATH="$T/bin:$PATH" NODE_LOG="$T/wait2.log" DEMO_SRC="$SRC" DEMO_DIR="$W" DEMO_STORY_MODE=s2d S2D_DIR="$W/s2d" \
+  DEMO_STORY_WAIT_SECS=2 sh "$STORY" > "$T/wait2.out" 2>&1 || rc=$?
+elapsed=$(( $(date +%s) - start ))
+if [ "$rc" != 0 ] && [ "$elapsed" -le 15 ] && grep -q 'gave up after 2s waiting for' "$T/wait2.out"; then
+  ok "s2d gives up with a clear message when the gateway never appears (${elapsed}s)"
+else
+  bad "s2d gives up with a clear message when the gateway never appears (rc=$rc elapsed=${elapsed}s: $(tail -1 "$T/wait2.out" 2>/dev/null))"
+fi
+
 echo "---"
 echo "pass=$pass fail=$fail"
 [ "$fail" -eq 0 ]
