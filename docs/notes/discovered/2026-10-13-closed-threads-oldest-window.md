@@ -20,3 +20,11 @@ must load on connect, not only on events: test it with more marks than one page 
 ## Changelog lines for the release notes
 - VS Code: the Closed threads group loads when the window starts and after every reconnect, and reads the newest
   marks first (a reopen or a recent close in a long history is no longer missed).
+
+## Follow-up: no bare refresh at activation
+The first version (#707) also called `refreshClosed()` once at the end of `activate`. In the integration suite
+the token is set right after `activate()` returns, so that call reached the gateway unauthenticated; the 401
+makes the shared client `close()`, which raced the first real call and failed the cascade test with
+"missing Authorization" (red on main after #707). The group now loads from `LiveCoordinator.onDidConnect`
+(the socket connects with the token, at start and after every reconnect) and from `onDidChange`.
+Lesson: never fire a gateway call from `activate` itself; hang it on a signal that already carries auth.
