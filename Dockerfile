@@ -137,6 +137,24 @@ RUN set -eu; \
     done; \
     echo "baked $(ls "$d"/*.duckdb_extension | wc -l) extensions, $(du -sh /opt/escurel/.duckdb | cut -f1)"
 
+# Bake the versioned optimizer artifact by digest and test it against this
+# image's DuckDB CLI. Runtime LOAD requires ESCUREL_INDEX_EXTENSIONS to name
+# this absolute path and ESCUREL_ALLOW_UNSIGNED_EXTENSIONS=true.
+# Source: anofox-optimize commit 3fff86195ceda1969602f313c84a3c86131d5f3c.
+ARG ANOFOX_OPTIMIZE_URL=https://get.erpl.io/anofox_optimize/3fff861/v1.5.6/linux_amd64/anofox_optimize.duckdb_extension.gz
+ARG ANOFOX_OPTIMIZE_GZ_SHA256=27fb898898a733def164912581b22660c65647424e7c392f11e56ae2cd796c40
+ARG ANOFOX_OPTIMIZE_SHA256=107d8c521b975b695e86792f514017e36a7e6282c64f3d73bbd08c93b4d0a3f4
+RUN set -eu; \
+    mkdir -p /opt/escurel/extensions; \
+    curl -sSfL "${ANOFOX_OPTIMIZE_URL}" -o /tmp/anofox_optimize.gz; \
+    echo "${ANOFOX_OPTIMIZE_GZ_SHA256}  /tmp/anofox_optimize.gz" | sha256sum -c -; \
+    gunzip -c /tmp/anofox_optimize.gz > /opt/escurel/extensions/anofox_optimize.duckdb_extension; \
+    rm /tmp/anofox_optimize.gz; \
+    echo "${ANOFOX_OPTIMIZE_SHA256}  /opt/escurel/extensions/anofox_optimize.duckdb_extension" | sha256sum -c -; \
+    duckdb -unsigned -c "LOAD '/opt/escurel/extensions/anofox_optimize.duckdb_extension'; \
+      SELECT CASE WHEN count(DISTINCT function_name) = 3 THEN 'ok' ELSE error('anofox_optimize: missing opt_* functions') END \
+      FROM duckdb_functions() WHERE function_name IN ('opt_knapsack_exact','opt_pack_best_of','opt_wave_best_of');"
+
 # ---- demo gateway (web workbench demo only; NOT the default target) -------
 # The demo stack needs a gateway that VERIFIES tokens and can tell which run wrote what (the thread, the
 # trace, the held proposals): that is `escurel-test-gateway` (escurel-server + a built-in token issuer).
@@ -187,6 +205,7 @@ RUN ldconfig
 # root filesystem. HOME is set to match, because HOME is what decides where
 # DuckDB looks: pointing it anywhere else silently reverts to downloading.
 COPY --from=extensions --chown=65532:65532 /opt/escurel/.duckdb /opt/escurel/.duckdb
+COPY --from=extensions --chown=65532:65532 /opt/escurel/extensions /opt/escurel/extensions
 ENV HOME=/opt/escurel
 
 # Run as the uid the substrate chart already uses (securityContext.runAsUser 65532), NOT root, so a
