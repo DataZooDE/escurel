@@ -176,7 +176,9 @@ export function activate(context: vscode.ExtensionContext): EscurelApi | undefin
   const details = DetailsViewProvider.register(context, threads);
   const runs = RunController.register(context, services);
   // The Closed group is folded from the `escurel:thread-closed` label listing (no new tool), newest
-  // first and bounded (loadClosedThreads): at activation, on every (re)connect of the live socket,
+  // first and bounded (loadClosedThreads): when the live socket connects (at start, and again after every
+  // reconnect; NOT a bare call at activation: it would reach the gateway before the token is set, and the
+  // 401 closes the shared client under the first real call),
   // live when a close lands, and after this window's own close/reopen. A newer refresh wins over an
   // older one still in flight; a failed refresh keeps what the outline showed (same tenant), and a
   // gateway/auth change clears it first so another tenant's list is never kept.
@@ -212,7 +214,6 @@ export function activate(context: vscode.ExtensionContext): EscurelApi | undefin
       refreshClosed();
     }),
   );
-  refreshClosed();
   PageAsUiEditor.register(context, () => services.client, services.onDidChange);
   SkillPageEditor.register(context, () => services.client, services.onDidChange);
 

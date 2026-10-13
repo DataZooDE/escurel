@@ -80,6 +80,16 @@ jobs:
           echo "version=$V" >> "$GITHUB_OUTPUT"
           echo "Release version: $V"
 
+      # Populate CARGO_HOME BEFORE the tag-version injection below. A runner starts with an empty
+      # CARGO_HOME and (deliberately, see the rust-cache note) no cache, and the lockfile refresh after
+      # the injection runs `cargo update --workspace --offline`: with nothing fetched that resolves
+      # against an empty registry and dies with "no matching package named ..." (exit 101), so a tag
+      # build would fail before any Release is created. `--locked` is valid here because the manifests
+      # still match the committed Cargo.lock at this point.
+      - name: Fetch dependencies (locked)
+        shell: bash
+        run: cargo fetch --locked
+
       # Inject the tag version into [workspace.package] so `escurel --version`
       # reports the release (flapi's version-override, but uncommitted). Only
       # the first top-level `version = "..."` line is touched. python3 ships on
@@ -105,8 +115,11 @@ jobs:
           # (-rc.1, +meta), strip leading zeros per core component, reassemble.
           m = re.match(r"^([0-9]+(?:\.[0-9]+)*)(.*)$", v)
           if m:
-              core = ".".join(str(int(p)) for p in m.group(1).split("."))
-              v = core + m.group(2)
+              parts = [str(int(p)) for p in m.group(1).split(".")]
+              # Cargo wants exactly major.minor.patch. A same-day re-cut (v2026.10.14.1) has a fourth
+              # component: carry it as SemVer build metadata (2026.10.14+1) so the crate version stays valid.
+              core, extra = ".".join(parts[:3]), parts[3:]
+              v = core + m.group(2) + (("+" + ".".join(extra)) if extra else "")
           s = open("Cargo.toml", encoding="utf-8").read()
           s, n = re.subn(r'(?m)^version = "[^"]*"', f'version = "{v}"', s, count=1)
           assert n == 1, "no top-level version line found in Cargo.toml"
@@ -419,6 +432,9 @@ jobs:
           set -euo pipefail
           TAG="${GITHUB_REF#refs/tags/}"
           git fetch --force origin "refs/tags/${TAG}:refs/tags/${TAG}"
+          if [[ "$(git cat-file -t "refs/tags/${TAG}")" != "tag" ]]; then
+            echo "::error::${TAG} is a lightweight tag: the tag message is the release notes, so cut it with 'git tag -a' (docs/release/RELEASE-CHECKLIST.md)"; exit 1
+          fi
           MSG="$(git for-each-ref "refs/tags/${TAG}" --format='%(contents)')"
           SECTION="$(awk -v t="## ${TAG}" 'index($0, t) == 1 {p=1; print; next} /^## / {p=0} p' CHANGELOG.md)"
           if [[ -z "${SECTION//[[:space:]]/}" ]]; then

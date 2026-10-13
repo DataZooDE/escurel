@@ -362,7 +362,7 @@ citation; never treat one as a link. The link's `skill` segment is its
       is repeated only when the skill DECLARES it safe (`write: {…, idempotent: true}` for REST, `idempotency_arg`
       for MCP; a `PUT` is repeatable by contract); otherwise it is attempted ONCE and never repeated blind.
       `base_etag` is REQUIRED: a proposal without it is refused `write_back_base_etag_required`. Every step leaves a system event
-      (`label_skill: escurel:write-back`, ids `write-back:<draft>:applying|applied|failed`; body has
+      (`label_skill: escurel:write-back`, ids `write-back:<draft>:applied` and, per attempt, `write-back:<draft>:<n>:applying|failed`; body has
       `outcome`, `attempts`, `columns`, `before_etag`, never the values). `update_page` can NOT carry a
       `write_back` block (`write_back_requires_draft`). Refusals, as `issues[].code`:
       `backend_read_only` (the skill declares no write), `backend_read_only_field` (a column that is not in
