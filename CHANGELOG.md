@@ -11,7 +11,7 @@ re-cuts append `.N`), matching the DataZoo release scheme (cf. erpl).
 **Read first:** [`docs/deploy/kind-migration.md`](docs/deploy/kind-migration.md) (stop-first upgrade, backup,
 rollback) and the consumer checklist in
 [`.claude/skills/escurel-platform/CHANGELOG.md`](.claude/skills/escurel-platform/CHANGELOG.md) (0.7.0 – 0.18.1).
-Skill version `0.20.0`. Every consumer that writes pages or reads the tool surface moves in the same window.
+Skill version `0.20.1`. Every consumer that writes pages or reads the tool surface moves in the same window.
 
 ### Fixed
 
@@ -28,8 +28,20 @@ Skill version `0.20.0`. Every consumer that writes pages or reads the tool surfa
   `expand` a syntax error and `search` find nothing; a hostile name could close the identifier.
 - **A run-bound token cannot file `escurel:` events, system events or workflow steps** (#686): the runner mints
   ADMIN run tokens, and the guard was `!is_admin`. The runner's own admin identity is unaffected.
-- **A branch is its author's workspace** (#687): another machine can no longer write into, merge or abandon it;
-  people and admins still decide it (the review).
+- **A branch is its author's workspace** (#687, tightened in #714): nobody else writes into it, merges it or
+  abandons it; only its author (for a machine's branch: the person who minted the token) or an admin decides
+  it. Anyone else gets `unknown_branch`, the same answer as a missing name.
+- **A hand-written `scenario:` naming a registered branch follows branch ownership** (#708): `update_page`
+  without a `branch:` argument used to drop the page into another author's branch, and that author's merge
+  would land it. Now author/admin only, others get `unknown_branch`; an unregistered name stays the legacy overlay.
+- **Write-back audit rows are per attempt** (#705): REST write-back records
+  `write-back:<draft>:<n>:applying|failed`, so a stale record from an earlier outage can no longer license a
+  second send of a non-idempotent write that may already have applied (at-most-once holds).
+- **Release machinery** (#704, #713): the tag build fetches dependencies before refreshing the lockfile (the
+  first tag build would have failed on a cold runner); lightweight tags are refused; a same-day re-cut
+  `vYYYY.MM.DD.N` builds as `YYYY.M.D+N`; the release's first job gates the tag on a green main push CI run of
+  that exact commit (an ancestor of `main`, waits up to 30 min; `RELEASE_SKIP_CI_GATE=1` is the logged escape
+  hatch). The image bakes `anofox_optimize` for DuckDB 1.5.6 (#706).
 - Links that escape the exposed directories fail closed when the directory cannot be read (#681); the
   `rows_get` timeout test is deterministic (#683).
 

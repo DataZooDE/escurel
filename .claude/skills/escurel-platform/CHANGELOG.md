@@ -4,6 +4,16 @@ The skill version tracks the consumer-facing contract, not the Escurel
 binary version. The Escurel repo's checked-out git ref is the true version
 pin (see `SKILL.md` → "How this skill is installed").
 
+## 0.20.1 — branch decisions are author-or-admin; write-back audit ids are per attempt
+
+- **`merge_branch` / `abandon_branch` / writes into a branch** (`02-tool-surface.md`): only the branch's author
+  or an admin; any other caller, including another person, gets `unknown_branch`. A machine's branch is
+  authored by the person who minted its token. Supersedes 0.19.4's "a person may decide a machine's branch".
+- **`update_page` with a hand-written `scenario:` naming a registered branch** follows the same ownership rule
+  (no `branch:` argument needed to trigger it); an unregistered name stays the legacy overlay.
+- **Write-back audit events** (`01-data-model.md`): REST upstreams record `write-back:<draft>:<n>:applying|failed`
+  per attempt; `:applied` keeps its id. Do not parse these ids; they are reserved bookkeeping.
+
 ## 0.20.0 — a skill declares an Overview tile; the runner publishes its harness allow-list; threads can be closed
 
 All additive; nothing a consumer does today changes.
