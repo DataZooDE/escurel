@@ -9,7 +9,7 @@
 //!   its host resolves to has to be public (loopback only with `ESCUREL_EGRESS_ALLOW_LOOPBACK`);
 //! - a file database (`sqlite`) must live under `ESCUREL_SQL_FILE_DIRS`, canonicalised; with the
 //!   variable unset no file database can be attached at all. The directory connectors (`json_dir`,
-//!   `parquet_dir`) read any file the gateway can, so they are confined to the same directories;
+//!   `parquet_dir`) use the same local-file rule, or the separately configured object prefixes;
 //! - the connection string is read with the driver's own grammar, only a short list of keys is
 //!   accepted, and a host named by NAME is pinned to the address that was checked.
 
@@ -18,7 +18,7 @@ use std::path::{Component, Path};
 
 use escurel_index::{CredentialResolver, dsn};
 
-use crate::egress::{EgressPolicy, is_public_ip};
+use crate::egress::{EgressPolicy, is_public_ip, valid_object_url};
 
 /// The resolver the gateway installs on its indexers.
 #[derive(Debug, Clone)]
@@ -71,6 +71,30 @@ impl ServerCredentialPolicy {
     /// (as far as the pattern can reach) that leads outside. Unset = no directory connector at all.
     /// The words never name a file or say what is there.
     fn check_glob(&self, glob: &str) -> Result<(), String> {
+        if glob.contains("://") {
+            let refuse = || {
+                "egress policy: the object directory is outside the prefixes the operator exposes \
+                 (ESCUREL_SQL_OBJECT_PREFIXES)"
+                    .to_owned()
+            };
+            if self.policy.sql_object_prefixes.is_empty() {
+                return Err(
+                    "egress policy: object directory sources are not available on this gateway \
+                     (the operator has not set ESCUREL_SQL_OBJECT_PREFIXES)"
+                        .to_owned(),
+                );
+            }
+            if !valid_object_url(glob, true) {
+                return Err(refuse());
+            }
+            return self
+                .policy
+                .sql_object_prefixes
+                .iter()
+                .any(|prefix| glob.starts_with(prefix))
+                .then_some(())
+                .ok_or_else(refuse);
+        }
         let refuse = || {
             "egress policy: the directory is outside the directories the operator exposes \
              (ESCUREL_SQL_FILE_DIRS)"
@@ -472,5 +496,42 @@ mod tests {
                 .unwrap_err()
                 .contains("not available")
         );
+    }
+
+    #[test]
+    fn remote_directory_requires_an_exact_operator_prefix() {
+        let none = policy(|_| {});
+        let err = none
+            .check_directory("parquet_dir", "s3://bucket/demo/a.parquet")
+            .unwrap_err();
+        assert!(err.contains("ESCUREL_SQL_OBJECT_PREFIXES"), "{err}");
+        let p = policy(|p| {
+            p.sql_object_prefixes = vec!["s3://bucket/demo/".into(), "gs://other/data/".into()]
+        });
+        for ok in [
+            "s3://bucket/demo/a.parquet",
+            "s3://bucket/demo/sub/*.parquet",
+            "gs://other/data/*.json",
+        ] {
+            assert!(p.check_directory("parquet_dir", ok).is_ok(), "{ok}");
+        }
+        for bad in [
+            "s3://bucket/demo-evil/a.parquet",
+            "s3://bucket/dem*/a.parquet",
+            "s3://bucket/demo/../private/a.parquet",
+            "s3://bucket/demo/./a.parquet",
+            "s3://bucket/demo/%2e%2e/a.parquet",
+            "s3://bucket/demo/%2Fprivate",
+            "s3://bucket/demo/a?x",
+            "s3://bucket/demo/a#x",
+            "s3://user@bucket/demo/a.parquet",
+            "s3://bucket:9000/demo/a.parquet",
+            "s3://other/demo/a.parquet",
+            "gs://bucket/demo/a.parquet",
+        ] {
+            let err = p.check_directory("parquet_dir", bad).unwrap_err();
+            assert!(err.contains("ESCUREL_SQL_OBJECT_PREFIXES"), "{bad}: {err}");
+            assert!(!err.contains(bad), "{err}");
+        }
     }
 }

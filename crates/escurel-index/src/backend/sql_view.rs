@@ -308,14 +308,13 @@ async fn prepare_source(
     match binding.connector {
         SqlConnector::JsonDir | SqlConnector::ParquetDir => {
             if !is_safe_sql_fragment(&binding.relation) {
-                return Err(SqlViewError::InvalidBinding(format!(
-                    "relation/glob contains an unsafe character: {:?}",
-                    binding.relation
-                )));
+                return Err(SqlViewError::InvalidBinding(
+                    "relation/glob contains an unsafe character".to_owned(),
+                ));
             }
             let glob = directory_glob(binding.connector, &binding.relation);
-            // A directory connector reads whatever the gateway can: confine it to the directories the
-            // operator exposes (`ESCUREL_SQL_FILE_DIRS`), exactly as a file database is.
+            // A directory connector reads whatever DuckDB can. The server policy confines local
+            // paths to SQL_FILE_DIRS and object URLs to SQL_OBJECT_PREFIXES before interpolation.
             if let Some(resolver) = indexer.credential_resolver() {
                 resolver
                     .check_directory(binding.connector.as_str(), &glob)

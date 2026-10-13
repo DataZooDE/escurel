@@ -106,6 +106,11 @@ small axum / node server; do NOT mock the HTTP client), start the gateway with
 `ESCUREL_EGRESS_ALLOW_LOOPBACK=1`, then `register_endpoint {name, kind, base_url}` as the admin. A SQL-database fixture (`orders-db` in the demo: a SQLite file) needs a secret file holding the DSN under `<ESCUREL_SECRET_FILE_DIRS>/<tenant>/`, the database directory (and any `json_dir` source directory) in `ESCUREL_SQL_FILE_DIRS`, and `register_credential {name, connector: sqlite, secret_ref: file:<path>}` as the admin. The demo
 at `editors/vscode/demo/` does exactly this with a REST portal and an MCP server (`services/`).
 
+An object-store directory fixture (`s3://bucket/demo/`) needs
+`ESCUREL_SQL_OBJECT_PREFIXES=s3://bucket/demo/` plus DuckDB httpfs credentials and an endpoint.
+The prefix setting only permits the relation path; it does not supply credentials. A DuckLake S3/GCS
+secret on the same index connection supplies them, while `ESCUREL_STORAGE_S3_*` alone does not.
+
 ## Migrating a repo of page files (`type:` -> `kind:`)
 
 A repository that keeps skills/instances as markdown files (seeds, fixtures, a git-managed knowledge base)
