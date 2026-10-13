@@ -66,8 +66,17 @@ derives its version from the tag (`vYYYY.MM.DD` → `YYYY.M.D`, leading zeros dr
 - In the zoomed-out thread overview the column headers no longer run together: below 85% zoom a header shows
   only its leading stage name (full label stays in the accessible name); cards keep icon and text (#699).
 
+### Fixed
+
+- The Closed threads group loads when the window starts and after every reconnect, and reads the newest marks
+  first, so a reopen or a recent close in a long history is no longer missed (#707, #711).
+- Approve plan no longer sends an `escurel.harness` the runner's allow-list does not name; the runner default
+  is used instead. The delayed-items count is capped (5 pages, shown as "N+ delayed") (#710).
+
 ### Demo
 
 - `demo/run.sh` opens the calm window by default (`ESCUREL_DEMO_FOCUS=0` for the classic look), picks the
   libduckdb matching `Cargo.lock`, and seeds the Source-to-Deliver stories (`demo/s2d/`, see
   `demo/s2d/REHEARSAL.md`).
+- The s2d story waits for the gateway (bounded, with a clear message) instead of failing when started early; the
+  demo shell tests run in CI (#709).
