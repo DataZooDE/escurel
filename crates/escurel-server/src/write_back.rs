@@ -206,7 +206,7 @@ pub(crate) fn backoff(base: Duration, attempt: u32) -> Duration {
     scaled + scaled / 4 * u32::try_from(roll).unwrap_or(0) / 1000
 }
 
-/// One audit event. Idempotent per `event_id`, so a retried promotion rewrites the same row.
+/// One audit event. Idempotent per `event_id` (first writer wins: a second write of the same id is dropped, so per-attempt rows carry the attempt number in their id).
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn audit(
     state: &crate::server::AppState,
@@ -402,9 +402,7 @@ async fn run_inner(
         Err(e) => return Err(refusal(intent_error_code(&e), e)),
     };
     let stripped = strip_intent(content);
-    let id_applying = format!("write-back:{draft_id}:applying");
     let id_applied = format!("write-back:{draft_id}:applied");
-    let id_failed = format!("write-back:{draft_id}:failed");
     // The audit trail is read before anything is sent (the witnesses): when that read fails the store
     // is unhealthy, nothing was sent, and the person is told so in words, not with a SQL error.
     let internal = |e: String| {
@@ -452,6 +450,31 @@ async fn run_inner(
         )
         .await;
     }
+    // One `applying` / `failed` pair PER ATTEMPT (`write-back:<draft>:<n>:applying`): an audit row is
+    // first-writer-wins, so a single shared row would let an old attempt's outcome (an outage that
+    // sent nothing) stand for a later attempt that did reach the upstream.
+    let mut attempt_no = 1u32;
+    while witness(
+        indexer,
+        &format!("write-back:{draft_id}:{attempt_no}:applying"),
+    )
+    .await
+    .map_err(internal)?
+    .is_some()
+        || witness(
+            indexer,
+            &format!("write-back:{draft_id}:{attempt_no}:failed"),
+        )
+        .await
+        .map_err(internal)?
+        .is_some()
+    {
+        attempt_no += 1;
+    }
+    let id_applying = format!("write-back:{draft_id}:{attempt_no}:applying");
+    let id_failed = format!("write-back:{draft_id}:{attempt_no}:failed");
+    let prev_applying = format!("write-back:{draft_id}:{}:applying", attempt_no - 1);
+    let prev_failed = format!("write-back:{draft_id}:{}:failed", attempt_no - 1);
     let src = remote_rows::source(indexer, skill)
         .await
         .map_err(internal)?
@@ -496,13 +519,14 @@ async fn run_inner(
 
     // An `applying` event with no outcome is an upstream call whose result nobody saw. With an
     // idempotency key it is safe to repeat; without one, repeating could apply it twice.
-    let in_flight = witness(indexer, &id_applying)
-        .await
-        .map_err(internal)?
-        .is_some();
+    let in_flight = attempt_no > 1
+        && witness(indexer, &prev_applying)
+            .await
+            .map_err(internal)?
+            .is_some();
     // ...unless the recorded outcome says the upstream REFUSED (or nothing was ever sent): then it
     // certainly did not apply, and a human who fixed the cause may promote again.
-    if in_flight && !idempotent && !definitely_not_applied(indexer, &id_failed).await {
+    if in_flight && !idempotent && !definitely_not_applied(indexer, &prev_failed).await {
         return Err(refusal(
             "write_back_unknown_outcome",
             "an earlier attempt may have reached the upstream and its outcome was not recorded; \
