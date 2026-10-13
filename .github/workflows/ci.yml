@@ -68,6 +68,11 @@ jobs:
           sh editors/vscode/demo/web/test-init.sh
           sh editors/vscode/demo/web/test-story.sh
 
+      # The release tag gate (scripts/release-gate.sh) is the one part of the release path the dry run cannot
+      # exercise; its decision logic runs here against fixtures, offline, in seconds.
+      - name: Release gate tests
+        run: bash scripts/test-release-gate.sh
+
       # rust-toolchain.toml drives the channel + components; rustup
       # honours it automatically on first invocation.
       - name: Install Rust toolchain

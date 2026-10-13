@@ -33,8 +33,37 @@ env:
   CARGO_PROFILE_RELEASE_DEBUG: "0"
 
 jobs:
+  # A release is cut from a commit whose CI on main is green. The tag push itself runs no CI, so look up
+  # the `CI` push run of exactly the tagged commit on main (scripts/release-gate.sh; tested offline by
+  # scripts/test-release-gate.sh). This runs FIRST so a red or missing result fails the release in minutes,
+  # not after ~90 minutes of cross-platform builds. It waits (up to 30 minutes) for a push run still in
+  # progress. Tag pushes only: a workflow_dispatch dry run skips it. Emergency escape: set the repository
+  # variable RELEASE_SKIP_CI_GATE=1 (loud warning; unset it afterwards).
+  gate:
+    name: gate (green CI on main for this commit)
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Require a green CI run on main for the tagged commit
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_SKIP_CI_GATE: ${{ vars.RELEASE_SKIP_CI_GATE }}
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin main
+          scripts/release-gate.sh "$GITHUB_SHA" --repo "$GITHUB_REPOSITORY"
+
   build:
     name: build ${{ matrix.target_name }}
+    needs: gate
+    if: ${{ always() && (needs.gate.result == 'success' || needs.gate.result == 'skipped') }}
     strategy:
       fail-fast: false
       matrix:
@@ -351,6 +380,8 @@ jobs:
   # (VSIX versions reject leading zeros too). Attached beside the binaries.
   vsix:
     name: build vsix
+    needs: gate
+    if: ${{ always() && (needs.gate.result == 'success' || needs.gate.result == 'skipped') }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     defaults:
@@ -402,28 +433,10 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
-      checks: read
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-
-      # A release is cut from a commit whose CI is green. The tag push itself runs no CI, so look the
-      # required check up on the tagged commit (it ran when that commit reached main). Emergency
-      # escape: set the repository variable RELEASE_SKIP_CI_GATE=1 (and unset it afterwards).
-      - name: Require green CI on the tagged commit
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          SKIP: ${{ vars.RELEASE_SKIP_CI_GATE }}
-        run: |
-          set -euo pipefail
-          if [[ "${SKIP:-}" == "1" ]]; then echo "::warning::RELEASE_SKIP_CI_GATE=1: CI gate skipped"; exit 0; fi
-          conclusion="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}/check-runs?per_page=100" \
-            --jq '[.check_runs[] | select(.name == "fmt + clippy + test")] | sort_by(.completed_at) | last | .conclusion // "missing"')"
-          echo "fmt + clippy + test on ${GITHUB_SHA}: ${conclusion}"
-          if [[ "$conclusion" != "success" ]]; then
-            echo "::error::the tagged commit has no green 'fmt + clippy + test' check (${conclusion}); fix CI or tag a green commit"; exit 1
-          fi
 
       # The tag message is the release notes. If the CHANGELOG section for this tag is marked BREAKING
       # the annotated tag body must say so, and the section must exist (renamed from Unreleased).
