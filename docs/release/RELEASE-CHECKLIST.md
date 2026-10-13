@@ -13,9 +13,16 @@ the SemVer-normalised number (`2026.10.14` → `2026.10.14`; leading zeros strip
 
 ## 1. Before the tag
 
-1. **main is green**: the last commit on `main` has a green `fmt + clippy + test` check (the release job
-   refuses a tag whose commit has none; emergency escape: repository variable `RELEASE_SKIP_CI_GATE=1`, unset it
-   afterwards) and no open must-fix PR. `git fetch && git log --oneline origin/main -5`.
+1. **main is green**: the `CI` workflow run of the `push` event on `main` for the commit you will tag has
+   succeeded (its `fmt + clippy + test` job included) and no must-fix PR is open.
+   `git fetch && git log --oneline origin/main -5`, then check it yourself before tagging:
+   `GITHUB_REPOSITORY=DataZooDE/escurel scripts/release-gate.sh "$(git rev-parse origin/main)"` (read-only; it
+   is the same script the release uses). The release workflow runs it as its **first** job (`gate`), before any
+   build, so a red or missing result fails the release within minutes: the tag must be an ancestor of
+   `origin/main`, and the main push run of exactly that commit must be green (a run still in progress is
+   waited for, up to 30 minutes, then the job fails: re-run it when CI has finished). Emergency escape (loud
+   warning in the log): set the repository variable `RELEASE_SKIP_CI_GATE=1`, re-run, and unset it
+   afterwards. The decision logic is tested offline by `scripts/test-release-gate.sh` (runs in CI).
 2. **Skill and CHANGELOG final**: `.claude/skills/escurel-platform/VERSION` and its `CHANGELOG.md` say what
    shipped; in the root `CHANGELOG.md` rename `## Unreleased — BREAKING (…)` to `## vYYYY.MM.DD — BREAKING (…)`
    (the release job fails if the CHANGELOG has no `## <tag>` section) and open a new empty `## Unreleased`.
