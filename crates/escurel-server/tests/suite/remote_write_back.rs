@@ -67,6 +67,10 @@ struct Crm {
     applies: AtomicUsize,
     /// Apply the next N PATCHes and THEN answer 503: the change happened, the caller never learns.
     apply_then_fail: AtomicUsize,
+    /// A lagging read replica: while set, the first PATCH keeps the row as it was BEFORE it applied
+    /// and every GET serves that snapshot (the change happened, the reads do not show it yet).
+    stale_reads: std::sync::atomic::AtomicBool,
+    snapshot: Mutex<Option<Value>>,
 }
 
 impl Crm {
@@ -89,7 +93,12 @@ async fn get_one(State(c): State<Arc<Crm>>, Path(id): Path<String>) -> Response 
         return (StatusCode::SERVICE_UNAVAILABLE, "down: do-not-repeat-this").into_response();
     }
     let rows = c.rows.lock().unwrap();
-    match rows.get(&id) {
+    let lagging = c
+        .stale_reads
+        .load(Ordering::SeqCst)
+        .then(|| c.snapshot.lock().unwrap().clone())
+        .flatten();
+    match lagging.as_ref().or_else(|| rows.get(&id)) {
         Some(v) => {
             let mut h = HeaderMap::new();
             h.insert("etag", HeaderValue::from_str(&c.etag()).unwrap());
@@ -151,6 +160,12 @@ async fn patch(
     let Some(row) = rows.get_mut(&id) else {
         return StatusCode::NOT_FOUND.into_response();
     };
+    if c.stale_reads.load(Ordering::SeqCst) {
+        c.snapshot
+            .lock()
+            .unwrap()
+            .get_or_insert_with(|| row.clone());
+    }
     if let (Some(o), Some(p)) = (row.as_object_mut(), body.as_object()) {
         for (k, v) in p {
             o.insert(k.clone(), v.clone());
@@ -1142,5 +1157,82 @@ async fn a_write_back_without_a_base_etag_is_refused_before_it_can_overwrite_an_
         "{d}"
     );
     assert_eq!(c.patches.lock().unwrap().len(), 0);
+    p.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_stale_failure_record_from_an_earlier_outage_cannot_license_a_second_send() {
+    // The audit rows are one per draft and kind, first writer wins. An outage BEFORE anything is sent
+    // writes `failed` with `attempts: 0` ("nothing was sent: safe to repeat"). If that row then stays
+    // the draft's only `failed` witness, a LATER attempt that really reached the upstream (the change
+    // applied, the answer was lost) can never record its own outcome, and the stale row keeps telling
+    // `definitely_not_applied` that nothing was ever sent: a third promote re-sends a change that has
+    // already been applied (the read replica has not caught up, so the row still looks unchanged).
+    let c = crm();
+    c.ignore_keys.store(true, Ordering::SeqCst);
+    let app = Router::new()
+        .route("/customers", get(list))
+        .route("/customers/{id}", get(get_one).patch(patch))
+        .with_state(Arc::clone(&c));
+    let (base, _h) = serve(app).await;
+    let (p, _d) = spawn_gateway(
+        &[("customer", UNDECLARED_SKILL)],
+        EgressPolicy {
+            allow_loopback: true,
+            write_retry_backoff: std::time::Duration::from_millis(5),
+            ..EgressPolicy::default()
+        },
+    )
+    .await;
+    admin(
+        &p,
+        "register_endpoint",
+        json!({ "name": "crm_rest", "kind": "openapi", "base_url": base }),
+    )
+    .await;
+    let etag = etag_of_row(&p).await;
+    let id = draft_id(&draft(&p, &intent_content("tier: gold", &etag, "n")).await);
+
+    // 1. The portal cannot be read: nothing is sent, `failed` / attempts 0 is recorded.
+    c.read_down.store(true, Ordering::SeqCst);
+    let outage = promote(&p, &id).await;
+    assert_eq!(outage["ok"], false, "{outage}");
+    assert_eq!(c.applies.load(Ordering::SeqCst), 0);
+
+    // 2. The portal is back; the change reaches it and applies, but the answer is lost.
+    c.read_down.store(false, Ordering::SeqCst);
+    c.stale_reads.store(true, Ordering::SeqCst);
+    c.apply_then_fail.store(1, Ordering::SeqCst);
+    let lost = promote(&p, &id).await;
+    assert_eq!(lost["ok"], false, "{lost}");
+    assert_eq!(c.applies.load(Ordering::SeqCst), 1, "applied once");
+
+    // 3. A third promote must NOT send again: the stale `attempts: 0` row says nothing about THIS attempt.
+    let third = promote(&p, &id).await;
+    assert!(
+        issue_codes(&third).contains(&"write_back_unknown_outcome".to_owned()),
+        "a possibly-applied non-idempotent write is refused, not repeated: {third}"
+    );
+    assert_eq!(
+        c.applies.load(Ordering::SeqCst),
+        1,
+        "the upstream must have seen the change exactly once"
+    );
+    assert_eq!(c.patches.lock().unwrap().len(), 1, "one PATCH in total");
+
+    // Every attempt left its own record: the outage row and the attempt's own failure.
+    let failed = events(&p)
+        .await
+        .iter()
+        .filter(|e| {
+            e["event_id"]
+                .as_str()
+                .is_some_and(|i| i.ends_with(":failed"))
+        })
+        .count();
+    assert_eq!(
+        failed, 2,
+        "one failure record per attempt, none overwritten"
+    );
     p.shutdown().await;
 }
