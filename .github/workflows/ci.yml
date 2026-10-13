@@ -60,6 +60,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # The demo shell scripts (init.sh, story.sh) have behaviour tests that nothing ran in CI. They are
+      # seconds long and need only sh + node (preinstalled), so they run first and fail fast.
+      - name: Demo shell script tests
+        run: |
+          set -euo pipefail
+          sh editors/vscode/demo/web/test-init.sh
+          sh editors/vscode/demo/web/test-story.sh
+
       # rust-toolchain.toml drives the channel + components; rustup
       # honours it automatically on first invocation.
       - name: Install Rust toolchain
