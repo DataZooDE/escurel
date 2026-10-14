@@ -18,6 +18,10 @@ pub const CONTROL_TARGETS: &[(&str, &str)] = &[
     ("evolve_validate", "evolve_experiment"),
     ("evolve_publish_candidate", "evolve_validation_report"),
     ("evolve_compare", "evolve_comparison"),
+    // Rule discovery: propose and test spend nothing; approve is the explicit human decision.
+    ("evolve_rules_propose", "evolve_training_source"),
+    ("evolve_rules_test", "evolve_rule_candidate"),
+    ("evolve_rules_approve", "evolve_rule_candidate"),
 ];
 
 /// The run label: a spend against an owner-authored problem page.
@@ -38,7 +42,10 @@ pub fn target_skill(label: &str) -> Option<&'static str> {
     if label == RUN_LABEL {
         return Some(RUN_TARGET);
     }
-    CONTROL_TARGETS.iter().find(|(l, _)| *l == label).map(|(_, t)| *t)
+    CONTROL_TARGETS
+        .iter()
+        .find(|(l, _)| *l == label)
+        .map(|(_, t)| *t)
 }
 
 /// Owner-gated control click: private to its author and never run by the runner.
@@ -94,8 +101,38 @@ mod tests {
     }
 
     #[test]
+    fn rule_labels_are_control_labels_with_their_own_targets() {
+        assert_eq!(
+            target_skill("evolve_rules_propose"),
+            Some("evolve_training_source")
+        );
+        assert_eq!(
+            target_skill("evolve_rules_test"),
+            Some("evolve_rule_candidate")
+        );
+        assert_eq!(
+            target_skill("evolve_rules_approve"),
+            Some("evolve_rule_candidate")
+        );
+        for l in [
+            "evolve_rules_propose",
+            "evolve_rules_test",
+            "evolve_rules_approve",
+        ] {
+            assert!(is_control_label(l), "{l}");
+        }
+    }
+
+    #[test]
     fn unrelated_labels_are_not_gated() {
-        for l in ["", "evolve", "evolve_rules", "evolve_rules_get", "triage", "evolve:preflight"] {
+        for l in [
+            "",
+            "evolve",
+            "evolve_rules",
+            "evolve_rules_get",
+            "triage",
+            "evolve:preflight",
+        ] {
             assert!(!is_gated_label(l), "{l}");
             assert!(!is_control_label(l), "{l}");
             assert_eq!(target_skill(l), None, "{l}");
@@ -104,13 +141,30 @@ mod tests {
 
     #[test]
     fn system_receipts_map_to_their_root_label() {
-        assert_eq!(root_label_for_system("evolve:preflight"), "evolve_preflight");
-        assert_eq!(root_label_for_system("evolve:training-source"), "evolve_prepare_source");
-        assert_eq!(root_label_for_system("evolve:validation"), "evolve_validate");
-        assert_eq!(root_label_for_system("evolve:candidate"), "evolve_publish_candidate");
+        assert_eq!(
+            root_label_for_system("evolve:preflight"),
+            "evolve_preflight"
+        );
+        assert_eq!(
+            root_label_for_system("evolve:training-source"),
+            "evolve_prepare_source"
+        );
+        assert_eq!(
+            root_label_for_system("evolve:validation"),
+            "evolve_validate"
+        );
+        assert_eq!(
+            root_label_for_system("evolve:candidate"),
+            "evolve_publish_candidate"
+        );
         assert_eq!(root_label_for_system("evolve:admission"), "evolve_run");
-        for s in ["evolve:admission", "evolve:preflight", "evolve:training-source",
-                  "evolve:validation", "evolve:candidate"] {
+        for s in [
+            "evolve:admission",
+            "evolve:preflight",
+            "evolve:training-source",
+            "evolve:validation",
+            "evolve:candidate",
+        ] {
             assert!(is_system_label(s), "{s}");
         }
         assert!(!is_system_label("evolve:other"));

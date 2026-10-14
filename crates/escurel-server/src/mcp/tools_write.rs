@@ -2107,6 +2107,10 @@ pub(super) async fn tool_capture_event(
             || requested_manual.and_then(|m| m.get("confirm")) != stored_manual.get("confirm")
             || requested_manual.and_then(|m| m.get("review_note"))
                 != stored_manual.get("review_note")
+            || requested_manual.and_then(|m| m.get("expected_test_sha256"))
+                != stored_manual.get("expected_test_sha256")
+            || requested_manual.and_then(|m| m.get("rule_sha256s"))
+                != stored_manual.get("rule_sha256s")
         {
             return Err(JsonRpcError::invalid_params(
                 "capture_event: Evolve event ID belongs to another request".to_owned(),
@@ -2238,6 +2242,61 @@ pub(super) async fn tool_capture_event(
                     "capture_event: candidate publication needs the current passed report and explicit confirmation"
                         .to_owned(),
                 ));
+        }
+        if matches!(
+            a.label_skill.as_str(),
+            "evolve_rules_propose" | "evolve_rules_test" | "evolve_rules_approve"
+        ) && manual.get("mode").and_then(Value::as_str) != Some("run")
+        {
+            return Err(JsonRpcError::invalid_params(
+                "capture_event: rule discovery runs in the background".to_owned(),
+            ));
+        }
+        // A candidate batch is tested exactly once; only one still waiting for it can be clicked.
+        if a.label_skill == "evolve_rules_test"
+            && (expanded.frontmatter["status"] != "proposed"
+                || expanded.frontmatter["next_rule_action"] != "evolve_rules_test")
+        {
+            return Err(JsonRpcError::invalid_params(
+                "capture_event: rule test needs a proposed batch that has not been tested"
+                    .to_owned(),
+            ));
+        }
+        // Approval is the human decision: it names the exact test the person reviewed and only
+        // rules that test supported, and it needs an explicit boolean confirmation.
+        if a.label_skill == "evolve_rules_approve" {
+            let is_hash = |v: &Value| {
+                v.as_str()
+                    .is_some_and(|h| h.len() == 64 && h.bytes().all(|b| b.is_ascii_hexdigit()))
+            };
+            let supported = expanded.frontmatter["supported_rule_sha256s"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default();
+            let chosen = manual
+                .get("rule_sha256s")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default();
+            let distinct = chosen
+                .iter()
+                .collect::<std::collections::HashSet<_>>()
+                .len();
+            if manual.get("confirm") != Some(&json!(true))
+                || expanded.frontmatter["status"] != "tested"
+                || expanded.frontmatter["next_rule_action"] != "evolve_rules_approve"
+                || !manual.get("expected_test_sha256").is_some_and(is_hash)
+                || manual.get("expected_test_sha256") != expanded.frontmatter.get("test_sha256")
+                || chosen.is_empty()
+                || chosen.len() > 64
+                || distinct != chosen.len()
+                || !chosen.iter().all(|r| is_hash(r) && supported.contains(r))
+            {
+                return Err(JsonRpcError::invalid_params(
+                    "capture_event: rule approval needs the current tested batch, its exact test, supported rules and explicit confirmation"
+                        .to_owned(),
+                ));
+            }
         }
         manual.remove("target_page_sha256");
         manual.remove("target_page_sha256_gateway_verified");
