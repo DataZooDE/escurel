@@ -490,7 +490,7 @@ the operator's, not an application's, but the names are listed so nothing is a s
 | `validate_bindings` | — | re-probe every SQL-view binding (schema drift, unreachable sources) |
 | `create_remote_instance` | `skill`, `id`, `overlay_body?` | materialise a remote instance from the skill's `backend:` block |
 | `compact_lanes` | `tenant_id` | compact the CRDT op lanes |
-| `publish_snapshot` | — | trigger a DuckLake publish and prune old snapshots |
+| `publish_snapshot` | `allow_shrink?` | trigger a DuckLake publish and prune old snapshots. Refuses a PARTIAL index (a rebuild that did not finish) and a corpus under half the lake's page count (lakes of 10+ pages); `allow_shrink: true` only for a deliberate mass delete |
 | `embedding_reload` | — | hot-reload the embedding model |
 
 ## Not exposed (by design)

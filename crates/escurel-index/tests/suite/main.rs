@@ -36,6 +36,7 @@ mod frontmatter_links;
 mod historical_expand;
 mod index_roundtrip;
 mod kreuzberg_extract;
+mod lake_publish_guards;
 mod lake_upgrade;
 mod legacy_kind_refusal;
 mod live_inspect;

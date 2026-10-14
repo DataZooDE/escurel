@@ -222,6 +222,39 @@ impl Indexer {
         }
     }
 
+    /// QUARANTINE the tenant when the index it adopted from the lake still holds pages with the
+    /// removed `type:` key. Returns whether it is quarantined.
+    ///
+    /// The boot scan ([`Self::quarantine_legacy_kind_pages`]) reads the LANE, but a DuckLake writer
+    /// then replaces its local index with the lake's corpus. A lake published before the migration is
+    /// stale (the migrated lane is `kind:`, the lake is `type:`), and without this check the writer
+    /// serves it silently (the lab-cutover rehearsal of 2026-10-14). The quarantine routes the
+    /// operator to `migrate_kind --apply`, which re-derives the index from the lane and (on a lake
+    /// writer) publishes it, so the lake becomes consistent.
+    ///
+    /// # Errors
+    /// When reading the index fails.
+    pub async fn quarantine_stale_adopted_lake(&self) -> Result<bool, IndexerError> {
+        let stale: Vec<String> = {
+            let conn = self.conn.lock().await;
+            let mut stmt = conn.prepare(
+                "SELECT page_id FROM pages \
+                 WHERE json_extract(frontmatter, '$.type') IS NOT NULL ORDER BY page_id",
+            )?;
+            let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
+            rows.collect::<Result<Vec<_>, _>>()?
+        };
+        if stale.is_empty() {
+            return Ok(false);
+        }
+        let mut pages = self.legacy_quarantine().unwrap_or_default();
+        pages.extend(stale);
+        pages.sort();
+        pages.dedup();
+        self.set_quarantine(Some(pages));
+        Ok(true)
+    }
+
     fn set_quarantine(&self, pages: Option<Vec<String>>) {
         if let Ok(mut g) = self.kind_quarantine.write() {
             *g = pages;

@@ -72,6 +72,15 @@ Outbound connector and write-back health is on the same `/metrics` endpoint:
   with a non-zero exit and nothing written. It needs a DuckDB with the same `ducklake` extension the
   server runs (the image's own binary, DuckDB 1.5.6): never hand-edit the manifest.
 
+- **A DuckLake deployment adopts the lake over the lane at boot.** A lake published before the migration still
+  holds `type:` pages. The writer boot therefore quarantines the tenant when the adopted corpus carries the
+  removed key (never serves it silently), and `migrate-kind --apply` ends by **publishing** the migrated corpus
+  (`lake_published` in the report), so a restart finds a consistent lake. `scripts/migrate-kind-job.sh` runs
+  lake-upgrade -> dry run (no conflicts) -> apply -> a second boot that must not be quarantined. Never run
+  `escurel admin rebuild` or `publish_snapshot` by hand in the middle of it: a rebuild that did not finish
+  flags the index partial and a publish is refused until one completes; a corpus under half the lake's pages is
+  refused too (`allow_shrink` is only for a deliberate mass delete). Size the Job deadline for >= 3600 s.
+
 ## 1. Back up (the REAL restore point)
 
 `escurel admin tenant export` is a logical export and it is **refused once the tenant is quarantined**

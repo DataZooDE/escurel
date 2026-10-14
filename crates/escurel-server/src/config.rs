@@ -323,6 +323,16 @@ impl From<SnapshotError> for ConfigError {
                 value: lake_pages.to_string(),
                 reason: "refused to publish an empty corpus over a populated lake",
             },
+            SnapshotError::RefusedPartialPublish { lake_pages, .. } => ConfigError::InvalidValue {
+                var: "ESCUREL_DUCKLAKE_CATALOG_DSN",
+                value: lake_pages.to_string(),
+                reason: "refused to publish a corpus far smaller than the lake it overwrites",
+            },
+            SnapshotError::RefusedIncompleteIndex => ConfigError::InvalidValue {
+                var: "ESCUREL_DUCKLAKE_CATALOG_DSN",
+                value: String::new(),
+                reason: "refused to publish a partial index (a rebuild did not finish)",
+            },
             SnapshotError::InvalidLakeConfig(value) => ConfigError::InvalidValue {
                 var: "ESCUREL_DUCKLAKE_CATALOG_DSN",
                 value,
@@ -1867,6 +1877,23 @@ impl EscurelConfig {
                         // start serving).
                         let adopted_snapshot_id =
                             adopt_lake_for_writer(&indexer, embedder.as_ref()).await?;
+                        // The lane scan above cannot see a STALE LAKE: the adopt just replaced the
+                        // local index with the lake's corpus, which an older writer published with
+                        // the removed `type:` key. Quarantine rather than serve it silently;
+                        // `migrate_kind --apply` re-derives the index from the lane and republishes.
+                        if indexer.quarantine_stale_adopted_lake().await?
+                            && let Some(pages) = indexer.legacy_quarantine()
+                        {
+                            tracing::error!(
+                                target: "escurel",
+                                tenant = %indexer.tenant(),
+                                legacy_pages = pages.len(),
+                                "tenant QUARANTINED: the lake holds a stale corpus with the removed \
+                                 `type:` page-kind key; run `escurel admin migrate-kind --tenant {} \
+                                 --apply` (it re-derives the index from the lane and republishes the lake)",
+                                indexer.tenant()
+                            );
+                        }
                         if let Some(snapshot_id) = adopted_snapshot_id {
                             // The adopted state IS the lake's current
                             // published state as of THIS moment — read

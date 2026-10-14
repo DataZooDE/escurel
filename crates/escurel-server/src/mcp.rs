@@ -39,7 +39,7 @@ use escurel_crdt::{
     CrdtBackend, Op, Snapshot, Version, hydrate_content, snapshot_bytes_from_markdown,
     three_way_merge,
 };
-use escurel_index::snapshot::{gc_lake_snapshots, publish_lake};
+use escurel_index::snapshot::{PublishOptions, gc_lake_snapshots, publish_lake_with};
 use escurel_index::{
     AclCaller, AppendChatMessage, Capabilities, ChatMessage, Direction, EventInfo, Granularity,
     GraphDir, Indexer, IndexerError, IndexerHandle, Issue, ListChatMessages, NewEvent, OrderDir,
@@ -1127,7 +1127,7 @@ async fn dispatch_tools_call(
             return tool_migrate_kind(state, params.arguments).await;
         }
         "publish_snapshot" => {
-            return tool_publish_snapshot(state).await;
+            return tool_publish_snapshot(state, params.arguments).await;
         }
         // Outbound-webhook delivery log (observability). Needs only the
         // webhook handle on AppState, so it routes before the indexer gate.

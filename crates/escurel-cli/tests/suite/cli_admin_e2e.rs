@@ -194,6 +194,28 @@ async fn admin_rebuild_reports_terminal_progress() {
     h.process.shutdown().await;
 }
 
+/// `rebuild` takes `--timeout-secs` like `migrate-kind` (a big tenant takes minutes, and the old fixed
+/// 60 s client deadline gave up mid-rebuild); the server keeps rebuilding when a client gives up.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn admin_rebuild_accepts_a_timeout_flag() {
+    let h = start().await;
+    let out = admin(
+        &h,
+        v(&[
+            "admin",
+            "rebuild",
+            "--tenant",
+            TENANT,
+            "--timeout-secs",
+            "120",
+        ]),
+    )
+    .await;
+    let prog = json(&out);
+    assert_eq!(prog["done"], prog["total"], "rebuild done == total: {prog}");
+    h.process.shutdown().await;
+}
+
 /// Export a tenant to a file, then import it back into a fresh tenant.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn admin_tenant_export_then_import() {

@@ -427,4 +427,8 @@ pub struct MigrateKindReport {
     pub tenant_quarantined: bool,
     /// The `escurel:kind-migration` audit event, once applied.
     pub audit_event_id: Option<String>,
+    /// On a DuckLake writer, the publish `apply` ran itself after lifting the quarantine, so the lake
+    /// holds the migrated corpus (a restart would otherwise adopt the stale `type:` one). `None` for a
+    /// dry run, a still-quarantined tenant, or a gateway without a lake.
+    pub lake_published: Option<PublishSnapshotResponse>,
 }

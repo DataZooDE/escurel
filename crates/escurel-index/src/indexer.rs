@@ -144,6 +144,9 @@ pub struct Indexer {
     /// the tenant is QUARANTINED: it must not serve, but it must stay up so an operator can run
     /// `migrate_kind` against it (a boot that exits would make the migration unrunnable).
     pub(crate) kind_quarantine: std::sync::RwLock<Option<Vec<String>>>,
+    /// Set when a rebuild truncated the index and has not finished (cancelled, or it failed after
+    /// the truncate): the served index is partial and must never be published ([`Self::rebuild_incomplete`]).
+    rebuild_incomplete: std::sync::atomic::AtomicBool,
     /// Pages the last boot-time rebuild skipped as unparsable: `(page_id, reason)`.
     skipped_pages: std::sync::RwLock<Vec<(String, String)>>,
     /// Serialises `migrate_kind` runs (see there).
@@ -427,6 +430,7 @@ impl Indexer {
             drafts_backend: std::sync::OnceLock::new(),
             crdt_pg_backend: std::sync::OnceLock::new(),
             kind_quarantine: std::sync::RwLock::new(None),
+            rebuild_incomplete: std::sync::atomic::AtomicBool::new(false),
             skipped_pages: std::sync::RwLock::new(Vec::new()),
             migration_lock: tokio::sync::Mutex::new(()),
             rows_query_timeout: crate::backend::rows::ROWS_QUERY_TIMEOUT,
@@ -1849,6 +1853,16 @@ impl Indexer {
         self.rebuild_inner(|_| {}, true).await
     }
 
+    /// Whether a rebuild truncated the index and did not finish: it was cancelled (a dropped
+    /// future), or it failed after the truncate. The served index is then partial; a publish
+    /// refuses ([`crate::snapshot::SnapshotError::RefusedIncompleteIndex`]) until a rebuild
+    /// completes. Cleared only by a rebuild that ran to the end.
+    #[must_use]
+    pub fn rebuild_incomplete(&self) -> bool {
+        self.rebuild_incomplete
+            .load(std::sync::atomic::Ordering::SeqCst)
+    }
+
     /// Pages the last tolerant rebuild skipped, as `(page_id, reason)`.
     #[must_use]
     pub fn skipped_pages(&self) -> Vec<(String, String)> {
@@ -1960,6 +1974,11 @@ impl Indexer {
             tx.execute("DELETE FROM links", [])?;
             tx.execute("DELETE FROM pages", [])?;
             tx.commit()?;
+            // From here until the last page is back the index is partial: set under the same lock
+            // that made it so, and cleared only at the very end, so a cancelled or failed rebuild
+            // leaves the flag up for `publish_lake` to see.
+            self.rebuild_incomplete
+                .store(true, std::sync::atomic::Ordering::SeqCst);
             carried.into_iter().collect::<HashMap<_, _>>()
         };
 
@@ -2002,6 +2021,8 @@ impl Indexer {
         // the counter is monotone, only equality vs. last-published
         // matters, so over-counting is harmless).
         self.bump_mutation_epoch();
+        self.rebuild_incomplete
+            .store(false, std::sync::atomic::Ordering::SeqCst);
         Ok(())
     }
 

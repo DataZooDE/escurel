@@ -155,6 +155,7 @@ mod sql_rows_postgres;
 mod sql_validate;
 mod sql_view_tools;
 mod sql_write_back;
+mod stale_lake_boot;
 mod surface_consolidation;
 mod synchronous_lake_durability;
 mod thread_closed_events;

@@ -152,7 +152,10 @@ async fn run(cli: Cli) -> Result<()> {
             // `migrate-kind` can legitimately run for minutes on a big tenant: no default total
             // deadline (the 60 s default cut an 8,000-page migration mid-way); `--timeout-secs`
             // opts back in.
-            if let admin::AdminCmd::MigrateKind { timeout_secs, .. } = &cmd {
+            // `rebuild` the same: the 60 s default gave up mid-rebuild on a big tenant.
+            if let admin::AdminCmd::MigrateKind { timeout_secs, .. }
+            | admin::AdminCmd::Rebuild { timeout_secs, .. } = &cmd
+            {
                 client = client.with_timeout(timeout_secs.map(std::time::Duration::from_secs));
             }
             admin::run(&client, cmd).await?
