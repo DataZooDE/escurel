@@ -392,6 +392,24 @@ pub async fn publish_lake(
     cfg: &LakeConfig,
     last_published_epoch: Option<u64>,
 ) -> Result<PublishReport, SnapshotError> {
+    publish_lake_with(ix, cfg, last_published_epoch, PublishOptions::default()).await
+}
+
+/// Knobs for [`publish_lake_with`].
+#[derive(Debug, Clone, Copy, Default)]
+pub struct PublishOptions {
+    /// Allow a publish whose corpus is far smaller than the lake it overwrites (a deliberate mass
+    /// delete). Off by default: see [`SnapshotError::RefusedPartialPublish`].
+    pub allow_shrink: bool,
+}
+
+/// [`publish_lake`] with explicit [`PublishOptions`].
+pub async fn publish_lake_with(
+    ix: &Indexer,
+    cfg: &LakeConfig,
+    last_published_epoch: Option<u64>,
+    opts: PublishOptions,
+) -> Result<PublishReport, SnapshotError> {
     // Lock order: write lock first (blocks new ingest from starting its
     // embed→write sequence), then the connection mutex (blocks every
     // other SQL user, including merge/rebuild paths that skip the write
@@ -412,6 +430,11 @@ pub async fn publish_lake(
             blocks: 0,
             skipped: true,
         });
+    }
+    // A rebuild that truncated the index and did not finish leaves it partial: refuse, whatever the
+    // epoch says. (Found 2026-10-14: a rebuild whose client gave up, then a publish of 91 of ~183 pages.)
+    if ix.rebuild_incomplete() {
+        return Err(SnapshotError::RefusedIncompleteIndex);
     }
     if last_published_epoch == Some(epoch) {
         return Ok(PublishReport {
@@ -452,6 +475,24 @@ pub async fn publish_lake(
                 .unwrap_or(0);
             if lake_pages > 0 {
                 return Err(SnapshotError::RefusedEmptyPublish { lake_pages });
+            }
+        } else if !opts.allow_shrink {
+            // The same wholesale overwrite, from a corpus that is not empty but is far too small to
+            // be the real one (a partial rebuild, a store that listed only part of the lane). A
+            // tiny lake is exempt (deleting two of three pages is ordinary editing); a deliberate
+            // mass delete passes `allow_shrink`.
+            let lake_pages: i64 = conn
+                .query_row(
+                    &format!("SELECT count(*) FROM {LAKE_ALIAS}.pages"),
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap_or(0);
+            if lake_pages >= PARTIAL_PUBLISH_FLOOR && local_pages * 2 < lake_pages {
+                return Err(SnapshotError::RefusedPartialPublish {
+                    local_pages,
+                    lake_pages,
+                });
             }
         }
     }
@@ -843,6 +884,9 @@ pub async fn latest_lake_snapshot_id(cfg: &LakeConfig) -> Result<Option<i64>, Sn
     }
     Ok(Some(lake_latest_snapshot(&conn)?))
 }
+
+/// A lake with fewer pages than this is exempt from the partial-publish refusal.
+const PARTIAL_PUBLISH_FLOOR: i64 = 10;
 
 /// What [`lake_upgrade`] did (or, for a dry run, would do).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]

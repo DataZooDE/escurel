@@ -1685,10 +1685,18 @@ pub(crate) fn tool_defs() -> Vec<ToolDef> {
                  index state, then prune old snapshots down to \
                  `ESCUREL_SNAPSHOT_KEEP`. A no-op (`skipped: true`) when \
                  nothing changed since the last publish. Unavailable on a \
-                 non-ducklake gateway or a ducklake reader replica.",
+                 non-ducklake gateway or a ducklake reader replica. Refuses a \
+                 PARTIAL index (a rebuild that did not finish) and a corpus \
+                 that is less than half the lake's page count; pass \
+                 `allow_shrink: true` only for a deliberate mass delete.",
             json!({
                 "type": "object",
-                "properties": {}
+                "properties": {
+                    "allow_shrink": {
+                        "type": "boolean",
+                        "description": "Publish even though the corpus is less than half the lake's pages (a deliberate mass delete). Default false."
+                    }
+                }
             }),
         ),
         tool_entry(

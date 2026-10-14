@@ -2308,13 +2308,21 @@ pub(super) async fn tool_rebuild(state: &AppState, args: Value) -> Result<Value,
     // progress stream.
     let last = Arc::new(std::sync::Mutex::new((0u64, 0u64)));
     let sink = Arc::clone(&last);
-    indexer
-        .rebuild_with_progress(move |p| {
-            if let Ok(mut g) = sink.lock() {
-                *g = (p.done, p.total);
-            }
-        })
-        .await
+    // Run in a SPAWNED task: a client that gives up (a CLI timeout, a killed shell, a proxy cutting a
+    // long request) drops this handler future, and without the spawn that cancelled the rebuild
+    // AFTER its truncate, leaving the served index empty or partial (found 2026-10-14). The task
+    // finishes on its own; `Indexer::rebuild_incomplete` keeps a publish out while it runs.
+    let run = tokio::spawn(async move {
+        indexer
+            .rebuild_with_progress(move |p| {
+                if let Ok(mut g) = sink.lock() {
+                    *g = (p.done, p.total);
+                }
+            })
+            .await
+    });
+    run.await
+        .map_err(|e| JsonRpcError::internal(format!("rebuild: task failed: {e}")))?
         .map_err(|e| JsonRpcError::internal(format!("rebuild: {e}")))?;
     let (done, total) = *last.lock().expect("rebuild progress lock");
     to_value(RebuildProgress {
@@ -2333,7 +2341,28 @@ pub(super) async fn tool_rebuild(state: &AppState, args: Value) -> Result<Value,
 /// follow-up [`gc_lake_snapshots`] pass down to `ESCUREL_SNAPSHOT_KEEP`.
 /// A GC failure is logged, not surfaced as an error: the publish itself
 /// already committed and the response should still report it.
-pub(super) async fn tool_publish_snapshot(state: &AppState) -> Result<Value, JsonRpcError> {
+pub(super) async fn tool_publish_snapshot(
+    state: &AppState,
+    args: Value,
+) -> Result<Value, JsonRpcError> {
+    let a: PublishSnapshotArgs = parse_args(args, "publish_snapshot")?;
+    to_value(publish_now(state, a.allow_shrink).await?)
+}
+
+/// `publish_snapshot` arguments. `allow_shrink` lets a DELIBERATE mass delete overwrite a lake whose
+/// page count is more than twice the local corpus (see `SnapshotError::RefusedPartialPublish`).
+#[derive(Debug, Default, serde::Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct PublishSnapshotArgs {
+    allow_shrink: bool,
+}
+
+/// Publish the writer's index into the lake (and GC) exactly as the `publish_snapshot` tool does;
+/// shared with `migrate_kind --apply`, which leaves the lake consistent by publishing itself.
+async fn publish_now(
+    state: &AppState,
+    allow_shrink: bool,
+) -> Result<PublishSnapshotResponse, JsonRpcError> {
     let lake_cfg = state.lake.as_ref().ok_or_else(|| {
         JsonRpcError::publish_unavailable(
             "no DuckLake configured on this gateway (ESCUREL_INDEX_BACKEND != ducklake)",
@@ -2349,9 +2378,14 @@ pub(super) async fn tool_publish_snapshot(state: &AppState) -> Result<Value, Jso
         .last_published_epoch
         .lock()
         .expect("last_published_epoch lock");
-    let report = publish_lake(&indexer, lake_cfg, last_epoch)
-        .await
-        .map_err(|e| JsonRpcError::internal(format!("publish_snapshot: {e}")))?;
+    let report = publish_lake_with(
+        &indexer,
+        lake_cfg,
+        last_epoch,
+        PublishOptions { allow_shrink },
+    )
+    .await
+    .map_err(|e| JsonRpcError::internal(format!("publish_snapshot: {e}")))?;
 
     let mut pruned_snapshots = 0u64;
     if !report.skipped {
@@ -2371,7 +2405,7 @@ pub(super) async fn tool_publish_snapshot(state: &AppState) -> Result<Value, Jso
         }
     }
 
-    to_value(PublishSnapshotResponse {
+    Ok(PublishSnapshotResponse {
         snapshot_id: report.snapshot_id,
         epoch: report.epoch,
         pages: report.pages,
@@ -2403,7 +2437,24 @@ pub(super) async fn tool_migrate_kind(
         .await
         .map_err(|e| JsonRpcError::internal(format!("migrate_kind: task failed: {e}")))?;
     match outcome {
-        Ok(report) => to_value(report),
+        Ok(mut report) => {
+            // A DuckLake writer: the apply re-derived the index from the lane, but the lake still
+            // holds whatever was published BEFORE, and the next boot adopts the lake over the lane.
+            // Publish now so the lake is consistent with the migrated corpus; a failure is an
+            // error (the lane is migrated and a retry of the same call publishes), never a report
+            // that looks finished while the lake is stale.
+            if a.apply && !report.tenant_quarantined && state.lake.is_some() {
+                let published = publish_now(state, false).await.map_err(|e| {
+                    JsonRpcError::internal(format!(
+                        "migrate_kind: the lane is migrated but publishing the lake failed ({}); \
+                         re-run `migrate_kind --apply` (idempotent) or `publish_snapshot`",
+                        e.message
+                    ))
+                })?;
+                report.lake_published = Some(published);
+            }
+            to_value(report)
+        }
         Err(e @ escurel_index::indexer::IndexerError::KindMigrationRefused { .. }) => {
             Err(JsonRpcError::invalid_params(format!("migrate_kind: {e}")))
         }

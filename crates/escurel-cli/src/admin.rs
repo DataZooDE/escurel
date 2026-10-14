@@ -53,6 +53,11 @@ pub enum AdminCmd {
         tenant: String,
         #[arg(long, default_value = "")]
         scope: String,
+        /// Give up waiting after this many seconds (default: wait as long as it takes). The
+        /// rebuild runs in a server task and CONTINUES after the CLI gives up or is killed (a
+        /// publish is refused until it finishes); re-run to wait for it.
+        #[arg(long)]
+        timeout_secs: Option<u64>,
     },
     /// Compact a tenant's CRDT op lanes. Returns the terminal
     /// `{ops_compacted, bytes_reclaimed}`.
@@ -372,7 +377,11 @@ pub async fn run(client: &AdminClient, cmd: AdminCmd) -> Result<Value> {
                 .await?;
             Ok(json!({ "model_revision": r.model_revision }))
         }
-        AdminCmd::Rebuild { tenant, scope } => {
+        AdminCmd::Rebuild {
+            tenant,
+            scope,
+            timeout_secs: _,
+        } => {
             let p = client
                 .rebuild(RebuildRequest {
                     tenant_id: tenant,

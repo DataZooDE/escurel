@@ -44,9 +44,10 @@ pub use events_pg::{
     EVENTS_PG_ALIAS, attach_events_pg, attach_events_pg_sql, create_events_pg_table_sql,
 };
 pub use lake::{
-    LakeConfig, LakeUpgradeAction, LakeUpgradeReport, ObjectStoreSecret, adopt_lake,
-    adopt_lake_for_writer, attach_lake, attach_sql, gc_lake_snapshots, install_load_sql,
-    lake_upgrade, latest_lake_snapshot_id, publish_lake, publish_page_sync, secret_sql,
+    LakeConfig, LakeUpgradeAction, LakeUpgradeReport, ObjectStoreSecret, PublishOptions,
+    adopt_lake, adopt_lake_for_writer, attach_lake, attach_sql, gc_lake_snapshots,
+    install_load_sql, lake_upgrade, latest_lake_snapshot_id, publish_lake, publish_lake_with,
+    publish_page_sync, secret_sql,
 };
 pub use lease::WriterLease;
 pub use store::{AttachRetrievalFn, SingleFileStore};
@@ -62,6 +63,23 @@ pub enum SnapshotError {
          pages in the lake"
     )]
     RefusedEmptyPublish { lake_pages: i64 },
+
+    /// The local corpus is far smaller than the lake it would overwrite: a partial index (a
+    /// rebuild that was cancelled or failed half-way, a store that listed only part of the
+    /// lane). Publishing it replaces every lake table wholesale and retention GC then prunes the
+    /// Parquet that held the real corpus. A deliberate mass delete passes `allow_shrink`.
+    #[error(
+        "refused: publishing {local_pages} pages would shrink the lake's {lake_pages} pages by more \
+         than half; if this is a deliberate mass delete, publish with allow_shrink"
+    )]
+    RefusedPartialPublish { local_pages: i64, lake_pages: i64 },
+
+    /// A rebuild started but did not finish (cancelled, or it failed after the truncate), so the
+    /// served index is partial. Run `admin rebuild` to completion first.
+    #[error(
+        "refused: the index is partial (a rebuild did not finish); run `escurel admin rebuild` to completion before publishing"
+    )]
+    RefusedIncompleteIndex,
 
     /// Creating (or clearing) a directory / file under the tenant dir
     /// failed.
