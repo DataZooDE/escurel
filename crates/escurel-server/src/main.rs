@@ -37,6 +37,7 @@ USAGE
     escurel-server pack|info|unpack  self-packaging: fold a markdown corpus into a copy of this binary
     escurel-server --help | --version
     escurel-server --print-config-keys   print the generated environment table (docs/deploy/env.md)
+    escurel-server lake-upgrade [--dry-run]  re-pin a DuckLake manifest one declared-compatible schema version behind (stop the writer first)
 
 CONFIGURATION (environment; the full table with defaults is docs/deploy/env.md, generated from the code)
     ESCUREL_SERVER_DATA_DIR            data volume (default /data); lanes + index live under tenants/<tenant>/
@@ -92,6 +93,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         Some("pack") => return cmd_pack(&args[2..]),
         Some("info") => return cmd_info(),
         Some("unpack") => return cmd_unpack(&args[2..]),
+        Some("lake-upgrade") => return cmd_lake_upgrade(&args[2..]).await,
         _ => {}
     }
 
@@ -233,4 +235,47 @@ async fn wait_for_shutdown() {
 #[cfg(not(unix))]
 async fn wait_for_shutdown() {
     let _ = tokio::signal::ctrl_c().await;
+}
+
+/// `escurel-server lake-upgrade [--dry-run]`: re-pin the DuckLake manifest to this build's schema
+/// version when (and only when) the lake is one declared-compatible version behind
+/// (`Migrator::LAKE_ADOPTS_FROM`). Configured through the same `ESCUREL_DUCKLAKE_*` environment as the
+/// server; prints the report as JSON on stdout; exits non-zero for an unknown jump or a newer lake.
+///
+/// Stopped-writer semantics: on a Postgres catalog it takes the single-writer lease for the duration
+/// and refuses while a writer holds it, so it can never race a live publish (which would re-pin the
+/// manifest wholesale anyway).
+async fn cmd_lake_upgrade(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
+    let mut dry_run = false;
+    for a in args {
+        match a.as_str() {
+            "--dry-run" => dry_run = true,
+            other => {
+                return Err(
+                    format!("lake-upgrade: unknown argument `{other}` (only --dry-run)").into(),
+                );
+            }
+        }
+    }
+    let config = EscurelConfig::from_env()?;
+    let Some(lake) = config.lake.as_ref() else {
+        return Err(
+            "lake-upgrade needs ESCUREL_INDEX_BACKEND=ducklake and the ESCUREL_DUCKLAKE_* settings"
+                .into(),
+        );
+    };
+    let _lease = if lake.is_pg_catalog() && !dry_run {
+        match escurel_index::snapshot::WriterLease::acquire(&lake.catalog_dsn).await {
+            Ok(Some(lease)) => Some(lease),
+            Ok(None) => {
+                return Err("lake-upgrade: a writer holds the single-writer lease on this catalog; stop it first".into());
+            }
+            Err(e) => return Err(format!("lake-upgrade: catalog unreachable: {e}").into()),
+        }
+    } else {
+        None
+    };
+    let report = escurel_index::snapshot::lake_upgrade(lake, dry_run).await?;
+    println!("{}", serde_json::to_string_pretty(&report)?);
+    Ok(())
 }

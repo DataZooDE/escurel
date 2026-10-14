@@ -844,6 +844,30 @@ pub async fn latest_lake_snapshot_id(cfg: &LakeConfig) -> Result<Option<i64>, Sn
     Ok(Some(lake_latest_snapshot(&conn)?))
 }
 
+/// What [`lake_upgrade`] did (or, for a dry run, would do).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LakeUpgradeAction {
+    /// The lake was never published: nothing to upgrade.
+    NoLake,
+    /// The manifest already names this build's schema version.
+    AlreadyCurrent,
+    /// Dry run: the manifest would be re-pinned.
+    WouldUpgrade,
+    /// The manifest was re-pinned.
+    Upgraded,
+}
+
+/// Outcome of [`lake_upgrade`].
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct LakeUpgradeReport {
+    pub action: LakeUpgradeAction,
+    /// The manifest's schema version before (0 when there is no lake).
+    pub from: i64,
+    /// This build's [`Migrator::SCHEMA_VERSION`].
+    pub to: i64,
+}
+
 /// Fail-closed manifest compatibility gate (loader-transfer precedent —
 /// see `escurel-loader::transfer`): the lake's pinned `schema_version`
 /// and embedding space (`model_id` + `dim`) must equal this reader's,
@@ -854,9 +878,13 @@ fn check_manifest_compat(conn: &Connection, embedder: &dyn Embedder) -> Result<(
         [],
         |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
     )?;
-    if schema_version != i64::from(Migrator::SCHEMA_VERSION) {
+    let adoptable_older = u32::try_from(schema_version)
+        .map(|v| Migrator::LAKE_ADOPTS_FROM.contains(&v))
+        .unwrap_or(false);
+    if schema_version != i64::from(Migrator::SCHEMA_VERSION) && !adoptable_older {
         return Err(SnapshotError::LakeIncompatible(format!(
-            "lake schema_version {schema_version} != reader schema_version {}",
+            "lake schema_version {schema_version} != reader schema_version {} \
+             (run `escurel-server lake-upgrade` if the lake is one declared-compatible version behind)",
             Migrator::SCHEMA_VERSION
         )));
     }
@@ -1042,6 +1070,89 @@ fn set_spill_directory(conn: &Connection, tenant: &str) -> Result<(), SnapshotEr
     }
     conn.execute_batch(&format!("SET temp_directory = '{dir}';"))?;
     Ok(())
+}
+
+/// Re-pin the lake's manifest to this build's [`Migrator::SCHEMA_VERSION`], WITHOUT loading or
+/// publishing a single corpus row: the supported replacement for a hand-run
+/// `UPDATE lake.escurel_manifest SET schema_version = ..`.
+///
+/// Accepts only what [`check_manifest_compat`] would also adopt as-is: the manifest already at
+/// this version (a no-op, so it is idempotent), or at a version listed in
+/// [`Migrator::LAKE_ADOPTS_FROM`]. Anything else (an unknown older version, which needs a real
+/// migration, or a NEWER lake, which this build must not touch) is refused with
+/// [`SnapshotError::LakeIncompatible`] and nothing is written. The embedding space is checked
+/// by the adopt, not here: this changes the version pin and nothing else.
+///
+/// Stopped-writer semantics: a live writer republishes the manifest wholesale on its next
+/// publish, so run this while no writer is up (the `escurel-server lake-upgrade` subcommand
+/// takes the single-writer lease on a Postgres catalog to enforce that). `dry_run` attaches
+/// read-only and reports what it would do.
+pub async fn lake_upgrade(
+    cfg: &LakeConfig,
+    dry_run: bool,
+) -> Result<LakeUpgradeReport, SnapshotError> {
+    let to = i64::from(Migrator::SCHEMA_VERSION);
+    let conn = Connection::open_in_memory_with_flags(Migrator::connection_config()?).map_err(
+        |source| SnapshotError::DuckdbOpen {
+            path: ":memory: (lake upgrade)".to_owned(),
+            source,
+        },
+    )?;
+    attach_lake(&conn, cfg, dry_run)?;
+    if !lake_table_exists(&conn, "escurel_manifest")? {
+        if lake_table_exists(&conn, "pages")? {
+            return Err(SnapshotError::LakeIncompatible(
+                "lake has data tables but no escurel_manifest".to_owned(),
+            ));
+        }
+        return Ok(LakeUpgradeReport {
+            action: LakeUpgradeAction::NoLake,
+            from: 0,
+            to,
+        });
+    }
+    let from: i64 = conn.query_row(
+        &format!("SELECT schema_version FROM {LAKE_ALIAS}.escurel_manifest"),
+        [],
+        |r| r.get(0),
+    )?;
+    if from == to {
+        return Ok(LakeUpgradeReport {
+            action: LakeUpgradeAction::AlreadyCurrent,
+            from,
+            to,
+        });
+    }
+    let adoptable = u32::try_from(from)
+        .map(|v| Migrator::LAKE_ADOPTS_FROM.contains(&v))
+        .unwrap_or(false);
+    if !adoptable {
+        let why = if from > to {
+            "the lake is NEWER than this build (never downgrade a lake)"
+        } else {
+            "no declared compatible path from that version (it needs a real migration)"
+        };
+        return Err(SnapshotError::LakeIncompatible(format!(
+            "lake schema_version {from} cannot be upgraded to {to}: {why}"
+        )));
+    }
+    if dry_run {
+        return Ok(LakeUpgradeReport {
+            action: LakeUpgradeAction::WouldUpgrade,
+            from,
+            to,
+        });
+    }
+    conn.execute(
+        &format!("UPDATE {LAKE_ALIAS}.escurel_manifest SET schema_version = ?"),
+        params![to],
+    )?;
+    conn.execute_batch(&scrub_column_stats_sql(LAKE_ALIAS))?;
+    Ok(LakeUpgradeReport {
+        action: LakeUpgradeAction::Upgraded,
+        from,
+        to,
+    })
 }
 
 #[cfg(test)]

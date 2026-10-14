@@ -34,6 +34,20 @@ impl Migrator {
     /// wouldn't line up).
     pub const SCHEMA_VERSION: u32 = 10;
 
+    /// Older lake `schema_version`s this build adopts AS-IS. A lake's manifest pins the
+    /// version of the writer that published it, and the adopt gate is fail-closed (#563): a
+    /// version that is not [`Self::SCHEMA_VERSION`] is refused unless it is listed here.
+    ///
+    /// List a version ONLY when every table the lake carries is still readable by this
+    /// build unchanged: the published corpus tables (`pages`, `links`, `blocks`, ...) kept
+    /// their shape, and any table that did change is migrated by the attach that owns it
+    /// (9 -> 10 only added `events.revision_binding_sha256`, which `attach_events_lake`
+    /// adds itself). A bump that changes a published table's shape must NOT be listed: it
+    /// then needs a real migration, and `lake_upgrade` refuses it. The next publish
+    /// re-pins the manifest to [`Self::SCHEMA_VERSION`]; `escurel-server lake-upgrade`
+    /// does the same without publishing.
+    pub const LAKE_ADOPTS_FROM: &'static [u32] = &[9];
+
     /// Load the per-connection extension/session state Escurel relies on:
     /// auto-install/-load plus `INSTALL`+`LOAD` of `vss`+`fts`
     /// (see `sql/0001_a_autoload.sql`).
