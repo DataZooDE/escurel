@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import { createHash } from 'node:crypto';
 import type { Services } from '../services';
 import { readConfig } from '../config';
 import { describeError } from '../errors';
@@ -14,33 +15,40 @@ import { reviewRules, startWithRules, type RulesApi, type RulesUi } from './rule
 
 const START_FILE_LIMIT = 4_000_000;
 
-/** The person's own start file: the active JSON editor (saved), or one they choose. */
+/** The person's own start file: an open (saved) JSON editor, or one they choose. */
 async function readStartSpec(): Promise<Record<string, unknown> | undefined> {
-  const active = vscode.window.activeTextEditor?.document;
+  const open = vscode.workspace.textDocuments
+    .filter((doc) => doc.uri.scheme === 'file' && doc.uri.path.endsWith('.json'))
+    .slice(0, 12);
   const choices = [
-    ...(active?.uri.scheme === 'file' && active.uri.path.endsWith('.json')
-      ? [{ label: 'Use active JSON file', description: active.uri.fsPath }]
-      : []),
-    { label: 'Choose local JSON file', description: 'The new experiment’s start request' },
+    ...open.map((doc) => ({
+      label: `Use open file ${doc.uri.path.split('/').pop() ?? ''}`,
+      description: doc.uri.fsPath,
+      doc,
+    })),
+    {
+      label: 'Choose local JSON file',
+      description: 'The new experiment\u2019s start request',
+      doc: undefined,
+    },
   ];
   const selected = await vscode.window.showQuickPick(choices, {
     placeHolder: 'Choose the new replenishment experiment start file',
   });
   if (!selected) return undefined;
-  const file =
-    selected.label === 'Use active JSON file'
-      ? active!.uri
-      : (
-          await vscode.window.showOpenDialog({
-            canSelectMany: false,
-            openLabel: 'Choose start file',
-            filters: { JSON: ['json'] },
-          })
-        )?.[0];
+  const doc = selected.doc;
+  const file = doc
+    ? doc.uri
+    : (
+        await vscode.window.showOpenDialog({
+          canSelectMany: false,
+          openLabel: 'Choose start file',
+          filters: { JSON: ['json'] },
+        })
+      )?.[0];
   if (!file) return undefined;
   const bytes = await vscode.workspace.fs.readFile(file);
-  if (selected.label === 'Use active JSON file')
-    requireReviewedFileBytes(bytes, active!.getText(), active!.isDirty);
+  if (doc) requireReviewedFileBytes(bytes, doc.getText(), doc.isDirty);
   if (bytes.length > START_FILE_LIMIT) throw new Error('The start file exceeds the 4 MB limit.');
   let parsed: unknown;
   try {
@@ -53,10 +61,19 @@ async function readStartSpec(): Promise<Record<string, unknown> | undefined> {
   return parsed as Record<string, unknown>;
 }
 
+/** The report is shown read-only: a virtual document, so it can neither be edited nor left "unsaved". */
+const REPORT_SCHEME = 'escurel-evolve-rules';
+
 export function registerReviewEvolveRules(
   context: vscode.ExtensionContext,
   services: Services,
 ): vscode.Disposable {
+  const reports = new Map<string, string>();
+  context.subscriptions.push(
+    vscode.workspace.registerTextDocumentContentProvider(REPORT_SCHEME, {
+      provideTextDocumentContent: (uri) => reports.get(uri.path) ?? '',
+    }),
+  );
   const command = vscode.commands.registerCommand(
     'escurel.reviewEvolveRules',
     async (prepared?: { sourceId?: string }) => {
@@ -97,10 +114,11 @@ export function registerReviewEvolveRules(
               'Run confirmation test',
             )) === 'Run confirmation test',
           showReport: async (markdown) => {
-            const document = await vscode.workspace.openTextDocument({
-              language: 'plaintext',
-              content: markdown,
-            });
+            const path = `/rules-${createHash('sha256').update(markdown).digest('hex').slice(0, 12)}.txt`;
+            reports.set(path, markdown);
+            const document = await vscode.workspace.openTextDocument(
+              vscode.Uri.from({ scheme: REPORT_SCHEME, path }),
+            );
             await vscode.window.showTextDocument(document, { preview: false });
           },
           pickRules: async (supported) => {

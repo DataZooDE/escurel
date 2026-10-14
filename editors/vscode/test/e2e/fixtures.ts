@@ -256,6 +256,7 @@ export const test = base.extend<
                   adminBearer: bearer().admin_bearer,
                   issuerUrl: info.issuer_url,
                   tenant: 'vsx',
+                  ruleApprovers: ['alice'],
                 }),
                 GEMINI_API_KEY: 'unused-seed-only-test-key',
               },
