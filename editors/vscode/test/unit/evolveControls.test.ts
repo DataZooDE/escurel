@@ -10,11 +10,14 @@ import {
 } from '../../src/shared/evolveControls';
 
 describe('evolve control labels: one table', () => {
-  it('keeps the review controls exactly as before the table existed', () => {
+  it('keeps the three original review controls first and adds the rule labels (never offered by the inspector)', () => {
     expect([...EVOLVE_REVIEW_CONTROLS]).toEqual([
       'evolve_validate',
       'evolve_publish_candidate',
       'evolve_compare',
+      'evolve_rules_propose',
+      'evolve_rules_test',
+      'evolve_rules_approve',
     ]);
     for (const label of EVOLVE_REVIEW_CONTROLS) expect(isEvolveReviewControl(label)).toBe(true);
     expect(isEvolveReviewControl('evolve_run')).toBe(false);

@@ -160,7 +160,10 @@ export function registerPrepareEvolveTrainingSource(
       await openPreparedDraft(event.event_id, result, stored.sha256);
       const action = await vscode.window.showInformationMessage(
         `Source ${String(result.training_source_id)} prepared. The opened V2 draft needs policy SQL, service targets, costs, windows, and budget. Save it, register a matching private holdout, then import the completed spec.`,
-        'Register private holdout',
+        'Register private holdout', 'Discover data rules',
+      );
+      if (action === 'Discover data rules') await vscode.commands.executeCommand(
+        'escurel.reviewEvolveRules', { sourceId: result.training_source_id },
       );
       if (action === 'Register private holdout') await vscode.commands.executeCommand(
         'escurel.registerEvolveHoldout', {

@@ -23,6 +23,12 @@ export const EVOLVE_CONTROL_TARGETS: readonly EvolveControl[] = [
   { label: 'evolve_validate', targetSkill: 'evolve_experiment', review: true },
   { label: 'evolve_publish_candidate', targetSkill: 'evolve_validation_report', review: true },
   { label: 'evolve_compare', targetSkill: 'evolve_comparison', review: true },
+  // Rule discovery. The Workbench reviews and approves rules through its own command, which talks
+  // to Evolve directly; these gateway labels exist so an owner-gated click on a rule candidate page
+  // can carry the same reviewed revision, and the inspector must never offer them.
+  { label: 'evolve_rules_propose', targetSkill: 'evolve_training_source', review: true },
+  { label: 'evolve_rules_test', targetSkill: 'evolve_rule_candidate', review: true },
+  { label: 'evolve_rules_approve', targetSkill: 'evolve_rule_candidate', review: true },
 ];
 
 const RUN_LABEL = 'evolve_run';
