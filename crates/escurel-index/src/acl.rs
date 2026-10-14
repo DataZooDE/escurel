@@ -456,14 +456,7 @@ impl Indexer {
         // page can be deleted or change owner after the user action.
         // Let only the gateway-stamped capturer of the action read them.
         if event.kind == crate::EventKind::User
-            && matches!(
-                event.label_skill.as_str(),
-                "evolve_preflight"
-                    | "evolve_prepare_source"
-                    | "evolve_validate"
-                    | "evolve_publish_candidate"
-                    | "evolve_compare"
-            )
+            && escurel_types::evolve_labels::is_control_label(&event.label_skill)
         {
             return Ok(event.provenance["captured_by"].as_str() == Some(caller.subject));
         }
@@ -474,13 +467,8 @@ impl Indexer {
             let Some(root) = self.get_event(root_id).await? else {
                 return Ok(false);
             };
-            let expected_root = match event.label_skill.as_str() {
-                "evolve:preflight" => "evolve_preflight",
-                "evolve:training-source" => "evolve_prepare_source",
-                "evolve:validation" => "evolve_validate",
-                "evolve:candidate" => "evolve_publish_candidate",
-                _ => "evolve_run",
-            };
+            let expected_root =
+                escurel_types::evolve_labels::root_label_for_system(&event.label_skill);
             return Ok(root.kind == crate::EventKind::User
                 && root.label_skill == expected_root
                 && root.provenance["captured_by"].as_str() == Some(caller.subject));

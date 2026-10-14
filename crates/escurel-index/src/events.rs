@@ -249,23 +249,9 @@ impl EventInfo {
     /// even when the general event ACL is still in rollout mode.
     pub fn is_private_evolve_event(&self) -> bool {
         (self.kind == EventKind::User
-            && matches!(
-                self.label_skill.as_str(),
-                "evolve_preflight"
-                    | "evolve_prepare_source"
-                    | "evolve_validate"
-                    | "evolve_publish_candidate"
-                    | "evolve_compare"
-            ))
+            && escurel_types::evolve_labels::is_control_label(&self.label_skill))
             || (self.kind == EventKind::System
-                && matches!(
-                    self.label_skill.as_str(),
-                    "evolve:admission"
-                        | "evolve:preflight"
-                        | "evolve:training-source"
-                        | "evolve:validation"
-                        | "evolve:candidate"
-                )
+                && escurel_types::evolve_labels::is_system_label(&self.label_skill)
                 && self.instance_page_id.is_none())
     }
 }
