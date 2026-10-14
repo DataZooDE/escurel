@@ -55,6 +55,23 @@ Outbound connector and write-back health is on the same `/metrics` endpoint:
 - **No live editing sessions** (the tool refuses `--apply` while a page has CRDT ops newer than its newest
   snapshot): close them, or run `escurel admin compact-lanes --tenant <t>` first.
 
+- **A DuckLake deployment: upgrade the lake manifest first.** A lake published by an older build pins
+  that build's schema version, and the boot gate is fail-closed. A version that this build declares
+  compatible (`Migrator::LAKE_ADOPTS_FROM`; 9 for schema 10: only a self-migrating events column
+  changed) is adopted as-is, and the next publish re-pins the manifest. To re-pin it explicitly *before*
+  the new server boots (the migration job does), run with the **writer stopped**:
+
+  ```sh
+  escurel-server lake-upgrade --dry-run   # {"action": "would_upgrade", "from": 9, "to": 10}
+  escurel-server lake-upgrade             # {"action": "upgraded", ...}; a second run: "already_current"
+  ```
+
+  It takes the same `ESCUREL_DUCKLAKE_*` environment as the server and, on a Postgres catalog, the
+  single-writer lease, so it refuses while a writer is up. A version that is *not* declared compatible
+  (an unknown older one, which needs a real migration) and a lake *newer* than the build are refused
+  with a non-zero exit and nothing written. It needs a DuckDB with the same `ducklake` extension the
+  server runs (the image's own binary, DuckDB 1.5.6): never hand-edit the manifest.
+
 ## 1. Back up (the REAL restore point)
 
 `escurel admin tenant export` is a logical export and it is **refused once the tenant is quarantined**

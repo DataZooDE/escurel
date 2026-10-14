@@ -77,6 +77,7 @@ mod ingest_webhook;
 mod instance_acl;
 mod instance_scoped_acl;
 mod instances_pagination;
+mod lake_upgrade_cmd;
 mod layer_read_only;
 mod list_lineage;
 mod list_skills_acl;
