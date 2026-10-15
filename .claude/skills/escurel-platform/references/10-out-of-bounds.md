@@ -48,6 +48,9 @@ These exist but are **not** part of a normal consuming app:
 - **CLI-only ops:** `audit` (drift detection), `rebuild` (re-index from
   markdown), `attach_external` (wire a DuckLake catalog),
   `export`/`import` (per-tenant backup). Operators run these.
+  The server binary also carries `escurel-server lake-upgrade [--dry-run] [--to N]`
+  (re-pin a DuckLake manifest across a declared-compatible schema bump, writer stopped) and the
+  `migrate-kind-job` cutover script: `docs/deploy/kind-migration.md`.
 - **Admin tools** (gated by `escurel:admin`): `admin_list_lanes`,
   `admin_lane_keys`, `admin_lane_blob`, `admin_index_query`. For operator
   UIs and tenant migration, not product features.
