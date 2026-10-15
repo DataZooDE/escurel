@@ -101,11 +101,8 @@ jobs:
         id: ver
         shell: bash
         run: |
-          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
-            V="${GITHUB_REF#refs/tags/v}"
-          else
-            V="0.0.0-dev"
-          fi
+          # The tag name reaches later shell steps: only a plain version passes (scripts/release-version.sh).
+          V="$(bash scripts/release-version.sh "$GITHUB_REF")"
           echo "version=$V" >> "$GITHUB_OUTPUT"
           echo "Release version: $V"
 
@@ -398,11 +395,7 @@ jobs:
         id: ver
         shell: bash
         run: |
-          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
-            V="${GITHUB_REF#refs/tags/v}"
-          else
-            V="0.0.0-dev"
-          fi
+          V="$(bash ../../scripts/release-version.sh "$GITHUB_REF")"
           V="$(python3 - "$V" <<'PY'
           import re, sys
           v = sys.argv[1]
