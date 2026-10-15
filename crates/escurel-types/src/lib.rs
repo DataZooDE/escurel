@@ -28,6 +28,7 @@ mod chat;
 mod core;
 mod drafts;
 mod events;
+pub mod evolve_labels;
 mod null;
 // Public as a MODULE (not glob-re-exported functions): the pack
 // signing/verification primitives read best namespaced —

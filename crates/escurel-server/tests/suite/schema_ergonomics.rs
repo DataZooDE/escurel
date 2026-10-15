@@ -34,6 +34,14 @@ const EVOLVE_COMPARISON_SKILL: &str = "---\nkind: skill\nid: evolve_comparison\n
 const EVOLVE_COMPARISON_A: &str = "---\nkind: instance\nskill: evolve_comparison\nid: a\nowner_subject: test-subject\nexperiment: exp-1\nbaseline: previous_best\ncandidate: winner\nstatus: requested\nnext_comparison_action: evolve_compare\n---\n# Comparison\n";
 const EVOLVE_COMPARISON_DONE: &str = "---\nkind: instance\nskill: evolve_comparison\nid: done\nowner_subject: test-subject\nexperiment: exp-1\nbaseline: seed\ncandidate: winner\nstatus: completed\n---\n# Comparison\n";
 
+const EVOLVE_RULE_SKILL: &str = "---\nkind: skill\nid: evolve_rule_candidate\ndescription: Discovered rules awaiting a human decision.\nowner_field: owner_subject\nacl:\n  read: [owner]\n  create: [owner]\n  update: [admin]\n---\n# Rule candidate\n";
+const RULE_TEST_SHA: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+const RULE_SUPPORTED_SHA: &str = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
+const RULE_REJECTED_SHA: &str = "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd";
+const EVOLVE_RULE_PROPOSED: &str = "---\nkind: instance\nskill: evolve_rule_candidate\nid: proposed\nowner_subject: test-subject\nstatus: proposed\nnext_rule_action: evolve_rules_test\n---\n# Proposed\n";
+const EVOLVE_RULE_TESTED: &str = "---\nkind: instance\nskill: evolve_rule_candidate\nid: tested\nowner_subject: test-subject\nstatus: tested\nnext_rule_action: evolve_rules_approve\ntest_sha256: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\nsupported_rule_sha256s:\n  - cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\n---\n# Tested\n";
+const EVOLVE_RULE_APPROVED: &str = "---\nkind: instance\nskill: evolve_rule_candidate\nid: approved\nowner_subject: test-subject\nstatus: approved\ntest_sha256: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\nsupported_rule_sha256s:\n  - cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\n---\n# Approved\n";
+
 async fn start() -> EscurelProcess {
     EscurelProcess::spawn(Opts {
         auth: AuthMode::TestIssuer,
@@ -867,4 +875,495 @@ async fn list_lineage_declares_every_include_its_handler_accepts() {
         declared.iter().any(|v| v == "tool_calls"),
         "the handler accepts `tool_calls`, so the schema must declare it; declared: {declared:?}"
     );
+}
+
+fn rule_page(skill: &str, id: &str) -> String {
+    format!("markdown/instances/{skill}/{id}.md")
+}
+
+fn rule_hash(content: &str) -> String {
+    use sha2::{Digest, Sha256};
+    format!("{:x}", Sha256::digest(content.as_bytes()))
+}
+
+#[tokio::test]
+async fn evolve_rule_tools_are_gated_by_label_owner_and_page_state() {
+    let p = EscurelProcess::spawn(Opts {
+        auth: AuthMode::TestIssuer,
+        fixtures: Some(
+            FixtureBuilder::new()
+                .tenant(TENANT)
+                .skill("evolve_training_source", PRIVATE_EVOLVE_SOURCE_SKILL)
+                .instance("evolve_training_source", "a", PRIVATE_EVOLVE_SOURCE_A)
+                .skill("evolve_rule_candidate", EVOLVE_RULE_SKILL)
+                .instance("evolve_rule_candidate", "proposed", EVOLVE_RULE_PROPOSED)
+                .instance("evolve_rule_candidate", "tested", EVOLVE_RULE_TESTED)
+                .instance("evolve_rule_candidate", "approved", EVOLVE_RULE_APPROVED)
+                .done(),
+        ),
+        ..Default::default()
+    })
+    .await;
+    let owner = p.mint_token(TENANT, Role::Agent);
+    let other = p.mint_token_with_sub(TENANT, Role::Agent, "other-user");
+    let source = rule_page("evolve_training_source", "a");
+    let source_sha = rule_hash(PRIVATE_EVOLVE_SOURCE_A);
+    let proposed = rule_page("evolve_rule_candidate", "proposed");
+    let proposed_sha = rule_hash(EVOLVE_RULE_PROPOSED);
+    let tested = rule_page("evolve_rule_candidate", "tested");
+    let tested_sha = rule_hash(EVOLVE_RULE_TESTED);
+    let approved = rule_page("evolve_rule_candidate", "approved");
+    let approved_sha = rule_hash(EVOLVE_RULE_APPROVED);
+
+    let click = |label: &str, id: &str, page: &str, manual: Value| {
+        json!({"label_skill": label, "event_id": id, "instance_page_id": page,
+               "source": "workbench", "provenance": {"manual": manual}})
+    };
+    let deny = |res: &Value, why: &str| {
+        assert_eq!(res["error"]["code"], -32602, "{why}: {res}");
+    };
+
+    // propose: only on the owner's training source, in the background, on the reviewed revision.
+    let ok_manual = |sha: &str| json!({"mode": "run", "expected_page_sha256": sha});
+    deny(
+        &call(
+            &p,
+            &owner,
+            "capture_event",
+            click(
+                "evolve_rules_propose",
+                "RP-STALE",
+                &source,
+                ok_manual(&"0".repeat(64)),
+            ),
+        )
+        .await,
+        "stale source",
+    );
+    deny(
+        &call(
+            &p,
+            &owner,
+            "capture_event",
+            click(
+                "evolve_rules_propose",
+                "RP-PLAN",
+                &source,
+                json!({"mode": "plan", "expected_page_sha256": source_sha}),
+            ),
+        )
+        .await,
+        "plan mode",
+    );
+    deny(
+        &call(
+            &p,
+            &other,
+            "capture_event",
+            click(
+                "evolve_rules_propose",
+                "RP-FOREIGN",
+                &source,
+                ok_manual(&source_sha),
+            ),
+        )
+        .await,
+        "another user",
+    );
+    deny(
+        &call(
+            &p,
+            &owner,
+            "capture_event",
+            click(
+                "evolve_rules_propose",
+                "RP-WRONGSKILL",
+                &proposed,
+                ok_manual(&proposed_sha),
+            ),
+        )
+        .await,
+        "a candidate page is not a source",
+    );
+    let accepted = call(
+        &p,
+        &owner,
+        "capture_event",
+        click(
+            "evolve_rules_propose",
+            "RP-OWNER",
+            &source,
+            ok_manual(&source_sha),
+        ),
+    )
+    .await;
+    assert!(accepted.get("error").is_none(), "{accepted}");
+
+    // test: only a candidate that is waiting for its one test.
+    deny(
+        &call(
+            &p,
+            &owner,
+            "capture_event",
+            click(
+                "evolve_rules_test",
+                "RT-TESTED",
+                &tested,
+                ok_manual(&tested_sha),
+            ),
+        )
+        .await,
+        "already tested",
+    );
+    deny(
+        &call(
+            &p,
+            &owner,
+            "capture_event",
+            click(
+                "evolve_rules_test",
+                "RT-SOURCE",
+                &source,
+                ok_manual(&source_sha),
+            ),
+        )
+        .await,
+        "a source is not a candidate",
+    );
+    deny(
+        &call(
+            &p,
+            &other,
+            "capture_event",
+            click(
+                "evolve_rules_test",
+                "RT-FOREIGN",
+                &proposed,
+                ok_manual(&proposed_sha),
+            ),
+        )
+        .await,
+        "another user",
+    );
+    deny(
+        &call(
+            &p,
+            &owner,
+            "capture_event",
+            click(
+                "evolve_rules_test",
+                "RT-STALE",
+                &proposed,
+                ok_manual(&"0".repeat(64)),
+            ),
+        )
+        .await,
+        "stale candidate",
+    );
+    let accepted = call(
+        &p,
+        &owner,
+        "capture_event",
+        click(
+            "evolve_rules_test",
+            "RT-OWNER",
+            &proposed,
+            ok_manual(&proposed_sha),
+        ),
+    )
+    .await;
+    assert!(accepted.get("error").is_none(), "{accepted}");
+
+    // approve: the explicit decision. Needs confirm, the reviewed test hash, and supported rules only.
+    let approve = |sha: &str, confirm: Value, test_sha: &str, rules: Value| {
+        json!({"mode": "run", "expected_page_sha256": sha, "confirm": confirm,
+               "expected_test_sha256": test_sha, "rule_sha256s": rules})
+    };
+    let good = approve(
+        &tested_sha,
+        json!(true),
+        RULE_TEST_SHA,
+        json!([RULE_SUPPORTED_SHA]),
+    );
+    deny(
+        &call(
+            &p,
+            &owner,
+            "capture_event",
+            click(
+                "evolve_rules_approve",
+                "RA-NOCONFIRM",
+                &tested,
+                approve(
+                    &tested_sha,
+                    json!(false),
+                    RULE_TEST_SHA,
+                    json!([RULE_SUPPORTED_SHA]),
+                ),
+            ),
+        )
+        .await,
+        "no confirmation",
+    );
+    deny(
+        &call(
+            &p,
+            &owner,
+            "capture_event",
+            click(
+                "evolve_rules_approve",
+                "RA-STRCONFIRM",
+                &tested,
+                approve(
+                    &tested_sha,
+                    json!("true"),
+                    RULE_TEST_SHA,
+                    json!([RULE_SUPPORTED_SHA]),
+                ),
+            ),
+        )
+        .await,
+        "confirm must be the boolean true",
+    );
+    deny(
+        &call(
+            &p,
+            &owner,
+            "capture_event",
+            click(
+                "evolve_rules_approve",
+                "RA-WRONGTEST",
+                &tested,
+                approve(
+                    &tested_sha,
+                    json!(true),
+                    &"e".repeat(64),
+                    json!([RULE_SUPPORTED_SHA]),
+                ),
+            ),
+        )
+        .await,
+        "a test the page does not carry",
+    );
+    deny(
+        &call(
+            &p,
+            &owner,
+            "capture_event",
+            click(
+                "evolve_rules_approve",
+                "RA-REJECTED",
+                &tested,
+                approve(
+                    &tested_sha,
+                    json!(true),
+                    RULE_TEST_SHA,
+                    json!([RULE_REJECTED_SHA]),
+                ),
+            ),
+        )
+        .await,
+        "a rule the test did not support",
+    );
+    deny(
+        &call(
+            &p,
+            &owner,
+            "capture_event",
+            click(
+                "evolve_rules_approve",
+                "RA-NONE",
+                &tested,
+                approve(&tested_sha, json!(true), RULE_TEST_SHA, json!([])),
+            ),
+        )
+        .await,
+        "no rules chosen",
+    );
+    deny(
+        &call(
+            &p,
+            &owner,
+            "capture_event",
+            click(
+                "evolve_rules_approve",
+                "RA-NOTHEX",
+                &tested,
+                approve(&tested_sha, json!(true), RULE_TEST_SHA, json!(["nope"])),
+            ),
+        )
+        .await,
+        "not a hash",
+    );
+    deny(
+        &call(
+            &p,
+            &owner,
+            "capture_event",
+            click(
+                "evolve_rules_approve",
+                "RA-STALE",
+                &tested,
+                approve(
+                    &"0".repeat(64),
+                    json!(true),
+                    RULE_TEST_SHA,
+                    json!([RULE_SUPPORTED_SHA]),
+                ),
+            ),
+        )
+        .await,
+        "stale page",
+    );
+    deny(
+        &call(
+            &p,
+            &owner,
+            "capture_event",
+            click(
+                "evolve_rules_approve",
+                "RA-PROPOSED",
+                &proposed,
+                approve(
+                    &proposed_sha,
+                    json!(true),
+                    RULE_TEST_SHA,
+                    json!([RULE_SUPPORTED_SHA]),
+                ),
+            ),
+        )
+        .await,
+        "not tested yet",
+    );
+    deny(
+        &call(
+            &p,
+            &owner,
+            "capture_event",
+            click(
+                "evolve_rules_approve",
+                "RA-DONE",
+                &approved,
+                approve(
+                    &approved_sha,
+                    json!(true),
+                    RULE_TEST_SHA,
+                    json!([RULE_SUPPORTED_SHA]),
+                ),
+            ),
+        )
+        .await,
+        "already decided",
+    );
+    deny(
+        &call(
+            &p,
+            &other,
+            "capture_event",
+            click(
+                "evolve_rules_approve",
+                "RA-FOREIGN2",
+                &tested,
+                approve(
+                    &tested_sha,
+                    json!(true),
+                    RULE_TEST_SHA,
+                    json!([RULE_SUPPORTED_SHA]),
+                ),
+            ),
+        )
+        .await,
+        "another user",
+    );
+    let mut plan = good.clone();
+    plan["mode"] = json!("plan");
+    deny(
+        &call(
+            &p,
+            &owner,
+            "capture_event",
+            click("evolve_rules_approve", "RA-PLAN", &tested, plan),
+        )
+        .await,
+        "plan mode",
+    );
+
+    let accepted = call(
+        &p,
+        &owner,
+        "capture_event",
+        click("evolve_rules_approve", "RA-OWNER", &tested, good.clone()),
+    )
+    .await;
+    assert!(accepted.get("error").is_none(), "{accepted}");
+    let stored = call(&p, &owner, "list_events", json!({"event_id": "RA-OWNER"})).await;
+    let event = &stored["result"]["structuredContent"]["events"][0];
+    assert_eq!(event["revision_binding_attested"], true, "{stored}");
+    assert_eq!(
+        event["provenance"]["manual"]["target_page_sha256"],
+        tested_sha
+    );
+    assert_eq!(
+        event["status"], "processed",
+        "the click never reaches the runner"
+    );
+    let inbox = call(&p, &owner, "list_inbox", json!({})).await;
+    assert!(
+        inbox["result"]["structuredContent"]["events"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+
+    // Another user can neither take over the event id nor read the click.
+    deny(
+        &call(
+            &p,
+            &other,
+            "capture_event",
+            click("evolve_rules_approve", "RA-OWNER", &tested, good.clone()),
+        )
+        .await,
+        "event id collision",
+    );
+    let seen = call(&p, &other, "list_events", json!({"event_id": "RA-OWNER"})).await;
+    let leaked = seen["result"]["structuredContent"]["events"]
+        .as_array()
+        .is_some_and(|e| !e.is_empty());
+    assert!(!leaked, "{seen}");
+    // The owner replaying the id with a different decision is a different request.
+    let mut other_rules = good.clone();
+    other_rules["rule_sha256s"] = json!([RULE_SUPPORTED_SHA, RULE_REJECTED_SHA]);
+    deny(
+        &call(
+            &p,
+            &owner,
+            "capture_event",
+            click("evolve_rules_approve", "RA-OWNER", &tested, other_rules),
+        )
+        .await,
+        "replay with other rules",
+    );
+    let mut other_test = good.clone();
+    other_test["expected_test_sha256"] = json!("e".repeat(64));
+    deny(
+        &call(
+            &p,
+            &owner,
+            "capture_event",
+            click("evolve_rules_approve", "RA-OWNER", &tested, other_test),
+        )
+        .await,
+        "replay with another test hash",
+    );
+
+    // A label next to the gated ones is not gated by accident.
+    let unrelated = call(
+        &p,
+        &owner,
+        "capture_event",
+        json!({"label_skill": "evolve_rules_get", "event_id": "RG-1", "source": "workbench"}),
+    )
+    .await;
+    assert!(unrelated.get("error").is_none(), "{unrelated}");
 }

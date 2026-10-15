@@ -152,7 +152,10 @@ export function registerPrepareEvolveTrainingCsv(
       await vscode.window.showTextDocument(document, { preview: false });
       const action = await vscode.window.showInformationMessage(
         `Training source ${sourceId} prepared from ${String(receipt.row_count)} dated rows. ${policy ? 'Review the merged V2 policy draft' : 'Complete the opened V2 policy draft'}, save it locally, register a matching private holdout, then import the problem.`,
-        'Register private holdout',
+        'Register private holdout', 'Discover data rules',
+      );
+      if (action === 'Discover data rules') await vscode.commands.executeCommand(
+        'escurel.reviewEvolveRules', { sourceId },
       );
       if (action === 'Register private holdout') await vscode.commands.executeCommand(
         'escurel.registerEvolveHoldout', {

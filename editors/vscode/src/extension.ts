@@ -39,6 +39,7 @@ import { registerImportEvolveProblem } from './evolve/importProblem';
 import { registerPrepareEvolveTrainingSource } from './evolve/prepareSource';
 import { registerEvolveHoldout } from './evolve/registerHoldout';
 import { registerEvolveHoldoutCsv } from './evolve/registerHoldoutCsv';
+import { registerReviewEvolveRules } from './evolve/reviewRules';
 import { registerPrepareEvolveTrainingCsv } from './evolve/prepareCsv';
 import { ScenariosTree } from './views/scenarios';
 import { FocusMode } from './focus/focusMode';
@@ -85,6 +86,7 @@ export function activate(context: vscode.ExtensionContext): EscurelApi | undefin
   registerPrepareEvolveTrainingCsv(context, services);
   registerEvolveHoldout(context, services);
   registerEvolveHoldoutCsv(context, services);
+  registerReviewEvolveRules(context, services);
   registerOpenOriginal(context, services);
   registerSkillDiagnostics(context, () => services.client);
   WikilinkProvider.register(context);

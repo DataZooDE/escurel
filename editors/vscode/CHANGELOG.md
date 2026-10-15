@@ -8,6 +8,17 @@ derives its version from the tag (`vYYYY.MM.DD` → `YYYY.M.D`, leading zeros dr
 
 ### Added
 
+- **Review and approve Evolve data rules**: `Discover, review and approve Anofox Evolve data rules…`
+  proposes candidate rules for a prepared training source, runs the one confirmation test after you agree,
+  shows the value-free report (counts, p-values, Holm-corrected decision, required rows, insufficient
+  evidence), and approves only the supported rules you choose and then confirm. Approval is never automatic
+  and is bound to the exact test you reviewed. The approved hash can be attached to a new replenishment
+  experiment started from your own start file. Talks to Evolve directly (like holdout registration); the
+  Evolve guided `evolve_run` path does not carry the hash yet.
+- The Evolve event labels now come from one table (`escurel-types` and `shared/evolveControls.ts`, compared
+  by a test); the gateway gates `evolve_rules_propose` / `evolve_rules_test` / `evolve_rules_approve` by
+  label, owner and page state.
+
 - **Focus mode** (#660): `Switch to focus view` / `Leave focus view` / toggle. The calm window hides the
   menu bar, command center, status bar, breadcrumbs, minimap and editor actions and moves the activity bar
   to the top; the person's own user-level settings are remembered on enter and restored exactly on exit.

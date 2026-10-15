@@ -172,6 +172,11 @@
         "category": "Escurel"
       },
       {
+        "command": "escurel.reviewEvolveRules",
+        "title": "Discover, review and approve Anofox Evolve data rules…",
+        "category": "Escurel"
+      },
+      {
         "command": "escurel.checkEvolveTrainingSource",
         "title": "Check Anofox Evolve source preparation…",
         "category": "Escurel"

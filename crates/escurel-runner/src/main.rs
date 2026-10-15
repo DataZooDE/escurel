@@ -668,12 +668,8 @@ fn gate_and_enqueue(
     // member of the namespace.)
     if trigger.is_system
         || trigger.label_skill.starts_with("escurel:")
-        || trigger.label_skill == "evolve_preflight"
-        || trigger.label_skill == "evolve_prepare_source"
-        || trigger.label_skill == "evolve_validate"
-        || trigger.label_skill == "evolve_publish_candidate"
-        || trigger.label_skill == "evolve_compare"
-        || (trigger.label_skill == "evolve_run"
+        || escurel_types::evolve_labels::is_control_label(&trigger.label_skill)
+        || (trigger.label_skill == escurel_types::evolve_labels::RUN_LABEL
             && trigger
                 .manual
                 .as_ref()

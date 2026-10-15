@@ -7,7 +7,7 @@
 // stay a deprecated alias for one release), so both spellings are passed: whichever the agent build reads wins.
 //
 //   node evolve-env.mjs lines <gateway_url> <admin_bearer> <issuer_url> <tenant>   one KEY=VALUE per line (run.sh)
-export function evolveAgentEnv({ gatewayUrl, adminBearer, issuerUrl, tenant }) {
+export function evolveAgentEnv({ gatewayUrl, adminBearer, issuerUrl, tenant, ruleApprovers = [] }) {
   const jwks = `${issuerUrl}/protocol/openid-connect/certs`;
   return {
     ESCUREL_ENDPOINT: gatewayUrl,
@@ -24,6 +24,8 @@ export function evolveAgentEnv({ gatewayUrl, adminBearer, issuerUrl, tenant }) {
     EVOLVE_TENANT: tenant,
     GEMINI_API_KEY: 'unused-scripted-demo-key',
     EVOLVE_ALLOW_SYNTHETIC_BRAIN: '1',
+    // Rule approval fails closed in the agent: only these subjects may approve discovered rules.
+    ...(ruleApprovers.length ? { EVOLVE_RULE_APPROVER_PRINCIPALS: ruleApprovers.join(',') } : {}),
   };
 }
 

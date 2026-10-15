@@ -23,6 +23,16 @@ describe('evolveAgentEnv', () => {
     });
   });
 
+  it('lists rule approvers only when asked: with none, nobody can approve rules (fail closed)', () => {
+    expect(evolveAgentEnv(input)).not.toHaveProperty('EVOLVE_RULE_APPROVER_PRINCIPALS');
+    expect(evolveAgentEnv({ ...input, ruleApprovers: ['alice', 'bob'] })).toMatchObject({
+      EVOLVE_RULE_APPROVER_PRINCIPALS: 'alice,bob',
+    });
+    expect(evolveAgentEnv({ ...input, ruleApprovers: [] })).not.toHaveProperty(
+      'EVOLVE_RULE_APPROVER_PRINCIPALS',
+    );
+  });
+
   it("passes the agent's OIDC keys under both the old and the new (ESCUREL_EVOLVE_OIDC_*) names", () => {
     const env = evolveAgentEnv(input);
     for (const part of ['ISSUER', 'AUDIENCE', 'JWKS_URI']) {

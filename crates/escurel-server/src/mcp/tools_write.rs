@@ -2073,15 +2073,7 @@ pub(super) async fn tool_capture_event(
     // An Evolve run spends a budget against an owner-authored problem page.
     // Bind the click to the stored bytes at capture time. The expected hash
     // comes from Workbench's displayed page; the stored hash is gateway-owned.
-    let evolve_target_skill = match a.label_skill.as_str() {
-        "evolve_run" => Some("evolve_problem"),
-        "evolve_preflight" => Some("evolve_problem"),
-        "evolve_prepare_source" => Some("evolve_training_source"),
-        "evolve_validate" => Some("evolve_experiment"),
-        "evolve_publish_candidate" => Some("evolve_validation_report"),
-        "evolve_compare" => Some("evolve_comparison"),
-        _ => None,
-    };
+    let evolve_target_skill = escurel_types::evolve_labels::target_skill(&a.label_skill);
     let existing_evolve_event = if evolve_target_skill.is_some() {
         if let Some(event_id) = a.event_id.as_deref() {
             indexer.get_event(event_id).await.map_err(|e| {
@@ -2093,15 +2085,8 @@ pub(super) async fn tool_capture_event(
     } else {
         None
     };
-    if matches!(
-        a.label_skill.as_str(),
-        "evolve_run"
-            | "evolve_preflight"
-            | "evolve_prepare_source"
-            | "evolve_validate"
-            | "evolve_publish_candidate"
-            | "evolve_compare"
-    ) && let Some(existing) = existing_evolve_event.as_ref()
+    if escurel_types::evolve_labels::is_gated_label(&a.label_skill)
+        && let Some(existing) = existing_evolve_event.as_ref()
     {
         let requested_manual = a.provenance.as_ref().and_then(|p| p.get("manual"));
         let stored_manual = &existing.provenance["manual"];
@@ -2122,6 +2107,10 @@ pub(super) async fn tool_capture_event(
             || requested_manual.and_then(|m| m.get("confirm")) != stored_manual.get("confirm")
             || requested_manual.and_then(|m| m.get("review_note"))
                 != stored_manual.get("review_note")
+            || requested_manual.and_then(|m| m.get("expected_test_sha256"))
+                != stored_manual.get("expected_test_sha256")
+            || requested_manual.and_then(|m| m.get("rule_sha256s"))
+                != stored_manual.get("rule_sha256s")
         {
             return Err(JsonRpcError::invalid_params(
                 "capture_event: Evolve event ID belongs to another request".to_owned(),
@@ -2154,14 +2143,7 @@ pub(super) async fn tool_capture_event(
                 a.label_skill
             )));
         }
-        let allowed = if matches!(
-            a.label_skill.as_str(),
-            "evolve_preflight"
-                | "evolve_prepare_source"
-                | "evolve_validate"
-                | "evolve_publish_candidate"
-                | "evolve_compare"
-        ) {
+        let allowed = if escurel_types::evolve_labels::is_control_label(&a.label_skill) {
             expanded.frontmatter["owner_subject"] == caller.subject
                 && indexer
                     .may_read_instance(&caller, &expanded.page.skill, &expanded.frontmatter)
@@ -2261,6 +2243,61 @@ pub(super) async fn tool_capture_event(
                         .to_owned(),
                 ));
         }
+        if matches!(
+            a.label_skill.as_str(),
+            "evolve_rules_propose" | "evolve_rules_test" | "evolve_rules_approve"
+        ) && manual.get("mode").and_then(Value::as_str) != Some("run")
+        {
+            return Err(JsonRpcError::invalid_params(
+                "capture_event: rule discovery runs in the background".to_owned(),
+            ));
+        }
+        // A candidate batch is tested exactly once; only one still waiting for it can be clicked.
+        if a.label_skill == "evolve_rules_test"
+            && (expanded.frontmatter["status"] != "proposed"
+                || expanded.frontmatter["next_rule_action"] != "evolve_rules_test")
+        {
+            return Err(JsonRpcError::invalid_params(
+                "capture_event: rule test needs a proposed batch that has not been tested"
+                    .to_owned(),
+            ));
+        }
+        // Approval is the human decision: it names the exact test the person reviewed and only
+        // rules that test supported, and it needs an explicit boolean confirmation.
+        if a.label_skill == "evolve_rules_approve" {
+            let is_hash = |v: &Value| {
+                v.as_str()
+                    .is_some_and(|h| h.len() == 64 && h.bytes().all(|b| b.is_ascii_hexdigit()))
+            };
+            let supported = expanded.frontmatter["supported_rule_sha256s"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default();
+            let chosen = manual
+                .get("rule_sha256s")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default();
+            let distinct = chosen
+                .iter()
+                .collect::<std::collections::HashSet<_>>()
+                .len();
+            if manual.get("confirm") != Some(&json!(true))
+                || expanded.frontmatter["status"] != "tested"
+                || expanded.frontmatter["next_rule_action"] != "evolve_rules_approve"
+                || !manual.get("expected_test_sha256").is_some_and(is_hash)
+                || manual.get("expected_test_sha256") != expanded.frontmatter.get("test_sha256")
+                || chosen.is_empty()
+                || chosen.len() > 64
+                || distinct != chosen.len()
+                || !chosen.iter().all(|r| is_hash(r) && supported.contains(r))
+            {
+                return Err(JsonRpcError::invalid_params(
+                    "capture_event: rule approval needs the current tested batch, its exact test, supported rules and explicit confirmation"
+                        .to_owned(),
+                ));
+            }
+        }
         manual.remove("target_page_sha256");
         manual.remove("target_page_sha256_gateway_verified");
         manual.insert("target_page_sha256".to_owned(), json!(current_hash));
@@ -2336,14 +2373,8 @@ pub(super) async fn tool_capture_event(
         None => indexer.capture_event(requested.clone()).await,
     }
     .map_err(|e| JsonRpcError::internal(format!("capture_event: {e}")))?;
-    if matches!(
-        requested.label_skill.as_str(),
-        "evolve_preflight"
-            | "evolve_prepare_source"
-            | "evolve_validate"
-            | "evolve_publish_candidate"
-            | "evolve_compare"
-    ) && stored.label_skill == requested.label_skill
+    if escurel_types::evolve_labels::is_control_label(&requested.label_skill)
+        && stored.label_skill == requested.label_skill
     {
         // This is an Evolve control request, not a runnable skill. Keep it
         // in event history and lineage while removing it from the runner's
@@ -3139,15 +3170,7 @@ pub(super) async fn tool_list_events(
     let mut result = events_page_json(events.clone(), next_cursor, resume_cursor);
     for (i, event) in events.iter().enumerate() {
         if event.kind == escurel_index::EventKind::User
-            && matches!(
-                event.label_skill.as_str(),
-                "evolve_run"
-                    | "evolve_preflight"
-                    | "evolve_prepare_source"
-                    | "evolve_validate"
-                    | "evolve_publish_candidate"
-                    | "evolve_compare"
-            )
+            && escurel_types::evolve_labels::is_gated_label(&event.label_skill)
         {
             let sha = event.provenance["manual"]["target_page_sha256"]
                 .as_str()
