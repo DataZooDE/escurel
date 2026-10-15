@@ -271,7 +271,7 @@ pub enum ConfigError {
         provider: &'static str,
         var: &'static str,
     },
-    #[error("creating data dir {path}: {source}")]
+    #[error("creating data dir {path} (ESCUREL_SERVER_DATA_DIR / HOME): {source}")]
     DataDir {
         path: String,
         #[source]
@@ -1499,6 +1499,32 @@ type BootIndex = (
 );
 
 impl EscurelConfig {
+    /// Create the data dir (`ESCUREL_SERVER_DATA_DIR`, mode 0700) and, when `HOME` is set, the DuckDB home
+    /// it names. DuckDB resolves its home from `$HOME` and refuses to open a connection at all when that
+    /// directory is missing (`Can't find the home directory at ...`); the substrate pods point `HOME` at the
+    /// data dir on a fresh emptyDir, so every path that touches DuckDB before a server has ever booted (the
+    /// first `migrate-kind-job` step, `lake-upgrade`) must create it first. Idempotent.
+    pub fn ensure_data_dir(&self) -> Result<(), ConfigError> {
+        let create = |path: &std::path::Path| -> Result<(), ConfigError> {
+            let mut b = std::fs::DirBuilder::new();
+            b.recursive(true);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::DirBuilderExt as _;
+                b.mode(0o700);
+            }
+            b.create(path).map_err(|source| ConfigError::DataDir {
+                path: path.display().to_string(),
+                source,
+            })
+        };
+        create(&self.data_dir)?;
+        if let Some(home) = std::env::var_os("HOME").filter(|h| !h.is_empty()) {
+            create(std::path::Path::new(&home))?;
+        }
+        Ok(())
+    }
+
     /// Build every backend the gateway needs and `serve()` it.
     ///
     /// Degraded start: if the configured embedder fails to load
@@ -1537,11 +1563,8 @@ impl EscurelConfig {
         // of this fn instead of installed a second time there.
         let telemetry_guard = install_telemetry(&self.version);
 
-        // 1. Data dir on the host volume.
-        std::fs::create_dir_all(&self.data_dir).map_err(|source| ConfigError::DataDir {
-            path: self.data_dir.display().to_string(),
-            source,
-        })?;
+        // 1. Data dir on the host volume (and the DuckDB home).
+        self.ensure_data_dir()?;
 
         // 2. LaneStore.
         let store = self.build_lane_store().await?;

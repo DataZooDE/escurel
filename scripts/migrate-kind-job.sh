@@ -53,6 +53,15 @@ remaining() {
     echo $((DEADLINE - ($(date +%s) - START)))
 }
 
+# A k8s Job starts on a FRESH emptyDir: nothing has created the data dir yet, and DuckDB refuses to open at
+# all when $HOME (the pods point it at the data dir) is missing ("Can't find the home directory at ...",
+# the lab cutover of 2026-10-15). The binaries create both themselves; this is belt and braces.
+DATA_DIR="${ESCUREL_SERVER_DATA_DIR:-/data}"
+mkdir -p "$DATA_DIR" || fail "cannot create ESCUREL_SERVER_DATA_DIR=$DATA_DIR"
+if [ -n "${HOME:-}" ]; then
+    mkdir -p "$HOME" || fail "cannot create HOME=$HOME (DuckDB's home directory)"
+fi
+
 LAKE=0
 [ "${ESCUREL_INDEX_BACKEND:-}" = "ducklake" ] && LAKE=1
 
