@@ -9,16 +9,30 @@
 #
 # On a DuckLake deployment (ESCUREL_INDEX_BACKEND=ducklake, the ESCUREL_DUCKLAKE_* env of the writer)
 # the job also keeps the LAKE consistent, because a writer adopts the lake over the lane at boot:
-#   1. `escurel-server lake-upgrade` (before any server boots: re-pins a lake one declared-compatible
-#      schema version behind; refuses an unknown jump or a newer lake);
-#   2. a `migrate-kind` DRY RUN that must report no conflicts;
-#   3. `migrate-kind --apply`, which publishes the migrated corpus to the lake itself (the report
+#   1. a `migrate-kind` DRY RUN that must report no conflicts (the server boot adopts a lake that is one
+#      declared-compatible schema version behind AS-IS: nothing needs re-pinning first);
+#   2. `migrate-kind --apply`, which publishes the migrated corpus to the lake itself (the report
 #      carries `lake_published`; its absence fails the job);
-#   4. a SECOND boot over the lake, which must come up NOT quarantined (a stale lake that still holds
+#   3. a SECOND boot over the lake, which must come up NOT quarantined (a stale lake that still holds
 #      `type:` pages quarantines the tenant, so this is the "no legacy page left in the lake" check)
-#      and whose dry run must find nothing left to migrate.
+#      and whose dry run must find nothing left to migrate;
+#   4. LAST, `escurel-server lake-upgrade`: pins the manifest to this build's schema version when the
+#      publish did not (idempotent).
+# The one-way step comes LAST on purpose. Re-pinning the lake (and any publish does it) makes the PREVIOUS
+# release refuse the lake (`lake schema_version 10 != reader schema_version 9`), so a job that failed after
+# that point stranded the rollback target (the lab cutover of 2026-10-15, attempt 2). Everything that can fail
+# on configuration, auth or a conflict now fails BEFORE the lake is touched. If a cutover still has to be
+# walked back after the publish, `escurel-server lake-upgrade --to <previous>` restores the pin (a compatible
+# bump only; the migrated lane content comes back from the backup).
 # The job NEVER uses `escurel admin rebuild` (its client deadline and a partial index were how the
 # 2026-10-14 rehearsal almost published 91 of 183 pages).
+#
+# Threat model: the throwaway server binds 127.0.0.1 only, inside a Job pod with no Service and no ingress,
+# and runs WITHOUT auth: the job's own CLI is its only caller. So the job drops every ESCUREL_AUTH_* variable
+# the Deployment's environment carries (the lab sets the OIDC issuer; an inherited issuer made the job's own
+# unauthenticated calls fail with `http 401`), plus the other knobs of the real gateway that a throwaway
+# server must not act on: the outbound webhook, the periodic lake publish (it would re-pin the manifest on
+# its own timer) and the metrics listener.
 #
 # Plan the Job deadline for >= 3600 s: the rehearsal on 183 pages / 988 snapshots took ~15 min
 # (boot 36 s, dry run 295 s, apply 831 s) and a second boot adds ~35 s.
@@ -65,8 +79,16 @@ fi
 LAKE=0
 [ "${ESCUREL_INDEX_BACKEND:-}" = "ducklake" ] && LAKE=1
 
+# The Deployment's gateway config is not this job's config (see "Threat model" above). `unset` every auth
+# variable, indexed ones (ESCUREL_AUTH_OIDC_ISSUER_2, ...) included.
+for v in $(env | sed -n 's/^\(ESCUREL_AUTH_[A-Za-z0-9_]*\)=.*/\1/p'); do
+    unset "$v"
+done
+unset ESCUREL_WEBHOOK_URL ESCUREL_WEBHOOK_SECRET
+
 start_server() {
     ESCUREL_SERVER_LISTEN_HTTP="127.0.0.1:$PORT" ESCUREL_OBSERVABILITY_METRICS_LISTEN= \
+        ESCUREL_SNAPSHOT_PUBLISH_SECS=0 \
         "${BIN}escurel-server" &
     SERVER_PID=$!
     # Wait for the listener, but notice a server that died at boot instead of looping forever.
@@ -84,15 +106,9 @@ stop_server_clean() {
     SERVER_PID=""
 }
 
-# 1. The lake schema pin (DuckLake only), before any server touches the lake.
-if [ "$LAKE" = 1 ]; then
-    "${BIN}escurel-server" lake-upgrade >"$OUT" || fail "lake-upgrade failed (see above)"
-    cat "$OUT"
-fi
-
 start_server
 
-# 2. Dry run: conflicts block the apply (it would leave the tenant quarantined).
+# 1. Dry run: conflicts block the apply (it would leave the tenant quarantined).
 LEFT="$(remaining)"
 [ "$LEFT" -gt 0 ] || fail "deadline of ${DEADLINE}s used up before the dry run started"
 "${BIN}escurel" --server "$URL" admin migrate-kind --tenant "$ESCUREL_TENANT" \
@@ -101,7 +117,7 @@ cat "$OUT"
 grep -q '"conflicts": \[\]' "$OUT" ||
     fail "the dry run reports conflicts (a page with both keys): resolve them before applying"
 
-# 3. Apply.
+# 2. Apply.
 LEFT="$(remaining)"
 [ "$LEFT" -gt 0 ] || fail "deadline of ${DEADLINE}s used up before the apply started"
 "${BIN}escurel" --server "$URL" admin migrate-kind --tenant "$ESCUREL_TENANT" --apply \
@@ -117,7 +133,7 @@ fi
 
 stop_server_clean
 
-# 4. DuckLake: boot AGAIN over the lake, exactly as production will. A lake that still holds `type:`
+# 3. DuckLake: boot AGAIN over the lake, exactly as production will. A lake that still holds `type:`
 #    pages quarantines the tenant at this boot, and a clean second dry run proves nothing is left.
 if [ "$LAKE" = 1 ]; then
     start_server
@@ -132,6 +148,10 @@ if [ "$LAKE" = 1 ]; then
     grep -q '"pages_to_migrate": \[\]' "$OUT" ||
         fail "the verification dry run still finds pages to migrate (see the report)"
     stop_server_clean
+
+    # 4. The one-way step, LAST: pin the manifest to this build's version (a no-op when the publish already did).
+    "${BIN}escurel-server" lake-upgrade >"$OUT" || fail "lake-upgrade failed (see above)"
+    cat "$OUT"
 fi
 
 rm -f "$OUT"

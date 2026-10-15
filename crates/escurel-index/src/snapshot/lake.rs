@@ -900,6 +900,11 @@ pub enum LakeUpgradeAction {
     WouldUpgrade,
     /// The manifest was re-pinned.
     Upgraded,
+    /// Dry run: the manifest would be walked back to a declared-compatible older version.
+    WouldDowngrade,
+    /// The manifest was walked back to a declared-compatible older version
+    /// (the reverse of a failed cutover, see [`lake_downgrade`]).
+    Downgraded,
 }
 
 /// Outcome of [`lake_upgrade`].
@@ -1196,6 +1201,85 @@ pub async fn lake_upgrade(
         action: LakeUpgradeAction::Upgraded,
         from,
         to,
+    })
+}
+
+/// The REVERSE of [`lake_upgrade`], for a compatible bump only: walk the manifest back from this build's
+/// [`Migrator::SCHEMA_VERSION`] to `to`, which must be listed in [`Migrator::LAKE_ADOPTS_FROM`].
+///
+/// Why it exists: a publish (the migration's own, or any later one) re-pins the manifest to this build's
+/// version, and the PREVIOUS release refuses a lake pinned at a version it does not know
+/// (`lake schema_version 10 != reader schema_version 9`). A cutover that fails after that point would strand the
+/// rolled-back release; this restores the pin so it boots again. It changes the version pin and nothing else:
+/// it is only sound because every table the lake carries is still readable by the older build (the
+/// [`Migrator::LAKE_ADOPTS_FROM`] contract). It cannot undo a migration of the CONTENT (`type:` -> `kind:`):
+/// that is restored from the backup.
+///
+/// Idempotent (the manifest already at `to` is a no-op) and strict: a manifest that is neither this build's
+/// version nor `to` (an unknown or newer lake) is refused, and nothing is written. Same stopped-writer semantics
+/// as [`lake_upgrade`].
+pub async fn lake_downgrade(
+    cfg: &LakeConfig,
+    to: u32,
+    dry_run: bool,
+) -> Result<LakeUpgradeReport, SnapshotError> {
+    let target = i64::from(to);
+    if !Migrator::LAKE_ADOPTS_FROM.contains(&to) {
+        return Err(SnapshotError::LakeIncompatible(format!(
+            "lake schema_version cannot be set to {to}: not a version this build declares compatible \
+             (compatible older versions: {:?})",
+            Migrator::LAKE_ADOPTS_FROM
+        )));
+    }
+    let build = i64::from(Migrator::SCHEMA_VERSION);
+    let conn = Connection::open_in_memory_with_flags(Migrator::connection_config()?).map_err(
+        |source| SnapshotError::DuckdbOpen {
+            path: ":memory: (lake downgrade)".to_owned(),
+            source,
+        },
+    )?;
+    attach_lake(&conn, cfg, dry_run)?;
+    if !lake_table_exists(&conn, "escurel_manifest")? {
+        return Ok(LakeUpgradeReport {
+            action: LakeUpgradeAction::NoLake,
+            from: 0,
+            to: target,
+        });
+    }
+    let from: i64 = conn.query_row(
+        &format!("SELECT schema_version FROM {LAKE_ALIAS}.escurel_manifest"),
+        [],
+        |r| r.get(0),
+    )?;
+    if from == target {
+        return Ok(LakeUpgradeReport {
+            action: LakeUpgradeAction::AlreadyCurrent,
+            from,
+            to: target,
+        });
+    }
+    if from != build {
+        return Err(SnapshotError::LakeIncompatible(format!(
+            "lake schema_version {from} is neither this build's {build} nor the target {target}: \
+             refusing to rewrite the pin"
+        )));
+    }
+    if dry_run {
+        return Ok(LakeUpgradeReport {
+            action: LakeUpgradeAction::WouldDowngrade,
+            from,
+            to: target,
+        });
+    }
+    conn.execute(
+        &format!("UPDATE {LAKE_ALIAS}.escurel_manifest SET schema_version = ?"),
+        params![target],
+    )?;
+    conn.execute_batch(&scrub_column_stats_sql(LAKE_ALIAS))?;
+    Ok(LakeUpgradeReport {
+        action: LakeUpgradeAction::Downgraded,
+        from,
+        to: target,
     })
 }
 

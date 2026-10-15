@@ -46,8 +46,8 @@ pub use events_pg::{
 pub use lake::{
     LakeConfig, LakeUpgradeAction, LakeUpgradeReport, ObjectStoreSecret, PublishOptions,
     adopt_lake, adopt_lake_for_writer, attach_lake, attach_sql, gc_lake_snapshots,
-    install_load_sql, lake_upgrade, latest_lake_snapshot_id, publish_lake, publish_lake_with,
-    publish_page_sync, secret_sql,
+    install_load_sql, lake_downgrade, lake_upgrade, latest_lake_snapshot_id, publish_lake,
+    publish_lake_with, publish_page_sync, secret_sql,
 };
 pub use lease::WriterLease;
 pub use store::{AttachRetrievalFn, SingleFileStore};

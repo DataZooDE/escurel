@@ -55,11 +55,16 @@ Outbound connector and write-back health is on the same `/metrics` endpoint:
 - **No live editing sessions** (the tool refuses `--apply` while a page has CRDT ops newer than its newest
   snapshot): close them, or run `escurel admin compact-lanes --tenant <t>` first.
 
-- **A DuckLake deployment: upgrade the lake manifest first.** A lake published by an older build pins
-  that build's schema version, and the boot gate is fail-closed. A version that this build declares
-  compatible (`Migrator::LAKE_ADOPTS_FROM`; 9 for schema 10: only a self-migrating events column
-  changed) is adopted as-is, and the next publish re-pins the manifest. To re-pin it explicitly *before*
-  the new server boots (the migration job does), run with the **writer stopped**:
+- **A DuckLake deployment: the lake manifest pin is a ONE-WAY step: take it last.** A lake published by an
+  older build pins that build's schema version, and the boot gate is fail-closed. A version that this build
+  declares compatible (`Migrator::LAKE_ADOPTS_FROM`; 9 for schema 10: only a self-migrating events column
+  changed) is adopted as-is, so the new server boots on it without any re-pin. Every publish (the migration's
+  own included) re-pins the manifest to this build's version, and from then on the **previous release refuses
+  the lake** (`lake schema_version 10 != reader schema_version 9`). Therefore the migration job does NOT re-pin
+  first: it boots, dry-runs, applies and verifies, and only then runs `lake-upgrade`, so anything that can fail
+  on config, auth or a conflict fails while the previous release can still boot (the lab cutover of
+  2026-10-15 re-pinned first, failed, and rolled back to an image that refused the lake). To pin it explicitly
+  yourself, run with the **writer stopped**:
 
   ```sh
   escurel-server lake-upgrade --dry-run   # {"action": "would_upgrade", "from": 9, "to": 10}
@@ -72,11 +77,29 @@ Outbound connector and write-back health is on the same `/metrics` endpoint:
   with a non-zero exit and nothing written. It needs a DuckDB with the same `ducklake` extension the
   server runs (the image's own binary, DuckDB 1.5.6): never hand-edit the manifest.
 
+  **Walking a cutover back.** If the cutover fails after a publish and you must roll the image back, restore
+  the pin first, with the writer stopped and the NEW image's binary:
+
+  ```sh
+  escurel-server lake-upgrade --to 9      # {"action": "downgraded", "from": 10, "to": 9}; again: "already_current"
+  ```
+
+  `--to N` is accepted only for a version in `Migrator::LAKE_ADOPTS_FROM` and only from this build's own
+  version; any other lake or target is refused with nothing written. It restores the *pin* only: it cannot
+  undo the `type:` -> `kind:` migration of the lane content (that comes back from the §1 backup), and the
+  previous release has not been rehearsed against a lake the new build touched.
+
+- **The job runs without auth.** `scripts/migrate-kind-job.sh` starts a throwaway server on `127.0.0.1` inside
+  a Job pod (no Service, no ingress) and calls it with its own CLI, so it drops every `ESCUREL_AUTH_*`
+  variable of the Deployment's environment (an inherited OIDC issuer made the job's own calls fail with
+  `http 401`), the outbound webhook, the periodic publish and the metrics listener. Nothing in the Job's pod
+  spec needs to unset them.
+
 - **A DuckLake deployment adopts the lake over the lane at boot.** A lake published before the migration still
   holds `type:` pages. The writer boot therefore quarantines the tenant when the adopted corpus carries the
   removed key (never serves it silently), and `migrate-kind --apply` ends by **publishing** the migrated corpus
   (`lake_published` in the report), so a restart finds a consistent lake. `scripts/migrate-kind-job.sh` runs
-  lake-upgrade -> dry run (no conflicts) -> apply -> a second boot that must not be quarantined. Never run
+  dry run (no conflicts) -> apply -> a second boot that must not be quarantined -> lake-upgrade (last). Never run
   `escurel admin rebuild` or `publish_snapshot` by hand in the middle of it: a rebuild that did not finish
   flags the index partial and a publish is refused until one completes; a corpus under half the lake's pages is
   refused too (`allow_shrink` is only for a deliberate mass delete). Size the Job deadline for >= 3600 s.

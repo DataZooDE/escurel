@@ -208,10 +208,6 @@ async fn a_ducklake_job_upgrades_the_lake_migrates_the_lane_and_leaves_the_lake_
         String::from_utf8_lossy(&out.stdout),
         String::from_utf8_lossy(&out.stderr)
     );
-    assert!(
-        String::from_utf8_lossy(&out.stdout).contains("\"upgraded\""),
-        "lake-upgrade ran"
-    );
     assert_eq!(
         lake_count(
             &cfg,
@@ -244,7 +240,8 @@ async fn a_ducklake_job_refuses_a_lake_newer_than_the_build_and_migrates_nothing
     .await
     .unwrap();
     assert!(!out.status.success(), "a newer lake must fail the job");
-    assert!(String::from_utf8_lossy(&out.stderr).contains("lake-upgrade failed"));
+    // The server boot is now the first lake touch (it adopts only a declared-compatible version).
+    assert!(String::from_utf8_lossy(&out.stderr).contains("exited during boot"));
     assert!(
         std::fs::read_to_string(page).unwrap().contains("type:"),
         "nothing may be migrated when the lake step refuses"
@@ -290,9 +287,128 @@ async fn a_ducklake_job_gets_past_lake_upgrade_on_a_fresh_volume() {
         !stderr.contains("Can't find the home directory"),
         "the job tripped on the missing home on a fresh volume\nstderr: {stderr}"
     );
+    // The first server boot adopts the lake and the dry run reaches the engine: the volume was usable. (A fresh
+    // LOCAL lane is empty, so the apply's publish rightly refuses to shrink the lake; the lab's lane is in S3.)
     assert!(
-        stdout.contains("\"upgraded\""),
-        "lake-upgrade must have run and upgraded the lake\nstdout: {stdout}\nstderr: {stderr}"
+        stdout.contains("\"pages_scanned\""),
+        "the job must get through the boot to the dry run on a fresh volume\nstdout: {stdout}\nstderr: {stderr}"
+    );
+}
+
+// ---- the lab cutover of 2026-10-15, attempt 2: the job must not inherit the Deployment's auth ----
+
+/// The lab Deployment sets `ESCUREL_AUTH_OIDC_ISSUER` (+ JWKS URI). The job's throwaway server (loopback, a
+/// Job pod with no Service and no ingress) inherited them while the job's own CLI calls carry no bearer, so the
+/// dry run died with `http 401 missing Authorization: Bearer header`. The job must run with NO inherited auth.
+#[test]
+fn a_job_with_an_oidc_issuer_in_its_environment_still_migrates() {
+    let dir = TempDir::new().unwrap();
+    seed(dir.path(), &[]);
+    let (out, _) = job(
+        dir.path(),
+        300,
+        &[
+            ("ESCUREL_AUTH_OIDC_ISSUER", "http://127.0.0.1:9/issuer"),
+            ("ESCUREL_AUTH_JWKS_URI", "http://127.0.0.1:9/jwks"),
+            ("ESCUREL_AUTH_OIDC_AUDIENCE", "escurel"),
+            ("ESCUREL_AUTH_OIDC_ISSUER_2", "http://127.0.0.1:9/issuer2"),
+            ("ESCUREL_AUTH_JWKS_URI_2", "http://127.0.0.1:9/jwks2"),
+        ],
+    );
+    assert!(
+        out.status.success(),
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let page = std::fs::read_to_string(
+        dir.path()
+            .join("tenants/default/markdown/instances/s0/a.md"),
+    )
+    .unwrap();
+    assert!(page.contains("kind: instance") && !page.contains("type: instance"));
+}
+
+/// The lab sets other knobs a loopback throwaway server must not inherit: an outbound webhook, a periodic lake
+/// publish (which re-pins the lake manifest on its own timer) and a metrics listener on the real port.
+#[test]
+fn a_job_ignores_the_deployments_webhook_and_publish_cadence() {
+    let dir = TempDir::new().unwrap();
+    seed(dir.path(), &[]);
+    let (out, _) = job(
+        dir.path(),
+        300,
+        &[
+            ("ESCUREL_WEBHOOK_URL", "http://127.0.0.1:9/hook"),
+            ("ESCUREL_WEBHOOK_SECRET", "s3cr3t-of-the-deployment"),
+            ("ESCUREL_SNAPSHOT_PUBLISH_SECS", "1"),
+            ("ESCUREL_OBSERVABILITY_METRICS_LISTEN", "0.0.0.0:9100"),
+        ],
+    );
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+// ---- the one-way step comes LAST: a job that fails must not strand the previous release ----
+
+/// Attempt 2 of the lab cutover re-pinned the lake to schema 10 FIRST, then the dry run failed; `helm --atomic`
+/// rolled back to the previous image, which refuses schema 10, so dz-escurel was down. A server boot adopts a
+/// declared-compatible older lake as-is, so nothing needs the pin before the apply. A job that fails before the
+/// apply must leave the lake exactly where it found it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_ducklake_job_that_fails_before_the_apply_leaves_the_lake_at_the_old_schema() {
+    let data = TempDir::new().unwrap();
+    let lake_dir = TempDir::new().unwrap();
+    let cfg = local_lake(lake_dir.path());
+    publish_a_lake_from_a_kind_lane(data.path(), &cfg).await;
+    make_lake_old(&cfg, 9);
+    make_lane_legacy(data.path());
+    // A page holding BOTH keys: the dry run reports a conflict and the job fails before the apply.
+    std::fs::write(
+        data.path()
+            .join("tenants/default/markdown/instances/s0/both.md"),
+        "---\ntype: instance\nkind: s0\nskill: s0\nid: both\n---\n# b\n",
+    )
+    .unwrap();
+
+    let out = tokio::task::spawn_blocking({
+        let (d, c) = (data.path().to_owned(), cfg.clone());
+        move || lake_job(&d, &c)
+    })
+    .await
+    .unwrap();
+    assert!(!out.status.success(), "a conflict must fail the job");
+    assert!(String::from_utf8_lossy(&out.stderr).contains("dry run reports conflicts"));
+    assert_eq!(
+        lake_count(&cfg, "SELECT schema_version FROM lake.escurel_manifest"),
+        9,
+        "a job that failed before the apply must not re-pin the lake (the previous image would refuse it)"
+    );
+}
+
+/// When the lanes need no migration the apply may publish nothing: the final `lake-upgrade` step still pins
+/// the lake to this build's version, so the cutover ends consistent.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_ducklake_job_pins_the_lake_as_its_last_step() {
+    let data = TempDir::new().unwrap();
+    let lake_dir = TempDir::new().unwrap();
+    let cfg = local_lake(lake_dir.path());
+    publish_a_lake_from_a_kind_lane(data.path(), &cfg).await;
+    make_lake_old(&cfg, 9);
+    // The lane is already `kind:` (nothing to migrate), the lake says schema 9.
+    let out = tokio::task::spawn_blocking({
+        let (d, c) = (data.path().to_owned(), cfg.clone());
+        move || lake_job(&d, &c)
+    })
+    .await
+    .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
     );
     assert_eq!(
         lake_count(&cfg, "SELECT schema_version FROM lake.escurel_manifest"),

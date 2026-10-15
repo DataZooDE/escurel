@@ -37,7 +37,8 @@ USAGE
     escurel-server pack|info|unpack  self-packaging: fold a markdown corpus into a copy of this binary
     escurel-server --help | --version
     escurel-server --print-config-keys   print the generated environment table (docs/deploy/env.md)
-    escurel-server lake-upgrade [--dry-run]  re-pin a DuckLake manifest one declared-compatible schema version behind (stop the writer first)
+    escurel-server lake-upgrade [--dry-run] [--to N]  re-pin a DuckLake manifest one declared-compatible schema version behind;
+                                         --to N walks it BACK to compatible version N (stop the writer first)
 
 CONFIGURATION (environment; the full table with defaults is docs/deploy/env.md, generated from the code)
     ESCUREL_SERVER_DATA_DIR            data volume (default /data); lanes + index live under tenants/<tenant>/
@@ -242,18 +243,33 @@ async fn wait_for_shutdown() {
 /// (`Migrator::LAKE_ADOPTS_FROM`). Configured through the same `ESCUREL_DUCKLAKE_*` environment as the
 /// server; prints the report as JSON on stdout; exits non-zero for an unknown jump or a newer lake.
 ///
+/// `--to N` is the REVERSE, for a declared-compatible older version only (a failed cutover must not strand the
+/// previous release, which refuses a lake pinned at this build's version): it walks the pin back to `N`,
+/// idempotently, and refuses anything else.
+///
 /// Stopped-writer semantics: on a Postgres catalog it takes the single-writer lease for the duration
 /// and refuses while a writer holds it, so it can never race a live publish (which would re-pin the
 /// manifest wholesale anyway).
 async fn cmd_lake_upgrade(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     let mut dry_run = false;
-    for a in args {
+    let mut to: Option<u32> = None;
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
         match a.as_str() {
             "--dry-run" => dry_run = true,
+            "--to" => {
+                let v = it
+                    .next()
+                    .ok_or("lake-upgrade: --to needs a schema version")?;
+                to = Some(v.parse().map_err(|_| {
+                    format!("lake-upgrade: --to needs a non-negative schema version, got `{v}`")
+                })?);
+            }
             other => {
-                return Err(
-                    format!("lake-upgrade: unknown argument `{other}` (only --dry-run)").into(),
-                );
+                return Err(format!(
+                    "lake-upgrade: unknown argument `{other}` (only --dry-run and --to N)"
+                )
+                .into());
             }
         }
     }
@@ -277,7 +293,14 @@ async fn cmd_lake_upgrade(args: &[String]) -> Result<(), Box<dyn std::error::Err
     } else {
         None
     };
-    let report = escurel_index::snapshot::lake_upgrade(lake, dry_run).await?;
+    // `--to` this build's own version is the plain upgrade; any other target is the reverse for a
+    // declared-compatible older version (a failed cutover must not strand the previous release).
+    let report = match to {
+        Some(n) if n != escurel_index::Migrator::SCHEMA_VERSION => {
+            escurel_index::snapshot::lake_downgrade(lake, n, dry_run).await?
+        }
+        _ => escurel_index::snapshot::lake_upgrade(lake, dry_run).await?,
+    };
     println!("{}", serde_json::to_string_pretty(&report)?);
     Ok(())
 }
