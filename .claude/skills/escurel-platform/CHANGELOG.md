@@ -4,6 +4,21 @@ The skill version tracks the consumer-facing contract, not the Escurel
 binary version. The Escurel repo's checked-out git ref is the true version
 pin (see `SKILL.md` → "How this skill is installed").
 
+## 0.21.0 — the lake has an upgrade path; `publish_snapshot` guards a shrinking corpus; Evolve data-rule labels
+
+Operator-side and additive; no consumer call changes shape.
+
+- **`publish_snapshot {allow_shrink?}`** (`02-tool-surface.md`): refuses a partial index and a corpus under half
+  the lake's page count (lakes of 10+ pages); pass `allow_shrink: true` only for a deliberate mass delete.
+- **`migrate-kind --apply`** on a DuckLake writer also publishes the migrated corpus (`lake_published` in the
+  report, `04-consume-via-cli.md`); a writer that adopts a lake still holding `type:` pages boots quarantined.
+  `escurel admin rebuild --timeout-secs N` is opt-in and the rebuild continues server-side when the client gives up.
+- **`escurel-server lake-upgrade [--dry-run] [--to N]`** (`10-out-of-bounds.md`, operator-only): re-pins a DuckLake
+  manifest one declared-compatible schema version behind (and `--to N` walks it back); the writer must be stopped.
+  Consumers never call it.
+- **Evolve control labels** `evolve_rules_propose|test|approve` for `capture_event` (owner-gated, `mode: run`,
+  never run by the runner): used by the Evolve agent and the VS Code extension, not by app code.
+
 ## 0.20.1 — branch decisions are author-or-admin; write-back audit ids are per attempt
 
 - **`merge_branch` / `abandon_branch` / writes into a branch** (`02-tool-surface.md`): only the branch's author

@@ -11,7 +11,7 @@ re-cuts append `.N`), matching the DataZoo release scheme (cf. erpl).
 **Read first:** [`docs/deploy/kind-migration.md`](docs/deploy/kind-migration.md) (stop-first upgrade, backup,
 rollback) and the consumer checklist in
 [`.claude/skills/escurel-platform/CHANGELOG.md`](.claude/skills/escurel-platform/CHANGELOG.md) (0.7.0 – 0.18.1).
-Skill version `0.20.1`. Every consumer that writes pages or reads the tool surface moves in the same window.
+Skill version `0.21.0`. Every consumer that writes pages or reads the tool surface moves in the same window.
 
 ### Fixed
 
@@ -42,6 +42,20 @@ Skill version `0.20.1`. Every consumer that writes pages or reads the tool surfa
   `vYYYY.MM.DD.N` builds as `YYYY.M.D+N`; the release's first job gates the tag on a green main push CI run of
   that exact commit (an ancestor of `main`, waits up to 30 min; `RELEASE_SKIP_CI_GATE=1` is the logged escape
   hatch). The image bakes `anofox_optimize` for DuckDB 1.5.6 (#706).
+- **Lab-move engine fixes (#716, #718, #719, #720).** The lake (DuckLake) now has a supported upgrade path and a
+  cutover that cannot leave it stale or strand the previous release:
+  `escurel-server lake-upgrade [--dry-run]` re-pins a manifest one declared-compatible schema version behind
+  (9 to 10), and a writer also adopts such a lake at boot; `escurel-server lake-upgrade --to N` walks the pin
+  back to a declared-compatible older version (idempotent; both need the writer stopped). `migrate-kind
+  --apply` on a DuckLake writer publishes the migrated corpus (`lake_published` in the report), and a writer
+  that adopts a lake still holding `type:` pages boots QUARANTINED instead of serving it. `publish_snapshot`
+  refuses a partial index and a corpus under half the lake's pages (optional `allow_shrink` for a deliberate
+  mass delete); `rebuild` keeps running when its client gives up (`escurel admin rebuild --timeout-secs`).
+  `migrate-kind-job` creates its data dir and DuckDB home itself (fresh volume), drops the Deployment's
+  `ESCUREL_AUTH_*` / webhook / periodic-publish / metrics environment for its loopback-only throwaway server (an
+  OIDC-enabled gateway migrates with the same pod environment), and takes the one-way lake re-pin LAST, so a job
+  that fails on config, auth or a conflict leaves the lake where the previous release can still boot it.
+  See `docs/deploy/kind-migration.md` and `docs/notes/discovered/2026-10-15-lab-cutover-lessons.md`.
 - Links that escape the exposed directories fail closed when the directory cannot be read (#681); the
   `rows_get` timeout test is deterministic (#683).
 
@@ -174,6 +188,11 @@ Skill version `0.20.1`. Every consumer that writes pages or reads the tool surfa
   reviewed from the Workbench. The VS Code extension gains a **Scenarios** view (seed-vs-winner diffs over the
   signed-in token, a page is trusted only if it carries the record's result hash), "New scenario comparison"
   and the Compute comparison action, plus Evolve plan review in the native window.
+- **Evolve data rules (#717).** `capture_event` accepts three more owner-gated Evolve control labels,
+  `evolve_rules_propose`, `evolve_rules_test` and `evolve_rules_approve`. They need `mode: run`, approval needs an
+  explicit boolean `confirm` plus the exact test hash the page carries, and they are private to the author and
+  never run by the runner. The Evolve event labels now come from one shared table in `escurel-types`. No wire or
+  lake change.
 - **DuckDB 1.5.6 (#659).** `duckdb` / `libduckdb-sys 1.10506.0`; the image's `DUCKDB_VERSION=v1.5.6`.
   DuckDB extensions are version-locked, so `anofox_optimize` and `gdrive` were rebuilt for 1.5.6 (the erpl
   mirror now serves both). The `gdrive` bake is conditional: when the mirror has no artifact for the pinned
