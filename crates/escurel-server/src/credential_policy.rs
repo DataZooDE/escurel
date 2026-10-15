@@ -148,7 +148,10 @@ impl ServerCredentialPolicy {
         // redirect. `**` can reach any depth: bound it.
         let depth = if recursive { 8 } else { rest.saturating_sub(1) };
         let mut budget = 20_000_usize;
-        if links_escape(&base, depth, &allowed, &mut budget) {
+        // For `**` the depth is only a bound, not what the pattern can reach: a directory below it is
+        // unexamined, so it counts as escaping. For a fixed-depth pattern the levels below `depth`
+        // cannot be matched at all, so they are rightly left alone.
+        if links_escape(&base, depth, recursive, &allowed, &mut budget) {
             return Err(refuse());
         }
         Ok(())
@@ -269,9 +272,12 @@ impl CredentialResolver for ServerCredentialPolicy {
 
 /// Does anything under `dir` (to `depth` levels, without following links) link OUTSIDE `allowed`? A
 /// directory too large to look through counts as escaping: failing closed beats an unbounded walk.
+/// With `cap_is_a_bound` (a `**` pattern, whose reach the depth only limits) a subdirectory below
+/// `depth` counts as escaping too, because nothing looked inside it.
 fn links_escape(
     dir: &Path,
     depth: usize,
+    cap_is_a_bound: bool,
     allowed: &[std::path::PathBuf],
     budget: &mut usize,
 ) -> bool {
@@ -299,8 +305,14 @@ fn links_escape(
                 Ok(target) if allowed.iter().any(|d| target.starts_with(d)) => {}
                 _ => return true,
             }
-        } else if meta.is_dir() && depth > 0 && links_escape(&path, depth - 1, allowed, budget) {
-            return true;
+        } else if meta.is_dir() {
+            if depth == 0 {
+                if cap_is_a_bound {
+                    return true;
+                }
+            } else if links_escape(&path, depth - 1, cap_is_a_bound, allowed, budget) {
+                return true;
+            }
         }
     }
     false
@@ -319,7 +331,7 @@ mod tests {
         std::fs::set_permissions(&hidden, std::fs::Permissions::from_mode(0o000)).unwrap();
         let allowed = [root.path().canonicalize().unwrap()];
         let mut budget = 100;
-        let escaped = links_escape(root.path(), 4, &allowed, &mut budget);
+        let escaped = links_escape(root.path(), 4, false, &allowed, &mut budget);
         std::fs::set_permissions(&hidden, std::fs::Permissions::from_mode(0o755)).unwrap();
         // As root the directory is listable anyway: nothing to assert.
         if running_as_root() {
@@ -334,6 +346,7 @@ mod tests {
         assert!(!links_escape(
             &root.path().join("absent"),
             4,
+            false,
             &allowed,
             &mut budget
         ));
@@ -495,6 +508,38 @@ mod tests {
             none.check_directory("json_dir", &format!("{}/*.json", d.display()))
                 .unwrap_err()
                 .contains("not available")
+        );
+    }
+
+    #[test]
+    fn a_recursive_glob_refuses_a_tree_deeper_than_the_walk_can_vouch_for() {
+        // `**` can reach any depth but the walk stops at the cap: a link out BELOW the cap must not
+        // slip through as "nothing found". The walk fails closed beyond what it looked at.
+        let root = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let d = root.path().join("data");
+        let mut deep = d.clone();
+        for i in 0..10 {
+            deep = deep.join(format!("l{i}"));
+        }
+        std::fs::create_dir_all(&deep).unwrap();
+        std::os::unix::fs::symlink(outside.path(), deep.join("out")).unwrap();
+        let p = policy(|p| p.sql_file_dirs = vec![d.clone()]);
+        assert!(
+            p.check_directory("json_dir", &format!("{}/**/*.json", d.display()))
+                .is_err(),
+            "a link out below the depth cap must be refused, not missed"
+        );
+        // A shallow tree with no link stays accepted (the walk can vouch for all of it).
+        let shallow = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(shallow.path().join("data/a/b")).unwrap();
+        let q = policy(|p| p.sql_file_dirs = vec![shallow.path().join("data")]);
+        assert!(
+            q.check_directory(
+                "json_dir",
+                &format!("{}/data/**/*.json", shallow.path().display())
+            )
+            .is_ok()
         );
     }
 
