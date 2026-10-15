@@ -73,6 +73,10 @@ jobs:
       - name: Release gate tests
         run: bash scripts/test-release-gate.sh
 
+      # The tag name becomes the release version and reaches shell steps: only a plain version may pass.
+      - name: Release version tests
+        run: bash scripts/test-release-version.sh
+
       # rust-toolchain.toml drives the channel + components; rustup
       # honours it automatically on first invocation.
       - name: Install Rust toolchain
