@@ -11,7 +11,7 @@ use duckdb::Connection;
 use escurel_embed::{Embedder, HashEmbedder};
 use escurel_index::snapshot::{
     LakeConfig, LakeUpgradeAction, ObjectStoreSecret, SnapshotError, adopt_lake, attach_lake,
-    lake_upgrade, publish_lake,
+    lake_downgrade, lake_upgrade, publish_lake,
 };
 use escurel_index::{Indexer, Migrator};
 use escurel_storage::{FsStore, LaneStore};
@@ -169,4 +169,67 @@ async fn lake_upgrade_on_a_lake_that_was_never_published_says_so() {
         .await
         .expect("an empty lake is not an error");
     assert_eq!(r.action, LakeUpgradeAction::NoLake);
+}
+
+/// The reverse for a compatible bump: a failed cutover must not strand the previous release (it refuses a lake
+/// pinned at this build's version). Only a declared-compatible target, only from this build's own version.
+#[tokio::test]
+async fn lake_downgrade_walks_the_pin_back_for_a_compatible_version_only() {
+    let l = published_lake().await;
+    let build = i64::from(Migrator::SCHEMA_VERSION);
+    assert_eq!(manifest_version(&l.cfg), build);
+
+    let dry = lake_downgrade(&l.cfg, behind() as u32, true)
+        .await
+        .expect("dry run");
+    assert_eq!(dry.action, LakeUpgradeAction::WouldDowngrade);
+    assert_eq!(manifest_version(&l.cfg), build, "a dry run must not write");
+
+    let done = lake_downgrade(&l.cfg, behind() as u32, false)
+        .await
+        .expect("downgrade");
+    assert_eq!(done.action, LakeUpgradeAction::Downgraded);
+    assert_eq!((done.from, done.to), (build, behind()));
+    assert_eq!(manifest_version(&l.cfg), behind());
+    // The older pin is exactly what this build adopts as-is (the previous image's reader accepts it).
+    let adopted = adopt_lake(&l.cfg, Arc::clone(&l.store), embedder(), TENANT, None)
+        .await
+        .expect("a walked-back lake still adopts")
+        .expect("indexer");
+    assert!(adopted.indexer.resolve("[[customer]]", None).await.is_ok());
+
+    let again = lake_downgrade(&l.cfg, behind() as u32, false)
+        .await
+        .expect("idempotent");
+    assert_eq!(again.action, LakeUpgradeAction::AlreadyCurrent);
+
+    // ... and forward again.
+    let up = lake_upgrade(&l.cfg, false).await.expect("upgrade");
+    assert_eq!(up.action, LakeUpgradeAction::Upgraded);
+    assert_eq!(manifest_version(&l.cfg), build);
+}
+
+#[tokio::test]
+async fn lake_downgrade_refuses_undeclared_targets_and_unknown_lakes_and_writes_nothing() {
+    let l = published_lake().await;
+    let build = i64::from(Migrator::SCHEMA_VERSION);
+    for to in [
+        0_u32,
+        1,
+        Migrator::SCHEMA_VERSION,
+        Migrator::SCHEMA_VERSION + 1,
+    ] {
+        let err = lake_downgrade(&l.cfg, to, false)
+            .await
+            .expect_err("an undeclared target must be refused");
+        assert!(matches!(err, SnapshotError::LakeIncompatible(_)), "{err}");
+        assert_eq!(manifest_version(&l.cfg), build);
+    }
+    // A lake that is neither this build's version nor the target is not rewritten.
+    set_manifest_version(&l.cfg, 0);
+    let err = lake_downgrade(&l.cfg, behind() as u32, false)
+        .await
+        .expect_err("an unknown lake must be refused");
+    assert!(matches!(err, SnapshotError::LakeIncompatible(_)), "{err}");
+    assert_eq!(manifest_version(&l.cfg), 0);
 }

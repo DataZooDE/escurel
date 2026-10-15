@@ -207,3 +207,68 @@ fn an_uncreatable_data_dir_fails_with_a_message_naming_the_env_var() {
         String::from_utf8_lossy(&out.stderr)
     );
 }
+
+/// The reverse of the one-way step, for a compatible bump ONLY: after a failed cutover the previous image refuses
+/// a lake pinned at this build's schema, and `--to <previous>` restores the pin so it boots again.
+#[test]
+fn to_restores_the_previous_compatible_version_idempotently_and_upgrade_goes_forward_again() {
+    let lake = lake_at(i64::from(Migrator::SCHEMA_VERSION));
+    let to = behind().to_string();
+
+    let dry = run(&lake, &["--to", &to, "--dry-run"]);
+    assert!(
+        dry.status.success(),
+        "{}",
+        String::from_utf8_lossy(&dry.stderr)
+    );
+    assert_eq!(json(&dry)["action"], "would_downgrade");
+    assert_eq!(
+        manifest_version(&lake.cfg),
+        i64::from(Migrator::SCHEMA_VERSION),
+        "--dry-run must not write"
+    );
+
+    let done = run(&lake, &["--to", &to]);
+    assert!(
+        done.status.success(),
+        "{}",
+        String::from_utf8_lossy(&done.stderr)
+    );
+    let report = json(&done);
+    assert_eq!(report["action"], "downgraded");
+    assert_eq!(report["from"], i64::from(Migrator::SCHEMA_VERSION));
+    assert_eq!(report["to"], behind());
+    assert_eq!(manifest_version(&lake.cfg), behind());
+
+    let again = run(&lake, &["--to", &to]);
+    assert!(again.status.success());
+    assert_eq!(json(&again)["action"], "already_current");
+
+    // ... and the plain upgrade moves it forward again.
+    let up = run(&lake, &[]);
+    assert!(up.status.success());
+    assert_eq!(json(&up)["action"], "upgraded");
+    assert_eq!(
+        manifest_version(&lake.cfg),
+        i64::from(Migrator::SCHEMA_VERSION)
+    );
+}
+
+#[test]
+fn to_refuses_a_target_that_is_not_a_declared_compatible_version_and_writes_nothing() {
+    let lake = lake_at(i64::from(Migrator::SCHEMA_VERSION));
+    for to in ["0", "1", "11", "abc", "-3"] {
+        let out = run(&lake, &["--to", to]);
+        assert!(!out.status.success(), "--to {to} must be refused");
+        assert_eq!(
+            manifest_version(&lake.cfg),
+            i64::from(Migrator::SCHEMA_VERSION),
+            "a refused --to {to} must not touch the lake"
+        );
+    }
+    // A lake at an UNKNOWN version is not walked back either.
+    let odd = lake_at(0);
+    let out = run(&odd, &["--to", &behind().to_string()]);
+    assert!(!out.status.success());
+    assert_eq!(manifest_version(&odd.cfg), 0);
+}
