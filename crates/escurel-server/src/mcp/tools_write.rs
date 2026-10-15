@@ -2428,12 +2428,16 @@ pub(super) async fn tool_capture_event(
             "event-ACL would hide this idempotent read-back (log mode) — showing"
         );
     }
-    let mut event = if visible || event_acl == crate::server::EventAclMode::Log {
+    let shows_stored = visible || event_acl == crate::server::EventAclMode::Log;
+    let mut event = if shows_stored {
         event_to_json(&stored)
     } else {
         event_to_json(&echoed_event(&stored, &requested))
     };
-    if replayed {
+    // The flag is computed from the stored row, so it is only the caller's to see when the row is:
+    // a hidden collision must read exactly like a first capture, or `replayed` tells a guesser the
+    // id is taken.
+    if replayed && shows_stored {
         event["replayed"] = json!(true);
     }
     if unknown_label {

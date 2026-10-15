@@ -138,6 +138,46 @@ async fn a_hidden_collision_echo_reads_like_a_first_capture() {
     assert!(echo["run_id"].is_null());
 }
 
+/// The hidden-collision echo must not carry `replayed: true`: that flag is computed from the STORED
+/// row before the ACL is applied, so a caller who may not read the row learned the id was taken from
+/// it. The owner's own retry keeps the flag (the positive control).
+#[tokio::test]
+async fn a_hidden_collision_echo_does_not_say_replayed() {
+    let p = start().await;
+    let alice = p.mint_token_with_sub(TENANT, Role::Agent, "alice");
+    let bob = p.mint_token_with_sub(TENANT, Role::Agent, "bob");
+    call(
+        &p,
+        &alice,
+        "capture_event",
+        capture_args("EV-ORACLE", "alice's text"),
+    )
+    .await;
+    let own = call(
+        &p,
+        &alice,
+        "capture_event",
+        capture_args("EV-ORACLE", "alice's text"),
+    )
+    .await;
+    assert_eq!(
+        own["result"]["structuredContent"]["replayed"], true,
+        "the owner's retry is told it was a replay: {own}"
+    );
+    let echo = call(
+        &p,
+        &bob,
+        "capture_event",
+        capture_args("EV-ORACLE", "bob's text"),
+    )
+    .await;
+    let echo = &echo["result"]["structuredContent"];
+    assert!(
+        echo.get("replayed").is_none(),
+        "a caller who may not read the stored row must not learn the id was taken: {echo}"
+    );
+}
+
 #[tokio::test]
 async fn inbox_does_not_leak_another_callers_capture() {
     let p = start().await;
