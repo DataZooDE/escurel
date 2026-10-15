@@ -264,6 +264,8 @@ async fn cmd_lake_upgrade(args: &[String]) -> Result<(), Box<dyn std::error::Err
                 .into(),
         );
     };
+    // First step of the migration job on a FRESH volume: nothing has created the data dir / DuckDB home yet.
+    config.ensure_data_dir()?;
     let _lease = if lake.is_pg_catalog() && !dry_run {
         match escurel_index::snapshot::WriterLease::acquire(&lake.catalog_dsn).await {
             Ok(Some(lease)) => Some(lease),

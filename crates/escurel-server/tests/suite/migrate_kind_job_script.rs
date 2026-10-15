@@ -250,3 +250,52 @@ async fn a_ducklake_job_refuses_a_lake_newer_than_the_build_and_migrates_nothing
         "nothing may be migrated when the lake step refuses"
     );
 }
+
+/// The lab cutover of 2026-10-15: the Job's data dir (also its `HOME`) is a FRESH emptyDir path that does not
+/// exist yet, and the first step (`lake-upgrade`) died with `Can't find the home directory`. The job must get
+/// past that first step on a volume nothing has created.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_ducklake_job_gets_past_lake_upgrade_on_a_fresh_volume() {
+    let seed_dir = TempDir::new().unwrap();
+    let lake_dir = TempDir::new().unwrap();
+    let cfg = local_lake(lake_dir.path());
+    publish_a_lake_from_a_kind_lane(seed_dir.path(), &cfg).await;
+    make_lake_old(&cfg, 9);
+
+    let fresh = TempDir::new().unwrap();
+    let data = fresh.path().join("escurel");
+    assert!(!data.exists());
+    let out = tokio::task::spawn_blocking({
+        let (d, c) = (data.clone(), cfg.clone());
+        move || {
+            job(
+                &d,
+                900,
+                &[
+                    ("ESCUREL_INDEX_BACKEND", "ducklake"),
+                    ("ESCUREL_ROLE", "writer"),
+                    ("ESCUREL_DUCKLAKE_CATALOG_DSN", &c.catalog_dsn),
+                    ("ESCUREL_DUCKLAKE_DATA_PATH", &c.data_path),
+                    ("HOME", d.to_str().unwrap()),
+                ],
+            )
+            .0
+        }
+    })
+    .await
+    .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !stderr.contains("Can't find the home directory"),
+        "the job tripped on the missing home on a fresh volume\nstderr: {stderr}"
+    );
+    assert!(
+        stdout.contains("\"upgraded\""),
+        "lake-upgrade must have run and upgraded the lake\nstdout: {stdout}\nstderr: {stderr}"
+    );
+    assert_eq!(
+        lake_count(&cfg, "SELECT schema_version FROM lake.escurel_manifest"),
+        10
+    );
+}

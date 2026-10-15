@@ -67,6 +67,10 @@ fn run(lake: &Lake, args: &[&str]) -> Output {
         .env("ESCUREL_INDEX_BACKEND", "ducklake")
         .env("ESCUREL_DUCKLAKE_CATALOG_DSN", &lake.cfg.catalog_dsn)
         .env("ESCUREL_DUCKLAKE_DATA_PATH", &lake.cfg.data_path)
+        .env(
+            "ESCUREL_SERVER_DATA_DIR",
+            lake._dir.path().join("server-data"),
+        )
         .output()
         .expect("run escurel-server lake-upgrade")
 }
@@ -149,4 +153,57 @@ fn needs_a_lake_configuration() {
         .unwrap();
     assert!(!out.status.success());
     assert!(String::from_utf8_lossy(&out.stderr).contains("ESCUREL_INDEX_BACKEND=ducklake"));
+}
+
+/// The lab cutover of 2026-10-15 died on its very first step in a k8s Job: the pod's HOME and
+/// `ESCUREL_SERVER_DATA_DIR` are `/tmp/escurel` on a FRESH emptyDir, nothing has ever created it
+/// (only a booting server does), and DuckDB refuses to open with
+/// `Can't find the home directory at '/tmp/escurel'`. The command is the first thing the job runs, so it
+/// must create the data dir (and the DuckDB home) itself.
+#[test]
+fn upgrades_on_a_fresh_volume_where_the_data_dir_and_home_do_not_exist_yet() {
+    let lake = lake_at(behind());
+    let fresh = TempDir::new().unwrap();
+    let data_dir = fresh.path().join("escurel");
+    assert!(!data_dir.exists());
+
+    let out = cargo_bin()
+        .arg("lake-upgrade")
+        .env("ESCUREL_INDEX_BACKEND", "ducklake")
+        .env("ESCUREL_DUCKLAKE_CATALOG_DSN", &lake.cfg.catalog_dsn)
+        .env("ESCUREL_DUCKLAKE_DATA_PATH", &lake.cfg.data_path)
+        .env("ESCUREL_SERVER_DATA_DIR", &data_dir)
+        .env("HOME", &data_dir)
+        .output()
+        .expect("run escurel-server lake-upgrade");
+    assert!(
+        out.status.success(),
+        "a fresh volume must not break the first job step: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(json(&out)["action"], "upgraded");
+    assert!(data_dir.is_dir(), "the data dir is created by the command");
+}
+
+#[test]
+fn an_uncreatable_data_dir_fails_with_a_message_naming_the_env_var() {
+    let lake = lake_at(behind());
+    let fresh = TempDir::new().unwrap();
+    // A regular file where a directory is needed: creating `<file>/escurel` must fail.
+    let blocker = fresh.path().join("blocker");
+    std::fs::write(&blocker, b"x").unwrap();
+    let out = cargo_bin()
+        .arg("lake-upgrade")
+        .env("ESCUREL_INDEX_BACKEND", "ducklake")
+        .env("ESCUREL_DUCKLAKE_CATALOG_DSN", &lake.cfg.catalog_dsn)
+        .env("ESCUREL_DUCKLAKE_DATA_PATH", &lake.cfg.data_path)
+        .env("ESCUREL_SERVER_DATA_DIR", blocker.join("escurel"))
+        .output()
+        .expect("run escurel-server lake-upgrade");
+    assert!(!out.status.success());
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("ESCUREL_SERVER_DATA_DIR"),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
 }
