@@ -11,7 +11,7 @@ re-cuts append `.N`), matching the DataZoo release scheme (cf. erpl).
 **Read first:** [`docs/deploy/kind-migration.md`](docs/deploy/kind-migration.md) (stop-first upgrade, backup,
 rollback) and the consumer checklist in
 [`.claude/skills/escurel-platform/CHANGELOG.md`](.claude/skills/escurel-platform/CHANGELOG.md) (0.7.0 – 0.18.1).
-Skill version `0.21.1`. Every consumer that writes pages or reads the tool surface moves in the same window.
+Skill version `0.22.0`. Every consumer that writes pages or reads the tool surface moves in the same window.
 
 ### Fixed
 
@@ -152,6 +152,15 @@ Skill version `0.21.1`. Every consumer that writes pages or reads the tool surfa
 
 ### Added
 
+- **`admin_purge_events` / `escurel admin purge-events` / `AdminClient::purge_events` (#731).** An audited
+  retention tool for one event label: a dry run unless `apply`, refused without a bound (`before_ts` and/or
+  `keep_latest`), protected audit labels need `allow_protected`, and an applied purge leaves an
+  `escurel:event-purge` event. 87 tools now. Use it to clear a heartbeat backlog on a lake that never ran the
+  keep-50 prune.
+- **`migrate-kind --rename-field OLD=NEW` (#728, job env `ESCUREL_MIGRATE_KIND_RENAME`)** renames a domain
+  field that collides with the page-kind key (a `kind:` data field) while the pages migrate; see
+  [`docs/deploy/kind-migration.md`](docs/deploy/kind-migration.md).
+
 - **A skill can declare an Overview tile (#700).** `overview: {tile, status_field, delayed_when, sort_field?}` in a
   skill's frontmatter names a status field and the values that count as delayed; the VS Code Overview board shows
   one tile per declaring skill ("N delayed", the top three by `sort_field`, each opening the instance). It is
@@ -250,6 +259,14 @@ Skill version `0.21.1`. Every consumer that writes pages or reads the tool surfa
 
 ### Operators
 
+- **Events on an attached Postgres catalog run inside Postgres (#729).** `list_inbox`, paged `list_events`,
+  `capture_event` and both prunes no longer read the whole `escurel_events` table through the scanner
+  (5,003 rows read for `list_inbox(5)` over 5,000 hidden heartbeats, now 2); attach creates the supporting
+  indexes. Pruning a 59k-row backlog on a clone took 1.1 s. See
+  `docs/notes/discovered/2026-10-16-events-table-read-in-full-on-attached-postgres.md`.
+- **`ESCUREL_RUNNER_STATUS_INTERVAL` defaults to 5 minutes (was 30 s) (#730).** The real lake-churn amplifier is
+  heartbeat rate x `ESCUREL_SNAPSHOT_KEEP` (2100 snapshots cover ~11 h at 30 s); compaction + GC already bound
+  the catalog. Set the variable explicitly if you depend on the old cadence.
 - **`/readyz` reports quarantine** without failing: still 200 (so the migration can run) with
   `x-escurel-quarantined: 1` and a JSON `notices` body; new metrics `escurel_tenant_quarantined{tenant}`,
   `escurel_migration_pending`, `escurel_semantic_search_enabled`, `escurel_egress_total{outcome}`,
