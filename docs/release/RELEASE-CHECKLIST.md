@@ -35,6 +35,10 @@ the SemVer-normalised number (`2026.10.14` → `2026.10.14`; leading zeros strip
 
 ## 2. The tag (owner go required)
 
+The tag name must be a plain version: `vYYYY.MM.DD`, a same-day re-cut `vYYYY.MM.DD.N`, or a pre-release such
+as `vYYYY.MM.DD-rc1`. `scripts/release-version.sh` (tested by `scripts/test-release-version.sh`) refuses anything
+else before it reaches a shell step.
+
 Draft the annotated tag message from the CHANGELOG section. It MUST contain the word `BREAKING` when the
 section does (the release job checks it). Suggested opening paragraph for the first release after the
 `kind:` cut:
@@ -63,6 +67,9 @@ git push origin "$TAG"          # if SSH is unavailable: git push https://github
 4. **VSIX**: the GitHub Release carries the file. Publishing it to a marketplace (VS Marketplace / Open VSX)
    needs the owner's explicit go and a publisher token; it is not part of `release.yml`.
 5. **Consumers** (each moves in the same window as the engine; see `docs/deploy/consumer-rollout.md`):
+   - (State on 2026-10-15: the lab already runs escurel `c9b035c1190e` and agent-template #359 (`fa6548854003`);
+     the lab move that proved `kind-migration.md` is `docs/notes/discovered/2026-10-15-lab-cutover-lessons.md`.
+     The tag window then only re-pins the lab values to `:$TAG`.)
    - hetzner lab: escurel image `:$TAG` with anofox_optimize + gdrive 1.5.6, agent-template (PR #359, writes
      `kind:` pages) in the same window, then `escurel admin migrate-kind` per tenant
      (`docs/deploy/kind-migration.md`); the lab owns its values PR (ADR-0016).
