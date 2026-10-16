@@ -176,6 +176,10 @@ async fn agent_role_is_rejected_from_every_admin_tool() {
             "admin_delete_chat_history",
             json!({"chat_group_id": "room-1"}),
         ),
+        (
+            "admin_purge_events",
+            json!({"label_skill": "escurel:runner-status", "keep_latest": 0, "apply": true}),
+        ),
     ] {
         let body = call(&p, Role::Agent, name, args).await;
         let err = body
@@ -228,5 +232,148 @@ async fn admin_lane_tools_over_mcp() {
     let denied = call(&p, Role::Agent, "admin_list_lanes", json!({})).await;
     assert!(denied.get("error").is_some(), "agent denied: {denied}");
 
+    p.shutdown().await;
+}
+
+async fn capture_status(p: &EscurelProcess, n: u32) {
+    let body = call(
+        p,
+        Role::Admin,
+        "capture_event",
+        json!({ "kind": "system", "source": "escurel-runner", "mime": "application/json",
+                "label_skill": "escurel:runner-status", "title": "heartbeat",
+                "at": format!("2026-09-{n:02}T10:00:00Z"), "body": json!({ "n": n }).to_string() }),
+    )
+    .await;
+    assert!(body.get("error").is_none(), "capture failed: {body}");
+}
+
+async fn status_rows(p: &EscurelProcess) -> usize {
+    let body = call(
+        p,
+        Role::Admin,
+        "list_events",
+        json!({ "label_skill": "escurel:runner-status", "limit": 1000 }),
+    )
+    .await;
+    body["result"]["structuredContent"]["events"]
+        .as_array()
+        .unwrap()
+        .len()
+}
+
+#[tokio::test]
+async fn admin_purge_events_counts_by_default_then_deletes_what_it_counted() {
+    let p = start().await;
+    for n in 1..=10 {
+        capture_status(&p, n).await;
+    }
+
+    // The default is a dry run: counted, nothing deleted.
+    let dry = call(
+        &p,
+        Role::Admin,
+        "admin_purge_events",
+        json!({"label_skill": "escurel:runner-status", "before_ts": "2026-09-06T00:00:00Z", "keep_latest": 2}),
+    )
+    .await;
+    assert!(dry.get("error").is_none(), "dry run: {dry}");
+    let d = &dry["result"]["structuredContent"];
+    assert_eq!(
+        (
+            d["total"].as_u64(),
+            d["matched"].as_u64(),
+            d["deleted"].as_u64()
+        ),
+        (Some(10), Some(5), Some(0))
+    );
+    assert_eq!(d["dry_run"], true);
+    assert_eq!(status_rows(&p).await, 10);
+
+    let done = call(
+        &p,
+        Role::Admin,
+        "admin_purge_events",
+        json!({"label_skill": "escurel:runner-status", "before_ts": "2026-09-06T00:00:00Z",
+               "keep_latest": 2, "apply": true}),
+    )
+    .await;
+    let r = &done["result"]["structuredContent"];
+    assert_eq!(
+        (
+            r["matched"].as_u64(),
+            r["deleted"].as_u64(),
+            r["dry_run"].as_bool()
+        ),
+        (Some(5), Some(5), Some(false))
+    );
+    let audit = r["audit_event_id"].as_str().expect("audit event id");
+    assert_eq!(status_rows(&p).await, 5);
+
+    // The trail is a system event under its own label.
+    let trail = call(
+        &p,
+        Role::Admin,
+        "list_events",
+        json!({ "label_skill": "escurel:event-purge", "include_system": true }),
+    )
+    .await;
+    let ev = &trail["result"]["structuredContent"]["events"][0];
+    assert_eq!(ev["event_id"], audit);
+    p.shutdown().await;
+}
+
+#[tokio::test]
+async fn admin_purge_events_refuses_an_unbounded_or_audit_or_foreign_request() {
+    let p = start().await;
+    capture_status(&p, 1).await;
+    let refused = |body: &Value, needle: &str| {
+        let msg = body["error"]["message"]
+            .as_str()
+            .unwrap_or_default()
+            .to_owned();
+        assert!(msg.contains(needle), "expected `{needle}` in: {body}");
+    };
+    // No bound: never "every row of the label" by omission.
+    let r = call(
+        &p,
+        Role::Admin,
+        "admin_purge_events",
+        json!({"label_skill": "escurel:runner-status", "apply": true}),
+    )
+    .await;
+    refused(&r, "before_ts and/or keep_latest");
+    // An audit label needs allow_protected.
+    let r = call(
+        &p,
+        Role::Admin,
+        "admin_purge_events",
+        json!({"label_skill": "escurel:write-back", "keep_latest": 0, "apply": true}),
+    )
+    .await;
+    refused(&r, "audit trail");
+    // A malformed cutoff.
+    let r = call(
+        &p,
+        Role::Admin,
+        "admin_purge_events",
+        json!({"label_skill": "x", "before_ts": "yesterday"}),
+    )
+    .await;
+    refused(&r, "RFC 3339");
+    // A foreign tenant.
+    let r = call(
+        &p,
+        Role::Admin,
+        "admin_purge_events",
+        json!({"tenant_id": "someone-else", "label_skill": "x", "keep_latest": 0}),
+    )
+    .await;
+    refused(&r, "does not match");
+    assert_eq!(
+        status_rows(&p).await,
+        1,
+        "nothing was deleted by any refused request"
+    );
     p.shutdown().await;
 }

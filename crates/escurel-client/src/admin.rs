@@ -36,11 +36,11 @@ pub use escurel_types::{
     AttachExternalRequest, AttachExternalResponse, AuditRequest, AuditResponse,
     CompactLanesRequest, CompactProgress, DeleteChatHistoryRequest, DeleteChatHistoryResponse,
     EmbeddingReloadRequest, EmbeddingReloadResponse, ExportPackRequest, HealthRequest,
-    HealthResponse, MigrateKindReport, MigrateKindRequest, PackManifest, QuotaGetRequest,
-    QuotaGetResponse, RebuildProgress, RebuildRequest, TenantCreateRequest, TenantCreateResponse,
-    TenantDeleteRequest, TenantDeleteResponse, TenantExportRequest, TenantGetRequest,
-    TenantGetResponse, TenantImportResponse, TenantListRequest, TenantListResponse,
-    TenantUpdateRequest, TenantUpdateResponse,
+    HealthResponse, MigrateKindReport, MigrateKindRequest, PackManifest, PurgeEventsRequest,
+    PurgeEventsResponse, QuotaGetRequest, QuotaGetResponse, RebuildProgress, RebuildRequest,
+    TenantCreateRequest, TenantCreateResponse, TenantDeleteRequest, TenantDeleteResponse,
+    TenantExportRequest, TenantGetRequest, TenantGetResponse, TenantImportResponse,
+    TenantListRequest, TenantListResponse, TenantUpdateRequest, TenantUpdateResponse,
 };
 
 /// Typed MCP-over-HTTP client for the Escurel v1 **admin** surface.
@@ -192,6 +192,27 @@ impl AdminClient {
         self.transport
             .call_typed("admin_delete_chat_history", args)
             .await
+    }
+
+    /// Purge one label's events by age and/or count (retention for the
+    /// event bus). A dry run unless `req.apply`; see [`PurgeEventsRequest`].
+    pub async fn purge_events(
+        &self,
+        req: PurgeEventsRequest,
+    ) -> Result<PurgeEventsResponse, Error> {
+        let mut args = json!({
+            "tenant_id": req.tenant_id,
+            "label_skill": req.label_skill,
+            "apply": req.apply,
+            "allow_protected": req.allow_protected,
+        });
+        if !req.before_ts.is_empty() {
+            args["before_ts"] = json!(req.before_ts);
+        }
+        if let Some(n) = req.keep_latest {
+            args["keep_latest"] = json!(n);
+        }
+        self.transport.call_typed("admin_purge_events", args).await
     }
 
     /// Attach an external read-only source to the gateway's tenant. The

@@ -812,3 +812,159 @@ fn reopening_a_pre_lineage_events_file_gains_the_columns_once() {
     }
     let _ = Connection::open(&path).expect("third open is clean too");
 }
+
+// --- purge_events (an operator's retention tool) ---------------------------
+
+fn status_event(i: u32) -> NewEvent {
+    NewEvent {
+        at: Some(format!("2026-09-{:02}T10:00:00Z", i)),
+        source: "escurel-runner".to_owned(),
+        mime: "application/json".to_owned(),
+        label_skill: "escurel:runner-status".to_owned(),
+        title: "heartbeat".to_owned(),
+        body: format!("{{\"n\":{i}}}"),
+        kind: escurel_index::EventKind::System,
+        ..Default::default()
+    }
+}
+
+async fn label_titles(h: &Harness, label: &str) -> Vec<String> {
+    let page = h
+        .indexer
+        .list_events_filtered_page(
+            &escurel_index::EventListFilter {
+                label_skill: Some(label.to_owned()),
+                include_system: true,
+                ..Default::default()
+            },
+            true,
+            1000,
+            None,
+        )
+        .await
+        .unwrap();
+    page.events.into_iter().map(|e| e.body).collect()
+}
+
+#[tokio::test]
+async fn a_dry_run_counts_and_deletes_nothing_then_apply_deletes_exactly_that() {
+    let h = fresh_harness();
+    for i in 1..=10 {
+        h.indexer.capture_event(status_event(i)).await.unwrap();
+    }
+    h.indexer.capture_event(gmail_event()).await.unwrap();
+    let spec = escurel_index::PurgeSpec::new(
+        "escurel:runner-status",
+        Some("2026-09-06T00:00:00Z"),
+        Some(2),
+        false,
+    )
+    .unwrap();
+
+    let dry = h.indexer.purge_events(&spec, false).await.unwrap();
+    assert_eq!(
+        (dry.total, dry.matched, dry.kept, dry.deleted),
+        (10, 5, 5, 0)
+    );
+    assert!(dry.dry_run && dry.audit_event_id.is_none());
+    assert_eq!(
+        label_titles(&h, "escurel:runner-status").await.len(),
+        10,
+        "nothing deleted"
+    );
+
+    let done = h.indexer.purge_events(&spec, true).await.unwrap();
+    assert_eq!((done.matched, done.kept, done.deleted), (5, 5, 5));
+    assert!(!done.dry_run);
+    let left = label_titles(&h, "escurel:runner-status").await;
+    assert_eq!(left.len(), 5, "days 6-10 remain: {left:?}");
+    assert!(
+        left.iter()
+            .all(|b| !b.contains("\"n\":1}") && !b.contains("\"n\":5}"))
+    );
+    assert_eq!(
+        h.indexer.list_inbox(None).await.unwrap().len(),
+        1,
+        "other labels untouched"
+    );
+
+    // The purge leaves a trail under its own label.
+    let audit = done.audit_event_id.expect("audit event id");
+    let trail = h
+        .indexer
+        .get_event(&audit)
+        .await
+        .unwrap()
+        .expect("audit event stored");
+    assert_eq!(trail.label_skill, "escurel:event-purge");
+    assert!(trail.body.contains("\"deleted\":5"), "{}", trail.body);
+
+    // A second apply finds nothing to do and writes no further trail.
+    let again = h.indexer.purge_events(&spec, true).await.unwrap();
+    assert_eq!((again.matched, again.deleted), (0, 0));
+    assert!(again.audit_event_id.is_none());
+}
+
+#[tokio::test]
+async fn keep_latest_alone_keeps_the_newest_n_and_zero_means_all() {
+    let h = fresh_harness();
+    for i in 1..=6 {
+        h.indexer.capture_event(status_event(i)).await.unwrap();
+    }
+    let keep3 =
+        escurel_index::PurgeSpec::new("escurel:runner-status", None, Some(3), false).unwrap();
+    let r = h.indexer.purge_events(&keep3, true).await.unwrap();
+    assert_eq!((r.matched, r.deleted, r.kept), (3, 3, 3));
+    let left = label_titles(&h, "escurel:runner-status").await;
+    assert!(
+        left.iter()
+            .all(|b| b.contains("\"n\":4}") || b.contains("\"n\":5}") || b.contains("\"n\":6}")),
+        "{left:?}"
+    );
+
+    let all = escurel_index::PurgeSpec::new("escurel:runner-status", None, Some(0), false).unwrap();
+    let r = h.indexer.purge_events(&all, true).await.unwrap();
+    assert_eq!((r.matched, r.deleted, r.kept), (3, 3, 0));
+}
+
+#[test]
+fn a_purge_request_must_be_bounded_named_and_not_an_audit_label_by_accident() {
+    use escurel_index::PurgeSpec;
+    assert!(
+        PurgeSpec::new("", None, Some(1), false)
+            .unwrap_err()
+            .contains("label_skill")
+    );
+    assert!(
+        PurgeSpec::new("escurel:runner-status", None, None, false)
+            .unwrap_err()
+            .contains("before_ts and/or keep_latest"),
+        "omission must not mean 'every row'"
+    );
+    for audit in [
+        "escurel:write-back",
+        "escurel:kind-migration",
+        "escurel:event-purge",
+    ] {
+        assert!(
+            PurgeSpec::new(audit, None, Some(0), false)
+                .unwrap_err()
+                .contains("audit trail")
+        );
+        assert!(
+            PurgeSpec::new(audit, None, Some(0), true).is_ok(),
+            "named explicitly"
+        );
+    }
+    assert!(
+        PurgeSpec::new("x", Some("yesterday"), None, false)
+            .unwrap_err()
+            .contains("RFC 3339")
+    );
+    let s = PurgeSpec::new("x", Some("2026-10-01T02:00:00+02:00"), None, false).unwrap();
+    assert_eq!(
+        s.before.as_deref(),
+        Some("2026-10-01 00:00:00.000000"),
+        "normalised to UTC"
+    );
+}

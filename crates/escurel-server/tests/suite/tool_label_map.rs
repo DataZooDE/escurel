@@ -38,6 +38,7 @@ const EXPECTED: &[&str] = &[
     "admin_lane_blob:deterministic",
     "admin_lane_keys:deterministic",
     "admin_list_lanes:deterministic",
+    "admin_purge_events:orchestration",
     "admin_quota:orchestration",
     "admin_webhook_deliveries:orchestration",
     "append_message:orchestration",

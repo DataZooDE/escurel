@@ -9,8 +9,9 @@ use clap::{Args, Subcommand};
 use escurel_client::{
     AdminClient, AttachExternalRequest, AuditRequest, CompactLanesRequest,
     DeleteChatHistoryRequest, EmbeddingReloadRequest, ExportPackRequest, HealthRequest,
-    MigrateKindRequest, QuotaGetRequest, RebuildRequest, TenantCreateRequest, TenantDeleteRequest,
-    TenantExportRequest, TenantGetRequest, TenantListRequest, TenantSpec, TenantUpdateRequest,
+    MigrateKindRequest, PurgeEventsRequest, QuotaGetRequest, RebuildRequest, TenantCreateRequest,
+    TenantDeleteRequest, TenantExportRequest, TenantGetRequest, TenantListRequest, TenantSpec,
+    TenantUpdateRequest,
 };
 use serde_json::{Value, json};
 
@@ -38,6 +39,10 @@ pub enum AdminCmd {
     /// GDPR erasure / retention prune of chat history. Empty filters
     /// compose with AND; all empty = full-tenant wipe.
     DeleteChatHistory(DeleteChatArgs),
+    /// Purge one label's events by age and/or count (event-bus retention).
+    /// A dry run unless `--apply`; give `--before` and/or `--keep-latest`
+    /// (`--keep-latest 0` purges the whole label).
+    PurgeEvents(PurgeEventsArgs),
     /// Attach an external read-only source to a tenant.
     AttachExternal {
         #[arg(long)]
@@ -275,6 +280,27 @@ pub enum TenantCmd {
 }
 
 #[derive(Args, Debug)]
+pub struct PurgeEventsArgs {
+    #[arg(long)]
+    pub tenant: String,
+    /// The label whose events are purged, e.g. `escurel:runner-status`.
+    #[arg(long)]
+    pub label: String,
+    /// Only events older than this (RFC 3339).
+    #[arg(long)]
+    pub before: Option<String>,
+    /// Keep the newest N events of the label whatever their age.
+    #[arg(long)]
+    pub keep_latest: Option<u32>,
+    /// Delete for real (default: count only).
+    #[arg(long)]
+    pub apply: bool,
+    /// Allow purging an audit label (`escurel:write-back`, ...).
+    #[arg(long)]
+    pub allow_protected: bool,
+}
+
+#[derive(Args, Debug)]
 pub struct DeleteChatArgs {
     #[arg(long)]
     pub tenant: String,
@@ -368,6 +394,27 @@ pub async fn run(client: &AdminClient, cmd: AdminCmd) -> Result<Value> {
                 })
                 .await?;
             Ok(json!({ "deleted": r.deleted }))
+        }
+        AdminCmd::PurgeEvents(a) => {
+            let r = client
+                .purge_events(PurgeEventsRequest {
+                    tenant_id: a.tenant,
+                    label_skill: a.label,
+                    before_ts: a.before.unwrap_or_default(),
+                    keep_latest: a.keep_latest,
+                    apply: a.apply,
+                    allow_protected: a.allow_protected,
+                })
+                .await?;
+            Ok(json!({
+                "label_skill": r.label_skill,
+                "total": r.total,
+                "matched": r.matched,
+                "kept": r.kept,
+                "deleted": r.deleted,
+                "dry_run": r.dry_run,
+                "audit_event_id": r.audit_event_id,
+            }))
         }
         AdminCmd::AttachExternal { tenant, source_url } => {
             let r = client

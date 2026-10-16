@@ -161,6 +161,108 @@ pub struct ExpiredGatewayRun {
     pub instance_page_id: Option<String>,
 }
 
+/// The label of the audit event a purge leaves behind.
+pub const EVENT_PURGE_LABEL: &str = "escurel:event-purge";
+
+/// Labels whose rows are the engine's own audit trail: a purge refuses them
+/// unless the caller says so explicitly.
+pub const PROTECTED_EVENT_LABELS: [&str; 3] = [
+    "escurel:write-back",
+    crate::migrate_kind::KIND_MIGRATION_LABEL,
+    EVENT_PURGE_LABEL,
+];
+
+/// A validated request to purge one label's events (see
+/// [`Indexer::purge_events`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PurgeSpec {
+    pub label_skill: String,
+    /// `YYYY-MM-DD HH:MM:SS[.ffffff]` (UTC): only rows older than this.
+    pub before: Option<String>,
+    /// Keep the newest N rows of the label whatever their age.
+    pub keep_latest: Option<usize>,
+}
+
+impl PurgeSpec {
+    /// Validate a purge request. A purge must name a label and bound itself
+    /// by age, by count, or both (it never means "every row of the label"
+    /// by omission); an audit label needs `allow_protected`.
+    ///
+    /// # Errors
+    /// A message for the caller when the request is not acceptable.
+    pub fn new(
+        label_skill: &str,
+        before_rfc3339: Option<&str>,
+        keep_latest: Option<usize>,
+        allow_protected: bool,
+    ) -> Result<Self, String> {
+        let label = label_skill.trim();
+        if label.is_empty() {
+            return Err("label_skill is required".to_owned());
+        }
+        if before_rfc3339.is_none() && keep_latest.is_none() {
+            return Err(
+                "give before_ts and/or keep_latest: a purge never deletes a whole label by omission (use keep_latest: 0 to mean exactly that)"
+                    .to_owned(),
+            );
+        }
+        if !allow_protected && PROTECTED_EVENT_LABELS.contains(&label) {
+            return Err(format!(
+                "`{label}` is the engine's own audit trail; pass allow_protected: true to purge it"
+            ));
+        }
+        let before = match before_rfc3339 {
+            None => None,
+            Some(raw) => {
+                let dt = chrono::DateTime::parse_from_rfc3339(raw).map_err(|e| {
+                    format!("before_ts must be RFC 3339 (e.g. 2026-10-01T00:00:00Z): {e}")
+                })?;
+                Some(
+                    dt.with_timezone(&chrono::Utc)
+                        .format("%Y-%m-%d %H:%M:%S%.6f")
+                        .to_string(),
+                )
+            }
+        };
+        Ok(Self {
+            label_skill: label.to_owned(),
+            before,
+            keep_latest,
+        })
+    }
+}
+
+/// What a purge counted (and, when applied, deleted).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct PurgeEventsReport {
+    pub label_skill: String,
+    /// Rows of the label before the purge.
+    pub total: u64,
+    /// Rows the request selects for deletion.
+    pub matched: u64,
+    /// Rows that remain (or would remain on a dry run).
+    pub kept: u64,
+    /// Rows actually deleted: `matched` when applied, `0` on a dry run.
+    pub deleted: u64,
+    pub dry_run: bool,
+    /// The system event a non-empty applied purge leaves behind.
+    pub audit_event_id: Option<String>,
+}
+
+impl PurgeEventsReport {
+    fn new(spec: &PurgeSpec, total: u64, matched: u64, apply: bool) -> Self {
+        Self {
+            label_skill: spec.label_skill.clone(),
+            total,
+            matched,
+            kept: total.saturating_sub(matched),
+            deleted: if apply { matched } else { 0 },
+            dry_run: !apply,
+            audit_event_id: None,
+        }
+    }
+}
+
 /// The default list surfaces' filter: bookkeeping stays out of a human's
 /// (or an agent's) view unless asked for with `include_system`.
 const HIDE_SYSTEM: &str = "COALESCE(kind, 'user') <> 'system'";
@@ -1161,6 +1263,148 @@ impl Indexer {
             Some(t) => conn.execute(&sql, params![label_skill, t, label_skill, t])?,
         };
         Ok(())
+    }
+
+    /// Purge one label's events (an operator's retention tool): the rows
+    /// of `spec.label_skill` older than `spec.before`, except the newest
+    /// `spec.keep_latest`. Counts first; deletes only when `apply`. Scoped
+    /// to this tenant on the shared backends. On the attached-Postgres
+    /// table both the count and the delete run inside Postgres.
+    ///
+    /// # Errors
+    /// When the count or the delete fails.
+    pub async fn purge_events(
+        &self,
+        spec: &PurgeSpec,
+        apply: bool,
+    ) -> Result<PurgeEventsReport, IndexerError> {
+        let mut report = self.purge_events_counted(spec, apply).await?;
+        if apply && report.deleted > 0 {
+            // The purge is itself an operator action worth a trail: a system
+            // event under its own (protected) label, with the report as body.
+            let body = serde_json::to_string(&report)?;
+            let event = self
+                .capture_event(NewEvent {
+                    source: "escurel".to_owned(),
+                    mime: "application/json".to_owned(),
+                    label_skill: EVENT_PURGE_LABEL.to_owned(),
+                    title: format!("events purged: {}", report.label_skill),
+                    body,
+                    kind: EventKind::System,
+                    ..NewEvent::default()
+                })
+                .await?;
+            report.audit_event_id = Some(event.event_id);
+        }
+        Ok(report)
+    }
+
+    async fn purge_events_counted(
+        &self,
+        spec: &PurgeSpec,
+        apply: bool,
+    ) -> Result<PurgeEventsReport, IndexerError> {
+        let table = self.events_table();
+        let tenant = self.events_tenant_scope().map(str::to_owned);
+        let alias = match self.events_backend() {
+            EventsBackend::AttachedPostgres { alias } => Some(alias),
+            _ => None,
+        };
+        // `native` spells the table unqualified (it runs inside Postgres)
+        // and casts the cutoff with Postgres' own `CAST`.
+        let build = |native: bool| -> (String, String, Vec<Bind>) {
+            let tbl = if native {
+                EVENTS_PG_TABLE_NAME.to_owned()
+            } else {
+                table.clone()
+            };
+            let mut scope = vec!["label_skill = ?".to_owned()];
+            let mut binds = vec![Bind::Str(spec.label_skill.clone())];
+            if let Some(t) = &tenant {
+                scope.push("tenant = ?".to_owned());
+                binds.push(Bind::Str(t.clone()));
+            }
+            let all_of_label = scope.join(" AND ");
+            let mut clauses = scope.clone();
+            if let Some(before) = &spec.before {
+                clauses.push(if native {
+                    "at_ts < CAST(? AS timestamp)".to_owned()
+                } else {
+                    "at_ts < TRY_CAST(? AS TIMESTAMP)".to_owned()
+                });
+                binds.push(Bind::Str(before.clone()));
+            }
+            if let Some(n) = spec.keep_latest {
+                clauses.push(format!(
+                    "event_id NOT IN (SELECT event_id FROM {tbl} WHERE {all_of_label} \
+                     ORDER BY at_ts DESC NULLS LAST, event_id DESC LIMIT {n})"
+                ));
+                binds.push(Bind::Str(spec.label_skill.clone()));
+                if let Some(t) = &tenant {
+                    binds.push(Bind::Str(t.clone()));
+                }
+            }
+            (all_of_label, clauses.join(" AND "), binds)
+        };
+
+        let conn = self.conn.lock().await;
+        if let Some(alias) = &alias {
+            let (all_sql, match_sql, binds) = build(true);
+            let all_binds = &binds[..(if tenant.is_some() { 2 } else { 1 })];
+            if let (Some(all_rendered), Some(match_rendered)) = (
+                pg_native::render(&all_sql, all_binds),
+                pg_native::render(&match_sql, &binds),
+            ) {
+                let count = |where_sql: &str| -> Result<u64, IndexerError> {
+                    let inner =
+                        format!("SELECT count(*) FROM {EVENTS_PG_TABLE_NAME} WHERE {where_sql}");
+                    let q = format!(
+                        "SELECT * FROM postgres_query('{alias}', {})",
+                        pg_native::duckdb_string(&inner)
+                    );
+                    let n: i64 = conn.query_row(&q, [], |r| r.get(0))?;
+                    Ok(u64::try_from(n).unwrap_or(0))
+                };
+                let total = count(&all_rendered)?;
+                let matched = count(&match_rendered)?;
+                if apply && matched > 0 {
+                    let del = format!("DELETE FROM {EVENTS_PG_TABLE_NAME} WHERE {match_rendered}");
+                    conn.execute_batch(&format!(
+                        "CALL postgres_execute('{alias}', {});",
+                        pg_native::duckdb_string(&del)
+                    ))?;
+                }
+                return Ok(PurgeEventsReport::new(spec, total, matched, apply));
+            }
+        }
+        let (all_sql, match_sql, binds) = build(false);
+        let all_binds = &binds[..(if tenant.is_some() { 2 } else { 1 })];
+        let refs = |b: &[Bind]| -> Vec<Box<dyn duckdb::ToSql>> {
+            b.iter()
+                .map(|x| Box::new(x.clone()) as Box<dyn duckdb::ToSql>)
+                .collect()
+        };
+        let count = |where_sql: &str, b: &[Bind]| -> Result<u64, IndexerError> {
+            let boxed = refs(b);
+            let params: Vec<&dyn duckdb::ToSql> = boxed.iter().map(|x| x.as_ref()).collect();
+            let n: i64 = conn.query_row(
+                &format!("SELECT count(*) FROM {table} WHERE {where_sql}"),
+                params.as_slice(),
+                |r| r.get(0),
+            )?;
+            Ok(u64::try_from(n).unwrap_or(0))
+        };
+        let total = count(&all_sql, all_binds)?;
+        let matched = count(&match_sql, &binds)?;
+        if apply && matched > 0 {
+            let boxed = refs(&binds);
+            let params: Vec<&dyn duckdb::ToSql> = boxed.iter().map(|x| x.as_ref()).collect();
+            conn.execute(
+                &format!("DELETE FROM {table} WHERE {match_sql}"),
+                params.as_slice(),
+            )?;
+        }
+        Ok(PurgeEventsReport::new(spec, total, matched, apply))
     }
 
     /// One event by id, whatever its status — the by-event lookup the
