@@ -135,6 +135,10 @@ fn reader_cfg(h: &Harness) -> EscurelConfig {
         ("ESCUREL_EMBEDDING_PROVIDER", "zero".to_owned()),
         ("ESCUREL_INDEX_BACKEND", "ducklake".to_owned()),
         ("ESCUREL_ROLE", "reader".to_owned()),
+        // This test is about the READER's tool gate, not the per-instance write ACL: its callers are
+        // anonymous (no auth is configured), which `enforce` (the shipped default since #655) refuses
+        // by design. Pin the ACL off here, explicitly, instead of inheriting whatever the process says.
+        ("ESCUREL_WRITE_ACL", "off".to_owned()),
         ("ESCUREL_DUCKLAKE_CATALOG_DSN", lake.catalog_dsn),
         ("ESCUREL_DUCKLAKE_DATA_PATH", lake.data_path),
         ("ESCUREL_SNAPSHOT_REFRESH_SECS", "30".to_owned()),
@@ -157,12 +161,23 @@ async fn call(base: &str, name: &str, args: serde_json::Value) -> serde_json::Va
         .unwrap()
 }
 
-/// One Loro op blob (`insert("hi") at 0`), base64-encoded — the exact
+/// The page the session writes. `close_session {commit: true}` writes the merged body through as a page,
+/// and a page must parse (frontmatter first), so the body is a minimal valid page, not bare text.
+const SESSION_PAGE: &str = "---\n\
+    kind: skill\n\
+    id: reader-native-page\n\
+    description: written by a session opened on a reader\n\
+    ---\n\
+    # reader-native-page\n\
+    \n\
+    hi from a reader\n";
+
+/// One Loro op blob (`insert(SESSION_PAGE) at 0`), base64-encoded — the exact
 /// shape `apply_op` expects, mirroring `mcp_session_tools.rs`'s `Client`.
 fn one_insert_op_b64() -> String {
     let doc = LoroDoc::new();
     let vv = doc.oplog_vv();
-    doc.get_text("body").insert(0, "hi from a reader").unwrap();
+    doc.get_text("body").insert(0, SESSION_PAGE).unwrap();
     doc.commit();
     let update = doc.export(ExportMode::updates(&vv)).unwrap();
     B64.encode(update)

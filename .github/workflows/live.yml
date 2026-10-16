@@ -91,6 +91,9 @@ jobs:
 
       # The S3 LaneStore against a real S3-compatible server (RustFS), including the shared
       # conformance suite (blob layer, size(), delete-missing, versions).
+      # Every test step below runs even when an earlier one failed (`!cancelled()`): with the default
+      # `success()` the first red step hid everything after it, which is how a dead MinIO image masked a
+      # broken reader-role test, for weeks (docs/notes/discovered/2026-10-16-live-workflow-masked-failures.md).
       - name: LaneStore — S3 conformance (RustFS)
         run: cargo test -p escurel-storage --features test-s3-server --test s3_roundtrip
 
@@ -98,6 +101,7 @@ jobs:
       # publish/adopt, the reader refresh cycle, and the Phase-B
       # chat/events/CRDT cross-replica read-your-writes assertions.
       - name: DuckLake — live (Postgres + RustFS)
+        if: ${{ !cancelled() }}
         run: |
           cargo test -p escurel-index --features live-ducklake --test suite ducklake_publish_live::
           cargo test -p escurel-index --features live-ducklake --test suite ducklake_adopt_live::
@@ -109,6 +113,7 @@ jobs:
           cargo test -p escurel-crdt --features live-ducklake --test ducklake_crdt_live
 
       - name: DuckLake — reader role (live)
+        if: ${{ !cancelled() }}
         run: |
           cargo test -p escurel-server --features live-ducklake --test suite reader_role_chat::
           cargo test -p escurel-server --features live-ducklake --test suite reader_role_events::
@@ -120,6 +125,7 @@ jobs:
       # step they were verified only by someone remembering the flag locally. Each test starts its
       # own `postgres:16-alpine` container (already pre-pulled above).
       - name: SQL connectors + writer lease — live Postgres
+        if: ${{ !cancelled() }}
         run: |
           set -euo pipefail
           cargo test -p escurel-server --features live-postgres --test suite sql_rows_postgres::
@@ -129,7 +135,7 @@ jobs:
       # The migrate-kind SIGKILL test kills the real server at ten points of the migration; the PR
       # gate runs four (one per phase, to stay inside the runner's budget). Nightly runs all ten.
       - name: migrate-kind — SIGKILL at all ten points (nightly)
-        if: github.event_name != 'pull_request'
+        if: ${{ !cancelled() && github.event_name != 'pull_request' }}
         run: |
           set -euo pipefail
           ESCUREL_SIGKILL_FULL=1 cargo test -p escurel-server --test suite migrate_kind_sigkill
@@ -137,6 +143,7 @@ jobs:
       # `#[ignore]`d live tests that need a secret. Said out loud when the secret is absent, instead of
       # passing vacuously (they used to `return` early and report green).
       - name: Live Gemini harness tests (when the key is configured)
+        if: ${{ !cancelled() }}
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: |

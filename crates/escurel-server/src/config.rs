@@ -631,6 +631,10 @@ pub struct EscurelConfig {
     /// `[<title> › <heading path> › p.<page>]` context (stored beside the
     /// verbatim body; feeds the dense/FTS/rerank representations only).
     pub ingest_contextualize: ContextualizeMode,
+    /// Per-instance write-ACL mode (`ESCUREL_WRITE_ACL`: `off` | `log` | `enforce`; unset or unknown
+    /// enforces). Read through the config source like every other key, so an embedded gateway built
+    /// from an injected map (a test) can choose it without touching the process-global environment.
+    pub write_acl: crate::WriteAclMode,
     /// How long one `instances: rows` source query may run (`ESCUREL_ROWS_QUERY_TIMEOUT_SECS`,
     /// default 30): interrupted past it, and enforced by a Postgres server itself.
     pub rows_query_timeout: std::time::Duration,
@@ -1102,6 +1106,10 @@ impl EscurelConfig {
             "structural",
         ));
 
+        // Fail closed: unset or a typo enforces (`WriteAclMode::parse`).
+        let write_acl =
+            crate::WriteAclMode::parse(&env.get("ESCUREL_WRITE_ACL").unwrap_or_default());
+
         let secs_knob = |var: &'static str,
                          default: std::time::Duration|
          -> Result<std::time::Duration, ConfigError> {
@@ -1365,6 +1373,7 @@ impl EscurelConfig {
             operation_slug_secret,
             metrics_listen,
             ingest_contextualize,
+            write_acl,
             rows_query_timeout,
             sql_connect_timeout,
             rebuild_index_on_boot,
@@ -2108,9 +2117,9 @@ impl EscurelConfig {
 
         let server_config = ServerConfig {
             // Per-instance write ACL (`ESCUREL_WRITE_ACL`): enforce (default) |
-            // log | off. Read straight from env so it can be flipped at
-            // deploy without a config-file change.
-            write_acl: crate::WriteAclMode::from_env(),
+            // log | off. Env-only (no TOML key) so it can be flipped at deploy
+            // without a config-file change; read via the config source in `from_source`.
+            write_acl: self.write_acl,
             event_acl: crate::EventAclMode::from_env(),
             toolcall_detail: crate::ToolcallDetailMode::from_env(),
             // Skill-page `autonomy:` lint (`ESCUREL_AUTONOMY_LINT`): off
@@ -2664,6 +2673,25 @@ mod tests {
     fn ingest_contextualize_defaults_to_structural() {
         let cfg = cfg_from(&[]);
         assert_eq!(cfg.ingest_contextualize, ContextualizeMode::Structural);
+    }
+
+    // The write ACL is chosen through the config SOURCE, not the process environment, so an embedded
+    // gateway (a test) can pick a mode without a process-global `set_var`. Unset or a typo enforces.
+    #[test]
+    fn write_acl_is_read_from_the_config_source_and_fails_closed() {
+        assert_eq!(cfg_from(&[]).write_acl, crate::WriteAclMode::Enforce);
+        assert_eq!(
+            cfg_from(&[("ESCUREL_WRITE_ACL", "off")]).write_acl,
+            crate::WriteAclMode::Off
+        );
+        assert_eq!(
+            cfg_from(&[("ESCUREL_WRITE_ACL", " Log ")]).write_acl,
+            crate::WriteAclMode::Log
+        );
+        assert_eq!(
+            cfg_from(&[("ESCUREL_WRITE_ACL", "of")]).write_acl,
+            crate::WriteAclMode::Enforce
+        );
     }
 
     #[test]
