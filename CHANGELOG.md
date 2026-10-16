@@ -11,7 +11,7 @@ re-cuts append `.N`), matching the DataZoo release scheme (cf. erpl).
 **Read first:** [`docs/deploy/kind-migration.md`](docs/deploy/kind-migration.md) (stop-first upgrade, backup,
 rollback) and the consumer checklist in
 [`.claude/skills/escurel-platform/CHANGELOG.md`](.claude/skills/escurel-platform/CHANGELOG.md) (0.7.0 – 0.18.1).
-Skill version `0.21.0`. Every consumer that writes pages or reads the tool surface moves in the same window.
+Skill version `0.21.1`. Every consumer that writes pages or reads the tool surface moves in the same window.
 
 ### Fixed
 
@@ -58,6 +58,18 @@ Skill version `0.21.0`. Every consumer that writes pages or reads the tool surfa
   See `docs/deploy/kind-migration.md` and `docs/notes/discovered/2026-10-15-lab-cutover-lessons.md`.
 - Links that escape the exposed directories fail closed when the directory cannot be read (#681); the
   `rows_get` timeout test is deterministic (#683).
+- **`capture_event` no longer tells a guesser that an event exists (security, #721).** Under
+  `ESCUREL_EVENT_ACL=enforce`, re-capturing a stored `event_id` the caller may not read used to answer
+  `replayed: true`, which revealed the id. A hidden collision now reads exactly like a first capture; the flag
+  stays for the caller who may see the stored event (and in `log` mode).
+- **A `**` glob over a tree deeper than the symlink check can inspect is refused (security, #723).**
+  `json_dir` / `parquet_dir` globs containing `**` were checked only 8 directory levels deep, so a symlink out
+  of the allowed directories below that passed unchecked. A directory below the cap now counts as escaping:
+  a legitimate `**` glob over a tree deeper than 8 levels is refused; use a more specific glob or keep the
+  tree shallower.
+- **A tag name can no longer inject into the release job (security, #724).** The version taken from the tag
+  now passes `scripts/release-version.sh` (digits and dots, optional `-prerelease` and `+build`) before it reaches
+  a shell step; a tag such as `v1$(cmd)` is refused. Exploiting it needed push access.
 
 - **Write-back: at-most-once unless the skill declares idempotency; `base_etag` is required (security / data
   integrity).** Every REST write used to count as repeatable, so an upstream that ignored `Idempotency-Key` could

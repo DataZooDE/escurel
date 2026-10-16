@@ -4,6 +4,12 @@ The skill version tracks the consumer-facing contract, not the Escurel
 binary version. The Escurel repo's checked-out git ref is the true version
 pin (see `SKILL.md` → "How this skill is installed").
 
+## 0.21.1 — `replayed` is only shown to a caller who may read the stored event
+
+- **`capture_event`** (`02-tool-surface.md`): a re-captured `event_id` carries `replayed: true` only for a caller
+  who may see the stored event (always under `ESCUREL_EVENT_ACL=off|log`); under `enforce` a caller who may not
+  read it gets an answer indistinguishable from a first capture. Do not use `replayed` to probe for ids.
+
 ## 0.21.0 — the lake has an upgrade path; `publish_snapshot` guards a shrinking corpus; Evolve data-rule labels
 
 Operator-side and additive; no consumer call changes shape.

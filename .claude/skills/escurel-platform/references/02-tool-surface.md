@@ -527,7 +527,7 @@ of the normal app surface — see `references/08` and `references/10`.
   rows follow.
 - **Starting a skill action.** `list_skills.actions[]` (`kind: event`) -> `capture_event` with
   `label_skill=<action.event>` and `instance_page_id=<the instance>`. A `label_skill` that names no skill
-  is stored with a warning issue `unknown_label_skill`. A re-captured `event_id` carries `replayed: true`.
+  is stored with a warning issue `unknown_label_skill`. A re-captured `event_id` carries `replayed: true` for a caller who may read the stored event (under `ESCUREL_EVENT_ACL=enforce` a caller who may not gets an answer identical to a first capture).
 - **Ids.** `page_id` / `target_page_id` / `instance_page_id` / `ref` all name a page: the full path
   (`markdown/instances/<skill>/<id>.md`, `markdown/skills/<skill>.md`) except `ref`/`wikilink`, which
   take `[[skill::id]]`. `list_instances` takes `skill_id` (alias `skill`); `search` takes `skill`.
