@@ -4,6 +4,17 @@ The skill version tracks the consumer-facing contract, not the Escurel
 binary version. The Escurel repo's checked-out git ref is the true version
 pin (see `SKILL.md` → "How this skill is installed").
 
+## 0.22.0 — `admin_purge_events`; `migrate-kind --rename-field`; five-minute runner heartbeat
+
+Additive; no existing call changes shape.
+
+- **`admin_purge_events {label_skill, before_ts?, keep_latest?, apply?, allow_protected?}`** (`02-tool-surface.md`,
+  CLI `escurel admin purge-events`, `04-consume-via-cli.md`): audited retention for one event label; dry run
+  unless `apply`, needs a bound, leaves an `escurel:event-purge` event. Operator tool, not for app code.
+- **`escurel admin migrate-kind --rename-field OLD=NEW`** (repeatable, `04-consume-via-cli.md`) for a domain field
+  that collides with the page-kind key.
+- **`ESCUREL_RUNNER_STATUS_INTERVAL` default is now `5m`** (`11-event-driven-agents.md`); readiness windows follow.
+
 ## 0.21.1 — `replayed` is only shown to a caller who may read the stored event
 
 - **`capture_event`** (`02-tool-surface.md`): a re-captured `event_id` carries `replayed: true` only for a caller
