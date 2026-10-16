@@ -2,7 +2,7 @@
 //!
 //! Production default per the v1 spec (storage.md). Speaks plain S3
 //! (GET / PUT / DELETE / ListObjectsV2) against any S3-compatible
-//! endpoint — AWS S3, MinIO, Hetzner Object Storage — via a custom
+//! endpoint — AWS S3, RustFS, MinIO, Hetzner Object Storage — via a custom
 //! endpoint URL with **path-style addressing** (`force_path_style`).
 //! Virtual-host-style addressing requires per-bucket DNS, which MinIO
 //! and Hetzner do not provide out of the box, so path-style is the

@@ -1,61 +1,30 @@
 //! Integration tests for [`escurel_storage::S3Store`].
 //!
-//! Real MinIO over real HTTP via a `testcontainers` container — no
+//! A real S3-compatible server over real HTTP via a `testcontainers` container — no
 //! mocks, no in-memory S3 fake (principle 2: this is the named
 //! component the merge gate must exercise against a real backend).
 //!
-//! Each test boots a fresh MinIO container, creates a bucket, and
+//! Each test boots a fresh S3 server container, creates a bucket, and
 //! mirrors the `FsStore` scenarios from `fs_roundtrip.rs` so the two
 //! backends are held to the same `LaneStore` contract.
 
-#![cfg(feature = "s3")]
+#![cfg(feature = "test-s3-server")]
 
 use bytes::Bytes;
-use escurel_storage::{Key, LaneStore, S3Store, S3StoreConfig, StoreError};
-use testcontainers_modules::minio::MinIO;
-use testcontainers_modules::testcontainers::ContainerAsync;
-use testcontainers_modules::testcontainers::ImageExt;
-use testcontainers_modules::testcontainers::runners::AsyncRunner;
+use escurel_storage::testing::S3Server;
+use escurel_storage::{Key, LaneStore, S3Store, StoreError};
 
 mod conformance;
 
-/// Boot a MinIO container and build an `S3Store` against it under
-/// the given prefix, creating the bucket first. The container handle
-/// is returned alongside the store so the caller keeps it alive for
-/// the test's duration (drop tears the container down).
-/// MinIO's images are no longer on Docker Hub.
-///
-/// `testcontainers_modules::minio::MinIO` defaults to `minio/minio`, which now
-/// answers 404: "pull access denied … repository does not exist or may require
-/// 'docker login'". MinIO publishes to quay.io instead, under the same tags.
-///
-/// That 404 is why the nightly `live` workflow had been red every morning
-/// since at least 2026-09-10 — every S3 conformance test failed in
-/// `store_and_minio` before touching any code under test, so the redness said
-/// nothing about S3 and there was nothing to learn by reading it.
-const MINIO_REGISTRY: &str = "quay.io";
-
-async fn store_and_minio(prefix: &str) -> (S3Store, ContainerAsync<MinIO>) {
-    let node = MinIO::default()
-        .with_name(format!("{MINIO_REGISTRY}/minio/minio"))
-        .start()
-        .await
-        .expect("start minio");
-    let host = node.get_host().await.expect("minio host");
-    let port = node.get_host_port_ipv4(9000).await.expect("minio s3 port");
-    let endpoint = format!("http://{host}:{port}");
-
-    let config = S3StoreConfig {
-        bucket: "escurel-test".to_owned(),
-        prefix: prefix.to_owned(),
-        endpoint_url: endpoint,
-        region: "us-east-1".to_owned(),
-        access_key_id: "minioadmin".to_owned(),
-        secret_access_key: "minioadmin".to_owned(),
-    };
-    let store = S3Store::new(config).await.expect("build S3Store");
-    store.ensure_bucket().await.expect("create bucket");
-    (store, node)
+/// Boot a real S3-compatible server and build an `S3Store` against it under
+/// the given prefix, creating the bucket first. The server handle is returned
+/// alongside the store so the caller keeps it alive for the test's duration
+/// (drop tears the container down). Which server, and why: see
+/// `escurel_storage::testing`.
+async fn store_and_server(prefix: &str) -> (S3Store, S3Server) {
+    let server = S3Server::start().await;
+    let store = server.store("escurel-test", prefix).await;
+    (store, server)
 }
 
 fn k(tenant: &str, path: &str) -> Key {
@@ -65,7 +34,7 @@ fn k(tenant: &str, path: &str) -> Key {
 
 #[tokio::test]
 async fn s3_write_then_read_roundtrip() {
-    let (store, _node) = store_and_minio("p1").await;
+    let (store, _node) = store_and_server("p1").await;
     let key = k("acme", "markdown/skills/customer.md");
     let body = Bytes::from_static(b"---\nkind: skill\nid: customer\n---\n# customer\n");
 
@@ -80,7 +49,7 @@ async fn s3_write_then_read_roundtrip() {
 
 #[tokio::test]
 async fn s3_overwrite_replaces_bytes() {
-    let (store, _node) = store_and_minio("p2").await;
+    let (store, _node) = store_and_server("p2").await;
     let key = k("acme", "markdown/skills/customer.md");
 
     store
@@ -98,7 +67,7 @@ async fn s3_overwrite_replaces_bytes() {
 
 #[tokio::test]
 async fn s3_read_missing_returns_not_found() {
-    let (store, _node) = store_and_minio("p3").await;
+    let (store, _node) = store_and_server("p3").await;
     let key = k("acme", "does/not/exist.md");
 
     let err = store.read(&key).await.expect_err("missing read");
@@ -110,7 +79,7 @@ async fn s3_read_missing_returns_not_found() {
 
 #[tokio::test]
 async fn s3_delete_then_read_returns_not_found() {
-    let (store, _node) = store_and_minio("p4").await;
+    let (store, _node) = store_and_server("p4").await;
     let key = k("acme", "tmp.md");
 
     store
@@ -125,7 +94,7 @@ async fn s3_delete_then_read_returns_not_found() {
 
 #[tokio::test]
 async fn s3_list_returns_keys_under_prefix() {
-    let (store, _node) = store_and_minio("p5").await;
+    let (store, _node) = store_and_server("p5").await;
     let keys = [
         k("acme", "markdown/skills/customer.md"),
         k("acme", "markdown/skills/meeting.md"),
@@ -157,7 +126,7 @@ async fn s3_list_returns_keys_under_prefix() {
 
 #[tokio::test]
 async fn s3_list_isolates_tenants() {
-    let (store, _node) = store_and_minio("p6").await;
+    let (store, _node) = store_and_server("p6").await;
     store
         .write(
             &k("acme", "markdown/skills/customer.md"),
@@ -184,14 +153,14 @@ async fn s3_list_isolates_tenants() {
 
 #[tokio::test]
 async fn s3_list_under_nonexistent_prefix_returns_empty() {
-    let (store, _node) = store_and_minio("p7").await;
+    let (store, _node) = store_and_server("p7").await;
     let listed = store.list(&k("acme", "no/such/dir/")).await.expect("list");
     assert!(listed.is_empty(), "list under missing prefix is empty Vec");
 }
 
 #[tokio::test]
 async fn s3_url_returns_parseable_s3_url() {
-    let (store, _node) = store_and_minio("p8").await;
+    let (store, _node) = store_and_server("p8").await;
     let key = k("acme", "markdown/skills/customer.md");
 
     let url = store.url(&key).expect("url");
@@ -212,7 +181,7 @@ async fn s3_url_returns_parseable_s3_url() {
 /// later reads it back. Round-trip must be byte-for-byte.
 #[tokio::test]
 async fn s3_survives_indexer_style_page_write_and_readback() {
-    let (store, _node) = store_and_minio("p9").await;
+    let (store, _node) = store_and_server("p9").await;
     let key = k("acme", "markdown/instances/customer/acme.md");
     let body = Bytes::from(
         "---\n\
@@ -240,13 +209,13 @@ async fn s3_survives_indexer_style_page_write_and_readback() {
 }
 
 /// The shared `LaneStore` contract (`tests/conformance/`), against real
-/// MinIO. This is what closes the drift the per-backend files had: the S3
+/// the S3 server. This is what closes the drift the per-backend files had: the S3
 /// side was missing `delete_missing_returns_not_found` and the
 /// distinct-versions check, and the blob layer had never run against S3 at
 /// all despite riding on `list()`, whose contract differs most between
 /// backends.
 #[tokio::test]
 async fn s3_store_satisfies_the_lane_store_contract() {
-    let (store, _node) = store_and_minio("conformance").await;
+    let (store, _node) = store_and_server("conformance").await;
     conformance::run_lane_store_conformance(&store, "s3").await;
 }

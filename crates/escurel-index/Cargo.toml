@@ -19,15 +19,15 @@ homepage.workspace = true
 kreuzberg = ["dep:kreuzberg", "dep:html-to-markdown-rs"]
 # Opt-in live SQL-connector integration test (sql_view_postgres.rs) — boots a
 # real Postgres testcontainer, so it needs Docker. OFF by default (like the
-# escurel-storage `s3` MinIO test) so a default `cargo test` on a Docker-less
+# escurel-storage `s3` S3 test) so a default `cargo test` on a Docker-less
 # box doesn't fail. Run with `--features live-postgres`.
 live-postgres = []
 # Opt-in live DuckLake publish integration test (ducklake_publish_live.rs) —
-# boots a real Postgres (catalog) + MinIO (s3:// DATA_PATH) testcontainer
+# boots a real Postgres (catalog) + an S3 server (s3:// DATA_PATH) testcontainer
 # pair, so it needs Docker. OFF by default like `live-postgres`. Enables the
-# `escurel-storage/s3` feature so the test can create the MinIO bucket with
-# the real S3Store. Run with `--features live-ducklake`.
-live-ducklake = ["escurel-storage/s3"]
+# `escurel-storage/test-s3-server` feature (RustFS container + the real
+# S3Store to create the bucket). Run with `--features live-ducklake`.
+live-ducklake = ["escurel-storage/test-s3-server"]
 # Variant B of Contextual Retrieval (#216): an LLM writes a one-sentence
 # situating context per chunk at ingest. OFF by default — it is a NETWORK path
 # (pulls reqwest), at odds with the deterministic/air-gap default; the default
@@ -107,10 +107,10 @@ tokio = { version = "1", features = ["macros", "rt-multi-thread", "time", "sync"
 async-trait = "0.1"
 url = "2"
 # Live SQL-view connector round-trip (sql_view_postgres.rs): a real Postgres
-# in a testcontainer + a real libpq client to seed it. No mocks. `minio` is
-# for the live DuckLake publish test (ducklake_publish_live.rs, feature
-# `live-ducklake`): a real MinIO backs the lake's `s3://` DATA_PATH.
-testcontainers-modules = { version = "0.15", features = ["postgres", "minio"] }
+# in a testcontainer + a real libpq client to seed it. No mocks. The S3 server
+# for the live DuckLake tests (feature `live-ducklake`) comes from
+# `escurel_storage::testing` and backs the lake's `s3://` DATA_PATH.
+testcontainers-modules = { version = "0.15", features = ["postgres"] }
 tokio-postgres = "0.7"
 # contextualize_llm.rs timeout regression test (#569), feature `contextualize-llm`.
 wiremock = "0.6"

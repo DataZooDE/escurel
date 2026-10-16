@@ -18,6 +18,8 @@ mod key;
 pub mod layout;
 #[cfg(feature = "s3")]
 pub mod s3;
+#[cfg(feature = "test-s3-server")]
+pub mod testing;
 
 pub use blob::{BLOB_PREFIX, BlobId, INBOX_PREFIX};
 #[cfg(feature = "duckvfs")]

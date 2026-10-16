@@ -135,8 +135,9 @@ Three implementations ship:
   trait's `NotFound` contract. The S3 backend assumes only basic S3 semantics
   (GET/PUT/DELETE/list/multipart-upload, path-style addressing,
   no STS, no presigned URLs, no AWS-S3-Tables-or-Vectors
-  specific APIs). Verified backends: AWS S3, MinIO, Hetzner
-  Object Storage. **Critical**: the S3 endpoint hostname
+  specific APIs). Verified backends: AWS S3, Hetzner
+  Object Storage, RustFS (the live tests run against it in CI; MinIO was
+  verified earlier, until it stopped publishing images). **Critical**: the S3 endpoint hostname
   returned by `S3Store::url()` must equal the hostname the
   LaneStore is configured against — DuckDB `httpfs` honours
   the secret's `ENDPOINT` field literally, so a hostname

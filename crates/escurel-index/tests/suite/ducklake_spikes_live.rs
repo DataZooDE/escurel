@@ -25,8 +25,7 @@ use duckdb::Connection;
 use escurel_index::snapshot::{
     LakeConfig, ObjectStoreSecret, attach_sql, install_load_sql, secret_sql,
 };
-use escurel_storage::{S3Store, S3StoreConfig};
-use testcontainers_modules::minio::MinIO;
+use escurel_storage::testing::{self, S3Server};
 use testcontainers_modules::postgres::Postgres;
 use testcontainers_modules::testcontainers::ContainerAsync;
 use testcontainers_modules::testcontainers::runners::AsyncRunner;
@@ -36,7 +35,7 @@ const BUCKET: &str = "escurel-spike";
 struct Live {
     cfg: LakeConfig,
     _pg: ContainerAsync<Postgres>,
-    _minio: ContainerAsync<MinIO>,
+    _s3: S3Server,
 }
 
 async fn live() -> Live {
@@ -45,34 +44,23 @@ async fn live() -> Live {
     let dsn =
         format!("host=127.0.0.1 port={pg_port} user=postgres password=postgres dbname=postgres");
 
-    let minio = MinIO::default().start().await.expect("start minio");
-    let s3_port = minio.get_host_port_ipv4(9000).await.expect("minio port");
-    let s3 = S3Store::new(S3StoreConfig {
-        bucket: BUCKET.to_owned(),
-        prefix: "unused".to_owned(),
-        endpoint_url: format!("http://127.0.0.1:{s3_port}"),
-        region: "us-east-1".to_owned(),
-        access_key_id: "minioadmin".to_owned(),
-        secret_access_key: "minioadmin".to_owned(),
-    })
-    .await
-    .expect("build S3Store");
-    s3.ensure_bucket().await.expect("create bucket");
+    let s3_server = S3Server::start().await;
+    let _s3 = s3_server.store(BUCKET, "unused").await;
 
     Live {
         cfg: LakeConfig {
             catalog_dsn: dsn,
             data_path: format!("s3://{BUCKET}/data/"),
             object_store: ObjectStoreSecret::S3 {
-                endpoint: format!("127.0.0.1:{s3_port}"),
-                access_key_id: "minioadmin".to_owned(),
-                secret_access_key: "minioadmin".to_owned(),
+                endpoint: s3_server.endpoint_host_port(),
+                access_key_id: testing::ACCESS_KEY.to_owned(),
+                secret_access_key: testing::SECRET_KEY.to_owned(),
                 region: "us-east-1".to_owned(),
                 use_ssl: false,
             },
         },
         _pg: pg,
-        _minio: minio,
+        _s3: s3_server,
     }
 }
 

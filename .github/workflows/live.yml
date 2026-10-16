@@ -10,7 +10,7 @@ name: live
 # LaneStore — verified only by a human remembering to pass the flag locally.
 #
 # They do not belong on every PR either: each test boots its own Postgres
-# and/or MinIO container, and `ci.yml` already runs with CARGO_BUILD_JOBS=1
+# and/or S3-server container, and `ci.yml` already runs with CARGO_BUILD_JOBS=1
 # and a 90-minute budget to stay inside the runner's memory. So: nightly, on
 # demand, and opt-in per-PR via a label when a change touches the storage
 # layer.
@@ -71,10 +71,10 @@ jobs:
       # slow registry shows up as its own step rather than a mysterious
       # per-test timeout.
       #
-      # MinIO comes from quay.io: `minio/minio` on Docker Hub now answers 404
-      # ("pull access denied … repository does not exist"), which is what made
-      # this workflow red every morning from at least 2026-09-10. Pulling the
-      # SAME tag the test asks for, so a warm cache actually helps it.
+      # The S3 server is RustFS, pinned in `escurel_storage::testing` (keep the tag below in step with
+      # it). MinIO stopped publishing images (Docker Hub answered 404, then quay.io lost every tag,
+      # `latest` included), which kept this workflow red every morning from at least 2026-09-10 and
+      # left the real-S3 coverage dark. See docs/notes/discovered/2026-10-16-minio-images-gone.md.
       #
       # `wait` alone reports success even when a pull failed, which is how a
       # dead image stayed a per-test panic rather than a failed step; fail the
@@ -84,20 +84,20 @@ jobs:
           set -euo pipefail
           docker pull postgres:16-alpine &
           p1=$!
-          docker pull quay.io/minio/minio:RELEASE.2025-02-28T09-55-16Z &
+          docker pull rustfs/rustfs:1.0.1 &
           p2=$!
           wait $p1
           wait $p2
 
-      # The S3 LaneStore against real MinIO, including the shared
+      # The S3 LaneStore against a real S3-compatible server (RustFS), including the shared
       # conformance suite (blob layer, size(), delete-missing, versions).
-      - name: LaneStore — S3 conformance (MinIO)
-        run: cargo test -p escurel-storage --features s3 --test s3_roundtrip
+      - name: LaneStore — S3 conformance (RustFS)
+        run: cargo test -p escurel-storage --features test-s3-server --test s3_roundtrip
 
       # DuckLake against a real Postgres catalog + real object storage:
       # publish/adopt, the reader refresh cycle, and the Phase-B
       # chat/events/CRDT cross-replica read-your-writes assertions.
-      - name: DuckLake — live (Postgres + MinIO)
+      - name: DuckLake — live (Postgres + RustFS)
         run: |
           cargo test -p escurel-index --features live-ducklake --test suite ducklake_publish_live::
           cargo test -p escurel-index --features live-ducklake --test suite ducklake_adopt_live::

@@ -1,10 +1,10 @@
 //! Live DuckLake publish round-trip (DuckLake PR 3): a REAL Postgres
-//! catalog (testcontainer) + a REAL MinIO `s3://` DATA_PATH
+//! catalog (testcontainer) + a REAL the S3 test server `s3://` DATA_PATH
 //! (testcontainer), no mocks. This is the production shape ADR-0009
 //! locks (Postgres-catalog DuckLake, object-store Parquet).
 //!
 //! Opt-in: gated behind the `live-ducklake` feature (needs Docker),
-//! mirroring `live-postgres` / the escurel-storage `s3` MinIO tests. Run
+//! mirroring `live-postgres` / the escurel-storage `s3` the S3 test server tests. Run
 //! with `cargo test -p escurel-index --features live-ducklake --test
 //! ducklake_publish_live`.
 
@@ -19,9 +19,9 @@ use escurel_index::snapshot::{
     LakeConfig, ObjectStoreSecret, attach_sql, install_load_sql, publish_lake, secret_sql,
 };
 use escurel_index::{Indexer, Migrator};
-use escurel_storage::{FsStore, LaneStore, S3Store, S3StoreConfig};
+use escurel_storage::testing::{self, S3Server};
+use escurel_storage::{FsStore, LaneStore};
 use tempfile::TempDir;
-use testcontainers_modules::minio::MinIO;
 use testcontainers_modules::postgres::Postgres;
 use testcontainers_modules::testcontainers::ContainerAsync;
 use testcontainers_modules::testcontainers::runners::AsyncRunner;
@@ -53,12 +53,12 @@ struct LiveLake {
     indexer: Arc<Indexer>,
     cfg: LakeConfig,
     _pg: ContainerAsync<Postgres>,
-    _minio: ContainerAsync<MinIO>,
+    _s3: S3Server,
     _store_dir: TempDir,
     _db_dir: TempDir,
 }
 
-/// Boot Postgres (catalog) + MinIO (data path), create the bucket with
+/// Boot Postgres (catalog) + the S3 test server (data path), create the bucket with
 /// the REAL S3Store, and build a seeded-ready Indexer.
 async fn live_lake() -> LiveLake {
     let pg = Postgres::default().start().await.expect("start postgres");
@@ -66,27 +66,16 @@ async fn live_lake() -> LiveLake {
     let dsn =
         format!("host=127.0.0.1 port={pg_port} user=postgres password=postgres dbname=postgres");
 
-    let minio = MinIO::default().start().await.expect("start minio");
-    let s3_port = minio.get_host_port_ipv4(9000).await.expect("minio port");
-    let s3 = S3Store::new(S3StoreConfig {
-        bucket: BUCKET.to_owned(),
-        prefix: "unused".to_owned(),
-        endpoint_url: format!("http://127.0.0.1:{s3_port}"),
-        region: "us-east-1".to_owned(),
-        access_key_id: "minioadmin".to_owned(),
-        secret_access_key: "minioadmin".to_owned(),
-    })
-    .await
-    .expect("build S3Store");
-    s3.ensure_bucket().await.expect("create bucket");
+    let s3_server = S3Server::start().await;
+    let _s3 = s3_server.store(BUCKET, "unused").await;
 
     let cfg = LakeConfig {
         catalog_dsn: dsn,
         data_path: format!("s3://{BUCKET}/data/"),
         object_store: ObjectStoreSecret::S3 {
-            endpoint: format!("127.0.0.1:{s3_port}"),
-            access_key_id: "minioadmin".to_owned(),
-            secret_access_key: "minioadmin".to_owned(),
+            endpoint: s3_server.endpoint_host_port(),
+            access_key_id: testing::ACCESS_KEY.to_owned(),
+            secret_access_key: testing::SECRET_KEY.to_owned(),
             region: "us-east-1".to_owned(),
             use_ssl: false,
         },
@@ -103,7 +92,7 @@ async fn live_lake() -> LiveLake {
         indexer,
         cfg,
         _pg: pg,
-        _minio: minio,
+        _s3: s3_server,
         _store_dir: store_dir,
         _db_dir: db_dir,
     }
@@ -121,7 +110,7 @@ fn reader_conn(cfg: &LakeConfig) -> Connection {
 }
 
 #[tokio::test]
-async fn parquet_directory_reads_minio_with_the_lake_secret() {
+async fn parquet_directory_reads_s3_with_the_lake_secret() {
     let lake = live_lake().await;
     // Write a real object through httpfs. The directory connector uses the same
     // S3 secret installed when the indexer attaches the lake.
@@ -155,7 +144,7 @@ async fn parquet_directory_reads_minio_with_the_lake_secret() {
 }
 
 #[tokio::test]
-async fn publish_creates_lake_tables_and_manifest_pg_minio() {
+async fn publish_creates_lake_tables_and_manifest_pg_s3() {
     let lake = live_lake().await;
     lake.indexer
         .update_page("markdown/skills/customer.md", CUSTOMER_SKILL)
@@ -168,7 +157,7 @@ async fn publish_creates_lake_tables_and_manifest_pg_minio() {
 
     let report = publish_lake(&lake.indexer, &lake.cfg, None)
         .await
-        .expect("publish to PG catalog + MinIO");
+        .expect("publish to PG catalog + the S3 test server");
     assert!(!report.skipped);
     assert_eq!(report.pages, 2);
     assert_eq!(report.blocks, 2);
@@ -210,7 +199,7 @@ async fn publish_creates_lake_tables_and_manifest_pg_minio() {
         .unwrap();
     assert_eq!(cred_tables, 0);
 
-    // MinIO now physically holds Parquet objects under the data prefix
+    // the S3 test server now physically holds Parquet objects under the data prefix
     // (probed through httpfs on the same reader — real object listing).
     let parquet_objects: i64 = reader
         .query_row(
@@ -221,7 +210,7 @@ async fn publish_creates_lake_tables_and_manifest_pg_minio() {
         .unwrap();
     assert!(
         parquet_objects > 0,
-        "publish must write Parquet data files to MinIO"
+        "publish must write Parquet data files to the S3 test server"
     );
 }
 
