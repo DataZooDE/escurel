@@ -143,7 +143,7 @@ Key settings (full list in `crates/escurel-runner-core/src/config.rs`):
 | `ESCUREL_RUNNER_TAIL_MAX_AGE` | `10m` | how old a review / run-control request may be and still be acted on after a restart; older ones are skipped, not replayed |
 | `ESCUREL_RUNNER_CANCEL_GRACE` | `5s` | on cancel, the wait between SIGTERM and SIGKILL for the harness subprocess |
 | `ESCUREL_RUNNER_HARNESS_ALLOW` | the configured harness | the harness names a manual start may ask for (comma-separated); anything else fails the run closed |
-| `ESCUREL_RUNNER_STATUS_INTERVAL` | `30s` | heartbeat cadence of the runner's `escurel:runner-status` report (a change is reported at once) |
+| `ESCUREL_RUNNER_STATUS_INTERVAL` | `5m` | heartbeat cadence of the runner's `escurel:runner-status` report (a change is reported at once) |
 | `ESCUREL_RUNNER_ID` | `<HOSTNAME>:<pid>` | how this runner names itself in its status reports |
 | `ESCUREL_RUNNER_EMIT_EVENTS` | `true` | write each run's lifecycle as `escurel:run` system events (see *Run lifecycle events*); `false` = the workbench sees events and drafts but no runs |
 | `ESCUREL_RUNNER_AGENT_NARROW` | off | narrow each run's agent token to its target skill: `escurel:agent` + the skill's `acl.create` / `acl.update` groups instead of `escurel:admin` (see references/08 § per-run agent token); a skill with no write grant then runs an agent that can write nothing under `ESCUREL_WRITE_ACL=enforce` |

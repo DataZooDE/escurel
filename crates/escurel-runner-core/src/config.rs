@@ -121,6 +121,11 @@ pub const DEFAULT_TENANT_MAX_CONCURRENT: u64 = 8;
 /// concurrency with a process-wide semaphore regardless of per-tenant limits.
 pub const DEFAULT_MAX_HARNESS_PROCS: usize = 16;
 
+/// Default `ESCUREL_RUNNER_STATUS_INTERVAL`: how often an idle runner reports its health.
+/// Five minutes (it was 30 s: 2,880 event rows a day per runner, each a lake snapshot on
+/// the lake backends; see `docs/notes/discovered/2026-10-16-events-table-read-in-full-on-attached-postgres.md`).
+pub const DEFAULT_STATUS_INTERVAL: Duration = Duration::from_secs(5 * 60);
+
 /// Default SIGTERM drain timeout (#158): on shutdown the runner stops
 /// accepting new triggers and lets in-flight runs finish, bounded by this
 /// deadline before it exits anyway (a still-pending run is recovered on the
@@ -300,7 +305,8 @@ pub struct RunnerConfig {
     /// `escurel:runner-status` event when nothing changed (workbench
     /// backend P2-4); a change is reported at once. Same duration grammar
     /// as `poll_interval`. Source: `ESCUREL_RUNNER_STATUS_INTERVAL`
-    /// (default 30s).
+    /// (default 5m: every heartbeat is an event row, and on a lake backend
+    /// a snapshot; the readiness window follows it, twice the interval).
     pub status_interval: Duration,
     /// The harnesses a manual start may ask for by name (workbench backend
     /// P2-5). A request outside the list fails the run closed. Source:
@@ -608,7 +614,7 @@ impl RunnerConfig {
             Some(raw) if !raw.is_empty() => {
                 parse_duration(&raw).ok_or(ConfigError::InvalidPollInterval { value: raw })?
             }
-            _ => Duration::from_secs(30),
+            _ => DEFAULT_STATUS_INTERVAL,
         };
         let runner_id = match lookup("ESCUREL_RUNNER_ID") {
             Some(raw) if !raw.is_empty() => raw,
@@ -925,6 +931,12 @@ mod tests {
         assert_eq!(cfg.tenant_max_concurrent, DEFAULT_TENANT_MAX_CONCURRENT);
         assert_eq!(cfg.max_harness_procs, DEFAULT_MAX_HARNESS_PROCS);
         assert_eq!(cfg.drain_timeout, DEFAULT_DRAIN_TIMEOUT);
+        assert_eq!(cfg.status_interval, DEFAULT_STATUS_INTERVAL);
+        assert_eq!(
+            DEFAULT_STATUS_INTERVAL,
+            Duration::from_secs(300),
+            "five minutes: every heartbeat is an event row (and, on a lake, a snapshot), so 30 s was 2,880 rows a day per runner"
+        );
     }
 
     #[test]

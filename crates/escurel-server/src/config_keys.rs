@@ -746,7 +746,7 @@ pub const CONFIG_KEYS: &[ConfigKey] = &[
     ConfigKey {
         name: "ESCUREL_RUNNER_STATUS_INTERVAL",
         component: "Runner",
-        default: "30s",
+        default: "5m",
         doc: "how often the runner reports its health as an `escurel:runner-status` event when nothing changed",
     },
     ConfigKey {

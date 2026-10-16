@@ -162,7 +162,7 @@ tenant/token can process `/trigger` but deliberately report unready at
 | `ESCUREL_RUNNER_SEEN_CAP` | 4096 | bound of the dedup seen-set |
 | `ESCUREL_RUNNER_POLL_INTERVAL` | 30s | interval between inbox polls (`30s`, `1500ms`, `2m`) |
 | `ESCUREL_RUNNER_TAIL_MAX_AGE` | 10m | how old a request on a tailed label may be and still be acted on after a restart |
-| `ESCUREL_RUNNER_STATUS_INTERVAL` | 30s | how often the runner reports its health as an `escurel:runner-status` event when nothing changed |
+| `ESCUREL_RUNNER_STATUS_INTERVAL` | 5m | how often the runner reports its health as an `escurel:runner-status` event when nothing changed |
 | `ESCUREL_RUNNER_HARNESS_ALLOW` | the configured harness | comma-separated harnesses a manual start may ask for by name; others fail closed |
 | `ESCUREL_RUNNER_ID` | <HOSTNAME>:<pid> | this runner's name in its status reports |
 | `ESCUREL_RUNNER_CANCEL_GRACE` | 5s | time a cancelled run's subprocess gets between SIGTERM and SIGKILL |

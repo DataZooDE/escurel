@@ -5,9 +5,11 @@ import { cleanText } from '../shared/untrustedText';
  * Runner status heartbeat interval assumption:
  * The heartbeat interval is not transmitted in the runner status body.
  * In crates/escurel-runner-core/src/config.rs (ESCUREL_RUNNER_STATUS_INTERVAL),
- * the default interval is 30 seconds (30,000 ms).
+ * the default interval is 5 minutes (300,000 ms; it was 30 s until every heartbeat turned out to
+ * cost an event row, and on a lake backend a snapshot). An observed interval (see
+ * `estimateHeartbeatIntervalMs`) always wins over this assumption.
  */
-export const ESCUREL_RUNNER_STATUS_INTERVAL_MS = 30_000;
+export const ESCUREL_RUNNER_STATUS_INTERVAL_MS = 300_000;
 
 export interface RunnerLiveRun {
   run_id: string;
@@ -133,7 +135,8 @@ export function formatHeartbeatAge(ageMs: number): string {
  * - no status row => "no runner status yet"
  * - otherwise compare newest row's age (its `at`) with the heartbeat interval:
  *   fresh => "ok"
- *   older than 3x the interval (90s) or last_poll_age_ms huge (>90s) => "stale".
+ *   older than 3x the interval (15 min at the 5 min default) or last_poll_age_ms beyond the same
+ *   bound => "stale" (so a runner polling every 10 min is not flagged).
  */
 export function deriveHealth(
   statusRow: { at?: string | null; body?: string | RunnerStatusBody | null } | null | undefined,
