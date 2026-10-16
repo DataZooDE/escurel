@@ -1,6 +1,6 @@
 // Reads the runs control center's data from the gateway. No `vscode` import: the provider owns the UI.
 import type { EscurelClient, Event } from '../client';
-import { estimateHeartbeatIntervalMs, ESCUREL_RUNNER_STATUS_INTERVAL_MS } from './runnerModel';
+import { runnerIntervalMs, ESCUREL_RUNNER_STATUS_INTERVAL_MS } from './runnerModel';
 import { foldRuns } from './runsModel';
 
 /** Run lifecycle events loaded so far, newest first by what the gateway returned. */
@@ -143,7 +143,7 @@ export interface StatusRead {
   intervalMs: number;
 }
 
-/** The runner's newest status event, and the heartbeat interval its recent rows show. */
+/** The runner's newest status row, and its interval: declared in the record, else observed from its rows. */
 export async function readRunnerStatus(client: EscurelClient): Promise<StatusRead> {
   const page = await client.listEvents({
     label_skill: 'escurel:runner-status',
@@ -154,7 +154,7 @@ export async function readRunnerStatus(client: EscurelClient): Promise<StatusRea
   return {
     event: page.events?.[0],
     intervalMs: page.events?.length
-      ? estimateHeartbeatIntervalMs(page.events)
+      ? runnerIntervalMs(page.events)
       : ESCUREL_RUNNER_STATUS_INTERVAL_MS,
   };
 }

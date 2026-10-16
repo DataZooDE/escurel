@@ -968,3 +968,153 @@ fn a_purge_request_must_be_bounded_named_and_not_an_audit_label_by_accident() {
         "normalised to UTC"
     );
 }
+
+// --- the runner's single status record -------------------------------------
+
+fn legacy_heartbeat(runner: &str, i: u32) -> NewEvent {
+    NewEvent {
+        provenance: Some(
+            serde_json::json!({ "runner_status": { "runner_id": runner, "tenant": TENANT } }),
+        ),
+        body: format!("{{\"runner\":\"{runner}\",\"n\":{i}}}"),
+        ..status_event(i)
+    }
+}
+
+async fn status_rows(h: &Harness) -> Vec<escurel_index::EventInfo> {
+    h.indexer
+        .list_events_filtered_page(
+            &escurel_index::EventListFilter {
+                label_skill: Some("escurel:runner-status".to_owned()),
+                include_system: true,
+                ..Default::default()
+            },
+            false,
+            1000,
+            None,
+        )
+        .await
+        .unwrap()
+        .events
+}
+
+fn status_prov(runner: &str) -> serde_json::Value {
+    serde_json::json!({ "runner_status": { "runner_id": runner, "tenant": TENANT } })
+}
+
+#[tokio::test]
+async fn a_thousand_status_reports_leave_one_row_per_runner() {
+    let h = fresh_harness();
+    // The legacy stream: 30 heartbeats of runner `r1`, 3 of another runner.
+    for i in 1..=30 {
+        h.indexer
+            .capture_event(legacy_heartbeat("r1", i))
+            .await
+            .unwrap();
+    }
+    for i in 1..=3 {
+        h.indexer
+            .capture_event(legacy_heartbeat("r2", i))
+            .await
+            .unwrap();
+    }
+    h.indexer.capture_event(gmail_event()).await.unwrap();
+
+    let first = h
+        .indexer
+        .upsert_runner_status(
+            "r1",
+            Some("2026-10-01T00:00:00.000001Z".to_owned()),
+            "started",
+            "{\"state\":\"started\"}",
+            &status_prov("r1"),
+        )
+        .await
+        .unwrap();
+    assert!(first.created, "the first report creates the record");
+    assert_eq!(first.event.event_id, "runner-status:r1");
+    let rows = status_rows(&h).await;
+    assert_eq!(
+        rows.len(),
+        4,
+        "r1's 30 legacy rows are gone, r2's 3 stay, plus the record: {rows:?}"
+    );
+
+    for i in 0..1000 {
+        let r = h
+            .indexer
+            .upsert_runner_status(
+                "r1",
+                Some(format!("2026-10-02T00:00:{:02}.{:06}Z", i / 1000, i)),
+                "heartbeat",
+                &format!("{{\"n\":{i}}}"),
+                &status_prov("r1"),
+            )
+            .await
+            .unwrap();
+        assert!(!r.created, "report {i} overwrites");
+    }
+    let rows = status_rows(&h).await;
+    assert_eq!(rows.len(), 4, "1000 reports add no row: {rows:?}");
+    let record = rows
+        .iter()
+        .find(|e| e.event_id == "runner-status:r1")
+        .expect("record");
+    assert_eq!(record.title, "heartbeat");
+    assert_eq!(record.body, "{\"n\":999}");
+    assert_eq!(record.kind, escurel_index::EventKind::System);
+    assert_eq!(record.label_skill, "escurel:runner-status");
+    assert_eq!(
+        record.provenance["runner_status"]["runner_id"], "r1",
+        "{record:?}"
+    );
+    assert_eq!(
+        rows[0].event_id, "runner-status:r1",
+        "the overwritten record sorts first (newest at_ts)"
+    );
+    assert_eq!(
+        h.indexer.list_inbox(None).await.unwrap().len(),
+        1,
+        "other labels and the inbox are untouched"
+    );
+}
+
+#[tokio::test]
+async fn two_runners_keep_one_record_each() {
+    let h = fresh_harness();
+    for runner in ["a", "b"] {
+        for i in 0..5 {
+            h.indexer
+                .upsert_runner_status(
+                    runner,
+                    None,
+                    "heartbeat",
+                    &format!("{{\"n\":{i}}}"),
+                    &status_prov(runner),
+                )
+                .await
+                .unwrap();
+        }
+    }
+    let rows = status_rows(&h).await;
+    let mut ids: Vec<_> = rows.iter().map(|e| e.event_id.as_str()).collect();
+    ids.sort_unstable();
+    assert_eq!(ids, ["runner-status:a", "runner-status:b"]);
+}
+
+#[tokio::test]
+async fn a_runner_id_that_cannot_key_a_record_is_refused() {
+    let h = fresh_harness();
+    for bad in ["", "   ", "a b", "x/../y", &"r".repeat(200)] {
+        let err = h
+            .indexer
+            .upsert_runner_status(bad, None, "heartbeat", "{}", &status_prov("x"))
+            .await
+            .expect_err(bad);
+        assert!(
+            matches!(err, escurel_index::IndexerError::InvalidRunnerStatus(_)),
+            "{bad:?}: {err}"
+        );
+    }
+    assert!(status_rows(&h).await.is_empty());
+}

@@ -4,6 +4,18 @@ The skill version tracks the consumer-facing contract, not the Escurel
 binary version. The Escurel repo's checked-out git ref is the true version
 pin (see `SKILL.md` → "How this skill is installed").
 
+## 0.23.0 — `report_runner_status`: a runner's health is one overwritten record
+
+Additive; a reader that takes the label's newest row keeps working.
+
+- **`report_runner_status {runner_id, state, status_interval_s, body, started_at?, last_change_at?}`**
+  (`02-tool-surface.md`; no CLI twin, the runner calls it): overwrites the runner's ONE status record
+  `runner-status:<runner_id>` (label `escurel:runner-status`, `state` as its title) instead of a heartbeat event
+  per tick, so the table stops growing. Runner admin identity only; `capture_event` now refuses event ids starting
+  `runner-status:`. The body gains `state`, `status_interval_s`, `started_at`, `last_change_at`. A gateway without
+  the tool answers `-32601` and the runner falls back to heartbeat events (`11-event-driven-agents.md`).
+  An app that polls `list_events{label_skill: "escurel:runner-status", newest_first, limit: 1}` needs no change.
+
 ## 0.22.0 — `admin_purge_events`; `migrate-kind --rename-field`; five-minute runner heartbeat
 
 Additive; no existing call changes shape.

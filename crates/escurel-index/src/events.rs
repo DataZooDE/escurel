@@ -161,6 +161,25 @@ pub struct ExpiredGatewayRun {
     pub instance_page_id: Option<String>,
 }
 
+/// The label of a runner's health record.
+pub const RUNNER_STATUS_LABEL: &str = "escurel:runner-status";
+
+/// The reserved event-id prefix of a runner's status record
+/// (`runner-status:<runner_id>`): one row per runner, overwritten by
+/// [`Indexer::upsert_runner_status`]. Only that call (the gateway's
+/// `report_runner_status` tool) may mint such an id.
+pub const RUNNER_STATUS_ID_PREFIX: &str = "runner-status:";
+
+/// What [`Indexer::upsert_runner_status`] stored.
+#[derive(Debug, Clone)]
+pub struct RunnerStatusUpsert {
+    /// The runner's record as stored.
+    pub event: EventInfo,
+    /// `true` when this call created the record (the runner's first report):
+    /// the runner's older `escurel:runner-status` rows were deleted then.
+    pub created: bool,
+}
+
 /// The label of the audit event a purge leaves behind.
 pub const EVENT_PURGE_LABEL: &str = "escurel:event-purge";
 
@@ -1405,6 +1424,244 @@ impl Indexer {
             )?;
         }
         Ok(PurgeEventsReport::new(spec, total, matched, apply))
+    }
+
+    /// Overwrite the runner's single status record.
+    ///
+    /// A runner reports its health every few minutes; as an event stream
+    /// that is a table that only grows (the lab's reached ~58k rows and
+    /// every poll read them). The record is ONE row per runner under the
+    /// reserved id `runner-status:<runner_id>` (`kind: system`, label
+    /// [`RUNNER_STATUS_LABEL`]), overwritten in place: `at_ts`, `title` (the
+    /// runner's current state), `body` and `provenance` take the new
+    /// values. The row sorts by its fresh `at_ts`, so a reader asking for
+    /// the label's newest row still finds it first.
+    ///
+    /// The runner's first report creates the record and, in the same call,
+    /// deletes that runner's older heartbeat rows (`provenance.runner_status
+    /// .runner_id`), so a backlog written by the stream design is gone
+    /// after one report. Updating is UPDATE-then-INSERT (DuckLake has no
+    /// primary key to conflict on); on the attached-Postgres table the
+    /// whole write runs inside Postgres as one `INSERT … ON CONFLICT DO
+    /// UPDATE`. One runner has one writer task, so there is no race to lose.
+    ///
+    /// # Errors
+    /// [`IndexerError::InvalidRunnerStatus`] for a runner id that cannot key
+    /// a record; when a statement fails.
+    pub async fn upsert_runner_status(
+        &self,
+        runner_id: &str,
+        at: Option<String>,
+        title: &str,
+        body: &str,
+        provenance: &serde_json::Value,
+    ) -> Result<RunnerStatusUpsert, IndexerError> {
+        if runner_id.is_empty()
+            || runner_id.len() > 128
+            || !runner_id
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-' | ':' | '@'))
+        {
+            return Err(IndexerError::InvalidRunnerStatus(format!(
+                "runner_id must be 1..=128 characters of [A-Za-z0-9._:@-], got {runner_id:?}"
+            )));
+        }
+        let event_id = format!("{RUNNER_STATUS_ID_PREFIX}{runner_id}");
+        let at = at
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or_else(now_rfc3339_micros);
+        let provenance_json = serde_json::to_string(provenance)?;
+
+        let mut native = true;
+        let created = match self
+            .upsert_runner_status_native(runner_id, &event_id, &at, title, body, &provenance_json)
+            .await?
+        {
+            Some(created) => created,
+            None => {
+                native = false;
+                let updated = {
+                    let conn = self.conn.lock().await;
+                    let table = self.events_table();
+                    let json_cast = if matches!(self.events_backend(), EventsBackend::Local) {
+                        "?::JSON"
+                    } else {
+                        "?"
+                    };
+                    match self.events_tenant_scope() {
+                        None => conn.execute(
+                            &format!(
+                                "UPDATE {table} SET at_ts = TRY_CAST(? AS TIMESTAMP), title = ?, \
+                                 body = ?, provenance = {json_cast} WHERE event_id = ?"
+                            ),
+                            params![at, title, body, provenance_json, event_id],
+                        )?,
+                        Some(tenant) => conn.execute(
+                            &format!(
+                                "UPDATE {table} SET at_ts = TRY_CAST(? AS TIMESTAMP), title = ?, \
+                                 body = ?, provenance = {json_cast} WHERE event_id = ? AND tenant = ?"
+                            ),
+                            params![at, title, body, provenance_json, event_id, tenant],
+                        )?,
+                    }
+                };
+                if updated > 0 {
+                    false
+                } else {
+                    self.capture_event(NewEvent {
+                        event_id: Some(event_id.clone()),
+                        at: Some(at.clone()),
+                        source: "escurel-runner".to_owned(),
+                        mime: "application/json".to_owned(),
+                        label_skill: RUNNER_STATUS_LABEL.to_owned(),
+                        title: title.to_owned(),
+                        body: body.to_owned(),
+                        provenance: Some(provenance.clone()),
+                        kind: EventKind::System,
+                        ..NewEvent::default()
+                    })
+                    .await?;
+                    self.delete_older_runner_status(runner_id, &event_id)
+                        .await?;
+                    true
+                }
+            }
+        };
+        let event = if native {
+            // Written inside Postgres: the row is known, so it is not read
+            // back through the scanner (that read pulled the whole table).
+            EventInfo {
+                event_id: event_id.clone(),
+                at: Some(format!("{}Z", at[..19.min(at.len())].replace(' ', "T"))),
+                source: "escurel-runner".to_owned(),
+                mime: "application/json".to_owned(),
+                label_skill: RUNNER_STATUS_LABEL.to_owned(),
+                instance_page_id: None,
+                status: "inbox".to_owned(),
+                title: title.to_owned(),
+                body: body.to_owned(),
+                provenance: provenance.clone(),
+                kind: EventKind::System,
+                root_event_id: Some(event_id.clone()),
+                run_id: None,
+            }
+        } else {
+            self.get_event(&event_id).await?.ok_or_else(|| {
+                IndexerError::InvalidRunnerStatus(format!("record {event_id} missing after write"))
+            })?
+        };
+        Ok(RunnerStatusUpsert { event, created })
+    }
+
+    /// The runner's older heartbeat rows (the stream design's backlog), by
+    /// `provenance.runner_status.runner_id`; the record itself is kept.
+    async fn delete_older_runner_status(
+        &self,
+        runner_id: &str,
+        keep_event_id: &str,
+    ) -> Result<(), IndexerError> {
+        let conn = self.conn.lock().await;
+        let table = self.events_table();
+        match self.events_tenant_scope() {
+            None => conn.execute(
+                &format!(
+                    "DELETE FROM {table} WHERE label_skill = ? AND event_id <> ? \
+                     AND json_extract_string(CAST(provenance AS VARCHAR), '$.runner_status.runner_id') = ?"
+                ),
+                params![RUNNER_STATUS_LABEL, keep_event_id, runner_id],
+            )?,
+            Some(tenant) => conn.execute(
+                &format!(
+                    "DELETE FROM {table} WHERE label_skill = ? AND event_id <> ? AND tenant = ? \
+                     AND json_extract_string(CAST(provenance AS VARCHAR), '$.runner_status.runner_id') = ?"
+                ),
+                params![RUNNER_STATUS_LABEL, keep_event_id, tenant, runner_id],
+            )?,
+        };
+        Ok(())
+    }
+
+    /// The attached-Postgres write of [`Self::upsert_runner_status`]: one
+    /// `INSERT … ON CONFLICT DO UPDATE` and, for a new record, one `DELETE`
+    /// of the runner's older rows, both inside Postgres. `Ok(None)` when the
+    /// backend is not attached Postgres or a value cannot be quoted with
+    /// certainty (the caller then takes the generic path).
+    async fn upsert_runner_status_native(
+        &self,
+        runner_id: &str,
+        event_id: &str,
+        at: &str,
+        title: &str,
+        body: &str,
+        provenance_json: &str,
+    ) -> Result<Option<bool>, IndexerError> {
+        let (EventsBackend::AttachedPostgres { alias }, Some(tenant)) =
+            (self.events_backend(), self.events_tenant_scope())
+        else {
+            return Ok(None);
+        };
+        if !pg_native::is_timestamp_text(at) {
+            return Ok(None);
+        }
+        let lit = |s: &str| pg_native::pg_literal(s);
+        let (
+            Some(lt),
+            Some(lid),
+            Some(lat),
+            Some(ltitle),
+            Some(lbody),
+            Some(lprov),
+            Some(lrid),
+            Some(llabel),
+        ) = (
+            lit(tenant),
+            lit(event_id),
+            lit(at),
+            lit(title),
+            lit(body),
+            lit(provenance_json),
+            lit(runner_id),
+            lit(RUNNER_STATUS_LABEL),
+        )
+        else {
+            return Ok(None);
+        };
+        let t = EVENTS_PG_TABLE_NAME;
+        let conn = self.conn.lock().await;
+        let exists_inner = format!("SELECT 1 FROM {t} WHERE tenant = {lt} AND event_id = {lid}");
+        let existed: i64 = conn.query_row(
+            &format!(
+                "SELECT count(*) FROM postgres_query('{alias}', {})",
+                pg_native::duckdb_string(&exists_inner)
+            ),
+            [],
+            |r| r.get(0),
+        )?;
+        let upsert = format!(
+            "INSERT INTO {t} (tenant, event_id, at_ts, source, mime, label_skill, status, title, \
+                              body, provenance, created_at, kind, seq) \
+             VALUES ({lt}, {lid}, CAST({lat} AS timestamp), 'escurel-runner', 'application/json', \
+                     {llabel}, 'inbox', {ltitle}, {lbody}, {lprov}, now(), 'system', \
+                     (SELECT COALESCE(max(seq), 0) + 1 FROM {t} WHERE tenant = {lt})) \
+             ON CONFLICT (tenant, event_id) DO UPDATE SET at_ts = EXCLUDED.at_ts, \
+                 title = EXCLUDED.title, body = EXCLUDED.body, provenance = EXCLUDED.provenance"
+        );
+        conn.execute_batch(&format!(
+            "CALL postgres_execute('{alias}', {});",
+            pg_native::duckdb_string(&upsert)
+        ))?;
+        if existed == 0 {
+            let del = format!(
+                "DELETE FROM {t} WHERE tenant = {lt} AND label_skill = {llabel} \
+                 AND event_id <> {lid} \
+                 AND provenance::json -> 'runner_status' ->> 'runner_id' = {lrid}"
+            );
+            conn.execute_batch(&format!(
+                "CALL postgres_execute('{alias}', {});",
+                pg_native::duckdb_string(&del)
+            ))?;
+        }
+        Ok(Some(existed == 0))
     }
 
     /// One event by id, whatever its status — the by-event lookup the

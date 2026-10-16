@@ -70,6 +70,35 @@ pub struct CaptureEventRequest {
     pub kind: String,
 }
 
+/// `report_runner_status` arguments: a runner's health as its ONE overwritten
+/// record (`runner-status:<runner_id>`) instead of a heartbeat event per tick.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct ReportRunnerStatusRequest {
+    pub runner_id: String,
+    /// `started` | `changed` | `heartbeat` | `stopping`; becomes the record's title.
+    pub state: String,
+    /// How often this runner reports while idle (seconds).
+    pub status_interval_s: u64,
+    /// RFC 3339: when the runner process started. Empty sends nothing.
+    pub started_at: String,
+    /// RFC 3339: when the runner's state last changed. Empty sends nothing.
+    pub last_change_at: String,
+    /// The runner's snapshot, a JSON object as text.
+    pub body: String,
+}
+
+/// MCP `report_runner_status` wire keys as named.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct ReportRunnerStatusResponse {
+    /// `runner-status:<runner_id>`.
+    pub event_id: String,
+    /// `true` on the runner's first report (its older rows were deleted then).
+    pub created: bool,
+    pub at: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct ListInboxRequest {

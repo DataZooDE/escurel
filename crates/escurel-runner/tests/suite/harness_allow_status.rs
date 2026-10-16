@@ -166,6 +166,11 @@ async fn runner_status_harness_allow_list_leaks_no_detail() {
         "draining",
         "uptime_s",
         "last_poll_age_ms",
+        // Added by `report_runner_status` (the gateway sets them from the report).
+        "state",
+        "status_interval_s",
+        "started_at",
+        "last_change_at",
     ];
     let obj = body.as_object().expect("status body is an object");
     for key in obj.keys() {

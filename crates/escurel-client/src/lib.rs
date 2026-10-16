@@ -74,9 +74,10 @@ pub use escurel_types::{
     ProvenanceAncestryRequest, ProvenanceAncestryResponse, ProvenancePathRequest,
     ProvenancePathResponse, ProvenanceReportRequest, ProvenanceReportResponse, PurgePageRequest,
     PurgePageResponse, QueryInstanceRequest, QueryInstanceResponse, ReportProgressRequest,
-    ReportProgressResponse, ResolveRequest, ResolveResponse, SearchHit, SearchRequest,
-    SearchResponse, Skill, StoredQueryColumn, TenantSpec, UpdatePageRequest, UpdatePageResponse,
-    ValidateRequest, ValidateResponse, ValidationIssue, WikilinkParsed,
+    ReportProgressResponse, ReportRunnerStatusRequest, ReportRunnerStatusResponse, ResolveRequest,
+    ResolveResponse, SearchHit, SearchRequest, SearchResponse, Skill, StoredQueryColumn,
+    TenantSpec, UpdatePageRequest, UpdatePageResponse, ValidateRequest, ValidateResponse,
+    ValidationIssue, WikilinkParsed,
 };
 // Held writes (the `autonomy: review` gate): a draft is a finished change
 // that has not landed, and these are how an app shows a human what is
@@ -527,6 +528,30 @@ impl Client {
             args["kind"] = json!(req.kind);
         }
         self.transport.call_typed("capture_event", args).await
+    }
+
+    /// Overwrite this runner's single status record (`report_runner_status`).
+    /// A gateway older than the tool answers JSON-RPC `-32601`
+    /// ([`Error::JsonRpc`]); the caller then falls back to `capture_event`.
+    pub async fn report_runner_status(
+        &self,
+        req: ReportRunnerStatusRequest,
+    ) -> Result<ReportRunnerStatusResponse, Error> {
+        let mut args = json!({
+            "runner_id": req.runner_id,
+            "state": req.state,
+            "status_interval_s": req.status_interval_s,
+            "body": req.body,
+        });
+        if !req.started_at.is_empty() {
+            args["started_at"] = json!(req.started_at);
+        }
+        if !req.last_change_at.is_empty() {
+            args["last_change_at"] = json!(req.last_change_at);
+        }
+        self.transport
+            .call_typed("report_runner_status", args)
+            .await
     }
 
     /// List unprocessed inbox events, newest first. `limit` of 0 means

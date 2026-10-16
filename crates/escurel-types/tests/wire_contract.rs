@@ -896,6 +896,23 @@ fn roundtrip_events() {
         instance_page_id: "p".into(),
         status: "processed".into(),
     });
+    rt(ReportRunnerStatusRequest {
+        runner_id: "r1".into(),
+        state: "heartbeat".into(),
+        status_interval_s: 300,
+        started_at: "2026-10-16T08:00:00Z".into(),
+        last_change_at: "2026-10-16T08:00:00Z".into(),
+        body: "{}".into(),
+    });
+    // The wire answer of the gateway tool, key for key.
+    let resp: ReportRunnerStatusResponse = serde_json::from_value(
+        json!({ "event_id": "runner-status:r1", "created": true, "at": "2026-10-16T08:00:00Z" }),
+    )
+    .unwrap();
+    assert_eq!(
+        (resp.event_id.as_str(), resp.created),
+        ("runner-status:r1", true)
+    );
 }
 
 #[test]

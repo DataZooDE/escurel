@@ -165,6 +165,8 @@ async fn measured<T, Fut: std::future::Future<Output = T>>(
 /// path is two orders of magnitude above it with the backlog below.
 const PUSHED_DOWN_CEILING: i64 = 500;
 const BACKLOG: i64 = 5_000;
+/// The lab's incident: one runner's heartbeats, ~58k rows.
+const RUNNER_BACKLOG: i64 = 58_000;
 
 #[tokio::test]
 async fn the_inbox_does_not_read_the_heartbeat_backlog() {
@@ -411,4 +413,130 @@ async fn purging_a_label_on_postgres_runs_in_postgres_and_stays_in_its_tenant() 
         ))
         .await;
     assert_eq!(trail, 1, "the applied purge left one audit event");
+}
+
+/// `n` heartbeats of one runner, written the way the stream design did
+/// (`provenance.runner_status.runner_id`), natively.
+async fn seed_runner_heartbeats(probe: &Probe, runner: &str, n: i64, tenant: &str, base: i64) {
+    probe
+        .exec(&format!(
+            "INSERT INTO escurel_events \
+             (tenant, event_id, at_ts, source, mime, label_skill, status, title, body, provenance, kind, seq) \
+             SELECT '{tenant}', '{runner}-hb' || g, now() - (g || ' seconds')::interval, 'escurel-runner', \
+                    'application/json', '{LABEL}', 'inbox', 'heartbeat', repeat('x', 400), \
+                    '{{\"runner_status\":{{\"runner_id\":\"{runner}\",\"tenant\":\"{tenant}\"}}}}', 'system', {base} + g \
+             FROM generate_series(1, {n}) g"
+        ))
+        .await;
+}
+
+fn runner_prov(runner: &str) -> serde_json::Value {
+    serde_json::json!({ "runner_status": { "runner_id": runner, "tenant": TENANT } })
+}
+
+#[tokio::test]
+async fn a_runners_first_status_report_purges_its_backlog_in_postgres_then_stays_one_row() {
+    let (_pg, dsn) = live_postgres().await;
+    let r = replica(&dsn).await;
+    let probe = Probe::new(&dsn).await;
+    probe.seed(0).await;
+    // The runner's own 58,000-row backlog; another runner's rows; the same
+    // runner id under another tenant sharing the physical table.
+    seed_runner_heartbeats(&probe, "r1", RUNNER_BACKLOG, TENANT, 10).await;
+    seed_runner_heartbeats(&probe, "r2", BACKLOG, TENANT, 100_000).await;
+    seed_runner_heartbeats(&probe, "r1", 30, "other", 0).await;
+    probe.exec("ANALYZE escurel_events").await;
+    r.indexer.list_inbox(Some(1)).await.unwrap();
+
+    let count = |where_sql: String| {
+        let probe = &probe;
+        async move {
+            probe
+                .scalar(&format!(
+                    "SELECT count(*)::bigint FROM escurel_events WHERE {where_sql}"
+                ))
+                .await
+        }
+    };
+
+    let started = Instant::now();
+    let first = r
+        .indexer
+        .upsert_runner_status(
+            "r1",
+            None,
+            "started",
+            "{\"state\":\"started\"}",
+            &runner_prov("r1"),
+        )
+        .await
+        .expect("first report");
+    eprintln!(
+        "first report (creates the record, purges a {RUNNER_BACKLOG}-row backlog): {:?}",
+        started.elapsed()
+    );
+    assert!(first.created);
+    assert_eq!(first.event.event_id, "runner-status:r1");
+    assert_eq!(
+        count(format!("tenant = '{TENANT}' AND label_skill = '{LABEL}'")).await,
+        1 + BACKLOG,
+        "r1's backlog is gone, its record and r2's rows stay"
+    );
+    assert_eq!(
+        count("tenant = 'other' AND label_skill = 'escurel:runner-status'".to_owned()).await,
+        30,
+        "the same runner id under another tenant is untouched"
+    );
+
+    // Steady state: every further report is one UPDATE; the table does not grow
+    // and Postgres reads a handful of rows for it. Two warm-up reports: the attached connection charges the backlog delete's
+    // counters to the first statements that follow it.
+    for _ in 0..2 {
+        r.indexer
+            .upsert_runner_status("r1", None, "heartbeat", "{}", &runner_prov("r1"))
+            .await
+            .expect("warm-up report");
+        tokio::time::sleep(Duration::from_secs(3)).await;
+    }
+    for i in 0..5 {
+        let (r2, rows) = measured(&probe, || async {
+            r.indexer
+                .upsert_runner_status(
+                    "r1",
+                    None,
+                    "heartbeat",
+                    &format!("{{\"n\":{i}}}"),
+                    &runner_prov("r1"),
+                )
+                .await
+        })
+        .await;
+        let r2 = r2.expect("report");
+        assert!(!r2.created);
+        assert_eq!(r2.event.body, format!("{{\"n\":{i}}}"));
+        assert!(
+            rows < PUSHED_DOWN_CEILING,
+            "report {i} read {rows} rows of the events table"
+        );
+    }
+    assert_eq!(
+        count(format!("tenant = '{TENANT}' AND label_skill = '{LABEL}'")).await,
+        1 + BACKLOG,
+        "the reports add no row"
+    );
+
+    // The newest-first label tail (what the workbench and the readiness probe read)
+    // finds the record first.
+    let tail = EventListFilter {
+        label_skill: Some(LABEL.to_owned()),
+        include_system: true,
+        ..Default::default()
+    };
+    let newest = r
+        .indexer
+        .list_events_filtered_page(&tail, false, 1, None)
+        .await
+        .expect("newest");
+    assert_eq!(newest.events[0].event_id, "runner-status:r1");
+    assert_eq!(newest.events[0].title, "heartbeat");
 }

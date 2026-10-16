@@ -74,6 +74,7 @@ mod tools_mint;
 pub(crate) use tools_mint::sweep_expired_minted_runs;
 mod tool_detail;
 mod tools_progress;
+mod tools_status;
 mod tools_tool_calls;
 pub use tools_progress::DEFAULT_RUN_PROGRESS_KEEP;
 mod tools_read;
@@ -87,6 +88,7 @@ use tools_drafts::*;
 use tools_lineage::*;
 use tools_progress::*;
 use tools_read::*;
+use tools_status::*;
 pub(crate) use tools_write::event_to_json;
 
 /// The `search` tool for the WS live-search subscription (#355): same
@@ -678,9 +680,19 @@ fn dimension_for(method: &str, params: &Value) -> Option<Dimension> {
         // `apply_op` is a write; `open_session` debits a session
         // slot (semaphore, not a token bucket) inside the tool
         // body; `close_session` is a cleanup and does not debit.
-        "update_page" | "delete_page" | "move_page" | "purge_page" | "apply_op"
-        | "append_message" | "capture_event" | "assign_event" | "create_draft"
-        | "promote_draft" | "discard_draft" | "start_operation" => Dimension::Writes,
+        "update_page"
+        | "delete_page"
+        | "move_page"
+        | "purge_page"
+        | "apply_op"
+        | "append_message"
+        | "capture_event"
+        | "report_runner_status"
+        | "assign_event"
+        | "create_draft"
+        | "promote_draft"
+        | "discard_draft"
+        | "start_operation" => Dimension::Writes,
         "open_session" | "close_session" => return None,
         _ => Dimension::Queries,
     })
@@ -1246,6 +1258,9 @@ async fn dispatch_tools_call(
                 params.arguments,
             )
             .await
+        }
+        "report_runner_status" => {
+            tool_report_runner_status(indexer, caller, params.arguments).await
         }
         "mint_agent_token" => {
             tools_mint::tool_mint_agent_token(state, indexer, caller, params.arguments).await

@@ -293,6 +293,10 @@ pub enum IndexerError {
     )]
     KindMigrationRefused { pages: Vec<String> },
 
+    /// A runner status report the index refuses (an id it cannot key a record by).
+    #[error("invalid runner status: {0}")]
+    InvalidRunnerStatus(String),
+
     #[error("duckdb error: {0}")]
     Duckdb(#[from] duckdb::Error),
     #[error("lane store error: {0}")]
