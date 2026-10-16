@@ -119,7 +119,15 @@ pub fn migrate_events_pg_lineage_sql() -> Vec<String> {
     let pg_sql = format!(
         "CREATE INDEX IF NOT EXISTS escurel_events_root_at ON {EVENTS_PG_TABLE_NAME} (tenant, root_event_id, at_ts); \
          CREATE INDEX IF NOT EXISTS escurel_events_run_at ON {EVENTS_PG_TABLE_NAME} (tenant, run_id, at_ts); \
-         CREATE INDEX IF NOT EXISTS escurel_events_seq ON {EVENTS_PG_TABLE_NAME} (tenant, seq);"
+         CREATE INDEX IF NOT EXISTS escurel_events_seq ON {EVENTS_PG_TABLE_NAME} (tenant, seq); \
+         CREATE INDEX IF NOT EXISTS escurel_events_label_seq ON {EVENTS_PG_TABLE_NAME} (tenant, label_skill, seq); \
+         CREATE INDEX IF NOT EXISTS escurel_events_status_at ON {EVENTS_PG_TABLE_NAME} \
+             (tenant, status, at_ts DESC NULLS LAST, event_id DESC); \
+         CREATE INDEX IF NOT EXISTS escurel_events_inbox_at ON {EVENTS_PG_TABLE_NAME} \
+             (tenant, at_ts DESC NULLS LAST, event_id DESC) \
+             WHERE status = 'inbox' AND COALESCE(kind, 'user') <> 'system'; \
+         CREATE INDEX IF NOT EXISTS escurel_events_instance_at ON {EVENTS_PG_TABLE_NAME} \
+             (tenant, instance_page_id, at_ts);"
     );
     let escaped = pg_sql.replace('\'', "''");
     alters
