@@ -436,15 +436,24 @@ ordinary: the same gate, the same ledger, the same lifecycle events.
 
 ## Runner status (`escurel:runner-status`)
 
-The runner reports its own health as unassigned `kind: system` events
-under `escurel:runner-status` — `started` on boot, `changed` the moment
-what it reports changes (a run starts or ends, a tenant is paused),
-`heartbeat` every `ESCUREL_RUNNER_STATUS_INTERVAL` while nothing does,
-`stopping` on drain. Read the latest:
+The runner reports its own health as ONE overwritten record: the
+`kind: system` row `runner-status:<runner_id>` under `escurel:runner-status`,
+written through `report_runner_status` (not `capture_event`). Its title is
+the runner's state — `started` on boot, `changed` the moment what it
+reports changes (a run starts or ends, a tenant is paused), `heartbeat`
+every `ESCUREL_RUNNER_STATUS_INTERVAL` while nothing does, `stopping` on
+drain — and each report replaces the last, so the table holds one row per
+runner however long it runs. Read the latest:
 
 ```json
 { "label_skill": "escurel:runner-status", "newest_first": true, "limit": 1 }
 ```
+
+(The record's `at` is its last report, so it sorts first. With several
+runners in a tenant, take the newest row per `body.runner_id`.) A runner
+whose gateway predates the tool (`-32601`) falls back to the old heartbeat
+*events*, which the gateway prunes to the newest 50; a reader that takes the
+newest row per `runner_id` handles both.
 
 The body: `runner_id`, `version`, `harness` (the default), `harness_allow`
 (the published allow-list: the harness names a manual start may ask for,
@@ -453,9 +462,11 @@ sorted, names only), `tenant`, `live_runs`
 (`{pending, processed, failed, dead_letter, cancelled, total}` from the
 ledger), `throttled` (`{runs_per_min, max_concurrent, paused}` counters),
 `harness_permits_available`, `draining`, `uptime_s`, `last_poll_age_ms`
-(`null` until the first poll). A runner that has gone quiet is one whose
-latest row's `at` is older than its interval. The gateway keeps a tenant's
-last 50 rows, so the label never grows. A workbench with no `harness`
+(`null` until the first poll), and, set by the gateway from the report,
+`state`, `status_interval_s` (how often it reports), `started_at` and
+`last_change_at`. A runner that has gone quiet is one whose record's `at` is
+older than a few `status_interval_s` (the workbench uses 3x). The first
+report of a runner also deletes its older heartbeat rows. A workbench with no `harness`
 configured offers `harness_allow` as a picker when it holds more than one
 name (`Use default` first, nothing remembered) and never sends a name
 outside it (a configured name that is not on the list gets a warning and a

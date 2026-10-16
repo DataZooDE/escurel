@@ -66,7 +66,7 @@ pub use creds::{CredentialInfo, CredentialRecord};
 pub use events::{
     EVENT_PURGE_LABEL, EVENTS_MAX_LIMIT, EventInfo, EventKind, EventListFilter, EventPage,
     ExpiredGatewayRun, NewEvent, PROTECTED_EVENT_LABELS, PurgeEventsReport, PurgeSpec,
-    now_rfc3339_micros,
+    RUNNER_STATUS_ID_PREFIX, RUNNER_STATUS_LABEL, RunnerStatusUpsert, now_rfc3339_micros,
 };
 pub use graph::{
     AbandonedNode, DriftRow, GraphBackend, GraphDir, MAX_HOPS_CEILING, ProvenanceHop,

@@ -747,7 +747,7 @@ pub const CONFIG_KEYS: &[ConfigKey] = &[
         name: "ESCUREL_RUNNER_STATUS_INTERVAL",
         component: "Runner",
         default: "5m",
-        doc: "how often the runner reports its health as an `escurel:runner-status` event when nothing changed",
+        doc: "how often the runner refreshes its status record (`runner-status:<runner_id>`) when nothing changed; it travels in the record as `status_interval_s`",
     },
     ConfigKey {
         name: "ESCUREL_RUNNER_HARNESS_ALLOW",
@@ -1120,7 +1120,8 @@ const GROUPS: &[(&str, &str)] = &[
         "Runner",
         "escurel-runner (the agent runner). For an Evolve/Workbench deployment, probe\n\
          `GET /readyz` and admit planning work only after it returns 200. It becomes\n\
-         ready after a successful reserved `escurel:runner-status` system-event write\n\
+         ready after a successful write of its reserved `escurel:runner-status` record\n\
+         (`report_runner_status`; an older gateway: a system event)\n\
          and becomes unready when that write is refused, fails, goes stale, or the\n\
          runner starts draining. Give the runner service credential `escurel:admin`\n\
          scope; keep per-run harness credentials caller-scoped. `GET /healthz` remains\n\

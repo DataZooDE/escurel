@@ -301,12 +301,13 @@ pub struct RunnerConfig {
     /// (a week-old `cancel` must not fire). Same duration grammar as
     /// `poll_interval`. Source: `ESCUREL_RUNNER_TAIL_MAX_AGE` (default 10m).
     pub tail_max_age: Duration,
-    /// How often the runner reports its own health as an
-    /// `escurel:runner-status` event when nothing changed (workbench
-    /// backend P2-4); a change is reported at once. Same duration grammar
-    /// as `poll_interval`. Source: `ESCUREL_RUNNER_STATUS_INTERVAL`
-    /// (default 5m: every heartbeat is an event row, and on a lake backend
-    /// a snapshot; the readiness window follows it, twice the interval).
+    /// How often the runner refreshes its own status record
+    /// (`runner-status:<runner_id>`, one overwritten row) when nothing
+    /// changed (workbench backend P2-4); a change is reported at once. The
+    /// interval travels in the record, so a reader derives staleness from
+    /// it. Same duration grammar as `poll_interval`. Source:
+    /// `ESCUREL_RUNNER_STATUS_INTERVAL` (default 5m; the readiness window
+    /// follows it, twice the interval).
     pub status_interval: Duration,
     /// The harnesses a manual start may ask for by name (workbench backend
     /// P2-5). A request outside the list fails the run closed. Source:

@@ -1,9 +1,11 @@
-//! The runner reports its own health as `escurel:runner-status` system
-//! events (knowledge-workbench backend P2-4 — BRD FR-C runner status): a
-//! heartbeat every `ESCUREL_RUNNER_STATUS_INTERVAL`, and one at once when
-//! what it reports changes (a run starts or ends, a tenant pauses). The
-//! workbench reads the latest with `list_events { label_skill,
-//! newest_first: true, limit: 1 }`.
+//! The runner reports its own health as ONE overwritten record
+//! (`runner-status:<runner_id>`, label `escurel:runner-status`, via
+//! `report_runner_status`): refreshed every `ESCUREL_RUNNER_STATUS_INTERVAL`,
+//! and at once when what it reports changes (a run starts or ends, a tenant
+//! pauses). The workbench reads it with `list_events { label_skill,
+//! newest_first: true, limit: 1 }`. A gateway that does not know the tool
+//! (an older image) answers `-32601`; the runner then falls back, once, to the
+//! heartbeat-event stream it used before.
 //!
 //! Real gateway, real runner binary, real echo harness idling so a run is
 //! observably live.
@@ -246,33 +248,173 @@ async fn the_runner_heartbeats_and_reports_a_change_at_once() {
     .await;
     assert_eq!(e["title"], "changed", "{e}");
 
-    // Heartbeats keep coming while nothing changes.
-    let before = call(
-        &gw,
-        &admin,
-        "list_events",
-        json!({ "label_skill": "escurel:runner-status", "limit": 1000 }),
-    )
-    .await["events"]
-        .as_array()
-        .unwrap()
-        .len();
+    // The record keeps being refreshed while nothing changes, and stays ONE row.
+    let at_of = |e: &Value| e["at"].as_str().unwrap_or_default().to_owned();
+    let (e0, _) = latest(&gw, &admin).await.expect("record");
+    let before = at_of(&e0);
     tokio::time::sleep(Duration::from_millis(4500)).await;
-    let after = call(
+    let (e1, body) = latest(&gw, &admin).await.expect("record");
+    assert_ne!(
+        at_of(&e1),
+        before,
+        "the heartbeat refreshed the record: {e1}"
+    );
+    assert_eq!(e1["title"], "heartbeat", "{e1}");
+    assert_eq!(body["state"], "heartbeat", "{body}");
+    assert_eq!(body["status_interval_s"], 2, "{body}");
+    assert!(body["started_at"].is_string(), "{body}");
+    assert!(body["last_change_at"].is_string(), "{body}");
+    let rows = call(
         &gw,
         &admin,
         "list_events",
-        json!({ "label_skill": "escurel:runner-status", "limit": 1000 }),
+        json!({ "label_skill": "escurel:runner-status", "limit": 1000, "include_system": true }),
     )
     .await;
-    let rows = after["events"].as_array().unwrap();
-    assert!(
-        rows.len() >= before + 2,
-        "heartbeats: {before} → {}",
-        rows.len()
-    );
-    assert!(
-        rows.iter().rev().take(2).all(|e| e["title"] == "heartbeat"),
-        "{after}"
-    );
+    let rows = rows["events"].as_array().unwrap();
+    assert_eq!(rows.len(), 1, "one record, however many reports: {rows:?}");
+    assert_eq!(rows[0]["event_id"], "runner-status:runner-a");
+}
+
+/// A thin reverse proxy in front of a REAL gateway that answers `-32601` to
+/// `report_runner_status` and forwards everything else: what a gateway built
+/// before the tool does with it. Returns its address and the count of
+/// forwarded `capture_event` calls on the status label.
+async fn gateway_without_the_tool(
+    upstream: String,
+) -> (String, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+    use axum::body::Bytes;
+    use axum::extract::State;
+    use axum::http::{HeaderMap, Method, StatusCode, Uri};
+    use axum::response::{IntoResponse, Response};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[derive(Clone)]
+    struct S {
+        upstream: String,
+        http: reqwest::Client,
+        status_captures: std::sync::Arc<AtomicUsize>,
+    }
+    async fn forward(
+        State(s): State<S>,
+        method: Method,
+        uri: Uri,
+        headers: HeaderMap,
+        body: Bytes,
+    ) -> Response {
+        if let Ok(v) = serde_json::from_slice::<Value>(&body) {
+            let tool = v["params"]["name"].as_str().unwrap_or_default();
+            if tool == "report_runner_status" {
+                return axum::Json(json!({ "jsonrpc": "2.0", "id": v["id"],
+                    "error": { "code": -32601, "message": "unknown tool `report_runner_status`" } }))
+                .into_response();
+            }
+            if tool == "capture_event"
+                && v["params"]["arguments"]["label_skill"] == "escurel:runner-status"
+            {
+                s.status_captures.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+        let mut req = s.http.request(
+            reqwest::Method::from_bytes(method.as_str().as_bytes()).unwrap(),
+            format!(
+                "{}{}",
+                s.upstream,
+                uri.path_and_query().map_or("", |p| p.as_str())
+            ),
+        );
+        for (k, v) in &headers {
+            if k != "host" && k != "content-length" {
+                req = req.header(k.as_str(), v.as_bytes());
+            }
+        }
+        match req.body(body.to_vec()).send().await {
+            Ok(r) => {
+                let status = StatusCode::from_u16(r.status().as_u16()).unwrap();
+                let ct = r.headers().get("content-type").cloned();
+                let bytes = r.bytes().await.unwrap_or_default();
+                let mut out = (status, bytes).into_response();
+                if let Some(ct) = ct {
+                    out.headers_mut().insert("content-type", ct);
+                }
+                out
+            }
+            Err(_) => StatusCode::BAD_GATEWAY.into_response(),
+        }
+    }
+    let count = std::sync::Arc::new(AtomicUsize::new(0));
+    let app = axum::Router::new().fallback(forward).with_state(S {
+        upstream,
+        http: reqwest::Client::new(),
+        status_captures: count.clone(),
+    });
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        let _ = axum::serve(listener, app).await;
+    });
+    (format!("http://{addr}"), count)
+}
+
+#[tokio::test]
+async fn a_runner_falls_back_to_heartbeat_events_on_a_gateway_without_the_tool() {
+    let gw = EscurelProcess::spawn(Opts {
+        auth: AuthMode::TestIssuer,
+        fixtures: Some(FixtureBuilder::new().tenant(TENANT).done()),
+        ..Default::default()
+    })
+    .await;
+    let admin = gw.mint_token(TENANT, Role::Admin);
+    let (old_gateway, status_captures) = gateway_without_the_tool(gw.base_url().to_owned()).await;
+
+    let listen = format!("127.0.0.1:{}", free_port());
+    let ledger_dir = tempfile::tempdir().expect("tempdir");
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_escurel-runner"));
+    cmd.env("ESCUREL_RUNNER_LISTEN", &listen)
+        .env("ESCUREL_RUNNER_GATEWAY_URL", &old_gateway)
+        .env("ESCUREL_RUNNER_TENANT", TENANT)
+        .env("ESCUREL_RUNNER_TOKEN", &admin)
+        .env("ESCUREL_RUNNER_ID", "runner-old")
+        .env(
+            "ESCUREL_RUNNER_LEDGER_PATH",
+            ledger_dir.path().join("ledger.sqlite"),
+        )
+        .env("ESCUREL_RUNNER_STATUS_INTERVAL", "1s");
+    let _runner = ChildGuard(cmd.spawn().expect("spawn runner"));
+
+    // Heartbeat EVENTS arrive (several rows, none of them the record), and the
+    // runner is ready: the fallback write is the readiness write.
+    let deadline = Instant::now() + Duration::from_secs(25);
+    loop {
+        let rows = call(
+            &gw,
+            &admin,
+            "list_events",
+            json!({ "label_skill": "escurel:runner-status", "limit": 1000, "include_system": true }),
+        )
+        .await;
+        let rows = rows["events"].as_array().unwrap().clone();
+        if rows.len() >= 3 {
+            assert!(
+                rows.iter()
+                    .all(|e| e["event_id"] != "runner-status:runner-old"),
+                "{rows:?}"
+            );
+            assert!(rows.iter().any(|e| e["title"] == "heartbeat"), "{rows:?}");
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "no fallback heartbeats: {rows:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    let ready: Value = reqwest::get(format!("http://{listen}/readyz"))
+        .await
+        .expect("readyz")
+        .json()
+        .await
+        .expect("json");
+    assert_eq!(ready["ready"], true, "{ready}");
+    assert!(status_captures.load(std::sync::atomic::Ordering::SeqCst) >= 3);
 }

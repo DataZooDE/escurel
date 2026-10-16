@@ -1973,6 +1973,17 @@ pub(super) async fn tool_capture_event(
             crate::write_back::RESERVED_EVENT_ID_PREFIX
         )));
     }
+    // `runner-status:<runner_id>` is the one overwritten record `report_runner_status` keeps per runner;
+    // minting it here would let a caller plant a row the readers take for a runner's health.
+    if a.event_id
+        .as_deref()
+        .is_some_and(|id| id.starts_with(escurel_index::RUNNER_STATUS_ID_PREFIX))
+    {
+        return Err(JsonRpcError::invalid_params(format!(
+            "capture_event: event ids starting with `{}` are reserved for `report_runner_status`",
+            escurel_index::RUNNER_STATUS_ID_PREFIX
+        )));
+    }
     // Bookkeeping rights belong to the runner's and the gateway's own admin identity, NOT to a token
     // bound to a run: the runner mints its harnesses ADMIN run tokens, so `is_admin` alone let an
     // agent run file `escurel:run-status`, a system `run-finished`, or a `provenance.workflow` step.

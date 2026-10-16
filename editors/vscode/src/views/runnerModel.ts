@@ -44,6 +44,12 @@ export interface RunnerStatusBody {
   paused_tenants?: string[];
   runner_id?: string;
   runs?: RunnerRunsCount;
+  /** `started` | `changed` | `heartbeat` | `stopping`: set by the gateway from `report_runner_status`. */
+  state?: string;
+  /** How often this runner reports while idle (seconds). Absent on a runner that files events. */
+  status_interval_s?: number;
+  started_at?: string;
+  last_change_at?: string;
   tenant?: string;
   throttled?: RunnerThrottled;
   uptime_s?: number;
@@ -121,6 +127,27 @@ export function estimateHeartbeatIntervalMs(
   gaps.sort((a, b) => a - b);
   const mid = Math.floor(gaps.length / 2);
   return gaps.length % 2 ? gaps[mid]! : (gaps[mid - 1]! + gaps[mid]!) / 2;
+}
+
+/**
+ * The interval of the runner whose status is NEWEST in `rows` (newest first). A runner on the
+ * overwritten record declares it (`body.status_interval_s`), which is exact. A runner that still
+ * files heartbeat events does not, so it is observed from the gaps between ITS OWN rows (several
+ * runners of a tenant share the label, and mixing their gaps would measure no runner).
+ */
+export function runnerIntervalMs(
+  rows: readonly { at?: string | null; title?: string | null; body?: string | null }[],
+): number {
+  const newest = rows[0];
+  if (!newest) return ESCUREL_RUNNER_STATUS_INTERVAL_MS;
+  const body = parseRunnerStatusBody(newest);
+  const declared = body?.status_interval_s;
+  if (typeof declared === 'number' && Number.isFinite(declared) && declared > 0) {
+    return declared * 1000;
+  }
+  const id = body?.runner_id;
+  const ownRows = id ? rows.filter((r) => parseRunnerStatusBody(r)?.runner_id === id) : rows;
+  return estimateHeartbeatIntervalMs(ownRows);
 }
 
 /** Formats age in seconds: "last heartbeat N s ago". */

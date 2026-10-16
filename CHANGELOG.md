@@ -11,7 +11,7 @@ re-cuts append `.N`), matching the DataZoo release scheme (cf. erpl).
 **Read first:** [`docs/deploy/kind-migration.md`](docs/deploy/kind-migration.md) (stop-first upgrade, backup,
 rollback) and the consumer checklist in
 [`.claude/skills/escurel-platform/CHANGELOG.md`](.claude/skills/escurel-platform/CHANGELOG.md) (0.7.0 – 0.18.1).
-Skill version `0.22.0`. Every consumer that writes pages or reads the tool surface moves in the same window.
+Skill version `0.23.0`. Every consumer that writes pages or reads the tool surface moves in the same window.
 
 ### Fixed
 
@@ -152,6 +152,15 @@ Skill version `0.22.0`. Every consumer that writes pages or reads the tool surfa
 
 ### Added
 
+- **`report_runner_status`: a runner's health is ONE overwritten record, not a heartbeat stream.** The runner
+  overwrites `runner-status:<runner_id>` (label `escurel:runner-status`, `kind: system`; `state` is the title and
+  the body gains `state`, `status_interval_s`, `started_at`, `last_change_at`) through the new MCP tool, so the
+  events table stops growing (the lab's reached ~58k rows). Native `INSERT … ON CONFLICT DO UPDATE` on the
+  attached-Postgres table, UPDATE-then-INSERT on the local and lake tables. A runner's first report deletes its
+  older heartbeat rows (58k rows: ~130 ms against a local Postgres). Runner admin identity only; no webhook or
+  `/ws` event; `capture_event` refuses ids starting `runner-status:`. A runner whose gateway answers `-32601`
+  (an image older than this) falls back to the old heartbeat events; the VS Code Runs view reads the interval
+  from the record (`status_interval_s`), else from that runner's own rows. 88 tools; skill 0.23.0.
 - **`admin_purge_events` / `escurel admin purge-events` / `AdminClient::purge_events` (#731).** An audited
   retention tool for one event label: a dry run unless `apply`, refused without a bound (`before_ts` and/or
   `keep_latest`), protected audit labels need `allow_protected`, and an applied purge leaves an

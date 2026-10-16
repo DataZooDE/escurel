@@ -3505,13 +3505,20 @@ fn status_snapshot(
 }
 
 /// The status reporter (workbench backend P2-4). Writes this runner's
-/// health as unassigned `escurel:runner-status` system events — `started`
-/// once, `changed` as soon as the stable part of the snapshot differs
-/// (checked every 250 ms), `heartbeat` every `interval` while nothing does,
-/// `stopping` on drain. The gateway keeps a tenant's last 50 rows; the
-/// workbench reads the latest with `list_events { label_skill,
-/// newest_first: true, limit: 1 }`. Best-effort: a refused write is the
-/// next tick's problem.
+/// health as ONE overwritten record, `runner-status:<runner_id>`, through the
+/// gateway's `report_runner_status` tool: `started` once, `changed` as soon
+/// as the stable part of the snapshot differs (checked every 250 ms),
+/// `heartbeat` every `interval` while nothing does, `stopping` on drain. The
+/// state is the record's title and travels in its body with the interval, so
+/// the table does not grow and a reader needs only the label's newest row
+/// (`list_events { label_skill, newest_first: true, limit: 1 }`).
+///
+/// A gateway that does not know the tool (an image older than it) answers
+/// JSON-RPC `-32601`; the runner then logs it once and, for the rest of its
+/// life, files the same status as `escurel:runner-status` system events
+/// through `capture_event` (the gateway keeps a tenant's newest 50). Either
+/// way a successful write is what readiness means. Best-effort: a refused
+/// write is the next tick's problem.
 async fn status_loop(
     state: AppState,
     gateway_url: String,
@@ -3522,6 +3529,10 @@ async fn status_loop(
 ) {
     const CHECK: std::time::Duration = std::time::Duration::from_millis(250);
     let started = Instant::now();
+    let started_at = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+    let mut last_change_at = started_at.clone();
+    // Cleared for good when the gateway answers `-32601` to `report_runner_status`.
+    let mut record_supported = true;
     let mut last_stable: Option<serde_json::Value> = None;
     let mut last_sent = Instant::now();
     let mut ticker = tokio::time::interval(CHECK.min(interval));
@@ -3546,18 +3557,50 @@ async fn status_loop(
                 .store(4, std::sync::atomic::Ordering::Relaxed);
             continue;
         };
-        let written = client
-            .capture_event(escurel_client::CaptureEventRequest {
-                source: "escurel-runner".to_owned(),
-                mime: "application/json".to_owned(),
-                label_skill: "escurel:runner-status".to_owned(),
-                title: title.to_owned(),
-                body: body.to_string(),
-                provenance: json!({ "runner_status": { "runner_id": who.runner_id, "tenant": tenant } }),
-                kind: "system".to_owned(),
-                ..Default::default()
-            })
-            .await;
+        if title != "heartbeat" {
+            last_change_at = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+        }
+        let mut written = if record_supported {
+            client
+                .report_runner_status(escurel_client::ReportRunnerStatusRequest {
+                    runner_id: who.runner_id.clone(),
+                    state: title.to_owned(),
+                    status_interval_s: interval.as_secs().max(1),
+                    started_at: started_at.clone(),
+                    last_change_at: last_change_at.clone(),
+                    body: body.to_string(),
+                })
+                .await
+                .map(|_| ())
+        } else {
+            Ok(())
+        };
+        if matches!(
+            &written,
+            Err(escurel_client::Error::JsonRpc { code: -32601, .. })
+        ) {
+            tracing::warn!(
+                target: "escurel_runner",
+                "runner-status: the gateway has no `report_runner_status` (an older image); \
+                 falling back to heartbeat events for the rest of this run"
+            );
+            record_supported = false;
+        }
+        if !record_supported {
+            written = client
+                .capture_event(escurel_client::CaptureEventRequest {
+                    source: "escurel-runner".to_owned(),
+                    mime: "application/json".to_owned(),
+                    label_skill: "escurel:runner-status".to_owned(),
+                    title: title.to_owned(),
+                    body: body.to_string(),
+                    provenance: json!({ "runner_status": { "runner_id": who.runner_id, "tenant": tenant } }),
+                    kind: "system".to_owned(),
+                    ..Default::default()
+                })
+                .await
+                .map(|_| ());
+        }
         match written {
             Ok(_) => {
                 *state

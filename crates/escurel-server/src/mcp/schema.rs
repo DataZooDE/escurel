@@ -852,6 +852,36 @@ pub(crate) fn tool_defs() -> Vec<ToolDef> {
             }),
         ),
         tool_entry(
+            "report_runner_status",
+            Execution::Orchestration,
+            Scope::Agent,
+            Touches::shared(Surface::Events),
+            "Runner bookkeeping: overwrite this runner's ONE status record \
+                 (`runner-status:<runner_id>`, label `escurel:runner-status`) with \
+                 its current health, instead of filing a heartbeat event per tick. \
+                 Only the runner's own admin identity may call it (not a run-bound \
+                 token); the reserved id prefix `runner-status:` is minted only \
+                 here. `state` becomes the record's title; `body` is the runner's \
+                 snapshot as a JSON object (text), to which the gateway adds \
+                 `state`, `status_interval_s`, `started_at` and `last_change_at`. \
+                 The first report of a runner also deletes that runner's older \
+                 `escurel:runner-status` rows. Announces nothing (no webhook, no \
+                 WS event). A gateway without this tool answers -32601: fall back \
+                 to `capture_event`.",
+            json!({
+                "type": "object",
+                "required": ["runner_id", "state", "status_interval_s", "body"],
+                "properties": {
+                    "runner_id": { "type": "string", "maxLength": 128, "description": "[A-Za-z0-9._:@-]" },
+                    "state": { "type": "string", "enum": ["started", "changed", "heartbeat", "stopping"] },
+                    "status_interval_s": { "type": "integer", "minimum": 1, "description": "How often this runner reports while idle; readers derive staleness from it." },
+                    "started_at": { "type": "string", "description": "RFC 3339: when the runner process started." },
+                    "last_change_at": { "type": "string", "description": "RFC 3339: when the runner's state last changed." },
+                    "body": { "type": "string", "maxLength": 65536, "description": "The runner's snapshot, a JSON object as text." }
+                }
+            }),
+        ),
+        tool_entry(
             "list_inbox",
             Execution::Deterministic,
             Scope::Agent,
@@ -1817,8 +1847,13 @@ fn group_of(name: &str, scope: Scope) -> &'static str {
         "list_changesets" | "promote_changeset" | "discard_changeset" | "create_branch"
         | "list_branches" | "merge_branch" | "abandon_branch" | "diff_draft" | "list_drafts"
         | "promote_draft" | "discard_draft" => "[REVIEW]",
-        "mint_agent_token" | "report_progress" | "get_run_tool_calls" | "list_lineage"
-        | "start_operation" | "get_operation" => "[RUNNER]",
+        "mint_agent_token"
+        | "report_progress"
+        | "report_runner_status"
+        | "get_run_tool_calls"
+        | "list_lineage"
+        | "start_operation"
+        | "get_operation" => "[RUNNER]",
         "open_session" | "apply_op" | "close_session" | "list_snapshots" | "list_op_authors" => {
             "[SESSION]"
         }
@@ -2302,6 +2337,11 @@ fn output_schema_for(name: &str) -> Option<Value> {
         })),
         "capture_event" | "assign_event" => obj(json!({
             "event_id": { "type": "string" }
+        })),
+        "report_runner_status" => obj(json!({
+            "event_id": { "type": "string", "description": "`runner-status:<runner_id>`" },
+            "created": { "type": "boolean", "description": "true on the runner's first report (older rows were deleted then)" },
+            "at": { "type": "string" }
         })),
         "list_lineage" => obj(json!({
             "root_event_id": { "type": "string" },

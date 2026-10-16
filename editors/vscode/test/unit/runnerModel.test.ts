@@ -4,6 +4,7 @@ import {
   allowedHarnesses,
   estimateHeartbeatIntervalMs,
   deriveHealth,
+  runnerIntervalMs,
   type RunnerStatusBody,
 } from '../../src/views/runnerModel';
 
@@ -156,5 +157,44 @@ describe('health ages with the clock', () => {
     const at = Date.parse(row.at as string);
     expect(deriveHealth(row, at + 5_000).status).toBe('ok');
     expect(deriveHealth(row, at + 20 * 60_000).status).toBe('stale'); // > 3 x the 5 min default
+  });
+});
+
+describe('the interval of the runner whose status is newest', () => {
+  const template = (runnerStatusFixture.events as Event[])[2]!;
+  const row = (iso: string, body: Record<string, unknown>, title = 'heartbeat') => ({
+    ...template,
+    at: iso,
+    title,
+    body: JSON.stringify(body),
+  });
+
+  it('is the one the record declares, whatever the rows say', () => {
+    // A single overwritten record has no gaps to measure; the payload carries the interval.
+    const rows = [row('2026-10-02T12:00:00Z', { runner_id: 'r1', status_interval_s: 120 })];
+    expect(runnerIntervalMs(rows)).toBe(120_000);
+  });
+
+  it('ignores a declared interval that is not a positive number', () => {
+    for (const bad of [0, -5, 'soon', null]) {
+      const rows = [row('2026-10-02T12:00:00Z', { runner_id: 'r1', status_interval_s: bad })];
+      expect(runnerIntervalMs(rows)).toBe(300_000);
+    }
+  });
+
+  it('falls back to the observed gaps of ITS OWN rows, not a neighbour runner\'s', () => {
+    const rows = [
+      row('2026-10-02T12:03:00Z', { runner_id: 'a' }),
+      row('2026-10-02T12:02:30Z', { runner_id: 'b' }),
+      row('2026-10-02T12:02:00Z', { runner_id: 'a' }),
+      row('2026-10-02T12:01:00Z', { runner_id: 'a' }),
+      row('2026-10-02T12:00:30Z', { runner_id: 'b' }),
+    ];
+    // a: 60 s gaps; mixing in b's rows would give 30 s gaps.
+    expect(runnerIntervalMs(rows)).toBe(60_000);
+  });
+
+  it('is the default with no rows', () => {
+    expect(runnerIntervalMs([])).toBe(300_000);
   });
 });

@@ -60,6 +60,7 @@ mod event_pagination;
 mod events;
 mod events_kind;
 mod events_newest_first;
+mod events_runner_status;
 mod file_connector_confinement;
 mod fusion_acl;
 mod get_run_tool_calls;

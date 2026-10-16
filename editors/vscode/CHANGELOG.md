@@ -8,6 +8,9 @@ derives its version from the tag (`vYYYY.MM.DD` → `YYYY.M.D`, leading zeros dr
 
 ### Added
 
+- **The Runs view reads the runner's single status record**: the interval comes from the record
+  (`status_interval_s`, written by `report_runner_status`), and for a runner that still files heartbeat
+  events from the gaps between that runner's own rows (not a neighbour's).
 - **Review and approve Evolve data rules**: `Discover, review and approve Anofox Evolve data rules…`
   proposes candidate rules for a prepared training source, runs the one confirmation test after you agree,
   shows the value-free report (counts, p-values, Holm-corrected decision, required rows, insufficient

@@ -143,7 +143,8 @@ read by several binaries.
 
 escurel-runner (the agent runner). For an Evolve/Workbench deployment, probe
 `GET /readyz` and admit planning work only after it returns 200. It becomes
-ready after a successful reserved `escurel:runner-status` system-event write
+ready after a successful write of its reserved `escurel:runner-status` record
+(`report_runner_status`; an older gateway: a system event)
 and becomes unready when that write is refused, fails, goes stale, or the
 runner starts draining. Give the runner service credential `escurel:admin`
 scope; keep per-run harness credentials caller-scoped. `GET /healthz` remains
@@ -162,7 +163,7 @@ tenant/token can process `/trigger` but deliberately report unready at
 | `ESCUREL_RUNNER_SEEN_CAP` | 4096 | bound of the dedup seen-set |
 | `ESCUREL_RUNNER_POLL_INTERVAL` | 30s | interval between inbox polls (`30s`, `1500ms`, `2m`) |
 | `ESCUREL_RUNNER_TAIL_MAX_AGE` | 10m | how old a request on a tailed label may be and still be acted on after a restart |
-| `ESCUREL_RUNNER_STATUS_INTERVAL` | 5m | how often the runner reports its health as an `escurel:runner-status` event when nothing changed |
+| `ESCUREL_RUNNER_STATUS_INTERVAL` | 5m | how often the runner refreshes its status record (`runner-status:<runner_id>`) when nothing changed; it travels in the record as `status_interval_s` |
 | `ESCUREL_RUNNER_HARNESS_ALLOW` | the configured harness | comma-separated harnesses a manual start may ask for by name; others fail closed |
 | `ESCUREL_RUNNER_ID` | <HOSTNAME>:<pid> | this runner's name in its status reports |
 | `ESCUREL_RUNNER_CANCEL_GRACE` | 5s | time a cancelled run's subprocess gets between SIGTERM and SIGKILL |

@@ -69,6 +69,10 @@ const COVERAGE: &[(&str, Coverage)] = &[
     ("list_op_authors", Agent(&["page", "op-authors"])),
     ("assign_event", Agent(&["event", "assign"])),
     ("report_progress", Agent(&["run", "progress"])),
+    (
+        "report_runner_status",
+        Excluded("runner-internal heartbeat; the runner calls it, MCP-only"),
+    ),
     ("mint_agent_token", Agent(&["run", "mint-token"])),
     ("get_run_tool_calls", Agent(&["run", "tool-calls"])),
     ("list_lineage", Agent(&["run", "lineage"])),
