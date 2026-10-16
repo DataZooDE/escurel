@@ -969,6 +969,23 @@ fn roundtrip_admin() {
         content_type: "text/markdown".into(),
     });
     rt(DeleteChatHistoryResponse { deleted: 4 });
+    rt(PurgeEventsResponse {
+        label_skill: "escurel:runner-status".into(),
+        total: 10,
+        matched: 7,
+        kept: 3,
+        deleted: 7,
+        dry_run: false,
+        audit_event_id: Some("01HZ".into()),
+    });
+    rt(PurgeEventsRequest {
+        tenant_id: "acme".into(),
+        label_skill: "escurel:runner-status".into(),
+        before_ts: "2026-10-01T00:00:00Z".into(),
+        keep_latest: Some(50),
+        apply: true,
+        allow_protected: false,
+    });
     rt(CompactProgress {
         ops_compacted: 3,
         bytes_reclaimed: 4096,

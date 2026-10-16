@@ -261,6 +261,52 @@ pub(super) async fn tool_admin_delete_chat_history(
 }
 
 #[derive(Deserialize)]
+pub(super) struct AdminPurgeEventsArgs {
+    /// Optional; when given it must name the tenant this gateway serves.
+    #[serde(default)]
+    tenant_id: String,
+    label_skill: String,
+    #[serde(default)]
+    before_ts: Option<String>,
+    #[serde(default)]
+    keep_latest: Option<u32>,
+    /// Delete for real; absent/false = count only.
+    #[serde(default)]
+    apply: bool,
+    #[serde(default)]
+    allow_protected: bool,
+}
+
+pub(super) async fn tool_admin_purge_events(
+    indexer: &Indexer,
+    args: Value,
+) -> Result<Value, JsonRpcError> {
+    let a: AdminPurgeEventsArgs = parse_args(args, "admin_purge_events")?;
+    ensure_tenant_matches(indexer, &a.tenant_id)?;
+    let spec = escurel_index::PurgeSpec::new(
+        &a.label_skill,
+        a.before_ts.as_deref().filter(|s| !s.is_empty()),
+        a.keep_latest.map(|n| n as usize),
+        a.allow_protected,
+    )
+    .map_err(JsonRpcError::invalid_params)?;
+    let report = indexer
+        .purge_events(&spec, a.apply)
+        .await
+        .map_err(|e| JsonRpcError::internal(format!("admin_purge_events: {e}")))?;
+    Ok(json!({
+        "ok": true,
+        "label_skill": report.label_skill,
+        "total": report.total,
+        "matched": report.matched,
+        "kept": report.kept,
+        "deleted": report.deleted,
+        "dry_run": report.dry_run,
+        "audit_event_id": report.audit_event_id,
+    }))
+}
+
+#[derive(Deserialize)]
 pub(super) struct GroupMemberArgs {
     group_id: String,
     subject: String,

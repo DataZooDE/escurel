@@ -347,3 +347,68 @@ async fn pruning_a_big_runner_status_backlog_runs_in_postgres() {
         "the prune pulled {rows} rows through the scanner for a 2000-row backlog"
     );
 }
+
+#[tokio::test]
+async fn purging_a_label_on_postgres_runs_in_postgres_and_stays_in_its_tenant() {
+    let (_pg, dsn) = live_postgres().await;
+    let r = replica(&dsn).await;
+    let probe = Probe::new(&dsn).await;
+    probe.seed(2_000).await;
+    // The same label under ANOTHER tenant that shares the physical table.
+    probe
+        .exec(&format!(
+            "INSERT INTO escurel_events (tenant, event_id, at_ts, label_skill, status, kind, seq) \
+             SELECT 'other', 'o' || g, now() - (g || ' seconds')::interval, '{LABEL}', 'inbox', 'system', g \
+             FROM generate_series(1, 100) g"
+        ))
+        .await;
+    r.indexer.list_inbox(Some(1)).await.unwrap();
+    let spec = escurel_index::PurgeSpec::new(LABEL, None, Some(50), false).unwrap();
+
+    let (dry, rows) = measured(&probe, || async {
+        r.indexer.purge_events(&spec, false).await
+    })
+    .await;
+    let dry = dry.expect("dry run");
+    assert_eq!(
+        (dry.total, dry.matched, dry.kept, dry.deleted),
+        (2_000, 1_950, 50, 0)
+    );
+    assert_eq!(
+        probe
+            .scalar(&format!(
+                "SELECT count(*)::bigint FROM escurel_events WHERE label_skill = '{LABEL}'"
+            ))
+            .await,
+        2_100,
+        "a dry run deletes nothing"
+    );
+    assert!(
+        rows < 2_000,
+        "the dry run's counts ran in Postgres, not through the scanner; read {rows}"
+    );
+
+    let done = r.indexer.purge_events(&spec, true).await.expect("apply");
+    assert_eq!((done.matched, done.deleted), (1_950, 1_950));
+    let mine = probe
+        .scalar(&format!(
+            "SELECT count(*)::bigint FROM escurel_events WHERE label_skill = '{LABEL}' AND tenant = '{TENANT}'"
+        ))
+        .await;
+    let other = probe
+        .scalar(&format!(
+            "SELECT count(*)::bigint FROM escurel_events WHERE label_skill = '{LABEL}' AND tenant = 'other'"
+        ))
+        .await;
+    assert_eq!(
+        (mine, other),
+        (50, 100),
+        "only this tenant's rows, and the newest 50 survive"
+    );
+    let trail = probe
+        .scalar(&format!(
+            "SELECT count(*)::bigint FROM escurel_events WHERE label_skill = 'escurel:event-purge' AND tenant = '{TENANT}'"
+        ))
+        .await;
+    assert_eq!(trail, 1, "the applied purge left one audit event");
+}

@@ -64,8 +64,9 @@ pub use citation::IndexerCitationLookup;
 pub use credential_resolver::{CredentialResolver, SharedResolver};
 pub use creds::{CredentialInfo, CredentialRecord};
 pub use events::{
-    EVENTS_MAX_LIMIT, EventInfo, EventKind, EventListFilter, EventPage, ExpiredGatewayRun,
-    NewEvent, now_rfc3339_micros,
+    EVENT_PURGE_LABEL, EVENTS_MAX_LIMIT, EventInfo, EventKind, EventListFilter, EventPage,
+    ExpiredGatewayRun, NewEvent, PROTECTED_EVENT_LABELS, PurgeEventsReport, PurgeSpec,
+    now_rfc3339_micros,
 };
 pub use graph::{
     AbandonedNode, DriftRow, GraphBackend, GraphDir, MAX_HOPS_CEILING, ProvenanceHop,

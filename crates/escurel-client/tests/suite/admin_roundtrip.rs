@@ -14,10 +14,10 @@ use std::sync::Arc;
 use escurel_admin::{FsTenantStore, TenantStore};
 use escurel_client::Error as ClientError;
 use escurel_client::{
-    AdminClient, AppendMessageRequest, AuditRequest, Client, DeleteChatHistoryRequest,
-    HealthRequest, JSONRPC_ADMIN_REQUIRED, ListMessagesRequest, QuotaGetRequest, SecretString,
-    TenantCreateRequest, TenantDeleteRequest, TenantGetRequest, TenantListRequest, TenantSpec,
-    TenantUpdateRequest,
+    AdminClient, AppendMessageRequest, AuditRequest, CaptureEventRequest, Client,
+    DeleteChatHistoryRequest, HealthRequest, JSONRPC_ADMIN_REQUIRED, ListMessagesRequest,
+    PurgeEventsRequest, QuotaGetRequest, SecretString, TenantCreateRequest, TenantDeleteRequest,
+    TenantGetRequest, TenantListRequest, TenantSpec, TenantUpdateRequest,
 };
 use escurel_quota::{QuotaConfig, QuotaManager};
 use escurel_test_support::{AuthMode, ConfigOverrides, EscurelProcess, FixtureBuilder, Opts, Role};
@@ -292,4 +292,49 @@ async fn agent_role_is_rejected_on_admin_tool() {
         other => panic!("expected Error::JsonRpc(admin required), got {other:?}"),
     }
     h.process.shutdown().await;
+}
+
+/// Event-bus retention: an operator trims one label through the admin
+/// client; the default is a dry run and the applied purge is what the dry
+/// run counted.
+#[tokio::test]
+async fn purge_events_trims_a_label_and_defaults_to_a_dry_run() {
+    let p = start_with_quota().await;
+    let admin = admin_client(&p).await;
+    // A system event may only be captured by an admin token.
+    let writer = Client::connect(
+        p.base_url(),
+        SecretString::from(p.mint_token(TENANT, Role::Admin)),
+    )
+    .await
+    .unwrap();
+    for i in 1..=4 {
+        writer
+            .capture_event(CaptureEventRequest {
+                source: "escurel-runner".to_owned(),
+                mime: "application/json".to_owned(),
+                label_skill: "escurel:runner-status".to_owned(),
+                title: "heartbeat".to_owned(),
+                body: format!("{{\"n\":{i}}}"),
+                kind: "system".to_owned(),
+                at: format!("2026-09-0{i}T10:00:00Z"),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+    }
+    let req = |apply| PurgeEventsRequest {
+        tenant_id: TENANT.to_owned(),
+        label_skill: "escurel:runner-status".to_owned(),
+        keep_latest: Some(1),
+        apply,
+        ..Default::default()
+    };
+    let dry = admin.purge_events(req(false)).await.unwrap();
+    assert_eq!((dry.total, dry.matched, dry.deleted), (4, 3, 0));
+    assert!(dry.dry_run);
+    let done = admin.purge_events(req(true)).await.unwrap();
+    assert_eq!((done.matched, done.deleted, done.kept), (3, 3, 1));
+    assert!(done.audit_event_id.is_some());
+    p.shutdown().await;
 }

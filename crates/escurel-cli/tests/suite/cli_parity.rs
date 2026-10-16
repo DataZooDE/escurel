@@ -104,6 +104,7 @@ const COVERAGE: &[(&str, Coverage)] = &[
     ("admin_quota", Admin(&["quota"])),
     ("admin_audit", Admin(&["audit"])),
     ("admin_delete_chat_history", Admin(&["delete-chat-history"])),
+    ("admin_purge_events", Admin(&["purge-events"])),
     ("attach_external", Admin(&["attach-external"])),
     ("embedding_reload", Admin(&["embedding-reload"])),
     ("rebuild", Admin(&["rebuild"])),

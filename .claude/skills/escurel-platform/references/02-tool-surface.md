@@ -253,7 +253,7 @@ an `escurel:review` system event on the target page (`draft-created`,
 decided_by, already_decided}` — see *Review events* in `references/11`. A
 review queue subscribes instead of polling.
 
-Note this list is **curated, not exhaustive** — the server exposes 86 tools
+Note this list is **curated, not exhaustive** — the server exposes 87 tools
 (the count is pinned by `skill_doc_parity.rs`; update it here when the
 surface changes), most of them operator/admin surface (tenant CRUD,
 credential and endpoint registries, pack import/export, lane inspection,
@@ -478,6 +478,7 @@ the operator's, not an application's, but the names are listed so nothing is a s
 | `admin_lane_keys` | `lane`, `prefix?`, `limit?` | list keys under a prefix in a lane |
 | `admin_lane_blob` | `lane`, `key` | fetch one blob from a lane (1 MiB cap) |
 | `admin_delete_chat_history` | `chat_group_id?`, `author?`, `before_ts?` | erase chat history (GDPR / retention) |
+| `admin_purge_events` | `label_skill`, `before_ts?`, `keep_latest?`, `apply?`, `allow_protected?` | event-bus retention: purge one label's events older than `before_ts` except the newest `keep_latest`; **a dry run (counts only) unless `apply: true`**; needs a bound (`keep_latest: 0` = the whole label); audit labels (`escurel:write-back`, `escurel:kind-migration`, `escurel:event-purge`) need `allow_protected`; an applied purge leaves an `escurel:event-purge` system event |
 | `add_group_member` | `group_id`, `subject` | add a principal to a custom RBAC group |
 | `remove_group_member` | `group_id`, `subject` | remove one |
 | `list_group_members` | `group_id` | list a group's members |

@@ -278,6 +278,39 @@ pub struct DeleteChatHistoryResponse {
     pub deleted: u64,
 }
 
+/// `admin_purge_events` arguments: purge one label's events by age and/or
+/// count. A dry run unless `apply` is set; never "every row of the label"
+/// by omission (`keep_latest: 0` says it).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct PurgeEventsRequest {
+    pub tenant_id: String,
+    /// The label whose rows are purged (exact; required).
+    pub label_skill: String,
+    /// RFC 3339: only rows older than this.
+    pub before_ts: String,
+    /// Keep the newest N rows of the label whatever their age.
+    pub keep_latest: Option<u32>,
+    /// Delete for real. Default: count only.
+    pub apply: bool,
+    /// Purge an audit label (`escurel:write-back`, `escurel:kind-migration`,
+    /// `escurel:event-purge`).
+    pub allow_protected: bool,
+}
+
+/// MCP `admin_purge_events` wire keys as named.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct PurgeEventsResponse {
+    pub label_skill: String,
+    pub total: u64,
+    pub matched: u64,
+    pub kept: u64,
+    pub deleted: u64,
+    pub dry_run: bool,
+    pub audit_event_id: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct QuotaGetRequest {

@@ -1104,6 +1104,33 @@ pub(crate) fn tool_defs() -> Vec<ToolDef> {
             }),
         ),
         tool_entry(
+            "admin_purge_events",
+            Execution::Orchestration,
+            Scope::Admin,
+            Touches::shared(Surface::Events),
+            "Admin: purge one label's events (event-bus retention): the rows \
+                 of `label_skill` older than `before_ts`, except the newest \
+                 `keep_latest`. A dry run (counts only) unless `apply` is \
+                 true; give `before_ts` and/or `keep_latest` (`keep_latest: 0` \
+                 purges the whole label); an audit label \
+                 (`escurel:write-back`, `escurel:kind-migration`, \
+                 `escurel:event-purge`) needs `allow_protected`. An applied \
+                 purge that deletes anything leaves an `escurel:event-purge` \
+                 system event.",
+            json!({
+                "type": "object",
+                "required": ["label_skill"],
+                "properties": {
+                    "tenant_id": { "type": "string", "description": "Must be the tenant this token is bound to; optional." },
+                    "label_skill": { "type": "string", "description": "The label to purge, exactly (e.g. escurel:runner-status)." },
+                    "before_ts": { "type": "string", "description": "RFC 3339: only events older than this." },
+                    "keep_latest": { "type": "integer", "minimum": 0, "description": "Keep the newest N events of the label whatever their age." },
+                    "apply": { "type": "boolean", "default": false, "description": "Delete for real; the default only counts." },
+                    "allow_protected": { "type": "boolean", "default": false }
+                }
+            }),
+        ),
+        tool_entry(
             "admin_list_lanes",
             Execution::Deterministic,
             Scope::Admin,
@@ -1863,6 +1890,7 @@ fn annotations_of(name: &str) -> Value {
                 | "delete_credential"
                 | "delete_endpoint"
                 | "admin_delete_chat_history"
+                | "admin_purge_events"
                 | "unsubscribe_pack"
                 | "rebase_pack"
                 | "import_pack"
