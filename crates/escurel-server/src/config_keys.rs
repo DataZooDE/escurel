@@ -1074,6 +1074,12 @@ pub const CONFIG_KEYS: &[ConfigKey] = &[
         doc: "`migrate-kind-job`: boot + apply deadline",
     },
     ConfigKey {
+        name: "ESCUREL_MIGRATE_KIND_RENAME",
+        component: "Tooling",
+        default: "—",
+        doc: "`migrate-kind-job`: comma-separated `OLD=NEW` renames of a tenant's own field that collides with the page-kind key (`kind=system_kind`), passed as `--rename-field` to the dry run, the apply and the verification dry run",
+    },
+    ConfigKey {
         name: "ESCUREL_JOB_PORT",
         component: "Tooling",
         default: "8080",
