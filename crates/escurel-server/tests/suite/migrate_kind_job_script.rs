@@ -415,3 +415,141 @@ async fn a_ducklake_job_pins_the_lake_as_its_last_step() {
         10
     );
 }
+
+// ---- `ESCUREL_MIGRATE_KIND_RENAME`: heron's colliding `kind` domain field (rehearsal of 2026-10-16) ----
+
+/// heron's `system` skill declares `kind` as an optional domain field, and two of its instances
+/// carry `type: instance` AND `kind: bus` / `kind: saas-api`.
+fn seed_heron_system_pages(data: &Path) {
+    let root = data.join("tenants/default/markdown");
+    std::fs::create_dir_all(root.join("skills")).unwrap();
+    std::fs::create_dir_all(root.join("instances/system")).unwrap();
+    std::fs::write(
+        root.join("skills/system.md"),
+        "---\ntype: skill\nid: system\ndescription: An external system.\noptional_frontmatter: [kind, endpoint]\n---\n# system\n",
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("instances/system/lexware.md"),
+        "---\ntype: instance\nskill: system\nid: lexware\nkind: saas-api\nendpoint: https://api.lexware.io\n---\n# lexware\n",
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("instances/system/escurel-event-bus.md"),
+        "---\ntype: instance\nskill: system\nid: escurel-event-bus\nkind: bus\n---\n# bus\n",
+    )
+    .unwrap();
+}
+
+#[test]
+fn without_the_rename_env_the_heron_pages_fail_the_job_before_anything_is_written() {
+    let dir = TempDir::new().unwrap();
+    seed(dir.path(), &[]);
+    seed_heron_system_pages(dir.path());
+    let (out, _) = job(dir.path(), 300, &[]);
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("dry run reports conflicts"));
+    let lex = std::fs::read_to_string(
+        dir.path()
+            .join("tenants/default/markdown/instances/system/lexware.md"),
+    )
+    .unwrap();
+    assert!(lex.contains("type: instance"), "nothing may be rewritten");
+}
+
+#[test]
+fn the_rename_env_lets_the_job_migrate_heron_pages_without_touching_live_content_first() {
+    let dir = TempDir::new().unwrap();
+    seed(dir.path(), &[]);
+    seed_heron_system_pages(dir.path());
+    let (out, _) = job(
+        dir.path(),
+        300,
+        &[("ESCUREL_MIGRATE_KIND_RENAME", "kind=system_kind")],
+    );
+    assert!(
+        out.status.success(),
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let md = dir.path().join("tenants/default/markdown");
+    let lex = std::fs::read_to_string(md.join("instances/system/lexware.md")).unwrap();
+    assert!(
+        lex.starts_with("---\nkind: instance\nskill: system\nid: lexware\nsystem_kind: saas-api\n"),
+        "{lex}"
+    );
+    let skill = std::fs::read_to_string(md.join("skills/system.md")).unwrap();
+    assert!(
+        skill.contains("optional_frontmatter: [system_kind, endpoint]"),
+        "{skill}"
+    );
+}
+
+#[test]
+fn a_malformed_rename_env_fails_the_job_with_the_reason() {
+    let dir = TempDir::new().unwrap();
+    seed(dir.path(), &[]);
+    let (out, _) = job(
+        dir.path(),
+        300,
+        &[("ESCUREL_MIGRATE_KIND_RENAME", "kind-system_kind")],
+    );
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("expected OLD=NEW"));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_ducklake_job_with_the_rename_publishes_a_lake_with_system_kind_and_no_type() {
+    let data = TempDir::new().unwrap();
+    let lake_dir = TempDir::new().unwrap();
+    let cfg = local_lake(lake_dir.path());
+    publish_a_lake_from_a_kind_lane(data.path(), &cfg).await;
+    make_lake_old(&cfg, 9);
+    make_lane_legacy(data.path());
+    seed_heron_system_pages(data.path());
+
+    let out = tokio::task::spawn_blocking({
+        let (d, c) = (data.path().to_owned(), cfg.clone());
+        move || {
+            job(
+                &d,
+                900,
+                &[
+                    ("ESCUREL_INDEX_BACKEND", "ducklake"),
+                    ("ESCUREL_ROLE", "writer"),
+                    ("ESCUREL_DUCKLAKE_CATALOG_DSN", &c.catalog_dsn),
+                    ("ESCUREL_DUCKLAKE_DATA_PATH", &c.data_path),
+                    ("ESCUREL_MIGRATE_KIND_RENAME", "kind=system_kind"),
+                ],
+            )
+            .0
+        }
+    })
+    .await
+    .unwrap();
+    assert!(
+        out.status.success(),
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(
+        lake_count(
+            &cfg,
+            "SELECT count(*) FROM lake.pages WHERE json_extract(frontmatter, '$.type') IS NOT NULL"
+        ),
+        0,
+        "no `type:` page may remain in the lake"
+    );
+    assert_eq!(
+        lake_count(
+            &cfg,
+            "SELECT count(*) FROM lake.pages WHERE page_id LIKE '%system/lexware.md' \
+             AND json_extract_string(frontmatter, '$.system_kind') = 'saas-api' \
+             AND json_extract_string(frontmatter, '$.kind') = 'instance'"
+        ),
+        1,
+        "the published lake carries the renamed domain field and the page kind"
+    );
+}

@@ -246,7 +246,11 @@ impl AdminClient {
         self.transport
             .call_typed(
                 "migrate_kind",
-                json!({ "tenant_id": req.tenant_id, "apply": req.apply }),
+                json!({
+                    "tenant_id": req.tenant_id,
+                    "apply": req.apply,
+                    "rename_fields": req.rename_fields,
+                }),
             )
             .await
     }

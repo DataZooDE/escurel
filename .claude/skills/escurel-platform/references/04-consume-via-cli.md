@@ -95,6 +95,7 @@ escurel admin quota  --tenant acme
 escurel admin rebuild --tenant acme                  # no default deadline; --timeout-secs N opts in (the rebuild continues server-side)
 escurel admin migrate-kind --tenant acme            # DRY RUN: rewrite legacy `type:` -> `kind:` (references/01)
 escurel admin migrate-kind --tenant acme --apply    # write; refuses while a page has a live CRDT session; on a DuckLake writer it also publishes the migrated corpus (`lake_published` in the report)
+escurel admin migrate-kind --tenant acme --rename-field kind=system_kind   # repeatable OLD=NEW: rename a tenant's OWN top-level field that collides with the page-kind key, INSIDE the migration (dry run first; report keys `fields_renamed`, `skill_declarations_renamed`, `rename_collisions`, `rename_warnings`)
 escurel admin migrate-kind-files --path ./repo          # OFFLINE, no gateway: the same rewrite over a directory of page files (DRY RUN; --apply, --allow-dirty; references/07)
 
 # skill packs (admin-role token; references/02 §Skill packs)

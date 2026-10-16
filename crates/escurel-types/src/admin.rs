@@ -382,6 +382,20 @@ pub struct AdminLaneBlobResponse {
 pub struct MigrateKindRequest {
     pub tenant_id: String,
     pub apply: bool,
+    /// `OLD=NEW` renames of a tenant's own top-level frontmatter field that collides with the
+    /// page-kind key (`kind=system_kind`), applied inside the same migration: on every page that still
+    /// carries the legacy `type:`, and in the `optional_frontmatter`/`required_frontmatter` lists of
+    /// the skills that declare it. Empty = none (a page with a colliding field stays a conflict).
+    pub rename_fields: Vec<String>,
+}
+
+/// One renamed frontmatter field of one page (`migrate_kind --rename-field`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct FieldRenamed {
+    pub page: String,
+    pub from: String,
+    pub to: String,
 }
 
 /// One open draft whose proposed bytes were rewritten (new `content_sha256`).
@@ -407,6 +421,17 @@ pub struct MigrateKindReport {
     /// Workflow-run board pages whose `status:` is/was renamed `run_status:` (the engine-owned key
     /// that collided with OKF's `status`). A subset of `pages_to_migrate` when they also had `type:`.
     pub run_status_renamed: Vec<String>,
+    /// `--rename-field`: instance pages whose own domain field was (dry run: would be) renamed.
+    pub fields_renamed: Vec<FieldRenamed>,
+    /// `--rename-field`: skill pages whose `optional_frontmatter`/`required_frontmatter` entry was
+    /// (dry run: would be) renamed.
+    pub skill_declarations_renamed: Vec<FieldRenamed>,
+    /// `--rename-field`: pages where the new name already exists (never overwritten). Also listed in
+    /// `conflicts`, so a collision blocks the apply like any other conflict.
+    pub rename_collisions: Vec<String>,
+    /// `--rename-field`: places in a skill that still mention the OLD name and were NOT rewritten (a
+    /// SQL view, listing columns, a query in the body): `page:line: text`. Review before the window.
+    pub rename_warnings: Vec<String>,
     /// Pages with BOTH `kind:` and a legacy page-kind `type:`; never auto-fixed.
     pub conflicts: Vec<String>,
     /// Pages with no page-kind key at all, or whose top-level `type:` is the page's own data.

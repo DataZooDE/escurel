@@ -32,12 +32,16 @@
 //! rewritten by `escurel admin migrate-kind` (see [`legacy::rewrite_legacy_type_key`]).
 
 pub mod legacy;
+pub mod rename;
 pub mod wikilink;
 
 // Re-export the YAML types we expose in our public API so downstream
 // crates can read parsed frontmatter without having to depend on
 // `serde_yaml_ng` directly.
 pub use legacy::{KindRewrite, rewrite_legacy_type_key, rewrite_workflow_run_status};
+pub use rename::{
+    FieldRename, PageRewrite, PageRewriteOutcome, field_references, rewrite_page_kind,
+};
 pub use serde_yaml_ng::{Mapping as YamlMapping, Value as YamlValue};
 
 use thiserror::Error;

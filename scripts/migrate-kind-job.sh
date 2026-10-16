@@ -37,9 +37,18 @@
 # Plan the Job deadline for >= 3600 s: the rehearsal on 183 pages / 988 snapshots took ~15 min
 # (boot 36 s, dry run 295 s, apply 831 s) and a second boot adds ~35 s.
 #
+# A tenant's own domain field named like the page-kind key (heron's `system` skill declares `kind: bus`
+# beside the legacy `type: instance`) is a conflict that blocks the whole migration. Name it and the job
+# renames it INSIDE the migration, with no live page edited first:
+#   ESCUREL_MIGRATE_KIND_RENAME=kind=system_kind        (comma-separated OLD=NEW pairs)
+# The same renames go to the dry run, the apply AND the verification dry run, so a page that still needs a
+# rename after the apply fails the job. Review `rename_warnings` in the report: other mentions of the old name
+# in a skill (a SQL view, listing columns) are reported, never rewritten.
+#
 # Env: ESCUREL_TENANT (required), the SAME embedder env as production (the apply rebuilds the index
 #      with it), ESCUREL_JOB_DEADLINE_SECS (default 3600: boot + apply together),
-#      ESCUREL_JOB_PORT (default 8080), ESCUREL_BIN_DIR (default: binaries on PATH).
+#      ESCUREL_JOB_PORT (default 8080), ESCUREL_BIN_DIR (default: binaries on PATH),
+#      ESCUREL_MIGRATE_KIND_RENAME (optional, see above).
 set -eu
 
 : "${ESCUREL_TENANT:?ESCUREL_TENANT is required}"
@@ -79,6 +88,31 @@ fi
 LAKE=0
 [ "${ESCUREL_INDEX_BACKEND:-}" = "ducklake" ] && LAKE=1
 
+# `--rename-field OLD=NEW` for every pair of ESCUREL_MIGRATE_KIND_RENAME. Validated here (plain keys only),
+# so the unquoted expansion below can never word-split or inject anything.
+RENAME_ARGS=""
+if [ -n "${ESCUREL_MIGRATE_KIND_RENAME:-}" ]; then
+    OLD_IFS="$IFS"
+    IFS=","
+    for pair in $ESCUREL_MIGRATE_KIND_RENAME; do
+        case "$pair" in
+            *[!A-Za-z0-9_=-]* | =* | *= | *=*=* | "" | -* | *=-*)
+                IFS="$OLD_IFS"
+                fail "ESCUREL_MIGRATE_KIND_RENAME: \`$pair\`: expected OLD=NEW (plain frontmatter keys), comma-separated"
+                ;;
+        esac
+        case "$pair" in
+            *=*) ;;
+            *)
+                IFS="$OLD_IFS"
+                fail "ESCUREL_MIGRATE_KIND_RENAME: \`$pair\`: expected OLD=NEW (plain frontmatter keys), comma-separated"
+                ;;
+        esac
+        RENAME_ARGS="$RENAME_ARGS --rename-field $pair"
+    done
+    IFS="$OLD_IFS"
+fi
+
 # The Deployment's gateway config is not this job's config (see "Threat model" above). `unset` every auth
 # variable, indexed ones (ESCUREL_AUTH_OIDC_ISSUER_2, ...) included.
 for v in $(env | sed -n 's/^\(ESCUREL_AUTH_[A-Za-z0-9_]*\)=.*/\1/p'); do
@@ -111,7 +145,8 @@ start_server
 # 1. Dry run: conflicts block the apply (it would leave the tenant quarantined).
 LEFT="$(remaining)"
 [ "$LEFT" -gt 0 ] || fail "deadline of ${DEADLINE}s used up before the dry run started"
-"${BIN}escurel" --server "$URL" admin migrate-kind --tenant "$ESCUREL_TENANT" \
+# shellcheck disable=SC2086 # RENAME_ARGS is validated above: plain keys, no spaces inside a word
+"${BIN}escurel" --server "$URL" admin migrate-kind --tenant "$ESCUREL_TENANT" $RENAME_ARGS \
     --timeout-secs "$LEFT" >"$OUT" || fail "migrate-kind dry run failed (see above)"
 cat "$OUT"
 grep -q '"conflicts": \[\]' "$OUT" ||
@@ -120,7 +155,8 @@ grep -q '"conflicts": \[\]' "$OUT" ||
 # 2. Apply.
 LEFT="$(remaining)"
 [ "$LEFT" -gt 0 ] || fail "deadline of ${DEADLINE}s used up before the apply started"
-"${BIN}escurel" --server "$URL" admin migrate-kind --tenant "$ESCUREL_TENANT" --apply \
+# shellcheck disable=SC2086
+"${BIN}escurel" --server "$URL" admin migrate-kind --tenant "$ESCUREL_TENANT" --apply $RENAME_ARGS \
     --timeout-secs "$LEFT" >"$OUT" || fail "migrate-kind --apply failed (see above)"
 cat "$OUT"
 
@@ -143,7 +179,8 @@ if [ "$LAKE" = 1 ]; then
     fi
     LEFT="$(remaining)"
     [ "$LEFT" -gt 0 ] || fail "deadline of ${DEADLINE}s used up before the verification dry run"
-    "${BIN}escurel" --server "$URL" admin migrate-kind --tenant "$ESCUREL_TENANT" \
+    # shellcheck disable=SC2086
+    "${BIN}escurel" --server "$URL" admin migrate-kind --tenant "$ESCUREL_TENANT" $RENAME_ARGS \
         --timeout-secs "$LEFT" >"$OUT" || fail "verification dry run failed (see above)"
     grep -q '"pages_to_migrate": \[\]' "$OUT" ||
         fail "the verification dry run still finds pages to migrate (see the report)"

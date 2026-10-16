@@ -84,6 +84,13 @@ pub enum AdminCmd {
         /// pages the full list is megabytes). `conflicts` is always printed in full.
         #[arg(long)]
         verbose: bool,
+        /// Rename the tenant's OWN top-level frontmatter field that collides with the page-kind key,
+        /// inside this migration (repeatable): `--rename-field kind=system_kind`. Applies to pages that
+        /// still carry the legacy `type:` and to the `optional_frontmatter`/`required_frontmatter` of
+        /// the skills that declare the field; other mentions of the old name are only reported
+        /// (`rename_warnings`). Without it such a page is a conflict and blocks the apply.
+        #[arg(long = "rename-field", value_name = "OLD=NEW")]
+        rename_field: Vec<String>,
     },
     /// OFFLINE `type:` -> `kind:` migration of a directory tree of page files (skills/instances
     /// kept as markdown in git). The file twin of `migrate-kind`: a dry run unless `--apply`, one
@@ -395,11 +402,13 @@ pub async fn run(client: &AdminClient, cmd: AdminCmd) -> Result<Value> {
             apply,
             timeout_secs,
             verbose,
+            rename_field,
         } => {
             let started = std::time::Instant::now();
             let call = client.migrate_kind(MigrateKindRequest {
                 tenant_id: tenant,
                 apply,
+                rename_fields: rename_field,
             });
             tokio::pin!(call);
             let mut tick = tokio::time::interval(std::time::Duration::from_secs(30));
