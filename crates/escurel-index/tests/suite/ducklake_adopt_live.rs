@@ -1,5 +1,5 @@
 //! Live DuckLake adopt round-trip (DuckLake PR 4): a REAL Postgres
-//! catalog (testcontainer) + a REAL MinIO `s3://` DATA_PATH
+//! catalog (testcontainer) + a REAL the S3 test server `s3://` DATA_PATH
 //! (testcontainer), no mocks — the production shape ADR-0009 locks.
 //! Publish from a writer indexer, poll, adopt into a fresh in-memory
 //! reader, and query it over the real wire.
@@ -18,9 +18,9 @@ use escurel_index::snapshot::{
     LakeConfig, ObjectStoreSecret, adopt_lake, latest_lake_snapshot_id, publish_lake,
 };
 use escurel_index::{Indexer, Migrator};
-use escurel_storage::{FsStore, LaneStore, S3Store, S3StoreConfig};
+use escurel_storage::testing::{self, S3Server};
+use escurel_storage::{FsStore, LaneStore};
 use tempfile::TempDir;
-use testcontainers_modules::minio::MinIO;
 use testcontainers_modules::postgres::Postgres;
 use testcontainers_modules::testcontainers::ContainerAsync;
 use testcontainers_modules::testcontainers::runners::AsyncRunner;
@@ -69,12 +69,12 @@ struct LiveLake {
     indexer: Arc<Indexer>,
     cfg: LakeConfig,
     _pg: ContainerAsync<Postgres>,
-    _minio: ContainerAsync<MinIO>,
+    _s3: S3Server,
     _store_dir: TempDir,
     _db_dir: TempDir,
 }
 
-/// Boot Postgres (catalog) + MinIO (data path), create the bucket with
+/// Boot Postgres (catalog) + the S3 test server (data path), create the bucket with
 /// the REAL S3Store, and build a seeded-ready writer Indexer.
 async fn live_lake() -> LiveLake {
     let pg = Postgres::default().start().await.expect("start postgres");
@@ -82,27 +82,16 @@ async fn live_lake() -> LiveLake {
     let dsn =
         format!("host=127.0.0.1 port={pg_port} user=postgres password=postgres dbname=postgres");
 
-    let minio = MinIO::default().start().await.expect("start minio");
-    let s3_port = minio.get_host_port_ipv4(9000).await.expect("minio port");
-    let s3 = S3Store::new(S3StoreConfig {
-        bucket: BUCKET.to_owned(),
-        prefix: "unused".to_owned(),
-        endpoint_url: format!("http://127.0.0.1:{s3_port}"),
-        region: "us-east-1".to_owned(),
-        access_key_id: "minioadmin".to_owned(),
-        secret_access_key: "minioadmin".to_owned(),
-    })
-    .await
-    .expect("build S3Store");
-    s3.ensure_bucket().await.expect("create bucket");
+    let s3_server = S3Server::start().await;
+    let _s3 = s3_server.store(BUCKET, "unused").await;
 
     let cfg = LakeConfig {
         catalog_dsn: dsn,
         data_path: format!("s3://{BUCKET}/data/"),
         object_store: ObjectStoreSecret::S3 {
-            endpoint: format!("127.0.0.1:{s3_port}"),
-            access_key_id: "minioadmin".to_owned(),
-            secret_access_key: "minioadmin".to_owned(),
+            endpoint: s3_server.endpoint_host_port(),
+            access_key_id: testing::ACCESS_KEY.to_owned(),
+            secret_access_key: testing::SECRET_KEY.to_owned(),
             region: "us-east-1".to_owned(),
             use_ssl: false,
         },
@@ -120,14 +109,14 @@ async fn live_lake() -> LiveLake {
         indexer,
         cfg,
         _pg: pg,
-        _minio: minio,
+        _s3: s3_server,
         _store_dir: store_dir,
         _db_dir: db_dir,
     }
 }
 
 #[tokio::test]
-async fn adopt_builds_queryable_indexer_pg_minio() {
+async fn adopt_builds_queryable_indexer_pg_s3() {
     let lake = live_lake().await;
     for (path, body) in [CUSTOMER_SKILL, ACME, STOPWORT] {
         lake.indexer.update_page(path, body).await.unwrap();
@@ -135,7 +124,7 @@ async fn adopt_builds_queryable_indexer_pg_minio() {
 
     let report = publish_lake(&lake.indexer, &lake.cfg, None)
         .await
-        .expect("publish to PG catalog + MinIO");
+        .expect("publish to PG catalog + the S3 test server");
     assert!(!report.skipped);
     assert_eq!(report.pages, 3);
 
@@ -143,7 +132,7 @@ async fn adopt_builds_queryable_indexer_pg_minio() {
     let latest = latest_lake_snapshot_id(&lake.cfg).await.expect("poll");
     assert_eq!(latest, Some(report.snapshot_id));
 
-    // Full adopt over the real wire: PG catalog + Parquet from MinIO.
+    // Full adopt over the real wire: PG catalog + Parquet from the S3 test server.
     let reader_embedder: Arc<dyn Embedder> = Arc::new(HashEmbedder::default());
     let adopted = adopt_lake(
         &lake.cfg,

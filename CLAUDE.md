@@ -19,7 +19,7 @@ spec into running code.
    Unit tests are fine for the inner loop. The merge gate during
    rapid bootstrap is an integration test that exercises the *real*
    component — real filesystem, real DuckDB file, real S3 endpoint
-   (MinIO testcontainer), real network where possible. No `mockall`,
+   (RustFS testcontainer, `escurel_storage::testing`), real network where possible. No `mockall`,
    no test doubles at the boundary the test exists to cover. If you
    cannot exercise the real component from a test, the test is not
    yet finished.

@@ -14,6 +14,11 @@ homepage.workspace = true
 # (`FsStore`) need not pull the AWS SDK + its transitive deps. The
 # substrate deployment target builds with `--features s3`.
 s3 = ["dep:aws-config", "dep:aws-sdk-s3", "dep:aws-credential-types"]
+# A real S3-compatible server in a container (`escurel_storage::testing`) for
+# the live tests of this crate and of escurel-index (`live-ducklake`). Needs
+# Docker, so it is OFF by default. MinIO used to fill this role; it stopped
+# publishing images (see docs/notes/discovered/2026-10-16-minio-images-gone.md).
+test-s3-server = ["s3", "dep:testcontainers-modules"]
 # GCS-backed LaneStore. Same rationale as `s3`: the official Google client
 # and its auth stack are a heavy dependency the fs default should not pay.
 # Credentials are Application Default Credentials — the metadata server on
@@ -36,7 +41,7 @@ url = "2"
 walkdir = "2"
 
 # S3 backend (feature `s3`). The official AWS SDK speaks plain S3 and
-# works against MinIO / Hetzner Object Storage via a custom endpoint
+# works against any S3-compatible store (Hetzner Object Storage, RustFS, …) via a custom endpoint
 # URL + path-style addressing.
 aws-config = { version = "1", optional = true }
 aws-sdk-s3 = { version = "1", optional = true }
@@ -48,12 +53,12 @@ serde_json = { version = "1.0.151", optional = true }
 # DuckDB VFS backend (feature `duckvfs`). Same pinned build as
 # escurel-index — see that crate's note on DUCKDB_DOWNLOAD_LIB.
 duckdb = { version = "1", default-features = false, optional = true }
+# `GenericImage` for the S3 test server (feature `test-s3-server`).
+testcontainers-modules = { version = "0.15", features = ["http_wait"], optional = true }
 
 [dev-dependencies]
 tempfile = "3"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
-# Real MinIO container for the S3 integration test (feature `s3`).
-testcontainers-modules = { version = "0.15", features = ["minio"] }
 
 [lints]
 workspace = true
