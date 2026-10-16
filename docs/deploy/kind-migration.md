@@ -131,8 +131,36 @@ escurel --server http://127.0.0.1:8080 admin migrate-kind --tenant <t>
 `pages_to_migrate`, `drafts` (open drafts that will be rewritten; their `content_sha256` changes),
 `snapshots_to_rewrite`, `run_status_renamed`, and the things that need a human:
 
-- `conflicts`: a page with BOTH a legacy `type:` and a `kind:` (usually its own `kind:` data field). Rename the
-  data field in that page, then rerun. The tool never auto-fixes these.
+- `conflicts`: a page with BOTH a legacy `type:` and a `kind:` (usually its own `kind:` data field). The tool
+  never auto-fixes these on its own. Either rename the data field in that page and rerun, or let the migration do
+  it for you with **`--rename-field`** (below).
+
+### A domain field that collides with the page-kind key: `--rename-field`
+
+heron's `system` skill declares `kind` as an optional domain field (`optional_frontmatter: [kind, endpoint]`) and
+its instances carry `type: instance` **and** `kind: bus` / `kind: saas-api` (the lab rehearsal of 2026-10-16). Name
+the colliding field and the migration renames it in the same pass, with no live page edited first:
+
+```sh
+escurel --server http://127.0.0.1:8080 admin migrate-kind --tenant <t> --rename-field kind=system_kind          # dry run
+escurel --server http://127.0.0.1:8080 admin migrate-kind --tenant <t> --rename-field kind=system_kind --apply
+# the job: ESCUREL_MIGRATE_KIND_RENAME=kind=system_kind  (comma-separated OLD=NEW; passed to the dry run, the apply and the verification dry run)
+```
+
+What it does, and what it does not:
+
+- On every page that **still has the legacy `type:`**, the top-level `OLD:` key becomes `NEW:` (value, comment and
+  line ending kept), then `type:` becomes `kind:`. A page that only has `kind:` is never touched, and `kind:
+  skill|instance` next to a legacy `type:` stays a real conflict (that is the page kind twice).
+- In every **skill** that declares `OLD` in `optional_frontmatter` / `required_frontmatter` (flow or block list,
+  before or after the skill's own `type:` -> `kind:`), the entry is renamed. Open drafts and historical CRDT
+  snapshots of those pages get the same rewrite.
+- `NEW` already present on the page (or in the same list) is a **collision**: never overwritten, listed in
+  `rename_collisions` and in `conflicts` (so the job fails before the apply).
+- Other mentions of the old name in a skill (a SQL view, listing columns, a query in a code block) are **not**
+  rewritten: they are listed in `rename_warnings` as `page:line: text`. Review them before the window; a skill
+  that selects `kind` from its instances must be changed to `system_kind` by its owner.
+- Idempotent: a second run finds nothing to rename.
 - `skipped_pack_base`: signed pack pages (`markdown/base/**`) cannot be rewritten locally; the pack publisher
   must re-export and re-sign with `kind:`, then `escurel admin pack rebase`. The tenant stays quarantined
   until they are gone.
@@ -163,7 +191,7 @@ echo "exit=$?"     # 0 ONLY when the tenant ended migrated and un-quarantined
 runs under `set -eu`, boots the throwaway server on the container's loopback, notices a server that died at boot
 (no infinite wait), enforces `ESCUREL_JOB_DEADLINE_SECS` (default 3600, boot + apply), and **fails unless the apply
 response says `"tenant_quarantined": false`** (a both-keys conflict or a signed pack page leaves the tenant
-quarantined and the job exits 1). It is exercised against the real binaries for success, conflict and
+quarantined and the job exits 1; `ESCUREL_MIGRATE_KIND_RENAME` carries `--rename-field` pairs, see above). It is exercised against the real binaries for success, conflict and
 boot-failure (`crates/escurel-server/tests/suite/migrate_kind_job_script.rs`). In k8s run the same container as a
 `Job` that mounts the data PVC (a non-zero exit fails the Job), then roll the Deployment.
 

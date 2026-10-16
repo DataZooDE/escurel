@@ -1663,8 +1663,14 @@ pub(crate) fn tool_defs() -> Vec<ToolDef> {
                  the removed `type:` page-kind key to `kind:`. DRY RUN unless `apply` is true: the \
                  dry run reports `{pages_to_migrate, conflicts, skipped_pack_base, drafts, \
                  snapshots_to_rewrite, crdt_pages_with_live_ops}` and writes nothing. A page that \
-                 has BOTH keys is a conflict and is never auto-fixed; signed pack pages \
-                 (`markdown/base/**`) are skipped (the publisher re-exports). `apply` refuses \
+                 has BOTH keys is a conflict and is never auto-fixed (unless `rename_fields` names the \
+                 colliding domain field); signed pack pages (`markdown/base/**`) are skipped (the \
+                 publisher re-exports). `rename_fields: [\"kind=system_kind\"]` renames a tenant's own \
+                 top-level field that collides with the page-kind key, inside the same migration: on \
+                 every page that still has the legacy `type:` and in the skills' \
+                 `optional_frontmatter`/`required_frontmatter`; the report lists \
+                 `fields_renamed`, `skill_declarations_renamed`, `rename_collisions` and \
+                 `rename_warnings` (other mentions of the old name, not rewritten). `apply` refuses \
                  while a page has a live CRDT session, and records an `escurel:kind-migration` \
                  audit event.",
             json!({
@@ -1672,7 +1678,12 @@ pub(crate) fn tool_defs() -> Vec<ToolDef> {
                 "required": ["tenant_id"],
                 "properties": {
                     "tenant_id": { "type": "string" },
-                    "apply": { "type": "boolean", "description": "Write the changes. Default false (dry run)." }
+                    "apply": { "type": "boolean", "description": "Write the changes. Default false (dry run)." },
+                    "rename_fields": {
+                        "type": "array",
+                        "items": { "type": "string", "description": "OLD=NEW, e.g. kind=system_kind" },
+                        "description": "Rename a tenant's own top-level frontmatter field that collides with the page-kind key, inside this migration. Default none."
+                    }
                 }
             }),
         ),

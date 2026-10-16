@@ -2426,13 +2426,19 @@ pub(super) async fn tool_migrate_kind(
         validate_tenant_id(&a.tenant_id)
             .map_err(|e| JsonRpcError::invalid_params(e.to_string()))?;
     }
+    let renames = a
+        .rename_fields
+        .iter()
+        .map(|spec| escurel_md::FieldRename::parse(spec))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| JsonRpcError::invalid_params(format!("migrate_kind: rename_fields: {e}")))?;
     let indexer = admin_indexer(state)?;
     ensure_tenant_matches(&indexer, &a.tenant_id)?;
     // The apply runs in a SPAWNED task: a client that disconnects (a CLI timeout, a killed shell,
     // a proxy cutting a long request) drops this handler future, and without the spawn that
     // cancelled the migration half-way. The task finishes on its own; a retried `--apply` waits
     // for it (the indexer serialises migrations) and finds nothing left to do.
-    let run = tokio::spawn(async move { indexer.migrate_kind(a.apply).await });
+    let run = tokio::spawn(async move { indexer.migrate_kind_renaming(a.apply, &renames).await });
     let outcome = run
         .await
         .map_err(|e| JsonRpcError::internal(format!("migrate_kind: task failed: {e}")))?;

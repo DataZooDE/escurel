@@ -25,9 +25,12 @@ use std::collections::HashMap;
 
 use bytes::Bytes;
 use duckdb::params;
-use escurel_md::{KindRewrite, rewrite_legacy_type_key, rewrite_workflow_run_status};
+use escurel_md::{
+    FieldRename, PageRewriteOutcome, field_references, rewrite_page_kind,
+    rewrite_workflow_run_status,
+};
 use escurel_storage::Key;
-use escurel_types::{DraftKindMigration, MigrateKindReport};
+use escurel_types::{DraftKindMigration, FieldRenamed, MigrateKindReport};
 
 use crate::events::{EventKind, NewEvent};
 use crate::indexer::{Indexer, IndexerError, is_archived};
@@ -93,6 +96,20 @@ impl Indexer {
     /// [`IndexerError::KindMigrationRefused`] when `apply` is set and a page has a live CRDT
     /// session; otherwise when a store, index or CRDT read/write fails.
     pub async fn migrate_kind(&self, apply: bool) -> Result<MigrateKindReport, IndexerError> {
+        self.migrate_kind_renaming(apply, &[]).await
+    }
+
+    /// [`Self::migrate_kind`] that also renames the tenant's own top-level frontmatter fields that
+    /// collide with the page-kind key (`--rename-field kind=system_kind`): see
+    /// [`escurel_md::rewrite_page_kind`] for the exact rule. With no `renames` it is `migrate_kind`.
+    ///
+    /// # Errors
+    /// As [`Self::migrate_kind`].
+    pub async fn migrate_kind_renaming(
+        &self,
+        apply: bool,
+        renames: &[FieldRename],
+    ) -> Result<MigrateKindReport, IndexerError> {
         // One migration at a time: a second `--apply` (a retried CLI while the first one is still
         // running server-side) waits, then finds nothing left to do. Idempotent by design.
         let _one_at_a_time = self.migration_lock.lock().await;
@@ -113,10 +130,12 @@ impl Indexer {
             // Durable BEFORE the first rewrite: see `MIGRATION_MARKER_PATH`.
             self.write_migration_marker().await?;
         }
-        self.migrate_kind_pages(apply, quarantined_before, &mut report)
+        self.migrate_kind_pages(apply, quarantined_before, renames, &mut report)
             .await?;
-        self.migrate_kind_drafts(apply, &mut report).await?;
-        self.migrate_kind_snapshots(apply, &mut report).await?;
+        self.migrate_kind_drafts(apply, renames, &mut report)
+            .await?;
+        self.migrate_kind_snapshots(apply, renames, &mut report)
+            .await?;
 
         if apply {
             // Pages were rewritten lane-only when the tenant was quarantined (its index was never,
@@ -294,6 +313,7 @@ impl Indexer {
         &self,
         apply: bool,
         lane_only: bool,
+        renames: &[FieldRename],
         report: &mut MigrateKindReport,
     ) -> Result<(), IndexerError> {
         let mut paths: Vec<String> = self.list_markdown_paths().await?.into_iter().collect();
@@ -317,18 +337,45 @@ impl Indexer {
                 continue;
             };
             // Page kind first: a conflict or a page with no kind is reported and left exactly as is.
-            let (mut next, kind_changed) = match rewrite_legacy_type_key(content) {
-                KindRewrite::Conflict => {
+            // `--rename-field` runs inside the same rewrite, so a colliding domain field never makes
+            // a page a conflict and the page is written once.
+            let rewrite = match rewrite_page_kind(content, renames) {
+                PageRewriteOutcome::Conflict => {
                     report.conflicts.push(path);
                     continue;
                 }
-                KindRewrite::NotAPageKind => {
+                PageRewriteOutcome::Collision(_) => {
+                    report.rename_collisions.push(path.clone());
+                    report.conflicts.push(path);
+                    continue;
+                }
+                PageRewriteOutcome::NotAPageKind => {
                     report.not_a_page_kind.push(path);
                     continue;
                 }
-                KindRewrite::Rewritten(new) => (new, true),
-                KindRewrite::AlreadyKind => (content.to_owned(), false),
+                PageRewriteOutcome::Done(rewrite) => rewrite,
             };
+            let kind_changed = rewrite.changed();
+            let mut next = rewrite.content;
+            for r in &rewrite.instance_fields {
+                report.fields_renamed.push(field_renamed(&path, r));
+            }
+            for r in &rewrite.declarations {
+                report
+                    .skill_declarations_renamed
+                    .push(field_renamed(&path, r));
+            }
+            if !rewrite.declarations.is_empty() {
+                // The declared lists were rewritten; any OTHER mention of the old name in the skill
+                // (a SQL view, listing columns, a query in the body) is the owner's to review.
+                for r in &rewrite.declarations {
+                    for (line, text) in field_references(&next, &r.from) {
+                        report
+                            .rename_warnings
+                            .push(format!("{path}:{line}: {text}"));
+                    }
+                }
+            }
             // The engine-owned run board's `status:` -> `run_status:` rides along (same page, one
             // write): a tenant's own `status` data is never touched (the rule checks the skill).
             let mut status_changed = false;
@@ -366,12 +413,18 @@ impl Indexer {
     async fn migrate_kind_drafts(
         &self,
         apply: bool,
+        renames: &[FieldRename],
         report: &mut MigrateKindReport,
     ) -> Result<(), IndexerError> {
         for draft in self.list_drafts(None).await? {
-            let KindRewrite::Rewritten(new) = rewrite_legacy_type_key(&draft.content) else {
+            let PageRewriteOutcome::Done(rewrite) = rewrite_page_kind(&draft.content, renames)
+            else {
                 continue;
             };
+            if !rewrite.changed() {
+                continue;
+            }
+            let new = rewrite.content;
             let old_sha256 = draft.content_sha256.clone();
             let new_sha256 = crate::drafts::content_hash(&new);
             if apply {
@@ -396,6 +449,7 @@ impl Indexer {
     async fn migrate_kind_snapshots(
         &self,
         apply: bool,
+        renames: &[FieldRename],
         report: &mut MigrateKindReport,
     ) -> Result<(), IndexerError> {
         let table = self.crdt_snapshots_table();
@@ -446,9 +500,13 @@ impl Indexer {
             let Ok(markdown) = escurel_crdt::body_from_snapshot(&bytes) else {
                 continue;
             };
-            let KindRewrite::Rewritten(new) = rewrite_legacy_type_key(&markdown) else {
+            let PageRewriteOutcome::Done(rewrite) = rewrite_page_kind(&markdown, renames) else {
                 continue;
             };
+            if !rewrite.changed() {
+                continue;
+            }
+            let new = rewrite.content;
             report.snapshots_to_rewrite += 1;
             if !apply {
                 continue;
@@ -526,6 +584,14 @@ impl Indexer {
         )?;
         let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
         Ok(rows.collect::<Result<HashMap<_, _>, _>>()?)
+    }
+}
+
+fn field_renamed(page: &str, r: &FieldRename) -> FieldRenamed {
+    FieldRenamed {
+        page: page.to_owned(),
+        from: r.from.clone(),
+        to: r.to.clone(),
     }
 }
 

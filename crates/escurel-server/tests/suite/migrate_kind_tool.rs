@@ -433,3 +433,44 @@ async fn a_quarantined_tenant_refuses_a_live_websocket() {
         other => panic!("a quarantined tenant must refuse the socket, got {other:?}"),
     }
 }
+
+#[tokio::test]
+async fn migrate_kind_rename_fields_is_validated_and_reported_through_the_tool() {
+    let h = start_with_legacy_lane().await;
+    let p = &h.process;
+
+    // A malformed pair is refused with the reason, before anything runs.
+    for bad in ["kind", "kind=kind", "a b=c"] {
+        let body = call(
+            p,
+            Role::Admin,
+            "migrate_kind",
+            json!({ "tenant_id": TENANT, "rename_fields": [bad] }),
+        )
+        .await;
+        let msg = body["error"]["message"].as_str().unwrap_or_default();
+        assert!(
+            msg.contains("rename_fields"),
+            "`{bad}` must be refused with the reason: {body}"
+        );
+    }
+
+    // A well-formed pair is accepted and the new report keys are on the wire (nothing to rename here).
+    let body = call(
+        p,
+        Role::Admin,
+        "migrate_kind",
+        json!({ "tenant_id": TENANT, "rename_fields": ["kind=system_kind"] }),
+    )
+    .await;
+    let r = structured(&body);
+    for key in [
+        "fields_renamed",
+        "skill_declarations_renamed",
+        "rename_collisions",
+        "rename_warnings",
+    ] {
+        assert!(r[key].as_array().is_some_and(Vec::is_empty), "{key}: {r}");
+    }
+    assert_eq!(r["pages_to_migrate"].as_array().unwrap().len(), 2);
+}
