@@ -165,6 +165,89 @@ pub struct ExpiredGatewayRun {
 /// (or an agent's) view unless asked for with `include_system`.
 const HIDE_SYSTEM: &str = "COALESCE(kind, 'user') <> 'system'";
 
+/// A bound value of an events query. Every backend binds it as a DuckDB
+/// parameter; on the attached-Postgres backend the same value can instead
+/// be inlined as a Postgres literal, so the whole `WHERE ... ORDER BY ...
+/// LIMIT` runs inside Postgres (see [`pg_native`]).
+#[derive(Debug, Clone)]
+enum Bind {
+    Str(String),
+    Int(i64),
+}
+
+impl duckdb::ToSql for Bind {
+    fn to_sql(&self) -> duckdb::Result<duckdb::types::ToSqlOutput<'_>> {
+        match self {
+            Bind::Str(s) => s.to_sql(),
+            Bind::Int(i) => i.to_sql(),
+        }
+    }
+}
+
+/// Native (pushed-down) SQL for the attached-Postgres events table.
+///
+/// DuckDB's postgres scanner pushes only simple column comparisons into
+/// Postgres; `COALESCE(kind, ..)`, `ORDER BY` and `LIMIT` run in DuckDB
+/// after the scan, so every listing pulled the whole matching set across
+/// the wire (the lab's runner polled the inbox with ~58k hidden heartbeat
+/// rows in it, ~120 GiB/day of egress). `postgres_query` / `postgres_execute`
+/// run a statement inside Postgres instead; values are inlined as quoted
+/// literals, so [`pg_literal`] refuses (and the caller falls back to the
+/// scanner path) anything it cannot quote with certainty.
+mod pg_native {
+    use super::Bind;
+
+    /// `'...'` with `'` doubled; `None` for a value that cannot be quoted
+    /// with certainty: a NUL byte, or a backslash (which ends the literal
+    /// early under `standard_conforming_strings = off`).
+    pub(super) fn pg_literal(s: &str) -> Option<String> {
+        if s.contains('\0') || s.contains('\\') {
+            return None;
+        }
+        Some(format!("'{}'", s.replace('\'', "''")))
+    }
+
+    impl Bind {
+        fn pg_literal(&self) -> Option<String> {
+            match self {
+                Bind::Str(s) => pg_literal(s),
+                Bind::Int(i) => Some(i.to_string()),
+            }
+        }
+    }
+
+    /// `sql` with each `?` replaced, in order, by the matching bind as a
+    /// Postgres literal. `None` when a bind cannot be quoted or the counts
+    /// disagree (the caller then keeps the DuckDB-bound statement).
+    pub(super) fn render(sql: &str, binds: &[Bind]) -> Option<String> {
+        let mut out = String::with_capacity(sql.len() + 32);
+        let mut next = binds.iter();
+        for ch in sql.chars() {
+            if ch == '?' {
+                out.push_str(&next.next()?.pg_literal()?);
+            } else {
+                out.push(ch);
+            }
+        }
+        next.next().is_none().then_some(out)
+    }
+
+    /// Embed a Postgres statement as a DuckDB string literal argument of
+    /// `postgres_query` / `postgres_execute`.
+    pub(super) fn duckdb_string(pg_sql: &str) -> String {
+        format!("'{}'", pg_sql.replace('\'', "''"))
+    }
+
+    /// A cursor timestamp is produced by `strftime(.., '%Y-%m-%d %H:%M:%S.%f')`
+    /// and sealed; only that shape is cast natively.
+    pub(super) fn is_timestamp_text(s: &str) -> bool {
+        !s.is_empty()
+            && s.len() <= 40
+            && s.chars()
+                .all(|c| c.is_ascii_digit() || matches!(c, '-' | ':' | ' ' | '.' | 'T' | 'Z'))
+    }
+}
+
 /// Whether an event is work (`user`) or bookkeeping about a run (`system`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum EventKind {
@@ -395,6 +478,24 @@ impl Indexer {
         // stored-event side idempotent for the ordinary re-emit case,
         // which is what the dedup contract actually needs.
         let lake = matches!(self.events_backend(), EventsBackend::AttachedLake { .. });
+        let native_seq: Option<i64> = match (self.events_backend(), self.events_tenant_scope()) {
+            (EventsBackend::AttachedPostgres { alias }, Some(tenant)) => {
+                match pg_native::pg_literal(tenant) {
+                    Some(lit) => {
+                        let inner = format!(
+                            "SELECT max(seq) AS m FROM {EVENTS_PG_TABLE_NAME} WHERE tenant = {lit}"
+                        );
+                        let q = format!(
+                            "SELECT COALESCE(m, 0) + 1 FROM postgres_query('{alias}', {})",
+                            pg_native::duckdb_string(&inner)
+                        );
+                        Some(conn.query_row(&q, [], |r| r.get::<_, i64>(0))?)
+                    }
+                    None => None,
+                }
+            }
+            _ => None,
+        };
         let sql = match (self.events_tenant_scope(), lake) {
             (None, _) => format!(
                 "INSERT INTO {table} \
@@ -414,6 +515,20 @@ impl Indexer {
             // Against `created_at TIMESTAMP NOT NULL DEFAULT now()` that is a
             // not-null violation, and capture_event fails outright — the
             // whole event bus, on the DEFAULT events backend.
+            // On the attached-Postgres table the next position is read by a
+            // native `max(seq)` (an index-only read) and bound as a value;
+            // the scalar subquery form pulled the tenant's whole `seq`
+            // column through the scanner on every capture. The read and the
+            // insert are still two steps, exactly as the subquery form was
+            // (the scanner ran it as a separate scan before the COPY).
+            (Some(_), false) if native_seq.is_some() => format!(
+                "INSERT INTO {table} \
+                 (tenant, event_id, at_ts, source, mime, label_skill, instance_page_id, status, title, body, provenance, created_at, \
+                  kind, root_event_id, run_id, seq, revision_binding_sha256) \
+                 SELECT ?, ?, TRY_CAST(? AS TIMESTAMP), ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP::TIMESTAMP, ?, ?, ?, \
+                        CAST(? AS BIGINT), ? \
+                 ON CONFLICT (tenant, event_id) DO NOTHING"
+            ),
             (Some(_), false) => format!(
                 "INSERT INTO {table} \
                  (tenant, event_id, at_ts, source, mime, label_skill, instance_page_id, status, title, body, provenance, created_at, \
@@ -481,6 +596,13 @@ impl Indexer {
                 )?
             }
             Some(tenant) => {
+                // The next position: a bound value (native read above) or,
+                // when the tenant could not be quoted, the `MAX(seq)
+                // WHERE tenant = ?` subquery's tenant parameter.
+                let seq_param: Box<dyn duckdb::ToSql> = match native_seq {
+                    Some(n) => Box::new(n),
+                    None => Box::new(tenant.to_owned()),
+                };
                 conn.execute(
                     &sql,
                     params![
@@ -498,8 +620,7 @@ impl Indexer {
                         kind,
                         root_event_id,
                         input.run_id,
-                        // `MAX(seq) WHERE tenant = ?` — the next position.
-                        tenant,
+                        seq_param.as_ref(),
                         revision_sha256,
                     ],
                 )?
@@ -568,6 +689,18 @@ impl Indexer {
     /// Unprocessed `user` events (the inbox), newest first. System rows
     /// are hidden; [`Self::list_inbox_page`] can include them.
     pub async fn list_inbox(&self, limit: Option<usize>) -> Result<Vec<EventInfo>, IndexerError> {
+        // A bounded inbox read on the attached-Postgres backend is the
+        // paged listing without a cursor: the same ordering, pushed down.
+        if let (EventsBackend::AttachedPostgres { .. }, Some(n)) = (self.events_backend(), limit) {
+            if n == 0 {
+                return Ok(Vec::new());
+            }
+            let filter = EventListFilter {
+                status: Some("inbox".to_owned()),
+                ..Default::default()
+            };
+            return Ok(self.paged_events(&filter, false, n, None).await?.events);
+        }
         let table = self.events_table();
         let tenant = self.events_tenant_scope().map(str::to_owned);
         let mut where_clauses = vec!["status = 'inbox'".to_owned(), HIDE_SYSTEM.to_owned()];
@@ -591,6 +724,17 @@ impl Indexer {
         instance_page_id: &str,
         limit: Option<usize>,
     ) -> Result<Vec<EventInfo>, IndexerError> {
+        if let (EventsBackend::AttachedPostgres { .. }, Some(n)) = (self.events_backend(), limit) {
+            if n == 0 {
+                return Ok(Vec::new());
+            }
+            let filter = EventListFilter {
+                instance_page_id: Some(instance_page_id.to_owned()),
+                status: Some("processed".to_owned()),
+                ..Default::default()
+            };
+            return Ok(self.paged_events(&filter, true, n, None).await?.events);
+        }
         let table = self.events_table();
         let tenant = self.events_tenant_scope().map(str::to_owned);
         let mut where_clauses = vec![
@@ -691,78 +835,103 @@ impl Indexer {
         let table = self.events_table();
         let tenant = self.events_tenant_scope().map(str::to_owned);
 
-        let mut where_clauses: Vec<String> = Vec::new();
-        let mut bindings: Vec<Box<dyn duckdb::ToSql + Send>> = Vec::new();
-        if let Some(inst) = &filter.instance_page_id {
-            where_clauses.push("instance_page_id = ?".to_owned());
-            bindings.push(Box::new(inst.clone()));
-        }
-        if let Some(root) = &filter.root_event_id {
-            where_clauses.push("(root_event_id = ? OR event_id = ?)".to_owned());
-            bindings.push(Box::new(root.clone()));
-            bindings.push(Box::new(root.clone()));
-        }
-        if let Some(run) = &filter.run_id {
-            where_clauses.push("run_id = ?".to_owned());
-            bindings.push(Box::new(run.clone()));
-        }
-        if let Some(label) = &filter.label_skill {
-            where_clauses.push("label_skill = ?".to_owned());
-            bindings.push(Box::new(label.clone()));
-        }
-        if let Some(status) = &filter.status {
-            where_clauses.push("status = ?".to_owned());
-            bindings.push(Box::new(status.clone()));
-        }
-        match filter.kind {
-            Some(kind) => {
-                where_clauses.push("COALESCE(kind, 'user') = ?".to_owned());
-                bindings.push(Box::new(kind.as_str().to_owned()));
+        // The attached-Postgres table is listed natively: the whole WHERE /
+        // ORDER BY / LIMIT runs inside Postgres, so a listing transfers at
+        // most `limit + 1` rows however much hidden bookkeeping the table
+        // holds. Anything that cannot be quoted with certainty (a backslash
+        // or NUL in a filter value) falls back to the scanner path below.
+        let alias = match self.events_backend() {
+            EventsBackend::AttachedPostgres { alias } => Some(alias),
+            _ => None,
+        };
+        let build = |native: bool| -> (Vec<String>, Vec<Bind>) {
+            let mut where_clauses: Vec<String> = Vec::new();
+            let mut bindings: Vec<Bind> = Vec::new();
+            if let Some(inst) = &filter.instance_page_id {
+                where_clauses.push("instance_page_id = ?".to_owned());
+                bindings.push(Bind::Str(inst.clone()));
             }
-            None if !filter.include_system => where_clauses.push(HIDE_SYSTEM.to_owned()),
-            None => {}
-        }
-        if where_clauses.is_empty() {
-            where_clauses.push("TRUE".to_owned());
-        }
-        if let Some(t) = &tenant {
-            where_clauses.push("tenant = ?".to_owned());
-            bindings.push(Box::new(t.clone()));
-        }
+            if let Some(root) = &filter.root_event_id {
+                where_clauses.push("(root_event_id = ? OR event_id = ?)".to_owned());
+                bindings.push(Bind::Str(root.clone()));
+                bindings.push(Bind::Str(root.clone()));
+            }
+            if let Some(run) = &filter.run_id {
+                where_clauses.push("run_id = ?".to_owned());
+                bindings.push(Bind::Str(run.clone()));
+            }
+            if let Some(label) = &filter.label_skill {
+                where_clauses.push("label_skill = ?".to_owned());
+                bindings.push(Bind::Str(label.clone()));
+            }
+            if let Some(status) = &filter.status {
+                where_clauses.push("status = ?".to_owned());
+                bindings.push(Bind::Str(status.clone()));
+            }
+            match filter.kind {
+                Some(kind) => {
+                    where_clauses.push("COALESCE(kind, 'user') = ?".to_owned());
+                    bindings.push(Bind::Str(kind.as_str().to_owned()));
+                }
+                None if !filter.include_system => where_clauses.push(HIDE_SYSTEM.to_owned()),
+                None => {}
+            }
+            if where_clauses.is_empty() {
+                where_clauses.push("TRUE".to_owned());
+            }
+            if let Some(t) = &tenant {
+                where_clauses.push("tenant = ?".to_owned());
+                bindings.push(Bind::Str(t.clone()));
+            }
+            if let Some(c) = &cursor {
+                let cmp = if asc { ">" } else { "<" };
+                let ts_cast = if native {
+                    "CAST(? AS timestamp)"
+                } else {
+                    "TRY_CAST(? AS TIMESTAMP)"
+                };
+                match (by_seq, c) {
+                    (true, EventCursor::Seq(seq)) => {
+                        where_clauses.push(format!("seq {cmp} ?"));
+                        bindings.push(Bind::Int(*seq));
+                    }
+                    (
+                        false,
+                        EventCursor::At {
+                            at: Some(at),
+                            event_id,
+                        },
+                    ) => {
+                        where_clauses.push(format!(
+                            "((at_ts IS NOT NULL AND at_ts {cmp} {ts_cast}) \
+                             OR (at_ts = {ts_cast} AND event_id {cmp} ?) \
+                             OR at_ts IS NULL)"
+                        ));
+                        bindings.push(Bind::Str(at.clone()));
+                        bindings.push(Bind::Str(at.clone()));
+                        bindings.push(Bind::Str(event_id.clone()));
+                    }
+                    (false, EventCursor::At { at: None, event_id }) => {
+                        where_clauses.push(format!("(at_ts IS NULL AND event_id {cmp} ?)"));
+                        bindings.push(Bind::Str(event_id.clone()));
+                    }
+                    // A cursor of the other flavour: handled by the caller.
+                    _ => {}
+                }
+            }
+            (where_clauses, bindings)
+        };
         if let Some(c) = &cursor {
-            let cmp = if asc { ">" } else { "<" };
-            match (by_seq, c) {
-                (true, EventCursor::Seq(seq)) => {
-                    where_clauses.push(format!("seq {cmp} ?"));
-                    bindings.push(Box::new(*seq));
-                }
-                (
-                    false,
-                    EventCursor::At {
-                        at: Some(at),
-                        event_id,
-                    },
-                ) => {
-                    where_clauses.push(format!(
-                        "((at_ts IS NOT NULL AND at_ts {cmp} TRY_CAST(? AS TIMESTAMP)) \
-                         OR (at_ts = TRY_CAST(? AS TIMESTAMP) AND event_id {cmp} ?) \
-                         OR at_ts IS NULL)"
-                    ));
-                    bindings.push(Box::new(at.clone()));
-                    bindings.push(Box::new(at.clone()));
-                    bindings.push(Box::new(event_id.clone()));
-                }
-                (false, EventCursor::At { at: None, event_id }) => {
-                    where_clauses.push(format!("(at_ts IS NULL AND event_id {cmp} ?)"));
-                    bindings.push(Box::new(event_id.clone()));
-                }
-                // A cursor of the other flavour: the listing changed shape
-                // under the client (or the client mixed selectors).
-                _ => {
-                    return Err(IndexerError::InvalidCursor(
-                        "cursor was issued by a listing of another kind".to_owned(),
-                    ));
-                }
+            let mismatched = !matches!(
+                (by_seq, c),
+                (true, EventCursor::Seq(_)) | (false, EventCursor::At { .. })
+            );
+            if mismatched {
+                // The listing changed shape under the client (or the client
+                // mixed selectors).
+                return Err(IndexerError::InvalidCursor(
+                    "cursor was issued by a listing of another kind".to_owned(),
+                ));
             }
         }
         let dir = if asc { "ASC" } else { "DESC" };
@@ -778,20 +947,48 @@ impl Indexer {
         let projection = projection
             .strip_suffix(&format!(" FROM {table}"))
             .expect("select_cols ends with FROM <table>");
-        let sql = format!(
-            "{projection}, strftime(at_ts, '%Y-%m-%d %H:%M:%S.%f'), seq \
-             FROM {table} WHERE {} \
-             ORDER BY {order} LIMIT {}",
-            where_clauses.join(" AND "),
-            limit + 1,
-        );
+        let cursor_is_native_safe = match &cursor {
+            Some(EventCursor::At { at: Some(at), .. }) => pg_native::is_timestamp_text(at),
+            _ => true,
+        };
+        let native_sql = alias.as_ref().filter(|_| cursor_is_native_safe).and_then(|alias| {
+            let (clauses, binds) = build(true);
+            let rendered = pg_native::render(&clauses.join(" AND "), &binds)?;
+            let inner = format!(
+                "SELECT event_id, at_ts, source, mime, label_skill, instance_page_id, status, \
+                 title, body, provenance, COALESCE(kind, 'user') AS kind, root_event_id, run_id, seq \
+                 FROM {EVENTS_PG_TABLE_NAME} WHERE {rendered} ORDER BY {order} LIMIT {}",
+                limit + 1
+            );
+            Some(format!(
+                "SELECT event_id, strftime(at_ts, '%Y-%m-%dT%H:%M:%SZ'), source, mime, label_skill, \
+                 instance_page_id, status, title, body, provenance::VARCHAR, kind, root_event_id, run_id, \
+                 strftime(at_ts, '%Y-%m-%d %H:%M:%S.%f'), seq \
+                 FROM postgres_query('{alias}', {}) ORDER BY {order}",
+                pg_native::duckdb_string(&inner)
+            ))
+        });
+        let (sql, bindings) = match native_sql {
+            Some(sql) => (sql, Vec::new()),
+            None => {
+                let (clauses, binds) = build(false);
+                (
+                    format!(
+                        "{projection}, strftime(at_ts, '%Y-%m-%d %H:%M:%S.%f'), seq \
+                         FROM {table} WHERE {} \
+                         ORDER BY {order} LIMIT {}",
+                        clauses.join(" AND "),
+                        limit + 1,
+                    ),
+                    binds,
+                )
+            }
+        };
 
         let conn = self.conn.lock().await;
         let mut stmt = conn.prepare(&sql)?;
-        let param_refs: Vec<&dyn duckdb::ToSql> = bindings
-            .iter()
-            .map(|b| b.as_ref() as &dyn duckdb::ToSql)
-            .collect();
+        let param_refs: Vec<&dyn duckdb::ToSql> =
+            bindings.iter().map(|b| b as &dyn duckdb::ToSql).collect();
         let mut rows: Vec<(EventRow, Option<String>, Option<i64>)> = stmt
             .query_map(param_refs.as_slice(), |row| {
                 Ok((
@@ -847,6 +1044,24 @@ impl Indexer {
                  ORDER BY at_ts DESC NULLS LAST, event_id DESC LIMIT {keep})"
         );
         let conn = self.conn.lock().await;
+        // Native on the attached-Postgres table, like `prune_label_events`.
+        if let (EventsBackend::AttachedPostgres { alias }, Some(t)) =
+            (self.events_backend(), &tenant)
+            && let (Some(lt), Some(lr)) = (pg_native::pg_literal(t), pg_native::pg_literal(run_id))
+        {
+            let pg = format!(
+                "DELETE FROM {EVENTS_PG_TABLE_NAME} WHERE run_id = {lr} AND label_skill = 'escurel:run' \
+                 AND title = 'run-progress' AND tenant = {lt} AND event_id NOT IN (\
+                 SELECT event_id FROM {EVENTS_PG_TABLE_NAME} WHERE run_id = {lr} \
+                 AND label_skill = 'escurel:run' AND title = 'run-progress' AND tenant = {lt} \
+                 ORDER BY at_ts DESC NULLS LAST, event_id DESC LIMIT {keep})"
+            );
+            conn.execute_batch(&format!(
+                "CALL postgres_execute('{alias}', {});",
+                pg_native::duckdb_string(&pg)
+            ))?;
+            return Ok(());
+        }
         match &tenant {
             None => conn.execute(&sql, params![run_id, run_id])?,
             Some(t) => conn.execute(&sql, params![run_id, t, run_id, t])?,
@@ -920,6 +1135,27 @@ impl Indexer {
                  ORDER BY at_ts DESC NULLS LAST, event_id DESC LIMIT {keep})"
         );
         let conn = self.conn.lock().await;
+        // On the attached-Postgres table the delete runs inside Postgres:
+        // through the scanner the `NOT IN (subquery)` pulled every row of
+        // the label across the wire first (a 2,000-row backlog read ~60k
+        // rows; the lab's was ~58k heartbeats).
+        if let (EventsBackend::AttachedPostgres { alias }, Some(t)) =
+            (self.events_backend(), &tenant)
+            && let (Some(lt), Some(ll)) =
+                (pg_native::pg_literal(t), pg_native::pg_literal(label_skill))
+        {
+            let pg = format!(
+                "DELETE FROM {EVENTS_PG_TABLE_NAME} WHERE tenant = {lt} AND label_skill = {ll} \
+                 AND event_id NOT IN (SELECT event_id FROM {EVENTS_PG_TABLE_NAME} \
+                 WHERE tenant = {lt} AND label_skill = {ll} \
+                 ORDER BY at_ts DESC NULLS LAST, event_id DESC LIMIT {keep})"
+            );
+            conn.execute_batch(&format!(
+                "CALL postgres_execute('{alias}', {});",
+                pg_native::duckdb_string(&pg)
+            ))?;
+            return Ok(());
+        }
         match &tenant {
             None => conn.execute(&sql, params![label_skill, label_skill])?,
             Some(t) => conn.execute(&sql, params![label_skill, t, label_skill, t])?,
