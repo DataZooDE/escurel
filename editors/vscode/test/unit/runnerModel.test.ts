@@ -37,7 +37,7 @@ describe('runnerModel', () => {
     it('returns "stale" when age exceeds 3x heartbeat interval (90s)', () => {
       // 95 seconds after heartbeat
       const now95s = new Date(eventTime + 95000);
-      const health = deriveHealth(newestStatusEvent, now95s);
+      const health = deriveHealth(newestStatusEvent, now95s, { intervalMs: 30_000 });
       expect(health.status).toBe('stale');
       expect(health.label).toBe('stale');
       expect(health.description).toBe('last heartbeat 95 s ago');
@@ -52,6 +52,7 @@ describe('runnerModel', () => {
       const health = deriveHealth(
         { at: newestStatusEvent.at, body: JSON.stringify(staleBody) },
         now4s,
+        { intervalMs: 30_000 },
       );
       expect(health.status).toBe('stale');
       expect(health.label).toBe('stale');
@@ -134,9 +135,9 @@ describe('the heartbeat interval is observed, not assumed', () => {
     expect(estimateHeartbeatIntervalMs(rows)).toBe(60_000);
   });
 
-  it('falls back to the runner default (30 s) without two heartbeats to measure', () => {
-    expect(estimateHeartbeatIntervalMs([])).toBe(30_000);
-    expect(estimateHeartbeatIntervalMs([heartbeatAt('2026-10-02T12:00:00Z')])).toBe(30_000);
+  it('falls back to the runner default (5 min) without two heartbeats to measure', () => {
+    expect(estimateHeartbeatIntervalMs([])).toBe(300_000);
+    expect(estimateHeartbeatIntervalMs([heartbeatAt('2026-10-02T12:00:00Z')])).toBe(300_000);
   });
 
   it('judges staleness by it: 100 s is fine for a 60 s heartbeat and stale for a 30 s one', () => {
@@ -154,6 +155,6 @@ describe('health ages with the clock', () => {
     const row = (runnerStatusFixture.events as Event[])[2]!;
     const at = Date.parse(row.at as string);
     expect(deriveHealth(row, at + 5_000).status).toBe('ok');
-    expect(deriveHealth(row, at + 10 * 60_000).status).toBe('stale');
+    expect(deriveHealth(row, at + 20 * 60_000).status).toBe('stale'); // > 3 x the 5 min default
   });
 });

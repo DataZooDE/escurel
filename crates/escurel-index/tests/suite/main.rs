@@ -32,6 +32,7 @@ mod duckpgq_spike;
 mod embed_lock;
 mod endpoints;
 mod events;
+mod events_lake_churn_live;
 mod events_pg_cost_live;
 mod frontmatter_links;
 mod historical_expand;
