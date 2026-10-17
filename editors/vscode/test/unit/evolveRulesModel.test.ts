@@ -1,3 +1,6 @@
+/* eslint-disable @typescript-eslint/no-explicit-any -- JSON fixtures captured from the real service */
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
   EvolveShapeError,
@@ -174,5 +177,51 @@ describe('rule discovery payloads', () => {
     const text = describeRule({ kind: 'not_null', table: 't‮evil', column: 'c\n[x](y)' });
     expect(text).not.toContain('‮');
     expect(text).not.toContain('\n');
+  });
+});
+
+describe('the parsed evidence is a closed shape (no field the service adds can pass through)', () => {
+  const fx = (name: string): any =>
+    JSON.parse(readFileSync(join(__dirname, 'fixtures/evolve-rules', name + '.json'), 'utf8'));
+  const HOSTILE = ['rows', 'example', 'values', 'rule_json', 'row_values'];
+  const MARK = 'HOSTILE_MARKER_8c1f';
+  const BINOMIAL = [
+    'bound',
+    'confirmation',
+    'decision',
+    'discovery',
+    'pValue',
+    'rowsRequired',
+    'ruleSha256',
+    'text',
+  ];
+  const STATE = ['decision', 'reason', 'ruleSha256', 'text'];
+  const REPLAY = ['breaches', 'guard', 'program', 'role'];
+
+  const poison = (raw: any) => {
+    const r = structuredClone(raw);
+    for (const e of r.evidence) for (const k of HOSTILE) e[k] = { [k]: MARK, leak: [MARK] };
+    for (const e of r.replays ?? []) for (const k of HOSTILE) e[k] = MARK;
+    return r;
+  };
+
+  for (const [name, allowed] of [
+    ['test_v2_pmax5', BINOMIAL],
+    ['test_state_p0', STATE],
+  ] as const) {
+    it(`${name}: every evidence entry has only the whitelisted keys`, () => {
+      const report = parseTestReport(poison(fx(name)));
+      expect(report.evidence.length).toBeGreaterThan(0);
+      for (const e of report.evidence)
+        for (const key of Object.keys(e)) expect(allowed).toContain(key);
+      for (const r of report.replays)
+        for (const key of Object.keys(r)) expect(REPLAY).toContain(key);
+      expect(JSON.stringify(report)).not.toContain(MARK);
+      expect(renderReport(report)).not.toContain(MARK);
+    });
+  }
+
+  it('the state fixture really has replay entries to poison', () => {
+    expect(parseTestReport(poison(fx('test_state_p0'))).replays.length).toBeGreaterThan(0);
   });
 });
