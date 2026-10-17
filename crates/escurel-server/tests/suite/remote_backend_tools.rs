@@ -724,12 +724,8 @@ async fn openapi_bearer_auth_forwarded_and_read_degrades_when_unauthorised() {
 /// `{ issue }` rather than fabricating a body.
 #[tokio::test]
 async fn openapi_unreachable_endpoint_degrades_read_and_probe() {
-    // Bind then drop, so the port is closed (connection refused).
-    let listener = TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], 0)))
-        .await
-        .unwrap();
-    let dead = format!("http://{}", listener.local_addr().unwrap());
-    drop(listener);
+    // A held, non-listening port: connection refused, and no parallel test can claim it.
+    let (dead, _port_guard) = super::remote_rest_rows::dead_base().await;
 
     let (process, _dirs) = spawn_gateway("customer", CUSTOMER_SKILL).await;
     let p = &process;
