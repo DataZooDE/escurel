@@ -131,6 +131,7 @@ mod remote_rest_rows;
 mod remote_support;
 mod remote_write_back;
 mod report_progress;
+mod reserved_ids_and_purge_gate;
 mod review_events;
 mod rows_instances;
 mod rows_paging_keys;

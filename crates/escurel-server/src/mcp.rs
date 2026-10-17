@@ -1299,7 +1299,7 @@ async fn dispatch_tools_call(
         "admin_delete_chat_history" => {
             tool_admin_delete_chat_history(indexer, params.arguments).await
         }
-        "admin_purge_events" => tool_admin_purge_events(indexer, params.arguments).await,
+        "admin_purge_events" => tool_admin_purge_events(indexer, caller, params.arguments).await,
         "admin_list_lanes" => tool_admin_list_lanes(indexer),
         "admin_lane_keys" => tool_admin_lane_keys(indexer, params.arguments).await,
         "admin_lane_blob" => tool_admin_lane_blob(indexer, params.arguments).await,

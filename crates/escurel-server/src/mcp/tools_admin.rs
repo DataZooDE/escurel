@@ -279,10 +279,22 @@ pub(super) struct AdminPurgeEventsArgs {
 
 pub(super) async fn tool_admin_purge_events(
     indexer: &Indexer,
+    caller: AclCaller<'_>,
     args: Value,
 ) -> Result<Value, JsonRpcError> {
     let a: AdminPurgeEventsArgs = parse_args(args, "admin_purge_events")?;
     ensure_tenant_matches(indexer, &a.tenant_id)?;
+    // The runner mints its harnesses ADMIN run tokens, so the admin scope alone is not an operator: a
+    // prompt-injected agent run could otherwise erase the write-back witnesses (a re-promote would then
+    // apply upstream twice) and the purge's own audit row. A machine may count (a dry run) but not
+    // delete, and never touches an audit label.
+    if super::tools_write::is_machine_caller(&caller) && (a.apply || a.allow_protected) {
+        return Err(JsonRpcError::invalid_params(
+            "admin_purge_events: an agent run (machine caller) may only count what a purge would \
+             remove; deleting events, or reaching for an audit label, is an operator's call"
+                .to_owned(),
+        ));
+    }
     let spec = escurel_index::PurgeSpec::new(
         &a.label_skill,
         a.before_ts.as_deref().filter(|s| !s.is_empty()),
