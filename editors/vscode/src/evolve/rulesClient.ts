@@ -13,6 +13,7 @@ import {
   type Proposal,
   type TestReport,
 } from './rulesModel';
+import { instanceOnly, isStatePilot, readStateInstance, stateStartRequest } from './stateInstance';
 
 export type EvolveCallErrorKind =
   | 'signed_out'
@@ -131,21 +132,26 @@ export async function callEvolve(
 
 const safe: CallOptions = { retry: true, timeoutMs: 120_000 };
 
-/** Evolve freezes a batch of candidate rules from the discovery window of the source. */
+/** What rules are discovered for: a registered training source, or one exact CSV-start instance. */
+export type RulesInput =
+  | { kind: 'training_source'; sourceId: string }
+  | { kind: 'instance'; instance: Record<string, unknown> };
+
+/**
+ * Evolve freezes a batch of candidate rules: from the discovery window of a training source, or, for
+ * a P0/P5/P7 instance, for exactly that instance. An instance is checked against the pilot's key
+ * allow-list first and only its own keys are sent.
+ */
 export async function proposeRules(
   endpoint: string,
   refresher: TokenRefresher,
-  sourceId: string,
+  input: RulesInput,
 ): Promise<Proposal> {
-  return parseProposal(
-    await callEvolve(
-      endpoint,
-      refresher,
-      'evolve_rules_propose',
-      { training_source_id: sourceId },
-      safe,
-    ),
-  );
+  const args =
+    input.kind === 'training_source'
+      ? { training_source_id: input.sourceId }
+      : instanceOnly(readStateInstance(input.instance));
+  return parseProposal(await callEvolve(endpoint, refresher, 'evolve_rules_propose', args, safe));
 }
 
 /**
@@ -247,10 +253,27 @@ export async function startWithApprovedRules(
 ): Promise<{ experiment: string; state: string }> {
   if (!isHash(ruleSetSha256))
     throw new EvolveCallError('invalid', 'An approved rule set is a 64-character hash.');
+  if (isStatePilot(spec.pilot)) {
+    // A CSV-start pilot: the request is exactly the instance, the start keys of the file, brain llm
+    // and the hash. The service re-derives the instance hash and the limit from it.
+    let request: Record<string, unknown>;
+    try {
+      request = stateStartRequest(spec, ruleSetSha256);
+    } catch (error) {
+      throw new EvolveCallError('invalid', error instanceof Error ? error.message : String(error));
+    }
+    return startReceipt(
+      await callEvolve(endpoint, refresher, 'evolve_start', request, {
+        retry: false,
+        timeoutMs: 120_000,
+      }),
+      request.experiment,
+    );
+  }
   if (spec.pilot !== 'p1_decision')
     throw new EvolveCallError(
       'invalid',
-      'Approved rule sets apply to p1_decision (replenishment) experiments only.',
+      'Approved rule sets apply to p1_decision (replenishment) experiments or to p0, p5 or p7 instances only.',
     );
   if ('rule_set' in spec || 'rule_set_p_max' in spec)
     throw new EvolveCallError('invalid', 'The rules are set by the server, not the request.');
@@ -259,18 +282,32 @@ export async function startWithApprovedRules(
       'invalid',
       'The start file already names a rule set. Remove it; the approved one is attached for you.',
     );
-  const raw = (await callEvolve(
-    endpoint,
-    refresher,
-    'evolve_start',
-    { ...spec, approved_rule_set_sha256: ruleSetSha256 },
-    { retry: false, timeoutMs: 120_000 },
-  )) as Record<string, unknown>;
+  return startReceipt(
+    await callEvolve(
+      endpoint,
+      refresher,
+      'evolve_start',
+      { ...spec, approved_rule_set_sha256: ruleSetSha256 },
+      { retry: false, timeoutMs: 120_000 },
+    ),
+    spec.experiment,
+  );
+}
+
+function startReceipt(body: unknown, experiment: unknown): { experiment: string; state: string } {
+  const raw = (body && typeof body === 'object' ? body : {}) as Record<string, unknown>;
   return {
     experiment: cleanText(
-      typeof raw.experiment === 'string' ? raw.experiment : String(spec.experiment ?? ''),
+      typeof raw.experiment === 'string' ? raw.experiment : String(experiment ?? ''),
       128,
     ),
-    state: cleanText(typeof raw.state === 'string' ? raw.state : 'accepted', 40),
+    state: cleanText(
+      typeof raw.state === 'string'
+        ? raw.state
+        : typeof raw.dispatch_state === 'string'
+          ? raw.dispatch_state
+          : 'accepted',
+      40,
+    ),
   };
 }

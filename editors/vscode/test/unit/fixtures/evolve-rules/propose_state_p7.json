@@ -1,0 +1,43 @@
+{
+  "batch_id": "ac69afed3401e02ab3ac288b961cd8068b1ac206262aa1dbe1a0a640c94295e6",
+  "candidates": [
+    {
+      "rule": {
+        "column": "asset_id",
+        "kind": "fk_in",
+        "ref_column": "asset_id",
+        "ref_table": "p7_assets",
+        "table": "p7_state"
+      },
+      "rule_sha256": "b9040d21a11622e9190c4a8649f2e0ae51b7e7d795b3bd43e98b795f0a1ab0c8"
+    }
+  ],
+  "candidates_count": 1,
+  "data_sha256": "5dbe7300bc1fa283525882277372350346dffde7b545a719acfb2c70324e445d",
+  "dsl_version": "rules_v1",
+  "evidence_scope": "replay_of_reference_and_planted_programs_on_this_exact_instance",
+  "idempotent": false,
+  "next_action": "evolve_rules_test",
+  "pilot": "p7",
+  "programs": [
+    {
+      "intended_rule_sha256": null,
+      "name": "seed",
+      "role": "positive",
+      "sql_sha256": "7cbf5a40bc27c70d09c2273957febc0c8e617796ad030a80e3601496ce692584"
+    },
+    {
+      "intended_rule_sha256": null,
+      "name": "top_return",
+      "role": "positive",
+      "sql_sha256": "6d30d58dee7216c9a4791d0bda20ffd0af0b2416101224ce9783ab782b0e7e70"
+    },
+    {
+      "intended_rule_sha256": "b9040d21a11622e9190c4a8649f2e0ae51b7e7d795b3bd43e98b795f0a1ab0c8",
+      "name": "unknown_asset",
+      "role": "negative",
+      "sql_sha256": "ce36b738e4a805892d4e0c6eddfc9138b30e91dcd1cae3e791981a4205029bd3"
+    }
+  ],
+  "proposer": "state_rules_v1"
+}

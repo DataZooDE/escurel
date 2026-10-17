@@ -1,4 +1,5 @@
-import { EvolveCallError } from './rulesClient';
+import { EvolveCallError, type RulesInput } from './rulesClient';
+import { instanceOnly } from './stateInstance';
 import {
   approvable,
   describePolicy,
@@ -17,7 +18,7 @@ import {
 
 /** What the review needs from Evolve; the command binds it to the endpoint and the signed-in token. */
 export interface RulesApi {
-  propose(sourceId: string): Promise<Proposal>;
+  propose(input: RulesInput): Promise<Proposal>;
   test(batchId: string, choice: PolicyChoice): Promise<TestReport>;
   get(batchId: string): Promise<{ test: TestReport | undefined }>;
   approve(decision: {
@@ -29,7 +30,8 @@ export interface RulesApi {
 
 /** Every question a person is asked. Each returns what they answered; nothing is assumed. */
 export interface RulesUi {
-  askSourceId(): Promise<string | undefined>;
+  /** What to discover rules for: a registered training source or one exact P0/P5/P7 instance. */
+  askInput(): Promise<RulesInput | undefined>;
   /**
    * Optionally choose p_max and alpha for the test (within the service's caps). An empty choice means
    * the service default; undefined means the person cancelled. Not asked for state batches.
@@ -45,7 +47,13 @@ export interface RulesUi {
 }
 
 export type ReviewOutcome =
-  | { state: 'approved'; approval: Approval; sourceId: string; batchId: string; testSha256: string }
+  | {
+      state: 'approved';
+      approval: Approval;
+      input: RulesInput;
+      batchId: string;
+      testSha256: string;
+    }
   | { state: 'nothing_to_approve'; report: TestReport }
   | { state: 'cancelled' };
 
@@ -66,14 +74,28 @@ export async function reviewRules(deps: {
   const owner = await subject();
   if (!owner)
     throw new Error('Sign in before reviewing rules: Evolve binds them to your identity.');
-  const sourceId = (await ui.askSourceId())?.trim();
-  if (!sourceId) return { state: 'cancelled' };
+  const asked = await ui.askInput();
+  const input: RulesInput | undefined =
+    asked?.kind === 'training_source'
+      ? asked.sourceId.trim()
+        ? { kind: 'training_source', sourceId: asked.sourceId.trim() }
+        : undefined
+      : asked;
+  if (!input) return { state: 'cancelled' };
 
-  const proposal = await api.propose(sourceId);
+  const proposal = await api.propose(input);
   if (proposal.candidates.length === 0) {
-    ui.notify('Evolve found no candidate rules in this training source.');
+    ui.notify(
+      input.kind === 'instance'
+        ? 'Evolve found no candidate rules for this instance.'
+        : 'Evolve found no candidate rules in this training source.',
+    );
     return { state: 'cancelled' };
   }
+  if ((input.kind === 'instance') !== (proposal.kind === 'state'))
+    throw stale(
+      'Evolve answered with another kind of batch than the one asked for. Nothing was tested.',
+    );
   const choice = proposal.kind === 'state' ? {} : await ui.askPolicy(proposal);
   if (!choice) return { state: 'cancelled' };
   if (!(await ui.confirmTest(proposal, choice))) return { state: 'cancelled' };
@@ -122,13 +144,15 @@ export async function reviewRules(deps: {
   const rules = offered.filter((e) => chosen.includes(e.ruleSha256));
 
   const summary = [
-    `Approve ${rules.length} rule${rules.length === 1 ? '' : 's'} for the training source ${sourceId}?`,
+    `Approve ${rules.length} rule${rules.length === 1 ? '' : 's'} for ${subjectOf(input, proposal)}?`,
     '',
     ...rules.map((e) => `- ${e.text} (${evidenceFacts(e)})`),
     '',
     `Bound to test ${report.testSha256}, under ${describePolicy(report.policy)}.`,
     'The upper bounds in the report are informational: they do not decide anything and are not an approval signal.',
-    'They apply to new experiments only, started with the approved hash; a running experiment is never changed. Approved means they survived a pre-registered test on this training data, not that they are true of the world.',
+    input.kind === 'instance'
+      ? 'They apply to new experiments on exactly this instance only, started with the approved hash; a running experiment is never changed. Approved means known programs behaved as expected under them on this instance, not that they are true of the world.'
+      : 'They apply to new experiments only, started with the approved hash; a running experiment is never changed. Approved means they survived a pre-registered test on this training data, not that they are true of the world.',
     `Your approval is recorded as ${owner}.`,
   ].join('\n');
   if (!(await ui.confirmApproval(summary))) return { state: 'cancelled' };
@@ -147,7 +171,7 @@ export async function reviewRules(deps: {
   return {
     state: 'approved',
     approval,
-    sourceId,
+    input,
     batchId: proposal.batchId,
     testSha256: report.testSha256,
   };
@@ -160,7 +184,7 @@ export async function reviewRules(deps: {
  */
 export async function startWithRules(deps: {
   approval: Approval;
-  sourceId: string;
+  input: RulesInput;
   readSpec: () => Promise<Record<string, unknown> | undefined>;
   confirmStart: (summary: string) => Promise<boolean>;
   start: (
@@ -172,20 +196,72 @@ export async function startWithRules(deps: {
   if (!spec) return undefined;
   if (typeof spec.experiment !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(spec.experiment))
     throw new Error('The start file needs a new experiment id (letters, digits, - and _).');
-  if (spec.training_source_id !== deps.sourceId)
-    throw new Error(
-      'The start file names a different training source than the rules were approved on.',
-    );
-  if (typeof spec.source_sha256 === 'string' && spec.source_sha256 !== deps.approval.dataSha256)
-    throw new Error('The start file is for different data than the rules were approved on.');
-  const summary = [
-    `Start new experiment ${spec.experiment} (${String(spec.pilot)}) on ${deps.sourceId}?`,
-    `It carries the approved rule set ${deps.approval.ruleSetSha256} (${deps.approval.rules.length} rule${deps.approval.rules.length === 1 ? '' : 's'}).`,
-    'Evolve checks the rules against this experiment’s training data first and refuses the start if one is breached.',
+  const { input, approval } = deps;
+  let summary: string[];
+  if (input.kind === 'instance') {
+    if (spec.pilot !== input.instance.pilot || (approval.pilot && approval.pilot !== spec.pilot))
+      throw new Error('The start file is for a different pilot than the rules were approved for.');
+    if (
+      JSON.stringify(canonical(instanceOnly(spec))) !==
+      JSON.stringify(canonical(instanceOnly(input.instance)))
+    )
+      throw new Error(
+        'The start file describes a different instance than the rules were approved on.',
+      );
+    if (typeof spec.max_generations !== 'number')
+      throw new Error(
+        'The start file needs an explicit max_generations (0 runs no model call). No default is assumed.',
+      );
+    summary = [
+      `Start new experiment ${spec.experiment} (${String(spec.pilot)}) on the exact instance the rules were approved on (data hash prefix ${approval.dataSha256.slice(0, 12)}), with ${spec.max_generations} generation${spec.max_generations === 1 ? '' : 's'}?`,
+      `It carries the approved rule set ${approval.ruleSetSha256} (${approval.rules.length} rule${approval.rules.length === 1 ? '' : 's'}) and brain "llm", the only brain that enforces it.`,
+      'Evolve re-checks the rules on this instance first and refuses the start if the instance, its limit or a count differs.',
+    ];
+  } else {
+    if (spec.training_source_id !== input.sourceId)
+      throw new Error(
+        'The start file names a different training source than the rules were approved on.',
+      );
+    if (typeof spec.source_sha256 === 'string' && spec.source_sha256 !== approval.dataSha256)
+      throw new Error('The start file is for different data than the rules were approved on.');
+    summary = [
+      `Start new experiment ${spec.experiment} (${String(spec.pilot)}) on ${input.sourceId}?`,
+      `It carries the approved rule set ${approval.ruleSetSha256} (${approval.rules.length} rule${approval.rules.length === 1 ? '' : 's'}).`,
+      'Evolve checks the rules against this experiment\u2019s training data first and refuses the start if one is breached.',
+    ];
+  }
+  summary.push(
     'This starts a search directly in Evolve and may spend its budget; it does not go through the Escurel plan review.',
-  ].join('\n');
-  if (!(await deps.confirmStart(summary))) return undefined;
-  return deps.start(spec, deps.approval.ruleSetSha256);
+  );
+  if (!(await deps.confirmStart(summary.join('\n')))) return undefined;
+  return deps.start(spec, approval.ruleSetSha256);
+}
+
+/** Key order must not matter when two instances are compared. */
+function canonical(value: Record<string, unknown>): [string, unknown][] {
+  return Object.entries(value).sort(([a], [b]) => (a < b ? -1 : 1));
+}
+
+/** Who the rules are for, in words: a training source, or one exact instance. */
+function subjectOf(input: RulesInput, proposal: Proposal): string {
+  return input.kind === 'instance'
+    ? `this exact instance (pilot ${String(input.instance.pilot)}, data hash prefix ${proposal.dataSha256.slice(0, 12)})`
+    : `the training source ${input.sourceId}`;
+}
+
+/** The supported rules as pick items. Nothing is pre-selected: no item carries `picked`. */
+export function ruleChoices(supported: Evidence[]): {
+  label: string;
+  description: string;
+  detail: string;
+  hash: string;
+}[] {
+  return supported.map((e) => ({
+    label: e.text,
+    description: evidenceFacts(e),
+    detail: `rule ${e.ruleSha256}`,
+    hash: e.ruleSha256,
+  }));
 }
 
 /** The chosen policy in words, for the modal that precedes the one-shot test. */
@@ -196,12 +272,16 @@ export function describeChoice(choice: PolicyChoice): string {
 }
 
 /** What the confirmation before the one-shot test says: the policy, its caps and that it cannot be redone. */
-export function confirmTestDetail(proposal: Proposal, choice: PolicyChoice): string {
+export function confirmTestDetail(
+  proposal: Proposal,
+  choice: PolicyChoice,
+  instance?: Record<string, unknown>,
+): string {
   const state = proposal.kind === 'state';
   return [
     `Batch ${proposal.batchId}`,
     state
-      ? 'These rules are tested by replaying known programs on this exact instance; there is no p_max or alpha.'
+      ? `These rules are tested by replaying known programs on this exact instance (pilot ${String(instance?.pilot ?? proposal.pilot ?? '?')}, data hash prefix ${proposal.dataSha256.slice(0, 12)}); there is no p_max or alpha.`
       : `Found in the first ${proposal.dayCut} of ${proposal.days} training days; they are tested on the rest.`,
     ...(state
       ? []

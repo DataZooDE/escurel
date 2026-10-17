@@ -3,8 +3,10 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import { EvolveCallError } from '../../src/evolve/rulesClient';
+import { readStateInstance } from '../../src/evolve/stateInstance';
 import {
   confirmTestDetail,
+  ruleChoices,
   reviewRules,
   startWithRules,
   type RulesApi,
@@ -18,6 +20,7 @@ import {
 } from '../../src/evolve/rulesModel';
 
 const H = (c: string) => c.repeat(64);
+const SRC_INPUT = { kind: 'training_source', sourceId: 'src-1' } as const;
 const rule = (sha: string, column: string) => ({
   rule_sha256: sha,
   rule: { kind: 'not_null', table: 't', column },
@@ -70,7 +73,7 @@ function setup(
 ) {
   const calls: string[] = [];
   const ui: RulesUi = {
-    askSourceId: vi.fn(async () => 'src-1'),
+    askInput: vi.fn(async () => SRC_INPUT),
     askPolicy: vi.fn(async () => ({})),
     confirmTest: vi.fn(async () => true),
     showReport: vi.fn(async () => undefined),
@@ -253,7 +256,7 @@ describe('start a new experiment with the approved rules', () => {
       confirm,
       deps: {
         approval,
-        sourceId: 'src-1',
+        input: SRC_INPUT,
         readSpec: async () => over.spec ?? spec,
         confirmStart: confirm,
         start,
@@ -355,7 +358,13 @@ describe('choosing p_max and alpha before the one-shot test', () => {
     const stateProposal = parseProposal(fx('propose_state_p0'));
     const stateReport = parseTestReport(fx('test_state_p0'));
     const s = setup({
-      ui: { pickRules: vi.fn(async (o: { ruleSha256: string }[]) => [o[0]!.ruleSha256]) },
+      ui: {
+        askInput: vi.fn(async () => ({
+          kind: 'instance' as const,
+          instance: { pilot: 'p0', capacity: 10, items_csv: '6,5' },
+        })),
+        pickRules: vi.fn(async (o: { ruleSha256: string }[]) => [o[0]!.ruleSha256]),
+      },
       api: {
         propose: vi.fn(async () => stateProposal),
         test: vi.fn(async () => stateReport),
@@ -494,5 +503,176 @@ describe('the confirmation before the one-shot test', () => {
     expect(state).not.toMatch(/Test policy:/);
     expect(state).toMatch(/every p0_bin_assignment\.item_id exists in p0_items\.id/);
     expect(state).toMatch(/at least 16 rows/);
+  });
+});
+
+describe('a state batch for one exact instance (P0, P5, P7)', () => {
+  const instances: Record<string, Record<string, unknown>> = {
+    p0: { pilot: 'p0', capacity: 10, items_csv: '6,5,4,7,2,3,8,1,9,4,6,2,5,3,7,1' },
+    p5: fx('instance_p5'),
+    p7: fx('instance_p7'),
+  };
+  const START = { experiment: 'exp-s', max_generations: 0 };
+
+  function stateSetup(pilot: string, over: Parameters<typeof setup>[0] = {}) {
+    const instance = readStateInstance({ ...instances[pilot], ...START });
+    const proposed = parseProposal(fx(`propose_state_${pilot}`));
+    const tested = parseTestReport(fx(`test_state_${pilot}`));
+    const approved = parseApproval(fx(`approve_state_${pilot}`));
+    const input = { kind: 'instance', instance } as const;
+    const first = tested.evidence.find((e) => e.decision === 'supported')!.ruleSha256;
+    const s = setup({
+      ...over,
+      ui: {
+        askInput: vi.fn(async () => input),
+        pickRules: vi.fn(async () => [first]),
+        ...over.ui,
+      },
+      api: {
+        propose: vi.fn(async () => proposed),
+        test: vi.fn(async () => tested),
+        get: vi.fn(async () => ({ test: tested })),
+        approve: vi.fn(async () => approved),
+        ...over.api,
+      },
+    });
+    return { ...s, input, instance, proposed, tested, approved, first };
+  }
+
+  for (const pilot of ['p0', 'p5', 'p7']) {
+    it(`${pilot}: proposes the instance, skips the p_max/alpha question, names the instance`, async () => {
+      const s = stateSetup(pilot);
+      const out = await reviewRules(s);
+      expect(out.state).toBe('approved');
+      expect(s.api.propose).toHaveBeenCalledWith(s.input);
+      expect(s.ui.askPolicy).not.toHaveBeenCalled();
+      expect(s.api.test).toHaveBeenCalledWith(s.proposed.batchId, {});
+      const summary = (s.ui.confirmApproval as ReturnType<typeof vi.fn>).mock
+        .calls[0]![0] as string;
+      expect(summary).toContain(
+        `for this exact instance (pilot ${pilot}, data hash prefix ${s.proposed.dataSha256.slice(0, 12)})`,
+      );
+      expect(summary).not.toMatch(/training source/);
+      expect(summary).toContain(s.tested.testSha256);
+      // the approval is bound to the reviewed test, for exactly the chosen rule
+      expect(s.api.approve).toHaveBeenCalledWith({
+        batchId: s.proposed.batchId,
+        ruleSha256s: [s.first],
+        expectedTestSha256: s.tested.testSha256,
+      });
+      // the outcome carries the instance, for the start
+      expect(out.state === 'approved' && out.input).toEqual(s.input);
+    });
+  }
+
+  it('never approves a state batch without the explicit choice and confirmation', async () => {
+    for (const ui of [
+      { confirmApproval: vi.fn(async () => false) },
+      { pickRules: vi.fn(async () => undefined) },
+      { pickRules: vi.fn(async () => []) },
+    ]) {
+      const s = stateSetup('p0', { ui });
+      expect((await reviewRules(s)).state).toBe('cancelled');
+      expect(s.api.approve).not.toHaveBeenCalled();
+    }
+    const s = stateSetup('p0', { ui: { confirmTest: vi.fn(async () => false) } });
+    expect((await reviewRules(s)).state).toBe('cancelled');
+    expect(s.api.test).not.toHaveBeenCalled();
+  });
+
+  it('a cancelled input stores nothing', async () => {
+    const s = stateSetup('p0', { ui: { askInput: vi.fn(async () => undefined) } });
+    expect((await reviewRules(s)).state).toBe('cancelled');
+    expect(s.api.propose).not.toHaveBeenCalled();
+  });
+
+  it('the confirmation before the test names the instance, not a training source', () => {
+    const proposed = parseProposal(fx('propose_state_p0'));
+    const text = confirmTestDetail(proposed, {}, instances.p0);
+    expect(text).toContain('this exact instance (pilot p0, data hash prefix 26eff570ba98)');
+  });
+
+  it('offers the supported rules with nothing pre-selected', () => {
+    const tested = parseTestReport(fx('test_state_p0'));
+    const items = ruleChoices(tested.evidence.filter((e) => e.decision === 'supported'));
+    expect(items.length).toBeGreaterThan(0);
+    for (const item of items) expect(item).not.toHaveProperty('picked');
+  });
+
+  describe('start', () => {
+    const deps = (pilot: string, specOver: Record<string, unknown> = {}, confirm = true) => {
+      const s = stateSetup(pilot);
+      const spec = { ...s.instance, ...specOver };
+      const start = vi.fn(async (_spec: Record<string, unknown>, _hash: string) => ({
+        experiment: 'exp-s',
+        state: 'pending',
+      }));
+      const confirmStart = vi.fn(async (_summary: string) => confirm);
+      return {
+        s,
+        spec,
+        start,
+        confirmStart,
+        deps: {
+          approval: s.approved,
+          input: s.input,
+          readSpec: async () => spec,
+          confirmStart,
+          start,
+        },
+      };
+    };
+
+    for (const pilot of ['p0', 'p5', 'p7'])
+      it(`${pilot}: starts the same instance with the approved hash after one more confirmation`, async () => {
+        const d = deps(pilot);
+        const out = await startWithRules(d.deps);
+        expect(out?.experiment).toBe('exp-s');
+        expect(d.start).toHaveBeenCalledWith(d.spec, d.s.approved.ruleSetSha256);
+        const summary = d.confirmStart.mock.calls[0]![0] as string;
+        expect(summary).toMatch(/does not go through the Escurel plan review/);
+        expect(summary).toContain(d.s.approved.ruleSetSha256);
+        expect(summary).toMatch(/exact instance/);
+        expect(summary).toMatch(/0 generation/);
+      });
+
+    it('does nothing without the confirmation', async () => {
+      const d = deps('p0', {}, false);
+      expect(await startWithRules(d.deps)).toBeUndefined();
+      expect(d.start).not.toHaveBeenCalled();
+    });
+
+    it('refuses a start file for another pilot than the rules were approved for', async () => {
+      const d = deps('p0');
+      const other = { ...instances.p5, ...START };
+      await expect(startWithRules({ ...d.deps, readSpec: async () => other })).rejects.toThrow(
+        /different pilot/,
+      );
+      expect(d.start).not.toHaveBeenCalled();
+    });
+
+    it('refuses a start file whose instance differs from the one the rules were approved on', async () => {
+      for (const change of [{ capacity: 12 }, { items_csv: '6,5,4' }]) {
+        const d = deps('p0', change);
+        await expect(startWithRules(d.deps)).rejects.toThrow(/different instance/);
+        expect(d.start).not.toHaveBeenCalled();
+      }
+    });
+
+    it('needs an experiment id and an explicit max_generations', async () => {
+      const noId = deps('p0');
+      const spec: Record<string, unknown> = { ...noId.spec };
+      delete spec.experiment;
+      await expect(startWithRules({ ...noId.deps, readSpec: async () => spec })).rejects.toThrow(
+        /experiment id/,
+      );
+      const noGen = deps('p0');
+      const spec2: Record<string, unknown> = { ...noGen.spec };
+      delete spec2.max_generations;
+      await expect(startWithRules({ ...noGen.deps, readSpec: async () => spec2 })).rejects.toThrow(
+        /max_generations/,
+      );
+      expect(noGen.start).not.toHaveBeenCalled();
+    });
   });
 });

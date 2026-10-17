@@ -1,0 +1,34 @@
+{
+  "applies_to": "new brain=llm experiments on exactly this instance only; a running search is never changed",
+  "approved_rule_set_sha256": "16dc006a566f4292d72ed53598ef0674bd0ffebbf49d8f4bff3cfea553e29a85",
+  "approver": "dev-user",
+  "data_sha256": "7b388c873f112cd5a96781eb702320b1b4fd6003f4d5cbfc2e3cdd3ce8edbd99",
+  "idempotent": false,
+  "next_action": "evolve_start with approved_rule_set_sha256",
+  "pilot": "p5",
+  "rules": [
+    {
+      "rule": {
+        "column": "product_id",
+        "kind": "fk_in",
+        "ref_column": "product_id",
+        "ref_table": "p5_products",
+        "table": "p5_state"
+      },
+      "rule_sha256": "4f7b2e9f0dbc6dd126c34190ebe358f118fe25260b3dc0f4fd6008f1675ff7fa"
+    },
+    {
+      "rule": {
+        "agg": "count",
+        "bound": 24,
+        "filter": {
+          "column": "listed",
+          "value": true
+        },
+        "kind": "agg_le",
+        "table": "p5_state"
+      },
+      "rule_sha256": "7952d9814609d3452ab4913d2c88dcca53fe6e22d3f2e53efca24bc2bf3da1cb"
+    }
+  ]
+}

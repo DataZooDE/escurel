@@ -23,6 +23,8 @@ export interface Proposal {
   dataSha256: string;
   /** A training-source batch is tested statistically; a state batch (P0/P5/P7) by replay. */
   kind: 'training_source' | 'state';
+  /** State batch only: the pilot the instance belongs to (p0, p5 or p7). */
+  pilot?: string;
   dayCut?: number;
   days?: number;
   candidates: RuleView[];
@@ -96,6 +98,8 @@ export interface Approval {
   ruleSetSha256: string;
   dataSha256: string;
   approver: string;
+  /** The pilot the set was approved for, when the service says (p1_decision, p0, p5, p7). */
+  pilot?: string;
   rules: RuleView[];
   /** The policy the set was tested under; undefined for sets approved before policies were recorded. */
   policy?: Policy;
@@ -226,7 +230,8 @@ export function parseProposal(value: unknown): Proposal {
     candidates: p.candidates.map(ruleView),
   };
   // A state batch (P0/P5/P7) is an experiment instance with replay evidence: it has no time split.
-  if (p.split === undefined && typeof p.pilot === 'string') return { ...base, kind: 'state' };
+  if (p.split === undefined && typeof p.pilot === 'string')
+    return { ...base, kind: 'state', pilot: cleanText(p.pilot, 20) };
   const split = obj(p.split, 'split');
   return {
     ...base,
@@ -412,6 +417,7 @@ export function parseApproval(value: unknown): Approval {
     ruleSetSha256: hash(a.approved_rule_set_sha256, 'rule-set hash'),
     dataSha256: hash(a.data_sha256, 'data hash'),
     approver: cleanText(typeof a.approver === 'string' ? a.approver : '', 120),
+    ...(typeof a.pilot === 'string' ? { pilot: cleanText(a.pilot, 20) } : {}),
     rules: a.rules.map(ruleView),
     ...(policy ? { policy } : {}),
   };

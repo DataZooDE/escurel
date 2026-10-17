@@ -1,0 +1,91 @@
+{
+  "already_tested": false,
+  "batch_id": "4ea17eaf715b481be06e66cbaafd82ab01c329028a8003d6368a3132a589cad5",
+  "candidates_before": null,
+  "claim": "survived a pre-registered confirmation test on this training data with multiplicity control; not a law of the world, and not tested on the sealed holdout",
+  "evidence": [
+    {
+      "decision": "supported",
+      "reason": null,
+      "rule": {
+        "column": "product_id",
+        "kind": "fk_in",
+        "ref_column": "product_id",
+        "ref_table": "p5_products",
+        "table": "p5_state"
+      },
+      "rule_sha256": "4f7b2e9f0dbc6dd126c34190ebe358f118fe25260b3dc0f4fd6008f1675ff7fa"
+    },
+    {
+      "decision": "supported",
+      "reason": null,
+      "rule": {
+        "agg": "count",
+        "bound": 24,
+        "filter": {
+          "column": "listed",
+          "value": true
+        },
+        "kind": "agg_le",
+        "table": "p5_state"
+      },
+      "rule_sha256": "7952d9814609d3452ab4913d2c88dcca53fe6e22d3f2e53efca24bc2bf3da1cb"
+    }
+  ],
+  "insufficient_evidence": 0,
+  "next_action": "a person approves supported rules with evolve_rules_approve",
+  "policy": {
+    "kind": "state_replay_v1"
+  },
+  "rejected": 0,
+  "replays": [
+    {
+      "breaches": {
+        "4f7b2e9f0dbc6dd126c34190ebe358f118fe25260b3dc0f4fd6008f1675ff7fa": 0,
+        "7952d9814609d3452ab4913d2c88dcca53fe6e22d3f2e53efca24bc2bf3da1cb": 0
+      },
+      "program": "seed",
+      "role": "positive",
+      "skill_guard_breach": null
+    },
+    {
+      "breaches": {
+        "4f7b2e9f0dbc6dd126c34190ebe358f118fe25260b3dc0f4fd6008f1675ff7fa": 0,
+        "7952d9814609d3452ab4913d2c88dcca53fe6e22d3f2e53efca24bc2bf3da1cb": 0
+      },
+      "program": "top_n",
+      "role": "positive",
+      "skill_guard_breach": null
+    },
+    {
+      "breaches": {
+        "4f7b2e9f0dbc6dd126c34190ebe358f118fe25260b3dc0f4fd6008f1675ff7fa": 0,
+        "7952d9814609d3452ab4913d2c88dcca53fe6e22d3f2e53efca24bc2bf3da1cb": 0
+      },
+      "program": "substitution_aware",
+      "role": "positive",
+      "skill_guard_breach": null
+    },
+    {
+      "breaches": {
+        "4f7b2e9f0dbc6dd126c34190ebe358f118fe25260b3dc0f4fd6008f1675ff7fa": 1,
+        "7952d9814609d3452ab4913d2c88dcca53fe6e22d3f2e53efca24bc2bf3da1cb": 0
+      },
+      "program": "unknown_product",
+      "role": "negative",
+      "skill_guard_breach": null
+    },
+    {
+      "breaches": {
+        "4f7b2e9f0dbc6dd126c34190ebe358f118fe25260b3dc0f4fd6008f1675ff7fa": 0,
+        "7952d9814609d3452ab4913d2c88dcca53fe6e22d3f2e53efca24bc2bf3da1cb": 1
+      },
+      "program": "list_everything",
+      "role": "negative",
+      "skill_guard_breach": "shelf_over_capacity"
+    }
+  ],
+  "split": null,
+  "supported": 2,
+  "test_sha256": "47aa8255237eb9a826649bdf118f185b775ac0a39168ca16ca8a6f38446d502c"
+}

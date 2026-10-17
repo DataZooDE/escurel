@@ -1,0 +1,13 @@
+test_v1_real.json, propose_v1_real.json: real output of anofox-evolve at commit 9afa37b (the commit
+before #44 / policy v2; no policy_version, no upper bound), built with
+  cargo build -p evolve-agent   (clean worktree, private CARGO_TARGET_DIR)
+and driven over HTTP (`evolve-agent serve`, EVOLVE_RULE_APPROVER_PRINCIPALS=dev-user) with:
+  evolve_prepare_training_source {source_id: "rich", source_json: richSource(7)}   (16 SKU x 90 days, as in test/e2e/evolve-rules.spec.ts)
+  evolve_rules_propose {training_source_id: "rich"}
+  evolve_rules_test {batch_id}                                                       (the v1 service takes no p_max/alpha)
+Captured 2026-10-17. Script: the capture helper used for the other fixtures, trimmed to these calls.
+
+test_v1_via_v2_service.json: the SAME stored test (identical test_sha256), read back through the
+origin/main evolve-agent (e33ad55) from the database the 9afa37b agent wrote (`evolve_rules_test`
+on the already-tested batch). This is what a person sees for a batch tested before policy v2: the
+service adds policy_version "binom_holm_v1" and policy_caps, the evidence still has no bound.
