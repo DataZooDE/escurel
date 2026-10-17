@@ -43,3 +43,13 @@ on a timer into a table that is read by scanner: count rows per label, then look
   test does two warm-up reports before it measures.
 - `pg_literal` refuses a value with a backslash, so a body containing one takes the generic
   (scanner) path; it is correct, only less cheap.
+
+**Follow-up (2026-10-17): the record of a replaced pod.** With the default `ESCUREL_RUNNER_ID`
+(`<HOSTNAME>:<pid>`, the pod name on k8s) every redeploy leaves a record nobody overwrites, and the
+first-report cleanup only matches the runner's own id. Fix: every report also deletes other
+`runner-status:*` records of the tenant silent for longer than `max(10 x their own status_interval_s, 1 h)`,
+judged by the *reporting runner's* `at` (not the gateway's wall clock). It cannot run on the first report
+alone: during a Recreate rollout the old pod's last report is seconds old, so the window has not elapsed;
+it has to run on later reports. The candidate query is a primary-key range (`event_id >= 'runner-status:' AND
+< 'runner-status;'`); a plain `LIKE` or the label alone read the whole legacy backlog again (5,037 rows per
+report in the live test). A stable default id was not added: the GC makes the pod-name id harmless.

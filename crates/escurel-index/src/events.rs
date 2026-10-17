@@ -170,6 +170,15 @@ pub const RUNNER_STATUS_LABEL: &str = "escurel:runner-status";
 /// `report_runner_status` tool) may mint such an id.
 pub const RUNNER_STATUS_ID_PREFIX: &str = "runner-status:";
 
+/// A status record is collected once its runner has been silent for this
+/// many of its own reporting intervals, and never sooner than
+/// [`RUNNER_STATUS_MIN_WINDOW_S`].
+const RUNNER_STATUS_STOPPED_INTERVALS: u64 = 10;
+/// The shortest silence after which a runner's record may be collected.
+pub const RUNNER_STATUS_MIN_WINDOW_S: u64 = 3600;
+/// The interval assumed for a record that does not carry one.
+const RUNNER_STATUS_DEFAULT_INTERVAL_S: u64 = 300;
+
 /// What [`Indexer::upsert_runner_status`] stored.
 #[derive(Debug, Clone)]
 pub struct RunnerStatusUpsert {
@@ -1550,7 +1559,149 @@ impl Indexer {
                 IndexerError::InvalidRunnerStatus(format!("record {event_id} missing after write"))
             })?
         };
+        // A pod that was replaced never reports again, so its record would
+        // sit there for good: every report collects the records of runners
+        // that have been silent for a clear margin.
+        self.collect_stopped_runner_status(&event_id, &at).await?;
         Ok(RunnerStatusUpsert { event, created })
+    }
+
+    /// Delete the status records of runners that stopped reporting: a
+    /// record whose `at_ts` is older than `max(10 x` its own
+    /// `status_interval_s`, [`RUNNER_STATUS_MIN_WINDOW_S`]`)` before `now_at`
+    /// (the reporting runner's own report time, so the decision does not
+    /// depend on this process' wall clock). Only reserved `runner-status:`
+    /// ids of this tenant are candidates, never the record being written,
+    /// and never the legacy heartbeat stream (those rows have other ids).
+    /// Returns how many were deleted.
+    async fn collect_stopped_runner_status(
+        &self,
+        keep_event_id: &str,
+        now_at: &str,
+    ) -> Result<usize, IndexerError> {
+        let Some(now) = parse_status_time(now_at) else {
+            return Ok(0);
+        };
+        let tenant = self.events_tenant_scope().map(str::to_owned);
+        let native = match (self.events_backend(), &tenant) {
+            (EventsBackend::AttachedPostgres { alias }, Some(t)) => {
+                match (
+                    pg_native::pg_literal(t),
+                    pg_native::pg_literal(RUNNER_STATUS_LABEL),
+                    pg_native::pg_literal(keep_event_id),
+                ) {
+                    (Some(lt), Some(ll), Some(lk)) => Some((alias, lt, ll, lk)),
+                    _ => None,
+                }
+            }
+            _ => None,
+        };
+        let conn = self.conn.lock().await;
+        let candidates: Vec<(String, String, String)> = if let Some((alias, lt, ll, lk)) = &native {
+            // The id range (`:` + 1 is `;`) lets the (tenant, event_id) primary key
+            // answer it; the label and `LIKE` keep it exact under any collation.
+            let inner = format!(
+                "SELECT event_id, at_ts::text, body FROM {EVENTS_PG_TABLE_NAME} \
+                 WHERE tenant = {lt} AND label_skill = {ll} \
+                 AND event_id >= '{RUNNER_STATUS_ID_PREFIX}' AND event_id < 'runner-status;' \
+                 AND event_id LIKE '{RUNNER_STATUS_ID_PREFIX}%' AND event_id <> {lk}"
+            );
+            let mut stmt = conn.prepare(&format!(
+                "SELECT event_id, at_ts, body FROM postgres_query('{alias}', {})",
+                pg_native::duckdb_string(&inner)
+            ))?;
+            stmt.query_map([], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, Option<String>>(1)?.unwrap_or_default(),
+                    r.get::<_, Option<String>>(2)?.unwrap_or_default(),
+                ))
+            })?
+            .collect::<duckdb::Result<Vec<_>>>()?
+        } else {
+            let table = self.events_table();
+            let scope = if tenant.is_some() {
+                " AND tenant = ?"
+            } else {
+                ""
+            };
+            let sql = format!(
+                "SELECT event_id, CAST(at_ts AS VARCHAR), CAST(body AS VARCHAR) FROM {table} \
+                 WHERE label_skill = ? AND starts_with(event_id, '{RUNNER_STATUS_ID_PREFIX}') \
+                 AND event_id <> ?{scope}"
+            );
+            let mut stmt = conn.prepare(&sql)?;
+            let map = |r: &duckdb::Row<'_>| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, Option<String>>(1)?.unwrap_or_default(),
+                    r.get::<_, Option<String>>(2)?.unwrap_or_default(),
+                ))
+            };
+            match &tenant {
+                None => stmt.query_map(params![RUNNER_STATUS_LABEL, keep_event_id], map)?,
+                Some(t) => stmt.query_map(params![RUNNER_STATUS_LABEL, keep_event_id, t], map)?,
+            }
+            .collect::<duckdb::Result<Vec<_>>>()?
+        };
+        let stopped: Vec<String> = candidates
+            .into_iter()
+            .filter(|(_, at_ts, body)| {
+                let Some(last) = parse_status_time(at_ts) else {
+                    return false;
+                };
+                let interval = serde_json::from_str::<serde_json::Value>(body)
+                    .ok()
+                    .and_then(|v| {
+                        v.get("status_interval_s")
+                            .and_then(serde_json::Value::as_u64)
+                    })
+                    .filter(|s| *s > 0)
+                    .unwrap_or(RUNNER_STATUS_DEFAULT_INTERVAL_S)
+                    .min(86_400);
+                let window =
+                    (interval * RUNNER_STATUS_STOPPED_INTERVALS).max(RUNNER_STATUS_MIN_WINDOW_S);
+                now.signed_duration_since(last).num_seconds() > i64::try_from(window).unwrap_or(0)
+            })
+            .map(|(id, _, _)| id)
+            .collect();
+        if stopped.is_empty() {
+            return Ok(0);
+        }
+        if let Some((alias, lt, ll, _)) = &native {
+            let ids: Option<Vec<String>> =
+                stopped.iter().map(|id| pg_native::pg_literal(id)).collect();
+            if let Some(ids) = ids {
+                let del = format!(
+                    "DELETE FROM {EVENTS_PG_TABLE_NAME} WHERE tenant = {lt} AND label_skill = {ll} \
+                     AND event_id IN ({})",
+                    ids.join(", ")
+                );
+                conn.execute_batch(&format!(
+                    "CALL postgres_execute('{alias}', {});",
+                    pg_native::duckdb_string(&del)
+                ))?;
+                return Ok(stopped.len());
+            }
+        }
+        let table = self.events_table();
+        let marks = vec!["?"; stopped.len()].join(", ");
+        let mut binds: Vec<Box<dyn duckdb::ToSql>> = vec![Box::new(RUNNER_STATUS_LABEL)];
+        for id in &stopped {
+            binds.push(Box::new(id.clone()));
+        }
+        let scope = if let Some(t) = &tenant {
+            binds.push(Box::new(t.clone()));
+            " AND tenant = ?"
+        } else {
+            ""
+        };
+        let refs: Vec<&dyn duckdb::ToSql> = binds.iter().map(|b| b.as_ref()).collect();
+        conn.execute(
+            &format!("DELETE FROM {table} WHERE label_skill = ? AND event_id IN ({marks}){scope}"),
+            refs.as_slice(),
+        )?;
+        Ok(stopped.len())
     }
 
     /// The runner's older heartbeat rows (the stream design's backlog), by
@@ -1955,4 +2106,18 @@ fn limit_sql(limit: Option<usize>) -> String {
     limit
         .map(|n| format!(" LIMIT {}", n.min(EVENTS_MAX_LIMIT)))
         .unwrap_or_default()
+}
+
+/// A status timestamp as stored (`2026-10-17 08:00:00[.ffffff]`) or reported
+/// (RFC 3339), as UTC.
+fn parse_status_time(s: &str) -> Option<chrono::DateTime<chrono::Utc>> {
+    let s = s.trim();
+    chrono::DateTime::parse_from_rfc3339(s)
+        .map(|d| d.with_timezone(&chrono::Utc))
+        .ok()
+        .or_else(|| {
+            chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S%.f")
+                .ok()
+                .map(|n| n.and_utc())
+        })
 }

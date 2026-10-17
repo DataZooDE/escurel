@@ -865,7 +865,9 @@ pub(crate) fn tool_defs() -> Vec<ToolDef> {
                  snapshot as a JSON object (text), to which the gateway adds \
                  `state`, `status_interval_s`, `started_at` and `last_change_at`. \
                  The first report of a runner also deletes that runner's older \
-                 `escurel:runner-status` rows. Announces nothing (no webhook, no \
+                 `escurel:runner-status` rows, and every report deletes the records \
+                 of runners silent for longer than max(10 x their own \
+                 `status_interval_s`, 1 h). Announces nothing (no webhook, no \
                  WS event). A gateway without this tool answers -32601: fall back \
                  to `capture_event`.",
             json!({

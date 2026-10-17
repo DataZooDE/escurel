@@ -1118,3 +1118,106 @@ async fn a_runner_id_that_cannot_key_a_record_is_refused() {
     }
     assert!(status_rows(&h).await.is_empty());
 }
+
+// --- a stopped runner's record is collected ---------------------------------
+
+async fn report_at(h: &Harness, runner: &str, at: &str, interval_s: u64) {
+    h.indexer
+        .upsert_runner_status(
+            runner,
+            Some(at.to_owned()),
+            "heartbeat",
+            &format!("{{\"status_interval_s\":{interval_s}}}"),
+            &status_prov(runner),
+        )
+        .await
+        .unwrap();
+}
+
+async fn status_ids(h: &Harness) -> Vec<String> {
+    let mut ids: Vec<String> = status_rows(h)
+        .await
+        .into_iter()
+        .map(|e| e.event_id)
+        .collect();
+    ids.sort_unstable();
+    ids
+}
+
+#[tokio::test]
+async fn a_live_runners_report_collects_the_record_of_a_runner_that_stopped() {
+    let h = fresh_harness();
+    // A redeploy: the old pod (`old`) reported at 08:00 and never again; a
+    // sibling (`near`) reports at 08:30; the new pod (`new`) reports later.
+    report_at(&h, "old", "2026-10-17T08:00:00.000000Z", 300).await;
+    report_at(&h, "near", "2026-10-17T08:30:00.000000Z", 300).await;
+    assert_eq!(
+        status_ids(&h).await,
+        ["runner-status:near", "runner-status:old"],
+        "`old` has been silent for 30 min, inside its 1 h floor: not collected yet"
+    );
+
+    report_at(&h, "new", "2026-10-17T09:15:00.000000Z", 300).await;
+    assert_eq!(
+        status_ids(&h).await,
+        ["runner-status:near", "runner-status:new"],
+        "`old` (75 min silent, window max(10 x 300 s, 1 h)) is collected; `near` (45 min) is not"
+    );
+}
+
+#[tokio::test]
+async fn the_collection_window_follows_the_silent_runners_own_interval() {
+    let h = fresh_harness();
+    // Both silent for 4 h. `slow` reports every 30 min (window 5 h), `fast`
+    // every 5 min (window 1 h).
+    report_at(&h, "slow", "2026-10-17T06:00:00.000000Z", 1800).await;
+    report_at(&h, "fast", "2026-10-17T06:00:00.000000Z", 300).await;
+    report_at(&h, "live", "2026-10-17T10:00:00.000000Z", 300).await;
+    assert_eq!(
+        status_ids(&h).await,
+        ["runner-status:live", "runner-status:slow"],
+        "only the runner silent for longer than 10 of its own intervals goes"
+    );
+}
+
+#[tokio::test]
+async fn collection_never_touches_a_live_runner_or_other_labels_or_legacy_rows() {
+    let h = fresh_harness();
+    // Legacy stream rows have no reserved id: they are the backlog's, not
+    // the record GC's (the first-report cleanup and `purge-events` own them).
+    h.indexer
+        .capture_event(legacy_heartbeat("ghost", 1))
+        .await
+        .unwrap();
+    h.indexer.capture_event(gmail_event()).await.unwrap();
+    for runner in ["a", "b", "c"] {
+        report_at(&h, runner, "2026-10-17T10:00:00.000000Z", 300).await;
+    }
+    // Many reports by one runner: the others stay.
+    for i in 0..20 {
+        report_at(
+            &h,
+            "a",
+            &format!("2026-10-17T10:{:02}:00.000000Z", i + 1),
+            300,
+        )
+        .await;
+    }
+    let ids = status_ids(&h).await;
+    assert_eq!(
+        ids.iter()
+            .filter(|i| i.starts_with("runner-status:"))
+            .count(),
+        3,
+        "a, b and c are all live (20 min < 1 h): {ids:?}"
+    );
+    assert!(
+        ids.iter().any(|i| !i.starts_with("runner-status:")),
+        "the legacy heartbeat is not the GC's to delete: {ids:?}"
+    );
+    assert_eq!(
+        h.indexer.list_inbox(None).await.unwrap().len(),
+        1,
+        "the user event stays in the inbox (system rows never listed there)"
+    );
+}

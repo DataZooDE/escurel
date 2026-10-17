@@ -540,3 +540,90 @@ async fn a_runners_first_status_report_purges_its_backlog_in_postgres_then_stays
     assert_eq!(newest.events[0].event_id, "runner-status:r1");
     assert_eq!(newest.events[0].title, "heartbeat");
 }
+
+/// One reserved-id status record, written natively `age_s` seconds ago.
+async fn seed_status_record(
+    probe: &Probe,
+    tenant: &str,
+    runner: &str,
+    age_s: i64,
+    interval_s: u64,
+) {
+    probe
+        .exec(&format!(
+            "INSERT INTO escurel_events \
+             (tenant, event_id, at_ts, source, mime, label_skill, status, title, body, provenance, kind, seq) \
+             VALUES ('{tenant}', 'runner-status:{runner}', now() - interval '{age_s} seconds', \
+                     'escurel-runner', 'application/json', '{LABEL}', 'inbox', 'heartbeat', \
+                     '{{\"status_interval_s\":{interval_s}}}', \
+                     '{{\"runner_status\":{{\"runner_id\":\"{runner}\",\"tenant\":\"{tenant}\"}}}}', \
+                     'system', (SELECT COALESCE(max(seq), 0) + 1 FROM escurel_events))"
+        ))
+        .await;
+}
+
+#[tokio::test]
+async fn a_report_collects_a_stopped_runners_record_in_postgres_and_only_in_its_tenant() {
+    let (_pg, dsn) = live_postgres().await;
+    let r = replica(&dsn).await;
+    let probe = Probe::new(&dsn).await;
+    probe.seed(0).await;
+    // Old pods of two redeploys (3 h and 2 h silent), a sibling that reported
+    // 10 min ago, a slow runner (30 min interval) silent for 4 h (window 5 h),
+    // and a stopped runner of ANOTHER tenant sharing the physical table.
+    seed_status_record(&probe, TENANT, "pod-old-1", 3 * 3600, 300).await;
+    seed_status_record(&probe, TENANT, "pod-old-2", 2 * 3600, 300).await;
+    seed_status_record(&probe, TENANT, "sibling", 600, 300).await;
+    seed_status_record(&probe, TENANT, "slow", 4 * 3600, 1800).await;
+    seed_status_record(&probe, "other", "pod-old-1", 3 * 3600, 300).await;
+    probe.exec("ANALYZE escurel_events").await;
+
+    let ids = || {
+        let probe = &probe;
+        async move {
+            let c = probe.client().await;
+            let rows = c
+                .query(
+                    &format!(
+                        "SELECT tenant || '/' || event_id FROM escurel_events \
+                         WHERE label_skill = '{LABEL}' ORDER BY 1"
+                    ),
+                    &[],
+                )
+                .await
+                .unwrap();
+            rows.iter()
+                .map(|r| r.get::<_, String>(0))
+                .collect::<Vec<_>>()
+        }
+    };
+
+    let (res, rows) = measured(&probe, || async {
+        r.indexer
+            .upsert_runner_status(
+                "pod-new",
+                None,
+                "started",
+                "{\"status_interval_s\":300}",
+                &runner_prov("pod-new"),
+            )
+            .await
+    })
+    .await;
+    res.expect("report");
+    assert_eq!(
+        ids().await,
+        [
+            "acme/runner-status:pod-new",
+            "acme/runner-status:sibling",
+            "acme/runner-status:slow",
+            "other/runner-status:pod-old-1",
+        ],
+        "both stopped pods of this tenant are gone; the sibling, the slow runner inside \
+         its own window and the other tenant's record stay"
+    );
+    assert!(
+        rows < PUSHED_DOWN_CEILING,
+        "the report plus the collection read {rows} rows of the events table"
+    );
+}
