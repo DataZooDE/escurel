@@ -4,6 +4,14 @@ The skill version tracks the consumer-facing contract, not the Escurel
 binary version. The Escurel repo's checked-out git ref is the true version
 pin (see `SKILL.md` → "How this skill is installed").
 
+## 0.25.1 — branch merges use a per-page fork point
+
+No tool or wire change. `merge_branch` compared each base page's head against the branch-wide `base_version`, which
+`create_branch` recorded as `v0`: merging a branch that edited a page with earlier history reported a `conflict` nobody
+had caused. The fork point is now the base twin's version at the branch's first write to that page, and a branch
+tombstone of a page the base edited since the fork is a `conflict` (it used to delete the newer edit). Branches created
+before this keep the old behaviour for pages without a recorded fork point.
+
 ## 0.25.0 — the `duckvfs` lane store can sit on SharePoint
 
 Env only; no tool or wire change. `ESCUREL_STORAGE_BACKEND=duckvfs` with `ESCUREL_STORAGE_DUCKVFS_ROOT=sharepoint://…`

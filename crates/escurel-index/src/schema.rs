@@ -370,11 +370,13 @@ impl Migrator {
             [],
             |row| row.get(0),
         )?;
-        if present == 1 && tables == 1 {
-            return Ok(());
+        if present != 1 || tables != 1 {
+            conn.execute_batch(STAGE_16_BRANCHES)?;
+            conn.execute_batch("CHECKPOINT;")?;
         }
-        conn.execute_batch(STAGE_16_BRANCHES)?;
-        conn.execute_batch("CHECKPOINT;")?;
+        // Per-page fork points. A plain table (no function-valued default, no ALTER), so it is idempotent
+        // and replay-safe on every boot without the checkpoint the stage above needs.
+        conn.execute_batch(STAGE_21_BRANCH_PAGE_BASES)?;
         Ok(())
     }
 
@@ -672,6 +674,7 @@ const STAGE_17_EVENTS_LINEAGE: &str = include_str!("../sql/0016_events_lineage.s
 const STAGE_18_DRAFT_RUN_LINEAGE: &str = include_str!("../sql/0017_drafts_run_lineage.sql");
 const STAGE_19_EVENTS_SEQ: &str = include_str!("../sql/0018_events_seq.sql");
 const STAGE_20_RUN_TOOL_CALLS: &str = include_str!("../sql/0019_run_tool_calls.sql");
+const STAGE_21_BRANCH_PAGE_BASES: &str = include_str!("../sql/0020_branch_page_bases.sql");
 
 #[cfg(test)]
 mod tests {

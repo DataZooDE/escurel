@@ -64,6 +64,33 @@ pub(super) fn stamp_scenario(content: &str, branch: &str) -> String {
         .unwrap_or_else(|_| content.to_owned())
 }
 
+/// Record the version a branch forks `base_page_id` from: the base twin's CRDT version now, kept by the branch's
+/// FIRST write to the page (a later write must not move it). A page with no base twin, or a gateway without a
+/// CRDT backend, records nothing and merges against the branch-wide `base_version` as before.
+pub(super) async fn record_fork_point(
+    state: &crate::server::AppState,
+    indexer: &Indexer,
+    branch: &str,
+    base_page_id: &str,
+) -> Result<(), JsonRpcError> {
+    let Some(backend) = state.crdt_backend.as_ref() else {
+        return Ok(());
+    };
+    let has_base = indexer
+        .read_page_markdown(base_page_id)
+        .await
+        .map_err(|e| JsonRpcError::internal(format!("branch fork point: {e}")))?
+        .is_some();
+    if !has_base {
+        return Ok(());
+    }
+    let hlc = u64::try_from(backend.max_hlc(base_page_id).await.unwrap_or(0)).unwrap_or(0);
+    indexer
+        .record_branch_page_base(branch, base_page_id, Version::from_op_count(hlc).as_str())
+        .await
+        .map_err(|e| JsonRpcError::internal(format!("branch fork point: {e}")))
+}
+
 /// Resolve a named branch that is open, or the refusal that stops the write.
 ///
 /// A write naming a branch that was never opened is REFUSED rather than
@@ -325,11 +352,45 @@ pub(super) async fn tool_merge_branch(
             .base_twin(&page.skill, &page.slug)
             .await
             .map_err(|e| JsonRpcError::internal(format!("merge_branch: {e}")))?;
+        // The version this page forked from: its own fork point when the branch recorded one, else the
+        // branch-wide value (a page created on the branch, or a branch from before fork points existed).
+        let fork_version = match &base_twin {
+            Some(base) => indexer
+                .branch_page_base(&branch.name, base)
+                .await
+                .map_err(|e| JsonRpcError::internal(format!("merge_branch: {e}")))?,
+            None => None,
+        };
         if page.deleted {
             // A tombstone needs something to remove. A branch that deleted a
             // slug the base never had is not a conflict — it is a no-op, and
             // saying so beats refusing the whole merge over it.
-            plan.push((page.clone(), base_twin, None));
+            //
+            // A tombstone of a page the base EDITED since the fork is a conflict: landing it would silently
+            // destroy the newer edit. (No recorded fork point: the branch predates fork points, so the
+            // tombstone lands as it always did.)
+            if let (Some(base), Some(forked), Some(backend)) =
+                (&base_twin, &fork_version, state.crdt_backend.as_ref())
+            {
+                let head_hlc = u64::try_from(backend.max_hlc(base).await.unwrap_or(0)).unwrap_or(0);
+                let head = Version::from_op_count(head_hlc);
+                if head.as_str() != forked {
+                    issues.push(json!({
+                        "severity": "error",
+                        "code": "conflict",
+                        "location": base,
+                        "message": format!(
+                            "branch `{}` deletes `{base}`, but the base edited it since the fork \
+                             ({forked} -> {}); deleting it now would destroy that newer edit; \
+                             nothing in the branch lands",
+                            branch.name,
+                            head.as_str()
+                        ),
+                    }));
+                    continue;
+                }
+            }
+            plan.push((page.clone(), base_twin, None, String::new()));
             continue;
         }
         let content = indexer
@@ -371,20 +432,18 @@ pub(super) async fn tool_merge_branch(
         // unchanged → land; moved with disjoint frontmatter keys →
         // three-way merge; the same key on both sides, or an unparseable
         // result → conflict. No second merge algorithm.
+        let page_fork = fork_version
+            .clone()
+            .unwrap_or_else(|| branch.base_version.clone());
         if let (Some(base), Some(backend)) = (&base_twin, state.crdt_backend.as_ref())
-            && branch.base_version.starts_with('v')
+            && page_fork.starts_with('v')
         {
             let head_hlc = u64::try_from(backend.max_hlc(base).await.unwrap_or(0)).unwrap_or(0);
             let head = Version::from_op_count(head_hlc);
-            if head.as_str() != branch.base_version
-                && crate::mcp::tools_write::try_auto_merge(
-                    backend,
-                    base,
-                    &branch.base_version,
-                    &landed,
-                )
-                .await
-                .is_none()
+            if head.as_str() != page_fork
+                && crate::mcp::tools_write::try_auto_merge(backend, base, &page_fork, &landed)
+                    .await
+                    .is_none()
             {
                 issues.push(json!({
                     "severity": "error",
@@ -394,14 +453,14 @@ pub(super) async fn tool_merge_branch(
                         "`{base}` moved since branch `{}` forked at {} (head is {}) and the \
                          edits could not be auto-merged; nothing in the branch lands",
                         branch.name,
-                        branch.base_version,
+                        page_fork,
                         head.as_str()
                     ),
                 }));
                 continue;
             }
         }
-        plan.push((page.clone(), base_twin, Some(landed)));
+        plan.push((page.clone(), base_twin, Some(landed), page_fork));
     }
     if !issues.is_empty() {
         return Ok(json!({ "ok": false, "name": branch.name, "issues": issues }));
@@ -409,7 +468,7 @@ pub(super) async fn tool_merge_branch(
 
     // ── Apply. ──
     let mut results = Vec::new();
-    for (page, base_twin, landed) in plan {
+    for (page, base_twin, landed, page_fork) in plan {
         let target = base_twin
             .clone()
             .unwrap_or_else(|| base_page_id(&page.page_id, &branch.name));
@@ -419,8 +478,8 @@ pub(super) async fn tool_merge_branch(
                 // path pre-flight just simulated — including ADR-0008's
                 // re-run of the write guards on the merged artifact.
                 let mut args = json!({ "page_id": target, "content": content });
-                if base_twin.is_some() && branch.base_version.starts_with('v') {
-                    args["base_version"] = json!(branch.base_version);
+                if base_twin.is_some() && page_fork.starts_with('v') {
+                    args["base_version"] = json!(page_fork);
                 }
                 crate::mcp::tools_write::tool_update_page_ungated(
                     state, indexer, caller, write_acl, args,
