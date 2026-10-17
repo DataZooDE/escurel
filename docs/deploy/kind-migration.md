@@ -102,7 +102,7 @@ Outbound connector and write-back health is on the same `/metrics` endpoint:
   dry run (no conflicts) -> apply -> a second boot that must not be quarantined -> lake-upgrade (last). Never run
   `escurel admin rebuild` or `publish_snapshot` by hand in the middle of it: a rebuild that did not finish
   flags the index partial and a publish is refused until one completes; a corpus under half the lake's pages is
-  refused too (`allow_shrink` is only for a deliberate mass delete). Size the Job deadline for >= 3600 s.
+  refused too (`allow_shrink` is only for a deliberate mass delete). Size the Job deadline for >= 3600 s; a Drive-backed lake (heron-escurel's rehearsal: 67 min for 226 pages) needs >= 10800 s.
 
 ## 1. Back up (the REAL restore point)
 

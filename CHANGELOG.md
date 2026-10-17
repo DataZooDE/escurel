@@ -6,12 +6,14 @@ loosely [Keep a Changelog](https://keepachangelog.com/). Through the
 follow **`vYYYY.MM.DD`** — the date the binary set was cut (same-day
 re-cuts append `.N`), matching the DataZoo release scheme (cf. erpl).
 
-## Unreleased — BREAKING (stored format, wire, skills, agent behaviour)
+## Unreleased
+
+## v2026.10.17 — BREAKING (stored format, wire, skills, agent behaviour)
 
 **Read first:** [`docs/deploy/kind-migration.md`](docs/deploy/kind-migration.md) (stop-first upgrade, backup,
 rollback) and the consumer checklist in
-[`.claude/skills/escurel-platform/CHANGELOG.md`](.claude/skills/escurel-platform/CHANGELOG.md) (0.7.0 – 0.18.1).
-Skill version `0.23.0`. Every consumer that writes pages or reads the tool surface moves in the same window.
+[`.claude/skills/escurel-platform/CHANGELOG.md`](.claude/skills/escurel-platform/CHANGELOG.md) (0.7.0 – 0.24.0).
+Skill version `0.24.0`. Every consumer that writes pages or reads the tool surface moves in the same window.
 
 ### Fixed
 
@@ -169,7 +171,7 @@ Skill version `0.23.0`. Every consumer that writes pages or reads the tool surfa
 - **`admin_purge_events` / `escurel admin purge-events` / `AdminClient::purge_events` (#731).** An audited
   retention tool for one event label: a dry run unless `apply`, refused without a bound (`before_ts` and/or
   `keep_latest`), protected audit labels need `allow_protected`, and an applied purge leaves an
-  `escurel:event-purge` event. 87 tools now. Use it to clear a heartbeat backlog on a lake that never ran the
+  `escurel:event-purge` event (87 tools with it; 88 with `report_runner_status`). Use it to clear a heartbeat backlog on a lake that never ran the
   keep-50 prune.
 - **`migrate-kind --rename-field OLD=NEW` (#728, job env `ESCUREL_MIGRATE_KIND_RENAME`)** renames a domain
   field that collides with the page-kind key (a `kind:` data field) while the pages migrate; see
@@ -281,6 +283,14 @@ Skill version `0.23.0`. Every consumer that writes pages or reads the tool surfa
 - **`ESCUREL_RUNNER_STATUS_INTERVAL` defaults to 5 minutes (was 30 s) (#730).** The real lake-churn amplifier is
   heartbeat rate x `ESCUREL_SNAPSHOT_KEEP` (2100 snapshots cover ~11 h at 30 s); compaction + GC already bound
   the catalog. Set the variable explicitly if you depend on the old cadence.
+- **Sizing the migration Job (measured on a Drive-backed lake, 226 pages).** A rehearsal of `migrate-kind-job` on a
+  copy of heron-escurel's lake (Drive, ~1.6 s per operation) took 67 min: boot 5.5 min, dry run 5 min, apply plus
+  lake publish 46 min, second boot 5.5 min, verify 5 min, `lake-upgrade` 6 s. Size `ESCUREL_JOB_DEADLINE_SECS` for
+  at least 10800 s for a lake of that kind (the default 3600 is for local/object-store lakes), keep the Drive token
+  fresh for the whole run, and give the Job the same environment shape as the Deployment (Cloud SQL proxy sidecar,
+  the workload-identity credential file via `GOOGLE_APPLICATION_CREDENTIALS`, the gdrive v1.5.6 extension paths,
+  a writable `ESCUREL_SERVER_DATA_DIR`, `ESCUREL_CURSOR_KEY`, the Gemini key). A domain field called `kind` is
+  carried across with `ESCUREL_MIGRATE_KIND_RENAME=kind=system_kind`.
 - **`/readyz` reports quarantine** without failing: still 200 (so the migration can run) with
   `x-escurel-quarantined: 1` and a JSON `notices` body; new metrics `escurel_tenant_quarantined{tenant}`,
   `escurel_migration_pending`, `escurel_semantic_search_enabled`, `escurel_egress_total{outcome}`,
