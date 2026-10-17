@@ -74,6 +74,17 @@ pub enum SnapshotError {
     )]
     RefusedPartialPublish { local_pages: i64, lake_pages: i64 },
 
+    /// The lake's page count could not be read, so neither the empty-publish nor the partial-publish guard
+    /// can judge the publish. A failed read is not an empty lake: the publish is refused before any
+    /// table is overwritten. (A lake that has no `pages` table yet is empty, and publishes.)
+    #[error(
+        "refused: could not read the lake's page count, so the publish guards cannot judge it: {source}"
+    )]
+    LakePagesUnreadable {
+        #[source]
+        source: duckdb::Error,
+    },
+
     /// A rebuild started but did not finish (cancelled, or it failed after the truncate), so the
     /// served index is partial. Run `admin rebuild` to completion first.
     #[error(

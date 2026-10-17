@@ -324,6 +324,28 @@ pub fn attach_sql(cfg: &LakeConfig, read_only: bool) -> Result<String, SnapshotE
 /// ATTACH. Idempotent — `ATTACH IF NOT EXISTS` makes a re-run against an
 /// already-attached connection a no-op, `INSTALL`/`CREATE OR REPLACE
 /// SECRET` are idempotent by construction.
+/// The number of pages in the attached lake: 0 when the lake has no `pages` table yet (a fresh lake is
+/// empty), an error when the table exists but cannot be read. The publish guards compare against this; a
+/// read failure must refuse the publish (`LakePagesUnreadable`), never look like an empty lake.
+fn lake_page_count(conn: &Connection) -> Result<i64, SnapshotError> {
+    let has_pages: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM duckdb_tables() WHERE database_name = ? AND table_name = 'pages'",
+            [LAKE_ALIAS],
+            |row| row.get(0),
+        )
+        .map_err(|source| SnapshotError::LakePagesUnreadable { source })?;
+    if has_pages == 0 {
+        return Ok(0);
+    }
+    conn.query_row(
+        &format!("SELECT count(*) FROM {LAKE_ALIAS}.pages"),
+        [],
+        |row| row.get(0),
+    )
+    .map_err(|source| SnapshotError::LakePagesUnreadable { source })
+}
+
 pub fn attach_lake(
     conn: &Connection,
     cfg: &LakeConfig,
@@ -462,17 +484,10 @@ pub async fn publish_lake_with(
     // Publishing an empty corpus into an empty lake stays legal: it is only
     // a refusal when there is something to lose.
     {
-        let local_pages: i64 = conn
-            .query_row("SELECT count(*) FROM pages", [], |row| row.get(0))
-            .unwrap_or(0);
+        let local_pages: i64 =
+            conn.query_row("SELECT count(*) FROM pages", [], |row| row.get(0))?;
         if local_pages == 0 {
-            let lake_pages: i64 = conn
-                .query_row(
-                    &format!("SELECT count(*) FROM {LAKE_ALIAS}.pages"),
-                    [],
-                    |row| row.get(0),
-                )
-                .unwrap_or(0);
+            let lake_pages = lake_page_count(&conn)?;
             if lake_pages > 0 {
                 return Err(SnapshotError::RefusedEmptyPublish { lake_pages });
             }
@@ -481,13 +496,7 @@ pub async fn publish_lake_with(
             // be the real one (a partial rebuild, a store that listed only part of the lane). A
             // tiny lake is exempt (deleting two of three pages is ordinary editing); a deliberate
             // mass delete passes `allow_shrink`.
-            let lake_pages: i64 = conn
-                .query_row(
-                    &format!("SELECT count(*) FROM {LAKE_ALIAS}.pages"),
-                    [],
-                    |row| row.get(0),
-                )
-                .unwrap_or(0);
+            let lake_pages = lake_page_count(&conn)?;
             if lake_pages >= PARTIAL_PUBLISH_FLOOR && local_pages * 2 < lake_pages {
                 return Err(SnapshotError::RefusedPartialPublish {
                     local_pages,
