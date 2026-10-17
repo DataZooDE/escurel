@@ -10,6 +10,7 @@
 //! warns you about it.
 
 mod acl;
+mod append_lake_compaction;
 mod append_lake_probe;
 mod as_of;
 mod chat_messages;
@@ -36,6 +37,7 @@ mod events_copy_live;
 mod events_lake_churn_live;
 mod events_pg_cost_live;
 mod frontmatter_links;
+mod gdrive_lake_settings;
 mod historical_expand;
 mod index_roundtrip;
 mod kreuzberg_extract;

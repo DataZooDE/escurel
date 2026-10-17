@@ -667,6 +667,23 @@ impl Indexer {
         crate::snapshot::compact_append_tables(&conn)
     }
 
+    /// As [`Self::compact_append_lake`], but rewrites only the tables that have at least `min_files` data
+    /// files (see [`crate::snapshot::compact_append_tables_if_needed`]): an idle publish tick then uploads
+    /// nothing. Returns the tables that were rewritten.
+    pub async fn compact_append_lake_if(
+        &self,
+        min_files: u32,
+    ) -> Result<Vec<&'static str>, crate::snapshot::SnapshotError> {
+        if !matches!(self.chat_backend(), ChatBackend::AttachedLake { .. })
+            && !matches!(self.events_backend(), EventsBackend::AttachedLake { .. })
+        {
+            return Ok(Vec::new());
+        }
+        let _guard = self.write_guard().await;
+        let conn = self.conn.lock().await;
+        crate::snapshot::compact_append_tables_if_needed(&conn, min_files)
+    }
+
     /// The CRDT-pg backend `list_snapshots`/`seed_snapshot_history`
     /// currently read/write — [`CrdtPgBackend::Local`] until
     /// [`Self::attach_crdt_pg`] has run.

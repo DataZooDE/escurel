@@ -8,6 +8,15 @@ re-cuts append `.N`), matching the DataZoo release scheme (cf. erpl).
 
 ## Unreleased
 
+- **Drive-friendly lakes: immutable data prefix, data-driven compaction, drafts compacted, a lake-draft fix** (skill
+  0.25.5). A `gdrive://` lake now declares its `DATA_PATH` `gdrive_immutable_prefixes` (DuckLake never rewrites a file
+  in place), which drops the extension's ~270 ms per-open revalidation; the publish tick rewrites an append table
+  (events, drafts, chat) only once it holds `ESCUREL_APPEND_COMPACT_MIN_FILES` files (default 8) instead of every tick
+  (an idle system uploaded ~576 objects a day), and the drafts table, which nothing compacted, is compacted too.
+  `ESCUREL_DUCKLAKE_GDRIVE_PERMANENT_DELETE=true` makes the GC delete expired Parquet instead of trashing it.
+  **Fixed:** on a lake-backed drafts table the first proposal failed with `NOT NULL constraint failed:
+  escurel_drafts.decided_by` (the lake table has no defaults and `create_draft` omitted `reason` / `decided_by`); a
+  draft now lives its whole life on a lake. File operations per call are in `docs/deploy/lake-on-drive.md`.
 - **`escurel-server events-copy`: the supported Postgres-to-lake copy of events, drafts and chat** (skill 0.25.4).
   Switching `ESCUREL_EVENTS_BACKEND` / `ESCUREL_CHAT_BACKEND` to `ducklake` alone started empty lake tables and orphaned
   the Postgres rows (inbox, pending drafts, audit events, chat). `events-copy` copies the configured tenant's rows with

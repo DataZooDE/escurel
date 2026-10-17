@@ -244,8 +244,8 @@ impl Indexer {
                     "INSERT INTO {table} \
                      (tenant, draft_id, target_page_id, content, content_sha256, base_sha256, \
                       author, event_id, changeset_id, base_version, run_id, root_event_id, \
-                      status, created_at) \
-                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', CURRENT_TIMESTAMP)"
+                      status, reason, decided_by, created_at) \
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', '', '', CURRENT_TIMESTAMP)"
                 ),
                 duckdb::params![
                     t,
@@ -268,8 +268,8 @@ impl Indexer {
                     "INSERT INTO {table} \
                      (draft_id, target_page_id, content, content_sha256, base_sha256, \
                       author, event_id, changeset_id, base_version, run_id, root_event_id, \
-                      status, created_at) \
-                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', CURRENT_TIMESTAMP)"
+                      status, reason, decided_by, created_at) \
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', '', '', CURRENT_TIMESTAMP)"
                 ),
                 duckdb::params![
                     &draft_id,

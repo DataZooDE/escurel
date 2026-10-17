@@ -77,6 +77,10 @@ pub enum ObjectStoreSecret {
         /// extension is installable by name from the community repository;
         /// until then a local build has to be `LOAD`ed by path.
         extension_path: Option<String>,
+        /// `SET GLOBAL gdrive_permanent_delete = true` on every lake connection: the retention GC then deletes
+        /// expired Parquet for good instead of moving it to the Drive trash (the extension's default, which is
+        /// recoverable but counts against quota until the trash empties). Off by default.
+        permanent_delete: bool,
     },
 }
 
@@ -161,6 +165,7 @@ fn validate(cfg: &LakeConfig) -> Result<(), SnapshotError> {
                 drive_id,
                 scope,
                 extension_path,
+                ..
             },
             _,
         ) => {
@@ -250,6 +255,21 @@ pub fn install_load_sql(cfg: &LakeConfig) -> String {
                 ..
             } => sql.push_str(&format!(" LOAD '{path}';")),
             _ => sql.push_str(" INSTALL gdrive; LOAD gdrive;"),
+        }
+        // DuckLake never rewrites a data file in place (every write is a new, uniquely named Parquet file), so
+        // the extension may trust a cached leaf and skip its per-open `files.get` revalidation (~270 ms per
+        // open on Drive; a lake read opens one file per Parquet object). Declared for the DATA_PATH only: the
+        // lane store rewrites its files in place and is a different DuckDB instance, so it is never affected.
+        sql.push_str(&format!(
+            " SET GLOBAL gdrive_immutable_prefixes = '{}';",
+            cfg.data_path.replace('\'', "''")
+        ));
+        if let ObjectStoreSecret::Gdrive {
+            permanent_delete: true,
+            ..
+        } = &cfg.object_store
+        {
+            sql.push_str(" SET GLOBAL gdrive_permanent_delete = true;");
         }
     }
     sql
@@ -1326,8 +1346,63 @@ mod tests {
                 drive_id: "0AA5vtjzlyjnoUk9PVA".to_owned(),
                 scope: "https://www.googleapis.com/auth/drive".to_owned(),
                 extension_path: Some("/opt/gdrive.duckdb_extension".to_owned()),
+                permanent_delete: false,
             },
         }
+    }
+
+    /// A DuckLake never rewrites a data file in place, so a gdrive lake declares its DATA_PATH immutable and the
+    /// extension skips its ~270 ms per-open `files.get` revalidation. The declaration is scoped to the lake's own
+    /// prefix: the lane store (rewritten in place) is another DuckDB instance and never sees it.
+    #[test]
+    fn a_gdrive_lake_declares_its_data_path_immutable() {
+        let sql = install_load_sql(&pg_gdrive_cfg());
+        assert!(
+            sql.contains("SET GLOBAL gdrive_immutable_prefixes = 'gdrive://escurel/lake';"),
+            "{sql}"
+        );
+        let after_load = sql.find("gdrive.duckdb_extension").unwrap();
+        assert!(
+            sql.find("gdrive_immutable_prefixes").unwrap() > after_load,
+            "the option exists only once the extension is loaded: {sql}"
+        );
+    }
+
+    #[test]
+    fn a_quote_in_the_data_path_cannot_end_the_immutable_prefix_literal() {
+        let mut cfg = pg_gdrive_cfg();
+        cfg.data_path = "gdrive://es'; DROP TABLE x; --/lake".to_owned();
+        let sql = install_load_sql(&cfg);
+        assert!(
+            sql.contains("'gdrive://es''; DROP TABLE x; --/lake'"),
+            "the quote is doubled: {sql}"
+        );
+    }
+
+    #[test]
+    fn gdrive_permanent_delete_is_opt_in() {
+        assert!(
+            !install_load_sql(&pg_gdrive_cfg()).contains("gdrive_permanent_delete"),
+            "the Drive trash (recoverable) stays the default"
+        );
+        let mut cfg = pg_gdrive_cfg();
+        if let ObjectStoreSecret::Gdrive {
+            permanent_delete, ..
+        } = &mut cfg.object_store
+        {
+            *permanent_delete = true;
+        }
+        assert!(
+            install_load_sql(&cfg).contains("SET GLOBAL gdrive_permanent_delete = true;"),
+            "{}",
+            install_load_sql(&cfg)
+        );
+    }
+
+    #[test]
+    fn a_lake_that_is_not_on_drive_sets_no_gdrive_option() {
+        let sql = install_load_sql(&pg_s3_cfg());
+        assert!(!sql.contains("gdrive"), "{sql}");
     }
 
     #[test]
@@ -1354,6 +1429,7 @@ mod tests {
             drive_id: "0AA5vtjzlyjnoUk9PVA".to_owned(),
             scope: "https://www.googleapis.com/auth/drive".to_owned(),
             extension_path: None,
+            permanent_delete: false,
         };
         assert!(install_load_sql(&cfg).contains("INSTALL gdrive; LOAD gdrive;"));
     }
@@ -1403,6 +1479,7 @@ mod tests {
             drive_id: "0AA5'; DROP TABLE x; --".to_owned(),
             scope: "https://www.googleapis.com/auth/drive".to_owned(),
             extension_path: None,
+            permanent_delete: false,
         };
         assert!(secret_sql(&cfg).is_err());
 
@@ -1413,6 +1490,7 @@ mod tests {
             drive_id: "0AA5vtjzlyjnoUk9PVA".to_owned(),
             scope: "https://www.googleapis.com/auth/drive".to_owned(),
             extension_path: Some("/opt/x'; ATTACH 'evil".to_owned()),
+            permanent_delete: false,
         };
         assert!(secret_sql(&cfg).is_err());
     }
