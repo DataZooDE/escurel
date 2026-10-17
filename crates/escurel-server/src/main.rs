@@ -39,6 +39,9 @@ USAGE
     escurel-server --print-config-keys   print the generated environment table (docs/deploy/env.md)
     escurel-server lake-upgrade [--dry-run] [--to N]  re-pin a DuckLake manifest one declared-compatible schema version behind;
                                          --to N walks it BACK to compatible version N (stop the writer first)
+    escurel-server events-copy [--apply] [--tables events,drafts,chat]  copy this tenant's escurel_events / escurel_drafts /
+                                         escurel_chat_messages from the catalog Postgres into the lake (dry run unless --apply;
+                                         stop the writer first; the Postgres rows are never touched)
 
 CONFIGURATION (environment; the full table with defaults is docs/deploy/env.md, generated from the code)
     ESCUREL_SERVER_DATA_DIR            data volume (default /data); lanes + index live under tenants/<tenant>/
@@ -95,6 +98,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         Some("info") => return cmd_info(),
         Some("unpack") => return cmd_unpack(&args[2..]),
         Some("lake-upgrade") => return cmd_lake_upgrade(&args[2..]).await,
+        Some("events-copy") => return cmd_events_copy(&args[2..]).await,
         _ => {}
     }
 
@@ -236,6 +240,81 @@ async fn wait_for_shutdown() {
 #[cfg(not(unix))]
 async fn wait_for_shutdown() {
     let _ = tokio::signal::ctrl_c().await;
+}
+
+/// `escurel-server events-copy [--apply] [--tables events,drafts,chat]`: copy the configured tenant's append
+/// surfaces from the Postgres tables in the lake catalog's database into the lake, so that switching
+/// `ESCUREL_EVENTS_BACKEND` / `ESCUREL_CHAT_BACKEND` to `ducklake` does not orphan the existing rows. Configured
+/// through the same `ESCUREL_*` environment as the server; prints the report as JSON on stdout.
+///
+/// A dry run unless `--apply`; never modifies the Postgres rows; idempotent. Stopped-writer semantics like
+/// `lake-upgrade`: an applied run takes the single-writer lease and refuses while a writer holds it.
+async fn cmd_events_copy(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
+    use escurel_index::snapshot::{CopyTable, EventsCopyOptions};
+    let mut apply = false;
+    let mut tables: Vec<CopyTable> = CopyTable::ALL.to_vec();
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        match a.as_str() {
+            "--apply" => apply = true,
+            "--dry-run" => apply = false,
+            "--tables" => {
+                let v = it
+                    .next()
+                    .ok_or("events-copy: --tables needs a list (events,drafts,chat)")?;
+                tables = v
+                    .split(',')
+                    .map(|t| {
+                        CopyTable::parse(t.trim()).ok_or_else(|| {
+                            format!("events-copy: unknown table `{t}` (events, drafts, chat)")
+                        })
+                    })
+                    .collect::<Result<_, _>>()?;
+            }
+            other => {
+                return Err(format!(
+                    "events-copy: unknown argument `{other}` (only --apply, --dry-run and --tables a,b)"
+                )
+                .into());
+            }
+        }
+    }
+    let config = EscurelConfig::from_env()?;
+    let Some(lake) = config.lake.as_ref() else {
+        return Err(
+            "events-copy needs ESCUREL_INDEX_BACKEND=ducklake and the ESCUREL_DUCKLAKE_* settings"
+                .into(),
+        );
+    };
+    if !lake.is_pg_catalog() {
+        return Err(
+            "events-copy needs a Postgres catalog: the source tables live in the catalog's database".into(),
+        );
+    }
+    config.ensure_data_dir()?;
+    let _lease = if apply {
+        match escurel_index::snapshot::WriterLease::acquire(&lake.catalog_dsn).await {
+            Ok(Some(lease)) => Some(lease),
+            Ok(None) => {
+                return Err("events-copy: a writer holds the single-writer lease on this catalog; stop it first".into());
+            }
+            Err(e) => return Err(format!("events-copy: catalog unreachable: {e}").into()),
+        }
+    } else {
+        None
+    };
+    let report = escurel_index::snapshot::events_copy(
+        lake,
+        &EventsCopyOptions {
+            source_dsn: &lake.catalog_dsn,
+            tenant: &config.tenant,
+            apply,
+            tables: &tables,
+        },
+    )
+    .await?;
+    println!("{}", serde_json::to_string_pretty(&report)?);
+    Ok(())
 }
 
 /// `escurel-server lake-upgrade [--dry-run]`: re-pin the DuckLake manifest to this build's schema

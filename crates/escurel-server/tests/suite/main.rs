@@ -60,6 +60,7 @@ mod error_data;
 mod event_acl;
 mod event_pagination;
 mod events;
+mod events_copy_cmd;
 mod events_kind;
 mod events_newest_first;
 mod events_runner_status;

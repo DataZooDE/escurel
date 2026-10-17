@@ -1116,6 +1116,12 @@ pub const CONFIG_KEYS: &[ConfigKey] = &[
         doc: "`migrate-kind-job`: boot + apply deadline",
     },
     ConfigKey {
+        name: "ESCUREL_EVENTS_COPY_TABLES",
+        component: "Tooling",
+        default: "events,drafts,chat",
+        doc: "`events-copy-job`: which append surfaces `escurel-server events-copy` moves from the catalog Postgres into the lake (comma-separated `events`, `drafts`, `chat`); the job also reads `ESCUREL_JOB_DEADLINE_SECS` (default 3600) and `ESCUREL_BIN_DIR`",
+    },
+    ConfigKey {
         name: "ESCUREL_MIGRATE_KIND_RENAME",
         component: "Tooling",
         default: "—",

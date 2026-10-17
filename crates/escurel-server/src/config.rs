@@ -343,6 +343,12 @@ impl From<SnapshotError> for ConfigError {
                 value,
                 reason: "invalid lake config",
             },
+            // Only `events-copy` produces this; it is not an IndexStore open failure.
+            SnapshotError::EventsCopy(value) => ConfigError::InvalidValue {
+                var: "ESCUREL_DUCKLAKE_CATALOG_DSN",
+                value,
+                reason: "events copy refused or failed",
+            },
             SnapshotError::LakeSql(source) => ConfigError::DuckdbOpen {
                 path: "ducklake".to_owned(),
                 source,

@@ -8,6 +8,14 @@ re-cuts append `.N`), matching the DataZoo release scheme (cf. erpl).
 
 ## Unreleased
 
+- **`escurel-server events-copy`: the supported Postgres-to-lake copy of events, drafts and chat** (skill 0.25.4).
+  Switching `ESCUREL_EVENTS_BACKEND` / `ESCUREL_CHAT_BACKEND` to `ducklake` alone started empty lake tables and orphaned
+  the Postgres rows (inbox, pending drafts, audit events, chat). `events-copy` copies the configured tenant's rows with
+  every id, `seq`, `at_ts`, `kind` and lineage column preserved; it is a dry run unless `--apply`, takes the
+  single-writer lease to apply, is idempotent (keyed on `event_id` / `draft_id` / `msg_id`), never touches or deletes the
+  Postgres rows, refuses to overwrite a diverged lake row, verifies row counts and checksums per table, and writes an
+  `escurel:events-copy` audit event. `scripts/events-copy-job.sh` runs dry run, apply and an independent verification as
+  a Job (no throwaway server). Runbook: `docs/deploy/events-to-lake.md`.
 - **A writer says what it is doing while it adopts a slow lake; startup recovery is quiet on a tenant with no workflow
   runs.** The heron-escurel writer was silent for 19 minutes adopting its Drive lake (a file-by-file fetch with no
   output), which looked like a hang while a startup probe was ticking. The slow boot steps (`attach the lake`,

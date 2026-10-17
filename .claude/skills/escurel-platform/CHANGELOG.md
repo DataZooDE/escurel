@@ -4,6 +4,14 @@ The skill version tracks the consumer-facing contract, not the Escurel
 binary version. The Escurel repo's checked-out git ref is the true version
 pin (see `SKILL.md` → "How this skill is installed").
 
+## 0.25.4 — `escurel-server events-copy`
+
+Operator command only; no tool or wire change. `escurel-server events-copy [--apply] [--tables events,drafts,chat]` copies
+the configured tenant's `escurel_events`, `escurel_drafts` and `escurel_chat_messages` from the catalog Postgres into the
+lake with ids, `seq`, `at_ts`, `kind` and lineage preserved (dry run unless `--apply`; idempotent; the Postgres rows are
+never modified; a diverged lake row refuses the apply). Run it, with the writer stopped, BEFORE setting
+`ESCUREL_EVENTS_BACKEND` / `ESCUREL_CHAT_BACKEND` to `ducklake`: the variable alone orphans the Postgres rows. See
+`10-out-of-bounds.md`, `docs/deploy/events-to-lake.md`.
 ## 0.25.3 — the SQL-source policy is applied when the writer rebuilds its views at boot
 
 No tool or wire change. A `sql_view` binding already in storage (written before the operator's policy, or while
