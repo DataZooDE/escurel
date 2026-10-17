@@ -11,3 +11,12 @@ test_v1_via_v2_service.json: the SAME stored test (identical test_sha256), read 
 origin/main evolve-agent (e33ad55) from the database the 9afa37b agent wrote (`evolve_rules_test`
 on the already-tested batch). This is what a person sees for a batch tested before policy v2: the
 service adds policy_version "binom_holm_v1" and policy_caps, the evidence still has no bound.
+
+test_v2_simultaneous.json, get_approved_p1.json, get_approved_state_p0.json: real output of anofox-evolve
+origin/main aff2aaf (PR #46, simultaneous bound + richer evolve_rules_get), debug `evolve-agent serve` with
+EVOLVE_RULE_APPROVER_PRINCIPALS=dev-user, bearer dev-token. Captured 2026-10-17 with:
+  evolve_prepare_training_source {source_id: "rich", source_json: richSource(7)}   (as test/e2e/evolve-rules.spec.ts)
+  evolve_rules_propose {training_source_id: "rich"}; evolve_rules_test {p_max: 0.05, alpha: 0.05}
+  evolve_rules_approve (all supported rules) -> evolve_rules_get {rule_set_sha256}
+  and for the P0 instance {pilot p0, capacity 10, items_csv "6,5,4,7,2,3,8,1,9,4,6,2,5,3,7,1"}:
+  evolve_rules_propose -> evolve_rules_test -> evolve_rules_approve (supported) -> evolve_rules_get.

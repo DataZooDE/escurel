@@ -202,6 +202,31 @@ export async function getRuleBatch(
 }
 
 /**
+ * Read an approved rule set back by its hash. Evolve answers only for the owner who approved it, so
+ * another owner's hash and an unknown one are the same 404. The answer must be for the hash asked.
+ */
+export async function getApprovedRules(
+  endpoint: string,
+  refresher: TokenRefresher,
+  ruleSetSha256: string,
+): Promise<Approval> {
+  if (!isHash(ruleSetSha256))
+    throw new EvolveCallError('invalid', 'An approved rule set is a 64-character hash.');
+  const approval = parseApproval(
+    await callEvolve(
+      endpoint,
+      refresher,
+      'evolve_rules_get',
+      { rule_set_sha256: ruleSetSha256 },
+      safe,
+    ),
+  );
+  if (approval.ruleSetSha256 !== ruleSetSha256)
+    throw new EvolveCallError('stale', 'Evolve answered with another rule set than the one asked for.');
+  return approval;
+}
+
+/**
  * Approve some supported rules. Only called after a person confirmed exactly these rules for exactly
  * this test; `confirm: true` is what Evolve requires of that decision, so it is sent here and nowhere
  * else, and never from a code path that has not shown the report.
