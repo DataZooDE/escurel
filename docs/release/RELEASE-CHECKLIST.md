@@ -44,11 +44,15 @@ section does (the release job checks it). Suggested opening paragraph for the fi
 `kind:` cut:
 
 > **BREAKING.** Page frontmatter `type: skill|instance` is now `kind:` (wire `page_type` → `page_kind`); existing
-> tenants boot quarantined until `escurel admin migrate-kind` has run (see docs/deploy/kind-migration.md).
-> `ESCUREL_WRITE_ACL` now defaults to enforce. MCP `tools/list` moves `execution` to `_meta.escurel.execution`.
-> `ESCUREL_CURSOR_KEY` must be at least 32 bytes. Secrets are per tenant (`ESCUREL_SECRET_<TENANT>__NAME`).
-> MySQL is not supported (refused, not advertised). DuckDB is 1.5.6: every DuckDB extension must be a v1.5.6
-> build (anofox_optimize and gdrive are published on get.erpl.io under `v1.5.6/linux_amd64/`).
+> tenants boot quarantined until `escurel admin migrate-kind` has run (see docs/deploy/kind-migration.md; on a
+> DuckLake writer the apply publishes the lake, and a lake manifest one compatible schema version behind (9 → 10)
+> is re-pinned by `escurel-server lake-upgrade` or adopted at boot). `ESCUREL_WRITE_ACL` now defaults to enforce.
+> MCP `tools/list` moves `execution` to `_meta.escurel.execution`. `ESCUREL_CURSOR_KEY` must be at least 32 bytes.
+> Secrets are per tenant (`ESCUREL_SECRET_<TENANT>__NAME`). MySQL is not supported (refused, not advertised).
+> DuckDB is 1.5.6: every DuckDB extension must be a v1.5.6 build (anofox_optimize and gdrive are published on
+> get.erpl.io under `v1.5.6/linux_amd64/`). A runner's health is now ONE overwritten record
+> (`report_runner_status`, 88 tools; the heartbeat default is 5 minutes; a gateway older than this release makes
+> the runner fall back to heartbeat events) and `escurel admin purge-events` clears an old heartbeat backlog.
 
 ```sh
 TAG=vYYYY.MM.DD
@@ -67,9 +71,11 @@ git push origin "$TAG"          # if SSH is unavailable: git push https://github
 4. **VSIX**: the GitHub Release carries the file. Publishing it to a marketplace (VS Marketplace / Open VSX)
    needs the owner's explicit go and a publisher token; it is not part of `release.yml`.
 5. **Consumers** (each moves in the same window as the engine; see `docs/deploy/consumer-rollout.md`):
-   - (State on 2026-10-15: the lab already runs escurel `c9b035c1190e` and agent-template #359 (`fa6548854003`);
-     the lab move that proved `kind-migration.md` is `docs/notes/discovered/2026-10-15-lab-cutover-lessons.md`.
-     The tag window then only re-pins the lab values to `:$TAG`.)
+   - (State on 2026-10-17: the lab runs escurel `52ec78c0ce1c` on dz-escurel, escurel-runner and
+     escurel-async-runner, plus agent-template #359 (`fa6548854003`); heron-escurel is still on the old image
+     (`6d942410`, lake schema 9) and moves with `migrate-kind-job` (rehearsed on a copy: 67 min, Job deadline
+     >= 10800 s, `ESCUREL_MIGRATE_KIND_RENAME=kind=system_kind`). The lab move that proved `kind-migration.md` is
+     `docs/notes/discovered/2026-10-15-lab-cutover-lessons.md`. The tag window re-pins the lab values to `:$TAG`.)
    - hetzner lab: escurel image `:$TAG` with anofox_optimize + gdrive 1.5.6, agent-template (PR #359, writes
      `kind:` pages) in the same window, then `escurel admin migrate-kind` per tenant
      (`docs/deploy/kind-migration.md`); the lab owns its values PR (ADR-0016).
