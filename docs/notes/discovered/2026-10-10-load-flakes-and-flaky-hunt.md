@@ -53,8 +53,13 @@ rerun).
   later (that `expand` took 1937 ms on the starved runner); in that window a parallel test's mock took the port.
   Fix: `dead_base()` now returns a guard that keeps the port **bound but not listening** for the test's life, so a
   connect is refused (`ECONNREFUSED`) and nothing else can be handed the number
-  (`a_dead_base_stays_dead_and_unclaimable_while_held` pins both). Two more probe-then-drop sites remain
-  (`remote_backend_tools.rs:732`, `gateway_lost_mid_life.rs:59`); change them the same way if they ever flake.
+  (`a_dead_base_stays_dead_and_unclaimable_while_held` pins both). `remote_backend_tools.rs`
+  `openapi_unreachable_endpoint_degrades_read_and_probe` uses the same held `dead_base()` now. Not changed:
+  `gateway_lost_mid_life.rs`, which drops a stub that WAS listening: its served connections leave the port in
+  `TIME_WAIT`, so re-binding it without `SO_REUSEADDR` fails for ~60 s, and with `SO_REUSEADDR` the hold excludes
+  nobody (two bound-but-not-listening sockets may share a port on Linux). Holding it would need `shutdown(2)` on
+  the listening fd (a `libc` dev-dependency); the test already polls for the refusal and names the stranger in its
+  panic, so it stays as is. `connect_retry.rs`'s `vacant_port` must be re-bindable by design.
 - **`sigterm_drain` and `distill_stamps_last_verified` did not reproduce** (25/25 each at load average ~50 on 32
   cores with 48 CPU hogs added; the tests take 1-5 s against 15-45 s deadlines), and the original failure output
   was not kept, so their cause is not established. They share the pattern named above (a runner on a `free_port()`

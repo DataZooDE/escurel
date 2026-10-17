@@ -434,7 +434,7 @@ async fn upstream_text_is_data_marked_external_never_instructions() {
 /// and no other test's listener or ephemeral client socket can be handed the same number in between.
 /// The old probe-then-drop version left that window open, and under the full suite's load a source
 /// that was meant to be dead answered `ok` (the `an_unreachable_source_is_counted` flake, #733 CI).
-async fn dead_base() -> (String, tokio::net::TcpSocket) {
+pub(crate) async fn dead_base() -> (String, tokio::net::TcpSocket) {
     let sock = tokio::net::TcpSocket::new_v4().expect("socket");
     sock.bind("127.0.0.1:0".parse().unwrap()).expect("bind");
     let port = sock.local_addr().expect("local_addr").port();
