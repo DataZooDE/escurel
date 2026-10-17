@@ -35,6 +35,7 @@ mod autonomy_hardening;
 mod backend_read_limits;
 mod binary_boots;
 mod blob_route;
+mod boot_sql_policy;
 mod branches;
 mod changesets;
 mod chat_acl;

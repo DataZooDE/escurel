@@ -8,6 +8,12 @@ re-cuts append `.N`), matching the DataZoo release scheme (cf. erpl).
 
 ## Unreleased
 
+- **The SQL-source policy judges stored bindings at writer boot** (skill 0.25.3). Security pass of 2026-10-17 (F1). The
+  credential/egress policy was installed on the served indexer after `Config::build` had rebuilt every `sql_view`, so a
+  binding already in storage (written before the policy, or under a wider `ESCUREL_SQL_FILE_DIRS`) was re-attached with
+  no check and stayed queryable for the life of the process. The policy (now parsed with the rest of the config, so an
+  embedded gateway can set it from its config source) goes on the indexer before the fresh-boot rebuild and the
+  lake-adopt rebuild; an out-of-policy binding's view is simply not created.
 - **`/ingest` refuses the gateway's event-id namespaces; a machine cannot purge events** (skill 0.25.2). Security pass
   of 2026-10-17. `/ingest` forwarded a caller's `event_id` without the reserved-prefix check `capture_event` has, so a
   member could squat `runner-status:<runner>` or forge a `write-back:<draft>:applied` witness (a promote would skip its

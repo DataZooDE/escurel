@@ -4,6 +4,13 @@ The skill version tracks the consumer-facing contract, not the Escurel
 binary version. The Escurel repo's checked-out git ref is the true version
 pin (see `SKILL.md` → "How this skill is installed").
 
+## 0.25.3 — the SQL-source policy is applied when the writer rebuilds its views at boot
+
+No tool or wire change. A `sql_view` binding already in storage (written before the operator's policy, or while
+`ESCUREL_SQL_FILE_DIRS` / the egress rules were wider) used to be re-attached at writer boot with no check; the policy now
+goes on the indexer before the boot-time view rebuild, so such a binding's view is simply absent until the policy allows
+it again (`references/02-tool-surface.md`).
+
 ## 0.25.2 — `/ingest` refuses the gateway's event-id namespaces; a machine cannot purge events
 
 No tool or wire shape change; two refusals. `POST /ingest` (and `/ingest/upload`) took a caller's `event_id` without the
