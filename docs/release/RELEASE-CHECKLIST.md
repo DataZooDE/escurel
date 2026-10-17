@@ -57,9 +57,15 @@ section does (the release job checks it). Suggested opening paragraph for the fi
 ```sh
 TAG=vYYYY.MM.DD
 git fetch origin && git checkout --detach origin/main      # the commit that passed the dry run
-git tag -a "$TAG" -m "$(sed -n "/^## $TAG/,/^## /p" CHANGELOG.md | sed '$d')"
+scripts/release-tag.sh "$TAG"   # local only; annotated tag from the CHANGELOG section, then verifies BREAKING survived
+git for-each-ref "refs/tags/$TAG" --format='%(contents)' | grep -c BREAKING     # must print >= 1 for a BREAKING section
 git push origin "$TAG"          # if SSH is unavailable: git push https://github.com/DataZooDE/escurel.git "$TAG"
 ```
+
+Do not build the message with a bare `git tag -a "$TAG" -m "$(sed ...)"`: git strips every line starting with `#`
+(the section's markdown headings, which carry `BREAKING`) and the release job then refuses the tag
+(`docs/notes/discovered/2026-10-17-git-tag-strips-markdown-headings.md`). `scripts/release-tag.sh` writes it with
+`--cleanup=whitespace`; it is tested by `scripts/test-release-tag.sh` (CI).
 
 ## 3. After the tag
 
