@@ -68,6 +68,78 @@ interface BoundEvidence {
   confirmation: { rows: number; breaches: number };
   breach_rate_upper_bound?: number;
   bound_statement?: string;
+  simultaneous_bound_statement?: string;
+}
+
+/**
+ * "Show approved Anofox Evolve data rules": pick the hash remembered from this session's approval
+ * (or, with `typed`, enter it by hand) and wait for the read-only document to open.
+ */
+async function openApprovedRules(page: Page, hash: string, typed = false) {
+  await expect(page.locator('.notifications-toasts .notification-toast')).toHaveCount(0, {
+    timeout: 60_000 * SLOW,
+  });
+  const name = 'Show approved Anofox Evolve data rules';
+  const widget = page.locator('.quick-input-widget');
+  const input = widget.locator('input');
+  const ask = widget.getByPlaceholder('Which approved rule set?');
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    await filterCommandPalette(page, name, name);
+    await expect(page.locator('.quick-input-list .monaco-list-row.focused')).toHaveCount(1, {
+      timeout: 20_000 * SLOW,
+    });
+    await input.press('Enter');
+    if (
+      await expect(ask)
+        .toBeVisible({ timeout: 20_000 * SLOW })
+        .then(() => true)
+        .catch(() => false)
+    )
+      break;
+    await page.keyboard.press('Escape');
+    if (attempt === 3) throw new Error('The approved-rules command did not open its question');
+  }
+  if (typed) {
+    await input.fill('Enter a hash');
+    await expect(page.locator('.quick-input-list .monaco-list-row.focused')).toContainText(
+      'Enter a hash',
+    );
+    await input.press('Enter');
+    await expect(widget).toContainText('64 hex');
+    await input.fill('not a hash');
+    await expect(widget).toContainText('Enter exactly 64 hex characters');
+    await input.fill(hash);
+  } else {
+    // The hash approved earlier in this window is offered by its prefix.
+    await expect(page.locator('.quick-input-list')).toContainText(hash.slice(0, 12));
+    await input.fill(hash.slice(0, 12));
+    await expect(page.locator('.quick-input-list .monaco-list-row.focused')).toContainText(
+      hash.slice(0, 12),
+    );
+  }
+  await input.press('Enter');
+  await expect(page.locator('.monaco-editor .view-lines').last()).toContainText(
+    'Approved data rules',
+    { timeout: 60_000 * SLOW },
+  );
+}
+
+/**
+ * Tick the first `count` rules of the "choose the supported rules" list by clicking their rows, one at
+ * a time with the running count checked: no key press can be lost on a busy machine and double-toggle
+ * or skip a row. Then Enter confirms the selection.
+ */
+async function pickFirstRules(page: Page, count: number) {
+  const rows = page.locator('.quick-input-widget .quick-input-list .monaco-list-row');
+  await expect(rows.first()).toBeVisible({ timeout: 60_000 * SLOW });
+  for (let i = 0; i < count; i += 1) {
+    await rows.nth(i).click();
+    await expect(page.locator('.quick-input-widget .quick-input-count')).toContainText(
+      `${i + 1} Selected`,
+      { timeout: 30_000 * SLOW },
+    );
+  }
+  await page.keyboard.press('Enter');
 }
 
 const dialog = (page: Page, text: string | RegExp) =>
@@ -88,9 +160,13 @@ async function answerPolicy(page: Page, choice?: { pMax: string; alpha: string }
     await page.keyboard.press('Enter');
     return;
   }
-  await page.keyboard.press('ArrowDown');
-  await page.keyboard.press('Enter');
+  // Choose the second entry by filtering for it: an arrow key can land before the list is ready.
   const input = picker.locator('input');
+  await input.fill('Choose p_max');
+  await expect(page.locator('.quick-input-list .monaco-list-row.focused')).toContainText(
+    'Choose p_max and alpha',
+  );
+  await input.press('Enter');
   await expect(picker.locator('.quick-input-title')).toContainText('p_max');
   // Above the service cap: refused client-side with the cap in the message, Enter does not accept.
   await input.fill('6');
@@ -299,16 +375,7 @@ test('a person reviews and approves discovered rules, and the approval rides on 
   await expect(rows.first()).toBeVisible();
   const offered = await rows.count();
   expect(offered).toBeGreaterThan(1);
-  const picks = async (count: number) => {
-    for (let i = 0; i < count; i += 1) {
-      await stack.page.keyboard.press('ArrowDown');
-      await stack.page.keyboard.press('Space');
-    }
-    await expect(stack.page.locator('.quick-input-widget .quick-input-count')).toContainText(
-      `${count} Selected`,
-    );
-    await stack.page.keyboard.press('Enter');
-  };
+  const picks = (count: number) => pickFirstRules(stack.page, count);
   await picks(1);
   const cancelDialog = dialog(stack.page, 'Approve 1 rule');
   await expect(cancelDialog).toBeVisible();
@@ -345,8 +412,30 @@ test('a person reviews and approves discovered rules, and the approval rides on 
   expect(await documentContains(stack.page, aSupported.bound_statement!)).toBe(true);
   expect(await documentContains(stack.page, anInsufficient.bound_statement!)).toBe(true);
   expect(
-    await documentContains(stack.page, 'upper bound (informational, not an approval signal)'),
+    await documentContains(
+      stack.page,
+      'upper bound, this rule alone (informational, not an approval signal)',
+    ),
   ).toBe(true);
+  // The simultaneous bound (all rules of the batch at once) sits next to it, for a supported and an
+  // insufficient rule, in the service's own exact sentence, with the m of the whole family.
+  expect(aSupported.simultaneous_bound_statement).toMatch(
+    /^0 breaches in \d+ held-out rows; across all \d+ rules tested on this data, with 95% family-wise confidence the breach rate is below \d+\.\d{3}%$/,
+  );
+  expect(anInsufficient.simultaneous_bound_statement).toMatch(/across all \d+ rules tested/);
+  expect(await documentContains(stack.page, aSupported.simultaneous_bound_statement!)).toBe(true);
+  expect(await documentContains(stack.page, anInsufficient.simultaneous_bound_statement!)).toBe(
+    true,
+  );
+  expect(
+    await documentContains(
+      stack.page,
+      'simultaneous bound, all rules of this batch at once (informational, not an approval signal)',
+    ),
+  ).toBe(true);
+  expect(await documentContains(stack.page, 'neither is an approval signal')).toBe(true);
+  expect(await documentContains(stack.page, 'neither makes a rule supported')).toBe(true);
+  await stack.shot('evolve-rules-simultaneous');
   expect(
     await documentContains(
       stack.page,
@@ -406,6 +495,45 @@ test('a person reviews and approves discovered rules, and the approval rides on 
   })) as { approved_rule_set_sha256: string; idempotent: boolean };
   expect(again.approved_rule_set_sha256).toBe(setHash);
   expect(again.idempotent).toBe(true);
+
+  // The approved set, read back by its hash into a read-only document: approver, time, policy, what
+  // it applies to, and the two rules in words with their hash prefixes. First from the hash this
+  // window remembers, then (after the toast is gone) typed by hand.
+  const approvedSet = (await stack.evolveCall('evolve_rules_get', {
+    rule_set_sha256: setHash,
+  })) as {
+    approved_at: string;
+    applies_to: string;
+    rule_summaries: { rule_sha256: string }[];
+  };
+  await openApprovedRules(stack.page, setHash);
+  expect(await documentContains(stack.page, `Approved rule set SHA-256: ${setHash}`)).toBe(true);
+  expect(await documentContains(stack.page, 'Approver: alice')).toBe(true);
+  expect(
+    await documentContains(
+      stack.page,
+      `Approved at: ${approvedSet.approved_at.replace('T', ' ').replace(/Z$/, '')} UTC`,
+    ),
+  ).toBe(true);
+  expect(
+    await documentContains(stack.page, 'Test policy: binom_holm_ub_v2 (p_max 5%, alpha 5%)'),
+  ).toBe(true);
+  expect(
+    await documentContains(
+      stack.page,
+      'Caps for new tests: p_max may be up to 5%, alpha up to 10%',
+    ),
+  ).toBe(true);
+  expect(await documentContains(stack.page, `Applies to: ${approvedSet.applies_to}`)).toBe(true);
+  expect(await documentContains(stack.page, 'Rules (2):')).toBe(true);
+  for (const r of approvedSet.rule_summaries)
+    expect(await documentContains(stack.page, `[rule ${r.rule_sha256.slice(0, 12)}`)).toBe(true);
+  expect(await documentContains(stack.page, 'demand.qty')).toBe(true);
+  await stack.shot('evolve-rules-approved-set');
+  await stack.page.keyboard.press('Control+W');
+  await openApprovedRules(stack.page, setHash, true);
+  expect(await documentContains(stack.page, 'Approver: alice')).toBe(true);
+  await stack.page.keyboard.press('Control+W');
 
   // 4. Attach it to a NEW experiment start: a sealed holdout and a start file, both the person's own.
   const experiment = `${id}-exp`;
@@ -595,16 +723,7 @@ test('a person reviews, approves and starts rules for one exact P0 instance (sta
   const chooser = stack.page.locator('.quick-input-widget');
   await expect(chooser.getByPlaceholder(/Choose the supported rules to approve/)).toBeVisible();
   await expect(chooser.locator('.quick-input-list .monaco-list-row').first()).toBeVisible();
-  const picks = async (count: number) => {
-    for (let i = 0; i < count; i += 1) {
-      await stack.page.keyboard.press('ArrowDown');
-      await stack.page.keyboard.press('Space');
-    }
-    await expect(stack.page.locator('.quick-input-widget .quick-input-count')).toContainText(
-      `${count} Selected`,
-    );
-    await stack.page.keyboard.press('Enter');
-  };
+  const picks = (count: number) => pickFirstRules(stack.page, count);
   await picks(1);
   const cancelDialog = dialog(stack.page, 'Approve 1 rule');
   await expect(cancelDialog).toBeVisible();
