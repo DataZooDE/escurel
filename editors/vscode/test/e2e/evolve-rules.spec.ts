@@ -111,12 +111,8 @@ async function runReview(page: Page, sourceId: string, choice?: { pMax: string; 
   await expect(page.locator('.notifications-toasts .notification-toast')).toHaveCount(0, {
     timeout: 60_000 * SLOW,
   });
-  await filterCommandPalette(
-    page,
-    'Discover, review and approve Anofox Evolve data rules',
-    'Discover, review and approve Anofox Evolve data rules',
-  );
-  const input = page.locator('.quick-input-widget input');
+  const input = await openRulesCommand(page);
+  await expect(page.locator('.quick-input-widget')).toContainText('Registered training source');
   await input.press('Enter');
   await expect(page.locator('.quick-input-widget')).toContainText(
     'training-source ID to discover rules in',
@@ -124,6 +120,54 @@ async function runReview(page: Page, sourceId: string, choice?: { pMax: string; 
   await input.fill(sourceId);
   await input.press('Enter');
   await answerPolicy(page, choice);
+  const testDialog = dialog(page, 'Run the one confirmation test');
+  await expect(testDialog).toBeVisible({ timeout: 60_000 * SLOW });
+  return testDialog;
+}
+
+/**
+ * Open the rules command from the palette, and again from the palette if its first question did not
+ * appear: on a loaded machine an Enter can land before the list has an active row.
+ */
+async function openRulesCommand(page: Page) {
+  const name = 'Discover, review and approve Anofox Evolve data rules';
+  const input = page.locator('.quick-input-widget input');
+  const first = page
+    .locator('.quick-input-widget')
+    .getByPlaceholder('What should the rules be discovered for?');
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    await filterCommandPalette(page, name, name);
+    await expect(page.locator('.quick-input-list .monaco-list-row.focused')).toHaveCount(1, {
+      timeout: 20_000 * SLOW,
+    });
+    await input.press('Enter');
+    const opened = await expect(first)
+      .toBeVisible({ timeout: 20_000 * SLOW })
+      .then(() => true)
+      .catch(() => false);
+    if (opened) return input;
+    await page.keyboard.press('Escape');
+  }
+  throw new Error('The rules command did not open its first question');
+}
+
+/** The same command for a CSV-start instance: the second choice, then an open saved JSON file. */
+async function runInstanceReview(page: Page, fileStem: string) {
+  await expect(page.locator('.notifications-toasts .notification-toast')).toHaveCount(0, {
+    timeout: 60_000 * SLOW,
+  });
+  const input = await openRulesCommand(page);
+  await expect(page.locator('.quick-input-widget')).toContainText('CSV-start instance (P0/P5/P7)');
+  // Pick the second choice by filtering for it: an arrow key can land before the list is ready.
+  const active = page.locator('.quick-input-list .monaco-list-row.focused');
+  await input.fill('CSV-start');
+  await expect(active).toContainText('CSV-start instance');
+  await input.press('Enter');
+  await expect(
+    page.locator('.quick-input-widget').getByPlaceholder(/Choose the P0, P5 or P7 instance file/),
+  ).toBeVisible();
+  await input.fill(fileStem);
+  await input.press('Enter');
   const testDialog = dialog(page, 'Run the one confirmation test');
   await expect(testDialog).toBeVisible({ timeout: 60_000 * SLOW });
   return testDialog;
@@ -477,6 +521,173 @@ test('a person reviews and approves discovered rules, and the approval rides on 
   })) as { idempotent?: boolean };
   expect(replay.idempotent).toBe(true);
   await expect(stack.evolveCall('evolve_start', startSpec)).rejects.toThrow(/HTTP (409|422|4\d\d)/);
+
+  expect(
+    stack.errors.filter(
+      (e) =>
+        !/favicon|ResizeObserver|DeprecationWarning|trace-deprecation|github\.copilot|EXTRA proposals/.test(
+          e,
+        ),
+    ),
+  ).toEqual([]);
+});
+
+test('a person reviews, approves and starts rules for one exact P0 instance (state replay)', async ({
+  stack,
+}) => {
+  test.setTimeout(420_000 * SLOW);
+  const id = `p0rules-${Date.now()}`;
+  const experiment = `${id}-exp`;
+  // 16 items, capacity 10: the instance of the service's own P0 rule tests.
+  const instance = {
+    pilot: 'p0',
+    capacity: 10,
+    items_csv: '6,5,4,7,2,3,8,1,9,4,6,2,5,3,7,1',
+  };
+  const file = { ...instance, experiment, max_generations: 0, budget: { max_evaluated: 1 } };
+  writeFileSync(join(stack.workspaceDir, `${id}.json`), JSON.stringify(file));
+  await stack.page.keyboard.press('Control+P');
+  const quick = stack.page.locator('.quick-input-widget input');
+  await quick.fill(join(stack.workspaceDir, `${id}.json`));
+  await expect(stack.page.locator('.quick-input-list')).toContainText(`${id}.json`);
+  await quick.press('Enter');
+  await expect(stack.page.getByRole('tab', { name: `${id}.json` })).toBeVisible();
+
+  const batch = (await stack.evolveCall('evolve_rules_propose', instance)) as {
+    batch_id: string;
+    data_sha256: string;
+  };
+  const stored = async () =>
+    (await stack.evolveCall('evolve_rules_get', { batch_id: batch.batch_id })) as {
+      test?: null | {
+        test_sha256: string;
+        evidence: { rule_sha256: string; decision: string; rule: { kind: string } }[];
+      };
+    };
+
+  // 1. Cancel at the test confirmation: the instance is named, no policy question was asked, and
+  // Evolve has no test for the batch.
+  let confirmTest = await runInstanceReview(stack.page, id);
+  const detail = await confirmTest.innerText();
+  expect(detail).toContain(
+    `this exact instance (pilot p0, data hash prefix ${batch.data_sha256.slice(0, 12)})`,
+  );
+  expect(detail).not.toMatch(/Test policy:/);
+  expect(detail).toMatch(/one-shot per batch/);
+  await stack.shot('evolve-rules-state-confirm-test');
+  await confirmTest.getByRole('button', { name: 'Cancel' }).click();
+  expect((await stored()).test ?? null).toBeNull();
+
+  // 2. Run the replay test, choose rules, CANCEL at the approval confirmation: nothing is approved.
+  confirmTest = await runInstanceReview(stack.page, id);
+  await confirmTest.getByRole('button', { name: 'Run confirmation test' }).click();
+  await expect(stack.page.locator('.monaco-editor .view-lines').last()).toContainText(
+    'Discovered rules: replay test',
+    { timeout: 120_000 * SLOW },
+  );
+  const report = (
+    await stack.page.locator('.monaco-editor .view-lines').last().innerText()
+  ).replace(/\u00a0/g, ' ');
+  expect(report).toContain('state_replay_v1');
+  expect(report).toMatch(/not a statistical test/i);
+  expect(report).not.toMatch(/p-value|Holm/i);
+  await stack.shot('evolve-rules-state-report');
+  const chooser = stack.page.locator('.quick-input-widget');
+  await expect(chooser.getByPlaceholder(/Choose the supported rules to approve/)).toBeVisible();
+  await expect(chooser.locator('.quick-input-list .monaco-list-row').first()).toBeVisible();
+  const picks = async (count: number) => {
+    for (let i = 0; i < count; i += 1) {
+      await stack.page.keyboard.press('ArrowDown');
+      await stack.page.keyboard.press('Space');
+    }
+    await expect(stack.page.locator('.quick-input-widget .quick-input-count')).toContainText(
+      `${count} Selected`,
+    );
+    await stack.page.keyboard.press('Enter');
+  };
+  await picks(1);
+  const cancelDialog = dialog(stack.page, 'Approve 1 rule');
+  await expect(cancelDialog).toBeVisible();
+  await expect(cancelDialog).toContainText(
+    `for this exact instance (pilot p0, data hash prefix ${batch.data_sha256.slice(0, 12)})`,
+  );
+  await expect(cancelDialog).not.toContainText('training source');
+  await expect(cancelDialog).toContainText('Bound to test');
+  await cancelDialog.getByRole('button', { name: 'Cancel' }).click();
+  const tested = (await stored()).test!;
+  const supported = tested.evidence.filter((e) => e.decision === 'supported');
+  expect(supported.length).toBeGreaterThan(1);
+  // Proof that cancelling approved nothing: approving a rule from outside is a FIRST approval. The
+  // service refuses a joined aggregate without its fk_in, so the probe is the key rule alone.
+  const key = supported.find((e) => e.rule.kind === 'fk_in')!;
+  const probe = (await stack.evolveCall('evolve_rules_approve', {
+    batch_id: batch.batch_id,
+    rule_sha256s: [key.rule_sha256],
+    expected_test_sha256: tested.test_sha256,
+    confirm: true,
+  })) as { idempotent: boolean };
+  expect(probe.idempotent).toBe(false);
+
+  // 3. The real approval of the first two supported rules; Evolve records alice.
+  confirmTest = await runInstanceReview(stack.page, id);
+  await confirmTest.getByRole('button', { name: 'Run confirmation test' }).click();
+  await expect(chooser.getByPlaceholder(/Choose the supported rules to approve/)).toBeVisible({
+    timeout: 90_000 * SLOW,
+  });
+  await picks(2);
+  const approveDialog = dialog(stack.page, 'Approve 2 rules');
+  await expect(approveDialog).toBeVisible();
+  expect(await approveDialog.innerText()).toContain(tested.test_sha256);
+  await approveDialog.getByRole('button', { name: 'Approve rules' }).click();
+  const approved = notice(stack.page, /Approved 2 rules\. Approved rule set SHA-256: [a-f0-9]{64}/);
+  await expect(approved.first()).toBeVisible({ timeout: 60_000 * SLOW });
+  const toast = await approved.first().innerText();
+  const setHash = /SHA-256: ([a-f0-9]{64})/.exec(toast)![1]!;
+  expect(toast).toContain('experiments on exactly this instance');
+  await stack.shot('evolve-rules-state-approved');
+  const set = (await stack.evolveCall('evolve_rules_get', { rule_set_sha256: setHash })) as {
+    approver: string;
+    pilot: string;
+    rules: unknown[];
+    data_sha256: string;
+  };
+  expect(set).toMatchObject({ approver: 'alice', pilot: 'p0', data_sha256: batch.data_sha256 });
+  expect(set.rules).toHaveLength(2);
+
+  // 4. Start a NEW experiment on the same instance with the approved hash, zero generations.
+  await approved
+    .first()
+    .getByRole('button', { name: 'Start new experiment with these rules' })
+    .click();
+  const startDialog = dialog(stack.page, `Start new experiment ${experiment}`);
+  await expect(startDialog).toBeVisible();
+  await expect(startDialog).toContainText(setHash);
+  await expect(startDialog).toContainText('exact instance');
+  await expect(startDialog).toContainText('0 generations');
+  await expect(startDialog).toContainText('does not go through the Escurel plan review');
+  await stack.shot('evolve-rules-state-start');
+  await startDialog.getByRole('button', { name: 'Start experiment' }).click();
+  await expect(
+    notice(stack.page, `Experiment ${experiment} accepted by Evolve`).first(),
+  ).toBeVisible({ timeout: 120_000 * SLOW });
+
+  // The window sent exactly instance + start keys + brain llm + this hash.
+  const replay = (await stack.evolveCall('evolve_start', {
+    ...file,
+    brain: 'llm',
+    approved_rule_set_sha256: setHash,
+  })) as { idempotent?: boolean };
+  expect(replay.idempotent).toBe(true);
+  // A different limit is a different instance: the service refuses it for this rule set.
+  await expect(
+    stack.evolveCall('evolve_start', {
+      ...file,
+      experiment: `${experiment}-cap`,
+      capacity: 12,
+      brain: 'llm',
+      approved_rule_set_sha256: setHash,
+    }),
+  ).rejects.toThrow(/HTTP 409/);
 
   expect(
     stack.errors.filter(

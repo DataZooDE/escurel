@@ -27,6 +27,15 @@ derives its version from the tag (`vYYYY.MM.DD` → `YYYY.M.D`, leading zeros dr
   test cannot be redone. State rules (`fk_in`, `agg_le`, `agg_ge`) read as words, replay evidence
   (`state_replay_v1`) is shown as per-control breach counts, and an unknown rule kind is named without its
   details. What approval sends (the reviewed `test_sha256`) is unchanged.
+- **Rules for one exact P0/P5/P7 instance, through to the start**: the rules command first asks whether
+  to work on a registered training source or on a CSV-start instance file (a saved editor or a chosen
+  file, at most 4 MB, one JSON object). The file is checked against each pilot's keys before anything is
+  sent (`p0`: `capacity`, `items_csv`; `p5`: `shelf_capacity`, `products_csv`, `subs_csv`; `p7`:
+  `max_holdings`, `max_position_size`, `assets_csv`, `covariance_csv`; plus `experiment`, `brain`,
+  `max_generations`, `budget` for the start). The review names the exact instance (pilot and data hash
+  prefix), asks no p_max/alpha question, pre-selects nothing and binds approval to the reviewed test. The
+  start sends the same instance, `brain: "llm"` and the approved hash; a file without an explicit
+  `max_generations` is refused. Replenishment (p1) starts are unchanged.
 - The Evolve event labels now come from one table (`escurel-types` and `shared/evolveControls.ts`, compared
   by a test); the gateway gates `evolve_rules_propose` / `evolve_rules_test` / `evolve_rules_approve` by
   label, owner and page state.
