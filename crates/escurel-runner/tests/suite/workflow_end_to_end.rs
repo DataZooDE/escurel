@@ -2972,7 +2972,11 @@ async fn lint_tick_schedules_a_scan_without_manual_invocation() {
 // --- G3: freshness + curated index -----------------------------------------
 
 /// Spawn the real runner (echo harness) against `gateway` and return its guard.
-fn spawn_echo_runner(gateway: &EscurelProcess, ledger_dir: &std::path::Path) -> ChildGuard {
+///
+/// Returns once the runner answers `/healthz`, so the generous per-test workflow deadlines measure the
+/// workflow and not a slow process start on a loaded machine; a runner that dies at start (its
+/// `listen` port taken, bad env) fails here, by name, instead of as a silent 45 s timeout later.
+async fn spawn_echo_runner(gateway: &EscurelProcess, ledger_dir: &std::path::Path) -> ChildGuard {
     // The runner authenticates as an admin identity (in production it mints its
     // own `escurel:admin` bearer): its orchestration writes include the reserved
     // `escurel:run-status` status events, which the capture guard admits only for
@@ -2994,7 +2998,24 @@ fn spawn_echo_runner(gateway: &EscurelProcess, ledger_dir: &std::path::Path) -> 
         .env("ESCUREL_RUNNER_MAX_ATTEMPTS", "3")
         .env("ESCUREL_RUNNER_RETRY_BACKOFF", "100ms")
         .env("ESCUREL_RUNNER_POLL_INTERVAL", "250ms");
-    ChildGuard(cmd.spawn().expect("spawn escurel-runner"))
+    let mut runner = ChildGuard(cmd.spawn().expect("spawn escurel-runner"));
+    let http = reqwest::Client::new();
+    let url = format!("http://{listen}/healthz");
+    let deadline = Instant::now() + Duration::from_secs(60);
+    loop {
+        if let Some(status) = runner.0.try_wait().expect("try_wait") {
+            panic!("runner exited before it became healthy at {listen}: {status:?}");
+        }
+        if let Ok(resp) = http.get(&url).send().await
+            && resp.status().is_success()
+        {
+            return runner;
+        }
+        if Instant::now() >= deadline {
+            panic!("runner never became healthy at {listen}");
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
 }
 
 async fn invoke_curate(gateway: &EscurelProcess, run_page: &str) {
@@ -3040,7 +3061,7 @@ async fn curate_generates_a_derivable_by_category_index() {
     .await;
 
     let ledger_dir = tempfile::tempdir().expect("tempdir for ledger");
-    let _runner = spawn_echo_runner(&gateway, ledger_dir.path());
+    let _runner = spawn_echo_runner(&gateway, ledger_dir.path()).await;
 
     // First curation.
     invoke_curate(&gateway, "markdown/instances/workflow-run/cur1.md").await;
@@ -3122,7 +3143,7 @@ async fn distill_stamps_last_verified_on_the_woven_page() {
     .await;
 
     let ledger_dir = tempfile::tempdir().expect("tempdir for ledger");
-    let _runner = spawn_echo_runner(&gateway, ledger_dir.path());
+    let _runner = spawn_echo_runner(&gateway, ledger_dir.path()).await;
 
     let lv = await_frontmatter_key(&gateway, target, "last_verified", 45).await;
     assert!(
@@ -3195,7 +3216,7 @@ async fn eval_improves_a_failing_skill_then_reverify_passes() {
     .await;
 
     let ledger_dir = tempfile::tempdir().expect("tempdir for ledger");
-    let _runner = spawn_echo_runner(&gateway, ledger_dir.path());
+    let _runner = spawn_echo_runner(&gateway, ledger_dir.path()).await;
 
     // Run 1: score (fail) → apply weaves the fix into the FAQ skill.
     invoke_eval(&gateway, "markdown/instances/workflow-run/ev1.md").await;
@@ -3276,7 +3297,7 @@ async fn eval_regression_is_flagged_when_a_fix_does_not_hold() {
     .await;
 
     let ledger_dir = tempfile::tempdir().expect("tempdir for ledger");
-    let _runner = spawn_echo_runner(&gateway, ledger_dir.path());
+    let _runner = spawn_echo_runner(&gateway, ledger_dir.path()).await;
 
     // Run 1: fail → apply weaves the (broken) fix, stamping source_event.
     invoke_eval(&gateway, "markdown/instances/workflow-run/rg1.md").await;

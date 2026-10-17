@@ -76,11 +76,16 @@ fn spawn_runner(listen: &str, gateway: &EscurelProcess, token: &str, ledger_path
     cmd.spawn().expect("spawn escurel-runner")
 }
 
-/// Wait until the runner's HTTP listener answers `/healthz`.
-async fn wait_healthy(http: &reqwest::Client, listen: &str, within: Duration) {
+/// Wait until the runner's HTTP listener answers `/healthz`. A runner that already exited (its
+/// `listen` port was taken by something else, a missing env) fails here by name instead of after the
+/// full deadline, and a `/healthz` answered by a *stranger* on that port can no longer pass for it.
+async fn wait_healthy(http: &reqwest::Client, listen: &str, within: Duration, child: &mut Child) {
     let deadline = Instant::now() + within;
     let url = format!("http://{listen}/healthz");
     loop {
+        if let Some(status) = child.try_wait().expect("try_wait") {
+            panic!("runner exited before it became healthy at {listen}: {status:?}");
+        }
         if let Ok(resp) = http.get(&url).send().await
             && resp.status().is_success()
         {
@@ -143,7 +148,7 @@ async fn sigterm_drains_and_restart_is_consistent() {
     let listen1 = format!("127.0.0.1:{port1}");
     let mut child1 = spawn_runner(&listen1, &gateway, &token, &ledger_path);
     let pid1 = child1.id();
-    wait_healthy(&http, &listen1, Duration::from_secs(15)).await;
+    wait_healthy(&http, &listen1, Duration::from_secs(15), &mut child1).await;
 
     let run_url1 = format!("http://{listen1}/debug/run?tenant={TENANT}&event_id={event_id}");
     let deadline = Instant::now() + Duration::from_secs(20);
@@ -155,6 +160,9 @@ async fn sigterm_drains_and_restart_is_consistent() {
             if body["event_id"].as_str() == Some(event_id.as_str()) {
                 break; // a run row exists (pending or already terminal)
             }
+        }
+        if let Some(status) = child1.try_wait().expect("try_wait") {
+            panic!("first runner exited before it began a run for {event_id}: {status:?}");
         }
         if Instant::now() >= deadline {
             panic!("first runner never began a run for {event_id}");
@@ -198,8 +206,8 @@ async fn sigterm_drains_and_restart_is_consistent() {
     //    still-inbox event. Either way the event converges to processed.
     let port2 = free_port();
     let listen2 = format!("127.0.0.1:{port2}");
-    let _child2 = ChildGuard(spawn_runner(&listen2, &gateway, &token, &ledger_path));
-    wait_healthy(&http, &listen2, Duration::from_secs(15)).await;
+    let mut child2 = ChildGuard(spawn_runner(&listen2, &gateway, &token, &ledger_path));
+    wait_healthy(&http, &listen2, Duration::from_secs(15), &mut child2.0).await;
 
     // 6. Ledger consistency: within the deadline the event becomes `processed`
     //    (recovered-as-confirmed or re-driven by the poller), with NO orphaned

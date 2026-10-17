@@ -428,19 +428,39 @@ async fn upstream_text_is_data_marked_external_never_instructions() {
     p.shutdown().await;
 }
 
-/// A base URL nothing listens on: a port that was bound and released, so connecting is refused.
-async fn dead_base() -> String {
-    let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let port = l.local_addr().unwrap().port();
-    drop(l);
-    format!("http://127.0.0.1:{port}")
+/// A base URL nothing answers on, for as long as the returned guard lives.
+///
+/// The port is **held** by a bound-but-not-listening socket, so a connect is refused (`ECONNREFUSED`)
+/// and no other test's listener or ephemeral client socket can be handed the same number in between.
+/// The old probe-then-drop version left that window open, and under the full suite's load a source
+/// that was meant to be dead answered `ok` (the `an_unreachable_source_is_counted` flake, #733 CI).
+async fn dead_base() -> (String, tokio::net::TcpSocket) {
+    let sock = tokio::net::TcpSocket::new_v4().expect("socket");
+    sock.bind("127.0.0.1:0".parse().unwrap()).expect("bind");
+    let port = sock.local_addr().expect("local_addr").port();
+    (format!("http://127.0.0.1:{port}"), sock)
+}
+
+#[tokio::test]
+async fn a_dead_base_stays_dead_and_unclaimable_while_held() {
+    let (base, _guard) = dead_base().await;
+    let addr = base.trim_start_matches("http://").to_owned();
+    assert!(
+        tokio::net::TcpListener::bind(&addr).await.is_err(),
+        "nothing else may take a dead source's port"
+    );
+    let err = tokio::net::TcpStream::connect(&addr)
+        .await
+        .expect_err("a dead base refuses connections");
+    assert_eq!(err.kind(), std::io::ErrorKind::ConnectionRefused);
 }
 
 #[tokio::test]
 async fn a_row_whose_source_is_down_still_opens_as_a_page_that_says_so() {
     // The portal is unreachable. A person who opens a row must get a page that names the problem (and
     // keeps whatever notes exist), not a raw transport error; and never a fabricated row.
-    let (p, _dirs) = gateway_over(&dead_base().await).await;
+    let (dead, _port_guard) = dead_base().await;
+    let (p, _dirs) = gateway_over(&dead).await;
     let page_id = "markdown/instances/customer/c-0001.md";
 
     // No notes yet: the page is a shell, the source columns are absent, the failure is named.
@@ -696,7 +716,8 @@ async fn a_refused_outbound_call_is_counted_and_never_reaches_the_upstream() {
 
 #[tokio::test]
 async fn an_unreachable_source_is_counted() {
-    let (p, _dirs) = gateway_over(&dead_base().await).await;
+    let (dead, _port_guard) = dead_base().await;
+    let (p, _dirs) = gateway_over(&dead).await;
     let _ = admin(
         &p,
         "expand",

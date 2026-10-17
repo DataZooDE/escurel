@@ -38,3 +38,28 @@ still alive (`try_wait`) and respawn on a new port if it exited, instead of trus
   `editors/vscode/README.md`); e2e: `ESCUREL_E2E_SLOW=4`.
 - Do not widen a timeout in the test to make the number go away unless the hunt shows it failing on an idle
   machine.
+
+## Update 2026-10-17: three more, one with the stranger's fingerprint, and the fix for the pattern
+
+`remote_rest_rows::an_unreachable_source_is_counted` (CI, #731 attempt 1, `cargo test` 308 s on a 2-core runner),
+`sigterm_drain::sigterm_drains_and_restart_is_consistent` and
+`workflow_end_to_end::distill_stamps_last_verified_on_the_woven_page` (both the pre-push hook on #733, passed on
+rerun).
+
+- **`an_unreachable_source_is_counted` is the stranger-on-the-port race, with proof.** The failed run's `/metrics`
+  shows `escurel_egress_total{outcome="ok"} 1` next to `{outcome="error"} 2` and **no**
+  `escurel_source_unavailable_total` line: one outbound call to the "dead" source succeeded. `dead_base()` bound
+  port 0, read the port, dropped the listener and handed the number to a gateway that connected to it ~1.9 s
+  later (that `expand` took 1937 ms on the starved runner); in that window a parallel test's mock took the port.
+  Fix: `dead_base()` now returns a guard that keeps the port **bound but not listening** for the test's life, so a
+  connect is refused (`ECONNREFUSED`) and nothing else can be handed the number
+  (`a_dead_base_stays_dead_and_unclaimable_while_held` pins both). Two more probe-then-drop sites remain
+  (`remote_backend_tools.rs:732`, `gateway_lost_mid_life.rs:59`); change them the same way if they ever flake.
+- **`sigterm_drain` and `distill_stamps_last_verified` did not reproduce** (25/25 each at load average ~50 on 32
+  cores with 48 CPU hogs added; the tests take 1-5 s against 15-45 s deadlines), and the original failure output
+  was not kept, so their cause is not established. They share the pattern named above (a runner on a `free_port()`
+  that can die at bind while a stranger answers, or just start late under load). What changed: both now fail by
+  name when the runner has already exited (`runner exited before it became healthy at <addr>: <status>`), and
+  `spawn_echo_runner` now returns only after `/healthz` answers, so the 45 s workflow deadlines measure the
+  workflow, not process start. If either flakes again the message says which of the two it was.
+- `scripts/flaky-hunt.sh` knows the three files now.
