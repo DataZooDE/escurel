@@ -34,7 +34,7 @@ function rng(seed: number) {
 }
 
 /** The demo's replenishment source payload at the contract's size: 16 SKUs, 90 training days, demand a multiple of 6. */
-function richSource(seed: number) {
+function richSource(seed: number, days = 90) {
   const next = rng(seed);
   const series = (n: number) => Array.from({ length: n }, () => 6 * Math.floor(next() * 7));
   return {
@@ -43,9 +43,9 @@ function richSource(seed: number) {
       sku_id: i + 1,
       name: `S${i + 1}`,
       initial_stock: 10,
-      initial_pipeline: Array(90).fill(0),
+      initial_pipeline: Array(days).fill(0),
       history: series(365),
-      demand: series(90),
+      demand: series(days),
       lead_time: 2,
       case_pack: 6,
       min_order: 0,
@@ -54,7 +54,7 @@ function richSource(seed: number) {
       fixed_order_cost: 2.0,
     })),
     training_start: '2026-08-01',
-    training_end: '2026-10-29',
+    training_end: days === 90 ? '2026-10-29' : '2026-09-19',
     history_start: '2025-08-01',
     history_end: '2026-07-31',
     inventory_as_of: '2026-08-01',
@@ -62,12 +62,51 @@ function richSource(seed: number) {
   };
 }
 
+interface BoundEvidence {
+  rule_sha256: string;
+  decision: string;
+  confirmation: { rows: number; breaches: number };
+  breach_rate_upper_bound?: number;
+  bound_statement?: string;
+}
+
 const dialog = (page: Page, text: string | RegExp) =>
   page.locator('[role="dialog"]', { hasText: text });
 const notice = (page: Page, text: string | RegExp) =>
   page.locator('.notifications-toasts', { hasText: text }).first();
 
-async function runReview(page: Page, sourceId: string) {
+/**
+ * The test-policy question that precedes the one-shot test: Enter keeps the service default, or the
+ * person types p_max (and alpha) as percentages. A value above the cap is refused while typing.
+ */
+async function answerPolicy(page: Page, choice?: { pMax: string; alpha: string }) {
+  const picker = page.locator('.quick-input-widget');
+  await expect(picker.getByPlaceholder(/Test policy\. The test runs once per batch/)).toBeVisible({
+    timeout: 60_000 * SLOW,
+  });
+  if (!choice) {
+    await page.keyboard.press('Enter');
+    return;
+  }
+  await page.keyboard.press('ArrowDown');
+  await page.keyboard.press('Enter');
+  const input = picker.locator('input');
+  await expect(picker.locator('.quick-input-title')).toContainText('p_max');
+  // Above the service cap: refused client-side with the cap in the message, Enter does not accept.
+  await input.fill('6');
+  await expect(picker.locator('.quick-input-message')).toContainText('at most 5%');
+  await input.press('Enter');
+  await expect(picker.locator('.quick-input-title')).toContainText('p_max');
+  await input.fill(choice.pMax);
+  await input.press('Enter');
+  await expect(picker.locator('.quick-input-title')).toContainText('alpha');
+  await input.fill('11');
+  await expect(picker.locator('.quick-input-message')).toContainText('at most 10%');
+  await input.fill(choice.alpha);
+  await input.press('Enter');
+}
+
+async function runReview(page: Page, sourceId: string, choice?: { pMax: string; alpha: string }) {
   // A toast from the previous step can still hold focus, and the palette then opens without its input.
   await expect(page.locator('.notifications-toasts .notification-toast')).toHaveCount(0, {
     timeout: 60_000 * SLOW,
@@ -84,9 +123,31 @@ async function runReview(page: Page, sourceId: string) {
   );
   await input.fill(sourceId);
   await input.press('Enter');
+  await answerPolicy(page, choice);
   const testDialog = dialog(page, 'Run the one confirmation test');
   await expect(testDialog).toBeVisible({ timeout: 60_000 * SLOW });
   return testDialog;
+}
+
+/**
+ * The review document is a virtual editor and Monaco draws only the visible lines, so a line deep in
+ * the report is found the way a person would: with Find. True when the document contains `text`.
+ */
+async function documentContains(page: Page, text: string): Promise<boolean> {
+  await page.locator('.monaco-editor .view-lines').last().click();
+  await page.keyboard.press('Control+F');
+  const find = page.locator('.monaco-editor .find-widget textarea').first();
+  await find.fill(text);
+  await find.press('Enter');
+  const count = page.locator('.monaco-editor .find-widget .matchesCount').first();
+  await expect(count).not.toHaveText('', { timeout: 20_000 * SLOW });
+  const found = !/No results/i.test((await count.innerText()).trim());
+  if (found)
+    await expect(page.locator('.monaco-editor .view-lines').last()).toContainText(
+      text.slice(0, 40),
+    );
+  await page.keyboard.press('Escape');
+  return found;
 }
 
 test('a person reviews and approves discovered rules, and the approval rides on a new experiment start', async ({
@@ -124,10 +185,55 @@ test('a person reviews and approves discovered rules, and the approval rides on 
   await stack.shot('evolve-rules-insufficient-evidence');
   await stack.page.keyboard.press('Control+W');
 
+  // 1b. A rule can have a LOW upper bound and still be insufficient evidence. 16 SKUs x 50 days at
+  // the service default p_max (1%): 400 confirmation rows, 0 breaches, bound below 1%, but the test
+  // needs ~670 rows. The document shows the bound and says it does not make the rule supported.
+  const shortId = `${id}-short`;
+  await stack.evolveCall('evolve_prepare_training_source', {
+    source_id: shortId,
+    source_json: JSON.stringify(richSource(7, 50)),
+  });
+  confirmTest = await runReview(stack.page, shortId);
+  const defaultDetail = await confirmTest.innerText();
+  expect(defaultDetail).toContain('p_max the service default, alpha the service default');
+  expect(defaultDetail).toMatch(/one-shot per batch/);
+  await confirmTest.getByRole('button', { name: 'Run confirmation test' }).click();
+  await expect(
+    stack.page
+      .locator('.quick-input-widget')
+      .getByPlaceholder(/Choose the supported rules to approve/),
+  ).toBeVisible({ timeout: 90_000 * SLOW });
+  await stack.page.keyboard.press('Escape'); // approve nothing
+  const shortBatch = (await stack.evolveCall('evolve_rules_propose', {
+    training_source_id: shortId,
+  })) as { batch_id: string };
+  const shortTest = (
+    (await stack.evolveCall('evolve_rules_get', { batch_id: shortBatch.batch_id })) as {
+      test: { policy: { p_max: number }; evidence: BoundEvidence[] };
+    }
+  ).test;
+  const lowInsufficient = shortTest.evidence.find(
+    (e) =>
+      e.decision === 'insufficient_evidence' &&
+      e.breach_rate_upper_bound! < shortTest.policy.p_max &&
+      e.confirmation.breaches === 0,
+  );
+  expect(lowInsufficient, 'a real insufficient rule with a bound below p_max').toBeDefined();
+  expect(await documentContains(stack.page, lowInsufficient!.bound_statement!)).toBe(true);
+  expect(await documentContains(stack.page, 'does not make it supported')).toBe(true);
+  expect(await documentContains(stack.page, 'not an approval signal')).toBe(true);
+  await stack.shot('evolve-rules-low-bound-insufficient');
+  await stack.page.keyboard.press('Control+W');
+
   // 2. Enough data: review, choose, and CANCEL at the final confirmation. Nothing is approved.
-  confirmTest = await runReview(stack.page, richId);
+  confirmTest = await runReview(stack.page, richId, { pMax: '5', alpha: '5' });
   const candidates = await confirmTest.innerText();
   expect(candidates).toContain('is a multiple of 6');
+  // The modal states the chosen policy, the caps and that the test cannot be redone, before running.
+  expect(candidates).toContain('p_max 5% (0.05), alpha 5% (0.05)');
+  expect(candidates).toContain('p_max up to 5%, alpha up to 10%');
+  expect(candidates).toMatch(/one-shot per batch/);
+  expect(candidates).toMatch(/cannot be redone/);
   await stack.shot('evolve-rules-confirm-test');
   await confirmTest.getByRole('button', { name: 'Run confirmation test' }).click();
   await expect(stack.page.locator('.monaco-editor .view-lines').last()).toContainText(
@@ -139,6 +245,8 @@ test('a person reviews and approves discovered rules, and the approval rides on 
   ).replace(/\u00a0/g, ' ');
   expect(reportText).toMatch(/Result: [1-9]\d* supported/);
   expect(reportText).toContain('Holm-corrected');
+  expect(reportText).toContain('binom_holm_ub_v2 (p_max 5%, alpha 5%)');
+  expect(reportText).toContain('Caps for new tests: p_max may be up to 5%, alpha up to 10%');
   await stack.shot('evolve-rules-report');
   const chooser = stack.page.locator('.quick-input-widget');
   await expect(chooser.getByPlaceholder(/Choose the supported rules to approve/)).toBeVisible();
@@ -173,10 +281,35 @@ test('a person reviews and approves discovered rules, and the approval rides on 
   };
   expect(batch.idempotent).toBe(true);
   const stored = (await stack.evolveCall('evolve_rules_get', { batch_id: batch.batch_id })) as {
-    test: { test_sha256: string; evidence: { rule_sha256: string; decision: string }[] };
+    test: {
+      test_sha256: string;
+      policy: Record<string, unknown>;
+      evidence: { rule_sha256: string; decision: string }[];
+    };
   };
   const supported = stored.test.evidence.filter((e) => e.decision === 'supported');
   expect(supported.length).toBeGreaterThan(1);
+  expect(stored.test.policy).toMatchObject({ p_max: 0.05, alpha: 0.05 });
+
+  // The bound text of one supported and one insufficient_evidence rule is in the document the person
+  // just read, word for word as the service wrote it, next to the statement that it is not a signal.
+  const withBound = stored.test.evidence as BoundEvidence[];
+  const aSupported = withBound.find((e) => e.decision === 'supported')!;
+  const anInsufficient = withBound.find((e) => e.decision === 'insufficient_evidence')!;
+  expect(aSupported.bound_statement).toMatch(/held-out rows; with 95% confidence/);
+  expect(anInsufficient.bound_statement).toMatch(/held-out rows; with 95% confidence/);
+  expect(await documentContains(stack.page, aSupported.bound_statement!)).toBe(true);
+  expect(await documentContains(stack.page, anInsufficient.bound_statement!)).toBe(true);
+  expect(
+    await documentContains(stack.page, 'upper bound (informational, not an approval signal)'),
+  ).toBe(true);
+  expect(
+    await documentContains(
+      stack.page,
+      'a rule can have a low bound and still be insufficient evidence',
+    ),
+  ).toBe(true);
+  await stack.shot('evolve-rules-bounds');
   // Proof that cancelling stored nothing: approving that one rule from outside is a FIRST approval.
   const probe = (await stack.evolveCall('evolve_rules_approve', {
     batch_id: batch.batch_id,
@@ -186,9 +319,13 @@ test('a person reviews and approves discovered rules, and the approval rides on 
   })) as { idempotent: boolean };
   expect(probe.idempotent).toBe(false);
 
-  // 3. The real approval: choose the first two supported rules and confirm.
-  confirmTest = await runReview(stack.page, richId);
+  // 3. The real approval: choose the first two supported rules and confirm. The batch was tested once
+  // (at 5%); choosing 1% now cannot redo it, and the person is told that their choice was not applied.
+  confirmTest = await runReview(stack.page, richId, { pMax: '1', alpha: '5' });
   await confirmTest.getByRole('button', { name: 'Run confirmation test' }).click();
+  await expect(notice(stack.page, /already tested[^]*was not applied/)).toBeVisible({
+    timeout: 90_000 * SLOW,
+  });
   await expect(
     stack.page
       .locator('.quick-input-widget')

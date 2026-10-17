@@ -20,6 +20,7 @@ pub mod layout;
 pub mod s3;
 #[cfg(feature = "test-s3-server")]
 pub mod testing;
+mod vfs_credentials;
 
 pub use blob::{BLOB_PREFIX, BlobId, INBOX_PREFIX};
 #[cfg(feature = "duckvfs")]
@@ -30,6 +31,7 @@ pub use gcs::{GcsStore, GcsStoreConfig};
 pub use key::{Key, KeyError};
 #[cfg(feature = "s3")]
 pub use s3::{S3Store, S3StoreConfig};
+pub use vfs_credentials::{CredentialError, SecretString, SharepointCredentials};
 
 use async_trait::async_trait;
 use bytes::Bytes;

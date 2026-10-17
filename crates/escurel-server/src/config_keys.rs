@@ -99,7 +99,7 @@ pub const CONFIG_KEYS: &[ConfigKey] = &[
         name: "ESCUREL_STORAGE_DUCKVFS_ROOT",
         component: "Server",
         default: "—",
-        doc: "root URL, e.g. `gdrive://escurel/lanes` (backend=duckvfs); its scheme picks the filesystem",
+        doc: "root URL, e.g. `gdrive://escurel/lanes` or `sharepoint://escurel/lanes` (backend=duckvfs); its scheme picks the filesystem and the extension that is loaded",
     },
     ConfigKey {
         name: "ESCUREL_STORAGE_DUCKVFS_EXTENSION",
@@ -124,6 +124,48 @@ pub const CONFIG_KEYS: &[ConfigKey] = &[
         component: "Server",
         default: "…/auth/drive",
         doc: "OAuth scope; the default is read/write because the extension's own `drive.readonly` default cannot serve a lane store",
+    },
+    ConfigKey {
+        name: "ESCUREL_STORAGE_DUCKVFS_SHAREPOINT_TENANT_ID",
+        component: "Server",
+        default: "—",
+        doc: "Entra tenant id for a `sharepoint://` root (backend=duckvfs); REQUIRED for that scheme and refused for any other",
+    },
+    ConfigKey {
+        name: "ESCUREL_STORAGE_DUCKVFS_SHAREPOINT_CLIENT_ID",
+        component: "Server",
+        default: "—",
+        doc: "Entra app (client) id for a `sharepoint://` root; REQUIRED for that scheme",
+    },
+    ConfigKey {
+        name: "ESCUREL_STORAGE_DUCKVFS_SHAREPOINT_CLIENT_SECRET",
+        component: "Server",
+        default: "—",
+        doc: "the app's client secret for a `sharepoint://` root; never logged or printed. Prefer `…_CLIENT_SECRET_FILE` so the secret is mounted rather than exported. Exactly one of the two is REQUIRED",
+    },
+    ConfigKey {
+        name: "ESCUREL_STORAGE_DUCKVFS_SHAREPOINT_CLIENT_SECRET_FILE",
+        component: "Server",
+        default: "—",
+        doc: "path to a file holding the client secret (surrounding whitespace trimmed); the alternative to `…_CLIENT_SECRET`, refused when both are set",
+    },
+    ConfigKey {
+        name: "ESCUREL_STORAGE_DUCKVFS_SHAREPOINT_DRIVE_ID",
+        component: "Server",
+        default: "—",
+        doc: "Graph drive id `b!…` of the document library the paths hang off; exactly one of this and `…_SITE_ID` is REQUIRED, else the store would have no library to root the paths in",
+    },
+    ConfigKey {
+        name: "ESCUREL_STORAGE_DUCKVFS_SHAREPOINT_SITE_ID",
+        component: "Server",
+        default: "—",
+        doc: "Graph site id (`host,siteId,webId`), resolved to the site's default library; the alternative to `…_DRIVE_ID`",
+    },
+    ConfigKey {
+        name: "ESCUREL_STORAGE_DUCKVFS_SHAREPOINT_GRAPH_SCOPE",
+        component: "Server",
+        default: "—",
+        doc: "OAuth scope override (`GRAPH_SCOPE`); the extension defaults to `<graph endpoint>/.default`",
     },
     ConfigKey {
         name: "ESCUREL_STORAGE_GCS_BUCKET",

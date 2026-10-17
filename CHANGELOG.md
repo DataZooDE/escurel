@@ -8,7 +8,13 @@ re-cuts append `.N`), matching the DataZoo release scheme (cf. erpl).
 
 ## Unreleased
 
-### Fixed
+- **The `duckvfs` lane store can sit on SharePoint** (skill 0.25.0). A `sharepoint://` root loads the `sharepoint`
+  extension and registers its client-credentials secret from `ESCUREL_STORAGE_DUCKVFS_SHAREPOINT_*`
+  (tenant, client id, client secret or `…_CLIENT_SECRET_FILE`, drive or site id, optional `GRAPH_SCOPE`). The secret
+  never reaches `Debug`, logs or errors; a missing credential or target, or both drive and site id, fails config; the
+  variables are refused on any other root; keys with SharePoint-forbidden characters are refused at write time. Lanes
+  only: a DuckLake `DATA_PATH` on SharePoint, and baking the extension into the image, follow separately. See
+  `docs/deploy/sharepoint-lanes.md`.
 
 - **`publish-image.yml` no longer interpolates the pushed tag name into shell.** The job holds `packages: write` and
   the tag is chosen by whoever pushes it, so a name such as `v1$(cmd)` would have run in the job. The tag now reaches

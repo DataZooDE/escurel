@@ -51,6 +51,7 @@ mod document_ingestion;
 mod draft_lineage;
 mod draft_sessions;
 mod drafts;
+mod duckvfs_sharepoint_config;
 mod egress_dsn;
 mod egress_policy;
 mod empty_event_id;

@@ -54,6 +54,7 @@ async fn the_extension_is_installed_from_the_community_repository() {
         extension_repo: Some("community".to_owned()),
         drive_id: None,
         drive_scope: None,
+        sharepoint: None,
     })
     .expect("open a store that sources its extension from the community repo");
 

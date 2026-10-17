@@ -11,7 +11,22 @@ import {
   startWithApprovedRules,
   testRules,
 } from './rulesClient';
-import { reviewRules, startWithRules, type RulesApi, type RulesUi } from './rulesReview';
+import {
+  confirmTestDetail,
+  reviewRules,
+  startWithRules,
+  type RulesApi,
+  type RulesUi,
+} from './rulesReview';
+import {
+  ALPHA_CAP,
+  P_MAX_CAP,
+  describePolicy,
+  evidenceFacts,
+  parsePolicyInput,
+  percent,
+  type PolicyChoice,
+} from './rulesModel';
 
 const START_FILE_LIMIT = 4_000_000;
 
@@ -82,7 +97,7 @@ export function registerReviewEvolveRules(
         const refresher = services.auth.refresher;
         const api: RulesApi = {
           propose: (sourceId) => proposeRules(endpoint, refresher, sourceId),
-          test: (batchId) => testRules(endpoint, refresher, batchId),
+          test: (batchId, choice) => testRules(endpoint, refresher, batchId, choice),
           get: (batchId) => getRuleBatch(endpoint, refresher, batchId),
           approve: (decision) => approveRules(endpoint, refresher, decision),
         };
@@ -94,23 +109,62 @@ export function registerReviewEvolveRules(
                   prompt: 'Registered Evolve training-source ID to discover rules in',
                   ignoreFocusOut: true,
                 }),
-          confirmTest: async (proposal) =>
-            (await vscode.window.showWarningMessage(
-              `Run the one confirmation test on ${proposal.candidates.length} candidate rule${proposal.candidates.length === 1 ? '' : 's'}?`,
+          askPolicy: async () => {
+            const chosen = await vscode.window.showQuickPick(
+              [
+                {
+                  label: 'Use the service default',
+                  description: 'recommended; the report states the policy that was applied',
+                  custom: false,
+                },
+                {
+                  label: 'Choose p_max and alpha\u2026',
+                  description: `p_max up to ${percent(P_MAX_CAP)}, alpha up to ${percent(ALPHA_CAP)}`,
+                  custom: true,
+                },
+              ],
               {
-                modal: true,
-                detail: [
-                  `Batch ${proposal.batchId}`,
-                  `Found in the first ${proposal.dayCut} of ${proposal.days} training days; they are tested on the rest.`,
-                  '',
-                  ...proposal.candidates.slice(0, 25).map((c) => `- ${c.text}`),
-                  ...(proposal.candidates.length > 25
-                    ? [`… and ${proposal.candidates.length - 25} more`]
-                    : []),
-                  '',
-                  'A batch is tested once: asking again returns the stored report, and every candidate counts toward the multiple-testing correction for this data.',
-                ].join('\n'),
+                placeHolder:
+                  'Test policy. The test runs once per batch: a wrong choice cannot be redone.',
+                ignoreFocusOut: true,
               },
+            );
+            if (!chosen) return undefined;
+            if (!chosen.custom) return {};
+            const ask = async (which: 'p_max' | 'alpha', cap: number) => {
+              const text = await vscode.window.showInputBox({
+                title: `Test policy: ${which}`,
+                prompt:
+                  which === 'p_max'
+                    ? `p_max in percent: the highest breach rate you would tolerate. At most ${percent(cap)}. Empty keeps the service default. Not redoable once the test has run.`
+                    : `alpha in percent: the chance of wrongly supporting a rule you accept. At most ${percent(cap)}. Empty keeps the service default. Not redoable once the test has run.`,
+                placeHolder: 'for example 5',
+                ignoreFocusOut: true,
+                validateInput: (value) => {
+                  if (value.trim() === '') return undefined;
+                  const read = parsePolicyInput(value, which);
+                  return read.ok ? undefined : read.message;
+                },
+              });
+              if (text === undefined) return { cancelled: true as const };
+              if (text.trim() === '') return { cancelled: false as const, value: undefined };
+              const read = parsePolicyInput(text, which);
+              if (!read.ok) return { cancelled: true as const };
+              return { cancelled: false as const, value: read.value };
+            };
+            const pMax = await ask('p_max', P_MAX_CAP);
+            if (pMax.cancelled) return undefined;
+            const alpha = await ask('alpha', ALPHA_CAP);
+            if (alpha.cancelled) return undefined;
+            const choice: PolicyChoice = {};
+            if (pMax.value !== undefined) choice.pMax = pMax.value;
+            if (alpha.value !== undefined) choice.alpha = alpha.value;
+            return choice;
+          },
+          confirmTest: async (proposal, choice) =>
+            (await vscode.window.showWarningMessage(
+              `Run the one confirmation test on ${proposal.candidates.length} candidate rule${proposal.candidates.length === 1 ? '' : 's'}? It cannot be redone.`,
+              { modal: true, detail: confirmTestDetail(proposal, choice) },
               'Run confirmation test',
             )) === 'Run confirmation test',
           showReport: async (markdown) => {
@@ -125,7 +179,7 @@ export function registerReviewEvolveRules(
             const picked = await vscode.window.showQuickPick(
               supported.map((e) => ({
                 label: e.text,
-                description: `${e.confirmation.rows} rows, ${e.confirmation.breaches} breaches, p ${e.pValue}`,
+                description: evidenceFacts(e),
                 detail: `rule ${e.ruleSha256}`,
                 hash: e.ruleSha256,
               })),
@@ -155,7 +209,7 @@ export function registerReviewEvolveRules(
         if (outcome.state !== 'approved') return;
         const { approval } = outcome;
         const action = await vscode.window.showInformationMessage(
-          `Approved ${approval.rules.length} rule${approval.rules.length === 1 ? '' : 's'}. Approved rule set SHA-256: ${approval.ruleSetSha256}. It applies to new replenishment experiments started with this hash.`,
+          `Approved ${approval.rules.length} rule${approval.rules.length === 1 ? '' : 's'}. Approved rule set SHA-256: ${approval.ruleSetSha256}. It applies to new replenishment experiments started with this hash.${approval.policy ? ` Test policy: ${describePolicy(approval.policy)}.` : ''}`,
           'Start new experiment with these rules',
         );
         if (action !== 'Start new experiment with these rules') return;
