@@ -1,0 +1,7 @@
+{
+  "status": 422,
+  "body": {
+    "error": "a state batch is tested by replay and takes no p_max or alpha",
+    "reason": "rules"
+  }
+}

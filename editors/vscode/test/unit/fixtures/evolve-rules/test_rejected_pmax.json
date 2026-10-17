@@ -1,0 +1,7 @@
+{
+  "status": 422,
+  "body": {
+    "error": "p_max must be in (0, 0.05]",
+    "reason": "rules"
+  }
+}
