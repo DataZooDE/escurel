@@ -195,6 +195,7 @@ describe('the parsed evidence is a closed shape (no field the service adds can p
     'ruleSha256',
     'text',
   ];
+  const BINOMIAL_SIMULTANEOUS = [...BINOMIAL, 'simultaneous'];
   const STATE = ['decision', 'reason', 'ruleSha256', 'text'];
   const REPLAY = ['breaches', 'guard', 'program', 'role'];
 
@@ -207,6 +208,7 @@ describe('the parsed evidence is a closed shape (no field the service adds can p
 
   for (const [name, allowed] of [
     ['test_v2_pmax5', BINOMIAL],
+    ['test_v2_simultaneous', BINOMIAL_SIMULTANEOUS],
     ['test_state_p0', STATE],
   ] as const) {
     it(`${name}: every evidence entry has only the whitelisted keys`, () => {

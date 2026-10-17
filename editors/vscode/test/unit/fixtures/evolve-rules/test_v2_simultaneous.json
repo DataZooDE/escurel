@@ -1,0 +1,1272 @@
+{
+  "already_tested": false,
+  "batch_id": "479b47457c62d27741d9ac08ffb09bd28886f6c970ab6d2aa56e3a3260241014",
+  "candidates_before": 0,
+  "claim": "survived a pre-registered confirmation test on this training data with multiplicity control; not a law of the world, and not tested on the sealed holdout",
+  "evidence": [
+    {
+      "bound_statement": "0 breaches in 7 held-out rows; with 95% confidence the breach rate is below 34.816%",
+      "breach_rate_observed": 0,
+      "breach_rate_upper_bound": 0.3481636551311613,
+      "breach_rate_upper_bound_simultaneous": 0.6178394825841824,
+      "confirmation": {
+        "breaches": 0,
+        "rows": 7
+      },
+      "decision": "insufficient_evidence",
+      "discovery": {
+        "breaches": 0,
+        "rows": 9
+      },
+      "p_value": 0.6983372960937498,
+      "rows_required": 132,
+      "rule": {
+        "column": "lead_time",
+        "divisor": 2,
+        "kind": "multiple_of",
+        "table": "sku"
+      },
+      "rule_sha256": "080d326b2f5cb345e476b9491eacced781fcafd235abde4de6b07fae2c514118",
+      "simultaneous_bound_statement": "0 breaches in 7 held-out rows; across all 42 rules tested on this data, with 95% family-wise confidence the breach rate is below 61.784%",
+      "upper_bound_confidence": 0.95,
+      "upper_bound_method": "clopper_pearson_one_sided",
+      "upper_bound_simultaneous_confidence": 0.95,
+      "upper_bound_simultaneous_method": "clopper_pearson_one_sided_bonferroni"
+    },
+    {
+      "bound_statement": "0 breaches in 720 held-out rows; with 95% confidence the breach rate is below 0.415%",
+      "breach_rate_observed": 0,
+      "breach_rate_upper_bound": 0.0041520953856641896,
+      "breach_rate_upper_bound_simultaneous": 0.009308353615384846,
+      "confirmation": {
+        "breaches": 0,
+        "rows": 720
+      },
+      "decision": "supported",
+      "discovery": {
+        "breaches": 0,
+        "rows": 720
+      },
+      "p_value": 9.141044180302734e-17,
+      "rows_required": 132,
+      "rule": {
+        "column": "qty",
+        "kind": "not_null",
+        "table": "demand"
+      },
+      "rule_sha256": "0a65e9994a410ef4fc10d7d77483156b19300cd18346f54985ab0bdd3a670a72",
+      "simultaneous_bound_statement": "0 breaches in 720 held-out rows; across all 42 rules tested on this data, with 95% family-wise confidence the breach rate is below 0.931%",
+      "upper_bound_confidence": 0.95,
+      "upper_bound_method": "clopper_pearson_one_sided",
+      "upper_bound_simultaneous_confidence": 0.95,
+      "upper_bound_simultaneous_method": "clopper_pearson_one_sided_bonferroni"
+    },
+    {
+      "bound_statement": "0 breaches in 7 held-out rows; with 95% confidence the breach rate is below 34.816%",
+      "breach_rate_observed": 0,
+      "breach_rate_upper_bound": 0.3481636551311613,
+      "breach_rate_upper_bound_simultaneous": 0.6178394825841824,
+      "confirmation": {
+        "breaches": 0,
+        "rows": 7
+      },
+      "decision": "insufficient_evidence",
+      "discovery": {
+        "breaches": 0,
+        "rows": 9
+      },
+      "p_value": 0.6983372960937498,
+      "rows_required": 132,
+      "rule": {
+        "column": "min_order",
+        "kind": "in_set",
+        "table": "sku",
+        "values": [
+          0
+        ]
+      },
+      "rule_sha256": "178a33f6b069baf77512f649dc8fe64bb363f3e8b4832066ae39ad6199b3a5f1",
+      "simultaneous_bound_statement": "0 breaches in 7 held-out rows; across all 42 rules tested on this data, with 95% family-wise confidence the breach rate is below 61.784%",
+      "upper_bound_confidence": 0.95,
+      "upper_bound_method": "clopper_pearson_one_sided",
+      "upper_bound_simultaneous_confidence": 0.95,
+      "upper_bound_simultaneous_method": "clopper_pearson_one_sided_bonferroni"
+    },
+    {
+      "bound_statement": "0 breaches in 7 held-out rows; with 95% confidence the breach rate is below 34.816%",
+      "breach_rate_observed": 0,
+      "breach_rate_upper_bound": 0.3481636551311613,
+      "breach_rate_upper_bound_simultaneous": 0.6178394825841824,
+      "confirmation": {
+        "breaches": 0,
+        "rows": 7
+      },
+      "decision": "insufficient_evidence",
+      "discovery": {
+        "breaches": 0,
+        "rows": 9
+      },
+      "p_value": 0.6983372960937498,
+      "rows_required": 132,
+      "rule": {
+        "column": "lead_time",
+        "kind": "not_null",
+        "table": "sku"
+      },
+      "rule_sha256": "1c71d80d83378fa1f4371dc1b029d97656c7cfb3f266b31dd6714cb427ebad81",
+      "simultaneous_bound_statement": "0 breaches in 7 held-out rows; across all 42 rules tested on this data, with 95% family-wise confidence the breach rate is below 61.784%",
+      "upper_bound_confidence": 0.95,
+      "upper_bound_method": "clopper_pearson_one_sided",
+      "upper_bound_simultaneous_confidence": 0.95,
+      "upper_bound_simultaneous_method": "clopper_pearson_one_sided_bonferroni"
+    },
+    {
+      "bound_statement": "0 breaches in 720 held-out rows; with 95% confidence the breach rate is below 0.415%",
+      "breach_rate_observed": 0,
+      "breach_rate_upper_bound": 0.0041520953856641896,
+      "breach_rate_upper_bound_simultaneous": 0.009308353615384846,
+      "confirmation": {
+        "breaches": 0,
+        "rows": 720
+      },
+      "decision": "supported",
+      "discovery": {
+        "breaches": 0,
+        "rows": 720
+      },
+      "p_value": 9.141044180302734e-17,
+      "rows_required": 132,
+      "rule": {
+        "column": "qty",
+        "kind": "in_set",
+        "table": "demand",
+        "values": [
+          0,
+          6,
+          12,
+          18,
+          24,
+          30,
+          36
+        ]
+      },
+      "rule_sha256": "1d7294dc72a652a7462c8f12b340d782917e2e3da4d7b00568a4f5f7707e4c5b",
+      "simultaneous_bound_statement": "0 breaches in 720 held-out rows; across all 42 rules tested on this data, with 95% family-wise confidence the breach rate is below 0.931%",
+      "upper_bound_confidence": 0.95,
+      "upper_bound_method": "clopper_pearson_one_sided",
+      "upper_bound_simultaneous_confidence": 0.95,
+      "upper_bound_simultaneous_method": "clopper_pearson_one_sided_bonferroni"
+    },
+    {
+      "bound_statement": "0 breaches in 7 held-out rows; with 95% confidence the breach rate is below 34.816%",
+      "breach_rate_observed": 0,
+      "breach_rate_upper_bound": 0.3481636551311613,
+      "breach_rate_upper_bound_simultaneous": 0.6178394825841824,
+      "confirmation": {
+        "breaches": 0,
+        "rows": 7
+      },
+      "decision": "insufficient_evidence",
+      "discovery": {
+        "breaches": 0,
+        "rows": 9
+      },
+      "p_value": 0.6983372960937498,
+      "rows_required": 132,
+      "rule": {
+        "column": "lead_time",
+        "kind": "in_set",
+        "table": "sku",
+        "values": [
+          2
+        ]
+      },
+      "rule_sha256": "236d2b545a971c9f3545c67154abe5e50a03f3aed93e591e7dc3a7003c04369a",
+      "simultaneous_bound_statement": "0 breaches in 7 held-out rows; across all 42 rules tested on this data, with 95% family-wise confidence the breach rate is below 61.784%",
+      "upper_bound_confidence": 0.95,
+      "upper_bound_method": "clopper_pearson_one_sided",
+      "upper_bound_simultaneous_confidence": 0.95,
+      "upper_bound_simultaneous_method": "clopper_pearson_one_sided_bonferroni"
+    },
+    {
+      "bound_statement": "0 breaches in 7 held-out rows; with 95% confidence the breach rate is below 34.816%",
+      "breach_rate_observed": 0,
+      "breach_rate_upper_bound": 0.3481636551311613,
+      "breach_rate_upper_bound_simultaneous": 0.6178394825841824,
+      "confirmation": {
+        "breaches": 0,
+        "rows": 7
+      },
+      "decision": "insufficient_evidence",
+      "discovery": {
+        "breaches": 0,
+        "rows": 9
+      },
+      "p_value": 0.6983372960937498,
+      "rows_required": 132,
+      "rule": {
+        "column": "holding_cost",
+        "kind": "not_null",
+        "table": "sku"
+      },
+      "rule_sha256": "34444f528d751169eaffd8e5848fef18044f0a48b277e9726509656a4a98db21",
+      "simultaneous_bound_statement": "0 breaches in 7 held-out rows; across all 42 rules tested on this data, with 95% family-wise confidence the breach rate is below 61.784%",
+      "upper_bound_confidence": 0.95,
+      "upper_bound_method": "clopper_pearson_one_sided",
+      "upper_bound_simultaneous_confidence": 0.95,
+      "upper_bound_simultaneous_method": "clopper_pearson_one_sided_bonferroni"
+    },
+    {
+      "bound_statement": "0 breaches in 2928 held-out rows; with 95% confidence the breach rate is below 0.102%",
+      "breach_rate_observed": 0,
+      "breach_rate_upper_bound": 0.0010226093853793472,
+      "breach_rate_upper_bound_simultaneous": 0.0022970169258069717,
+      "confirmation": {
+        "breaches": 0,
+        "rows": 2928
+      },
+      "decision": "supported",
+      "discovery": {
+        "breaches": 0,
+        "rows": 2912
+      },
+      "p_value": 5.95273138698215e-66,
+      "rows_required": 132,
+      "rule": {
+        "column": "qty",
+        "kind": "not_null",
+        "table": "history"
+      },
+      "rule_sha256": "44e23f5db044e82c6934586cd02b68b5b825927099c61c11f0a952c7660e9be0",
+      "simultaneous_bound_statement": "0 breaches in 2928 held-out rows; across all 42 rules tested on this data, with 95% family-wise confidence the breach rate is below 0.230%",
+      "upper_bound_confidence": 0.95,
+      "upper_bound_method": "clopper_pearson_one_sided",
+      "upper_bound_simultaneous_confidence": 0.95,
+      "upper_bound_simultaneous_method": "clopper_pearson_one_sided_bonferroni"
+    },
+    {
+      "bound_statement": "0 breaches in 7 held-out rows; with 95% confidence the breach rate is below 34.816%",
+      "breach_rate_observed": 0,
+      "breach_rate_upper_bound": 0.3481636551311613,
+      "breach_rate_upper_bound_simultaneous": 0.6178394825841824,
+      "confirmation": {
+        "breaches": 0,
+        "rows": 7
+      },
+      "decision": "insufficient_evidence",
+      "discovery": {
+        "breaches": 0,
+        "rows": 9
+      },
+      "p_value": 0.6983372960937498,
+      "rows_required": 132,
+      "rule": {
+        "column": "case_pack",
+        "divisor": 6,
+        "kind": "multiple_of",
+        "table": "sku"
+      },
+      "rule_sha256": "45665548007e6ff84f0be91ccc57cceebddcc1889ab12bfcff7493496f8ca099",
+      "simultaneous_bound_statement": "0 breaches in 7 held-out rows; across all 42 rules tested on this data, with 95% family-wise confidence the breach rate is below 61.784%",
+      "upper_bound_confidence": 0.95,
+      "upper_bound_method": "clopper_pearson_one_sided",
+      "upper_bound_simultaneous_confidence": 0.95,
+      "upper_bound_simultaneous_method": "clopper_pearson_one_sided_bonferroni"
+    },
+    {
+      "bound_statement": "0 breaches in 720 held-out rows; with 95% confidence the breach rate is below 0.415%",
+      "breach_rate_observed": 0,
+      "breach_rate_upper_bound": 0.0041520953856641896,
+      "breach_rate_upper_bound_simultaneous": 0.009308353615384846,
+      "confirmation": {
+        "breaches": 0,
+        "rows": 720
+      },
+      "decision": "supported",
+      "discovery": {
+        "breaches": 0,
+        "rows": 720
+      },
+      "p_value": 9.141044180302734e-17,
+      "rows_required": 132,
+      "rule": {
+        "column": "qty",
+        "kind": "range",
+        "max": 36,
+        "min": 0,
+        "table": "demand"
+      },
+      "rule_sha256": "4d90292addd8270c8e9ebd13ae11b2279ac56982a85710677164287f3a784c9c",
+      "simultaneous_bound_statement": "0 breaches in 720 held-out rows; across all 42 rules tested on this data, with 95% family-wise confidence the breach rate is below 0.931%",
+      "upper_bound_confidence": 0.95,
+      "upper_bound_method": "clopper_pearson_one_sided",
+      "upper_bound_simultaneous_confidence": 0.95,
+      "upper_bound_simultaneous_method": "clopper_pearson_one_sided_bonferroni"
+    },
+    {
+      "bound_statement": "0 breaches in 7 held-out rows; with 95% confidence the breach rate is below 34.816%",
+      "breach_rate_observed": 0,
+      "breach_rate_upper_bound": 0.3481636551311613,
+      "breach_rate_upper_bound_simultaneous": 0.6178394825841824,
+      "confirmation": {
+        "breaches": 0,
+        "rows": 7
+      },
+      "decision": "insufficient_evidence",
+      "discovery": {
+        "breaches": 0,
+        "rows": 9
+      },
+      "p_value": 0.6983372960937498,
+      "rows_required": 132,
+      "rule": {
+        "columns": [
+          "sku_id"
+        ],
+        "kind": "unique",
+        "table": "sku"
+      },
+      "rule_sha256": "512384f66384855bf6c49d211f0fcb4847736a84a79e083192849a17b23dc8b8",
+      "simultaneous_bound_statement": "0 breaches in 7 held-out rows; across all 42 rules tested on this data, with 95% family-wise confidence the breach rate is below 61.784%",
+      "upper_bound_confidence": 0.95,
+      "upper_bound_method": "clopper_pearson_one_sided",
+      "upper_bound_simultaneous_confidence": 0.95,
+      "upper_bound_simultaneous_method": "clopper_pearson_one_sided_bonferroni"
+    },
+    {
+      "bound_statement": "0 breaches in 2928 held-out rows; with 95% confidence the breach rate is below 0.102%",
+      "breach_rate_observed": 0,
+      "breach_rate_upper_bound": 0.0010226093853793472,
+      "breach_rate_upper_bound_simultaneous": 0.0022970169258069717,
+      "confirmation": {
+        "breaches": 0,
+        "rows": 2928
+      },
+      "decision": "supported",
+      "discovery": {
+        "breaches": 0,
+        "rows": 2912
+      },
+      "p_value": 5.95273138698215e-66,
+      "rows_required": 132,
+      "rule": {
+        "column": "qty",
+        "kind": "in_set",
+        "table": "history",
+        "values": [
+          0,
+          6,
+          12,
+          18,
+          24,
+          30,
+          36
+        ]
+      },
+      "rule_sha256": "56861be034d8b39c5bb229ac291b4073e497977d3ea28750cc1ce9df6c769e1a",
+      "simultaneous_bound_statement": "0 breaches in 2928 held-out rows; across all 42 rules tested on this data, with 95% family-wise confidence the breach rate is below 0.230%",
+      "upper_bound_confidence": 0.95,
+      "upper_bound_method": "clopper_pearson_one_sided",
+      "upper_bound_simultaneous_confidence": 0.95,
+      "upper_bound_simultaneous_method": "clopper_pearson_one_sided_bonferroni"
+    },
+    {
+      "bound_statement": "0 breaches in 7 held-out rows; with 95% confidence the breach rate is below 34.816%",
+      "breach_rate_observed": 0,
+      "breach_rate_upper_bound": 0.3481636551311613,
+      "breach_rate_upper_bound_simultaneous": 0.6178394825841824,
+      "confirmation": {
+        "breaches": 0,
+        "rows": 7
+      },
+      "decision": "insufficient_evidence",
+      "discovery": {
+        "breaches": 0,
+        "rows": 9
+      },
+      "p_value": 0.6983372960937498,
+      "rows_required": 132,
+      "rule": {
+        "column": "case_pack",
+        "kind": "range",
+        "max": 6,
+        "min": 6,
+        "table": "sku"
+      },
+      "rule_sha256": "6964b00ea05a5833eeb00b1685e15af2304ccb69db71f4aaeb6afe298c3050c7",
+      "simultaneous_bound_statement": "0 breaches in 7 held-out rows; across all 42 rules tested on this data, with 95% family-wise confidence the breach rate is below 61.784%",
+      "upper_bound_confidence": 0.95,
+      "upper_bound_method": "clopper_pearson_one_sided",
+      "upper_bound_simultaneous_confidence": 0.95,
+      "upper_bound_simultaneous_method": "clopper_pearson_one_sided_bonferroni"
+    },
+    {
+      "bound_statement": "0 breaches in 7 held-out rows; with 95% confidence the breach rate is below 34.816%",
+      "breach_rate_observed": 0,
+      "breach_rate_upper_bound": 0.3481636551311613,
+      "breach_rate_upper_bound_simultaneous": 0.6178394825841824,
+      "confirmation": {
+        "breaches": 0,
+        "rows": 7
+      },
+      "decision": "insufficient_evidence",
+      "discovery": {
+        "breaches": 0,
+        "rows": 9
+      },
+      "p_value": 0.6983372960937498,
+      "rows_required": 132,
+      "rule": {
+        "column": "initial_stock",
+        "divisor": 10,
+        "kind": "multiple_of",
+        "table": "sku"
+      },
+      "rule_sha256": "6c72e2399706e263aeda905aacdfdc07ece18a0e885b80fb67f38bdf546630df",
+      "simultaneous_bound_statement": "0 breaches in 7 held-out rows; across all 42 rules tested on this data, with 95% family-wise confidence the breach rate is below 61.784%",
+      "upper_bound_confidence": 0.95,
+      "upper_bound_method": "clopper_pearson_one_sided",
+      "upper_bound_simultaneous_confidence": 0.95,
+      "upper_bound_simultaneous_method": "clopper_pearson_one_sided_bonferroni"
+    },
+    {
+      "bound_statement": "0 breaches in 720 held-out rows; with 95% confidence the breach rate is below 0.415%",
+      "breach_rate_observed": 0,
+      "breach_rate_upper_bound": 0.0041520953856641896,
+      "breach_rate_upper_bound_simultaneous": 0.009308353615384846,
+      "confirmation": {
+        "breaches": 0,
+        "rows": 720
+      },
+      "decision": "supported",
+      "discovery": {
+        "breaches": 0,
+        "rows": 720
+      },
+      "p_value": 9.141044180302734e-17,
+      "rows_required": 132,
+      "rule": {
+        "column": "qty",
+        "divisor": 6,
+        "kind": "multiple_of",
+        "table": "demand"
+      },
+      "rule_sha256": "6d042074892306d823798a832500f1f933ca136315b21369da3fa7ba580784fc",
+      "simultaneous_bound_statement": "0 breaches in 720 held-out rows; across all 42 rules tested on this data, with 95% family-wise confidence the breach rate is below 0.931%",
+      "upper_bound_confidence": 0.95,
+      "upper_bound_method": "clopper_pearson_one_sided",
+      "upper_bound_simultaneous_confidence": 0.95,
+      "upper_bound_simultaneous_method": "clopper_pearson_one_sided_bonferroni"
+    },
+    {
+      "bound_statement": "0 breaches in 720 held-out rows; with 95% confidence the breach rate is below 0.415%",
+      "breach_rate_observed": 0,
+      "breach_rate_upper_bound": 0.0041520953856641896,
+      "breach_rate_upper_bound_simultaneous": 0.009308353615384846,
+      "confirmation": {
+        "breaches": 0,
+        "rows": 720
+      },
+      "decision": "supported",
+      "discovery": {
+        "breaches": 0,
+        "rows": 720
+      },
+      "p_value": 9.141044180302734e-17,
+      "rows_required": 132,
+      "rule": {
+        "column": "day_idx",
+        "kind": "not_null",
+        "table": "demand"
+      },
+      "rule_sha256": "707fb848abcda14c430ea2aede0ab486d43b94365fff5be17b66f089db2754cf",
+      "simultaneous_bound_statement": "0 breaches in 720 held-out rows; across all 42 rules tested on this data, with 95% family-wise confidence the breach rate is below 0.931%",
+      "upper_bound_confidence": 0.95,
+      "upper_bound_method": "clopper_pearson_one_sided",
+      "upper_bound_simultaneous_confidence": 0.95,
+      "upper_bound_simultaneous_method": "clopper_pearson_one_sided_bonferroni"
+    },
+    {
+      "bound_statement": "0 breaches in 7 held-out rows; with 95% confidence the breach rate is below 34.816%",
+      "breach_rate_observed": 0,
+      "breach_rate_upper_bound": 0.3481636551311613,
+      "breach_rate_upper_bound_simultaneous": 0.6178394825841824,
+      "confirmation": {
+        "breaches": 0,
+        "rows": 7
+      },
+      "decision": "insufficient_evidence",
+      "discovery": {
+        "breaches": 0,
+        "rows": 9
+      },
+      "p_value": 0.6983372960937498,
+      "rows_required": 132,
+      "rule": {
+        "column": "initial_stock",
+        "kind": "not_null",
+        "table": "sku"
+      },
+      "rule_sha256": "773d1f7ce77ab018e337dfbe54e9cf53e2051c8437b443cba007e1d88b41c530",
+      "simultaneous_bound_statement": "0 breaches in 7 held-out rows; across all 42 rules tested on this data, with 95% family-wise confidence the breach rate is below 61.784%",
+      "upper_bound_confidence": 0.95,
+      "upper_bound_method": "clopper_pearson_one_sided",
+      "upper_bound_simultaneous_confidence": 0.95,
+      "upper_bound_simultaneous_method": "clopper_pearson_one_sided_bonferroni"
+    },
+    {
+      "bound_statement": "0 breaches in 720 held-out rows; with 95% confidence the breach rate is below 0.415%",
+      "breach_rate_observed": 0,
+      "breach_rate_upper_bound": 0.0041520953856641896,
+      "breach_rate_upper_bound_simultaneous": 0.009308353615384846,
+      "confirmation": {
+        "breaches": 0,
+        "rows": 720
+      },
+      "decision": "supported",
+      "discovery": {
+        "breaches": 0,
+        "rows": 720
+      },
+      "p_value": 9.141044180302734e-17,
+      "rows_required": 132,
+      "rule": {
+        "column": "sku_id",
+        "kind": "not_null",
+        "table": "demand"
+      },
+      "rule_sha256": "864196cce787e0aeda686415522b1943a0a719d1b0a25d6504659952c700bb45",
+      "simultaneous_bound_statement": "0 breaches in 720 held-out rows; across all 42 rules tested on this data, with 95% family-wise confidence the breach rate is below 0.931%",
+      "upper_bound_confidence": 0.95,
+      "upper_bound_method": "clopper_pearson_one_sided",
+      "upper_bound_simultaneous_confidence": 0.95,
+      "upper_bound_simultaneous_method": "clopper_pearson_one_sided_bonferroni"
+    },
+    {
+      "bound_statement": "0 breaches in 2928 held-out rows; with 95% confidence the breach rate is below 0.102%",
+      "breach_rate_observed": 0,
+      "breach_rate_upper_bound": 0.0010226093853793472,
+      "breach_rate_upper_bound_simultaneous": 0.0022970169258069717,
+      "confirmation": {
+        "breaches": 0,
+        "rows": 2928
+      },
+      "decision": "supported",
+      "discovery": {
+        "breaches": 0,
+        "rows": 2912
+      },
+      "p_value": 5.95273138698215e-66,
+      "rows_required": 132,
+      "rule": {
+        "column": "sku_id",
+        "kind": "not_null",
+        "table": "history"
+      },
+      "rule_sha256": "8840e9488cbd9f58f58e7ef4959b1d8ea8180b32ce415c046256121984a017d1",
+      "simultaneous_bound_statement": "0 breaches in 2928 held-out rows; across all 42 rules tested on this data, with 95% family-wise confidence the breach rate is below 0.230%",
+      "upper_bound_confidence": 0.95,
+      "upper_bound_method": "clopper_pearson_one_sided",
+      "upper_bound_simultaneous_confidence": 0.95,
+      "upper_bound_simultaneous_method": "clopper_pearson_one_sided_bonferroni"
+    },
+    {
+      "bound_statement": "0 breaches in 7 held-out rows; with 95% confidence the breach rate is below 34.816%",
+      "breach_rate_observed": 0,
+      "breach_rate_upper_bound": 0.3481636551311613,
+      "breach_rate_upper_bound_simultaneous": 0.6178394825841824,
+      "confirmation": {
+        "breaches": 0,
+        "rows": 7
+      },
+      "decision": "insufficient_evidence",
+      "discovery": {
+        "breaches": 0,
+        "rows": 9
+      },
+      "p_value": 0.6983372960937498,
+      "rows_required": 132,
+      "rule": {
+        "column": "case_pack",
+        "kind": "not_null",
+        "table": "sku"
+      },
+      "rule_sha256": "8ac21e26434ef36a5c57464c8cfcaee35c9cfb9e70c93211785bb75ac86d89b4",
+      "simultaneous_bound_statement": "0 breaches in 7 held-out rows; across all 42 rules tested on this data, with 95% family-wise confidence the breach rate is below 61.784%",
+      "upper_bound_confidence": 0.95,
+      "upper_bound_method": "clopper_pearson_one_sided",
+      "upper_bound_simultaneous_confidence": 0.95,
+      "upper_bound_simultaneous_method": "clopper_pearson_one_sided_bonferroni"
+    },
+    {
+      "bound_statement": "0 breaches in 7 held-out rows; with 95% confidence the breach rate is below 34.816%",
+      "breach_rate_observed": 0,
+      "breach_rate_upper_bound": 0.3481636551311613,
+      "breach_rate_upper_bound_simultaneous": 0.6178394825841824,
+      "confirmation": {
+        "breaches": 0,
+        "rows": 7
+      },
+      "decision": "insufficient_evidence",
+      "discovery": {
+        "breaches": 0,
+        "rows": 9
+      },
+      "p_value": 0.6983372960937498,
+      "rows_required": 132,
+      "rule": {
+        "column": "initial_stock",
+        "kind": "in_set",
+        "table": "sku",
+        "values": [
+          10
+        ]
+      },
+      "rule_sha256": "8b4cc42c6f97de10188cf07bc12047c87341496d2210e93f40f9f47187526471",
+      "simultaneous_bound_statement": "0 breaches in 7 held-out rows; across all 42 rules tested on this data, with 95% family-wise confidence the breach rate is below 61.784%",
+      "upper_bound_confidence": 0.95,
+      "upper_bound_method": "clopper_pearson_one_sided",
+      "upper_bound_simultaneous_confidence": 0.95,
+      "upper_bound_simultaneous_method": "clopper_pearson_one_sided_bonferroni"
+    },
+    {
+      "bound_statement": "0 breaches in 7 held-out rows; with 95% confidence the breach rate is below 34.816%",
+      "breach_rate_observed": 0,
+      "breach_rate_upper_bound": 0.3481636551311613,
+      "breach_rate_upper_bound_simultaneous": 0.6178394825841824,
+      "confirmation": {
+        "breaches": 0,
+        "rows": 7
+      },
+      "decision": "insufficient_evidence",
+      "discovery": {
+        "breaches": 0,
+        "rows": 9
+      },
+      "p_value": 0.6983372960937498,
+      "rows_required": 132,
+      "rule": {
+        "column": "fixed_order_cost",
+        "kind": "range",
+        "max": 2,
+        "min": 2,
+        "table": "sku"
+      },
+      "rule_sha256": "92c47b6eec04686cf4b0ee2ebaafa26bbc408efc681d988e6efbe6759012b1cb",
+      "simultaneous_bound_statement": "0 breaches in 7 held-out rows; across all 42 rules tested on this data, with 95% family-wise confidence the breach rate is below 61.784%",
+      "upper_bound_confidence": 0.95,
+      "upper_bound_method": "clopper_pearson_one_sided",
+      "upper_bound_simultaneous_confidence": 0.95,
+      "upper_bound_simultaneous_method": "clopper_pearson_one_sided_bonferroni"
+    },
+    {
+      "bound_statement": "0 breaches in 7 held-out rows; with 95% confidence the breach rate is below 34.816%",
+      "breach_rate_observed": 0,
+      "breach_rate_upper_bound": 0.3481636551311613,
+      "breach_rate_upper_bound_simultaneous": 0.6178394825841824,
+      "confirmation": {
+        "breaches": 0,
+        "rows": 7
+      },
+      "decision": "insufficient_evidence",
+      "discovery": {
+        "breaches": 0,
+        "rows": 9
+      },
+      "p_value": 0.6983372960937498,
+      "rows_required": 132,
+      "rule": {
+        "column": "sku_id",
+        "kind": "not_null",
+        "table": "sku"
+      },
+      "rule_sha256": "950d4324e6a294b997808b93e8a1117bf36d62939ebcfb9be82b4d52150ad618",
+      "simultaneous_bound_statement": "0 breaches in 7 held-out rows; across all 42 rules tested on this data, with 95% family-wise confidence the breach rate is below 61.784%",
+      "upper_bound_confidence": 0.95,
+      "upper_bound_method": "clopper_pearson_one_sided",
+      "upper_bound_simultaneous_confidence": 0.95,
+      "upper_bound_simultaneous_method": "clopper_pearson_one_sided_bonferroni"
+    },
+    {
+      "bound_statement": "0 breaches in 7 held-out rows; with 95% confidence the breach rate is below 34.816%",
+      "breach_rate_observed": 0,
+      "breach_rate_upper_bound": 0.3481636551311613,
+      "breach_rate_upper_bound_simultaneous": 0.6178394825841824,
+      "confirmation": {
+        "breaches": 0,
+        "rows": 7
+      },
+      "decision": "insufficient_evidence",
+      "discovery": {
+        "breaches": 0,
+        "rows": 9
+      },
+      "p_value": 0.6983372960937498,
+      "rows_required": 132,
+      "rule": {
+        "column": "shortage_cost",
+        "kind": "not_null",
+        "table": "sku"
+      },
+      "rule_sha256": "9555778df61129acbea8e0788a119f3a72f50fae8cc518ce4cff1b24248e5e61",
+      "simultaneous_bound_statement": "0 breaches in 7 held-out rows; across all 42 rules tested on this data, with 95% family-wise confidence the breach rate is below 61.784%",
+      "upper_bound_confidence": 0.95,
+      "upper_bound_method": "clopper_pearson_one_sided",
+      "upper_bound_simultaneous_confidence": 0.95,
+      "upper_bound_simultaneous_method": "clopper_pearson_one_sided_bonferroni"
+    },
+    {
+      "bound_statement": "0 breaches in 7 held-out rows; with 95% confidence the breach rate is below 34.816%",
+      "breach_rate_observed": 0,
+      "breach_rate_upper_bound": 0.3481636551311613,
+      "breach_rate_upper_bound_simultaneous": 0.6178394825841824,
+      "confirmation": {
+        "breaches": 0,
+        "rows": 7
+      },
+      "decision": "insufficient_evidence",
+      "discovery": {
+        "breaches": 0,
+        "rows": 9
+      },
+      "p_value": 0.6983372960937498,
+      "rows_required": 132,
+      "rule": {
+        "column": "shortage_cost",
+        "kind": "range",
+        "max": 5,
+        "min": 5,
+        "table": "sku"
+      },
+      "rule_sha256": "acb1c49dd1ab828521388f306896fbcd50f66cb48bf54e51a30b0ec8ef7dda16",
+      "simultaneous_bound_statement": "0 breaches in 7 held-out rows; across all 42 rules tested on this data, with 95% family-wise confidence the breach rate is below 61.784%",
+      "upper_bound_confidence": 0.95,
+      "upper_bound_method": "clopper_pearson_one_sided",
+      "upper_bound_simultaneous_confidence": 0.95,
+      "upper_bound_simultaneous_method": "clopper_pearson_one_sided_bonferroni"
+    },
+    {
+      "bound_statement": "0 breaches in 7 held-out rows; with 95% confidence the breach rate is below 34.816%",
+      "breach_rate_observed": 0,
+      "breach_rate_upper_bound": 0.3481636551311613,
+      "breach_rate_upper_bound_simultaneous": 0.6178394825841824,
+      "confirmation": {
+        "breaches": 0,
+        "rows": 7
+      },
+      "decision": "insufficient_evidence",
+      "discovery": {
+        "breaches": 0,
+        "rows": 9
+      },
+      "p_value": 0.6983372960937498,
+      "rows_required": 132,
+      "rule": {
+        "columns": [
+          "name"
+        ],
+        "kind": "unique",
+        "table": "sku"
+      },
+      "rule_sha256": "b190b9bdc7b88f29f0854af69cc891257b438a9b61c6c1baa3f3c000df345293",
+      "simultaneous_bound_statement": "0 breaches in 7 held-out rows; across all 42 rules tested on this data, with 95% family-wise confidence the breach rate is below 61.784%",
+      "upper_bound_confidence": 0.95,
+      "upper_bound_method": "clopper_pearson_one_sided",
+      "upper_bound_simultaneous_confidence": 0.95,
+      "upper_bound_simultaneous_method": "clopper_pearson_one_sided_bonferroni"
+    },
+    {
+      "bound_statement": "0 breaches in 7 held-out rows; with 95% confidence the breach rate is below 34.816%",
+      "breach_rate_observed": 0,
+      "breach_rate_upper_bound": 0.3481636551311613,
+      "breach_rate_upper_bound_simultaneous": 0.6178394825841824,
+      "confirmation": {
+        "breaches": 0,
+        "rows": 7
+      },
+      "decision": "insufficient_evidence",
+      "discovery": {
+        "breaches": 0,
+        "rows": 9
+      },
+      "p_value": 0.6983372960937498,
+      "rows_required": 132,
+      "rule": {
+        "column": "name",
+        "kind": "not_null",
+        "table": "sku"
+      },
+      "rule_sha256": "b60ff2b72d36c1c8d7d5faeb91c47cf51fa8c7083eb3c34bb9094adc839dadf3",
+      "simultaneous_bound_statement": "0 breaches in 7 held-out rows; across all 42 rules tested on this data, with 95% family-wise confidence the breach rate is below 61.784%",
+      "upper_bound_confidence": 0.95,
+      "upper_bound_method": "clopper_pearson_one_sided",
+      "upper_bound_simultaneous_confidence": 0.95,
+      "upper_bound_simultaneous_method": "clopper_pearson_one_sided_bonferroni"
+    },
+    {
+      "bound_statement": "0 breaches in 720 held-out rows; with 95% confidence the breach rate is below 0.415%",
+      "breach_rate_observed": 0,
+      "breach_rate_upper_bound": 0.0041520953856641896,
+      "breach_rate_upper_bound_simultaneous": 0.009308353615384846,
+      "confirmation": {
+        "breaches": 0,
+        "rows": 720
+      },
+      "decision": "supported",
+      "discovery": {
+        "breaches": 0,
+        "rows": 720
+      },
+      "p_value": 9.141044180302734e-17,
+      "rows_required": 132,
+      "rule": {
+        "column": "sku_id",
+        "kind": "range",
+        "max": 16,
+        "min": 1,
+        "table": "demand"
+      },
+      "rule_sha256": "b79ae747ca7aa1fca0eef09d8074d2348fa3d4baaf1ba47ea5855ef8b9f024d6",
+      "simultaneous_bound_statement": "0 breaches in 720 held-out rows; across all 42 rules tested on this data, with 95% family-wise confidence the breach rate is below 0.931%",
+      "upper_bound_confidence": 0.95,
+      "upper_bound_method": "clopper_pearson_one_sided",
+      "upper_bound_simultaneous_confidence": 0.95,
+      "upper_bound_simultaneous_method": "clopper_pearson_one_sided_bonferroni"
+    },
+    {
+      "bound_statement": "0 breaches in 7 held-out rows; with 95% confidence the breach rate is below 34.816%",
+      "breach_rate_observed": 0,
+      "breach_rate_upper_bound": 0.3481636551311613,
+      "breach_rate_upper_bound_simultaneous": 0.6178394825841824,
+      "confirmation": {
+        "breaches": 0,
+        "rows": 7
+      },
+      "decision": "insufficient_evidence",
+      "discovery": {
+        "breaches": 0,
+        "rows": 9
+      },
+      "p_value": 0.6983372960937498,
+      "rows_required": 132,
+      "rule": {
+        "column": "case_pack",
+        "kind": "in_set",
+        "table": "sku",
+        "values": [
+          6
+        ]
+      },
+      "rule_sha256": "b81e25f214e005bba28a36614b72977112e3cd8c2432edc01a41b7b2967a896f",
+      "simultaneous_bound_statement": "0 breaches in 7 held-out rows; across all 42 rules tested on this data, with 95% family-wise confidence the breach rate is below 61.784%",
+      "upper_bound_confidence": 0.95,
+      "upper_bound_method": "clopper_pearson_one_sided",
+      "upper_bound_simultaneous_confidence": 0.95,
+      "upper_bound_simultaneous_method": "clopper_pearson_one_sided_bonferroni"
+    },
+    {
+      "bound_statement": "720 breaches in 720 held-out rows; with 95% confidence the breach rate is below 100.000%",
+      "breach_rate_observed": 1,
+      "breach_rate_upper_bound": 1,
+      "breach_rate_upper_bound_simultaneous": 1,
+      "confirmation": {
+        "breaches": 720,
+        "rows": 720
+      },
+      "decision": "rejected",
+      "discovery": {
+        "breaches": 0,
+        "rows": 720
+      },
+      "p_value": 0.9999999999992766,
+      "rows_required": 132,
+      "rule": {
+        "column": "day_idx",
+        "kind": "range",
+        "max": 44,
+        "min": 0,
+        "table": "demand"
+      },
+      "rule_sha256": "bff492b7cbff372502da4f31845da70c701124a9686ca399ee1938680b509dd7",
+      "simultaneous_bound_statement": "720 breaches in 720 held-out rows; across all 42 rules tested on this data, with 95% family-wise confidence the breach rate is below 100.000%",
+      "upper_bound_confidence": 0.95,
+      "upper_bound_method": "clopper_pearson_one_sided",
+      "upper_bound_simultaneous_confidence": 0.95,
+      "upper_bound_simultaneous_method": "clopper_pearson_one_sided_bonferroni"
+    },
+    {
+      "bound_statement": "3 breaches in 7 held-out rows; with 95% confidence the breach rate is below 77.468%",
+      "breach_rate_observed": 0.42857142857142855,
+      "breach_rate_upper_bound": 0.7746784159675525,
+      "breach_rate_upper_bound_simultaneous": 0.9197467525202292,
+      "confirmation": {
+        "breaches": 3,
+        "rows": 7
+      },
+      "decision": "insufficient_evidence",
+      "discovery": {
+        "breaches": 0,
+        "rows": 9
+      },
+      "p_value": 0.9998064218749998,
+      "rows_required": 132,
+      "rule": {
+        "column": "sku_id",
+        "kind": "range",
+        "max": 14,
+        "min": 2,
+        "table": "sku"
+      },
+      "rule_sha256": "c51944bf5e52092ea90ed61508e7729d162d48f60e04b485bc8db5fbc2cdb2e1",
+      "simultaneous_bound_statement": "3 breaches in 7 held-out rows; across all 42 rules tested on this data, with 95% family-wise confidence the breach rate is below 91.975%",
+      "upper_bound_confidence": 0.95,
+      "upper_bound_method": "clopper_pearson_one_sided",
+      "upper_bound_simultaneous_confidence": 0.95,
+      "upper_bound_simultaneous_method": "clopper_pearson_one_sided_bonferroni"
+    },
+    {
+      "bound_statement": "2928 breaches in 2928 held-out rows; with 95% confidence the breach rate is below 100.000%",
+      "breach_rate_observed": 1,
+      "breach_rate_upper_bound": 1,
+      "breach_rate_upper_bound_simultaneous": 1,
+      "confirmation": {
+        "breaches": 2928,
+        "rows": 2928
+      },
+      "decision": "rejected",
+      "discovery": {
+        "breaches": 0,
+        "rows": 2912
+      },
+      "p_value": 1,
+      "rows_required": 132,
+      "rule": {
+        "column": "day_idx",
+        "kind": "range",
+        "max": 181,
+        "min": 0,
+        "table": "history"
+      },
+      "rule_sha256": "c5ce7dbe5ea8f8042d431f03663053e9cf8bf31fc56ec7b6068aeaee6711ae74",
+      "simultaneous_bound_statement": "2928 breaches in 2928 held-out rows; across all 42 rules tested on this data, with 95% family-wise confidence the breach rate is below 100.000%",
+      "upper_bound_confidence": 0.95,
+      "upper_bound_method": "clopper_pearson_one_sided",
+      "upper_bound_simultaneous_confidence": 0.95,
+      "upper_bound_simultaneous_method": "clopper_pearson_one_sided_bonferroni"
+    },
+    {
+      "bound_statement": "0 breaches in 2928 held-out rows; with 95% confidence the breach rate is below 0.102%",
+      "breach_rate_observed": 0,
+      "breach_rate_upper_bound": 0.0010226093853793472,
+      "breach_rate_upper_bound_simultaneous": 0.0022970169258069717,
+      "confirmation": {
+        "breaches": 0,
+        "rows": 2928
+      },
+      "decision": "supported",
+      "discovery": {
+        "breaches": 0,
+        "rows": 2912
+      },
+      "p_value": 5.95273138698215e-66,
+      "rows_required": 132,
+      "rule": {
+        "column": "day_idx",
+        "kind": "not_null",
+        "table": "history"
+      },
+      "rule_sha256": "c79bc23bf32b8c01153807217fc9e9bf59fb84eb5a81d919771d49c5feffff74",
+      "simultaneous_bound_statement": "0 breaches in 2928 held-out rows; across all 42 rules tested on this data, with 95% family-wise confidence the breach rate is below 0.230%",
+      "upper_bound_confidence": 0.95,
+      "upper_bound_method": "clopper_pearson_one_sided",
+      "upper_bound_simultaneous_confidence": 0.95,
+      "upper_bound_simultaneous_method": "clopper_pearson_one_sided_bonferroni"
+    },
+    {
+      "bound_statement": "0 breaches in 7 held-out rows; with 95% confidence the breach rate is below 34.816%",
+      "breach_rate_observed": 0,
+      "breach_rate_upper_bound": 0.3481636551311613,
+      "breach_rate_upper_bound_simultaneous": 0.6178394825841824,
+      "confirmation": {
+        "breaches": 0,
+        "rows": 7
+      },
+      "decision": "insufficient_evidence",
+      "discovery": {
+        "breaches": 0,
+        "rows": 9
+      },
+      "p_value": 0.6983372960937498,
+      "rows_required": 132,
+      "rule": {
+        "column": "initial_stock",
+        "kind": "range",
+        "max": 10,
+        "min": 10,
+        "table": "sku"
+      },
+      "rule_sha256": "c94256ce7fc12e9e3c082d863d55aad2b5f00433321d7b9b529e0360445e2131",
+      "simultaneous_bound_statement": "0 breaches in 7 held-out rows; across all 42 rules tested on this data, with 95% family-wise confidence the breach rate is below 61.784%",
+      "upper_bound_confidence": 0.95,
+      "upper_bound_method": "clopper_pearson_one_sided",
+      "upper_bound_simultaneous_confidence": 0.95,
+      "upper_bound_simultaneous_method": "clopper_pearson_one_sided_bonferroni"
+    },
+    {
+      "bound_statement": "0 breaches in 7 held-out rows; with 95% confidence the breach rate is below 34.816%",
+      "breach_rate_observed": 0,
+      "breach_rate_upper_bound": 0.3481636551311613,
+      "breach_rate_upper_bound_simultaneous": 0.6178394825841824,
+      "confirmation": {
+        "breaches": 0,
+        "rows": 7
+      },
+      "decision": "insufficient_evidence",
+      "discovery": {
+        "breaches": 0,
+        "rows": 9
+      },
+      "p_value": 0.6983372960937498,
+      "rows_required": 132,
+      "rule": {
+        "column": "lead_time",
+        "kind": "range",
+        "max": 2,
+        "min": 2,
+        "table": "sku"
+      },
+      "rule_sha256": "ccc33e1e935a1cc458fd9cc101e7e8acac7c1d666d09a0d0e4759bba545d65eb",
+      "simultaneous_bound_statement": "0 breaches in 7 held-out rows; across all 42 rules tested on this data, with 95% family-wise confidence the breach rate is below 61.784%",
+      "upper_bound_confidence": 0.95,
+      "upper_bound_method": "clopper_pearson_one_sided",
+      "upper_bound_simultaneous_confidence": 0.95,
+      "upper_bound_simultaneous_method": "clopper_pearson_one_sided_bonferroni"
+    },
+    {
+      "bound_statement": "0 breaches in 7 held-out rows; with 95% confidence the breach rate is below 34.816%",
+      "breach_rate_observed": 0,
+      "breach_rate_upper_bound": 0.3481636551311613,
+      "breach_rate_upper_bound_simultaneous": 0.6178394825841824,
+      "confirmation": {
+        "breaches": 0,
+        "rows": 7
+      },
+      "decision": "insufficient_evidence",
+      "discovery": {
+        "breaches": 0,
+        "rows": 9
+      },
+      "p_value": 0.6983372960937498,
+      "rows_required": 132,
+      "rule": {
+        "column": "holding_cost",
+        "kind": "range",
+        "max": 0.1,
+        "min": 0.1,
+        "table": "sku"
+      },
+      "rule_sha256": "cdd870eb5368f1b72f5b87a0a461a446248f85c73266f581e81a3531b45080de",
+      "simultaneous_bound_statement": "0 breaches in 7 held-out rows; across all 42 rules tested on this data, with 95% family-wise confidence the breach rate is below 61.784%",
+      "upper_bound_confidence": 0.95,
+      "upper_bound_method": "clopper_pearson_one_sided",
+      "upper_bound_simultaneous_confidence": 0.95,
+      "upper_bound_simultaneous_method": "clopper_pearson_one_sided_bonferroni"
+    },
+    {
+      "bound_statement": "0 breaches in 2928 held-out rows; with 95% confidence the breach rate is below 0.102%",
+      "breach_rate_observed": 0,
+      "breach_rate_upper_bound": 0.0010226093853793472,
+      "breach_rate_upper_bound_simultaneous": 0.0022970169258069717,
+      "confirmation": {
+        "breaches": 0,
+        "rows": 2928
+      },
+      "decision": "supported",
+      "discovery": {
+        "breaches": 0,
+        "rows": 2912
+      },
+      "p_value": 5.95273138698215e-66,
+      "rows_required": 132,
+      "rule": {
+        "column": "qty",
+        "kind": "range",
+        "max": 36,
+        "min": 0,
+        "table": "history"
+      },
+      "rule_sha256": "ecb038c6e390204404b8be11c430ed49ed5d593169d1b2b62d85021e1c4be57e",
+      "simultaneous_bound_statement": "0 breaches in 2928 held-out rows; across all 42 rules tested on this data, with 95% family-wise confidence the breach rate is below 0.230%",
+      "upper_bound_confidence": 0.95,
+      "upper_bound_method": "clopper_pearson_one_sided",
+      "upper_bound_simultaneous_confidence": 0.95,
+      "upper_bound_simultaneous_method": "clopper_pearson_one_sided_bonferroni"
+    },
+    {
+      "bound_statement": "0 breaches in 7 held-out rows; with 95% confidence the breach rate is below 34.816%",
+      "breach_rate_observed": 0,
+      "breach_rate_upper_bound": 0.3481636551311613,
+      "breach_rate_upper_bound_simultaneous": 0.6178394825841824,
+      "confirmation": {
+        "breaches": 0,
+        "rows": 7
+      },
+      "decision": "insufficient_evidence",
+      "discovery": {
+        "breaches": 0,
+        "rows": 9
+      },
+      "p_value": 0.6983372960937498,
+      "rows_required": 132,
+      "rule": {
+        "column": "fixed_order_cost",
+        "kind": "not_null",
+        "table": "sku"
+      },
+      "rule_sha256": "edb942e4f24c223af436c81e78d9f1f3c3349ad3f3553c65f0dd98c1498b1fe7",
+      "simultaneous_bound_statement": "0 breaches in 7 held-out rows; across all 42 rules tested on this data, with 95% family-wise confidence the breach rate is below 61.784%",
+      "upper_bound_confidence": 0.95,
+      "upper_bound_method": "clopper_pearson_one_sided",
+      "upper_bound_simultaneous_confidence": 0.95,
+      "upper_bound_simultaneous_method": "clopper_pearson_one_sided_bonferroni"
+    },
+    {
+      "bound_statement": "0 breaches in 2928 held-out rows; with 95% confidence the breach rate is below 0.102%",
+      "breach_rate_observed": 0,
+      "breach_rate_upper_bound": 0.0010226093853793472,
+      "breach_rate_upper_bound_simultaneous": 0.0022970169258069717,
+      "confirmation": {
+        "breaches": 0,
+        "rows": 2928
+      },
+      "decision": "supported",
+      "discovery": {
+        "breaches": 0,
+        "rows": 2912
+      },
+      "p_value": 5.95273138698215e-66,
+      "rows_required": 132,
+      "rule": {
+        "column": "qty",
+        "divisor": 6,
+        "kind": "multiple_of",
+        "table": "history"
+      },
+      "rule_sha256": "f09ed6c125ab6cda480a6a260994921c3039a82fe98ad3a887cc3dcd39229a2d",
+      "simultaneous_bound_statement": "0 breaches in 2928 held-out rows; across all 42 rules tested on this data, with 95% family-wise confidence the breach rate is below 0.230%",
+      "upper_bound_confidence": 0.95,
+      "upper_bound_method": "clopper_pearson_one_sided",
+      "upper_bound_simultaneous_confidence": 0.95,
+      "upper_bound_simultaneous_method": "clopper_pearson_one_sided_bonferroni"
+    },
+    {
+      "bound_statement": "0 breaches in 2928 held-out rows; with 95% confidence the breach rate is below 0.102%",
+      "breach_rate_observed": 0,
+      "breach_rate_upper_bound": 0.0010226093853793472,
+      "breach_rate_upper_bound_simultaneous": 0.0022970169258069717,
+      "confirmation": {
+        "breaches": 0,
+        "rows": 2928
+      },
+      "decision": "supported",
+      "discovery": {
+        "breaches": 0,
+        "rows": 2912
+      },
+      "p_value": 5.95273138698215e-66,
+      "rows_required": 132,
+      "rule": {
+        "column": "sku_id",
+        "kind": "range",
+        "max": 16,
+        "min": 1,
+        "table": "history"
+      },
+      "rule_sha256": "f0fb4f866a938f5bbed49fab058f9ea2ac08aa006d50a59fbf447e40153d6f2a",
+      "simultaneous_bound_statement": "0 breaches in 2928 held-out rows; across all 42 rules tested on this data, with 95% family-wise confidence the breach rate is below 0.230%",
+      "upper_bound_confidence": 0.95,
+      "upper_bound_method": "clopper_pearson_one_sided",
+      "upper_bound_simultaneous_confidence": 0.95,
+      "upper_bound_simultaneous_method": "clopper_pearson_one_sided_bonferroni"
+    },
+    {
+      "bound_statement": "0 breaches in 7 held-out rows; with 95% confidence the breach rate is below 34.816%",
+      "breach_rate_observed": 0,
+      "breach_rate_upper_bound": 0.3481636551311613,
+      "breach_rate_upper_bound_simultaneous": 0.6178394825841824,
+      "confirmation": {
+        "breaches": 0,
+        "rows": 7
+      },
+      "decision": "insufficient_evidence",
+      "discovery": {
+        "breaches": 0,
+        "rows": 9
+      },
+      "p_value": 0.6983372960937498,
+      "rows_required": 132,
+      "rule": {
+        "column": "min_order",
+        "kind": "not_null",
+        "table": "sku"
+      },
+      "rule_sha256": "f127b33212620aa09f0cb2d01fe8d2e516d6b2cb607e57783c32e44253b1492f",
+      "simultaneous_bound_statement": "0 breaches in 7 held-out rows; across all 42 rules tested on this data, with 95% family-wise confidence the breach rate is below 61.784%",
+      "upper_bound_confidence": 0.95,
+      "upper_bound_method": "clopper_pearson_one_sided",
+      "upper_bound_simultaneous_confidence": 0.95,
+      "upper_bound_simultaneous_method": "clopper_pearson_one_sided_bonferroni"
+    },
+    {
+      "bound_statement": "0 breaches in 7 held-out rows; with 95% confidence the breach rate is below 34.816%",
+      "breach_rate_observed": 0,
+      "breach_rate_upper_bound": 0.3481636551311613,
+      "breach_rate_upper_bound_simultaneous": 0.6178394825841824,
+      "confirmation": {
+        "breaches": 0,
+        "rows": 7
+      },
+      "decision": "insufficient_evidence",
+      "discovery": {
+        "breaches": 0,
+        "rows": 9
+      },
+      "p_value": 0.6983372960937498,
+      "rows_required": 132,
+      "rule": {
+        "column": "min_order",
+        "kind": "range",
+        "max": 0,
+        "min": 0,
+        "table": "sku"
+      },
+      "rule_sha256": "f30d9789fe1e3babde90363c26d1e1f9f479a2e3e6c6e8993b6ae62a4a35f81a",
+      "simultaneous_bound_statement": "0 breaches in 7 held-out rows; across all 42 rules tested on this data, with 95% family-wise confidence the breach rate is below 61.784%",
+      "upper_bound_confidence": 0.95,
+      "upper_bound_method": "clopper_pearson_one_sided",
+      "upper_bound_simultaneous_confidence": 0.95,
+      "upper_bound_simultaneous_method": "clopper_pearson_one_sided_bonferroni"
+    }
+  ],
+  "insufficient_evidence": 26,
+  "next_action": "a person approves supported rules with evolve_rules_approve",
+  "policy": {
+    "alpha": 0.05,
+    "p_max": 0.05,
+    "policy_version": "binom_holm_ub_v2"
+  },
+  "policy_caps": {
+    "alpha_max": 0.1,
+    "p_max_max": 0.05
+  },
+  "rejected": 2,
+  "split": {
+    "day_cut": 45,
+    "days": 90,
+    "seed": "28fd4f3185fcc175e2c4642b18407dfb4b41cf5cdd7f4b54475706f5d3f4528f",
+    "version": "rule_split_v1"
+  },
+  "supported": 14,
+  "test_sha256": "3544733d6e40bddd13b99d41c7b2c7fc7b1a8a22352d21a07b88b4593f9f6379",
+  "upper_bound_note": "breach_rate_upper_bound is a one-sided exact (1 - alpha) bound from the held-out window; it is informational and never decides support"
+}

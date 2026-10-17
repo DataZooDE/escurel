@@ -676,3 +676,32 @@ describe('a state batch for one exact instance (P0, P5, P7)', () => {
     });
   });
 });
+
+describe('the simultaneous bound changes nothing about what is approved', () => {
+  it('shows both bounds in the report, and sends exactly the chosen rule and the reviewed test hash', async () => {
+    const s = realSetup({}, 'test_v2_simultaneous');
+    const out = await reviewRules(s);
+    expect(out.state).toBe('approved');
+    const shown = (s.ui.showReport as ReturnType<typeof vi.fn>).mock.calls[0]![0] as string;
+    expect(shown).toContain(s.raw.evidence[1].simultaneous_bound_statement);
+    expect(shown).toContain(s.raw.evidence[1].bound_statement);
+    const supported = s.raw.evidence.find((e: any) => e.decision === 'supported');
+    expect(s.api.approve).toHaveBeenCalledTimes(1);
+    expect(s.api.approve).toHaveBeenCalledWith({
+      batchId: s.raw.batch_id,
+      ruleSha256s: [supported.rule_sha256],
+      expectedTestSha256: s.raw.test_sha256,
+    });
+  });
+
+  it('does not pre-select or offer a rule because of a low simultaneous bound', async () => {
+    const s = realSetup({}, 'test_v2_simultaneous');
+    await reviewRules(s);
+    const offered = (s.ui.pickRules as ReturnType<typeof vi.fn>).mock.calls[0]![0] as {
+      decision: string;
+    }[];
+    expect(offered.length).toBeGreaterThan(0);
+    expect(offered.every((e) => e.decision === 'supported')).toBe(true);
+    expect(offered).toHaveLength(s.raw.supported);
+  });
+});

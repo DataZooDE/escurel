@@ -6,8 +6,10 @@ import { describeError } from '../errors';
 import { evolveOrigin } from './holdoutClient';
 import { pickJsonObject, type JsonFileHost } from './jsonObjectFile';
 import { readStateInstance } from './stateInstance';
+import { showApprovedRules } from './approvedRules';
 import {
   approveRules,
+  getApprovedRules,
   getRuleBatch,
   proposeRules,
   startWithApprovedRules,
@@ -25,6 +27,7 @@ import {
 import {
   ALPHA_CAP,
   P_MAX_CAP,
+  isHash,
   describePolicy,
   parsePolicyInput,
   percent,
@@ -77,6 +80,7 @@ async function readInstance(): Promise<Record<string, unknown> | undefined> {
 
 /** The report is shown read-only: a virtual document, so it can neither be edited nor left "unsaved". */
 const START_LABEL = 'Start new experiment with these rules';
+const VIEW_LABEL = 'View approved rule set';
 const REPORT_SCHEME = 'escurel-evolve-rules';
 
 export function registerReviewEvolveRules(
@@ -87,6 +91,69 @@ export function registerReviewEvolveRules(
   context.subscriptions.push(
     vscode.workspace.registerTextDocumentContentProvider(REPORT_SCHEME, {
       provideTextDocumentContent: (uri) => reports.get(uri.path) ?? '',
+    }),
+  );
+  const showDocument = async (text: string) => {
+    const path = `/rules-${createHash('sha256').update(text).digest('hex').slice(0, 12)}.txt`;
+    reports.set(path, text);
+    const document = await vscode.workspace.openTextDocument(
+      vscode.Uri.from({ scheme: REPORT_SCHEME, path }),
+    );
+    await vscode.window.showTextDocument(document, { preview: false });
+  };
+  /** Rule-set hashes approved in this session, per signed-in owner (memory only, never stored). */
+  const approvedThisSession = new Map<string, string[]>();
+  const remember = (owner: string, hash: string) => {
+    const known = (approvedThisSession.get(owner) ?? []).filter((h) => h !== hash);
+    approvedThisSession.set(owner, [hash, ...known].slice(0, 20));
+  };
+  const openApproved = async (presetHash?: string) => {
+    const endpoint = evolveOrigin(readConfig().evolveEndpoint);
+    const refresher = services.auth.refresher;
+    await showApprovedRules(
+      {
+        ui: {
+          pickHash: async (remembered) => {
+            const ENTER = 'Enter a hash\u2026';
+            const chosen = await vscode.window.showQuickPick(
+              [
+                ...remembered.map((hash) => ({
+                  label: `${hash.slice(0, 12)}\u2026`,
+                  description: 'approved in this session',
+                  detail: hash,
+                  hash,
+                })),
+                { label: ENTER, description: 'a 64-character approved rule-set SHA-256', hash: '' },
+              ],
+              { placeHolder: 'Which approved rule set?', ignoreFocusOut: true },
+            );
+            if (!chosen) return undefined;
+            if (chosen.hash) return chosen.hash;
+            return vscode.window.showInputBox({
+              prompt: 'Approved rule-set SHA-256 (64 hex characters)',
+              ignoreFocusOut: true,
+              validateInput: (value) =>
+                isHash(value.trim().toLowerCase()) ? undefined : 'Enter exactly 64 hex characters.',
+            });
+          },
+          show: showDocument,
+        },
+        get: (hash) => getApprovedRules(endpoint, refresher, hash),
+        subject: () => services.subject(),
+        remembered: (owner) => approvedThisSession.get(owner) ?? [],
+      },
+      presetHash,
+    );
+  };
+  context.subscriptions.push(
+    vscode.commands.registerCommand('escurel.showEvolveApprovedRules', async () => {
+      try {
+        await openApproved();
+      } catch (error) {
+        void vscode.window.showErrorMessage(
+          `Showing the approved rules failed: ${describeError(error)}`,
+        );
+      }
     }),
   );
   const command = vscode.commands.registerCommand(
@@ -195,14 +262,7 @@ export function registerReviewEvolveRules(
               { modal: true, detail: confirmTestDetail(proposal, choice, instanceInput?.instance) },
               'Run confirmation test',
             )) === 'Run confirmation test',
-          showReport: async (markdown) => {
-            const path = `/rules-${createHash('sha256').update(markdown).digest('hex').slice(0, 12)}.txt`;
-            reports.set(path, markdown);
-            const document = await vscode.workspace.openTextDocument(
-              vscode.Uri.from({ scheme: REPORT_SCHEME, path }),
-            );
-            await vscode.window.showTextDocument(document, { preview: false });
-          },
+          showReport: showDocument,
           pickRules: async (supported) => {
             const picked = await vscode.window.showQuickPick(ruleChoices(supported), {
               canPickMany: true,
@@ -228,10 +288,18 @@ export function registerReviewEvolveRules(
         }
         if (outcome.state !== 'approved') return;
         const { approval } = outcome;
-        const action = await vscode.window.showInformationMessage(
-          `Approved ${approval.rules.length} rule${approval.rules.length === 1 ? '' : 's'}. Approved rule set SHA-256: ${approval.ruleSetSha256}. It applies to new ${outcome.input.kind === 'instance' ? 'experiments on exactly this instance' : 'replenishment experiments'} started with this hash.${approval.policy ? ` Test policy: ${describePolicy(approval.policy)}.` : ''}`,
-          START_LABEL,
-        );
+        const approvedOwner = await services.subject();
+        if (approvedOwner) remember(approvedOwner, approval.ruleSetSha256);
+        let action: string | undefined;
+        do {
+          action = await vscode.window.showInformationMessage(
+            `Approved ${approval.rules.length} rule${approval.rules.length === 1 ? '' : 's'}. Approved rule set SHA-256: ${approval.ruleSetSha256}. It applies to new ${outcome.input.kind === 'instance' ? 'experiments on exactly this instance' : 'replenishment experiments'} started with this hash.${approval.policy ? ` Test policy: ${describePolicy(approval.policy)}.` : ''}`,
+            VIEW_LABEL,
+            START_LABEL,
+          );
+          // Looking at the approved set does not use up the chance to start with it.
+          if (action === VIEW_LABEL) await openApproved(approval.ruleSetSha256);
+        } while (action === VIEW_LABEL);
         if (action !== START_LABEL) return;
         const owner = await services.subject();
         const started = await startWithRules({

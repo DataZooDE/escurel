@@ -1,0 +1,78 @@
+{
+  "applies_to": "new brain=llm experiments on exactly this instance only; a running search is never changed",
+  "approved_at": "2026-10-17T13:59:11Z",
+  "approved_rule_set_sha256": "43ddccf1a557c1b52c057a4372255bf26f4dc88b6e2cc2e85232bb9a30c0008d",
+  "approver": "dev-user",
+  "batch_id": "a741115c86223eb0705932dfbcefbaa524acaeabd87b16f297e0c546ea601b10",
+  "data_sha256": "26eff570ba985c3e4aa49043cf7f43aa86bd552219e7d7bbb69c52f81174846d",
+  "dsl_version": "rules_v1",
+  "pilot": "p0",
+  "policy": {
+    "kind": "state_replay_v1"
+  },
+  "rule_summaries": [
+    {
+      "rule": {
+        "agg": "sum",
+        "bound": 10,
+        "column": "size",
+        "group_by": "bin_id",
+        "join": {
+          "input_column": "id",
+          "state_column": "item_id",
+          "table": "p0_items"
+        },
+        "kind": "agg_le",
+        "table": "p0_bin_assignment"
+      },
+      "rule_sha256": "0cc52ace4ca70d511f2b70ace4629392a08bbe47a1e0cc0b169666dfc17ad465"
+    },
+    {
+      "rule": {
+        "column": "item_id",
+        "kind": "fk_in",
+        "ref_column": "id",
+        "ref_table": "p0_items",
+        "table": "p0_bin_assignment"
+      },
+      "rule_sha256": "4cbb2a878d058ebb92dc860965d0c3bba461ff097a2af9586487c46db30b61e8"
+    },
+    {
+      "rule": {
+        "agg": "count",
+        "bound": 16,
+        "kind": "agg_ge",
+        "table": "p0_bin_assignment"
+      },
+      "rule_sha256": "99c13249ac5236e87edbda054ee76601f441e16f64e405e645db7f8ced364976"
+    }
+  ],
+  "rules": [
+    {
+      "agg": "sum",
+      "bound": 10,
+      "column": "size",
+      "group_by": "bin_id",
+      "join": {
+        "input_column": "id",
+        "state_column": "item_id",
+        "table": "p0_items"
+      },
+      "kind": "agg_le",
+      "table": "p0_bin_assignment"
+    },
+    {
+      "column": "item_id",
+      "kind": "fk_in",
+      "ref_column": "id",
+      "ref_table": "p0_items",
+      "table": "p0_bin_assignment"
+    },
+    {
+      "agg": "count",
+      "bound": 16,
+      "kind": "agg_ge",
+      "table": "p0_bin_assignment"
+    }
+  ]
+}

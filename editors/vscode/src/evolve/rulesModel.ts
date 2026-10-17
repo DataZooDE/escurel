@@ -62,6 +62,17 @@ export interface Bound {
   method: string;
   statement: string;
 }
+/**
+ * The same kind of bound, but valid for every rule of the batch at once (Bonferroni over the m rules
+ * tested on this data). Informational like the per-rule bound; absent on older tests and on replays.
+ */
+export interface SimultaneousBound {
+  upper: number;
+  /** The family-wise level (1 - alpha), not the per-rule level. */
+  confidence: number;
+  method: string;
+  statement: string;
+}
 export interface Evidence {
   ruleSha256: string;
   text: string;
@@ -73,6 +84,7 @@ export interface Evidence {
   pValue?: number;
   rowsRequired?: number;
   bound?: Bound;
+  simultaneous?: SimultaneousBound;
 }
 export interface Replay {
   program: string;
@@ -103,6 +115,10 @@ export interface Approval {
   rules: RuleView[];
   /** The policy the set was tested under; undefined for sets approved before policies were recorded. */
   policy?: Policy;
+  /** The service's own words on what the set applies to (read back by evolve_rules_get). */
+  appliesTo?: string;
+  /** When the set was approved, UTC ISO 8601 (read back by evolve_rules_get). */
+  approvedAt?: string;
 }
 
 const HASH = /^[a-f0-9]{64}$/;
@@ -315,6 +331,60 @@ function parseBound(e: Record<string, unknown>, confirmation: RuleCount): Bound 
   return { observed, upper, confidence, method, statement };
 }
 
+const SIMULTANEOUS_FIELDS = [
+  'breach_rate_upper_bound_simultaneous',
+  'upper_bound_simultaneous_confidence',
+  'upper_bound_simultaneous_method',
+  'simultaneous_bound_statement',
+] as const;
+
+const SIMULTANEOUS_STATEMENT =
+  /^(\d+) breaches in (\d+) held-out rows; across all (\d+) rules tested on this data, with (\d+)% family-wise confidence the breach rate is below (\d+\.\d{3})%$/;
+
+/**
+ * `rulesTested` is m, the number of rules tested on this data (earlier candidates plus this batch).
+ * Optional as a whole: all four fields or none. The service's sentence is shown only when it has the
+ * documented shape and says what the counts, m, the level and the bound say; otherwise it is rebuilt
+ * here from those numbers.
+ */
+function parseSimultaneous(
+  e: Record<string, unknown>,
+  confirmation: RuleCount,
+  rulesTested: number,
+): SimultaneousBound | undefined {
+  const present = SIMULTANEOUS_FIELDS.filter((k) => e[k] !== undefined && e[k] !== null);
+  if (present.length === 0) return undefined;
+  if (present.length !== SIMULTANEOUS_FIELDS.length)
+    throw new EvolveShapeError('Evolve returned an incomplete simultaneous bound.');
+  const upper = real(e.breach_rate_upper_bound_simultaneous, 'simultaneous bound');
+  const confidence = real(e.upper_bound_simultaneous_confidence, 'simultaneous confidence');
+  if (upper < 0 || upper > 1 || confidence <= 0 || confidence > 1)
+    throw new EvolveShapeError('Evolve returned an invalid simultaneous bound.');
+  const method = cleanText(
+    typeof e.upper_bound_simultaneous_method === 'string'
+      ? e.upper_bound_simultaneous_method
+      : '?',
+    60,
+  );
+  const level = Math.round(confidence * 100);
+  const rate = (upper * 100).toFixed(3);
+  const given =
+    typeof e.simultaneous_bound_statement === 'string'
+      ? SIMULTANEOUS_STATEMENT.exec(e.simultaneous_bound_statement)
+      : null;
+  const consistent =
+    given &&
+    Number(given[1]) === confirmation.breaches &&
+    Number(given[2]) === confirmation.rows &&
+    Number(given[3]) === rulesTested &&
+    Number(given[4]) === level &&
+    given[5] === rate;
+  const statement = consistent
+    ? (e.simultaneous_bound_statement as string)
+    : `${confirmation.breaches} breaches in ${confirmation.rows} held-out rows; across all ${rulesTested} rules tested on this data, with ${level}% family-wise confidence the breach rate is below ${rate}%`;
+  return { upper, confidence, method, statement };
+}
+
 function parseReplays(value: unknown, rules: Set<string>): Replay[] {
   if (value === undefined || value === null) return [];
   if (!Array.isArray(value) || value.length > 64)
@@ -346,6 +416,9 @@ export function parseTestReport(value: unknown): TestReport {
   const rawPolicy = obj(t.policy, 'policy');
   const state = rawPolicy.kind === STATE_REPLAY;
   if (!Array.isArray(t.evidence)) throw new EvolveShapeError('Evolve returned no evidence.');
+  const rulesTested = state
+    ? 0
+    : count(t.candidates_before, 'earlier candidates') + t.evidence.length;
   const evidence: Evidence[] = t.evidence.map((raw) => {
     const e = obj(raw, 'evidence');
     const decision = DECISIONS.find((d) => d === e.decision);
@@ -362,6 +435,7 @@ export function parseTestReport(value: unknown): TestReport {
       };
     const confirmation = ruleCount(e.confirmation, 'confirmation count');
     const bound = parseBound(e, confirmation);
+    const simultaneous = parseSimultaneous(e, confirmation, rulesTested);
     return {
       ...base,
       discovery: ruleCount(e.discovery, 'discovery count'),
@@ -369,6 +443,7 @@ export function parseTestReport(value: unknown): TestReport {
       pValue: real(e.p_value, 'p-value'),
       rowsRequired: count(e.rows_required, 'required rows'),
       ...(bound ? { bound } : {}),
+      ...(simultaneous ? { simultaneous } : {}),
     };
   });
   let policy: Policy;
@@ -408,18 +483,34 @@ export function parseTestReport(value: unknown): TestReport {
   return report;
 }
 
+const ISO_UTC = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?Z$/;
+
+/**
+ * An approved rule set, from the approve receipt or from evolve_rules_get. A lookup carries the
+ * hash-labelled rules in `rule_summaries` (its `rules` are the bare rules); the receipt's `rules`
+ * are already hash-labelled. Keys an older service does not send are simply absent here.
+ */
 export function parseApproval(value: unknown): Approval {
   const a = obj(value, 'approval');
-  if (!Array.isArray(a.rules) || a.rules.length === 0)
+  const listed = Array.isArray(a.rule_summaries) && a.rule_summaries.length > 0;
+  const source = listed ? (a.rule_summaries as unknown[]) : a.rules;
+  if (!Array.isArray(source) || source.length === 0)
     throw new EvolveShapeError('Evolve returned an approval without rules.');
-  const policy = lenientPolicy(a.policy);
+  if (source.length > 200) throw new EvolveShapeError('Evolve returned too many rules.');
+  const policy = lenientPolicy(a.policy, a.policy_caps);
   return {
     ruleSetSha256: hash(a.approved_rule_set_sha256, 'rule-set hash'),
     dataSha256: hash(a.data_sha256, 'data hash'),
     approver: cleanText(typeof a.approver === 'string' ? a.approver : '', 120),
     ...(typeof a.pilot === 'string' ? { pilot: cleanText(a.pilot, 20) } : {}),
-    rules: a.rules.map(ruleView),
+    rules: source.map(ruleView),
     ...(policy ? { policy } : {}),
+    ...(typeof a.applies_to === 'string' && a.applies_to
+      ? { appliesTo: cleanText(a.applies_to, 300) }
+      : {}),
+    ...(typeof a.approved_at === 'string' && ISO_UTC.test(a.approved_at)
+      ? { approvedAt: a.approved_at }
+      : {}),
   };
 }
 
@@ -489,16 +580,20 @@ function binomialBlock(e: Evidence, policy: Policy): string[] {
   if (e.bound) {
     lines.push(
       `  observed breach rate: ${pct(e.bound.observed)} (${c.breaches} of ${c.rows} confirmation rows)`,
-      `  upper bound (informational, not an approval signal): ${e.bound.statement}`,
+      `  upper bound, this rule alone (informational, not an approval signal): ${e.bound.statement}`,
     );
-  } else if (policy.version === POLICY_V1) {
+  }
+  if (e.simultaneous)
+    lines.push(
+      `  simultaneous bound, all rules of this batch at once (informational, not an approval signal): ${e.simultaneous.statement}`,
+    ); else if (policy.version === POLICY_V1) {
     lines.push('  no upper bound was computed: this test used the older policy binom_holm_v1');
   }
   if (e.decision === 'insufficient_evidence') {
     lines.push(
       '  Too few confirmation rows to prove this rule at this tolerance however clean they were: this is not a verdict on the rule.',
     );
-    if (e.bound)
+    if (e.bound || e.simultaneous)
       lines.push(
         '  A low upper bound does not make it supported: only the test above decides, and it needs more rows.',
       );
@@ -584,6 +679,11 @@ export function renderReport(report: TestReport, opts: { requested?: PolicyChoic
         '',
         "The upper bound under each rule is informational. It is a one-sided exact (Clopper-Pearson) upper confidence bound on the rule's breach rate, from the confirmation window only. It is not an approval signal: it never makes a rule supported, and a rule can have a low bound and still be insufficient evidence. Only the corrected test above decides.",
       );
+    if (report.evidence.some((e) => e.simultaneous))
+      lines.push(
+        '',
+        "A second bound sits under each rule: the simultaneous bound. The per-rule bound answers 'this rule alone'. The simultaneous bound answers 'all rules of this batch at once': it is a one-sided exact bound with a Bonferroni correction over every rule tested on this data, so with the stated family-wise confidence all of the rules are below their bounds together. It is wider, because it has to hold for all of them. Both bounds are informational: neither is an approval signal, and neither makes a rule supported.",
+      );
     lines.push('');
     for (const e of report.evidence) lines.push(...binomialBlock(e, policy), '');
   }
@@ -593,6 +693,39 @@ export function renderReport(report: TestReport, opts: { requested?: PolicyChoic
     report.kind === 'state_replay'
       ? 'Supported means the rule held on this instance under the replays above. It is not a law of the world. No row values are shown or stored with this evidence.'
       : 'Supported means the rule survived a pre-registered test on this training data. It is not a law of the world and was not tested on the sealed holdout. No row values are shown or stored with this evidence.',
+  );
+  return lines.join('\n') + '\n';
+}
+
+/**
+ * An approved rule set as a read-only document: who approved it and when, under which policy, what it
+ * applies to, and each rule in words with its hash prefix. Only the fields named here are shown; no
+ * row, value or raw rule JSON ever is.
+ */
+export function renderApproval(a: Approval): string {
+  const lines = [
+    '# Approved data rules',
+    '',
+    `Approved rule set SHA-256: ${a.ruleSetSha256}`,
+    `Pilot: ${a.pilot ?? 'not stated'}`,
+    `Data hash (prefix): ${a.dataSha256.slice(0, 12)}\u2026`,
+    `Approver: ${a.approver || 'not stated'}`,
+    `Approved at: ${a.approvedAt ? `${a.approvedAt.replace('T', ' ').replace(/Z$/, '')} UTC` : 'not stated'}`,
+  ];
+  if (a.policy) {
+    lines.push(`Test policy: ${describePolicy(a.policy)}`);
+    if (a.policy.caps)
+      lines.push(
+        `Caps for new tests: p_max may be up to ${percent(a.policy.caps.pMaxMax)}, alpha up to ${percent(a.policy.caps.alphaMax)}.`,
+      );
+  } else {
+    lines.push('Test policy: not recorded (this set was approved before policies were recorded)');
+  }
+  lines.push(`Applies to: ${a.appliesTo ?? 'not stated'}`, '', `Rules (${a.rules.length}):`);
+  a.rules.forEach((r, i) => lines.push(`  ${i + 1}. ${r.text}  [rule ${r.sha256.slice(0, 12)}\u2026]`));
+  lines.push(
+    '',
+    'These are the rules a person approved. Supported means they survived the test above, not that they are a law of the world. No row values are shown or stored with this evidence.',
   );
   return lines.join('\n') + '\n';
 }
