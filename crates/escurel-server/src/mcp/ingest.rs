@@ -340,6 +340,19 @@ async fn record_and_dispatch_ingest(
         )
             .into_response();
     }
+    // The gateway's own id namespaces (`write-back:*`, `runner-status:*`) are not the caller's to mint:
+    // the same refusal `capture_event` applies, or this door would squat a runner's status record or
+    // forge a write-back witness.
+    if let Some(reason) = caller_event_id
+        .as_deref()
+        .and_then(super::tools_write::reserved_event_id_refusal)
+    {
+        return (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(json!({ "error": "invalid_event_id", "message": reason })),
+        )
+            .into_response();
+    }
     // escurel#382: a caller-supplied `event_id` is an idempotency key. A
     // redelivery — the same key already captured — is acknowledged without
     // re-capturing OR re-dispatching the worker: the bytes were deduped by

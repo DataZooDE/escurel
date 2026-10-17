@@ -4,6 +4,15 @@ The skill version tracks the consumer-facing contract, not the Escurel
 binary version. The Escurel repo's checked-out git ref is the true version
 pin (see `SKILL.md` → "How this skill is installed").
 
+## 0.25.2 — `/ingest` refuses the gateway's event-id namespaces; a machine cannot purge events
+
+No tool or wire shape change; two refusals. `POST /ingest` (and `/ingest/upload`) took a caller's `event_id` without the
+check `capture_event` applies, so a member could squat `runner-status:<runner>` (hiding a runner's health behind an inbox
+row) or forge `write-back:<draft>:applied` (a promote would then skip the upstream write): both are now `422
+invalid_event_id`. `admin_purge_events` received no caller, so a runner-minted ADMIN run token (every harness gets one)
+could erase the write-back witnesses and the purge's own audit row: a machine caller may count (a dry run) but `apply`
+or `allow_protected` from one is refused. A person's admin token is unchanged.
+
 ## 0.25.1 — branch merges use a per-page fork point
 
 No tool or wire change. `merge_branch` compared each base page's head against the branch-wide `base_version`, which

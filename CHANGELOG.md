@@ -8,6 +8,12 @@ re-cuts append `.N`), matching the DataZoo release scheme (cf. erpl).
 
 ## Unreleased
 
+- **`/ingest` refuses the gateway's event-id namespaces; a machine cannot purge events** (skill 0.25.2). Security pass
+  of 2026-10-17. `/ingest` forwarded a caller's `event_id` without the reserved-prefix check `capture_event` has, so a
+  member could squat `runner-status:<runner>` or forge a `write-back:<draft>:applied` witness (a promote would skip its
+  upstream write); both are `422 invalid_event_id` now, through one shared helper. `admin_purge_events` now sees its
+  caller: a runner-minted admin run token (a machine) may count but not `apply` or `allow_protected`, so an agent run
+  cannot erase the write-back witnesses or the purge audit row. A person's admin token is unchanged.
 - **Branch merges use a per-page fork point** (skill 0.25.1). `create_branch` recorded `v0` as the fork version, so
   merging a branch that edited a page with earlier CRDT history reported a `conflict` nobody had caused, and a branch
   tombstone had no fork point at all and silently deleted a page the base had edited meanwhile. The branch's first write

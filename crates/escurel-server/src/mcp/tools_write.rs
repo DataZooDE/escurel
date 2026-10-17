@@ -260,6 +260,31 @@ pub(super) fn is_machine_caller(caller: &AclCaller<'_>) -> bool {
     caller.run_id.is_some() || caller.agent_skill.is_some() || caller.actor.is_some()
 }
 
+/// Why a caller may not mint `event_id`, when it lies in a namespace the gateway owns.
+///
+/// * `write-back:<draft>:applied` / `…:<n>:applying|failed` are the promotion bookkeeping: a promote
+///   trusts those ids, so a forged `applied` would make it skip the upstream write (and `applying`
+///   would make it refuse one).
+/// * `runner-status:<runner_id>` is the one overwritten record `report_runner_status` keeps per runner;
+///   a squatted row would hide that runner's health behind an inbox row nothing garbage-collects.
+///
+/// Every door that takes a caller-chosen event id (MCP `capture_event`, `/ingest`) asks this first.
+pub(crate) fn reserved_event_id_refusal(event_id: &str) -> Option<String> {
+    if event_id.starts_with(crate::write_back::RESERVED_EVENT_ID_PREFIX) {
+        return Some(format!(
+            "event ids starting with `{}` are reserved for the gateway",
+            crate::write_back::RESERVED_EVENT_ID_PREFIX
+        ));
+    }
+    if event_id.starts_with(escurel_index::RUNNER_STATUS_ID_PREFIX) {
+        return Some(format!(
+            "event ids starting with `{}` are reserved for `report_runner_status`",
+            escurel_index::RUNNER_STATUS_ID_PREFIX
+        ));
+    }
+    None
+}
+
 /// The skill an INSTANCE page id belongs to (`markdown/instances/<skill>/<id>.md`).
 fn instance_skill_of(page_id: &str) -> Option<&str> {
     page_id
@@ -1965,27 +1990,11 @@ pub(super) async fn tool_capture_event(
     } else {
         None
     };
-    // The gateway's own write-back bookkeeping (`write-back:<draft>:applied`, `write-back:<draft>:<n>:applying|failed`) is
-    // addressed by id, and a promotion trusts those ids: a caller must not be able to file one, or
-    // it could make a promote skip the upstream (a forged `applied`) or refuse it (`applying`).
-    if a.event_id
-        .as_deref()
-        .is_some_and(|id| id.starts_with(crate::write_back::RESERVED_EVENT_ID_PREFIX))
-    {
+    // Ids in the gateway's own namespaces (`write-back:*`, `runner-status:*`) are addressed by id and
+    // trusted by what reads them: a caller must not be able to file one. The same refusal guards `/ingest`.
+    if let Some(reason) = a.event_id.as_deref().and_then(reserved_event_id_refusal) {
         return Err(JsonRpcError::invalid_params(format!(
-            "capture_event: event ids starting with `{}` are reserved for the gateway",
-            crate::write_back::RESERVED_EVENT_ID_PREFIX
-        )));
-    }
-    // `runner-status:<runner_id>` is the one overwritten record `report_runner_status` keeps per runner;
-    // minting it here would let a caller plant a row the readers take for a runner's health.
-    if a.event_id
-        .as_deref()
-        .is_some_and(|id| id.starts_with(escurel_index::RUNNER_STATUS_ID_PREFIX))
-    {
-        return Err(JsonRpcError::invalid_params(format!(
-            "capture_event: event ids starting with `{}` are reserved for `report_runner_status`",
-            escurel_index::RUNNER_STATUS_ID_PREFIX
+            "capture_event: {reason}"
         )));
     }
     // Bookkeeping rights belong to the runner's and the gateway's own admin identity, NOT to a token
