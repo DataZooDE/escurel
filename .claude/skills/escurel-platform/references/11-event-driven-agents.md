@@ -449,6 +449,13 @@ runner however long it runs. Read the latest:
 { "label_skill": "escurel:runner-status", "newest_first": true, "limit": 1 }
 ```
 
+A pod that is replaced never reports again, so every report also deletes the
+records of runners that have been silent for longer than
+`max(10 x their own status_interval_s, 1 h)` (judged by the reporting runner's
+own report time). A record you still see after a redeploy is therefore at most
+about an hour old and disappears with the next live runner's report; there is
+no need to pin `ESCUREL_RUNNER_ID` to keep the table tidy.
+
 (The record's `at` is its last report, so it sorts first. With several
 runners in a tenant, take the newest row per `body.runner_id`.) A runner
 whose gateway predates the tool (`-32601`) falls back to the old heartbeat

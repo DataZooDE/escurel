@@ -152,6 +152,11 @@ Skill version `0.23.0`. Every consumer that writes pages or reads the tool surfa
 
 ### Added
 
+- **A stopped runner's status record is collected.** Every `report_runner_status` also deletes the other
+  `runner-status:*` records of the tenant whose runner has been silent for longer than `max(10 x its own
+  status_interval_s, 1 h)` (judged by the reporting runner's report time), so the record a replaced pod leaves
+  behind (the default `ESCUREL_RUNNER_ID` is the pod name) goes away on its own; legacy heartbeat rows and live
+  runners are never touched. The candidate read is one primary-key range on the attached-Postgres table. Skill 0.24.0.
 - **`report_runner_status`: a runner's health is ONE overwritten record, not a heartbeat stream.** The runner
   overwrites `runner-status:<runner_id>` (label `escurel:runner-status`, `kind: system`; `state` is the title and
   the body gains `state`, `status_interval_s`, `started_at`, `last_change_at`) through the new MCP tool, so the

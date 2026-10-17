@@ -4,6 +4,13 @@ The skill version tracks the consumer-facing contract, not the Escurel
 binary version. The Escurel repo's checked-out git ref is the true version
 pin (see `SKILL.md` → "How this skill is installed").
 
+## 0.24.0 — a stopped runner's status record is collected
+
+Behaviour only; no new field or tool. Every `report_runner_status` also deletes the other `runner-status:*`
+records of the tenant whose runner has been silent for longer than `max(10 x its status_interval_s, 1 h)`, so the
+record a replaced pod leaves behind (the default `ESCUREL_RUNNER_ID` is `<HOSTNAME>:<pid>`) goes away on its own.
+A reader taking the newest row per `runner_id` is unaffected (`02-tool-surface.md`, `11-event-driven-agents.md`).
+
 ## 0.23.0 — `report_runner_status`: a runner's health is one overwritten record
 
 Additive; a reader that takes the label's newest row keeps working.
