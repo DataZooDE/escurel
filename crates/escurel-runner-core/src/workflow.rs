@@ -713,13 +713,24 @@ pub async fn recover_workflows(
     client: &Client,
     max_runs_per_root: u64,
 ) -> Result<usize, WorkflowDriveError> {
-    let runs = client
+    let runs = match client
         .list_instances(ListInstancesRequest {
             skill: RUN_SKILL.to_owned(),
             ..Default::default()
         })
         .await
-        .map_err(WorkflowDriveError::Read)?;
+    {
+        Ok(runs) => runs,
+        // A tenant that never declared the run skill (heron's, for one) has no workflow runs to
+        // re-drive: the gateway answers `unknown_skill`, and that is "nothing to recover", not a
+        // warning at every boot.
+        Err(escurel_client::Error::Refused(r))
+            if r.issues.iter().any(|i| i.code == "unknown_skill") =>
+        {
+            return Ok(0);
+        }
+        Err(e) => return Err(WorkflowDriveError::Read(e)),
+    };
 
     let mut resumed = 0;
     for run in runs.instances {

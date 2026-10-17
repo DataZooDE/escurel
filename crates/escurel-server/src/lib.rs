@@ -38,6 +38,7 @@
 #![recursion_limit = "256"]
 
 mod auth_gate;
+pub mod boot_progress;
 pub mod config;
 pub mod config_keys;
 mod config_probe;

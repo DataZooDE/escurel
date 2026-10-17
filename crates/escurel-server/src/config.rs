@@ -1827,12 +1827,15 @@ impl EscurelConfig {
                         "ESCUREL_INDEX_BACKEND=ducklake always carries a LakeConfig \
                      (EscurelConfig::from_env validated this)",
                     );
-                    let adopted = adopt_lake(
-                        lake_cfg,
-                        Arc::clone(&store),
-                        Arc::clone(&embedder) as Arc<dyn Embedder>,
-                        &self.tenant,
-                        None,
+                    let adopted = crate::boot_progress::with_progress(
+                        "adopt the lake",
+                        adopt_lake(
+                            lake_cfg,
+                            Arc::clone(&store),
+                            Arc::clone(&embedder) as Arc<dyn Embedder>,
+                            &self.tenant,
+                            None,
+                        ),
                     )
                     .await?
                     .ok_or_else(|| ConfigError::InvalidValue {
@@ -2034,7 +2037,13 @@ impl EscurelConfig {
                                 }
                             }
                         }
-                        indexer.attach_lake(lake_cfg).await?;
+                        // Over a slow filesystem (Drive) the attach and the adopt below each take minutes
+                        // and used to say nothing; `with_progress` logs the phase every 30 s.
+                        crate::boot_progress::with_progress(
+                            "attach the lake",
+                            indexer.attach_lake(lake_cfg),
+                        )
+                        .await?;
 
                         // #563: adopt whatever the lake already durably
                         // holds BEFORE this writer can serve or the
@@ -2049,8 +2058,11 @@ impl EscurelConfig {
                         // synchronous adopt already takes (a writer that
                         // cannot verify what's already durable must not
                         // start serving).
-                        let adopted_snapshot_id =
-                            adopt_lake_for_writer(&indexer, embedder.as_ref()).await?;
+                        let adopted_snapshot_id = crate::boot_progress::with_progress(
+                            "adopt the lake's content",
+                            adopt_lake_for_writer(&indexer, embedder.as_ref()),
+                        )
+                        .await?;
                         // The lane scan above cannot see a STALE LAKE: the adopt just replaced the
                         // local index with the lake's corpus, which an older writer published with
                         // the removed `type:` key. Quarantine rather than serve it silently;

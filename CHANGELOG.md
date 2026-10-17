@@ -8,6 +8,13 @@ re-cuts append `.N`), matching the DataZoo release scheme (cf. erpl).
 
 ## Unreleased
 
+- **A writer says what it is doing while it adopts a slow lake; startup recovery is quiet on a tenant with no workflow
+  runs.** The heron-escurel writer was silent for 19 minutes adopting its Drive lake (a file-by-file fetch with no
+  output), which looked like a hang while a startup probe was ticking. The slow boot steps (`attach the lake`,
+  `adopt the lake's content`, and the reader's adopt) now log `boot: <phase> is still running` with `elapsed_s` every
+  30 s (target `escurel_boot`); the startup-budget numbers are in `docs/deploy/kind-migration.md`. And the runner's
+  startup crash recovery no longer warns `workflow: gateway read failed: … unknown_skill … workflow-run` on a tenant
+  that never declared the `workflow-run` skill: no skill means no runs to re-drive.
 - **The SQL-source policy judges stored bindings at writer boot** (skill 0.25.3). Security pass of 2026-10-17 (F1). The
   credential/egress policy was installed on the served indexer after `Config::build` had rebuilt every `sql_view`, so a
   binding already in storage (written before the policy, or under a wider `ESCUREL_SQL_FILE_DIRS`) was re-attached with
