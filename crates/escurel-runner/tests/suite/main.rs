@@ -52,6 +52,7 @@ mod plan_mode;
 mod promotion_cascades;
 mod quota_throttle;
 mod reconcile_retry;
+mod recover_without_workflows;
 mod review_no_op;
 mod run_control_subscriber;
 mod run_events;

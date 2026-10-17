@@ -220,6 +220,13 @@ budgeted at 29), so size the window for the rebuild, not for the rewrite. Memory
 ~0.4 GB for this size) because pages, drafts and snapshots are streamed one at a time. Reproduce with
 `cargo run --release -p escurel-index --example gen_legacy_tenant -- <data_dir> default 20000 2000 500`.
 
+**Startup budget of the Deployment that follows.** A writer over a Drive-backed lake adopts the lake's content
+before it listens, one file at a time: the heron-escurel rehearsal boots took ~5.5 min, the live cold boot of the
+migrated lake **19 min** (a fresh `emptyDir`, ~0.1-0.2 cores, a trickle of network), against a 29 min startup budget.
+Size the startup probe for the cold boot, not the rehearsal, and expect the log to say so: from this release the
+writer logs `boot: attach the lake is still running` / `boot: adopt the lake's content is still running` (target
+`escurel_boot`, with `elapsed_s`) every 30 s. Before it, that quarter of an hour was silent and looked like a hang.
+
 ## 4. Verify, then swap
 
 ```sh
