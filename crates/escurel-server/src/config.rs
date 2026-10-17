@@ -644,6 +644,12 @@ pub struct EscurelConfig {
     /// enforces). Read through the config source like every other key, so an embedded gateway built
     /// from an injected map (a test) can choose it without touching the process-global environment.
     pub write_acl: crate::WriteAclMode,
+    /// The operator's egress policy (`ESCUREL_EGRESS_*`, `ESCUREL_SQL_FILE_DIRS`, `ESCUREL_SQL_OBJECT_PREFIXES`):
+    /// what an outbound call and a SQL source may reach. Read through the config source like every other
+    /// key, and judged from the very first view rebuild of the boot: the credential policy built from it
+    /// is installed on the indexer before anything is rebuilt (a stored binding is re-judged when the
+    /// writer starts, not only when it was written).
+    pub egress: crate::egress::EgressPolicy,
     /// How long one `instances: rows` source query may run (`ESCUREL_ROWS_QUERY_TIMEOUT_SECS`,
     /// default 30): interrupted past it, and enforced by a Postgres server itself.
     pub rows_query_timeout: std::time::Duration,
@@ -1227,6 +1233,14 @@ impl EscurelConfig {
         // Fail closed: unset or a typo enforces (`WriteAclMode::parse`).
         let write_acl =
             crate::WriteAclMode::parse(&env.get("ESCUREL_WRITE_ACL").unwrap_or_default());
+        let egress =
+            crate::egress::EgressPolicy::from_source(&|k: &str| env.get(k)).map_err(|e| {
+                ConfigError::InvalidValue {
+                    var: e.var,
+                    value: e.value,
+                    reason: e.reason,
+                }
+            })?;
 
         let secs_knob = |var: &'static str,
                          default: std::time::Duration|
@@ -1492,6 +1506,7 @@ impl EscurelConfig {
             metrics_listen,
             ingest_contextualize,
             write_acl,
+            egress,
             rows_query_timeout,
             sql_connect_timeout,
             rebuild_index_on_boot,
@@ -1745,6 +1760,15 @@ impl EscurelConfig {
                 let base = base
                     .with_rows_query_timeout(cfg.rows_query_timeout)
                     .with_sql_connect_timeout(cfg.sql_connect_timeout);
+                // The operator's credential/egress policy goes on BEFORE the fresh-boot rebuild and the
+                // lake adopt rebuild the SQL views: a binding already in storage (written before the
+                // policy, or under a wider one) is judged by today's policy, not re-attached unchecked.
+                base.set_credential_resolver(Arc::new(
+                    crate::credential_policy::ServerCredentialPolicy::new(
+                        cfg.egress.clone(),
+                        &cfg.tenant,
+                    ),
+                ));
                 cfg.attach_retrieval(base).await
             })
         });
@@ -2245,13 +2269,7 @@ impl EscurelConfig {
             // reason — refusing writes over a field that has been free-form
             // until now needs a dark rung and an observed rung first.
             autonomy_lint: crate::AutonomyLintMode::from_env(),
-            egress: crate::egress::EgressPolicy::try_from_env().map_err(|e| {
-                ConfigError::InvalidValue {
-                    var: e.var,
-                    value: e.value,
-                    reason: e.reason,
-                }
-            })?,
+            egress: self.egress.clone(),
             listen: self.listen_http.clone(),
             version: self.version.clone(),
             readiness,

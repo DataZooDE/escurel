@@ -398,7 +398,7 @@ them is `escurel:admin`-gated and so not part of the normal agent surface:
   connection strings are parsed with libpq's grammar and checked against the operator's egress policy when first
   used (only `host`, `hostaddr`, `port`, `dbname`, `user`, `password`, `sslmode`, `options`, `application_name`,
   `connect_timeout` are accepted; every host must be public); `sqlite` file paths AND `json_dir` / `parquet_dir`
-  globs must lie under `ESCUREL_SQL_FILE_DIRS` (unset = none).
+  globs must lie under `ESCUREL_SQL_FILE_DIRS` (unset = none). The policy is also applied when the writer REBUILDS its views at boot: a binding already stored that the policy no longer allows (the operator narrowed `ESCUREL_SQL_FILE_DIRS` or the egress rules since) is not re-attached — its view is simply absent until the policy allows it again.
 - `validate_bindings()` — re-probe every `sql_view` for schema drift; a
   `binding_degraded` view reads fail-closed.
 - `register_endpoint(name, kind, base_url, [secret_ref | secret])` / `list_endpoints()` — the REST / MCP
