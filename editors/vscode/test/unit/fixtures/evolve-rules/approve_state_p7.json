@@ -1,0 +1,21 @@
+{
+  "applies_to": "new brain=llm experiments on exactly this instance only; a running search is never changed",
+  "approved_rule_set_sha256": "deef31dcec7a96a55cb130b8d69d2b73f777aa3ad8ea4dce84b6799e9858aa13",
+  "approver": "dev-user",
+  "data_sha256": "5dbe7300bc1fa283525882277372350346dffde7b545a719acfb2c70324e445d",
+  "idempotent": false,
+  "next_action": "evolve_start with approved_rule_set_sha256",
+  "pilot": "p7",
+  "rules": [
+    {
+      "rule": {
+        "column": "asset_id",
+        "kind": "fk_in",
+        "ref_column": "asset_id",
+        "ref_table": "p7_assets",
+        "table": "p7_state"
+      },
+      "rule_sha256": "b9040d21a11622e9190c4a8649f2e0ae51b7e7d795b3bd43e98b795f0a1ab0c8"
+    }
+  ]
+}

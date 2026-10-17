@@ -1,0 +1,68 @@
+{
+  "batch_id": "4ea17eaf715b481be06e66cbaafd82ab01c329028a8003d6368a3132a589cad5",
+  "candidates": [
+    {
+      "rule": {
+        "column": "product_id",
+        "kind": "fk_in",
+        "ref_column": "product_id",
+        "ref_table": "p5_products",
+        "table": "p5_state"
+      },
+      "rule_sha256": "4f7b2e9f0dbc6dd126c34190ebe358f118fe25260b3dc0f4fd6008f1675ff7fa"
+    },
+    {
+      "rule": {
+        "agg": "count",
+        "bound": 24,
+        "filter": {
+          "column": "listed",
+          "value": true
+        },
+        "kind": "agg_le",
+        "table": "p5_state"
+      },
+      "rule_sha256": "7952d9814609d3452ab4913d2c88dcca53fe6e22d3f2e53efca24bc2bf3da1cb"
+    }
+  ],
+  "candidates_count": 2,
+  "data_sha256": "7b388c873f112cd5a96781eb702320b1b4fd6003f4d5cbfc2e3cdd3ce8edbd99",
+  "dsl_version": "rules_v1",
+  "evidence_scope": "replay_of_reference_and_planted_programs_on_this_exact_instance",
+  "idempotent": false,
+  "next_action": "evolve_rules_test",
+  "pilot": "p5",
+  "programs": [
+    {
+      "intended_rule_sha256": null,
+      "name": "seed",
+      "role": "positive",
+      "sql_sha256": "df38c8cf91129841bbb3f63849b30d832eb6099bd880d0e47cb6f07fff9efa57"
+    },
+    {
+      "intended_rule_sha256": null,
+      "name": "top_n",
+      "role": "positive",
+      "sql_sha256": "920991d41987cd51f21798d79750f551e6d86395688c65fa2458b29ab5383726"
+    },
+    {
+      "intended_rule_sha256": null,
+      "name": "substitution_aware",
+      "role": "positive",
+      "sql_sha256": "afea46348129bcc920559bff431bcb145b87408979d8b9fbf4b86fa54148e009"
+    },
+    {
+      "intended_rule_sha256": "4f7b2e9f0dbc6dd126c34190ebe358f118fe25260b3dc0f4fd6008f1675ff7fa",
+      "name": "unknown_product",
+      "role": "negative",
+      "sql_sha256": "1e9c8f42d7cdfd9854db0736fa51047e7d96d57655827e3dd508246a6680bfbb"
+    },
+    {
+      "intended_rule_sha256": "7952d9814609d3452ab4913d2c88dcca53fe6e22d3f2e53efca24bc2bf3da1cb",
+      "name": "list_everything",
+      "role": "negative",
+      "sql_sha256": "783832e733c76c90539c52d5c67bc58c94b1e7d9efe514c45d36f215e69b429b"
+    }
+  ],
+  "proposer": "state_rules_v1"
+}

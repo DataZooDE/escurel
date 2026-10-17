@@ -18,7 +18,8 @@ import {
 /**
  * Real JSON captured from a merged evolve-agent (policy v2, #44) running on the 16 SKU x 90 day
  * source of the e2e spec, and from a P0 state batch (state_replay_v1). Nothing here is hand-written
- * except the cases that are marked "derived" (an old v1 record, hostile fields added on purpose).
+ * except hostile fields added on purpose; the old v1 record is real output of the commit before #44
+ * (see fixtures/evolve-rules/test_v1_real.provenance.txt).
  */
 const fx = (name: string): any =>
   JSON.parse(readFileSync(join(__dirname, 'fixtures/evolve-rules', name + '.json'), 'utf8'));
@@ -178,28 +179,34 @@ describe('policy v2 report (real service output)', () => {
   });
 });
 
-describe('policy v1 report (derived: the pre-#44 shape, no version and no bound)', () => {
-  const v1 = structuredClone(v2);
-  delete v1.policy.policy_version;
-  delete v1.upper_bound_note;
-  for (const e of v1.evidence) {
-    for (const k of [
-      'breach_rate_observed',
-      'breach_rate_upper_bound',
-      'upper_bound_confidence',
-      'upper_bound_method',
-      'bound_statement',
-    ])
-      delete e[k];
-  }
+describe('policy v1 report (real service output of anofox-evolve 9afa37b, before policy v2)', () => {
+  const v1 = fx('test_v1_real');
+
+  it('is a genuine pre-#44 record: no policy version, no bound anywhere', () => {
+    expect(v1.policy.policy_version).toBeUndefined();
+    expect(v1.upper_bound_note).toBeUndefined();
+    for (const e of v1.evidence) expect(e.breach_rate_upper_bound).toBeUndefined();
+  });
 
   it('is read as binom_holm_v1 and states that no bound was computed for it', () => {
     const report = parseTestReport(v1);
     expect(report.policy.version).toBe('binom_holm_v1');
+    expect(report.policy.caps).toBeUndefined();
     const text = renderReport(report);
     expect(text).toContain('binom_holm_v1');
     expect(text).toMatch(/no upper bound/i);
     expect(text).not.toContain('breach rate is below');
+    expect(text).not.toMatch(/caps/i);
+  });
+
+  it('the same stored test read back through the policy-v2 service names the caps as new-test only', () => {
+    const viaV2 = fx('test_v1_via_v2_service');
+    expect(viaV2.test_sha256).toBe(v1.test_sha256);
+    const report = parseTestReport(viaV2);
+    expect(report.policy.version).toBe('binom_holm_v1');
+    expect(report.policy.caps).toEqual({ pMaxMax: 0.05, alphaMax: 0.1 });
+    const text = renderReport(report);
+    expect(text).toMatch(/no upper bound/i);
     expect(text).toMatch(/caps apply to new tests only/i);
   });
 });

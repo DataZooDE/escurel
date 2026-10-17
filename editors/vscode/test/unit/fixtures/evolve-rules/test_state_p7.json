@@ -1,0 +1,55 @@
+{
+  "already_tested": false,
+  "batch_id": "ac69afed3401e02ab3ac288b961cd8068b1ac206262aa1dbe1a0a640c94295e6",
+  "candidates_before": null,
+  "claim": "survived a pre-registered confirmation test on this training data with multiplicity control; not a law of the world, and not tested on the sealed holdout",
+  "evidence": [
+    {
+      "decision": "supported",
+      "reason": null,
+      "rule": {
+        "column": "asset_id",
+        "kind": "fk_in",
+        "ref_column": "asset_id",
+        "ref_table": "p7_assets",
+        "table": "p7_state"
+      },
+      "rule_sha256": "b9040d21a11622e9190c4a8649f2e0ae51b7e7d795b3bd43e98b795f0a1ab0c8"
+    }
+  ],
+  "insufficient_evidence": 0,
+  "next_action": "a person approves supported rules with evolve_rules_approve",
+  "policy": {
+    "kind": "state_replay_v1"
+  },
+  "rejected": 0,
+  "replays": [
+    {
+      "breaches": {
+        "b9040d21a11622e9190c4a8649f2e0ae51b7e7d795b3bd43e98b795f0a1ab0c8": 0
+      },
+      "program": "seed",
+      "role": "positive",
+      "skill_guard_breach": null
+    },
+    {
+      "breaches": {
+        "b9040d21a11622e9190c4a8649f2e0ae51b7e7d795b3bd43e98b795f0a1ab0c8": 0
+      },
+      "program": "top_return",
+      "role": "positive",
+      "skill_guard_breach": null
+    },
+    {
+      "breaches": {
+        "b9040d21a11622e9190c4a8649f2e0ae51b7e7d795b3bd43e98b795f0a1ab0c8": 1
+      },
+      "program": "unknown_asset",
+      "role": "negative",
+      "skill_guard_breach": "unknown_asset"
+    }
+  ],
+  "split": null,
+  "supported": 1,
+  "test_sha256": "3ca95ccc936d915de5736fd12ce962f4c8accfbce507c9ead39f8e4e395b00e5"
+}
