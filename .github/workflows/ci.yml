@@ -77,6 +77,10 @@ jobs:
       - name: Release version tests
         run: bash scripts/test-release-version.sh
 
+      # `git tag -m` strips `#` lines (the BREAKING headings): scripts/release-tag.sh keeps them.
+      - name: Release tag message tests
+        run: bash scripts/test-release-tag.sh
+
       # rust-toolchain.toml drives the channel + components; rustup
       # honours it automatically on first invocation.
       - name: Install Rust toolchain
