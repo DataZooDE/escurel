@@ -24,11 +24,18 @@ escurel-server.
 | `ESCUREL_TENANT` | default | single-tenant indexer's tenant id |
 | `ESCUREL_REBUILD_INDEX_ON_BOOT` | if-missing | derived-index boot policy: `if-missing` (reuse an existing DuckDB; rebuild only when absent, and the default everywhere including the container) or `always` (drop + rebuild from the markdown LaneStore each start — re-embeds the whole corpus, so expect minutes) |
 | `ESCUREL_STORAGE_BACKEND` | fs | `fs`, `s3`, `gcs` or `duckvfs` |
-| `ESCUREL_STORAGE_DUCKVFS_ROOT` | — | root URL, e.g. `gdrive://escurel/lanes` (backend=duckvfs); its scheme picks the filesystem |
+| `ESCUREL_STORAGE_DUCKVFS_ROOT` | — | root URL, e.g. `gdrive://escurel/lanes` or `sharepoint://escurel/lanes` (backend=duckvfs); its scheme picks the filesystem and the extension that is loaded |
 | `ESCUREL_STORAGE_DUCKVFS_EXTENSION` | — | path to a built `gdrive.duckdb_extension` (backend=duckvfs); needed for every scheme, not only `gdrive://`. Prefer `…_EXTENSION_REPO` — a path is a local build a container does not have |
 | `ESCUREL_STORAGE_DUCKVFS_EXTENSION_REPO` | — | `community` (the DuckDB community repository) or a repository URL, used when `…_EXTENSION` is unset. Setting NEITHER skips the load rather than failing, so the store opens and the first WRITE fails on a missing `write_blob` |
 | `ESCUREL_STORAGE_DUCKVFS_DRIVE_ID` | — | Shared Drive id `0A…`; REQUIRED for a `gdrive://` root, else the store would silently target the credential's My Drive |
 | `ESCUREL_STORAGE_DUCKVFS_DRIVE_SCOPE` | …/auth/drive | OAuth scope; the default is read/write because the extension's own `drive.readonly` default cannot serve a lane store |
+| `ESCUREL_STORAGE_DUCKVFS_SHAREPOINT_TENANT_ID` | — | Entra tenant id for a `sharepoint://` root (backend=duckvfs); REQUIRED for that scheme and refused for any other |
+| `ESCUREL_STORAGE_DUCKVFS_SHAREPOINT_CLIENT_ID` | — | Entra app (client) id for a `sharepoint://` root; REQUIRED for that scheme |
+| `ESCUREL_STORAGE_DUCKVFS_SHAREPOINT_CLIENT_SECRET` | — | the app's client secret for a `sharepoint://` root; never logged or printed. Prefer `…_CLIENT_SECRET_FILE` so the secret is mounted rather than exported. Exactly one of the two is REQUIRED |
+| `ESCUREL_STORAGE_DUCKVFS_SHAREPOINT_CLIENT_SECRET_FILE` | — | path to a file holding the client secret (surrounding whitespace trimmed); the alternative to `…_CLIENT_SECRET`, refused when both are set |
+| `ESCUREL_STORAGE_DUCKVFS_SHAREPOINT_DRIVE_ID` | — | Graph drive id `b!…` of the document library the paths hang off; exactly one of this and `…_SITE_ID` is REQUIRED, else the store would have no library to root the paths in |
+| `ESCUREL_STORAGE_DUCKVFS_SHAREPOINT_SITE_ID` | — | Graph site id (`host,siteId,webId`), resolved to the site's default library; the alternative to `…_DRIVE_ID` |
+| `ESCUREL_STORAGE_DUCKVFS_SHAREPOINT_GRAPH_SCOPE` | — | OAuth scope override (`GRAPH_SCOPE`); the extension defaults to `<graph endpoint>/.default` |
 | `ESCUREL_STORAGE_GCS_BUCKET` | — | GCS bucket (backend=gcs) |
 | `ESCUREL_STORAGE_GCS_PREFIX` |  | GCS key prefix (backend=gcs) |
 | `ESCUREL_STORAGE_GCS_CREDENTIALS_PATH` | — | service-account key file (backend=gcs); unset = ADC, i.e. the metadata server on GCP |

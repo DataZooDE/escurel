@@ -535,6 +535,10 @@ pub struct DuckVfsConfig {
     pub drive_id: Option<String>,
     /// OAuth scope override; defaults to read/write `drive`.
     pub drive_scope: Option<String>,
+    /// App-registration credentials for a `sharepoint://` root. Set exactly
+    /// when the root's scheme is `sharepoint://`; its client secret prints as
+    /// `<redacted>` in `Debug`.
+    pub sharepoint: Option<escurel_storage::SharepointCredentials>,
 }
 
 /// Resolved, validated configuration for the server binary.
@@ -721,6 +725,113 @@ where
     fn get(&self, key: &str) -> Option<String> {
         self(key)
     }
+}
+
+/// The `ESCUREL_STORAGE_DUCKVFS_SHAREPOINT_*` variables for a `sharepoint://`
+/// root. `Ok(None)` for any other root, which must not carry them: a
+/// credential that is set but never used is a misconfiguration, and refusing
+/// it keeps a stray client secret from sitting unnoticed in a pod's
+/// environment.
+///
+/// The client secret comes from `…_CLIENT_SECRET` or, so a pod can mount it
+/// instead of exporting it, from the file named by `…_CLIENT_SECRET_FILE`
+/// (surrounding whitespace trimmed). Both set is refused as ambiguous. No
+/// error from here carries the secret, only the variable names.
+fn parse_sharepoint_credentials<E: EnvSource + ?Sized>(
+    env: &E,
+    root: &str,
+) -> Result<Option<escurel_storage::SharepointCredentials>, ConfigError> {
+    const VARS: [&str; 7] = [
+        "ESCUREL_STORAGE_DUCKVFS_SHAREPOINT_TENANT_ID",
+        "ESCUREL_STORAGE_DUCKVFS_SHAREPOINT_CLIENT_ID",
+        "ESCUREL_STORAGE_DUCKVFS_SHAREPOINT_CLIENT_SECRET",
+        "ESCUREL_STORAGE_DUCKVFS_SHAREPOINT_CLIENT_SECRET_FILE",
+        "ESCUREL_STORAGE_DUCKVFS_SHAREPOINT_DRIVE_ID",
+        "ESCUREL_STORAGE_DUCKVFS_SHAREPOINT_SITE_ID",
+        "ESCUREL_STORAGE_DUCKVFS_SHAREPOINT_GRAPH_SCOPE",
+    ];
+    let get = |name: &str| env.get(name).filter(|v| !v.is_empty());
+    if !root.starts_with("sharepoint://") {
+        if let Some(var) = VARS.iter().find(|v| get(v).is_some()) {
+            return Err(ConfigError::InvalidValue {
+                var,
+                value: "<redacted>".to_owned(),
+                reason: "only valid with a sharepoint:// ESCUREL_STORAGE_DUCKVFS_ROOT",
+            });
+        }
+        return Ok(None);
+    }
+    let required = |name: &'static str| {
+        get(name).ok_or(ConfigError::MissingStorageField {
+            var: name,
+            backend: "duckvfs",
+        })
+    };
+    let tenant_id = required("ESCUREL_STORAGE_DUCKVFS_SHAREPOINT_TENANT_ID")?;
+    let client_id = required("ESCUREL_STORAGE_DUCKVFS_SHAREPOINT_CLIENT_ID")?;
+    let secret = match (
+        get("ESCUREL_STORAGE_DUCKVFS_SHAREPOINT_CLIENT_SECRET"),
+        get("ESCUREL_STORAGE_DUCKVFS_SHAREPOINT_CLIENT_SECRET_FILE"),
+    ) {
+        (Some(_), Some(_)) => {
+            return Err(ConfigError::InvalidValue {
+                var: "ESCUREL_STORAGE_DUCKVFS_SHAREPOINT_CLIENT_SECRET_FILE",
+                value: "<redacted>".to_owned(),
+                reason: "set either …_CLIENT_SECRET or …_CLIENT_SECRET_FILE, not both",
+            });
+        }
+        (Some(secret), None) => secret,
+        (None, Some(path)) => std::fs::read_to_string(&path)
+            .map(|raw| raw.trim().to_owned())
+            .map_err(|_| ConfigError::InvalidValue {
+                var: "ESCUREL_STORAGE_DUCKVFS_SHAREPOINT_CLIENT_SECRET_FILE",
+                value: path,
+                reason: "could not read the client secret file",
+            })?,
+        (None, None) => {
+            return Err(ConfigError::MissingStorageField {
+                var: "ESCUREL_STORAGE_DUCKVFS_SHAREPOINT_CLIENT_SECRET",
+                backend: "duckvfs",
+            });
+        }
+    };
+    let drive_id = get("ESCUREL_STORAGE_DUCKVFS_SHAREPOINT_DRIVE_ID");
+    let site_id = get("ESCUREL_STORAGE_DUCKVFS_SHAREPOINT_SITE_ID");
+    // Without a target the extension has no library to root the paths in
+    // (and the failure would come on the first read); both is ambiguous.
+    match (&drive_id, &site_id) {
+        (None, None) => {
+            return Err(ConfigError::MissingStorageField {
+                var: "ESCUREL_STORAGE_DUCKVFS_SHAREPOINT_DRIVE_ID (or …_SITE_ID)",
+                backend: "duckvfs",
+            });
+        }
+        (Some(_), Some(_)) => {
+            return Err(ConfigError::InvalidValue {
+                var: "ESCUREL_STORAGE_DUCKVFS_SHAREPOINT_SITE_ID",
+                value: "<redacted>".to_owned(),
+                reason: "set either …_DRIVE_ID or …_SITE_ID, not both",
+            });
+        }
+        _ => {}
+    }
+    let creds = escurel_storage::SharepointCredentials {
+        tenant_id,
+        client_id,
+        client_secret: escurel_storage::SecretString::new(secret),
+        drive_id,
+        site_id,
+        graph_scope: get("ESCUREL_STORAGE_DUCKVFS_SHAREPOINT_GRAPH_SCOPE"),
+    };
+    creds.validate().map_err(|e| ConfigError::InvalidValue {
+        var: "ESCUREL_STORAGE_DUCKVFS_SHAREPOINT_CLIENT_SECRET",
+        value: "<redacted>".to_owned(),
+        reason: match e {
+            escurel_storage::CredentialError::Empty(_) => "a required sharepoint field is blank",
+            _ => "a sharepoint field contains a control character",
+        },
+    })?;
+    Ok(Some(creds))
 }
 
 impl EscurelConfig {
@@ -929,6 +1040,7 @@ impl EscurelConfig {
                     backend: "duckvfs",
                 });
             }
+            let sharepoint = parse_sharepoint_credentials(env, &root)?;
             Some(DuckVfsConfig {
                 root,
                 extension_path: env
@@ -941,6 +1053,7 @@ impl EscurelConfig {
                 drive_scope: env
                     .get("ESCUREL_STORAGE_DUCKVFS_DRIVE_SCOPE")
                     .filter(|v| !v.is_empty()),
+                sharepoint,
             })
         } else {
             None
@@ -2337,6 +2450,7 @@ impl EscurelConfig {
             extension_repo: cfg.extension_repo.clone(),
             drive_id: cfg.drive_id.clone(),
             drive_scope: cfg.drive_scope.clone(),
+            sharepoint: cfg.sharepoint.clone(),
         })
         .map_err(|e| ConfigError::InvalidValue {
             var: "ESCUREL_STORAGE_DUCKVFS_ROOT",

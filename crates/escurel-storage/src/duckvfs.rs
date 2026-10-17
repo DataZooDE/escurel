@@ -68,7 +68,7 @@ use duckdb::types::Value;
 use sha2::{Digest, Sha256};
 use url::Url;
 
-use crate::{Key, LaneStore, Result, StoreError, Version};
+use crate::{Key, LaneStore, Result, SharepointCredentials, StoreError, Version};
 
 /// Everything needed to reach a filesystem through DuckDB.
 #[derive(Debug, Clone, Default)]
@@ -105,12 +105,45 @@ pub struct DuckVfsStoreConfig {
     /// the extension's own default is the narrower `drive.readonly`, which
     /// cannot serve a lane store.
     pub drive_scope: Option<String>,
+    /// App-registration credentials for a `sharepoint://` root. Required
+    /// for that scheme and refused for any other, so a stray credential can
+    /// never silently ride along with a different provider.
+    pub sharepoint: Option<SharepointCredentials>,
+}
+
+/// Which extension serves the root's scheme.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Provider {
+    /// `gdrive://`, and the home of the scheme-generic `write_blob` family
+    /// for every other root (`file://`, `s3://`, …) until they ship in core.
+    Gdrive,
+    /// `sharepoint://`, a sibling extension exposing the same functions.
+    Sharepoint,
+}
+
+impl Provider {
+    fn for_root(root: &str) -> Self {
+        if root.starts_with("sharepoint://") {
+            Self::Sharepoint
+        } else {
+            Self::Gdrive
+        }
+    }
+
+    /// The extension name for `INSTALL … FROM <repo>` / `LOAD`.
+    fn extension(self) -> &'static str {
+        match self {
+            Self::Gdrive => "gdrive",
+            Self::Sharepoint => "sharepoint",
+        }
+    }
 }
 
 /// A [`LaneStore`] over any filesystem DuckDB can reach.
 pub struct DuckVfsStore {
     conn: Arc<Mutex<Connection>>,
     root: String,
+    provider: Provider,
 }
 
 /// The DuckDB community repository, named rather than spelled as a URL.
@@ -134,6 +167,7 @@ impl DuckVfsStore {
     /// Returns [`StoreError::Io`] if DuckDB cannot open, the extension
     /// cannot be loaded, or the secret is rejected.
     pub fn new(cfg: &DuckVfsStoreConfig) -> Result<Self> {
+        let provider = check_provider_config(cfg)?;
         // Unsigned extensions must be permitted BEFORE the connection is
         // made: a locally-built .duckdb_extension carries no signature, and
         // the flag is read at database-open time, not at LOAD time.
@@ -154,16 +188,31 @@ impl DuckVfsStore {
             // quoted; a repository URL must be. Quoting the keyword makes
             // DuckDB look for a repository literally named "community" and
             // fail with a message that says nothing about quoting.
+            let name = provider.extension();
             let install = if repo == COMMUNITY_REPO {
-                "INSTALL gdrive FROM community;".to_owned()
+                format!("INSTALL {name} FROM community;")
             } else {
-                format!("INSTALL gdrive FROM '{}';", escape_sql(repo))
+                format!("INSTALL {name} FROM '{}';", escape_sql(repo))
             };
-            conn.execute_batch(&format!("{install} LOAD gdrive;"))
+            conn.execute_batch(&format!("{install} LOAD {name};"))
                 .map_err(|e| duck_err("install extension", e))?;
         }
 
-        if cfg.root.starts_with("gdrive://") {
+        if provider == Provider::Sharepoint {
+            let creds = cfg
+                .sharepoint
+                .as_ref()
+                .expect("checked by check_provider_config");
+            // The statement carries the client secret, and DuckDB echoes the
+            // statement in some errors: scrub before the message leaves.
+            conn.execute_batch(&sharepoint_secret_sql(creds))
+                .map_err(|e| {
+                    duck_err(
+                        "create sharepoint secret",
+                        creds.client_secret.scrub(&e.to_string()),
+                    )
+                })?;
+        } else if cfg.root.starts_with("gdrive://") {
             conn.execute_batch(&gdrive_secret_sql(cfg))
                 .map_err(|e| duck_err("create gdrive secret", e))?;
         }
@@ -171,6 +220,7 @@ impl DuckVfsStore {
         Ok(Self {
             conn: Arc::new(Mutex::new(conn)),
             root: cfg.root.trim_end_matches('/').to_owned(),
+            provider,
         })
     }
 
@@ -234,6 +284,9 @@ impl LaneStore for DuckVfsStore {
     }
 
     async fn write(&self, key: &Key, body: Bytes) -> Result<Version> {
+        if self.provider == Provider::Sharepoint {
+            check_sharepoint_name(key)?;
+        }
         let url = self.object_url(key);
         let version = content_version(&body);
         self.with_conn(move |conn| {
@@ -413,6 +466,80 @@ fn gdrive_secret_sql(cfg: &DuckVfsStoreConfig) -> String {
     sql
 }
 
+/// Validate the root/credential pairing and pick the provider.
+///
+/// A `sharepoint://` root needs complete credentials; credentials on any
+/// other root are a misconfiguration worth a loud refusal rather than a
+/// secret that is never used.
+fn check_provider_config(cfg: &DuckVfsStoreConfig) -> Result<Provider> {
+    let provider = Provider::for_root(&cfg.root);
+    match (provider, &cfg.sharepoint) {
+        (Provider::Sharepoint, Some(creds)) => {
+            creds
+                .validate()
+                .map_err(|e| StoreError::Io(std::io::Error::other(e.to_string())))?;
+        }
+        (Provider::Sharepoint, None) => {
+            return Err(duck_err(
+                "config",
+                "a sharepoint:// root needs sharepoint credentials (tenant, client id, client secret and a drive or site id)",
+            ));
+        }
+        (Provider::Gdrive, Some(_)) => {
+            return Err(duck_err(
+                "config",
+                "sharepoint credentials were given for a root that is not sharepoint://",
+            ));
+        }
+        (Provider::Gdrive, None) => {}
+    }
+    Ok(provider)
+}
+
+/// `CREATE SECRET` for the `sharepoint` extension's `client_credentials`
+/// provider. `GRAPH_SCOPE`, never `SCOPE`: DuckDB reserves `SCOPE` for the
+/// secret's path-matching prefix, so an OAuth scope under that name would
+/// silently rescope the secret to match nothing.
+fn sharepoint_secret_sql(creds: &SharepointCredentials) -> String {
+    let mut sql = format!(
+        "CREATE OR REPLACE SECRET escurel_lanes (TYPE sharepoint, PROVIDER client_credentials, \
+         TENANT_ID '{}', CLIENT_ID '{}', CLIENT_SECRET '{}'",
+        escape_sql(&creds.tenant_id),
+        escape_sql(&creds.client_id),
+        escape_sql(creds.client_secret.expose()),
+    );
+    if let Some(drive_id) = &creds.drive_id {
+        sql.push_str(&format!(", DRIVE_ID '{}'", escape_sql(drive_id)));
+    }
+    if let Some(site_id) = &creds.site_id {
+        sql.push_str(&format!(", SITE_ID '{}'", escape_sql(site_id)));
+    }
+    if let Some(scope) = &creds.graph_scope {
+        sql.push_str(&format!(", GRAPH_SCOPE '{}'", escape_sql(scope)));
+    }
+    sql.push_str(");");
+    sql
+}
+
+/// SharePoint refuses these characters in a file or folder name. The
+/// extension rejects them up front too, but a lane write that fails deep in
+/// DuckDB reads as an IO fault; naming the key and the character makes it a
+/// content problem the caller can act on.
+const SHAREPOINT_FORBIDDEN: [char; 9] = ['"', '*', ':', '<', '>', '?', '\\', '|', '\0'];
+
+fn check_sharepoint_name(key: &Key) -> Result<()> {
+    let path = key.path();
+    match path.chars().find(|c| SHAREPOINT_FORBIDDEN.contains(c)) {
+        Some(c) => Err(StoreError::Io(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!(
+                "sharepoint cannot store {path:?}: {c:?} is not allowed in a SharePoint file name"
+            ),
+        ))),
+        None => Ok(()),
+    }
+}
+
 /// Escape single quotes for a SQL string literal. These values come from
 /// operator configuration rather than user input, but they are spliced
 /// rather than bound (DuckDB does not parameterise `CREATE SECRET` or
@@ -455,6 +582,7 @@ mod tests {
             extension_repo: None,
             drive_id: None,
             drive_scope: None,
+            sharepoint: None,
         }
     }
 
@@ -466,6 +594,7 @@ mod tests {
         let store = DuckVfsStore {
             conn: Arc::new(Mutex::new(Connection::open_in_memory().unwrap())),
             root: "gdrive://escurel/lanes".to_owned(),
+            provider: Provider::Gdrive,
         };
         let key = Key::new("acme", "skills/crm.md").unwrap();
         assert_eq!(
@@ -495,6 +624,7 @@ mod tests {
             extension_repo: None,
             drive_id: Some("0AA5vtjzlyjnoUk9PVA".to_owned()),
             drive_scope: None,
+            sharepoint: None,
         };
         let sql = gdrive_secret_sql(&cfg);
         assert!(sql.contains("DRIVE_ID '0AA5vtjzlyjnoUk9PVA'"), "{sql}");
@@ -516,8 +646,236 @@ mod tests {
             extension_repo: None,
             drive_id: Some("it's-bad".to_owned()),
             drive_scope: None,
+            sharepoint: None,
         };
         assert!(gdrive_secret_sql(&cfg).contains("'it''s-bad'"));
+    }
+
+    fn sp_creds() -> SharepointCredentials {
+        SharepointCredentials {
+            tenant_id: "00000000-0000-0000-0000-000000000000".to_owned(),
+            client_id: "11111111-1111-1111-1111-111111111111".to_owned(),
+            client_secret: crate::SecretString::new("s3cr3t-value"),
+            drive_id: Some("b!AbCdEf".to_owned()),
+            site_id: None,
+            graph_scope: None,
+        }
+    }
+
+    fn sp_cfg(creds: Option<SharepointCredentials>) -> DuckVfsStoreConfig {
+        DuckVfsStoreConfig {
+            root: "sharepoint://escurel/lanes".to_owned(),
+            sharepoint: creds,
+            ..DuckVfsStoreConfig::default()
+        }
+    }
+
+    #[test]
+    fn provider_follows_the_root_scheme() {
+        assert_eq!(
+            Provider::for_root("sharepoint://escurel/lanes"),
+            Provider::Sharepoint
+        );
+        assert_eq!(Provider::for_root("gdrive://escurel"), Provider::Gdrive);
+        // Every other scheme keeps riding the gdrive extension's write_blob
+        // family, exactly as before.
+        assert_eq!(Provider::for_root("file:///tmp/x"), Provider::Gdrive);
+        assert_eq!(Provider::for_root("s3://bucket/p"), Provider::Gdrive);
+        assert_eq!(Provider::Sharepoint.extension(), "sharepoint");
+        assert_eq!(Provider::Gdrive.extension(), "gdrive");
+    }
+
+    #[test]
+    fn sharepoint_secret_uses_graph_scope_and_the_right_keys() {
+        let sql = sharepoint_secret_sql(&SharepointCredentials {
+            graph_scope: Some("https://graph.microsoft.com/.default".to_owned()),
+            ..sp_creds()
+        });
+        for needle in [
+            "TYPE sharepoint",
+            "PROVIDER client_credentials",
+            "TENANT_ID '00000000-0000-0000-0000-000000000000'",
+            "CLIENT_ID '11111111-1111-1111-1111-111111111111'",
+            "CLIENT_SECRET 's3cr3t-value'",
+            "DRIVE_ID 'b!AbCdEf'",
+            "GRAPH_SCOPE 'https://graph.microsoft.com/.default'",
+        ] {
+            assert!(sql.contains(needle), "{needle} missing from the statement");
+        }
+        assert!(!sql.contains(", SCOPE '"), "SCOPE would rescope the secret");
+        assert!(!sql.contains("SITE_ID"), "only one target is sent");
+        assert!(sql.starts_with("CREATE OR REPLACE SECRET escurel_lanes"));
+    }
+
+    #[test]
+    fn a_site_id_is_sent_as_site_id_not_drive_id() {
+        let sql = sharepoint_secret_sql(&SharepointCredentials {
+            drive_id: None,
+            site_id: Some("contoso.sharepoint.com,s,w".to_owned()),
+            ..sp_creds()
+        });
+        assert!(
+            sql.contains("SITE_ID 'contoso.sharepoint.com,s,w'"),
+            "{sql}"
+        );
+        assert!(!sql.contains("DRIVE_ID"), "{sql}");
+        assert!(
+            !sql.contains("GRAPH_SCOPE"),
+            "default scope is the extension's: {sql}"
+        );
+    }
+
+    #[test]
+    fn sharepoint_secret_literals_are_escaped() {
+        let sql = sharepoint_secret_sql(&SharepointCredentials {
+            client_secret: crate::SecretString::new("it's"),
+            ..sp_creds()
+        });
+        assert!(sql.contains("CLIENT_SECRET 'it''s'"), "{sql}");
+    }
+
+    #[test]
+    fn a_sharepoint_root_without_credentials_is_refused() {
+        let err = DuckVfsStore::new(&sp_cfg(None)).err().expect("refused");
+        assert!(err.to_string().contains("sharepoint credentials"), "{err}");
+    }
+
+    #[test]
+    fn incomplete_sharepoint_credentials_are_refused_before_duckdb() {
+        let err = DuckVfsStore::new(&sp_cfg(Some(SharepointCredentials {
+            drive_id: None,
+            ..sp_creds()
+        })))
+        .err()
+        .expect("refused");
+        assert!(err.to_string().contains("drive_id and site_id"), "{err}");
+        assert!(!err.to_string().contains("s3cr3t-value"), "{err}");
+    }
+
+    #[test]
+    fn sharepoint_credentials_on_another_root_are_refused() {
+        let cfg = DuckVfsStoreConfig {
+            root: "gdrive://escurel".to_owned(),
+            sharepoint: Some(sp_creds()),
+            ..DuckVfsStoreConfig::default()
+        };
+        let err = DuckVfsStore::new(&cfg).err().expect("refused");
+        assert!(err.to_string().contains("not sharepoint://"), "{err}");
+    }
+
+    #[test]
+    fn the_secret_never_appears_in_an_open_error() {
+        // No sharepoint extension is loaded here, so CREATE SECRET fails on
+        // an unknown type. Whatever DuckDB echoes, the secret must not
+        // survive into the error.
+        let err = DuckVfsStore::new(&sp_cfg(Some(sp_creds())))
+            .err()
+            .expect("secret type unknown without the extension");
+        assert!(!err.to_string().contains("s3cr3t-value"), "{err}");
+        assert!(!format!("{err:?}").contains("s3cr3t-value"), "{err:?}");
+    }
+
+    #[test]
+    fn sharepoint_forbidden_names_are_refused_with_the_character_named() {
+        let bad = Key::new("acme", "notes/why?.md").unwrap();
+        let err = check_sharepoint_name(&bad).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("'?'") && msg.contains("why?.md"), "{msg}");
+        for ch in ['"', '*', ':', '<', '>', '|', '\\'] {
+            let k = Key::new("acme", format!("a{ch}b.md"));
+            if let Ok(k) = k {
+                assert!(check_sharepoint_name(&k).is_err(), "{ch:?}");
+            }
+        }
+        let ok = Key::new("acme", "skills/crm-2026.md").unwrap();
+        check_sharepoint_name(&ok).expect("plain names pass");
+    }
+
+    /// The staged, extension-equipped checks. `#[ignore]`d for the same reason
+    /// the gdrive round trip is: they need a built `sharepoint.duckdb_extension`
+    /// (the erpl.io mirror serves one per DuckDB release), which CI does not
+    /// carry. An ordinary run REPORTS them ignored; run on purpose with
+    /// `ESCUREL_TEST_SHAREPOINT_EXTENSION=/path/sharepoint.duckdb_extension
+    /// cargo test -p escurel-storage --features duckvfs --lib -- --ignored sharepoint`.
+    /// None of them touches the network: a secret is only registered, never spent.
+    fn sharepoint_extension() -> String {
+        std::env::var("ESCUREL_TEST_SHAREPOINT_EXTENSION")
+            .expect("set ESCUREL_TEST_SHAREPOINT_EXTENSION to a built sharepoint.duckdb_extension")
+    }
+
+    #[test]
+    #[ignore = "needs ESCUREL_TEST_SHAREPOINT_EXTENSION (a built sharepoint.duckdb_extension)"]
+    fn a_sharepoint_store_registers_the_secret_with_the_real_extension() {
+        let store = DuckVfsStore::new(&DuckVfsStoreConfig {
+            extension_path: Some(sharepoint_extension()),
+            ..sp_cfg(Some(sp_creds()))
+        })
+        .expect("the extension accepts the statement escurel builds");
+        let conn = store.conn.lock().unwrap();
+        let (ty, provider, redacted): (String, String, String) = conn
+            .query_row(
+                "SELECT type, provider, secret_string FROM duckdb_secrets() WHERE name = 'escurel_lanes'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .expect("secret escurel_lanes is registered");
+        assert_eq!(ty, "sharepoint");
+        assert_eq!(provider, "client_credentials");
+        // DuckDB itself redacts the value in its listing; the keys we sent
+        // are the ones it recorded.
+        for key in ["tenant_id", "client_id", "drive_id"] {
+            assert!(redacted.contains(key), "{key} not recorded: {redacted}");
+        }
+        assert!(!redacted.contains("s3cr3t-value"), "{redacted}");
+    }
+
+    #[test]
+    #[ignore = "needs ESCUREL_TEST_SHAREPOINT_EXTENSION (a built sharepoint.duckdb_extension)"]
+    fn a_quote_in_a_sharepoint_value_cannot_inject_a_secret_option() {
+        // The extension rejects an unknown option ("Unknown parameter"), so
+        // an injected `BOGUS_OPTION` would fail the open. It opens, which
+        // shows the quote stayed inside its string literal.
+        let store = DuckVfsStore::new(&DuckVfsStoreConfig {
+            extension_path: Some(sharepoint_extension()),
+            ..sp_cfg(Some(SharepointCredentials {
+                graph_scope: Some("x', BOGUS_OPTION 'y".to_owned()),
+                ..sp_creds()
+            }))
+        })
+        .expect("the quote is escaped, not interpreted");
+        let conn = store.conn.lock().unwrap();
+        let recorded: String = conn
+            .query_row(
+                "SELECT secret_string FROM duckdb_secrets() WHERE name = 'escurel_lanes'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(
+            !recorded.to_lowercase().contains("bogus_option="),
+            "{recorded}"
+        );
+    }
+
+    #[test]
+    #[ignore = "needs ESCUREL_TEST_SHAREPOINT_EXTENSION (a built sharepoint.duckdb_extension)"]
+    fn a_sharepoint_write_with_a_forbidden_name_fails_before_any_io() {
+        let store = DuckVfsStore::new(&DuckVfsStoreConfig {
+            extension_path: Some(sharepoint_extension()),
+            ..sp_cfg(Some(sp_creds()))
+        })
+        .expect("open");
+        let key = Key::new("acme", "notes/a:b.md").unwrap();
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        let err = rt
+            .block_on(store.write(&key, Bytes::from_static(b"x")))
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("not allowed in a SharePoint"),
+            "{err}"
+        );
     }
 
     #[test]

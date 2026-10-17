@@ -39,6 +39,7 @@ fn store_and_dir() -> Option<(DuckVfsStore, TempDir)> {
         extension_repo: None,
         drive_id: None,
         drive_scope: None,
+        sharepoint: None,
     })
     .expect("open duckvfs store");
     Some((store, dir))

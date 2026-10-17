@@ -4,6 +4,16 @@ The skill version tracks the consumer-facing contract, not the Escurel
 binary version. The Escurel repo's checked-out git ref is the true version
 pin (see `SKILL.md` → "How this skill is installed").
 
+## 0.25.0 — the `duckvfs` lane store can sit on SharePoint
+
+Env only; no tool or wire change. `ESCUREL_STORAGE_BACKEND=duckvfs` with `ESCUREL_STORAGE_DUCKVFS_ROOT=sharepoint://…`
+loads the `sharepoint` extension (not `gdrive`) and registers its client-credentials secret from
+`ESCUREL_STORAGE_DUCKVFS_SHAREPOINT_{TENANT_ID,CLIENT_ID,CLIENT_SECRET|CLIENT_SECRET_FILE,DRIVE_ID|SITE_ID,GRAPH_SCOPE}`.
+Fail-closed: every credential and exactly one of drive/site id is required, and these variables are refused on any other
+root. A key containing a character SharePoint forbids (`" * : < > ? \ |`) is refused at write time, naming the
+character. The lake (`ESCUREL_DUCKLAKE_DATA_PATH`) is still Drive/GCS/S3 only. See `09-local-iteration.md`,
+`docs/deploy/sharepoint-lanes.md`.
+
 ## 0.24.0 — a stopped runner's status record is collected
 
 Behaviour only; no new field or tool. Every `report_runner_status` also deletes the other `runner-status:*`
