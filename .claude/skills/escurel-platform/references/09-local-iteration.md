@@ -138,7 +138,8 @@ honest. Also there: `escurel_tool_calls`, `escurel_tool_latency_ms`,
   `ESCUREL_SERVER_DATA_DIR`, `ESCUREL_SERVER_LISTEN_HTTP`, `ESCUREL_CONFIG`,
   `ESCUREL_TENANT`, `ESCUREL_SEED_DIR`, `ESCUREL_AUTH_*`,
   `ESCUREL_EMBEDDING_*`, `ESCUREL_STORAGE_*` (`_S3_*` / `_GCS_*` /
-  `_DUCKVFS_*`), `ESCUREL_INDEX_BACKEND` + `ESCUREL_DUCKLAKE_*`. In
+  `_DUCKVFS_*`; a `sharepoint://` root adds `_DUCKVFS_SHAREPOINT_*`, see
+  `docs/deploy/sharepoint-lanes.md`), `ESCUREL_INDEX_BACKEND` + `ESCUREL_DUCKLAKE_*`. In
   production your app doesn't set these — the deployment does; locally you
   set them yourself. The authoritative list is the module doc comment at
   the top of `crates/escurel-server/src/config.rs`, which is generated from
