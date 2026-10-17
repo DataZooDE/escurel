@@ -28,8 +28,11 @@ declare -A CRATE=(
   [binary_boots]=escurel-server
   [connect_retry]=escurel-client
   [gateway_not_ready]=escurel-runner
+  [sigterm_drain]=escurel-runner
+  [workflow_end_to_end]=escurel-runner
+  [remote_rest_rows]=escurel-server
 )
-ORDER=(promotion_cascades runner_status agent_token_narrowing gateway_not_ready rows_paging_keys binary_boots connect_retry)
+ORDER=(promotion_cascades runner_status agent_token_narrowing gateway_not_ready rows_paging_keys binary_boots connect_retry sigterm_drain workflow_end_to_end remote_rest_rows)
 if [ "$#" -gt 0 ]; then
   ORDER=("$@")
   for t in "${ORDER[@]}"; do [ -n "${CRATE[$t]:-}" ] || { echo "unknown test file: $t (known: ${!CRATE[*]})" >&2; exit 2; }; done
