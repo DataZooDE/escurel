@@ -30,6 +30,12 @@ Skill version `0.24.0`. Every consumer that writes pages or reads the tool surfa
 
 ### Fixed
 
+- **The publish guards fail closed when the lake cannot be read.** The empty-corpus and the partial-corpus guards
+  compared against a lake page count that was `.unwrap_or(0)`: a failed read looked like an empty lake, so neither
+  guard fired and the whole-corpus overwrite went ahead. The count now propagates its error
+  (`SnapshotError::LakePagesUnreadable`, refused before any table is overwritten); a lake with no `pages` table yet
+  is still empty and publishes.
+
 - **Object-store directory connectors can be operator-authorized.** `json_dir` and `parquet_dir`
   sources under `s3://` / `gs://` now pass the gateway policy when their URL lies beneath an
   `ESCUREL_SQL_OBJECT_PREFIXES` entry. The default remains deny. Consumers with remote directory

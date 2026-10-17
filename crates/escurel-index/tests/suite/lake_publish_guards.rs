@@ -285,3 +285,49 @@ async fn a_stale_lake_adopted_over_a_migrated_lane_quarantines_and_apply_makes_i
     );
     assert_eq!(lake_pages(&e.cfg), 6);
 }
+
+/// Damage the lake CATALOG (not the data): the DuckDB-file catalog still opens and the lake still
+/// attaches, but the rows of its tables cannot be listed (a catalog database restored without one of its
+/// metadata tables). This is the failure shape of a catalog that answers the attach and then errors on a read.
+fn damage_lake_catalog(cfg: &LakeConfig) {
+    let conn = Connection::open(&cfg.catalog_dsn).unwrap();
+    conn.execute_batch("ALTER TABLE ducklake_data_file RENAME TO ducklake_data_file_gone;")
+        .unwrap();
+}
+
+#[tokio::test]
+async fn a_publish_whose_lake_page_count_cannot_be_read_is_refused_not_treated_as_an_empty_lake() {
+    let e = env_with(14, None).await; // 15 pages
+    publish_lake(&e.indexer, &e.cfg, None)
+        .await
+        .expect("first publish");
+    damage_lake_catalog(&e.cfg);
+
+    // A partial index (4 of 15 pages) is exactly what the partial-publish guard exists to stop; with the
+    // lake unreadable the guard has to fail CLOSED, not read the failure as "0 lake pages".
+    let db2 = TempDir::new().unwrap();
+    let partial = indexer_over(Arc::clone(&e.store), &db2);
+    let (sp, sb) = skill_page();
+    partial.update_page(sp, &sb).await.unwrap();
+    for i in 0..3 {
+        let (p, b) = instance_page(i);
+        partial.update_page(&p, &b).await.unwrap();
+    }
+    let err = publish_lake(&partial, &e.cfg, None)
+        .await
+        .expect_err("an unreadable lake must refuse the publish, not overwrite it");
+    assert!(
+        matches!(err, SnapshotError::LakePagesUnreadable { .. }),
+        "the guard must refuse BEFORE the overwrite, naming that the lake could not be read: {err}"
+    );
+}
+
+#[tokio::test]
+async fn an_empty_corpus_over_a_lake_that_has_no_pages_table_yet_still_publishes() {
+    // A brand-new lake has no `pages` table: that is "empty", not "unreadable".
+    let e = env_with(0, None).await;
+    publish_lake(&e.indexer, &e.cfg, None)
+        .await
+        .expect("the first publish into a fresh lake");
+    assert_eq!(lake_pages(&e.cfg), 1);
+}

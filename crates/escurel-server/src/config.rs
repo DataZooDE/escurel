@@ -328,6 +328,11 @@ impl From<SnapshotError> for ConfigError {
                 value: lake_pages.to_string(),
                 reason: "refused to publish a corpus far smaller than the lake it overwrites",
             },
+            SnapshotError::LakePagesUnreadable { .. } => ConfigError::InvalidValue {
+                var: "ESCUREL_DUCKLAKE_CATALOG_DSN",
+                value: String::new(),
+                reason: "refused to publish: the lake's page count could not be read",
+            },
             SnapshotError::RefusedIncompleteIndex => ConfigError::InvalidValue {
                 var: "ESCUREL_DUCKLAKE_CATALOG_DSN",
                 value: String::new(),
