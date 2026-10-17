@@ -244,11 +244,42 @@ pub fn compact_append_table(conn: &Connection, table: &str) -> Result<(), Snapsh
     Ok(())
 }
 
-/// Compact both append tables. Missing tables are skipped rather than
-/// failing: a deployment may have only one of the two surfaces on the
-/// lake.
-pub fn compact_append_tables(conn: &Connection) -> Result<(), SnapshotError> {
-    for table in [CHAT_PG_TABLE_NAME, EVENTS_PG_TABLE_NAME] {
+/// The append tables a lake can hold. Drafts follow the events selector, so they are here too: until now
+/// they were the one lake table nothing ever compacted.
+const APPEND_TABLES: [&str; 3] = [
+    CHAT_PG_TABLE_NAME,
+    EVENTS_PG_TABLE_NAME,
+    DRAFTS_PG_TABLE_NAME,
+];
+
+/// Rewrite an append table only once it holds at least this many data files. A rewrite is O(rows) and, on a
+/// Drive-backed lake, one upload plus one snapshot per table, so an idle tick must not do it; each capture adds
+/// one file, so this also bounds how many files a read opens between compactions.
+pub const DEFAULT_APPEND_COMPACT_MIN_FILES: u32 = 8;
+
+/// Data files in the table's current snapshot.
+fn data_file_count(conn: &Connection, table: &str) -> Result<i64, SnapshotError> {
+    // `table` is one of the fixed constants of this module, never caller-supplied.
+    Ok(conn.query_row(
+        &format!("SELECT count(*) FROM ducklake_list_files('{APPEND_LAKE_ALIAS}', '{table}')"),
+        [],
+        |r| r.get(0),
+    )?)
+}
+
+/// Compact every attached append table that has at least `min_files` data files (never fewer than 2: a
+/// single file is already compact). Missing tables are skipped rather than failing: a deployment may have only
+/// some of the surfaces on the lake. Returns the tables that were rewritten.
+///
+/// # Errors
+/// When counting files or a rewrite fails.
+pub fn compact_append_tables_if_needed(
+    conn: &Connection,
+    min_files: u32,
+) -> Result<Vec<&'static str>, SnapshotError> {
+    let threshold = i64::from(min_files.max(2));
+    let mut compacted = Vec::new();
+    for table in APPEND_TABLES {
         let exists: bool = conn
             .query_row(
                 "SELECT count(*) > 0 FROM duckdb_tables() \
@@ -257,11 +288,17 @@ pub fn compact_append_tables(conn: &Connection) -> Result<(), SnapshotError> {
                 |r| r.get(0),
             )
             .unwrap_or(false);
-        if exists {
+        if exists && data_file_count(conn, table)? >= threshold {
             compact_append_table(conn, table)?;
+            compacted.push(table);
         }
     }
-    Ok(())
+    Ok(compacted)
+}
+
+/// Compact every attached append table that is not already a single file.
+pub fn compact_append_tables(conn: &Connection) -> Result<(), SnapshotError> {
+    compact_append_tables_if_needed(conn, 2).map(|_| ())
 }
 
 #[cfg(test)]

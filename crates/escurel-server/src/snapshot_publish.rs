@@ -43,6 +43,7 @@ pub struct PublishTask {
     interval: Duration,
     keep: u32,
     last_published_epoch: Arc<Mutex<Option<u64>>>,
+    compact_min_files: u32,
 }
 
 impl PublishTask {
@@ -63,7 +64,16 @@ impl PublishTask {
             interval,
             keep,
             last_published_epoch,
+            compact_min_files: escurel_index::snapshot::DEFAULT_APPEND_COMPACT_MIN_FILES,
         }
+    }
+
+    /// Rewrite a lake-backed append table only once it has this many data files (default
+    /// [`escurel_index::snapshot::DEFAULT_APPEND_COMPACT_MIN_FILES`]): an idle tick then uploads nothing.
+    #[must_use]
+    pub fn with_compact_min_files(mut self, min_files: u32) -> Self {
+        self.compact_min_files = min_files;
+        self
     }
 
     /// Spawn the publish/GC loop on the current Tokio runtime. Returns a
@@ -76,6 +86,7 @@ impl PublishTask {
             interval,
             keep,
             last_published_epoch,
+            compact_min_files,
         } = self;
         let (shutdown_tx, mut shutdown_rx) = oneshot::channel();
         let join = tokio::spawn(async move {
@@ -84,7 +95,8 @@ impl PublishTask {
             loop {
                 tokio::select! {
                     _ = tick.tick() => {
-                        publish_and_gc(&handle, &lake_cfg, keep, &last_published_epoch).await;
+                        publish_and_gc(&handle, &lake_cfg, keep, compact_min_files, &last_published_epoch)
+                            .await;
                     }
                     _ = &mut shutdown_rx => break,
                 }
@@ -104,6 +116,7 @@ async fn publish_and_gc(
     handle: &IndexerHandle,
     lake_cfg: &LakeConfig,
     keep: u32,
+    compact_min_files: u32,
     last_published_epoch: &Arc<Mutex<Option<u64>>>,
 ) {
     let indexer = handle.current();
@@ -120,8 +133,18 @@ async fn publish_and_gc(
     //
     // No-op unless a surface is actually lake-backed.
     let mut compacted = false;
-    match indexer.compact_append_lake().await {
-        Ok(()) => compacted = true,
+    match indexer.compact_append_lake_if(compact_min_files).await {
+        Ok(tables) => {
+            if !tables.is_empty() {
+                tracing::info!(
+                    target: "escurel",
+                    ?tables,
+                    min_files = compact_min_files,
+                    "periodic publish: compacted append tables"
+                );
+            }
+            compacted = !tables.is_empty();
+        }
         Err(e) => tracing::warn!(
             target: "escurel",
             error = %e,

@@ -51,4 +51,5 @@ checksums.
 ## After the switch (Drive-backed lakes)
 
 Every capture is then a synchronous lake write (one Parquet object and one snapshot), and the publish task rewrites the
-append tables each cycle: plan the lake settings (publish tick, compaction, retention) before the window.
+append tables each cycle: see `docs/deploy/lake-on-drive.md` for the settings that keep that bounded (immutable data
+prefix, data-driven compaction, the drafts table, trash vs permanent delete) and for what a call costs.

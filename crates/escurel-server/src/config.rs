@@ -710,6 +710,10 @@ pub struct EscurelConfig {
     /// default `5`). `0` disables the GC pass a successful publish runs
     /// afterwards.
     pub snapshot_keep: u32,
+    /// `ESCUREL_APPEND_COMPACT_MIN_FILES`: the publish task rewrites a lake-backed append table (events, drafts,
+    /// chat) only once it holds this many data files, so an idle tick uploads nothing. Default
+    /// [`escurel_index::snapshot::DEFAULT_APPEND_COMPACT_MIN_FILES`].
+    pub append_compact_min_files: u32,
     /// The single-writer boot guard (`ESCUREL_WRITER_LEASE`, default on;
     /// `off` disables). A ducklake WRITER against a Postgres catalog
     /// takes a catalog advisory lock at boot and refuses to start when
@@ -1467,6 +1471,14 @@ impl EscurelConfig {
             })?,
             None => 5,
         };
+        let append_compact_min_files = match env.get("ESCUREL_APPEND_COMPACT_MIN_FILES") {
+            Some(raw) => raw.parse::<u32>().map_err(|_| ConfigError::InvalidValue {
+                var: "ESCUREL_APPEND_COMPACT_MIN_FILES",
+                value: raw,
+                reason: "expected a non-negative integer (data files); values below 2 compact whenever a table has more than one file",
+            })?,
+            None => escurel_index::snapshot::DEFAULT_APPEND_COMPACT_MIN_FILES,
+        };
         // Default ON: the guarded topology (two writers, one catalog) is
         // silent data loss (#371). Only an explicit opt-out disables.
         let writer_lease = match env.get("ESCUREL_WRITER_LEASE") {
@@ -1525,6 +1537,7 @@ impl EscurelConfig {
             snapshot_refresh_secs,
             snapshot_publish_secs,
             snapshot_keep,
+            append_compact_min_files,
             writer_lease,
         })
     }
@@ -1594,6 +1607,14 @@ fn build_lake_config(env: &dyn EnvSource) -> Result<LakeConfig, ConfigError> {
             extension_path: env
                 .get("ESCUREL_DUCKLAKE_GDRIVE_EXTENSION")
                 .filter(|v| !v.is_empty()),
+            permanent_delete: env
+                .get("ESCUREL_DUCKLAKE_GDRIVE_PERMANENT_DELETE")
+                .is_some_and(|raw| {
+                    matches!(
+                        raw.trim().to_ascii_lowercase().as_str(),
+                        "true" | "1" | "yes" | "on"
+                    )
+                }),
         }
     } else {
         ObjectStoreSecret::None
@@ -2205,6 +2226,7 @@ impl EscurelConfig {
                                     self.snapshot_keep,
                                     Arc::clone(&last_published_epoch),
                                 )
+                                .with_compact_min_files(self.append_compact_min_files)
                                 .spawn(),
                             );
                         }

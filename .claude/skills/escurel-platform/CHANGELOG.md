@@ -4,6 +4,13 @@ The skill version tracks the consumer-facing contract, not the Escurel
 binary version. The Escurel repo's checked-out git ref is the true version
 pin (see `SKILL.md` → "How this skill is installed").
 
+## 0.25.5 — drafts work on a lake backend; Drive-friendly lake settings
+
+No tool or wire change. With `ESCUREL_EVENTS_BACKEND=ducklake` (drafts follow it) the first `create_draft` failed with
+`NOT NULL constraint failed: escurel_drafts.decided_by`; an open draft now stores an empty `reason` / `decided_by` on every
+backend. Operator env: `ESCUREL_APPEND_COMPACT_MIN_FILES` (default 8; the publish tick compacts an append table only once it
+holds that many files) and `ESCUREL_DUCKLAKE_GDRIVE_PERMANENT_DELETE`; a `gdrive://` lake declares its `DATA_PATH`
+immutable. See `docs/deploy/lake-on-drive.md`.
 ## 0.25.4 — `escurel-server events-copy`
 
 Operator command only; no tool or wire change. `escurel-server events-copy [--apply] [--tables events,drafts,chat]` copies

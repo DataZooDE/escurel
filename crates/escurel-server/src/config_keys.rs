@@ -468,6 +468,12 @@ pub const CONFIG_KEYS: &[ConfigKey] = &[
         doc: "path to a built `gdrive.duckdb_extension`; omit once it is installable by name from the community repository",
     },
     ConfigKey {
+        name: "ESCUREL_DUCKLAKE_GDRIVE_PERMANENT_DELETE",
+        component: "Server",
+        default: "false",
+        doc: "`true` makes the lake's retention GC delete expired Parquet on Drive for good (`gdrive_permanent_delete`) instead of moving it to the Drive trash, which is recoverable but counts against quota (~one object per capture/compaction). The lake data path is also declared `gdrive_immutable_prefixes` automatically: DuckLake never rewrites a data file in place",
+    },
+    ConfigKey {
         name: "ESCUREL_ALLOW_UNSIGNED_EXTENSIONS",
         component: "Server",
         default: "false",
@@ -484,6 +490,12 @@ pub const CONFIG_KEYS: &[ConfigKey] = &[
         component: "Server",
         default: "unset",
         doc: "a writer's optional periodic publish interval (seconds); an explicit `0` disables it (manual-only, via the `publish_snapshot` admin tool). Unset: disabled, UNLESS chat/events are lake-backed (`ESCUREL_CHAT_BACKEND` / `ESCUREL_EVENTS_BACKEND` = `ducklake`), where the task doubles as append-table compaction and unset defaults to `300` — see `resolve_publish_secs` / `escurel_server::snapshot_publish::PublishTask`",
+    },
+    ConfigKey {
+        name: "ESCUREL_APPEND_COMPACT_MIN_FILES",
+        component: "Server",
+        default: "8",
+        doc: "the publish task rewrites a lake-backed append table (events, drafts, chat) to one file only once it holds this many data files, so an idle tick uploads nothing and a read opens at most this many files; values below 2 mean \"whenever a table has more than one file\" (the old every-tick behaviour is `1`)",
     },
     ConfigKey {
         name: "ESCUREL_SNAPSHOT_KEEP",

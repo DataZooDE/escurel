@@ -33,9 +33,10 @@ use crate::indexer::{Indexer, IndexerError};
 use crate::schema::MigrationError;
 
 pub use append_lake::{
-    APPEND_LAKE_ALIAS, attach_append_lake_sql, attach_chat_lake, attach_drafts_lake,
-    attach_events_lake, compact_append_table, compact_append_tables, create_chat_lake_table_sql,
-    create_drafts_lake_table_sql, create_events_lake_table_sql,
+    APPEND_LAKE_ALIAS, DEFAULT_APPEND_COMPACT_MIN_FILES, attach_append_lake_sql, attach_chat_lake,
+    attach_drafts_lake, attach_events_lake, compact_append_table, compact_append_tables,
+    compact_append_tables_if_needed, create_chat_lake_table_sql, create_drafts_lake_table_sql,
+    create_events_lake_table_sql,
 };
 pub use chat_pg::{CHAT_PG_ALIAS, attach_chat_pg, attach_chat_pg_sql, create_chat_pg_table_sql};
 pub use drafts_pg::{
