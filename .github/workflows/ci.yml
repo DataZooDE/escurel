@@ -81,6 +81,10 @@ jobs:
       - name: Release tag message tests
         run: bash scripts/test-release-tag.sh
 
+      # publish-image.yml holds `packages: write` and takes the tag name from the pusher: it must be validated first.
+      - name: Image tag validation tests
+        run: bash scripts/test-image-tags.sh
+
       # rust-toolchain.toml drives the channel + components; rustup
       # honours it automatically on first invocation.
       - name: Install Rust toolchain

@@ -16,6 +16,11 @@ re-cuts append `.N`), matching the DataZoo release scheme (cf. erpl).
   only: a DuckLake `DATA_PATH` on SharePoint, and baking the extension into the image, follow separately. See
   `docs/deploy/sharepoint-lanes.md`.
 
+- **`publish-image.yml` no longer interpolates the pushed tag name into shell.** The job holds `packages: write` and
+  the tag is chosen by whoever pushes it, so a name such as `v1$(cmd)` would have run in the job. The tag now reaches
+  `scripts/image-tags.sh` only through the environment, is validated by `scripts/release-version.sh` before the
+  buildx setup and the GHCR login, and a hostile name fails the job (`scripts/test-image-tags.sh`, run in CI).
+
 ## v2026.10.17 — BREAKING (stored format, wire, skills, agent behaviour)
 
 **Read first:** [`docs/deploy/kind-migration.md`](docs/deploy/kind-migration.md) (stop-first upgrade, backup,
