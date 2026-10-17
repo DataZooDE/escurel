@@ -13,6 +13,7 @@ import type { TokenRefresher } from '../../src/auth/refresher';
 
 const H = (c: string) => c.repeat(64);
 const endpoint = 'http://127.0.0.1:8123';
+const SRC = { kind: 'training_source', sourceId: 'src' } as const;
 
 function refresher(tokens: (string | undefined)[] = ['tok-1', 'tok-2']) {
   let i = 0;
@@ -75,19 +76,19 @@ describe('Evolve rule tools from the extension', () => {
 
   it('refuses an endpoint that is not an HTTPS origin before sending anything', async () => {
     const f = stub();
-    await expect(proposeRules('http://evolve.example.com', refresher(), 'src')).rejects.toThrow(
+    await expect(proposeRules('http://evolve.example.com', refresher(), SRC)).rejects.toThrow(
       /HTTPS origin/,
     );
     await expect(
-      proposeRules('https://u:p@evolve.example.com', refresher(), 'src'),
+      proposeRules('https://u:p@evolve.example.com', refresher(), SRC),
     ).rejects.toThrow();
-    await expect(proposeRules('', refresher(), 'src')).rejects.toThrow(/escurel.evolveEndpoint/);
+    await expect(proposeRules('', refresher(), SRC)).rejects.toThrow(/escurel.evolveEndpoint/);
     expect(f).not.toHaveBeenCalled();
   });
 
   it('refuses to call without a signed-in token', async () => {
     const f = stub();
-    await expect(proposeRules(endpoint, refresher([undefined]), 'src')).rejects.toMatchObject({
+    await expect(proposeRules(endpoint, refresher([undefined]), SRC)).rejects.toMatchObject({
       kind: 'signed_out',
     });
     expect(f).not.toHaveBeenCalled();
@@ -112,7 +113,7 @@ describe('Evolve rule tools from the extension', () => {
       new TypeError('fetch failed'),
       new TypeError('x'),
     );
-    const failure = await proposeRules(endpoint, refresher(), 'src').catch((e: unknown) => e);
+    const failure = await proposeRules(endpoint, refresher(), SRC).catch((e: unknown) => e);
     expect(failure).toBeInstanceOf(EvolveCallError);
     expect((failure as EvolveCallError).kind).toBe('unreachable');
     expect((failure as EvolveCallError).message).toMatch(/not reachable/i);
@@ -146,14 +147,14 @@ describe('Evolve rule tools from the extension', () => {
     expect(stale).toMatchObject({ kind: 'stale' });
     expect((stale as Error).message).toMatch(/changed/);
     stub(json(422, { error: 'training source not found' }));
-    await expect(proposeRules(endpoint, refresher(), 'src')).rejects.toMatchObject({
+    await expect(proposeRules(endpoint, refresher(), SRC)).rejects.toMatchObject({
       kind: 'invalid',
     });
   });
 
   it('never echoes an unbounded or hostile server message', async () => {
     stub(json(422, { error: 'bad‮' + 'x'.repeat(5000) }));
-    const failure = (await proposeRules(endpoint, refresher(), 'src').catch(
+    const failure = (await proposeRules(endpoint, refresher(), SRC).catch(
       (e: unknown) => e,
     )) as Error;
     expect(failure.message.length).toBeLessThan(500);
@@ -217,9 +218,14 @@ describe('Evolve rule tools from the extension', () => {
     await expect(
       startWithApprovedRules(endpoint, refresher(), { ...spec, rule_set: [] }, H('9')),
     ).rejects.toThrow(/set by the server/);
+    // Other pilots are refused: a state pilot needs its own instance keys, a P1 file is not one.
+    for (const pilot of ['p2', 'p3', 'p8', 'p1', undefined])
+      await expect(
+        startWithApprovedRules(endpoint, refresher(), { ...spec, pilot }, H('9')),
+      ).rejects.toThrow(/p1_decision|p0, p5 or p7/);
     await expect(
       startWithApprovedRules(endpoint, refresher(), { ...spec, pilot: 'p0' }, H('9')),
-    ).rejects.toThrow(/p1_decision/);
+    ).rejects.toThrow(/training_source_id|capacity|items_csv/);
     await expect(
       startWithApprovedRules(
         endpoint,
@@ -321,5 +327,110 @@ describe('approval request is unchanged by the new report fields', () => {
       confirm: true,
     });
     expect(out.policy?.version).toBe('binom_holm_ub_v2');
+  });
+});
+
+const STATE_START = { experiment: 'exp-s', max_generations: 0, budget: { max_evaluated: 1 } };
+const instances: Record<string, Record<string, unknown>> = {
+  p0: { pilot: 'p0', capacity: 10, items_csv: '6,5,4,7,2,3,8,1,9,4,6,2,5,3,7,1' },
+  p5: fx('instance_p5'),
+  p7: fx('instance_p7'),
+};
+
+describe('proposing rules for an exact instance (P0, P5, P7)', () => {
+  for (const pilot of Object.keys(instances)) {
+    it(`${pilot}: sends the instance and nothing of the start keys`, async () => {
+      const f = stub(json(200, fx(pilot === 'p0' ? 'propose_state_p0' : `propose_state_${pilot}`)));
+      const proposal = await proposeRules(endpoint, refresher(), {
+        kind: 'instance',
+        instance: { ...instances[pilot], ...STATE_START },
+      });
+      expect(header(f.mock.calls[0]!, 'X-Triton-Tool')).toBe('evolve_rules_propose');
+      expect(sent(f)).toEqual(instances[pilot]);
+      expect(proposal.kind).toBe('state');
+    });
+  }
+
+  it('refuses an unknown key before anything is sent', async () => {
+    const f = stub(json(200, fx('propose_state_p0')));
+    for (const extra of ['synthetic_brain', 'substitution_csv', 'rule_set', 'training_source_id'])
+      await expect(
+        proposeRules(endpoint, refresher(), {
+          kind: 'instance',
+          instance: { ...instances.p0, [extra]: 'x' },
+        }),
+      ).rejects.toThrow(new RegExp(extra));
+    expect(f).not.toHaveBeenCalled();
+  });
+
+  it('keeps the training-source request exactly as it was', async () => {
+    const f = stub(json(200, fx('propose_v2')));
+    await proposeRules(endpoint, refresher(), SRC);
+    expect(sent(f)).toEqual({ training_source_id: 'src' });
+  });
+});
+
+describe('starting a state experiment with approved rules', () => {
+  for (const pilot of Object.keys(instances)) {
+    it(`${pilot}: sends exactly the instance, the start keys, brain llm and the hash`, async () => {
+      const f = stub(json(202, { experiment: 'exp-s', state: 'queued' }));
+      await startWithApprovedRules(
+        endpoint,
+        refresher(),
+        { ...instances[pilot], ...STATE_START },
+        H('9'),
+      );
+      expect(header(f.mock.calls[0]!, 'X-Triton-Tool')).toBe('evolve_start');
+      expect(sent(f)).toEqual({
+        ...instances[pilot],
+        ...STATE_START,
+        brain: 'llm',
+        approved_rule_set_sha256: H('9'),
+      });
+    });
+  }
+
+  it('refuses before sending: no max_generations, another brain, an unknown or server-owned key', async () => {
+    const f = stub(json(202, {}));
+    const base = { ...instances.p0, ...STATE_START };
+    const noGen: Record<string, unknown> = { ...base };
+    delete noGen.max_generations;
+    for (const bad of [
+      noGen,
+      { ...base, brain: 'scripted' },
+      { ...base, synthetic_brain: 'x' },
+      { ...base, rule_set: [] },
+      { ...base, approved_rule_set_sha256: H('8') },
+      { ...base, rule_set_p_max: 0.05 },
+    ])
+      await expect(startWithApprovedRules(endpoint, refresher(), bad, H('9'))).rejects.toThrow();
+    expect(f).not.toHaveBeenCalled();
+  });
+
+  it('reads the real receipt of a state start (dispatch_state, no state field)', async () => {
+    stub(
+      json(202, {
+        accepted: true,
+        dispatch_state: 'pending',
+        experiment: 'exp-s',
+        idempotent: false,
+      }),
+    );
+    expect(
+      await startWithApprovedRules(
+        endpoint,
+        refresher(),
+        { ...instances.p0, ...STATE_START },
+        H('9'),
+      ),
+    ).toEqual({ experiment: 'exp-s', state: 'pending' });
+  });
+
+  it('does not retry a lost state start', async () => {
+    const f = stub(new TypeError('fetch failed'));
+    await expect(
+      startWithApprovedRules(endpoint, refresher(), { ...instances.p0, ...STATE_START }, H('9')),
+    ).rejects.toMatchObject({ kind: 'unreachable' });
+    expect(f).toHaveBeenCalledOnce();
   });
 });

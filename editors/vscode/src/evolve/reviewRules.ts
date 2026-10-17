@@ -3,16 +3,20 @@ import { createHash } from 'node:crypto';
 import type { Services } from '../services';
 import { readConfig } from '../config';
 import { describeError } from '../errors';
-import { evolveOrigin, requireReviewedFileBytes } from './holdoutClient';
+import { evolveOrigin } from './holdoutClient';
+import { pickJsonObject, type JsonFileHost } from './jsonObjectFile';
+import { readStateInstance } from './stateInstance';
 import {
   approveRules,
   getRuleBatch,
   proposeRules,
   startWithApprovedRules,
   testRules,
+  type RulesInput,
 } from './rulesClient';
 import {
   confirmTestDetail,
+  ruleChoices,
   reviewRules,
   startWithRules,
   type RulesApi,
@@ -22,61 +26,57 @@ import {
   ALPHA_CAP,
   P_MAX_CAP,
   describePolicy,
-  evidenceFacts,
   parsePolicyInput,
   percent,
   type PolicyChoice,
 } from './rulesModel';
 
-const START_FILE_LIMIT = 4_000_000;
+/** VS Code as the host of the JSON-file picker: open saved editors, or a file the person chooses. */
+const jsonFileHost: JsonFileHost<vscode.Uri> = {
+  openJsonDocs: () =>
+    vscode.workspace.textDocuments
+      .filter((doc) => doc.uri.scheme === 'file' && doc.uri.path.endsWith('.json'))
+      .map((doc) => ({
+        uri: doc.uri,
+        name: doc.uri.path.split('/').pop() ?? '',
+        fsPath: doc.uri.fsPath,
+        isDirty: doc.isDirty,
+        getText: () => doc.getText(),
+      })),
+  pick: async (choices, placeHolder) => vscode.window.showQuickPick(choices, { placeHolder }),
+  chooseFile: async (openLabel) =>
+    (
+      await vscode.window.showOpenDialog({
+        canSelectMany: false,
+        openLabel,
+        filters: { JSON: ['json'] },
+      })
+    )?.[0],
+  read: async (uri) => vscode.workspace.fs.readFile(uri),
+};
 
 /** The person's own start file: an open (saved) JSON editor, or one they choose. */
-async function readStartSpec(): Promise<Record<string, unknown> | undefined> {
-  const open = vscode.workspace.textDocuments
-    .filter((doc) => doc.uri.scheme === 'file' && doc.uri.path.endsWith('.json'))
-    .slice(0, 12);
-  const choices = [
-    ...open.map((doc) => ({
-      label: `Use open file ${doc.uri.path.split('/').pop() ?? ''}`,
-      description: doc.uri.fsPath,
-      doc,
-    })),
-    {
-      label: 'Choose local JSON file',
-      description: 'The new experiment\u2019s start request',
-      doc: undefined,
-    },
-  ];
-  const selected = await vscode.window.showQuickPick(choices, {
+const readStartSpec = () =>
+  pickJsonObject(jsonFileHost, {
+    what: 'start file',
     placeHolder: 'Choose the new replenishment experiment start file',
+    chooseDescription: 'The new experiment\u2019s start request',
+    openLabel: 'Choose start file',
   });
-  if (!selected) return undefined;
-  const doc = selected.doc;
-  const file = doc
-    ? doc.uri
-    : (
-        await vscode.window.showOpenDialog({
-          canSelectMany: false,
-          openLabel: 'Choose start file',
-          filters: { JSON: ['json'] },
-        })
-      )?.[0];
-  if (!file) return undefined;
-  const bytes = await vscode.workspace.fs.readFile(file);
-  if (doc) requireReviewedFileBytes(bytes, doc.getText(), doc.isDirty);
-  if (bytes.length > START_FILE_LIMIT) throw new Error('The start file exceeds the 4 MB limit.');
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(new TextDecoder().decode(bytes));
-  } catch {
-    throw new Error('The start file is not valid JSON.');
-  }
-  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed))
-    throw new Error('The start file must be one JSON object.');
-  return parsed as Record<string, unknown>;
+
+/** The instance of a CSV-start pilot (P0, P5, P7), read once and checked against the pilot's keys. */
+async function readInstance(): Promise<Record<string, unknown> | undefined> {
+  const raw = await pickJsonObject(jsonFileHost, {
+    what: 'instance file',
+    placeHolder: 'Choose the P0, P5 or P7 instance file (the start request of the experiment)',
+    chooseDescription: 'Pilot p0, p5 or p7 with its capacity and CSV tables',
+    openLabel: 'Choose instance file',
+  });
+  return raw ? readStateInstance(raw) : undefined;
 }
 
 /** The report is shown read-only: a virtual document, so it can neither be edited nor left "unsaved". */
+const START_LABEL = 'Start new experiment with these rules';
 const REPORT_SCHEME = 'escurel-evolve-rules';
 
 export function registerReviewEvolveRules(
@@ -95,20 +95,48 @@ export function registerReviewEvolveRules(
       try {
         const endpoint = evolveOrigin(readConfig().evolveEndpoint);
         const refresher = services.auth.refresher;
+        let instanceInput: Extract<RulesInput, { kind: 'instance' }> | undefined;
         const api: RulesApi = {
-          propose: (sourceId) => proposeRules(endpoint, refresher, sourceId),
+          propose: (input) => proposeRules(endpoint, refresher, input),
           test: (batchId, choice) => testRules(endpoint, refresher, batchId, choice),
           get: (batchId) => getRuleBatch(endpoint, refresher, batchId),
           approve: (decision) => approveRules(endpoint, refresher, decision),
         };
         const ui: RulesUi = {
-          askSourceId: async () =>
-            typeof prepared?.sourceId === 'string' && prepared.sourceId
-              ? prepared.sourceId
-              : vscode.window.showInputBox({
-                  prompt: 'Registered Evolve training-source ID to discover rules in',
-                  ignoreFocusOut: true,
-                }),
+          askInput: async () => {
+            const prepared_ =
+              typeof prepared?.sourceId === 'string' && prepared.sourceId
+                ? prepared.sourceId
+                : undefined;
+            if (prepared_) return { kind: 'training_source', sourceId: prepared_ };
+            const kind = await vscode.window.showQuickPick(
+              [
+                {
+                  label: 'Registered training source',
+                  description: 'replenishment data already registered with Evolve',
+                  instance: false,
+                },
+                {
+                  label: 'CSV-start instance (P0/P5/P7)',
+                  description: 'rules for one exact instance file, tested by replay',
+                  instance: true,
+                },
+              ],
+              { placeHolder: 'What should the rules be discovered for?', ignoreFocusOut: true },
+            );
+            if (!kind) return undefined;
+            if (kind.instance) {
+              const instance = await readInstance();
+              if (!instance) return undefined;
+              instanceInput = { kind: 'instance', instance };
+              return instanceInput;
+            }
+            const sourceId = await vscode.window.showInputBox({
+              prompt: 'Registered Evolve training-source ID to discover rules in',
+              ignoreFocusOut: true,
+            });
+            return sourceId ? { kind: 'training_source', sourceId } : undefined;
+          },
           askPolicy: async () => {
             const chosen = await vscode.window.showQuickPick(
               [
@@ -164,7 +192,7 @@ export function registerReviewEvolveRules(
           confirmTest: async (proposal, choice) =>
             (await vscode.window.showWarningMessage(
               `Run the one confirmation test on ${proposal.candidates.length} candidate rule${proposal.candidates.length === 1 ? '' : 's'}? It cannot be redone.`,
-              { modal: true, detail: confirmTestDetail(proposal, choice) },
+              { modal: true, detail: confirmTestDetail(proposal, choice, instanceInput?.instance) },
               'Run confirmation test',
             )) === 'Run confirmation test',
           showReport: async (markdown) => {
@@ -176,19 +204,11 @@ export function registerReviewEvolveRules(
             await vscode.window.showTextDocument(document, { preview: false });
           },
           pickRules: async (supported) => {
-            const picked = await vscode.window.showQuickPick(
-              supported.map((e) => ({
-                label: e.text,
-                description: evidenceFacts(e),
-                detail: `rule ${e.ruleSha256}`,
-                hash: e.ruleSha256,
-              })),
-              {
-                canPickMany: true,
-                ignoreFocusOut: true,
-                placeHolder: 'Choose the supported rules to approve (none are pre-selected)',
-              },
-            );
+            const picked = await vscode.window.showQuickPick(ruleChoices(supported), {
+              canPickMany: true,
+              ignoreFocusOut: true,
+              placeHolder: 'Choose the supported rules to approve (none are pre-selected)',
+            });
             return picked?.map((item) => item.hash);
           },
           confirmApproval: async (summary) =>
@@ -209,15 +229,18 @@ export function registerReviewEvolveRules(
         if (outcome.state !== 'approved') return;
         const { approval } = outcome;
         const action = await vscode.window.showInformationMessage(
-          `Approved ${approval.rules.length} rule${approval.rules.length === 1 ? '' : 's'}. Approved rule set SHA-256: ${approval.ruleSetSha256}. It applies to new replenishment experiments started with this hash.${approval.policy ? ` Test policy: ${describePolicy(approval.policy)}.` : ''}`,
-          'Start new experiment with these rules',
+          `Approved ${approval.rules.length} rule${approval.rules.length === 1 ? '' : 's'}. Approved rule set SHA-256: ${approval.ruleSetSha256}. It applies to new ${outcome.input.kind === 'instance' ? 'experiments on exactly this instance' : 'replenishment experiments'} started with this hash.${approval.policy ? ` Test policy: ${describePolicy(approval.policy)}.` : ''}`,
+          START_LABEL,
         );
-        if (action !== 'Start new experiment with these rules') return;
+        if (action !== START_LABEL) return;
         const owner = await services.subject();
         const started = await startWithRules({
           approval,
-          sourceId: outcome.sourceId,
-          readSpec: readStartSpec,
+          input: outcome.input,
+          readSpec:
+            outcome.input.kind === 'instance'
+              ? async () => (outcome.input.kind === 'instance' ? outcome.input.instance : undefined)
+              : readStartSpec,
           confirmStart: async (summary) =>
             (await vscode.window.showWarningMessage(
               'Start this experiment with the approved rules?',
