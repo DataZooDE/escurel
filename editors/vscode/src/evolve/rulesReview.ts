@@ -1,10 +1,16 @@
 import { EvolveCallError } from './rulesClient';
 import {
   approvable,
+  describePolicy,
+  evidenceFacts,
+  ALPHA_CAP,
+  P_MAX_CAP,
   isHash,
+  percent,
   renderReport,
   type Approval,
   type Evidence,
+  type PolicyChoice,
   type Proposal,
   type TestReport,
 } from './rulesModel';
@@ -12,7 +18,7 @@ import {
 /** What the review needs from Evolve; the command binds it to the endpoint and the signed-in token. */
 export interface RulesApi {
   propose(sourceId: string): Promise<Proposal>;
-  test(batchId: string): Promise<TestReport>;
+  test(batchId: string, choice: PolicyChoice): Promise<TestReport>;
   get(batchId: string): Promise<{ test: TestReport | undefined }>;
   approve(decision: {
     batchId: string;
@@ -24,8 +30,13 @@ export interface RulesApi {
 /** Every question a person is asked. Each returns what they answered; nothing is assumed. */
 export interface RulesUi {
   askSourceId(): Promise<string | undefined>;
+  /**
+   * Optionally choose p_max and alpha for the test (within the service's caps). An empty choice means
+   * the service default; undefined means the person cancelled. Not asked for state batches.
+   */
+  askPolicy(proposal: Proposal): Promise<PolicyChoice | undefined>;
   /** Testing a batch spends the multiple-testing correction, so it is asked first. */
-  confirmTest(proposal: Proposal): Promise<boolean>;
+  confirmTest(proposal: Proposal, choice: PolicyChoice): Promise<boolean>;
   showReport(markdown: string): Promise<void>;
   /** The supported rules to choose from; resolves the hashes chosen, or undefined on cancel. */
   pickRules(supported: Evidence[]): Promise<string[] | undefined>;
@@ -63,9 +74,11 @@ export async function reviewRules(deps: {
     ui.notify('Evolve found no candidate rules in this training source.');
     return { state: 'cancelled' };
   }
-  if (!(await ui.confirmTest(proposal))) return { state: 'cancelled' };
+  const choice = proposal.kind === 'state' ? {} : await ui.askPolicy(proposal);
+  if (!choice) return { state: 'cancelled' };
+  if (!(await ui.confirmTest(proposal, choice))) return { state: 'cancelled' };
 
-  const report = await api.test(proposal.batchId);
+  const report = await api.test(proposal.batchId, choice);
   const proposed = new Set(proposal.candidates.map((c) => c.sha256));
   if (
     report.batchId !== proposal.batchId ||
@@ -73,7 +86,31 @@ export async function reviewRules(deps: {
   )
     throw stale('The test does not belong to the batch that was proposed. Start the review again.');
 
-  await ui.showReport(renderReport(report));
+  // A choice that did not take effect is either a batch tested before (the stored test stands and the
+  // document says so) or a different policy than asked for (a fault: nothing is shown or approved).
+  if (
+    !report.alreadyTested &&
+    ((choice.pMax !== undefined && report.policy.pMax !== choice.pMax) ||
+      (choice.alpha !== undefined && report.policy.alpha !== choice.alpha))
+  )
+    throw stale(
+      'The test was made under a different policy than the one you chose. Nothing was approved.',
+    );
+  if (report.alreadyTested && (choice.pMax !== undefined || choice.alpha !== undefined)) {
+    const same =
+      (choice.pMax === undefined || choice.pMax === report.policy.pMax) &&
+      (choice.alpha === undefined || choice.alpha === report.policy.alpha);
+    if (!same)
+      ui.notify(
+        `This batch was already tested under ${describePolicy(report.policy)}; your choice (${[
+          choice.pMax !== undefined ? `p_max ${percent(choice.pMax)}` : '',
+          choice.alpha !== undefined ? `alpha ${percent(choice.alpha)}` : '',
+        ]
+          .filter(Boolean)
+          .join(', ')}) was not applied.`,
+      );
+  }
+  await ui.showReport(renderReport(report, { requested: choice }));
   const offered = approvable(report);
   if (offered.length === 0) return { state: 'nothing_to_approve', report };
 
@@ -87,9 +124,10 @@ export async function reviewRules(deps: {
   const summary = [
     `Approve ${rules.length} rule${rules.length === 1 ? '' : 's'} for the training source ${sourceId}?`,
     '',
-    ...rules.map((e) => `- ${e.text} (${e.confirmation.rows} confirmation rows, p ${e.pValue})`),
+    ...rules.map((e) => `- ${e.text} (${evidenceFacts(e)})`),
     '',
-    `Bound to test ${report.testSha256}.`,
+    `Bound to test ${report.testSha256}, under ${describePolicy(report.policy)}.`,
+    'The upper bounds in the report are informational: they do not decide anything and are not an approval signal.',
     'They apply to new experiments only, started with the approved hash; a running experiment is never changed. Approved means they survived a pre-registered test on this training data, not that they are true of the world.',
     `Your approval is recorded as ${owner}.`,
   ].join('\n');
@@ -148,4 +186,34 @@ export async function startWithRules(deps: {
   ].join('\n');
   if (!(await deps.confirmStart(summary))) return undefined;
   return deps.start(spec, deps.approval.ruleSetSha256);
+}
+
+/** The chosen policy in words, for the modal that precedes the one-shot test. */
+export function describeChoice(choice: PolicyChoice): string {
+  const part = (name: string, value: number | undefined) =>
+    value === undefined ? `${name} the service default` : `${name} ${percent(value)} (${value})`;
+  return `${part('p_max', choice.pMax)}, ${part('alpha', choice.alpha)}`;
+}
+
+/** What the confirmation before the one-shot test says: the policy, its caps and that it cannot be redone. */
+export function confirmTestDetail(proposal: Proposal, choice: PolicyChoice): string {
+  const state = proposal.kind === 'state';
+  return [
+    `Batch ${proposal.batchId}`,
+    state
+      ? 'These rules are tested by replaying known programs on this exact instance; there is no p_max or alpha.'
+      : `Found in the first ${proposal.dayCut} of ${proposal.days} training days; they are tested on the rest.`,
+    ...(state
+      ? []
+      : [
+          '',
+          `Test policy: ${describeChoice(choice)}.`,
+          `Caps: p_max up to ${percent(P_MAX_CAP)}, alpha up to ${percent(ALPHA_CAP)}; the service enforces them too.`,
+        ]),
+    '',
+    ...proposal.candidates.slice(0, 25).map((c) => `- ${c.text}`),
+    ...(proposal.candidates.length > 25 ? [`… and ${proposal.candidates.length - 25} more`] : []),
+    '',
+    'This test is one-shot per batch. The result is stored and cannot be redone: asking again returns the stored report, not a new test, so a wrong p_max or alpha cannot be corrected afterwards. Every candidate also counts toward the multiple-testing correction for this data.',
+  ].join('\n');
 }

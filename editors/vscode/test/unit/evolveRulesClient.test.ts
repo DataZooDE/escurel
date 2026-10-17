@@ -1,3 +1,6 @@
+/* eslint-disable @typescript-eslint/no-explicit-any -- JSON fixtures captured from the real service */
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   EvolveCallError,
@@ -239,5 +242,84 @@ describe('Evolve rule tools from the extension', () => {
       ),
     ).rejects.toMatchObject({ kind: 'unreachable' });
     expect(f).toHaveBeenCalledOnce();
+  });
+});
+
+const fx = (name: string): any =>
+  JSON.parse(readFileSync(join(__dirname, 'fixtures/evolve-rules', name + '.json'), 'utf8'));
+const sent = (f: ReturnType<typeof stub>) =>
+  JSON.parse(String((f.mock.calls[0]![1] as RequestInit).body));
+
+describe('choosing p_max and alpha at test time', () => {
+  it('sends only what was chosen, and nothing when nothing was', async () => {
+    let f = stub(json(200, fx('test_v2_pmax5')));
+    await testRules(endpoint, refresher(), H('1'), {});
+    expect(sent(f)).toEqual({ batch_id: H('1') });
+    f = stub(json(200, fx('test_v2_pmax5')));
+    await testRules(endpoint, refresher(), H('1'), { pMax: 0.05 });
+    expect(sent(f)).toEqual({ batch_id: H('1'), p_max: 0.05 });
+    f = stub(json(200, fx('test_v2_pmax5')));
+    const report = await testRules(endpoint, refresher(), H('1'), { pMax: 0.05, alpha: 0.05 });
+    expect(sent(f)).toEqual({ batch_id: H('1'), p_max: 0.05, alpha: 0.05 });
+    expect(report.policy.version).toBe('binom_holm_ub_v2');
+    expect(report.evidence[0]!.bound?.statement).toMatch(/held-out rows/);
+  });
+
+  it('enforces the caps before sending anything', async () => {
+    const f = stub(json(200, fx('test_v2_pmax5')));
+    for (const bad of [
+      { pMax: 0.0500001 },
+      { pMax: 0.2 },
+      { pMax: 0 },
+      { pMax: -0.01 },
+      { pMax: Number.NaN },
+      { pMax: Number.POSITIVE_INFINITY },
+      { alpha: 0.11 },
+      { alpha: 0 },
+      { alpha: Number.NaN },
+    ])
+      await expect(testRules(endpoint, refresher(), H('1'), bad)).rejects.toMatchObject({
+        kind: 'invalid',
+      });
+    expect(f).not.toHaveBeenCalled();
+  });
+
+  it('accepts the caps themselves', async () => {
+    const f = stub(json(200, fx('test_v2_pmax5')));
+    await testRules(endpoint, refresher(), H('1'), { pMax: 0.05, alpha: 0.1 });
+    expect(sent(f)).toEqual({ batch_id: H('1'), p_max: 0.05, alpha: 0.1 });
+  });
+
+  it('shows the service refusal when the service enforces a cap itself (real 422 body)', async () => {
+    const real = fx('test_rejected_pmax');
+    stub(json(real.status, real.body));
+    await expect(testRules(endpoint, refresher(), H('1'), { pMax: 0.04 })).rejects.toMatchObject({
+      kind: 'invalid',
+      message: expect.stringContaining('p_max must be in (0, 0.05]'),
+    });
+  });
+
+  it('reads a state_replay_v1 report from a state batch', async () => {
+    stub(json(200, fx('test_state_p0')));
+    const report = await testRules(endpoint, refresher(), H('1'));
+    expect(report.kind).toBe('state_replay');
+  });
+});
+
+describe('approval request is unchanged by the new report fields', () => {
+  it('sends exactly batch, rules, the reviewed test hash and confirm', async () => {
+    const f = stub(json(200, fx('approve_v2')));
+    const out = await approveRules(endpoint, refresher(), {
+      batchId: H('1'),
+      ruleSha256s: [H('a')],
+      expectedTestSha256: H('4'),
+    });
+    expect(sent(f)).toEqual({
+      batch_id: H('1'),
+      rule_sha256s: [H('a')],
+      expected_test_sha256: H('4'),
+      confirm: true,
+    });
+    expect(out.policy?.version).toBe('binom_holm_ub_v2');
   });
 });

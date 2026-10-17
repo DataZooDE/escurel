@@ -1,0 +1,120 @@
+{
+  "already_tested": false,
+  "batch_id": "a741115c86223eb0705932dfbcefbaa524acaeabd87b16f297e0c546ea601b10",
+  "candidates_before": null,
+  "claim": "survived a pre-registered confirmation test on this training data with multiplicity control; not a law of the world, and not tested on the sealed holdout",
+  "evidence": [
+    {
+      "decision": "supported",
+      "reason": null,
+      "rule": {
+        "agg": "sum",
+        "bound": 10,
+        "column": "size",
+        "group_by": "bin_id",
+        "join": {
+          "input_column": "id",
+          "state_column": "item_id",
+          "table": "p0_items"
+        },
+        "kind": "agg_le",
+        "table": "p0_bin_assignment"
+      },
+      "rule_sha256": "0cc52ace4ca70d511f2b70ace4629392a08bbe47a1e0cc0b169666dfc17ad465"
+    },
+    {
+      "decision": "supported",
+      "reason": null,
+      "rule": {
+        "column": "item_id",
+        "kind": "fk_in",
+        "ref_column": "id",
+        "ref_table": "p0_items",
+        "table": "p0_bin_assignment"
+      },
+      "rule_sha256": "4cbb2a878d058ebb92dc860965d0c3bba461ff097a2af9586487c46db30b61e8"
+    },
+    {
+      "decision": "supported",
+      "reason": null,
+      "rule": {
+        "agg": "count",
+        "bound": 16,
+        "kind": "agg_ge",
+        "table": "p0_bin_assignment"
+      },
+      "rule_sha256": "99c13249ac5236e87edbda054ee76601f441e16f64e405e645db7f8ced364976"
+    }
+  ],
+  "insufficient_evidence": 0,
+  "next_action": "a person approves supported rules with evolve_rules_approve",
+  "policy": {
+    "kind": "state_replay_v1"
+  },
+  "rejected": 0,
+  "replays": [
+    {
+      "breaches": {
+        "0cc52ace4ca70d511f2b70ace4629392a08bbe47a1e0cc0b169666dfc17ad465": 0,
+        "4cbb2a878d058ebb92dc860965d0c3bba461ff097a2af9586487c46db30b61e8": 0,
+        "99c13249ac5236e87edbda054ee76601f441e16f64e405e645db7f8ced364976": 0
+      },
+      "program": "seed",
+      "role": "positive",
+      "skill_guard_breach": null
+    },
+    {
+      "breaches": {
+        "0cc52ace4ca70d511f2b70ace4629392a08bbe47a1e0cc0b169666dfc17ad465": 0,
+        "4cbb2a878d058ebb92dc860965d0c3bba461ff097a2af9586487c46db30b61e8": 0,
+        "99c13249ac5236e87edbda054ee76601f441e16f64e405e645db7f8ced364976": 0
+      },
+      "program": "next_fit",
+      "role": "positive",
+      "skill_guard_breach": null
+    },
+    {
+      "breaches": {
+        "0cc52ace4ca70d511f2b70ace4629392a08bbe47a1e0cc0b169666dfc17ad465": 0,
+        "4cbb2a878d058ebb92dc860965d0c3bba461ff097a2af9586487c46db30b61e8": 0,
+        "99c13249ac5236e87edbda054ee76601f441e16f64e405e645db7f8ced364976": 0
+      },
+      "program": "first_fit_decreasing",
+      "role": "positive",
+      "skill_guard_breach": null
+    },
+    {
+      "breaches": {
+        "0cc52ace4ca70d511f2b70ace4629392a08bbe47a1e0cc0b169666dfc17ad465": 1,
+        "4cbb2a878d058ebb92dc860965d0c3bba461ff097a2af9586487c46db30b61e8": 0,
+        "99c13249ac5236e87edbda054ee76601f441e16f64e405e645db7f8ced364976": 0
+      },
+      "program": "single_bin",
+      "role": "negative",
+      "skill_guard_breach": "over_capacity"
+    },
+    {
+      "breaches": {
+        "0cc52ace4ca70d511f2b70ace4629392a08bbe47a1e0cc0b169666dfc17ad465": 0,
+        "4cbb2a878d058ebb92dc860965d0c3bba461ff097a2af9586487c46db30b61e8": 1,
+        "99c13249ac5236e87edbda054ee76601f441e16f64e405e645db7f8ced364976": 0
+      },
+      "program": "fake_item_id",
+      "role": "negative",
+      "skill_guard_breach": "incomplete_assignment"
+    },
+    {
+      "breaches": {
+        "0cc52ace4ca70d511f2b70ace4629392a08bbe47a1e0cc0b169666dfc17ad465": 0,
+        "4cbb2a878d058ebb92dc860965d0c3bba461ff097a2af9586487c46db30b61e8": 0,
+        "99c13249ac5236e87edbda054ee76601f441e16f64e405e645db7f8ced364976": 1
+      },
+      "program": "omit_items",
+      "role": "negative",
+      "skill_guard_breach": "incomplete_assignment"
+    }
+  ],
+  "split": null,
+  "supported": 3,
+  "test_sha256": "414cd1fef3b2d207d47308cb982164e11a1f528312e5b50bf5d982b2b6be57b9"
+}

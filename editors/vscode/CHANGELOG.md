@@ -18,6 +18,15 @@ derives its version from the tag (`vYYYY.MM.DD` → `YYYY.M.D`, leading zeros dr
   and is bound to the exact test you reviewed. The approved hash can be attached to a new replenishment
   experiment started from your own start file. Talks to Evolve directly (like holdout registration); the
   Evolve guided `evolve_run` path does not carry the hash yet.
+- **Rule review shows the exact upper bound, the policy and the state-rule replays**: each tested rule lists
+  its observed breach rate, the service's one-sided exact upper bound with its confidence and the exact
+  bound statement, the test policy version and its caps. The bound is labelled informational and not an
+  approval signal; a rule can have a low bound and still be `insufficient_evidence`, and each decision is
+  explained. Before the one-shot confirmation test you can optionally choose `p_max` (up to 5%) and `alpha`
+  (up to 10%); the caps are checked in the extension and again by Evolve, and the confirmation says the
+  test cannot be redone. State rules (`fk_in`, `agg_le`, `agg_ge`) read as words, replay evidence
+  (`state_replay_v1`) is shown as per-control breach counts, and an unknown rule kind is named without its
+  details. What approval sends (the reviewed `test_sha256`) is unchanged.
 - The Evolve event labels now come from one table (`escurel-types` and `shared/evolveControls.ts`, compared
   by a test); the gateway gates `evolve_rules_propose` / `evolve_rules_test` / `evolve_rules_approve` by
   label, owner and page state.

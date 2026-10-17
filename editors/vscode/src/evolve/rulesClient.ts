@@ -2,11 +2,14 @@ import type { TokenRefresher } from '../auth/refresher';
 import { cleanText } from '../shared/untrustedText';
 import { evolveOrigin } from './holdoutClient';
 import {
+  ALPHA_CAP,
+  P_MAX_CAP,
   isHash,
   parseApproval,
   parseProposal,
   parseTestReport,
   type Approval,
+  type PolicyChoice,
   type Proposal,
   type TestReport,
 } from './rulesModel';
@@ -145,16 +148,32 @@ export async function proposeRules(
   );
 }
 
-/** The batch's one confirmation test. Asking again returns the stored report. */
+/**
+ * The batch's one confirmation test. Asking again returns the stored report, whatever is asked now.
+ * `choice` is what the person picked for p_max and alpha; a missing field is left out of the request
+ * so the service default applies. The caps are checked here first and again by the service.
+ */
 export async function testRules(
   endpoint: string,
   refresher: TokenRefresher,
   batchId: string,
+  choice: PolicyChoice = {},
 ): Promise<TestReport> {
   if (!isHash(batchId)) throw new EvolveCallError('invalid', 'A batch id is a 64-character hash.');
-  return parseTestReport(
-    await callEvolve(endpoint, refresher, 'evolve_rules_test', { batch_id: batchId }, safe),
-  );
+  const args: Record<string, unknown> = { batch_id: batchId };
+  for (const [key, value, cap] of [
+    ['p_max', choice.pMax, P_MAX_CAP],
+    ['alpha', choice.alpha, ALPHA_CAP],
+  ] as const) {
+    if (value === undefined) continue;
+    if (!Number.isFinite(value) || value <= 0 || value > cap)
+      throw new EvolveCallError(
+        'invalid',
+        `${key} must be above 0 and at most ${cap} (the service's cap).`,
+      );
+    args[key] = value;
+  }
+  return parseTestReport(await callEvolve(endpoint, refresher, 'evolve_rules_test', args, safe));
 }
 
 /** Read a batch and its stored test (used to see whether a reviewed test is still the stored one). */

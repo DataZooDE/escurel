@@ -80,7 +80,9 @@ describe('rule discovery payloads', () => {
     expect(describeRule({ kind: 'unique', table: 't', columns: ['a', 'b'] })).toBe(
       't has no two rows with the same a, b',
     );
-    expect(describeRule({ kind: 'surprise', table: 't' })).toBe('an unrecognised rule kind');
+    expect(describeRule({ kind: 'surprise', table: 't' })).toBe(
+      'rule kind "surprise": details not rendered',
+    );
   });
 
   it('rejects a malformed proposal instead of showing it', () => {

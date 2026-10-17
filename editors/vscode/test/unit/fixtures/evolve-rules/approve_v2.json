@@ -1,0 +1,41 @@
+{
+  "applies_to": "new experiments only, started with this hash; a running search is never changed",
+  "approved_rule_set_sha256": "a914b21d58e936e10dee0d6f03403f5f8fcb12f3fa47ad0bb249785c10c8dca9",
+  "approver": "dev-user",
+  "data_sha256": "83e6a7887b5388219981eef0dd85929300c306b8242abbbaee708408ee4c37c9",
+  "idempotent": false,
+  "next_action": "evolve_start with approved_rule_set_sha256",
+  "pilot": "p1_decision",
+  "policy": {
+    "alpha": 0.05,
+    "p_max": 0.05,
+    "policy_version": "binom_holm_ub_v2"
+  },
+  "rules": [
+    {
+      "rule": {
+        "column": "qty",
+        "kind": "not_null",
+        "table": "demand"
+      },
+      "rule_sha256": "0a65e9994a410ef4fc10d7d77483156b19300cd18346f54985ab0bdd3a670a72"
+    },
+    {
+      "rule": {
+        "column": "qty",
+        "kind": "in_set",
+        "table": "demand",
+        "values": [
+          0,
+          6,
+          12,
+          18,
+          24,
+          30,
+          36
+        ]
+      },
+      "rule_sha256": "1d7294dc72a652a7462c8f12b340d782917e2e3da4d7b00568a4f5f7707e4c5b"
+    }
+  ]
+}

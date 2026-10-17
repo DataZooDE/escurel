@@ -1,6 +1,10 @@
+/* eslint-disable @typescript-eslint/no-explicit-any -- JSON fixtures captured from the real service */
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import { EvolveCallError } from '../../src/evolve/rulesClient';
 import {
+  confirmTestDetail,
   reviewRules,
   startWithRules,
   type RulesApi,
@@ -67,6 +71,7 @@ function setup(
   const calls: string[] = [];
   const ui: RulesUi = {
     askSourceId: vi.fn(async () => 'src-1'),
+    askPolicy: vi.fn(async () => ({})),
     confirmTest: vi.fn(async () => true),
     showReport: vi.fn(async () => undefined),
     pickRules: vi.fn(async () => [H('a')]),
@@ -282,5 +287,212 @@ describe('start a new experiment with the approved rules', () => {
     delete noId.experiment;
     const d = startDeps({ spec: noId });
     await expect(startWithRules(d.deps)).rejects.toThrow(/experiment id/);
+  });
+});
+
+const fx = (name: string): any =>
+  JSON.parse(readFileSync(join(__dirname, 'fixtures/evolve-rules', name + '.json'), 'utf8'));
+
+/** The real service output (policy v2, p_max 5%) as the api would hand it over. */
+function realSetup(over: Parameters<typeof setup>[0] = {}, testName = 'test_v2_pmax5') {
+  const raw = fx(testName);
+  // The proposal of the same batch: the real candidate list for the pmax5 batch, and the rules the
+  // real report names for the other (its proposal was not captured separately).
+  const real = parseProposal(
+    testName === 'test_v2_pmax5'
+      ? fx('propose_v2')
+      : {
+          batch_id: raw.batch_id,
+          data_sha256: H('2'),
+          split: raw.split,
+          candidates: raw.evidence.map((e: any) => ({ rule_sha256: e.rule_sha256, rule: e.rule })),
+        },
+  );
+  const tested = parseTestReport(raw);
+  const calls: string[] = [];
+  const firstSupported = tested.evidence.find((e) => e.decision === 'supported')!.ruleSha256;
+  const base = setup({
+    ...over,
+    ui: { pickRules: vi.fn(async () => [firstSupported]), ...over.ui },
+    api: {
+      propose: vi.fn(async () => real),
+      test: vi.fn(async () => tested),
+      get: vi.fn(async () => ({ test: tested })),
+      approve: vi.fn(async () => approval),
+      ...over.api,
+    },
+  });
+  return { ...base, calls, raw, tested, real };
+}
+
+describe('choosing p_max and alpha before the one-shot test', () => {
+  it('asks for the policy after the proposal and before the confirmation, and tests with the choice', async () => {
+    const choice = { pMax: 0.05, alpha: 0.05 };
+    const s = realSetup({ ui: { askPolicy: vi.fn(async () => choice) } });
+    await reviewRules(s);
+    const order = (f: unknown) => (f as ReturnType<typeof vi.fn>).mock.invocationCallOrder[0]!;
+    expect(order(s.api.propose)).toBeLessThan(order(s.ui.askPolicy));
+    expect(order(s.ui.askPolicy)).toBeLessThan(order(s.ui.confirmTest));
+    expect(order(s.ui.confirmTest)).toBeLessThan(order(s.api.test));
+    expect(s.ui.confirmTest).toHaveBeenCalledWith(s.real, choice);
+    expect(s.api.test).toHaveBeenCalledWith(s.real.batchId, choice);
+  });
+
+  it('keeps the service default when nothing is chosen', async () => {
+    const s = realSetup();
+    await reviewRules(s);
+    expect(s.api.test).toHaveBeenCalledWith(s.real.batchId, {});
+  });
+
+  it('tests nothing if the person cancels the policy question', async () => {
+    const s = realSetup({ ui: { askPolicy: vi.fn(async () => undefined) } });
+    expect((await reviewRules(s)).state).toBe('cancelled');
+    expect(s.ui.confirmTest).not.toHaveBeenCalled();
+    expect(s.api.test).not.toHaveBeenCalled();
+  });
+
+  it('does not offer a choice for a state batch (the service takes none)', async () => {
+    const stateProposal = parseProposal(fx('propose_state_p0'));
+    const stateReport = parseTestReport(fx('test_state_p0'));
+    const s = setup({
+      ui: { pickRules: vi.fn(async (o: { ruleSha256: string }[]) => [o[0]!.ruleSha256]) },
+      api: {
+        propose: vi.fn(async () => stateProposal),
+        test: vi.fn(async () => stateReport),
+        get: vi.fn(async () => ({ test: stateReport })),
+      },
+    });
+    await reviewRules(s);
+    expect(s.ui.askPolicy).not.toHaveBeenCalled();
+    expect(s.api.test).toHaveBeenCalledWith(stateProposal.batchId, {});
+    const shown = (s.ui.showReport as ReturnType<typeof vi.fn>).mock.calls[0]![0] as string;
+    expect(shown).toMatch(/replay evidence/i);
+  });
+
+  it('refuses a report that was made under a different policy than the one chosen', async () => {
+    // The person chose 1%; the service (or something in between) answers with a 5% test.
+    const s = realSetup({ ui: { askPolicy: vi.fn(async () => ({ pMax: 0.01 })) } });
+    await expect(reviewRules(s)).rejects.toThrow(/different policy/);
+    expect(s.ui.showReport).not.toHaveBeenCalled();
+    expect(s.api.approve).not.toHaveBeenCalled();
+  });
+
+  it('says so when the batch had been tested before and the choice could not apply', async () => {
+    const again = parseTestReport({ ...fx('test_v2_pmax5'), already_tested: true });
+    const s = realSetup({
+      ui: { askPolicy: vi.fn(async () => ({ pMax: 0.01, alpha: 0.05 })) },
+      api: { test: vi.fn(async () => again) },
+    });
+    await reviewRules(s);
+    const shown = (s.ui.showReport as ReturnType<typeof vi.fn>).mock.calls[0]![0] as string;
+    expect(shown).toMatch(/already tested[^\n]*not applied/);
+    expect(s.ui.notify).toHaveBeenCalledWith(expect.stringMatching(/already tested/i));
+  });
+});
+
+describe('approval stays bound to the exact reviewed test (real v2 report)', () => {
+  it('sends exactly the reviewed hash, the chosen supported rules and nothing from the new fields', async () => {
+    const s = realSetup({
+      ui: {
+        pickRules: vi.fn(async (offered: { ruleSha256: string }[]) => [offered[0]!.ruleSha256]),
+      },
+    });
+    await reviewRules(s);
+    const first = s.tested.evidence.find((e) => e.decision === 'supported')!;
+    expect(s.api.approve).toHaveBeenCalledWith({
+      batchId: s.real.batchId,
+      ruleSha256s: [first.ruleSha256],
+      expectedTestSha256: s.raw.test_sha256,
+    });
+  });
+
+  it('offers only supported rules, pre-selects none, and never offers a low-bound insufficient one', async () => {
+    const s = realSetup({}, 'test_v2_default_short');
+    await reviewRules(s);
+    const offered = (s.ui.pickRules as ReturnType<typeof vi.fn>).mock.calls[0]![0] as {
+      decision: string;
+      ruleSha256: string;
+    }[];
+    expect(offered.length).toBe(s.raw.supported);
+    expect(offered.every((e) => e.decision === 'supported')).toBe(true);
+    const lowInsufficient = s.raw.evidence.filter(
+      (e: any) => e.decision === 'insufficient_evidence' && e.breach_rate_upper_bound < 0.01,
+    );
+    expect(lowInsufficient.length).toBeGreaterThan(0);
+    for (const e of lowInsufficient)
+      expect(offered.map((o) => o.ruleSha256)).not.toContain(e.rule_sha256);
+  });
+
+  it('refuses to approve a low-bound insufficient rule even if the chooser returns it', async () => {
+    const s = realSetup({}, 'test_v2_default_short');
+    const low = s.raw.evidence.find(
+      (e: any) => e.decision === 'insufficient_evidence' && e.breach_rate_upper_bound < 0.01,
+    );
+    const t = realSetup(
+      { ui: { pickRules: vi.fn(async () => [low.rule_sha256]) } },
+      'test_v2_default_short',
+    );
+    await expect(reviewRules(t)).rejects.toThrow(/not one of the supported rules/);
+    expect(t.api.approve).not.toHaveBeenCalled();
+  });
+
+  it('shows the report (with the bounds) before anything can be chosen, and never approves on its own', async () => {
+    const s = realSetup({ ui: { confirmApproval: vi.fn(async () => false) } });
+    const out = await reviewRules(s);
+    expect(out.state).toBe('cancelled');
+    expect(s.api.approve).not.toHaveBeenCalled();
+    const shown = (s.ui.showReport as ReturnType<typeof vi.fn>).mock.calls[0]![0] as string;
+    expect(shown).toContain(s.raw.evidence[0].bound_statement);
+    expect(shown).toContain(s.raw.test_sha256);
+  });
+
+  it('keeps the owner re-check and the stored-test check with the new report shape', async () => {
+    let calls = 0;
+    const s = realSetup({ subject: async () => (++calls <= 1 ? 'alice' : 'mallory') });
+    await expect(reviewRules(s)).rejects.toThrow(/signed-in owner changed/);
+    const other = parseTestReport({ ...fx('test_v2_pmax5'), test_sha256: 'e'.repeat(64) });
+    const t = realSetup({ api: { get: vi.fn(async () => ({ test: other })) } });
+    await expect(reviewRules(t)).rejects.toMatchObject({ kind: 'stale' });
+    expect(t.api.approve).not.toHaveBeenCalled();
+  });
+
+  it('the confirmation names the informational bound as such and still shows the hash', async () => {
+    const s = realSetup();
+    await reviewRules(s);
+    const summary = (s.ui.confirmApproval as ReturnType<typeof vi.fn>).mock.calls[0]![0] as string;
+    expect(summary).toContain(s.raw.test_sha256);
+    expect(summary).toMatch(/informational/i);
+    expect(summary).toMatch(/does not decide|not an approval signal/i);
+  });
+});
+
+describe('the confirmation before the one-shot test', () => {
+  const real = parseProposal(fx('propose_v2'));
+
+  it('says before running that the test is one-shot and a wrong choice cannot be redone', () => {
+    const text = confirmTestDetail(real, { pMax: 0.05, alpha: 0.05 });
+    expect(text).toMatch(/one-shot per batch/);
+    expect(text).toMatch(/cannot be redone/);
+    expect(text).toMatch(/wrong p_max or alpha cannot be corrected/);
+    expect(confirmTestDetail(real, {})).toMatch(/one-shot per batch/);
+  });
+
+  it('shows the choice, the default when nothing was chosen, and the caps', () => {
+    expect(confirmTestDetail(real, { pMax: 0.05, alpha: 0.025 })).toContain(
+      'p_max 5% (0.05), alpha 2.5% (0.025)',
+    );
+    expect(confirmTestDetail(real, {})).toContain(
+      'p_max the service default, alpha the service default',
+    );
+    expect(confirmTestDetail(real, {})).toContain('p_max up to 5%, alpha up to 10%');
+  });
+
+  it('lists the real candidates and the split, and for a state batch says there is no p_max', () => {
+    expect(confirmTestDetail(real, {})).toContain('is a multiple of 6');
+    const state = confirmTestDetail(parseProposal(fx('propose_state_p0')), {});
+    expect(state).toMatch(/replaying known programs/);
+    expect(state).not.toMatch(/Test policy:/);
+    expect(state).toMatch(/every p0_bin_assignment\.item_id exists in p0_items\.id/);
+    expect(state).toMatch(/at least 16 rows/);
   });
 });
