@@ -238,6 +238,7 @@ scripts, compose and examples (not read by the gateway).
 |---|---|---|
 | `ESCUREL_BIN_DIR` | — | directory holding the built binaries (`escurel`, `escurel-server`) for `scripts/migrate-kind-job.sh` and the extension e2e |
 | `ESCUREL_JOB_DEADLINE_SECS` | 3600 | `migrate-kind-job`: boot + apply deadline |
+| `ESCUREL_EVENTS_COPY_TABLES` | events,drafts,chat | `events-copy-job`: which append surfaces `escurel-server events-copy` moves from the catalog Postgres into the lake (comma-separated `events`, `drafts`, `chat`); the job also reads `ESCUREL_JOB_DEADLINE_SECS` (default 3600) and `ESCUREL_BIN_DIR` |
 | `ESCUREL_MIGRATE_KIND_RENAME` | — | `migrate-kind-job`: comma-separated `OLD=NEW` renames of a tenant's own field that collides with the page-kind key (`kind=system_kind`), passed as `--rename-field` to the dry run, the apply and the verification dry run |
 | `ESCUREL_JOB_PORT` | 8080 | `migrate-kind-job`: loopback port of the throwaway server |
 | `ESCUREL_HTTP_PORT` | 8080 | compose: host port mapped to the gateway's 8080 |

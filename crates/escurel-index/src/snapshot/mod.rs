@@ -17,6 +17,7 @@
 mod append_lake;
 mod chat_pg;
 mod drafts_pg;
+mod events_copy;
 mod events_pg;
 mod lake;
 mod lease;
@@ -39,6 +40,9 @@ pub use append_lake::{
 pub use chat_pg::{CHAT_PG_ALIAS, attach_chat_pg, attach_chat_pg_sql, create_chat_pg_table_sql};
 pub use drafts_pg::{
     DRAFTS_PG_ALIAS, attach_drafts_pg, attach_drafts_pg_sql, create_drafts_pg_table_sql,
+};
+pub use events_copy::{
+    CopyTable, EVENTS_COPY_LABEL, EventsCopyOptions, EventsCopyReport, TableCopyReport, events_copy,
 };
 pub use events_pg::{
     EVENTS_PG_ALIAS, attach_events_pg, attach_events_pg_sql, create_events_pg_table_sql,
@@ -140,6 +144,10 @@ pub enum SnapshotError {
     /// running the attach/create-table statements.
     #[error("crdt pg attach failed: {0}")]
     Crdt(#[from] escurel_crdt::Error),
+    /// `events-copy` refused or failed: bad input, a destination row that differs from its source, or a
+    /// verification mismatch after the insert.
+    #[error("events copy: {0}")]
+    EventsCopy(String),
 }
 
 /// A freshly opened per-tenant index: the boot-ready [`Indexer`] plus

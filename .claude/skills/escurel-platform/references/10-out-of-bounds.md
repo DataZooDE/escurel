@@ -50,7 +50,10 @@ These exist but are **not** part of a normal consuming app:
   `export`/`import` (per-tenant backup). Operators run these.
   The server binary also carries `escurel-server lake-upgrade [--dry-run] [--to N]`
   (re-pin a DuckLake manifest across a declared-compatible schema bump, writer stopped) and the
-  `migrate-kind-job` cutover script: `docs/deploy/kind-migration.md`.
+  `migrate-kind-job` cutover script: `docs/deploy/kind-migration.md`. And `escurel-server events-copy [--apply]
+  [--tables events,drafts,chat]` (dry run by default; writer stopped for an apply), the lossless Postgres-to-lake copy
+  of events/drafts/chat that must precede switching `ESCUREL_EVENTS_BACKEND`/`ESCUREL_CHAT_BACKEND` to `ducklake`:
+  `docs/deploy/events-to-lake.md`.
 - **Admin tools** (gated by `escurel:admin`): `admin_list_lanes`,
   `admin_lane_keys`, `admin_lane_blob`, `admin_index_query`. For operator
   UIs and tenant migration, not product features.
