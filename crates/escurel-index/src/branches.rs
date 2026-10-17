@@ -198,6 +198,46 @@ impl Indexer {
         Ok(out)
     }
 
+    /// Record the version a branch forked a BASE page from: the base twin's version at the branch's first
+    /// write to it. The first write wins, so a later branch write cannot move the fork point.
+    ///
+    /// # Errors
+    /// When the insert fails.
+    pub async fn record_branch_page_base(
+        &self,
+        branch: &str,
+        base_page_id: &str,
+        base_version: &str,
+    ) -> Result<(), IndexerError> {
+        let conn = self.conn.lock().await;
+        conn.execute(
+            "INSERT INTO branch_page_bases (branch, base_page_id, base_version) VALUES (?, ?, ?) \
+             ON CONFLICT DO NOTHING",
+            duckdb::params![branch, base_page_id, base_version],
+        )?;
+        Ok(())
+    }
+
+    /// The version a branch forked a BASE page from, when it was recorded (`None` for a page created on the
+    /// branch, a branch from before the record existed, or a gateway without a CRDT backend).
+    ///
+    /// # Errors
+    /// When the query fails.
+    pub async fn branch_page_base(
+        &self,
+        branch: &str,
+        base_page_id: &str,
+    ) -> Result<Option<String>, IndexerError> {
+        let conn = self.conn.lock().await;
+        Ok(conn
+            .query_row(
+                "SELECT base_version FROM branch_page_bases WHERE branch = ? AND base_page_id = ?",
+                duckdb::params![branch, base_page_id],
+                |row| row.get::<_, String>(0),
+            )
+            .ok())
+    }
+
     /// Mark an overlay page as a tombstone (#512 §3).
     ///
     /// The row stays — a tombstone IS the branch's statement about the slug,

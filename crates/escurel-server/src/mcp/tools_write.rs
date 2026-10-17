@@ -493,6 +493,8 @@ pub(super) async fn tool_update_page_ungated(
             Ok(_) => {}
             Err(refusal) => return Ok(refusal),
         }
+        // Where this page forks from: the base twin's version NOW, recorded by the branch's first write to it.
+        crate::mcp::tools_branches::record_fork_point(state, indexer, &branch, &a.page_id).await?;
         a.page_id = crate::mcp::tools_branches::overlay_page_id(&a.page_id, &branch);
         a.content = crate::mcp::tools_branches::stamp_scenario(&a.content, &branch);
         // A byte CAS the caller computed against the BASE page cannot apply
@@ -1213,6 +1215,8 @@ pub(super) async fn tool_delete_page(
             Ok(_) => {}
             Err(refusal) => return Ok(refusal),
         }
+        // The tombstone is a statement about the base twin AS IT IS NOW; the merge refuses it if the base moved.
+        crate::mcp::tools_branches::record_fork_point(state, indexer, &branch, &a.page_id).await?;
         let overlay = crate::mcp::tools_branches::overlay_page_id(&a.page_id, &branch);
         if indexer
             .read_page_markdown(&overlay)

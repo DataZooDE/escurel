@@ -8,6 +8,12 @@ re-cuts append `.N`), matching the DataZoo release scheme (cf. erpl).
 
 ## Unreleased
 
+- **Branch merges use a per-page fork point** (skill 0.25.1). `create_branch` recorded `v0` as the fork version, so
+  merging a branch that edited a page with earlier CRDT history reported a `conflict` nobody had caused, and a branch
+  tombstone had no fork point at all and silently deleted a page the base had edited meanwhile. The branch's first write
+  to a base page now records that page's version (`branch_page_bases`); `merge_branch` compares against it, and a
+  tombstone of a page the base edited since is a `conflict`. Branches that predate the table merge as before.
+
 - **The `duckvfs` lane store can sit on SharePoint** (skill 0.25.0). A `sharepoint://` root loads the `sharepoint`
   extension and registers its client-credentials secret from `ESCUREL_STORAGE_DUCKVFS_SHAREPOINT_*`
   (tenant, client id, client secret or `…_CLIENT_SECRET_FILE`, drive or site id, optional `GRAPH_SCOPE`). The secret

@@ -960,3 +960,144 @@ async fn a_machines_branch_belongs_to_the_person_it_acts_for() {
 
     p.shutdown().await;
 }
+
+fn fm_note(id: &str, status: &str, body: &str) -> String {
+    format!("---\nkind: instance\nskill: note\nid: {id}\nstatus: {status}\n---\n# {id}\n{body}\n")
+}
+
+/// A branch forks from a corpus whose page already has history (two earlier edits). Nothing moves on the base
+/// after the fork, so merging must land the branch's edit cleanly: the fork point is the page's version AT the
+/// fork, not "v0" (a `v0` fork point makes the unchanged base look as if it had moved since the beginning of time).
+#[tokio::test]
+async fn a_branch_forked_from_a_page_with_history_merges_cleanly_when_the_base_did_not_move() {
+    let p = start().await;
+    let token = p.mint_token(TENANT, Role::Agent);
+    for status in ["draft", "review"] {
+        let r = call(
+            &p,
+            &token,
+            "update_page",
+            json!({ "page_id": page_id("alpha"), "content": fm_note("alpha", status, "history.") }),
+        )
+        .await;
+        assert_ne!(r["ok"], json!(false), "{r}");
+    }
+
+    call(&p, &token, "create_branch", json!({ "name": "fresh" })).await;
+    let r = call(
+        &p,
+        &token,
+        "update_page",
+        json!({
+            "page_id": page_id("alpha"),
+            "content": fm_note("alpha", "approved", "BRANCH edit."),
+            "branch": "fresh",
+        }),
+    )
+    .await;
+    assert_ne!(r["ok"], json!(false), "{r}");
+
+    let merged = call(&p, &token, "merge_branch", json!({ "name": "fresh" })).await;
+    assert_eq!(
+        merged["ok"],
+        json!(true),
+        "the base never moved after the fork, so there is nothing to conflict with: {merged}"
+    );
+    let now = call(&p, &token, "expand", json!({ "page_id": page_id("alpha") })).await;
+    assert_eq!(now["frontmatter"]["status"], json!("approved"), "{now}");
+    assert!(
+        base_body(&p, &token, "alpha")
+            .await
+            .unwrap_or_default()
+            .contains("BRANCH edit."),
+        "the branch's edit must land"
+    );
+}
+
+/// The branch deleted a page; meanwhile the base edited it. Landing the tombstone would silently destroy
+/// the newer edit, so the merge must refuse it the way it refuses a moved edit.
+#[tokio::test]
+async fn a_branch_tombstone_does_not_silently_delete_a_page_the_base_edited_since_the_fork() {
+    let p = start().await;
+    let token = p.mint_token(TENANT, Role::Agent);
+    call(&p, &token, "create_branch", json!({ "name": "dropper" })).await;
+    call(
+        &p,
+        &token,
+        "delete_page",
+        json!({ "page_id": page_id("beta"), "branch": "dropper" }),
+    )
+    .await;
+    // The base moves on after the fork.
+    let r = call(
+        &p,
+        &token,
+        "update_page",
+        json!({ "page_id": page_id("beta"), "content": note("beta", "NEWER base edit.") }),
+    )
+    .await;
+    assert_ne!(r["ok"], json!(false), "{r}");
+
+    let merged = call(&p, &token, "merge_branch", json!({ "name": "dropper" })).await;
+    assert_eq!(merged["ok"], json!(false), "{merged}");
+    assert!(
+        merged["issues"]
+            .as_array()
+            .is_some_and(|i| i.iter().any(|i| i["code"] == json!("conflict"))),
+        "the refusal must name the conflict: {merged}"
+    );
+    assert!(
+        base_body(&p, &token, "beta")
+            .await
+            .unwrap_or_default()
+            .contains("NEWER base edit."),
+        "the newer base edit must survive a refused merge"
+    );
+}
+
+/// The fork point is per page: a page WITH history still conflicts when the base moves the same key after the fork.
+#[tokio::test]
+async fn a_branch_forked_from_a_page_with_history_still_conflicts_when_the_base_moves_the_same_key()
+{
+    let p = start().await;
+    let token = p.mint_token(TENANT, Role::Agent);
+    for status in ["draft", "review"] {
+        call(
+            &p,
+            &token,
+            "update_page",
+            json!({ "page_id": page_id("alpha"), "content": fm_note("alpha", status, "history.") }),
+        )
+        .await;
+    }
+    call(&p, &token, "create_branch", json!({ "name": "race" })).await;
+    call(
+        &p,
+        &token,
+        "update_page",
+        json!({
+            "page_id": page_id("alpha"),
+            "content": fm_note("alpha", "won", "history."),
+            "branch": "race",
+        }),
+    )
+    .await;
+    call(
+        &p,
+        &token,
+        "update_page",
+        json!({ "page_id": page_id("alpha"), "content": fm_note("alpha", "lost", "history.") }),
+    )
+    .await;
+
+    let merged = call(&p, &token, "merge_branch", json!({ "name": "race" })).await;
+    assert_eq!(merged["ok"], json!(false), "{merged}");
+    assert!(
+        merged["issues"]
+            .as_array()
+            .is_some_and(|i| i.iter().any(|i| i["code"] == json!("conflict"))),
+        "{merged}"
+    );
+    let now = call(&p, &token, "expand", json!({ "page_id": page_id("alpha") })).await;
+    assert_eq!(now["frontmatter"]["status"], json!("lost"), "{now}");
+}
