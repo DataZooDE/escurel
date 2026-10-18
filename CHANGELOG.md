@@ -8,6 +8,8 @@ re-cuts append `.N`), matching the DataZoo release scheme (cf. erpl).
 
 ## Unreleased
 
+## v2026.10.18
+
 - **Drive-friendly lakes: immutable data prefix, data-driven compaction, drafts compacted, a lake-draft fix** (skill
   0.25.5). A `gdrive://` lake now declares its `DATA_PATH` `gdrive_immutable_prefixes` (DuckLake never rewrites a file
   in place), which drops the extension's ~270 ms per-open revalidation; the publish tick rewrites an append table
@@ -62,6 +64,44 @@ re-cuts append `.N`), matching the DataZoo release scheme (cf. erpl).
   the tag is chosen by whoever pushes it, so a name such as `v1$(cmd)` would have run in the job. The tag now reaches
   `scripts/image-tags.sh` only through the environment, is validated by `scripts/release-version.sh` before the
   buildx setup and the GHCR login, and a hostile name fails the job (`scripts/test-image-tags.sh`, run in CI).
+
+- **The lake publish guards fail closed** (#742). `publish_snapshot` refuses an empty or partial publish by comparing the
+  corpus with the lake's page count, but every count used `.unwrap_or(0)`: a count that could not be read looked like
+  an empty lake and the guards did not fire (the damaged-catalog case was only stopped later, by luck, in the commit).
+  An unreadable count is now `SnapshotError::LakePagesUnreadable`; a fresh lake with no `pages` table still publishes.
+
+- **`scripts/release-tag.sh` creates the annotated tag** (#739). `git tag -a -m/-F` strips every line that starts with
+  `#`, which removed the section headings and with them the breaking-change marker `release.yml` checks for in the tag
+  message (the first `v2026.10.17` push failed its create-release step on exactly this). The script writes the message
+  with `--cleanup=whitespace`, verifies the marker survived and never pushes (`scripts/test-release-tag.sh`, run in CI).
+  The note is `docs/notes/discovered/2026-10-17-git-tag-strips-markdown-headings.md`.
+
+### Operators
+
+- **No stored-format change, no migration.** Nothing here needs `migrate-kind` or `lake-upgrade`. The one new table,
+  `branch_page_bases`, is created on first use; branches that predate it merge as before.
+- **Moving events, drafts and chat to the lake** (a deployment that ran the Postgres backend): do not just switch
+  `ESCUREL_EVENTS_BACKEND` / `ESCUREL_CHAT_BACKEND`; run `events-copy` first with the writer stopped
+  (`docs/deploy/events-to-lake.md`: dry run, apply, second dry run, switch the env, boot, verify; rollback is switching the
+  env back, the Postgres rows are never touched). Size the Job deadline from a rehearsal on a copy of the real catalog and
+  lake; there is no measured `events-copy` timing yet (the Drive rehearsal is tracked as hetzner-agent-substrate #982).
+  For a `gdrive://` lake read `docs/deploy/lake-on-drive.md` (immutable data prefix, `ESCUREL_APPEND_COMPACT_MIN_FILES`,
+  `ESCUREL_DUCKLAKE_GDRIVE_PERMANENT_DELETE`). The lake-draft fix in this release is required before any draft is created
+  on a lake backend.
+- **Startup budget on a Drive lake.** A cold writer boot on the real heron Drive lake took 19 minutes against 5.5 minutes
+  in the rehearsal; keep the startup probe budget above that (`docs/deploy/kind-migration.md`), and expect the new
+  `boot: <phase> is still running` lines while it adopts.
+- **Behaviour changes to know about.** `/ingest` answers `422 invalid_event_id` for ids that start `runner-status:` or
+  `write-back:`; a runner-minted admin run token can no longer `apply` or `allow_protected` an `admin_purge_events`
+  (a person's admin token is unchanged); a stored SQL-view binding that the current `ESCUREL_SQL_*` policy forbids is
+  no longer re-attached at writer boot.
+- **Images.** The release image is built from the tag with `REQUIRE_GDRIVE=1` (a missing gdrive v1.5.6 artifact on the
+  erpl.io mirror fails the build): `ghcr.io/datazoode/escurel:v2026.10.18` and `escurel-runner:v2026.10.18`. Untagged
+  `main` images are built without that guarantee and are for rehearsals only.
+- **Consumer re-pins.** At the time of writing the hetzner lab runs `dz-escurel` and both runners on `07ca8c19cb97` and
+  `heron-escurel` on the v2026.10.17 build (`069f63f22c2a`); all of them move to the `v2026.10.18` tag (or its commit) in
+  the lab's own values PRs, one app at a time. heron (agent-template pin), anofox-evolve (Cargo `rev`) and
+  datazoo-ai-engineering follow the checkout.
 
 ## v2026.10.17 — BREAKING (stored format, wire, skills, agent behaviour)
 

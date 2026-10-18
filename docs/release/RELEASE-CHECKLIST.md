@@ -77,10 +77,10 @@ Do not build the message with a bare `git tag -a "$TAG" -m "$(sed ...)"`: git st
 4. **VSIX**: the GitHub Release carries the file. Publishing it to a marketplace (VS Marketplace / Open VSX)
    needs the owner's explicit go and a publisher token; it is not part of `release.yml`.
 5. **Consumers** (each moves in the same window as the engine; see `docs/deploy/consumer-rollout.md`):
-   - (State on 2026-10-17: the lab runs escurel `52ec78c0ce1c` on dz-escurel, escurel-runner and
-     escurel-async-runner, plus agent-template #359 (`fa6548854003`); heron-escurel is still on the old image
-     (`6d942410`, lake schema 9) and moves with `migrate-kind-job` (rehearsed on a copy: 67 min, Job deadline
-     >= 10800 s, `ESCUREL_MIGRATE_KIND_RENAME=kind=system_kind`). The lab move that proved `kind-migration.md` is
+   - (State on 2026-10-18: per the hetzner lab, `dz-escurel`, `escurel-runner` and `escurel-async-runner` run escurel
+     `07ca8c19cb97`, plus agent-template #359 (`fa6548854003`); `heron-escurel` was migrated on 2026-10-17 with
+     `migrate-kind-job` and runs `069f63f22c2a` (the `v2026.10.17` build): apply 49.6 min, rehearsed on a copy at 67 min,
+     `ESCUREL_MIGRATE_KIND_RENAME=kind=system_kind`. The lab move that proved `kind-migration.md` is
      `docs/notes/discovered/2026-10-15-lab-cutover-lessons.md`. The tag window re-pins the lab values to `:$TAG`.)
    - hetzner lab: escurel image `:$TAG` with anofox_optimize + gdrive 1.5.6, agent-template (PR #359, writes
      `kind:` pages) in the same window, then `escurel admin migrate-kind` per tenant
