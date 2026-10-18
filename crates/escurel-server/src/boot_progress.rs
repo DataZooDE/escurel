@@ -65,6 +65,41 @@ where
     .await
 }
 
+/// Open the tenant's single-file index with the boot step reported. On a fresh data directory
+/// (a new pod, a wiped volume, `ESCUREL_REBUILD_INDEX_ON_BOOT=always`) `open` scans every lane page for
+/// legacy kinds and rebuilds the whole index from the lane store, which over Drive is the longest silent
+/// phase of a boot (19-21 minutes on heron-escurel, rehearsal #982). `every` and `on_tick` are the
+/// [`with_progress_every`] arguments, so a test can use a short interval.
+pub async fn open_index_with_progress(
+    store: &escurel_index::snapshot::SingleFileStore,
+    every: Duration,
+    on_tick: impl Fn(Duration) + Send + 'static,
+) -> Result<escurel_index::snapshot::OpenedIndex, escurel_index::snapshot::SnapshotError> {
+    with_progress_every(
+        every,
+        on_tick,
+        escurel_index::snapshot::IndexStore::open(store),
+    )
+    .await
+}
+
+/// [`open_index_with_progress`] at [`PROGRESS_EVERY`], logging one `info` line per tick under the
+/// `escurel_boot` target.
+pub async fn open_index(
+    store: &escurel_index::snapshot::SingleFileStore,
+) -> Result<escurel_index::snapshot::OpenedIndex, escurel_index::snapshot::SnapshotError> {
+    let phase = "open the index (a fresh data directory scans and rebuilds it from the lanes)";
+    open_index_with_progress(store, PROGRESS_EVERY, move |elapsed| {
+        tracing::info!(
+            target: "escurel_boot",
+            phase,
+            elapsed_s = elapsed.as_secs(),
+            "boot: {phase} is still running"
+        );
+    })
+    .await
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;

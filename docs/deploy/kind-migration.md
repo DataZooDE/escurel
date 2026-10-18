@@ -226,6 +226,11 @@ migrated lake **19 min** (a fresh `emptyDir`, ~0.1-0.2 cores, a trickle of netwo
 Size the startup probe for the cold boot, not the rehearsal, and expect the log to say so: from this release the
 writer logs `boot: attach the lake is still running` / `boot: adopt the lake's content is still running` (target
 `escurel_boot`, with `elapsed_s`) every 30 s. Before it, that quarter of an hour was silent and looked like a hang.
+The first boot on a **fresh data directory** (a new pod, a wiped volume) spends most of its time in an earlier step: it
+scans every lane page and rebuilds the whole index from the lane store (and, with `ESCUREL_EVENTS_BACKEND=ducklake`
+on Drive, that was the 21 min of the #982 rehearsal). That step reports too: `boot: open the index (a fresh data
+directory scans and rebuilds it from the lanes) is still running`. The lines are the first sign of life; a boot
+that shows none is not the index open or the lake attach/adopt.
 
 ## 4. Verify, then swap
 

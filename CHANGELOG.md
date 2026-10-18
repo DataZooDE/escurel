@@ -12,6 +12,11 @@ re-cuts append `.N`), matching the DataZoo release scheme (cf. erpl).
   attaching a `gdrive://` lake died at `LOAD` of the unsigned mirror `gdrive` extension ("signature is either missing"),
   the same artifact the lab image bakes. It now opens with `Migrator::connection_config()` like every other lake
   connection. Found by the Drive rehearsal #982; see `docs/notes/discovered/2026-10-18-events-copy-bare-connection.md`.
+- **A cold boot now reports the index open.** The 19-21 minutes of silence in heron-escurel's cold boot (rehearsal
+  #982) were not the lake attach or adopt: on a fresh data directory the boot first scans every lane page and rebuilds
+  the whole index from the lane store, a step #746's progress lines did not cover. It logs
+  `boot: open the index (a fresh data directory scans and rebuilds it from the lanes) is still running` every 30 s
+  (target `escurel_boot`, with `elapsed_s`). See `docs/notes/discovered/2026-10-18-fresh-boot-index-open-was-silent.md`.
 
 ## v2026.10.18
 
