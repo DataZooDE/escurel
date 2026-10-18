@@ -8,6 +8,11 @@ re-cuts append `.N`), matching the DataZoo release scheme (cf. erpl).
 
 ## Unreleased
 
+## v2026.10.19
+
+A patch on v2026.10.18 from the Drive rehearsal of the events move (hetzner-agent-substrate #982). **Use this tag, not
+v2026.10.18, for `events-copy`**: the v2026.10.18 build cannot load the lab's unsigned `gdrive` extension in that job.
+
 - **`events-copy` honours `ESCUREL_ALLOW_UNSIGNED_EXTENSIONS`.** The copy opened a bare in-memory DuckDB connection, so
   attaching a `gdrive://` lake died at `LOAD` of the unsigned mirror `gdrive` extension ("signature is either missing"),
   the same artifact the lab image bakes. It now opens with `Migrator::connection_config()` like every other lake
@@ -17,6 +22,21 @@ re-cuts append `.N`), matching the DataZoo release scheme (cf. erpl).
   the whole index from the lane store, a step #746's progress lines did not cover. It logs
   `boot: open the index (a fresh data directory scans and rebuilds it from the lanes) is still running` every 30 s
   (target `escurel_boot`, with `elapsed_s`). See `docs/notes/discovered/2026-10-18-fresh-boot-index-open-was-silent.md`.
+
+### Operators
+
+- **No stored-format change, no migration.** Nothing here needs `migrate-kind` or `lake-upgrade`.
+- **Measured on the Drive rehearsal (#982, a copy of heron's lake and catalog).** `events-copy` took 1 min 43 s end to end
+  for 151 events, 63 drafts and 0 chat rows (dry run 9 s, apply 67 s, verification 27 s; a second apply copied nothing),
+  so the default 3600 s Job deadline is ample. A cold writer boot on the Drive lake after the switch took 21 min 10 s
+  (5 min 11 s for a boot with an existing local index): size the startup probe at 45 minutes or more. On real Drive
+  `capture_event` takes about 6 s, `list_inbox` about 1 s and `list_events` by label 0.8-1 s (Postgres through the proxy:
+  1.6 s, 0.4 s, 0.4 s), compaction did not change that. The first publish after the switch trashes about 1000 objects
+  (4.8 MB) and reads can stall for about 7 minutes during that first garbage collection; the lake then stays at about
+  30 files. Rollback is switching the env back: the Postgres rows are never touched.
+- **Images and re-pins.** The release image is built with `REQUIRE_GDRIVE=1`: `ghcr.io/datazoode/escurel:v2026.10.19`
+  and `escurel-runner:v2026.10.19`. Anything that runs `events-copy` uses this tag; the rest of the lab and heron may move
+  from v2026.10.18 to it at the same time (their own values PRs, one app at a time).
 
 ## v2026.10.18
 
