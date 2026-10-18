@@ -38,8 +38,8 @@ use escurel_crdt::{CrdtBackend, DuckdbCrdtBackend};
 use escurel_embed::{Embedder, ReloadableEmbedder, ZeroEmbedder};
 use escurel_index::backend::ContextualizeMode;
 use escurel_index::snapshot::{
-    AttachRetrievalFn, IndexStore, LakeConfig, ObjectStoreSecret, SingleFileStore, SnapshotError,
-    WriterLease, adopt_lake, adopt_lake_for_writer,
+    AttachRetrievalFn, LakeConfig, ObjectStoreSecret, SingleFileStore, SnapshotError, WriterLease,
+    adopt_lake, adopt_lake_for_writer,
 };
 use escurel_index::{Indexer, IndexerHandle};
 use escurel_quota::{QuotaConfig, QuotaManager};
@@ -294,7 +294,7 @@ pub enum ConfigError {
     CrdtPg(#[from] escurel_crdt::Error),
 }
 
-/// Map an [`IndexStore`] open failure back onto the exact
+/// Map an [`IndexStore`](escurel_index::snapshot::IndexStore) open failure back onto the exact
 /// [`ConfigError`] variants the inline boot used to produce, so the
 /// fatal-boot error surface is unchanged by the seam extraction.
 impl From<SnapshotError> for ConfigError {
@@ -1989,7 +1989,7 @@ impl EscurelConfig {
                     (handle, reader_crdt_backend, true, Some(refresh), None)
                 }
                 (backend, _writer_role) => {
-                    let opened = single_file.open().await?;
+                    let opened = crate::boot_progress::open_index(&single_file).await?;
                     let indexer = opened.indexer;
                     if let Some(pages) = indexer.legacy_quarantine() {
                         tracing::error!(
