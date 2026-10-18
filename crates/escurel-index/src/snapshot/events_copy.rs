@@ -195,6 +195,19 @@ fn copy_err(msg: impl Into<String>) -> SnapshotError {
     SnapshotError::EventsCopy(msg.into())
 }
 
+/// The in-memory connection the copy runs on. It opens with the same config as every other lake
+/// connection (`Migrator::connection_config`), so `ESCUREL_ALLOW_UNSIGNED_EXTENSIONS` reaches it: the
+/// lake attach loads the unsigned mirror `gdrive` extension, and a bare connection refuses it
+/// ("signature is either missing") exactly as the rehearsal #982 showed.
+fn open_copy_connection() -> Result<Connection, SnapshotError> {
+    Connection::open_in_memory_with_flags(crate::schema::Migrator::connection_config()?).map_err(
+        |source| SnapshotError::DuckdbOpen {
+            path: ":memory: (events-copy)".to_owned(),
+            source,
+        },
+    )
+}
+
 /// Copy `opts.tables` of `opts.tenant` from the Postgres source into the lake.
 ///
 /// The caller must hold the writer lease (or know the writer is stopped); nothing here checks.
@@ -219,10 +232,7 @@ pub async fn events_copy(
     if opts.tables.is_empty() {
         return Err(copy_err("no tables selected (events, drafts, chat)"));
     }
-    let conn = Connection::open_in_memory().map_err(|source| SnapshotError::DuckdbOpen {
-        path: ":memory: (events-copy)".to_owned(),
-        source,
-    })?;
+    let conn = open_copy_connection()?;
     conn.execute_batch("INSTALL postgres; LOAD postgres;")?;
     conn.execute_batch(&format!(
         "ATTACH '{}' AS {SOURCE_ALIAS} (TYPE postgres, READ_ONLY);",
@@ -541,4 +551,66 @@ fn write_audit(
         params![tenant, event_id, at, body, event_id, tenant],
     )?;
     Ok(event_id)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Env var that makes the test binary re-run itself as the child below.
+    const CHILD_MARKER: &str = "ESCUREL_TEST_EVENTS_COPY_CHILD";
+
+    /// The child half: in a process whose environment says unsigned extensions are
+    /// allowed (`ESCUREL_ALLOW_UNSIGNED_EXTENSIONS=1`), the connection the copy
+    /// opens must allow them. `set_var` is `unsafe` and this crate forbids
+    /// `unsafe`, so the parent test sets the variable for a real child process
+    /// instead of mutating its own environment.
+    #[test]
+    fn child_copy_connection_allows_unsigned_extensions() {
+        if std::env::var_os(CHILD_MARKER).is_none() {
+            return; // only meaningful when the parent test spawned us
+        }
+        let conn = open_copy_connection().expect("open the copy connection");
+        let allowed: bool = conn
+            .query_row(
+                "SELECT current_setting('allow_unsigned_extensions')::BOOLEAN",
+                [],
+                |r| r.get(0),
+            )
+            .expect("read allow_unsigned_extensions");
+        assert!(
+            allowed,
+            "ESCUREL_ALLOW_UNSIGNED_EXTENSIONS=1 must reach the events-copy connection \
+             (the mirror gdrive extension is unsigned; the lab image bakes it)"
+        );
+    }
+
+    /// Real process, real DuckDB, real environment: the rehearsal #982 failure.
+    #[test]
+    fn events_copy_connection_honours_allow_unsigned_extensions() {
+        let exe = std::env::current_exe().expect("test binary path");
+        let out = std::process::Command::new(exe)
+            .args([
+                "--exact",
+                "snapshot::events_copy::tests::child_copy_connection_allows_unsigned_extensions",
+                "--nocapture",
+                "--test-threads=1",
+            ])
+            .env(CHILD_MARKER, "1")
+            .env("ESCUREL_ALLOW_UNSIGNED_EXTENSIONS", "1")
+            .output()
+            .expect("spawn the child test process");
+        assert!(
+            out.status.success(),
+            "child failed:\n{}\n{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        // Guard against the child silently running zero tests (a renamed test).
+        assert!(
+            String::from_utf8_lossy(&out.stdout).contains("1 passed"),
+            "the child test did not run:\n{}",
+            String::from_utf8_lossy(&out.stdout)
+        );
+    }
 }

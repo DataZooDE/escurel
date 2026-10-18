@@ -8,6 +8,11 @@ re-cuts append `.N`), matching the DataZoo release scheme (cf. erpl).
 
 ## Unreleased
 
+- **`events-copy` honours `ESCUREL_ALLOW_UNSIGNED_EXTENSIONS`.** The copy opened a bare in-memory DuckDB connection, so
+  attaching a `gdrive://` lake died at `LOAD` of the unsigned mirror `gdrive` extension ("signature is either missing"),
+  the same artifact the lab image bakes. It now opens with `Migrator::connection_config()` like every other lake
+  connection. Found by the Drive rehearsal #982; see `docs/notes/discovered/2026-10-18-events-copy-bare-connection.md`.
+
 ## v2026.10.18
 
 - **Drive-friendly lakes: immutable data prefix, data-driven compaction, drafts compacted, a lake-draft fix** (skill
