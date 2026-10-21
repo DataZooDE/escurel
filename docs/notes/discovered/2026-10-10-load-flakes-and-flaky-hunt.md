@@ -68,3 +68,14 @@ rerun).
   `spawn_echo_runner` now returns only after `/healthz` answers, so the 45 s workflow deadlines measure the
   workflow, not process start. If either flakes again the message says which of the two it was.
 - `scripts/flaky-hunt.sh` knows the three files now.
+- **`escurel-quota` `buckets_refill_with_time` failed on its own "bucket is empty" assertion, reproduced.** The test drained a
+  6000-token bucket refilling at 100/s, then asserted the next consume fails. Draining 6000 tokens in a debug build under load
+  takes tens of milliseconds, which is one or more refilled tokens at that rate: with 40 CPU hogs it failed in 92 of 150 runs
+  (always at the `is_err()` after the drain, never at the refill check). The test now uses a 2/s refill (120 tokens), so a
+  token needs 500 ms and the drain cannot refill it, and sleeps 1.2 s for the refill check (a loaded machine only sleeps longer,
+  which refills more): 0 failures in 60 runs under the same load. The bucket has no injectable clock, so the margin is time,
+  not an assertion on a fake clock.
+- **Not identified:** the one failing test in the `escurel-server` suite (866 passed, 1 failed, once in a pre-push hook) and the
+  one in the `escurel-client` suite (55 passed, 1 failed, once in the v2026.10.19 tag hook) were not named in the captured
+  output. `connect_retry` (already on the list above) is the only timing-sensitive `escurel-client` test, the likeliest
+  candidate for the second.
