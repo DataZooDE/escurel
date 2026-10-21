@@ -1101,3 +1101,38 @@ async fn a_branch_forked_from_a_page_with_history_still_conflicts_when_the_base_
     let now = call(&p, &token, "expand", json!({ "page_id": page_id("alpha") })).await;
     assert_eq!(now["frontmatter"]["status"], json!("lost"), "{now}");
 }
+
+/// Two names that sanitise to the same overlay file (`a/b` and `a-b` both become `...@a-b.md`) would write
+/// into one overlay page: one branch silently overwrites the other's work. A name whose overlay slug is
+/// already taken by a DIFFERENT branch is refused, so the registry keeps promising one workspace per name.
+#[tokio::test]
+async fn two_branch_names_that_share_an_overlay_file_are_refused() {
+    let p = start().await;
+    let token = p.mint_token(TENANT, Role::Agent);
+
+    let first = call(&p, &token, "create_branch", json!({ "name": "agent/ws" })).await;
+    assert_eq!(first["ok"], json!(true), "{first}");
+
+    let clash = call(&p, &token, "create_branch", json!({ "name": "agent-ws" })).await;
+    assert_eq!(
+        clash["ok"],
+        json!(false),
+        "`agent-ws` shares the overlay file `@agent-ws` with `agent/ws`: {clash}"
+    );
+    assert!(
+        clash["issues"]
+            .as_array()
+            .is_some_and(|i| i.iter().any(|i| i["code"] == json!("name_collision"))),
+        "{clash}"
+    );
+
+    // An unrelated name is untouched.
+    let other = call(
+        &p,
+        &token,
+        "create_branch",
+        json!({ "name": "agent-other" }),
+    )
+    .await;
+    assert_eq!(other["ok"], json!(true), "{other}");
+}
