@@ -79,3 +79,8 @@ rerun).
   one in the `escurel-client` suite (55 passed, 1 failed, once in the v2026.10.19 tag hook) were not named in the captured
   output. `connect_retry` (already on the list above) is the only timing-sensitive `escurel-client` test, the likeliest
   candidate for the second.
+- **`agent_token_narrowing::a_narrowed_run_writes_its_skills_instance_and_is_refused_another_skills`** failed once in the
+  pre-push hook of the crew docs PR with `run never reached a terminal` after its 60 s deadline (a docs-only diff, a machine
+  running five hooks). It did not reproduce (0 of 20 at 30 CPU hogs), so the cause is not established; it is the same shape as
+  the other runner tests (a runner on a `free_port()` that a stranger may answer, or that died at boot). `await_terminal` now
+  fails by name when the runner has exited and prints the last answer of `/debug/run`, so a recurrence says which.

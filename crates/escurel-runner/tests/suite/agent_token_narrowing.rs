@@ -117,19 +117,36 @@ async fn capture(gw: &EscurelProcess, skill: &str) -> String {
     r["event_id"].as_str().unwrap().to_owned()
 }
 
-/// The ledger terminal for `event_id`.
-async fn await_terminal(listen: &str, event_id: &str) -> String {
+/// The ledger terminal for `event_id`. Fails by name when the runner has already exited (a port a stranger took,
+/// a crash at boot) or when `/debug/run` answered something else for the whole deadline, so a flake says which.
+async fn await_terminal(runner: &mut ChildGuard, listen: &str, event_id: &str) -> String {
     let url = format!("http://{listen}/debug/run?tenant={TENANT}&event_id={event_id}");
     let deadline = Instant::now() + Duration::from_secs(60);
     loop {
-        if let Ok(resp) = reqwest::get(&url).await
-            && let Ok(v) = resp.json::<Value>().await
-            && let Some(status) = v["status"].as_str()
-            && status != "pending"
-        {
-            return status.to_owned();
+        if let Some(status) = runner.0.try_wait().expect("try_wait") {
+            panic!("runner at {listen} exited before the run reached a terminal: {status:?}");
         }
-        assert!(Instant::now() < deadline, "run never reached a terminal");
+        let last = match reqwest::get(&url).await {
+            Ok(resp) => {
+                let code = resp.status();
+                match resp.json::<Value>().await {
+                    Ok(v) => {
+                        if let Some(status) = v["status"].as_str()
+                            && status != "pending"
+                        {
+                            return status.to_owned();
+                        }
+                        format!("{code}: {v}")
+                    }
+                    Err(e) => format!("{code}, not JSON: {e}"),
+                }
+            }
+            Err(e) => format!("request failed: {e}"),
+        };
+        assert!(
+            Instant::now() < deadline,
+            "run never reached a terminal; the last answer from {listen} was {last}"
+        );
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
 }
@@ -152,11 +169,11 @@ async fn writer_of(gw: &EscurelProcess, skill: &str) -> (bool, String) {
 #[tokio::test]
 async fn a_narrowed_run_writes_its_skills_instance_and_is_refused_another_skills() {
     let gw = gateway().await;
-    let (_runner, listen) = spawn_runner(&gw, true);
+    let (mut runner, listen) = spawn_runner(&gw, true);
 
     // The skill that grants `ops`: the narrowed agent carries it and writes.
     let e1 = capture(&gw, "renewal").await;
-    assert_eq!(await_terminal(&listen, &e1).await, "processed");
+    assert_eq!(await_terminal(&mut runner, &listen, &e1).await, "processed");
     let (folded, writer) = writer_of(&gw, "renewal").await;
     assert!(folded, "renewal's instance was not written");
     assert_eq!(writer, "agent:renewal", "the run writes as its agent");
@@ -164,7 +181,7 @@ async fn a_narrowed_run_writes_its_skills_instance_and_is_refused_another_skills
     // The skill that grants nothing: admin-write-only, and the narrowed
     // agent is not admin — the write is refused and the run cannot land.
     let e2 = capture(&gw, "audit").await;
-    let status = await_terminal(&listen, &e2).await;
+    let status = await_terminal(&mut runner, &listen, &e2).await;
     assert_ne!(status, "processed", "a narrowed agent must not write audit");
     let (folded, _) = writer_of(&gw, "audit").await;
     assert!(!folded, "audit's instance must be untouched");
@@ -173,10 +190,14 @@ async fn a_narrowed_run_writes_its_skills_instance_and_is_refused_another_skills
 #[tokio::test]
 async fn with_the_flag_off_the_agent_token_keeps_admin_and_writes_both() {
     let gw = gateway().await;
-    let (_runner, listen) = spawn_runner(&gw, false);
+    let (mut runner, listen) = spawn_runner(&gw, false);
     for skill in ["renewal", "audit"] {
         let e = capture(&gw, skill).await;
-        assert_eq!(await_terminal(&listen, &e).await, "processed", "{skill}");
+        assert_eq!(
+            await_terminal(&mut runner, &listen, &e).await,
+            "processed",
+            "{skill}"
+        );
         let (folded, writer) = writer_of(&gw, skill).await;
         assert!(folded, "{skill} was not written with the flag off");
         assert_eq!(writer, format!("agent:{skill}"));
