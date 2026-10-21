@@ -195,6 +195,11 @@ quarantined and the job exits 1; `ESCUREL_MIGRATE_KIND_RENAME` carries `--rename
 boot-failure (`crates/escurel-server/tests/suite/migrate_kind_job_script.rs`). In k8s run the same container as a
 `Job` that mounts the data PVC (a non-zero exit fails the Job), then roll the Deployment.
 
+**Other one-shot Jobs in the same image.** The runtime image ships two Job entrypoints, both listed in the
+`Dockerfile` with a build-time `test -x` assertion (and `scripts/test-image-scripts.sh` fails CI when a
+`scripts/*-job.sh` is not shipped): `migrate-kind-job` (this page) and `events-copy-job`
+(`docs/deploy/events-to-lake.md`, Postgres to lake copy of events, drafts and chat; since v2026.10.19).
+
 **Long migrations.** The CLI has no total deadline for `migrate-kind` (`--timeout-secs N` opts in). The apply runs
 in a server task: a CLI that gives up or is killed does **not** cancel it; re-run the same command to wait for it
 (migrations are serialised and idempotent) or watch `/readyz` until `quarantined` clears.

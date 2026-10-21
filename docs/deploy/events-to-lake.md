@@ -39,10 +39,27 @@ checksums.
    rehearsal, not from the row count.
 3. **Stop the writer** (the single-writer Deployment is scaled to zero / stop-first).
 4. **Dry run:** `escurel-server events-copy`. Expect `diverged: 0` everywhere and `to_copy` equal to `source_rows` on a first run.
-5. **Run the job:** `scripts/events-copy-job.sh` does dry run, apply and an independent verification dry run, and exits 0
-   only when nothing is left to copy. Env: `ESCUREL_TENANT`, the writer's lake environment, `ESCUREL_JOB_DEADLINE_SECS`
-   (default 3600), optionally `ESCUREL_EVENTS_COPY_TABLES` (default `events,drafts,chat`). It starts no server, so no
-   auth or webhook environment is involved.
+5. **Run the job:** `events-copy-job` ([`scripts/events-copy-job.sh`](../../scripts/events-copy-job.sh), shipped in the server
+   image at `/usr/local/bin/events-copy-job` since v2026.10.19; v2026.10.18 and older do not contain it, and their
+   `escurel-server events-copy` fails to load an unsigned gdrive extension) does dry run, apply and an independent
+   verification dry run, and exits 0 only when nothing is left to copy. In k8s run the same container as a `Job`
+   with `command: ["events-copy-job"]` (or `docker run --entrypoint events-copy-job <image>`). It starts no server, so
+   no auth or webhook environment is involved. The Job needs, beyond the Deployment's own environment (the chart merges
+   it in):
+   - `ESCUREL_TENANT` and `ESCUREL_INDEX_BACKEND=ducklake` (the script refuses anything else: the lake is the
+     destination);
+   - the writer's lake environment: `ESCUREL_DUCKLAKE_CATALOG_DSN` (the Postgres catalog that also holds the source
+     tables), `ESCUREL_DUCKLAKE_DATA_PATH`, and for a `gdrive://` lake the drive id, the gdrive extension paths,
+     `ESCUREL_ALLOW_UNSIGNED_EXTENSIONS=true` (the mirror's extensions are unsigned), the workload-identity
+     credential (`GOOGLE_APPLICATION_CREDENTIALS`) and its token refresh, and the Cloud SQL proxy sidecar;
+   - a writable `HOME` and `ESCUREL_SERVER_DATA_DIR` (a fresh `emptyDir` is fine: the script creates both);
+   - `ESCUREL_JOB_DEADLINE_SECS` (default 3600; the Drive rehearsal of 151 events and 63 drafts took 1 min 43 s in
+     total: dry run 9 s, apply 67 s, verification 27 s), optionally `ESCUREL_EVENTS_COPY_TABLES` (default
+     `events,drafts,chat`);
+   - `ESCUREL_EVENTS_BACKEND` and `ESCUREL_CHAT_BACKEND` may stay **unset** (postgres) during the Job: the command
+     reads the source from the catalog's Postgres tables and writes the destination to the lake from
+     `ESCUREL_DUCKLAKE_*` alone and never reads the two selectors (the rehearsal ran with them unset). Set them to
+     `ducklake` only for the server boot in step 6.
 6. **Switch** `ESCUREL_EVENTS_BACKEND=ducklake` and `ESCUREL_CHAT_BACKEND=ducklake` on the writer (and readers) and boot.
 7. **Verify** through the product: the inbox, a draft's review queue and a chat group show the same rows as before.
 8. **Rollback** is switching the two variables back: the Postgres rows were never touched. Rows written to the lake after
