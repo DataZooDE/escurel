@@ -1354,6 +1354,9 @@ impl Indexer {
             }
             let all_of_label = scope.join(" AND ");
             let mut clauses = scope.clone();
+            // A write-back `:applied` witness is what stops a retry from writing upstream twice. It is not a
+            // retention concern, so even an explicit audit purge (`allow_protected`) leaves it alone.
+            clauses.push("event_id NOT LIKE 'write-back:%:applied'".to_owned());
             if let Some(before) = &spec.before {
                 clauses.push(if native {
                     "at_ts < CAST(? AS timestamp)".to_owned()

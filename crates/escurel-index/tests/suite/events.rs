@@ -927,6 +927,64 @@ async fn keep_latest_alone_keeps_the_newest_n_and_zero_means_all() {
     assert_eq!((r.matched, r.deleted, r.kept), (3, 3, 0));
 }
 
+#[tokio::test]
+async fn an_explicit_audit_purge_never_deletes_a_write_back_applied_witness() {
+    let h = fresh_harness();
+    for (i, id) in [
+        "write-back:d1:applied",
+        "write-back:d1:1:applying",
+        "write-back:d2:applied",
+    ]
+    .iter()
+    .enumerate()
+    {
+        h.indexer
+            .capture_event(NewEvent {
+                event_id: Some((*id).to_owned()),
+                at: Some(format!("2026-09-{:02}T10:00:00Z", i + 1)),
+                source: "escurel-server".to_owned(),
+                mime: "application/json".to_owned(),
+                label_skill: "escurel:write-back".to_owned(),
+                title: (*id).to_owned(),
+                body: "{}".to_owned(),
+                kind: escurel_index::EventKind::System,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+    }
+    // The operator names the audit label on purpose and asks for everything.
+    let spec = escurel_index::PurgeSpec::new("escurel:write-back", None, Some(0), true).unwrap();
+    let dry = h.indexer.purge_events(&spec, false).await.unwrap();
+    assert_eq!(
+        dry.matched, 1,
+        "only the `applying` audit row is purgeable; the `:applied` witnesses are not"
+    );
+    let done = h.indexer.purge_events(&spec, true).await.unwrap();
+    assert_eq!(done.deleted, 1);
+    let left = h
+        .indexer
+        .list_events_filtered_page(
+            &escurel_index::EventListFilter {
+                label_skill: Some("escurel:write-back".to_owned()),
+                include_system: true,
+                ..Default::default()
+            },
+            true,
+            100,
+            None,
+        )
+        .await
+        .unwrap();
+    let mut ids: Vec<String> = left.events.into_iter().map(|e| e.event_id).collect();
+    ids.sort();
+    assert_eq!(
+        ids,
+        vec!["write-back:d1:applied", "write-back:d2:applied"],
+        "a write-back witness is what stops a duplicate upstream write after a retry"
+    );
+}
+
 #[test]
 fn a_purge_request_must_be_bounded_named_and_not_an_audit_label_by_accident() {
     use escurel_index::PurgeSpec;
