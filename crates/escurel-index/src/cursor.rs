@@ -24,8 +24,19 @@ static KEY: std::sync::OnceLock<Vec<u8>> = std::sync::OnceLock::new();
 /// A key shorter than [`MIN_KEY_BYTES`] is refused: a short secret makes the tag forgeable by guessing.
 pub fn set_key(key: &str) -> Result<(), String> {
     check_key(key)?;
-    let _ = KEY.set(key.as_bytes().to_vec());
+    if KEY.set(key.as_bytes().to_vec()).is_ok() {
+        CONFIGURED.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
     Ok(())
+}
+
+static CONFIGURED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Was the signing key fixed from configuration ([`set_key`])? `false` means every cursor this process
+/// signs dies with it: after a restart a client's stored cursor answers `invalid_cursor`.
+#[must_use]
+pub fn key_configured() -> bool {
+    CONFIGURED.load(std::sync::atomic::Ordering::Relaxed)
 }
 
 /// The refusal [`set_key`] gives a key that is too short to sign with.

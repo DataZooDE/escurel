@@ -164,3 +164,54 @@ async fn a_request_filed_while_the_runner_was_down_is_acted_on_after_a_restart_w
     tokio::time::sleep(Duration::from_millis(800)).await;
     assert_eq!(results(&gw, &admin).await.len(), 2, "exactly first + fresh");
 }
+
+/// A gateway restarted without `ESCUREL_CURSOR_KEY` signs cursors with a fresh random key, so the cursor
+/// the runner stored is refused (`invalid_cursor`). The runner used to answer by re-positioning at the END
+/// of the label, which silently dropped every request filed since its last read. It now finds its place
+/// again from the id of the last event it had read and acts on what came after.
+#[tokio::test]
+async fn a_refused_cursor_resumes_after_the_last_event_read_not_at_the_end_of_the_label() {
+    let gw = EscurelProcess::spawn(Opts {
+        auth: AuthMode::TestIssuer,
+        fixtures: Some(
+            FixtureBuilder::new()
+                .tenant(TENANT)
+                .skill("renewal", SKILL_BODY)
+                .done(),
+        ),
+        ..Default::default()
+    })
+    .await;
+    let admin = gw.mint_token(TENANT, Role::Admin);
+    let ledger_dir = tempfile::tempdir().expect("tempdir");
+    let ledger = ledger_dir.keep().join("ledger.duckdb");
+
+    // Runner A reads and answers a first request, so it has a cursor and a last event read; then it goes.
+    let (a, listen_a) = spawn_runner(&gw, &admin, &ledger);
+    wait_healthy(&listen_a).await;
+    let first = control(&gw, &admin, "pause").await;
+    wait_for_answer(&gw, &admin, &first).await;
+    drop(a);
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    // What a gateway restart without a shared key does to the stored cursor: the gateway refuses it.
+    {
+        let l = escurel_runner_core::Ledger::open(&ledger).expect("open the runner's ledger");
+        l.put_tail_cursor("escurel:run-control", "bm90LWlzc3VlZA.bm90LWEtdGFn")
+            .expect("replace the cursor");
+    }
+
+    // A request filed after the runner's last read, still within the max age.
+    let fresh = control(&gw, &admin, "resume").await;
+
+    let (_b, listen_b) = spawn_runner(&gw, &admin, &ledger);
+    wait_healthy(&listen_b).await;
+    wait_for_answer(&gw, &admin, &fresh).await;
+    tokio::time::sleep(Duration::from_millis(800)).await;
+    let answered = results(&gw, &admin).await;
+    assert_eq!(
+        answered.len(),
+        2,
+        "exactly `first` and `fresh`: what was read before is not replayed ({answered:?})"
+    );
+}

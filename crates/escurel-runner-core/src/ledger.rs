@@ -366,7 +366,38 @@ impl Ledger {
                  label      TEXT PRIMARY KEY,
                  cursor     TEXT NOT NULL,
                  updated_at TEXT NOT NULL
+             );
+             CREATE TABLE IF NOT EXISTS tail_marks (
+                 label      TEXT PRIMARY KEY,
+                 event_id   TEXT NOT NULL,
+                 updated_at TEXT NOT NULL
              );",
+        )?;
+        Ok(())
+    }
+
+    /// The id of the last event a label tail has read, if any. A cursor is signed with the gateway's key, so
+    /// a gateway restarted without `ESCUREL_CURSOR_KEY` refuses the stored cursor; this mark lets the tail
+    /// find its place again by scanning the label instead of skipping to its end.
+    pub fn tail_mark(&self, label: &str) -> Result<Option<String>, LedgerError> {
+        let conn = self.conn.lock().expect("run ledger mutex");
+        let mut stmt = conn.prepare("SELECT event_id FROM tail_marks WHERE label = $1")?;
+        let mark = stmt
+            .query_row(duckdb::params![label], |r| r.get::<_, String>(0))
+            .map(Some)
+            .or_else(|e| match e {
+                duckdb::Error::QueryReturnedNoRows => Ok(None),
+                other => Err(other),
+            })?;
+        Ok(mark)
+    }
+
+    /// Persist the id of the last event a label tail has read (replacing the previous one).
+    pub fn put_tail_mark(&self, label: &str, event_id: &str) -> Result<(), LedgerError> {
+        let conn = self.conn.lock().expect("run ledger mutex");
+        conn.execute(
+            "INSERT OR REPLACE INTO tail_marks (label, event_id, updated_at) VALUES ($1, $2, $3)",
+            duckdb::params![label, event_id, now_iso()],
         )?;
         Ok(())
     }
@@ -1188,6 +1219,32 @@ mod tests {
                 LedgerDecision::Created(_)
             ),
             "a workflow step must run even when its content repeats"
+        );
+    }
+
+    #[test]
+    fn a_tail_mark_round_trips_and_survives_reopen() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("ledger.duckdb");
+        {
+            let ledger = Ledger::open(&path).expect("open");
+            assert_eq!(ledger.tail_mark("escurel:review").expect("get"), None);
+            ledger.put_tail_mark("escurel:review", "e1").expect("put");
+            ledger
+                .put_tail_mark("escurel:review", "e2")
+                .expect("replace");
+        }
+        let reopened = Ledger::open(&path).expect("re-open");
+        assert_eq!(
+            reopened
+                .tail_mark("escurel:review")
+                .expect("get")
+                .as_deref(),
+            Some("e2")
+        );
+        assert_eq!(
+            reopened.tail_mark("escurel:run-control").expect("get"),
+            None
         );
     }
 

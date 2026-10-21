@@ -363,3 +363,36 @@ async fn a_failed_tool_call_records_why_it_failed() {
 
     p.shutdown().await;
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_boot_without_a_cursor_key_warns_that_cursors_will_not_survive_a_restart() {
+    let buf = shared_buf();
+    let start_offset = buf.lock().unwrap().len();
+
+    // The test environment sets no ESCUREL_CURSOR_KEY.
+    assert!(
+        std::env::var("ESCUREL_CURSOR_KEY").is_err(),
+        "this test needs a process without a cursor key"
+    );
+    // `Config::build` calls this right after it installs telemetry; the in-process harness skips `build`.
+    escurel_server::config::warn_if_cursor_key_unset();
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    let all = {
+        let raw = String::from_utf8(buf.lock().unwrap()[start_offset..].to_vec()).unwrap();
+        raw.lines()
+            .filter(|l| !l.is_empty())
+            .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+            .collect::<Vec<_>>()
+    };
+    let warned = all.iter().any(|r| {
+        r["level"] == "warn"
+            && r["msg"]
+                .as_str()
+                .is_some_and(|m| m.contains("ESCUREL_CURSOR_KEY"))
+    });
+    assert!(
+        warned,
+        "an unset cursor key makes every cursor answer invalid_cursor after a restart; boot must say so: {all:?}"
+    );
+}

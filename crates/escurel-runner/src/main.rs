@@ -2931,6 +2931,12 @@ struct LabelTail {
     /// A request older than this is skipped, not acted on: the tail may
     /// resume days later, and a stale `cancel` must not fire.
     max_age: std::time::Duration,
+    /// The id of the newest event this tail has read (persisted with the cursor). A cursor is signed with
+    /// the gateway's key, so one issued before a restart without `ESCUREL_CURSOR_KEY` is refused; the mark
+    /// is how the tail finds its place again instead of skipping to the end of the label.
+    last_seen: Option<String>,
+    /// Set when the gateway refused the cursor: the mark to re-find on the next poll.
+    resync_after: Option<String>,
 }
 
 impl LabelTail {
@@ -2940,13 +2946,70 @@ impl LabelTail {
         if resumed {
             tracing::info!(target: "escurel_runner", label, "tail: resuming from the persisted cursor");
         }
+        let last_seen = ledger.tail_mark(label).ok().flatten();
         Self {
             label,
             cursor: persisted,
             caught_up: resumed,
             ledger,
             max_age,
+            last_seen,
+            resync_after: None,
         }
+    }
+
+    /// Note the newest event of a page as the place to resume from.
+    fn note_seen(&mut self, events: &[escurel_types::Event]) {
+        if let Some(last) = events.last() {
+            if let Err(e) = self.ledger.put_tail_mark(self.label, &last.event_id) {
+                tracing::warn!(target: "escurel_runner", label = self.label, error = %e, "tail: position not persisted");
+            }
+            self.last_seen = Some(last.event_id.clone());
+        }
+    }
+
+    /// The gateway refused our cursor. Read the label from its start WITHOUT acting until the mark is found,
+    /// then return everything after it: the requests filed since our last read are not history. When the
+    /// mark is gone (the event was purged) fall back to the end of the label, as before.
+    async fn resync(&mut self, client: &Client, mark: String) -> Vec<escurel_types::Event> {
+        let mut cursor = String::new();
+        let mut found = false;
+        let mut after: Vec<escurel_types::Event> = Vec::new();
+        loop {
+            let req = ListEventsRequest {
+                cursor: cursor.clone(),
+                ..self.request()
+            };
+            match client.list_events(req).await {
+                Ok(page) => {
+                    if found {
+                        after.extend(page.events.iter().cloned());
+                    } else if let Some(i) = page.events.iter().position(|e| e.event_id == mark) {
+                        found = true;
+                        after.extend(page.events[i + 1..].iter().cloned());
+                    }
+                    self.note_seen(&page.events);
+                    self.remember(page.next_cursor.clone());
+                    if !page.has_more {
+                        break;
+                    }
+                    cursor = page.next_cursor.unwrap_or_default();
+                }
+                Err(e) => {
+                    // Keep the mark: the next poll tries the whole resync again.
+                    tracing::warn!(target: "escurel_runner", label = self.label, error = %e, "tail: resync read failed; will retry");
+                    return Vec::new();
+                }
+            }
+        }
+        self.resync_after = None;
+        self.caught_up = true;
+        if !found {
+            tracing::warn!(target: "escurel_runner", label = self.label, mark = %mark, "tail: the last event read is gone from the label; positioned at its end");
+            return Vec::new();
+        }
+        tracing::info!(target: "escurel_runner", label = self.label, resumed = after.len(), "tail: cursor was refused; resumed after the last event read");
+        after
     }
 
     fn request(&self) -> ListEventsRequest {
@@ -2978,6 +3041,7 @@ impl LabelTail {
         loop {
             match client.list_events(self.request()).await {
                 Ok(page) => {
+                    self.note_seen(&page.events);
                     self.remember(page.next_cursor.clone());
                     if !page.has_more {
                         self.caught_up = true;
@@ -3016,7 +3080,26 @@ impl LabelTail {
         }
     }
 
+    /// Split events into those to act on and those too old to, warning about the latter.
+    fn only_fresh(&self, events: Vec<escurel_types::Event>) -> Vec<escurel_types::Event> {
+        let (fresh, stale): (Vec<_>, Vec<_>) = events.into_iter().partition(|e| !self.too_old(e));
+        for e in &stale {
+            tracing::warn!(
+                target: "escurel_runner",
+                label = self.label,
+                event_id = %e.event_id,
+                at = %e.at,
+                "tail: request older than ESCUREL_RUNNER_TAIL_MAX_AGE; skipped, not replayed"
+            );
+        }
+        fresh
+    }
+
     async fn poll(&mut self, client: &Client) -> Vec<escurel_types::Event> {
+        if let Some(mark) = self.resync_after.clone() {
+            let events = self.resync(client, mark).await;
+            return self.only_fresh(events);
+        }
         if !self.caught_up {
             self.catch_up(client).await;
             // Whatever was read while catching up is history, not requests.
@@ -3024,6 +3107,7 @@ impl LabelTail {
         }
         match client.list_events(self.request()).await {
             Ok(page) => {
+                self.note_seen(&page.events);
                 self.remember(page.next_cursor.clone());
                 let (fresh, stale): (Vec<_>, Vec<_>) =
                     page.events.into_iter().partition(|e| !self.too_old(e));
@@ -3041,13 +3125,20 @@ impl LabelTail {
             Err(e) => {
                 let msg = e.to_string();
                 if msg.contains("cursor") {
-                    // The gateway no longer understands our cursor (a
-                    // listing changed shape under us — H3 moved the tails
-                    // to ingestion order). Start over from the end of the
-                    // label rather than retry the same refusal for ever.
-                    tracing::warn!(target: "escurel_runner", label = self.label, error = %msg, "tail: cursor refused; re-positioning at the end of the label");
+                    // The gateway no longer understands our cursor (a listing changed shape under us — H3
+                    // moved the tails to ingestion order — or the gateway restarted without a shared
+                    // `ESCUREL_CURSOR_KEY`). Do not retry the same refusal for ever, and do not skip to the
+                    // end of the label either: that would drop every request filed since our last read.
+                    // Find the last event we read and carry on after it; with no such mark, start over from
+                    // the end of the label.
                     self.cursor = None;
-                    self.caught_up = false;
+                    if let Some(mark) = self.last_seen.clone() {
+                        tracing::warn!(target: "escurel_runner", label = self.label, error = %msg, "tail: cursor refused; resuming after the last event read");
+                        self.resync_after = Some(mark);
+                    } else {
+                        tracing::warn!(target: "escurel_runner", label = self.label, error = %msg, "tail: cursor refused; re-positioning at the end of the label");
+                        self.caught_up = false;
+                    }
                 } else {
                     tracing::warn!(target: "escurel_runner", label = self.label, error = %msg, "tail: poll failed; will retry");
                 }
