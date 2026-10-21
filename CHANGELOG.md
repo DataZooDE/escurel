@@ -17,6 +17,10 @@ re-cuts append `.N`), matching the DataZoo release scheme (cf. erpl).
   could silently overwrite the other's pages.
 - **`admin purge-events` never deletes a write-back `:applied` witness**, even with `allow_protected`: the witness is what stops
   a retry writing upstream twice.
+- **A same-day re-cut tag (`vYYYY.MM.DD.N`) no longer fails the VSIX job.** Cargo carried the fourth component as build
+  metadata but the VSIX step did not, so `npm version` rejected it. Both now use `scripts/release-semver.sh`
+  (`2026.10.15.1` -> `2026.10.15+1`, leading zeros stripped), tested in CI. `escurel-quota`'s `buckets_refill_with_time` no
+  longer races its own drain (a test-only fix).
 - **Docs:** `list_events` tail paging says `next_cursor`, `/metrics` is on `:9090`, the rollback section of
   `docs/deploy/kind-migration.md` names `lake-upgrade --to 9`, the Dockerfile's glibc note, and the changelog's secret naming
   (`ESCUREL_SECRET_<TENANT>__<NAME>`).
