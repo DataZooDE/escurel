@@ -224,3 +224,63 @@ export function deriveHealth(
     description: statusRow.at ? formatHeartbeatAge(ageMs) : undefined,
   };
 }
+
+/** One runner as the Runs view shows it. */
+export interface RunnerEntry {
+  /** The id the runner reports under (`runner-status:<id>`); '' for a runner that names none. */
+  runnerId: string;
+  /** Its newest status row. */
+  event: Event;
+  body: RunnerStatusBody | null;
+  /** Its own interval: declared, else observed from its own rows. */
+  intervalMs: number;
+  /** How long ago it last reported. */
+  ageMs: number;
+  /** Reported within 3 x its own interval (a draining runner is still there). */
+  fresh: boolean;
+  draining: boolean;
+}
+
+/** The runner id a status row belongs to: the body names it; failing that the `runner-status:<id>` record id. */
+function rowRunnerId(row: Event): string {
+  const named = parseRunnerStatusBody(row)?.runner_id;
+  if (typeof named === 'string' && named) return named;
+  const prefix = 'runner-status:';
+  return row.event_id?.startsWith(prefix) ? row.event_id.slice(prefix.length) : '';
+}
+
+/**
+ * One entry per runner, from the `escurel:runner-status` rows. A runner keeps ONE overwritten record
+ * (`runner-status:<id>`), so a runner that died leaves a record that only gets older: reading the newest
+ * row of the tenant hid it behind a live one, and showed a stale one as running. Each runner is judged
+ * against its OWN interval (an old runner that still files heartbeat events has its interval observed from its
+ * own rows). Fresh runners first, then the stale ones, each most recently seen first. Nothing is dropped.
+ */
+export function summariseRunners(rows: readonly Event[], nowMs: number): RunnerEntry[] {
+  const groups = new Map<string, Event[]>();
+  const atMs = (e: Event) => Date.parse(String(e.at ?? '')) || 0;
+  for (const row of [...rows].sort((a, b) => atMs(b) - atMs(a))) {
+    const id = rowRunnerId(row);
+    const list = groups.get(id);
+    if (list) list.push(row);
+    else groups.set(id, [row]);
+  }
+  const entries: RunnerEntry[] = [];
+  for (const [runnerId, own] of groups) {
+    const event = own[0]!;
+    const intervalMs = runnerIntervalMs(own);
+    const health = deriveHealth(event, nowMs, { intervalMs });
+    entries.push({
+      runnerId,
+      event,
+      body: parseRunnerStatusBody(event),
+      intervalMs,
+      ageMs: Math.max(0, nowMs - atMs(event)),
+      fresh: health.state !== 'stale',
+      draining: health.state === 'draining',
+    });
+  }
+  return entries.sort(
+    (a, b) => Number(b.fresh) - Number(a.fresh) || a.ageMs - b.ageMs,
+  );
+}

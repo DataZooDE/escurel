@@ -5,6 +5,7 @@ import {
   estimateHeartbeatIntervalMs,
   deriveHealth,
   runnerIntervalMs,
+  summariseRunners,
   type RunnerStatusBody,
 } from '../../src/views/runnerModel';
 
@@ -196,5 +197,79 @@ describe('the interval of the runner whose status is newest', () => {
 
   it('is the default with no rows', () => {
     expect(runnerIntervalMs([])).toBe(300_000);
+  });
+});
+
+describe('one entry per runner', () => {
+  const template = (runnerStatusFixture.events as Event[])[2]!;
+  const NOW = Date.parse('2026-10-20T12:00:00Z');
+  const ago = (s: number) => new Date(NOW - s * 1000).toISOString();
+  const record = (
+    id: string,
+    secondsAgo: number,
+    extra: Record<string, unknown> = {},
+    title = 'heartbeat',
+  ): Event => ({
+    ...template,
+    event_id: `runner-status:${id}`,
+    at: ago(secondsAgo),
+    title,
+    body: JSON.stringify({ runner_id: id, status_interval_s: 300, ...extra }),
+  });
+
+  it('keeps a dead runner visible next to a live one, newest per runner id', () => {
+    const rows = [record('live', 20), record('dead', 7200)];
+    const entries = summariseRunners(rows, NOW);
+    expect(entries.map((e) => e.runnerId)).toEqual(['live', 'dead']);
+    expect(entries.map((e) => e.fresh)).toEqual([true, false]);
+    // The dead one is OLDER, so a "newest row per tenant" read never showed it; the live one is first
+    // whichever order the gateway returned them in.
+    expect(summariseRunners([...rows].reverse(), NOW).map((e) => e.runnerId)).toEqual([
+      'live',
+      'dead',
+    ]);
+  });
+
+  it('judges each runner against its OWN declared interval', () => {
+    const rows = [
+      record('slow', 1500, { status_interval_s: 600 }), // 25 min: inside 3 x 10 min
+      record('quick', 1500, { status_interval_s: 60 }), // 25 min: far beyond 3 x 1 min
+    ];
+    const byId = new Map(summariseRunners(rows, NOW).map((e) => [e.runnerId, e]));
+    expect(byId.get('slow')!.fresh).toBe(true);
+    expect(byId.get('quick')!.fresh).toBe(false);
+    expect(byId.get('quick')!.ageMs).toBe(1_500_000);
+    expect(byId.get('quick')!.intervalMs).toBe(60_000);
+  });
+
+  it('is empty without rows and all stale when every runner is silent', () => {
+    expect(summariseRunners([], NOW)).toEqual([]);
+    const entries = summariseRunners([record('a', 9000), record('b', 12000)], NOW);
+    expect(entries.every((e) => !e.fresh)).toBe(true);
+    // Most recently seen first.
+    expect(entries.map((e) => e.runnerId)).toEqual(['a', 'b']);
+  });
+
+  it('takes the id from the record id when the body names none, one entry for a legacy runner', () => {
+    const legacy = [
+      { ...template, event_id: 'ev-1', at: ago(60), title: 'heartbeat', body: JSON.stringify({}) },
+      { ...template, event_id: 'ev-2', at: ago(120), title: 'heartbeat', body: JSON.stringify({}) },
+      { ...template, event_id: 'ev-3', at: ago(180), title: 'heartbeat', body: JSON.stringify({}) },
+    ];
+    const entries = summariseRunners(legacy, NOW);
+    expect(entries).toHaveLength(1);
+    // The interval is observed from its own heartbeat gaps, as before.
+    expect(entries[0]!.intervalMs).toBe(60_000);
+    const named = summariseRunners(
+      [{ ...template, event_id: 'runner-status:r9', at: ago(5), title: 'heartbeat', body: '{}' }],
+      NOW,
+    );
+    expect(named[0]!.runnerId).toBe('r9');
+  });
+
+  it('a draining runner is still there, not stale', () => {
+    const entries = summariseRunners([record('d', 10, { draining: true })], NOW);
+    expect(entries[0]!.fresh).toBe(true);
+    expect(entries[0]!.draining).toBe(true);
   });
 });

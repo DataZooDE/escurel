@@ -303,7 +303,7 @@ describe('describeRunner', () => {
     const old = { at: iso(600), body: fresh.body };
     expect(
       describeRunner(old, NOW, { isAdmin: true, tenant: 'vsx', intervalMs: 30_000 }).text,
-    ).toMatch(/^Agents are not responding/);
+    ).toMatch(/^No agent running · last seen 10 min ago/);
   });
 
   it('lists the published allow-list for the tooltip, never in the sentence', () => {
@@ -882,5 +882,64 @@ describe('Runs for this record narrows every section', () => {
     expect(attention.children!.map((c) => c.runId)).toEqual(['a']);
     const history = tree.find((n) => n.id === 'group:history')!;
     expect(history.children!.map((c) => c.runId)).toEqual(['a']);
+  });
+});
+
+describe('the agents row with several runners', () => {
+  const base = {
+    records: [],
+    filter: {},
+    nowMs: NOW,
+    historyLimit: 25,
+    hasMoreHistory: false,
+    isAdmin: true,
+  } as unknown as Parameters<typeof buildRunsTree>[0];
+  const runner = (health: 'ok' | 'stale', text: string) => ({
+    text,
+    paused: false,
+    dispatchHint: 'Pause agents',
+    health,
+  });
+  const entries = (live: boolean) => [
+    { runnerId: 'escurel-runner', fresh: live, ageMs: live ? 4000 : 7_200_000, draining: false, intervalMs: 300_000 },
+    { runnerId: 'old-pod:17', fresh: false, ageMs: 7_200_000, draining: false, intervalMs: 300_000 },
+  ];
+
+  it('lists a stale runner greyed with when it was last seen, under a live agents row', () => {
+    const tree = buildRunsTree({
+      ...base,
+      runner: runner('ok', 'Agents are running · last seen 4 s ago'),
+      runners: entries(true),
+    });
+    const dispatch = tree.find((n) => n.kind === 'dispatch')!;
+    expect(dispatch.label).toBe('Agents are running');
+    const kids = dispatch.children ?? [];
+    expect(kids.map((k) => k.label)).toEqual(['escurel-runner', 'old-pod:17']);
+    expect(kids.map((k) => k.contextValue)).toEqual(['runner.live', 'runner.stale']);
+    expect(kids[1]!.description).toBe('stopped · last seen 2 h ago');
+    expect(kids[0]!.description).toBe('running · last seen 4 s ago');
+  });
+
+  it('says plainly that no agent runs when every runner is stale, and keeps them listed', () => {
+    const tree = buildRunsTree({
+      ...base,
+      runner: runner('stale', 'No agent running · last seen 2 h ago'),
+      runners: entries(false),
+    });
+    const dispatch = tree.find((n) => n.kind === 'dispatch')!;
+    expect(dispatch.label).toBe('No agent running');
+    expect(dispatch.description).toBe('last seen 2 h ago');
+    expect(dispatch.children).toHaveLength(2);
+  });
+
+  it('adds no children for a single live runner: the row is as it was', () => {
+    const tree = buildRunsTree({
+      ...base,
+      runner: runner('ok', 'Agents are running · last seen 4 s ago'),
+      runners: [entries(true)[0]!],
+    });
+    const dispatch = tree.find((n) => n.kind === 'dispatch')!;
+    expect(dispatch.label).toBe('Agents are running');
+    expect(dispatch.children ?? []).toHaveLength(0);
   });
 });
