@@ -1731,6 +1731,7 @@ impl EscurelConfig {
         // first. The guard is threaded through to `serve` at the end
         // of this fn instead of installed a second time there.
         let telemetry_guard = install_telemetry(&self.version);
+        warn_if_cursor_key_unset();
 
         // 1. Data dir on the host volume (and the DuckDB home).
         self.ensure_data_dir()?;
@@ -3046,5 +3047,20 @@ fn listener_is_loopback(listen: &str) -> bool {
     match listen.parse::<std::net::SocketAddr>() {
         Ok(addr) => addr.ip().is_loopback(),
         Err(_) => listen.starts_with("localhost:"),
+    }
+}
+
+/// Say, once at boot, that list cursors will not survive a restart when `ESCUREL_CURSOR_KEY` was not set.
+///
+/// An unset key is signed per process: after a gateway restart every stored cursor (a runner's tail cursor, a
+/// client's page cursor) answers `invalid_cursor`. Called from [`EscurelConfig::build`] after the key is
+/// applied and telemetry is installed, so the line is not lost; the in-process test harness bypasses `build`.
+pub fn warn_if_cursor_key_unset() {
+    if !escurel_index::cursor::key_configured() {
+        tracing::warn!(
+            "ESCUREL_CURSOR_KEY is not set: list cursors are signed with a key that dies with this process, so \
+             after a restart every stored cursor answers invalid_cursor (set a shared key of at least 32 bytes, \
+             e.g. `openssl rand -hex 32`, on every replica)"
+        );
     }
 }
