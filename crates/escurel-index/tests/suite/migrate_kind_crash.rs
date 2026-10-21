@@ -24,6 +24,8 @@ const TENANT: &str = "acme";
 struct FaultStore {
     inner: FsStore,
     allow: AtomicUsize,
+    /// When set, every `delete` fails (the migration marker is removed with a delete).
+    fail_deletes: std::sync::atomic::AtomicBool,
 }
 
 #[async_trait]
@@ -58,6 +60,11 @@ impl LaneStore for FaultStore {
         self.inner.list(prefix).await
     }
     async fn delete(&self, key: &Key) -> escurel_storage::Result<()> {
+        if self.fail_deletes.load(Ordering::SeqCst) {
+            return Err(StoreError::Io(std::io::Error::other(
+                "injected store fault",
+            )));
+        }
         self.inner.delete(key).await
     }
     fn url(&self, key: &Key) -> escurel_storage::Result<Url> {
@@ -76,6 +83,7 @@ fn rig() -> Rig {
         store: Arc::new(FaultStore {
             inner: FsStore::new(dir.path().join("lane")),
             allow: AtomicUsize::new(usize::MAX),
+            fail_deletes: std::sync::atomic::AtomicBool::new(false),
         }),
         dir,
     }
@@ -159,10 +167,12 @@ async fn an_interruption_after_every_page_was_rewritten_still_quarantines_on_reb
     let first_boot = indexer(&rig, "a.duckdb");
     assert!(first_boot.quarantine_legacy_kind_pages().await.unwrap());
 
-    // Marker + both pages = 3 writes allowed; the 4th (anything after the pages) fails.
-    rig.store.allow.store(3, Ordering::SeqCst);
+    // Every page is rewritten (marker + both pages = 3 writes) and the index is rebuilt, but the store
+    // dies before the marker is cleared. (The rebuild itself no longer writes the lane, so the fault
+    // is injected at the one store operation that still follows the pages: the marker delete.)
+    rig.store.fail_deletes.store(true, Ordering::SeqCst);
     let _ = first_boot.migrate_kind(true).await;
-    rig.store.allow.store(usize::MAX, Ordering::SeqCst);
+    rig.store.fail_deletes.store(false, Ordering::SeqCst);
 
     for path in [SKILL, p.as_str()] {
         let body = rig.store.inner.read(&key(path)).await.unwrap();
