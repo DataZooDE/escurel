@@ -944,6 +944,24 @@ impl Indexer {
         content: &str,
         principal: Option<&str>,
     ) -> Result<(), IndexerError> {
+        self.update_page_inner(page_id, content, principal, true)
+            .await
+    }
+
+    /// [`Self::update_page_as`] with the lane write switchable.
+    ///
+    /// `write_lane = false` is for a caller that has just READ `content` from the lane (a rebuild): the
+    /// lane already holds exactly these bytes, so writing them back changes nothing but costs one store
+    /// write per page (on a Google Drive lane ~1.5 s each) and turns a transient store error into a
+    /// failed boot. Everything else (meta-skill guard, parse, embed, the index transaction, the mutation
+    /// epoch) is identical.
+    async fn update_page_inner(
+        &self,
+        page_id: &str,
+        content: &str,
+        principal: Option<&str>,
+        write_lane: bool,
+    ) -> Result<(), IndexerError> {
         // Serialise the whole embed → write sequence through the
         // dedicated write lock (NOT the connection mutex) so two
         // concurrent writers can't commit out of order. Held for the
@@ -989,7 +1007,7 @@ impl Indexer {
         // (derived) keeps them in sync and makes the index safely rebuildable.
         // `page_id` is the lane key (`markdown/<relpath>`), as `seed_from_dir`
         // and `ensure_meta_skill` already rely on.
-        {
+        if write_lane {
             let key = Key::new(self.tenant.as_str(), page_id.to_owned())?;
             self.store
                 .write(&key, Bytes::from(content.to_owned()))
@@ -2014,8 +2032,14 @@ impl Indexer {
             // from-scratch rebuild. Progress still advances so `done` reaches
             // `total`.
             if !is_archived(content) {
-                self.update_page_as(&path, content, attribution.get(&path).map(String::as_str))
-                    .await?;
+                // Index-only: `content` was just read from the lane, so there is nothing to write back.
+                self.update_page_inner(
+                    &path,
+                    content,
+                    attribution.get(&path).map(String::as_str),
+                    false,
+                )
+                .await?;
             }
             on_progress(RebuildProgress {
                 done: (idx as u64) + 1,
