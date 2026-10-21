@@ -4,6 +4,14 @@ The skill version tracks the consumer-facing contract, not the Escurel
 binary version. The Escurel repo's checked-out git ref is the true version
 pin (see `SKILL.md` → "How this skill is installed").
 
+## 0.25.7 — a rebuild is index-only; the duckvfs lane store retries transient Drive errors
+
+`escurel admin rebuild` (and a cold boot on a fresh data directory) reads each page from the lane and writes only the index;
+it no longer writes every page back to the lane. `ESCUREL_STORAGE_DUCKVFS_RETRY_ATTEMPTS` (6; `1` = off),
+`ESCUREL_STORAGE_DUCKVFS_RETRY_MAX_BACKOFF_MS` (30000) and `ESCUREL_STORAGE_DUCKVFS_RETRY_TOTAL_MS` (180000) bound the retry
+of a transient Drive error in the lane store; they are operator settings under `_DUCKVFS_*` (`docs/deploy/env.md`). No tool,
+wire or CLI change.
+
 ## 0.25.6 — branch name collisions, a purge-proof write-back witness, doc drift
 
 `create_branch` refuses (`ok: false`, issue `name_collision`) a name whose overlay file another branch already uses
