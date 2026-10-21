@@ -546,6 +546,9 @@ pub struct DuckVfsConfig {
     pub drive_id: Option<String>,
     /// OAuth scope override; defaults to read/write `drive`.
     pub drive_scope: Option<String>,
+    /// How the lane store repeats a transient error (a Drive `temporary Drive API failure`, a rate
+    /// limit, a 5xx or a timeout). The defaults are `RetryPolicy::default()`.
+    pub retry: escurel_storage::RetryPolicy,
     /// App-registration credentials for a `sharepoint://` root. Set exactly
     /// when the root's scheme is `sharepoint://`; its client secret prints as
     /// `<redacted>` in `Debug`.
@@ -758,6 +761,43 @@ where
 /// instead of exporting it, from the file named by `…_CLIENT_SECRET_FILE`
 /// (surrounding whitespace trimmed). Both set is refused as ambiguous. No
 /// error from here carries the secret, only the variable names.
+/// `ESCUREL_STORAGE_DUCKVFS_RETRY_ATTEMPTS` / `…_RETRY_MAX_BACKOFF_MS` / `…_RETRY_TOTAL_MS` over the
+/// defaults of [`escurel_storage::RetryPolicy`]. Attempts count the first try, so `1` turns retrying off.
+fn parse_duckvfs_retry<E: EnvSource + ?Sized>(
+    env: &E,
+) -> Result<escurel_storage::RetryPolicy, ConfigError> {
+    let mut policy = escurel_storage::RetryPolicy::default();
+    if let Some(raw) = env.get("ESCUREL_STORAGE_DUCKVFS_RETRY_ATTEMPTS") {
+        policy.attempts = match raw.parse::<u32>() {
+            Ok(n) if n >= 1 => n,
+            _ => {
+                return Err(ConfigError::InvalidValue {
+                    var: "ESCUREL_STORAGE_DUCKVFS_RETRY_ATTEMPTS",
+                    value: raw,
+                    reason: "expected an integer of at least 1 (1 = no retry)",
+                });
+            }
+        };
+    }
+    for (var, slot) in [
+        (
+            "ESCUREL_STORAGE_DUCKVFS_RETRY_MAX_BACKOFF_MS",
+            &mut policy.max_backoff,
+        ),
+        ("ESCUREL_STORAGE_DUCKVFS_RETRY_TOTAL_MS", &mut policy.total),
+    ] {
+        if let Some(raw) = env.get(var) {
+            let ms = raw.parse::<u64>().map_err(|_| ConfigError::InvalidValue {
+                var,
+                value: raw,
+                reason: "expected a non-negative integer (milliseconds)",
+            })?;
+            *slot = std::time::Duration::from_millis(ms);
+        }
+    }
+    Ok(policy)
+}
+
 fn parse_sharepoint_credentials<E: EnvSource + ?Sized>(
     env: &E,
     root: &str,
@@ -1075,6 +1115,7 @@ impl EscurelConfig {
                     .get("ESCUREL_STORAGE_DUCKVFS_DRIVE_SCOPE")
                     .filter(|v| !v.is_empty()),
                 sharepoint,
+                retry: parse_duckvfs_retry(env)?,
             })
         } else {
             None
@@ -2521,7 +2562,11 @@ impl EscurelConfig {
             value: e.to_string(),
             reason: "failed to open the DuckDB VFS store",
         })?;
-        Ok(Arc::new(store))
+        // One transient Drive error must not fail a boot that touches hundreds of lane objects.
+        Ok(Arc::new(escurel_storage::RetryingStore::new(
+            Arc::new(store),
+            cfg.retry,
+        )))
     }
 
     #[cfg(not(feature = "duckvfs"))]

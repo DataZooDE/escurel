@@ -126,6 +126,24 @@ pub const CONFIG_KEYS: &[ConfigKey] = &[
         doc: "OAuth scope; the default is read/write because the extension's own `drive.readonly` default cannot serve a lane store",
     },
     ConfigKey {
+        name: "ESCUREL_STORAGE_DUCKVFS_RETRY_ATTEMPTS",
+        component: "Server",
+        default: "6",
+        doc: "tries per lane operation (the first counts) when the VFS answers a transient error (`temporary Drive API failure`, a rate limit, a 5xx, a timeout); `1` turns retrying off. Permanent errors (not found, permission, quota) are never retried",
+    },
+    ConfigKey {
+        name: "ESCUREL_STORAGE_DUCKVFS_RETRY_MAX_BACKOFF_MS",
+        component: "Server",
+        default: "30000",
+        doc: "longest wait between two tries; the wait starts at 500 ms, doubles, and is jittered into its upper half",
+    },
+    ConfigKey {
+        name: "ESCUREL_STORAGE_DUCKVFS_RETRY_TOTAL_MS",
+        component: "Server",
+        default: "180000",
+        doc: "once an operation has been failing this long its next transient error is returned instead of retried (a cold boot on a Drive lane touches hundreds of objects, so this bounds the stall of ONE object, not the boot)",
+    },
+    ConfigKey {
         name: "ESCUREL_STORAGE_DUCKVFS_SHAREPOINT_TENANT_ID",
         component: "Server",
         default: "—",
