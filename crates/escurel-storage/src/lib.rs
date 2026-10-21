@@ -16,6 +16,7 @@ pub mod fs;
 pub mod gcs;
 mod key;
 pub mod layout;
+pub mod retry;
 #[cfg(feature = "s3")]
 pub mod s3;
 #[cfg(feature = "test-s3-server")]
@@ -29,6 +30,7 @@ pub use fs::FsStore;
 #[cfg(feature = "gcs")]
 pub use gcs::{GcsStore, GcsStoreConfig};
 pub use key::{Key, KeyError};
+pub use retry::{RetryPolicy, RetryingStore};
 #[cfg(feature = "s3")]
 pub use s3::{S3Store, S3StoreConfig};
 pub use vfs_credentials::{CredentialError, SecretString, SharepointCredentials};

@@ -29,6 +29,9 @@ escurel-server.
 | `ESCUREL_STORAGE_DUCKVFS_EXTENSION_REPO` | — | `community` (the DuckDB community repository) or a repository URL, used when `…_EXTENSION` is unset. Setting NEITHER skips the load rather than failing, so the store opens and the first WRITE fails on a missing `write_blob` |
 | `ESCUREL_STORAGE_DUCKVFS_DRIVE_ID` | — | Shared Drive id `0A…`; REQUIRED for a `gdrive://` root, else the store would silently target the credential's My Drive |
 | `ESCUREL_STORAGE_DUCKVFS_DRIVE_SCOPE` | …/auth/drive | OAuth scope; the default is read/write because the extension's own `drive.readonly` default cannot serve a lane store |
+| `ESCUREL_STORAGE_DUCKVFS_RETRY_ATTEMPTS` | 6 | tries per lane operation (the first counts) when the VFS answers a transient error (`temporary Drive API failure`, a rate limit, a 5xx, a timeout); `1` turns retrying off. Permanent errors (not found, permission, quota) are never retried |
+| `ESCUREL_STORAGE_DUCKVFS_RETRY_MAX_BACKOFF_MS` | 30000 | longest wait between two tries; the wait starts at 500 ms, doubles, and is jittered into its upper half |
+| `ESCUREL_STORAGE_DUCKVFS_RETRY_TOTAL_MS` | 180000 | once an operation has been failing this long its next transient error is returned instead of retried (a cold boot on a Drive lane touches hundreds of objects, so this bounds the stall of ONE object, not the boot) |
 | `ESCUREL_STORAGE_DUCKVFS_SHAREPOINT_TENANT_ID` | — | Entra tenant id for a `sharepoint://` root (backend=duckvfs); REQUIRED for that scheme and refused for any other |
 | `ESCUREL_STORAGE_DUCKVFS_SHAREPOINT_CLIENT_ID` | — | Entra app (client) id for a `sharepoint://` root; REQUIRED for that scheme |
 | `ESCUREL_STORAGE_DUCKVFS_SHAREPOINT_CLIENT_SECRET` | — | the app's client secret for a `sharepoint://` root; never logged or printed. Prefer `…_CLIENT_SECRET_FILE` so the secret is mounted rather than exported. Exactly one of the two is REQUIRED |

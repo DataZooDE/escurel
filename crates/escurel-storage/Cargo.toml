@@ -36,7 +36,8 @@ async-trait = "0.1"
 bytes = "1"
 sha2 = "0.10"
 thiserror = "2"
-tokio = { version = "1", features = ["fs", "io-util", "rt"] }
+tokio = { version = "1", features = ["fs", "io-util", "rt", "time"] }
+tracing = "0.1"
 url = "2"
 walkdir = "2"
 
