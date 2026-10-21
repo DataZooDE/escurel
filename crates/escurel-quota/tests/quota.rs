@@ -94,19 +94,25 @@ async fn per_tenant_override_replaces_defaults() {
 
 #[tokio::test]
 async fn buckets_refill_with_time() {
+    // A SLOW refill (2 tokens/s) so that the time spent draining the bucket cannot refill it: at 100/s the
+    // 6000-call drain took long enough under load (a debug build, a busy machine) for the 6001st call to
+    // succeed, and the test failed on its own "bucket is empty" assertion (about half of the runs with the
+    // machine saturated). A token needs 500 ms here, a stall of that length between the drain and the
+    // check is far outside what a loaded runner does.
     let qm = QuotaManager::new(QuotaConfig {
-        queries_per_minute: 6_000, // 100/s
-        writes_per_minute: 6_000,
-        embeds_per_minute: 6_000,
+        queries_per_minute: 120, // 2/s
+        writes_per_minute: 120,
+        embeds_per_minute: 120,
         concurrent_sessions: 2,
         max_blob_bytes: 25 * 1024 * 1024,
     });
-    for _ in 0..6_000 {
+    for _ in 0..120 {
         qm.try_consume("acme", Dimension::Queries).unwrap();
     }
     assert!(qm.try_consume("acme", Dimension::Queries).is_err());
-    thread::sleep(Duration::from_millis(50));
-    // After 50ms at 100 tok/sec ≈ 5 tokens.
+    // 1.2 s at 2 tok/s is 2.4 tokens: sleeping at least that long (a loaded machine only sleeps longer, which
+    // refills more) always leaves two to take.
+    thread::sleep(Duration::from_millis(1200));
     qm.try_consume("acme", Dimension::Queries).unwrap();
     qm.try_consume("acme", Dimension::Queries).unwrap();
 }
