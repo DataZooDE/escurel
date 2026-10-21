@@ -22,6 +22,21 @@
 
 use super::*;
 
+/// The filename-safe form of a branch name. Not injective (`a/b` and `a-b` both give `a-b`), which is why
+/// `create_branch` refuses a name whose slug another branch already uses.
+fn branch_slug(branch: &str) -> String {
+    branch
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.') {
+                c
+            } else {
+                '-'
+            }
+        })
+        .collect()
+}
+
 /// Derive the overlay page id a branch write lands on.
 ///
 /// `markdown/instances/note/alpha.md` + `wip` →
@@ -34,16 +49,7 @@ use super::*;
 /// (`agent/inbox-scan`, the issue's own example) must not become a directory.
 #[must_use]
 pub(super) fn overlay_page_id(page_id: &str, branch: &str) -> String {
-    let slug_safe: String = branch
-        .chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.') {
-                c
-            } else {
-                '-'
-            }
-        })
-        .collect();
+    let slug_safe = branch_slug(branch);
     match page_id.rsplit_once('.') {
         Some((stem, ext)) => format!("{stem}@{slug_safe}.{ext}"),
         None => format!("{page_id}@{slug_safe}"),
@@ -188,6 +194,30 @@ pub(super) async fn tool_create_branch(
                 .unwrap_or(0)
         ),
     };
+
+    // Two names that sanitise to one overlay file would write into the same page: refuse the later one.
+    let slug = branch_slug(name);
+    let taken = indexer
+        .list_branches()
+        .await
+        .map_err(|e| JsonRpcError::internal(format!("create_branch: {e}")))?
+        .into_iter()
+        .find(|b| b.name != name && branch_slug(&b.name) == slug);
+    if let Some(other) = taken {
+        return Ok(json!({
+            "ok": false,
+            "issues": [{
+                "severity": "error",
+                "code": "name_collision",
+                "location": "name",
+                "message": format!(
+                    "branch `{name}` would write to the same overlay files as branch `{}` (both map to `@{slug}`) \
+                     — pick a name that differs after `/` and similar characters become `-`",
+                    other.name
+                ),
+            }],
+        }));
+    }
 
     match indexer
         .create_branch(name, caller.subject, &base_version)
