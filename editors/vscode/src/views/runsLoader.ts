@@ -1,6 +1,10 @@
 // Reads the runs control center's data from the gateway. No `vscode` import: the provider owns the UI.
 import type { EscurelClient, Event } from '../client';
-import { runnerIntervalMs, ESCUREL_RUNNER_STATUS_INTERVAL_MS } from './runnerModel';
+import {
+  ESCUREL_RUNNER_STATUS_INTERVAL_MS,
+  summariseRunners,
+  type RunnerEntry,
+} from './runnerModel';
 import { foldRuns } from './runsModel';
 
 /** Run lifecycle events loaded so far, newest first by what the gateway returned. */
@@ -139,23 +143,34 @@ export async function loadOlderRunEvents(
 }
 
 export interface StatusRead {
+  /** The status row to describe the agents by: the freshest runner's, else the most recently seen one. */
   event: Event | undefined;
+  /** That runner's interval: declared in its record, else observed from its own rows. */
   intervalMs: number;
+  /** Every runner that has reported, fresh ones first. Nothing is hidden behind the freshest. */
+  runners: RunnerEntry[];
 }
 
-/** The runner's newest status row, and its interval: declared in the record, else observed from its rows. */
-export async function readRunnerStatus(client: EscurelClient): Promise<StatusRead> {
+/** How many status rows to read: one per runner on the overwritten record, a few more for an old runner's heartbeats. */
+const STATUS_ROWS = 50;
+
+/** The runners' status rows, one entry per runner id, and the row the agents sentence is about. */
+export async function readRunnerStatus(
+  client: EscurelClient,
+  nowMs: number = Date.now(),
+): Promise<StatusRead> {
   const page = await client.listEvents({
     label_skill: 'escurel:runner-status',
     newest_first: true,
     include_system: true,
-    limit: 8,
+    limit: STATUS_ROWS,
   });
+  const runners = summariseRunners(page.events ?? [], nowMs);
+  const primary = runners[0];
   return {
-    event: page.events?.[0],
-    intervalMs: page.events?.length
-      ? runnerIntervalMs(page.events)
-      : ESCUREL_RUNNER_STATUS_INTERVAL_MS,
+    event: primary?.event,
+    intervalMs: primary?.intervalMs ?? ESCUREL_RUNNER_STATUS_INTERVAL_MS,
+    runners,
   };
 }
 

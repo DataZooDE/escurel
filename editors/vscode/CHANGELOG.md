@@ -8,6 +8,11 @@ derives its version from the tag (`vYYYY.MM.DD` → `YYYY.M.D`, leading zeros dr
 
 ### Added
 
+- **The Runs view lists every runner, and a stopped one stays visible**: one row per runner id under the agents
+  row (`running · last seen 4 s ago`, or greyed `stopped · last seen 2 h ago` once it has been silent for more than
+  three times its own interval). A dead runner no longer hides behind a live one, and when none is reporting the row
+  says `No agent running` with when one was last seen, instead of `Agents are running`. The agents row opens by
+  itself when a runner has stopped.
 - **The Runs view reads the runner's single status record**: the interval comes from the record
   (`status_interval_s`, written by `report_runner_status`), and for a runner that still files heartbeat
   events from the gaps between that runner's own rows (not a neighbour's).

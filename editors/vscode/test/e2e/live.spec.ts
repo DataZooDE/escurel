@@ -49,6 +49,37 @@ test('the story is on screen: knowledge, threads, awaiting, inbox and the runner
   await stack.shot('01-overview');
 });
 
+test('a runner that stopped stays listed greyed, next to the live one', async ({ stack }) => {
+  const { page } = stack;
+  const runner = pane(page, 'Runs');
+  // A runner of an earlier deployment: its record is two hours old and was declared at a 5 minute interval.
+  const twoHoursAgo = new Date(Date.now() - 2 * 3600_000).toISOString();
+  await stack.call(
+    'capture_event',
+    {
+      event_id: 'e2e-stopped-runner',
+      at: twoHoursAgo,
+      label_skill: 'escurel:runner-status',
+      kind: 'system',
+      title: 'heartbeat',
+      source: 'e2e',
+      mime: 'application/json',
+      body: JSON.stringify({ runner_id: 'old-pod:17', status_interval_s: 300, state: 'heartbeat' }),
+    },
+    true,
+  );
+  // The live runner still gives the row its words ...
+  await expect(runner.getByRole('treeitem', { name: /Agents are running/ })).toBeVisible({
+    timeout: 60_000,
+  });
+  // ... and the stopped one is not hidden behind it: its own row, in words, with when it was last seen.
+  const stopped = runner.getByRole('treeitem', { name: /old-pod:17/ });
+  await expect(stopped).toBeVisible({ timeout: 60_000 });
+  await expect(stopped).toContainText(/stopped · last seen 2 h ago/);
+  await expect(stopped).toHaveAttribute('aria-label', /^old-pod:17\. stopped · last seen 2 h ago/);
+  await stack.shot('01d-stopped-runner');
+});
+
 test('the Knowledge tree can be narrowed by a tag and cleared again', async ({ stack }) => {
   const { page } = stack;
   const knowledge = pane(page, 'Knowledge');

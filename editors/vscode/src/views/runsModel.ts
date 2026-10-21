@@ -1,12 +1,13 @@
 // The runs control center's model: pure, no `vscode`. Run lifecycle events in, rows and words out.
 import type { Event } from '../client';
 import { pageSlug } from '../shared/pageId';
-import { cleanBlock, cleanOpt } from '../shared/untrustedText';
+import { cleanBlock, cleanOpt, cleanText } from '../shared/untrustedText';
 import { parseGatewayTime } from '../shared/time';
 import {
   allowedHarnesses,
   deriveHealth,
   ESCUREL_RUNNER_STATUS_INTERVAL_MS,
+  type RunnerEntry,
   type RunnerStatusBody,
 } from './runnerModel';
 
@@ -297,6 +298,18 @@ export function formatMs(msValue: number): string {
   return rest ? `${Math.floor(s / 60)} min ${rest} s` : `${Math.floor(s / 60)} min`;
 }
 
+/** "just now", "3 s ago", "10 min ago", "2 h ago", "3 d ago": how long ago, coarse enough for a stale runner. */
+export function formatAgo(msValue: number): string {
+  const s = Math.max(0, Math.round(msValue / 1000));
+  if (s < 2) return 'just now';
+  if (s < 60) return `${s} s ago`;
+  const min = Math.floor(s / 60);
+  if (min < 60) return `${min} min ago`;
+  const h = Math.floor(min / 60);
+  if (h < 48) return `${h} h ago`;
+  return `${Math.floor(h / 24)} d ago`;
+}
+
 /** "supplier-risk · order-4500123": what ran on what. Never an id. */
 export function runLabel(r: Pick<RunRecord, 'skill' | 'targetPageId'>): string {
   const page = r.targetPageId ? pageSlug(r.targetPageId) : '';
@@ -398,13 +411,13 @@ export function describeRunner(
   const paused = !!opts.tenant && (body.paused_tenants ?? []).includes(opts.tenant);
   const lead =
     health.state === 'stale'
-      ? 'Agents are not responding'
+      ? 'No agent running'
       : health.state === 'draining'
         ? 'Agents are shutting down'
         : 'Agents are running';
   const parts = [
     lead,
-    seconds < 2 ? 'last seen just now' : `last seen ${formatMs(seconds * 1000)} ago`,
+    `last seen ${formatAgo(seconds * 1000)}`,
   ];
   if (paused) parts[0] = 'Agents are paused: new work waits';
   const verb = paused ? 'Resume' : 'Pause';
@@ -439,7 +452,7 @@ function safeBody(raw: string): RunnerStatusBody {
 // --- the tree -------------------------------------------------------------------------------
 
 export type RunsNodeKind =
-  'insight' | 'dispatch' | 'group' | 'run' | 'reason' | 'more' | 'empty' | 'error';
+  'insight' | 'dispatch' | 'runner' | 'group' | 'run' | 'reason' | 'more' | 'empty' | 'error';
 
 export interface RunsNode {
   /** Stable, so VS Code keeps a group expanded across refreshes. */
@@ -464,6 +477,11 @@ export interface RunsNode {
 /** How many failures the section lists; the rest are one click away in History, filtered. */
 const ATTENTION_LIMIT = 10;
 
+/** What the agents row needs of a runner: a `RunnerEntry` without its raw event. */
+export type RunnerRow = Pick<RunnerEntry, 'runnerId' | 'fresh' | 'ageMs' | 'draining' | 'intervalMs'> & {
+  body?: RunnerStatusBody | null | undefined;
+};
+
 export interface TreeInput {
   records: readonly RunRecord[];
   filter: RunsFilter;
@@ -473,6 +491,8 @@ export interface TreeInput {
   /** Whether the gateway holds older run events than the ones loaded. */
   hasMoreHistory: boolean;
   runner: RunnerDescription | undefined;
+  /** One entry per runner that has reported; the agents row lists them when there is more to say. */
+  runners?: readonly RunnerRow[] | undefined;
   isAdmin: boolean;
   error?: string | undefined;
 }
@@ -535,6 +555,29 @@ function runNode(r: RunRecord, nowMs: number, section: string): RunsNode {
   };
 }
 
+/** One runner under the agents row: its id, whether it is up, and when it was last seen. */
+function runnerNode(r: RunnerRow, index: number): RunsNode {
+  const label = cleanText(r.runnerId || 'agent', 60);
+  const seen = formatAgo(r.ageMs);
+  return {
+    id: `runner:${r.runnerId || index}`,
+    kind: 'runner',
+    label,
+    description: r.fresh
+      ? `${r.draining ? 'shutting down' : 'running'} · last seen ${seen}`
+      : `stopped · last seen ${seen}`,
+    tooltip: [
+      r.fresh ? 'Reporting' : 'Not reporting: silent for more than three times its own interval',
+      `Reports every ${formatMs(r.intervalMs)}`,
+      r.body?.version ? `Version ${r.body.version}` : undefined,
+      r.body?.harness ? `Agent engine: ${r.body.harness}` : undefined,
+    ]
+      .filter(Boolean)
+      .join('\n'),
+    contextValue: r.fresh ? 'runner.live' : 'runner.stale',
+  };
+}
+
 const empty = (id: string, label: string): RunsNode => ({ id, kind: 'empty', label });
 
 /** The control center's rows: the dispatch row, then the four sections. */
@@ -558,12 +601,36 @@ export function buildRunsTree(input: TreeInput): RunsNode[] {
   const out: RunsNode[] = [];
 
   if (input.runner && input.runner.health !== 'none') {
+    const stale = input.runner.health === 'stale';
+    // The runners behind the row: listed when there is more than one, or one of them has stopped, so a dead
+    // runner is never hidden and a stale one never reads as running.
+    const runners = input.runners ?? [];
+    const runnerRows: RunsNode[] =
+      runners.length > 1 || runners.some((r) => !r.fresh)
+        ? runners.map((r, i) => runnerNode(r, i))
+        : [];
+    const stopped = runners.some((r) => !r.fresh);
     out.push({
-      id: 'dispatch',
+      // VS Code applies a row's expanded state only the first time it sees the id; a different id while a runner is
+      // stopped makes the row open when that appears, and fold again when it clears.
+      id: stopped && runnerRows.length ? 'dispatch:stopped' : 'dispatch',
       kind: 'dispatch',
-      label: input.runner.paused ? 'Agents are paused' : 'Agents are running',
-      // The button is there for an admin; for anyone else the short reason, and the sentence on hover.
-      description: input.isAdmin ? undefined : input.runner.paused ? 'admins only' : 'admins only',
+      label: input.runner.paused
+        ? 'Agents are paused'
+        : stale
+          ? 'No agent running'
+          : 'Agents are running',
+      // The button is there for an admin; for anyone else the short reason, and the sentence on hover. A row with
+      // no agent running says when one was last seen.
+      description: input.isAdmin
+        ? stale
+          ? input.runner.text.replace(/^.*?· /, '')
+          : undefined
+        : 'admins only',
+      // Open when a runner has stopped: that is what the person should see without a click.
+      ...(runnerRows.length
+        ? { children: runnerRows, expanded: stopped }
+        : {}),
       tooltip: [
         input.runner.text,
         input.runner.engine,

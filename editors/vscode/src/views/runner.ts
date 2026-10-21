@@ -9,6 +9,7 @@ import type { Services } from '../services';
 import {
   ESCUREL_RUNNER_STATUS_INTERVAL_MS,
   parseRunnerStatusBody,
+  type RunnerEntry,
   type RunnerStatusBody,
 } from './runnerModel';
 import {
@@ -63,6 +64,7 @@ export class RunnerTree implements vscode.TreeDataProvider<RunsNode>, vscode.Dis
   private focusSubscription?: vscode.Disposable;
   private snapshot: RunsSnapshot = emptySnapshot();
   private status: { at?: string | null; body?: RunnerStatusBody | null } | null = null;
+  private runners: RunnerEntry[] = [];
   private intervalMs = ESCUREL_RUNNER_STATUS_INTERVAL_MS;
   private adminState: AdminState = 'unknown';
   private readonly skills = new Map<string, string>();
@@ -159,16 +161,35 @@ export class RunnerTree implements vscode.TreeDataProvider<RunsNode>, vscode.Dis
     switch (node.kind) {
       case 'dispatch':
         item.iconPath = new vscode.ThemeIcon(
-          node.contextValue === 'dispatch.paused' ? 'debug-pause' : 'debug-start',
+          node.contextValue === 'dispatch.paused'
+            ? 'debug-pause'
+            : node.label === 'No agent running'
+              ? 'warning'
+              : 'debug-start',
           node.contextValue === 'dispatch.paused'
             ? new vscode.ThemeColor('charts.yellow')
-            : undefined,
+            : node.label === 'No agent running'
+              ? new vscode.ThemeColor('editorWarning.foreground')
+              : undefined,
         );
         item.accessibilityInformation = {
           label: `${node.label}. ${node.description ?? ''}`,
           role: 'treeitem',
         };
         break;
+      case 'runner': {
+        const live = node.contextValue === 'runner.live';
+        // The state is a WORD in the description and the accessible name: never colour alone.
+        item.iconPath = new vscode.ThemeIcon(
+          live ? 'vm-running' : 'circle-slash',
+          new vscode.ThemeColor(live ? 'charts.green' : 'disabledForeground'),
+        );
+        item.accessibilityInformation = {
+          label: `${node.label}. ${node.description ?? ''}`,
+          role: 'treeitem',
+        };
+        break;
+      }
       case 'insight':
         item.iconPath = new vscode.ThemeIcon('graph');
         break;
@@ -296,6 +317,7 @@ export class RunnerTree implements vscode.TreeDataProvider<RunsNode>, vscode.Dis
           ? { at: status.event.at, body: parseRunnerStatusBody(status.event) }
           : null;
         this.intervalMs = status.intervalMs;
+        this.runners = status.runners;
         this.snapshot = snapshot;
       } catch (err) {
         error = describeError(err);
@@ -354,6 +376,7 @@ export class RunnerTree implements vscode.TreeDataProvider<RunsNode>, vscode.Dis
       historyLimit: this.historyLimit,
       hasMoreHistory: this.snapshot.hasMoreOlder,
       runner,
+      runners: this.runners,
       isAdmin: this.adminState === 'admin',
       error: this.loadError,
     });
