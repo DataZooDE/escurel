@@ -151,7 +151,9 @@ RUN --mount=type=cache,target=/build/target \
     cargo build --release -p escurel-test-support --bin escurel-test-gateway \
     && cp target/release/escurel-test-gateway /usr/local/bin/escurel-test-gateway
 
-# trixie, not bookworm: the optimizer extension is built against a newer glibc (GLIBC_2.38) than bookworm ships (2.36).
+# trixie: kept from when the optimizer extension was built against a newer glibc (GLIBC_2.38) than bookworm ships (2.36).
+# The DuckDB 1.5.6 artifact on the erpl.io mirror needs at most GLIBC_2.25 and loads on bookworm (checked 2026-10-17), and the
+# shipped runtime image is bookworm-slim, so this stage no longer needs trixie for that reason.
 FROM debian:trixie-slim AS demo-gateway
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates curl libstdc++6 \

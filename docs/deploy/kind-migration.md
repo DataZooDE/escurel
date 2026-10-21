@@ -270,7 +270,9 @@ tar -C /data -xzf /backup/<t>-pre-kind.tgz
 # deploy the previous image
 ```
 
-Rewriting `kind:` back to `type:` in place is not supported.
+If the lake was upgraded or published, restore the manifest pin first (`escurel-server lake-upgrade --to 9`, writer stopped, with the NEW image's
+binary: see *Walking a cutover back* under the lake step); it is a walk-back of the pin only, and once DuckDB 1.5.6 has written the
+catalog the rollback is restore-based. Rewriting `kind:` back to `type:` in place is not supported.
 
 ## Transcript (throwaway store, real binaries)
 

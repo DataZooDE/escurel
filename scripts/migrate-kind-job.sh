@@ -18,12 +18,14 @@
 #      and whose dry run must find nothing left to migrate;
 #   4. LAST, `escurel-server lake-upgrade`: pins the manifest to this build's schema version when the
 #      publish did not (idempotent).
-# The one-way step comes LAST on purpose. Re-pinning the lake (and any publish does it) makes the PREVIOUS
-# release refuse the lake (`lake schema_version 10 != reader schema_version 9`), so a job that failed after
-# that point stranded the rollback target (the lab cutover of 2026-10-15, attempt 2). Everything that can fail
-# on configuration, auth or a conflict now fails BEFORE the lake is touched. If a cutover still has to be
-# walked back after the publish, `escurel-server lake-upgrade --to <previous>` restores the pin (a compatible
-# bump only; the migrated lane content comes back from the backup).
+# Where the point of no return is. Re-pinning the lake (every publish does it) makes the PREVIOUS release refuse the
+# lake (`lake schema_version 10 != reader schema_version 9`). In this job that happens at the APPLY (step 2, which
+# publishes), not at `lake-upgrade` (step 4, which is then a no-op and exists for a lake the apply did not publish).
+# So everything that can fail on configuration, auth or a conflict must fail BEFORE the apply: a job that failed after
+# a re-pin stranded the rollback target (the lab cutover of 2026-10-15, attempt 2). The dry run's conflict check and
+# the boot run first for exactly that reason (pinned by migrate_kind_job_script.rs). After the apply, the way back is
+# `escurel-server lake-upgrade --to <previous>` (a compatible bump only; the migrated lane content comes back from
+# the backup).
 # The job NEVER uses `escurel admin rebuild` (its client deadline and a partial index were how the
 # 2026-10-14 rehearsal almost published 91 of 183 pages).
 #

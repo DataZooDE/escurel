@@ -88,7 +88,7 @@ Three traps worth knowing up front:
 | `/healthz` | 8080 | liveness (dependency-free) |
 | `/readyz` | 8080 | readiness (dependencies up) |
 | `/version` | 8080 | build version |
-| `/metrics` | 8080 | Prometheus/OTel metrics |
+| `/metrics` | 9090 | Prometheus/OTel metrics, on a dedicated listener (`ESCUREL_OBSERVABILITY_METRICS_LISTEN`, default `0.0.0.0:9090`; never on 8080) |
 
 Quick liveness check while iterating: `curl -s localhost:8080/healthz`.
 
@@ -141,9 +141,9 @@ honest. Also there: `escurel_tool_calls`, `escurel_tool_latency_ms`,
   `_DUCKVFS_*`; a `sharepoint://` root adds `_DUCKVFS_SHAREPOINT_*`, see
   `docs/deploy/sharepoint-lanes.md`), `ESCUREL_INDEX_BACKEND` + `ESCUREL_DUCKLAKE_*`. In
   production your app doesn't set these — the deployment does; locally you
-  set them yourself. The authoritative list is the module doc comment at
-  the top of `crates/escurel-server/src/config.rs`, which is generated from
-  the same parser that reads them.
+  set them yourself. The authoritative list is the generated table
+  `docs/deploy/env.md` (`escurel-server --print-config-keys`, from
+  `crates/escurel-server/src/config_keys.rs`, the parser's own registry).
 
 ## Make your test suite fast
 

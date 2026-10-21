@@ -8,6 +8,23 @@ re-cuts append `.N`), matching the DataZoo release scheme (cf. erpl).
 
 ## Unreleased
 
+- **A refused tail cursor resumes where the runner left off.** A gateway restarted without a shared `ESCUREL_CURSOR_KEY` signs
+  cursors with a fresh random key, so the cursor a runner had stored was refused and the runner repositioned at the END of the
+  label, dropping every request filed since its last read. The tail now keeps the id of the newest event it read (ledger table
+  `tail_marks`) and scans the label for it; with no mark, or a purged one, it falls back to the end. The gateway also warns at
+  boot when `ESCUREL_CURSOR_KEY` is unset.
+- **`create_branch` refuses a name whose overlay file another branch uses** (`a/b` vs `a-b`, issue `name_collision`): one branch
+  could silently overwrite the other's pages.
+- **`admin purge-events` never deletes a write-back `:applied` witness**, even with `allow_protected`: the witness is what stops
+  a retry writing upstream twice.
+- **A same-day re-cut tag (`vYYYY.MM.DD.N`) no longer fails the VSIX job.** Cargo carried the fourth component as build
+  metadata but the VSIX step did not, so `npm version` rejected it. Both now use `scripts/release-semver.sh`
+  (`2026.10.15.1` -> `2026.10.15+1`, leading zeros stripped), tested in CI. `escurel-quota`'s `buckets_refill_with_time` no
+  longer races its own drain (a test-only fix).
+- **Docs:** `list_events` tail paging says `next_cursor`, `/metrics` is on `:9090`, the rollback section of
+  `docs/deploy/kind-migration.md` names `lake-upgrade --to 9`, the Dockerfile's glibc note, and the changelog's secret naming
+  (`ESCUREL_SECRET_<TENANT>__<NAME>`).
+
 ## v2026.10.19
 
 A patch on v2026.10.18 from the Drive rehearsal of the events move (hetzner-agent-substrate #982). **Use this tag, not
@@ -436,7 +453,7 @@ Skill version `0.24.0`. Every consumer that writes pages or reads the tool surfa
   status code alone**; deploy stop-first with the migration before the swap.
 - **New env (every key is in the generated table [`docs/deploy/env.md`](docs/deploy/env.md), the source of truth; `docs/deploy/README.md` explains the groups):** `ESCUREL_EGRESS_ALLOW_LOOPBACK` (dev/tests only —
   never in production), `ESCUREL_EGRESS_MAX_RESPONSE_BYTES`, `…_TIMEOUT_MS`, `…_MAX_CONCURRENCY`,
-  `…_RATE_PER_SEC`, `…_WRITE_RETRY_BACKOFF_MS`, `ESCUREL_SECRET_<NAME>`, `ESCUREL_SECRET_ENV_ALLOW`,
+  `…_RATE_PER_SEC`, `…_WRITE_RETRY_BACKOFF_MS`, `ESCUREL_SECRET_<TENANT>__<NAME>` (secrets are per tenant; the earlier global `ESCUREL_SECRET_<NAME>` is gone), `ESCUREL_SECRET_ENV_ALLOW`,
   `ESCUREL_SECRET_FILE_DIRS`, `ESCUREL_SHUTDOWN_DRAIN_SECS` (graceful-stop deadline, default 25). An unparsable `ESCUREL_EGRESS_*` value now **fails the boot** (it used to be
   silently ignored).
 - The server image runs **non-root (uid 65532)**, ships the `escurel` CLI (`docker exec … escurel admin …`), and
