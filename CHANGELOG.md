@@ -17,6 +17,13 @@ v2026.10.18, for `events-copy`**: the v2026.10.18 build cannot load the lab's un
   attaching a `gdrive://` lake died at `LOAD` of the unsigned mirror `gdrive` extension ("signature is either missing"),
   the same artifact the lab image bakes. It now opens with `Migrator::connection_config()` like every other lake
   connection. Found by the Drive rehearsal #982; see `docs/notes/discovered/2026-10-18-events-copy-bare-connection.md`.
+- **The server image ships `events-copy-job`.** The runtime image copied only `migrate-kind-job`, so the lab Job for
+  the Postgres to lake copy had no entrypoint (the v2026.10.18 image does not contain `events-copy-job`). The
+  `Dockerfile` now installs `scripts/events-copy-job.sh` as `/usr/local/bin/events-copy-job`, and a `RUN test -x`
+  step fails the image build if either Job script is missing or not executable; `scripts/test-image-scripts.sh`
+  (run in CI) fails when a `scripts/*-job.sh` is not shipped. `docs/deploy/events-to-lake.md` lists the Job's
+  environment: `ESCUREL_EVENTS_BACKEND`/`ESCUREL_CHAT_BACKEND` may stay unset during the Job and are switched to
+  `ducklake` only for the server boot afterwards.
 - **A cold boot now reports the index open.** The 19-21 minutes of silence in heron-escurel's cold boot (rehearsal
   #982) were not the lake attach or adopt: on a fresh data directory the boot first scans every lane page and rebuilds
   the whole index from the lane store, a step #746's progress lines did not cover. It logs

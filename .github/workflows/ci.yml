@@ -85,6 +85,11 @@ jobs:
       - name: Image tag validation tests
         run: bash scripts/test-image-tags.sh
 
+      # The one-shot Job scripts (scripts/*-job.sh) must ship in the server image and the build must assert it:
+      # the v2026.10.18 image had migrate-kind-job but not events-copy-job.
+      - name: Image Job scripts test
+        run: bash scripts/test-image-scripts.sh
+
       # rust-toolchain.toml drives the channel + components; rustup
       # honours it automatically on first invocation.
       - name: Install Rust toolchain

@@ -180,6 +180,13 @@ COPY --from=builder /usr/local/bin/escurel-server /usr/local/bin/escurel-server
 COPY --from=builder /usr/local/bin/escurel /usr/local/bin/escurel
 # The one-shot migration job (exits non-zero unless the tenant ends migrated and un-quarantined).
 COPY --from=builder /build/scripts/migrate-kind-job.sh /usr/local/bin/migrate-kind-job
+# The one-shot Postgres -> lake copy of events, drafts and chat (docs/deploy/events-to-lake.md).
+COPY --from=builder /build/scripts/events-copy-job.sh /usr/local/bin/events-copy-job
+# A Job entrypoint that is missing or not executable is found out when the maintenance window is open: fail the
+# image build instead (scripts/test-image-scripts.sh checks that every scripts/*-job.sh is listed here).
+RUN chmod 0755 /usr/local/bin/migrate-kind-job /usr/local/bin/events-copy-job \
+    && test -x /usr/local/bin/migrate-kind-job \
+    && test -x /usr/local/bin/events-copy-job
 # The dynamically-linked libduckdb.so (see the builder note). Land it in a
 # standard search dir and refresh the loader cache so the binary — which has
 # no rpath — finds it at startup.
