@@ -4,6 +4,15 @@ The skill version tracks the consumer-facing contract, not the Escurel
 binary version. The Escurel repo's checked-out git ref is the true version
 pin (see `SKILL.md` → "How this skill is installed").
 
+## 0.25.6 — branch name collisions, a purge-proof write-back witness, doc drift
+
+`create_branch` refuses (`ok: false`, issue `name_collision`) a name whose overlay file another branch already uses
+(`a/b` and `a-b` both map to `@a-b`). `admin_purge_events` never deletes a `write-back:<draft>:applied` witness, even with
+`allow_protected`. Runner label tails (`escurel:review`, `escurel:run-control`) whose cursor the gateway refuses (a gateway
+restarted without `ESCUREL_CURSOR_KEY`) resume after the last event they read instead of skipping to the end of the label, and
+the gateway logs a warning at boot when no cursor key is set. Doc fixes: `list_events` tails pass `next_cursor` (not the removed
+`resume_cursor`), `/metrics` is on the dedicated `:9090` listener, the env list's source of truth is `docs/deploy/env.md`.
+
 ## 0.25.5 — drafts work on a lake backend; Drive-friendly lake settings
 
 No tool or wire change. With `ESCUREL_EVENTS_BACKEND=ducklake` (drafts follow it) the first `create_draft` failed with
