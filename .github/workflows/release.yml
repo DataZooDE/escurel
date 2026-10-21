@@ -134,18 +134,12 @@ jobs:
         env:
           VERSION: ${{ steps.ver.outputs.version }}
         run: |
-          python3 - "$VERSION" <<'PY'
+          # SemVer form of the tag version: no leading zeros, a fourth component as build metadata
+          # (scripts/release-semver.sh, tested by scripts/test-release-semver.sh).
+          v="$(bash scripts/release-semver.sh "$VERSION")"
+          python3 - "$v" <<'PY'
           import re, sys
           v = sys.argv[1]
-          # Split the numeric dotted core from any pre-release/build suffix
-          # (-rc.1, +meta), strip leading zeros per core component, reassemble.
-          m = re.match(r"^([0-9]+(?:\.[0-9]+)*)(.*)$", v)
-          if m:
-              parts = [str(int(p)) for p in m.group(1).split(".")]
-              # Cargo wants exactly major.minor.patch. A same-day re-cut (v2026.10.14.1) has a fourth
-              # component: carry it as SemVer build metadata (2026.10.14+1) so the crate version stays valid.
-              core, extra = ".".join(parts[:3]), parts[3:]
-              v = core + m.group(2) + (("+" + ".".join(extra)) if extra else "")
           s = open("Cargo.toml", encoding="utf-8").read()
           s, n = re.subn(r'(?m)^version = "[^"]*"', f'version = "{v}"', s, count=1)
           assert n == 1, "no top-level version line found in Cargo.toml"
@@ -396,15 +390,8 @@ jobs:
         shell: bash
         run: |
           V="$(bash ../../scripts/release-version.sh "$GITHUB_REF")"
-          V="$(python3 - "$V" <<'PY'
-          import re, sys
-          v = sys.argv[1]
-          m = re.match(r"^([0-9]+(?:\.[0-9]+)*)(.*)$", v)
-          if m:
-              v = ".".join(str(int(p)) for p in m.group(1).split(".")) + m.group(2)
-          print(v)
-          PY
-          )"
+          # The same SemVer form Cargo gets: `npm version` rejects leading zeros AND a fourth component.
+          V="$(bash ../../scripts/release-semver.sh "$V")"
           echo "version=$V" >> "$GITHUB_OUTPUT"
       - run: npm ci
       - name: Set version

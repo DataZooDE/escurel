@@ -77,6 +77,11 @@ jobs:
       - name: Release version tests
         run: bash scripts/test-release-version.sh
 
+      # Cargo and the VSIX both take the tag's version: leading zeros and a fourth component (a same-day re-cut
+      # `vYYYY.MM.DD.N`) must become valid SemVer for both (the VSIX job had only half of it).
+      - name: Release SemVer tests
+        run: bash scripts/test-release-semver.sh
+
       # `git tag -m` strips `#` lines (the BREAKING headings): scripts/release-tag.sh keeps them.
       - name: Release tag message tests
         run: bash scripts/test-release-tag.sh
