@@ -8,6 +8,23 @@ re-cuts append `.N`), matching the DataZoo release scheme (cf. erpl).
 
 ## Unreleased
 
+## v2026.10.21
+
+A patch on v2026.10.19 from the heron-escurel events-to-lake window (hetzner-agent-substrate #979/#987): its Drive cold boot
+died at minute 20 on one transient Drive write error and restarted into another 20 minutes. Both causes are fixed. Use this
+tag for any boot over a Drive lane (heron-escurel); no migration, no stored-format change.
+
+- **A rebuild reads the lane and writes only the index** (#763). `Indexer::rebuild` (a cold boot on a fresh data directory,
+  `escurel admin rebuild`) re-derived the index through `update_page_as`, which writes the lane first, so it wrote every page
+  it had just read straight back: one lane write per page (on Drive about 1.5 s each, 223 pages on heron) and one transient
+  error failed the boot. The rebuild now skips the lane write; every other writer is unchanged, and `migrate-kind` still
+  writes the lane because it changes the bytes. Expected boot saving on heron about 5 to 6 minutes (not measured).
+- **The duckvfs lane store retries transient Drive errors** (#764). A new `RetryingStore` repeats a `temporary Drive API
+  failure`, rate limit, 429/5xx, timeout or connection reset with exponential backoff and jitter; not-found, permission,
+  quota and bad-key errors return at once, and a retried delete that finds the object gone counts as done. Each retry logs one
+  `warn` (operation, tenant-relative path, attempt, matched marker; never the error text). New env, defaults in brackets:
+  `ESCUREL_STORAGE_DUCKVFS_RETRY_ATTEMPTS` (6; `1` turns retrying off), `ESCUREL_STORAGE_DUCKVFS_RETRY_MAX_BACKOFF_MS`
+  (30000), `ESCUREL_STORAGE_DUCKVFS_RETRY_TOTAL_MS` (180000).
 - **A refused tail cursor resumes where the runner left off.** A gateway restarted without a shared `ESCUREL_CURSOR_KEY` signs
   cursors with a fresh random key, so the cursor a runner had stored was refused and the runner repositioned at the END of the
   label, dropping every request filed since its last read. The tail now keeps the id of the newest event it read (ledger table
@@ -24,6 +41,22 @@ re-cuts append `.N`), matching the DataZoo release scheme (cf. erpl).
 - **Docs:** `list_events` tail paging says `next_cursor`, `/metrics` is on `:9090`, the rollback section of
   `docs/deploy/kind-migration.md` names `lake-upgrade --to 9`, the Dockerfile's glibc note, and the changelog's secret naming
   (`ESCUREL_SECRET_<TENANT>__<NAME>`).
+
+### Operators
+
+- **No stored-format change, no migration.** Nothing here needs `migrate-kind`, `lake-upgrade` or `events-copy`.
+- **What the heron window showed.** On v2026.10.19 the heron-escurel events-to-lake window (backends `ducklake`, Drive lane)
+  booted from a fresh data directory for about 20 minutes and died with `lane store error: io error: duckvfs write:
+  temporary Drive API failure`; the pod restarted and the second boot succeeded (ready at 14:12). With this tag the rebuild
+  no longer rewrites lane pages (expected saving about 5 to 6 minutes, not measured) and lane store errors are retried, so
+  one transient Drive error no longer costs a full cold boot. Keep the startup budget at 45 minutes or more.
+- **Not covered.** DuckLake over `gdrive://` talks to Drive inside DuckDB, not through the lane store: a lake attach at boot
+  still has no retry (the publish tick retries on its next cycle). See
+  `docs/notes/discovered/2026-10-21-drive-lane-store-had-no-retry.md` and
+  `docs/notes/discovered/2026-10-21-rebuild-rewrote-every-lane-page.md`.
+- **Images and re-pins.** The release image is built with `REQUIRE_GDRIVE=1`: `ghcr.io/datazoode/escurel:v2026.10.21` and
+  `escurel-runner:v2026.10.21`. heron-escurel moves first (watch the cold boot), then dz-escurel and both runners, one app at
+  a time in their own values PRs.
 
 ## v2026.10.19
 
