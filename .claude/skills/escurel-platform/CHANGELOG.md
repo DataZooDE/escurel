@@ -17,7 +17,10 @@ one (chain capped at 4 links). A write cannot lift its own freeze; it ends by ed
 A skill may declare `protected: [delete, move]`: `delete_page` / archive (also through `update_page` `archived: true`, a draft or
 a changeset member) and `move_page` of its instances are refused with `instance_protected` (family `instance_protected`);
 updates stay allowed. Order of refusals: `instance_frozen`, `instance_immutable`, `instance_protected`, `relation_in_use`.
-`list_skills` publishes `protected`. 90 tools.
+`list_skills` publishes `protected`.
+
+`update_page` with `archived: true` on a live page now answers `relation_in_use` (with `referrers`) like `delete_page`, judged
+against the saved corpus; a changeset is still judged as one batch by `promote_changeset`. 90 tools.
 
 ## 0.25.10 — operator credential: cross-tenant administration is the operator's
 

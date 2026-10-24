@@ -523,6 +523,31 @@ pub(super) async fn tool_update_page_ungated(
     write_acl: crate::server::WriteAclMode,
     args: Value,
 ) -> Result<Value, JsonRpcError> {
+    update_page_checked(state, indexer, caller, write_acl, args, true).await
+}
+
+/// `update_page` for a write whose archive was already judged as part of a batch (a changeset
+/// member after `promote_changeset`'s pre-flight, or a branch merge): the in-use guard is not asked
+/// again against the saved corpus, where a member that lands first would see a referrer that a
+/// later member of the same batch archives.
+pub(super) async fn tool_update_page_batch_judged(
+    state: &crate::server::AppState,
+    indexer: &Indexer,
+    caller: AclCaller<'_>,
+    write_acl: crate::server::WriteAclMode,
+    args: Value,
+) -> Result<Value, JsonRpcError> {
+    update_page_checked(state, indexer, caller, write_acl, args, false).await
+}
+
+async fn update_page_checked(
+    state: &crate::server::AppState,
+    indexer: &Indexer,
+    caller: AclCaller<'_>,
+    write_acl: crate::server::WriteAclMode,
+    args: Value,
+    relation_guard: bool,
+) -> Result<Value, JsonRpcError> {
     let mut a: UpdatePageArgs = parse_args(args, "update_page")?;
 
     // ── Branch write context (#512 §2). ──
@@ -925,6 +950,27 @@ pub(super) async fn tool_update_page_ungated(
             "ok": false,
             "issues": issues.iter().map(issue_to_json).collect::<Vec<_>>(),
         }));
+    }
+    // The in-use guard for an archive that arrives as a write (`archived: true` on a live page),
+    // judged against the saved corpus under the same gate as the write. A page that is already
+    // archived, a page created archived, and a branch overlay are not archives of a live page.
+    if relation_guard
+        && a.branch.is_none()
+        && escurel_index::drafts::content_is_archived(&content_to_write)
+        && indexer
+            .read_page_markdown(&a.page_id)
+            .await
+            .map_err(|e| JsonRpcError::internal(format!("update_page archive guard: {e}")))?
+            .is_some_and(|stored| !escurel_index::drafts::content_is_archived(&stored))
+        && let Some(refused) = relation_in_use_refusal(
+            indexer,
+            &a.page_id,
+            "archive",
+            &std::collections::HashMap::new(),
+        )
+        .await?
+    {
+        return Ok(refused);
     }
     // The write, attributed. `stamped_principal` reads ONLY the verified
     // token subject — nothing from `a`, so no argument, frontmatter key or

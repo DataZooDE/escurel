@@ -209,7 +209,12 @@ instances, other scenarios and the page itself do not count. A draft whose
 content sets `archived: true` is judged the same way when promoted, and a
 changeset is judged as a batch: a referrer the same changeset archives or
 re-points does not block, one it creates does. A blocked changeset lands
-nothing. Direct `update_page` with `archived: true` is not guarded.
+nothing. A direct `update_page` with `archived: true` on a live page is guarded the same way,
+judged against the saved corpus (another staged draft is not a referrer) under the page-write gate;
+a page that is already archived, a page created archived and a branch overlay write are not
+archives of a live page. Changeset members are not re-judged one by one when they land (the
+pre-flight judged the batch), and neither are the pages a branch merge writes. Order of refusals
+on a write: `instance_frozen`, `instance_immutable`, `instance_protected`, then `relation_in_use`.
 
 **Lease fence.** `create_draft` and `discard_changeset` accept `lease:
 {page_id, holder}`. The write is stored only while the page at `page_id`
