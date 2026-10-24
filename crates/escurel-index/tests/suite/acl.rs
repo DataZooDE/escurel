@@ -671,3 +671,146 @@ async fn admin_bypasses_owner_visibility() {
         "the admin role bypasses owner-visibility (operator dashboard)"
     );
 }
+
+// ── instance_acl: false and page-bound chat ──────────────────────────
+
+const SKILL_NOTE: (&str, &str) = (
+    "markdown/skills/note.md",
+    "---\nkind: skill\nid: note\ndescription: A note.\nacl:\n  read: [reader]\n\
+     instance_acl: false\nchat:\n  page_bound: true\n---\n# note\n",
+);
+const SKILL_TICKET: (&str, &str) = (
+    "markdown/skills/ticket.md",
+    "---\nkind: skill\nid: ticket\ndescription: A ticket.\nacl:\n  read: [reader]\n---\n# ticket\n",
+);
+const INST_NOTE_WIDENED: (&str, &str) = (
+    "markdown/instances/note/n1.md",
+    "---\nkind: instance\nskill: note\nid: n1\nacl:\n  read: [public]\n---\n# N1\n",
+);
+const INST_TICKET_WIDENED: (&str, &str) = (
+    "markdown/instances/ticket/t1.md",
+    "---\nkind: instance\nskill: ticket\nid: t1\nacl:\n  read: [public]\n---\n# T1\n",
+);
+const NOTE_PAGE: &str = "markdown/instances/note/n1.md";
+const TICKET_PAGE: &str = "markdown/instances/ticket/t1.md";
+
+fn sha(subject: &str) -> String {
+    use sha2::{Digest, Sha256};
+    format!("{:x}", Sha256::digest(subject.as_bytes()))
+}
+
+#[tokio::test]
+async fn skill_declares_instance_acl_off_and_page_bound_chat() {
+    let h = fresh_harness();
+    seed(&h, &[SKILL_NOTE, SKILL_TICKET, SKILL_TALK]).await;
+    let note = skill_info(&h, "note").await;
+    assert!(note.instance_acl_disabled && note.chat_page_bound);
+    for id in ["ticket", "talk"] {
+        let s = skill_info(&h, id).await;
+        assert!(!s.instance_acl_disabled && !s.chat_page_bound, "{id}");
+    }
+}
+
+#[tokio::test]
+async fn instance_acl_false_ignores_the_instance_block() {
+    let h = fresh_harness();
+    seed(
+        &h,
+        &[
+            SKILL_NOTE,
+            SKILL_TICKET,
+            INST_NOTE_WIDENED,
+            INST_TICKET_WIDENED,
+        ],
+    )
+    .await;
+    let groups = vec!["reader".to_owned()];
+    let reader = member_with_groups(BOB, &groups);
+    let note = fm(&h, "note", "n1").await;
+    let ticket = fm(&h, "ticket", "t1").await;
+    // Without the option the instance block widens read to everyone;
+    // with it, only the skill's `reader` group reads.
+    assert!(
+        h.indexer
+            .may_read_instance(&member(BOB), "ticket", &ticket)
+            .await
+            .unwrap()
+    );
+    assert!(
+        !h.indexer
+            .may_read_instance(&member(BOB), "note", &note)
+            .await
+            .unwrap()
+    );
+    assert!(
+        h.indexer
+            .may_read_instance(&reader, "note", &note)
+            .await
+            .unwrap()
+    );
+}
+
+#[tokio::test]
+async fn page_chat_follows_page_read_acl_and_owner_hash() {
+    let h = fresh_harness();
+    seed(
+        &h,
+        &[
+            SKILL_NOTE,
+            SKILL_TICKET,
+            INST_NOTE_WIDENED,
+            INST_TICKET_WIDENED,
+        ],
+    )
+    .await;
+    let groups = vec!["reader".to_owned()];
+    let alice = member_with_groups(ALICE, &groups);
+    let bob_reader = member_with_groups(BOB, &groups);
+    let bob_plain = member(BOB);
+    let group = |owner: &str, page: &str| format!("page-chat:v1:{}:{page}", sha(owner));
+
+    let own = group(ALICE, NOTE_PAGE);
+    assert!(h.indexer.may_access_chat(&alice, &own).await.unwrap());
+    // Another reader may not use Alice's chat; a caller who cannot read the page may not either.
+    assert!(!h.indexer.may_access_chat(&bob_reader, &own).await.unwrap());
+    assert!(
+        !h.indexer
+            .may_access_chat(&bob_plain, &group(BOB, NOTE_PAGE))
+            .await
+            .unwrap()
+    );
+    // Admin reads any page chat, but the page must still exist and be page-bound.
+    let admin = AclCaller {
+        is_admin: true,
+        ..member(BOB)
+    };
+    assert!(h.indexer.may_access_chat(&admin, &own).await.unwrap());
+    assert!(
+        !h.indexer
+            .may_access_chat(&admin, &group(ALICE, "markdown/instances/note/absent.md"))
+            .await
+            .unwrap()
+    );
+    // A skill that does not declare page_bound refuses every page chat.
+    assert!(
+        !h.indexer
+            .may_access_chat(&alice, &group(ALICE, TICKET_PAGE))
+            .await
+            .unwrap()
+    );
+    // Malformed shapes are refused.
+    for bad in [
+        format!("page-chat:v2:{}:{NOTE_PAGE}", sha(ALICE)),
+        format!("page-chat:v1:{}", sha(ALICE)),
+        format!(
+            "page-chat:v1:{}:markdown/instances/note/../n1.md",
+            sha(ALICE)
+        ),
+        format!("page-chat:v1:{}:markdown/skills/note.md", sha(ALICE)),
+    ] {
+        assert!(
+            !h.indexer.may_access_chat(&admin, &bad).await.unwrap(),
+            "{bad}"
+        );
+    }
+}

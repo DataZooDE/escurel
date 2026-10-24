@@ -175,6 +175,43 @@ impl Cursor {
 }
 
 impl Indexer {
+    /// Append a chat message only while the referenced page still has the
+    /// revision (SHA-256 of its stored markdown) the caller saw. The tenant
+    /// write lock that serialises page updates is held across the check and
+    /// the append, so no update can fall between them. A missing page or a
+    /// different revision is [`IndexerError::RevisionChanged`].
+    pub async fn append_chat_message_with_revision(
+        &self,
+        input: AppendChatMessage<'_>,
+        page_id: &str,
+        revision_sha256: &str,
+    ) -> Result<ChatMessage, IndexerError> {
+        use sha2::{Digest, Sha256};
+        let _write = self.write_lock.lock().await;
+        let changed = || IndexerError::RevisionChanged {
+            page_id: page_id.to_owned(),
+        };
+        let content = self
+            .read_page_markdown(page_id)
+            .await?
+            .ok_or_else(changed)?;
+        if format!("{:x}", Sha256::digest(content.as_bytes())) != revision_sha256 {
+            return Err(changed());
+        }
+        self.append_chat_message(input).await
+    }
+
+    /// Resolve one stored message by its `(chat_group_id, msg_id)` key for a
+    /// caller that has already passed the chat ACL.
+    pub async fn get_chat_message(
+        &self,
+        chat_group_id: &str,
+        msg_id: &str,
+    ) -> Result<Option<ChatMessage>, IndexerError> {
+        let conn = self.conn.lock().await;
+        self.find_chat_message(&conn, chat_group_id, msg_id)
+    }
+
     /// The table this indexer's chat methods read/write:
     /// `chat_messages` (local) or `<alias>.escurel_chat_messages`
     /// (attached Postgres, DuckLake PR 8).

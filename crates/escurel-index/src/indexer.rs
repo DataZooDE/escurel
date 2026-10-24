@@ -66,7 +66,7 @@ pub struct Indexer {
     /// embed runs while only `write_lock` is held and `conn` is taken
     /// only for the transaction. Mirrors the spec's per-tenant write
     /// lock (`docs/spec/platform.md §Concurrency`).
-    write_lock: Mutex<()>,
+    pub(crate) write_lock: Mutex<()>,
     /// Dirty counter for the DuckLake publish loop: bumped once per
     /// committed index mutation ([`Self::update_page`],
     /// [`Self::write_document_blocks`] — the shared tail of
@@ -256,6 +256,10 @@ impl AuditDrift {
 
 #[derive(Debug, Error)]
 pub enum IndexerError {
+    /// A write bound to a page revision found the page missing or changed.
+    #[error("page `{page_id}` changed since the revision the caller saw")]
+    RevisionChanged { page_id: String },
+
     /// A rebuild would have truncated a populated index against a corpus
     /// listing with nothing in it. The listing is proven complete by this
     /// point — `LaneStore::list` errors rather than reporting an unreachable

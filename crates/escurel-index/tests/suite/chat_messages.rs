@@ -616,3 +616,70 @@ async fn list_paginates_within_one_visible_second() {
         );
     }
 }
+
+#[tokio::test]
+async fn append_with_revision_requires_the_page_revision_the_caller_saw() {
+    use escurel_index::IndexerError;
+    use sha2::{Digest, Sha256};
+    let h = fresh_harness();
+    let page = "markdown/instances/note/n1.md";
+    let v1 = "---\nkind: instance\nskill: note\nid: n1\n---\n# One\n";
+    let v2 = "---\nkind: instance\nskill: note\nid: n1\n---\n# Two\n";
+    h.indexer.update_page(page, v1).await.unwrap();
+    let rev1 = format!("{:x}", Sha256::digest(v1.as_bytes()));
+
+    let stored = h
+        .indexer
+        .append_chat_message_with_revision(append("g", "user", "hello", None), page, &rev1)
+        .await
+        .unwrap();
+    let again = h
+        .indexer
+        .get_chat_message("g", &stored.msg_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(again.content, "hello");
+    assert!(
+        h.indexer
+            .get_chat_message("g", "nope")
+            .await
+            .unwrap()
+            .is_none()
+    );
+
+    h.indexer.update_page(page, v2).await.unwrap();
+    let stale = h
+        .indexer
+        .append_chat_message_with_revision(append("g", "user", "late", None), page, &rev1)
+        .await;
+    assert!(
+        matches!(stale, Err(IndexerError::RevisionChanged { .. })),
+        "{stale:?}"
+    );
+    let gone = h
+        .indexer
+        .append_chat_message_with_revision(
+            append("g", "user", "late", None),
+            "markdown/instances/note/absent.md",
+            &rev1,
+        )
+        .await;
+    assert!(
+        matches!(gone, Err(IndexerError::RevisionChanged { .. })),
+        "{gone:?}"
+    );
+    let page = h
+        .indexer
+        .list_chat_messages(ListChatMessages {
+            chat_group_id: "g",
+            since: None,
+            until: None,
+            limit: 10,
+            cursor: None,
+            direction: OrderDir::Asc,
+        })
+        .await
+        .unwrap();
+    assert_eq!(page.messages.len(), 1, "refused appends store nothing");
+}
