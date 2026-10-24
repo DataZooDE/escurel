@@ -132,6 +132,28 @@ async fn owner_overwrites_own_instance() {
 }
 
 #[tokio::test]
+async fn narrowed_agent_writes_only_skills_in_its_scope() {
+    let h = fresh_harness();
+    seed(&h, &[SKILL_MEMBER, INST_ALICE]).await;
+    let alice = fm(&h, "community_member", "alice").await;
+    let mut caller = member(ALICE);
+    caller.agent_skill = Some("event_profile,community_member");
+    assert!(
+        h.indexer
+            .may_write_instance(&caller, "community_member", Some(&alice), &alice)
+            .await
+            .unwrap()
+    );
+    caller.agent_skill = Some("event_profile,community_members");
+    assert!(
+        !h.indexer
+            .may_write_instance(&caller, "community_member", Some(&alice), &alice)
+            .await
+            .unwrap()
+    );
+}
+
+#[tokio::test]
 async fn non_owner_overwrite_denied() {
     let h = fresh_harness();
     seed(&h, &[SKILL_MEMBER, INST_ALICE]).await;

@@ -224,6 +224,31 @@ impl TokenSource {
         }
     }
 
+    /// Mint an agent confined to several explicit output skills, subject to
+    /// each skill's instance ACL.
+    pub fn mint_agent_for_skills(
+        &self,
+        label_skill: &str,
+        ttl_secs: u64,
+        run: Option<&RunClaims>,
+        groups: &[String],
+        skills: &[&str],
+    ) -> Result<Option<String>, AuthError> {
+        match self {
+            Self::Static(_) => Ok(None),
+            Self::Minted {
+                signer, subject, ..
+            } => Ok(Some(signer.mint_agent_narrowed_for_skills(
+                subject,
+                label_skill,
+                ttl_secs,
+                run,
+                groups,
+                skills,
+            )?)),
+        }
+    }
+
     /// Whether this source can mint per-run, caller-scoped tokens — true only in
     /// **minted** mode (a signing key), false for a [`Self::Static`] bearer.
     ///
@@ -533,6 +558,37 @@ mod tests {
             .expect("mint")
             .expect("minting source");
         assert!(claims_of(&bare).get(RUN_ID_CLAIM).is_none());
+    }
+
+    #[test]
+    fn minted_source_mints_multi_skill_scope_and_static_source_cannot() {
+        let signer = Signer::build(
+            "https://issuer".into(),
+            "escurel".into(),
+            "acme".into(),
+            None,
+            &test_key(),
+        )
+        .expect("signer");
+        let minted = TokenSource::Minted {
+            signer,
+            ttl_secs: 120,
+            subject: "runner".into(),
+            cached: Mutex::new(None),
+        };
+        let token = minted
+            .mint_agent_for_skills("triage", 90, Some(&run()), &[], &["triage", "report"])
+            .expect("mint")
+            .expect("minted source");
+        assert_eq!(claims_of(&token)["skill"], "triage,report");
+        assert_eq!(claims_of(&token)[RUN_ID_CLAIM], "01HRUN");
+        let static_source = TokenSource::Static("bearer".into());
+        assert!(
+            static_source
+                .mint_agent_for_skills("triage", 90, None, &[], &["triage", "report"])
+                .expect("static source")
+                .is_none()
+        );
     }
 
     /// A workflow run's requester-scoped token carries the run too, and the

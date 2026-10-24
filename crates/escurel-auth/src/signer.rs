@@ -332,7 +332,7 @@ impl Signer {
             ttl_secs,
             run,
             vec!["escurel:admin".to_owned()],
-            false,
+            None,
         )
     }
 
@@ -373,7 +373,52 @@ impl Signer {
             }
             roles.push(g.to_owned());
         }
-        self.mint_agent_with_roles(runner_subject, label_skill, ttl_secs, run, roles, true)
+        self.mint_agent_with_roles(
+            runner_subject,
+            label_skill,
+            ttl_secs,
+            run,
+            roles,
+            Some(label_skill.to_owned()),
+        )
+    }
+
+    /// Mint an agent confined to the listed output skills. Each skill must
+    /// still grant the token's groups write access to its instances.
+    pub fn mint_agent_narrowed_for_skills(
+        &self,
+        runner_subject: &str,
+        label_skill: &str,
+        ttl_secs: u64,
+        run: Option<&RunClaims>,
+        groups: &[String],
+        skills: &[&str],
+    ) -> Result<String, SignError> {
+        if skills.is_empty() {
+            return Err(SignError::UnusableAgentSubject(String::new()));
+        }
+        for skill in skills {
+            agent_slug(skill)?;
+        }
+        let mut roles = vec!["escurel:agent".to_owned()];
+        for group in groups {
+            let group = group.trim();
+            if !group.is_empty()
+                && !group.starts_with("escurel:")
+                && !matches!(group, "public" | "owner" | "admin")
+                && !roles.iter().any(|role| role == group)
+            {
+                roles.push(group.to_owned());
+            }
+        }
+        self.mint_agent_with_roles(
+            runner_subject,
+            label_skill,
+            ttl_secs,
+            run,
+            roles,
+            Some(skills.join(",")),
+        )
     }
 
     fn mint_agent_with_roles(
@@ -383,7 +428,7 @@ impl Signer {
         ttl_secs: u64,
         run: Option<&RunClaims>,
         roles: Vec<String>,
-        narrowed: bool,
+        skill_scope: Option<String>,
     ) -> Result<String, SignError> {
         let slug = agent_slug(label_skill)?;
         let now = now_secs();
@@ -403,11 +448,9 @@ impl Signer {
             "exp": now + ttl_secs,
         });
         stamp_run(&mut claims, run);
-        if narrowed {
-            // Groups are tenant-wide; the skill claim is what confines the
-            // token to THIS skill's instances at the write boundary (codex
-            // second-opinion review of P3).
-            claims[SKILL_CLAIM] = json!(label_skill);
+        if let Some(skill_scope) = skill_scope {
+            // Groups are tenant-wide; the skill claim bounds instance writes.
+            claims[SKILL_CLAIM] = json!(skill_scope);
         }
         let mut header = Header::new(Algorithm::RS256);
         header.kid = Some(self.kid.clone());
@@ -561,6 +604,36 @@ mod tests {
         );
         assert_eq!(wide["roles"], serde_json::json!(["escurel:admin"]));
         assert!(wide.get(SKILL_CLAIM).is_none(), "{wide}");
+    }
+
+    #[test]
+    fn multi_skill_scope_round_trips_and_rejects_invalid_skills() {
+        let signer = Signer::build(
+            "https://issuer".into(),
+            "escurel".into(),
+            "acme".into(),
+            None,
+            &test_key(),
+        )
+        .expect("signer");
+        let mint = |skills: &[&str]| {
+            signer.mint_agent_narrowed_for_skills(
+                "runner",
+                "triage",
+                90,
+                None,
+                &["editors".into(), "escurel:admin".into()],
+                skills,
+            )
+        };
+        let token = mint(&["triage", "report-v2"]).expect("mint");
+        let claims = decode_claims(&token);
+        assert_eq!(claims[SKILL_CLAIM], "triage,report-v2");
+        assert_eq!(claims["sub"], "agent:triage");
+        assert_eq!(claims["roles"], json!(["escurel:agent", "editors"]));
+        assert!(mint(&[]).is_err());
+        assert!(mint(&["triage,private"]).is_err());
+        assert!(mint(&["bad/slug"]).is_err());
     }
 
     fn decode_claims(token: &str) -> serde_json::Value {
