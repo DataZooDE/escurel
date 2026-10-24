@@ -39,6 +39,7 @@ describe('the public extension API', () => {
       'getClient',
       'onDidChangeTenant',
       'registerOverviewTile',
+      'registerPageAugment',
       'registerPageRenderer',
       'themeCss',
       'themeTokens',

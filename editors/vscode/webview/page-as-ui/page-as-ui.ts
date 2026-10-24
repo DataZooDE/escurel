@@ -13,6 +13,7 @@ import { LitElement, css, html, nothing } from 'lit';
 import { property, state } from 'lit/decorators.js';
 import type { PageModel, StartMode, WebviewToHost } from '../../src/shared/protocol';
 import { fieldRows, splitButton, theme } from '../shared/theme.css';
+import '../shared/augment-view';
 import './field';
 import './source-preview';
 import './split-button';
@@ -416,6 +417,8 @@ export class EscurelPageAsUi extends LitElement {
 
   @property({ attribute: false }) model?: PageModel;
   @property({ attribute: false }) error?: string;
+  /** What became of the last companion form (host answer). */
+  @property({ attribute: false }) augmentResult?: { id: string; ok: boolean; message: string };
   @state() private view: 'page' | 'markdown' = 'page';
 
   override connectedCallback(): void {
@@ -687,6 +690,18 @@ export class EscurelPageAsUi extends LitElement {
       </section>
 
       ${m.report ? this.reportSection(m.report) : nothing}
+      ${
+        m.augment
+          ? html`<escurel-augment
+              .view=${m.augment}
+              .result=${this.augmentResult}
+              @augment-action=${(e: CustomEvent<{ id: string }>) =>
+                this.send({ type: 'augment-action', id: e.detail.id })}
+              @augment-form=${(e: CustomEvent<{ id: string; values: Record<string, unknown> }>) =>
+                this.send({ type: 'augment-form', id: e.detail.id, values: e.detail.values })}
+            ></escurel-augment>`
+          : nothing
+      }
       ${
         m.preview
           ? html`<section>

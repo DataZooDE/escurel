@@ -36,6 +36,35 @@ Deliberately left out: sessions or tokens, a way to run tools the user could not
 controllers, a webview-side library. Custom drawing inside the Overview board is out of scope: a companion opens its own
 panel (`webviewHtml`) from a tile's `openCommand`.
 
+## Additive hooks
+
+These extend a core view instead of replacing it, so a companion keeps no copy of the view. All are additive to
+API version 1 (a companion that does not use them is unaffected) and share one rule set: providers and hooks run
+on the host, what they return is data that the host cleans and bounds, the core webview draws it with text nodes
+only, commands and tool names never reach a webview, and the host re-validates every message from a webview.
+
+### Page view augment: `registerPageAugment(skill, augment)`
+
+```ts
+api.registerPageAugment('acme-thing', {
+  sections: async (ctx) => [{ id: 'impact', title: 'Impact', blocks: [{ type: 'table', columns: [...], rows: [[...]] }] }],
+  actions: (ctx) => [{ id: 'open', label: 'Open report', command: 'acme.example.openReport', args: [ctx.pageId] }],
+  forms: [{ id: 'note', title: 'Add a note', fields: [{ name: 'text', label: 'Note', kind: 'textarea', required: true }],
+            toDraft: (values, ctx) => ({ target_page_id: ctx.pageId, content: ... }) }],
+});
+```
+
+| Part | Rules |
+| --- | --- |
+| `sections(ctx)` | Returns `{ id, title, blocks, empty? }`. Block types: `text`, `facts` (label, value, tone), `table` (columns, rows of strings), `list` (lines that may name a host `command` and `args`). Anything else is dropped. At most 12 sections, 8 blocks per section, 50 rows, 8 columns, 20 list lines; text is cleaned like gateway text. A tone is shown in words as well as colour. |
+| `actions(ctx)` | Returns `{ id, label, hint?, command, args? }`. The command id is pattern-checked; the webview gets only a handle (`a:<n>`, `l:<n>` for list lines) and posts it back, and the host runs the command it holds for that handle. A handle it did not hand out is refused. |
+| `forms` | Static list of `{ id, title, submitLabel?, fields, toDraft }`. Field kinds: `text`, `textarea`, `enum`, `bool`, with `required`, `values`, `maxLength` (default 2000, at most 20000). The host re-validates the submitted values against its own copy of the form (required, enum membership, length, unknown keys dropped), calls `toDraft` on the host, and keeps only `target_page_id`, `content` and a 64-hex `base_sha256`; the call is `create_draft` and nothing else, so a reviewer still decides. `target_page_id` must be a relative page id without `..`. |
+| `ctx` | `{ pageId, skill, frontmatter, client, signal }`. `client` is the same `GatewayClient`. `signal` aborts after about 5 s. |
+| Failure | A provider that throws or times out costs only its own contribution; the view says "Some additional information could not be read just now". A throwing `toDraft` answers the form with a refusal. |
+| Scope | Several companions may augment one skill (unlike `registerPageRenderer`); `dispose()` removes one. A skill with a registered renderer is drawn by the renderer, not augmented. With no augment registered for a skill, nothing extra is read. |
+
+Not offered: scripts in the webview, a form that writes anything other than a draft, a button that names a tool.
+
 ## Classification of a downstream fork's changes
 
 Measured against the `editors/vscode` diff of one downstream fork: 298 files, 257 added, 41 modified.
@@ -64,5 +93,5 @@ Not covered (companion-only, or a follow-up if the owner wants it generic):
 
 ## Tests
 
-`test/unit/extensionApi.test.ts`, `contributedTiles.test.ts`, `pageRendererDelegation.test.ts`, `themeTokens.test.ts`,
+`test/unit/extensionApi.test.ts`, `contributedTiles.test.ts`, `pageRendererDelegation.test.ts`, `pageAugment.test.ts`, `pageAugmentWiring.test.ts`, `test/component/augment-view.test.ts`, `themeTokens.test.ts`,
 `apiExposure.test.ts`. Not covered by unit tests: the Overview panel wiring in a real window (integration suite).

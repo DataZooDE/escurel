@@ -1,6 +1,7 @@
 import type { ReportModel } from './report';
 import type { WriteBackStatus } from './writeBack';
 import type { RowSource } from './rowSource';
+import type { PageAugmentView } from './augment';
 // The host ↔ webview contract (SPEC §5): typed postMessage both ways.
 // Shared by both tsconfigs, so nothing here may import `vscode` or Node.
 
@@ -84,10 +85,16 @@ export interface PageModel {
   source?: RowSource;
   /** The last write-back to the source, from the page's `escurel:write-back` events. */
   writeBack?: WriteBackStatus;
+  /** What companion extensions add to this page view (sections, buttons, forms); absent when none. */
+  augment?: PageAugmentView;
 }
 
 export type HostToWebview =
-  { type: 'loading' } | { type: 'page'; model: PageModel } | { type: 'error'; message: string };
+  | { type: 'loading' }
+  | { type: 'page'; model: PageModel }
+  | { type: 'error'; message: string }
+  /** What became of a form the person submitted (`augment-form`). */
+  | { type: 'augment-result'; id: string; ok: boolean; message: string };
 
 export type StartMode = 'background' | 'plan' | 'terminal';
 
@@ -121,7 +128,11 @@ export type WebviewToHost =
   | { type: 'refresh' }
   | { type: 'open-thread'; rootEventId: string }
   | { type: 'open-run'; runId: string }
-  | { type: 'start-skill'; skill: string; mode: StartMode };
+  | { type: 'start-skill'; skill: string; mode: StartMode }
+  /** A button or list line a companion added: only the handle the host handed out travels. */
+  | { type: 'augment-action'; id: string }
+  /** A companion's form; the host validates the values again and can only create a draft. */
+  | { type: 'augment-form'; id: string; values: Record<string, unknown> };
 
 // ── the thread and run webviews (SPEC §3.5, §3.6) ────────────────────
 //

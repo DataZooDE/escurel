@@ -95,7 +95,7 @@ export interface ContributedTiles {
 const tone = (t: unknown, fallback: OverviewTone): OverviewTone =>
   TONES.includes(t as OverviewTone) ? (t as OverviewTone) : fallback;
 
-function withTimeout<T>(run: (signal: AbortSignal) => Promise<T>, ms: number): Promise<T> {
+export function withTimeout<T>(run: (signal: AbortSignal) => Promise<T>, ms: number): Promise<T> {
   const ac = new AbortController();
   let timer: NodeJS.Timeout | undefined;
   const timeout = new Promise<never>((_, reject) => {

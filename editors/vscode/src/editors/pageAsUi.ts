@@ -12,11 +12,22 @@ import { safePost } from '../shared/safePost';
 import { findThreadStrip } from '../shared/threadStrip';
 import { pageTabTitle } from '../shared/tabTitle';
 import type { Contributions } from '../api';
+import { loadAugment, resolveAugmentAction, resolveAugmentSubmit, type AugmentTable } from '../api/augment';
 import { parseViewer } from '../shared/viewer';
 import { loadReport } from './reportLoader';
 import type { HostToWebview, PageModel, WebviewToHost } from '../shared/protocol';
 
 export const VIEW_TYPE = 'escurel.pageAsUi';
+
+type PageContributions = Pick<Contributions, 'renderers' | 'gateway' | 'onDidChangeTenant'> &
+  Partial<Pick<Contributions, 'augments'>>;
+
+/** What the host knows of the companions' additions to the page it last sent. */
+interface AugmentState {
+  table?: AugmentTable;
+  frontmatter: Record<string, unknown>;
+  skill?: string;
+}
 
 /** Name the tab; a panel that was closed while the page loaded is not worth an error. */
 function setTitle(panel: vscode.WebviewPanel, parts: Parameters<typeof pageTabTitle>[0]): void {
@@ -37,17 +48,14 @@ export class PageAsUiEditor implements vscode.CustomReadonlyEditorProvider {
     private readonly context: vscode.ExtensionContext,
     private readonly client: () => EscurelClient,
     private readonly onDidChange: vscode.Event<void>,
-    private readonly contributions?: Pick<
-      Contributions,
-      'renderers' | 'gateway' | 'onDidChangeTenant'
-    >,
+    private readonly contributions?: PageContributions,
   ) {}
 
   static register(
     context: vscode.ExtensionContext,
     client: () => EscurelClient,
     onDidChange: vscode.Event<void>,
-    contributions?: Pick<Contributions, 'renderers' | 'gateway' | 'onDidChangeTenant'>,
+    contributions?: PageContributions,
   ): void {
     context.subscriptions.push(
       vscode.window.registerCustomEditorProvider(
@@ -83,7 +91,12 @@ export class PageAsUiEditor implements vscode.CustomReadonlyEditorProvider {
     let shown = false;
     // Reads overlap (every event, view-state change and gateway change starts one, each several awaits):
     // only the newest is applied, so a slow old read cannot replace the model the host validates against.
-    const loader = latestLoader<{ message: HostToWebview; model?: PageModel }>(
+    const augmentState: AugmentState = { frontmatter: {} };
+    const loader = latestLoader<{
+      message: HostToWebview;
+      model?: PageModel;
+      augment?: AugmentState;
+    }>(
       async () => {
         if (!pageId)
           return {
@@ -150,12 +163,28 @@ export class PageAsUiEditor implements vscode.CustomReadonlyEditorProvider {
           }
         }
         const base = strip ? { ...model, thread: strip } : model;
-        const built = writeBack ? { ...base, writeBack } : base;
-        return { message: { type: 'page', model: built }, model: built };
+        const withWriteBack = writeBack ? { ...base, writeBack } : base;
+        // What companions add is read last and is an addition like the strip: a failure costs the
+        // additions, never the page.
+        const loaded = this.contributions?.augments?.has(skill.id)
+          ? await loadAugment(this.contributions.augments, skill.id, {
+              pageId,
+              skill: skill.id,
+              frontmatter: e.frontmatter ?? {},
+              client: this.contributions.gateway,
+            }).catch(() => undefined)
+          : undefined;
+        const built = loaded ? { ...withWriteBack, augment: loaded.view } : withWriteBack;
+        return {
+          message: { type: 'page', model: built },
+          model: built,
+          augment: { table: loaded?.table, frontmatter: e.frontmatter ?? {}, skill: skill.id },
+        };
       },
       (result) => {
         if (result.model) {
           current = result.model;
+          Object.assign(augmentState, result.augment);
           shown = true;
         }
         post(result.message);
@@ -167,9 +196,12 @@ export class PageAsUiEditor implements vscode.CustomReadonlyEditorProvider {
       await loader.run();
     };
     const subs: vscode.Disposable[] = [
-      panel.webview.onDidReceiveMessage((m: WebviewToHost) =>
-        this.onMessage(m, pageId, current, load),
-      ),
+      panel.webview.onDidReceiveMessage((m: WebviewToHost) => {
+        if (m?.type === 'augment-action' || m?.type === 'augment-form') {
+          return void this.onAugmentMessage(m, pageId, augmentState, post, load);
+        }
+        this.onMessage(m, pageId, current, load);
+      }),
       // A different gateway or tenant: what is on screen (and what messages are judged against) belongs
       // to the old one. Retire the reads in flight and start over.
       this.onDidChange(() => {
@@ -213,6 +245,46 @@ export class PageAsUiEditor implements vscode.CustomReadonlyEditorProvider {
     } catch (err) {
       log().warn(`escurel: page renderer failed, showing the generic page: ${describeError(err)}`);
       return false;
+    }
+  }
+
+  /**
+   * A button, list line or form a companion added. The webview names a handle; the command, or the
+   * draft a form may create, comes from the table the host built for the page on screen.
+   */
+  private async onAugmentMessage(
+    m: Extract<WebviewToHost, { type: 'augment-action' | 'augment-form' }>,
+    pageId: string | undefined,
+    state: AugmentState,
+    post: (m: HostToWebview) => void,
+    load: () => Promise<void>,
+  ): Promise<void> {
+    const table = state.table;
+    if (!table || !pageId || !state.skill) return;
+    if (m.type === 'augment-action') {
+      const cmd = resolveAugmentAction(table, m.id);
+      if (!cmd) {
+        log().warn('escurel: refused an augment action it did not offer');
+        return;
+      }
+      void vscode.commands.executeCommand(cmd.command, ...cmd.args);
+      return;
+    }
+    const result = (ok: boolean, message: string) =>
+      post({ type: 'augment-result', id: String(m.id), ok, message });
+    const submit = await resolveAugmentSubmit(table, m.id, m.values, {
+      pageId,
+      skill: state.skill,
+      frontmatter: state.frontmatter,
+      client: this.contributions!.gateway,
+    });
+    if (!submit.ok) return result(false, submit.message);
+    try {
+      await this.client().createDraft(submit.args);
+      result(true, 'Proposed. A reviewer decides it in Awaiting you.');
+      void load();
+    } catch (err) {
+      result(false, describeError(err));
     }
   }
 

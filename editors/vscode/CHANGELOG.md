@@ -8,6 +8,14 @@ derives its version from the tag (`vYYYY.MM.DD` → `YYYY.M.D`, leading zeros dr
 
 ### Added
 
+- **Page view augment for companion extensions**: `registerPageAugment(skill, { sections?, actions?, forms? })`
+  (API v1, additive) extends the generic page view of a skill. Sections are data from a host-side provider and are
+  drawn by the core webview from a declarative schema (text, facts, table, list; no companion script runs in the
+  webview); buttons run a host command id with arguments the host checked; a form can only call `create_draft`
+  (the host validates the values again and keeps only the `create_draft` arguments). Several companions may extend
+  one skill; a provider that fails or exceeds 5 s costs only its own contribution and the page says so. See
+  `docs/design/extension-api.md`.
+
 - **A public API for companion extensions**: `activate()` returns a versioned object (`apiVersion: 1`) in every
   install, without any token: `getClient()` (one MCP tool call with the user's session, input re-checked),
   `webviewHtml()` and the `--escurel-*` theme tokens, `registerOverviewTile()` (a tile on the Overview board,
