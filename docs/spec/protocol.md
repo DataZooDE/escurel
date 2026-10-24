@@ -956,6 +956,28 @@ skill of the same id (the overlay direction of `pack_skill_collision`
 no longer refuses; two BASE pages with one id still do — no precedence
 exists between packs).
 
+### Held writes: reading a draft
+
+`list_drafts` returns the open drafts the caller may see, newest first, paged
+by `limit` + `cursor` (`next_cursor` null means done). `get_draft` reads one
+draft by id, open or decided.
+
+```
+get_draft({draft_id}) -> {draft: {draft_id, target_page_id, content,
+  content_sha256, base_sha256, author, event_id, status, reason, decided_by,
+  created_at, run_id, root_event_id, ...}}
+                      | {ok: false, issues: [{code: "not_found", ...}]}
+```
+
+`status` is `open`, `promoted` or `discarded`. A promoted draft returns the
+bytes that were approved, so a client can check them against the page's
+`content_sha256`. The read gate is the one `list_drafts` and `diff_draft`
+use: the author, or a caller with read rights on the target instance. After a
+draft is decided, a non-admin may read it only while they can still read the
+target page as it is now, so a change of owner closes the former owner's view
+of the history. A hidden draft is indistinguishable from an absent one
+(`not_found`).
+
 ### Events / inbox (M7 — Event-sourcing surface)
 
 Events are the dynamic input of the memory triad (Events · Skills ·

@@ -797,6 +797,53 @@ pub(super) async fn tool_list_drafts(
     Ok(out)
 }
 
+/// Read one stored review decision, including a promoted draft's approved bytes.
+/// A hidden draft is indistinguishable from an absent one.
+pub(super) async fn tool_get_draft(
+    indexer: &Indexer,
+    caller: AclCaller<'_>,
+    args: Value,
+) -> Result<Value, JsonRpcError> {
+    let a: DiffDraftArgs = parse_args(args, "get_draft")?;
+    let Some(draft) = indexer
+        .get_draft(&a.draft_id)
+        .await
+        .map_err(|e| JsonRpcError::internal(format!("get_draft: {e}")))?
+    else {
+        return Ok(not_found(&a.draft_id));
+    };
+    if !may_see(indexer, &caller, &draft).await? {
+        return Ok(not_found(&a.draft_id));
+    }
+    // A decided draft keeps its bytes after the page moved on; a non-admin
+    // may read them only while they could read the page as it is now, so an
+    // owner transfer closes the old owner's view of the history.
+    if draft.status != "open" && !caller.is_admin {
+        let current = indexer
+            .read_page_markdown(&draft.target_page_id)
+            .await
+            .map_err(|e| JsonRpcError::internal(format!("get_draft current page: {e}")))?;
+        let Some(parsed) = current.as_deref().and_then(|c| escurel_md::parse(c).ok()) else {
+            return Ok(not_found(&a.draft_id));
+        };
+        let skill = parsed
+            .frontmatter
+            .fields
+            .get("skill")
+            .and_then(escurel_md::YamlValue::as_str)
+            .unwrap_or_default();
+        let fields = serde_json::to_value(&parsed.frontmatter.fields).unwrap_or_else(|_| json!({}));
+        if !indexer
+            .may_read_instance(&caller, skill, &fields)
+            .await
+            .map_err(|e| JsonRpcError::internal(format!("get_draft current ACL: {e}")))?
+        {
+            return Ok(not_found(&a.draft_id));
+        }
+    }
+    Ok(json!({ "draft": draft_to_json(&draft) }))
+}
+
 /// Land a held write, under the approver's identity.
 pub(super) async fn tool_promote_draft(
     state: &crate::server::AppState,

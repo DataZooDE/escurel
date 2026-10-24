@@ -726,6 +726,83 @@ mod scope {
         );
     }
 
+    #[tokio::test]
+    async fn get_draft_keeps_private_history_scoped_after_promotion_and_owner_change() {
+        let p = start_scoped().await;
+        let alice = p.mint_token_with_sub(TENANT, Role::Agent, ALICE);
+        let bob = p.mint_token_with_sub(TENANT, Role::Agent, BOB);
+        let admin = p.mint_token(TENANT, Role::Admin);
+        let created = call(
+            &p,
+            &alice,
+            "create_draft",
+            json!({"target_page_id":ALICE_PAGE,"content":ALICE_EDIT}),
+        )
+        .await;
+        assert_eq!(created["ok"], json!(true), "{created}");
+        let id = created["draft"]["draft_id"].as_str().expect("draft ID");
+        let open = call(&p, &alice, "get_draft", json!({"draft_id":id})).await;
+        assert_eq!(open["draft"]["content"], json!(ALICE_EDIT));
+        assert_eq!(open["draft"]["status"], json!("open"));
+        assert_eq!(open["draft"]["target_page_id"], json!(ALICE_PAGE));
+        assert!(open["draft"]["content_sha256"].is_string(), "{open}");
+        let hidden = call(&p, &bob, "get_draft", json!({"draft_id":id})).await;
+        let absent = call(
+            &p,
+            &bob,
+            "get_draft",
+            json!({"draft_id":"01K00000000000000000000000"}),
+        )
+        .await;
+        assert_eq!(hidden["issues"][0]["code"], json!("not_found"));
+        assert_eq!(hidden["ok"], absent["ok"]);
+        assert_eq!(
+            call(&p, &admin, "promote_draft", json!({"draft_id":id})).await["ok"],
+            json!(true)
+        );
+        assert_eq!(
+            call(&p, &alice, "get_draft", json!({"draft_id":id})).await["draft"]["status"],
+            json!("promoted")
+        );
+        assert_eq!(
+            call(&p, &bob, "get_draft", json!({"draft_id":id})).await["ok"],
+            json!(false)
+        );
+        let changed_owner = ALICE_EDIT.replace("whatsapp:111", "whatsapp:222");
+        assert_eq!(
+            call(
+                &p,
+                &admin,
+                "update_page",
+                json!({"page_id":ALICE_PAGE,"content":changed_owner})
+            )
+            .await["ok"],
+            json!(true)
+        );
+        assert_eq!(
+            call(&p, &alice, "get_draft", json!({"draft_id":id})).await["ok"],
+            json!(false),
+            "old owner must not read historical bytes after transfer"
+        );
+        assert_eq!(
+            call(&p, &admin, "get_draft", json!({"draft_id":id})).await["draft"]["status"],
+            json!("promoted")
+        );
+        let other_tenant = p.mint_token_with_sub("different-customer", Role::Agent, ALICE);
+        let foreign = reqwest::Client::new()
+            .post(p.mcp_url())
+            .header("authorization", format!("Bearer {other_tenant}"))
+            .json(&json!({"jsonrpc":"2.0","id":1,"method":"tools/call",
+                "params":{"name":"get_draft","arguments":{"draft_id":id}}}))
+            .send()
+            .await
+            .expect("foreign tenant request");
+        assert!(
+            !foreign.status().is_success(),
+            "another tenant must not reach this draft tool"
+        );
+    }
+
     /// A draft is not knowledge, and neither is its diff: the same read gate
     /// that keeps another person's held write out of `list_drafts` keeps its
     /// contents out of here. Otherwise `diff_draft` is a way to read a draft
