@@ -25,21 +25,28 @@ else
   fail "set PASSWORD (at least 12 characters) or HASHED_PASSWORD (argon2): the workbench will not start unauthenticated"
 fi
 
+# --- the downstream overlay (OVERLAY.md): validated again here, so a bad layer fails loudly at start -----
+OPT="${ESCUREL_OPT:-/opt/escurel}"
+OVERLAY="${ESCUREL_OVERLAY_DIR:-$OPT/overlay}"
+NODE="${ESCUREL_NODE:-/usr/lib/code-server/lib/node}"
+"$NODE" "$OPT/overlay.mjs" check "$OVERLAY" || exit $?
+APP_NAME="$("$NODE" "$OPT/overlay.mjs" get productName "$OVERLAY")"
+WELCOME="$("$NODE" "$OPT/overlay.mjs" get welcomeText "$OVERLAY")"
+
 DATA="${WORKBENCH_DATA_DIR:-/home/coder/data}"
 mkdir -p "$DATA" /home/coder/workspace
 
-NODE=/usr/lib/code-server/lib/node
-"$NODE" /opt/escurel/render-settings.mjs /opt/escurel/settings.common.json /opt/escurel/settings.base.json /opt/escurel/keybindings.json "$DATA"
+"$NODE" "$OPT/render-settings.mjs" "$OPT/settings.common.json" "$OPT/settings.base.json" "$OPT/keybindings.json" "$DATA" "$OVERLAY"
 
 set -- --auth password \
   --bind-addr "0.0.0.0:${PORT:-8080}" \
   --user-data-dir "$DATA" \
-  --extensions-dir /opt/escurel/extensions \
-  --config /opt/escurel/code-server.yaml \
+  --extensions-dir "$OPT/extensions" \
+  --config "$OPT/code-server.yaml" \
   --disable-telemetry --disable-update-check --disable-workspace-trust \
   --disable-file-downloads --disable-file-uploads --disable-proxy \
   --disable-getting-started-override \
-  --app-name Escurel --welcome-text "${WORKBENCH_WELCOME_TEXT:-Sign in to Escurel}"
+  --app-name "${APP_NAME:-Escurel}" --welcome-text "${WORKBENCH_WELCOME_TEXT:-${WELCOME:-Sign in to ${APP_NAME:-Escurel}}}"
 
 # TLS terminated here instead of by a proxy (optional): both files, or neither.
 if [ -n "${CODE_SERVER_CERT:-}" ] || [ -n "${CODE_SERVER_CERT_KEY:-}" ]; then

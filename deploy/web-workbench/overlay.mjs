@@ -4,6 +4,7 @@
 //   node overlay.mjs check   [dir]      validate; exit 64 with all problems on failure
 //   node overlay.mjs get KEY [dir]      print productName | welcomeText (empty when unset)
 //   node overlay.mjs install [dir]      build time, as root: apply the overlay to code-server and the extension dir
+import { spawnSync } from 'node:child_process';
 import { existsSync, lstatSync, readdirSync, readFileSync } from 'node:fs';
 import { basename, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -187,8 +188,12 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
     if (cmd === 'check') loadOverlay(a ?? OVERLAY_DIR);
     else if (cmd === 'get') console.log(loadOverlay(b ?? OVERLAY_DIR).loginTokens[a] ?? '');
     else if (cmd === 'install') {
-      const { install } = await import('./overlay-install.mjs');
-      install(loadOverlay(a ?? OVERLAY_DIR));
+      // overlay-install.mjs imports this module, so it runs as its own entry point: a dynamic import back into it
+      // is a cycle through this module's top-level await and never settles.
+      const r = spawnSync(process.execPath, [fileURLToPath(new URL('./overlay-install.mjs', import.meta.url)), ...(a ? [a] : [])], {
+        stdio: 'inherit',
+      });
+      process.exit(r.status ?? 1);
     } else {
       console.error('usage: overlay.mjs check|get KEY|install [dir]');
       process.exit(2);
