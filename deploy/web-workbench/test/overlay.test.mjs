@@ -159,3 +159,11 @@ test('all problems are reported at once', () => {
   assert.match(p, /product\.json/);
   assert.match(p, /zzz/);
 });
+
+test('the shipped example overlay is valid under the contract it documents', async () => {
+  const { fileURLToPath } = await import('node:url');
+  const dir = fileURLToPath(new URL('../examples/overlay-acme', import.meta.url));
+  const o = loadOverlay(dir);
+  assert.equal(o.loginTokens.productName, 'Acme Workbench');
+  assert.equal(o.bootstrap.length, 1);
+});

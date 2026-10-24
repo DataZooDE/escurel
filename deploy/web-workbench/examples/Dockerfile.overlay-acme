@@ -1,0 +1,6 @@
+# Example downstream image. Build it from the directory that contains overlay-acme/.
+FROM ghcr.io/example/escurel-workbench:1.2.3
+USER root
+COPY overlay-acme/ /opt/escurel/overlay/
+RUN escurel-overlay-install
+USER coder

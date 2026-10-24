@@ -66,4 +66,4 @@ Settings: common < base < overlay < environment-derived values. CSS: base, then 
 
 ## Example
 
-`examples/overlay-acme/` is a complete overlay for a product called `Acme Workbench`; copy and edit it.
+`examples/overlay-acme/` is a complete overlay for a product called `Acme Workbench` (add `extensions/*.vsix` and `assets/*` as needed), and `examples/Dockerfile.overlay-acme` is the derived image. Tests: `node --test 'deploy/web-workbench/**/*.test.mjs'`.

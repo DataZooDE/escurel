@@ -1,0 +1,4 @@
+/* Layout only. Colours come from login-tokens.json through var(--vscode-*); hex literals are refused. */
+.card-box {
+  border-radius: 12px;
+}
