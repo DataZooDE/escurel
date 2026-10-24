@@ -110,6 +110,35 @@ returns, and a failing lookup never reports, a token. `undefined` on a gateway w
 A change of identity fires `onDidChangeTenant`; a companion that keys data by subject asks again then. Use: key
 per-person data (page-bound chat groups, saved views) and apply separation of duties without reading the token.
 
+### `getHelperCredential({ extensionId, audience, scopes?, ttlSeconds? })`
+
+For a companion that starts a helper process (an importer, an exporter) which must call the gateway as the user.
+Returns `{ token, expiresAt, gatewayUrl }`. The companion passes `token` to the helper by environment or stdin
+(never an argument) and does not keep it.
+
+- **The user's token stays in the host.** The call uses the existing gateway tool `mint_agent_token`: the gateway
+  signs a NEW bearer for `agent:helper-<audience>`. Same tenant, the same acting person (`act.sub`), the caller's
+  own groups, never admin, no refresh token, lifetime `ttlSeconds` (1 to 3600, default 300). Each call is a
+  governed run in the gateway's record (`run-started`, `run-finished: expired`), so the use is auditable. No new
+  gateway request was needed. A gateway without a signing key answers `unsupported`, and the call refuses.
+- **Who may ask.** Refused unless the caller's `extensionId` is an installed extension and either is listed in
+  the user-level setting `escurel.api.helperCredentialExtensions` (application scope: a repository cannot add one;
+  restricted in an untrusted workspace) or the user answered the one-time modal question naming the extension, the
+  audience and the lifetime. A yes is remembered per extension id in global state; a no is not remembered. The
+  command `Escurel: Forget which extensions may request helper credentials` clears the answers. Concurrent first
+  calls ask once.
+- **Limit of the check.** VS Code does not tell a host which extension called an exported function, so
+  `extensionId` is declared by the caller, not proven. The allowlist and the question protect the user against an
+  extension that was never meant to receive a credential and make every grant visible; they do not stop a
+  malicious extension in the same extension host from naming an allowed id, just as it could call
+  `vscode.authentication.getSession` itself. Install only extensions you trust.
+- **`scopes`** is reserved: the gateway cannot narrow a credential yet, so a non-empty list is refused rather than
+  ignored (least privilege must not be advertised and not delivered).
+- **Gateway without a verifier** (no issuer configured, no session): returns `token: undefined` and the gateway
+  URL, without a question, since a helper needs no bearer there.
+- **Never logged.** `token` is a non-enumerable property (absent from `JSON.stringify`, spread and `util.inspect`);
+  a mint failure is stripped of anything token-shaped before it is reported; a refusal logs only the extension id.
+
 ## Classification of a downstream fork's changes
 
 Measured against the `editors/vscode` diff of one downstream fork: 298 files, 257 added, 41 modified.

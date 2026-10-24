@@ -77,6 +77,15 @@
           ],
           "description": "Scopes requested at sign-in."
         },
+        "escurel.api.helperCredentialExtensions": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "scope": "application",
+          "description": "Extension ids (publisher.name) that may request a short-lived credential for a helper process they start, without a question. Any other extension is asked about once. The credential is minted by the gateway: your own access, never admin, valid for minutes."
+        },
         "escurel.shellHarness": {
           "type": "string",
           "default": "claude",
@@ -92,6 +101,11 @@
       }
     },
     "commands": [
+      {
+        "command": "escurel.api.resetHelperCredentialConsent",
+        "title": "Forget which extensions may request helper credentials",
+        "category": "Escurel"
+      },
       {
         "command": "escurel.reviewPreview",
         "title": "Preview the proposal",
@@ -1376,7 +1390,8 @@
         "escurel.auth.clientId",
         "escurel.auth.scopes",
         "escurel.shellHarness",
-        "escurel.harness"
+        "escurel.harness",
+        "escurel.api.helperCredentialExtensions"
       ]
     },
     "virtualWorkspaces": true

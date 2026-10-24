@@ -122,6 +122,12 @@ derives its version from the tag (`vYYYY.MM.DD` → `YYYY.M.D`, leading zeros dr
 - **`getSubject()` on the companion API**: the signed-in subject as a string (never the token); `undefined` without
   a verifier or a session. Additive, `apiVersion` stays 1.
 
+- **`getHelperCredential()` on the companion API**: a short-lived bearer for a helper process a companion starts,
+  minted by the gateway (`mint_agent_token`: same person, never admin, no refresh, 1 to 3600 s) so the user's own
+  token never leaves the host. Refused unless the extension id is in the new user-level setting
+  `escurel.api.helperCredentialExtensions` or the user accepted a one-time question; the token is never logged
+  and is not enumerable. New command `Escurel: Forget which extensions may request helper credentials`.
+
 ### Changed
 
 - The typed client treats `isError: true` as an error, never as an empty result (#654); `validate` refusals

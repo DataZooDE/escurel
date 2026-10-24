@@ -31,6 +31,30 @@ export interface TenantInfo {
   gatewayUrl: string;
 }
 
+export interface HelperCredentialRequest {
+  /** The caller's own extension id (`publisher.name`). Checked against the allowlist or the user's consent. */
+  extensionId: string;
+  /** What the helper is, for the run record: 1 to 40 letters, digits, `_`, `-`; the helper acts as `agent:helper-<audience>`. */
+  audience: string;
+  /** Reserved. The gateway cannot narrow a credential by scope yet, so only an empty list is accepted. */
+  scopes?: readonly string[];
+  /** Lifetime in seconds: whole number, 1 to 3600, default 300. */
+  ttlSeconds?: number;
+}
+
+/**
+ * A short-lived bearer minted for a helper process. Pass `token` to the helper by environment or stdin,
+ * never on a command line, and do not store it. `token` is not enumerable: it does not appear in JSON or
+ * a log of this object. `undefined` on a gateway without a verifier, where the helper needs none.
+ */
+export interface HelperCredential {
+  readonly token: string | undefined;
+  /** RFC 3339 expiry of the token. */
+  readonly expiresAt: string | undefined;
+  /** The gateway the helper talks to (the one this window is connected to). */
+  readonly gatewayUrl: string;
+}
+
 export interface WebviewHtmlOptions {
   webview: vscode.Webview;
   /** The companion's own extension URI: its bundle is `dist/webview/<bundle>.js` under it. */
@@ -104,6 +128,12 @@ export interface EscurelExtensionApi {
    * without a verifier or with no session. A change of identity fires `onDidChangeTenant`: ask again.
    */
   getSubject(): Promise<string | undefined>;
+  /**
+   * A short-lived credential for a helper process the companion starts. The user's own token stays in the
+   * host: the gateway mints a new bearer (same tenant, same person, never admin, no refresh). Refused unless
+   * the extension is in `escurel.api.helperCredentialExtensions` or the user accepted a one-time question.
+   */
+  getHelperCredential(request: HelperCredentialRequest): Promise<HelperCredential>;
   /** The shell of a companion webview: CSP, nonce, theme tokens. */
   webviewHtml(options: WebviewHtmlOptions): string;
   readonly themeTokens: ThemeTokens;

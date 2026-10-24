@@ -6,10 +6,13 @@ import { PageAugmentRegistry } from './augment';
 import { InboxDecoratorRegistry } from './inbox';
 import { OverviewTileRegistry, PageRendererRegistry } from './contributions';
 import { gatewayFacade } from './gateway';
+import type { HelperBroker } from './helperCredential';
 import {
   EXTENSION_API_VERSION,
   type EscurelExtensionApi,
   type GatewayClient,
+  type HelperCredential,
+  type HelperCredentialRequest,
   type OverviewTileContribution,
   type InboxDecorator,
   type PageAugment,
@@ -29,6 +32,8 @@ export interface ApiDeps {
   onDidChange: vscode.Event<void>;
   /** The signed-in subject (`sub`), or undefined without a verifier or a session. Never a token. */
   subject?: () => Promise<string | undefined>;
+  /** Mints helper credentials (see helperCredential.ts); absent: the member refuses. */
+  helper?: HelperBroker;
 }
 
 /** What the host keeps beside the public object: the registries its own views read. */
@@ -84,6 +89,12 @@ export function createExtensionApi(deps: ApiDeps, c: Contributions): EscurelExte
         // A lookup failure says nothing the caller may act on, and its message could carry a token.
         return undefined;
       }
+    },
+    getHelperCredential(request: HelperCredentialRequest): Promise<HelperCredential> {
+      if (!deps.helper) {
+        return Promise.reject(new Error('getHelperCredential: not available in this host'));
+      }
+      return deps.helper.get(request);
     },
     webviewHtml(o: WebviewHtmlOptions): string {
       if (typeof o?.bundle !== 'string' || !BUNDLE.test(o.bundle)) {

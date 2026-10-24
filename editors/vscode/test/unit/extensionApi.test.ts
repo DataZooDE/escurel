@@ -38,6 +38,7 @@ describe('the public extension API', () => {
     expect(Object.keys(api).sort()).toEqual([
       'apiVersion',
       'getClient',
+      'getHelperCredential',
       'getSubject',
       'onDidChangeTenant',
       'registerInboxDecorator',

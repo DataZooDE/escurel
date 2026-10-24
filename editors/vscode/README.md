@@ -25,7 +25,7 @@ degradations are tracked in `docs/BACKEND_GAPS.md`.
 A companion extension (`extensionDependencies: ["escurel.escurel"]`) adds its own views without patching this
 one. `activate()` returns `EscurelExtensionApi` (`apiVersion: 1`): `getClient()` for gateway tool calls with the
 user's session, `webviewHtml()` and the theme tokens for its webviews, `registerOverviewTile()` for a tile on the
-Overview board, `registerPageRenderer(skill, renderer)` for the page view of one skill, and `onDidChangeTenant`. `getSubject()` returns the signed-in subject (never the token).
+Overview board, `registerPageRenderer(skill, renderer)` for the page view of one skill, and `onDidChangeTenant`. `getSubject()` returns the signed-in subject (never the token), and `getHelperCredential()` mints a short-lived credential for a helper process the companion starts (allowlist `escurel.api.helperCredentialExtensions` or a one-time question).
 Types are in `src/api/types.ts` (types only). The contract, its rules and what it deliberately leaves out are in
 [`docs/design/extension-api.md`](../../docs/design/extension-api.md).
 

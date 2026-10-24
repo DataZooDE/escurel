@@ -121,9 +121,34 @@ describe('settings that decide where a credential goes or what runs', () => {
     'escurel.auth.scopes',
     'escurel.shellHarness',
     'escurel.harness',
+    'escurel.api.helperCredentialExtensions',
   ])('%s cannot be set by a workspace', (id) => {
     const prop = manifest.contributes.configuration.properties[id] as { scope?: string };
     expect(prop.scope).toBe('application');
+  });
+});
+
+describe('the helper credential allowlist', () => {
+  it('is a list of strings, empty by default, and restricted in an untrusted workspace', () => {
+    const prop = manifest.contributes.configuration.properties[
+      'escurel.api.helperCredentialExtensions'
+    ] as { type: string; default: unknown; items: { type: string } };
+    expect(prop.type).toBe('array');
+    expect(prop.items.type).toBe('string');
+    expect(prop.default).toEqual([]);
+    const caps = (
+      manifest as unknown as {
+        capabilities: { untrustedWorkspaces: { restrictedConfigurations: string[] } };
+      }
+    ).capabilities;
+    expect(caps.untrustedWorkspaces.restrictedConfigurations).toContain(
+      'escurel.api.helperCredentialExtensions',
+    );
+  });
+
+  it('has a command to forget the consents', () => {
+    const cmds = manifest.contributes.commands.map((c) => c.command);
+    expect(cmds).toContain('escurel.api.resetHelperCredentialConsent');
   });
 });
 
@@ -166,10 +191,14 @@ describe('the details view', () => {
 
 describe('explain access', () => {
   it('contributes the explain command to every Escurel view title', () => {
-    const views = Object.values(manifest.contributes.views).flatMap((entries) => entries.map((v) => v.id));
-    const explained = new Set((manifest.contributes.menus['view/title'] ?? [])
-      .filter((entry) => entry.command === 'escurel.explainView')
-      .map((entry) => entry.when?.match(/view == (escurel\.\w+)/)?.[1]));
+    const views = Object.values(manifest.contributes.views).flatMap((entries) =>
+      entries.map((v) => v.id),
+    );
+    const explained = new Set(
+      (manifest.contributes.menus['view/title'] ?? [])
+        .filter((entry) => entry.command === 'escurel.explainView')
+        .map((entry) => entry.when?.match(/view == (escurel\.\w+)/)?.[1]),
+    );
     expect(views.filter((view) => !explained.has(view))).toEqual([]);
   });
 });
