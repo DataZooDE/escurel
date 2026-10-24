@@ -647,6 +647,21 @@ pub struct SkillField {
     /// when undeclared. A client ignores a hint it does not know.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub render: Option<String>,
+    /// The key may not change once the instance exists.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub immutable: bool,
+    /// A present value may not be blank.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub non_blank: bool,
+    /// A `kind: link` chain through the target skill may not cycle.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub acyclic: bool,
+    /// Refinement of a string field (`date`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub format: Option<String>,
+    /// `[other_field, value]`: required while `other_field` equals `value`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub required_when: Option<(String, String)>,
 }
 
 /// One invocation parameter a skill declares. MCP wire keys: `name`,

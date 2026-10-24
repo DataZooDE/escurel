@@ -185,6 +185,11 @@ fn skill_to_wire(s: escurel_index::SkillInfo, is_admin: bool) -> TypesSkill {
                 label: f.label,
                 description: f.description,
                 render: f.render,
+                immutable: f.immutable,
+                non_blank: f.non_blank,
+                acyclic: f.acyclic,
+                format: f.format,
+                required_when: f.required_when,
             })
             .collect(),
         // The declared instance-body layout (P3-5): verbatim, in

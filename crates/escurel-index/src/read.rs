@@ -243,6 +243,22 @@ pub struct SkillField {
     /// `field_render_unknown`; a client ignores a hint it does not know).
     /// `None` when undeclared. Nothing in the gateway keys off it.
     pub render: Option<String>,
+    /// `immutable: true` — once the instance exists, this key may not change
+    /// (`validate` reports `field_immutable`).
+    pub immutable: bool,
+    /// `non_blank: true` — a present value may not be empty or whitespace
+    /// (`field_blank`).
+    pub non_blank: bool,
+    /// For a [`FieldKind::Link`] with a target skill: the chain of this link
+    /// through instances of that same skill may not return to its start
+    /// (`relation_cycle`).
+    pub acyclic: bool,
+    /// `format:` — a refinement of a string field. Only `date` is recognised
+    /// (`YYYY-MM-DD`); an unrecognised format constrains nothing.
+    pub format: Option<String>,
+    /// `required_when: {other_field: value}` — the field is required while
+    /// `other_field` equals `value` (compared as text).
+    pub required_when: Option<(String, String)>,
 }
 
 /// One block of a skill's declared instance body layout (the `blocks:`
@@ -365,6 +381,12 @@ fn field_from(name: &str, attrs: &serde_json::Value) -> SkillField {
             .map(str::to_owned)
     };
     let number = |key: &str| attrs.get(key).and_then(serde_json::Value::as_f64);
+    let flag = |key: &str| {
+        attrs
+            .get(key)
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false)
+    };
     SkillField {
         name: name.to_owned(),
         // `type:` is accepted as a synonym for `kind:`, as on `params:`.
@@ -381,7 +403,9 @@ fn field_from(name: &str, attrs: &serde_json::Value) -> SkillField {
                     .collect()
             })
             .unwrap_or_default(),
-        target_skill: text("target_skill").or_else(|| text("skill")),
+        target_skill: text("to")
+            .or_else(|| text("target_skill"))
+            .or_else(|| text("skill")),
         required: attrs
             .get("required")
             .and_then(serde_json::Value::as_bool)
@@ -391,6 +415,18 @@ fn field_from(name: &str, attrs: &serde_json::Value) -> SkillField {
         label: text("label"),
         description: text("description"),
         render: text("render"),
+        immutable: flag("immutable"),
+        non_blank: flag("non_blank"),
+        acyclic: flag("acyclic"),
+        format: text("format"),
+        required_when: attrs
+            .get("required_when")
+            .and_then(serde_json::Value::as_object)
+            .and_then(|m| {
+                let (k, v) = m.iter().next()?;
+                let v = v.as_str().map_or_else(|| v.to_string(), str::to_owned);
+                Some((k.clone(), v))
+            }),
     }
 }
 
