@@ -3,7 +3,7 @@
 const fs = require('fs');
 const path = require('path');
 
-const overlayDir = () => process.env.ESCUREL_OVERLAY_DIR || '/opt/escurel/overlay';
+const overlayDir = () => process.env.WORKBENCH_OVERLAY_DIR || '/opt/escurel/overlay';
 
 // Overlay settings.json is validated at build and start (overlay.mjs); here it is only read for one value.
 function overlaySetting(key) {
@@ -36,7 +36,7 @@ function loadScripts() {
 }
 
 async function runScripts(scripts, vscode, context, firstRun) {
-  const limit = Number(process.env.ESCUREL_OVERLAY_SCRIPT_TIMEOUT_MS) || 10000;
+  const limit = Number(process.env.WORKBENCH_OVERLAY_SCRIPT_TIMEOUT_MS) || 10000;
   for (const s of scripts) {
     let timer;
     try {

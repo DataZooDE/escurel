@@ -26,9 +26,9 @@ else
 fi
 
 # --- the downstream overlay (OVERLAY.md): validated again here, so a bad layer fails loudly at start -----
-OPT="${ESCUREL_OPT:-/opt/escurel}"
-OVERLAY="${ESCUREL_OVERLAY_DIR:-$OPT/overlay}"
-NODE="${ESCUREL_NODE:-/usr/lib/code-server/lib/node}"
+OPT="${WORKBENCH_OPT:-/opt/escurel}"
+OVERLAY="${WORKBENCH_OVERLAY_DIR:-$OPT/overlay}"
+NODE="${WORKBENCH_NODE:-/usr/lib/code-server/lib/node}"
 "$NODE" "$OPT/overlay.mjs" check "$OVERLAY" || exit $?
 APP_NAME="$("$NODE" "$OPT/overlay.mjs" get productName "$OVERLAY")"
 WELCOME="$("$NODE" "$OPT/overlay.mjs" get welcomeText "$OVERLAY")"

@@ -125,7 +125,7 @@ test('entrypoint: an invalid overlay refuses to start (exit 64) before code-serv
   writeFileSync(join(opt, 'settings.common.json'), '{}');
   const bad = overlayDir({ 'product.json': '[]' });
   const r = spawnSync('sh', [join(wb, 'entrypoint.sh')], {
-    env: { PATH: process.env.PATH, PASSWORD: 'a-long-enough-pass', ESCUREL_OPT: opt, ESCUREL_OVERLAY_DIR: bad, ESCUREL_NODE: process.execPath, WORKBENCH_DATA_DIR: join(opt, 'data'), WORKBENCH_GATEWAY_URL: 'http://gw:8080' },
+    env: { PATH: process.env.PATH, PASSWORD: 'a-long-enough-pass', WORKBENCH_OPT: opt, WORKBENCH_OVERLAY_DIR: bad, WORKBENCH_NODE: process.execPath, WORKBENCH_DATA_DIR: join(opt, 'data'), WORKBENCH_GATEWAY_URL: 'http://gw:8080' },
     encoding: 'utf8',
   });
   assert.equal(r.status, 64, r.stderr);

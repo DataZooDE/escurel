@@ -60,9 +60,9 @@ function withOverlay(files, fn) {
     mkdirSync(path.join(dir, n, '..'), { recursive: true });
     writeFileSync(path.join(dir, n), b);
   }
-  const old = process.env.ESCUREL_OVERLAY_DIR;
-  process.env.ESCUREL_OVERLAY_DIR = dir;
-  const restore = () => (old === undefined ? delete process.env.ESCUREL_OVERLAY_DIR : (process.env.ESCUREL_OVERLAY_DIR = old));
+  const old = process.env.WORKBENCH_OVERLAY_DIR;
+  process.env.WORKBENCH_OVERLAY_DIR = dir;
+  const restore = () => (old === undefined ? delete process.env.WORKBENCH_OVERLAY_DIR : (process.env.WORKBENCH_OVERLAY_DIR = old));
   return fn().finally(restore);
 }
 const script = (body) => `exports.activate = async ({ vscode, context, firstRun }) => { ${body} };`;
@@ -102,11 +102,11 @@ test('a script that never returns is abandoned after the timeout', () =>
     'bootstrap.d/20-ok.js': script("await vscode.commands.executeCommand('ok');"),
   }, async () => {
     const calls = [];
-    process.env.ESCUREL_OVERLAY_SCRIPT_TIMEOUT_MS = '50';
+    process.env.WORKBENCH_OVERLAY_SCRIPT_TIMEOUT_MS = '50';
     try {
       await load(calls).activate({ globalState: memento() });
     } finally {
-      delete process.env.ESCUREL_OVERLAY_SCRIPT_TIMEOUT_MS;
+      delete process.env.WORKBENCH_OVERLAY_SCRIPT_TIMEOUT_MS;
     }
     assert.ok(calls.some((c) => c[1] === 'ok'));
   }));

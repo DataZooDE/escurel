@@ -59,6 +59,18 @@ Scripts only drive the UI through the `vscode` API. They never receive a token. 
 runs longer than 10 s is logged and skipped; the others still run. If `settings.json` sets
 `workbench.activityBar.location`, the bootstrap uses that value instead of hiding the activity bar.
 
+## Paths (tests and local runs)
+
+The defaults fit the image; tests and local runs override them with the workbench's own variables
+(read by this deploy only, not by the Escurel binaries):
+
+| Variable | Default | Used by |
+|---|---|---|
+| `WORKBENCH_OPT` | `/opt/escurel` | entrypoint: where `overlay.mjs` and the settings files live |
+| `WORKBENCH_OVERLAY_DIR` | `$WORKBENCH_OPT/overlay` | entrypoint, bootstrap extension: the overlay directory |
+| `WORKBENCH_NODE` | `/usr/lib/code-server/lib/node` | entrypoint: the Node binary that runs the overlay tools |
+| `WORKBENCH_OVERLAY_SCRIPT_TIMEOUT_MS` | `10000` | bootstrap extension: time limit per `bootstrap.d` script |
+
 ## Order of effects
 
 Settings: common < base < overlay < environment-derived values. CSS: base, then overlay. Product name:
