@@ -27,6 +27,8 @@ export interface ApiDeps {
   gatewayUrl: () => string;
   /** Fires when the client was rebuilt (gateway or identity changed). */
   onDidChange: vscode.Event<void>;
+  /** The signed-in subject (`sub`), or undefined without a verifier or a session. Never a token. */
+  subject?: () => Promise<string | undefined>;
 }
 
 /** What the host keeps beside the public object: the registries its own views read. */
@@ -73,6 +75,15 @@ export function createExtensionApi(deps: ApiDeps, c: Contributions): EscurelExte
         throw new Error('getClient: this window is not connected to that tenant');
       }
       return c.gateway;
+    },
+    async getSubject(): Promise<string | undefined> {
+      try {
+        const sub = await deps.subject?.();
+        return typeof sub === 'string' && sub !== '' ? sub : undefined;
+      } catch {
+        // A lookup failure says nothing the caller may act on, and its message could carry a token.
+        return undefined;
+      }
     },
     webviewHtml(o: WebviewHtmlOptions): string {
       if (typeof o?.bundle !== 'string' || !BUNDLE.test(o.bundle)) {

@@ -99,6 +99,16 @@ api.registerInboxDecorator('acme-request', {
 | View badge | When a decorator is registered, the Inbox view badge shows the number of rows whose status is `open`. |
 | `emptyMessage` | A string, or one text per language (`en`, `de`, ...); chosen by the window language (exact, language family, `en`). Shown as the view message when the Inbox has no row, so a requester sees where a request goes. The first decorator that contributes one wins. |
 | Bounds and failure | Data only: no command, no script, no webview. Returned text is cleaned and capped; anything outside the schema is dropped. The first decorator that sets a field wins. A decorator that throws or exceeds 2 s leaves its rows as they were. Registering or disposing a decorator refreshes the open view. |
+## Additions (identity, helper credential, shell options, focus profiles)
+
+Additive members of version 1 (the version stays 1: nothing existing changes).
+
+### `getSubject()`
+
+`getSubject(): Promise<string | undefined>` returns the signed-in subject (the `sub` claim) as a string. It never
+returns, and a failing lookup never reports, a token. `undefined` on a gateway without a verifier or with no session.
+A change of identity fires `onDidChangeTenant`; a companion that keys data by subject asks again then. Use: key
+per-person data (page-bound chat groups, saved views) and apply separation of duties without reading the token.
 
 ## Classification of a downstream fork's changes
 

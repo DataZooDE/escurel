@@ -3,7 +3,7 @@ import * as vscode from 'vscode';
 import { createContributions, createExtensionApi } from '../../src/api';
 import { gatewayFacade } from '../../src/api/gateway';
 
-function setup(gatewayUrl = 'http://gw.test') {
+function setup(gatewayUrl = 'http://gw.test', subject?: () => Promise<string | undefined>) {
   const changed = new vscode.EventEmitter<void>();
   const calls: [string, unknown][] = [];
   const deps = {
@@ -15,6 +15,7 @@ function setup(gatewayUrl = 'http://gw.test') {
     }),
     gatewayUrl: () => gatewayUrl,
     onDidChange: changed.event,
+    subject,
   };
   const contributions = createContributions(deps);
   const api = createExtensionApi(deps, contributions);
@@ -37,6 +38,7 @@ describe('the public extension API', () => {
     expect(Object.keys(api).sort()).toEqual([
       'apiVersion',
       'getClient',
+      'getSubject',
       'onDidChangeTenant',
       'registerInboxDecorator',
       'registerOverviewTile',
@@ -47,6 +49,25 @@ describe('the public extension API', () => {
       'themeTokens',
       'webviewHtml',
     ]);
+  });
+
+  it('answers getSubject with the subject string and nothing else', async () => {
+    const { api } = setup('http://gw.test', async () => 'user-42');
+    await expect(api.getSubject()).resolves.toBe('user-42');
+  });
+
+  it('answers getSubject with undefined without a verifier or without a session', async () => {
+    await expect(setup('http://gw.test', async () => undefined).api.getSubject()).resolves.toBe(
+      undefined,
+    );
+    await expect(setup().api.getSubject()).resolves.toBe(undefined);
+  });
+
+  it('never lets a failing subject lookup leak its message (it may carry a token)', async () => {
+    const { api } = setup('http://gw.test', async () => {
+      throw new Error('bad token eyJhbGciOi.abc.def');
+    });
+    await expect(api.getSubject()).resolves.toBe(undefined);
   });
 
   it('accepts the connected tenant and rejects another', () => {

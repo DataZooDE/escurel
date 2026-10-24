@@ -84,6 +84,7 @@ export function activate(
     client: () => services.client,
     gatewayUrl: () => services.gatewayUrl,
     onDidChange: services.onDidChange,
+    subject: () => services.subject(),
   };
   const contributions = createContributions(apiDeps);
   context.subscriptions.push(contributions);

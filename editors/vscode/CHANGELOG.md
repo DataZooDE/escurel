@@ -119,6 +119,9 @@ derives its version from the tag (`vYYYY.MM.DD` → `YYYY.M.D`, leading zeros dr
   once to switch to the calm focus view (never in the demo and web workbench windows, which enter it
   themselves, nor in untrusted or virtual workspaces).
 
+- **`getSubject()` on the companion API**: the signed-in subject as a string (never the token); `undefined` without
+  a verifier or a session. Additive, `apiVersion` stays 1.
+
 ### Changed
 
 - The typed client treats `isError: true` as an error, never as an empty result (#654); `validate` refusals

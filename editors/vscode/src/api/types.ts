@@ -99,6 +99,11 @@ export interface EscurelExtensionApi {
   readonly apiVersion: typeof EXTENSION_API_VERSION;
   /** `tenant` is a gateway URL; one window talks to one gateway, so any other value throws. */
   getClient(tenant?: string): GatewayClient;
+  /**
+   * The signed-in subject (the `sub` claim) as a string, never the token. `undefined` on a gateway
+   * without a verifier or with no session. A change of identity fires `onDidChangeTenant`: ask again.
+   */
+  getSubject(): Promise<string | undefined>;
   /** The shell of a companion webview: CSP, nonce, theme tokens. */
   webviewHtml(options: WebviewHtmlOptions): string;
   readonly themeTokens: ThemeTokens;
