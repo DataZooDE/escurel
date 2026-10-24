@@ -87,7 +87,7 @@ async fn post_ingest(p: &EscurelProcess, token: Option<&str>, body: Value) -> (S
 #[tokio::test]
 async fn ingest_records_event_and_routes_to_handler_skill() {
     let s = setup(None).await;
-    let token = s.process.mint_token(TENANT, Role::Agent);
+    let token = s.process.mint_token(TENANT, Role::Admin);
     let (status, body) = post_ingest(
         &s.process,
         Some(&token),
@@ -108,7 +108,7 @@ async fn ingest_records_event_and_routes_to_handler_skill() {
 #[tokio::test]
 async fn unmatched_mime_parked_no_handler_skill() {
     let s = setup(None).await;
-    let token = s.process.mint_token(TENANT, Role::Agent);
+    let token = s.process.mint_token(TENANT, Role::Admin);
     let (status, body) = post_ingest(
         &s.process,
         Some(&token),
@@ -144,7 +144,7 @@ async fn ingest_rate_limited_per_tenant() {
         ..QuotaConfig::defaults()
     }))
     .await;
-    let token = s.process.mint_token(TENANT, Role::Agent);
+    let token = s.process.mint_token(TENANT, Role::Admin);
     let body = json!({ "blob_id": s.blob_id, "content_type": "text/plain" });
     let (s1, _) = post_ingest(&s.process, Some(&token), body.clone()).await;
     assert_eq!(s1, StatusCode::ACCEPTED);
@@ -163,7 +163,7 @@ async fn ingest_with_undeposited_blob_fails_gracefully() {
     // landing in the inbox. The worker must fail gracefully (no panic/hang),
     // not 2xx-materialise a phantom instance.
     let s = setup(None).await;
-    let token = s.process.mint_token(TENANT, Role::Agent);
+    let token = s.process.mint_token(TENANT, Role::Admin);
     let phantom = format!("sha256:{}", "0".repeat(64)); // valid shape, never deposited
     let (status, body) = post_ingest(
         &s.process,
@@ -184,7 +184,7 @@ async fn ingest_upload_deposits_and_materialises() {
     // inbox itself, then runs the same ingest path → materialised instance.
     use base64::Engine as _;
     let s = setup(None).await;
-    let token = s.process.mint_token(TENANT, Role::Agent);
+    let token = s.process.mint_token(TENANT, Role::Admin);
     let b64 = base64::engine::general_purpose::STANDARD.encode(b"an uploaded memo body");
     let resp = reqwest::Client::new()
         .post(format!("{}/ingest/upload", s.process.base_url()))

@@ -99,7 +99,7 @@ async fn post_upload(
 async fn oversize_upload_rejected_before_deposit() {
     // Cap at 64 bytes; the payload is well over it.
     let s = setup(64).await;
-    let token = s.process.mint_token(TENANT, Role::Agent);
+    let token = s.process.mint_token(TENANT, Role::Admin);
     let big = vec![b'x'; 4096];
 
     let (status, body) = post_upload(&s.process, &token, "text/plain", &big).await;
@@ -125,7 +125,7 @@ async fn oversize_upload_rejected_before_deposit() {
 async fn under_cap_upload_materialises() {
     // Generous cap; a small text doc sails through and materialises.
     let s = setup(25 * 1024 * 1024).await;
-    let token = s.process.mint_token(TENANT, Role::Agent);
+    let token = s.process.mint_token(TENANT, Role::Admin);
 
     let (status, body) = post_upload(&s.process, &token, "text/plain", b"a short memo body").await;
     assert_eq!(status, StatusCode::ACCEPTED, "under-cap upload: {body}");

@@ -93,7 +93,7 @@ async fn ingest_text(s: &Setup, token: &str, body: &'static str) -> String {
 #[tokio::test]
 async fn get_blob_streams_the_original_bytes_with_real_headers() {
     let s = setup().await;
-    let token = s.process.mint_token(TENANT, Role::Agent);
+    let token = s.process.mint_token(TENANT, Role::Admin);
     let body = "The original bytes of the source document, verbatim.";
     let page_id = ingest_text(&s, &token, body).await;
 

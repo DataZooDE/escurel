@@ -114,7 +114,7 @@ async fn rpc(p: &EscurelProcess, token: &str, name: &str, args: Value) -> Value 
 #[tokio::test]
 async fn ingest_refuses_the_gateway_s_reserved_event_ids_and_still_takes_an_ordinary_one() {
     let s = setup().await;
-    let person = s.process.mint_token(TENANT, Role::Agent);
+    let person = s.process.mint_token(TENANT, Role::Admin);
     for (n, reserved) in [
         "runner-status:r9",
         "runner-status:",
