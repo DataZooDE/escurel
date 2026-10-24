@@ -1362,7 +1362,11 @@ Tenant resolution rules are *different* on admin tools — the tenant is
 named explicitly (`tenant_id`) rather than taken from the token's claim
 — but because a gateway is single-tenant, a `tenant_id` that names a
 tenant other than the one this gateway serves is refused (`-32002`); an
-empty value means "this gateway's tenant".
+empty value means "this gateway's tenant". The tools that act on a tenant's
+data (`tenant_export`, `tenant_import`, `compact_lanes`, `rebuild`, pack and
+audit tools) compare it with the tenant of the caller's credential. The tenant
+registry tools (`tenant_create`, `tenant_list`, `tenant_get`, `tenant_update`,
+`tenant_delete`) are operator provisioning and take any tenant id.
 
 | tool | inputs | outputs | purpose |
 |---|---|---|---|

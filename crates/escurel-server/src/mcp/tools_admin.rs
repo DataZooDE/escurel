@@ -1014,6 +1014,21 @@ pub(super) fn ensure_tenant_matches(
     Ok(())
 }
 
+/// Reject a `tenant_id` argument that names a tenant other than the one the caller's credential
+/// is bound to. Unlike [`ensure_tenant_matches`] it needs no indexer, so it also guards the
+/// tools that work on the tenant store directly. An empty argument means the credential's tenant.
+pub(super) fn ensure_credential_tenant(
+    credential_tenant: &str,
+    tenant_id: &str,
+) -> Result<(), JsonRpcError> {
+    if !tenant_id.is_empty() && tenant_id != credential_tenant {
+        return Err(JsonRpcError::failed_precondition(format!(
+            "tenant `{tenant_id}` does not match this gateway's tenant `{credential_tenant}`"
+        )));
+    }
+    Ok(())
+}
+
 /// Map an `AdminError` onto the JSON-RPC envelope, mirroring the
 /// gRPC status mapping: invalid id → invalid_params; everything else
 /// (already-exists, I/O, duckdb) → internal.
@@ -2195,9 +2210,11 @@ pub(super) async fn tool_list_packs(state: &AppState) -> Result<Value, JsonRpcEr
 
 pub(super) async fn tool_tenant_export(
     state: &AppState,
+    credential_tenant: &str,
     args: Value,
 ) -> Result<Value, JsonRpcError> {
     let a: TenantIdArgs = parse_args(args, "tenant_export")?;
+    ensure_credential_tenant(credential_tenant, &a.tenant_id)?;
     let store = tenant_store(state)?.clone();
     // Validate before constructing on-disk paths — `tenant_dir` is
     // filesystem-direct and would happily resolve `../other`.
@@ -2265,9 +2282,11 @@ pub(super) struct TenantImportArgs {
 
 pub(super) async fn tool_tenant_import(
     state: &AppState,
+    credential_tenant: &str,
     args: Value,
 ) -> Result<Value, JsonRpcError> {
     let a: TenantImportArgs = parse_args(args, "tenant_import")?;
+    ensure_credential_tenant(credential_tenant, &a.tenant_id)?;
     let store = tenant_store(state)?.clone();
     validate_tenant_id(&a.tenant_id).map_err(|e| JsonRpcError::invalid_params(e.to_string()))?;
     // The target tenant must exist before import (mirrors gRPC).
@@ -2528,9 +2547,11 @@ pub(super) async fn tool_migrate_kind(
 
 pub(super) async fn tool_compact_lanes(
     state: &AppState,
+    credential_tenant: &str,
     args: Value,
 ) -> Result<Value, JsonRpcError> {
     let a: TenantIdArgs = parse_args(args, "compact_lanes")?;
+    ensure_credential_tenant(credential_tenant, &a.tenant_id)?;
     validate_tenant_id(&a.tenant_id).map_err(|e| JsonRpcError::invalid_params(e.to_string()))?;
     let backend = state
         .crdt_backend

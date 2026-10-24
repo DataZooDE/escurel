@@ -216,7 +216,7 @@ async fn admin_rebuild_accepts_a_timeout_flag() {
     h.process.shutdown().await;
 }
 
-/// Export a tenant to a file, then import it back into a fresh tenant.
+/// Export a tenant to a file, then import it back into the same tenant.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn admin_tenant_export_then_import() {
     let h = start().await;
@@ -233,19 +233,11 @@ async fn admin_tenant_export_then_import() {
     assert!(json(&exp)["bytes_exported"].as_u64().unwrap() > 0);
     assert!(tar.is_file());
 
-    // Fresh destination tenant.
-    admin(
-        &h,
-        v(&[
-            "admin", "tenant", "create", "--id", "globex", "--name", "Globex",
-        ]),
-    )
-    .await;
-
+    // Restore into the credential's own tenant: a tenant admin cannot import into another one.
     let imp = admin(
         &h,
         v(&[
-            "admin", "tenant", "import", "--id", "globex", "--in", &tar_str,
+            "admin", "tenant", "import", "--id", TENANT, "--in", &tar_str,
         ]),
     )
     .await;

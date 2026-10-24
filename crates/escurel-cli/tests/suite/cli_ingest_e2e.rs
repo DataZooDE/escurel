@@ -49,7 +49,7 @@ async fn start() -> Harness {
         .strip_prefix("http://")
         .unwrap()
         .to_owned();
-    let bearer = process.mint_token(TENANT, Role::Agent);
+    let bearer = process.mint_token(TENANT, Role::Admin);
     Harness {
         process,
         addr,
