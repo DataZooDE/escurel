@@ -8,7 +8,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use axum::Router;
-use axum::extract::State;
+use axum::extract::{DefaultBodyLimit, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::routing::{get, post};
@@ -211,6 +211,11 @@ impl AutonomyLintMode {
 
 /// Gateway configuration. Built by the operator (or the test
 /// harness) and consumed by [`serve`].
+/// The request-body limit of `/mcp` and `/ingest/upload` unless configured: 16 MiB, so a base64
+/// source file of about 12 MiB fits (axum's own default is 2 MiB). The per-tenant blob quota
+/// still bounds the decoded bytes.
+pub const DEFAULT_MAX_BODY_BYTES: usize = 16 * 1024 * 1024;
+
 #[derive(Clone)]
 pub struct ServerConfig {
     /// Per-instance write-ACL enforcement mode (`ESCUREL_WRITE_ACL`).
@@ -316,6 +321,10 @@ pub struct ServerConfig {
     /// serving; unknown paths are 404. Set from
     /// `ESCUREL_SERVE_DEMO_DIR` by the binary.
     pub demo_dir: Option<std::path::PathBuf>,
+    /// Request-body limit of `POST /mcp`, in bytes (`ESCUREL_MCP_MAX_BODY_BYTES`).
+    pub mcp_max_body_bytes: usize,
+    /// Request-body limit of `POST /ingest/upload`, in bytes (`ESCUREL_INGEST_MAX_BODY_BYTES`).
+    pub ingest_max_body_bytes: usize,
     /// Opt-in outbound capture webhook URL (`ESCUREL_WEBHOOK_URL`).
     /// `Some` → `capture_event` fires a fire-and-forget POST of the
     /// new event to this URL; `None` (default) disables it.
@@ -656,9 +665,16 @@ pub async fn serve(
         .route("/readyz", get(readyz))
         .route("/version", get(version))
         .route("/openapi.json", get(openapi_json))
-        .route("/mcp", post(mcp))
+        .route(
+            "/mcp",
+            post(mcp).layer(DefaultBodyLimit::max(config.mcp_max_body_bytes)),
+        )
         .route("/ingest", post(crate::mcp::ingest))
-        .route("/ingest/upload", post(crate::mcp::ingest_upload))
+        .route(
+            "/ingest/upload",
+            post(crate::mcp::ingest_upload)
+                .layer(DefaultBodyLimit::max(config.ingest_max_body_bytes)),
+        )
         .route("/blob/{*page_id}", get(crate::mcp::blob_get))
         .route("/ws", get(ws_upgrade))
         .with_state(state.clone());

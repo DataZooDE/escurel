@@ -618,6 +618,18 @@ pub const CONFIG_KEYS: &[ConfigKey] = &[
         doc: "per-query wall-clock bound on retrieval queries (#455); `0` disables the bound",
     },
     ConfigKey {
+        name: "ESCUREL_MCP_MAX_BODY_BYTES",
+        component: "Server",
+        default: "16777216 (16 MiB)",
+        doc: "request-body limit of `POST /mcp` in bytes; a larger body is refused with 413",
+    },
+    ConfigKey {
+        name: "ESCUREL_INGEST_MAX_BODY_BYTES",
+        component: "Server",
+        default: "16777216 (16 MiB)",
+        doc: "request-body limit of `POST /ingest/upload` in bytes; the body is base64 JSON, so the file limit is about three quarters of it. The per-tenant `max_blob_bytes` quota still applies after decoding",
+    },
+    ConfigKey {
         name: "ESCUREL_EVENT_ACL",
         component: "Server",
         default: "off",

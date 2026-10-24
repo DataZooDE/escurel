@@ -110,6 +110,8 @@ escurel-server.
 | `ESCUREL_ROWS_QUERY_TIMEOUT_SECS` | 30 | how long one `instances: rows` source query may run before it is interrupted (and, for Postgres, cancelled by the server itself). Whole number of seconds ≥ 1 |
 | `ESCUREL_SQL_CONNECT_TIMEOUT_SECS` | 5 | libpq `connect_timeout` for a network database source (Postgres), so a black-holed host cannot hold the tenant's index connection for the OS TCP timeout. Whole number of seconds ≥ 1 |
 | `ESCUREL_QUERY_TIMEOUT_MS` | see `escurel_index::DEFAULT_QUERY_TIMEOUT_MS` | per-query wall-clock bound on retrieval queries (#455); `0` disables the bound |
+| `ESCUREL_MCP_MAX_BODY_BYTES` | 16777216 (16 MiB) | request-body limit of `POST /mcp` in bytes; a larger body is refused with 413 |
+| `ESCUREL_INGEST_MAX_BODY_BYTES` | 16777216 (16 MiB) | request-body limit of `POST /ingest/upload` in bytes; the body is base64 JSON, so the file limit is about three quarters of it. The per-tenant `max_blob_bytes` quota still applies after decoding |
 | `ESCUREL_EVENT_ACL` | off | per-event ACL on the event bus: `off` \\| `log` \\| `enforce` |
 | `ESCUREL_TOOLCALL_DETAIL` | summary | what a run's recorded tool calls keep beyond sizes: `summary` (a bounded, redacted summary of each call's arguments and result, readable only by whoever may read the run) \\| `off` (sizes and timing only). An unrecognised value means `off` |
 | `ESCUREL_AUTONOMY_LINT` | off | write-time lint of a skill page's `autonomy:` value: `off` \\| `log` \\| `enforce` |
