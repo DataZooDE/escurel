@@ -1,6 +1,7 @@
 import type { Event } from '../client';
 import { pageSlug } from '../shared/pageId';
 import { cleanText } from '../shared/untrustedText';
+import type { InboxRowStatus } from '../api/types';
 
 /**
  * An event's age matters more than its clock time in a queue you scan, so
@@ -40,6 +41,9 @@ export interface InboxRow {
   tooltip: string;
   pageId?: string;
   body?: string | null;
+  /** Set by a companion's decorator (api/inbox.ts); absent for a plain row. */
+  status?: InboxRowStatus;
+  badge?: string;
 }
 
 /**

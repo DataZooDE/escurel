@@ -4,6 +4,7 @@ import type { EscurelClient } from '../client';
 import { connectionStateOf, describeError } from '../errors';
 import { uriForPage } from '../fs/provider';
 import { log } from '../log';
+import { decorateRows, emptyInboxMessage, type InboxDecoratorRegistry } from '../api/inbox';
 import { buildInboxRows, type InboxRow } from './inboxModel';
 
 export interface ErrorRow {
@@ -23,16 +24,33 @@ export class InboxTree implements vscode.TreeDataProvider<Node> {
   private readonly changed = new vscode.EventEmitter<Node | undefined>();
   readonly onDidChangeTreeData = this.changed.event;
 
-  constructor(private readonly client: () => EscurelClient) {}
+  private view: Pick<vscode.TreeView<Node>, 'message'> & Partial<Pick<vscode.TreeView<Node>, 'badge'>> | undefined;
 
-  static register(context: vscode.ExtensionContext, client: () => EscurelClient): InboxTree {
-    const tree = new InboxTree(client);
-    context.subscriptions.push(
-      vscode.window.createTreeView('escurel.inbox', {
-        treeDataProvider: tree,
-        showCollapseAll: false,
-      }),
-    );
+  constructor(
+    private readonly client: () => EscurelClient,
+    private readonly decorators?: InboxDecoratorRegistry,
+    private readonly language: () => string = () => vscode.env.language,
+  ) {}
+
+  /** The tree view whose `message` and `badge` a companion's decorators may set. */
+  attach(view: Pick<vscode.TreeView<Node>, 'message'> & Partial<Pick<vscode.TreeView<Node>, 'badge'>>): void {
+    this.view = view;
+  }
+
+  static register(
+    context: vscode.ExtensionContext,
+    client: () => EscurelClient,
+    decorators?: InboxDecoratorRegistry,
+  ): InboxTree {
+    const tree = new InboxTree(client, decorators);
+    const view = vscode.window.createTreeView('escurel.inbox', {
+      treeDataProvider: tree,
+      showCollapseAll: false,
+    });
+    tree.attach(view);
+    context.subscriptions.push(view);
+    // A decorator that appears or goes while the view is open changes what it shows.
+    if (decorators) context.subscriptions.push(decorators.onDidChange(() => tree.refresh()));
     return tree;
   }
 
@@ -46,10 +64,12 @@ export class InboxTree implements vscode.TreeDataProvider<Node> {
         const item = new vscode.TreeItem(n.label, vscode.TreeItemCollapsibleState.None);
         item.description = n.description;
         item.tooltip = n.tooltip;
-        item.iconPath = new vscode.ThemeIcon(
-          'symbol-event',
-          new vscode.ThemeColor('charts.orange'),
-        );
+        item.iconPath =
+          n.status === 'answered' || n.status === 'done'
+            ? new vscode.ThemeIcon('check')
+            : n.status === 'failed'
+              ? new vscode.ThemeIcon('warning', new vscode.ThemeColor('errorForeground'))
+              : new vscode.ThemeIcon('symbol-event', new vscode.ThemeColor('charts.orange'));
         item.contextValue = n.pageId ? 'event.hasInstance' : 'event';
         if (n.pageId) {
           item.resourceUri = uriForPage(n.pageId);
@@ -79,7 +99,23 @@ export class InboxTree implements vscode.TreeDataProvider<Node> {
         const page = await this.client().listInbox();
         await vscode.commands.executeCommand('setContext', 'escurel.connected', true);
         await vscode.commands.executeCommand('setContext', 'escurel.connectionState', 'ok');
-        return buildInboxRows(page.events);
+        const plain = buildInboxRows(page.events);
+        if (!this.decorators?.size) {
+          if (this.view) {
+            this.view.badge = undefined;
+            this.view.message = undefined;
+          }
+          return plain;
+        }
+        const decorated = await decorateRows(this.decorators, plain);
+        const open = decorated.open;
+        if (this.view) {
+          this.view.badge = open ? { value: open, tooltip: `${open} open` } : undefined;
+          this.view.message = decorated.rows.length
+            ? undefined
+            : emptyInboxMessage(this.decorators, this.language());
+        }
+        return decorated.rows;
       }
       return [];
     } catch (e) {

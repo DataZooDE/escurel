@@ -3,6 +3,7 @@ import { webviewHtml as shellHtml } from '../shared/webviewHtml';
 import { THEME_CSS, THEME_TOKENS } from '../shared/themeTokens';
 import { ReviewHookRegistry } from '../review/hooks';
 import { PageAugmentRegistry } from './augment';
+import { InboxDecoratorRegistry } from './inbox';
 import { OverviewTileRegistry, PageRendererRegistry } from './contributions';
 import { gatewayFacade } from './gateway';
 import {
@@ -10,6 +11,7 @@ import {
   type EscurelExtensionApi,
   type GatewayClient,
   type OverviewTileContribution,
+  type InboxDecorator,
   type PageAugment,
   type PageRenderer,
   type ReviewHook,
@@ -33,6 +35,7 @@ export interface Contributions {
   renderers: PageRendererRegistry;
   augments: PageAugmentRegistry;
   reviewHooks: ReviewHookRegistry;
+  inboxDecorators: InboxDecoratorRegistry;
   gateway: GatewayClient;
   onDidChangeTenant: vscode.Event<TenantInfo>;
 }
@@ -45,6 +48,7 @@ export function createContributions(deps: ApiDeps): Contributions & { dispose():
     renderers: new PageRendererRegistry(),
     augments: new PageAugmentRegistry(),
     reviewHooks: new ReviewHookRegistry(),
+    inboxDecorators: new InboxDecoratorRegistry(),
     gateway: gatewayFacade(deps.client),
     onDidChangeTenant: changed.event,
     dispose: () => {
@@ -87,6 +91,8 @@ export function createExtensionApi(deps: ApiDeps, c: Contributions): EscurelExte
     registerPageAugment: (skill: string, augment: PageAugment) =>
       c.augments.register(skill, augment),
     registerReviewHook: (hook: ReviewHook) => c.reviewHooks.register(hook),
+    registerInboxDecorator: (skill: string, decorator: InboxDecorator) =>
+      c.inboxDecorators.register(skill, decorator),
     onDidChangeTenant: c.onDidChangeTenant,
   });
 }

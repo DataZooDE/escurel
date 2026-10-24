@@ -8,6 +8,12 @@ derives its version from the tag (`vYYYY.MM.DD` → `YYYY.M.D`, leading zeros dr
 
 ### Added
 
+- **Inbox row decorator for companion extensions**: `registerInboxDecorator(skill, { decorate?, emptyMessage? })`
+  (API v1, additive). `decorate(row, rows)` returns data only (`badge`, `description`, `status`, `hidden`) for the
+  rows of one skill; the status picks the icon, sorts decided rows after open ones and feeds the Inbox view badge
+  (open count). `emptyMessage` is a string or one text per language, shown when the Inbox has no row. A decorator
+  that fails leaves its rows as they were.
+
 - **Review decision hooks for companion extensions**: `registerReviewHook({ before?, after?, preview? })` (API v1,
   additive). `before` runs ahead of accept, reject and accept-with-edits: it can ask for a decision note (required
   or optional; a reject reuses its own reason box) and can veto with a message. `after` receives each decided

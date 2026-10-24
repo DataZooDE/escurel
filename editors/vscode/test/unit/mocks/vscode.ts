@@ -171,6 +171,25 @@ export class Uri {
   }
 }
 
+export enum TreeItemCollapsibleState {
+  None = 0,
+  Collapsed = 1,
+  Expanded = 2,
+}
+
+export class TreeItem {
+  description?: string;
+  tooltip?: string;
+  iconPath?: unknown;
+  contextValue?: string;
+  resourceUri?: unknown;
+  command?: unknown;
+  constructor(
+    readonly label: string,
+    readonly collapsibleState?: TreeItemCollapsibleState,
+  ) {}
+}
+
 export class ThemeIcon {
   constructor(
     readonly id: string,

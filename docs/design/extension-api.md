@@ -84,6 +84,22 @@ api.registerReviewHook({
 | Accept with edits | The core has no editing UI. A companion that offers one saves its edit and runs `escurel.promote` with `{ draftId, withEdits: true }`; the hooks then hear `accepted_with_edits`. |
 | Scope | Hooks see every decision; a hook that cares about one skill or page pattern checks `targetPageId` itself. Several hooks run in registration order. |
 
+### Inbox row decoration: `registerInboxDecorator(skill, decorator)`
+
+```ts
+api.registerInboxDecorator('acme-request', {
+  decorate: (row, rows) => ({ badge: 'Answered', description: 'by the agent', status: 'answered' }),
+  emptyMessage: { en: 'No requests yet.', de: 'Noch keine Anfragen.' },
+});
+```
+
+| Part | Rules |
+| --- | --- |
+| `decorate(row, rows)` | Called for each Inbox row whose event is filed under `skill`. `row` and `rows` (every visible row, for correlation: a reply row can mark its request answered) are plain data with string values only (`eventId, labelSkill, title, body, pageId, at, rootEventId, runId, eventStatus, provenance`). Returns `{ badge?, description?, status?, hidden? }` (sync or a Promise). `badge` is a short word (24 characters) shown before the secondary text; `description` replaces the secondary text (skill and age); `status` is `open`, `answered`, `failed` or `done`: it picks the icon, and a row that is not `open` sorts after the others; `hidden` leaves a technical receipt out. |
+| View badge | When a decorator is registered, the Inbox view badge shows the number of rows whose status is `open`. |
+| `emptyMessage` | A string, or one text per language (`en`, `de`, ...); chosen by the window language (exact, language family, `en`). Shown as the view message when the Inbox has no row, so a requester sees where a request goes. The first decorator that contributes one wins. |
+| Bounds and failure | Data only: no command, no script, no webview. Returned text is cleaned and capped; anything outside the schema is dropped. The first decorator that sets a field wins. A decorator that throws or exceeds 2 s leaves its rows as they were. Registering or disposing a decorator refreshes the open view. |
+
 ## Classification of a downstream fork's changes
 
 Measured against the `editors/vscode` diff of one downstream fork: 298 files, 257 added, 41 modified.
@@ -102,9 +118,9 @@ Covered by a hook (the companion keeps its own code, Escurel carries nothing of 
 Not covered (companion-only, or a follow-up if the owner wants it generic):
 
 1. Rich Overview board (`src/overview/controller.ts` +1239, `webview/overview/overview.ts` +1658: import, scenarios, reference seeding, exports in one panel). Companion-only: it becomes the companion's own panel.
-2. Extending the generic page view additively (extra sections, actions, forms inside `page-as-ui.ts` +808): the renderer hook replaces the whole view, it does not extend it. Needs an "augment" hook if wanted.
-3. Review controller (`src/review/controller.ts`: decision note, recorded decisions, impact preview, accept-with-edits). A review hook (before/after decision) would be needed; otherwise companion-only.
-4. Inbox decoration (`src/views/inbox.ts`, `inboxModel.ts`: request statuses, badge, localized empty message). Needs a row-decorator hook, or stays companion-only.
+2. Extending the generic page view additively (extra sections, actions, forms inside `page-as-ui.ts` +808): covered by `registerPageAugment` (see Additive hooks).
+3. Review controller (`src/review/controller.ts`: decision note, recorded decisions, impact preview, accept-with-edits): covered by `registerReviewHook` (see Additive hooks).
+4. Inbox decoration (`src/views/inbox.ts`, `inboxModel.ts`: request statuses, badge, localized empty message): covered by `registerInboxDecorator` (see Additive hooks).
 5. Webview-side shared helpers used by companion webviews (`webview/shared/markdown-view.ts` options, `download.ts`, `filter-strip.ts`, `vscode-api.ts` message union). The companion bundles its own copies or Escurel exports a webview helper bundle.
 6. Visual identity: brand tokens in `webview/shared/theme.css.ts` (fonts, radii, surfaces, muted colour), font loading and CSP `font-src` in `webviewHtml.ts`, `media/fonts`, `themes/*`, `focusSettings.ts` (theme and window title), `esbuild.mjs` font copy. Companion-only; `webviewHtml` would need a `fontSrc`/extra-head option for the fonts.
 7. `src/views/scenarios.ts` / `scenariosVisibility.ts` (view visibility by setting) and `src/shared/untrustedText.ts` (U+2028/2029 as unsafe): the second is a generic fix and can go upstream on its own.
@@ -112,5 +128,5 @@ Not covered (companion-only, or a follow-up if the owner wants it generic):
 
 ## Tests
 
-`test/unit/extensionApi.test.ts`, `contributedTiles.test.ts`, `pageRendererDelegation.test.ts`, `pageAugment.test.ts`, `pageAugmentWiring.test.ts`, `reviewHooks.test.ts`, `reviewControllerHooks.test.ts`, `reviewPreviewPanel.test.ts`, `test/component/review-preview.test.ts`, `test/component/augment-view.test.ts`, `themeTokens.test.ts`,
+`test/unit/extensionApi.test.ts`, `contributedTiles.test.ts`, `pageRendererDelegation.test.ts`, `pageAugment.test.ts`, `pageAugmentWiring.test.ts`, `reviewHooks.test.ts`, `reviewControllerHooks.test.ts`, `reviewPreviewPanel.test.ts`, `inboxDecorator.test.ts`, `test/component/review-preview.test.ts`, `test/component/augment-view.test.ts`, `themeTokens.test.ts`,
 `apiExposure.test.ts`. Not covered by unit tests: the Overview panel wiring in a real window (integration suite).

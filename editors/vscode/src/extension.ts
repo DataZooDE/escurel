@@ -103,7 +103,7 @@ export function activate(
   registerSkillDiagnostics(context, () => services.client);
   WikilinkProvider.register(context);
   const knowledge = KnowledgeTree.register(context, () => services.client);
-  const inbox = InboxTree.register(context, () => services.client);
+  const inbox = InboxTree.register(context, () => services.client, contributions.inboxDecorators);
   const awaiting = AwaitingTree.register(context, () => services.client);
   const runner = registerRunnerView(context, services);
   EscurelFileSystem.register(

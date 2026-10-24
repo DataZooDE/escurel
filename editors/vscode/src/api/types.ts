@@ -109,6 +109,8 @@ export interface EscurelExtensionApi {
   registerPageAugment(skill: string, augment: PageAugment): vscode.Disposable;
   /** Hooks around the review decision (accept, reject, accept with edits) and a preview beside the diff. */
   registerReviewHook(hook: ReviewHook): vscode.Disposable;
+  /** Decorates the Inbox rows of `skill` (badge, secondary text, status) and contributes an empty-state message. */
+  registerInboxDecorator(skill: string, decorator: InboxDecorator): vscode.Disposable;
   /** Fires when the gateway or the signed-in identity changed: drop cached data. */
   readonly onDidChangeTenant: vscode.Event<TenantInfo>;
 }
@@ -252,4 +254,53 @@ export interface ReviewHook {
    * list lines may open a host command). Return `[]` for a draft that is not yours.
    */
   preview?(ctx: ReviewPreviewContext): AugmentSectionData[] | Promise<AugmentSectionData[]>;
+}
+
+// ── inbox row decoration ─────────────────────────────────────────────
+
+export type InboxRowStatus = 'open' | 'answered' | 'failed' | 'done';
+
+/** An inbox row as a decorator sees it: strings only (`''` when the event does not have the value). */
+export interface InboxRowData {
+  eventId: string;
+  labelSkill: string;
+  title: string;
+  body: string;
+  pageId: string;
+  /** RFC 3339 instant of the capture. */
+  at: string;
+  rootEventId: string;
+  runId: string;
+  /** The event's own status, `inbox` or `processed`. */
+  eventStatus: string;
+  /** The event's provenance, string values only. */
+  provenance: Record<string, string>;
+}
+
+/** Data only: nothing here runs in a webview or names a command. */
+export interface InboxDecoration {
+  /** A short word before the secondary text (at most 24 characters), e.g. `Answered`. */
+  badge?: string;
+  /** Replaces the secondary text of the row (the skill and the age). */
+  description?: string;
+  /** Picks the icon; a row that is not `open` sorts after the open ones. `open` rows count in the view badge. */
+  status?: InboxRowStatus;
+  /** Leaves the row out (a technical receipt that is not work for a person). */
+  hidden?: boolean;
+}
+
+export interface InboxDecorator {
+  /**
+   * Called once per row of the skill with every visible row for correlation (a reply row can mark its
+   * request answered). An error or a timeout leaves the row as it was.
+   */
+  decorate?(
+    row: InboxRowData,
+    rows: readonly InboxRowData[],
+  ): InboxDecoration | undefined | Promise<InboxDecoration | undefined>;
+  /**
+   * Said in the Inbox view when it has no row, so a requester sees where a request goes. A plain string,
+   * or one text per language (`en`, `de`, ...); the first decorator that contributes one is used.
+   */
+  emptyMessage?: string | Record<string, string>;
 }

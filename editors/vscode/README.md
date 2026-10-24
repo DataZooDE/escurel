@@ -34,6 +34,8 @@ actions?, forms? })` adds read-only sections (data from a host-side provider, dr
 declarative schema), buttons that run a host command, and forms whose submit can only call `create_draft`.
 `registerReviewHook({ before?, after?, preview? })` lets a companion ask for a decision note, veto, record the
 decision and add a preview beside a review diff.
+`registerInboxDecorator(skill, { decorate?, emptyMessage? })` sets a badge, secondary text and status on Inbox rows
+(data only) and contributes a localized empty-state message.
 
 ## Security model
 
