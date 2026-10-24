@@ -194,6 +194,16 @@ impl TestIssuer {
         self.mint_with_sub(tenant, role, "test-subject")
     }
 
+    /// Sign an OPERATOR bearer: `escurel:operator` (the cross-tenant credential) beside
+    /// `escurel:admin`. `tenant` must still be the tenant the instance serves.
+    pub(crate) fn mint_operator(&self, tenant: &str) -> String {
+        self.sign_with_roles(
+            tenant,
+            "test-operator",
+            &["escurel:admin".to_owned(), "escurel:operator".to_owned()],
+        )
+    }
+
     /// Sign a bearer for `tenant`/`role` with an explicit `sub` claim —
     /// for per-instance ACL tests where the subject is the owning
     /// principal (e.g. a member credential).

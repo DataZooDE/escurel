@@ -72,6 +72,13 @@ async fn admin(p: &EscurelProcess) -> AdminClient {
         .unwrap()
 }
 
+async fn operator(p: &EscurelProcess) -> AdminClient {
+    let token = p.mint_operator_token(TENANT);
+    AdminClient::connect(p.base_url(), SecretString::from(token))
+        .await
+        .unwrap()
+}
+
 /// `rebuild` returns the terminal `{done, total}` over the one-shot
 /// MCP transport (no streaming).
 #[tokio::test]
@@ -116,7 +123,8 @@ async fn tenant_export_then_import_round_trips() {
     let h = start_admin().await;
     let client = admin(&h.process).await;
 
-    client
+    operator(&h.process)
+        .await
         .tenant_create(TenantCreateRequest {
             spec: Some(TenantSpec {
                 tenant_id: TENANT.to_owned(),

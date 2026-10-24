@@ -235,6 +235,45 @@ async fn it_prints_an_admin_bearer_beside_the_ordinary_one() {
     );
 }
 
+/// The cross-tenant credential: `operator_bearer` passes the operator gate of the tenant
+/// registry tools, the admin bearer does not.
+#[tokio::test]
+async fn it_prints_an_operator_bearer_that_the_admin_bearer_is_not() {
+    let g = start(&[]);
+    let operator = g.info["operator_bearer"]
+        .as_str()
+        .expect("an operator_bearer");
+    let admin = g.info["admin_bearer"].as_str().expect("an admin_bearer");
+    assert_ne!(operator, admin);
+
+    let refused: Value = call(&g, Some(admin), "tenant_list", json!({}))
+        .await
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(
+        refused["error"]["data"]["code"],
+        json!("operator_required"),
+        "{refused}"
+    );
+
+    let allowed: Value = call(&g, Some(operator), "tenant_list", json!({}))
+        .await
+        .json()
+        .await
+        .unwrap();
+    assert_ne!(
+        allowed["error"]["data"]["code"],
+        json!("operator_required"),
+        "{allowed}"
+    );
+    assert_ne!(
+        allowed["error"]["data"]["code"],
+        json!("admin_required"),
+        "{allowed}"
+    );
+}
+
 /// A demo outlasts a ten-minute token. `--bearer-file` keeps a file holding a CURRENT bearer for
 /// whoever is signed in with it, rewritten in place by rename so a reader never sees half of it.
 #[tokio::test]

@@ -18,12 +18,23 @@ issuer's JWKS and reads a small, **configurable** set of claims
 | tenant | `tenant_claim` | `tenant` | `escurel_tenant` |
 | role list | `admin_role_claim` | `roles` | `roles` |
 | admin grant | `admin_role_value` | `escurel:admin` | `escurel:admin` |
+| operator grant | `ESCUREL_AUTH_OPERATOR_ROLE_VALUE` | `escurel:operator` | `escurel:operator` |
 
 Verification flow (`platform.md`): extract bearer → verify signature
 against cached JWKS → resolve `tenant_id` from the tenant claim → resolve
 **role** (admin iff `admin_role_value` ∈ the role-claim array; otherwise
 agent) → stamp `(tenant_id, role, sub)` onto the request. The stamped role
 surfaces as `escurel.role = "agent" | "admin"`.
+
+**Operator.** `escurel:operator` in the same role claim marks an operator, which is also an admin. A tenant
+admin may act only on its own tenant: an admin tool whose `tenant_id` names another tenant is refused (`-32002`). The
+operator is the only credential that may name another tenant, and only in the tools that work on the tenant store
+(`tenant_export`, `tenant_import`); tools bound to this gateway's own index or lanes (`compact_lanes`, `rebuild`,
+`admin_quota`, `admin_audit`, ...) refuse a foreign tenant for everyone. The tenant registry (`tenant_create`,
+`tenant_list`, `tenant_get`, `tenant_update`, `tenant_delete`) needs an operator (`-32001`, `operator_required`). The
+operator token's `tenant` claim is still the served tenant. Nothing the gateway or runner mints carries the operator
+value. Tests: `process.mint_operator_token("acme")`; `escurel-test-gateway` prints an `operator_bearer`. Design:
+`docs/design/operator-credential.md`.
 
 A **per-run agent token** (the bearer the runner mints for one harness run,
 `sub: agent:<skill>`, `act.sub: escurel-runner`) additionally carries the

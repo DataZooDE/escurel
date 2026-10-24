@@ -11,7 +11,7 @@
 //!                       [--group <name>]... [--write-acl-enforce] [--tenant-export]
 //!                       [--external-issuer-url <url> --external-jwks-url <url>]
 //! {"gateway_url":"http://127.0.0.1:…","issuer_url":"http://127.0.0.1:…","kid":"…",
-//!  "signing_key":"-----BEGIN RSA PRIVATE KEY-----…","bearer":"eyJ…","admin_bearer":"eyJ…","tenant":"vsx"}
+//!  "signing_key":"-----BEGIN RSA PRIVATE KEY-----…","bearer":"eyJ…","admin_bearer":"eyJ…","operator_bearer":"eyJ…","tenant":"vsx"}
 //! ```
 //! Repeating `--group` sets the groups in locally minted bearer tokens. With no `--group`, the
 //! bearer has `escurel:agent`. External issuer mode returns null for local signing material and
@@ -30,9 +30,13 @@
 //! plenty for a test run and is not extended here, because a long-lived credential printed to
 //! stdout is the thing to avoid.
 //!
+//! The `operator_bearer` carries the operator role beside admin: the only credential that may name
+//! another tenant in the cross-tenant admin tools (tenant registry, `tenant_export`/`tenant_import`).
+//! Its `tenant` claim is still the served tenant.
+//!
 //! The gateway also holds a signing identity on the issuer's own key, so `mint_agent_token` works.
 //!
-//! A demo outlasts that. `--bearer-file <path>` writes `{bearer, admin_bearer}` there BEFORE the
+//! A demo outlasts that. `--bearer-file <path>` writes `{bearer, admin_bearer, operator_bearer}` there BEFORE the
 //! line is printed and replaces it (by rename, so a reader never sees half a file) with fresh
 //! ones every `--bearer-refresh-secs` (default 240). Nothing else is ever written.
 
@@ -47,7 +51,7 @@ struct Args {
     tenant: String,
     seed: PathBuf,
     subject: String,
-    /// Keep this file holding a current `{bearer, admin_bearer}` (a demo outlasts a token).
+    /// Keep this file holding a current `{bearer, admin_bearer, operator_bearer}` (a demo outlasts a token).
     bearer_file: Option<PathBuf>,
     bearer_refresh_secs: u64,
     groups: Vec<String>,
@@ -128,11 +132,12 @@ fn write_atomically(path: &Path, contents: &str) -> std::io::Result<()> {
     std::fs::rename(&tmp, path)
 }
 
-/// A fresh `{bearer, admin_bearer}` pair for the signed-in subject, written atomically.
+/// A fresh `{bearer, admin_bearer, operator_bearer}` set for the signed-in subject, written atomically.
 fn write_bearers(process: &EscurelProcess, args: &Args, path: &Path) -> std::io::Result<()> {
     let contents = json!({
         "bearer": mint_bearer(process, args),
         "admin_bearer": process.mint_token_with_sub(&args.tenant, Role::Admin, &args.subject),
+        "operator_bearer": process.mint_operator_token(&args.tenant),
     })
     .to_string();
     write_atomically(path, &contents)
@@ -276,16 +281,17 @@ async fn main() {
     })
     .await;
 
-    let (signing_key, kid, bearer, admin_bearer) = if external.is_none() {
+    let (signing_key, kid, bearer, admin_bearer, operator_bearer) = if external.is_none() {
         let (key, kid) = process.signing_material();
         (
             Some(key),
             Some(kid),
             Some(mint_bearer(&process, &args)),
             Some(process.mint_token_with_sub(&args.tenant, Role::Admin, &args.subject)),
+            Some(process.mint_operator_token(&args.tenant)),
         )
     } else {
-        (None, None, None, None)
+        (None, None, None, None, None)
     };
     // A demo outlasts a ten-minute token. The file is written BEFORE the line is printed, so a
     // reader that waits for the line always finds a bearer, and then kept fresh. Only what the
@@ -306,6 +312,7 @@ async fn main() {
             "signing_key": signing_key,
             "bearer": bearer,
             "admin_bearer": admin_bearer,
+            "operator_bearer": operator_bearer,
             "tenant": args.tenant,
             "fixture_store_dir": args.tenant_export.then(|| process.fixture_store_dir())
                 .flatten().map(|path| path.display().to_string()),

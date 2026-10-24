@@ -128,14 +128,13 @@ pub(crate) fn rbac_groups(
     state: &crate::server::AppState,
     auth_ctx: Option<&AuthContext>,
 ) -> Vec<String> {
-    let admin_value = state
-        .verifier
-        .as_ref()
-        .map(|v| v.config().admin_role_value.clone());
-    strip_admin_value(
+    let cfg = state.verifier.as_ref().map(|v| v.config());
+    let groups = strip_admin_value(
         auth_ctx.map(|c| c.groups.as_slice()).unwrap_or(&[]),
-        admin_value.as_deref(),
-    )
+        cfg.map(|c| c.admin_role_value.as_str()),
+    );
+    // The operator value is a privilege marker in the same claim: never a group name.
+    strip_admin_value(&groups, cfg.map(|c| c.operator_role_value.as_str()))
 }
 
 /// The stripping itself, separated so the security boundary is testable

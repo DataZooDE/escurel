@@ -52,7 +52,7 @@ async fn verb_first_aliases_route_to_the_canonical_tool() {
         fixtures: Some(FixtureBuilder::new().tenant(TENANT).done()),
     })
     .await;
-    let admin = p.mint_token(TENANT, Role::Admin);
+    let admin = p.mint_operator_token(TENANT);
 
     // Create through the verb-first spelling…
     let created = call(

@@ -25,6 +25,7 @@ struct Harness {
     process: EscurelProcess,
     http_addr: String,
     admin_token: String,
+    operator_token: String,
     agent_token: String,
     tenants_root: PathBuf,
     _tenants_dir: TempDir,
@@ -81,6 +82,7 @@ async fn start() -> Harness {
         .to_owned();
     Harness {
         admin_token: process.mint_token(TENANT, Role::Admin),
+        operator_token: process.mint_operator_token(TENANT),
         agent_token: process.mint_token(TENANT, Role::Agent),
         process,
         http_addr,
@@ -94,8 +96,16 @@ fn v(args: &[&str]) -> Vec<String> {
 }
 
 async fn admin(h: &Harness, args: Vec<String>) -> std::process::Output {
+    run_as(h, h.admin_token.clone(), args).await
+}
+
+/// The tenant registry (`admin tenant ...`) is the operator's: it needs an operator credential.
+async fn operator(h: &Harness, args: Vec<String>) -> std::process::Output {
+    run_as(h, h.operator_token.clone(), args).await
+}
+
+async fn run_as(h: &Harness, token: String, args: Vec<String>) -> std::process::Output {
     let addr = h.http_addr.clone();
-    let token = h.admin_token.clone();
     tokio::task::spawn_blocking(move || {
         Command::cargo_bin("escurel")
             .unwrap()
@@ -128,7 +138,7 @@ async fn admin_health_reports_version() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn admin_tenant_crud_lifecycle() {
     let h = start().await;
-    let created = admin(
+    let created = operator(
         &h,
         v(&[
             "admin",
@@ -144,10 +154,10 @@ async fn admin_tenant_crud_lifecycle() {
     assert_eq!(json(&created)["tenant"]["tenant_id"], "globex");
     assert!(h.tenants_root.join("globex").join("tenant.json").is_file());
 
-    let got = admin(&h, v(&["admin", "tenant", "get", "--id", "globex"])).await;
+    let got = operator(&h, v(&["admin", "tenant", "get", "--id", "globex"])).await;
     assert_eq!(json(&got)["tenant"]["display_name"], "Globex Corp");
 
-    let listed = admin(&h, v(&["admin", "tenant", "list"])).await;
+    let listed = operator(&h, v(&["admin", "tenant", "list"])).await;
     assert!(
         json(&listed)["tenants"]
             .as_array()
@@ -156,7 +166,7 @@ async fn admin_tenant_crud_lifecycle() {
             .any(|t| t["tenant_id"] == "globex")
     );
 
-    let updated = admin(
+    let updated = operator(
         &h,
         v(&[
             "admin", "tenant", "update", "--id", "globex", "--name", "Renamed",
@@ -165,7 +175,7 @@ async fn admin_tenant_crud_lifecycle() {
     .await;
     assert_eq!(json(&updated)["tenant"]["display_name"], "Renamed");
 
-    let deleted = admin(&h, v(&["admin", "tenant", "delete", "--id", "globex"])).await;
+    let deleted = operator(&h, v(&["admin", "tenant", "delete", "--id", "globex"])).await;
     assert_eq!(json(&deleted)["deleted"], true);
     assert!(!h.tenants_root.join("globex").exists());
     h.process.shutdown().await;

@@ -116,12 +116,12 @@ async fn suspended_tenant_rejects_ingest() {
         ..Default::default()
     })
     .await;
-    let admin = p.mint_token(TENANT, Role::Admin);
+    let operator = p.mint_operator_token(TENANT);
     let agent = p.mint_token(TENANT, Role::Agent);
 
     let created = mcp(
         &p,
-        &admin,
+        &operator,
         "tenant_create",
         json!({ "tenant_id": TENANT, "display_name": "Stuttgart AI" }),
     )
@@ -130,7 +130,7 @@ async fn suspended_tenant_rejects_ingest() {
 
     let susp = mcp(
         &p,
-        &admin,
+        &operator,
         "tenant_update",
         json!({ "tenant_id": TENANT, "status": "suspended" }),
     )

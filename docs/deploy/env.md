@@ -55,6 +55,7 @@ escurel-server.
 | `ESCUREL_WRITE_ACL` | enforce | per-instance write ACL: `enforce` (reject; the default, also for an unrecognised value) \| `log` (warn but allow) \| `off` (no check, explicit opt-out). Symmetric to the read ACL: owner-or-admin writes; public/no-owner instances are admin-write-only. |
 | `ESCUREL_AUTH_ADMIN_ROLE_CLAIM` | roles | JWT claim listing roles |
 | `ESCUREL_AUTH_ADMIN_ROLE_VALUE` | escurel:admin | role value granting admin |
+| `ESCUREL_AUTH_OPERATOR_ROLE_VALUE` | escurel:operator | role value (in the admin role claim) marking an OPERATOR credential, the only one that may name another tenant in the cross-tenant admin tools (tenant registry, tenant_export/tenant_import) |
 | `ESCUREL_AUTH_JWKS_REFRESH_SECS` | 300 | JWKS cache TTL (seconds) |
 | `ESCUREL_AUTH_JWKS_URI` | derived from issuer | explicit JWKS URL (e.g. Triton's `<issuer>/.well-known/jwks.json`) |
 | `ESCUREL_RUN_PROGRESS_KEEP` | 50 | how many `run-progress` snapshots a run keeps (pruned at capture) |

@@ -101,6 +101,14 @@ async fn admin_client(p: &EscurelProcess) -> AdminClient {
         .unwrap()
 }
 
+/// The tenant registry needs the operator credential, not just an admin one.
+async fn operator_client(p: &EscurelProcess) -> AdminClient {
+    let token = p.mint_operator_token(TENANT);
+    AdminClient::connect(p.base_url(), SecretString::from(token))
+        .await
+        .unwrap()
+}
+
 async fn agent_admin_client(p: &EscurelProcess) -> AdminClient {
     let token = p.mint_token(TENANT, Role::Agent);
     AdminClient::connect(p.base_url(), SecretString::from(token))
@@ -140,7 +148,7 @@ async fn health_returns_configured_version() {
 #[tokio::test]
 async fn tenant_crud_lifecycle_round_trips() {
     let h = start_with_store().await;
-    let client = admin_client(&h.process).await;
+    let client = operator_client(&h.process).await;
 
     let created = client
         .tenant_create(TenantCreateRequest {

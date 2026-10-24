@@ -316,6 +316,9 @@ async fn mcp_inner(
     // is wired (dev / on-host mode) — the gateway is open, so admin
     // tools are allowed (the local demo runs without a token).
     let role = auth_ctx.as_ref().map(|c| c.role);
+    // Operator credential (cross-tenant administration). No verifier = open dev gateway = treated
+    // as an operator, exactly as it is treated as an admin.
+    let operator = auth_ctx.as_ref().is_none_or(|c| c.operator);
 
     // #247 suspend gate: a suspended tenant rejects non-admin callers so an
     // operator can still `resume` with an admin token. Only bites when a
@@ -416,6 +419,7 @@ async fn mcp_inner(
                 &state,
                 &tenant_id,
                 role,
+                operator,
                 &subject,
                 &token_groups,
                 actor.as_deref(),
@@ -718,6 +722,30 @@ fn require_admin(role: Option<Role>) -> Result<(), JsonRpcError> {
     }
 }
 
+/// Tools that act across tenants by nature (the tenant registry): operator credential required,
+/// not just admin. Cross-tenant `tenant_id` arguments of the other admin tools are decided by
+/// `ensure_tenant_access` (tools_admin.rs).
+const OPERATOR_TOOLS: [&str; 5] = [
+    "tenant_create",
+    "tenant_list",
+    "tenant_get",
+    "tenant_update",
+    "tenant_delete",
+];
+
+fn require_operator(operator: bool) -> Result<(), JsonRpcError> {
+    if operator {
+        Ok(())
+    } else {
+        Err(JsonRpcError {
+            code: -32001,
+            message: "operator credential required for this tool".to_owned(),
+            data: None,
+        }
+        .with_code("operator_required", false))
+    }
+}
+
 /// Serialize an `escurel_types` response struct to a JSON-RPC result
 /// value. The escurel-types structs are the wire contract; a
 /// serialization failure here is a server bug, surfaced as internal.
@@ -914,13 +942,14 @@ const SHARED_SURFACE_PROBES: &[SharedSurfaceProbe] = &[
     (schema::Surface::Crdt, Indexer::has_shared_crdt),
 ];
 
-// Eight inputs describe one authenticated call (who, for whom, for which run);
+// Nine inputs describe one authenticated call (who, for whom, for which run);
 // bundling them would only move the count somewhere less legible.
 #[allow(clippy::too_many_arguments)]
 async fn dispatch_tools_call(
     state: &crate::server::AppState,
     tenant_id: &str,
     role: Option<Role>,
+    operator: bool,
     subject: &str,
     token_groups: &[String],
     actor: Option<&str>,
@@ -1012,6 +1041,10 @@ async fn dispatch_tools_call(
     if schema::admin_scope_tools().contains(params.name.as_str()) {
         require_admin(role)?;
     }
+    // The tenant registry spans tenants, so it is the operator's, not a tenant admin's.
+    if OPERATOR_TOOLS.contains(&params.name.as_str()) {
+        require_operator(operator)?;
+    }
 
     // The hard cut (`type:` -> `kind:`): a tenant that booted with legacy pages is QUARANTINED. It
     // is up, so an operator can run `migrate_kind` against it (and clear live sessions with
@@ -1101,7 +1134,7 @@ async fn dispatch_tools_call(
             return tool_tenant_delete(state, params.arguments).await;
         }
         "tenant_export" => {
-            return tool_tenant_export(state, tenant_id, params.arguments).await;
+            return tool_tenant_export(state, tenant_id, operator, params.arguments).await;
         }
         "export_pack" => {
             return tool_export_pack(state, params.arguments).await;
@@ -1122,7 +1155,7 @@ async fn dispatch_tools_call(
             return tool_submit_promotion(state, subject, params.arguments).await;
         }
         "tenant_import" => {
-            return tool_tenant_import(state, tenant_id, params.arguments).await;
+            return tool_tenant_import(state, tenant_id, operator, params.arguments).await;
         }
         "attach_external" => {
             return tool_attach_external(state, params.arguments).await;
@@ -1134,7 +1167,7 @@ async fn dispatch_tools_call(
             return tool_rebuild(state, params.arguments).await;
         }
         "compact_lanes" => {
-            return tool_compact_lanes(state, tenant_id, params.arguments).await;
+            return tool_compact_lanes(state, tenant_id, operator, params.arguments).await;
         }
         "migrate_kind" => {
             return tool_migrate_kind(state, params.arguments).await;
