@@ -191,6 +191,7 @@ fn skill_to_wire(s: escurel_index::SkillInfo, is_admin: bool) -> TypesSkill {
                 acyclic: f.acyclic,
                 format: f.format,
                 required_when: f.required_when,
+                frozen_by_parent: f.frozen_by_parent,
             })
             .collect(),
         // The declared instance-body layout (P3-5): verbatim, in
@@ -204,6 +205,8 @@ fn skill_to_wire(s: escurel_index::SkillInfo, is_admin: bool) -> TypesSkill {
                 kind: b.kind,
             })
             .collect(),
+        freeze_when: s.freeze_when,
+        protected: s.protected,
     }
 }
 

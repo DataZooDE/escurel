@@ -146,6 +146,8 @@ pub fn family_for_code(code: &str) -> Option<&'static str> {
         "field_blank" => "field_blank",
         "field_immutable" => "field_immutable",
         "instance_immutable" => "instance_immutable",
+        "instance_frozen" => "instance_frozen",
+        "instance_protected" => "instance_protected",
         "identity_duplicate" => "identity_duplicate",
         "relation_invalid" => "relation_invalid",
         "relation_unresolved" => "relation_unresolved",
@@ -1130,6 +1132,10 @@ pub(crate) struct SkillContract {
     pub(crate) strict_required: bool,
     /// `immutable: true`: an instance cannot change once it exists.
     pub(crate) immutable: bool,
+    /// `freeze_when:` (field, values): while the stored instance matches, it is frozen.
+    pub(crate) freeze_when: Option<(String, Vec<String>)>,
+    /// `protected:` removal actions (`delete`, `move`).
+    pub(crate) protected: Vec<String>,
     /// `unique:` key tuples (composite identity).
     pub(crate) unique: Vec<Vec<String>>,
     /// `unique` scope `accepted`: only `status: accepted` instances count.
@@ -1534,10 +1540,22 @@ impl Indexer {
                     .flatten()
                     .filter_map(|s| skills.get(s))
                     .collect();
-            issues.extend(
-                self.immutability_issues(page_id, content, &contracts, fields)
-                    .await?,
-            );
+            // A freeze answers first and alone: the other refusals would only restate it.
+            let frozen = self
+                .frozen_write_issues(page_id, declared_skill, fields, pending)
+                .await?;
+            if frozen.is_empty() {
+                issues.extend(
+                    self.immutability_issues(page_id, content, &contracts, fields)
+                        .await?,
+                );
+                issues.extend(
+                    self.protected_archive_issues(page_id, fields, &contracts)
+                        .await?,
+                );
+            } else {
+                issues.extend(frozen);
+            }
             issues.extend(self.pack_binding_issues(fields, pending).await?);
         }
 
@@ -1962,6 +1980,8 @@ impl Indexer {
                             == Some(true),
                         immutable: fm.get("immutable").and_then(serde_json::Value::as_bool)
                             == Some(true),
+                        freeze_when: crate::freeze::parse_freeze_when(&fm),
+                        protected: crate::freeze::parse_protected(&fm),
                         unique: crate::field_rules::parse_unique(&fm)
                             .map(|(k, _)| k)
                             .unwrap_or_default(),

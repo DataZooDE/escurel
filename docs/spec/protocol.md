@@ -114,7 +114,7 @@ vocabulary for the field and relation rules switches on `family` instead:
 | `frontmatter_field_type` (any other kind) | `field_type_invalid` |
 | `frontmatter_field_range` | `field_range_invalid` |
 | `frontmatter_required_key_missing`, `frontmatter_required_key_missing_strict` | `field_required_missing` |
-| `field_required_when`, `field_blank`, `field_immutable`, `instance_immutable`, `identity_duplicate` | the same name |
+| `field_required_when`, `field_blank`, `field_immutable`, `instance_immutable`, `instance_frozen`, `identity_duplicate` | the same name |
 | `relation_invalid`, `relation_unresolved`, `relation_cycle` | the same name |
 
 `validate` reports every finding it has. `update_page` refuses a write only
@@ -150,6 +150,8 @@ declare none are unchanged.
 | skill `immutable: true` | page bytes cannot change after the page exists, and the page cannot be archived (`delete_page`) or renamed (`move_page`); the rule follows the page path and the stored page's skill, not only the draft's `skill:` | `instance_immutable` |
 | `fields[].kind: link`, `to: <skill>` or `to: [<skill>, ...]` | value is one quoted `[[<skill>::<id>]]` link (or a list of them) to a live instance of `<skill>` (of any listed skill), saved or in the pending batch | `relation_invalid`, `relation_unresolved` |
 | `fields[].acyclic: true` (link to the field's own skill) | following the link never returns to a visited instance | `relation_cycle` |
+| skill `freeze_when: {field: value}` or `{field: [v1, v2]}` | while the *stored* page's `field` equals the value (or any listed value, compared as text) the page is frozen; the list must be non-empty and hold plain values | `skill_rule_malformed` if ill-formed; `instance_frozen` on a refused write |
+| `fields[].frozen_by_parent: true` (on a `kind: link` field) | an instance whose link points at a frozen page is frozen too; resolved from the stored page, at most 4 links deep | `fields_malformed` if not a boolean or not a link; `instance_frozen` |
 | skill `unique: [[a, b]]`, or `{keys: [[a, b]], scope: accepted}` | the composite key identifies at most one instance, excluding the page itself; `scope: accepted` counts only instances with `status: accepted` | `identity_duplicate` |
 | skill `relation_guard: false` | opt the skill's instances out of the in-use guard on archive and rename | `skill_rule_malformed` if not a boolean |
 | skill `lease: {holder, expires, while?}` | its instances are leases: `holder` names the field with the current holder, `expires` the field with the expiry in Unix seconds, `while: {field: value}` the state in which it is live | `skill_rule_malformed` if ill-formed; `lease_fence` on a refused write |
@@ -166,6 +168,25 @@ byte change and is refused the same way; a changeset that carries one lands
 nothing. A field-level `immutable: true` is not affected: it freezes one key,
 not the page's existence. `purge_page` remains the operator's erasure act and
 only acts on a page that is already archived.
+
+**Frozen instances.** `freeze_when` makes a page read-only by data. While the stored page's
+field holds a declared value, `update_page`, `delete_page`, `move_page`, an archive through
+`update_page`, `create_draft` for it, and a changeset member for it are refused with
+`instance_frozen` (family `instance_frozen`), for every role including admin and operator. The
+check reads the stored page, so the write that sets the freezing value is allowed and the next one
+is not, and a write cannot lift its own freeze: reopening a frozen page is refused too. A freeze
+answers before `instance_immutable`, `instance_protected` and `relation_in_use`, and a lease fence
+(`lease_fence`) is judged before a draft's content is. With `frozen_by_parent: true` on a link field,
+the children of a frozen page are frozen through that link: a stored child whose link points at a
+frozen page is refused, and so is a new child created under one, or an existing child re-pointed at
+one. A chain is followed at most 4 links (a page 5 or more links below a frozen page is not frozen
+by it); a link cycle ends at that bound. Each check reads the page and walks its parents by id, at
+most one page read per link and level, never a scan: O(links x 4). In a changeset the pending
+parent pages count, so a batch cannot create a frozen parent and a child under it. A freeze ends by
+editing the skill page (`freeze_when` removed or changed, subject to the skill page's own
+write rights) or by an operator-level restore of the page (`tenant_import`); there is deliberately no
+instance-level override, and `purge_page` does not apply because a frozen page cannot be archived.
+Session edits (`open_session`/`apply_op`) and branch overlays are not covered.
 
 **In-use guard.** A link field declared with `to: <skill>` (every skill of a `to:` list) also protects its
 target. `delete_page` (archive) and `move_page` (rename) refuse with
@@ -190,7 +211,7 @@ It is a single-gateway guard, not a distributed lock. A worker that may have
 been replaced sends its fence with each write.
 
 Malformed declarations are reported on the skill page: `skill_rule_malformed`
-(`immutable`, `strict_required_frontmatter`, `unique`, `pack`) and
+(`immutable`, `freeze_when`, `strict_required_frontmatter`, `unique`, `pack`) and
 `fields_malformed` (per-field attributes), both blocking; `unique_field_unknown`,
 `field_required_when_unknown` and `field_format_unknown` are warnings.
 

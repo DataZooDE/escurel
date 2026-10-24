@@ -33,6 +33,7 @@ pub mod endpoints;
 pub mod events;
 mod field_rules;
 pub mod filter;
+pub mod freeze;
 pub mod graph;
 pub mod groups;
 pub mod indexer;

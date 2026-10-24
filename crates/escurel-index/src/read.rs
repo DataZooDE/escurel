@@ -127,6 +127,12 @@ pub struct SkillInfo {
     /// sequence, workbench backend P3-5), in the author's order. Empty when
     /// undeclared. Pass-through only.
     pub blocks: Vec<SkillBlock>,
+    /// `freeze_when: {field: value}`: while a stored instance's `field` equals one of the values,
+    /// the instance is frozen (`instance_frozen`). `None` when undeclared or malformed.
+    pub freeze_when: Option<(String, Vec<String>)>,
+    /// `protected: [delete, move]`: the removal actions refused for this skill's instances
+    /// (`instance_protected`). Empty when undeclared.
+    pub protected: Vec<String>,
 }
 
 /// One invocation parameter a skill page declares via `params:`
@@ -261,6 +267,9 @@ pub struct SkillField {
     /// field is required while `other_field` equals one of the values
     /// (compared as text). A single value is a one-element list.
     pub required_when: Option<(String, Vec<String>)>,
+    /// `frozen_by_parent: true` on a link field: an instance whose link points at a frozen page is
+    /// frozen too (`instance_frozen`).
+    pub frozen_by_parent: bool,
 }
 
 /// One block of a skill's declared instance body layout (the `blocks:`
@@ -424,6 +433,7 @@ fn field_from(name: &str, attrs: &serde_json::Value) -> SkillField {
         acyclic: flag("acyclic"),
         format: text("format"),
         required_when: attrs.get("required_when").and_then(parse_required_when),
+        frozen_by_parent: flag("frozen_by_parent"),
     }
 }
 
@@ -825,6 +835,8 @@ impl Indexer {
                 cascade: parse_cascade(&fm),
                 params: parse_params(&fm),
                 blocks: parse_blocks(&fm),
+                freeze_when: crate::freeze::parse_freeze_when(&fm),
+                protected: crate::freeze::parse_protected(&fm),
             });
         }
 

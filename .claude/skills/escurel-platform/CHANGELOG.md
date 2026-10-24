@@ -4,6 +4,16 @@ The skill version tracks the consumer-facing contract, not the Escurel
 binary version. The Escurel repo's checked-out git ref is the true version
 pin (see `SKILL.md` → "How this skill is installed").
 
+## 0.25.11 — frozen instances (`freeze_when`, `frozen_by_parent`)
+
+A skill may declare `freeze_when: {field: value}` (or `{field: [v1, v2]}`): while the stored page's field holds a listed value,
+`update_page`, `delete_page`, `move_page`, an archive through `update_page`, `create_draft` and changeset members for it are
+refused with `instance_frozen` (family `instance_frozen`), for every role including admin and operator. A `kind: link` field may
+declare `frozen_by_parent: true`: instances linking to a frozen page are frozen too, and a new child cannot be created under
+one (chain capped at 4 links). A write cannot lift its own freeze; it ends by editing the skill page or an operator restore.
+`list_skills` publishes `freeze_when` as `[field, [value, ...]]` and `frozen_by_parent` per field; a malformed declaration is
+`skill_rule_malformed` / `fields_malformed`. 90 tools.
+
 ## 0.25.10 — operator credential: cross-tenant administration is the operator's
 
 A token whose roles claim carries `escurel:operator` (`ESCUREL_AUTH_OPERATOR_ROLE_VALUE`) is an OPERATOR; it is also an admin.

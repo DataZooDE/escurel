@@ -253,6 +253,8 @@ pub(super) fn blocking_issues<'a>(
             // fields, the declaration is the per-skill opt-in, so these block.
             "field_immutable"
             | "instance_immutable"
+            | "instance_frozen"
+            | "instance_protected"
             | "field_blank"
             | "field_required_when"
             | "identity_duplicate"
@@ -1081,17 +1083,18 @@ async fn publish_durably(
     Ok(())
 }
 
-/// The `instance_immutable` refusal for archiving or renaming `page_id`: `None`
-/// unless the page is an instance of a skill declared `immutable: true`.
-pub(super) async fn immutable_removal_refusal(
+/// The refusal for archiving or renaming `page_id` that the page's skill declares
+/// (`instance_frozen`, `instance_immutable`, `instance_protected`, in that order): `None` when
+/// the skill declares none of them for this page.
+pub(super) async fn removal_refusal(
     indexer: &Indexer,
     page_id: &str,
     action: &str,
 ) -> Result<Option<Value>, JsonRpcError> {
     let issue = indexer
-        .immutable_removal_issue(page_id, action)
+        .removal_issue(page_id, action)
         .await
-        .map_err(|e| JsonRpcError::internal(format!("{action} immutability guard: {e}")))?;
+        .map_err(|e| JsonRpcError::internal(format!("{action} removal guard: {e}")))?;
     Ok(issue.map(|issue| {
         json!({
             "ok": false,
@@ -1226,7 +1229,7 @@ pub(super) async fn tool_move_page(
         }
     }
 
-    if let Some(refused) = immutable_removal_refusal(indexer, &a.from, "move").await? {
+    if let Some(refused) = removal_refusal(indexer, &a.from, "move").await? {
         return Ok(refused);
     }
     if let Some(refused) =
@@ -1480,7 +1483,7 @@ pub(super) async fn tool_delete_page(
         }
     }
 
-    if let Some(refused) = immutable_removal_refusal(indexer, &a.page_id, "archive").await? {
+    if let Some(refused) = removal_refusal(indexer, &a.page_id, "archive").await? {
         return Ok(refused);
     }
     if let Some(refused) = relation_in_use_refusal(
