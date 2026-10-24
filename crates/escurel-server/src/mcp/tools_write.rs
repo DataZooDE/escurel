@@ -1081,6 +1081,33 @@ async fn publish_durably(
     Ok(())
 }
 
+/// The `relation_in_use` refusal for archiving or renaming `page_id`: `None`
+/// when no live instance holds a declared link to it. `pending` is the
+/// content a changeset will write alongside (empty for a single write).
+pub(super) async fn relation_in_use_refusal(
+    indexer: &Indexer,
+    page_id: &str,
+    action: &str,
+    pending: &std::collections::HashMap<String, String>,
+) -> Result<Option<Value>, JsonRpcError> {
+    let referrers = indexer
+        .relation_referrers(page_id, pending)
+        .await
+        .map_err(|e| JsonRpcError::internal(format!("{action} relation guard: {e}")))?;
+    Ok(referrers.issue(page_id, action).map(|issue| {
+        json!({
+            "ok": false,
+            "issues": [crate::mcp::tools_read::issue_to_json(&issue)],
+            "referrers": referrers
+                .items
+                .iter()
+                .map(|r| json!({ "page_id": r.page_id, "field": r.field }))
+                .collect::<Vec<_>>(),
+            "referrers_total": referrers.total,
+        })
+    }))
+}
+
 /// `move_page`: rename a page id, leaving nothing behind.
 ///
 /// Distinct from `delete_page` on purpose. A delete is a *retraction* and
@@ -1178,6 +1205,12 @@ pub(super) async fn tool_move_page(
                 }));
             }
         }
+    }
+
+    if let Some(refused) =
+        relation_in_use_refusal(indexer, &a.from, "move", &std::collections::HashMap::new()).await?
+    {
+        return Ok(refused);
     }
 
     match indexer.move_page(&a.from, &a.to).await {
@@ -1423,6 +1456,17 @@ pub(super) async fn tool_delete_page(
                 }],
             }));
         }
+    }
+
+    if let Some(refused) = relation_in_use_refusal(
+        indexer,
+        &a.page_id,
+        "archive",
+        &std::collections::HashMap::new(),
+    )
+    .await?
+    {
+        return Ok(refused);
     }
 
     match indexer.delete_page(&a.page_id).await {

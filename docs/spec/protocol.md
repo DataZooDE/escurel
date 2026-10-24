@@ -151,9 +151,23 @@ declare none are unchanged.
 | `fields[].kind: link`, `to: <skill>` | value is one quoted `[[<skill>::<id>]]` link (or a list of them) to a live instance of `<skill>`, saved or in the pending batch | `relation_invalid`, `relation_unresolved` |
 | `fields[].acyclic: true` (link to the field's own skill) | following the link never returns to a visited instance | `relation_cycle` |
 | skill `unique: [[a, b]]`, or `{keys: [[a, b]], scope: accepted}` | the composite key identifies at most one instance, excluding the page itself; `scope: accepted` counts only instances with `status: accepted` | `identity_duplicate` |
+| skill `relation_guard: false` | opt the skill's instances out of the in-use guard on archive and rename | `skill_rule_malformed` if not a boolean |
 | skill `strict_required_frontmatter: true` | `required_frontmatter` and `required: true` fields must also be non-blank | `frontmatter_required_key_missing_strict`, `frontmatter_required_key_blank_strict` |
 | skill `pack: {id, version, sha256}` (or a list) | declares an approved release | `skill_rule_malformed` if ill-formed |
 | instance `pack_id`, `pack_version`, `pack_sha256` | the page claims a release; the hash must equal the declared one | `pack_malformed`, `pack_unknown`, `pack_hash_mismatch` |
+
+**In-use guard.** A link field declared with `to: <skill>` also protects its
+target. `delete_page` (archive) and `move_page` (rename) refuse with
+`relation_in_use` while another live instance holds such a link to the page;
+the result carries `referrers` (up to 20 `{page_id, field}`, sorted) and
+`referrers_total`. Only declared fields count: a wikilink in the body or in an
+undeclared field is not guarded. The target's skill opts out with
+`relation_guard: false` (a non-boolean value is `skill_rule_malformed`). Archived
+instances, other scenarios and the page itself do not count. A draft whose
+content sets `archived: true` is judged the same way when promoted, and a
+changeset is judged as a batch: a referrer the same changeset archives or
+re-points does not block, one it creates does. A blocked changeset lands
+nothing. Direct `update_page` with `archived: true` is not guarded.
 
 Malformed declarations are reported on the skill page: `skill_rule_malformed`
 (`immutable`, `strict_required_frontmatter`, `unique`, `pack`) and
