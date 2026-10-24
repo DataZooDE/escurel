@@ -780,3 +780,136 @@ async fn a_skill_without_fields_is_unchanged() {
         "and still accepts what it always accepted: {issues:?}"
     );
 }
+
+const SKILL_EPIC: (&str, &str) = (
+    "markdown/skills/epic.md",
+    "---\nkind: skill\nid: epic\ndescription: A group of tickets.\n---\n# epic\n",
+);
+
+const SKILL_TICKET: (&str, &str) = (
+    "markdown/skills/ticket.md",
+    "---\nkind: skill\nid: ticket\ndescription: A work item.\nfields:\n  - {name: epic, kind: link, to: epic, required: true}\n  - {name: after, kind: link, to: ticket}\n---\n# ticket\n",
+);
+
+fn ticket(id: &str, links: &str) -> String {
+    format!("---\nkind: instance\nskill: ticket\nid: {id}\n{links}---\n# {id}\n")
+}
+
+/// `validate_batch_member`: a declared relation resolves in the saved set or
+/// in the batch, and nowhere else.
+#[tokio::test]
+async fn pending_pages_resolve_declared_relations() {
+    use std::collections::HashMap;
+
+    let h = fresh_harness();
+    seed(&h, &[SKILL_EPIC, SKILL_TICKET]).await;
+    let page = "markdown/instances/ticket/t1.md";
+    let content = ticket("t1", "epic: \"[[epic::launch]]\"\n");
+
+    // Alone, the link is dangling in a required field and unresolved as a relation.
+    let alone = h
+        .indexer
+        .validate_batch_member(Some(page), &content, &HashMap::new())
+        .await
+        .unwrap();
+    let codes: Vec<&str> = alone.iter().map(|i| i.code.as_str()).collect();
+    assert_eq!(codes, ["relation_unresolved"], "{alone:?}");
+
+    // With the batch member present, nothing is reported.
+    let pending = HashMap::from([(
+        "markdown/instances/epic/launch.md".to_owned(),
+        "---\nkind: instance\nskill: epic\nid: launch\n---\n# launch\n".to_owned(),
+    )]);
+    let batch = h
+        .indexer
+        .validate_batch_member(Some(page), &content, &pending)
+        .await
+        .unwrap();
+    assert!(
+        !batch.iter().any(|i| i.severity == Severity::Error),
+        "{batch:?}"
+    );
+
+    // A saved target resolves as well.
+    h.indexer
+        .update_page(
+            "markdown/instances/epic/saved.md",
+            "---\nkind: instance\nskill: epic\nid: saved\n---\n# saved\n",
+        )
+        .await
+        .unwrap();
+    let saved = h
+        .indexer
+        .validate_batch_member(
+            Some(page),
+            &ticket("t1", "epic: \"[[epic::saved]]\"\n"),
+            &HashMap::new(),
+        )
+        .await
+        .unwrap();
+    assert!(
+        !saved.iter().any(|i| i.severity == Severity::Error),
+        "{saved:?}"
+    );
+
+    // The wrong skill is invalid, not merely unresolved.
+    let wrong = h
+        .indexer
+        .validate_batch_member(
+            Some(page),
+            &ticket("t1", "epic: \"[[ticket::t9]]\"\n"),
+            &HashMap::new(),
+        )
+        .await
+        .unwrap();
+    assert!(
+        wrong.iter().any(|i| i.code == "relation_invalid"),
+        "{wrong:?}"
+    );
+}
+
+#[tokio::test]
+async fn pending_relations_that_wait_on_each_other_are_a_cycle() {
+    use std::collections::HashMap;
+
+    let h = fresh_harness();
+    seed(&h, &[SKILL_EPIC, SKILL_TICKET]).await;
+    let epic = "epic: \"[[epic::saved-later]]\"\n";
+    let a = ticket("a", &format!("{epic}after: \"[[ticket::b]]\"\n"));
+    let b = ticket("b", &format!("{epic}after: \"[[ticket::a]]\"\n"));
+    let pending = HashMap::from([("markdown/instances/ticket/b.md".to_owned(), b)]);
+    let issues = h
+        .indexer
+        .validate_batch_member(Some("markdown/instances/ticket/a.md"), &a, &pending)
+        .await
+        .unwrap();
+    assert!(
+        issues.iter().any(|i| i.code == "relation_cycle"),
+        "{issues:?}"
+    );
+
+    // Once `b` is saved, `a` no longer waits on anything new.
+    h.indexer
+        .update_page(
+            "markdown/instances/epic/saved-later.md",
+            "---\nkind: instance\nskill: epic\nid: saved-later\n---\n# e\n",
+        )
+        .await
+        .unwrap();
+    h.indexer
+        .update_page(
+            "markdown/instances/ticket/b.md",
+            &pending["markdown/instances/ticket/b.md"],
+        )
+        .await
+        .unwrap();
+    let after = h
+        .indexer
+        .validate_with_pending(Some("markdown/instances/ticket/a.md"), &a, &HashMap::new())
+        .await
+        .unwrap();
+    assert!(
+        !after.iter().any(|i| i.code == "relation_cycle"),
+        "{after:?}"
+    );
+}

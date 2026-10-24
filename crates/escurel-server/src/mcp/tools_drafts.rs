@@ -505,8 +505,35 @@ pub(super) async fn tool_create_draft(
     // Same blocking set promotion will
     // apply. A draft that cannot be promoted is worse than a refused write:
     // it costs a human a review before anyone finds out.
+    //
+    // A draft that joins a changeset is judged together with its siblings: a
+    // link to a page another open member creates is not dangling, and a link a
+    // skill declares must resolve in the saved set or in the batch. Only the
+    // caller's own open members count; any other changeset reads as absent.
+    let mut pending_targets = std::collections::HashMap::new();
+    if let Some(changeset_id) = a.changeset_id.as_deref().filter(|id| !id.trim().is_empty()) {
+        let members = indexer
+            .drafts_in_changeset(changeset_id.trim())
+            .await
+            .map_err(|e| JsonRpcError::internal(format!("create_draft changeset: {e}")))?;
+        if members.is_empty()
+            || members.iter().any(|m| {
+                m.status != "open"
+                    || m.author != caller.subject
+                    || m.run_id.as_deref() != caller.run_id
+            })
+        {
+            return Ok(not_found_changeset(changeset_id.trim()));
+        }
+        pending_targets.extend(
+            members
+                .into_iter()
+                .filter(|m| m.target_page_id != a.target_page_id)
+                .map(|m| (m.target_page_id, m.content)),
+        );
+    }
     let issues = indexer
-        .validate(Some(&a.target_page_id), &a.content)
+        .validate_batch_member(Some(&a.target_page_id), &a.content, &pending_targets)
         .await
         .map_err(|e| JsonRpcError::internal(format!("create_draft validate: {e}")))?;
     let blocking = draft_blocking_issues(state, &issues);
@@ -609,10 +636,11 @@ pub(super) async fn tool_create_draft(
         // red, because the agent's SECOND tool call silently destroyed the
         // good draft its first call had made, and the run was then recorded
         // failed for work that had landed.
-        let predecessor_is_dead = open
-            .base_sha256
-            .as_deref()
-            .is_some_and(|base| Some(base) != head_sha256.as_deref());
+        // An empty base is the "create" sentinel, so it names no head and the
+        // page not existing yet is exactly what it expects: still live.
+        let predecessor_is_dead = open.base_sha256.as_deref().is_some_and(|base| {
+            !(base.is_empty() && head_sha256.is_none()) && Some(base) != head_sha256.as_deref()
+        });
         if !predecessor_is_dead {
             return Ok(json!({
                 "ok": false,
@@ -1399,6 +1427,14 @@ pub(super) async fn tool_list_changesets(
                     .iter()
                     .map(|m| m.target_page_id.clone())
                     .collect::<Vec<_>>(),
+                "members": members
+                    .iter()
+                    .map(|m| json!({
+                        "draft_id": m.draft_id,
+                        "target_page_id": m.target_page_id,
+                        "status": m.status,
+                    }))
+                    .collect::<Vec<_>>(),
             }),
         ));
     }
@@ -1520,6 +1556,10 @@ pub(super) async fn tool_promote_changeset(
     // ── Pre-flight. Nothing is written until every member could be. ──
     let open: Vec<&escurel_index::drafts::DraftInfo> =
         members.iter().filter(|m| m.status == "open").collect();
+    let pending_targets: std::collections::HashMap<String, String> = open
+        .iter()
+        .map(|m| (m.target_page_id.clone(), m.content.clone()))
+        .collect();
     let mut issues = Vec::new();
     for m in &open {
         let head = indexer
@@ -1530,7 +1570,11 @@ pub(super) async fn tool_promote_changeset(
         // The same CAS promotion will apply, asked before anything lands. An
         // `already_applied` member (the page already holds these bytes) is
         // NOT a conflict — that is the interrupted-promotion retry.
-        if head_sha != m.base_sha256 && head_sha.as_deref() != Some(&m.content_sha256) {
+        let unchanged_create = m.base_sha256.as_deref() == Some("") && head_sha.is_none();
+        if !unchanged_create
+            && head_sha != m.base_sha256
+            && head_sha.as_deref() != Some(&m.content_sha256)
+        {
             issues.push(json!({
                 "severity": "error",
                 "code": "conflict",
@@ -1542,8 +1586,13 @@ pub(super) async fn tool_promote_changeset(
             }));
             continue;
         }
+        let siblings: std::collections::HashMap<String, String> = pending_targets
+            .iter()
+            .filter(|(page, _)| **page != m.target_page_id)
+            .map(|(page, content)| (page.clone(), content.clone()))
+            .collect();
         let validation = indexer
-            .validate(Some(&m.target_page_id), &m.content)
+            .validate_batch_member(Some(&m.target_page_id), &m.content, &siblings)
             .await
             .map_err(|e| JsonRpcError::internal(format!("promote_changeset validate: {e}")))?;
         for issue in draft_blocking_issues(state, &validation) {
@@ -1558,12 +1607,59 @@ pub(super) async fn tool_promote_changeset(
         }));
     }
 
+    // Each member lands through the ordinary single-write path, which wants a
+    // linked target to exist. Order the members so a page the batch creates
+    // lands before every page whose declared relation points at it.
+    let new_targets: std::collections::HashSet<&str> = open
+        .iter()
+        .filter(|m| m.base_sha256.as_deref() == Some(""))
+        .map(|m| m.target_page_id.as_str())
+        .collect();
+    let mut remaining: Vec<&escurel_index::drafts::DraftInfo> = open;
+    let mut ordered = Vec::with_capacity(remaining.len());
+    let mut landed: std::collections::HashSet<String> = std::collections::HashSet::new();
+    while !remaining.is_empty() {
+        let mut ready = None;
+        for (i, m) in remaining.iter().enumerate() {
+            let waits = indexer
+                .declared_relation_targets(&m.content)
+                .await
+                .map_err(|e| JsonRpcError::internal(format!("promote_changeset order: {e}")))?
+                .into_iter()
+                .any(|t| {
+                    t != m.target_page_id
+                        && new_targets.contains(t.as_str())
+                        && !landed.contains(&t)
+                });
+            if !waits {
+                ready = Some(i);
+                break;
+            }
+        }
+        let Some(i) = ready else {
+            return Ok(json!({
+                "ok": false,
+                "changeset_id": a.changeset_id,
+                "issues": [{
+                    "severity": "error",
+                    "code": "relation_cycle",
+                    "location": "changeset_id",
+                    "message": "relations between the open members of this changeset form a cycle; \
+                                none of them could land first",
+                }],
+            }));
+        };
+        let member = remaining.remove(i);
+        landed.insert(member.target_page_id.clone());
+        ordered.push(member);
+    }
+
     // ── Apply. Each member goes through `promote_draft`, so the layer,
     // backend, curator and validation guards, the CAS, the lake publish, the
     // provenance stamp and the event retirement all run exactly as they do
     // for a single held write. This is not a second write path.
     let mut results = Vec::new();
-    for m in &open {
+    for m in &ordered {
         let mut args = json!({ "draft_id": m.draft_id });
         if let Some(human) = &a.decided_by {
             args["decided_by"] = json!(human);
