@@ -52,8 +52,8 @@ pub use document::{
     Chunk, ChunkConfig, ContextualizeMode, DeterministicProcessor, DocMetadata,
     DocumentIngestWorker, DocumentProcessor, ExtractConfig, ExtractError, ExtractionResult,
     Extractor, IngestOutcome, MediaMetadata, NullExtractor, OcrPolicy, PlainTextExtractor,
-    RetainedMediaExtractor, chunk_text, contextualized_chunks, heading_path_at,
-    structural_context_prefix,
+    RETAINED_ENGINE, RetainedExtractor, RetainedMediaExtractor, chunk_text, contextualized_chunks,
+    heading_path_at, structural_context_prefix,
 };
 pub use remote::{
     RemoteError, encode_segment, fill_path_template, fill_template, has_dot_segment, json_path_get,

@@ -177,6 +177,17 @@ pub struct DocumentBinding {
     /// Read cap: the maximum chunk lead `expand` returns (`backend.lead_chunks`).
     /// `None` ⇒ the server default. The full text always lives in the blob.
     pub lead_chunks: Option<usize>,
+    /// `backend.retain`: MIME types (exact or `type/*`) kept as original bytes
+    /// without extraction or chunks. For formats the consumer reads itself.
+    pub retain: Vec<String>,
+    /// `backend.event_kind`: the kind of the ingest event an upload into this
+    /// skill records. `system` keeps technical intake out of the work inbox;
+    /// `None` means the default (`user`).
+    pub event_kind: Option<crate::events::EventKind>,
+    /// `backend.settle_event`: once the document is materialised, assign the
+    /// ingest event to it, so the event leaves the inbox as `processed`. An
+    /// interrupted upload leaves the event open for a retry.
+    pub settle_event: bool,
 }
 
 /// How strongly an `accepts:` list claims a MIME. The order is the
@@ -438,6 +449,24 @@ fn parse_document(block: &serde_json::Map<String, serde_json::Value>) -> Documen
             .get("lead_chunks")
             .and_then(serde_json::Value::as_u64)
             .map(|n| n as usize),
+        retain: block
+            .get("retain")
+            .and_then(serde_json::Value::as_array)
+            .map(|a| {
+                a.iter()
+                    .filter_map(serde_json::Value::as_str)
+                    .map(str::to_owned)
+                    .collect()
+            })
+            .unwrap_or_default(),
+        event_kind: block
+            .get("event_kind")
+            .and_then(serde_json::Value::as_str)
+            .and_then(crate::events::EventKind::parse),
+        settle_event: block
+            .get("settle_event")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false),
     }
 }
 
@@ -617,6 +646,27 @@ fn parse_sql_view(block: &serde_json::Map<String, serde_json::Value>) -> Option<
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn a_document_skill_parses_retain_event_kind_and_settlement() {
+        let fm = json!({"backend": {
+            "kind": "document", "accepts": ["text/xml"],
+            "retain": ["application/pdf", "image/*"],
+            "event_kind": "system", "settle_event": true
+        }});
+        let d = BackendBinding::parse(&fm).document.expect("document");
+        assert_eq!(
+            d.retain,
+            vec!["application/pdf".to_owned(), "image/*".to_owned()]
+        );
+        assert_eq!(d.event_kind, Some(crate::events::EventKind::System));
+        assert!(d.settle_event);
+        // Absent or unknown values mean the defaults.
+        let fm = json!({"backend": {"kind": "document", "accepts": ["text/xml"],
+            "event_kind": "bogus"}});
+        let d = BackendBinding::parse(&fm).document.expect("document");
+        assert!(d.retain.is_empty() && d.event_kind.is_none() && !d.settle_event);
+    }
 
     #[test]
     fn a_rest_rows_skill_parses_list_key_cursor_and_rows_config() {

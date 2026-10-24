@@ -79,6 +79,7 @@ mod ingest_autonomy;
 mod ingest_blob_quota;
 mod ingest_gate_parity;
 mod ingest_owner_scope;
+mod ingest_source_files;
 mod ingest_upload_lake_durability;
 mod ingest_webhook;
 mod instance_acl;

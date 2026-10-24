@@ -1171,6 +1171,26 @@ backend:
   lead_chunks: 8                           # optional; chunk lead expand returns (default 8)
 ```
 
+Optional intake declarations, all off by default:
+
+```yaml
+  retain: [application/vnd.openxmlformats-officedocument.spreadsheetml.sheet]
+  event_kind: system     # kind of the ingest event (default user)
+  settle_event: true     # assign the ingest event to the document once it exists
+```
+
+`retain:` lists MIME types (exact or `type/*`) kept as original bytes with no
+extraction and no chunks, for formats a consumer reads itself. `text/*`,
+`application/xml` and `application/json` are extracted as UTF-8 text; XML with
+NUL bytes and syntactically invalid JSON keep their original and report
+`extraction_failed`. Uploading the same bytes again after a failed extraction
+reprocesses the retained original under its first title and owner. A replay
+under `text/xml`/`application/xml`, or `text/plain`/`application/json` for valid
+JSON, is the same document; any other MIME difference is `document_mime_conflict`.
+`ingest_upload` is also an MCP tool with the same semantics as
+`POST /ingest/upload`; refusals come back as `ok: false` with an issue that
+carries `http_status`.
+
 An `accepts:` entry is an exact MIME or a **type wildcard** (`audio/*`),
 claiming every subtype of that type. `*/*` is not a wildcard — an unhandled
 MIME must still park rather than be swallowed. An exact claim always beats a

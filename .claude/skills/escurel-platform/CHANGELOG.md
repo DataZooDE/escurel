@@ -4,6 +4,16 @@ The skill version tracks the consumer-facing contract, not the Escurel
 binary version. The Escurel repo's checked-out git ref is the true version
 pin (see `SKILL.md` → "How this skill is installed").
 
+## 0.25.9 — `ingest_upload` over MCP; document skills declare retention, event kind and settlement
+
+`ingest_upload` is an MCP tool with the semantics of `POST /ingest/upload` (a refusal is `ok:false` with an issue carrying
+`http_status`). A `document` skill may declare under `backend`: `retain: [mime, ...]` (original bytes kept, no extraction),
+`event_kind: system` (the ingest event skips the work inbox) and `settle_event: true` (the event is assigned to the document
+once it exists, so a replay completes an interrupted upload). `application/xml` and `application/json` are extracted as
+text (NUL-bearing XML and invalid JSON keep their original as `extraction_failed`); re-uploading a failed extraction
+reprocesses the retained original with its first title and owner; `text/xml` and `application/xml` (and valid JSON as
+`text/plain`) are one document on replay. 90 tools.
+
 ## 0.25.8 — get_draft, immutable instances cannot be archived or moved, required_when takes a list
 
 `get_draft {draft_id}` reads one draft, open or decided, behind the `list_drafts` read gate. A skill with `immutable: true`

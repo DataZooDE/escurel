@@ -131,6 +131,24 @@ pub(crate) fn tool_defs() -> Vec<ToolDef> {
             }),
         ),
         tool_entry(
+            "ingest_upload",
+            Execution::Orchestration,
+            Scope::Agent,
+            Touches::INDEX,
+            "Deposit base64 file bytes in the tenant inbox and materialise them as a document-backed instance. Use event_id to make retries idempotent; the original bytes remain available through fetch_blob. A refusal is returned as ok:false with an issue carrying the HTTP status.",
+            json!({
+                "type": "object",
+                "required": ["content_type", "bytes_b64"],
+                "properties": {
+                    "content_type": { "type": "string", "description": "MIME type of the original file." },
+                    "bytes_b64": { "type": "string", "description": "Base64-encoded original file bytes." },
+                    "title": { "type": "string" },
+                    "skill": { "type": "string", "description": "Document skill to receive the file; it must accept content_type." },
+                    "event_id": { "type": "string", "description": "Stable non-empty idempotency key for retries." }
+                }
+            }),
+        ),
+        tool_entry(
             "neighbours",
             Execution::Deterministic,
             Scope::Agent,
@@ -1878,7 +1896,7 @@ fn group_of(name: &str, scope: Scope) -> &'static str {
             "[SESSION]"
         }
         "update_page" | "delete_page" | "move_page" | "append_message" | "capture_event"
-        | "assign_event" | "write_instance" | "create_draft" => "[WRITE]",
+        | "assign_event" | "write_instance" | "create_draft" | "ingest_upload" => "[WRITE]",
         _ => "[READ]",
     }
 }

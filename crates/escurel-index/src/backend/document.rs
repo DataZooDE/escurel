@@ -287,7 +287,7 @@ pub trait Extractor: Send + Sync {
     ) -> Result<ExtractionResult, ExtractError>;
 }
 
-/// Real born-digital extractor for `text/*` (plain, markdown). UTF-8 decode
+/// Real born-digital extractor for `text/*`, XML and JSON. UTF-8 decode
 /// + character-window chunking. No native deps — always available offline.
 #[derive(Debug, Default)]
 pub struct PlainTextExtractor;
@@ -299,7 +299,9 @@ impl Extractor for PlainTextExtractor {
     }
 
     fn accepts(&self, mime: &str) -> bool {
-        mime == "text/plain"
+        mime == "application/xml"
+            || mime == "application/json"
+            || mime == "text/plain"
             || mime == "text/markdown"
             || mime == "text/x-markdown"
             || mime.starts_with("text/")
@@ -308,12 +310,21 @@ impl Extractor for PlainTextExtractor {
     async fn extract(
         &self,
         bytes: &[u8],
-        _mime: &str,
+        mime: &str,
         cfg: &ExtractConfig,
     ) -> Result<ExtractionResult, ExtractError> {
+        if matches!(mime, "text/xml" | "application/xml") && bytes.contains(&0) {
+            return Err(ExtractError::ExtractionFailed(
+                "XML byte stream contains NUL; only UTF-8 XML text can be extracted".to_owned(),
+            ));
+        }
         let content = std::str::from_utf8(bytes)
             .map_err(|e| ExtractError::ExtractionFailed(format!("not valid UTF-8: {e}")))?
             .to_owned();
+        if mime == "application/json" {
+            serde_json::from_str::<serde_json::Value>(&content)
+                .map_err(|e| ExtractError::ExtractionFailed(format!("invalid JSON: {e}")))?;
+        }
         let chunks = chunk_text(&content, cfg.chunk);
         Ok(ExtractionResult {
             content,
@@ -375,6 +386,41 @@ impl Extractor for RetainedMediaExtractor {
                 }),
                 ..DocMetadata::default()
             },
+            chunks: Vec::new(),
+        })
+    }
+}
+
+/// Retain a source file whose type a skill declares as `backend.retain`: the
+/// original blob stays canonical and fetchable, no text is extracted and no
+/// chunk is written. For formats a consumer reads itself from the original
+/// bytes (for example a workbook), so a build without an extractor for them
+/// still stores the evidence instead of marking it `extraction_failed`.
+#[derive(Debug, Default)]
+pub struct RetainedExtractor;
+
+/// The `backend_ref.extract_engine` value written for a retained file.
+pub const RETAINED_ENGINE: &str = "retained@1";
+
+#[async_trait]
+impl Extractor for RetainedExtractor {
+    fn name(&self) -> &str {
+        RETAINED_ENGINE
+    }
+
+    fn accepts(&self, _mime: &str) -> bool {
+        true
+    }
+
+    async fn extract(
+        &self,
+        _bytes: &[u8],
+        _mime: &str,
+        _cfg: &ExtractConfig,
+    ) -> Result<ExtractionResult, ExtractError> {
+        Ok(ExtractionResult {
+            content: String::new(),
+            metadata: DocMetadata::default(),
             chunks: Vec::new(),
         })
     }
@@ -790,7 +836,7 @@ pub(crate) async fn rebuild_documents(indexer: &Indexer) -> Result<(), IndexerEr
         // main rebuild loop has just re-indexed its overlay markdown as an
         // ordinary one-block page; re-materialise with zero chunks so a
         // from-scratch rebuild reproduces exactly what live ingest stored.
-        if ov.content_type.starts_with("audio/") {
+        if ov.content_type.starts_with("audio/") || ov.extract_engine == RETAINED_ENGINE {
             let Ok(key) = Key::new(indexer.tenant(), ov.page_id.clone()) else {
                 continue;
             };
@@ -953,6 +999,7 @@ struct DocOverlay {
     /// GH #356 — they are all text/PDF/DOCX, which the UTF-8 probe below
     /// classifies correctly anyway.
     content_type: String,
+    extract_engine: String,
     status: String,
 }
 
@@ -962,6 +1009,7 @@ async fn enumerate_document_overlays(indexer: &Indexer) -> Result<Vec<DocOverlay
         "SELECT page_id, skill, \
          json_extract_string(frontmatter, '$.backend_ref.blob_id'), \
          json_extract_string(frontmatter, '$.backend_ref.content_type'), \
+         json_extract_string(frontmatter, '$.backend_ref.extract_engine'), \
          json_extract_string(frontmatter, '$.backend_ref.status') \
          FROM pages \
          WHERE page_type = 'instance' \
@@ -974,7 +1022,8 @@ async fn enumerate_document_overlays(indexer: &Indexer) -> Result<Vec<DocOverlay
                 skill: r.get(1)?,
                 blob_id: r.get::<_, Option<String>>(2)?.unwrap_or_default(),
                 content_type: r.get::<_, Option<String>>(3)?.unwrap_or_default(),
-                status: r.get::<_, Option<String>>(4)?.unwrap_or_default(),
+                extract_engine: r.get::<_, Option<String>>(4)?.unwrap_or_default(),
+                status: r.get::<_, Option<String>>(5)?.unwrap_or_default(),
             })
         })?
         .collect::<Result<_, _>>()?;
@@ -1151,6 +1200,34 @@ mod tests {
             matches!(err, ExtractError::ExtractionFailed(_)),
             "got {err:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn json_extracts_exact_text_and_rejects_invalid_syntax() {
+        let ex = PlainTextExtractor;
+        assert!(ex.accepts("application/json"));
+        let bytes = b"{\"capability\":\"Planning\"}\n";
+        let extracted = ex
+            .extract(bytes, "application/json", &ExtractConfig::default())
+            .await
+            .unwrap();
+        assert_eq!(extracted.content.as_bytes(), bytes);
+        assert!(!extracted.chunks.is_empty());
+        assert!(matches!(
+            ex.extract(b"{broken", "application/json", &ExtractConfig::default())
+                .await,
+            Err(ExtractError::ExtractionFailed(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn retained_extractor_yields_no_text_and_no_chunks() {
+        let r = RetainedExtractor
+            .extract(b"\x00\x01", "application/x-any", &ExtractConfig::default())
+            .await
+            .unwrap();
+        assert!(r.content.is_empty() && r.chunks.is_empty());
+        assert_eq!(RetainedExtractor.name(), RETAINED_ENGINE);
     }
 
     #[test]
