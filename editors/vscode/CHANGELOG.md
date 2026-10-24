@@ -8,6 +8,14 @@ derives its version from the tag (`vYYYY.MM.DD` → `YYYY.M.D`, leading zeros dr
 
 ### Added
 
+- **A public API for companion extensions**: `activate()` returns a versioned object (`apiVersion: 1`) in every
+  install, without any token: `getClient()` (one MCP tool call with the user's session, input re-checked),
+  `webviewHtml()` and the `--escurel-*` theme tokens, `registerOverviewTile()` (a tile on the Overview board,
+  data only, bounded and cleaned by the host), `registerPageRenderer(skill, renderer)` (the page-as-UI panel of
+  one skill; a failing renderer falls back to the generic page), `onDidChangeTenant`, and a types-only entry
+  (`src/api/types.ts`). The service graph is still exported only in Development and Test mode. See
+  `docs/design/extension-api.md`.
+
 - **The Runs view lists every runner, and a stopped one stays visible**: one row per runner id under the agents
   row (`running · last seen 4 s ago`, or greyed `stopped · last seen 2 h ago` once it has been silent for more than
   three times its own interval). A dead runner no longer hides behind a live one, and when none is reporting the row

@@ -11,6 +11,7 @@ import { newNonce } from './nonce';
 import { safePost } from '../shared/safePost';
 import { findThreadStrip } from '../shared/threadStrip';
 import { pageTabTitle } from '../shared/tabTitle';
+import type { Contributions } from '../api';
 import { parseViewer } from '../shared/viewer';
 import { loadReport } from './reportLoader';
 import type { HostToWebview, PageModel, WebviewToHost } from '../shared/protocol';
@@ -36,17 +37,22 @@ export class PageAsUiEditor implements vscode.CustomReadonlyEditorProvider {
     private readonly context: vscode.ExtensionContext,
     private readonly client: () => EscurelClient,
     private readonly onDidChange: vscode.Event<void>,
+    private readonly contributions?: Pick<
+      Contributions,
+      'renderers' | 'gateway' | 'onDidChangeTenant'
+    >,
   ) {}
 
   static register(
     context: vscode.ExtensionContext,
     client: () => EscurelClient,
     onDidChange: vscode.Event<void>,
+    contributions?: Pick<Contributions, 'renderers' | 'gateway' | 'onDidChangeTenant'>,
   ): void {
     context.subscriptions.push(
       vscode.window.registerCustomEditorProvider(
         VIEW_TYPE,
-        new PageAsUiEditor(context, client, onDidChange),
+        new PageAsUiEditor(context, client, onDidChange, contributions),
         {
           webviewOptions: { retainContextWhenHidden: true },
           supportsMultipleEditorsPerDocument: true,
@@ -65,6 +71,7 @@ export class PageAsUiEditor implements vscode.CustomReadonlyEditorProvider {
       enableScripts: true,
       localResourceRoots: [vscode.Uri.joinPath(this.context.extensionUri, 'dist', 'webview')],
     };
+    if (pageId && (await this.delegate(pageId, panel))) return;
     panel.webview.html = this.html(panel.webview);
     const post = (m: HostToWebview) => safePost(panel, m);
     // The model the host last built: a webview message is judged against THIS, never against what
@@ -179,6 +186,34 @@ export class PageAsUiEditor implements vscode.CustomReadonlyEditorProvider {
       loader.invalidate();
       subs.forEach((s) => s.dispose());
     });
+  }
+
+  /**
+   * A companion extension that registered a renderer for this page's skill draws the page itself. The
+   * skill is read only when a renderer exists, so a window without companions pays nothing. A renderer
+   * that throws leaves the generic view in place.
+   */
+  private async delegate(pageId: string, panel: vscode.WebviewPanel): Promise<boolean> {
+    const c = this.contributions;
+    if (!c || c.renderers.size === 0) return false;
+    try {
+      const e = await this.client().expand({ page_id: pageId });
+      const renderer = e.page ? c.renderers.get(e.page.skill) : undefined;
+      if (!e.page || !renderer) return false;
+      const taken = await renderer.render({
+        pageId,
+        skill: e.page.skill,
+        frontmatter: e.frontmatter ?? {},
+        panel,
+        client: c.gateway,
+        onDidChangeTenant: c.onDidChangeTenant,
+      });
+      if (taken) panel.onDidDispose(() => taken.dispose());
+      return true;
+    } catch (err) {
+      log().warn(`escurel: page renderer failed, showing the generic page: ${describeError(err)}`);
+      return false;
+    }
   }
 
   private onMessage(

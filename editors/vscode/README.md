@@ -20,6 +20,15 @@ degradations are tracked in `docs/BACKEND_GAPS.md`.
   run produced. An admin can also requeue a dead letter and pause or resume agents; a human sees those
   controls deactivated, with the reason, not hidden.
 
+## Extending Escurel
+
+A companion extension (`extensionDependencies: ["escurel.escurel"]`) adds its own views without patching this
+one. `activate()` returns `EscurelExtensionApi` (`apiVersion: 1`): `getClient()` for gateway tool calls with the
+user's session, `webviewHtml()` and the theme tokens for its webviews, `registerOverviewTile()` for a tile on the
+Overview board, `registerPageRenderer(skill, renderer)` for the page view of one skill, and `onDidChangeTenant`.
+Types are in `src/api/types.ts` (types only). The contract, its rules and what it deliberately leaves out are in
+[`docs/design/extension-api.md`](../../docs/design/extension-api.md).
+
 ## Security model
 
 The gateway decides what you may do; the extension only avoids offering what it knows will be refused. What it
@@ -32,8 +41,8 @@ does itself:
   host itself loaded before anything is written.
 - Starting in a terminal runs your own `escurel.shellHarness` command, only in a trusted workspace, and only
   when you click it.
-- A production install exports no API to other extensions; the test and demo harnesses get one in Development
-  and Test mode only.
+- A production install exports only the small versioned public API (no token in it; see "Extending Escurel"
+  below); the service graph the test and demo harnesses drive goes out in Development and Test mode only.
 
 ```sh
 npm ci

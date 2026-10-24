@@ -45,6 +45,8 @@ import { ScenariosTree } from './views/scenarios';
 import { FocusMode } from './focus/focusMode';
 import { registerFocusSuggestion } from './focus/registerSuggestion';
 import { OverviewController } from './overview/controller';
+import { createContributions, createExtensionApi } from './api';
+import type { EscurelExtensionApi } from './api/types';
 
 const EXPLAIN_SCHEME = 'escurel-explain';
 
@@ -73,13 +75,22 @@ export interface EscurelApi {
   setApprovalConfirm: typeof setApprovalConfirm;
 }
 
-export function activate(context: vscode.ExtensionContext): EscurelApi | undefined {
+export function activate(
+  context: vscode.ExtensionContext,
+): EscurelExtensionApi & Partial<EscurelApi> {
   const services = new Services(context);
+  const apiDeps = {
+    client: () => services.client,
+    gatewayUrl: () => services.gatewayUrl,
+    onDidChange: services.onDidChange,
+  };
+  const contributions = createContributions(apiDeps);
+  context.subscriptions.push(contributions);
   const focus = FocusMode.register(context);
   registerControlCommands(context, services);
   registerNodeCommands(context, services);
   context.subscriptions.push(services);
-  const overview = OverviewController.register(context, services, focus);
+  const overview = OverviewController.register(context, services, focus, contributions);
   registerStartInTerminal(context, services);
   registerImportEvolveProblem(context, services);
   registerPrepareEvolveTrainingSource(context, services);
@@ -216,7 +227,7 @@ export function activate(context: vscode.ExtensionContext): EscurelApi | undefin
       refreshClosed();
     }),
   );
-  PageAsUiEditor.register(context, () => services.client, services.onDidChange);
+  PageAsUiEditor.register(context, () => services.client, services.onDidChange, contributions);
   SkillPageEditor.register(context, () => services.client, services.onDidChange);
 
   context.subscriptions.push(
@@ -325,26 +336,30 @@ export function activate(context: vscode.ExtensionContext): EscurelApi | undefin
   );
   registerQueryPreview(context, services);
   log().info('escurel: activated');
-  // Other extensions can read an extension's `exports`, and this object holds the token store. A
-  // production install hands out nothing; the test, e2e and demo harnesses (Test / Development mode)
-  // get the API they drive the extension through.
-  return exposedApi(context.extensionMode === vscode.ExtensionMode.Production, {
-    services,
-    knowledge,
-    inbox,
-    awaiting,
-    review,
-    live,
-    threads,
-    details,
-    runs,
-    threadsTree,
-    canAdmin: adminContextValue,
-    runner,
-    focus,
-    overview,
-    setApprovalConfirm,
-  });
+  // Other extensions can read an extension's `exports`. Every mode gets the versioned public API (no
+  // token in it). The service graph, which holds the token store, goes only to the test, e2e and demo
+  // harnesses (Test / Development mode).
+  return exposedApi(
+    context.extensionMode === vscode.ExtensionMode.Production,
+    createExtensionApi(apiDeps, contributions),
+    {
+      services,
+      knowledge,
+      inbox,
+      awaiting,
+      review,
+      live,
+      threads,
+      details,
+      runs,
+      threadsTree,
+      canAdmin: adminContextValue,
+      runner,
+      focus,
+      overview,
+      setApprovalConfirm,
+    },
+  );
 }
 
 export function deactivate(): void {}

@@ -12,6 +12,7 @@ export function webviewHtml(
   extensionUri: vscode.Uri,
   bundle: string,
   tag: string,
+  extraHead = '',
 ): string {
   const script = webview.asWebviewUri(
     vscode.Uri.joinPath(extensionUri, 'dist', 'webview', `${bundle}.js`),
@@ -19,7 +20,7 @@ export function webviewHtml(
   const nonce = newNonce();
   return `<!doctype html><html><head><meta charset="utf-8" />
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${webview.cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}';" />
-<style>html,body{margin:0;height:100%}</style></head>
+<style>${extraHead}html,body{margin:0;height:100%}</style></head>
 <body><${tag}></${tag}><script type="module" nonce="${nonce}" src="${script}"></script></body></html>`;
 }
 

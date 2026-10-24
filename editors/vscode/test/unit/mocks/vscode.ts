@@ -127,6 +127,10 @@ export class Uri {
     return `${this.scheme}:${auth}${this.path}${q}${f}`;
   }
 
+  static joinPath(base: Uri, ...parts: string[]): Uri {
+    return new Uri(base.scheme, base.authority, [base.path, ...parts].join('/'), '', '');
+  }
+
   static file(path: string): Uri {
     return new Uri('file', '', path, '', '');
   }

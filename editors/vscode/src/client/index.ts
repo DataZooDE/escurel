@@ -103,6 +103,11 @@ export class EscurelClient {
     return new EscurelError('transport', e instanceof Error ? e.message : String(e), { tool });
   }
 
+  /** One tool call by name, for callers that hold no typed method for it (the public extension API). */
+  callTool<T>(tool: string, args: Record<string, unknown> = {}): Promise<T> {
+    return this.call<T>(tool, args);
+  }
+
   /** `tools/call`; a `{ok: false}` payload (except from `validate`) is thrown as a typed refusal. */
   private async call<T>(tool: string, args: Record<string, unknown>): Promise<T> {
     const client = await this.connected();
