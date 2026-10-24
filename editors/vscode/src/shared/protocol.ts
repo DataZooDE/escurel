@@ -533,3 +533,12 @@ export type OverviewWebviewToHost =
   /** The view a tile belongs to (Awaiting, Runs, Knowledge): the host maps the tile id, nothing is named. */
   | { type: 'open-tile'; tile: OverviewTile['id'] }
   | { type: 'toggle-focus' };
+
+// ── review preview (what companion hooks add beside a review diff) ──
+
+export type ReviewPreviewHostToWebview = { type: 'review-preview'; view: PageAugmentView };
+
+export type ReviewPreviewWebviewToHost =
+  | { type: 'ready' }
+  /** A list line a companion added: only the handle the host handed out travels. */
+  | { type: 'augment-action'; id: string };

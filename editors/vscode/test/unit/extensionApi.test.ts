@@ -41,6 +41,7 @@ describe('the public extension API', () => {
       'registerOverviewTile',
       'registerPageAugment',
       'registerPageRenderer',
+      'registerReviewHook',
       'themeCss',
       'themeTokens',
       'webviewHtml',
@@ -145,5 +146,14 @@ describe('webviewHtml for a companion', () => {
     expect(() => api.webviewHtml({ ...base, bundle: '../x', tag: 'a-b' })).toThrow();
     expect(() => api.webviewHtml({ ...base, bundle: 'x', tag: 'a-b><script>' })).toThrow();
     expect(() => api.webviewHtml({ ...base, bundle: 'x', tag: 'nohyphen' })).toThrow();
+  });
+
+  it('registers review hooks, rejects an empty one, and removes one on dispose', () => {
+    const { api, contributions } = setup();
+    const d = api.registerReviewHook({ before: () => undefined });
+    expect(contributions.reviewHooks.size).toBe(1);
+    expect(() => api.registerReviewHook({})).toThrow(/at least one/);
+    d.dispose();
+    expect(contributions.reviewHooks.size).toBe(0);
   });
 });

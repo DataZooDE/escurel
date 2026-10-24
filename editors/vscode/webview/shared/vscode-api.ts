@@ -1,8 +1,14 @@
-import type { OverviewWebviewToHost, WebviewToHost } from '../../src/shared/protocol';
+import type {
+  OverviewWebviewToHost,
+  ReviewPreviewWebviewToHost,
+  WebviewToHost,
+} from '../../src/shared/protocol';
 import type { SkillPageToHost } from '../../src/shared/skillPage';
 
 interface VsCodeApi {
-  postMessage(message: WebviewToHost | SkillPageToHost | OverviewWebviewToHost): void;
+  postMessage(
+    message: WebviewToHost | SkillPageToHost | OverviewWebviewToHost | ReviewPreviewWebviewToHost,
+  ): void;
   getState(): unknown;
   setState(state: unknown): void;
 }

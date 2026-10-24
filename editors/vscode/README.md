@@ -32,6 +32,8 @@ Types are in `src/api/types.ts` (types only). The contract, its rules and what i
 Three additive hooks extend the generic views instead of replacing them. `registerPageAugment(skill, { sections?,
 actions?, forms? })` adds read-only sections (data from a host-side provider, drawn by the core webview from a
 declarative schema), buttons that run a host command, and forms whose submit can only call `create_draft`.
+`registerReviewHook({ before?, after?, preview? })` lets a companion ask for a decision note, veto, record the
+decision and add a preview beside a review diff.
 
 ## Security model
 

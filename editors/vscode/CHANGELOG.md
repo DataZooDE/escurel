@@ -8,6 +8,13 @@ derives its version from the tag (`vYYYY.MM.DD` → `YYYY.M.D`, leading zeros dr
 
 ### Added
 
+- **Review decision hooks for companion extensions**: `registerReviewHook({ before?, after?, preview? })` (API v1,
+  additive). `before` runs ahead of accept, reject and accept-with-edits: it can ask for a decision note (required
+  or optional; a reject reuses its own reason box) and can veto with a message. `after` receives each decided
+  draft (draft id, decision, note, provenance as strings) once the gateway call succeeded. `preview` adds sections
+  (same declarative schema as the page augment) in a "Review context" panel beside the diff. An error or a
+  timeout in a hook never blocks a decision; only an explicit veto does.
+
 - **Page view augment for companion extensions**: `registerPageAugment(skill, { sections?, actions?, forms? })`
   (API v1, additive) extends the generic page view of a skill. Sections are data from a host-side provider and are
   drawn by the core webview from a declarative schema (text, facts, table, list; no companion script runs in the

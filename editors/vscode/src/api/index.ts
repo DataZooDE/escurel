@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import { webviewHtml as shellHtml } from '../shared/webviewHtml';
 import { THEME_CSS, THEME_TOKENS } from '../shared/themeTokens';
+import { ReviewHookRegistry } from '../review/hooks';
 import { PageAugmentRegistry } from './augment';
 import { OverviewTileRegistry, PageRendererRegistry } from './contributions';
 import { gatewayFacade } from './gateway';
@@ -11,6 +12,7 @@ import {
   type OverviewTileContribution,
   type PageAugment,
   type PageRenderer,
+  type ReviewHook,
   type TenantInfo,
   type WebviewHtmlOptions,
 } from './types';
@@ -30,6 +32,7 @@ export interface Contributions {
   tiles: OverviewTileRegistry;
   renderers: PageRendererRegistry;
   augments: PageAugmentRegistry;
+  reviewHooks: ReviewHookRegistry;
   gateway: GatewayClient;
   onDidChangeTenant: vscode.Event<TenantInfo>;
 }
@@ -41,6 +44,7 @@ export function createContributions(deps: ApiDeps): Contributions & { dispose():
     tiles: new OverviewTileRegistry(),
     renderers: new PageRendererRegistry(),
     augments: new PageAugmentRegistry(),
+    reviewHooks: new ReviewHookRegistry(),
     gateway: gatewayFacade(deps.client),
     onDidChangeTenant: changed.event,
     dispose: () => {
@@ -82,6 +86,7 @@ export function createExtensionApi(deps: ApiDeps, c: Contributions): EscurelExte
       c.renderers.register(skill, renderer),
     registerPageAugment: (skill: string, augment: PageAugment) =>
       c.augments.register(skill, augment),
+    registerReviewHook: (hook: ReviewHook) => c.reviewHooks.register(hook),
     onDidChangeTenant: c.onDidChangeTenant,
   });
 }

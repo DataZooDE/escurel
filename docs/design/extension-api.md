@@ -65,6 +65,25 @@ api.registerPageAugment('acme-thing', {
 
 Not offered: scripts in the webview, a form that writes anything other than a draft, a button that names a tool.
 
+### Review decision hooks: `registerReviewHook({ before?, after?, preview? })`
+
+```ts
+api.registerReviewHook({
+  before: (ctx) => ctx.drafts.some(isMine) ? { note: 'required', notePrompt: 'Why accept this change?' } : undefined,
+  after: async (ctx) => { await ctx.client.callTool('capture_event', { ... ctx.draftId, ctx.decision, ctx.note ... }); },
+  preview: async (ctx) => isMine(ctx.targetPageId) ? [{ id: 'impact', title: 'Impact', blocks: [...] }] : [],
+});
+```
+
+| Member | Rules |
+| --- | --- |
+| `before(ctx)` | Runs before accept (`escurel.promote`), reject (`escurel.discard`) and accept with edits. `ctx = { decision, drafts: [{ draftId, targetPageId }], client, signal }`; a changeset decision lists its open drafts. May return `{ note?: 'required' \| 'optional', notePrompt?, veto? }`. The strictest note over all hooks wins; the reviewer gets one input box (a reject reuses its own reason box, so it is never asked twice) and Escape cancels the decision. A non-empty `veto` string stops the decision and is shown as a warning. |
+| `after(ctx)` | Runs once per decided draft after the gateway call succeeded (not for a failed or already decided one). `ctx = { draftId, targetPageId, decision, note, provenance, client }` with `decision` in `accepted`, `rejected`, `accepted_with_edits`, `note` the reviewer's text (empty when none was asked) and `provenance` the draft's own author, run, thread, event, changeset, creation time and hashes as strings. A changeset accept reports only the drafts applied now. |
+| `preview(ctx)` | Returns sections in the schema of the page augment (read-only; list lines may open a host command; no forms). When any hook returns a section, a panel "Review context" opens beside the diff of that draft (core webview, same rules as the page augment); with none, no panel is opened. `ctx = { draftId, targetPageId, client, signal }`. |
+| Failure | A hook that throws, answers nonsense or exceeds 5 s counts as no answer (logged). Only an explicit `veto` blocks; an `after` error never undoes or hides a decision. |
+| Accept with edits | The core has no editing UI. A companion that offers one saves its edit and runs `escurel.promote` with `{ draftId, withEdits: true }`; the hooks then hear `accepted_with_edits`. |
+| Scope | Hooks see every decision; a hook that cares about one skill or page pattern checks `targetPageId` itself. Several hooks run in registration order. |
+
 ## Classification of a downstream fork's changes
 
 Measured against the `editors/vscode` diff of one downstream fork: 298 files, 257 added, 41 modified.
@@ -93,5 +112,5 @@ Not covered (companion-only, or a follow-up if the owner wants it generic):
 
 ## Tests
 
-`test/unit/extensionApi.test.ts`, `contributedTiles.test.ts`, `pageRendererDelegation.test.ts`, `pageAugment.test.ts`, `pageAugmentWiring.test.ts`, `test/component/augment-view.test.ts`, `themeTokens.test.ts`,
+`test/unit/extensionApi.test.ts`, `contributedTiles.test.ts`, `pageRendererDelegation.test.ts`, `pageAugment.test.ts`, `pageAugmentWiring.test.ts`, `reviewHooks.test.ts`, `reviewControllerHooks.test.ts`, `reviewPreviewPanel.test.ts`, `test/component/review-preview.test.ts`, `test/component/augment-view.test.ts`, `themeTokens.test.ts`,
 `apiExposure.test.ts`. Not covered by unit tests: the Overview panel wiring in a real window (integration suite).

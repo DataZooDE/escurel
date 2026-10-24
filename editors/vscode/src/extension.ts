@@ -14,6 +14,7 @@ import { PageAsUiEditor } from './editors/pageAsUi';
 import { SkillPageEditor } from './editors/skillPage';
 import { openPage, resolveCommand, searchCommand } from './commands/search';
 import { ReviewController } from './review';
+import { ReviewPreviewPanel } from './review/previewPanel';
 import { LiveCoordinator } from './live';
 import { RunController } from './runs/controller';
 import { registerControlCommands } from './runs/controlCommands';
@@ -119,6 +120,15 @@ export function activate(
     () => {
       awaiting.refresh();
       services.onDidChangeEmit();
+    },
+    {
+      hooks: contributions.reviewHooks,
+      gateway: contributions.gateway,
+      preview: new ReviewPreviewPanel({
+        hooks: contributions.reviewHooks,
+        gateway: contributions.gateway,
+        extensionUri: context.extensionUri,
+      }),
     },
   );
   const live = LiveCoordinator.register(context, services, { inbox, awaiting });

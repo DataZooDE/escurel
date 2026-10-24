@@ -107,6 +107,8 @@ export interface EscurelExtensionApi {
   registerPageRenderer(skill: string, renderer: PageRenderer): vscode.Disposable;
   /** Adds read-only sections, buttons and `create_draft` forms to the generic page view of `skill`. */
   registerPageAugment(skill: string, augment: PageAugment): vscode.Disposable;
+  /** Hooks around the review decision (accept, reject, accept with edits) and a preview beside the diff. */
+  registerReviewHook(hook: ReviewHook): vscode.Disposable;
   /** Fires when the gateway or the signed-in identity changed: drop cached data. */
   readonly onDidChangeTenant: vscode.Event<TenantInfo>;
 }
@@ -189,4 +191,65 @@ export interface PageAugment {
   actions?(ctx: PageAugmentContext): AugmentActionData[] | Promise<AugmentActionData[]>;
   /** Forms whose submit can only call `create_draft`. */
   forms?: AugmentFormData[];
+}
+
+// ── review decision hooks ────────────────────────────────────────────
+
+export type ReviewDecision = 'accepted' | 'rejected' | 'accepted_with_edits';
+
+/** A proposal under decision, by ids only. */
+export interface ReviewDraftRef {
+  draftId: string;
+  targetPageId: string;
+}
+
+export interface ReviewBeforeContext {
+  decision: ReviewDecision;
+  /** One draft, or every open draft of a changeset. */
+  drafts: ReviewDraftRef[];
+  client: GatewayClient;
+  /** Aborted when the review stops waiting (about 5 s). */
+  signal?: AbortSignal;
+}
+
+export interface ReviewBeforeResult {
+  /** Ask the reviewer for a note: `required` refuses an empty one. Default: no question. */
+  note?: 'required' | 'optional';
+  /** The question, one line. */
+  notePrompt?: string;
+  /** A non-empty message stops the decision and is shown to the reviewer. Only this blocks. */
+  veto?: string;
+}
+
+export interface ReviewAfterContext {
+  draftId: string;
+  targetPageId: string;
+  decision: ReviewDecision;
+  /** What the reviewer wrote; empty when no note was asked or given. */
+  note: string;
+  /** The proposal's own provenance (author, run, thread, changeset, creation time), string values only. */
+  provenance: Record<string, string>;
+  client: GatewayClient;
+}
+
+export interface ReviewPreviewContext {
+  draftId: string;
+  targetPageId: string;
+  client: GatewayClient;
+  signal?: AbortSignal;
+}
+
+export interface ReviewHook {
+  /**
+   * Before accept, reject or accept-with-edits: may ask for a decision note and may veto. An error or a
+   * timeout is ignored (logged); only an explicit `veto` blocks.
+   */
+  before?(ctx: ReviewBeforeContext): ReviewBeforeResult | void | Promise<ReviewBeforeResult | void>;
+  /** After the decision was recorded, once per decided draft: e.g. store an event. Errors are ignored. */
+  after?(ctx: ReviewAfterContext): void | Promise<void>;
+  /**
+   * Sections shown beside the diff of a draft (same declarative schema as the page augment, read-only;
+   * list lines may open a host command). Return `[]` for a draft that is not yours.
+   */
+  preview?(ctx: ReviewPreviewContext): AugmentSectionData[] | Promise<AugmentSectionData[]>;
 }

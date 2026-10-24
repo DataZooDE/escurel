@@ -3,6 +3,7 @@
 export const workspace = {
   getConfiguration: () => ({ get: () => undefined }),
   onDidChangeConfiguration: () => ({ dispose() {} }),
+  onDidOpenTextDocument: () => ({ dispose() {} }),
 };
 /** A QuickPick the test can drive: it records handlers and lets the test fire them. */
 export class FakeQuickPick {
