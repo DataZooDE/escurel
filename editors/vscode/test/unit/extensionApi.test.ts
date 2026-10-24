@@ -189,3 +189,108 @@ describe('webviewHtml for a companion', () => {
     expect(contributions.inboxDecorators.size).toBe(0);
   });
 });
+
+describe('webviewHtml shell options: fonts, lang, title', () => {
+  const webview = {
+    cspSource: 'vscode-resource:',
+    asWebviewUri: (u: { path: string }) => `vscode-resource:${u.path}`,
+  } as unknown as vscode.Webview;
+  const extensionUri = vscode.Uri.file('/ext/acme');
+  const font = (rel: string) => vscode.Uri.joinPath(extensionUri, rel);
+  const base = { webview, extensionUri, bundle: 'main', tag: 'acme-board' };
+
+  it('adds @font-face and font-src for a font under the companion, nothing else loosened', () => {
+    const { api } = setup();
+    const html = api.webviewHtml({
+      ...base,
+      fonts: [
+        { family: 'Lato', file: font('dist/webview/fonts/Lato-Regular.woff2'), weight: 400 },
+        {
+          family: 'Lato',
+          file: font('dist/webview/fonts/Lato-Bold.woff2'),
+          weight: 700,
+          style: 'italic',
+        },
+      ],
+    });
+    expect(html).toContain('font-src vscode-resource:;');
+    expect(html).toContain(
+      '@font-face{font-family:"Lato";src:url("vscode-resource:/ext/acme/dist/webview/fonts/Lato-Regular.woff2") format("woff2");font-weight:400;font-style:normal;font-display:swap}',
+    );
+    expect(html).toContain('font-weight:700;font-style:italic');
+    expect(html).toContain("default-src 'none'");
+    expect(html).not.toContain('connect-src');
+    expect(html).not.toMatch(/(img|script|style|default)-src[^;]*\bhttps?:/);
+  });
+
+  it('has no font-src and no @font-face without fonts, and keeps the old shell otherwise', () => {
+    const { api } = setup();
+    const html = api.webviewHtml(base);
+    expect(html).not.toContain('font-src');
+    expect(html).not.toContain('@font-face');
+    expect(html).not.toContain('<title>');
+    expect(html).toMatch(/<html>/);
+  });
+
+  it.each([
+    ['a font outside the companion', vscode.Uri.file('/etc/fonts/x.woff2')],
+    ['a font reached with ..', vscode.Uri.file('/ext/acme/../other/x.woff2')],
+    ['a sibling directory with the same prefix', vscode.Uri.file('/ext/acme-evil/x.woff2')],
+    ['a file that is not a font', vscode.Uri.file('/ext/acme/dist/x.js')],
+    ['a remote font', vscode.Uri.parse('https://evil.example/x.woff2')],
+    [
+      'a path that breaks out of a CSS string',
+      vscode.Uri.file('/ext/acme/a");}body{x:url(".woff2'),
+    ],
+  ])('refuses %s', (_n, file) => {
+    const { api } = setup();
+    expect(() => api.webviewHtml({ ...base, fonts: [{ family: 'Lato', file }] })).toThrow();
+  });
+
+  it.each([
+    ['a family with a quote', 'La"to'],
+    ['a family with a brace', 'Lato}{'],
+    ['an empty family', ''],
+    ['a long family', 'L'.repeat(61)],
+  ])('refuses %s', (_n, family) => {
+    const { api } = setup();
+    const file = font('dist/webview/fonts/a.woff2');
+    expect(() => api.webviewHtml({ ...base, fonts: [{ family, file }] })).toThrow(/family/);
+  });
+
+  it('refuses a bad weight, a bad style, too many fonts and a non-list', () => {
+    const { api } = setup();
+    const file = font('dist/webview/fonts/a.woff2');
+    const f = { family: 'Lato', file };
+    expect(() => api.webviewHtml({ ...base, fonts: [{ ...f, weight: 450 }] })).toThrow(/weight/);
+    expect(() =>
+      api.webviewHtml({ ...base, fonts: [{ ...f, weight: '400;x' as never }] }),
+    ).toThrow();
+    expect(() =>
+      api.webviewHtml({ ...base, fonts: [{ ...f, style: 'oblique;' as never }] }),
+    ).toThrow(/style/);
+    expect(() => api.webviewHtml({ ...base, fonts: Array(9).fill(f) })).toThrow(/at most/);
+    expect(() => api.webviewHtml({ ...base, fonts: 'x' as never })).toThrow();
+  });
+
+  it('sets <html lang> from a language tag and refuses anything else', () => {
+    const { api } = setup();
+    expect(api.webviewHtml({ ...base, lang: 'de' })).toContain('<html lang="de">');
+    expect(api.webviewHtml({ ...base, lang: 'pt-BR' })).toContain('<html lang="pt-BR">');
+    for (const bad of ['', 'de"><script>', 'x', 'english-language-name', 'de_DE', 5]) {
+      expect(() => api.webviewHtml({ ...base, lang: bad as never })).toThrow(/lang/);
+    }
+  });
+
+  it('sets <title> escaped and bounded, refuses a non-string or an overlong one', () => {
+    const { api } = setup();
+    const html = api.webviewHtml({ ...base, title: 'A & B <script>alert(1)</script> "x"' });
+    expect(html).toContain(
+      '<title>A &amp; B &lt;script&gt;alert(1)&lt;/script&gt; &quot;x&quot;</title>',
+    );
+    expect(html).not.toContain('<script>alert');
+    expect(api.webviewHtml({ ...base, title: 'a\u0000b c' })).toContain('<title>a b c</title>');
+    expect(() => api.webviewHtml({ ...base, title: 'x'.repeat(201) })).toThrow(/title/);
+    expect(() => api.webviewHtml({ ...base, title: 5 as never })).toThrow(/title/);
+  });
+});

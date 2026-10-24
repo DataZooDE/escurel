@@ -6,6 +6,7 @@ import { PageAugmentRegistry } from './augment';
 import { InboxDecoratorRegistry } from './inbox';
 import { OverviewTileRegistry, PageRendererRegistry } from './contributions';
 import { gatewayFacade } from './gateway';
+import { shellExtras } from './shellOptions';
 import type { HelperBroker } from './helperCredential';
 import {
   EXTENSION_API_VERSION,
@@ -103,7 +104,8 @@ export function createExtensionApi(deps: ApiDeps, c: Contributions): EscurelExte
       if (typeof o.tag !== 'string' || !TAG.test(o.tag)) {
         throw new Error('webviewHtml: invalid element name');
       }
-      return shellHtml(o.webview, o.extensionUri, o.bundle, o.tag, THEME_CSS);
+      const extras = shellExtras(o, o.webview, o.extensionUri);
+      return shellHtml(o.webview, o.extensionUri, o.bundle, o.tag, THEME_CSS, extras);
     },
     themeTokens: THEME_TOKENS,
     themeCss: THEME_CSS,

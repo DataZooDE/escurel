@@ -55,7 +55,29 @@ export interface HelperCredential {
   readonly gatewayUrl: string;
 }
 
-export interface WebviewHtmlOptions {
+/** A font file the companion ships. It is served from the webview's own origin only. */
+export interface WebviewFont {
+  /** CSS family name: 1 to 60 letters, digits, spaces, `_`, `-`. */
+  family: string;
+  /** A `.woff2`, `.woff`, `.ttf` or `.otf` under the companion's `extensionUri`. The companion's webview `localResourceRoots` must include its folder. */
+  file: vscode.Uri;
+  /** 100 to 900 in steps of 100. Default 400. */
+  weight?: number;
+  /** Default `normal`. */
+  style?: 'normal' | 'italic';
+}
+
+/** Optional parts of the shell. All validated; none loosens the CSP beyond `font-src` for the webview origin. */
+export interface WebviewShellOptions {
+  /** Adds the `@font-face` rules and `font-src <webview origin>`. At most 8. */
+  fonts?: readonly WebviewFont[];
+  /** `<html lang>`: a language tag such as `de` or `pt-BR` (for example `vscode.env.language`). */
+  lang?: string;
+  /** `<title>`: at most 200 characters, escaped. */
+  title?: string;
+}
+
+export interface WebviewHtmlOptions extends WebviewShellOptions {
   webview: vscode.Webview;
   /** The companion's own extension URI: its bundle is `dist/webview/<bundle>.js` under it. */
   extensionUri: vscode.Uri;

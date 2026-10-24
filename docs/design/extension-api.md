@@ -139,6 +139,21 @@ Returns `{ token, expiresAt, gatewayUrl }`. The companion passes `token` to the 
 - **Never logged.** `token` is a non-enumerable property (absent from `JSON.stringify`, spread and `util.inspect`);
   a mint failure is stripped of anything token-shaped before it is reported; a refusal logs only the extension id.
 
+### `webviewHtml` shell options: `fonts`, `lang`, `title`
+
+All optional, all validated on the host; with none of them the shell is byte-identical to before.
+
+- `fonts: [{ family, file: Uri, weight?, style? }]` (at most 8): adds one `@font-face` per entry and the CSP directive
+  `font-src <webview origin>`. `file` must be a `.woff2`, `.woff`, `.ttf` or `.otf` Uri with the same scheme and
+  authority as `extensionUri`, lying under it (no `.`/`..` segment, no query or fragment, a conservative character set),
+  so no remote font and no file elsewhere on disk. `family` is 1 to 60 letters, digits, spaces, `_`, `-`; `weight` is
+  100 to 900 in steps of 100; `style` is `normal` or `italic`. The companion's own `webview.options.localResourceRoots`
+  must still include the folder that holds the font.
+- `lang`: a language tag (`de`, `pt-BR`; for example `vscode.env.language`) written to `<html lang>`.
+- `title`: at most 200 characters, control characters and U+2028/2029 replaced by a space, HTML-escaped, written as `<title>`.
+
+The CSP stays `default-src 'none'` with no `connect-src`; `font-src` appears only when fonts are given.
+
 ## Classification of a downstream fork's changes
 
 Measured against the `editors/vscode` diff of one downstream fork: 298 files, 257 added, 41 modified.

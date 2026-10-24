@@ -128,6 +128,10 @@ derives its version from the tag (`vYYYY.MM.DD` → `YYYY.M.D`, leading zeros dr
   `escurel.api.helperCredentialExtensions` or the user accepted a one-time question; the token is never logged
   and is not enumerable. New command `Escurel: Forget which extensions may request helper credentials`.
 
+- **`webviewHtml()` shell options for companions**: `fonts` (font files under the companion's folder, adds
+  `@font-face` and `font-src` for the webview origin only), `lang` (`<html lang>`) and `title` (`<title>`), validated so
+  none of them can break out of the markup or load a remote font. Without them the shell is unchanged.
+
 ### Changed
 
 - The typed client treats `isError: true` as an error, never as an empty result (#654); `validate` refusals
