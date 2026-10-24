@@ -86,6 +86,7 @@ mod ingest_webhook;
 mod instance_acl;
 mod instance_freeze;
 mod instance_immutable_removal;
+mod instance_protected;
 mod instance_scoped_acl;
 mod instances_pagination;
 mod lake_upgrade_cmd;

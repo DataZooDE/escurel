@@ -114,7 +114,7 @@ vocabulary for the field and relation rules switches on `family` instead:
 | `frontmatter_field_type` (any other kind) | `field_type_invalid` |
 | `frontmatter_field_range` | `field_range_invalid` |
 | `frontmatter_required_key_missing`, `frontmatter_required_key_missing_strict` | `field_required_missing` |
-| `field_required_when`, `field_blank`, `field_immutable`, `instance_immutable`, `instance_frozen`, `identity_duplicate` | the same name |
+| `field_required_when`, `field_blank`, `field_immutable`, `instance_immutable`, `instance_frozen`, `instance_protected`, `identity_duplicate` | the same name |
 | `relation_invalid`, `relation_unresolved`, `relation_cycle` | the same name |
 
 `validate` reports every finding it has. `update_page` refuses a write only
@@ -152,6 +152,7 @@ declare none are unchanged.
 | `fields[].acyclic: true` (link to the field's own skill) | following the link never returns to a visited instance | `relation_cycle` |
 | skill `freeze_when: {field: value}` or `{field: [v1, v2]}` | while the *stored* page's `field` equals the value (or any listed value, compared as text) the page is frozen; the list must be non-empty and hold plain values | `skill_rule_malformed` if ill-formed; `instance_frozen` on a refused write |
 | `fields[].frozen_by_parent: true` (on a `kind: link` field) | an instance whose link points at a frozen page is frozen too; resolved from the stored page, at most 4 links deep | `fields_malformed` if not a boolean or not a link; `instance_frozen` |
+| skill `protected: [delete, move]` | `delete_page` / archive and `move_page` of its instances are refused; updates stay allowed; a non-empty list drawn from `delete` and `move` | `skill_rule_malformed` if ill-formed; `instance_protected` on a refused removal |
 | skill `unique: [[a, b]]`, or `{keys: [[a, b]], scope: accepted}` | the composite key identifies at most one instance, excluding the page itself; `scope: accepted` counts only instances with `status: accepted` | `identity_duplicate` |
 | skill `relation_guard: false` | opt the skill's instances out of the in-use guard on archive and rename | `skill_rule_malformed` if not a boolean |
 | skill `lease: {holder, expires, while?}` | its instances are leases: `holder` names the field with the current holder, `expires` the field with the expiry in Unix seconds, `while: {field: value}` the state in which it is live | `skill_rule_malformed` if ill-formed; `lease_fence` on a refused write |
@@ -188,6 +189,15 @@ write rights) or by an operator-level restore of the page (`tenant_import`); the
 instance-level override, and `purge_page` does not apply because a frozen page cannot be archived.
 Session edits (`open_session`/`apply_op`) and branch overlays are not covered.
 
+**Protected instances.** `protected: [delete, move]` refuses removal of a skill's instances while
+leaving updates alone. `delete` covers `delete_page` and an archive that arrives as `update_page`
+with `archived: true` (a page that is already archived, or is created archived, is not an archive),
+as a draft or as a changeset member; `move` covers `move_page`. The refusal is `instance_protected`
+(family `instance_protected`), for every role including admin and operator. It is the same check
+as the immutable removal check, and the order of refusals is `instance_frozen`, `instance_immutable`,
+`instance_protected`, then `relation_in_use`. A changeset drafted before the skill began to protect
+its instances lands nothing. `purge_page` is not covered (it only acts on an archived page).
+
 **In-use guard.** A link field declared with `to: <skill>` (every skill of a `to:` list) also protects its
 target. `delete_page` (archive) and `move_page` (rename) refuse with
 `relation_in_use` while another live instance holds such a link to the page;
@@ -211,7 +221,7 @@ It is a single-gateway guard, not a distributed lock. A worker that may have
 been replaced sends its fence with each write.
 
 Malformed declarations are reported on the skill page: `skill_rule_malformed`
-(`immutable`, `freeze_when`, `strict_required_frontmatter`, `unique`, `pack`) and
+(`immutable`, `freeze_when`, `protected`, `strict_required_frontmatter`, `unique`, `pack`) and
 `fields_malformed` (per-field attributes), both blocking; `unique_field_unknown`,
 `field_required_when_unknown` and `field_format_unknown` are warnings.
 
