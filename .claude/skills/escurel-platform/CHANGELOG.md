@@ -4,6 +4,16 @@ The skill version tracks the consumer-facing contract, not the Escurel
 binary version. The Escurel repo's checked-out git ref is the true version
 pin (see `SKILL.md` → "How this skill is installed").
 
+## 0.25.12 — page-bound chat: run replies, revision guard, server-stamped author
+
+For a group named `page-chat:v1:<sha256(subject)>:<page_id>` (skill `chat: {page_bound: true}`), `append_message`:
+stamps `author` with the verified caller and ignores a client value (metadata `run_id`, `event_id`, `actor` are server-owned);
+takes optional `page_revision_sha256` and answers `revision_changed` (`-32602`) when the page moved (the argument on any other
+group is `-32602`); and lets a run token post exactly one kind of message — `role: "assistant"` into the group its root event's
+`provenance.chat_group_id` names, when that event was captured by the group's owner as themselves. A run token gets neither the
+owner nor the admin rule there; everything else is `-32003`. `escurel chat append --page-revision-sha256`, and
+`AppendMessageRequest.page_revision_sha256` in `escurel-types`.
+
 ## 0.25.11 — frozen and protected instances (`freeze_when`, `frozen_by_parent`, `protected`)
 
 A skill may declare `freeze_when: {field: value}` (or `{field: [v1, v2]}`): while the stored page's field holds a listed value,

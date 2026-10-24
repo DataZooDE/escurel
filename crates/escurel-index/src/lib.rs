@@ -57,7 +57,9 @@ mod tool_calls;
 mod traversal;
 pub mod validate;
 
-pub use acl::{AclCaller, CAPTURED_BY_FIELD, CAPTURED_VIA_FIELD, captured_by};
+pub use acl::{
+    AclCaller, CAPTURED_BY_FIELD, CAPTURED_VIA_FIELD, captured_by, is_page_chat, page_chat_page_id,
+};
 pub use backend::{
     BackendBinding, BackendKind, BindingStatus, Capabilities, Materialized, ROWS_QUERY_TIMEOUT,
     RemoteBinding, RemoteKind, RemoteOp, SQL_CONNECT_TIMEOUT, SearchMode, SqlConnector,

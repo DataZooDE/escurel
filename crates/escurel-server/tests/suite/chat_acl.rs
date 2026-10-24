@@ -273,3 +273,299 @@ async fn page_bound_chat_is_private_and_bound_to_a_readable_page() {
         assert_eq!(r["error"]["code"], -32003, "{bad}: {r}");
     }
 }
+
+// --- page-bound chat: run replies, revision guard, server-stamped author ---
+
+const NOTE_PAGE_2: &str = "markdown/instances/note/n-002.md";
+const NOTE_RECORD_2: &str =
+    "---\nkind: instance\nskill: note\nid: n-002\nowner: \"whatsapp:111\"\n---\n# Note 2\n";
+const BOB_NOTE_PAGE: &str = "markdown/instances/note/n-003.md";
+const BOB_NOTE_RECORD: &str =
+    "---\nkind: instance\nskill: note\nid: n-003\nowner: \"whatsapp:222\"\n---\n# Note 3\n";
+
+async fn start_page_chat(signing: bool) -> EscurelProcess {
+    EscurelProcess::spawn(Opts {
+        auth: AuthMode::TestIssuer,
+        config_overrides: ConfigOverrides {
+            write_acl: Some(WriteAclMode::Enforce),
+            signing,
+            ..Default::default()
+        },
+        fixtures: Some(
+            FixtureBuilder::new()
+                .tenant(TENANT)
+                .skill("note", NOTE_SKILL)
+                .instance("note", "n-001", NOTE_RECORD)
+                .instance("note", "n-002", NOTE_RECORD_2)
+                .instance("note", "n-003", BOB_NOTE_RECORD)
+                .done(),
+        ),
+    })
+    .await
+}
+
+/// A person asks for a reply: an event whose provenance names the page chat.
+async fn capture_request(p: &EscurelProcess, token: &str, group: &str) -> String {
+    let r = call(
+        p,
+        token,
+        "capture_event",
+        json!({
+            "label_skill": "note",
+            "source": "page-chat",
+            "title": "reply request",
+            "body": "please answer",
+            "provenance": { "chat_group_id": group },
+        }),
+    )
+    .await;
+    assert!(r.get("error").is_none(), "capture: {r}");
+    r["result"]["structuredContent"]["event_id"]
+        .as_str()
+        .expect("event_id")
+        .to_owned()
+}
+
+fn reply(group: &str, role: &str, content: &str) -> Value {
+    json!({"chat_group_id": group, "role": role, "content": content, "embed": false})
+}
+
+async fn messages(p: &EscurelProcess, token: &str, group: &str) -> Vec<Value> {
+    let r = call(
+        p,
+        token,
+        "list_messages",
+        json!({"chat_group_id": group, "direction": "asc"}),
+    )
+    .await;
+    r["result"]["structuredContent"]["messages"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default()
+}
+
+fn sha(s: &str) -> String {
+    format!("{:x}", Sha256::digest(s.as_bytes()))
+}
+
+#[tokio::test]
+async fn a_run_token_replies_only_into_the_page_chat_its_root_event_names() {
+    let p = start_page_chat(false).await;
+    let alice = p.mint_token_with_sub(TENANT, Role::Agent, ALICE);
+    let bob = p.mint_token_with_sub(TENANT, Role::Agent, BOB);
+    let group = page_chat(ALICE, NOTE_PAGE);
+    let other_group = page_chat(ALICE, NOTE_PAGE_2);
+    let event = capture_request(&p, &alice, &group).await;
+    let other_event = capture_request(&p, &alice, &other_group).await;
+    // An event captured by bob that names alice's chat must not open it.
+    let bobs_event = capture_request(&p, &bob, &group).await;
+
+    // The runner's per-run token (admin authority, as in production).
+    let run = p.mint_token_for_run(TENANT, Role::Admin, "agent:note-reply", "RUN-1", &event);
+    let ok = call(
+        &p,
+        &run,
+        "append_message",
+        reply(&group, "assistant", "answer"),
+    )
+    .await;
+    assert!(ok.get("error").is_none(), "run reply: {ok}");
+
+    // Only `assistant`, only that group: the admin authority is not a bypass.
+    let as_user = call(&p, &run, "append_message", reply(&group, "user", "x")).await;
+    assert_eq!(as_user["error"]["code"], -32003, "{as_user}");
+    let elsewhere = call(
+        &p,
+        &run,
+        "append_message",
+        reply(&other_group, "assistant", "x"),
+    )
+    .await;
+    assert_eq!(elsewhere["error"]["code"], -32003, "{elsewhere}");
+    let bobs_chat = page_chat(BOB, BOB_NOTE_PAGE);
+    let foreign = call(
+        &p,
+        &run,
+        "append_message",
+        reply(&bobs_chat, "assistant", "x"),
+    )
+    .await;
+    assert_eq!(foreign["error"]["code"], -32003, "{foreign}");
+
+    // A run of another event cannot write here either.
+    let run2 = p.mint_token_for_run(
+        TENANT,
+        Role::Admin,
+        "agent:note-reply",
+        "RUN-2",
+        &other_event,
+    );
+    let wrong = call(&p, &run2, "append_message", reply(&group, "assistant", "x")).await;
+    assert_eq!(wrong["error"]["code"], -32003, "{wrong}");
+    // A run whose root event was captured by someone other than the chat's owner.
+    let run3 = p.mint_token_for_run(
+        TENANT,
+        Role::Admin,
+        "agent:note-reply",
+        "RUN-3",
+        &bobs_event,
+    );
+    let forged = call(&p, &run3, "append_message", reply(&group, "assistant", "x")).await;
+    assert_eq!(forged["error"]["code"], -32003, "{forged}");
+    // A run whose root event does not exist.
+    let run4 = p.mint_token_for_run(
+        TENANT,
+        Role::Admin,
+        "agent:note-reply",
+        "RUN-4",
+        "no-such-event",
+    );
+    let ghost = call(&p, &run4, "append_message", reply(&group, "assistant", "x")).await;
+    assert_eq!(ghost["error"]["code"], -32003, "{ghost}");
+
+    // The owner sees exactly the one reply, stamped with the run's lineage.
+    let msgs = messages(&p, &alice, &group).await;
+    assert_eq!(msgs.len(), 1, "{msgs:?}");
+    assert_eq!(msgs[0]["role"], "assistant");
+    assert_eq!(msgs[0]["author"], "agent:note-reply", "{msgs:?}");
+    assert_eq!(msgs[0]["metadata"]["run_id"], "RUN-1", "{msgs:?}");
+    assert_eq!(msgs[0]["metadata"]["event_id"], json!(event), "{msgs:?}");
+    assert_eq!(msgs[0]["metadata"]["actor"], "escurel-runner", "{msgs:?}");
+}
+
+#[tokio::test]
+async fn a_gateway_minted_run_replies_for_the_person_who_asked_and_no_one_else() {
+    let p = start_page_chat(true).await;
+    let alice = p.mint_token_with_sub(TENANT, Role::Agent, ALICE);
+    let bob = p.mint_token_with_sub(TENANT, Role::Agent, BOB);
+    let group = page_chat(ALICE, NOTE_PAGE);
+    let event = capture_request(&p, &alice, &group).await;
+
+    let minted = call(
+        &p,
+        &alice,
+        "mint_agent_token",
+        json!({"skill": "note-reply", "root_event_id": event}),
+    )
+    .await;
+    let token = minted["result"]["structuredContent"]["token"]
+        .as_str()
+        .expect("token")
+        .to_owned();
+    let run_id = minted["result"]["structuredContent"]["run_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let ok = call(
+        &p,
+        &token,
+        "append_message",
+        reply(&group, "assistant", "answer"),
+    )
+    .await;
+    assert!(ok.get("error").is_none(), "gateway run reply: {ok}");
+    // The run speaks as the assistant, never as the person.
+    let as_user = call(&p, &token, "append_message", reply(&group, "user", "x")).await;
+    assert_eq!(as_user["error"]["code"], -32003, "{as_user}");
+    let other = call(
+        &p,
+        &token,
+        "append_message",
+        reply(&page_chat(ALICE, NOTE_PAGE_2), "assistant", "x"),
+    )
+    .await;
+    assert_eq!(other["error"]["code"], -32003, "{other}");
+
+    // Bob minting a run on alice's event gains nothing.
+    let bobs = call(
+        &p,
+        &bob,
+        "mint_agent_token",
+        json!({"skill": "note-reply", "root_event_id": event}),
+    )
+    .await;
+    let bobs_token = bobs["result"]["structuredContent"]["token"]
+        .as_str()
+        .expect("token")
+        .to_owned();
+    let spy = call(
+        &p,
+        &bobs_token,
+        "append_message",
+        reply(&group, "assistant", "x"),
+    )
+    .await;
+    assert_eq!(spy["error"]["code"], -32003, "{spy}");
+
+    let msgs = messages(&p, &alice, &group).await;
+    assert_eq!(msgs.len(), 1, "{msgs:?}");
+    // The verified subject of a gateway-minted token is the person; the agent is the actor.
+    assert_eq!(msgs[0]["author"], ALICE, "{msgs:?}");
+    assert_eq!(msgs[0]["metadata"]["run_id"], json!(run_id), "{msgs:?}");
+    assert_eq!(msgs[0]["metadata"]["event_id"], json!(event), "{msgs:?}");
+    assert_eq!(msgs[0]["metadata"]["actor"], "agent:note-reply", "{msgs:?}");
+}
+
+#[tokio::test]
+async fn a_page_chat_append_bound_to_a_stale_revision_is_refused() {
+    let p = start_page_chat(false).await;
+    let alice = p.mint_token_with_sub(TENANT, Role::Agent, ALICE);
+    let admin = p.mint_token(TENANT, Role::Admin);
+    let group = page_chat(ALICE, NOTE_PAGE);
+    let seen = sha(NOTE_RECORD);
+
+    let mut args = reply(&group, "user", "about this version");
+    args["page_revision_sha256"] = json!(seen);
+    let ok = call(&p, &alice, "append_message", args.clone()).await;
+    assert!(ok.get("error").is_none(), "current revision: {ok}");
+
+    let edited = NOTE_RECORD.replace("# Note", "# Note, edited");
+    let upd = call(
+        &p,
+        &admin,
+        "update_page",
+        json!({"page_id": NOTE_PAGE, "content": edited}),
+    )
+    .await;
+    assert!(upd.get("error").is_none(), "update: {upd}");
+
+    args["content"] = json!("about the old version");
+    let stale = call(&p, &alice, "append_message", args).await;
+    assert_eq!(
+        stale["error"]["data"]["code"], "revision_changed",
+        "{stale}"
+    );
+    assert_eq!(messages(&p, &alice, &group).await.len(), 1);
+
+    // A revision guard on a group that is not page-bound is a caller error.
+    let mut plain = reply("ops-broadcast", "user", "x");
+    plain["page_revision_sha256"] = json!(seen);
+    let bad = call(&p, &alice, "append_message", plain).await;
+    assert_eq!(bad["error"]["code"], -32602, "{bad}");
+}
+
+#[tokio::test]
+async fn the_server_stamps_the_author_of_a_page_chat_message() {
+    let p = start_page_chat(false).await;
+    let alice = p.mint_token_with_sub(TENANT, Role::Agent, ALICE);
+    let group = page_chat(ALICE, NOTE_PAGE);
+    let mut args = reply(&group, "user", "hello");
+    args["author"] = json!("someone-else");
+    args["metadata"] = json!({"client": "kept", "run_id": "forged"});
+    let ok = call(&p, &alice, "append_message", args).await;
+    assert!(ok.get("error").is_none(), "{ok}");
+    let msgs = messages(&p, &alice, &group).await;
+    assert_eq!(msgs[0]["author"], ALICE, "{msgs:?}");
+    assert_eq!(msgs[0]["metadata"]["client"], "kept", "{msgs:?}");
+    assert!(
+        msgs[0]["metadata"].get("run_id").is_none(),
+        "a person's message carries no run lineage: {msgs:?}"
+    );
+
+    // Other chat groups keep the caller-supplied author.
+    let mut plain = reply("ops-broadcast", "user", "x");
+    plain["author"] = json!("display-name");
+    call(&p, &alice, "append_message", plain).await;
+    let open = messages(&p, &alice, "ops-broadcast").await;
+    assert_eq!(open[0]["author"], "display-name", "{open:?}");
+}

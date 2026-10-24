@@ -41,6 +41,10 @@ pub struct AppendMessageRequest {
     pub metadata: Value,
     pub msg_id: String,
     pub embed: bool,
+    /// Page-bound chat groups only: SHA-256 of the page markdown the caller
+    /// saw; the append fails with code `revision_changed` when it moved.
+    /// Empty = unguarded.
+    pub page_revision_sha256: String,
 }
 
 /// MCP `append_message` ack: `{msg_id, ts}` (the resolved id +

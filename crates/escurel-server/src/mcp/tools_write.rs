@@ -1751,6 +1751,8 @@ pub(super) struct AppendMessageArgs {
     msg_id: Option<String>,
     #[serde(default = "default_embed")]
     embed: bool,
+    #[serde(default)]
+    page_revision_sha256: Option<String>,
 }
 
 pub(super) fn default_embed() -> bool {
@@ -1764,19 +1766,45 @@ pub(super) async fn tool_append_message(
     args: Value,
 ) -> Result<Value, JsonRpcError> {
     let a: AppendMessageArgs = parse_args(args, "append_message")?;
+    let page_chat = escurel_index::is_page_chat(&a.chat_group_id);
+    if a.page_revision_sha256.is_some() && !page_chat {
+        return Err(JsonRpcError::invalid_params(
+            "append_message: `page_revision_sha256` applies to page-bound chat groups \
+             (`page-chat:v1:...`) only"
+                .to_owned(),
+        ));
+    }
+    // A run token in a page chat: it may post its `assistant` reply into the
+    // one group its root event names, and nothing else (the owner / admin
+    // rule does not apply to borrowed authority).
+    let run_reply = page_chat && caller.run_id.is_some();
 
     // Chat-surface ACL: only the chat group's owner (or admin) may append.
     if write_acl != crate::server::WriteAclMode::Off {
-        let allowed = indexer
-            .may_access_chat(&caller, &a.chat_group_id)
-            .await
-            .map_err(|e| JsonRpcError::internal(format!("append_message acl: {e}")))?;
+        let allowed = if run_reply {
+            a.role == "assistant"
+                && indexer
+                    .may_reply_in_page_chat(&caller, &a.chat_group_id)
+                    .await
+                    .map_err(|e| JsonRpcError::internal(format!("append_message acl: {e}")))?
+        } else {
+            indexer
+                .may_access_chat(&caller, &a.chat_group_id)
+                .await
+                .map_err(|e| JsonRpcError::internal(format!("append_message acl: {e}")))?
+        };
         if !allowed {
             if write_acl == crate::server::WriteAclMode::Log {
                 tracing::warn!(
                     subject = %caller.subject, chat_group_id = %a.chat_group_id,
                     "chat-ACL would deny this append (log mode) — allowing"
                 );
+            } else if run_reply {
+                return Err(JsonRpcError::forbidden(format!(
+                    "append denied: run `{}` may only post an `assistant` reply into the page \
+                     chat its root event names",
+                    caller.run_id.unwrap_or_default()
+                )));
             } else {
                 return Err(JsonRpcError::forbidden(format!(
                     "append denied: caller `{}` does not own chat `{}`",
@@ -1786,28 +1814,82 @@ pub(super) async fn tool_append_message(
         }
     }
 
-    let stored = indexer
-        .append_chat_message(AppendChatMessage {
-            chat_group_id: &a.chat_group_id,
-            role: &a.role,
-            content: &a.content,
-            author: a.author.as_deref(),
-            ts: a.ts.as_deref(),
-            metadata: a.metadata,
-            msg_id: a.msg_id.as_deref(),
-            embed: a.embed,
-        })
-        .await
-        .map_err(|e| match e {
-            IndexerError::RevisionChanged { page_id } => {
-                revision_changed_error("append_message", &page_id)
-            }
-            e => JsonRpcError::internal(format!("append_message: {e}")),
-        })?;
+    // A page chat's author is the verified caller, never a client claim; a
+    // run's message also carries its lineage.
+    let (author, metadata) = if page_chat {
+        (
+            Some(caller.subject),
+            page_chat_metadata(a.metadata, &caller),
+        )
+    } else {
+        (a.author.as_deref(), a.metadata)
+    };
+    let input = AppendChatMessage {
+        chat_group_id: &a.chat_group_id,
+        role: &a.role,
+        content: &a.content,
+        author,
+        ts: a.ts.as_deref(),
+        metadata,
+        msg_id: a.msg_id.as_deref(),
+        embed: a.embed,
+    };
+    let appended = match (
+        a.page_revision_sha256.as_deref(),
+        escurel_index::page_chat_page_id(&a.chat_group_id),
+    ) {
+        (Some(revision), Some(page_id)) => {
+            indexer
+                .append_chat_message_with_revision(input, page_id, revision)
+                .await
+        }
+        (Some(_), None) => {
+            return Err(JsonRpcError::invalid_params(format!(
+                "append_message: `{}` is not a well-formed page chat group",
+                a.chat_group_id
+            )));
+        }
+        (None, _) => indexer.append_chat_message(input).await,
+    };
+    let stored = appended.map_err(|e| match e {
+        IndexerError::RevisionChanged { page_id } => {
+            revision_changed_error("append_message", &page_id)
+        }
+        e => JsonRpcError::internal(format!("append_message: {e}")),
+    })?;
     Ok(json!({
         "msg_id": stored.msg_id,
         "ts": stored.ts,
     }))
+}
+
+/// The metadata stored with a page-chat message: the caller's own object,
+/// with the server-owned lineage keys (`run_id`, `event_id`, `actor`)
+/// replaced by what the verified token says — removed for a caller that is
+/// not a run, so a person cannot assert one.
+fn page_chat_metadata(metadata: Option<Value>, caller: &AclCaller<'_>) -> Option<Value> {
+    let mut obj = match metadata {
+        Some(Value::Object(m)) => m,
+        None | Some(Value::Null) => serde_json::Map::new(),
+        Some(other) => {
+            let mut m = serde_json::Map::new();
+            m.insert("metadata".to_owned(), other);
+            m
+        }
+    };
+    for key in ["run_id", "event_id", "actor"] {
+        obj.remove(key);
+    }
+    if let Some(run_id) = caller.run_id {
+        obj.insert("run_id".to_owned(), json!(run_id));
+        if let Some(root) = caller.root_event_id {
+            obj.insert("event_id".to_owned(), json!(root));
+        }
+    }
+    if let Some(actor) = caller.actor {
+        obj.insert("actor".to_owned(), json!(actor));
+    }
+    (!obj.is_empty()).then_some(Value::Object(obj))
 }
 
 #[derive(Deserialize)]
