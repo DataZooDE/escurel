@@ -2252,6 +2252,7 @@ fn write_envelope_schema() -> Value {
                     "properties": {
                         "severity": { "type": "string" },
                         "code": { "type": "string" },
+                        "family": { "type": "string", "description": "stable rule family, a second name for `code` (e.g. field_enum_invalid, field_date_invalid); absent outside the field-check vocabulary" },
                         "location": { "type": "string" },
                         "message": { "type": "string" },
                         "suggestion": { "type": "string" }

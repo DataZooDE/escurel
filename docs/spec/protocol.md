@@ -96,11 +96,26 @@ These are referenced from every tool, expressed as JSON Schema.
 {
   severity: "error" | "warning",
   code:     string,        // e.g. "unknown_skill", "anchor_missing", "frontmatter_required_key_missing"
+  family?:  string,        // stable rule family, see below; absent outside the field-check vocabulary
   location: string,        // e.g. "line:32 col:8" or "frontmatter.at"
   message:  string,
   suggestion?: string
 }
 ```
+
+`family` is a second, additive name for the same finding. `code` never
+changes, so clients that match on it keep working; a client that wants one
+vocabulary for the field and relation rules switches on `family` instead:
+
+| `code` | `family` |
+|---|---|
+| `frontmatter_enum_value` | `field_enum_invalid` |
+| `frontmatter_field_type` (a date, timestamp or `format: date` value) | `field_date_invalid` |
+| `frontmatter_field_type` (any other kind) | `field_type_invalid` |
+| `frontmatter_field_range` | `field_range_invalid` |
+| `frontmatter_required_key_missing`, `frontmatter_required_key_missing_strict` | `field_required_missing` |
+| `field_required_when`, `field_blank`, `field_immutable`, `instance_immutable`, `identity_duplicate` | the same name |
+| `relation_invalid`, `relation_unresolved`, `relation_cycle` | the same name |
 
 `validate` reports every finding it has. `update_page` refuses a write only
 for a deliberately narrow subset — link integrity and page identity — so

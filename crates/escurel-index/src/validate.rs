@@ -68,6 +68,13 @@ pub struct Issue {
     /// Stable machine code, e.g. `unknown_skill`,
     /// `frontmatter_required_key_missing`.
     pub code: String,
+    /// Stable rule family, a second name for the same finding (e.g.
+    /// `field_enum_invalid`, `field_date_invalid`). `code` is unchanged and
+    /// stays the identifier existing clients match on; `family` is one
+    /// vocabulary for the field-check rules so a client can switch on it
+    /// without learning each code. `None` for findings outside that
+    /// vocabulary. See [`family_for_code`].
+    pub family: Option<String>,
     /// Where in the draft, e.g. `frontmatter.name` or `frontmatter`.
     pub location: String,
     pub message: String,
@@ -83,6 +90,7 @@ impl Issue {
         Self {
             severity: Severity::Error,
             code: code.to_owned(),
+            family: family_for_code(code).map(str::to_owned),
             location: location.into(),
             message: message.into(),
             suggestion: None,
@@ -97,10 +105,20 @@ impl Issue {
         Self {
             severity: Severity::Warning,
             code: code.to_owned(),
+            family: family_for_code(code).map(str::to_owned),
             location: location.into(),
             message: message.into(),
             suggestion: None,
         }
+    }
+
+    /// Override the family derived from the code, where one code covers
+    /// several families (`frontmatter_field_type` is `field_date_invalid`
+    /// for a date).
+    #[must_use]
+    pub(crate) fn with_family(mut self, family: &str) -> Self {
+        self.family = Some(family.to_owned());
+        self
     }
 
     /// Attach the `suggestion` field. Worth doing where the fix is a closed
@@ -110,6 +128,30 @@ impl Issue {
         self.suggestion = Some(suggestion.into());
         self
     }
+}
+
+/// The stable family of a field-check or relation/identity rule code, or
+/// `None` when the code is outside that vocabulary. Additive: the code is
+/// never rewritten. A code that is already the family name maps to itself.
+#[must_use]
+pub fn family_for_code(code: &str) -> Option<&'static str> {
+    Some(match code {
+        "frontmatter_enum_value" => "field_enum_invalid",
+        "frontmatter_field_type" => "field_type_invalid",
+        "frontmatter_field_range" => "field_range_invalid",
+        "frontmatter_required_key_missing" | "frontmatter_required_key_missing_strict" => {
+            "field_required_missing"
+        }
+        "field_required_when" => "field_required_when",
+        "field_blank" => "field_blank",
+        "field_immutable" => "field_immutable",
+        "instance_immutable" => "instance_immutable",
+        "identity_duplicate" => "identity_duplicate",
+        "relation_invalid" => "relation_invalid",
+        "relation_unresolved" => "relation_unresolved",
+        "relation_cycle" => "relation_cycle",
+        _ => return None,
+    })
 }
 
 /// A skill whose `backend.source.connector` is one the gateway refuses (MySQL / MariaDB: no test, no
@@ -917,17 +959,22 @@ fn check_field_value(field: &crate::SkillField, value: &YamlValue) -> Vec<Issue>
             })
             .unwrap_or_else(|| format!("{value:?}")),
     };
-    let type_error = |expected: &str| {
-        vec![Issue::error(
-            "frontmatter_field_type",
-            location.clone(),
-            format!(
-                "`{name}: {}` does not parse as {expected}, which is what skill \
-                 declares for this field",
-                shown()
-            ),
-        )]
+    let type_error_in = |expected: &str, family: &str| {
+        vec![
+            Issue::error(
+                "frontmatter_field_type",
+                location.clone(),
+                format!(
+                    "`{name}: {}` does not parse as {expected}, which is what skill \
+                     declares for this field",
+                    shown()
+                ),
+            )
+            .with_family(family),
+        ]
     };
+    let type_error = |expected: &str| type_error_in(expected, "field_type_invalid");
+    let date_error = |expected: &str| type_error_in(expected, "field_date_invalid");
 
     // A number, however the author wrote it.
     let as_number = || -> Option<f64> {
@@ -967,7 +1014,7 @@ fn check_field_value(field: &crate::SkillField, value: &YamlValue) -> Vec<Issue>
             if is_date(&shown()) {
                 Vec::new()
             } else {
-                type_error("a date (`YYYY-MM-DD`)")
+                date_error("a date (`YYYY-MM-DD`)")
             }
         }
         FieldKind::DateTime => {
@@ -975,7 +1022,7 @@ fn check_field_value(field: &crate::SkillField, value: &YamlValue) -> Vec<Issue>
             if is_date(&text) || is_datetime(&text) {
                 Vec::new()
             } else {
-                type_error("a timestamp (`YYYY-MM-DDTHH:MM:SSZ`)")
+                date_error("a timestamp (`YYYY-MM-DDTHH:MM:SSZ`)")
             }
         }
         FieldKind::Enum => {
@@ -1015,7 +1062,7 @@ fn check_field_value(field: &crate::SkillField, value: &YamlValue) -> Vec<Issue>
         && !crate::field_rules::is_blank(value)
         && !is_date(&shown())
     {
-        issues.extend(type_error("a date (`YYYY-MM-DD`)"));
+        issues.extend(date_error("a date (`YYYY-MM-DD`)"));
     }
 
     // Bounds apply to whatever parsed as a number, whichever numeric kind was

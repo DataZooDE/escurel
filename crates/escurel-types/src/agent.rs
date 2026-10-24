@@ -804,6 +804,11 @@ pub struct ValidateRequest {
 pub struct ValidationIssue {
     pub severity: String,
     pub code: String,
+    /// Stable rule family (`field_enum_invalid`, `field_date_invalid`, ...),
+    /// a second name for the same finding; `code` is unchanged. Absent for
+    /// findings outside the field-check vocabulary.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub family: Option<String>,
     pub location: String,
     pub message: String,
     #[serde(skip_serializing_if = "Option::is_none")]

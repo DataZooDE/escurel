@@ -103,4 +103,4 @@ pub use traversal::{
     CORPUS_TARGET, Dir, Filter, MAX_DEPTH_CEILING, START_ALIAS, Start, Step, Traversal,
     TraversalError, parse_traversal,
 };
-pub use validate::{Issue, Severity};
+pub use validate::{Issue, Severity, family_for_code};

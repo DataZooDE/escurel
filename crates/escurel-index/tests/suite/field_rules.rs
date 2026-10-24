@@ -113,6 +113,27 @@ async fn field_level_validators_report_generic_codes() {
         "{issues:?}"
     );
 
+    // Each finding also carries a stable family; `code` is unchanged.
+    let family_of = |code: &str| {
+        issues
+            .iter()
+            .find(|i| i.code == code)
+            .and_then(|i| i.family.as_deref())
+    };
+    assert_eq!(
+        family_of("frontmatter_enum_value"),
+        Some("field_enum_invalid")
+    );
+    assert_eq!(family_of("field_blank"), Some("field_blank"));
+    assert_eq!(
+        family_of("frontmatter_field_type"),
+        Some("field_date_invalid")
+    );
+    assert_eq!(
+        family_of("frontmatter_field_range"),
+        Some("field_range_invalid")
+    );
+
     let (_, ok) = instance(
         "ticket",
         "t1",

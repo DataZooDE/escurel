@@ -83,6 +83,7 @@ pub fn refusal_of(result: &Value) -> Option<Refusal> {
                 .map(|i| ValidationIssue {
                     severity: text(i, "severity").unwrap_or_else(|| "error".to_owned()),
                     code: text(i, "code").unwrap_or_default(),
+                    family: text(i, "family"),
                     location: text(i, "location").unwrap_or_default(),
                     message: text(i, "message").unwrap_or_default(),
                     suggestion: text(i, "suggestion"),
@@ -99,6 +100,7 @@ pub fn refusal_of(result: &Value) -> Option<Refusal> {
         issues.push(ValidationIssue {
             severity: "error".to_owned(),
             code: "tool_error".to_owned(),
+            family: None,
             location: String::new(),
             message,
             suggestion: None,

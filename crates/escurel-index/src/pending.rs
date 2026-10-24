@@ -31,17 +31,11 @@ use std::collections::{HashMap, HashSet};
 use escurel_md::wikilink::parse_wikilinks;
 use escurel_md::{PageKind, YamlMapping, YamlValue, parse};
 
-use crate::validate::{Issue, Severity};
+use crate::validate::Issue;
 use crate::{FieldKind, Indexer, IndexerError, SkillField};
 
 fn error(code: &str, location: impl Into<String>, message: impl Into<String>) -> Issue {
-    Issue {
-        severity: Severity::Error,
-        code: code.to_owned(),
-        location: location.into(),
-        message: message.into(),
-        suggestion: None,
-    }
+    Issue::error(code, location, message)
 }
 
 /// `markdown/instances/<skill>/<id>.md`
