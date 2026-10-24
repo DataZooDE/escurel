@@ -148,7 +148,7 @@ declare none are unchanged.
 | `fields[].required_when: {other: value}` or `{other: [v1, v2]}` | required while `other` equals the value, or any one of the listed values (compared as text); the list must be non-empty and hold plain values, else `fields_malformed` | `field_required_when` |
 | `fields[].immutable: true` | key cannot change (or be added or dropped) after the page exists | `field_immutable` |
 | skill `immutable: true` | page bytes cannot change after the page exists, and the page cannot be archived (`delete_page`) or renamed (`move_page`); the rule follows the page path and the stored page's skill, not only the draft's `skill:` | `instance_immutable` |
-| `fields[].kind: link`, `to: <skill>` | value is one quoted `[[<skill>::<id>]]` link (or a list of them) to a live instance of `<skill>`, saved or in the pending batch | `relation_invalid`, `relation_unresolved` |
+| `fields[].kind: link`, `to: <skill>` or `to: [<skill>, ...]` | value is one quoted `[[<skill>::<id>]]` link (or a list of them) to a live instance of `<skill>` (of any listed skill), saved or in the pending batch | `relation_invalid`, `relation_unresolved` |
 | `fields[].acyclic: true` (link to the field's own skill) | following the link never returns to a visited instance | `relation_cycle` |
 | skill `unique: [[a, b]]`, or `{keys: [[a, b]], scope: accepted}` | the composite key identifies at most one instance, excluding the page itself; `scope: accepted` counts only instances with `status: accepted` | `identity_duplicate` |
 | skill `relation_guard: false` | opt the skill's instances out of the in-use guard on archive and rename | `skill_rule_malformed` if not a boolean |
@@ -166,7 +166,7 @@ nothing. A field-level `immutable: true` is not affected: it freezes one key,
 not the page's existence. `purge_page` remains the operator's erasure act and
 only acts on a page that is already archived.
 
-**In-use guard.** A link field declared with `to: <skill>` also protects its
+**In-use guard.** A link field declared with `to: <skill>` (every skill of a `to:` list) also protects its
 target. `delete_page` (archive) and `move_page` (rename) refuse with
 `relation_in_use` while another live instance holds such a link to the page;
 the result carries `referrers` (up to 20 `{page_id, field}`, sorted) and

@@ -226,8 +226,9 @@ pub struct SkillField {
     /// kind, and an enum with none constrains nothing (which `validate`
     /// reports on the skill page rather than on every instance).
     pub values: Vec<String>,
-    /// For [`FieldKind::Link`]: the skill a linked instance must belong to.
-    pub target_skill: Option<String>,
+    /// For [`FieldKind::Link`]: the skills a linked instance may belong to
+    /// (`to: a` or `to: [a, b]`; a value resolves if it is an instance of any).
+    pub target_skills: Vec<String>,
     /// Whether an instance must carry it. Omitted `required:` ⇒ `false`:
     /// declaring a field is not the same as demanding it.
     pub required: bool,
@@ -404,9 +405,11 @@ fn field_from(name: &str, attrs: &serde_json::Value) -> SkillField {
                     .collect()
             })
             .unwrap_or_default(),
-        target_skill: text("to")
-            .or_else(|| text("target_skill"))
-            .or_else(|| text("skill")),
+        target_skills: ["to", "target_skill", "skill"]
+            .iter()
+            .map(|k| target_list(attrs.get(*k)))
+            .find(|l| !l.is_empty())
+            .unwrap_or_default(),
         required: attrs
             .get("required")
             .and_then(serde_json::Value::as_bool)
@@ -1807,4 +1810,21 @@ pub(crate) fn parse_required_when(v: &serde_json::Value) -> Option<(String, Vec<
         other => vec![scalar(other)?],
     };
     (!values.is_empty()).then(|| (key.clone(), values))
+}
+
+/// One skill name or a list of them, in order, without blanks or repeats.
+fn target_list(value: Option<&serde_json::Value>) -> Vec<String> {
+    let items: Vec<&serde_json::Value> = match value {
+        Some(serde_json::Value::Array(a)) => a.iter().collect(),
+        Some(v) => vec![v],
+        None => Vec::new(),
+    };
+    let mut out: Vec<String> = Vec::new();
+    for s in items.into_iter().filter_map(serde_json::Value::as_str) {
+        let s = s.trim();
+        if !s.is_empty() && !out.iter().any(|o| o == s) {
+            out.push(s.to_owned());
+        }
+    }
+    out
 }

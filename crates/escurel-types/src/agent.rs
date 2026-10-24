@@ -631,9 +631,14 @@ pub struct SkillField {
     /// The allowed values, for `kind: enum`.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub values: Vec<String>,
-    /// The skill a `kind: link` value must point at.
+    /// The skill a `kind: link` value must point at; the first of
+    /// `target_skills` (kept for clients written against one target).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub target_skill: Option<String>,
+    /// Every skill a `kind: link` value may point at (`to: [a, b]`); a value
+    /// resolves if it is an instance of any of them.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub target_skills: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub min: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]

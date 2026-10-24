@@ -243,7 +243,7 @@ pub(crate) fn check_field_rules(page_kind: PageKind, fields: &YamlMapping) -> Ve
                 ));
             }
         }
-        if f.acyclic && (f.kind != crate::FieldKind::Link || f.target_skill.is_none()) {
+        if f.acyclic && (f.kind != crate::FieldKind::Link || f.target_skills.is_empty()) {
             issues.push(Issue::error(
                 "fields_malformed",
                 format!("{loc}.acyclic"),
@@ -387,10 +387,10 @@ impl Indexer {
         let mut issues = Vec::new();
         let self_id = fields.get("id").and_then(YamlValue::as_str);
         for field in &contract.fields {
-            let (crate::FieldKind::Link, Some(to)) = (field.kind, field.target_skill.as_deref())
-            else {
+            if field.kind != crate::FieldKind::Link || field.target_skills.is_empty() {
                 continue;
-            };
+            }
+            let to = field.target_skills.join("|");
             let Some(value) = fields.get(field.name.as_str()) else {
                 continue;
             };
@@ -424,7 +424,7 @@ impl Indexer {
                     ));
                     continue;
                 };
-                if t_skill != to {
+                if !field.target_skills.contains(&t_skill) {
                     issues.push(Issue::error(
                         "relation_invalid",
                         loc.clone(),
@@ -441,7 +441,7 @@ impl Indexer {
                         "relation_unresolved",
                         loc.clone(),
                         format!(
-                            "`{}` links to `[[{to}::{t_id}]]`, which is not a live instance \
+                            "`{}` links to `[[{t_skill}::{t_id}]]`, which is not a live instance \
                              in the corpus or in this batch",
                             field.name
                         ),
@@ -450,7 +450,7 @@ impl Indexer {
                 }
                 if field.acyclic
                     && single
-                    && to == skill
+                    && field.target_skills.iter().any(|t| t == skill)
                     && let Some(start) = self_id
                     && let Some(at) = self.cycle_at(field, skill, start, &t_id, pending).await?
                 {
