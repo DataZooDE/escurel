@@ -972,6 +972,24 @@ pub const CONFIG_KEYS: &[ConfigKey] = &[
         doc: "Generative Language API base for the Gemini adapter (tests point it at a local server)",
     },
     ConfigKey {
+        name: "ESCUREL_RUNNER_GEMINI_VERTEX_LOCATION",
+        component: "Runner",
+        default: "eu",
+        doc: "Vertex AI location used when the Gemini adapter authenticates with workload identity",
+    },
+    ConfigKey {
+        name: "ESCUREL_RUNNER_GEMINI_METADATA_URL",
+        component: "Runner",
+        default: "—",
+        doc: "metadata server base for Vertex workload credentials (tests point it at a local server)",
+    },
+    ConfigKey {
+        name: "ESCUREL_RUNNER_GEMINI_MAX_TOTAL_TOKENS",
+        component: "Runner",
+        default: "unbounded",
+        doc: "provider-reported token cap for one Gemini invocation; a response without usage metadata fails the run",
+    },
+    ConfigKey {
         name: "ESCUREL_RUNNER_AGENT_A2A_URL",
         component: "Runner",
         default: "—",

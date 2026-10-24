@@ -18,6 +18,7 @@ name = "escurel-echo-harness"
 path = "src/bin/echo_harness.rs"
 
 [features]
+vertex-test-endpoints = []
 
 [dependencies]
 anyhow = "1"

@@ -261,6 +261,8 @@ pub struct TaskContext {
     /// (claude `--permission-mode plan`), the others refuse — and the run
     /// ends `planned` with nothing landed.
     pub plan_mode: bool,
+    /// Provider reported Gemini tokens from earlier attempts of this run.
+    pub prior_model_tokens: u64,
     /// Tenant-scoped bearer for the `/mcp` toolset, held opaque.
     ///
     /// For now this reuses the configured `ESCUREL_RUNNER_TOKEN`. The
@@ -391,6 +393,7 @@ impl TaskContext {
     ) -> Self {
         Self {
             plan_mode: false,
+            prior_model_tokens: 0,
             cancel: None,
             instructions,
             input,
@@ -682,34 +685,21 @@ pub async fn package(
                 .iter()
                 .find(|e| e.event_id == trigger.event_id)
                 .cloned();
-            // A pre-flagged event is NOT in the instance's history: it is
-            // still in the inbox until something assigns it, and
-            // `list_events` returns processed history only. So the branch
-            // that had a target found no event and fell back to rendering
-            // two ids — the agent was asked to fold an event whose title,
-            // body and provenance it had never been shown, and it could not
-            // say so, because a plausible answer is always available.
-            //
-            // Invisible until now because the deployed loop never ran, and
-            // because the tests that did run captured events the harness
-            // then assigned itself before anyone looked.
+            // A pre-flagged event is absent from processed instance history.
+            // Resolve its exact ID because a bounded inbox page may omit it.
             if trigger_event.is_none() {
-                let inbox = client
-                    .list_inbox(ListInboxRequest {
-                        cursor: String::new(),
-                        limit: EVENT_HISTORY_LIMIT,
+                let exact = client
+                    .list_events(ListEventsRequest {
+                        event_id: Some(trigger.event_id.clone()),
+                        limit: 1,
                         ..Default::default()
                     })
                     .await
                     .map_err(|source| PackageError::Client {
-                        call: "list_inbox",
+                        call: "list_events",
                         source,
                     })?;
-                trigger_event = inbox
-                    .events
-                    .iter()
-                    .find(|e| e.event_id == trigger.event_id)
-                    .cloned();
+                trigger_event = exact.events.into_iter().next();
             }
             let input = build_input_for_instance(
                 trigger,
@@ -812,6 +802,7 @@ pub async fn package(
     Ok(TaskContext {
         cancel: None,
         plan_mode,
+        prior_model_tokens: 0,
         instructions,
         input,
         autonomy,
@@ -1657,6 +1648,7 @@ mod tests {
     fn debug_redacts_the_token() {
         let ctx = TaskContext {
             plan_mode: false,
+            prior_model_tokens: 0,
             cancel: None,
             instructions: "i".into(),
             input: "in".into(),

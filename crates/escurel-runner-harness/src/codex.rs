@@ -274,6 +274,7 @@ fn parse_outcome(final_message: &str, jsonl: &[u8]) -> Result<HarnessOutcome, Ha
             usage.get_or_insert_with(Usage::default).accumulate(&Usage {
                 input_tokens: count("input_tokens"),
                 output_tokens: count("output_tokens"),
+                billed_tokens: None,
                 cost_usd: None,
                 model: None,
             });

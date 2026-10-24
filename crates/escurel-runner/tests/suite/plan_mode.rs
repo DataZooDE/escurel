@@ -208,3 +208,293 @@ async fn a_plan_mode_run_reports_its_plan_lands_nothing_and_an_approval_runs_it(
         "the approved plan reached the harness: {page}"
     );
 }
+
+#[tokio::test]
+async fn a_failing_plan_run_is_never_recorded_as_planned() {
+    let gw = EscurelProcess::spawn(Opts {
+        auth: AuthMode::TestIssuer,
+        fixtures: Some(
+            FixtureBuilder::new()
+                .tenant(TENANT)
+                .skill("renewal", SKILL_BODY)
+                .instance("renewal", "c1", INSTANCE_BODY)
+                .done(),
+        ),
+        ..Default::default()
+    })
+    .await;
+    let alice = gw.mint_token_with_sub(TENANT, Role::Agent, "alice");
+    let (signing_key, kid) = gw.signing_material();
+    let listen = format!("127.0.0.1:{}", free_port());
+    let ledger_dir = tempfile::tempdir().expect("tempdir");
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_escurel-runner"));
+    cmd.env("ESCUREL_RUNNER_LISTEN", &listen)
+        .env("ESCUREL_RUNNER_GATEWAY_URL", gw.base_url())
+        .env("ESCUREL_RUNNER_TENANT", TENANT)
+        .env_remove("ESCUREL_RUNNER_TOKEN")
+        .env("ESCUREL_RUNNER_AUTH_ISSUER", gw.issuer_url())
+        .env("ESCUREL_RUNNER_AUTH_KID", kid)
+        .env("ESCUREL_RUNNER_AUTH_SIGNING_KEY", &signing_key)
+        .env("ESCUREL_RUNNER_HARNESS", "echo")
+        .env("ESCUREL_ECHO_FAIL_SKILL", "renewal")
+        .env(
+            "ESCUREL_RUNNER_LEDGER_PATH",
+            ledger_dir.keep().join("ledger.sqlite"),
+        )
+        .env("ESCUREL_RUNNER_POLL_INTERVAL", "250ms");
+    let _runner = ChildGuard(cmd.spawn().expect("spawn runner"));
+    let event = manual_start(&gw, &alice, json!({ "mode": "plan" }), "failing plan").await;
+    let run = wait_for_terminal(&listen, &event).await;
+    assert_eq!(run["status"], "dead_letter", "{run}");
+    let page = call(&gw, &alice, "expand", json!({ "page_id": PAGE })).await;
+    assert!(
+        page["body"].as_str().unwrap().contains("BASELINE"),
+        "{page}"
+    );
+}
+
+#[tokio::test]
+async fn an_over_budget_gemini_plan_is_dead_lettered_not_planned() {
+    use axum::{Router, extract::State};
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+
+    async fn answer(State(calls): State<Arc<AtomicUsize>>) -> axum::Json<Value> {
+        calls.fetch_add(1, Ordering::SeqCst);
+        axum::Json(json!({ "candidates": [{ "content": { "parts": [
+            { "text": "Proposed plan" }
+        ] } }], "usageMetadata": { "promptTokenCount": 120,
+            "candidatesTokenCount": 40, "totalTokenCount": 160 } }))
+    }
+    let calls = Arc::new(AtomicUsize::new(0));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let model_base = format!("http://{}", listener.local_addr().unwrap());
+    tokio::spawn({
+        let calls = Arc::clone(&calls);
+        async move {
+            let _ = axum::serve(listener, Router::new().fallback(answer).with_state(calls)).await;
+        }
+    });
+
+    let gw = EscurelProcess::spawn(Opts {
+        auth: AuthMode::TestIssuer,
+        fixtures: Some(
+            FixtureBuilder::new()
+                .tenant(TENANT)
+                .skill("renewal", SKILL_BODY)
+                .instance("renewal", "c1", INSTANCE_BODY)
+                .done(),
+        ),
+        ..Default::default()
+    })
+    .await;
+    let alice = gw.mint_token_with_sub(TENANT, Role::Agent, "alice");
+    let (signing_key, kid) = gw.signing_material();
+    let listen = format!("127.0.0.1:{}", free_port());
+    let ledger_dir = tempfile::tempdir().expect("tempdir");
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_escurel-runner"));
+    cmd.env("ESCUREL_RUNNER_LISTEN", &listen)
+        .env("ESCUREL_RUNNER_GATEWAY_URL", gw.base_url())
+        .env("ESCUREL_RUNNER_TENANT", TENANT)
+        .env_remove("ESCUREL_RUNNER_TOKEN")
+        .env("ESCUREL_RUNNER_AUTH_ISSUER", gw.issuer_url())
+        .env("ESCUREL_RUNNER_AUTH_KID", kid)
+        .env("ESCUREL_RUNNER_AUTH_SIGNING_KEY", &signing_key)
+        .env("ESCUREL_RUNNER_HARNESS", "gemini")
+        .env("ESCUREL_GEMINI_API_KEY", "test-key")
+        .env("ESCUREL_RUNNER_GEMINI_BASE_URL", model_base)
+        .env("ESCUREL_RUNNER_GEMINI_MAX_TOTAL_TOKENS", "100")
+        .env(
+            "ESCUREL_RUNNER_LEDGER_PATH",
+            ledger_dir.keep().join("ledger.sqlite"),
+        )
+        .env("ESCUREL_RUNNER_POLL_INTERVAL", "250ms");
+    let _runner = ChildGuard(cmd.spawn().expect("spawn runner"));
+    let event = manual_start(&gw, &alice, json!({ "mode": "plan" }), "budget plan").await;
+    let run = wait_for_terminal(&listen, &event).await;
+    assert_eq!(run["status"], "dead_letter", "{run}");
+    assert_eq!(calls.load(Ordering::SeqCst), 1, "no extra model turn");
+    let page = call(&gw, &alice, "expand", json!({ "page_id": PAGE })).await;
+    assert!(
+        page["body"].as_str().unwrap().contains("BASELINE"),
+        "{page}"
+    );
+}
+
+#[tokio::test]
+async fn a_timed_out_gemini_call_with_unknown_usage_is_not_retried() {
+    use axum::{Router, extract::State};
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+
+    async fn stalled(State(calls): State<Arc<AtomicUsize>>) -> axum::Json<Value> {
+        calls.fetch_add(1, Ordering::SeqCst);
+        tokio::time::sleep(Duration::from_secs(20)).await;
+        axum::Json(json!({ "candidates": [{ "content": { "parts": [
+            { "text": "Too late" }
+        ] } }], "usageMetadata": { "promptTokenCount": 120,
+            "candidatesTokenCount": 4, "totalTokenCount": 124 } }))
+    }
+    let calls = Arc::new(AtomicUsize::new(0));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let model_base = format!("http://{}", listener.local_addr().unwrap());
+    tokio::spawn({
+        let calls = Arc::clone(&calls);
+        async move {
+            let _ = axum::serve(listener, Router::new().fallback(stalled).with_state(calls)).await;
+        }
+    });
+
+    let gw = EscurelProcess::spawn(Opts {
+        auth: AuthMode::TestIssuer,
+        fixtures: Some(
+            FixtureBuilder::new()
+                .tenant(TENANT)
+                .skill("renewal", SKILL_BODY)
+                .instance("renewal", "c1", INSTANCE_BODY)
+                .done(),
+        ),
+        ..Default::default()
+    })
+    .await;
+    let alice = gw.mint_token_with_sub(TENANT, Role::Agent, "alice");
+    let (signing_key, kid) = gw.signing_material();
+    let listen = format!("127.0.0.1:{}", free_port());
+    let ledger_dir = tempfile::tempdir().expect("tempdir");
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_escurel-runner"));
+    cmd.env("ESCUREL_RUNNER_LISTEN", &listen)
+        .env("ESCUREL_RUNNER_GATEWAY_URL", gw.base_url())
+        .env("ESCUREL_RUNNER_TENANT", TENANT)
+        .env_remove("ESCUREL_RUNNER_TOKEN")
+        .env("ESCUREL_RUNNER_AUTH_ISSUER", gw.issuer_url())
+        .env("ESCUREL_RUNNER_AUTH_KID", kid)
+        .env("ESCUREL_RUNNER_AUTH_SIGNING_KEY", &signing_key)
+        .env("ESCUREL_RUNNER_HARNESS", "gemini")
+        .env("ESCUREL_GEMINI_API_KEY", "test-key")
+        .env("ESCUREL_RUNNER_GEMINI_BASE_URL", model_base)
+        // Allow gateway packaging to finish under a busy suite; the model
+        // itself stalls well past this bound.
+        .env("ESCUREL_RUNNER_RUN_TIMEOUT", "5s")
+        .env("ESCUREL_RUNNER_MAX_ATTEMPTS", "2")
+        .env("ESCUREL_RUNNER_RETRY_BACKOFF", "100ms")
+        .env(
+            "ESCUREL_RUNNER_LEDGER_PATH",
+            ledger_dir.keep().join("ledger.sqlite"),
+        )
+        .env("ESCUREL_RUNNER_POLL_INTERVAL", "250ms");
+    let _runner = ChildGuard(cmd.spawn().expect("spawn runner"));
+    let event = manual_start(&gw, &alice, json!({ "mode": "plan" }), "stalled plan").await;
+    let run = wait_for_terminal(&listen, &event).await;
+    assert_eq!(run["status"], "dead_letter", "{run}");
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        1,
+        "must not retry unknown usage"
+    );
+}
+
+#[tokio::test]
+async fn gemini_retry_carries_reported_usage_before_a_second_tool_call() {
+    use axum::{Router, extract::State};
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+
+    async fn answer(State(calls): State<Arc<AtomicUsize>>) -> axum::Json<Value> {
+        let turn = calls.fetch_add(1, Ordering::SeqCst);
+        if turn == 0 {
+            // A clean answer with no gateway effect makes the reconciler
+            // retry. Those 80 tokens still belong to the same run.
+            return axum::Json(json!({ "candidates": [{ "content": { "parts": [
+                { "text": "No change made" }
+            ] } }], "usageMetadata": { "promptTokenCount": 70,
+                "candidatesTokenCount": 10, "totalTokenCount": 80 } }));
+        }
+        axum::Json(json!({ "candidates": [{ "content": { "parts": [{
+            "functionCall": { "name": "update_page", "args": {
+                "page_id": PAGE,
+                "content": "---\nkind: instance\nid: c1\nskill: renewal\n---\nSHOULD_NOT_LAND\n"
+            } }
+        }] } }], "usageMetadata": { "promptTokenCount": 25,
+            "candidatesTokenCount": 5, "totalTokenCount": 30 } }))
+    }
+    let calls = Arc::new(AtomicUsize::new(0));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let model_base = format!("http://{}", listener.local_addr().unwrap());
+    tokio::spawn({
+        let calls = Arc::clone(&calls);
+        async move {
+            let _ = axum::serve(listener, Router::new().fallback(answer).with_state(calls)).await;
+        }
+    });
+
+    let gw = EscurelProcess::spawn(Opts {
+        auth: AuthMode::TestIssuer,
+        fixtures: Some(
+            FixtureBuilder::new()
+                .tenant(TENANT)
+                .skill("renewal", SKILL_BODY)
+                .instance("renewal", "c1", INSTANCE_BODY)
+                .done(),
+        ),
+        ..Default::default()
+    })
+    .await;
+    let alice = gw.mint_token_with_sub(TENANT, Role::Agent, "alice");
+    let (signing_key, kid) = gw.signing_material();
+    let listen = format!("127.0.0.1:{}", free_port());
+    let ledger_dir = tempfile::tempdir().expect("tempdir");
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_escurel-runner"));
+    cmd.env("ESCUREL_RUNNER_LISTEN", &listen)
+        .env("ESCUREL_RUNNER_GATEWAY_URL", gw.base_url())
+        .env("ESCUREL_RUNNER_TENANT", TENANT)
+        .env_remove("ESCUREL_RUNNER_TOKEN")
+        .env("ESCUREL_RUNNER_AUTH_ISSUER", gw.issuer_url())
+        .env("ESCUREL_RUNNER_AUTH_KID", kid)
+        .env("ESCUREL_RUNNER_AUTH_SIGNING_KEY", &signing_key)
+        .env("ESCUREL_RUNNER_HARNESS", "gemini")
+        .env("ESCUREL_GEMINI_API_KEY", "test-key")
+        .env("ESCUREL_RUNNER_GEMINI_BASE_URL", model_base)
+        .env("ESCUREL_RUNNER_GEMINI_MAX_TOTAL_TOKENS", "100")
+        .env("ESCUREL_RUNNER_MAX_ATTEMPTS", "2")
+        .env("ESCUREL_RUNNER_RETRY_BACKOFF", "100ms")
+        .env(
+            "ESCUREL_RUNNER_LEDGER_PATH",
+            ledger_dir.keep().join("ledger.sqlite"),
+        )
+        .env("ESCUREL_RUNNER_POLL_INTERVAL", "250ms");
+    let _runner = ChildGuard(cmd.spawn().expect("spawn runner"));
+    let event = manual_start(&gw, &alice, json!({ "mode": "run" }), "budget retry").await;
+    let run = wait_for_terminal(&listen, &event).await;
+    assert_eq!(run["status"], "dead_letter", "{run}");
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        2,
+        "exactly one model call per attempt"
+    );
+    let finished = body_of(
+        &run_event(
+            &gw,
+            &gw.mint_token(TENANT, Role::Admin),
+            run["run_id"].as_str().unwrap(),
+            "run-finished",
+        )
+        .await,
+    );
+    assert_eq!(finished["attempts"], 2, "{finished}");
+    assert_eq!(finished["usage"]["billed_tokens"], 110, "{finished}");
+    let page = call(&gw, &alice, "expand", json!({ "page_id": PAGE })).await;
+    assert!(
+        page["body"].as_str().unwrap().contains("BASELINE"),
+        "{page}"
+    );
+    assert!(
+        !page["body"].as_str().unwrap().contains("SHOULD_NOT_LAND"),
+        "{page}"
+    );
+}

@@ -1597,6 +1597,9 @@ fn build_harness_named(config: &RunnerConfig, name: &str) -> Option<Arc<dyn Harn
                 if let Some(turns) = config.harness_max_turns {
                     h = h.with_max_turns(turns);
                 }
+                if let Some(tokens) = config.gemini_max_total_tokens {
+                    h = h.with_max_total_tokens(tokens);
+                }
                 Arc::new(h)
             }
             // Deliberately NOT the echo fallback below. A misconfigured
@@ -1614,6 +1617,63 @@ fn build_harness_named(config: &RunnerConfig, name: &str) -> Option<Arc<dyn Harn
                 std::process::exit(2);
             }
         },
+        "gemini-vertex" => {
+            let (Some(project), Some(location)) = (
+                config.gemini_vertex_project.as_deref(),
+                config.gemini_vertex_location.as_deref(),
+            ) else {
+                tracing::error!(target: "escurel_runner", "gemini-vertex needs GOOGLE_CLOUD_PROJECT and a model location");
+                std::process::exit(2);
+            };
+            let mut h = match GeminiHarness::vertex(project, location) {
+                Ok(h) => h,
+                Err(error) => {
+                    tracing::error!(target: "escurel_runner", %error, "invalid Vertex configuration");
+                    std::process::exit(2);
+                }
+            };
+            if config
+                .gemini_model
+                .as_deref()
+                .is_some_and(|model| model != "gemini-3.5-flash")
+            {
+                tracing::error!(target: "escurel_runner", "gemini-vertex requires gemini-3.5-flash");
+                std::process::exit(2);
+            }
+            if !cfg!(feature = "vertex-test-endpoints")
+                && (config.gemini_base_url.is_some() || config.gemini_metadata_url.is_some())
+            {
+                tracing::error!(target: "escurel_runner", "Vertex endpoint overrides require vertex-test-endpoints");
+                std::process::exit(2);
+            }
+            for override_url in [
+                config.gemini_base_url.as_deref(),
+                config.gemini_metadata_url.as_deref(),
+            ]
+            .into_iter()
+            .flatten()
+            {
+                let loopback = reqwest::Url::parse(override_url).ok().is_some_and(|url| {
+                    url.scheme() == "http"
+                        && matches!(url.host_str(), Some("127.0.0.1" | "localhost" | "::1"))
+                });
+                if !loopback {
+                    tracing::error!(target: "escurel_runner", "Vertex endpoint overrides require local HTTP");
+                    std::process::exit(2);
+                }
+            }
+            h = h.with_base_url(config.gemini_base_url.clone());
+            if let Some(url) = config.gemini_metadata_url.clone() {
+                h = h.with_metadata_url(url);
+            }
+            if let Some(turns) = config.harness_max_turns {
+                h = h.with_max_turns(turns);
+            }
+            if let Some(tokens) = config.gemini_max_total_tokens {
+                h = h.with_max_total_tokens(tokens);
+            }
+            Arc::new(h)
+        }
         _ => return None,
     };
     Some(built)
@@ -2031,9 +2091,8 @@ async fn dispatch_loop(
             // re-delivery and not re-drivable either, because the poller's
             // seen-set already holds its event id.
             //
-            // A timeout is a TRANSIENT failure: the retry policy already
-            // knows what to do with one, and a stalled attempt is exactly
-            // what a retry is for.
+            // A subprocess timeout is transient. A Gemini timeout leaves
+            // provider usage unknown, so retrying could exceed the run budget.
             // The harness for THIS trigger: a workflow step may declare its
             // own, and the runner's configured one answers for everything
             // else.
@@ -2050,10 +2109,15 @@ async fn dispatch_loop(
                 sink_ref,
             );
             let bound = config.run_timeout;
+            let gemini_budgeted = matches!(step_harness.name(), "gemini" | "gemini-vertex");
             async move {
                 let started_at = escurel_runner_core::now_ts();
                 let result = match tokio::time::timeout(bound, fut).await {
                     Ok(result) => result,
+                    Err(_) if gemini_budgeted => Err(ReconcileError::Permanent(format!(
+                        "Gemini usage unknown: run attempt exceeded {}ms and was abandoned",
+                        bound.as_millis()
+                    ))),
                     Err(_) => Err(ReconcileError::Transient(format!(
                         "run attempt exceeded {}s and was abandoned",
                         bound.as_secs()
@@ -2507,6 +2571,11 @@ async fn attempt_run(
             package_error_to_reconcile(e)
         })?;
     task.cancel = Some(cancel.clone());
+    task.prior_model_tokens = sink
+        .lock()
+        .ok()
+        .and_then(|s| s.usage.as_ref().and_then(|u| u.billed_tokens))
+        .unwrap_or(0);
     // Cancelled while packaging (or between attempts): don't start a harness.
     if cancel.is_cancelled() {
         return Err(ReconcileError::Cancelled(
@@ -2548,9 +2617,13 @@ async fn attempt_run(
                         s.tool_calls = outcome.tool_calls;
                         s.add_usage(outcome.usage.as_ref());
                     }
-                    return Err(ReconcileError::Converged(
-                        "planned: the harness reported its plan and stopped".to_owned(),
-                    ));
+                    return Err(if outcome.ok {
+                        ReconcileError::Converged(
+                            "planned: the harness reported its plan and stopped".to_owned(),
+                        )
+                    } else {
+                        ReconcileError::Permanent(outcome.summary)
+                    });
                 }
                 if let Ok(mut s) = sink.lock() {
                     s.summary = outcome.summary.clone();
@@ -2610,6 +2683,13 @@ async fn attempt_run(
                 );
                 if let Ok(mut s) = sink.lock() {
                     s.last_error = Some(e.to_string());
+                }
+                if matches!(harness.name(), "gemini" | "gemini-vertex")
+                    && !matches!(e, escurel_runner_harness::HarnessError::Preflight { .. })
+                {
+                    return Err(ReconcileError::Permanent(format!(
+                        "Gemini usage unknown after adapter error: {e}"
+                    )));
                 }
                 return Err(harness_error_to_reconcile(&e));
             }
@@ -2760,9 +2840,11 @@ fn harness_error_to_reconcile(e: &escurel_runner_harness::HarnessError) -> Recon
         // retry policy exists for. A genuinely permanent misconfiguration
         // (a revoked key) will exhaust `max_attempts` and dead-letter with
         // the upstream's own message attached, which is the diagnosis.
-        H::Spawn { .. } | H::Timeout { .. } | H::Io { .. } | H::Upstream { .. } => {
-            ReconcileError::Transient(e.to_string())
-        }
+        H::Spawn { .. }
+        | H::Timeout { .. }
+        | H::Io { .. }
+        | H::Upstream { .. }
+        | H::Preflight { .. } => ReconcileError::Transient(e.to_string()),
         H::BadOutcome { .. } => ReconcileError::BadOutput(e.to_string()),
         H::Cancelled { .. } => ReconcileError::Cancelled(e.to_string()),
         // Permanent, and deliberately so: the harness refused this task

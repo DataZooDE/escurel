@@ -145,7 +145,7 @@ async fn spawn_stub_model(page_id: String, seen: Arc<Mutex<Seen>>) -> String {
             ]),
             _ => json!([{ "text": "done" }]),
         };
-        axum::Json(json!({ "candidates": [{ "content": { "parts": parts } }] }))
+        super::gemini_response(parts)
     }
 
     let app = Router::new()

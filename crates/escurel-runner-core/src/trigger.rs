@@ -220,7 +220,8 @@ fn captured_via(provenance: &serde_json::Value) -> Option<&str> {
 ///
 /// Deliberately NOT the whole record. `event_id`, timestamps and provenance
 /// differ between two captures of the same thread — hashing them would make
-/// every event unique and the dedup inert, which is the state this replaces.
+/// every event unique and the dedup inert. An explicit `request_id` on a
+/// targeted event does distinguish separate requests.
 #[must_use]
 pub fn content_hash(event: &Event) -> String {
     use sha2::{Digest, Sha256};
@@ -233,6 +234,13 @@ pub fn content_hash(event: &Event) -> String {
     ] {
         hasher.update(field.len().to_le_bytes());
         hasher.update(field.as_bytes());
+    }
+    // A named request represents separate user intent even when its wording repeats.
+    if !event.instance_page_id.is_empty()
+        && let Some(request_id) = event.provenance.get("request_id").and_then(|v| v.as_str())
+    {
+        hasher.update(request_id.len().to_le_bytes());
+        hasher.update(request_id.as_bytes());
     }
     format!("sha256:{:x}", hasher.finalize())
 }
@@ -323,6 +331,21 @@ mod tests {
             status: "inbox".to_owned(),
             ..Event::default()
         }
+    }
+
+    #[test]
+    fn distinct_named_requests_have_distinct_content_identity() {
+        let mut first = sample_event();
+        first.instance_page_id = "markdown/instances/note/a.md".to_owned();
+        first.provenance = serde_json::json!({"request_id": "first"});
+        let mut second = first.clone();
+        second.event_id = "second-event".to_owned();
+        second.provenance = serde_json::json!({"request_id": "second"});
+        assert_ne!(content_hash(&first), content_hash(&second));
+        let mut unnamed = sample_event();
+        let baseline = content_hash(&unnamed);
+        unnamed.event_id = "different-event".to_owned();
+        assert_eq!(baseline, content_hash(&unnamed));
     }
 
     #[test]

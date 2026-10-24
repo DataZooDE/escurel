@@ -73,30 +73,73 @@ async fn call_mcp(p: &EscurelProcess, name: &str, args: Value) -> Value {
 #[derive(Default)]
 struct Seen {
     requests: Vec<Value>,
+    token_requests: usize,
 }
 
 /// A real HTTP server speaking `generateContent`. Turn 1 asks for the two
 /// tool calls that fold the event; turn 2 (after the adapter feeds the
 /// results back) answers with text, which is how the adapter learns the run
 /// is done.
-async fn spawn_stub_model(instance_page_id: String, seen: Arc<Mutex<Seen>>) -> String {
-    use axum::{Router, extract::State, http::Uri};
+async fn spawn_stub_model(
+    instance_page_id: String,
+    seen: Arc<Mutex<Seen>>,
+    vertex: bool,
+) -> String {
+    use axum::{
+        Router,
+        extract::State,
+        http::{HeaderMap, Uri},
+        routing::get,
+    };
 
     #[derive(Clone)]
     struct St {
         instance_page_id: String,
         seen: Arc<Mutex<Seen>>,
+        vertex: bool,
     }
 
-    async fn generate(State(st): State<St>, uri: Uri, body: String) -> axum::Json<Value> {
+    async fn metadata(State(st): State<St>, headers: HeaderMap) -> axum::Json<Value> {
+        assert_eq!(
+            headers.get("Metadata-Flavor").and_then(|v| v.to_str().ok()),
+            Some("Google")
+        );
+        st.seen.lock().expect("lock").token_requests += 1;
+        axum::Json(
+            json!({"access_token":"local-workload-token", "token_type":"Bearer", "expires_in":3600}),
+        )
+    }
+
+    async fn generate(
+        State(st): State<St>,
+        uri: Uri,
+        headers: HeaderMap,
+        body: String,
+    ) -> axum::Json<Value> {
         // The URL shape is part of the contract with the real API: a wrong
         // path is a 404 there and would be invisible behind a permissive
         // stub. Asserted rather than routed, because axum cannot route a
         // segment that mixes a parameter with a literal (`{model}:generate…`).
         assert!(
-            uri.path().starts_with("/models/") && uri.path().ends_with(":generateContent"),
+            uri.path().starts_with(if st.vertex {
+                "/v1/projects/pilot-project/locations/eu/publishers/google/models/"
+            } else {
+                "/models/"
+            }) && uri.path().ends_with(":generateContent"),
             "unexpected model URL: {uri}"
         );
+        if st.vertex {
+            assert_eq!(
+                headers.get("authorization").and_then(|v| v.to_str().ok()),
+                Some("Bearer local-workload-token")
+            );
+            assert!(headers.get("x-goog-api-key").is_none());
+        } else {
+            assert_eq!(
+                headers.get("x-goog-api-key").and_then(|v| v.to_str().ok()),
+                Some("test-key-not-a-real-credential")
+            );
+        }
         let req: Value = serde_json::from_str(&body).expect("adapter sent JSON");
         let decls = req["tools"][0]["functionDeclarations"]
             .as_array()
@@ -158,7 +201,9 @@ async fn spawn_stub_model(instance_page_id: String, seen: Arc<Mutex<Seen>>) -> S
         } else {
             json!([{ "text": "Folded the event into the instance." }])
         };
-        axum::Json(json!({ "candidates": [{ "content": { "parts": parts } }] }))
+        axum::Json(json!({ "candidates": [{ "content": { "parts": parts } }],
+            "usageMetadata": { "promptTokenCount": 120, "candidatesTokenCount": 40,
+                "totalTokenCount": 160 } }))
     }
 
     /// The event id the runner packaged, read out of the first request's
@@ -177,10 +222,14 @@ async fn spawn_stub_model(instance_page_id: String, seen: Arc<Mutex<Seen>>) -> S
             .to_owned()
     }
 
-    let app = Router::new().fallback(generate).with_state(St {
-        instance_page_id,
-        seen,
-    });
+    let app = Router::new()
+        .route("/metadata", get(metadata))
+        .fallback(generate)
+        .with_state(St {
+            instance_page_id,
+            seen,
+            vertex,
+        });
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
         .expect("bind stub model");
@@ -193,6 +242,16 @@ async fn spawn_stub_model(instance_page_id: String, seen: Arc<Mutex<Seen>>) -> S
 
 #[tokio::test]
 async fn gemini_adapter_folds_an_event_through_real_mcp_calls() {
+    gemini_case(false).await;
+}
+
+#[cfg(feature = "vertex-test-endpoints")]
+#[tokio::test]
+async fn vertex_workload_adapter_folds_an_event_through_real_mcp_calls() {
+    gemini_case(true).await;
+}
+
+async fn gemini_case(vertex: bool) {
     let gateway = EscurelProcess::spawn(Opts {
         auth: AuthMode::TestIssuer,
         fixtures: Some(
@@ -227,7 +286,7 @@ async fn gemini_adapter_folds_an_event_through_real_mcp_calls() {
     let event_id = captured["event_id"].as_str().expect("event_id").to_owned();
 
     let seen = Arc::new(Mutex::new(Seen::default()));
-    let model_base = spawn_stub_model(instance_page_id.clone(), Arc::clone(&seen)).await;
+    let model_base = spawn_stub_model(instance_page_id.clone(), Arc::clone(&seen), vertex).await;
 
     let token = gateway.mint_token(TENANT, Role::Agent);
     let listen = format!("127.0.0.1:{}", free_port());
@@ -243,14 +302,30 @@ async fn gemini_adapter_folds_an_event_through_real_mcp_calls() {
         .env("ESCUREL_RUNNER_GATEWAY_URL", gateway.base_url())
         .env("ESCUREL_RUNNER_TENANT", TENANT)
         .env("ESCUREL_RUNNER_TOKEN", &token)
-        .env("ESCUREL_RUNNER_HARNESS", "gemini")
+        .env(
+            "ESCUREL_RUNNER_HARNESS",
+            if vertex { "gemini-vertex" } else { "gemini" },
+        )
         .env(
             "ESCUREL_RUNNER_LEDGER_PATH",
             ledger_dir.path().join("ledger.sqlite").to_str().unwrap(),
         )
         .env("ESCUREL_GEMINI_API_KEY", "test-key-not-a-real-credential")
-        .env("ESCUREL_RUNNER_GEMINI_BASE_URL", &model_base)
         .env("ESCUREL_RUNNER_POLL_INTERVAL", "250ms");
+    if vertex {
+        cmd.env("GOOGLE_CLOUD_PROJECT", "pilot-project")
+            .env("ESCUREL_RUNNER_GEMINI_VERTEX_LOCATION", "eu")
+            .env(
+                "ESCUREL_RUNNER_GEMINI_BASE_URL",
+                format!("{model_base}/v1/projects/pilot-project/locations/eu/publishers/google"),
+            )
+            .env(
+                "ESCUREL_RUNNER_GEMINI_METADATA_URL",
+                format!("{model_base}/metadata"),
+            );
+    } else {
+        cmd.env("ESCUREL_RUNNER_GEMINI_BASE_URL", &model_base);
+    }
     let _runner = ChildGuard(cmd.spawn().expect("spawn escurel-runner"));
 
     let deadline = Instant::now() + Duration::from_secs(60);
@@ -292,6 +367,12 @@ async fn gemini_adapter_folds_an_event_through_real_mcp_calls() {
     // would mean the adapter never returned the tool results to the model —
     // which is the whole loop.
     let guard = seen.lock().expect("lock");
+    if vertex {
+        assert!(
+            guard.token_requests >= 2,
+            "each Vertex turn needs a workload token"
+        );
+    }
     assert!(
         guard.requests.len() >= 2,
         "the adapter must feed tool results back to the model, got {} request(s)",
