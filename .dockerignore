@@ -25,6 +25,12 @@ apps/escurel-explore/build
 apps/escurel-explore/.dart_tool
 **/.dart_tool
 
+# Local dependencies and generated editor test output.
+**/node_modules
+editors/vscode/dist
+editors/vscode/*.vsix
+editors/vscode/test/e2e/artifacts
+
 # Editor / OS cruft.
 .DS_Store
 *.swp

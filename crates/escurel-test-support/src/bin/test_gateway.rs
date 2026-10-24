@@ -8,9 +8,14 @@
 //! ```text
 //! escurel-test-gateway --tenant vsx --seed test/integration/seed [--subject alice]
 //!                       [--bearer-file <path> [--bearer-refresh-secs 240]]
+//!                       [--group <name>]... [--write-acl-enforce] [--tenant-export]
+//!                       [--external-issuer-url <url> --external-jwks-url <url>]
 //! {"gateway_url":"http://127.0.0.1:…","issuer_url":"http://127.0.0.1:…","kid":"…",
 //!  "signing_key":"-----BEGIN RSA PRIVATE KEY-----…","bearer":"eyJ…","admin_bearer":"eyJ…","tenant":"vsx"}
 //! ```
+//! Repeating `--group` sets the groups in locally minted bearer tokens. With no `--group`, the
+//! bearer has `escurel:agent`. External issuer mode returns null for local signing material and
+//! bearers; the caller supplies its own token.
 //!
 //! The seed directory holds `skills/*.md` and `instances/*.md`. Each file becomes the page
 //! `markdown/skills/<name>.md` / `markdown/instances/<name>.md` — FLAT, so an instance is
@@ -18,7 +23,7 @@
 //! subdirectory is NESTED: `instances/<skill>/<id>.md` is `markdown/instances/<skill>/<id>.md` (the page
 //! id of a row of an `instances: rows` skill, and of its linked markdown).
 //!
-//! The `bearer` is a HUMAN's (role `agent`, the subject given by `--subject`): it can read,
+//! The locally minted `bearer` is a HUMAN's (role `agent`, the subject given by `--subject`): it can read,
 //! draft and promote, and it is what an editor under test signs in with. The `admin_bearer` is
 //! the same subject with the admin role, for what only an admin may do (requeue, pause and
 //! resume the runner). Both expire in ten minutes, like every token this issuer mints; that is
@@ -33,7 +38,9 @@
 
 use std::path::{Path, PathBuf};
 
-use escurel_test_support::{AuthMode, ConfigOverrides, EscurelProcess, FixtureBuilder, Opts, Role};
+use escurel_test_support::{
+    AuthMode, ConfigOverrides, EscurelProcess, FixtureBuilder, Opts, Role, WriteAclMode,
+};
 use serde_json::json;
 
 struct Args {
@@ -43,6 +50,11 @@ struct Args {
     /// Keep this file holding a current `{bearer, admin_bearer}` (a demo outlasts a token).
     bearer_file: Option<PathBuf>,
     bearer_refresh_secs: u64,
+    groups: Vec<String>,
+    external_issuer_url: Option<String>,
+    external_jwks_url: Option<String>,
+    write_acl_enforce: bool,
+    tenant_export: bool,
 }
 
 fn parse() -> Result<Args, String> {
@@ -51,6 +63,11 @@ fn parse() -> Result<Args, String> {
     let mut subject = "alice".to_owned();
     let mut bearer_file = None;
     let mut bearer_refresh_secs = 240;
+    let mut groups = Vec::new();
+    let mut external_issuer_url = None;
+    let mut external_jwks_url = None;
+    let mut write_acl_enforce = false;
+    let mut tenant_export = false;
     let mut it = std::env::args().skip(1);
     while let Some(flag) = it.next() {
         let value = |it: &mut dyn Iterator<Item = String>| {
@@ -60,20 +77,34 @@ fn parse() -> Result<Args, String> {
             "--tenant" => tenant = Some(value(&mut it)?),
             "--seed" => seed = Some(PathBuf::from(value(&mut it)?)),
             "--subject" => subject = value(&mut it)?,
+            "--group" => groups.push(value(&mut it)?),
             "--bearer-file" => bearer_file = Some(PathBuf::from(value(&mut it)?)),
             "--bearer-refresh-secs" => {
                 bearer_refresh_secs = value(&mut it)?
                     .parse()
                     .map_err(|_| "--bearer-refresh-secs is a whole number of seconds".to_owned())?;
             }
+            "--external-issuer-url" => external_issuer_url = Some(value(&mut it)?),
+            "--external-jwks-url" => external_jwks_url = Some(value(&mut it)?),
+            "--write-acl-enforce" => write_acl_enforce = true,
+            "--tenant-export" => tenant_export = true,
             "-h" | "--help" => {
                 return Err(
-                    "usage: escurel-test-gateway --tenant <id> --seed <dir> [--subject <sub>]"
+                    "usage: escurel-test-gateway --tenant <id> --seed <dir> [--subject <sub>] [--group <name>]... [--write-acl-enforce] [--tenant-export] [--external-issuer-url <url> --external-jwks-url <url>]"
                         .into(),
                 );
             }
             other => return Err(format!("unknown argument `{other}`")),
         }
+    }
+    if external_issuer_url.is_some() != external_jwks_url.is_some() {
+        return Err("external issuer URL and JWKS URL must be supplied together".into());
+    }
+    if external_issuer_url.is_some() && bearer_file.is_some() {
+        return Err("external issuer mode does not mint or refresh bearer files".into());
+    }
+    if groups.is_empty() {
+        groups.push("escurel:agent".to_owned());
     }
     Ok(Args {
         tenant: tenant.ok_or("--tenant is required")?,
@@ -81,6 +112,11 @@ fn parse() -> Result<Args, String> {
         subject,
         bearer_file,
         bearer_refresh_secs: bearer_refresh_secs.max(1),
+        groups,
+        external_issuer_url,
+        external_jwks_url,
+        write_acl_enforce,
+        tenant_export,
     })
 }
 
@@ -95,11 +131,16 @@ fn write_atomically(path: &Path, contents: &str) -> std::io::Result<()> {
 /// A fresh `{bearer, admin_bearer}` pair for the signed-in subject, written atomically.
 fn write_bearers(process: &EscurelProcess, args: &Args, path: &Path) -> std::io::Result<()> {
     let contents = json!({
-        "bearer": process.mint_token_with_sub(&args.tenant, Role::Agent, &args.subject),
+        "bearer": mint_bearer(process, args),
         "admin_bearer": process.mint_token_with_sub(&args.tenant, Role::Admin, &args.subject),
     })
     .to_string();
     write_atomically(path, &contents)
+}
+
+fn mint_bearer(process: &EscurelProcess, args: &Args) -> String {
+    let groups: Vec<&str> = args.groups.iter().map(String::as_str).collect();
+    process.mint_token_with_groups(&args.tenant, &args.subject, &groups, false)
 }
 
 /// `skills/` and `instances/` markdown files, in a stable order so a seed replays the same way
@@ -193,15 +234,28 @@ async fn main() {
     for (path, body) in pages {
         tenant = tenant.page(&path, body);
     }
+    let external = args
+        .external_issuer_url
+        .as_ref()
+        .zip(args.external_jwks_url.as_ref());
     let process = EscurelProcess::spawn(Opts {
-        auth: AuthMode::TestIssuer,
+        auth: if let Some((issuer_url, jwks_url)) = external {
+            AuthMode::External {
+                issuer_url: issuer_url.clone(),
+                jwks_url: jwks_url.clone(),
+            }
+        } else {
+            AuthMode::TestIssuer
+        },
         fixtures: Some(tenant.done()),
         config_overrides: ConfigOverrides {
+            write_acl: args.write_acl_enforce.then_some(WriteAclMode::Enforce),
+            fixture_tenant_export: args.tenant_export,
             // Live CRDT sessions, so the editor's personal-draft path works against it.
             live_crdt: true,
             // A signing identity on the issuer's own key, so `mint_agent_token` works: starting
             // a skill in a terminal under a governed run needs it.
-            signing: true,
+            signing: external.is_none(),
             // The demo's REST and MCP upstreams are local processes; `ESCUREL_EGRESS_*` (notably
             // `ESCUREL_EGRESS_ALLOW_LOOPBACK=1`) opens loopback for them, strict otherwise.
             egress: Some(escurel_test_support::EgressPolicy::from_env()),
@@ -222,9 +276,17 @@ async fn main() {
     })
     .await;
 
-    let (signing_key, kid) = process.signing_material();
-    let bearer = process.mint_token_with_sub(&args.tenant, Role::Agent, &args.subject);
-    let admin_bearer = process.mint_token_with_sub(&args.tenant, Role::Admin, &args.subject);
+    let (signing_key, kid, bearer, admin_bearer) = if external.is_none() {
+        let (key, kid) = process.signing_material();
+        (
+            Some(key),
+            Some(kid),
+            Some(mint_bearer(&process, &args)),
+            Some(process.mint_token_with_sub(&args.tenant, Role::Admin, &args.subject)),
+        )
+    } else {
+        (None, None, None, None)
+    };
     // A demo outlasts a ten-minute token. The file is written BEFORE the line is printed, so a
     // reader that waits for the line always finds a bearer, and then kept fresh. Only what the
     // flag asked for is written, and only to the path given.
@@ -239,12 +301,14 @@ async fn main() {
         "{}",
         json!({
             "gateway_url": process.base_url(),
-            "issuer_url": process.issuer_url(),
+            "issuer_url": external.map_or_else(|| process.issuer_url(), |(url, _)| url.clone()),
             "kid": kid,
             "signing_key": signing_key,
             "bearer": bearer,
             "admin_bearer": admin_bearer,
             "tenant": args.tenant,
+            "fixture_store_dir": args.tenant_export.then(|| process.fixture_store_dir())
+                .flatten().map(|path| path.display().to_string()),
         })
     );
 

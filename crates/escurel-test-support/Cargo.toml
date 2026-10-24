@@ -9,6 +9,10 @@ authors.workspace = true
 repository.workspace = true
 homepage.workspace = true
 
+[features]
+# Opt in to real PDF extraction for downstream acceptance tests.
+document-pdf = ["escurel-server/kreuzberg"]
+
 [dependencies]
 escurel-types = { path = "../escurel-types" }
 escurel-admin = { path = "../escurel-admin" }
@@ -18,7 +22,7 @@ escurel-crdt = { path = "../escurel-crdt" }
 escurel-embed = { path = "../escurel-embed" }
 escurel-index = { path = "../escurel-index" }
 escurel-quota = { path = "../escurel-quota" }
-escurel-server = { path = "../escurel-server" }
+escurel-server = { path = "../escurel-server", default-features = false, features = ["test-faults"] }
 escurel-storage = { path = "../escurel-storage" }
 base64 = "0.22"
 bytes = "1"
