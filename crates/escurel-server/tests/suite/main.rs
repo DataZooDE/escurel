@@ -81,6 +81,7 @@ mod ingest_owner_scope;
 mod ingest_upload_lake_durability;
 mod ingest_webhook;
 mod instance_acl;
+mod instance_immutable_removal;
 mod instance_scoped_acl;
 mod instances_pagination;
 mod lake_upgrade_cmd;

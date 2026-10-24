@@ -10,7 +10,7 @@
 //! | Where | Key | Meaning | Issue code |
 //! |-------|-----|---------|------------|
 //! | field | `immutable: true` | the key cannot change once the page exists | `field_immutable` |
-//! | skill | `immutable: true` | the page cannot change once it exists | `instance_immutable` |
+//! | skill | `immutable: true` | the page cannot change, be archived or be renamed once it exists | `instance_immutable` |
 //! | field | `non_blank: true` | a present value is not empty or whitespace | `field_blank` |
 //! | field | `format: date` | a string value is `YYYY-MM-DD` | `frontmatter_field_type` |
 //! | field | `required_when: {other: value}` | required while `other` equals `value` | `field_required_when` |
@@ -693,6 +693,59 @@ impl Indexer {
             }
         }
         Ok(issues)
+    }
+
+    /// `immutable: true` on a skill also forbids removing its instances.
+    ///
+    /// `action` is `archive` (`delete_page`) or `move` (`move_page`); the
+    /// refusal carries the same `instance_immutable` code as a changed write.
+    /// The skill is read from the page path and from the stored page's own
+    /// `skill:` key, as for a write, so relabelling does not shed the rule.
+    /// `None` when the page is absent, not an instance, or of a mutable skill.
+    /// `purge_page` is deliberately not covered: it is the operator's erasure
+    /// act, and it only acts on a page that is already archived.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`IndexerError`] for an underlying DuckDB failure.
+    pub async fn immutable_removal_issue(
+        &self,
+        page_id: &str,
+        action: &str,
+    ) -> Result<Option<Issue>, IndexerError> {
+        let Some(path_skill) = page_id
+            .strip_prefix("markdown/instances/")
+            .and_then(|tail| tail.split_once('/'))
+            .map(|(skill, _)| skill)
+        else {
+            return Ok(None);
+        };
+        let Some(stored) = self.read_page_markdown(page_id).await? else {
+            return Ok(None);
+        };
+        let stored_skill = parse(&stored).ok().and_then(|p| {
+            p.frontmatter
+                .fields
+                .get("skill")
+                .and_then(YamlValue::as_str)
+                .map(str::to_owned)
+        });
+        let mut wanted: HashSet<&str> = HashSet::from([path_skill]);
+        if let Some(s) = stored_skill.as_deref() {
+            wanted.insert(s);
+        }
+        let contracts = self.resolve_skills(&wanted).await?;
+        if !contracts.values().any(|c| c.immutable) {
+            return Ok(None);
+        }
+        Ok(Some(Issue::error(
+            "instance_immutable",
+            "page_id",
+            format!(
+                "cannot {action} `{page_id}`: its skill is immutable, so an instance is never \
+                 changed, archived or renamed; write a new instance to correct it"
+            ),
+        )))
     }
 
     /// A page that claims a release (`pack_id`, `pack_version`, `pack_sha256`)

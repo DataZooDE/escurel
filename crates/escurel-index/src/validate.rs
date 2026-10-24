@@ -1909,7 +1909,7 @@ impl Indexer {
     /// Both halves come from the ONE row already being read, deliberately: the
     /// typed checks must not cost a second pass over the same pages (#508 asks
     /// for exactly this — "fold it into the existing single locked pass").
-    async fn resolve_skills(
+    pub(crate) async fn resolve_skills(
         &self,
         slugs: &HashSet<&str>,
     ) -> Result<HashMap<String, SkillContract>, IndexerError> {

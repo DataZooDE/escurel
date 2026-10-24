@@ -1081,6 +1081,25 @@ async fn publish_durably(
     Ok(())
 }
 
+/// The `instance_immutable` refusal for archiving or renaming `page_id`: `None`
+/// unless the page is an instance of a skill declared `immutable: true`.
+pub(super) async fn immutable_removal_refusal(
+    indexer: &Indexer,
+    page_id: &str,
+    action: &str,
+) -> Result<Option<Value>, JsonRpcError> {
+    let issue = indexer
+        .immutable_removal_issue(page_id, action)
+        .await
+        .map_err(|e| JsonRpcError::internal(format!("{action} immutability guard: {e}")))?;
+    Ok(issue.map(|issue| {
+        json!({
+            "ok": false,
+            "issues": [crate::mcp::tools_read::issue_to_json(&issue)],
+        })
+    }))
+}
+
 /// The `relation_in_use` refusal for archiving or renaming `page_id`: `None`
 /// when no live instance holds a declared link to it. `pending` is the
 /// content a changeset will write alongside (empty for a single write).
@@ -1207,6 +1226,9 @@ pub(super) async fn tool_move_page(
         }
     }
 
+    if let Some(refused) = immutable_removal_refusal(indexer, &a.from, "move").await? {
+        return Ok(refused);
+    }
     if let Some(refused) =
         relation_in_use_refusal(indexer, &a.from, "move", &std::collections::HashMap::new()).await?
     {
@@ -1458,6 +1480,9 @@ pub(super) async fn tool_delete_page(
         }
     }
 
+    if let Some(refused) = immutable_removal_refusal(indexer, &a.page_id, "archive").await? {
+        return Ok(refused);
+    }
     if let Some(refused) = relation_in_use_refusal(
         indexer,
         &a.page_id,

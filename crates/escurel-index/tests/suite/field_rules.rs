@@ -288,6 +288,55 @@ async fn an_immutable_skill_freezes_its_instances_even_if_the_skill_key_is_edite
     assert!(has(&issues, "instance_immutable", "page_id"), "{issues:?}");
 }
 
+#[tokio::test]
+async fn removing_an_instance_of_an_immutable_skill_is_refused() {
+    let h = harness();
+    let (eid, e1) = instance("event", "e1", "kind_of: login\n");
+    let (nid, n1) = instance("note", "n1", "");
+    seed_all(
+        &h,
+        &[
+            skill_page("event", "immutable: true\n"),
+            skill_page("note", ""),
+            (eid.clone(), e1),
+            (nid.clone(), n1),
+        ],
+    )
+    .await;
+
+    for action in ["archive", "move"] {
+        let issue = h
+            .indexer
+            .immutable_removal_issue(&eid, action)
+            .await
+            .unwrap()
+            .unwrap_or_else(|| panic!("{action} of an immutable instance must be refused"));
+        assert_eq!(issue.code, "instance_immutable");
+        assert!(issue.message.contains(action), "{}", issue.message);
+        assert!(
+            h.indexer
+                .immutable_removal_issue(&nid, action)
+                .await
+                .unwrap()
+                .is_none(),
+            "a mutable skill's instance is not affected"
+        );
+    }
+    // Not an instance, or not there: nothing to refuse.
+    for page in [
+        "markdown/skills/event.md",
+        "markdown/instances/event/none.md",
+    ] {
+        assert!(
+            h.indexer
+                .immutable_removal_issue(page, "archive")
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
+}
+
 const TOPIC_FIELDS: &str = "\
 fields:
   - {name: parent, kind: link, to: topic, acyclic: true}
