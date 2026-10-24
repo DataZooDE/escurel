@@ -145,7 +145,7 @@ declare none are unchanged.
 | `fields[].kind: date`, or `kind: string` + `format: date` | `YYYY-MM-DD` | `frontmatter_field_type` |
 | `fields[].min` / `max` | inclusive number bounds | `frontmatter_field_range` |
 | `fields[].non_blank: true` | present value not empty or whitespace | `field_blank` |
-| `fields[].required_when: {other: value}` | required while `other` equals `value` | `field_required_when` |
+| `fields[].required_when: {other: value}` or `{other: [v1, v2]}` | required while `other` equals the value, or any one of the listed values (compared as text); the list must be non-empty and hold plain values, else `fields_malformed` | `field_required_when` |
 | `fields[].immutable: true` | key cannot change (or be added or dropped) after the page exists | `field_immutable` |
 | skill `immutable: true` | page bytes cannot change after the page exists, and the page cannot be archived (`delete_page`) or renamed (`move_page`); the rule follows the page path and the stored page's skill, not only the draft's `skill:` | `instance_immutable` |
 | `fields[].kind: link`, `to: <skill>` | value is one quoted `[[<skill>::<id>]]` link (or a list of them) to a live instance of `<skill>`, saved or in the pending batch | `relation_invalid`, `relation_unresolved` |

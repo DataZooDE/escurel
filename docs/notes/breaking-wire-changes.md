@@ -2,6 +2,8 @@
 
 One line per change. Folded into the root `CHANGELOG.md` BREAKING entry and `docs/deploy/README.md`.
 
+- `list_skills` `fields[].required_when` is now `[other_field, [value, ...]]` (was `[other_field, value]`), because a skill
+  may declare `required_when: {status: [resolved, dismissed]}`. A single-value declaration is a one-element list.
 - `ESCUREL_WRITE_ACL` defaults to `enforce` (was `off`); an unrecognised value also means `enforce`. A deployment
   that never set it now refuses writes by callers who are neither the instance owner nor an admin (`forbidden`).
   Opt out with `ESCUREL_WRITE_ACL=off`; `log` warns and allows. Skill 0.17.1.

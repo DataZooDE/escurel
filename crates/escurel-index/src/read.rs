@@ -256,9 +256,10 @@ pub struct SkillField {
     /// `format:` — a refinement of a string field. Only `date` is recognised
     /// (`YYYY-MM-DD`); an unrecognised format constrains nothing.
     pub format: Option<String>,
-    /// `required_when: {other_field: value}` — the field is required while
-    /// `other_field` equals `value` (compared as text).
-    pub required_when: Option<(String, String)>,
+    /// `required_when: {other_field: value}` or `{other_field: [v1, v2]}` — the
+    /// field is required while `other_field` equals one of the values
+    /// (compared as text). A single value is a one-element list.
+    pub required_when: Option<(String, Vec<String>)>,
 }
 
 /// One block of a skill's declared instance body layout (the `blocks:`
@@ -419,14 +420,7 @@ fn field_from(name: &str, attrs: &serde_json::Value) -> SkillField {
         non_blank: flag("non_blank"),
         acyclic: flag("acyclic"),
         format: text("format"),
-        required_when: attrs
-            .get("required_when")
-            .and_then(serde_json::Value::as_object)
-            .and_then(|m| {
-                let (k, v) = m.iter().next()?;
-                let v = v.as_str().map_or_else(|| v.to_string(), str::to_owned);
-                Some((k.clone(), v))
-            }),
+        required_when: attrs.get("required_when").and_then(parse_required_when),
     }
 }
 
@@ -1794,4 +1788,23 @@ fn string_array_field(fm: &serde_json::Value, key: &str) -> Vec<String> {
                 .collect()
         })
         .unwrap_or_default()
+}
+
+/// `required_when:` is a one-entry mapping `{other_field: value}` where the value
+/// is a scalar or a non-empty list of scalars. `None` when ill-formed.
+pub(crate) fn parse_required_when(v: &serde_json::Value) -> Option<(String, Vec<String>)> {
+    fn scalar(v: &serde_json::Value) -> Option<String> {
+        match v {
+            serde_json::Value::Array(_) | serde_json::Value::Object(_) => None,
+            serde_json::Value::String(s) => Some(s.clone()),
+            other => Some(other.to_string()),
+        }
+    }
+    let map = v.as_object().filter(|m| m.len() == 1)?;
+    let (key, value) = map.iter().next()?;
+    let values = match value {
+        serde_json::Value::Array(items) => items.iter().map(scalar).collect::<Option<Vec<_>>>()?,
+        other => vec![scalar(other)?],
+    };
+    (!values.is_empty()).then(|| (key.clone(), values))
 }

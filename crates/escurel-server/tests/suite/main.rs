@@ -137,6 +137,7 @@ mod remote_rest_rows;
 mod remote_support;
 mod remote_write_back;
 mod report_progress;
+mod required_when_wire;
 mod reserved_ids_and_purge_gate;
 mod review_events;
 mod rows_instances;
