@@ -6,11 +6,13 @@ import { PageAugmentRegistry } from './augment';
 import { InboxDecoratorRegistry } from './inbox';
 import { OverviewTileRegistry, PageRendererRegistry } from './contributions';
 import { gatewayFacade } from './gateway';
+import { FocusProfileRegistry } from '../focus/focusProfiles';
 import { shellExtras } from './shellOptions';
 import type { HelperBroker } from './helperCredential';
 import {
   EXTENSION_API_VERSION,
   type EscurelExtensionApi,
+  type FocusProfile,
   type GatewayClient,
   type HelperCredential,
   type HelperCredentialRequest,
@@ -44,12 +46,14 @@ export interface Contributions {
   augments: PageAugmentRegistry;
   reviewHooks: ReviewHookRegistry;
   inboxDecorators: InboxDecoratorRegistry;
+  focusProfiles: FocusProfileRegistry;
   gateway: GatewayClient;
   onDidChangeTenant: vscode.Event<TenantInfo>;
 }
 
 export function createContributions(deps: ApiDeps): Contributions & { dispose(): void } {
   const changed = new vscode.EventEmitter<TenantInfo>();
+  const focusProfiles = new FocusProfileRegistry();
   const sub = deps.onDidChange(() => changed.fire({ gatewayUrl: deps.gatewayUrl() }));
   return {
     tiles: new OverviewTileRegistry(),
@@ -57,10 +61,12 @@ export function createContributions(deps: ApiDeps): Contributions & { dispose():
     augments: new PageAugmentRegistry(),
     reviewHooks: new ReviewHookRegistry(),
     inboxDecorators: new InboxDecoratorRegistry(),
+    focusProfiles,
     gateway: gatewayFacade(deps.client),
     onDidChangeTenant: changed.event,
     dispose: () => {
       sub.dispose();
+      focusProfiles.dispose();
       changed.dispose();
     },
   };
@@ -97,6 +103,7 @@ export function createExtensionApi(deps: ApiDeps, c: Contributions): EscurelExte
       }
       return deps.helper.get(request);
     },
+    registerFocusProfile: (profile: FocusProfile) => c.focusProfiles.register(profile),
     webviewHtml(o: WebviewHtmlOptions): string {
       if (typeof o?.bundle !== 'string' || !BUNDLE.test(o.bundle)) {
         throw new Error('webviewHtml: invalid bundle name');

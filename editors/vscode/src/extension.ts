@@ -95,7 +95,7 @@ export function activate(
   };
   const contributions = createContributions(apiDeps);
   context.subscriptions.push(contributions);
-  const focus = FocusMode.register(context);
+  const focus = FocusMode.register(context, contributions.focusProfiles);
   registerControlCommands(context, services);
   registerNodeCommands(context, services);
   context.subscriptions.push(services);

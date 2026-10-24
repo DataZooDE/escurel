@@ -154,6 +154,29 @@ All optional, all validated on the host; with none of them the shell is byte-ide
 
 The CSP stays `default-src 'none'` with no `connect-src`; `font-src` appears only when fonts are given.
 
+### `registerFocusProfile({ id, settings })`
+
+Escurel's focus mode (the calm window) writes a list of VS Code settings and puts the person's own values back on
+exit. A companion with its own calm window used to write the same settings through its own toggle, so the second
+toggle remembered the first one's values as the person's. A profile replaces that: the companion offers a list, and the
+one focus toggle applies the active profile.
+
+- **Data only.** `settings` is a plain object (at most 40 entries, plain JSON values, small). Keys are limited to
+  appearance: `window.*`, `workbench.*`, `breadcrumbs.*`, `editor.minimap.*` and a few editor looks
+  (`editor.fontFamily`, `fontSize`, `lineHeight`, `lineNumbers`, `wordWrap`, `renderLineHighlight`, `cursorBlinking`). A key
+  of Escurel (`escurel.*`), or one that names a trust, path, command, URL, domain, shell, terminal, task, proxy,
+  extension, security or auth setting, is refused, so a profile cannot redirect the token or make something run. Id
+  `escurel` is reserved for the built-in list. A duplicate id throws; `dispose()` removes the profile.
+- **Which profile is active.** The user-level setting `escurel.focus.profile` (`escurel` or a registered id) wins. Unset:
+  the one registered companion profile, otherwise the built-in one. With two companions and no choice Escurel does not
+  pick one for the user. A setting that names an unregistered id is ignored.
+- **No clobbering.** The person's own values are remembered once, at the first enter, per setting. Switching profile
+  while the window is calm (a profile appears, goes away or is chosen) keeps those originals for shared keys, remembers
+  the window's value for keys new to the profile, and gives back at once what only the old profile changed. Leaving
+  restores everything. Enter, switch and exit take turns, so a settings event during an exit cannot put the calm window back.
+- The companion keeps its own title and theme in the profile (`window.title`, `workbench.colorTheme`); a theme it
+  ships is its own `contributes.themes`.
+
 ## Classification of a downstream fork's changes
 
 Measured against the `editors/vscode` diff of one downstream fork: 298 files, 257 added, 41 modified.

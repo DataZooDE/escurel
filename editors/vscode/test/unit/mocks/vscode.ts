@@ -303,3 +303,4 @@ export const comments = {
     return new CommentController(id, label);
   },
 };
+export const ConfigurationTarget = { Global: 1, Workspace: 2, WorkspaceFolder: 3 } as const;

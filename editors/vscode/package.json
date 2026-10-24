@@ -86,6 +86,12 @@
           "scope": "application",
           "description": "Extension ids (publisher.name) that may request a short-lived credential for a helper process they start, without a question. Any other extension is asked about once. The credential is minted by the gateway: your own access, never admin, valid for minutes."
         },
+        "escurel.focus.profile": {
+          "type": "string",
+          "default": "",
+          "scope": "application",
+          "description": "Which focus-mode profile the focus toggle applies: \"escurel\" (the built-in calm window) or the id of a profile an installed companion extension registered. Empty: the one registered companion profile, or the built-in one when there are none or several."
+        },
         "escurel.shellHarness": {
           "type": "string",
           "default": "claude",
@@ -1391,7 +1397,8 @@
         "escurel.auth.scopes",
         "escurel.shellHarness",
         "escurel.harness",
-        "escurel.api.helperCredentialExtensions"
+        "escurel.api.helperCredentialExtensions",
+        "escurel.focus.profile"
       ]
     },
     "virtualWorkspaces": true

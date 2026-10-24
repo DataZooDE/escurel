@@ -122,6 +122,7 @@ describe('settings that decide where a credential goes or what runs', () => {
     'escurel.shellHarness',
     'escurel.harness',
     'escurel.api.helperCredentialExtensions',
+    'escurel.focus.profile',
   ])('%s cannot be set by a workspace', (id) => {
     const prop = manifest.contributes.configuration.properties[id] as { scope?: string };
     expect(prop.scope).toBe('application');

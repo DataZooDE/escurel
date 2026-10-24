@@ -77,6 +77,17 @@ export interface WebviewShellOptions {
   title?: string;
 }
 
+/**
+ * The calm-window settings a companion wants when the user turns focus mode on. Data only. Appearance
+ * settings only: `window.*`, `workbench.*`, `breadcrumbs.*`, `editor.minimap.*` and a few editor looks.
+ */
+export interface FocusProfile {
+  /** Unique: 1 to 64 letters, digits, `.`, `_`, `-`; `escurel` is reserved. The user selects it by this id. */
+  id: string;
+  /** Setting id to value, at most 40, plain JSON values. The profile replaces Escurel's own list while active. */
+  settings: Readonly<Record<string, unknown>>;
+}
+
 export interface WebviewHtmlOptions extends WebviewShellOptions {
   webview: vscode.Webview;
   /** The companion's own extension URI: its bundle is `dist/webview/<bundle>.js` under it. */
@@ -156,6 +167,12 @@ export interface EscurelExtensionApi {
    * the extension is in `escurel.api.helperCredentialExtensions` or the user accepted a one-time question.
    */
   getHelperCredential(request: HelperCredentialRequest): Promise<HelperCredential>;
+  /**
+   * Offers a focus-mode profile. Escurel's single focus toggle applies the ACTIVE profile and keeps the
+   * person's own values: the user's setting `escurel.focus.profile` picks it; unset, the one registered
+   * profile is used, and with several the built-in one stays until the user chooses. Duplicate id throws.
+   */
+  registerFocusProfile(profile: FocusProfile): vscode.Disposable;
   /** The shell of a companion webview: CSP, nonce, theme tokens. */
   webviewHtml(options: WebviewHtmlOptions): string;
   readonly themeTokens: ThemeTokens;

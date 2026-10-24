@@ -41,6 +41,7 @@ describe('the public extension API', () => {
       'getHelperCredential',
       'getSubject',
       'onDidChangeTenant',
+      'registerFocusProfile',
       'registerInboxDecorator',
       'registerOverviewTile',
       'registerPageAugment',

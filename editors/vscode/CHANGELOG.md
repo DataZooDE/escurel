@@ -132,6 +132,14 @@ derives its version from the tag (`vYYYY.MM.DD` → `YYYY.M.D`, leading zeros dr
   `@font-face` and `font-src` for the webview origin only), `lang` (`<html lang>`) and `title` (`<title>`), validated so
   none of them can break out of the markup or load a remote font. Without them the shell is unchanged.
 
+- **`registerFocusProfile()` on the companion API**: a companion offers a list of appearance settings and Escurel's
+  single focus toggle applies the active profile (new user setting `escurel.focus.profile`; unset, the one registered
+  profile, else the built-in one), so two toggles no longer remember each other's values as the person's. Switching
+  profile while the window is calm keeps the person's originals; the keys are limited to window, workbench, breadcrumbs
+  and minimap appearance, and anything about trust, paths, commands, URLs or `escurel.*` is refused.
+- **Focus mode**: enter, switch and exit now take turns, and the window holds what it remembered itself instead of
+  re-reading it from VS Code's global state right after writing.
+
 ### Changed
 
 - The typed client treats `isError: true` as an error, never as an empty result (#654); `validate` refusals
