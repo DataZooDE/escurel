@@ -129,4 +129,4 @@ Not covered (companion-only, or a follow-up if the owner wants it generic):
 ## Tests
 
 `test/unit/extensionApi.test.ts`, `contributedTiles.test.ts`, `pageRendererDelegation.test.ts`, `pageAugment.test.ts`, `pageAugmentWiring.test.ts`, `reviewHooks.test.ts`, `reviewControllerHooks.test.ts`, `reviewPreviewPanel.test.ts`, `inboxDecorator.test.ts`, `test/component/review-preview.test.ts`, `test/component/augment-view.test.ts`, `themeTokens.test.ts`,
-`apiExposure.test.ts`. Not covered by unit tests: the Overview panel wiring in a real window (integration suite).
+`apiExposure.test.ts`. The additive hooks run in a real window against a real gateway in `test/integration/suite/hooks.test.ts` (page augment provider on a real page, veto and `after` around a real promote, an Inbox decorator). Not covered by unit tests: the Overview panel wiring in a real window (integration suite).
