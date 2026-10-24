@@ -7,6 +7,11 @@
 //! protocols in one file.
 
 use super::*;
+use std::hash::{Hash, Hasher};
+use std::sync::OnceLock;
+
+// Bound lock memory while serialising materialisation of the same document.
+static DOCUMENT_INGEST_LOCKS: OnceLock<[tokio::sync::Mutex<()>; 256]> = OnceLock::new();
 
 /// or not a handler matched; and dispatches the deterministic worker (PR-3d)
 /// when one did. An unmatched MIME is parked with `no_handler_skill` and the
@@ -353,34 +358,6 @@ async fn record_and_dispatch_ingest(
         )
             .into_response();
     }
-    // escurel#382: a caller-supplied `event_id` is an idempotency key. A
-    // redelivery — the same key already captured — is acknowledged without
-    // re-capturing OR re-dispatching the worker: the bytes were deduped by
-    // the content hash, and this dedupes the WORK. Same first-writer-wins
-    // contract as the MCP `capture_event` verb.
-    if let Some(id) = caller_event_id.as_deref() {
-        match indexer.get_event(id).await {
-            Ok(Some(existing)) => {
-                return (
-                    StatusCode::OK,
-                    Json(json!({
-                        "event_id": existing.event_id,
-                        "blob_id": blob_id,
-                        "status": "duplicate",
-                    })),
-                )
-                    .into_response();
-            }
-            Ok(None) => {}
-            Err(e) => {
-                return (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(json!({ "error": format!("event lookup: {e}") })),
-                )
-                    .into_response();
-            }
-        }
-    }
     // Resolve the handler skill: an explicit `target_skill` (validated to be a
     // document-backend skill that accepts the MIME) wins; otherwise route by
     // MIME (REQ-DOC-06). An explicit skill that is missing, not a document
@@ -499,6 +476,35 @@ async fn record_and_dispatch_ingest(
                 .into_response();
         }
     }
+    let requested_title = title.as_deref().unwrap_or(blob_id);
+    // Check the full upload identity before accepting a reused key. This also
+    // retries materialisation if an earlier attempt captured its event first.
+    if let Some(id) = caller_event_id.as_deref() {
+        match indexer.get_event(id).await {
+            Ok(Some(existing)) => {
+                return existing_upload_response(
+                    indexer,
+                    lake,
+                    &existing,
+                    blob_id,
+                    content_type,
+                    requested_title,
+                    handler.as_deref(),
+                    subject,
+                    title.as_deref(),
+                )
+                .await;
+            }
+            Ok(None) => {}
+            Err(e) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({ "error": format!("event lookup: {e}") })),
+                )
+                    .into_response();
+            }
+        }
+    }
     let label_skill = handler.clone().unwrap_or_else(|| "ingest".to_owned());
     // GH #369: the Event consumes `title` (falling back to the blob id), but the
     // materialised instance needs it too — keep the caller's *own* title, so an
@@ -509,6 +515,8 @@ async fn record_and_dispatch_ingest(
         .map(str::trim)
         .filter(|t| !t.is_empty())
         .map(str::to_owned);
+    // capture_event returns the first writer's row when attempts race.
+    let attempt_id = ulid::Ulid::new().to_string();
     let event = indexer
         .capture_event(NewEvent {
             event_id: caller_event_id,
@@ -517,7 +525,7 @@ async fn record_and_dispatch_ingest(
             mime: content_type.to_owned(),
             label_skill,
             instance_page_id: None,
-            title: title.unwrap_or_else(|| blob_id.to_owned()),
+            title: requested_title.to_owned(),
             body: String::new(),
             // Stamped like every other capture: an uploaded document is
             // un-triaged third-party content too, and without the stamp it
@@ -528,6 +536,7 @@ async fn record_and_dispatch_ingest(
                     "content_type": content_type,
                     "handler_skill": handler,
                     "by": subject,
+                    "ingest_attempt_id": attempt_id,
                 })),
                 subject,
                 // An upload is made by whoever presented the bearer; the
@@ -547,6 +556,25 @@ async fn record_and_dispatch_ingest(
                 .into_response();
         }
     };
+    if event
+        .provenance
+        .get("ingest_attempt_id")
+        .and_then(Value::as_str)
+        != Some(attempt_id.as_str())
+    {
+        return existing_upload_response(
+            indexer,
+            lake,
+            &event,
+            blob_id,
+            content_type,
+            requested_title,
+            handler.as_deref(),
+            subject,
+            doc_title.as_deref(),
+        )
+        .await;
+    }
     // Announce to in-process WS subscribers (#333), same as the MCP
     // capture path; subscriber-side ACL filtering applies.
     let _ = events_tx.send(std::sync::Arc::new(event.clone()));
@@ -580,6 +608,76 @@ async fn record_and_dispatch_ingest(
         )
             .into_response(),
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn existing_upload_response(
+    indexer: &std::sync::Arc<Indexer>,
+    lake: Option<&escurel_index::snapshot::LakeConfig>,
+    existing: &escurel_index::EventInfo,
+    blob_id: &str,
+    content_type: &str,
+    requested_title: &str,
+    handler: Option<&str>,
+    subject: &str,
+    title: Option<&str>,
+) -> axum::response::Response {
+    let same_upload = existing.source == "ingest"
+        && existing.provenance.get("blob_id").and_then(Value::as_str) == Some(blob_id)
+        && existing.mime == content_type
+        && existing.title == requested_title
+        && existing
+            .provenance
+            .get(escurel_index::CAPTURED_BY_FIELD)
+            .and_then(Value::as_str)
+            == Some(subject)
+        && existing
+            .provenance
+            .get("handler_skill")
+            .and_then(Value::as_str)
+            == handler;
+    if !same_upload {
+        return (
+            StatusCode::CONFLICT,
+            Json(json!({
+                "error": "event_id_conflict",
+                "message": "event_id already belongs to a different upload",
+            })),
+        )
+            .into_response();
+    }
+    if let Some(skill) = handler {
+        let recovered = run_document_ingest(
+            indexer,
+            lake,
+            skill,
+            blob_id,
+            content_type,
+            &existing.event_id,
+            subject,
+            title,
+        )
+        .await;
+        if !recovered.status().is_success() || recovered.status() == StatusCode::ACCEPTED {
+            return recovered;
+        }
+    }
+    (
+        StatusCode::OK,
+        Json(json!({
+            "event_id": existing.event_id,
+            "blob_id": blob_id,
+            "status": "duplicate",
+            "page_id": handler.and_then(|skill| document_page_id(skill, blob_id)),
+        })),
+    )
+        .into_response()
+}
+
+fn document_page_id(skill: &str, blob_id_str: &str) -> Option<String> {
+    let blob_id = escurel_storage::BlobId::parse(blob_id_str)?;
+    let instance_id = format!("doc-{}", &blob_id.hex()[..12.min(blob_id.hex().len())]);
+    Some(format!("markdown/instances/{skill}/{instance_id}.md"))
 }
 
 /// Run the deterministic ingest worker inline: extract+chunk off the write
@@ -635,9 +733,124 @@ async fn run_document_ingest(
 
     // Deterministic instance id from the content hash (idempotent intake).
     let instance_id = format!("doc-{}", &blob_id.hex()[..12.min(blob_id.hex().len())]);
-    let extractor: std::sync::Arc<dyn Extractor> = if content_type.starts_with("text/") {
+    let page_id = document_page_id(skill, blob_id_str)
+        .expect("validated blob ID must produce a document page ID");
+    let mut lock_key = std::collections::hash_map::DefaultHasher::new();
+    indexer.tenant().hash(&mut lock_key);
+    skill.hash(&mut lock_key);
+    blob_id_str.hash(&mut lock_key);
+    let locks =
+        DOCUMENT_INGEST_LOCKS.get_or_init(|| std::array::from_fn(|_| tokio::sync::Mutex::new(())));
+    let _ingest_guard = locks[(lock_key.finish() as usize) % locks.len()]
+        .lock()
+        .await;
+    match indexer.read_page_markdown(&page_id).await {
+        Ok(Some(existing)) => {
+            let parsed = escurel_md::parse(&existing).ok();
+            let backend = parsed
+                .as_ref()
+                .and_then(|page| page.frontmatter.fields.get("backend_ref"))
+                .and_then(|value| value.as_mapping());
+            let field = |name| {
+                backend
+                    .and_then(|map| map.get(name))
+                    .and_then(|value| value.as_str())
+            };
+            if field("kind") != Some("document") || field("blob_id") != Some(blob_id_str) {
+                return (
+                    StatusCode::CONFLICT,
+                    Json(json!({"error":"document_blob_conflict","page_id":page_id})),
+                )
+                    .into_response();
+            }
+            if field("status") != Some("ok") {
+                return (
+                    StatusCode::CONFLICT,
+                    Json(json!({"error":"document_overlay_incomplete","page_id":page_id})),
+                )
+                    .into_response();
+            }
+            let mut recovered_blob = false;
+            let canonical_bytes = match indexer.read_blob(&blob_id).await {
+                Ok(bytes) => bytes,
+                Err(IndexerError::Store(StoreError::NotFound(_))) => {
+                    let promoted = indexer.promote_blob(&blob_id).await;
+                    match indexer.read_blob(&blob_id).await {
+                        Ok(bytes) => {
+                            recovered_blob = true;
+                            bytes
+                        }
+                        Err(error) => {
+                            return (StatusCode::SERVICE_UNAVAILABLE, Json(json!({
+                                "error":"document_blob_recovery_failed",
+                                "message":format!("promotion: {promoted:?}; canonical read: {error}")
+                            }))).into_response();
+                        }
+                    }
+                }
+                Err(error) => {
+                    return (
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        Json(json!({
+                            "error":"document_blob_unavailable","message":error.to_string()
+                        })),
+                    )
+                        .into_response();
+                }
+            };
+            use sha2::Digest;
+            if format!("{:x}", sha2::Sha256::digest(&canonical_bytes)) != blob_id.hex() {
+                return (
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    Json(json!({"error":"document_blob_corrupt","page_id":page_id})),
+                )
+                    .into_response();
+            }
+            if field("content_type") != Some(content_type) {
+                return (
+                    StatusCode::CONFLICT,
+                    Json(json!({"error":"document_mime_conflict","page_id":page_id})),
+                )
+                    .into_response();
+            }
+            if recovered_blob
+                && let Some(cfg) = lake
+                && let Err(error) = indexer.publish_page_sync(cfg, &page_id).await
+            {
+                return (
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    Json(json!({
+                        "error":"document_recovery_publish_failed","message":error.to_string()
+                    })),
+                )
+                    .into_response();
+            }
+            return (
+                StatusCode::OK,
+                Json(json!({
+                    "event_id":event_id,"blob_id":blob_id_str,"handler_skill":skill,
+                    "status":"existing_document","page_id":page_id,"recovered_blob":recovered_blob
+                })),
+            )
+                .into_response();
+        }
+        Ok(None) => {}
+        Err(error) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error":format!("existing document lookup: {error}")})),
+            )
+                .into_response();
+        }
+    }
+    let media_type = content_type
+        .split(';')
+        .next()
+        .unwrap_or(content_type)
+        .trim();
+    let extractor: std::sync::Arc<dyn Extractor> = if media_type.starts_with("text/") {
         std::sync::Arc::new(PlainTextExtractor)
-    } else if content_type.starts_with("audio/") {
+    } else if media_type.starts_with("audio/") {
         // CR-4 (GH #356): audio is RETAINED, not extracted. Escurel does not
         // transcribe — the consumer files the transcript as its own content —
         // so the recording materialises as a zero-chunk instance whose value
