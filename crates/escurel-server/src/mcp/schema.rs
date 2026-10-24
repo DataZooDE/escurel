@@ -322,7 +322,10 @@ pub(crate) fn tool_defs() -> Vec<ToolDef> {
                     "base_sha256": { "type": "string", "description": "The target's content_sha256 when drafted, from `expand`; \"\" = approve-create (expect no page). Carried into `update_page`'s CAS at promotion." },
                     "event_id": { "type": "string", "description": "The inbox event this draft answers, when it answers one." },
                     "changeset_id": { "type": "string", "description": "Join the changeset a previous create_draft in this run returned (#509)." },
-                    "new_changeset": { "type": "boolean", "description": "Start a changeset; the server mints the id and returns it on the stored draft. Not with `changeset_id`." }
+                    "new_changeset": { "type": "boolean", "description": "Start a changeset; the server mints the id and returns it on the stored draft. Not with `changeset_id`." },
+                    "lease": { "type": "object", "required": ["page_id", "holder"],
+                        "description": "Optional lease fence: store the draft only while `holder` still owns the lease page (a skill declaring `lease:`); otherwise refused with `lease_fence`.",
+                        "properties": { "page_id": { "type": "string" }, "holder": { "type": "string" } } }
                 }
             }),
         ),
@@ -380,7 +383,10 @@ pub(crate) fn tool_defs() -> Vec<ToolDef> {
                 "properties": {
                     "changeset_id": { "type": "string" },
                     "reason": { "type": "string" },
-                    "decided_by": { "type": "string" }
+                    "decided_by": { "type": "string" },
+                    "lease": { "type": "object", "required": ["page_id", "holder"],
+                        "description": "discard_changeset only: the same lease fence as create_draft.",
+                        "properties": { "page_id": { "type": "string" }, "holder": { "type": "string" } } }
                 }
             }),
         ),

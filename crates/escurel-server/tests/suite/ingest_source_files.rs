@@ -345,6 +345,22 @@ async fn a_failed_extraction_is_retried_with_its_title_and_owner() {
     assert_eq!(first["status"], "extraction_failed", "{first}");
     let page_id = first["page_id"].as_str().unwrap().to_owned();
 
+    // The original is still readable through the ACL-checked fetch.
+    let blob = call(
+        &s.process,
+        &alice,
+        "fetch_blob",
+        json!({"page_id": page_id}),
+    )
+    .await;
+    assert_eq!(
+        base64::engine::general_purpose::STANDARD
+            .decode(blob["blob"]["bytes_base64"].as_str().unwrap_or_default())
+            .unwrap_or_default(),
+        bad,
+        "a failed extraction still exposes its original bytes: {blob}"
+    );
+
     // Another caller repeats it: reprocessed, but still alice's, still "Plan".
     let (st, again) = upload(
         &s.process,
@@ -532,4 +548,51 @@ async fn the_mcp_bridge_uploads_and_reports_refusals_in_the_envelope() {
             "params":{"name":"ingest_upload","arguments": args(b"x","text/plain","evidence",None,None)}}))
         .send().await.unwrap();
     assert_eq!(anon.status(), 401);
+}
+
+/// A file travels as base64 inside the request body, so the body limit must
+/// admit a realistic source file (about 10 MiB original) on both doors and
+/// still refuse a body far beyond it.
+#[tokio::test]
+async fn a_large_source_file_fits_both_upload_doors_and_a_huge_body_does_not() {
+    let s = setup().await;
+    let token = s.process.mint_token(TENANT, Role::Agent);
+    let big = vec![b'a'; 9 * 1024 * 1024];
+    let (st, r) = upload(
+        &s.process,
+        &token,
+        args(&big, XLSX, "evidence", Some("Big"), None),
+    )
+    .await;
+    assert_eq!(
+        st,
+        202,
+        "REST door admits a 9 MiB file: {}",
+        &r.to_string()[..r.to_string().len().min(300)]
+    );
+    let mut other = big.clone();
+    other[0] = b'b';
+    let viamcp = call(
+        &s.process,
+        &token,
+        "ingest_upload",
+        args(&other, XLSX, "evidence", None, None),
+    )
+    .await;
+    assert_eq!(
+        viamcp["status"], "materialised",
+        "MCP door admits it too: {viamcp}"
+    );
+
+    // CONTROL: a body beyond the bound is refused, not buffered.
+    let huge = vec![b'c'; 20 * 1024 * 1024];
+    let resp = reqwest::Client::new()
+        .post(s.process.mcp_url())
+        .header("authorization", format!("Bearer {token}"))
+        .json(&json!({"jsonrpc":"2.0","id":1,"method":"tools/call",
+            "params":{"name":"ingest_upload","arguments": args(&huge, XLSX, "evidence", None, None)}}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 413);
 }

@@ -20,6 +20,10 @@ reprocesses the retained original with its first title and owner; `text/xml` and
 now also refuses `delete_page` and `move_page` of its instances (`instance_immutable`). `required_when` accepts a list of values
 (`{status: [resolved, dismissed]}`); `list_skills` publishes it as `[other_field, [value, ...]]`.
 
+`create_draft` and `discard_changeset` accept `lease: {page_id, holder}`: with a skill that declares `lease: {holder, expires,
+while?}`, the write is stored only while that holder owns the lease page, else `lease_fence`. A failed-extraction document
+stays readable through `fetch_blob`; `/mcp` and `/ingest/upload` accept bodies up to 16 MiB.
+
 ## 0.25.7 — a rebuild is index-only; the duckvfs lane store retries transient Drive errors
 
 `escurel admin rebuild` (and a cold boot on a fresh data directory) reads each page from the lane and writes only the index;

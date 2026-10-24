@@ -36,6 +36,7 @@ pub mod filter;
 pub mod graph;
 pub mod groups;
 pub mod indexer;
+mod lease;
 mod materialise;
 pub mod meta_skill;
 pub mod migrate_kind;
@@ -80,6 +81,7 @@ pub use indexer::{
     AuditDrift, DEFAULT_QUERY_TIMEOUT_MS, IndexChunk, Indexer, IndexerError, RebuildProgress,
     derive_attach_alias, is_safe_attach_source, is_valid_attach_alias,
 };
+pub use lease::LEASE_FENCE;
 pub use meta_skill::{META_SKILL_ID, META_SKILL_MD, META_SKILL_PAGE_ID};
 pub use query::{
     ColumnSchema, INSPECTABLE_TABLES, MAX_RESULT_ROWS, QueryError, QueryInstanceResult,

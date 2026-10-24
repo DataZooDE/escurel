@@ -885,10 +885,21 @@ pub(super) async fn resolve_readable_blob(
     }
     let blob_id = escurel_storage::BlobId::parse(blob_id_str.unwrap())
         .ok_or_else(|| "blob: malformed blob_id".to_owned())?;
-    let bytes = indexer
-        .read_blob(&blob_id)
-        .await
-        .map_err(|err| format!("blob read: {err}"))?;
+    // A failed extraction keeps its original in the inbox (it is not promoted,
+    // so a repeat upload can reprocess it). The ACL-checked page must still
+    // expose those bytes.
+    let extraction_failed = e
+        .frontmatter
+        .get("backend_ref")
+        .and_then(|b| b.get("status"))
+        .and_then(Value::as_str)
+        == Some("extraction_failed");
+    let bytes = if extraction_failed {
+        indexer.read_inbox_blob(&blob_id).await
+    } else {
+        indexer.read_blob(&blob_id).await
+    }
+    .map_err(|err| format!("blob read: {err}"))?;
     // Prefer the MIME the upload DECLARED (recorded on the overlay since
     // GH #356) over sniffing the bytes: the sniff knows PDF/OOXML/text and
     // answers `application/octet-stream` for everything else — which is

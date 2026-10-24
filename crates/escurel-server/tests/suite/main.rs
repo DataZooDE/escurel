@@ -51,6 +51,7 @@ mod demo_analysis_orders;
 mod demo_rows;
 mod dispatch_aliases;
 mod document_ingestion;
+mod draft_lease_fence;
 mod draft_lineage;
 mod draft_sessions;
 mod drafts;
