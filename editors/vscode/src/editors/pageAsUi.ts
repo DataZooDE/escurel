@@ -125,7 +125,12 @@ export class PageAsUiEditor implements vscode.CustomReadonlyEditorProvider {
         const viewer = parseViewer(skillPage?.frontmatter);
         // The figures that report draws for THIS record (KPIs and tables); none when it cannot be shown.
         const report = viewer ? await loadReport(c, viewer.report, e.frontmatter ?? {}) : undefined;
-        const withViewer = viewer ? { ...fromPage, viewer } : fromPage;
+        // Page chat is declared on the skill page too (`chat: {page_bound: true}`).
+        const pageChat =
+          (skillPage?.frontmatter as { chat?: { page_bound?: unknown } } | undefined)?.chat
+            ?.page_bound === true;
+        const withChat = pageChat ? { ...fromPage, chat: true as const } : fromPage;
+        const withViewer = viewer ? { ...withChat, viewer } : withChat;
         const model = report ? { ...withViewer, report } : withViewer;
         // The tab is named after the URI's last segment (`all.md`) unless the host says otherwise.
         setTitle(panel, {

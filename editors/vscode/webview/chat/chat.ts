@@ -99,6 +99,26 @@ export class EscurelChat extends LitElement {
         border-color: transparent;
         padding: 0 4px;
       }
+      .focus {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 4px;
+        padding: 6px 8px 0;
+        border-top: 1px solid var(--escurel-border);
+      }
+      .focus .chip {
+        display: inline-flex;
+        align-items: center;
+        gap: 2px;
+        padding: 0 0 0 6px;
+        border: 1px solid var(--escurel-instance);
+        border-radius: 10px;
+        font-size: 0.9em;
+      }
+      .focus .chip button {
+        border-color: transparent;
+        padding: 0 6px;
+      }
       form {
         display: flex;
         gap: 6px;
@@ -187,20 +207,8 @@ export class EscurelChat extends LitElement {
           <div class="who">
             Escurel${word ? html` · <span class="state-word">${word}</span>` : nothing}
           </div>
-          <div class="text">${renderMarkdown(r.text)}</div>
-          ${
-            r.runId
-              ? html`<div class="row-actions">
-                  <button
-                    type="button"
-                    class="show-run"
-                    @click=${() => this.emit({ type: 'show-run', key: r.key })}
-                  >
-                    Show how I got this
-                  </button>
-                </div>`
-              : nothing
-          }
+          <div class="text md">${renderMarkdown(r.text)}</div>
+          ${r.runId || r.drafts.length ? this.rowActions(r) : nothing}
         </div>`;
       }
       case 'pending':
@@ -208,6 +216,34 @@ export class EscurelChat extends LitElement {
       case 'notice':
         return html`<div class="notice" role="status">${r.text}</div>`;
     }
+  }
+
+  /** Review for each proposed change, then the way to the run that answered. */
+  private rowActions(r: Extract<ChatRow, { kind: 'assistant' }>): TemplateResult {
+    return html`<div class="row-actions">
+      ${r.drafts.map(
+        (_, n) =>
+          html`<button
+            type="button"
+            class="review"
+            title="Open the proposed change to approve or discard it"
+            @click=${() => this.emit({ type: 'review-draft', key: r.key, index: n })}
+          >
+            Review change ${n + 1}
+          </button>`,
+      )}
+      ${
+        r.runId
+          ? html`<button
+              type="button"
+              class="show-run"
+              @click=${() => this.emit({ type: 'show-run', key: r.key })}
+            >
+              Show how I got this
+            </button>`
+          : nothing
+      }
+    </div>`;
   }
 
   override render(): TemplateResult {
@@ -251,6 +287,25 @@ export class EscurelChat extends LitElement {
             : html`<p class="empty">Ask a question about what this knowledge base knows.</p>`
         }
       </div>
+      ${
+        s.focus.length
+          ? html`<div class="focus" role="group" aria-label="Focus for the next question">
+              ${s.focus.map(
+                (f) =>
+                  html`<span class="chip"
+                    >${f.title}
+                    <button
+                      type="button"
+                      aria-label=${`Remove ${f.title} from the focus`}
+                      @click=${() => this.emit({ type: 'remove-focus', key: f.key })}
+                    >
+                      ×
+                    </button></span
+                  >`,
+              )}
+            </div>`
+          : nothing
+      }
       <form
         @submit=${(e: Event) => {
           e.preventDefault();

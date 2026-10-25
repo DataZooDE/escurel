@@ -286,6 +286,16 @@
         "icon": "$(add)"
       },
       {
+        "command": "escurel.chat.askAboutRecord",
+        "title": "Ask about this record",
+        "category": "Escurel"
+      },
+      {
+        "command": "escurel.chat.addToFocus",
+        "title": "Add to chat focus",
+        "category": "Escurel"
+      },
+      {
         "command": "escurel.openReview",
         "title": "Open review",
         "category": "Escurel"
@@ -704,6 +714,14 @@
     "menus": {
       "commandPalette": [
         {
+          "command": "escurel.chat.askAboutRecord",
+          "when": "false"
+        },
+        {
+          "command": "escurel.chat.addToFocus",
+          "when": "false"
+        },
+        {
           "command": "escurel.cancelRun",
           "when": "escurel.connected"
         },
@@ -988,6 +1006,11 @@
           "command": "escurel.openInstance",
           "when": "view == escurel.knowledge && viewItem == instance",
           "group": "inline"
+        },
+        {
+          "command": "escurel.chat.addToFocus",
+          "when": "view == escurel.knowledge && viewItem == instance",
+          "group": "3_chat@1"
         },
         {
           "command": "escurel.openInstance",

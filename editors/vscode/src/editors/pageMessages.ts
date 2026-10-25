@@ -51,6 +51,10 @@ export function resolvePageMessage(
         args: [{ pageId: model.pageId, field: m.field }],
       };
     }
+    case 'ask-about-record':
+      return model?.chat
+        ? { command: 'escurel.chat.askAboutRecord', args: [model.pageId, model.title] }
+        : undefined;
     case 'show-runs':
       return model ? { command: 'escurel.runs.forPage', args: [model.pageId] } : undefined;
     case 'open-run':

@@ -87,6 +87,8 @@ export interface PageModel {
   writeBack?: WriteBackStatus;
   /** What companion extensions add to this page view (sections, buttons, forms); absent when none. */
   augment?: PageAugmentView;
+  /** The skill declares `chat: {page_bound: true}`: the page offers "Ask about this record". */
+  chat?: true;
 }
 
 export type HostToWebview =
@@ -123,6 +125,8 @@ export type WebviewToHost =
   | { type: 'show-raw' }
   /** "Runs for this record": the host opens the Runs view filtered to THIS page. */
   | { type: 'show-runs' }
+  /** "Ask about this record": the host opens THIS page's chat (its own page id, never a webview's). */
+  | { type: 'ask-about-record' }
   | { type: 'propose-write-back'; field: string }
   | { type: 'open-original' }
   | { type: 'refresh' }
@@ -579,6 +583,8 @@ export interface ChatViewState {
   /** The open conversation, or none for a new chat. */
   current?: { key: string; title: string } | undefined;
   rows: ChatRow[];
+  /** Pages pinned as context for the next question (at most 10), by opaque key. */
+  focus: { key: string; title: string }[];
   /** False while a question is being sent. */
   canSend: boolean;
 }
@@ -593,4 +599,8 @@ export type ChatWebviewToHost =
   /** A `[[skill::id]]` in an answer; the host opens it only if an answer on show cites it. */
   | { type: 'open-wikilink'; wikilink: string }
   /** "Show how I got this" on the assistant row with this key. */
-  | { type: 'show-run'; key: string };
+  | { type: 'show-run'; key: string }
+  /** "Review" on the `index`-th draft of the assistant row with this key. */
+  | { type: 'review-draft'; key: string; index: number }
+  /** Unpin a focus chip. */
+  | { type: 'remove-focus'; key: string };

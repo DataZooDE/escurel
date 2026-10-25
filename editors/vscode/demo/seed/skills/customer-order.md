@@ -7,6 +7,9 @@ role: record
 tags: [sap, sd]
 description: A customer sales order (SAP SD, transaction VA03) - header data, delivery status and the items behind it.
 autonomy: review
+# Each order has its own private chat ("Ask about this record").
+chat:
+  page_bound: true
 actions:
   - name: assess-supplier-risk
     kind: event
