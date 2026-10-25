@@ -16,6 +16,7 @@
 //! | field | `required_when: {other: value}` or `{other: [v1, v2]}` | required while `other` equals the value, or any of the values | `field_required_when` |
 //! | field | `kind: link`, `to: <skill>` | the value is a wikilink to an existing instance of `<skill>` | `relation_invalid`, `relation_unresolved` |
 //! | field | `acyclic: true` (with a link to its own skill) | following the link never returns to the start | `relation_cycle` |
+//! | field | `max_items: <n>` (positive whole number; mainly on `kind: link`) | the value holds at most `n` entries; a scalar counts as one | `fields_malformed` if not a positive whole number, `field_max_items` |
 //! | skill | `freeze_when: {field: value}` or `{field: [v1, v2]}` | while the stored instance's `field` matches, it cannot be updated, archived, renamed or drafted against | `skill_rule_malformed` if malformed, `instance_frozen` on a refused write |
 //! | field | `frozen_by_parent: true` (on a `kind: link` field) | an instance linking to a frozen page is frozen too (chain capped at [`crate::freeze::MAX_PARENT_DEPTH`]) | `fields_malformed` if not a boolean or not a link, `instance_frozen` |
 //! | skill | `protected: [delete, move]` | `delete_page` / archive and `move_page` of its instances are refused; updates stay allowed | `skill_rule_malformed` if malformed, `instance_protected` on a refused removal |
@@ -56,6 +57,16 @@ pub(crate) fn scalar_text(value: &YamlValue) -> Option<String> {
 /// Empty, whitespace-only or null.
 pub(crate) fn is_blank(value: &YamlValue) -> bool {
     value.is_null() || value.as_str().is_some_and(|t| t.trim().is_empty())
+}
+
+/// How many values a frontmatter value holds: a list its entries, null none,
+/// any other value one. What `max_items:` counts.
+pub(crate) fn item_count(value: &YamlValue) -> usize {
+    match value {
+        YamlValue::Sequence(items) => items.len(),
+        YamlValue::Null => 0,
+        _ => 1,
+    }
 }
 
 /// `[[skill::id]]` as one whole value.
@@ -288,6 +299,21 @@ pub(crate) fn check_field_rules(page_kind: PageKind, fields: &YamlMapping) -> Ve
                     f.name
                 ),
             ));
+        }
+        if let Some(v) = attrs.get("max_items")
+            && v.as_u64().is_none_or(|n| n == 0)
+        {
+            issues.push(
+                Issue::error(
+                    "fields_malformed",
+                    format!("{loc}.max_items"),
+                    format!(
+                        "`max_items:` on `{}` must be a positive whole number, the most values the field may hold",
+                        f.name
+                    ),
+                )
+                .with_suggestion("max_items: 1"),
+            );
         }
         if let Some(v) = attrs.get("required_when")
             && crate::read::parse_required_when(v).is_none()
@@ -921,6 +947,49 @@ mod tests {
         assert_eq!(link_target("[[topic::a]] [[topic::b]]"), None);
         assert_eq!(link_target("[[root]]"), None);
         assert_eq!(link_target("topic::root"), None);
+    }
+
+    fn skill_fields(yaml: &str) -> YamlMapping {
+        let page = format!("---\nkind: skill\nid: s\ndescription: S.\nfields:\n{yaml}---\n# s\n");
+        parse(&page).unwrap().frontmatter.fields.clone()
+    }
+
+    #[test]
+    fn max_items_must_be_a_positive_whole_number() {
+        for bad in ["0", "-1", "1.5", "\"3\"", "true", "[2]"] {
+            let fields = skill_fields(&format!(
+                "  - {{name: deps, kind: link, to: s, max_items: {bad}}}\n"
+            ));
+            let issues = check_field_rules(PageKind::Skill, &fields);
+            assert!(
+                issues.iter().any(|i| i.code == "fields_malformed"
+                    && i.location == "frontmatter.fields.deps.max_items"),
+                "max_items: {bad} -> {issues:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_positive_max_items_is_accepted_on_any_kind() {
+        let fields = skill_fields(
+            "  - {name: deps, kind: link, to: s, max_items: 1}\n  \
+             - {name: tags, kind: string, max_items: 3}\n",
+        );
+        let issues = check_field_rules(PageKind::Skill, &fields);
+        assert!(issues.is_empty(), "{issues:?}");
+        let fm = serde_json::to_value(&fields).unwrap();
+        let parsed = crate::parse_fields(&fm);
+        assert_eq!(parsed[0].max_items, Some(1));
+        assert_eq!(parsed[1].max_items, Some(3));
+    }
+
+    #[test]
+    fn item_count_counts_a_scalar_as_one_and_null_as_none() {
+        let seq = YamlValue::Sequence(vec!["a".into(), "b".into(), "c".into()]);
+        assert_eq!(item_count(&seq), 3);
+        assert_eq!(item_count(&YamlValue::from("[[s::a]]")), 1);
+        assert_eq!(item_count(&YamlValue::from(7)), 1);
+        assert_eq!(item_count(&YamlValue::Null), 0);
     }
 
     #[test]

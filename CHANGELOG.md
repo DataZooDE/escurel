@@ -8,6 +8,11 @@ re-cuts append `.N`), matching the DataZoo release scheme (cf. erpl).
 
 ## Unreleased
 
+- **`max_items: <n>` on a field.** A skill may cap how many values a field holds, mainly for `kind: link` fields that take
+  one link or a list: a list counts its entries, a scalar counts as one. A page over the cap is refused by `update_page`,
+  `create_draft`/`validate` and `promote_draft` with `field_max_items` (family `field_max_items`). `n` must be a positive
+  whole number; anything else refuses the skill page with `fields_malformed`. `list_skills` publishes `fields[].max_items`.
+
 ## v2026.10.26 — BREAKING (operator-only tenant administration, upload create ACL, `required_when` wire shape, web-workbench override names)
 
 Skill-declared data rules, a public API for companion VS Code extensions, a web-workbench overlay contract, an operator

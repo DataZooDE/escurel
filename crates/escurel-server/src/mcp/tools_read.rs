@@ -192,6 +192,7 @@ fn skill_to_wire(s: escurel_index::SkillInfo, is_admin: bool) -> TypesSkill {
                 format: f.format,
                 required_when: f.required_when,
                 frozen_by_parent: f.frozen_by_parent,
+                max_items: f.max_items,
             })
             .collect(),
         // The declared instance-body layout (P3-5): verbatim, in

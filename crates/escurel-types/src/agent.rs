@@ -678,6 +678,10 @@ pub struct SkillField {
     /// A link whose target being frozen freezes this instance too.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub frozen_by_parent: bool,
+    /// The most values the field may hold (a list counts its entries, a
+    /// scalar counts as one); absent when undeclared.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_items: Option<u64>,
 }
 
 /// One invocation parameter a skill declares. MCP wire keys: `name`,
