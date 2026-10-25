@@ -596,10 +596,11 @@ impl DocumentProcessor for DeterministicProcessor {
         mime: &str,
         cfg: &ExtractConfig,
     ) -> Result<ExtractionResult, ExtractError> {
-        if !self.extractor.accepts(mime) {
+        let media_type = mime.split(';').next().unwrap_or(mime).trim();
+        if !self.extractor.accepts(media_type) {
             return Err(ExtractError::Unsupported(mime.to_owned()));
         }
-        self.extractor.extract(bytes, mime, cfg).await
+        self.extractor.extract(bytes, media_type, cfg).await
     }
 }
 

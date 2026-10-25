@@ -113,6 +113,43 @@ async fn post_ingest_titled(
 }
 
 #[tokio::test]
+async fn ingest_idempotency_key_identifies_one_upload() {
+    let s = setup().await;
+    let token = s.process.mint_token(TENANT, Role::Agent);
+    let first = s
+        .store
+        .put_inbox_blob(TENANT, Bytes::from_static(b"First document body"), None)
+        .await
+        .unwrap();
+    let second = s
+        .store
+        .put_inbox_blob(TENANT, Bytes::from_static(b"Second document body"), None)
+        .await
+        .unwrap();
+    let post = |blob_id: &str| {
+        reqwest::Client::new()
+            .post(format!("{}/ingest", s.process.base_url()))
+            .header("authorization", format!("Bearer {token}"))
+            .json(&json!({
+                "blob_id": blob_id, "content_type": "text/plain; charset=UTF-8",
+                "event_id": "repeatable-upload", "title": "Notes",
+            }))
+            .send()
+    };
+    let initial = post(first.as_str()).await.unwrap();
+    assert_eq!(initial.status(), reqwest::StatusCode::ACCEPTED);
+    let repeated = post(first.as_str()).await.unwrap();
+    assert_eq!(repeated.status(), reqwest::StatusCode::OK);
+    let body: Value = repeated.json().await.unwrap();
+    assert_eq!(body["status"], "duplicate", "{body}");
+    let conflict = post(second.as_str()).await.unwrap();
+    assert_eq!(conflict.status(), reqwest::StatusCode::CONFLICT);
+    let body: Value = conflict.json().await.unwrap();
+    assert_eq!(body["error"], "event_id_conflict", "{body}");
+    s.process.shutdown().await;
+}
+
+#[tokio::test]
 async fn ingest_title_names_the_materialised_instance() {
     // GH #369: `/ingest` accepts a `title`, records it on the ingest Event and
     // must also forward it to the materialised instance — as the overlay's

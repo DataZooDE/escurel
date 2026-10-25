@@ -208,14 +208,17 @@ pub enum MimeClaim {
 /// opposite of the fail-closed `no_handler` park.
 #[must_use]
 pub fn mime_claim(accepts: &[String], mime: &str) -> Option<MimeClaim> {
+    // Parameters describe the representation, not a different media type.
+    // Retain the caller's original MIME on the ingest event and blob.
+    let media_type = mime.split(';').next()?.trim();
     accepts
         .iter()
         .filter_map(|pattern| {
-            if pattern == mime {
+            if pattern == media_type {
                 return Some(MimeClaim::Exact);
             }
             let ty = pattern.strip_suffix("/*")?;
-            (!ty.is_empty() && ty != "*" && mime.split('/').next() == Some(ty))
+            (!ty.is_empty() && ty != "*" && media_type.split('/').next() == Some(ty))
                 .then_some(MimeClaim::Wildcard)
         })
         .min()
@@ -970,6 +973,10 @@ mod tests {
         assert_eq!(mime_claim(&accepts, "text/plain"), Some(MimeClaim::Exact));
         assert_eq!(mime_claim(&accepts, "text/markdown"), None);
         assert_eq!(mime_claim(&accepts, "audio/mpeg"), None);
+        assert_eq!(
+            mime_claim(&accepts, "text/plain; charset=UTF-8"),
+            Some(MimeClaim::Exact)
+        );
     }
 
     /// A type wildcard claims the whole type — including subtypes nobody
