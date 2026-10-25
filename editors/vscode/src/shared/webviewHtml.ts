@@ -13,14 +13,15 @@ export function webviewHtml(
   bundle: string,
   tag: string,
   extraHead = '',
+  shell: { htmlAttrs?: string; fontSrc?: string; fontCss?: string; titleTag?: string } = {},
 ): string {
   const script = webview.asWebviewUri(
     vscode.Uri.joinPath(extensionUri, 'dist', 'webview', `${bundle}.js`),
   );
   const nonce = newNonce();
-  return `<!doctype html><html><head><meta charset="utf-8" />
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${webview.cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}';" />
-<style>${extraHead}html,body{margin:0;height:100%}</style></head>
+  return `<!doctype html><html${shell.htmlAttrs ?? ''}><head><meta charset="utf-8" />${shell.titleTag ?? ''}
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${webview.cspSource} 'unsafe-inline'; ${shell.fontSrc ?? ''}script-src 'nonce-${nonce}';" />
+<style>${shell.fontCss ?? ''}${extraHead}html,body{margin:0;height:100%}</style></head>
 <body><${tag}></${tag}><script type="module" nonce="${nonce}" src="${script}"></script></body></html>`;
 }
 

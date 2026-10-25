@@ -6,10 +6,16 @@ import { PageAugmentRegistry } from './augment';
 import { InboxDecoratorRegistry } from './inbox';
 import { OverviewTileRegistry, PageRendererRegistry } from './contributions';
 import { gatewayFacade } from './gateway';
+import { FocusProfileRegistry } from '../focus/focusProfiles';
+import { shellExtras } from './shellOptions';
+import type { HelperBroker } from './helperCredential';
 import {
   EXTENSION_API_VERSION,
   type EscurelExtensionApi,
+  type FocusProfile,
   type GatewayClient,
+  type HelperCredential,
+  type HelperCredentialRequest,
   type OverviewTileContribution,
   type InboxDecorator,
   type PageAugment,
@@ -27,6 +33,10 @@ export interface ApiDeps {
   gatewayUrl: () => string;
   /** Fires when the client was rebuilt (gateway or identity changed). */
   onDidChange: vscode.Event<void>;
+  /** The signed-in subject (`sub`), or undefined without a verifier or a session. Never a token. */
+  subject?: () => Promise<string | undefined>;
+  /** Mints helper credentials (see helperCredential.ts); absent: the member refuses. */
+  helper?: HelperBroker;
 }
 
 /** What the host keeps beside the public object: the registries its own views read. */
@@ -36,12 +46,14 @@ export interface Contributions {
   augments: PageAugmentRegistry;
   reviewHooks: ReviewHookRegistry;
   inboxDecorators: InboxDecoratorRegistry;
+  focusProfiles: FocusProfileRegistry;
   gateway: GatewayClient;
   onDidChangeTenant: vscode.Event<TenantInfo>;
 }
 
 export function createContributions(deps: ApiDeps): Contributions & { dispose(): void } {
   const changed = new vscode.EventEmitter<TenantInfo>();
+  const focusProfiles = new FocusProfileRegistry();
   const sub = deps.onDidChange(() => changed.fire({ gatewayUrl: deps.gatewayUrl() }));
   return {
     tiles: new OverviewTileRegistry(),
@@ -49,10 +61,12 @@ export function createContributions(deps: ApiDeps): Contributions & { dispose():
     augments: new PageAugmentRegistry(),
     reviewHooks: new ReviewHookRegistry(),
     inboxDecorators: new InboxDecoratorRegistry(),
+    focusProfiles,
     gateway: gatewayFacade(deps.client),
     onDidChangeTenant: changed.event,
     dispose: () => {
       sub.dispose();
+      focusProfiles.dispose();
       changed.dispose();
     },
   };
@@ -74,6 +88,22 @@ export function createExtensionApi(deps: ApiDeps, c: Contributions): EscurelExte
       }
       return c.gateway;
     },
+    async getSubject(): Promise<string | undefined> {
+      try {
+        const sub = await deps.subject?.();
+        return typeof sub === 'string' && sub !== '' ? sub : undefined;
+      } catch {
+        // A lookup failure says nothing the caller may act on, and its message could carry a token.
+        return undefined;
+      }
+    },
+    getHelperCredential(request: HelperCredentialRequest): Promise<HelperCredential> {
+      if (!deps.helper) {
+        return Promise.reject(new Error('getHelperCredential: not available in this host'));
+      }
+      return deps.helper.get(request);
+    },
+    registerFocusProfile: (profile: FocusProfile) => c.focusProfiles.register(profile),
     webviewHtml(o: WebviewHtmlOptions): string {
       if (typeof o?.bundle !== 'string' || !BUNDLE.test(o.bundle)) {
         throw new Error('webviewHtml: invalid bundle name');
@@ -81,7 +111,8 @@ export function createExtensionApi(deps: ApiDeps, c: Contributions): EscurelExte
       if (typeof o.tag !== 'string' || !TAG.test(o.tag)) {
         throw new Error('webviewHtml: invalid element name');
       }
-      return shellHtml(o.webview, o.extensionUri, o.bundle, o.tag, THEME_CSS);
+      const extras = shellExtras(o, o.webview, o.extensionUri);
+      return shellHtml(o.webview, o.extensionUri, o.bundle, o.tag, THEME_CSS, extras);
     },
     themeTokens: THEME_TOKENS,
     themeCss: THEME_CSS,

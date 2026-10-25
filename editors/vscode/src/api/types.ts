@@ -31,7 +31,64 @@ export interface TenantInfo {
   gatewayUrl: string;
 }
 
-export interface WebviewHtmlOptions {
+export interface HelperCredentialRequest {
+  /** The caller's own extension id (`publisher.name`). Checked against the allowlist or the user's consent. */
+  extensionId: string;
+  /** What the helper is, for the run record: 1 to 40 letters, digits, `_`, `-`; the helper acts as `agent:helper-<audience>`. */
+  audience: string;
+  /** Reserved. The gateway cannot narrow a credential by scope yet, so only an empty list is accepted. */
+  scopes?: readonly string[];
+  /** Lifetime in seconds: whole number, 1 to 3600, default 300. */
+  ttlSeconds?: number;
+}
+
+/**
+ * A short-lived bearer minted for a helper process. Pass `token` to the helper by environment or stdin,
+ * never on a command line, and do not store it. `token` is not enumerable: it does not appear in JSON or
+ * a log of this object. `undefined` on a gateway without a verifier, where the helper needs none.
+ */
+export interface HelperCredential {
+  readonly token: string | undefined;
+  /** RFC 3339 expiry of the token. */
+  readonly expiresAt: string | undefined;
+  /** The gateway the helper talks to (the one this window is connected to). */
+  readonly gatewayUrl: string;
+}
+
+/** A font file the companion ships. It is served from the webview's own origin only. */
+export interface WebviewFont {
+  /** CSS family name: 1 to 60 letters, digits, spaces, `_`, `-`. */
+  family: string;
+  /** A `.woff2`, `.woff`, `.ttf` or `.otf` under the companion's `extensionUri`. The companion's webview `localResourceRoots` must include its folder. */
+  file: vscode.Uri;
+  /** 100 to 900 in steps of 100. Default 400. */
+  weight?: number;
+  /** Default `normal`. */
+  style?: 'normal' | 'italic';
+}
+
+/** Optional parts of the shell. All validated; none loosens the CSP beyond `font-src` for the webview origin. */
+export interface WebviewShellOptions {
+  /** Adds the `@font-face` rules and `font-src <webview origin>`. At most 8. */
+  fonts?: readonly WebviewFont[];
+  /** `<html lang>`: a language tag such as `de` or `pt-BR` (for example `vscode.env.language`). */
+  lang?: string;
+  /** `<title>`: at most 200 characters, escaped. */
+  title?: string;
+}
+
+/**
+ * The calm-window settings a companion wants when the user turns focus mode on. Data only. Appearance
+ * settings only: `window.*`, `workbench.*`, `breadcrumbs.*`, `editor.minimap.*` and a few editor looks.
+ */
+export interface FocusProfile {
+  /** Unique: 1 to 64 letters, digits, `.`, `_`, `-`; `escurel` is reserved. The user selects it by this id. */
+  id: string;
+  /** Setting id to value, at most 40, plain JSON values. The profile replaces Escurel's own list while active. */
+  settings: Readonly<Record<string, unknown>>;
+}
+
+export interface WebviewHtmlOptions extends WebviewShellOptions {
   webview: vscode.Webview;
   /** The companion's own extension URI: its bundle is `dist/webview/<bundle>.js` under it. */
   extensionUri: vscode.Uri;
@@ -99,6 +156,23 @@ export interface EscurelExtensionApi {
   readonly apiVersion: typeof EXTENSION_API_VERSION;
   /** `tenant` is a gateway URL; one window talks to one gateway, so any other value throws. */
   getClient(tenant?: string): GatewayClient;
+  /**
+   * The signed-in subject (the `sub` claim) as a string, never the token. `undefined` on a gateway
+   * without a verifier or with no session. A change of identity fires `onDidChangeTenant`: ask again.
+   */
+  getSubject(): Promise<string | undefined>;
+  /**
+   * A short-lived credential for a helper process the companion starts. The user's own token stays in the
+   * host: the gateway mints a new bearer (same tenant, same person, never admin, no refresh). Refused unless
+   * the extension is in `escurel.api.helperCredentialExtensions` or the user accepted a one-time question.
+   */
+  getHelperCredential(request: HelperCredentialRequest): Promise<HelperCredential>;
+  /**
+   * Offers a focus-mode profile. Escurel's single focus toggle applies the ACTIVE profile and keeps the
+   * person's own values: the user's setting `escurel.focus.profile` picks it; unset, the one registered
+   * profile is used, and with several the built-in one stays until the user chooses. Duplicate id throws.
+   */
+  registerFocusProfile(profile: FocusProfile): vscode.Disposable;
   /** The shell of a companion webview: CSP, nonce, theme tokens. */
   webviewHtml(options: WebviewHtmlOptions): string;
   readonly themeTokens: ThemeTokens;

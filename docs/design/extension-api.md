@@ -99,6 +99,83 @@ api.registerInboxDecorator('acme-request', {
 | View badge | When a decorator is registered, the Inbox view badge shows the number of rows whose status is `open`. |
 | `emptyMessage` | A string, or one text per language (`en`, `de`, ...); chosen by the window language (exact, language family, `en`). Shown as the view message when the Inbox has no row, so a requester sees where a request goes. The first decorator that contributes one wins. |
 | Bounds and failure | Data only: no command, no script, no webview. Returned text is cleaned and capped; anything outside the schema is dropped. The first decorator that sets a field wins. A decorator that throws or exceeds 2 s leaves its rows as they were. Registering or disposing a decorator refreshes the open view. |
+## Additions (identity, helper credential, shell options, focus profiles)
+
+Additive members of version 1 (the version stays 1: nothing existing changes).
+
+### `getSubject()`
+
+`getSubject(): Promise<string | undefined>` returns the signed-in subject (the `sub` claim) as a string. It never
+returns, and a failing lookup never reports, a token. `undefined` on a gateway without a verifier or with no session.
+A change of identity fires `onDidChangeTenant`; a companion that keys data by subject asks again then. Use: key
+per-person data (page-bound chat groups, saved views) and apply separation of duties without reading the token.
+
+### `getHelperCredential({ extensionId, audience, scopes?, ttlSeconds? })`
+
+For a companion that starts a helper process (an importer, an exporter) which must call the gateway as the user.
+Returns `{ token, expiresAt, gatewayUrl }`. The companion passes `token` to the helper by environment or stdin
+(never an argument) and does not keep it.
+
+- **The user's token stays in the host.** The call uses the existing gateway tool `mint_agent_token`: the gateway
+  signs a NEW bearer for `agent:helper-<audience>`. Same tenant, the same acting person (`act.sub`), the caller's
+  own groups, never admin, no refresh token, lifetime `ttlSeconds` (1 to 3600, default 300). Each call is a
+  governed run in the gateway's record (`run-started`, `run-finished: expired`), so the use is auditable. No new
+  gateway request was needed. A gateway without a signing key answers `unsupported`, and the call refuses.
+- **Who may ask.** Refused unless the caller's `extensionId` is an installed extension and either is listed in
+  the user-level setting `escurel.api.helperCredentialExtensions` (application scope: a repository cannot add one;
+  restricted in an untrusted workspace) or the user answered the one-time modal question naming the extension, the
+  audience and the lifetime. A yes is remembered per extension id in global state; a no is not remembered. The
+  command `Escurel: Forget which extensions may request helper credentials` clears the answers. Concurrent first
+  calls ask once.
+- **Limit of the check.** VS Code does not tell a host which extension called an exported function, so
+  `extensionId` is declared by the caller, not proven. The allowlist and the question protect the user against an
+  extension that was never meant to receive a credential and make every grant visible; they do not stop a
+  malicious extension in the same extension host from naming an allowed id, just as it could call
+  `vscode.authentication.getSession` itself. Install only extensions you trust.
+- **`scopes`** is reserved: the gateway cannot narrow a credential yet, so a non-empty list is refused rather than
+  ignored (least privilege must not be advertised and not delivered).
+- **Gateway without a verifier** (no issuer configured, no session): returns `token: undefined` and the gateway
+  URL, without a question, since a helper needs no bearer there.
+- **Never logged.** `token` is a non-enumerable property (absent from `JSON.stringify`, spread and `util.inspect`);
+  a mint failure is stripped of anything token-shaped before it is reported; a refusal logs only the extension id.
+
+### `webviewHtml` shell options: `fonts`, `lang`, `title`
+
+All optional, all validated on the host; with none of them the shell is byte-identical to before.
+
+- `fonts: [{ family, file: Uri, weight?, style? }]` (at most 8): adds one `@font-face` per entry and the CSP directive
+  `font-src <webview origin>`. `file` must be a `.woff2`, `.woff`, `.ttf` or `.otf` Uri with the same scheme and
+  authority as `extensionUri`, lying under it (no `.`/`..` segment, no query or fragment, a conservative character set),
+  so no remote font and no file elsewhere on disk. `family` is 1 to 60 letters, digits, spaces, `_`, `-`; `weight` is
+  100 to 900 in steps of 100; `style` is `normal` or `italic`. The companion's own `webview.options.localResourceRoots`
+  must still include the folder that holds the font.
+- `lang`: a language tag (`de`, `pt-BR`; for example `vscode.env.language`) written to `<html lang>`.
+- `title`: at most 200 characters, control characters and U+2028/2029 replaced by a space, HTML-escaped, written as `<title>`.
+
+The CSP stays `default-src 'none'` with no `connect-src`; `font-src` appears only when fonts are given.
+
+### `registerFocusProfile({ id, settings })`
+
+Escurel's focus mode (the calm window) writes a list of VS Code settings and puts the person's own values back on
+exit. A companion with its own calm window used to write the same settings through its own toggle, so the second
+toggle remembered the first one's values as the person's. A profile replaces that: the companion offers a list, and the
+one focus toggle applies the active profile.
+
+- **Data only.** `settings` is a plain object (at most 40 entries, plain JSON values, small). Keys are limited to
+  appearance: `window.*`, `workbench.*`, `breadcrumbs.*`, `editor.minimap.*` and a few editor looks
+  (`editor.fontFamily`, `fontSize`, `lineHeight`, `lineNumbers`, `wordWrap`, `renderLineHighlight`, `cursorBlinking`). A key
+  of Escurel (`escurel.*`), or one that names a trust, path, command, URL, domain, shell, terminal, task, proxy,
+  extension, security or auth setting, is refused, so a profile cannot redirect the token or make something run. Id
+  `escurel` is reserved for the built-in list. A duplicate id throws; `dispose()` removes the profile.
+- **Which profile is active.** The user-level setting `escurel.focus.profile` (`escurel` or a registered id) wins. Unset:
+  the one registered companion profile, otherwise the built-in one. With two companions and no choice Escurel does not
+  pick one for the user. A setting that names an unregistered id is ignored.
+- **No clobbering.** The person's own values are remembered once, at the first enter, per setting. Switching profile
+  while the window is calm (a profile appears, goes away or is chosen) keeps those originals for shared keys, remembers
+  the window's value for keys new to the profile, and gives back at once what only the old profile changed. Leaving
+  restores everything. Enter, switch and exit take turns, so a settings event during an exit cannot put the calm window back.
+- The companion keeps its own title and theme in the profile (`window.title`, `workbench.colorTheme`); a theme it
+  ships is its own `contributes.themes`.
 
 ## Classification of a downstream fork's changes
 

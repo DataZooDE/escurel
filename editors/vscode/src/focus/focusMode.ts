@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import { log } from '../log';
 import { FOCUS_SETTINGS, planEnter, planExit, type SavedSettings } from './focusSettings';
+import { BUILTIN_PROFILE, chooseProfile, type FocusProfileRegistry } from './focusProfiles';
 
 const SAVED_KEY = 'escurel.focus.restore';
 const CONTEXT_KEY = 'escurel.focusMode';
@@ -21,12 +22,59 @@ export interface EnterOptions {
 export class FocusMode implements vscode.Disposable {
   /** Set synchronously, before entering can yield to a connection callback. */
   silentBootstrap = false;
-  constructor(private readonly memento: vscode.Memento) {
+  /**
+   * What was remembered, held here as the truth and written through to the memento. VS Code's global
+   * state may answer a `get` with the value from before a just-awaited `update`, and a window that
+   * forgets it is calm cannot put the person's settings back.
+   */
+  private saved: SavedSettings | undefined;
+  private async remember(saved: SavedSettings | undefined): Promise<void> {
+    this.saved = saved;
+    await this.memento.update(SAVED_KEY, saved);
+  }
+  /** Enter, switch and exit take turns: a settings write yields, and events arrive while it does. */
+  private turn: Promise<unknown> = Promise.resolve();
+  private serial<T>(work: () => Promise<T>): Promise<T> {
+    const run = this.turn.then(work, work);
+    this.turn = run.catch(() => undefined);
+    return run;
+  }
+  constructor(
+    private readonly memento: vscode.Memento,
+    private readonly profiles?: {
+      registry: FocusProfileRegistry;
+      /** `escurel.focus.profile`: the profile the user chose, or empty. */
+      configured: () => string | undefined;
+    },
+  ) {
+    this.saved = memento.get<SavedSettings>(SAVED_KEY);
     void this.publish();
   }
 
-  static register(context: vscode.ExtensionContext): FocusMode {
-    const focus = new FocusMode(context.globalState);
+  /** The settings the active profile wants: a companion's when it is the one chosen, else Escurel's own. */
+  private activeSettings(): Readonly<Record<string, unknown>> {
+    if (!this.profiles) return FOCUS_SETTINGS;
+    const id = chooseProfile(this.profiles.configured(), this.profiles.registry.ids());
+    if (id === BUILTIN_PROFILE) return FOCUS_SETTINGS;
+    return this.profiles.registry.get(id)?.settings ?? FOCUS_SETTINGS;
+  }
+
+  static register(context: vscode.ExtensionContext, registry?: FocusProfileRegistry): FocusMode {
+    const configured = (): string | undefined =>
+      vscode.workspace.getConfiguration('escurel').get<string>('focus.profile');
+    const focus = new FocusMode(
+      context.globalState,
+      registry ? { registry, configured } : undefined,
+    );
+    if (registry) {
+      // A profile appeared, went away or was chosen while the window is calm: apply the active one now.
+      context.subscriptions.push(
+        registry.onDidChange(() => void focus.reapply()),
+        vscode.workspace.onDidChangeConfiguration((e) => {
+          if (e.affectsConfiguration('escurel.focus.profile')) void focus.reapply();
+        }),
+      );
+    }
     context.subscriptions.push(
       focus,
       vscode.commands.registerCommand('escurel.focusMode.enter', (o?: EnterOptions) =>
@@ -41,7 +89,7 @@ export class FocusMode implements vscode.Disposable {
   }
 
   isOn(): boolean {
-    return Object.keys(this.memento.get<SavedSettings>(SAVED_KEY) ?? {}).length > 0;
+    return Object.keys(this.saved ?? {}).length > 0;
   }
 
   async enter(options: EnterOptions = {}): Promise<boolean> {
@@ -54,27 +102,42 @@ export class FocusMode implements vscode.Disposable {
       );
       if (pick !== 'Switch') return false;
     }
-    const config = vscode.workspace.getConfiguration();
-    const current: Record<string, unknown> = {};
-    for (const key of Object.keys(FOCUS_SETTINGS)) {
-      current[key] = config.inspect(key)?.globalValue;
-    }
-    const plan = planEnter(current, this.memento.get<SavedSettings>(SAVED_KEY));
-    // Remember BEFORE writing: a crash half way must still be able to put things back.
-    await this.memento.update(SAVED_KEY, plan.saved);
-    await this.write(plan.writes);
-    await this.publish();
+    await this.serial(() => this.apply());
     if (options.overview !== false) {
       await vscode.commands.executeCommand('escurel.openOverview');
     }
     return true;
   }
 
-  async exit(): Promise<void> {
-    const saved = this.memento.get<SavedSettings>(SAVED_KEY);
-    await this.write(planExit(saved));
-    await this.memento.update(SAVED_KEY, undefined);
+  /** Writes the active profile; what the previous one changed and this one does not is given back. */
+  private async apply(): Promise<void> {
+    const settings = this.activeSettings();
+    const config = vscode.workspace.getConfiguration();
+    const current: Record<string, unknown> = {};
+    for (const key of Object.keys(settings)) {
+      current[key] = config.inspect(key)?.globalValue;
+    }
+    const plan = planEnter(current, this.saved, settings);
+    // Remember BEFORE writing: a crash half way must still be able to put things back.
+    await this.remember(plan.saved);
+    await this.write(plan.writes);
     await this.publish();
+  }
+
+  /** The active profile changed (registered, removed or chosen): while the window is calm, apply it. */
+  async reapply(): Promise<void> {
+    await this.serial(async () => {
+      if (this.isOn()) await this.apply();
+    });
+  }
+
+  exit(): Promise<void> {
+    return this.serial(async () => {
+      const saved = this.saved;
+      await this.write(planExit(saved));
+      await this.remember(undefined);
+      await this.publish();
+    });
   }
 
   private async write(values: Record<string, unknown>): Promise<void> {

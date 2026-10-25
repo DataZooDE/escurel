@@ -119,6 +119,27 @@ derives its version from the tag (`vYYYY.MM.DD` → `YYYY.M.D`, leading zeros dr
   once to switch to the calm focus view (never in the demo and web workbench windows, which enter it
   themselves, nor in untrusted or virtual workspaces).
 
+- **`getSubject()` on the companion API**: the signed-in subject as a string (never the token); `undefined` without
+  a verifier or a session. Additive, `apiVersion` stays 1.
+
+- **`getHelperCredential()` on the companion API**: a short-lived bearer for a helper process a companion starts,
+  minted by the gateway (`mint_agent_token`: same person, never admin, no refresh, 1 to 3600 s) so the user's own
+  token never leaves the host. Refused unless the extension id is in the new user-level setting
+  `escurel.api.helperCredentialExtensions` or the user accepted a one-time question; the token is never logged
+  and is not enumerable. New command `Escurel: Forget which extensions may request helper credentials`.
+
+- **`webviewHtml()` shell options for companions**: `fonts` (font files under the companion's folder, adds
+  `@font-face` and `font-src` for the webview origin only), `lang` (`<html lang>`) and `title` (`<title>`), validated so
+  none of them can break out of the markup or load a remote font. Without them the shell is unchanged.
+
+- **`registerFocusProfile()` on the companion API**: a companion offers a list of appearance settings and Escurel's
+  single focus toggle applies the active profile (new user setting `escurel.focus.profile`; unset, the one registered
+  profile, else the built-in one), so two toggles no longer remember each other's values as the person's. Switching
+  profile while the window is calm keeps the person's originals; the keys are limited to window, workbench, breadcrumbs
+  and minimap appearance, and anything about trust, paths, commands, URLs or `escurel.*` is refused.
+- **Focus mode**: enter, switch and exit now take turns, and the window holds what it remembered itself instead of
+  re-reading it from VS Code's global state right after writing.
+
 ### Changed
 
 - The typed client treats `isError: true` as an error, never as an empty result (#654); `validate` refusals

@@ -47,6 +47,7 @@ import { FocusMode } from './focus/focusMode';
 import { registerFocusSuggestion } from './focus/registerSuggestion';
 import { OverviewController } from './overview/controller';
 import { createContributions, createExtensionApi } from './api';
+import { registerHelperCredential } from './api/helperHost';
 import type { EscurelExtensionApi } from './api/types';
 
 const EXPLAIN_SCHEME = 'escurel-explain';
@@ -84,10 +85,17 @@ export function activate(
     client: () => services.client,
     gatewayUrl: () => services.gatewayUrl,
     onDidChange: services.onDidChange,
+    subject: () => services.subject(),
+    helper: registerHelperCredential(
+      context,
+      (req) => services.client.mintAgentToken(req),
+      () => services.gatewayUrl,
+      async () => (await services.auth.refresher.get()) !== undefined,
+    ),
   };
   const contributions = createContributions(apiDeps);
   context.subscriptions.push(contributions);
-  const focus = FocusMode.register(context);
+  const focus = FocusMode.register(context, contributions.focusProfiles);
   registerControlCommands(context, services);
   registerNodeCommands(context, services);
   context.subscriptions.push(services);

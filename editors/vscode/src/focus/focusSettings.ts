@@ -40,18 +40,25 @@ export interface EnterPlan {
 export function planEnter(
   current: Readonly<Record<string, unknown>>,
   alreadySaved: SavedSettings | undefined,
+  settings: Readonly<Record<string, unknown>> = FOCUS_SETTINGS,
 ): EnterPlan {
-  if (alreadySaved && Object.keys(alreadySaved).length > 0) {
-    return { saved: alreadySaved, writes: { ...FOCUS_SETTINGS } };
-  }
+  const had: SavedSettings = alreadySaved ?? {};
   const saved: SavedSettings = {};
-  for (const key of Object.keys(FOCUS_SETTINGS)) {
+  const writes: Record<string, unknown> = { ...settings };
+  for (const key of Object.keys(settings)) {
+    // A key that an earlier enter already remembered keeps its FIRST original; a key new to this profile
+    // is remembered as the window has it now (nobody of ours wrote it yet).
     saved[key] =
-      key in current && current[key] !== undefined
+      had[key] ??
+      (key in current && current[key] !== undefined
         ? { set: true, value: current[key] }
-        : { set: false };
+        : { set: false });
   }
-  return { saved, writes: { ...FOCUS_SETTINGS } };
+  // Switching profile while on: what the previous profile changed and this one does not is given back.
+  for (const [key, was] of Object.entries(had)) {
+    if (!(key in settings)) writes[key] = was.set ? was.value : undefined;
+  }
+  return { saved, writes };
 }
 
 /** Leaving it: the value to write for each key (`undefined` removes the key), or nothing if none was saved. */
