@@ -3,15 +3,19 @@ import { exposedApi } from '../../src/shared/apiExposure';
 
 // `activate()` used to return the whole service graph, token store included, to ANY installed
 // extension (`getExtension('datazoo.escurel').exports`). The test and demo harnesses need it; a real
-// install must not hand it out.
+// install must not hand it out. The versioned public API (no token in it) is handed out in every mode.
 describe('exposedApi', () => {
-  const api = { services: { auth: { refresher: 'the token store' } } };
+  const pub = { apiVersion: 1 };
+  const internals = { services: { auth: { refresher: 'the token store' } } };
 
-  it('hands nothing to other extensions in a production install', () => {
-    expect(exposedApi(true, api)).toBeUndefined();
+  it('hands only the public API to other extensions in a production install', () => {
+    const api = exposedApi(true, pub, internals);
+    expect(api).toBe(pub);
+    expect(api).not.toHaveProperty('services');
   });
 
-  it('hands the API to the test and demo harnesses', () => {
-    expect(exposedApi(false, api)).toBe(api);
+  it('adds the internals for the test and demo harnesses', () => {
+    const api = exposedApi(false, pub, internals);
+    expect(api).toMatchObject({ apiVersion: 1, services: internals.services });
   });
 });

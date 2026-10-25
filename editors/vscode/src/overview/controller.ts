@@ -2,13 +2,12 @@ import * as vscode from 'vscode';
 import { describeError } from '../errors';
 import type { FocusMode } from '../focus/focusMode';
 import { log } from '../log';
-import type {
-  OverviewHostToWebview,
-  OverviewWebviewToHost,
-} from '../shared/protocol';
+import type { OverviewHostToWebview, OverviewWebviewToHost } from '../shared/protocol';
 import { safePost } from '../shared/safePost';
 import { webviewHtml, webviewOptions } from '../shared/webviewHtml';
 import type { Services } from '../services';
+import { loadContributedTiles } from '../api/contributions';
+import type { Contributions } from '../api';
 import { loadOverviewInputs } from './load';
 import { buildOverview, type OverviewAction } from './model';
 
@@ -32,6 +31,7 @@ export class OverviewController implements vscode.Disposable {
   private panel: vscode.WebviewPanel | undefined;
   private actions = new Map<string, OverviewAction>();
   private declaredTiles = new Map<string, string>();
+  private contributedOpen = new Map<string, string>();
   private readonly skillCache = new Map<string, string>();
   private timer: NodeJS.Timeout | undefined;
   private loadSeq = 0;
@@ -41,12 +41,18 @@ export class OverviewController implements vscode.Disposable {
     private readonly context: vscode.ExtensionContext,
     private readonly services: Services,
     private readonly focus: FocusMode,
+    private readonly contributions?: Pick<Contributions, 'tiles' | 'gateway'>,
   ) {
+    if (contributions) {
+      // A companion that registers or removes a tile while the board is open changes the board.
+      this.disposers.push(contributions.tiles.onDidChange(() => void this.load()));
+    }
     this.disposers.push(
       services.onDidChange(() => {
         this.skillCache.clear();
         this.actions = new Map();
         this.declaredTiles = new Map();
+        this.contributedOpen = new Map();
         void this.load();
       }),
     );
@@ -56,8 +62,9 @@ export class OverviewController implements vscode.Disposable {
     context: vscode.ExtensionContext,
     services: Services,
     focus: FocusMode,
+    contributions?: Pick<Contributions, 'tiles' | 'gateway'>,
   ): OverviewController {
-    const c = new OverviewController(context, services, focus);
+    const c = new OverviewController(context, services, focus, contributions);
     context.subscriptions.push(
       c,
       vscode.commands.registerCommand('escurel.openOverview', () => c.open()),
@@ -103,6 +110,7 @@ export class OverviewController implements vscode.Disposable {
       this.panel = undefined;
       this.actions = new Map();
       this.declaredTiles = new Map();
+      this.contributedOpen = new Map();
       this.loadSeq += 1;
     });
   }
@@ -128,6 +136,11 @@ export class OverviewController implements vscode.Disposable {
       case 'open-tile': {
         const command = Object.hasOwn(TILE_VIEW, m.tile) ? TILE_VIEW[m.tile] : undefined;
         const skill = this.declaredTiles.get(m.tile);
+        const contributed = this.contributedOpen.get(m.tile);
+        if (contributed) {
+          await vscode.commands.executeCommand(contributed);
+          return true;
+        }
         if (skill) {
           await vscode.commands.executeCommand('escurel.viewSkill', skill);
           return true;
@@ -159,12 +172,28 @@ export class OverviewController implements vscode.Disposable {
       if (!this.panel || mine !== this.loadSeq) return;
       const out = buildOverview({ ...inputs, nowMs: Date.now(), focusOn: this.focus.isOn() });
       this.actions = out.actions;
-      this.declaredTiles = new Map((inputs.delayed ?? []).map((d) => [`declared:${d.skill}`, d.skill]));
-      this.post({ type: 'overview', view: out.view });
+      this.declaredTiles = new Map(
+        (inputs.delayed ?? []).map((d) => [`declared:${d.skill}`, d.skill]),
+      );
+      this.contributedOpen = new Map();
+      let view = out.view;
+      if (this.contributions && this.contributions.tiles.size > 0) {
+        // Companion tiles come after the core ones; their lines resolve through the same key table.
+        const extra = await loadContributedTiles(
+          this.contributions.tiles,
+          this.contributions.gateway,
+        );
+        if (!this.panel || mine !== this.loadSeq) return;
+        for (const [key, action] of extra.actions) this.actions.set(key, action);
+        this.contributedOpen = extra.openCommands;
+        view = { ...view, tiles: [...view.tiles, ...extra.tiles] };
+      }
+      this.post({ type: 'overview', view });
     } catch (err) {
       if (!this.panel || mine !== this.loadSeq) return;
       this.actions = new Map();
       this.declaredTiles = new Map();
+      this.contributedOpen = new Map();
       this.post({ type: 'overview-error', message: describeError(err) });
     }
   }
