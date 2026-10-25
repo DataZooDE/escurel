@@ -203,6 +203,7 @@ mod tests {
         Trigger {
             manual: None,
             is_system: false,
+            chat: None,
             tenant: "acme".to_owned(),
             event_id: event_id.to_owned(),
             label_skill: "note".to_owned(),

@@ -355,6 +355,7 @@ async fn recovery_writes_the_missing_run_finished_for_an_orphaned_pending_row() 
             .begin_run(&Trigger {
                 manual: None,
                 is_system: false,
+                chat: None,
                 tenant: TENANT.to_owned(),
                 event_id: event_id.clone(),
                 label_skill: SKILL.to_owned(),
