@@ -247,6 +247,17 @@ async fn a_user_turn_gets_exactly_one_assistant_reply_from_the_run() {
     // Nothing else arrives later.
     tokio::time::sleep(Duration::from_secs(1)).await;
     assert_eq!(messages(&gw, &alice, 3).await.len(), 2);
+    // An answered turn leaves the inbox: it was handled, and nobody else should pick it up.
+    let admin = gw.mint_token(TENANT, Role::Admin);
+    let inbox = call(&gw, &admin, "list_inbox", json!({})).await;
+    assert!(
+        !inbox["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|e| e["event_id"] == event_id.as_str()),
+        "{inbox}"
+    );
 }
 
 #[tokio::test]

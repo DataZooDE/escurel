@@ -7,7 +7,7 @@ pin (see `SKILL.md` → "How this skill is installed").
 ## 0.25.18 — the chat corpus and `chat:` validation
 
 `chat_corpus()` / `examples/chat/seed/`: an owner-only, page-bound `conversation` skill and the `chat` agent skill
-(`autonomy: review`). `validate` now checks `chat:` (`chat_invalid` error, `chat_unknown_key` warning). Chat runs may also
+(`autonomy: review`). `validate` now checks `chat:` (`chat_invalid` error, `chat_unknown_key` warning). An answered chat turn's event is assigned to its page and leaves the inbox. Chat runs may also
 call `query_instance`, `provenance_ancestry` and `provenance_report`; a draft a chat run creates is listed in its
 reply's `metadata.drafts`.
 
