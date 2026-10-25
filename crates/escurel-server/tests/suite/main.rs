@@ -43,6 +43,7 @@ mod changesets;
 mod chat_acl;
 mod chat_cursor;
 mod chat_idempotency;
+mod chat_ws;
 mod config_keys;
 mod corpus_traversal;
 mod crm_demo_backends;

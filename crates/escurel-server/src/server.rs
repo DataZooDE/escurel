@@ -572,6 +572,13 @@ pub(crate) struct AppState {
     /// sending here is unconditional. A `send` with no subscribers is
     /// the cheap common case, not an error.
     pub(crate) events_tx: tokio::sync::broadcast::Sender<Arc<escurel_index::EventInfo>>,
+    /// In-process fan-out of freshly appended chat messages to WS
+    /// `event_subscribe {filters: {chat_group_id}}` subscribers (governed
+    /// chat agent, FR-G1). Only rows `append_message` actually INSERTED are
+    /// sent — an idempotent `msg_id` echo is not announced twice. The
+    /// subscriber passed `may_access_chat` for its one group at subscribe
+    /// time; the WS side drops every other group's message.
+    pub(crate) chat_tx: tokio::sync::broadcast::Sender<Arc<escurel_index::ChatMessage>>,
 }
 
 /// Build the router(s) + bind + spawn the server tasks. Returns
@@ -658,6 +665,7 @@ pub async fn serve(
         // 256 in-flight events per lagging subscriber before it is told
         // to resync — same order as the session dispatcher's buffer.
         events_tx: tokio::sync::broadcast::channel(1024).0,
+        chat_tx: tokio::sync::broadcast::channel(1024).0,
     };
 
     let mut app = Router::new()

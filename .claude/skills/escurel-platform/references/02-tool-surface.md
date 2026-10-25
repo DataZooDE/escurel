@@ -367,6 +367,17 @@ token subject) hang off one of its pages. For those groups:
   `provenance: {chat_group_id}`, the run (triggered by or minted for that
   event) appends its `assistant` reply.
 
+**Live chat over `/ws`.** A presence-only socket can watch one group:
+`{type: "event_subscribe", subscription_id, filters: {chat_group_id}}`.
+The subscribe is checked with the same chat ACL as `list_messages`; a
+refusal is `{type: "error", code: "forbidden"}` and subscribes nothing.
+Once acked, every message `append_message` inserts into that group arrives
+as `{type: "chat_message", subscription_id, chat_group_id, msg}` (`msg` is a
+`list_messages` row). A `msg_id` retry is not pushed twice. The filter is
+exclusive (with any event filter → `invalid_subscription`), the socket gets
+no `event` frames, and there is no replay: after a reconnect, read the gap
+with `list_messages(since: <last ts>)` and dedupe by `msg_id`.
+
 There is **no agent-facing delete tool by design.** Deletion is operator
 territory: `EscurelAdmin.DeleteChatHistory(tenant_id, [chat_group_id,
 before_ts])` covers GDPR right-to-erasure (group set), retention pruning
