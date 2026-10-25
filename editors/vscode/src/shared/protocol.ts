@@ -542,3 +542,55 @@ export type ReviewPreviewWebviewToHost =
   | { type: 'ready' }
   /** A list line a companion added: only the handle the host handed out travels. */
   | { type: 'augment-action'; id: string };
+
+// ── chat (SPEC §3.11) ─────────────────────────────────────────────────
+
+export type ChatAnswerStatus = 'ok' | 'failed' | 'cancelled';
+
+/** One row of the conversation, cleaned by the host (src/chat/chatModel.ts). */
+export type ChatRow =
+  | { kind: 'user'; key: string; text: string; ts: string }
+  | {
+      kind: 'assistant';
+      key: string;
+      text: string;
+      ts: string;
+      status: ChatAnswerStatus;
+      /** The run that answered: "Show how I got this" sends this row's key back. */
+      runId?: string | undefined;
+      drafts: string[];
+    }
+  | { kind: 'pending'; key: string; text: string }
+  | { kind: 'notice'; key: string; text: string };
+
+/** A conversation in Recent. `key` is opaque: the host maps it back to the page it offered. */
+export interface ChatConversationItem {
+  key: string;
+  title: string;
+  when: string;
+}
+
+export interface ChatViewState {
+  /** `signed-out`: no verified identity, so no private chat. `unavailable`: the chat skills are not installed. */
+  status: 'ready' | 'signed-out' | 'unavailable' | 'error';
+  /** One line for a non-ready status. */
+  message?: string;
+  recent: ChatConversationItem[];
+  /** The open conversation, or none for a new chat. */
+  current?: { key: string; title: string } | undefined;
+  rows: ChatRow[];
+  /** False while a question is being sent. */
+  canSend: boolean;
+}
+
+export type ChatHostToWebview = { type: 'chat-state'; state: ChatViewState };
+
+export type ChatWebviewToHost =
+  | { type: 'ready' }
+  | { type: 'new-chat' }
+  | { type: 'open-conversation'; key: string }
+  | { type: 'send'; text: string }
+  /** A `[[skill::id]]` in an answer; the host opens it only if an answer on show cites it. */
+  | { type: 'open-wikilink'; wikilink: string }
+  /** "Show how I got this" on the assistant row with this key. */
+  | { type: 'show-run'; key: string };

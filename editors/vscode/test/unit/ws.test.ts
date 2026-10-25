@@ -336,3 +336,33 @@ describe('EventSocket', () => {
     expect(connected).toBe(true);
   });
 });
+
+describe('EventSocket chat subscription', () => {
+  it('subscribes with filters.chat_group_id and delivers chat_message frames, not events', async () => {
+    const srv = await startFakeWs();
+    servers.push(srv);
+    const chats: string[] = [];
+    const o = options(srv.url, {
+      filters: { chat_group_id: 'page-chat:v1:abc:p.md' },
+      onChatMessage: (m) => chats.push(m.msg_id),
+    });
+    const s = new EventSocket(o);
+    sockets.push(s);
+    s.connect();
+    await srv.waitFor(() => srv.upgrades[0]?.frames.length === 2);
+    expect(srv.upgrades[0]!.frames[1]).toMatchObject({
+      filters: { chat_group_id: 'page-chat:v1:abc:p.md' },
+    });
+    srv.upgrades[0]!.socket.send(
+      JSON.stringify({
+        type: 'chat_message',
+        subscription_id: 1,
+        chat_group_id: 'page-chat:v1:abc:p.md',
+        msg: { msg_id: 'u-1', ts: 't', role: 'user', content: 'hi', embedded: false },
+      }),
+    );
+    await srv.waitFor(() => chats.length === 1);
+    expect(chats).toEqual(['u-1']);
+    expect(o.events).toEqual([]);
+  });
+});
