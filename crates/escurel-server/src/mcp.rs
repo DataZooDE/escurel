@@ -89,7 +89,7 @@ use tools_lineage::*;
 use tools_progress::*;
 use tools_read::*;
 use tools_status::*;
-pub(crate) use tools_write::event_to_json;
+pub(crate) use tools_write::{chat_message_to_json, event_to_json};
 
 /// The `search` tool for the WS live-search subscription (#355): same
 /// ACL-fused hybrid search, errors flattened to their message (the
@@ -1251,7 +1251,14 @@ async fn dispatch_tools_call(
             tool_purge_page(state, indexer, params.arguments).await
         }
         "append_message" => {
-            tool_append_message(indexer, caller, state.write_acl, params.arguments).await
+            tool_append_message(
+                indexer,
+                caller,
+                state.write_acl,
+                &state.chat_tx,
+                params.arguments,
+            )
+            .await
         }
         "list_messages" => {
             tool_list_messages(indexer, caller, state.write_acl, params.arguments).await

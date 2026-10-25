@@ -186,6 +186,19 @@ impl Indexer {
         page_id: &str,
         revision_sha256: &str,
     ) -> Result<ChatMessage, IndexerError> {
+        self.append_chat_message_with_revision_tracked(input, page_id, revision_sha256)
+            .await
+            .map(|(stored, _)| stored)
+    }
+
+    /// [`Self::append_chat_message_with_revision`], also saying whether a row
+    /// was inserted (`false` for an idempotent `msg_id` echo).
+    pub async fn append_chat_message_with_revision_tracked(
+        &self,
+        input: AppendChatMessage<'_>,
+        page_id: &str,
+        revision_sha256: &str,
+    ) -> Result<(ChatMessage, bool), IndexerError> {
         use sha2::{Digest, Sha256};
         let _write = self.write_lock.lock().await;
         let changed = || IndexerError::RevisionChanged {
@@ -198,7 +211,7 @@ impl Indexer {
         if format!("{:x}", Sha256::digest(content.as_bytes())) != revision_sha256 {
             return Err(changed());
         }
-        self.append_chat_message(input).await
+        self.append_chat_message_tracked(input).await
     }
 
     /// Resolve one stored message by its `(chat_group_id, msg_id)` key for a
@@ -263,6 +276,19 @@ impl Indexer {
         &self,
         input: AppendChatMessage<'_>,
     ) -> Result<ChatMessage, IndexerError> {
+        self.append_chat_message_tracked(input)
+            .await
+            .map(|(stored, _)| stored)
+    }
+
+    /// [`Self::append_chat_message`], also saying whether a row was inserted:
+    /// `false` when a caller-supplied `msg_id` echoed the stored row. The
+    /// gateway pushes only inserted rows to `/ws` chat subscribers, so a
+    /// retry is not announced twice.
+    pub async fn append_chat_message_tracked(
+        &self,
+        input: AppendChatMessage<'_>,
+    ) -> Result<(ChatMessage, bool), IndexerError> {
         let msg_id: String = input
             .msg_id
             .map(str::to_owned)
@@ -309,7 +335,7 @@ impl Indexer {
             && !pg_backend
             && let Some(existing) = self.find_chat_message(&conn, input.chat_group_id, &msg_id)?
         {
-            return Ok(existing);
+            return Ok((existing, false));
         }
 
         let dense_vec_literal: Option<String> = if input.embed {
@@ -433,6 +459,10 @@ impl Indexer {
             .iter()
             .map(|b| b.as_ref() as &dyn duckdb::ToSql)
             .collect();
+        // Whether THIS call inserted the row. Only the Postgres path can
+        // turn an insert into a no-op (`ON CONFLICT DO NOTHING`, or the
+        // swallowed duplicate-key race below).
+        let mut inserted = true;
         let stored_ts: String = match already_resolved_ts {
             Some(ts) => {
                 // `ON CONFLICT` over the attached-Postgres table is NOT
@@ -445,7 +475,7 @@ impl Indexer {
                 // swallow it and let the readback below echo the stored
                 // row; any other error propagates untouched.
                 match conn.execute(&sql, param_refs.as_slice()) {
-                    Ok(_) => {}
+                    Ok(rows) => inserted = rows > 0 || !pg_backend,
                     // Only when the caller supplied the msg_id — that is
                     // the idempotency-key contract, and the readback
                     // below is what turns the swallow into an echo. A
@@ -455,7 +485,10 @@ impl Indexer {
                         if pg_backend
                             && input.msg_id.is_some()
                             && e.to_string()
-                                .contains("duplicate key value violates unique constraint") => {}
+                                .contains("duplicate key value violates unique constraint") =>
+                    {
+                        inserted = false;
+                    }
                     Err(e) => return Err(e.into()),
                 }
                 ts
@@ -476,19 +509,23 @@ impl Indexer {
         if pg_backend && input.msg_id.is_some() {
             return self
                 .find_chat_message(&conn, input.chat_group_id, &msg_id)?
+                .map(|stored| (stored, inserted))
                 .ok_or(IndexerError::Duckdb(duckdb::Error::QueryReturnedNoRows));
         }
 
-        Ok(ChatMessage {
-            chat_group_id: input.chat_group_id.to_owned(),
-            msg_id,
-            ts: stored_ts,
-            role: input.role.to_owned(),
-            author: input.author.map(str::to_owned),
-            content: input.content.to_owned(),
-            metadata: input.metadata,
-            embedded: input.embed,
-        })
+        Ok((
+            ChatMessage {
+                chat_group_id: input.chat_group_id.to_owned(),
+                msg_id,
+                ts: stored_ts,
+                role: input.role.to_owned(),
+                author: input.author.map(str::to_owned),
+                content: input.content.to_owned(),
+                metadata: input.metadata,
+                embedded: input.embed,
+            },
+            true,
+        ))
     }
 
     /// Look up one message by its `(chat_group_id, msg_id)` dedup key.

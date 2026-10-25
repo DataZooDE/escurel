@@ -1763,6 +1763,7 @@ pub(super) async fn tool_append_message(
     indexer: &Indexer,
     caller: AclCaller<'_>,
     write_acl: crate::server::WriteAclMode,
+    chat_tx: &tokio::sync::broadcast::Sender<std::sync::Arc<ChatMessage>>,
     args: Value,
 ) -> Result<Value, JsonRpcError> {
     let a: AppendMessageArgs = parse_args(args, "append_message")?;
@@ -1840,7 +1841,7 @@ pub(super) async fn tool_append_message(
     ) {
         (Some(revision), Some(page_id)) => {
             indexer
-                .append_chat_message_with_revision(input, page_id, revision)
+                .append_chat_message_with_revision_tracked(input, page_id, revision)
                 .await
         }
         (Some(_), None) => {
@@ -1849,18 +1850,22 @@ pub(super) async fn tool_append_message(
                 a.chat_group_id
             )));
         }
-        (None, _) => indexer.append_chat_message(input).await,
+        (None, _) => indexer.append_chat_message_tracked(input).await,
     };
-    let stored = appended.map_err(|e| match e {
+    let (stored, inserted) = appended.map_err(|e| match e {
         IndexerError::RevisionChanged { page_id } => {
             revision_changed_error("append_message", &page_id)
         }
         e => JsonRpcError::internal(format!("append_message: {e}")),
     })?;
-    Ok(json!({
+    let out = json!({
         "msg_id": stored.msg_id,
         "ts": stored.ts,
-    }))
+    });
+    if inserted {
+        let _ = chat_tx.send(std::sync::Arc::new(stored));
+    }
+    Ok(out)
 }
 
 /// The metadata stored with a page-chat message: the caller's own object,
@@ -1976,7 +1981,7 @@ pub(super) async fn tool_list_messages(
     Ok(out)
 }
 
-pub(super) fn chat_message_to_json(m: &ChatMessage) -> Value {
+pub(crate) fn chat_message_to_json(m: &ChatMessage) -> Value {
     let mut out = json!({
         "chat_group_id": m.chat_group_id,
         "msg_id": m.msg_id,

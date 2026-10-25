@@ -4,6 +4,14 @@ The skill version tracks the consumer-facing contract, not the Escurel
 binary version. The Escurel repo's checked-out git ref is the true version
 pin (see `SKILL.md` → "How this skill is installed").
 
+## 0.25.13 — live chat over `/ws` (`event_subscribe` `chat_group_id` filter)
+
+`event_subscribe` accepts `filters: {chat_group_id}`: the socket then receives `chat_message` frames
+(`{subscription_id, chat_group_id, msg}`, `msg` = a `list_messages` row) for every message `append_message` inserts into
+that group, and no `event` frames. The subscribe is checked against the chat ACL (`forbidden` error frame when refused);
+the filter cannot be combined with event filters (`invalid_subscription`); an idempotent `msg_id` retry is not pushed
+again; there is no replay (reconcile with `list_messages`).
+
 ## 0.25.12 — page-bound chat: run replies, revision guard, server-stamped author
 
 For a group named `page-chat:v1:<sha256(subject)>:<page_id>` (skill `chat: {page_bound: true}`), `append_message`:

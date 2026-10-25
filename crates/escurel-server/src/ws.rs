@@ -250,6 +250,11 @@ async fn handle_socket(
         tokio::sync::broadcast::Receiver<std::sync::Arc<escurel_index::EventInfo>>,
     > = None;
     let mut event_sub_id = Value::Null;
+    // A chat subscription (`filters.chat_group_id`, FR-G1): `Some` instead
+    // of `events_rx` once a subscribe names a group the caller may access.
+    let mut chat_rx: Option<
+        tokio::sync::broadcast::Receiver<std::sync::Arc<escurel_index::ChatMessage>>,
+    > = None;
     // Live search subscription (#355): `Some((sub_id, args))` once the
     // client sends `search_subscribe` with a query; the ticker arm below
     // re-runs the search whenever the index's mutation epoch moves and
@@ -337,6 +342,48 @@ async fn handle_socket(
                     }
                 }
             }
+            pushed = async {
+                chat_rx
+                    .as_mut()
+                    .expect("arm gated on chat_rx.is_some()")
+                    .recv()
+                    .await
+            }, if chat_rx.is_some() => {
+                use tokio::sync::broadcast::error::RecvError;
+                match pushed {
+                    Ok(msg) => {
+                        if event_filter.chat_group_id.as_deref() == Some(msg.chat_group_id.as_str()) {
+                            let frame = json!({
+                                "type": "chat_message",
+                                "subscription_id": event_sub_id,
+                                "chat_group_id": msg.chat_group_id,
+                                "msg": crate::mcp::chat_message_to_json(&msg),
+                            });
+                            if send_json(socket, frame).await.is_err() {
+                                break;
+                            }
+                        }
+                        continue;
+                    }
+                    Err(RecvError::Lagged(skipped)) => {
+                        let notice = json!({
+                            "type": "event_lagged",
+                            "subscription_id": event_sub_id,
+                            "skipped": skipped,
+                            "message": "fell behind the chat stream; \
+                                        poll list_messages to catch up",
+                        });
+                        if send_json(socket, notice).await.is_err() {
+                            break;
+                        }
+                        continue;
+                    }
+                    Err(RecvError::Closed) => {
+                        chat_rx = None;
+                        continue;
+                    }
+                }
+            }
         };
         let frame = match frame {
             Ok(v) => v,
@@ -383,6 +430,7 @@ async fn handle_socket(
                         // a refused replacement must not leave the old,
                         // possibly broader, subscription streaming.
                         events_rx = None;
+                        chat_rx = None;
                         event_sub_id = Value::Null;
                         event_filter = EventSubFilter::default();
                         let _ = send_json(
@@ -398,6 +446,40 @@ async fn handle_socket(
                         continue;
                     }
                 };
+                // A chat subscription: one group, gated by the chat ACL at
+                // subscribe time, `chat_message` frames instead of events, no
+                // replay (`list_messages` is the reconciliation path).
+                if let Some(group) = filter.chat_group_id.clone() {
+                    events_rx = None;
+                    chat_rx = None;
+                    event_sub_id = Value::Null;
+                    event_filter = EventSubFilter::default();
+                    if !chat_subscribe_allowed(&state, &caller, &group).await {
+                        let _ = send_json(
+                            socket,
+                            json!({
+                                "type": "error",
+                                "code": "forbidden",
+                                "subscription_id": sub_id,
+                                "message": "event_subscribe: you may not read this chat group",
+                            }),
+                        )
+                        .await;
+                        continue;
+                    }
+                    event_sub_id = sub_id;
+                    event_filter = filter;
+                    chat_rx = Some(state.chat_tx.subscribe());
+                    let ack = json!({
+                        "type": "event_subscribe_ack",
+                        "subscription_id": event_sub_id,
+                    });
+                    if send_json(socket, ack).await.is_err() {
+                        break;
+                    }
+                    continue;
+                }
+                chat_rx = None;
                 event_sub_id = sub_id;
                 event_filter = filter;
                 // Subscribe BEFORE the replay query below: an event that
@@ -616,6 +698,10 @@ struct EventSubFilter {
     label_skill: Option<String>,
     kind: Option<escurel_index::EventKind>,
     instance_page_id: Option<String>,
+    /// A chat subscription (FR-G1): pushes this group's appended messages
+    /// as `chat_message` frames. Exclusive — it cannot be combined with the
+    /// event filters above.
+    chat_group_id: Option<String>,
 }
 
 impl EventSubFilter {
@@ -642,6 +728,7 @@ impl EventSubFilter {
                 "run_id" => out.run_id = text,
                 "label_skill" => out.label_skill = text,
                 "instance_page_id" => out.instance_page_id = text,
+                "chat_group_id" => out.chat_group_id = text,
                 "kind" => {
                     out.kind = match text {
                         None => None,
@@ -652,6 +739,15 @@ impl EventSubFilter {
                 }
                 other => return Err(format!("unknown filter `{other}`")),
             }
+        }
+        if out.chat_group_id.is_some()
+            && (out.root_event_id.is_some()
+                || out.run_id.is_some()
+                || out.label_skill.is_some()
+                || out.kind.is_some()
+                || out.instance_page_id.is_some())
+        {
+            return Err("filters.chat_group_id cannot be combined with event filters".to_owned());
         }
         Ok(out)
     }
@@ -680,6 +776,32 @@ impl EventSubFilter {
                 .as_deref()
                 .is_none_or(|p| e.instance_page_id.as_deref() == Some(p))
     }
+}
+
+/// Whether this caller may subscribe to `group`'s messages: the same
+/// `may_access_chat` rule `list_messages` enforces, under the same
+/// `ESCUREL_WRITE_ACL` ladder (`off` = legacy open chat, `log` warns and
+/// allows). Fail-closed when there is no indexer or the check errors.
+async fn chat_subscribe_allowed(state: &AppState, caller: &WsCaller, group: &str) -> bool {
+    use crate::server::WriteAclMode;
+    if state.write_acl == WriteAclMode::Off {
+        return true;
+    }
+    let Some(indexer) = state.indexer.as_ref().map(IndexerHandle::current) else {
+        return false;
+    };
+    let allowed = indexer
+        .may_access_chat(&caller.acl(), group)
+        .await
+        .unwrap_or(false);
+    if !allowed && state.write_acl == WriteAclMode::Log {
+        tracing::warn!(
+            subject = %caller.subject, chat_group_id = %group,
+            "chat-ACL would deny this subscription (log mode) — allowing"
+        );
+        return true;
+    }
+    allowed
 }
 
 async fn event_push_allowed(
