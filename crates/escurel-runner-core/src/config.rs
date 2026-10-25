@@ -464,6 +464,19 @@ pub struct RunnerConfig {
     /// [`DEFAULT_RUN_TIMEOUT`]). On expiry subprocess attempts are transient.
     /// Gemini attempts stop permanently because model usage may be unknown.
     pub run_timeout: Duration,
+    /// Chat lane (governed chat agent): how many chat runs may run at once,
+    /// beside — never behind — the serial lane.
+    /// Source: `ESCUREL_RUNNER_CHAT_CONCURRENCY` (default 2).
+    pub chat_concurrency: usize,
+    /// A chat run's attempt bound. Source: `ESCUREL_RUNNER_CHAT_TIMEOUT`
+    /// (default 120 s).
+    pub chat_timeout: Duration,
+    /// A chat run's attempts cap. Source: `ESCUREL_RUNNER_CHAT_MAX_ATTEMPTS`
+    /// (default 1: a person is waiting, and a retry repeats the whole answer).
+    pub chat_max_attempts: u32,
+    /// How many recent turns a chat run is shown.
+    /// Source: `ESCUREL_RUNNER_CHAT_HISTORY_TURNS` (default 20).
+    pub chat_history_turns: u32,
     /// Base backoff before the first reconciler retry; grows per attempt.
     /// Source: `ESCUREL_RUNNER_RETRY_BACKOFF` (default
     /// [`DEFAULT_RETRY_BACKOFF`]).
@@ -732,6 +745,23 @@ impl RunnerConfig {
             Some(v) => parse_duration(&v).ok_or(ConfigError::InvalidRunTimeout { value: v })?,
             None => DEFAULT_RUN_TIMEOUT,
         };
+        let chat_concurrency =
+            parse_positive_u64("ESCUREL_RUNNER_CHAT_CONCURRENCY", &lookup, 2)? as usize;
+        let chat_timeout = match lookup("ESCUREL_RUNNER_CHAT_TIMEOUT") {
+            Some(v) if !v.is_empty() => {
+                parse_duration(&v).ok_or(ConfigError::InvalidRunTimeout { value: v })?
+            }
+            _ => Duration::from_secs(120),
+        };
+        let chat_max_attempts = match lookup("ESCUREL_RUNNER_CHAT_MAX_ATTEMPTS") {
+            Some(raw) if !raw.is_empty() => match raw.parse::<u32>() {
+                Ok(n) if n >= 1 => n,
+                _ => return Err(ConfigError::InvalidMaxAttempts { value: raw }),
+            },
+            _ => 1,
+        };
+        let chat_history_turns =
+            parse_positive_u64("ESCUREL_RUNNER_CHAT_HISTORY_TURNS", &lookup, 20)?.min(1000) as u32;
         let max_attempts = match lookup("ESCUREL_RUNNER_MAX_ATTEMPTS") {
             Some(raw) if !raw.is_empty() => match raw.parse::<u32>() {
                 Ok(n) if n >= 1 => n,
@@ -862,6 +892,10 @@ impl RunnerConfig {
             codex_model,
             max_attempts,
             run_timeout,
+            chat_concurrency,
+            chat_timeout,
+            chat_max_attempts,
+            chat_history_turns,
             retry_backoff,
             unavailable_grace,
             max_depth,
@@ -1275,5 +1309,35 @@ mod tests {
         })
         .expect_err("a bad listen address must fail");
         assert!(matches!(err, ConfigError::InvalidListen { .. }));
+    }
+
+    #[test]
+    fn chat_lane_settings_default_and_validate() {
+        let cfg = RunnerConfig::from_env_with(|_| None).expect("defaults");
+        assert_eq!(cfg.chat_concurrency, 2);
+        assert_eq!(cfg.chat_timeout, Duration::from_secs(120));
+        assert_eq!(cfg.chat_max_attempts, 1);
+        assert_eq!(cfg.chat_history_turns, 20);
+        let set = RunnerConfig::from_env_with(|k| match k {
+            "ESCUREL_RUNNER_CHAT_CONCURRENCY" => Some("4".into()),
+            "ESCUREL_RUNNER_CHAT_TIMEOUT" => Some("30s".into()),
+            _ => None,
+        })
+        .expect("valid");
+        assert_eq!(
+            (set.chat_concurrency, set.chat_timeout),
+            (4, Duration::from_secs(30))
+        );
+        for (key, bad) in [
+            ("ESCUREL_RUNNER_CHAT_CONCURRENCY", "0"),
+            ("ESCUREL_RUNNER_CHAT_TIMEOUT", "soon"),
+            ("ESCUREL_RUNNER_CHAT_MAX_ATTEMPTS", "0"),
+            ("ESCUREL_RUNNER_CHAT_HISTORY_TURNS", "x"),
+        ] {
+            assert!(
+                RunnerConfig::from_env_with(|k| (k == key).then(|| bad.to_owned())).is_err(),
+                "{key}={bad} must be refused"
+            );
+        }
     }
 }

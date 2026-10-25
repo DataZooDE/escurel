@@ -22,8 +22,6 @@ use crate::{ChatContext, RunnerConfig, Trigger};
 /// The reason a chat run refuses on a runner that cannot mint run tokens.
 pub const CHAT_REQUIRES_RUN_TOKENS: &str = "chat_requires_run_tokens";
 
-/// How many recent turns the history carries.
-const HISTORY_TURNS: u32 = 20;
 /// Caps, in characters: one history message, the whole history, one page.
 const MESSAGE_CAP: usize = 4_000;
 const HISTORY_CAP: usize = 24_000;
@@ -114,7 +112,7 @@ pub(super) async fn package_chat(
     let mut recent = client
         .list_messages(ListMessagesRequest {
             chat_group_id: turn.chat_group_id.clone(),
-            limit: HISTORY_TURNS,
+            limit: cfg.chat_history_turns,
             direction: "desc".to_owned(),
             ..Default::default()
         })

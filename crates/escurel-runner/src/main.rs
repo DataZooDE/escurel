@@ -274,13 +274,39 @@ async fn main() -> anyhow::Result<()> {
     // a tenant + token are configured; without them the runner can't build a
     // gateway client, so it falls back to draining (terminal-marking) the
     // queue so the dedup seen-set still governs convergence.
-    let (queue, consumer) = DispatchQueue::new(config.queue_cap, config.seen_cap);
+    //
+    // Chat triggers take a lane of their own (governed chat agent, FR-R3):
+    // `ESCUREL_RUNNER_CHAT_CONCURRENCY` more loops of the same dispatch path,
+    // so a person's question never waits behind a long workflow run. The
+    // serial lane — and its cascade/workflow semantics — is unchanged.
+    let (queue, consumer, chat_consumer) =
+        DispatchQueue::with_chat_lane(config.queue_cap, config.seen_cap);
+    let mut chat_lanes = Vec::new();
     // Notified once the dispatch loop observes the queue closed AND finished
     // its in-flight run — the drain-complete signal SIGTERM waits on.
     let drained = Arc::new(Notify::new());
     match (config.tenant.clone(), tokens.clone()) {
         (Some(_), Some(source)) => {
             let harness = build_harness(&config);
+            // A chat run is bounded for a waiting person: its own timeout and
+            // attempts cap, read by the same `run_with_retry`.
+            let mut chat_config = config.clone();
+            chat_config.run_timeout = config.chat_timeout;
+            chat_config.max_attempts = config.chat_max_attempts;
+            for _ in 0..config.chat_concurrency {
+                chat_lanes.push(tokio::spawn(dispatch_loop(
+                    chat_consumer.clone(),
+                    Arc::clone(&ledger),
+                    chat_config.clone(),
+                    Arc::clone(&source),
+                    Arc::clone(&harness),
+                    governor.clone(),
+                    Arc::clone(&metrics),
+                    Arc::clone(&inflight),
+                    cancels.clone(),
+                    Arc::new(Notify::new()),
+                )));
+            }
             tokio::spawn(dispatch_loop(
                 consumer,
                 Arc::clone(&ledger),
@@ -300,6 +326,7 @@ async fn main() -> anyhow::Result<()> {
                 "harness dispatch disabled (no tenant/token); draining queue instead"
             );
             let drained = Arc::clone(&drained);
+            chat_lanes.push(tokio::spawn(drain_loop(chat_consumer, Arc::clone(&ledger))));
             let ledger = Arc::clone(&ledger);
             tokio::spawn(async move {
                 drain_loop(consumer, ledger).await;
@@ -460,7 +487,13 @@ async fn main() -> anyhow::Result<()> {
     // the queue) was dropped when `serve` returned; the poller drops its clone
     // on the drain flag; this drops the last local one.
     drop(queue);
-    let drain = tokio::time::timeout(drain_timeout, drained.notified()).await;
+    let drain = tokio::time::timeout(drain_timeout, async {
+        drained.notified().await;
+        for lane in chat_lanes {
+            let _ = lane.await;
+        }
+    })
+    .await;
     match drain {
         Ok(()) => tracing::info!(target: "escurel_runner", "in-flight runs drained cleanly"),
         Err(_) => tracing::warn!(
@@ -2307,6 +2340,10 @@ async fn dispatch_loop(
                 &outcome,
             )
             .await;
+            metrics.observe_runner_chat_turn(
+                outcome.status(),
+                turn.received_at.elapsed().as_secs_f64(),
+            );
         }
         if report.confirmed.is_none() && report.converged_no_op {
             record_run_terminal(&metrics, &trigger.tenant, "converged");

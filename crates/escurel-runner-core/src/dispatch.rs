@@ -99,15 +99,22 @@ impl Seen {
 #[derive(Debug, Clone)]
 pub struct DispatchQueue {
     tx: mpsc::Sender<Trigger>,
+    /// The chat lane (governed chat agent): chat triggers go here instead,
+    /// so they never wait behind the serial lane. `None` = one lane.
+    chat_tx: Option<mpsc::Sender<Trigger>>,
     seen: Arc<Mutex<Seen>>,
 }
 
 /// The single consumer handle. Held by the dispatch loop (a later work-item
 /// drives the harness); here it exists so the queue has a real receiving
 /// side and `enqueue` exercises true backpressure.
-#[derive(Debug)]
+///
+/// Cloneable so several loops can drain one lane — the chat lane's bounded
+/// concurrency is that many consumers; each holds the receiver only while
+/// waiting for its next trigger.
+#[derive(Debug, Clone)]
 pub struct DispatchConsumer {
-    rx: mpsc::Receiver<Trigger>,
+    rx: Arc<tokio::sync::Mutex<mpsc::Receiver<Trigger>>>,
 }
 
 impl DispatchQueue {
@@ -120,9 +127,22 @@ impl DispatchQueue {
         let (tx, rx) = mpsc::channel(capacity.max(1));
         let queue = Self {
             tx,
+            chat_tx: None,
             seen: Arc::new(Mutex::new(Seen::new(seen_cap))),
         };
-        (queue, DispatchConsumer { rx })
+        (queue, DispatchConsumer::new(rx))
+    }
+
+    /// Like [`Self::new`], plus a chat lane: triggers carrying
+    /// [`Trigger::chat`] go to the second consumer. The seen-set is shared.
+    pub fn with_chat_lane(
+        capacity: usize,
+        seen_cap: usize,
+    ) -> (Self, DispatchConsumer, DispatchConsumer) {
+        let (mut queue, serial) = Self::new(capacity, seen_cap);
+        let (chat_tx, chat_rx) = mpsc::channel(capacity.max(1));
+        queue.chat_tx = Some(chat_tx);
+        (queue, serial, DispatchConsumer::new(chat_rx))
     }
 
     /// Enqueue `trigger`, collapsing duplicates by `event_id`.
@@ -142,7 +162,11 @@ impl DispatchQueue {
         if seen.set.contains(&trigger.event_id) {
             return EnqueueOutcome::Duplicate;
         }
-        match self.tx.try_send(trigger.clone()) {
+        let lane = match &self.chat_tx {
+            Some(chat) if trigger.chat.is_some() => chat,
+            _ => &self.tx,
+        };
+        match lane.try_send(trigger.clone()) {
             Ok(()) => {
                 seen.record(&trigger.event_id);
                 EnqueueOutcome::Enqueued
@@ -182,15 +206,21 @@ impl DispatchQueue {
 }
 
 impl DispatchConsumer {
+    fn new(rx: mpsc::Receiver<Trigger>) -> Self {
+        Self {
+            rx: Arc::new(tokio::sync::Mutex::new(rx)),
+        }
+    }
+
     /// Await the next trigger, or `None` once every [`DispatchQueue`] clone
     /// has been dropped.
     pub async fn recv(&mut self) -> Option<Trigger> {
-        self.rx.recv().await
+        self.rx.lock().await.recv().await
     }
 
     /// Non-blocking receive, for tests that want to drain without awaiting.
     pub fn try_recv(&mut self) -> Option<Trigger> {
-        self.rx.try_recv().ok()
+        self.rx.try_lock().ok()?.try_recv().ok()
     }
 }
 

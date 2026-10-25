@@ -1020,6 +1020,30 @@ pub const CONFIG_KEYS: &[ConfigKey] = &[
         doc: "`aud` of the runner→agent delegation token (the agent's audience, never escurel's)",
     },
     ConfigKey {
+        name: "ESCUREL_RUNNER_CHAT_CONCURRENCY",
+        component: "Runner",
+        default: "2",
+        doc: "chat runs that may run at once, in their own lane beside the serial one",
+    },
+    ConfigKey {
+        name: "ESCUREL_RUNNER_CHAT_HISTORY_TURNS",
+        component: "Runner",
+        default: "20",
+        doc: "recent turns a chat run is shown",
+    },
+    ConfigKey {
+        name: "ESCUREL_RUNNER_CHAT_MAX_ATTEMPTS",
+        component: "Runner",
+        default: "1",
+        doc: "attempts per chat run",
+    },
+    ConfigKey {
+        name: "ESCUREL_RUNNER_CHAT_TIMEOUT",
+        component: "Runner",
+        default: "120s",
+        doc: "wall-clock bound on one chat-run attempt",
+    },
+    ConfigKey {
         name: "ESCUREL_RUNNER_MAX_ATTEMPTS",
         component: "Runner",
         default: "3",
@@ -1144,6 +1168,12 @@ pub const CONFIG_KEYS: &[ConfigKey] = &[
         component: "TestOnly",
         default: "0",
         doc: "echo harness: idle this long before finishing, so a test can cancel a run",
+    },
+    ConfigKey {
+        name: "ESCUREL_ECHO_SLEEP_SKILL",
+        component: "TestOnly",
+        default: "—",
+        doc: "echo harness: only runs of this label idle for ESCUREL_ECHO_SLEEP_MS (tests)",
     },
     ConfigKey {
         name: "ESCUREL_ECHO_USAGE",

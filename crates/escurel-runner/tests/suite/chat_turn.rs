@@ -31,6 +31,11 @@ const ALICE_NOTE: &str = "---\nkind: instance\nskill: note\nid: mine\nowner: \"u
 const BOB_NOTE: &str =
     "---\nkind: instance\nskill: note\nid: theirs\nowner: \"user:bob\"\n---\n# Theirs\n\nSECRET.\n";
 
+const RENEWAL_SKILL: &str =
+    "---\nkind: skill\nid: renewal\nautonomy: auto\n---\n# renewal\n\nFold the event in.\n";
+const RENEWAL: &str = "---\nkind: instance\nid: c1\nskill: renewal\n---\n# C1\n";
+const RENEWAL_PAGE: &str = "markdown/instances/renewal/c1.md";
+
 struct ChildGuard(Child);
 impl Drop for ChildGuard {
     fn drop(&mut self) {
@@ -51,6 +56,8 @@ async fn gateway() -> EscurelProcess {
                 .instance("conversation", "c-1", CONVERSATION)
                 .instance("note", "mine", ALICE_NOTE)
                 .instance("note", "theirs", BOB_NOTE)
+                .skill("renewal", RENEWAL_SKILL)
+                .instance("renewal", "c1", RENEWAL)
                 .done(),
         ),
         ..Default::default()
@@ -320,7 +327,7 @@ async fn a_failed_run_posts_a_failed_turn() {
         true,
         &[
             ("ESCUREL_ECHO_FAIL_CHAT", "1"),
-            ("ESCUREL_RUNNER_MAX_ATTEMPTS", "2"),
+            ("ESCUREL_RUNNER_CHAT_MAX_ATTEMPTS", "2"),
         ],
     );
 
@@ -394,4 +401,66 @@ async fn a_static_token_runner_refuses_chat() {
     // The runner's own identity never writes into a person's chat.
     tokio::time::sleep(Duration::from_secs(1)).await;
     assert_eq!(messages(&gw, &alice, 2).await.len(), 1);
+}
+
+#[tokio::test]
+async fn a_chat_turn_is_answered_while_a_long_workflow_run_is_in_progress() {
+    let gw = gateway().await;
+    let alice = gw.mint_token_with_sub(TENANT, Role::Agent, ALICE);
+    // Only the renewal fold idles; chat runs answer at once.
+    let (_runner, listen) = spawn_runner_with(
+        &gw,
+        true,
+        &[
+            ("ESCUREL_ECHO_SLEEP_MS", "20000"),
+            ("ESCUREL_ECHO_SLEEP_SKILL", "renewal"),
+        ],
+    );
+    let admin = gw.mint_token(TENANT, Role::Admin);
+    let long = call(
+        &gw,
+        &admin,
+        "capture_event",
+        json!({ "source": "manual", "label_skill": "renewal", "instance_page_id": RENEWAL_PAGE,
+                "title": "renew", "body": "a long job" }),
+    )
+    .await["event_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    // The long run is in flight on the serial lane.
+    let url = format!("http://{listen}/debug/run?tenant={TENANT}&event_id={long}");
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while reqwest::get(&url).await.ok().map(|r| r.status()) != Some(reqwest::StatusCode::OK) {
+        assert!(Instant::now() < deadline, "the long run never started");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    let started = Instant::now();
+    let turn = ask(&gw, &alice, "u-1", "Which customers renew?", &[]).await;
+    assert_eq!(await_terminal(&listen, &turn).await.1, "processed");
+    let msgs = messages(&gw, &alice, 2).await;
+    assert_eq!(msgs.len(), 2, "{msgs:#?}");
+    assert!(
+        started.elapsed() < Duration::from_secs(12),
+        "the chat turn waited for the long run: {:?}",
+        started.elapsed()
+    );
+    let long_run: Value = reqwest::get(&url).await.unwrap().json().await.unwrap();
+    assert_eq!(
+        long_run["status"], "pending",
+        "the long run is still working"
+    );
+    let metrics = reqwest::get(format!("http://{listen}/metrics"))
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    assert!(
+        metrics.contains("escurel_runner_chat_turns_total{status=\"ok\"} 1"),
+        "{metrics}"
+    );
+    assert!(metrics.contains("escurel_runner_chat_turn_seconds_count{status=\"ok\"} 1"));
 }
