@@ -511,7 +511,7 @@ pub(super) async fn tool_merge_branch(
                 if base_twin.is_some() && page_fork.starts_with('v') {
                     args["base_version"] = json!(page_fork);
                 }
-                crate::mcp::tools_write::tool_update_page_ungated(
+                crate::mcp::tools_write::tool_update_page_batch_judged(
                     state, indexer, caller, write_acl, args,
                 )
                 .await?

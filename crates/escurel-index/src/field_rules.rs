@@ -16,6 +16,9 @@
 //! | field | `required_when: {other: value}` or `{other: [v1, v2]}` | required while `other` equals the value, or any of the values | `field_required_when` |
 //! | field | `kind: link`, `to: <skill>` | the value is a wikilink to an existing instance of `<skill>` | `relation_invalid`, `relation_unresolved` |
 //! | field | `acyclic: true` (with a link to its own skill) | following the link never returns to the start | `relation_cycle` |
+//! | skill | `freeze_when: {field: value}` or `{field: [v1, v2]}` | while the stored instance's `field` matches, it cannot be updated, archived, renamed or drafted against | `skill_rule_malformed` if malformed, `instance_frozen` on a refused write |
+//! | field | `frozen_by_parent: true` (on a `kind: link` field) | an instance linking to a frozen page is frozen too (chain capped at [`crate::freeze::MAX_PARENT_DEPTH`]) | `fields_malformed` if not a boolean or not a link, `instance_frozen` |
+//! | skill | `protected: [delete, move]` | `delete_page` / archive and `move_page` of its instances are refused; updates stay allowed | `skill_rule_malformed` if malformed, `instance_protected` on a refused removal |
 //! | skill | `unique: [[a, b]]` (or `{keys: [[a, b]], scope: accepted}`) | the composite key identifies at most one instance | `identity_duplicate` |
 //! | skill | `relation_guard: false` | opt out of the in-use guard on archive and rename | `skill_rule_malformed` if not a boolean |
 //! | skill | `lease: {holder, expires, while?}` | the skill's instances are leases a write may be fenced on (`create_draft`/`discard_changeset` `lease:`) | `skill_rule_malformed` if malformed, `lease_fence` on a refused write |
@@ -134,6 +137,21 @@ pub(crate) fn check_skill_rules(page_kind: PageKind, fields: &YamlMapping) -> Ve
             issues.push(bad(key, &format!("`{key}:` must be `true` or `false`")));
         }
     }
+    if let Some(v) = fields.get("freeze_when") {
+        let json = serde_json::to_value(v).unwrap_or_default();
+        if crate::read::parse_required_when(&json).is_none() {
+            issues.push(
+                bad("freeze_when", crate::freeze::FREEZE_WHEN_PROBLEM)
+                    .with_suggestion("freeze_when: {status: [closed, cancelled]}"),
+            );
+        }
+    }
+    if let Some(v) = fields.get("protected") {
+        let json = serde_json::to_value(v).unwrap_or_default();
+        if let Some(problem) = crate::freeze::protected_problem(&json) {
+            issues.push(bad("protected", problem).with_suggestion("protected: [delete, move]"));
+        }
+    }
     if let Some(v) = fields.get("lease") {
         let json = serde_json::to_value(v).unwrap_or_default();
         if let Some(problem) = crate::lease::lease_declaration_problem(&json) {
@@ -239,7 +257,7 @@ pub(crate) fn check_field_rules(page_kind: PageKind, fields: &YamlMapping) -> Ve
     for f in &parsed {
         let loc = format!("frontmatter.fields.{}", f.name);
         let attrs = attrs_of(&f.name).unwrap_or_default();
-        for key in ["immutable", "non_blank", "acyclic"] {
+        for key in ["immutable", "non_blank", "acyclic", "frozen_by_parent"] {
             if let Some(v) = attrs.get(key)
                 && !v.is_boolean()
             {
@@ -257,6 +275,16 @@ pub(crate) fn check_field_rules(page_kind: PageKind, fields: &YamlMapping) -> Ve
                 format!(
                     "`acyclic: true` on `{}` needs `kind: link` and a `to:` skill; with no target \
                      there is no chain to follow",
+                    f.name
+                ),
+            ));
+        }
+        if f.frozen_by_parent && f.kind != crate::FieldKind::Link {
+            issues.push(Issue::error(
+                "fields_malformed",
+                format!("{loc}.frozen_by_parent"),
+                format!(
+                    "`frozen_by_parent: true` on `{}` needs `kind: link`; with no link there is no parent",
                     f.name
                 ),
             ));

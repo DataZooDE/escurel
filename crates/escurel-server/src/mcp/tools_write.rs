@@ -253,6 +253,8 @@ pub(super) fn blocking_issues<'a>(
             // fields, the declaration is the per-skill opt-in, so these block.
             "field_immutable"
             | "instance_immutable"
+            | "instance_frozen"
+            | "instance_protected"
             | "field_blank"
             | "field_required_when"
             | "identity_duplicate"
@@ -520,6 +522,31 @@ pub(super) async fn tool_update_page_ungated(
     caller: AclCaller<'_>,
     write_acl: crate::server::WriteAclMode,
     args: Value,
+) -> Result<Value, JsonRpcError> {
+    update_page_checked(state, indexer, caller, write_acl, args, true).await
+}
+
+/// `update_page` for a write whose archive was already judged as part of a batch (a changeset
+/// member after `promote_changeset`'s pre-flight, or a branch merge): the in-use guard is not asked
+/// again against the saved corpus, where a member that lands first would see a referrer that a
+/// later member of the same batch archives.
+pub(super) async fn tool_update_page_batch_judged(
+    state: &crate::server::AppState,
+    indexer: &Indexer,
+    caller: AclCaller<'_>,
+    write_acl: crate::server::WriteAclMode,
+    args: Value,
+) -> Result<Value, JsonRpcError> {
+    update_page_checked(state, indexer, caller, write_acl, args, false).await
+}
+
+async fn update_page_checked(
+    state: &crate::server::AppState,
+    indexer: &Indexer,
+    caller: AclCaller<'_>,
+    write_acl: crate::server::WriteAclMode,
+    args: Value,
+    relation_guard: bool,
 ) -> Result<Value, JsonRpcError> {
     let mut a: UpdatePageArgs = parse_args(args, "update_page")?;
 
@@ -924,6 +951,27 @@ pub(super) async fn tool_update_page_ungated(
             "issues": issues.iter().map(issue_to_json).collect::<Vec<_>>(),
         }));
     }
+    // The in-use guard for an archive that arrives as a write (`archived: true` on a live page),
+    // judged against the saved corpus under the same gate as the write. A page that is already
+    // archived, a page created archived, and a branch overlay are not archives of a live page.
+    if relation_guard
+        && a.branch.is_none()
+        && escurel_index::drafts::content_is_archived(&content_to_write)
+        && indexer
+            .read_page_markdown(&a.page_id)
+            .await
+            .map_err(|e| JsonRpcError::internal(format!("update_page archive guard: {e}")))?
+            .is_some_and(|stored| !escurel_index::drafts::content_is_archived(&stored))
+        && let Some(refused) = relation_in_use_refusal(
+            indexer,
+            &a.page_id,
+            "archive",
+            &std::collections::HashMap::new(),
+        )
+        .await?
+    {
+        return Ok(refused);
+    }
     // The write, attributed. `stamped_principal` reads ONLY the verified
     // token subject — nothing from `a`, so no argument, frontmatter key or
     // `provenance` block the caller sent can reach the column (#357).
@@ -1081,17 +1129,18 @@ async fn publish_durably(
     Ok(())
 }
 
-/// The `instance_immutable` refusal for archiving or renaming `page_id`: `None`
-/// unless the page is an instance of a skill declared `immutable: true`.
-pub(super) async fn immutable_removal_refusal(
+/// The refusal for archiving or renaming `page_id` that the page's skill declares
+/// (`instance_frozen`, `instance_immutable`, `instance_protected`, in that order): `None` when
+/// the skill declares none of them for this page.
+pub(super) async fn removal_refusal(
     indexer: &Indexer,
     page_id: &str,
     action: &str,
 ) -> Result<Option<Value>, JsonRpcError> {
     let issue = indexer
-        .immutable_removal_issue(page_id, action)
+        .removal_issue(page_id, action)
         .await
-        .map_err(|e| JsonRpcError::internal(format!("{action} immutability guard: {e}")))?;
+        .map_err(|e| JsonRpcError::internal(format!("{action} removal guard: {e}")))?;
     Ok(issue.map(|issue| {
         json!({
             "ok": false,
@@ -1226,7 +1275,7 @@ pub(super) async fn tool_move_page(
         }
     }
 
-    if let Some(refused) = immutable_removal_refusal(indexer, &a.from, "move").await? {
+    if let Some(refused) = removal_refusal(indexer, &a.from, "move").await? {
         return Ok(refused);
     }
     if let Some(refused) =
@@ -1480,7 +1529,7 @@ pub(super) async fn tool_delete_page(
         }
     }
 
-    if let Some(refused) = immutable_removal_refusal(indexer, &a.page_id, "archive").await? {
+    if let Some(refused) = removal_refusal(indexer, &a.page_id, "archive").await? {
         return Ok(refused);
     }
     if let Some(refused) = relation_in_use_refusal(

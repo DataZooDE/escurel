@@ -51,7 +51,7 @@ fn split_instance(page_id: &str) -> Option<(&str, &str)> {
     (!skill.is_empty() && !id.is_empty() && !id.contains('/')).then_some((skill, id))
 }
 
-fn links_in(value: &serde_json::Value) -> Vec<(String, String)> {
+pub(crate) fn links_in(value: &serde_json::Value) -> Vec<(String, String)> {
     let texts: Vec<&str> = match value {
         serde_json::Value::String(s) => vec![s.as_str()],
         serde_json::Value::Array(a) => a.iter().filter_map(|v| v.as_str()).collect(),

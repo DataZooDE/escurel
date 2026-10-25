@@ -1070,7 +1070,9 @@ pub(super) async fn tool_promote_draft(
     // answers with `head_version`, not the `head_sha256` the old detection
     // read off the refusal.
     let already_landed = head_markdown.as_deref() == Some(promoted.as_str());
-    let mut result = crate::mcp::tools_write::tool_update_page_ungated(
+    // A changeset member was judged with its batch before anything landed; a lone draft's archive
+    // was judged above, before the upstream write-back.
+    let mut result = crate::mcp::tools_write::tool_update_page_batch_judged(
         state, indexer, caller, write_acl, write_args,
     )
     .await?;

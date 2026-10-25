@@ -599,6 +599,13 @@ pub struct Skill {
     /// skill declares none.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub blocks: Vec<SkillBlock>,
+    /// `freeze_when:` as `[field, [value, ...]]`: while a stored instance's `field` equals one of
+    /// the values, writes to it are refused with `instance_frozen`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub freeze_when: Option<(String, Vec<String>)>,
+    /// `protected:` — `delete` and/or `move`: removal actions refused with `instance_protected`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub protected: Vec<String>,
 }
 
 /// One block of a skill's declared instance layout (`blocks:`). MCP wire
@@ -668,6 +675,9 @@ pub struct SkillField {
     /// the values. A single-value declaration is a one-element list.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub required_when: Option<(String, Vec<String>)>,
+    /// A link whose target being frozen freezes this instance too.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub frozen_by_parent: bool,
 }
 
 /// One invocation parameter a skill declares. MCP wire keys: `name`,
