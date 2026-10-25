@@ -398,6 +398,37 @@ cascades only to the `event` skill of a listed `kind: event` action; undeclared 
 `cascade.max_depth` (the deepest hop this skill's chains reach; the
 runner's global `ESCUREL_RUNNER_MAX_DEPTH` still caps everything).
 
+## Chat runs (`provenance.chat_group_id`)
+
+A question in a page-bound chat is answered by a run. The person:
+
+1. appends their turn: `append_message(chat_group_id: "page-chat:v1:…", role: "user", msg_id: <uuid>, content)`;
+2. captures the turn: `capture_event(label_skill: "chat", instance_page_id: <the conversation or record page>,
+   provenance: {chat_group_id, user_msg_id: <that msg_id>, focus?: [page_id…]})`, as themselves.
+
+The runner treats an event whose `provenance.chat_group_id` is a `page-chat:` group and that names a
+`user_msg_id` as a **chat run**:
+
+- It runs **as the asker**: the run token is minted for the event's `captured_by` (with the run
+  claims), so the run reads exactly what that person may read. An event captured on someone's
+  behalf (`captured_via`) is refused. The run needs a **minting runner**
+  (`ESCUREL_RUNNER_AUTH_ISSUER` + `ESCUREL_RUNNER_AUTH_SIGNING_KEY`); a static
+  `ESCUREL_RUNNER_TOKEN` cannot mint the token the reply rule needs.
+- The harness gets the chat skill's body plus a chat framing, and as input the last 20 turns, the
+  bound page (the one in the group id), the focus pages (at most 10; unreadable ones are left out)
+  and the question, each inside an `<untrusted kind="…">` block. Its tools are the review surface
+  **without `append_message`**: reads, `create_draft`, `report_progress`. No `update_page`,
+  `capture_event` or `assign_event`.
+- The **runner** posts exactly one `assistant` turn, with the run token, for every terminal:
+  `msg_id: "run:<run_id>:reply"` (a retry echoes it), `content` = the harness's final answer (or one
+  sentence saying why there is none), `metadata: {status: ok|failed|cancelled, drafts: [draft_id…],
+  cited: [page_id…], user_msg_id, reason?}` plus the server-stamped `run_id`, `event_id`, `actor`;
+  `author` is the asker.
+- Dedup is per turn, not per content: the same words twice are two runs, while a second event for the
+  same `(chat_group_id, user_msg_id)` dead-letters as `duplicate_content`.
+
+Watch the answer arrive with `event_subscribe {filters: {chat_group_id}}` (references/02).
+
 ## Manual start (`provenance.manual`)
 
 A human starts a run by hand by capturing an ordinary event — any label,

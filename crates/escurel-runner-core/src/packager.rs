@@ -25,6 +25,9 @@ use secrecy::{ExposeSecret, SecretString};
 
 use crate::{RunnerConfig, Trigger};
 
+mod chat;
+pub use chat::{CHAT_REQUIRES_RUN_TOKENS, bound_page_id, chat_run_token, chat_tools};
+
 /// The narrowed agent tool surface a packaged run is allowed to call —
 /// the read tools plus the write-capable subset
 /// (`validate`/`update_page`/`assign_event`/`capture_event`) named by the
@@ -225,6 +228,20 @@ pub enum PackageError {
     MissingRequester {
         /// The run board page id.
         run: String,
+    },
+    /// A chat run needs a run token minted for the asker (the reply rule
+    /// #785 accepts nothing else), and this runner holds a static bearer.
+    #[error("chat_requires_run_tokens: a chat run needs a minting runner")]
+    ChatRequiresRunTokens,
+    /// A chat event whose asker is unknown: not captured by a person acting
+    /// as themselves. Answering it would need someone else's rights.
+    #[error("chat event has no asker (captured_by, without captured_via)")]
+    ChatAskerUnknown,
+    /// The turn the chat event names is not in the group's recent history.
+    #[error("chat turn {msg_id:?} not found in the conversation")]
+    ChatTurnNotFound {
+        /// The `user_msg_id` the event named.
+        msg_id: String,
     },
 }
 
@@ -578,6 +595,10 @@ pub async fn package(
     // bearer is re-minted before it lapses, and a run packaged with an
     // expired one fails every `/mcp` call while the process looks healthy.
     let tokens = tokens.ok_or(PackageError::MissingToken)?;
+    // A chat turn is a question to answer as the asker, not an event to fold.
+    if let Some(turn) = &trigger.chat {
+        return chat::package_chat(trigger, turn, cfg, tokens, run).await;
+    }
     // Per-run caller token (async-ops Phase 2c-i): a WORKFLOW run executes under
     // the REQUESTER's identity — the subject + RBAC groups the facade stamped on
     // the run board — not the runner's admin bearer, so the harness reads and

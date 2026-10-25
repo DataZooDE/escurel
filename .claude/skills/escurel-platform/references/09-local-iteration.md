@@ -217,6 +217,8 @@ runner's per-run token is ignored, an agent's draft carries no `run_id`, `list_l
 the event and the run but never the changeset, and promoting it never cascades. Give a
 minted-mode runner `ESCUREL_RUNNER_AUTH_ISSUER=<issuer_url>`, `ESCUREL_RUNNER_AUTH_KID=<kid>`
 and `ESCUREL_RUNNER_AUTH_SIGNING_KEY=<signing_key>` and leave `ESCUREL_RUNNER_TOKEN` unset.
+**Chat runs require minted mode**: a chat turn is answered as the asker, with a run token only a
+signing runner can mint (references/11, *Chat runs*).
 
 ## The iterate loop
 

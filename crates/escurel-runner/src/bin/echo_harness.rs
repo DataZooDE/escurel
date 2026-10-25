@@ -424,8 +424,54 @@ fn analyse(mcp: &Mcp, event: &Value, event_id: &str) -> Option<analysis::Built> 
     ))
 }
 
+/// The text of the first `<untrusted kind="{kind}" …>` block in a chat input.
+fn untrusted_block<'a>(input: &'a str, kind: &str) -> Option<&'a str> {
+    let open = format!("<untrusted kind=\"{kind}\"");
+    let start = input.find(&open)?;
+    let body = input[start..].split_once(">\n")?.1;
+    body.split_once("\n</untrusted>").map(|(text, _)| text)
+}
+
+/// A chat-mode run (governed chat agent): answer `echo: <the question>`, and
+/// name the focus pages the run was shown, so a test can see what the asker's
+/// token let it read. Never writes — the runner appends the reply.
+fn run_chat(task: &HarnessTask, question: &str) -> HarnessOutcome {
+    let mcp = Mcp::new(&task.mcp_endpoint, &task.token);
+    let mut tool_calls = 0u32;
+    if task.allowed_tools.iter().any(|t| t == "report_progress") {
+        let _ = mcp.call(
+            "report_progress",
+            json!({ "plan": [{ "step": "answer the question", "status": "completed" }],
+                    "current": "answer the question" }),
+        );
+        tool_calls += 1;
+    }
+    let focus: Vec<&str> = task
+        .input
+        .match_indices("<untrusted kind=\"focus\" page_id=\"")
+        .filter_map(|(i, m)| task.input[i + m.len()..].split('"').next())
+        .collect();
+    let mut reply = format!("echo: {question}");
+    if !focus.is_empty() {
+        reply.push_str(&format!("\n\nfocus: {}", focus.join(", ")));
+    }
+    HarnessOutcome {
+        reply: Some(reply),
+        result_ref: None,
+        usage: knob_usage(),
+        ok: true,
+        status: HarnessStatus::Ok,
+        summary: "answered the chat turn".to_owned(),
+        tool_calls,
+        produced_instance: None,
+    }
+}
+
 /// Perform the deterministic fold; returns the structured outcome.
 fn run(task: &HarnessTask) -> Result<HarnessOutcome, String> {
+    if let Some(question) = untrusted_block(&task.input, "question") {
+        return Ok(run_chat(task, question));
+    }
     let mcp = Mcp::new(&task.mcp_endpoint, &task.token);
     let mut tool_calls = 0u32;
 
