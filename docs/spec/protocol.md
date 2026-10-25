@@ -1394,9 +1394,14 @@ named explicitly (`tenant_id`) rather than taken from the token's claim
 tenant other than the one this gateway serves is refused (`-32002`); an
 empty value means "this gateway's tenant". The tools that act on a tenant's
 data (`tenant_export`, `tenant_import`, `compact_lanes`, `rebuild`, pack and
-audit tools) compare it with the tenant of the caller's credential. The tenant
-registry tools (`tenant_create`, `tenant_list`, `tenant_get`, `tenant_update`,
-`tenant_delete`) are operator provisioning and take any tenant id.
+audit tools) compare it with the tenant of the caller's credential. Only an **operator**
+credential (role value `escurel:operator`, `ESCUREL_AUTH_OPERATOR_ROLE_VALUE`)
+may name another tenant, and only in the tools that work on the tenant store
+(`tenant_export`, `tenant_import`); tools bound to this gateway's own index or
+lanes refuse a foreign tenant for every caller. The tenant registry tools
+(`tenant_create`, `tenant_list`, `tenant_get`, `tenant_update`, `tenant_delete`)
+require an operator (`-32001`, `data.code: operator_required`). See
+[`docs/design/operator-credential.md`](../design/operator-credential.md).
 
 | tool | inputs | outputs | purpose |
 |---|---|---|---|
@@ -1535,6 +1540,7 @@ succeed. Codes in use:
 | data.code | numeric | retryable | meaning |
 |---|---|---|---|
 | `admin_required` | `-32001` | no | admin-gated tool, agent token |
+| `operator_required` | `-32001` | no | tenant registry tool, admin token that is not an operator |
 | `failed_precondition` | `-32002` | no | e.g. foreign `tenant_id` on a single-tenant gateway |
 | `forbidden` | `-32003` | no | authenticated but not permitted (ACL) |
 | `tenant_suspended` | `-32003` | no | suspend gate; admin can `resume` |

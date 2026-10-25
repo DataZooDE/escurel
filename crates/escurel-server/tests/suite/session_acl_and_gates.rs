@@ -325,6 +325,7 @@ async fn suspended_tenant_is_rejected_at_the_ws_upgrade() {
     })
     .await;
     let admin = p.mint_token(ACME, Role::Admin);
+    let operator = p.mint_operator_token(ACME);
     let agent = p.mint_token(ACME, Role::Agent);
 
     let ws_req = |bearer: &str| {
@@ -336,7 +337,7 @@ async fn suspended_tenant_is_rejected_at_the_ws_upgrade() {
 
     call_ok(
         &p,
-        &admin,
+        &operator,
         "tenant_create",
         json!({ "tenant_id": ACME, "display_name": "Acme" }),
     )
@@ -350,7 +351,7 @@ async fn suspended_tenant_is_rejected_at_the_ws_upgrade() {
     // Suspend.
     call_ok(
         &p,
-        &admin,
+        &operator,
         "tenant_update",
         json!({ "tenant_id": ACME, "status": "suspended" }),
     )

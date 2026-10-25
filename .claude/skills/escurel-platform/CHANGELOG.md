@@ -4,6 +4,18 @@ The skill version tracks the consumer-facing contract, not the Escurel
 binary version. The Escurel repo's checked-out git ref is the true version
 pin (see `SKILL.md` → "How this skill is installed").
 
+## 0.25.10 — operator credential: cross-tenant administration is the operator's
+
+A token whose roles claim carries `escurel:operator` (`ESCUREL_AUTH_OPERATOR_ROLE_VALUE`) is an OPERATOR; it is also an admin.
+A tenant admin acts on its own tenant only: `tenant_export`, `tenant_import`, `compact_lanes` and every tool that checks
+`tenant_id` refuse another tenant (`-32002`, "does not match"). The tenant registry (`tenant_create`, `tenant_list`,
+`tenant_get`, `tenant_update`, `tenant_delete`) now needs an operator (`-32001`, `operator_required`), also for the admin's own
+tenant. An operator may name another tenant in `tenant_export` and `tenant_import` (they work on the tenant store); tools bound to
+the gateway's own index or lanes (`compact_lanes`, `rebuild`, `admin_quota`, `admin_audit`, ...) refuse a foreign tenant for
+everyone, the operator included. The `tenant` claim of an operator token must still be the served tenant (403 otherwise). Tests:
+`EscurelProcess::mint_operator_token(tenant)`; `escurel-test-gateway` prints `operator_bearer`. Existing admin tokens keep working
+for their own tenant. 90 tools.
+
 ## 0.25.9 — `ingest_upload` over MCP; document skills declare retention, event kind and settlement
 
 `ingest_upload` is an MCP tool with the semantics of `POST /ingest/upload` (a refusal is `ok:false` with an issue carrying

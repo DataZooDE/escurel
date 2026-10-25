@@ -405,6 +405,7 @@ struct TomlAuth {
     tenant_claim: Option<String>,
     admin_role_claim: Option<String>,
     admin_role_value: Option<String>,
+    operator_role_value: Option<String>,
     groups_claim: Option<String>,
     jwks_refresh_secs: Option<u64>,
     jwks_uri: Option<String>,
@@ -469,6 +470,9 @@ pub struct AuthConfig {
     pub tenant_claim: String,
     pub admin_role_claim: String,
     pub admin_role_value: String,
+    /// Role value (same claim as admin) marking an OPERATOR credential: the only one that may
+    /// name another tenant in the cross-tenant admin tools.
+    pub operator_role_value: String,
     /// JWT claim listing the subject's groups for the data-level ACL.
     /// Defaults to the same `roles` claim admin derives from.
     pub groups_claim: String,
@@ -1161,6 +1165,11 @@ impl EscurelConfig {
                         "ESCUREL_AUTH_ADMIN_ROLE_VALUE",
                         toml_cfg.auth.admin_role_value,
                         "escurel:admin",
+                    ),
+                    operator_role_value: pick(
+                        "ESCUREL_AUTH_OPERATOR_ROLE_VALUE",
+                        toml_cfg.auth.operator_role_value,
+                        "escurel:operator",
                     ),
                     groups_claim: pick(
                         "ESCUREL_AUTH_GROUPS_CLAIM",
@@ -2891,6 +2900,7 @@ impl EscurelConfig {
         let mut cfg = OidcConfig::new(auth.issuer.clone(), auth.audience.clone())
             .with_tenant_claim(auth.tenant_claim.clone())
             .with_admin_role(auth.admin_role_claim.clone(), auth.admin_role_value.clone())
+            .with_operator_role(auth.operator_role_value.clone())
             .with_groups_claim(auth.groups_claim.clone());
         if let Some(uri) = auth.jwks_uri.clone() {
             cfg = cfg.with_jwks_uri(uri);

@@ -282,6 +282,12 @@ pub const CONFIG_KEYS: &[ConfigKey] = &[
         doc: "role value granting admin",
     },
     ConfigKey {
+        name: "ESCUREL_AUTH_OPERATOR_ROLE_VALUE",
+        component: "Server",
+        default: "escurel:operator",
+        doc: "role value (in the admin role claim) marking an OPERATOR credential, the only one that may name another tenant in the cross-tenant admin tools (tenant registry, tenant_export/tenant_import)",
+    },
+    ConfigKey {
         name: "ESCUREL_AUTH_JWKS_REFRESH_SECS",
         component: "Server",
         default: "300",

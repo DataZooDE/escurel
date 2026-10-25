@@ -732,3 +732,66 @@ async fn an_act_claim_projects_the_delegating_actor_into_authcontext() {
         assert_eq!(ctx.actor, None, "malformed act must not become an actor");
     }
 }
+
+/// The operator claim is additive: `escurel:operator` in the roles claim marks the credential
+/// as an operator (and, being a superset, also grants the admin role). An admin token without
+/// it is not an operator; the operator value is configurable.
+#[tokio::test]
+async fn operator_claim_is_projected_and_admin_alone_is_not_an_operator() {
+    let server = MockServer::start().await;
+    let keys = make_keys();
+    mock_jwks(&server, &keys).await;
+    let issuer = format!("{}{ISSUER_PATH}", server.uri());
+    let v = verifier_pointing_at(&server);
+    let now = now();
+    let mint = |roles: Value| {
+        sign_token(
+            &keys,
+            json!({
+                "iss": issuer, "aud": AUDIENCE, "sub": "s", "tenant": "acme",
+                "iat": now, "exp": now + 600, "roles": roles,
+            }),
+        )
+    };
+
+    let admin = v
+        .verify(&mint(json!(["escurel:admin"])))
+        .await
+        .expect("verify");
+    assert_eq!(admin.role, Role::Admin);
+    assert!(!admin.operator, "an admin token is not an operator");
+
+    let op = v
+        .verify(&mint(json!(["escurel:operator"])))
+        .await
+        .expect("verify");
+    assert!(op.operator);
+    assert_eq!(op.role, Role::Admin, "operator is a superset of admin");
+
+    let agent = v
+        .verify(&mint(json!(["escurel:agent"])))
+        .await
+        .expect("verify");
+    assert!(!agent.operator);
+    assert_eq!(agent.role, Role::Agent);
+
+    let renamed = OidcVerifier::new(
+        OidcConfig::new(issuer.clone(), AUDIENCE.to_owned())
+            .with_jwks_uri(format!("{issuer}/protocol/openid-connect/certs"))
+            .with_operator_role("ops:root"),
+    );
+    assert!(
+        renamed
+            .verify(&mint(json!(["ops:root"])))
+            .await
+            .expect("verify")
+            .operator
+    );
+    assert!(
+        !renamed
+            .verify(&mint(json!(["escurel:operator"])))
+            .await
+            .expect("verify")
+            .operator
+    );
+}

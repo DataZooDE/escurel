@@ -1014,19 +1014,42 @@ pub(super) fn ensure_tenant_matches(
     Ok(())
 }
 
-/// Reject a `tenant_id` argument that names a tenant other than the one the caller's credential
-/// is bound to. Unlike [`ensure_tenant_matches`] it needs no indexer, so it also guards the
-/// tools that work on the tenant store directly. An empty argument means the credential's tenant.
-pub(super) fn ensure_credential_tenant(
+/// How far an admin tool's data reaches.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum TenantReach {
+    /// Works on the tenant store directly: any tenant the store holds is reachable by an operator.
+    Store,
+    /// Works on this gateway's own index / lanes: only the served tenant is reachable, by anyone.
+    Served,
+}
+
+/// The ONE decision for a cross-tenant `tenant_id` argument of an admin tool. An empty argument or
+/// the credential's own tenant always passes. Any other tenant needs an OPERATOR credential, and
+/// even an operator reaches it only when the tool works on the tenant store (`TenantReach::Store`):
+/// a tool bound to this gateway's index or lanes would otherwise act on the served tenant under a
+/// foreign name, so it is refused and the caller is told to ask the gateway that serves that tenant.
+pub(super) fn ensure_tenant_access(
     credential_tenant: &str,
+    operator: bool,
     tenant_id: &str,
+    reach: TenantReach,
 ) -> Result<(), JsonRpcError> {
-    if !tenant_id.is_empty() && tenant_id != credential_tenant {
+    if tenant_id.is_empty() || tenant_id == credential_tenant {
+        return Ok(());
+    }
+    if !operator {
         return Err(JsonRpcError::failed_precondition(format!(
-            "tenant `{tenant_id}` does not match this gateway's tenant `{credential_tenant}`"
+            "tenant `{tenant_id}` does not match this gateway's tenant `{credential_tenant}`; \
+             acting on another tenant needs an operator credential"
         )));
     }
-    Ok(())
+    match reach {
+        TenantReach::Store => Ok(()),
+        TenantReach::Served => Err(JsonRpcError::failed_precondition(format!(
+            "tenant `{tenant_id}` does not match this gateway's tenant `{credential_tenant}`: \
+             it is served by another gateway, send the call there"
+        ))),
+    }
 }
 
 /// Map an `AdminError` onto the JSON-RPC envelope, mirroring the
@@ -2211,10 +2234,16 @@ pub(super) async fn tool_list_packs(state: &AppState) -> Result<Value, JsonRpcEr
 pub(super) async fn tool_tenant_export(
     state: &AppState,
     credential_tenant: &str,
+    operator: bool,
     args: Value,
 ) -> Result<Value, JsonRpcError> {
     let a: TenantIdArgs = parse_args(args, "tenant_export")?;
-    ensure_credential_tenant(credential_tenant, &a.tenant_id)?;
+    ensure_tenant_access(
+        credential_tenant,
+        operator,
+        &a.tenant_id,
+        TenantReach::Store,
+    )?;
     let store = tenant_store(state)?.clone();
     // Validate before constructing on-disk paths — `tenant_dir` is
     // filesystem-direct and would happily resolve `../other`.
@@ -2283,10 +2312,16 @@ pub(super) struct TenantImportArgs {
 pub(super) async fn tool_tenant_import(
     state: &AppState,
     credential_tenant: &str,
+    operator: bool,
     args: Value,
 ) -> Result<Value, JsonRpcError> {
     let a: TenantImportArgs = parse_args(args, "tenant_import")?;
-    ensure_credential_tenant(credential_tenant, &a.tenant_id)?;
+    ensure_tenant_access(
+        credential_tenant,
+        operator,
+        &a.tenant_id,
+        TenantReach::Store,
+    )?;
     let store = tenant_store(state)?.clone();
     validate_tenant_id(&a.tenant_id).map_err(|e| JsonRpcError::invalid_params(e.to_string()))?;
     // The target tenant must exist before import (mirrors gRPC).
@@ -2548,10 +2583,16 @@ pub(super) async fn tool_migrate_kind(
 pub(super) async fn tool_compact_lanes(
     state: &AppState,
     credential_tenant: &str,
+    operator: bool,
     args: Value,
 ) -> Result<Value, JsonRpcError> {
     let a: TenantIdArgs = parse_args(args, "compact_lanes")?;
-    ensure_credential_tenant(credential_tenant, &a.tenant_id)?;
+    ensure_tenant_access(
+        credential_tenant,
+        operator,
+        &a.tenant_id,
+        TenantReach::Served,
+    )?;
     validate_tenant_id(&a.tenant_id).map_err(|e| JsonRpcError::invalid_params(e.to_string()))?;
     let backend = state
         .crdt_backend

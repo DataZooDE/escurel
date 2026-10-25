@@ -679,6 +679,16 @@ impl EscurelProcess {
         issuer.mint(tenant, role)
     }
 
+    /// An OPERATOR bearer (`escurel:operator` + `escurel:admin`): the only credential that may
+    /// name a tenant other than its own in the cross-tenant admin tools. Its `tenant` claim is
+    /// still checked at the gate, so pass the tenant this instance serves.
+    pub fn mint_operator_token(&self, tenant: &str) -> String {
+        let issuer = self.issuer.as_ref().expect(
+            "EscurelProcess::mint_operator_token requires AuthMode::TestIssuer; spawned with a different mode",
+        );
+        issuer.mint_operator(tenant)
+    }
+
     /// Like [`Self::mint_token`], but with an explicit `sub` claim — for
     /// per-instance ACL tests where the caller subject is the owning
     /// principal (e.g. a member credential).

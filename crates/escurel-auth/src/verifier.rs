@@ -25,6 +25,10 @@ pub struct OidcConfig {
     /// The role value that grants admin access. Default
     /// `"escurel:admin"`.
     pub admin_role_value: String,
+    /// The role value (in the same claim as [`Self::admin_role_value`]) that marks the
+    /// credential as an OPERATOR: the only credential that may act on a tenant other than
+    /// its own. Default `"escurel:operator"`. An operator is also an admin.
+    pub operator_role_value: String,
     /// JWT claim name that lists the subject's group/role memberships
     /// for the data-level ACL. Default `"roles"` (the same claim admin
     /// derives from). Parsed leniently — see [`parse_groups_claim`].
@@ -55,6 +59,7 @@ impl OidcConfig {
             tenant_claim: "tenant".to_owned(),
             admin_role_claim: "roles".to_owned(),
             admin_role_value: "escurel:admin".to_owned(),
+            operator_role_value: "escurel:operator".to_owned(),
             groups_claim: "roles".to_owned(),
             jwks_refresh: Duration::from_secs(300),
             jwks_uri: None,
@@ -95,6 +100,13 @@ impl OidcConfig {
         self
     }
 
+    /// Rename the role value that marks an operator credential.
+    #[must_use]
+    pub fn with_operator_role(mut self, value: impl Into<String>) -> Self {
+        self.operator_role_value = value.into();
+        self
+    }
+
     #[must_use]
     pub fn with_groups_claim(mut self, claim: impl Into<String>) -> Self {
         self.groups_claim = claim.into();
@@ -123,6 +135,11 @@ pub struct AuthContext {
     pub subject: String,
     pub tenant_id: String,
     pub role: Role,
+    /// The credential carries the operator role value: it may act on a tenant other than the
+    /// one in its `tenant` claim (cross-tenant administration). `role` is `Admin` whenever this
+    /// is set. Authorization-relevant: an admin that is not an operator is confined to its own
+    /// tenant.
+    pub operator: bool,
     /// Group/role names parsed from the configured `groups_claim`.
     /// Raw — reserved-name and admin-value stripping is the ACL
     /// layer's job (`escurel-index`), not the verifier's.
@@ -363,7 +380,12 @@ impl OidcVerifier {
             })?
             .to_owned();
 
-        let role = if has_admin_role(&claims.rest, &self.config) {
+        let operator = has_role_value(
+            &claims.rest,
+            &self.config.admin_role_claim,
+            &self.config.operator_role_value,
+        );
+        let role = if operator || has_admin_role(&claims.rest, &self.config) {
             Role::Admin
         } else {
             Role::Agent
@@ -428,6 +450,7 @@ impl OidcVerifier {
             subject,
             tenant_id,
             role,
+            operator,
             groups,
             actor,
             run,
@@ -466,14 +489,20 @@ impl OidcVerifier {
 }
 
 fn has_admin_role(claims: &serde_json::Map<String, serde_json::Value>, cfg: &OidcConfig) -> bool {
-    let Some(v) = claims.get(&cfg.admin_role_claim) else {
+    has_role_value(claims, &cfg.admin_role_claim, &cfg.admin_role_value)
+}
+
+fn has_role_value(
+    claims: &serde_json::Map<String, serde_json::Value>,
+    claim: &str,
+    value: &str,
+) -> bool {
+    let Some(v) = claims.get(claim) else {
         return false;
     };
     match v {
-        serde_json::Value::Array(arr) => arr
-            .iter()
-            .any(|item| item.as_str() == Some(cfg.admin_role_value.as_str())),
-        serde_json::Value::String(s) => s == &cfg.admin_role_value,
+        serde_json::Value::Array(arr) => arr.iter().any(|item| item.as_str() == Some(value)),
+        serde_json::Value::String(s) => s == value,
         _ => false,
     }
 }

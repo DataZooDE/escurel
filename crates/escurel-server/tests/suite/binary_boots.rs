@@ -135,10 +135,12 @@ fn from_env_unauthenticated_when_no_oidc_issuer() {
         ("ESCUREL_AUTH_TENANT_CLAIM", "escurel_tenant"),
         ("ESCUREL_AUTH_ADMIN_ROLE_CLAIM", "roles"),
         ("ESCUREL_AUTH_ADMIN_ROLE_VALUE", "escurel:admin"),
+        ("ESCUREL_AUTH_OPERATOR_ROLE_VALUE", "ops:root"),
         ("ESCUREL_AUTH_JWKS_REFRESH_SECS", "120"),
     ])))
     .unwrap();
     let auth = cfg.auth.expect("auth config present");
+    assert_eq!(auth.operator_role_value, "ops:root");
     assert_eq!(auth.issuer, "https://auth.example.com/realms/main");
     assert_eq!(auth.tenant_claim, "escurel_tenant");
     assert_eq!(auth.admin_role_value, "escurel:admin");

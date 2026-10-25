@@ -84,6 +84,32 @@ async fn call(p: &EscurelProcess, role: Role, name: &str, args: Value) -> Value 
         .expect("json")
 }
 
+/// Like [`call`], with an OPERATOR credential: the tenant claim is the served tenant (the
+/// gateway's one-instance-one-tenant gate), and the role value `escurel:operator` is what lets
+/// it name another tenant.
+async fn call_op(p: &EscurelProcess, name: &str, args: Value) -> Value {
+    let token = p.mint_operator_token(TENANT);
+    post_tool(p, &token, name, args).await
+}
+
+async fn post_tool(p: &EscurelProcess, token: &str, name: &str, args: Value) -> Value {
+    reqwest::Client::new()
+        .post(p.mcp_url())
+        .header("authorization", format!("Bearer {token}"))
+        .json(&json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": { "name": name, "arguments": args },
+        }))
+        .send()
+        .await
+        .expect("post")
+        .json()
+        .await
+        .expect("json")
+}
+
 // --- tenant CRUD lifecycle -------------------------------------------
 
 #[tokio::test]
@@ -92,9 +118,8 @@ async fn tenant_crud_lifecycle_over_mcp() {
     let p = &h.process;
 
     // create → on-disk provisioning.
-    let created = call(
+    let created = call_op(
         p,
-        Role::Admin,
         "tenant_create",
         json!({ "tenant_id": "globex", "display_name": "Globex Corp" }),
     )
@@ -114,20 +139,14 @@ async fn tenant_crud_lifecycle_over_mcp() {
     assert!(dir.join("db").join("escurel.duckdb").is_file());
 
     // get → echoes the spec.
-    let got = call(
-        p,
-        Role::Admin,
-        "tenant_get",
-        json!({ "tenant_id": "globex" }),
-    )
-    .await;
+    let got = call_op(p, "tenant_get", json!({ "tenant_id": "globex" })).await;
     assert_eq!(
         got["result"]["structuredContent"]["spec"]["display_name"],
         "Globex Corp"
     );
 
     // list → includes the created tenant.
-    let listed = call(p, Role::Admin, "tenant_list", json!({})).await;
+    let listed = call_op(p, "tenant_list", json!({})).await;
     let ids: Vec<String> = listed["result"]["structuredContent"]["tenants"]
         .as_array()
         .expect("tenants array")
@@ -140,9 +159,8 @@ async fn tenant_crud_lifecycle_over_mcp() {
     );
 
     // update → display name changes and persists.
-    let updated = call(
+    let updated = call_op(
         p,
-        Role::Admin,
         "tenant_update",
         json!({ "tenant_id": "globex", "display_name": "Globex Inc" }),
     )
@@ -151,22 +169,15 @@ async fn tenant_crud_lifecycle_over_mcp() {
         updated["result"]["structuredContent"]["spec"]["display_name"],
         "Globex Inc"
     );
-    let reread = call(
-        p,
-        Role::Admin,
-        "tenant_get",
-        json!({ "tenant_id": "globex" }),
-    )
-    .await;
+    let reread = call_op(p, "tenant_get", json!({ "tenant_id": "globex" })).await;
     assert_eq!(
         reread["result"]["structuredContent"]["spec"]["display_name"],
         "Globex Inc"
     );
 
     // delete → returns true + the directory is gone (confirm echoes the id).
-    let deleted = call(
+    let deleted = call_op(
         p,
-        Role::Admin,
         "tenant_delete",
         json!({ "tenant_id": "globex", "confirm": "globex" }),
     )
@@ -182,21 +193,14 @@ async fn tenant_delete_requires_matching_confirm() {
     let h = start().await;
     let p = &h.process;
     // Missing confirm → rejected, tenant untouched.
-    let no_confirm = call(
-        p,
-        Role::Admin,
-        "tenant_delete",
-        json!({ "tenant_id": "acme" }),
-    )
-    .await;
+    let no_confirm = call_op(p, "tenant_delete", json!({ "tenant_id": "acme" })).await;
     assert_eq!(
         no_confirm["error"]["code"], -32602,
         "missing confirm must be invalid_params: {no_confirm}"
     );
     // Wrong confirm → rejected.
-    let wrong = call(
+    let wrong = call_op(
         p,
-        Role::Admin,
         "tenant_delete",
         json!({ "tenant_id": "acme", "confirm": "nope" }),
     )
@@ -257,9 +261,8 @@ async fn foreign_tenant_admin_forbidden_even_without_indexer() {
 #[tokio::test]
 async fn tenant_create_rejects_invalid_id() {
     let h = start().await;
-    let body = call(
+    let body = call_op(
         &h.process,
-        Role::Admin,
         "tenant_create",
         json!({ "tenant_id": "Bad/Id", "display_name": "x" }),
     )
@@ -275,13 +278,7 @@ async fn tenant_create_rejects_invalid_id() {
 #[tokio::test]
 async fn tenant_get_missing_is_not_found_error() {
     let h = start().await;
-    let body = call(
-        &h.process,
-        Role::Admin,
-        "tenant_get",
-        json!({ "tenant_id": "ghost" }),
-    )
-    .await;
+    let body = call_op(&h.process, "tenant_get", json!({ "tenant_id": "ghost" })).await;
     assert!(
         body.get("error").is_some(),
         "missing tenant must error: {body}"
@@ -292,9 +289,8 @@ async fn tenant_get_missing_is_not_found_error() {
 #[tokio::test]
 async fn tenant_delete_missing_returns_false() {
     let h = start().await;
-    let body = call(
+    let body = call_op(
         &h.process,
-        Role::Admin,
         "tenant_delete",
         json!({ "tenant_id": "ghost", "confirm": "ghost" }),
     )
@@ -332,15 +328,15 @@ async fn attach_external_rejects_unsafe_source() {
 // rather than silently acting on / reporting the wrong tenant. The
 // gateway here is bound to `acme`; `globex` is a valid-but-foreign id.
 
+/// The three callers of every cross-tenant admin tool: a tenant admin on its own tenant (ok), a
+/// tenant admin naming another tenant (refused), an operator naming another tenant (ok where the
+/// gateway can reach that tenant's data).
 #[tokio::test]
-async fn tenant_export_import_and_compact_reject_a_foreign_tenant() {
-    // The credential belongs to `acme`; `globex` exists in the registry. A tenant admin
-    // must not read, overwrite or compact another tenant through a `tenant_id` argument.
+async fn tenant_export_and_import_three_callers() {
     let h = start().await;
     let p = &h.process;
-    call(
+    call_op(
         p,
-        Role::Admin,
         "tenant_create",
         json!({ "tenant_id": "globex", "display_name": "Globex" }),
     )
@@ -348,18 +344,30 @@ async fn tenant_export_import_and_compact_reject_a_foreign_tenant() {
     let md = h.tenants_root.join("globex").join("markdown");
     std::fs::create_dir_all(&md).unwrap();
     std::fs::write(md.join("secret.md"), "globex only").unwrap();
+    std::fs::create_dir_all(h.tenants_root.join(TENANT).join("markdown")).unwrap();
+
+    // Tenant admin, own tenant: allowed.
+    let own = call(
+        p,
+        Role::Admin,
+        "tenant_export",
+        json!({ "tenant_id": TENANT }),
+    )
+    .await;
+    assert!(own.get("error").is_none(), "admin own tenant: {own}");
+
+    // Tenant admin, foreign tenant: refused, for export and for import; nothing touched.
     for (tool, args) in [
         ("tenant_export", json!({ "tenant_id": "globex" })),
         (
             "tenant_import",
             json!({ "tenant_id": "globex", "tarball_b64": "" }),
         ),
-        ("compact_lanes", json!({ "tenant_id": "globex" })),
     ] {
         let body = call(p, Role::Admin, tool, args).await;
         assert_eq!(
             body["error"]["code"], -32002,
-            "{tool} must reject a foreign tenant: {body}"
+            "{tool} must refuse a foreign tenant for a tenant admin: {body}"
         );
         assert!(
             body["error"]["message"]
@@ -369,10 +377,153 @@ async fn tenant_export_import_and_compact_reject_a_foreign_tenant() {
             "{tool}: {body}"
         );
     }
+    assert!(md.join("secret.md").is_file());
+
+    // Operator, foreign tenant: allowed; the export carries globex's markdown and an import of it
+    // restores a wiped tree.
+    let exported = call_op(p, "tenant_export", json!({ "tenant_id": "globex" })).await;
     assert!(
-        md.join("secret.md").is_file(),
-        "nothing of globex was touched"
+        exported.get("error").is_none(),
+        "operator export: {exported}"
     );
+    let tarball = exported["result"]["structuredContent"]["tarball_b64"]
+        .as_str()
+        .expect("tarball_b64")
+        .to_owned();
+    std::fs::remove_file(md.join("secret.md")).unwrap();
+    let imported = call_op(
+        p,
+        "tenant_import",
+        json!({ "tenant_id": "globex", "tarball_b64": tarball }),
+    )
+    .await;
+    assert!(
+        imported.get("error").is_none(),
+        "operator import: {imported}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(md.join("secret.md")).unwrap(),
+        "globex only"
+    );
+    h.process.shutdown().await;
+}
+
+/// `compact_lanes` works on the lanes of the tenant this gateway serves. A tenant admin may name
+/// its own tenant but not another; an operator naming another tenant is refused too, because this
+/// gateway cannot reach that tenant's lanes (it must call the gateway that serves it), and
+/// silently compacting the served tenant's lanes under a foreign name would be wrong.
+#[tokio::test]
+async fn compact_lanes_three_callers() {
+    let h = start().await;
+    let p = &h.process;
+    let own = call(
+        p,
+        Role::Admin,
+        "compact_lanes",
+        json!({ "tenant_id": TENANT }),
+    )
+    .await;
+    // No crdt backend is wired on this harness: the own-tenant call passes the tenant guard and
+    // fails later, so the refusal under test is the guard's and not this error.
+    assert_ne!(
+        own["error"]["code"], -32002,
+        "own tenant passes the guard: {own}"
+    );
+    let admin_foreign = call(
+        p,
+        Role::Admin,
+        "compact_lanes",
+        json!({ "tenant_id": "globex" }),
+    )
+    .await;
+    assert_eq!(admin_foreign["error"]["code"], -32002, "{admin_foreign}");
+    let op_foreign = call_op(p, "compact_lanes", json!({ "tenant_id": "globex" })).await;
+    assert_eq!(op_foreign["error"]["code"], -32002, "{op_foreign}");
+    assert!(
+        op_foreign["error"]["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("another gateway"),
+        "{op_foreign}"
+    );
+    h.process.shutdown().await;
+}
+
+/// The tools that read or change the served tenant's index (`admin_quota`, `admin_audit`,
+/// `rebuild`, ...) refuse a foreign tenant for EVERY caller: the operator credential does not
+/// make this gateway serve another tenant.
+#[tokio::test]
+async fn index_bound_admin_tools_refuse_a_foreign_tenant_even_for_an_operator() {
+    let h = start().await;
+    let p = &h.process;
+    for tool in ["admin_quota", "admin_audit", "rebuild"] {
+        let args = json!({ "tenant_id": "globex" });
+        let admin = call(p, Role::Admin, tool, args.clone()).await;
+        assert_eq!(admin["error"]["code"], -32002, "{tool} admin: {admin}");
+        let op = call_op(p, tool, args).await;
+        assert_eq!(op["error"]["code"], -32002, "{tool} operator: {op}");
+        let own = call_op(p, tool, json!({ "tenant_id": TENANT })).await;
+        assert!(
+            own.get("error").is_none(),
+            "{tool} operator own tenant: {own}"
+        );
+    }
+    h.process.shutdown().await;
+}
+
+/// The tenant registry is operator-only: a tenant admin is refused every registry tool, on its
+/// own tenant too (`operator_required`); an operator may use them.
+#[tokio::test]
+async fn tenant_registry_tools_require_an_operator() {
+    let h = start().await;
+    let p = &h.process;
+    for (tool, args) in [
+        (
+            "tenant_create",
+            json!({ "tenant_id": "globex", "display_name": "G" }),
+        ),
+        ("tenant_list", json!({})),
+        ("tenant_get", json!({ "tenant_id": TENANT })),
+        (
+            "tenant_update",
+            json!({ "tenant_id": TENANT, "display_name": "x" }),
+        ),
+        (
+            "tenant_delete",
+            json!({ "tenant_id": TENANT, "confirm": TENANT }),
+        ),
+    ] {
+        let body = call(p, Role::Admin, tool, args).await;
+        assert_eq!(body["error"]["code"], -32001, "{tool}: {body}");
+        assert_eq!(
+            body["error"]["data"]["code"], "operator_required",
+            "{tool}: {body}"
+        );
+    }
+    // Nothing was created or deleted by the refused calls.
+    assert!(!h.tenants_root.join("globex").exists());
+    let listed = call_op(p, "tenant_list", json!({})).await;
+    assert!(listed.get("error").is_none(), "operator list: {listed}");
+    h.process.shutdown().await;
+}
+
+/// An operator credential is minted for the served tenant like any other: a token whose
+/// `tenant` claim names another tenant is refused at the gate, operator or not. The operator
+/// reaches another tenant through the `tenant_id` argument, not through its claim.
+#[tokio::test]
+async fn an_operator_token_for_a_foreign_tenant_claim_is_refused_at_the_gate() {
+    let h = start().await;
+    let p = &h.process;
+    let token = p.mint_operator_token("globex");
+    let resp = reqwest::Client::new()
+        .post(p.mcp_url())
+        .header("authorization", format!("Bearer {token}"))
+        .json(&json!({"jsonrpc":"2.0","id":1,"method":"tools/call",
+                      "params":{"name":"tenant_list","arguments":{}}}))
+        .send()
+        .await
+        .expect("post");
+    assert_eq!(resp.status(), 403);
     h.process.shutdown().await;
 }
 
@@ -485,9 +636,8 @@ async fn tenant_export_then_import_round_trips() {
     let p = &h.process;
 
     // Provision a tenant with on-disk markdown to export.
-    call(
+    call_op(
         p,
-        Role::Admin,
         "tenant_create",
         json!({ "tenant_id": TENANT, "display_name": "Acme" }),
     )
@@ -729,9 +879,8 @@ fn structured(env: &Value) -> Value {
 async fn tenant_update_suspend_rejects_then_resume_allows() {
     let h = start().await;
     // Provision the served tenant in the store so tenant_update can read-merge.
-    call(
+    call_op(
         &h.process,
-        Role::Admin,
         "tenant_create",
         json!({ "tenant_id": TENANT, "display_name": "Acme" }),
     )
@@ -745,9 +894,8 @@ async fn tenant_update_suspend_rejects_then_resume_allows() {
     );
 
     // Suspend (admin).
-    let susp = call(
+    let susp = call_op(
         &h.process,
-        Role::Admin,
         "tenant_update",
         json!({ "tenant_id": TENANT, "status": "suspended" }),
     )
@@ -762,9 +910,8 @@ async fn tenant_update_suspend_rejects_then_resume_allows() {
     );
 
     // Admin can still act (to resume) — the gate never blocks admin.
-    let resumed = call(
+    let resumed = call_op(
         &h.process,
-        Role::Admin,
         "tenant_update",
         json!({ "tenant_id": TENANT, "status": "active" }),
     )
@@ -784,9 +931,8 @@ async fn tenant_update_suspend_rejects_then_resume_allows() {
 #[tokio::test]
 async fn tenant_update_quotas_persist_and_embedding_change_requires_rebuild() {
     let h = start().await;
-    call(
+    call_op(
         &h.process,
-        Role::Admin,
         "tenant_create",
         json!({ "tenant_id": TENANT, "display_name": "Acme" }),
     )
@@ -794,9 +940,8 @@ async fn tenant_update_quotas_persist_and_embedding_change_requires_rebuild() {
 
     // A partial update that sets quotas persists them (visible via tenant_get)
     // and does NOT require a rebuild.
-    let upd = call(
+    let upd = call_op(
         &h.process,
-        Role::Admin,
         "tenant_update",
         json!({ "tenant_id": TENANT, "quotas": { "writes_per_minute": 5 } }),
     )
@@ -806,21 +951,14 @@ async fn tenant_update_quotas_persist_and_embedding_change_requires_rebuild() {
         Value::Null,
         "quota change needs no rebuild: {upd}"
     );
-    let got = call(
-        &h.process,
-        Role::Admin,
-        "tenant_get",
-        json!({ "tenant_id": TENANT }),
-    )
-    .await;
+    let got = call_op(&h.process, "tenant_get", json!({ "tenant_id": TENANT })).await;
     assert_eq!(structured(&got)["spec"]["quotas"]["writes_per_minute"], 5);
     // Partial update preserved the display name (get-modify-put on the server).
     assert_eq!(structured(&got)["spec"]["display_name"], "Acme");
 
     // Changing embedding_provider requires a rebuild (vector space moves).
-    let emb = call(
+    let emb = call_op(
         &h.process,
-        Role::Admin,
         "tenant_update",
         json!({ "tenant_id": TENANT, "embedding_provider": { "provider": "zero" } }),
     )
