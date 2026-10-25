@@ -58,6 +58,7 @@ mod query_instance;
 mod read_tools;
 mod rebuild_guard;
 mod rebuild_no_lane_writes;
+mod relation_guard;
 mod rerank;
 mod resolve_expand;
 mod scenarios;

@@ -45,6 +45,7 @@ pub mod quack_policy;
 pub mod quack_session;
 pub mod query;
 pub mod read;
+mod relation_guard;
 pub mod result_ref;
 pub mod retrieval;
 pub mod schema;
@@ -89,6 +90,7 @@ pub use read::{
     InstanceInfo, OrderDir, PageRef, ParamKind, ResolvedWikilink, SkillBlock, SkillField,
     SkillInfo, SkillParam, Visibility, parse_blocks, parse_fields,
 };
+pub use relation_guard::{RELATION_IN_USE, RELATION_REFERRER_LIMIT, Referrer, RelationReferrers};
 pub use retrieval::RetrievalConfig;
 pub use schema::Migrator;
 pub use search::{Granularity, SearchHit};

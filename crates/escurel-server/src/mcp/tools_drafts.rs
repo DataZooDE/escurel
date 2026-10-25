@@ -914,6 +914,21 @@ pub(super) async fn tool_promote_draft(
         Ok(c) => c,
         Err(refusal) => return Ok(refusal),
     };
+    // A lone draft that archives a page is judged against the saved corpus.
+    // A changeset member is judged once, against the whole batch, before any
+    // member lands (`promote_changeset`).
+    if draft.changeset_id.is_none()
+        && escurel_index::drafts::content_is_archived(landing.as_str())
+        && let Some(refused) = crate::mcp::tools_write::relation_in_use_refusal(
+            indexer,
+            &draft.target_page_id,
+            "archive",
+            &std::collections::HashMap::new(),
+        )
+        .await?
+    {
+        return Ok(refused);
+    }
     let mut write_args = json!({
         "page_id": draft.target_page_id,
         "content": landing.as_str(),
@@ -1597,6 +1612,21 @@ pub(super) async fn tool_promote_changeset(
             .map_err(|e| JsonRpcError::internal(format!("promote_changeset validate: {e}")))?;
         for issue in draft_blocking_issues(state, &validation) {
             issues.push(issue_to_json(issue));
+        }
+        // A member that archives a page is judged against the batch: a
+        // referrer the same changeset archives or re-points does not block.
+        if escurel_index::drafts::content_is_archived(&m.content)
+            && head.is_some()
+            && let Some(refused) = crate::mcp::tools_write::relation_in_use_refusal(
+                indexer,
+                &m.target_page_id,
+                "archive",
+                &siblings,
+            )
+            .await?
+            && let Some(found) = refused.get("issues").and_then(Value::as_array)
+        {
+            issues.extend(found.iter().cloned());
         }
     }
     if !issues.is_empty() {

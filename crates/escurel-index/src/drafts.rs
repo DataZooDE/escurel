@@ -656,3 +656,10 @@ impl Indexer {
         Ok(n > 0)
     }
 }
+
+/// Whether proposed page content carries `archived: true`, i.e. landing it
+/// archives the page.
+#[must_use]
+pub fn content_is_archived(content: &str) -> bool {
+    crate::indexer::is_archived(content)
+}
