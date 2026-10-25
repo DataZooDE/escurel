@@ -20,6 +20,7 @@ import { RunController } from './runs/controller';
 import { registerControlCommands } from './runs/controlCommands';
 import { adminContextValue } from './runs/adminContext';
 import { ThreadController } from './thread/controller';
+import { ChatViewProvider } from './chat/chatView';
 import { DetailsViewProvider } from './thread/detailsView';
 import { buildInspectors } from './thread/inspector';
 import { toThreadView } from './thread/threadModel';
@@ -63,6 +64,8 @@ export interface EscurelApi {
   threads: ThreadController;
   /** The bottom-panel details view of the node selected in a thread. */
   details: DetailsViewProvider;
+  /** The Chat view beside Runs. */
+  chat: ChatViewProvider;
   runs: RunController;
   threadsTree: ThreadsTree;
   /**
@@ -205,6 +208,13 @@ export function activate(
     }),
   );
   const details = DetailsViewProvider.register(context, threads);
+  // The Chat view beside Runs: a question is a run of the `chat` skill, answered as the asker.
+  const chat = ChatViewProvider.register(
+    context,
+    services,
+    () => runner.runnerAlive(),
+    runner.onDidChangeTreeData,
+  );
   const runs = RunController.register(context, services);
   // The Closed group is folded from the `escurel:thread-closed` label listing (no new tool), newest
   // first and bounded (loadClosedThreads): when the live socket connects (at start, and again after every
@@ -369,6 +379,7 @@ export function activate(
       live,
       threads,
       details,
+      chat,
       runs,
       threadsTree,
       canAdmin: adminContextValue,
