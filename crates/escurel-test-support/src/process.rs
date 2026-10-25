@@ -11,7 +11,7 @@ use std::sync::Arc;
 
 use bytes::Bytes;
 use duckdb::Connection;
-use escurel_admin::TenantStore;
+use escurel_admin::{FsTenantStore, TenantStore};
 use escurel_auth::{OidcConfig, OidcVerifier};
 use escurel_client::{Client, SecretString};
 use escurel_crdt::CrdtBackend;
@@ -72,6 +72,9 @@ pub struct ConfigOverrides {
     /// tenant-CRUD surface; CRUD calls return
     /// `failed_precondition` when absent.
     pub tenant_store: Option<Arc<dyn TenantStore>>,
+    /// Expose this fixture tenant's canonical Markdown through the admin export surface.
+    /// Off by default so unrelated tests keep their own store wiring.
+    pub fixture_tenant_export: bool,
     /// Install a `CrdtBackend`. Required to exercise the live
     /// session tools (`open_session`/`apply_op`/`close_session`)
     /// and the WS attach paths.
@@ -289,6 +292,11 @@ impl std::fmt::Debug for EscurelProcess {
 }
 
 impl EscurelProcess {
+    /// Filesystem root used by the disposable fixture gateway, when it owns one.
+    pub fn fixture_store_dir(&self) -> Option<&std::path::Path> {
+        self._store_dir.as_ref().map(TempDir::path)
+    }
+
     /// Bind a fresh gateway and (optionally) replay `opts.fixtures`
     /// through the public write path before returning.
     ///
@@ -490,7 +498,16 @@ impl EscurelProcess {
             shutdown_drain: overrides
                 .shutdown_drain
                 .unwrap_or(escurel_server::DEFAULT_SHUTDOWN_DRAIN),
-            tenant_store: overrides.tenant_store.clone(),
+            tenant_store: overrides.tenant_store.clone().or_else(|| {
+                overrides.fixture_tenant_export.then(|| {
+                    let root = store_dir
+                        .as_ref()
+                        .expect("fixture export needs store")
+                        .path()
+                        .join("tenants");
+                    Arc::new(FsTenantStore::new(root)) as Arc<dyn TenantStore>
+                })
+            }),
             crdt_backend: overrides.crdt_backend.clone().or(live_backend),
             embedder_reload: overrides.embedder_reload.clone(),
             embedder_factory: overrides.embedder_factory.clone(),

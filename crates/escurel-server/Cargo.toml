@@ -18,6 +18,8 @@ name = "escurel-server"
 path = "src/main.rs"
 
 [features]
+# Declared for disposable test gateways; no server behavior is enabled by it.
+test-faults = []
 # Opt-in: tests that need Docker (a real Postgres container) for the SQL rows / write-back
 # connectors: `cargo test -p escurel-server --features live-postgres --test suite sql_rows_postgres`.
 live-postgres = []
