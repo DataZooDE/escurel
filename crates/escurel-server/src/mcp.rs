@@ -1100,7 +1100,7 @@ async fn dispatch_tools_call(
             return tool_tenant_delete(state, params.arguments).await;
         }
         "tenant_export" => {
-            return tool_tenant_export(state, params.arguments).await;
+            return tool_tenant_export(state, tenant_id, params.arguments).await;
         }
         "export_pack" => {
             return tool_export_pack(state, params.arguments).await;
@@ -1121,7 +1121,7 @@ async fn dispatch_tools_call(
             return tool_submit_promotion(state, subject, params.arguments).await;
         }
         "tenant_import" => {
-            return tool_tenant_import(state, params.arguments).await;
+            return tool_tenant_import(state, tenant_id, params.arguments).await;
         }
         "attach_external" => {
             return tool_attach_external(state, params.arguments).await;
@@ -1133,7 +1133,7 @@ async fn dispatch_tools_call(
             return tool_rebuild(state, params.arguments).await;
         }
         "compact_lanes" => {
-            return tool_compact_lanes(state, params.arguments).await;
+            return tool_compact_lanes(state, tenant_id, params.arguments).await;
         }
         "migrate_kind" => {
             return tool_migrate_kind(state, params.arguments).await;

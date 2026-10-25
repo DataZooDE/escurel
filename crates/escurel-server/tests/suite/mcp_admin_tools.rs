@@ -333,6 +333,50 @@ async fn attach_external_rejects_unsafe_source() {
 // gateway here is bound to `acme`; `globex` is a valid-but-foreign id.
 
 #[tokio::test]
+async fn tenant_export_import_and_compact_reject_a_foreign_tenant() {
+    // The credential belongs to `acme`; `globex` exists in the registry. A tenant admin
+    // must not read, overwrite or compact another tenant through a `tenant_id` argument.
+    let h = start().await;
+    let p = &h.process;
+    call(
+        p,
+        Role::Admin,
+        "tenant_create",
+        json!({ "tenant_id": "globex", "display_name": "Globex" }),
+    )
+    .await;
+    let md = h.tenants_root.join("globex").join("markdown");
+    std::fs::create_dir_all(&md).unwrap();
+    std::fs::write(md.join("secret.md"), "globex only").unwrap();
+    for (tool, args) in [
+        ("tenant_export", json!({ "tenant_id": "globex" })),
+        (
+            "tenant_import",
+            json!({ "tenant_id": "globex", "tarball_b64": "" }),
+        ),
+        ("compact_lanes", json!({ "tenant_id": "globex" })),
+    ] {
+        let body = call(p, Role::Admin, tool, args).await;
+        assert_eq!(
+            body["error"]["code"], -32002,
+            "{tool} must reject a foreign tenant: {body}"
+        );
+        assert!(
+            body["error"]["message"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("does not match"),
+            "{tool}: {body}"
+        );
+    }
+    assert!(
+        md.join("secret.md").is_file(),
+        "nothing of globex was touched"
+    );
+    h.process.shutdown().await;
+}
+
+#[tokio::test]
 async fn rebuild_rejects_foreign_tenant() {
     let h = start().await;
     let body = call(
@@ -445,11 +489,11 @@ async fn tenant_export_then_import_round_trips() {
         p,
         Role::Admin,
         "tenant_create",
-        json!({ "tenant_id": "globex", "display_name": "Globex" }),
+        json!({ "tenant_id": TENANT, "display_name": "Acme" }),
     )
     .await;
     // Write a markdown file into the tenant's markdown dir directly.
-    let md_dir = h.tenants_root.join("globex").join("markdown");
+    let md_dir = h.tenants_root.join(TENANT).join("markdown");
     std::fs::create_dir_all(md_dir.join("skills")).unwrap();
     std::fs::write(
         md_dir.join("skills").join("customer.md"),
@@ -462,7 +506,7 @@ async fn tenant_export_then_import_round_trips() {
         p,
         Role::Admin,
         "tenant_export",
-        json!({ "tenant_id": "globex" }),
+        json!({ "tenant_id": TENANT }),
     )
     .await;
     assert!(exported.get("error").is_none(), "export error: {exported}");
@@ -502,7 +546,7 @@ async fn tenant_export_then_import_round_trips() {
         p,
         Role::Admin,
         "tenant_import",
-        json!({ "tenant_id": "globex", "tarball_b64": tarball }),
+        json!({ "tenant_id": TENANT, "tarball_b64": tarball }),
     )
     .await;
     assert!(imported.get("error").is_none(), "import error: {imported}");

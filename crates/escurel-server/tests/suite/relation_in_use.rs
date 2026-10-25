@@ -177,3 +177,40 @@ async fn changeset_archiving_a_target_still_in_use_lands_nothing() {
         "{listed}"
     );
 }
+
+#[tokio::test]
+async fn list_skills_exposes_every_target_of_a_link_field() {
+    let multi = "---\nkind: skill\nid: multi\ndescription: Many targets.\nvisibility: public\n\
+        fields:\n  - {name: about, kind: link, to: [note, ticket]}\n  - {name: one, kind: link, to: note}\n---\n# multi\n";
+    let fixtures = FixtureBuilder::new()
+        .tenant(TENANT)
+        .skill("note", note_skill("").as_str())
+        .skill("ticket", TICKET)
+        .skill("multi", multi)
+        .done();
+    let p = EscurelProcess::spawn(Opts {
+        auth: AuthMode::TestIssuer,
+        config_overrides: ConfigOverrides::default(),
+        fixtures: Some(fixtures),
+    })
+    .await;
+    let r = call(&p, "list_skills", json!({})).await;
+    let skill = r["skills"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["id"] == "multi")
+        .unwrap();
+    let field = |n: &str| {
+        skill["fields"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|f| f["name"] == n)
+            .unwrap()
+            .clone()
+    };
+    assert_eq!(field("about")["target_skills"], json!(["note", "ticket"]));
+    assert_eq!(field("one")["target_skills"], json!(["note"]));
+    assert_eq!(field("one")["target_skill"], json!("note"));
+}

@@ -65,7 +65,7 @@ fn string_values(value: &YamlValue) -> Vec<&str> {
 fn relations(fields: &YamlMapping, declared: &[SkillField]) -> Vec<Relation> {
     let mut out = Vec::new();
     for decl in declared {
-        let (FieldKind::Link, Some(_)) = (decl.kind, decl.target_skill.as_ref()) else {
+        let (FieldKind::Link, false) = (decl.kind, decl.target_skills.is_empty()) else {
             continue;
         };
         let Some(value) = fields.get(decl.name.as_str()) else {

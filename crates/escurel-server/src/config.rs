@@ -609,6 +609,11 @@ pub struct EscurelConfig {
     /// read surface for as long as it runs. `0` disables the bound.
     /// Source: `ESCUREL_QUERY_TIMEOUT_MS`.
     pub query_timeout_ms: u64,
+    /// Request-body limit of `POST /mcp` in bytes. Source: `ESCUREL_MCP_MAX_BODY_BYTES`.
+    pub mcp_max_body_bytes: usize,
+    /// Request-body limit of `POST /ingest/upload` in bytes (the base64 JSON body, so about a
+    /// third above the file size). Source: `ESCUREL_INGEST_MAX_BODY_BYTES`.
+    pub ingest_max_body_bytes: usize,
     /// Optional built demo bundle (Flutter web `build/web`) to serve
     /// at `/`. `None` → no static serving. Set from
     /// `ESCUREL_SERVE_DEMO_DIR`.
@@ -1407,6 +1412,21 @@ impl EscurelConfig {
             None => escurel_index::DEFAULT_QUERY_TIMEOUT_MS,
         };
 
+        let body_limit = |var: &'static str| -> Result<usize, ConfigError> {
+            match env.get(var) {
+                Some(raw) => raw.trim().parse::<usize>().ok().filter(|n| *n >= 1).ok_or(
+                    ConfigError::InvalidValue {
+                        var,
+                        value: raw,
+                        reason: "expected a positive number of bytes",
+                    },
+                ),
+                None => Ok(crate::server::DEFAULT_MAX_BODY_BYTES),
+            }
+        };
+        let mcp_max_body_bytes = body_limit("ESCUREL_MCP_MAX_BODY_BYTES")?;
+        let ingest_max_body_bytes = body_limit("ESCUREL_INGEST_MAX_BODY_BYTES")?;
+
         // --- DuckLake backend / role (PR 6) ---
         let role = match env
             .get("ESCUREL_ROLE")
@@ -1556,6 +1576,8 @@ impl EscurelConfig {
             coarse_dim,
             coarse_candidates,
             query_timeout_ms,
+            mcp_max_body_bytes,
+            ingest_max_body_bytes,
             demo_dir,
             seed_dir,
             webhook_url,
@@ -2416,6 +2438,8 @@ impl EscurelConfig {
                 _ => crate::server::DEFAULT_SHUTDOWN_DRAIN,
             },
             demo_dir: self.demo_dir.clone(),
+            mcp_max_body_bytes: self.mcp_max_body_bytes,
+            ingest_max_body_bytes: self.ingest_max_body_bytes,
             webhook_url: self.webhook_url.clone(),
             webhook_secret: self.webhook_secret.clone(),
             pack_secret: self.pack_secret.clone(),

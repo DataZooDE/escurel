@@ -201,3 +201,48 @@ async fn a_referrer_the_batch_rewrites_or_archives_does_not_block() {
         2
     );
 }
+
+#[tokio::test]
+async fn every_listed_target_skill_is_guarded() {
+    let h = harness();
+    put(&h, "markdown/skills/epic.md", &epic_skill("")).await;
+    put(
+        &h,
+        "markdown/skills/story.md",
+        "---\nkind: skill\nid: story\ndescription: s\n---\n# story\n",
+    )
+    .await;
+    put(
+        &h,
+        "markdown/skills/ticket.md",
+        "---\nkind: skill\nid: ticket\ndescription: t\nfields:\n  - {name: parent, kind: link, to: [epic, story]}\n---\n# ticket\n",
+    )
+    .await;
+    put(
+        &h,
+        EPIC,
+        "---\nkind: instance\nskill: epic\nid: launch\n---\n# launch\n",
+    )
+    .await;
+    let story = "markdown/instances/story/s1.md";
+    put(
+        &h,
+        story,
+        "---\nkind: instance\nskill: story\nid: s1\n---\n# s1\n",
+    )
+    .await;
+    put(
+        &h,
+        "markdown/instances/ticket/t1.md",
+        &ticket("t1", "parent: \"[[story::s1]]\"\n"),
+    )
+    .await;
+    for target in [story, EPIC] {
+        let r = h
+            .indexer
+            .relation_referrers(target, &HashMap::new())
+            .await
+            .unwrap();
+        assert_eq!(r.total, usize::from(target == story), "{target}: {r:?}");
+    }
+}

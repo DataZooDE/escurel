@@ -229,7 +229,7 @@ async fn call(p: &EscurelProcess, token: &str, name: &str, args: Value) -> Value
 #[tokio::test]
 async fn an_audio_upload_materialises_instead_of_parking_no_handler() {
     let s = setup().await;
-    let token = s.process.mint_token(TENANT, Role::Agent);
+    let token = s.process.mint_token(TENANT, Role::Admin);
 
     let (status, resp) = upload(&s.process, &token, &wav(8_000), "audio/wav", None).await;
     assert_eq!(status, 202, "audio upload accepted: {resp}");
@@ -269,7 +269,7 @@ async fn an_audio_upload_materialises_instead_of_parking_no_handler() {
 #[tokio::test]
 async fn an_exact_mime_claim_beats_a_wildcard_one() {
     let s = setup().await;
-    let token = s.process.mint_token(TENANT, Role::Agent);
+    let token = s.process.mint_token(TENANT, Role::Admin);
 
     // `podcast` claims audio/mpeg by name; `recording` claims audio/* and
     // sorts EARLIER, so id-order alone would pick the wrong one.
@@ -302,7 +302,7 @@ async fn an_exact_mime_claim_beats_a_wildcard_one() {
 #[tokio::test]
 async fn the_overlay_records_the_content_type_and_media_metadata() {
     let s = setup().await;
-    let token = s.process.mint_token(TENANT, Role::Agent);
+    let token = s.process.mint_token(TENANT, Role::Admin);
     // 8000 frames at 16 kHz = exactly 500 ms.
     let bytes = wav(8_000);
 
@@ -342,7 +342,7 @@ async fn the_overlay_records_the_content_type_and_media_metadata() {
 #[tokio::test]
 async fn the_audio_bytes_are_retained_and_fetchable_verbatim() {
     let s = setup().await;
-    let token = s.process.mint_token(TENANT, Role::Agent);
+    let token = s.process.mint_token(TENANT, Role::Admin);
     let bytes = wav(4_000);
 
     let (_, resp) = upload(&s.process, &token, &bytes, "audio/wav", None).await;
@@ -387,7 +387,7 @@ async fn the_audio_bytes_are_retained_and_fetchable_verbatim() {
 #[tokio::test]
 async fn the_recording_is_an_ordinary_instance_with_identity_links_and_history() {
     let s = setup().await;
-    let token = s.process.mint_token(TENANT, Role::Agent);
+    let token = s.process.mint_token(TENANT, Role::Admin);
 
     let (_, resp) = upload(&s.process, &token, &wav(2_000), "audio/wav", None).await;
     let page_id = resp["page_id"].as_str().unwrap().to_owned();
@@ -564,7 +564,7 @@ async fn a_recording_is_acl_scoped_like_any_other_instance() {
 #[tokio::test]
 async fn extraction_failure_still_retains_the_upload() {
     let s = setup().await;
-    let token = s.process.mint_token(TENANT, Role::Agent);
+    let token = s.process.mint_token(TENANT, Role::Admin);
     // Invalid UTF-8 declared as text/plain → PlainTextExtractor fails.
     let bad = Bytes::from_static(&[0xff, 0xfe, 0x00, 0x01]);
     let blob = s

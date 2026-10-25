@@ -284,7 +284,7 @@ async fn fetch_blob_round_trips_typed() {
         config_overrides: ConfigOverrides::default(),
     })
     .await;
-    let client = client_as(&p, Role::Agent).await;
+    let client = client_as(&p, Role::Admin).await;
 
     let body = "The original bytes of the source document, verbatim.";
     let ingested = client

@@ -57,6 +57,23 @@ backend:
 # fraktion_gruene_dok
 ";
 
+// Reached by MIME routing only: nobody names it, the content type picks it.
+const ROUTED_SKILL: &str = "\
+---
+kind: skill
+id: gruene_routed
+description: Routed documents of the fraktion.
+owner_field: author
+acl:
+  read: [owner, fraktion:gruene]
+  create: [fraktion:gruene]
+backend:
+  kind: document
+  accepts: [text/x-gruene]
+---
+# gruene_routed
+";
+
 struct Setup {
     process: EscurelProcess,
     store: Arc<dyn LaneStore>,
@@ -77,6 +94,10 @@ async fn setup() -> Setup {
         .unwrap();
     indexer
         .update_page("markdown/skills/fraktion_gruene_dok.md", TEAM_SKILL)
+        .await
+        .unwrap();
+    indexer
+        .update_page("markdown/skills/gruene_routed.md", ROUTED_SKILL)
         .await
         .unwrap();
     let process = EscurelProcess::spawn(Opts {
@@ -284,6 +305,61 @@ async fn ingest_into_a_skill_the_caller_cannot_create_in_is_forbidden() {
     assert_eq!(
         status, 403,
         "a non-GRÜNE caller must be forbidden from creating in fraktion_gruene_dok: {resp}"
+    );
+    s.process.shutdown().await;
+}
+
+async fn post_upload(
+    p: &EscurelProcess,
+    token: &str,
+    ct: &str,
+    skill: Option<&str>,
+) -> (reqwest::StatusCode, Value) {
+    use base64::Engine as _;
+    let mut body = json!({
+        "content_type": ct,
+        "bytes_b64": base64::engine::general_purpose::STANDARD.encode(b"routed upload"),
+    });
+    if let Some(sk) = skill {
+        body["skill"] = json!(sk);
+    }
+    let resp = reqwest::Client::new()
+        .post(format!("{}/ingest/upload", p.base_url()))
+        .header("authorization", format!("Bearer {token}"))
+        .json(&body)
+        .send()
+        .await
+        .unwrap();
+    let status = resp.status();
+    (status, resp.json().await.unwrap())
+}
+
+#[tokio::test]
+async fn mime_routed_upload_checks_the_routed_skills_create_acl() {
+    let s = setup().await;
+    let outsider = s
+        .process
+        .mint_token_with_groups(TENANT, "mallory", &["fraktion:cdu"], false);
+    let member = s
+        .process
+        .mint_token_with_groups(TENANT, "gina", &["fraktion:gruene"], false);
+    let (st, resp) = post_upload(&s.process, &outsider, "text/x-gruene", None).await;
+    assert_eq!(st, 403, "routed upload without create rights: {resp}");
+    // Same refusal as the explicit path.
+    let (st2, resp2) = post_upload(
+        &s.process,
+        &outsider,
+        "text/x-gruene",
+        Some("gruene_routed"),
+    )
+    .await;
+    assert_eq!(st2, 403);
+    assert_eq!(resp["error"], resp2["error"]);
+    assert_eq!(resp["message"], resp2["message"]);
+    let (st3, resp3) = post_upload(&s.process, &member, "text/x-gruene", None).await;
+    assert!(
+        st3.is_success(),
+        "a member may create in the routed skill: {resp3}"
     );
     s.process.shutdown().await;
 }

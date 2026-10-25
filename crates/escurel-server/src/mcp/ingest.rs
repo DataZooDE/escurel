@@ -392,46 +392,6 @@ async fn record_and_dispatch_ingest(
                 )
                     .into_response();
             }
-            // AUTHORIZATION: the caller *chose* this skill, and the document
-            // materialise path bypasses the normal `update_page` write gate — so
-            // enforce the skill's `create` ACL here. Otherwise an authenticated
-            // user could inject a (group-readable) document into a skill they may
-            // not write, e.g. another fraktion's collection. The would-be owner
-            // (`owner_field` ← subject) is part of the create decision.
-            let owner_field = indexer.list_skills().await.ok().and_then(|ss| {
-                ss.into_iter()
-                    .find(|s| s.id == sk)
-                    .and_then(|s| s.owner_field)
-            });
-            let mut incoming = serde_json::Map::new();
-            if let Some(field) = &owner_field
-                && !subject.is_empty()
-            {
-                incoming.insert(field.clone(), json!(subject));
-            }
-            let acl_caller = AclCaller {
-                subject,
-                is_admin: caller.is_admin,
-                token_groups: &caller.groups,
-                actor: caller.actor.as_deref(),
-                run_id: caller.run_id.as_deref(),
-                root_event_id: caller.root_event_id.as_deref(),
-                agent_skill: caller.agent_skill.as_deref(),
-            };
-            let may_create = indexer
-                .may_write_instance(&acl_caller, sk, None, &Value::Object(incoming))
-                .await
-                .unwrap_or(false);
-            if !may_create {
-                return (
-                    StatusCode::FORBIDDEN,
-                    Json(json!({
-                        "error": "forbidden",
-                        "message": format!("not authorised to create documents in skill `{sk}`"),
-                    })),
-                )
-                    .into_response();
-            }
             Some(sk.to_owned())
         }
         None => match indexer.document_skill_for_mime(content_type).await {
@@ -445,6 +405,48 @@ async fn record_and_dispatch_ingest(
             }
         },
     };
+    if let Some(sk) = handler.as_deref() {
+        // AUTHORIZATION: the document path reaches this skill (named or MIME-routed), and the document
+        // materialise path bypasses the normal `update_page` write gate — so
+        // enforce the skill's `create` ACL here. Otherwise an authenticated
+        // user could inject a (group-readable) document into a skill they may
+        // not write, e.g. another fraktion's collection. The would-be owner
+        // (`owner_field` ← subject) is part of the create decision.
+        let owner_field = indexer.list_skills().await.ok().and_then(|ss| {
+            ss.into_iter()
+                .find(|s| s.id == sk)
+                .and_then(|s| s.owner_field)
+        });
+        let mut incoming = serde_json::Map::new();
+        if let Some(field) = &owner_field
+            && !subject.is_empty()
+        {
+            incoming.insert(field.clone(), json!(subject));
+        }
+        let acl_caller = AclCaller {
+            subject,
+            is_admin: caller.is_admin,
+            token_groups: &caller.groups,
+            actor: caller.actor.as_deref(),
+            run_id: caller.run_id.as_deref(),
+            root_event_id: caller.root_event_id.as_deref(),
+            agent_skill: caller.agent_skill.as_deref(),
+        };
+        let may_create = indexer
+            .may_write_instance(&acl_caller, sk, None, &Value::Object(incoming))
+            .await
+            .unwrap_or(false);
+        if !may_create {
+            return (
+                StatusCode::FORBIDDEN,
+                Json(json!({
+                    "error": "forbidden",
+                    "message": format!("not authorised to create documents in skill `{sk}`"),
+                })),
+            )
+                .into_response();
+        }
+    }
     // The autonomy gate. This door materialises an instance without `update_page`, so a machine's
     // upload (explicit skill or routed by MIME) into a skill that asks for review must not land here
     // either; a blob cannot be held as a draft, so it is refused with whom to ask.

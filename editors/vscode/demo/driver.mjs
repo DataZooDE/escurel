@@ -11,7 +11,10 @@ import { readFileSync } from 'node:fs';
 
 const [gatewayFile, bearerFile] = process.argv.slice(2);
 const gw = JSON.parse(readFileSync(gatewayFile, 'utf8').split('\n')[0]);
-const bearer = JSON.parse(readFileSync(bearerFile, 'utf8')).bearer;
+const tokens = JSON.parse(readFileSync(bearerFile, 'utf8'));
+const bearer = tokens.bearer;
+// Seeding the document corpus is an operator act: a skill without a create ACL is admin-write-only for uploads.
+const seedBearer = tokens.admin_bearer ?? bearer;
 
 async function call(name, args) {
   const res = await fetch(`${gw.gateway_url}/mcp`, {
@@ -59,7 +62,7 @@ months before it ends.
 async function uploadDocument(title, text, eventId) {
   const res = await fetch(`${gw.gateway_url}/ingest/upload`, {
     method: 'POST',
-    headers: { 'content-type': 'application/json', authorization: `Bearer ${bearer}` },
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${seedBearer}` },
     body: JSON.stringify({
       bytes_b64: Buffer.from(text).toString('base64'),
       content_type: 'text/markdown',

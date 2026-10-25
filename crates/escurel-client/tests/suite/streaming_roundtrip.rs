@@ -119,25 +119,25 @@ async fn tenant_export_then_import_round_trips() {
     client
         .tenant_create(TenantCreateRequest {
             spec: Some(TenantSpec {
-                tenant_id: "globex".to_owned(),
-                display_name: "Globex".to_owned(),
+                tenant_id: TENANT.to_owned(),
+                display_name: "Acme".to_owned(),
                 ..Default::default()
             }),
         })
         .await
         .expect("tenant_create");
-    assert!(h.tenants_root.join("globex").join("tenant.json").is_file());
+    assert!(h.tenants_root.join(TENANT).join("tenant.json").is_file());
 
     let bytes = client
         .tenant_export(TenantExportRequest {
-            tenant_id: "globex".to_owned(),
+            tenant_id: TENANT.to_owned(),
         })
         .await
         .expect("tenant_export");
     assert!(!bytes.is_empty(), "export tarball must be non-empty");
 
     let imported = client
-        .tenant_import("globex", bytes)
+        .tenant_import(TENANT, bytes)
         .await
         .expect("tenant_import");
     assert!(imported > 0, "import must report the bytes it ingested");

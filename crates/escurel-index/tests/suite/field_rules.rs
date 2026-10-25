@@ -837,3 +837,57 @@ async fn skills_without_declared_rules_are_unchanged() {
         "an undeclared skill gets no new errors: {issues:?}"
     );
 }
+
+#[tokio::test]
+async fn a_link_field_may_name_several_target_skills() {
+    let h = harness();
+    seed_all(
+        &h,
+        &[
+            skill_page(
+                "ref",
+                "fields:\n  - {name: subject, kind: link, to: [person, topic]}\n  - {name: solo, kind: link, to: person}\n",
+            ),
+            skill_page("topic", ""),
+            skill_page("person", ""),
+            skill_page("other", ""),
+            instance("topic", "root", ""),
+            instance("person", "ann", ""),
+            instance("other", "x", ""),
+        ],
+    )
+    .await;
+    let (_, ok) = instance("ref", "r1", "subject: \"[[topic::root]]\"\n");
+    assert!(h.indexer.validate(None, &ok).await.unwrap().is_empty());
+    let (_, ok2) = instance(
+        "ref",
+        "r2",
+        "subject: [\"[[person::ann]]\", \"[[topic::root]]\"]\nsolo: \"[[person::ann]]\"\n",
+    );
+    assert!(h.indexer.validate(None, &ok2).await.unwrap().is_empty());
+
+    let (_, wrong) = instance("ref", "r3", "subject: \"[[other::x]]\"\n");
+    let issues = h.indexer.validate(None, &wrong).await.unwrap();
+    assert!(
+        has(&issues, "relation_invalid", "frontmatter.subject"),
+        "{issues:?}"
+    );
+    let (_, ghost) = instance("ref", "r4", "subject: \"[[topic::ghost]]\"\n");
+    let issues = h.indexer.validate(None, &ghost).await.unwrap();
+    assert!(
+        has(&issues, "relation_unresolved", "frontmatter.subject"),
+        "{issues:?}"
+    );
+    // The single-string form keeps its meaning.
+    let (_, solo) = instance("ref", "r5", "solo: \"[[topic::root]]\"\n");
+    let issues = h.indexer.validate(None, &solo).await.unwrap();
+    assert!(
+        has(&issues, "relation_invalid", "frontmatter.solo"),
+        "{issues:?}"
+    );
+
+    let skills = h.indexer.list_skills().await.unwrap();
+    let r = skills.iter().find(|s| s.id == "ref").unwrap();
+    let f = r.fields.iter().find(|f| f.name == "subject").unwrap();
+    assert_eq!(f.target_skills, ["person", "topic"]);
+}

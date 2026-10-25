@@ -142,7 +142,7 @@ async fn post_upload(
 #[tokio::test]
 async fn materialised_upload_is_durable_in_the_lake_before_the_response() {
     let s = setup().await;
-    let token = s.process.mint_token(TENANT, Role::Agent);
+    let token = s.process.mint_token(TENANT, Role::Admin);
 
     let (status, body) = post_upload(&s.process, &token, "text/plain", b"a short memo body").await;
     assert_eq!(status, StatusCode::ACCEPTED, "upload: {body}");
@@ -168,7 +168,7 @@ async fn materialised_upload_is_durable_in_the_lake_before_the_response() {
 #[tokio::test]
 async fn extraction_failed_overlay_is_durable_too() {
     let s = setup().await;
-    let token = s.process.mint_token(TENANT, Role::Agent);
+    let token = s.process.mint_token(TENANT, Role::Admin);
 
     // `text/plain` routes to the memo skill, but PlainTextExtractor's
     // `extract` requires valid UTF-8 (`document.rs`) — invalid bytes

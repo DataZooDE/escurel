@@ -112,7 +112,9 @@ impl Indexer {
         for (slug, fm) in &skills {
             let names: Vec<String> = parse_fields(fm)
                 .into_iter()
-                .filter(|f| f.kind == FieldKind::Link && f.target_skill.as_deref() == Some(t_skill))
+                .filter(|f| {
+                    f.kind == FieldKind::Link && f.target_skills.iter().any(|t| t == t_skill)
+                })
                 .map(|f| f.name)
                 .collect();
             if !names.is_empty() {

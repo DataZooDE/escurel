@@ -129,6 +129,10 @@ pub struct ConfigOverrides {
     /// fallback + SPA index routing; `None` (default) keeps the
     /// bare-API behaviour (unknown path → 404).
     pub demo_dir: Option<std::path::PathBuf>,
+    /// Request-body limit of `POST /mcp` in bytes; `None` keeps the 16 MiB default.
+    pub mcp_max_body_bytes: Option<usize>,
+    /// Request-body limit of `POST /ingest/upload` in bytes; `None` keeps the 16 MiB default.
+    pub ingest_max_body_bytes: Option<usize>,
     /// Outbound capture webhook URL. `Some` exercises the
     /// fire-and-forget POST `capture_event` fires on a new inbox item;
     /// `None` (default) disables it.
@@ -512,6 +516,12 @@ impl EscurelProcess {
             embedder_reload: overrides.embedder_reload.clone(),
             embedder_factory: overrides.embedder_factory.clone(),
             demo_dir: overrides.demo_dir.clone(),
+            mcp_max_body_bytes: overrides
+                .mcp_max_body_bytes
+                .unwrap_or(escurel_server::DEFAULT_MAX_BODY_BYTES),
+            ingest_max_body_bytes: overrides
+                .ingest_max_body_bytes
+                .unwrap_or(escurel_server::DEFAULT_MAX_BODY_BYTES),
             webhook_url: overrides.webhook_url.clone(),
             webhook_secret: overrides.webhook_secret.clone(),
             pack_secret: overrides.pack_secret.clone(),

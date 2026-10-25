@@ -115,7 +115,7 @@ async fn post_ingest_titled(
 #[tokio::test]
 async fn ingest_idempotency_key_identifies_one_upload() {
     let s = setup().await;
-    let token = s.process.mint_token(TENANT, Role::Agent);
+    let token = s.process.mint_token(TENANT, Role::Admin);
     let first = s
         .store
         .put_inbox_blob(TENANT, Bytes::from_static(b"First document body"), None)
@@ -156,7 +156,7 @@ async fn ingest_title_names_the_materialised_instance() {
     // `# <title>` heading AND as a projected `title` frontmatter field, since
     // frontmatter is what `list_instances` and `search` surface to a person.
     let s = setup().await;
-    let token = s.process.mint_token(TENANT, Role::Agent);
+    let token = s.process.mint_token(TENANT, Role::Admin);
     let body = "Quarterly logistics notes for the northern corridor.";
     let blob = s
         .store
@@ -236,7 +236,7 @@ async fn ingest_without_title_still_names_the_instance_from_the_digest() {
     // property. No title → the heading stays `doc-<hex12>` and no `title`
     // frontmatter key appears.
     let s = setup().await;
-    let token = s.process.mint_token(TENANT, Role::Agent);
+    let token = s.process.mint_token(TENANT, Role::Admin);
     let body = "An untitled memo body, ingested exactly as it was before.";
     let blob = s
         .store
@@ -274,7 +274,7 @@ async fn ingest_without_title_still_names_the_instance_from_the_digest() {
 #[tokio::test]
 async fn ingest_text_end_to_end_materialises_searchable_instance() {
     let s = setup().await;
-    let token = s.process.mint_token(TENANT, Role::Agent);
+    let token = s.process.mint_token(TENANT, Role::Admin);
     let body = "The zephyr proposal covers Q3 logistics across three regions in detail.";
     let blob = s
         .store
@@ -328,7 +328,7 @@ async fn fetch_blob_returns_original_bytes_for_a_document_instance() {
     // The retained original file is fetchable byte-for-byte via fetch_blob
     // (for a faithful client-side preview), with a sniffed content type.
     let s = setup().await;
-    let token = s.process.mint_token(TENANT, Role::Agent);
+    let token = s.process.mint_token(TENANT, Role::Admin);
     let body = "The original bytes of the source document, verbatim.";
     let blob = s
         .store
@@ -359,7 +359,7 @@ async fn fetch_blob_returns_original_bytes_for_a_document_instance() {
 #[tokio::test]
 async fn fetch_blob_is_null_for_missing_or_non_document_page() {
     let s = setup().await;
-    let token = s.process.mint_token(TENANT, Role::Agent);
+    let token = s.process.mint_token(TENANT, Role::Admin);
     // A skill page (catalogue, not a document instance) → null blob.
     let r = call(
         &s.process,
@@ -385,7 +385,7 @@ async fn fetch_blob_is_null_for_missing_or_non_document_page() {
 #[tokio::test]
 async fn extraction_failure_retains_blob_and_marks_instance() {
     let s = setup().await;
-    let token = s.process.mint_token(TENANT, Role::Agent);
+    let token = s.process.mint_token(TENANT, Role::Admin);
     // Invalid UTF-8 → PlainTextExtractor fails; the blob must be retained.
     let blob = s
         .store
@@ -423,7 +423,7 @@ async fn extraction_failure_retains_blob_and_marks_instance() {
 #[tokio::test]
 async fn expand_returns_bounded_chunk_lead_not_full_text() {
     let s = setup().await;
-    let token = s.process.mint_token(TENANT, Role::Agent);
+    let token = s.process.mint_token(TENANT, Role::Admin);
     // A long body → many small chunks (skill chunk.max_chars = 40).
     let body = "lorem ipsum dolor sit amet ".repeat(30);
     let blob = s
@@ -453,7 +453,7 @@ async fn update_page_on_document_instance_rejected() {
     // Documents are pipeline-managed; update_page must not clobber their
     // chunks (backend_read_only).
     let s = setup().await;
-    let token = s.process.mint_token(TENANT, Role::Agent);
+    let token = s.process.mint_token(TENANT, Role::Admin);
     let blob = s
         .store
         .put_inbox_blob(TENANT, Bytes::from_static(b"some memo text"), None)
@@ -480,7 +480,7 @@ async fn update_page_on_document_instance_rejected() {
 async fn ingest_is_idempotent_on_content_hash() {
     // Same bytes → same BlobId → same instance id → re-ingest overwrites.
     let s = setup().await;
-    let token = s.process.mint_token(TENANT, Role::Agent);
+    let token = s.process.mint_token(TENANT, Role::Admin);
     let body = "idempotent body";
     let blob = s
         .store
@@ -529,7 +529,7 @@ async fn ingest_pdf_without_kreuzberg_feature_fails_gracefully() {
     // the "always-PlainText" bug broke.
     let s = setup().await;
     seed_report_skill(&s).await;
-    let token = s.process.mint_token(TENANT, Role::Agent);
+    let token = s.process.mint_token(TENANT, Role::Admin);
     let pdf = include_bytes!("../fixtures/report.pdf");
     let blob = s
         .store
@@ -585,7 +585,7 @@ async fn ingest_docx_end_to_end_materialises_searchable_instance() {
         .update_page("markdown/skills/worddoc.md", DOCX_SKILL)
         .await
         .unwrap();
-    let token = s.process.mint_token(TENANT, Role::Agent);
+    let token = s.process.mint_token(TENANT, Role::Admin);
     let docx = include_bytes!("../fixtures/memo.docx");
     let blob = s
         .store
@@ -639,7 +639,7 @@ async fn ingest_pptx_deck_end_to_end_materialises_searchable_instance() {
         .update_page("markdown/skills/deck.md", DECK_SKILL)
         .await
         .unwrap();
-    let token = s.process.mint_token(TENANT, Role::Agent);
+    let token = s.process.mint_token(TENANT, Role::Admin);
 
     // A real PowerPoint deck (generated by python-pptx) with distinctive text.
     let pptx = include_bytes!("../fixtures/deck.pptx");
@@ -725,7 +725,7 @@ async fn list_skills_reports_document_kind_and_capabilities() {
     // G4 uniform surface for the document backend (parallel to the sql_view
     // capability test): read-only, block-grain, hybrid search, overlay-CRDT.
     let s = setup().await;
-    let token = s.process.mint_token(TENANT, Role::Agent);
+    let token = s.process.mint_token(TENANT, Role::Admin);
     let r = call(&s.process, &token, "list_skills", json!({})).await;
     let skills = r["result"]["structuredContent"]["skills"]
         .as_array()
