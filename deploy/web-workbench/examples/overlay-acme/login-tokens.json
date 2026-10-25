@@ -1,0 +1,13 @@
+{
+  "productName": "Acme Workbench",
+  "welcomeText": "Sign in to Acme Workbench",
+  "colors": {
+    "button.background": "#1f6f5c",
+    "button.hoverBackground": "#185a4a",
+    "button.foreground": "#ffffff",
+    "textLink.foreground": "#1f6f5c",
+    "textLink.activeForeground": "#185a4a",
+    "focusBorder": "#1f6f5c",
+    "activityBar.foreground": "#1f6f5c"
+  }
+}

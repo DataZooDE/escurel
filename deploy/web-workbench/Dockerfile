@@ -53,6 +53,7 @@ COPY --from=logincheck /login-in-sync /tmp/login-in-sync
 # compose overrides or scratch files sit next to the Dockerfile: a wholesale `COPY deploy/web-workbench/` once
 # put the workbench password into the image (docs/notes/discovered/2026-10-10-web-workbench-image-carried-env.md).
 COPY deploy/web-workbench/entrypoint.sh deploy/web-workbench/render-settings.mjs deploy/web-workbench/settings.base.json \
+     deploy/web-workbench/overlay.mjs deploy/web-workbench/overlay-install.mjs \
      editors/vscode/demo/settings.common.json \
      deploy/web-workbench/keybindings.json deploy/web-workbench/code-server.yaml /opt/escurel/
 COPY deploy/web-workbench/login /opt/escurel/login
@@ -83,6 +84,16 @@ RUN set -eux; \
     install -m 0644 favicon.svg favicon-dark-support.svg favicon.ico pwa-icon-192.png pwa-icon-512.png \
                     pwa-icon-maskable-192.png pwa-icon-maskable-512.png "$SRC/media/"; \
     grep -q '{{ERROR}}' "$SRC/pages/login.html" && grep -q 'name="password"' "$SRC/pages/login.html"
+
+# The downstream overlay contract (OVERLAY.md). `escurel-overlay-install` is what a derived image runs after
+# `COPY overlay/ /opt/escurel/overlay/`. Run here without an overlay it is a no-op that asserts every code-server
+# file the overlay would touch (workbench.css, product.json, the login pages) exists, so an upgrade of the pinned
+# code-server that moves one fails this build.
+RUN printf '#!/bin/sh\nexec /usr/lib/code-server/lib/node /opt/escurel/overlay.mjs install "$@"\n' > /usr/local/bin/escurel-overlay-install \
+    && chmod 0755 /usr/local/bin/escurel-overlay-install \
+    && test ! -e /opt/escurel/overlay \
+    && escurel-overlay-install \
+    && chmod -R a+rX,go-w /opt/escurel
 
 # The data directory exists and belongs to `coder` BEFORE it becomes a volume, so a fresh named volume
 # inherits that ownership (a root-owned volume would stop the non-root process from starting).

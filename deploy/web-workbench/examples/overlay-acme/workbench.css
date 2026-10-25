@@ -1,0 +1,4 @@
+/* Appended to the workbench's own CSS. Hide the stock Search item in the activity bar. */
+.monaco-workbench .activitybar .action-item:has([aria-label^="Search"]) {
+  display: none;
+}

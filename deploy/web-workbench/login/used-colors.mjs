@@ -1,0 +1,25 @@
+// The theme colours the login/error pages use. Shared by gen-global-css.mjs and the overlay loader
+// (overlay.mjs), which validates login-tokens.json against it. No other imports: it runs inside the image.
+export const USED = [
+  'editor.background',
+  'editorWidget.background',
+  'sideBar.background',
+  'widget.border',
+  'foreground',
+  'descriptionForeground',
+  'input.background',
+  'input.border',
+  'input.foreground',
+  'focusBorder',
+  'button.background',
+  'button.foreground',
+  'button.border',
+  'button.hoverBackground',
+  'textLink.foreground',
+  'textLink.activeForeground',
+  'errorForeground',
+  'titleBar.activeBackground',
+  'titleBar.activeForeground',
+  'titleBar.border',
+  'activityBar.foreground',
+];

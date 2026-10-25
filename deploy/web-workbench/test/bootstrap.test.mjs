@@ -49,3 +49,85 @@ test('a later load only reveals the views: it does not re-force the layout', asy
   assert.ok(!calls.some((c) => c[1] === 'escurel.focusMode.enter'), 'focus mode forced again');
   assert.ok(!calls.some((c) => c[0] === 'cfg'), 'activity bar forced again');
 });
+
+// ---- the overlay's bootstrap.d scripts (OVERLAY.md) -------------------------------------------------------
+import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+
+function withOverlay(files, fn) {
+  const dir = mkdtempSync(path.join(tmpdir(), 'bs-'));
+  for (const [n, b] of Object.entries(files)) {
+    mkdirSync(path.join(dir, n, '..'), { recursive: true });
+    writeFileSync(path.join(dir, n), b);
+  }
+  const old = process.env.WORKBENCH_OVERLAY_DIR;
+  process.env.WORKBENCH_OVERLAY_DIR = dir;
+  const restore = () => (old === undefined ? delete process.env.WORKBENCH_OVERLAY_DIR : (process.env.WORKBENCH_OVERLAY_DIR = old));
+  return fn().finally(restore);
+}
+const script = (body) => `exports.activate = async ({ vscode, context, firstRun }) => { ${body} };`;
+
+test('overlay scripts run in file-name order on every load, after the base steps, with firstRun set accordingly', () =>
+  withOverlay({
+    'bootstrap.d/20-b.js': script("await vscode.commands.executeCommand('b', firstRun);"),
+    'bootstrap.d/10-a.js': script("await vscode.commands.executeCommand('a', firstRun);"),
+  }, async () => {
+    const globalState = memento();
+    const first = [];
+    await load(first).activate({ globalState });
+    const ids = first.filter((c) => c[1] === 'a' || c[1] === 'b');
+    assert.deepEqual(ids.map((c) => c[1]), ['a', 'b']);
+    assert.equal(ids[0][2], true);
+    assert.ok(first.findIndex((c) => c[1] === 'a') > first.findIndex((c) => c[1] === 'escurel.focusMode.enter'));
+    const later = [];
+    await load(later).activate({ globalState });
+    assert.deepEqual(later.filter((c) => c[1] === 'a')[0].slice(1), ['a', false]);
+  }));
+
+test('a script that throws is skipped; the others still run and the layout is still recorded', () =>
+  withOverlay({
+    'bootstrap.d/10-bad.js': script("throw new Error('boom');"),
+    'bootstrap.d/20-ok.js': script("await vscode.commands.executeCommand('ok');"),
+  }, async () => {
+    const calls = [];
+    const globalState = memento();
+    await load(calls).activate({ globalState });
+    assert.ok(calls.some((c) => c[1] === 'ok'));
+    assert.equal(globalState.get('escurel.web.bootstrapped'), true);
+  }));
+
+test('a script that never returns is abandoned after the timeout', () =>
+  withOverlay({
+    'bootstrap.d/10-hang.js': script('await new Promise(() => {});'),
+    'bootstrap.d/20-ok.js': script("await vscode.commands.executeCommand('ok');"),
+  }, async () => {
+    const calls = [];
+    process.env.WORKBENCH_OVERLAY_SCRIPT_TIMEOUT_MS = '50';
+    try {
+      await load(calls).activate({ globalState: memento() });
+    } finally {
+      delete process.env.WORKBENCH_OVERLAY_SCRIPT_TIMEOUT_MS;
+    }
+    assert.ok(calls.some((c) => c[1] === 'ok'));
+  }));
+
+test('a script may suppress the Overview board with overview:false', () =>
+  withOverlay({ 'bootstrap.d/10-x.js': "exports.overview = false; exports.activate = async () => {};" }, async () => {
+    const calls = [];
+    await load(calls).activate({ globalState: memento() });
+    const enter = calls.find((c) => c[1] === 'escurel.focusMode.enter');
+    assert.equal(enter[2].overview, false);
+  }));
+
+test('without an overlay the Overview board is opened, as before', async () => {
+  const calls = [];
+  await load(calls).activate({ globalState: memento() });
+  assert.equal(calls.find((c) => c[1] === 'escurel.focusMode.enter')[2].overview, true);
+});
+
+test('overlay settings.json decides the activity bar location; without it the bar is hidden', () =>
+  withOverlay({ 'settings.json': '{"workbench.activityBar.location":"default"}' }, async () => {
+    const calls = [];
+    await load(calls).activate({ globalState: memento() });
+    assert.ok(calls.some((c) => c[0] === 'cfg' && c[1] === 'workbench.activityBar.location' && c[2] === 'default'));
+  }));

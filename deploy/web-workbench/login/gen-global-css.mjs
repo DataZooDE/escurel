@@ -10,34 +10,12 @@
 import { readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { USED } from './used-colors.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const ext = join(here, '..', '..', '..', 'editors', 'vscode');
 
-// The theme colours the login/error pages use (VS Code colour ids).
-export const USED = [
-  'editor.background',
-  'editorWidget.background',
-  'sideBar.background',
-  'widget.border',
-  'foreground',
-  'descriptionForeground',
-  'input.background',
-  'input.border',
-  'input.foreground',
-  'focusBorder',
-  'button.background',
-  'button.foreground',
-  'button.border',
-  'button.hoverBackground',
-  'textLink.foreground',
-  'textLink.activeForeground',
-  'errorForeground',
-  'titleBar.activeBackground',
-  'titleBar.activeForeground',
-  'titleBar.border',
-  'activityBar.foreground',
-];
+export { USED };
 const cssName = (id) => `--vscode-${id.replaceAll('.', '-')}`;
 
 const theme = JSON.parse(readFileSync(join(ext, 'themes', 'escurel-calm-color-theme.json'), 'utf8')).colors;

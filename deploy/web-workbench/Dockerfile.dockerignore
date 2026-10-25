@@ -16,6 +16,9 @@ deploy/web-workbench/.env*
 deploy/web-workbench/compose*
 deploy/web-workbench/*.local
 deploy/web-workbench/probe
+deploy/web-workbench/examples
+deploy/web-workbench/test
+deploy/web-workbench/*.md
 deploy/web-workbench/s2d-*.sh
 **/.env
 **/.env.*
