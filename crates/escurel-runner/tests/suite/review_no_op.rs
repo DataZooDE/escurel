@@ -81,11 +81,11 @@ async fn spawn_idle_model(page_id: String, calls: Arc<Mutex<usize>>) -> String {
 
     async fn generate(State(st): State<St>, _body: String) -> axum::Json<Value> {
         *st.calls.lock().expect("lock") += 1;
-        axum::Json(json!({ "candidates": [{ "content": { "parts": [
+        super::gemini_response(json!([
             { "text": format!(
                 "Event already covered by existing note; no page modification \
                  needed. {}", st.page_id) },
-        ] } }] }))
+        ]))
     }
 
     let app = Router::new()

@@ -66,6 +66,9 @@ pub struct HarnessOutcome {
 pub struct Usage {
     pub input_tokens: u64,
     pub output_tokens: u64,
+    /// Provider-reported total, including token classes outside input/output.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub billed_tokens: Option<u64>,
     #[serde(default)]
     pub cost_usd: Option<f64>,
     #[serde(default)]
@@ -78,6 +81,10 @@ impl Usage {
     pub fn accumulate(&mut self, other: &Usage) {
         self.input_tokens += other.input_tokens;
         self.output_tokens += other.output_tokens;
+        self.billed_tokens = match (self.billed_tokens, other.billed_tokens) {
+            (None, None) => None,
+            (a, b) => Some(a.unwrap_or(0).saturating_add(b.unwrap_or(0))),
+        };
         self.cost_usd = match (self.cost_usd, other.cost_usd) {
             (None, None) => None,
             (a, b) => Some(a.unwrap_or(0.0) + b.unwrap_or(0.0)),
@@ -143,6 +150,14 @@ pub enum HarnessError {
         harness: &'static str,
         /// What failed, carrying the upstream's own message where there is
         /// one — a bare status code has cost real debugging time here.
+        message: String,
+    },
+    /// A gateway preflight failed before a model request was sent.
+    #[error("harness {harness:?} preflight error: {message}")]
+    Preflight {
+        /// The adapter name.
+        harness: &'static str,
+        /// The preflight failure.
         message: String,
     },
     /// The harness stdout was not the expected JSON outcome.

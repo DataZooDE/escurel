@@ -432,6 +432,14 @@ pub struct RunnerConfig {
     /// that speaks the wire shape.
     /// Source: `ESCUREL_RUNNER_GEMINI_BASE_URL` (unset → `None`).
     pub gemini_base_url: Option<String>,
+    /// GCP project used by the Vertex Gemini route.
+    pub gemini_vertex_project: Option<String>,
+    /// Vertex model location.
+    pub gemini_vertex_location: Option<String>,
+    /// Local integration test override for the metadata endpoint.
+    pub gemini_metadata_url: Option<String>,
+    /// Cumulative provider reported token cap for a Gemini run.
+    pub gemini_max_total_tokens: Option<u64>,
     /// The agent's A2A endpoint the `delegate` harness POSTs `message/send` /
     /// `tasks/get` to (async-ops Phase 4 slice 3c). escurel is the orchestrator;
     /// a `harness: delegate` step hands the domain work to the agent here.
@@ -453,9 +461,8 @@ pub struct RunnerConfig {
     /// Wall-clock bound on one run attempt.
     ///
     /// Source: `ESCUREL_RUNNER_RUN_TIMEOUT` (default
-    /// [`DEFAULT_RUN_TIMEOUT`]). On expiry the attempt is a TRANSIENT
-    /// failure: the retry policy already knows what to do with one, and a
-    /// stalled attempt is exactly the case a retry exists for.
+    /// [`DEFAULT_RUN_TIMEOUT`]). On expiry subprocess attempts are transient.
+    /// Gemini attempts stop permanently because model usage may be unknown.
     pub run_timeout: Duration,
     /// Base backoff before the first reconciler retry; grows per attempt.
     /// Source: `ESCUREL_RUNNER_RETRY_BACKOFF` (default
@@ -699,6 +706,24 @@ impl RunnerConfig {
         let gemini_api_key = lookup("ESCUREL_GEMINI_API_KEY").filter(|s| !s.is_empty());
         let gemini_model = lookup("ESCUREL_RUNNER_GEMINI_MODEL").filter(|s| !s.is_empty());
         let gemini_base_url = lookup("ESCUREL_RUNNER_GEMINI_BASE_URL").filter(|s| !s.is_empty());
+        let gemini_vertex_project = lookup("GOOGLE_CLOUD_PROJECT").filter(|s| !s.is_empty());
+        let gemini_vertex_location = lookup("ESCUREL_RUNNER_GEMINI_VERTEX_LOCATION")
+            .filter(|s| !s.is_empty())
+            .or_else(|| Some("eu".to_owned()));
+        let gemini_metadata_url =
+            lookup("ESCUREL_RUNNER_GEMINI_METADATA_URL").filter(|s| !s.is_empty());
+        let gemini_max_total_tokens = match lookup("ESCUREL_RUNNER_GEMINI_MAX_TOTAL_TOKENS") {
+            Some(raw) => match raw.parse::<u64>() {
+                Ok(n) if n > 0 => Some(n),
+                _ => {
+                    return Err(ConfigError::InvalidQuotaU64 {
+                        key: "ESCUREL_RUNNER_GEMINI_MAX_TOTAL_TOKENS".to_owned(),
+                        value: raw,
+                    });
+                }
+            },
+            None => None,
+        };
         let agent_a2a_url = lookup("ESCUREL_RUNNER_AGENT_A2A_URL").filter(|s| !s.is_empty());
         let agent_a2a_audience =
             lookup("ESCUREL_RUNNER_AGENT_A2A_AUDIENCE").filter(|s| !s.is_empty());
@@ -821,6 +846,10 @@ impl RunnerConfig {
             gemini_api_key,
             gemini_model,
             gemini_base_url,
+            gemini_vertex_project,
+            gemini_vertex_location,
+            gemini_metadata_url,
+            gemini_max_total_tokens,
             agent_a2a_url,
             agent_a2a_audience,
             agy_bin,
@@ -1051,6 +1080,20 @@ mod tests {
             bad_backoff,
             ConfigError::InvalidRetryBackoff { .. }
         ));
+    }
+
+    #[test]
+    fn gemini_token_budget_loads_and_rejects_zero() {
+        let configured = RunnerConfig::from_env_with(|key| {
+            (key == "ESCUREL_RUNNER_GEMINI_MAX_TOTAL_TOKENS").then(|| "120000".to_owned())
+        })
+        .expect("positive token budget");
+        assert_eq!(configured.gemini_max_total_tokens, Some(120_000));
+        let invalid = RunnerConfig::from_env_with(|key| {
+            (key == "ESCUREL_RUNNER_GEMINI_MAX_TOTAL_TOKENS").then(|| "0".to_owned())
+        })
+        .expect_err("zero token budget must fail startup");
+        assert!(matches!(invalid, ConfigError::InvalidQuotaU64 { .. }));
     }
 
     #[test]

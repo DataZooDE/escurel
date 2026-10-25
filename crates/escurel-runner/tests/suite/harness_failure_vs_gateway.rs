@@ -118,7 +118,7 @@ async fn spawn_stub_model(page_id: String, draft: bool) -> String {
                             subject: Re: this colon makes it invalid\n---\nBody.\n",
             } } }])
         };
-        axum::Json(json!({ "candidates": [{ "content": { "parts": parts } }] }))
+        super::gemini_response(parts)
     }
 
     let app = Router::new()

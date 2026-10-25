@@ -275,6 +275,7 @@ fn parse_usage(envelope: &serde_json::Value) -> Option<Usage> {
             + count("cache_read_input_tokens")
             + count("cache_creation_input_tokens"),
         output_tokens: count("output_tokens"),
+        billed_tokens: None,
         cost_usd: envelope
             .get("total_cost_usd")
             .and_then(serde_json::Value::as_f64),

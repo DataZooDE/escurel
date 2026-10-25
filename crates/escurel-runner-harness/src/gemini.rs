@@ -4,8 +4,7 @@
 //! works on a laptop, where `claude` or `codex` is already logged in, and it
 //! does not work where the runner is actually deployed: a container has no
 //! interactive auth, no node runtime, and nothing to log in with. The
-//! harness a cluster can run is one that needs a single API key and speaks
-//! HTTP.
+//! harness a cluster can run speaks HTTP using an API key or a workload identity.
 //!
 //! So [`GeminiHarness`] runs the loop itself:
 //!
@@ -53,6 +52,8 @@ pub const DEFAULT_BASE_URL: &str = "https://generativelanguage.googleapis.com/v1
 
 /// Default model. Overridable (`ESCUREL_RUNNER_GEMINI_MODEL`).
 pub const DEFAULT_MODEL: &str = "gemini-2.5-flash";
+/// Model qualified for the regional Vertex route.
+pub const VERTEX_MODEL: &str = "gemini-3.5-flash";
 
 /// Default per-run wall clock, covering every model turn and tool call.
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(300);
@@ -64,6 +65,9 @@ const DEFAULT_TIMEOUT: Duration = Duration::from_secs(300);
 /// function of the model's mood. Reaching it is a `Failed` outcome the
 /// reconciler can retry — never a silent truncation reported as success.
 const DEFAULT_MAX_TURNS: u32 = 12;
+/// Cap reported token consumption across model turns in one invocation.
+const DEFAULT_MAX_TOTAL_TOKENS: u64 = 250_000;
+const MAX_OUTPUT_TOKENS_PER_TURN: u64 = 8_192;
 
 /// The JSON-Schema keys Gemini's `functionDeclarations` accepts.
 ///
@@ -83,13 +87,39 @@ const SCHEMA_KEYS: [&str; 7] = [
 ];
 
 /// Adapter that drives Gemini over HTTP, in process.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct GeminiHarness {
-    api_key: String,
+    auth: GeminiAuth,
     model: String,
     base_url: String,
     timeout: Duration,
     max_turns: u32,
+    max_total_tokens: u64,
+}
+
+#[derive(Clone)]
+enum GeminiAuth {
+    ApiKey(String),
+    Metadata { url: String },
+}
+
+impl std::fmt::Debug for GeminiHarness {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("GeminiHarness")
+            .field(
+                "auth",
+                &match self.auth {
+                    GeminiAuth::ApiKey(_) => "api-key",
+                    GeminiAuth::Metadata { .. } => "workload-metadata",
+                },
+            )
+            .field("model", &self.model)
+            .field("base_url", &self.base_url)
+            .field("timeout", &self.timeout)
+            .field("max_turns", &self.max_turns)
+            .field("max_total_tokens", &self.max_total_tokens)
+            .finish()
+    }
 }
 
 impl GeminiHarness {
@@ -97,12 +127,78 @@ impl GeminiHarness {
     #[must_use]
     pub fn new(api_key: impl Into<String>) -> Self {
         Self {
-            api_key: api_key.into(),
+            auth: GeminiAuth::ApiKey(api_key.into()),
             model: DEFAULT_MODEL.to_owned(),
             base_url: DEFAULT_BASE_URL.to_owned(),
             timeout: DEFAULT_TIMEOUT,
             max_turns: DEFAULT_MAX_TURNS,
+            max_total_tokens: DEFAULT_MAX_TOTAL_TOKENS,
         }
+    }
+
+    /// Use the regional Vertex endpoint with the attached workload identity.
+    pub fn vertex(project: &str, location: &str) -> Result<Self, HarnessError> {
+        if project.is_empty()
+            || !project
+                .bytes()
+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+            || location != "eu"
+        {
+            return Err(Self::upstream(
+                "Vertex requires a valid project and EU location",
+            ));
+        }
+        Ok(Self {
+            auth: GeminiAuth::Metadata {
+                url: "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token".to_owned(),
+            },
+            model: VERTEX_MODEL.to_owned(),
+            base_url: format!("https://aiplatform.eu.rep.googleapis.com/v1/projects/{project}/locations/{location}/publishers/google"),
+            timeout: DEFAULT_TIMEOUT,
+            max_turns: DEFAULT_MAX_TURNS,
+            max_total_tokens: DEFAULT_MAX_TOTAL_TOKENS,
+        })
+    }
+
+    /// Replace the metadata endpoint for local integration tests.
+    #[must_use]
+    pub fn with_metadata_url(mut self, url: String) -> Self {
+        if let GeminiAuth::Metadata { url: target } = &mut self.auth {
+            *target = url;
+        }
+        self
+    }
+
+    fn model_url(&self) -> String {
+        format!("{}/models/{}:generateContent", self.base_url, self.model)
+    }
+
+    async fn metadata_token(client: &reqwest::Client, url: &str) -> Result<String, HarnessError> {
+        let response = client
+            .get(url)
+            .header("Metadata-Flavor", "Google")
+            .timeout(Duration::from_secs(5))
+            .send()
+            .await
+            .map_err(|e| Self::upstream(format!("workload token request failed: {e}")))?;
+        if !response.status().is_success() {
+            return Err(Self::upstream(format!(
+                "workload token HTTP {}",
+                response.status()
+            )));
+        }
+        let body: Value = response
+            .json()
+            .await
+            .map_err(|e| Self::upstream(format!("workload token was not JSON: {e}")))?;
+        if body["token_type"] != "Bearer" {
+            return Err(Self::upstream("workload token was not a Bearer token"));
+        }
+        body["access_token"]
+            .as_str()
+            .filter(|s| !s.is_empty())
+            .map(str::to_owned)
+            .ok_or_else(|| Self::upstream("workload token response had no access token"))
     }
 
     /// Set the model (`ESCUREL_RUNNER_GEMINI_MODEL`). An empty value keeps
@@ -141,6 +237,15 @@ impl GeminiHarness {
         self
     }
 
+    /// Set the maximum reported tokens consumed in one invocation.
+    #[must_use]
+    pub fn with_max_total_tokens(mut self, tokens: u64) -> Self {
+        if tokens > 0 {
+            self.max_total_tokens = tokens;
+        }
+        self
+    }
+
     fn upstream(message: impl Into<String>) -> HarnessError {
         HarnessError::Upstream {
             harness: NAME,
@@ -175,10 +280,20 @@ impl GeminiHarness {
     /// itself, so `cost_usd` stays `None`; the model is the configured one.
     fn turn_usage(body: &Value, model: &str) -> Option<Usage> {
         let meta = body.get("usageMetadata")?.as_object()?;
-        let count = |k: &str| meta.get(k).and_then(Value::as_u64).unwrap_or(0);
+        let input_tokens = meta.get("promptTokenCount").and_then(Value::as_u64)?;
+        let output_tokens = meta
+            .get("candidatesTokenCount")
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
         Some(Usage {
-            input_tokens: count("promptTokenCount"),
-            output_tokens: count("candidatesTokenCount"),
+            input_tokens,
+            output_tokens,
+            billed_tokens: Some(
+                meta.get("totalTokenCount")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0)
+                    .max(input_tokens.saturating_add(output_tokens)),
+            ),
             cost_usd: None,
             model: Some(model.to_owned()),
         })
@@ -218,10 +333,19 @@ impl GeminiHarness {
         client: &reqwest::Client,
         task: &TaskContext,
     ) -> Result<Vec<Value>, HarnessError> {
-        let listed = Self::mcp(client, task, "tools/list", json!({})).await?;
-        let tools = listed["result"]["tools"]
-            .as_array()
-            .ok_or_else(|| Self::upstream(format!("tools/list returned no tools: {listed}")))?;
+        let listed = Self::mcp(client, task, "tools/list", json!({}))
+            .await
+            .map_err(|e| HarnessError::Preflight {
+                harness: NAME,
+                message: e.to_string(),
+            })?;
+        let tools =
+            listed["result"]["tools"]
+                .as_array()
+                .ok_or_else(|| HarnessError::Preflight {
+                    harness: NAME,
+                    message: format!("tools/list returned no tools: {listed}"),
+                })?;
         let decls: Vec<Value> = tools
             .iter()
             .filter(|t| {
@@ -252,14 +376,17 @@ impl GeminiHarness {
 
     /// The whole run, minus the timeout wrapper.
     async fn converse(&self, task: &TaskContext) -> Result<HarnessOutcome, HarnessError> {
-        let client = reqwest::Client::new();
+        let client = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .map_err(|e| Self::upstream(format!("HTTP client: {e}")))?;
         let decls = Self::function_declarations(&client, task).await?;
 
         let mut contents = vec![json!({
             "role": "user",
             "parts": [{ "text": task.input }],
         })];
-        let url = format!("{}/models/{}:generateContent", self.base_url, self.model);
+        let url = self.model_url();
 
         let mut tool_calls: u32 = 0;
         let mut produced_instance: Option<String> = None;
@@ -267,8 +394,25 @@ impl GeminiHarness {
         // Every turn is one `generateContent` call with its own
         // `usageMetadata`; the run's usage is their sum.
         let mut usage: Option<Usage> = None;
+        // This invocation reports only its own usage. The cap also includes
+        // provider-reported tokens from earlier attempts of the same run.
+        let mut billed_tokens = task.prior_model_tokens;
 
         for _turn in 0..self.max_turns {
+            if billed_tokens >= self.max_total_tokens {
+                return Ok(HarnessOutcome {
+                    result_ref: None,
+                    usage,
+                    ok: false,
+                    status: HarnessStatus::Failed,
+                    summary: format!(
+                        "Gemini run token budget exhausted: {billed_tokens} >= {}",
+                        self.max_total_tokens
+                    ),
+                    tool_calls,
+                    produced_instance,
+                });
+            }
             // In-process, so no child to signal: the cancel lands between
             // turns (a turn in flight finishes its HTTP call first).
             if task.cancel.as_ref().is_some_and(|c| c.is_cancelled()) {
@@ -278,10 +422,16 @@ impl GeminiHarness {
                 "systemInstruction": { "parts": [{ "text": task.instructions }] },
                 "contents": contents,
                 "tools": [{ "functionDeclarations": decls }],
+                "generationConfig": { "maxOutputTokens":
+                    MAX_OUTPUT_TOKENS_PER_TURN.min(self.max_total_tokens - billed_tokens) },
             });
-            let resp = client
-                .post(&url)
-                .header("x-goog-api-key", &self.api_key)
+            let model_call = match &self.auth {
+                GeminiAuth::ApiKey(key) => client.post(&url).header("x-goog-api-key", key),
+                GeminiAuth::Metadata { url: metadata_url } => client
+                    .post(&url)
+                    .bearer_auth(Self::metadata_token(&client, metadata_url).await?),
+            };
+            let resp = model_call
                 .json(&request)
                 .send()
                 .await
@@ -300,13 +450,40 @@ impl GeminiHarness {
                 )));
             }
 
-            if let Some(turn) = Self::turn_usage(&body, &self.model) {
-                usage.get_or_insert_with(Usage::default).accumulate(&turn);
-            }
             let parts = body["candidates"][0]["content"]["parts"]
                 .as_array()
                 .cloned()
                 .unwrap_or_default();
+            if let Some(turn) = Self::turn_usage(&body, &self.model) {
+                billed_tokens = billed_tokens.saturating_add(turn.billed_tokens.unwrap_or(0));
+                usage.get_or_insert_with(Usage::default).accumulate(&turn);
+                if billed_tokens > self.max_total_tokens {
+                    return Ok(HarnessOutcome {
+                        result_ref: None,
+                        usage,
+                        ok: false,
+                        status: HarnessStatus::Failed,
+                        summary: format!(
+                            "Gemini run token budget exceeded: {billed_tokens} > {}",
+                            self.max_total_tokens
+                        ),
+                        tool_calls,
+                        produced_instance,
+                    });
+                }
+            } else {
+                return Ok(HarnessOutcome {
+                    result_ref: None,
+                    usage,
+                    ok: false,
+                    status: HarnessStatus::Failed,
+                    summary:
+                        "Gemini response has no usage metadata; token budget cannot be checked"
+                            .into(),
+                    tool_calls,
+                    produced_instance,
+                });
+            }
             if parts.is_empty() {
                 // A MALFORMED function call is the model's mistake to
                 // correct, not the run's to fail. Seen live the moment the
@@ -450,7 +627,10 @@ impl GeminiHarness {
 #[async_trait]
 impl Harness for GeminiHarness {
     fn name(&self) -> &str {
-        NAME
+        match self.auth {
+            GeminiAuth::ApiKey(_) => NAME,
+            GeminiAuth::Metadata { .. } => "gemini-vertex",
+        }
     }
 
     async fn run(&self, task: &TaskContext) -> Result<HarnessOutcome, HarnessError> {
@@ -502,6 +682,7 @@ mod tests {
         let usage = GeminiHarness::turn_usage(&body, "gemini-2.5-flash").expect("usage");
         assert_eq!(usage.input_tokens, 640);
         assert_eq!(usage.output_tokens, 57);
+        assert_eq!(usage.billed_tokens, Some(697));
         assert_eq!(usage.cost_usd, None);
         assert_eq!(usage.model.as_deref(), Some("gemini-2.5-flash"));
         assert_eq!(
@@ -512,6 +693,18 @@ mod tests {
 
     /// A schema that is not an object at all must still produce something
     /// declarable — one odd tool must not fail the whole request.
+    #[test]
+    fn vertex_uses_a_regional_project_endpoint_and_metadata_auth() {
+        let harness = GeminiHarness::vertex("example-project", "eu").unwrap();
+        assert_eq!(
+            harness.model_url(),
+            "https://aiplatform.eu.rep.googleapis.com/v1/projects/example-project/locations/eu/publishers/google/models/gemini-3.5-flash:generateContent"
+        );
+        assert!(matches!(harness.auth, GeminiAuth::Metadata { .. }));
+        assert!(GeminiHarness::vertex("example-project", "global").is_err());
+        assert!(GeminiHarness::vertex("example-project", "europe-west2").is_err());
+    }
+
     #[test]
     fn a_non_object_schema_degrades_instead_of_failing() {
         assert_eq!(

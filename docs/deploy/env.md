@@ -201,6 +201,9 @@ tenant/token can process `/trigger` but deliberately report unready at
 | `ESCUREL_RUNNER_MAX_TURNS` | the harness default | model-turn bound for the harness |
 | `ESCUREL_RUNNER_GEMINI_MODEL` | — | model id of the Gemini adapter |
 | `ESCUREL_RUNNER_GEMINI_BASE_URL` | — | Generative Language API base for the Gemini adapter (tests point it at a local server) |
+| `ESCUREL_RUNNER_GEMINI_VERTEX_LOCATION` | eu | Vertex AI location used when the Gemini adapter authenticates with workload identity |
+| `ESCUREL_RUNNER_GEMINI_METADATA_URL` | — | metadata server base for Vertex workload credentials (tests point it at a local server) |
+| `ESCUREL_RUNNER_GEMINI_MAX_TOTAL_TOKENS` | unbounded | provider-reported token cap for one Gemini invocation; a response without usage metadata fails the run |
 | `ESCUREL_RUNNER_AGENT_A2A_URL` | — | the agent's A2A endpoint the `delegate` harness posts to; unset disables delegation |
 | `ESCUREL_RUNNER_AGENT_A2A_AUDIENCE` | — | `aud` of the runner→agent delegation token (the agent's audience, never escurel's) |
 | `ESCUREL_RUNNER_MAX_ATTEMPTS` | 3 | reconciler attempts per run before it is recorded `failed` |

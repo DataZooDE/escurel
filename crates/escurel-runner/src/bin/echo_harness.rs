@@ -841,6 +841,7 @@ fn knob_usage() -> Option<Usage> {
     Some(Usage {
         input_tokens,
         output_tokens,
+        billed_tokens: None,
         cost_usd,
         model: Some("echo".to_owned()),
     })

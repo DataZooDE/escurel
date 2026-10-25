@@ -65,3 +65,15 @@ mod tail_cursor_durability;
 mod trigger;
 mod usage_on_run_finished;
 mod workflow_end_to_end;
+
+/// A successful local Gemini turn has provider usage, as the real adapter requires.
+fn gemini_response(parts: serde_json::Value) -> axum::Json<serde_json::Value> {
+    axum::Json(serde_json::json!({
+        "candidates": [{ "content": { "parts": parts } }],
+        "usageMetadata": {
+            "promptTokenCount": 12,
+            "candidatesTokenCount": 3,
+            "totalTokenCount": 15,
+        },
+    }))
+}
