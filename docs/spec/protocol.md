@@ -584,6 +584,18 @@ decision is a pure comparison on the request path — never an LLM, agent,
 or classifier. Owner-visibility is reported back on `list_skills` as
 `"visibility"` + `"owner_field"`.
 
+Two optional skill declarations refine this:
+
+- `instance_acl: false` makes the skill's own `acl:` authoritative; an `acl:`
+  block stored on an instance of the skill is ignored for read and write.
+- `chat: {page_bound: true}` lets a chat group named
+  `page-chat:v1:<owner_sha256>:<page_id>` be bound to a page of the skill.
+  The caller must be admin or hold the SHA-256 (hex) of their own subject as
+  `<owner_sha256>`, the page must exist, and the caller must be allowed to
+  read it under the skill's ACL. Every other shape of such a group id is
+  refused. A write bound to a page revision that finds the page changed
+  returns the domain error code `revision_changed`.
+
 ###### Group ACL (`acl:` block, group ACL v1)
 
 A skill MAY instead declare a **per-CRUD group ACL** — a superset of

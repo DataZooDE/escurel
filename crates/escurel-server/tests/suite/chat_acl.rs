@@ -7,6 +7,7 @@
 use escurel_server::WriteAclMode;
 use escurel_test_support::{AuthMode, ConfigOverrides, EscurelProcess, FixtureBuilder, Opts, Role};
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 
 const TENANT: &str = "stuttgart-ai";
 const ALICE: &str = "whatsapp:111";
@@ -172,4 +173,103 @@ async fn unknown_chat_group_is_ungated() {
         a.get("error").is_none(),
         "unknown chat group is ungated: {a}"
     );
+}
+
+const NOTE_PAGE: &str = "markdown/instances/note/n-001.md";
+const NOTE_SKILL: &str = "---\nkind: skill\nid: note\ndescription: Note.\nvisibility: owner\n\
+    owner_field: owner\nchat:\n  page_bound: true\n---\n# Note\n";
+const NOTE_RECORD: &str =
+    "---\nkind: instance\nskill: note\nid: n-001\nowner: \"whatsapp:111\"\n---\n# Note\n";
+const TICKET_SKILL: &str = "---\nkind: skill\nid: ticket\ndescription: Ticket.\nvisibility: owner\n\
+    owner_field: owner\n---\n# Ticket\n";
+const TICKET_RECORD: &str =
+    "---\nkind: instance\nskill: ticket\nid: t-001\nowner: \"whatsapp:111\"\n---\n# Ticket\n";
+
+fn page_chat(subject: &str, page_id: &str) -> String {
+    format!(
+        "page-chat:v1:{:x}:{page_id}",
+        Sha256::digest(subject.as_bytes())
+    )
+}
+
+#[tokio::test]
+async fn page_bound_chat_is_private_and_bound_to_a_readable_page() {
+    let p = EscurelProcess::spawn(Opts {
+        auth: AuthMode::TestIssuer,
+        config_overrides: ConfigOverrides {
+            write_acl: Some(WriteAclMode::Enforce),
+            ..Default::default()
+        },
+        fixtures: Some(
+            FixtureBuilder::new()
+                .tenant(TENANT)
+                .skill("note", NOTE_SKILL)
+                .skill("ticket", TICKET_SKILL)
+                .instance("note", "n-001", NOTE_RECORD)
+                .instance("ticket", "t-001", TICKET_RECORD)
+                .done(),
+        ),
+    })
+    .await;
+    let alice = p.mint_token_with_sub(TENANT, Role::Agent, ALICE);
+    let bob = p.mint_token_with_sub(TENANT, Role::Agent, BOB);
+    let admin = p.mint_token(TENANT, Role::Admin);
+    let group = page_chat(ALICE, NOTE_PAGE);
+    let args = |g: &str, content: &str| json!({"chat_group_id": g, "role": "user", "content": content, "embed": false});
+
+    // The owner of the page and of the hash may append and read.
+    let ok = call(&p, &alice, "append_message", args(&group, "first")).await;
+    assert!(ok.get("error").is_none(), "owner appends: {ok}");
+    let read = call(&p, &alice, "list_messages", json!({"chat_group_id": group})).await;
+    assert_eq!(
+        read["result"]["structuredContent"]["messages"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+
+    // Another caller: append forbidden, read empty, even when naming their own hash.
+    let spy = call(&p, &bob, "append_message", args(&group, "spy")).await;
+    assert_eq!(spy["error"]["code"], -32003);
+    let spy_read = call(&p, &bob, "list_messages", json!({"chat_group_id": group})).await;
+    assert_eq!(
+        spy_read["result"]["structuredContent"]["messages"],
+        json!([])
+    );
+    let own_hash = call(
+        &p,
+        &bob,
+        "append_message",
+        args(&page_chat(BOB, NOTE_PAGE), "x"),
+    )
+    .await;
+    assert_eq!(
+        own_hash["error"]["code"], -32003,
+        "bob cannot read the page: {own_hash}"
+    );
+
+    // Admin reads any page chat.
+    let adm = call(&p, &admin, "list_messages", json!({"chat_group_id": group})).await;
+    assert_eq!(
+        adm["result"]["structuredContent"]["messages"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+
+    // A page that does not exist, a skill that is not page-bound, and a
+    // malformed id are all refused.
+    for bad in [
+        page_chat(ALICE, "markdown/instances/note/absent.md"),
+        page_chat(ALICE, "markdown/instances/ticket/t-001.md"),
+        format!(
+            "page-chat:v2:{:x}:{NOTE_PAGE}",
+            Sha256::digest(ALICE.as_bytes())
+        ),
+    ] {
+        let r = call(&p, &alice, "append_message", args(&bad, "orphan")).await;
+        assert_eq!(r["error"]["code"], -32003, "{bad}: {r}");
+    }
 }

@@ -22,6 +22,7 @@ use std::collections::HashSet;
 
 use escurel_md::{PageKind, YamlValue, parse};
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 
 use crate::meta_skill::META_SKILL_PAGE_ID;
 use crate::read::AclPolicy;
@@ -70,6 +71,9 @@ const OWNER_CREDENTIAL_FIELD: &str = "credential";
 /// chat's owner is that instance's `owner_field` value, resolved the same
 /// way as an instance owner.
 const CHAT_OWNER_SKILL: &str = "community_member";
+
+/// Chat groups named `page-chat:v1:<owner_sha256>:<page_id>` are bound to a page.
+const PAGE_CHAT_PREFIX: &str = "page-chat:";
 
 /// The `provenance` key naming the subject that captured an event.
 ///
@@ -221,10 +225,14 @@ impl Indexer {
         if caller.is_admin {
             return Ok(true);
         }
-        let (acl, owner_field) = self.skill_acl(skill).await?.unwrap_or((None, None));
-        let policy = self
-            .resolve_policy(&[instance_acl(fm), acl], Verb::Read)
-            .await?;
+        let (acl, owner_field, instance_acl_disabled) =
+            self.skill_acl(skill).await?.unwrap_or((None, None, false));
+        let instance = if instance_acl_disabled {
+            None
+        } else {
+            instance_acl(fm)
+        };
+        let policy = self.resolve_policy(&[instance, acl], Verb::Read).await?;
         let mut effective = self.caller_groups(caller).await?;
         if self.owns(caller, owner_field.as_deref(), fm).await? {
             effective.insert("owner".to_owned());
@@ -331,7 +339,8 @@ impl Indexer {
         {
             return Ok(false);
         }
-        let (acl, owner_field) = self.skill_acl(skill).await?.unwrap_or((None, None));
+        let (acl, owner_field, instance_acl_disabled) =
+            self.skill_acl(skill).await?.unwrap_or((None, None, false));
         let mut effective = self.caller_groups(caller).await?;
 
         // The `owner` group resolves differently per write verb (CR §4.4):
@@ -381,7 +390,11 @@ impl Indexer {
         // shipping a block that grants itself. A CREATE has no stored page
         // to be scoped by, so it stays skill-grained (the create grant is
         // "may add instances of this type", which is a skill-level claim).
-        let instance = existing_fm.and_then(instance_acl);
+        let instance = if instance_acl_disabled {
+            None
+        } else {
+            existing_fm.and_then(instance_acl)
+        };
         let policy = self.resolve_policy(&[instance, acl], verb).await?;
         Ok(intersects(&policy, &effective))
     }
@@ -398,6 +411,9 @@ impl Indexer {
         caller: &AclCaller<'_>,
         chat_group_id: &str,
     ) -> Result<bool, IndexerError> {
+        if let Some(rest) = chat_group_id.strip_prefix(PAGE_CHAT_PREFIX) {
+            return self.may_access_page_chat(caller, rest).await;
+        }
         if caller.is_admin {
             return Ok(true);
         }
@@ -408,7 +424,7 @@ impl Indexer {
         let owner_field = self
             .skill_acl(CHAT_OWNER_SKILL)
             .await?
-            .and_then(|(_, owner_field)| owner_field);
+            .and_then(|(_, owner_field, _)| owner_field);
         match self
             .resolve_owner_subject(owner_field.as_deref(), &expanded.frontmatter)
             .await?
@@ -494,20 +510,68 @@ impl Indexer {
         }
     }
 
-    /// The `(acl, owner_field)` a skill declares, or `None` when no such
+    /// A page-bound chat group, `page-chat:v1:<owner_sha256>:<page_id>`
+    /// (`rest` is what follows the `page-chat:` prefix). Closed by default:
+    /// every malformed or unknown shape is refused. The caller must be admin
+    /// or own the hash of their subject; the page must exist and be an
+    /// instance of a skill that declares `chat: {page_bound: true}`; and the
+    /// caller must be allowed to read that page under the skill's ACL.
+    async fn may_access_page_chat(
+        &self,
+        caller: &AclCaller<'_>,
+        rest: &str,
+    ) -> Result<bool, IndexerError> {
+        let Some(rest) = rest.strip_prefix("v1:") else {
+            return Ok(false);
+        };
+        let Some((owner_hash, page_id)) = rest.split_once(':') else {
+            return Ok(false);
+        };
+        let Some((skill, id)) = crate::backend::rows::split_instance_page_id(page_id) else {
+            return Ok(false);
+        };
+        if id == "."
+            || id == ".."
+            || !id
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.'))
+        {
+            return Ok(false);
+        }
+        if !caller.is_admin
+            && owner_hash != format!("{:x}", Sha256::digest(caller.subject.as_bytes()))
+        {
+            return Ok(false);
+        }
+        let page_bound = self
+            .list_skills()
+            .await?
+            .into_iter()
+            .any(|s| s.id == skill && s.chat_page_bound);
+        if !page_bound {
+            return Ok(false);
+        }
+        let Some(page) = self.expand(page_id, None, None).await? else {
+            return Ok(false);
+        };
+        self.may_read_instance(caller, skill, &page.frontmatter)
+            .await
+    }
+
+    /// The `(acl, owner_field, instance_acl_disabled)` a skill declares, or `None` when no such
     /// skill page exists in the tenant index. `acl` is `None` when the
     /// skill declares neither an `acl:` block nor a legacy `visibility:`
     /// field (→ the decision falls through to the tenant default).
     async fn skill_acl(
         &self,
         skill: &str,
-    ) -> Result<Option<(Option<AclPolicy>, Option<String>)>, IndexerError> {
+    ) -> Result<Option<(Option<AclPolicy>, Option<String>, bool)>, IndexerError> {
         Ok(self
             .list_skills()
             .await?
             .into_iter()
             .find(|s| s.id == skill)
-            .map(|s| (s.acl, s.owner_field)))
+            .map(|s| (s.acl, s.owner_field, s.instance_acl_disabled)))
     }
 
     /// Whether `caller` may file an event INTO `target_page_id` (#363).

@@ -1664,7 +1664,12 @@ pub(super) async fn tool_append_message(
             embed: a.embed,
         })
         .await
-        .map_err(|e| JsonRpcError::internal(format!("append_message: {e}")))?;
+        .map_err(|e| match e {
+            IndexerError::RevisionChanged { page_id } => {
+                revision_changed_error("append_message", &page_id)
+            }
+            e => JsonRpcError::internal(format!("append_message: {e}")),
+        })?;
     Ok(json!({
         "msg_id": stored.msg_id,
         "ts": stored.ts,
@@ -3009,6 +3014,15 @@ pub(super) async fn tool_list_inbox(
         page.next_cursor,
         page.resume_cursor,
     ))
+}
+
+/// A write bound to a page revision lost the race: the page changed or is gone.
+/// The caller re-reads the page and retries against the new revision.
+pub(super) fn revision_changed_error(tool: &str, page_id: &str) -> JsonRpcError {
+    JsonRpcError::invalid_params(format!(
+        "{tool}: page `{page_id}` changed since it was read"
+    ))
+    .with_code("revision_changed", false)
 }
 
 /// An undecodable cursor is the caller's mistake (`invalid_params`),

@@ -49,6 +49,13 @@ pub struct SkillInfo {
     /// through to the tenant default. A verb left unset inside the block
     /// (`Some(policy)` with that verb `None`) also falls through.
     pub acl: Option<AclPolicy>,
+    /// `instance_acl: false`: ACL blocks stored on an instance cannot widen
+    /// or narrow this skill's read or write policy; only the skill decides.
+    pub instance_acl_disabled: bool,
+    /// `chat: {page_bound: true}`: chat groups named `page-chat:v1:<owner>:<page>`
+    /// may be bound to a page of this skill. The page's own read ACL then
+    /// decides who may use the chat.
+    pub chat_page_bound: bool,
     /// The backend that materialises and reads this skill's instances,
     /// parsed from the skill page's `backend:` block. Absent block ⇒
     /// [`BackendKind::Markdown`](crate::BackendKind) (every skill today).
@@ -739,6 +746,14 @@ impl Indexer {
                     .and_then(serde_json::Value::as_str)
                     .map(str::to_owned),
                 acl: parse_skill_acl(&fm),
+                instance_acl_disabled: fm
+                    .get("instance_acl")
+                    .is_some_and(|v| v.as_bool() == Some(false) || v.as_str() == Some("false")),
+                chat_page_bound: fm
+                    .get("chat")
+                    .and_then(|c| c.get("page_bound"))
+                    .and_then(serde_json::Value::as_bool)
+                    .unwrap_or(false),
                 fields: parse_fields(&fm),
                 backend: crate::backend::BackendBinding::parse(&fm),
                 layer: fm
