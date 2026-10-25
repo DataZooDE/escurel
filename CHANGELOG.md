@@ -6,7 +6,15 @@ loosely [Keep a Changelog](https://keepachangelog.com/). Through the
 follow **`vYYYY.MM.DD`** — the date the binary set was cut (same-day
 re-cuts append `.N`), matching the DataZoo release scheme (cf. erpl).
 
-## Unreleased
+## v2026.10.27
+
+A field rule that caps how many values a field holds, and chat-message pushes on the event subscription.
+
+- **`event_subscribe` with a `chat_group_id` filter** pushes appended chat messages of that group (#788).
+- **`max_items: <n>` on a field.** A skill may cap how many values a field holds, mainly for `kind: link` fields that take
+  one link or a list: a list counts its entries, a scalar counts as one. A page over the cap is refused by `update_page`,
+  `create_draft`/`validate` and `promote_draft` with `field_max_items` (family `field_max_items`). `n` must be a positive
+  whole number; anything else refuses the skill page with `fields_malformed`. `list_skills` publishes `fields[].max_items`.
 
 ## v2026.10.26 — BREAKING (operator-only tenant administration, upload create ACL, `required_when` wire shape, web-workbench override names)
 

@@ -169,6 +169,15 @@ Frontmatter rules the indexer enforces at write time:
   `fields`, so a client can build an instance form from the catalogue
   alone.
 
+  A field may cap how many values it holds with **`max_items: <n>`**
+  (a positive whole number), mainly on a `kind: link` field that takes
+  one link or a list: `{name: after, kind: link, to: task, max_items: 3}`.
+  A list counts its entries, a scalar counts as one. A page over the cap
+  is an **error** (`field_max_items`) and **rejects the write** on
+  `update_page`, `create_draft` and `promote_draft`; a cap that is not a
+  positive whole number rejects the skill page (`fields_malformed`).
+  `list_skills` publishes it on `fields[].max_items`.
+
   A field may also carry a **`render:` hint** — how a client SHOWS the
   value, as distinct from `kind` (what it IS): `text | markdown | date |
   datetime | money | link | badge`. `list_skills` passes it through on

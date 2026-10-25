@@ -256,6 +256,7 @@ pub(super) fn blocking_issues<'a>(
             | "instance_frozen"
             | "instance_protected"
             | "field_blank"
+            | "field_max_items"
             | "field_required_when"
             | "identity_duplicate"
             | "pack_malformed"

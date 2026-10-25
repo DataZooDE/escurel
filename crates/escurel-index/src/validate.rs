@@ -144,6 +144,7 @@ pub fn family_for_code(code: &str) -> Option<&'static str> {
         }
         "field_required_when" => "field_required_when",
         "field_blank" => "field_blank",
+        "field_max_items" => "field_max_items",
         "field_immutable" => "field_immutable",
         "instance_immutable" => "instance_immutable",
         "instance_frozen" => "instance_frozen",
@@ -1056,6 +1057,17 @@ fn check_field_value(field: &crate::SkillField, value: &YamlValue) -> Vec<Issue>
             location.clone(),
             format!("`{name}` must not be blank"),
         ));
+    }
+    // `max_items: n`: a list holds at most `n` entries; a scalar counts as one.
+    if let Some(max) = field.max_items {
+        let count = crate::field_rules::item_count(value);
+        if count as u64 > max {
+            issues.push(Issue::error(
+                "field_max_items",
+                location.clone(),
+                format!("`{name}` holds {count} values; the skill allows at most {max}"),
+            ));
+        }
     }
     // `format: date` refines a string field to `YYYY-MM-DD`. The other kinds
     // already carry their own shape.

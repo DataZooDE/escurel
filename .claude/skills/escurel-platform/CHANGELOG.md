@@ -4,6 +4,14 @@ The skill version tracks the consumer-facing contract, not the Escurel
 binary version. The Escurel repo's checked-out git ref is the true version
 pin (see `SKILL.md` → "How this skill is installed").
 
+## 0.25.14 — `max_items` on a field
+
+A `fields:` entry may declare `max_items: <n>` (a positive whole number), mainly on a `kind: link` field that holds one link
+or a list. A list counts its entries, a scalar counts as one. A page whose field holds more than `n` values is refused by
+`update_page`, `create_draft`, `validate` and `promote_draft` with `field_max_items` (family `field_max_items`). A
+declaration that is not a positive whole number (`0`, `-1`, `1.5`, `"3"`) refuses the skill page with `fields_malformed`.
+`list_skills` publishes `fields[].max_items`; `escurel-types::SkillField.max_items` is `Option<u64>`.
+
 ## 0.25.13 — live chat over `/ws` (`event_subscribe` `chat_group_id` filter)
 
 `event_subscribe` accepts `filters: {chat_group_id}`: the socket then receives `chat_message` frames

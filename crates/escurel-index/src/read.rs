@@ -270,6 +270,11 @@ pub struct SkillField {
     /// `frozen_by_parent: true` on a link field: an instance whose link points at a frozen page is
     /// frozen too (`instance_frozen`).
     pub frozen_by_parent: bool,
+    /// `max_items: <n>` — the field holds at most `n` values: a list counts its
+    /// entries, a scalar counts as one (`field_max_items`). `None` when
+    /// undeclared or not a positive whole number (which `validate` reports on
+    /// the skill page as `fields_malformed`).
+    pub max_items: Option<u64>,
 }
 
 /// One block of a skill's declared instance body layout (the `blocks:`
@@ -434,6 +439,10 @@ fn field_from(name: &str, attrs: &serde_json::Value) -> SkillField {
         format: text("format"),
         required_when: attrs.get("required_when").and_then(parse_required_when),
         frozen_by_parent: flag("frozen_by_parent"),
+        max_items: attrs
+            .get("max_items")
+            .and_then(serde_json::Value::as_u64)
+            .filter(|n| *n > 0),
     }
 }
 

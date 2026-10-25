@@ -419,6 +419,69 @@ async fn removing_an_instance_of_an_immutable_skill_is_refused() {
     }
 }
 
+#[tokio::test]
+async fn max_items_caps_how_many_values_a_field_holds() {
+    let h = harness();
+    seed_all(
+        &h,
+        &[
+            skill_page(
+                "task",
+                "fields:\n  - {name: after, kind: link, to: task, max_items: 2}\n  \
+                 - {name: tags, kind: string, max_items: 1}\n",
+            ),
+            instance("task", "a", ""),
+            instance("task", "b", ""),
+            instance("task", "c", ""),
+        ],
+    )
+    .await;
+
+    // At the limit, below it, and a single (scalar) link: accepted.
+    for extra in [
+        "after: [\"[[task::a]]\", \"[[task::b]]\"]\n",
+        "after: [\"[[task::a]]\"]\n",
+        "after: \"[[task::a]]\"\ntags: one\n",
+        "tags: [one]\n",
+    ] {
+        let (_, ok) = instance("task", "x", extra);
+        let issues = h.indexer.validate(None, &ok).await.unwrap();
+        assert!(issues.is_empty(), "{extra}: {issues:?}");
+    }
+
+    // One over: refused, in the field-rule family, on the field's location.
+    let (_, over) = instance(
+        "task",
+        "x",
+        "after: [\"[[task::a]]\", \"[[task::b]]\", \"[[task::c]]\"]\ntags: [one, two]\n",
+    );
+    let issues = h.indexer.validate(None, &over).await.unwrap();
+    assert!(
+        has(&issues, "field_max_items", "frontmatter.after"),
+        "{issues:?}"
+    );
+    assert!(
+        has(&issues, "field_max_items", "frontmatter.tags"),
+        "{issues:?}"
+    );
+    let family = issues
+        .iter()
+        .find(|i| i.code == "field_max_items")
+        .and_then(|i| i.family.as_deref());
+    assert_eq!(family, Some("field_max_items"));
+
+    // A staged batch is judged the same way.
+    let issues = h
+        .indexer
+        .validate_with_pending(None, &over, &HashMap::new())
+        .await
+        .unwrap();
+    assert!(
+        has(&issues, "field_max_items", "frontmatter.after"),
+        "{issues:?}"
+    );
+}
+
 const TOPIC_FIELDS: &str = "\
 fields:
   - {name: parent, kind: link, to: topic, acyclic: true}
