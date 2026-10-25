@@ -31,6 +31,7 @@ pub mod drafts;
 pub mod dsn;
 pub mod endpoints;
 pub mod events;
+mod field_rules;
 pub mod filter;
 pub mod graph;
 pub mod groups;

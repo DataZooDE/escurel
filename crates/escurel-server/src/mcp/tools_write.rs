@@ -246,6 +246,22 @@ pub(super) fn blocking_issues<'a>(
             // no `values:` accepts everything — it fails OPEN, which is the
             // shape of mistake nobody notices from the outside.
             "fields_malformed" => true,
+            // Rules a skill declares as data (`field_rules`): like typed
+            // fields, the declaration is the per-skill opt-in, so these block.
+            "field_immutable"
+            | "instance_immutable"
+            | "field_blank"
+            | "field_required_when"
+            | "relation_invalid"
+            | "relation_unresolved"
+            | "relation_cycle"
+            | "identity_duplicate"
+            | "pack_malformed"
+            | "pack_unknown"
+            | "pack_hash_mismatch"
+            | "skill_rule_malformed"
+            | "frontmatter_required_key_missing_strict"
+            | "frontmatter_required_key_blank_strict" => true,
             // A source nobody can attach (MySQL / MariaDB are refused) must not be stored as configured.
             "connector_not_supported" => true,
             _ => false,

@@ -75,7 +75,11 @@ pub struct Issue {
 }
 
 impl Issue {
-    fn error(code: &str, location: impl Into<String>, message: impl Into<String>) -> Self {
+    pub(crate) fn error(
+        code: &str,
+        location: impl Into<String>,
+        message: impl Into<String>,
+    ) -> Self {
         Self {
             severity: Severity::Error,
             code: code.to_owned(),
@@ -85,7 +89,11 @@ impl Issue {
         }
     }
 
-    fn warning(code: &str, location: impl Into<String>, message: impl Into<String>) -> Self {
+    pub(crate) fn warning(
+        code: &str,
+        location: impl Into<String>,
+        message: impl Into<String>,
+    ) -> Self {
         Self {
             severity: Severity::Warning,
             code: code.to_owned(),
@@ -98,7 +106,7 @@ impl Issue {
     /// Attach the `suggestion` field. Worth doing where the fix is a closed
     /// set the author can be handed verbatim.
     #[must_use]
-    fn with_suggestion(mut self, suggestion: impl Into<String>) -> Self {
+    pub(crate) fn with_suggestion(mut self, suggestion: impl Into<String>) -> Self {
         self.suggestion = Some(suggestion.into());
         self
     }
@@ -992,6 +1000,24 @@ fn check_field_value(field: &crate::SkillField, value: &YamlValue) -> Vec<Issue>
         }
     };
 
+    // `non_blank: true`: a present value is not empty or whitespace.
+    if field.non_blank && crate::field_rules::is_blank(value) {
+        issues.push(Issue::error(
+            "field_blank",
+            location.clone(),
+            format!("`{name}` must not be blank"),
+        ));
+    }
+    // `format: date` refines a string field to `YYYY-MM-DD`. The other kinds
+    // already carry their own shape.
+    if field.format.as_deref() == Some("date")
+        && field.kind == FieldKind::String
+        && !crate::field_rules::is_blank(value)
+        && !is_date(&shown())
+    {
+        issues.extend(type_error("a date (`YYYY-MM-DD`)"));
+    }
+
     // Bounds apply to whatever parsed as a number, whichever numeric kind was
     // declared. A bound on a non-numeric field is the author's mistake and is
     // simply inert — reporting it on every instance would be noise aimed at
@@ -1050,21 +1076,27 @@ fn is_datetime(text: &str) -> bool {
 /// What a skill demands of its instances: which keys must be present, and —
 /// when the skill declares `fields:` (#508) — what shape their values take.
 #[derive(Debug, Clone, Default)]
-struct SkillContract {
-    required: Vec<String>,
-    fields: Vec<crate::SkillField>,
+pub(crate) struct SkillContract {
+    pub(crate) required: Vec<String>,
+    pub(crate) fields: Vec<crate::SkillField>,
+    /// `strict_required_frontmatter: true`: required keys must also be non-blank.
+    pub(crate) strict_required: bool,
+    /// `immutable: true`: an instance cannot change once it exists.
+    pub(crate) immutable: bool,
+    /// `unique:` key tuples (composite identity).
+    pub(crate) unique: Vec<Vec<String>>,
+    /// `unique` scope `accepted`: only `status: accepted` instances count.
+    pub(crate) unique_accepted_only: bool,
 }
 
 impl Indexer {
     /// Dry-run the indexer's authoring checks on `content` and
     /// return the resulting [`Issue`] list. Writes nothing.
     ///
-    /// `_page_id` is the optional `as_page_id` from the agent tool;
-    /// today the checks don't depend on the target page id (the
-    /// draft's own `skill:` frontmatter drives the required-key and
-    /// skill-existence checks), but the parameter is accepted so the
-    /// surface matches the contract and future per-page rules
-    /// (e.g. immutability of event instances) have a home.
+    /// `page_id` is the optional `as_page_id` from the agent tool. Most checks
+    /// are driven by the draft's own `skill:` frontmatter; the page id is what
+    /// lets immutability compare against the stored page and lets identity
+    /// checks exclude the page itself.
     ///
     /// # Errors
     ///
@@ -1074,8 +1106,27 @@ impl Indexer {
     /// gets structured feedback rather than an opaque failure.
     pub async fn validate(
         &self,
-        _page_id: Option<&str>,
+        page_id: Option<&str>,
         content: &str,
+    ) -> Result<Vec<Issue>, IndexerError> {
+        self.validate_with_pending(page_id, content, &HashMap::new())
+            .await
+    }
+
+    /// [`Self::validate`] for one member of a batch that is staged but not
+    /// saved (a draft session or review changeset). `pending` maps the page
+    /// id of every OTHER staged page to its content: a link may resolve to one
+    /// of them, and an identity may collide with one. The caller validates each
+    /// staged member in turn and orders promotion so dependencies land first.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::validate`].
+    pub async fn validate_with_pending(
+        &self,
+        page_id: Option<&str>,
+        content: &str,
+        pending: &HashMap<String, String>,
     ) -> Result<Vec<Issue>, IndexerError> {
         let parsed = match parse(content) {
             Ok(p) => p,
@@ -1151,6 +1202,16 @@ impl Indexer {
         issues.extend(check_fields(parsed.frontmatter.page_kind, fields));
         // The instance-body layout a skill declares (workbench P3-5).
         issues.extend(check_blocks(parsed.frontmatter.page_kind, fields));
+        // The generic rule declarations (immutable, unique, pack, per-field
+        // rule attributes), linted where they are declared.
+        issues.extend(crate::field_rules::check_skill_rules(
+            parsed.frontmatter.page_kind,
+            fields,
+        ));
+        issues.extend(crate::field_rules::check_field_rules(
+            parsed.frontmatter.page_kind,
+            fields,
+        ));
         // A stored corpus traversal (#511). Checked HERE rather than at query
         // time: a bound that is only enforced when someone runs the query is a
         // bound that ships broken, and the author finds out from a stranger.
@@ -1179,6 +1240,35 @@ impl Indexer {
         let mut wanted: HashSet<&str> = HashSet::new();
         if let Some(skill) = declared_skill {
             wanted.insert(skill);
+        }
+        // The skill the page PATH names, and the skill the stored page was
+        // written under: an instance cannot shed an `immutable` declaration by
+        // changing its own `skill:` key.
+        let path_skill = page_id
+            .and_then(|p| p.strip_prefix("markdown/instances/"))
+            .and_then(|tail| tail.split_once('/'))
+            .map(|(skill, _)| skill);
+        let stored_skill: Option<String> =
+            if let (PageKind::Instance, Some(id)) = (parsed.frontmatter.page_kind, page_id) {
+                self.read_page_markdown(id).await?.and_then(|stored| {
+                    parse(&stored).ok().and_then(|p| {
+                        p.frontmatter
+                            .fields
+                            .get("skill")
+                            .and_then(YamlValue::as_str)
+                            .map(str::to_owned)
+                    })
+                })
+            } else {
+                None
+            };
+        if parsed.frontmatter.page_kind == PageKind::Instance {
+            if let Some(s) = path_skill {
+                wanted.insert(s);
+            }
+            if let Some(s) = stored_skill.as_deref() {
+                wanted.insert(s);
+            }
         }
         for wl in body_links.iter().chain(fm_links.iter().map(|(_, wl)| wl)) {
             if let (Some(skill), Some(id)) = (&wl.skill, &wl.id) {
@@ -1294,13 +1384,29 @@ impl Indexer {
                         Ok(Some(src)) => src.project.values().cloned().collect(),
                         _ => Vec::new(),
                     };
+                    let blank = crate::field_rules::is_blank;
+                    // `strict_required_frontmatter: true` makes a required key
+                    // mean "present and non-blank", under its own codes.
+                    let missing_code = if contract.strict_required {
+                        "frontmatter_required_key_missing_strict"
+                    } else {
+                        "frontmatter_required_key_missing"
+                    };
                     for key in &contract.required {
-                        if fields.get(key.as_str()).is_none() && !source_supplied.contains(key) {
-                            issues.push(Issue::error(
-                                "frontmatter_required_key_missing",
+                        match fields.get(key.as_str()) {
+                            None if !source_supplied.contains(key) => issues.push(Issue::error(
+                                missing_code,
                                 format!("frontmatter.{key}"),
                                 format!("skill `{skill}` requires frontmatter key `{key}`"),
-                            ));
+                            )),
+                            Some(value) if contract.strict_required && blank(value) => {
+                                issues.push(Issue::error(
+                                    "frontmatter_required_key_blank_strict",
+                                    format!("frontmatter.{key}"),
+                                    format!("skill `{skill}` requires a non-blank `{key}`"),
+                                ));
+                            }
+                            _ => {}
                         }
                     }
 
@@ -1314,13 +1420,42 @@ impl Indexer {
                     // not have to learn two vocabularies for one missing key.
                     for field in &contract.fields {
                         match fields.get(field.name.as_str()) {
-                            Some(value) => issues.extend(check_field_value(field, value)),
+                            Some(value) => {
+                                if contract.strict_required
+                                    && field.required
+                                    && !contract.required.iter().any(|key| key == &field.name)
+                                    && blank(value)
+                                {
+                                    issues.push(Issue::error(
+                                        "frontmatter_required_key_blank_strict",
+                                        format!("frontmatter.{}", field.name),
+                                        format!(
+                                            "skill `{skill}` requires a non-blank `{}`",
+                                            field.name
+                                        ),
+                                    ));
+                                } else if contract.strict_required
+                                    && matches!(field.kind, crate::FieldKind::String)
+                                    && value.as_str().is_none()
+                                {
+                                    issues.push(Issue::error(
+                                        "frontmatter_field_type",
+                                        format!("frontmatter.{}", field.name),
+                                        format!(
+                                            "skill `{skill}` requires a string `{}`",
+                                            field.name
+                                        ),
+                                    ));
+                                } else {
+                                    issues.extend(check_field_value(field, value));
+                                }
+                            }
                             None if field.required
                                 && !source_supplied.contains(&field.name)
                                 && !contract.required.iter().any(|k| k == &field.name) =>
                             {
                                 issues.push(Issue::error(
-                                    "frontmatter_required_key_missing",
+                                    missing_code,
                                     format!("frontmatter.{}", field.name),
                                     format!(
                                         "skill `{skill}` declares `{}` as a required field",
@@ -1331,9 +1466,32 @@ impl Indexer {
                             None => {}
                         }
                     }
+
+                    // Conditional requirements, relation integrity and
+                    // composite identity: the rules that need the corpus or
+                    // the pending batch.
+                    issues.extend(
+                        self.declared_rule_issues(page_id, skill, contract, fields, pending)
+                            .await?,
+                    );
                 }
                 None => {}
             }
+        }
+
+        // Immutability and release binding apply to instances only.
+        if parsed.frontmatter.page_kind == PageKind::Instance {
+            let contracts: Vec<&SkillContract> =
+                [declared_skill, path_skill, stored_skill.as_deref()]
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|s| skills.get(s))
+                    .collect();
+            issues.extend(
+                self.immutability_issues(page_id, content, &contracts, fields)
+                    .await?,
+            );
+            issues.extend(self.pack_binding_issues(fields, pending).await?);
         }
 
         // Wikilink syntax + referenced-skill existence, over body and
@@ -1751,6 +1909,17 @@ impl Indexer {
                             })
                             .unwrap_or_default(),
                         fields: crate::parse_fields(&fm),
+                        strict_required: fm
+                            .get("strict_required_frontmatter")
+                            .and_then(serde_json::Value::as_bool)
+                            == Some(true),
+                        immutable: fm.get("immutable").and_then(serde_json::Value::as_bool)
+                            == Some(true),
+                        unique: crate::field_rules::parse_unique(&fm)
+                            .map(|(k, _)| k)
+                            .unwrap_or_default(),
+                        unique_accepted_only: crate::field_rules::parse_unique(&fm)
+                            .is_some_and(|(_, accepted)| accepted),
                     }
                 }
                 None => SkillContract::default(),

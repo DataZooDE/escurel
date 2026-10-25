@@ -116,6 +116,40 @@ unwritable — for *any* edit, not only an edit to that field. `validate`
 reports it in all three modes; `log` additionally warns to the operator log
 while writing, and leaves the response identical to `off`.
 
+#### Rules a skill declares as data
+
+A skill page can declare validators in its frontmatter; `validate` applies
+them to every instance of that skill (and, through `validate_with_pending`,
+to instances in a staged batch). Every one is opt-in per skill and blocks
+`update_page` once declared, like the typed `fields:` checks. Skills that
+declare none are unchanged.
+
+| Declaration | Meaning | Issue code (error) |
+|-------------|---------|--------------------|
+| `fields[].kind: enum`, `values` | closed value set | `frontmatter_enum_value` |
+| `fields[].kind: date`, or `kind: string` + `format: date` | `YYYY-MM-DD` | `frontmatter_field_type` |
+| `fields[].min` / `max` | inclusive number bounds | `frontmatter_field_range` |
+| `fields[].non_blank: true` | present value not empty or whitespace | `field_blank` |
+| `fields[].required_when: {other: value}` | required while `other` equals `value` | `field_required_when` |
+| `fields[].immutable: true` | key cannot change (or be added or dropped) after the page exists | `field_immutable` |
+| skill `immutable: true` | page bytes cannot change after the page exists; the rule follows the page path and the stored page's skill, not only the draft's `skill:` | `instance_immutable` |
+| `fields[].kind: link`, `to: <skill>` | value is one quoted `[[<skill>::<id>]]` link (or a list of them) to a live instance of `<skill>`, saved or in the pending batch | `relation_invalid`, `relation_unresolved` |
+| `fields[].acyclic: true` (link to the field's own skill) | following the link never returns to a visited instance | `relation_cycle` |
+| skill `unique: [[a, b]]`, or `{keys: [[a, b]], scope: accepted}` | the composite key identifies at most one instance, excluding the page itself; `scope: accepted` counts only instances with `status: accepted` | `identity_duplicate` |
+| skill `strict_required_frontmatter: true` | `required_frontmatter` and `required: true` fields must also be non-blank | `frontmatter_required_key_missing_strict`, `frontmatter_required_key_blank_strict` |
+| skill `pack: {id, version, sha256}` (or a list) | declares an approved release | `skill_rule_malformed` if ill-formed |
+| instance `pack_id`, `pack_version`, `pack_sha256` | the page claims a release; the hash must equal the declared one | `pack_malformed`, `pack_unknown`, `pack_hash_mismatch` |
+
+Malformed declarations are reported on the skill page: `skill_rule_malformed`
+(`immutable`, `strict_required_frontmatter`, `unique`, `pack`) and
+`fields_malformed` (per-field attributes), both blocking; `unique_field_unknown`,
+`field_required_when_unknown` and `field_format_unknown` are warnings.
+
+`validate_with_pending(page_id, content, pending)` takes `pending`, a map of
+page id to content for the other staged pages. A link may resolve to one of
+them and an identity may collide with one; the caller validates each staged
+member and orders promotion so dependencies land first.
+
 ### `FilterClause` (used by `search`)
 
 ```ts
