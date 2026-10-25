@@ -522,6 +522,10 @@ pub struct ChatAppendArgs {
     /// Skip embedding.
     #[arg(long)]
     pub no_embed: bool,
+    /// Page-bound chat groups only: SHA-256 of the page markdown you saw;
+    /// refused with `revision_changed` when the page moved.
+    #[arg(long)]
+    pub page_revision_sha256: Option<String>,
 }
 
 #[derive(Args, Debug)]
@@ -1406,6 +1410,7 @@ async fn chat_append(client: &Client, a: ChatAppendArgs) -> Result<Value> {
             metadata: parse_json_arg(a.metadata),
             msg_id: a.msg_id.unwrap_or_default(),
             embed: !a.no_embed,
+            page_revision_sha256: a.page_revision_sha256.unwrap_or_default(),
         })
         .await?;
     Ok(json!({ "msg_id": resp.msg_id, "ts": resp.ts }))

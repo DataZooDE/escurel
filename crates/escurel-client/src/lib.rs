@@ -466,6 +466,9 @@ impl Client {
         if !req.metadata.is_null() {
             args["metadata"] = req.metadata;
         }
+        if !req.page_revision_sha256.is_empty() {
+            args["page_revision_sha256"] = json!(req.page_revision_sha256);
+        }
         self.transport.call_typed("append_message", args).await
     }
 

@@ -76,7 +76,7 @@ escurel event list   --instance <page_id> --limit 50
 escurel event assign --event <event_id> --instance <page_id>
 
 # per-chat-group conversation history
-escurel chat append -g <chat_group_id> --role user                 # content on stdin unless --content
+escurel chat append -g <chat_group_id> --role user                 # content on stdin unless --content; --page-revision-sha256 for page chats
 escurel chat list   -g <chat_group_id> --since <rfc3339> --limit 100 --direction desc
 
 # live CRDT co-editing session (raw op passthrough)

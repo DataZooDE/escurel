@@ -670,7 +670,14 @@ pub(crate) fn tool_defs() -> Vec<ToolDef> {
             "Append a message to a chat-group's conversation history. \
                  `chat_group_id` is opaque to escurel; consumers own the \
                  identifier scheme. `embed` defaults to true; set false to \
-                 skip the embedding cost for high-volume sources.",
+                 skip the embedding cost for high-volume sources. A page-bound \
+                 group (`page-chat:v1:<sha256(subject)>:<page_id>`) is private \
+                 to its owner; the server stamps `author` with the verified \
+                 caller, and `page_revision_sha256` binds the message to the \
+                 page revision the caller saw (error code `revision_changed` \
+                 when the page moved). A run token may post only an \
+                 `assistant` reply, only into the page chat its root event's \
+                 `provenance.chat_group_id` names.",
             json!({
                 "type": "object",
                 "required": ["chat_group_id", "role", "content"],
@@ -691,7 +698,11 @@ pub(crate) fn tool_defs() -> Vec<ToolDef> {
                         "type": "string",
                         "description": "Caller-supplied IDEMPOTENCY KEY: a retry with the same (chat_group_id, msg_id) echoes the stored row instead of inserting a duplicate. Server generates a ULID when absent (no dedup)."
                     },
-                    "embed": { "type": "boolean", "default": true }
+                    "embed": { "type": "boolean", "default": true },
+                    "page_revision_sha256": {
+                        "type": "string",
+                        "description": "Page-bound chat groups only: SHA-256 (hex) of the page's stored markdown as the caller read it. The append is refused with code `revision_changed` when the page changed or is gone."
+                    }
                 }
             }),
         ),

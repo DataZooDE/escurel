@@ -715,6 +715,29 @@ Two optional skill declarations refine this:
   refused. A write bound to a page revision that finds the page changed
   returns the domain error code `revision_changed`.
 
+  `append_message` on such a group:
+
+  - **Author.** The server stamps `author` with the verified caller subject
+    and ignores a client-supplied value. The metadata keys `run_id`,
+    `event_id` and `actor` are server-owned: for a run token they carry the
+    token's `run_id`, `root_event_id` and `act.sub`; otherwise they are
+    removed. Other metadata keys are stored as sent.
+  - **Revision guard.** Optional `page_revision_sha256` (SHA-256 hex of the
+    page's stored markdown as the caller read it). The check and the append
+    run under the tenant write lock; a changed or missing page is
+    `-32602` with `data.code = "revision_changed"` (`retryable: false`).
+    The argument on a group that is not page-bound is `-32602`.
+  - **Run replies.** A run token (`run_id` and `root_event_id` claims) does
+    not get the owner or admin rule for page-bound groups. It may append
+    only `role: "assistant"`, and only into the group named by its root
+    event's `provenance.chat_group_id`, when that event's server-stamped
+    `captured_by` hashes to the group's `<owner_sha256>` and the event
+    carries no `captured_via` (the person captured it as themselves). The
+    caller is either the runner's per-run `agent:<skill>` subject or — for
+    a gateway-minted token, whose verified subject is the person who minted
+    it — that person. The page must still exist under a page-bound skill and
+    be readable by the caller or the person. Everything else is `-32003`.
+
 ###### Group ACL (`acl:` block, group ACL v1)
 
 A skill MAY instead declare a **per-CRUD group ACL** — a superset of

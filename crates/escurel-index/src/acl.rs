@@ -75,6 +75,42 @@ const CHAT_OWNER_SKILL: &str = "community_member";
 /// Chat groups named `page-chat:v1:<owner_sha256>:<page_id>` are bound to a page.
 const PAGE_CHAT_PREFIX: &str = "page-chat:";
 
+/// The page a page-bound chat group names, when `chat_group_id` is one
+/// (`page-chat:v1:<owner_sha256>:<page_id>`); `None` for any other group.
+#[must_use]
+pub fn page_chat_page_id(chat_group_id: &str) -> Option<&str> {
+    let rest = chat_group_id.strip_prefix(PAGE_CHAT_PREFIX)?;
+    parse_page_chat(rest).map(|(_, page_id, _)| page_id)
+}
+
+/// Whether `chat_group_id` uses the page-bound naming scheme at all
+/// (well-formed or not: a malformed one is refused by the ACL).
+#[must_use]
+pub fn is_page_chat(chat_group_id: &str) -> bool {
+    chat_group_id.starts_with(PAGE_CHAT_PREFIX)
+}
+
+/// `v1:<owner_sha256>:<page_id>` → `(owner_sha256, page_id, skill)`, for a
+/// well-formed instance page id only.
+fn parse_page_chat(rest: &str) -> Option<(&str, &str, &str)> {
+    let rest = rest.strip_prefix("v1:")?;
+    let (owner_hash, page_id) = rest.split_once(':')?;
+    let (skill, id) = crate::backend::rows::split_instance_page_id(page_id)?;
+    if id == "."
+        || id == ".."
+        || !id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.'))
+    {
+        return None;
+    }
+    Some((owner_hash, page_id, skill))
+}
+
+fn subject_hash(subject: &str) -> String {
+    format!("{:x}", Sha256::digest(subject.as_bytes()))
+}
+
 /// The `provenance` key naming the subject that captured an event.
 ///
 /// **Server-owned.** `capture_event` overwrites whatever the caller put
@@ -521,41 +557,104 @@ impl Indexer {
         caller: &AclCaller<'_>,
         rest: &str,
     ) -> Result<bool, IndexerError> {
-        let Some(rest) = rest.strip_prefix("v1:") else {
+        let Some((owner_hash, page_id, skill)) = parse_page_chat(rest) else {
             return Ok(false);
         };
-        let Some((owner_hash, page_id)) = rest.split_once(':') else {
+        if !caller.is_admin && owner_hash != subject_hash(caller.subject) {
+            return Ok(false);
+        }
+        let Some(fm) = self.page_chat_target(page_id, skill).await? else {
             return Ok(false);
         };
-        let Some((skill, id)) = crate::backend::rows::split_instance_page_id(page_id) else {
+        self.may_read_instance(caller, skill, &fm).await
+    }
+
+    /// Whether a **run** may post its reply into a page-bound chat group.
+    ///
+    /// A run token (`run_id` + `root_event_id` claims) never reaches a page
+    /// chat through the owner or admin rule: its authority is borrowed, and an
+    /// agent steered by injected text must not write into a person's other
+    /// conversations. It may append exactly where it was asked to answer:
+    ///
+    /// * the run's root event exists, names `chat_group_id` in its
+    ///   provenance, and was captured by a person acting as themselves
+    ///   (server-stamped `captured_by`, no `captured_via` delegation);
+    /// * that person's subject hashes to the group's owner hash;
+    /// * the caller is either the runner's per-run agent (`agent:<skill>`
+    ///   subject) or — for a gateway-minted token, whose verified subject is
+    ///   the person who minted it — that same person;
+    /// * the page exists under a `chat: {page_bound: true}` skill and the
+    ///   caller or the person may read it.
+    ///
+    /// The role restriction (`assistant` only) is the caller's job; this is
+    /// the identity half. Every other shape is refused.
+    pub async fn may_reply_in_page_chat(
+        &self,
+        caller: &AclCaller<'_>,
+        chat_group_id: &str,
+    ) -> Result<bool, IndexerError> {
+        let (Some(_), Some(root)) = (caller.run_id, caller.root_event_id) else {
             return Ok(false);
         };
-        if id == "."
-            || id == ".."
-            || !id
-                .bytes()
-                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.'))
+        let Some(rest) = chat_group_id.strip_prefix(PAGE_CHAT_PREFIX) else {
+            return Ok(false);
+        };
+        let Some((owner_hash, page_id, skill)) = parse_page_chat(rest) else {
+            return Ok(false);
+        };
+        let Some(event) = self.get_event(root).await? else {
+            return Ok(false);
+        };
+        if event
+            .provenance
+            .get("chat_group_id")
+            .and_then(Value::as_str)
+            != Some(chat_group_id)
+            || event.provenance.get(CAPTURED_VIA_FIELD).is_some()
         {
             return Ok(false);
         }
-        if !caller.is_admin
-            && owner_hash != format!("{:x}", Sha256::digest(caller.subject.as_bytes()))
-        {
+        let Some(person) = captured_by(&event.provenance) else {
+            return Ok(false);
+        };
+        if subject_hash(person) != owner_hash {
             return Ok(false);
         }
+        if !(caller.subject.starts_with("agent:") || caller.subject == person) {
+            return Ok(false);
+        }
+        let Some(fm) = self.page_chat_target(page_id, skill).await? else {
+            return Ok(false);
+        };
+        if self.may_read_instance(caller, skill, &fm).await? {
+            return Ok(true);
+        }
+        let as_person = AclCaller {
+            subject: person,
+            ..AclCaller::default()
+        };
+        self.may_read_instance(&as_person, skill, &fm).await
+    }
+
+    /// The frontmatter of a page-chat's page when it exists and its skill
+    /// declares `chat: {page_bound: true}`; `None` otherwise.
+    async fn page_chat_target(
+        &self,
+        page_id: &str,
+        skill: &str,
+    ) -> Result<Option<Value>, IndexerError> {
         let page_bound = self
             .list_skills()
             .await?
             .into_iter()
             .any(|s| s.id == skill && s.chat_page_bound);
         if !page_bound {
-            return Ok(false);
+            return Ok(None);
         }
-        let Some(page) = self.expand(page_id, None, None).await? else {
-            return Ok(false);
-        };
-        self.may_read_instance(caller, skill, &page.frontmatter)
-            .await
+        Ok(self
+            .expand(page_id, None, None)
+            .await?
+            .map(|page| page.frontmatter))
     }
 
     /// The `(acl, owner_field, instance_acl_disabled)` a skill declares, or `None` when no such

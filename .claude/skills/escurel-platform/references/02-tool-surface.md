@@ -323,11 +323,12 @@ ADR: `docs/adr/0002-chat-message-surface.md`.
 
 | tool | inputs | output | mode |
 |---|---|---|---|
-| `append_message` | `chat_group_id`, `role`, `content`, `author?`, `ts?`, `metadata?`, `msg_id?`, `embed=true` | `{msg_id, ts}` | append (Writes quota); a caller-supplied `msg_id` is an **idempotency key** — a retry echoes the stored row (original `ts`), never a duplicate |
+| `append_message` | `chat_group_id`, `role`, `content`, `author?`, `ts?`, `metadata?`, `msg_id?`, `embed=true`, `page_revision_sha256?` | `{msg_id, ts}` | append (Writes quota); a caller-supplied `msg_id` is an **idempotency key** — a retry echoes the stored row (original `ts`), never a duplicate |
 | `list_messages` | `chat_group_id`, `since?`, `until?`, `limit=100`, `cursor?`, `direction='desc'` | `{messages[], next_cursor?}` | read (Queries quota) |
 
 Field semantics:
-- `chat_group_id` is opaque — escurel never parses it. Pick a scheme
+- `chat_group_id` is opaque — escurel never parses it, except the
+  page-bound scheme below (`page-chat:`). Pick a scheme
   that's stable for your app (e.g. `room-<uuid>`, `dm-<a>-<b>`).
 - `ts` is RFC-3339 UTC. Omit to let the server stamp `CURRENT_TIMESTAMP`;
   the response always carries the resolved value.
@@ -340,6 +341,31 @@ Field semantics:
 - `direction` defaults to `'desc'` (most recent first); pass `'asc'` for
   forward chronological reads.
 - `cursor` is opaque — pass the previous response's `next_cursor` verbatim.
+
+**Page-bound chat groups.** One naming scheme is not opaque: a skill that
+declares `chat: {page_bound: true}` lets a group named
+`page-chat:v1:<sha256(subject)>:<page_id>` (SHA-256 hex of the owner's
+token subject) hang off one of its pages. For those groups:
+- Only the owner (the subject whose hash is in the id, and who may read the
+  page) or an admin may append and read; others get `-32003` / an empty page.
+- The server stamps `author` with the verified caller subject and ignores a
+  client-supplied `author`. The metadata keys `run_id`, `event_id` and
+  `actor` are server-owned: set from the token (run id, run root event,
+  `act.sub` lineage) and stripped otherwise; other metadata keys are kept.
+- `page_revision_sha256` (SHA-256 hex of the page markdown as you read it)
+  binds the message to that revision; when the page changed or is gone the
+  append fails with `-32602` and `error.data.code = "revision_changed"`
+  (re-read, then retry). Passing it for any other group is `-32602`.
+- A **run token** (`run_id` + `root_event_id` claims) never gets the owner
+  or admin rule here. It may append only `role: "assistant"`, only into the
+  group named by its root event's `provenance.chat_group_id`, and only when
+  that event was captured by the group's owner acting as themselves (no
+  `captured_via`). The caller must be the runner's `agent:<skill>` or, for a
+  gateway-minted token (`mint_agent_token`, verified subject = the person),
+  that same person. Anything else is `-32003`.
+  Flow: the person appends their `user` turn, captures an event with
+  `provenance: {chat_group_id}`, the run (triggered by or minted for that
+  event) appends its `assistant` reply.
 
 There is **no agent-facing delete tool by design.** Deletion is operator
 territory: `EscurelAdmin.DeleteChatHistory(tenant_id, [chat_group_id,
