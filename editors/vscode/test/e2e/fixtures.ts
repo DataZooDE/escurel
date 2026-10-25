@@ -150,8 +150,22 @@ export const test = base.extend<
               parts = [{ text: 'Plan reported for the owner to review.' }];
             }
           }
+          // Real Gemini reports usageMetadata on every generateContent answer, and the runner
+          // fails a run closed without it (its token budget cannot be checked). Report a
+          // deterministic estimate of roughly four bytes per token.
+          const promptTokenCount = Math.ceil(body.length / 4);
+          const candidatesTokenCount = Math.ceil(JSON.stringify(parts).length / 4);
           response.setHeader('content-type', 'application/json');
-          response.end(JSON.stringify({ candidates: [{ content: { parts } }] }));
+          response.end(
+            JSON.stringify({
+              candidates: [{ content: { role: 'model', parts }, finishReason: 'STOP' }],
+              usageMetadata: {
+                promptTokenCount,
+                candidatesTokenCount,
+                totalTokenCount: promptTokenCount + candidatesTokenCount,
+              },
+            }),
+          );
         });
         await new Promise<void>((resolveListen) =>
           modelServer!.listen(0, '127.0.0.1', resolveListen),
