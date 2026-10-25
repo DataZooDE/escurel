@@ -58,6 +58,47 @@ pub(super) struct CreateDraftArgs {
     /// having one silently win.
     #[serde(default)]
     new_changeset: bool,
+    /// Optional lease fence: the write is stored only while this holder still owns the lease page.
+    #[serde(default)]
+    lease: Option<LeaseFenceArgs>,
+}
+
+/// `lease: {page_id, holder}` — see [`escurel_index::LEASE_FENCE`].
+#[derive(Deserialize)]
+struct LeaseFenceArgs {
+    page_id: String,
+    holder: String,
+}
+
+/// Take the page-write gate and check the lease, when a fence was sent. The returned guard must
+/// be held across the write the fence protects: a takeover updates the lease page through the
+/// same gate, so it cannot interleave. `Err(refusal)` is the tool result to return.
+async fn lease_gate<'a>(
+    state: &'a crate::server::AppState,
+    indexer: &Indexer,
+    fence: Option<&LeaseFenceArgs>,
+) -> Result<Option<tokio::sync::MutexGuard<'a, ()>>, Value> {
+    let Some(fence) = fence else {
+        return Ok(None);
+    };
+    let guard = state.update_page_gate.lock().await;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    let current = indexer
+        .lease_is_current(&fence.page_id, &fence.holder, now)
+        .await
+        .unwrap_or(false);
+    if current {
+        Ok(Some(guard))
+    } else {
+        Err(json!({"ok": false, "issues": [{
+            "severity": "error",
+            "code": escurel_index::LEASE_FENCE,
+            "location": "lease",
+            "message": "the holder no longer owns a current lease on that page",
+        }]}))
+    }
 }
 
 #[derive(Deserialize)]
@@ -361,6 +402,10 @@ pub(super) async fn tool_create_draft(
 ) -> Result<Value, JsonRpcError> {
     let content_given = args.get("content").is_some_and(|c| !c.is_null());
     let mut a: CreateDraftArgs = parse_args(args, "create_draft")?;
+    let _lease_gate = match lease_gate(state, indexer, a.lease.as_ref()).await {
+        Ok(g) => g,
+        Err(refusal) => return Ok(refusal),
+    };
     if let Some(intent) = a.write_back.take() {
         match crate::write_back::inject_intent(
             &a.target_page_id,
@@ -1435,6 +1480,9 @@ pub(super) struct DecideChangesetArgs {
     /// Admin-only, exactly as on [`DecideDraftArgs`].
     #[serde(default)]
     decided_by: Option<String>,
+    /// Optional lease fence (`discard_changeset` only); see [`CreateDraftArgs::lease`].
+    #[serde(default)]
+    lease: Option<LeaseFenceArgs>,
 }
 
 /// The queue, one row per RUN rather than one per page (#509 §1).
@@ -1802,6 +1850,10 @@ pub(super) async fn tool_discard_changeset(
     args: Value,
 ) -> Result<Value, JsonRpcError> {
     let a: DecideChangesetArgs = parse_args(args, "discard_changeset")?;
+    let _lease_gate = match lease_gate(state, indexer, a.lease.as_ref()).await {
+        Ok(g) => g,
+        Err(refusal) => return Ok(refusal),
+    };
     let members = match changeset_members(indexer, &caller, &a.changeset_id).await? {
         Ok(m) => m,
         Err(refusal) => return Ok(refusal),

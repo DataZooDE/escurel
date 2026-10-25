@@ -240,6 +240,57 @@ async fn ingest_upload_inner(
         Ok(v) => v,
         Err(resp) => return resp,
     };
+    deposit_and_ingest(state, &indexer, &caller, req).await
+}
+
+/// The MCP `ingest_upload` tool: the same deposit and ingest as
+/// `POST /ingest/upload`, for clients that hold only the MCP endpoint. The
+/// dispatcher has already authenticated and rate-limited the caller. A refusal
+/// is returned as an `ok: false` envelope carrying the REST status, so it
+/// reaches the model as a tool result rather than a protocol error.
+pub(super) async fn tool_ingest_upload(
+    state: &crate::server::AppState,
+    indexer: &std::sync::Arc<Indexer>,
+    caller: AclCaller<'_>,
+    args: Value,
+) -> Result<Value, JsonRpcError> {
+    let req: IngestUploadRequest = parse_args(args, "ingest_upload")?;
+    let ingest_caller = IngestCaller {
+        subject: caller.subject.to_owned(),
+        groups: caller.token_groups.to_vec(),
+        is_admin: caller.is_admin,
+        actor: caller.actor.map(str::to_owned),
+        run_id: caller.run_id.map(str::to_owned),
+        root_event_id: caller.root_event_id.map(str::to_owned),
+        agent_skill: caller.agent_skill.map(str::to_owned),
+    };
+    let response = deposit_and_ingest(state, indexer, &ingest_caller, req).await;
+    let status = response.status();
+    let body = axum::body::to_bytes(response.into_body(), 1024 * 1024)
+        .await
+        .map_err(|e| JsonRpcError::internal(format!("ingest_upload response body: {e}")))?;
+    let payload: Value = serde_json::from_slice(&body)
+        .map_err(|e| JsonRpcError::internal(format!("ingest_upload response JSON: {e}")))?;
+    if status.is_success() {
+        return Ok(payload);
+    }
+    Ok(json!({
+        "ok": false,
+        "issues": [{
+            "severity": "error",
+            "code": payload.get("error").and_then(Value::as_str).unwrap_or("ingest_upload_failed"),
+            "message": payload.get("message").and_then(Value::as_str).unwrap_or("file upload failed"),
+            "http_status": status.as_u16(),
+        }],
+    }))
+}
+
+async fn deposit_and_ingest(
+    state: &crate::server::AppState,
+    indexer: &std::sync::Arc<Indexer>,
+    caller: &IngestCaller,
+    req: IngestUploadRequest,
+) -> axum::response::Response {
     let bytes = match B64.decode(req.bytes_b64.as_bytes()) {
         Ok(b) => b,
         Err(e) => {
@@ -286,7 +337,7 @@ async fn ingest_upload_inner(
         }
     };
     record_and_dispatch_ingest(
-        &indexer,
+        indexer,
         &state.events_tx,
         state.lake.as_ref(),
         IngestJob {
@@ -296,7 +347,7 @@ async fn ingest_upload_inner(
             title: req.title,
             target_skill: req.skill.as_deref(),
         },
-        &caller,
+        caller,
     )
     .await
 }
@@ -478,6 +529,23 @@ async fn record_and_dispatch_ingest(
                 .into_response();
         }
     }
+    // What the handler skill declares about the intake event (`backend.event_kind`).
+    let event_kind = match handler.as_deref() {
+        Some(sk) => match indexer.skill_backend(sk).await {
+            Ok(b) => b
+                .document
+                .and_then(|d| d.event_kind)
+                .unwrap_or(escurel_index::EventKind::User),
+            Err(e) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({ "error": format!("skill backend: {e}") })),
+                )
+                    .into_response();
+            }
+        },
+        None => escurel_index::EventKind::User,
+    };
     let requested_title = title.as_deref().unwrap_or(blob_id);
     // Check the full upload identity before accepting a reused key. This also
     // retries materialisation if an earlier attempt captured its event first.
@@ -526,6 +594,7 @@ async fn record_and_dispatch_ingest(
             source: "ingest".to_owned(),
             mime: content_type.to_owned(),
             label_skill,
+            kind: event_kind,
             instance_page_id: None,
             title: requested_title.to_owned(),
             body: String::new(),
@@ -582,7 +651,7 @@ async fn record_and_dispatch_ingest(
     let _ = events_tx.send(std::sync::Arc::new(event.clone()));
     match handler {
         Some(skill) => {
-            run_document_ingest(
+            let result = run_document_ingest(
                 indexer,
                 lake,
                 &skill,
@@ -592,7 +661,14 @@ async fn record_and_dispatch_ingest(
                 subject,
                 doc_title.as_deref(),
             )
-            .await
+            .await;
+            if result.status().is_success()
+                && let Err(response) =
+                    settle_ingest_event(indexer, &skill, blob_id, &event.event_id).await
+            {
+                return response;
+            }
+            result
         }
         None => (
             StatusCode::ACCEPTED,
@@ -660,7 +736,15 @@ async fn existing_upload_response(
             title,
         )
         .await;
-        if !recovered.status().is_success() || recovered.status() == StatusCode::ACCEPTED {
+        if !recovered.status().is_success() {
+            return recovered;
+        }
+        if let Err(response) =
+            settle_ingest_event(indexer, skill, blob_id, &existing.event_id).await
+        {
+            return response;
+        }
+        if recovered.status() == StatusCode::ACCEPTED {
             return recovered;
         }
     }
@@ -674,6 +758,59 @@ async fn existing_upload_response(
         })),
     )
         .into_response()
+}
+
+/// Settle the ingest event on its document when the skill declares
+/// `backend.settle_event`. Runs after the document exists, so an interrupted
+/// upload leaves the event open and a replay completes it (assigning twice to
+/// the same page is a no-op).
+async fn settle_ingest_event(
+    indexer: &escurel_index::Indexer,
+    skill: &str,
+    blob_id: &str,
+    event_id: &str,
+) -> Result<(), axum::response::Response> {
+    let declared = indexer
+        .skill_backend(skill)
+        .await
+        .ok()
+        .and_then(|b| b.document)
+        .is_some_and(|d| d.settle_event);
+    if !declared {
+        return Ok(());
+    }
+    let Some(page_id) = document_page_id(skill, blob_id) else {
+        return Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": "invalid blob id for event settlement" })),
+        )
+            .into_response());
+    };
+    indexer.assign_event(event_id, &page_id).await.map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": format!("settle ingest event: {e}") })),
+        )
+            .into_response()
+    })
+}
+
+/// Media types that name one representation: a replay of the same bytes under
+/// either spelling is the same document. JSON is only aliased with plain text
+/// when the bytes really parse as JSON.
+fn mime_alias(original: &str, requested: &str, bytes: &[u8]) -> bool {
+    let media = |m: &str| m.split(';').next().unwrap_or(m).trim().to_ascii_lowercase();
+    let (a, b) = (media(original), media(requested));
+    if a == b {
+        return true;
+    }
+    matches!(
+        (a.as_str(), b.as_str()),
+        ("text/xml", "application/xml") | ("application/xml", "text/xml")
+    ) || (matches!(
+        (a.as_str(), b.as_str()),
+        ("text/plain", "application/json") | ("application/json", "text/plain")
+    ) && serde_json::from_slice::<Value>(bytes).is_ok())
 }
 
 fn document_page_id(skill: &str, blob_id_str: &str) -> Option<String> {
@@ -698,7 +835,7 @@ async fn run_document_ingest(
 ) -> axum::response::Response {
     use escurel_index::backend::{
         ChunkConfig, DeterministicProcessor, DocumentIngestWorker, ExtractConfig, Extractor,
-        IngestOutcome, OcrPolicy, PlainTextExtractor, RetainedMediaExtractor,
+        IngestOutcome, OcrPolicy, PlainTextExtractor, RetainedExtractor, RetainedMediaExtractor,
     };
     use escurel_storage::BlobId;
 
@@ -746,88 +883,127 @@ async fn run_document_ingest(
     let _ingest_guard = locks[(lock_key.finish() as usize) % locks.len()]
         .lock()
         .await;
-    match indexer.read_page_markdown(&page_id).await {
-        Ok(Some(existing)) => {
-            let parsed = escurel_md::parse(&existing).ok();
-            let backend = parsed
-                .as_ref()
-                .and_then(|page| page.frontmatter.fields.get("backend_ref"))
-                .and_then(|value| value.as_mapping());
-            let field = |name| {
-                backend
-                    .and_then(|map| map.get(name))
-                    .and_then(|value| value.as_str())
-            };
-            if field("kind") != Some("document") || field("blob_id") != Some(blob_id_str) {
-                return (
-                    StatusCode::CONFLICT,
-                    Json(json!({"error":"document_blob_conflict","page_id":page_id})),
-                )
-                    .into_response();
-            }
-            if field("status") != Some("ok") {
-                return (
-                    StatusCode::CONFLICT,
-                    Json(json!({"error":"document_overlay_incomplete","page_id":page_id})),
-                )
-                    .into_response();
-            }
-            let mut recovered_blob = false;
-            let canonical_bytes = match indexer.read_blob(&blob_id).await {
-                Ok(bytes) => bytes,
-                Err(IndexerError::Store(StoreError::NotFound(_))) => {
-                    let promoted = indexer.promote_blob(&blob_id).await;
-                    match indexer.read_blob(&blob_id).await {
-                        Ok(bytes) => {
-                            recovered_blob = true;
-                            bytes
-                        }
+    let mut retry_overlay: Option<String> = None;
+    'existing_page: {
+        match indexer.read_page_markdown(&page_id).await {
+            Ok(Some(existing)) => {
+                let parsed = escurel_md::parse(&existing).ok();
+                let backend = parsed
+                    .as_ref()
+                    .and_then(|page| page.frontmatter.fields.get("backend_ref"))
+                    .and_then(|value| value.as_mapping());
+                let field = |name| {
+                    backend
+                        .and_then(|map| map.get(name))
+                        .and_then(|value| value.as_str())
+                };
+                if field("kind") != Some("document") || field("blob_id") != Some(blob_id_str) {
+                    return (
+                        StatusCode::CONFLICT,
+                        Json(json!({"error":"document_blob_conflict","page_id":page_id})),
+                    )
+                        .into_response();
+                }
+                if field("status") == Some("extraction_failed") {
+                    // A failed extraction keeps its original in the inbox. A repeat
+                    // upload reprocesses those verified bytes (an extractor may
+                    // have changed), only under the original MIME, and keeps the
+                    // artifact's first title and owner.
+                    if field("content_type") != Some(content_type) {
+                        return (
+                            StatusCode::CONFLICT,
+                            Json(json!({"error":"document_mime_conflict","page_id":page_id})),
+                        )
+                            .into_response();
+                    }
+                    let inbox_bytes = match indexer.read_inbox_blob(&blob_id).await {
+                        Ok(bytes) => bytes,
                         Err(error) => {
-                            return (StatusCode::SERVICE_UNAVAILABLE, Json(json!({
+                            return (
+                                StatusCode::SERVICE_UNAVAILABLE,
+                                Json(json!({"error":"document_inbox_unavailable",
+                                "message":error.to_string()})),
+                            )
+                                .into_response();
+                        }
+                    };
+                    use sha2::Digest;
+                    if format!("{:x}", sha2::Sha256::digest(&inbox_bytes)) != blob_id.hex() {
+                        return (
+                            StatusCode::SERVICE_UNAVAILABLE,
+                            Json(json!({"error":"document_blob_corrupt","page_id":page_id})),
+                        )
+                            .into_response();
+                    }
+                    retry_overlay = Some(existing);
+                    break 'existing_page;
+                }
+                if field("status") != Some("ok") {
+                    return (
+                        StatusCode::CONFLICT,
+                        Json(json!({"error":"document_overlay_incomplete","page_id":page_id})),
+                    )
+                        .into_response();
+                }
+                let mut recovered_blob = false;
+                let canonical_bytes = match indexer.read_blob(&blob_id).await {
+                    Ok(bytes) => bytes,
+                    Err(IndexerError::Store(StoreError::NotFound(_))) => {
+                        let promoted = indexer.promote_blob(&blob_id).await;
+                        match indexer.read_blob(&blob_id).await {
+                            Ok(bytes) => {
+                                recovered_blob = true;
+                                bytes
+                            }
+                            Err(error) => {
+                                return (StatusCode::SERVICE_UNAVAILABLE, Json(json!({
                                 "error":"document_blob_recovery_failed",
                                 "message":format!("promotion: {promoted:?}; canonical read: {error}")
                             }))).into_response();
+                            }
                         }
                     }
+                    Err(error) => {
+                        return (
+                            StatusCode::SERVICE_UNAVAILABLE,
+                            Json(json!({
+                                "error":"document_blob_unavailable","message":error.to_string()
+                            })),
+                        )
+                            .into_response();
+                    }
+                };
+                use sha2::Digest;
+                if format!("{:x}", sha2::Sha256::digest(&canonical_bytes)) != blob_id.hex() {
+                    return (
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        Json(json!({"error":"document_blob_corrupt","page_id":page_id})),
+                    )
+                        .into_response();
                 }
-                Err(error) => {
+                let original_mime = field("content_type").unwrap_or_default();
+                if original_mime != content_type
+                    && !mime_alias(original_mime, content_type, &canonical_bytes)
+                {
+                    return (
+                        StatusCode::CONFLICT,
+                        Json(json!({"error":"document_mime_conflict","page_id":page_id})),
+                    )
+                        .into_response();
+                }
+                if recovered_blob
+                    && let Some(cfg) = lake
+                    && let Err(error) = indexer.publish_page_sync(cfg, &page_id).await
+                {
                     return (
                         StatusCode::SERVICE_UNAVAILABLE,
                         Json(json!({
-                            "error":"document_blob_unavailable","message":error.to_string()
+                            "error":"document_recovery_publish_failed","message":error.to_string()
                         })),
                     )
                         .into_response();
                 }
-            };
-            use sha2::Digest;
-            if format!("{:x}", sha2::Sha256::digest(&canonical_bytes)) != blob_id.hex() {
                 return (
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    Json(json!({"error":"document_blob_corrupt","page_id":page_id})),
-                )
-                    .into_response();
-            }
-            if field("content_type") != Some(content_type) {
-                return (
-                    StatusCode::CONFLICT,
-                    Json(json!({"error":"document_mime_conflict","page_id":page_id})),
-                )
-                    .into_response();
-            }
-            if recovered_blob
-                && let Some(cfg) = lake
-                && let Err(error) = indexer.publish_page_sync(cfg, &page_id).await
-            {
-                return (
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    Json(json!({
-                        "error":"document_recovery_publish_failed","message":error.to_string()
-                    })),
-                )
-                    .into_response();
-            }
-            return (
                 StatusCode::OK,
                 Json(json!({
                     "event_id":event_id,"blob_id":blob_id_str,"handler_skill":skill,
@@ -835,14 +1011,15 @@ async fn run_document_ingest(
                 })),
             )
                 .into_response();
-        }
-        Ok(None) => {}
-        Err(error) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"error":format!("existing document lookup: {error}")})),
-            )
-                .into_response();
+            }
+            Ok(None) => {}
+            Err(error) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({"error":format!("existing document lookup: {error}")})),
+                )
+                    .into_response();
+            }
         }
     }
     let media_type = content_type
@@ -850,26 +1027,38 @@ async fn run_document_ingest(
         .next()
         .unwrap_or(content_type)
         .trim();
-    let extractor: std::sync::Arc<dyn Extractor> = if media_type.starts_with("text/") {
-        std::sync::Arc::new(PlainTextExtractor)
-    } else if media_type.starts_with("audio/") {
-        // CR-4 (GH #356): audio is RETAINED, not extracted. Escurel does not
-        // transcribe — the consumer files the transcript as its own content —
-        // so the recording materialises as a zero-chunk instance whose value
-        // is its identity, its links and its retained bytes. Routing it to a
-        // text/kreuzberg extractor instead would mark perfectly good evidence
-        // `extraction_failed`.
-        std::sync::Arc::new(RetainedMediaExtractor)
-    } else {
-        #[cfg(feature = "kreuzberg")]
-        {
-            std::sync::Arc::new(escurel_index::backend::KreuzbergExtractor)
-        }
-        #[cfg(not(feature = "kreuzberg"))]
+    let retain = indexer
+        .skill_backend(skill)
+        .await
+        .ok()
+        .and_then(|b| b.document)
+        .map(|d| d.retain)
+        .unwrap_or_default();
+    let extractor: std::sync::Arc<dyn Extractor> =
+        if escurel_index::backend::mime_claim(&retain, media_type).is_some() {
+            std::sync::Arc::new(RetainedExtractor)
+        } else if media_type.starts_with("text/")
+            || matches!(media_type, "application/xml" | "application/json")
         {
             std::sync::Arc::new(PlainTextExtractor)
-        }
-    };
+        } else if media_type.starts_with("audio/") {
+            // CR-4 (GH #356): audio is RETAINED, not extracted. Escurel does not
+            // transcribe — the consumer files the transcript as its own content —
+            // so the recording materialises as a zero-chunk instance whose value
+            // is its identity, its links and its retained bytes. Routing it to a
+            // text/kreuzberg extractor instead would mark perfectly good evidence
+            // `extraction_failed`.
+            std::sync::Arc::new(RetainedMediaExtractor)
+        } else {
+            #[cfg(feature = "kreuzberg")]
+            {
+                std::sync::Arc::new(escurel_index::backend::KreuzbergExtractor)
+            }
+            #[cfg(not(feature = "kreuzberg"))]
+            {
+                std::sync::Arc::new(PlainTextExtractor)
+            }
+        };
     let worker = DocumentIngestWorker::new(
         std::sync::Arc::clone(indexer),
         std::sync::Arc::new(DeterministicProcessor::new(extractor)),
@@ -904,7 +1093,21 @@ async fn run_document_ingest(
     // extra key as instance frontmatter, so one insert makes the upload both
     // readable and findable — `search` and `list_instances` project
     // frontmatter, and a heading-only title would not reach them.
+    let retry_page = retry_overlay
+        .as_deref()
+        .and_then(|overlay| escurel_md::parse(overlay).ok());
+    let retry_field = |name: &str| {
+        retry_page
+            .as_ref()
+            .and_then(|page| page.frontmatter.fields.get(name))
+            .and_then(|value| value.as_str())
+    };
     let mut extra_map = serde_json::Map::new();
+    let title = if retry_overlay.is_some() {
+        retry_field("title")
+    } else {
+        title
+    };
     if let Some(t) = title {
         extra_map.insert("title".to_owned(), json!(t));
     }
@@ -919,7 +1122,16 @@ async fn run_document_ingest(
     // Inserted last so the owner stamp wins: it is an authorization fact and a
     // caller-supplied title must never be able to displace it.
     if let Some(field) = owner_field {
-        extra_map.insert(field, json!(subject));
+        let owner = if retry_overlay.is_some() {
+            retry_field(&field)
+        } else if subject.is_empty() {
+            None
+        } else {
+            Some(subject)
+        };
+        if let Some(owner) = owner {
+            extra_map.insert(field, json!(owner));
+        }
     }
     let extra = if extra_map.is_empty() {
         serde_json::Value::Null

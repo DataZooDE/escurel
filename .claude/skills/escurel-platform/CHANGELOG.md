@@ -4,11 +4,25 @@ The skill version tracks the consumer-facing contract, not the Escurel
 binary version. The Escurel repo's checked-out git ref is the true version
 pin (see `SKILL.md` → "How this skill is installed").
 
+## 0.25.9 — `ingest_upload` over MCP; document skills declare retention, event kind and settlement
+
+`ingest_upload` is an MCP tool with the semantics of `POST /ingest/upload` (a refusal is `ok:false` with an issue carrying
+`http_status`). A `document` skill may declare under `backend`: `retain: [mime, ...]` (original bytes kept, no extraction),
+`event_kind: system` (the ingest event skips the work inbox) and `settle_event: true` (the event is assigned to the document
+once it exists, so a replay completes an interrupted upload). `application/xml` and `application/json` are extracted as
+text (NUL-bearing XML and invalid JSON keep their original as `extraction_failed`); re-uploading a failed extraction
+reprocesses the retained original with its first title and owner; `text/xml` and `application/xml` (and valid JSON as
+`text/plain`) are one document on replay. 90 tools.
+
 ## 0.25.8 — get_draft, immutable instances cannot be archived or moved, required_when takes a list
 
 `get_draft {draft_id}` reads one draft, open or decided, behind the `list_drafts` read gate. A skill with `immutable: true`
 now also refuses `delete_page` and `move_page` of its instances (`instance_immutable`). `required_when` accepts a list of values
 (`{status: [resolved, dismissed]}`); `list_skills` publishes it as `[other_field, [value, ...]]`.
+
+`create_draft` and `discard_changeset` accept `lease: {page_id, holder}`: with a skill that declares `lease: {holder, expires,
+while?}`, the write is stored only while that holder owns the lease page, else `lease_fence`. A failed-extraction document
+stays readable through `fetch_blob`; `/mcp` and `/ingest/upload` accept bodies up to 16 MiB.
 
 ## 0.25.7 — a rebuild is index-only; the duckvfs lane store retries transient Drive errors
 

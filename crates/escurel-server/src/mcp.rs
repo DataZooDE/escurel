@@ -692,7 +692,8 @@ fn dimension_for(method: &str, params: &Value) -> Option<Dimension> {
         | "create_draft"
         | "promote_draft"
         | "discard_draft"
-        | "start_operation" => Dimension::Writes,
+        | "start_operation"
+        | "ingest_upload" => Dimension::Writes,
         "open_session" | "close_session" => return None,
         _ => Dimension::Queries,
     })
@@ -1162,6 +1163,9 @@ async fn dispatch_tools_call(
         "resolve" => tool_resolve(indexer, &state.egress, caller, params.arguments).await,
         "expand" => tool_expand(state, indexer, caller, params.arguments).await,
         "fetch_blob" => tool_fetch_blob(indexer, caller, params.arguments).await,
+        "ingest_upload" => {
+            ingest::tool_ingest_upload(state, indexer, caller, params.arguments).await
+        }
         "neighbours" => tool_neighbours(indexer, caller, params.arguments).await,
         "provenance_ancestry" => tool_provenance_ancestry(indexer, caller, params.arguments).await,
         "provenance_report" => tool_provenance_report(indexer, caller, params.arguments).await,

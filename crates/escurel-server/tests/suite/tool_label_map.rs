@@ -75,6 +75,7 @@ const EXPECTED: &[&str] = &[
     "expand:deterministic",
     "export_pack:deterministic",
     "fetch_blob:deterministic",
+    "ingest_upload:orchestration",
     "get_operation:deterministic",
     "import_pack:orchestration",
     "list_credentials:deterministic",

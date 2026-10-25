@@ -18,6 +18,7 @@
 //! | field | `acyclic: true` (with a link to its own skill) | following the link never returns to the start | `relation_cycle` |
 //! | skill | `unique: [[a, b]]` (or `{keys: [[a, b]], scope: accepted}`) | the composite key identifies at most one instance | `identity_duplicate` |
 //! | skill | `relation_guard: false` | opt out of the in-use guard on archive and rename | `skill_rule_malformed` if not a boolean |
+//! | skill | `lease: {holder, expires, while?}` | the skill's instances are leases a write may be fenced on (`create_draft`/`discard_changeset` `lease:`) | `skill_rule_malformed` if malformed, `lease_fence` on a refused write |
 //! | skill | `strict_required_frontmatter: true` | required keys must also be non-blank | `frontmatter_required_key_missing_strict`, `frontmatter_required_key_blank_strict` |
 //! | skill | `pack: {id, version, sha256}` | an approved release | `pack_malformed` |
 //! | instance | `pack_id`, `pack_version`, `pack_sha256` | the page claims a release; the hash must match the declared one | `pack_unknown`, `pack_hash_mismatch` |
@@ -131,6 +132,12 @@ pub(crate) fn check_skill_rules(page_kind: PageKind, fields: &YamlMapping) -> Ve
             && v.as_bool().is_none()
         {
             issues.push(bad(key, &format!("`{key}:` must be `true` or `false`")));
+        }
+    }
+    if let Some(v) = fields.get("lease") {
+        let json = serde_json::to_value(v).unwrap_or_default();
+        if let Some(problem) = crate::lease::lease_declaration_problem(&json) {
+            issues.push(bad("lease", problem));
         }
     }
     let declared: HashSet<String> = {

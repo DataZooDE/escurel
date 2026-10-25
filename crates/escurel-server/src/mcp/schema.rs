@@ -131,6 +131,24 @@ pub(crate) fn tool_defs() -> Vec<ToolDef> {
             }),
         ),
         tool_entry(
+            "ingest_upload",
+            Execution::Orchestration,
+            Scope::Agent,
+            Touches::INDEX,
+            "Deposit base64 file bytes in the tenant inbox and materialise them as a document-backed instance. Use event_id to make retries idempotent; the original bytes remain available through fetch_blob. A refusal is returned as ok:false with an issue carrying the HTTP status.",
+            json!({
+                "type": "object",
+                "required": ["content_type", "bytes_b64"],
+                "properties": {
+                    "content_type": { "type": "string", "description": "MIME type of the original file." },
+                    "bytes_b64": { "type": "string", "description": "Base64-encoded original file bytes." },
+                    "title": { "type": "string" },
+                    "skill": { "type": "string", "description": "Document skill to receive the file; it must accept content_type." },
+                    "event_id": { "type": "string", "description": "Stable non-empty idempotency key for retries." }
+                }
+            }),
+        ),
+        tool_entry(
             "neighbours",
             Execution::Deterministic,
             Scope::Agent,
@@ -304,7 +322,10 @@ pub(crate) fn tool_defs() -> Vec<ToolDef> {
                     "base_sha256": { "type": "string", "description": "The target's content_sha256 when drafted, from `expand`; \"\" = approve-create (expect no page). Carried into `update_page`'s CAS at promotion." },
                     "event_id": { "type": "string", "description": "The inbox event this draft answers, when it answers one." },
                     "changeset_id": { "type": "string", "description": "Join the changeset a previous create_draft in this run returned (#509)." },
-                    "new_changeset": { "type": "boolean", "description": "Start a changeset; the server mints the id and returns it on the stored draft. Not with `changeset_id`." }
+                    "new_changeset": { "type": "boolean", "description": "Start a changeset; the server mints the id and returns it on the stored draft. Not with `changeset_id`." },
+                    "lease": { "type": "object", "required": ["page_id", "holder"],
+                        "description": "Optional lease fence: store the draft only while `holder` still owns the lease page (a skill declaring `lease:`); otherwise refused with `lease_fence`.",
+                        "properties": { "page_id": { "type": "string" }, "holder": { "type": "string" } } }
                 }
             }),
         ),
@@ -362,7 +383,10 @@ pub(crate) fn tool_defs() -> Vec<ToolDef> {
                 "properties": {
                     "changeset_id": { "type": "string" },
                     "reason": { "type": "string" },
-                    "decided_by": { "type": "string" }
+                    "decided_by": { "type": "string" },
+                    "lease": { "type": "object", "required": ["page_id", "holder"],
+                        "description": "discard_changeset only: the same lease fence as create_draft.",
+                        "properties": { "page_id": { "type": "string" }, "holder": { "type": "string" } } }
                 }
             }),
         ),
@@ -1878,7 +1902,7 @@ fn group_of(name: &str, scope: Scope) -> &'static str {
             "[SESSION]"
         }
         "update_page" | "delete_page" | "move_page" | "append_message" | "capture_event"
-        | "assign_event" | "write_instance" | "create_draft" => "[WRITE]",
+        | "assign_event" | "write_instance" | "create_draft" | "ingest_upload" => "[WRITE]",
         _ => "[READ]",
     }
 }

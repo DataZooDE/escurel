@@ -152,6 +152,7 @@ declare none are unchanged.
 | `fields[].acyclic: true` (link to the field's own skill) | following the link never returns to a visited instance | `relation_cycle` |
 | skill `unique: [[a, b]]`, or `{keys: [[a, b]], scope: accepted}` | the composite key identifies at most one instance, excluding the page itself; `scope: accepted` counts only instances with `status: accepted` | `identity_duplicate` |
 | skill `relation_guard: false` | opt the skill's instances out of the in-use guard on archive and rename | `skill_rule_malformed` if not a boolean |
+| skill `lease: {holder, expires, while?}` | its instances are leases: `holder` names the field with the current holder, `expires` the field with the expiry in Unix seconds, `while: {field: value}` the state in which it is live | `skill_rule_malformed` if ill-formed; `lease_fence` on a refused write |
 | skill `strict_required_frontmatter: true` | `required_frontmatter` and `required: true` fields must also be non-blank | `frontmatter_required_key_missing_strict`, `frontmatter_required_key_blank_strict` |
 | skill `pack: {id, version, sha256}` (or a list) | declares an approved release | `skill_rule_malformed` if ill-formed |
 | instance `pack_id`, `pack_version`, `pack_sha256` | the page claims a release; the hash must equal the declared one | `pack_malformed`, `pack_unknown`, `pack_hash_mismatch` |
@@ -178,6 +179,15 @@ content sets `archived: true` is judged the same way when promoted, and a
 changeset is judged as a batch: a referrer the same changeset archives or
 re-points does not block, one it creates does. A blocked changeset lands
 nothing. Direct `update_page` with `archived: true` is not guarded.
+
+**Lease fence.** `create_draft` and `discard_changeset` accept `lease:
+{page_id, holder}`. The write is stored only while the page at `page_id`
+belongs to a skill that declares `lease:` and names `holder` in its holder
+field, is unexpired and, if declared, in its live state; otherwise it is refused
+with `lease_fence` and nothing is written. The check and the write share the
+page-write gate, so a takeover that updates the lease page cannot interleave.
+It is a single-gateway guard, not a distributed lock. A worker that may have
+been replaced sends its fence with each write.
 
 Malformed declarations are reported on the skill page: `skill_rule_malformed`
 (`immutable`, `strict_required_frontmatter`, `unique`, `pack`) and
@@ -1170,6 +1180,26 @@ backend:
   chunk: { max_chars: 800, overlap: 80 }
   lead_chunks: 8                           # optional; chunk lead expand returns (default 8)
 ```
+
+Optional intake declarations, all off by default:
+
+```yaml
+  retain: [application/vnd.openxmlformats-officedocument.spreadsheetml.sheet]
+  event_kind: system     # kind of the ingest event (default user)
+  settle_event: true     # assign the ingest event to the document once it exists
+```
+
+`retain:` lists MIME types (exact or `type/*`) kept as original bytes with no
+extraction and no chunks, for formats a consumer reads itself. `text/*`,
+`application/xml` and `application/json` are extracted as UTF-8 text; XML with
+NUL bytes and syntactically invalid JSON keep their original and report
+`extraction_failed`. Uploading the same bytes again after a failed extraction
+reprocesses the retained original under its first title and owner. A replay
+under `text/xml`/`application/xml`, or `text/plain`/`application/json` for valid
+JSON, is the same document; any other MIME difference is `document_mime_conflict`.
+`ingest_upload` is also an MCP tool with the same semantics as
+`POST /ingest/upload`; refusals come back as `ok: false` with an issue that
+carries `http_status`.
 
 An `accepts:` entry is an exact MIME or a **type wildcard** (`audio/*`),
 claiming every subtype of that type. `*/*` is not a wildcard — an unhandled
