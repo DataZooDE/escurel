@@ -84,6 +84,7 @@ pub async fn recover_pending(
         let trigger = Trigger {
             manual: None,
             is_system: false,
+            chat: None,
             tenant: rec.tenant.clone(),
             event_id: rec.event_id.clone(),
             label_skill: String::new(),
