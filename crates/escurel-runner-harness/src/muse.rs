@@ -378,6 +378,7 @@ fn parse_outcome(stdout: &[u8]) -> Result<HarnessOutcome, HarnessError> {
     .unwrap_or(u32::MAX);
 
     Ok(HarnessOutcome {
+        reply: None,
         result_ref: None,
         usage: None,
         ok,

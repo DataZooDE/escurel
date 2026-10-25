@@ -105,6 +105,7 @@ mod tests {
     #[test]
     fn outcome_wire_contract_round_trips() {
         let outcome = HarnessOutcome {
+            reply: None,
             result_ref: None,
             usage: None,
             ok: true,

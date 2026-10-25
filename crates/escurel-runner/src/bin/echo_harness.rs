@@ -444,6 +444,7 @@ fn run(task: &HarnessTask) -> Result<HarnessOutcome, String> {
         None => {
             // Nothing to fold — a clean no-op pass.
             return Ok(HarnessOutcome {
+                reply: None,
                 result_ref: None,
                 usage: None,
                 ok: true,
@@ -624,6 +625,7 @@ fn run(task: &HarnessTask) -> Result<HarnessOutcome, String> {
             tool_calls += 1;
         }
         return Ok(HarnessOutcome {
+            reply: None,
             result_ref: knob_result_ref(),
             usage: None,
             ok: true,
@@ -732,6 +734,7 @@ fn run(task: &HarnessTask) -> Result<HarnessOutcome, String> {
             }
         }
         return Ok(HarnessOutcome {
+            reply: None,
             result_ref: knob_result_ref(),
             usage: None,
             ok: true,
@@ -765,6 +768,7 @@ fn run(task: &HarnessTask) -> Result<HarnessOutcome, String> {
     // as the review path above does.
     if let Some(draft_id) = held_draft(&updated) {
         return Ok(HarnessOutcome {
+            reply: None,
             result_ref: knob_result_ref(),
             usage: None,
             ok: true,
@@ -791,6 +795,7 @@ fn run(task: &HarnessTask) -> Result<HarnessOutcome, String> {
     tool_calls += 1;
 
     Ok(HarnessOutcome {
+        reply: None,
         result_ref: knob_result_ref(),
         usage: knob_usage(),
         ok: true,
@@ -1063,6 +1068,7 @@ fn lint_scan(
     tool_calls += 1;
 
     Ok(HarnessOutcome {
+        reply: None,
         result_ref: None,
         usage: None,
         ok: true,
@@ -1161,6 +1167,7 @@ fn curate_index(
     tool_calls += 1;
 
     Ok(HarnessOutcome {
+        reply: None,
         result_ref: None,
         usage: None,
         ok: true,
@@ -1256,6 +1263,7 @@ fn eval_score(
     tool_calls += 1;
 
     Ok(HarnessOutcome {
+        reply: None,
         result_ref: None,
         usage: None,
         ok: true,
@@ -1331,6 +1339,7 @@ fn improve_apply(
     tool_calls += 1;
 
     Ok(HarnessOutcome {
+        reply: None,
         result_ref: None,
         usage: None,
         ok: true,

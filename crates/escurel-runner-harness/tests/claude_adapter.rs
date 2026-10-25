@@ -100,6 +100,11 @@ async fn claude_adapter_builds_invocation_and_parses_real_stub_output() {
     assert!(outcome.ok, "success envelope → ok");
     assert_eq!(outcome.status, HarnessStatus::Ok);
     assert_eq!(outcome.summary, "folded the renewal event");
+    assert_eq!(
+        outcome.reply.as_deref(),
+        Some("folded the renewal event"),
+        "the final assistant message is the user-facing reply"
+    );
     assert_eq!(outcome.tool_calls, 3, "num_turns mapped to tool_calls");
     assert_eq!(outcome.produced_instance, None);
 

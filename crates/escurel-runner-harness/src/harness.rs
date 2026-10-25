@@ -52,6 +52,13 @@ pub struct HarnessOutcome {
     /// meters it. `#[serde(default)]` keeps older subprocess harnesses valid.
     #[serde(default)]
     pub usage: Option<Usage>,
+    /// The user-facing answer of a chat run (governed chat agent): the
+    /// model's final message, untruncated — as distinct from `summary`, which
+    /// describes the run for the Runs view. `None` for a harness that has no
+    /// final message to offer; the runner then falls back to `summary`.
+    /// `#[serde(default)]` keeps older subprocess harnesses valid.
+    #[serde(default)]
+    pub reply: Option<String>,
 }
 
 /// Token usage and cost of one harness invocation.
