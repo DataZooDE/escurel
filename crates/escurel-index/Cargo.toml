@@ -70,7 +70,8 @@ bytes = "1"
 chrono = { version = "0.4", default-features = false, features = ["std"] }
 regex = "1"
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+# Page frontmatter keeps the order it was written in, however this crate is built.
+serde_json = { version = "1", features = ["preserve_order"] }
 sha2 = "0.10"
 hmac = "0.12"
 thiserror = "2"

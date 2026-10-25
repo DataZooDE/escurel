@@ -32,6 +32,7 @@ mod echo_analysis;
 mod echo_end_to_end;
 mod echo_rows;
 mod echo_trigger;
+mod frontmatter_key_order;
 mod gateway_lost_mid_life;
 mod gateway_not_ready;
 mod gemini_end_to_end;
