@@ -4,6 +4,12 @@ The skill version tracks the consumer-facing contract, not the Escurel
 binary version. The Escurel repo's checked-out git ref is the true version
 pin (see `SKILL.md` → "How this skill is installed").
 
+## 0.25.8 — get_draft, immutable instances cannot be archived or moved, required_when takes a list
+
+`get_draft {draft_id}` reads one draft, open or decided, behind the `list_drafts` read gate. A skill with `immutable: true`
+now also refuses `delete_page` and `move_page` of its instances (`instance_immutable`). `required_when` accepts a list of values
+(`{status: [resolved, dismissed]}`); `list_skills` publishes it as `[other_field, [value, ...]]`.
+
 ## 0.25.7 — a rebuild is index-only; the duckvfs lane store retries transient Drive errors
 
 `escurel admin rebuild` (and a cold boot on a fresh data directory) reads each page from the lane and writes only the index;

@@ -83,6 +83,12 @@ const COVERAGE: &[(&str, Coverage)] = &[
     ("abandon_branch", Agent(&["branch", "abandon"])),
     ("list_drafts", Agent(&["draft", "list"])),
     ("diff_draft", Agent(&["draft", "diff"])),
+    (
+        "get_draft",
+        Excluded(
+            "a draft is read through `draft diff`; the typed client and editors use get_draft",
+        ),
+    ),
     ("list_changesets", Agent(&["changeset", "list"])),
     ("promote_changeset", Agent(&["changeset", "promote"])),
     ("discard_changeset", Agent(&["changeset", "discard"])),

@@ -1185,6 +1185,7 @@ async fn dispatch_tools_call(
             tool_merge_branch(state, indexer, caller, state.write_acl, params.arguments).await
         }
         "abandon_branch" => tool_abandon_branch(indexer, caller, params.arguments).await,
+        "get_draft" => tool_get_draft(indexer, caller, params.arguments).await,
         "diff_draft" => tool_diff_draft(indexer, caller, params.arguments).await,
         "list_changesets" => tool_list_changesets(indexer, caller, params.arguments).await,
         "promote_changeset" => {

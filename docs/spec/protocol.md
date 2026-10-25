@@ -145,9 +145,9 @@ declare none are unchanged.
 | `fields[].kind: date`, or `kind: string` + `format: date` | `YYYY-MM-DD` | `frontmatter_field_type` |
 | `fields[].min` / `max` | inclusive number bounds | `frontmatter_field_range` |
 | `fields[].non_blank: true` | present value not empty or whitespace | `field_blank` |
-| `fields[].required_when: {other: value}` | required while `other` equals `value` | `field_required_when` |
+| `fields[].required_when: {other: value}` or `{other: [v1, v2]}` | required while `other` equals the value, or any one of the listed values (compared as text); the list must be non-empty and hold plain values, else `fields_malformed` | `field_required_when` |
 | `fields[].immutable: true` | key cannot change (or be added or dropped) after the page exists | `field_immutable` |
-| skill `immutable: true` | page bytes cannot change after the page exists; the rule follows the page path and the stored page's skill, not only the draft's `skill:` | `instance_immutable` |
+| skill `immutable: true` | page bytes cannot change after the page exists, and the page cannot be archived (`delete_page`) or renamed (`move_page`); the rule follows the page path and the stored page's skill, not only the draft's `skill:` | `instance_immutable` |
 | `fields[].kind: link`, `to: <skill>` | value is one quoted `[[<skill>::<id>]]` link (or a list of them) to a live instance of `<skill>`, saved or in the pending batch | `relation_invalid`, `relation_unresolved` |
 | `fields[].acyclic: true` (link to the field's own skill) | following the link never returns to a visited instance | `relation_cycle` |
 | skill `unique: [[a, b]]`, or `{keys: [[a, b]], scope: accepted}` | the composite key identifies at most one instance, excluding the page itself; `scope: accepted` counts only instances with `status: accepted` | `identity_duplicate` |
@@ -155,6 +155,16 @@ declare none are unchanged.
 | skill `strict_required_frontmatter: true` | `required_frontmatter` and `required: true` fields must also be non-blank | `frontmatter_required_key_missing_strict`, `frontmatter_required_key_blank_strict` |
 | skill `pack: {id, version, sha256}` (or a list) | declares an approved release | `skill_rule_malformed` if ill-formed |
 | instance `pack_id`, `pack_version`, `pack_sha256` | the page claims a release; the hash must equal the declared one | `pack_malformed`, `pack_unknown`, `pack_hash_mismatch` |
+
+**Immutable instances and removal.** An instance of a skill declared
+`immutable: true` is never changed, archived or renamed. `delete_page` and
+`move_page` refuse it with `instance_immutable` (family `instance_immutable`) for
+every role, before the in-use guard runs. An archive that arrives as an
+`update_page` with `archived: true`, as a draft, or as a changeset member is a
+byte change and is refused the same way; a changeset that carries one lands
+nothing. A field-level `immutable: true` is not affected: it freezes one key,
+not the page's existence. `purge_page` remains the operator's erasure act and
+only acts on a page that is already archived.
 
 **In-use guard.** A link field declared with `to: <skill>` also protects its
 target. `delete_page` (archive) and `move_page` (rename) refuse with
@@ -955,6 +965,28 @@ pristine content, and a future pack upgrade rebases against it.
 skill of the same id (the overlay direction of `pack_skill_collision`
 no longer refuses; two BASE pages with one id still do — no precedence
 exists between packs).
+
+### Held writes: reading a draft
+
+`list_drafts` returns the open drafts the caller may see, newest first, paged
+by `limit` + `cursor` (`next_cursor` null means done). `get_draft` reads one
+draft by id, open or decided.
+
+```
+get_draft({draft_id}) -> {draft: {draft_id, target_page_id, content,
+  content_sha256, base_sha256, author, event_id, status, reason, decided_by,
+  created_at, run_id, root_event_id, ...}}
+                      | {ok: false, issues: [{code: "not_found", ...}]}
+```
+
+`status` is `open`, `promoted` or `discarded`. A promoted draft returns the
+bytes that were approved, so a client can check them against the page's
+`content_sha256`. The read gate is the one `list_drafts` and `diff_draft`
+use: the author, or a caller with read rights on the target instance. After a
+draft is decided, a non-admin may read it only while they can still read the
+target page as it is now, so a change of owner closes the former owner's view
+of the history. A hidden draft is indistinguishable from an absent one
+(`not_found`).
 
 ### Events / inbox (M7 — Event-sourcing surface)
 

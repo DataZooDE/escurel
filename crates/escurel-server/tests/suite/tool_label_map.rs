@@ -61,6 +61,7 @@ const EXPECTED: &[&str] = &[
     "list_branches:deterministic",
     "merge_branch:orchestration",
     "diff_draft:deterministic",
+    "get_draft:deterministic",
     "discard_changeset:orchestration",
     "list_changesets:deterministic",
     "promote_changeset:orchestration",

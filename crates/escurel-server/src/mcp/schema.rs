@@ -457,6 +457,24 @@ pub(crate) fn tool_defs() -> Vec<ToolDef> {
             }),
         ),
         tool_entry(
+            "get_draft",
+            Execution::Deterministic,
+            Scope::Agent,
+            Touches::shared(Surface::Drafts),
+            "One held write by id, open OR decided: `status` (open, promoted, \
+                 discarded, ...), `target_page_id`, `content`, `content_sha256`, \
+                 `author`, the run it came from and the decision metadata. A \
+                 promoted draft returns the bytes that were approved. Read-only; \
+                 the same read gate as `list_drafts`, and a decided draft is \
+                 readable only while the caller may still read the target page. \
+                 A draft you may not see reads as `not_found`.",
+            json!({
+                "type": "object",
+                "required": ["draft_id"],
+                "properties": { "draft_id": { "type": "string" } }
+            }),
+        ),
+        tool_entry(
             "list_drafts",
             Execution::Deterministic,
             Scope::Agent,
@@ -1847,8 +1865,8 @@ fn group_of(name: &str, scope: Scope) -> &'static str {
     }
     match name {
         "list_changesets" | "promote_changeset" | "discard_changeset" | "create_branch"
-        | "list_branches" | "merge_branch" | "abandon_branch" | "diff_draft" | "list_drafts"
-        | "promote_draft" | "discard_draft" => "[REVIEW]",
+        | "list_branches" | "merge_branch" | "abandon_branch" | "diff_draft" | "get_draft"
+        | "list_drafts" | "promote_draft" | "discard_draft" => "[REVIEW]",
         "mint_agent_token"
         | "report_progress"
         | "report_runner_status"
@@ -1902,6 +1920,7 @@ fn annotations_of(name: &str) -> Value {
                 | "query_instance"
                 | "validate"
                 | "diff_draft"
+                | "get_draft"
                 | "describe_endpoint"
                 | "validate_bindings"
                 | "validate_endpoints"
@@ -2320,6 +2339,11 @@ fn output_schema_for(name: &str) -> Option<Value> {
         "discard_changeset" => obj(json!({
             "ok": { "type": "boolean" },
             "discarded": { "type": "integer" }
+        })),
+        "get_draft" => obj(json!({
+            "draft": { "type": "object", "description": "{draft_id, target_page_id, content, content_sha256, base_sha256, author, event_id, status, reason, decided_by, created_at, run_id, ...}" },
+            "ok": { "type": "boolean", "description": "false with a not_found issue when absent or hidden" },
+            "issues": { "type": "array" }
         })),
         "diff_draft" => obj(json!({
             "ok": { "type": "boolean" },

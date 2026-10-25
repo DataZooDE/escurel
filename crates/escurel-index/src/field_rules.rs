@@ -10,10 +10,10 @@
 //! | Where | Key | Meaning | Issue code |
 //! |-------|-----|---------|------------|
 //! | field | `immutable: true` | the key cannot change once the page exists | `field_immutable` |
-//! | skill | `immutable: true` | the page cannot change once it exists | `instance_immutable` |
+//! | skill | `immutable: true` | the page cannot change, be archived or be renamed once it exists | `instance_immutable` |
 //! | field | `non_blank: true` | a present value is not empty or whitespace | `field_blank` |
 //! | field | `format: date` | a string value is `YYYY-MM-DD` | `frontmatter_field_type` |
-//! | field | `required_when: {other: value}` | required while `other` equals `value` | `field_required_when` |
+//! | field | `required_when: {other: value}` or `{other: [v1, v2]}` | required while `other` equals the value, or any of the values | `field_required_when` |
 //! | field | `kind: link`, `to: <skill>` | the value is a wikilink to an existing instance of `<skill>` | `relation_invalid`, `relation_unresolved` |
 //! | field | `acyclic: true` (with a link to its own skill) | following the link never returns to the start | `relation_cycle` |
 //! | skill | `unique: [[a, b]]` (or `{keys: [[a, b]], scope: accepted}`) | the composite key identifies at most one instance | `identity_duplicate` |
@@ -254,21 +254,20 @@ pub(crate) fn check_field_rules(page_kind: PageKind, fields: &YamlMapping) -> Ve
                 ),
             ));
         }
-        if let Some(v) = attrs.get("required_when") {
-            let single = v.as_object().is_some_and(|m| m.len() == 1);
-            if !single {
-                issues.push(
-                    Issue::error(
-                        "fields_malformed",
-                        format!("{loc}.required_when"),
-                        format!(
-                            "`required_when:` on `{}` must be a one-entry mapping `{{other_field: value}}`",
-                            f.name
-                        ),
-                    )
-                    .with_suggestion("required_when: {status: accepted}"),
-                );
-            }
+        if let Some(v) = attrs.get("required_when")
+            && crate::read::parse_required_when(v).is_none()
+        {
+            issues.push(
+                Issue::error(
+                    "fields_malformed",
+                    format!("{loc}.required_when"),
+                    format!(
+                        "`required_when:` on `{}` must be a one-entry mapping `{{other_field: value}}` or `{{other_field: [value, ...]}}` with a non-empty list of plain values",
+                        f.name
+                    ),
+                )
+                .with_suggestion("required_when: {status: [resolved, dismissed]}"),
+            );
         }
         if let Some((other, _)) = &f.required_when
             && !names.contains(other.as_str())
@@ -619,14 +618,19 @@ impl Indexer {
             let active = fields
                 .get(other.as_str())
                 .and_then(scalar_text)
-                .is_some_and(|v| &v == expected);
+                .is_some_and(|v| expected.contains(&v));
             if active && fields.get(field.name.as_str()).is_none_or(is_blank) {
                 issues.push(Issue::error(
                     "field_required_when",
                     format!("frontmatter.{}", field.name),
                     format!(
-                        "`{}` is required while `{other}` is `{expected}`",
-                        field.name
+                        "`{}` is required while `{other}` is {}",
+                        field.name,
+                        expected
+                            .iter()
+                            .map(|v| format!("`{v}`"))
+                            .collect::<Vec<_>>()
+                            .join(" or ")
                     ),
                 ));
             }
@@ -693,6 +697,59 @@ impl Indexer {
             }
         }
         Ok(issues)
+    }
+
+    /// `immutable: true` on a skill also forbids removing its instances.
+    ///
+    /// `action` is `archive` (`delete_page`) or `move` (`move_page`); the
+    /// refusal carries the same `instance_immutable` code as a changed write.
+    /// The skill is read from the page path and from the stored page's own
+    /// `skill:` key, as for a write, so relabelling does not shed the rule.
+    /// `None` when the page is absent, not an instance, or of a mutable skill.
+    /// `purge_page` is deliberately not covered: it is the operator's erasure
+    /// act, and it only acts on a page that is already archived.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`IndexerError`] for an underlying DuckDB failure.
+    pub async fn immutable_removal_issue(
+        &self,
+        page_id: &str,
+        action: &str,
+    ) -> Result<Option<Issue>, IndexerError> {
+        let Some(path_skill) = page_id
+            .strip_prefix("markdown/instances/")
+            .and_then(|tail| tail.split_once('/'))
+            .map(|(skill, _)| skill)
+        else {
+            return Ok(None);
+        };
+        let Some(stored) = self.read_page_markdown(page_id).await? else {
+            return Ok(None);
+        };
+        let stored_skill = parse(&stored).ok().and_then(|p| {
+            p.frontmatter
+                .fields
+                .get("skill")
+                .and_then(YamlValue::as_str)
+                .map(str::to_owned)
+        });
+        let mut wanted: HashSet<&str> = HashSet::from([path_skill]);
+        if let Some(s) = stored_skill.as_deref() {
+            wanted.insert(s);
+        }
+        let contracts = self.resolve_skills(&wanted).await?;
+        if !contracts.values().any(|c| c.immutable) {
+            return Ok(None);
+        }
+        Ok(Some(Issue::error(
+            "instance_immutable",
+            "page_id",
+            format!(
+                "cannot {action} `{page_id}`: its skill is immutable, so an instance is never \
+                 changed, archived or renamed; write a new instance to correct it"
+            ),
+        )))
     }
 
     /// A page that claims a release (`pack_id`, `pack_version`, `pack_sha256`)

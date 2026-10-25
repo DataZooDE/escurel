@@ -213,6 +213,7 @@ privately, which put consumer-shaped objects in the knowledge base and made
 | tool | what it does |
 |---|---|
 | `create_draft` | Hold the whole proposed markdown for `target_page_id` (which need not exist yet), with the `base_sha256` it was drafted against (`""` = expect no page). Returns the draft with its `draft_id` and `content_sha256` — and, when the caller's bearer is a per-run agent token, the `run_id` / `root_event_id` the server stamped from it (never an argument; `null` for a human's draft). **`write_back: {patch: {column: value}, base_etag}`** is a declared argument for changing an external (sql/openapi/mcp) row: the server writes it into the frontmatter (`content` is then optional); a human promotes it; a value outside the field's kind/enum is refused at draft time (`write_back_invalid_value`); ONE open draft per page (`conflict`, `discard_draft` yours first). |
+| `get_draft` | `draft_id`: one draft by id, open or decided (`status`, `target_page_id`, `content`, `content_sha256`, author and run). A promoted draft returns the bytes that were approved. A hidden or absent draft is `not_found`. |
 | `list_drafts` | Everything still waiting, newest first — the answer to "what is waiting for me?". |
 | `create_branch` | `name` | `{ok, branch:{name, base_version, author, status, created_at}}` | open a BRANCH — an isolated workspace whose writes never touch the base timeline (#512). Records who opened it and what it forked from; the name is also the `scenario` its pages carry. Opening an existing name is refused, never joined; so is a name whose overlay file another branch already uses (`a/b` and `a-b` both map to `@a-b`): `ok: false`, issue `name_collision` |
 | `list_branches` | — | `{branches:[{name, base_version, author, status, reason, decided_by, created_at}]}` | every branch, newest first, including decided ones |
@@ -253,7 +254,7 @@ an `escurel:review` system event on the target page (`draft-created`,
 decided_by, already_decided}` — see *Review events* in `references/11`. A
 review queue subscribes instead of polling.
 
-Note this list is **curated, not exhaustive** — the server exposes 88 tools
+Note this list is **curated, not exhaustive** — the server exposes 89 tools
 (the count is pinned by `skill_doc_parity.rs`; update it here when the
 surface changes), most of them operator/admin surface (tenant CRUD,
 credential and endpoint registries, pack import/export, lane inspection,

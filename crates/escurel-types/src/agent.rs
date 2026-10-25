@@ -659,9 +659,10 @@ pub struct SkillField {
     /// Refinement of a string field (`date`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub format: Option<String>,
-    /// `[other_field, value]`: required while `other_field` equals `value`.
+    /// `[other_field, [value, ...]]`: required while `other_field` equals one of
+    /// the values. A single-value declaration is a one-element list.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub required_when: Option<(String, String)>,
+    pub required_when: Option<(String, Vec<String>)>,
 }
 
 /// One invocation parameter a skill declares. MCP wire keys: `name`,
