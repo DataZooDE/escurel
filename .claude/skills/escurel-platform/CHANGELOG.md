@@ -4,6 +4,12 @@ The skill version tracks the consumer-facing contract, not the Escurel
 binary version. The Escurel repo's checked-out git ref is the true version
 pin (see `SKILL.md` → "How this skill is installed").
 
+## 0.25.16 — chat runs: failed, cancelled and static-token turns
+
+A failed, timed-out or cancelled chat run posts one `assistant` turn with `status: failed` (+ `reason`) or
+`cancelled` and a one-sentence content. A static-bearer runner dead-letters chat runs with `run-finished.reason:
+chat_requires_run_tokens` and posts nothing. `run-finished.error` now also names a packaging failure.
+
 ## 0.25.15 — chat runs: the runner answers a page-chat turn as the asker
 
 An event with `provenance: {chat_group_id: "page-chat:…", user_msg_id, focus?}` is a chat run. It runs under a run

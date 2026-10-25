@@ -1122,6 +1122,12 @@ pub const CONFIG_KEYS: &[ConfigKey] = &[
         doc: "set by the runner in a harness subprocess: the scoped bearer for that run (never set it yourself)",
     },
     ConfigKey {
+        name: "ESCUREL_ECHO_FAIL_CHAT",
+        component: "TestOnly",
+        default: "—",
+        doc: "echo harness: fail every chat run (tests)",
+    },
+    ConfigKey {
         name: "ESCUREL_ECHO_FAIL_SKILL",
         component: "TestOnly",
         default: "—",

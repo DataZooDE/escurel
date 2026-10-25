@@ -83,6 +83,16 @@ fn group() -> String {
 
 /// A minted-mode runner on the echo harness (no static bearer).
 fn spawn_runner(gw: &EscurelProcess) -> (ChildGuard, String) {
+    spawn_runner_with(gw, true, &[])
+}
+
+/// A runner on the echo harness, minted (`minted`) or on a static admin
+/// bearer, with `extra` env.
+fn spawn_runner_with(
+    gw: &EscurelProcess,
+    minted: bool,
+    extra: &[(&str, &str)],
+) -> (ChildGuard, String) {
     let (signing_key, kid) = gw.signing_material();
     let listen = format!("127.0.0.1:{}", free_port());
     let ledger_dir = tempfile::tempdir().expect("tempdir");
@@ -90,10 +100,6 @@ fn spawn_runner(gw: &EscurelProcess) -> (ChildGuard, String) {
     cmd.env("ESCUREL_RUNNER_LISTEN", &listen)
         .env("ESCUREL_RUNNER_GATEWAY_URL", gw.base_url())
         .env("ESCUREL_RUNNER_TENANT", TENANT)
-        .env_remove("ESCUREL_RUNNER_TOKEN")
-        .env("ESCUREL_RUNNER_AUTH_ISSUER", gw.issuer_url())
-        .env("ESCUREL_RUNNER_AUTH_KID", kid)
-        .env("ESCUREL_RUNNER_AUTH_SIGNING_KEY", &signing_key)
         .env("ESCUREL_RUNNER_HARNESS", "echo")
         .env(
             "ESCUREL_RUNNER_LEDGER_PATH",
@@ -101,6 +107,17 @@ fn spawn_runner(gw: &EscurelProcess) -> (ChildGuard, String) {
         )
         .env("ESCUREL_RUNNER_RETRY_BACKOFF", "50ms")
         .env("ESCUREL_RUNNER_POLL_INTERVAL", "250ms");
+    if minted {
+        cmd.env_remove("ESCUREL_RUNNER_TOKEN")
+            .env("ESCUREL_RUNNER_AUTH_ISSUER", gw.issuer_url())
+            .env("ESCUREL_RUNNER_AUTH_KID", kid)
+            .env("ESCUREL_RUNNER_AUTH_SIGNING_KEY", &signing_key);
+    } else {
+        cmd.env("ESCUREL_RUNNER_TOKEN", gw.mint_token(TENANT, Role::Admin));
+    }
+    for (k, v) in extra {
+        cmd.env(k, v);
+    }
     (ChildGuard(cmd.spawn().expect("spawn runner")), listen)
 }
 
@@ -292,4 +309,89 @@ async fn a_chat_run_reads_with_the_askers_rights() {
         !content.contains("theirs"),
         "a page the asker cannot read never reaches the run: {content}"
     );
+}
+
+#[tokio::test]
+async fn a_failed_run_posts_a_failed_turn() {
+    let gw = gateway().await;
+    let alice = gw.mint_token_with_sub(TENANT, Role::Agent, ALICE);
+    let (_runner, listen) = spawn_runner_with(
+        &gw,
+        true,
+        &[
+            ("ESCUREL_ECHO_FAIL_CHAT", "1"),
+            ("ESCUREL_RUNNER_MAX_ATTEMPTS", "2"),
+        ],
+    );
+
+    let event_id = ask(&gw, &alice, "u-1", "Which customers renew?", &[]).await;
+    assert_eq!(await_terminal(&listen, &event_id).await.1, "dead_letter");
+    let msgs = messages(&gw, &alice, 2).await;
+    assert_eq!(msgs.len(), 2, "{msgs:#?}");
+    assert_eq!(msgs[1]["role"], "assistant");
+    assert_eq!(msgs[1]["metadata"]["status"], "failed");
+    assert_eq!(msgs[1]["metadata"]["reason"], "harness_error");
+    assert!(
+        msgs[1]["content"]
+            .as_str()
+            .unwrap()
+            .starts_with("I couldn't finish"),
+        "{}",
+        msgs[1]["content"]
+    );
+    // Retries exhausted, one turn — not one per attempt.
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    assert_eq!(messages(&gw, &alice, 3).await.len(), 2);
+}
+
+#[tokio::test]
+async fn a_cancelled_chat_run_posts_a_cancelled_turn() {
+    let gw = gateway().await;
+    let alice = gw.mint_token_with_sub(TENANT, Role::Agent, ALICE);
+    let (_runner, listen) = spawn_runner_with(
+        &gw,
+        true,
+        &[
+            ("ESCUREL_ECHO_SLEEP_MS", "30000"),
+            ("ESCUREL_RUNNER_CANCEL_GRACE", "1s"),
+        ],
+    );
+
+    let event_id = ask(&gw, &alice, "u-1", "Which customers renew?", &[]).await;
+    let url = format!("http://{listen}/debug/run?tenant={TENANT}&event_id={event_id}");
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while reqwest::get(&url).await.ok().map(|r| r.status()) != Some(reqwest::StatusCode::OK) {
+        assert!(Instant::now() < deadline, "the run never started");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let resp = reqwest::Client::new()
+        .post(format!("http://{listen}/debug/cancel"))
+        .json(&json!({ "tenant": TENANT, "event_id": event_id, "reason": "never mind" }))
+        .send()
+        .await
+        .expect("cancel");
+    assert_eq!(resp.status(), 200);
+
+    assert_eq!(await_terminal(&listen, &event_id).await.1, "cancelled");
+    let msgs = messages(&gw, &alice, 2).await;
+    assert_eq!(msgs.len(), 2, "{msgs:#?}");
+    assert_eq!(msgs[1]["metadata"]["status"], "cancelled");
+}
+
+#[tokio::test]
+async fn a_static_token_runner_refuses_chat() {
+    let gw = gateway().await;
+    let alice = gw.mint_token_with_sub(TENANT, Role::Agent, ALICE);
+    let (_runner, listen) = spawn_runner_with(&gw, false, &[]);
+
+    let event_id = ask(&gw, &alice, "u-1", "Which customers renew?", &[]).await;
+    let (run_id, status) = await_terminal(&listen, &event_id).await;
+    assert_eq!(status, "dead_letter");
+    let finished = run_finished(&gw, &run_id).await;
+    assert_eq!(finished["reason"], "chat_requires_run_tokens", "{finished}");
+    assert_eq!(finished["attempts"], 1, "no retry: it cannot succeed");
+    // The runner's own identity never writes into a person's chat.
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    assert_eq!(messages(&gw, &alice, 2).await.len(), 1);
 }

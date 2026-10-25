@@ -424,6 +424,13 @@ The runner treats an event whose `provenance.chat_group_id` is a `page-chat:` gr
   sentence saying why there is none), `metadata: {status: ok|failed|cancelled, drafts: [draft_id…],
   cited: [page_id…], user_msg_id, reason?}` plus the server-stamped `run_id`, `event_id`, `actor`;
   `author` is the asker.
+- A run that fails, times out or is cancelled still gets its one turn: `status: failed` (with `reason`:
+  `harness_error`, `timeout` or `budget`) or `status: cancelled`, and a one-sentence `content` — never a
+  partial answer, and one turn however many attempts ran.
+- A runner on a static `ESCUREL_RUNNER_TOKEN` refuses chat runs without starting a harness: the run
+  dead-letters after one attempt with `run-finished { reason: "chat_requires_run_tokens" }`, and no
+  turn is posted (the runner's own identity never writes into a person's chat). It logs a WARN once at
+  startup.
 - Dedup is per turn, not per content: the same words twice are two runs, while a second event for the
   same `(chat_group_id, user_msg_id)` dead-letters as `duplicate_content`.
 

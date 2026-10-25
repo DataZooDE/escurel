@@ -209,6 +209,15 @@ async fn main() -> anyhow::Result<()> {
         }
         None => None,
     };
+    // Chat runs answer as the asker with a minted run token (governed chat
+    // agent); say once, at startup, that this runner will refuse them.
+    if tokens.as_ref().is_some_and(|t| !t.can_mint()) {
+        tracing::warn!(
+            target: "escurel_runner",
+            "static ESCUREL_RUNNER_TOKEN: chat runs will fail with chat_requires_run_tokens \
+             (set ESCUREL_RUNNER_AUTH_ISSUER + ESCUREL_RUNNER_AUTH_SIGNING_KEY to answer chat)"
+        );
+    }
 
     // In-flight quota slots, shared gate → dispatch loop (#158).
     let inflight: InflightSlots = Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
@@ -2223,7 +2232,17 @@ async fn dispatch_loop(
                 }
                 (None, false, Some(RunFailure::Permanent)) => {
                     escurel_runner_core::RunFinish::DeadLetter {
-                        reason: "permanent".to_owned(),
+                        // A chat turn on a runner that cannot mint says WHY,
+                        // not just that it will never succeed (AC7).
+                        reason: if attempt_sink.lock().ok().is_some_and(|s| {
+                            s.last_error.as_deref().is_some_and(|e| {
+                                e.contains(escurel_runner_core::CHAT_REQUIRES_RUN_TOKENS)
+                            })
+                        }) {
+                            escurel_runner_core::CHAT_REQUIRES_RUN_TOKENS.to_owned()
+                        } else {
+                            "permanent".to_owned()
+                        },
                         error: attempt_sink.lock().ok().and_then(|s| s.last_error.clone()),
                     }
                 }
@@ -2596,6 +2615,10 @@ async fn attempt_run(
                 error = %e,
                 "dispatch: packaging failed"
             );
+            // `run-finished.error` names why the run never reached a harness.
+            if let Ok(mut s) = sink.lock() {
+                s.last_error = Some(e.to_string());
+            }
             package_error_to_reconcile(e)
         })?;
     task.cancel = Some(cancel.clone());
