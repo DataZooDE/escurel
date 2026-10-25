@@ -201,6 +201,9 @@ pub(super) fn blocking_issues<'a>(
             // the hole being closed: an agent could cite
             // `[[customer::invented-gmbh]]` and the graph would carry it.
             "dangling_wikilink" => true,
+            // Relation findings of a draft session (`validate_with_pending`):
+            // a link a skill declares must resolve, and must be able to land.
+            "relation_invalid" | "relation_unresolved" | "relation_cycle" => true,
             // ...but only for a WIKILINK. The same code also fires at
             // `frontmatter.skill` when a page declares a skill that is not
             // seeded yet, which is ordering-sensitive: a bulk seed may write
@@ -252,9 +255,6 @@ pub(super) fn blocking_issues<'a>(
             | "instance_immutable"
             | "field_blank"
             | "field_required_when"
-            | "relation_invalid"
-            | "relation_unresolved"
-            | "relation_cycle"
             | "identity_duplicate"
             | "pack_malformed"
             | "pack_unknown"

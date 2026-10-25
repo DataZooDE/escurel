@@ -1427,7 +1427,7 @@ async fn open_draft_for_session(
         .await
         .map_err(|e| JsonRpcError::internal(format!("open_session draft: {e}")))?
         .ok_or_else(denied)?;
-    if !caller.is_admin && draft.author != caller.subject {
+    if !draft_session_owner_permitted(caller, &draft) {
         return Err(denied());
     }
     if draft.status != "open" {
@@ -1442,6 +1442,19 @@ async fn open_draft_for_session(
         .with_code("already_decided", false));
     }
     Ok(draft)
+}
+
+/// Who may open, edit or commit a draft session: admin, or the draft's author.
+/// A machine caller must also belong to the run that created the draft, so a
+/// second run that shares a service subject cannot edit another run's draft.
+fn draft_session_owner_permitted(
+    caller: &AclCaller<'_>,
+    draft: &escurel_index::drafts::DraftInfo,
+) -> bool {
+    caller.is_admin
+        || (draft.author == caller.subject
+            && (!tools_write::is_machine_caller(caller)
+                || (caller.run_id.is_some() && draft.run_id.as_deref() == caller.run_id)))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1700,6 +1713,28 @@ async fn tool_apply_op(
         return Err(JsonRpcError::internal(
             "live CRDT mode not enabled on this server",
         ));
+    }
+
+    // A session id is not authority to edit a draft from another run that
+    // happens to use the same service subject.
+    if let (Some(key), Some(ix)) = (sessions.page_id_of(&a.session), indexer)
+        && let Some(draft_id) = crate::session::draft_id_of_key(&key)
+    {
+        let draft = ix
+            .get_draft(draft_id)
+            .await
+            .map_err(|e| JsonRpcError::internal(format!("apply_op draft: {e}")))?;
+        if !draft
+            .as_ref()
+            .is_some_and(|d| draft_session_owner_permitted(&caller, d))
+        {
+            return Err(JsonRpcError {
+                code: -32000,
+                message: "apply_op denied: draft session is not yours to edit".to_owned(),
+                data: None,
+            }
+            .with_code("forbidden", false));
+        }
     }
 
     // The same gate `close_session` applies, for the same reason and at the
@@ -1972,12 +2007,14 @@ async fn tool_close_session(
         // path below. Closing a session is itself an action — it ends the
         // author's editing and frees the key — so a stranger holding the
         // session id must not be able to do it by committing nothing.
+        let draft = ix
+            .get_draft(&key)
+            .await
+            .map_err(|e| JsonRpcError::internal(format!("close_session draft: {e}")))?;
         let permitted = caller.is_admin
-            || ix
-                .get_draft(&key)
-                .await
-                .map_err(|e| JsonRpcError::internal(format!("close_session draft: {e}")))?
-                .is_some_and(|d| d.author == subject);
+            || draft
+                .as_ref()
+                .is_some_and(|d| draft_session_owner_permitted(&caller, d));
         if !permitted {
             // The session stays open, as on the page path: the author can still
             // discard their own work. The refusal deliberately does not name the
@@ -1997,6 +2034,58 @@ async fn tool_close_session(
         }
         // Empty is what a just-opened session that never received an op
         // reports; saving it would blank the draft.
+        let _draft_gate = if body.trim().is_empty() {
+            None
+        } else {
+            Some(state.update_page_gate.lock().await)
+        };
+        if !body.trim().is_empty() {
+            // Judge the edited bytes with the draft's siblings, as `create_draft`
+            // did, and keep the gate from here to the write so a linked target
+            // cannot disappear in between. A refused edit leaves the stored
+            // draft unchanged and the session open.
+            if let Some(draft) = draft.as_ref() {
+                let mut pending_targets = std::collections::HashMap::new();
+                if let Some(changeset_id) = draft.changeset_id.as_deref() {
+                    let members = ix.drafts_in_changeset(changeset_id).await.map_err(|e| {
+                        JsonRpcError::internal(format!("close_session changeset: {e}"))
+                    })?;
+                    pending_targets.extend(
+                        members
+                            .into_iter()
+                            .filter(|m| {
+                                m.status == "open"
+                                    && m.draft_id != draft.draft_id
+                                    && m.author == draft.author
+                                    && m.run_id == draft.run_id
+                            })
+                            .map(|m| (m.target_page_id, m.content)),
+                    );
+                }
+                let validation = ix
+                    .validate_batch_member(Some(&draft.target_page_id), &body, &pending_targets)
+                    .await
+                    .map_err(|e| {
+                        JsonRpcError::internal(format!("close_session draft validate: {e}"))
+                    })?;
+                // Work in progress may be incomplete or not parse yet (it stays
+                // visible to its author), so the session refuses only what no
+                // later edit of a sibling can repair for it: a relation that
+                // breaks the batch.
+                if validation.iter().any(|i| {
+                    i.severity == escurel_index::Severity::Error
+                        && matches!(
+                            i.code.as_str(),
+                            "relation_invalid" | "relation_unresolved" | "relation_cycle"
+                        )
+                }) {
+                    return Ok(json!({
+                        "ok": false,
+                        "issues": validation.iter().map(tools_read::issue_to_json).collect::<Vec<_>>(),
+                    }));
+                }
+            }
+        }
         if !body.trim().is_empty()
             && ix
                 .set_draft_content(&key, &body)

@@ -37,6 +37,9 @@ const NOTE: &str = "---\nkind: skill\nid: note\ndescription: A note.\n\
     visibility: public\n---\n# note\n";
 const BASE: &str = "---\nkind: instance\nskill: note\nid: plan\n---\n# Plan\n\nv1 body.\n";
 const PAGE: &str = "markdown/instances/note/plan.md";
+const EPIC_SKILL: &str =
+    "---\nkind: skill\nid: epic\ndescription: A group of tickets.\nautonomy: review\n---\n# Epic\n";
+const TICKET_SKILL: &str = "---\nkind: skill\nid: ticket\ndescription: A work item.\nautonomy: review\nfields:\n  - {name: epic, kind: link, to: epic}\n  - {name: after, kind: link, to: ticket}\n---\n# Ticket\n";
 const AUTHOR: &str = "ada";
 const STRANGER: &str = "grace";
 
@@ -59,6 +62,8 @@ async fn start() -> Harness {
                 .tenant(TENANT)
                 .skill("note", NOTE)
                 .instance("note", "plan", BASE)
+                .skill("epic", EPIC_SKILL)
+                .skill("ticket", TICKET_SKILL)
                 .done(),
         ),
         config_overrides: ConfigOverrides {
@@ -126,6 +131,312 @@ fn op_inserting(body: &str) -> String {
     doc.get_text("body").insert(0, body).unwrap();
     doc.commit();
     B64.encode(doc.export(ExportMode::updates(&vv)).unwrap())
+}
+
+/// Replace the body of an open draft through a live session and close it.
+async fn edit_draft_body(
+    h: &Harness,
+    token: &str,
+    draft_id: &str,
+    before: &str,
+    after: &str,
+) -> Value {
+    let opened = call(h, token, "open_session", json!({ "draft_id": draft_id })).await;
+    let sid = opened["session"].as_str().unwrap();
+    let doc = LoroDoc::new();
+    doc.import(&B64.decode(opened["snapshot"].as_str().unwrap()).unwrap())
+        .unwrap();
+    let vv = doc.oplog_vv();
+    doc.get_text("body").delete(0, before.len()).unwrap();
+    doc.get_text("body").insert(0, after).unwrap();
+    doc.commit();
+    let op = B64.encode(doc.export(ExportMode::updates(&vv)).unwrap());
+    let applied = raw(h, token, "apply_op", json!({ "session": sid, "op": op })).await;
+    assert!(applied.get("error").is_none(), "apply_op: {applied}");
+    call(
+        h,
+        token,
+        "close_session",
+        json!({ "session": sid, "commit": true }),
+    )
+    .await
+}
+
+fn epic(id: &str) -> String {
+    format!("---\nkind: instance\nskill: epic\nid: {id}\n---\n# {id}\n")
+}
+
+fn ticket(id: &str, links: &str) -> String {
+    format!("---\nkind: instance\nskill: ticket\nid: {id}\n{links}---\n# {id}\n")
+}
+
+fn ticket_page(id: &str) -> String {
+    format!("markdown/instances/ticket/{id}.md")
+}
+
+async fn create(h: &Harness, token: &str, page: &str, content: &str, join: Value) -> Value {
+    let mut args = json!({"target_page_id": page, "content": content, "base_sha256": ""});
+    match join {
+        Value::String(_) => args["changeset_id"] = join,
+        _ => args["new_changeset"] = json!(true),
+    }
+    call(h, token, "create_draft", args).await
+}
+
+fn codes(v: &Value) -> Vec<String> {
+    v["issues"]
+        .as_array()
+        .map(|a| {
+            a.iter()
+                .map(|i| i["code"].as_str().unwrap().to_owned())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+#[tokio::test]
+async fn a_session_can_link_to_a_page_another_member_creates() {
+    let h = start().await;
+    let token = author_token(&h);
+    let first = create(
+        &h,
+        &token,
+        "markdown/instances/epic/launch.md",
+        &epic("launch"),
+        Value::Null,
+    )
+    .await;
+    assert_eq!(first["ok"], true, "{first}");
+    let changeset = first["draft"]["changeset_id"].clone();
+    let before = ticket("t1", "");
+    let after = ticket("t1", "epic: \"[[epic::launch]]\"\n");
+    let second = create(&h, &token, &ticket_page("t1"), &before, changeset.clone()).await;
+    assert_eq!(second["ok"], true, "{second}");
+    let edited = edit_draft_body(
+        &h,
+        &token,
+        second["draft"]["draft_id"].as_str().unwrap(),
+        &before,
+        &after,
+    )
+    .await;
+    assert_eq!(edited["ok"], true, "{edited}");
+    let listed = call(&h, &token, "list_changesets", json!({})).await;
+    assert_eq!(
+        listed["changesets"][0]["members"].as_array().unwrap().len(),
+        2
+    );
+    let landed = call(
+        &h,
+        &token,
+        "promote_changeset",
+        json!({"changeset_id": changeset}),
+    )
+    .await;
+    assert_eq!(landed["ok"], true, "{landed}");
+    // The target lands before the page that links to it, whatever the draft order.
+    assert_eq!(
+        landed["results"][0]["page_id"],
+        "markdown/instances/epic/launch.md"
+    );
+    let page = call(&h, &token, "expand", json!({"page_id": ticket_page("t1")})).await;
+    assert_eq!(page["frontmatter"]["epic"], "[[epic::launch]]");
+}
+
+#[tokio::test]
+async fn a_declared_relation_must_resolve_and_name_the_declared_skill() {
+    let h = start().await;
+    let token = author_token(&h);
+    let missing = call(
+        &h,
+        &token,
+        "create_draft",
+        json!({
+            "target_page_id": ticket_page("t2"),
+            "content": ticket("t2", "epic: \"[[epic::nowhere]]\"\n"),
+            "base_sha256": ""
+        }),
+    )
+    .await;
+    assert_eq!(missing["ok"], false, "{missing}");
+    assert_eq!(codes(&missing), ["relation_unresolved"], "{missing}");
+    let wrong = call(
+        &h,
+        &token,
+        "create_draft",
+        json!({
+            "target_page_id": ticket_page("t2"),
+            "content": ticket("t2", "epic: \"[[note::plan]]\"\n"),
+            "base_sha256": ""
+        }),
+    )
+    .await;
+    assert_eq!(wrong["ok"], false, "{wrong}");
+    assert!(
+        codes(&wrong).contains(&"relation_invalid".to_owned()),
+        "{wrong}"
+    );
+    let bare = call(
+        &h,
+        &token,
+        "create_draft",
+        json!({
+            "target_page_id": ticket_page("t2"),
+            "content": ticket("t2", "epic: launch\n"),
+            "base_sha256": ""
+        }),
+    )
+    .await;
+    assert_eq!(bare["ok"], false, "{bare}");
+    assert!(
+        codes(&bare).contains(&"relation_invalid".to_owned()),
+        "{bare}"
+    );
+}
+
+#[tokio::test]
+async fn relations_that_wait_on_each_other_refuse_the_whole_changeset() {
+    let h = start().await;
+    let token = author_token(&h);
+    let a_before = ticket("cyc-a", "");
+    let a_after = ticket("cyc-a", "after: \"[[ticket::cyc-b]]\"\n");
+    let b = ticket("cyc-b", "after: \"[[ticket::cyc-a]]\"\n");
+    let first = create(&h, &token, &ticket_page("cyc-a"), &a_before, Value::Null).await;
+    assert_eq!(first["ok"], true, "{first}");
+    let changeset = first["draft"]["changeset_id"].clone();
+    let second = create(&h, &token, &ticket_page("cyc-b"), &b, changeset.clone()).await;
+    assert_eq!(second["ok"], true, "{second}");
+
+    // Closing the session that would complete the cycle is refused, and the
+    // stored draft keeps its previous content.
+    let edited = edit_draft_body(
+        &h,
+        &token,
+        first["draft"]["draft_id"].as_str().unwrap(),
+        &a_before,
+        &a_after,
+    )
+    .await;
+    assert_eq!(edited["ok"], false, "{edited}");
+    assert!(
+        codes(&edited).contains(&"relation_cycle".to_owned()),
+        "{edited}"
+    );
+    let listed = call(&h, &token, "list_drafts", json!({})).await;
+    let stored = listed["drafts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|d| d["draft_id"] == first["draft"]["draft_id"])
+        .unwrap();
+    assert_eq!(stored["content"], a_before);
+}
+
+#[tokio::test]
+async fn another_run_with_the_same_subject_cannot_edit_a_draft_session() {
+    let h = start().await;
+    let first =
+        h.process
+            .mint_token_for_run(TENANT, Role::Agent, AUTHOR, "run-first", "event-first");
+    let second =
+        h.process
+            .mint_token_for_run(TENANT, Role::Agent, AUTHOR, "run-second", "event-second");
+    let draft = call(
+        &h,
+        &first,
+        "create_draft",
+        json!({"target_page_id": PAGE, "content": BASE, "base_sha256": sha(BASE)}),
+    )
+    .await;
+    assert_eq!(draft["ok"], true, "{draft}");
+    let id = draft["draft"]["draft_id"].as_str().unwrap();
+    let denied_open = raw(&h, &second, "open_session", json!({"draft_id": id})).await;
+    assert!(denied_open.get("error").is_some(), "{denied_open}");
+    let opened = call(&h, &first, "open_session", json!({"draft_id": id})).await;
+    let session = opened["session"].as_str().unwrap();
+    let denied_op = raw(
+        &h,
+        &second,
+        "apply_op",
+        json!({"session": session, "op": op_inserting("interference")}),
+    )
+    .await;
+    assert!(denied_op.get("error").is_some(), "{denied_op}");
+    let denied_close = call(
+        &h,
+        &second,
+        "close_session",
+        json!({"session": session, "commit": true}),
+    )
+    .await;
+    assert_eq!(denied_close["ok"], false, "{denied_close}");
+    let owner_close = call(
+        &h,
+        &first,
+        "close_session",
+        json!({"session": session, "commit": false}),
+    )
+    .await;
+    assert_eq!(owner_close["ok"], true, "{owner_close}");
+}
+
+#[tokio::test]
+async fn a_changeset_of_another_run_reads_as_absent_when_joining() {
+    let h = start().await;
+    let first =
+        h.process
+            .mint_token_for_run(TENANT, Role::Agent, AUTHOR, "run-first", "event-first");
+    let second =
+        h.process
+            .mint_token_for_run(TENANT, Role::Agent, AUTHOR, "run-second", "event-second");
+    let seed = create(
+        &h,
+        &first,
+        "markdown/instances/epic/own.md",
+        &epic("own"),
+        Value::Null,
+    )
+    .await;
+    assert_eq!(seed["ok"], true, "{seed}");
+    let joined = create(
+        &h,
+        &second,
+        &ticket_page("t3"),
+        &ticket("t3", ""),
+        seed["draft"]["changeset_id"].clone(),
+    )
+    .await;
+    assert_eq!(joined["ok"], false, "{joined}");
+    assert!(
+        joined["issues"][0]["message"]
+            .as_str()
+            .unwrap()
+            .contains("no changeset")
+    );
+}
+
+#[tokio::test]
+async fn a_second_create_draft_for_the_same_new_page_does_not_replace_the_first() {
+    let h = start().await;
+    let token = author_token(&h);
+    let page = "markdown/instances/epic/fresh.md";
+    let first = call(
+        &h,
+        &token,
+        "create_draft",
+        json!({"target_page_id": page, "content": epic("fresh"), "base_sha256": ""}),
+    )
+    .await;
+    assert_eq!(first["ok"], true, "{first}");
+    let second = call(
+        &h,
+        &token,
+        "create_draft",
+        json!({"target_page_id": page, "content": epic("fresh"), "base_sha256": ""}),
+    )
+    .await;
+    assert_eq!(second["ok"], false, "{second}");
+    assert_eq!(codes(&second), ["conflict"], "{second}");
 }
 
 /// The page's stored hash, as `expand` publishes it.
