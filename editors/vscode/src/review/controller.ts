@@ -20,9 +20,38 @@ import {
   interpretPromoteDraftSuccess,
   resolveReviewTarget,
   type ChangesetQuickPickItem,
+  type ReviewTarget,
   type DecisionOutcome,
 } from './reviewModel';
 import { decodeReviewUri, encodeReviewUri } from './uri';
+import { collectBefore, runAfter, type ReviewHookRegistry } from './hooks';
+import type { ReviewPreviewPanel } from './previewPanel';
+import type { GatewayClient, ReviewDecision, ReviewDraftRef } from '../api/types';
+
+/** What the host wires in from companion extensions: decision hooks and the preview beside a diff. */
+export interface ReviewExtensions {
+  hooks: ReviewHookRegistry;
+  gateway: GatewayClient;
+  preview?: ReviewPreviewPanel;
+}
+
+/** The proposal's own provenance as strings: what a companion may want to record with a decision. */
+function provenanceOf(d: Draft): Record<string, string> {
+  const out: Record<string, string> = {};
+  const put = (k: string, v: unknown) => {
+    if (typeof v === 'string' && v) out[k] = v;
+  };
+  put('author', d.author);
+  put('run_id', d.run_id);
+  put('root_event_id', d.root_event_id);
+  put('event_id', d.event_id);
+  put('changeset_id', d.changeset_id);
+  put('created_at', d.created_at);
+  put('base_version', d.base_version);
+  put('base_sha256', d.base_sha256);
+  put('content_sha256', d.content_sha256);
+  return out;
+}
 
 /**
  * Orchestrates the Escurel Review Surface.
@@ -38,6 +67,7 @@ export class ReviewController implements vscode.Disposable {
     private readonly contentProvider: ReviewContentProvider,
     private readonly commentsController: ReviewCommentsController,
     private readonly refreshAwaiting: () => void,
+    private readonly extensions?: ReviewExtensions,
   ) {
     this.disposables.push(
       vscode.commands.registerCommand('escurel.openReview', (arg?: unknown) =>
@@ -79,6 +109,7 @@ export class ReviewController implements vscode.Disposable {
     context: vscode.ExtensionContext,
     client: () => EscurelClient,
     refreshAwaiting: () => void,
+    extensions?: ReviewExtensions,
   ): ReviewController {
     const contentProvider = ReviewContentProvider.register(context, client);
     const commentsController = ReviewCommentsController.register(context, client);
@@ -87,6 +118,7 @@ export class ReviewController implements vscode.Disposable {
       contentProvider,
       commentsController,
       refreshAwaiting,
+      extensions,
     );
     context.subscriptions.push(controller);
     return controller;
@@ -263,13 +295,99 @@ export class ReviewController implements vscode.Disposable {
     try {
       await vscode.commands.executeCommand('vscode.diff', baseUri, proposedUri, title);
       await this.commentsController.loadCommentsForDraft(draft);
+      // What companions add beside the diff is an addition: it must never cost the reviewer the diff.
+      await this.extensions?.preview?.show(draft).catch((err: unknown) => {
+        log().warn(`review: preview unavailable: ${describeError(err)}`);
+      });
     } finally {
       this.openingDrafts.delete(draft.draft_id);
     }
   }
 
+  /** The open drafts a decision applies to, read before the decision so hooks can name them. */
+  private async draftsOf(target: ReviewTarget): Promise<Draft[]> {
+    try {
+      if (target.kind === 'draft') {
+        const cached = this.contentProvider.getDraft(target.draftId);
+        if (cached) return [cached];
+        return (await this.client().listDrafts()).filter((d) => d.draft_id === target.draftId);
+      }
+      return (await this.client().listDrafts()).filter(
+        (d) => d.changeset_id === target.changesetId && d.status === 'open',
+      );
+    } catch (err) {
+      log().warn(`review: could not read the drafts for the hooks: ${describeError(err)}`);
+      return [];
+    }
+  }
+
   /**
-   * Promotes a draft or changeset.
+   * Before a decision: companions may veto and may ask for a note. Returns the note (empty when none was
+   * asked), or undefined when the decision must not go on (a veto, or the reviewer cancelled the prompt).
+   * Without a hook that asks, `fallback` is the host's own optional reason prompt (a reject has one).
+   */
+  private async beforeDecision(
+    decision: ReviewDecision,
+    drafts: Draft[],
+    fallback?: { prompt: string; placeHolder: string },
+  ): Promise<{ note: string } | undefined> {
+    const hooks = this.extensions?.hooks;
+    const asked =
+      hooks && hooks.size
+        ? await collectBefore(hooks, {
+            decision,
+            drafts: drafts.map(
+              (d): ReviewDraftRef => ({ draftId: d.draft_id, targetPageId: d.target_page_id }),
+            ),
+            client: this.extensions!.gateway,
+          })
+        : { note: 'none' as const };
+    if ('veto' in asked && asked.veto) {
+      void vscode.window.showWarningMessage(asked.veto);
+      return undefined;
+    }
+    if (asked.note === 'none' && !fallback) return { note: '' };
+    const required = asked.note === 'required';
+    const prompt = 'prompt' in asked ? asked.prompt : undefined;
+    const input = await vscode.window.showInputBox({
+      prompt:
+        prompt ??
+        (asked.note === 'none'
+          ? fallback!.prompt
+          : `Decision note (${required ? 'required' : 'optional'})`),
+      ...(asked.note === 'none' ? { placeHolder: fallback!.placeHolder } : {}),
+      ...(required
+        ? { validateInput: (v: string) => (v.trim() ? undefined : 'A note is required.') }
+        : {}),
+    });
+    // The reviewer pressed Escape.
+    if (input === undefined) return undefined;
+    return { note: input.trim() };
+  }
+
+  /** After a decision was recorded: tell the hooks, once per decided draft. Never throws. */
+  private async afterDecision(
+    decision: ReviewDecision,
+    decided: { draftId: string; targetPageId: string; draft?: Draft }[],
+    note: string,
+  ): Promise<void> {
+    const hooks = this.extensions?.hooks;
+    if (!hooks || !hooks.size) return;
+    for (const d of decided) {
+      await runAfter(hooks, {
+        draftId: d.draftId,
+        targetPageId: d.targetPageId,
+        decision,
+        note,
+        provenance: d.draft ? provenanceOf(d.draft) : {},
+        client: this.extensions!.gateway,
+      });
+    }
+  }
+
+  /**
+   * Promotes a draft or changeset. A companion's own "accept with edits" command saves its edit and
+   * passes `withEdits: true`, so the hooks hear `accepted_with_edits`.
    */
   async promote(arg?: unknown): Promise<void> {
     const activeUri = vscode.window.activeTextEditor?.document.uri.toString();
@@ -280,12 +398,25 @@ export class ReviewController implements vscode.Disposable {
       return;
     }
 
+    const decision: ReviewDecision =
+      (arg as { withEdits?: unknown } | undefined)?.withEdits === true
+        ? 'accepted_with_edits'
+        : 'accepted';
+    const before = this.extensions?.hooks.size ? await this.draftsOf(target) : [];
+    const gate = await this.beforeDecision(decision, before);
+    if (!gate) return;
+
     let outcome: DecisionOutcome;
 
     if (target.kind === 'draft') {
       try {
         await this.client().promoteDraft({ draft_id: target.draftId });
         outcome = interpretPromoteDraftSuccess(target.draftId);
+        await this.afterDecision(
+          decision,
+          before.map((d) => ({ draftId: d.draft_id, targetPageId: d.target_page_id, draft: d })),
+          gate.note,
+        );
         this.tell(outcome, 'info', arg);
       } catch (err) {
         outcome = interpretPromoteDraftError(err, target.draftId);
@@ -309,6 +440,17 @@ export class ReviewController implements vscode.Disposable {
     try {
       const res = await this.client().promoteChangeset({ changeset_id: target.changesetId });
       outcome = interpretPromoteChangesetResult(res);
+      await this.afterDecision(
+        decision,
+        res.results
+          .filter((row) => row.ok && !row.already_applied)
+          .map((row) => ({
+            draftId: row.draft_id,
+            targetPageId: row.page_id,
+            draft: before.find((d) => d.draft_id === row.draft_id),
+          })),
+        gate.note,
+      );
       if (outcome.kind === 'partial') {
         this.tell(outcome, 'warning', arg);
       } else {
@@ -354,13 +496,14 @@ export class ReviewController implements vscode.Disposable {
       return;
     }
 
-    const input = await vscode.window.showInputBox({
+    const before = this.extensions?.hooks.size ? await this.draftsOf(target) : [];
+    const gate = await this.beforeDecision('rejected', before, {
       prompt: `Reason for discarding ${target.kind === 'draft' ? 'draft' : 'changeset'} (optional)`,
       placeHolder: 'Optional discard reason',
     });
-    // User pressed Escape to cancel
-    if (input === undefined) return;
-    const reason = input.trim() ? input.trim() : undefined;
+    // Escape, or a companion's veto
+    if (!gate) return;
+    const reason = gate.note ? gate.note : undefined;
 
     let outcome: DecisionOutcome;
 
@@ -368,6 +511,11 @@ export class ReviewController implements vscode.Disposable {
       try {
         await this.client().discardDraft({ draft_id: target.draftId, reason });
         outcome = interpretDiscardResult('draft', target.draftId);
+        await this.afterDecision(
+          'rejected',
+          before.map((d) => ({ draftId: d.draft_id, targetPageId: d.target_page_id, draft: d })),
+          gate.note,
+        );
         this.tell(outcome, 'info', arg);
       } catch (err) {
         outcome = interpretDiscardError(err, 'draft', target.draftId);
@@ -391,6 +539,11 @@ export class ReviewController implements vscode.Disposable {
     try {
       await this.client().discardChangeset({ changeset_id: target.changesetId, reason });
       outcome = interpretDiscardResult('changeset', target.changesetId);
+      await this.afterDecision(
+        'rejected',
+        before.map((d) => ({ draftId: d.draft_id, targetPageId: d.target_page_id, draft: d })),
+        gate.note,
+      );
       this.tell(outcome, 'info', arg);
     } catch (err) {
       outcome = interpretDiscardError(err, 'changeset', target.changesetId);

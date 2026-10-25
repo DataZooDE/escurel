@@ -38,8 +38,11 @@ describe('the public extension API', () => {
       'apiVersion',
       'getClient',
       'onDidChangeTenant',
+      'registerInboxDecorator',
       'registerOverviewTile',
+      'registerPageAugment',
       'registerPageRenderer',
+      'registerReviewHook',
       'themeCss',
       'themeTokens',
       'webviewHtml',
@@ -144,5 +147,23 @@ describe('webviewHtml for a companion', () => {
     expect(() => api.webviewHtml({ ...base, bundle: '../x', tag: 'a-b' })).toThrow();
     expect(() => api.webviewHtml({ ...base, bundle: 'x', tag: 'a-b><script>' })).toThrow();
     expect(() => api.webviewHtml({ ...base, bundle: 'x', tag: 'nohyphen' })).toThrow();
+  });
+
+  it('registers review hooks, rejects an empty one, and removes one on dispose', () => {
+    const { api, contributions } = setup();
+    const d = api.registerReviewHook({ before: () => undefined });
+    expect(contributions.reviewHooks.size).toBe(1);
+    expect(() => api.registerReviewHook({})).toThrow(/at least one/);
+    d.dispose();
+    expect(contributions.reviewHooks.size).toBe(0);
+  });
+
+  it('registers inbox decorators, rejects an empty one, and removes one on dispose', () => {
+    const { api, contributions } = setup();
+    const d = api.registerInboxDecorator('acme-request', { decorate: () => undefined });
+    expect(contributions.inboxDecorators.size).toBe(1);
+    expect(() => api.registerInboxDecorator('acme-request', {})).toThrow(/at least one/);
+    d.dispose();
+    expect(contributions.inboxDecorators.size).toBe(0);
   });
 });

@@ -29,6 +29,14 @@ Overview board, `registerPageRenderer(skill, renderer)` for the page view of one
 Types are in `src/api/types.ts` (types only). The contract, its rules and what it deliberately leaves out are in
 [`docs/design/extension-api.md`](../../docs/design/extension-api.md).
 
+Three additive hooks extend the generic views instead of replacing them. `registerPageAugment(skill, { sections?,
+actions?, forms? })` adds read-only sections (data from a host-side provider, drawn by the core webview from a
+declarative schema), buttons that run a host command, and forms whose submit can only call `create_draft`.
+`registerReviewHook({ before?, after?, preview? })` lets a companion ask for a decision note, veto, record the
+decision and add a preview beside a review diff.
+`registerInboxDecorator(skill, { decorate?, emptyMessage? })` sets a badge, secondary text and status on Inbox rows
+(data only) and contributes a localized empty-state message.
+
 ## Security model
 
 The gateway decides what you may do; the extension only avoids offering what it knows will be refused. What it

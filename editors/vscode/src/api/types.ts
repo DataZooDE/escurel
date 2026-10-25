@@ -2,6 +2,7 @@
 // version constant this file emits nothing, so a companion can `import type` from it without
 // bundling any of Escurel. The rules for every member are in docs/design/extension-api.md.
 import type * as vscode from 'vscode';
+import type { AugmentBlock, AugmentFieldKind, AugmentTone } from '../shared/augment';
 
 export type {
   PageModel,
@@ -104,6 +105,202 @@ export interface EscurelExtensionApi {
   readonly themeCss: string;
   registerOverviewTile(tile: OverviewTileContribution): vscode.Disposable;
   registerPageRenderer(skill: string, renderer: PageRenderer): vscode.Disposable;
+  /** Adds read-only sections, buttons and `create_draft` forms to the generic page view of `skill`. */
+  registerPageAugment(skill: string, augment: PageAugment): vscode.Disposable;
+  /** Hooks around the review decision (accept, reject, accept with edits) and a preview beside the diff. */
+  registerReviewHook(hook: ReviewHook): vscode.Disposable;
+  /** Decorates the Inbox rows of `skill` (badge, secondary text, status) and contributes an empty-state message. */
+  registerInboxDecorator(skill: string, decorator: InboxDecorator): vscode.Disposable;
   /** Fires when the gateway or the signed-in identity changed: drop cached data. */
   readonly onDidChangeTenant: vscode.Event<TenantInfo>;
+}
+
+// ── page view augment ────────────────────────────────────────────────
+
+export type {
+  AugmentTone,
+  AugmentBlock,
+  AugmentSection,
+  AugmentFact,
+  AugmentFieldKind,
+} from '../shared/augment';
+
+/** A section a companion adds to a page view. List lines may name a host command; the webview never sees it. */
+export interface AugmentSectionData {
+  /** `[A-Za-z0-9][A-Za-z0-9._-]*`, at most 64 characters, unique within the page. */
+  id: string;
+  title: string;
+  blocks: (
+    | Exclude<AugmentBlock, { type: 'list' }>
+    | {
+        type: 'list';
+        items: { label: string; detail?: string; tone?: AugmentTone; command?: string; args?: unknown[] }[];
+      }
+  )[];
+  empty?: string;
+}
+
+/** A button that runs a host command. The id is the companion's own; the host hands the webview another. */
+export interface AugmentActionData {
+  id: string;
+  label: string;
+  hint?: string;
+  command: string;
+  args?: unknown[];
+}
+
+export interface AugmentFieldData {
+  name: string;
+  label: string;
+  kind: AugmentFieldKind;
+  required?: boolean;
+  /** Members of an `enum` field. */
+  values?: string[];
+  /** Characters; default 2000, at most 20000. */
+  maxLength?: number;
+}
+
+/** The only write a form can make: `create_draft`. The decision stays with a reviewer. */
+export interface CreateDraftArgs {
+  target_page_id: string;
+  content: string;
+  base_sha256?: string;
+}
+
+export interface AugmentFormData {
+  /** Lower case, `[a-z][a-z0-9._-]*`, at most 64 characters. */
+  id: string;
+  title: string;
+  submitLabel?: string;
+  fields: AugmentFieldData[];
+  /** Host side. Gets the values the host validated; returns the draft to create. */
+  toDraft(values: Record<string, unknown>, ctx: PageAugmentContext): CreateDraftArgs | Promise<CreateDraftArgs>;
+}
+
+export interface PageAugmentContext {
+  pageId: string;
+  skill: string;
+  frontmatter: Record<string, unknown>;
+  client: GatewayClient;
+  /** Aborted when the page stops waiting (about 5 s). */
+  signal?: AbortSignal;
+}
+
+export interface PageAugment {
+  /** Read-only sections, drawn by the core webview from the declarative schema. */
+  sections?(ctx: PageAugmentContext): AugmentSectionData[] | Promise<AugmentSectionData[]>;
+  /** Extra buttons: a host command id and arguments, checked by the host. */
+  actions?(ctx: PageAugmentContext): AugmentActionData[] | Promise<AugmentActionData[]>;
+  /** Forms whose submit can only call `create_draft`. */
+  forms?: AugmentFormData[];
+}
+
+// ── review decision hooks ────────────────────────────────────────────
+
+export type ReviewDecision = 'accepted' | 'rejected' | 'accepted_with_edits';
+
+/** A proposal under decision, by ids only. */
+export interface ReviewDraftRef {
+  draftId: string;
+  targetPageId: string;
+}
+
+export interface ReviewBeforeContext {
+  decision: ReviewDecision;
+  /** One draft, or every open draft of a changeset. */
+  drafts: ReviewDraftRef[];
+  client: GatewayClient;
+  /** Aborted when the review stops waiting (about 5 s). */
+  signal?: AbortSignal;
+}
+
+export interface ReviewBeforeResult {
+  /** Ask the reviewer for a note: `required` refuses an empty one. Default: no question. */
+  note?: 'required' | 'optional';
+  /** The question, one line. */
+  notePrompt?: string;
+  /** A non-empty message stops the decision and is shown to the reviewer. Only this blocks. */
+  veto?: string;
+}
+
+export interface ReviewAfterContext {
+  draftId: string;
+  targetPageId: string;
+  decision: ReviewDecision;
+  /** What the reviewer wrote; empty when no note was asked or given. */
+  note: string;
+  /** The proposal's own provenance (author, run, thread, changeset, creation time), string values only. */
+  provenance: Record<string, string>;
+  client: GatewayClient;
+}
+
+export interface ReviewPreviewContext {
+  draftId: string;
+  targetPageId: string;
+  client: GatewayClient;
+  signal?: AbortSignal;
+}
+
+export interface ReviewHook {
+  /**
+   * Before accept, reject or accept-with-edits: may ask for a decision note and may veto. An error or a
+   * timeout is ignored (logged); only an explicit `veto` blocks.
+   */
+  before?(ctx: ReviewBeforeContext): ReviewBeforeResult | void | Promise<ReviewBeforeResult | void>;
+  /** After the decision was recorded, once per decided draft: e.g. store an event. Errors are ignored. */
+  after?(ctx: ReviewAfterContext): void | Promise<void>;
+  /**
+   * Sections shown beside the diff of a draft (same declarative schema as the page augment, read-only;
+   * list lines may open a host command). Return `[]` for a draft that is not yours.
+   */
+  preview?(ctx: ReviewPreviewContext): AugmentSectionData[] | Promise<AugmentSectionData[]>;
+}
+
+// ── inbox row decoration ─────────────────────────────────────────────
+
+export type InboxRowStatus = 'open' | 'answered' | 'failed' | 'done';
+
+/** An inbox row as a decorator sees it: strings only (`''` when the event does not have the value). */
+export interface InboxRowData {
+  eventId: string;
+  labelSkill: string;
+  title: string;
+  body: string;
+  pageId: string;
+  /** RFC 3339 instant of the capture. */
+  at: string;
+  rootEventId: string;
+  runId: string;
+  /** The event's own status, `inbox` or `processed`. */
+  eventStatus: string;
+  /** The event's provenance, string values only. */
+  provenance: Record<string, string>;
+}
+
+/** Data only: nothing here runs in a webview or names a command. */
+export interface InboxDecoration {
+  /** A short word before the secondary text (at most 24 characters), e.g. `Answered`. */
+  badge?: string;
+  /** Replaces the secondary text of the row (the skill and the age). */
+  description?: string;
+  /** Picks the icon; a row that is not `open` sorts after the open ones. `open` rows count in the view badge. */
+  status?: InboxRowStatus;
+  /** Leaves the row out (a technical receipt that is not work for a person). */
+  hidden?: boolean;
+}
+
+export interface InboxDecorator {
+  /**
+   * Called once per row of the skill with every visible row for correlation (a reply row can mark its
+   * request answered). An error or a timeout leaves the row as it was.
+   */
+  decorate?(
+    row: InboxRowData,
+    rows: readonly InboxRowData[],
+  ): InboxDecoration | undefined | Promise<InboxDecoration | undefined>;
+  /**
+   * Said in the Inbox view when it has no row, so a requester sees where a request goes. A plain string,
+   * or one text per language (`en`, `de`, ...); the first decorator that contributes one is used.
+   */
+  emptyMessage?: string | Record<string, string>;
 }

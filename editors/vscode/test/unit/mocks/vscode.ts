@@ -3,6 +3,7 @@
 export const workspace = {
   getConfiguration: () => ({ get: () => undefined }),
   onDidChangeConfiguration: () => ({ dispose() {} }),
+  onDidOpenTextDocument: () => ({ dispose() {} }),
 };
 /** A QuickPick the test can drive: it records handlers and lets the test fire them. */
 export class FakeQuickPick {
@@ -168,6 +169,25 @@ export class Uri {
       components.fragment ?? '',
     );
   }
+}
+
+export enum TreeItemCollapsibleState {
+  None = 0,
+  Collapsed = 1,
+  Expanded = 2,
+}
+
+export class TreeItem {
+  description?: string;
+  tooltip?: string;
+  iconPath?: unknown;
+  contextValue?: string;
+  resourceUri?: unknown;
+  command?: unknown;
+  constructor(
+    readonly label: string,
+    readonly collapsibleState?: TreeItemCollapsibleState,
+  ) {}
 }
 
 export class ThemeIcon {

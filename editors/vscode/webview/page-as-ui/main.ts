@@ -19,6 +19,8 @@ if (api) {
     if (msg.type === 'page') {
       el.model = msg.model;
       el.error = undefined;
+    } else if (msg.type === 'augment-result') {
+      el.augmentResult = { id: msg.id, ok: msg.ok, message: msg.message };
     } else if (msg.type === 'error') {
       el.error = msg.message;
     } else if (msg.type === 'loading') {
