@@ -8,6 +8,46 @@ re-cuts append `.N`), matching the DataZoo release scheme (cf. erpl).
 
 ## Unreleased
 
+## v2026.10.26 — BREAKING (operator-only tenant administration, upload create ACL, `required_when` wire shape, web-workbench override names)
+
+Skill-declared data rules, a public API for companion VS Code extensions, a web-workbench overlay contract, an operator
+credential and stricter upload ACLs (#767–#786). Upgrade notes first, then the changes.
+
+**BREAKING.**
+- **Tenant administration is operator-only** (#780). Tokens whose roles carry `escurel:operator` (configurable with
+  `ESCUREL_AUTH_OPERATOR_ROLE_VALUE`) may use `tenant_create`/`list`/`get`/`update`/`delete` and export or import another
+  tenant; a tenant-scoped admin acts on its own tenant only. Existing admin tokens keep working for their own tenant.
+- **Uploads into a skill without a create ACL are admin-only** (#778). `/ingest/upload` and the MCP `ingest_upload` now check the
+  create ACL of the skill a MIME type routes to, as they already did for an explicit `skill`.
+- **`list_skills` publishes `required_when` as `[field, [values...]]`** (#777); a skill may list several values.
+- **Web-workbench path overrides are named `WORKBENCH_OPT`, `WORKBENCH_NODE`, `WORKBENCH_OVERLAY_DIR`,
+  `WORKBENCH_OVERLAY_SCRIPT_TIMEOUT_MS`** (#784, #785).
+- **Page-bound chat stamps the author on the server** (#785); a client-supplied `author` is ignored for `page-chat:v1:` groups.
+
+**Data rules a skill declares** (#771–#773, #775–#777, #783): field rules (`required_when`, `non_blank`, `format: date`,
+`immutable`), link fields (`kind: link`, `to:` one or several skills, `acyclic`), identity uniqueness (`unique`), instance
+immutability, `freeze_when`/`frozen_by_parent`, `protected: [delete, move]`, the in-use guard (`relation_in_use`, also for archive
+via `update_page`), release hash binding (`pack:`), page-bound chat (`chat: {page_bound: true}`) and `instance_acl: false`.
+Issues carry a stable `family` beside the code. A changeset's drafts are judged as one batch.
+
+**Tools and transport**: `get_draft` (#777); `ingest_upload` over MCP with skill-declared retention, event kind and settlement,
+XML/JSON extraction, MIME aliases and failed-extraction retry (#770, #779); a skill-declared lease fence on `create_draft` and
+`discard_changeset` (#779); configurable body limits `ESCUREL_MCP_MAX_BODY_BYTES`/`ESCUREL_INGEST_MAX_BODY_BYTES`, default
+16 MiB (#778); run tokens may reply into the page chat their root event names, and `append_message` takes
+`page_revision_sha256` (`revision_changed`) (#785); narrowed agent tokens may carry several output skills (#768).
+
+**Runner**: Gemini token budget carried across attempts, Vertex workload auth, a preflight error and failed plans recorded as
+failures (#769). Binaries built on their own keep frontmatter key order (#786).
+
+**VS Code**: a public, versioned API for companion extensions (client, `webviewHtml` with fonts/lang/title, theme tokens,
+Overview tiles, page renderers and augments, review hooks, Inbox decorators, subject, helper credential, focus profiles)
+(#774, #781, #782).
+
+**Web workbench**: a downstream overlay contract at `/opt/escurel/overlay/` (settings, CSS, login tokens, product name, assets,
+extensions, bootstrap scripts), validated at build and start (#784).
+
+**Test support**: external issuer, write ACL, groups, fixture export and an operator bearer for the test gateway (#767, #780).
+
 ## v2026.10.21
 
 A patch on v2026.10.19 from the heron-escurel events-to-lake window (hetzner-agent-substrate #979/#987): its Drive cold boot
