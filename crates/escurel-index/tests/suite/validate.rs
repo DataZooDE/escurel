@@ -679,6 +679,71 @@ async fn a_value_outside_a_declared_range_is_an_error() {
     assert_eq!(bad.location, "frontmatter.arr_eur", "{bad:?}");
     assert_eq!(bad.severity, Severity::Error, "{bad:?}");
     assert!(bad.message.contains('0'), "name the bound: {bad:?}");
+    assert_eq!(
+        bad.family.as_deref(),
+        Some("field_range_invalid"),
+        "{bad:?}"
+    );
+}
+
+/// `family` is a second, stable name beside the unchanged `code`: a date
+/// that does not parse is `field_date_invalid`, any other kind mismatch is
+/// `field_type_invalid`, an enum miss is `field_enum_invalid`, and a code
+/// outside the vocabulary has no family.
+#[tokio::test]
+async fn field_findings_carry_a_stable_family_beside_the_unchanged_code() {
+    let h = fresh_harness();
+    seed(&h, &[SKILL_TYPED]).await;
+    let family = |body: &str, code: &str, key: &str| {
+        let h = &h;
+        let body = typed_instance(body);
+        let code = code.to_owned();
+        let key = key.to_owned();
+        async move {
+            let issues = h.indexer.validate(None, &body).await.unwrap();
+            let i = issues
+                .iter()
+                .find(|i| i.code == code && i.location == key)
+                .unwrap_or_else(|| panic!("{code} at {key}: {issues:?}"))
+                .clone();
+            i.family
+        }
+    };
+    assert_eq!(
+        family(
+            "opened: last tuesday\n",
+            "frontmatter_field_type",
+            "frontmatter.opened"
+        )
+        .await
+        .as_deref(),
+        Some("field_date_invalid")
+    );
+    assert_eq!(
+        family(
+            "opened: 2026-01-05\nseats: twelve\n",
+            "frontmatter_field_type",
+            "frontmatter.seats"
+        )
+        .await
+        .as_deref(),
+        Some("field_type_invalid")
+    );
+    assert_eq!(
+        family(
+            "hotness: 5-Cold-ish\nopened: 2026-01-05\n",
+            "frontmatter_enum_value",
+            "frontmatter.hotness"
+        )
+        .await
+        .as_deref(),
+        Some("field_enum_invalid")
+    );
+    assert_eq!(escurel_index::family_for_code("unknown_skill"), None);
+    assert_eq!(
+        escurel_index::family_for_code("frontmatter_required_key_missing"),
+        Some("field_required_missing")
+    );
 }
 
 /// `fields[].required` is about presence, like `required_frontmatter`, and

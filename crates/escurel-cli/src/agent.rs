@@ -818,6 +818,7 @@ async fn validate(client: &Client, page_id: String) -> Result<Value> {
         "issues": resp.issues.into_iter().map(|i| json!({
             "severity": i.severity,
             "code": i.code,
+            "family": i.family,
             "message": i.message,
             "location": opt(&i.location),
             "suggestion": i.suggestion,
@@ -839,6 +840,7 @@ async fn update_page(client: &Client, page_id: String) -> Result<Value> {
         "issues": resp.issues.into_iter().map(|i| json!({
             "severity": i.severity,
             "code": i.code,
+            "family": i.family,
             "message": i.message,
             "location": opt(&i.location),
             "suggestion": i.suggestion,
@@ -854,6 +856,7 @@ async fn purge_page(client: &Client, page_id: String) -> Result<Value> {
         "issues": resp.issues.into_iter().map(|i| json!({
             "severity": i.severity,
             "code": i.code,
+            "family": i.family,
             "message": i.message,
             "location": opt(&i.location),
             "suggestion": i.suggestion,
@@ -869,6 +872,7 @@ async fn move_page(client: &Client, from: String, to: String) -> Result<Value> {
         "issues": resp.issues.into_iter().map(|i| json!({
             "severity": i.severity,
             "code": i.code,
+            "family": i.family,
             "message": i.message,
             "location": opt(&i.location),
             "suggestion": i.suggestion,
@@ -894,6 +898,7 @@ async fn delete_page(
         "issues": resp.issues.into_iter().map(|i| json!({
             "severity": i.severity,
             "code": i.code,
+            "family": i.family,
             "message": i.message,
             "location": opt(&i.location),
             "suggestion": i.suggestion,

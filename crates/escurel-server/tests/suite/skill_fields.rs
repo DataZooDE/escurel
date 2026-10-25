@@ -102,6 +102,16 @@ async fn a_write_that_violates_a_declared_field_does_not_commit() {
             .any(|i| i["code"] == json!("frontmatter_enum_value"))),
         "the refusal must name the field rule that stopped it: {refused}"
     );
+    // The stable family rides beside the unchanged code on the wire.
+    assert!(
+        refused["issues"]
+            .as_array()
+            .is_some_and(|i| i.iter().any(|i| {
+                i["code"] == json!("frontmatter_enum_value")
+                    && i["family"] == json!("field_enum_invalid")
+            })),
+        "the issue must carry its rule family: {refused}"
+    );
 
     // Nothing landed. The page does not exist — which is the strongest form
     // of "did not commit" available for a create.

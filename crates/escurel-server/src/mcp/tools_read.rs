@@ -2162,6 +2162,9 @@ pub(super) fn issue_to_json(issue: &Issue) -> Value {
         "location": issue.location,
         "message": issue.message,
     });
+    if let Some(f) = &issue.family {
+        obj["family"] = json!(f);
+    }
     if let Some(s) = &issue.suggestion {
         obj["suggestion"] = json!(s);
     }

@@ -812,6 +812,7 @@ fn roundtrip_agent() {
         issues: vec![ValidationIssue {
             severity: "error".into(),
             code: "c".into(),
+            family: Some("field_enum_invalid".into()),
             location: "frontmatter".into(),
             message: "m".into(),
             suggestion: Some("fix it".into()),
