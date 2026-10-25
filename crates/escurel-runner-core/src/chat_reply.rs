@@ -137,7 +137,10 @@ pub async fn post_chat_reply(
         .map(|r| {
             r.drafts
                 .into_iter()
-                .filter(|d| d.event_id == trigger.event_id)
+                // Named by the event, or stamped from the run token's root
+                // claim — a chat turn is always a lineage root, and an agent
+                // is not told to pass `event_id`.
+                .filter(|d| d.event_id == trigger.event_id || d.root_event_id == trigger.event_id)
                 .map(|d| d.draft_id)
                 .collect()
         })

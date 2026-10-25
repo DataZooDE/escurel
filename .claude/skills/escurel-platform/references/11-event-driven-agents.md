@@ -403,6 +403,7 @@ runner's global `ESCUREL_RUNNER_MAX_DEPTH` still caps everything).
 A question in a page-bound chat is answered by a run. The person:
 
 1. appends their turn: `append_message(chat_group_id: "page-chat:v1:…", role: "user", msg_id: <uuid>, content)`;
+   (into a `conversation` from the chat corpus — references/01 — or any page-bound record)
 2. captures the turn: `capture_event(label_skill: "chat", instance_page_id: <the conversation or record page>,
    provenance: {chat_group_id, user_msg_id: <that msg_id>, focus?: [page_id…]})`, as themselves.
 
@@ -417,7 +418,8 @@ The runner treats an event whose `provenance.chat_group_id` is a `page-chat:` gr
 - The harness gets the chat skill's body plus a chat framing, and as input the last 20 turns, the
   bound page (the one in the group id), the focus pages (at most 10; unreadable ones are left out)
   and the question, each inside an `<untrusted kind="…">` block. Its tools are the review surface
-  **without `append_message`**: reads, `create_draft`, `report_progress`. No `update_page`,
+  **without `append_message`**: reads (plus `query_instance`, `provenance_ancestry`,
+  `provenance_report`), `create_draft`, `report_progress`. No `update_page`,
   `capture_event` or `assign_event`.
 - The **runner** posts exactly one `assistant` turn, with the run token, for every terminal:
   `msg_id: "run:<run_id>:reply"` (a retry echoes it), `content` = the harness's final answer (or one

@@ -16,6 +16,8 @@ Use these to:
 
 ## Tenants
 
+- [`chat/`](chat/) — the chat corpus (`conversation` + `chat` skills) for
+  the governed chat agent; seed with `ESCUREL_SEED_DIR=examples/chat/seed`.
 - [`crm-demo/`](crm-demo/) — a five-instance sales-lifecycle chain
   (engagement → lead → opportunity → project) plus the supporting
   customer and contact skills. Companion to the

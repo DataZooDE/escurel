@@ -267,6 +267,7 @@ test knobs: never set in a deployment.
 
 | var | default | meaning |
 |---|---|---|
+| `ESCUREL_ECHO_CHAT_DRAFT` | — | echo harness: a chat run drafts a change to its bound page (tests) |
 | `ESCUREL_ECHO_FAIL_CHAT` | — | echo harness: fail every chat run (tests) |
 | `ESCUREL_ECHO_FAIL_SKILL` | — | echo harness: fail runs targeting this skill (tests) |
 | `ESCUREL_ECHO_RESULT_REF` | — | echo harness: attach this result reference (tests) |

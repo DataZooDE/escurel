@@ -4,6 +4,13 @@ The skill version tracks the consumer-facing contract, not the Escurel
 binary version. The Escurel repo's checked-out git ref is the true version
 pin (see `SKILL.md` → "How this skill is installed").
 
+## 0.25.18 — the chat corpus and `chat:` validation
+
+`chat_corpus()` / `examples/chat/seed/`: an owner-only, page-bound `conversation` skill and the `chat` agent skill
+(`autonomy: review`). `validate` now checks `chat:` (`chat_invalid` error, `chat_unknown_key` warning). Chat runs may also
+call `query_instance`, `provenance_ancestry` and `provenance_report`; a draft a chat run creates is listed in its
+reply's `metadata.drafts`.
+
 ## 0.25.17 — chat lane: chat runs never wait behind the serial lane
 
 Chat runs dispatch on their own lane (`ESCUREL_RUNNER_CHAT_CONCURRENCY`, default 2) with their own limits

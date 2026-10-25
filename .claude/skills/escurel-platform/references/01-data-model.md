@@ -213,6 +213,28 @@ See §Layer/stability axis below.
 See the live shapes in `examples/echo-app/tests/fixtures/customer.skill.md`
 and `…/acme-corp.md`.
 
+### Chat on a page: `chat:` and the `conversation` skill
+
+A skill that declares `chat: {page_bound: true}` lets each of its instances carry a private chat:
+the group `page-chat:v1:<sha256(owner subject)>:<page_id>`, readable and writable only by that owner
+(who must also be able to read the page) and admins (references/02, *Page-bound chat groups*). Any
+record skill can opt in with that one key. `validate` checks it: `chat:` must be a map whose
+`page_bound` is a boolean (`chat_invalid`, an error — `page_bound: "true"` would silently leave chat
+off); any other sub-key is a `chat_unknown_key` warning.
+
+The **chat corpus** (`escurel_runner_workflow::corpus::chat_corpus()`, or seed
+`examples/chat/seed/` with `ESCUREL_SEED_DIR`) ships two skills. Installing it is explicit, like every
+corpus:
+
+- `conversation` — a free-standing chat with the knowledge agent: `owner_field: owner`,
+  `acl: {read, create, update, delete: [owner]}`, `chat: {page_bound: true}`; required `title`,
+  `owner` (the person's token subject), `started_at`; optional `about` (a wikilink to the record it
+  is about), `focus` (pinned page links), `summary`. A person starts one with `update_page`
+  (`base_sha256: ""`, `owner` = themselves); "Recent" is `list_instances(skill: conversation)`.
+- `chat` — the agent's instructions (its body), `autonomy: review`, no `harness:` pin. A question in
+  any page chat is a `chat` event (references/11, *Chat runs*); override the page to change how the
+  agent answers.
+
 ## Typed wikilinks
 
 Pages connect through wikilinks. Full grammar (all segments after `id`

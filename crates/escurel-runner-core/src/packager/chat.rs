@@ -28,13 +28,15 @@ const HISTORY_CAP: usize = 24_000;
 const PAGE_CAP: usize = 8_000;
 
 /// The tools a chat run gets: the review surface without `append_message` —
-/// the runner is the only writer of the reply.
+/// the runner is the only writer of the reply — plus the ACL'd data and
+/// provenance reads an answer needs (FR-A2). No SQL of the agent's own.
 #[must_use]
 pub fn chat_tools() -> Vec<&'static str> {
     REVIEW_TOOLS
         .iter()
         .copied()
         .filter(|t| *t != "append_message")
+        .chain(["query_instance", "provenance_ancestry", "provenance_report"])
         .collect()
 }
 
@@ -291,6 +293,7 @@ mod tests {
             assert!(!tools.contains(&denied), "{denied} in {tools:?}");
         }
         assert!(tools.contains(&"create_draft"));
+        assert!(tools.contains(&"query_instance"));
         assert!(tools.contains(&"report_progress"));
     }
 }
