@@ -104,17 +104,24 @@ pub enum Autonomy {
 impl Autonomy {
     /// Read a skill page's `autonomy:` frontmatter.
     ///
-    /// **Absent or unrecognised is `Review`.** Only the exact string `auto`
-    /// buys unattended writes. A typo (`atuo:`) that silently meant "commit
-    /// without a gate" is the one direction this must not fail in, and the
-    /// cost of the opposite mistake is a human seeing a draft they would
-    /// have approved anyway.
+    /// **Absent is `Auto`, unrecognised is `Review`.** Absent follows the
+    /// gateway, which treats a skill with no `autonomy:` as auto: the runner
+    /// held such a skill's writes for review while the gateway let a person's
+    /// land, and two defaults for one key is a contradiction (BRD chat-agent
+    /// Q2, owner decision 2026-10-25). A value that is present but not
+    /// understood (`atuo:`) still holds for review — a typo must not commit
+    /// without a gate.
     #[must_use]
     pub fn from_frontmatter(frontmatter: &serde_json::Value) -> Self {
-        match frontmatter.get("autonomy").and_then(|v| v.as_str()) {
-            Some("auto") => Self::Auto,
-            Some("confirm") => Self::Confirm,
-            _ => Self::Review,
+        match frontmatter.get("autonomy") {
+            // Absent: the gateway's default, auto (one default for both sides,
+            // owner decision 2026-10-25).
+            None | Some(serde_json::Value::Null) => Self::Auto,
+            Some(v) => match v.as_str() {
+                Some("auto") => Self::Auto,
+                Some("confirm") => Self::Confirm,
+                _ => Self::Review,
+            },
         }
     }
 

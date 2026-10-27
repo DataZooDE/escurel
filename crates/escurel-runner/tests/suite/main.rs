@@ -19,6 +19,7 @@
 
 mod agent_token_narrowing;
 mod agy_live;
+mod autonomy_default;
 mod autonomy_gate;
 mod cancellable_runs;
 mod cascade_lineage;
