@@ -80,6 +80,24 @@ describe('<escurel-page-as-ui>', () => {
     expect(sent).to.deep.equal([{ type: 'show-runs' }]);
   });
 
+  it('offers Ask about this record only when the skill has page chat, and sends no id', async () => {
+    const plain = await fixture<EscurelPageAsUi>(
+      html`<escurel-page-as-ui .model=${orderPage}></escurel-page-as-ui>`,
+    );
+    await plain.updateComplete;
+    expect(q(plain, '.ask-record')).to.equal(null);
+    const el = await fixture<EscurelPageAsUi>(
+      html`<escurel-page-as-ui .model=${{ ...orderPage, chat: true }}></escurel-page-as-ui>`,
+    );
+    await el.updateComplete;
+    const sent: WebviewToHost[] = [];
+    el.addEventListener('escurel-message', (e) =>
+      sent.push((e as CustomEvent<WebviewToHost>).detail),
+    );
+    (q(el, '.ask-record') as HTMLButtonElement).click();
+    expect(sent).to.deep.equal([{ type: 'ask-about-record' }]);
+  });
+
   it('shows the summary, the body and the gate for a review skill; the form is read-only and says how to edit', async () => {
     const el = await render();
     expect(text(q(el, '.summary'))).to.contain('Delivery at risk');

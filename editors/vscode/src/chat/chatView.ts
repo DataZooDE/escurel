@@ -16,6 +16,8 @@ import { createConversation, recentConversations, type Conversation } from './co
 export const CHAT_SKILL = 'chat';
 const HISTORY_LIMIT = 200;
 const MAX_QUESTION = 8000;
+/** The runner reads at most this many focus pages. */
+const MAX_FOCUS = 10;
 
 /**
  * The Chat view (SPEC §3.11): a WebviewView beside Runs in the secondary sidebar. A conversation is
@@ -36,7 +38,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
   private status: ChatViewState['status'] = 'ready';
   private message: string | undefined;
   private recent: Conversation[] = [];
-  private current: (Conversation & { group: string }) | undefined;
+  /** The open chat: a conversation, or a record's own page chat (`record`). */
+  private current: (Conversation & { group: string; record?: true }) | undefined;
+  /** Pages pinned as context for the next question; sent as `provenance.focus`. */
+  private focus: { pageId: string; title: string }[] = [];
   private messages: ChatMessage[] = [];
   private sending = false;
   private progress: string | undefined;
@@ -68,6 +73,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
       vscode.window.registerWebviewViewProvider(ChatViewProvider.viewType, provider, {
         webviewOptions: { retainContextWhenHidden: true },
       }),
+      vscode.commands.registerCommand('escurel.chat.askAboutRecord', (pageId, title) =>
+        provider.askAboutRecord(pageId, title),
+      ),
+      vscode.commands.registerCommand('escurel.chat.addToFocus', (arg) => provider.addToFocus(arg)),
       vscode.commands.registerCommand('escurel.chat.new', async () => {
         provider.newChat();
         await vscode.commands.executeCommand(`${ChatViewProvider.viewType}.focus`);
@@ -105,10 +114,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
         when: c.startedAt,
       })),
       current: this.current && {
-        key: `recent:${this.recent.findIndex((c) => c.pageId === this.current?.pageId)}`,
-        title: this.current.title,
+        key: this.current.record
+          ? 'record'
+          : `recent:${this.recent.findIndex((c) => c.pageId === this.current?.pageId)}`,
+        title: this.current.record ? `About ${this.current.title}` : this.current.title,
       },
       rows: this.rows(),
+      focus: this.focus.map((f, i) => ({ key: `focus:${i}`, title: f.title })),
       canSend: this.status === 'ready' && !this.sending,
     };
   }
@@ -151,9 +163,46 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
         await vscode.commands.executeCommand('escurel.openRun', row.runId);
         return true;
       }
+      case 'review-draft': {
+        const row = this.rows().find((r) => r.key === m.key);
+        const draftId =
+          row?.kind === 'assistant' && Number.isInteger(m.index) ? row.drafts[m.index] : undefined;
+        if (!draftId) return false;
+        await vscode.commands.executeCommand('escurel.openReview', { draftId });
+        return true;
+      }
+      case 'remove-focus': {
+        const n = typeof m.key === 'string' ? /^focus:(\d+)$/.exec(m.key)?.[1] : undefined;
+        if (n === undefined || !this.focus[Number(n)]) return false;
+        this.focus = this.focus.filter((_, i) => i !== Number(n));
+        this.render();
+        return true;
+      }
       default:
         return false;
     }
+  }
+
+  /** "Ask about this record": the record's own page chat, with the record as its context. */
+  async askAboutRecord(pageId: unknown, title: unknown): Promise<void> {
+    if (typeof pageId !== 'string' || !pageId.startsWith('markdown/')) return;
+    if (!this.subject) this.subject = await this.services.subject();
+    if (!this.subject) return;
+    const name = typeof title === 'string' && title ? cleanText(title, 80) : pageId;
+    await this.open({ pageId, title: name, startedAt: '' }, true);
+    await vscode.commands.executeCommand(`${ChatViewProvider.viewType}.focus`);
+  }
+
+  /** "Add to chat focus" from the Knowledge tree: pin a page as context (at most 10). */
+  addToFocus(arg: unknown): void {
+    const pageId =
+      typeof arg === 'string' ? arg : (arg as { pageId?: unknown } | undefined)?.pageId;
+    if (typeof pageId !== 'string' || !pageId.startsWith('markdown/')) return;
+    if (this.focus.some((f) => f.pageId === pageId) || this.focus.length >= MAX_FOCUS) return;
+    const title = pageId.split('/').pop()?.replace(/\.md$/, '') ?? pageId;
+    this.focus = [...this.focus, { pageId, title: cleanText(title, 60) }];
+    this.render();
+    void vscode.commands.executeCommand(`${ChatViewProvider.viewType}.focus`);
   }
 
   newChat(): void {
@@ -216,10 +265,14 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     this.render();
   }
 
-  private async open(conv: Conversation): Promise<void> {
+  private async open(conv: Conversation, record = false): Promise<void> {
     if (!this.subject) return;
     this.closeSockets();
-    this.current = { ...conv, group: chatGroupId(this.subject, conv.pageId) };
+    this.current = {
+      ...conv,
+      group: chatGroupId(this.subject, conv.pageId),
+      ...(record ? { record: true as const } : {}),
+    };
     this.messages = [];
     this.progress = undefined;
     this.render();
@@ -305,7 +358,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
         instance_page_id: current.pageId,
         title: 'chat turn',
         body: '',
-        provenance: { chat_group_id: current.group, user_msg_id: msgId },
+        provenance: {
+          chat_group_id: current.group,
+          user_msg_id: msgId,
+          ...(this.focus.length ? { focus: this.focus.map((f) => f.pageId) } : {}),
+        },
       });
       this.watchProgress(event.event_id);
       return true;

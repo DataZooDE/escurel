@@ -24,6 +24,7 @@ const ready: ChatViewState = {
     { kind: 'user', key: 'u-2', text: 'And Initech?', ts: 't3' },
     { kind: 'pending', key: 'pending:u-2', text: 'Working on it: searching' },
   ],
+  focus: [],
   canSend: true,
 };
 
@@ -114,9 +115,49 @@ describe('<escurel-chat>', () => {
       message: 'Chat is not set up in this workspace.',
       recent: [],
       rows: [],
+      focus: [],
       canSend: false,
     });
     expect(text(q(el, '.status'))).to.equal('Chat is not set up in this workspace.');
     expect(q(el, 'textarea')).to.equal(null);
+  });
+
+  it('offers Review for each draft an answer proposed, by row key and index', async () => {
+    const el = await render({
+      ...ready,
+      rows: [
+        {
+          kind: 'assistant',
+          key: 'run:R3:reply',
+          text: 'A draft is waiting for your review.',
+          ts: 't',
+          status: 'ok',
+          runId: 'R3',
+          drafts: ['D1', 'D2'],
+        },
+      ],
+    });
+    const out = sent(el);
+    const buttons = all(el, 'button.review') as HTMLButtonElement[];
+    expect(buttons.map((b) => text(b))).to.deep.equal(['Review change 1', 'Review change 2']);
+    buttons[1]!.click();
+    expect(out).to.deep.equal([{ type: 'review-draft', key: 'run:R3:reply', index: 1 }]);
+  });
+
+  it('shows the focus as removable chips above the prompt', async () => {
+    const el = await render({
+      ...ready,
+      focus: [
+        { key: 'focus:0', title: 'order-4500123' },
+        { key: 'focus:1', title: 'meier-guss' },
+      ],
+    });
+    const out = sent(el);
+    const chips = all(el, '.focus .chip');
+    expect(chips.map((c) => text(c))).to.deep.equal(['order-4500123 ×', 'meier-guss ×']);
+    const remove = q(el, '.focus .chip button') as HTMLButtonElement;
+    expect(remove.getAttribute('aria-label')).to.equal('Remove order-4500123 from the focus');
+    remove.click();
+    expect(out).to.deep.equal([{ type: 'remove-focus', key: 'focus:0' }]);
   });
 });
