@@ -84,6 +84,7 @@ const harness = {
     'details-harness': 'test/visual/harness/details.ts',
     'skill-harness': 'test/visual/harness/skill.ts',
     'overview-harness': 'test/visual/harness/overview.ts',
+    'chat-harness': 'test/visual/harness/chat.ts',
   },
   bundle: true,
   platform: 'browser',

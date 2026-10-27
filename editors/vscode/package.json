@@ -280,6 +280,22 @@
         "category": "Escurel"
       },
       {
+        "command": "escurel.chat.new",
+        "title": "New chat",
+        "category": "Escurel",
+        "icon": "$(add)"
+      },
+      {
+        "command": "escurel.chat.askAboutRecord",
+        "title": "Ask about this record",
+        "category": "Escurel"
+      },
+      {
+        "command": "escurel.chat.addToFocus",
+        "title": "Add to chat focus",
+        "category": "Escurel"
+      },
+      {
         "command": "escurel.openReview",
         "title": "Open review",
         "category": "Escurel"
@@ -578,6 +594,11 @@
         {
           "id": "escurel.runner",
           "name": "Runs"
+        },
+        {
+          "id": "escurel.chat",
+          "name": "Chat",
+          "type": "webview"
         }
       ],
       "escurel-details": [
@@ -692,6 +713,14 @@
     ],
     "menus": {
       "commandPalette": [
+        {
+          "command": "escurel.chat.askAboutRecord",
+          "when": "false"
+        },
+        {
+          "command": "escurel.chat.addToFocus",
+          "when": "false"
+        },
         {
           "command": "escurel.cancelRun",
           "when": "escurel.connected"
@@ -902,6 +931,11 @@
           "group": "navigation@9"
         },
         {
+          "command": "escurel.chat.new",
+          "when": "view == escurel.chat",
+          "group": "navigation@1"
+        },
+        {
           "command": "escurel.runs.filter",
           "when": "view == escurel.runner",
           "group": "navigation@1"
@@ -942,6 +976,11 @@
           "group": "navigation@9"
         },
         {
+          "command": "escurel.explainView",
+          "when": "view == escurel.chat",
+          "group": "navigation@9"
+        },
+        {
           "command": "escurel.scenarios.refresh",
           "when": "view == escurel.scenarios",
           "group": "navigation@1"
@@ -967,6 +1006,11 @@
           "command": "escurel.openInstance",
           "when": "view == escurel.knowledge && viewItem == instance",
           "group": "inline"
+        },
+        {
+          "command": "escurel.chat.addToFocus",
+          "when": "view == escurel.knowledge && viewItem == instance",
+          "group": "3_chat@1"
         },
         {
           "command": "escurel.openInstance",

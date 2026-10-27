@@ -36,7 +36,7 @@ summary for text-only clients. A refusal answers `isError: true` with `structure
 
 - **Discovery:** `tools/list` is **role-scoped**. Every entry carries a
   `scope: "agent" | "admin"` label; an agent-role token receives only
-  the `scope: "agent"` subset (47 tools — the ones it can actually
+  the `scope: "agent"` subset (48 tools — the ones it can actually
   call), while an admin token sees the whole surface (90). Calling an
   admin tool without the role is still refused at dispatch (`-32001`).
 - **Errors:** JSON-RPC error envelope

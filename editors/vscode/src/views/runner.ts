@@ -7,6 +7,7 @@ import { latest } from '../shared/latest';
 import { log } from '../log';
 import type { Services } from '../services';
 import {
+  deriveHealth,
   ESCUREL_RUNNER_STATUS_INTERVAL_MS,
   parseRunnerStatusBody,
   type RunnerEntry,
@@ -58,6 +59,16 @@ const ICONS: Record<RunState, [string, string | undefined]> = {
 export class RunnerTree implements vscode.TreeDataProvider<RunsNode>, vscode.Disposable {
   private readonly changed = new vscode.EventEmitter<RunsNode | undefined>();
   readonly onDidChangeTreeData = this.changed.event;
+
+  /**
+   * Whether an agent runner is reporting in: `false` when its heartbeat is stale or there is none,
+   * `undefined` before the first load (the Chat view says "no agent is running" only when it knows).
+   */
+  runnerAlive(): boolean | undefined {
+    if (!this.loaded) return undefined;
+    const health = deriveHealth(this.status, Date.now(), { intervalMs: this.intervalMs });
+    return health.status === 'ok' || health.status === 'draining';
+  }
 
   private treeView?: vscode.TreeView<RunsNode>;
   private socket?: EventSocket;

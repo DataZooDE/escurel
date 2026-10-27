@@ -44,6 +44,7 @@ use Coverage::{Admin, Agent, Excluded};
 /// `tools_list_payload()` in `escurel-server/src/mcp.rs`.
 const COVERAGE: &[(&str, Coverage)] = &[
     // --- agent surface: every one MUST have an agent CLI command --------
+    ("whoami", Agent(&["whoami"])),
     ("list_skills", Agent(&["skill", "list"])),
     ("list_instances", Agent(&["instance", "list"])),
     ("resolve", Agent(&["resolve"])),

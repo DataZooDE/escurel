@@ -77,7 +77,7 @@ pub use escurel_types::{
     ReportProgressResponse, ReportRunnerStatusRequest, ReportRunnerStatusResponse, ResolveRequest,
     ResolveResponse, SearchHit, SearchRequest, SearchResponse, Skill, StoredQueryColumn,
     TenantSpec, UpdatePageRequest, UpdatePageResponse, ValidateRequest, ValidateResponse,
-    ValidationIssue, WikilinkParsed,
+    ValidationIssue, WhoamiResponse, WikilinkParsed,
 };
 // Held writes (the `autonomy: review` gate): a draft is a finished change
 // that has not landed, and these are how an app shows a human what is
@@ -204,6 +204,11 @@ impl Client {
     }
 
     /// Parse a `[[wikilink]]` and look up its target page.
+    /// Who the gateway takes this client for: subject, tenant, admin flag.
+    pub async fn whoami(&self) -> Result<WhoamiResponse, Error> {
+        self.transport.call_typed("whoami", json!({})).await
+    }
+
     pub async fn resolve(&self, req: ResolveRequest) -> Result<ResolveResponse, Error> {
         let mut args = json!({ "wikilink": req.wikilink });
         if !req.scenario.is_empty() {

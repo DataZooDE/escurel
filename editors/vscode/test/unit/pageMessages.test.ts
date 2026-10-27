@@ -177,3 +177,14 @@ describe('show-runs', () => {
     expect(resolvePageMessage(undefined, { type: 'show-runs' })).toBeUndefined();
   });
 });
+
+describe('ask-about-record', () => {
+  it('opens the chat of the page the host built, only when its skill has page chat', () => {
+    expect(resolvePageMessage({ ...model, chat: true }, { type: 'ask-about-record' })).toEqual({
+      command: 'escurel.chat.askAboutRecord',
+      args: [model.pageId, model.title],
+    });
+    expect(resolvePageMessage(model, { type: 'ask-about-record' })).toBeUndefined();
+    expect(resolvePageMessage(undefined, { type: 'ask-about-record' })).toBeUndefined();
+  });
+});

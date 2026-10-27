@@ -530,6 +530,13 @@ replaced by a `supersedes` revision authored *after* the decision
 they read whatever provenance relations exist and are most meaningful
 with the `project-memory` skill pack subscribed.
 
+#### `whoami`
+
+No arguments. Returns `{subject, tenant, is_admin}`: the verified token subject (the
+dev subject on a gateway with no verifier), the gateway's tenant and the admin flag. It is
+how a client without an OIDC session of its own learns the subject its page chats are
+named by (`page-chat:v1:<sha256(subject)>:<page_id>`).
+
 #### `list_skills`
 
 ```jsonc

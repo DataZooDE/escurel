@@ -602,6 +602,15 @@ export class EscurelPageAsUi extends LitElement {
         >
           Runs for this record
         </button>
+        ${m.chat
+          ? html`<button
+              class="runs-link ask-record"
+              title="Open Chat about this record: it is the context of every question"
+              @click=${() => this.send({ type: 'ask-about-record' })}
+            >
+              Ask about this record
+            </button>`
+          : nothing}
       </div>
       <details class="page-meta">
         <summary>Page details</summary>

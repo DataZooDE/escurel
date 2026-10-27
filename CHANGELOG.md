@@ -10,7 +10,7 @@ re-cuts append `.N`), matching the DataZoo release scheme (cf. erpl).
 
 A service-role gate for workers that run under a service identity, and page chat answered by the runner.
 
-**Page chat** (#789, #791–#796, #800, #806):
+**Page chat** (#789, #791–#797, #799–#801, #806):
 - The runner has a chat mode: it answers a page-chat turn as the asker and posts the reply; chat runs use their own
   lane and never wait behind the serial lane; failed, cancelled or unmintable chat runs say so; turns deduplicate on
   `(chat_group_id, user_msg_id)`.
@@ -18,6 +18,9 @@ A service-role gate for workers that run under a service identity, and page chat
 - WebSocket chat access is rechecked per message; a timed-out chat run says so.
 - VS Code: chat client methods, the `/ws` chat frame, a pure chat model and the Chat webview (conversation, prompt,
   Recent, New chat).
+- VS Code: a Chat view beside Runs, answered live by a governed run; Ask about this record, chat focus and Review for
+  proposed changes.
+- `whoami`: the caller's verified subject, tenant and admin flag (also `escurel whoami`, `Client::whoami()`).
 
 **Service-role gate:**
 

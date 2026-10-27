@@ -73,6 +73,8 @@ mkdir -p "$HOME_DIR/workspace" "$HOME_DIR/profile/User" "$HOME_DIR/ext"
 # The seed, with one placeholder resolved: the `order-lines` sql_view reads a JSON extract, and DuckDB
 # resolves a relative glob against the server's cwd, so its skill page must carry an absolute path.
 cp -r "$HERE/seed" "$HOME_DIR/seed"
+# The chat corpus (the Chat view's `conversation` and `chat` skills), from its one source.
+cp "$REPO"/examples/chat/seed/skills/*.md "$HOME_DIR/seed/skills/"
 sed -i "s|@ORDER_LINES_DIR@|$HERE/sources/order-lines|" "$HOME_DIR/seed/skills/order-lines.md"
 if [ -n "${ESCUREL_DEMO_EVOLVE_AGENT_BIN:-}" ]; then ESCUREL_DEMO_EVOLVE_SEED=1; fi
 if [ "${ESCUREL_DEMO_EVOLVE_SEED:-0}" = "1" ]; then
