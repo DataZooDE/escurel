@@ -263,6 +263,7 @@ test knobs: never set in a deployment.
 
 | var | default | meaning |
 |---|---|---|
+| `ESCUREL_ECHO_FAIL_CHAT` | — | echo harness: fail every chat run (tests) |
 | `ESCUREL_ECHO_FAIL_SKILL` | — | echo harness: fail runs targeting this skill (tests) |
 | `ESCUREL_ECHO_RESULT_REF` | — | echo harness: attach this result reference (tests) |
 | `ESCUREL_ECHO_SLEEP_MS` | 0 | echo harness: idle this long before finishing, so a test can cancel a run |

@@ -435,7 +435,20 @@ fn untrusted_block<'a>(input: &'a str, kind: &str) -> Option<&'a str> {
 /// A chat-mode run (governed chat agent): answer `echo: <the question>`, and
 /// name the focus pages the run was shown, so a test can see what the asker's
 /// token let it read. Never writes — the runner appends the reply.
-fn run_chat(task: &HarnessTask, question: &str) -> HarnessOutcome {
+///
+/// Test knobs: `ESCUREL_ECHO_SLEEP_MS` idles first (so a cancel can land
+/// mid-run); `ESCUREL_ECHO_FAIL_CHAT` fails every chat run.
+fn run_chat(task: &HarnessTask, question: &str) -> Result<HarnessOutcome, String> {
+    if let Some(ms) = std::env::var("ESCUREL_ECHO_SLEEP_MS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .filter(|ms| *ms > 0)
+    {
+        std::thread::sleep(std::time::Duration::from_millis(ms));
+    }
+    if std::env::var("ESCUREL_ECHO_FAIL_CHAT").is_ok_and(|v| !v.is_empty()) {
+        return Err("echo: injected chat failure (ESCUREL_ECHO_FAIL_CHAT)".to_owned());
+    }
     let mcp = Mcp::new(&task.mcp_endpoint, &task.token);
     let mut tool_calls = 0u32;
     if task.allowed_tools.iter().any(|t| t == "report_progress") {
@@ -455,7 +468,7 @@ fn run_chat(task: &HarnessTask, question: &str) -> HarnessOutcome {
     if !focus.is_empty() {
         reply.push_str(&format!("\n\nfocus: {}", focus.join(", ")));
     }
-    HarnessOutcome {
+    Ok(HarnessOutcome {
         reply: Some(reply),
         result_ref: None,
         usage: knob_usage(),
@@ -464,13 +477,13 @@ fn run_chat(task: &HarnessTask, question: &str) -> HarnessOutcome {
         summary: "answered the chat turn".to_owned(),
         tool_calls,
         produced_instance: None,
-    }
+    })
 }
 
 /// Perform the deterministic fold; returns the structured outcome.
 fn run(task: &HarnessTask) -> Result<HarnessOutcome, String> {
     if let Some(question) = untrusted_block(&task.input, "question") {
-        return Ok(run_chat(task, question));
+        return run_chat(task, question);
     }
     let mcp = Mcp::new(&task.mcp_endpoint, &task.token);
     let mut tool_calls = 0u32;
