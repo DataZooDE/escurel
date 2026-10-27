@@ -53,13 +53,12 @@ Notes:
   commits directly), `review` (held for human approval), `confirm` (as
   review, plus an out-of-band notification). Escurel reports it; it never
   enforces it — the gate lives in your app.
-  **The field is absent when the key is absent AND when its value is
-  unrecognised.** Treat absence as "hold for review". Never write
-  `autonomy == "auto" ? ungated : gated` against a default you supply — an
-  unrecognised value must not become `auto`, or a typo (`autonmy: review`)
-  turns into an ungated write. `validate` returns
-  `frontmatter_autonomy_unknown` (error) for the unrecognised case, which is
-  how you tell it apart from an honest absence. `update_page` refuses such a
+  **A skill that declares no `autonomy:` is reported as `auto`** (absent means
+  auto for the gateway, the runner and you). **The field is omitted only when
+  the value is unrecognised** — treat an omitted field as "hold for review".
+  Never supply a default of your own: an unrecognised value must not become
+  `auto`, or a typo (`autonmy: review`) turns into an ungated write. `validate`
+  returns `frontmatter_autonomy_unknown` (error) for it. `update_page` refuses such a
   write only when the operator has set `ESCUREL_AUTONOMY_LINT=enforce`
   (default `off`, middle rung `log`).
   **The approve recipe (atomic, race-free):** when you hold a

@@ -4,6 +4,13 @@ The skill version tracks the consumer-facing contract, not the Escurel
 binary version. The Escurel repo's checked-out git ref is the true version
 pin (see `SKILL.md` → "How this skill is installed").
 
+## 0.25.21 — absent `autonomy:` means auto, everywhere
+
+A skill with no `autonomy:` key runs auto in the runner too (it held such writes for review while the gateway let them
+land), and `list_skills` now reports it as `autonomy: "auto"` instead of omitting the field. The field is omitted only for
+a value that is present but unrecognised; keep treating an omitted field as "hold for review" (a typo still never reads
+as auto, in the runner or for a client). `expand` still returns the frontmatter verbatim.
+
 ## 0.25.20 — service-role gate
 
 `ESCUREL_AUTH_ROLE_TOOLS` restricts a role to listed tools (`role_restricted`; `/ingest`, `/blob`, `/ws` refused);

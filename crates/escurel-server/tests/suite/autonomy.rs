@@ -111,9 +111,12 @@ async fn list_skills_surfaces_autonomy_and_never_reads_unknown_as_auto() {
     assert_eq!(by_id["triage"]["autonomy"], json!("review"));
     assert_eq!(by_id["draft"]["autonomy"], json!("auto"), "normalised");
 
-    // Absence stays absence — a skill that declares nothing is not silently
-    // given a policy it never asked for.
-    assert_eq!(by_id["note"].get("autonomy"), None);
+    // A skill that declares nothing runs auto: the default the gateway's own
+    // write gate, the runner and every client share (BRD chat-agent Q2, owner
+    // decision 2026-10-25). It is REPORTED as `auto`, so a client can keep
+    // reading an omitted field as "hold for review" — omitted now means only
+    // "declared, but not understood".
+    assert_eq!(by_id["note"]["autonomy"], json!("auto"));
 
     // The typo. This is the assertion the whole key exists for.
     assert_ne!(
@@ -141,7 +144,7 @@ async fn a_skill_without_autonomy_keeps_its_whole_row() {
     assert_eq!(note["visibility"], json!("public"));
     assert_eq!(note["layer"], json!("overlay"));
     assert_eq!(note["backend"]["kind"], json!("markdown"));
-    assert_eq!(note.get("autonomy"), None);
+    assert_eq!(note["autonomy"], json!("auto"));
 }
 
 /// `expand` is the RAW page, and stays raw: it reports what the author

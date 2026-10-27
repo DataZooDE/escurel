@@ -386,7 +386,8 @@ key the caller sends is dropped (only the server's own `thread` block is kept).
 
 ## What the runner reads off a skill page
 
-Besides `autonomy` (`auto` lands, `review` and `confirm` hold a draft —
+Besides `autonomy` (`auto` — also when the key is absent — lands, `review` and
+`confirm` hold a draft, and so does a value the runner does not recognise —
 `confirm` additionally marks the run's events `autonomy: confirm` so the
 workbench asks the human explicitly), the runner honours the contract keys
 of references/01: `harness:` (like a manual start's ask, within
