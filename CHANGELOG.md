@@ -16,6 +16,9 @@ Replies reach the requester, and a service role may reply under a declared label
 - **`acl.reply_into: [groups]`** on a skill: a role-restricted caller may capture a reply under that skill's label into a
   readable root of another label. Without it a restricted reply keeps the root's label. `list_skills` reports it to
   admins.
+- Also in this release: the explore Chat tab in the right rail, answered by a governed run (#802, #803); an absent
+  `autonomy:` means auto in the runner and `list_skills` as at the gateway (#804); cold chat latency notes for the
+  claude and gemini harnesses (#805).
 
 ## v2026.10.28
 

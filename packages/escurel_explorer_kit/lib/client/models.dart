@@ -1044,6 +1044,14 @@ class ChatMessage {
 
 /// One page of [ChatMessage]s plus an opaque cursor for the next page
 /// (`null` when the history is exhausted).
+/// `whoami` — the caller's verified identity.
+class Whoami {
+  const Whoami({required this.subject, required this.tenant, required this.isAdmin});
+  final String subject;
+  final String tenant;
+  final bool isAdmin;
+}
+
 class ChatPage {
   const ChatPage({required this.messages, this.nextCursor});
   final List<ChatMessage> messages;

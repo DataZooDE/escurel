@@ -746,13 +746,18 @@ fn parse_cascade(fm: &serde_json::Value) -> Option<CascadePolicy> {
 
 /// Project `autonomy:` from a skill page's indexed frontmatter.
 ///
-/// `None` covers three cases a consumer must treat identically: the key is
-/// absent, the key holds something that is not a string (`autonomy: [auto]`),
-/// or the string is not one of the three. All of them mean "no policy was
-/// successfully declared" — which fails closed, because only an explicit,
-/// well-formed `auto` may switch a gate off.
+/// An ABSENT key is `Auto`: the default the gateway's write gate
+/// (`autonomy_requires_review`), the runner and every client share (BRD
+/// chat-agent Q2, owner decision 2026-10-25), reported as such so a client
+/// never has to guess it. `None` is left for a key that is present but not
+/// understood — not a string (`autonomy: [auto]`) or not one of the three —
+/// which fails closed: a client reads an omitted field as "hold for review",
+/// so a typo never reads as `auto`.
 fn parse_autonomy(fm: &serde_json::Value) -> Option<Autonomy> {
-    Autonomy::parse(fm.get("autonomy")?.as_str()?)
+    match fm.get("autonomy") {
+        None | Some(serde_json::Value::Null) => Some(Autonomy::Auto),
+        Some(v) => Autonomy::parse(v.as_str()?),
+    }
 }
 
 /// One instance page, projected for [`Indexer::list_instances`].

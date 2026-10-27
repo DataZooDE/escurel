@@ -550,7 +550,7 @@ named by (`page-chat:v1:<sha256(subject)>:<page_id>`).
       "required_frontmatter": ["tier", "opened", "status"],
       "optional_frontmatter": ["mrr_band", "owner", ...],
       "is_event_typed": false,      // true iff `at` is in required_frontmatter
-      "autonomy": "review",         // omitted when undeclared OR unrecognised
+      "autonomy": "review",         // "auto" when undeclared; omitted when unrecognised
       "params": [                   // omitted entirely when none are declared
         { "name": "window", "kind": "string", "required": true,
           "label": "Window", "description": "e.g. 30d" },
@@ -607,13 +607,15 @@ policy; the gateway stays automation-free. It recognises the key so a
 consumer has one declared place to read it from, and so `validate` can
 object to a typo at authoring time.
 
-**The field is omitted when the key is absent *and* when its value is not
-one of the three.** Those two cases collapse on purpose: an unrecognised
-value must never be reported as `auto`, because a consumer reading `auto`
-switches a human gate off — `autonmy: review` silently meaning "commit
-ungated" is a data-governance incident rather than a bug. A client treats
-an omitted `autonomy` as "hold for review" and calls `validate` to learn
-which of the two cases it is. Case and surrounding whitespace are
+**A skill with no `autonomy:` key is reported as `auto`; the field is
+omitted only when the key is present but its value is not one of the
+three.** Absent means auto everywhere — the gateway's write gate, the runner
+and every client share that one default (owner decision 2026-10-25), so the
+gateway says so rather than leave a client to guess. An unrecognised value
+must never be reported as `auto`, because a consumer reading `auto` switches
+a human gate off — `autonmy: review` silently meaning "commit ungated" is a
+data-governance incident rather than a bug. A client treats an omitted
+`autonomy` as "hold for review"; `validate` names the unrecognised value. Case and surrounding whitespace are
 normalised, so `Auto` and `"  auto "` are both `auto`.
 
 ##### Invocation parameters (`params`)

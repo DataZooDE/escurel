@@ -358,22 +358,22 @@ async fn an_unrecognised_autonomy_behaves_as_review() {
     );
 }
 
-/// A skill that declares nothing is not thereby unattended.
+/// A skill that declares nothing runs auto, as the gateway has always treated
+/// it (one default on both sides: BRD chat-agent Q2, owner decision 2026-10-25).
+/// A present but unknown value still holds (`autonomy: atuo`, above).
 #[tokio::test]
-async fn an_absent_autonomy_behaves_as_review() {
+async fn an_absent_autonomy_behaves_as_auto() {
     let r = start("customer_silent", None).await;
 
-    until("a draft appears for the event", 60, || async {
-        let drafts = call_mcp(&r.gateway, "list_drafts", json!({})).await;
-        drafts["drafts"]
-            .as_array()
-            .is_some_and(|ds| ds.iter().any(|d| d["event_id"] == json!(r.event_id)))
+    until("the write lands on the page", 60, || async {
+        page_body(&r).await.contains(WRITTEN_MARKER)
     })
     .await;
-
-    let body = page_body(&r).await;
+    let drafts = call_mcp(&r.gateway, "list_drafts", json!({})).await;
     assert!(
-        !body.contains(WRITTEN_MARKER),
-        "a skill with no `autonomy:` must not commit: {body}"
+        !drafts["drafts"]
+            .as_array()
+            .is_some_and(|ds| ds.iter().any(|d| d["event_id"] == json!(r.event_id))),
+        "nothing held for review: {drafts}"
     );
 }

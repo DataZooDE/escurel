@@ -828,6 +828,16 @@ class HttpEscurelClient implements EscurelClient {
     );
   }
 
+  @override
+  Future<Whoami> whoami() async {
+    final result = await _call('whoami', const {});
+    return Whoami(
+      subject: (result['subject'] as String?) ?? '',
+      tenant: (result['tenant'] as String?) ?? '',
+      isAdmin: (result['is_admin'] as bool?) ?? false,
+    );
+  }
+
   // ── chat history (M-Chat) ───────────────────────────────────
 
   @override

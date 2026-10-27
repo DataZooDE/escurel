@@ -317,7 +317,8 @@ async fn a_skill_without_params_keeps_its_whole_row_and_grows_no_key() {
     assert_eq!(note["layer"], json!("overlay"));
     assert_eq!(note["backend"]["kind"], json!("markdown"));
     assert_eq!(note["capabilities"]["writable"], json!(true));
-    assert_eq!(note.get("autonomy"), None);
+    // An undeclared autonomy is reported as auto (one default, BRD chat-agent Q2).
+    assert_eq!(note["autonomy"], json!("auto"));
 
     // The shipped meta-skill page declares no params either — proof the
     // absence above is not an artefact of this test's own fixture.
