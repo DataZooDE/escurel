@@ -1,7 +1,7 @@
 import WebSocket from 'ws';
 import type { TokenSource } from '../auth/tokenSource';
 import { EscurelError } from './errors';
-import type { Event } from './types';
+import type { ChatMessage, Event } from './types';
 
 /** `event_subscribe.filters` (crates/escurel-server/src/ws.rs). All strings. */
 export interface EventFilters {
@@ -10,6 +10,12 @@ export interface EventFilters {
   label_skill?: string;
   kind?: 'user' | 'system';
   instance_page_id?: string;
+  /**
+   * A CHAT subscription (exclusive: no other key): the group's appended messages arrive as
+   * `chat_message` frames through `onChatMessage`, and no events. Refused unless the caller may
+   * read the group. There is no replay; reconcile with `list_messages` on (re)connect.
+   */
+  chat_group_id?: string;
 }
 
 export type WarningKind = 'lagged' | 'session_cap_reached';
@@ -21,6 +27,8 @@ export interface EventSocketOptions {
   /** Resume point for the first subscribe (the last `event_id` the view saw). */
   sinceEventId?: string;
   onEvent: (event: Event, replayed: boolean) => void;
+  /** A message appended to the subscribed chat group (`filters.chat_group_id`). */
+  onChatMessage?: (message: ChatMessage) => void;
   /** Non-blocking: `lagged` = poll to reconcile; `session_cap_reached` = refresh-on-focus from now on. */
   onWarning: (kind: WarningKind, message: string) => void;
   onError: (error: EscurelError) => void;
@@ -186,6 +194,13 @@ export class EventSocket {
         if (this.seenOrder.length > 4096) this.seen.delete(this.seenOrder.shift()!);
         this._lastEventId = event.event_id;
         this.opts.onEvent(event, frame.replayed === true);
+        return;
+      }
+      case 'chat_message': {
+        const msg = frame.msg as ChatMessage | undefined;
+        if (msg && typeof msg.msg_id === 'string') {
+          this.opts.onChatMessage?.({ ...msg, chat_group_id: String(frame.chat_group_id ?? '') });
+        }
         return;
       }
       case 'event_lagged':

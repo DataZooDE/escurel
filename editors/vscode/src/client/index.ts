@@ -8,7 +8,11 @@ import { authedFetch, createTransport, mcpUrl } from './transport';
 import type {
   ApplyOpRequest,
   ApplyOpResponse,
+  AppendMessageRequest,
+  AppendMessageResponse,
   CaptureEventRequest,
+  ListMessagesRequest,
+  ListMessagesResponse,
   Changeset,
   CloseSessionRequest,
   CloseSessionResponse,
@@ -233,6 +237,15 @@ export class EscurelClient {
 
   captureEvent(req: CaptureEventRequest): Promise<Event> {
     return this.call('capture_event', { ...req });
+  }
+
+  appendMessage(req: AppendMessageRequest): Promise<AppendMessageResponse> {
+    return this.call('append_message', { ...req });
+  }
+
+  /** A denied read is an empty page, never an error (the gateway does not leak a chat's existence). */
+  listMessages(req: ListMessagesRequest): Promise<ListMessagesResponse> {
+    return this.call('list_messages', { ...req });
   }
 
   listLineage(req: ListLineageRequest): Promise<ListLineageResponse> {

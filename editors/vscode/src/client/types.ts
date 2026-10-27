@@ -499,3 +499,48 @@ export interface CloseSessionResponse {
   issues?: ValidationIssue[];
   [key: string]: unknown;
 }
+
+// ── chat (append_message / list_messages; crates/escurel-server/src/mcp/schema.rs) ──
+
+/** One stored chat message (`list_messages` row, `/ws` `chat_message.msg`). */
+export interface ChatMessage {
+  chat_group_id: string;
+  msg_id: string;
+  ts: string;
+  role: string;
+  content: string;
+  embedded: boolean;
+  author?: string;
+  metadata?: Record<string, unknown>;
+}
+
+export interface AppendMessageRequest {
+  chat_group_id: string;
+  role: 'user' | 'assistant' | 'system';
+  content: string;
+  /** Idempotency key: a retry with the same id echoes the stored row. */
+  msg_id?: string;
+  metadata?: Record<string, unknown>;
+  embed?: boolean;
+  /** Page chats only: the revision (sha256 of the page markdown) the person saw. */
+  page_revision_sha256?: string;
+}
+
+export interface AppendMessageResponse {
+  msg_id: string;
+  ts: string;
+}
+
+export interface ListMessagesRequest {
+  chat_group_id: string;
+  since?: string;
+  until?: string;
+  limit?: number;
+  cursor?: string;
+  direction?: 'asc' | 'desc';
+}
+
+export interface ListMessagesResponse {
+  messages: ChatMessage[];
+  next_cursor?: string;
+}
