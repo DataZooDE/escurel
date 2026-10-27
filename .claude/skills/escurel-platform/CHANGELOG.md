@@ -4,6 +4,12 @@ The skill version tracks the consumer-facing contract, not the Escurel
 binary version. The Escurel repo's checked-out git ref is the true version
 pin (see `SKILL.md` → "How this skill is installed").
 
+## 0.25.17 — chat lane: chat runs never wait behind the serial lane
+
+Chat runs dispatch on their own lane (`ESCUREL_RUNNER_CHAT_CONCURRENCY`, default 2) with their own limits
+(`ESCUREL_RUNNER_CHAT_TIMEOUT` 120s, `ESCUREL_RUNNER_CHAT_MAX_ATTEMPTS` 1, `ESCUREL_RUNNER_CHAT_HISTORY_TURNS` 20).
+New runner metrics `escurel_runner_chat_turns_total{status}`, `escurel_runner_chat_turn_seconds{status}`.
+
 ## 0.25.16 — chat runs: failed, cancelled and static-token turns
 
 A failed, timed-out or cancelled chat run posts one `assistant` turn with `status: failed` (+ `reason`) or

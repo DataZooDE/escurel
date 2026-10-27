@@ -437,12 +437,14 @@ fn untrusted_block<'a>(input: &'a str, kind: &str) -> Option<&'a str> {
 /// token let it read. Never writes — the runner appends the reply.
 ///
 /// Test knobs: `ESCUREL_ECHO_SLEEP_MS` idles first (so a cancel can land
-/// mid-run); `ESCUREL_ECHO_FAIL_CHAT` fails every chat run.
+/// mid-run) unless `ESCUREL_ECHO_SLEEP_SKILL` narrows the idle to another
+/// label; `ESCUREL_ECHO_FAIL_CHAT` fails every chat run.
 fn run_chat(task: &HarnessTask, question: &str) -> Result<HarnessOutcome, String> {
     if let Some(ms) = std::env::var("ESCUREL_ECHO_SLEEP_MS")
         .ok()
         .and_then(|v| v.parse::<u64>().ok())
         .filter(|ms| *ms > 0)
+        && std::env::var("ESCUREL_ECHO_SLEEP_SKILL").is_err()
     {
         std::thread::sleep(std::time::Duration::from_millis(ms));
     }
@@ -532,10 +534,14 @@ fn run(task: &HarnessTask) -> Result<HarnessOutcome, String> {
     // Test-only idle (workbench backend P2-3a): `ESCUREL_ECHO_SLEEP_MS`
     // holds the harness before it acts, so a test can cancel a run that is
     // genuinely in flight. Off unless set.
+    // `ESCUREL_ECHO_SLEEP_SKILL` narrows the idle to one label's runs.
     if let Some(ms) = std::env::var("ESCUREL_ECHO_SLEEP_MS")
         .ok()
         .and_then(|v| v.parse::<u64>().ok())
         .filter(|ms| *ms > 0)
+        && std::env::var("ESCUREL_ECHO_SLEEP_SKILL").map_or(true, |only| {
+            event.get("label_skill").and_then(Value::as_str) == Some(only.as_str())
+        })
     {
         std::thread::sleep(std::time::Duration::from_millis(ms));
     }

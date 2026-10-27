@@ -142,6 +142,8 @@ pub struct ChatContext {
     /// as this subject; `None` makes the chat run refuse rather than answer
     /// with anyone else's rights.
     pub asker: Option<String>,
+    /// When the runner received the turn, for the time-to-answer metric.
+    pub received_at: std::time::Instant,
 }
 
 impl ChatContext {
@@ -177,6 +179,7 @@ impl ChatContext {
             user_msg_id: user_msg_id.to_owned(),
             focus,
             asker,
+            received_at: std::time::Instant::now(),
         })
     }
 

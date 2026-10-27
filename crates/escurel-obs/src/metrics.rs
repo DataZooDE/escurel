@@ -44,6 +44,12 @@ pub struct Metrics {
     /// `escurel_runner_runs_total{tenant,status}` — agent-runner runs by
     /// terminal status (`processed`/`failed`/`dead_letter`/`converged`).
     runner_runs: IntCounterVec,
+    /// `escurel_runner_chat_turns_total{status}` — chat runs' assistant turns
+    /// by `ok` / `failed` / `cancelled` (governed chat agent).
+    runner_chat_turns: IntCounterVec,
+    /// `escurel_runner_chat_turn_seconds{status}` — runner received the turn
+    /// → its assistant turn was appended.
+    runner_chat_turn_seconds: HistogramVec,
     /// Confirmed page writes by origin (WI-6 absorption instrumentation).
     writes: IntCounterVec,
     /// `escurel_runner_throttled_total{reason}` — quota throttles by reason.
@@ -154,6 +160,25 @@ impl Metrics {
         )
         .expect("valid counter opts");
 
+        let runner_chat_turns = IntCounterVec::new(
+            Opts::new(
+                "escurel_runner_chat_turns_total",
+                "Chat runs' assistant turns by status (ok | failed | cancelled).",
+            ),
+            &["status"],
+        )
+        .expect("valid counter opts");
+
+        let runner_chat_turn_seconds = HistogramVec::new(
+            HistogramOpts::new(
+                "escurel_runner_chat_turn_seconds",
+                "Seconds from the runner receiving a chat turn to its reply being appended.",
+            )
+            .buckets(vec![1.0, 2.5, 5.0, 10.0, 20.0, 30.0, 60.0, 120.0, 300.0]),
+            &["status"],
+        )
+        .expect("valid histogram opts");
+
         let writes = IntCounterVec::new(
             Opts::new(
                 "escurel_writes_total",
@@ -237,6 +262,12 @@ impl Metrics {
         registry
             .register(Box::new(runner_runs.clone()))
             .expect("register escurel_runner_runs_total");
+        registry
+            .register(Box::new(runner_chat_turns.clone()))
+            .expect("register escurel_runner_chat_turns_total");
+        registry
+            .register(Box::new(runner_chat_turn_seconds.clone()))
+            .expect("register escurel_runner_chat_turn_seconds");
         registry
             .register(Box::new(writes.clone()))
             .expect("register writes");
@@ -332,6 +363,8 @@ impl Metrics {
             live_sessions,
             audit_drift,
             runner_runs,
+            runner_chat_turns,
+            runner_chat_turn_seconds,
             writes,
             runner_throttled,
             runner_tokens,
@@ -448,6 +481,15 @@ impl Metrics {
 
     pub fn inc_runner_run(&self, tenant: &str, status: &str) {
         self.runner_runs.with_label_values(&[tenant, status]).inc();
+    }
+
+    /// Record one chat run's assistant turn: its status and how long the
+    /// person waited for it.
+    pub fn observe_runner_chat_turn(&self, status: &str, seconds: f64) {
+        self.runner_chat_turns.with_label_values(&[status]).inc();
+        self.runner_chat_turn_seconds
+            .with_label_values(&[status])
+            .observe(seconds);
     }
 
     /// Record one run lifecycle event the gateway refused, by `kind`

@@ -431,6 +431,12 @@ The runner treats an event whose `provenance.chat_group_id` is a `page-chat:` gr
   dead-letters after one attempt with `run-finished { reason: "chat_requires_run_tokens" }`, and no
   turn is posted (the runner's own identity never writes into a person's chat). It logs a WARN once at
   startup.
+- Chat runs have their **own lane**: `ESCUREL_RUNNER_CHAT_CONCURRENCY` (default 2) loops beside the
+  serial one, so a question never waits behind a long workflow run. Their limits are separate:
+  `ESCUREL_RUNNER_CHAT_TIMEOUT` (120s per attempt), `ESCUREL_RUNNER_CHAT_MAX_ATTEMPTS` (1),
+  `ESCUREL_RUNNER_CHAT_HISTORY_TURNS` (20). Metrics: `escurel_runner_chat_turns_total{status}` and
+  `escurel_runner_chat_turn_seconds{status}` (runner received the turn → reply appended). Configure the
+  gateway webhook to the runner for chat; the poll interval is only the fallback.
 - Dedup is per turn, not per content: the same words twice are two runs, while a second event for the
   same `(chat_group_id, user_msg_id)` dead-letters as `duplicate_content`.
 

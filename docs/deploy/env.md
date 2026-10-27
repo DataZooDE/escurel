@@ -209,6 +209,10 @@ tenant/token can process `/trigger` but deliberately report unready at
 | `ESCUREL_RUNNER_GEMINI_MAX_TOTAL_TOKENS` | unbounded | provider-reported token cap for one Gemini invocation; a response without usage metadata fails the run |
 | `ESCUREL_RUNNER_AGENT_A2A_URL` | — | the agent's A2A endpoint the `delegate` harness posts to; unset disables delegation |
 | `ESCUREL_RUNNER_AGENT_A2A_AUDIENCE` | — | `aud` of the runner→agent delegation token (the agent's audience, never escurel's) |
+| `ESCUREL_RUNNER_CHAT_CONCURRENCY` | 2 | chat runs that may run at once, in their own lane beside the serial one |
+| `ESCUREL_RUNNER_CHAT_HISTORY_TURNS` | 20 | recent turns a chat run is shown |
+| `ESCUREL_RUNNER_CHAT_MAX_ATTEMPTS` | 1 | attempts per chat run |
+| `ESCUREL_RUNNER_CHAT_TIMEOUT` | 120s | wall-clock bound on one chat-run attempt |
 | `ESCUREL_RUNNER_MAX_ATTEMPTS` | 3 | reconciler attempts per run before it is recorded `failed` |
 | `ESCUREL_RUNNER_RUN_TIMEOUT` | 300s | wall-clock bound on one run attempt |
 | `ESCUREL_RUNNER_RETRY_BACKOFF` | 500ms | base backoff before the first reconciler retry (grows per attempt) |
@@ -267,6 +271,7 @@ test knobs: never set in a deployment.
 | `ESCUREL_ECHO_FAIL_SKILL` | — | echo harness: fail runs targeting this skill (tests) |
 | `ESCUREL_ECHO_RESULT_REF` | — | echo harness: attach this result reference (tests) |
 | `ESCUREL_ECHO_SLEEP_MS` | 0 | echo harness: idle this long before finishing, so a test can cancel a run |
+| `ESCUREL_ECHO_SLEEP_SKILL` | — | echo harness: only runs of this label idle for ESCUREL_ECHO_SLEEP_MS (tests) |
 | `ESCUREL_ECHO_USAGE` | — | echo harness: report this usage (tests) |
 | `ESCUREL_TEST_GDRIVE_EXTENSION` | — | path of a built gdrive extension for the duckvfs tests |
 | `ESCUREL_TEST_MIGRATE_KIND_PAGE_DELAY_MS` | — | sleep this long before each page of `migrate_kind`, to give a CI-sized tenant a long migration window |

@@ -332,6 +332,11 @@ run:
   token, which the gateway's reply rule (#785) accepts unchanged:
   `msg_id = run:<run_id>:reply`, metadata `{status, drafts, cited,
   user_msg_id}`. Every terminal — answered, failed, cancelled — gets a turn.
+- **Lane.** Chat triggers dispatch on a separate bounded lane
+  (`ESCUREL_RUNNER_CHAT_CONCURRENCY` loops of the same dispatch path, with
+  `CHAT_TIMEOUT` / `CHAT_MAX_ATTEMPTS`), so a question is never queued behind
+  a long run. Admission (ledger, depth, cycle, budget, quota) is the same
+  gate; the serial lane and its workflow semantics are untouched.
 - **Dedup.** The ledger keys a chat run on `(chat_group_id, user_msg_id)`
   instead of the content hash: identical words are two turns; a second event
   for the same turn is refused.

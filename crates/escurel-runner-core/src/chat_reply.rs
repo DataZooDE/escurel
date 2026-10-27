@@ -45,7 +45,9 @@ impl ChatOutcome {
         })
     }
 
-    fn status(&self) -> &'static str {
+    /// `ok`, `failed` or `cancelled` — the turn's `metadata.status`.
+    #[must_use]
+    pub fn status(&self) -> &'static str {
         match self {
             Self::Answered(_) => "ok",
             Self::Failed(_) => "failed",
