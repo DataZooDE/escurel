@@ -561,6 +561,9 @@ pub struct AclPolicy {
     /// [`Self::read_events`] references it by `[[skill::id]]` in its body and the event's capturer
     /// may read it. Skill-level only; only ever widens.
     pub read_referenced: Option<Vec<String>>,
+    /// Groups that, when role-restricted, may capture a reply under this skill's label into a
+    /// root event of ANOTHER label they can read. Skill-level only.
+    pub reply_into: Option<Vec<String>>,
 }
 
 impl AclPolicy {
@@ -614,6 +617,7 @@ pub(crate) fn parse_named_acl(fm: &serde_json::Value, key: &str) -> Option<AclPo
         propose: verb("propose"),
         read_events: verb("read_events"),
         read_referenced: verb("read_referenced"),
+        reply_into: verb("reply_into"),
     })
 }
 

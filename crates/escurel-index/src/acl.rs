@@ -675,6 +675,10 @@ impl Indexer {
     ///    rows that predate the stamp; every event captured through this
     ///    build carries one.
     ///
+    /// 5. whatever limbs 2-4 decide, the subject that captured the event's
+    ///    lineage ROOT may read a `user` event in it: a reply reaches the
+    ///    person who asked. A run's `system` bookkeeping is not a reply.
+    ///
     /// Limb 2 governs even when the caller captured the event: once an event
     /// is filed into someone's record it is that record's to disclose. It can
     /// only ever narrow a claim, never widen one — you cannot gain access to
@@ -717,19 +721,71 @@ impl Indexer {
         // (2) Filed into an instance → that instance's ACL decides. A named
         // page that does not exist falls through rather than deciding on a
         // dangling pointer.
-        if let Some(page_id) = event.instance_page_id.as_deref()
+        let ordinary = if let Some(page_id) = event.instance_page_id.as_deref()
             && let Some(expanded) = self.expand(page_id, None, None).await?
         {
-            return self
-                .may_read_instance(caller, &expanded.page.skill, &expanded.frontmatter)
-                .await;
+            self.may_read_instance(caller, &expanded.page.skill, &expanded.frontmatter)
+                .await?
+        } else {
+            // (3)/(4) Un-triaged → the capturing subject, or ungated when none
+            // was recorded.
+            match captured_by(&event.provenance) {
+                Some(subject) => subject == caller.subject,
+                None => true,
+            }
+        };
+        if ordinary {
+            return Ok(true);
         }
-        // (3)/(4) Un-triaged → the capturing subject, or ungated when none
-        // was recorded.
-        match captured_by(&event.provenance) {
-            Some(subject) => Ok(subject == caller.subject),
-            None => Ok(true),
+        // (5) A reply is addressed to whoever asked: the subject that captured a lineage's ROOT
+        // reads every `user` event in that lineage, filed or not, whoever captured it. Only the
+        // root's own capturer gains anything, and only within that one lineage. `system` events
+        // (a run's bookkeeping) are not replies and keep their own rule.
+        if event.kind != crate::EventKind::User {
+            return Ok(false);
         }
+        self.captured_the_root_of(caller, event).await
+    }
+
+    /// Whether `caller` captured the root of the lineage `event` belongs to (`root_event_id`,
+    /// set from `provenance.runner|review.root_event_id` at capture). A root names itself or no
+    /// root; an event that is its own root is not a reply.
+    async fn captured_the_root_of(
+        &self,
+        caller: &AclCaller<'_>,
+        event: &crate::EventInfo,
+    ) -> Result<bool, IndexerError> {
+        let Some(root_id) = event
+            .root_event_id
+            .as_deref()
+            .filter(|r| *r != event.event_id)
+        else {
+            return Ok(false);
+        };
+        let Some(root) = self.get_event(root_id).await? else {
+            return Ok(false);
+        };
+        let is_root = root
+            .root_event_id
+            .as_deref()
+            .is_none_or(|r| r == root.event_id);
+        Ok(is_root && captured_by(&root.provenance) == Some(caller.subject))
+    }
+
+    /// The `acl.reply_into` grant: `caller` holds a group the `label`'s skill lists there, so a
+    /// role-restricted caller may file a reply under this label into a root of another label.
+    pub async fn may_reply_into_label(
+        &self,
+        caller: &AclCaller<'_>,
+        label: &str,
+    ) -> Result<bool, IndexerError> {
+        let Some((Some(acl), _, _)) = self.skill_acl(label).await? else {
+            return Ok(false);
+        };
+        let Some(granted) = acl.reply_into.as_ref() else {
+            return Ok(false);
+        };
+        Ok(intersects(granted, &self.caller_groups(caller).await?))
     }
 
     /// A page-bound chat group, `page-chat:v1:<owner_sha256>:<page_id>`

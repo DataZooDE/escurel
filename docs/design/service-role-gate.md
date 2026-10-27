@@ -1,6 +1,6 @@
 # Service role gate
 
-Status: implemented (skill 0.25.19). Decision: a gateway-configured tool allow-list per service role, plus three
+Status: implemented (skill 0.25.19; lineage read and `acl.reply_into` 0.25.21). Decision: a gateway-configured tool allow-list per service role, plus
 skill-declared ACL grants. Neither half alone meets the requirement.
 
 ## Problem
@@ -47,8 +47,9 @@ Two allowed tools behave more narrowly for a restricted caller:
 
 - `create_draft` requires an `acl.propose` grant on the target skill, whatever the write-ACL mode and whatever write
   grants the role also holds. Non-instance targets (skill pages) are refused. The draft is still validated.
-- `capture_event` requires a lineage root (`provenance.runner.root_event_id`) that the caller may read, and the same
-  `label_skill` as that root: a restricted caller files replies, never new work under another label.
+- `capture_event` requires a lineage root (`provenance.runner.root_event_id`) that the caller may read, and either the
+  root's `label_skill` or a label whose skill grants the caller `acl.reply_into`: a restricted caller files replies,
+  never new work.
 
 **Minted children.** `mint_agent_token` copies the caller's groups (minus `escurel:` values) into the child, so the
 child carries the role value and the same gate. The mint is refused when the gateway reads groups from a claim other
@@ -69,6 +70,20 @@ instance by the ordinary rules (their subject and stored group membership). The 
 naming another person's attachment. The grant only widens: a role that already reads the skill through `read` (for
 example `read: [public]`) reads every instance. To keep unreferenced attachments private from the role, narrow `read`
 to the human groups, e.g. `read: [owner, editors]`.
+
+**`acl.reply_into: [groups]`** (reply skill). A restricted holder may capture a reply under this skill's label into a
+readable root of another label. Declared on the skill, not in `ESCUREL_AUTH_ROLE_TOOLS`: which labels a role may write
+under is data, like what it may read or propose, and a skill author adding a reply type should not need an operator
+change. The config stays a pure tool list, so one parser and one rule ("tools in config, data in skills") remain. It
+does not widen an unrestricted caller, who may already capture under any label. Assigning the root is unchanged.
+
+**Lineage read** (all callers, event ACL `log`/`enforce`). The subject that captured a lineage root reads every `user`
+event in that lineage (`root_event_id`, set from `provenance.runner|review.root_event_id`), filed or not, whoever
+captured it. A run's `system` bookkeeping under the root is not a reply and stays hidden.
+Without it the requester of an objectless request could not read the service's unassigned reply, which is visible only
+to its capturer. Only the root's capturer gains, and only within that lineage. This deliberately lets a reply filed into
+a record the requester cannot read stay readable to the requester: the reply was addressed to them. Any caller can still
+address a reply to any root id, which discloses that reply to the root's capturer and to nobody else.
 
 Tokens without a configured role are unaffected, and skills without the new keys behave as before.
 

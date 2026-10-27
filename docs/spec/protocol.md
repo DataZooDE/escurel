@@ -798,6 +798,8 @@ are read from the skill's block only (no tenant default, no instance override) a
 - `read_referenced: [groups]` — may read an instance of this skill when an event it reads through `read_events`
   names the instance as `[[skill::id]]` in its body (newest 50 mentions are inspected) and the event's capturer may
   read the instance by the ordinary rules (subject and stored membership).
+- `reply_into: [groups]` — a role-restricted holder may capture a reply under this skill's label into a root event of
+  another label it can read (otherwise a restricted reply keeps the root's label).
 
 The matching gateway restriction is `ESCUREL_AUTH_ROLE_TOOLS` (a role's tool allow-list, refused tools answer `-32001`
 `role_restricted`); see `docs/design/service-role-gate.md`.
@@ -1132,7 +1134,10 @@ to; until it belongs to one, it follows the person who captured it.*
 - An event whose `instance_page_id` is set is exactly as visible as that
   instance (the same per-instance read ACL `expand`/`list_instances`
   apply). An un-triaged event is visible only to the subject that
-  captured it. Admin bypasses. An event captured before the stamp
+  captured it. The subject that captured a lineage's root event also
+  reads every `user` event in that lineage (`root_event_id`), filed or not and
+  whoever captured it: a reply reaches the person who asked. Admin
+  bypasses. An event captured before the stamp
   existed carries none and stays ungated, the same compat fallback the
   chat ACL takes for an unresolvable owner.
 - `capture_event` is idempotent on `event_id` and returns the STORED

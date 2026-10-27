@@ -121,6 +121,7 @@ fn skill_to_wire(s: escurel_index::SkillInfo, is_admin: bool) -> TypesSkill {
             propose: a.propose,
             read_events: a.read_events,
             read_referenced: a.read_referenced,
+            reply_into: a.reply_into,
         }),
         backend: backend_to_wire(&s.backend),
         capabilities: {

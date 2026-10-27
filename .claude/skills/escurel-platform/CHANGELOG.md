@@ -4,6 +4,11 @@ The skill version tracks the consumer-facing contract, not the Escurel
 binary version. The Escurel repo's checked-out git ref is the true version
 pin (see `SKILL.md` → "How this skill is installed").
 
+## 0.25.22 — lineage read and `acl.reply_into`
+
+The capturer of a root event reads every `user` event in its lineage, unassigned replies included. `acl.reply_into: [groups]`
+lets a role-restricted caller reply under that label into a readable root of another label (references/01, 08).
+
 ## 0.25.21 — absent `autonomy:` means auto, everywhere
 
 A skill with no `autonomy:` key runs auto in the runner too (it held such writes for review while the gateway let them

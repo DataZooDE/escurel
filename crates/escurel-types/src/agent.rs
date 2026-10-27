@@ -351,6 +351,9 @@ pub struct SkillAcl {
     /// Groups that may read an instance referenced by an event they read through `read_events`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub read_referenced: Option<Vec<String>>,
+    /// Groups whose restricted role may reply under this label into a root of another label.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reply_into: Option<Vec<String>>,
 }
 
 /// The backend a skill's instances live in (`markdown` | `sql_view` |

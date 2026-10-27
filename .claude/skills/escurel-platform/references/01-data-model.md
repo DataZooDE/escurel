@@ -237,7 +237,7 @@ corpus:
 
 ## Service-role grants in a skill's `acl:` block
 
-Besides `read`/`create`/`update`/`delete`, a skill's `acl:` block may declare three grants. They are skill-level only
+Besides `read`/`create`/`update`/`delete`, a skill's `acl:` block may declare four grants. They are skill-level only
 (no tenant default, no instance override) and only ever widen access:
 
 - `propose: [groups]` — holders may `create_draft` an instance of this skill without a write grant. The content's
@@ -248,6 +248,11 @@ Besides `read`/`create`/`update`/`delete`, a skill's `acl:` block may declare th
 - `read_referenced: [groups]` — holders read an instance of this skill when an event they read through `read_events`
   references it as `[[skill::id]]` in its body and the event's capturer may read it. A role that already reads the skill
   through `read` (e.g. `read: [public]`) reads every instance, so narrow `read` to keep unreferenced instances private.
+- `reply_into: [groups]` — a role-restricted holder may capture a reply under this skill's label into a root event of
+  another label it can read. Without it a restricted reply must keep the root's label.
+
+Under the event ACL, the subject that captured a root event reads every `user` event (reply) in its lineage (`root_event_id`), even an
+unassigned reply someone else captured, so a requester reads the answer to an objectless request.
 
 ```yaml
 # skills/request.md                       # skills/attachment.md

@@ -43,7 +43,8 @@ intersection. A restricted token is also refused (`403 role_restricted`) at `/in
 `/ws`. Only agent-scope tools may be listed; the gateway refuses to boot on an unknown or admin tool, a role in the
 `escurel:` namespace, or the admin/operator value. Two allowed tools are narrower for a restricted caller: `create_draft`
 needs an `acl.propose` grant on the target skill (write grants do not count), and `capture_event` must reply to an event
-the caller can read (`provenance.runner.root_event_id`, same `label_skill`). `mint_agent_token` children carry the
+the caller can read (`provenance.runner.root_event_id`), under the root's `label_skill` or a label whose skill grants the
+role `acl.reply_into`. `mint_agent_token` children carry the
 parent's groups and so the same gate; it refuses for a restricted caller when `ESCUREL_AUTH_GROUPS_CLAIM` is not
 `roles`. What the role may read or propose is declared on the skills (`acl.read_events`, `acl.read_referenced`,
 `acl.propose`, references/01). Revocation: the gateway verifies self-contained JWTs, so a disabled service credential
