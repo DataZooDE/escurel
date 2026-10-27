@@ -2168,6 +2168,16 @@ async fn dispatch_loop(
                         bound.as_secs()
                     ))),
                 };
+                // An abandoned attempt never reached `attempt_run`'s own error
+                // path, so the sink has to hear about it here: a chat run's
+                // failure turn says WHY (`timeout`), and `run-finished.error`
+                // names it.
+                if let Err(e) = &result
+                    && e.to_string().contains("abandoned")
+                    && let Ok(mut s) = sink_ref.lock()
+                {
+                    s.last_error = Some(e.to_string());
+                }
                 if emit_events {
                     let (outcome, error) = match &result {
                         Ok(_) => ("ok", None),

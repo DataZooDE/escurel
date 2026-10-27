@@ -355,7 +355,12 @@ async fn handle_socket(
                 use tokio::sync::broadcast::error::RecvError;
                 match pushed {
                     Ok(msg) => {
-                        if event_filter.chat_group_id.as_deref() == Some(msg.chat_group_id.as_str()) {
+                        // Re-checked per message, not only at subscribe time: a
+                        // page that changes hands (or a chat ACL that tightens)
+                        // must stop the push to an open socket at once.
+                        if event_filter.chat_group_id.as_deref() == Some(msg.chat_group_id.as_str())
+                            && chat_subscribe_allowed(&state, &caller, &msg.chat_group_id).await
+                        {
                             let frame = json!({
                                 "type": "chat_message",
                                 "subscription_id": event_sub_id,

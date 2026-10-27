@@ -369,8 +369,8 @@ token subject) hang off one of its pages. For those groups:
 
 **Live chat over `/ws`.** A presence-only socket can watch one group:
 `{type: "event_subscribe", subscription_id, filters: {chat_group_id}}`.
-The subscribe is checked with the same chat ACL as `list_messages`; a
-refusal is `{type: "error", code: "forbidden"}` and subscribes nothing.
+The subscribe — and every message pushed after it — is checked with the same
+chat ACL as `list_messages`; a refusal is `{type: "error", code: "forbidden"}` and subscribes nothing.
 Once acked, every message `append_message` inserts into that group arrives
 as `{type: "chat_message", subscription_id, chat_group_id, msg}` (`msg` is a
 `list_messages` row). A `msg_id` retry is not pushed twice. The filter is

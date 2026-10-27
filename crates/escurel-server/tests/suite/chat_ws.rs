@@ -195,3 +195,37 @@ async fn a_chat_filter_mixed_with_event_filters_is_refused() {
     assert_eq!(refused["type"], "error", "{refused}");
     assert_eq!(refused["code"], "invalid_subscription", "{refused}");
 }
+
+#[tokio::test]
+async fn a_subscriber_who_loses_read_access_is_pushed_nothing_more() {
+    let p = start().await;
+    let alice = p.mint_token_with_sub(TENANT, Role::Agent, ALICE);
+    let admin = p.mint_token(TENANT, Role::Admin);
+    let group = page_chat(ALICE, NOTE_PAGE);
+    let (mut sock, ack) = subscribe(&p, &alice, json!({ "chat_group_id": group })).await;
+    assert_eq!(ack["type"], "event_subscribe_ack", "{ack}");
+    append(&p, &alice, &group, "u-1", "before").await;
+
+    // The note changes hands: alice may no longer read it, so not its chat.
+    let moved = NOTE_RECORD.replace("whatsapp:111", "whatsapp:222");
+    let resp: Value = reqwest::Client::new()
+        .post(p.mcp_url())
+        .header("authorization", format!("Bearer {admin}"))
+        .json(&json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": { "name": "update_page", "arguments": { "page_id": NOTE_PAGE, "content": moved } } }))
+        .send()
+        .await
+        .expect("post")
+        .json()
+        .await
+        .expect("json");
+    assert!(resp.get("error").is_none(), "{resp}");
+    append(&p, &admin, &group, "a-1", "after").await;
+
+    let ids: Vec<String> = chat_frames(&mut sock)
+        .await
+        .iter()
+        .map(|f| f["msg"]["msg_id"].as_str().unwrap().to_owned())
+        .collect();
+    assert_eq!(ids, ["u-1"], "nothing after access was lost");
+}
