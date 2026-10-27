@@ -4,6 +4,14 @@ The skill version tracks the consumer-facing contract, not the Escurel
 binary version. The Escurel repo's checked-out git ref is the true version
 pin (see `SKILL.md` → "How this skill is installed").
 
+## 0.25.15 — chat runs: the runner answers a page-chat turn as the asker
+
+An event with `provenance: {chat_group_id: "page-chat:…", user_msg_id, focus?}` is a chat run. It runs under a run
+token minted for the event's `captured_by` (minted runner required), sees the last turns, the bound page and the focus
+pages as `<untrusted>` data, and has the review tools without `append_message`. The runner then appends one
+`assistant` turn with the run token (`msg_id: run:<run_id>:reply`, metadata `status`, `drafts`, `cited`,
+`user_msg_id`). Dedup is per `(chat_group_id, user_msg_id)`, not per content. `HarnessOutcome.reply` carries the
+answer (claude: the final message; gemini: the last turn's text).
 ## 0.25.14 — `max_items` on a field
 
 A `fields:` entry may declare `max_items: <n>` (a positive whole number), mainly on a `kind: link` field that holds one link

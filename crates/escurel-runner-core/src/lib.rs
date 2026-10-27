@@ -17,6 +17,7 @@ mod admit;
 mod auth;
 mod cancel;
 mod cascade;
+mod chat_reply;
 mod config;
 mod dispatch;
 mod ledger;
@@ -37,6 +38,7 @@ pub use cancel::{Cancel, CancelRegistry, DEFAULT_CANCEL_GRACE};
 pub use cascade::{
     CascadeError, CascadeOutcome, SkillContract, emit_cascade, emit_cascade_with_id, skill_contract,
 };
+pub use chat_reply::{ChatOutcome, post_chat_reply};
 pub use config::{ConfigError, RunnerConfig};
 pub use dispatch::{DispatchConsumer, DispatchQueue, EnqueueOutcome};
 pub use escurel_runner_workflow::OperationStatus;
@@ -44,8 +46,9 @@ pub use ledger::{
     DeadLetterReason, Ledger, LedgerDecision, LedgerError, RunId, RunRecord, RunStatus,
 };
 pub use packager::{
-    ALLOWED_TOOLS, Autonomy, Delegation, PLAN_PARAGRAPH, PackageError, REVIEW_TOOLS, TaskContext,
-    WORKFLOW_STEP_TOOLS, package, plan_tools,
+    ALLOWED_TOOLS, Autonomy, CHAT_REQUIRES_RUN_TOKENS, Delegation, PLAN_PARAGRAPH, PackageError,
+    REVIEW_TOOLS, TaskContext, WORKFLOW_STEP_TOOLS, bound_page_id, chat_run_token, chat_tools,
+    package, plan_tools,
 };
 
 /// The harness selector for a step that delegates to the agent over A2A

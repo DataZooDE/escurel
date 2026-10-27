@@ -878,6 +878,8 @@ fn record_run_terminal(metrics: &Metrics, tenant: &str, status: &str) {
 #[derive(Debug, Default, Clone)]
 struct AttemptSink {
     summary: String,
+    /// The last attempt's user-facing answer, for a chat run's reply.
+    reply: Option<String>,
     tool_calls: u32,
     autonomy: Option<&'static str>,
     /// The last attempt's harness error, for `run-finished`'s reason.
@@ -2262,6 +2264,31 @@ async fn dispatch_loop(
                     .await,
             );
         }
+        // A chat run's assistant turn (governed chat agent): appended by the
+        // runner with the run's token, for every terminal, after the ledger
+        // and the lifecycle events recorded it.
+        if let Some(turn) = &trigger.chat {
+            let sink = attempt_sink.lock().map(|s| s.clone()).unwrap_or_default();
+            let outcome = match (&report.confirmed, report.converged_no_op, report.failure) {
+                (Some(_), _, _) | (None, true, _) => escurel_runner_core::ChatOutcome::Answered(
+                    sink.reply.clone().unwrap_or_else(|| sink.summary.clone()),
+                ),
+                (None, false, Some(RunFailure::Cancelled)) => {
+                    escurel_runner_core::ChatOutcome::Cancelled
+                }
+                _ => escurel_runner_core::ChatOutcome::failed_from(sink.last_error.as_deref()),
+            };
+            escurel_runner_core::post_chat_reply(
+                &client,
+                &config.gateway_url,
+                &tokens,
+                &trigger,
+                turn,
+                &run_claims,
+                &outcome,
+            )
+            .await;
+        }
         if report.confirmed.is_none() && report.converged_no_op {
             record_run_terminal(&metrics, &trigger.tenant, "converged");
             tracing::info!(
@@ -2628,6 +2655,7 @@ async fn attempt_run(
                 }
                 if let Ok(mut s) = sink.lock() {
                     s.summary = outcome.summary.clone();
+                    s.reply = outcome.reply.clone();
                     s.tool_calls = outcome.tool_calls;
                     s.add_usage(outcome.usage.as_ref());
                     s.autonomy = Some(match task.autonomy {

@@ -310,6 +310,32 @@ in the runner).
 The gateway stays automation-free: it still only *notifies*; the runner
 still owns every decision to *act*.
 
+## Chat runs (governed chat agent)
+
+A chat turn is an ordinary event — no new event kind, no server-side
+execution path. Its `provenance` names a page-bound group
+(`chat_group_id: "page-chat:v1:…"`) and the person's turn (`user_msg_id`,
+optional `focus` page ids). The runner, not the server, makes it a chat
+run:
+
+- **Identity.** The run token is minted for the asker (the event's
+  server-stamped `captured_by`, captured as themselves) with the run claims,
+  never as `agent:<skill>` with the runner's grant: a chat run reads exactly
+  what the asker may read. A static-bearer runner cannot mint it; chat runs
+  then fail with `chat_requires_run_tokens`.
+- **Packaging.** Chat mode replaces "fold the event into the instance": the
+  chat skill's body plus a chat framing, and as input the recent turns, the
+  bound page and the focus pages — all read with the run token, all wrapped
+  as `<untrusted>` data. Tools: `REVIEW_TOOLS` minus `append_message`, so
+  writes are drafts and the harness cannot post.
+- **The reply.** The runner appends one `assistant` turn per run with the run
+  token, which the gateway's reply rule (#785) accepts unchanged:
+  `msg_id = run:<run_id>:reply`, metadata `{status, drafts, cited,
+  user_msg_id}`. Every terminal — answered, failed, cancelled — gets a turn.
+- **Dedup.** The ledger keys a chat run on `(chat_group_id, user_msg_id)`
+  instead of the content hash: identical words are two turns; a second event
+  for the same turn is refused.
+
 ## Concurrency / safety / failure model
 
 - **At-least-once delivery, effectively-once processing** via the ledger's
