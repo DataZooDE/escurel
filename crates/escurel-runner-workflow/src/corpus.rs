@@ -339,6 +339,59 @@ pub fn lint_corpus() -> Vec<(String, &'static str)> {
     ]
 }
 
+// --- the `chat` corpus (governed chat agent) ------------------------------
+//
+// A conversation is an instance of `conversation`: one owner, one page-bound
+// chat group (`page-chat:v1:<sha256(owner)>:<page>`), private to that owner
+// by its `acl:`. A question in it is a `chat` event; the runner answers it in
+// chat mode with the `chat` skill's body as the agent's instructions, under
+// `autonomy: review`, so a change the agent proposes is a draft.
+
+/// A private conversation with the knowledge agent. Only its owner (and an
+/// admin) can create, read, update or delete it — and so read its chat.
+pub const CONVERSATION: &str = "---\n\
+kind: skill\n\
+id: conversation\n\
+description: A private conversation with the knowledge agent — one owner, one chat.\n\
+owner_field: owner\n\
+acl:\n  read: [owner]\n  create: [owner]\n  update: [owner]\n  delete: [owner]\n\
+chat:\n  page_bound: true\n\
+required_frontmatter: [title, owner, started_at]\n\
+optional_frontmatter: [about, focus, summary]\n\
+---\n\
+# conversation\n\n\
+A conversation with the knowledge agent. `owner` is the person's token subject; \
+`about` links the record it is about, `focus` the pages pinned as context.\n";
+
+/// The chat agent's instructions. Ordinary corpus: a tenant may override it,
+/// and a pack may ship it. No `harness:` pin — the runner's default answers.
+pub const CHAT: &str = "---\n\
+kind: skill\n\
+id: chat\n\
+description: Answer a person's question from the knowledge base; propose changes only as drafts.\n\
+autonomy: review\n\
+chat:\n  page_bound: false\n\
+---\n\
+# chat\n\n\
+You answer questions about this knowledge base for the person who asked.\n\n\
+- Search before you answer (`search`, `resolve`, `expand`, `neighbours`); for \
+data, use `query_instance` — never guess a number.\n\
+- Say what you found and where: cite every page you used as a `[[skill::id]]` \
+link. If the knowledge base does not say, say so.\n\
+- Be brief. Lead with the answer, then the evidence.\n\
+- When asked to change something, propose it as a draft for review; never \
+claim a change was made.\n";
+
+/// The `(page_id, markdown)` pairs of the `chat` corpus. Opt-in, like every
+/// corpus: installing it is an explicit seed.
+#[must_use]
+pub fn chat_corpus() -> Vec<(String, &'static str)> {
+    vec![
+        ("markdown/skills/conversation.md".to_owned(), CONVERSATION),
+        ("markdown/skills/chat.md".to_owned(), CHAT),
+    ]
+}
+
 // --- G3: the `curate` corpus (a map of the territory) ----------------------
 //
 // `curate` regenerates a single `index` instance — a by-category map of the
@@ -511,6 +564,29 @@ mod tests {
         ] {
             assert!(ids.iter().any(|id| id == expected), "missing {expected}");
         }
+    }
+
+    #[test]
+    fn chat_corpus_ships_a_private_page_bound_conversation_and_a_review_chat_skill() {
+        let pages = chat_corpus();
+        let ids: Vec<&str> = pages.iter().map(|(p, _)| p.as_str()).collect();
+        assert_eq!(
+            ids,
+            ["markdown/skills/conversation.md", "markdown/skills/chat.md"]
+        );
+        assert!(CONVERSATION.contains("chat:\n  page_bound: true\n"));
+        assert!(CONVERSATION.contains("read: [owner]"));
+        assert!(CHAT.contains("autonomy: review\n"));
+        assert!(!CHAT.contains("harness:"));
+        // The seedable example is the same corpus, byte for byte.
+        assert_eq!(
+            CONVERSATION,
+            include_str!("../../../examples/chat/seed/skills/conversation.md")
+        );
+        assert_eq!(
+            CHAT,
+            include_str!("../../../examples/chat/seed/skills/chat.md")
+        );
     }
 
     #[test]

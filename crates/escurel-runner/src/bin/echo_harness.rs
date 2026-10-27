@@ -438,7 +438,9 @@ fn untrusted_block<'a>(input: &'a str, kind: &str) -> Option<&'a str> {
 ///
 /// Test knobs: `ESCUREL_ECHO_SLEEP_MS` idles first (so a cancel can land
 /// mid-run) unless `ESCUREL_ECHO_SLEEP_SKILL` narrows the idle to another
-/// label; `ESCUREL_ECHO_FAIL_CHAT` fails every chat run.
+/// label; `ESCUREL_ECHO_FAIL_CHAT` fails every chat run; `ESCUREL_ECHO_CHAT_DRAFT`
+/// (or a question starting `propose:`) proposes a change to the bound page as a
+/// draft, the way a real agent is told to.
 fn run_chat(task: &HarnessTask, question: &str) -> Result<HarnessOutcome, String> {
     if let Some(ms) = std::env::var("ESCUREL_ECHO_SLEEP_MS")
         .ok()
@@ -469,6 +471,30 @@ fn run_chat(task: &HarnessTask, question: &str) -> Result<HarnessOutcome, String
     let mut reply = format!("echo: {question}");
     if !focus.is_empty() {
         reply.push_str(&format!("\n\nfocus: {}", focus.join(", ")));
+    }
+    // A question starting `propose:` drafts too, so a UI test can ask for a draft on a stack it
+    // does not configure.
+    if (std::env::var("ESCUREL_ECHO_CHAT_DRAFT").is_ok_and(|v| !v.is_empty())
+        || question.trim_start().starts_with("propose:"))
+        && task.allowed_tools.iter().any(|t| t == "create_draft")
+        && let Some(page) = task
+            .input
+            .split_once("<untrusted kind=\"bound\" page_id=\"")
+            .and_then(|(_, rest)| rest.split('"').next())
+    {
+        let read = mcp.call("expand", json!({ "page_id": page, "raw": true }))?;
+        let content = read["content"].as_str().unwrap_or_default();
+        let drafted = mcp.call(
+            "create_draft",
+            json!({ "target_page_id": page,
+                    "content": format!("{}\n- {question}\n", content.trim_end()),
+                    "base_sha256": read["content_sha256"].as_str().unwrap_or_default() }),
+        )?;
+        tool_calls += 2;
+        if drafted.get("ok").and_then(Value::as_bool) != Some(true) {
+            return Err(format!("echo: create_draft refused: {drafted}"));
+        }
+        reply.push_str("\n\nA draft is waiting for your review.");
     }
     Ok(HarnessOutcome {
         reply: Some(reply),

@@ -11,7 +11,9 @@
 use std::process::{Child, Command};
 use std::time::{Duration, Instant};
 
-use escurel_test_support::{AuthMode, EscurelProcess, FixtureBuilder, Opts, Role, free_port};
+use escurel_test_support::{
+    AuthMode, ConfigOverrides, EscurelProcess, FixtureBuilder, Opts, Role, WriteAclMode, free_port,
+};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
@@ -47,6 +49,11 @@ impl Drop for ChildGuard {
 async fn gateway() -> EscurelProcess {
     EscurelProcess::spawn(Opts {
         auth: AuthMode::TestIssuer,
+        // Production's write ACL (the test harness defaults to `off`).
+        config_overrides: ConfigOverrides {
+            write_acl: Some(WriteAclMode::Enforce),
+            ..Default::default()
+        },
         fixtures: Some(
             FixtureBuilder::new()
                 .tenant(TENANT)
@@ -60,7 +67,6 @@ async fn gateway() -> EscurelProcess {
                 .instance("renewal", "c1", RENEWAL)
                 .done(),
         ),
-        ..Default::default()
     })
     .await
 }
@@ -241,6 +247,17 @@ async fn a_user_turn_gets_exactly_one_assistant_reply_from_the_run() {
     // Nothing else arrives later.
     tokio::time::sleep(Duration::from_secs(1)).await;
     assert_eq!(messages(&gw, &alice, 3).await.len(), 2);
+    // An answered turn leaves the inbox: it was handled, and nobody else should pick it up.
+    let admin = gw.mint_token(TENANT, Role::Admin);
+    let inbox = call(&gw, &admin, "list_inbox", json!({})).await;
+    assert!(
+        !inbox["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|e| e["event_id"] == event_id.as_str()),
+        "{inbox}"
+    );
 }
 
 #[tokio::test]
@@ -463,4 +480,129 @@ async fn a_chat_turn_is_answered_while_a_long_workflow_run_is_in_progress() {
         "{metrics}"
     );
     assert!(metrics.contains("escurel_runner_chat_turn_seconds_count{status=\"ok\"} 1"));
+}
+
+/// A JSON-RPC call whose whole response (result or error) is returned.
+async fn raw(gw: &EscurelProcess, token: &str, name: &str, args: Value) -> Value {
+    reqwest::Client::new()
+        .post(gw.mcp_url())
+        .header("authorization", format!("Bearer {token}"))
+        .json(&json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                       "params": { "name": name, "arguments": args } }))
+        .send()
+        .await
+        .expect("post")
+        .json()
+        .await
+        .expect("json")
+}
+
+/// A gateway seeded with the shipped `chat_corpus()` and one conversation.
+async fn corpus_gateway() -> EscurelProcess {
+    let mut fixtures = FixtureBuilder::new().tenant(TENANT);
+    for (page_id, body) in escurel_runner_workflow::corpus::chat_corpus() {
+        fixtures = fixtures.page(&page_id, body);
+    }
+    EscurelProcess::spawn(Opts {
+        auth: AuthMode::TestIssuer,
+        // Production's write ACL (the test harness defaults to `off`).
+        config_overrides: ConfigOverrides {
+            write_acl: Some(WriteAclMode::Enforce),
+            ..Default::default()
+        },
+        fixtures: Some(
+            fixtures
+                .instance("conversation", "c-1", CONVERSATION)
+                .done(),
+        ),
+    })
+    .await
+}
+
+#[tokio::test]
+async fn review_chat_run_creates_a_draft_and_lists_it_in_the_reply() {
+    let gw = corpus_gateway().await;
+    let alice = gw.mint_token_with_sub(TENANT, Role::Agent, ALICE);
+    let before = call(
+        &gw,
+        &alice,
+        "expand",
+        json!({ "page_id": CONVERSATION_PAGE }),
+    )
+    .await;
+    let (_runner, listen) = spawn_runner_with(&gw, true, &[("ESCUREL_ECHO_CHAT_DRAFT", "1")]);
+
+    let event_id = ask(&gw, &alice, "u-1", "Add that Globex extended to 2028.", &[]).await;
+    assert_eq!(await_terminal(&listen, &event_id).await.1, "processed");
+    let msgs = messages(&gw, &alice, 2).await;
+    let drafts = msgs[1]["metadata"]["drafts"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    assert_eq!(drafts.len(), 1, "{msgs:#?}");
+
+    let admin = gw.mint_token(TENANT, Role::Admin);
+    let listed = call(&gw, &admin, "list_drafts", json!({})).await;
+    let draft = listed["drafts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|d| d["draft_id"] == drafts[0])
+        .cloned()
+        .unwrap_or_else(|| panic!("draft {} not listed: {listed}", drafts[0]));
+    assert_eq!(draft["target_page_id"], CONVERSATION_PAGE);
+    // Held for review: the page itself is unchanged.
+    let after = call(
+        &gw,
+        &alice,
+        "expand",
+        json!({ "page_id": CONVERSATION_PAGE }),
+    )
+    .await;
+    assert_eq!(after["content_sha256"], before["content_sha256"]);
+}
+
+#[tokio::test]
+async fn the_shipped_conversation_is_private_to_its_owner() {
+    let gw = corpus_gateway().await;
+    let alice = gw.mint_token_with_sub(TENANT, Role::Agent, ALICE);
+    let bob = gw.mint_token_with_sub(TENANT, Role::Agent, "user:bob");
+    let create = |owner: &str, id: &str| {
+        json!({ "page_id": format!("markdown/instances/conversation/{id}.md"), "base_sha256": "",
+                "content": format!("---\nkind: instance\nskill: conversation\nid: {id}\ntitle: New chat\n\
+                    owner: \"{owner}\"\nstarted_at: 2026-10-25T11:00:00Z\n---\n# New chat\n") })
+    };
+
+    // The owner starts a conversation.
+    let own = raw(&gw, &alice, "update_page", create(ALICE, "c-2")).await;
+    assert_eq!(own["result"]["structuredContent"]["ok"], true, "{own}");
+    // Someone else cannot start one in her name, read hers, or read its chat.
+    let forged = raw(&gw, &bob, "update_page", create(ALICE, "c-3")).await;
+    assert_ne!(
+        forged["result"]["structuredContent"]["ok"], true,
+        "{forged}"
+    );
+    let read = call(
+        &gw,
+        &bob,
+        "expand",
+        json!({ "page_id": "markdown/instances/conversation/c-2.md" }),
+    )
+    .await;
+    assert!(read["page"].is_null(), "{read}");
+    call(
+        &gw,
+        &alice,
+        "append_message",
+        json!({ "chat_group_id": group(), "role": "user", "content": "private", "embed": false }),
+    )
+    .await;
+    let spy = call(
+        &gw,
+        &bob,
+        "list_messages",
+        json!({ "chat_group_id": group() }),
+    )
+    .await;
+    assert_eq!(spy["messages"], json!([]));
 }

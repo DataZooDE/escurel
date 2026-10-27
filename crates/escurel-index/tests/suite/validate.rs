@@ -978,3 +978,52 @@ async fn pending_relations_that_wait_on_each_other_are_a_cycle() {
         "{after:?}"
     );
 }
+
+/// `chat:` (governed chat agent, FR-M4): a map whose `page_bound` is a
+/// boolean. Anything else would silently leave page chat off — a string
+/// `"true"` is not `true` to the ACL — so it is an error; an unknown sub-key is
+/// a warning.
+#[tokio::test]
+async fn chat_frontmatter_must_be_a_map_with_boolean_page_bound() {
+    let h = fresh_harness();
+    let skill = |chat: &str| {
+        format!("---\nkind: skill\nid: note\ndescription: Notes.\n{chat}\n---\n# note\n")
+    };
+    let codes = |issues: &[escurel_index::Issue]| {
+        issues
+            .iter()
+            .filter(|i| i.code.starts_with("chat_"))
+            .map(|i| (i.code.clone(), i.severity))
+            .collect::<Vec<_>>()
+    };
+
+    let ok = h
+        .indexer
+        .validate(None, &skill("chat:\n  page_bound: true"))
+        .await
+        .unwrap();
+    assert!(codes(&ok).is_empty(), "{ok:?}");
+
+    for bad in [
+        "chat: true",
+        "chat:\n  page_bound: \"true\"",
+        "chat: [page_bound]",
+    ] {
+        let issues = h.indexer.validate(None, &skill(bad)).await.unwrap();
+        assert_eq!(
+            codes(&issues),
+            [("chat_invalid".to_owned(), Severity::Error)],
+            "{bad}"
+        );
+    }
+
+    let unknown = h
+        .indexer
+        .validate(None, &skill("chat:\n  page_bound: true\n  shared: true"))
+        .await
+        .unwrap();
+    assert_eq!(
+        codes(&unknown),
+        [("chat_unknown_key".to_owned(), Severity::Warning)]
+    );
+}

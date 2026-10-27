@@ -323,6 +323,10 @@ run:
   never as `agent:<skill>` with the runner's grant: a chat run reads exactly
   what the asker may read. A static-bearer runner cannot mint it; chat runs
   then fail with `chat_requires_run_tokens`.
+- **Corpus.** `chat_corpus()` ships the owner-only, page-bound
+  `conversation` skill and the `chat` skill whose body is the agent's
+  instructions (`autonomy: review`); `examples/chat/seed/` is the same pages
+  for `ESCUREL_SEED_DIR`.
 - **Packaging.** Chat mode replaces "fold the event into the instance": the
   chat skill's body plus a chat framing, and as input the recent turns, the
   bound page and the focus pages — all read with the run token, all wrapped

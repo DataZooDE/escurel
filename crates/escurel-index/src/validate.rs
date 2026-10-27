@@ -511,6 +511,44 @@ fn check_okf_keys(page_kind: PageKind, fields: &YamlMapping) -> Vec<Issue> {
     issues
 }
 
+/// `chat:` on a SKILL page (governed chat agent, FR-M4): a map whose only key
+/// is `page_bound`, a boolean. Malformed is an ERROR — the chat ACL reads a
+/// real `true` and nothing else, so `page_bound: "true"` would silently leave
+/// page chat off. An unknown sub-key is a warning (a future key, or a typo).
+fn check_chat_keys(page_kind: PageKind, fields: &YamlMapping) -> Vec<Issue> {
+    let mut issues = Vec::new();
+    let Some(chat) = fields.get("chat").filter(|_| page_kind == PageKind::Skill) else {
+        return issues;
+    };
+    let invalid = || {
+        Issue::error(
+            "chat_invalid",
+            "frontmatter.chat",
+            "`chat:` is a map with a boolean `page_bound`",
+        )
+        .with_suggestion("write `chat: {page_bound: true}`")
+    };
+    let Some(map) = chat.as_mapping() else {
+        issues.push(invalid());
+        return issues;
+    };
+    for (key, value) in map {
+        match key.as_str() {
+            Some("page_bound") if value.as_bool().is_some() => {}
+            Some("page_bound") => issues.push(invalid()),
+            other => issues.push(
+                Issue::warning(
+                    "chat_unknown_key",
+                    format!("frontmatter.chat.{}", other.unwrap_or("?")),
+                    "`chat:` knows only `page_bound`",
+                )
+                .with_suggestion("remove the key, or check its spelling"),
+            ),
+        }
+    }
+    issues
+}
+
 /// A slug as an action `name` takes: lowercase letters, digits, `-` and `_`.
 fn is_action_slug(s: &str) -> bool {
     !s.is_empty()
@@ -1240,6 +1278,7 @@ impl Indexer {
         issues.extend(check_role(parsed.frontmatter.page_kind, fields));
         issues.extend(check_overview(parsed.frontmatter.page_kind, fields));
         issues.extend(check_okf_keys(parsed.frontmatter.page_kind, fields));
+        issues.extend(check_chat_keys(parsed.frontmatter.page_kind, fields));
         if parsed.frontmatter.page_kind == PageKind::Skill
             && let Some(raw) = fields.get("actions")
         {

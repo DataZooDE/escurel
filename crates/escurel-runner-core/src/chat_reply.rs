@@ -8,7 +8,9 @@
 //! Every terminal gets a turn: an answer, or one sentence saying why there is
 //! none (FR-T5), so a conversation never waits forever.
 
-use escurel_client::{AppendMessageRequest, Client, ListDraftsRequest, ResolveRequest};
+use escurel_client::{
+    AppendMessageRequest, AssignEventRequest, Client, ListDraftsRequest, ResolveRequest,
+};
 use secrecy::SecretString;
 use serde_json::json;
 
@@ -99,6 +101,11 @@ async fn cited(client: &Client, text: &str) -> Vec<String> {
 /// terminal is already recorded; a refused append is logged (no content),
 /// retried once, and otherwise left — the person sees no answer rather than
 /// a wrong one.
+///
+/// Once the turn is posted, the chat event is assigned to the page it is
+/// about, so an answered question leaves the inbox (a review run never assigns
+/// its event, and a question nobody else should pick up must not linger there).
+/// Returns whether the turn was posted.
 pub async fn post_chat_reply(
     runner: &Client,
     gateway_url: &str,
@@ -107,7 +114,7 @@ pub async fn post_chat_reply(
     turn: &ChatContext,
     run: &RunClaims,
     outcome: &ChatOutcome,
-) {
+) -> bool {
     let token = match chat_run_token(turn, tokens, Some(run)) {
         Ok(token) => token,
         Err(e) => {
@@ -118,7 +125,7 @@ pub async fn post_chat_reply(
                 error = %e,
                 "chat: no run token, so no assistant turn can be posted"
             );
-            return;
+            return false;
         }
     };
     let client = match Client::connect(gateway_url, SecretString::from(token)).await {
@@ -126,7 +133,7 @@ pub async fn post_chat_reply(
         Err(e) => {
             tracing::error!(target: "escurel_runner", run_id = %run.run_id, error = %e,
                 "chat: could not build the run-token client");
-            return;
+            return false;
         }
     };
     // The drafts this run left for review (the runner's own read: it sees
@@ -137,7 +144,10 @@ pub async fn post_chat_reply(
         .map(|r| {
             r.drafts
                 .into_iter()
-                .filter(|d| d.event_id == trigger.event_id)
+                // Named by the event, or stamped from the run token's root
+                // claim — a chat turn is always a lineage root, and an agent
+                // is not told to pass `event_id`.
+                .filter(|d| d.event_id == trigger.event_id || d.root_event_id == trigger.event_id)
                 .map(|d| d.draft_id)
                 .collect()
         })
@@ -167,7 +177,10 @@ pub async fn post_chat_reply(
     };
     for attempt in 1..=2 {
         match client.append_message(request.clone()).await {
-            Ok(_) => return,
+            Ok(_) => {
+                answered(runner, trigger, turn, run).await;
+                return true;
+            }
             Err(e) => tracing::error!(
                 target: "escurel_runner",
                 run_id = %run.run_id,
@@ -177,6 +190,29 @@ pub async fn post_chat_reply(
                 "chat: appending the assistant turn failed"
             ),
         }
+    }
+    false
+}
+
+/// Take an answered turn out of the inbox: assign its event to the page it is
+/// about (the event's pre-flagged page, else the chat's bound page).
+async fn answered(runner: &Client, trigger: &Trigger, turn: &ChatContext, run: &RunClaims) {
+    let Some(page) = trigger
+        .instance_page_id
+        .clone()
+        .or_else(|| crate::bound_page_id(&turn.chat_group_id).map(str::to_owned))
+    else {
+        return;
+    };
+    if let Err(e) = runner
+        .assign_event(AssignEventRequest {
+            event_id: trigger.event_id.clone(),
+            instance_page_id: page,
+        })
+        .await
+    {
+        tracing::warn!(target: "escurel_runner", run_id = %run.run_id, error = %e,
+            "chat: the answered turn stays in the inbox");
     }
 }
 
