@@ -40,5 +40,14 @@ selector, global search (lit up when M2 lands), and the backend status chip.
 Bottom write surface routes to `validate` / `update_page` / live-mode
 `apply_op` as those tools land.
 
+The right rail's **Chat** tab is the governed chat agent: a question is
+appended to a private conversation (a `conversation` instance from the chat
+corpus, `examples/chat/seed`) and answered by an `escurel-runner` run as the
+person who asked; the tab polls `list_messages` until the answer arrives.
+It needs `whoami` (to name the person's page chat) and, for answers, a
+gateway that verifies tokens plus a minted-mode runner — see
+`scripts/verify-chat.sh`. `?rail=chat` opens the rail on the tab (also
+`links|events|webhooks|members`).
+
 [heron]: https://github.com/DataZooDE/heron
 [herkules]: https://github.com/DataZooDE/herkules-ui

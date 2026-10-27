@@ -9,6 +9,7 @@ import '../editor/entity_editor.dart';
 import '../editor/right_rail.dart';
 import '../editor/webhook_deliveries_pane.dart';
 import '../state/providers.dart';
+import '../chat/chat_panel.dart';
 import '../theme/app_theme.dart';
 import 'status_bar.dart';
 import 'topbar.dart';
@@ -117,7 +118,7 @@ class _ResizeHandle extends StatelessWidget {
   }
 }
 
-/// The folded-in right panel: a four-tab controller surfacing the
+/// The folded-in right panel: a five-tab controller surfacing the
 /// link graph, the event view + inbox, the webhook delivery log, and
 /// RBAC group membership. Each tab keeps its child's existing
 /// Semantics labels; the tabs themselves carry stable `tab-*` labels.
@@ -127,7 +128,8 @@ class _RightTabs extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return DefaultTabController(
-      length: 4,
+      length: 5,
+      initialIndex: _initialRailTab(),
       child: Column(
         children: [
           const ColoredBox(
@@ -143,6 +145,7 @@ class _RightTabs extends StatelessWidget {
                 _RailTab(label: 'tab-events', text: 'Events'),
                 _RailTab(label: 'tab-webhooks', text: 'Webhooks'),
                 _RailTab(label: 'tab-members', text: 'Members'),
+                _RailTab(label: 'tab-chat', text: 'Chat'),
               ],
             ),
           ),
@@ -161,6 +164,7 @@ class _RightTabs extends StatelessWidget {
                     child: const GroupMembersPane(),
                   ),
                 ),
+                const ChatPanel(),
               ],
             ),
           ),
@@ -168,6 +172,15 @@ class _RightTabs extends StatelessWidget {
       ),
     );
   }
+}
+
+/// The tab a `?rail=<links|events|webhooks|members|chat>` query opens on,
+/// so a link (and `scripts/verify-demo.sh`, which cannot click a Flutter
+/// tab) can land on a tab whose content is otherwise built only once chosen.
+int _initialRailTab() {
+  const tabs = ['links', 'events', 'webhooks', 'members', 'chat'];
+  final i = tabs.indexOf(Uri.base.queryParameters['rail'] ?? '');
+  return i < 0 ? 0 : i;
 }
 
 class _RailTab extends StatelessWidget {

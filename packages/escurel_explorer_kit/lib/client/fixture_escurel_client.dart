@@ -836,6 +836,10 @@ class FixtureEscurelClient implements EscurelClient {
   int _chatSeq = 0;
 
   @override
+  Future<Whoami> whoami() async =>
+      const Whoami(subject: 'fixture-user', tenant: 'fixture', isAdmin: true);
+
+  @override
   Future<AppendedMessage> appendMessage({
     required String chatGroupId,
     required String role,
