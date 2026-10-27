@@ -6,6 +6,17 @@ loosely [Keep a Changelog](https://keepachangelog.com/). Through the
 follow **`vYYYY.MM.DD`** — the date the binary set was cut (same-day
 re-cuts append `.N`), matching the DataZoo release scheme (cf. erpl).
 
+## v2026.10.29
+
+Replies reach the requester, and a service role may reply under a declared label.
+
+- **Lineage read.** Under the event ACL, the subject that captured a root event reads every `user` event (reply) in that root's lineage
+  (`root_event_id`), filed or not, whoever captured it. The requester of an objectless request now reads the service's
+  unassigned reply; nobody else gains anything.
+- **`acl.reply_into: [groups]`** on a skill: a role-restricted caller may capture a reply under that skill's label into a
+  readable root of another label. Without it a restricted reply keeps the root's label. `list_skills` reports it to
+  admins.
+
 ## v2026.10.28
 
 A service-role gate for workers that run under a service identity, and page chat answered by the runner.

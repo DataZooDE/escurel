@@ -796,7 +796,8 @@ async fn restricted_draft_refusal(
 }
 
 /// A restricted caller files replies, never new work: the capture must name a lineage root
-/// (`provenance.runner.root_event_id`) the caller may read, under the same `label_skill`.
+/// (`provenance.runner.root_event_id`) the caller may read, under the root's `label_skill` or a
+/// label whose skill grants the caller `acl.reply_into`.
 async fn restricted_capture_check(
     indexer: &Indexer,
     caller: &AclCaller<'_>,
@@ -805,7 +806,8 @@ async fn restricted_capture_check(
     let refuse = || {
         JsonRpcError::forbidden(
             "capture_event: this credential's role may only reply to an event it can read \
-             (`provenance.runner.root_event_id`, same `label_skill`)"
+             (`provenance.runner.root_event_id`), under the root's `label_skill` or a label \
+             whose skill grants it `acl.reply_into`"
                 .to_owned(),
         )
     };
@@ -824,8 +826,19 @@ async fn restricted_capture_check(
         .may_read_event(caller, &root)
         .await
         .map_err(|e| JsonRpcError::internal(format!("capture_event acl: {e}")))?;
-    if !visible
-        || args.get("label_skill").and_then(Value::as_str) != Some(root.label_skill.as_str())
+    if !visible {
+        return Err(refuse());
+    }
+    // Same label as the root, or a label whose skill grants this caller `acl.reply_into`.
+    let label = args
+        .get("label_skill")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    if label != root.label_skill
+        && !indexer
+            .may_reply_into_label(caller, label)
+            .await
+            .map_err(|e| JsonRpcError::internal(format!("capture_event acl: {e}")))?
     {
         return Err(refuse());
     }
