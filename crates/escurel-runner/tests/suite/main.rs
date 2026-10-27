@@ -24,6 +24,7 @@ mod cancellable_runs;
 mod cascade_lineage;
 mod cascade_produced;
 mod cascade_trace;
+mod chat_turn;
 mod claude_live;
 mod codex_live;
 mod confirm_unflagged;

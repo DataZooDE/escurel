@@ -121,6 +121,78 @@ pub struct Trigger {
     /// flag. A runner that dispatched its own `run-finished` would hand
     /// itself a job per run, forever.
     pub is_system: bool,
+    /// A chat turn to answer (governed chat agent, FR-R1): read from
+    /// `provenance.{chat_group_id, user_msg_id, focus}` when the group is a
+    /// page-bound chat. The dispatch packages it in chat mode and the runner
+    /// appends the reply. `None` for every other trigger.
+    pub chat: Option<ChatContext>,
+}
+
+/// The chat turn a [`Trigger`] answers.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChatContext {
+    /// The page-bound group (`page-chat:v1:<sha256(owner)>:<page_id>`).
+    pub chat_group_id: String,
+    /// The person's turn this run answers.
+    pub user_msg_id: String,
+    /// Pages the person pinned as context, at most [`ChatContext::MAX_FOCUS`].
+    pub focus: Vec<String>,
+    /// Who asked: the server-stamped `provenance.captured_by`, when they
+    /// captured the event as themselves (no `captured_via`). The run executes
+    /// as this subject; `None` makes the chat run refuse rather than answer
+    /// with anyone else's rights.
+    pub asker: Option<String>,
+}
+
+impl ChatContext {
+    /// The focus set is capped; later ids are dropped.
+    pub const MAX_FOCUS: usize = 10;
+
+    fn from_provenance(provenance: &serde_json::Value) -> Option<Self> {
+        let text = |k: &str| {
+            provenance
+                .get(k)
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+        };
+        let chat_group_id = text("chat_group_id").filter(|g| g.starts_with("page-chat:"))?;
+        let user_msg_id = text("user_msg_id")?;
+        let focus = provenance
+            .get("focus")
+            .and_then(|v| v.as_array())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|v| v.as_str())
+                    .filter(|s| !s.is_empty())
+                    .take(Self::MAX_FOCUS)
+                    .map(str::to_owned)
+                    .collect()
+            })
+            .unwrap_or_default();
+        let asker = captured_by(provenance)
+            .filter(|_| captured_via(provenance).is_none())
+            .map(str::to_owned);
+        Some(Self {
+            chat_group_id: chat_group_id.to_owned(),
+            user_msg_id: user_msg_id.to_owned(),
+            focus,
+            asker,
+        })
+    }
+
+    /// The ledger's dedup key for this turn, stored where a content hash
+    /// goes: one run per `(chat_group_id, user_msg_id)` (FR-T2), while two
+    /// turns with the same words are two runs (FR-T3).
+    #[must_use]
+    pub fn turn_key(&self) -> String {
+        use sha2::{Digest, Sha256};
+        let mut hasher = Sha256::new();
+        for field in [self.chat_group_id.as_str(), self.user_msg_id.as_str()] {
+            hasher.update(field.len().to_le_bytes());
+            hasher.update(field.as_bytes());
+        }
+        format!("chat:{:x}", hasher.finalize())
+    }
 }
 
 impl Trigger {
@@ -189,6 +261,7 @@ impl Trigger {
             .filter(|_| trust_lineage)
             .unwrap_or_else(|| Lineage::root(event.event_id.clone()));
         let workflow = WorkflowProvenance::from_provenance(&event.provenance);
+        let chat = ChatContext::from_provenance(&event.provenance);
         Self {
             tenant: tenant.into(),
             event_id: event.event_id.clone(),
@@ -197,8 +270,12 @@ impl Trigger {
             lineage,
             workflow,
             manual,
-            content_hash: Some(content_hash(event)),
+            content_hash: Some(match &chat {
+                Some(turn) => turn.turn_key(),
+                None => content_hash(event),
+            }),
             is_system: event.kind == "system",
+            chat,
         }
     }
 }

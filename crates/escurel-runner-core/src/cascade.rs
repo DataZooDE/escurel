@@ -411,6 +411,7 @@ mod tests {
         Trigger {
             manual: None,
             is_system: false,
+            chat: None,
             tenant: "acme".into(),
             event_id: event_id.into(),
             label_skill: label.into(),

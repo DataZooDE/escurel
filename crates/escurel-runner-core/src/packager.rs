@@ -1254,6 +1254,7 @@ mod tests {
         let trigger = Trigger {
             manual: None,
             is_system: false,
+            chat: None,
             tenant: "acme".into(),
             event_id: "EVT1".into(),
             label_skill: "email".into(),
@@ -1328,6 +1329,7 @@ mod tests {
         let trigger = Trigger {
             manual: None,
             is_system: false,
+            chat: None,
             tenant: "acme".into(),
             event_id: "01EVENT".into(),
             label_skill: "note".into(),
@@ -1420,6 +1422,7 @@ mod tests {
         let trigger = |wf: Option<escurel_types::WorkflowProvenance>| Trigger {
             manual: None,
             is_system: false,
+            chat: None,
             tenant: "acme".into(),
             event_id: "EVT1".into(),
             label_skill: "verify-vote".into(),
@@ -1463,6 +1466,7 @@ mod tests {
         let mut trigger = Trigger {
             manual: None,
             is_system: false,
+            chat: None,
             tenant: "acme".into(),
             event_id: "EVT1".into(),
             label_skill: "deep-research".into(),
@@ -1549,6 +1553,7 @@ mod tests {
         let trigger = Trigger {
             manual: None,
             is_system: false,
+            chat: None,
             tenant: "acme".into(),
             event_id: "EVT1".into(),
             label_skill: "meeting".into(),
@@ -1585,6 +1590,7 @@ mod tests {
         let trigger = Trigger {
             manual: None,
             is_system: false,
+            chat: None,
             tenant: "acme".into(),
             event_id: "EVT1".into(),
             label_skill: "note".into(),
@@ -1631,6 +1637,7 @@ mod tests {
         let trigger = Trigger {
             manual: None,
             is_system: false,
+            chat: None,
             tenant: "acme".into(),
             event_id: "EVT1".into(),
             label_skill: "note".into(),

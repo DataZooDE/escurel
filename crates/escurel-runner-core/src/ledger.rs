@@ -504,23 +504,40 @@ impl Ledger {
         // have a stronger identity than content: the deterministic `step_key`
         // event id, plus the reducer's `emitted` set. Content-deduping them
         // silently dropped phases and stalled seven real workflows.
-        if trigger.workflow.is_none()
-            && let (Some(instance), Some(hash)) = (&trigger.instance_page_id, &trigger.content_hash)
-            && let Some(prior) = tx
-                .query_row(
-                    "SELECT run_id FROM runs
-                      WHERE tenant = $1 AND instance_page_id = $2
-                        AND content_hash = $3 AND status = 'processed'
-                      LIMIT 1",
-                    duckdb::params![trigger.tenant, instance, hash],
-                    |r| r.get::<_, String>(0),
-                )
-                .map(Some)
-                .or_else(|e| match e {
-                    duckdb::Error::QueryReturnedNoRows => Ok(None),
-                    other => Err(other),
-                })?
+        //
+        // **A chat turn dedups on its turn key instead** (governed chat agent,
+        // FR-T2/T3): `content_hash` then holds `(chat_group_id, user_msg_id)`,
+        // so "yes" twice is two runs, while a second event for the SAME turn —
+        // a client re-capturing after a timeout — is refused while the first
+        // run is pending or done. Only a `failed` (re-claimable) run frees it.
+        let prior = if trigger.chat.is_some()
+            && let Some(key) = &trigger.content_hash
         {
+            tx.query_row(
+                "SELECT run_id FROM runs
+                  WHERE tenant = $1 AND content_hash = $2 AND status <> 'failed'
+                  LIMIT 1",
+                duckdb::params![trigger.tenant, key],
+                |r| r.get::<_, String>(0),
+            )
+        } else if trigger.workflow.is_none()
+            && let (Some(instance), Some(hash)) = (&trigger.instance_page_id, &trigger.content_hash)
+        {
+            tx.query_row(
+                "SELECT run_id FROM runs
+                  WHERE tenant = $1 AND instance_page_id = $2
+                    AND content_hash = $3 AND status = 'processed'
+                  LIMIT 1",
+                duckdb::params![trigger.tenant, instance, hash],
+                |r| r.get::<_, String>(0),
+            )
+        } else {
+            Err(duckdb::Error::QueryReturnedNoRows)
+        };
+        if let Some(prior) = prior.map(Some).or_else(|e| match e {
+            duckdb::Error::QueryReturnedNoRows => Ok(None),
+            other => Err(other),
+        })? {
             // Record a TERMINAL row for this event id rather than dropping it
             // bare. Without one the poller re-pulls the same inbox event every
             // tick, re-derives the same verdict and drops it again, for ever;
@@ -1081,6 +1098,7 @@ mod tests {
         Trigger {
             manual: None,
             is_system: false,
+            chat: None,
             tenant: "acme".to_owned(),
             event_id: event_id.to_owned(),
             label_skill: "note".to_owned(),
@@ -1106,6 +1124,7 @@ mod tests {
         let with = |event_id: &str, instance: Option<&str>, hash: Option<&str>| Trigger {
             manual: None,
             is_system: false,
+            chat: None,
             tenant: "acme".to_owned(),
             event_id: event_id.to_owned(),
             label_skill: "email".to_owned(),

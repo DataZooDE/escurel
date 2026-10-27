@@ -1196,6 +1196,7 @@ async fn enqueue_requeued(state: &AppState, tenant: &str, event_id: &str) {
         None => Trigger {
             manual: None,
             is_system: false,
+            chat: None,
             tenant: tenant.to_owned(),
             event_id: event_id.to_owned(),
             label_skill: String::new(),
@@ -3985,6 +3986,7 @@ mod tests {
         Trigger {
             manual: None,
             is_system: false,
+            chat: None,
             tenant: "acme".to_owned(),
             event_id: event_id.to_owned(),
             label_skill: label.to_owned(),
