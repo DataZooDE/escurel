@@ -10,9 +10,9 @@
 #   2. drives the *real backend* via in-page POST /mcp probes — proving
 #      seed + as_of time-travel + scenario overlay + the event/inbox
 #      tools resolve end-to-end, and
-#   3. runs the *real* escurel-demo-agent for one pass to prove the full
-#      M7 loop: capture → inbox → agent fold → instance event history.
-#      Captures a screenshot.
+#   3. asks the governed chat agent a question on its own verifying stack
+#      (scripts/verify-chat.sh): the real escurel-runner answers it as the
+#      asker — capture → run → result. Captures a screenshot.
 #
 # SCOPE — read this before extending:
 #   Flutter web renders to a CanvasKit <canvas>. Its semantics tree is
@@ -68,6 +68,7 @@ ESCUREL_SERVER_DATA_DIR="$DATA_DIR" \
 ESCUREL_SERVER_LISTEN_HTTP="127.0.0.1:$PORT" \
 ESCUREL_OBSERVABILITY_METRICS_LISTEN="" \
 ESCUREL_EMBEDDING_PROVIDER="zero" \
+ESCUREL_SQL_FILE_DIRS="$SEED_DIR/sources" \
 ESCUREL_WEBHOOK_URL="$BASE/__webhook_sink" \
   cargo run -q -p escurel-server >"$ROOT/target/escurel-demo.log" 2>&1 &
 SERVER_PID=$!
@@ -121,6 +122,14 @@ present() { wait_label "$1" || fail "region semantics not found: $1"; note "pres
 present tab-events
 present tab-webhooks
 present tab-members
+present tab-chat
+
+# The Chat tab's content is built only once chosen, and rodney cannot click
+# a Flutter tab: `?rail=chat` opens the rail on it.
+"$RODNEY" open "$BASE/?rail=chat" >/dev/null 2>&1 || fail "rodney open ?rail=chat"
+present chat-panel
+"$RODNEY" open "$BASE/" >/dev/null 2>&1 || fail "rodney reopen /"
+present tab-events
 
 # --- behaviour: drive the real backend via same-origin /mcp probes ---
 
@@ -357,13 +366,12 @@ snap_count=$(mcp_int list_snapshots "{\"page_id\":\"$spine_id\"}" 'r.snapshots.l
 [[ "$snap_count" -ge 2 ]] || fail "spine has too few snapshots for version nav (got '$snap_count')"
 note "probe ok: spine snapshots = $snap_count"
 
-# --- live loop: capture → inbox → escurel-demo-agent → instance ------
+# --- live loop: capture → inbox ------------------------------------------
 # The full M7 vision end-to-end: capture an event pre-flagged for the
 # spine (so it lands in the inbox), run the *real* external agent for a
 # single pass against this gateway, and assert it folded the event into
 # the spine's history (out of the inbox, into list_events).
 note "probe: live capture → agent fold loop"
-events_before=$(mcp_int list_events "{\"instance_page_id\":\"$spine_id\"}" 'r.events.length')
 inbox_pre=$(mcp_int list_inbox '{}' 'r.events.length')
 cap_live=$(mcp_int capture_event \
   "{\"source\":\"gmail\",\"mime\":\"message/rfc822\",\"label_skill\":\"gmail\",\"instance_page_id\":\"$spine_id\",\"title\":\"live-loop probe\",\"body\":\"live-loop probe\"}" \
@@ -372,27 +380,17 @@ cap_live=$(mcp_int capture_event \
 inbox_mid=$(mcp_int list_inbox '{}' 'r.events.length')
 [[ "$inbox_mid" -gt "$inbox_pre" ]] || fail "inbox did not grow after live capture ($inbox_mid !> $inbox_pre)"
 
-note "building escurel-demo-agent"
-cargo build -q -p escurel-demo-agent || fail "cargo build escurel-demo-agent"
-AGENT_BIN="$ROOT/target/debug/escurel-demo-agent"
-[[ -x "$AGENT_BIN" ]] || fail "agent binary not found at $AGENT_BIN"
-
-note "running one agent pass (ESCUREL_AGENT_ONCE=1)"
-ESCUREL_AGENT_MCP_URL="$BASE/mcp" \
-ESCUREL_AGENT_TOKEN="demo" \
-ESCUREL_AGENT_ONCE="1" \
-  "$AGENT_BIN" >"$ROOT/target/escurel-demo-agent.log" 2>&1 \
-  || fail "agent single pass failed (see target/escurel-demo-agent.log)"
-
-events_after=$(mcp_int list_events "{\"instance_page_id\":\"$spine_id\"}" 'r.events.length')
-inbox_post=$(mcp_int list_inbox '{}' 'r.events.length')
-[[ "$events_after" -gt "$events_before" ]] \
-  || fail "agent did not fold the event into the spine ($events_after !> $events_before)"
-[[ "$inbox_post" -lt "$inbox_mid" ]] \
-  || fail "agent did not drain the captured event from the inbox ($inbox_post !< $inbox_mid)"
-note "probe ok: live loop — spine events $events_before → $events_after, inbox $inbox_mid → $inbox_post"
+# The external demo agent this stage used to run was removed (#454); the
+# capture → run → result loop is now proven by the chat stage below, against a
+# verifying gateway and the real escurel-runner (scripts/verify-chat.sh).
+note "probe ok: live capture landed in the inbox ($inbox_pre → $inbox_mid)"
 
 "$RODNEY" screenshot "$SHOTS/crm.png" >/dev/null 2>&1 || true
+
+# --- chat: an ANSWERED round trip on a verifying stack ------------------
+# Its own stack (a verifying gateway + a minted-mode runner): see the script.
+"$ROOT/scripts/verify-chat.sh" || fail "chat round trip (scripts/verify-chat.sh)"
+
 
 note "ALL REGIONS PRESENT + BACKEND PROBES PASSED — screenshot in $SHOTS/crm.png"
 echo "PASS"
