@@ -391,6 +391,9 @@ impl GeminiHarness {
         let mut tool_calls: u32 = 0;
         let mut produced_instance: Option<String> = None;
         let mut summary = String::new();
+        // The text of the turn being read; on the final turn (no tool
+        // calls) it is the model's answer — `summary` keeps every turn's.
+        let mut turn_text = String::new();
         // Every turn is one `generateContent` call with its own
         // `usageMetadata`; the run's usage is their sum.
         let mut usage: Option<Usage> = None;
@@ -401,6 +404,7 @@ impl GeminiHarness {
         for _turn in 0..self.max_turns {
             if billed_tokens >= self.max_total_tokens {
                 return Ok(HarnessOutcome {
+                    reply: None,
                     result_ref: None,
                     usage,
                     ok: false,
@@ -459,6 +463,7 @@ impl GeminiHarness {
                 usage.get_or_insert_with(Usage::default).accumulate(&turn);
                 if billed_tokens > self.max_total_tokens {
                     return Ok(HarnessOutcome {
+                        reply: None,
                         result_ref: None,
                         usage,
                         ok: false,
@@ -473,6 +478,7 @@ impl GeminiHarness {
                 }
             } else {
                 return Ok(HarnessOutcome {
+                    reply: None,
                     result_ref: None,
                     usage,
                     ok: false,
@@ -523,9 +529,11 @@ impl GeminiHarness {
             }
 
             let mut responses = Vec::new();
+            turn_text.clear();
             for part in &parts {
                 if let Some(text) = part["text"].as_str() {
                     summary.push_str(text);
+                    turn_text.push_str(text);
                 }
                 let Some(call) = part.get("functionCall") else {
                     continue;
@@ -591,7 +599,9 @@ impl GeminiHarness {
 
             if responses.is_empty() {
                 // No tool calls this turn: the model is done talking.
+                let answer = turn_text.trim();
                 return Ok(HarnessOutcome {
+                    reply: (!answer.is_empty()).then(|| answer.to_owned()),
                     result_ref: None,
                     usage: usage.clone(),
                     ok: true,
@@ -609,6 +619,7 @@ impl GeminiHarness {
         // done — the reconciler decides retry-vs-dead, and it can only do
         // that if this is not dressed up as success.
         Ok(HarnessOutcome {
+            reply: None,
             result_ref: None,
             usage,
             ok: false,

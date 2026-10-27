@@ -228,10 +228,16 @@ fn parse_outcome(stdout: &[u8]) -> Result<HarnessOutcome, HarnessError> {
         .unwrap_or("");
     let ok = !is_error && subtype != "error";
 
-    let summary = envelope
+    // The final assistant message, whole: a chat run's answer. The summary
+    // below is the same text cut for the Runs view.
+    let reply = envelope
         .get("result")
         .and_then(serde_json::Value::as_str)
+        .map(str::trim)
         .filter(|s| !s.is_empty())
+        .map(str::to_owned);
+    let summary = reply
+        .as_deref()
         .map(|s| s.chars().take(2000).collect::<String>())
         .unwrap_or_else(|| {
             if subtype.is_empty() {
@@ -247,6 +253,7 @@ fn parse_outcome(stdout: &[u8]) -> Result<HarnessOutcome, HarnessError> {
         .unwrap_or(0) as u32;
 
     Ok(HarnessOutcome {
+        reply: reply.filter(|_| ok),
         result_ref: None,
         usage: parse_usage(&envelope),
         ok,

@@ -206,6 +206,7 @@ impl DelegateHarness {
                 Some(TaskState::Completed) => return Ok(self.completed_outcome(&task)),
                 Some(TaskState::Failed) | Some(TaskState::Canceled) | Some(TaskState::Rejected) => {
                     return Ok(HarnessOutcome {
+                        reply: None,
                         ok: false,
                         status: HarnessStatus::Failed,
                         summary: format!(
@@ -247,6 +248,7 @@ impl DelegateHarness {
             .filter(|v| !v.is_null())
             .cloned();
         HarnessOutcome {
+            reply: None,
             ok: true,
             status: HarnessStatus::Ok,
             summary: "delegated task completed".to_owned(),

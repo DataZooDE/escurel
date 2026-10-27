@@ -292,6 +292,7 @@ fn parse_outcome(final_message: &str, jsonl: &[u8]) -> Result<HarnessOutcome, Ha
     };
 
     Ok(HarnessOutcome {
+        reply: None,
         result_ref: None,
         usage,
         ok,

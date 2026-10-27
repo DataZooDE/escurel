@@ -324,6 +324,7 @@ fn parse_outcome(stdout: &[u8]) -> Result<HarnessOutcome, HarnessError> {
         .unwrap_or(0) as u32;
 
     Ok(HarnessOutcome {
+        reply: None,
         result_ref: None,
         usage: None,
         ok,
