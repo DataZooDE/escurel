@@ -50,6 +50,7 @@ mod mcp;
 pub mod pack;
 mod remote_backend;
 mod remote_rows;
+pub mod role_gate;
 pub mod secret_policy;
 pub mod selfpack;
 mod server;

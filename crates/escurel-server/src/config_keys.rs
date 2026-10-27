@@ -288,6 +288,12 @@ pub const CONFIG_KEYS: &[ConfigKey] = &[
         doc: "role value (in the admin role claim) marking an OPERATOR credential, the only one that may name another tenant in the cross-tenant admin tools (tenant registry, tenant_export/tenant_import)",
     },
     ConfigKey {
+        name: "ESCUREL_AUTH_ROLE_TOOLS",
+        component: "Server",
+        default: "—",
+        doc: "service roles and the only tools each may call, `role=tool,tool;role=tool` (e.g. `app:worker=list_events,expand,create_draft`); a token whose groups carry a listed role is refused every other tool and the `/ingest`, `/blob` and `/ws` surfaces. Agent-scope tools only; boot fails on an unknown tool",
+    },
+    ConfigKey {
         name: "ESCUREL_AUTH_JWKS_REFRESH_SECS",
         component: "Server",
         default: "300",

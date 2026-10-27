@@ -550,6 +550,17 @@ pub struct AclPolicy {
     pub create: Option<Vec<String>>,
     pub update: Option<Vec<String>>,
     pub delete: Option<Vec<String>>,
+    /// Groups that may `create_draft` an instance of this skill without a write grant (the draft is
+    /// still validated, and promotion still checks `create`/`update`). Skill-level only: no tenant
+    /// default, no instance override.
+    pub propose: Option<Vec<String>>,
+    /// Groups that may read EVERY event whose `label_skill` is this skill, objectless or filed, and
+    /// file such an unassigned event into an instance they can read. Skill-level only.
+    pub read_events: Option<Vec<String>>,
+    /// Groups that may read an instance of this skill when an event they read through
+    /// [`Self::read_events`] references it by `[[skill::id]]` in its body and the event's capturer
+    /// may read it. Skill-level only; only ever widens.
+    pub read_referenced: Option<Vec<String>>,
 }
 
 impl AclPolicy {
@@ -561,6 +572,7 @@ impl AclPolicy {
             create: Some(vec!["admin".to_owned()]),
             update: Some(vec!["admin".to_owned()]),
             delete: Some(vec!["admin".to_owned()]),
+            ..Self::default()
         }
     }
 
@@ -572,6 +584,7 @@ impl AclPolicy {
             create: owner(),
             update: owner(),
             delete: owner(),
+            ..Self::default()
         }
     }
 }
@@ -598,6 +611,9 @@ pub(crate) fn parse_named_acl(fm: &serde_json::Value, key: &str) -> Option<AclPo
         create: verb("create"),
         update: verb("update"),
         delete: verb("delete"),
+        propose: verb("propose"),
+        read_events: verb("read_events"),
+        read_referenced: verb("read_referenced"),
     })
 }
 

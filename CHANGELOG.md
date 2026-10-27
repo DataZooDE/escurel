@@ -6,6 +6,22 @@ loosely [Keep a Changelog](https://keepachangelog.com/). Through the
 follow **`vYYYY.MM.DD`** — the date the binary set was cut (same-day
 re-cuts append `.N`), matching the DataZoo release scheme (cf. erpl).
 
+## Unreleased
+
+A service-role gate for workers that run under a service identity.
+
+- **`ESCUREL_AUTH_ROLE_TOOLS`** (`role=tool,tool;role=tool`): a token whose groups carry a listed role may call only
+  those tools (`-32001`, `role_restricted`); `tools/list` shows only them; `/ingest`, `/ingest/upload`, `/blob` and `/ws`
+  answer `403`. A restricted `create_draft` needs `acl.propose`; a restricted `capture_event` must reply to a readable
+  event under its label. Minted children inherit the gate. Boot fails on an unknown or admin tool.
+- **Skill grants `acl.propose`, `acl.read_events`, `acl.read_referenced`**: drafts without write rights, every event of a
+  label (and filing it into a readable instance), and instances a visible event references. `list_skills` reports them to
+  admins.
+- **`escurel-test-gateway`** honours `ESCUREL_EVENT_ACL` and `ESCUREL_AUTH_ROLE_TOOLS`, takes `--event-acl-enforce`, and
+  prints a `service_bearer` for `--service-subject`/`--service-group`.
+
+Design: `docs/design/service-role-gate.md`.
+
 ## v2026.10.27
 
 A field rule that caps how many values a field holds, and chat-message pushes on the event subscription.

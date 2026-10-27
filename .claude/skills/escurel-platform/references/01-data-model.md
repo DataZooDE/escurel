@@ -235,6 +235,31 @@ corpus:
   any page chat is a `chat` event (references/11, *Chat runs*); override the page to change how the
   agent answers.
 
+## Service-role grants in a skill's `acl:` block
+
+Besides `read`/`create`/`update`/`delete`, a skill's `acl:` block may declare three grants. They are skill-level only
+(no tenant default, no instance override) and only ever widen access:
+
+- `propose: [groups]` — holders may `create_draft` an instance of this skill without a write grant. The content's
+  `skill:` must match the target path; the draft is validated as usual; `promote_draft` still checks `create`/`update`.
+- `read_events: [groups]` (on the skill a `label_skill` names) — holders read every event under that label in the
+  tenant, objectless or filed, and may `assign_event` such an unassigned event into an instance they can read (no write
+  on the target needed).
+- `read_referenced: [groups]` — holders read an instance of this skill when an event they read through `read_events`
+  references it as `[[skill::id]]` in its body and the event's capturer may read it. A role that already reads the skill
+  through `read` (e.g. `read: [public]`) reads every instance, so narrow `read` to keep unreferenced instances private.
+
+```yaml
+# skills/request.md                       # skills/attachment.md
+acl:                                      owner_field: author
+  read: [public]                          acl:
+  create: [editors]                         read: [owner]
+  read_events: [app:worker]                 create: [owner]
+                                            read_referenced: [app:worker]
+```
+
+The role itself is restricted by the gateway's `ESCUREL_AUTH_ROLE_TOOLS` (references/08).
+
 ## Typed wikilinks
 
 Pages connect through wikilinks. Full grammar (all segments after `id`

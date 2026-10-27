@@ -94,6 +94,22 @@ pub(super) async fn tool_mint_agent_token(
             "mint_agent_token: `skill` is required (the agent runs as `agent:<skill>`)".to_owned(),
         ));
     }
+    // A restricted caller's child inherits the restriction through its groups, which the minter
+    // writes to `roles`. A gateway that reads groups from another claim would see a child without
+    // them, i.e. unrestricted: refuse rather than mint that.
+    if state.role_tools.restriction(caller.token_groups).is_some()
+        && state
+            .verifier
+            .as_ref()
+            .is_some_and(|v| v.config().groups_claim != "roles")
+    {
+        return Err(JsonRpcError::invalid_params(
+            "mint_agent_token: a restricted role cannot mint while ESCUREL_AUTH_GROUPS_CLAIM is \
+             not `roles` (the child would lose the restriction)"
+                .to_owned(),
+        )
+        .with_code("unsupported", false));
+    }
     let ttl = a.ttl_secs.unwrap_or(DEFAULT_TTL_SECS);
     if !(MIN_TTL_SECS..=MAX_TTL_SECS).contains(&ttl) {
         return Err(JsonRpcError::invalid_params(format!(

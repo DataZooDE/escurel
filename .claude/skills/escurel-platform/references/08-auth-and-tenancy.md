@@ -36,6 +36,20 @@ operator token's `tenant` claim is still the served tenant. Nothing the gateway 
 value. Tests: `process.mint_operator_token("acme")`; `escurel-test-gateway` prints an `operator_bearer`. Design:
 `docs/design/operator-credential.md`.
 
+**Service roles** (`ESCUREL_AUTH_ROLE_TOOLS="app:worker=list_inbox,list_events,expand,create_draft,...;<role>=..."`).
+A token whose groups carry a listed role value may call only that role's tools; every other tool is refused with
+`-32001`, `data.code: "role_restricted"`, and `tools/list` shows only the allowed ones. Two listed roles give the
+intersection. A restricted token is also refused (`403 role_restricted`) at `/ingest`, `/ingest/upload`, `/blob` and
+`/ws`. Only agent-scope tools may be listed; the gateway refuses to boot on an unknown or admin tool, a role in the
+`escurel:` namespace, or the admin/operator value. Two allowed tools are narrower for a restricted caller: `create_draft`
+needs an `acl.propose` grant on the target skill (write grants do not count), and `capture_event` must reply to an event
+the caller can read (`provenance.runner.root_event_id`, same `label_skill`). `mint_agent_token` children carry the
+parent's groups and so the same gate; it refuses for a restricted caller when `ESCUREL_AUTH_GROUPS_CLAIM` is not
+`roles`. What the role may read or propose is declared on the skills (`acl.read_events`, `acl.read_referenced`,
+`acl.propose`, references/01). Revocation: the gateway verifies self-contained JWTs, so a disabled service credential
+works at a direct gateway until its access token expires; a minted child lives until its own `ttl_secs` (default 1800,
+max 14400, no renewal). Design: `docs/design/service-role-gate.md`.
+
 A **per-run agent token** (the bearer the runner mints for one harness run,
 `sub: agent:<skill>`, `act.sub: escurel-runner`) additionally carries the
 run's identity as claims — `run_id`, `root_event_id`, `trace_id` (optional).

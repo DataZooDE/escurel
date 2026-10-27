@@ -333,6 +333,15 @@ pub struct SkillAcl {
     pub update: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub delete: Option<Vec<String>>,
+    /// Groups that may propose drafts of this skill's instances without a write grant.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub propose: Option<Vec<String>>,
+    /// Groups that may read every event labelled with this skill.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub read_events: Option<Vec<String>>,
+    /// Groups that may read an instance referenced by an event they read through `read_events`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub read_referenced: Option<Vec<String>>,
 }
 
 /// The backend a skill's instances live in (`markdown` | `sql_view` |

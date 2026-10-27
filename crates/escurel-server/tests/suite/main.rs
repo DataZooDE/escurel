@@ -155,6 +155,7 @@ mod run_tool_calls;
 mod schema_ergonomics;
 mod self_packaging;
 mod serve_demo;
+mod service_role_gate;
 mod session_acl_and_gates;
 mod session_commit_writes_through;
 mod session_hydrates_page;
