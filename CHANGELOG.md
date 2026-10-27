@@ -6,9 +6,20 @@ loosely [Keep a Changelog](https://keepachangelog.com/). Through the
 follow **`vYYYY.MM.DD`** — the date the binary set was cut (same-day
 re-cuts append `.N`), matching the DataZoo release scheme (cf. erpl).
 
-## Unreleased
+## v2026.10.28
 
-A service-role gate for workers that run under a service identity.
+A service-role gate for workers that run under a service identity, and page chat answered by the runner.
+
+**Page chat** (#789, #791–#796, #800, #806):
+- The runner has a chat mode: it answers a page-chat turn as the asker and posts the reply; chat runs use their own
+  lane and never wait behind the serial lane; failed, cancelled or unmintable chat runs say so; turns deduplicate on
+  `(chat_group_id, user_msg_id)`.
+- `chat_corpus()` with an owner-only conversation skill; `chat:` is validated.
+- WebSocket chat access is rechecked per message; a timed-out chat run says so.
+- VS Code: chat client methods, the `/ws` chat frame, a pure chat model and the Chat webview (conversation, prompt,
+  Recent, New chat).
+
+**Service-role gate:**
 
 - **`ESCUREL_AUTH_ROLE_TOOLS`** (`role=tool,tool;role=tool`): a token whose groups carry a listed role may call only
   those tools (`-32001`, `role_restricted`); `tools/list` shows only them; `/ingest`, `/ingest/upload`, `/blob` and `/ws`
