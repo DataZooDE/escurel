@@ -207,6 +207,12 @@ there before the line is printed and replaces it (by rename; a reader never sees
 fresh ones every `--bearer-refresh-secs` (default 240), so whoever is signed in with it stays
 signed in. Nothing else is written.
 
+**Production enforcement.** The event ACL is off unless asked for: pass `--event-acl-enforce` (or set
+`ESCUREL_EVENT_ACL=enforce`) to test visibility as production enforces it (`--write-acl-enforce` does the same for the
+write ACL). `ESCUREL_AUTH_ROLE_TOOLS` configures the service-role gate (references/08). `--service-subject <sub>` with
+`--service-group <name>`... adds a `service_bearer` for a worker identity (role `agent`, those groups) to the line and
+to `--bearer-file`.
+
 The gateway also holds a signing identity on the issuer's own key, so `mint_agent_token` works
 against it (starting a skill in a terminal under a governed run needs that); a gateway without one
 answers it `unsupported`.

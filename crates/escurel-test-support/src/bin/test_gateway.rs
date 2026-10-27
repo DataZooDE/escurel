@@ -8,7 +8,8 @@
 //! ```text
 //! escurel-test-gateway --tenant vsx --seed test/integration/seed [--subject alice]
 //!                       [--bearer-file <path> [--bearer-refresh-secs 240]]
-//!                       [--group <name>]... [--write-acl-enforce] [--tenant-export]
+//!                       [--group <name>]... [--write-acl-enforce] [--event-acl-enforce]
+//!                       [--service-subject <sub> [--service-group <name>]...] [--tenant-export]
 //!                       [--external-issuer-url <url> --external-jwks-url <url>]
 //! {"gateway_url":"http://127.0.0.1:…","issuer_url":"http://127.0.0.1:…","kid":"…",
 //!  "signing_key":"-----BEGIN RSA PRIVATE KEY-----…","bearer":"eyJ…","admin_bearer":"eyJ…","operator_bearer":"eyJ…","tenant":"vsx"}
@@ -36,6 +37,11 @@
 //!
 //! The gateway also holds a signing identity on the issuer's own key, so `mint_agent_token` works.
 //!
+//! Production enforcement can be reproduced: `--event-acl-enforce` (or `ESCUREL_EVENT_ACL`) sets
+//! the event ACL, `ESCUREL_AUTH_ROLE_TOOLS` configures the service-role gate, and
+//! `--service-subject` with `--service-group` adds a `service_bearer` for a worker identity
+//! (role `agent`, those groups; also kept fresh in `--bearer-file`).
+//!
 //! A demo outlasts that. `--bearer-file <path>` writes `{bearer, admin_bearer, operator_bearer}` there BEFORE the
 //! line is printed and replaces it (by rename, so a reader never sees half a file) with fresh
 //! ones every `--bearer-refresh-secs` (default 240). Nothing else is ever written.
@@ -43,7 +49,8 @@
 use std::path::{Path, PathBuf};
 
 use escurel_test_support::{
-    AuthMode, ConfigOverrides, EscurelProcess, FixtureBuilder, Opts, Role, WriteAclMode,
+    AuthMode, ConfigOverrides, EscurelProcess, EventAclMode, FixtureBuilder, Opts, Role,
+    WriteAclMode,
 };
 use serde_json::json;
 
@@ -58,6 +65,9 @@ struct Args {
     external_issuer_url: Option<String>,
     external_jwks_url: Option<String>,
     write_acl_enforce: bool,
+    event_acl_enforce: bool,
+    service_subject: Option<String>,
+    service_groups: Vec<String>,
     tenant_export: bool,
 }
 
@@ -71,6 +81,9 @@ fn parse() -> Result<Args, String> {
     let mut external_issuer_url = None;
     let mut external_jwks_url = None;
     let mut write_acl_enforce = false;
+    let mut event_acl_enforce = false;
+    let mut service_subject = None;
+    let mut service_groups = Vec::new();
     let mut tenant_export = false;
     let mut it = std::env::args().skip(1);
     while let Some(flag) = it.next() {
@@ -91,10 +104,13 @@ fn parse() -> Result<Args, String> {
             "--external-issuer-url" => external_issuer_url = Some(value(&mut it)?),
             "--external-jwks-url" => external_jwks_url = Some(value(&mut it)?),
             "--write-acl-enforce" => write_acl_enforce = true,
+            "--event-acl-enforce" => event_acl_enforce = true,
+            "--service-subject" => service_subject = Some(value(&mut it)?),
+            "--service-group" => service_groups.push(value(&mut it)?),
             "--tenant-export" => tenant_export = true,
             "-h" | "--help" => {
                 return Err(
-                    "usage: escurel-test-gateway --tenant <id> --seed <dir> [--subject <sub>] [--group <name>]... [--write-acl-enforce] [--tenant-export] [--external-issuer-url <url> --external-jwks-url <url>]"
+                    "usage: escurel-test-gateway --tenant <id> --seed <dir> [--subject <sub>] [--group <name>]... [--write-acl-enforce] [--event-acl-enforce] [--service-subject <sub> [--service-group <name>]...] [--tenant-export] [--external-issuer-url <url> --external-jwks-url <url>]"
                         .into(),
                 );
             }
@@ -106,6 +122,12 @@ fn parse() -> Result<Args, String> {
     }
     if external_issuer_url.is_some() && bearer_file.is_some() {
         return Err("external issuer mode does not mint or refresh bearer files".into());
+    }
+    if service_subject.is_none() && !service_groups.is_empty() {
+        return Err("--service-group needs --service-subject".into());
+    }
+    if external_issuer_url.is_some() && service_subject.is_some() {
+        return Err("external issuer mode does not mint a service bearer".into());
     }
     if groups.is_empty() {
         groups.push("escurel:agent".to_owned());
@@ -120,6 +142,9 @@ fn parse() -> Result<Args, String> {
         external_issuer_url,
         external_jwks_url,
         write_acl_enforce,
+        event_acl_enforce,
+        service_subject,
+        service_groups,
         tenant_export,
     })
 }
@@ -138,6 +163,7 @@ fn write_bearers(process: &EscurelProcess, args: &Args, path: &Path) -> std::io:
         "bearer": mint_bearer(process, args),
         "admin_bearer": process.mint_token_with_sub(&args.tenant, Role::Admin, &args.subject),
         "operator_bearer": process.mint_operator_token(&args.tenant),
+        "service_bearer": mint_service_bearer(process, args),
     })
     .to_string();
     write_atomically(path, &contents)
@@ -146,6 +172,13 @@ fn write_bearers(process: &EscurelProcess, args: &Args, path: &Path) -> std::io:
 fn mint_bearer(process: &EscurelProcess, args: &Args) -> String {
     let groups: Vec<&str> = args.groups.iter().map(String::as_str).collect();
     process.mint_token_with_groups(&args.tenant, &args.subject, &groups, false)
+}
+
+/// The worker identity's bearer, when `--service-subject` asked for one.
+fn mint_service_bearer(process: &EscurelProcess, args: &Args) -> Option<String> {
+    let subject = args.service_subject.as_deref()?;
+    let groups: Vec<&str> = args.service_groups.iter().map(String::as_str).collect();
+    Some(process.mint_token_with_groups(&args.tenant, subject, &groups, false))
 }
 
 /// `skills/` and `instances/` markdown files, in a stable order so a seed replays the same way
@@ -255,6 +288,16 @@ async fn main() {
         fixtures: Some(tenant.done()),
         config_overrides: ConfigOverrides {
             write_acl: args.write_acl_enforce.then_some(WriteAclMode::Enforce),
+            // The event ACL is off unless asked for, by flag or by the production variable.
+            event_acl: Some(if args.event_acl_enforce {
+                EventAclMode::Enforce
+            } else {
+                EventAclMode::from_env()
+            }),
+            // The service-role gate, from the production variable.
+            role_tools: std::env::var("ESCUREL_AUTH_ROLE_TOOLS")
+                .ok()
+                .filter(|v| !v.trim().is_empty()),
             fixture_tenant_export: args.tenant_export,
             // Live CRDT sessions, so the editor's personal-draft path works against it.
             live_crdt: true,
@@ -313,6 +356,7 @@ async fn main() {
             "bearer": bearer,
             "admin_bearer": admin_bearer,
             "operator_bearer": operator_bearer,
+            "service_bearer": mint_service_bearer(&process, &args),
             "tenant": args.tenant,
             "fixture_store_dir": args.tenant_export.then(|| process.fixture_store_dir())
                 .flatten().map(|path| path.display().to_string()),

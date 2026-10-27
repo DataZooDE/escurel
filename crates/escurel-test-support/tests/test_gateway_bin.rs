@@ -395,3 +395,72 @@ async fn a_log_reader_that_stops_reading_does_not_stall_the_gateway() {
     }
     drop(stdout);
 }
+
+/// A consumer must be able to test what production enforces: the event ACL (here by flag; the
+/// `ESCUREL_EVENT_ACL` variable works the same way) and the service-role gate
+/// (`ESCUREL_AUTH_ROLE_TOOLS`), with a bearer for the service identity beside the human's.
+#[tokio::test]
+async fn it_enforces_the_event_acl_and_the_role_gate_for_a_service_bearer() {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_escurel-test-gateway"))
+        .args(["--tenant", "vsx", "--seed"])
+        .arg(seed_dir())
+        .args([
+            "--event-acl-enforce",
+            "--service-subject",
+            "agent:worker",
+            "--service-group",
+            "app:worker",
+        ])
+        .env(
+            "ESCUREL_AUTH_ROLE_TOOLS",
+            "app:worker=list_events,capture_event",
+        )
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("spawn escurel-test-gateway");
+    let mut line = String::new();
+    BufReader::new(child.stdout.take().expect("stdout"))
+        .read_line(&mut line)
+        .expect("connection info");
+    let info: Value = serde_json::from_str(line.trim()).unwrap_or_else(|e| panic!("{e}: {line:?}"));
+    let g = Running { child, info };
+    let human = g.info["bearer"].as_str().unwrap().to_owned();
+    let service = g.info["service_bearer"]
+        .as_str()
+        .expect("service_bearer")
+        .to_owned();
+
+    let captured = call(
+        &g,
+        Some(&human),
+        "capture_event",
+        json!({ "event_id": "e-1", "source": "ui", "mime": "text/plain",
+                "label_skill": "note", "title": "t", "body": "private" }),
+    )
+    .await;
+    assert_eq!(captured.status(), 200);
+    let listed: Value = call(
+        &g,
+        Some(&service),
+        "list_events",
+        json!({ "label_skill": "note" }),
+    )
+    .await
+    .json()
+    .await
+    .unwrap();
+    assert_eq!(
+        listed["result"]["structuredContent"]["events"],
+        json!([]),
+        "enforced: another subject's objectless event is hidden: {listed}"
+    );
+    let refused: Value = call(&g, Some(&service), "search", json!({ "q": "x" }))
+        .await
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(
+        refused["error"]["data"]["code"], "role_restricted",
+        "{refused}"
+    );
+}
