@@ -280,6 +280,12 @@
         "category": "Escurel"
       },
       {
+        "command": "escurel.chat.new",
+        "title": "New chat",
+        "category": "Escurel",
+        "icon": "$(add)"
+      },
+      {
         "command": "escurel.openReview",
         "title": "Open review",
         "category": "Escurel"
@@ -578,6 +584,11 @@
         {
           "id": "escurel.runner",
           "name": "Runs"
+        },
+        {
+          "id": "escurel.chat",
+          "name": "Chat",
+          "type": "webview"
         }
       ],
       "escurel-details": [
@@ -902,6 +913,11 @@
           "group": "navigation@9"
         },
         {
+          "command": "escurel.chat.new",
+          "when": "view == escurel.chat",
+          "group": "navigation@1"
+        },
+        {
           "command": "escurel.runs.filter",
           "when": "view == escurel.runner",
           "group": "navigation@1"
@@ -939,6 +955,11 @@
         {
           "command": "escurel.explainView",
           "when": "view == escurel.details",
+          "group": "navigation@9"
+        },
+        {
+          "command": "escurel.explainView",
+          "when": "view == escurel.chat",
           "group": "navigation@9"
         },
         {
