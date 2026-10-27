@@ -174,6 +174,13 @@ abstract class EscurelClient {
   /// Drains when the underlying socket closes.
   Stream<AwarenessEvent> awareness(String pageId);
 
+  // ── identity ─────────────────────────────────────────────────
+
+  /// Who the gateway takes this client for (`whoami`): the verified
+  /// subject (it names the caller's page chats), the tenant and the
+  /// admin flag.
+  Future<Whoami> whoami();
+
   // ── chat history (M-Chat, issue #63) ────────────────────────
 
   /// Append one message to a chat group's conversation log. The

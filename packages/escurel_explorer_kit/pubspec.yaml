@@ -14,6 +14,9 @@ dependencies:
   # State
   flutter_riverpod: ^2.5.1
 
+  # SHA-256 for the page-chat group id (`page-chat:v1:<sha256(subject)>:<page>`).
+  crypto: ^3.0.6
+
   # Routing — the standalone-app fallback for the navigation seam
   # (embedding hosts inject their own handler; see state/explorer_nav).
   go_router: ^14.6.0

@@ -205,6 +205,9 @@ class _CapStubClient implements EscurelClient {
   Stream<AwarenessEvent> awareness(String pageId) => inner.awareness(pageId);
 
   @override
+  Future<Whoami> whoami() => inner.whoami();
+
+  @override
   Future<AppendedMessage> appendMessage({
     required String chatGroupId,
     required String role,

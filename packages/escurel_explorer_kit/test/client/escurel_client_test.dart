@@ -181,6 +181,9 @@ class _StubClient implements EscurelClient {
   }
 
   @override
+  Future<Whoami> whoami() async => throw notYetImplemented('whoami');
+
+  @override
   Future<AppendedMessage> appendMessage({
     required String chatGroupId,
     required String role,
