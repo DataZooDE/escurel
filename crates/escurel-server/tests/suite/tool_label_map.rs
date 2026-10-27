@@ -120,6 +120,7 @@ const EXPECTED: &[&str] = &[
     "validate:deterministic",
     "validate_bindings:orchestration",
     "validate_endpoints:orchestration",
+    "whoami:deterministic",
     "write_instance:orchestration",
 ];
 

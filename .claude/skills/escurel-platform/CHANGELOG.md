@@ -4,6 +4,11 @@ The skill version tracks the consumer-facing contract, not the Escurel
 binary version. The Escurel repo's checked-out git ref is the true version
 pin (see `SKILL.md` → "How this skill is installed").
 
+## 0.25.19 — `whoami`
+
+A read-only agent tool (and `escurel whoami`) returning `{subject, tenant, is_admin}`: how a client without an OIDC
+session of its own learns the subject its page chats are named by. `Client::whoami()` in `escurel-client`.
+
 ## 0.25.18 — the chat corpus and `chat:` validation
 
 `chat_corpus()` / `examples/chat/seed/`: an owner-only, page-bound `conversation` skill and the `chat` agent skill

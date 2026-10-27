@@ -22,6 +22,17 @@ use serde_json::{Value, json};
 pub(crate) fn tool_defs() -> Vec<ToolDef> {
     vec![
         tool_entry(
+            "whoami",
+            Execution::Deterministic,
+            Scope::Agent,
+            Touches::READ,
+            "Who the gateway takes you for: your verified token `subject`, the `tenant`, and \
+             `is_admin`. A client with no identity of its own (a browser app behind a backend) \
+             uses `subject` to address its own page chats \
+             (`page-chat:v1:<sha256(subject)>:<page_id>`).",
+            json!({ "type": "object", "properties": {} }),
+        ),
+        tool_entry(
             "list_skills",
             Execution::Deterministic,
             Scope::Agent,
@@ -2335,6 +2346,11 @@ fn output_schema_for(name: &str) -> Option<Value> {
             "granularity": { "type": "string" }
         })),
         "list_skills" => obj(json!({ "skills": { "type": "array" } })),
+        "whoami" => obj(json!({
+            "subject": { "type": "string" },
+            "tenant": { "type": "string" },
+            "is_admin": { "type": "boolean" }
+        })),
         "resolve" => obj(json!({
             "parsed": { "type": "object" },
             "page": { "type": "object" },

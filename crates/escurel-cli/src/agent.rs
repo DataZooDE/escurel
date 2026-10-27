@@ -555,6 +555,7 @@ pub async fn run(client: &Client, cmd: Command) -> Result<Value> {
     match cmd {
         Command::Search(a) => search(client, a).await,
         Command::Resolve { wikilink } => resolve(client, wikilink).await,
+        Command::Whoami => Ok(serde_json::to_value(client.whoami().await?)?),
         Command::Skill(SkillCmd::List) => list_skills(client).await,
         Command::Instance(InstanceCmd::List(a)) => list_instances(client, a).await,
         Command::Page(PageCmd::Expand { page_id }) => expand(client, page_id).await,

@@ -28,13 +28,14 @@ status, not only whether stdout is empty (`references/03` § Errors).
 ## Command shape
 
 Commands are grouped **gh/aws-style by resource noun** (`escurel <noun>
-<verb>`), plus two bare top-level verbs (`search`, `resolve`). Each maps
+<verb>`), plus three bare top-level verbs (`search`, `resolve`, `whoami`). Each maps
 1:1 to a tool in `references/02`:
 
 ```sh
 # search + resolve (top-level verbs)
 escurel search "acme churn" --k 5 --page-kind instance --skill customer
 escurel resolve '[[customer::acme-corp]]'
+escurel whoami                      # {subject, tenant, is_admin}
 
 # skills + instances
 escurel skill list
@@ -117,6 +118,7 @@ escurel admin pack submit-promotion --tenant acme --candidate-id acme-candidate 
 | CLI | Tool (`references/02`) |
 |---|---|
 | `search` / `resolve` | `search` / `resolve` |
+| `whoami` | `whoami` |
 | `skill list` / `instance list` | `list_skills` / `list_instances` |
 | `page expand` / `page validate` / `page update` | `expand` / `validate` / `update_page` |
 | `page delete` | `delete_page` |
