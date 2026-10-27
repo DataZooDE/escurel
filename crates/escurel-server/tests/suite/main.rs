@@ -187,6 +187,7 @@ mod update_page_concurrency;
 mod update_page_strict_cas;
 mod validate_tool;
 mod webhook;
+mod whoami;
 mod write_acl;
 mod write_attribution;
 mod write_load_soak;

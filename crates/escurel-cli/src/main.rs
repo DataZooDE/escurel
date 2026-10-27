@@ -61,6 +61,8 @@ enum Command {
     Search(agent::SearchArgs),
     /// Parse a `[[wikilink]]` and look up its target page.
     Resolve { wikilink: String },
+    /// Who the gateway takes you for: subject, tenant, admin flag.
+    Whoami,
     /// Tier-1 skill catalogue.
     #[command(subcommand)]
     Skill(agent::SkillCmd),

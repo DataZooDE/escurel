@@ -1189,6 +1189,11 @@ async fn dispatch_tools_call(
 
     match params.name.as_str() {
         "list_skills" => tool_list_skills(indexer, caller).await,
+        "whoami" => Ok(json!({
+            "subject": caller.subject,
+            "tenant": indexer.tenant(),
+            "is_admin": caller.is_admin,
+        })),
         "list_instances" => {
             tool_list_instances(indexer, &state.egress, caller, params.arguments).await
         }

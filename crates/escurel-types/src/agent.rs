@@ -75,6 +75,15 @@ pub struct ResolveRequest {
     pub scenario: String,
 }
 
+/// `whoami` result: the caller's verified identity.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct WhoamiResponse {
+    pub subject: String,
+    pub tenant: String,
+    pub is_admin: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct ResolveResponse {
