@@ -60,6 +60,9 @@ async fn ingest_gate(
     headers: &HeaderMap,
 ) -> Result<(std::sync::Arc<Indexer>, IngestCaller), axum::response::Response> {
     let auth_ctx = crate::auth_gate::authenticate(state, headers).await?;
+    if let Some(refused) = crate::role_gate::surface_refusal(state, auth_ctx.as_ref(), "/ingest") {
+        return Err(refused);
+    }
     // Dispatch-gate parity (API review B1): the REST intake door gives the
     // same guarantees as the MCP door. A ducklake READER owns no writes —
     // refuse before debiting quota, with the same typed vocabulary as the
@@ -1247,6 +1250,9 @@ async fn blob_get_inner(
         Ok(ctx) => ctx,
         Err(resp) => return resp,
     };
+    if let Some(refused) = crate::role_gate::surface_refusal(state, auth_ctx.as_ref(), "/blob") {
+        return refused;
+    }
     // Suspend gate, mirroring dispatch: agent traffic stops, admin passes.
     if state
         .tenant_suspended

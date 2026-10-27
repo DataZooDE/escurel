@@ -785,6 +785,21 @@ catalogue by the skill's `acl.read` for everyone else (#374 — see
 [`list_skills`](#list_skills)); `visibility`/`owner_field` are retained for
 every caller. *(Capability-tool RBAC is phase 2.)*
 
+Three further keys grant a group more than the CRUD verbs, for a service worker acting on others' requests. They
+are read from the skill's block only (no tenant default, no instance override) and never narrow:
+
+- `propose: [groups]` — may `create_draft` an instance of this skill without `create`/`update`. The target must be an
+  instance page whose path, incoming `skill:` and stored page agree. Validation and promotion are unchanged.
+- `read_events: [groups]` — on the skill a `label_skill` names: may read every event under that label in the tenant
+  (objectless, filed, any capturer; under every `ESCUREL_EVENT_ACL` mode), and may `assign_event` such an unassigned
+  event into an existing instance it can read, without write on the target.
+- `read_referenced: [groups]` — may read an instance of this skill when an event it reads through `read_events`
+  names the instance as `[[skill::id]]` in its body (newest 50 mentions are inspected) and the event's capturer may
+  read the instance by the ordinary rules (subject and stored membership).
+
+The matching gateway restriction is `ESCUREL_AUTH_ROLE_TOOLS` (a role's tool allow-list, refused tools answer `-32001`
+`role_restricted`); see `docs/design/service-role-gate.md`.
+
 ###### Instance-level `acl:` overrides
 
 An **instance** page MAY carry its own `acl:` block, in exactly the same

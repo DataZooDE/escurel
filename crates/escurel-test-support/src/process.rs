@@ -47,6 +47,9 @@ pub struct ConfigOverrides {
     /// Per-event ACL enforcement mode for the event bus. `None` → `Off`
     /// (the production default); event-ACL tests set `Enforce`.
     pub event_acl: Option<EventAclMode>,
+    /// Service roles and their allowed tools, in the `ESCUREL_AUTH_ROLE_TOOLS` syntax
+    /// (`role=tool,tool;role=tool`). `None` → no restricted role.
+    pub role_tools: Option<String>,
     /// What a run's recorded tool calls keep beyond sizes. `None` → the
     /// production default (`Summary`).
     pub toolcall_detail: Option<ToolcallDetailMode>,
@@ -474,6 +477,14 @@ impl EscurelProcess {
             // (or `Some(WriteAclMode::default())` to pin the shipped default).
             write_acl: overrides.write_acl.unwrap_or(WriteAclMode::Off),
             event_acl: overrides.event_acl.unwrap_or_default(),
+            role_tools: overrides
+                .role_tools
+                .as_deref()
+                .map(|raw| {
+                    escurel_server::role_gate::RoleTools::parse(raw)
+                        .expect("ConfigOverrides.role_tools")
+                })
+                .unwrap_or_default(),
             toolcall_detail: overrides.toolcall_detail.unwrap_or_default(),
             autonomy_lint: overrides.autonomy_lint.unwrap_or_default(),
             // Tests keep their directory-connector fixtures in temp dirs, so the default policy of a

@@ -62,6 +62,10 @@ pub struct AclCaller<'a> {
     pub agent_skill: Option<&'a str>,
 }
 
+/// How many events mentioning an instance [`Indexer::may_read_instance`] inspects for the
+/// `acl.read_referenced` grant (newest first). A bound, so a read never scans the whole bus.
+const REFERENCE_SCAN_LIMIT: usize = 50;
+
 /// The frontmatter field that carries a member's owning principal when an
 /// owner is reached through a `[[community_member::id]]` wikilink.
 const OWNER_CREDENTIAL_FIELD: &str = "credential";
@@ -192,6 +196,7 @@ fn shipped_tenant_default() -> AclPolicy {
         create: Some(vec!["admin".to_owned()]),
         update: Some(vec!["admin".to_owned()]),
         delete: Some(vec!["admin".to_owned()]),
+        ..AclPolicy::default()
     }
 }
 
@@ -263,17 +268,193 @@ impl Indexer {
         }
         let (acl, owner_field, instance_acl_disabled) =
             self.skill_acl(skill).await?.unwrap_or((None, None, false));
+        if self
+            .read_by_policy(
+                caller,
+                acl.as_ref(),
+                owner_field.as_deref(),
+                instance_acl_disabled,
+                fm,
+            )
+            .await?
+        {
+            return Ok(true);
+        }
+        self.read_by_reference(
+            caller,
+            skill,
+            acl.as_ref(),
+            owner_field.as_deref(),
+            instance_acl_disabled,
+            fm,
+        )
+        .await
+    }
+
+    /// The ordinary read decision: the instance's own block, then the skill's, then the tenant
+    /// default, with the structural `owner` group.
+    async fn read_by_policy(
+        &self,
+        caller: &AclCaller<'_>,
+        acl: Option<&AclPolicy>,
+        owner_field: Option<&str>,
+        instance_acl_disabled: bool,
+        fm: &Value,
+    ) -> Result<bool, IndexerError> {
         let instance = if instance_acl_disabled {
             None
         } else {
             instance_acl(fm)
         };
-        let policy = self.resolve_policy(&[instance, acl], Verb::Read).await?;
+        let policy = self
+            .resolve_policy(&[instance, acl.cloned()], Verb::Read)
+            .await?;
         let mut effective = self.caller_groups(caller).await?;
-        if self.owns(caller, owner_field.as_deref(), fm).await? {
+        if self.owns(caller, owner_field, fm).await? {
             effective.insert("owner".to_owned());
         }
         Ok(intersects(&policy, &effective))
+    }
+
+    /// The `acl.read_referenced` grant: a holder may read an instance of this skill when an event
+    /// it reads through `acl.read_events` references the instance as `[[skill::id]]` in its body,
+    /// and that event's capturer may read the instance by the ordinary rules (so a requester cannot
+    /// name somebody else's attachment). The capturer is judged by subject and stored membership:
+    /// their token groups are not known after the fact.
+    async fn read_by_reference(
+        &self,
+        caller: &AclCaller<'_>,
+        skill: &str,
+        acl: Option<&AclPolicy>,
+        owner_field: Option<&str>,
+        instance_acl_disabled: bool,
+        fm: &Value,
+    ) -> Result<bool, IndexerError> {
+        let Some(granted) = acl.and_then(|a| a.read_referenced.as_ref()) else {
+            return Ok(false);
+        };
+        if !intersects(granted, &self.caller_groups(caller).await?) {
+            return Ok(false);
+        }
+        let Some(id) = fm
+            .get("id")
+            .and_then(Value::as_str)
+            .filter(|s| !s.is_empty())
+        else {
+            return Ok(false);
+        };
+        let needle = format!("[[{skill}::{id}");
+        for event in self
+            .events_mentioning(&needle, REFERENCE_SCAN_LIMIT)
+            .await?
+        {
+            let links = escurel_md::wikilink::parse_wikilinks(&event.body)
+                .into_iter()
+                .any(|wl| wl.skill.as_deref() == Some(skill) && wl.id.as_deref() == Some(id));
+            if !links || !self.may_read_event_by_grant(caller, &event).await? {
+                continue;
+            }
+            let Some(capturer) = captured_by(&event.provenance) else {
+                continue;
+            };
+            let as_capturer = AclCaller {
+                subject: capturer,
+                ..AclCaller::default()
+            };
+            if self
+                .read_by_policy(&as_capturer, acl, owner_field, instance_acl_disabled, fm)
+                .await?
+            {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
+    /// The `acl.read_events` grant: `caller` holds a group the event's label skill lists there,
+    /// so it may read the event whoever captured it and wherever it is filed.
+    pub async fn may_read_event_by_grant(
+        &self,
+        caller: &AclCaller<'_>,
+        event: &crate::EventInfo,
+    ) -> Result<bool, IndexerError> {
+        let Some((Some(acl), _, _)) = self.skill_acl(&event.label_skill).await? else {
+            return Ok(false);
+        };
+        let Some(granted) = acl.read_events.as_ref() else {
+            return Ok(false);
+        };
+        Ok(intersects(granted, &self.caller_groups(caller).await?))
+    }
+
+    /// Whether `caller` may file an UNASSIGNED event it reads through `acl.read_events` into
+    /// `target_page_id`: the target must be an existing instance the caller can read. No write grant
+    /// on the target is needed; that is the point of the grant.
+    pub async fn may_file_granted_event(
+        &self,
+        caller: &AclCaller<'_>,
+        event: &crate::EventInfo,
+        target_page_id: &str,
+    ) -> Result<bool, IndexerError> {
+        if !self.may_read_event_by_grant(caller, event).await? {
+            return Ok(false);
+        }
+        match self.expand(target_page_id, None, None).await? {
+            Some(target) if target.page.page_kind == PageKind::Instance => {
+                self.may_read_instance(caller, &target.page.skill, &target.frontmatter)
+                    .await
+            }
+            _ => Ok(false),
+        }
+    }
+
+    /// The `acl.propose` grant: whether `caller` may hold a DRAFT of `content` for `page_id`
+    /// without a write grant. The target must be an instance page whose path, incoming `skill:`
+    /// and stored page (if any) all name the same skill, and that skill must list one of the
+    /// caller's groups under `propose`. A narrowed agent token stays confined to its skills.
+    pub async fn may_propose_page(
+        &self,
+        caller: &AclCaller<'_>,
+        page_id: &str,
+        content: &str,
+    ) -> Result<bool, IndexerError> {
+        if caller.is_admin {
+            return Ok(true);
+        }
+        let Some((path_skill, _)) = crate::backend::rows::split_instance_page_id(page_id) else {
+            return Ok(false);
+        };
+        let Ok(parsed) = parse(content) else {
+            return Ok(false);
+        };
+        if parsed.frontmatter.page_kind != PageKind::Instance
+            || parsed
+                .frontmatter
+                .fields
+                .get("skill")
+                .and_then(YamlValue::as_str)
+                != Some(path_skill)
+        {
+            return Ok(false);
+        }
+        if let Some(stored) = self.expand(page_id, None, None).await?
+            && stored.page.skill != path_skill
+        {
+            return Ok(false);
+        }
+        if caller
+            .agent_skill
+            .is_some_and(|scope| !scope.split(',').any(|allowed| allowed == path_skill))
+        {
+            return Ok(false);
+        }
+        let Some((Some(acl), _, _)) = self.skill_acl(path_skill).await? else {
+            return Ok(false);
+        };
+        let Some(granted) = acl.propose.as_ref() else {
+            return Ok(false);
+        };
+        Ok(intersects(granted, &self.caller_groups(caller).await?))
     }
 
     /// Whether `caller` may WRITE (create/overwrite) the instance page at
@@ -527,6 +708,11 @@ impl Indexer {
             return Ok(root.kind == crate::EventKind::User
                 && root.label_skill == expected_root
                 && root.provenance["captured_by"].as_str() == Some(caller.subject));
+        }
+        // The `acl.read_events` grant: the label's skill opens every event under it to the listed
+        // groups, objectless or filed (a service worker draining one request label).
+        if self.may_read_event_by_grant(caller, event).await? {
+            return Ok(true);
         }
         // (2) Filed into an instance → that instance's ACL decides. A named
         // page that does not exist falls through rather than deciding on a

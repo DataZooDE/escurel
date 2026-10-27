@@ -1849,6 +1849,30 @@ impl Indexer {
             .next())
     }
 
+    /// The newest `limit` events whose body contains `needle` verbatim (no pattern syntax: an
+    /// `_` in an id is not a wildcard). Feeds the `acl.read_referenced` grant, which then parses
+    /// each body's wikilinks exactly.
+    pub async fn events_mentioning(
+        &self,
+        needle: &str,
+        limit: usize,
+    ) -> Result<Vec<EventInfo>, IndexerError> {
+        let table = self.events_table();
+        let tenant = self.events_tenant_scope().map(str::to_owned);
+        let mut where_clauses = vec!["strpos(body, ?) > 0".to_owned()];
+        if tenant.is_some() {
+            where_clauses.push("tenant = ?".to_owned());
+        }
+        let sql = format!(
+            "{} WHERE {} ORDER BY at_ts DESC NULLS LAST, event_id DESC LIMIT {}",
+            select_cols(&table),
+            where_clauses.join(" AND "),
+            limit.min(EVENTS_MAX_LIMIT),
+        );
+        self.hydrate_events(&sql, Some(needle), tenant.as_deref())
+            .await
+    }
+
     /// The **most recent** processed event assigned to `instance` under
     /// `label` — newest by `at_ts` (async-ops Phase-4 F-6). One indexed row, so
     /// deriving an operation's current status is a `LIMIT 1` lookup rather than

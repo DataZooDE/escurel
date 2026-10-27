@@ -6,6 +6,36 @@ loosely [Keep a Changelog](https://keepachangelog.com/). Through the
 follow **`vYYYY.MM.DD`** — the date the binary set was cut (same-day
 re-cuts append `.N`), matching the DataZoo release scheme (cf. erpl).
 
+## v2026.10.28
+
+A service-role gate for workers that run under a service identity, and page chat answered by the runner.
+
+**Page chat** (#789, #791–#797, #799–#801, #806):
+- The runner has a chat mode: it answers a page-chat turn as the asker and posts the reply; chat runs use their own
+  lane and never wait behind the serial lane; failed, cancelled or unmintable chat runs say so; turns deduplicate on
+  `(chat_group_id, user_msg_id)`.
+- `chat_corpus()` with an owner-only conversation skill; `chat:` is validated.
+- WebSocket chat access is rechecked per message; a timed-out chat run says so.
+- VS Code: chat client methods, the `/ws` chat frame, a pure chat model and the Chat webview (conversation, prompt,
+  Recent, New chat).
+- VS Code: a Chat view beside Runs, answered live by a governed run; Ask about this record, chat focus and Review for
+  proposed changes.
+- `whoami`: the caller's verified subject, tenant and admin flag (also `escurel whoami`, `Client::whoami()`).
+
+**Service-role gate:**
+
+- **`ESCUREL_AUTH_ROLE_TOOLS`** (`role=tool,tool;role=tool`): a token whose groups carry a listed role may call only
+  those tools (`-32001`, `role_restricted`); `tools/list` shows only them; `/ingest`, `/ingest/upload`, `/blob` and `/ws`
+  answer `403`. A restricted `create_draft` needs `acl.propose`; a restricted `capture_event` must reply to a readable
+  event under its label. Minted children inherit the gate. Boot fails on an unknown or admin tool.
+- **Skill grants `acl.propose`, `acl.read_events`, `acl.read_referenced`**: drafts without write rights, every event of a
+  label (and filing it into a readable instance), and instances a visible event references. `list_skills` reports them to
+  admins.
+- **`escurel-test-gateway`** honours `ESCUREL_EVENT_ACL` and `ESCUREL_AUTH_ROLE_TOOLS`, takes `--event-acl-enforce`, and
+  prints a `service_bearer` for `--service-subject`/`--service-group`.
+
+Design: `docs/design/service-role-gate.md`.
+
 ## v2026.10.27
 
 A field rule that caps how many values a field holds, and chat-message pushes on the event subscription.

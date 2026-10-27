@@ -3564,10 +3564,16 @@ pub(super) async fn tool_assign_event(
                 .as_deref()
                 .is_none_or(|cur| cur.is_empty());
             if unassigned {
+                // Write on the target, or an `acl.read_events` grant on the event's label, which
+                // lets its holder file the event into an instance it can read.
                 let target_ok = indexer
                     .may_assign_event_target(&caller, &a.instance_page_id)
                     .await
-                    .map_err(|e| JsonRpcError::internal(format!("assign_event acl: {e}")))?;
+                    .map_err(|e| JsonRpcError::internal(format!("assign_event acl: {e}")))?
+                    || indexer
+                        .may_file_granted_event(&caller, &event, &a.instance_page_id)
+                        .await
+                        .map_err(|e| JsonRpcError::internal(format!("assign_event acl: {e}")))?;
                 if !target_ok {
                     if event_acl == crate::server::EventAclMode::Log {
                         tracing::warn!(

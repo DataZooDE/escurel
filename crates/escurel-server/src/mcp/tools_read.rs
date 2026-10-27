@@ -118,6 +118,9 @@ fn skill_to_wire(s: escurel_index::SkillInfo, is_admin: bool) -> TypesSkill {
             create: a.create,
             update: a.update,
             delete: a.delete,
+            propose: a.propose,
+            read_events: a.read_events,
+            read_referenced: a.read_referenced,
         }),
         backend: backend_to_wire(&s.backend),
         capabilities: {

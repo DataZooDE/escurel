@@ -4,6 +4,13 @@ The skill version tracks the consumer-facing contract, not the Escurel
 binary version. The Escurel repo's checked-out git ref is the true version
 pin (see `SKILL.md` → "How this skill is installed").
 
+## 0.25.20 — service-role gate
+
+`ESCUREL_AUTH_ROLE_TOOLS` restricts a role to listed tools (`role_restricted`; `/ingest`, `/blob`, `/ws` refused);
+skill grants `acl.propose`, `acl.read_events`, `acl.read_referenced` (references/01, 08). `escurel-test-gateway`:
+`--event-acl-enforce`, `ESCUREL_EVENT_ACL`, `ESCUREL_AUTH_ROLE_TOOLS`, `--service-subject`/`--service-group` →
+`service_bearer` (references/09).
+
 ## 0.25.19 — `whoami`
 
 A read-only agent tool (and `escurel whoami`) returning `{subject, tenant, is_admin}`: how a client without an OIDC

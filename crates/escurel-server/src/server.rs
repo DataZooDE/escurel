@@ -223,6 +223,9 @@ pub struct ServerConfig {
     /// Per-event ACL enforcement mode for the event bus
     /// (`ESCUREL_EVENT_ACL`).
     pub event_acl: EventAclMode,
+    /// Service roles and the tools each may call (`ESCUREL_AUTH_ROLE_TOOLS`). Empty = no
+    /// restricted role. See `docs/design/service-role-gate.md`.
+    pub role_tools: crate::role_gate::RoleTools,
     /// What a run's recorded tool calls keep beyond sizes
     /// (`ESCUREL_TOOLCALL_DETAIL`).
     pub toolcall_detail: ToolcallDetailMode,
@@ -489,6 +492,8 @@ pub const DEFAULT_SHUTDOWN_DRAIN: std::time::Duration = std::time::Duration::fro
 pub(crate) struct AppState {
     pub(crate) write_acl: WriteAclMode,
     pub(crate) event_acl: EventAclMode,
+    /// The service-role tool gate (`ESCUREL_AUTH_ROLE_TOOLS`).
+    pub(crate) role_tools: Arc<crate::role_gate::RoleTools>,
     pub(crate) toolcall_detail: ToolcallDetailMode,
     pub(crate) autonomy_lint: AutonomyLintMode,
     pub(crate) egress: Arc<crate::egress::Egress>,
@@ -628,6 +633,7 @@ pub async fn serve(
     let state = AppState {
         write_acl: config.write_acl,
         event_acl: config.event_acl,
+        role_tools: Arc::new(config.role_tools.clone()),
         toolcall_detail: config.toolcall_detail,
         autonomy_lint: config.autonomy_lint,
         egress: Arc::new(

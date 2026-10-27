@@ -356,6 +356,10 @@ async fn mcp_inner(
     // a header grant. Reserved names (public/owner/admin) are stripped
     // again inside escurel-index as defence in depth.
     let token_groups = crate::auth_gate::rbac_groups(&state, auth_ctx.as_ref());
+    // The service-role gate (`ESCUREL_AUTH_ROLE_TOOLS`): `Some` = this token may call only these
+    // tools. Derived from the same verified groups the ACL reads, so a minted child token, which
+    // inherits its parent's groups, inherits the restriction too.
+    let restriction = state.role_tools.restriction(&token_groups);
 
     // Who the subject is acting FOR (#510), from the verified `act.sub`: a
     // per-run agent token names the runner that delegated to it. Audit
@@ -380,7 +384,10 @@ async fn mcp_inner(
     let result = match req.method.as_str() {
         "initialize" => Ok(initialize_result(&req.params)),
         "ping" => Ok(json!({})),
-        "tools/list" => Ok(schema::tools_list_payload_for(role)),
+        "tools/list" => Ok(restricted_tools_list(
+            schema::tools_list_payload_for(role),
+            restriction.as_ref(),
+        )),
         "tools/call" => {
             // Per-tool metrics (escurel_tool_calls / _latency_ms):
             // name the tool, time the dispatch, record on completion.
@@ -425,6 +432,7 @@ async fn mcp_inner(
                 actor.as_deref(),
                 run.as_ref(),
                 agent_skill.as_deref(),
+                restriction.as_ref(),
                 req.params,
             ))
             .catch_unwind()
@@ -733,6 +741,117 @@ const OPERATOR_TOOLS: [&str; 5] = [
     "tenant_delete",
 ];
 
+/// `tools/list` for a restricted token: only the tools its role may call.
+fn restricted_tools_list(
+    payload: Value,
+    restriction: Option<&std::collections::BTreeSet<String>>,
+) -> Value {
+    let Some(allowed) = restriction else {
+        return payload;
+    };
+    let tools: Vec<Value> = payload["tools"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|t| t["name"].as_str().is_some_and(|n| allowed.contains(n)))
+        .collect();
+    json!({ "tools": tools })
+}
+
+/// A restricted caller may draft only what an `acl.propose` grant names, in every write-ACL
+/// mode: its own write grants and the non-instance shortcut of the write ACL do not count. `None`
+/// = allowed (the ordinary `create_draft` checks still run).
+async fn restricted_draft_refusal(
+    indexer: &Indexer,
+    caller: &AclCaller<'_>,
+    args: &Value,
+) -> Result<Option<Value>, JsonRpcError> {
+    let target = args
+        .get("target_page_id")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let content = args
+        .get("content")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let allowed = indexer
+        .may_propose_page(caller, target, content)
+        .await
+        .map_err(|e| JsonRpcError::internal(format!("create_draft acl: {e}")))?;
+    Ok((!allowed).then(|| {
+        json!({
+            "ok": false,
+            "issues": [{
+                "severity": "error",
+                "code": "forbidden",
+                "location": "target_page_id",
+                "message": format!(
+                    "draft denied: this credential's role may propose only instances of skills \
+                     that grant it `acl.propose`, and `{target}` is not one"
+                ),
+            }],
+        })
+    }))
+}
+
+/// A restricted caller files replies, never new work: the capture must name a lineage root
+/// (`provenance.runner.root_event_id`) the caller may read, under the same `label_skill`.
+async fn restricted_capture_check(
+    indexer: &Indexer,
+    caller: &AclCaller<'_>,
+    args: &Value,
+) -> Result<(), JsonRpcError> {
+    let refuse = || {
+        JsonRpcError::forbidden(
+            "capture_event: this credential's role may only reply to an event it can read \
+             (`provenance.runner.root_event_id`, same `label_skill`)"
+                .to_owned(),
+        )
+    };
+    let (root, _) = tools_write::lineage_from_provenance(args.get("provenance"));
+    let Some(root) = root else {
+        return Err(refuse());
+    };
+    let Some(root) = indexer
+        .get_event(&root)
+        .await
+        .map_err(|e| JsonRpcError::internal(format!("capture_event: {e}")))?
+    else {
+        return Err(refuse());
+    };
+    let visible = indexer
+        .may_read_event(caller, &root)
+        .await
+        .map_err(|e| JsonRpcError::internal(format!("capture_event acl: {e}")))?;
+    if !visible
+        || args.get("label_skill").and_then(Value::as_str) != Some(root.label_skill.as_str())
+    {
+        return Err(refuse());
+    }
+    Ok(())
+}
+
+/// A tool's canonical spelling (an alias resolves; anything else is returned as given).
+pub(crate) fn canonical_tool(name: &str) -> String {
+    schema::canonical_tool_name(name).map_or_else(|| name.to_owned(), str::to_owned)
+}
+
+/// `"agent"`, `"admin"` or `"operator"` for an advertised tool, `None` for an unknown name. The
+/// role gate refuses to allow-list anything but agent tools.
+pub(crate) fn tool_scope(name: &str) -> Option<&'static str> {
+    if !schema::tool_defs().iter().any(|d| d.name == name) {
+        return None;
+    }
+    Some(if OPERATOR_TOOLS.contains(&name) {
+        "operator"
+    } else if schema::admin_scope_tools().contains(name) {
+        "admin"
+    } else {
+        "agent"
+    })
+}
+
 fn require_operator(operator: bool) -> Result<(), JsonRpcError> {
     if operator {
         Ok(())
@@ -942,7 +1061,7 @@ const SHARED_SURFACE_PROBES: &[SharedSurfaceProbe] = &[
     (schema::Surface::Crdt, Indexer::has_shared_crdt),
 ];
 
-// Nine inputs describe one authenticated call (who, for whom, for which run);
+// Ten inputs describe one authenticated call (who, for whom, for which run, under which role);
 // bundling them would only move the count somewhere less legible.
 #[allow(clippy::too_many_arguments)]
 async fn dispatch_tools_call(
@@ -955,6 +1074,7 @@ async fn dispatch_tools_call(
     actor: Option<&str>,
     run: Option<&escurel_auth::RunClaims>,
     agent_skill: Option<&str>,
+    restriction: Option<&std::collections::BTreeSet<String>>,
     params: Value,
 ) -> Result<Value, JsonRpcError> {
     let params: ToolsCallParams = serde_json::from_value(params)
@@ -1038,6 +1158,21 @@ async fn dispatch_tools_call(
     // gates and after `caller`, and before both dispatch matches. That is the
     // order the per-arm calls produced, so which refusal a caller sees when
     // several apply is unchanged.
+    // The service-role gate, first: a restricted token never learns more about a tool than "not
+    // yours", whichever other gate would also refuse it.
+    if let Some(allowed) = restriction
+        && !allowed.contains(params.name.as_str())
+    {
+        return Err(JsonRpcError {
+            code: -32001,
+            message: format!(
+                "this credential's role does not permit `{}` (ESCUREL_AUTH_ROLE_TOOLS)",
+                params.name
+            ),
+            data: None,
+        }
+        .with_code("role_restricted", false));
+    }
     if schema::admin_scope_tools().contains(params.name.as_str()) {
         require_admin(role)?;
     }
@@ -1218,6 +1353,12 @@ async fn dispatch_tools_call(
         // Held writes (the `autonomy: review` gate). Agent-shaped like the
         // event surface, and write-ACL'd at CREATE — see `tools_drafts`.
         "create_draft" => {
+            if restriction.is_some()
+                && let Some(refusal) =
+                    restricted_draft_refusal(indexer, &caller, &params.arguments).await?
+            {
+                return Ok(refusal);
+            }
             tool_create_draft(state, indexer, caller, state.write_acl, params.arguments).await
         }
         "list_drafts" => tool_list_drafts(indexer, caller, params.arguments).await,
@@ -1276,6 +1417,9 @@ async fn dispatch_tools_call(
         // other three use it to FILTER per row (`may_read_event`), under
         // `ESCUREL_EVENT_ACL`.
         "capture_event" => {
+            if restriction.is_some() {
+                restricted_capture_check(indexer, &caller, &params.arguments).await?;
+            }
             tool_capture_event(
                 indexer,
                 caller,

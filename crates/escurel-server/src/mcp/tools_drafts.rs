@@ -432,10 +432,15 @@ pub(super) async fn tool_create_draft(
     // `update_page`'s — a draft is a write in waiting, and the authority to
     // make it is checked when it is written, not when it is approved.
     if write_acl != crate::server::WriteAclMode::Off {
+        // A write grant, or an `acl.propose` grant: a draft is a proposal, not a write.
         let allowed = indexer
             .may_write_page(&caller, &a.target_page_id, &a.content)
             .await
-            .map_err(|e| JsonRpcError::internal(format!("create_draft acl: {e}")))?;
+            .map_err(|e| JsonRpcError::internal(format!("create_draft acl: {e}")))?
+            || indexer
+                .may_propose_page(&caller, &a.target_page_id, &a.content)
+                .await
+                .map_err(|e| JsonRpcError::internal(format!("create_draft acl: {e}")))?;
         if !allowed {
             if write_acl == crate::server::WriteAclMode::Log {
                 tracing::warn!(

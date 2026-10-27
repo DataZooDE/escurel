@@ -227,6 +227,10 @@ pub enum ConfigError {
         value: String,
         reason: &'static str,
     },
+    /// `ESCUREL_AUTH_ROLE_TOOLS` names an unknown or non-agent tool, a reserved role, or is
+    /// malformed. Fatal at boot: a typo in a security allow-list must not start a gateway.
+    #[error("invalid value for ESCUREL_AUTH_ROLE_TOOLS: {0}")]
+    RoleTools(String),
     #[error("{var} is required when ESCUREL_STORAGE_BACKEND={backend}")]
     MissingStorageField {
         var: &'static str,
@@ -488,6 +492,10 @@ pub struct AuthConfig {
     /// Escurel trusts both Triton (forwarded inbound bearer) and Carl
     /// (self-minted dashboard token) — see `ESCUREL_AUTH_OIDC_ISSUER_2`.
     pub additional_issuers: Vec<(String, Option<String>)>,
+    /// Service roles and the tools each may call (`ESCUREL_AUTH_ROLE_TOOLS`,
+    /// `role=tool,tool;role=tool`). A token whose groups carry a listed role may call only those
+    /// tools. Empty = no restricted role.
+    pub role_tools: crate::role_gate::RoleTools,
 }
 
 /// The gateway's own signing identity (workbench backend P2-6), for
@@ -1204,10 +1212,26 @@ impl EscurelConfig {
                         }
                         extra
                     },
+                    role_tools: crate::role_gate::RoleTools::parse(
+                        &env.get("ESCUREL_AUTH_ROLE_TOOLS").unwrap_or_default(),
+                    )
+                    .map_err(ConfigError::RoleTools)?,
                 })
             }
             _ => None,
         };
+
+        // A service role equal to the admin or operator value would restrict every admin token.
+        if let Some(a) = auth.as_ref()
+            && let Some(r) = a
+                .role_tools
+                .roles()
+                .find(|r| *r == a.admin_role_value || *r == a.operator_role_value)
+        {
+            return Err(ConfigError::RoleTools(format!(
+                "role `{r}` is the admin or operator role value"
+            )));
+        }
 
         // --- signing (optional; workbench backend P2-6) ---
         let signing = match env
@@ -2376,6 +2400,11 @@ impl EscurelConfig {
             // without a config-file change; read via the config source in `from_source`.
             write_acl: self.write_acl,
             event_acl: crate::EventAclMode::from_env(),
+            role_tools: self
+                .auth
+                .as_ref()
+                .map(|a| a.role_tools.clone())
+                .unwrap_or_default(),
             toolcall_detail: crate::ToolcallDetailMode::from_env(),
             // Skill-page `autonomy:` lint (`ESCUREL_AUTONOMY_LINT`): off
             // (default) | log | enforce. Same env-only rollout, for the same

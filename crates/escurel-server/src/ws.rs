@@ -74,6 +74,9 @@ pub async fn ws_upgrade(
         Ok(ctx) => ctx,
         Err(resp) => return resp,
     };
+    if let Some(refused) = crate::role_gate::surface_refusal(&state, auth_ctx.as_ref(), "/ws") {
+        return refused;
+    }
 
     // #247 suspend gate — the same rule `POST /mcp` applies, at the same
     // place (BEFORE the upgrade, so the client gets a real status code):
