@@ -606,3 +606,23 @@ async fn the_shipped_conversation_is_private_to_its_owner() {
     .await;
     assert_eq!(spy["messages"], json!([]));
 }
+
+#[tokio::test]
+async fn a_timed_out_chat_run_says_it_took_too_long() {
+    let gw = gateway().await;
+    let alice = gw.mint_token_with_sub(TENANT, Role::Agent, ALICE);
+    let (_runner, listen) = spawn_runner_with(
+        &gw,
+        true,
+        &[
+            ("ESCUREL_ECHO_SLEEP_MS", "10000"),
+            ("ESCUREL_RUNNER_CHAT_TIMEOUT", "1s"),
+        ],
+    );
+    let event_id = ask(&gw, &alice, "u-1", "Which customers renew?", &[]).await;
+    let _ = await_terminal(&listen, &event_id).await;
+    let msgs = messages(&gw, &alice, 2).await;
+    assert_eq!(msgs.len(), 2, "{msgs:#?}");
+    assert_eq!(msgs[1]["metadata"]["status"], "failed");
+    assert_eq!(msgs[1]["metadata"]["reason"], "timeout", "{}", msgs[1]);
+}
