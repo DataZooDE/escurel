@@ -134,7 +134,7 @@ escurel-server.
 | `ESCUREL_OPERATION_SLUG_SECRET` | — | secret the async-operation slugs are derived with |
 | `ESCUREL_SEARCH_MIN_SIMILARITY` | none (no floor) | minimum cosine similarity a vector candidate must clear to enter the vector arm; BM25 matches are never affected |
 | `ESCUREL_SERVE_DEMO_DIR` | — | serve this directory (a built `escurel-explore` web bundle) at `/` |
-| `ESCUREL_AUTH_GROUPS_CLAIM` | `groups` | JWT claim listing the caller's groups |
+| `ESCUREL_AUTH_GROUPS_CLAIM` | `roles` | JWT claim listing the caller's groups |
 | `ESCUREL_INDEX_HNSW` | false | build the `vss` HNSW indexes (`true`/`1`/`yes`/`on`); off by default (large, slow to rebuild) |
 | `ESCUREL_INDEX_EXTENSIONS` | — | comma-separated absolute paths of pre-built `.duckdb_extension` files to `LOAD` (the image bakes them) |
 
