@@ -4,6 +4,12 @@ The skill version tracks the consumer-facing contract, not the Escurel
 binary version. The Escurel repo's checked-out git ref is the true version
 pin (see `SKILL.md` → "How this skill is installed").
 
+## 0.25.25 — `event_assigned` on `/ws`
+
+An `event_subscribe` socket gets `{type: "event_assigned", subscription_id, event_id, instance_page_id, status}`
+when an event it can see is assigned (directly or by a draft promotion), so inbox views drop the row
+(references/02).
+
 ## 0.25.24 — skill `model:`
 
 A skill page may declare `model: <id>`; the runner uses it for that skill's runs instead of its configured model, within

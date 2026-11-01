@@ -29,6 +29,8 @@ export interface EventSocketOptions {
   onEvent: (event: Event, replayed: boolean) => void;
   /** A message appended to the subscribed chat group (`filters.chat_group_id`). */
   onChatMessage?: (message: ChatMessage) => void;
+  /** An event the subscription can see was assigned to an instance (it has left the inbox). */
+  onEventAssigned?: (eventId: string, instancePageId: string | null) => void;
   /** Non-blocking: `lagged` = poll to reconcile; `session_cap_reached` = refresh-on-focus from now on. */
   onWarning: (kind: WarningKind, message: string) => void;
   onError: (error: EscurelError) => void;
@@ -200,6 +202,13 @@ export class EventSocket {
         const msg = frame.msg as ChatMessage | undefined;
         if (msg && typeof msg.msg_id === 'string') {
           this.opts.onChatMessage?.({ ...msg, chat_group_id: String(frame.chat_group_id ?? '') });
+        }
+        return;
+      }
+      case 'event_assigned': {
+        if (typeof frame.event_id === 'string') {
+          const page = frame.instance_page_id;
+          this.opts.onEventAssigned?.(frame.event_id, typeof page === 'string' ? page : null);
         }
         return;
       }

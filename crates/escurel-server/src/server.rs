@@ -584,6 +584,11 @@ pub(crate) struct AppState {
     /// subscriber passed `may_access_chat` for its one group at subscribe
     /// time; the WS side drops every other group's message.
     pub(crate) chat_tx: tokio::sync::broadcast::Sender<Arc<escurel_index::ChatMessage>>,
+    /// In-process fan-out of events `assign_event` just filed, as they now
+    /// stand, to WS `event_subscribe` subscribers as `event_assigned` frames,
+    /// so an open Inbox drops the row. Kept off `events_tx`: that bus means
+    /// "a new event", and clients dedupe its frames by `event_id`.
+    pub(crate) assigned_tx: tokio::sync::broadcast::Sender<Arc<escurel_index::EventInfo>>,
 }
 
 /// Build the router(s) + bind + spawn the server tasks. Returns
@@ -672,6 +677,7 @@ pub async fn serve(
         // to resync — same order as the session dispatcher's buffer.
         events_tx: tokio::sync::broadcast::channel(1024).0,
         chat_tx: tokio::sync::broadcast::channel(1024).0,
+        assigned_tx: tokio::sync::broadcast::channel(1024).0,
     };
 
     let mut app = Router::new()
