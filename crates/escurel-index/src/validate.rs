@@ -270,6 +270,26 @@ fn check_harness(page_kind: PageKind, fields: &YamlMapping) -> Option<Issue> {
     }
 }
 
+/// `model:` on a skill page is a model id string. The set of models is the
+/// runner's (`ESCUREL_RUNNER_MODEL_ALLOW`), so only the shape is checked here.
+fn check_model(page_kind: PageKind, fields: &YamlMapping) -> Option<Issue> {
+    if page_kind != PageKind::Skill {
+        return None;
+    }
+    let raw = fields.get("model")?;
+    match raw.as_str().map(str::trim) {
+        Some(name) if !name.is_empty() => None,
+        _ => Some(
+            Issue::error(
+                "model_invalid",
+                "frontmatter.model",
+                "`model:` must be a non-empty string naming the model id",
+            )
+            .with_suggestion("e.g. `model: gemini-3.8-flash`, within ESCUREL_RUNNER_MODEL_ALLOW"),
+        ),
+    }
+}
+
 /// The roles a skill may declare (`role:`), as a knowledge tree sorts and icons them.
 pub const SKILL_ROLES: [&str; 4] = ["record", "process", "report", "helper"];
 
@@ -1273,6 +1293,7 @@ impl Indexer {
         // adapter, both local; the fan-out list needs the corpus (below).
         issues.extend(check_summary(parsed.frontmatter.page_kind, fields));
         issues.extend(check_harness(parsed.frontmatter.page_kind, fields));
+        issues.extend(check_model(parsed.frontmatter.page_kind, fields));
         // Where a skill sits and what it is (OKF-aligned tree vocabulary), then the optional OKF keys.
         issues.extend(check_folder(parsed.frontmatter.page_kind, fields));
         issues.extend(check_role(parsed.frontmatter.page_kind, fields));

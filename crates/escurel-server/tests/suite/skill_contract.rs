@@ -101,11 +101,12 @@ async fn validate_lints_the_contract_keys() {
 
     // A well-formed skill carries none of the new findings.
     let good = call(&p, &token, "validate", json!({ "content": skill(
-        "summary: Short and sweet.\nharness: gemini\nactions:\n  - {name: renew, kind: event, label: Renew, event: renewal}\ncascade:\n  target: produced\n") })).await;
+        "summary: Short and sweet.\nharness: gemini\nmodel: gemini-3.8-flash\nactions:\n  - {name: renew, kind: event, label: Renew, event: renewal}\ncascade:\n  target: produced\n") })).await;
     for code in [
         "summary_missing",
         "summary_too_long",
         "harness_unknown",
+        "model_invalid",
         "action_skill_unknown",
     ] {
         assert!(
@@ -135,6 +136,18 @@ async fn validate_lints_the_contract_keys() {
     let i = issue(&out, "summary_too_long").unwrap_or_else(|| panic!("{out}"));
     assert_eq!(i["severity"], "error");
     assert!(i["message"].as_str().unwrap().contains("200"), "{out}");
+    assert_eq!(out["ok"], false);
+
+    // A `model:` that is not a model id string: an error.
+    let out = call(
+        &p,
+        &token,
+        "validate",
+        json!({ "content": skill("summary: s.\nmodel: [a, b]\n") }),
+    )
+    .await;
+    let i = issue(&out, "model_invalid").unwrap_or_else(|| panic!("{out}"));
+    assert_eq!(i["location"], "frontmatter.model");
     assert_eq!(out["ok"], false);
 
     // An unknown harness: an error naming the known ones.

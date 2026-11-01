@@ -75,6 +75,9 @@ pub enum CascadeOutcome {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SkillContract {
     pub harness: Option<String>,
+    /// `model:` — the model this skill's runs use instead of the runner's
+    /// own, within `ESCUREL_RUNNER_MODEL_ALLOW`.
+    pub model: Option<String>,
     /// Empty = undeclared = no restriction.
     pub actions: Vec<String>,
     /// `cascade.target`, or the older flat `cascade_target`.
@@ -151,6 +154,7 @@ pub async fn skill_contract(client: &Client, skill: &str) -> Option<SkillContrac
     }
     Some(SkillContract {
         harness: text(fm.get("harness")),
+        model: text(fm.get("model")),
         actions: event_skills(fm),
         cascade_target: text(cascade.and_then(|c| c.get("target")))
             .or_else(|| text(fm.get("cascade_target"))),

@@ -852,6 +852,12 @@ pub const CONFIG_KEYS: &[ConfigKey] = &[
         doc: "comma-separated harnesses a manual start may ask for by name; others fail closed",
     },
     ConfigKey {
+        name: "ESCUREL_RUNNER_MODEL_ALLOW",
+        component: "Runner",
+        default: "—",
+        doc: "comma-separated models a skill page's `model:` may pick instead of the runner's configured one; others fail the run closed",
+    },
+    ConfigKey {
         name: "ESCUREL_RUNNER_ID",
         component: "Runner",
         default: "<HOSTNAME>:<pid>",
@@ -986,7 +992,7 @@ pub const CONFIG_KEYS: &[ConfigKey] = &[
     ConfigKey {
         name: "ESCUREL_RUNNER_GEMINI_MODEL",
         component: "Runner",
-        default: "—",
+        default: "gemini-3.8-flash",
         doc: "model id of the Gemini adapter",
     },
     ConfigKey {

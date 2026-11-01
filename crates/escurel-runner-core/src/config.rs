@@ -314,6 +314,11 @@ pub struct RunnerConfig {
     /// `ESCUREL_RUNNER_HARNESS_ALLOW` (comma-separated; default = the
     /// configured harness alone).
     pub harness_allow: Vec<String>,
+    /// The models a skill page's `model:` may pick in place of the runner's
+    /// configured one. A model outside the list fails the run closed; the
+    /// configured model itself needs no entry. Source:
+    /// `ESCUREL_RUNNER_MODEL_ALLOW` (comma-separated; default empty).
+    pub model_allow: Vec<String>,
     /// This runner's name in its status reports. Source:
     /// `ESCUREL_RUNNER_ID` (default `<HOSTNAME>:<pid>`, or `runner:<pid>`).
     pub runner_id: String,
@@ -834,6 +839,13 @@ impl RunnerConfig {
             _ => DEFAULT_DRAIN_TIMEOUT,
         };
 
+        let model_allow: Vec<String> = lookup("ESCUREL_RUNNER_MODEL_ALLOW")
+            .unwrap_or_default()
+            .split(',')
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_owned)
+            .collect();
         let harness_allow: Vec<String> = match lookup("ESCUREL_RUNNER_HARNESS_ALLOW") {
             Some(raw) if !raw.trim().is_empty() => raw
                 .split(',')
@@ -859,6 +871,7 @@ impl RunnerConfig {
             status_interval,
             tail_max_age,
             harness_allow,
+            model_allow,
             agent_narrow,
             runner_id,
             cancel_grace,
@@ -967,6 +980,20 @@ fn parse_duration(raw: &str) -> Option<Duration> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn model_allow_is_empty_by_default_and_parses_a_comma_list() {
+        let unset = RunnerConfig::from_env_with(|_| None).expect("defaults");
+        assert!(
+            unset.model_allow.is_empty(),
+            "no model is allowed by default"
+        );
+        let set = RunnerConfig::from_env_with(|k| {
+            (k == "ESCUREL_RUNNER_MODEL_ALLOW").then(|| " a , ,b ".to_owned())
+        })
+        .expect("parses");
+        assert_eq!(set.model_allow, vec!["a".to_owned(), "b".to_owned()]);
+    }
 
     #[test]
     fn defaults_apply_when_env_is_empty() {

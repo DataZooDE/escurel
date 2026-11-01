@@ -1584,6 +1584,83 @@ fn resolve_harness(
     }
 }
 
+/// The model the runner itself configures for harness `name` — what a skill
+/// may name without an allow-list entry; `None` for a harness without one.
+fn configured_model(config: &RunnerConfig, name: &str) -> Option<String> {
+    match name {
+        "claude" => config.claude_model.clone(),
+        "codex" => config.codex_model.clone(),
+        "agy" => config.agy_model.clone(),
+        "muse" => config.muse_model.clone(),
+        "gemini" => Some(
+            config
+                .gemini_model
+                .clone()
+                .unwrap_or_else(|| escurel_runner_harness::GEMINI_DEFAULT_MODEL.to_owned()),
+        ),
+        // The only model `build_harness_named` lets the Vertex arm run.
+        "gemini-vertex" => Some("gemini-3.5-flash".to_owned()),
+        _ => None,
+    }
+}
+
+/// Apply a skill page's `model:` to the harness [`resolve_harness`] chose,
+/// returning the harness to run and the model it runs (for the run's events).
+///
+/// The same posture as a skill `harness:`: a model outside
+/// `ESCUREL_RUNNER_MODEL_ALLOW` **fails the run closed** — running the
+/// runner's own model in its place would quietly change what the skill
+/// asked for — and so does a model the chosen harness cannot take. A blank
+/// declaration, or one equal to the runner's configured model, needs no
+/// entry. The override is a config clone with that harness's model field
+/// replaced, so the adapter is built exactly as the runner-wide one is.
+fn apply_skill_model(
+    config: &RunnerConfig,
+    harness: Arc<dyn Harness>,
+    skill_model: Option<&str>,
+) -> (Arc<dyn Harness>, Option<String>) {
+    let name = harness.name().to_owned();
+    let configured = configured_model(config, &name);
+    let Some(model) = skill_model
+        .map(str::trim)
+        .filter(|m| !m.is_empty() && Some(*m) != configured.as_deref())
+        .filter(|_| name != "refusing")
+    else {
+        return (harness, configured);
+    };
+    if !config.model_allow.iter().any(|a| a == model) {
+        tracing::warn!(
+            target: "escurel_runner",
+            asked = %model,
+            allow = ?config.model_allow,
+            "the skill asks for a model outside ESCUREL_RUNNER_MODEL_ALLOW; refusing"
+        );
+        return (Arc::new(RefusingHarness::model_not_allowed(model)), None);
+    }
+    let mut overridden = config.clone();
+    let slot = match name.as_str() {
+        "claude" => &mut overridden.claude_model,
+        "codex" => &mut overridden.codex_model,
+        "agy" => &mut overridden.agy_model,
+        "muse" => &mut overridden.muse_model,
+        "gemini" => &mut overridden.gemini_model,
+        _ => {
+            return (
+                Arc::new(RefusingHarness::model_unsupported(&name, model)),
+                None,
+            );
+        }
+    };
+    *slot = Some(model.to_owned());
+    match build_harness_named(&overridden, &name) {
+        Some(h) => (h, Some(model.to_owned())),
+        None => (
+            Arc::new(RefusingHarness::model_unsupported(&name, model)),
+            None,
+        ),
+    }
+}
+
 /// Build one adapter by name, or `None` when the name is unknown.
 fn build_harness_named(config: &RunnerConfig, name: &str) -> Option<Arc<dyn Harness>> {
     let built: Arc<dyn Harness> = match name {
@@ -2099,6 +2176,12 @@ async fn dispatch_loop(
                 .unwrap_or_default()
         });
         let step_harness = resolve_harness(&config, &harness, &trigger, skill_harness.as_deref());
+        // The skill's `model:`, within ESCUREL_RUNNER_MODEL_ALLOW.
+        let (step_harness, step_model) = apply_skill_model(
+            &config,
+            step_harness,
+            skill_contract.as_ref().and_then(|c| c.model.as_deref()),
+        );
         // The run's lifecycle as `escurel:run` events (workbench backend
         // P1): a projection of the ledger for the humans watching the run,
         // best-effort — a refusal is logged and counted, never acted on.
@@ -2111,7 +2194,7 @@ async fn dispatch_loop(
             lineage_path: trigger.lineage.lineage_path.clone(),
             trace_id: Some(trace_id.clone()),
             harness: step_harness.name().to_owned(),
-            model: None,
+            model: step_model,
             max_attempts: config.max_attempts,
             target_page_id: trigger.instance_page_id.clone(),
             manual: trigger
