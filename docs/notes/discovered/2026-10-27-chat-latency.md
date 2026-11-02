@@ -51,4 +51,15 @@ Same script and question, 5 cold runs each, gemini harness, default turn cap (12
 gemini harness's 12-turn cap (`DEFAULT_MAX_TURNS`, `ESCUREL_RUNNER_MAX_TURNS`), so a chat turn fails more often
 than it answers on this question. Lite is about 7x faster and answered every time. **Recognise it next time:** a chat
 reply "I couldn't finish: the agent run failed." with `harness_error` and a runner log line `stopped after 12 model
-turns` is the turn cap, not the model or the gateway; raise the cap or give the skill a cheaper model (`model:`).
+turns` is the turn cap, not the model or the gateway; raise the cap (`ESCUREL_RUNNER_MAX_TURNS`; the default is 24 since 2026-11-02) or give chat runs a cheaper model (`ESCUREL_RUNNER_CHAT_MODEL`).
+
+## Update 2026-11-02: gemini-3.8-flash with a 24-turn cap
+
+Same script and question, 5 cold runs, `gemini-3.8-flash`, the new default of 24 model turns.
+
+| model | first progress (s) | answer (s) | outcome |
+|---|---|---|---|
+| `gemini-3.8-flash` | 3.5 · 2.9 · 3.4 · 2.5 · 2.8 — **p50 2.9** | 32.3 · 32.5 · 17.8 · 21.8 · 11.9 — **p50 21.8** | 5 of 5 answered |
+
+At 24 turns 3.8-flash no longer runs out, but it is still about 5x slower than lite (p50 4.6 s). So the chat lane
+runs lite (`ESCUREL_RUNNER_CHAT_MODEL=gemini-3.5-flash-lite`) and other runs keep the runner's model.
