@@ -21,9 +21,12 @@ first publish in a long time had about 3,650 snapshots to expire and their Parqu
 file per request and rate-limits, so the pass ran until Drive refused it. The failed pass leaves the backlog in place,
 so the next publish starts it again.
 
-**Fix.** The GC opens its own lake connection, so a read never waits on it. It expires in chunks (`GcOptions::chunk`,
+**Fix.** With a Postgres catalog (every deployment) the GC opens its own lake connection, so a read never waits on
+it. A DuckDB-file catalog (tests, local dev) can't be shared that way: a second DuckDB instance's catalog writes were
+lost under the first one's (`admin_publish::expire_keeps_recent_snapshots` caught it), so there the GC stays on the
+indexer's connection and frees it between chunks. It expires in chunks (`GcOptions::chunk`,
 100 snapshots), and each chunk holds the write guard only for the catalog-only expire step. The file cleanup after each
-chunk holds no lock, because no snapshot references those files any more. A separate `gc_lock` keeps two passes from
+chunk takes no write guard, because no snapshot references those files any more. A separate `gc_lock` keeps two passes from
 deleting the same files. Test:
 `crates/escurel-index/tests/suite/ducklake_publish.rs::a_read_and_a_write_get_through_while_gc_works_through_a_backlog`.
 
