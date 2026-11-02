@@ -19,6 +19,11 @@ issuer's JWKS and reads a small, **configurable** set of claims
 | role list | `admin_role_claim` | `roles` | `roles` |
 | admin grant | `admin_role_value` | `escurel:admin` | `escurel:admin` |
 | operator grant | `ESCUREL_AUTH_OPERATOR_ROLE_VALUE` | `escurel:operator` | `escurel:operator` |
+| groups | `ESCUREL_AUTH_GROUPS_CLAIM` | `roles` | `roles` |
+
+A caller's ACL groups are the token's groups (that claim, reserved names removed) **plus** their `group_members`
+rows for the token's `sub` (the admin group tools). A chat run's token carries
+no groups of its own, so for those only `group_members` counts; manage group grants there when a run must use them.
 
 Verification flow (`platform.md`): extract bearer → verify signature
 against cached JWKS → resolve `tenant_id` from the tenant claim → resolve

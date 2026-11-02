@@ -770,7 +770,7 @@ pub const CONFIG_KEYS: &[ConfigKey] = &[
     ConfigKey {
         name: "ESCUREL_AUTH_GROUPS_CLAIM",
         component: "Server",
-        default: "`groups`",
+        default: "`roles`",
         doc: "JWT claim listing the caller's groups",
     },
     ConfigKey {

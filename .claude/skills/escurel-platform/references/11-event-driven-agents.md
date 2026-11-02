@@ -413,8 +413,9 @@ The runner treats an event whose `provenance.chat_group_id` is a `page-chat:` gr
 
 - It runs **as the asker**: the run token is minted for the event's `captured_by` (with the run
   claims), so the run reads at most what that person may read — by ownership and
-  public ACLs, but **not through their groups** (the event carries no verified group
-  list): a page shared only with one of the asker's groups is invisible to the run. An event captured on someone's
+  public ACLs, and through their `group_members` groups, but **not through groups that exist only as a token claim**
+  (the event carries no verified group list): a page shared with a group the asker holds only in their token is
+  invisible to the run (references/08 § groups). An event captured on someone's
   behalf (`captured_via`) is refused. The run needs a **minting runner**
   (`ESCUREL_RUNNER_AUTH_ISSUER` + `ESCUREL_RUNNER_AUTH_SIGNING_KEY`); a static
   `ESCUREL_RUNNER_TOKEN` cannot mint the token the reply rule needs.

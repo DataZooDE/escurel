@@ -4,6 +4,12 @@ The skill version tracks the consumer-facing contract, not the Escurel
 binary version. The Escurel repo's checked-out git ref is the true version
 pin (see `SKILL.md` → "How this skill is installed").
 
+## 0.25.23 — where groups come from
+
+ACL groups are the token's groups claim (`ESCUREL_AUTH_GROUPS_CLAIM`, default `roles`, not `groups` as documented
+before) plus `group_members`. A chat run keeps the asker's `group_members` groups and loses only groups held solely
+in their token (references/08, 11).
+
 ## 0.25.22 — lineage read and `acl.reply_into`
 
 The capturer of a root event reads every `user` event in its lineage, unassigned replies included. `acl.reply_into: [groups]`
