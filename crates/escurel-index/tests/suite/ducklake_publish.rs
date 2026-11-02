@@ -8,12 +8,14 @@
 //! (`ducklake_publish_live.rs`, feature `live-ducklake`).
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::Duration;
 
 use duckdb::Connection;
 use escurel_embed::{Embedder, ZeroEmbedder};
 use escurel_index::snapshot::{
-    LakeConfig, ObjectStoreSecret, attach_sql, gc_lake_snapshots, install_load_sql, publish_lake,
-    secret_sql,
+    GcOptions, LakeConfig, ObjectStoreSecret, attach_sql, gc_lake_snapshots,
+    gc_lake_snapshots_with, install_load_sql, publish_lake, secret_sql,
 };
 use escurel_index::{Indexer, Migrator};
 use escurel_storage::{FsStore, LaneStore};
@@ -291,6 +293,75 @@ async fn gc_prunes_to_the_keep_count() {
         lake_snapshot_count(&cfg),
         2,
         "gc must settle the snapshot count at exactly `keep`"
+    );
+}
+
+/// A GC working through a backlog must not stall the gateway. On heron
+/// (2026-11-01) one pass held the index connection for 31 minutes while Drive
+/// rate-limited its deletes, and every read tool waited behind it. Between
+/// chunks, a read and a write must both get through.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_read_and_a_write_get_through_while_gc_works_through_a_backlog() {
+    let h = fresh_harness();
+    let cfg = lake_config(&h);
+    let mut last_epoch = None;
+    for i in 0..5 {
+        h.indexer
+            .update_page(
+                &format!("markdown/instances/customer/c{i}.md"),
+                ACME_INSTANCE,
+            )
+            .await
+            .unwrap();
+        last_epoch = Some(
+            publish_lake(&h.indexer, &cfg, last_epoch)
+                .await
+                .unwrap()
+                .epoch,
+        );
+    }
+
+    let ix = Arc::clone(&h.indexer);
+    let rt = tokio::runtime::Handle::current();
+    let chunks = Arc::new(AtomicUsize::new(0));
+    let seen = Arc::clone(&chunks);
+    let between_chunks = move || {
+        rt.block_on(async {
+            let page = tokio::time::timeout(
+                Duration::from_secs(5),
+                ix.expand("markdown/instances/customer/c0.md", None, None),
+            )
+            .await
+            .expect("a read waited on the GC")
+            .unwrap();
+            assert!(page.is_some(), "the read sees the page");
+            tokio::time::timeout(
+                Duration::from_secs(5),
+                ix.update_page("markdown/instances/customer/late.md", ACME_INSTANCE),
+            )
+            .await
+            .expect("a write waited on the GC")
+            .unwrap();
+        });
+        seen.fetch_add(1, Ordering::SeqCst);
+    };
+    let opts = GcOptions {
+        chunk: 1,
+        between_chunks: Some(Arc::new(between_chunks)),
+    };
+    let pruned = gc_lake_snapshots_with(&h.indexer, &cfg, 2, opts)
+        .await
+        .expect("gc");
+
+    assert!(pruned > 0, "the GC pruned something");
+    assert!(
+        chunks.load(Ordering::SeqCst) >= 2,
+        "a backlog is expired in more than one chunk"
+    );
+    assert_eq!(
+        lake_snapshot_count(&cfg),
+        2,
+        "chunking still settles at `keep`"
     );
 }
 

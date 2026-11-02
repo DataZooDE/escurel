@@ -67,6 +67,9 @@ pub struct Indexer {
     /// only for the transaction. Mirrors the spec's per-tenant write
     /// lock (`docs/spec/platform.md §Concurrency`).
     pub(crate) write_lock: Mutex<()>,
+    /// Serialises DuckLake snapshot GC passes ([`crate::snapshot::gc_lake_snapshots`]),
+    /// which run on their own connection and so are not ordered by `conn`.
+    pub(crate) gc_lock: Mutex<()>,
     /// Dirty counter for the DuckLake publish loop: bumped once per
     /// committed index mutation ([`Self::update_page`],
     /// [`Self::write_document_blocks`] — the shared tail of
@@ -426,6 +429,7 @@ impl Indexer {
             embedder,
             conn: Mutex::new(conn),
             write_lock: Mutex::new(()),
+            gc_lock: Mutex::new(()),
             mutation_epoch: AtomicU64::new(0),
             query_timeout_ms: AtomicU64::new(DEFAULT_QUERY_TIMEOUT_MS),
             tenant: tenant.into(),

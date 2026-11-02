@@ -353,6 +353,12 @@ impl From<SnapshotError> for ConfigError {
                 value,
                 reason: "events copy refused or failed",
             },
+            // Snapshot GC runs after boot, never from an IndexStore open.
+            SnapshotError::GcTask(value) => ConfigError::InvalidValue {
+                var: "ESCUREL_SNAPSHOT_KEEP",
+                value,
+                reason: "lake snapshot GC task failed",
+            },
             SnapshotError::LakeSql(source) => ConfigError::DuckdbOpen {
                 path: "ducklake".to_owned(),
                 source,
