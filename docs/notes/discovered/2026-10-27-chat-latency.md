@@ -37,3 +37,18 @@ citations, and none was refused or failed.
 **Recognise it next time.** If "time to answer" regresses, run the script against both
 harnesses before suspecting the gateway. If first progress grows but the answer does
 not, look at harness start-up (CLI version, MCP handshake), not at the model.
+
+## Update 2026-11-01: gemini-3.8-flash vs gemini-3.5-flash-lite
+
+Same script and question, 5 cold runs each, gemini harness, default turn cap (12 model turns).
+
+| model | first progress (s) | answer (s) | outcome |
+|---|---|---|---|
+| `gemini-3.8-flash` | 2.8 · 3.1 · 3.7 · 3.9 · 3.1 — **p50 3.1** | 28.1 · 35.6 · 32.9 · 47.6 · 34.4 — **p50 34.4** | **3 of 5 failed**: `stopped after 12 model turns without a final answer` (`harness_error`); the 2 answers used 11–15 tool calls, cited 6–7 pages |
+| `gemini-3.5-flash-lite` | 1.4 · 1.1 · 1.1 · 0.9 · 1.1 — **p50 1.1** | 6.8 · 4.6 · 5.2 · 4.4 · 4.4 — **p50 4.6** | 5 of 5 answered, correct, 6 citations each |
+
+**Reading it.** 3.8-flash explores more (it reads every opportunity and project before answering) and runs into the
+gemini harness's 12-turn cap (`DEFAULT_MAX_TURNS`, `ESCUREL_RUNNER_HARNESS_MAX_TURNS`), so a chat turn fails more often
+than it answers on this question. Lite is about 7x faster and answered every time. **Recognise it next time:** a chat
+reply "I couldn't finish: the agent run failed." with `harness_error` and a runner log line `stopped after 12 model
+turns` is the turn cap, not the model or the gateway; raise the cap or give the skill a cheaper model (`model:`).

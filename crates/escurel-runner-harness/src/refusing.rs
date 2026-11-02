@@ -48,6 +48,35 @@ impl RefusingHarness {
             declared,
         }
     }
+
+    /// A refusing harness for a skill whose `model:` names `model`, which
+    /// is not in this runner's `ESCUREL_RUNNER_MODEL_ALLOW` — running the
+    /// runner's own model in its place would quietly change what the skill
+    /// asked for.
+    pub fn model_not_allowed(model: impl Into<String>) -> Self {
+        let model = model.into();
+        Self {
+            reason: Some(format!(
+                "the skill asks for model `{model}`, which is not in this runner's \
+                 ESCUREL_RUNNER_MODEL_ALLOW; refusing rather than running the runner's \
+                 own model in its place"
+            )),
+            declared: model,
+        }
+    }
+
+    /// A refusing harness for a skill whose `model:` names `model` while
+    /// the resolved harness `harness` takes no per-run model.
+    pub fn model_unsupported(harness: &str, model: impl Into<String>) -> Self {
+        let model = model.into();
+        Self {
+            reason: Some(format!(
+                "the skill asks for model `{model}`, but harness `{harness}` cannot run a \
+                 per-skill model; refusing rather than running its own model in its place"
+            )),
+            declared: model,
+        }
+    }
 }
 
 #[async_trait]

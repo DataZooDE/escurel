@@ -51,7 +51,7 @@ const NAME: &str = "gemini";
 pub const DEFAULT_BASE_URL: &str = "https://generativelanguage.googleapis.com/v1beta";
 
 /// Default model. Overridable (`ESCUREL_RUNNER_GEMINI_MODEL`).
-pub const DEFAULT_MODEL: &str = "gemini-2.5-flash";
+pub const DEFAULT_MODEL: &str = "gemini-3.8-flash";
 /// Model qualified for the regional Vertex route.
 pub const VERTEX_MODEL: &str = "gemini-3.5-flash";
 

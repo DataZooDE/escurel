@@ -181,6 +181,7 @@ tenant/token can process `/trigger` but deliberately report unready at
 | `ESCUREL_RUNNER_TAIL_MAX_AGE` | 10m | how old a request on a tailed label may be and still be acted on after a restart |
 | `ESCUREL_RUNNER_STATUS_INTERVAL` | 5m | how often the runner refreshes its status record (`runner-status:<runner_id>`) when nothing changed; it travels in the record as `status_interval_s` |
 | `ESCUREL_RUNNER_HARNESS_ALLOW` | the configured harness | comma-separated harnesses a manual start may ask for by name; others fail closed |
+| `ESCUREL_RUNNER_MODEL_ALLOW` | — | comma-separated models a skill page's `model:` may pick instead of the runner's configured one; others fail the run closed |
 | `ESCUREL_RUNNER_ID` | <HOSTNAME>:<pid> | this runner's name in its status reports |
 | `ESCUREL_RUNNER_CANCEL_GRACE` | 5s | time a cancelled run's subprocess gets between SIGTERM and SIGKILL |
 | `ESCUREL_RUNNER_LINT_INTERVAL` | disabled | how often the runner synthesizes a `lint` event (the scheduled semantic-health pass) |
@@ -203,7 +204,7 @@ tenant/token can process `/trigger` but deliberately report unready at
 | `ESCUREL_RUNNER_AUTH_SUBJECT` | escurel-runner | `sub` of minted bearers (a service principal) |
 | `ESCUREL_RUNNER_AUTH_TTL_SECS` | 1800 | lifetime of each minted gateway bearer, in seconds |
 | `ESCUREL_RUNNER_MAX_TURNS` | the harness default | model-turn bound for the harness |
-| `ESCUREL_RUNNER_GEMINI_MODEL` | — | model id of the Gemini adapter |
+| `ESCUREL_RUNNER_GEMINI_MODEL` | gemini-3.8-flash | model id of the Gemini adapter |
 | `ESCUREL_RUNNER_GEMINI_BASE_URL` | — | Generative Language API base for the Gemini adapter (tests point it at a local server) |
 | `ESCUREL_RUNNER_GEMINI_VERTEX_LOCATION` | eu | Vertex AI location used when the Gemini adapter authenticates with workload identity |
 | `ESCUREL_RUNNER_GEMINI_METADATA_URL` | — | metadata server base for Vertex workload credentials (tests point it at a local server) |

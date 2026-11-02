@@ -4,6 +4,13 @@ The skill version tracks the consumer-facing contract, not the Escurel
 binary version. The Escurel repo's checked-out git ref is the true version
 pin (see `SKILL.md` → "How this skill is installed").
 
+## 0.25.24 — skill `model:`
+
+A skill page may declare `model: <id>`; the runner uses it for that skill's runs instead of its configured model, within
+the new `ESCUREL_RUNNER_MODEL_ALLOW` (comma-separated, default empty). Outside the list the run fails closed, like a
+skill `harness:` outside `ESCUREL_RUNNER_HARNESS_ALLOW`. The run's events carry the effective model as
+`provenance.runner.model`. The `gemini` adapter's default model is now `gemini-3.8-flash` (references/01, 11).
+
 ## 0.25.23 — where groups come from
 
 ACL groups are the token's groups claim (`ESCUREL_AUTH_GROUPS_CLAIM`, default `roles`, not `groups` as documented

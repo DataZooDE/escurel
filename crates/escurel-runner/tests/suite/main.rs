@@ -63,6 +63,7 @@ mod run_ledger;
 mod runner_status;
 mod sigterm_drain;
 mod skill_contract_runner;
+mod skill_model;
 mod system_events_not_dispatched;
 mod tail_cursor_durability;
 mod trigger;

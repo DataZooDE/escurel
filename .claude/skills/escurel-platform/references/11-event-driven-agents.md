@@ -143,6 +143,8 @@ Key settings (full list in `crates/escurel-runner-core/src/config.rs`):
 | `ESCUREL_RUNNER_TAIL_MAX_AGE` | `10m` | how old a review / run-control request may be and still be acted on after a restart; older ones are skipped, not replayed |
 | `ESCUREL_RUNNER_CANCEL_GRACE` | `5s` | on cancel, the wait between SIGTERM and SIGKILL for the harness subprocess |
 | `ESCUREL_RUNNER_HARNESS_ALLOW` | the configured harness | the harness names a manual start may ask for (comma-separated); anything else fails the run closed |
+| `ESCUREL_RUNNER_MODEL_ALLOW` | empty | the models a skill's `model:` may pick (comma-separated); anything else fails the run closed. The runner's own configured model needs no entry |
+| `ESCUREL_RUNNER_GEMINI_MODEL` | `gemini-3.8-flash` | the `gemini` adapter's model |
 | `ESCUREL_RUNNER_STATUS_INTERVAL` | `5m` | heartbeat cadence of the runner's `escurel:runner-status` report (a change is reported at once) |
 | `ESCUREL_RUNNER_ID` | `<HOSTNAME>:<pid>` | how this runner names itself in its status reports |
 | `ESCUREL_RUNNER_EMIT_EVENTS` | `true` | write each run's lifecycle as `escurel:run` system events (see *Run lifecycle events*); `false` = the workbench sees events and drafts but no runs |
@@ -392,7 +394,12 @@ Besides `autonomy` (`auto` — also when the key is absent — lands, `review` a
 workbench asks the human explicitly), the runner honours the contract keys
 of references/01: `harness:` (like a manual start's ask, within
 `ESCUREL_RUNNER_HARNESS_ALLOW`; a workflow step's declaration wins; outside
-the list the run fails closed), `actions:` (a confirmed cross-skill write
+the list the run fails closed), `model:` (the model the run uses in place
+of the runner's configured one, within `ESCUREL_RUNNER_MODEL_ALLOW`; outside
+the list — or with the list unset — the run fails closed: `dead_letter`, with
+`run-finished.error` naming the model and the env var, and no model is called;
+the effective model is recorded as `provenance.runner.model` on the run's
+events), `actions:` (a confirmed cross-skill write
 cascades only to the `event` skill of a listed `kind: event` action; undeclared = any;
 `kind: prompt` actions restrict nothing), `cascade.target`
 (where the hop is pre-flagged; `produced` = the page just written) and

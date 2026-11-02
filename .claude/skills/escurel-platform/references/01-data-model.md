@@ -41,6 +41,10 @@ optional; reported on `list_skills`, linted by `validate`):
 - `harness: echo | claude | codex | agy | muse | gemini | delegate` — the
   adapter the skill asks to run on; anything else is `harness_unknown`.
   The runner honours it within its own allow-list.
+- `model: <model id>` — the model the skill's runs use instead of the
+  runner's configured one (e.g. `gemini-3.5-flash-lite`). A non-string or
+  blank value is `model_invalid`. The runner honours it only within
+  `ESCUREL_RUNNER_MODEL_ALLOW`; outside it the run fails closed.
 - `generated:`, `verified:`, `status:`, `stale_after:`, `sources:` — the OKF provenance keys, all optional and
   lint-only (a malformed one is a warning). They reach `list_skills` as written; `stale_after` is an
   RFC 3339 instant or an ISO-8601 duration (`P90D`) counted from `verified`, and a client decides what
