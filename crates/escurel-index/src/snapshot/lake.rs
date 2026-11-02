@@ -815,57 +815,159 @@ pub fn publish_page_sync(
 /// the `Option` guard above exists specifically to avoid that call
 /// shape.
 ///
-/// Takes the indexer's write lock + connection mutex like
-/// [`publish_lake`] (same non-reentrant-mutex discipline) so a
-/// concurrent publish and a concurrent GC never interleave their SQL on
-/// the one connection.
+/// Runs on its own lake connection, never the indexer's: a pass over a
+/// large backlog on a slow store (Drive deletes one file per request, and
+/// rate-limits) once held that connection for 31 minutes and every read
+/// waited behind it (docs/notes/discovered/2026-11-01-lake-gc-blocks-reads.md).
+/// Expiry goes in chunks of [`GcOptions::chunk`] snapshots, each under the
+/// indexer's write guard so it never interleaves with a publish; the file
+/// cleanup after each chunk holds no lock.
 pub async fn gc_lake_snapshots(
     ix: &Indexer,
     cfg: &LakeConfig,
     keep: u32,
 ) -> Result<u64, SnapshotError> {
+    gc_lake_snapshots_with(ix, cfg, keep, GcOptions::default()).await
+}
+
+/// Tuning for [`gc_lake_snapshots_with`].
+#[derive(Clone)]
+pub struct GcOptions {
+    /// Snapshots expired per step.
+    pub chunk: usize,
+    /// Test seam: runs on the GC's thread after each step, with no lock held.
+    #[doc(hidden)]
+    pub between_chunks: Option<Arc<dyn Fn() + Send + Sync>>,
+}
+
+impl Default for GcOptions {
+    fn default() -> Self {
+        Self {
+            chunk: GC_EXPIRE_CHUNK,
+            between_chunks: None,
+        }
+    }
+}
+
+/// Snapshots expired per step, so a writer waits for one step and not for a whole backlog.
+const GC_EXPIRE_CHUNK: usize = 100;
+
+/// [`gc_lake_snapshots`] with explicit [`GcOptions`].
+pub async fn gc_lake_snapshots_with(
+    ix: &Indexer,
+    cfg: &LakeConfig,
+    keep: u32,
+    opts: GcOptions,
+) -> Result<u64, SnapshotError> {
     if keep == 0 {
         return Ok(0);
     }
-    let _write = ix.write_guard().await;
-    let conn = ix.conn.lock().await;
-    attach_lake(&conn, cfg, false)?;
+    let keep = keep as usize;
+    let chunk = opts.chunk.max(1);
+    // Two passes at once would both try to delete the same files.
+    let _gc = ix.gc_lock.lock().await;
+    let cfg = cfg.clone();
+    let conn = blocking(move || {
+        let conn = Connection::open_in_memory_with_flags(Migrator::connection_config()?).map_err(
+            |source| SnapshotError::DuckdbOpen {
+                path: ":memory: (lake gc)".to_owned(),
+                source,
+            },
+        )?;
+        attach_lake(&conn, &cfg, false)?;
+        Ok(conn)
+    })
+    .await?;
+    let conn = Arc::new(std::sync::Mutex::new(conn));
 
-    let cutoff: Option<String> = match conn.query_row(
-        &format!(
+    let times: Vec<String> = on_gc_conn(&conn, |c| {
+        let mut stmt = c.prepare(&format!(
             "SELECT CAST(snapshot_time AS VARCHAR) FROM ducklake_snapshots('{LAKE_ALIAS}') \
-             ORDER BY snapshot_id DESC LIMIT 1 OFFSET ?"
-        ),
-        params![i64::from(keep) - 1],
-        |r| r.get(0),
-    ) {
-        Ok(v) => Some(v),
-        Err(duckdb::Error::QueryReturnedNoRows) => None,
-        Err(e) => return Err(SnapshotError::LakeSql(e)),
-    };
-    let Some(cutoff) = cutoff else {
-        // Fewer published snapshots than `keep` — nothing to prune.
+             ORDER BY snapshot_id"
+        ))?;
+        let rows = stmt.query_map([], |r| r.get(0))?;
+        Ok(rows.collect::<Result<_, _>>()?)
+    })
+    .await?;
+    // Fewer published snapshots than `keep`: nothing to prune.
+    if times.len() <= keep {
         return Ok(0);
-    };
+    }
+    let expirable = times.len() - keep;
+    // Each step expires every snapshot older than its boundary; the last
+    // boundary is the `keep`-th newest snapshot, the cutoff a single pass used.
+    let boundaries = (chunk..expirable)
+        .step_by(chunk)
+        .chain(std::iter::once(expirable))
+        .map(|i| times[i].clone());
 
-    let before: i64 = conn.query_row(
-        &format!("SELECT count(*) FROM ducklake_snapshots('{LAKE_ALIAS}')"),
-        [],
-        |r| r.get(0),
-    )?;
-    conn.execute(
-        &format!("CALL ducklake_expire_snapshots('{LAKE_ALIAS}', older_than => ?::TIMESTAMPTZ)"),
-        params![cutoff],
-    )?;
-    conn.execute_batch(&format!(
-        "CALL ducklake_cleanup_old_files('{LAKE_ALIAS}', cleanup_all => true);"
-    ))?;
-    let after: i64 = conn.query_row(
-        &format!("SELECT count(*) FROM ducklake_snapshots('{LAKE_ALIAS}')"),
-        [],
-        |r| r.get(0),
-    )?;
-    Ok(u64::try_from(before.saturating_sub(after)).unwrap_or(0))
+    for boundary in boundaries {
+        // Expiry rewrites the catalog, so it must not interleave with a
+        // publish; it is a catalog-only step and holds the write guard briefly.
+        let write = ix.write_guard().await;
+        on_gc_conn(&conn, move |c| {
+            c.execute(
+                &format!(
+                    "CALL ducklake_expire_snapshots('{LAKE_ALIAS}', older_than => ?::TIMESTAMPTZ)"
+                ),
+                params![boundary],
+            )?;
+            Ok(())
+        })
+        .await?;
+        drop(write);
+        // Deleting the orphaned files is the slow part on a remote store (one
+        // request per file, rate-limited on Drive). No snapshot references
+        // them any more, so it needs no lock at all.
+        on_gc_conn(&conn, |c| {
+            c.execute_batch(&format!(
+                "CALL ducklake_cleanup_old_files('{LAKE_ALIAS}', cleanup_all => true);"
+            ))?;
+            Ok(())
+        })
+        .await?;
+        if let Some(hook) = opts.between_chunks.clone() {
+            blocking(move || {
+                hook();
+                Ok(())
+            })
+            .await?;
+        }
+    }
+
+    let after: i64 = on_gc_conn(&conn, |c| {
+        Ok(c.query_row(
+            &format!("SELECT count(*) FROM ducklake_snapshots('{LAKE_ALIAS}')"),
+            [],
+            |r| r.get(0),
+        )?)
+    })
+    .await?;
+    Ok(u64::try_from(times.len() as i64 - after).unwrap_or(0))
+}
+
+/// Run `f` on the blocking pool: DuckDB calls block, and a GC pass can run for minutes.
+async fn blocking<T, F>(f: F) -> Result<T, SnapshotError>
+where
+    T: Send + 'static,
+    F: FnOnce() -> Result<T, SnapshotError> + Send + 'static,
+{
+    tokio::task::spawn_blocking(f)
+        .await
+        .map_err(|e| SnapshotError::GcTask(e.to_string()))?
+}
+
+/// [`blocking`] against the GC's own connection.
+async fn on_gc_conn<T, F>(
+    conn: &Arc<std::sync::Mutex<Connection>>,
+    f: F,
+) -> Result<T, SnapshotError>
+where
+    T: Send + 'static,
+    F: FnOnce(&Connection) -> Result<T, SnapshotError> + Send + 'static,
+{
+    let conn = Arc::clone(conn);
+    blocking(move || f(&conn.lock().unwrap_or_else(|e| e.into_inner()))).await
 }
 
 /// Does `lake.<table>` exist? (information_schema over the attached

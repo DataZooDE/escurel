@@ -49,10 +49,10 @@ pub use events_pg::{
     EVENTS_PG_ALIAS, attach_events_pg, attach_events_pg_sql, create_events_pg_table_sql,
 };
 pub use lake::{
-    LakeConfig, LakeUpgradeAction, LakeUpgradeReport, ObjectStoreSecret, PublishOptions,
+    GcOptions, LakeConfig, LakeUpgradeAction, LakeUpgradeReport, ObjectStoreSecret, PublishOptions,
     adopt_lake, adopt_lake_for_writer, attach_lake, attach_sql, gc_lake_snapshots,
-    install_load_sql, lake_downgrade, lake_upgrade, latest_lake_snapshot_id, publish_lake,
-    publish_lake_with, publish_page_sync, secret_sql,
+    gc_lake_snapshots_with, install_load_sql, lake_downgrade, lake_upgrade,
+    latest_lake_snapshot_id, publish_lake, publish_lake_with, publish_page_sync, secret_sql,
 };
 pub use lease::WriterLease;
 pub use store::{AttachRetrievalFn, SingleFileStore};
@@ -147,6 +147,9 @@ pub enum SnapshotError {
     Crdt(#[from] escurel_crdt::Error),
     /// `events-copy` refused or failed: bad input, a destination row that differs from its source, or a
     /// verification mismatch after the insert.
+    #[error("lake gc task: {0}")]
+    GcTask(String),
+
     #[error("events copy: {0}")]
     EventsCopy(String),
 }
