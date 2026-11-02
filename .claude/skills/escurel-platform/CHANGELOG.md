@@ -4,6 +4,11 @@ The skill version tracks the consumer-facing contract, not the Escurel
 binary version. The Escurel repo's checked-out git ref is the true version
 pin (see `SKILL.md` → "How this skill is installed").
 
+## 0.25.26 — chat model and a 24-turn gemini bound
+
+`ESCUREL_RUNNER_CHAT_MODEL` sets the model chat runs use (a skill page's own `model:` still wins); no allow-list entry
+needed, as the operator sets it. The `gemini` adapter's default turn bound is 24, up from 12 (references/11).
+
 ## 0.25.25 — `event_assigned` on `/ws`
 
 An `event_subscribe` socket gets `{type: "event_assigned", subscription_id, event_id, instance_page_id, status}`

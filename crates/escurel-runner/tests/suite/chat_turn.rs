@@ -9,6 +9,7 @@
 //! it was shown, so the test can see what the run was allowed to read.
 
 use std::process::{Child, Command};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use escurel_test_support::{
@@ -625,4 +626,81 @@ async fn a_timed_out_chat_run_says_it_took_too_long() {
     assert_eq!(msgs.len(), 2, "{msgs:#?}");
     assert_eq!(msgs[1]["metadata"]["status"], "failed");
     assert_eq!(msgs[1]["metadata"]["reason"], "timeout", "{}", msgs[1]);
+}
+
+/// A stub `generateContent` that answers every turn with plain text and
+/// records the path, which names the model.
+async fn spawn_text_model(paths: Arc<Mutex<Vec<String>>>) -> String {
+    use axum::{Router, extract::State, http::Uri};
+    async fn generate(State(paths): State<Arc<Mutex<Vec<String>>>>, uri: Uri) -> axum::Json<Value> {
+        paths.lock().expect("lock").push(uri.path().to_owned());
+        axum::Json(
+            json!({ "candidates": [{ "content": { "parts": [{ "text": "Globex renews." }] } }],
+            "usageMetadata": { "promptTokenCount": 10, "candidatesTokenCount": 5,
+                "totalTokenCount": 15 } }),
+        )
+    }
+    let app = Router::new().fallback(generate).with_state(paths);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind stub model");
+    let addr = listener.local_addr().expect("addr");
+    tokio::spawn(async move {
+        let _ = axum::serve(listener, app).await;
+    });
+    format!("http://{addr}")
+}
+
+/// `ESCUREL_RUNNER_CHAT_MODEL`: the deployment picks the model for chat runs
+/// (a fast one: a person is waiting); every other run keeps the runner's model.
+#[tokio::test]
+async fn chat_runs_use_the_runners_chat_model_and_other_runs_do_not() {
+    let gw = gateway().await;
+    let alice = gw.mint_token_with_sub(TENANT, Role::Agent, ALICE);
+    let paths = Arc::new(Mutex::new(Vec::new()));
+    let base = spawn_text_model(Arc::clone(&paths)).await;
+    let (_runner, listen) = spawn_runner_with(
+        &gw,
+        true,
+        &[
+            ("ESCUREL_RUNNER_HARNESS", "gemini"),
+            ("ESCUREL_RUNNER_GEMINI_MODEL", "gemini-3.8-flash"),
+            ("ESCUREL_RUNNER_CHAT_MODEL", "gemini-3.5-flash-lite"),
+            ("ESCUREL_RUNNER_GEMINI_BASE_URL", &base),
+            ("ESCUREL_GEMINI_API_KEY", "test-key-not-a-real-credential"),
+        ],
+    );
+
+    let event_id = ask(&gw, &alice, "u-1", "Which customers renew?", &[]).await;
+    let (_, status) = await_terminal(&listen, &event_id).await;
+    assert_eq!(status, "processed");
+    let chat_paths = std::mem::take(&mut *paths.lock().unwrap());
+    assert!(
+        !chat_paths.is_empty()
+            && chat_paths
+                .iter()
+                .all(|p| p == "/models/gemini-3.5-flash-lite:generateContent"),
+        "a chat run calls the chat model: {chat_paths:?}"
+    );
+    let msgs = messages(&gw, &alice, 2).await;
+    assert_eq!(msgs[1]["content"], "Globex renews.", "{msgs:?}");
+
+    let admin = gw.mint_token(TENANT, Role::Admin);
+    let captured = call(
+        &gw,
+        &admin,
+        "capture_event",
+        json!({ "source": "manual", "mime": "text/plain", "label_skill": "renewal",
+                "instance_page_id": RENEWAL_PAGE, "title": "renewal", "body": "renew" }),
+    )
+    .await;
+    await_terminal(&listen, captured["event_id"].as_str().unwrap()).await;
+    let other = paths.lock().unwrap().clone();
+    assert!(
+        !other.is_empty()
+            && other
+                .iter()
+                .all(|p| p == "/models/gemini-3.8-flash:generateContent"),
+        "any other run keeps the runner's model: {other:?}"
+    );
 }
