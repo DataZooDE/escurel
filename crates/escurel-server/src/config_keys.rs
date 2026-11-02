@@ -858,6 +858,12 @@ pub const CONFIG_KEYS: &[ConfigKey] = &[
         doc: "comma-separated models a skill page's `model:` may pick instead of the runner's configured one; others fail the run closed",
     },
     ConfigKey {
+        name: "ESCUREL_RUNNER_CHAT_MODEL",
+        component: "Runner",
+        default: "—",
+        doc: "the model chat runs use instead of the runner's configured one, unless the skill page names its own `model:`",
+    },
+    ConfigKey {
         name: "ESCUREL_RUNNER_ID",
         component: "Runner",
         default: "<HOSTNAME>:<pid>",

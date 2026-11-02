@@ -209,6 +209,26 @@ async fn a_model_that_stays_malformed_runs_out_of_turns_cleanly() {
     assert_eq!(seen.lock().unwrap().len(), 3, "exactly max_turns requests");
 }
 
+/// The default bound is 24 model turns. At 12, `gemini-3.8-flash` ran out on
+/// 3 of 5 three-tool chat questions (docs/notes/discovered/2026-10-27-chat-latency.md).
+#[tokio::test]
+async fn the_default_turn_bound_is_24() {
+    let gateway = EscurelProcess::spawn(Opts {
+        auth: AuthMode::TestIssuer,
+        fixtures: Some(FixtureBuilder::new().tenant(TENANT).done()),
+        ..Default::default()
+    })
+    .await;
+    let seen: Seen = Arc::default();
+    let base = spawn_stub_model(Arc::clone(&seen), true).await;
+    let harness = GeminiHarness::new("test-key")
+        .with_base_url(Some(base))
+        .with_timeout(Duration::from_secs(30));
+    let outcome = harness.run(&task(&gateway)).await.expect("bounded");
+    assert!(!outcome.ok, "{outcome:?}");
+    assert_eq!(seen.lock().unwrap().len(), 24, "the default bound");
+}
+
 #[tokio::test]
 async fn a_model_turn_over_the_token_budget_cannot_write_through_real_mcp() {
     token_budget_case(Some(100)).await;

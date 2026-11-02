@@ -64,7 +64,9 @@ const DEFAULT_TIMEOUT: Duration = Duration::from_secs(300);
 /// failing tool loops until the timeout, and the run's cost is then a
 /// function of the model's mood. Reaching it is a `Failed` outcome the
 /// reconciler can retry — never a silent truncation reported as success.
-const DEFAULT_MAX_TURNS: u32 = 12;
+/// 24, not 12: at 12 a three-tool chat question on `gemini-3.8-flash` ran out
+/// on 3 of 5 runs (docs/notes/discovered/2026-10-27-chat-latency.md).
+const DEFAULT_MAX_TURNS: u32 = 24;
 /// Cap reported token consumption across model turns in one invocation.
 const DEFAULT_MAX_TOTAL_TOKENS: u64 = 250_000;
 const MAX_OUTPUT_TOKENS_PER_TURN: u64 = 8_192;

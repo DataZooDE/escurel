@@ -182,6 +182,7 @@ tenant/token can process `/trigger` but deliberately report unready at
 | `ESCUREL_RUNNER_STATUS_INTERVAL` | 5m | how often the runner refreshes its status record (`runner-status:<runner_id>`) when nothing changed; it travels in the record as `status_interval_s` |
 | `ESCUREL_RUNNER_HARNESS_ALLOW` | the configured harness | comma-separated harnesses a manual start may ask for by name; others fail closed |
 | `ESCUREL_RUNNER_MODEL_ALLOW` | — | comma-separated models a skill page's `model:` may pick instead of the runner's configured one; others fail the run closed |
+| `ESCUREL_RUNNER_CHAT_MODEL` | — | the model chat runs use instead of the runner's configured one, unless the skill page names its own `model:` |
 | `ESCUREL_RUNNER_ID` | <HOSTNAME>:<pid> | this runner's name in its status reports |
 | `ESCUREL_RUNNER_CANCEL_GRACE` | 5s | time a cancelled run's subprocess gets between SIGTERM and SIGKILL |
 | `ESCUREL_RUNNER_LINT_INTERVAL` | disabled | how often the runner synthesizes a `lint` event (the scheduled semantic-health pass) |

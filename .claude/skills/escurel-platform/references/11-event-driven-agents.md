@@ -144,6 +144,7 @@ Key settings (full list in `crates/escurel-runner-core/src/config.rs`):
 | `ESCUREL_RUNNER_CANCEL_GRACE` | `5s` | on cancel, the wait between SIGTERM and SIGKILL for the harness subprocess |
 | `ESCUREL_RUNNER_HARNESS_ALLOW` | the configured harness | the harness names a manual start may ask for (comma-separated); anything else fails the run closed |
 | `ESCUREL_RUNNER_MODEL_ALLOW` | empty | the models a skill's `model:` may pick (comma-separated); anything else fails the run closed. The runner's own configured model needs no entry |
+| `ESCUREL_RUNNER_CHAT_MODEL` | unset | the model chat runs use in place of the configured one (a person is waiting, so a fast one), unless the skill page names its own `model:`. Operator-set, so no allow-list entry. A harness without a model slot (`echo`, `gemini-vertex`) fails a chat run closed when it is set |
 | `ESCUREL_RUNNER_GEMINI_MODEL` | `gemini-3.8-flash` | the `gemini` adapter's model |
 | `ESCUREL_RUNNER_STATUS_INTERVAL` | `5m` | heartbeat cadence of the runner's `escurel:runner-status` report (a change is reported at once) |
 | `ESCUREL_RUNNER_ID` | `<HOSTNAME>:<pid>` | how this runner names itself in its status reports |
@@ -432,6 +433,9 @@ The runner treats an event whose `provenance.chat_group_id` is a `page-chat:` gr
   **without `append_message`**: reads (plus `query_instance`, `provenance_ancestry`,
   `provenance_report`), `create_draft`, `report_progress`. No `update_page`,
   `capture_event` or `assign_event`.
+- The model is the skill page's `model:` when it names one, else `ESCUREL_RUNNER_CHAT_MODEL` when the
+  runner sets it, else the runner's configured model. The gemini adapter stops a run after 24 model
+  turns (`ESCUREL_RUNNER_MAX_TURNS` overrides).
 - The **runner** posts exactly one `assistant` turn, with the run token, for every terminal:
   `msg_id: "run:<run_id>:reply"` (a retry echoes it), `content` = the harness's final answer (or one
   sentence saying why there is none), `metadata: {status: ok|failed|cancelled, drafts: [draft_id…],

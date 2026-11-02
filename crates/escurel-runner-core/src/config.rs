@@ -319,6 +319,10 @@ pub struct RunnerConfig {
     /// configured model itself needs no entry. Source:
     /// `ESCUREL_RUNNER_MODEL_ALLOW` (comma-separated; default empty).
     pub model_allow: Vec<String>,
+    /// The model chat-lane runs use in place of the configured one, unless the
+    /// skill page names its own `model:`. Set by the operator, so it needs no
+    /// allow-list entry. Source: `ESCUREL_RUNNER_CHAT_MODEL` (default unset).
+    pub chat_model: Option<String>,
     /// This runner's name in its status reports. Source:
     /// `ESCUREL_RUNNER_ID` (default `<HOSTNAME>:<pid>`, or `runner:<pid>`).
     pub runner_id: String,
@@ -846,6 +850,9 @@ impl RunnerConfig {
             .filter(|s| !s.is_empty())
             .map(str::to_owned)
             .collect();
+        let chat_model = lookup("ESCUREL_RUNNER_CHAT_MODEL")
+            .map(|m| m.trim().to_owned())
+            .filter(|m| !m.is_empty());
         let harness_allow: Vec<String> = match lookup("ESCUREL_RUNNER_HARNESS_ALLOW") {
             Some(raw) if !raw.trim().is_empty() => raw
                 .split(',')
@@ -872,6 +879,7 @@ impl RunnerConfig {
             tail_max_age,
             harness_allow,
             model_allow,
+            chat_model,
             agent_narrow,
             runner_id,
             cancel_grace,
@@ -993,6 +1001,22 @@ mod tests {
         })
         .expect("parses");
         assert_eq!(set.model_allow, vec!["a".to_owned(), "b".to_owned()]);
+    }
+
+    #[test]
+    fn chat_model_is_unset_by_default_and_blank_means_unset() {
+        let unset = RunnerConfig::from_env_with(|_| None).expect("defaults");
+        assert_eq!(unset.chat_model, None);
+        let blank = RunnerConfig::from_env_with(|k| {
+            (k == "ESCUREL_RUNNER_CHAT_MODEL").then(|| "  ".to_owned())
+        })
+        .expect("parses");
+        assert_eq!(blank.chat_model, None);
+        let set = RunnerConfig::from_env_with(|k| {
+            (k == "ESCUREL_RUNNER_CHAT_MODEL").then(|| " gemini-3.5-flash-lite ".to_owned())
+        })
+        .expect("parses");
+        assert_eq!(set.chat_model.as_deref(), Some("gemini-3.5-flash-lite"));
     }
 
     #[test]

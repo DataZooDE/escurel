@@ -1637,6 +1637,21 @@ fn apply_skill_model(
         );
         return (Arc::new(RefusingHarness::model_not_allowed(model)), None);
     }
+    override_model(config, harness, model)
+}
+
+/// Rebuild `harness` with `model` in its model slot. A harness with no slot
+/// (echo, gemini-vertex) cannot honour it and fails the run closed.
+fn override_model(
+    config: &RunnerConfig,
+    harness: Arc<dyn Harness>,
+    model: &str,
+) -> (Arc<dyn Harness>, Option<String>) {
+    let name = harness.name().to_owned();
+    let configured = configured_model(config, &name);
+    if name == "refusing" || configured.as_deref() == Some(model) {
+        return (harness, configured);
+    }
     let mut overridden = config.clone();
     let slot = match name.as_str() {
         "claude" => &mut overridden.claude_model,
@@ -2176,12 +2191,14 @@ async fn dispatch_loop(
                 .unwrap_or_default()
         });
         let step_harness = resolve_harness(&config, &harness, &trigger, skill_harness.as_deref());
-        // The skill's `model:`, within ESCUREL_RUNNER_MODEL_ALLOW.
-        let (step_harness, step_model) = apply_skill_model(
-            &config,
-            step_harness,
-            skill_contract.as_ref().and_then(|c| c.model.as_deref()),
-        );
+        // The skill's `model:`, within ESCUREL_RUNNER_MODEL_ALLOW; else, for a
+        // chat run, the operator's ESCUREL_RUNNER_CHAT_MODEL.
+        let skill_model = skill_contract.as_ref().and_then(|c| c.model.as_deref());
+        let chat_model = trigger.chat.as_ref().and(config.chat_model.as_deref());
+        let (step_harness, step_model) = match (skill_model, chat_model) {
+            (None, Some(model)) => override_model(&config, step_harness, model),
+            _ => apply_skill_model(&config, step_harness, skill_model),
+        };
         // The run's lifecycle as `escurel:run` events (workbench backend
         // P1): a projection of the ledger for the humans watching the run,
         // best-effort — a refusal is logged and counted, never acted on.
