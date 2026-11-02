@@ -252,6 +252,11 @@ async fn handle_socket(
     let mut events_rx: Option<
         tokio::sync::broadcast::Receiver<std::sync::Arc<escurel_index::EventInfo>>,
     > = None;
+    // Assignments of events the subscription can see (`event_assigned`
+    // frames): subscribed and dropped together with `events_rx`.
+    let mut assigned_rx: Option<
+        tokio::sync::broadcast::Receiver<std::sync::Arc<escurel_index::EventInfo>>,
+    > = None;
     let mut event_sub_id = Value::Null;
     // A chat subscription (`filters.chat_group_id`, FR-G1): `Some` instead
     // of `events_rx` once a subscribe names a group the caller may access.
@@ -298,6 +303,45 @@ async fn handle_socket(
                     }
                 }
                 continue;
+            }
+            assigned = async {
+                assigned_rx
+                    .as_mut()
+                    .expect("arm gated on assigned_rx.is_some()")
+                    .recv()
+                    .await
+            }, if assigned_rx.is_some() => {
+                use tokio::sync::broadcast::error::RecvError;
+                match assigned {
+                    // The same predicate and per-event ACL as an `event`
+                    // push, on the event as it now stands (filed into its
+                    // instance, so the instance's read ACL decides).
+                    Ok(event) => {
+                        if event_filter.matches(&event)
+                            && event_push_allowed(&state, &caller, &event).await
+                        {
+                            let frame = json!({
+                                "type": "event_assigned",
+                                "subscription_id": event_sub_id,
+                                "event_id": event.event_id,
+                                "instance_page_id": event.instance_page_id,
+                                "status": event.status,
+                            });
+                            if send_json(socket, frame).await.is_err() {
+                                break;
+                            }
+                        }
+                        continue;
+                    }
+                    // A missed assignment only leaves a stale row; the
+                    // client's next refresh (or an `event_lagged` on the
+                    // event bus) repairs it.
+                    Err(RecvError::Lagged(_)) => continue,
+                    Err(RecvError::Closed) => {
+                        assigned_rx = None;
+                        continue;
+                    }
+                }
             }
             pushed = async {
                 events_rx
@@ -438,6 +482,7 @@ async fn handle_socket(
                         // a refused replacement must not leave the old,
                         // possibly broader, subscription streaming.
                         events_rx = None;
+                        assigned_rx = None;
                         chat_rx = None;
                         event_sub_id = Value::Null;
                         event_filter = EventSubFilter::default();
@@ -459,6 +504,7 @@ async fn handle_socket(
                 // replay (`list_messages` is the reconciliation path).
                 if let Some(group) = filter.chat_group_id.clone() {
                     events_rx = None;
+                    assigned_rx = None;
                     chat_rx = None;
                     event_sub_id = Value::Null;
                     event_filter = EventSubFilter::default();
@@ -495,6 +541,7 @@ async fn handle_socket(
                 // dedupes by `event_id` — a duplicate is recoverable, a
                 // gap is not.
                 events_rx = Some(state.events_tx.subscribe());
+                assigned_rx = Some(state.assigned_tx.subscribe());
                 let ack = json!({
                     "type": "event_subscribe_ack",
                     "subscription_id": event_sub_id,

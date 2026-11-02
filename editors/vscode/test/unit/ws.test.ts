@@ -366,3 +366,30 @@ describe('EventSocket chat subscription', () => {
     expect(o.events).toEqual([]);
   });
 });
+
+describe('EventSocket event_assigned', () => {
+  it('delivers event_assigned frames through onEventAssigned, not as events', async () => {
+    const srv = await startFakeWs();
+    servers.push(srv);
+    const assigned: Array<[string, string | null]> = [];
+    const o = options(srv.url, {
+      onEventAssigned: (id, page) => assigned.push([id, page]),
+    });
+    const s = new EventSocket(o);
+    sockets.push(s);
+    s.connect();
+    await srv.waitFor(() => srv.upgrades[0]?.frames.length === 2);
+    srv.upgrades[0]!.socket.send(
+      JSON.stringify({
+        type: 'event_assigned',
+        subscription_id: 1,
+        event_id: 'ev-1',
+        instance_page_id: 'markdown/instances/customer/acme.md',
+        status: 'processed',
+      }),
+    );
+    await srv.waitFor(() => assigned.length === 1);
+    expect(assigned).toEqual([['ev-1', 'markdown/instances/customer/acme.md']]);
+    expect(o.events).toEqual([]);
+  });
+});

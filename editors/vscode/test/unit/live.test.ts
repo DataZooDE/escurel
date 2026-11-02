@@ -187,6 +187,21 @@ describe('LiveRefresher (debounce & coalesce)', () => {
     refresher.dispose();
   });
 
+  it('an assignment marks only the Inbox stale, coalesced with events', () => {
+    const inbox = { refresh: vi.fn() };
+    const awaiting = { refresh: vi.fn() };
+    const refresher = new LiveRefresher({ inbox, awaiting }, 300);
+
+    refresher.handleAssigned();
+    refresher.handleEvent(makeEvent({ event_id: 'e1', status: 'inbox' }));
+    refresher.handleAssigned();
+    vi.advanceTimersByTime(300);
+
+    expect(inbox.refresh).toHaveBeenCalledTimes(1);
+    expect(awaiting.refresh).not.toHaveBeenCalled();
+    refresher.dispose();
+  });
+
   it('coalesces bursts of review and ordinary events to one refresh per view', () => {
     const inbox = { refresh: vi.fn() };
     const awaiting = { refresh: vi.fn() };

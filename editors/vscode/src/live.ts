@@ -84,6 +84,12 @@ export class LiveRefresher implements vscode.Disposable {
     this.views.awaiting.refresh();
   }
 
+  /** An event left the inbox by assignment (`event_assigned`): only the Inbox shows it. */
+  handleAssigned(): void {
+    this.pendingInbox = true;
+    this.schedule();
+  }
+
   private schedule(): void {
     if (this.timer) clearTimeout(this.timer);
     this.timer = setTimeout(() => this.flush(), this.debounceMs);
@@ -190,6 +196,9 @@ export class LiveCoordinator implements vscode.Disposable {
       tokens: this.services.auth.refresher,
       onEvent: (event) => {
         this.handleEvent(event);
+      },
+      onEventAssigned: () => {
+        this.refresher.handleAssigned();
       },
       onConnect: () => {
         // Replay after a reconnect is inbox-only; review transitions that occurred

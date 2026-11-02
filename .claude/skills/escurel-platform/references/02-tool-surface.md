@@ -367,6 +367,11 @@ token subject) hang off one of its pages. For those groups:
   `provenance: {chat_group_id}`, the run (triggered by or minted for that
   event) appends its `assistant` reply.
 
+**Assignments over `/ws`.** An `event_subscribe` socket also gets
+`{type: "event_assigned", subscription_id, event_id, instance_page_id, status}` when an event it can see is
+filed into an instance (`assign_event`, or a draft promotion), so an inbox view can drop the row. It is not an
+`event` frame: don't treat it as a new capture. A repeat of the same assignment may arrive again.
+
 **Live chat over `/ws`.** A presence-only socket can watch one group:
 `{type: "event_subscribe", subscription_id, filters: {chat_group_id}}`.
 The subscribe — and every message pushed after it — is checked with the same

@@ -3501,6 +3501,7 @@ pub(super) async fn tool_assign_event(
     indexer: &Indexer,
     caller: AclCaller<'_>,
     event_acl: crate::server::EventAclMode,
+    assigned_tx: &tokio::sync::broadcast::Sender<std::sync::Arc<EventInfo>>,
     args: Value,
 ) -> Result<Value, JsonRpcError> {
     let a: AssignEventArgs = parse_args(args, "assign_event")?;
@@ -3616,6 +3617,12 @@ pub(super) async fn tool_assign_event(
             }
             other => JsonRpcError::internal(format!("assign_event: {other}")),
         })?;
+    // Announce the filing to `/ws` subscribers (best-effort: the write has
+    // landed; a failed re-read only costs the live refresh). An idempotent
+    // re-assign announces again, which a client absorbs as a no-op refresh.
+    if let Ok(Some(stored)) = indexer.get_event(&a.event_id).await {
+        let _ = assigned_tx.send(std::sync::Arc::new(stored));
+    }
     Ok(
         json!({ "event_id": a.event_id, "instance_page_id": a.instance_page_id, "status": "processed" }),
     )

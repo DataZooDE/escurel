@@ -1178,6 +1178,7 @@ pub(super) async fn tool_promote_draft(
                 indexer,
                 caller,
                 state.event_acl,
+                &state.assigned_tx,
                 json!({
                     "event_id": event_id,
                     "instance_page_id": &target_page_id,

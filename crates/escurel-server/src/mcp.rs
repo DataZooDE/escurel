@@ -1496,7 +1496,14 @@ async fn dispatch_tools_call(
             .await
         }
         "assign_event" => {
-            tool_assign_event(indexer, caller, state.event_acl, params.arguments).await
+            tool_assign_event(
+                indexer,
+                caller,
+                state.event_acl,
+                &state.assigned_tx,
+                params.arguments,
+            )
+            .await
         }
         // Admin-gated ops tools (mirror the documented MCP admin
         // surface; delegate to the same logic as EscurelAdmin gRPC).
