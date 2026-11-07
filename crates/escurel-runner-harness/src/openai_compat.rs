@@ -825,12 +825,9 @@ impl OpenAiCompatHarness {
                             if let Some(err) = result.get("error") {
                                 json!({ "error": err })
                             } else {
-                                let structured = &result["result"]["structuredContent"];
-                                if structured.is_null() {
-                                    result["result"].clone()
-                                } else {
-                                    structured.clone()
-                                }
+                                // A refusal's payload (`ok: false`, issues) is
+                                // passed on as is: the model must read why.
+                                escurel_types::call_result::payload_of(&result["result"])
                             }
                         }
                         // Malformed arguments are the model's mistake to
