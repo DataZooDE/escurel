@@ -13,7 +13,7 @@
 //! [`HarnessOutcome`]. Adapters deliberately do **not** write to escurel
 //! themselves — writes flow through the harness's own MCP tool calls.
 //!
-//! [`GeminiHarness`] is the exception to the subprocess shape, for a
+//! [`GeminiHarness`] and [`OpenAiCompatHarness`] are the exception to the subprocess shape, for a
 //! deployment reason: a container has no interactive auth and no node
 //! runtime, so a CLI harness cannot run where the runner actually runs. It
 //! drives the model over HTTP and runs the tool loop in process — and it
@@ -40,7 +40,9 @@ mod delegate;
 mod echo;
 mod gemini;
 mod harness;
+mod mcp;
 mod muse;
+mod openai_compat;
 mod refusing;
 mod task;
 
@@ -58,5 +60,8 @@ pub use gemini::{
 };
 pub use harness::{Harness, HarnessError, HarnessOutcome, HarnessStatus, Usage};
 pub use muse::MuseHarness;
+pub use openai_compat::{
+    OpenAiCompatHarness, Preset as OpenAiPreset, ProviderSettings, ToolSupport, read_api_key_file,
+};
 pub use refusing::RefusingHarness;
 pub use task::HarnessTask;

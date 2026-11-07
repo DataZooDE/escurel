@@ -187,7 +187,7 @@ tenant/token can process `/trigger` but deliberately report unready at
 | `ESCUREL_RUNNER_CANCEL_GRACE` | 5s | time a cancelled run's subprocess gets between SIGTERM and SIGKILL |
 | `ESCUREL_RUNNER_LINT_INTERVAL` | disabled | how often the runner synthesizes a `lint` event (the scheduled semantic-health pass) |
 | `ESCUREL_RUNNER_LEDGER_PATH` | ./escurel-runner-ledger.duckdb | runner-local durable run ledger (its own DuckDB file; use a path under `/data` in a deployment) |
-| `ESCUREL_RUNNER_HARNESS` | echo | harness adapter: `echo`, `claude`, `codex`, `agy`, `muse`, `gemini`, `delegate` |
+| `ESCUREL_RUNNER_HARNESS` | echo | harness adapter: `echo`, `claude`, `codex`, `agy`, `muse`, `gemini`, `gemini-vertex`, `alibaba`, `hetzner`, `openai-compatible`, `delegate` |
 | `ESCUREL_RUNNER_CLAUDE_BIN` | claude | path to the `claude` binary |
 | `ESCUREL_RUNNER_CLAUDE_MODEL` | — | `--model` passed to `claude` |
 | `ESCUREL_RUNNER_CODEX_BIN` | codex | path to the `codex` binary |
@@ -210,6 +210,33 @@ tenant/token can process `/trigger` but deliberately report unready at
 | `ESCUREL_RUNNER_GEMINI_VERTEX_LOCATION` | eu | Vertex AI location used when the Gemini adapter authenticates with workload identity |
 | `ESCUREL_RUNNER_GEMINI_METADATA_URL` | — | metadata server base for Vertex workload credentials (tests point it at a local server) |
 | `ESCUREL_RUNNER_GEMINI_MAX_TOTAL_TOKENS` | unbounded | provider-reported token cap for one Gemini invocation; a response without usage metadata fails the run |
+| `ESCUREL_RUNNER_ALIBABA_BASE_URL` | https://dashscope.aliyuncs.com/compatible-mode/v1 (Beijing; a workspace URL is recommended) | base URL (`…/v1`) of the `alibaba` harness; https, or plain http to a loopback address only |
+| `ESCUREL_RUNNER_ALIBABA_API_KEY_FILE` | — (required) | file holding the `alibaba` API key (a mounted secret); the key itself is never an env var |
+| `ESCUREL_RUNNER_ALIBABA_MODEL` | qwen3.8-flash | model of the `alibaba` harness for ordinary runs (event, manual, chat without `ESCUREL_RUNNER_CHAT_MODEL`) |
+| `ESCUREL_RUNNER_ALIBABA_LONG_MODEL` | qwen3.8-max | model of the `alibaba` harness for long, multi-step runs (workflow steps) |
+| `ESCUREL_RUNNER_ALIBABA_STREAM` | true | stream `/chat/completions` responses of the `alibaba` harness (`true`/`false`) |
+| `ESCUREL_RUNNER_ALIBABA_TOOLS` | native | tool calling of the `alibaba` harness: `native` (documented) or `probe` (verified once before the first run; refused without) |
+| `ESCUREL_RUNNER_ALIBABA_REASONING_EFFORT` | provider default | `reasoning_effort` passed to the `alibaba` model |
+| `ESCUREL_RUNNER_ALIBABA_MAX_TOTAL_TOKENS` | 250000 | provider-reported token cap for one `alibaba` invocation; a response without usage fails the run |
+| `ESCUREL_RUNNER_HETZNER_BASE_URL` | https://inference.hetzner.com/api/v1 | base URL (`…/v1`) of the `hetzner` harness; https, or plain http to a loopback address only |
+| `ESCUREL_RUNNER_HETZNER_API_KEY_FILE` | — (required) | file holding the `hetzner` API key (a mounted secret); the key itself is never an env var |
+| `ESCUREL_RUNNER_HETZNER_MODEL` | Qwen3.8-27B | model of the `hetzner` harness for ordinary runs (event, manual, chat without `ESCUREL_RUNNER_CHAT_MODEL`) |
+| `ESCUREL_RUNNER_HETZNER_LONG_MODEL` | the ordinary model | model of the `hetzner` harness for long, multi-step runs (workflow steps) |
+| `ESCUREL_RUNNER_HETZNER_STREAM` | false | stream `/chat/completions` responses of the `hetzner` harness (`true`/`false`) |
+| `ESCUREL_RUNNER_HETZNER_TOOLS` | probe | tool calling of the `hetzner` harness: `native` (documented) or `probe` (verified once before the first run; refused without) |
+| `ESCUREL_RUNNER_HETZNER_REASONING_EFFORT` | provider default | `reasoning_effort` passed to the `hetzner` model |
+| `ESCUREL_RUNNER_HETZNER_MAX_TOTAL_TOKENS` | 250000 | provider-reported token cap for one `hetzner` invocation; a response without usage fails the run |
+| `ESCUREL_RUNNER_OPENAI_BASE_URL` | — (required) | base URL (`…/v1`) of the `openai-compatible` harness; https, or plain http to a loopback address only |
+| `ESCUREL_RUNNER_OPENAI_API_KEY_FILE` | — (required) | file holding the `openai-compatible` API key (a mounted secret); the key itself is never an env var |
+| `ESCUREL_RUNNER_OPENAI_MODEL` | — (required) | model of the `openai-compatible` harness for ordinary runs (event, manual, chat without `ESCUREL_RUNNER_CHAT_MODEL`) |
+| `ESCUREL_RUNNER_OPENAI_LONG_MODEL` | the ordinary model | model of the `openai-compatible` harness for long, multi-step runs (workflow steps) |
+| `ESCUREL_RUNNER_OPENAI_STREAM` | false | stream `/chat/completions` responses of the `openai-compatible` harness (`true`/`false`) |
+| `ESCUREL_RUNNER_OPENAI_TOOLS` | probe | tool calling of the `openai-compatible` harness: `native` (documented) or `probe` (verified once before the first run; refused without) |
+| `ESCUREL_RUNNER_OPENAI_REASONING_EFFORT` | provider default | `reasoning_effort` passed to the `openai-compatible` model |
+| `ESCUREL_RUNNER_OPENAI_MAX_TOTAL_TOKENS` | 250000 | provider-reported token cap for one `openai-compatible` invocation; a response without usage fails the run |
+| `ESCUREL_RUNNER_CHAT_COMPLETIONS_REQUEST_TIMEOUT` | 180s | bound on one model request (stream included) of the OpenAI-compatible harnesses |
+| `ESCUREL_RUNNER_CHAT_COMPLETIONS_MAX_RETRIES` | 3 | retries of a 429/500/502/503/504 model response or a refused connection (OpenAI-compatible harnesses) |
+| `ESCUREL_RUNNER_CHAT_COMPLETIONS_RETRY_BACKOFF` | 1s | first retry wait, doubled per retry; a `Retry-After` in seconds wins, capped at 30s |
 | `ESCUREL_RUNNER_AGENT_A2A_URL` | — | the agent's A2A endpoint the `delegate` harness posts to; unset disables delegation |
 | `ESCUREL_RUNNER_AGENT_A2A_AUDIENCE` | — | `aud` of the runner→agent delegation token (the agent's audience, never escurel's) |
 | `ESCUREL_RUNNER_CHAT_CONCURRENCY` | 2 | chat runs that may run at once, in their own lane beside the serial one |

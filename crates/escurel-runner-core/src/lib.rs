@@ -39,7 +39,7 @@ pub use cascade::{
     CascadeError, CascadeOutcome, SkillContract, emit_cascade, emit_cascade_with_id, skill_contract,
 };
 pub use chat_reply::{ChatOutcome, post_chat_reply};
-pub use config::{ConfigError, RunnerConfig};
+pub use config::{ConfigError, OpenAiProviderConfig, RunnerConfig, ToolSupport};
 pub use dispatch::{DispatchConsumer, DispatchQueue, EnqueueOutcome};
 pub use escurel_runner_workflow::OperationStatus;
 pub use ledger::{

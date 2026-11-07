@@ -218,12 +218,173 @@ pub enum ConfigError {
         /// The offending value.
         value: String,
     },
+    /// A provider setting (`ESCUREL_RUNNER_<PRESET>_*`, `ESCUREL_RUNNER_CHAT_COMPLETIONS_*`)
+    /// was set to a value it cannot take.
+    #[error("invalid {key} {value:?}: expected {expected}")]
+    InvalidProviderSetting {
+        /// The offending env var name.
+        key: &'static str,
+        /// The offending value.
+        value: String,
+        /// What the variable takes.
+        expected: &'static str,
+    },
     /// `ESCUREL_RUNNER_DRAIN_TIMEOUT` was set but is not a valid duration.
     #[error("invalid ESCUREL_RUNNER_DRAIN_TIMEOUT {value:?}: expected e.g. 30s, 1500ms")]
     InvalidDrainTimeout {
         /// The offending value.
         value: String,
     },
+}
+
+/// Whether an OpenAI-compatible provider's tool calling is taken as given or
+/// verified first (`ESCUREL_RUNNER_<PRESET>_TOOLS`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToolSupport {
+    /// The provider documents tool calling; no probe.
+    Native,
+    /// Verify with a probe request before a run; refuse without.
+    Probe,
+}
+
+impl ToolSupport {
+    /// Parse `native` / `probe` (case-insensitive).
+    #[must_use]
+    pub fn parse(raw: &str) -> Option<Self> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "native" => Some(Self::Native),
+            "probe" => Some(Self::Probe),
+            _ => None,
+        }
+    }
+}
+
+/// What a deployment configured for one OpenAI-compatible preset
+/// (`alibaba`, `hetzner`, `openai-compatible`), read from
+/// `ESCUREL_RUNNER_<PRESET>_*`. Every `None` takes the preset's default in
+/// `escurel-runner-harness`. The API KEY is not a field: only the path to the
+/// file holding it is, so the key can never reach a log through the derived
+/// `Debug` — the runner reads the file where the harness is built.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct OpenAiProviderConfig {
+    /// `…_BASE_URL`: the `/v1`-style base `/chat/completions` hangs off.
+    pub base_url: Option<String>,
+    /// `…_API_KEY_FILE`: a file holding the key (a mounted secret).
+    pub api_key_file: Option<String>,
+    /// `…_MODEL`: the model for ordinary runs (event, chat, manual).
+    pub model: Option<String>,
+    /// `…_LONG_MODEL`: the model for long, multi-step runs — workflow steps.
+    pub long_model: Option<String>,
+    /// `…_STREAM`: `true`/`false`; unset takes the preset's default.
+    pub stream: Option<bool>,
+    /// `…_TOOLS`: `native` (documented tool calling) or `probe` (verify first).
+    pub tools: Option<ToolSupport>,
+    /// `…_REASONING_EFFORT`: passed through as `reasoning_effort`.
+    pub reasoning_effort: Option<String>,
+    /// `…_MAX_TOTAL_TOKENS`: cumulative provider-reported token cap per run.
+    pub max_total_tokens: Option<u64>,
+}
+
+/// The variable names of one preset, spelled out so a grep for any of them
+/// lands here (and the config-key registry's source scan sees them).
+struct ProviderKeys {
+    base_url: &'static str,
+    api_key_file: &'static str,
+    model: &'static str,
+    long_model: &'static str,
+    stream: &'static str,
+    tools: &'static str,
+    reasoning_effort: &'static str,
+    max_total_tokens: &'static str,
+}
+
+const ALIBABA_KEYS: ProviderKeys = ProviderKeys {
+    base_url: "ESCUREL_RUNNER_ALIBABA_BASE_URL",
+    api_key_file: "ESCUREL_RUNNER_ALIBABA_API_KEY_FILE",
+    model: "ESCUREL_RUNNER_ALIBABA_MODEL",
+    long_model: "ESCUREL_RUNNER_ALIBABA_LONG_MODEL",
+    stream: "ESCUREL_RUNNER_ALIBABA_STREAM",
+    tools: "ESCUREL_RUNNER_ALIBABA_TOOLS",
+    reasoning_effort: "ESCUREL_RUNNER_ALIBABA_REASONING_EFFORT",
+    max_total_tokens: "ESCUREL_RUNNER_ALIBABA_MAX_TOTAL_TOKENS",
+};
+const HETZNER_KEYS: ProviderKeys = ProviderKeys {
+    base_url: "ESCUREL_RUNNER_HETZNER_BASE_URL",
+    api_key_file: "ESCUREL_RUNNER_HETZNER_API_KEY_FILE",
+    model: "ESCUREL_RUNNER_HETZNER_MODEL",
+    long_model: "ESCUREL_RUNNER_HETZNER_LONG_MODEL",
+    stream: "ESCUREL_RUNNER_HETZNER_STREAM",
+    tools: "ESCUREL_RUNNER_HETZNER_TOOLS",
+    reasoning_effort: "ESCUREL_RUNNER_HETZNER_REASONING_EFFORT",
+    max_total_tokens: "ESCUREL_RUNNER_HETZNER_MAX_TOTAL_TOKENS",
+};
+const OPENAI_KEYS: ProviderKeys = ProviderKeys {
+    base_url: "ESCUREL_RUNNER_OPENAI_BASE_URL",
+    api_key_file: "ESCUREL_RUNNER_OPENAI_API_KEY_FILE",
+    model: "ESCUREL_RUNNER_OPENAI_MODEL",
+    long_model: "ESCUREL_RUNNER_OPENAI_LONG_MODEL",
+    stream: "ESCUREL_RUNNER_OPENAI_STREAM",
+    tools: "ESCUREL_RUNNER_OPENAI_TOOLS",
+    reasoning_effort: "ESCUREL_RUNNER_OPENAI_REASONING_EFFORT",
+    max_total_tokens: "ESCUREL_RUNNER_OPENAI_MAX_TOTAL_TOKENS",
+};
+
+fn parse_provider<F>(keys: &ProviderKeys, lookup: &F) -> Result<OpenAiProviderConfig, ConfigError>
+where
+    F: Fn(&str) -> Option<String>,
+{
+    let get = |k: &str| {
+        lookup(k)
+            .map(|v| v.trim().to_owned())
+            .filter(|v| !v.is_empty())
+    };
+    let stream = match get(keys.stream) {
+        None => None,
+        Some(v) => match v.to_ascii_lowercase().as_str() {
+            "1" | "true" | "on" | "yes" => Some(true),
+            "0" | "false" | "off" | "no" => Some(false),
+            _ => {
+                return Err(ConfigError::InvalidProviderSetting {
+                    key: keys.stream,
+                    value: v,
+                    expected: "true or false",
+                });
+            }
+        },
+    };
+    let tools = match get(keys.tools) {
+        None => None,
+        Some(v) => Some(
+            ToolSupport::parse(&v).ok_or(ConfigError::InvalidProviderSetting {
+                key: keys.tools,
+                value: v,
+                expected: "native or probe",
+            })?,
+        ),
+    };
+    let max_total_tokens = match get(keys.max_total_tokens) {
+        None => None,
+        Some(v) => match v.parse::<u64>() {
+            Ok(n) if n > 0 => Some(n),
+            _ => {
+                return Err(ConfigError::InvalidProviderSetting {
+                    key: keys.max_total_tokens,
+                    value: v,
+                    expected: "a positive integer",
+                });
+            }
+        },
+    };
+    Ok(OpenAiProviderConfig {
+        base_url: get(keys.base_url),
+        api_key_file: get(keys.api_key_file),
+        model: get(keys.model),
+        long_model: get(keys.long_model),
+        stream,
+        tools,
+        reasoning_effort: get(keys.reasoning_effort),
+        max_total_tokens,
+    })
 }
 
 /// Runtime configuration for the runner process.
@@ -449,6 +610,21 @@ pub struct RunnerConfig {
     pub gemini_metadata_url: Option<String>,
     /// Cumulative provider reported token cap for a Gemini run.
     pub gemini_max_total_tokens: Option<u64>,
+    /// The `alibaba` preset (Model Studio). Source: `ESCUREL_RUNNER_ALIBABA_*`.
+    pub alibaba: OpenAiProviderConfig,
+    /// The `hetzner` preset (Hetzner Inference API). Source: `ESCUREL_RUNNER_HETZNER_*`.
+    pub hetzner: OpenAiProviderConfig,
+    /// The `openai-compatible` preset (any endpoint). Source: `ESCUREL_RUNNER_OPENAI_*`.
+    pub openai_compatible: OpenAiProviderConfig,
+    /// Bound on one model HTTP request of an OpenAI-compatible preset.
+    /// Source: `ESCUREL_RUNNER_CHAT_COMPLETIONS_REQUEST_TIMEOUT` (unset → the harness default, 180s).
+    pub chat_completions_request_timeout: Option<Duration>,
+    /// Retries of a 429/5xx model response. Source:
+    /// `ESCUREL_RUNNER_CHAT_COMPLETIONS_MAX_RETRIES` (unset → the harness default, 3).
+    pub chat_completions_max_retries: Option<u32>,
+    /// First retry wait, doubled per retry (a `Retry-After` wins). Source:
+    /// `ESCUREL_RUNNER_CHAT_COMPLETIONS_RETRY_BACKOFF` (unset → the harness default, 1s).
+    pub chat_completions_retry_backoff: Option<Duration>,
     /// The agent's A2A endpoint the `delegate` harness POSTs `message/send` /
     /// `tasks/get` to (async-ops Phase 4 slice 3c). escurel is the orchestrator;
     /// a `harness: delegate` step hands the domain work to the agent here.
@@ -746,6 +922,38 @@ impl RunnerConfig {
             },
             None => None,
         };
+        let alibaba = parse_provider(&ALIBABA_KEYS, &lookup)?;
+        let hetzner = parse_provider(&HETZNER_KEYS, &lookup)?;
+        let openai_compatible = parse_provider(&OPENAI_KEYS, &lookup)?;
+        let cc_duration = |key: &'static str| match lookup(key).filter(|v| !v.trim().is_empty()) {
+            None => Ok(None),
+            Some(v) => {
+                parse_duration(v.trim())
+                    .map(Some)
+                    .ok_or(ConfigError::InvalidProviderSetting {
+                        key,
+                        value: v,
+                        expected: "a duration, e.g. 500ms, 30s, 2m",
+                    })
+            }
+        };
+        let chat_completions_request_timeout =
+            cc_duration("ESCUREL_RUNNER_CHAT_COMPLETIONS_REQUEST_TIMEOUT")?;
+        let chat_completions_retry_backoff =
+            cc_duration("ESCUREL_RUNNER_CHAT_COMPLETIONS_RETRY_BACKOFF")?;
+        let chat_completions_max_retries =
+            match lookup("ESCUREL_RUNNER_CHAT_COMPLETIONS_MAX_RETRIES")
+                .filter(|v| !v.trim().is_empty())
+            {
+                None => None,
+                Some(v) => Some(v.trim().parse::<u32>().map_err(|_| {
+                    ConfigError::InvalidProviderSetting {
+                        key: "ESCUREL_RUNNER_CHAT_COMPLETIONS_MAX_RETRIES",
+                        value: v.clone(),
+                        expected: "a non-negative integer",
+                    }
+                })?),
+            };
         let agent_a2a_url = lookup("ESCUREL_RUNNER_AGENT_A2A_URL").filter(|s| !s.is_empty());
         let agent_a2a_audience =
             lookup("ESCUREL_RUNNER_AGENT_A2A_AUDIENCE").filter(|s| !s.is_empty());
@@ -901,6 +1109,12 @@ impl RunnerConfig {
             gemini_vertex_location,
             gemini_metadata_url,
             gemini_max_total_tokens,
+            alibaba,
+            hetzner,
+            openai_compatible,
+            chat_completions_request_timeout,
+            chat_completions_max_retries,
+            chat_completions_retry_backoff,
             agent_a2a_url,
             agent_a2a_audience,
             agy_bin,
@@ -1017,6 +1231,51 @@ mod tests {
         })
         .expect("parses");
         assert_eq!(set.chat_model.as_deref(), Some("gemini-3.5-flash-lite"));
+    }
+
+    #[test]
+    fn openai_presets_are_configured_independently_and_validated() {
+        let unset = RunnerConfig::from_env_with(|_| None).expect("defaults");
+        assert_eq!(unset.alibaba, OpenAiProviderConfig::default());
+        let env = |k: &str| {
+            match k {
+                "ESCUREL_RUNNER_ALIBABA_BASE_URL" => Some(" https://ws.example/v1 "),
+                "ESCUREL_RUNNER_ALIBABA_API_KEY_FILE" => Some("/run/secrets/alibaba"),
+                "ESCUREL_RUNNER_ALIBABA_LONG_MODEL" => Some("qwen3.8-max"),
+                "ESCUREL_RUNNER_ALIBABA_STREAM" => Some("false"),
+                "ESCUREL_RUNNER_HETZNER_TOOLS" => Some("Native"),
+                "ESCUREL_RUNNER_CHAT_COMPLETIONS_RETRY_BACKOFF" => Some("250ms"),
+                "ESCUREL_RUNNER_CHAT_COMPLETIONS_MAX_RETRIES" => Some("0"),
+                _ => None,
+            }
+            .map(str::to_owned)
+        };
+        let c = RunnerConfig::from_env_with(env).expect("parses");
+        assert_eq!(c.alibaba.base_url.as_deref(), Some("https://ws.example/v1"));
+        assert_eq!(
+            c.alibaba.api_key_file.as_deref(),
+            Some("/run/secrets/alibaba")
+        );
+        assert_eq!(c.alibaba.long_model.as_deref(), Some("qwen3.8-max"));
+        assert_eq!(c.alibaba.stream, Some(false));
+        assert_eq!(c.hetzner.tools, Some(ToolSupport::Native));
+        assert_eq!(c.hetzner.base_url, None, "presets do not share settings");
+        assert_eq!(
+            c.chat_completions_retry_backoff,
+            Some(Duration::from_millis(250))
+        );
+        assert_eq!(c.chat_completions_max_retries, Some(0));
+
+        for (key, bad) in [
+            ("ESCUREL_RUNNER_OPENAI_STREAM", "maybe"),
+            ("ESCUREL_RUNNER_HETZNER_TOOLS", "assume"),
+            ("ESCUREL_RUNNER_ALIBABA_MAX_TOTAL_TOKENS", "0"),
+            ("ESCUREL_RUNNER_CHAT_COMPLETIONS_REQUEST_TIMEOUT", "soon"),
+        ] {
+            let err =
+                RunnerConfig::from_env_with(|k| (k == key).then(|| bad.to_owned())).expect_err(key);
+            assert!(err.to_string().contains(key), "{err}");
+        }
     }
 
     #[test]

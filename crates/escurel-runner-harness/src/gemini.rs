@@ -262,19 +262,7 @@ impl GeminiHarness {
         method: &str,
         params: Value,
     ) -> Result<Value, HarnessError> {
-        let body = client
-            .post(&task.mcp_endpoint)
-            .header("authorization", format!("Bearer {}", task.token_str()))
-            .json(&json!({
-                "jsonrpc": "2.0", "id": 1, "method": method, "params": params,
-            }))
-            .send()
-            .await
-            .map_err(|e| Self::upstream(format!("{method}: {e}")))?
-            .json::<Value>()
-            .await
-            .map_err(|e| Self::upstream(format!("{method}: response was not JSON: {e}")))?;
-        Ok(body)
+        crate::mcp::call(client, task, method, params, NAME).await
     }
 
     /// One turn's `usageMetadata` (`promptTokenCount` / `candidatesTokenCount`),
@@ -335,26 +323,9 @@ impl GeminiHarness {
         client: &reqwest::Client,
         task: &TaskContext,
     ) -> Result<Vec<Value>, HarnessError> {
-        let listed = Self::mcp(client, task, "tools/list", json!({}))
-            .await
-            .map_err(|e| HarnessError::Preflight {
-                harness: NAME,
-                message: e.to_string(),
-            })?;
-        let tools =
-            listed["result"]["tools"]
-                .as_array()
-                .ok_or_else(|| HarnessError::Preflight {
-                    harness: NAME,
-                    message: format!("tools/list returned no tools: {listed}"),
-                })?;
-        let decls: Vec<Value> = tools
+        let decls: Vec<Value> = crate::mcp::allowed_tools(client, task, NAME)
+            .await?
             .iter()
-            .filter(|t| {
-                t["name"]
-                    .as_str()
-                    .is_some_and(|n| task.allowed_tools.iter().any(|a| a == n))
-            })
             .map(|t| {
                 json!({
                     "name": t["name"],
@@ -363,16 +334,6 @@ impl GeminiHarness {
                 })
             })
             .collect();
-        if decls.is_empty() {
-            // Fail loudly: an agent with no tools cannot fold an event, and a
-            // model asked to do so will answer with prose that reads like
-            // success. The likeliest cause is a packaged tool name the
-            // gateway does not serve.
-            return Err(Self::upstream(format!(
-                "none of the packaged tools {:?} are advertised by the gateway",
-                task.allowed_tools
-            )));
-        }
         Ok(decls)
     }
 
@@ -574,15 +535,10 @@ impl GeminiHarness {
                 let payload = result["result"]["structuredContent"].clone();
                 // A call landed unless the gateway refused it: `isError`, `ok: false`, or a
                 // JSON-RPC error. (`isError` alone, with no payload flag, used to count as landed.)
-                let landed = result.get("error").is_none()
-                    && escurel_types::call_result::refusal_of(&result["result"]).is_none();
-                if landed
-                    && let Some(page) = args
-                        .get("page_id")
-                        .or_else(|| args.get("target_page_id"))
-                        .and_then(Value::as_str)
+                if crate::mcp::landed(&result)
+                    && let Some(page) = crate::mcp::written_page(&args)
                 {
-                    produced_instance = Some(page.to_owned());
+                    produced_instance = Some(page);
                 }
                 responses.push(json!({
                     "functionResponse": {
