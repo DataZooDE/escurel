@@ -68,8 +68,12 @@ escurel-server.
 | `ESCUREL_AUTH_JWKS_URI_2` | derived from issuer #2 | explicit JWKS URL for the second issuer (e.g. Carl's `<issuer>/jwks.json`) |
 | `ESCUREL_AUTH_OIDC_ISSUER_<N>` | — | further trusted issuers, read as a contiguous `_2.._N` sequence (e.g. `_3` = the escurel-explore BFF's browser auth bridge); a gap stops the scan |
 | `ESCUREL_AUTH_JWKS_URI_<N>` | derived from issuer #N | explicit JWKS URL for the Nth issuer |
-| `ESCUREL_EMBEDDING_PROVIDER` | gemini | `zero`, `gemini`, or `embeddinggemma` (a candle BERT-family sentence-transformer; ONLY in a binary built with `--features embeddinggemma`: the default build and the image refuse to boot with it). `gemini` with no key falls back to zero |
-| `ESCUREL_EMBEDDING_MODEL` | provider default | model id (candle default: `BAAI/bge-base-en-v1.5`, a BERT sentence-transformer — the candle backend has no Gemma3 path yet, see #299) |
+| `ESCUREL_EMBEDDING_PROVIDER` | gemini | `zero`, `gemini`, `alibaba`, `openai-compatible`, or `embeddinggemma` (a candle BERT-family sentence-transformer; ONLY in a binary built with `--features embeddinggemma`: the default build and the image refuse to boot with it). `gemini` with no key falls back to zero; `alibaba`/`openai-compatible` without a key file is a load failure. `hetzner` is refused: it serves no embeddings. Changing the provider or model re-embeds the corpus at the next boot |
+| `ESCUREL_EMBEDDING_OPENAI_BASE_URL` | alibaba: https://dashscope.aliyuncs.com/compatible-mode/v1 | `…/v1` base of the OpenAI-compatible embeddings endpoint (`alibaba`, `openai-compatible`); https, or plain http to loopback only |
+| `ESCUREL_EMBEDDING_OPENAI_API_KEY_FILE` | — (required) | file holding the embeddings API key (a mounted secret); the key itself is never an env var |
+| `ESCUREL_EMBEDDING_OPENAI_BATCH` | alibaba 10, else 16 | texts per `/embeddings` request |
+| `ESCUREL_EMBEDDING_OPENAI_SEND_DIMENSIONS` | true | send `dimensions` (= `ESCUREL_EMBEDDING_DIM`); turn off for a model that rejects it — the returned length is checked either way |
+| `ESCUREL_EMBEDDING_MODEL` | provider default | model id (alibaba default: `text-embedding-v4`; candle default: `BAAI/bge-base-en-v1.5`, a BERT sentence-transformer — the candle backend has no Gemma3 path yet, see #299) |
 | `ESCUREL_EMBEDDING_DEVICE` | cpu | candle device (informational; CPU only today) |
 | `ESCUREL_EMBEDDING_DIM` | 768 | vector dimension |
 | `ESCUREL_EMBEDDER_REQUIRED` | false | when `true`, a failed real-embedder load aborts boot instead of silently degrading to zero-vector (FTS-only) retrieval (#299) |

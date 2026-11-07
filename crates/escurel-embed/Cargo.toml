@@ -17,6 +17,9 @@ default = []
 # `tokio` (timer) and `tracing` are here for the rate-limit backoff:
 # a retry that is invisible in the logs is indistinguishable from a slow API.
 gemini = ["dep:reqwest", "dep:serde", "dep:tokio", "dep:tracing"]
+# The HTTP-backed `OpenAiEmbedder` (any OpenAI-compatible `/embeddings`
+# endpoint, e.g. Alibaba Model Studio's `text-embedding-v4`). Same deps.
+openai = ["dep:reqwest", "dep:serde", "dep:tokio", "dep:tracing"]
 # Pulls in candle + tokenizers + hf-hub for the local-model
 # `CandleEmbedder`. Off by default; heavy compile.
 candle = [

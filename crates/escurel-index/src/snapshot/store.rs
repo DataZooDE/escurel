@@ -134,6 +134,23 @@ impl IndexStore for SingleFileStore {
         // Skill-pack subscription pins: ensure on EVERY boot (idempotent),
         // like the credential registry. Separate canonical input.
         Migrator::ensure_pack_subscriptions(&conn)?;
+        // The embedding model the vectors were computed with, and a re-embed's
+        // staging area: ensure on EVERY boot (idempotent); reconciled by the
+        // server after open (`Indexer::reconcile_embedding_space`).
+        Migrator::ensure_embedding_space(&conn)?;
+        if fresh {
+            // A fresh index is built by THIS embedder (the rebuild below), so
+            // its space is known: recorded now, so the reconcile after open
+            // does not mistake the fresh vectors for ones of unknown origin.
+            conn.execute(
+                "INSERT OR REPLACE INTO embedding_space (singleton, model_id, dim) VALUES (TRUE, ?, ?)",
+                duckdb::params![self.embedder.model_id(), self.embedder.dim() as i64],
+            )
+            .map_err(|source| SnapshotError::DuckdbOpen {
+                path: db_path.display().to_string(),
+                source,
+            })?;
+        }
         // Contextual Retrieval (GH #216): ensure `blocks.context` on EVERY
         // boot (idempotent), so a tenant DB provisioned before the column
         // existed gains it before `refresh_fts` indexes it.

@@ -2401,7 +2401,43 @@ pub(super) async fn tool_embedding_reload(state: &AppState) -> Result<Value, Jso
     let (embedder, model_revision) = factory()
         .await
         .map_err(|e| JsonRpcError::internal(format!("embedding_reload: model load failed: {e}")))?;
-    reload.reload(embedder);
+    // A reload may change the model. The index is brought into the NEW
+    // model's space BEFORE the new model serves queries: re-embedded through
+    // a staging table under the write lock, then activated in the same
+    // critical section. On failure the previous embedder stays active over
+    // the vectors it made. Concurrent reloads and writes serialise on that
+    // lock; the call blocks for the re-embed. A reader serves an adopted lake
+    // whose manifest pins its model, and only swaps.
+    let writer_indexer = if state.reader_mode {
+        None
+    } else {
+        admin_indexer(state).ok()
+    };
+    if let Some(indexer) = writer_indexer {
+        let reload = Arc::clone(reload);
+        // Spawned for the same reason as `rebuild`: a client that gives up
+        // must not cancel a re-embed half way.
+        tokio::spawn(async move {
+            let target = Arc::clone(&embedder);
+            let outcome = indexer
+                .reconcile_embedding_space_with(target.as_ref(), move || reload.reload(embedder))
+                .await;
+            if let Ok(o) = &outcome {
+                crate::config::log_embedding_space(&indexer, o);
+            }
+            outcome
+        })
+        .await
+        .map_err(|e| JsonRpcError::internal(format!("embedding_reload: {e}")))?
+        .map_err(|e| {
+            JsonRpcError::internal(format!(
+                "embedding_reload: re-embedding into the new model failed; the previous \
+                 embedder stays active: {e}"
+            ))
+        })?;
+    } else {
+        reload.reload(embedder);
+    }
     to_value(EmbeddingReloadResponse { model_revision })
 }
 

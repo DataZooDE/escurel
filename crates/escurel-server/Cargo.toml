@@ -33,9 +33,12 @@ live-postgres = []
 #     deployments should set ESCUREL_EMBEDDING_PROVIDER=embeddinggemma (local
 #     candle) or `zero`.
 # `--no-default-features` gives a light, offline, text-only build.
-default = ["kreuzberg", "gemini"]
+default = ["kreuzberg", "gemini", "openai-embeddings"]
 kreuzberg = ["escurel-index/kreuzberg"]
 gemini = ["escurel-embed/gemini"]
+# `openai-embeddings` — the OpenAI-compatible HTTP embedder
+#   (ESCUREL_EMBEDDING_PROVIDER=alibaba | openai-compatible). Same deps as gemini.
+openai-embeddings = ["escurel-embed/openai"]
 # Opt-in backends. Off by default so the dev / test build stays light and the
 # cold-compile cost of the AWS SDK / candle is only paid when selected.
 #   --features s3             → S3-backed LaneStore (Hetzner OS / MinIO)

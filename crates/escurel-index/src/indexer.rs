@@ -1419,12 +1419,24 @@ impl Indexer {
             .iter()
             .map(std::convert::AsRef::as_ref)
             .collect();
-        let embeddings = if chunk_refs.is_empty() {
-            Vec::new()
-        } else {
-            self.embedder.embed(&chunk_refs).await?
+        let embed = || async {
+            if chunk_refs.is_empty() {
+                Ok(Vec::new())
+            } else {
+                self.embedder.embed(&chunk_refs).await
+            }
         };
-        self.write_document_blocks(page_id, overlay_content, chunks, &embeddings)
+        let embedded_with = self.embedder.model_id();
+        let mut embeddings = embed().await?;
+        let _write = self.write_lock.lock().await;
+        // The embed ran before the lock: an `embedding_reload` that swapped
+        // the model in between would leave these vectors in the OLD space
+        // under the new record. Embed again, now that the lock holds the
+        // model still.
+        if self.embedder.model_id() != embedded_with {
+            embeddings = embed().await?;
+        }
+        self.write_document_blocks_locked(page_id, overlay_content, chunks, &embeddings)
             .await
     }
 
@@ -1458,6 +1470,32 @@ impl Indexer {
         }
 
         let _write = self.write_lock.lock().await;
+        self.write_document_blocks_locked(page_id, overlay_content, chunks, vectors)
+            .await
+    }
+
+    /// [`Self::write_document_blocks`] for a caller that holds the write lock.
+    async fn write_document_blocks_locked(
+        &self,
+        page_id: &str,
+        overlay_content: &str,
+        chunks: &[IndexChunk],
+        vectors: &[Vec<f32>],
+    ) -> Result<(), IndexerError> {
+        if vectors.len() != chunks.len() {
+            return Err(IndexerError::EmbedderDimMismatch {
+                expected: chunks.len(),
+                got: vectors.len(),
+            });
+        }
+        for v in vectors {
+            if v.len() != BLOCKS_DENSE_VEC_DIM {
+                return Err(IndexerError::EmbedderDimMismatch {
+                    expected: BLOCKS_DENSE_VEC_DIM,
+                    got: v.len(),
+                });
+            }
+        }
         let parsed = parse(overlay_content)?;
 
         // Canonical markdown first (overlay), as in update_page.

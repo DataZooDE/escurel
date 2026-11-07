@@ -29,6 +29,7 @@ pub mod creds;
 pub mod cursor;
 pub mod drafts;
 pub mod dsn;
+pub mod embedding_space;
 pub mod endpoints;
 pub mod events;
 mod field_rules;

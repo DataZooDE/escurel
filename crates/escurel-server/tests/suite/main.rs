@@ -112,6 +112,7 @@ mod migrate_kind_tool;
 mod mint_agent_token;
 mod multi_issuer_groups;
 mod mysql_refused;
+mod openai_embeddings;
 mod openapi_surface;
 mod ops_visibility;
 mod pack_export;
