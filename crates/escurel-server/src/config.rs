@@ -169,6 +169,79 @@ pub enum EmbeddingProvider {
     Gemini,
     /// Local candle EmbeddingGemma (feature `embeddinggemma`).
     EmbeddingGemma,
+    /// Alibaba Cloud Model Studio, OpenAI-compatible `/embeddings`
+    /// (`text-embedding-v4`; feature `openai-embeddings`).
+    Alibaba,
+    /// Any OpenAI-compatible `/embeddings` endpoint (feature `openai-embeddings`).
+    OpenAiCompatible,
+}
+
+impl EmbeddingProvider {
+    /// The selector value (`ESCUREL_EMBEDDING_PROVIDER`).
+    fn name(self) -> &'static str {
+        match self {
+            Self::Zero => "zero",
+            Self::Gemini => "gemini",
+            Self::EmbeddingGemma => "embeddinggemma",
+            Self::Alibaba => "alibaba",
+            Self::OpenAiCompatible => "openai-compatible",
+        }
+    }
+}
+
+/// Bring `indexer` into its embedder's space and say what happened. A change
+/// of embedding model re-embeds the corpus (logged loudly: it costs a full
+/// pass over the provider); a degraded boot keeps the recorded vectors.
+///
+/// # Errors
+/// The rebuild's error, as an index-open failure.
+pub(crate) async fn reconcile_embedding_space(
+    indexer: &escurel_index::Indexer,
+) -> Result<(), escurel_index::IndexerError> {
+    let outcome = indexer.reconcile_embedding_space().await?;
+    log_embedding_space(indexer, &outcome);
+    Ok(())
+}
+
+/// Say what a reconcile did, in the log an operator reads.
+pub(crate) fn log_embedding_space(
+    indexer: &escurel_index::Indexer,
+    outcome: &escurel_index::embedding_space::EmbeddingSpaceOutcome,
+) {
+    use escurel_index::embedding_space::EmbeddingSpaceOutcome as O;
+    match outcome {
+        O::Recorded | O::Unchanged => {}
+        O::Repaired { blocks } => tracing::info!(
+            target: "escurel",
+            tenant = %indexer.tenant(),
+            blocks,
+            "re-embedded blocks written while the embedder was degraded"
+        ),
+        O::Reembedded {
+            from,
+            blocks,
+            chat_vectors_cleared,
+        } => tracing::warn!(
+            target: "escurel",
+            tenant = %indexer.tenant(),
+            from = from.as_deref().unwrap_or("unrecorded"),
+            blocks,
+            chat_vectors_cleared,
+            "embedding model changed; re-embedded the corpus (vectors from two models are not \
+             comparable){}",
+            if *chat_vectors_cleared {
+                ""
+            } else {
+                "; chat vectors live in a shared table and were NOT cleared — clear them there"
+            }
+        ),
+        O::KeptWhileDegraded { recorded } => tracing::warn!(
+            target: "escurel",
+            tenant = %indexer.tenant(),
+            recorded = %recorded,
+            "embedder is degraded; kept the index's vectors rather than re-embedding into zeros"
+        ),
+    }
 }
 
 /// Parse an `embedding_provider` string (#247 tenant spec / env) into the
@@ -178,6 +251,8 @@ pub(crate) fn parse_embedding_provider(s: &str) -> Option<EmbeddingProvider> {
         "zero" => Some(EmbeddingProvider::Zero),
         "gemini" => Some(EmbeddingProvider::Gemini),
         "embeddinggemma" => Some(EmbeddingProvider::EmbeddingGemma),
+        "alibaba" => Some(EmbeddingProvider::Alibaba),
+        "openai-compatible" => Some(EmbeddingProvider::OpenAiCompatible),
         _ => None,
     }
 }
@@ -601,6 +676,16 @@ pub struct EscurelConfig {
     /// keep working. See #299.
     pub embedder_required: bool,
     pub gemini_api_key: Option<String>,
+    /// `ESCUREL_EMBEDDING_OPENAI_BASE_URL`: the `…/v1` base of an
+    /// OpenAI-compatible embeddings endpoint (alibaba has a default).
+    pub embedding_openai_base_url: Option<String>,
+    /// `ESCUREL_EMBEDDING_OPENAI_API_KEY_FILE`: the file holding its key. The
+    /// key itself is read where the embedder is built, never held here.
+    pub embedding_openai_api_key_file: Option<String>,
+    /// `ESCUREL_EMBEDDING_OPENAI_BATCH`: texts per request (alibaba 10).
+    pub embedding_openai_batch: Option<usize>,
+    /// `ESCUREL_EMBEDDING_OPENAI_SEND_DIMENSIONS`: send `dimensions` (default on).
+    pub embedding_openai_send_dimensions: bool,
     /// Second-stage rerank mode (`[retrieval].rerank`, default-on where the
     /// `rerank` feature is built). `Off` reproduces first-stage-only ranking.
     pub rerank_mode: RerankMode,
@@ -1279,15 +1364,25 @@ impl EscurelConfig {
             toml_cfg.embedding.provider,
             "gemini",
         );
-        let embedding_provider = match provider_str.as_str() {
-            "zero" => EmbeddingProvider::Zero,
-            "gemini" => EmbeddingProvider::Gemini,
-            "embeddinggemma" => EmbeddingProvider::EmbeddingGemma,
-            other => {
+        let embedding_provider = match parse_embedding_provider(provider_str.as_str()) {
+            Some(p) => p,
+            // Said plainly, because the runner DOES take `hetzner`: the chat
+            // and embedding providers are configured independently.
+            None if provider_str == "hetzner" => {
                 return Err(ConfigError::InvalidValue {
                     var: "ESCUREL_EMBEDDING_PROVIDER",
-                    value: other.to_owned(),
-                    reason: "expected `zero`, `gemini`, or `embeddinggemma`",
+                    value: provider_str,
+                    reason: "the Hetzner inference API has no embeddings endpoint; embed with \
+                             `alibaba`, `gemini`, `openai-compatible` or `embeddinggemma` while \
+                             the runner uses `hetzner`",
+                });
+            }
+            None => {
+                return Err(ConfigError::InvalidValue {
+                    var: "ESCUREL_EMBEDDING_PROVIDER",
+                    value: provider_str,
+                    reason: "expected `zero`, `gemini`, `embeddinggemma`, `alibaba` or \
+                             `openai-compatible`",
                 });
             }
         };
@@ -1306,6 +1401,31 @@ impl EscurelConfig {
             None => toml_cfg.embedding.dim.unwrap_or(DEFAULT_DIM),
         };
         let gemini_api_key = env.get("ESCUREL_GEMINI_API_KEY");
+        let embedding_openai_base_url = env
+            .get("ESCUREL_EMBEDDING_OPENAI_BASE_URL")
+            .filter(|v| !v.trim().is_empty());
+        let embedding_openai_api_key_file = env
+            .get("ESCUREL_EMBEDDING_OPENAI_API_KEY_FILE")
+            .filter(|v| !v.trim().is_empty());
+        let embedding_openai_batch = match env.get("ESCUREL_EMBEDDING_OPENAI_BATCH") {
+            Some(raw) if !raw.trim().is_empty() => match raw.trim().parse::<usize>() {
+                Ok(n) if n > 0 => Some(n),
+                _ => {
+                    return Err(ConfigError::InvalidValue {
+                        var: "ESCUREL_EMBEDDING_OPENAI_BATCH",
+                        value: raw,
+                        reason: "expected a positive integer",
+                    });
+                }
+            },
+            _ => None,
+        };
+        let embedding_openai_send_dimensions = !matches!(
+            env.get("ESCUREL_EMBEDDING_OPENAI_SEND_DIMENSIONS")
+                .map(|v| v.trim().to_ascii_lowercase())
+                .as_deref(),
+            Some("0" | "false" | "off" | "no")
+        );
         // #299: opt-in — a failed real-embedder load becomes a fatal boot
         // error rather than a silent zero-vector degrade.
         let embedder_required = match env.get("ESCUREL_EMBEDDER_REQUIRED") {
@@ -1607,6 +1727,10 @@ impl EscurelConfig {
             embedding_dim,
             embedder_required,
             gemini_api_key,
+            embedding_openai_base_url,
+            embedding_openai_api_key_file,
+            embedding_openai_batch,
+            embedding_openai_send_dimensions,
             rerank_mode,
             rerank_candidates,
             rerank_model,
@@ -2103,6 +2227,30 @@ impl EscurelConfig {
                              and serves nothing but `migrate_kind`; run `escurel admin migrate-kind \
                              --tenant {} --apply`",
                             indexer.tenant()
+                        );
+                    }
+                    // The embedding model is part of the index's identity: a
+                    // changed model re-embeds here instead of mixing spaces.
+                    // A failed re-embed leaves the recorded vectors serving, so
+                    // it fails the boot only when the operator required the
+                    // embedder; otherwise it is the degraded start it already is.
+                    if indexer.legacy_quarantine().is_none()
+                        && let Err(error) = reconcile_embedding_space(&indexer).await
+                    {
+                        if self.embedder_required {
+                            return Err(error.into());
+                        }
+                        // Degrade, do not keep the new model: it would embed
+                        // queries and writes in a space the index is not in.
+                        embedder.degrade(self.embedding_dim);
+                        tracing::error!(
+                            target: "escurel",
+                            tenant = %indexer.tenant(),
+                            %error,
+                            "re-embedding into the configured model failed; the embedder is \
+                             DEGRADED (semantic search off, /readyz embedder=false) and the \
+                             index keeps its recorded vectors. The staged vectors are kept; \
+                             `embedding_reload` or the next boot resumes"
                         );
                     }
                     for (page, why) in indexer.skipped_pages() {
@@ -2714,7 +2862,25 @@ impl EscurelConfig {
     fn with_tenant_embedding(&self, spec: Option<&escurel_admin::TenantSpec>) -> Self {
         let mut cfg = self.clone();
         if let Some(ep) = spec.and_then(|s| s.embedding_provider.as_ref()) {
-            if let Some(p) = parse_embedding_provider(&ep.provider) {
+            let p = parse_embedding_provider(&ep.provider);
+            // A tenant spec may not send every page body to an endpoint the
+            // operator never named: an OpenAI-compatible provider from a spec
+            // needs ESCUREL_EMBEDDING_OPENAI_BASE_URL set in the environment
+            // (no fallback to a provider default such as Model Studio Beijing).
+            if matches!(
+                p,
+                Some(EmbeddingProvider::Alibaba | EmbeddingProvider::OpenAiCompatible)
+            ) && self.embedding_openai_base_url.is_none()
+            {
+                tracing::warn!(
+                    target: "escurel",
+                    provider = %ep.provider,
+                    "tenant spec asks for an OpenAI-compatible embedder but \
+                     ESCUREL_EMBEDDING_OPENAI_BASE_URL is unset; keeping the configured provider"
+                );
+                return cfg;
+            }
+            if let Some(p) = p {
                 cfg.embedding_provider = p;
             }
             if let Some(m) = ep.model.clone() {
@@ -2734,11 +2900,7 @@ impl EscurelConfig {
         if let Some(model) = self.embedding_model.as_ref().filter(|m| !m.is_empty()) {
             return model.clone();
         }
-        match self.embedding_provider {
-            EmbeddingProvider::Zero => "zero".to_owned(),
-            EmbeddingProvider::Gemini => "gemini".to_owned(),
-            EmbeddingProvider::EmbeddingGemma => "embeddinggemma".to_owned(),
-        }
+        self.embedding_provider.name().to_owned()
     }
 
     /// Attempt to construct the configured real embedder. The
@@ -2749,7 +2911,88 @@ impl EscurelConfig {
             EmbeddingProvider::Zero => Ok(Arc::new(ZeroEmbedder::new(self.embedding_dim))),
             EmbeddingProvider::Gemini => self.load_gemini(),
             EmbeddingProvider::EmbeddingGemma => self.load_embeddinggemma().await,
+            EmbeddingProvider::Alibaba | EmbeddingProvider::OpenAiCompatible => self.load_openai(),
         }
+    }
+
+    /// An OpenAI-compatible embedder. Unlike the keyless Gemini default, a
+    /// missing key FILE is a load error (degraded start, or a refused boot
+    /// under `ESCUREL_EMBEDDER_REQUIRED`): this provider is chosen on
+    /// purpose, and silently embedding zeros would hide that it is broken.
+    #[cfg(feature = "openai-embeddings")]
+    fn load_openai(&self) -> Result<Arc<dyn Embedder>, ConfigError> {
+        let alibaba = self.embedding_provider == EmbeddingProvider::Alibaba;
+        let provider = self.embedding_provider.name();
+        let missing = |var: &'static str| ConfigError::MissingEmbedderField { provider, var };
+        let base_url = self
+            .embedding_openai_base_url
+            .clone()
+            .or_else(|| {
+                alibaba.then(|| "https://dashscope.aliyuncs.com/compatible-mode/v1".to_owned())
+            })
+            .ok_or_else(|| missing("ESCUREL_EMBEDDING_OPENAI_BASE_URL"))?;
+        let model = self
+            .embedding_model
+            .clone()
+            .filter(|m| !m.trim().is_empty())
+            .or_else(|| alibaba.then(|| "text-embedding-v4".to_owned()))
+            .ok_or_else(|| missing("ESCUREL_EMBEDDING_MODEL"))?;
+        let path = self
+            .embedding_openai_api_key_file
+            .as_deref()
+            .ok_or_else(|| missing("ESCUREL_EMBEDDING_OPENAI_API_KEY_FILE"))?;
+        // The identity names the endpoint for a generic provider: the same
+        // model name at two hosts is not promised to be the same model.
+        let label = if alibaba {
+            provider.to_owned()
+        } else {
+            let host = reqwest::Url::parse(base_url.trim())
+                .ok()
+                .and_then(|u| u.host_str().map(str::to_owned))
+                .unwrap_or_default();
+            format!("{provider}@{host}")
+        };
+        let invalid = |reason: &'static str, value: String| ConfigError::InvalidValue {
+            var: "ESCUREL_EMBEDDING_OPENAI_API_KEY_FILE",
+            value,
+            reason,
+        };
+        // The error names the path, never the content.
+        let key = std::fs::read_to_string(path).map_err(|e| {
+            invalid(
+                "cannot read the API key file",
+                format!("{path} ({})", e.kind()),
+            )
+        })?;
+        let key = key.trim();
+        if key.is_empty() || key.contains(char::is_whitespace) {
+            return Err(invalid(
+                "the API key file is empty or holds more than one token",
+                path.to_owned(),
+            ));
+        }
+        let e =
+            escurel_embed::OpenAiEmbedder::new(label, &base_url, key, model, self.embedding_dim)
+                .map_err(|e| ConfigError::InvalidValue {
+                    var: "ESCUREL_EMBEDDING_OPENAI_BASE_URL",
+                    value: e.to_string(),
+                    reason: "cannot build the OpenAI-compatible embedder",
+                })?
+                .with_max_batch(self.embedding_openai_batch.unwrap_or(if alibaba {
+                    10
+                } else {
+                    16
+                }))
+                .with_send_dimensions(self.embedding_openai_send_dimensions);
+        Ok(Arc::new(e))
+    }
+
+    #[cfg(not(feature = "openai-embeddings"))]
+    fn load_openai(&self) -> Result<Arc<dyn Embedder>, ConfigError> {
+        Err(ConfigError::EmbedderFeatureDisabled {
+            provider: self.embedding_provider.name(),
+            feature: "openai-embeddings",
+        })
     }
 
     #[cfg(feature = "gemini")]

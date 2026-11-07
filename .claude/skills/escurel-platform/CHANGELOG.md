@@ -4,6 +4,14 @@ The skill version tracks the consumer-facing contract, not the Escurel
 binary version. The Escurel repo's checked-out git ref is the true version
 pin (see `SKILL.md` → "How this skill is installed").
 
+## 0.25.27 — OpenAI-compatible runner presets and embeddings
+
+The runner takes `ESCUREL_RUNNER_HARNESS=alibaba | hetzner | openai-compatible`, each configured by its own
+`ESCUREL_RUNNER_<ALIBABA|HETZNER|OPENAI>_*` block with the API key in a file; workflow steps run on the preset's
+`_LONG_MODEL` (references/11, `docs/deploy/llm-providers.md`). The gateway embeds with
+`ESCUREL_EMBEDDING_PROVIDER=alibaba | openai-compatible`; the index records its embedding model and a boot under
+another model re-embeds the corpus instead of mixing vector spaces (references/09).
+
 ## 0.25.26 — chat model and a 24-turn gemini bound
 
 `ESCUREL_RUNNER_CHAT_MODEL` sets the model chat runs use (a skill page's own `model:` still wins); no allow-list entry

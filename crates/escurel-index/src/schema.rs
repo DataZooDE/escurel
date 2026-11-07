@@ -270,6 +270,14 @@ impl Migrator {
         Ok(())
     }
 
+    /// Ensure the one-row `embedding_space` table (the model identity the
+    /// index's vectors were computed with). Idempotent and run on EVERY boot,
+    /// like the other `ensure_*`, so an index provisioned before it gains it.
+    pub fn ensure_embedding_space(conn: &Connection) -> Result<(), MigrationError> {
+        conn.execute_batch(STAGE_22_EMBEDDING_SPACE)?;
+        Ok(())
+    }
+
     /// Ensure the `pack_subscriptions` table (skill-pack pins, REQ-SUB-01)
     /// exists. Idempotent (`CREATE TABLE IF NOT EXISTS`) and run on EVERY
     /// connection like [`Migrator::ensure_external_credentials`]. A SEPARATE
@@ -675,6 +683,7 @@ const STAGE_18_DRAFT_RUN_LINEAGE: &str = include_str!("../sql/0017_drafts_run_li
 const STAGE_19_EVENTS_SEQ: &str = include_str!("../sql/0018_events_seq.sql");
 const STAGE_20_RUN_TOOL_CALLS: &str = include_str!("../sql/0019_run_tool_calls.sql");
 const STAGE_21_BRANCH_PAGE_BASES: &str = include_str!("../sql/0020_branch_page_bases.sql");
+const STAGE_22_EMBEDDING_SPACE: &str = include_str!("../sql/0021_embedding_space.sql");
 
 #[cfg(test)]
 mod tests {

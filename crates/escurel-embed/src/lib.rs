@@ -30,6 +30,8 @@ mod cross_encoder;
 #[cfg(feature = "gemini")]
 mod gemini;
 mod hash;
+#[cfg(feature = "openai")]
+mod openai;
 mod reloadable;
 mod reranker;
 mod zero;
@@ -41,6 +43,8 @@ pub use cross_encoder::CrossEncoderReranker;
 #[cfg(feature = "gemini")]
 pub use gemini::GeminiEmbedder;
 pub use hash::HashEmbedder;
+#[cfg(feature = "openai")]
+pub use openai::OpenAiEmbedder;
 pub use reloadable::ReloadableEmbedder;
 pub use reranker::{Candidate, NoopReranker, Ranked, Reranker};
 pub use zero::ZeroEmbedder;

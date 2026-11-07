@@ -31,6 +31,7 @@ mod ducklake_publish_live;
 mod ducklake_spikes_live;
 mod duckpgq_spike;
 mod embed_lock;
+mod embedding_space;
 mod endpoints;
 mod events;
 mod events_copy_live;

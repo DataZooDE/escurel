@@ -89,9 +89,55 @@ long-model slot.
   token budget cannot be checked. Streaming requests ask for it with
   `stream_options.include_usage`.
 
-## Embeddings
+## Embeddings (`ESCUREL_EMBEDDING_PROVIDER`, gateway)
 
-See the embedding section of [`env.md`](env.md) (`ESCUREL_EMBEDDING_PROVIDER`).
+| provider | endpoint default | model default | key | notes |
+|---|---|---|---|---|
+| `gemini` | Generative Language API | `gemini-embedding-001` | `ESCUREL_GEMINI_API_KEY` | no key: zero vectors (semantic search off) |
+| `alibaba` | `https://dashscope.aliyuncs.com/compatible-mode/v1` (set the workspace URL via `ESCUREL_EMBEDDING_OPENAI_BASE_URL`) | `text-embedding-v4` | `ESCUREL_EMBEDDING_OPENAI_API_KEY_FILE` | 10 texts per request; `dimensions` sent |
+| `openai-compatible` | none — set `ESCUREL_EMBEDDING_OPENAI_BASE_URL` | none — set `ESCUREL_EMBEDDING_MODEL` | `ESCUREL_EMBEDDING_OPENAI_API_KEY_FILE` | 16 per request (`ESCUREL_EMBEDDING_OPENAI_BATCH`); `ESCUREL_EMBEDDING_OPENAI_SEND_DIMENSIONS=false` for a model that rejects `dimensions` |
+| `embeddinggemma` | local (candle) | `BAAI/bge-base-en-v1.5` | none | air-gapped; feature build only |
+| `zero` | — | — | — | development only |
+
+`hetzner` is refused as an embedding provider: the Hetzner Inference API has
+no embeddings endpoint. A deployment that runs its chat on `hetzner` embeds
+with one of the others.
+
+The dimension is fixed at 768 (`ESCUREL_EMBEDDING_DIM`); `text-embedding-v4`
+supports it. A missing key file is a load failure: the gateway boots degraded
+(semantic search off, `/readyz` reports the embedder) or, with
+`ESCUREL_EMBEDDER_REQUIRED=true`, refuses to boot. The key travels as a bearer
+header only and is redacted from errors.
+
+**The embedding model is part of the index's identity.** The index records
+the embedder's model id — `alibaba:text-embedding-v4`, or
+`openai-compatible@<host>:<model>` for a generic endpoint, since the same model
+name at two hosts is not promised to be the same model — and the dimension.
+At boot, and on `embedding_reload`, it is brought into the configured model's
+space:
+
+- **another model recorded, or vectors of unrecorded origin** (an index from
+  before this record existed — the first boot after upgrading pays one
+  re-embed): every block is re-embedded and local chat-message vectors are
+  cleared. Vectors from two models are never mixed;
+- **the same model**: only blocks holding zero vectors — written while the
+  embedder was degraded — are re-embedded;
+- **degraded** (the zero placeholder): nothing is rewritten.
+
+A re-embed never truncates. New vectors are staged per batch and swapped in,
+with the new record, in one transaction once every block has one. A provider
+failure half way leaves the old vectors serving; the boot then continues
+degraded (or refuses, with `ESCUREL_EMBEDDER_REQUIRED=true`), and the next
+attempt resumes from the staged batches. The pass holds the write lock, so
+writes wait for it; `embedding_reload` activates the new model only after the
+re-embed succeeded and blocks until then. Chat vectors in a shared table
+(Postgres, the lake) are not cleared by a replica; the log says so. A DuckLake
+reader refuses a lake whose manifest names another model, as before: publish
+from the re-embedded writer, then point the readers at the new model.
+
+A tenant spec (`tenant.json`) may select `alibaba` or `openai-compatible` only
+when `ESCUREL_EMBEDDING_OPENAI_BASE_URL` is set in the environment: a spec does
+not get to send page bodies to a provider default the operator never named.
 
 ## How to choose
 
@@ -115,5 +161,9 @@ endpoint `https://{WorkspaceId}.cn-beijing.maas.aliyuncs.com/compatible-mode/v1`
 for a deployment unless the provider confirms otherwise.
 
 **Embeddings (gateway).** Vectors from different models are not comparable.
-Changing the embedding model re-embeds the corpus; choose once per tenant and
-change deliberately.
+Changing the embedding model re-embeds the corpus, at the provider's price per
+token; choose once per tenant and change deliberately. Where data residency
+decides the chat provider, it decides the embedding provider too: every page
+body is sent to it. Whether Alibaba's Token Plan covers `text-embedding-v4` is
+not documented (its model list names no embedding model); assume it does not
+and use a pay-as-you-go key.

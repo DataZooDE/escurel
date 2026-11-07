@@ -66,10 +66,16 @@ Three traps worth knowing up front:
   vector is identical, so `search` ranking is meaningless and nothing is
   findable *by meaning* — pages still write, `list_instances` still works,
   and only search is dead, which is the last thing you look at. Fine for a
-  keyless first boot; set `gemini` (+ `ESCUREL_GEMINI_API_KEY`) or
-  `embeddinggemma` the moment you care about search. **Changing provider
-  needs a re-embed** — one boot with `ESCUREL_REBUILD_INDEX_ON_BOOT=always`,
-  or existing pages keep their old vectors.
+  keyless first boot; set `gemini` (+ `ESCUREL_GEMINI_API_KEY`), `alibaba`
+  (+ `ESCUREL_EMBEDDING_OPENAI_API_KEY_FILE`, model `text-embedding-v4`),
+  `openai-compatible` (+ `ESCUREL_EMBEDDING_OPENAI_BASE_URL`, `…_API_KEY_FILE`,
+  `ESCUREL_EMBEDDING_MODEL`) or `embeddinggemma` the moment you care about
+  search. The index records the embedding model it was built with; **a boot
+  under a different provider or model re-embeds the corpus** (a full pass
+  over the provider — plan for its cost) and clears local chat vectors,
+  rather than mixing vectors from two models. A degraded boot (zero
+  placeholder) keeps the recorded vectors. `hetzner` has no embeddings
+  endpoint and is refused here, even where the runner uses it.
 - **`search` scores are reciprocal-rank fusion, not similarity.** The top
   hit is ~0.0164 (= 1/(60+1)) for every query. Rank carries the signal; the
   magnitude does not. Don't threshold on it.
