@@ -48,7 +48,7 @@ use escurel_runner_core::{
 use escurel_runner_core::{DeadLetterReason, RunId, StepTerminal};
 use escurel_runner_harness::{
     AgyHarness, ClaudeHarness, CodexHarness, DelegateHarness, EchoHarness, GeminiHarness, Harness,
-    MuseHarness, RefusingHarness, Usage,
+    MuseHarness, OpenAiCompatHarness, OpenAiPreset, RefusingHarness, Usage,
 };
 use escurel_types::{CaptureEventRequest, Event, ListInboxRequest};
 use hmac::{Hmac, Mac};
@@ -147,6 +147,7 @@ async fn main() -> anyhow::Result<()> {
         otlp_endpoint: std::env::var("ESCUREL_OTLP_ENDPOINT").ok(),
         json_logs: true,
     })?;
+    refuse_misconfigured_presets(&config);
 
     // The durable run ledger — its own SQLite file, the idempotency
     // authority that survives a process restart (#149). Opening it is
@@ -1482,6 +1483,32 @@ fn echo_harness_path() -> String {
         .unwrap_or_else(|| "escurel-echo-harness".to_owned())
 }
 
+/// An OpenAI-compatible preset that cannot run is a refusal to START, not a
+/// run that dead-letters later: checked at boot — before the gateway is
+/// needed — for the configured harness and for every preset a manual start or
+/// a skill may ask for, so a missing key file shows at deploy time rather
+/// than on the first request that needs it.
+fn refuse_misconfigured_presets(config: &RunnerConfig) {
+    for name in std::iter::once(&config.harness).chain(&config.harness_allow) {
+        if let Some(preset) = OpenAiPreset::from_name(name)
+            && let Err(error) = build_openai(config, preset)
+        {
+            tracing::error!(
+                target: "escurel_runner",
+                harness = %name,
+                %error,
+                "the OpenAI-compatible harness is misconfigured; refusing to start rather than \
+                 falling back to the echo harness, which would write stand-in content into a \
+                 real corpus"
+            );
+            // Also to stderr, synchronously: the JSON log writer is buffered,
+            // and `exit` does not wait for it — the reason must not be lost.
+            eprintln!("escurel-runner: harness {name} is misconfigured: {error}");
+            std::process::exit(2);
+        }
+    }
+}
+
 /// Build the configured harness adapter. `echo` is the deterministic real
 /// harness (#151); `claude` drives the real Claude Code CLI (#152); `codex`
 /// drives the real Codex CLI (#153); `agy` drives the Antigravity CLI for
@@ -1600,8 +1627,110 @@ fn configured_model(config: &RunnerConfig, name: &str) -> Option<String> {
         ),
         // The only model `build_harness_named` lets the Vertex arm run.
         "gemini-vertex" => Some("gemini-3.5-flash".to_owned()),
-        _ => None,
+        n => OpenAiPreset::from_name(n).and_then(|p| {
+            openai_settings(config, p)
+                .model
+                .clone()
+                .or_else(|| p.default_model().map(str::to_owned))
+        }),
     }
+}
+
+/// An in-process HTTP harness that meters the model against a token budget.
+/// A failed or abandoned attempt of one leaves the provider's usage unknown,
+/// so it is not retried: a retry could overrun the run's budget.
+fn meters_model(name: &str) -> bool {
+    matches!(name, "gemini" | "gemini-vertex") || OpenAiPreset::from_name(name).is_some()
+}
+
+/// The settings block of an OpenAI-compatible preset.
+fn openai_settings(
+    config: &RunnerConfig,
+    preset: OpenAiPreset,
+) -> &escurel_runner_core::OpenAiProviderConfig {
+    match preset {
+        OpenAiPreset::Alibaba => &config.alibaba,
+        OpenAiPreset::Hetzner => &config.hetzner,
+        OpenAiPreset::Generic => &config.openai_compatible,
+    }
+}
+
+/// The model a LONG run — a workflow step, the runner's multi-step kind —
+/// uses on harness `name`, when it differs from the ordinary one: the
+/// preset's `…_LONG_MODEL`, else its default long model. `None` for every
+/// other harness and when the long model is the ordinary one.
+fn long_model(config: &RunnerConfig, name: &str) -> Option<String> {
+    let preset = OpenAiPreset::from_name(name)?;
+    let long = openai_settings(config, preset)
+        .long_model
+        .clone()
+        .or_else(|| preset.default_long_model().map(str::to_owned))?;
+    (Some(&long) != configured_model(config, name).as_ref()).then_some(long)
+}
+
+/// Which model a run uses, by priority: the skill page's `model:` (within
+/// `ESCUREL_RUNNER_MODEL_ALLOW`), else — for a chat run —
+/// `ESCUREL_RUNNER_CHAT_MODEL`, else — for a workflow step — the harness's
+/// long model, else the harness's configured one. The last two are the
+/// operator's own settings, so they need no allow-list entry.
+fn select_model(
+    config: &RunnerConfig,
+    harness: Arc<dyn Harness>,
+    skill_model: Option<&str>,
+    trigger: &Trigger,
+) -> (Arc<dyn Harness>, Option<String>) {
+    let skill_model = skill_model.map(str::trim).filter(|m| !m.is_empty());
+    if skill_model.is_none() {
+        if let Some(model) = trigger.chat.as_ref().and(config.chat_model.as_deref()) {
+            return override_model(config, harness, model);
+        }
+        if trigger.workflow.is_some()
+            && let Some(model) = long_model(config, harness.name())
+        {
+            return override_model(config, harness, &model);
+        }
+    }
+    apply_skill_model(config, harness, skill_model)
+}
+
+/// Build an OpenAI-compatible preset from the runner's configuration: the API
+/// key is read from its file HERE, so it is never a config field.
+fn build_openai(
+    config: &RunnerConfig,
+    preset: OpenAiPreset,
+) -> Result<OpenAiCompatHarness, escurel_runner_harness::HarnessError> {
+    let c = openai_settings(config, preset);
+    let key_var = match preset {
+        OpenAiPreset::Alibaba => "ESCUREL_RUNNER_ALIBABA_API_KEY_FILE",
+        OpenAiPreset::Hetzner => "ESCUREL_RUNNER_HETZNER_API_KEY_FILE",
+        OpenAiPreset::Generic => "ESCUREL_RUNNER_OPENAI_API_KEY_FILE",
+    };
+    let Some(path) = c.api_key_file.as_deref() else {
+        return Err(escurel_runner_harness::HarnessError::Unsupported {
+            harness: preset.name(),
+            reason: format!("{key_var} is not set"),
+        });
+    };
+    let api_key = escurel_runner_harness::read_api_key_file(preset.name(), path)?;
+    OpenAiCompatHarness::new(
+        preset,
+        escurel_runner_harness::ProviderSettings {
+            base_url: c.base_url.clone(),
+            api_key,
+            model: c.model.clone(),
+            stream: c.stream,
+            tools: c.tools,
+            reasoning_effort: c.reasoning_effort.clone(),
+            max_turns: config.harness_max_turns,
+            max_total_tokens: c.max_total_tokens,
+            // The runner's own bound is the one that matters; the adapter's
+            // must not cut a long-model workflow step short of it.
+            timeout: Some(config.run_timeout.max(config.chat_timeout)),
+            request_timeout: config.chat_completions_request_timeout,
+            max_retries: config.chat_completions_max_retries,
+            retry_backoff: config.chat_completions_retry_backoff,
+        },
+    )
 }
 
 /// Apply a skill page's `model:` to the harness [`resolve_harness`] chose,
@@ -1659,6 +1788,9 @@ fn override_model(
         "agy" => &mut overridden.agy_model,
         "muse" => &mut overridden.muse_model,
         "gemini" => &mut overridden.gemini_model,
+        "alibaba" => &mut overridden.alibaba.model,
+        "hetzner" => &mut overridden.hetzner.model,
+        "openai-compatible" => &mut overridden.openai_compatible.model,
         _ => {
             return (
                 Arc::new(RefusingHarness::model_unsupported(&name, model)),
@@ -1667,6 +1799,17 @@ fn override_model(
         }
     };
     *slot = Some(model.to_owned());
+    if let Some(preset) = OpenAiPreset::from_name(&name) {
+        // Rebuilt (the key file is re-read, so a rotated key is picked up);
+        // a failure is reported as what it is, not as an unsupported model.
+        return match build_openai(&overridden, preset) {
+            Ok(h) => (Arc::new(h), Some(model.to_owned())),
+            Err(error) => (
+                Arc::new(RefusingHarness::unbuildable(&name, error.to_string())),
+                None,
+            ),
+        };
+    }
     match build_harness_named(&overridden, &name) {
         Some(h) => (h, Some(model.to_owned())),
         None => (
@@ -1811,7 +1954,17 @@ fn build_harness_named(config: &RunnerConfig, name: &str) -> Option<Arc<dyn Harn
             }
             Arc::new(h)
         }
-        _ => return None,
+        // A misconfigured preset was refused at boot (`build_harness`); one
+        // that still fails here — a model override, a key file gone since —
+        // is `None`, which fails the run closed rather than running another.
+        n => match OpenAiPreset::from_name(n).map(|p| build_openai(config, p)) {
+            Some(Ok(h)) => Arc::new(h),
+            Some(Err(error)) => {
+                tracing::error!(target: "escurel_runner", harness = %n, %error, "cannot build the OpenAI-compatible harness");
+                return None;
+            }
+            None => return None,
+        },
     };
     Some(built)
 }
@@ -2193,12 +2346,9 @@ async fn dispatch_loop(
         let step_harness = resolve_harness(&config, &harness, &trigger, skill_harness.as_deref());
         // The skill's `model:`, within ESCUREL_RUNNER_MODEL_ALLOW; else, for a
         // chat run, the operator's ESCUREL_RUNNER_CHAT_MODEL.
+        // A workflow step (the multi-step kind) takes the harness's long model.
         let skill_model = skill_contract.as_ref().and_then(|c| c.model.as_deref());
-        let chat_model = trigger.chat.as_ref().and(config.chat_model.as_deref());
-        let (step_harness, step_model) = match (skill_model, chat_model) {
-            (None, Some(model)) => override_model(&config, step_harness, model),
-            _ => apply_skill_model(&config, step_harness, skill_model),
-        };
+        let (step_harness, step_model) = select_model(&config, step_harness, skill_model, &trigger);
         // The run's lifecycle as `escurel:run` events (workbench backend
         // P1): a projection of the ledger for the humans watching the run,
         // best-effort — a refusal is logged and counted, never acted on.
@@ -2254,13 +2404,15 @@ async fn dispatch_loop(
                 sink_ref,
             );
             let bound = config.run_timeout;
-            let gemini_budgeted = matches!(step_harness.name(), "gemini" | "gemini-vertex");
+            // Every in-process HTTP harness meters the model: an abandoned
+            // attempt's usage is unknown, so a retry could overrun the budget.
+            let gemini_budgeted = meters_model(step_harness.name());
             async move {
                 let started_at = escurel_runner_core::now_ts();
                 let result = match tokio::time::timeout(bound, fut).await {
                     Ok(result) => result,
                     Err(_) if gemini_budgeted => Err(ReconcileError::Permanent(format!(
-                        "Gemini usage unknown: run attempt exceeded {}ms and was abandoned",
+                        "model usage unknown: run attempt exceeded {}ms and was abandoned",
                         bound.as_millis()
                     ))),
                     Err(_) => Err(ReconcileError::Transient(format!(
@@ -2883,11 +3035,11 @@ async fn attempt_run(
                 if let Ok(mut s) = sink.lock() {
                     s.last_error = Some(e.to_string());
                 }
-                if matches!(harness.name(), "gemini" | "gemini-vertex")
+                if meters_model(harness.name())
                     && !matches!(e, escurel_runner_harness::HarnessError::Preflight { .. })
                 {
                     return Err(ReconcileError::Permanent(format!(
-                        "Gemini usage unknown after adapter error: {e}"
+                        "model usage unknown after adapter error: {e}"
                     )));
                 }
                 return Err(harness_error_to_reconcile(&e));
@@ -4193,6 +4345,85 @@ mod tests {
             workflow: None,
             content_hash: None,
         }
+    }
+
+    /// The run-kind distinction for the OpenAI-compatible presets: ordinary
+    /// runs take `…_MODEL` (qwen3.8-flash on alibaba), a workflow step — the
+    /// runner's long, multi-step kind — takes `…_LONG_MODEL` (qwen3.8-max), a
+    /// chat run takes `ESCUREL_RUNNER_CHAT_MODEL`, and a skill's own `model:`
+    /// beats all of them within the allow-list.
+    #[test]
+    fn openai_presets_pick_the_model_by_run_kind() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let key = dir.path().join("key");
+        std::fs::write(&key, "sk-test\n").expect("key");
+        let key = key.to_str().expect("utf8").to_owned();
+        let config = RunnerConfig::from_env_with(|k| match k {
+            "ESCUREL_RUNNER_HARNESS" => Some("alibaba".to_owned()),
+            "ESCUREL_RUNNER_ALIBABA_API_KEY_FILE" => Some(key.clone()),
+            "ESCUREL_RUNNER_HETZNER_API_KEY_FILE" => Some(key.clone()),
+            "ESCUREL_RUNNER_CHAT_MODEL" => Some("qwen3.6-flash".to_owned()),
+            "ESCUREL_RUNNER_MODEL_ALLOW" => Some("qwen3.7-plus".to_owned()),
+            _ => None,
+        })
+        .expect("config");
+        let harness = build_harness_named(&config, "alibaba").expect("alibaba builds");
+        assert_eq!(harness.name(), "alibaba");
+
+        let plain = trigger_with_label("01PLAIN", "customer");
+        let mut step = trigger_with_label("01STEP", "customer");
+        step.workflow = Some(escurel_types::WorkflowProvenance::default());
+        let mut chat = trigger_with_label("01CHAT", "customer");
+        chat.chat = Some(escurel_runner_core::ChatContext {
+            chat_group_id: "g".to_owned(),
+            user_msg_id: "m".to_owned(),
+            focus: Vec::new(),
+            asker: Some("u".to_owned()),
+            received_at: std::time::Instant::now(),
+        });
+
+        let model = |t: &Trigger, skill: Option<&str>| {
+            let (h, m) = select_model(&config, Arc::clone(&harness), skill, t);
+            (h.name().to_owned(), m)
+        };
+        assert_eq!(
+            model(&plain, None),
+            ("alibaba".into(), Some("qwen3.8-flash".into()))
+        );
+        assert_eq!(
+            model(&step, None),
+            ("alibaba".into(), Some("qwen3.8-max".into()))
+        );
+        assert_eq!(
+            model(&chat, None),
+            ("alibaba".into(), Some("qwen3.6-flash".into()))
+        );
+        assert_eq!(
+            model(&step, Some("qwen3.7-plus")),
+            ("alibaba".into(), Some("qwen3.7-plus".into()))
+        );
+        // Outside the allow-list a skill's model fails closed.
+        assert_eq!(model(&plain, Some("qwen-unknown")).0, "refusing");
+
+        // A preset without a distinct long model runs its ordinary one.
+        let hetzner = build_harness_named(&config, "hetzner").expect("hetzner builds");
+        let (_, m) = select_model(&config, hetzner, None, &step);
+        assert_eq!(m.as_deref(), Some("Qwen3.8-27B"));
+        // Gemini has no long model.
+        assert_eq!(long_model(&config, "gemini"), None);
+    }
+
+    /// A preset with no key file cannot be built; the run fails closed.
+    #[test]
+    fn an_openai_preset_without_a_key_file_is_not_buildable() {
+        let config = RunnerConfig::from_env_with(|_| None).expect("config");
+        let err = build_openai(&config, OpenAiPreset::Alibaba).expect_err("no key");
+        assert!(
+            err.to_string()
+                .contains("ESCUREL_RUNNER_ALIBABA_API_KEY_FILE is not set"),
+            "{err}"
+        );
+        assert!(build_harness_named(&config, "openai-compatible").is_none());
     }
 
     /// F1: a reserved operation-status event is dropped at the enqueue

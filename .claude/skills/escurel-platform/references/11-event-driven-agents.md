@@ -136,7 +136,7 @@ Key settings (full list in `crates/escurel-runner-core/src/config.rs`):
 |---|---|---|
 | `ESCUREL_RUNNER_LISTEN` | `0.0.0.0:8088` | its own HTTP surface |
 | `ESCUREL_RUNNER_GATEWAY_URL` | `http://127.0.0.1:8080` | the escurel gateway |
-| `ESCUREL_RUNNER_HARNESS` | `echo` | **`echo` is the default — set `claude` or nothing runs an LLM** |
+| `ESCUREL_RUNNER_HARNESS` | `echo` | **`echo` is the default — set `claude`, `gemini`, `alibaba`, … or nothing runs an LLM** |
 | `ESCUREL_RUNNER_CLAUDE_BIN` | `claude` | binary path (or a test stub) |
 | `ESCUREL_RUNNER_POLL_INTERVAL` | `30s` | inbox-poll backstop |
 | `ESCUREL_RUNNER_LEDGER_PATH` | `./escurel-runner-ledger.duckdb` | the runner's durable run ledger (a DuckDB file; a SQLite-era file there is imported once) |
@@ -146,6 +146,7 @@ Key settings (full list in `crates/escurel-runner-core/src/config.rs`):
 | `ESCUREL_RUNNER_MODEL_ALLOW` | empty | the models a skill's `model:` may pick (comma-separated); anything else fails the run closed. The runner's own configured model needs no entry |
 | `ESCUREL_RUNNER_CHAT_MODEL` | unset | the model chat runs use in place of the configured one (a person is waiting, so a fast one), unless the skill page names its own `model:`. Operator-set, so no allow-list entry. A harness without a model slot (`echo`, `gemini-vertex`) fails a chat run closed when it is set |
 | `ESCUREL_RUNNER_GEMINI_MODEL` | `gemini-3.8-flash` | the `gemini` adapter's model |
+| `ESCUREL_RUNNER_HARNESS=alibaba` / `hetzner` / `openai-compatible` | — | the OpenAI-compatible presets (Model Studio Qwen, Hetzner Inference, any endpoint); each reads `ESCUREL_RUNNER_<ALIBABA\|HETZNER\|OPENAI>_{BASE_URL,API_KEY_FILE,MODEL,LONG_MODEL,STREAM,TOOLS,REASONING_EFFORT,MAX_TOTAL_TOKENS}`. The key comes from a **file**; a missing one refuses to start. `_LONG_MODEL` (alibaba default `qwen3.8-max`) runs workflow steps, `_MODEL` (alibaba `qwen3.8-flash`) everything else. `_TOOLS=probe` (hetzner, generic) verifies tool calling once and fails the run permanently without it. See `docs/deploy/llm-providers.md` |
 | `ESCUREL_RUNNER_STATUS_INTERVAL` | `5m` | heartbeat cadence of the runner's `escurel:runner-status` report (a change is reported at once) |
 | `ESCUREL_RUNNER_ID` | `<HOSTNAME>:<pid>` | how this runner names itself in its status reports |
 | `ESCUREL_RUNNER_EMIT_EVENTS` | `true` | write each run's lifecycle as `escurel:run` system events (see *Run lifecycle events*); `false` = the workbench sees events and drafts but no runs |

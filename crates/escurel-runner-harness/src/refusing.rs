@@ -65,6 +65,18 @@ impl RefusingHarness {
         }
     }
 
+    /// A refusing harness for `harness`, which this runner knows but could not
+    /// build for this run (`reason` says why — a key file gone, say).
+    pub fn unbuildable(harness: &str, reason: impl Into<String>) -> Self {
+        Self {
+            reason: Some(format!(
+                "harness `{harness}` could not be built for this run: {}",
+                reason.into()
+            )),
+            declared: harness.to_owned(),
+        }
+    }
+
     /// A refusing harness for a skill whose `model:` names `model` while
     /// the resolved harness `harness` takes no per-run model.
     pub fn model_unsupported(harness: &str, model: impl Into<String>) -> Self {
