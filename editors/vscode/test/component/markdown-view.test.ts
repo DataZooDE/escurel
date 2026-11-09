@@ -1,11 +1,11 @@
 import { expect } from '@open-wc/testing';
 import { render } from 'lit';
-import { renderMarkdown } from '../../webview/shared/markdown-view';
+import { renderMarkdown, type ChartImages } from '../../webview/shared/markdown-view';
 
-function mount(src: string): HTMLElement {
+function mount(src: string, charts?: ChartImages): HTMLElement {
   const host = document.createElement('div');
   document.body.appendChild(host);
-  render(renderMarkdown(src), host);
+  render(renderMarkdown(src, charts), host);
   return host;
 }
 
@@ -83,5 +83,39 @@ describe('renderMarkdown', () => {
     expect(bad!.classList.contains('link-mismatch')).to.equal(true);
     expect(ok!.getAttribute('title')).to.contain('sap.example');
     expect(ok!.classList.contains('link-mismatch')).to.equal(false);
+  });
+
+  describe('charts', () => {
+    const body = '![Rows changed: a 3](evolve-chart:cmp-1/rows_changed)';
+    const resolved: ChartImages = new Map([
+      [
+        'cmp-1/rows_changed',
+        { src: 'data:image/svg+xml;base64,PHN2Zz48L3N2Zz4=', alt: 'Rows changed: a 3' },
+      ],
+    ]);
+
+    it('draws a resolved chart as an image with its description', () => {
+      const host = mount(body, resolved);
+      const img = host.querySelector('figure.chart img') as HTMLImageElement;
+      expect(img.getAttribute('src')).to.equal('data:image/svg+xml;base64,PHN2Zz48L3N2Zz4=');
+      expect(img.getAttribute('alt')).to.equal('Rows changed: a 3');
+    });
+
+    it('shows only the description when the host resolved nothing', () => {
+      const host = mount(body);
+      expect(host.querySelector('img')).to.equal(null);
+      expect(host.textContent).to.contain('Rows changed: a 3');
+    });
+
+    it('does not draw a chart the host did not resolve, even if another one was', () => {
+      const host = mount('![x](evolve-chart:cmp-2/rows_changed)', resolved);
+      expect(host.querySelector('img')).to.equal(null);
+    });
+
+    it('never draws an ordinary image, whatever the resolved map holds', () => {
+      const host = mount('![logo](https://tracker.example/p.gif)', resolved);
+      expect(host.querySelector('img')).to.equal(null);
+      expect(host.textContent).to.contain('logo');
+    });
   });
 });

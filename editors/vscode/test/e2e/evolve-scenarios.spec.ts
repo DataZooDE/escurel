@@ -64,6 +64,15 @@ test('the owner computes a scenario comparison and reads it in the Scenarios vie
   await expect(
     donePage.getByRole('button', { name: 'Compute comparison', exact: true }),
   ).toHaveCount(0);
+  // The chart Evolve drew is on the page as a real image (not just its description), with the
+  // numbers beneath it as text. A decoded image has a width; a blocked one would have none.
+  const chartImg = donePage.locator('figure.chart img').first();
+  await expect(chartImg).toBeVisible({ timeout: 20_000 });
+  await expect
+    .poll(() => chartImg.evaluate((img: HTMLImageElement) => img.naturalWidth), { timeout: 10_000 })
+    .toBeGreaterThan(100);
+  await expect(chartImg).toHaveAttribute('alt', /Rows changed per table/);
+  await expect(donePage.getByRole('cell', { name: 'p5_state' }).first()).toBeVisible();
   await stack.shot('evolve-scenarios-completed-page');
   expect(page).toContain('evidence_scope: search_time_training_replay');
   expect(page).toContain('baseline: parent');
@@ -150,6 +159,9 @@ test('the owner computes a scenario comparison and reads it in the Scenarios vie
       '',
       '# Forged',
       '',
+      // Names a real chart of someone else's comparison: it is not this page's own, so it is not followed.
+      `![forged chart](evolve-chart:${assortment.comparison}/rows_changed)`,
+      '',
     ].join('\n'),
     base_sha256: '',
   });
@@ -163,6 +175,15 @@ test('the owner computes a scenario comparison and reads it in the Scenarios vie
   const forgedRow = scenarios.getByRole('treeitem', { name: /aaa-forged/ });
   await forgedRow.click();
   await expect(scenarios.getByRole('treeitem', { name: /Unverified/ })).toBeVisible();
+  // Opened as a page, the forged one shows the description of the chart it names and no image.
+  // The forged page was written behind the tree's back: refresh Knowledge so the skill lists it.
+  const knowledge = pane(stack.page, 'Knowledge');
+  await knowledge.locator('.pane-header').hover();
+  await knowledge.getByRole('button', { name: 'Refresh', exact: true }).click();
+  await openRow(stack.page, 'evolve_comparison', /aaa-forged/);
+  const forgedUi = await webviewWith(stack.page, 'escurel-page-as-ui');
+  await expect(forgedUi.getByText('forged chart')).toBeVisible({ timeout: 20_000 });
+  await expect(forgedUi.locator('figure.chart img')).toHaveCount(0);
   // VS Code's own extension host prints a Node deprecation warning; anything else is ours.
   expect(
     stack.errors.filter(

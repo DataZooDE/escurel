@@ -226,7 +226,7 @@ function rejectionMessage(status: number): string {
   return `Evolve could not return the comparison (HTTP ${status}).`;
 }
 
-async function fetchPage(
+export async function fetchPage(
   origin: string,
   refresher: TokenRefresher,
   body: Record<string, unknown>,

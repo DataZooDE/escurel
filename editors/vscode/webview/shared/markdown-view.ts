@@ -1,6 +1,21 @@
 import { css, html, type TemplateResult } from 'lit';
 import { hostOf, labelClaimsOtherSite } from '../../src/shared/links';
-import { parseMarkdown, type Block, type Inline } from '../../src/shared/markdown';
+import { chartKey, parseMarkdown, type Block, type Inline } from '../../src/shared/markdown';
+
+/** A chart the host has fetched and checked: a `data:` image and its text description. */
+export interface ChartImage {
+  src: string;
+  alt: string;
+}
+
+/**
+ * Charts the host resolved for this body, by `chartKey`. The webview draws only what is in here and
+ * cannot ask for more: a reference the host did not resolve is shown as its alt text.
+ */
+export type ChartImages = ReadonlyMap<string, ChartImage>;
+
+// Set for the duration of one (synchronous) render; the templates it builds close over nothing else.
+let charts: ChartImages | undefined;
 
 /**
  * Markdown as elements. The tree comes from `parseMarkdown`, which already refuses everything
@@ -8,8 +23,13 @@ import { parseMarkdown, type Block, type Inline } from '../../src/shared/markdow
  * target), and this only builds Lit templates from it: no `unsafeHTML`, no `innerHTML`, so no
  * path from page content to markup.
  */
-export function renderMarkdown(src: string): TemplateResult {
-  return html`${parseMarkdown(src).map(block)}`;
+export function renderMarkdown(src: string, resolved?: ChartImages): TemplateResult {
+  charts = resolved;
+  try {
+    return html`${parseMarkdown(src).map(block)}`;
+  } finally {
+    charts = undefined;
+  }
 }
 
 function plainText(nodes: Inline[]): string {
@@ -21,6 +41,8 @@ function plainText(nodes: Inline[]): string {
           return n.v;
         case 'wikilink':
           return n.label ?? n.target;
+        case 'chart':
+          return n.alt;
         default:
           return plainText(n.c);
       }
@@ -49,6 +71,12 @@ function inline(nodes: Inline[]): TemplateResult[] {
           title=${`Opens ${hostOf(n.href) || n.href}`}
           >${inline(n.c)}</a
         >`;
+      case 'chart': {
+        const image = charts?.get(chartKey(n.comparison, n.chart));
+        // Unresolved (no Evolve, not signed in, failed a check): the description is still there.
+        if (!image) return html`${n.alt}`;
+        return html`<figure class="chart"><img src=${image.src} alt=${image.alt} /></figure>`;
+      }
       case 'wikilink':
         // The webview cannot resolve `[[skill::id]]` (that needs the gateway, and guessing a page id
         // would open the wrong page in a nested corpus), so it says which link was chosen and the
@@ -227,6 +255,20 @@ export const markdownStyles = css`
   .md .wikilink:focus-visible {
     outline: 1px solid var(--vscode-focusBorder);
     outline-offset: 1px;
+  }
+  /* The one colour of its own: Evolve's SVG draws dark text on a transparent background, which is
+     unreadable on a dark theme, so the chart sits on a light panel. */
+  .md figure.chart {
+    margin: 0.6em 0;
+  }
+  .md figure.chart img {
+    display: block;
+    max-width: 100%;
+    height: auto;
+    background: white;
+    padding: 6px;
+    border: 1px solid var(--escurel-border);
+    border-radius: 3px;
   }
   .md .table-wrap {
     overflow-x: auto;

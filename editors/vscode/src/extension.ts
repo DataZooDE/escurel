@@ -10,7 +10,9 @@ import { WikilinkProvider } from './skills/links';
 import { KnowledgeTree } from './views/knowledge';
 import { InboxTree } from './views/inbox';
 import { AwaitingTree } from './views/awaiting';
+import { readConfig } from './config';
 import { PageAsUiEditor } from './editors/pageAsUi';
+import { cachingChartFetcher, fetchChart } from './evolve/chartImage';
 import { SkillPageEditor } from './editors/skillPage';
 import { openPage, resolveCommand, searchCommand } from './commands/search';
 import { ReviewController } from './review';
@@ -255,7 +257,17 @@ export function activate(
       refreshClosed();
     }),
   );
-  PageAsUiEditor.register(context, () => services.client, services.onDidChange, contributions);
+  const charts = cachingChartFetcher((comparison, chart) =>
+    fetchChart(readConfig().evolveEndpoint, services.auth.refresher, comparison, chart),
+  );
+  context.subscriptions.push(services.onDidChange(() => charts.clear()));
+  PageAsUiEditor.register(
+    context,
+    () => services.client,
+    services.onDidChange,
+    contributions,
+    charts.fetch,
+  );
   SkillPageEditor.register(context, () => services.client, services.onDidChange);
 
   context.subscriptions.push(

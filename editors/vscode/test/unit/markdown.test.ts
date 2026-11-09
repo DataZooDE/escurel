@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { parseMarkdown, type Block, type Inline } from '../../src/shared/markdown';
+import { chartRefs, parseMarkdown, type Block, type Inline } from '../../src/shared/markdown';
 
 const text = (v: string): Inline => ({ t: 'text', v });
 const para = (...c: Inline[]): Block => ({ t: 'p', c });
@@ -122,7 +122,7 @@ describe('what it must never do', () => {
   // make sure nothing in it can be a script, a handler or a dangerous URL.
   it('does not link a javascript:, data: or vbscript: target: it stays text', () => {
     for (const href of [
-      'javascript:alert(1)',
+      'javascript:void0',
       'JaVaScRiPt:alert(1)',
       'data:text/html,x',
       'vbscript:x',
@@ -187,5 +187,57 @@ describe('edges that are easy to get wrong', () => {
       para(text('intro')),
       { t: 'ul', items: [[text('one')]] },
     ]);
+  });
+});
+
+describe('chart references', () => {
+  const chart = (comparison: string, name: string, alt: string): Inline => ({
+    t: 'chart',
+    comparison,
+    chart: name,
+    alt,
+  });
+
+  it('keeps a reference to a stored Evolve chart as a chart node, not a URL', () => {
+    expect(parseMarkdown('![Rows changed: a 3](evolve-chart:cmp-1/rows_changed)')[0]).toEqual(
+      para(chart('cmp-1', 'rows_changed', 'Rows changed: a 3')),
+    );
+  });
+
+  it('turns every other image, including look-alikes, into its alt text', () => {
+    for (const target of [
+      'https://x.example/a.svg',
+      'data:image/svg+xml;base64,PHN2Zz4=',
+      'evolve-chart:cmp-1',
+      'evolve-chart:cmp-1/',
+      'evolve-chart:/rows',
+      'evolve-chart:../x/rows',
+      'evolve-chart:cmp-1/Rows',
+      'evolve-chart:cmp-1/a/b',
+      'evolve-chart:cmp 1/rows',
+      `evolve-chart:${'x'.repeat(129)}/rows`,
+      `evolve-chart:cmp-1/${'x'.repeat(65)}`,
+      'EVOLVE-CHART:cmp-1/rows',
+      'javascript:void0',
+    ]) {
+      expect(parseMarkdown(`![alt](${target})`)[0], target).toEqual(para(text('alt')));
+    }
+  });
+
+  it('lists the references in a body once each, in order, wherever they sit', () => {
+    const src = [
+      '![one](evolve-chart:cmp-1/rows_changed)',
+      '',
+      '- ![two](evolve-chart:cmp-1/cost_by_sku)',
+      '',
+      '> ![again](evolve-chart:cmp-1/rows_changed)',
+      '',
+      '![other](https://x.example/a.png)',
+    ].join('\n');
+    expect(chartRefs(src)).toEqual([
+      { comparison: 'cmp-1', chart: 'rows_changed' },
+      { comparison: 'cmp-1', chart: 'cost_by_sku' },
+    ]);
+    expect(chartRefs('no charts here')).toEqual([]);
   });
 });
