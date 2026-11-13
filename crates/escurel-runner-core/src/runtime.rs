@@ -511,17 +511,34 @@ impl RuntimeGate {
         }
     }
 
-    /// The gateway will not let this identity claim. In a fleet that is a
-    /// misconfigured member, and running the event anyway would race the
-    /// runner that holds it: take nothing, and say how to fix it.
+    /// The gateway will not let this identity claim. A fleet member (labels,
+    /// or exclusive) is then misconfigured, and running the event anyway
+    /// would race the runner that holds it: it takes nothing. A lone runner
+    /// (no labels, not exclusive) on a non-admin credential is the
+    /// single-runner deployment the claim layer must not break: it runs as
+    /// before, and is told that a second runner on such a credential would
+    /// not be coordinated.
     fn forbidden(&self, event_id: &str, e: &dyn std::fmt::Display) -> Admit {
+        if self.is_lone() {
+            self.tell_once("\0claim-forbidden", || {
+                tracing::error!(
+                    target: "escurel_runner",
+                    event_id,
+                    error = %e,
+                    "claim_event refused: the runner credential needs escurel:admin to claim; \
+                     running as a lone runner (the ledger alone decides) — a second runner on \
+                     this tenant would run the same events (logged once)"
+                );
+            });
+            return Admit::Take;
+        }
         self.tell_once("\0claim-forbidden", || {
             tracing::error!(
                 target: "escurel_runner",
                 event_id,
                 error = %e,
                 "claim_event refused: the runner credential needs escurel:admin to claim; \
-                 this runner takes no inbox work until it has it (logged once)"
+                 this labelled/exclusive runner takes no inbox work until it has it (logged once)"
             );
         });
         Admit::Refused
