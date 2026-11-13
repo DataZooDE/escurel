@@ -320,3 +320,51 @@ async fn thousands_of_unrelated_events_under_the_label_do_not_spend_the_budget()
     );
     assert!(fired.len() <= 3, "and it still holds: {fired:?}");
 }
+
+/// A malformed `schedule_budget:` fails CLOSED (crew review PR-1, F8): nothing fires, and every
+/// window files `run-skipped { reason: "invalid_budget" }`. `runs_per_day: 0` used to read as "no
+/// cap". Written through `update_page`: validate flags it, but validate is not a write gate.
+#[tokio::test]
+async fn a_malformed_budget_fires_nothing_and_says_why() {
+    let gw = gateway(&[]).await;
+    let page = "---\nkind: skill\nid: broke\ndescription: Bad budget.\nautonomy: auto\n\
+        schedule: \"*/2 * * * * *\"\nschedule_budget: {runs_per_day: 0}\n---\n# broke\n";
+    call(
+        &gw,
+        "update_page",
+        json!({ "page_id": "markdown/skills/broke.md", "content": page }),
+    )
+    .await;
+    let listed = call(&gw, "list_skills", json!({})).await;
+    let broke = listed["skills"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["id"] == "broke")
+        .cloned()
+        .unwrap_or_else(|| panic!("{listed}"));
+    assert_eq!(
+        broke["schedule_budget"],
+        json!({ "runs_per_day": 0, "invalid": true }),
+        "{broke}"
+    );
+
+    let _runner = spawn_runner(&gw).await;
+    tokio::time::sleep(Duration::from_secs(4)).await;
+    assert!(
+        trigger_windows(&gw, "broke").await.is_empty(),
+        "a malformed budget must not fire"
+    );
+    let skipped: Vec<Value> = events_under(&gw, "escurel:run")
+        .await
+        .into_iter()
+        .filter(|e| {
+            e["event_id"]
+                .as_str()
+                .is_some_and(|id| id.starts_with("sched:broke:") && id.ends_with(":skipped"))
+        })
+        .collect();
+    assert!(!skipped.is_empty(), "the refusal is visible");
+    let body: Value = serde_json::from_str(skipped[0]["body"].as_str().unwrap()).unwrap();
+    assert_eq!(body["reason"], "invalid_budget", "{body}");
+}

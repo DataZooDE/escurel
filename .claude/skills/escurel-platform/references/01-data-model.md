@@ -53,7 +53,9 @@ optional; reported on `list_skills`, linted by `validate`):
   non-string, an unknown zone or a malformed expression is an error (`schedule_invalid`).
   `schedule_budget: {runs_per_day: <positive integer>}` caps the triggers whose window starts on one
   UTC day; malformed is an error (`schedule_budget_invalid`), an unknown sub-key or a budget without a
-  `schedule:` is a warning under the same code. Both reach `list_skills` as written. How the windows
+  `schedule:` is a warning under the same code. A malformed budget fails CLOSED at the runner: it
+  reaches `list_skills` as `{runs_per_day: 0, invalid: true}` and the runner fires no window, filing
+  `run-skipped { reason: "invalid_budget" }` for each instead — never an uncapped schedule. Both reach `list_skills` as written. How the windows
   fire (no backfill, the skipped record) is in references/11 *Scheduled triggers*.
 - `generated:`, `verified:`, `status:`, `stale_after:`, `sources:` — the OKF provenance keys, all optional and
   lint-only (a malformed one is a warning). They reach `list_skills` as written; `stale_after` is an
@@ -556,6 +558,10 @@ malformed scope grants nothing, so it is an error) and
 `agent:` is `agent_invalid` (error), an agent with no page is
 `agent_unresolved` and one that does not list the skill is
 `agent_skill_not_listed` (warnings — the skill's runs are refused until fixed).
+`validate` is not a write gate, so the runner fails closed on its own: an
+agent whose `max_concurrent:` is present but not a positive whole number
+(`0`, `"2"`, `-1`) has its runs **refused** (dead-lettered, the error naming
+the key), never run uncapped.
 How the token and the gateway enforce it: references/08.
 
 ## Pages with rendered views: always carry a text alternative

@@ -478,3 +478,38 @@ async fn recovery_resolves_the_agent_a_fresh_run_would() {
         "{finished}"
     );
 }
+
+/// A malformed `max_concurrent:` fails CLOSED (crew review PR-1, F8): the agent's runs are refused,
+/// visibly, instead of running uncapped. `max_concurrent: 0` used to read as "no cap".
+#[tokio::test]
+async fn an_agent_with_a_malformed_max_concurrent_is_refused_not_run_uncapped() {
+    const LOOSE: &str = "---\nkind: instance\nskill: agent\nid: loose\nharness: echo\n\
+        skills: [\"[[skill::capless]]\"]\nmax_concurrent: 0\n---\n# loose\n";
+    const CAPLESS: &str = "---\nkind: skill\nid: capless\nautonomy: auto\n\
+        agent: \"[[agent::loose]]\"\nacl:\n  create: [ops]\n  update: [ops]\n---\n\
+        # capless\n\nFold the event into the instance.\n";
+    let gw = EscurelProcess::spawn(Opts {
+        auth: AuthMode::TestIssuer,
+        config_overrides: ConfigOverrides {
+            write_acl: Some(WriteAclMode::Enforce),
+            ..Default::default()
+        },
+        fixtures: Some(
+            FixtureBuilder::new()
+                .tenant(TENANT)
+                .skill("capless", CAPLESS)
+                .instance("capless", "c1", instance_body("capless").as_str())
+                .instance("agent", "loose", LOOSE)
+                .done(),
+        ),
+    })
+    .await;
+    let (mut runner, listen) = spawn_runner(&gw);
+    let e = capture(&gw, "capless").await;
+    let (status, _) = await_terminal(&mut runner, &listen, &e).await;
+    assert_eq!(status, "dead_letter", "refused, not run uncapped");
+    assert!(
+        !writer_of(&gw, "capless").await.0,
+        "the instance must be untouched"
+    );
+}

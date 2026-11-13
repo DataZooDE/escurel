@@ -645,6 +645,12 @@ pub struct Skill {
 #[serde(default)]
 pub struct ScheduleBudget {
     pub runs_per_day: u32,
+    /// The page declares a budget that cannot be read (`0`, a string, an
+    /// overflow, no `runs_per_day`). Fails CLOSED: `runs_per_day` is then `0`
+    /// and the runner fires nothing, filing `run-skipped { reason:
+    /// "invalid_budget" }` instead. A malformed cap must never read as no cap.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub invalid: bool,
 }
 
 /// One block of a skill's declared instance layout (`blocks:`). MCP wire

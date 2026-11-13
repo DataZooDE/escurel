@@ -749,12 +749,26 @@ fn parse_cascade(fm: &serde_json::Value) -> Option<CascadePolicy> {
     })
 }
 
-/// Project `schedule_budget: {runs_per_day: N}`. A count that is not a positive `u32` is dropped
-/// (as if undeclared) — `check_schedule` is what tells the author.
+/// Project `schedule_budget: {runs_per_day: N}`. A budget that is declared but not a positive `u32`
+/// is carried as `invalid` (and a cap of `0`), never dropped: dropping it would read a malformed cap
+/// as no cap. `check_schedule` is what tells the author.
 fn parse_schedule_budget(fm: &serde_json::Value) -> Option<escurel_types::ScheduleBudget> {
-    let n = fm.get("schedule_budget")?.get("runs_per_day")?.as_u64()?;
-    let runs_per_day = u32::try_from(n).ok().filter(|n| *n > 0)?;
-    Some(escurel_types::ScheduleBudget { runs_per_day })
+    let declared = fm.get("schedule_budget").filter(|v| !v.is_null())?;
+    let runs_per_day = declared
+        .get("runs_per_day")
+        .and_then(serde_json::Value::as_u64)
+        .and_then(|n| u32::try_from(n).ok())
+        .filter(|n| *n > 0);
+    Some(match runs_per_day {
+        Some(runs_per_day) => escurel_types::ScheduleBudget {
+            runs_per_day,
+            invalid: false,
+        },
+        None => escurel_types::ScheduleBudget {
+            runs_per_day: 0,
+            invalid: true,
+        },
+    })
 }
 
 /// Project `autonomy:` from a skill page's indexed frontmatter.

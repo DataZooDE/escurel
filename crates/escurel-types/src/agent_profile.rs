@@ -52,6 +52,10 @@ pub struct AgentProfile {
     /// `scopes.write`: page-id globs; `None` = no extra write restriction.
     pub write: Option<Vec<String>>,
     pub max_concurrent: Option<u32>,
+    /// `max_concurrent:` is present but not a positive whole number. Fails
+    /// CLOSED: the runner refuses this agent's runs (visibly, naming the key)
+    /// rather than running them uncapped.
+    pub max_concurrent_invalid: bool,
 }
 
 impl AgentProfile {
@@ -79,6 +83,9 @@ impl AgentProfile {
                 .and_then(Value::as_u64)
                 .filter(|n| *n > 0)
                 .map(|n| u32::try_from(n).unwrap_or(u32::MAX)),
+            max_concurrent_invalid: fm
+                .get("max_concurrent")
+                .is_some_and(|v| v.as_u64().is_none_or(|n| n == 0)),
         }
     }
 

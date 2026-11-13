@@ -71,6 +71,9 @@ pub struct ScheduleEntry {
     pub cadence: Cadence,
     /// `schedule_budget.runs_per_day`; `None` = unbounded.
     pub runs_per_day: Option<u32>,
+    /// The declared budget is malformed: nothing fires (fail closed), each
+    /// window files `run-skipped { reason: "invalid_budget" }`.
+    pub budget_invalid: bool,
     /// A workflow skill: its trigger names a `workflow-run` page and the
     /// workflow invocation the driver expects.
     pub workflow: bool,
@@ -89,6 +92,7 @@ impl ScheduleEntry {
             skill: skill.id.clone(),
             cadence: Cadence::Cron(Box::new(cron)),
             runs_per_day: skill.schedule_budget.map(|b| b.runs_per_day),
+            budget_invalid: skill.schedule_budget.is_some_and(|b| b.invalid),
             workflow: skill.backend.kind == WORKFLOW_BACKEND,
             source: ScheduleSource::Frontmatter,
             grace,
@@ -103,6 +107,7 @@ impl ScheduleEntry {
             skill: "lint".to_owned(),
             cadence: Cadence::Every(interval.as_secs().max(1)),
             runs_per_day: None,
+            budget_invalid: false,
             workflow: true,
             source: ScheduleSource::LintInterval {
                 tenant: tenant.to_owned(),
@@ -207,9 +212,15 @@ impl ScheduleEntry {
         }
     }
 
-    /// The `run-skipped` record filed in place of a trigger past the budget.
+    /// The `run-skipped` record filed in place of a trigger: past the budget
+    /// (`reason: "budget"`), or under a malformed one (`"invalid_budget"`).
     #[must_use]
-    pub fn skipped(&self, window: DateTime<Utc>, runs_per_day: u32) -> CaptureEventRequest {
+    pub fn skipped(
+        &self,
+        window: DateTime<Utc>,
+        reason: &str,
+        runs_per_day: u32,
+    ) -> CaptureEventRequest {
         let trigger = self.event_id(window);
         CaptureEventRequest {
             event_id: format!("{trigger}:skipped"),
@@ -218,7 +229,7 @@ impl ScheduleEntry {
             label_skill: RUN_EVENT_LABEL.to_owned(),
             title: "run-skipped".to_owned(),
             body: json!({
-                "reason": "budget",
+                "reason": reason,
                 "runs_per_day": runs_per_day,
                 "skill": self.skill,
                 "trigger_event_id": trigger,
@@ -346,10 +357,16 @@ async fn fire(
     entry: &ScheduleEntry,
     window: DateTime<Utc>,
 ) -> Result<TickOutcome, Error> {
+    if entry.budget_invalid {
+        let req = entry.skipped(window, "invalid_budget", 0);
+        let id = req.event_id.clone();
+        client.capture_event(req).await?;
+        return Ok(TickOutcome::Skipped(id));
+    }
     if let Some(cap) = entry.runs_per_day
         && fired_today(client, entry, window, cap).await? >= cap
     {
-        let req = entry.skipped(window, cap);
+        let req = entry.skipped(window, "budget", cap);
         let id = req.event_id.clone();
         client.capture_event(req).await?;
         return Ok(TickOutcome::Skipped(id));
@@ -438,7 +455,10 @@ mod tests {
         Skill {
             id: id.to_owned(),
             schedule: Some(schedule.to_owned()),
-            schedule_budget: Some(ScheduleBudget { runs_per_day: 3 }),
+            schedule_budget: Some(ScheduleBudget {
+                runs_per_day: 3,
+                invalid: false,
+            }),
             backend: SkillBackend {
                 kind: backend.to_owned(),
                 ..Default::default()
@@ -527,7 +547,7 @@ mod tests {
             .unwrap()
             .unwrap();
         let w = utc("2026-11-13T07:00:00Z");
-        let s = e.skipped(w, 3);
+        let s = e.skipped(w, "budget", 3);
         assert_eq!(s.event_id, "sched:digest:2026-11-13T07:00:00Z:skipped");
         assert_eq!(s.label_skill, RUN_EVENT_LABEL);
         assert_eq!(s.kind, "system");

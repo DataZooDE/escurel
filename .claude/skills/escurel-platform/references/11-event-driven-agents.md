@@ -474,7 +474,9 @@ for the runner's own identity, so nobody else can file one. At `N`
 it fires nothing and files instead an `escurel:run` `kind: system` event
 titled `run-skipped`, id `<trigger id>:skipped`, body `{reason: "budget",
 runs_per_day, skill, trigger_event_id, window_start}` — an exhausted
-budget is visible, never silence. Several runners on one tenant each check
+budget is visible, never silence. A malformed budget (`runs_per_day: 0`, a
+string, no count) fails closed: no window fires, each files the same
+record with `reason: "invalid_budget"`. Several runners on one tenant each check
 and then capture, so on a boundary they can overshoot the cap by up to one
 trigger each: the budget is a cost guard, not an exact quota (accepted).
 

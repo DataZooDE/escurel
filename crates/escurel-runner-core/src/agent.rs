@@ -121,9 +121,25 @@ async fn load(client: &Client, id: &str) -> Result<Option<AgentProfile>, escurel
     Ok(usable.then(|| AgentProfile::from_frontmatter(id, &page.frontmatter)))
 }
 
-/// The pure half of [`choose_agent`].
+/// The pure half of [`choose_agent`]. An agent whose `max_concurrent:` is
+/// malformed is refused, never run uncapped.
 #[must_use]
 pub fn decide(
+    skill: &str,
+    requested: Option<(&str, Option<AgentProfile>)>,
+    default: Option<(&str, Option<AgentProfile>)>,
+) -> AgentChoice {
+    match pick(skill, requested, default) {
+        AgentChoice::Agent(p) if p.max_concurrent_invalid => AgentChoice::Refused(format!(
+            "agent `{}` declares a `max_concurrent:` that is not a positive whole number; \
+             refusing its runs rather than running them uncapped",
+            p.id
+        )),
+        other => other,
+    }
+}
+
+fn pick(
     skill: &str,
     requested: Option<(&str, Option<AgentProfile>)>,
     default: Option<(&str, Option<AgentProfile>)>,
@@ -238,6 +254,35 @@ mod tests {
         assert_eq!(
             choose_agent(&client, "note", None, None).await.unwrap(),
             AgentChoice::None
+        );
+    }
+
+    #[test]
+    fn an_agent_with_a_malformed_max_concurrent_is_refused_not_uncapped() {
+        for bad in [json!(0), json!("2"), json!(-1)] {
+            let p = AgentProfile::from_frontmatter(
+                "a",
+                &json!({ "skills": ["[[skill::note]]"], "max_concurrent": bad }),
+            );
+            assert!(p.max_concurrent_invalid, "{bad}");
+            assert!(matches!(
+                decide("note", None, Some(("a", Some(p.clone())))),
+                AgentChoice::Refused(_)
+            ));
+            assert!(matches!(
+                decide("note", Some(("a", Some(p))), None),
+                AgentChoice::Refused(_)
+            ));
+        }
+        let ok = AgentProfile::from_frontmatter(
+            "a",
+            &json!({ "skills": ["[[skill::note]]"], "max_concurrent": 2 }),
+        );
+        assert!(!ok.max_concurrent_invalid);
+        assert!(
+            decide("note", None, Some(("a", Some(ok))))
+                .profile()
+                .is_some()
         );
     }
 
