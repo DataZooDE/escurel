@@ -1279,3 +1279,85 @@ async fn collection_never_touches_a_live_runner_or_other_labels_or_legacy_rows()
         "the user event stays in the inbox (system rows never listed there)"
     );
 }
+
+/// One `run-finished` row at `at`, shaped as the runner files it.
+fn run_finished_at(run: &str, at: &str, skill: &str, cost: f64) -> NewEvent {
+    NewEvent {
+        event_id: Some(format!("run:{run}:finished")),
+        at: Some(at.to_owned()),
+        source: "escurel-runner".to_owned(),
+        mime: "application/json".to_owned(),
+        label_skill: "escurel:run".to_owned(),
+        title: "run-finished".to_owned(),
+        body: serde_json::json!({ "status": "processed",
+            "usage": { "input_tokens": 1, "output_tokens": 2, "cost_usd": cost, "model": "m" } })
+        .to_string(),
+        provenance: Some(serde_json::json!({ "runner": { "run_id": run, "skill": skill } })),
+        kind: escurel_index::EventKind::System,
+        run_id: Some(run.to_owned()),
+        ..Default::default()
+    }
+}
+
+/// #821: `since` (inclusive) / `until` (exclusive) bound a listing by `at`,
+/// across pages, and `usage_report` folds exactly the window.
+#[tokio::test]
+async fn a_time_window_bounds_the_listing_and_the_usage_report() {
+    use escurel_index::{EventListFilter, UsageDim, UsageFold};
+    let h = fresh_harness();
+    for (run, at, skill) in [
+        ("r0", "2026-09-30T23:59:59Z", "a"),
+        ("r1", "2026-10-01T00:00:00Z", "a"),
+        ("r2", "2026-10-01T12:00:00Z", "b"),
+        ("r3", "2026-10-01T23:59:59.5Z", "a"),
+        ("r4", "2026-10-02T00:00:00Z", "b"),
+    ] {
+        h.indexer
+            .capture_event(run_finished_at(run, at, skill, 0.25))
+            .await
+            .unwrap();
+    }
+    let ts = |s: &str| {
+        chrono::DateTime::parse_from_rfc3339(s)
+            .unwrap()
+            .with_timezone(&chrono::Utc)
+    };
+    let filter = EventListFilter {
+        label_skill: Some("escurel:run".to_owned()),
+        include_system: true,
+        since: Some(ts("2026-10-01T00:00:00Z")),
+        until: Some(ts("2026-10-02T00:00:00Z")),
+        ..Default::default()
+    };
+    // Page size 1: the window holds across the cursor.
+    let mut seen = Vec::new();
+    let mut cursor: Option<String> = None;
+    loop {
+        let page = h
+            .indexer
+            .list_events_filtered_page(&filter, true, 1, cursor.as_deref())
+            .await
+            .unwrap();
+        seen.extend(page.events.iter().map(|e| e.run_id.clone().unwrap()));
+        match page.next_cursor {
+            Some(c) => cursor = Some(c),
+            None => break,
+        }
+    }
+    assert_eq!(seen, ["r1", "r2", "r3"]);
+
+    let fold = h
+        .indexer
+        .usage_report(
+            filter.since,
+            filter.until,
+            UsageFold::new(&[UsageDim::Skill], None),
+        )
+        .await
+        .unwrap();
+    let out = fold.to_json();
+    assert_eq!(out["total"]["runs"], serde_json::json!(3), "{out}");
+    assert_eq!(out["total"]["cost_usd"], serde_json::json!(0.75), "{out}");
+    assert_eq!(out["rows"][0]["group"], serde_json::json!({ "skill": "a" }));
+    assert_eq!(out["rows"][0]["runs"], serde_json::json!(2));
+}

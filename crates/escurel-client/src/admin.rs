@@ -41,6 +41,7 @@ pub use escurel_types::{
     TenantCreateRequest, TenantCreateResponse, TenantDeleteRequest, TenantDeleteResponse,
     TenantExportRequest, TenantGetRequest, TenantGetResponse, TenantImportResponse,
     TenantListRequest, TenantListResponse, TenantUpdateRequest, TenantUpdateResponse,
+    UsageReportRequest, UsageReportResponse, UsageTotals,
 };
 
 /// Typed MCP-over-HTTP client for the Escurel v1 **admin** surface.
@@ -213,6 +214,25 @@ impl AdminClient {
             args["keep_latest"] = json!(n);
         }
         self.transport.call_typed("admin_purge_events", args).await
+    }
+
+    /// Usage and cost rolled up from `run-finished` (#821), grouped by
+    /// `req.group_by` over `[since, until)`; see [`UsageReportRequest`].
+    pub async fn usage_report(
+        &self,
+        req: UsageReportRequest,
+    ) -> Result<UsageReportResponse, Error> {
+        let mut args = json!({ "group_by": req.group_by });
+        for (key, value) in [
+            ("since", &req.since),
+            ("until", &req.until),
+            ("skill", &req.skill),
+        ] {
+            if !value.is_empty() {
+                args[key] = json!(value);
+            }
+        }
+        self.transport.call_typed("usage_report", args).await
     }
 
     /// Attach an external read-only source to the gateway's tenant. The

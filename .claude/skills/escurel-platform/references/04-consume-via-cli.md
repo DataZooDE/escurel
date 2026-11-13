@@ -74,6 +74,8 @@ escurel event capture --source gmail --mime message/rfc822 --label-skill meeting
                       --title "Kickoff" --instance <page_id>       # body on stdin unless --body
 escurel event inbox  --limit 50
 escurel event list   --instance <page_id> --limit 50
+escurel event list   --label escurel:run --since 2026-10-01T00:00:00Z --until 2026-11-01T00:00:00Z   # a time window on `at`
+escurel run usage    --since 2026-10-01T00:00:00Z --group-by skill,model   # admin: usage + cost rolled up from run-finished
 escurel event assign --event <event_id> --instance <page_id>
 
 # per-chat-group conversation history
@@ -128,11 +130,12 @@ escurel admin pack submit-promotion --tenant acme --candidate-id acme-candidate 
 | `provenance drift\|abandoned` | `provenance_report` (`kind: "drift"` / `"abandoned"`; both return `{kind, rows}` — the abandoned key changed from `nodes` to `rows`) |
 | `ui` | — (client-side TUI over the read tools) |
 | `query instance` | `query_instance` (accepts `query_id` as an alias for `ref`; `query run` and its `run_stored_query` tool are gone) |
-| `event capture\|inbox\|list\|assign` | `capture_event` / `list_inbox` / `list_events` / `assign_event` (`event list --instance \| --root-event \| --run \| --label`, `--include-system` on `inbox`/`list`, `list --newest-first`, `capture --kind`) |
+| `event capture\|inbox\|list\|assign` | `capture_event` / `list_inbox` / `list_events` / `assign_event` (`event list --instance \| --root-event \| --run \| --label`, `--include-system` on `inbox`/`list`, `list --newest-first`, `list --since/--until <RFC3339>`, `capture --kind`) |
 | `run progress` | `report_progress` (needs a run-bound bearer; `--step <step>=<status>`, repeatable) |
 | `run mint-token` | `mint_agent_token` (`--skill`, `--root-event`, `--target`, `--ttl-secs`) |
 | `run tool-calls` | `get_run_tool_calls` (`--run`, `--limit`, `--after <seq>`) |
 | `run transcript` | `fetch_blob {run_id}` (`--run`) — the run's transcript, decoded: `{run_id, records:[…]}` |
+| `run usage` | `usage_report` (admin bearer; `--group-by skill,agent,page,model,day`, `--since`, `--until`, `--skill`) |
 | `run lineage` | `list_lineage` (`--root-event <id> [--include events|runs|drafts|tool_calls]… [--limit N] [--cursor]`) |
 | `chat append` / `chat list` | `append_message` / `list_messages` |
 | `session open [<page>] [--draft <id>]\|apply\|close` | `open_session` / `apply_op` / `close_session` |

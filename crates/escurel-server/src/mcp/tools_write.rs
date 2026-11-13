@@ -3322,6 +3322,24 @@ pub(super) struct ListEventsArgs {
     /// latest row (the workbench reads `escurel:runner-status` this way).
     #[serde(default)]
     newest_first: bool,
+    /// RFC 3339: only events at or after this `at`.
+    #[serde(default)]
+    since: Option<String>,
+    /// RFC 3339: only events before this `at` (exclusive).
+    #[serde(default)]
+    until: Option<String>,
+}
+
+/// An optional RFC 3339 tool argument, in UTC; empty reads as absent.
+pub(super) fn time_arg(
+    tool: &str,
+    field: &str,
+    raw: Option<&str>,
+) -> Result<Option<escurel_index::EventTs>, JsonRpcError> {
+    raw.filter(|s| !s.trim().is_empty())
+        .map(|s| escurel_index::parse_rfc3339_utc(s, &format!("`{field}`")))
+        .transpose()
+        .map_err(|e| JsonRpcError::invalid_params(format!("{tool}: {e}")))
 }
 
 pub(super) async fn tool_list_events(
@@ -3414,6 +3432,8 @@ pub(super) async fn tool_list_events(
             }
         };
         filter.label_skill = label;
+        filter.since = time_arg("list_events", "since", a.since.as_deref())?;
+        filter.until = time_arg("list_events", "until", a.until.as_deref())?;
         let page = indexer
             .list_events_filtered_page(
                 &filter,

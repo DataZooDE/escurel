@@ -77,6 +77,7 @@ mod tools_progress;
 mod tools_status;
 mod tools_tool_calls;
 mod tools_transcript;
+mod tools_usage;
 pub use tools_progress::DEFAULT_RUN_PROGRESS_KEEP;
 pub(crate) use tools_transcript::sweep_run_transcripts;
 mod tools_read;
@@ -1519,6 +1520,7 @@ async fn dispatch_tools_call(
             tool_admin_delete_chat_history(indexer, params.arguments).await
         }
         "admin_purge_events" => tool_admin_purge_events(indexer, caller, params.arguments).await,
+        "usage_report" => tools_usage::tool_usage_report(indexer, params.arguments).await,
         "admin_list_lanes" => tool_admin_list_lanes(indexer),
         "admin_lane_keys" => tool_admin_lane_keys(indexer, params.arguments).await,
         "admin_lane_blob" => tool_admin_lane_blob(indexer, params.arguments).await,

@@ -166,6 +166,10 @@ pub struct ListEventsRequest {
     /// — the tail the runner's subscribers poll (an `escurel:` label implies
     /// `include_system`). With a selector: a narrowing filter.
     pub label_skill: String,
+    /// RFC 3339: only events at or after this `at`. Empty = unbounded.
+    pub since: String,
+    /// RFC 3339: only events before this `at` (exclusive). Empty = unbounded.
+    pub until: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]

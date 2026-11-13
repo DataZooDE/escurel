@@ -4,8 +4,9 @@
 //! Real gateway, real runner binary, real echo harness. Every adapter parses
 //! what its harness reports into `HarnessOutcome.usage`; the runner sums it
 //! across attempts and writes it as `run-finished.body.usage`, and meters it
-//! as `escurel_runner_tokens_total{tenant,kind}` /
-//! `escurel_runner_cost_usd_total{tenant}`. The echo reports a synthetic usage
+//! as `escurel_runner_tokens_total{tenant,skill,model,kind}` /
+//! `escurel_runner_cost_usd_total{tenant,skill,model}`; the gateway's
+//! `usage_report` (#821) rolls the same row up. The echo reports a synthetic usage
 //! under `ESCUREL_ECHO_USAGE` (a test knob; unset ⇒ `null`, as for any harness
 //! that reports nothing).
 
@@ -153,12 +154,28 @@ async fn run_finished_carries_the_harness_usage_and_the_runner_meters_it() {
         .await
         .expect("text");
     for line in [
-        "escurel_runner_tokens_total{kind=\"input\",tenant=\"acme\"} 120",
-        "escurel_runner_tokens_total{kind=\"output\",tenant=\"acme\"} 45",
-        "escurel_runner_cost_usd_total{tenant=\"acme\"} 0.0031",
+        "escurel_runner_tokens_total{kind=\"input\",model=\"echo\",skill=\"renewal\",tenant=\"acme\"} 120",
+        "escurel_runner_tokens_total{kind=\"output\",model=\"echo\",skill=\"renewal\",tenant=\"acme\"} 45",
+        "escurel_runner_cost_usd_total{model=\"echo\",skill=\"renewal\",tenant=\"acme\"} 0.0031",
     ] {
         assert!(metrics.contains(line), "missing `{line}` in:\n{metrics}");
     }
+
+    // The gateway's rollup sees the same run, attributed to its skill.
+    let report = call(
+        &gw,
+        Role::Admin,
+        "usage_report",
+        json!({ "group_by": ["skill", "model"] }),
+    )
+    .await;
+    assert_eq!(
+        report["rows"],
+        json!([{ "group": { "skill": SKILL, "model": "echo" }, "runs": 1,
+                 "by_status": { "processed": 1 }, "input_tokens": 120,
+                 "output_tokens": 45, "cost_usd": 0.0031 }]),
+        "{report}"
+    );
 }
 
 #[tokio::test]

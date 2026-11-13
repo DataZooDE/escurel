@@ -241,16 +241,7 @@ impl PurgeSpec {
         }
         let before = match before_rfc3339 {
             None => None,
-            Some(raw) => {
-                let dt = chrono::DateTime::parse_from_rfc3339(raw).map_err(|e| {
-                    format!("before_ts must be RFC 3339 (e.g. 2026-10-01T00:00:00Z): {e}")
-                })?;
-                Some(
-                    dt.with_timezone(&chrono::Utc)
-                        .format("%Y-%m-%d %H:%M:%S%.6f")
-                        .to_string(),
-                )
-            }
+            Some(raw) => Some(store_ts(&parse_rfc3339_utc(raw, "before_ts")?)),
         };
         Ok(Self {
             label_skill: label.to_owned(),
@@ -490,6 +481,30 @@ pub struct EventListFilter {
     pub include_system: bool,
     /// `inbox` | `processed`; `None` = any status.
     pub status: Option<String>,
+    /// Only rows with `at >= since`. A bounded window excludes undated rows.
+    pub since: Option<EventTs>,
+    /// Only rows with `at < until` (exclusive, so consecutive windows tile).
+    pub until: Option<EventTs>,
+}
+
+/// An event-time bound, in UTC.
+pub type EventTs = chrono::DateTime<chrono::Utc>;
+
+/// An RFC 3339 timestamp from a caller, in UTC; `field` names it in the
+/// refusal.
+///
+/// # Errors
+/// A worded refusal when `raw` is not RFC 3339.
+pub fn parse_rfc3339_utc(raw: &str, field: &str) -> Result<EventTs, String> {
+    chrono::DateTime::parse_from_rfc3339(raw)
+        .map(|dt| dt.with_timezone(&chrono::Utc))
+        .map_err(|e| format!("{field} must be RFC 3339 (e.g. 2026-10-01T00:00:00Z): {e}"))
+}
+
+/// The space-separated microsecond form `at_ts` compares against on every
+/// backend (DuckDB's `TRY_CAST` and Postgres' `CAST` both read it exactly).
+fn store_ts(dt: &EventTs) -> String {
+    dt.format("%Y-%m-%d %H:%M:%S%.6f").to_string()
 }
 
 impl Indexer {
@@ -998,6 +1013,17 @@ impl Indexer {
                 where_clauses.push("status = ?".to_owned());
                 bindings.push(Bind::Str(status.clone()));
             }
+            let ts_cast = if native {
+                "CAST(? AS timestamp)"
+            } else {
+                "TRY_CAST(? AS TIMESTAMP)"
+            };
+            for (bound, cmp) in [(&filter.since, ">="), (&filter.until, "<")] {
+                if let Some(dt) = bound {
+                    where_clauses.push(format!("at_ts {cmp} {ts_cast}"));
+                    bindings.push(Bind::Str(store_ts(dt)));
+                }
+            }
             match filter.kind {
                 Some(kind) => {
                     where_clauses.push("COALESCE(kind, 'user') = ?".to_owned());
@@ -1015,11 +1041,6 @@ impl Indexer {
             }
             if let Some(c) = &cursor {
                 let cmp = if asc { ">" } else { "<" };
-                let ts_cast = if native {
-                    "CAST(? AS timestamp)"
-                } else {
-                    "TRY_CAST(? AS TIMESTAMP)"
-                };
                 match (by_seq, c) {
                     (true, EventCursor::Seq(seq)) => {
                         where_clauses.push(format!("seq {cmp} ?"));

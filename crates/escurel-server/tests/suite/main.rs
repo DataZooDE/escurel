@@ -189,6 +189,7 @@ mod tools_list_scope;
 mod update_page_automerge;
 mod update_page_concurrency;
 mod update_page_strict_cas;
+mod usage_report;
 mod validate_tool;
 mod webhook;
 mod whoami;

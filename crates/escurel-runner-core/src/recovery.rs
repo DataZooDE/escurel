@@ -118,6 +118,7 @@ pub async fn recover_pending(
                         run_id: run_id.0.clone(),
                         root_event_id: rec.root_event_id.clone(),
                         trigger_event_id: rec.event_id.clone(),
+                        skill: None,
                         parent_run_id: None,
                         depth: rec.depth,
                         lineage_path: vec![rec.event_id.clone()],

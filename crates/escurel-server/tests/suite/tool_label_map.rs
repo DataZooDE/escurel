@@ -118,6 +118,7 @@ const EXPECTED: &[&str] = &[
     "tenant_update:orchestration",
     "unsubscribe_pack:orchestration",
     "update_page:orchestration",
+    "usage_report:deterministic",
     "validate:deterministic",
     "validate_bindings:orchestration",
     "validate_endpoints:orchestration",

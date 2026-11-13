@@ -1005,7 +1005,8 @@ pub(crate) fn tool_defs() -> Vec<ToolDef> {
                  absent, not an error. Paginated: ONLY a null \
                  `next_cursor` means the listing is complete; it is where this \
                  page ENDED (pass it back as `cursor` to read on or to tail), \
-                 and `has_more: true` says rows already follow.",
+                 and `has_more: true` says rows already follow. `since` / \
+                 `until` (RFC 3339) bound any listing by the event's `at`.",
             json!({
                 "type": "object",
                 "properties": {
@@ -1018,7 +1019,9 @@ pub(crate) fn tool_defs() -> Vec<ToolDef> {
                     "include_system": { "type": "boolean", "description": "Also list `kind: system` rows. Default false." },
                     "newest_first": { "type": "boolean", "description": "Turn the listing around (newest first); with limit 1, the latest row. Default false (oldest first: the tail shape)." },
                     "limit": { "type": "integer", "minimum": 1, "maximum": 10000 },
-                    "cursor": { "type": "string", "description": "Opaque resume cursor from a previous page's next_cursor (listing branch only)." }
+                    "cursor": { "type": "string", "description": "Opaque resume cursor from a previous page's next_cursor (listing branch only)." },
+                    "since": { "type": "string", "description": "RFC 3339: only events at or after this `at`." },
+                    "until": { "type": "string", "description": "RFC 3339: only events before this `at` (exclusive)." }
                 }
             }),
         ),
@@ -1238,6 +1241,31 @@ pub(crate) fn tool_defs() -> Vec<ToolDef> {
                     "keep_latest": { "type": "integer", "minimum": 0, "description": "Keep the newest N events of the label whatever their age." },
                     "apply": { "type": "boolean", "default": false, "description": "Delete for real; the default only counts." },
                     "allow_protected": { "type": "boolean", "default": false }
+                }
+            }),
+        ),
+        tool_entry(
+            "usage_report",
+            Execution::Deterministic,
+            Scope::Admin,
+            Touches::shared(Surface::Events),
+            "Admin: usage and cost rolled up from every `run-finished` in a \
+                 window — runs, runs per terminal status, input/output tokens \
+                 and cost in USD per group of `group_by` (one or more of \
+                 `skill`, `agent`, `page`, `model`, `day`), plus a `total`. \
+                 `since` is inclusive, `until` exclusive; `skill` narrows to \
+                 one skill's runs before grouping.",
+            json!({
+                "type": "object",
+                "required": ["group_by"],
+                "properties": {
+                    "group_by": {
+                        "type": "array", "minItems": 1,
+                        "items": { "type": "string", "enum": ["skill", "agent", "page", "model", "day"] }
+                    },
+                    "since": { "type": "string", "description": "RFC 3339: runs finished at or after this." },
+                    "until": { "type": "string", "description": "RFC 3339: runs finished before this (exclusive)." },
+                    "skill": { "type": "string", "description": "Only this skill's runs." }
                 }
             }),
         ),
@@ -1990,6 +2018,7 @@ fn annotations_of(name: &str) -> Value {
                 | "admin_audit"
                 | "admin_webhook_deliveries"
                 | "admin_index_query"
+                | "usage_report"
                 | "admin_list_lanes"
                 | "admin_lane_keys"
                 | "admin_lane_blob"
@@ -2441,6 +2470,13 @@ fn output_schema_for(name: &str) -> Option<Value> {
             "root_event_id": { "type": "string" },
             "nodes": { "type": "array", "description": "[{id, type: event|run|changeset|draft, parent, state, …}]" },
             "next_cursor": { "type": "string", "description": "present iff more events lie past the page" }
+        })),
+        "usage_report" => obj(json!({
+            "group_by": { "type": "array" },
+            "since": { "type": ["string", "null"] },
+            "until": { "type": ["string", "null"] },
+            "rows": { "type": "array", "description": "[{group: {skill?, agent?, page?, model?, day?}, runs, by_status, input_tokens, output_tokens, cost_usd}]" },
+            "total": { "type": "object", "description": "{runs, by_status, input_tokens, output_tokens, cost_usd}" }
         })),
         "get_run_tool_calls" => obj(json!({
             "run_id": { "type": "string" },

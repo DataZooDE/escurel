@@ -52,6 +52,7 @@ pub use admin::{
     TenantCreateRequest, TenantCreateResponse, TenantDeleteRequest, TenantDeleteResponse,
     TenantExportRequest, TenantGetRequest, TenantGetResponse, TenantImportResponse,
     TenantListRequest, TenantListResponse, TenantUpdateRequest, TenantUpdateResponse,
+    UsageReportRequest, UsageReportResponse, UsageTotals,
 };
 pub use error::{Error, JSONRPC_ADMIN_REQUIRED};
 
@@ -613,6 +614,12 @@ impl Client {
         }
         if !req.cursor.is_empty() {
             args["cursor"] = json!(req.cursor);
+        }
+        if !req.since.is_empty() {
+            args["since"] = json!(req.since);
+        }
+        if !req.until.is_empty() {
+            args["until"] = json!(req.until);
         }
         self.transport.call_typed("list_events", args).await
     }

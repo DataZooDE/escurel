@@ -99,8 +99,13 @@ Each adapter parses what its harness reports into the outcome's `usage`
 (`{input_tokens, output_tokens, cost_usd, model}`); the runner sums it over
 the run's attempts, writes it as `run-finished.body.usage` (and so onto the
 lineage's `run` node), and meters it as
-`escurel_runner_tokens_total{tenant,kind=input|output}` and
-`escurel_runner_cost_usd_total{tenant}` on its `/metrics`.
+`escurel_runner_tokens_total{tenant,skill,model,kind=input|output}` and
+`escurel_runner_cost_usd_total{tenant,skill,model}` on its `/metrics`
+(`skill` = the triggering event's label, `model` = the reported model, else
+the one the runner chose, else `unknown`). `run-finished.provenance.runner.skill`
+names the skill too, and the admin tool `usage_report` (CLI `escurel run usage`)
+rolls those rows up by skill, agent, page, model or day over a time window —
+"what did skill X cost this month" without a metrics stack.
 
 | adapter | `input_tokens` | `output_tokens` | `cost_usd` | `model` |
 |---|---|---|---|---|

@@ -54,10 +54,10 @@ pub struct Metrics {
     writes: IntCounterVec,
     /// `escurel_runner_throttled_total{reason}` — quota throttles by reason.
     runner_throttled: IntCounterVec,
-    /// `escurel_runner_tokens_total{tenant,kind}` — tokens the runs'
+    /// `escurel_runner_tokens_total{tenant,skill,model,kind}` — tokens the runs'
     /// harnesses reported, `kind` = `input` / `output` (P3-4).
     runner_tokens: IntCounterVec,
-    /// `escurel_runner_cost_usd_total{tenant}` — the cost the runs' harnesses
+    /// `escurel_runner_cost_usd_total{tenant,skill,model}` — the cost the runs' harnesses
     /// priced themselves at (only harnesses that report a cost add to it).
     runner_cost_usd: CounterVec,
     /// `escurel_runner_queue_depth` — current dispatch-queue depth.
@@ -211,18 +211,18 @@ impl Metrics {
         let runner_tokens = IntCounterVec::new(
             Opts::new(
                 "escurel_runner_tokens_total",
-                "Tokens the agent-runner's harnesses reported, by tenant and kind (input | output).",
+                "Tokens the agent-runner's harnesses reported, by tenant, skill, model and kind (input | output).",
             ),
-            &["tenant", "kind"],
+            &["tenant", "skill", "model", "kind"],
         )
         .expect("valid counter opts");
 
         let runner_cost_usd = CounterVec::new(
             Opts::new(
                 "escurel_runner_cost_usd_total",
-                "Cost in USD the agent-runner's harnesses reported for their runs, by tenant.",
+                "Cost in USD the agent-runner's harnesses reported for their runs, by tenant, skill and model.",
             ),
-            &["tenant"],
+            &["tenant", "skill", "model"],
         )
         .expect("valid counter opts");
 
@@ -507,16 +507,28 @@ impl Metrics {
     }
 
     /// Add one run's reported token usage (and its cost, when the harness
-    /// priced itself) for `tenant`.
-    pub fn add_runner_usage(&self, tenant: &str, input: u64, output: u64, cost_usd: Option<f64>) {
+    /// priced itself) for `tenant`, the run's `skill` and its `model`. Both
+    /// are bounded by configuration (the skill pages, the model allow-list),
+    /// so the series stay few.
+    pub fn add_runner_usage(
+        &self,
+        tenant: &str,
+        skill: &str,
+        model: &str,
+        input: u64,
+        output: u64,
+        cost_usd: Option<f64>,
+    ) {
         self.runner_tokens
-            .with_label_values(&[tenant, "input"])
+            .with_label_values(&[tenant, skill, model, "input"])
             .inc_by(input);
         self.runner_tokens
-            .with_label_values(&[tenant, "output"])
+            .with_label_values(&[tenant, skill, model, "output"])
             .inc_by(output);
         if let Some(c) = cost_usd.filter(|c| c.is_finite() && *c >= 0.0) {
-            self.runner_cost_usd.with_label_values(&[tenant]).inc_by(c);
+            self.runner_cost_usd
+                .with_label_values(&[tenant, skill, model])
+                .inc_by(c);
         }
     }
 

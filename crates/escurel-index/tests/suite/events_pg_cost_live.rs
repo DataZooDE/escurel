@@ -627,3 +627,89 @@ async fn a_report_collects_a_stopped_runners_record_in_postgres_and_only_in_its_
         "the report plus the collection read {rows} rows of the events table"
     );
 }
+
+/// #821: a `since` / `until` window runs inside Postgres too (the native
+/// listing), so the usage report over a busy tenant reads its window, not
+/// the run label's whole history.
+#[tokio::test]
+async fn a_time_window_is_pushed_down_to_postgres() {
+    let (_pg, dsn) = live_postgres().await;
+    let r = replica(&dsn).await;
+    for (run, at) in [
+        ("r0", "2026-09-30T23:59:59Z"),
+        ("r1", "2026-10-01T00:00:00Z"),
+        ("r2", "2026-10-01T12:00:00Z"),
+        ("r3", "2026-10-02T00:00:00Z"),
+    ] {
+        r.indexer
+            .capture_event(NewEvent {
+                event_id: Some(format!("run:{run}:finished")),
+                at: Some(at.to_owned()),
+                source: "escurel-runner".to_owned(),
+                mime: "application/json".to_owned(),
+                label_skill: "escurel:run".to_owned(),
+                title: "run-finished".to_owned(),
+                body: serde_json::json!({ "status": "processed",
+                    "usage": { "input_tokens": 10, "output_tokens": 1, "cost_usd": 0.5 } })
+                .to_string(),
+                provenance: Some(serde_json::json!({ "runner": { "run_id": run, "skill": "s" } })),
+                kind: EventKind::System,
+                run_id: Some(run.to_owned()),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+    }
+    let ts = |s: &str| {
+        chrono::DateTime::parse_from_rfc3339(s)
+            .unwrap()
+            .with_timezone(&chrono::Utc)
+    };
+    let (since, until) = (
+        Some(ts("2026-10-01T00:00:00Z")),
+        Some(ts("2026-10-02T00:00:00Z")),
+    );
+    let page = r
+        .indexer
+        .list_events_filtered_page(
+            &EventListFilter {
+                label_skill: Some("escurel:run".to_owned()),
+                include_system: true,
+                since,
+                until,
+                ..Default::default()
+            },
+            true,
+            10,
+            None,
+        )
+        .await
+        .unwrap();
+    let runs: Vec<_> = page
+        .events
+        .iter()
+        .map(|e| e.run_id.clone().unwrap())
+        .collect();
+    assert_eq!(runs, ["r1", "r2"]);
+
+    let fold = r
+        .indexer
+        .usage_report(
+            since,
+            until,
+            escurel_index::UsageFold::new(&[escurel_index::UsageDim::Day], None),
+        )
+        .await
+        .unwrap()
+        .to_json();
+    assert_eq!(fold["total"]["runs"], serde_json::json!(2), "{fold}");
+    assert_eq!(
+        fold["total"]["input_tokens"],
+        serde_json::json!(20),
+        "{fold}"
+    );
+    assert_eq!(
+        fold["rows"][0]["group"],
+        serde_json::json!({ "day": "2026-10-01" })
+    );
+}

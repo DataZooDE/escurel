@@ -2436,6 +2436,7 @@ async fn dispatch_loop(
             run_id: run_id.0.clone(),
             root_event_id: trigger.lineage.root_event_id.clone(),
             trigger_event_id: trigger.event_id.clone(),
+            skill: Some(trigger.label_skill.clone()).filter(|s| !s.is_empty()),
             parent_run_id: trigger.lineage.parent_run_id.clone(),
             depth: trigger.lineage.depth,
             lineage_path: trigger.lineage.lineage_path.clone(),
@@ -2654,8 +2655,12 @@ async fn dispatch_loop(
             )
             .await;
             if let Some(u) = &sink.usage {
+                // The reported model, else the one this run chose.
+                let model = u.model.as_deref().or(run_ctx.model.as_deref());
                 metrics.add_runner_usage(
                     &trigger.tenant,
+                    &trigger.label_skill,
+                    model.unwrap_or("unknown"),
                     u.input_tokens,
                     u.output_tokens,
                     u.cost_usd,

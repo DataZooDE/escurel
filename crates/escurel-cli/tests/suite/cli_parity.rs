@@ -84,6 +84,8 @@ const COVERAGE: &[(&str, Coverage)] = &[
         ),
     ),
     ("list_lineage", Agent(&["run", "lineage"])),
+    // Admin-scope, but a run concern: it lives beside `run lineage` and dials with an admin bearer.
+    ("usage_report", Agent(&["run", "usage"])),
     ("create_draft", Agent(&["draft", "create"])),
     ("create_branch", Agent(&["branch", "create"])),
     ("list_branches", Agent(&["branch", "list"])),

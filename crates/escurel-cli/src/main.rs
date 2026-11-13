@@ -81,7 +81,7 @@ enum Command {
     /// Event-sourcing surface: inbox, history, capture, assign.
     #[command(subcommand)]
     Event(agent::EventCmd),
-    /// A run's own surface (needs a run-bound bearer): report progress.
+    /// Runs: progress (run-bound bearer), lineage, tool calls, usage (admin).
     #[command(subcommand)]
     Run(agent::RunCmd),
     /// Held writes: the review queue for `autonomy: review` skills.
@@ -161,6 +161,10 @@ async fn run(cli: Cli) -> Result<()> {
                 client = client.with_timeout(timeout_secs.map(std::time::Duration::from_secs));
             }
             admin::run(&client, cmd).await?
+        }
+        Command::Run(agent::RunCmd::Usage(args)) => {
+            let client = AdminClient::connect(&cli.server, token).await?;
+            agent::usage(&client, args).await?
         }
         Command::Workflow(cmd) => {
             let client = Client::connect(&cli.server, token).await?;
