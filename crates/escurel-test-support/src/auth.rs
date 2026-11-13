@@ -398,10 +398,20 @@ impl ExtraIssuer {
             "iat": now,
             "exp": now + 600,
         });
+        self.sign(&claims)
+    }
+
+    /// Sign arbitrary `claims` with this issuer's key (RS256, its `kid`).
+    ///
+    /// For a test that stands in for a THIRD-PARTY issuer whose token shape is
+    /// not escurel's — the Bot Framework's channel token (`iss`, `aud` = the
+    /// bot's app id, `serviceurl`) for the chat bridge — so the test spells
+    /// the claims and still never imports `jsonwebtoken` itself.
+    pub fn sign(&self, claims: &serde_json::Value) -> String {
         let mut header = Header::new(Algorithm::RS256);
         header.kid = Some(TEST_KID.to_owned());
         let key = EncodingKey::from_rsa_pem(&self.inner.keys.private_pem).expect("rsa pem parses");
-        encode(&header, &claims, &key).expect("jwt sign")
+        encode(&header, claims, &key).expect("jwt sign")
     }
 }
 

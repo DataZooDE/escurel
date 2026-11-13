@@ -1368,6 +1368,144 @@ pub const CONFIG_KEYS: &[ConfigKey] = &[
         doc: "shared server-to-server bearer on the outbound delivery POST",
     },
     ConfigKey {
+        name: "ESCUREL_BRIDGE_LISTEN",
+        component: "Bridge",
+        default: "0.0.0.0:3978",
+        doc: "HTTP listener of `escurel-chat-bridge`: the platform's messaging endpoint `POST /api/messages`, plus `/healthz` and `/version`",
+    },
+    ConfigKey {
+        name: "ESCUREL_BRIDGE_STATE_PATH",
+        component: "Bridge",
+        default: "/data/escurel-chat-bridge.duckdb",
+        doc: "the bridge's DuckDB state file: one row per platform message (the dedup key) and whether its one reply was sent. Durable state, not a cache: losing it lets a redelivered message be answered again",
+    },
+    ConfigKey {
+        name: "ESCUREL_BRIDGE_GATEWAY_URL",
+        component: "Bridge",
+        default: "—",
+        doc: "REQUIRED: the gateway base URL the bridge calls `/mcp` on",
+    },
+    ConfigKey {
+        name: "ESCUREL_BRIDGE_TENANT",
+        component: "Bridge",
+        default: "—",
+        doc: "REQUIRED: the tenant the bridge's tokens name",
+    },
+    ConfigKey {
+        name: "ESCUREL_BRIDGE_AUTH_ISSUER",
+        component: "Bridge",
+        default: "—",
+        doc: "REQUIRED: the issuer the bridge signs the asker's short-lived token as; the gateway must trust it (the same key material a minted-mode runner holds)",
+    },
+    ConfigKey {
+        name: "ESCUREL_BRIDGE_AUTH_AUDIENCE",
+        component: "Bridge",
+        default: "escurel",
+        doc: "audience of the tokens the bridge signs",
+    },
+    ConfigKey {
+        name: "ESCUREL_BRIDGE_AUTH_KID",
+        component: "Bridge",
+        default: "—",
+        doc: "`kid` of the signing key as the issuer's JWKS publishes it; unset derives it from the key",
+    },
+    ConfigKey {
+        name: "ESCUREL_BRIDGE_AUTH_SIGNING_KEY",
+        component: "Bridge",
+        default: "—",
+        doc: "RSA private key (PEM, PKCS#1 or PKCS#8) the bridge signs with; never logged. Exactly one of this and `…_FILE` is REQUIRED",
+    },
+    ConfigKey {
+        name: "ESCUREL_BRIDGE_AUTH_SIGNING_KEY_FILE",
+        component: "Bridge",
+        default: "—",
+        doc: "path to a file holding the signing key; the alternative to `ESCUREL_BRIDGE_AUTH_SIGNING_KEY`",
+    },
+    ConfigKey {
+        name: "ESCUREL_BRIDGE_TEAMS_APP_ID",
+        component: "Bridge",
+        default: "—",
+        doc: "REQUIRED: the bot's Microsoft app (client) id; the `aud` an inbound Bot Framework token must carry and the client id of the connector token",
+    },
+    ConfigKey {
+        name: "ESCUREL_BRIDGE_TEAMS_APP_PASSWORD",
+        component: "Bridge",
+        default: "—",
+        doc: "the bot app's client secret, for the client-credentials connector token; never logged. Exactly one of this and `…_FILE` is REQUIRED",
+    },
+    ConfigKey {
+        name: "ESCUREL_BRIDGE_TEAMS_APP_PASSWORD_FILE",
+        component: "Bridge",
+        default: "—",
+        doc: "path to a file holding the client secret; the alternative to `ESCUREL_BRIDGE_TEAMS_APP_PASSWORD`",
+    },
+    ConfigKey {
+        name: "ESCUREL_BRIDGE_TEAMS_OPENID_METADATA_URL",
+        component: "Bridge",
+        default: "https://login.botframework.com/v1/.well-known/openidconfiguration",
+        doc: "OpenID metadata whose `jwks_uri` holds the keys inbound channel tokens are verified against",
+    },
+    ConfigKey {
+        name: "ESCUREL_BRIDGE_TEAMS_ISSUER",
+        component: "Bridge",
+        default: "https://api.botframework.com",
+        doc: "the `iss` an inbound channel token must carry",
+    },
+    ConfigKey {
+        name: "ESCUREL_BRIDGE_TEAMS_TOKEN_URL",
+        component: "Bridge",
+        default: "https://login.microsoftonline.com/botframework.com/oauth2/v2.0/token",
+        doc: "client-credentials token endpoint for replies; a single-tenant bot uses `https://login.microsoftonline.com/<entra tenant id>/oauth2/v2.0/token`",
+    },
+    ConfigKey {
+        name: "ESCUREL_BRIDGE_TEAMS_TOKEN_SCOPE",
+        component: "Bridge",
+        default: "https://api.botframework.com/.default",
+        doc: "scope of the connector token",
+    },
+    ConfigKey {
+        name: "ESCUREL_BRIDGE_PRINCIPAL_TEMPLATE",
+        component: "Bridge",
+        default: "{aadObjectId}",
+        doc: "the escurel subject for a Teams user: `{aadObjectId}` (Entra object id), `{userId}` (Teams user id) and `{tenantId}` (Entra tenant) are filled in, e.g. `user:{aadObjectId}`. It must equal the `sub` the person's own OIDC token carries, or their chats and the pages they may read will not line up. A message from a user lacking a named field is not answered",
+    },
+    ConfigKey {
+        name: "ESCUREL_BRIDGE_CHAT_SKILL",
+        component: "Bridge",
+        default: "chat",
+        doc: "`label_skill` of the captured chat event (the runner answers it in chat mode)",
+    },
+    ConfigKey {
+        name: "ESCUREL_BRIDGE_CONVERSATION_SKILL",
+        component: "Bridge",
+        default: "conversation",
+        doc: "the page-bound conversation skill each person's Teams chat becomes an instance of (`chat: {page_bound: true}`, owner-private; the shipped chat corpus has one)",
+    },
+    ConfigKey {
+        name: "ESCUREL_BRIDGE_POLL_INTERVAL",
+        component: "Bridge",
+        default: "1s",
+        doc: "how often the bridge checks the chat group for the run's answer",
+    },
+    ConfigKey {
+        name: "ESCUREL_BRIDGE_TYPING_INTERVAL",
+        component: "Bridge",
+        default: "3s",
+        doc: "how often it re-sends the typing indicator while the run is live (Teams shows one for about three seconds)",
+    },
+    ConfigKey {
+        name: "ESCUREL_BRIDGE_REPLY_TIMEOUT",
+        component: "Bridge",
+        default: "10m",
+        doc: "how long it waits for an answer before telling the person it has none",
+    },
+    ConfigKey {
+        name: "ESCUREL_BRIDGE_ATTACHMENT_MAX_BYTES",
+        component: "Bridge",
+        default: "10485760",
+        doc: "largest attachment it downloads and uploads through `ingest_upload`; a larger one is listed in the message as not ingested",
+    },
+    ConfigKey {
         name: "ESCUREL_SERVER",
         component: "Cli",
         default: "http://127.0.0.1:8080",
@@ -1523,6 +1661,12 @@ pub const CONFIG_KEYS: &[ConfigKey] = &[
         default: "—",
         doc: "`examples/echo-app`: gateway endpoint (the app's own variable, not read by the server)",
     },
+    ConfigKey {
+        name: "ESCUREL_RUNNER_BIN",
+        component: "TestOnly",
+        default: "—",
+        doc: "`escurel-test-support`'s `RunnerProcess`: the `escurel-runner` binary to start; unset uses the one next to the test executable (`target/<profile>/`)",
+    },
 ];
 
 /// The group order of the rendered table.
@@ -1542,6 +1686,11 @@ const GROUPS: &[(&str, &str)] = &[
          a dependency-free liveness probe. Webhook-only runners without a configured\n\
          tenant/token can process `/trigger` but deliberately report unready at\n\
          `/readyz`, so do not use that probe as their traffic gate",
+    ),
+    (
+        "Bridge",
+        "escurel-chat-bridge (the Teams chat bridge, `docs/deploy/chat-bridge.md`).\n\
+         It runs only when started; nothing else reads these",
     ),
     ("Cli", "the `escurel` CLI"),
     ("Harness", "set by the runner for a harness subprocess"),

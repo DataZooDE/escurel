@@ -36,6 +36,8 @@ The full surface (`crates/escurel-test-support/src/`):
 | `.client_for(tenant, role) -> Client` | async; client for any tenant/role |
 | `.mcp_client() -> McpTestClient` | typed MCP-over-HTTP client (same methods, returns the same response types) |
 | `.shutdown()` | async; explicit graceful teardown (else `Drop` handles it) |
+| `RunnerProcess::echo(&gw, tenant)` | a real `escurel-runner` on the echo harness: `.minted()` (signs run tokens with the gateway's key; chat needs it), `.env(k, v)`, `.ledger(path)`, `.spawn()` → `RunningRunner` (`.restart()`, `.debug_run(event_id)`, killed on drop). Binary: `ESCUREL_RUNNER_BIN`, else `target/<profile>/escurel-runner` (`cargo build -p escurel-runner` first outside the workspace run) |
+| `ExtraIssuer::start()` + `.sign(&claims)` | a second issuer's JWKS (`.jwks_url()`) and RS256 tokens with any claims, for a third party's token shape (the chat bridge's Bot Framework stand-in) |
 
 ### The canonical test (from `examples/echo-app/tests/e2e.rs`)
 

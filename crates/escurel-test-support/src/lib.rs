@@ -48,6 +48,7 @@ mod fixtures;
 mod mcp_client;
 mod port;
 mod process;
+mod runner;
 
 pub use auth::{AuthMode, ExtraIssuer, Role};
 pub use escurel_server::egress::EgressPolicy;
@@ -55,6 +56,7 @@ pub use fixtures::{FixtureBuilder, MarkdownBody, TenantFixture};
 pub use mcp_client::{McpError, McpTestClient};
 pub use port::free_port;
 pub use process::{ConfigOverrides, EscurelProcess, Opts};
+pub use runner::{RunnerProcess, RunningRunner, runner_bin};
 // Re-export so consumers can set `ConfigOverrides.write_acl` in their own
 // integration tests without depending on `escurel-server` directly.
 pub use escurel_server::{AutonomyLintMode, EventAclMode, ToolcallDetailMode, WriteAclMode};

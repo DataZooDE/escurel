@@ -268,6 +268,37 @@ tenant/token can process `/trigger` but deliberately report unready at
 | `ESCUREL_RUNNER_OUTBOUND_URL` | — | channel courier endpoint the runner POSTs a terminal operation's result to; unset disables outbound delivery |
 | `ESCUREL_RUNNER_OUTBOUND_BEARER` | — | shared server-to-server bearer on the outbound delivery POST |
 
+## Bridge
+
+escurel-chat-bridge (the Teams chat bridge, `docs/deploy/chat-bridge.md`).
+It runs only when started; nothing else reads these.
+
+| var | default | meaning |
+|---|---|---|
+| `ESCUREL_BRIDGE_LISTEN` | 0.0.0.0:3978 | HTTP listener of `escurel-chat-bridge`: the platform's messaging endpoint `POST /api/messages`, plus `/healthz` and `/version` |
+| `ESCUREL_BRIDGE_STATE_PATH` | /data/escurel-chat-bridge.duckdb | the bridge's DuckDB state file: one row per platform message (the dedup key) and whether its one reply was sent. Durable state, not a cache: losing it lets a redelivered message be answered again |
+| `ESCUREL_BRIDGE_GATEWAY_URL` | — | REQUIRED: the gateway base URL the bridge calls `/mcp` on |
+| `ESCUREL_BRIDGE_TENANT` | — | REQUIRED: the tenant the bridge's tokens name |
+| `ESCUREL_BRIDGE_AUTH_ISSUER` | — | REQUIRED: the issuer the bridge signs the asker's short-lived token as; the gateway must trust it (the same key material a minted-mode runner holds) |
+| `ESCUREL_BRIDGE_AUTH_AUDIENCE` | escurel | audience of the tokens the bridge signs |
+| `ESCUREL_BRIDGE_AUTH_KID` | — | `kid` of the signing key as the issuer's JWKS publishes it; unset derives it from the key |
+| `ESCUREL_BRIDGE_AUTH_SIGNING_KEY` | — | RSA private key (PEM, PKCS#1 or PKCS#8) the bridge signs with; never logged. Exactly one of this and `…_FILE` is REQUIRED |
+| `ESCUREL_BRIDGE_AUTH_SIGNING_KEY_FILE` | — | path to a file holding the signing key; the alternative to `ESCUREL_BRIDGE_AUTH_SIGNING_KEY` |
+| `ESCUREL_BRIDGE_TEAMS_APP_ID` | — | REQUIRED: the bot's Microsoft app (client) id; the `aud` an inbound Bot Framework token must carry and the client id of the connector token |
+| `ESCUREL_BRIDGE_TEAMS_APP_PASSWORD` | — | the bot app's client secret, for the client-credentials connector token; never logged. Exactly one of this and `…_FILE` is REQUIRED |
+| `ESCUREL_BRIDGE_TEAMS_APP_PASSWORD_FILE` | — | path to a file holding the client secret; the alternative to `ESCUREL_BRIDGE_TEAMS_APP_PASSWORD` |
+| `ESCUREL_BRIDGE_TEAMS_OPENID_METADATA_URL` | https://login.botframework.com/v1/.well-known/openidconfiguration | OpenID metadata whose `jwks_uri` holds the keys inbound channel tokens are verified against |
+| `ESCUREL_BRIDGE_TEAMS_ISSUER` | https://api.botframework.com | the `iss` an inbound channel token must carry |
+| `ESCUREL_BRIDGE_TEAMS_TOKEN_URL` | https://login.microsoftonline.com/botframework.com/oauth2/v2.0/token | client-credentials token endpoint for replies; a single-tenant bot uses `https://login.microsoftonline.com/<entra tenant id>/oauth2/v2.0/token` |
+| `ESCUREL_BRIDGE_TEAMS_TOKEN_SCOPE` | https://api.botframework.com/.default | scope of the connector token |
+| `ESCUREL_BRIDGE_PRINCIPAL_TEMPLATE` | {aadObjectId} | the escurel subject for a Teams user: `{aadObjectId}` (Entra object id), `{userId}` (Teams user id) and `{tenantId}` (Entra tenant) are filled in, e.g. `user:{aadObjectId}`. It must equal the `sub` the person's own OIDC token carries, or their chats and the pages they may read will not line up. A message from a user lacking a named field is not answered |
+| `ESCUREL_BRIDGE_CHAT_SKILL` | chat | `label_skill` of the captured chat event (the runner answers it in chat mode) |
+| `ESCUREL_BRIDGE_CONVERSATION_SKILL` | conversation | the page-bound conversation skill each person's Teams chat becomes an instance of (`chat: {page_bound: true}`, owner-private; the shipped chat corpus has one) |
+| `ESCUREL_BRIDGE_POLL_INTERVAL` | 1s | how often the bridge checks the chat group for the run's answer |
+| `ESCUREL_BRIDGE_TYPING_INTERVAL` | 3s | how often it re-sends the typing indicator while the run is live (Teams shows one for about three seconds) |
+| `ESCUREL_BRIDGE_REPLY_TIMEOUT` | 10m | how long it waits for an answer before telling the person it has none |
+| `ESCUREL_BRIDGE_ATTACHMENT_MAX_BYTES` | 10485760 | largest attachment it downloads and uploads through `ingest_upload`; a larger one is listed in the message as not ingested |
+
 ## Cli
 
 the `escurel` CLI.
@@ -321,3 +352,4 @@ test knobs: never set in a deployment.
 | `ESCUREL_TEST_MIGRATE_KIND_PAGE_DELAY_MS` | — | sleep this long before each page of `migrate_kind`, to give a CI-sized tenant a long migration window |
 | `ESCUREL_SIGKILL_FULL` | — | `1`: run all ten kill points of the migrate-kind SIGKILL test (default: four) |
 | `ESCUREL_SECRET_ACME__SURELY_UNSET_X` | — | a name the secret-policy tests assert is NOT set |
+| `ESCUREL_RUNNER_BIN` | — | `escurel-test-support`'s `RunnerProcess`: the `escurel-runner` binary to start; unset uses the one next to the test executable (`target/<profile>/`) |

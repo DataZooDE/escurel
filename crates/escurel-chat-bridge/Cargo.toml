@@ -1,0 +1,45 @@
+[package]
+name = "escurel-chat-bridge"
+description = "Chat-channel bridge (Microsoft Teams first): a channel message becomes an escurel page-chat turn, the run's answer goes back as one reply."
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[[bin]]
+name = "escurel-chat-bridge"
+path = "src/main.rs"
+
+[dependencies]
+axum = "0.8"
+base64 = "0.22"
+chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
+# The state store: DuckDB, like the runner's ledger (never SQLite).
+duckdb = { version = "1", default-features = false }
+escurel-auth = { path = "../escurel-auth" }
+escurel-client = { path = "../escurel-client" }
+escurel-obs = { path = "../escurel-obs" }
+jsonwebtoken = "9"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+thiserror = "2"
+tokio = { version = "1", default-features = false, features = ["rt-multi-thread", "macros", "net", "signal", "sync", "time"] }
+tracing = "0.1"
+
+[dev-dependencies]
+axum = "0.8"
+escurel-runner-workflow = { path = "../escurel-runner-workflow" }
+escurel-test-support = { path = "../escurel-test-support" }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+serde_json = "1"
+sha2 = "0.10"
+tempfile = "3"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "time"] }
+
+[lints]
+workspace = true

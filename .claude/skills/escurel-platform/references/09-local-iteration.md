@@ -260,6 +260,32 @@ runners on one machine need two ledgers and two listen ports. Stopping the
 laptop leaves its unfinished events in the inbox once their lease lapses
 (`ESCUREL_RUNNER_CLAIM_LEASE`); work only it can take waits there for it.
 
+### Teams chat: `escurel-chat-bridge`
+
+A separate binary answers 1:1 Microsoft Teams chats from escurel. A Teams message becomes the
+asker's page-chat turn plus a `chat` event, and the runner's reply goes back once. Run it next to a
+verifying gateway and a minted-mode runner, with the same signing material:
+
+```sh
+cargo build -p escurel-chat-bridge
+ESCUREL_BRIDGE_GATEWAY_URL=<gateway_url> ESCUREL_BRIDGE_TENANT=<tenant> \
+ESCUREL_BRIDGE_AUTH_ISSUER=<issuer_url> ESCUREL_BRIDGE_AUTH_KID=<kid> \
+ESCUREL_BRIDGE_AUTH_SIGNING_KEY=<signing_key> \
+ESCUREL_BRIDGE_TEAMS_APP_ID=<bot app id> ESCUREL_BRIDGE_TEAMS_APP_PASSWORD=<secret> \
+ESCUREL_BRIDGE_PRINCIPAL_TEMPLATE='user:{aadObjectId}' ESCUREL_BRIDGE_STATE_PATH=./bridge.duckdb \
+  target/debug/escurel-chat-bridge          # POST /api/messages on :3978
+```
+
+The tenant needs the chat corpus (`conversation` + `chat`). The principal template must give the
+person's own token `sub`, because the bridge signs a token for that subject and acts as them. Only
+1:1 chats are answered. A real Teams tenant needs an Entra app and an Azure Bot pointing at a public
+`https://…/api/messages`. A test replaces Microsoft with local HTTP stand-ins: OpenID metadata +
+JWKS (`ESCUREL_BRIDGE_TEAMS_OPENID_METADATA_URL`), the token endpoint
+(`ESCUREL_BRIDGE_TEAMS_TOKEN_URL`) and a connector at the activity's `serviceUrl`, as
+`crates/escurel-chat-bridge/tests/teams_roundtrip.rs` does (`ExtraIssuer::sign` signs the channel
+token, `RunnerProcess` starts the runner; references/06). Setup and the full env:
+`docs/deploy/chat-bridge.md`.
+
 ## The iterate loop
 
 1. Author/adjust seed pages (`references/07`) and your data model

@@ -21,6 +21,7 @@ members = [
     "crates/escurel-runner-harness",
     "crates/escurel-runner-workflow",
     "crates/escurel-runner",
+    "crates/escurel-chat-bridge",
     "crates/escurel-loader",
     "crates/escurel-eval",
     "examples/echo-app",

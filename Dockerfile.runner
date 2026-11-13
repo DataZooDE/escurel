@@ -33,11 +33,18 @@ ENV CARGO_BUILD_JOBS=1
 # deterministic real harness the runner's own end-to-end test uses, and having
 # it in the image makes "is dispatch wired at all?" answerable in the cluster
 # without a model API key.
+#
+# `escurel-chat-bridge` (the Teams bridge, docs/deploy/chat-bridge.md) ships
+# here too: it is another small client of the gateway beside the runner. It
+# is binary only and off by default — the entrypoint stays the runner; a
+# deployment that wants Teams runs a second container from this image with
+# `--entrypoint /usr/local/bin/escurel-chat-bridge` and the ESCUREL_BRIDGE_* env.
 RUN --mount=type=cache,target=/build/target \
     --mount=type=cache,target=/usr/local/cargo/registry \
-    cargo build --release -p escurel-runner \
+    cargo build --release -p escurel-runner -p escurel-chat-bridge \
     && cp target/release/escurel-runner /usr/local/bin/escurel-runner \
     && cp target/release/escurel-echo-harness /usr/local/bin/escurel-echo-harness \
+    && cp target/release/escurel-chat-bridge /usr/local/bin/escurel-chat-bridge \
     && cp "$(find target -name libduckdb.so -print -quit)" /usr/local/lib/libduckdb.so
 
 # ---- runtime -------------------------------------------------------------
@@ -49,6 +56,7 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=builder /usr/local/bin/escurel-runner /usr/local/bin/escurel-runner
 COPY --from=builder /usr/local/bin/escurel-echo-harness /usr/local/bin/escurel-echo-harness
+COPY --from=builder /usr/local/bin/escurel-chat-bridge /usr/local/bin/escurel-chat-bridge
 COPY --from=builder /usr/local/lib/libduckdb.so /usr/lib/libduckdb.so
 RUN ldconfig
 

@@ -2559,6 +2559,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "escurel-chat-bridge"
+version = "1.0.0"
+dependencies = [
+ "axum",
+ "base64 0.22.1",
+ "chrono",
+ "duckdb",
+ "escurel-auth",
+ "escurel-client",
+ "escurel-obs",
+ "escurel-runner-workflow",
+ "escurel-test-support",
+ "jsonwebtoken 9.3.1",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "escurel-cli"
 version = "1.0.0"
 dependencies = [
