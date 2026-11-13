@@ -1012,7 +1012,7 @@ async fn store_transcript(
     run: &escurel_runner_core::RunClaims,
     metrics: &Metrics,
     records: &[escurel_runner_core::TranscriptRecord],
-) -> Option<serde_json::Value> {
+) -> Option<escurel_types::run_record::TranscriptSummary> {
     let (jsonl, _) = escurel_runner_core::to_jsonl(records)?;
     let run_client = match tokens.mint_agent(&trigger.label_skill, 300, Some(run), None) {
         Ok(Some(token)) => {
@@ -1043,11 +1043,11 @@ async fn store_transcript(
         .put_run_transcript(&run.run_id, jsonl)
         .await
     {
-        Ok(stored) => Some(serde_json::json!({
-            "records": stored.records,
-            "bytes": stored.bytes,
-            "sha256": stored.sha256,
-        })),
+        Ok(stored) => Some(escurel_types::run_record::TranscriptSummary {
+            records: stored.records,
+            bytes: stored.bytes,
+            sha256: stored.sha256,
+        }),
         Err(e) => {
             record_run_event(metrics, "transcript", Err(e));
             None
@@ -2768,7 +2768,7 @@ async fn dispatch_loop(
                         &sink.summary,
                         sink.tool_calls,
                         sink.autonomy,
-                        sink.usage.as_ref().map(|u| serde_json::json!(u)),
+                        sink.usage.clone(),
                         transcript,
                     )
                     .await,

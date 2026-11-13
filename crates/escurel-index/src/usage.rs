@@ -10,6 +10,8 @@
 
 use std::collections::BTreeMap;
 
+use escurel_types::UsageTotals;
+use escurel_types::run_record::{RunFinishedBody, RunnerProvenance};
 use serde_json::{Value, json};
 
 use crate::{
@@ -26,7 +28,7 @@ const RUN_FINISHED_TITLE: &str = "run-finished";
 pub enum UsageDim {
     /// The skill whose event triggered the run.
     Skill,
-    /// The principal the run acted as (see [`run_agent`]).
+    /// The principal the run acted as (see [`RunnerProvenance::principal`]).
     Agent,
     /// The page the run folded into.
     Page,
@@ -64,20 +66,9 @@ impl UsageDim {
     }
 }
 
-/// The principal a run acted as: `agent:<agent id>` for a run of an agent
-/// profile (#823, `provenance.runner.agent`), else `agent:<skill>` — the
-/// subject a run without one is minted as.
-#[must_use]
-pub fn run_agent(runner: &Value) -> Option<String> {
-    let named = |key: &str| runner[key].as_str().filter(|s| !s.is_empty());
-    named("agent")
-        .or_else(|| named("skill"))
-        .map(|s| format!("agent:{s}"))
-}
-
 /// One finished run's bill, read from its `run-finished` row.
 #[derive(Debug, Clone, PartialEq)]
-pub struct RunUsage {
+pub struct RunBill {
     pub skill: Option<String>,
     pub agent: Option<String>,
     pub page: Option<String>,
@@ -90,32 +81,34 @@ pub struct RunUsage {
     pub cost_usd: f64,
 }
 
-impl RunUsage {
-    /// The bill of a `run-finished` row; `None` for any other event.
+impl RunBill {
+    /// The bill of a `run-finished` row; `None` for any other event. Read
+    /// through the runner's own record types, so a renamed key is a build
+    /// error, not a silently zeroed group.
     #[must_use]
     pub fn from_event(e: &EventInfo) -> Option<Self> {
         if e.label_skill != RUN_LABEL || e.title != RUN_FINISHED_TITLE {
             return None;
         }
-        let body: Value = serde_json::from_str(&e.body).unwrap_or(Value::Null);
-        let runner = &e.provenance["runner"];
-        let usage = &body["usage"];
-        let text = |v: &Value| v.as_str().filter(|s| !s.is_empty()).map(str::to_owned);
+        let body: RunFinishedBody = serde_json::from_str(&e.body).unwrap_or_default();
+        let runner = RunnerProvenance::of(&e.provenance);
+        let usage = body.usage.unwrap_or_default();
+        let text = |v: Option<String>| v.filter(|s| !s.is_empty());
         Some(Self {
-            skill: text(&runner["skill"]),
-            agent: run_agent(runner),
-            page: text(&runner["target_page_id"]).or_else(|| e.instance_page_id.clone()),
-            model: text(&usage["model"]).or_else(|| text(&runner["model"])),
+            agent: runner.principal(),
+            skill: text(runner.skill),
+            page: text(runner.target_page_id).or_else(|| e.instance_page_id.clone()),
+            model: text(usage.model).or_else(|| text(runner.model)),
             day: e
                 .at
                 .as_deref()
                 .and_then(|at| at.get(..10))
                 .map(str::to_owned),
-            status: text(&body["status"]).unwrap_or_else(|| "unknown".to_owned()),
-            input_tokens: usage["input_tokens"].as_u64().unwrap_or(0),
-            output_tokens: usage["output_tokens"].as_u64().unwrap_or(0),
-            cost_usd: usage["cost_usd"]
-                .as_f64()
+            status: text(Some(body.status)).unwrap_or_else(|| "unknown".to_owned()),
+            input_tokens: usage.input_tokens,
+            output_tokens: usage.output_tokens,
+            cost_usd: usage
+                .cost_usd
                 .filter(|c| c.is_finite() && *c >= 0.0)
                 .unwrap_or(0.0),
         })
@@ -132,38 +125,22 @@ impl RunUsage {
     }
 }
 
-/// What a set of runs cost.
-#[derive(Debug, Clone, Default, PartialEq)]
-pub struct UsageTotals {
-    pub runs: u64,
-    /// Runs per terminal status (`processed`, `failed`, …).
-    pub by_status: BTreeMap<String, u64>,
-    pub input_tokens: u64,
-    pub output_tokens: u64,
-    pub cost_usd: f64,
+/// Add one run's bill to `t`.
+fn add_bill(t: &mut UsageTotals, r: &RunBill) {
+    t.runs += 1;
+    *t.by_status.entry(r.status.clone()).or_default() += 1;
+    t.input_tokens = t.input_tokens.saturating_add(r.input_tokens);
+    t.output_tokens = t.output_tokens.saturating_add(r.output_tokens);
+    t.cost_usd += r.cost_usd;
 }
 
-impl UsageTotals {
-    fn add(&mut self, r: &RunUsage) {
-        self.runs += 1;
-        *self.by_status.entry(r.status.clone()).or_default() += 1;
-        self.input_tokens = self.input_tokens.saturating_add(r.input_tokens);
-        self.output_tokens = self.output_tokens.saturating_add(r.output_tokens);
-        self.cost_usd += r.cost_usd;
-    }
-
-    /// `{runs, by_status, input_tokens, output_tokens, cost_usd}`. The cost
-    /// is rounded to the nano-dollar so a sum of decimal prices reads back
-    /// as the decimal a person would write, not its binary neighbour.
-    #[must_use]
-    pub fn to_json(&self) -> Value {
-        json!({
-            "runs": self.runs,
-            "by_status": self.by_status,
-            "input_tokens": self.input_tokens,
-            "output_tokens": self.output_tokens,
-            "cost_usd": (self.cost_usd * 1e9).round() / 1e9,
-        })
+/// `t` as the wire carries it: the cost rounded to the nano-dollar, so a sum
+/// of decimal prices reads back as the decimal a person would write, not its
+/// binary neighbour.
+fn rounded(t: &UsageTotals) -> UsageTotals {
+    UsageTotals {
+        cost_usd: (t.cost_usd * 1e9).round() / 1e9,
+        ..t.clone()
     }
 }
 
@@ -198,7 +175,7 @@ impl UsageFold {
     }
 
     pub fn add(&mut self, e: &EventInfo) {
-        let Some(run) = RunUsage::from_event(e) else {
+        let Some(run) = RunBill::from_event(e) else {
             return;
         };
         if self.skill.is_some() && run.skill != self.skill {
@@ -209,8 +186,8 @@ impl UsageFold {
             .iter()
             .map(|d| run.value(*d).map(str::to_owned))
             .collect();
-        self.rows.entry(key).or_default().add(&run);
-        self.total.add(&run);
+        add_bill(self.rows.entry(key).or_default(), &run);
+        add_bill(&mut self.total, &run);
     }
 
     #[must_use]
@@ -222,25 +199,23 @@ impl UsageFold {
     /// group values.
     #[must_use]
     pub fn to_json(&self) -> Value {
-        let rows: Vec<Value> = self
+        let rows: Vec<UsageTotals> = self
             .rows
             .iter()
-            .map(|(key, totals)| {
-                let group: serde_json::Map<String, Value> = self
+            .map(|(key, totals)| UsageTotals {
+                group: self
                     .group_by
                     .iter()
                     .zip(key)
-                    .map(|(d, v)| (d.as_str().to_owned(), json!(v)))
-                    .collect();
-                let mut row = totals.to_json();
-                row["group"] = Value::Object(group);
-                row
+                    .map(|(d, v)| (d.as_str().to_owned(), v.clone()))
+                    .collect(),
+                ..rounded(totals)
             })
             .collect();
         json!({
             "group_by": self.group_by.iter().map(|d| d.as_str()).collect::<Vec<_>>(),
             "rows": rows,
-            "total": self.total.to_json(),
+            "total": rounded(&self.total),
         })
     }
 }
@@ -284,19 +259,6 @@ impl Indexer {
 mod tests {
     use super::*;
 
-    #[test]
-    fn a_runs_agent_is_its_profile_when_it_ran_as_one() {
-        assert_eq!(
-            run_agent(&json!({ "skill": "note", "agent": "scribe" })).as_deref(),
-            Some("agent:scribe")
-        );
-        assert_eq!(
-            run_agent(&json!({ "skill": "note" })).as_deref(),
-            Some("agent:note")
-        );
-        assert_eq!(run_agent(&json!({ "agent": "" })), None);
-    }
-
     fn finished(skill: &str, model: &str, at: &str, status: &str, usage: Value) -> EventInfo {
         EventInfo {
             event_id: format!("run:{skill}-{at}:finished"),
@@ -328,7 +290,7 @@ mod tests {
             "failed",
             usage(10, 2, 0.1, "reported"),
         );
-        let r = RunUsage::from_event(&e).expect("a run-finished row");
+        let r = RunBill::from_event(&e).expect("a run-finished row");
         assert_eq!(r.skill.as_deref(), Some("renewal"));
         assert_eq!(r.agent.as_deref(), Some("agent:renewal"));
         assert_eq!(r.page.as_deref(), Some("markdown/instances/renewal/x.md"));
@@ -348,7 +310,7 @@ mod tests {
             "processed",
             Value::Null,
         );
-        let r = RunUsage::from_event(&e).unwrap();
+        let r = RunBill::from_event(&e).unwrap();
         assert_eq!(r.model.as_deref(), Some("chosen"));
         assert_eq!((r.input_tokens, r.output_tokens, r.cost_usd), (0, 0, 0.0));
     }
@@ -357,10 +319,10 @@ mod tests {
     fn other_lifecycle_rows_are_not_bills() {
         let mut e = finished("s", "m", "2026-10-01T09:00:00Z", "processed", Value::Null);
         e.title = "run-started".to_owned();
-        assert!(RunUsage::from_event(&e).is_none());
+        assert!(RunBill::from_event(&e).is_none());
         e.title = RUN_FINISHED_TITLE.to_owned();
         e.label_skill = "renewal".to_owned();
-        assert!(RunUsage::from_event(&e).is_none());
+        assert!(RunBill::from_event(&e).is_none());
     }
 
     #[test]

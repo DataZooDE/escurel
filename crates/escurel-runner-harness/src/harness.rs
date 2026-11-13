@@ -61,47 +61,9 @@ pub struct HarnessOutcome {
     pub reply: Option<String>,
 }
 
-/// Token usage and cost of one harness invocation.
-///
-/// Counts are what the harness's own accounting reports: for claude each
-/// turn's result envelope `usage` summed over the session (input = fresh +
-/// cache-read + cache-creation input tokens; the cost is the last envelope's
-/// running `total_cost_usd`), for gemini `usageMetadata` summed over the turns, for codex
-/// the `turn.completed` usage summed (its `cached_input_tokens` is a subset of
-/// `input_tokens`, not added). `cost_usd` only when the harness prices
-/// itself (claude's `total_cost_usd`); `model` when it names one.
-#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct Usage {
-    pub input_tokens: u64,
-    pub output_tokens: u64,
-    /// Provider-reported total, including token classes outside input/output.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub billed_tokens: Option<u64>,
-    #[serde(default)]
-    pub cost_usd: Option<f64>,
-    #[serde(default)]
-    pub model: Option<String>,
-}
-
-impl Usage {
-    /// Fold `other` into `self`: tokens and cost add up (a cost stays `None`
-    /// only while nobody reported one), the model is the last one reported.
-    pub fn accumulate(&mut self, other: &Usage) {
-        self.input_tokens += other.input_tokens;
-        self.output_tokens += other.output_tokens;
-        self.billed_tokens = match (self.billed_tokens, other.billed_tokens) {
-            (None, None) => None,
-            (a, b) => Some(a.unwrap_or(0).saturating_add(b.unwrap_or(0))),
-        };
-        self.cost_usd = match (self.cost_usd, other.cost_usd) {
-            (None, None) => None,
-            (a, b) => Some(a.unwrap_or(0.0) + b.unwrap_or(0.0)),
-        };
-        if other.model.is_some() {
-            self.model = other.model.clone();
-        }
-    }
-}
+/// Token usage and cost of one harness invocation: the run record's own type, so what a harness
+/// reports and what `run-finished.usage` carries cannot drift apart.
+pub use escurel_types::run_record::RunUsage as Usage;
 
 /// Errors raised by a harness adapter while managing its subprocess.
 ///

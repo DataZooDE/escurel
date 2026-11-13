@@ -41,6 +41,8 @@ pub mod pack;
 /// Credential shapes shared by the pack gate and every scrubber (feature `redact`).
 #[cfg(feature = "redact")]
 pub mod redact;
+// Namespaced: `escurel_types::run_record::RunFinishedBody` says whose record it is.
+pub mod run_record;
 /// `schedule:` cron grammar shared by the validator and the runner (feature `schedule`).
 #[cfg(feature = "schedule")]
 pub mod schedule;

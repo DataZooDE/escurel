@@ -116,5 +116,5 @@ pub use traversal::{
     CORPUS_TARGET, Dir, Filter, MAX_DEPTH_CEILING, START_ALIAS, Start, Step, Traversal,
     TraversalError, parse_traversal,
 };
-pub use usage::{RunUsage, UsageDim, UsageFold, UsageTotals, run_agent};
+pub use usage::{RunBill, UsageDim, UsageFold};
 pub use validate::{Issue, Severity, family_for_code};
