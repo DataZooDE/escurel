@@ -74,13 +74,13 @@ impl Harness for EchoHarness {
                 }
             })?;
         let mut inbox = match &task.inject {
-            Some(i) => Some(i.lock().await),
+            Some(i) => Some(i.open_session().await),
             None => None,
         };
         // With an inbox the task is one line and stdin stays open for the
         // turns that follow, each a JSON string line; the binary is told so,
         // because without it it reads the task to EOF.
-        let (envs, turns) = match inbox.as_deref_mut() {
+        let (envs, turns) = match inbox.as_mut() {
             Some(rx) => {
                 payload.push(b'\n');
                 (

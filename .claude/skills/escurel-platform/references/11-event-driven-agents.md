@@ -299,7 +299,7 @@ filed on, in the run's own record (`list_events { run_id }`), with
 | `cancel` | `not_live` | nothing to stop; `detail` says the run's status (or `unknown run`) |
 | `inject` | `injected` | the run was live and its harness takes messages: `text` was queued for the live session (`detail: "injection <n>"`) and recorded as `run:<run_id>:inject:<n>` |
 | `inject` | `unsupported` | the run is live but its harness cannot take a message mid-run (`detail` names the harness; today only `claude` and `echo` can) |
-| `inject` | `not_live` | nothing to steer; `detail` says the run's status (or `unknown run`) |
+| `inject` | `not_live` | nothing to steer; `detail` says the run's status (or `unknown run`). Also the answer while the run is still `pending` but its session is ending — the harness's last turn is out and its stdin closed — so a message is never answered `injected` and then dropped |
 | `retry` | `requeued` | a `failed` / `cancelled` / `dead_letter` run is re-driven now as `new_run_id` |
 | `pause` / `resume` | `paused` / `resumed` | the tenant admits nothing / admits again; held events stay in the inbox meanwhile |
 | `requeue` | `requeued` | the dead-lettered event is re-driven as `new_run_id` |

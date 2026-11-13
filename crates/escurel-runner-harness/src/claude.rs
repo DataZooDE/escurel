@@ -194,7 +194,7 @@ impl Harness for ClaudeHarness {
         // Held for the attempt: a message sent between attempts waits for
         // the next one rather than being lost.
         let mut inbox = match &task.inject {
-            Some(i) => Some(i.lock().await),
+            Some(i) => Some(i.open_session().await),
             None => None,
         };
 
@@ -208,7 +208,7 @@ impl Harness for ClaudeHarness {
             // Stdin stays open while a turn is in flight; claude exits at
             // the EOF sent once the last turn's `result` is out.
             turns: Some(crate::harness::Turns {
-                inbox: inbox.as_deref_mut(),
+                inbox: inbox.as_mut(),
                 encode: user_message,
                 turn_ended: is_result_line,
             }),
@@ -241,44 +241,34 @@ fn is_result_line(line: &str) -> bool {
             .is_ok_and(|v| v.get("type").and_then(serde_json::Value::as_str) == Some("result"))
 }
 
-/// The last turn's `result` envelope out of the stream-json output. A
-/// stdout that is one bare envelope (the `--output-format json` shape) is
+/// Every turn's `result` envelope out of the stream-json output, in order.
+/// A stdout that is one bare envelope (the `--output-format json` shape) is
 /// read as-is, so a parse error still names what was wrong.
-fn final_envelope(stdout: &[u8]) -> Result<serde_json::Value, HarnessError> {
+fn result_envelopes(stdout: &[u8]) -> Result<Vec<serde_json::Value>, HarnessError> {
     let text = String::from_utf8_lossy(stdout);
-    if let Some(line) = text.lines().rev().find(|l| is_result_line(l)) {
-        return serde_json::from_str(line).map_err(|source| HarnessError::BadOutcome {
-            harness: NAME,
-            source,
-        });
+    let lines: Vec<&str> = text.lines().filter(|l| is_result_line(l)).collect();
+    if lines.is_empty() {
+        return serde_json::from_slice(stdout)
+            .map(|v| vec![v])
+            .map_err(|source| HarnessError::BadOutcome {
+                harness: NAME,
+                source,
+            });
     }
-    serde_json::from_slice(stdout).map_err(|source| HarnessError::BadOutcome {
-        harness: NAME,
-        source,
-    })
+    lines
+        .into_iter()
+        .map(|l| {
+            serde_json::from_str(l).map_err(|source| HarnessError::BadOutcome {
+                harness: NAME,
+                source,
+            })
+        })
+        .collect()
 }
 
-/// Parse the final `result` envelope of a claude run into a
-/// [`HarnessOutcome`].
-///
-/// The envelope is a single JSON object of (roughly) the shape:
-/// `{"type":"result","subtype":"success","is_error":false,
-///   "result":"<final assistant text>","num_turns":N, ...}`.
-/// We read the fields we can map and tolerate the rest:
-///
-/// - `ok`/`status` ← `is_error` (false → ok). `subtype == "success"` is the
-///   confirming signal when present.
-/// - `summary` ← the `result` text (truncated), falling back to `subtype`.
-/// - `tool_calls` ← `num_turns` when present (a coarse but real proxy for how
-///   much the model did; the JSON envelope carries no exact tool-call count).
-/// - `produced_instance` ← `None`: the envelope does not name the page the
-///   model wrote; the runner's reconcile reads that back from the gateway.
-/// - `usage` ← the envelope's `usage` block (input = `input_tokens` +
-///   `cache_read_input_tokens` + `cache_creation_input_tokens`),
-///   `total_cost_usd`, and the model from `modelUsage`'s first key. `None`
-///   when the envelope carries no `usage` at all.
 fn parse_outcome(stdout: &[u8]) -> Result<HarnessOutcome, HarnessError> {
-    let envelope = final_envelope(stdout)?;
+    let envelopes = result_envelopes(stdout)?;
+    let envelope = envelopes.last().expect("at least one envelope");
 
     let is_error = envelope
         .get("is_error")
@@ -317,7 +307,7 @@ fn parse_outcome(stdout: &[u8]) -> Result<HarnessOutcome, HarnessError> {
     Ok(HarnessOutcome {
         reply: reply.filter(|_| ok),
         result_ref: None,
-        usage: parse_usage(&envelope),
+        usage: session_usage(&envelopes),
         ok,
         status: if ok {
             HarnessStatus::Ok
@@ -330,29 +320,44 @@ fn parse_outcome(stdout: &[u8]) -> Result<HarnessOutcome, HarnessError> {
     })
 }
 
-/// The `usage` block of the result envelope, or `None` when there is none.
-fn parse_usage(envelope: &serde_json::Value) -> Option<Usage> {
-    let usage = envelope.get("usage")?.as_object()?;
-    let count = |k: &str| {
-        usage
-            .get(k)
-            .and_then(serde_json::Value::as_u64)
-            .unwrap_or(0)
-    };
-    Some(Usage {
-        input_tokens: count("input_tokens")
+/// A session's usage over its turns' `result` envelopes, or `None` when no
+/// turn reported any. Each envelope's `usage` is that turn's alone, so the
+/// tokens add up; `total_cost_usd` and `modelUsage` are the session's
+/// running totals, so they come from the last envelope that has them.
+/// (Verified against a real two-turn stream-json session; see the test
+/// `a_multi_turn_session_sums_per_turn_tokens_and_takes_the_running_cost`.)
+fn session_usage(envelopes: &[serde_json::Value]) -> Option<Usage> {
+    let mut total: Option<Usage> = None;
+    for envelope in envelopes {
+        let Some(usage) = envelope.get("usage").and_then(serde_json::Value::as_object) else {
+            continue;
+        };
+        let count = |k: &str| {
+            usage
+                .get(k)
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or(0)
+        };
+        let t = total.get_or_insert_with(Usage::default);
+        t.input_tokens += count("input_tokens")
             + count("cache_read_input_tokens")
-            + count("cache_creation_input_tokens"),
-        output_tokens: count("output_tokens"),
-        billed_tokens: None,
-        cost_usd: envelope
+            + count("cache_creation_input_tokens");
+        t.output_tokens += count("output_tokens");
+        if let Some(cost) = envelope
             .get("total_cost_usd")
-            .and_then(serde_json::Value::as_f64),
-        model: envelope
+            .and_then(serde_json::Value::as_f64)
+        {
+            t.cost_usd = Some(cost);
+        }
+        if let Some(model) = envelope
             .get("modelUsage")
             .and_then(serde_json::Value::as_object)
-            .and_then(|m| m.keys().next().cloned()),
-    })
+            .and_then(|m| m.keys().next().cloned())
+        {
+            t.model = Some(model);
+        }
+    }
+    total
 }
 
 #[cfg(test)]
@@ -558,6 +563,32 @@ mod tests {
         assert_eq!(outcome.summary, "steered answer");
         assert_eq!(outcome.tool_calls, 3);
         assert_eq!(outcome.usage.expect("usage").output_tokens, 7);
+    }
+
+    /// Recorded from a real two-turn `claude -p --input-format stream-json`
+    /// session (claude-code 2.x, 2026-11): each turn's `result` carries that
+    /// turn's `usage` (turn 2's output 49 is its own message, not 80 + 49),
+    /// while `total_cost_usd` and `modelUsage` are the session's running
+    /// totals. Tokens add up across the results; the cost is the last one.
+    #[test]
+    fn a_multi_turn_session_sums_per_turn_tokens_and_takes_the_running_cost() {
+        let stdout = br#"{"type":"system","subtype":"init","session_id":"s1","model":"claude-haiku-5-5"}
+{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"echo hi"}}]}}
+{"type":"user","message":{"content":[{"tool_use_id":"t1","type":"tool_result","content":"hi","is_error":false}]}}
+{"type":"assistant","message":{"content":[{"type":"text","text":"one"}]}}
+{"type":"result","subtype":"success","is_error":false,"result":"one","num_turns":2,"total_cost_usd":0.20389395,"usage":{"input_tokens":4,"cache_creation_input_tokens":195273,"cache_read_input_tokens":168379,"output_tokens":80},"modelUsage":{"claude-haiku-5-5":{"inputTokens":4,"outputTokens":80,"costUSD":0.20389395}}}
+{"type":"system","subtype":"init","session_id":"s1","model":"claude-haiku-5-5"}
+{"type":"assistant","message":{"content":[{"type":"text","text":"Two is prime."}]}}
+{"type":"result","subtype":"success","is_error":false,"result":"Two is prime.","num_turns":1,"total_cost_usd":0.2136006,"usage":{"input_tokens":2,"cache_creation_input_tokens":60,"cache_read_input_tokens":190463,"output_tokens":49},"modelUsage":{"claude-haiku-5-5":{"inputTokens":6,"outputTokens":129,"costUSD":0.2136006}}}
+"#;
+        let usage = parse_outcome(stdout).expect("parse").usage.expect("usage");
+        assert_eq!(
+            usage.input_tokens,
+            (4 + 195_273 + 168_379) + (2 + 60 + 190_463)
+        );
+        assert_eq!(usage.output_tokens, 80 + 49);
+        assert_eq!(usage.cost_usd, Some(0.2136006), "the running total, once");
+        assert_eq!(usage.model.as_deref(), Some("claude-haiku-5-5"));
     }
 
     #[test]

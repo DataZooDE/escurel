@@ -217,7 +217,7 @@ done
         SecretString::from(TOKEN.to_owned()),
     );
     let (tx, inbox) = escurel_runner_core::InjectInbox::channel();
-    tx.send("STEER use 2027".to_owned()).unwrap();
+    assert!(tx.send("STEER use 2027"));
     task.inject = Some(inbox);
 
     let harness = ClaudeHarness::new(stub.to_string_lossy().into_owned())

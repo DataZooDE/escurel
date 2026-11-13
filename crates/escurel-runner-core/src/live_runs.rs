@@ -70,28 +70,105 @@ impl Default for Cancel {
 }
 
 /// The harness side of a run's injections: the messages a human sent the
-/// live session, in order. Shared across the run's attempts — a message
-/// that arrives between attempts is read by the next one.
+/// live session, in order. Shared across the run's attempts; each attempt
+/// reads it through one [`InjectSession`].
+///
+/// The inbox accepts messages until a session closes it — the harness's
+/// last turn ended and its stdin is gone — so a message that could no longer
+/// reach the session is answered `not_live` instead of being queued for
+/// nobody. Opening the next attempt's session accepts again; until the first
+/// session opens, messages wait for it.
 #[derive(Clone)]
-pub struct InjectInbox(Arc<tokio::sync::Mutex<UnboundedReceiver<String>>>);
+pub struct InjectInbox {
+    rx: Arc<tokio::sync::Mutex<UnboundedReceiver<String>>>,
+    accepting: Arc<Mutex<bool>>,
+}
+
+/// The sending half of an [`InjectInbox`].
+#[derive(Clone)]
+pub struct InjectSender {
+    tx: UnboundedSender<String>,
+    accepting: Arc<Mutex<bool>>,
+}
+
+impl InjectSender {
+    /// Queue `text` for the session; `false` when no session will read it.
+    #[must_use]
+    pub fn send(&self, text: &str) -> bool {
+        // Held across the send: a session closing concurrently either sees
+        // this message in its drain or makes this send refuse.
+        let accepting = self.accepting.lock().expect("inject gate");
+        *accepting && self.tx.send(text.to_owned()).is_ok()
+    }
+}
 
 impl InjectInbox {
     /// A new inbox and the sender that feeds it.
     #[must_use]
-    pub fn channel() -> (UnboundedSender<String>, Self) {
+    pub fn channel() -> (InjectSender, Self) {
         let (tx, rx) = unbounded_channel();
-        (tx, Self(Arc::new(tokio::sync::Mutex::new(rx))))
+        let accepting = Arc::new(Mutex::new(true));
+        (
+            InjectSender {
+                tx,
+                accepting: accepting.clone(),
+            },
+            Self {
+                rx: Arc::new(tokio::sync::Mutex::new(rx)),
+                accepting,
+            },
+        )
     }
 
-    /// Hold the inbox for one harness attempt.
-    pub async fn lock(&self) -> tokio::sync::MutexGuard<'_, UnboundedReceiver<String>> {
-        self.0.lock().await
+    /// Hold the inbox for one harness attempt; it accepts messages until
+    /// the session is closed or dropped.
+    pub async fn open_session(&self) -> InjectSession<'_> {
+        let rx = self.rx.lock().await;
+        *self.accepting.lock().expect("inject gate") = true;
+        InjectSession {
+            rx,
+            accepting: &self.accepting,
+        }
     }
 }
 
 impl std::fmt::Debug for InjectInbox {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("InjectInbox")
+    }
+}
+
+/// One attempt's hold on an [`InjectInbox`].
+pub struct InjectSession<'a> {
+    rx: tokio::sync::MutexGuard<'a, UnboundedReceiver<String>>,
+    accepting: &'a Mutex<bool>,
+}
+
+impl InjectSession<'_> {
+    /// The next message; pends until one arrives.
+    pub async fn recv(&mut self) -> Option<String> {
+        self.rx.recv().await
+    }
+
+    /// Stop accepting, and return the messages accepted before the close
+    /// that were not read yet — each was answered `injected`, so the caller
+    /// still owes it to the session.
+    pub fn close(&mut self) -> Vec<String> {
+        let mut accepting = self.accepting.lock().expect("inject gate");
+        *accepting = false;
+        let mut late = Vec::new();
+        while let Ok(text) = self.rx.try_recv() {
+            late.push(text);
+        }
+        late
+    }
+}
+
+impl Drop for InjectSession<'_> {
+    fn drop(&mut self) {
+        if let Ok(mut accepting) = self.accepting.lock() {
+            *accepting = false;
+        }
     }
 }
 
@@ -114,7 +191,7 @@ struct Entry {
     run: Option<RunEventCtx>,
     /// The sending half of the run's [`InjectInbox`]; `None` for a harness
     /// that cannot take one.
-    inject: Option<UnboundedSender<String>>,
+    inject: Option<InjectSender>,
     injected: u32,
 }
 
@@ -201,8 +278,8 @@ impl RunRegistry {
                     .map_or_else(|| "unknown".to_owned(), |r| r.harness.clone()),
             };
         };
-        if tx.send(text.to_owned()).is_err() {
-            // The inbox is gone with the harness session.
+        if !tx.send(text) {
+            // The session's last turn has ended: nothing would read it.
             return Injection::NotLive;
         }
         entry.injected += 1;
@@ -282,12 +359,41 @@ mod tests {
                 other => panic!("{other:?}"),
             }
         }
-        let mut rx = inbox.lock().await;
-        assert_eq!(rx.recv().await.as_deref(), Some("first"));
-        assert_eq!(rx.recv().await.as_deref(), Some("second"));
-        drop(rx);
+        let mut session = inbox.open_session().await;
+        assert_eq!(session.recv().await.as_deref(), Some("first"));
+        assert_eq!(session.recv().await.as_deref(), Some("second"));
+        drop(session);
         reg.finish("r1");
         assert!(matches!(reg.inject("r1", "late"), Injection::NotLive));
+    }
+
+    /// The late-message race: a message sent after the session's last turn
+    /// ended (stdin closed) but before the run's terminal is `not_live`, not
+    /// `injected`-and-lost; one accepted before the close is handed back.
+    #[tokio::test]
+    async fn a_closed_session_answers_not_live_and_hands_back_what_it_accepted() {
+        let reg = RunRegistry::new();
+        reg.register("r1", Duration::from_millis(10));
+        let inbox = reg.attach("r1", ctx("r1", "claude"), true).expect("inbox");
+        let mut session = inbox.open_session().await;
+        assert!(matches!(
+            reg.inject("r1", "racing"),
+            Injection::Queued { .. }
+        ));
+        assert_eq!(session.close(), vec!["racing".to_owned()]);
+        assert!(
+            matches!(reg.inject("r1", "late"), Injection::NotLive),
+            "the run is still registered, but nothing reads its inbox"
+        );
+        drop(session);
+        assert!(matches!(reg.inject("r1", "between"), Injection::NotLive));
+        // A retry's attempt opens a new session, which accepts again.
+        let mut retry = inbox.open_session().await;
+        assert!(matches!(
+            reg.inject("r1", "retry"),
+            Injection::Queued { .. }
+        ));
+        assert_eq!(retry.recv().await.as_deref(), Some("retry"));
     }
 
     #[test]

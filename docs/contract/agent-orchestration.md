@@ -257,8 +257,12 @@ The runner's live-run registry holds, per run, the cancel handle and the
 inject sender; each queued message is recorded as an `escurel:run` system
 event `run:<run_id>:inject:<n>` (`title: run-inject`, body `{n, text,
 bytes, requested_by}`) and answered `injected`, `unsupported` or
-`not_live` under `escurel:run-control-result`. An injection never changes
-the run's token or tool surface — it is text into the same session.
+`not_live` under `escurel:run-control-result`. The inbox stops accepting
+the moment an attempt's last turn ends (before stdin closes); a message
+accepted just before that is still written as one more turn, and one sent
+after it is answered `not_live` even though the run has not reached its
+terminal yet. A retry's attempt opens the inbox again. An injection never
+changes the run's token or tool surface — it is text into the same session.
 
 Adapter selection is per-`label_skill` (a skill may declare its preferred
 harness in frontmatter) with a runner-level default — data-driven and

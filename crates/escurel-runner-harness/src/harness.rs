@@ -63,9 +63,10 @@ pub struct HarnessOutcome {
 
 /// Token usage and cost of one harness invocation.
 ///
-/// Counts are what the harness's own accounting reports: for claude the
-/// result envelope's `usage` (input = fresh + cache-read + cache-creation
-/// input tokens), for gemini `usageMetadata` summed over the turns, for codex
+/// Counts are what the harness's own accounting reports: for claude each
+/// turn's result envelope `usage` summed over the session (input = fresh +
+/// cache-read + cache-creation input tokens; the cost is the last envelope's
+/// running `total_cost_usd`), for gemini `usageMetadata` summed over the turns, for codex
 /// the `turn.completed` usage summed (its `cached_input_tokens` is a subset of
 /// `input_tokens`, not added). `cost_usd` only when the harness prices
 /// itself (claude's `total_cost_usd`); `model` when it names one.
@@ -246,7 +247,7 @@ pub trait Harness: Send + Sync {
 ///
 /// `gemini` is deliberately not a caller: it speaks HTTP rather than spawning
 /// anything, so it shares none of this.
-pub(crate) struct Spawn<'a> {
+pub(crate) struct Spawn<'a, 'b> {
     /// Adapter name, for the error variants.
     pub harness: &'static str,
     pub bin: &'a str,
@@ -265,7 +266,7 @@ pub(crate) struct Spawn<'a> {
     pub stdout_lines: Option<tokio::sync::mpsc::UnboundedSender<String>>,
     /// Keep stdin open after `stdin` for further user turns. `None` keeps
     /// the write-then-close default above.
-    pub turns: Option<Turns<'a>>,
+    pub turns: Option<Turns<'a, 'b>>,
     pub timeout: std::time::Duration,
     /// The run's cancel handle (workbench backend P2-3a). On cancel the
     /// child gets SIGTERM, [`escurel_runner_core::Cancel::grace`], then
@@ -277,10 +278,11 @@ pub(crate) struct Spawn<'a> {
 /// A conversation over stdin: the initial `stdin` payload is turn one, each
 /// message from `inbox` is one more, and stdin closes once every turn the
 /// harness was sent has ended — the EOF a stream-json CLI needs to exit.
-pub(crate) struct Turns<'a> {
-    /// Further user turns, encoded and written as they arrive. `None` (or a
-    /// closed channel) = no more turns will come.
-    pub inbox: Option<&'a mut tokio::sync::mpsc::UnboundedReceiver<String>>,
+pub(crate) struct Turns<'a, 'b> {
+    /// Further user turns, encoded and written as they arrive. `None` = no
+    /// more turns will come. Closed once the last turn has ended, so a
+    /// message sent after that is refused at the registry, not lost here.
+    pub inbox: Option<&'a mut escurel_runner_core::InjectSession<'b>>,
     /// One turn's text as the bytes the harness reads (a newline-terminated
     /// stream-json message, a JSON string line, …).
     pub encode: fn(&str) -> Vec<u8>,
@@ -296,7 +298,9 @@ pub(crate) struct Turns<'a> {
 /// on a stdin or wait failure, [`HarnessError::Timeout`] if it outruns the
 /// deadline, and [`HarnessError::NonZeroExit`] (with stderr truncated to 2000
 /// characters) if it exits non-zero.
-pub(crate) async fn run_capture(spawn: Spawn<'_>) -> Result<std::process::Output, HarnessError> {
+pub(crate) async fn run_capture(
+    spawn: Spawn<'_, '_>,
+) -> Result<std::process::Output, HarnessError> {
     use std::process::Stdio;
 
     let harness = spawn.harness;
@@ -412,9 +416,21 @@ pub(crate) async fn run_capture(spawn: Spawn<'_>) -> Result<std::process::Output
             Some(()) = ended_rx.recv() => {
                 pending_turns = pending_turns.saturating_sub(1);
                 if pending_turns == 0 {
-                    // Dropping the handle is the EOF that ends the session.
-                    open_stdin = None;
-                    inbox = None;
+                    // Close before the EOF: a message accepted in between
+                    // is still written as one more turn.
+                    let late = inbox.take().map(|i| i.close()).unwrap_or_default();
+                    match (open_stdin.as_mut(), encode) {
+                        (Some(stdin), Some(encode)) if !late.is_empty() => {
+                            for text in &late {
+                                tokio::io::AsyncWriteExt::write_all(stdin, &encode(text))
+                                    .await
+                                    .map_err(|source| HarnessError::Io { harness, source })?;
+                            }
+                            pending_turns += late.len();
+                        }
+                        // Dropping the handle is the EOF that ends the session.
+                        _ => open_stdin = None,
+                    }
                 }
             }
         }
@@ -445,7 +461,7 @@ pub(crate) async fn run_capture(spawn: Spawn<'_>) -> Result<std::process::Output
 
 /// The next turn from `inbox`; pends forever when there is none.
 async fn next_turn(
-    inbox: &mut Option<&mut tokio::sync::mpsc::UnboundedReceiver<String>>,
+    inbox: &mut Option<&mut escurel_runner_core::InjectSession<'_>>,
 ) -> Option<String> {
     match inbox {
         Some(rx) => rx.recv().await,
@@ -662,8 +678,9 @@ mod cancel_tests {
     /// written, and stdin closes once both turns have ended.
     #[tokio::test]
     async fn a_conversation_keeps_stdin_open_until_every_turn_has_ended() {
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-        tx.send("steer".to_owned()).unwrap();
+        let (tx, inbox) = escurel_runner_core::InjectInbox::channel();
+        assert!(tx.send("steer"));
+        let mut rx = inbox.open_session().await;
         let args = sh("while read -r l; do echo \"got $l\"; echo done; done; echo eof");
         let output = run_capture(Spawn {
             harness: "test",
@@ -686,17 +703,18 @@ mod cancel_tests {
             String::from_utf8_lossy(&output.stdout),
             "got first\ndone\ngot steer\ndone\neof\n"
         );
-        drop(tx);
+        assert!(!tx.send("late"), "the session closed with its last turn");
     }
 
     /// A harness that never marks a turn ended keeps stdin until it exits;
     /// turns injected while it runs reach it.
     #[tokio::test]
     async fn turns_injected_mid_run_reach_a_harness_that_reads_until_it_is_done() {
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let (tx, inbox) = escurel_runner_core::InjectInbox::channel();
+        let mut rx = inbox.open_session().await;
         tokio::spawn(async move {
             tokio::time::sleep(Duration::from_millis(200)).await;
-            let _ = tx.send("mid-run".to_owned());
+            let _ = tx.send("mid-run");
             // Held: the harness, not the sender, decides when it is done.
             tokio::time::sleep(Duration::from_secs(30)).await;
         });

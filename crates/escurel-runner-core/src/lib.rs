@@ -47,7 +47,9 @@ pub use escurel_runner_workflow::OperationStatus;
 pub use ledger::{
     DeadLetterReason, Ledger, LedgerDecision, LedgerError, RunId, RunRecord, RunStatus,
 };
-pub use live_runs::{Cancel, DEFAULT_CANCEL_GRACE, InjectInbox, Injection, RunRegistry};
+pub use live_runs::{
+    Cancel, DEFAULT_CANCEL_GRACE, InjectInbox, InjectSender, InjectSession, Injection, RunRegistry,
+};
 pub use packager::{
     ALLOWED_TOOLS, Autonomy, CHAT_REQUIRES_RUN_TOKENS, Delegation, PLAN_PARAGRAPH, PackageError,
     REVIEW_TOOLS, TaskContext, WORKFLOW_STEP_TOOLS, bound_page_id, chat_run_token, chat_tools,
