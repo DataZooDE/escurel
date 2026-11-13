@@ -29,6 +29,9 @@ Runs you can see, steer and bill; agents with least privilege; cron schedules (e
 - claude runs now use stream-json; `usage` sums every turn, and `tool_calls` counts `tool_use` blocks.
 - Event ids starting `run:`, `sched:` or `lint-` are reserved for the runner's identity.
 - `mint_agent_token` refuses machine callers (agent, narrowed, run and workbench tokens).
+- `usage_report` totals carry `priced_runs` / `unpriced_runs`; the UIs say "cost unavailable" instead of $0.00.
+- With several runners, only the runner that holds a run answers its cancel / retry / inject at once; the others defer.
+- codex tool calls are read from `item.type` (codex-cli 0.168 shape) and counted once per completed call.
 
 ## v2026.10.29
 

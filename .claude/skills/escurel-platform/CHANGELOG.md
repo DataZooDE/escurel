@@ -8,12 +8,13 @@ pin (see `SKILL.md` → "How this skill is installed").
 
 - **Steer a live run:** `run_control{action:"inject", run_id, text}` (8 KiB) reaches a running claude or echo run as a
   new user turn; codex answers `outcome: unsupported`, a finished run `not_live`. Each inject is an `escurel:run`
-  event `run:<id>:inject:<n>`. Machine callers are refused; the page's write ACL always applies (references/02, 11).
+  event `run:<id>:inject:<n>`. Machine callers are refused; a person passes cancel's page-write gate. With several
+  runners, the runner that holds the run answers a cancel / retry / inject (references/02, 08, 11).
 - **Run transcripts:** the runner stores a redacted, normalised transcript per run (`put_run_transcript`, run-token
   only, written once); read it with `fetch_blob{run_id}`. `run-finished.transcript` is `{records, bytes, sha256}`.
   Expiry: `ESCUREL_RUN_TRANSCRIPT_RETENTION_DAYS` (references/02, 11).
 - **Cost:** admin `usage_report{since, until, group_by, skill?}` folds `run-finished` usage per skill / agent / page /
-  model / day; `list_events` takes `since` / `until`; CLI `escurel run usage`. Runner cost/token metrics gain `skill`
+  model / day, with `priced_runs` / `unpriced_runs` so a run without a price is never read as free; `list_events` takes `since` / `until`; CLI `escurel run usage`. Runner cost/token metrics gain `skill`
   and `model` labels. claude usage now sums every turn and `tool_calls` counts the `tool_use` blocks (references/02, 04, 11).
 - **Agent profiles:** the auto-shipped `agent` system skill (admin-only writes) declares `harness`, `model`, `skills`,
   `scopes: {tools, write}` and `max_concurrent`. Run tokens carry an `agent` claim; the gateway enforces the scopes
@@ -23,7 +24,8 @@ pin (see `SKILL.md` → "How this skill is installed").
   (references/01, 08, 11).
 - **Schedules:** skill frontmatter `schedule: "CRON_TZ=Europe/Berlin 15 7 * * 1-5"` and
   `schedule_budget: {runs_per_day}`; the runner fires each window once (`sched:<skill>:<RFC3339>`), catches up within
-  `ESCUREL_RUNNER_SCHEDULE_GRACE`, and files `run-skipped` with `reason: budget | invalid_budget`. The lint interval
+  `ESCUREL_RUNNER_SCHEDULE_GRACE`, and files `run-skipped` with `reason: budget | invalid_budget | invalid_schedule`; `list_skills` flags an unreadable
+  `schedule:` with `schedule_invalid: true`. A zoned schedule fires once per local time across DST (references/01, 11). The lint interval
   is now a schedule (references/01, 11).
 
 ## 0.25.27 — OpenAI-compatible runner presets and embeddings
