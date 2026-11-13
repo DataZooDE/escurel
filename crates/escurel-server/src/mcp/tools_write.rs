@@ -287,8 +287,24 @@ pub(super) fn is_machine_caller(caller: &AclCaller<'_>) -> bool {
 /// * `runner-status:<runner_id>` is the one overwritten record `report_runner_status` keeps per runner;
 ///   a squatted row would hide that runner's health behind an inbox row nothing garbage-collects.
 ///
+/// * `run:<id>:*` / `sched:<skill>:<window>` / `lint-<tenant>-<n>` are the runner's run lifecycle,
+///   schedule triggers and lint ticks. They are first-writer-wins and read back by id
+///   (`usage_report`, `fetch_blob{run_id}`, the schedule budget), so a pre-filed row would hide a
+///   run or swallow a trigger: only the bookkeeper (an admin that is not a machine caller, i.e. the
+///   runner's own identity) files them.
+///
 /// Every door that takes a caller-chosen event id (MCP `capture_event`, `/ingest`) asks this first.
-pub(crate) fn reserved_event_id_refusal(event_id: &str) -> Option<String> {
+pub(crate) fn reserved_event_id_refusal(event_id: &str, caller: &AclCaller<'_>) -> Option<String> {
+    const BOOKKEEPER_PREFIXES: [&str; 3] = ["run:", "sched:", "lint-"];
+    if let Some(prefix) = BOOKKEEPER_PREFIXES
+        .iter()
+        .find(|p| event_id.starts_with(**p))
+        && !(caller.is_admin && !is_machine_caller(caller))
+    {
+        return Some(format!(
+            "event ids starting with `{prefix}` are reserved for the runner's own identity"
+        ));
+    }
     if event_id.starts_with(crate::write_back::RESERVED_EVENT_ID_PREFIX) {
         return Some(format!(
             "event ids starting with `{}` are reserved for the gateway",
@@ -2283,9 +2299,14 @@ pub(super) async fn tool_capture_event(
     } else {
         None
     };
-    // Ids in the gateway's own namespaces (`write-back:*`, `runner-status:*`) are addressed by id and
-    // trusted by what reads them: a caller must not be able to file one. The same refusal guards `/ingest`.
-    if let Some(reason) = a.event_id.as_deref().and_then(reserved_event_id_refusal) {
+    // Ids in the gateway's and the runner's own namespaces (`write-back:*`, `runner-status:*`, `run:*`,
+    // `sched:*`, `lint-*`) are addressed by id and trusted by what reads them: a caller must not be
+    // able to file one. The same refusal guards `/ingest`.
+    if let Some(reason) = a
+        .event_id
+        .as_deref()
+        .and_then(|id| reserved_event_id_refusal(id, &caller))
+    {
         return Err(JsonRpcError::invalid_params(format!(
             "capture_event: {reason}"
         )));

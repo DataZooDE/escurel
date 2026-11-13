@@ -421,12 +421,13 @@ async fn record_and_dispatch_ingest(
         )
             .into_response();
     }
-    // The gateway's own id namespaces (`write-back:*`, `runner-status:*`) are not the caller's to mint:
+    // The gateway's and runner's id namespaces (`write-back:*`, `runner-status:*`, `run:*`, …) are not
+    // the caller's to mint:
     // the same refusal `capture_event` applies, or this door would squat a runner's status record or
     // forge a write-back witness.
     if let Some(reason) = caller_event_id
         .as_deref()
-        .and_then(super::tools_write::reserved_event_id_refusal)
+        .and_then(|id| super::tools_write::reserved_event_id_refusal(id, &caller.acl()))
     {
         return (
             StatusCode::UNPROCESSABLE_ENTITY,
