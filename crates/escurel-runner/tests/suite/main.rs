@@ -63,6 +63,7 @@ mod run_events;
 mod run_inject;
 mod run_ledger;
 mod runner_status;
+mod schedule_trigger;
 mod sigterm_drain;
 mod skill_contract_runner;
 mod skill_model;

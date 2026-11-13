@@ -22,7 +22,7 @@ escurel-client = { path = "../escurel-client" }
 escurel-auth = { path = "../escurel-auth" }
 jsonwebtoken = "9"
 escurel-runner-workflow = { path = "../escurel-runner-workflow" }
-escurel-types = { path = "../escurel-types" }
+escurel-types = { path = "../escurel-types", features = ["schedule"] }
 rsa = { version = "0.9", features = ["pem"] }
 duckdb = { version = "1", default-features = false }
 secrecy = "0.10"

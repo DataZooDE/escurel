@@ -82,6 +82,11 @@ pub struct SkillInfo {
     /// `harness:` — the adapter this skill asks to run on. Advisory here;
     /// the runner honours it within its allow-list.
     pub harness: Option<String>,
+    /// `schedule:` — the cron expression the runner fires this skill on (#819), as written.
+    /// `None` when undeclared. Shape is `check_schedule`'s concern, not this projection's.
+    pub schedule: Option<String>,
+    /// `schedule_budget: {runs_per_day}` — `None` when undeclared or not a positive count.
+    pub schedule_budget: Option<escurel_types::ScheduleBudget>,
     /// `folder:` — the `/` path placing this skill in a tree. `None` when undeclared.
     pub folder: Option<String>,
     /// `role:` — `record` | `process` | `report` | `helper` as written. `None` when undeclared.
@@ -744,6 +749,14 @@ fn parse_cascade(fm: &serde_json::Value) -> Option<CascadePolicy> {
     })
 }
 
+/// Project `schedule_budget: {runs_per_day: N}`. A count that is not a positive `u32` is dropped
+/// (as if undeclared) — `check_schedule` is what tells the author.
+fn parse_schedule_budget(fm: &serde_json::Value) -> Option<escurel_types::ScheduleBudget> {
+    let n = fm.get("schedule_budget")?.get("runs_per_day")?.as_u64()?;
+    let runs_per_day = u32::try_from(n).ok().filter(|n| *n > 0)?;
+    Some(escurel_types::ScheduleBudget { runs_per_day })
+}
+
 /// Project `autonomy:` from a skill page's indexed frontmatter.
 ///
 /// An ABSENT key is `Auto`: the default the gateway's write gate
@@ -851,6 +864,8 @@ impl Indexer {
                     .map(str::trim)
                     .filter(|s| !s.is_empty())
                     .map(str::to_owned),
+                schedule: trimmed_str(&fm, "schedule"),
+                schedule_budget: parse_schedule_budget(&fm),
                 folder: trimmed_str(&fm, "folder"),
                 role: trimmed_str(&fm, "role"),
                 tags: string_array_field(&fm, "tags"),

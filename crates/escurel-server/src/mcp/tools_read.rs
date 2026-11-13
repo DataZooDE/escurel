@@ -141,6 +141,8 @@ fn skill_to_wire(s: escurel_index::SkillInfo, is_admin: bool) -> TypesSkill {
         autonomy: s.autonomy.map(|a| a.as_str().to_owned()),
         summary: s.summary,
         harness: s.harness,
+        schedule: s.schedule,
+        schedule_budget: s.schedule_budget,
         folder: s.folder,
         role: s.role,
         tags: s.tags,

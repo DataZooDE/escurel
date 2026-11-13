@@ -903,7 +903,13 @@ pub const CONFIG_KEYS: &[ConfigKey] = &[
         name: "ESCUREL_RUNNER_LINT_INTERVAL",
         component: "Runner",
         default: "disabled",
-        doc: "how often the runner synthesizes a `lint` event (the scheduled semantic-health pass)",
+        doc: "how often the runner fires the `lint` skill (the scheduled semantic-health pass); a synthetic entry in the schedule loop, kept for compatibility",
+    },
+    ConfigKey {
+        name: "ESCUREL_RUNNER_SCHEDULE_TICK",
+        component: "Runner",
+        default: "30s",
+        doc: "how often the runner looks for skills whose `schedule:` window has opened (the worst-case lateness of a scheduled trigger; zero is refused)",
     },
     ConfigKey {
         name: "ESCUREL_RUNNER_LEDGER_PATH",

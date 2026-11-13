@@ -290,6 +290,79 @@ fn check_model(page_kind: PageKind, fields: &YamlMapping) -> Option<Issue> {
     }
 }
 
+/// `schedule:` and `schedule_budget:` on a skill page (#819). Both are ERRORS when malformed: the
+/// runner fires what the page says, so a schedule it cannot read must not be written. The grammar is
+/// [`escurel_types::schedule::CronSchedule`]'s, the one the runner parses with.
+fn check_schedule(page_kind: PageKind, fields: &YamlMapping) -> Vec<Issue> {
+    let mut issues = Vec::new();
+    if page_kind != PageKind::Skill {
+        return issues;
+    }
+    if let Some(raw) = fields.get("schedule") {
+        let suggestion = "a 5- or 6-field cron expression, optionally zoned: \
+                          `schedule: \"CRON_TZ=Europe/Berlin 15 7 * * 1-5\"` (UTC when unzoned)";
+        let err = match raw.as_str() {
+            Some(expr) => escurel_types::schedule::CronSchedule::parse(expr)
+                .err()
+                .map(|e| format!("`schedule: {expr}`: {e}")),
+            None => Some("`schedule:` must be a string".to_owned()),
+        };
+        if let Some(msg) = err {
+            issues.push(
+                Issue::error("schedule_invalid", "frontmatter.schedule", msg)
+                    .with_suggestion(suggestion),
+            );
+        }
+    }
+    if let Some(raw) = fields.get("schedule_budget") {
+        let invalid = || {
+            Issue::error(
+                "schedule_budget_invalid",
+                "frontmatter.schedule_budget",
+                "`schedule_budget:` is a map with a positive integer `runs_per_day`",
+            )
+            .with_suggestion("write `schedule_budget: {runs_per_day: 5}`")
+        };
+        match raw.as_mapping() {
+            None => issues.push(invalid()),
+            Some(map) => {
+                let count = map
+                    .get("runs_per_day")
+                    .and_then(YamlValue::as_u64)
+                    .and_then(|n| u32::try_from(n).ok());
+                if count.is_none_or(|n| n == 0) {
+                    issues.push(invalid());
+                }
+                for key in map.keys() {
+                    if key.as_str() != Some("runs_per_day") {
+                        issues.push(Issue::warning(
+                            "schedule_budget_invalid",
+                            "frontmatter.schedule_budget",
+                            format!(
+                                "`schedule_budget` has no key `{}`; it is ignored",
+                                yaml_key(key)
+                            ),
+                        ));
+                    }
+                }
+            }
+        }
+        if fields.get("schedule").is_none() {
+            issues.push(Issue::warning(
+                "schedule_budget_invalid",
+                "frontmatter.schedule_budget",
+                "`schedule_budget:` without a `schedule:` caps nothing",
+            ));
+        }
+    }
+    issues
+}
+
+fn yaml_key(key: &YamlValue) -> String {
+    key.as_str()
+        .map_or_else(|| format!("{key:?}"), str::to_owned)
+}
+
 /// The roles a skill may declare (`role:`), as a knowledge tree sorts and icons them.
 pub const SKILL_ROLES: [&str; 4] = ["record", "process", "report", "helper"];
 
@@ -1300,6 +1373,7 @@ impl Indexer {
         issues.extend(check_overview(parsed.frontmatter.page_kind, fields));
         issues.extend(check_okf_keys(parsed.frontmatter.page_kind, fields));
         issues.extend(check_chat_keys(parsed.frontmatter.page_kind, fields));
+        issues.extend(check_schedule(parsed.frontmatter.page_kind, fields));
         if parsed.frontmatter.page_kind == PageKind::Skill
             && let Some(raw) = fields.get("actions")
         {
@@ -2091,5 +2165,80 @@ mod duration_tests {
         ] {
             assert!(!is_iso_duration(bad), "{bad}");
         }
+    }
+}
+
+#[cfg(test)]
+mod schedule_tests {
+    use super::{PageKind, check_schedule};
+
+    fn codes(page_kind: PageKind, yaml: &str) -> Vec<(String, bool)> {
+        let source = format!("---\nkind: skill\nid: x\n{yaml}\n---\n");
+        let page = escurel_md::parse(&source).unwrap();
+        check_schedule(page_kind, &page.frontmatter.fields)
+            .into_iter()
+            .map(|i| (i.code.clone(), i.severity == super::Severity::Error))
+            .collect()
+    }
+
+    #[test]
+    fn a_well_formed_schedule_and_budget_pass() {
+        for yaml in [
+            "schedule: \"15 7 * * 1-5\"",
+            "schedule: \"*/2 * * * * *\"",
+            "schedule: \"CRON_TZ=Europe/Berlin 15 7 * * 1-5\"\nschedule_budget: {runs_per_day: 5}",
+        ] {
+            assert!(codes(PageKind::Skill, yaml).is_empty(), "{yaml}");
+        }
+    }
+
+    #[test]
+    fn a_bad_cron_or_zone_is_an_error() {
+        for yaml in [
+            "schedule: \"every monday\"",
+            "schedule: \"61 * * * *\"",
+            "schedule: \"CRON_TZ=Mars/Olympus 0 * * * *\"",
+            "schedule: [\"0 * * * *\"]",
+            "schedule: \"\"",
+        ] {
+            assert_eq!(
+                codes(PageKind::Skill, yaml),
+                vec![("schedule_invalid".to_owned(), true)],
+                "{yaml}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_bad_budget_is_an_error_and_odd_ones_warn() {
+        for yaml in [
+            "schedule: \"0 * * * *\"\nschedule_budget: 5",
+            "schedule: \"0 * * * *\"\nschedule_budget: {runs_per_day: 0}",
+            "schedule: \"0 * * * *\"\nschedule_budget: {runs_per_day: -1}",
+            "schedule: \"0 * * * *\"\nschedule_budget: {runs_per_day: many}",
+            "schedule: \"0 * * * *\"\nschedule_budget: {}",
+        ] {
+            assert_eq!(
+                codes(PageKind::Skill, yaml),
+                vec![("schedule_budget_invalid".to_owned(), true)],
+                "{yaml}"
+            );
+        }
+        assert_eq!(
+            codes(
+                PageKind::Skill,
+                "schedule: \"0 * * * *\"\nschedule_budget: {runs_per_day: 2, per_week: 9}"
+            ),
+            vec![("schedule_budget_invalid".to_owned(), false)]
+        );
+        assert_eq!(
+            codes(PageKind::Skill, "schedule_budget: {runs_per_day: 2}"),
+            vec![("schedule_budget_invalid".to_owned(), false)]
+        );
+    }
+
+    #[test]
+    fn only_skill_pages_are_checked() {
+        assert!(codes(PageKind::Instance, "schedule: \"nonsense\"").is_empty());
     }
 }

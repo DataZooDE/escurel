@@ -540,6 +540,15 @@ pub struct Skill {
     /// runner honours it within its allow-list).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub harness: Option<String>,
+    /// `schedule:` — when the runner fires this skill on its own (#819): a
+    /// 5- or 6-field cron expression, optionally `CRON_TZ=<zone> `-prefixed
+    /// (UTC otherwise), as written. Absent = event-driven only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub schedule: Option<String>,
+    /// `schedule_budget:` — how many scheduled runs a UTC day may start.
+    /// Absent = unbounded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub schedule_budget: Option<ScheduleBudget>,
     /// `folder:` — where the skill sits in a knowledge tree, a `/`-separated path of slugs
     /// (`sales/orders`). Absent = top level. OKF-style hierarchy for clients that render a tree.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -627,6 +636,15 @@ pub struct Skill {
     /// `protected:` — `delete` and/or `move`: removal actions refused with `instance_protected`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub protected: Vec<String>,
+}
+
+/// A skill's `schedule_budget:` (#819): the cap on scheduled runs per UTC day.
+/// A window past the cap is not fired; the runner files a visible
+/// `run-skipped` event in its place.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct ScheduleBudget {
+    pub runs_per_day: u32,
 }
 
 /// One block of a skill's declared instance layout (`blocks:`). MCP wire

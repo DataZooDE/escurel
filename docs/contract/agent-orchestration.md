@@ -179,6 +179,23 @@ Core internal pieces:
 10. Terminal: the cascade quiesces, hits the depth budget, or dead-letters.
     The full lineage is one OTel trace.
 
+### Scheduled triggers (#819)
+
+Step 1 has a second source besides external callers: the runner's
+**schedule loop**. A skill declaring `schedule:` (cron, optional
+`CRON_TZ=` prefix, UTC otherwise) gets one `capture_event` per window, id
+`sched:<skill>:<window-start RFC 3339 UTC>`, `source: runner-schedule`;
+first-writer-wins on that id makes restarts and multiple runners safe. Only
+the latest window fires (no backfill). `schedule_budget.runs_per_day` caps
+a UTC day; a window past the cap is recorded as an `escurel:run`
+`run-skipped` system event (`<trigger id>:skipped`, reason `budget`)
+instead of firing. The legacy lint tick (`ESCUREL_RUNNER_LINT_INTERVAL`) is
+a synthetic entry in the same loop that keeps its `lint-<tenant>-<window>`
+ids. The gateway stays automation-free: the runner owns the decision to
+act. Code: `escurel-runner-core/src/schedule.rs` (grammar in
+`escurel-types/src/schedule.rs`); test:
+`escurel-runner/tests/suite/schedule_trigger.rs`.
+
 ## "Skills as instructions + tools" delivery
 
 - **Instructions** = the `label_skill` page body, fetched via

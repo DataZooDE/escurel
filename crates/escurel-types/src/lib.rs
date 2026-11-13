@@ -35,6 +35,9 @@ mod null;
 // `escurel_types::pack::verify_pack` — while the manifest TYPES stay
 // flat like every other wire type.
 pub mod pack;
+/// `schedule:` cron grammar shared by the validator and the runner (feature `schedule`).
+#[cfg(feature = "schedule")]
+pub mod schedule;
 mod session;
 mod workflow;
 

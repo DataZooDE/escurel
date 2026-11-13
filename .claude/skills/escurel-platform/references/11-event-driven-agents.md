@@ -426,6 +426,43 @@ cascades only to the `event` skill of a listed `kind: event` action; undeclared 
 `cascade.max_depth` (the deepest hop this skill's chains reach; the
 runner's global `ESCUREL_RUNNER_MAX_DEPTH` still caps everything).
 
+## Scheduled triggers (`schedule:`)
+
+A skill page that declares `schedule:` (references/01) is fired by the
+runner itself. Every `ESCUREL_RUNNER_SCHEDULE_TICK` (default 30s — the
+worst-case lateness) the runner re-reads `list_skills`, takes each
+schedule's **latest** window start at or before now, and captures one
+event for it:
+
+- id `sched:<skill>:<window start, RFC 3339 UTC>` (e.g.
+  `sched:digest:2026-11-13T06:15:00Z`), `label_skill: <skill>`,
+  `source: runner-schedule`, `provenance.schedule: {expr, window_start}`;
+- a workflow skill (`backend: {kind: workflow}`) is bound to its run page
+  `markdown/instances/workflow-run/<skill>-<YYYYMMDDTHHMMSSZ>.md` and
+  carries `provenance.workflow: {run, wf_skill, phase: invoke}`; any other
+  skill's trigger is unassigned (the harness picks the page).
+
+The id is the whole idempotency story: a restart, an overlapping tick or a
+second runner computes the same id, and `capture_event` keeps the first.
+**No backfill**: a runner that was down for several windows fires only the
+latest one when it returns — and it does fire that one, even if it opened
+hours ago (a page written at 15:00 with a 07:15 schedule fires at once for
+today's 07:15).
+
+**Budget.** With `schedule_budget: {runs_per_day: N}`, before firing a
+window the runner counts the skill's other `sched:<skill>:` triggers whose
+window starts on the same UTC day (`list_events { label_skill }`). At `N`
+it fires nothing and files instead an `escurel:run` `kind: system` event
+titled `run-skipped`, id `<trigger id>:skipped`, body `{reason: "budget",
+runs_per_day, skill, trigger_event_id, window_start}` — an exhausted
+budget is visible, never silence.
+
+`ESCUREL_RUNNER_LINT_INTERVAL` still works: it adds a synthetic `lint`
+entry (epoch-aligned windows of that length) to the same loop, keeping the
+old lint tick's ids (`lint-<tenant>-<window>`), run page
+(`workflow-run/lint-<window>`) and `source: runner-lint-tick`, so an
+upgrade does not fire the current window twice.
+
 ## Chat runs (`provenance.chat_group_id`)
 
 A question in a page-bound chat is answered by a run. The person:

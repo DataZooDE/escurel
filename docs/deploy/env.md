@@ -189,7 +189,8 @@ tenant/token can process `/trigger` but deliberately report unready at
 | `ESCUREL_RUNNER_CHAT_MODEL` | — | the model chat runs use instead of the runner's configured one, unless the skill page names its own `model:` |
 | `ESCUREL_RUNNER_ID` | <HOSTNAME>:<pid> | this runner's name in its status reports |
 | `ESCUREL_RUNNER_CANCEL_GRACE` | 5s | time a cancelled run's subprocess gets between SIGTERM and SIGKILL |
-| `ESCUREL_RUNNER_LINT_INTERVAL` | disabled | how often the runner synthesizes a `lint` event (the scheduled semantic-health pass) |
+| `ESCUREL_RUNNER_LINT_INTERVAL` | disabled | how often the runner fires the `lint` skill (the scheduled semantic-health pass); a synthetic entry in the schedule loop, kept for compatibility |
+| `ESCUREL_RUNNER_SCHEDULE_TICK` | 30s | how often the runner looks for skills whose `schedule:` window has opened (the worst-case lateness of a scheduled trigger; zero is refused) |
 | `ESCUREL_RUNNER_LEDGER_PATH` | ./escurel-runner-ledger.duckdb | runner-local durable run ledger (its own DuckDB file; use a path under `/data` in a deployment) |
 | `ESCUREL_RUNNER_HARNESS` | echo | harness adapter: `echo`, `claude`, `codex`, `agy`, `muse`, `gemini`, `gemini-vertex`, `alibaba`, `hetzner`, `openai-compatible`, `delegate` |
 | `ESCUREL_RUNNER_CLAUDE_BIN` | claude | path to the `claude` binary |

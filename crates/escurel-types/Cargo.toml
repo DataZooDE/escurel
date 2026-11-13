@@ -20,3 +20,12 @@ serde = { version = "1", features = ["derive"] }
 # Page frontmatter keeps the order it was written in, however this crate is built.
 serde_json = { version = "1", features = ["preserve_order"] }
 sha2 = "0.10"
+# Cron schedules declared in skill frontmatter (`schedule` module): parsed by
+# the indexer's validator AND the runner's schedule loop, so both share one
+# grammar. Optional so wire-only consumers (the client) don't pay for tzdata.
+croner = { version = "4", optional = true }
+chrono = { version = "0.4", default-features = false, features = ["std", "clock"], optional = true }
+chrono-tz = { version = "0.10", optional = true }
+
+[features]
+schedule = ["dep:croner", "dep:chrono", "dep:chrono-tz"]

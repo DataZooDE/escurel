@@ -45,6 +45,14 @@ optional; reported on `list_skills`, linted by `validate`):
   runner's configured one (e.g. `gemini-3.5-flash-lite`). A non-string or
   blank value is `model_invalid`. The runner honours it only within
   `ESCUREL_RUNNER_MODEL_ALLOW`; outside it the run fails closed.
+- `schedule: "<cron>"` — the runner fires the skill on its own, once per window (#819). A 5-field
+  cron (minute granularity) or 6-field (leading seconds), optionally prefixed `CRON_TZ=<IANA zone> `
+  (`schedule: "CRON_TZ=Europe/Berlin 15 7 * * 1-5"`); without the prefix it is read in **UTC**. A
+  non-string, an unknown zone or a malformed expression is an error (`schedule_invalid`).
+  `schedule_budget: {runs_per_day: <positive integer>}` caps the triggers whose window starts on one
+  UTC day; malformed is an error (`schedule_budget_invalid`), an unknown sub-key or a budget without a
+  `schedule:` is a warning under the same code. Both reach `list_skills` as written. How the windows
+  fire (no backfill, the skipped record) is in references/11 *Scheduled triggers*.
 - `generated:`, `verified:`, `status:`, `stale_after:`, `sources:` — the OKF provenance keys, all optional and
   lint-only (a malformed one is a warning). They reach `list_skills` as written; `stale_after` is an
   RFC 3339 instant or an ISO-8601 duration (`P90D`) counted from `verified`, and a client decides what
