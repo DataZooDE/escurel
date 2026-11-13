@@ -1,7 +1,7 @@
 //! The seam between a messaging platform and escurel's page chat. Teams is
 //! the one implementation today ([`crate::teams::TeamsChannel`]); Slack fits
-//! the same four verbs: verify a webhook, read a turn out of it, post a reply,
-//! show that work is in progress.
+//! the same five verbs: verify a webhook, read a turn out of it, post a reply,
+//! show that work is in progress, download an attachment.
 
 use std::future::Future;
 
@@ -80,12 +80,42 @@ pub enum InboundError {
 
 #[derive(Debug, thiserror::Error)]
 pub enum ChannelError {
+    /// Getting the channel's own credential failed; nothing was sent.
     #[error("channel credentials: {0}")]
     Auth(String),
+    /// No connection was made; nothing was sent.
+    #[error("channel connect: {0}")]
+    Connect(String),
+    /// The request may have been sent (a timeout, a reset, a lost response).
     #[error("channel http: {0}")]
     Http(String),
     #[error("channel refused ({status}): {body}")]
     Refused { status: u16, body: String },
+}
+
+impl ChannelError {
+    /// The platform provably did not take the request, so sending it again
+    /// cannot duplicate it: the credential or the connection failed, or the
+    /// platform answered `429`.
+    #[must_use]
+    pub fn never_sent(&self) -> bool {
+        match self {
+            Self::Auth(_) | Self::Connect(_) => true,
+            Self::Refused { status, .. } => *status == 429,
+            Self::Http(_) => false,
+        }
+    }
+
+    /// The platform may have taken the request even though no success came
+    /// back: a transport failure after the request left, or a `5xx`.
+    #[must_use]
+    pub fn maybe_delivered(&self) -> bool {
+        match self {
+            Self::Http(_) => true,
+            Self::Refused { status, .. } => *status >= 500,
+            Self::Auth(_) | Self::Connect(_) => false,
+        }
+    }
 }
 
 /// A messaging platform the bridge answers on.

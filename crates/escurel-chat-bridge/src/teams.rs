@@ -129,7 +129,13 @@ impl TeamsChannel {
             .json(&body)
             .send()
             .await
-            .map_err(|e| ChannelError::Http(e.to_string()))?;
+            .map_err(|e| {
+                if e.is_connect() {
+                    ChannelError::Connect(e.to_string())
+                } else {
+                    ChannelError::Http(e.to_string())
+                }
+            })?;
         let status = resp.status();
         if status.is_success() {
             return Ok(());

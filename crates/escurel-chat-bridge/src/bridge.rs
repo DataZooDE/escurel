@@ -119,7 +119,9 @@ impl<C: ChatChannel> Bridge<C> {
                     Ok(()) => return,
                     Err(e @ BridgeError::NoPrincipal(_)) => {
                         tracing::warn!(message_id = %id, error = %e, "chat bridge: not answered");
-                        let _ = this.store.close(this.channel.name(), &id, "unmapped");
+                        let _ = this
+                            .store
+                            .close(this.channel.name(), &id, TurnState::Unmapped);
                         return;
                     }
                     Err(e) => {
@@ -202,7 +204,7 @@ impl<C: ChatChannel> Bridge<C> {
         let mut next_typing = Instant::now();
         while Instant::now() < deadline {
             if let Some((key, text)) = self.answer(&asker.get().await?, group, user_msg_id).await? {
-                return self.reply(turn, &key, &text, "replied").await;
+                return self.reply(turn, &key, &text, TurnState::Replied).await;
             }
             if Instant::now() >= next_typing {
                 if let Err(e) = self.channel.typing(turn).await {
@@ -213,7 +215,8 @@ impl<C: ChatChannel> Bridge<C> {
             tokio::time::sleep(self.cfg.poll_interval).await;
         }
         tracing::warn!(message_id = %turn.message_id, "chat bridge: no answer in time");
-        self.reply(turn, "timeout", TIMED_OUT, "expired").await
+        self.reply(turn, "timeout", TIMED_OUT, TurnState::Expired)
+            .await
     }
 
     /// The assistant turn answering `user_msg_id`: its `msg_id` (the reply
@@ -245,34 +248,48 @@ impl<C: ChatChannel> Bridge<C> {
             .map(|m| (m.msg_id, m.content)))
     }
 
-    /// Send `text` once: claim the turn's reply under `key`, post, close.
+    /// Send `text` at most once: claim the turn's reply under `key`, post,
+    /// close. Only a failure that provably sent nothing is retried; one that
+    /// may have reached the platform closes as `send_uncertain`, because a
+    /// second post could be a second answer.
     async fn reply(
         &self,
         turn: &InboundTurn,
         key: &str,
         text: &str,
-        closed: &str,
+        closed: TurnState,
     ) -> Result<(), BridgeError> {
         let name = self.channel.name();
         let turn_key = turn.key();
         if !self.store.claim_reply(name, &turn_key, key)? {
             return Ok(());
         }
-        for attempt in 1..=SEND_ATTEMPTS {
+        let mut attempt = 1;
+        let outcome = loop {
             match self.channel.send_reply(turn, text).await {
                 Ok(()) => {
                     tracing::info!(message_id = %turn.message_id, reply_key = key,
                         "chat bridge: reply sent");
-                    self.store.close(name, &turn_key, closed)?;
-                    return Ok(());
+                    break closed;
+                }
+                Err(e) if e.never_sent() && attempt < SEND_ATTEMPTS => {
+                    tracing::warn!(attempt, error = %e, "chat bridge: reply not sent, retrying");
+                    tokio::time::sleep(Duration::from_secs(u64::from(attempt))).await;
+                    attempt += 1;
+                }
+                Err(e) if e.maybe_delivered() => {
+                    tracing::warn!(message_id = %turn.message_id, reply_key = key, error = %e,
+                        "chat bridge: the reply may have been delivered; not sending it again");
+                    break TurnState::SendUncertain;
                 }
                 Err(e) => {
-                    tracing::warn!(attempt, error = %e, "chat bridge: sending the reply failed");
-                    tokio::time::sleep(Duration::from_secs(u64::from(attempt))).await;
+                    tracing::error!(message_id = %turn.message_id, error = %e,
+                        "chat bridge: sending the reply failed");
+                    break TurnState::SendFailed;
                 }
             }
-        }
-        self.store.close(name, &turn_key, "send_failed")?;
+        };
+        self.store.close(name, &turn_key, outcome)?;
         Ok(())
     }
 

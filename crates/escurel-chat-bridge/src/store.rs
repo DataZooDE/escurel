@@ -3,8 +3,9 @@
 //! restarted bridge finish the turns it had started.
 //!
 //! A turn moves `received` → `captured` → `replying` → `replied` (or
-//! `expired`). `replying` is claimed with a conditional update before the
-//! reply is posted, so no two tasks — and no restart — can send a second
+//! `expired`, or one of the failure closes: `unmapped`, `send_failed`,
+//! `send_uncertain`). `replying` is claimed with a conditional update before
+//! the reply is posted, so no two tasks — and no restart — can send a second
 //! answer: a crash between the claim and the post loses that one reply rather
 //! than risking a duplicate (the runner's own rule: no answer beats a wrong
 //! one).
@@ -24,11 +25,42 @@ pub enum StoreError {
     Decode(#[from] serde_json::Error),
 }
 
-/// Where a turn stands.
+/// Where a turn stands. Stored as [`TurnState::as_str`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TurnState {
+    /// Admitted; nothing is in escurel yet.
     Received,
+    /// The user turn and its event are in escurel.
     Captured,
+    /// The one reply is claimed and being posted.
+    Replying,
+    /// The answer was posted.
+    Replied,
+    /// No answer came in time; the timeout notice was posted.
+    Expired,
+    /// The principal template could not map the sender.
+    Unmapped,
+    /// The platform refused the reply, or never took it after retries.
+    SendFailed,
+    /// The reply may have been delivered (no success came back after the
+    /// request left); not retried, so it is never posted twice.
+    SendUncertain,
+}
+
+impl TurnState {
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Received => "received",
+            Self::Captured => "captured",
+            Self::Replying => "replying",
+            Self::Replied => "replied",
+            Self::Expired => "expired",
+            Self::Unmapped => "unmapped",
+            Self::SendFailed => "send_failed",
+            Self::SendUncertain => "send_uncertain",
+        }
+    }
 }
 
 /// A turn to (re)work, with what the store knows about it.
@@ -120,15 +152,15 @@ impl Store {
         Ok(n == 1)
     }
 
-    /// Close a claimed turn: `replied`, or `expired` when no answer came.
+    /// Close a turn in its final `state`.
     ///
     /// # Errors
     /// The write fails.
-    pub fn close(&self, channel: &str, turn_key: &str, state: &str) -> Result<(), StoreError> {
+    pub fn close(&self, channel: &str, turn_key: &str, state: TurnState) -> Result<(), StoreError> {
         self.conn().execute(
             "UPDATE turns SET state = ?, updated_at = current_timestamp
              WHERE channel = ? AND turn_key = ?",
-            params![state, channel, turn_key],
+            params![state.as_str(), channel, turn_key],
         )?;
         Ok(())
     }
@@ -151,7 +183,7 @@ impl Store {
             let (json, state) = row?;
             out.push(OpenTurn {
                 turn: serde_json::from_str(&json)?,
-                state: if state == "captured" {
+                state: if state == TurnState::Captured.as_str() {
                     TurnState::Captured
                 } else {
                     TurnState::Received
@@ -200,7 +232,7 @@ mod tests {
         let key = turn("1").key();
         assert!(s.claim_reply("msteams", &key, "run:r:reply").unwrap());
         assert!(!s.claim_reply("msteams", &key, "run:r:reply").unwrap());
-        s.close("msteams", &key, "replied").unwrap();
+        s.close("msteams", &key, TurnState::Replied).unwrap();
         assert!(s.open_turns("msteams").unwrap().is_empty());
     }
 }

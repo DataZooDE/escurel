@@ -63,7 +63,10 @@ start it.
 
 A restarted bridge resumes every unanswered turn from its state file. Each step is idempotent,
 so a restart in the middle sends the reply once. A crash between claiming and posting a reply
-loses that reply rather than risking a second one.
+loses that reply rather than risking a second one. For the same reason a post is retried only
+when it provably never left (the connector token could not be fetched, no connection was made,
+or the connector answered `429`). A timeout, a reset after sending or a `5xx` may mean the
+connector delivered it, so the turn closes as `send_uncertain` (logged) and is not posted again.
 
 Only 1:1 (`personal`) chats are answered. A page chat is private to one person, and a reply in a
 group chat or channel would show one member's answer to everyone in it.

@@ -50,6 +50,9 @@ struct Seen {
     activities: Vec<(String, String, Value)>,
     /// Form bodies posted to the token endpoint.
     token_requests: Vec<String>,
+    /// Record a `message` activity, then drop the connection without an
+    /// answer: the reply was delivered, but the bridge cannot know it.
+    drop_after_recording: bool,
 }
 
 struct BotFramework {
@@ -94,7 +97,15 @@ impl BotFramework {
                 .and_then(|v| v.to_str().ok())
                 .unwrap_or_default()
                 .to_owned();
-            seen.lock().unwrap().activities.push((rest, auth, body));
+            let drop_it = {
+                let mut seen = seen.lock().unwrap();
+                let drop_it = seen.drop_after_recording && body["type"] == "message";
+                seen.activities.push((rest, auth, body));
+                drop_it
+            };
+            // A panic ends this connection's task: the client sees the
+            // connection close after its request was read, with no response.
+            assert!(!drop_it, "stand-in connector: dropping the connection");
             axum::Json(json!({ "id": "sent-1" }))
         }
         async fn file() -> &'static str {
@@ -719,6 +730,24 @@ async fn an_attachment_on_an_internal_address_is_refused_and_never_fetched() {
         *hits.lock().unwrap(),
         0,
         "the internal service was never asked"
+    );
+}
+
+#[tokio::test]
+async fn a_reply_that_may_have_been_delivered_is_not_sent_again() {
+    let w = world(0).await;
+    w.bf.seen.lock().unwrap().drop_after_recording = true;
+    let token = w.bf.token(APP_ID);
+    let activity = w.bf.message("act-6", "Which customers renew?");
+    assert_eq!(w.bridge.post(Some(&token), &activity).await, StatusCode::OK);
+    wait_for_replies(&w.bf, 1, Duration::from_secs(60)).await;
+    // The old loop retried after 1 s and 2 s.
+    tokio::time::sleep(Duration::from_secs(5)).await;
+    assert_eq!(
+        w.bf.replies().len(),
+        1,
+        "a send that reached the connector is never repeated: {:?}",
+        w.bf.activity_types()
     );
 }
 
