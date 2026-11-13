@@ -146,6 +146,42 @@ trusted issuer's JWKS publishes), `ESCUREL_AUTH_SIGNING_KID`,
 `ESCUREL_AUTH_SIGNING_ISSUER` (defaults to the OIDC issuer). Without it
 the tool answers `unsupported`.
 
+**A chat bridge's token is restricted by its trust entry.** `escurel-chat-bridge` signs
+a token for each person it answers with a key of its own, never the gateway's
+main signing key. The bridge publishes the key's public half at `GET /.well-known/jwks.json`, which
+the gateway trusts as an extra issuer (`ESCUREL_AUTH_OIDC_ISSUER_<N>` +
+`ESCUREL_AUTH_JWKS_URI_<N>`, over https) and names as the bridge in `ESCUREL_AUTH_BRIDGE_ISSUER`,
+pinned to the key's id in `ESCUREL_AUTH_BRIDGE_KID`. EVERY token from that issuer is a bridge
+token whichever kid it names, and one under an unlisted kid is refused (`401`) — the bridge serves
+that JWKS, so a kid-only restriction would not restrict whoever controls it. A bridge token
+is bounded whatever it claims: at most 900 s (`exp - iat`; `exp - now` allows 60 s for a
+bridge clock running ahead, and the bridge mints 840 s), never
+admin or operator, **no roles or groups** (so ACLs that grant by IdP group do not
+reach a person through the bridge — only those naming them, their
+`group_members` groups, or `public`), refused (`401`) if it carries an
+`agent`/`skill`/`run_id`/`root_event_id`/`purpose`/`act` claim or names no valid
+`bridge_channel`. Its actor is `bridge:<channel>`, so what it captures reads
+`captured_by: <person>` / `captured_via: bridge:msteams`; the chat rules accept
+that via and no other. The bridge entry is pinned to one tenant
+(`ESCUREL_AUTH_BRIDGE_TENANT`, required, = the served tenant): a bridge token
+naming another is refused (`401`).
+
+**A bridge token may call only what a chat turn needs** — it is a relay, not the
+person on the agent surface:
+
+| tool | only when |
+|---|---|
+| `whoami` | always |
+| `update_page` | `base_sha256: ""` (create-if-absent) of an instance of a `chat: {page_bound: true}` skill |
+| `append_message` | a `page-chat:` group, `role: user` (the answer is the run's) |
+| `list_messages` | a `page-chat:` group |
+| `capture_event` | `label_skill` = `ESCUREL_AUTH_BRIDGE_CHAT_SKILL` (default `chat`) |
+| `ingest_upload` | always (attachments, as the person) |
+
+Everything else — `expand`, `search`, any edit, any other label — is `-32003`
+(`data.code: forbidden`), and `tools/list` offers only these six. `/ingest`,
+`/blob` and `/ws` answer `403`. The ordinary ACLs still apply on top.
+
 **A token minted for an agent is never admin or operator.** A token carrying
 an `agent` or `skill` claim, or `purpose: workbench_agent`, projects the
 agent role whatever its roles list — including a deployment's own
@@ -164,6 +200,35 @@ it anything, so `inject` grants no new authority — it only saves the cancel
 and re-trigger. Under `off` / `log` that is every caller, as it is for every
 other write. `inject` does reach a run whose token is the runner's admin; it
 changes what the run is told, not what the run may do.
+
+**Runners outside the cluster (#818).** A runner on a laptop or an on-prem
+host does not get the platform's signing key. The operator issues it its
+OWN credential instead: a bearer for a service subject (`runner:laptop-jr`)
+with `roles: [escurel:admin]` and no run, agent or actor claims, set as
+`ESCUREL_RUNNER_TOKEN` — or, for a short-lived credential a sidecar
+refreshes, written to a file named by `ESCUREL_RUNNER_TOKEN_FILE`, which the
+runner re-reads whenever it changes. The subject must not contain `#` (the
+lease holder is `<sub>#<holder_id>`; such a subject cannot claim). A runner
+whose credential is not an admin takes no inbox work: its claims
+are refused, and it logs that the credential needs `escurel:admin`. That identity is not a machine caller, so it may do
+the runner's bookkeeping — `report_runner_status`, write its `runtime` page
+(admin-only), `claim_event` / `renew_claim` — and it may call `mint_agent_token` for a per-run
+child. The child is what `mint_agent_token` always returns: never admin, the
+caller's groups, `act.sub` the runner, a gateway-assigned `run_id`; and as a
+machine caller it can neither mint again nor claim. No exception to the
+machine-caller rule was needed. The claim rule is exactly that: any
+**non-machine admin identity** may claim — a runner's admin bearer, and also a
+person's admin token (a non-admin token is refused `-32001`, a run or agent
+token `-32602` `forbidden`, a bridge token `-32003` before it gets that far). An admin who claims can park an event away
+from every runner for up to an hour, which is no more than an admin can do to
+the event directly. The lease's holder is `<sub>#<holder_id>`: `holder_id` is
+the caller's own label for replicas sharing one credential, not an identity,
+so a caller can never renew or take another identity's lease by naming its
+`holder_id`. Today the runner itself mints run tokens
+only in **minted** mode (it holds a signing key); on an operator-issued
+static credential its runs use that credential as before (chat runs are
+refused, see references/11), so give such a runner work that its own
+authority should do, and scope it with the credential's groups.
 
 So: your app's token must carry the right audience, a tenant claim naming
 the tenant, and — only for admin operations — the admin role value. A
@@ -185,6 +250,64 @@ subset; admin tools are listed for admin tokens and refused at dispatch
   chat history — by design. Out of scope for a typical consuming app
   except where the app schedules its own retention cron; see
   `references/10`.
+
+## Skill authority keys
+
+Some skill-page keys are **authority**, not description: `acl`, `visibility`,
+`owner_field`, `instance_acl`, `agent`, `autonomy`, `schedule`,
+`schedule_budget`, `requires`, `harness`, `model`, `cascade`, `actions` (its
+`kind: event` entries trigger cascades), `chat`, `backend` (a `kind:
+workflow` backend is a trigger too), `promotable`, `protected`, `immutable`,
+`freeze_when`. `layer` has its own guard; descriptive keys are free.
+The list is one constant, `escurel_types::skill_authority::AUTHORITY_KEYS`;
+the SKILL.md importer names the same keys (references/04).
+
+A write that **adds, removes or changes** any of them on a skill page lands
+only for:
+
+- an `escurel:admin` person, or
+- a person in the **stored** skill page's `acl.update` groups (token groups or
+  `add_group_member` membership; the structural `public` group grants
+  nothing here). The incoming page's `acl:` is never consulted, so a draft
+  cannot add its author and promote itself.
+
+Members of the stored `acl.update` may change `agent` and `autonomy` too, by
+design: an agent serves only the skills its **admin-only** profile lists
+(`skills:` on the `agent` page, references/01), so binding an agent that does
+not list the skill gets the skill nothing of that agent's — the run is
+refused, never run as that agent nor on a wider token. Which skills an agent
+may run as is the admin's decision, made on the agent page.
+
+A **new** skill page carrying any authority key, and a stored skill without
+`acl.update`, are therefore an admin's. A machine caller (run, narrowed
+agent, delegated `act` token) never changes them, admin role or not — its
+skill-page edits are held as drafts anyway. `description`, `summary`,
+`fields`, the body and every other key stay free under the ordinary write rule.
+
+A page is a skill page when its path is under `markdown/skills/` or its
+frontmatter says `kind: skill`. Relabelling counts: a page that **becomes** a
+skill (an instance rewritten as `kind: skill`) is judged as a create, so every
+authority key it carries needs an admin even if the instance carried the same
+values as data; a page that **stops** being a skill removes all its keys.
+
+Every write door applies it: `update_page` (branch writes included),
+`promote_draft` and `promote_changeset` (the **promoter** is judged, not the
+draft's author; a changeset refuses before any member lands), the
+`close_session` commit, `delete_page` (deleting a skill removes its ACL) and
+`move_page` (the source loses its keys; the destination is a create), and
+`merge_branch` (refused before any page lands). It judges what would
+**persist** — after a stale `base_version` auto-merge, the merged bytes, not
+the bytes you sent — against the page as stored when the write runs, so a
+write based on an older head cannot revert an admin's newer change.
+`import_pack`, `rebase_pack` and `unsubscribe_pack` replace skill pages
+wholesale, so they need a **person** with `escurel:admin`: a machine caller
+is refused (`-32003`, `data.code: forbidden`) whatever its role.
+
+The refusal is a JSON-RPC error `-32003` with `data: {code:
+"authority_keys_need_admin", keys: [...]}` and a message naming the keys.
+It follows `ESCUREL_WRITE_ACL`: `enforce` refuses, `log` logs the would-be
+refusal and allows, `off` keeps the ungated behaviour. The `agent` and
+`runtime` system skills stay admin-only in every mode (references/01).
 
 ## In tests: `AuthMode`
 

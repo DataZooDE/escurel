@@ -138,6 +138,8 @@ fn b64url(b: &[u8]) -> String {
 /// process's lifetime.
 pub(crate) struct TestIssuer {
     pub(crate) keys: &'static Keys,
+    /// The `kid` its JWKS publishes the key under and every token it signs names.
+    pub(crate) kid: &'static str,
     pub(crate) issuer_url: String,
     pub(crate) jwks_url: String,
     /// When the gateway was configured with a custom
@@ -165,7 +167,7 @@ impl TestIssuer {
     pub(crate) fn signing_material(&self) -> (String, &'static str) {
         (
             String::from_utf8(self.keys.private_pem.clone()).expect("pem is utf-8"),
-            TEST_KID,
+            self.kid,
         )
     }
 
@@ -174,13 +176,21 @@ impl TestIssuer {
     }
 
     pub(crate) async fn start_with_groups_claim(groups_claim: Option<String>) -> Self {
+        Self::start_with(Keys::shared(), TEST_KID, groups_claim).await
+    }
+
+    async fn start_with(
+        keys: &'static Keys,
+        kid: &'static str,
+        groups_claim: Option<String>,
+    ) -> Self {
         let mock_server = MockServer::start().await;
-        let keys = Keys::shared();
-        mount_jwks(&mock_server, keys).await;
+        mount_jwks(&mock_server, keys, kid).await;
         let issuer_url = format!("{}{}", mock_server.uri(), TEST_ISSUER_PATH);
         let jwks_url = format!("{issuer_url}/protocol/openid-connect/certs");
         Self {
             keys,
+            kid,
             issuer_url,
             jwks_url,
             groups_claim,
@@ -320,7 +330,7 @@ impl TestIssuer {
         let mut claims: serde_json::Value = serde_json::from_slice(&bytes).expect("json");
         claims[claim] = value;
         let mut header = Header::new(Algorithm::RS256);
-        header.kid = Some(TEST_KID.to_owned());
+        header.kid = Some(self.kid.to_owned());
         let key = EncodingKey::from_rsa_pem(&self.keys.private_pem).expect("rsa pem parses");
         encode(&header, &claims, &key).expect("jwt sign")
     }
@@ -344,7 +354,7 @@ impl TestIssuer {
             claims[claim.as_str()] = json!(roles);
         }
         let mut header = Header::new(Algorithm::RS256);
-        header.kid = Some(TEST_KID.to_owned());
+        header.kid = Some(self.kid.to_owned());
         let key = EncodingKey::from_rsa_pem(&self.keys.private_pem).expect("rsa pem parses");
         encode(&header, &claims, &key).expect("jwt sign")
     }
@@ -366,6 +376,24 @@ impl ExtraIssuer {
         Self {
             inner: TestIssuer::start().await,
         }
+    }
+
+    /// An issuer with a key of its OWN (not the process-wide test key the
+    /// gateway's primary issuer uses), published under `kid` — the shape of
+    /// a workload that must not hold the gateway's key, e.g. a chat bridge
+    /// whose issuer the gateway names in `ConfigOverrides::bridge_issuer`.
+    pub async fn start_with_own_key(kid: &str) -> Self {
+        let keys: &'static Keys = Box::leak(Box::new(Keys::generate()));
+        let kid: &'static str = Box::leak(kid.to_owned().into_boxed_str());
+        Self {
+            inner: TestIssuer::start_with(keys, kid, None).await,
+        }
+    }
+
+    /// This issuer's signing key (PKCS#1 PEM) and `kid`, for a workload under
+    /// test that mints its own tokens.
+    pub fn signing_material(&self) -> (String, &'static str) {
+        self.inner.signing_material()
     }
 
     /// The issuer URL (the token's `iss`).
@@ -398,24 +426,41 @@ impl ExtraIssuer {
             "iat": now,
             "exp": now + 600,
         });
+        self.sign(&claims)
+    }
+
+    /// Sign arbitrary `claims` with this issuer's key (RS256, its `kid`).
+    ///
+    /// For a test that stands in for a THIRD-PARTY issuer whose token shape is
+    /// not escurel's — the Bot Framework's channel token (`iss`, `aud` = the
+    /// bot's app id, `serviceurl`) for the chat bridge — so the test spells
+    /// the claims and still never imports `jsonwebtoken` itself.
+    pub fn sign(&self, claims: &serde_json::Value) -> String {
+        self.sign_with_kid(claims, self.inner.kid)
+    }
+
+    /// [`Self::sign`] under another `kid` — for a stand-in that publishes
+    /// this issuer's public key under kids of its own ([`Self::public_jwk`]),
+    /// e.g. a Bot Framework JWKS whose keys carry `endorsements`.
+    pub fn sign_with_kid(&self, claims: &serde_json::Value, kid: &str) -> String {
         let mut header = Header::new(Algorithm::RS256);
-        header.kid = Some(TEST_KID.to_owned());
+        header.kid = Some(kid.to_owned());
         let key = EncodingKey::from_rsa_pem(&self.inner.keys.private_pem).expect("rsa pem parses");
-        encode(&header, &claims, &key).expect("jwt sign")
+        encode(&header, claims, &key).expect("jwt sign")
+    }
+
+    /// This issuer's public key as one RS256 JWK under `kid`.
+    pub fn public_jwk(&self, kid: &str) -> serde_json::Value {
+        jwk(self.inner.keys, kid)
     }
 }
 
-async fn mount_jwks(server: &MockServer, k: &Keys) {
-    let jwks = json!({
-        "keys": [{
-            "kid": TEST_KID,
-            "kty": "RSA",
-            "alg": "RS256",
-            "use": "sig",
-            "n": k.n_b64,
-            "e": k.e_b64,
-        }]
-    });
+fn jwk(k: &Keys, kid: &str) -> serde_json::Value {
+    json!({ "kid": kid, "kty": "RSA", "alg": "RS256", "use": "sig", "n": k.n_b64, "e": k.e_b64 })
+}
+
+async fn mount_jwks(server: &MockServer, k: &Keys, kid: &str) {
+    let jwks = json!({ "keys": [jwk(k, kid)] });
     Mock::given(method("GET"))
         .and(path(format!(
             "{TEST_ISSUER_PATH}/protocol/openid-connect/certs"

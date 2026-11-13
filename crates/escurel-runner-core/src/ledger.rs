@@ -371,9 +371,32 @@ impl Ledger {
                  label      TEXT PRIMARY KEY,
                  event_id   TEXT NOT NULL,
                  updated_at TEXT NOT NULL
+             );
+             CREATE TABLE IF NOT EXISTS ledger_meta (
+                 key   TEXT PRIMARY KEY,
+                 value TEXT NOT NULL
              );",
         )?;
         Ok(())
+    }
+
+    /// This ledger's own identity: a ULID minted on first use and kept in
+    /// the file. A runner restarted on the same ledger is the same runner,
+    /// so it keeps the claim leases it held (#818) instead of waiting for
+    /// them to lapse — a default runner id (`<host>:<pid>`) changes on every
+    /// restart, the ledger does not.
+    pub fn identity(&self) -> Result<String, LedgerError> {
+        let conn = self.conn.lock().expect("run ledger mutex");
+        conn.execute(
+            "INSERT INTO ledger_meta (key, value) VALUES ('identity', $1) ON CONFLICT DO NOTHING",
+            duckdb::params![ulid::Ulid::new().to_string().to_ascii_lowercase()],
+        )?;
+        let id = conn.query_row(
+            "SELECT value FROM ledger_meta WHERE key = 'identity'",
+            [],
+            |r| r.get::<_, String>(0),
+        )?;
+        Ok(id)
     }
 
     /// The id of the last event a label tail has read, if any. A cursor is signed with the gateway's key, so

@@ -23,3 +23,4 @@ mod cli_kindfix_e2e;
 mod cli_parity;
 mod cli_session_e2e;
 mod cli_workflow_e2e;
+mod skill_md_roundtrip;

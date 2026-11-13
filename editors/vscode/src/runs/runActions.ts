@@ -54,10 +54,13 @@ export function acceptLoadMore(view: RunView, after: unknown): boolean {
   return typeof after === 'number' && Number.isInteger(after) && after === view.nextAfter;
 }
 
-/** A page the run panel may open on the webview's say-so: the run's own target or what it produced. */
+/**
+ * A page the run panel may open on the webview's say-so: the run's own target, what it produced, or
+ * the runtime holding its event.
+ */
 export function pageToOpen(view: RunView | undefined, requested: unknown): string | undefined {
   if (!view || typeof requested !== 'string' || !requested) return undefined;
-  return requested === view.targetPageId || requested === view.producedPageId
+  return [view.targetPageId, view.producedPageId, view.heldBy?.pageId].includes(requested)
     ? requested
     : undefined;
 }

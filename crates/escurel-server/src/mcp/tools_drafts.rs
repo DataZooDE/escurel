@@ -999,6 +999,16 @@ pub(super) async fn tool_promote_draft(
     {
         return Ok(refused);
     }
+    // The skill-authority gate, asked here too so a refused promoter changes nothing upstream; the
+    // page write re-judges it under the gate, on what actually lands.
+    crate::mcp::tools_write::skill_authority_refusal(
+        indexer,
+        &caller,
+        write_acl,
+        &draft.target_page_id,
+        Some(corrected.unwrap_or(draft.content.as_str())),
+    )
+    .await?;
     let landing = match crate::write_back::run(
         state,
         indexer,
@@ -1681,6 +1691,15 @@ pub(super) async fn tool_promote_changeset(
         .collect();
     let mut issues = Vec::new();
     for m in &open {
+        // A member that changes a skill's authority keys refuses the batch before any member lands.
+        crate::mcp::tools_write::skill_authority_refusal(
+            indexer,
+            &caller,
+            write_acl,
+            &m.target_page_id,
+            Some(&m.content),
+        )
+        .await?;
         let head = indexer
             .read_page_markdown(&m.target_page_id)
             .await

@@ -196,7 +196,8 @@ async fn reconciler_retries_a_real_transient_mcp_failure_then_succeeds() {
     // 4. Spawn the real runner pointed at the PROXY (not the gateway), with a
     //    generous attempts cap + short backoff so retries span the refuse
     //    phase. The runner-local ledger lives in a real sqlite file.
-    let token = gateway.mint_token(TENANT, Role::Agent);
+    // The runner credential must be an admin to claim events (a non-admin runner takes nothing).
+    let token = gateway.mint_token(TENANT, Role::Admin);
     let listen_port = free_port();
     let listen = format!("127.0.0.1:{listen_port}");
     let ledger_dir = tempfile::tempdir().expect("tempdir for ledger");

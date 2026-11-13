@@ -133,7 +133,8 @@ async fn sigterm_drains_and_restart_is_consistent() {
     .await;
     let event_id = captured["event_id"].as_str().unwrap().to_owned();
 
-    let token = gateway.mint_token(TENANT, Role::Agent);
+    // The runner credential must be an admin to claim events (a non-admin runner takes nothing).
+    let token = gateway.mint_token(TENANT, Role::Admin);
     let http = reqwest::Client::new();
 
     // The SAME ledger file across both runner lifetimes — the durability under

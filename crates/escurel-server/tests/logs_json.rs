@@ -396,3 +396,63 @@ async fn a_boot_without_a_cursor_key_warns_that_cursors_will_not_survive_a_resta
         "an unset cursor key makes every cursor answer invalid_cursor after a restart; boot must say so: {all:?}"
     );
 }
+
+/// `ESCUREL_WRITE_ACL=log` lets a write the skill-authority gate would refuse land, and SAYS so:
+/// the warning is the whole point of log mode (moved here from the suite, where nothing captured
+/// it, so the old test would have passed with no gate at all).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn log_mode_logs_the_skill_authority_refusal_it_allows() {
+    const PAGE: &str = "markdown/skills/logged.md";
+    let buf = shared_buf();
+    let start_offset = buf.lock().unwrap().len();
+    let p = EscurelProcess::spawn(Opts {
+        auth: AuthMode::TestIssuer,
+        config_overrides: ConfigOverrides {
+            write_acl: Some(escurel_server::WriteAclMode::Log),
+            ..Default::default()
+        },
+        fixtures: Some(
+            FixtureBuilder::new()
+                .tenant("acme")
+                .skill(
+                    "logged",
+                    "---\nkind: skill\nid: logged\ndescription: d\nacl:\n  update: [ops]\n---\n# logged\n",
+                )
+                .done(),
+        ),
+    })
+    .await;
+    let member = p.mint_token_with_sub("acme", escurel_test_support::Role::Agent, "member:bob");
+    let body: Value = reqwest::Client::new()
+        .post(p.mcp_url())
+        .header("authorization", format!("Bearer {member}"))
+        .json(&json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": { "name": "update_page", "arguments": {
+                "page_id": PAGE,
+                "content": "---\nkind: skill\nid: logged\ndescription: d\n---\n# logged\n" } } }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(body["result"]["structuredContent"]["ok"], true, "{body}");
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    let all = {
+        let raw = String::from_utf8(buf.lock().unwrap()[start_offset..].to_vec()).unwrap();
+        raw.lines()
+            .filter(|l| !l.is_empty())
+            .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+            .collect::<Vec<_>>()
+    };
+    let warned = all.iter().any(|r| {
+        r["level"] == "warn"
+            && r["page_id"] == PAGE
+            && r["msg"]
+                .as_str()
+                .is_some_and(|m| m.contains("skill-authority gate would deny"))
+    });
+    assert!(warned, "log mode must say what it let through: {all:?}");
+    p.shutdown().await;
+}

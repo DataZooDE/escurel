@@ -4,6 +4,32 @@ The skill version tracks the consumer-facing contract, not the Escurel
 binary version. The Escurel repo's checked-out git ref is the true version
 pin (see `SKILL.md` → "How this skill is installed").
 
+## 0.27.0 — distributed runtimes, SKILL.md interop, Teams bridge
+
+- **Runtimes:** every runner registers an admin-only `runtime` page (harnesses + CLI versions, labels from
+  `ESCUREL_RUNNER_LABELS`, `max_concurrent`); liveness comes from its status record. `list_runtimes` (versions and
+  `claim_holder` for admins only); CLI `escurel runtime list` (references/02, 04, 09).
+- **Routing:** skill frontmatter or event provenance `requires: {harness?, labels?}`; an event can only narrow its
+  skill's requirement. `ESCUREL_RUNNER_EXCLUSIVE=true` makes a runner take only work aimed at it — use it for
+  laptop and on-prem runners (references/01, 09, 11).
+- **Leases:** `claim_event` / `renew_claim` (runner identities: non-machine admin), released by `assign_event`;
+  `list_events{event_id}` shows the live `claim`. After a gateway restart, events captured before it wait up to
+  `ESCUREL_EVENT_CLAIM_BOOT_GRACE_SECS` for their holder to renew. Scheduled windows now run exactly once across
+  runners, and the runner holding a run answers its cancel / retry / inject (references/02, 08, 11).
+- **SKILL.md:** `escurel skill export <skill> --as skill-md [--out dir] [--pack]` and `escurel skill import <dir>`
+  (a curator-gated draft; the output names any `authority_keys` the file carries) (references/04).
+- **Runner credential (breaking):** every runner needs `escurel:admin` (or minting): a refused `claim_event` now
+  takes nothing on a lone runner too, and a non-admin runner (or one whose `whoami` is refused) logs the fix
+  at ERROR at boot (references/09, 11).
+- **Skill authority keys (breaking):** adding, removing or changing `acl`, `agent`, `autonomy`, `schedule`,
+  `requires`, `harness`, `model`, `cascade`, `actions`, `backend`, `freeze_when`, … on a skill page needs an admin or a member of
+  the STORED page's `acl.update`, on every write door (the promoter is judged); refusal `-32003`
+  `authority_keys_need_admin` with `data.keys` (references/01, 04, 08).
+- **Memory MCP recipe:** new references/12 — wiring Claude Code, Codex and Multica to escurel's `/mcp`.
+- **Teams:** `escurel-chat-bridge` answers 1:1 Teams chats as the asker under a restricted bridge key
+  (`ESCUREL_AUTH_BRIDGE_KID`; captures read `captured_via: bridge:msteams`) (references/09,
+  `docs/deploy/chat-bridge.md`).
+
 ## 0.26.0 — steer, transcripts, usage, agent profiles, schedules
 
 - **Steer a live run:** `run_control{action:"inject", run_id, text}` (8 KiB) reaches a running claude or echo run as a

@@ -144,6 +144,7 @@ fn skill_to_wire(s: escurel_index::SkillInfo, is_admin: bool) -> TypesSkill {
         schedule: s.schedule,
         schedule_invalid: s.schedule_invalid,
         schedule_budget: s.schedule_budget,
+        requires: s.requires,
         folder: s.folder,
         role: s.role,
         tags: s.tags,

@@ -28,6 +28,7 @@ import type {
   FetchRunTranscriptResponse,
   UsageReportRequest,
   UsageReportResponse,
+  ListRuntimesResponse,
   GetRunToolCallsRequest,
   GetRunToolCallsResponse,
   ListEventsRequest,
@@ -216,6 +217,11 @@ export class EscurelClient {
   /** Admin: what runs cost in a window, grouped. A non-admin is refused `admin_required`. */
   usageReport(req: UsageReportRequest): Promise<UsageReportResponse> {
     return this.call('usage_report', { ...req });
+  }
+
+  /** The registered runners, each with its liveness (online / stale / stopped). */
+  listRuntimes(): Promise<ListRuntimesResponse> {
+    return this.call('list_runtimes', {});
   }
 
   updatePage(req: UpdatePageRequest): Promise<UpdatePageResponse> {

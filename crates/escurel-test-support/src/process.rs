@@ -165,6 +165,17 @@ pub struct ConfigOverrides {
     /// one Escurel also trusts Triton's (or another service's) signer.
     /// Requires an auth mode with a verifier (not `Disabled`).
     pub extra_issuers: Vec<(String, String)>,
+    /// The trusted issuer that is a chat bridge (production
+    /// `ESCUREL_AUTH_BRIDGE_ISSUER`): every token verified against it is
+    /// restricted. Pair with an [`crate::ExtraIssuer::start_with_own_key`] in
+    /// `extra_issuers` and its kid in [`Self::bridge_kids`].
+    pub bridge_issuer: Option<String>,
+    /// Key ids the bridge entry is pinned to (production
+    /// `ESCUREL_AUTH_BRIDGE_KID`).
+    pub bridge_kids: Vec<String>,
+    /// The gateway's claim boot grace (`ESCUREL_EVENT_CLAIM_BOOT_GRACE_SECS`);
+    /// `None` = the production default.
+    pub event_claim_boot_grace: Option<std::time::Duration>,
     /// Boot the gateway in ducklake-reader mode (DuckLake PR 6): the
     /// mutating tool surface and the chat/CRDT/session/event tool
     /// surface are rejected with a typed JSON-RPC error. `false`
@@ -440,6 +451,14 @@ impl EscurelProcess {
             for (iss, jwks) in &overrides.extra_issuers {
                 cfg = cfg.with_additional_issuer(iss.clone(), Some(jwks.clone()));
             }
+            if let Some(issuer) = &overrides.bridge_issuer {
+                cfg = cfg
+                    .with_bridge_issuer(issuer.clone())
+                    .with_bridge_tenant(served_tenant.clone());
+            }
+            for kid in &overrides.bridge_kids {
+                cfg = cfg.with_bridge_kid(kid.clone());
+            }
             Arc::new(OidcVerifier::new(cfg))
         });
 
@@ -489,6 +508,7 @@ impl EscurelProcess {
                         .expect("ConfigOverrides.role_tools")
                 })
                 .unwrap_or_default(),
+            bridge_chat_skill: escurel_types::bridge::DEFAULT_CHAT_SKILL.to_owned(),
             toolcall_detail: overrides.toolcall_detail.unwrap_or_default(),
             autonomy_lint: overrides.autonomy_lint.unwrap_or_default(),
             // Tests keep their directory-connector fixtures in temp dirs, so the default policy of a
@@ -518,6 +538,9 @@ impl EscurelProcess {
             shutdown_drain: overrides
                 .shutdown_drain
                 .unwrap_or(escurel_server::DEFAULT_SHUTDOWN_DRAIN),
+            event_claim_boot_grace: overrides
+                .event_claim_boot_grace
+                .unwrap_or(escurel_server::DEFAULT_EVENT_CLAIM_BOOT_GRACE),
             tenant_store: overrides.tenant_store.clone().or_else(|| {
                 overrides.fixture_tenant_export.then(|| {
                     let root = store_dir
@@ -855,6 +878,13 @@ impl EscurelProcess {
     /// Equivalent to dropping the `EscurelProcess`, but explicit —
     /// tests that need to assert "the port is freed" call this
     /// rather than relying on `Drop` ordering.
+    /// The gateway's indexer, to spawn a second gateway over the same data
+    /// (`ConfigOverrides::indexer`) — a restart that keeps the tenant's state
+    /// and loses the process's memory. `None` when spawned without one.
+    pub fn indexer(&self) -> Option<Arc<Indexer>> {
+        self.indexer.clone()
+    }
+
     pub async fn shutdown(mut self) {
         if let Some(handle) = self.handle.take() {
             handle.shutdown().await;

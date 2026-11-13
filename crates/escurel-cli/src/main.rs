@@ -7,7 +7,7 @@
 //! non-zero exit so a calling agent can branch on them.
 //!
 //! Commands are grouped gh/aws-style by resource noun:
-//!   escurel skill list
+//!   escurel skill list|export|import
 //!   escurel instance list --skill customer
 //!   escurel page expand|validate|update <page_id>
 //!   escurel link neighbours <page_id>
@@ -30,6 +30,7 @@ mod agent;
 mod convert;
 mod kindfix;
 mod output;
+mod skill_io;
 mod workflow;
 
 use anyhow::Result;
@@ -85,6 +86,9 @@ enum Command {
     /// mint-token (a person's bearer).
     #[command(subcommand)]
     Run(agent::RunCmd),
+    /// Registered runner processes (runtimes): harnesses, labels, online/stale.
+    #[command(subcommand)]
+    Runtime(agent::RuntimeCmd),
     /// Held writes: the review queue for `autonomy: review` skills.
     #[command(subcommand)]
     Draft(agent::DraftCmd),

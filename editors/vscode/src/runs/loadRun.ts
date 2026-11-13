@@ -2,6 +2,7 @@ import type { EscurelClient, Event, LineageNode } from '../client';
 import type { RunView } from '../shared/protocol';
 import { buildRunView, mergeToolCallPage } from './runModel';
 import { triggerSkill } from './runFacts';
+import { heldBy, type HeldBy } from '../views/runtimesModel';
 
 export interface LoadedRun {
   view: RunView;
@@ -65,13 +66,34 @@ export async function loadRun(client: EscurelClient, runId: string): Promise<Loa
   const runner = started?.provenance?.runner;
   const eventId =
     runner && typeof runner === 'object' ? (runner as Record<string, unknown>).event_id : undefined;
+  const trigger = typeof eventId === 'string' && eventId ? eventId : undefined;
+  const held = view.status === 'running' && trigger ? await holder(client, trigger) : undefined;
   const enriched = {
     ...view,
     ...(skill ? { skill } : {}),
-    ...(typeof eventId === 'string' && eventId ? { triggerEventId: eventId } : {}),
+    ...(trigger ? { triggerEventId: trigger } : {}),
+    ...(held ? { heldBy: held } : {}),
   };
   // The id is known even when neither the node nor an event carried it.
   return { view: enriched.runId ? enriched : { ...enriched, runId }, rootEventId };
+}
+
+/**
+ * The runtime holding a live run's trigger event (#818). It is a nicety: a gateway without claims, a
+ * denied read or a lapsed lease all show nothing rather than failing the run's detail.
+ */
+async function holder(client: EscurelClient, eventId: string): Promise<HeldBy | undefined> {
+  try {
+    const { claim } = await client.listEvents({ event_id: eventId, limit: 1 });
+    if (!claim) return undefined;
+    const runtimes = await client.listRuntimes().then(
+      (r) => r.runtimes,
+      () => [],
+    );
+    return heldBy(claim, runtimes);
+  } catch {
+    return undefined;
+  }
 }
 
 /**

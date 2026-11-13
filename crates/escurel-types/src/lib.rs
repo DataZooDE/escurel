@@ -32,6 +32,7 @@ mod admin;
 mod agent;
 // Namespaced like `pack`: `escurel_types::agent_profile::glob_match` reads better than a flat helper.
 pub mod agent_profile;
+pub mod bridge;
 pub mod call_result;
 mod chat;
 mod core;
@@ -50,10 +51,13 @@ pub mod pack;
 pub mod redact;
 // Namespaced: `escurel_types::run_record::RunFinishedBody` says whose record it is.
 pub mod run_record;
+pub mod runtime;
 /// `schedule:` cron grammar shared by the validator and the runner (feature `schedule`).
 #[cfg(feature = "schedule")]
 pub mod schedule;
 mod session;
+// Namespaced: `escurel_types::skill_authority::AUTHORITY_KEYS` says whose keys they are.
+pub mod skill_authority;
 // Namespaced: `escurel_types::tools::is_known_tool` reads better than a flat helper.
 pub mod tools;
 mod workflow;

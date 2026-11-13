@@ -74,6 +74,18 @@ fn steered() -> String {
 }
 
 fn main() -> ExitCode {
+    // The runtime probe (#818) reads `<cli> --version`, as it does for the real CLIs.
+    // `ESCUREL_ECHO_VERSION_FILE` lets a test change the answer under a live runner.
+    if std::env::args().nth(1).as_deref() == Some("--version") {
+        let version = std::env::var("ESCUREL_ECHO_VERSION_FILE")
+            .ok()
+            .and_then(|p| std::fs::read_to_string(p).ok())
+            .map(|v| v.trim().to_owned())
+            .filter(|v| !v.is_empty())
+            .unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_owned());
+        println!("escurel-echo-harness {version}");
+        return ExitCode::SUCCESS;
+    }
     // Read the packaged task from stdin.
     let read = if std::env::var_os(ECHO_STDIN_TURNS_ENV).is_some() {
         read_conversation()

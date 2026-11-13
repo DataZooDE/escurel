@@ -232,6 +232,10 @@ abstract class EscurelClient {
     String? skill,
   });
 
+  /// The registered runners (`list_runtimes`, #818), sorted by runner id,
+  /// each with its liveness: `online` / `stale` / `stopped` / `unknown`.
+  Future<List<RuntimeInfo>> listRuntimes();
+
   /// Purge chat history (`admin_delete_chat_history`). GDPR erasure
   /// (group set), retention prune (beforeTs set), or both. Returns
   /// the number of rows removed.

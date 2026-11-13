@@ -3,10 +3,11 @@ import type { Instance, Skill } from '../client';
 import { pageSlug } from '../shared/pageId';
 import { backendChip } from '../shared/backendLabel';
 import { scheduleWords } from '../shared/schedule';
+import { requiresWords } from './runtimesModel';
 
 /**
  * The chips the mock shows beside a skill: autonomy, event-typed, a non-markdown backend, a
- * non-overlay layer, shadows, and a schedule with its next window.
+ * non-overlay layer, shadows, a schedule with its next window, and what a runner needs to take it.
  */
 export function chipsForSkill(s: Skill, now: Date = new Date()): string[] {
   const chips = [
@@ -18,6 +19,8 @@ export function chipsForSkill(s: Skill, now: Date = new Date()): string[] {
   if (s.shadows) chips.push('shadows');
   const schedule = scheduleWords(s, now);
   if (schedule) chips.push(schedule.hint);
+  const requires = requiresWords(s.requires);
+  if (requires) chips.push(requires.chip);
   return chips;
 }
 

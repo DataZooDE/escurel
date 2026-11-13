@@ -318,6 +318,12 @@ pub const CONFIG_KEYS: &[ConfigKey] = &[
         doc: "days a run transcript (`put_run_transcript`, read via `fetch_blob{run_id}`) is kept; swept every 30 s; `0` keeps them forever",
     },
     ConfigKey {
+        name: "ESCUREL_EVENT_CLAIM_BOOT_GRACE_SECS",
+        component: "Server",
+        default: "3600",
+        doc: "after a gateway start, how long `claim_event` withholds an event captured before the start that has no lease row (`claimed: false`, holder `(recovering)`), so a runner still running it under a lease the restart forgot can `renew_claim` it first. Events captured after the start are claimable at once. The default is the longest lease a claim may ask for; set it to your longest `ESCUREL_RUNNER_CLAIM_LEASE` to let an unheld backlog flow sooner, `0` turns it off",
+    },
+    ConfigKey {
         name: "ESCUREL_SHUTDOWN_DRAIN_SECS",
         component: "Server",
         default: "25",
@@ -364,6 +370,30 @@ pub const CONFIG_KEYS: &[ConfigKey] = &[
         component: "Server",
         default: "derived from issuer #N",
         doc: "explicit JWKS URL for the Nth issuer",
+    },
+    ConfigKey {
+        name: "ESCUREL_AUTH_BRIDGE_ISSUER",
+        component: "Server",
+        default: "—",
+        doc: "the trusted issuer that is a chat bridge (`escurel-chat-bridge`); must be `ESCUREL_AUTH_OIDC_ISSUER` or an `ESCUREL_AUTH_OIDC_ISSUER_<N>` (boot fails otherwise, or when `ESCUREL_AUTH_BRIDGE_KID` is set without it). EVERY token verified against this entry is a bridge token, whatever kid it names: it lives at most 900 s, is never admin or operator, honours no roles or groups (group-granted ACLs do not apply to it), is refused if it carries an `agent`/`skill`/`run_id`/`purpose`/`act` claim, must name its channel in `bridge_channel`, and what it captures is stamped `captured_via: bridge:<channel>`. Serve its JWKS over https: whoever controls that response controls which keys sign as the bridge",
+    },
+    ConfigKey {
+        name: "ESCUREL_AUTH_BRIDGE_KID",
+        component: "Server",
+        default: "—",
+        doc: "comma-separated key ids the bridge signs under; a pin on the `ESCUREL_AUTH_BRIDGE_ISSUER` entry: a token from it under any other kid is refused, and so is a token from another issuer under one of these kids. The key must be the bridge's own, never the gateway's main signing key. REQUIRED with `ESCUREL_AUTH_BRIDGE_ISSUER`",
+    },
+    ConfigKey {
+        name: "ESCUREL_AUTH_BRIDGE_TENANT",
+        component: "Server",
+        default: "—",
+        doc: "the one tenant the bridge's tokens may name; REQUIRED with `ESCUREL_AUTH_BRIDGE_ISSUER` and must equal `ESCUREL_TENANT` (boot fails otherwise), so a gateway for another tenant cannot be configured to trust the same bridge. A bridge token naming another tenant is refused (`401`)",
+    },
+    ConfigKey {
+        name: "ESCUREL_AUTH_BRIDGE_CHAT_SKILL",
+        component: "Server",
+        default: "chat",
+        doc: "the only `label_skill` a bridge token may `capture_event` under (= the bridge's `ESCUREL_BRIDGE_CHAT_SKILL`). A bridge token may call only `whoami`, `update_page` (create-if-absent of a `chat: {page_bound: true}` instance), `append_message` (`role: user`, page-bound groups), `list_messages` (page-bound groups), `capture_event` (this label) and `ingest_upload`; everything else is `-32003`, and `/ingest`, `/blob` and `/ws` answer `403`",
     },
     ConfigKey {
         name: "ESCUREL_EMBEDDING_PROVIDER",
@@ -843,7 +873,13 @@ pub const CONFIG_KEYS: &[ConfigKey] = &[
         name: "ESCUREL_RUNNER_TOKEN",
         component: "Runner",
         default: "—",
-        doc: "tenant-scoped bearer the runner presents to `/mcp`; a static token wins over minting. A runner on a static token cannot mint, so every run of a skill with an `agent:` profile fails (dead-letters) there: agent profiles need a minting runner (`ESCUREL_RUNNER_AUTH_SIGNING_KEY`)",
+        doc: "tenant-scoped bearer the runner presents to `/mcp`; it must carry `escurel:admin` (a non-admin runner cannot claim events, so it takes no inbox work and logs the fix at boot). A static token wins over minting. A runner on a static token cannot mint, so every run of a skill with an `agent:` profile fails (dead-letters) there: agent profiles need a minting runner (`ESCUREL_RUNNER_AUTH_SIGNING_KEY`)",
+    },
+    ConfigKey {
+        name: "ESCUREL_RUNNER_TOKEN_FILE",
+        component: "Runner",
+        default: "—",
+        doc: "a file holding the runner's bearer, kept fresh by a sidecar (a laptop or on-prem runner on a short-lived service credential); used when `ESCUREL_RUNNER_TOKEN` is unset, read at startup (an unreadable or empty file refuses to start) and re-read whenever it changes, so a rotated credential is used on the next gateway call (a runner whose calls came back `401` recovers without a restart). Like a static token it cannot mint",
     },
     ConfigKey {
         name: "ESCUREL_RUNNER_QUEUE_CAP",
@@ -874,6 +910,30 @@ pub const CONFIG_KEYS: &[ConfigKey] = &[
         component: "Runner",
         default: "5m",
         doc: "how often the runner refreshes its status record (`runner-status:<runner_id>`) when nothing changed; it travels in the record as `status_interval_s`",
+    },
+    ConfigKey {
+        name: "ESCUREL_RUNNER_LABELS",
+        component: "Runner",
+        default: "(none)",
+        doc: "comma-separated labels this runner carries (`site:muc,has:sap-gui`); work whose `requires: {labels}` it lacks is left in the inbox for a runner that has them, and the labels are advertised on its `runtime` page. Like every runner, its credential needs `escurel:admin` to claim (an error is logged at boot otherwise, and it takes no inbox work); a webhook trigger it cannot route or claim at once is left to the poller",
+    },
+    ConfigKey {
+        name: "ESCUREL_RUNNER_EXCLUSIVE",
+        component: "Runner",
+        default: "false",
+        doc: "take only inbox work whose SKILL page's `requires:` names one of this runner's labels or a harness it offers besides its default; recommended for laptop and on-prem runners, so they do not race the central runner for the whole inbox and an event's `provenance.requires` cannot steer arbitrary work onto them",
+    },
+    ConfigKey {
+        name: "ESCUREL_RUNNER_PROBE_INTERVAL",
+        component: "Runner",
+        default: "10m",
+        doc: "how often the runner re-probes its harness CLIs (`<cli> --version`) and rewrites its `runtime` page when a version or availability changed, without a restart. A CLI whose probe fails is `available: false` and gets no work that `requires:` its harness",
+    },
+    ConfigKey {
+        name: "ESCUREL_RUNNER_CLAIM_LEASE",
+        component: "Runner",
+        default: "max(60s, 4 x poll interval), capped at 60m",
+        doc: "how long a `claim_event` lease on an inbox event lasts: 1s to 60m (the gateway's bound) and at least two poll intervals, or the runner refuses to start naming this key. A renewal task renews held leases every third of the lease, independent of the inbox poll; a dead runner's events become claimable this long after it stopped",
     },
     ConfigKey {
         name: "ESCUREL_RUNNER_HARNESS_ALLOW",
@@ -1350,6 +1410,156 @@ pub const CONFIG_KEYS: &[ConfigKey] = &[
         doc: "shared server-to-server bearer on the outbound delivery POST",
     },
     ConfigKey {
+        name: "ESCUREL_BRIDGE_LISTEN",
+        component: "Bridge",
+        default: "0.0.0.0:3978",
+        doc: "HTTP listener of `escurel-chat-bridge`: the platform's messaging endpoint `POST /api/messages`, plus `/healthz` and `/version`",
+    },
+    ConfigKey {
+        name: "ESCUREL_BRIDGE_STATE_PATH",
+        component: "Bridge",
+        default: "/data/escurel-chat-bridge.duckdb",
+        doc: "the bridge's DuckDB state file: one row per platform message (the dedup key) and whether its one reply was sent. Durable state, not a cache: losing it lets a redelivered message be answered again",
+    },
+    ConfigKey {
+        name: "ESCUREL_BRIDGE_GATEWAY_URL",
+        component: "Bridge",
+        default: "—",
+        doc: "REQUIRED: the gateway base URL the bridge calls `/mcp` on",
+    },
+    ConfigKey {
+        name: "ESCUREL_BRIDGE_TENANT",
+        component: "Bridge",
+        default: "—",
+        doc: "REQUIRED: the tenant the bridge's tokens name",
+    },
+    ConfigKey {
+        name: "ESCUREL_BRIDGE_AUTH_ISSUER",
+        component: "Bridge",
+        default: "—",
+        doc: "REQUIRED: the issuer the bridge signs the asker's short-lived token as; the gateway must trust it (primary or `ESCUREL_AUTH_OIDC_ISSUER_<N>`), name it in `ESCUREL_AUTH_BRIDGE_ISSUER`, and its JWKS must publish the bridge's own key",
+    },
+    ConfigKey {
+        name: "ESCUREL_BRIDGE_AUTH_AUDIENCE",
+        component: "Bridge",
+        default: "escurel",
+        doc: "audience of the tokens the bridge signs",
+    },
+    ConfigKey {
+        name: "ESCUREL_BRIDGE_AUTH_KID",
+        component: "Bridge",
+        default: "—",
+        doc: "REQUIRED: `kid` of the bridge's own signing key as the issuer's JWKS publishes it; the gateway must name the bridge's issuer in `ESCUREL_AUTH_BRIDGE_ISSUER` (which restricts every token from it) and list this kid in `ESCUREL_AUTH_BRIDGE_KID`",
+    },
+    ConfigKey {
+        name: "ESCUREL_BRIDGE_AUTH_SIGNING_KEY",
+        component: "Bridge",
+        default: "—",
+        doc: "the bridge's OWN RSA private key (PEM, PKCS#1 or PKCS#8); never the gateway's or a runner's signing key, which would let a compromised bridge sign unrestricted tokens. Never logged. Exactly one of this and `…_FILE` is REQUIRED",
+    },
+    ConfigKey {
+        name: "ESCUREL_BRIDGE_AUTH_SIGNING_KEY_FILE",
+        component: "Bridge",
+        default: "—",
+        doc: "path to a file holding the signing key; the alternative to `ESCUREL_BRIDGE_AUTH_SIGNING_KEY`",
+    },
+    ConfigKey {
+        name: "ESCUREL_BRIDGE_TEAMS_APP_ID",
+        component: "Bridge",
+        default: "—",
+        doc: "REQUIRED: the bot's Microsoft app (client) id; the `aud` an inbound Bot Framework token must carry and the client id of the connector token",
+    },
+    ConfigKey {
+        name: "ESCUREL_BRIDGE_TEAMS_ALLOWED_TENANTS",
+        component: "Bridge",
+        default: "—",
+        doc: "REQUIRED: comma-separated Entra tenant ids whose people the bridge answers; an activity whose `conversation.tenantId` / `channelData.tenant.id` is not listed is ignored",
+    },
+    ConfigKey {
+        name: "ESCUREL_BRIDGE_TEAMS_APP_PASSWORD",
+        component: "Bridge",
+        default: "—",
+        doc: "the bot app's client secret, for the client-credentials connector token; never logged. Exactly one of this and `…_FILE` is REQUIRED",
+    },
+    ConfigKey {
+        name: "ESCUREL_BRIDGE_TEAMS_APP_PASSWORD_FILE",
+        component: "Bridge",
+        default: "—",
+        doc: "path to a file holding the client secret; the alternative to `ESCUREL_BRIDGE_TEAMS_APP_PASSWORD`",
+    },
+    ConfigKey {
+        name: "ESCUREL_BRIDGE_TEAMS_OPENID_METADATA_URL",
+        component: "Bridge",
+        default: "https://login.botframework.com/v1/.well-known/openidconfiguration",
+        doc: "OpenID metadata whose `jwks_uri` holds the keys inbound channel tokens are verified against",
+    },
+    ConfigKey {
+        name: "ESCUREL_BRIDGE_TEAMS_ISSUER",
+        component: "Bridge",
+        default: "https://api.botframework.com",
+        doc: "the `iss` an inbound channel token must carry",
+    },
+    ConfigKey {
+        name: "ESCUREL_BRIDGE_TEAMS_TOKEN_URL",
+        component: "Bridge",
+        default: "https://login.microsoftonline.com/botframework.com/oauth2/v2.0/token",
+        doc: "client-credentials token endpoint for replies; a single-tenant bot uses `https://login.microsoftonline.com/<entra tenant id>/oauth2/v2.0/token`",
+    },
+    ConfigKey {
+        name: "ESCUREL_BRIDGE_TEAMS_TOKEN_SCOPE",
+        component: "Bridge",
+        default: "https://api.botframework.com/.default",
+        doc: "scope of the connector token",
+    },
+    ConfigKey {
+        name: "ESCUREL_BRIDGE_PRINCIPAL_TEMPLATE",
+        component: "Bridge",
+        default: "—",
+        doc: "REQUIRED: the escurel subject for a Teams user: `{aadObjectId}` (Entra object id), `{userId}` (Teams user id) and `{tenantId}` (Entra tenant) are filled in, e.g. `user:{aadObjectId}`. The bridge refuses to start on an unknown placeholder or a template naming neither `{aadObjectId}` nor `{userId}` (it would map every sender to one subject). It must equal the `sub` the person's own token from the gateway's primary issuer carries, or their chats and the pages they may read will not line up. A message from a user lacking a named field is not answered",
+    },
+    ConfigKey {
+        name: "ESCUREL_BRIDGE_CHAT_SKILL",
+        component: "Bridge",
+        default: "chat",
+        doc: "`label_skill` of the captured chat event (the runner answers it in chat mode); the gateway's `ESCUREL_AUTH_BRIDGE_CHAT_SKILL` must name the same skill",
+    },
+    ConfigKey {
+        name: "ESCUREL_BRIDGE_CONVERSATION_SKILL",
+        component: "Bridge",
+        default: "conversation",
+        doc: "the page-bound conversation skill each person's Teams chat becomes an instance of (`chat: {page_bound: true}`, owner-private; the shipped chat corpus has one)",
+    },
+    ConfigKey {
+        name: "ESCUREL_BRIDGE_POLL_INTERVAL",
+        component: "Bridge",
+        default: "1s",
+        doc: "how often the bridge checks the chat group for the run's answer",
+    },
+    ConfigKey {
+        name: "ESCUREL_BRIDGE_TYPING_INTERVAL",
+        component: "Bridge",
+        default: "3s",
+        doc: "how often it re-sends the typing indicator while the run is live (Teams shows one for about three seconds)",
+    },
+    ConfigKey {
+        name: "ESCUREL_BRIDGE_REPLY_TIMEOUT",
+        component: "Bridge",
+        default: "10m",
+        doc: "how long it waits for an answer before telling the person it has none",
+    },
+    ConfigKey {
+        name: "ESCUREL_BRIDGE_ATTACHMENT_MAX_BYTES",
+        component: "Bridge",
+        default: "10485760",
+        doc: "largest attachment it downloads and uploads through `ingest_upload`; a larger one is listed in the message as not ingested",
+    },
+    ConfigKey {
+        name: "ESCUREL_BRIDGE_TEAMS_ATTACHMENT_HOSTS",
+        component: "Bridge",
+        default: "*.sharepoint.com,*.asm.skype.com",
+        doc: "comma-separated hosts (`*.suffix` = any subdomain) an attachment may be downloaded from besides the connector's own `serviceUrl` origin. Such a download must be https, resolve only to public addresses (loopback, private, link-local and CGNAT are refused after DNS resolution) and is not redirected; the bot's bearer goes only to the connector origin",
+    },
+    ConfigKey {
         name: "ESCUREL_SERVER",
         component: "Cli",
         default: "http://127.0.0.1:8080",
@@ -1390,6 +1600,12 @@ pub const CONFIG_KEYS: &[ConfigKey] = &[
         component: "TestOnly",
         default: "—",
         doc: "echo harness: attach this result reference (tests)",
+    },
+    ConfigKey {
+        name: "ESCUREL_ECHO_VERSION_FILE",
+        component: "TestOnly",
+        default: "—",
+        doc: "echo harness: `--version` answers with this file's contents, so a test can change a runner's probed CLI version (#818)",
     },
     ConfigKey {
         name: "ESCUREL_ECHO_SLEEP_MS",
@@ -1499,6 +1715,12 @@ pub const CONFIG_KEYS: &[ConfigKey] = &[
         default: "—",
         doc: "`examples/echo-app`: gateway endpoint (the app's own variable, not read by the server)",
     },
+    ConfigKey {
+        name: "ESCUREL_RUNNER_BIN",
+        component: "TestOnly",
+        default: "—",
+        doc: "`escurel-test-support`'s `RunnerProcess`: the `escurel-runner` binary to start; unset uses the one next to the test executable (`target/<profile>/`)",
+    },
 ];
 
 /// The group order of the rendered table.
@@ -1513,11 +1735,17 @@ const GROUPS: &[(&str, &str)] = &[
          ready after a successful write of its reserved `escurel:runner-status` record\n\
          (`report_runner_status`; an older gateway: a system event)\n\
          and becomes unready when that write is refused, fails, goes stale, or the\n\
-         runner starts draining. Give the runner service credential `escurel:admin`\n\
-         scope; keep per-run harness credentials caller-scoped. `GET /healthz` remains\n\
+         runner starts draining. The runner service credential MUST carry `escurel:admin`\n\
+         (or the runner must mint): a runner whose `claim_event` is refused takes no inbox\n\
+         work and logs the fix at boot. Keep per-run harness credentials caller-scoped. `GET /healthz` remains\n\
          a dependency-free liveness probe. Webhook-only runners without a configured\n\
          tenant/token can process `/trigger` but deliberately report unready at\n\
          `/readyz`, so do not use that probe as their traffic gate",
+    ),
+    (
+        "Bridge",
+        "escurel-chat-bridge (the Teams chat bridge, `docs/deploy/chat-bridge.md`).\n\
+         It runs only when started; nothing else reads these",
     ),
     ("Cli", "the `escurel` CLI"),
     ("Harness", "set by the runner for a harness subprocess"),

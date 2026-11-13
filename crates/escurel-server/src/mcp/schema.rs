@@ -963,6 +963,65 @@ pub(crate) fn tool_defs() -> Vec<ToolDef> {
             }),
         ),
         tool_entry(
+            "claim_event",
+            Execution::Orchestration,
+            Scope::Admin,
+            Touches::INDEX,
+            "Runner coordination: take a lease on an inbox event so exactly one \
+                 runner starts it. Compare-and-set: `claimed: true` when the caller \
+                 holds the lease now (a holder re-claiming extends it), else \
+                 `claimed: false` with the current `holder` and `expires_at`. An \
+                 expired lease is claimable again; `assign_event` releases it; a \
+                 processed event answers `processed: true`. The holder is the \
+                 caller's `sub`, `#<holder_id>` when one is sent (replicas sharing \
+                 a credential; the runner sends its ledger's stable identity). Only a runner's own admin identity may claim — a \
+                 run token or a person's token is refused. Leases live in the \
+                 gateway's memory: a restart forgets them and runners re-take theirs.",
+            json!({
+                "type": "object",
+                "required": ["event_id"],
+                "properties": {
+                    "event_id": { "type": "string" },
+                    "lease_secs": { "type": "integer", "minimum": 1, "maximum": 3600, "description": "Lease length; default 60." },
+                    "holder_id": { "type": "string", "maxLength": 128, "description": "[A-Za-z0-9._:@-]; qualifies the holder." }
+                }
+            }),
+        ),
+        tool_entry(
+            "renew_claim",
+            Execution::Orchestration,
+            Scope::Admin,
+            Touches::INDEX,
+            "Runner coordination: extend a lease `claim_event` gave the caller \
+                 (`renewed: true`, the new `expires_at`). Never takes over another \
+                 holder's lease, even a lapsed one (`renewed: false` + `holder`); a \
+                 lease the gateway forgot (a restart) is re-taken. Same caller rule \
+                 and holder (`holder_id`) as `claim_event`.",
+            json!({
+                "type": "object",
+                "required": ["event_id"],
+                "properties": {
+                    "event_id": { "type": "string" },
+                    "lease_secs": { "type": "integer", "minimum": 1, "maximum": 3600, "description": "Lease length; default 60." },
+                    "holder_id": { "type": "string", "maxLength": 128 }
+                }
+            }),
+        ),
+        tool_entry(
+            "list_runtimes",
+            Execution::Deterministic,
+            Scope::Agent,
+            Touches::READ,
+            "List the registered runtimes (runner processes): each `runtime` \
+                 instance you may read, with its harnesses (name, CLI version, and whether its CLI probe succeeded), \
+                 labels and `max_concurrent`, joined with the runner's status \
+                 record: `status` online | stale (silent for more than 3 x its \
+                 reporting interval) | stopped | unknown, `last_seen`, `age_s`, \
+                 `stale_after_s`, `version`, `live_runs`. Use it to see where work \
+                 that declares `requires: {harness, labels}` can run.",
+            json!({ "type": "object", "properties": {} }),
+        ),
+        tool_entry(
             "list_inbox",
             Execution::Deterministic,
             Scope::Agent,
@@ -1960,6 +2019,7 @@ fn group_of(name: &str, scope: Scope) -> &'static str {
         | "report_progress"
         | "put_run_transcript"
         | "report_runner_status"
+        | "list_runtimes"
         | "get_run_tool_calls"
         | "list_lineage"
         | "start_operation"
@@ -2451,6 +2511,7 @@ fn output_schema_for(name: &str) -> Option<Value> {
         })),
         "list_inbox" | "list_events" => obj(json!({
             "events": { "type": "array" },
+            "claim": { "type": "object", "description": "list_events{event_id} only: the live claim lease {holder, expires_at}; absent when nobody holds one" },
             "next_cursor": { "type": "string", "description": "where this page ENDED (present iff the page is non-empty): pass it back as `cursor` to continue or to tail; null = done" },
             "has_more": { "type": "boolean", "description": "true iff rows already lie past this page" }
         })),
@@ -2460,6 +2521,17 @@ fn output_schema_for(name: &str) -> Option<Value> {
         })),
         "capture_event" | "assign_event" => obj(json!({
             "event_id": { "type": "string" }
+        })),
+        "claim_event" | "renew_claim" => obj(json!({
+            "event_id": { "type": "string" },
+            "claimed": { "type": "boolean", "description": "claim_event: the caller holds the lease now" },
+            "renewed": { "type": "boolean", "description": "renew_claim: the lease was extended" },
+            "holder": { "type": "string", "description": "the current holder; null for a processed event" },
+            "expires_at": { "type": "string", "description": "RFC 3339; null for a processed event" },
+            "processed": { "type": "boolean", "description": "the event is already processed: nothing to claim" }
+        })),
+        "list_runtimes" => obj(json!({
+            "runtimes": { "type": "array", "description": "[{runner_id, page_id, harnesses: [{name, version, available, probe_error?}], labels, max_concurrent, claim_holder, status: online|stale|stopped|unknown, last_seen, age_s, stale_after_s, version, live_runs}]" }
         })),
         "report_runner_status" => obj(json!({
             "event_id": { "type": "string", "description": "`runner-status:<runner_id>`" },

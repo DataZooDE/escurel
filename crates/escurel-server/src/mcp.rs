@@ -72,8 +72,10 @@ mod tools_drafts;
 mod tools_lineage;
 mod tools_mint;
 pub(crate) use tools_mint::sweep_expired_minted_runs;
+pub(crate) use tools_runtimes::MAX_CLAIM_LEASE_SECS;
 mod tool_detail;
 mod tools_progress;
+mod tools_runtimes;
 mod tools_status;
 mod tools_tool_calls;
 mod tools_transcript;
@@ -376,6 +378,8 @@ async fn mcp_inner(
     // The agent profile the token runs as (#823): a NAME, whose scopes the
     // dispatch reads from the agent's own page — never from the token.
     let agent_claim = auth_ctx.as_ref().and_then(|c| c.agent.clone());
+    // A chat bridge's token (crew security F2): confined to its turn's calls.
+    let bridge = auth_ctx.as_ref().is_some_and(|c| c.bridge);
 
     // JSON-RPC notifications (no `id`, method `notifications/*`) get
     // NO response envelope — the MCP Streamable-HTTP spec says the
@@ -405,7 +409,10 @@ async fn mcp_inner(
             }
             None => Ok(filter_tools_list(
                 schema::tools_list_payload_for(role),
-                |name| restriction.as_ref().is_none_or(|r| r.contains(name)),
+                |name| {
+                    restriction.as_ref().is_none_or(|r| r.contains(name))
+                        && (!bridge || crate::bridge_gate::BRIDGE_TOOLS.contains(&name))
+                },
             )),
         },
         "tools/call" => {
@@ -454,6 +461,7 @@ async fn mcp_inner(
                 agent_skill.as_deref(),
                 agent_claim.as_deref(),
                 restriction.as_ref(),
+                bridge,
                 req.params,
             ))
             .catch_unwind()
@@ -727,6 +735,8 @@ fn dimension_for(method: &str, params: &Value) -> Option<Dimension> {
         | "append_message"
         | "capture_event"
         | "report_runner_status"
+        | "claim_event"
+        | "renew_claim"
         | "assign_event"
         | "create_draft"
         | "promote_draft"
@@ -1139,6 +1149,7 @@ async fn dispatch_tools_call(
     agent_skill: Option<&str>,
     agent_claim: Option<&str>,
     restriction: Option<&std::collections::BTreeSet<String>>,
+    bridge: bool,
     params: Value,
 ) -> Result<Value, JsonRpcError> {
     let params: ToolsCallParams = serde_json::from_value(params)
@@ -1245,6 +1256,19 @@ async fn dispatch_tools_call(
             data: None,
         }
         .with_code("role_restricted", false));
+    }
+    // A chat bridge's token: its turn's calls and nothing else (crew security F2).
+    if bridge
+        && let Some(why) = crate::bridge_gate::refusal(
+            &params.name,
+            &params.arguments,
+            &state.bridge_chat_skill,
+            current_indexer.as_deref(),
+        )
+        .await
+        .map_err(|e| JsonRpcError::internal(format!("bridge gate: {e}")))?
+    {
+        return Err(JsonRpcError::forbidden(why));
     }
     // The agent's tool scope, intersected with every gate above and below: it
     // can only take tools away.
@@ -1361,6 +1385,16 @@ async fn dispatch_tools_call(
         }
         "export_pack" => {
             return tool_export_pack(state, params.arguments).await;
+        }
+        "import_pack" | "rebase_pack" | "unsubscribe_pack" if caller.is_machine() => {
+            // A pack lands, replaces or removes skill pages wholesale, authority keys included, and a
+            // machine never changes those (the skill-authority gate) — admin role or not.
+            return Err(JsonRpcError::forbidden(format!(
+                "`{}` changes skill pages and their authority keys; a machine caller (an agent \
+                 run, a narrowed or delegated token) never does, admin role or not. Ask a person \
+                 with `escurel:admin`",
+                params.name
+            )));
         }
         "import_pack" => {
             return tool_import_pack(state, params.arguments).await;
@@ -1536,6 +1570,27 @@ async fn dispatch_tools_call(
         "report_runner_status" => {
             tool_report_runner_status(indexer, caller, params.arguments).await
         }
+        "claim_event" => {
+            tools_runtimes::tool_claim(
+                &state.event_claims,
+                indexer,
+                caller,
+                tools_runtimes::ClaimVerb::Claim,
+                params.arguments,
+            )
+            .await
+        }
+        "renew_claim" => {
+            tools_runtimes::tool_claim(
+                &state.event_claims,
+                indexer,
+                caller,
+                tools_runtimes::ClaimVerb::Renew,
+                params.arguments,
+            )
+            .await
+        }
+        "list_runtimes" => tools_runtimes::tool_list_runtimes(indexer, caller).await,
         "mint_agent_token" => {
             tools_mint::tool_mint_agent_token(state, indexer, caller, params.arguments).await
         }
@@ -1551,7 +1606,19 @@ async fn dispatch_tools_call(
         "list_lineage" => {
             tool_list_lineage(indexer, caller, state.event_acl, params.arguments).await
         }
-        "list_events" => tool_list_events(indexer, caller, state.event_acl, params.arguments).await,
+        "list_events" => {
+            // A by-id lookup also says who holds the event's claim lease (#818).
+            let by_id = params.arguments["event_id"].as_str().map(str::to_owned);
+            let mut listed =
+                tool_list_events(indexer, caller, state.event_acl, params.arguments).await?;
+            if let Some(id) = by_id
+                && listed["events"].as_array().is_some_and(|e| !e.is_empty())
+                && let Some(claim) = tools_runtimes::claim_view(&state.event_claims, &id)
+            {
+                listed["claim"] = claim;
+            }
+            Ok(listed)
+        }
         "list_snapshots" => tool_list_snapshots(indexer, caller, params.arguments).await,
         "list_op_authors" => {
             tool_list_op_authors(
@@ -1563,14 +1630,24 @@ async fn dispatch_tools_call(
             .await
         }
         "assign_event" => {
-            tool_assign_event(
+            let event_id = params.arguments["event_id"].as_str().map(str::to_owned);
+            let assigned = tool_assign_event(
                 indexer,
                 caller,
                 state.event_acl,
                 &state.assigned_tx,
                 params.arguments,
             )
-            .await
+            .await?;
+            // An assigned event is done: its claim lease has nothing left to guard.
+            if let Some(id) = event_id
+                && let Err(e) = state
+                    .event_claims
+                    .release(&id, crate::event_claims::now_ms())
+            {
+                tracing::warn!(event_id = %id, error = %e, "assign_event: claim not released");
+            }
+            Ok(assigned)
         }
         // Admin-gated ops tools (mirror the documented MCP admin
         // surface; delegate to the same logic as EscurelAdmin gRPC).
@@ -2449,6 +2526,16 @@ async fn tool_close_session(
                 return Ok(held);
             }
             let _gate = state.update_page_gate.lock().await;
+            // A skill page's authority keys, judged on the merged body against the head read under
+            // the gate (a held machine commit is a draft).
+            tools_write::skill_authority_refusal(
+                ix,
+                &caller,
+                state.write_acl_for(&caller),
+                &page_id,
+                Some(&body),
+            )
+            .await?;
             // The commit is a page write, so it carries the same stamp an
             // `update_page` would (#357): the caller that closed the
             // session is the page's last writer. Per-op authorship stays in

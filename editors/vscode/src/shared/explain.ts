@@ -21,6 +21,7 @@ The **Threads** view and the thread canvas show this chain for one event. A card
 - **Scenarios**: try different plans against the same starting situation. A scenario is one set of choices; a comparison shows how the outcomes differ. An Evolve run works through those choices and records what it found. Check the assumptions and figures before acting on a result.
 - **Runs** (right-hand side bar): what is running now, what needs attention, and past runs with their traces.
 - **Usage** and **Agents** (under Runs): what runs cost, by skill, model, agent, day or page (admins only), and the agent profiles runs execute as, with how their runs went.
+- **Runtimes** (under Runs): the runners that take work, whether each is online, stale or stopped, the agents and labels it offers and what it is running. A skill that needs a particular agent or labels runs only on a runtime that offers them.
 - **Inbox**: new events nobody has dealt with yet. **Awaiting you**: changes and plans that wait for your decision.
 
 ## Read-only, source and external

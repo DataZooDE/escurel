@@ -274,7 +274,13 @@ async function main(): Promise<void> {
           process.env,
           info,
           { port: basePort + 6, dir },
-          { ESCUREL_ECHO_SLEEP_MS: '4000', ESCUREL_ECHO_TRANSCRIPT: transcript },
+          {
+            ESCUREL_ECHO_SLEEP_MS: '4000',
+            ESCUREL_ECHO_TRANSCRIPT: transcript,
+            // The Runtimes view and run detail's "taken by" line name this runner (controls/runtimes.test.ts).
+            ESCUREL_RUNNER_ID: 'vsx-controls',
+            ESCUREL_RUNNER_LABELS: 'repo:escurel,site:vsx',
+          },
         ),
         stdio: ['ignore', openSync(log, 'a'), openSync(log, 'a')],
       });

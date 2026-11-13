@@ -38,6 +38,7 @@ use axum::response::IntoResponse;
 use axum::routing::{get, post};
 use escurel_client::{AssignEventRequest, Client, ListEventsRequest, SecretString};
 use escurel_obs::{Metrics, TelemetryConfig, init_telemetry};
+use escurel_runner_core::runtime::{Admit, RuntimeGate};
 use escurel_runner_core::{
     Admission, Autonomy, CascadeOutcome, ConfirmedEffect, DispatchConsumer, DispatchQueue,
     EnqueueOutcome, Governor, Ledger, LedgerDecision, LoopLimits, QuotaDecision, QuotaLimits,
@@ -131,6 +132,40 @@ struct AppState {
     /// loop control only when it was captured by this subject (runner-lineage-
     /// forge fix); `None` (static token with no readable `sub`) → trust-all.
     lineage_trust_subject: Option<Arc<str>>,
+    /// Routing + claim leases across the tenant's runners (#818): an inbox
+    /// event this runner cannot satisfy, or that another runner holds, is
+    /// never admitted. `None` without a gateway credential (dev drain path).
+    gate: Option<Arc<RuntimeGate>>,
+    /// What this runner decided for each recent run-control request
+    /// (`GET /debug/control`): with several runners reading every request
+    /// and the result id first-writer-wins, the stored result alone cannot
+    /// show that a runner which does not own the run stayed silent.
+    control_decisions: ControlDecisions,
+}
+
+/// The last [`ControlDecisions::KEEP`] run-control decisions, by request id.
+#[derive(Clone, Default)]
+struct ControlDecisions(Arc<std::sync::Mutex<std::collections::VecDeque<(String, String)>>>);
+
+impl ControlDecisions {
+    const KEEP: usize = 1000;
+
+    fn note(&self, request: &str, decision: impl Into<String>) {
+        let mut log = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        log.retain(|(r, _)| r != request);
+        if log.len() >= Self::KEEP {
+            log.pop_front();
+        }
+        log.push_back((request.to_owned(), decision.into()));
+    }
+
+    fn get(&self, request: &str) -> Option<String> {
+        let log = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        log.iter()
+            .rev()
+            .find(|(r, _)| r == request)
+            .map(|(_, d)| d.clone())
+    }
 }
 
 #[tokio::main]
@@ -204,7 +239,8 @@ async fn main() -> anyhow::Result<()> {
             tracing::error!(
                 target: "escurel_runner",
                 error = %e,
-                "ESCUREL_RUNNER_AUTH_SIGNING_KEY is configured but unusable; refusing to start"
+                "the runner credential (ESCUREL_RUNNER_TOKEN_FILE or \
+                 ESCUREL_RUNNER_AUTH_SIGNING_KEY) is configured but unusable; refusing to start"
             );
             std::process::exit(2);
         }
@@ -218,6 +254,53 @@ async fn main() -> anyhow::Result<()> {
             "static ESCUREL_RUNNER_TOKEN: chat runs will fail with chat_requires_run_tokens \
              (set ESCUREL_RUNNER_AUTH_ISSUER + ESCUREL_RUNNER_AUTH_SIGNING_KEY to answer chat)"
         );
+    }
+
+    // The routing + claim gate (#818). Its holder id is the ledger's own
+    // identity, so a restart on the same ledger keeps the leases it held.
+    let gate: Option<Arc<RuntimeGate>> = match (config.tenant.as_ref(), tokens.as_ref()) {
+        (Some(_), Some(source)) => Some(Arc::new(
+            RuntimeGate::new(
+                &ledger.identity()?,
+                source.subject().as_deref(),
+                escurel_runner_core::runtime::harness_set(&config.harness, &config.harness_allow),
+                config.labels.clone(),
+                config.claim_lease,
+            )
+            .exclusive(config.exclusive),
+        )),
+        _ => None,
+    };
+    // The harness CLIs this runner offers, probed once before any work is
+    // admitted: a CLI that is not there must not be routed `requires:` work.
+    let harness_clis: Vec<(String, Option<String>)> =
+        escurel_runner_core::runtime::harness_set(&config.harness, &config.harness_allow)
+            .into_iter()
+            .map(|name| {
+                let cli = harness_cli(&config, &name);
+                (name, cli)
+            })
+            .collect();
+    if let (Some(gate), Some(source)) = (gate.as_ref(), tokens.as_ref()) {
+        gate.apply_probe(&escurel_runner_core::runtime::probe_harnesses(&harness_clis).await);
+        if !gate.is_lone() && config.webhook_secret.is_some() {
+            tracing::warn!(
+                target: "escurel_runner",
+                "ESCUREL_RUNNER_LABELS / ESCUREL_RUNNER_EXCLUSIVE with webhook ingress: a webhook \
+                 trigger this runner cannot route or claim at once is left to the poller; feed \
+                 a fleet through the poller"
+            );
+        }
+        tokio::spawn(claim_preflight(
+            config.gateway_url.clone(),
+            Arc::clone(source),
+        ));
+        tokio::spawn(lease_renewal_loop(
+            config.gateway_url.clone(),
+            Arc::clone(source),
+            Arc::clone(gate),
+            Arc::clone(&draining),
+        ));
     }
 
     // In-flight quota slots, shared gate → dispatch loop (#158).
@@ -368,6 +451,7 @@ async fn main() -> anyhow::Result<()> {
                 Arc::clone(&inflight),
                 Arc::clone(&draining),
                 Arc::clone(&last_poll_ms),
+                gate.clone(),
             ));
         }
         _ => {
@@ -443,6 +527,8 @@ async fn main() -> anyhow::Result<()> {
         draining: Arc::clone(&draining),
         tenant: config.tenant.clone().map(Arc::from),
         lineage_trust_subject: tokens.as_ref().and_then(|t| t.subject()).map(Arc::from),
+        gate: gate.clone(),
+        control_decisions: ControlDecisions::default(),
     };
     // The run-control subscriber (workbench backend P2-3b) and the status
     // reporter (P2-4). Same enablement as the poller and the promotion tail.
@@ -469,6 +555,22 @@ async fn main() -> anyhow::Result<()> {
             config.status_interval,
         ));
     }
+    if let (Some(source), Some(gate)) = (tokens.clone(), gate.as_ref()) {
+        tokio::spawn(runtime_loop(
+            config.gateway_url.clone(),
+            source,
+            Arc::clone(gate),
+            Registration {
+                runner_id: config.runner_id.clone(),
+                holder: gate.holder().map(str::to_owned),
+                clis: harness_clis.clone(),
+                labels: config.labels.clone(),
+                max_concurrent: config.max_harness_procs as u64,
+            },
+            config.probe_interval,
+            Arc::clone(&draining),
+        ));
+    }
     let app = Router::new()
         .route("/healthz", get(healthz))
         .route("/readyz", get(readyz))
@@ -480,6 +582,8 @@ async fn main() -> anyhow::Result<()> {
         .route("/debug/seen", get(debug_seen))
         .route("/debug/ledger", get(debug_ledger))
         .route("/debug/run", get(debug_run))
+        .route("/debug/control", get(debug_control))
+        .route("/debug/admission", get(debug_admission))
         .route("/debug/cancel", post(debug_cancel))
         .with_state(state);
 
@@ -662,6 +766,66 @@ async fn trigger(State(state): State<AppState>, headers: HeaderMap, body: Bytes)
         Some(subj) => Trigger::from_event_gated(&event, tenant, subj),
         None => Trigger::from_event(&event, tenant),
     };
+    // Route and claim first (#818), off the request path: the 202 must not
+    // wait on the gateway it is answering.
+    if let (Some(gate), Some(tokens)) = (state.gate.clone(), state.tokens.clone()) {
+        tokio::spawn(async move {
+            let Some(client) = connect_now(&state.gateway_url, &tokens).await else {
+                return;
+            };
+            // A webhook trigger was already acknowledged (202). For a lone
+            // runner it has no other durable hold, so an undecidable
+            // admission (`Retry`: the gateway did not answer, the catalogue
+            // is not read yet) keeps it on the ledger, where its run waits
+            // for the gateway (#440) instead of being dropped. A fleet
+            // member (labels, or exclusive) must not: another runtime may
+            // hold the event or be the one it is routed to, and the event is
+            // still in the gateway's inbox, so the poller routes and claims
+            // it once the gateway answers.
+            let admit = gate.admit(&client, &event).await;
+            let hold = admit == Admit::Retry && gate.is_lone();
+            if admit == Admit::Retry {
+                if hold {
+                    tracing::warn!(
+                        target: "escurel_runner",
+                        event_id = %event.event_id,
+                        "webhook trigger admitted without a routing/claim answer from the gateway; \
+                         held on the ledger until the gateway answers dispatch"
+                    );
+                } else {
+                    tracing::warn!(
+                        target: "escurel_runner",
+                        event_id = %event.event_id,
+                        "webhook trigger not decidable now (no routing/claim answer); left to \
+                         the poller, which routes and claims it from the inbox"
+                    );
+                }
+            }
+            if admit == Admit::Take || hold {
+                gate_and_enqueue(
+                    &state.ledger,
+                    &state.queue,
+                    &state.limits,
+                    &state.governor,
+                    &state.metrics,
+                    &state.inflight,
+                    trigger,
+                    "webhook",
+                );
+            }
+            // Noted only once any enqueue is on the ledger, so a reader that
+            // sees the outcome also sees the run it did (or did not) start.
+            if admit == Admit::Retry {
+                let outcome = if hold {
+                    "webhook-held"
+                } else {
+                    "webhook-skipped"
+                };
+                gate.note_webhook(&event.event_id, outcome);
+            }
+        });
+        return StatusCode::ACCEPTED;
+    }
     // Loop-control gate (lifecycle step 4): the durable ledger is the
     // idempotency authority; the in-memory seen-set is a cheap fast-path in
     // front of it. Either way we acknowledge 202 immediately so the
@@ -1552,6 +1716,54 @@ async fn debug_cancel(
         _ => (
             StatusCode::NOT_FOUND,
             axum::Json(serde_json::json!({ "error": "no such live run" })),
+        ),
+    }
+}
+
+/// This runner's decision on one run-control request: `deferred` (a run it
+/// does not know), `left_to_holder` (another runner holds the run's claim),
+/// `already_answered` (another runner answered first) or `answered:<outcome>`.
+async fn debug_control(
+    State(state): State<AppState>,
+    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> impl IntoResponse {
+    let request = params
+        .get("request_event_id")
+        .map(String::as_str)
+        .unwrap_or("");
+    match state.control_decisions.get(request) {
+        Some(decision) => (
+            StatusCode::OK,
+            axum::Json(serde_json::json!({ "request_event_id": request, "decision": decision })),
+        ),
+        None => (
+            StatusCode::NOT_FOUND,
+            axum::Json(serde_json::json!({ "error": "no decision for that request" })),
+        ),
+    }
+}
+
+/// This runner's last admission decision on an inbox event (#818): `take`,
+/// `unroutable`, `elsewhere`, `done`, `retry`, `refused`, or what the webhook
+/// path did with an undecidable one (`webhook-held` / `webhook-skipped`). The
+/// webhook's outcome is also reported on its own (`webhook`), since the
+/// poller's next tick replaces `decision`. A test's positive "this runner had
+/// its chance" signal.
+async fn debug_admission(
+    State(state): State<AppState>,
+    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> impl IntoResponse {
+    let event_id = params.get("event_id").map(String::as_str).unwrap_or("");
+    match state.gate.as_ref().and_then(|g| g.decision(event_id)) {
+        Some((decision, webhook)) => (
+            StatusCode::OK,
+            axum::Json(serde_json::json!({
+                "event_id": event_id, "decision": decision, "webhook": webhook,
+            })),
+        ),
+        None => (
+            StatusCode::NOT_FOUND,
+            axum::Json(serde_json::json!({ "error": "no decision for that event" })),
         ),
     }
 }
@@ -3472,6 +3684,7 @@ async fn poll_loop(
     inflight: InflightSlots,
     draining: Arc<std::sync::atomic::AtomicBool>,
     last_poll_ms: Arc<std::sync::atomic::AtomicU64>,
+    gate: Option<Arc<RuntimeGate>>,
 ) {
     // A boot probe only — the per-tick client is built inside the loop.
     // A hoisted one carries a 30-minute minted bearer for the life of the
@@ -3523,9 +3736,20 @@ async fn poll_loop(
                 .unwrap_or(0),
             std::sync::atomic::Ordering::Relaxed,
         );
+        if let Some(gate) = &gate {
+            gate.prune();
+        }
         match client.list_inbox(ListInboxRequest::default()).await {
             Ok(resp) => {
                 for event in &resp.events {
+                    // Route and claim BEFORE the ledger sees it (#818): an
+                    // event this runner cannot satisfy, or another holds,
+                    // stays in the inbox untouched by this runner.
+                    if let Some(gate) = &gate
+                        && gate.admit(&client, event).await != Admit::Take
+                    {
+                        continue;
+                    }
                     let trigger = match self_subject.as_deref() {
                         Some(subj) => Trigger::from_event_gated(event, tenant.clone(), subj),
                         None => Trigger::from_event(event, tenant.clone()),
@@ -4116,7 +4340,8 @@ fn knows_run(state: &AppState, run_id: &str) -> bool {
 /// holds nor has in its ledger is answered only after a grace (3 ticks, at
 /// least [`CONTROL_STRANGER_GRACE_FLOOR`]), and only when no result exists by
 /// then: the runner that owns the run answers first, and a lone runner still
-/// says `not_live`. A stop-gap — run ownership/leases are PR-2 (#818).
+/// says `not_live`. While another runner holds the claim lease on the run's
+/// trigger event (#818), the stranger keeps waiting: the holder answers.
 async fn control_tail_loop(
     state: AppState,
     gateway_url: String,
@@ -4152,6 +4377,24 @@ async fn control_tail_loop(
         deferred = waiting;
         for (_, event) in due {
             if control_answered(&client, &event.event_id).await {
+                state
+                    .control_decisions
+                    .note(&event.event_id, "already_answered");
+                continue;
+            }
+            // The runner holding the run's claim answers it (#818); look
+            // again later while it does. A run nobody holds falls through
+            // to this runner's `not_live`.
+            if let (Some(run_id), Some(gate)) =
+                (run_scoped(&event.provenance["control"]), &state.gate)
+                && let Some(holder) =
+                    escurel_runner_core::runtime::run_claim_holder(&client, run_id).await
+                && Some(holder.as_str()) != gate.holder()
+            {
+                state
+                    .control_decisions
+                    .note(&event.event_id, "left_to_holder");
+                deferred.push((now + grace, event));
                 continue;
             }
             answer_control(&state, &client, &tenant, &event).await;
@@ -4164,6 +4407,7 @@ async fn control_tail_loop(
             if let Some(run_id) = run_scoped(control)
                 && !knows_run(&state, run_id)
             {
+                state.control_decisions.note(&event.event_id, "deferred");
                 deferred.push((now + grace, event));
                 continue;
             }
@@ -4193,6 +4437,9 @@ async fn answer_control(
     let control = &event.provenance["control"];
     let action = control["action"].as_str().unwrap_or("").to_owned();
     let result = act_on_control(state, client, tenant, control).await;
+    state
+        .control_decisions
+        .note(&event.event_id, format!("answered:{}", result.outcome));
     tracing::info!(
         target: "escurel_runner",
         request = %event.event_id,
@@ -4503,6 +4750,159 @@ async fn schedule_loop(
         let entries = scheduler.entries(&client, &extra).await;
         // Wall clock: the windows must agree across restarts and runners.
         scheduler.tick(&client, &entries, chrono::Utc::now()).await;
+    }
+}
+
+/// What a runner registers as its `runtime` page (#818).
+struct Registration {
+    runner_id: String,
+    holder: Option<String>,
+    /// `(harness, cli)`: the CLI `--version` is probed on; `None` in-process.
+    clis: Vec<(String, Option<String>)>,
+    labels: Vec<String>,
+    max_concurrent: u64,
+}
+
+/// Renew the leases this runner holds every third of the lease, on its own
+/// ticker (crew C-F2): renewal tied to the inbox loop let a running event's
+/// lease lapse whenever a tick ran long, and a second runner then took it.
+async fn lease_renewal_loop(
+    gateway_url: String,
+    tokens: Arc<escurel_runner_core::TokenSource>,
+    gate: Arc<RuntimeGate>,
+    draining: Arc<std::sync::atomic::AtomicBool>,
+) {
+    let period = (gate.lease() / 3).max(std::time::Duration::from_millis(200));
+    let mut ticker = tokio::time::interval(period);
+    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    loop {
+        ticker.tick().await;
+        if draining.load(std::sync::atomic::Ordering::Relaxed) {
+            return;
+        }
+        if let Some(client) = connect_now(&gateway_url, &tokens).await {
+            gate.renew_held(&client).await;
+        }
+    }
+}
+
+/// Say at boot, loudly, when this runner's credential cannot claim (crew
+/// U-F3; owner decision 2026-11-13): without `escurel:admin` every claim is
+/// refused, so the runner takes no inbox work at all. It is not a reason to
+/// refuse to start: the runner keeps serving `/healthz`, so the operator sees
+/// this error instead of a crash loop.
+async fn claim_preflight(gateway_url: String, tokens: Arc<escurel_runner_core::TokenSource>) {
+    let Some(client) = connect_now(&gateway_url, &tokens).await else {
+        return;
+    };
+    match client.whoami().await {
+        Ok(me) if !me.is_admin => tracing::error!(
+            target: "escurel_runner",
+            subject = %me.subject,
+            "the runner credential needs escurel:admin to claim events: {CLAIM_CREDENTIAL_FIX}"
+        ),
+        Ok(_) => {}
+        // A credential the gateway refuses outright cannot claim either: the same error, the same fix.
+        Err(e) if escurel_runner_core::runtime::is_identity_refusal(&e) => tracing::error!(
+            target: "escurel_runner",
+            error = %e,
+            "the gateway refused the runner credential's whoami, so it cannot claim events either: \
+             {CLAIM_CREDENTIAL_FIX}"
+        ),
+        // Anything else (a timeout, a 5xx) says nothing about the credential; the claims will tell.
+        Err(e) => tracing::warn!(
+            target: "escurel_runner",
+            error = %e,
+            "claim preflight: whoami failed, so whether this runner may claim events is unknown"
+        ),
+    }
+}
+
+/// What an operator does about a runner credential that cannot claim.
+const CLAIM_CREDENTIAL_FIX: &str = "this runner takes no inbox work until it has escurel:admin — \
+    give it an admin credential (ESCUREL_RUNNER_TOKEN / ESCUREL_RUNNER_TOKEN_FILE with the \
+    escurel:admin role, or a minting runner)";
+
+/// The CLI a harness runs, for its `--version` probe; `None` for one that
+/// runs in process (gemini, the OpenAI-compatible presets, delegate).
+fn harness_cli(config: &RunnerConfig, name: &str) -> Option<String> {
+    match name {
+        "echo" => Some(echo_harness_path()),
+        "claude" => Some(config.claude_bin.clone()),
+        "codex" => Some(config.codex_bin.clone()),
+        "agy" => Some(config.agy_bin.clone()),
+        "muse" => Some(config.muse_bin.clone()),
+        _ => None,
+    }
+}
+
+/// The runtime registration (#818): write this runner's `runtime` page on
+/// boot, then re-probe the harness CLIs every `interval` and rewrite it only
+/// when something a reader sees changed. Liveness is NOT written here: the
+/// status record already carries it, and a page version per heartbeat is
+/// lake snapshot churn. A runner whose identity may not write the page (it
+/// needs `escurel:admin`, not a run token) says so once and keeps working.
+async fn runtime_loop(
+    gateway_url: String,
+    tokens: Arc<escurel_runner_core::TokenSource>,
+    gate: Arc<RuntimeGate>,
+    reg: Registration,
+    interval: std::time::Duration,
+    draining: Arc<std::sync::atomic::AtomicBool>,
+) {
+    use escurel_runner_core::runtime::{probe_harnesses, registration, runtime_page};
+    let page_id = escurel_types::runtime::runtime_page_id(&reg.runner_id);
+    let mut written: Option<serde_json::Value> = None;
+    let mut told = false;
+    let mut ticker = tokio::time::interval(interval);
+    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    loop {
+        ticker.tick().await;
+        if draining.load(std::sync::atomic::Ordering::Relaxed) {
+            return;
+        }
+        let harnesses = probe_harnesses(&reg.clis).await;
+        gate.apply_probe(&harnesses);
+        let seen = registration(&harnesses, &reg.labels, reg.max_concurrent);
+        if written.as_ref() == Some(&seen) {
+            continue;
+        }
+        let Some(client) = connect_now(&gateway_url, &tokens).await else {
+            continue;
+        };
+        let content = runtime_page(
+            &reg.runner_id,
+            reg.holder.as_deref(),
+            &harnesses,
+            &reg.labels,
+            reg.max_concurrent,
+        );
+        match client
+            .update_page(escurel_client::UpdatePageRequest {
+                page_id: page_id.clone(),
+                content,
+                ..Default::default()
+            })
+            .await
+        {
+            Ok(_) => {
+                tracing::info!(target: "escurel_runner", page_id = %page_id, registration = %seen, "runtime registered");
+                written = Some(seen);
+            }
+            Err(e) if !told => {
+                told = true;
+                tracing::warn!(
+                    target: "escurel_runner",
+                    page_id = %page_id,
+                    error = %e,
+                    "could not write this runner's runtime page (it needs the runner's own \
+                     escurel:admin identity); routing and claims keep working, retrying quietly"
+                );
+            }
+            Err(e) => {
+                tracing::debug!(target: "escurel_runner", error = %e, "runtime page write failed")
+            }
+        }
     }
 }
 

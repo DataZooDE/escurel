@@ -144,7 +144,8 @@ async fn a_review_run_with_nothing_to_do_is_not_retried_into_drafting() {
     let calls = Arc::new(Mutex::new(0usize));
     let model_base = spawn_idle_model(page_id.clone(), Arc::clone(&calls)).await;
 
-    let token = gateway.mint_token(TENANT, Role::Agent);
+    // The runner credential must be an admin to claim events (a non-admin runner takes nothing).
+    let token = gateway.mint_token(TENANT, Role::Admin);
     let ledger_dir = tempfile::tempdir().expect("tempdir for ledger");
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_escurel-runner"));
     cmd.env(

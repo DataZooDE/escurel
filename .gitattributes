@@ -8,3 +8,7 @@
 # Forcing `eol=lf` keeps those assets byte-for-byte identical across
 # platforms; `text=auto` still lets git auto-detect and leave binaries alone.
 * text=auto eol=lf
+
+# A SKILL.md fixture that must keep its CRLF line endings: it pins how both
+# exporters (Rust and the VS Code port) treat a Windows-authored skill page.
+crates/escurel-md/tests/fixtures/skill-md/crlf/** -text

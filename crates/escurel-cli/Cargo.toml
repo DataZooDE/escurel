@@ -25,7 +25,7 @@ escurel-tui = { path = "../escurel-tui" }
 # `admin pack verify` is purely local: it re-uses the shared pack
 # signing/verification primitives (escurel_types::pack) — the CLI must
 # NOT depend on escurel-server for this.
-escurel-types = { path = "../escurel-types" }
+escurel-types = { path = "../escurel-types", features = ["tarball"] }
 # `admin migrate-kind-files` reuses the engine's own text edits for the type: -> kind: rewrite, so a
 # repository of page files migrates exactly the way a tenant does.
 escurel-md = { path = "../escurel-md" }

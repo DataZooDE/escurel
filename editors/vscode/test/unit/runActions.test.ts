@@ -211,4 +211,14 @@ describe('pageToOpen', () => {
     expect(pageToOpen(v, 42)).toBeUndefined();
     expect(pageToOpen(undefined, 'markdown/instances/a.md')).toBeUndefined();
   });
+  it('opens the runtime holding the run’s event, and only that one', () => {
+    const held = {
+      ...(v as object),
+      heldBy: { runtime: 'box', pageId: 'markdown/instances/runtime/box.md', until: '' },
+    } as never;
+    expect(pageToOpen(held, 'markdown/instances/runtime/box.md')).toBe(
+      'markdown/instances/runtime/box.md',
+    );
+    expect(pageToOpen(v, 'markdown/instances/runtime/box.md')).toBeUndefined();
+  });
 });

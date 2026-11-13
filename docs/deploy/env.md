@@ -61,6 +61,7 @@ escurel-server.
 | `ESCUREL_AUTH_JWKS_URI` | derived from issuer | explicit JWKS URL (e.g. Triton's `<issuer>/.well-known/jwks.json`) |
 | `ESCUREL_RUN_PROGRESS_KEEP` | 50 | how many `run-progress` snapshots a run keeps (pruned at capture) |
 | `ESCUREL_RUN_TRANSCRIPT_RETENTION_DAYS` | 90 | days a run transcript (`put_run_transcript`, read via `fetch_blob{run_id}`) is kept; swept every 30 s; `0` keeps them forever |
+| `ESCUREL_EVENT_CLAIM_BOOT_GRACE_SECS` | 3600 | after a gateway start, how long `claim_event` withholds an event captured before the start that has no lease row (`claimed: false`, holder `(recovering)`), so a runner still running it under a lease the restart forgot can `renew_claim` it first. Events captured after the start are claimable at once. The default is the longest lease a claim may ask for; set it to your longest `ESCUREL_RUNNER_CLAIM_LEASE` to let an unheld backlog flow sooner, `0` turns it off |
 | `ESCUREL_SHUTDOWN_DRAIN_SECS` | 25 | how long a graceful stop waits for in-flight requests before aborting them (keep below the orchestrator's kill timeout) |
 | `ESCUREL_AUTH_SIGNING_KEY` | — | RSA private key (PKCS#8 or PKCS#1 PEM) the gateway signs `mint_agent_token` bearers with; unset → the tool refuses `unsupported` |
 | `ESCUREL_AUTH_SIGNING_KID` | derived | the `kid` those bearers carry (must be in a trusted JWKS) |
@@ -69,6 +70,10 @@ escurel-server.
 | `ESCUREL_AUTH_JWKS_URI_2` | derived from issuer #2 | explicit JWKS URL for the second issuer (e.g. Carl's `<issuer>/jwks.json`) |
 | `ESCUREL_AUTH_OIDC_ISSUER_<N>` | — | further trusted issuers, read as a contiguous `_2.._N` sequence (e.g. `_3` = the escurel-explore BFF's browser auth bridge); a gap stops the scan |
 | `ESCUREL_AUTH_JWKS_URI_<N>` | derived from issuer #N | explicit JWKS URL for the Nth issuer |
+| `ESCUREL_AUTH_BRIDGE_ISSUER` | — | the trusted issuer that is a chat bridge (`escurel-chat-bridge`); must be `ESCUREL_AUTH_OIDC_ISSUER` or an `ESCUREL_AUTH_OIDC_ISSUER_<N>` (boot fails otherwise, or when `ESCUREL_AUTH_BRIDGE_KID` is set without it). EVERY token verified against this entry is a bridge token, whatever kid it names: it lives at most 900 s, is never admin or operator, honours no roles or groups (group-granted ACLs do not apply to it), is refused if it carries an `agent`/`skill`/`run_id`/`purpose`/`act` claim, must name its channel in `bridge_channel`, and what it captures is stamped `captured_via: bridge:<channel>`. Serve its JWKS over https: whoever controls that response controls which keys sign as the bridge |
+| `ESCUREL_AUTH_BRIDGE_KID` | — | comma-separated key ids the bridge signs under; a pin on the `ESCUREL_AUTH_BRIDGE_ISSUER` entry: a token from it under any other kid is refused, and so is a token from another issuer under one of these kids. The key must be the bridge's own, never the gateway's main signing key. REQUIRED with `ESCUREL_AUTH_BRIDGE_ISSUER` |
+| `ESCUREL_AUTH_BRIDGE_TENANT` | — | the one tenant the bridge's tokens may name; REQUIRED with `ESCUREL_AUTH_BRIDGE_ISSUER` and must equal `ESCUREL_TENANT` (boot fails otherwise), so a gateway for another tenant cannot be configured to trust the same bridge. A bridge token naming another tenant is refused (`401`) |
+| `ESCUREL_AUTH_BRIDGE_CHAT_SKILL` | chat | the only `label_skill` a bridge token may `capture_event` under (= the bridge's `ESCUREL_BRIDGE_CHAT_SKILL`). A bridge token may call only `whoami`, `update_page` (create-if-absent of a `chat: {page_bound: true}` instance), `append_message` (`role: user`, page-bound groups), `list_messages` (page-bound groups), `capture_event` (this label) and `ingest_upload`; everything else is `-32003`, and `/ingest`, `/blob` and `/ws` answer `403` |
 | `ESCUREL_EMBEDDING_PROVIDER` | gemini | `zero`, `gemini`, `alibaba`, `openai-compatible`, or `embeddinggemma` (a candle BERT-family sentence-transformer; ONLY in a binary built with `--features embeddinggemma`: the default build and the image refuse to boot with it). `gemini` with no key falls back to zero; `alibaba`/`openai-compatible` without a key file is a load failure. `hetzner` is refused: it serves no embeddings. Changing the provider or model re-embeds the corpus at the next boot |
 | `ESCUREL_EMBEDDING_OPENAI_BASE_URL` | alibaba: https://dashscope.aliyuncs.com/compatible-mode/v1 | `…/v1` base of the OpenAI-compatible embeddings endpoint (`alibaba`, `openai-compatible`); https, or plain http to loopback only |
 | `ESCUREL_EMBEDDING_OPENAI_API_KEY_FILE` | — (required) | file holding the embeddings API key (a mounted secret); the key itself is never an env var |
@@ -167,8 +172,9 @@ escurel-runner (the agent runner). For an Evolve/Workbench deployment, probe
 ready after a successful write of its reserved `escurel:runner-status` record
 (`report_runner_status`; an older gateway: a system event)
 and becomes unready when that write is refused, fails, goes stale, or the
-runner starts draining. Give the runner service credential `escurel:admin`
-scope; keep per-run harness credentials caller-scoped. `GET /healthz` remains
+runner starts draining. The runner service credential MUST carry `escurel:admin`
+(or the runner must mint): a runner whose `claim_event` is refused takes no inbox
+work and logs the fix at boot. Keep per-run harness credentials caller-scoped. `GET /healthz` remains
 a dependency-free liveness probe. Webhook-only runners without a configured
 tenant/token can process `/trigger` but deliberately report unready at
 `/readyz`, so do not use that probe as their traffic gate.
@@ -179,12 +185,17 @@ tenant/token can process `/trigger` but deliberately report unready at
 | `ESCUREL_RUNNER_GATEWAY_URL` | http://127.0.0.1:8080 | base URL of the escurel gateway exposing `/mcp` |
 | `ESCUREL_RUNNER_ENV` | dev | deployment environment stamped on every log record |
 | `ESCUREL_RUNNER_TENANT` | — | tenant whose inbox the poller drains; the poller is off when this or the token is absent |
-| `ESCUREL_RUNNER_TOKEN` | — | tenant-scoped bearer the runner presents to `/mcp`; a static token wins over minting. A runner on a static token cannot mint, so every run of a skill with an `agent:` profile fails (dead-letters) there: agent profiles need a minting runner (`ESCUREL_RUNNER_AUTH_SIGNING_KEY`) |
+| `ESCUREL_RUNNER_TOKEN` | — | tenant-scoped bearer the runner presents to `/mcp`; it must carry `escurel:admin` (a non-admin runner cannot claim events, so it takes no inbox work and logs the fix at boot). A static token wins over minting. A runner on a static token cannot mint, so every run of a skill with an `agent:` profile fails (dead-letters) there: agent profiles need a minting runner (`ESCUREL_RUNNER_AUTH_SIGNING_KEY`) |
+| `ESCUREL_RUNNER_TOKEN_FILE` | — | a file holding the runner's bearer, kept fresh by a sidecar (a laptop or on-prem runner on a short-lived service credential); used when `ESCUREL_RUNNER_TOKEN` is unset, read at startup (an unreadable or empty file refuses to start) and re-read whenever it changes, so a rotated credential is used on the next gateway call (a runner whose calls came back `401` recovers without a restart). Like a static token it cannot mint |
 | `ESCUREL_RUNNER_QUEUE_CAP` | 1024 | bound of the dispatch queue (backpressure instead of unbounded growth) |
 | `ESCUREL_RUNNER_SEEN_CAP` | 4096 | bound of the dedup seen-set |
 | `ESCUREL_RUNNER_POLL_INTERVAL` | 30s | interval between inbox polls (`30s`, `1500ms`, `2m`) |
 | `ESCUREL_RUNNER_TAIL_MAX_AGE` | 10m | how old a request on a tailed label may be and still be acted on after a restart |
 | `ESCUREL_RUNNER_STATUS_INTERVAL` | 5m | how often the runner refreshes its status record (`runner-status:<runner_id>`) when nothing changed; it travels in the record as `status_interval_s` |
+| `ESCUREL_RUNNER_LABELS` | (none) | comma-separated labels this runner carries (`site:muc,has:sap-gui`); work whose `requires: {labels}` it lacks is left in the inbox for a runner that has them, and the labels are advertised on its `runtime` page. Like every runner, its credential needs `escurel:admin` to claim (an error is logged at boot otherwise, and it takes no inbox work); a webhook trigger it cannot route or claim at once is left to the poller |
+| `ESCUREL_RUNNER_EXCLUSIVE` | false | take only inbox work whose SKILL page's `requires:` names one of this runner's labels or a harness it offers besides its default; recommended for laptop and on-prem runners, so they do not race the central runner for the whole inbox and an event's `provenance.requires` cannot steer arbitrary work onto them |
+| `ESCUREL_RUNNER_PROBE_INTERVAL` | 10m | how often the runner re-probes its harness CLIs (`<cli> --version`) and rewrites its `runtime` page when a version or availability changed, without a restart. A CLI whose probe fails is `available: false` and gets no work that `requires:` its harness |
+| `ESCUREL_RUNNER_CLAIM_LEASE` | max(60s, 4 x poll interval), capped at 60m | how long a `claim_event` lease on an inbox event lasts: 1s to 60m (the gateway's bound) and at least two poll intervals, or the runner refuses to start naming this key. A renewal task renews held leases every third of the lease, independent of the inbox poll; a dead runner's events become claimable this long after it stopped |
 | `ESCUREL_RUNNER_HARNESS_ALLOW` | the configured harness | comma-separated harnesses a manual start may ask for by name; others fail closed |
 | `ESCUREL_RUNNER_MODEL_ALLOW` | — | comma-separated models a skill page's `model:` may pick instead of the runner's configured one; others fail the run closed |
 | `ESCUREL_RUNNER_CHAT_MODEL` | — | the model chat runs use instead of the runner's configured one, unless the skill page names its own `model:` |
@@ -265,6 +276,39 @@ tenant/token can process `/trigger` but deliberately report unready at
 | `ESCUREL_RUNNER_OUTBOUND_URL` | — | channel courier endpoint the runner POSTs a terminal operation's result to; unset disables outbound delivery |
 | `ESCUREL_RUNNER_OUTBOUND_BEARER` | — | shared server-to-server bearer on the outbound delivery POST |
 
+## Bridge
+
+escurel-chat-bridge (the Teams chat bridge, `docs/deploy/chat-bridge.md`).
+It runs only when started; nothing else reads these.
+
+| var | default | meaning |
+|---|---|---|
+| `ESCUREL_BRIDGE_LISTEN` | 0.0.0.0:3978 | HTTP listener of `escurel-chat-bridge`: the platform's messaging endpoint `POST /api/messages`, plus `/healthz` and `/version` |
+| `ESCUREL_BRIDGE_STATE_PATH` | /data/escurel-chat-bridge.duckdb | the bridge's DuckDB state file: one row per platform message (the dedup key) and whether its one reply was sent. Durable state, not a cache: losing it lets a redelivered message be answered again |
+| `ESCUREL_BRIDGE_GATEWAY_URL` | — | REQUIRED: the gateway base URL the bridge calls `/mcp` on |
+| `ESCUREL_BRIDGE_TENANT` | — | REQUIRED: the tenant the bridge's tokens name |
+| `ESCUREL_BRIDGE_AUTH_ISSUER` | — | REQUIRED: the issuer the bridge signs the asker's short-lived token as; the gateway must trust it (primary or `ESCUREL_AUTH_OIDC_ISSUER_<N>`), name it in `ESCUREL_AUTH_BRIDGE_ISSUER`, and its JWKS must publish the bridge's own key |
+| `ESCUREL_BRIDGE_AUTH_AUDIENCE` | escurel | audience of the tokens the bridge signs |
+| `ESCUREL_BRIDGE_AUTH_KID` | — | REQUIRED: `kid` of the bridge's own signing key as the issuer's JWKS publishes it; the gateway must name the bridge's issuer in `ESCUREL_AUTH_BRIDGE_ISSUER` (which restricts every token from it) and list this kid in `ESCUREL_AUTH_BRIDGE_KID` |
+| `ESCUREL_BRIDGE_AUTH_SIGNING_KEY` | — | the bridge's OWN RSA private key (PEM, PKCS#1 or PKCS#8); never the gateway's or a runner's signing key, which would let a compromised bridge sign unrestricted tokens. Never logged. Exactly one of this and `…_FILE` is REQUIRED |
+| `ESCUREL_BRIDGE_AUTH_SIGNING_KEY_FILE` | — | path to a file holding the signing key; the alternative to `ESCUREL_BRIDGE_AUTH_SIGNING_KEY` |
+| `ESCUREL_BRIDGE_TEAMS_APP_ID` | — | REQUIRED: the bot's Microsoft app (client) id; the `aud` an inbound Bot Framework token must carry and the client id of the connector token |
+| `ESCUREL_BRIDGE_TEAMS_ALLOWED_TENANTS` | — | REQUIRED: comma-separated Entra tenant ids whose people the bridge answers; an activity whose `conversation.tenantId` / `channelData.tenant.id` is not listed is ignored |
+| `ESCUREL_BRIDGE_TEAMS_APP_PASSWORD` | — | the bot app's client secret, for the client-credentials connector token; never logged. Exactly one of this and `…_FILE` is REQUIRED |
+| `ESCUREL_BRIDGE_TEAMS_APP_PASSWORD_FILE` | — | path to a file holding the client secret; the alternative to `ESCUREL_BRIDGE_TEAMS_APP_PASSWORD` |
+| `ESCUREL_BRIDGE_TEAMS_OPENID_METADATA_URL` | https://login.botframework.com/v1/.well-known/openidconfiguration | OpenID metadata whose `jwks_uri` holds the keys inbound channel tokens are verified against |
+| `ESCUREL_BRIDGE_TEAMS_ISSUER` | https://api.botframework.com | the `iss` an inbound channel token must carry |
+| `ESCUREL_BRIDGE_TEAMS_TOKEN_URL` | https://login.microsoftonline.com/botframework.com/oauth2/v2.0/token | client-credentials token endpoint for replies; a single-tenant bot uses `https://login.microsoftonline.com/<entra tenant id>/oauth2/v2.0/token` |
+| `ESCUREL_BRIDGE_TEAMS_TOKEN_SCOPE` | https://api.botframework.com/.default | scope of the connector token |
+| `ESCUREL_BRIDGE_PRINCIPAL_TEMPLATE` | — | REQUIRED: the escurel subject for a Teams user: `{aadObjectId}` (Entra object id), `{userId}` (Teams user id) and `{tenantId}` (Entra tenant) are filled in, e.g. `user:{aadObjectId}`. The bridge refuses to start on an unknown placeholder or a template naming neither `{aadObjectId}` nor `{userId}` (it would map every sender to one subject). It must equal the `sub` the person's own token from the gateway's primary issuer carries, or their chats and the pages they may read will not line up. A message from a user lacking a named field is not answered |
+| `ESCUREL_BRIDGE_CHAT_SKILL` | chat | `label_skill` of the captured chat event (the runner answers it in chat mode); the gateway's `ESCUREL_AUTH_BRIDGE_CHAT_SKILL` must name the same skill |
+| `ESCUREL_BRIDGE_CONVERSATION_SKILL` | conversation | the page-bound conversation skill each person's Teams chat becomes an instance of (`chat: {page_bound: true}`, owner-private; the shipped chat corpus has one) |
+| `ESCUREL_BRIDGE_POLL_INTERVAL` | 1s | how often the bridge checks the chat group for the run's answer |
+| `ESCUREL_BRIDGE_TYPING_INTERVAL` | 3s | how often it re-sends the typing indicator while the run is live (Teams shows one for about three seconds) |
+| `ESCUREL_BRIDGE_REPLY_TIMEOUT` | 10m | how long it waits for an answer before telling the person it has none |
+| `ESCUREL_BRIDGE_ATTACHMENT_MAX_BYTES` | 10485760 | largest attachment it downloads and uploads through `ingest_upload`; a larger one is listed in the message as not ingested |
+| `ESCUREL_BRIDGE_TEAMS_ATTACHMENT_HOSTS` | *.sharepoint.com,*.asm.skype.com | comma-separated hosts (`*.suffix` = any subdomain) an attachment may be downloaded from besides the connector's own `serviceUrl` origin. Such a download must be https, resolve only to public addresses (loopback, private, link-local and CGNAT are refused after DNS resolution) and is not redirected; the bot's bearer goes only to the connector origin |
+
 ## Cli
 
 the `escurel` CLI.
@@ -309,6 +353,7 @@ test knobs: never set in a deployment.
 | `ESCUREL_ECHO_FAIL_CHAT` | — | echo harness: fail every chat run (tests) |
 | `ESCUREL_ECHO_FAIL_SKILL` | — | echo harness: fail runs targeting this skill (tests) |
 | `ESCUREL_ECHO_RESULT_REF` | — | echo harness: attach this result reference (tests) |
+| `ESCUREL_ECHO_VERSION_FILE` | — | echo harness: `--version` answers with this file's contents, so a test can change a runner's probed CLI version (#818) |
 | `ESCUREL_ECHO_SLEEP_MS` | 0 | echo harness: idle this long before finishing, so a test can cancel a run |
 | `ESCUREL_ECHO_SLEEP_SKILL` | — | echo harness: only runs of this label idle for ESCUREL_ECHO_SLEEP_MS (tests) |
 | `ESCUREL_ECHO_TRANSCRIPT` | — | echo harness: print this JSONL file's lines (`{"transcript":{kind, name?, args?, text?}}`, `{token}` = the run's bearer) as its stream, for the run transcript (tests) |
@@ -317,3 +362,4 @@ test knobs: never set in a deployment.
 | `ESCUREL_TEST_MIGRATE_KIND_PAGE_DELAY_MS` | — | sleep this long before each page of `migrate_kind`, to give a CI-sized tenant a long migration window |
 | `ESCUREL_SIGKILL_FULL` | — | `1`: run all ten kill points of the migrate-kind SIGKILL test (default: four) |
 | `ESCUREL_SECRET_ACME__SURELY_UNSET_X` | — | a name the secret-policy tests assert is NOT set |
+| `ESCUREL_RUNNER_BIN` | — | `escurel-test-support`'s `RunnerProcess`: the `escurel-runner` binary to start; unset uses the one next to the test executable (`target/<profile>/`) |

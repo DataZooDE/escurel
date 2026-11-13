@@ -41,6 +41,49 @@ pub struct SearchArgs {
 pub enum SkillCmd {
     /// Return the tenant's Tier-1 skill catalogue.
     List,
+    /// Write skills out as Anthropic-style SKILL.md directories
+    /// (`<out>/<skill>/SKILL.md`), or as one `.tar.gz` with `--pack`.
+    Export(SkillExportArgs),
+    /// Turn a SKILL.md directory into a skill page, held as a DRAFT for a
+    /// curator to promote (`draft promote`); nothing lands directly.
+    Import(SkillImportArgs),
+}
+
+/// What `skill export` writes. One value today; the flag is `--as` because
+/// `--format` is the global output switch.
+#[derive(clap::ValueEnum, Clone, Copy, Debug, Default)]
+pub enum ExportFormat {
+    /// Anthropic `SKILL.md`: `name`/`description` frontmatter, the
+    /// instructions as the body, escurel-only keys under `metadata.escurel`.
+    #[default]
+    SkillMd,
+}
+
+#[derive(Args, Debug)]
+pub struct SkillExportArgs {
+    /// Skill ids to export.
+    #[arg(required = true)]
+    pub skills: Vec<String>,
+    #[arg(long = "as", value_enum, default_value_t = ExportFormat::SkillMd)]
+    pub export_as: ExportFormat,
+    /// Directory to write into (created if missing).
+    #[arg(long, default_value = ".")]
+    pub out: std::path::PathBuf,
+    /// Write one deterministic `<out>/escurel-skills.tar.gz` holding every
+    /// `<skill>/SKILL.md` instead of one directory per skill.
+    #[arg(long)]
+    pub pack: bool,
+    /// Overwrite files that exist with different content. Without it the
+    /// export refuses (writing nothing) rather than clobber a local edit; a
+    /// file that already holds exactly the export is left alone.
+    #[arg(long)]
+    pub force: bool,
+}
+
+#[derive(Args, Debug)]
+pub struct SkillImportArgs {
+    /// A directory holding `SKILL.md` (other files in it are listed, not uploaded).
+    pub dir: std::path::PathBuf,
 }
 
 #[derive(Subcommand, Debug)]
@@ -410,6 +453,15 @@ pub async fn usage(client: &escurel_client::AdminClient, a: UsageArgs) -> Result
     Ok(serde_json::to_value(resp)?)
 }
 
+/// Runner processes that registered themselves (#818).
+#[derive(Subcommand, Debug)]
+pub enum RuntimeCmd {
+    /// Every registered runtime with its harnesses (and CLI versions), labels,
+    /// capacity and liveness — `online`, `stale`, `stopped` or `unknown`
+    /// (`list_runtimes`).
+    List,
+}
+
 /// Held writes — the review queue for `autonomy: review` skills.
 #[derive(Subcommand, Debug)]
 pub enum DraftCmd {
@@ -602,6 +654,8 @@ pub async fn run(client: &Client, cmd: Command) -> Result<Value> {
         Command::Resolve { wikilink } => resolve(client, wikilink).await,
         Command::Whoami => Ok(serde_json::to_value(client.whoami().await?)?),
         Command::Skill(SkillCmd::List) => list_skills(client).await,
+        Command::Skill(SkillCmd::Export(a)) => crate::skill_io::export(client, a).await,
+        Command::Skill(SkillCmd::Import(a)) => crate::skill_io::import(client, a).await,
         Command::Instance(InstanceCmd::List(a)) => list_instances(client, a).await,
         Command::Page(PageCmd::Expand { page_id }) => expand(client, page_id).await,
         Command::Page(PageCmd::Validate { page_id }) => validate(client, page_id).await,
@@ -622,6 +676,9 @@ pub async fn run(client: &Client, cmd: Command) -> Result<Value> {
         Command::Provenance(ProvenanceCmd::Path(a)) => provenance_path(client, a).await,
         Command::Event(c) => event_cmd(client, c).await,
         Command::Run(c) => run_cmd(client, c).await,
+        Command::Runtime(RuntimeCmd::List) => {
+            Ok(serde_json::to_value(client.list_runtimes().await?)?)
+        }
         Command::Draft(c) => draft_cmd(client, c).await,
         Command::Branch(c) => branch_cmd(client, c).await,
         Command::Changeset(c) => changeset_cmd(client, c).await,
@@ -1284,7 +1341,7 @@ async fn event_cmd(client: &Client, cmd: EventCmd) -> Result<Value> {
 /// Render one draft. The proposed markdown is elided by default: a review
 /// queue printed in full is unreadable, and `--full` (or `draft promote`'s
 /// own conflict output) is where the bytes belong.
-fn draft_json(d: escurel_client::Draft, full: bool) -> Value {
+pub(crate) fn draft_json(d: escurel_client::Draft, full: bool) -> Value {
     let content = if full {
         json!(d.content)
     } else {

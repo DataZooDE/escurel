@@ -39,11 +39,13 @@
 
 mod auth_gate;
 pub mod boot_progress;
+mod bridge_gate;
 pub mod config;
 pub mod config_keys;
 mod config_probe;
 pub mod credential_policy;
 pub mod egress;
+mod event_claims;
 mod health;
 mod live_dispatch;
 mod mcp;
@@ -67,6 +69,7 @@ mod ws;
 pub use config::{BootedServer, ConfigError, EscurelConfig};
 pub use health::{AlwaysReady, ReadinessProbe, ReadinessReport};
 pub use server::{
-    AutonomyLintMode, DEFAULT_MAX_BODY_BYTES, DEFAULT_SHUTDOWN_DRAIN, EmbedderFactory,
-    EventAclMode, ServerConfig, ServerError, ServerHandle, ToolcallDetailMode, WriteAclMode, serve,
+    AutonomyLintMode, DEFAULT_EVENT_CLAIM_BOOT_GRACE, DEFAULT_MAX_BODY_BYTES,
+    DEFAULT_SHUTDOWN_DRAIN, EmbedderFactory, EventAclMode, ServerConfig, ServerError, ServerHandle,
+    ToolcallDetailMode, WriteAclMode, serve,
 };

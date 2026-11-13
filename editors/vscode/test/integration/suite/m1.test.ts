@@ -2,6 +2,9 @@
 // instances, open an instance as UI and raw, edit and save a skill with
 // diagnostics, find a page by search.
 import * as assert from 'node:assert/strict';
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import * as vscode from 'vscode';
 import type { EscurelApi } from '../../../src/extension';
 
@@ -118,5 +121,43 @@ suite('M1', () => {
     const tab = await until(() => vscode.window.tabGroups.activeTabGroup.activeTab);
     assert.ok(tab.label.includes(slug), tab.label);
     await vscode.commands.executeCommand('workbench.action.closeAllEditors');
+  });
+
+  test('Export as SKILL.md writes <folder>/<skill>/SKILL.md from the stored skill page', async () => {
+    const folder = mkdtempSync(join(tmpdir(), 'escurel-skill-md-'));
+    const file = await vscode.commands.executeCommand<vscode.Uri | undefined>(
+      'escurel.exportSkillMd',
+      'markdown/skills/customer.md',
+      vscode.Uri.file(folder),
+    );
+    assert.ok(file, 'the command reports the file it wrote');
+    assert.equal(file.fsPath, join(folder, 'customer', 'SKILL.md'));
+    const text = readFileSync(file.fsPath, 'utf8');
+    assert.match(text, /^---\nname: customer\ndescription: /);
+    assert.doesNotMatch(text, /^kind:/m, 'no escurel page kind in a SKILL.md');
+    const stored = await api.services.client.expand({
+      page_id: 'markdown/skills/customer.md',
+      raw: true,
+    });
+    assert.ok(text.includes(stored.body.trim().split('\n')[0]!), 'the body is the skill page body');
+
+    // A local edit is not clobbered: without a yes, nothing is written.
+    const edited = `${text}\nA local note.\n`;
+    writeFileSync(file.fsPath, edited);
+    const refused = await vscode.commands.executeCommand<vscode.Uri | undefined>(
+      'escurel.exportSkillMd',
+      'markdown/skills/customer.md',
+      vscode.Uri.file(folder),
+    );
+    assert.equal(refused, undefined, 'a differing file is not replaced without a yes');
+    assert.equal(readFileSync(file.fsPath, 'utf8'), edited);
+    const replaced = await vscode.commands.executeCommand<vscode.Uri | undefined>(
+      'escurel.exportSkillMd',
+      'markdown/skills/customer.md',
+      vscode.Uri.file(folder),
+      { overwrite: true },
+    );
+    assert.equal(replaced?.fsPath, file.fsPath);
+    assert.equal(readFileSync(file.fsPath, 'utf8'), text);
   });
 });

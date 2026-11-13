@@ -392,3 +392,34 @@ async fn a_machine_caller_cannot_mint_a_child_token() {
     .await;
     assert_eq!(err["error"]["data"]["code"], "agent_scope_denied", "{err}");
 }
+
+/// A runner outside the cluster (#818) holds an operator-issued credential, not the platform's
+/// signing key: its own identity (admin, no run / agent / actor claims) is not a machine caller,
+/// so it may mint through the gateway, and claim events. The child it gets is never admin and is
+/// itself a machine caller: it can neither mint again nor claim.
+#[tokio::test]
+async fn an_operator_issued_runner_credential_mints_and_its_child_cannot() {
+    let p = start(true).await;
+    let runner = p.mint_token_with_sub(TENANT, Role::Admin, "runner:laptop");
+    let child = call(
+        &p,
+        &runner,
+        "mint_agent_token",
+        json!({ "skill": "renewal", "ttl_secs": 600 }),
+    )
+    .await;
+    let token = child["token"].as_str().unwrap();
+    assert_eq!(child["subject"], "agent:renewal", "{child}");
+    let who = call(&p, token, "whoami", json!({})).await;
+    assert_eq!(
+        who["is_admin"], false,
+        "a minted child is never admin: {who}"
+    );
+    let err = rpc(&p, token, "mint_agent_token", json!({ "skill": "renewal" })).await;
+    assert_eq!(err["error"]["data"]["code"], "agent_scope_denied", "{err}");
+    let err = rpc(&p, token, "claim_event", json!({ "event_id": "x" })).await;
+    assert!(
+        err.get("error").is_some(),
+        "a run token cannot claim: {err}"
+    );
+}

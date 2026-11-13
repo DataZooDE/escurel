@@ -21,7 +21,7 @@ import type {
 import { usageChip } from '../../src/shared/usageWords';
 import { INJECT_MAX_BYTES, injectTextProblem } from '../../src/runs/steer';
 import './run-transcript';
-import { formatDateTime, formatDuration } from '../../src/shared/time';
+import { formatClock, formatDateTime, formatDuration } from '../../src/shared/time';
 import { theme } from '../shared/theme.css';
 import { confirmRow, confirmStyles } from '../shared/confirm';
 import { confirmationFor } from '../../src/runs/controlWording';
@@ -545,6 +545,31 @@ export class EscurelRunDetail extends LitElement {
     this.send({ type: 'steer', text: this.steerText });
   }
 
+  /** Which runtime holds the run's event: named and linked when the caller may see it. */
+  private heldBySection(run: RunView): TemplateResult | typeof nothing {
+    const held = run.heldBy;
+    if (!held) return nothing;
+    const until = formatClock(held.until);
+    return html`<div data-testid="run-held-by">
+      Taken by
+      ${
+        held.runtime === undefined
+          ? 'a runtime (an admin sees which)'
+          : held.pageId
+            ? html`runtime
+                <button
+                  class="link"
+                  title=${`Open ${held.pageId}`}
+                  @click=${() => this.send({ type: 'open-page', pageId: held.pageId! })}
+                >
+                  ${held.runtime}
+                </button>`
+            : html`runtime ${held.runtime}`
+      }
+      ${until ? html`· lease until ${until}` : nothing}
+    </div>`;
+  }
+
   /** The steer box: only on a live run; when its agent cannot read a message, one line says so. */
   private steerSection(run: RunView): TemplateResult | typeof nothing {
     const offer = run.steer;
@@ -825,6 +850,7 @@ export class EscurelRunDetail extends LitElement {
             </div>`
           : nothing
       }
+      ${this.heldBySection(run)}
       ${
         run.producedPageId
           ? html`<div>

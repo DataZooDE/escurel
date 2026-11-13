@@ -232,6 +232,94 @@ and `ESCUREL_RUNNER_AUTH_SIGNING_KEY=<signing_key>` and leave `ESCUREL_RUNNER_TO
 **Chat runs require minted mode**: a chat turn is answered as the asker, with a run token only a
 signing runner can mint (references/11, *Chat runs*).
 
+## A second runner on your laptop, against a shared gateway
+
+To take work that needs YOUR machine (a checkout, an authenticated CLI) from
+a tenant whose central runner lives elsewhere (#818):
+
+```sh
+ESCUREL_RUNNER_GATEWAY_URL=https://escurel.example \
+ESCUREL_RUNNER_TENANT=<tenant> \
+ESCUREL_RUNNER_TOKEN=<operator-issued runner credential, see references/08> \
+ESCUREL_RUNNER_ID=laptop-$USER \
+ESCUREL_RUNNER_LABELS=site:home,repo:escurel \
+ESCUREL_RUNNER_EXCLUSIVE=true \
+ESCUREL_RUNNER_HARNESS=claude ESCUREL_RUNNER_HARNESS_ALLOW=claude,codex \
+ESCUREL_RUNNER_LEDGER_PATH=$HOME/.escurel/runner-ledger.duckdb \
+ESCUREL_RUNNER_LISTEN=127.0.0.1:8089 \
+  ./target/debug/escurel-runner
+escurel runtime list     # your laptop shows up: harnesses + versions, labels, online
+```
+
+Then route work to it: a skill page declares `requires: {labels:
+["repo:escurel"]}` or `requires: {harness: codex}`; only a runner that
+satisfies it claims it (references/11 *Several runners on one tenant*).
+**Keep `ESCUREL_RUNNER_EXCLUSIVE=true` on a laptop or on-prem runner**: without
+it the runner races the central one for every unconstrained event in the
+inbox, which then runs on your machine under your local CLI credentials, and an
+event's `provenance.requires` naming your label can steer any skill onto it.
+Exclusive, it takes only work whose **skill** names one of its labels or a
+harness it offers besides its default. Keep the ledger path and `ESCUREL_RUNNER_ID` stable: the ledger's
+identity is what lets a restarted runner keep the leases it held, and a new
+id registers a second `runtime` page while the old one reads `stale`. Two
+runners on one machine need two ledgers and two listen ports. Stopping the
+laptop leaves its unfinished events in the inbox once their lease lapses
+(`ESCUREL_RUNNER_CLAIM_LEASE`); work only it can take waits there for it.
+**Every runner needs an `escurel:admin` credential** (a static or file token
+with the admin role, or a minting runner, whose own token is admin): without
+one it logs *the runner credential needs escurel:admin to claim events* at
+boot and takes no inbox work — lone or labelled, it keeps serving `/healthz`
+so the error is what you see. A dev gateway without OIDC treats every caller
+as admin, so any bearer works there. On a short-lived service credential, point
+`ESCUREL_RUNNER_TOKEN_FILE` at a file a sidecar refreshes instead of pasting
+`ESCUREL_RUNNER_TOKEN`: the runner re-reads it whenever it changes, so a
+rotation needs no restart (a pasted token that expires shows only as `401`s
+in the runner log and the runtime going `stale`). A harness whose CLI is not
+installed shows `available: false` in `escurel runtime list` and gets no work
+that `requires:` it.
+
+### Teams chat: `escurel-chat-bridge`
+
+A separate binary answers 1:1 Microsoft Teams chats from escurel. A Teams message becomes the
+asker's page-chat turn plus a `chat` event, and the runner's reply goes back once. Run it next to a
+verifying gateway and a minted-mode runner. The bridge signs with a key of its OWN and serves its
+public half at `GET /.well-known/jwks.json`; the gateway trusts it as one more issuer
+(`ESCUREL_AUTH_OIDC_ISSUER_<N>` = the bridge's `ESCUREL_BRIDGE_AUTH_ISSUER`,
+`ESCUREL_AUTH_JWKS_URI_<N>` = `http://<bridge>/.well-known/jwks.json`, https outside a laptop) and
+restricts it by naming that issuer in `ESCUREL_AUTH_BRIDGE_ISSUER`, its kid in
+`ESCUREL_AUTH_BRIDGE_KID` and the served tenant in `ESCUREL_AUTH_BRIDGE_TENANT` (never the
+gateway's or the runner's key; references/08 § chat bridge lists the few tools a bridge token may
+call):
+
+```sh
+cargo build -p escurel-chat-bridge
+ESCUREL_BRIDGE_GATEWAY_URL=<gateway_url> ESCUREL_BRIDGE_TENANT=<tenant> \
+ESCUREL_BRIDGE_AUTH_ISSUER=<bridge issuer_url> ESCUREL_BRIDGE_AUTH_KID=<bridge kid> \
+ESCUREL_BRIDGE_AUTH_SIGNING_KEY=<bridge signing_key> \
+ESCUREL_BRIDGE_TEAMS_APP_ID=<bot app id> ESCUREL_BRIDGE_TEAMS_APP_PASSWORD=<secret> \
+ESCUREL_BRIDGE_TEAMS_ALLOWED_TENANTS=<entra tenant id> \
+ESCUREL_BRIDGE_PRINCIPAL_TEMPLATE='user:{aadObjectId}' ESCUREL_BRIDGE_STATE_PATH=./bridge.duckdb \
+  target/debug/escurel-chat-bridge          # POST /api/messages on :3978
+```
+
+The tenant needs the chat corpus (`conversation` + `chat`), shipped as files in
+`examples/chat/seed/skills/` (`escurel page update markdown/skills/<s>.md < examples/chat/seed/skills/<s>.md`
+as an admin, or `ESCUREL_SEED_DIR=examples/chat/seed` on a dev gateway). A gateway outage mid-turn is
+retried with capped backoff until the turn's reply deadline (arrival + `ESCUREL_BRIDGE_REPLY_TIMEOUT`),
+then the person gets one timeout notice. The principal template is required and
+must name `{aadObjectId}` or `{userId}` (the bridge refuses a template that maps everyone to one
+subject); it must give the person's own token `sub`, because the bridge signs a token for that
+subject and acts as them. Only explicitly `personal` (1:1) chats from an allowed Entra tenant on the
+`msteams` channel are answered. A real Teams tenant needs an Entra app and an Azure Bot pointing at a public
+`https://…/api/messages`. A test replaces Microsoft with local HTTP stand-ins: OpenID metadata +
+JWKS (`ESCUREL_BRIDGE_TEAMS_OPENID_METADATA_URL`), the token endpoint
+(`ESCUREL_BRIDGE_TEAMS_TOKEN_URL`) and a connector at the activity's `serviceUrl`, as
+`crates/escurel-chat-bridge/tests/teams_roundtrip.rs` does (`ExtraIssuer::sign` signs the channel
+token, `ExtraIssuer::start_with_own_key` gives the bridge its key, the gateway's
+`ConfigOverrides::extra_issuers` points at the bridge's own `/.well-known/jwks.json` and
+`ConfigOverrides::bridge_kids` restricts it, `RunnerProcess` starts the runner; references/06). Setup and the full env:
+`docs/deploy/chat-bridge.md`.
+
 ## The iterate loop
 
 1. Author/adjust seed pages (`references/07`) and your data model

@@ -57,6 +57,20 @@ describe('knowledge model', () => {
     expect(chipsForSkill({ ...customer, autonomy: 'auto' }, now)).toEqual(['auto']);
   });
 
+  it('a skill that requires a harness or labels says so; a malformed requires says routing is blocked (#818)', () => {
+    expect(
+      chipsForSkill({
+        ...customer,
+        autonomy: 'auto',
+        requires: { harness: 'codex', labels: ['repo:escurel'] },
+      }),
+    ).toEqual(['auto', 'needs codex · repo:escurel']);
+    expect(chipsForSkill({ ...customer, autonomy: 'auto', requires: { invalid: true } })).toEqual([
+      'auto',
+      'routing blocked',
+    ]);
+  });
+
   it('autonomy absent reads as "review" (hold for review), never as auto', () => {
     const { autonomy, ...noAutonomy } = customer;
     void autonomy;

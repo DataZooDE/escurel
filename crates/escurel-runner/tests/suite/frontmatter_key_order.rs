@@ -93,7 +93,8 @@ async fn echo_fold_keeps_the_frontmatter_key_order_of_the_page() {
     .await;
     let event_id = captured["event_id"].as_str().expect("event_id").to_owned();
 
-    let token = gateway.mint_token(TENANT, Role::Agent);
+    // The runner credential must be an admin to claim events (a non-admin runner takes nothing).
+    let token = gateway.mint_token(TENANT, Role::Admin);
     let listen = format!("127.0.0.1:{}", free_port());
     let ledger_dir = tempfile::tempdir().expect("tempdir for ledger");
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_escurel-runner"));

@@ -7,6 +7,7 @@ import '../shell/topbar.dart';
 import '../state/explorer_nav.dart';
 import '../theme/app_theme.dart';
 import 'agents_panel.dart';
+import 'runtimes_panel.dart';
 import 'backend_admin_panel.dart';
 import 'md_inspector_panel.dart';
 import 'tools_panel.dart';
@@ -67,6 +68,14 @@ class InspectorShell extends ConsumerWidget {
                   selected: panelId == 'agents',
                 ),
                 const SizedBox(width: 4),
+                // The runner directory is readable by any token; a member's
+                // read just carries no CLI versions.
+                _PanelChip(
+                  id: 'runtimes',
+                  label: 'Runtimes',
+                  selected: panelId == 'runtimes',
+                ),
+                const SizedBox(width: 4),
                 _PanelChip(
                   id: 'lanes',
                   label: 'LaneStore',
@@ -102,6 +111,7 @@ class InspectorShell extends ConsumerWidget {
       'md' => const MdInspectorPanel(),
       'tools' => const ToolsPanel(),
       'agents' => const AgentsPanel(),
+      'runtimes' => const RuntimesPanel(),
       'backends' => const BackendAdminPanel(),
       _ => _ComingSoonPanel(panelId: id),
     };
@@ -111,6 +121,7 @@ class InspectorShell extends ConsumerWidget {
     'md' => 'Markdown',
     'tools' => 'Tools',
     'agents' => 'Agents',
+    'runtimes' => 'Runtimes',
     'lanes' => 'LaneStore',
     'index' => 'Index',
     'backends' => 'Backends',

@@ -46,6 +46,23 @@ pub struct OidcConfig {
     /// and Carl (the self-minted dashboard token); both name the same
     /// [`Self::audience`], differing only in `iss` + signing key.
     pub additional_issuers: Vec<(String, Option<String>)>,
+    /// The trusted issuer that is a chat-channel bridge
+    /// (`ESCUREL_AUTH_BRIDGE_ISSUER`). EVERY token verified against this
+    /// entry is a BRIDGE token, restricted whatever it claims or whichever
+    /// kid it names — see [`OidcVerifier::verify`] and `escurel_types::bridge`.
+    /// The restriction belongs to the trust entry, not to a kid: the bridge
+    /// serves this entry's JWKS, so whoever controls that response can publish
+    /// any kid it likes.
+    pub bridge_issuer: Option<String>,
+    /// Key ids the bridge signs under (`ESCUREL_AUTH_BRIDGE_KID`): an extra
+    /// pin on the bridge entry — a token from it under any other kid is
+    /// refused. A token from another entry under one of these kids is refused
+    /// too (fail closed). The key must be the bridge's own, never the
+    /// gateway's main signing key.
+    pub bridge_kids: Vec<String>,
+    /// The one tenant a bridge token may name (`ESCUREL_AUTH_BRIDGE_TENANT`);
+    /// a bridge token naming another is refused. `None` = not pinned here.
+    pub bridge_tenant: Option<String>,
 }
 
 impl OidcConfig {
@@ -64,7 +81,33 @@ impl OidcConfig {
             jwks_refresh: Duration::from_secs(300),
             jwks_uri: None,
             additional_issuers: Vec::new(),
+            bridge_issuer: None,
+            bridge_kids: Vec::new(),
+            bridge_tenant: None,
         }
+    }
+
+    /// Pin the bridge entry to `tenant` (see [`Self::bridge_tenant`]).
+    #[must_use]
+    pub fn with_bridge_tenant(mut self, tenant: impl Into<String>) -> Self {
+        self.bridge_tenant = Some(tenant.into());
+        self
+    }
+
+    /// Mark the trusted issuer `issuer` as a chat bridge: every token
+    /// verified against it is restricted. It must also be configured as the
+    /// primary or an additional issuer.
+    #[must_use]
+    pub fn with_bridge_issuer(mut self, issuer: impl Into<String>) -> Self {
+        self.bridge_issuer = Some(issuer.into());
+        self
+    }
+
+    /// Pin the bridge entry to `kid` (see [`Self::bridge_kids`]).
+    #[must_use]
+    pub fn with_bridge_kid(mut self, kid: impl Into<String>) -> Self {
+        self.bridge_kids.push(kid.into());
+        self
     }
 
     #[must_use]
@@ -170,6 +213,11 @@ pub struct AuthContext {
     /// string is kept as `Some("")` — it names no agent the gateway can find,
     /// so it fails closed rather than reading as "no agent".
     pub agent: Option<String>,
+    /// The token was verified against the chat-bridge trust entry
+    /// ([`OidcConfig::bridge_issuer`]). An authorization input, and only ever
+    /// a restriction: the gateway confines such a context to the few calls a
+    /// bridge makes (`escurel-server`'s bridge gate).
+    pub bridge: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -196,6 +244,8 @@ pub enum AuthError {
     MissingTenant { tenant_claim: String },
     #[error("token carries purpose `{0}`, which is not accepted at this surface")]
     PurposeRefused(String),
+    #[error("bridge token refused: {0}")]
+    BridgeRefused(String),
 }
 
 /// The `purpose` claim + value on a runner→agent INTERNAL-DELEGATION token
@@ -242,6 +292,8 @@ struct Claims {
 struct TrustEntry {
     issuer: String,
     jwks: JwksCache,
+    /// This entry is the chat bridge's ([`OidcConfig::bridge_issuer`]).
+    bridge: bool,
 }
 
 pub struct OidcVerifier {
@@ -275,10 +327,12 @@ impl OidcVerifier {
     #[must_use]
     pub fn new(config: OidcConfig) -> Self {
         let mut entries = Vec::with_capacity(1 + config.additional_issuers.len());
+        let is_bridge = |issuer: &str| config.bridge_issuer.as_deref() == Some(issuer);
         // Primary issuer first.
         entries.push(TrustEntry {
             issuer: config.issuer.clone(),
             jwks: JwksCache::new(config.effective_jwks_uri(), config.jwks_refresh),
+            bridge: is_bridge(&config.issuer),
         });
         for (issuer, jwks_uri) in &config.additional_issuers {
             entries.push(TrustEntry {
@@ -287,6 +341,7 @@ impl OidcVerifier {
                     derive_jwks_uri(issuer, jwks_uri.as_deref()),
                     config.jwks_refresh,
                 ),
+                bridge: is_bridge(issuer),
             });
         }
         Self { config, entries }
@@ -322,6 +377,25 @@ impl OidcVerifier {
         // authenticates; a forged `iss` only selects the wrong entry,
         // whose key then fails to verify the signature.
         let entry = self.select_entry(token)?;
+        // The bridge kids pin the bridge entry, both ways, before any key is
+        // fetched: the bridge serves this entry's JWKS, so an unlisted kid
+        // there is a key the gateway never agreed to, and a listed kid under
+        // another entry means the configuration is confused. Refused either
+        // way — never verified as an unrestricted token.
+        match (entry.bridge, self.config.bridge_kids.contains(&kid)) {
+            (true, false) => {
+                return Err(AuthError::BridgeRefused(format!(
+                    "kid `{kid}` is not a bridge kid (ESCUREL_AUTH_BRIDGE_KID)"
+                )));
+            }
+            (false, true) => {
+                return Err(AuthError::BridgeRefused(format!(
+                    "bridge kid `{kid}` under issuer `{}`, which is not the bridge issuer",
+                    entry.issuer
+                )));
+            }
+            _ => {}
+        }
         let key = entry.jwks.key_for_kid(&kid).await?;
         // Validate against exactly the (already allow-listed) header
         // alg. We must not stuff the whole allow-list in here —
@@ -361,6 +435,13 @@ impl OidcVerifier {
             .map_err(|e| AuthError::Invalid(e.to_string()))?;
 
         let claims = token_data.claims;
+        if entry.bridge {
+            return bridge_context(
+                claims,
+                &self.config.tenant_claim,
+                self.config.bridge_tenant.as_deref(),
+            );
+        }
 
         // Defense-in-depth (fleet #801 AD-7): a runner→agent internal-delegation
         // token is signed by the same issuer and verified against the same JWKS
@@ -484,6 +565,7 @@ impl OidcVerifier {
             run,
             agent_skill,
             agent,
+            bridge: false,
         })
     }
 
@@ -515,6 +597,100 @@ impl OidcVerifier {
     pub fn config(&self) -> &OidcConfig {
         &self.config
     }
+}
+
+/// A chat bridge's token: one verified against the bridge trust entry.
+///
+/// The bridge holds a key that can sign for anyone, so the gateway — not the
+/// bridge — bounds what such a token is: it lives at most
+/// [`escurel_types::bridge::MAX_TTL_SECS`], carries no agent, skill, run,
+/// purpose or `act` claim (refused, not ignored: a bridge never mints those,
+/// so one present means the key is being misused), is never admin or
+/// operator, and honours no roles or groups — the gateway does not know the
+/// person's IdP groups here, so group-granted ACLs do not apply. Its actor is
+/// `bridge:<channel>`, stamped as `captured_via` on what it captures.
+/// How far the bridge host's clock may lead the gateway's (crew C-F3).
+const BRIDGE_CLOCK_SKEW_SECS: u64 = 60;
+
+/// A bridge token's lifetime bound. `exp - iat` is the minter's own claim and
+/// is held to [`escurel_types::bridge::MAX_TTL_SECS`] exactly; `exp - now`
+/// compares two clocks, so a bridge whose clock leads the gateway's by up to
+/// [`BRIDGE_CLOCK_SKEW_SECS`] is not locked out. Expiry itself has no leeway.
+fn bridge_lifetime_ok(iat: u64, exp: u64, now: u64) -> bool {
+    let max = escurel_types::bridge::MAX_TTL_SECS;
+    exp.saturating_sub(iat) <= max && exp.saturating_sub(now) <= max + BRIDGE_CLOCK_SKEW_SECS
+}
+
+fn bridge_context(
+    claims: Claims,
+    tenant_claim: &str,
+    pinned_tenant: Option<&str>,
+) -> Result<AuthContext, AuthError> {
+    use escurel_types::bridge;
+    let refuse = |why: String| Err(AuthError::BridgeRefused(why));
+    for forbidden in [
+        AGENT_CLAIM,
+        SKILL_CLAIM,
+        RUN_ID_CLAIM,
+        ROOT_EVENT_ID_CLAIM,
+        DELEGATION_PURPOSE_CLAIM,
+        ACT_CLAIM,
+    ] {
+        if claims.rest.contains_key(forbidden) {
+            return refuse(format!("a bridge token may not carry `{forbidden}`"));
+        }
+    }
+    let num = |k: &str| claims.rest.get(k).and_then(serde_json::Value::as_u64);
+    let (Some(iat), Some(exp)) = (num("iat"), num("exp")) else {
+        return refuse("a bridge token needs numeric `iat` and `exp`".to_owned());
+    };
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    if !bridge_lifetime_ok(iat, exp, now) {
+        return refuse(format!(
+            "a bridge token lives at most {}s",
+            bridge::MAX_TTL_SECS
+        ));
+    }
+    let Some(via) = claims
+        .rest
+        .get(bridge::CHANNEL_CLAIM)
+        .and_then(serde_json::Value::as_str)
+        .and_then(bridge::via)
+    else {
+        return refuse(format!(
+            "a bridge token names its channel in `{}`",
+            bridge::CHANNEL_CLAIM
+        ));
+    };
+    let tenant_id = claims
+        .rest
+        .get(tenant_claim)
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| AuthError::MissingTenant {
+            tenant_claim: tenant_claim.to_owned(),
+        })?
+        .to_owned();
+    if let Some(pinned) = pinned_tenant
+        && tenant_id != pinned
+    {
+        return refuse(format!(
+            "a bridge token names tenant `{tenant_id}`; this bridge serves `{pinned}`"
+        ));
+    }
+    Ok(AuthContext {
+        subject: claims.sub,
+        tenant_id,
+        role: Role::Agent,
+        operator: false,
+        groups: Vec::new(),
+        actor: Some(via),
+        run: None,
+        agent_skill: None,
+        agent: None,
+        bridge: true,
+    })
 }
 
 fn has_admin_role(claims: &serde_json::Map<String, serde_json::Value>, cfg: &OidcConfig) -> bool {
@@ -574,4 +750,29 @@ fn allowed_algorithms() -> &'static [Algorithm] {
         Algorithm::ES256,
         Algorithm::ES384,
     ]
+}
+
+#[cfg(test)]
+mod bridge_lifetime_tests {
+    use super::*;
+
+    /// A bridge whose clock leads the gateway's mints `iat`/`exp` in the
+    /// gateway's future (crew C-F3): within the skew it is accepted; the
+    /// minter's own `exp - iat` stays bounded exactly.
+    #[test]
+    fn a_bridge_clock_a_little_ahead_is_not_locked_out() {
+        let max = escurel_types::bridge::MAX_TTL_SECS;
+        let now = 1_000_000;
+        for lead in [0, 1, 30, BRIDGE_CLOCK_SKEW_SECS] {
+            let iat = now + lead;
+            assert!(bridge_lifetime_ok(iat, iat + max, now), "lead {lead}s");
+            assert!(bridge_lifetime_ok(iat, iat + max - 60, now), "lead {lead}s");
+        }
+        let iat = now + BRIDGE_CLOCK_SKEW_SECS + 1;
+        assert!(!bridge_lifetime_ok(iat, iat + max, now), "too far ahead");
+        assert!(
+            !bridge_lifetime_ok(now, now + max + 1, now),
+            "too long a life"
+        );
+    }
 }

@@ -106,6 +106,10 @@ pub use escurel_types::{
 // Re-exported so callers don't need to depend on `secrecy` directly
 // just to spell out a token. Keeping the version in sync with this
 // crate's `Cargo.toml` is part of the semver contract.
+pub use escurel_types::runtime::{
+    ClaimEventRequest, ClaimEventResponse, EventClaim, ListRuntimesResponse, Requires,
+    RuntimeHarness, RuntimeInfo,
+};
 pub use secrecy::SecretString;
 
 use serde_json::{Value, json};
@@ -561,6 +565,28 @@ impl Client {
         self.transport
             .call_typed("report_runner_status", args)
             .await
+    }
+
+    /// Take a claim lease on an inbox event (`claim_event`, #818): `claimed`
+    /// says whether the caller holds it now. Only a runner's own admin
+    /// identity may call it.
+    pub async fn claim_event(&self, req: ClaimEventRequest) -> Result<ClaimEventResponse, Error> {
+        self.transport
+            .call_typed("claim_event", claim_args(req))
+            .await
+    }
+
+    /// Extend a lease [`Self::claim_event`] gave the caller (`renew_claim`);
+    /// `claimed` carries the reply's `renewed`.
+    pub async fn renew_claim(&self, req: ClaimEventRequest) -> Result<ClaimEventResponse, Error> {
+        self.transport
+            .call_typed("renew_claim", claim_args(req))
+            .await
+    }
+
+    /// The registered runtimes with derived liveness (`list_runtimes`).
+    pub async fn list_runtimes(&self) -> Result<ListRuntimesResponse, Error> {
+        self.transport.call_typed("list_runtimes", json!({})).await
     }
 
     /// List unprocessed inbox events, newest first. `limit` of 0 means
@@ -1047,4 +1073,16 @@ impl Client {
         }
         self.transport.post_json("/ingest/upload", body).await
     }
+}
+
+/// `claim_event` / `renew_claim` arguments: zero and empty send nothing.
+fn claim_args(req: ClaimEventRequest) -> Value {
+    let mut args = json!({ "event_id": req.event_id });
+    if req.lease_secs > 0 {
+        args["lease_secs"] = json!(req.lease_secs);
+    }
+    if !req.holder_id.is_empty() {
+        args["holder_id"] = json!(req.holder_id);
+    }
+    args
 }

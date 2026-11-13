@@ -276,7 +276,7 @@ pub(super) fn blocking_issues<'a>(
 /// acting for a runner (`run_id` / `skill` / `act.sub` claims). A person on a plain agent-role token
 /// (the extension, the CLI) is not: they write directly.
 pub(super) fn is_machine_caller(caller: &AclCaller<'_>) -> bool {
-    caller.run_id.is_some() || caller.agent_skill.is_some() || caller.actor.is_some()
+    caller.is_machine()
 }
 
 /// Why a caller may not mint `event_id`, when it lies in a namespace the gateway owns.
@@ -471,6 +471,59 @@ pub(super) async fn refuse_machine_removal(
     })))
 }
 
+/// The skill-authority gate (owner decision 2026-11-13): a write that adds, removes or changes an
+/// authority key (`acl`, `agent`, `autonomy`, `schedule`, …; `escurel_types::skill_authority`) on a
+/// SKILL page needs an admin, or a member of the stored page's `acl.update` — see
+/// `Indexer::skill_authority_denied`. `incoming` is the page as it would be, `None` for a removal.
+///
+/// It follows `ESCUREL_WRITE_ACL` like the rest of the write ACL: `Enforce` refuses with `-32003`
+/// `authority_keys_need_admin` naming the keys, `Log` records the would-be refusal and allows, `Off`
+/// keeps the ungated behaviour. The admin-only system skills (`agent`, `runtime`) are enforced in
+/// every mode, as they are for the ordinary write ACL.
+pub(super) async fn skill_authority_refusal(
+    indexer: &Indexer,
+    caller: &AclCaller<'_>,
+    write_acl: crate::server::WriteAclMode,
+    page_id: &str,
+    incoming: Option<&str>,
+) -> Result<(), JsonRpcError> {
+    let write_acl = write_acl.for_page(page_id, incoming.unwrap_or_default());
+    if write_acl == crate::server::WriteAclMode::Off {
+        return Ok(());
+    }
+    let keys = indexer
+        .skill_authority_denied(caller, page_id, incoming)
+        .await
+        .map_err(|e| JsonRpcError::internal(format!("skill authority gate: {e}")))?;
+    if keys.is_empty() {
+        return Ok(());
+    }
+    let named = keys
+        .iter()
+        .map(|k| format!("`{k}`"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    if write_acl == crate::server::WriteAclMode::Log {
+        tracing::warn!(
+            subject = %caller.subject,
+            page_id = %page_id,
+            keys = %named,
+            "skill-authority gate would deny this write (log mode) — allowing"
+        );
+        return Ok(());
+    }
+    let mut refusal = JsonRpcError::forbidden(format!(
+        "`{page_id}`: changing {named} on a skill page needs `escurel:admin`, or membership of the \
+         stored page's `acl.update` groups; an agent run never changes them. Propose it as a draft \
+         and ask an admin to promote it"
+    ))
+    .with_code("authority_keys_need_admin", false);
+    if let Some(data) = refusal.data.as_mut() {
+        data["keys"] = json!(keys);
+    }
+    Err(refusal)
+}
+
 /// The per-instance WRITE ACL as one decision, shared by `update_page` and by promotion (which must
 /// ask it BEFORE a write-back touches an external system). `Off` skips; `Log` records a would-be
 /// denial and allows; `Enforce` answers the `forbidden` refusal. `Ok(None)` = go on.
@@ -499,8 +552,8 @@ pub(super) async fn write_acl_refusal(
             }],
         })));
     }
-    let write_acl = write_acl.for_page(page_id, content);
-    if write_acl == crate::server::WriteAclMode::Off {
+    let mode = write_acl.for_page(page_id, content);
+    if mode == crate::server::WriteAclMode::Off {
         return Ok(None);
     }
     let allowed = indexer
@@ -510,7 +563,7 @@ pub(super) async fn write_acl_refusal(
     if allowed {
         return Ok(None);
     }
-    if write_acl == crate::server::WriteAclMode::Log {
+    if mode == crate::server::WriteAclMode::Log {
         tracing::warn!(
             subject = %caller.subject,
             page_id = %page_id,
@@ -929,6 +982,20 @@ async fn update_page_checked(
         }
     }
 
+    // The skill-authority gate, under the gate and on what persists: the stored page is the head
+    // read inside the lock (an admin's concurrent change cannot be reverted by a write judged
+    // against an older head), and `content_to_write` is the auto-merge result, which can carry
+    // keys the caller never sent (a refused session's ops live on in the CRDT head). Asked after
+    // the ordinary write ACL, so a write that ACL refuses keeps that refusal's shape.
+    skill_authority_refusal(
+        indexer,
+        &caller,
+        write_acl,
+        &a.page_id,
+        Some(&content_to_write),
+    )
+    .await?;
+
     // Refuse a write the dry run would have rejected. `update_page` did not
     // validate at all, so `page validate` and `page update` disagreed — and
     // agents call `update`. That is how an instance with no `id:` and links
@@ -1234,6 +1301,10 @@ pub(super) async fn tool_move_page(
         }
     }
 
+    // The gate every page write takes, held from the read of `from` to the move: the checks below
+    // (the skill-authority gate among them) judge exactly the bytes that move, and no concurrent
+    // write can change them in between.
+    let _cas_gate = state.update_page_gate.lock().await;
     let Some(existing) = indexer
         .read_page_markdown(&a.from)
         .await
@@ -1332,6 +1403,11 @@ pub(super) async fn tool_move_page(
         }));
     }
 
+    // The skill-authority gate, for the same two writes: removing `from` drops its keys (its stored
+    // `acl.update` decides), and `to` is a create carrying them (an admin's, unless `to` is a stored
+    // skill whose `acl.update` grants the caller).
+    skill_authority_refusal(indexer, &caller, write_acl, &a.from, None).await?;
+    skill_authority_refusal(indexer, &caller, write_acl, &a.to, Some(&existing)).await?;
     if let Some(refused) = removal_refusal(indexer, &a.from, "move").await? {
         return Ok(refused);
     }
@@ -1563,6 +1639,9 @@ pub(super) async fn tool_delete_page(
     // rather than retract a page they have not seen. Held under the same CAS
     // gate so the check-then-delete cannot interleave with an update_page.
     let _cas_gate = state.update_page_gate.lock().await;
+    // Deleting a skill page removes its authority keys, its ACL among them; judged on the head
+    // read under the gate.
+    skill_authority_refusal(indexer, &caller, write_acl, &a.page_id, None).await?;
     if a.base_version.is_some() && state.crdt_backend.is_none() {
         // Symmetric with update_page: a guard this gateway cannot honour is
         // refused, never silently dropped. See `versioning_unavailable`.
@@ -2213,6 +2292,18 @@ pub(super) async fn tool_capture_event(
         return Err(JsonRpcError::invalid_params(
             "capture_event: `label_skill` is required (the label→skill routing key)".to_owned(),
         ));
+    }
+    // `provenance.requires` routes the event to a runner that can take it
+    // (#818). A malformed one would be satisfied by nobody and sit in the
+    // inbox unexplained: refuse it here, where the author still hears why.
+    if let Some(raw) = a.provenance.as_ref().and_then(|p| p.get("requires"))
+        && !raw.is_null()
+        && let Err(msg) = escurel_types::runtime::Requires::parse(raw)
+    {
+        return Err(
+            JsonRpcError::invalid_params(format!("capture_event: provenance.{msg}"))
+                .with_code("requires_invalid", false),
+        );
     }
     // Reserved namespace (async-ops crew Phase-2 F1): the `escurel:` label prefix
     // is server/runner-owned. An operation's status events live under
@@ -2904,16 +2995,6 @@ fn operation_slug_for_key(
     slug
 }
 
-/// A skill id is a safe, bounded slug — letters, digits, `_`, `-`, `.`. Used to
-/// reject a `wf_skill` before it is interpolated into board frontmatter (crew
-/// Phase-2 F-1) and as a cheap shape check before resolving it.
-fn is_safe_skill_id(s: &str) -> bool {
-    !s.is_empty()
-        && s.len() <= 128
-        && s.bytes()
-            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-' | b'.'))
-}
-
 /// `start_operation` — begin an async workflow operation (async-ops Phase 2b).
 ///
 /// The **server-owned** entry point for an async run. The server constructs the
@@ -2947,7 +3028,8 @@ pub(super) async fn tool_start_operation(
     // that never drives (fail-slow, `pending` forever). Fail fast instead. The
     // charset check also makes `wf_skill` safe to interpolate into frontmatter
     // (F-1).
-    if !is_safe_skill_id(&a.wf_skill) {
+    // Rejected before it is interpolated into board frontmatter (crew Phase-2 F-1).
+    if !escurel_types::is_safe_skill_id(&a.wf_skill) {
         return Err(JsonRpcError::invalid_params(
             "start_operation: `wf_skill` must be a skill id (letters, digits, _-.)".to_owned(),
         ));

@@ -33,6 +33,37 @@ Runs you can see, steer and bill; agents with least privilege; cron schedules (e
 - With several runners, only the runner that holds a run answers its cancel / retry / inject at once; the others defer.
 - codex tool calls are read from `item.type` (codex-cli 0.168 shape) and counted once per completed call.
 
+Distributed runtimes, SKILL.md interop and a Teams bridge (epic #817: #818, #824, #825).
+
+- **Runtimes (#818):** runners register `runtime` pages and route by `requires: {harness, labels}`; gateway
+  `claim_event` / `renew_claim` leases give each event one runner (with a boot grace after a gateway restart);
+  `ESCUREL_RUNNER_EXCLUSIVE` for laptop/on-prem runners; `list_runtimes`, `escurel runtime list`. Scheduled windows
+  run exactly once across runners; the holding runner answers run control.
+- **SKILL.md (#825):** `escurel skill export --as skill-md` / `escurel skill import`, VS Code "Export as SKILL.md",
+  references/12 on escurel as memory MCP for external agents.
+- **Teams (#824):** new `escurel-chat-bridge` binary (in the runner image, off unless configured); see
+  `docs/deploy/chat-bridge.md`. New gateway key `ESCUREL_AUTH_BRIDGE_KID` restricts what a bridge-signed token may do.
+- UI: VS Code Runtimes view, `requires` chips, claim holder in run detail; explore Runtimes panel.
+
+**Behaviour changes to note:** a third system skill (`runtime`) appears in `list_skills`; the gateway's page-chat
+reply rule and the runner's chat rule accept `captured_via: bridge:<channel>`.
+
+- **Breaking — every runner needs an admin credential.** A runner whose `claim_event` is refused for
+  authorisation (`-32001` / `-32003` / `401` / `403`) now takes **no** inbox work, lone or in a fleet (the
+  lone-runner exception is gone), and logs *the runner credential needs escurel:admin to claim events*; every
+  runner checks `whoami` at boot and logs that error when it is not an admin (it keeps serving `/healthz`). A
+  gateway without claim tools (`-32601`) and synthetic webhook events are unaffected. **Upgrade step:** give the
+  runner an admin-capable credential (`escurel:admin` on `ESCUREL_RUNNER_TOKEN` / `_FILE`, or minting mode)
+  before rolling out. A dev gateway without OIDC treats every caller as admin.
+- **Breaking — skill authority keys need an admin.** A write that adds, removes or changes an authority key
+  (`acl`, `agent`, `autonomy`, `schedule`, `requires`, `harness`, `model`, `cascade`, `actions`, `backend`,
+  `freeze_when`, …; `escurel_types::skill_authority`) on a skill page lands only for an `escurel:admin` person or a member of the
+  stored page's `acl.update` groups — on `update_page`, `promote_draft` / `promote_changeset` (the promoter is
+  judged), the `close_session` commit, `delete_page` and `move_page`. A new skill that sets one is an admin's.
+  Refusal: `-32003`, `data.code: authority_keys_need_admin`, `data.keys`. `ESCUREL_WRITE_ACL=log` logs and
+  allows; `off` is ungated. Upgrade: give the people who curate skills `escurel:admin`, or list their group in
+  each skill's `acl.update`.
+
 ## v2026.10.29
 
 Replies reach the requester, and a service role may reply under a declared label.

@@ -143,9 +143,12 @@ pub struct ChatContext {
     /// Pages the person pinned as context, at most [`ChatContext::MAX_FOCUS`].
     pub focus: Vec<String>,
     /// Who asked: the server-stamped `provenance.captured_by`, when they
-    /// captured the event as themselves (no `captured_via`). The run executes
-    /// as this subject; `None` makes the chat run refuse rather than answer
-    /// with anyone else's rights.
+    /// captured the event as themselves (no `captured_via`) or a chat bridge
+    /// relayed their turn (`captured_via: bridge:<channel>`, which only a
+    /// gateway-restricted bridge token produces). The run executes as this
+    /// subject; `None` makes the chat run refuse rather than answer with
+    /// anyone else's rights — a turn captured via a runner or agent is not a
+    /// person's question.
     pub asker: Option<String>,
     /// When the runner received the turn, for the time-to-answer metric.
     pub received_at: std::time::Instant,
@@ -177,7 +180,7 @@ impl ChatContext {
             })
             .unwrap_or_default();
         let asker = captured_by(provenance)
-            .filter(|_| captured_via(provenance).is_none())
+            .filter(|_| captured_via(provenance).is_none_or(escurel_types::bridge::is_bridge_via))
             .map(str::to_owned);
         Some(Self {
             chat_group_id: chat_group_id.to_owned(),
@@ -484,6 +487,25 @@ mod tests {
             );
         }
         assert_eq!(Trigger::from_event(&sample_event(), "t").agent, None);
+    }
+
+    #[test]
+    fn a_chat_turn_relayed_by_a_bridge_has_its_asker_and_one_via_a_runner_does_not() {
+        let asker = |via: Option<&str>| {
+            let mut event = sample_event();
+            event.provenance = serde_json::json!({
+                "chat_group_id": "page-chat:v1:abc:markdown/instances/conversation/x.md",
+                "user_msg_id": "m-1", "captured_by": "user:alice",
+            });
+            if let Some(v) = via {
+                event.provenance["captured_via"] = serde_json::json!(v);
+            }
+            Trigger::from_event(&event, "t").chat.and_then(|c| c.asker)
+        };
+        assert_eq!(asker(None).as_deref(), Some("user:alice"));
+        assert_eq!(asker(Some("bridge:msteams")).as_deref(), Some("user:alice"));
+        assert_eq!(asker(Some("escurel-runner")), None);
+        assert_eq!(asker(Some("bridge:Not A Channel")), None);
     }
 
     #[test]

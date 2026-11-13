@@ -2,8 +2,18 @@
 //! (knowledge-workbench backend, P1 PR7 — BRD FR-R-1/2/4/5).
 //!
 //! Real gateway, real runner binary, real echo harness. The ledger stays the
-//! source of truth; the events are its projection — best-effort, so a
-//! gateway that refuses them (a non-admin runner bearer) never fails the run.
+//! source of truth; the events are its projection — best-effort: a refusal
+//! is only logged and counted (`record_run_event`), never fails the run.
+//!
+//! No test here makes the gateway refuse them any more. The gateway admits
+//! `run:*` ids, the `escurel:` label and `kind: system` for exactly one
+//! credential, `is_admin && !is_machine` (`tools_write.rs` `bookkeeper`) —
+//! the same predicate `claim_event` requires (`tools_runtimes.rs`), so a
+//! runner that may write them is the only kind that runs anything (it fails
+//! closed on a refused claim). A service-role restriction cannot carve out
+//! the capture either: `claim_event` is admin-scoped and no restricted role
+//! may list it. What is left is the generic body cap, which hits every call.
+//!
 //! Every run lands on the root event's page as `run-started`, one
 //! `run-attempt` per attempt, and `run-finished` with the ledger's terminal.
 
@@ -272,31 +282,6 @@ async fn run_events_are_not_written_when_emit_events_is_off() {
     tokio::time::sleep(Duration::from_millis(500)).await;
     let r = call(&gw, Role::Admin, "list_events", json!({ "run_id": run_id })).await;
     assert!(r["events"].as_array().unwrap().is_empty(), "{r}");
-}
-
-#[tokio::test]
-async fn a_gateway_that_refuses_the_run_event_does_not_fail_the_run() {
-    let gw = gateway().await;
-    let event_id = capture(&gw).await;
-    // A NON-admin runner bearer: the gateway refuses the `escurel:` write.
-    // The projection is best-effort; the run itself must still land.
-    let (_runner, listen) = spawn_runner(&gw, Role::Agent, &[]);
-    let (run_id, status) = await_terminal(&listen, &event_id).await;
-    assert_eq!(
-        status, "processed",
-        "the run lands whatever the projection does"
-    );
-    let expanded = call(&gw, Role::Agent, "expand", json!({ "page_id": PAGE })).await;
-    assert!(
-        expanded["body"].as_str().unwrap().contains("folded event"),
-        "{expanded}"
-    );
-    tokio::time::sleep(Duration::from_millis(500)).await;
-    let r = call(&gw, Role::Admin, "list_events", json!({ "run_id": run_id })).await;
-    assert!(
-        r["events"].as_array().unwrap().is_empty(),
-        "refused, so absent: {r}"
-    );
 }
 
 /// Crash recovery (P1 PR7b — BRD FR-R-5): a run that landed but died before

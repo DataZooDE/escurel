@@ -114,7 +114,8 @@ async fn cascaded_beta_event(beta_cascade_target: &str) -> Option<Value> {
     .await;
     let seed = captured["event_id"].as_str().expect("event_id").to_owned();
 
-    let token = gateway.mint_token(TENANT, Role::Agent);
+    // The runner credential must be an admin to claim events (a non-admin runner takes nothing).
+    let token = gateway.mint_token(TENANT, Role::Admin);
     let ledger_dir = tempfile::tempdir().expect("tempdir");
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_escurel-runner"));
     cmd.env(

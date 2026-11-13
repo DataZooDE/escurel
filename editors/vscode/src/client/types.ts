@@ -64,6 +64,11 @@ export interface Skill {
    * declared budget cannot be read: the runner then fires nothing.
    */
   schedule_budget?: { runs_per_day: number; invalid?: boolean };
+  /**
+   * What the runner that takes this skill's work must offer (#818); absent = any runner. `invalid`:
+   * declared but unreadable, so no runner takes the work.
+   */
+  requires?: SkillRequires;
   /** `/`-separated path of slugs placing the skill in a tree (`sales/orders`); absent = top level. */
   folder?: string;
   /** `record | process | report | helper`; typed as a string so a newer server's value still parses. */
@@ -205,6 +210,51 @@ export interface UsageReportResponse {
   total: UsageTotals;
 }
 
+/** A skill's or an event's `requires:` (#818). */
+export interface SkillRequires {
+  harness?: string;
+  labels?: string[];
+  /** Declared but malformed: no runner satisfies it. */
+  invalid?: boolean;
+}
+
+/**
+ * One harness a runtime offers, with the CLI version its probe read (`null`: in-process or
+ * unreadable). The gateway shows versions to admins only; a member's read has no `version`.
+ */
+export interface RuntimeHarness {
+  name: string;
+  version?: string | null;
+  /** `false` when the harness's CLI probe failed: the runner takes no work that requires it. Absent reads as available. */
+  available?: boolean;
+  /** Why the probe failed (admins only). */
+  probe_error?: string | null;
+}
+
+/** One registered runner as `list_runtimes` reports it (#818). */
+export interface Runtime {
+  runner_id: string;
+  page_id: string;
+  harnesses: RuntimeHarness[];
+  labels: string[];
+  max_concurrent: number | null;
+  /** The holder string this runner's claim leases carry: matches `Event.claim.holder`. Admins only. */
+  claim_holder?: string | null;
+  /** `online | stale | stopped | unknown` (no status record); a string so a newer value still parses. */
+  status: string;
+  /** RFC 3339: the runner's last status report. */
+  last_seen: string | null;
+  age_s: number | null;
+  /** The age past which the runtime reads stale (3 x its reporting interval). */
+  stale_after_s: number | null;
+  version: string | null;
+  live_runs: number;
+}
+
+export interface ListRuntimesResponse {
+  runtimes: Runtime[];
+}
+
 export interface ExpandResponse {
   /** `null` when the page does not exist or the caller may not read it (absence, never a leak). */
   page: PageRef | null;
@@ -318,6 +368,14 @@ export interface Event {
   revision_binding_attested?: boolean;
 }
 
+/** A live claim lease on an inbox event: which runner holds it (`claim_event`, #818). */
+export interface EventClaim {
+  /** The runner's token `sub`, `#<holder_id>` when it sent one; a runtime's `claim_holder`. */
+  holder: string;
+  /** RFC 3339: when the lease lapses unless renewed. */
+  expires_at: string;
+}
+
 export interface ListEventsRequest {
   instance_page_id?: string;
   event_id?: string;
@@ -341,6 +399,8 @@ export interface EventsPage {
   next_cursor?: string;
   /** True iff rows already lie past this page; absent otherwise. */
   has_more?: boolean;
+  /** `list_events {event_id}` only: the event's live claim lease; absent when nobody holds one. */
+  claim?: EventClaim;
 }
 
 export interface ListInboxRequest {

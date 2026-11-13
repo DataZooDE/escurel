@@ -41,6 +41,12 @@ escurel whoami                      # {subject, tenant, is_admin}
 escurel skill list
 escurel instance list --skill customer --order-by-at desc --limit 20
 
+# skills as Anthropic-style SKILL.md (#825; references/12)
+escurel skill export triage customer --out .claude/skills   # <out>/<skill>/SKILL.md each; never clobbers a local edit
+escurel skill export triage --out .claude/skills --force    # replace files that differ
+escurel skill export triage customer --pack --out dist      # one deterministic dist/escurel-skills.tar.gz
+escurel skill import ./pdf-tools                            # <dir>/SKILL.md → a DRAFT, never a direct write
+
 # pages
 escurel page expand    markdown/instances/customer/acme-corp.md
 escurel page validate  markdown/instances/customer/acme-corp.md   # body on stdin, commits nothing
@@ -76,6 +82,7 @@ escurel event inbox  --limit 50
 escurel event list   --instance <page_id> --limit 50
 escurel event list   --label escurel:run --since 2026-10-01T00:00:00Z --until 2026-11-01T00:00:00Z   # a time window on `at`
 escurel run usage    --since 2026-10-01T00:00:00Z --group-by skill,model   # admin: usage + cost rolled up from run-finished
+escurel runtime list                                                         # registered runners: harnesses, labels, online/stale (list_runtimes)
 escurel event assign --event <event_id> --instance <page_id>
 
 # per-chat-group conversation history
@@ -122,6 +129,8 @@ escurel admin pack submit-promotion --tenant acme --candidate-id acme-candidate 
 | `search` / `resolve` | `search` / `resolve` |
 | `whoami` | `whoami` |
 | `skill list` / `instance list` | `list_skills` / `list_instances` |
+| `skill export` | `expand` (`raw: true`, the stored markdown) per skill; the SKILL.md rendering is client-side |
+| `skill import` | `expand` (`raw: true`, for the stored page's `content_sha256`) then `create_draft` |
 | `page expand` / `page validate` / `page update` | `expand` / `validate` / `update_page` |
 | `page delete` | `delete_page` |
 | `page blob` / `page snapshots` | `fetch_blob` / `list_snapshots` |
@@ -136,6 +145,7 @@ escurel admin pack submit-promotion --tenant acme --candidate-id acme-candidate 
 | `run tool-calls` | `get_run_tool_calls` (`--run`, `--limit`, `--after <seq>`) |
 | `run transcript` | `fetch_blob {run_id}` (`--run`) — the run's transcript, decoded: `{run_id, records:[…]}` |
 | `run usage` | `usage_report` (admin bearer; `--group-by skill,agent,page,model,day`, `--since`, `--until`, `--skill`) |
+| `runtime list` | `list_runtimes` (`claim_event` / `renew_claim` are runner coordination, not in the CLI) |
 | `run lineage` | `list_lineage` (`--root-event <id> [--include events|runs|drafts|tool_calls]… [--limit N] [--cursor]`) |
 | `chat append` / `chat list` | `append_message` / `list_messages` |
 | `session open [<page>] [--draft <id>]\|apply\|close` | `open_session` / `apply_op` / `close_session` |
@@ -170,6 +180,48 @@ drive them over MCP/gRPC or the BFF.
 - `--page-kind` is `skill` | `instance` | `any` (default `any`);
   `--direction` is `in` | `out` | `both` (default `both`); `limit 0`
   means no limit.
+- `skill export` / `skill import` speak Anthropic's `SKILL.md`: `name` is the
+  skill id, `description` the description, the body the skill's
+  instructions. Every other escurel key (`acl`, `schedule`, `agent`,
+  `fields`, …) rides in `metadata.escurel`, and SKILL.md keys escurel does
+  not use (`license`, `allowed-tools`, other `metadata`) ride back in the
+  page's `skill_md:` key, so a round trip gives back the same page. The
+  body's `[[…]]` links stay as written; the export appends an
+  `<!-- escurel:resolve-hints -->` section listing each one for the MCP
+  `resolve` tool, and the import strips exactly that section. The export
+  flag is `--as skill-md` (the default; `--format` is the global output
+  switch). A skill with no `description` exports its `summary` instead,
+  and importing that back adds it — the one lossy direction. The pack
+  importer's `layer:` stamp is dropped.
+  `skill import` refuses a `name` that is not a skill id (letters, digits,
+  `_`, `-`, `.`, at most 128) and writes nothing: it holds the page as a
+  draft (`{ok, skill, target_page_id, draft, issues}`) against the stored
+  page's `content_sha256` (`""` for a new skill), for a person to `draft
+  promote`. Other files in the directory (scripts, assets) are listed in
+  `extra_files` and **not uploaded** — an escurel skill is one page.
+  When the bundle's `metadata.escurel` sets authority (`acl`, `visibility`,
+  `owner_field`, `agent`, `autonomy`, `schedule`, `requires`, `harness`,
+  `model`, `cascade`, `backend`, `promotable`, …) the output names them in
+  `authority_keys` with an `authority_note`, and a warning goes to stderr:
+  review those before promoting a third-party playbook. (A draft has no
+  description field, so the review queue itself shows them only in the
+  draft's content.) The other direction matters as much: importing over an
+  **existing** skill that carries authority keys the bundle does not (a plain
+  community SKILL.md over a skill with `acl.read: [finance]` or an `agent:`)
+  names them in `removed_authority_keys` with a `removed_authority_note`, and
+  warns on stderr — promoting that draft removes them. Anyone may import (a
+  draft is a proposal), but the gateway judges the **promoter**: a draft that
+  adds, removes or changes an authority key lands only for an `escurel:admin`,
+  or a member of the **stored** skill's `acl.update` groups (never the draft's
+  own `acl:`). Anyone else's `draft promote` is refused with `-32003`
+  `data.code: authority_keys_need_admin`, `data.keys` naming the keys, and
+  nothing lands (see references/08 § Skill authority keys). A draft that
+  changes only `description`, the body or other free keys promotes under the
+  ordinary rule. A SKILL.md body keeps its line endings both ways.
+- `skill export` never clobbers a local edit: a file that already holds
+  exactly the export is left alone (listed under `unchanged`), and a file with
+  different content makes the export refuse — naming it, writing nothing at
+  all — unless `--force` is given. Output: `{skills, written, unchanged}`.
 - `ingest --skill <id>` pins a specific `document`-backend skill and
   triggers that skill's **create-ACL** (a 403 if the caller can't create
   there); omit it to resolve the handling skill from the MIME.

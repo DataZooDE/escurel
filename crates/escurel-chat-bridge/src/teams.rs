@@ -1,0 +1,459 @@
+//! Microsoft Teams over the Bot Framework.
+//!
+//! Inbound: the channel POSTs an activity with a JWT the Bot Framework signed
+//! (RS256). It is checked against the keys the OpenID metadata names, for the
+//! configured issuer, with `aud` = this bot's app id, and its `serviceurl`
+//! claim must be the activity's `serviceUrl` — so a token for one connector
+//! cannot carry an activity that points the reply somewhere else. That bound
+//! `serviceUrl` is the only host the bridge ever sends its connector bearer to.
+//! The activity must be a Teams one (`channelId: msteams`), and when the JWKS
+//! lists the signing key's `endorsements` they must include `msteams`, so a
+//! token the Bot Framework issued for another channel this bot is enabled on
+//! cannot enter the Teams identity path.
+//!
+//! Only a person in an allowed Entra tenant, in an explicitly `personal`
+//! conversation, is answered; everything else is ignored.
+//!
+//! Outbound: a client-credentials token from the configured token endpoint,
+//! then `POST {serviceUrl}/v3/conversations/{id}/activities[/{replyToId}]`.
+
+use std::time::{Duration, Instant};
+
+use axum::http::HeaderMap;
+use escurel_auth::JwksCache;
+use jsonwebtoken::{Algorithm, Validation, decode, decode_header};
+use serde_json::{Value, json};
+use tokio::sync::{Mutex, OnceCell};
+
+use crate::channel::{Attachment, ChannelError, ChatChannel, InboundError, InboundTurn, UserRef};
+use crate::config::TeamsConfig;
+
+/// Clock skew the Bot Framework SDKs allow on `exp` / `nbf`.
+const LEEWAY_SECS: u64 = 300;
+/// Re-fetch the signing keys at most this often (and on an unknown `kid`).
+const JWKS_TTL: Duration = Duration::from_secs(3600);
+/// Renew the connector token this long before it expires.
+const TOKEN_MARGIN: Duration = Duration::from_secs(300);
+/// The only Bot Framework channel this implementation answers.
+const CHANNEL_ID: &str = "msteams";
+/// The Teams file-consent attachment that carries a pre-authorised download URL.
+const TEAMS_FILE: &str = "application/vnd.microsoft.teams.file.download.info";
+
+pub struct TeamsChannel {
+    cfg: TeamsConfig,
+    http: reqwest::Client,
+    keys: OnceCell<JwksCache>,
+    token: Mutex<Option<(String, Instant)>>,
+}
+
+impl TeamsChannel {
+    #[must_use]
+    pub fn new(cfg: TeamsConfig) -> Self {
+        Self {
+            cfg,
+            http: client(reqwest::Client::builder()),
+            keys: OnceCell::new(),
+            token: Mutex::new(None),
+        }
+    }
+
+    async fn keys(&self) -> Result<&JwksCache, InboundError> {
+        self.keys
+            .get_or_try_init(|| async {
+                let meta: Value = self
+                    .http
+                    .get(&self.cfg.openid_metadata_url)
+                    .send()
+                    .await
+                    .and_then(reqwest::Response::error_for_status)
+                    .map_err(|e| InboundError::Keys(e.to_string()))?
+                    .json()
+                    .await
+                    .map_err(|e| InboundError::Keys(e.to_string()))?;
+                let jwks_uri = meta["jwks_uri"]
+                    .as_str()
+                    .ok_or_else(|| InboundError::Keys("metadata has no jwks_uri".into()))?;
+                Ok(JwksCache::new(jwks_uri, JWKS_TTL))
+            })
+            .await
+    }
+
+    async fn connector_token(&self) -> Result<String, ChannelError> {
+        let mut slot = self.token.lock().await;
+        if let Some((token, renew_at)) = slot.as_ref()
+            && Instant::now() < *renew_at
+        {
+            return Ok(token.clone());
+        }
+        let resp = self
+            .http
+            .post(&self.cfg.token_url)
+            .form(&[
+                ("grant_type", "client_credentials"),
+                ("client_id", self.cfg.app_id.as_str()),
+                ("client_secret", self.cfg.app_password.as_str()),
+                ("scope", self.cfg.token_scope.as_str()),
+            ])
+            .send()
+            .await
+            .map_err(|e| ChannelError::Auth(e.to_string()))?;
+        if !resp.status().is_success() {
+            // The body may echo the request; never log it with the secret.
+            return Err(ChannelError::Auth(format!(
+                "token endpoint answered {}",
+                resp.status()
+            )));
+        }
+        let body: Value = resp
+            .json()
+            .await
+            .map_err(|e| ChannelError::Auth(e.to_string()))?;
+        let token = body["access_token"]
+            .as_str()
+            .ok_or_else(|| ChannelError::Auth("no access_token".into()))?
+            .to_owned();
+        let ttl = Duration::from_secs(body["expires_in"].as_u64().unwrap_or(3600));
+        *slot = Some((
+            token.clone(),
+            Instant::now() + ttl.saturating_sub(TOKEN_MARGIN),
+        ));
+        Ok(token)
+    }
+
+    async fn post_activity(&self, url: String, body: Value) -> Result<(), ChannelError> {
+        let token = self.connector_token().await?;
+        let resp = self
+            .http
+            .post(&url)
+            .bearer_auth(token)
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| {
+                if e.is_connect() {
+                    ChannelError::Connect(e.to_string())
+                } else {
+                    ChannelError::Http(e.to_string())
+                }
+            })?;
+        let status = resp.status();
+        if status.is_success() {
+            return Ok(());
+        }
+        Err(ChannelError::Refused {
+            status: status.as_u16(),
+            body: resp.text().await.unwrap_or_default(),
+        })
+    }
+}
+
+impl ChatChannel for TeamsChannel {
+    fn name(&self) -> &'static str {
+        "msteams"
+    }
+
+    async fn verify_inbound(
+        &self,
+        headers: &HeaderMap,
+        body: &[u8],
+    ) -> Result<Value, InboundError> {
+        let token = headers
+            .get(axum::http::header::AUTHORIZATION)
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.strip_prefix("Bearer "))
+            .ok_or(InboundError::MissingToken)?;
+        let header = decode_header(token).map_err(|e| InboundError::BadToken(e.to_string()))?;
+        if header.alg != Algorithm::RS256 {
+            return Err(InboundError::BadToken(format!("alg {:?}", header.alg)));
+        }
+        let kid = header
+            .kid
+            .ok_or_else(|| InboundError::BadToken("no kid".into()))?;
+        let (key, endorsements) = self
+            .keys()
+            .await?
+            .endorsed_key_for_kid(&kid)
+            .await
+            .map_err(|e| InboundError::BadToken(e.to_string()))?;
+        if let Some(channels) = &endorsements
+            && !channels.iter().any(|c| c == CHANNEL_ID)
+        {
+            return Err(InboundError::BadToken(format!(
+                "signing key `{kid}` is not endorsed for {CHANNEL_ID}"
+            )));
+        }
+        let mut validation = Validation::new(Algorithm::RS256);
+        validation.set_issuer(&[&self.cfg.issuer]);
+        validation.set_audience(&[&self.cfg.app_id]);
+        validation.leeway = LEEWAY_SECS;
+        validation.validate_nbf = true;
+        let claims = decode::<Value>(token, &key, &validation)
+            .map_err(|e| InboundError::BadToken(e.to_string()))?
+            .claims;
+        let activity: Value =
+            serde_json::from_slice(body).map_err(|e| InboundError::Malformed(e.to_string()))?;
+        if activity["channelId"].as_str() != Some(CHANNEL_ID) {
+            return Err(InboundError::BadToken(format!(
+                "not a {CHANNEL_ID} activity (channelId {})",
+                activity["channelId"]
+            )));
+        }
+        let bound = claims["serviceurl"]
+            .as_str()
+            .or_else(|| claims["serviceUrl"].as_str())
+            .ok_or_else(|| InboundError::BadToken("no serviceurl claim".into()))?;
+        let claimed = activity["serviceUrl"].as_str().unwrap_or_default();
+        if bound.trim_end_matches('/') != claimed.trim_end_matches('/') {
+            return Err(InboundError::BadToken(
+                "the activity's serviceUrl is not the token's".into(),
+            ));
+        }
+        Ok(activity)
+    }
+
+    fn to_capture(&self, a: &Value) -> Option<InboundTurn> {
+        if a["type"] != "message" {
+            return None;
+        }
+        let text = |v: &Value| v.as_str().map(str::to_owned);
+        let message_id = text(&a["id"])?;
+        let conversation_id = text(&a["conversation"]["id"])?;
+        let from_id = text(&a["from"]["id"])?;
+        if a["recipient"]["id"].as_str() == Some(from_id.as_str()) {
+            return None;
+        }
+        // A page chat is private to one person; a group or channel reply
+        // would show one member's answer to everyone in it. Only an explicit
+        // `personal` counts: a missing type is not evidence of a 1:1 chat.
+        let kind = a["conversation"]["conversationType"].as_str();
+        if kind != Some("personal") {
+            tracing::info!(conversation_type = ?kind, "teams: not a 1:1 chat, ignored");
+            return None;
+        }
+        let tenant = text(&a["conversation"]["tenantId"])
+            .or_else(|| text(&a["channelData"]["tenant"]["id"]));
+        if !tenant
+            .as_deref()
+            .is_some_and(|t| self.cfg.allowed_tenants.iter().any(|a| a == t))
+        {
+            tracing::warn!(tenant = ?tenant, "teams: sender's tenant is not allowed, ignored");
+            return None;
+        }
+        Some(InboundTurn {
+            message_id,
+            conversation_id,
+            user: UserRef {
+                id: from_id,
+                directory_id: text(&a["from"]["aadObjectId"]),
+                directory_tenant: tenant,
+                display_name: text(&a["from"]["name"]),
+            },
+            text: strip_mentions(a["text"].as_str().unwrap_or_default()),
+            attachments: attachments(a),
+            reply_to: json!({
+                "serviceUrl": a["serviceUrl"],
+                "conversation": a["conversation"],
+                "from": a["recipient"],
+                "recipient": a["from"],
+                "replyToId": a["id"],
+            }),
+        })
+    }
+
+    async fn send_reply(&self, turn: &InboundTurn, text: &str) -> Result<(), ChannelError> {
+        let r = &turn.reply_to;
+        let url = format!(
+            "{}/{}",
+            conversation_url(r),
+            path_segment(r["replyToId"].as_str().unwrap_or_default())
+        );
+        let body = json!({
+            "type": "message", "from": r["from"], "recipient": r["recipient"],
+            "conversation": r["conversation"], "replyToId": r["replyToId"],
+            "text": text, "textFormat": "markdown",
+        });
+        self.post_activity(url, body).await
+    }
+
+    async fn typing(&self, turn: &InboundTurn) -> Result<(), ChannelError> {
+        let r = &turn.reply_to;
+        let body = json!({
+            "type": "typing", "from": r["from"], "recipient": r["recipient"],
+            "conversation": r["conversation"],
+        });
+        self.post_activity(conversation_url(r), body).await
+    }
+
+    async fn fetch_attachment(
+        &self,
+        turn: &InboundTurn,
+        attachment: &Attachment,
+        max_bytes: usize,
+    ) -> Result<Vec<u8>, ChannelError> {
+        let service = turn.reply_to["serviceUrl"].as_str().unwrap_or_default();
+        let target = crate::fetch::check(&attachment.url, service, &self.cfg.attachment_hosts)
+            .await
+            .map_err(|e| ChannelError::Http(format!("refused: {e}")))?;
+        // Inline content lives on the connector and needs the bot's bearer; a
+        // file link is pre-authorised. Never hand the bearer to another host.
+        let req = match target {
+            crate::fetch::Target::Connector => self
+                .http
+                .get(&attachment.url)
+                .bearer_auth(self.connector_token().await?),
+            crate::fetch::Target::Pinned { host, addrs } => {
+                client(reqwest::Client::builder().resolve_to_addrs(&host, &addrs))
+                    .get(&attachment.url)
+            }
+        };
+        let mut resp = req
+            .send()
+            .await
+            .map_err(|e| ChannelError::Http(e.to_string()))?;
+        if !resp.status().is_success() {
+            return Err(ChannelError::Refused {
+                status: resp.status().as_u16(),
+                body: String::new(),
+            });
+        }
+        let mut bytes = Vec::new();
+        while let Some(chunk) = resp
+            .chunk()
+            .await
+            .map_err(|e| ChannelError::Http(e.to_string()))?
+        {
+            bytes.extend_from_slice(&chunk);
+            if bytes.len() > max_bytes {
+                return Err(ChannelError::Http(format!("larger than {max_bytes} bytes")));
+            }
+        }
+        Ok(bytes)
+    }
+}
+
+/// Every request the channel makes: bounded, and redirects are not followed
+/// (a redirect would reach a host nobody checked; a 3xx is a refusal).
+fn client(builder: reqwest::ClientBuilder) -> reqwest::Client {
+    builder
+        .timeout(Duration::from_secs(30))
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .unwrap_or_default()
+}
+
+/// `{serviceUrl}/v3/conversations/{id}/activities`.
+fn conversation_url(reply_to: &Value) -> String {
+    format!(
+        "{}/v3/conversations/{}/activities",
+        reply_to["serviceUrl"]
+            .as_str()
+            .unwrap_or_default()
+            .trim_end_matches('/'),
+        path_segment(reply_to["conversation"]["id"].as_str().unwrap_or_default())
+    )
+}
+
+/// Percent-encode everything but RFC 3986 unreserved characters: Teams
+/// conversation ids carry `:`, `;`, `=` and `@`.
+fn path_segment(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for b in s.bytes() {
+        if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'~') {
+            out.push(char::from(b));
+        } else {
+            out.push_str(&format!("%{b:02X}"));
+        }
+    }
+    out
+}
+
+/// Drop `<at>…</at>` mentions of the bot and surrounding whitespace.
+fn strip_mentions(text: &str) -> String {
+    let mut out = String::new();
+    let mut rest = text;
+    while let Some(start) = rest.find("<at>") {
+        out.push_str(&rest[..start]);
+        rest = rest[start..]
+            .find("</at>")
+            .map_or("", |end| &rest[start + end + "</at>".len()..]);
+    }
+    out.push_str(rest);
+    out.trim().to_owned()
+}
+
+/// The downloadable attachments of an activity. Teams repeats the message
+/// itself as an inline `text/html` attachment with no URL; those are skipped.
+fn attachments(a: &Value) -> Vec<Attachment> {
+    a["attachments"]
+        .as_array()
+        .map(|list| {
+            list.iter()
+                .filter_map(|att| {
+                    let name = att["name"].as_str().unwrap_or("attachment").to_owned();
+                    let declared = att["contentType"].as_str().unwrap_or_default();
+                    let (url, content_type) = if declared == TEAMS_FILE {
+                        let url = att["content"]["downloadUrl"].as_str()?;
+                        (url, mime_for(&name).to_owned())
+                    } else {
+                        (att["contentUrl"].as_str()?, declared.to_owned())
+                    };
+                    Some(Attachment {
+                        name,
+                        content_type,
+                        url: url.to_owned(),
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// A file's MIME type from its extension (a Teams file attachment names only
+/// the file type).
+fn mime_for(name: &str) -> &'static str {
+    let ext = name.rsplit_once('.').map(|(_, e)| e.to_ascii_lowercase());
+    match ext.as_deref() {
+        Some("txt") => "text/plain",
+        Some("md") => "text/markdown",
+        Some("csv") => "text/csv",
+        Some("pdf") => "application/pdf",
+        Some("docx") => "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        Some("xlsx") => "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        Some("pptx") => "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        Some("png") => "image/png",
+        Some("jpg" | "jpeg") => "image/jpeg",
+        _ => "application/octet-stream",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mentions_are_stripped() {
+        assert_eq!(
+            strip_mentions("<at>escurel</at> who renews?"),
+            "who renews?"
+        );
+        assert_eq!(strip_mentions("plain"), "plain");
+    }
+
+    #[test]
+    fn conversation_ids_are_encoded_as_one_segment() {
+        assert_eq!(path_segment("a:1b;messageid=2"), "a%3A1b%3Bmessageid%3D2");
+    }
+
+    #[test]
+    fn the_inline_html_copy_is_not_an_attachment_and_a_teams_file_is() {
+        let a = json!({ "attachments": [
+            { "contentType": "text/html", "content": "<p>hi</p>" },
+            { "contentType": TEAMS_FILE, "name": "Q3.pdf",
+              "content": { "downloadUrl": "https://files/q3", "fileType": "pdf" } },
+        ]});
+        let got = attachments(&a);
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].content_type, "application/pdf");
+        assert_eq!(got[0].url, "https://files/q3");
+    }
+}

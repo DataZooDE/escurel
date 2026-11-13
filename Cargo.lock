@@ -2545,6 +2545,7 @@ name = "escurel-auth"
 version = "1.0.0"
 dependencies = [
  "base64 0.22.1",
+ "escurel-types",
  "jsonwebtoken 9.3.1",
  "rand 0.8.6",
  "reqwest 0.12.28",
@@ -2556,6 +2557,31 @@ dependencies = [
  "tokio",
  "ulid",
  "wiremock",
+]
+
+[[package]]
+name = "escurel-chat-bridge"
+version = "1.0.0"
+dependencies = [
+ "axum",
+ "base64 0.22.1",
+ "chrono",
+ "duckdb",
+ "escurel-auth",
+ "escurel-client",
+ "escurel-obs",
+ "escurel-runner-workflow",
+ "escurel-test-support",
+ "escurel-types",
+ "jsonwebtoken 9.3.1",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]
@@ -2746,6 +2772,7 @@ dependencies = [
 name = "escurel-md"
 version = "1.0.0"
 dependencies = [
+ "escurel-types",
  "regex",
  "serde_yaml_ng",
  "thiserror 2.0.18",
@@ -2987,11 +3014,13 @@ dependencies = [
  "chrono",
  "chrono-tz",
  "croner",
+ "flate2",
  "hmac 0.12.1",
  "regex",
  "serde",
  "serde_json",
  "sha2 0.10.9",
+ "tar",
 ]
 
 [[package]]

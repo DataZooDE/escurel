@@ -103,6 +103,9 @@ pub struct Signer {
     kid: String,
     /// PKCS#1 PEM — the flavour `jsonwebtoken`'s RS256 path accepts.
     private_pem: Vec<u8>,
+    /// The public half, base64url modulus and exponent, for [`Self::public_jwk`].
+    n_b64: String,
+    e_b64: String,
 }
 
 impl std::fmt::Debug for Signer {
@@ -154,6 +157,18 @@ impl Signer {
             tenant,
             kid,
             private_pem,
+            n_b64,
+            e_b64,
+        })
+    }
+
+    /// The public half of the signing key as one RS256 JWK under this
+    /// signer's `kid` — what a verifier's JWKS lists. Never the private key.
+    #[must_use]
+    pub fn public_jwk(&self) -> serde_json::Value {
+        serde_json::json!({
+            "kty": "RSA", "alg": "RS256", "use": "sig",
+            "kid": self.kid, "n": self.n_b64, "e": self.e_b64,
         })
     }
 
@@ -200,6 +215,25 @@ impl Signer {
             .cloned()
             .collect();
         self.mint_with_roles(subject, &scoped, ttl_secs, run)
+    }
+
+    /// Mint a chat bridge's token for the person it answers (#824): `sub`, no
+    /// roles, and the channel in `escurel_types::bridge::CHANNEL_CLAIM`. The
+    /// gateway honours it as a bridge token only under a key it lists in
+    /// `ESCUREL_AUTH_BRIDGE_KID`, and then bounds it whatever it says (see
+    /// the verifier); this method is the shape the bridge signs, not a limit.
+    ///
+    /// # Errors
+    /// When signing fails.
+    pub fn mint_bridge(
+        &self,
+        subject: &str,
+        channel: &str,
+        ttl_secs: u64,
+    ) -> Result<String, SignError> {
+        let mut claims = self.claims(subject, &[], ttl_secs);
+        claims[escurel_types::bridge::CHANNEL_CLAIM] = json!(channel);
+        self.sign(&claims)
     }
 
     /// Mint an INTERNAL-DELEGATION bearer (fleet #801 Phase 4, AD-7): the token
@@ -507,8 +541,14 @@ impl Signer {
         ttl_secs: u64,
         run: Option<&RunClaims>,
     ) -> Result<String, SignError> {
+        let mut claims = self.claims(subject, roles, ttl_secs);
+        stamp_run(&mut claims, run);
+        self.sign(&claims)
+    }
+
+    fn claims(&self, subject: &str, roles: &[String], ttl_secs: u64) -> serde_json::Value {
         let now = now_secs();
-        let mut claims = json!({
+        json!({
             "iss": self.issuer,
             "aud": self.audience,
             "sub": subject,
@@ -516,15 +556,7 @@ impl Signer {
             "roles": roles,
             "iat": now,
             "exp": now + ttl_secs,
-        });
-        stamp_run(&mut claims, run);
-        let mut header = Header::new(Algorithm::RS256);
-        header.kid = Some(self.kid.clone());
-        Ok(encode(
-            &header,
-            &claims,
-            &EncodingKey::from_rsa_pem(&self.private_pem)?,
-        )?)
+        })
     }
 }
 
@@ -614,6 +646,34 @@ mod tests {
         key.to_pkcs8_pem(rsa::pkcs8::LineEnding::LF)
             .expect("encode")
             .to_string()
+    }
+
+    /// The published JWK is the public half only, and verifies what the
+    /// signer mints (the bridge serves it as its JWKS).
+    #[test]
+    fn the_public_jwk_verifies_the_signers_tokens_and_holds_no_private_part() {
+        let signer = Signer::build(
+            "https://issuer".into(),
+            "escurel".into(),
+            "acme".into(),
+            Some("bridge-key".into()),
+            &test_key(),
+        )
+        .unwrap();
+        let jwk = signer.public_jwk();
+        assert_eq!(jwk["kid"], "bridge-key");
+        for private in ["d", "p", "q", "dp", "dq", "qi"] {
+            assert!(jwk.get(private).is_none(), "{private} leaked: {jwk}");
+        }
+        let token = signer.mint_bridge("user:alice", "msteams", 60).unwrap();
+        let key = jsonwebtoken::DecodingKey::from_rsa_components(
+            jwk["n"].as_str().unwrap(),
+            jwk["e"].as_str().unwrap(),
+        )
+        .unwrap();
+        let mut v = jsonwebtoken::Validation::new(jsonwebtoken::Algorithm::RS256);
+        v.set_audience(&["escurel"]);
+        jsonwebtoken::decode::<serde_json::Value>(&token, &key, &v).expect("verifies");
     }
 
     /// Workbench backend P3-6 (#510 step 2): a NARROWED agent token carries

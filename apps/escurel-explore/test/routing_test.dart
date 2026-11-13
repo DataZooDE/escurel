@@ -95,6 +95,21 @@ void main() {
     expect(find.bySemanticsLabel('agents-panel'), findsOneWidget);
   });
 
+  testWidgets('/inspector/runtimes opens the Runtimes panel', (tester) async {
+    tester.view.physicalSize = const Size(1600, 900);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.resetPhysicalSize);
+
+    final client = _buildCorpus();
+    addTearDown(client.close);
+
+    await tester.pumpWidget(_appWith(client, initialLocation: '/inspector/runtimes'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Dev Inspector — Runtimes'), findsOneWidget);
+    expect(find.bySemanticsLabel('runtimes-panel'), findsOneWidget);
+  });
+
   testWidgets('topbar inspector toggle navigates between editor and inspector', (tester) async {
     tester.view.physicalSize = const Size(1600, 900);
     tester.view.devicePixelRatio = 1.0;

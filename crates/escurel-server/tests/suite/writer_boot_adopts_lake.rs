@@ -241,8 +241,8 @@ async fn first_ever_writer_boot_against_an_unpublished_lake_still_succeeds() {
         .unwrap_or_default();
     assert_eq!(
         skills.len(),
-        2,
-        "only the system skills (escurel, agent): {resp}"
+        3,
+        "only the system skills (escurel, agent, runtime): {resp}"
     );
 
     booted.handle.shutdown().await;

@@ -8,6 +8,12 @@ derives its version from the tag (`vYYYY.MM.DD` → `YYYY.M.D`, leading zeros dr
 
 ### Added
 
+- **Export as SKILL.md** (#825). A skill page's editor title and its Knowledge-tree row export the skill as an
+  Anthropic-style `<folder>/<skill>/SKILL.md` (a folder you pick) for an agent that reads SKILL.md playbooks: the same
+  rendering as `escurel skill export` (`name`/`description`, the instructions as the body, escurel-only keys under
+  `metadata.escurel`, each `[[link]]` listed as a `resolve` hint), pinned to the CLI by a shared fixture. Importing a
+  SKILL.md back is the CLI's `escurel skill import`, which holds it as a draft for review.
+
 - **Scheduled skills** (#819). A skill with `schedule:` says so where skills are listed: a chip in the Knowledge
   tree (`scheduled · next 07:15 UTC`; the tooltip and the skill page's **Schedule** fact give the expression, its
   zone, the next window and the `schedule_budget`), and a line under it in the Start skill picker. The next window
@@ -15,6 +21,16 @@ derives its version from the tag (`vYYYY.MM.DD` → `YYYY.M.D`, leading zeros dr
   shown as written, never guessed. A window the runner skipped because the daily budget was spent (`run-skipped`)
   is listed in the Runs view under **Skipped by budget** (closed, with its count), with the window and the budget in
   words; a click opens the skill, where the schedule is set.
+
+- **Runtimes view** (#818), beside Runs (collapsed until opened; it reads only while shown). One row per
+  registered runner (`list_runtimes`): its status in words and by icon shape (online, stale, stopped, not
+  reporting), the harnesses it offers with their CLI versions (names only for a non-admin, whose read leaves the
+  versions out), its labels and how many runs it has live; the tooltip says when it was last seen, when it turns
+  stale, its capacity and its page. A click opens the runtime page. A skill that declares `requires:` shows
+  "needs codex · repo:escurel" on its Knowledge row and "needs harness codex · labels repo:escurel" in its
+  tooltip; a malformed one shows "routing blocked". Run detail of a live run says which runtime holds its event's
+  claim lease ("Taken by runtime build-box · lease until 10:01", linked to the runtime page); a non-admin, who
+  cannot see claim holders, reads "Taken by a runtime (an admin sees which)".
 
 - **Usage and Agents views** (#821, #823), beside Runs (collapsed until opened; each reads only while it is
   shown). **Usage** rolls up `usage_report` for the last 24 hours, 7 days or 30 days (title action), grouped by

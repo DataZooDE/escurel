@@ -60,6 +60,18 @@ optional; reported on `list_skills`, linted by `validate`):
   reaches `list_skills` as `{runs_per_day: 0, invalid: true}` and the runner fires no window, filing
   `run-skipped { reason: "invalid_budget" }` for each instead — never an uncapped schedule. Both reach `list_skills` as written. How the windows
   fire (no backfill, the skipped record) is in references/11 *Scheduled triggers*.
+- `requires: {harness: <name>, labels: [<label>, …]}` — what a runner must offer to take this
+  skill's work (#818): the harness (its default or one in `ESCUREL_RUNNER_HARNESS_ALLOW`) and
+  EVERY label (`ESCUREL_RUNNER_LABELS`, e.g. `site:muc`, `has:sap-gui`). Both keys are optional.
+  An event may add its own as `provenance.requires` (same shape; both must hold). A runner that
+  cannot satisfy it leaves the event in the inbox **unclaimed** — never dead-letters it — for a
+  runner that can (references/11 *Several runners*). Malformed is an error (`requires_invalid`;
+  `capture_event` refuses a malformed `provenance.requires` with that code) and fails closed: it
+  reaches `list_skills` as `requires: {invalid: true}` and no runner takes the work.
+  `requires.harness` only **routes** (to a runner offering it); the run still uses the skill's
+  `harness:` or the runner's default, so a skill naming two different ones gets a
+  `requires_harness_mismatch` warning. The event's requirement can only narrow the skill's
+  (labels add up; two different harnesses match no runner).
 - `generated:`, `verified:`, `status:`, `stale_after:`, `sources:` — the OKF provenance keys, all optional and
   lint-only (a malformed one is a warning). They reach `list_skills` as written; `stale_after` is an
   RFC 3339 instant or an ISO-8601 duration (`P90D`) counted from `verified`, and a client decides what
@@ -507,16 +519,30 @@ Do not confuse it with *this* `escurel-platform` skill: the meta-skill is
 content inside a tenant for runtime agents; this skill is developer
 documentation for building the app.
 
-### System skills: `escurel` and `agent`
+### Authority keys on a skill page
+
+`acl`, `visibility`, `owner_field`, `instance_acl`, `agent`, `autonomy`,
+`schedule`, `schedule_budget`, `requires`, `harness`, `model`, `cascade`,
+`actions`, `chat`, `backend`, `promotable`, `protected`, `immutable` and
+`freeze_when` decide
+who may read and write, who a run executes as, when it runs and what it
+triggers. Adding, removing or changing any of them on a skill page needs an
+admin, or membership of the **stored** page's `acl.update` groups; a new
+skill that sets one is an admin's. `description`, `summary`, `fields` and
+the body stay free. Who exactly, every write door, and the refusal shape:
+references/08 § Skill authority keys.
+
+### System skills: `escurel`, `agent` and `runtime`
 
 The meta-skill is one of the **system skills** every served tenant gets at
-boot (`Indexer::ensure_system_skills`); the other is **`agent`** — agent
-profiles (§Agent profiles below). Both are installed only when the tenant has
+boot (`Indexer::ensure_system_skills`); the others are **`agent`** — agent
+profiles (§Agent profiles below) — and **`runtime`** — runner registrations
+(§Runtimes below). Each is installed only when the tenant has
 no skill page with that id, so a tenant's own page is never clobbered (a
 tenant-authored `agent` page is kept and logged). `list_skills` therefore
-always shows both — count them when you assert on a fresh tenant's catalogue.
+always shows all three — count them when you assert on a fresh tenant's catalogue.
 
-`agent` is **admin-only authority**: its skill page, any skill page claiming
+`agent` and `runtime` are **admin-only authority** (said here for `agent`; `runtime` is the same): its skill page, any skill page claiming
 `id: agent`, and every page under `markdown/instances/agent/` are writable by
 `escurel:admin` alone — in every `ESCUREL_WRITE_ACL` mode, `off` and `log`
 included. That is enforced by the write ACL independently of
@@ -570,6 +596,34 @@ agent whose `max_concurrent:` is present but not a positive whole number
 (`0`, `"2"`, `-1`) has its runs **refused** (dead-lettered, the error naming
 the key), never run uncapped.
 How the token and the gateway enforce it: references/08.
+
+### Runtimes: `runtime` instances (written by runners)
+
+Every `escurel-runner` registers itself (#818) as
+`markdown/instances/runtime/<runner-id-slug>.md`, on boot and again whenever
+its probe of the harness CLIs reads a different version
+(`ESCUREL_RUNNER_PROBE_INTERVAL`, default 10m) — never per heartbeat:
+
+```yaml
+kind: instance
+skill: runtime
+id: laptop-jr                       # slug of runner_id
+runner_id: "laptop-jr"              # ESCUREL_RUNNER_ID
+harnesses: [{"name": "echo", "version": "escurel-echo-harness 0.47.0"}, {"name": "codex", "version": null}]
+labels: ["site:muc", "has:sap-gui"] # ESCUREL_RUNNER_LABELS
+max_concurrent: 4                   # ESCUREL_RUNNER_MAX_HARNESS_PROCS
+claim_holder: "escurel-runner#01jx…" # what its claim_event leases carry
+```
+
+`version` is the first line of `<cli> --version`, `null` for an in-process
+harness or a CLI that is not installed. Only `escurel:admin` writes these, so
+the runner uses its own admin identity; a runner that may not write logs it
+once and keeps working. Read them with `list_runtimes` (references/02), which
+adds liveness derived from the runner's status record — `online`, `stale`
+(silent for more than 3 x its reporting interval), `stopped`, `unknown`. Do not
+author runtime pages by hand; give a stable `ESCUREL_RUNNER_ID` instead, or a
+restarted runner (default id `<host>:<pid>`) registers a new page and the old
+one reads stale.
 
 ## Pages with rendered views: always carry a text alternative
 

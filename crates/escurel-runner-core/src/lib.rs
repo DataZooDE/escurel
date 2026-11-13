@@ -28,6 +28,7 @@ mod quota;
 mod reconciler;
 mod recovery;
 mod run_events;
+pub mod runtime;
 pub mod schedule;
 mod transcript;
 mod trigger;
@@ -36,7 +37,8 @@ mod workflow;
 pub use admit::{Admission, LoopLimits, admit};
 pub use agent::{AgentChoice, agent_for_trigger, choose_agent, resolve_run_agent};
 pub use auth::{
-    AuthError, ROOT_EVENT_ID_CLAIM, RUN_ID_CLAIM, RunClaims, Signer, TRACE_ID_CLAIM, TokenSource,
+    AuthError, ROOT_EVENT_ID_CLAIM, RUN_ID_CLAIM, RunClaims, Signer, TRACE_ID_CLAIM, TokenFile,
+    TokenSource,
 };
 pub use cascade::{
     CascadeError, CascadeOutcome, SkillContract, emit_cascade, emit_cascade_with_id, skill_contract,

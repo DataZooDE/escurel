@@ -11,7 +11,7 @@
 #      seed + as_of time-travel + scenario overlay + the event/inbox
 #      tools resolve end-to-end, and
 #   2b. seeds an agent profile + two finished runs and asserts the page
-#      cost badge (deep-linked spine page) and the Agents inspector panel
+#      cost badge (deep-linked spine page), the Agents and Runtimes inspector panels
 #      render them, with usage_report probes behind both, and
 #   3. asks the governed chat agent a question on its own verifying stack
 #      (scripts/verify-chat.sh): the real escurel-runner answers it as the
@@ -136,6 +136,19 @@ for run in 1:processed:0.30 2:failed:0.12; do
     | jq -e '.result.structuredContent.event_id' >/dev/null || fail "could not file run-finished $n"
 done
 
+# --- runtimes: a registered runner reporting status ----------------------
+# A real runner cannot run against this gateway (see above), so its two
+# writes are filed the way the runner files them (#818): its `runtime` page
+# (`runtime_page`, escurel-runner-core) and its one overwritten status record
+# (`report_runner_status`), which `list_runtimes` joins into `online`.
+note "seeding the verify-demo runtime + its status record"
+RUNTIME_DOC="$(printf -- '---\nkind: instance\nskill: runtime\nid: verify-demo-runner\nrunner_id: "verify-demo-runner"\nharnesses: [{"name":"echo","version":null},{"name":"claude","version":"2.1.3"}]\nlabels: ["repo:escurel","site:demo"]\nmax_concurrent: 2\nclaim_holder: "verify-demo#runner"\n---\n# runtime verify-demo-runner\n')"
+seed_mcp update_page "$(jq -nc --arg c "$RUNTIME_DOC" '{page_id: "markdown/instances/runtime/verify-demo-runner.md", base_sha256: "", content: $c}')" \
+  | jq -e '.result.structuredContent.ok == true' >/dev/null || fail "could not seed the runtime page"
+seed_mcp report_runner_status '{"runner_id":"verify-demo-runner","state":"started","status_interval_s":300,"body":"{\"version\":\"verify-demo\",\"live_runs\":[]}"}' \
+  | jq -e '.result.structuredContent.event_id == "runner-status:verify-demo-runner"' >/dev/null \
+  || fail "could not file the runner status record"
+
 mkdir -p "$SHOTS"
 "$RODNEY" start >/dev/null 2>&1 || fail "rodney start"
 note "open $BASE/  (the editor — inbox/events/webhooks/members folded in)"
@@ -200,6 +213,14 @@ note "probe ok: cost badge = ${badge//$'\n'/ }"
 present agents-panel
 present agent-row:scribe
 
+# The Runtimes inspector panel lists the seeded runner, online.
+"$RODNEY" open "$BASE/#/inspector/runtimes" >/dev/null 2>&1 || fail "rodney open /inspector/runtimes"
+present runtimes-panel
+present runtime-row:verify-demo-runner
+rt_status="$(leaf_text runtime-status:verify-demo-runner)"
+[[ "$rt_status" == *online* ]] || fail "the verify-demo runtime should read online (got '$rt_status')"
+note "probe ok: runtime status = ${rt_status//$'\n'/ }"
+
 "$RODNEY" open "$BASE/" >/dev/null 2>&1 || fail "rodney reopen /"
 present tab-events
 
@@ -228,6 +249,11 @@ expect_int "spine runs (group_by page)" "$(mcp_int usage_report '{"group_by":["p
 by_agent="r.rows.find(function(x){return x.group.agent==='agent:scribe'})"
 expect_int "scribe runs~processed (group_by agent)" \
   "$(mcp_int usage_report '{"group_by":["agent"]}' "(($by_agent)||{}).runs+'~'+((($by_agent)||{}).by_status||{}).processed")" "2~1"
+
+note "probe: list_runtimes joins the runtime page with its status record"
+rt_row="r.runtimes.find(function(x){return x.runner_id==='verify-demo-runner'})"
+expect_int "verify-demo runtime status~labels" \
+  "$(mcp_int list_runtimes '{}' "(($rt_row)||{}).status+'~'+((($rt_row)||{}).labels||[]).join(',')")" "online~repo:escurel,site:demo"
 
 note "probe: seed populated (engagement instances)"
 eng=$(mcp_int list_instances '{"skill_id":"engagement"}' 'r.instances.length')
