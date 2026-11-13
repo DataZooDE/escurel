@@ -112,23 +112,7 @@ pub enum ParseError {
 /// block, the YAML is malformed, or the required `kind:` field is
 /// absent or unrecognised.
 pub fn parse(input: &str) -> Result<Page<'_>, ParseError> {
-    // An editor-saved page may carry a UTF-8 BOM and/or CRLF line endings; both are ordinary files.
-    // Slices (not copies) are returned, so the body stays byte-verbatim.
-    let after_open = strip_bom(input)
-        .strip_prefix("---\n")
-        .or_else(|| strip_bom(input).strip_prefix("---\r\n"))
-        .ok_or(ParseError::MissingFrontmatter)?;
-
-    // Find the closing delimiter: a `---` line. Match either
-    // `\n---\n` (delimiter followed by body) or `\n---` at end of
-    // input (delimiter is the last line with no trailing newline).
-    let (yaml, body) = split_at_close(after_open).ok_or(ParseError::UnterminatedFrontmatter)?;
-
-    let value: serde_yaml_ng::Value = serde_yaml_ng::from_str(yaml)?;
-    let mapping = match value {
-        serde_yaml_ng::Value::Mapping(m) => m,
-        _ => return Err(ParseError::NotAMapping),
-    };
+    let (mapping, body) = split_frontmatter(input)?;
 
     // `kind:` is the page-kind key. The legacy `type: skill|instance` spelling is REMOVED (OKF stage 1
     // hard cut): a page that has it and no valid `kind:` is told so, instead of being reported as a
@@ -158,6 +142,54 @@ pub fn parse(input: &str) -> Result<Page<'_>, ParseError> {
     })
 }
 
+/// Split a `---`-fenced YAML frontmatter block off a markdown document, without asking what kind of
+/// document it is. [`parse`] is this plus the escurel `kind:` rule; a foreign format that shares the
+/// fence (an Anthropic `SKILL.md`, which has `name:` and no `kind:`) needs only this half.
+///
+/// # Errors
+///
+/// [`ParseError::MissingFrontmatter`], [`ParseError::UnterminatedFrontmatter`],
+/// [`ParseError::Yaml`] or [`ParseError::NotAMapping`].
+pub fn split_frontmatter(input: &str) -> Result<(serde_yaml_ng::Mapping, &str), ParseError> {
+    // An editor-saved page may carry a UTF-8 BOM and/or CRLF line endings; both are ordinary files.
+    // Slices (not copies) are returned, so the body stays byte-verbatim.
+    let after_open = strip_bom(input)
+        .strip_prefix("---\n")
+        .or_else(|| strip_bom(input).strip_prefix("---\r\n"))
+        .ok_or(ParseError::MissingFrontmatter)?;
+
+    // Find the closing delimiter: a `---` line. Match either
+    // `\n---\n` (delimiter followed by body) or `\n---` at end of
+    // input (delimiter is the last line with no trailing newline).
+    let (yaml, body) = split_at_close(after_open).ok_or(ParseError::UnterminatedFrontmatter)?;
+
+    match serde_yaml_ng::from_str(yaml)? {
+        serde_yaml_ng::Value::Mapping(m) => Ok((m, body)),
+        // An empty block (`---\n---`) is an empty mapping, not "not a mapping".
+        serde_yaml_ng::Value::Null => Ok((serde_yaml_ng::Mapping::new(), body)),
+        _ => Err(ParseError::NotAMapping),
+    }
+}
+
+/// Serialise `fields` as a frontmatter block followed by `body` — the inverse of
+/// [`split_frontmatter`]. Key order is the mapping's order; comments are not representable.
+///
+/// # Errors
+///
+/// [`ParseError::Yaml`] when a value cannot be serialised.
+pub fn render_page(fields: &serde_yaml_ng::Mapping, body: &str) -> Result<String, ParseError> {
+    // `to_string` terminates with a newline, so the closing `---` follows on
+    // its own line directly after the serialized block. An empty mapping
+    // serialises as `{}`, which a reader would take for a one-line flow map:
+    // emit an empty block instead.
+    let yaml = if fields.is_empty() {
+        String::new()
+    } else {
+        serde_yaml_ng::to_string(fields)?
+    };
+    Ok(format!("---\n{yaml}---\n{body}"))
+}
+
 /// Set a boolean frontmatter field on a page and re-serialize the whole
 /// markdown document (frontmatter block + unchanged body).
 ///
@@ -178,10 +210,7 @@ pub fn set_frontmatter_bool(input: &str, key: &str, value: bool) -> Result<Strin
     let page = parse(input)?;
     let mut fields = page.frontmatter.fields.clone();
     fields.insert(YamlValue::String(key.to_owned()), YamlValue::Bool(value));
-    // `to_string` terminates with a newline, so the closing `---` follows on
-    // its own line directly after the serialized block.
-    let yaml = serde_yaml_ng::to_string(&YamlValue::Mapping(fields))?;
-    Ok(format!("---\n{yaml}---\n{}", page.body))
+    render_page(&fields, page.body)
 }
 
 /// Set (or clear) a string-valued frontmatter key, re-serialising the page.
@@ -216,8 +245,7 @@ pub fn set_frontmatter_str(
             fields.remove(YamlValue::String(key.to_owned()));
         }
     }
-    let yaml = serde_yaml_ng::to_string(&YamlValue::Mapping(fields))?;
-    Ok(format!("---\n{yaml}---\n{}", page.body))
+    render_page(&fields, page.body)
 }
 
 /// Locate the closing `---` line. Returns `(yaml_block, body_slice)`

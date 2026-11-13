@@ -76,6 +76,28 @@ pub struct PackManifest {
     pub signature: String,
 }
 
+/// Build the deterministic gzip tarball of `pages` (`(relative path,
+/// content)`, already sorted by path). Headers pin mtime/uid/gid to zero and
+/// mode to 0644, so unchanged content yields byte-identical bundles.
+#[cfg(feature = "tarball")]
+pub fn build_tarball(pages: &[(String, String)]) -> std::io::Result<Vec<u8>> {
+    let gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+    let mut tar = tar::Builder::new(gz);
+    for (path, content) in pages {
+        let bytes = content.as_bytes();
+        let mut header = tar::Header::new_gnu();
+        header.set_size(bytes.len() as u64);
+        header.set_mode(0o644);
+        header.set_mtime(0);
+        header.set_uid(0);
+        header.set_gid(0);
+        header.set_cksum();
+        tar.append_data(&mut header, path, bytes)?;
+    }
+    let gz = tar.into_inner()?;
+    gz.finish()
+}
+
 /// `sha256:<hex>` over the tarball bytes.
 #[must_use]
 pub fn content_hash(tarball: &[u8]) -> String {

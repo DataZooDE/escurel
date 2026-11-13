@@ -2916,16 +2916,6 @@ fn operation_slug_for_key(
     slug
 }
 
-/// A skill id is a safe, bounded slug — letters, digits, `_`, `-`, `.`. Used to
-/// reject a `wf_skill` before it is interpolated into board frontmatter (crew
-/// Phase-2 F-1) and as a cheap shape check before resolving it.
-fn is_safe_skill_id(s: &str) -> bool {
-    !s.is_empty()
-        && s.len() <= 128
-        && s.bytes()
-            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-' | b'.'))
-}
-
 /// `start_operation` — begin an async workflow operation (async-ops Phase 2b).
 ///
 /// The **server-owned** entry point for an async run. The server constructs the
@@ -2959,7 +2949,8 @@ pub(super) async fn tool_start_operation(
     // that never drives (fail-slow, `pending` forever). Fail fast instead. The
     // charset check also makes `wf_skill` safe to interpolate into frontmatter
     // (F-1).
-    if !is_safe_skill_id(&a.wf_skill) {
+    // Rejected before it is interpolated into board frontmatter (crew Phase-2 F-1).
+    if !escurel_types::is_safe_skill_id(&a.wf_skill) {
         return Err(JsonRpcError::invalid_params(
             "start_operation: `wf_skill` must be a skill id (letters, digits, _-.)".to_owned(),
         ));

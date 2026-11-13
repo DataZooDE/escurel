@@ -278,3 +278,31 @@ fn legacy_rewrite_handles_crlf_and_bom_and_keeps_the_eol() {
         other => panic!("expected a rewrite, got {other:?}"),
     }
 }
+
+#[test]
+fn split_frontmatter_needs_no_kind() {
+    // An Anthropic SKILL.md shares the fence but has `name:`, not `kind:`.
+    let input = "---\nname: pdf-tools\ndescription: Work with PDFs.\n---\n# PDF\n";
+    let (fields, body) = escurel_md::split_frontmatter(input).expect("splits");
+    assert_eq!(
+        fields.get("name").and_then(escurel_md::YamlValue::as_str),
+        Some("pdf-tools")
+    );
+    assert_eq!(body, "# PDF\n");
+    // `parse` still insists on the escurel page kind.
+    assert!(matches!(parse(input), Err(ParseError::InvalidType)));
+}
+
+#[test]
+fn render_page_inverts_split_frontmatter() {
+    let input = "---\nkind: skill\nid: customer\ntags:\n- a\n---\n# customer\n\nbody\n";
+    let (fields, body) = escurel_md::split_frontmatter(input).unwrap();
+    let rendered = escurel_md::render_page(&fields, body).unwrap();
+    assert_eq!(rendered, input);
+    // An empty mapping renders as an empty block, which splits back to an empty mapping.
+    let empty = escurel_md::render_page(&escurel_md::YamlMapping::new(), "x\n").unwrap();
+    assert_eq!(empty, "---\n---\nx\n");
+    let (fields, body) = escurel_md::split_frontmatter(&empty).unwrap();
+    assert!(fields.is_empty());
+    assert_eq!(body, "x\n");
+}

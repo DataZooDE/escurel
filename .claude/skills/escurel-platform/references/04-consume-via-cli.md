@@ -41,6 +41,11 @@ escurel whoami                      # {subject, tenant, is_admin}
 escurel skill list
 escurel instance list --skill customer --order-by-at desc --limit 20
 
+# skills as Anthropic-style SKILL.md (#825; references/12)
+escurel skill export triage customer --out .claude/skills   # <out>/<skill>/SKILL.md each
+escurel skill export triage customer --pack --out dist      # one deterministic dist/escurel-skills.tar.gz
+escurel skill import ./pdf-tools                            # <dir>/SKILL.md → a DRAFT, never a direct write
+
 # pages
 escurel page expand    markdown/instances/customer/acme-corp.md
 escurel page validate  markdown/instances/customer/acme-corp.md   # body on stdin, commits nothing
@@ -123,6 +128,8 @@ escurel admin pack submit-promotion --tenant acme --candidate-id acme-candidate 
 | `search` / `resolve` | `search` / `resolve` |
 | `whoami` | `whoami` |
 | `skill list` / `instance list` | `list_skills` / `list_instances` |
+| `skill export` | `expand` (`raw: true`, the stored markdown) per skill; the SKILL.md rendering is client-side |
+| `skill import` | `expand` (`raw: true`, for the stored page's `content_sha256`) then `create_draft` |
 | `page expand` / `page validate` / `page update` | `expand` / `validate` / `update_page` |
 | `page delete` | `delete_page` |
 | `page blob` / `page snapshots` | `fetch_blob` / `list_snapshots` |
@@ -172,6 +179,25 @@ drive them over MCP/gRPC or the BFF.
 - `--page-kind` is `skill` | `instance` | `any` (default `any`);
   `--direction` is `in` | `out` | `both` (default `both`); `limit 0`
   means no limit.
+- `skill export` / `skill import` speak Anthropic's `SKILL.md`: `name` is the
+  skill id, `description` the description, the body the skill's
+  instructions. Every other escurel key (`acl`, `schedule`, `agent`,
+  `fields`, …) rides in `metadata.escurel`, and SKILL.md keys escurel does
+  not use (`license`, `allowed-tools`, other `metadata`) ride back in the
+  page's `skill_md:` key, so a round trip gives back the same page. The
+  body's `[[…]]` links stay as written; the export appends an
+  `<!-- escurel:resolve-hints -->` section listing each one for the MCP
+  `resolve` tool, and the import strips exactly that section. The export
+  flag is `--as skill-md` (the default; `--format` is the global output
+  switch). A skill with no `description` exports its `summary` instead,
+  and importing that back adds it — the one lossy direction. The pack
+  importer's `layer:` stamp is dropped.
+  `skill import` refuses a `name` that is not a skill id (letters, digits,
+  `_`, `-`, `.`, at most 128) and writes nothing: it holds the page as a
+  draft (`{ok, skill, target_page_id, draft, issues}`) against the stored
+  page's `content_sha256` (`""` for a new skill), for a person to `draft
+  promote`. Other files in the directory (scripts, assets) are listed in
+  `extra_files` and **not uploaded** — an escurel skill is one page.
 - `ingest --skill <id>` pins a specific `document`-backend skill and
   triggers that skill's **create-ACL** (a 403 if the caller can't create
   there); omit it to resolve the handling skill from the MIME.

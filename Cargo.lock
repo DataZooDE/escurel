@@ -2987,11 +2987,13 @@ dependencies = [
  "chrono",
  "chrono-tz",
  "croner",
+ "flate2",
  "hmac 0.12.1",
  "regex",
  "serde",
  "serde_json",
  "sha2 0.10.9",
+ "tar",
 ]
 
 [[package]]

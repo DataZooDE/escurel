@@ -15,38 +15,15 @@
 //! derivability story, INV-DERIV). Entries are pre-sorted by the
 //! collector; headers pin mtime/uid/gid to zero and mode to 0644.
 
-use flate2::Compression;
-use flate2::write::GzEncoder;
-
-// The pure signing/verification primitives live in escurel-types::pack
-// (next to `PackManifest`) so offline consumers — the CLI's local
-// `pack verify` — share one implementation without depending on this
-// crate. Re-exported here so existing server code and tests keep the
-// `crate::pack::verify_pack` spelling.
-pub use escurel_types::pack::{content_hash, sign_manifest, verify_pack};
+// The pure signing/verification primitives and the deterministic tarball
+// builder live in escurel-types::pack (next to `PackManifest`) so offline
+// consumers — the CLI's local `pack verify` and `skill export --pack` —
+// share one implementation without depending on this crate. Re-exported
+// here so existing server code and tests keep the `crate::pack::…` spelling.
+pub use escurel_types::pack::{build_tarball, content_hash, sign_manifest, verify_pack};
 
 /// The pack tarball/manifest layout version. Bump on any layout change.
 pub const PACK_FORMAT_VERSION: u32 = 1;
-
-/// Build the deterministic gzip tarball of `pages` (`(relative path,
-/// content)`, already sorted by path).
-pub fn build_tarball(pages: &[(String, String)]) -> std::io::Result<Vec<u8>> {
-    let gz = GzEncoder::new(Vec::new(), Compression::default());
-    let mut tar = tar::Builder::new(gz);
-    for (path, content) in pages {
-        let bytes = content.as_bytes();
-        let mut header = tar::Header::new_gnu();
-        header.set_size(bytes.len() as u64);
-        header.set_mode(0o644);
-        header.set_mtime(0);
-        header.set_uid(0);
-        header.set_gid(0);
-        header.set_cksum();
-        tar.append_data(&mut header, path, bytes)?;
-    }
-    let gz = tar.into_inner()?;
-    gz.finish()
-}
 
 /// Decode a pack tarball into `(relative path, content)` entries,
 /// validating every path fail-closed (agy review: the import side must

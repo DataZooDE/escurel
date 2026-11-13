@@ -7,7 +7,7 @@
 //! non-zero exit so a calling agent can branch on them.
 //!
 //! Commands are grouped gh/aws-style by resource noun:
-//!   escurel skill list
+//!   escurel skill list|export|import
 //!   escurel instance list --skill customer
 //!   escurel page expand|validate|update <page_id>
 //!   escurel link neighbours <page_id>
@@ -30,6 +30,8 @@ mod agent;
 mod convert;
 mod kindfix;
 mod output;
+mod skill_io;
+mod skill_md;
 mod workflow;
 
 use anyhow::Result;

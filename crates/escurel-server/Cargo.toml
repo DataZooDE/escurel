@@ -86,7 +86,7 @@ escurel-md = { path = "../escurel-md" }
 escurel-obs = { path = "../escurel-obs" }
 escurel-quota = { path = "../escurel-quota" }
 escurel-storage = { path = "../escurel-storage" }
-escurel-types = { path = "../escurel-types", features = ["redact"] }
+escurel-types = { path = "../escurel-types", features = ["redact", "tarball"] }
 flate2 = "1"
 hmac = "0.12"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }

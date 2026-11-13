@@ -29,7 +29,12 @@ chrono-tz = { version = "0.10", optional = true }
 # Credential shapes (`redact` module): the pack gate, the gateway's tool-call
 # summaries and the runner's run transcript share one scrubber.
 regex = { version = "1", optional = true }
+# The deterministic pack tarball (`pack::build_tarball`): the gateway's
+# `export_pack` and the CLI's `skill export --pack` write the same bytes.
+flate2 = { version = "1", optional = true }
+tar = { version = "0.4", optional = true }
 
 [features]
 schedule = ["dep:croner", "dep:chrono", "dep:chrono-tz"]
 redact = ["dep:regex"]
+tarball = ["dep:flate2", "dep:tar"]

@@ -4,6 +4,18 @@ use serde::{Deserialize, Serialize};
 
 use crate::null::null_as_default;
 
+/// A skill id is a safe, bounded slug — letters, digits, `_`, `-`, `.`. It is
+/// interpolated into page ids (`markdown/skills/<id>.md`) and frontmatter, so
+/// the gateway (a workflow's `wf_skill`) and the CLI (`skill import`'s SKILL.md
+/// `name`) refuse anything else before it gets there.
+#[must_use]
+pub fn is_safe_skill_id(s: &str) -> bool {
+    !s.is_empty()
+        && s.len() <= 128
+        && s.bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-' | b'.'))
+}
+
 /// A reference to a page. Mirrors the proto `PageRef` /
 /// escurel-index `PageRef`. `page_kind` is `"skill"` | `"instance"`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
