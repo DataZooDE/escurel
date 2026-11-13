@@ -316,7 +316,7 @@ describe('what a run cost, what it kept and who steered it (#820–#822)', () =>
           cost_usd: 0.0123,
           model: 'claude-sonnet-4',
         },
-        transcript: { blob_id: 'b', records: 12, bytes: 3400 },
+        transcript: { sha256: 'b', records: 12, bytes: 3400 },
       }),
     ]);
     expect(view.usage).toEqual({

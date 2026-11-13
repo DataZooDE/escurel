@@ -71,7 +71,7 @@ function usageOf(value: unknown): RunUsage | undefined {
 function transcriptOf(value: unknown): RunView['transcript'] {
   if (value === null || typeof value !== 'object') return undefined;
   const t = value as Body;
-  if (typeof t.blob_id !== 'string' || !t.blob_id) return undefined;
+  if (typeof t.sha256 !== 'string' || !t.sha256) return undefined;
   return { records: numberValue(t.records) ?? 0, bytes: numberValue(t.bytes) ?? 0 };
 }
 
