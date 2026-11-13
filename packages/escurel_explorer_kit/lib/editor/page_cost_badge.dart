@@ -47,7 +47,6 @@ class PageCostBadge extends ConsumerWidget {
   }
 }
 
-/// "$0.42 · 7 runs (30d)" — shared with the Agents panel so both read alike.
+/// "$0.42 · 7 runs (30d)".
 String costLabel(UsageRow row) =>
-    '\$${row.costUsd.toStringAsFixed(2)} · ${row.runs} '
-    '${row.runs == 1 ? 'run' : 'runs'} ($usageWindowLabel)';
+    '${formatUsd(row.costUsd)} · ${formatRuns(row.runs)} ($usageWindowLabel)';

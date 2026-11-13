@@ -20,6 +20,12 @@ const usageWindow = Duration(days: 30);
 /// The short label a figure over [usageWindow] carries.
 const usageWindowLabel = '30d';
 
+/// A cost as the explorer prints it: `$0.42`.
+String formatUsd(double usd) => '\$${usd.toStringAsFixed(2)}';
+
+/// "7 runs" / "1 run".
+String formatRuns(int n) => '$n ${n == 1 ? 'run' : 'runs'}';
+
 /// The last [usageWindow] of `usage_report`, keyed by the value of the one
 /// grouping dimension named (`page`, `agent`, …); `null` when the caller is
 /// not an admin.

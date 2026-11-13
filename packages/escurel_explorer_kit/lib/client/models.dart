@@ -1218,3 +1218,55 @@ class UsageReport {
       if (r.group[dim] != null) r.group[dim]!: r,
   };
 }
+
+/// An agent profile (#823): an instance of the `agent` system skill — the
+/// harness, model and least-privilege scopes a run executes under.
+class AgentProfile {
+  const AgentProfile({
+    required this.id,
+    required this.pageId,
+    this.harness,
+    this.model,
+    this.skills = const [],
+    this.tools,
+    this.write,
+    this.maxConcurrent,
+  });
+
+  /// The `agent` instance id; runs that act as it report `agent:<id>`.
+  final String id;
+  final String pageId;
+  final String? harness;
+
+  /// Null when the profile pins none (the runner's choice applies).
+  final String? model;
+
+  /// The skill links the agent may run (`[[skill::note]]`), as written.
+  final List<String> skills;
+
+  /// `scopes.tools` / `scopes.write`; null = no limit beyond the skill's.
+  final List<String>? tools;
+  final List<String>? write;
+  final int? maxConcurrent;
+
+  /// The principal key `usage_report{group_by:[agent]}` files its runs under.
+  String get principal => 'agent:$id';
+
+  factory AgentProfile.fromInstance(InstanceSummary i) {
+    final fm = i.frontmatter;
+    final scopes = fm['scopes'] is Map ? fm['scopes'] as Map : const {};
+    List<String>? strings(Object? v) =>
+        v is List ? v.map((e) => e.toString()).toList() : null;
+    final fallbackId = i.id.split('/').last.replaceFirst(RegExp(r'\.md$'), '');
+    return AgentProfile(
+      id: (fm['id'] as String?) ?? fallbackId,
+      pageId: i.id,
+      harness: fm['harness'] as String?,
+      model: fm['model'] as String?,
+      skills: strings(fm['skills']) ?? const [],
+      tools: strings(scopes['tools']),
+      write: strings(scopes['write']),
+      maxConcurrent: (fm['max_concurrent'] as num?)?.toInt(),
+    );
+  }
+}
