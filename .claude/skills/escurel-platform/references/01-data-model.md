@@ -519,6 +519,18 @@ Do not confuse it with *this* `escurel-platform` skill: the meta-skill is
 content inside a tenant for runtime agents; this skill is developer
 documentation for building the app.
 
+### Authority keys on a skill page
+
+`acl`, `visibility`, `owner_field`, `instance_acl`, `agent`, `autonomy`,
+`schedule`, `schedule_budget`, `requires`, `harness`, `model`, `cascade`,
+`actions`, `chat`, `backend`, `promotable`, `protected` and `immutable` decide
+who may read and write, who a run executes as, when it runs and what it
+triggers. Adding, removing or changing any of them on a skill page needs an
+admin, or membership of the **stored** page's `acl.update` groups; a new
+skill that sets one is an admin's. `description`, `summary`, `fields` and
+the body stay free. Who exactly, every write door, and the refusal shape:
+references/08 § Skill authority keys.
+
 ### System skills: `escurel`, `agent` and `runtime`
 
 The meta-skill is one of the **system skills** every served tenant gets at

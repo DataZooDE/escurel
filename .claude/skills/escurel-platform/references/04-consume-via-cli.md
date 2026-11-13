@@ -209,11 +209,15 @@ drive them over MCP/gRPC or the BFF.
   **existing** skill that carries authority keys the bundle does not (a plain
   community SKILL.md over a skill with `acl.read: [finance]` or an `agent:`)
   names them in `removed_authority_keys` with a `removed_authority_note`, and
-  warns on stderr — promoting that draft removes them. Who may promote is the
-  gateway's draft rule, not the importer's: today any caller allowed to write
-  the skill page may promote a skill draft, so "curator-gated" means a person
-  looks before promoting, not that the gateway refuses a non-admin. A SKILL.md
-  body keeps its line endings both ways.
+  warns on stderr — promoting that draft removes them. Anyone may import (a
+  draft is a proposal), but the gateway judges the **promoter**: a draft that
+  adds, removes or changes an authority key lands only for an `escurel:admin`,
+  or a member of the **stored** skill's `acl.update` groups (never the draft's
+  own `acl:`). Anyone else's `draft promote` is refused with `-32003`
+  `data.code: authority_keys_need_admin`, `data.keys` naming the keys, and
+  nothing lands (see references/08 § Skill authority keys). A draft that
+  changes only `description`, the body or other free keys promotes under the
+  ordinary rule. A SKILL.md body keeps its line endings both ways.
 - `skill export` never clobbers a local edit: a file that already holds
   exactly the export is left alone (listed under `unchanged`), and a file with
   different content makes the export refuse — naming it, writing nothing at

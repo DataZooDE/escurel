@@ -48,6 +48,15 @@ Distributed runtimes, SKILL.md interop and a Teams bridge (epic #817: #818, #824
 **Behaviour changes to note:** a third system skill (`runtime`) appears in `list_skills`; the gateway's page-chat
 reply rule and the runner's chat rule accept `captured_via: bridge:<channel>`.
 
+- **Breaking — skill authority keys need an admin.** A write that adds, removes or changes an authority key
+  (`acl`, `agent`, `autonomy`, `schedule`, `requires`, `harness`, `model`, `cascade`, `actions`, `backend`, …;
+  `escurel_types::skill_authority`) on a skill page lands only for an `escurel:admin` person or a member of the
+  stored page's `acl.update` groups — on `update_page`, `promote_draft` / `promote_changeset` (the promoter is
+  judged), the `close_session` commit, `delete_page` and `move_page`. A new skill that sets one is an admin's.
+  Refusal: `-32003`, `data.code: authority_keys_need_admin`, `data.keys`. `ESCUREL_WRITE_ACL=log` logs and
+  allows; `off` is ungated. Upgrade: give the people who curate skills `escurel:admin`, or list their group in
+  each skill's `acl.update`.
+
 ## v2026.10.29
 
 Replies reach the requester, and a service role may reply under a declared label.

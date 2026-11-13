@@ -131,10 +131,12 @@ pub async fn import(client: &Client, a: SkillImportArgs) -> Result<Value> {
         let keys = imported.authority_keys.join(", ");
         out["authority_keys"] = json!(imported.authority_keys);
         out["authority_note"] = json!(format!(
-            "this draft sets {keys}: review them before promoting it"
+            "this draft sets {keys}: review them before promoting it; only an admin, or a member \
+             of the stored skill's `acl.update`, may promote a change to them"
         ));
         eprintln!(
-            "warning: the imported skill sets {keys}; review them before promoting the draft"
+            "warning: the imported skill sets {keys}; review them before promoting the draft \
+             (an admin's to promote, or a member of the stored skill's acl.update)"
         );
     }
     if !removed.is_empty() {

@@ -56,29 +56,10 @@ const PASSTHROUGH: &str = "skill_md";
 const PLACEMENT: &[&str] = &["layer"];
 
 /// Skill-page keys that grant, route or schedule — authority a curator must
-/// see before promoting a third-party bundle that sets them: who may read or
-/// write (`acl`, …), who a run executes as (`agent`), whether it lands
-/// unreviewed (`autonomy`), when and where it runs (`schedule`, `requires`,
-/// `harness`, `model`), and what it triggers or connects to.
-pub const AUTHORITY_KEYS: &[&str] = &[
-    "acl",
-    "visibility",
-    "owner_field",
-    "instance_acl",
-    "agent",
-    "autonomy",
-    "schedule",
-    "schedule_budget",
-    "requires",
-    "harness",
-    "model",
-    "cascade",
-    "chat",
-    "backend",
-    "promotable",
-    "protected",
-    "immutable",
-];
+/// see before promoting a third-party bundle that sets them. The one list the
+/// gateway's write gate reads too ([`escurel_types::skill_authority`]), so an
+/// import's warning and the refusal a promotion meets name the same keys.
+pub use escurel_types::skill_authority::AUTHORITY_KEYS;
 
 /// The page id a skill's page lives at.
 #[must_use]
@@ -264,6 +245,28 @@ pub fn removed_authority_keys(stored: &str, imported: &str) -> Vec<String> {
     AUTHORITY_KEYS
         .iter()
         .filter(|k| before.iter().any(|b| b == *k) && !after.iter().any(|a| a == *k))
+        .map(|k| (*k).to_owned())
+        .collect()
+}
+
+/// The [`AUTHORITY_KEYS`] a write ADDS, REMOVES or CHANGES on a skill page:
+/// `stored` is the page as it is (`None` for a create), `incoming` the page
+/// as it would be (`None` for a delete). In [`AUTHORITY_KEYS`] order.
+///
+/// A side whose frontmatter does not parse reads as carrying no keys, so the
+/// answer errs towards "changed": a corrupt stored page cannot vouch for
+/// what the write keeps, and unparseable bytes cannot show that they keep it.
+#[must_use]
+pub fn changed_authority_keys(stored: Option<&str>, incoming: Option<&str>) -> Vec<String> {
+    let fields = |page: Option<&str>| {
+        page.and_then(|p| crate::split_frontmatter(p).ok())
+            .map(|(fields, _)| fields)
+            .unwrap_or_default()
+    };
+    let (before, after) = (fields(stored), fields(incoming));
+    AUTHORITY_KEYS
+        .iter()
+        .filter(|k| before.get(**k) != after.get(**k))
         .map(|k| (*k).to_owned())
         .collect()
 }
@@ -462,6 +465,34 @@ Again: [[customer::acme]].\n";
             .unwrap()
             .to_string();
         assert!(err.contains("no `name:`"), "{err}");
+    }
+
+    #[test]
+    fn a_write_changes_the_authority_keys_it_adds_removes_or_rewrites() {
+        let stored = "---\nkind: skill\nid: s\ndescription: d\nacl: {update: [ops]}\n\
+                      schedule: \"0 * * * *\"\n---\nbody\n";
+        let prose = "---\nkind: skill\nid: s\ndescription: new\nacl: {update: [ops]}\n\
+                     schedule: \"0 * * * *\"\n---\nother body\n";
+        assert!(changed_authority_keys(Some(stored), Some(prose)).is_empty());
+        let rewired = "---\nkind: skill\nid: s\ndescription: d\nagent: bot\n\
+                       schedule: \"5 * * * *\"\n---\nbody\n";
+        assert_eq!(
+            changed_authority_keys(Some(stored), Some(rewired)),
+            ["acl", "agent", "schedule"]
+        );
+        assert_eq!(
+            changed_authority_keys(None, Some(stored)),
+            ["acl", "schedule"]
+        );
+        assert_eq!(
+            changed_authority_keys(Some(stored), None),
+            ["acl", "schedule"]
+        );
+        assert_eq!(
+            changed_authority_keys(Some(stored), Some("not a page")),
+            ["acl", "schedule"],
+            "bytes that do not parse cannot show they keep the keys"
+        );
     }
 
     #[test]

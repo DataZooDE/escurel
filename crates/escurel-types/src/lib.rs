@@ -56,6 +56,8 @@ pub mod runtime;
 #[cfg(feature = "schedule")]
 pub mod schedule;
 mod session;
+// Namespaced: `escurel_types::skill_authority::AUTHORITY_KEYS` says whose keys they are.
+pub mod skill_authority;
 // Namespaced: `escurel_types::tools::is_known_tool` reads better than a flat helper.
 pub mod tools;
 mod workflow;

@@ -1681,6 +1681,15 @@ pub(super) async fn tool_promote_changeset(
         .collect();
     let mut issues = Vec::new();
     for m in &open {
+        // A member that changes a skill's authority keys refuses the batch before any member lands.
+        crate::mcp::tools_write::skill_authority_refusal(
+            indexer,
+            &caller,
+            write_acl,
+            &m.target_page_id,
+            Some(&m.content),
+        )
+        .await?;
         let head = indexer
             .read_page_markdown(&m.target_page_id)
             .await

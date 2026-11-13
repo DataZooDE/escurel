@@ -251,6 +251,44 @@ subset; admin tools are listed for admin tokens and refused at dispatch
   except where the app schedules its own retention cron; see
   `references/10`.
 
+## Skill authority keys
+
+Some skill-page keys are **authority**, not description: `acl`, `visibility`,
+`owner_field`, `instance_acl`, `agent`, `autonomy`, `schedule`,
+`schedule_budget`, `requires`, `harness`, `model`, `cascade`, `actions` (its
+`kind: event` entries trigger cascades), `chat`, `backend` (a `kind:
+workflow` backend is a trigger too), `promotable`, `protected`, `immutable`.
+The list is one constant, `escurel_types::skill_authority::AUTHORITY_KEYS`;
+the SKILL.md importer names the same keys (references/04).
+
+A write that **adds, removes or changes** any of them on a skill page lands
+only for:
+
+- an `escurel:admin` person, or
+- a person in the **stored** skill page's `acl.update` groups (token groups or
+  `add_group_member` membership; the structural `public` group grants
+  nothing here). The incoming page's `acl:` is never consulted, so a draft
+  cannot add its author and promote itself.
+
+A **new** skill page carrying any authority key, and a stored skill without
+`acl.update`, are therefore an admin's. A machine caller (run, narrowed
+agent, delegated `act` token) never changes them, admin role or not — its
+skill-page edits are held as drafts anyway. `description`, `summary`,
+`fields`, the body and every other key stay free under the ordinary write rule.
+
+Every write door applies it: `update_page` (branch writes included),
+`promote_draft` and `promote_changeset` (the **promoter** is judged, not the
+draft's author; a changeset refuses before any member lands), the
+`close_session` commit, `delete_page` (deleting a skill removes its ACL) and
+`move_page` (the source loses its keys; the destination is a create). Pack
+import / rebase are admin tools already.
+
+The refusal is a JSON-RPC error `-32003` with `data: {code:
+"authority_keys_need_admin", keys: [...]}` and a message naming the keys.
+It follows `ESCUREL_WRITE_ACL`: `enforce` refuses, `log` logs the would-be
+refusal and allows, `off` keeps the ungated behaviour. The `agent` and
+`runtime` system skills stay admin-only in every mode (references/01).
+
 ## In tests: `AuthMode`
 
 `escurel-test-support` (`references/06`) gives you the whole OIDC dance as

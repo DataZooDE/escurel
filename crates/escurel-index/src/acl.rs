@@ -73,6 +73,15 @@ impl AclCaller<'_> {
     pub fn agent_write_denied(&self, page_id: &str) -> bool {
         self.agent.is_some_and(|a| !a.allows_write(page_id))
     }
+
+    /// Whether this caller is a MACHINE: a token minted for an agent run, a
+    /// narrowed per-skill agent, or one acting for a runner (`run_id` /
+    /// `skill` / `act.sub` claims). A person on a plain agent-role token (the
+    /// extension, the CLI) is not.
+    #[must_use]
+    pub fn is_machine(&self) -> bool {
+        self.run_id.is_some() || self.agent_skill.is_some() || self.actor.is_some()
+    }
 }
 
 /// How many events mentioning an instance [`Indexer::may_read_instance`] inspects for the
@@ -473,6 +482,60 @@ impl Indexer {
             return Ok(false);
         };
         Ok(intersects(granted, &self.caller_groups(caller).await?))
+    }
+
+    /// The skill-page AUTHORITY keys (`escurel_types::skill_authority`) a
+    /// write would change at `page_id` that `caller` may not change; empty =
+    /// go on. `incoming` is the page as it would be, `None` for a removal.
+    ///
+    /// Only a skill page is judged (its path, or `kind: skill` on either
+    /// side). A change is allowed to a PERSON who is admin, or who is in the
+    /// STORED page's `acl.update` groups — never the incoming page's: a
+    /// draft that lists its author there would otherwise promote itself. A
+    /// create has no stored page, so a new skill carrying authority keys is
+    /// an admin's; so is a stored skill without `acl.update`. A machine
+    /// (run, narrowed agent, delegated token) never changes them, admin
+    /// role or not. The structural `public` group grants nothing here.
+    pub async fn skill_authority_denied(
+        &self,
+        caller: &AclCaller<'_>,
+        page_id: &str,
+        incoming: Option<&str>,
+    ) -> Result<Vec<String>, IndexerError> {
+        let stored = self.read_page_markdown(page_id).await?;
+        let skill = |md: Option<&str>| {
+            md.and_then(|m| parse(m).ok())
+                .is_some_and(|p| p.frontmatter.page_kind == PageKind::Skill)
+        };
+        if !page_id.starts_with("markdown/skills/") && !skill(stored.as_deref()) && !skill(incoming)
+        {
+            return Ok(Vec::new());
+        }
+        let changed = escurel_md::skill_md::changed_authority_keys(stored.as_deref(), incoming);
+        if changed.is_empty() || caller.is_machine() {
+            return Ok(changed);
+        }
+        if caller.is_admin {
+            return Ok(Vec::new());
+        }
+        let update = match stored.as_deref().map(parse).transpose() {
+            Ok(Some(page)) => {
+                let fm: Value = serde_json::from_str(&crate::indexer::mapping_to_json(
+                    &page.frontmatter.fields,
+                )?)?;
+                crate::read::parse_named_acl(&fm, "acl").and_then(|acl| acl.update)
+            }
+            _ => None,
+        };
+        let Some(update) = update else {
+            return Ok(changed);
+        };
+        let mut groups = self.caller_groups(caller).await?;
+        groups.remove("public");
+        if intersects(&update, &groups) {
+            return Ok(Vec::new());
+        }
+        Ok(changed)
     }
 
     /// Whether `caller` may WRITE (create/overwrite) the instance page at

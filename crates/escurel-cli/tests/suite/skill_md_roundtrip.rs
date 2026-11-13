@@ -455,6 +455,14 @@ async fn under_an_enforced_acl_an_import_is_a_draft_a_curator_promotes() {
     };
     assert!(!listed(curator.clone()).await, "a draft is not a write");
     let draft_id = drafted["draft"]["draft_id"].as_str().unwrap();
+    // Bob cannot promote his own `agent:` binding: authority keys on a skill page are an admin's.
+    let refused = cli_as(&h, &bob, &["draft", "promote", "--draft", draft_id])
+        .await
+        .expect_err("a member does not bind an agent");
+    assert!(refused.contains("code=-32003"), "{refused}");
+    assert!(refused.contains("needs `escurel:admin`"), "{refused}");
+    assert!(refused.contains("`agent`"), "{refused}");
+    assert!(!listed(curator.clone()).await, "the refusal landed nothing");
     let (promoted, _) = cli_as(&h, &curator, &["draft", "promote", "--draft", draft_id])
         .await
         .expect("the curator promotes");

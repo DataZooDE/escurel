@@ -2515,6 +2515,15 @@ async fn tool_close_session(
                 }
                 return Ok(held);
             }
+            // A skill page's authority keys, judged on the merged body (a held machine commit is a draft).
+            tools_write::skill_authority_refusal(
+                ix,
+                &caller,
+                state.write_acl_for(&caller),
+                &page_id,
+                Some(&body),
+            )
+            .await?;
             let _gate = state.update_page_gate.lock().await;
             // The commit is a page write, so it carries the same stamp an
             // `update_page` would (#357): the caller that closed the

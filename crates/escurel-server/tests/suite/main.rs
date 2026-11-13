@@ -166,6 +166,7 @@ mod session_commit_writes_through;
 mod session_hydrates_page;
 mod shadow_merge;
 mod shutdown_drain;
+mod skill_authority_gate;
 mod skill_contract;
 mod skill_doc_parity;
 mod skill_fields;

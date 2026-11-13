@@ -18,6 +18,10 @@ pin (see `SKILL.md` → "How this skill is installed").
   runners, and the runner holding a run answers its cancel / retry / inject (references/02, 08, 11).
 - **SKILL.md:** `escurel skill export <skill> --as skill-md [--out dir] [--pack]` and `escurel skill import <dir>`
   (a curator-gated draft; the output names any `authority_keys` the file carries) (references/04).
+- **Skill authority keys (breaking):** adding, removing or changing `acl`, `agent`, `autonomy`, `schedule`,
+  `requires`, `harness`, `model`, `cascade`, `actions`, `backend`, … on a skill page needs an admin or a member of
+  the STORED page's `acl.update`, on every write door (the promoter is judged); refusal `-32003`
+  `authority_keys_need_admin` with `data.keys` (references/01, 04, 08).
 - **Memory MCP recipe:** new references/12 — wiring Claude Code, Codex and Multica to escurel's `/mcp`.
 - **Teams:** `escurel-chat-bridge` answers 1:1 Teams chats as the asker under a restricted bridge key
   (`ESCUREL_AUTH_BRIDGE_KID`; captures read `captured_via: bridge:msteams`) (references/09,

@@ -276,7 +276,7 @@ pub(super) fn blocking_issues<'a>(
 /// acting for a runner (`run_id` / `skill` / `act.sub` claims). A person on a plain agent-role token
 /// (the extension, the CLI) is not: they write directly.
 pub(super) fn is_machine_caller(caller: &AclCaller<'_>) -> bool {
-    caller.run_id.is_some() || caller.agent_skill.is_some() || caller.actor.is_some()
+    caller.is_machine()
 }
 
 /// Why a caller may not mint `event_id`, when it lies in a namespace the gateway owns.
@@ -471,6 +471,59 @@ pub(super) async fn refuse_machine_removal(
     })))
 }
 
+/// The skill-authority gate (owner decision 2026-11-13): a write that adds, removes or changes an
+/// authority key (`acl`, `agent`, `autonomy`, `schedule`, …; `escurel_types::skill_authority`) on a
+/// SKILL page needs an admin, or a member of the stored page's `acl.update` — see
+/// `Indexer::skill_authority_denied`. `incoming` is the page as it would be, `None` for a removal.
+///
+/// It follows `ESCUREL_WRITE_ACL` like the rest of the write ACL: `Enforce` refuses with `-32003`
+/// `authority_keys_need_admin` naming the keys, `Log` records the would-be refusal and allows, `Off`
+/// keeps the ungated behaviour. The admin-only system skills (`agent`, `runtime`) are enforced in
+/// every mode, as they are for the ordinary write ACL.
+pub(super) async fn skill_authority_refusal(
+    indexer: &Indexer,
+    caller: &AclCaller<'_>,
+    write_acl: crate::server::WriteAclMode,
+    page_id: &str,
+    incoming: Option<&str>,
+) -> Result<(), JsonRpcError> {
+    let write_acl = write_acl.for_page(page_id, incoming.unwrap_or_default());
+    if write_acl == crate::server::WriteAclMode::Off {
+        return Ok(());
+    }
+    let keys = indexer
+        .skill_authority_denied(caller, page_id, incoming)
+        .await
+        .map_err(|e| JsonRpcError::internal(format!("skill authority gate: {e}")))?;
+    if keys.is_empty() {
+        return Ok(());
+    }
+    let named = keys
+        .iter()
+        .map(|k| format!("`{k}`"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    if write_acl == crate::server::WriteAclMode::Log {
+        tracing::warn!(
+            subject = %caller.subject,
+            page_id = %page_id,
+            keys = %named,
+            "skill-authority gate would deny this write (log mode) — allowing"
+        );
+        return Ok(());
+    }
+    let mut refusal = JsonRpcError::forbidden(format!(
+        "`{page_id}`: changing {named} on a skill page needs `escurel:admin`, or membership of the \
+         stored page's `acl.update` groups; an agent run never changes them. Propose it as a draft \
+         and ask an admin to promote it"
+    ))
+    .with_code("authority_keys_need_admin", false);
+    if let Some(data) = refusal.data.as_mut() {
+        data["keys"] = json!(keys);
+    }
+    Err(refusal)
+}
+
 /// The per-instance WRITE ACL as one decision, shared by `update_page` and by promotion (which must
 /// ask it BEFORE a write-back touches an external system). `Off` skips; `Log` records a would-be
 /// denial and allows; `Enforce` answers the `forbidden` refusal. `Ok(None)` = go on.
@@ -499,23 +552,25 @@ pub(super) async fn write_acl_refusal(
             }],
         })));
     }
-    let write_acl = write_acl.for_page(page_id, content);
-    if write_acl == crate::server::WriteAclMode::Off {
+    let mode = write_acl.for_page(page_id, content);
+    if mode == crate::server::WriteAclMode::Off {
         return Ok(None);
     }
     let allowed = indexer
         .may_write_page(caller, page_id, content)
         .await
         .map_err(|e| JsonRpcError::internal(format!("update_page acl: {e}")))?;
-    if allowed {
-        return Ok(None);
-    }
-    if write_acl == crate::server::WriteAclMode::Log {
-        tracing::warn!(
-            subject = %caller.subject,
-            page_id = %page_id,
-            "write-ACL would deny this write (log mode) — allowing"
-        );
+    if allowed || mode == crate::server::WriteAclMode::Log {
+        if !allowed {
+            tracing::warn!(
+                subject = %caller.subject,
+                page_id = %page_id,
+                "write-ACL would deny this write (log mode) — allowing"
+            );
+        }
+        // The page may be written; whether its authority keys may change is asked second, so a
+        // write the ordinary ACL refuses keeps that refusal's shape.
+        skill_authority_refusal(indexer, caller, write_acl, page_id, Some(content)).await?;
         return Ok(None);
     }
     Ok(Some(json!({
@@ -1332,6 +1387,11 @@ pub(super) async fn tool_move_page(
         }));
     }
 
+    // The skill-authority gate, for the same two writes: removing `from` drops its keys (its stored
+    // `acl.update` decides), and `to` is a create carrying them (an admin's, unless `to` is a stored
+    // skill whose `acl.update` grants the caller).
+    skill_authority_refusal(indexer, &caller, write_acl, &a.from, None).await?;
+    skill_authority_refusal(indexer, &caller, write_acl, &a.to, Some(&existing)).await?;
     if let Some(refused) = removal_refusal(indexer, &a.from, "move").await? {
         return Ok(refused);
     }
@@ -1558,6 +1618,8 @@ pub(super) async fn tool_delete_page(
         }
     }
 
+    // Deleting a skill page removes its authority keys, its ACL among them.
+    skill_authority_refusal(indexer, &caller, write_acl, &a.page_id, None).await?;
     // Optimistic concurrency (#300, symmetric with update_page): a stale
     // `base_version` means the page changed since the caller read it — refuse
     // rather than retract a page they have not seen. Held under the same CAS
