@@ -6,7 +6,20 @@ loosely [Keep a Changelog](https://keepachangelog.com/). Through the
 follow **`vYYYY.MM.DD`** — the date the binary set was cut (same-day
 re-cuts append `.N`), matching the DataZoo release scheme (cf. erpl).
 
-## Unreleased
+## v2026.11.13 — BREAKING (runner credential must be admin; skill authority keys need an admin)
+
+The Multica-gap epic (#817): runs you can steer, read and bill, agents with least privilege, cron schedules,
+distributed runtimes, SKILL.md interop and a Microsoft Teams bridge — plus the runner, embedding and VS Code work
+merged since v2026.10.29.
+
+**Upgrade checklist (in this order):**
+1. Give every runner an admin-capable credential (`escurel:admin` on `ESCUREL_RUNNER_TOKEN` / `ESCUREL_RUNNER_TOKEN_FILE`,
+   or minting mode) **before** the new image runs — otherwise it takes no inbox work (see *Breaking* below).
+2. Give the people who curate skills `escurel:admin`, or list their group in each skill's `acl.update`.
+3. If a skill page names `model:`, list that model in `ESCUREL_RUNNER_MODEL_ALLOW` (#810), or its runs fail closed.
+4. Changing the embedding provider/model re-embeds the corpus on boot (#815) — plan for it, or keep the model.
+5. Dashboards that match the exact label set of `escurel_runner_cost_usd_total` / `escurel_runner_tokens_total`
+   need the new `skill` and `model` labels.
 
 Runs you can see, steer and bill; agents with least privilege; cron schedules (epic #817: #819–#823).
 
@@ -63,6 +76,18 @@ reply rule and the runner's chat rule accept `captured_via: bridge:<channel>`.
   Refusal: `-32003`, `data.code: authority_keys_need_admin`, `data.keys`. `ESCUREL_WRITE_ACL=log` logs and
   allows; `off` is ungated. Upgrade: give the people who curate skills `escurel:admin`, or list their group in
   each skill's `acl.update`.
+
+Also in this release (merged since v2026.10.29):
+
+- **Skill `model:`** picks the run's model within the new `ESCUREL_RUNNER_MODEL_ALLOW`; outside it the run fails
+  closed (#810). **`ESCUREL_RUNNER_CHAT_MODEL`** sets the model for chat runs; the gemini turn bound is 24 (#813).
+- **OpenAI-compatible runner harness** with `alibaba`, `hetzner` and `openai-compatible` presets (#814).
+- **OpenAI-compatible embeddings** (`ESCUREL_EMBEDDING_PROVIDER`); the embedding model is part of the index
+  identity, so a boot under another model re-embeds instead of mixing vector spaces (#815).
+- **Lake GC** runs on its own connection in chunks, so reads never wait on it (#812).
+- **`/ws` `event_assigned`**: an open Inbox drops an event once it is filed (#811).
+- **VS Code:** a comparison's stored charts render inline, fetched and hash-verified by the host (#816).
+- Docs: where ACL groups come from; `ESCUREL_AUTH_GROUPS_CLAIM` defaults to `roles` (#809).
 
 ## v2026.10.29
 
