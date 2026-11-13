@@ -1,9 +1,16 @@
 //! Plain `serde`-derived Rust structs for the escurel MCP-over-HTTP
-//! wire contract.
+//! wire contract, plus the small shared vocabularies more than one crate
+//! must agree on.
 //!
-//! These types are the intended single source of truth for the
+//! The flat types are the intended single source of truth for the
 //! request/response/message shapes exchanged over the MCP `/mcp`
-//! endpoint.
+//! endpoint. The namespaced modules are the contracts BETWEEN escurel's own
+//! processes that no single crate may own: the agent-profile parser
+//! (`agent_profile`, read by the runner, the gateway and `validate`), the
+//! `run-finished` record (`run_record`, written by the runner, folded by the
+//! gateway), the tool and harness vocabularies (`tools`, `harness`), and,
+//! behind features, the cron grammar (`schedule`) and the credential
+//! scrubber (`redact`). Each stays dependency-light: no I/O, no async.
 //!
 //! Wire-shape rules captured here:
 //!

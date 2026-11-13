@@ -24,8 +24,8 @@ pub struct SystemSkill {
     pub admin_only: bool,
 }
 
-/// Skill id of agent profiles (#823).
-pub const AGENT_SKILL_ID: &str = "agent";
+/// Skill id of agent profiles (#823): the one the agent-profile parser keys on.
+pub use escurel_types::agent_profile::AGENT_SKILL as AGENT_SKILL_ID;
 
 /// Every skill escurel ships. Adding one is adding a row.
 pub const SYSTEM_SKILLS: &[SystemSkill] = &[

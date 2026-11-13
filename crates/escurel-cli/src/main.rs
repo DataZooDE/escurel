@@ -81,7 +81,8 @@ enum Command {
     /// Event-sourcing surface: inbox, history, capture, assign.
     #[command(subcommand)]
     Event(agent::EventCmd),
-    /// Runs: progress (run-bound bearer), lineage, tool calls, usage (admin).
+    /// Runs: progress (run-bound bearer), lineage, transcript, tool calls, usage (admin),
+    /// mint-token (a person's bearer).
     #[command(subcommand)]
     Run(agent::RunCmd),
     /// Held writes: the review queue for `autonomy: review` skills.

@@ -4620,6 +4620,41 @@ mod tests {
         assert_eq!(long_model(&config, "gemini"), None);
     }
 
+    /// Every name `validate` and the runner's allow-list accept (`KNOWN_HARNESSES`) is a harness
+    /// this runner can build once configured, and nothing it builds is missing from the list (crew
+    /// review PR-1, F17): the two lists used to agree only by convention.
+    #[test]
+    fn every_known_harness_is_buildable_once_configured() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let key = dir.path().join("key");
+        std::fs::write(&key, "sk-test\n").expect("key");
+        let key = key.to_str().expect("utf8").to_owned();
+        let config = RunnerConfig::from_env_with(|k| match k {
+            "ESCUREL_GEMINI_API_KEY" => Some("g-test".to_owned()),
+            "GOOGLE_CLOUD_PROJECT" => Some("p".to_owned()),
+            "ESCUREL_RUNNER_ALIBABA_API_KEY_FILE"
+            | "ESCUREL_RUNNER_HETZNER_API_KEY_FILE"
+            | "ESCUREL_RUNNER_OPENAI_API_KEY_FILE" => Some(key.clone()),
+            "ESCUREL_RUNNER_OPENAI_BASE_URL" => Some("http://127.0.0.1:1/v1".to_owned()),
+            "ESCUREL_RUNNER_OPENAI_MODEL" => Some("m".to_owned()),
+            _ => None,
+        })
+        .expect("config");
+        for name in escurel_types::harness::KNOWN_HARNESSES {
+            assert!(
+                build_harness_named(&config, name).is_some(),
+                "`{name}` is a known harness the runner cannot build"
+            );
+        }
+        for unknown in ["openai", "gpt", ""] {
+            assert!(
+                !escurel_types::harness::is_known_harness(unknown)
+                    && build_harness_named(&config, unknown).is_none(),
+                "`{unknown}`"
+            );
+        }
+    }
+
     /// A preset with no key file cannot be built; the run fails closed.
     #[test]
     fn an_openai_preset_without_a_key_file_is_not_buildable() {

@@ -1841,15 +1841,16 @@ impl Indexer {
     pub async fn ensure_system_skills(&self) -> Result<(), IndexerError> {
         let mut installed = false;
         for row in crate::system_skills::SYSTEM_SKILLS {
+            // `optional()`, not `ok()`: a DuckDB error must not read as "no page", or the shipped
+            // page would be written over a tenant's own.
             let existing: Option<String> = {
                 let conn = self.conn.lock().await;
-                conn.query_row(
+                duckdb::OptionalExt::optional(conn.query_row(
                     "SELECT page_id FROM pages WHERE page_type = 'skill' AND slug = ? \
                      ORDER BY page_id LIMIT 1",
                     params![row.id],
                     |r| r.get(0),
-                )
-                .ok()
+                ))?
             };
             if let Some(page_id) = existing {
                 if row.admin_only {
