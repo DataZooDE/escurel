@@ -139,6 +139,21 @@ async fn lookup(gw: &EscurelProcess, event_id: &str) -> Value {
     .await
 }
 
+/// What `runner` decided on the run-control request `req`, if anything yet.
+async fn control_decision(runner: &RunningRunner, req: &str) -> Option<String> {
+    let resp = reqwest::get(format!(
+        "{}/debug/control?request_event_id={req}",
+        runner.base_url()
+    ))
+    .await
+    .ok()?;
+    if !resp.status().is_success() {
+        return None;
+    }
+    let body: Value = resp.json().await.ok()?;
+    body["decision"].as_str().map(str::to_owned)
+}
+
 async fn healthy(mut r: RunningRunner) -> RunningRunner {
     r.wait_healthy().await;
     r
@@ -285,12 +300,15 @@ async fn work_goes_only_to_the_runtime_that_can_take_it_and_a_dead_one_goes_stal
 }
 
 /// The runner that holds a run answers its controls: an inject to a run on
-/// muc comes back `injected`, written by muc, while hq stays silent.
+/// muc comes back `injected`, written by muc, while hq stays silent. The
+/// result id is first-writer-wins, so one stored result cannot show that hq
+/// kept quiet: hq's own decision (`/debug/control`) is asserted, once hq has
+/// made its final one (crew F12).
 #[tokio::test]
 async fn an_inject_to_a_run_on_one_runtime_is_answered_by_that_runtime() {
     let gw = gateway().await;
     let token = admin(&gw);
-    let _a = healthy(hq(&gw).spawn()).await;
+    let a = healthy(hq(&gw).spawn()).await;
     let b = healthy(muc(&gw).spawn()).await;
 
     let event = capture(&gw, "slow", json!({})).await;
@@ -312,8 +330,14 @@ async fn an_inject_to_a_run_on_one_runtime_is_answered_by_that_runtime() {
         result["provenance"]["captured_by"], "runner:muc",
         "the holder answered: {result}"
     );
-    // hq did not file a second (or an earlier, contradicting) answer.
-    tokio::time::sleep(Duration::from_secs(3)).await;
+    // hq did not file a second (or an earlier, contradicting) answer: it
+    // deferred to the holder and, once its grace ran out, found the answer.
+    let decision = eventually(Duration::from_secs(20), "hq's final decision", || async {
+        let d = control_decision(&a, &req).await?;
+        (d == "already_answered" || d.starts_with("answered")).then_some(d)
+    })
+    .await;
+    assert_eq!(decision, "already_answered", "hq must not answer muc's run");
     let answers = call(
         &gw,
         &token,

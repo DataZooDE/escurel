@@ -136,6 +136,36 @@ struct AppState {
     /// event this runner cannot satisfy, or that another runner holds, is
     /// never admitted. `None` without a gateway credential (dev drain path).
     gate: Option<Arc<RuntimeGate>>,
+    /// What this runner decided for each recent run-control request
+    /// (`GET /debug/control`): with several runners reading every request
+    /// and the result id first-writer-wins, the stored result alone cannot
+    /// show that a runner which does not own the run stayed silent.
+    control_decisions: ControlDecisions,
+}
+
+/// The last [`ControlDecisions::KEEP`] run-control decisions, by request id.
+#[derive(Clone, Default)]
+struct ControlDecisions(Arc<std::sync::Mutex<std::collections::VecDeque<(String, String)>>>);
+
+impl ControlDecisions {
+    const KEEP: usize = 1000;
+
+    fn note(&self, request: &str, decision: impl Into<String>) {
+        let mut log = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        log.retain(|(r, _)| r != request);
+        if log.len() >= Self::KEEP {
+            log.pop_front();
+        }
+        log.push_back((request.to_owned(), decision.into()));
+    }
+
+    fn get(&self, request: &str) -> Option<String> {
+        let log = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        log.iter()
+            .rev()
+            .find(|(r, _)| r == request)
+            .map(|(_, d)| d.clone())
+    }
 }
 
 #[tokio::main]
@@ -466,6 +496,7 @@ async fn main() -> anyhow::Result<()> {
         tenant: config.tenant.clone().map(Arc::from),
         lineage_trust_subject: tokens.as_ref().and_then(|t| t.subject()).map(Arc::from),
         gate: gate.clone(),
+        control_decisions: ControlDecisions::default(),
     };
     // The run-control subscriber (workbench backend P2-3b) and the status
     // reporter (P2-4). Same enablement as the poller and the promotion tail.
@@ -527,6 +558,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/debug/seen", get(debug_seen))
         .route("/debug/ledger", get(debug_ledger))
         .route("/debug/run", get(debug_run))
+        .route("/debug/control", get(debug_control))
         .route("/debug/cancel", post(debug_cancel))
         .with_state(state);
 
@@ -1621,6 +1653,29 @@ async fn debug_cancel(
         _ => (
             StatusCode::NOT_FOUND,
             axum::Json(serde_json::json!({ "error": "no such live run" })),
+        ),
+    }
+}
+
+/// This runner's decision on one run-control request: `deferred` (a run it
+/// does not know), `left_to_holder` (another runner holds the run's claim),
+/// `already_answered` (another runner answered first) or `answered:<outcome>`.
+async fn debug_control(
+    State(state): State<AppState>,
+    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> impl IntoResponse {
+    let request = params
+        .get("request_event_id")
+        .map(String::as_str)
+        .unwrap_or("");
+    match state.control_decisions.get(request) {
+        Some(decision) => (
+            StatusCode::OK,
+            axum::Json(serde_json::json!({ "request_event_id": request, "decision": decision })),
+        ),
+        None => (
+            StatusCode::NOT_FOUND,
+            axum::Json(serde_json::json!({ "error": "no decision for that request" })),
         ),
     }
 }
@@ -4234,6 +4289,9 @@ async fn control_tail_loop(
         deferred = waiting;
         for (_, event) in due {
             if control_answered(&client, &event.event_id).await {
+                state
+                    .control_decisions
+                    .note(&event.event_id, "already_answered");
                 continue;
             }
             // The runner holding the run's claim answers it (#818); look
@@ -4245,6 +4303,9 @@ async fn control_tail_loop(
                     escurel_runner_core::runtime::run_claim_holder(&client, run_id).await
                 && Some(holder.as_str()) != gate.holder()
             {
+                state
+                    .control_decisions
+                    .note(&event.event_id, "left_to_holder");
                 deferred.push((now + grace, event));
                 continue;
             }
@@ -4258,6 +4319,7 @@ async fn control_tail_loop(
             if let Some(run_id) = run_scoped(control)
                 && !knows_run(&state, run_id)
             {
+                state.control_decisions.note(&event.event_id, "deferred");
                 deferred.push((now + grace, event));
                 continue;
             }
@@ -4287,6 +4349,9 @@ async fn answer_control(
     let control = &event.provenance["control"];
     let action = control["action"].as_str().unwrap_or("").to_owned();
     let result = act_on_control(state, client, tenant, control).await;
+    state
+        .control_decisions
+        .note(&event.event_id, format!("answered:{}", result.outcome));
     tracing::info!(
         target: "escurel_runner",
         request = %event.event_id,

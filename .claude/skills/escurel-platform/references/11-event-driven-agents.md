@@ -167,7 +167,9 @@ Key settings (full list in `crates/escurel-runner-core/src/config.rs`):
 | `ESCUREL_RUNNER_TENANT_MAX_CONCURRENT`, `…_RUNS_PER_MIN` | — | per-tenant limits |
 
 Its routes: `/healthz`, `/version`, `/metrics`, `POST /trigger`, `/dlq`,
-`/dlq/requeue`, and `/debug/{seen,ledger,run}`.
+`/dlq/requeue`, and `/debug/{seen,ledger,run,control}` (`/debug/control?request_event_id=`
+is this runner's decision on a run-control request: `deferred`, `left_to_holder`,
+`already_answered` or `answered:<outcome>`).
 
 `POST /trigger` takes an **optional shared secret**; when set, the request
 must carry a valid HMAC-SHA256 signature of the body — the same signature
