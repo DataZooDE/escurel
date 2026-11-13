@@ -3,8 +3,16 @@ import * as vscode from 'vscode';
 import type { Event } from '../../../src/client/types';
 import type { RunView } from '../../../src/shared/protocol';
 import type { EscurelApi } from '../../../src/extension';
-import { activate, discardOpenDrafts, freeOrder, signInAsAdmin, until } from '../cascade/support';
+import {
+  activate,
+  discardOpenDrafts,
+  freeOrder,
+  settleInbox,
+  signInAsAdmin,
+  until,
+} from '../cascade/support';
 import { requireEnv } from '../requireEnv';
+import { chipsForSkill } from '../../../src/views/knowledgeModel';
 
 // A real gateway that verifies tokens, a real runner minting per-run tokens and the real echo
 // harness, which sleeps (ESCUREL_ECHO_SLEEP_MS) so a message can reach the run while it is live,
@@ -199,5 +207,62 @@ suite('steering, transcript and usage against the real stack', () => {
     await api.agents.load();
     assert.ok(api.agents.rows().some((r) => r.label === 'vsx-scribe'));
     assert.equal(api.agents.message, 'Run counts need an admin sign-in.');
+  });
+
+  test('a skill whose daily budget is spent shows its skipped window in the Runs view, and its schedule where skills are listed', async function () {
+    this.timeout(240_000);
+    const pageId = 'markdown/skills/vsx-digest.md';
+    const skillPage = (schedule: string) =>
+      [
+        '---',
+        'kind: skill',
+        'id: vsx-digest',
+        'description: A digest the runner starts on its own.',
+        'autonomy: auto',
+        schedule,
+        '---',
+        '# vsx-digest',
+        '',
+      ].join('\n');
+    const back = signInAsAdmin(api);
+    try {
+      // Every minute, at most once a day: the first window fires, the next one is skipped and recorded.
+      await api.services.client.updatePage({
+        page_id: pageId,
+        base_sha256: '',
+        content: skillPage('schedule: "* * * * *"\nschedule_budget: {runs_per_day: 1}'),
+      });
+      const listed = (await api.services.client.listSkills()).find((s) => s.id === 'vsx-digest');
+      assert.equal(listed?.schedule, '* * * * *');
+      assert.deepEqual(listed?.schedule_budget, { runs_per_day: 1 });
+      const chips = chipsForSkill(listed!, new Date());
+      assert.match(chips.at(-1) ?? '', /^scheduled · next \d\d:\d\d UTC$/);
+
+      await until(
+        async () => {
+          await api.runner.refresh();
+          const roots = await api.runner.getChildren();
+          const group = roots.find((r) => r.id === 'group:skipped');
+          return group?.children?.find((c) => c.label === 'Skipped · vsx-digest');
+        },
+        180_000,
+        'a skipped window in the Runs view',
+      );
+    } finally {
+      // Stop the schedule before anything else runs against this runner.
+      const head = await api.services.client.expand({ page_id: pageId }).catch(() => undefined);
+      await api.services.client
+        .updatePage({
+          page_id: pageId,
+          base_sha256: head?.content_sha256 ?? '',
+          content: skillPage('schedule_budget: {runs_per_day: 1}').replace(
+            'schedule_budget: {runs_per_day: 1}\n',
+            '',
+          ),
+        })
+        .catch(() => undefined);
+      back();
+      await settleInbox(api);
+    }
   });
 });

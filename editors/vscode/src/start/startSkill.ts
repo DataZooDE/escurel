@@ -1,6 +1,7 @@
 import { notify } from '../commands/notify';
 import { quietly } from '../shared/quiet';
 import * as vscode from 'vscode';
+import { scheduleWords } from '../shared/schedule';
 import { EscurelError } from '../client';
 import { readConfig } from '../config';
 import { describeError } from '../errors';
@@ -258,11 +259,17 @@ export function registerStartSkill(
       if (!skill) {
         try {
           const skills = await client.listSkills();
-          const items: SkillQuickPickItem[] = skills.map((s) => ({
-            label: s.id,
-            description: s.summary ?? s.description ?? '',
-            skillId: s.id,
-          }));
+          const now = new Date();
+          const items: SkillQuickPickItem[] = skills.map((s) => {
+            // A scheduled skill also runs on its own: say when, so a manual start is a choice.
+            const scheduled = scheduleWords(s, now)?.hint;
+            return {
+              label: s.id,
+              description: s.summary ?? s.description ?? '',
+              ...(scheduled ? { detail: scheduled } : {}),
+              skillId: s.id,
+            };
+          });
           const picked = await vscode.window.showQuickPick(items, {
             placeHolder: 'Select a skill to start',
             matchOnDescription: true,

@@ -51,6 +51,10 @@ export interface Skill {
   autonomy?: string;
   summary?: string;
   harness?: string;
+  /** The cron expression the runner fires the skill on (`CRON_TZ=<zone> ` prefix optional), as written. */
+  schedule?: string;
+  /** Present only with a positive count: at most this many scheduled triggers per UTC day. */
+  schedule_budget?: { runs_per_day: number };
   /** `/`-separated path of slugs placing the skill in a tree (`sales/orders`); absent = top level. */
   folder?: string;
   /** `record | process | report | helper`; typed as a string so a newer server's value still parses. */

@@ -8,6 +8,14 @@ derives its version from the tag (`vYYYY.MM.DD` → `YYYY.M.D`, leading zeros dr
 
 ### Added
 
+- **Scheduled skills** (#819). A skill with `schedule:` says so where skills are listed: a chip in the Knowledge
+  tree (`scheduled · next 07:15 UTC`; the tooltip and the skill page's **Schedule** fact give the expression, its
+  zone, the next window and the `schedule_budget`), and a line under it in the Start skill picker. The next window
+  is computed only for a UTC schedule the preview can read; a `CRON_TZ=` zone or an extension it does not know is
+  shown as written, never guessed. A window the runner skipped because the daily budget was spent (`run-skipped`)
+  is listed in the Runs view under **Skipped by budget** (closed, with its count), with the window and the budget in
+  words; a click opens the skill, where the schedule is set.
+
 - **Usage and Agents views** (#821, #823), beside Runs (collapsed until opened; each reads only while it is
   shown). **Usage** rolls up `usage_report` for the last 24 hours, 7 days or 30 days (title action), grouped by
   skill, model, agent, day or page (title action): an **All runs** row, then one row per group with its runs,

@@ -2,9 +2,13 @@ import { cleanText } from '../shared/untrustedText';
 import type { Instance, Skill } from '../client';
 import { pageSlug } from '../shared/pageId';
 import { backendChip } from '../shared/backendLabel';
+import { scheduleWords } from '../shared/schedule';
 
-/** The chips the mock shows beside a skill: autonomy, event-typed, a non-markdown backend, a non-overlay layer, shadows. */
-export function chipsForSkill(s: Skill): string[] {
+/**
+ * The chips the mock shows beside a skill: autonomy, event-typed, a non-markdown backend, a
+ * non-overlay layer, shadows, and a schedule with its next window.
+ */
+export function chipsForSkill(s: Skill, now: Date = new Date()): string[] {
   const chips = [
     s.autonomy && ['auto', 'review', 'confirm'].includes(s.autonomy) ? s.autonomy : 'review',
   ];
@@ -12,6 +16,8 @@ export function chipsForSkill(s: Skill): string[] {
   if (s.backend.kind !== 'markdown') chips.push(backendChip(s.backend.kind));
   if (s.layer !== 'overlay') chips.push(s.layer);
   if (s.shadows) chips.push('shadows');
+  const schedule = scheduleWords(s, now);
+  if (schedule) chips.push(schedule.hint);
   return chips;
 }
 

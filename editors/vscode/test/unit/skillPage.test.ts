@@ -72,6 +72,21 @@ describe('buildSkillPageModel', () => {
     expect(m.facts.some((f) => /^(Backend|Autonomy|Layer)$/.test(f.label))).toBe(false);
   });
 
+  it('says when a scheduled skill runs on its own, and its daily budget', () => {
+    const m = buildSkillPageModel(
+      skill({ schedule: '15 7 * * *', schedule_budget: { runs_per_day: 2 } }),
+      [],
+      [],
+      Date.parse('2026-11-13T06:20:00Z'),
+    );
+    expect(m.facts.find((f) => f.label === 'Schedule')?.value).toBe(
+      'Runs on its own on the schedule 15 7 * * * (UTC). Next run: 2026-11-13 07:15 UTC. At most 2 runs a day; a window past that is skipped and recorded.',
+    );
+    expect(buildSkillPageModel(skill(), [], [], 0).facts.some((f) => f.label === 'Schedule')).toBe(
+      false,
+    );
+  });
+
   it('uses the OKF title when the skill has one', () => {
     expect(buildSkillPageModel(skill({ title: 'Sales order' }), [], [], 0).title).toBe(
       'Sales order',

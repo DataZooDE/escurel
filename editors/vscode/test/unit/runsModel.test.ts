@@ -4,6 +4,7 @@ import {
   applyFilter,
   describeRunner,
   foldRuns,
+  foldSkipped,
   groupRuns,
   insightLine,
   runDescription,
@@ -320,7 +321,9 @@ describe('describeRunner', () => {
   });
 
   it('has no allow-list line on an old runner', () => {
-    expect(describeRunner(fresh, NOW, { isAdmin: true, tenant: 'vsx' }).harnessAllow).toBeUndefined();
+    expect(
+      describeRunner(fresh, NOW, { isAdmin: true, tenant: 'vsx' }).harnessAllow,
+    ).toBeUndefined();
   });
 });
 
@@ -413,10 +416,7 @@ describe('buildRunsTree', () => {
       NOW,
       { isAdmin: true, tenant: 'vsx' },
     );
-    const row = find(
-      buildRunsTree({ ...base, runner: withAllow, records: [] }),
-      'dispatch',
-    )!;
+    const row = find(buildRunsTree({ ...base, runner: withAllow, records: [] }), 'dispatch')!;
     expect(row.tooltip).toContain('Harnesses: claude, echo');
   });
 
@@ -901,8 +901,20 @@ describe('the agents row with several runners', () => {
     health,
   });
   const entries = (live: boolean) => [
-    { runnerId: 'escurel-runner', fresh: live, ageMs: live ? 4000 : 7_200_000, draining: false, intervalMs: 300_000 },
-    { runnerId: 'old-pod:17', fresh: false, ageMs: 7_200_000, draining: false, intervalMs: 300_000 },
+    {
+      runnerId: 'escurel-runner',
+      fresh: live,
+      ageMs: live ? 4000 : 7_200_000,
+      draining: false,
+      intervalMs: 300_000,
+    },
+    {
+      runnerId: 'old-pod:17',
+      fresh: false,
+      ageMs: 7_200_000,
+      draining: false,
+      intervalMs: 300_000,
+    },
   ];
 
   it('lists a stale runner greyed with when it was last seen, under a live agents row', () => {
@@ -941,5 +953,78 @@ describe('the agents row with several runners', () => {
     const dispatch = tree.find((n) => n.kind === 'dispatch')!;
     expect(dispatch.label).toBe('Agents are running');
     expect(dispatch.children ?? []).toHaveLength(0);
+  });
+});
+
+describe('a scheduled window the budget skipped (#819)', () => {
+  const skipped = (skill: string, window: string, secondsAgo: number): Event => ({
+    event_id: `sched:${skill}:${window}:skipped`,
+    at: iso(secondsAgo),
+    source: 'runner-schedule',
+    mime: 'application/json',
+    label_skill: 'escurel:run',
+    instance_page_id: null,
+    status: 'processed',
+    title: 'run-skipped',
+    body: JSON.stringify({
+      reason: 'budget',
+      runs_per_day: 2,
+      skill,
+      trigger_event_id: `sched:${skill}:${window}`,
+      window_start: window,
+    }),
+    provenance: { schedule: { expr: '*/5 * * * *', window_start: window } },
+    kind: 'system',
+    root_event_id: `sched:${skill}:${window}:skipped`,
+    run_id: null,
+  });
+  const input = (events: Event[], filter = {}) => ({
+    records: foldRuns(events, { nowMs: NOW }),
+    skipped: foldSkipped(events),
+    filter,
+    nowMs: NOW,
+    historyLimit: 25,
+    hasMoreHistory: false,
+    runner: undefined,
+    isAdmin: false,
+  });
+
+  it('is folded from run-skipped, newest first, and never counted as a run', () => {
+    const events = [
+      skipped('digest', '2026-10-04T11:50:00Z', 600),
+      skipped('digest', '2026-10-04T11:55:00Z', 300),
+    ];
+    expect(foldRuns(events, { nowMs: NOW })).toEqual([]);
+    expect(foldSkipped(events).map((s) => s.windowStart)).toEqual([
+      '2026-10-04T11:55:00Z',
+      '2026-10-04T11:50:00Z',
+    ]);
+  });
+
+  it('shows as its own group with the reason in words', () => {
+    const tree = buildRunsTree(input([skipped('digest', '2026-10-04T11:55:00Z', 300)]));
+    const group = tree.find((r) => r.id === 'group:skipped')!;
+    expect(group).toMatchObject({ label: 'Skipped by budget', description: '1', expanded: false });
+    const [row] = group.children!;
+    expect(row).toMatchObject({
+      kind: 'skipped',
+      label: 'Skipped · digest',
+      contextValue: 'run.skipped',
+    });
+    expect(row!.description).toBe('window 11:55 UTC · 5 m');
+    expect(row!.tooltip).toContain('Not run: digest already ran 2 times on that day (its budget).');
+  });
+
+  it('follows the skill filter and hides under a page filter', () => {
+    const events = [skipped('digest', '2026-10-04T11:55:00Z', 300)];
+    expect(
+      buildRunsTree(input(events, { skill: 'other' })).some((r) => r.id === 'group:skipped'),
+    ).toBe(false);
+    expect(
+      buildRunsTree(input(events, { pageId: 'markdown/instances/x.md' })).some(
+        (r) => r.id === 'group:skipped',
+      ),
+    ).toBe(false);
+    expect(buildRunsTree(input([])).some((r) => r.id === 'group:skipped')).toBe(false);
   });
 });
