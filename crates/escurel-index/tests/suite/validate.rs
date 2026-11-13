@@ -1151,3 +1151,46 @@ async fn every_runner_harness_is_a_known_harness() {
         );
     }
 }
+
+/// `scopes.tools` names tools the gateway declares, and `scopes.write` globs stay cheap (crew review
+/// PR-1, F13 / F17): a typo (`serach`) would mint an agent refused everything with no authoring
+/// error, and a glob with many `**` backtracks exponentially at every write.
+#[tokio::test]
+async fn an_agents_scopes_name_known_tools_and_bounded_globs() {
+    let h = fresh_harness();
+    h.indexer.ensure_system_skills().await.unwrap();
+    let page = |scopes: &str| {
+        format!("---\nkind: instance\nskill: agent\nid: a\nscopes:\n{scopes}---\n# a\n")
+    };
+    let grade = |content: String| {
+        let ix = &h.indexer;
+        async move {
+            ix.validate(Some("markdown/instances/agent/a.md"), &content)
+                .await
+                .unwrap()
+        }
+    };
+    let typo = grade(page("  tools: [expand, serach]\n")).await;
+    let typo_issue = typo
+        .iter()
+        .find(|i| i.code == "agent_scopes_invalid")
+        .unwrap_or_else(|| panic!("an unknown tool is an error: {typo:?}"));
+    assert!(typo_issue.message.contains("serach"), "{typo_issue:?}");
+
+    let deep = grade(page(
+        "  write: [\"markdown/**/a/**/b/**/c/**/d/**/e.md\"]\n",
+    ))
+    .await;
+    assert!(
+        codes(&deep).contains(&"agent_scopes_invalid"),
+        "five `**` in one glob: {deep:?}"
+    );
+    let fine = grade(page(
+        "  tools: [expand, search]\n  write: [\"markdown/**/notes/**\"]\n",
+    ))
+    .await;
+    assert!(
+        !codes(&fine).iter().any(|c| c.starts_with("agent_")),
+        "{fine:?}"
+    );
+}

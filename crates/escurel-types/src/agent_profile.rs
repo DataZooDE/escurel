@@ -179,11 +179,26 @@ fn link_target(inner: &str, namespace: &str) -> Option<String> {
     is_valid_agent_id(id).then(|| id.to_owned())
 }
 
+/// The most `**` one glob may carry. Each one multiplies the backtracking, and
+/// every write an agent makes runs its globs; four is plenty for a page path.
+pub const MAX_DOUBLE_STARS: usize = 4;
+
+/// Whether `pattern` stays within [`MAX_DOUBLE_STARS`].
+#[must_use]
+pub fn glob_is_bounded(pattern: &str) -> bool {
+    pattern.matches("**").count() <= MAX_DOUBLE_STARS
+}
+
 /// Match a page id against a path glob: `*` matches within one `/`-separated
 /// segment, `**` matches across segments (including none), `?` one non-`/`
-/// character. Everything else is literal.
+/// character. Everything else is literal. A glob over [`MAX_DOUBLE_STARS`]
+/// matches nothing (fail closed: a scope grants, so an unusable one grants
+/// nothing).
 #[must_use]
 pub fn glob_match(pattern: &str, text: &str) -> bool {
+    if !glob_is_bounded(pattern) {
+        return false;
+    }
     fn go(p: &[u8], t: &[u8]) -> bool {
         match p.first() {
             None => t.is_empty(),
@@ -217,6 +232,14 @@ pub fn glob_match(pattern: &str, text: &str) -> bool {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn a_glob_with_too_many_double_stars_matches_nothing() {
+        let five = "**/**/**/**/**";
+        assert!(!glob_is_bounded(five));
+        assert!(!glob_match(five, "a/b"));
+        assert!(glob_match("**/**/**/**", "a/b"));
+    }
 
     #[test]
     fn a_single_star_stays_inside_one_segment() {

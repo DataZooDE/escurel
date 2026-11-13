@@ -47,6 +47,8 @@ pub mod run_record;
 #[cfg(feature = "schedule")]
 pub mod schedule;
 mod session;
+// Namespaced: `escurel_types::tools::is_known_tool` reads better than a flat helper.
+pub mod tools;
 mod workflow;
 
 pub use admin::*;

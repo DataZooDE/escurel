@@ -542,7 +542,11 @@ max_concurrent: 2                  # runs of this agent at once, per runner
 ```
 
 `write` entries are page-id globs: `*` stays inside one path segment, `**`
-crosses them, `?` is one character. Scopes only ever **narrow**: the skill's
+crosses them, `?` is one character; a glob carries at most four `**` (one
+with more matches nothing, and `validate` flags it `agent_scopes_invalid`).
+`tools` entries must be tools the gateway declares — `validate` flags an
+unknown name (`serach`) as `agent_scopes_invalid` rather than letting it
+mint an agent refused everything. Scopes only ever **narrow**: the skill's
 own `acl:` grants and the token's skill confinement still apply.
 
 A skill names its default agent with **`agent: "[[agent::scribe]]"`** (quote

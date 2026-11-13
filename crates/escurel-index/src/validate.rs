@@ -705,7 +705,43 @@ fn check_agent_keys(page_kind: PageKind, fields: &YamlMapping) -> Vec<Issue> {
                             .all(|v| v.as_str().is_some_and(|t| !t.trim().is_empty()))
                     });
                     match key {
-                        "tools" | "write" if strings => {}
+                        "tools" if strings => {
+                            for unknown in value
+                                .as_sequence()
+                                .into_iter()
+                                .flatten()
+                                .filter_map(|v| v.as_str())
+                                .filter(|t| !escurel_types::tools::is_known_tool(t.trim()))
+                            {
+                                issues.push(error(
+                                    "agent_scopes_invalid",
+                                    "scopes.tools",
+                                    &format!(
+                                        "`{unknown}` is not a tool this gateway declares; the \
+                                         agent could never call it"
+                                    ),
+                                ));
+                            }
+                        }
+                        "write" if strings => {
+                            for deep in value
+                                .as_sequence()
+                                .into_iter()
+                                .flatten()
+                                .filter_map(|v| v.as_str())
+                                .filter(|g| !escurel_types::agent_profile::glob_is_bounded(g))
+                            {
+                                issues.push(error(
+                                    "agent_scopes_invalid",
+                                    "scopes.write",
+                                    &format!(
+                                        "`{deep}` has more than {} `**`; such a glob matches \
+                                         nothing",
+                                        escurel_types::agent_profile::MAX_DOUBLE_STARS
+                                    ),
+                                ));
+                            }
+                        }
                         "tools" | "write" => issues.push(error(
                             "agent_scopes_invalid",
                             &format!("scopes.{key}"),
