@@ -104,6 +104,15 @@ pub(super) async fn authorise_run_control(
             return Err(mistake(format!("`{action}` names a `run_id`")));
         };
         if action == "inject" {
+            // `inject` DIRECTS a run (cancel only stops one), and a run's token may be the runner's
+            // admin: a machine caller, which may itself be steered by injected text, never sends one.
+            if caller.agent.is_some() || super::tools_write::is_machine_caller(caller) {
+                return Err(JsonRpcError::invalid_params(
+                    "capture_event: `escurel:run-control`: an agent or run token cannot `inject`"
+                        .to_owned(),
+                )
+                .with_code("agent_scope_denied", false));
+            }
             // Whitespace alone says nothing to the run.
             let Some(message) = req["text"].as_str().filter(|t| !t.trim().is_empty()) else {
                 return Err(mistake("`inject` carries a non-empty `text`"));
@@ -144,7 +153,14 @@ pub(super) async fn authorise_run_control(
             let Some(target) = target.as_deref() else {
                 return Err(denied());
             };
-            let write_acl = write_acl.for_page(target, "");
+            // `inject` asks the write ACL whatever the deployment's mode: a person who may write the
+            // page could already capture an event that steers a run on it, so the page writer is the
+            // right bound, and an `off` / `log` deployment must not widen it to every caller.
+            let write_acl = if action == "inject" {
+                crate::server::WriteAclMode::Enforce
+            } else {
+                write_acl.for_page(target, "")
+            };
             if write_acl != crate::server::WriteAclMode::Off {
                 let Some(existing) = indexer.read_page_markdown(target).await.map_err(|e| {
                     JsonRpcError::internal(format!("capture_event run-control: {e}"))

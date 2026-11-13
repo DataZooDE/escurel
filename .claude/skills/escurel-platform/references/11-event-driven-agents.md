@@ -291,7 +291,8 @@ The body is JSON `{action, run_id?, event_id?, reason?, text?}`:
 
 | action | names | who may ask |
 |---|---|---|
-| `cancel`, `retry`, `inject` | `run_id` (`inject` also `text`, non-blank, at most 8 KiB) | anyone allowed to **write the run's target page** (the page its `run-started` names) — the same `ESCUREL_WRITE_ACL` gate as `update_page`; admin always |
+| `cancel`, `retry` | `run_id` | anyone allowed to **write the run's target page** (the page its `run-started` names) — the same `ESCUREL_WRITE_ACL` gate as `update_page`; admin always |
+| `inject` | `run_id`, `text` (non-blank, at most 8 KiB) | a PERSON allowed to write the run's target page, the write ACL **enforced whatever `ESCUREL_WRITE_ACL` says**; a person's admin token always. Never a machine caller (agent-profile, narrowed or run-bound token, admin or not: `agent_scope_denied`) |
 | `pause`, `resume` | — (the caller's tenant) | admin |
 | `requeue` | `event_id` (the dead-lettered event) | admin |
 
@@ -336,7 +337,11 @@ harness session as one more user turn — `claude` gets a stream-json user
 message, the `echo` harness reads it off its stdin — instead of a cancel and
 a re-trigger that would lose the run's context and spend. It rides the
 run's existing token and tool surface; nothing about the run's authority
-changes. Every queued message is recorded in the run's own record as an
+changes. Why the page writer is the bound: they could already capture an
+event that steers a run on that page, so `inject` grants them nothing new.
+It is NOT relaxed by `ESCUREL_WRITE_ACL=off|log` (it directs a run whose
+token may be the runner's admin), and a machine caller never sends one — an
+agent steered by injected text must not steer another run. Every queued message is recorded in the run's own record as an
 `escurel:run` system event, `event_id: run:<run_id>:inject:<n>` (n counts
 from 1 per run), `title: run-inject`, `body {n, text, bytes,
 requested_by}` — the text whole, since it is the requester's own message.

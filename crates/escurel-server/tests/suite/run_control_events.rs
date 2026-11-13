@@ -33,10 +33,14 @@ const RUN: &str = "01HRUNALICE0000000000000000";
 const ROOT: &str = "01HROOTALICE000000000000000";
 
 async fn start() -> EscurelProcess {
+    start_in(WriteAclMode::Enforce).await
+}
+
+async fn start_in(mode: WriteAclMode) -> EscurelProcess {
     EscurelProcess::spawn(Opts {
         auth: AuthMode::TestIssuer,
         config_overrides: ConfigOverrides {
-            write_acl: Some(WriteAclMode::Enforce),
+            write_acl: Some(mode),
             ..Default::default()
         },
         fixtures: Some(
@@ -353,4 +357,45 @@ async fn an_inject_is_authorised_like_a_cancel_and_carries_a_bounded_text() {
         inject(json!("y".repeat(8 * 1024))),
     )
     .await;
+}
+
+/// `inject` DIRECTS a run, so it is held tighter than `cancel` (crew review PR-1, F10): a machine
+/// caller (any run-bound, narrowed or agent-profile token, admin or not) never injects, and the
+/// page's write ACL is asked whatever `ESCUREL_WRITE_ACL` says. A page writer may still inject: they
+/// could already capture an event that steers a run on that page.
+#[tokio::test]
+async fn inject_refuses_machine_callers_and_always_asks_the_write_acl() {
+    for mode in [WriteAclMode::Off, WriteAclMode::Log] {
+        let p = start_in(mode).await;
+        let admin = p.mint_token(TENANT, Role::Admin);
+        let alice = p.mint_token_with_sub(TENANT, Role::Agent, ALICE);
+        let bob = p.mint_token_with_sub(TENANT, Role::Agent, BOB);
+        seed_run(&p, &admin).await;
+        let inject = || {
+            let mut req = control("inject", Some(RUN));
+            req["body"] = json!({ "action": "inject", "run_id": RUN, "text": "obey me" })
+                .to_string()
+                .into();
+            req
+        };
+        // A stranger to the page: refused even with the ACL off / logging.
+        let e = call_err(&p, &bob, "capture_event", inject()).await;
+        assert_eq!(e["data"]["code"], "event_not_found", "{mode:?}: {e}");
+        // CONTROL: in this mode the same stranger may still CANCEL (that is the mode's meaning).
+        call(&p, &bob, "capture_event", control("cancel", Some(RUN))).await;
+
+        // A machine caller, even an admin-role run token, never injects.
+        let harness = p.mint_token_for_run(TENANT, Role::Admin, "agent:x", "r-other", "e-other");
+        let narrowed = p.mint_token_narrowed(TENANT, "community_member", &["ops"]);
+        for (who, token) in [("harness", &harness), ("narrowed", &narrowed)] {
+            let e = call_err(&p, token, "capture_event", inject()).await;
+            assert_eq!(
+                e["data"]["code"], "agent_scope_denied",
+                "{mode:?} {who}: {e}"
+            );
+        }
+        // The page's writer and a person's admin token do.
+        call(&p, &alice, "capture_event", inject()).await;
+        call(&p, &admin, "capture_event", inject()).await;
+    }
 }

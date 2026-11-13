@@ -130,9 +130,13 @@ sessions).
 A **workbench agent token** is the same shape minted by the GATEWAY
 (`mint_agent_token`) for an interactive agent with no runner behind it:
 `sub: agent:<skill>`, `act.sub: <the human who asked>`,
-`purpose: workbench_agent`, the run claims, and the human's own authority —
-an admin's mint carries `escurel:admin`, a member's carries their groups
-with every reserved `escurel:` role stripped. The gateway authorises it AS
+`purpose: workbench_agent`, the run claims, and the human's own groups —
+never admin, whoever minted it (an admin who wants admin authority uses their
+own token), with every reserved `escurel:` role stripped. Only a PERSON's
+token mints: an agent-profile, narrowed or run-bound token calling
+`mint_agent_token` is refused `-32001`, `data.code: agent_scope_denied` (the
+child would carry the groups but shed the agent's scopes and skill
+confinement). The gateway authorises it AS
 THE HUMAN: the ACL subject is `act.sub`, the agent is the actor, so what
 the agent writes reads `captured_by: <human>` / `captured_via:
 agent:<skill>`, and an instance owned by the agent principal confers
@@ -141,6 +145,24 @@ a signing identity: `ESCUREL_AUTH_SIGNING_KEY` (an RSA private key some
 trusted issuer's JWKS publishes), `ESCUREL_AUTH_SIGNING_KID`,
 `ESCUREL_AUTH_SIGNING_ISSUER` (defaults to the OIDC issuer). Without it
 the tool answers `unsupported`.
+
+**A token minted for an agent is never admin or operator.** A token carrying
+an `agent` or `skill` claim, or `purpose: workbench_agent`, projects the
+agent role whatever its roles list — including a deployment's own
+`ESCUREL_AUTH_ADMIN_ROLE_VALUE` / `ESCUREL_AUTH_OPERATOR_ROLE_VALUE` when
+those name an IdP group: a skill page (member-writable) names its agent's
+groups, so honouring the mapping there would let a page author mint an
+admin agent.
+
+**Steering a run (`inject`) is held tighter than cancelling one.** A
+machine caller (any agent-profile, narrowed or run-bound token, admin role
+or not) is refused (`agent_scope_denied`), and the run's target page's
+write ACL is asked **whatever `ESCUREL_WRITE_ACL` says**. The bound is the
+page writer, deliberately: whoever may write the page could already capture
+an event that steers a run on it, so `inject` grants a page writer no new
+authority — it only saves the cancel and re-trigger. `inject` does reach a
+run whose token is the runner's admin; it changes what the run is told, not
+what the run may do.
 
 So: your app's token must carry the right audience, a tenant claim naming
 the tenant, and — only for admin operations — the admin role value. A
