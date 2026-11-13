@@ -1,0 +1,133 @@
+//! System skills (#823 prerequisite): every served tenant ships the `agent`
+//! skill alongside the `escurel` meta-skill, and agent pages are authority —
+//! writable by the admin role alone, whatever the skill page's own `acl:`
+//! block says, because a widened grant there would let a member hand a run
+//! whatever harness and scopes they liked.
+//!
+//! Real gateway over HTTP under `ESCUREL_WRITE_ACL=enforce`.
+
+use escurel_server::WriteAclMode;
+use escurel_test_support::{AuthMode, ConfigOverrides, EscurelProcess, FixtureBuilder, Opts, Role};
+use serde_json::{Value, json};
+
+const TENANT: &str = "acme";
+const MEMBER: &str = "member:alice";
+const AGENT_PAGE: &str = "markdown/instances/agent/researcher.md";
+const AGENT_SKILL_PAGE: &str = "markdown/skills/agent.md";
+const RESEARCHER: &str = "---\nkind: instance\nskill: agent\nid: researcher\nharness: echo\n\
+    skills: [\"[[skill::note]]\"]\nscopes:\n  write: [\"markdown/instances/note/*\"]\n---\n\
+    # researcher\n";
+/// The agent skill page, rewritten by an admin to grant writes to everyone.
+const WIDENED_AGENT_SKILL: &str = "---\nkind: skill\nid: agent\ndescription: widened\n\
+    acl:\n  create: [public]\n  update: [public]\n---\n# agent\n";
+const NOTE: &str = "---\nkind: skill\nid: note\ndescription: n\n\
+    acl:\n  create: [public]\n  update: [public]\n---\n# note\n";
+
+async fn gateway() -> EscurelProcess {
+    EscurelProcess::spawn(Opts {
+        auth: AuthMode::TestIssuer,
+        config_overrides: ConfigOverrides {
+            write_acl: Some(WriteAclMode::Enforce),
+            ..Default::default()
+        },
+        fixtures: Some(
+            FixtureBuilder::new()
+                .tenant(TENANT)
+                .skill("note", NOTE)
+                .done(),
+        ),
+    })
+    .await
+}
+
+async fn call(p: &EscurelProcess, token: &str, name: &str, args: Value) -> Value {
+    let body: Value = reqwest::Client::new()
+        .post(p.mcp_url())
+        .header("authorization", format!("Bearer {token}"))
+        .json(&json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                       "params": { "name": name, "arguments": args } }))
+        .send()
+        .await
+        .expect("post")
+        .json()
+        .await
+        .expect("json");
+    assert!(body.get("error").is_none(), "{name}: {body}");
+    body["result"]["structuredContent"].clone()
+}
+
+fn member(p: &EscurelProcess) -> String {
+    p.mint_token_with_sub(TENANT, Role::Agent, MEMBER)
+}
+
+fn admin(p: &EscurelProcess) -> String {
+    p.mint_token(TENANT, Role::Admin)
+}
+
+async fn write(p: &EscurelProcess, token: &str, page_id: &str, content: &str) -> Value {
+    call(
+        p,
+        token,
+        "update_page",
+        json!({ "page_id": page_id, "content": content }),
+    )
+    .await
+}
+
+#[tokio::test]
+async fn a_fresh_tenant_lists_the_agent_skill() {
+    let p = gateway().await;
+    let skills = call(&p, &member(&p), "list_skills", json!({})).await;
+    let ids: Vec<&str> = skills["skills"]
+        .as_array()
+        .expect("skills")
+        .iter()
+        .filter_map(|s| s["id"].as_str())
+        .collect();
+    assert!(ids.contains(&"agent"), "agent skill shipped; got {ids:?}");
+    assert!(
+        ids.contains(&"escurel"),
+        "meta-skill still shipped; got {ids:?}"
+    );
+}
+
+#[tokio::test]
+async fn only_an_admin_creates_an_agent() {
+    let p = gateway().await;
+    // The member CAN write where the skill grants it — so the refusal below is
+    // about the agent skill, not about this caller writing nothing at all.
+    let note = "---\nkind: instance\nskill: note\nid: n1\n---\n# n1\n";
+    let ok = write(&p, &member(&p), "markdown/instances/note/n1.md", note).await;
+    assert_eq!(ok["ok"], true, "{ok}");
+
+    let refused = write(&p, &member(&p), AGENT_PAGE, RESEARCHER).await;
+    assert_eq!(
+        refused["ok"], false,
+        "a member must not create an agent: {refused}"
+    );
+
+    let created = write(&p, &admin(&p), AGENT_PAGE, RESEARCHER).await;
+    assert_eq!(created["ok"], true, "{created}");
+
+    let edit = RESEARCHER.replace("harness: echo", "harness: claude");
+    let refused = write(&p, &member(&p), AGENT_PAGE, &edit).await;
+    assert_eq!(
+        refused["ok"], false,
+        "a member must not edit an agent: {refused}"
+    );
+}
+
+#[tokio::test]
+async fn a_widened_agent_skill_page_does_not_open_agents_to_members() {
+    let p = gateway().await;
+    // A member cannot rewrite the agent skill page at all.
+    let refused = write(&p, &member(&p), AGENT_SKILL_PAGE, WIDENED_AGENT_SKILL).await;
+    assert_eq!(refused["ok"], false, "{refused}");
+
+    // Even an admin's widening of the page's acl does not reach agents: the
+    // gate is the system skill, not the block.
+    let widened = write(&p, &admin(&p), AGENT_SKILL_PAGE, WIDENED_AGENT_SKILL).await;
+    assert_eq!(widened["ok"], true, "{widened}");
+    let refused = write(&p, &member(&p), AGENT_PAGE, RESEARCHER).await;
+    assert_eq!(refused["ok"], false, "{refused}");
+}

@@ -239,7 +239,11 @@ async fn first_ever_writer_boot_against_an_unpublished_lake_still_succeeds() {
         .as_array()
         .cloned()
         .unwrap_or_default();
-    assert_eq!(skills.len(), 1, "only the mandatory meta-skill: {resp}");
+    assert_eq!(
+        skills.len(),
+        2,
+        "only the system skills (escurel, agent): {resp}"
+    );
 
     booted.handle.shutdown().await;
 }

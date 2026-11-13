@@ -101,7 +101,7 @@ async fn single_file_backend_boots_and_serves_unchanged() {
     })
     .await;
 
-    // A fresh tenant carries the mandatory meta-skill (ensure_meta_skill
+    // A fresh tenant carries the mandatory meta-skill (ensure_system_skills
     // ran inside open()).
     let skills = call_tool(&p, "list_skills", json!({})).await;
     let ids: Vec<&str> = skills["skills"]

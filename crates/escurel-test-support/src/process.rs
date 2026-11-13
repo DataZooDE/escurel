@@ -366,9 +366,9 @@ impl EscurelProcess {
                 // Done here rather than in the sync `build_indexer`
                 // because it's an async write through the indexer.
                 indexer
-                    .ensure_meta_skill()
+                    .ensure_system_skills()
                     .await
-                    .expect("escurel-test-support: ensure meta-skill");
+                    .expect("escurel-test-support: ensure system skills");
                 (Some(store_dir), Some(db_dir), Some(indexer), Some(store))
             };
 

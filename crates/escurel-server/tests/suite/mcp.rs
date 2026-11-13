@@ -152,13 +152,14 @@ async fn list_skills_returns_seeded_skills_plus_meta_skill() {
     let result = call_tool(&p, "list_skills", json!({})).await;
     let skills = result["skills"].as_array().expect("skills array");
     let ids: Vec<&str> = skills.iter().filter_map(|s| s["id"].as_str()).collect();
-    // Three seeded skills plus the mandatory `escurel` meta-skill that
-    // every tenant ships (locked decision 3).
+    // Three seeded skills plus the two system skills every tenant ships:
+    // the `escurel` meta-skill (locked decision 3) and `agent` (#823).
     assert!(ids.contains(&"customer"));
     assert!(ids.contains(&"meeting"));
     assert!(ids.contains(&"query"));
     assert!(ids.contains(&"escurel"), "meta-skill present; got {ids:?}");
-    assert_eq!(ids.len(), 4);
+    assert!(ids.contains(&"agent"), "agent skill present; got {ids:?}");
+    assert_eq!(ids.len(), 5);
     p.shutdown().await;
 }
 

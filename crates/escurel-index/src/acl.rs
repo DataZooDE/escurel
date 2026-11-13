@@ -476,6 +476,26 @@ impl Indexer {
             return Ok(true);
         }
         let parsed = parse(content)?;
+        // An admin-only system skill (`agent`) is authority: neither its page,
+        // a page claiming its id, nor an instance under its path is a
+        // member's to write — checked before every grant below can widen it.
+        let declared = |key: &str| {
+            parsed
+                .frontmatter
+                .fields
+                .get(key)
+                .and_then(YamlValue::as_str)
+                .unwrap_or("")
+                .to_owned()
+        };
+        if crate::system_skills::is_admin_only_skill_page(page_id)
+            || crate::backend::rows::split_instance_page_id(page_id)
+                .is_some_and(|(skill, _)| crate::system_skills::is_admin_only_skill(skill))
+            || (parsed.frontmatter.page_kind == PageKind::Skill
+                && crate::system_skills::is_admin_only_skill(&declared("id")))
+        {
+            return Ok(false);
+        }
         if parsed.frontmatter.page_kind != PageKind::Instance {
             return Ok(true); // P1: gate instance writes only
         }
@@ -503,13 +523,7 @@ impl Indexer {
         {
             return Ok(true);
         }
-        let skill = parsed
-            .frontmatter
-            .fields
-            .get("skill")
-            .and_then(YamlValue::as_str)
-            .unwrap_or("")
-            .to_owned();
+        let skill = declared("skill");
         let incoming_fm: Value = serde_json::from_str(&crate::indexer::mapping_to_json(
             &parsed.frontmatter.fields,
         )?)?;
@@ -547,6 +561,10 @@ impl Indexer {
     ) -> Result<bool, IndexerError> {
         if caller.is_admin {
             return Ok(true);
+        }
+        // A system skill's instances are admin-written, whatever its page grants.
+        if crate::system_skills::is_admin_only_skill(skill) {
+            return Ok(false);
         }
         // A narrowed agent token writes only its named skills' instances,
         // whatever its groups would otherwise reach.

@@ -76,6 +76,9 @@ sha2 = "0.10"
 hmac = "0.12"
 thiserror = "2"
 tokio = { version = "1", features = ["rt", "rt-multi-thread", "sync", "time"] }
+# The one boot-time warning a library cannot return: a tenant page kept in place of a
+# shipped system skill (`Indexer::ensure_system_skills`).
+tracing = "0.1"
 # The single-writer lease (#371): a Postgres advisory lock held on a
 # dedicated session against the DuckLake catalog. Plain TCP client —
 # the catalog DSN escurel already attaches with.

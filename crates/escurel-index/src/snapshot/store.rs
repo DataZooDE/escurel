@@ -75,7 +75,7 @@ impl IndexStore for SingleFileStore {
     /// 5. `Indexer::new` + contextualize + retrieval attach;
     /// 6. fresh-only `rebuild()` (cattle-node-loss recovery);
     /// 7. optional `seed_from_dir`;
-    /// 8. `ensure_meta_skill`.
+    /// 8. `ensure_system_skills`.
     async fn open(&self) -> Result<OpenedIndex, SnapshotError> {
         std::fs::create_dir_all(&self.tenant_dir).map_err(|source| SnapshotError::DataDir {
             path: self.tenant_dir.display().to_string(),
@@ -246,7 +246,7 @@ impl IndexStore for SingleFileStore {
         // — the agent's in-corpus navigation doc (locked decision 3,
         // docs/contract/agent-interface.md). Idempotent: a no-op when
         // the tenant already carries an `escurel` skill page.
-        indexer.ensure_meta_skill().await?;
+        indexer.ensure_system_skills().await?;
 
         Ok(OpenedIndex {
             indexer,

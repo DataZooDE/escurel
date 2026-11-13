@@ -166,11 +166,11 @@ async fn admin_tool_publishes_and_returns_report() {
     assert!(resp.get("error").is_none(), "publish failed: {resp}");
     let result = &resp["result"]["structuredContent"];
     assert_eq!(result["skipped"], false, "{resp}");
-    // 3, not 2: every writer boot also seeds the mandatory `escurel`
-    // meta-skill page (`Indexer::ensure_meta_skill`), published right
+    // 4, not 2: every writer boot also seeds the two system skill pages,
+    // `escurel` and `agent` (`Indexer::ensure_system_skills`), published right
     // alongside the two pages this test seeded.
-    assert_eq!(result["pages"], 3, "{resp}");
-    assert_eq!(result["blocks"], 3, "{resp}");
+    assert_eq!(result["pages"], 4, "{resp}");
+    assert_eq!(result["blocks"], 4, "{resp}");
     assert!(
         result["snapshot_id"].as_i64().unwrap() >= 0,
         "must report a real snapshot id: {resp}"

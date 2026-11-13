@@ -494,3 +494,48 @@ async fn a_produced_page_with_no_run_board_stays_admin_only() {
         "without a matching run board, a no-owner produced instance stays admin-only"
     );
 }
+
+/// System skills (#823): a fresh tenant gets the `agent` skill next to the
+/// meta-skill, and a tenant that already authored its own `agent` page keeps
+/// it — re-opening never clobbers a tenant's page — while its instances stay
+/// admin-write-only whatever that page grants.
+#[tokio::test]
+async fn system_skills_install_once_and_keep_a_tenants_own_page() {
+    let h = fresh_harness();
+    h.indexer.ensure_system_skills().await.unwrap();
+    let ids: Vec<String> = h
+        .indexer
+        .list_skills()
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|s| s.id)
+        .collect();
+    assert!(ids.iter().any(|i| i == "agent"), "{ids:?}");
+    assert!(ids.iter().any(|i| i == "escurel"), "{ids:?}");
+
+    const OWN: &str = "---\nkind: skill\nid: agent\ndescription: ours\n\
+        acl:\n  create: [public]\n  update: [public]\n---\n# our agents\n";
+    let own = fresh_harness();
+    seed(&own, &[("markdown/skills/agent.md", OWN)]).await;
+    own.indexer.ensure_system_skills().await.unwrap();
+    assert_eq!(
+        own.indexer
+            .read_page_markdown("markdown/skills/agent.md")
+            .await
+            .unwrap()
+            .as_deref(),
+        Some(OWN),
+        "the tenant's own agent page must not be replaced"
+    );
+    let incoming: Value = serde_json::json!({ "kind": "instance", "skill": "agent", "id": "x" });
+    let allowed = own
+        .indexer
+        .may_write_instance(&member(ALICE), "agent", None, &incoming)
+        .await
+        .unwrap();
+    assert!(
+        !allowed,
+        "a member must not create an agent under a widened page"
+    );
+}

@@ -180,6 +180,7 @@ mod sql_write_back;
 mod stale_lake_boot;
 mod surface_consolidation;
 mod synchronous_lake_durability;
+mod system_skills;
 mod thread_closed_events;
 mod tool_call_detail;
 mod tool_execution_labels;

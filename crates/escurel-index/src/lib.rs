@@ -55,6 +55,7 @@ mod run_transcripts;
 pub mod schema;
 pub mod search;
 pub mod snapshot;
+pub mod system_skills;
 mod tool_calls;
 mod traversal;
 pub mod usage;

@@ -500,6 +500,22 @@ Do not confuse it with *this* `escurel-platform` skill: the meta-skill is
 content inside a tenant for runtime agents; this skill is developer
 documentation for building the app.
 
+### System skills: `escurel` and `agent`
+
+The meta-skill is one of the **system skills** every served tenant gets at
+boot (`Indexer::ensure_system_skills`); the other is **`agent`** — agent
+profiles (§Agent profiles below). Both are installed only when the tenant has
+no skill page with that id, so a tenant's own page is never clobbered (a
+tenant-authored `agent` page is kept and logged). `list_skills` therefore
+always shows both — count them when you assert on a fresh tenant's catalogue.
+
+`agent` is **admin-only authority**: its skill page, any skill page claiming
+`id: agent`, and every page under `markdown/instances/agent/` are writable by
+`escurel:admin` alone. That is enforced by the write ACL independently of
+the page's own `acl:` block, so neither a widened `acl_defaults`, nor an
+admin's edit of the skill page, nor an instance `acl:` opens agents to
+members (`instance_acl: false` on the shipped page, too).
+
 ## Pages with rendered views: always carry a text alternative
 
 When a page is shown graphically by a consumer (a Peacock `viewer:` report, a chart,
