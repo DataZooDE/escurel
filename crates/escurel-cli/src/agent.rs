@@ -339,6 +339,13 @@ pub enum RunCmd {
         #[arg(long)]
         cursor: Option<String>,
     },
+    /// A finished run's transcript — every tool call, result, message and
+    /// error the harness reported, redacted — one record per element
+    /// (`fetch_blob{run_id}`).
+    Transcript {
+        #[arg(long)]
+        run: String,
+    },
     /// A run's recorded `/mcp` calls, oldest first (`--after <seq>` pages).
     ToolCalls {
         #[arg(long)]
@@ -1100,6 +1107,25 @@ async fn run_cmd(client: &Client, cmd: RunCmd) -> Result<Value> {
                 })
                 .await?;
             Ok(serde_json::to_value(resp)?)
+        }
+        RunCmd::Transcript { run } => {
+            use base64::Engine as _;
+            let resp = client
+                .fetch_blob(escurel_client::FetchBlobRequest {
+                    run_id: run.clone(),
+                    ..Default::default()
+                })
+                .await?;
+            let blob = resp
+                .blob
+                .ok_or_else(|| anyhow::anyhow!("run `{run}` returned no transcript"))?;
+            let bytes = base64::engine::general_purpose::STANDARD.decode(blob.bytes_base64)?;
+            let records = String::from_utf8_lossy(&bytes)
+                .lines()
+                .filter(|l| !l.trim().is_empty())
+                .map(serde_json::from_str)
+                .collect::<Result<Vec<Value>, _>>()?;
+            Ok(json!({ "run_id": run, "records": records }))
         }
         RunCmd::ToolCalls { run, limit, after } => {
             let resp = client

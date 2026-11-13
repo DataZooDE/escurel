@@ -62,6 +62,7 @@ mod rebuild_no_lane_writes;
 mod relation_guard;
 mod rerank;
 mod resolve_expand;
+mod run_transcripts;
 mod scenarios;
 mod search;
 mod seed;

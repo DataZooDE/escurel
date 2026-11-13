@@ -76,7 +76,9 @@ mod tool_detail;
 mod tools_progress;
 mod tools_status;
 mod tools_tool_calls;
+mod tools_transcript;
 pub use tools_progress::DEFAULT_RUN_PROGRESS_KEEP;
+pub(crate) use tools_transcript::sweep_run_transcripts;
 mod tools_read;
 mod tools_write;
 pub(crate) use ingest::{blob_get, ingest, ingest_upload};
@@ -1348,7 +1350,10 @@ async fn dispatch_tools_call(
         "get_operation" => tool_get_operation(indexer, caller, params.arguments).await,
         "resolve" => tool_resolve(indexer, &state.egress, caller, params.arguments).await,
         "expand" => tool_expand(state, indexer, caller, params.arguments).await,
-        "fetch_blob" => tool_fetch_blob(indexer, caller, params.arguments).await,
+        "fetch_blob" => tool_fetch_blob(indexer, caller, state.event_acl, params.arguments).await,
+        "put_run_transcript" => {
+            tools_transcript::tool_put_run_transcript(indexer, caller, params.arguments).await
+        }
         "ingest_upload" => {
             ingest::tool_ingest_upload(state, indexer, caller, params.arguments).await
         }

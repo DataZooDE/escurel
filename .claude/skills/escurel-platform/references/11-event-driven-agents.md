@@ -219,7 +219,7 @@ run's target page (`processed`, never inbox work) and readable with
 |---|---|---|
 | `run-started` | the ledger admitted the run and a harness is about to run it | `{}` |
 | `run-attempt` | each try ends | `{attempt, started_at, ended_at, outcome: ok \| converged \| failed \| timeout, error?}` |
-| `run-finished` | the ledger reached its terminal | `{status: processed \| failed \| dead_letter \| cancelled \| planned, reason?, error?, attempts, held, summary, tool_calls, produced_instance, produced_version, plan, usage}` — a run that reached a verdict never ends `failed`: a permanent failure (a non-zero harness exit, a refused write, a harness outside the allow-list) dead-letters with `reason: permanent` and the attempt's `error`, as do `retries_exhausted` and `bad_output`, so one refused event costs one run and waits in the DLQ for a `requeue` / `retry`; `plan` is the newest `run-progress` snapshot the agent reported; `usage` is `{input_tokens, output_tokens, cost_usd, model}` summed over the attempts, `null` when no attempt reported any (see *What a run cost*) |
+| `run-finished` | the ledger reached its terminal | `{status: processed \| failed \| dead_letter \| cancelled \| planned, reason?, error?, attempts, held, summary, tool_calls, produced_instance, produced_version, plan, usage, transcript}` — a run that reached a verdict never ends `failed`: a permanent failure (a non-zero harness exit, a refused write, a harness outside the allow-list) dead-letters with `reason: permanent` and the attempt's `error`, as do `retries_exhausted` and `bad_output`, so one refused event costs one run and waits in the DLQ for a `requeue` / `retry`; `plan` is the newest `run-progress` snapshot the agent reported; `usage` is `{input_tokens, output_tokens, cost_usd, model}` summed over the attempts, `null` when no attempt reported any (see *What a run cost*); `transcript` is `{blob_id, records, bytes}` of the stored run transcript, `null` when none was stored (see *Run transcripts*) |
 
 `provenance.runner` on each carries `run_id`, `root_event_id`, `event_id`
 (the trigger), `parent_run_id` (a cascade hop's emitting run), `depth`,
@@ -651,6 +651,45 @@ runner's lines for a run and every gateway line it caused — including
 the runner's own bookkeeping calls, which carry no run claim. The header
 is log correlation only: authorisation, lineage stamping and
 `run_tool_calls` read the token's `run_id` claim, never the header.
+
+## Run transcripts
+
+What the agent itself did — every tool call, its result, what it said, what
+went wrong — is kept per run (#822), so "why did the agent set this field?"
+is answered by replaying the run, not by reading runner logs. Each harness
+adapter normalises its own stream into records:
+
+| harness | source |
+|---|---|
+| `claude` | stream-json: `tool_use` → `tool_call`, `tool_result` → `tool_result` (`error` when `is_error`), assistant text → `message`, a failed `result` → `error` |
+| `codex` | `--json` events: MCP tool-call items → `tool_call` (+ `tool_result` / `error` from the item), `agent_message` → `message`, error events → `error` |
+| `gemini` | its in-process turns: each function call, its gateway answer, the model's text, and a call refused before the wire |
+| `echo` | the lines of `ESCUREL_ECHO_TRANSCRIPT` (tests script the stream with it) |
+| `agy`, `muse`, `openai`, `delegate` | none yet — `run-finished.transcript` stays `null` |
+
+A record is `{ts, attempt, kind, name?, args_digest?, summary}`: `kind` is
+`tool_call` / `tool_result` / `message` / `error`; arguments are never
+stored, only `args_digest` (`sha256:` of the canonical, key-sorted args
+JSON — the same arguments always digest the same); `summary` is at most 200
+characters, scrubbed of credentials (`Bearer …`, JWTs, `sk-…` keys, `token=…`,
+DSN passwords, private-key blocks, and the run's own bearer) before it is
+cut. Every attempt's records are kept, in order, each with its `attempt`;
+a run keeps at most 4000 (a final `error` record says how many it dropped).
+
+After the last attempt the runner stores them as JSONL with
+`put_run_transcript` — with a token for exactly that run when it mints, its
+own admin bearer when it runs on a static one — and names the blob on
+`run-finished.transcript {blob_id, records, bytes}`. A failed upload never
+fails the run: it is logged and counted
+(`escurel_runner_run_events_failed_total{kind="transcript"}`), and
+`transcript` is `null`. A runner on a static **agent** bearer cannot store
+transcripts (the gateway accepts only the run's own bearer or a non-run admin one).
+
+Replay with `fetch_blob { run_id }` (or `escurel run transcript --run <id>`):
+whoever may read the run's `run-finished` event may read its transcript.
+Transcripts are deleted `ESCUREL_RUN_TRANSCRIPT_RETENTION_DAYS` after they
+were stored (gateway, default 90; `0` keeps them forever); after that the read
+answers `transcript_expired`. There is no per-tenant override yet.
 
 ## Reading a lineage: `list_lineage`
 

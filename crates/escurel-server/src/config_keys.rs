@@ -312,6 +312,12 @@ pub const CONFIG_KEYS: &[ConfigKey] = &[
         doc: "how many `run-progress` snapshots a run keeps (pruned at capture)",
     },
     ConfigKey {
+        name: "ESCUREL_RUN_TRANSCRIPT_RETENTION_DAYS",
+        component: "Server",
+        default: "90",
+        doc: "days a run transcript (`put_run_transcript`, read via `fetch_blob{run_id}`) is kept; swept every 30 s; `0` keeps them forever",
+    },
+    ConfigKey {
         name: "ESCUREL_SHUTDOWN_DRAIN_SECS",
         component: "Server",
         default: "25",
@@ -1402,6 +1408,12 @@ pub const CONFIG_KEYS: &[ConfigKey] = &[
         component: "Harness",
         default: "—",
         doc: "set by the runner in an echo harness subprocess: stdin is the task line, then injected turns (never set it yourself)",
+    },
+    ConfigKey {
+        name: "ESCUREL_ECHO_TRANSCRIPT",
+        component: "TestOnly",
+        default: "—",
+        doc: "echo harness: print this JSONL file's lines (`{\"transcript\":{kind, name?, args?, text?}}`, `{token}` = the run's bearer) as its stream, for the run transcript (tests)",
     },
     ConfigKey {
         name: "ESCUREL_ECHO_USAGE",

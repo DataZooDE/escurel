@@ -18,27 +18,11 @@ use serde_json::{Map, Value};
 /// The most bytes one summary holds, marker included.
 pub(crate) const CAP: usize = 2048;
 const MARK: &str = "…[truncated]";
-const REDACTED: &str = "[redacted]";
+use escurel_types::redact::{REDACTED, is_secret_key};
 const MAX_STR_CHARS: usize = 160;
 const MAX_ITEMS: usize = 8;
 const MAX_KEYS: usize = 40;
 const MAX_DEPTH: usize = 4;
-
-/// Keys whose value is a credential, whatever the string looks like.
-const SECRET_KEY_PARTS: &[&str] = &[
-    "token",
-    "secret",
-    "password",
-    "passwd",
-    "authorization",
-    "api_key",
-    "apikey",
-    "api-key",
-    "credential",
-    "bearer",
-    "cookie",
-    "private_key",
-];
 
 /// Keys whose string value is content, not an identifier: kept as a size only.
 const CONTENT_KEYS: &[&str] = &[
@@ -50,11 +34,6 @@ const CONTENT_KEYS: &[&str] = &[
     "bytes_b64",
     "text",
 ];
-
-fn is_secret_key(key: &str) -> bool {
-    let k = key.to_ascii_lowercase();
-    SECRET_KEY_PARTS.iter().any(|p| k.contains(p))
-}
 
 fn is_content_key(key: &str) -> bool {
     CONTENT_KEYS.contains(&key.to_ascii_lowercase().as_str())
@@ -127,41 +106,9 @@ fn shorten(s: &str) -> String {
     format!("{head}…({n} chars)")
 }
 
-/// Credentials inside free text: `Bearer <x>`, a JWT, `token=<x>`. Whitespace is kept as it was.
+/// Credentials inside free text — one scrubber for the gateway and the runner.
 fn scrub_str(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    // The previous word named a credential (`Bearer`, `token:`): this one is its value.
-    let mut value_next = false;
-    for piece in s.split_inclusive(char::is_whitespace) {
-        let word = piece.trim_end_matches(char::is_whitespace);
-        let space = &piece[word.len()..];
-        if word.is_empty() {
-            out.push_str(space);
-            continue;
-        }
-        let at_sep = word.find(['=', ':']);
-        let scrubbed = if value_next || looks_like_jwt(word) {
-            REDACTED.to_owned()
-        } else if let Some(i) = at_sep
-            && i > 0
-            && is_secret_key(&word[..i])
-            && i + 1 < word.len()
-        {
-            format!("{}{REDACTED}", &word[..=i])
-        } else {
-            word.to_owned()
-        };
-        let label = word.trim_end_matches([':', '=']);
-        value_next = matches!(label.to_ascii_lowercase().as_str(), "bearer" | "basic")
-            || (label.len() < word.len() && is_secret_key(label));
-        out.push_str(&scrubbed);
-        out.push_str(space);
-    }
-    out
-}
-
-fn looks_like_jwt(word: &str) -> bool {
-    word.starts_with("eyJ") && word.matches('.').count() >= 2
+    escurel_types::redact::scrub(s, &[])
 }
 
 /// `s` capped at [`CAP`] bytes, cut on a character boundary, with the marker inside the cap.

@@ -947,6 +947,8 @@ struct AttemptSink {
     last_error: Option<String>,
     /// Token usage summed over every attempt that reported one (P3-4).
     usage: Option<Usage>,
+    /// Every attempt's transcript records, in order (#822).
+    transcript: Vec<escurel_runner_core::TranscriptRecord>,
 }
 
 impl AttemptSink {
@@ -954,6 +956,66 @@ impl AttemptSink {
     fn add_usage(&mut self, usage: Option<&Usage>) {
         if let Some(u) = usage {
             self.usage.get_or_insert_with(Usage::default).accumulate(u);
+        }
+    }
+}
+
+/// Store the run's transcript (#822) and return the `{blob_id, records,
+/// bytes}` that `run-finished.transcript` names. Best-effort like every run
+/// event: a refused upload is logged and counted
+/// (`escurel_runner_run_events_failed_total{kind="transcript"}`) and the run
+/// is unaffected.
+///
+/// Uploaded with a token for exactly this run when the runner mints, so the
+/// gateway's own-run rule applies; a static-bearer runner has no run token
+/// and uses its own admin bearer, which the gateway accepts for any run.
+async fn store_transcript(
+    client: &escurel_client::Client,
+    gateway_url: &str,
+    tokens: &escurel_runner_core::TokenSource,
+    trigger: &escurel_runner_core::Trigger,
+    run: &escurel_runner_core::RunClaims,
+    metrics: &Metrics,
+    records: &[escurel_runner_core::TranscriptRecord],
+) -> Option<serde_json::Value> {
+    let (jsonl, _) = escurel_runner_core::to_jsonl(records)?;
+    let run_client = match tokens.mint_agent(&trigger.label_skill, 300, Some(run), None) {
+        Ok(Some(token)) => {
+            match escurel_client::Client::connect(
+                gateway_url,
+                escurel_runner_core::SecretString::from(token),
+            )
+            .await
+            {
+                Ok(c) => Some(c.with_run_id(&run.run_id)),
+                Err(e) => {
+                    record_run_event(metrics, "transcript", Err(e));
+                    return None;
+                }
+            }
+        }
+        Ok(None) => None,
+        Err(e) => {
+            metrics.inc_runner_run_event_failed("transcript");
+            tracing::warn!(target: "escurel_runner", run_id = %run.run_id, error = %e,
+                "transcript: no run token; not stored (best-effort); run unaffected");
+            return None;
+        }
+    };
+    match run_client
+        .as_ref()
+        .unwrap_or(client)
+        .put_run_transcript(&run.run_id, jsonl)
+        .await
+    {
+        Ok(stored) => Some(serde_json::json!({
+            "blob_id": stored.blob_id,
+            "records": stored.records,
+            "bytes": stored.bytes,
+        })),
+        Err(e) => {
+            record_run_event(metrics, "transcript", Err(e));
+            None
         }
     }
 }
@@ -2581,6 +2643,16 @@ async fn dispatch_loop(
                 },
             };
             let sink = attempt_sink.lock().map(|s| s.clone()).unwrap_or_default();
+            let transcript = store_transcript(
+                &client,
+                &config.gateway_url,
+                &tokens,
+                &trigger,
+                &run_claims,
+                &metrics,
+                &sink.transcript,
+            )
+            .await;
             if let Some(u) = &sink.usage {
                 metrics.add_runner_usage(
                     &trigger.tenant,
@@ -2601,6 +2673,7 @@ async fn dispatch_loop(
                         sink.tool_calls,
                         sink.autonomy,
                         sink.usage.as_ref().map(|u| serde_json::json!(u)),
+                        transcript,
                     )
                     .await,
             );
@@ -2950,6 +3023,8 @@ async fn attempt_run(
         })?;
     task.cancel = Some(cancel.clone());
     task.inject = inject.cloned();
+    let transcript = escurel_runner_core::TranscriptSink::new(attempt);
+    task.transcript = Some(transcript.clone());
     task.prior_model_tokens = sink
         .lock()
         .ok()
@@ -2973,107 +3048,112 @@ async fn attempt_run(
     // Carried past the match so the read-back below can tell "the harness
     // named a page" from "it named nothing" — the latter is only meaningful
     // once the gateway has also been asked.
-    let (harness_produced, harness_reported_failure, harness_result_ref) =
-        match harness.run(&task).await {
-            Ok(outcome) => {
-                tracing::info!(
-                    target: "escurel_runner",
-                    event_id = %trigger.event_id,
-                    harness = %harness.name(),
-                    attempt,
-                    ok = outcome.ok,
-                    tool_calls = outcome.tool_calls,
-                    produced_instance = ?outcome.produced_instance,
-                    summary = %outcome.summary,
-                    "dispatch: harness completed"
-                );
-                // A planning run (P2-5b) reported its plan and stopped: a
-                // clean terminal with nothing to confirm, never a write to
-                // reconcile.
-                if task.plan_mode {
-                    if let Ok(mut s) = sink.lock() {
-                        s.summary = outcome.summary.clone();
-                        s.tool_calls = outcome.tool_calls;
-                        s.add_usage(outcome.usage.as_ref());
-                    }
-                    return Err(if outcome.ok {
-                        ReconcileError::Converged(
-                            "planned: the harness reported its plan and stopped".to_owned(),
-                        )
-                    } else {
-                        ReconcileError::Permanent(outcome.summary)
-                    });
-                }
+    let ran = harness.run(&task).await;
+    // Whatever the attempt's outcome: a failed attempt's record is the one an
+    // auditor most wants.
+    if let Ok(mut s) = sink.lock() {
+        s.transcript.extend(transcript.take());
+    }
+    let (harness_produced, harness_reported_failure, harness_result_ref) = match ran {
+        Ok(outcome) => {
+            tracing::info!(
+                target: "escurel_runner",
+                event_id = %trigger.event_id,
+                harness = %harness.name(),
+                attempt,
+                ok = outcome.ok,
+                tool_calls = outcome.tool_calls,
+                produced_instance = ?outcome.produced_instance,
+                summary = %outcome.summary,
+                "dispatch: harness completed"
+            );
+            // A planning run (P2-5b) reported its plan and stopped: a
+            // clean terminal with nothing to confirm, never a write to
+            // reconcile.
+            if task.plan_mode {
                 if let Ok(mut s) = sink.lock() {
                     s.summary = outcome.summary.clone();
-                    s.reply = outcome.reply.clone();
                     s.tool_calls = outcome.tool_calls;
                     s.add_usage(outcome.usage.as_ref());
-                    s.autonomy = Some(match task.autonomy {
-                        Autonomy::Auto => "auto",
-                        Autonomy::Review => "review",
-                        Autonomy::Confirm => "confirm",
-                    });
                 }
-                // A self-reported FAILURE is not evidence either.
-                //
-                // This used to return here, before the read-back — which
-                // contradicted the rule stated eight lines below and enforced
-                // everywhere else in this function: the gateway is the authority,
-                // never the harness's own account of itself. Measured in the
-                // cluster on 2026-09-06: a Gemini run created a draft
-                // (`create_draft` → `status: ok`), kept talking, hit the turn cap,
-                // and reported failure. The run was recorded `failed
-                // (retriable re-drive)` for work that had landed — and a re-drive
-                // would have produced a SECOND draft for a page whose rule is
-                // one draft per page.
-                //
-                // So carry the report past the read-back and let it decide. If
-                // the gateway confirms an effect, the run succeeded whatever the
-                // model said; if it confirms nothing, this becomes the permanent
-                // failure it always was, with the harness's own words attached.
-                let reported_failure = (!outcome.ok).then(|| outcome.summary.clone());
-                // NB: "produced no instance + no pre-flagged target" is NOT by
-                // itself a no-op, and treating it as one was a real bug. Both
-                // real LLM adapters hardcode `produced_instance: None` — their
-                // envelopes do not name the page the model wrote — so this fired
-                // on every unflagged `claude`/`codex` run, including ones that
-                // had just written a page and assigned the event. The run was
-                // recorded `processed` with no effect, and never cascaded. Only
-                // the `echo` stub reports a produced instance, which is why the
-                // suite never saw it.
-                //
-                // The gateway is the authority, so ask it first (below) and
-                // decide afterwards. `result_ref` is the harness's own — a produced
-                // artifact the gateway read-back cannot observe — so it rides
-                // through to the confirmed effect verbatim.
-                (
-                    outcome.produced_instance,
-                    reported_failure,
-                    outcome.result_ref,
-                )
+                return Err(if outcome.ok {
+                    ReconcileError::Converged(
+                        "planned: the harness reported its plan and stopped".to_owned(),
+                    )
+                } else {
+                    ReconcileError::Permanent(outcome.summary)
+                });
             }
-            Err(e) => {
-                tracing::warn!(
-                    target: "escurel_runner",
-                    event_id = %trigger.event_id,
-                    attempt,
-                    error = %e,
-                    "dispatch: harness run failed"
-                );
-                if let Ok(mut s) = sink.lock() {
-                    s.last_error = Some(e.to_string());
-                }
-                if meters_model(harness.name())
-                    && !matches!(e, escurel_runner_harness::HarnessError::Preflight { .. })
-                {
-                    return Err(ReconcileError::Permanent(format!(
-                        "model usage unknown after adapter error: {e}"
-                    )));
-                }
-                return Err(harness_error_to_reconcile(&e));
+            if let Ok(mut s) = sink.lock() {
+                s.summary = outcome.summary.clone();
+                s.reply = outcome.reply.clone();
+                s.tool_calls = outcome.tool_calls;
+                s.add_usage(outcome.usage.as_ref());
+                s.autonomy = Some(match task.autonomy {
+                    Autonomy::Auto => "auto",
+                    Autonomy::Review => "review",
+                    Autonomy::Confirm => "confirm",
+                });
             }
-        };
+            // A self-reported FAILURE is not evidence either.
+            //
+            // This used to return here, before the read-back — which
+            // contradicted the rule stated eight lines below and enforced
+            // everywhere else in this function: the gateway is the authority,
+            // never the harness's own account of itself. Measured in the
+            // cluster on 2026-09-06: a Gemini run created a draft
+            // (`create_draft` → `status: ok`), kept talking, hit the turn cap,
+            // and reported failure. The run was recorded `failed
+            // (retriable re-drive)` for work that had landed — and a re-drive
+            // would have produced a SECOND draft for a page whose rule is
+            // one draft per page.
+            //
+            // So carry the report past the read-back and let it decide. If
+            // the gateway confirms an effect, the run succeeded whatever the
+            // model said; if it confirms nothing, this becomes the permanent
+            // failure it always was, with the harness's own words attached.
+            let reported_failure = (!outcome.ok).then(|| outcome.summary.clone());
+            // NB: "produced no instance + no pre-flagged target" is NOT by
+            // itself a no-op, and treating it as one was a real bug. Both
+            // real LLM adapters hardcode `produced_instance: None` — their
+            // envelopes do not name the page the model wrote — so this fired
+            // on every unflagged `claude`/`codex` run, including ones that
+            // had just written a page and assigned the event. The run was
+            // recorded `processed` with no effect, and never cascaded. Only
+            // the `echo` stub reports a produced instance, which is why the
+            // suite never saw it.
+            //
+            // The gateway is the authority, so ask it first (below) and
+            // decide afterwards. `result_ref` is the harness's own — a produced
+            // artifact the gateway read-back cannot observe — so it rides
+            // through to the confirmed effect verbatim.
+            (
+                outcome.produced_instance,
+                reported_failure,
+                outcome.result_ref,
+            )
+        }
+        Err(e) => {
+            tracing::warn!(
+                target: "escurel_runner",
+                event_id = %trigger.event_id,
+                attempt,
+                error = %e,
+                "dispatch: harness run failed"
+            );
+            if let Ok(mut s) = sink.lock() {
+                s.last_error = Some(e.to_string());
+            }
+            if meters_model(harness.name())
+                && !matches!(e, escurel_runner_harness::HarnessError::Preflight { .. })
+            {
+                return Err(ReconcileError::Permanent(format!(
+                    "model usage unknown after adapter error: {e}"
+                )));
+            }
+            return Err(harness_error_to_reconcile(&e));
+        }
+    };
 
     // Don't trust the harness: read back over `/mcp` to confirm the event is
     // processed + bound and the instance's version advanced (#155). For an

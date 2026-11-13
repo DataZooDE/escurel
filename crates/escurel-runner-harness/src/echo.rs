@@ -15,7 +15,7 @@
 use std::time::Duration;
 
 use async_trait::async_trait;
-use escurel_runner_core::TaskContext;
+use escurel_runner_core::{TaskContext, TranscriptEntry, TranscriptKind};
 
 use crate::harness::{Harness, HarnessError, HarnessOutcome};
 use crate::task::HarnessTask;
@@ -97,26 +97,65 @@ impl Harness for EchoHarness {
             None => (Vec::new(), None),
         };
 
+        let lines = crate::harness::LineLog::new();
         let output = crate::harness::run_capture(crate::harness::Spawn {
             harness: NAME,
             bin: &self.bin_path,
             args: &[],
             envs,
             stdin: Some(&payload),
-            stdout_lines: None,
+            stdout_lines: Some(lines.sender()),
             turns,
             timeout: self.timeout,
             cancel: task.cancel.as_ref(),
         })
-        .await?;
+        .await;
+        lines.transcribe(task, transcript_entries);
 
-        serde_json::from_slice::<HarnessOutcome>(&output.stdout).map_err(|source| {
-            HarnessError::BadOutcome {
-                harness: NAME,
-                source,
-            }
-        })
+        parse_outcome(&output?.stdout)
     }
+}
+
+/// The outcome is the binary's LAST stdout line; scripted transcript lines
+/// (`ESCUREL_ECHO_TRANSCRIPT`) come before it.
+fn parse_outcome(stdout: &[u8]) -> Result<HarnessOutcome, HarnessError> {
+    let text = String::from_utf8_lossy(stdout);
+    let last = text
+        .lines()
+        .rev()
+        .find(|l| !l.trim().is_empty())
+        .unwrap_or("");
+    serde_json::from_str::<HarnessOutcome>(last).map_err(|source| HarnessError::BadOutcome {
+        harness: NAME,
+        source,
+    })
+}
+
+/// Makes the echo binary print each line of this JSONL file to stdout
+/// before it works (`{token}` in a line becomes the run's bearer), so a test
+/// scripts the stream the transcript is built from.
+pub const ECHO_TRANSCRIPT_ENV: &str = "ESCUREL_ECHO_TRANSCRIPT";
+
+/// One echo stdout line as transcript entries: a scripted
+/// `{"transcript": {kind, name?, args?, text?}}` line is one entry; the
+/// outcome line and anything else yield none.
+pub(crate) fn transcript_entries(line: &str) -> Vec<TranscriptEntry> {
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
+        return Vec::new();
+    };
+    let Some(t) = v.get("transcript") else {
+        return Vec::new();
+    };
+    let Ok(kind) = serde_json::from_value::<TranscriptKind>(t["kind"].clone()) else {
+        return Vec::new();
+    };
+    let mut entry = TranscriptEntry::new(kind, t["text"].as_str().unwrap_or(""));
+    entry.name = t["name"].as_str().map(str::to_owned);
+    entry.args = t
+        .get("args")
+        .cloned()
+        .filter(|_| kind == TranscriptKind::ToolCall);
+    vec![entry]
 }
 
 /// Tells the echo binary its stdin is a conversation: the task on the first
@@ -134,6 +173,26 @@ fn json_line(text: &str) -> Vec<u8> {
 mod tests {
     use super::*;
     use crate::harness::HarnessStatus;
+
+    #[test]
+    fn scripted_lines_normalise_and_the_outcome_is_the_last_line() {
+        let stdout =
+            br#"{"transcript":{"kind":"tool_call","name":"update_page","args":{"page_id":"p"}}}
+{"transcript":{"kind":"error","text":"boom"}}
+{"transcript":{"kind":"bogus"}}
+{"ok":true,"status":"ok","summary":"folded","tool_calls":2,"produced_instance":null}
+"#;
+        let text = String::from_utf8_lossy(stdout);
+        let entries: Vec<TranscriptEntry> = text.lines().flat_map(transcript_entries).collect();
+        assert_eq!(entries.len(), 2, "{entries:?}");
+        assert_eq!(entries[0].kind, TranscriptKind::ToolCall);
+        assert_eq!(entries[0].args, Some(serde_json::json!({"page_id": "p"})));
+        assert_eq!(entries[1].kind, TranscriptKind::Error);
+        assert_eq!(entries[1].text, "boom");
+        let outcome = parse_outcome(stdout).expect("last line");
+        assert_eq!(outcome.summary, "folded");
+        assert_eq!(outcome.tool_calls, 2, "echo reports its own real calls");
+    }
 
     #[test]
     fn name_is_echo() {

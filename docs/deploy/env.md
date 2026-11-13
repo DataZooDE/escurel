@@ -60,6 +60,7 @@ escurel-server.
 | `ESCUREL_AUTH_JWKS_REFRESH_SECS` | 300 | JWKS cache TTL (seconds) |
 | `ESCUREL_AUTH_JWKS_URI` | derived from issuer | explicit JWKS URL (e.g. Triton's `<issuer>/.well-known/jwks.json`) |
 | `ESCUREL_RUN_PROGRESS_KEEP` | 50 | how many `run-progress` snapshots a run keeps (pruned at capture) |
+| `ESCUREL_RUN_TRANSCRIPT_RETENTION_DAYS` | 90 | days a run transcript (`put_run_transcript`, read via `fetch_blob{run_id}`) is kept; swept every 30 s; `0` keeps them forever |
 | `ESCUREL_SHUTDOWN_DRAIN_SECS` | 25 | how long a graceful stop waits for in-flight requests before aborting them (keep below the orchestrator's kill timeout) |
 | `ESCUREL_AUTH_SIGNING_KEY` | — | RSA private key (PKCS#8 or PKCS#1 PEM) the gateway signs `mint_agent_token` bearers with; unset → the tool refuses `unsupported` |
 | `ESCUREL_AUTH_SIGNING_KID` | derived | the `kid` those bearers carry (must be in a trusted JWKS) |
@@ -310,6 +311,7 @@ test knobs: never set in a deployment.
 | `ESCUREL_ECHO_RESULT_REF` | — | echo harness: attach this result reference (tests) |
 | `ESCUREL_ECHO_SLEEP_MS` | 0 | echo harness: idle this long before finishing, so a test can cancel a run |
 | `ESCUREL_ECHO_SLEEP_SKILL` | — | echo harness: only runs of this label idle for ESCUREL_ECHO_SLEEP_MS (tests) |
+| `ESCUREL_ECHO_TRANSCRIPT` | — | echo harness: print this JSONL file's lines (`{"transcript":{kind, name?, args?, text?}}`, `{token}` = the run's bearer) as its stream, for the run transcript (tests) |
 | `ESCUREL_ECHO_USAGE` | — | echo harness: report this usage (tests) |
 | `ESCUREL_TEST_GDRIVE_EXTENSION` | — | path of a built gdrive extension for the duckvfs tests |
 | `ESCUREL_TEST_MIGRATE_KIND_PAGE_DELAY_MS` | — | sleep this long before each page of `migrate_kind`, to give a CI-sized tenant a long migration window |

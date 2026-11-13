@@ -28,7 +28,7 @@
 use std::time::Duration;
 
 use async_trait::async_trait;
-use escurel_runner_core::TaskContext;
+use escurel_runner_core::{TaskContext, TranscriptEntry, TranscriptKind};
 
 use crate::harness::{Harness, HarnessError, HarnessOutcome, HarnessStatus, Usage};
 
@@ -198,13 +198,14 @@ impl Harness for ClaudeHarness {
             None => None,
         };
 
+        let lines = crate::harness::LineLog::new();
         let output = crate::harness::run_capture(crate::harness::Spawn {
             harness: NAME,
             bin: &self.bin_path,
             args: &args,
             envs: Vec::new(),
             stdin: Some(&user_message(&task.input)),
-            stdout_lines: None,
+            stdout_lines: Some(lines.sender()),
             // Stdin stays open while a turn is in flight; claude exits at
             // the EOF sent once the last turn's `result` is out.
             turns: Some(crate::harness::Turns {
@@ -215,9 +216,97 @@ impl Harness for ClaudeHarness {
             timeout: self.timeout,
             cancel: task.cancel.as_ref(),
         })
-        .await?;
+        .await;
+        lines.transcribe(task, transcript_entries);
 
-        parse_outcome(&output.stdout)
+        parse_outcome(&output?.stdout)
+    }
+}
+
+/// One stream-json output line as transcript entries — the one parser of
+/// the claude stream: the outcome's `tool_calls` counts its `tool_use`s.
+///
+/// - `assistant`: each `tool_use` is a tool call (name, input), each `text`
+///   a message;
+/// - `user`: each `tool_result` is a tool result, or an error when
+///   `is_error`;
+/// - `result`: an error when the turn failed (`is_error`, `error_*`).
+///
+/// A line's own `timestamp` dates its entries.
+pub(crate) fn transcript_entries(line: &str) -> Vec<TranscriptEntry> {
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
+        return Vec::new();
+    };
+    let at = v
+        .get("timestamp")
+        .and_then(serde_json::Value::as_str)
+        .and_then(escurel_runner_core::parse_rfc3339);
+    let content = || {
+        v["message"]["content"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default()
+    };
+    let mut out = Vec::new();
+    match v.get("type").and_then(serde_json::Value::as_str) {
+        Some("assistant") => {
+            for item in content() {
+                match item["type"].as_str() {
+                    Some("tool_use") => out.push(TranscriptEntry::tool_call(
+                        item["name"].as_str().unwrap_or("unknown"),
+                        item.get("input").cloned().unwrap_or_default(),
+                    )),
+                    Some("text") => {
+                        let text = item["text"].as_str().unwrap_or("").trim();
+                        if !text.is_empty() {
+                            out.push(TranscriptEntry::new(TranscriptKind::Message, text));
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        Some("user") => {
+            for item in content() {
+                if item["type"] != "tool_result" {
+                    continue;
+                }
+                let kind = if item["is_error"].as_bool() == Some(true) {
+                    TranscriptKind::Error
+                } else {
+                    TranscriptKind::ToolResult
+                };
+                out.push(TranscriptEntry::new(kind, result_text(&item["content"])));
+            }
+        }
+        Some("result") => {
+            let subtype = v["subtype"].as_str().unwrap_or("");
+            if v["is_error"].as_bool() == Some(true) || subtype.starts_with("error") {
+                let text = v["result"]
+                    .as_str()
+                    .filter(|r| !r.trim().is_empty())
+                    .unwrap_or(subtype);
+                out.push(TranscriptEntry::new(TranscriptKind::Error, text));
+            }
+        }
+        _ => {}
+    }
+    if let Some(at) = at {
+        out = out.into_iter().map(|e| e.at(at)).collect();
+    }
+    out
+}
+
+/// A `tool_result`'s content: a string, or the text of its text blocks.
+fn result_text(content: &serde_json::Value) -> String {
+    match content {
+        serde_json::Value::String(s) => s.clone(),
+        serde_json::Value::Array(items) => items
+            .iter()
+            .filter_map(|i| i["text"].as_str())
+            .collect::<Vec<_>>()
+            .join(" "),
+        _ => String::new(),
     }
 }
 
@@ -299,10 +388,13 @@ fn parse_outcome(stdout: &[u8]) -> Result<HarnessOutcome, HarnessError> {
             }
         });
 
-    let tool_calls = envelope
-        .get("num_turns")
-        .and_then(serde_json::Value::as_u64)
-        .unwrap_or(0) as u32;
+    // The model's own tool calls, from the same parser as the transcript
+    // (`num_turns` counts model turns, which is not the same thing).
+    let tool_calls = String::from_utf8_lossy(stdout)
+        .lines()
+        .flat_map(transcript_entries)
+        .filter(|e| e.kind == TranscriptKind::ToolCall)
+        .count() as u32;
 
     Ok(HarnessOutcome {
         reply: reply.filter(|_| ok),
@@ -514,7 +606,7 @@ mod tests {
         assert!(outcome.ok);
         assert_eq!(outcome.status, HarnessStatus::Ok);
         assert_eq!(outcome.summary, "folded the event");
-        assert_eq!(outcome.tool_calls, 4);
+        assert_eq!(outcome.tool_calls, 0, "a bare envelope shows no tool_use");
     }
 
     #[test]
@@ -561,7 +653,7 @@ mod tests {
         let outcome = parse_outcome(stdout).expect("parse stream");
         assert!(outcome.ok);
         assert_eq!(outcome.summary, "steered answer");
-        assert_eq!(outcome.tool_calls, 3);
+        assert_eq!(outcome.tool_calls, 0, "num_turns is not a tool-call count");
         assert_eq!(outcome.usage.expect("usage").output_tokens, 7);
     }
 
@@ -589,6 +681,58 @@ mod tests {
         assert_eq!(usage.output_tokens, 80 + 49);
         assert_eq!(usage.cost_usd, Some(0.2136006), "the running total, once");
         assert_eq!(usage.model.as_deref(), Some("claude-haiku-5-5"));
+    }
+
+    /// Lines recorded from a real `claude -p --output-format stream-json`
+    /// session (2026-11), trimmed: a tool call, its result, the answer, plus
+    /// a failed tool result and an error result.
+    #[test]
+    fn the_stream_normalises_to_calls_results_messages_and_errors() {
+        let lines = [
+            r#"{"type":"system","subtype":"init","session_id":"s1","tools":["Bash"]}"#,
+            r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_1","name":"Bash","input":{"command":"echo hi","description":"Print hi"}}]},"timestamp":"2026-11-13T04:25:54.583Z"}"#,
+            r#"{"type":"user","message":{"content":[{"tool_use_id":"toolu_1","type":"tool_result","content":"hi","is_error":false}]},"timestamp":"2026-11-13T04:25:54.659Z"}"#,
+            r#"{"type":"rate_limit_event","rate_limit_info":{}}"#,
+            r#"{"type":"assistant","message":{"content":[{"type":"text","text":"one"}]}}"#,
+            r#"{"type":"user","message":{"content":[{"tool_use_id":"toolu_2","type":"tool_result","content":[{"type":"text","text":"permission denied"}],"is_error":true}]}}"#,
+            r#"{"type":"result","subtype":"error_max_turns","is_error":true,"result":""}"#,
+            "not json at all",
+        ];
+        let entries: Vec<TranscriptEntry> =
+            lines.iter().flat_map(|l| transcript_entries(l)).collect();
+        let kinds: Vec<TranscriptKind> = entries.iter().map(|e| e.kind).collect();
+        assert_eq!(
+            kinds,
+            [
+                TranscriptKind::ToolCall,
+                TranscriptKind::ToolResult,
+                TranscriptKind::Message,
+                TranscriptKind::Error,
+                TranscriptKind::Error,
+            ]
+        );
+        assert_eq!(entries[0].name.as_deref(), Some("Bash"));
+        assert_eq!(
+            entries[0].args,
+            Some(serde_json::json!({"command":"echo hi","description":"Print hi"}))
+        );
+        assert_eq!(
+            entries[0].at,
+            escurel_runner_core::parse_rfc3339("2026-11-13T04:25:54.583Z"),
+            "the stream's own timestamp dates the entry"
+        );
+        assert_eq!(entries[1].text, "hi");
+        assert_eq!(entries[2].text, "one");
+        assert_eq!(entries[3].text, "permission denied");
+        assert_eq!(entries[4].text, "error_max_turns");
+        let stdout = lines.join("\n");
+        assert_eq!(
+            parse_outcome(format!("{stdout}\n").as_bytes())
+                .expect("parse")
+                .tool_calls,
+            1,
+            "tool_calls is the stream's tool_use count"
+        );
     }
 
     #[test]

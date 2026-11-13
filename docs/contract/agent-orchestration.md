@@ -346,6 +346,28 @@ best-effort projection of the ledger — see the consumer skill's
 `update_page` commits (more automation surface — keep the cascade bridge
 in the runner).
 
+**Run transcripts (#822).** Each harness adapter normalises its own
+structured stream (claude stream-json, codex `--json` events, gemini's
+in-process turns, the echo harness's scripted lines) into transcript
+records `{ts, attempt, kind: tool_call|tool_result|message|error, name?,
+args_digest?, summary}` — one parser per harness: the outcome's `tool_calls`
+count is derived from the same records (for claude that replaces the old
+`num_turns`, which counted model turns, not calls). Arguments never leave
+the runner: `args_digest` is the SHA-256 of the canonical args JSON. Every
+`summary` and `name` goes through `escurel_types::redact::scrub` (the one
+credential-shape module the pack gate and the gateway's tool-call summaries
+share), with the run's own bearer passed as a literal, then is cut to 200
+characters. The runner concatenates every attempt's records, uploads the
+JSONL with the agent-scope tool `put_run_transcript` (only the run's own
+bearer, or a runner's non-run admin bearer; 2 MiB cap; content-addressed
+via `LaneStore::put_blob`), and names the blob on `run-finished.transcript`.
+`fetch_blob {run_id}` reads it back through the `run-finished` event's ACL.
+The gateway tracks transcript blobs in a `run_transcripts` table so its
+periodic sweep (`ESCUREL_RUN_TRANSCRIPT_RETENTION_DAYS`, default 90, `0` =
+forever) deletes transcripts and never a document blob. Not yet: a
+per-tenant retention override (no tenant-settings mechanism exists), and
+transcripts for `agy` / `muse` / `openai` / `delegate`.
+
 The gateway stays automation-free: it still only *notifies*; the runner
 still owns every decision to *act*.
 

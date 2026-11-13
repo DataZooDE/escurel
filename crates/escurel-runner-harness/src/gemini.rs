@@ -38,7 +38,7 @@
 use std::time::Duration;
 
 use async_trait::async_trait;
-use escurel_runner_core::TaskContext;
+use escurel_runner_core::{TaskContext, TranscriptEntry, TranscriptKind};
 use serde_json::{Value, json};
 
 use crate::harness::{Harness, HarnessError, HarnessOutcome, HarnessStatus, Usage};
@@ -497,12 +497,16 @@ impl GeminiHarness {
                 if let Some(text) = part["text"].as_str() {
                     summary.push_str(text);
                     turn_text.push_str(text);
+                    if !text.trim().is_empty() {
+                        task.transcribe(TranscriptEntry::new(TranscriptKind::Message, text));
+                    }
                 }
                 let Some(call) = part.get("functionCall") else {
                     continue;
                 };
                 let name = call["name"].as_str().unwrap_or_default().to_owned();
                 let args = call.get("args").cloned().unwrap_or_else(|| json!({}));
+                task.transcribe(TranscriptEntry::tool_call(name.clone(), args.clone()));
 
                 // The narrowed surface is enforced HERE too, not only by
                 // declaring it: the declarations are a prompt, and a prompt is
@@ -510,6 +514,13 @@ impl GeminiHarness {
                 // call anyway; refusing it before the wire keeps the scoped
                 // token off a call the packager never allowed.
                 if !task.allowed_tools.contains(&name) {
+                    task.transcribe(
+                        TranscriptEntry::new(
+                            TranscriptKind::Error,
+                            "refused before the wire: not on this run's tool surface",
+                        )
+                        .named(name.clone()),
+                    );
                     // Name what IS available: a model that only hears "not
                     // allowed" retries the same name until its turns run out.
                     responses.push(json!({
@@ -533,6 +544,13 @@ impl GeminiHarness {
                 )
                 .await?;
                 let payload = result["result"]["structuredContent"].clone();
+                task.transcribe(if crate::mcp::landed(&result) {
+                    TranscriptEntry::new(TranscriptKind::ToolResult, payload.to_string())
+                        .named(name.clone())
+                } else {
+                    let why = result.get("error").unwrap_or(&result["result"]);
+                    TranscriptEntry::new(TranscriptKind::Error, why.to_string()).named(name.clone())
+                });
                 // A call landed unless the gateway refused it: `isError`, `ok: false`, or a
                 // JSON-RPC error. (`isError` alone, with no payload flag, used to count as landed.)
                 if crate::mcp::landed(&result)

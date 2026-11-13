@@ -2617,6 +2617,7 @@ impl EscurelConfig {
                 }
                 _ => crate::mcp::DEFAULT_RUN_PROGRESS_KEEP,
             },
+            run_transcript_retention: run_transcript_retention_from_env()?,
             shutdown_drain: match std::env::var("ESCUREL_SHUTDOWN_DRAIN_SECS") {
                 Ok(raw) if !raw.trim().is_empty() => std::time::Duration::from_secs(
                     raw.trim().parse::<u64>().ok().filter(|n| *n >= 1).ok_or(
@@ -3400,6 +3401,28 @@ mod rerank_config_tests {
 }
 
 /// Whether the listen address (`host:port`) only accepts connections from this machine.
+/// The default for `ESCUREL_RUN_TRANSCRIPT_RETENTION_DAYS`.
+pub const DEFAULT_RUN_TRANSCRIPT_RETENTION_DAYS: u64 = 90;
+
+/// `ESCUREL_RUN_TRANSCRIPT_RETENTION_DAYS` (#822): days a run transcript is
+/// kept; `0` keeps them forever (`None`), unset is
+/// [`DEFAULT_RUN_TRANSCRIPT_RETENTION_DAYS`].
+fn run_transcript_retention_from_env() -> Result<Option<std::time::Duration>, ConfigError> {
+    let days = match std::env::var("ESCUREL_RUN_TRANSCRIPT_RETENTION_DAYS") {
+        Ok(raw) if !raw.trim().is_empty() => {
+            raw.trim()
+                .parse::<u64>()
+                .map_err(|_| ConfigError::InvalidValue {
+                    var: "ESCUREL_RUN_TRANSCRIPT_RETENTION_DAYS",
+                    value: raw.clone(),
+                    reason: "expected a whole number of days (0 = keep forever)",
+                })?
+        }
+        _ => DEFAULT_RUN_TRANSCRIPT_RETENTION_DAYS,
+    };
+    Ok((days > 0).then(|| std::time::Duration::from_secs(days.saturating_mul(86_400))))
+}
+
 fn listener_is_loopback(listen: &str) -> bool {
     match listen.parse::<std::net::SocketAddr>() {
         Ok(addr) => addr.ip().is_loopback(),

@@ -287,6 +287,9 @@ pub struct ServerConfig {
     /// How many `run-progress` snapshots a run keeps (`ESCUREL_RUN_PROGRESS_KEEP`,
     /// default 50); older ones are pruned at capture.
     pub run_progress_keep: usize,
+    /// How long a run transcript is kept (`ESCUREL_RUN_TRANSCRIPT_RETENTION_DAYS`,
+    /// default 90 days); `None` = forever. Swept on the minted-run tick.
+    pub run_transcript_retention: Option<std::time::Duration>,
     /// How long a graceful stop waits for in-flight requests before it aborts them
     /// (`ESCUREL_SHUTDOWN_DRAIN_SECS`, default [`DEFAULT_SHUTDOWN_DRAIN`]). Kept below the
     /// orchestrator's own kill timeout, so a stuck request cannot get the process SIGKILLed mid-write.
@@ -521,6 +524,7 @@ pub(crate) struct AppState {
     /// deployment opts in via `ESCUREL_EMIT_EDIT_EVENTS`.
     pub(crate) emit_edit_events: bool,
     pub(crate) run_progress_keep: usize,
+    pub(crate) run_transcript_retention: Option<std::time::Duration>,
     pub(crate) crdt_backend: Option<Arc<dyn CrdtBackend>>,
     /// #246 follow-up: serializes the whole optimistic-concurrency
     /// section of `update_page` (head-version read → staleness check /
@@ -655,6 +659,7 @@ pub async fn serve(
         tenant_suspended: Arc::clone(&config.tenant_suspended),
         emit_edit_events: config.emit_edit_events,
         run_progress_keep: config.run_progress_keep,
+        run_transcript_retention: config.run_transcript_retention,
         tenant_store: config.tenant_store.clone(),
         crdt_backend: config.crdt_backend.clone(),
         update_page_gate: Arc::new(tokio::sync::Mutex::new(())),
@@ -748,7 +753,8 @@ pub async fn serve(
     let (evict_shutdown_tx, mut evict_shutdown_rx) = oneshot::channel();
     let sweep_sessions = Arc::clone(&state.sessions);
     // Gateway-minted runs (workbench backend P2-6) share the sweep: a token
-    // that lapsed unused closes its run as `expired`.
+    // that lapsed unused closes its run as `expired`. Run transcripts past
+    // their retention (#822) go on the same tick.
     let mint_state = state.clone();
     let mint_every = config
         .minted_run_sweep
@@ -765,6 +771,7 @@ pub async fn serve(
                 }
                 _ = mint_tick.tick() => {
                     crate::mcp::sweep_expired_minted_runs(&mint_state).await;
+                    crate::mcp::sweep_run_transcripts(&mint_state).await;
                 }
                 _ = &mut evict_shutdown_rx => break,
             }

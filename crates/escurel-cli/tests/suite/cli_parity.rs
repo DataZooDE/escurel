@@ -77,6 +77,12 @@ const COVERAGE: &[(&str, Coverage)] = &[
     ),
     ("mint_agent_token", Agent(&["run", "mint-token"])),
     ("get_run_tool_calls", Agent(&["run", "tool-calls"])),
+    (
+        "put_run_transcript",
+        Excluded(
+            "runner bookkeeping: only a run's own bearer stores its transcript; read it with `run transcript`",
+        ),
+    ),
     ("list_lineage", Agent(&["run", "lineage"])),
     ("create_draft", Agent(&["draft", "create"])),
     ("create_branch", Agent(&["branch", "create"])),

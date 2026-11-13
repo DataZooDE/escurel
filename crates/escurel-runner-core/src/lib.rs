@@ -28,6 +28,7 @@ mod reconciler;
 mod recovery;
 mod run_events;
 pub mod schedule;
+mod transcript;
 mod trigger;
 mod workflow;
 
@@ -54,6 +55,10 @@ pub use packager::{
     ALLOWED_TOOLS, Autonomy, CHAT_REQUIRES_RUN_TOKENS, Delegation, PLAN_PARAGRAPH, PackageError,
     REVIEW_TOOLS, TaskContext, WORKFLOW_STEP_TOOLS, bound_page_id, chat_run_token, chat_tools,
     package, plan_tools,
+};
+pub use transcript::{
+    MAX_RECORDS_PER_RUN, SUMMARY_MAX_CHARS, TranscriptEntry, TranscriptKind, TranscriptRecord,
+    TranscriptSink, args_digest, parse_rfc3339, to_jsonl,
 };
 
 /// The harness selector for a step that delegates to the agent over A2A

@@ -503,6 +503,13 @@ impl Migrator {
         Ok(())
     }
 
+    /// Ensure `run_transcripts` (#822) exists. Plain `IF NOT EXISTS` DDL,
+    /// safe on every open.
+    pub fn ensure_run_transcripts(conn: &Connection) -> Result<(), MigrationError> {
+        conn.execute_batch(STAGE_23_RUN_TRANSCRIPTS)?;
+        Ok(())
+    }
+
     /// Ensure the `resolved_links` provenance-graph VIEW (ADR-0010) exists.
     /// A VIEW, not a table — `CREATE OR REPLACE`, so it is safe (and cheap) to
     /// run on EVERY connection like the other `ensure_*` methods, and it stays
@@ -548,6 +555,7 @@ impl Migrator {
         Self::ensure_events_lineage(conn)?;
         Self::ensure_events_seq(conn)?;
         Self::ensure_run_tool_calls(conn)?;
+        Self::ensure_run_transcripts(conn)?;
         // Drafts: a held write awaiting a human. Added after `events`, so it
         // is ALSO applied on every reopen (`ensure_drafts`) — a tenant
         // provisioned before drafts existed must gain the table, and every
@@ -684,6 +692,7 @@ const STAGE_19_EVENTS_SEQ: &str = include_str!("../sql/0018_events_seq.sql");
 const STAGE_20_RUN_TOOL_CALLS: &str = include_str!("../sql/0019_run_tool_calls.sql");
 const STAGE_21_BRANCH_PAGE_BASES: &str = include_str!("../sql/0020_branch_page_bases.sql");
 const STAGE_22_EMBEDDING_SPACE: &str = include_str!("../sql/0021_embedding_space.sql");
+const STAGE_23_RUN_TRANSCRIPTS: &str = include_str!("../sql/0022_run_transcripts.sql");
 
 #[cfg(test)]
 mod tests {

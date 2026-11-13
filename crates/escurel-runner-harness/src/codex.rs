@@ -37,7 +37,7 @@
 use std::time::Duration;
 
 use async_trait::async_trait;
-use escurel_runner_core::TaskContext;
+use escurel_runner_core::{TaskContext, TranscriptEntry, TranscriptKind};
 
 use crate::harness::{Harness, HarnessError, HarnessOutcome, HarnessStatus, Usage};
 
@@ -205,6 +205,7 @@ impl Harness for CodexHarness {
 
         let args = self.build_args(task, &last_message_path);
 
+        let lines = crate::harness::LineLog::new();
         let output = crate::harness::run_capture(crate::harness::Spawn {
             harness: NAME,
             bin: &self.bin_path,
@@ -218,12 +219,14 @@ impl Harness for CodexHarness {
             ],
             // codex reads the prompt until stdin closes.
             stdin: Some(Self::build_prompt(task).as_bytes()),
-            stdout_lines: None,
+            stdout_lines: Some(lines.sender()),
             turns: None,
             timeout: self.timeout,
             cancel: task.cancel.as_ref(),
         })
-        .await?;
+        .await;
+        lines.transcribe(task, transcript_entries);
+        let output = output?;
 
         // Read the final agent message the `-o` file captured (the clean
         // summary); the JSONL on stdout carries tool-call / error signal.
@@ -261,11 +264,14 @@ fn parse_outcome(final_message: &str, jsonl: &[u8]) -> Result<HarnessOutcome, Ha
         let Ok(event) = serde_json::from_str::<serde_json::Value>(line) else {
             continue;
         };
-        if is_tool_call_event(&event) {
-            tool_calls += 1;
-        }
-        if is_error_event(&event) {
-            saw_error = true;
+        for entry in event_entries(&event) {
+            match entry.kind {
+                TranscriptKind::ToolCall => tool_calls += 1,
+                // A run-level error event; a refused tool call (named) is
+                // the model's to recover from, not the run's verdict.
+                TranscriptKind::Error if entry.name.is_none() => saw_error = true,
+                _ => {}
+            }
         }
         if event["type"] == "turn.completed"
             && let Some(u) = event.get("usage").and_then(serde_json::Value::as_object)
@@ -307,6 +313,58 @@ fn parse_outcome(final_message: &str, jsonl: &[u8]) -> Result<HarnessOutcome, Ha
         tool_calls,
         produced_instance: None,
     })
+}
+
+/// One codex `--json` stdout line as transcript entries; banner lines and
+/// anything else that is not a JSON object yield none.
+pub(crate) fn transcript_entries(line: &str) -> Vec<TranscriptEntry> {
+    serde_json::from_str::<serde_json::Value>(line.trim())
+        .map(|event| event_entries(&event))
+        .unwrap_or_default()
+}
+
+/// One codex event as transcript entries — the one parser of the codex
+/// stream: the outcome's `tool_calls` and its error verdict count these.
+///
+/// - an MCP tool-call event ([`is_tool_call_event`]) is a tool call (its
+///   `item.tool`, `item.arguments`), followed by a tool result when the
+///   item carries its `result` or an error when it carries an `error`;
+/// - an error event ([`is_error_event`]) is an error (its `message`);
+/// - an `agent_message` item is a message (its `text`).
+fn event_entries(event: &serde_json::Value) -> Vec<TranscriptEntry> {
+    let item = &event["item"];
+    if is_tool_call_event(event) {
+        let name = item["tool"].as_str().unwrap_or("unknown").to_owned();
+        let mut out = vec![TranscriptEntry::tool_call(
+            name.clone(),
+            item.get("arguments").cloned().unwrap_or_default(),
+        )];
+        if let Some(err) = item.get("error").filter(|e| !e.is_null()) {
+            out.push(TranscriptEntry::new(TranscriptKind::Error, preview(err)).named(name));
+        } else if let Some(result) = item.get("result").filter(|r| !r.is_null()) {
+            out.push(TranscriptEntry::new(TranscriptKind::ToolResult, preview(result)).named(name));
+        }
+        return out;
+    }
+    if is_error_event(event) {
+        let text = event["message"]
+            .as_str()
+            .or_else(|| event["error"]["message"].as_str())
+            .unwrap_or("codex error event");
+        return vec![TranscriptEntry::new(TranscriptKind::Error, text)];
+    }
+    let item_type = item["type"].as_str().or_else(|| item["item_type"].as_str());
+    if item_type == Some("agent_message")
+        && let Some(text) = item["text"].as_str().filter(|t| !t.trim().is_empty())
+    {
+        return vec![TranscriptEntry::new(TranscriptKind::Message, text)];
+    }
+    Vec::new()
+}
+
+/// A JSON value as preview text: a string as-is, anything else compact.
+fn preview(v: &serde_json::Value) -> String {
+    v.as_str().map_or_else(|| v.to_string(), str::to_owned)
 }
 
 /// Recognise a codex `--json` event that represents an MCP tool call.
@@ -503,6 +561,43 @@ mod tests {
         assert_eq!(outcome.tool_calls, 1);
         // Empty final message falls back to a stable summary.
         assert_eq!(outcome.summary, "codex run completed");
+    }
+
+    #[test]
+    fn the_event_stream_normalises_to_calls_results_messages_and_errors() {
+        let lines = [
+            "Reading prompt from stdin...",
+            r#"{"type":"item.completed","item":{"id":"i1","type":"mcp_tool_call","item_type":"mcp_tool_call","server":"escurel","tool":"update_page","arguments":{"page_id":"p","content":"x"},"result":{"content":[{"type":"text","text":"ok"}]},"error":null}}"#,
+            r#"{"type":"item.completed","item":{"item_type":"mcp_tool_call","tool":"assign_event","arguments":{},"error":{"message":"forbidden"}}}"#,
+            r#"{"type":"item.completed","item":{"type":"agent_message","text":"folded"}}"#,
+            r#"{"type":"error","message":"model refused"}"#,
+        ];
+        let entries: Vec<TranscriptEntry> =
+            lines.iter().flat_map(|l| transcript_entries(l)).collect();
+        let kinds: Vec<TranscriptKind> = entries.iter().map(|e| e.kind).collect();
+        assert_eq!(
+            kinds,
+            [
+                TranscriptKind::ToolCall,
+                TranscriptKind::ToolResult,
+                TranscriptKind::ToolCall,
+                TranscriptKind::Error,
+                TranscriptKind::Message,
+                TranscriptKind::Error,
+            ]
+        );
+        assert_eq!(entries[0].name.as_deref(), Some("update_page"));
+        assert_eq!(
+            entries[0].args,
+            Some(serde_json::json!({"page_id":"p","content":"x"}))
+        );
+        assert_eq!(entries[3].name.as_deref(), Some("assign_event"));
+        assert_eq!(entries[5].text, "model refused");
+        let outcome = parse_outcome("", lines.join("\n").as_bytes()).expect("parse");
+        assert_eq!(outcome.tool_calls, 2, "counted by the same parser");
+        assert!(!outcome.ok, "the run-level error event fails the run");
+        let refused_call_only = parse_outcome("", lines[2].as_bytes()).expect("parse");
+        assert!(refused_call_only.ok, "a refused tool call alone does not");
     }
 
     #[test]

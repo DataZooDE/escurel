@@ -48,6 +48,7 @@ const EXPECTED: &[&str] = &[
     "capture_event:orchestration",
     "describe_endpoint:orchestration",
     "report_progress:orchestration",
+    "put_run_transcript:orchestration",
     "report_runner_status:orchestration",
     "mint_agent_token:orchestration",
     "get_run_tool_calls:deterministic",

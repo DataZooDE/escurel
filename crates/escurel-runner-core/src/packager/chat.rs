@@ -179,6 +179,7 @@ pub(super) async fn package_chat(
     Ok(TaskContext {
         cancel: None,
         inject: None,
+        transcript: None,
         plan_mode: false,
         prior_model_tokens: 0,
         instructions: build_chat_instructions(&skill.body),

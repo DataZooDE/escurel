@@ -65,6 +65,7 @@ printf '%s\n' '{{"type":"system","subtype":"init","session_id":"stub-1"}}'
 # this loop blocks until the timeout — itself part of the contract asserted.
 while IFS= read -r line; do
   printf '%s\n' "$line" >> "{stdin_out}"
+  printf '%s\n' '{{"type":"assistant","message":{{"content":[{{"type":"tool_use","id":"t1","name":"mcp__escurel__update_page","input":{{"page_id":"p"}}}}]}}}}'
   printf '%s\n' '{{"type":"assistant","message":{{"content":[{{"type":"text","text":"working"}}]}}}}'
   printf '%s\n' '{{"type":"result","subtype":"success","is_error":false,"result":"folded the renewal event","num_turns":3,"session_id":"stub-1"}}'
 done
@@ -114,7 +115,10 @@ async fn claude_adapter_builds_invocation_and_parses_real_stub_output() {
         Some("folded the renewal event"),
         "the final assistant message is the user-facing reply"
     );
-    assert_eq!(outcome.tool_calls, 3, "num_turns mapped to tool_calls");
+    assert_eq!(
+        outcome.tool_calls, 1,
+        "the stream's tool_use lines are counted"
+    );
     assert_eq!(outcome.produced_instance, None);
 
     // (a) The adapter built the correct invocation.

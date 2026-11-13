@@ -37,7 +37,7 @@ use std::process::ExitCode;
 use std::sync::Mutex;
 
 use escurel_runner_harness::{
-    ECHO_STDIN_TURNS_ENV, HarnessOutcome, HarnessStatus, HarnessTask, Usage,
+    ECHO_STDIN_TURNS_ENV, ECHO_TRANSCRIPT_ENV, HarnessOutcome, HarnessStatus, HarnessTask, Usage,
 };
 use serde_json::{Value, json};
 
@@ -96,6 +96,10 @@ fn main() -> ExitCode {
         }
     };
 
+    if let Err(e) = print_scripted_transcript(&task) {
+        eprintln!("echo-harness: {e}");
+        return ExitCode::FAILURE;
+    }
     match run(&task) {
         Ok(outcome) => match serde_json::to_string(&outcome) {
             Ok(s) => {
@@ -112,6 +116,22 @@ fn main() -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+/// Test knob (#822): with [`ECHO_TRANSCRIPT_ENV`] naming a JSONL file,
+/// print each of its lines to stdout first — the stream the adapter builds
+/// the run's transcript from. `{token}` in a line becomes this run's bearer,
+/// so a test can prove the transcript never carries it.
+fn print_scripted_transcript(task: &HarnessTask) -> Result<(), String> {
+    let Some(path) = std::env::var_os(ECHO_TRANSCRIPT_ENV) else {
+        return Ok(());
+    };
+    let script = std::fs::read_to_string(&path)
+        .map_err(|e| format!("could not read {ECHO_TRANSCRIPT_ENV} {path:?}: {e}"))?;
+    for line in script.lines().filter(|l| !l.trim().is_empty()) {
+        println!("{}", line.replace("{token}", &task.token));
+    }
+    Ok(())
 }
 
 /// A blocking MCP-over-HTTP tool call against the packaged endpoint.

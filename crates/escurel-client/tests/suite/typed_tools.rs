@@ -299,6 +299,7 @@ async fn fetch_blob_round_trips_typed() {
     let fetched = client
         .fetch_blob(FetchBlobRequest {
             page_id: page_id.clone(),
+            ..Default::default()
         })
         .await
         .unwrap();
@@ -315,6 +316,7 @@ async fn fetch_blob_round_trips_typed() {
     let none = client
         .fetch_blob(FetchBlobRequest {
             page_id: "markdown/skills/memo.md".to_owned(),
+            ..Default::default()
         })
         .await
         .unwrap();

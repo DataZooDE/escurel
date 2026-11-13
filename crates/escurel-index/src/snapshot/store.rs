@@ -165,6 +165,7 @@ impl IndexStore for SingleFileStore {
         Migrator::ensure_events_lineage(&conn)?;
         Migrator::ensure_events_seq(&conn)?;
         Migrator::ensure_run_tool_calls(&conn)?;
+        Migrator::ensure_run_transcripts(&conn)?;
         // Held writes awaiting a human: ensure on EVERY boot (idempotent),
         // like the credential registry. Drafts arrived after every deployed
         // tenant was provisioned, so without this a tenant would serve the

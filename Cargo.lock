@@ -2783,6 +2783,7 @@ version = "1.0.0"
 dependencies = [
  "anyhow",
  "axum",
+ "base64 0.22.1",
  "chrono",
  "escurel-client",
  "escurel-obs",
@@ -2818,6 +2819,7 @@ dependencies = [
  "rand 0.8.6",
  "rsa",
  "secrecy",
+ "serde",
  "serde_json",
  "sha2 0.10.9",
  "tempfile",
@@ -2981,6 +2983,7 @@ dependencies = [
  "chrono-tz",
  "croner",
  "hmac 0.12.1",
+ "regex",
  "serde",
  "serde_json",
  "sha2 0.10.9",

@@ -1052,11 +1052,15 @@ pub struct WebhookDeliveriesResponse {
 
 // ── fetch_blob ────────────────────────────────────────────────────
 
-/// `fetch_blob` arguments. MCP wire key: `page_id`.
+/// `fetch_blob` arguments: exactly one of `page_id` (a document's
+/// original) or `run_id` (a finished run's transcript, #822).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct FetchBlobRequest {
+    #[serde(skip_serializing_if = "String::is_empty")]
     pub page_id: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub run_id: String,
 }
 
 /// The retained original file of a `document`-backed instance. MCP wire
@@ -1065,6 +1069,9 @@ pub struct FetchBlobRequest {
 #[serde(default)]
 pub struct BlobInfo {
     pub page_id: String,
+    /// Set instead of `page_id` for a run transcript (`fetch_blob{run_id}`).
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub run_id: String,
     /// The MIME the upload declared (falling back to a byte sniff for
     /// overlays written before the field existed).
     pub content_type: String,
@@ -1081,6 +1088,16 @@ pub struct BlobInfo {
 #[serde(default)]
 pub struct FetchBlobResponse {
     pub blob: Option<BlobInfo>,
+}
+
+/// `put_run_transcript` result (#822): the stored blob and its size.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct PutRunTranscriptResponse {
+    /// `sha256:<hex>`, content-addressed.
+    pub blob_id: String,
+    pub records: u64,
+    pub bytes: u64,
 }
 
 // ── list_snapshots / list_op_authors (CRDT history reads) ─────────

@@ -132,12 +132,27 @@ pub(crate) fn tool_defs() -> Vec<ToolDef> {
             Execution::Deterministic,
             Scope::Agent,
             Touches::READ,
-            "Fetch the original retained file bytes of a document-backed instance (base64 + content type) for a faithful client preview.",
+            "Fetch the original retained file bytes of a document-backed instance (base64 + content type) for a faithful client preview — or, with `run_id` instead of `page_id`, a finished run's transcript (JSONL, `application/x-ndjson`), readable when the run's `run-finished` event is.",
             json!({
                 "type": "object",
-                "required": ["page_id"],
                 "properties": {
-                    "page_id": { "type": "string", "description": "Repo-relative page path, e.g. `markdown/instances/<skill>/<slug>.md` (skills live under `markdown/skills/<id>.md`)." }
+                    "page_id": { "type": "string", "description": "Repo-relative page path, e.g. `markdown/instances/<skill>/<slug>.md` (skills live under `markdown/skills/<id>.md`). Exactly one of `page_id` / `run_id`." },
+                    "run_id": { "type": "string", "description": "A finished run whose transcript to fetch. Refusals carry `data.code`: `run_not_found` (absent or not readable), `transcript_absent`, `transcript_expired`." }
+                }
+            }),
+        ),
+        tool_entry(
+            "put_run_transcript",
+            Execution::Orchestration,
+            Scope::Agent,
+            Touches::INDEX,
+            "Store a run's transcript — JSONL, one `{ts, attempt, kind, name?, args_digest?, summary}` record per line — as a content-addressed blob (at most 2 MiB; idempotent). Runner bookkeeping: only the run's own bearer (its `run_id` claim) or the runner's non-run admin bearer may call it. The runner names the blob on `run-finished.transcript`; read it back with `fetch_blob{run_id}`.",
+            json!({
+                "type": "object",
+                "required": ["run_id", "records"],
+                "properties": {
+                    "run_id": { "type": "string", "description": "The run the transcript belongs to; must be the bearer's own run." },
+                    "records": { "type": "string", "description": "The transcript as JSONL (one JSON object per line), already redacted." }
                 }
             }),
         ),
@@ -1915,6 +1930,7 @@ fn group_of(name: &str, scope: Scope) -> &'static str {
         | "list_drafts" | "promote_draft" | "discard_draft" => "[REVIEW]",
         "mint_agent_token"
         | "report_progress"
+        | "put_run_transcript"
         | "report_runner_status"
         | "get_run_tool_calls"
         | "list_lineage"
@@ -2446,6 +2462,11 @@ fn output_schema_for(name: &str) -> Option<Value> {
         })),
         "fetch_blob" => obj(json!({
             "blob": { "type": ["object", "null"] }
+        })),
+        "put_run_transcript" => obj(json!({
+            "blob_id": { "type": "string", "description": "`sha256:<hex>` of the stored bytes" },
+            "records": { "type": "integer" },
+            "bytes": { "type": "integer" }
         })),
         "expand" => obj(json!({
             "page": { "type": ["object", "null"] },

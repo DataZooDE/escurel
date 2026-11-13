@@ -22,10 +22,11 @@ escurel-client = { path = "../escurel-client" }
 escurel-auth = { path = "../escurel-auth" }
 jsonwebtoken = "9"
 escurel-runner-workflow = { path = "../escurel-runner-workflow" }
-escurel-types = { path = "../escurel-types", features = ["schedule"] }
+escurel-types = { path = "../escurel-types", features = ["schedule", "redact"] }
 rsa = { version = "0.9", features = ["pem"] }
 duckdb = { version = "1", default-features = false }
 secrecy = "0.10"
+serde = { version = "1", features = ["derive"] }
 # Page frontmatter keeps the order it was written in, however this crate is built.
 serde_json = { version = "1", features = ["preserve_order"] }
 sha2 = "0.10"

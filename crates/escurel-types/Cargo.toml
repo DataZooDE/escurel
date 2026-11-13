@@ -26,6 +26,10 @@ sha2 = "0.10"
 croner = { version = "4", optional = true }
 chrono = { version = "0.4", default-features = false, features = ["std", "clock"], optional = true }
 chrono-tz = { version = "0.10", optional = true }
+# Credential shapes (`redact` module): the pack gate, the gateway's tool-call
+# summaries and the runner's run transcript share one scrubber.
+regex = { version = "1", optional = true }
 
 [features]
 schedule = ["dep:croner", "dep:chrono", "dep:chrono-tz"]
+redact = ["dep:regex"]

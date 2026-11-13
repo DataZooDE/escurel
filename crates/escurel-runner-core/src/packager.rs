@@ -285,6 +285,9 @@ pub struct TaskContext {
     /// be injected (an unsupported harness, tests, one-off packaging). An
     /// injection never changes the token or the tool surface above.
     pub inject: Option<crate::InjectInbox>,
+    /// The attempt's transcript (#822): what the harness did, normalised by
+    /// its adapter. `None` = not recorded (tests, one-off packaging).
+    pub transcript: Option<crate::TranscriptSink>,
     /// Plan mode (workbench backend P2-5b): the harness may only read and
     /// report a plan — a subprocess adapter that can plan runs planning
     /// (claude `--permission-mode plan`), the others refuse — and the run
@@ -389,6 +392,14 @@ impl TaskContext {
         self.token.expose_secret()
     }
 
+    /// Record one transcript entry, scrubbed of the run's own bearer and
+    /// every credential shape; a no-op when the attempt keeps no transcript.
+    pub fn transcribe(&self, entry: crate::TranscriptEntry) {
+        if let Some(sink) = &self.transcript {
+            sink.record(entry, &[self.token_str()]);
+        }
+    }
+
     /// The delegation parameters for a `harness: delegate` step, if this task is
     /// one. `None` for every ordinary step — the `DelegateHarness` treats that
     /// as "not a delegate task" and refuses.
@@ -425,6 +436,7 @@ impl TaskContext {
             prior_model_tokens: 0,
             cancel: None,
             inject: None,
+            transcript: None,
             instructions,
             input,
             mcp_endpoint,
@@ -836,6 +848,7 @@ pub async fn package(
     Ok(TaskContext {
         cancel: None,
         inject: None,
+        transcript: None,
         plan_mode,
         prior_model_tokens: 0,
         instructions,
@@ -1693,6 +1706,7 @@ mod tests {
             prior_model_tokens: 0,
             cancel: None,
             inject: None,
+            transcript: None,
             instructions: "i".into(),
             input: "in".into(),
             mcp_endpoint: "http://gw/mcp".into(),

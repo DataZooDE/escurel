@@ -260,10 +260,11 @@ pub(crate) struct Spawn<'a, 'b> {
     /// reads its prompt until EOF, so a held-open stdin hangs the run until
     /// the timeout — that is why this closes rather than leaving the handle.
     pub stdin: Option<&'a [u8]>,
-    /// Every stdout line as it arrives (without its newline), for a live
-    /// consumer such as a run transcript. The lines are still accumulated
-    /// into [`std::process::Output::stdout`] for the post-exit parsers.
-    pub stdout_lines: Option<tokio::sync::mpsc::UnboundedSender<String>>,
+    /// Every stdout line as it arrives (without its newline) and when, for
+    /// a live consumer such as a run transcript ([`LineLog`]). The lines are
+    /// still accumulated into [`std::process::Output::stdout`] for the
+    /// post-exit parsers.
+    pub stdout_lines: Option<tokio::sync::mpsc::UnboundedSender<StdoutLine>>,
     /// Keep stdin open after `stdin` for further user turns. `None` keeps
     /// the write-then-close default above.
     pub turns: Option<Turns<'a, 'b>>,
@@ -273,6 +274,51 @@ pub(crate) struct Spawn<'a, 'b> {
     /// SIGKILL, and the run reports [`HarnessError::Cancelled`]. `None` =
     /// not cancellable.
     pub cancel: Option<&'a escurel_runner_core::Cancel>,
+}
+
+/// One stdout line and when it was read.
+pub(crate) type StdoutLine = (std::time::SystemTime, String);
+
+/// The stdout lines of one harness run, kept for its transcript. Read after
+/// the run whatever its outcome: a run that failed, timed out or was
+/// cancelled is exactly the one an auditor wants to replay.
+pub(crate) struct LineLog {
+    tx: tokio::sync::mpsc::UnboundedSender<StdoutLine>,
+    rx: tokio::sync::mpsc::UnboundedReceiver<StdoutLine>,
+}
+
+impl LineLog {
+    pub(crate) fn new() -> Self {
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        Self { tx, rx }
+    }
+
+    /// The sink to hand [`Spawn::stdout_lines`].
+    pub(crate) fn sender(&self) -> tokio::sync::mpsc::UnboundedSender<StdoutLine> {
+        self.tx.clone()
+    }
+
+    /// Normalise every line read so far with the adapter's `entries` and
+    /// record them on the task's transcript. An entry without its own
+    /// time is stamped with when its line was read.
+    pub(crate) fn transcribe(
+        mut self,
+        task: &TaskContext,
+        entries: fn(&str) -> Vec<escurel_runner_core::TranscriptEntry>,
+    ) {
+        if task.transcript.is_none() {
+            return;
+        }
+        while let Ok((at, line)) = self.rx.try_recv() {
+            for entry in entries(&line) {
+                let entry = match entry.at {
+                    Some(_) => entry,
+                    None => entry.at(at),
+                };
+                task.transcribe(entry);
+            }
+        }
+    }
 }
 
 /// A conversation over stdin: the initial `stdin` payload is turn one, each
@@ -474,7 +520,7 @@ async fn next_turn(
 /// closes a turn.
 async fn stream_stdout(
     pipe: tokio::process::ChildStdout,
-    sink: Option<tokio::sync::mpsc::UnboundedSender<String>>,
+    sink: Option<tokio::sync::mpsc::UnboundedSender<StdoutLine>>,
     turn_ended: Option<fn(&str) -> bool>,
     ended: tokio::sync::mpsc::UnboundedSender<()>,
 ) -> Vec<u8> {
@@ -492,7 +538,7 @@ async fn stream_stdout(
             let _ = ended.send(());
         }
         if let Some(sink) = &sink {
-            let _ = sink.send(line.to_owned());
+            let _ = sink.send((std::time::SystemTime::now(), line.to_owned()));
         }
     }
     all
@@ -645,8 +691,8 @@ mod cancel_tests {
     }
 
     #[tokio::test]
-    async fn stdout_lines_stream_to_the_sink_and_are_still_captured() {
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    async fn stdout_lines_reach_the_transcript_and_are_still_captured() {
+        let log = LineLog::new();
         let args = sh("printf 'one\\ntwo\\nthree'");
         let output = run_capture(Spawn {
             harness: "test",
@@ -654,7 +700,7 @@ mod cancel_tests {
             args: &args,
             envs: Vec::new(),
             stdin: None,
-            stdout_lines: Some(tx),
+            stdout_lines: Some(log.sender()),
             turns: None,
             timeout: Duration::from_secs(10),
             cancel: None,
@@ -662,11 +708,23 @@ mod cancel_tests {
         .await
         .expect("runs");
         assert_eq!(output.stdout, b"one\ntwo\nthree");
-        let mut lines = Vec::new();
-        while let Ok(l) = rx.try_recv() {
-            lines.push(l);
-        }
-        assert_eq!(lines, ["one", "two", "three"]);
+        let mut task = TaskContext::for_test(
+            String::new(),
+            String::new(),
+            String::new(),
+            Vec::new(),
+            escurel_runner_core::SecretString::from("t".to_owned()),
+        );
+        let sink = escurel_runner_core::TranscriptSink::new(1);
+        task.transcript = Some(sink.clone());
+        log.transcribe(&task, |l| {
+            vec![escurel_runner_core::TranscriptEntry::new(
+                escurel_runner_core::TranscriptKind::Message,
+                l,
+            )]
+        });
+        let summaries: Vec<String> = sink.take().into_iter().map(|r| r.summary).collect();
+        assert_eq!(summaries, ["one", "two", "three"]);
     }
 
     fn line(text: &str) -> Vec<u8> {

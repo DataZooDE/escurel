@@ -51,6 +51,7 @@ pub mod read;
 mod relation_guard;
 pub mod result_ref;
 pub mod retrieval;
+mod run_transcripts;
 pub mod schema;
 pub mod search;
 pub mod snapshot;
@@ -98,6 +99,7 @@ pub use read::{
 };
 pub use relation_guard::{RELATION_IN_USE, RELATION_REFERRER_LIMIT, Referrer, RelationReferrers};
 pub use retrieval::RetrievalConfig;
+pub use run_transcripts::StoredTranscript;
 pub use schema::Migrator;
 pub use search::{Granularity, SearchHit};
 pub use snapshot::{

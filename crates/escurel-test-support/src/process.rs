@@ -176,8 +176,12 @@ pub struct ConfigOverrides {
     /// gateway's verifier accepts. Requires `AuthMode::TestIssuer`.
     pub signing: bool,
     /// How often the gateway sweeps gateway-minted runs for expiry (P2-6);
-    /// `None` = the production default.
+    /// `None` = the production default. Run transcripts are swept on the
+    /// same tick.
     pub minted_run_sweep: Option<std::time::Duration>,
+    /// How long run transcripts are kept (#822); `None` = forever (a test
+    /// gateway keeps everything unless the test asks).
+    pub run_transcript_retention: Option<std::time::Duration>,
     /// Attach a DuckLake so `state.lake` is `Some` — otherwise always
     /// `None` (see `serve`'s `ServerConfig` construction). Tests for
     /// lake-durability behavior (#567: `/ingest/upload`'s synchronous
@@ -510,6 +514,7 @@ impl EscurelProcess {
             tenant_suspended: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             emit_edit_events: overrides.emit_edit_events,
             run_progress_keep: overrides.run_progress_keep.unwrap_or(50),
+            run_transcript_retention: overrides.run_transcript_retention,
             shutdown_drain: overrides
                 .shutdown_drain
                 .unwrap_or(escurel_server::DEFAULT_SHUTDOWN_DRAIN),

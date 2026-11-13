@@ -223,7 +223,7 @@ impl RunEventCtx {
     }
 
     /// `run-finished` with the ledger's terminal, the harness's last summary
-    /// and tool-call count, and the run's final plan (the newest
+    /// and tool-call count, the stored transcript, and the run's final plan (the newest
     /// `run-progress` snapshot the agent reported, read back best-effort).
     ///
     /// # Errors
@@ -238,6 +238,7 @@ impl RunEventCtx {
         tool_calls: u32,
         autonomy: Option<&str>,
         usage: Option<Value>,
+        transcript: Option<Value>,
     ) -> Result<(), Error> {
         let (status, produced, held, reason) = match finish {
             RunFinish::Processed { produced, held } => ("processed", produced.clone(), *held, None),
@@ -261,6 +262,10 @@ impl RunEventCtx {
             // `{input_tokens, output_tokens, cost_usd, model}` summed over the
             // attempts (P3-4); `null` when no attempt reported any.
             "usage": usage,
+            // `{blob_id, records, bytes}` of the stored transcript (#822),
+            // read back with `fetch_blob{run_id}`; `null` when none was
+            // stored.
+            "transcript": transcript,
         });
         if let Some(r) = reason {
             body["reason"] = json!(r);

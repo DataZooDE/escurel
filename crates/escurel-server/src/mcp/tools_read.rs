@@ -851,7 +851,11 @@ pub(super) const FETCH_BLOB_MAX_BYTES: usize = 25 * 1024 * 1024;
 
 #[derive(Deserialize)]
 pub(super) struct FetchBlobArgs {
-    page_id: String,
+    #[serde(default)]
+    page_id: Option<String>,
+    /// A run whose transcript to fetch (#822), instead of a page.
+    #[serde(default)]
+    run_id: Option<String>,
 }
 
 /// Return the ORIGINAL retained file bytes for a `document`-backed instance —
@@ -931,10 +935,33 @@ pub(super) async fn resolve_readable_blob(
 pub(super) async fn tool_fetch_blob(
     indexer: &Indexer,
     caller: AclCaller<'_>,
+    event_acl: crate::server::EventAclMode,
     args: Value,
 ) -> Result<Value, JsonRpcError> {
     let a: FetchBlobArgs = parse_args(args, "fetch_blob")?;
-    let Some((content_type, bytes)) = resolve_readable_blob(indexer, &caller, &a.page_id)
+    let nonblank = |v: Option<String>| v.filter(|s| !s.trim().is_empty());
+    let page_id = match (nonblank(a.page_id), nonblank(a.run_id)) {
+        (Some(page_id), None) => page_id,
+        (None, Some(run_id)) => {
+            let bytes =
+                super::tools_transcript::readable_transcript(indexer, &caller, event_acl, &run_id)
+                    .await?;
+            return Ok(json!({
+                "blob": {
+                    "run_id": run_id,
+                    "content_type": "application/x-ndjson",
+                    "size": bytes.len(),
+                    "bytes_base64": B64.encode(&bytes),
+                }
+            }));
+        }
+        _ => {
+            return Err(JsonRpcError::invalid_params(
+                "fetch_blob: name exactly one of `page_id` or `run_id`".to_owned(),
+            ));
+        }
+    };
+    let Some((content_type, bytes)) = resolve_readable_blob(indexer, &caller, &page_id)
         .await
         .map_err(|e| JsonRpcError::internal(format!("fetch_blob {e}")))?
     else {
@@ -948,7 +975,7 @@ pub(super) async fn tool_fetch_blob(
     }
     Ok(json!({
         "blob": {
-            "page_id": a.page_id,
+            "page_id": page_id,
             "content_type": content_type,
             "size": bytes.len(),
             "bytes_base64": B64.encode(&bytes),
