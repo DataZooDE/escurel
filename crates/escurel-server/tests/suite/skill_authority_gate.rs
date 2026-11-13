@@ -222,9 +222,9 @@ async fn log_mode_logs_and_allows() {
     p.shutdown().await;
 }
 
-#[tokio::test]
-async fn a_session_commit_cannot_drop_a_skills_acl() {
-    let p = EscurelProcess::spawn(Opts {
+/// An enforcing gateway with the CRDT backend: sessions, versions, auto-merge.
+async fn crdt_gateway() -> EscurelProcess {
+    EscurelProcess::spawn(Opts {
         auth: AuthMode::TestIssuer,
         config_overrides: ConfigOverrides {
             live_crdt: true,
@@ -238,9 +238,14 @@ async fn a_session_commit_cannot_drop_a_skills_acl() {
                 .done(),
         ),
     })
-    .await;
-    let bob = member(&p);
-    let opened = rpc(&p, &bob, "open_session", json!({ "page_id": PAGE })).await;
+    .await
+}
+
+/// Bob opens a session on the playbook, cuts its `acl:` block and commits; the commit is refused.
+/// The op stays in the CRDT head.
+async fn refused_session_cutting_the_acl(p: &EscurelProcess) {
+    let bob = member(p);
+    let opened = rpc(p, &bob, "open_session", json!({ "page_id": PAGE })).await;
     let opened = &opened["result"]["structuredContent"];
     let session = opened["session"].as_str().expect("session id");
     // Edit the hydrated page the way a client would: cut the `acl:` block out of it.
@@ -258,22 +263,65 @@ async fn a_session_commit_cannot_drop_a_skills_acl() {
         doc.commit();
         b64.encode(doc.export(loro::ExportMode::updates(&before)).unwrap())
     };
-    let applied = rpc(
-        &p,
-        &bob,
-        "apply_op",
-        json!({ "session": session, "op": op }),
-    )
-    .await;
+    let applied = rpc(p, &bob, "apply_op", json!({ "session": session, "op": op })).await;
     assert!(applied.get("error").is_none(), "{applied}");
     refused(
-        &p,
+        p,
         &bob,
         "close_session",
         json!({ "session": session, "commit": true }),
         &["acl"],
     )
     .await;
+}
+
+#[tokio::test]
+async fn a_session_commit_cannot_drop_a_skills_acl() {
+    let p = crdt_gateway().await;
+    refused_session_cutting_the_acl(&p).await;
+    assert!(stored(&p).await.contains("ops"), "the ACL is still there");
+    p.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_refused_session_cannot_land_through_an_auto_merge() {
+    let p = crdt_gateway().await;
+    let v1 = PLAYBOOK.replace("# playbook\n", "# playbook\n\nv1.\n");
+    let base = ok(&p, &admin(&p), "update_page", write(PAGE, &v1)).await["new_version"].clone();
+    refused_session_cutting_the_acl(&p).await;
+    // A body-only edit on the pre-session base: its own bytes keep the ACL, but the auto-merge
+    // folds in the refused session's op, so what would persist drops it.
+    let mut args = write(PAGE, &v1.replace("v1.", "v2."));
+    args["base_version"] = base;
+    refused(&p, &member(&p), "update_page", args, &["acl"]).await;
+    assert!(stored(&p).await.contains("ops"), "the ACL is still there");
+    p.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_members_stale_write_does_not_revert_an_admins_change() {
+    let p = crdt_gateway().await;
+    let v1 = PLAYBOOK.replace("# playbook\n", "# playbook\n\nv1.\n");
+    let base = ok(&p, &admin(&p), "update_page", write(PAGE, &v1)).await["new_version"].clone();
+    // The admin schedules it after Bob read v1.
+    let scheduled = v1.replace("acl:", "schedule: \"0 9 * * 1\"\nacl:");
+    ok(&p, &admin(&p), "update_page", write(PAGE, &scheduled)).await;
+    // Bob's body edit on his stale base merges with the admin's schedule and keeps it.
+    let mut args = write(PAGE, &v1.replace("v1.", "v2."));
+    args["base_version"] = base;
+    let merged = ok(&p, &member(&p), "update_page", args).await;
+    assert_eq!(merged["auto_merged"], true, "{merged}");
+    assert!(stored(&p).await.contains("0 9 * * 1"), "the schedule stays");
+    // The same bytes with no base would overwrite the schedule away: judged against the head.
+    refused(
+        &p,
+        &member(&p),
+        "update_page",
+        write(PAGE, &v1.replace("v1.", "v3.")),
+        &["schedule"],
+    )
+    .await;
+    assert!(stored(&p).await.contains("0 9 * * 1"), "the schedule stays");
     p.shutdown().await;
 }
 

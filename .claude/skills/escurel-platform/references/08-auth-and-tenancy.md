@@ -286,7 +286,11 @@ Every write door applies it: `update_page` (branch writes included),
 `promote_draft` and `promote_changeset` (the **promoter** is judged, not the
 draft's author; a changeset refuses before any member lands), the
 `close_session` commit, `delete_page` (deleting a skill removes its ACL) and
-`move_page` (the source loses its keys; the destination is a create). Pack
+`move_page` (the source loses its keys; the destination is a create), and
+`merge_branch` (refused before any page lands). It judges what would
+**persist** — after a stale `base_version` auto-merge, the merged bytes, not
+the bytes you sent — against the page as stored when the write runs, so a
+write based on an older head cannot revert an admin's newer change. Pack
 import / rebase are admin tools already.
 
 The refusal is a JSON-RPC error `-32003` with `data: {code:

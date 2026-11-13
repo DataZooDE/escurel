@@ -420,6 +420,13 @@ pub(super) async fn tool_merge_branch(
                     continue;
                 }
             }
+            if let Some(base) = &base_twin {
+                // Deleting a skill removes its authority keys: refused before anything lands.
+                crate::mcp::tools_write::skill_authority_refusal(
+                    indexer, &caller, write_acl, base, None,
+                )
+                .await?;
+            }
             plan.push((page.clone(), base_twin, None, String::new()));
             continue;
         }
@@ -444,6 +451,19 @@ pub(super) async fn tool_merge_branch(
         // timeline, and a `scenario:` left on it would make it an overlay of
         // itself.
         let landed = strip_scenario(&content);
+        // A member that changes a skill's authority keys refuses the merge before anything lands;
+        // each write re-judges it under the gate, on the merged bytes.
+        let target = base_twin
+            .clone()
+            .unwrap_or_else(|| base_page_id(&page.page_id, &branch.name));
+        crate::mcp::tools_write::skill_authority_refusal(
+            indexer,
+            &caller,
+            write_acl,
+            &target,
+            Some(&landed),
+        )
+        .await?;
         let validation = indexer
             .validate(base_twin.as_deref(), &landed)
             .await

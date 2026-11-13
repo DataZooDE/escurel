@@ -560,17 +560,15 @@ pub(super) async fn write_acl_refusal(
         .may_write_page(caller, page_id, content)
         .await
         .map_err(|e| JsonRpcError::internal(format!("update_page acl: {e}")))?;
-    if allowed || mode == crate::server::WriteAclMode::Log {
-        if !allowed {
-            tracing::warn!(
-                subject = %caller.subject,
-                page_id = %page_id,
-                "write-ACL would deny this write (log mode) — allowing"
-            );
-        }
-        // The page may be written; whether its authority keys may change is asked second, so a
-        // write the ordinary ACL refuses keeps that refusal's shape.
-        skill_authority_refusal(indexer, caller, write_acl, page_id, Some(content)).await?;
+    if allowed {
+        return Ok(None);
+    }
+    if mode == crate::server::WriteAclMode::Log {
+        tracing::warn!(
+            subject = %caller.subject,
+            page_id = %page_id,
+            "write-ACL would deny this write (log mode) — allowing"
+        );
         return Ok(None);
     }
     Ok(Some(json!({
@@ -984,6 +982,20 @@ async fn update_page_checked(
         }
     }
 
+    // The skill-authority gate, under the gate and on what persists: the stored page is the head
+    // read inside the lock (an admin's concurrent change cannot be reverted by a write judged
+    // against an older head), and `content_to_write` is the auto-merge result, which can carry
+    // keys the caller never sent (a refused session's ops live on in the CRDT head). Asked after
+    // the ordinary write ACL, so a write that ACL refuses keeps that refusal's shape.
+    skill_authority_refusal(
+        indexer,
+        &caller,
+        write_acl,
+        &a.page_id,
+        Some(&content_to_write),
+    )
+    .await?;
+
     // Refuse a write the dry run would have rejected. `update_page` did not
     // validate at all, so `page validate` and `page update` disagreed — and
     // agents call `update`. That is how an instance with no `id:` and links
@@ -1289,6 +1301,10 @@ pub(super) async fn tool_move_page(
         }
     }
 
+    // The gate every page write takes, held from the read of `from` to the move: the checks below
+    // (the skill-authority gate among them) judge exactly the bytes that move, and no concurrent
+    // write can change them in between.
+    let _cas_gate = state.update_page_gate.lock().await;
     let Some(existing) = indexer
         .read_page_markdown(&a.from)
         .await
@@ -1618,13 +1634,14 @@ pub(super) async fn tool_delete_page(
         }
     }
 
-    // Deleting a skill page removes its authority keys, its ACL among them.
-    skill_authority_refusal(indexer, &caller, write_acl, &a.page_id, None).await?;
     // Optimistic concurrency (#300, symmetric with update_page): a stale
     // `base_version` means the page changed since the caller read it — refuse
     // rather than retract a page they have not seen. Held under the same CAS
     // gate so the check-then-delete cannot interleave with an update_page.
     let _cas_gate = state.update_page_gate.lock().await;
+    // Deleting a skill page removes its authority keys, its ACL among them; judged on the head
+    // read under the gate.
+    skill_authority_refusal(indexer, &caller, write_acl, &a.page_id, None).await?;
     if a.base_version.is_some() && state.crdt_backend.is_none() {
         // Symmetric with update_page: a guard this gateway cannot honour is
         // refused, never silently dropped. See `versioning_unavailable`.
