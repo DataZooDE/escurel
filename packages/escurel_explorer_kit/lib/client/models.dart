@@ -1067,7 +1067,11 @@ class ChatMessage {
 /// (`null` when the history is exhausted).
 /// `whoami` — the caller's verified identity.
 class Whoami {
-  const Whoami({required this.subject, required this.tenant, required this.isAdmin});
+  const Whoami({
+    required this.subject,
+    required this.tenant,
+    required this.isAdmin,
+  });
   final String subject;
   final String tenant;
   final bool isAdmin;
@@ -1247,14 +1251,28 @@ class UsageReport {
 /// `--version` line; null for an in-process harness, a failed probe, or a
 /// non-admin's read (the gateway shows versions to admins only).
 class RuntimeHarness {
-  const RuntimeHarness({required this.name, this.version});
+  const RuntimeHarness({
+    required this.name,
+    this.version,
+    this.available = true,
+    this.probeError,
+  });
 
   final String name;
   final String? version;
 
+  /// `false` when the harness's CLI probe failed: the runner takes no work
+  /// that requires it. An older runtime page (no field) reads available.
+  final bool available;
+
+  /// Why the probe failed (an admin's read only).
+  final String? probeError;
+
   factory RuntimeHarness.fromJson(Map<String, dynamic> j) => RuntimeHarness(
     name: (j['name'] as String?) ?? '',
     version: j['version'] as String?,
+    available: (j['available'] as bool?) ?? true,
+    probeError: j['probe_error'] as String?,
   );
 }
 

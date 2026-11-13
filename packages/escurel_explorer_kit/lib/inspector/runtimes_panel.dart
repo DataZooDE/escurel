@@ -36,9 +36,8 @@ class RuntimesPanel extends ConsumerWidget {
           padding: const EdgeInsets.all(16),
           child: Text(
             'error: ${humanizeEscurelError(e)}',
-            style: Theme.of(
-              context,
-            ).textTheme.bodySmall?.copyWith(color: kError),
+            style: Theme.of(context).textTheme.bodySmall
+                ?.copyWith(color: kError),
           ),
         ),
         data: (list) {
@@ -104,7 +103,18 @@ class _RuntimeRow extends StatelessWidget {
     final (icon, word, colour) = _statusLook(r.status);
     final harnesses = r.harnesses.isEmpty
         ? 'no harness'
-        : r.harnesses.map((h) => [h.name, ?h.version].join(' ')).join(', ');
+        // In words, never colour alone: a harness whose CLI probe failed
+        // runs nothing, and work that requires it goes elsewhere.
+        : r.harnesses
+              .map(
+                (h) => [
+                  h.name,
+                  ?h.version,
+                  if (!h.available) '(unavailable)',
+                ].join(' '),
+              )
+              .join(', ');
+    final down = r.harnesses.where((h) => !h.available).toList();
     final busy = r.liveRuns == 0
         ? 'idle'
         : '${r.liveRuns} live ${r.liveRuns == 1 ? 'run' : 'runs'}';
@@ -134,6 +144,12 @@ class _RuntimeRow extends StatelessWidget {
                     ),
                   ),
                   Text(harnesses, style: muted),
+                  for (final h in down)
+                    Text(
+                      '${h.name} unavailable: its CLI probe failed'
+                      '${h.probeError == null ? '' : ' (${h.probeError})'}',
+                      style: muted,
+                    ),
                   Text(
                     'labels: ${r.labels.isEmpty ? 'none' : r.labels.join(', ')}',
                     style: muted,

@@ -63,9 +63,9 @@ class _MockMcpServer {
   void _listen() {
     _server.listen((req) async {
       if (req.method == 'POST' && req.uri.path == '/mcp') {
-        final body =
-            jsonDecode(await utf8.decoder.bind(req).join())
-                as Map<String, dynamic>;
+        final body = jsonDecode(
+          await utf8.decoder.bind(req).join(),
+        ) as Map<String, dynamic>;
         if (nextError != null) {
           await _respondJson(req, 200, {
             'jsonrpc': '2.0',
@@ -186,44 +186,37 @@ void main() {
       });
     });
 
-    test(
-      'search posts JSON-RPC 2.0 to /mcp with method=tools/call and correct args',
-      () async {
-        Map<String, dynamic>? receivedArgs;
-        mock.toolHandlers['search'] = (args) {
-          receivedArgs = args;
-          return {
-            'hits': [
-              {
-                'page_id': 'contact__hoffmann',
-                'skill': 'contact',
-                'score': 0.92,
-              },
-              {
-                'page_id': 'engagement__hoffmann-intro',
-                'skill': 'engagement',
-                'score': 0.71,
-              },
-            ],
-          };
+    test('search posts JSON-RPC 2.0 to /mcp with method=tools/call and correct args', () async {
+      Map<String, dynamic>? receivedArgs;
+      mock.toolHandlers['search'] = (args) {
+        receivedArgs = args;
+        return {
+          'hits': [
+            {'page_id': 'contact__hoffmann', 'skill': 'contact', 'score': 0.92},
+            {
+              'page_id': 'engagement__hoffmann-intro',
+              'skill': 'engagement',
+              'score': 0.71,
+            },
+          ],
         };
+      };
 
-        final r = await client.search(q: 'hoffmann', k: 5, skill: 'contact');
+      final r = await client.search(q: 'hoffmann', k: 5, skill: 'contact');
 
-        expect(receivedArgs, {
-          'q': 'hoffmann',
-          'k': 5,
-          'granularity': 'block',
-          'page_kind': 'any',
-          'skill': 'contact',
-        });
-        expect(r.hits.map((h) => h.pageId).toList(), [
-          'contact__hoffmann',
-          'engagement__hoffmann-intro',
-        ]);
-        expect(r.hits.first.score, closeTo(0.92, 1e-6));
-      },
-    );
+      expect(receivedArgs, {
+        'q': 'hoffmann',
+        'k': 5,
+        'granularity': 'block',
+        'page_kind': 'any',
+        'skill': 'contact',
+      });
+      expect(r.hits.map((h) => h.pageId).toList(), [
+        'contact__hoffmann',
+        'engagement__hoffmann-intro',
+      ]);
+      expect(r.hits.first.score, closeTo(0.92, 1e-6));
+    });
 
     test('resolve unmarshals page_kind into the md.PageKind enum', () async {
       mock.toolHandlers['resolve'] = (args) => {
@@ -370,104 +363,118 @@ void main() {
       },
     );
 
-    test('list_skills parses schedule + schedule_budget when declared', () async {
-      mock.toolHandlers['list_skills'] = (_) => {
-        'skills': [
-          {
-            'id': 'digest',
-            'description': 'weekday digest',
-            'schedule': '0 9 * * 1-5',
-            'schedule_budget': {'runs_per_day': 3},
-          },
-          {'id': 'note', 'description': 'unscheduled'},
-        ],
-      };
-      final r = await client.listSkills();
-      final digest = r.firstWhere((s) => s.id == 'digest');
-      expect(digest.schedule, '0 9 * * 1-5');
-      expect(digest.scheduleRunsPerDay, 3);
-      final note = r.firstWhere((s) => s.id == 'note');
-      expect(note.schedule, isNull);
-      expect(note.scheduleRunsPerDay, isNull);
-    });
+    test(
+      'list_skills parses schedule + schedule_budget when declared',
+      () async {
+        mock.toolHandlers['list_skills'] = (_) => {
+          'skills': [
+            {
+              'id': 'digest',
+              'description': 'weekday digest',
+              'schedule': '0 9 * * 1-5',
+              'schedule_budget': {'runs_per_day': 3},
+            },
+            {'id': 'note', 'description': 'unscheduled'},
+          ],
+        };
+        final r = await client.listSkills();
+        final digest = r.firstWhere((s) => s.id == 'digest');
+        expect(digest.schedule, '0 9 * * 1-5');
+        expect(digest.scheduleRunsPerDay, 3);
+        final note = r.firstWhere((s) => s.id == 'note');
+        expect(note.schedule, isNull);
+        expect(note.scheduleRunsPerDay, isNull);
+      },
+    );
 
     // The runner fires nothing for either (crew review PR-1, F4): the flags
     // must survive the parse, and a budget of 0 is kept as the wire sends it.
-    test('list_skills carries an unreadable schedule or budget as invalid',
-        () async {
-      mock.toolHandlers['list_skills'] = (_) => {
-        'skills': [
-          {
-            'id': 'typo',
-            'description': 'bad cron',
-            'schedule': '15 7 * * Mo-Fr',
-            'schedule_invalid': true,
-          },
-          {
-            'id': 'broke',
-            'description': 'bad budget',
-            'schedule': '0 9 * * 1-5',
-            'schedule_budget': {'runs_per_day': 0, 'invalid': true},
-          },
-        ],
-      };
-      final r = await client.listSkills();
-      final typo = r.firstWhere((s) => s.id == 'typo');
-      expect(typo.scheduleInvalid, isTrue);
-      expect(typo.scheduleBudgetInvalid, isFalse);
-      final broke = r.firstWhere((s) => s.id == 'broke');
-      expect(broke.scheduleInvalid, isFalse);
-      expect(broke.scheduleBudgetInvalid, isTrue);
-      expect(broke.scheduleRunsPerDay, 0);
-    });
+    test(
+      'list_skills carries an unreadable schedule or budget as invalid',
+      () async {
+        mock.toolHandlers['list_skills'] = (_) => {
+          'skills': [
+            {
+              'id': 'typo',
+              'description': 'bad cron',
+              'schedule': '15 7 * * Mo-Fr',
+              'schedule_invalid': true,
+            },
+            {
+              'id': 'broke',
+              'description': 'bad budget',
+              'schedule': '0 9 * * 1-5',
+              'schedule_budget': {'runs_per_day': 0, 'invalid': true},
+            },
+          ],
+        };
+        final r = await client.listSkills();
+        final typo = r.firstWhere((s) => s.id == 'typo');
+        expect(typo.scheduleInvalid, isTrue);
+        expect(typo.scheduleBudgetInvalid, isFalse);
+        final broke = r.firstWhere((s) => s.id == 'broke');
+        expect(broke.scheduleInvalid, isFalse);
+        expect(broke.scheduleBudgetInvalid, isTrue);
+        expect(broke.scheduleRunsPerDay, 0);
+      },
+    );
 
-    test('list_runtimes parses an admin read and a member read (no versions)', () async {
-      mock.toolHandlers['list_runtimes'] = (args) => {
-        'runtimes': [
-          {
-            'runner_id': 'laptop',
-            'page_id': 'markdown/instances/runtime/laptop.md',
-            'harnesses': [
-              {'name': 'claude', 'version': '2.1.3'},
-            ],
-            'labels': ['site:muc'],
-            'max_concurrent': 2,
-            'claim_holder': 'svc#a',
-            'status': 'online',
-            'last_seen': '2026-11-13T10:00:00Z',
-            'age_s': 12,
-            'stale_after_s': 90,
-            'version': '2026.11.13',
-            'live_runs': 1,
-          },
-          {
-            'runner_id': 'box',
-            'page_id': 'markdown/instances/runtime/box.md',
-            'harnesses': [
-              {'name': 'codex'},
-            ],
-            'labels': <String>[],
-            'max_concurrent': null,
-            'status': 'unknown',
-            'last_seen': null,
-            'age_s': null,
-            'stale_after_s': null,
-            'version': null,
-            'live_runs': 0,
-          },
-        ],
-      };
-      final rs = await client.listRuntimes();
-      expect(rs.map((r) => r.runnerId), ['laptop', 'box']);
-      expect(rs[0].harnesses.single.version, '2.1.3');
-      expect(rs[0].labels, ['site:muc']);
-      expect(rs[0].liveRuns, 1);
-      expect(rs[0].staleAfterS, 90);
-      expect(rs[1].harnesses.single.name, 'codex');
-      expect(rs[1].harnesses.single.version, isNull);
-      expect(rs[1].status, 'unknown');
-      expect(rs[1].maxConcurrent, isNull);
-    });
+    test(
+      'list_runtimes parses an admin read and a member read (no versions)',
+      () async {
+        mock.toolHandlers['list_runtimes'] = (args) => {
+          'runtimes': [
+            {
+              'runner_id': 'laptop',
+              'page_id': 'markdown/instances/runtime/laptop.md',
+              'harnesses': [
+                {'name': 'claude', 'version': '2.1.3'},
+              ],
+              'labels': ['site:muc'],
+              'max_concurrent': 2,
+              'claim_holder': 'svc#a',
+              'status': 'online',
+              'last_seen': '2026-11-13T10:00:00Z',
+              'age_s': 12,
+              'stale_after_s': 90,
+              'version': '2026.11.13',
+              'live_runs': 1,
+            },
+            {
+              'runner_id': 'box',
+              'page_id': 'markdown/instances/runtime/box.md',
+              'harnesses': [
+                {'name': 'codex', 'available': false},
+              ],
+              'labels': <String>[],
+              'max_concurrent': null,
+              'status': 'unknown',
+              'last_seen': null,
+              'age_s': null,
+              'stale_after_s': null,
+              'version': null,
+              'live_runs': 0,
+            },
+          ],
+        };
+        final rs = await client.listRuntimes();
+        expect(rs.map((r) => r.runnerId), ['laptop', 'box']);
+        expect(rs[0].harnesses.single.version, '2.1.3');
+        expect(rs[0].labels, ['site:muc']);
+        expect(rs[0].liveRuns, 1);
+        expect(rs[0].staleAfterS, 90);
+        expect(rs[1].harnesses.single.name, 'codex');
+        expect(rs[1].harnesses.single.version, isNull);
+        expect(rs[1].harnesses.single.available, isFalse);
+        expect(
+          rs[0].harnesses.single.available,
+          isTrue,
+          reason: 'absent reads available',
+        );
+        expect(rs[1].status, 'unknown');
+        expect(rs[1].maxConcurrent, isNull);
+      },
+    );
 
     test('usage_report sends group_by + since and parses rows', () async {
       Map<String, dynamic>? sent;
@@ -572,8 +579,7 @@ void main() {
           'blocks': <Map<String, dynamic>>[],
           'wikilinks_out': <String>[],
           'shadow': {
-            'base_page_id':
-                'markdown/base/logistics-midmarket/skills/pallet-consolidation.md',
+            'base_page_id': 'markdown/base/logistics-midmarket/skills/pallet-consolidation.md',
             'pack': 'base@logistics-midmarket@v7',
             'base': {
               'id': 'pallet-consolidation',
@@ -611,26 +617,29 @@ void main() {
       },
     );
 
-    test('runStoredQuery delegates to query_instance and parses the schema', () async {
-      // The server emits `schema: [{name, type}]` (mcp.rs
-      // tool_run_stored_query) — the client used to read a
-      // non-existent `columns` key and silently dropped all column
-      // metadata.
-      mock.toolHandlers['query_instance'] = (_) => {
-        'rows': [
-          {'customer': 'acme', 'total': 12000},
-        ],
-        'schema': [
-          {'name': 'customer', 'type': 'VARCHAR'},
-          {'name': 'total', 'type': 'BIGINT'},
-        ],
-      };
-      final r = await client.runStoredQuery('sales_by_customer');
-      expect(r.rows, hasLength(1));
-      expect(r.columns, hasLength(2), reason: 'schema must not be dropped');
-      expect(r.columns.first.name, 'customer');
-      expect(r.columns.first.dartType, 'VARCHAR');
-    });
+    test(
+      'runStoredQuery delegates to query_instance and parses the schema',
+      () async {
+        // The server emits `schema: [{name, type}]` (mcp.rs
+        // tool_run_stored_query) — the client used to read a
+        // non-existent `columns` key and silently dropped all column
+        // metadata.
+        mock.toolHandlers['query_instance'] = (_) => {
+          'rows': [
+            {'customer': 'acme', 'total': 12000},
+          ],
+          'schema': [
+            {'name': 'customer', 'type': 'VARCHAR'},
+            {'name': 'total', 'type': 'BIGINT'},
+          ],
+        };
+        final r = await client.runStoredQuery('sales_by_customer');
+        expect(r.rows, hasLength(1));
+        expect(r.columns, hasLength(2), reason: 'schema must not be dropped');
+        expect(r.columns.first.name, 'customer');
+        expect(r.columns.first.dartType, 'VARCHAR');
+      },
+    );
 
     test('list_packs parses the subscription pins', () async {
       mock.toolHandlers['list_packs'] = (_) => {
@@ -886,42 +895,48 @@ void main() {
   });
 
   group('cursor pagination', () {
-    test('list_inbox round-trips the cursor; has_more says rows follow', () async {
-      final sentArgs = <Map<String, dynamic>>[];
-      mock.toolHandlers['list_inbox'] = (args) {
-        sentArgs.add(args);
-        // `next_cursor` is where a page ENDED; `has_more` says rows follow.
-        if (args['cursor'] == null) {
+    test(
+      'list_inbox round-trips the cursor; has_more says rows follow',
+      () async {
+        final sentArgs = <Map<String, dynamic>>[];
+        mock.toolHandlers['list_inbox'] = (args) {
+          sentArgs.add(args);
+          // `next_cursor` is where a page ENDED; `has_more` says rows follow.
+          if (args['cursor'] == null) {
+            return {
+              'events': [
+                {'event_id': 'ev-1'},
+              ],
+              'next_cursor': 'c-1',
+              'has_more': true,
+            };
+          }
           return {
             'events': [
-              {'event_id': 'ev-1'},
+              {'event_id': 'ev-2'},
             ],
-            'next_cursor': 'c-1',
-            'has_more': true,
+            'next_cursor': 'c-2',
           };
-        }
-        return {
-          'events': [
-            {'event_id': 'ev-2'},
-          ],
-          'next_cursor': 'c-2',
         };
-      };
 
-      final first = await client.listInbox(limit: 1);
-      expect(first.events.single.eventId, 'ev-1');
-      expect(first.nextCursor, 'c-1');
-      expect(first.hasMore, isTrue);
-      // No cursor on the first request.
-      expect(sentArgs.first.containsKey('cursor'), isFalse);
+        final first = await client.listInbox(limit: 1);
+        expect(first.events.single.eventId, 'ev-1');
+        expect(first.nextCursor, 'c-1');
+        expect(first.hasMore, isTrue);
+        // No cursor on the first request.
+        expect(sentArgs.first.containsKey('cursor'), isFalse);
 
-      final second = await client.listInbox(limit: 1, cursor: first.nextCursor);
-      expect(sentArgs.last['cursor'], 'c-1');
-      expect(second.events.single.eventId, 'ev-2');
-      // The page ended at c-2 (a tail resumes there) and nothing follows it.
-      expect(second.nextCursor, 'c-2');
-      expect(second.hasMore, isFalse);
-    });
+        final second = await client.listInbox(
+          limit: 1,
+          cursor: first.nextCursor,
+        );
+        expect(sentArgs.last['cursor'], 'c-1');
+        expect(second.events.single.eventId, 'ev-2');
+        // The page ended at c-2 (a tail resumes there) and nothing follows it.
+        expect(second.nextCursor, 'c-2');
+        expect(second.hasMore, isFalse);
+      },
+    );
 
     test('list_events round-trips the cursor', () async {
       Map<String, dynamic>? sent;

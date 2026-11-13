@@ -98,6 +98,37 @@ void main() {
     },
   );
 
+  testWidgets('a harness whose CLI probe failed is unavailable, in words', (
+    tester,
+  ) async {
+    await _pump(
+      tester,
+      _RuntimesClient(const [
+        RuntimeInfo(
+          runnerId: 'laptop',
+          pageId: 'markdown/instances/runtime/laptop.md',
+          status: 'online',
+          harnesses: [
+            RuntimeHarness(name: 'echo', version: '1.0'),
+            RuntimeHarness(
+              name: 'codex',
+              available: false,
+              probeError: '`codex --version` could not start',
+            ),
+          ],
+        ),
+      ]),
+    );
+    expect(find.text('echo 1.0, codex (unavailable)'), findsOneWidget);
+    expect(
+      find.text(
+        'codex unavailable: its CLI probe failed '
+        '(`codex --version` could not start)',
+      ),
+      findsOneWidget,
+    );
+  });
+
   testWidgets('a member read (no versions) lists harnesses by name', (
     tester,
   ) async {
