@@ -2214,6 +2214,18 @@ pub(super) async fn tool_capture_event(
             "capture_event: `label_skill` is required (the label→skill routing key)".to_owned(),
         ));
     }
+    // `provenance.requires` routes the event to a runner that can take it
+    // (#818). A malformed one would be satisfied by nobody and sit in the
+    // inbox unexplained: refuse it here, where the author still hears why.
+    if let Some(raw) = a.provenance.as_ref().and_then(|p| p.get("requires"))
+        && !raw.is_null()
+        && let Err(msg) = escurel_types::runtime::Requires::parse(raw)
+    {
+        return Err(
+            JsonRpcError::invalid_params(format!("capture_event: provenance.{msg}"))
+                .with_code("requires_invalid", false),
+        );
+    }
     // Reserved namespace (async-ops crew Phase-2 F1): the `escurel:` label prefix
     // is server/runner-owned. An operation's status events live under
     // `escurel:run-status`, and `get_operation` trusts them — so a non-admin

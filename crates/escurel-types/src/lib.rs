@@ -50,6 +50,7 @@ pub mod pack;
 pub mod redact;
 // Namespaced: `escurel_types::run_record::RunFinishedBody` says whose record it is.
 pub mod run_record;
+pub mod runtime;
 /// `schedule:` cron grammar shared by the validator and the runner (feature `schedule`).
 #[cfg(feature = "schedule")]
 pub mod schedule;

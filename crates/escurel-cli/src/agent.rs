@@ -410,6 +410,15 @@ pub async fn usage(client: &escurel_client::AdminClient, a: UsageArgs) -> Result
     Ok(serde_json::to_value(resp)?)
 }
 
+/// Runner processes that registered themselves (#818).
+#[derive(Subcommand, Debug)]
+pub enum RuntimeCmd {
+    /// Every registered runtime with its harnesses (and CLI versions), labels,
+    /// capacity and liveness — `online`, `stale`, `stopped` or `unknown`
+    /// (`list_runtimes`).
+    List,
+}
+
 /// Held writes — the review queue for `autonomy: review` skills.
 #[derive(Subcommand, Debug)]
 pub enum DraftCmd {
@@ -622,6 +631,9 @@ pub async fn run(client: &Client, cmd: Command) -> Result<Value> {
         Command::Provenance(ProvenanceCmd::Path(a)) => provenance_path(client, a).await,
         Command::Event(c) => event_cmd(client, c).await,
         Command::Run(c) => run_cmd(client, c).await,
+        Command::Runtime(RuntimeCmd::List) => {
+            Ok(serde_json::to_value(client.list_runtimes().await?)?)
+        }
         Command::Draft(c) => draft_cmd(client, c).await,
         Command::Branch(c) => branch_cmd(client, c).await,
         Command::Changeset(c) => changeset_cmd(client, c).await,

@@ -232,6 +232,34 @@ and `ESCUREL_RUNNER_AUTH_SIGNING_KEY=<signing_key>` and leave `ESCUREL_RUNNER_TO
 **Chat runs require minted mode**: a chat turn is answered as the asker, with a run token only a
 signing runner can mint (references/11, *Chat runs*).
 
+## A second runner on your laptop, against a shared gateway
+
+To take work that needs YOUR machine (a checkout, an authenticated CLI) from
+a tenant whose central runner lives elsewhere (#818):
+
+```sh
+ESCUREL_RUNNER_GATEWAY_URL=https://escurel.example \
+ESCUREL_RUNNER_TENANT=<tenant> \
+ESCUREL_RUNNER_TOKEN=<operator-issued runner credential, see references/08> \
+ESCUREL_RUNNER_ID=laptop-$USER \
+ESCUREL_RUNNER_LABELS=site:home,repo:escurel \
+ESCUREL_RUNNER_HARNESS=claude ESCUREL_RUNNER_HARNESS_ALLOW=claude,codex \
+ESCUREL_RUNNER_LEDGER_PATH=$HOME/.escurel/runner-ledger.duckdb \
+ESCUREL_RUNNER_LISTEN=127.0.0.1:8089 \
+  ./target/debug/escurel-runner
+escurel runtime list     # your laptop shows up: harnesses + versions, labels, online
+```
+
+Then route work to it: a skill page (or one event's `provenance`) declares
+`requires: {labels: ["repo:escurel"]}` or `requires: {harness: codex}`; only
+a runner that satisfies it claims it (references/11 *Several runners on one
+tenant*). Keep the ledger path and `ESCUREL_RUNNER_ID` stable: the ledger's
+identity is what lets a restarted runner keep the leases it held, and a new
+id registers a second `runtime` page while the old one reads `stale`. Two
+runners on one machine need two ledgers and two listen ports. Stopping the
+laptop leaves its unfinished events in the inbox once their lease lapses
+(`ESCUREL_RUNNER_CLAIM_LEASE`); work only it can take waits there for it.
+
 ## The iterate loop
 
 1. Author/adjust seed pages (`references/07`) and your data model

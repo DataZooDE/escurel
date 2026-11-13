@@ -72,7 +72,7 @@ async fn search_subscribe_runs_the_query_and_pushes_on_index_change() {
             "type": "search_subscribe",
             "subscription_id": "sub-s",
             "q": "quartz oscillator",
-            "k": 5,
+            "k": 10,
         })
         .to_string(),
     ))
@@ -161,7 +161,7 @@ async fn a_draft_wakes_a_subscriber_although_it_writes_no_page() {
             "type": "search_subscribe",
             "subscription_id": "sub-draft",
             "q": "quartz oscillator",
-            "k": 5,
+            "k": 10,
         })
         .to_string(),
     ))

@@ -639,6 +639,27 @@ fn check_chat_keys(page_kind: PageKind, fields: &YamlMapping) -> Vec<Issue> {
     issues
 }
 
+/// `requires: {harness, labels}` on a SKILL page (#818). An ERROR: a
+/// malformed requirement is satisfied by no runner, so the skill's work would
+/// sit in the inbox unclaimed with nobody told why.
+fn check_requires(page_kind: PageKind, fields: &YamlMapping) -> Vec<Issue> {
+    let Some(raw) = fields
+        .get("requires")
+        .filter(|_| page_kind == PageKind::Skill)
+    else {
+        return Vec::new();
+    };
+    let json = serde_json::to_value(raw).unwrap_or_default();
+    match escurel_types::runtime::Requires::parse(&json) {
+        Ok(_) => Vec::new(),
+        Err(msg) => vec![
+            Issue::error("requires_invalid", "frontmatter.requires", msg).with_suggestion(
+                "write `requires: {harness: codex, labels: [\"site:muc\"]}`; every key is optional",
+            ),
+        ],
+    }
+}
+
 /// The keys of an `agent` profile page (#823). Errors, because each one is
 /// authority: a malformed `scopes:` would otherwise be enforced as "nothing
 /// allowed" with nobody told why, and an unknown harness is a refused run.
@@ -1550,6 +1571,7 @@ impl Indexer {
         issues.extend(check_chat_keys(parsed.frontmatter.page_kind, fields));
         issues.extend(check_schedule(parsed.frontmatter.page_kind, fields));
         issues.extend(check_agent_keys(parsed.frontmatter.page_kind, fields));
+        issues.extend(check_requires(parsed.frontmatter.page_kind, fields));
         issues.extend(
             self.check_skill_agent(parsed.frontmatter.page_kind, fields)
                 .await?,
@@ -2350,7 +2372,7 @@ mod duration_tests {
 
 #[cfg(test)]
 mod schedule_tests {
-    use super::{PageKind, check_schedule};
+    use super::{PageKind, check_requires, check_schedule};
 
     fn codes(page_kind: PageKind, yaml: &str) -> Vec<(String, bool)> {
         let source = format!("---\nkind: skill\nid: x\n{yaml}\n---\n");
@@ -2359,6 +2381,34 @@ mod schedule_tests {
             .into_iter()
             .map(|i| (i.code.clone(), i.severity == super::Severity::Error))
             .collect()
+    }
+
+    #[test]
+    fn a_requires_block_is_checked_on_skill_pages_only() {
+        let run = |kind: PageKind, yaml: &str| -> Vec<String> {
+            let source = format!("---\nkind: skill\nid: x\n{yaml}\n---\n");
+            let page = escurel_md::parse(&source).unwrap();
+            check_requires(kind, &page.frontmatter.fields)
+                .into_iter()
+                .map(|i| i.code)
+                .collect()
+        };
+        assert!(
+            run(
+                PageKind::Skill,
+                "requires: {harness: codex, labels: [\"site:muc\"]}"
+            )
+            .is_empty()
+        );
+        assert!(run(PageKind::Skill, "requires: {labels: [has:sap-gui]}").is_empty());
+        for bad in [
+            "requires: codex",
+            "requires: {labels: site:muc}",
+            "requires: {zone: x}",
+        ] {
+            assert_eq!(run(PageKind::Skill, bad), vec!["requires_invalid"], "{bad}");
+        }
+        assert!(run(PageKind::Instance, "requires: codex").is_empty());
     }
 
     #[test]

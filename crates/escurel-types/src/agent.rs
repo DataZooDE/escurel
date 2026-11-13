@@ -555,6 +555,11 @@ pub struct Skill {
     /// Absent = unbounded.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub schedule_budget: Option<ScheduleBudget>,
+    /// `requires:` — what a runner must offer to take this skill's work
+    /// (#818): `{harness?, labels?}`. A declared but unreadable one arrives
+    /// with `invalid: true` and is satisfied by no runner. Absent = any runner.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requires: Option<crate::runtime::Requires>,
     /// `folder:` — where the skill sits in a knowledge tree, a `/`-separated path of slugs
     /// (`sales/orders`). Absent = top level. OKF-style hierarchy for clients that render a tree.
     #[serde(default, skip_serializing_if = "Option::is_none")]

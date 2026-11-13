@@ -165,6 +165,23 @@ and re-trigger. Under `off` / `log` that is every caller, as it is for every
 other write. `inject` does reach a run whose token is the runner's admin; it
 changes what the run is told, not what the run may do.
 
+**Runners outside the cluster (#818).** A runner on a laptop or an on-prem
+host does not get the platform's signing key. The operator issues it its
+OWN credential instead: a bearer for a service subject (`runner:laptop-jr`)
+with `roles: [escurel:admin]` and no run, agent or actor claims, set as
+`ESCUREL_RUNNER_TOKEN`. That identity is not a machine caller, so it may do
+the runner's bookkeeping — `report_runner_status`, write its `runtime` page
+(admin-only), `claim_event` / `renew_claim` (refused to every person's token
+and to every run token) — and it may call `mint_agent_token` for a per-run
+child. The child is what `mint_agent_token` always returns: never admin, the
+caller's groups, `act.sub` the runner, a gateway-assigned `run_id`; and as a
+machine caller it can neither mint again nor claim. No exception to the
+machine-caller rule was needed. Today the runner itself mints run tokens
+only in **minted** mode (it holds a signing key); on an operator-issued
+static credential its runs use that credential as before (chat runs are
+refused, see references/11), so give such a runner work that its own
+authority should do, and scope it with the credential's groups.
+
 So: your app's token must carry the right audience, a tenant claim naming
 the tenant, and — only for admin operations — the admin role value. A
 mismatched tenant in a request body is rejected. `tools/list` is

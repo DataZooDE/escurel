@@ -76,6 +76,7 @@ escurel event inbox  --limit 50
 escurel event list   --instance <page_id> --limit 50
 escurel event list   --label escurel:run --since 2026-10-01T00:00:00Z --until 2026-11-01T00:00:00Z   # a time window on `at`
 escurel run usage    --since 2026-10-01T00:00:00Z --group-by skill,model   # admin: usage + cost rolled up from run-finished
+escurel runtime list                                                         # registered runners: harnesses, labels, online/stale (list_runtimes)
 escurel event assign --event <event_id> --instance <page_id>
 
 # per-chat-group conversation history
@@ -136,6 +137,7 @@ escurel admin pack submit-promotion --tenant acme --candidate-id acme-candidate 
 | `run tool-calls` | `get_run_tool_calls` (`--run`, `--limit`, `--after <seq>`) |
 | `run transcript` | `fetch_blob {run_id}` (`--run`) — the run's transcript, decoded: `{run_id, records:[…]}` |
 | `run usage` | `usage_report` (admin bearer; `--group-by skill,agent,page,model,day`, `--since`, `--until`, `--skill`) |
+| `runtime list` | `list_runtimes` (`claim_event` / `renew_claim` are runner coordination, not in the CLI) |
 | `run lineage` | `list_lineage` (`--root-event <id> [--include events|runs|drafts|tool_calls]… [--limit N] [--cursor]`) |
 | `chat append` / `chat list` | `append_message` / `list_messages` |
 | `session open [<page>] [--draft <id>]\|apply\|close` | `open_session` / `apply_op` / `close_session` |

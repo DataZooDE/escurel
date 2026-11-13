@@ -85,6 +85,9 @@ enum Command {
     /// mint-token (a person's bearer).
     #[command(subcommand)]
     Run(agent::RunCmd),
+    /// Registered runner processes (runtimes): harnesses, labels, online/stale.
+    #[command(subcommand)]
+    Runtime(agent::RuntimeCmd),
     /// Held writes: the review queue for `autonomy: review` skills.
     #[command(subcommand)]
     Draft(agent::DraftCmd),

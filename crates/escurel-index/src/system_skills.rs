@@ -1,7 +1,7 @@
 //! Skills escurel itself ships into every served tenant.
 //!
 //! The `escurel` meta-skill was the first ([`crate::meta_skill`]); agent
-//! profiles (#823) add `agent`, and runtimes will add a third. Each is one row
+//! profiles (#823) add `agent`, and runner registrations (#818) add `runtime`. Each is one row
 //! of [`SYSTEM_SKILLS`], installed by [`crate::Indexer::ensure_system_skills`]
 //! at indexer open.
 //!
@@ -41,6 +41,12 @@ pub const SYSTEM_SKILLS: &[SystemSkill] = &[
         id: AGENT_SKILL_ID,
         page_id: "markdown/skills/agent.md",
         markdown: include_str!("agent_skill.md"),
+        admin_only: true,
+    },
+    SystemSkill {
+        id: escurel_types::runtime::RUNTIME_SKILL,
+        page_id: "markdown/skills/runtime.md",
+        markdown: include_str!("runtime_skill.md"),
         admin_only: true,
     },
 ];
@@ -117,8 +123,10 @@ mod tests {
     }
 
     #[test]
-    fn only_the_agent_skill_is_admin_only() {
+    fn only_the_agent_and_runtime_skills_are_admin_only() {
         assert!(is_admin_only_skill("agent"));
+        assert!(is_admin_only_skill("runtime"));
+        assert!(is_admin_only_path("markdown/instances/runtime/laptop.md"));
         assert!(!is_admin_only_skill("escurel"));
         assert!(!is_admin_only_skill("note"));
         assert!(is_admin_only_skill_page("markdown/skills/agent.md"));

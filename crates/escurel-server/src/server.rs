@@ -619,6 +619,9 @@ pub(crate) struct AppState {
     /// so an open Inbox drops the row. Kept off `events_tx`: that bus means
     /// "a new event", and clients dedupe its frames by `event_id`.
     pub(crate) assigned_tx: tokio::sync::broadcast::Sender<Arc<escurel_index::EventInfo>>,
+    /// Claim leases on inbox events (`claim_event` / `renew_claim`, #818):
+    /// gateway-local and in memory, released by `assign_event`.
+    pub(crate) event_claims: Arc<crate::event_claims::EventClaims>,
 }
 
 /// Build the router(s) + bind + spawn the server tasks. Returns
@@ -665,6 +668,9 @@ pub async fn serve(
             ),
         ));
     }
+    let event_claims = Arc::new(crate::event_claims::EventClaims::open().map_err(|e| {
+        ServerError::Serve(std::io::Error::other(format!("event_claims table: {e}")))
+    })?);
     let state = AppState {
         write_acl: config.write_acl,
         event_acl: config.event_acl,
@@ -709,6 +715,7 @@ pub async fn serve(
         events_tx: tokio::sync::broadcast::channel(1024).0,
         chat_tx: tokio::sync::broadcast::channel(1024).0,
         assigned_tx: tokio::sync::broadcast::channel(1024).0,
+        event_claims,
     };
 
     let mut app = Router::new()

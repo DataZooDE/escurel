@@ -31,6 +31,7 @@ mod claude_live;
 mod codex_live;
 mod confirm_unflagged;
 mod delegate_a2a;
+mod distributed_runtimes;
 mod echo_analysis;
 mod echo_end_to_end;
 mod echo_rows;

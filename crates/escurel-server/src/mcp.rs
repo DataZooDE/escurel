@@ -74,6 +74,7 @@ mod tools_mint;
 pub(crate) use tools_mint::sweep_expired_minted_runs;
 mod tool_detail;
 mod tools_progress;
+mod tools_runtimes;
 mod tools_status;
 mod tools_tool_calls;
 mod tools_transcript;
@@ -727,6 +728,8 @@ fn dimension_for(method: &str, params: &Value) -> Option<Dimension> {
         | "append_message"
         | "capture_event"
         | "report_runner_status"
+        | "claim_event"
+        | "renew_claim"
         | "assign_event"
         | "create_draft"
         | "promote_draft"
@@ -1536,6 +1539,27 @@ async fn dispatch_tools_call(
         "report_runner_status" => {
             tool_report_runner_status(indexer, caller, params.arguments).await
         }
+        "claim_event" => {
+            tools_runtimes::tool_claim(
+                &state.event_claims,
+                indexer,
+                caller,
+                tools_runtimes::ClaimVerb::Claim,
+                params.arguments,
+            )
+            .await
+        }
+        "renew_claim" => {
+            tools_runtimes::tool_claim(
+                &state.event_claims,
+                indexer,
+                caller,
+                tools_runtimes::ClaimVerb::Renew,
+                params.arguments,
+            )
+            .await
+        }
+        "list_runtimes" => tools_runtimes::tool_list_runtimes(indexer, caller).await,
         "mint_agent_token" => {
             tools_mint::tool_mint_agent_token(state, indexer, caller, params.arguments).await
         }
@@ -1551,7 +1575,19 @@ async fn dispatch_tools_call(
         "list_lineage" => {
             tool_list_lineage(indexer, caller, state.event_acl, params.arguments).await
         }
-        "list_events" => tool_list_events(indexer, caller, state.event_acl, params.arguments).await,
+        "list_events" => {
+            // A by-id lookup also says who holds the event's claim lease (#818).
+            let by_id = params.arguments["event_id"].as_str().map(str::to_owned);
+            let mut listed =
+                tool_list_events(indexer, caller, state.event_acl, params.arguments).await?;
+            if let Some(id) = by_id
+                && listed["events"].as_array().is_some_and(|e| !e.is_empty())
+                && let Some(claim) = tools_runtimes::claim_view(&state.event_claims, &id)
+            {
+                listed["claim"] = claim;
+            }
+            Ok(listed)
+        }
         "list_snapshots" => tool_list_snapshots(indexer, caller, params.arguments).await,
         "list_op_authors" => {
             tool_list_op_authors(
@@ -1563,14 +1599,22 @@ async fn dispatch_tools_call(
             .await
         }
         "assign_event" => {
-            tool_assign_event(
+            let event_id = params.arguments["event_id"].as_str().map(str::to_owned);
+            let assigned = tool_assign_event(
                 indexer,
                 caller,
                 state.event_acl,
                 &state.assigned_tx,
                 params.arguments,
             )
-            .await
+            .await?;
+            // An assigned event is done: its claim lease has nothing left to guard.
+            if let Some(id) = event_id
+                && let Err(e) = state.event_claims.release(&id)
+            {
+                tracing::warn!(event_id = %id, error = %e, "assign_event: claim not released");
+            }
+            Ok(assigned)
         }
         // Admin-gated ops tools (mirror the documented MCP admin
         // surface; delegate to the same logic as EscurelAdmin gRPC).

@@ -185,6 +185,9 @@ tenant/token can process `/trigger` but deliberately report unready at
 | `ESCUREL_RUNNER_POLL_INTERVAL` | 30s | interval between inbox polls (`30s`, `1500ms`, `2m`) |
 | `ESCUREL_RUNNER_TAIL_MAX_AGE` | 10m | how old a request on a tailed label may be and still be acted on after a restart |
 | `ESCUREL_RUNNER_STATUS_INTERVAL` | 5m | how often the runner refreshes its status record (`runner-status:<runner_id>`) when nothing changed; it travels in the record as `status_interval_s` |
+| `ESCUREL_RUNNER_LABELS` | (none) | comma-separated labels this runner carries (`site:muc,has:sap-gui`); work whose `requires: {labels}` it lacks is left in the inbox for a runner that has them, and the labels are advertised on its `runtime` page |
+| `ESCUREL_RUNNER_PROBE_INTERVAL` | 10m | how often the runner re-probes its harness CLIs (`<cli> --version`) and rewrites its `runtime` page when a version changed, without a restart |
+| `ESCUREL_RUNNER_CLAIM_LEASE` | max(60s, 4 x poll interval) | how long a `claim_event` lease on an inbox event lasts; the poller renews held leases at half-life, and a dead runner's events become claimable this long after it stopped |
 | `ESCUREL_RUNNER_HARNESS_ALLOW` | the configured harness | comma-separated harnesses a manual start may ask for by name; others fail closed |
 | `ESCUREL_RUNNER_MODEL_ALLOW` | — | comma-separated models a skill page's `model:` may pick instead of the runner's configured one; others fail the run closed |
 | `ESCUREL_RUNNER_CHAT_MODEL` | — | the model chat runs use instead of the runner's configured one, unless the skill page names its own `model:` |
@@ -309,6 +312,7 @@ test knobs: never set in a deployment.
 | `ESCUREL_ECHO_FAIL_CHAT` | — | echo harness: fail every chat run (tests) |
 | `ESCUREL_ECHO_FAIL_SKILL` | — | echo harness: fail runs targeting this skill (tests) |
 | `ESCUREL_ECHO_RESULT_REF` | — | echo harness: attach this result reference (tests) |
+| `ESCUREL_ECHO_VERSION_FILE` | — | echo harness: `--version` answers with this file's contents, so a test can change a runner's probed CLI version (#818) |
 | `ESCUREL_ECHO_SLEEP_MS` | 0 | echo harness: idle this long before finishing, so a test can cancel a run |
 | `ESCUREL_ECHO_SLEEP_SKILL` | — | echo harness: only runs of this label idle for ESCUREL_ECHO_SLEEP_MS (tests) |
 | `ESCUREL_ECHO_TRANSCRIPT` | — | echo harness: print this JSONL file's lines (`{"transcript":{kind, name?, args?, text?}}`, `{token}` = the run's bearer) as its stream, for the run transcript (tests) |

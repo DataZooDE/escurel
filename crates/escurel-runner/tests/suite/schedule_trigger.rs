@@ -218,16 +218,12 @@ async fn an_exhausted_budget_skips_the_window_visibly() {
     );
 }
 
-/// Two runners on one gateway with the same schedule: each window still has
-/// one trigger, and its work really runs — counted from the runs' own
-/// `run-finished`, not only from the ids the gateway already dedups (crew
-/// review PR-1, F7). No contiguity: a tick stalled on a busy CI box may miss
-/// a window, which is not what this test is about.
-///
-/// Not asserted: that the harness runs ONCE per window. Today it does not —
-/// both runners' inbox pollers pick up the one trigger and each runs it (as
-/// for any inbox event; nothing claims an event across runners). Run
-/// ownership/leases are PR-2 (#818), which should tighten this to `== 1`.
+/// Two runners on one gateway with the same schedule: each window has one
+/// trigger, and its work runs exactly ONCE across the two — counted from the
+/// runs' own `run-started` / `run-finished`, not only from the ids the
+/// gateway already dedups (crew review PR-1, F7). The claim lease (#818)
+/// decides which runner takes the trigger. No contiguity: a tick stalled on a
+/// busy CI box may miss a window, which is not what this test is about.
 #[tokio::test]
 async fn two_runners_on_one_schedule_do_not_double_fire() {
     let gw = gateway(&[("tick", TICK_SKILL)]).await;
@@ -239,14 +235,24 @@ async fn two_runners_on_one_schedule_do_not_double_fire() {
     // Let the first windows' runs finish before counting.
     tokio::time::sleep(Duration::from_secs(2)).await;
     let runs = events_under(&gw, "escurel:run").await;
-    let ran = |trigger: &str| {
+    let count = |title: &str, trigger: &str| {
         runs.iter()
-            .filter(|e| e["title"] == "run-finished")
-            .any(|e| e["provenance"]["runner"]["event_id"] == trigger)
+            .filter(|e| e["title"] == title)
+            .filter(|e| e["provenance"]["runner"]["event_id"] == trigger)
+            .count()
     };
     for w in &windows[..2] {
         let trigger = trigger_id("tick", *w);
-        assert!(ran(&trigger), "{trigger} fired but its work never ran");
+        assert_eq!(
+            count("run-started", &trigger),
+            1,
+            "{trigger}: one runner starts it"
+        );
+        assert_eq!(
+            count("run-finished", &trigger),
+            1,
+            "{trigger}: its work runs once"
+        );
     }
 }
 

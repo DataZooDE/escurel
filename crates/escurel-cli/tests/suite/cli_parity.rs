@@ -75,6 +75,17 @@ const COVERAGE: &[(&str, Coverage)] = &[
         "report_runner_status",
         Excluded("runner-internal heartbeat; the runner calls it, MCP-only"),
     ),
+    (
+        "claim_event",
+        Excluded(
+            "runner coordination: only a runner's own identity claims; `list_events{event_id}` shows the holder",
+        ),
+    ),
+    (
+        "renew_claim",
+        Excluded("runner coordination: the runner renews the leases it holds"),
+    ),
+    ("list_runtimes", Agent(&["runtime", "list"])),
     ("mint_agent_token", Agent(&["run", "mint-token"])),
     ("get_run_tool_calls", Agent(&["run", "tool-calls"])),
     (

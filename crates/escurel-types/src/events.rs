@@ -182,6 +182,10 @@ pub struct ListEventsResponse {
     /// See [`ListInboxResponse::has_more`].
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub has_more: bool,
+    /// On an `event_id` lookup only: the live claim lease on that event
+    /// (`claim_event`, #818). Absent when nobody holds one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub claim: Option<crate::runtime::EventClaim>,
 }
 
 /// One step of an agent's plan, as `report_progress` snapshots it.

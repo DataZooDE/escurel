@@ -223,7 +223,10 @@ fn lane_kinds(data_dir: &Path) -> (usize, usize) {
     let (mut legacy, mut kind) = (0, 0);
     for f in files {
         // The server seeds its own system skills into every tenant; they are not part of the corpus.
-        if f.ends_with("markdown/skills/escurel.md") || f.ends_with("markdown/skills/agent.md") {
+        if ["escurel", "agent", "runtime"]
+            .iter()
+            .any(|s| f.ends_with(format!("markdown/skills/{s}.md")))
+        {
             continue;
         }
         // The store writes through a temp file + rename, so a file listed a moment ago can be gone by

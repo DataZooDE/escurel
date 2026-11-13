@@ -33,6 +33,12 @@ pub const DEFAULT_SEEN_CAP: usize = 4096;
 /// missed webhooks, so a coarse cadence is fine.
 pub const DEFAULT_POLL_INTERVAL: Duration = Duration::from_secs(30);
 
+/// Default for `ESCUREL_RUNNER_PROBE_INTERVAL` (#818).
+pub const DEFAULT_PROBE_INTERVAL: Duration = Duration::from_secs(10 * 60);
+
+/// The floor of `ESCUREL_RUNNER_CLAIM_LEASE`'s default (#818).
+pub const DEFAULT_CLAIM_LEASE: Duration = Duration::from_secs(60);
+
 /// Default harness adapter the runner dispatches each packaged trigger to.
 /// `echo` is the deterministic real harness (#151); `claude`, `codex`, `agy`
 /// and `gemini` are selected by the same env var.
@@ -236,6 +242,18 @@ pub enum ConfigError {
         value: String,
         /// What the variable takes.
         expected: &'static str,
+    },
+    /// A distributed-runtime setting (#818: `ESCUREL_RUNNER_LABELS`,
+    /// `ESCUREL_RUNNER_PROBE_INTERVAL`, `ESCUREL_RUNNER_CLAIM_LEASE`) was set
+    /// to a value it cannot take.
+    #[error("invalid {key} {value:?}: {reason}")]
+    InvalidRuntimeSetting {
+        /// The offending env var name.
+        key: &'static str,
+        /// The offending value.
+        value: String,
+        /// Why it was refused.
+        reason: String,
     },
     /// `ESCUREL_RUNNER_DRAIN_TIMEOUT` was set but is not a valid duration.
     #[error("invalid ESCUREL_RUNNER_DRAIN_TIMEOUT {value:?}: expected e.g. 30s, 1500ms")]
@@ -495,6 +513,19 @@ pub struct RunnerConfig {
     /// This runner's name in its status reports. Source:
     /// `ESCUREL_RUNNER_ID` (default `<HOSTNAME>:<pid>`, or `runner:<pid>`).
     pub runner_id: String,
+    /// What this runner carries for `requires: {labels}` routing (#818), e.g.
+    /// `site:muc`, `has:sap-gui`. Advertised on its `runtime` page. Source:
+    /// `ESCUREL_RUNNER_LABELS` (comma-separated; default none).
+    pub labels: Vec<String>,
+    /// How often the runner re-probes its harness CLIs' versions and
+    /// rewrites its `runtime` page when they changed (#818). Zero is refused.
+    /// Source: `ESCUREL_RUNNER_PROBE_INTERVAL` (default 10m).
+    pub probe_interval: Duration,
+    /// How long a `claim_event` lease on an inbox event lasts (#818); the
+    /// poller renews held leases at half-life. Source:
+    /// `ESCUREL_RUNNER_CLAIM_LEASE` (default the larger of 60s and four poll
+    /// intervals, so a slow tick never lets a held lease lapse).
+    pub claim_lease: Duration,
     /// How long a cancelled run's harness subprocess gets between SIGTERM
     /// and SIGKILL (workbench backend P2-3a). Same duration grammar as
     /// `poll_interval`. Source: `ESCUREL_RUNNER_CANCEL_GRACE` (default
@@ -1094,6 +1125,33 @@ impl RunnerConfig {
         let chat_model = lookup("ESCUREL_RUNNER_CHAT_MODEL")
             .map(|m| m.trim().to_owned())
             .filter(|m| !m.is_empty());
+        let labels = match lookup("ESCUREL_RUNNER_LABELS") {
+            Some(raw) => escurel_types::runtime::parse_label_list(&raw).map_err(|reason| {
+                ConfigError::InvalidRuntimeSetting {
+                    key: "ESCUREL_RUNNER_LABELS",
+                    value: raw.clone(),
+                    reason,
+                }
+            })?,
+            None => Vec::new(),
+        };
+        let runtime_duration = |key: &'static str, default: Duration| match lookup(key) {
+            Some(raw) if !raw.is_empty() => match parse_duration(&raw) {
+                Some(d) if !d.is_zero() => Ok(d),
+                _ => Err(ConfigError::InvalidRuntimeSetting {
+                    key,
+                    value: raw,
+                    reason: "expected a positive duration, e.g. 10m, 90s".to_owned(),
+                }),
+            },
+            _ => Ok(default),
+        };
+        let probe_interval =
+            runtime_duration("ESCUREL_RUNNER_PROBE_INTERVAL", DEFAULT_PROBE_INTERVAL)?;
+        let claim_lease = runtime_duration(
+            "ESCUREL_RUNNER_CLAIM_LEASE",
+            DEFAULT_CLAIM_LEASE.max(poll_interval.saturating_mul(4)),
+        )?;
         let harness_allow: Vec<String> = match lookup("ESCUREL_RUNNER_HARNESS_ALLOW") {
             Some(raw) if !raw.trim().is_empty() => raw
                 .split(',')
@@ -1123,6 +1181,9 @@ impl RunnerConfig {
             chat_model,
             agent_narrow,
             runner_id,
+            labels,
+            probe_interval,
+            claim_lease,
             cancel_grace,
             lint_interval,
             schedule_tick,

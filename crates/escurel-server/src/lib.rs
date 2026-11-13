@@ -44,6 +44,7 @@ pub mod config_keys;
 mod config_probe;
 pub mod credential_policy;
 pub mod egress;
+mod event_claims;
 mod health;
 mod live_dispatch;
 mod mcp;

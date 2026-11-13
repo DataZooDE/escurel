@@ -63,6 +63,7 @@ mod egress_policy;
 mod empty_event_id;
 mod error_data;
 mod event_acl;
+mod event_claims;
 mod event_pagination;
 mod events;
 mod events_copy_cmd;

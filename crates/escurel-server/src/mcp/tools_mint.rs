@@ -49,7 +49,7 @@ pub(super) struct MintAgentTokenArgs {
 
 /// `YYYY-MM-DDTHH:MM:SSZ` for a `SystemTime`, without a date crate (the
 /// gateway carries none): Howard Hinnant's days-to-civil algorithm.
-fn rfc3339(t: SystemTime) -> String {
+pub(super) fn rfc3339(t: SystemTime) -> String {
     let secs = t
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())

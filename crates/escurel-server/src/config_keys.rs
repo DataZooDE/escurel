@@ -876,6 +876,24 @@ pub const CONFIG_KEYS: &[ConfigKey] = &[
         doc: "how often the runner refreshes its status record (`runner-status:<runner_id>`) when nothing changed; it travels in the record as `status_interval_s`",
     },
     ConfigKey {
+        name: "ESCUREL_RUNNER_LABELS",
+        component: "Runner",
+        default: "(none)",
+        doc: "comma-separated labels this runner carries (`site:muc,has:sap-gui`); work whose `requires: {labels}` it lacks is left in the inbox for a runner that has them, and the labels are advertised on its `runtime` page",
+    },
+    ConfigKey {
+        name: "ESCUREL_RUNNER_PROBE_INTERVAL",
+        component: "Runner",
+        default: "10m",
+        doc: "how often the runner re-probes its harness CLIs (`<cli> --version`) and rewrites its `runtime` page when a version changed, without a restart",
+    },
+    ConfigKey {
+        name: "ESCUREL_RUNNER_CLAIM_LEASE",
+        component: "Runner",
+        default: "max(60s, 4 x poll interval)",
+        doc: "how long a `claim_event` lease on an inbox event lasts; the poller renews held leases at half-life, and a dead runner's events become claimable this long after it stopped",
+    },
+    ConfigKey {
         name: "ESCUREL_RUNNER_HARNESS_ALLOW",
         component: "Runner",
         default: "the configured harness",
@@ -1390,6 +1408,12 @@ pub const CONFIG_KEYS: &[ConfigKey] = &[
         component: "TestOnly",
         default: "—",
         doc: "echo harness: attach this result reference (tests)",
+    },
+    ConfigKey {
+        name: "ESCUREL_ECHO_VERSION_FILE",
+        component: "TestOnly",
+        default: "—",
+        doc: "echo harness: `--version` answers with this file's contents, so a test can change a runner's probed CLI version (#818)",
     },
     ConfigKey {
         name: "ESCUREL_ECHO_SLEEP_MS",
