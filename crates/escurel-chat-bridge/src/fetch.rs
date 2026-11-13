@@ -68,7 +68,10 @@ pub fn host_allowed(host: &str, patterns: &[String]) -> bool {
 }
 
 /// A globally routable unicast address: not loopback, private, link-local,
-/// shared (CGNAT), unspecified, broadcast, multicast or documentation space.
+/// shared (CGNAT), benchmarking, reserved (240/4), unspecified, broadcast,
+/// multicast or documentation space. An IPv6 address that embeds an IPv4 one
+/// (mapped, IPv4-compatible, NAT64 `64:ff9b::/96`, 6to4 `2002::/16`) is
+/// judged by the IPv4 address it reaches (crew C-F8).
 #[must_use]
 pub fn is_public(ip: IpAddr) -> bool {
     match ip {
@@ -82,10 +85,12 @@ pub fn is_public(ip: IpAddr) -> bool {
                 || v4.is_multicast()
                 || v4.is_documentation()
                 || a == 0
-                || (a == 100 && (64..128).contains(&b)))
+                || a >= 240
+                || (a == 100 && (64..128).contains(&b))
+                || (a == 198 && (18..20).contains(&b)))
         }
         IpAddr::V6(v6) => {
-            if let Some(v4) = v6.to_ipv4_mapped() {
+            if let Some(v4) = embedded_ipv4(v6) {
                 return is_public(IpAddr::V4(v4));
             }
             !(v6.is_loopback()
@@ -94,6 +99,28 @@ pub fn is_public(ip: IpAddr) -> bool {
                 || v6.is_unique_local()
                 || v6.is_unicast_link_local())
         }
+    }
+}
+
+/// The IPv4 address an IPv6 address carries, for the forms that route to it.
+fn embedded_ipv4(v6: std::net::Ipv6Addr) -> Option<std::net::Ipv4Addr> {
+    let seg = v6.segments();
+    let low = |hi: u16, lo: u16| {
+        let [a, b] = hi.to_be_bytes();
+        let [c, d] = lo.to_be_bytes();
+        std::net::Ipv4Addr::new(a, b, c, d)
+    };
+    if let Some(v4) = v6.to_ipv4_mapped() {
+        return Some(v4);
+    }
+    match seg {
+        // NAT64 well-known prefix 64:ff9b::/96.
+        [0x64, 0xff9b, 0, 0, 0, 0, hi, lo] => Some(low(hi, lo)),
+        // 6to4 2002:AABB:CCDD::/48.
+        [0x2002, hi, lo, ..] => Some(low(hi, lo)),
+        // Deprecated IPv4-compatible ::a.b.c.d (not :: or ::1).
+        [0, 0, 0, 0, 0, 0, hi, lo] if hi != 0 => Some(low(hi, lo)),
+        _ => None,
     }
 }
 
@@ -183,10 +210,26 @@ mod tests {
             "fd00::1",
             "fe80::1",
             "::ffff:127.0.0.1",
+            "198.18.0.1",
+            "198.19.255.254",
+            "240.0.0.1",
+            "255.255.255.254",
+            "64:ff9b::a9fe:a9fe",
+            "64:ff9b::7f00:1",
+            "2002:a9fe:a9fe::1",
+            "2002:0a00:0001::",
+            "::7f00:1",
+            "::a9fe:a9fe",
         ] {
             assert!(!is_public(ip.parse().unwrap()), "{ip}");
         }
-        for ip in ["52.112.0.1", "2603:1000::1"] {
+        for ip in [
+            "52.112.0.1",
+            "2603:1000::1",
+            "198.20.0.1",
+            "64:ff9b::3470:1",
+            "2002:3470:0001::1",
+        ] {
             assert!(is_public(ip.parse().unwrap()), "{ip}");
         }
     }
