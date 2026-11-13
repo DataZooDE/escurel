@@ -843,7 +843,7 @@ pub const CONFIG_KEYS: &[ConfigKey] = &[
         name: "ESCUREL_RUNNER_TOKEN",
         component: "Runner",
         default: "—",
-        doc: "tenant-scoped bearer the runner presents to `/mcp`; a static token wins over minting",
+        doc: "tenant-scoped bearer the runner presents to `/mcp`; a static token wins over minting. A runner on a static token cannot mint, so every run of a skill with an `agent:` profile fails (dead-letters) there: agent profiles need a minting runner (`ESCUREL_RUNNER_AUTH_SIGNING_KEY`)",
     },
     ConfigKey {
         name: "ESCUREL_RUNNER_QUEUE_CAP",
@@ -1017,7 +1017,7 @@ pub const CONFIG_KEYS: &[ConfigKey] = &[
         name: "ESCUREL_RUNNER_AUTH_SIGNING_KEY",
         component: "Runner",
         default: "—",
-        doc: "private key (PEM) the runner signs its minted bearers with",
+        doc: "private key (PEM) the runner signs its minted bearers with; required for agent profiles (`agent:` on a skill), whose runs are minted as the agent",
     },
     ConfigKey {
         name: "ESCUREL_RUNNER_AUTH_SUBJECT",

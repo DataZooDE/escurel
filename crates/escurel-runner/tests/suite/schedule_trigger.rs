@@ -466,3 +466,60 @@ async fn a_zoned_schedule_names_its_window_in_utc() {
         assert!(drift <= 10, "the window is now in UTC, not 5h30 away: {w}");
     }
 }
+
+/// The operator path end to end (crew review PR-1, F11): a scheduled skill whose default is an
+/// agent profile runs AS that agent under a minting runner — `run-finished` names the agent.
+/// (On a static `ESCUREL_RUNNER_TOKEN` the same run cannot be minted and fails.)
+#[tokio::test]
+async fn a_scheduled_skill_runs_as_its_default_agent_under_a_minting_runner() {
+    const DIGEST: &str = "---\nkind: skill\nid: digest\ndescription: Every two seconds, as bot.\n\
+        autonomy: auto\nagent: \"[[agent::bot]]\"\nschedule: \"*/2 * * * * *\"\n\
+        schedule_budget: {runs_per_day: 2}\n---\n# digest\n\nNote the time.\n";
+    const BOT: &str = "---\nkind: instance\nskill: agent\nid: bot\nharness: echo\n\
+        skills: [\"[[skill::digest]]\"]\n---\n# bot\n";
+    let gw = EscurelProcess::spawn(Opts {
+        auth: AuthMode::TestIssuer,
+        fixtures: Some(
+            FixtureBuilder::new()
+                .tenant(TENANT)
+                .skill("digest", DIGEST)
+                .instance("agent", "bot", BOT)
+                .done(),
+        ),
+        ..Default::default()
+    })
+    .await;
+    let mut runner = RunnerProcess::echo(&gw, TENANT)
+        .minted()
+        .env("ESCUREL_RUNNER_SCHEDULE_TICK", "250ms")
+        .env("ESCUREL_RUNNER_SCHEDULE_GRACE", "2s")
+        .spawn();
+    runner.wait_healthy().await;
+
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let finished = loop {
+        let found = events_under(&gw, "escurel:run")
+            .await
+            .into_iter()
+            .find(|e| {
+                e["title"] == "run-finished"
+                    && e["provenance"]["runner"]["event_id"]
+                        .as_str()
+                        .is_some_and(|id| id.starts_with("sched:digest:"))
+            });
+        if let Some(e) = found {
+            break e;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "no scheduled run of digest finished"
+        );
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    };
+    assert_eq!(
+        finished["provenance"]["runner"]["agent"], "bot",
+        "{finished}"
+    );
+    let body: Value = serde_json::from_str(finished["body"].as_str().unwrap()).unwrap();
+    assert_eq!(body["status"], "processed", "{body}");
+}

@@ -551,6 +551,39 @@ event's `provenance.agent`, then the skill's default): a reconciled run's
 `run-finished` names that agent and skill, and a reset run is re-driven from
 the event by the poller like any other.
 
+### Operator walkthrough: a weekday digest that runs as its own agent
+
+The path a first operator takes, in order — each step is where it usually
+goes wrong.
+
+1. **A minting runner.** Agent runs are minted as the agent, so the runner
+   needs the signing identity (`ESCUREL_RUNNER_AUTH_ISSUER`,
+   `ESCUREL_RUNNER_AUTH_SIGNING_KEY`, `ESCUREL_RUNNER_AUTH_KID`) and **no**
+   `ESCUREL_RUNNER_TOKEN` (a static token wins, cannot mint, and every
+   agent run dead-letters). Put the agent's harness in
+   `ESCUREL_RUNNER_HARNESS_ALLOW` and its model in `ESCUREL_RUNNER_MODEL_ALLOW`
+   (docs/deploy/env.md); outside them the run is refused, not substituted.
+2. **The agent page, as an admin** (only `escurel:admin` may write one):
+   `markdown/instances/agent/digest-bot.md` with `harness: claude`,
+   `model: <id>`, `skills: ["[[skill::digest]]"]`, and the narrowest
+   `scopes.tools` / `scopes.write` that do the job (references/01).
+3. **The skill page.** `agent: "[[agent::digest-bot]]"`, an `acl:` that
+   grants `create` / `update` to the groups the run writes as (the run's
+   token carries the skill's write groups — not admin), and
+   `schedule: "CRON_TZ=Europe/Berlin 15 7 * * 1-5"` with
+   `schedule_budget: {runs_per_day: 1}`.
+4. **`validate` both pages** before writing them: `schedule_invalid`,
+   `schedule_budget_invalid` and the agent codes are errors there, but a
+   write is not refused for them. `list_skills` then shows the schedule —
+   with no `schedule_invalid` beside it.
+5. **Check the first run** after 07:15 Berlin: the trigger is
+   `sched:digest:<the UTC instant>` under `label_skill: digest`; its
+   `run-finished` (`list_events {label_skill: "escurel:run"}`) has
+   `provenance.runner.agent: "digest-bot"` and `body.status: processed`. No
+   run, but an `escurel:run` `run-skipped`? Its `reason` says why
+   (`budget`, `invalid_budget`, `invalid_schedule`). A `dead_letter` naming
+   the agent means step 1 or 2.
+
 ## Chat runs (`provenance.chat_group_id`)
 
 A question in a page-bound chat is answered by a run. The person:

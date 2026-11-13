@@ -179,7 +179,7 @@ tenant/token can process `/trigger` but deliberately report unready at
 | `ESCUREL_RUNNER_GATEWAY_URL` | http://127.0.0.1:8080 | base URL of the escurel gateway exposing `/mcp` |
 | `ESCUREL_RUNNER_ENV` | dev | deployment environment stamped on every log record |
 | `ESCUREL_RUNNER_TENANT` | — | tenant whose inbox the poller drains; the poller is off when this or the token is absent |
-| `ESCUREL_RUNNER_TOKEN` | — | tenant-scoped bearer the runner presents to `/mcp`; a static token wins over minting |
+| `ESCUREL_RUNNER_TOKEN` | — | tenant-scoped bearer the runner presents to `/mcp`; a static token wins over minting. A runner on a static token cannot mint, so every run of a skill with an `agent:` profile fails (dead-letters) there: agent profiles need a minting runner (`ESCUREL_RUNNER_AUTH_SIGNING_KEY`) |
 | `ESCUREL_RUNNER_QUEUE_CAP` | 1024 | bound of the dispatch queue (backpressure instead of unbounded growth) |
 | `ESCUREL_RUNNER_SEEN_CAP` | 4096 | bound of the dedup seen-set |
 | `ESCUREL_RUNNER_POLL_INTERVAL` | 30s | interval between inbox polls (`30s`, `1500ms`, `2m`) |
@@ -208,7 +208,7 @@ tenant/token can process `/trigger` but deliberately report unready at
 | `ESCUREL_RUNNER_AUTH_ISSUER` | — | issuer of the bearers the runner MINTS for itself instead of holding a static token |
 | `ESCUREL_RUNNER_AUTH_AUDIENCE` | escurel | audience of minted bearers |
 | `ESCUREL_RUNNER_AUTH_KID` | derived from the key | `kid` of minted bearers |
-| `ESCUREL_RUNNER_AUTH_SIGNING_KEY` | — | private key (PEM) the runner signs its minted bearers with |
+| `ESCUREL_RUNNER_AUTH_SIGNING_KEY` | — | private key (PEM) the runner signs its minted bearers with; required for agent profiles (`agent:` on a skill), whose runs are minted as the agent |
 | `ESCUREL_RUNNER_AUTH_SUBJECT` | escurel-runner | `sub` of minted bearers (a service principal) |
 | `ESCUREL_RUNNER_AUTH_TTL_SECS` | 1800 | lifetime of each minted gateway bearer, in seconds |
 | `ESCUREL_RUNNER_MAX_TURNS` | the harness default | model-turn bound for the harness |

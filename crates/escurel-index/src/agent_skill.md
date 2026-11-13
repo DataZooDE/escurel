@@ -48,6 +48,14 @@ so it is never something a run (or an ordinary member) can widen.
 A skill whose default agent is missing, or does not list it, does not
 run — the runner refuses it rather than falling back to a broader token.
 
+## Which runner can run an agent
+
+Only a **minting** runner — one holding the signing key
+(`ESCUREL_RUNNER_AUTH_ISSUER` + `ESCUREL_RUNNER_AUTH_SIGNING_KEY`). A runner
+on a static `ESCUREL_RUNNER_TOKEN` cannot mint a token as the agent, so every
+run of a skill naming an agent fails there (dead-letters) rather than writing
+with the runner's own token.
+
 ## Enforcement
 
 The run's token names the agent (`agent` claim, `sub: agent:<id>`, role
