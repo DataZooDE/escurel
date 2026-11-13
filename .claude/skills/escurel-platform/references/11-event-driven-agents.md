@@ -465,12 +465,18 @@ catches it; a 07:15 job does **not** run at 15:00 because the runner booted
 or the page was written then — it waits for tomorrow's 07:15.
 
 **Budget.** With `schedule_budget: {runs_per_day: N}`, before firing a
-window the runner counts the skill's other `sched:<skill>:` triggers whose
-window starts on the same UTC day (`list_events { label_skill }`). At `N`
+window the runner counts the skill's other `sched:<skill>:` triggers
+(`source: runner-schedule`) whose window starts on the same UTC day,
+reading only events captured that day (`list_events { label_skill, since:
+<day start>, until: <next day start + grace> }`) — ordinary events under the
+label, however many, never spend the budget, and `sched:` ids are reserved
+for the runner's own identity, so nobody else can file one. At `N`
 it fires nothing and files instead an `escurel:run` `kind: system` event
 titled `run-skipped`, id `<trigger id>:skipped`, body `{reason: "budget",
 runs_per_day, skill, trigger_event_id, window_start}` — an exhausted
-budget is visible, never silence.
+budget is visible, never silence. Several runners on one tenant each check
+and then capture, so on a boundary they can overshoot the cap by up to one
+trigger each: the budget is a cost guard, not an exact quota (accepted).
 
 `ESCUREL_RUNNER_LINT_INTERVAL` still works: it adds a synthetic `lint`
 entry (epoch-aligned windows of that length) to the same loop, keeping the

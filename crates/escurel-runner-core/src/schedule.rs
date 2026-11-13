@@ -42,10 +42,8 @@ pub const SCHEDULE_SOURCE: &str = "runner-schedule";
 const LINT_TICK_SOURCE: &str = "runner-lint-tick";
 /// The skill `backend.kind` whose runs live on a `workflow-run` page.
 const WORKFLOW_BACKEND: &str = "workflow";
-/// Newest-first page size when counting a day's triggers.
+/// Page size when counting a day's triggers.
 const BUDGET_PAGE: u32 = 200;
-/// Pages read before the count gives up (and treats the budget as spent).
-const BUDGET_MAX_PAGES: usize = 20;
 
 /// When an entry's windows open.
 #[derive(Debug, Clone)]
@@ -366,6 +364,18 @@ async fn fire(
 /// day, counted up to `cap` (enough to decide). The window's own trigger is
 /// excluded, so a restart re-handling a window it already fired re-captures
 /// it (a no-op) instead of skipping it.
+///
+/// Reads only the events CAPTURED in the span a trigger for that day can have
+/// been captured in (`since` the day's start, `until` the next day's start
+/// plus the catch-up grace: a window is fired at most `grace` after it
+/// opens), and counts only this entry's triggers — `source: runner-schedule`
+/// AND a `sched:<skill>:` id, a prefix only the runner's identity may file.
+/// Ordinary events under the label, however many, are paged past and never
+/// counted, and running out of pages is the count, not an exhausted budget.
+///
+/// Several runners on one tenant check-then-capture independently, so on a
+/// window boundary they can overshoot the cap by up to one trigger each. An
+/// accepted limitation: the budget is a cost guard, not an exact quota.
 async fn fired_today(
     client: &Client,
     entry: &ScheduleEntry,
@@ -374,23 +384,31 @@ async fn fired_today(
 ) -> Result<u32, Error> {
     let own = entry.event_id(window);
     let day = window.date_naive();
+    let start = Utc.from_utc_datetime(&day.and_time(chrono::NaiveTime::MIN));
+    let until = start
+        + chrono::Duration::days(1)
+        + chrono::Duration::from_std(entry.grace).unwrap_or_default();
     let mut count = 0;
     let mut cursor = String::new();
-    for _ in 0..BUDGET_MAX_PAGES {
+    loop {
         let page = client
             .list_events(ListEventsRequest {
                 label_skill: entry.skill.clone(),
-                newest_first: true,
+                since: rfc3339(start),
+                until: rfc3339(until),
                 limit: BUDGET_PAGE,
                 cursor: cursor.clone(),
                 ..Default::default()
             })
             .await?;
         for event in &page.events {
-            let Some(w) = entry.window_of(&event.event_id) else {
+            if event.source != SCHEDULE_SOURCE || event.event_id == own {
                 continue;
-            };
-            if event.event_id != own && w.date_naive() == day {
+            }
+            if entry
+                .window_of(&event.event_id)
+                .is_some_and(|w| w.date_naive() == day)
+            {
                 count += 1;
                 if count >= cap {
                     return Ok(count);
@@ -402,8 +420,6 @@ async fn fired_today(
             _ => return Ok(count),
         }
     }
-    // A day with more triggers than we read is a day whose budget is spent.
-    Ok(cap)
 }
 
 #[cfg(test)]

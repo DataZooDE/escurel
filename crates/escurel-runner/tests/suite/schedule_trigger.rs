@@ -64,12 +64,12 @@ async fn call(gw: &EscurelProcess, name: &str, args: Value) -> Value {
     body["result"]["structuredContent"].clone()
 }
 
-/// Every event under `label`, any status.
+/// The newest 1000 events under `label`, any status.
 async fn events_under(gw: &EscurelProcess, label: &str) -> Vec<Value> {
     let r = call(
         gw,
         "list_events",
-        json!({ "label_skill": label, "limit": 1000 }),
+        json!({ "label_skill": label, "limit": 1000, "newest_first": true }),
     )
     .await;
     r["events"].as_array().cloned().unwrap_or_default()
@@ -257,4 +257,66 @@ async fn a_window_older_than_the_grace_does_not_fire() {
         Vec::<DateTime<Utc>>::new(),
         "a window an hour past is outside the 2 s grace and must not fire"
     );
+}
+
+/// The budget counts the day's TRIGGERS, not the label's history (crew review PR-1, F7): a skill
+/// with thousands of ordinary events under its label still fires. The old count paged newest-first
+/// through at most 4000 label events and read "pages ran out" as "budget spent", so any member could
+/// stop a schedule by filing events under its label. Seeded in-process (processed, so the runner
+/// does not dispatch them) before the gateway starts.
+#[tokio::test]
+async fn thousands_of_unrelated_events_under_the_label_do_not_spend_the_budget() {
+    use std::sync::Arc;
+    const BUSY: &str = "---\nkind: skill\nid: busy\ndescription: Busy label.\n\
+        autonomy: auto\nschedule: \"*/2 * * * * *\"\nschedule_budget: {runs_per_day: 3}\n---\n\
+        # busy\n\nNote the time.\n";
+    let store_dir = tempfile::TempDir::new().unwrap();
+    let db_dir = tempfile::TempDir::new().unwrap();
+    let store: Arc<dyn escurel_storage::LaneStore> = Arc::new(escurel_storage::FsStore::new(
+        store_dir.path().to_path_buf(),
+    ));
+    let embedder: Arc<dyn escurel_embed::Embedder> =
+        Arc::new(escurel_embed::ZeroEmbedder::default());
+    let conn = duckdb::Connection::open(db_dir.path().join("escurel.duckdb")).unwrap();
+    escurel_index::Migrator::up(&conn).unwrap();
+    let indexer = Arc::new(escurel_index::Indexer::new(store, embedder, conn, TENANT).unwrap());
+    indexer
+        .update_page("markdown/skills/busy.md", BUSY)
+        .await
+        .unwrap();
+    for n in 0..4100 {
+        let e = indexer
+            .capture_event(escurel_index::NewEvent {
+                event_id: Some(format!("noise-{n}")),
+                source: "member".to_owned(),
+                mime: "text/plain".to_owned(),
+                label_skill: "busy".to_owned(),
+                title: "noise".to_owned(),
+                body: "unrelated".to_owned(),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        indexer
+            .assign_event(&e.event_id, "markdown/instances/busy/n.md")
+            .await
+            .unwrap();
+    }
+    let gw = EscurelProcess::spawn(Opts {
+        auth: AuthMode::TestIssuer,
+        config_overrides: escurel_test_support::ConfigOverrides {
+            indexer: Some(Arc::clone(&indexer)),
+            ..Default::default()
+        },
+        ..Default::default()
+    })
+    .await;
+    let _runner = spawn_runner(&gw).await;
+    tokio::time::sleep(Duration::from_secs(5)).await;
+    let fired = trigger_windows(&gw, "busy").await;
+    assert!(
+        fired.len() >= 2,
+        "the budget (3/day) is not spent by 4100 unrelated events: {fired:?}"
+    );
+    assert!(fired.len() <= 3, "and it still holds: {fired:?}");
 }
