@@ -11,6 +11,9 @@ pub const BOT_FRAMEWORK_ISSUER: &str = "https://api.botframework.com";
 pub const BOT_FRAMEWORK_TOKEN_URL: &str =
     "https://login.microsoftonline.com/botframework.com/oauth2/v2.0/token";
 pub const BOT_FRAMEWORK_SCOPE: &str = "https://api.botframework.com/.default";
+/// Where Teams puts files people share (SharePoint / OneDrive) and the
+/// media it hosts itself.
+pub const DEFAULT_ATTACHMENT_HOSTS: &str = "*.sharepoint.com,*.asm.skype.com";
 
 #[derive(Debug, thiserror::Error)]
 pub enum ConfigError {
@@ -54,6 +57,9 @@ pub struct TeamsConfig {
     /// (`ESCUREL_BRIDGE_TEAMS_ALLOWED_TENANTS`). Required: a multi-tenant bot
     /// app would otherwise give anyone in any tenant an escurel identity.
     pub allowed_tenants: Vec<String>,
+    /// Hosts other than the connector an attachment may be downloaded from
+    /// (`ESCUREL_BRIDGE_TEAMS_ATTACHMENT_HOSTS`; `*.suffix` wildcards).
+    pub attachment_hosts: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -143,6 +149,10 @@ impl BridgeConfig {
                 token_url: or("ESCUREL_BRIDGE_TEAMS_TOKEN_URL", BOT_FRAMEWORK_TOKEN_URL),
                 token_scope: or("ESCUREL_BRIDGE_TEAMS_TOKEN_SCOPE", BOT_FRAMEWORK_SCOPE),
                 allowed_tenants: list(&req("ESCUREL_BRIDGE_TEAMS_ALLOWED_TENANTS")?),
+                attachment_hosts: list(&or(
+                    "ESCUREL_BRIDGE_TEAMS_ATTACHMENT_HOSTS",
+                    DEFAULT_ATTACHMENT_HOSTS,
+                )),
             },
             principal_template: {
                 let t = req("ESCUREL_BRIDGE_PRINCIPAL_TEMPLATE")?;

@@ -51,10 +51,7 @@ impl TeamsChannel {
     pub fn new(cfg: TeamsConfig) -> Self {
         Self {
             cfg,
-            http: reqwest::Client::builder()
-                .timeout(Duration::from_secs(30))
-                .build()
-                .unwrap_or_default(),
+            http: client(reqwest::Client::builder()),
             keys: OnceCell::new(),
             token: Mutex::new(None),
         }
@@ -287,13 +284,22 @@ impl ChatChannel for TeamsChannel {
         attachment: &Attachment,
         max_bytes: usize,
     ) -> Result<Vec<u8>, ChannelError> {
-        let mut req = self.http.get(&attachment.url);
+        let service = turn.reply_to["serviceUrl"].as_str().unwrap_or_default();
+        let target = crate::fetch::check(&attachment.url, service, &self.cfg.attachment_hosts)
+            .await
+            .map_err(|e| ChannelError::Http(format!("refused: {e}")))?;
         // Inline content lives on the connector and needs the bot's bearer; a
         // file link is pre-authorised. Never hand the bearer to another host.
-        let service = turn.reply_to["serviceUrl"].as_str().unwrap_or_default();
-        if !service.is_empty() && attachment.url.starts_with(service.trim_end_matches('/')) {
-            req = req.bearer_auth(self.connector_token().await?);
-        }
+        let req = match target {
+            crate::fetch::Target::Connector => self
+                .http
+                .get(&attachment.url)
+                .bearer_auth(self.connector_token().await?),
+            crate::fetch::Target::Pinned { host, addrs } => {
+                client(reqwest::Client::builder().resolve_to_addrs(&host, &addrs))
+                    .get(&attachment.url)
+            }
+        };
         let mut resp = req
             .send()
             .await
@@ -317,6 +323,16 @@ impl ChatChannel for TeamsChannel {
         }
         Ok(bytes)
     }
+}
+
+/// Every request the channel makes: bounded, and redirects are not followed
+/// (a redirect would reach a host nobody checked; a 3xx is a refusal).
+fn client(builder: reqwest::ClientBuilder) -> reqwest::Client {
+    builder
+        .timeout(Duration::from_secs(30))
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .unwrap_or_default()
 }
 
 /// `{serviceUrl}/v3/conversations/{id}/activities`.

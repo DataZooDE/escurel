@@ -1512,6 +1512,12 @@ pub const CONFIG_KEYS: &[ConfigKey] = &[
         doc: "largest attachment it downloads and uploads through `ingest_upload`; a larger one is listed in the message as not ingested",
     },
     ConfigKey {
+        name: "ESCUREL_BRIDGE_TEAMS_ATTACHMENT_HOSTS",
+        component: "Bridge",
+        default: "*.sharepoint.com,*.asm.skype.com",
+        doc: "comma-separated hosts (`*.suffix` = any subdomain) an attachment may be downloaded from besides the connector's own `serviceUrl` origin. Such a download must be https, resolve only to public addresses (loopback, private, link-local and CGNAT are refused after DNS resolution) and is not redirected; the bot's bearer goes only to the connector origin",
+    },
+    ConfigKey {
         name: "ESCUREL_SERVER",
         component: "Cli",
         default: "http://127.0.0.1:8080",

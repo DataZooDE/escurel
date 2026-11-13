@@ -48,7 +48,12 @@ start it.
    page-bound chat group (`msg_id` `msteams:<hash of conversation + activity id>`), and captures a
    `chat` event naming it (`event_id` `msteams-<same hash>`, so a retry stores no second event).
 6. **Attachments**: each file is downloaded (at most `ESCUREL_BRIDGE_ATTACHMENT_MAX_BYTES`) and
-   uploaded through `ingest_upload` as the person. The message gets one line per attachment:
+   uploaded through `ingest_upload` as the person. A URL on the connector's own origin (scheme,
+   host and port of the token-bound `serviceUrl`) is fetched with the bot's bearer; any other URL
+   must be https on a host in `ESCUREL_BRIDGE_TEAMS_ATTACHMENT_HOSTS` (SharePoint and Teams media
+   by default), must resolve only to public addresses, is fetched pinned to those addresses without
+   the bearer, and is not redirected. So an activity cannot make the bridge read an internal
+   endpoint (`http://127.0.0.1:8080/metrics`, a metadata address) into escurel. The message gets one line per attachment:
    the page it became, or `not ingested: <why>` (no document skill accepts the type, the person
    may not create in it, the download failed).
 7. **Typing**: while no answer exists, a typing activity every `ESCUREL_BRIDGE_TYPING_INTERVAL`.
@@ -112,5 +117,6 @@ real tenant:
 - the JWKS `endorsements` (channel ids per key): the bridge requires `msteams` when a key lists
   them, and accepts a key that lists none;
 - Bot Framework Emulator tokens (a different issuer), which the bridge does not accept;
-- inline-image downloads needing the connector bearer;
+- inline-image downloads needing the connector bearer, and whether Teams file links redirect
+  (the bridge does not follow redirects; add the final host to the allow-list if one does);
 - the single-tenant token endpoint.

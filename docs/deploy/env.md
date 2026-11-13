@@ -299,6 +299,7 @@ It runs only when started; nothing else reads these.
 | `ESCUREL_BRIDGE_TYPING_INTERVAL` | 3s | how often it re-sends the typing indicator while the run is live (Teams shows one for about three seconds) |
 | `ESCUREL_BRIDGE_REPLY_TIMEOUT` | 10m | how long it waits for an answer before telling the person it has none |
 | `ESCUREL_BRIDGE_ATTACHMENT_MAX_BYTES` | 10485760 | largest attachment it downloads and uploads through `ingest_upload`; a larger one is listed in the message as not ingested |
+| `ESCUREL_BRIDGE_TEAMS_ATTACHMENT_HOSTS` | *.sharepoint.com,*.asm.skype.com | comma-separated hosts (`*.suffix` = any subdomain) an attachment may be downloaded from besides the connector's own `serviceUrl` origin. Such a download must be https, resolve only to public addresses (loopback, private, link-local and CGNAT are refused after DNS resolution) and is not redirected; the bot's bearer goes only to the connector origin |
 
 ## Cli
 

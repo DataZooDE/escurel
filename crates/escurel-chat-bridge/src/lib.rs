@@ -11,6 +11,7 @@
 pub mod bridge;
 pub mod channel;
 pub mod config;
+pub mod fetch;
 mod http;
 pub mod store;
 pub mod teams;

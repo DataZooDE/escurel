@@ -236,6 +236,12 @@ impl Bridge {
                 "ESCUREL_BRIDGE_TEAMS_ALLOWED_TENANTS",
                 format!("some-other-tenant,{ENTRA_TENANT}"),
             ),
+            // Allow-listed, so the attachment test proves the address check
+            // refuses it, not the list.
+            (
+                "ESCUREL_BRIDGE_TEAMS_ATTACHMENT_HOSTS",
+                "*.sharepoint.com,localhost".to_owned(),
+            ),
             (
                 "ESCUREL_BRIDGE_TEAMS_APP_PASSWORD",
                 "not-a-real-secret".to_owned(),
@@ -650,6 +656,69 @@ async fn an_attachment_is_ingested_when_the_gateway_takes_it_and_listed_when_not
     assert!(
         turn.contains("photo.png") && turn.contains("not ingested"),
         "the refused attachment is listed with why: {turn}"
+    );
+}
+
+#[tokio::test]
+async fn an_attachment_on_an_internal_address_is_refused_and_never_fetched() {
+    let w = world(0).await;
+    // A reachable internal service: it would answer, so a refusal is the
+    // bridge's decision, not a dead port.
+    let hits = Arc::new(Mutex::new(0usize));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let internal = listener.local_addr().unwrap().port();
+    let counter = Arc::clone(&hits);
+    let app = Router::new().route(
+        "/{*rest}",
+        get(move || {
+            let c = Arc::clone(&counter);
+            async move {
+                *c.lock().unwrap() += 1;
+                "internal secret\n"
+            }
+        }),
+    );
+    tokio::spawn(async move {
+        let _ = axum::serve(listener, app).await;
+    });
+
+    let token = w.bf.token(APP_ID);
+    let mut activity = w.bf.message("act-5", "What does the memo say?");
+    activity["attachments"] = json!([
+        // Plain http to a loopback address that is not the connector.
+        { "contentType": "text/plain", "name": "metrics.txt",
+          "contentUrl": format!("http://127.0.0.1:{internal}/metrics") },
+        // https, on an allow-listed host, that resolves to loopback.
+        { "contentType": "text/plain", "name": "local.txt",
+          "contentUrl": format!("https://localhost:{internal}/x") },
+        // A Teams file link pointing at the same internal service.
+        { "contentType": "application/vnd.microsoft.teams.file.download.info",
+          "name": "file.txt",
+          "content": { "downloadUrl": format!("http://127.0.0.1:{internal}/file") } },
+    ]);
+    assert_eq!(w.bridge.post(Some(&token), &activity).await, StatusCode::OK);
+    wait_for_replies(&w.bf, 1, Duration::from_secs(60)).await;
+
+    let (_, msgs) = alice_history(&w.gw).await;
+    let turn = msgs[0]["content"].as_str().unwrap().to_owned();
+    for name in ["metrics.txt", "local.txt", "file.txt"] {
+        assert!(
+            turn.lines()
+                .any(|l| l.contains(name) && l.contains("not ingested")),
+            "{name} is listed as refused: {turn}"
+        );
+    }
+    let alice = w.gw.mint_token_with_sub(TENANT, Role::Agent, ALICE);
+    let memos = call(&w.gw, &alice, "list_instances", json!({ "skill": "memo" })).await;
+    assert_eq!(
+        memos["instances"].as_array().map_or(0, Vec::len),
+        0,
+        "nothing internal is ingested: {memos}"
+    );
+    assert_eq!(
+        *hits.lock().unwrap(),
+        0,
+        "the internal service was never asked"
     );
 }
 
