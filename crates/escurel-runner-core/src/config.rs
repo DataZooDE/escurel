@@ -517,6 +517,10 @@ pub struct RunnerConfig {
     /// `site:muc`, `has:sap-gui`. Advertised on its `runtime` page. Source:
     /// `ESCUREL_RUNNER_LABELS` (comma-separated; default none).
     pub labels: Vec<String>,
+    /// Take only work whose skill's `requires:` names one of [`Self::labels`]
+    /// or a non-default harness (#818). Source: `ESCUREL_RUNNER_EXCLUSIVE`
+    /// (default off). Recommended for laptop and on-prem runners.
+    pub exclusive: bool,
     /// How often the runner re-probes its harness CLIs' versions and
     /// rewrites its `runtime` page when they changed (#818). Zero is refused.
     /// Source: `ESCUREL_RUNNER_PROBE_INTERVAL` (default 10m).
@@ -1094,6 +1098,12 @@ impl RunnerConfig {
                 .as_deref(),
             Some("0" | "false" | "off" | "no")
         );
+        let exclusive = matches!(
+            lookup("ESCUREL_RUNNER_EXCLUSIVE")
+                .map(|v| v.trim().to_ascii_lowercase())
+                .as_deref(),
+            Some("1" | "true" | "on" | "yes")
+        );
         let agent_narrow = matches!(
             lookup("ESCUREL_RUNNER_AGENT_NARROW")
                 .map(|v| v.trim().to_ascii_lowercase())
@@ -1182,6 +1192,7 @@ impl RunnerConfig {
             agent_narrow,
             runner_id,
             labels,
+            exclusive,
             probe_interval,
             claim_lease,
             cancel_grace,

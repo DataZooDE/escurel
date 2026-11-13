@@ -390,3 +390,49 @@ async fn a_runner_that_cannot_read_the_catalogue_takes_no_work() {
     assert!(looked.get("claim").is_none(), "{looked}");
     assert_eq!(looked["events"][0]["status"], "inbox", "{looked}");
 }
+
+/// An exclusive runner (crew F8, `ESCUREL_RUNNER_EXCLUSIVE`) takes only work
+/// whose SKILL names one of its labels or its non-default harness, and an
+/// event's `provenance.requires` only narrows its skill's: it can never pull
+/// an exclusive runner onto a skill that does not ask for it, nor loosen what
+/// the skill asks for.
+#[tokio::test]
+async fn an_exclusive_runner_takes_only_its_skills_and_an_event_can_only_narrow() {
+    let gw = gateway().await;
+    let a = healthy(hq(&gw).spawn()).await;
+    let b = healthy(muc(&gw).env("ESCUREL_RUNNER_EXCLUSIVE", "true").spawn()).await;
+
+    let plain = capture(&gw, "note", json!({})).await;
+    let its_own = capture(&gw, "field", json!({})).await;
+    // A capturer names muc's label on a skill that does not ask for it.
+    let steered = capture(
+        &gw,
+        "note",
+        json!({ "requires": { "labels": ["has:sap-gui"] } }),
+    )
+    .await;
+    // An event adds a label to its skill's: now nobody carries both.
+    let narrowed = capture(
+        &gw,
+        "field",
+        json!({ "requires": { "labels": ["site:hq"] } }),
+    )
+    .await;
+
+    b.wait_for_status(&its_own, &["processed"], Duration::from_secs(30))
+        .await;
+    a.wait_for_status(&plain, &["processed"], Duration::from_secs(30))
+        .await;
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    for e in [&plain, &steered, &narrowed] {
+        assert!(b.debug_run(e).await.is_none(), "exclusive muc took {e}");
+    }
+    for e in [&its_own, &steered, &narrowed] {
+        assert!(a.debug_run(e).await.is_none(), "hq took {e}");
+    }
+    for e in [&steered, &narrowed] {
+        let looked = lookup(&gw, e).await;
+        assert_eq!(looked["events"][0]["status"], "inbox", "{looked}");
+        assert!(looked.get("claim").is_none(), "{looked}");
+    }
+}

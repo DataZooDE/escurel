@@ -228,13 +228,16 @@ async fn main() -> anyhow::Result<()> {
     // The routing + claim gate (#818). Its holder id is the ledger's own
     // identity, so a restart on the same ledger keeps the leases it held.
     let gate: Option<Arc<RuntimeGate>> = match (config.tenant.as_ref(), tokens.as_ref()) {
-        (Some(_), Some(source)) => Some(Arc::new(RuntimeGate::new(
-            &ledger.identity()?,
-            source.subject().as_deref(),
-            escurel_runner_core::runtime::harness_set(&config.harness, &config.harness_allow),
-            config.labels.clone(),
-            config.claim_lease,
-        ))),
+        (Some(_), Some(source)) => Some(Arc::new(
+            RuntimeGate::new(
+                &ledger.identity()?,
+                source.subject().as_deref(),
+                escurel_runner_core::runtime::harness_set(&config.harness, &config.harness_allow),
+                config.labels.clone(),
+                config.claim_lease,
+            )
+            .exclusive(config.exclusive),
+        )),
         _ => None,
     };
 

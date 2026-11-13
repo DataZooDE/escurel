@@ -158,6 +158,7 @@ Key settings (full list in `crates/escurel-runner-core/src/config.rs`):
 | `ESCUREL_RUNNER_STATUS_INTERVAL` | `5m` | heartbeat cadence of the runner's `escurel:runner-status` report (a change is reported at once) |
 | `ESCUREL_RUNNER_ID` | `<HOSTNAME>:<pid>` | how this runner names itself in its status reports and its `runtime` page — set a stable one when several runners share a tenant |
 | `ESCUREL_RUNNER_LABELS` | none | what this runner carries for `requires: {labels}` routing, comma-separated (`site:muc,has:sap-gui`) — see *Several runners on one tenant* |
+| `ESCUREL_RUNNER_EXCLUSIVE` | off | take only work whose SKILL page's `requires:` names one of this runner's labels or a harness it offers besides its default; recommended for laptop and on-prem runners — see *Several runners on one tenant* |
 | `ESCUREL_RUNNER_PROBE_INTERVAL` | `10m` | re-probe the harness CLIs' `--version` and rewrite the `runtime` page when one changed |
 | `ESCUREL_RUNNER_CLAIM_LEASE` | max(60s, 4 x poll) | the `claim_event` lease on an inbox event this runner takes; renewed at half-life while it is in the inbox |
 | `ESCUREL_RUNNER_EMIT_EVENTS` | `true` | write each run's lifecycle as `escurel:run` system events (see *Run lifecycle events*); `false` = the workbench sees events and drafts but no runs |
@@ -528,7 +529,13 @@ a SAP GUI session. Each one:
    rewritten per heartbeat);
 2. **routes**: an inbox event is taken only when the runner satisfies its
    skill page's `requires:` AND the event's `provenance.requires` (harness
-   offered, every label carried). Anything else is skipped BEFORE claiming —
+   offered, every label carried). The event's requirement can only **narrow**
+   the skill's — labels add up, two different harnesses match nobody — never
+   loosen it. A capturer can still narrow work onto a host that runs that
+   skill anyway (name a label only that host carries); the protection is
+   `ESCUREL_RUNNER_EXCLUSIVE=true` on such a host, which then takes only work
+   whose **skill** names one of its labels or a non-default harness, and
+   ignores unconstrained work and work an event alone points at it. Anything else is skipped BEFORE claiming —
    it stays in the inbox, visible and unclaimed, for a runner that can; no
    runner dead-letters work it cannot take. Nothing runs it until such a
    runner comes up: watch `list_runtimes` and the inbox. A runner that has

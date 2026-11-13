@@ -188,6 +188,7 @@ tenant/token can process `/trigger` but deliberately report unready at
 | `ESCUREL_RUNNER_TAIL_MAX_AGE` | 10m | how old a request on a tailed label may be and still be acted on after a restart |
 | `ESCUREL_RUNNER_STATUS_INTERVAL` | 5m | how often the runner refreshes its status record (`runner-status:<runner_id>`) when nothing changed; it travels in the record as `status_interval_s` |
 | `ESCUREL_RUNNER_LABELS` | (none) | comma-separated labels this runner carries (`site:muc,has:sap-gui`); work whose `requires: {labels}` it lacks is left in the inbox for a runner that has them, and the labels are advertised on its `runtime` page |
+| `ESCUREL_RUNNER_EXCLUSIVE` | false | take only inbox work whose SKILL page's `requires:` names one of this runner's labels or a harness it offers besides its default; recommended for laptop and on-prem runners, so they do not race the central runner for the whole inbox and an event's `provenance.requires` cannot steer arbitrary work onto them |
 | `ESCUREL_RUNNER_PROBE_INTERVAL` | 10m | how often the runner re-probes its harness CLIs (`<cli> --version`) and rewrites its `runtime` page when a version changed, without a restart |
 | `ESCUREL_RUNNER_CLAIM_LEASE` | max(60s, 4 x poll interval) | how long a `claim_event` lease on an inbox event lasts; the poller renews held leases at half-life, and a dead runner's events become claimable this long after it stopped |
 | `ESCUREL_RUNNER_HARNESS_ALLOW` | the configured harness | comma-separated harnesses a manual start may ask for by name; others fail closed |

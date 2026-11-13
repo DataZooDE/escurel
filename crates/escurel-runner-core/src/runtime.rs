@@ -141,6 +141,8 @@ pub struct RuntimeGate {
     harnesses: Vec<String>,
     labels: Vec<String>,
     lease: Duration,
+    /// Take only work whose skill asks for this runner (`ESCUREL_RUNNER_EXCLUSIVE`).
+    exclusive: bool,
     skills: Mutex<Option<(Instant, HashMap<String, Requires>)>>,
     held: Mutex<HashMap<String, Held>>,
     claims_unsupported: AtomicBool,
@@ -162,11 +164,32 @@ impl RuntimeGate {
             harnesses,
             labels,
             lease,
+            exclusive: false,
             skills: Mutex::new(None),
             held: Mutex::new(HashMap::new()),
             claims_unsupported: AtomicBool::new(false),
             told: Mutex::new(HashSet::new()),
         }
+    }
+
+    /// Take only work whose SKILL page's `requires:` names one of this
+    /// runner's labels or a harness it offers other than its default — a
+    /// laptop or an on-prem host that should not race the central runner for
+    /// the whole inbox. An event's `provenance.requires` never makes work
+    /// eligible here: a capturer could otherwise steer any skill onto it.
+    #[must_use]
+    pub fn exclusive(mut self, on: bool) -> Self {
+        self.exclusive = on;
+        self
+    }
+
+    /// Whether a skill's requirement asks for this runner in particular.
+    fn asks_for_me(&self, skill: &Requires) -> bool {
+        skill.labels.iter().any(|l| self.labels.contains(l))
+            || skill
+                .harness
+                .as_ref()
+                .is_some_and(|h| self.harnesses.first() != Some(h) && self.harnesses.contains(h))
     }
 
     /// The holder string the gateway writes for this runner's leases.
@@ -201,11 +224,21 @@ impl RuntimeGate {
             });
             return Admit::Retry;
         };
-        let unroutable = declared
-            .iter()
-            .chain(skill.iter())
-            .find(|r| !self.routes(r));
-        if let Some(r) = unroutable {
+        if self.exclusive && !skill.as_ref().is_some_and(|r| self.asks_for_me(r)) {
+            self.tell_once(&event.event_id, || {
+                tracing::info!(
+                    target: "escurel_runner",
+                    event_id = %event.event_id,
+                    label_skill = %event.label_skill,
+                    "exclusive runner: the skill does not ask for this runner; left unclaimed"
+                );
+            });
+            return Admit::Unroutable;
+        }
+        // The event can only narrow its skill's requirement, never loosen it.
+        let effective = skill.unwrap_or_default().and(declared);
+        if !self.routes(&effective) {
+            let r = &effective;
             self.tell_once(&event.event_id, || {
                 tracing::info!(
                     target: "escurel_runner",

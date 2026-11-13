@@ -894,6 +894,12 @@ pub const CONFIG_KEYS: &[ConfigKey] = &[
         doc: "comma-separated labels this runner carries (`site:muc,has:sap-gui`); work whose `requires: {labels}` it lacks is left in the inbox for a runner that has them, and the labels are advertised on its `runtime` page",
     },
     ConfigKey {
+        name: "ESCUREL_RUNNER_EXCLUSIVE",
+        component: "Runner",
+        default: "false",
+        doc: "take only inbox work whose SKILL page's `requires:` names one of this runner's labels or a harness it offers besides its default; recommended for laptop and on-prem runners, so they do not race the central runner for the whole inbox and an event's `provenance.requires` cannot steer arbitrary work onto them",
+    },
+    ConfigKey {
         name: "ESCUREL_RUNNER_PROBE_INTERVAL",
         component: "Runner",
         default: "10m",

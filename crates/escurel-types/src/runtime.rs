@@ -88,6 +88,28 @@ impl Requires {
         }))
     }
 
+    /// Both requirements at once: the event's `provenance.requires` on top of
+    /// its skill's. It can only narrow: labels add up, and two different
+    /// harnesses are satisfied by nobody (a run has one harness).
+    #[must_use]
+    pub fn and(self, other: Option<Self>) -> Self {
+        let Some(other) = other else {
+            return self;
+        };
+        let mut labels = self.labels;
+        for l in other.labels {
+            if !labels.contains(&l) {
+                labels.push(l);
+            }
+        }
+        let conflict = matches!((&self.harness, &other.harness), (Some(a), Some(b)) if a != b);
+        Self {
+            harness: self.harness.or(other.harness),
+            labels,
+            invalid: self.invalid || other.invalid || conflict,
+        }
+    }
+
     /// Whether a runner offering `harnesses` and carrying `labels` may take the work.
     #[must_use]
     pub fn satisfied_by<H: AsRef<str>, L: AsRef<str>>(
@@ -253,6 +275,35 @@ fn is_label(s: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_events_requirement_only_narrows_its_skills() {
+        let skill = Requires {
+            labels: vec!["has:sap-gui".into()],
+            ..Requires::default()
+        };
+        let both = skill.clone().and(Some(Requires {
+            labels: vec!["site:hq".into()],
+            ..Requires::default()
+        }));
+        assert_eq!(both.labels, ["has:sap-gui", "site:hq"]);
+        assert!(!both.satisfied_by(&["echo"], &["has:sap-gui"]));
+        let loosened = skill.clone().and(Some(Requires::default()));
+        assert!(
+            !loosened.satisfied_by(&["echo"], &[] as &[&str]),
+            "an empty one loosens nothing"
+        );
+        let two = Requires {
+            harness: Some("claude".into()),
+            ..Requires::default()
+        }
+        .and(Some(Requires {
+            harness: Some("codex".into()),
+            ..Requires::default()
+        }));
+        assert!(!two.satisfied_by(&["claude", "codex"], &[] as &[&str]));
+        assert_eq!(skill.clone().and(None), skill);
+    }
     use serde_json::json;
 
     #[test]

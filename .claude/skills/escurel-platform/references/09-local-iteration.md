@@ -243,6 +243,7 @@ ESCUREL_RUNNER_TENANT=<tenant> \
 ESCUREL_RUNNER_TOKEN=<operator-issued runner credential, see references/08> \
 ESCUREL_RUNNER_ID=laptop-$USER \
 ESCUREL_RUNNER_LABELS=site:home,repo:escurel \
+ESCUREL_RUNNER_EXCLUSIVE=true \
 ESCUREL_RUNNER_HARNESS=claude ESCUREL_RUNNER_HARNESS_ALLOW=claude,codex \
 ESCUREL_RUNNER_LEDGER_PATH=$HOME/.escurel/runner-ledger.duckdb \
 ESCUREL_RUNNER_LISTEN=127.0.0.1:8089 \
@@ -250,10 +251,15 @@ ESCUREL_RUNNER_LISTEN=127.0.0.1:8089 \
 escurel runtime list     # your laptop shows up: harnesses + versions, labels, online
 ```
 
-Then route work to it: a skill page (or one event's `provenance`) declares
-`requires: {labels: ["repo:escurel"]}` or `requires: {harness: codex}`; only
-a runner that satisfies it claims it (references/11 *Several runners on one
-tenant*). Keep the ledger path and `ESCUREL_RUNNER_ID` stable: the ledger's
+Then route work to it: a skill page declares `requires: {labels:
+["repo:escurel"]}` or `requires: {harness: codex}`; only a runner that
+satisfies it claims it (references/11 *Several runners on one tenant*).
+**Keep `ESCUREL_RUNNER_EXCLUSIVE=true` on a laptop or on-prem runner**: without
+it the runner races the central one for every unconstrained event in the
+inbox, which then runs on your machine under your local CLI credentials, and an
+event's `provenance.requires` naming your label can steer any skill onto it.
+Exclusive, it takes only work whose **skill** names one of its labels or a
+harness it offers besides its default. Keep the ledger path and `ESCUREL_RUNNER_ID` stable: the ledger's
 identity is what lets a restarted runner keep the leases it held, and a new
 id registers a second `runtime` page while the old one reads `stale`. Two
 runners on one machine need two ledgers and two listen ports. Stopping the
