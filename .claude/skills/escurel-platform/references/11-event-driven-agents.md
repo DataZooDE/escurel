@@ -493,6 +493,14 @@ An ordinary event run (not a workflow step, not a chat turn) may run as an
 3. else no agent: unchanged behaviour (`agent:<skill>`, admin unless
    `ESCUREL_RUNNER_AGENT_NARROW=1`).
 
+A page that could not be READ (the gateway did not answer, refused the
+runner's bearer, …) is not a missing one: the runner retries the read with
+the run's backoff up to its attempts cap, and if the skill or agent page
+stays unreadable the run ends `failed` with `reason: agent_unreadable`
+(retriable — the poller re-drives the event) before any token is minted. It
+never runs without the skill's default agent, and never dead-letters
+claiming the agent does not exist.
+
 With an agent, its `harness:` / `model:` stand in for the skill page's (same
 allow-lists — an agent naming a harness outside `ESCUREL_RUNNER_HARNESS_ALLOW`
 is a refused run), its `max_concurrent` caps how many of its runs this runner
@@ -506,7 +514,7 @@ agent's `scopes.write` sees it refused with `agent_scope_denied`; the call is
 on `get_run_tool_calls` as `rejected`, and the echo harness fails the run on
 it. A runner on a static `ESCUREL_RUNNER_TOKEN` cannot mint, so an agent run
 there fails rather than writing as the runner. Crash recovery resolves the
-agent through the same function as a fresh run (`agent_for_trigger`: the
+agent through the same function as a fresh run (`resolve_run_agent`: the
 event's `provenance.agent`, then the skill's default): a reconciled run's
 `run-finished` names that agent and skill, and a reset run is re-driven from
 the event by the poller like any other.
