@@ -59,23 +59,52 @@ impl Harness for EchoHarness {
         NAME
     }
 
+    /// Injected messages arrive as further stdin lines while the echo
+    /// harness idles (`ESCUREL_ECHO_SLEEP_MS`); it folds them into its note.
+    fn supports_inject(&self) -> bool {
+        true
+    }
+
     async fn run(&self, task: &TaskContext) -> Result<HarnessOutcome, HarnessError> {
-        let payload = serde_json::to_vec(&HarnessTask::from_context(task)).map_err(|source| {
-            HarnessError::BadOutcome {
-                harness: NAME,
-                source,
+        let mut payload =
+            serde_json::to_vec(&HarnessTask::from_context(task)).map_err(|source| {
+                HarnessError::BadOutcome {
+                    harness: NAME,
+                    source,
+                }
+            })?;
+        let mut inbox = match &task.inject {
+            Some(i) => Some(i.lock().await),
+            None => None,
+        };
+        // With an inbox the task is one line and stdin stays open for the
+        // turns that follow, each a JSON string line; the binary is told so,
+        // because without it it reads the task to EOF.
+        let (envs, turns) = match inbox.as_deref_mut() {
+            Some(rx) => {
+                payload.push(b'\n');
+                (
+                    vec![(ECHO_STDIN_TURNS_ENV, std::ffi::OsString::from("1"))],
+                    Some(crate::harness::Turns {
+                        inbox: Some(rx),
+                        encode: json_line,
+                        // The echo harness decides when it is done: it reads
+                        // turns until it acts, then exits.
+                        turn_ended: |_| false,
+                    }),
+                )
             }
-        })?;
+            None => (Vec::new(), None),
+        };
 
         let output = crate::harness::run_capture(crate::harness::Spawn {
             harness: NAME,
             bin: &self.bin_path,
             args: &[],
-            envs: Vec::new(),
-            // Streamed in, then closed so the harness's read-to-end completes.
+            envs,
             stdin: Some(&payload),
             stdout_lines: None,
-            turns: None,
+            turns,
             timeout: self.timeout,
             cancel: task.cancel.as_ref(),
         })
@@ -88,6 +117,17 @@ impl Harness for EchoHarness {
             }
         })
     }
+}
+
+/// Tells the echo binary its stdin is a conversation: the task on the first
+/// line, then one JSON string per injected turn.
+pub const ECHO_STDIN_TURNS_ENV: &str = "ESCUREL_ECHO_STDIN_TURNS";
+
+/// One turn as a JSON string line — a message may hold newlines.
+fn json_line(text: &str) -> Vec<u8> {
+    let mut line = serde_json::to_vec(text).unwrap_or_default();
+    line.push(b'\n');
+    line
 }
 
 #[cfg(test)]

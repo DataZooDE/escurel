@@ -11,8 +11,10 @@
 //! run that made progress, so every writer returns the client error for
 //! the caller to log and count, never to act on.
 //!
+//! A human steering the run (#820) adds one `run-inject` per message.
+//!
 //! Event ids are deterministic (`run:<run_id>:started`, `:attempt:<n>`,
-//! `:finished`), so re-emission — a retry, recovery after a crash — is
+//! `:inject:<n>`, `:finished`), so re-emission — a retry, recovery after a crash — is
 //! idempotent through `capture_event`'s first-writer-wins.
 
 use escurel_client::{CaptureEventRequest, Client, Error, ListEventsRequest};
@@ -193,6 +195,29 @@ impl RunEventCtx {
             "run-attempt",
             body,
             json!({ "attempt": report.attempt }),
+        )
+        .await
+    }
+
+    /// `run-inject`: the `n`th message a human (`requested_by`) sent the live
+    /// session. The text is recorded whole — it is the requester's own
+    /// message, and auditing who steered a run with what is the point.
+    ///
+    /// # Errors
+    /// As [`Self::emit_started`].
+    pub async fn emit_inject(
+        &self,
+        client: &Client,
+        n: u32,
+        text: &str,
+        requested_by: &str,
+    ) -> Result<(), Error> {
+        self.write(
+            client,
+            &format!("inject:{n}"),
+            "run-inject",
+            json!({ "n": n, "text": text, "bytes": text.len(), "requested_by": requested_by }),
+            json!({ "injected_by": requested_by }),
         )
         .await
     }

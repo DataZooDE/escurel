@@ -53,7 +53,7 @@ pub use delegate::{
     DEFAULT_POLL_INTERVAL as DELEGATE_DEFAULT_POLL_INTERVAL,
     DEFAULT_TIMEOUT as DELEGATE_DEFAULT_TIMEOUT, DelegateHarness, NAME as DELEGATE_NAME,
 };
-pub use echo::EchoHarness;
+pub use echo::{ECHO_STDIN_TURNS_ENV, EchoHarness};
 pub use gemini::{
     DEFAULT_BASE_URL as GEMINI_DEFAULT_BASE_URL, DEFAULT_MODEL as GEMINI_DEFAULT_MODEL,
     GeminiHarness,

@@ -226,6 +226,22 @@ tools" honest and the adapter a thin process-management shell.
   `/mcp`; emits a JSON outcome on stdout. The heaviest adapter → behind a
   feature flag.
 
+**Steering a live run (#820).** Beside `cancel`, the `escurel:run-control`
+label takes `{action: "inject", run_id, text}` — a human's message for the
+run's live harness session, authorised like `cancel` (whoever may write the
+run's target page; admin always) and capped at 8 KiB of `text`. The trait's
+`supports_inject()` (default `false`) says whether a harness can take one:
+`claude` writes it as one more stream-json user turn and closes stdin only
+once every turn's `result` is out; the `echo` harness reads it off a
+still-open stdin and folds it into its note; `codex exec` reads one prompt
+and offers no follow-up turn into a live session, so it stays `false`.
+The runner's live-run registry holds, per run, the cancel handle and the
+inject sender; each queued message is recorded as an `escurel:run` system
+event `run:<run_id>:inject:<n>` (`title: run-inject`, body `{n, text,
+bytes, requested_by}`) and answered `injected`, `unsupported` or
+`not_live` under `escurel:run-control-result`. An injection never changes
+the run's token or tool surface — it is text into the same session.
+
 Adapter selection is per-`label_skill` (a skill may declare its preferred
 harness in frontmatter) with a runner-level default — data-driven and
 in-corpus, not hardcoded.

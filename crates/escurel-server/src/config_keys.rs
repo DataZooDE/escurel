@@ -1386,6 +1386,12 @@ pub const CONFIG_KEYS: &[ConfigKey] = &[
         doc: "echo harness: only runs of this label idle for ESCUREL_ECHO_SLEEP_MS (tests)",
     },
     ConfigKey {
+        name: "ESCUREL_ECHO_STDIN_TURNS",
+        component: "Harness",
+        default: "—",
+        doc: "set by the runner in an echo harness subprocess: stdin is the task line, then injected turns (never set it yourself)",
+    },
+    ConfigKey {
         name: "ESCUREL_ECHO_USAGE",
         component: "TestOnly",
         default: "—",

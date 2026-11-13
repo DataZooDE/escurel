@@ -181,3 +181,63 @@ async fn claude_adapter_builds_invocation_and_parses_real_stub_output() {
         "the scoped bearer is carried into the MCP config"
     );
 }
+
+/// #820: a message injected into a live claude run is written into the
+/// session as one more stream-json user turn, stdin stays open until that
+/// turn's `result` too, and the outcome is the last turn's.
+#[tokio::test]
+async fn an_injected_message_is_one_more_user_turn_in_the_live_session() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let stdin_out = dir.path().join("stdin.txt");
+    let stub = dir.path().join("claude-stub.sh");
+    // One result per user turn, each naming the turn; exit only at EOF.
+    let script = format!(
+        r#"#!/usr/bin/env bash
+set -euo pipefail
+: > "{out}"
+n=0
+while IFS= read -r line; do
+  n=$((n+1))
+  printf '%s\n' "$line" >> "{out}"
+  printf '{{"type":"result","subtype":"success","is_error":false,"result":"turn %s","num_turns":%s}}\n' "$n" "$n"
+done
+"#,
+        out = stdin_out.display()
+    );
+    std::fs::write(&stub, script).expect("write stub");
+    let mut perms = std::fs::metadata(&stub).unwrap().permissions();
+    std::os::unix::fs::PermissionsExt::set_mode(&mut perms, 0o755);
+    std::fs::set_permissions(&stub, perms).unwrap();
+
+    let mut task = TaskContext::for_test(
+        "SKILLBODY".to_owned(),
+        "INPUT first".to_owned(),
+        MCP_ENDPOINT.to_owned(),
+        vec!["update_page".to_owned()],
+        SecretString::from(TOKEN.to_owned()),
+    );
+    let (tx, inbox) = escurel_runner_core::InjectInbox::channel();
+    tx.send("STEER use 2027".to_owned()).unwrap();
+    task.inject = Some(inbox);
+
+    let harness = ClaudeHarness::new(stub.to_string_lossy().into_owned())
+        .with_timeout(Duration::from_secs(20));
+    assert!(harness.supports_inject());
+    let outcome = harness.run(&task).await.expect("the session ended at EOF");
+    assert_eq!(outcome.summary, "turn 2", "the last turn's result");
+
+    let seen = std::fs::read_to_string(&stdin_out).unwrap();
+    let texts: Vec<String> = seen
+        .lines()
+        .map(|l| {
+            let v: serde_json::Value = serde_json::from_str(l).unwrap();
+            assert_eq!(v["type"], "user", "{l}");
+            v["message"]["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .to_owned()
+        })
+        .collect();
+    assert_eq!(texts, ["INPUT first", "STEER use 2027"]);
+    drop(tx);
+}

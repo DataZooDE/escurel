@@ -278,6 +278,7 @@ set by the runner for a harness subprocess.
 | var | default | meaning |
 |---|---|---|
 | `ESCUREL_MCP_BEARER` | — | set by the runner in a harness subprocess: the scoped bearer for that run (never set it yourself) |
+| `ESCUREL_ECHO_STDIN_TURNS` | — | set by the runner in an echo harness subprocess: stdin is the task line, then injected turns (never set it yourself) |
 
 ## Tooling
 

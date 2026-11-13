@@ -360,6 +360,14 @@ mod tests {
         assert_eq!(CodexHarness::new("codex").name(), "codex");
     }
 
+    /// `codex exec` reads one prompt and has no way to take a follow-up
+    /// turn into the live session (`exec resume` is a new process), so an
+    /// injection into a codex run is answered `unsupported` (#820).
+    #[test]
+    fn codex_cannot_take_an_injected_message() {
+        assert!(!CodexHarness::new("codex").supports_inject());
+    }
+
     #[test]
     fn config_toml_declares_escurel_http_server_with_env_var_bearer() {
         let toml = CodexHarness::config_toml(&task());

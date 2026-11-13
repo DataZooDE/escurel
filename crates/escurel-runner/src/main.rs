@@ -2371,7 +2371,12 @@ async fn dispatch_loop(
         };
         // The run's entry learns who runs it, so a control verb that needs
         // the harness (an injection) can answer and record it.
-        runs.attach(run_id.as_str(), run_ctx.clone(), false);
+        // A harness that takes injections (#820) gets an inbox for them.
+        let inject = runs.attach(
+            run_id.as_str(),
+            run_ctx.clone(),
+            step_harness.supports_inject(),
+        );
         let emit_events = config.emit_run_events;
         if emit_events {
             record_run_event(&metrics, "started", run_ctx.emit_started(&client).await);
@@ -2404,6 +2409,7 @@ async fn dispatch_loop(
                 Some(&run_claims),
                 narrow_groups.as_deref(),
                 &cancel,
+                inject.as_ref(),
                 sink_ref,
             );
             let bound = config.run_timeout;
@@ -2905,6 +2911,7 @@ async fn attempt_run(
     run: Option<&escurel_runner_core::RunClaims>,
     narrow: Option<&[String]>,
     cancel: &escurel_runner_core::Cancel,
+    inject: Option<&escurel_runner_core::InjectInbox>,
     sink: &std::sync::Mutex<AttemptSink>,
 ) -> Result<ConfirmedEffect, ReconcileError> {
     let mut task: TaskContext = package(trigger, client, config, Some(tokens), run, narrow)
@@ -2924,6 +2931,7 @@ async fn attempt_run(
             package_error_to_reconcile(e)
         })?;
     task.cancel = Some(cancel.clone());
+    task.inject = inject.cloned();
     task.prior_model_tokens = sink
         .lock()
         .ok()
@@ -3752,6 +3760,19 @@ impl ControlOutcome {
             new_run_id: None,
         }
     }
+    /// A per-run verb for a run that is not live: the ledger says why.
+    fn not_live(state: &AppState, run_id: &str) -> Self {
+        let detail = match state.ledger.find_run(run_id) {
+            Ok(Some(rec)) => format!("run is {}", rec.status.as_str()),
+            Ok(None) => "unknown run".to_owned(),
+            Err(e) => format!("ledger: {e}"),
+        };
+        Self {
+            outcome: "not_live",
+            detail: Some(detail),
+            new_run_id: None,
+        }
+    }
 }
 
 /// Act on one authorised control request (the gateway already decided who
@@ -3759,6 +3780,7 @@ impl ControlOutcome {
 /// gateway writes).
 async fn act_on_control(
     state: &AppState,
+    client: &Client,
     tenant: &str,
     control: &serde_json::Value,
 ) -> ControlOutcome {
@@ -3779,15 +3801,39 @@ async fn act_on_control(
             if state.runs.cancel(&run_id, text("reason").as_deref()) {
                 return ControlOutcome::done("cancelled");
             }
-            let detail = match state.ledger.find_run(&run_id) {
-                Ok(Some(rec)) => format!("run is {}", rec.status.as_str()),
-                Ok(None) => "unknown run".to_owned(),
-                Err(e) => format!("ledger: {e}"),
+            ControlOutcome::not_live(state, &run_id)
+        }
+        "inject" => {
+            let Some(run_id) = text("run_id") else {
+                return ControlOutcome::refused("inject names a run_id");
             };
-            ControlOutcome {
-                outcome: "not_live",
-                detail: Some(detail),
-                new_run_id: None,
+            let Some(message) = text("text") else {
+                return ControlOutcome::refused("inject carries a text");
+            };
+            // The text goes to the session as it is: a human's own message,
+            // through the run's existing harness, token and tool surface.
+            match state.runs.inject(&run_id, &message) {
+                escurel_runner_core::Injection::Queued { n, run } => {
+                    let by = control["requested_by"].as_str().unwrap_or_default();
+                    record_run_event(
+                        &state.metrics,
+                        "inject",
+                        run.emit_inject(client, n, &message, by).await,
+                    );
+                    ControlOutcome {
+                        outcome: "injected",
+                        detail: Some(format!("injection {n}")),
+                        new_run_id: None,
+                    }
+                }
+                escurel_runner_core::Injection::Unsupported { harness } => ControlOutcome {
+                    outcome: "unsupported",
+                    detail: Some(format!(
+                        "the {harness} harness cannot take a message mid-run"
+                    )),
+                    new_run_id: None,
+                },
+                escurel_runner_core::Injection::NotLive => ControlOutcome::not_live(state, &run_id),
             }
         }
         "retry" => {
@@ -3888,7 +3934,7 @@ async fn control_tail_loop(
                 continue;
             }
             let action = control["action"].as_str().unwrap_or("").to_owned();
-            let result = act_on_control(&state, &tenant, control).await;
+            let result = act_on_control(&state, &client, &tenant, control).await;
             tracing::info!(
                 target: "escurel_runner",
                 request = %event.event_id,

@@ -218,6 +218,17 @@ pub trait Harness: Send + Sync {
     /// logging.
     fn name(&self) -> &str;
 
+    /// Whether a human's message can be written into a LIVE session of this
+    /// harness (#820). When true, the runner hands each run an
+    /// [`escurel_runner_core::InjectInbox`] on
+    /// [`TaskContext::inject`](escurel_runner_core::TaskContext::inject) and
+    /// the adapter feeds what arrives on it to the harness as further user
+    /// turns. A harness that cannot (one prompt in, one result out) keeps
+    /// the default, and an injection is answered `unsupported`.
+    fn supports_inject(&self) -> bool {
+        false
+    }
+
     /// Run the packaged task: spawn the harness subprocess, wait (with a
     /// timeout + kill-on-drop), and return its captured outcome.
     async fn run(&self, task: &TaskContext) -> Result<HarnessOutcome, HarnessError>;

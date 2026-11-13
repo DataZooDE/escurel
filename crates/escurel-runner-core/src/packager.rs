@@ -280,6 +280,11 @@ pub struct TaskContext {
     /// harness stops its child on it, an in-process one checks it between
     /// turns. `None` = not cancellable (tests, one-off packaging).
     pub cancel: Option<crate::Cancel>,
+    /// The run's injections (#820): messages a human sends the live
+    /// session, for a harness that `supports_inject`. `None` = nothing can
+    /// be injected (an unsupported harness, tests, one-off packaging). An
+    /// injection never changes the token or the tool surface above.
+    pub inject: Option<crate::InjectInbox>,
     /// Plan mode (workbench backend P2-5b): the harness may only read and
     /// report a plan — a subprocess adapter that can plan runs planning
     /// (claude `--permission-mode plan`), the others refuse — and the run
@@ -419,6 +424,7 @@ impl TaskContext {
             plan_mode: false,
             prior_model_tokens: 0,
             cancel: None,
+            inject: None,
             instructions,
             input,
             mcp_endpoint,
@@ -829,6 +835,7 @@ pub async fn package(
 
     Ok(TaskContext {
         cancel: None,
+        inject: None,
         plan_mode,
         prior_model_tokens: 0,
         instructions,
@@ -1685,6 +1692,7 @@ mod tests {
             plan_mode: false,
             prior_model_tokens: 0,
             cancel: None,
+            inject: None,
             instructions: "i".into(),
             input: "in".into(),
             mcp_endpoint: "http://gw/mcp".into(),

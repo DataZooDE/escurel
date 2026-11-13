@@ -166,6 +166,11 @@ impl Harness for ClaudeHarness {
         NAME
     }
 
+    /// Each injected message is one more stream-json user turn.
+    fn supports_inject(&self) -> bool {
+        true
+    }
+
     async fn run(&self, task: &TaskContext) -> Result<HarnessOutcome, HarnessError> {
         // Write the MCP-server config to a per-run tempfile. Passing it as a
         // path (rather than inline) keeps the scoped bearer out of the argv /
@@ -186,6 +191,12 @@ impl Harness for ClaudeHarness {
         let mcp_config_path = mcp_config.path().to_string_lossy().into_owned();
 
         let args = self.build_args(task, &mcp_config_path);
+        // Held for the attempt: a message sent between attempts waits for
+        // the next one rather than being lost.
+        let mut inbox = match &task.inject {
+            Some(i) => Some(i.lock().await),
+            None => None,
+        };
 
         let output = crate::harness::run_capture(crate::harness::Spawn {
             harness: NAME,
@@ -197,7 +208,7 @@ impl Harness for ClaudeHarness {
             // Stdin stays open while a turn is in flight; claude exits at
             // the EOF sent once the last turn's `result` is out.
             turns: Some(crate::harness::Turns {
-                inbox: None,
+                inbox: inbox.as_deref_mut(),
                 encode: user_message,
                 turn_ended: is_result_line,
             }),

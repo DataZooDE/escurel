@@ -76,6 +76,13 @@ impl Default for Cancel {
 pub struct InjectInbox(Arc<tokio::sync::Mutex<UnboundedReceiver<String>>>);
 
 impl InjectInbox {
+    /// A new inbox and the sender that feeds it.
+    #[must_use]
+    pub fn channel() -> (UnboundedSender<String>, Self) {
+        let (tx, rx) = unbounded_channel();
+        (tx, Self(Arc::new(tokio::sync::Mutex::new(rx))))
+    }
+
     /// Hold the inbox for one harness attempt.
     pub async fn lock(&self) -> tokio::sync::MutexGuard<'_, UnboundedReceiver<String>> {
         self.0.lock().await
@@ -159,9 +166,9 @@ impl RunRegistry {
         if !supports_inject {
             return None;
         }
-        let (tx, rx) = unbounded_channel();
+        let (tx, inbox) = InjectInbox::channel();
         entry.inject = Some(tx);
-        Some(InjectInbox(Arc::new(tokio::sync::Mutex::new(rx))))
+        Some(inbox)
     }
 
     /// Cancel a live run; `false` when no such run is live. The first

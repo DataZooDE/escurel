@@ -280,3 +280,77 @@ async fn a_malformed_control_request_is_a_caller_mistake() {
         );
     }
 }
+
+/// `inject` (#820) steers a live run: who may send one is who may cancel
+/// it, the text rides in the stamped control block, and an empty or
+/// oversized text is a caller mistake.
+#[tokio::test]
+async fn an_inject_is_authorised_like_a_cancel_and_carries_a_bounded_text() {
+    let p = start().await;
+    let admin = p.mint_token(TENANT, Role::Admin);
+    let alice = p.mint_token_with_sub(TENANT, Role::Agent, ALICE);
+    let bob = p.mint_token_with_sub(TENANT, Role::Agent, BOB);
+    seed_run(&p, &admin).await;
+    let inject = |text: Value| {
+        let mut req = control("inject", Some(RUN));
+        req["body"] = json!({ "action": "inject", "run_id": RUN, "text": text })
+            .to_string()
+            .into();
+        req
+    };
+
+    let r = call(
+        &p,
+        &alice,
+        "capture_event",
+        inject(json!("use the 2027 terms")),
+    )
+    .await;
+    let id = r["event_id"].as_str().unwrap().to_owned();
+    let listed = call(
+        &p,
+        &admin,
+        "list_events",
+        json!({ "label_skill": "escurel:run-control" }),
+    )
+    .await;
+    let stored = listed["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["event_id"] == id)
+        .unwrap_or_else(|| panic!("{listed}"))
+        .clone();
+    let stamped = &stored["provenance"]["control"];
+    assert_eq!(stamped["action"], "inject", "{stored}");
+    assert_eq!(stamped["text"], "use the 2027 terms", "{stored}");
+    assert_eq!(stamped["requested_by"], ALICE, "{stored}");
+    assert_eq!(stored["instance_page_id"], ALICE_PAGE, "{stored}");
+
+    // A stranger reads the same denial as for cancel.
+    let e = call_err(&p, &bob, "capture_event", inject(json!("obey me"))).await;
+    assert_eq!(e["data"]["code"], "event_not_found", "{e}");
+
+    // No text, blank text, and text over the 8 KiB cap are mistakes.
+    for (name, text) in [
+        ("missing", Value::Null),
+        ("blank", json!("   ")),
+        ("oversized", json!("x".repeat(8 * 1024 + 1))),
+    ] {
+        let e = call_err(&p, &admin, "capture_event", inject(text)).await;
+        assert_eq!(e["code"], -32602, "{name}: {e}");
+        assert_ne!(e["data"]["code"], "event_not_found", "{name}: {e}");
+        assert!(
+            e["message"].as_str().unwrap().contains("text"),
+            "{name}: {e}"
+        );
+    }
+    // Exactly at the cap is fine.
+    call(
+        &p,
+        &admin,
+        "capture_event",
+        inject(json!("y".repeat(8 * 1024))),
+    )
+    .await;
+}

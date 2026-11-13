@@ -269,7 +269,7 @@ restart if younger than `ESCUREL_RUNNER_TAIL_MAX_AGE`, else skipped.
 
 ## Controls as events (`escurel:run-control`)
 
-A human cancels, retries, pauses, resumes or requeues by capturing an event
+A human cancels, retries, steers, pauses, resumes or requeues by capturing an event
 — there is no control tool, and the gateway does nothing itself; the
 runner's subscriber acts and answers under `escurel:run-control-result`.
 
@@ -279,11 +279,11 @@ runner's subscriber acts and answers under `escurel:run-control-result`.
   "body": "{\"action\":\"cancel\",\"run_id\":\"01H…\",\"reason\":\"wrong document\"}" }
 ```
 
-The body is JSON `{action, run_id?, event_id?, reason?}`:
+The body is JSON `{action, run_id?, event_id?, reason?, text?}`:
 
 | action | names | who may ask |
 |---|---|---|
-| `cancel`, `retry` | `run_id` | anyone allowed to **write the run's target page** (the page its `run-started` names) — the same `ESCUREL_WRITE_ACL` gate as `update_page`; admin always |
+| `cancel`, `retry`, `inject` | `run_id` (`inject` also `text`, non-blank, at most 8 KiB) | anyone allowed to **write the run's target page** (the page its `run-started` names) — the same `ESCUREL_WRITE_ACL` gate as `update_page`; admin always |
 | `pause`, `resume` | — (the caller's tenant) | admin |
 | `requeue` | `event_id` (the dead-lettered event) | admin |
 
@@ -297,6 +297,9 @@ filed on, in the run's own record (`list_events { run_id }`), with
 |---|---|---|
 | `cancel` | `cancelled` | the run was live and is being stopped (see below) |
 | `cancel` | `not_live` | nothing to stop; `detail` says the run's status (or `unknown run`) |
+| `inject` | `injected` | the run was live and its harness takes messages: `text` was queued for the live session (`detail: "injection <n>"`) and recorded as `run:<run_id>:inject:<n>` |
+| `inject` | `unsupported` | the run is live but its harness cannot take a message mid-run (`detail` names the harness; today only `claude` and `echo` can) |
+| `inject` | `not_live` | nothing to steer; `detail` says the run's status (or `unknown run`) |
 | `retry` | `requeued` | a `failed` / `cancelled` / `dead_letter` run is re-driven now as `new_run_id` |
 | `pause` / `resume` | `paused` / `resumed` | the tenant admits nothing / admits again; held events stay in the inbox meanwhile |
 | `requeue` | `requeued` | the dead-lettered event is re-driven as `new_run_id` |
@@ -310,14 +313,26 @@ cursor yet) starts from the end of the label.
 
 A denied request and an unknown run both fail with `event_not_found` (no
 existence oracle for runs on pages you may not write). A malformed one —
-no action, an unknown action, `cancel` without a run, a body that is not
-JSON — is a plain `invalid_params`. The stored event is `kind: system`
+no action, an unknown action, `cancel` without a run, an `inject` without
+a `text` or over 8 KiB, a body that is not JSON — is a plain
+`invalid_params`. The stored event is `kind: system`
 (whatever you passed), on the run's target page for `cancel`/`retry` and
 unassigned for the tenant-wide actions, with `provenance.control =
-{action, run_id?, event_id?, reason?, requested_by}` written from your
+{action, run_id?, event_id?, reason?, text?, requested_by}` written from your
 token (a block you supply is replaced). It therefore never shows as inbox
 work; find it under `list_events { run_id }` or
 `list_events { label_skill: "escurel:run-control" }`.
+
+**What an inject does (#820).** The message goes into the run's live
+harness session as one more user turn — `claude` gets a stream-json user
+message, the `echo` harness reads it off its stdin — instead of a cancel and
+a re-trigger that would lose the run's context and spend. It rides the
+run's existing token and tool surface; nothing about the run's authority
+changes. Every queued message is recorded in the run's own record as an
+`escurel:run` system event, `event_id: run:<run_id>:inject:<n>` (n counts
+from 1 per run), `title: run-inject`, `body {n, text, bytes,
+requested_by}` — the text whole, since it is the requester's own message.
+A message that arrives between attempts is read by the next attempt.
 
 **What a cancel does.** The runner stops the harness subprocess (SIGTERM,
 `ESCUREL_RUNNER_CANCEL_GRACE`, SIGKILL; the in-process Gemini loop stops
