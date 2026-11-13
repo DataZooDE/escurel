@@ -167,6 +167,12 @@
         "icon": "$(code)"
       },
       {
+        "command": "escurel.exportSkillMd",
+        "title": "Export as SKILL.md…",
+        "category": "Escurel",
+        "icon": "$(export)"
+      },
+      {
         "command": "escurel.importEvolveProblem",
         "title": "Import Anofox Evolve V2 problem…",
         "category": "Escurel"
@@ -1092,6 +1098,11 @@
           "group": "1_open@3"
         },
         {
+          "command": "escurel.exportSkillMd",
+          "when": "view == escurel.knowledge && viewItem =~ /^skill/",
+          "group": "1_open@4"
+        },
+        {
           "command": "escurel.startSkill",
           "when": "view == escurel.knowledge && viewItem =~ /^(instance|skill)/",
           "group": "2_run@1"
@@ -1280,6 +1291,11 @@
           "command": "escurel.showRaw",
           "when": "resourceScheme == escurel && (activeCustomEditorId == escurel.pageAsUi || activeCustomEditorId == escurel.skillPage)",
           "group": "navigation"
+        },
+        {
+          "command": "escurel.exportSkillMd",
+          "when": "resourceScheme == escurel && activeCustomEditorId == escurel.skillPage",
+          "group": "navigation@9"
         },
         {
           "command": "escurel.promote",

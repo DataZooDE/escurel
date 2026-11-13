@@ -32,6 +32,7 @@ import { THREAD_CLOSED_LABEL, loadClosedThreads } from './views/closedThreads';
 import { registerThreadCloseCommands } from './views/threadCloseCommands';
 import { registerStartInTerminal } from './start/terminal';
 import { registerOpenOriginal } from './commands/openOriginal';
+import { registerExportSkillMd } from './commands/exportSkillMd';
 import { registerStartSkill } from './start/startSkill';
 import { registerQueryPreview } from './commands/queryPreview';
 import { registerProposeWriteBack } from './editors/proposeWriteBack';
@@ -119,6 +120,7 @@ export function activate(
   registerEvolveHoldoutCsv(context, services);
   registerReviewEvolveRules(context, services);
   registerOpenOriginal(context, services);
+  registerExportSkillMd(context, services);
   registerSkillDiagnostics(context, () => services.client);
   WikilinkProvider.register(context);
   const knowledge = KnowledgeTree.register(context, () => services.client);

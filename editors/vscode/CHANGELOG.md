@@ -8,6 +8,12 @@ derives its version from the tag (`vYYYY.MM.DD` → `YYYY.M.D`, leading zeros dr
 
 ### Added
 
+- **Export as SKILL.md** (#825). A skill page's editor title and its Knowledge-tree row export the skill as an
+  Anthropic-style `<folder>/<skill>/SKILL.md` (a folder you pick) for an agent that reads SKILL.md playbooks: the same
+  rendering as `escurel skill export` (`name`/`description`, the instructions as the body, escurel-only keys under
+  `metadata.escurel`, each `[[link]]` listed as a `resolve` hint), pinned to the CLI by a shared fixture. Importing a
+  SKILL.md back is the CLI's `escurel skill import`, which holds it as a draft for review.
+
 - **Scheduled skills** (#819). A skill with `schedule:` says so where skills are listed: a chip in the Knowledge
   tree (`scheduled · next 07:15 UTC`; the tooltip and the skill page's **Schedule** fact give the expression, its
   zone, the next window and the `schedule_budget`), and a line under it in the Start skill picker. The next window
