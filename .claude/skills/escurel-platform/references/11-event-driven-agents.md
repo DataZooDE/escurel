@@ -500,9 +500,11 @@ gateway enforces (references/08). A run whose write falls outside the
 agent's `scopes.write` sees it refused with `agent_scope_denied`; the call is
 on `get_run_tool_calls` as `rejected`, and the echo harness fails the run on
 it. A runner on a static `ESCUREL_RUNNER_TOKEN` cannot mint, so an agent run
-there fails rather than writing as the runner. Crash recovery re-runs a
-recovered event with the skill's default agent (an event's own request is
-not re-read).
+there fails rather than writing as the runner. Crash recovery resolves the
+agent through the same function as a fresh run (`agent_for_trigger`: the
+event's `provenance.agent`, then the skill's default): a reconciled run's
+`run-finished` names that agent and skill, and a reset run is re-driven from
+the event by the poller like any other.
 
 ## Chat runs (`provenance.chat_group_id`)
 

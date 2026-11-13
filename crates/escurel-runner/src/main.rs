@@ -2409,20 +2409,10 @@ async fn dispatch_loop(
         // skill page is honoured like a manual one, within the allow-list.
         let skill_contract =
             escurel_runner_core::skill_contract(&client, &trigger.label_skill).await;
-        // The agent profile the run executes as (#823): the event's request,
-        // else the skill's default. A workflow step runs as its requester and a
-        // chat turn as its asker, so neither takes an agent.
-        let agent = if trigger.workflow.is_none() && trigger.chat.is_none() {
-            escurel_runner_core::choose_agent(
-                &client,
-                &trigger.label_skill,
-                trigger.agent.as_deref(),
-                skill_contract.as_ref().and_then(|c| c.agent.as_deref()),
-            )
-            .await
-        } else {
-            escurel_runner_core::AgentChoice::None
-        };
+        // The agent profile the run executes as (#823).
+        let agent =
+            escurel_runner_core::agent_for_trigger(&client, &trigger, skill_contract.as_ref())
+                .await;
         let profile = agent.profile();
         // An agent's harness and model stand in for the skill's own asks.
         let skill_harness = profile

@@ -391,3 +391,90 @@ async fn tools_list_offers_an_agent_only_its_scoped_tools() {
     let body = list_tools(&gw, &forged).await;
     assert_eq!(body["error"]["data"]["code"], "agent_unknown", "{body}");
 }
+
+/// Crash recovery attributes a reconciled run to the agent a fresh run of the
+/// same event would execute as — the event's `provenance.agent` request, else
+/// the skill's default — through the same resolution, so `usage_report`
+/// counts it against that agent rather than an anonymous recovery.
+#[tokio::test]
+async fn recovery_resolves_the_agent_a_fresh_run_would() {
+    use escurel_runner_core::{Ledger, LedgerDecision, Trigger};
+
+    let gw = gateway().await;
+    // `note` defaults to scribe; the event asks for scribe explicitly too, so
+    // either source names it — the point is that recovery reads them at all.
+    let r = call(
+        &gw,
+        "capture_event",
+        json!({ "source": "manual", "mime": "text/plain", "label_skill": "note",
+                "instance_page_id": page_id("note"), "title": "t", "body": "b",
+                "provenance": { "agent": "[[agent::scribe]]" } }),
+    )
+    .await;
+    let event_id = r["event_id"].as_str().unwrap().to_owned();
+    call(
+        &gw,
+        "assign_event",
+        json!({ "event_id": event_id, "instance_page_id": page_id("note") }),
+    )
+    .await;
+    let events = call(&gw, "list_events", json!({ "event_id": event_id })).await;
+    let event: escurel_types::Event =
+        serde_json::from_value(events["events"][0].clone()).expect("event");
+    let ledger_dir = tempfile::tempdir().expect("tempdir");
+    let ledger_path = ledger_dir.path().join("ledger.duckdb");
+    let run_id = {
+        let ledger = Ledger::open(&ledger_path).expect("open ledger");
+        match ledger
+            .begin_run(&Trigger::from_event(&event, TENANT.to_owned()))
+            .expect("begin_run")
+        {
+            LedgerDecision::Created(id) => id.0,
+            other => panic!("expected a fresh pending row, got {other:?}"),
+        }
+    };
+
+    let runner = crate::support::RunnerProcess::echo(&gw, TENANT)
+        .static_bearer(gw.mint_token(TENANT, Role::Admin))
+        .ledger(&ledger_path)
+        .spawn();
+    let url = format!(
+        "http://{}/debug/run?tenant={TENANT}&event_id={event_id}",
+        runner.listen()
+    );
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        if let Ok(resp) = reqwest::get(&url).await
+            && let Ok(v) = resp.json::<Value>().await
+            && v["status"].as_str().is_some_and(|s| s != "pending")
+        {
+            assert_eq!(v["status"], "processed", "{v}");
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "recovery never reconciled the row"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let finished = loop {
+        let r = call(&gw, "list_events", json!({ "run_id": run_id })).await;
+        if let Some(e) = r["events"]
+            .as_array()
+            .and_then(|a| a.iter().find(|e| e["title"] == "run-finished"))
+        {
+            break e.clone();
+        }
+        assert!(Instant::now() < deadline, "no run-finished for {run_id}");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    };
+    assert_eq!(
+        finished["provenance"]["runner"]["agent"], "scribe",
+        "{finished}"
+    );
+    assert_eq!(
+        finished["provenance"]["runner"]["skill"], "note",
+        "{finished}"
+    );
+}

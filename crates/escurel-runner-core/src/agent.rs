@@ -34,6 +34,28 @@ impl AgentChoice {
     }
 }
 
+/// The agent a run of `trigger` executes as — THE resolution, shared by a
+/// fresh dispatch and by crash recovery so both read the same sources: the
+/// event's `provenance.agent` request, then the skill's default (`contract`,
+/// read off its page). A workflow step runs as its requester and a chat turn
+/// as its asker, so neither takes an agent.
+pub async fn agent_for_trigger(
+    client: &Client,
+    trigger: &crate::Trigger,
+    contract: Option<&crate::SkillContract>,
+) -> AgentChoice {
+    if trigger.workflow.is_some() || trigger.chat.is_some() {
+        return AgentChoice::None;
+    }
+    choose_agent(
+        client,
+        &trigger.label_skill,
+        trigger.agent.as_deref(),
+        contract.and_then(|c| c.agent.as_deref()),
+    )
+    .await
+}
+
 /// Resolve the agent for a run of `skill`: `requested` from the event,
 /// `default` from the skill page (each an agent id, possibly malformed).
 pub async fn choose_agent(
