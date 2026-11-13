@@ -146,7 +146,7 @@ pub(crate) fn tool_defs() -> Vec<ToolDef> {
             Execution::Orchestration,
             Scope::Agent,
             Touches::INDEX,
-            "Store a run's transcript — JSONL, one `{ts, attempt, kind, name?, args_digest?, summary}` record per line — as a content-addressed blob (at most 2 MiB; idempotent). Runner bookkeeping: only the run's own bearer (its `run_id` claim) or the runner's non-run admin bearer may call it. The runner names the blob on `run-finished.transcript`; read it back with `fetch_blob{run_id}`.",
+            "Store a run's transcript — JSONL, one `{ts, attempt, kind, name?, args_digest?, summary}` record per line — keyed by the run (at most 2 MiB). Written once per run: the same bytes again are a no-op, different bytes are refused (`transcript_exists`). Runner bookkeeping: only the run's own bearer (its `run_id` claim) or the runner's non-run admin bearer may call it. The runner records `{records, bytes, sha256}` on `run-finished.transcript` (informational); read it back with `fetch_blob{run_id}`.",
             json!({
                 "type": "object",
                 "required": ["run_id", "records"],
@@ -2500,7 +2500,7 @@ fn output_schema_for(name: &str) -> Option<Value> {
             "blob": { "type": ["object", "null"] }
         })),
         "put_run_transcript" => obj(json!({
-            "blob_id": { "type": "string", "description": "`sha256:<hex>` of the stored bytes" },
+            "sha256": { "type": "string", "description": "`sha256:<hex>` of the stored bytes" },
             "records": { "type": "integer" },
             "bytes": { "type": "integer" }
         })),

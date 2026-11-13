@@ -136,7 +136,7 @@ async fn a_finished_run_carries_a_redacted_transcript_its_readers_can_replay() {
     };
     let transcript = body_of(&finished)["transcript"].clone();
     assert!(
-        transcript["blob_id"]
+        transcript["sha256"]
             .as_str()
             .is_some_and(|b| b.starts_with("sha256:")),
         "{transcript}"

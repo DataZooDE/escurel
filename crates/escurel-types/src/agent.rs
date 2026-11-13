@@ -1090,14 +1090,14 @@ pub struct FetchBlobResponse {
     pub blob: Option<BlobInfo>,
 }
 
-/// `put_run_transcript` result (#822): the stored blob and its size.
+/// `put_run_transcript` result (#822): what was stored for the run.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct PutRunTranscriptResponse {
-    /// `sha256:<hex>`, content-addressed.
-    pub blob_id: String,
     pub records: u64,
     pub bytes: u64,
+    /// `sha256:<hex>` of the stored bytes.
+    pub sha256: String,
 }
 
 // ── list_snapshots / list_op_authors (CRDT history reads) ─────────

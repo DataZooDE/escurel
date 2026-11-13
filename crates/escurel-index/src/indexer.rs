@@ -304,6 +304,14 @@ pub enum IndexerError {
     #[error("invalid runner status: {0}")]
     InvalidRunnerStatus(String),
 
+    /// A run's transcript is written once; this upload differs from the stored one.
+    #[error("run `{run_id}` already has a different transcript (a transcript is written once)")]
+    TranscriptExists { run_id: String },
+
+    /// A transcript's run id must name exactly one key (no path syntax).
+    #[error("`{0}` is not a usable run id for a transcript")]
+    InvalidTranscriptRunId(String),
+
     #[error("duckdb error: {0}")]
     Duckdb(#[from] duckdb::Error),
     #[error("lane store error: {0}")]

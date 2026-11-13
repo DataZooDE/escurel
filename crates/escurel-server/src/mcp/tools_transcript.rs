@@ -5,13 +5,15 @@
 //!   the run named, or — for a runner on a static bearer, which has no run
 //!   token — a non-machine admin bearer (`is_machine_caller` false: no run,
 //!   skill or `act` claim). An agent token for another run is refused, admin
-//!   or not. Bytes are capped at [`MAX_TRANSCRIPT_BYTES`] and stored
-//!   content-addressed (`LaneStore::put_blob`), so a retried upload is a
-//!   no-op.
-//! - **Read** goes through the run's `run-finished` event
-//!   (`run:<run_id>:finished`): readable under the event ACL, it names the
-//!   blob. A run the caller cannot read and a run that does not exist get
-//!   the same answer.
+//!   or not. Bytes are capped at [`MAX_TRANSCRIPT_BYTES`] and stored KEYED BY
+//!   THE RUN (`transcripts/<run_id>.jsonl`), never in the content-addressed
+//!   `blobs/` namespace, and written once: a retried identical upload is a
+//!   no-op, different bytes are `transcript_exists`.
+//! - **Read** is authorised by the run's `run-finished` event
+//!   (`run:<run_id>:finished`, an id only the runner's identity may file):
+//!   readable under the event ACL. The bytes come from the run's own key,
+//!   never from a blob id the event body names. A run the caller cannot read
+//!   and a run that does not exist get the same answer.
 //! - **Retention** (`ESCUREL_RUN_TRANSCRIPT_RETENTION_DAYS`): the gateway's
 //!   periodic sweep deletes transcripts stored before the cutoff.
 
@@ -83,11 +85,20 @@ pub(super) async fn tool_put_run_transcript(
             MAX_TRANSCRIPT_BYTES,
         )
         .await
-        .map_err(|e| JsonRpcError::internal(format!("put_run_transcript: {e}")))?;
+        .map_err(|e| match e {
+            escurel_index::IndexerError::TranscriptExists { .. } => {
+                JsonRpcError::invalid_params(format!("put_run_transcript: {e}"))
+                    .with_code("transcript_exists", false)
+            }
+            escurel_index::IndexerError::InvalidTranscriptRunId(_) => {
+                JsonRpcError::invalid_params(format!("put_run_transcript: {e}"))
+            }
+            other => JsonRpcError::internal(format!("put_run_transcript: {other}")),
+        })?;
     Ok(json!({
-        "blob_id": stored.blob_id,
         "records": stored.records,
         "bytes": stored.bytes,
+        "sha256": stored.sha256,
     }))
 }
 
@@ -129,24 +140,27 @@ pub(super) async fn readable_transcript(
             );
         }
     }
+    if let Some(bytes) = indexer
+        .read_run_transcript(run_id)
+        .await
+        .map_err(|e| JsonRpcError::internal(format!("fetch_blob: {e}")))?
+    {
+        return Ok(bytes);
+    }
+    // Nothing stored under the run. The event body only says which refusal fits: a run that
+    // recorded a transcript lost it to retention; one that did not never had one.
     let body: Value = serde_json::from_str(&finished.body).unwrap_or(Value::Null);
-    let Some(blob_id) = body["transcript"]["blob_id"].as_str() else {
-        return Err(JsonRpcError::invalid_params(format!(
+    if body["transcript"].is_object() {
+        Err(JsonRpcError::invalid_params(format!(
+            "fetch_blob: run `{run_id}`'s transcript is past its retention"
+        ))
+        .with_code("transcript_expired", false))
+    } else {
+        Err(JsonRpcError::invalid_params(format!(
             "fetch_blob: run `{run_id}` finished without a transcript"
         ))
-        .with_code("transcript_absent", false));
-    };
-    let id = escurel_storage::BlobId::parse(blob_id)
-        .ok_or_else(|| JsonRpcError::internal("fetch_blob: malformed transcript blob_id"))?;
-    indexer.read_blob(&id).await.map_err(|e| match e {
-        escurel_index::IndexerError::Store(escurel_storage::StoreError::NotFound(_)) => {
-            JsonRpcError::invalid_params(format!(
-                "fetch_blob: run `{run_id}`'s transcript is past its retention"
-            ))
-            .with_code("transcript_expired", false)
-        }
-        other => JsonRpcError::internal(format!("fetch_blob: {other}")),
-    })
+        .with_code("transcript_absent", false))
+    }
 }
 
 /// Delete transcripts past `ESCUREL_RUN_TRANSCRIPT_RETENTION_DAYS`; a no-op

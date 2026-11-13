@@ -1,7 +1,8 @@
-//! Run transcripts (#822) against a real DuckDB file and a real `FsStore`:
-//! the retention sweep removes a transcript's row and blob, keeps a blob
-//! another run's transcript still names, and never touches a blob that is
-//! not a transcript.
+//! Run transcripts (#822) against a real DuckDB file and a real `FsStore`.
+//! A transcript is KEY-addressed (`transcripts/<run_id>.jsonl`), written once
+//! per run, and the retention sweep deletes transcript keys and nothing else
+//! — in particular never a content-addressed document blob that happens to
+//! hold the same bytes (crew review PR-1, F3/F15).
 
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
@@ -9,8 +10,8 @@ use std::time::{Duration, SystemTime};
 use bytes::Bytes;
 use duckdb::Connection;
 use escurel_embed::{Embedder, ZeroEmbedder};
-use escurel_index::{Indexer, Migrator};
-use escurel_storage::{BlobId, FsStore, LaneStore};
+use escurel_index::{Indexer, IndexerError, Migrator};
+use escurel_storage::{FsStore, Key, LaneStore};
 use tempfile::TempDir;
 
 const TENANT: &str = "acme";
@@ -27,89 +28,112 @@ fn fresh() -> (Arc<dyn LaneStore>, Indexer, TempDir, TempDir) {
     (store, indexer, store_dir, db_dir)
 }
 
-async fn exists(store: &Arc<dyn LaneStore>, blob_id: &str) -> bool {
-    store
-        .get_blob(TENANT, &BlobId::parse(blob_id).unwrap())
-        .await
-        .is_ok()
-}
-
 #[tokio::test]
-async fn the_sweep_deletes_expired_transcripts_and_only_unshared_transcript_blobs() {
+async fn a_document_with_a_transcripts_bytes_survives_replace_and_sweep() {
     let (store, indexer, _s, _d) = fresh();
-    let document = store
-        .put_blob(
-            TENANT,
-            Bytes::from_static(b"a document, not a transcript"),
-            None,
-        )
+    let bytes = Bytes::from_static(b"{\"kind\":\"message\"}\n");
+    let document = store.put_blob(TENANT, bytes.clone(), None).await.unwrap();
+    let stored = indexer
+        .store_run_transcript("run-a", bytes.clone(), 1, CAP)
         .await
         .unwrap();
-    let same = Bytes::from_static(b"{\"kind\":\"message\"}\n");
-    let a = indexer
-        .store_run_transcript("run-a", same.clone(), 1, CAP)
-        .await
-        .unwrap();
-    let b = indexer
-        .store_run_transcript("run-b", same, 1, CAP)
-        .await
-        .unwrap();
-    assert_eq!(a.blob_id, b.blob_id, "content-addressed");
-    assert_eq!((a.records, a.bytes), (1, 19));
+    assert_eq!((stored.records, stored.bytes), (1, 19));
 
-    // Idempotent: the same upload again changes nothing.
-    let again = indexer
-        .store_run_transcript(
-            "run-a",
-            Bytes::from_static(b"{\"kind\":\"message\"}\n"),
-            1,
-            CAP,
-        )
+    // A second, different upload for the same run is refused, and deletes nothing.
+    let err = indexer
+        .store_run_transcript("run-a", Bytes::from_static(b"{\"x\":1}\n"), 1, CAP)
         .await
-        .unwrap();
-    assert_eq!(again, a);
-
-    // Nothing is older than an hour ago.
-    let hour_ago = SystemTime::now() - Duration::from_secs(3600);
-    assert_eq!(indexer.sweep_run_transcripts(hour_ago).await.unwrap(), 0);
-    assert!(exists(&store, &a.blob_id).await);
-
-    // Everything is older than a second from now: both rows go, the shared
-    // blob goes once nobody names it, the document blob stays.
-    let soon = SystemTime::now() + Duration::from_secs(1);
-    assert_eq!(indexer.sweep_run_transcripts(soon).await.unwrap(), 2);
+        .expect_err("written once");
     assert!(
-        !exists(&store, &a.blob_id).await,
-        "the transcript blob is gone"
+        matches!(err, IndexerError::TranscriptExists { .. }),
+        "{err}"
     );
+    assert!(store.get_blob(TENANT, &document).await.is_ok());
+
+    // The sweep removes the transcript and never the document blob.
+    let soon = SystemTime::now() + Duration::from_secs(1);
+    assert_eq!(indexer.sweep_run_transcripts(soon).await.unwrap(), 1);
     assert!(
-        exists(&store, document.as_str()).await,
+        indexer
+            .read_run_transcript("run-a")
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(
+        store.get_blob(TENANT, &document).await.unwrap(),
+        bytes,
         "a document blob is never swept"
     );
 }
 
 #[tokio::test]
-async fn a_transcript_over_the_cap_is_refused() {
+async fn a_transcript_is_written_once_and_an_identical_retry_is_a_no_op() {
+    let (_store, indexer, _s, _d) = fresh();
+    let bytes = Bytes::from_static(b"{\"kind\":\"message\"}\n");
+    let first = indexer
+        .store_run_transcript("run-a", bytes.clone(), 1, CAP)
+        .await
+        .unwrap();
+    let again = indexer
+        .store_run_transcript("run-a", bytes.clone(), 1, CAP)
+        .await
+        .unwrap();
+    assert_eq!(first, again, "an identical retry is idempotent");
+    assert_eq!(
+        indexer.read_run_transcript("run-a").await.unwrap(),
+        Some(bytes)
+    );
+    // Nothing is older than an hour ago.
+    let hour_ago = SystemTime::now() - Duration::from_secs(3600);
+    assert_eq!(indexer.sweep_run_transcripts(hour_ago).await.unwrap(), 0);
+    assert!(
+        indexer
+            .read_run_transcript("run-a")
+            .await
+            .unwrap()
+            .is_some()
+    );
+}
+
+#[tokio::test]
+async fn a_transcript_over_the_cap_or_with_an_unsafe_run_id_is_refused() {
     let (_store, indexer, _s, _d) = fresh();
     let err = indexer
         .store_run_transcript("run-a", Bytes::from(vec![b'x'; 2048]), 1, CAP)
         .await
         .expect_err("over the cap");
     assert!(err.to_string().contains("quota"), "{err}");
+    for bad in ["../blobs/x", "a/b", "", ".."] {
+        assert!(
+            indexer
+                .store_run_transcript(bad, Bytes::from_static(b"{}\n"), 1, CAP)
+                .await
+                .is_err(),
+            "`{bad}` must not name a key"
+        );
+    }
 }
 
+/// The registry lives in DuckDB; the bytes in the lane store. After an index rebuild the rows are
+/// gone but the keys are not: the sweep adopts an unregistered transcript key (as stored now), so
+/// it expires one retention window later instead of living forever.
 #[tokio::test]
-async fn a_replaced_transcript_drops_its_old_blob() {
+async fn an_unregistered_transcript_key_is_adopted_by_the_sweep_and_then_expires() {
     let (store, indexer, _s, _d) = fresh();
-    let first = indexer
-        .store_run_transcript("run-a", Bytes::from_static(b"one\n"), 1, CAP)
+    let key = Key::new(TENANT, "transcripts/run-orphan.jsonl").unwrap();
+    store
+        .write(&key, Bytes::from_static(b"{\"kind\":\"message\"}\n"))
         .await
         .unwrap();
-    let second = indexer
-        .store_run_transcript("run-a", Bytes::from_static(b"one\ntwo\n"), 2, CAP)
-        .await
-        .unwrap();
-    assert_ne!(first.blob_id, second.blob_id);
-    assert!(!exists(&store, &first.blob_id).await);
-    assert!(exists(&store, &second.blob_id).await);
+    let soon = SystemTime::now() + Duration::from_secs(1);
+    assert_eq!(indexer.sweep_run_transcripts(soon).await.unwrap(), 0);
+    assert!(
+        store.read(&key).await.is_ok(),
+        "adopted, not deleted on sight"
+    );
+    tokio::time::sleep(Duration::from_millis(1100)).await;
+    let later = SystemTime::now() + Duration::from_secs(1);
+    assert_eq!(indexer.sweep_run_transcripts(later).await.unwrap(), 1);
+    assert!(store.read(&key).await.is_err(), "expired once adopted");
 }

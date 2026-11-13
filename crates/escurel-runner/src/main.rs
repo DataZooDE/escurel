@@ -960,8 +960,9 @@ impl AttemptSink {
     }
 }
 
-/// Store the run's transcript (#822) and return the `{blob_id, records,
-/// bytes}` that `run-finished.transcript` names. Best-effort like every run
+/// Store the run's transcript (#822) and return the `{records, bytes,
+/// sha256}` that `run-finished.transcript` records (informational: readers
+/// fetch the transcript by run id). Best-effort like every run
 /// event: a refused upload is logged and counted
 /// (`escurel_runner_run_events_failed_total{kind="transcript"}`) and the run
 /// is unaffected.
@@ -1009,9 +1010,9 @@ async fn store_transcript(
         .await
     {
         Ok(stored) => Some(serde_json::json!({
-            "blob_id": stored.blob_id,
             "records": stored.records,
             "bytes": stored.bytes,
+            "sha256": stored.sha256,
         })),
         Err(e) => {
             record_run_event(metrics, "transcript", Err(e));

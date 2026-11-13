@@ -503,7 +503,7 @@ pub fn parse_rfc3339_utc(raw: &str, field: &str) -> Result<EventTs, String> {
 
 /// The space-separated microsecond form `at_ts` compares against on every
 /// backend (DuckDB's `TRY_CAST` and Postgres' `CAST` both read it exactly).
-fn store_ts(dt: &EventTs) -> String {
+pub(crate) fn store_ts(dt: &EventTs) -> String {
     dt.format("%Y-%m-%d %H:%M:%S%.6f").to_string()
 }
 

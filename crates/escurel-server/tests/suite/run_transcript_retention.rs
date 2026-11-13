@@ -184,3 +184,60 @@ async fn fetch_blob_names_one_target_and_says_why_a_run_has_no_transcript() {
     .await;
     assert_eq!(stored["records"], 1, "{stored}");
 }
+
+/// `fetch_blob{run_id}` reads the run's OWN transcript key, never a blob id the `run-finished` body
+/// names (crew review PR-1, F6/F3): a body pointing at a document's blob serves nothing of it. And a
+/// transcript is written once: a second, different upload for the run is `transcript_exists`.
+#[tokio::test]
+async fn a_run_finished_body_cannot_point_fetch_blob_at_a_document_and_a_transcript_is_written_once()
+ {
+    let p = start(None).await;
+    let admin = p.mint_token(TENANT, Role::Admin);
+    // Any blob id at all: the body is informational, so it never reaches the store.
+    let document_blob = format!("sha256:{}", "ab".repeat(32));
+    call(
+        &p,
+        &admin,
+        "capture_event",
+        json!({ "event_id": format!("run:{RUN}:finished"), "kind": "system",
+                "source": "escurel-runner", "mime": "application/json",
+                "label_skill": "escurel:run", "title": "run-finished",
+                "body": json!({ "status": "processed",
+                                "transcript": { "blob_id": document_blob, "records": 1, "bytes": 3 } })
+                    .to_string() }),
+    )
+    .await;
+    let r = rpc(&p, &admin, "fetch_blob", json!({ "run_id": RUN })).await;
+    assert_eq!(r["error"]["data"]["code"], "transcript_expired", "{r}");
+
+    let own = p.mint_token_for_run(TENANT, Role::Agent, "agent:note", RUN, ROOT);
+    let first = "{\"kind\":\"message\"}\n";
+    call(
+        &p,
+        &own,
+        "put_run_transcript",
+        json!({ "run_id": RUN, "records": first }),
+    )
+    .await;
+    // The same bytes again: a no-op.
+    call(
+        &p,
+        &own,
+        "put_run_transcript",
+        json!({ "run_id": RUN, "records": first }),
+    )
+    .await;
+    let other = rpc(
+        &p,
+        &admin,
+        "put_run_transcript",
+        json!({ "run_id": RUN, "records": "{\"kind\":\"forged\"}\n" }),
+    )
+    .await;
+    assert_eq!(
+        other["error"]["data"]["code"], "transcript_exists",
+        "{other}"
+    );
+    let fetched = call(&p, &admin, "fetch_blob", json!({ "run_id": RUN })).await;
+    assert_eq!(fetched["blob"]["size"], first.len(), "{fetched}");
+}

@@ -270,9 +270,9 @@ impl RunEventCtx {
             // `{input_tokens, output_tokens, cost_usd, model}` summed over the
             // attempts (P3-4); `null` when no attempt reported any.
             "usage": usage,
-            // `{blob_id, records, bytes}` of the stored transcript (#822),
-            // read back with `fetch_blob{run_id}`; `null` when none was
-            // stored.
+            // `{records, bytes, sha256}` of the stored transcript (#822),
+            // informational: readers fetch it by run id with
+            // `fetch_blob{run_id}`; `null` when none was stored.
             "transcript": transcript,
         });
         if let Some(r) = reason {
