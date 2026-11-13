@@ -1428,6 +1428,12 @@ pub const CONFIG_KEYS: &[ConfigKey] = &[
         doc: "REQUIRED: the bot's Microsoft app (client) id; the `aud` an inbound Bot Framework token must carry and the client id of the connector token",
     },
     ConfigKey {
+        name: "ESCUREL_BRIDGE_TEAMS_ALLOWED_TENANTS",
+        component: "Bridge",
+        default: "—",
+        doc: "REQUIRED: comma-separated Entra tenant ids whose people the bridge answers; an activity whose `conversation.tenantId` / `channelData.tenant.id` is not listed is ignored",
+    },
+    ConfigKey {
         name: "ESCUREL_BRIDGE_TEAMS_APP_PASSWORD",
         component: "Bridge",
         default: "—",
@@ -1466,8 +1472,8 @@ pub const CONFIG_KEYS: &[ConfigKey] = &[
     ConfigKey {
         name: "ESCUREL_BRIDGE_PRINCIPAL_TEMPLATE",
         component: "Bridge",
-        default: "{aadObjectId}",
-        doc: "the escurel subject for a Teams user: `{aadObjectId}` (Entra object id), `{userId}` (Teams user id) and `{tenantId}` (Entra tenant) are filled in, e.g. `user:{aadObjectId}`. It must equal the `sub` the person's own OIDC token carries, or their chats and the pages they may read will not line up. A message from a user lacking a named field is not answered",
+        default: "—",
+        doc: "REQUIRED: the escurel subject for a Teams user: `{aadObjectId}` (Entra object id), `{userId}` (Teams user id) and `{tenantId}` (Entra tenant) are filled in, e.g. `user:{aadObjectId}`. The bridge refuses to start on an unknown placeholder or a template naming neither `{aadObjectId}` nor `{userId}` (it would map every sender to one subject). It must equal the `sub` the person's own token from the gateway's primary issuer carries, or their chats and the pages they may read will not line up. A message from a user lacking a named field is not answered",
     },
     ConfigKey {
         name: "ESCUREL_BRIDGE_CHAT_SKILL",

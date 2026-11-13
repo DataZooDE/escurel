@@ -20,14 +20,25 @@ start it.
 1. **Verifies** the request: the `Authorization` bearer is an RS256 JWT signed by a key from the
    Bot Framework OpenID metadata (`ESCUREL_BRIDGE_TEAMS_OPENID_METADATA_URL`), `iss` =
    `ESCUREL_BRIDGE_TEAMS_ISSUER`, `aud` = `ESCUREL_BRIDGE_TEAMS_APP_ID`, unexpired (5 min skew),
-   and its `serviceurl` claim equals the activity's `serviceUrl`. Anything else is `401` and
-   nothing is captured.
+   and its `serviceurl` claim equals the activity's `serviceUrl`. The activity's `channelId` must
+   be `msteams`, and when the JWKS lists the signing key's `endorsements` they must include
+   `msteams`. Anything else is `401` and nothing is captured.
+   Only a person in an Entra tenant listed in `ESCUREL_BRIDGE_TEAMS_ALLOWED_TENANTS`
+   (`conversation.tenantId`, else `channelData.tenant.id`) in a conversation whose
+   `conversationType` is explicitly `personal` is answered; anything else is answered `200` and
+   ignored.
 2. **Dedupes** on the conversation id plus the activity id, in its state file
    (`ESCUREL_BRIDGE_STATE_PATH`). A redelivered activity is answered `200` and ignored.
-3. **Maps the person**: `ESCUREL_BRIDGE_PRINCIPAL_TEMPLATE` with the sender's Entra object id
-   (`{aadObjectId}`), Teams user id (`{userId}`) or Entra tenant (`{tenantId}`). The result must be
-   the `sub` that person's own OIDC token carries, so the bridge sees exactly what they see. A sender
-   without the named field gets no answer.
+3. **Maps the person**: `ESCUREL_BRIDGE_PRINCIPAL_TEMPLATE` (required, no default) with the
+   sender's Entra object id (`{aadObjectId}`), Teams user id (`{userId}`) or Entra tenant
+   (`{tenantId}`). The bridge refuses to start on an unknown placeholder (a misspelt
+   `{aadObjectID}` would stay a literal) or a template naming neither `{aadObjectId}` nor
+   `{userId}`: a constant or tenant-only template maps every sender to one subject, who then share
+   each other's private pages. The result must be the `sub` the person's own token from the
+   gateway's **primary issuer** carries. If that issuer is Entra itself, note that Entra's `sub` is
+   pairwise per app and is *not* the object id; use an issuer (the substrate IdP) whose `sub` is
+   derived from the object id, or the bridge identity is a different principal from the person's
+   web identity. A sender without the named field gets no answer.
 4. **Acts as that person**: it signs a 15-minute token for the principal with the key in
    `ESCUREL_BRIDGE_AUTH_SIGNING_KEY` (no groups, no admin). The gateway must trust that key, the
    same trust a minted-mode runner has. The event therefore reads `captured_by: <person>` with no
@@ -85,7 +96,8 @@ group chat or channel would show one member's answer to everyone in it.
 The bridge's variables are the *Bridge* table of [`env.md`](env.md). The minimum is
 `ESCUREL_BRIDGE_GATEWAY_URL`, `ESCUREL_BRIDGE_TENANT`, `ESCUREL_BRIDGE_AUTH_ISSUER` (+ `_KID`),
 `ESCUREL_BRIDGE_AUTH_SIGNING_KEY`, `ESCUREL_BRIDGE_TEAMS_APP_ID`,
-`ESCUREL_BRIDGE_TEAMS_APP_PASSWORD` and, almost always, `ESCUREL_BRIDGE_PRINCIPAL_TEMPLATE`.
+`ESCUREL_BRIDGE_TEAMS_APP_PASSWORD`, `ESCUREL_BRIDGE_TEAMS_ALLOWED_TENANTS` and
+`ESCUREL_BRIDGE_PRINCIPAL_TEMPLATE`.
 Keep `ESCUREL_BRIDGE_STATE_PATH` on the persistent volume (`/data`). Logs are JSON on stdout
 (`app: escurel-chat-bridge`). `GET /healthz` is dependency-free.
 
@@ -97,7 +109,8 @@ connector. These behaviours follow Microsoft's documentation and have not been c
 real tenant:
 
 - the `serviceurl` claim name and value on Teams channel tokens;
-- the JWKS `endorsements` (channel ids per key), which the bridge does not check;
+- the JWKS `endorsements` (channel ids per key): the bridge requires `msteams` when a key lists
+  them, and accepts a key that lists none;
 - Bot Framework Emulator tokens (a different issuer), which the bridge does not accept;
 - inline-image downloads needing the connector bearer;
 - the single-tenant token endpoint.

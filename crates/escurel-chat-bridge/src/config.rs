@@ -18,6 +18,8 @@ pub enum ConfigError {
     Missing(&'static str),
     #[error("{key}: cannot parse `{value}`")]
     Invalid { key: &'static str, value: String },
+    #[error("{key}: {reason}")]
+    Refused { key: &'static str, reason: String },
     #[error("{key}: {source}")]
     Read {
         key: &'static str,
@@ -48,6 +50,10 @@ pub struct TeamsConfig {
     pub issuer: String,
     pub token_url: String,
     pub token_scope: String,
+    /// The Entra tenants whose people the bridge answers
+    /// (`ESCUREL_BRIDGE_TEAMS_ALLOWED_TENANTS`). Required: a multi-tenant bot
+    /// app would otherwise give anyone in any tenant an escurel identity.
+    pub allowed_tenants: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -59,6 +65,7 @@ pub struct BridgeConfig {
     pub gateway: GatewayConfig,
     pub teams: TeamsConfig,
     /// `{aadObjectId}` / `{userId}` / `{tenantId}` → the escurel subject.
+    /// Validated at boot by [`validate_principal_template`].
     pub principal_template: String,
     pub chat_skill: String,
     pub conversation_skill: String,
@@ -135,8 +142,16 @@ impl BridgeConfig {
                 issuer: or("ESCUREL_BRIDGE_TEAMS_ISSUER", BOT_FRAMEWORK_ISSUER),
                 token_url: or("ESCUREL_BRIDGE_TEAMS_TOKEN_URL", BOT_FRAMEWORK_TOKEN_URL),
                 token_scope: or("ESCUREL_BRIDGE_TEAMS_TOKEN_SCOPE", BOT_FRAMEWORK_SCOPE),
+                allowed_tenants: list(&req("ESCUREL_BRIDGE_TEAMS_ALLOWED_TENANTS")?),
             },
-            principal_template: or("ESCUREL_BRIDGE_PRINCIPAL_TEMPLATE", "{aadObjectId}"),
+            principal_template: {
+                let t = req("ESCUREL_BRIDGE_PRINCIPAL_TEMPLATE")?;
+                validate_principal_template(&t).map_err(|reason| ConfigError::Refused {
+                    key: "ESCUREL_BRIDGE_PRINCIPAL_TEMPLATE",
+                    reason,
+                })?;
+                t
+            },
             chat_skill: or("ESCUREL_BRIDGE_CHAT_SKILL", "chat"),
             conversation_skill: or("ESCUREL_BRIDGE_CONVERSATION_SKILL", "conversation"),
             poll_interval: dur("ESCUREL_BRIDGE_POLL_INTERVAL", Duration::from_secs(1))?,
@@ -145,6 +160,55 @@ impl BridgeConfig {
             attachment_max_bytes: max_bytes,
         })
     }
+}
+
+/// The placeholders a principal template may name.
+pub const PRINCIPAL_PLACEHOLDERS: [&str; 3] = ["{aadObjectId}", "{userId}", "{tenantId}"];
+
+/// Refuse a principal template that could map two people to one subject:
+/// every `{…}` must be a known placeholder, and at least one of them must
+/// name the person (`{aadObjectId}` or `{userId}`) — a constant, a misspelt
+/// placeholder (left in as a literal) or a tenant-only template would give
+/// everyone the same identity, and with it each other's private pages.
+///
+/// # Errors
+/// Why the template is refused.
+pub fn validate_principal_template(template: &str) -> Result<(), String> {
+    let mut rest = template;
+    while let Some(open) = rest.find('{') {
+        let after = &rest[open..];
+        let close = after
+            .find('}')
+            .ok_or_else(|| format!("unclosed `{{` in `{template}`"))?;
+        let placeholder = &after[..=close];
+        if !PRINCIPAL_PLACEHOLDERS.contains(&placeholder) {
+            return Err(format!(
+                "unknown placeholder `{placeholder}` (known: {})",
+                PRINCIPAL_PLACEHOLDERS.join(", ")
+            ));
+        }
+        rest = &after[close + 1..];
+    }
+    if rest.contains('}') {
+        return Err(format!("stray `}}` in `{template}`"));
+    }
+    if !(template.contains("{aadObjectId}") || template.contains("{userId}")) {
+        return Err(
+            "must name the person (`{aadObjectId}` or `{userId}`): otherwise every sender \
+             maps to one subject"
+                .to_owned(),
+        );
+    }
+    Ok(())
+}
+
+/// A comma-separated list, trimmed, empties dropped.
+fn list(raw: &str) -> Vec<String> {
+    raw.split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_owned)
+        .collect()
 }
 
 /// `250ms`, `3s`, `10m`, or bare seconds.
@@ -178,6 +242,8 @@ mod tests {
             "ESCUREL_BRIDGE_AUTH_SIGNING_KEY" => Some("pem".into()),
             "ESCUREL_BRIDGE_TEAMS_APP_ID" => Some("app".into()),
             "ESCUREL_BRIDGE_TEAMS_APP_PASSWORD" => Some("pw".into()),
+            "ESCUREL_BRIDGE_TEAMS_ALLOWED_TENANTS" => Some("t-1, t-2".into()),
+            "ESCUREL_BRIDGE_PRINCIPAL_TEMPLATE" => Some("user:{aadObjectId}".into()),
             _ => None,
         }
     }
@@ -203,6 +269,59 @@ mod tests {
             err.to_string().contains("ESCUREL_BRIDGE_TEAMS_APP_ID"),
             "{err}"
         );
+    }
+
+    #[test]
+    fn the_allowed_tenants_are_required_and_listed() {
+        let c = BridgeConfig::from_env_with(minimal).unwrap();
+        assert_eq!(c.teams.allowed_tenants, ["t-1", "t-2"]);
+        let err = BridgeConfig::from_env_with(|k| {
+            (k != "ESCUREL_BRIDGE_TEAMS_ALLOWED_TENANTS")
+                .then(|| minimal(k))
+                .flatten()
+        })
+        .unwrap_err();
+        assert!(err.to_string().contains("ALLOWED_TENANTS"), "{err}");
+    }
+
+    #[test]
+    fn the_principal_template_is_required_and_has_no_default() {
+        let err = BridgeConfig::from_env_with(|k| {
+            (k != "ESCUREL_BRIDGE_PRINCIPAL_TEMPLATE")
+                .then(|| minimal(k))
+                .flatten()
+        })
+        .unwrap_err();
+        assert!(err.to_string().contains("PRINCIPAL_TEMPLATE"), "{err}");
+    }
+
+    #[test]
+    fn a_template_that_maps_everyone_to_one_subject_is_refused() {
+        for (template, why) in [
+            ("alice", "must name the person"),
+            ("user:{aadObjectID}", "unknown placeholder `{aadObjectID}`"),
+            ("{tenantId}", "must name the person"),
+            ("team:{tenantId}:all", "must name the person"),
+            ("user:{aadObjectId", "unclosed"),
+            ("user:aadObjectId}", "stray"),
+        ] {
+            let err = validate_principal_template(template).unwrap_err();
+            assert!(err.contains(why), "{template}: {err}");
+        }
+        for ok in [
+            "user:{aadObjectId}",
+            "{aadObjectId}",
+            "{tenantId}/{userId}",
+            "teams:{tenantId}:{aadObjectId}",
+        ] {
+            validate_principal_template(ok).unwrap_or_else(|e| panic!("{ok}: {e}"));
+        }
+        let err = BridgeConfig::from_env_with(|k| match k {
+            "ESCUREL_BRIDGE_PRINCIPAL_TEMPLATE" => Some("everyone".into()),
+            _ => minimal(k),
+        })
+        .unwrap_err();
+        assert!(err.to_string().contains("must name the person"), "{err}");
     }
 
     #[test]

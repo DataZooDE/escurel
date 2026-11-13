@@ -408,24 +408,31 @@ impl ExtraIssuer {
     /// bot's app id, `serviceurl`) for the chat bridge — so the test spells
     /// the claims and still never imports `jsonwebtoken` itself.
     pub fn sign(&self, claims: &serde_json::Value) -> String {
+        self.sign_with_kid(claims, TEST_KID)
+    }
+
+    /// [`Self::sign`] under another `kid` — for a stand-in that publishes
+    /// this issuer's public key under kids of its own ([`Self::public_jwk`]),
+    /// e.g. a Bot Framework JWKS whose keys carry `endorsements`.
+    pub fn sign_with_kid(&self, claims: &serde_json::Value, kid: &str) -> String {
         let mut header = Header::new(Algorithm::RS256);
-        header.kid = Some(TEST_KID.to_owned());
+        header.kid = Some(kid.to_owned());
         let key = EncodingKey::from_rsa_pem(&self.inner.keys.private_pem).expect("rsa pem parses");
         encode(&header, claims, &key).expect("jwt sign")
     }
+
+    /// This issuer's public key as one RS256 JWK under `kid`.
+    pub fn public_jwk(&self, kid: &str) -> serde_json::Value {
+        jwk(self.inner.keys, kid)
+    }
+}
+
+fn jwk(k: &Keys, kid: &str) -> serde_json::Value {
+    json!({ "kid": kid, "kty": "RSA", "alg": "RS256", "use": "sig", "n": k.n_b64, "e": k.e_b64 })
 }
 
 async fn mount_jwks(server: &MockServer, k: &Keys) {
-    let jwks = json!({
-        "keys": [{
-            "kid": TEST_KID,
-            "kty": "RSA",
-            "alg": "RS256",
-            "use": "sig",
-            "n": k.n_b64,
-            "e": k.e_b64,
-        }]
-    });
+    let jwks = json!({ "keys": [jwk(k, TEST_KID)] });
     Mock::given(method("GET"))
         .and(path(format!(
             "{TEST_ISSUER_PATH}/protocol/openid-connect/certs"

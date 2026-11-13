@@ -272,13 +272,16 @@ ESCUREL_BRIDGE_GATEWAY_URL=<gateway_url> ESCUREL_BRIDGE_TENANT=<tenant> \
 ESCUREL_BRIDGE_AUTH_ISSUER=<issuer_url> ESCUREL_BRIDGE_AUTH_KID=<kid> \
 ESCUREL_BRIDGE_AUTH_SIGNING_KEY=<signing_key> \
 ESCUREL_BRIDGE_TEAMS_APP_ID=<bot app id> ESCUREL_BRIDGE_TEAMS_APP_PASSWORD=<secret> \
+ESCUREL_BRIDGE_TEAMS_ALLOWED_TENANTS=<entra tenant id> \
 ESCUREL_BRIDGE_PRINCIPAL_TEMPLATE='user:{aadObjectId}' ESCUREL_BRIDGE_STATE_PATH=./bridge.duckdb \
   target/debug/escurel-chat-bridge          # POST /api/messages on :3978
 ```
 
-The tenant needs the chat corpus (`conversation` + `chat`). The principal template must give the
-person's own token `sub`, because the bridge signs a token for that subject and acts as them. Only
-1:1 chats are answered. A real Teams tenant needs an Entra app and an Azure Bot pointing at a public
+The tenant needs the chat corpus (`conversation` + `chat`). The principal template is required and
+must name `{aadObjectId}` or `{userId}` (the bridge refuses a template that maps everyone to one
+subject); it must give the person's own token `sub`, because the bridge signs a token for that
+subject and acts as them. Only explicitly `personal` (1:1) chats from an allowed Entra tenant on the
+`msteams` channel are answered. A real Teams tenant needs an Entra app and an Azure Bot pointing at a public
 `https://…/api/messages`. A test replaces Microsoft with local HTTP stand-ins: OpenID metadata +
 JWKS (`ESCUREL_BRIDGE_TEAMS_OPENID_METADATA_URL`), the token endpoint
 (`ESCUREL_BRIDGE_TEAMS_TOKEN_URL`) and a connector at the activity's `serviceUrl`, as

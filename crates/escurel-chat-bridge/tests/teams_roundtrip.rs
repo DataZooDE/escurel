@@ -29,6 +29,11 @@ const BF_ISSUER: &str = "https://api.botframework.com";
 const ALICE_AAD: &str = "alice-aad-oid";
 const ALICE: &str = "user:alice-aad-oid";
 const CONVERSATION_ID: &str = "a:1teams-personal-chat;messageid=1";
+const ENTRA_TENANT: &str = "entra-tenant";
+/// The stand-in JWKS publishes the test key twice: endorsed for Teams, and
+/// endorsed only for another Bot Framework channel.
+const TEAMS_KID: &str = "bf-teams";
+const WEBCHAT_KID: &str = "bf-webchat";
 
 /// A `document` skill taking plain text, so an attachment has somewhere to
 /// go; each person owns the memos they upload.
@@ -59,8 +64,13 @@ impl BotFramework {
         let seen = Arc::new(Mutex::new(Seen::default()));
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let base = format!("http://{}", listener.local_addr().unwrap());
-        let metadata = json!({ "issuer": BF_ISSUER, "jwks_uri": issuer.jwks_url(),
+        let metadata = json!({ "issuer": BF_ISSUER, "jwks_uri": format!("{base}/jwks"),
             "id_token_signing_alg_values_supported": ["RS256"] });
+        let mut teams_key = issuer.public_jwk(TEAMS_KID);
+        teams_key["endorsements"] = json!(["msteams"]);
+        let mut webchat_key = issuer.public_jwk(WEBCHAT_KID);
+        webchat_key["endorsements"] = json!(["webchat"]);
+        let jwks = json!({ "keys": [teams_key, webchat_key] });
 
         async fn token(State(seen): State<Arc<Mutex<Seen>>>, body: String) -> axum::Json<Value> {
             seen.lock().unwrap().token_requests.push(body);
@@ -98,6 +108,13 @@ impl BotFramework {
                     async move { axum::Json(m) }
                 }),
             )
+            .route(
+                "/jwks",
+                get(move || {
+                    let k = jwks.clone();
+                    async move { axum::Json(k) }
+                }),
+            )
             .route("/token", post(token))
             .route("/v3/conversations/{*rest}", post(activity))
             .route("/files/memo.txt", get(file))
@@ -110,14 +127,21 @@ impl BotFramework {
 
     /// A channel token as the Bot Framework signs it for this bot.
     fn token(&self, audience: &str) -> String {
+        self.token_with_kid(audience, TEAMS_KID)
+    }
+
+    fn token_with_kid(&self, audience: &str, kid: &str) -> String {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_secs();
-        self.issuer.sign(&json!({
-            "iss": BF_ISSUER, "aud": audience, "serviceurl": self.base,
-            "nbf": now - 5, "iat": now - 5, "exp": now + 600,
-        }))
+        self.issuer.sign_with_kid(
+            &json!({
+                "iss": BF_ISSUER, "aud": audience, "serviceurl": self.base,
+                "nbf": now - 5, "iat": now - 5, "exp": now + 600,
+            }),
+            kid,
+        )
     }
 
     /// The `message` activities sent back (typing excluded), in order.
@@ -149,7 +173,7 @@ impl BotFramework {
             "from": { "id": "29:alice", "name": "Alice", "aadObjectId": ALICE_AAD },
             "recipient": { "id": format!("28:{APP_ID}"), "name": "escurel" },
             "conversation": { "id": CONVERSATION_ID, "conversationType": "personal",
-                              "tenantId": "entra-tenant" },
+                              "tenantId": ENTRA_TENANT },
         })
     }
 }
@@ -208,6 +232,10 @@ impl Bridge {
             ("ESCUREL_BRIDGE_TYPING_INTERVAL", "200ms".to_owned()),
             ("ESCUREL_BRIDGE_POLL_INTERVAL", "100ms".to_owned()),
             ("ESCUREL_BRIDGE_TEAMS_APP_ID", APP_ID.to_owned()),
+            (
+                "ESCUREL_BRIDGE_TEAMS_ALLOWED_TENANTS",
+                format!("some-other-tenant,{ENTRA_TENANT}"),
+            ),
             (
                 "ESCUREL_BRIDGE_TEAMS_APP_PASSWORD",
                 "not-a-real-secret".to_owned(),
@@ -488,6 +516,66 @@ async fn a_bad_signature_or_a_foreign_audience_is_refused_and_nothing_is_capture
         "no capture on a refused activity"
     );
     assert!(w.bf.activity_types().is_empty(), "nothing sent back");
+}
+
+#[tokio::test]
+async fn only_a_teams_personal_chat_from_an_allowed_tenant_is_answered() {
+    let w = world(0).await;
+    let token = w.bf.token(APP_ID);
+
+    // Another Bot Framework channel this bot is enabled on, on a key the
+    // JWKS endorses for Teams.
+    let mut webchat = w.bf.message("act-c", "Which customers renew?");
+    webchat["channelId"] = json!("webchat");
+    // A genuine Teams activity, signed with a key endorsed only for webchat.
+    let unendorsed = w.bf.token_with_kid(APP_ID, WEBCHAT_KID);
+    // A person in an Entra tenant the deployment does not serve, by either
+    // field Teams names it with.
+    let mut foreign = w.bf.message("act-t", "Which customers renew?");
+    foreign["conversation"]["tenantId"] = json!("foreign-tenant");
+    let mut foreign_channel_data = w.bf.message("act-t2", "Which customers renew?");
+    foreign_channel_data["conversation"]
+        .as_object_mut()
+        .unwrap()
+        .remove("tenantId");
+    foreign_channel_data["channelData"] = json!({ "tenant": { "id": "foreign-tenant" } });
+    // A conversation that does not say it is 1:1.
+    let mut untyped = w.bf.message("act-u", "Which customers renew?");
+    untyped["conversation"]
+        .as_object_mut()
+        .unwrap()
+        .remove("conversationType");
+    let mut group = w.bf.message("act-g", "Which customers renew?");
+    group["conversation"]["conversationType"] = json!("groupChat");
+
+    w.bridge.post(Some(&token), &webchat).await;
+    w.bridge
+        .post(
+            Some(&unendorsed),
+            &w.bf.message("act-e", "Which customers renew?"),
+        )
+        .await;
+    for activity in [&foreign, &foreign_channel_data, &untyped, &group] {
+        w.bridge.post(Some(&token), activity).await;
+    }
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    assert!(
+        chat_events(&w.gw).await.is_empty(),
+        "none of them is captured: {:#?}",
+        chat_events(&w.gw).await
+    );
+    assert!(w.bf.activity_types().is_empty(), "nothing sent back");
+
+    // The same world answers a proper one: the refusals are the reason.
+    let mut allowed = w.bf.message("act-ok", "Which customers renew?");
+    allowed["conversation"]
+        .as_object_mut()
+        .unwrap()
+        .remove("tenantId");
+    allowed["channelData"] = json!({ "tenant": { "id": ENTRA_TENANT } });
+    assert_eq!(w.bridge.post(Some(&token), &allowed).await, StatusCode::OK);
+    wait_for_replies(&w.bf, 1, Duration::from_secs(60)).await;
+    assert_eq!(chat_events(&w.gw).await.len(), 1);
 }
 
 #[tokio::test]

@@ -6,6 +6,13 @@
 //! claim must be the activity's `serviceUrl` — so a token for one connector
 //! cannot carry an activity that points the reply somewhere else. That bound
 //! `serviceUrl` is the only host the bridge ever sends its connector bearer to.
+//! The activity must be a Teams one (`channelId: msteams`), and when the JWKS
+//! lists the signing key's `endorsements` they must include `msteams`, so a
+//! token the Bot Framework issued for another channel this bot is enabled on
+//! cannot enter the Teams identity path.
+//!
+//! Only a person in an allowed Entra tenant, in an explicitly `personal`
+//! conversation, is answered; everything else is ignored.
 //!
 //! Outbound: a client-credentials token from the configured token endpoint,
 //! then `POST {serviceUrl}/v3/conversations/{id}/activities[/{replyToId}]`.
@@ -27,6 +34,8 @@ const LEEWAY_SECS: u64 = 300;
 const JWKS_TTL: Duration = Duration::from_secs(3600);
 /// Renew the connector token this long before it expires.
 const TOKEN_MARGIN: Duration = Duration::from_secs(300);
+/// The only Bot Framework channel this implementation answers.
+const CHANNEL_ID: &str = "msteams";
 /// The Teams file-consent attachment that carries a pre-authorised download URL.
 const TEAMS_FILE: &str = "application/vnd.microsoft.teams.file.download.info";
 
@@ -157,12 +166,19 @@ impl ChatChannel for TeamsChannel {
         let kid = header
             .kid
             .ok_or_else(|| InboundError::BadToken("no kid".into()))?;
-        let key = self
+        let (key, endorsements) = self
             .keys()
             .await?
-            .key_for_kid(&kid)
+            .endorsed_key_for_kid(&kid)
             .await
             .map_err(|e| InboundError::BadToken(e.to_string()))?;
+        if let Some(channels) = &endorsements
+            && !channels.iter().any(|c| c == CHANNEL_ID)
+        {
+            return Err(InboundError::BadToken(format!(
+                "signing key `{kid}` is not endorsed for {CHANNEL_ID}"
+            )));
+        }
         let mut validation = Validation::new(Algorithm::RS256);
         validation.set_issuer(&[&self.cfg.issuer]);
         validation.set_audience(&[&self.cfg.app_id]);
@@ -173,6 +189,12 @@ impl ChatChannel for TeamsChannel {
             .claims;
         let activity: Value =
             serde_json::from_slice(body).map_err(|e| InboundError::Malformed(e.to_string()))?;
+        if activity["channelId"].as_str() != Some(CHANNEL_ID) {
+            return Err(InboundError::BadToken(format!(
+                "not a {CHANNEL_ID} activity (channelId {})",
+                activity["channelId"]
+            )));
+        }
         let bound = claims["serviceurl"]
             .as_str()
             .or_else(|| claims["serviceUrl"].as_str())
@@ -198,12 +220,20 @@ impl ChatChannel for TeamsChannel {
             return None;
         }
         // A page chat is private to one person; a group or channel reply
-        // would show one member's answer to everyone in it.
-        let kind = a["conversation"]["conversationType"]
-            .as_str()
-            .unwrap_or("personal");
-        if kind != "personal" {
-            tracing::info!(conversation_type = kind, "teams: not a 1:1 chat, ignored");
+        // would show one member's answer to everyone in it. Only an explicit
+        // `personal` counts: a missing type is not evidence of a 1:1 chat.
+        let kind = a["conversation"]["conversationType"].as_str();
+        if kind != Some("personal") {
+            tracing::info!(conversation_type = ?kind, "teams: not a 1:1 chat, ignored");
+            return None;
+        }
+        let tenant = text(&a["conversation"]["tenantId"])
+            .or_else(|| text(&a["channelData"]["tenant"]["id"]));
+        if !tenant
+            .as_deref()
+            .is_some_and(|t| self.cfg.allowed_tenants.iter().any(|a| a == t))
+        {
+            tracing::warn!(tenant = ?tenant, "teams: sender's tenant is not allowed, ignored");
             return None;
         }
         Some(InboundTurn {
@@ -212,8 +242,7 @@ impl ChatChannel for TeamsChannel {
             user: UserRef {
                 id: from_id,
                 directory_id: text(&a["from"]["aadObjectId"]),
-                directory_tenant: text(&a["conversation"]["tenantId"])
-                    .or_else(|| text(&a["channelData"]["tenant"]["id"])),
+                directory_tenant: tenant,
                 display_name: text(&a["from"]["name"]),
             },
             text: strip_mentions(a["text"].as_str().unwrap_or_default()),

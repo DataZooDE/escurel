@@ -41,6 +41,10 @@ pub struct JwkRaw {
     /// EC y-coordinate (base64url).
     #[serde(default)]
     pub y: Option<String>,
+    /// The channels this key may sign for — a Bot Framework extension: its
+    /// JWKS lists, per key, the channel ids (`msteams`, …) the key endorses.
+    #[serde(default)]
+    pub endorsements: Option<Vec<String>>,
 }
 
 /// `reqwest` has no default request timeout — see the substrate finding
@@ -63,9 +67,14 @@ pub struct JwksCache {
     client: reqwest::Client,
 }
 
+struct CachedKey {
+    key: DecodingKey,
+    endorsements: Option<Vec<String>>,
+}
+
 #[derive(Default)]
 struct CacheState {
-    keys: HashMap<String, DecodingKey>,
+    keys: HashMap<String, CachedKey>,
     fetched_at: Option<Instant>,
 }
 
@@ -111,24 +120,35 @@ impl JwksCache {
     /// Look up a decoding key by `kid`. Refreshes the JWKS on
     /// miss or when the TTL has expired.
     pub async fn key_for_kid(&self, kid: &str) -> Result<DecodingKey, JwksCacheError> {
+        Ok(self.endorsed_key_for_kid(kid).await?.0)
+    }
+
+    /// [`Self::key_for_kid`] plus the key's `endorsements` as the JWKS
+    /// published them (`None` when it published none).
+    pub async fn endorsed_key_for_kid(
+        &self,
+        kid: &str,
+    ) -> Result<(DecodingKey, Option<Vec<String>>), JwksCacheError> {
+        let found = |state: &CacheState| {
+            state
+                .keys
+                .get(kid)
+                .map(|k| (k.key.clone(), k.endorsements.clone()))
+        };
         // Fast path: TTL-fresh cached lookup.
         {
             let state = self.state.read().await;
             if let Some(fetched_at) = state.fetched_at
                 && fetched_at.elapsed() < self.ttl
-                && let Some(k) = state.keys.get(kid)
+                && let Some(k) = found(&state)
             {
-                return Ok(k.clone());
+                return Ok(k);
             }
         }
         // Slow path: refresh, then look up.
         self.refresh().await?;
         let state = self.state.read().await;
-        state
-            .keys
-            .get(kid)
-            .cloned()
-            .ok_or_else(|| JwksCacheError::UnknownKid(kid.to_owned()))
+        found(&state).ok_or_else(|| JwksCacheError::UnknownKid(kid.to_owned()))
     }
 
     /// Force a refresh of the JWKS, replacing the cached set.
@@ -155,8 +175,14 @@ impl JwksCache {
         for jwk in jwks.keys {
             let kid = jwk.kid.clone();
             match decoding_key_from_jwk(&jwk) {
-                Ok(k) => {
-                    new_keys.insert(kid, k);
+                Ok(key) => {
+                    new_keys.insert(
+                        kid,
+                        CachedKey {
+                            key,
+                            endorsements: jwk.endorsements.clone(),
+                        },
+                    );
                 }
                 Err(_) => {
                     // Skip key shapes we don't support today; a
