@@ -356,3 +356,32 @@ async fn relabelling_a_skill_as_an_instance_removes_its_keys() {
     .await;
     p.shutdown().await;
 }
+
+#[tokio::test]
+async fn a_machine_with_the_admin_role_never_writes_a_pack() {
+    let p = gateway(WriteAclMode::Enforce).await;
+    let run = p.mint_token_for_run(TENANT, Role::Admin, "agent:bot", "run-1", "evt-1");
+    let packs = [
+        (
+            "import_pack",
+            json!({ "tenant_id": TENANT, "manifest": {}, "tarball_b64": "" }),
+        ),
+        (
+            "rebase_pack",
+            json!({ "tenant_id": TENANT, "manifest": {}, "tarball_b64": "" }),
+        ),
+        (
+            "unsubscribe_pack",
+            json!({ "tenant_id": TENANT, "pack_id": "crm" }),
+        ),
+    ];
+    for (tool, args) in packs {
+        let body = rpc(&p, &run, tool, args.clone()).await;
+        assert_eq!(body["error"]["code"], -32003, "{tool}: {body}");
+        assert_eq!(body["error"]["data"]["code"], "forbidden", "{tool}: {body}");
+        // A person with the same role gets past the caller check (and fails on the bogus pack).
+        let person = rpc(&p, &admin(&p), tool, args).await;
+        assert_ne!(person["error"]["code"], -32003, "{tool}: {person}");
+    }
+    p.shutdown().await;
+}

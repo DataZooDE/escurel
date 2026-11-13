@@ -1386,6 +1386,16 @@ async fn dispatch_tools_call(
         "export_pack" => {
             return tool_export_pack(state, params.arguments).await;
         }
+        "import_pack" | "rebase_pack" | "unsubscribe_pack" if caller.is_machine() => {
+            // A pack lands, replaces or removes skill pages wholesale, authority keys included, and a
+            // machine never changes those (the skill-authority gate) — admin role or not.
+            return Err(JsonRpcError::forbidden(format!(
+                "`{}` changes skill pages and their authority keys; a machine caller (an agent \
+                 run, a narrowed or delegated token) never does, admin role or not. Ask a person \
+                 with `escurel:admin`",
+                params.name
+            )));
+        }
         "import_pack" => {
             return tool_import_pack(state, params.arguments).await;
         }

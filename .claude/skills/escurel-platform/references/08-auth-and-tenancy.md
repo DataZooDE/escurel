@@ -290,8 +290,10 @@ draft's author; a changeset refuses before any member lands), the
 `merge_branch` (refused before any page lands). It judges what would
 **persist** — after a stale `base_version` auto-merge, the merged bytes, not
 the bytes you sent — against the page as stored when the write runs, so a
-write based on an older head cannot revert an admin's newer change. Pack
-import / rebase are admin tools already.
+write based on an older head cannot revert an admin's newer change.
+`import_pack`, `rebase_pack` and `unsubscribe_pack` replace skill pages
+wholesale, so they need a **person** with `escurel:admin`: a machine caller
+is refused (`-32003`, `data.code: forbidden`) whatever its role.
 
 The refusal is a JSON-RPC error `-32003` with `data: {code:
 "authority_keys_need_admin", keys: [...]}` and a message naming the keys.
