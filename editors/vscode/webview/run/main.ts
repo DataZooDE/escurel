@@ -22,6 +22,10 @@ export function connectRunWebview(api: RunApi, el: EscurelRunDetail): () => void
       el.error = undefined;
     } else if (message.type === 'run-error') {
       el.error = { message: message.message, canReconnect: message.canReconnect };
+    } else if (message.type === 'run-transcript') {
+      el.transcript = message.state;
+    } else if (message.type === 'steer-result') {
+      el.steerReply = { sent: message.sent, message: message.message };
     }
   };
   el.addEventListener('escurel-message', forward);

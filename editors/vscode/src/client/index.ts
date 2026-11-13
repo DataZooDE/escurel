@@ -25,6 +25,9 @@ import type {
   ExpandRequest,
   ExpandResponse,
   FetchBlobResponse,
+  FetchRunTranscriptResponse,
+  UsageReportRequest,
+  UsageReportResponse,
   GetRunToolCallsRequest,
   GetRunToolCallsResponse,
   ListEventsRequest,
@@ -203,6 +206,16 @@ export class EscurelClient {
   /** The ORIGINAL file behind a `document` page (base64), or `blob: null` when absent or hidden. */
   fetchBlob(pageId: string): Promise<FetchBlobResponse> {
     return this.call('fetch_blob', { page_id: pageId });
+  }
+
+  /** A finished run's transcript; a refusal's `data.code` says why there is none (see runs/transcript.ts). */
+  fetchRunTranscript(runId: string): Promise<FetchRunTranscriptResponse> {
+    return this.call('fetch_blob', { run_id: runId });
+  }
+
+  /** Admin: what runs cost in a window, grouped. A non-admin is refused `admin_required`. */
+  usageReport(req: UsageReportRequest): Promise<UsageReportResponse> {
+    return this.call('usage_report', { ...req });
   }
 
   updatePage(req: UpdatePageRequest): Promise<UpdatePageResponse> {

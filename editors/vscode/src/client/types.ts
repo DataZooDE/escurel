@@ -144,6 +144,44 @@ export interface FetchBlobResponse {
   blob: { content_type: string; size: number; bytes_base64: string } | null;
 }
 
+/** `fetch_blob{run_id}`: the run's transcript as JSONL (`application/x-ndjson`). */
+export interface FetchRunTranscriptResponse {
+  blob: { run_id: string; content_type: string; size: number; bytes_base64: string } | null;
+}
+
+export type UsageDimension = 'skill' | 'agent' | 'page' | 'model' | 'day';
+
+export interface UsageReportRequest {
+  group_by: UsageDimension[];
+  /** RFC 3339, inclusive. */
+  since?: string;
+  /** RFC 3339, exclusive. */
+  until?: string;
+  skill?: string;
+}
+
+export interface UsageTotals {
+  runs: number;
+  /** Runs per terminal status (`processed`, `failed`, `dead_letter`, …). */
+  by_status: Record<string, number>;
+  input_tokens: number;
+  output_tokens: number;
+  cost_usd: number;
+}
+
+export interface UsageReportRow extends UsageTotals {
+  group: Partial<Record<UsageDimension, string | null>>;
+}
+
+/** `usage_report` (admin): usage and cost folded from every `run-finished` in the window. */
+export interface UsageReportResponse {
+  group_by: UsageDimension[];
+  since?: string | null;
+  until?: string | null;
+  rows: UsageReportRow[];
+  total: UsageTotals;
+}
+
 export interface ExpandResponse {
   /** `null` when the page does not exist or the caller may not read it (absence, never a leak). */
   page: PageRef | null;

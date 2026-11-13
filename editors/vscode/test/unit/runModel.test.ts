@@ -285,3 +285,76 @@ describe('what a call asked and got back', () => {
     expect(row!.argsSummary!.length).toBeLessThanOrEqual(2300);
   });
 });
+
+describe('what a run cost, what it kept and who steered it (#820–#822)', () => {
+  const ev = (title: string, body: unknown, extra: Partial<Event> = {}): Event =>
+    ({
+      event_id: `run:r1:${title}`,
+      at: '2026-11-13T06:00:00Z',
+      source: 'escurel-runner',
+      mime: 'application/json',
+      label_skill: 'escurel:run',
+      instance_page_id: 'markdown/instances/order/o1.md',
+      status: 'processed',
+      title,
+      body: JSON.stringify(body),
+      provenance: { runner: { run_id: 'r1', harness: 'echo' } },
+      kind: 'system',
+      root_event_id: 'e1',
+      run_id: 'r1',
+      ...extra,
+    }) as Event;
+
+  it('reads usage and the stored transcript off run-finished', () => {
+    const view = buildRunView(undefined, [
+      ev('run-started', {}),
+      ev('run-finished', {
+        status: 'processed',
+        usage: {
+          input_tokens: 1200,
+          output_tokens: 340,
+          cost_usd: 0.0123,
+          model: 'claude-sonnet-4',
+        },
+        transcript: { blob_id: 'b', records: 12, bytes: 3400 },
+      }),
+    ]);
+    expect(view.usage).toEqual({
+      inputTokens: 1200,
+      outputTokens: 340,
+      costUsd: 0.0123,
+      model: 'claude-sonnet-4',
+    });
+    expect(view.transcript).toEqual({ records: 12, bytes: 3400 });
+  });
+
+  it('has no usage or transcript when the run reported none', () => {
+    const view = buildRunView(undefined, [
+      ev('run-finished', { status: 'processed', usage: null, transcript: null }),
+    ]);
+    expect(view.usage).toBeUndefined();
+    expect(view.transcript).toBeUndefined();
+  });
+
+  it('knows the harness of a live run from its own run-started, without a lineage', () => {
+    expect(buildRunView(undefined, [ev('run-started', {})]).harness).toBe('echo');
+  });
+
+  it('lists the messages people sent, in order, once each', () => {
+    const inject = (n: number, text: string) =>
+      ev(
+        'run-inject',
+        { n, text, bytes: text.length, requested_by: 'ops:jo' },
+        { event_id: `run:r1:inject:${n}`, at: `2026-11-13T06:00:0${n}Z` },
+      );
+    const view = buildRunView(undefined, [
+      inject(2, 'second'),
+      inject(1, 'use\n2027'),
+      inject(2, 'second'),
+    ]);
+    expect(view.injections).toEqual([
+      { n: 1, text: 'use\n2027', requestedBy: 'ops:jo', at: '2026-11-13T06:00:01.000Z' },
+      { n: 2, text: 'second', requestedBy: 'ops:jo', at: '2026-11-13T06:00:02.000Z' },
+    ]);
+  });
+});

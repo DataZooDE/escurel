@@ -1,5 +1,12 @@
 import type { Event, GetRunToolCallsResponse, LineageNode } from '../client';
-import type { PlanStep, RunAttempt, RunView, ToolCallRow } from '../shared/protocol';
+import type {
+  PlanStep,
+  RunAttempt,
+  RunInjection,
+  RunUsage,
+  RunView,
+  ToolCallRow,
+} from '../shared/protocol';
 import { parseGatewayTime, toIsoUtc } from '../shared/time';
 import { cleanBlock, cleanText, stripUnsafe } from '../shared/untrustedText';
 
@@ -45,6 +52,41 @@ function planSteps(value: unknown): PlanStep[] | undefined {
   return steps.length ? steps : undefined;
 }
 
+function usageOf(value: unknown): RunUsage | undefined {
+  if (value === null || typeof value !== 'object') return undefined;
+  const u = value as Body;
+  const inputTokens = numberValue(u.input_tokens);
+  const outputTokens = numberValue(u.output_tokens);
+  if (inputTokens === undefined && outputTokens === undefined) return undefined;
+  const costUsd = numberValue(u.cost_usd);
+  const model = stringValue(u.model);
+  return {
+    inputTokens: inputTokens ?? 0,
+    outputTokens: outputTokens ?? 0,
+    ...(costUsd !== undefined ? { costUsd } : {}),
+    ...(model ? { model } : {}),
+  };
+}
+
+function transcriptOf(value: unknown): RunView['transcript'] {
+  if (value === null || typeof value !== 'object') return undefined;
+  const t = value as Body;
+  if (typeof t.blob_id !== 'string' || !t.blob_id) return undefined;
+  return { records: numberValue(t.records) ?? 0, bytes: numberValue(t.bytes) ?? 0 };
+}
+
+/** The harness a run event's runner block names: a live run has no lineage harness to read yet. */
+function runnerHarness(events: Event[]): string | undefined {
+  for (const event of events) {
+    const runner = event.provenance?.runner;
+    if (runner && typeof runner === 'object') {
+      const harness = stringValue((runner as Body).harness);
+      if (harness) return harness;
+    }
+  }
+  return undefined;
+}
+
 /**
  * The lineage node owns summary attributes; final rows fill gaps and settle the status.
  */
@@ -54,11 +96,25 @@ export function buildRunView(runNode: LineageNode | undefined, runEvents: Event[
   let progressPosition = -1;
   let finished: Body = {};
   const attempts: RunAttempt[] = [];
+  const injections = new Map<number, RunInjection>();
 
   for (const [position, event] of runEvents.entries()) {
     if (event.label_skill !== 'escurel:run') continue;
     const body = bodyOf(event);
-    if (event.title === 'run-attempt') {
+    if (event.title === 'run-inject') {
+      const n = numberValue(body.n);
+      // The person's own message, kept as they wrote it (line breaks too), only made safe to show.
+      if (n !== undefined && typeof body.text === 'string' && !injections.has(n)) {
+        const requestedBy = stringValue(body.requested_by);
+        const at = toIsoUtc(event.at);
+        injections.set(n, {
+          n,
+          text: cleanBlock(body.text, 8192),
+          ...(requestedBy ? { requestedBy } : {}),
+          ...(at ? { at } : {}),
+        });
+      }
+    } else if (event.title === 'run-attempt') {
       const n = numberValue(body.attempt);
       if (n !== undefined) {
         attempts.push({
@@ -86,6 +142,8 @@ export function buildRunView(runNode: LineageNode | undefined, runEvents: Event[
   }
 
   attempts.sort((a, b) => a.n - b.n);
+  const usage = usageOf(finished.usage);
+  const transcript = transcriptOf(finished.transcript);
   const status = (stringValue(finished.status) ?? stringValue(runNode?.state) ?? 'running')
     .trim()
     .toLowerCase();
@@ -110,7 +168,8 @@ export function buildRunView(runNode: LineageNode | undefined, runEvents: Event[
       : ['running', 'processed', 'planned'].includes(status)
         ? 'run'
         : 'neutral',
-    harness: stringValue(runNode?.harness) ?? stringValue(finished.harness),
+    harness:
+      stringValue(runNode?.harness) ?? stringValue(finished.harness) ?? runnerHarness(runEvents),
     model: stringValue(runNode?.model) ?? stringValue(finished.model),
     autonomy: stringValue(runNode?.autonomy) ?? stringValue(finished.autonomy),
     targetPageId: stringValue(runNode?.target_page_id) ?? stringValue(finished.target_page_id),
@@ -127,6 +186,9 @@ export function buildRunView(runNode: LineageNode | undefined, runEvents: Event[
     toolCallCount: numberValue(runNode?.tool_calls) ?? numberValue(finished.tool_calls),
     calls: [],
     nextAfter: null,
+    ...(usage ? { usage } : {}),
+    ...(transcript ? { transcript } : {}),
+    injections: [...injections.values()].sort((a, b) => a.n - b.n),
   };
 }
 

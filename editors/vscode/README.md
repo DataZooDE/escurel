@@ -17,7 +17,8 @@ degradations are tracked in `docs/BACKEND_GAPS.md`.
   what is running now (cancel it), what waits for you (approve the plan), what needs attention (the reason on
   its own line; retry it), and the history of past runs, paged and filterable, with a day's summary on top.
   One click opens a run: its plan, attempts and a readable trace of every tool call, with a link to what the
-  run produced. An admin can also requeue a dead letter and pause or resume agents; a human sees those
+  run produced, what it cost, and a Transcript tab that replays everything the agent did, step by step. A live
+  run whose agent takes messages (claude, echo) can be steered: your message becomes its next turn. An admin can also requeue a dead letter and pause or resume agents; a human sees those
   controls deactivated, with the reason, not hidden.
 
 ## Extending Escurel

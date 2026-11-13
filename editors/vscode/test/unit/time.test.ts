@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { formatClock, formatDateTime, formatDuration, toIsoUtc } from '../../src/shared/time';
+import {
+  formatClock,
+  formatDateTime,
+  formatDuration,
+  formatElapsed,
+  toIsoUtc,
+} from '../../src/shared/time';
 
 // The gateway speaks two timestamp dialects (recorded in test/unit/fixtures/lineage/):
 // RFC 3339 with `Z` almost everywhere, and `run-attempt`'s `2026-09-29 02:59:08.035678` —
@@ -41,5 +47,15 @@ describe('gateway time', () => {
     expect(formatDuration('2026-09-29T06:12:10Z', undefined)).toBe('');
     // A clock skew that puts the end first is not a negative duration.
     expect(formatDuration('2026-09-29T06:12:10Z', '2026-09-29T06:12:09Z')).toBe('0 ms');
+  });
+});
+
+describe('formatElapsed', () => {
+  it('keeps a tenth under 10 s only when asked, and reads minutes', () => {
+    expect(formatElapsed(1500)).toBe('2 s');
+    expect(formatElapsed(1500, { tenths: true })).toBe('1.5 s');
+    expect(formatElapsed(2000, { tenths: true })).toBe('2 s');
+    expect(formatElapsed(65_000, { tenths: true })).toBe('1 min 5 s');
+    expect(formatElapsed(-5)).toBe('0 ms');
   });
 });

@@ -8,6 +8,18 @@ derives its version from the tag (`vYYYY.MM.DD` → `YYYY.M.D`, leading zeros dr
 
 ### Added
 
+- **Run detail: transcript, cost and steering** (#820, #821, #822). A **Transcript** tab beside Details replays
+  what the agent did (`fetch_blob {run_id}`), read only when the tab is first opened: one row per tool call,
+  result, message or error, with its name, summary, time from the first record and attempt; toggle buttons filter
+  by kind and **Step through** walks the replay a record at a time (Previous / Next / Show all, or the arrow keys,
+  Home and End on the list). A run still working, one whose agent keeps no transcript, one past the retention
+  (`transcript_expired`) and one not readable (`run_not_found`) each say so in words. A **cost chip** in the
+  header reads `run-finished.usage` (`12.4k in · 860 out · $0.042`, the model in the tooltip and the accessible
+  name). While a run is live and its harness takes messages (`claude`, `echo`), **Steer this run** sends a message
+  as an `inject` run-control (at most 8 KiB, checked before sending; Ctrl+Enter sends) and says the runner's
+  answer: `injected`, `unsupported` or `not_live`; for another harness one line says it cannot be steered. Sent
+  messages (`run-inject`) are listed under **Messages sent to the run**, as written, with who sent them.
+
 - **Inbox row decorator for companion extensions**: `registerInboxDecorator(skill, { decorate?, emptyMessage? })`
   (API v1, additive). `decorate(row, rows)` returns data only (`badge`, `description`, `status`, `hidden`) for the
   rows of one skill; the status picks the icon, sorts decided rows after open ones and feeds the Inbox view badge

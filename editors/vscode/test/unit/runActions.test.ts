@@ -25,6 +25,7 @@ const base = {
   plan: [],
   calls: [],
   nextAfter: null,
+  injections: [],
 } as RunView & { triggerEventId: string };
 const view = (status: string, admin: 'admin' | 'not-admin' = 'admin') => ({
   ...base,

@@ -49,8 +49,17 @@ export function formatDuration(start: unknown, end: unknown): string {
   const b = parseGatewayTime(end);
   if (!a || !b) return '';
   // A skewed clock can put the end first; that is not a negative duration.
-  const ms = Math.max(0, b.getTime() - a.getTime());
+  return formatElapsed(b.getTime() - a.getTime());
+}
+
+/**
+ * Milliseconds at the scale a person reads them: `175 ms`, `42 s`, `1 min 5 s`; with `tenths`, a
+ * time under 10 s keeps its tenth (`1.5 s`), where it tells close steps apart. Negative is zero.
+ */
+export function formatElapsed(raw: number, opts: { tenths?: boolean } = {}): string {
+  const ms = Math.max(0, Math.round(raw));
   if (ms < 1000) return `${ms} ms`;
+  if (opts.tenths && ms < 10_000 && ms % 1000 !== 0) return `${(ms / 1000).toFixed(1).replace(/\.0$/, '')} s`;
   const s = Math.round(ms / 1000);
   if (s < 60) return `${s} s`;
   const rest = s % 60;
