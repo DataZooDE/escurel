@@ -7,10 +7,10 @@ import {
   type Page,
 } from '@playwright/test';
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
-import { mkdtempSync, readFileSync, mkdirSync, openSync, closeSync } from 'node:fs';
+import { mkdtempSync, readFileSync, mkdirSync, openSync, closeSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { createServer as createHttpServer, type Server as HttpServer } from 'node:http';
-import { homedir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
 /**
@@ -65,6 +65,26 @@ export interface Stack {
   geminiRequests: Record<string, unknown>[];
   /** Authenticated Anofox Evolve tool call when the cross-repository service fixture is enabled. */
   evolveCall: (name: string, args: Record<string, unknown>) => Promise<ToolResult>;
+}
+
+/**
+ * A short scripted agent stream for the echo harness (`ESCUREL_ECHO_TRANSCRIPT`). Beside the demo home,
+ * not in it: the launcher refuses a home it did not make.
+ */
+function echoTranscript(): string {
+  const path = join(mkdtempSync(join(tmpdir(), 'escurel-e2e-echo-')), 'transcript.jsonl');
+  writeFileSync(
+    path,
+    [
+      { kind: 'message', text: 'Reading the order and the supplier signal first.' },
+      { kind: 'tool_call', name: 'expand', args: { page_id: 'the order' } },
+      { kind: 'tool_result', name: 'expand', text: 'order read: 3 items, supplier Hoffmann' },
+      { kind: 'message', text: 'Drafting the fold for review.' },
+    ]
+      .map((t) => JSON.stringify({ transcript: t }))
+      .join('\n'),
+  );
+  return path;
 }
 
 // See playwright.config.ts: ESCUREL_E2E_SLOW stretches every wait on an overloaded machine.
@@ -218,6 +238,8 @@ export const test = base.extend<
         ESCUREL_CLI_BIN: join(bin, 'escurel'),
         ESCUREL_DEMO_S2D: s2d ? '1' : '0',
         ESCUREL_ECHO_SLEEP_MS: '6000',
+        // Every echo run prints this scripted stream, so each run stores a transcript to replay.
+        ESCUREL_ECHO_TRANSCRIPT: echoTranscript(),
         // No zoom: Playwright maps clicks into a nested webview with the page's own scale, and a zoomed
         // window (the demo's default) puts them on the wrong element.
         ESCUREL_DEMO_ZOOM: '0',

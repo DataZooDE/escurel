@@ -5,6 +5,16 @@ export const pane = (page: Page, title: string) =>
   page.locator('.pane', { has: page.locator('.pane-header', { hasText: title }) });
 
 /**
+ * A title action of the Runs view. Runs shares its container with Usage, Agents and Chat, so its
+ * actions sit on its own pane header, and VS Code shows them only while the header is hovered.
+ */
+export async function runsAction(page: Page, name: RegExp) {
+  const header = pane(page, 'Runs').locator('.pane-header').first();
+  await header.hover();
+  await header.getByRole('button', { name }).click();
+}
+
+/**
  * The tree views only render the rows in view (the list is virtualised), and the Knowledge tree now
  * holds folders, so a row may not exist until it is scrolled to. Scroll from the top, a step at a time,
  * until the row is rendered; no test depends on how tall the window happens to be.
