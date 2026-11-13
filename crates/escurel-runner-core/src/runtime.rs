@@ -14,7 +14,10 @@
 //!   starts it. The ledger stays the local idempotency authority.
 //!
 //! A gateway older than the claim tools answers `-32601`; the gate then
-//! admits everything it can route, which is the single-runner behaviour.
+//! admits everything it can route, which is the single-runner behaviour. A
+//! claim the gateway did not answer (timeout, transport, `5xx`) is retried on
+//! the next poll, never taken. Admission is one gateway call per inbox event,
+//! in series; bounded concurrency is a possible follow-up.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Mutex;
@@ -32,9 +35,8 @@ use serde_json::{Value, json};
 const SKILL_CACHE_TTL: Duration = Duration::from_secs(10);
 /// How long `<cli> --version` may take.
 const PROBE_TIMEOUT: Duration = Duration::from_secs(10);
-/// How long admission waits on the gateway before admitting as a lone
-/// runner would: a gateway that is down must not hold a trigger off the
-/// ledger (which keeps it until the gateway returns).
+/// How long admission waits on the gateway before leaving the event for the
+/// next poll.
 const ADMIT_CALL_TIMEOUT: Duration = Duration::from_secs(2);
 /// A version line is a label, not a log.
 const MAX_VERSION_LEN: usize = 120;
@@ -251,20 +253,36 @@ impl RuntimeGate {
         };
         match tokio::time::timeout(ADMIT_CALL_TIMEOUT, call).await {
             Ok(Ok(r)) => self.record(event_id, &r),
-            Ok(Err(e)) => {
+            Ok(Err(e)) if permanent_claim_refusal(&e) => {
                 let unsupported = matches!(e, Error::JsonRpc { code: -32601, .. });
                 self.no_answer(event_id, unsupported, &e)
             }
-            Err(_) => self.no_answer(event_id, false, &"claim_event timed out"),
+            Ok(Err(e)) => self.unanswered(event_id, &e),
+            Err(_) => self.unanswered(event_id, &"claim_event timed out"),
         }
     }
 
-    /// No answer is not a "no": a gateway that cannot be reached (the run
-    /// waits for it anyway), an event it does not store (a synthetic webhook),
-    /// an identity it will not let claim, or an image without the tool
-    /// (`unsupported`) all fall back to the single-runner behaviour — the
-    /// ledger alone decides. Only a lease another runner HOLDS keeps this
-    /// runner off an event.
+    /// The gateway did not answer the claim (slow, unreachable, failing):
+    /// another runner may hold or be taking the event, so do not start it;
+    /// the next poll asks again. The run could not progress without the
+    /// gateway anyway.
+    fn unanswered(&self, event_id: &str, e: &dyn std::fmt::Display) -> Admit {
+        self.tell_once("\0claim-unanswered", || {
+            tracing::warn!(
+                target: "escurel_runner",
+                event_id,
+                error = %e,
+                "claim_event gave no answer; the event waits for the next poll (logged once)"
+            );
+        });
+        Admit::Retry
+    }
+
+    /// A permanent refusal is not a "no": an event the gateway does not store
+    /// (a synthetic webhook), an identity it will not let claim, or an image
+    /// without the tool (`unsupported`) all fall back to the single-runner
+    /// behaviour — the ledger alone decides. Only a lease another runner HOLDS
+    /// keeps this runner off an event.
     fn no_answer(&self, event_id: &str, unsupported: bool, e: &dyn std::fmt::Display) -> Admit {
         if unsupported {
             self.claims_unsupported.store(true, Ordering::Relaxed);
@@ -404,6 +422,21 @@ pub async fn run_claim_holder(client: &Client, run_id: &str) -> Option<String> {
     looked.claim.map(|c| c.holder)
 }
 
+/// A claim refusal that no retry changes, after which the runner admits the
+/// event as a lone runner would: a gateway without the tool (`-32601`), an
+/// identity it will not let claim (`-32001` admin required, `-32003`
+/// forbidden, `401`/`403`), or an event it does not store / a malformed
+/// claim (`-32602`, e.g. `event_not_found` for a synthetic webhook event).
+/// Anything else — a timeout, a transport failure, a `5xx`/`429`, an
+/// internal error — may be the gateway being slow, and is retried.
+fn permanent_claim_refusal(e: &Error) -> bool {
+    match e {
+        Error::JsonRpc { code, .. } => matches!(code, -32601 | -32001 | -32003 | -32602),
+        Error::Http { status, .. } => matches!(status, 401 | 403),
+        _ => false,
+    }
+}
+
 /// Time left on a lease that lapses at `expires_at` (RFC 3339).
 fn remaining(expires_at: Option<&str>) -> Duration {
     expires_at
@@ -468,6 +501,67 @@ mod tests {
             out.insert(k.to_owned(), v);
         }
         Value::Object(out)
+    }
+
+    /// A gateway that does not answer (here: a closed port, a real
+    /// connection refusal) is not a gateway that has no leases: two runners
+    /// would both start the event. The claim is retried next poll.
+    #[tokio::test]
+    async fn a_claim_the_gateway_never_answered_is_retried_not_taken() {
+        let closed = {
+            let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            l.local_addr().unwrap().port()
+        };
+        let client = Client::connect(
+            &format!("http://127.0.0.1:{closed}"),
+            escurel_client::SecretString::from("t".to_owned()),
+        )
+        .await
+        .unwrap();
+        let gate = RuntimeGate::new(
+            "b",
+            Some("svc"),
+            vec!["echo".into()],
+            vec![],
+            Duration::from_secs(60),
+        );
+        assert_eq!(gate.claim(&client, "e1").await, Admit::Retry);
+    }
+
+    #[test]
+    fn only_a_permanent_claim_refusal_fails_open() {
+        let rpc = |code: i64, data_code: Option<&str>| Error::JsonRpc {
+            code,
+            message: String::new(),
+            data_code: data_code.map(str::to_owned),
+            retryable: None,
+        };
+        for permanent in [
+            rpc(-32601, None),
+            rpc(-32001, None),
+            rpc(-32602, Some("forbidden")),
+            rpc(-32602, Some("event_not_found")),
+            Error::Http {
+                status: 403,
+                body: String::new(),
+            },
+        ] {
+            assert!(permanent_claim_refusal(&permanent), "{permanent}");
+        }
+        for transient in [
+            rpc(-32603, None),
+            rpc(-32000, Some("quota_exhausted")),
+            Error::Http {
+                status: 503,
+                body: String::new(),
+            },
+            Error::Http {
+                status: 429,
+                body: String::new(),
+            },
+        ] {
+            assert!(!permanent_claim_refusal(&transient), "{transient}");
+        }
     }
 
     #[test]

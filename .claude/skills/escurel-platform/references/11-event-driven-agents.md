@@ -558,13 +558,16 @@ the restart are claimable at once. A **scheduled window** is
 therefore executed by exactly one runner, and a **run-control** request for a
 run is answered by the runner holding that run's claim: another runner that
 does not know the run stays silent while the holder's lease is live, and
-answers `not_live` only once nobody holds it. Only a lease another
-runner HOLDS keeps a runner off an event: when `claim_event` gives no answer —
-a gateway older than the tool (`-32601`), one that is unreachable, an identity
-it will not let claim (a non-admin runner token), an event it does not store —
-the runner admits the event as a lone runner would and the ledger alone
-decides. So during a gateway outage two runners may both start an event they
-both satisfy; give runners that must never overlap disjoint `requires:`.
+answers `not_live` only once nobody holds it. A **permanent** claim refusal
+lets the runner admit the event as a lone runner would (the ledger alone
+decides): a gateway older than the tool (`-32601`), an identity it will not
+let claim (`-32001` / `-32003` / `401` / `403`, e.g. a non-admin runner
+token), an event it does not store or a malformed claim (`-32602`, such as
+`event_not_found` for a synthetic webhook event). A claim the gateway did
+**not answer** — a timeout (2 s), a transport failure, a `5xx`, a `429` — is
+not taken: the event stays unclaimed and the next poll asks again (a run could
+not progress without the gateway anyway). So a slow gateway does not let two
+runners start one event.
 
 A runner **outside the cluster** needs no signing key: references/08
 *Runners outside the cluster*.
