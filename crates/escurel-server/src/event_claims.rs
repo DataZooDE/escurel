@@ -10,9 +10,14 @@
 //! a lease is ephemeral coordination, not tenant data, so it must not become
 //! a lake snapshot (the churn behind the heron GC hang) and it works the same
 //! over a single file, DuckLake or attached Postgres. A gateway restart
-//! forgets every lease; runners re-take theirs on the next renew, and the
-//! ledger still stops a runner from starting an event twice. Claims are
-//! writes, so a read replica refuses them and they reach the one writer.
+//! forgets every lease, so a restarted gateway starts in a BOOT GRACE: for
+//! the longest lease it may have issued, an event captured before it started
+//! (by the store's `seq`, not the caller's `at`) that has no row cannot be
+//! claimed — it answers `claimed: false`, holder [`RECOVERING`] — and only
+//! `renew_claim` re-creates its row. A runner that was running it renews (it
+//! renews at half its lease), and nobody else starts it meanwhile. Events
+//! captured after the restart are claimable at once. Claims are writes, so a
+//! read replica refuses them and they reach the one writer.
 
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -39,8 +44,22 @@ pub(crate) struct ClaimOutcome {
 /// How long a lapsed lease is kept before a write sweeps it.
 const SWEEP_SLACK_MS: i64 = 10 * 60 * 1000;
 
+/// The holder a claim reports while the boot grace withholds an event.
+pub(crate) const RECOVERING: &str = "(recovering)";
+
+/// The window after a restart in which leases the gateway forgot may still be
+/// held by a runner.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct BootGrace {
+    /// Unix milliseconds the grace ends.
+    pub until_ms: i64,
+    /// The highest event `seq` at boot: events at or below it may be held.
+    pub watermark_seq: i64,
+}
+
 pub(crate) struct EventClaims {
     conn: Mutex<Connection>,
+    grace: Option<BootGrace>,
 }
 
 /// Unix milliseconds now.
@@ -52,11 +71,11 @@ pub(crate) fn now_ms() -> i64 {
 }
 
 impl EventClaims {
-    /// An empty, in-memory claims table.
+    /// An empty, in-memory claims table, in `grace` after a (re)start.
     ///
     /// # Errors
     /// When DuckDB cannot open an in-memory database.
-    pub(crate) fn open() -> Result<Self, duckdb::Error> {
+    pub(crate) fn open(grace: Option<BootGrace>) -> Result<Self, duckdb::Error> {
         let conn = Connection::open_in_memory()?;
         conn.execute_batch(
             "CREATE TABLE event_claims (
@@ -67,18 +86,42 @@ impl EventClaims {
         )?;
         Ok(Self {
             conn: Mutex::new(conn),
+            grace,
         })
     }
 
+    /// Whether the boot grace is still on at `now`.
+    pub(crate) fn in_grace(&self, now: i64) -> bool {
+        self.grace.is_some_and(|g| now < g.until_ms)
+    }
+
     /// Take `event_id` for `holder` unless someone else holds a live lease.
-    /// A holder re-claiming its own lease extends it.
+    /// A holder re-claiming its own lease extends it. `seq` is the event's
+    /// capture position: during the boot grace an event captured before the
+    /// restart with no row is withheld (see the module docs).
     pub(crate) fn claim(
         &self,
         event_id: &str,
         holder: &str,
         lease_ms: i64,
         now: i64,
+        seq: Option<i64>,
     ) -> Result<ClaimOutcome, duckdb::Error> {
+        let withheld = self
+            .grace
+            .filter(|g| now < g.until_ms && seq.is_none_or(|s| s <= g.watermark_seq));
+        if let Some(g) = withheld {
+            let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+            if read(&conn, event_id)?.is_none() {
+                return Ok(ClaimOutcome {
+                    won: false,
+                    lease: Lease {
+                        holder: RECOVERING.to_owned(),
+                        expires_ms: g.until_ms,
+                    },
+                });
+            }
+        }
         self.compare_and_set(event_id, holder, lease_ms, now, true)
     }
 
@@ -166,9 +209,9 @@ mod tests {
 
     #[test]
     fn one_holder_at_a_time_until_the_lease_lapses() {
-        let c = EventClaims::open().unwrap();
-        assert!(c.claim("e1", "a", 1_000, 0).unwrap().won);
-        let lost = c.claim("e1", "b", 1_000, 500).unwrap();
+        let c = EventClaims::open(None).unwrap();
+        assert!(c.claim("e1", "a", 1_000, 0, None).unwrap().won);
+        let lost = c.claim("e1", "b", 1_000, 500, None).unwrap();
         assert!(!lost.won);
         assert_eq!(lost.lease.holder, "a");
         assert!(
@@ -181,7 +224,7 @@ mod tests {
             "renew never takes over"
         );
         assert!(
-            c.claim("e1", "b", 1_000, 1_901).unwrap().won,
+            c.claim("e1", "b", 1_000, 1_901, None).unwrap().won,
             "lapsed: claimable"
         );
         assert_eq!(c.live("e1", 1_902).unwrap().unwrap().holder, "b");
@@ -190,6 +233,32 @@ mod tests {
         assert!(
             c.renew("e1", "a", 1_000, 2_000).unwrap().won,
             "a forgotten lease is re-taken"
+        );
+    }
+
+    #[test]
+    fn after_a_restart_only_the_holders_renew_recreates_a_pre_boot_lease() {
+        let grace = BootGrace {
+            until_ms: 10_000,
+            watermark_seq: 5,
+        };
+        let c = EventClaims::open(Some(grace)).unwrap();
+        let held = c.claim("old", "b", 1_000, 100, Some(5)).unwrap();
+        assert!(!held.won, "a pre-boot event with no row is withheld");
+        assert_eq!(held.lease.holder, RECOVERING);
+        assert!(
+            c.renew("old", "a", 1_000, 200).unwrap().won,
+            "its holder renews"
+        );
+        let lost = c.claim("old", "b", 1_000, 300, Some(5)).unwrap();
+        assert_eq!((lost.won, lost.lease.holder.as_str()), (false, "a"));
+        assert!(
+            c.claim("new", "b", 1_000, 300, Some(6)).unwrap().won,
+            "an event captured after the restart is claimable at once"
+        );
+        assert!(
+            c.claim("old2", "b", 1_000, 10_000, Some(1)).unwrap().won,
+            "the grace ends"
         );
     }
 }

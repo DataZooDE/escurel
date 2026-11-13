@@ -544,7 +544,14 @@ a SAP GUI session. Each one:
 The runner's own **ledger** stays the local idempotency authority; the lease
 only decides which runner starts. The holder is the runner's identity plus
 its ledger's stable id, so a restart on the same ledger keeps its leases,
-while a fresh ledger waits out the old lease. A **scheduled window** is
+while a fresh ledger waits out the old lease. A **gateway** restart forgets
+every lease; for its boot grace (`ESCUREL_EVENT_CLAIM_BOOT_GRACE_SECS`,
+default one maximum lease) an event captured before the restart with no lease
+answers `claimed: false` (`holder: "(recovering)"`) to everyone, and the
+runner still running it re-takes it with its next renew (at half its lease).
+So an unheld backlog from before a deploy waits out the grace; set it to your
+longest `ESCUREL_RUNNER_CLAIM_LEASE` to shorten that. Events captured after
+the restart are claimable at once. A **scheduled window** is
 therefore executed by exactly one runner, and a **run-control** request for a
 run is answered by the runner holding that run's claim: another runner that
 does not know the run stays silent while the holder's lease is live, and

@@ -2644,6 +2644,18 @@ impl EscurelConfig {
                 ),
                 _ => crate::server::DEFAULT_SHUTDOWN_DRAIN,
             },
+            event_claim_boot_grace: match std::env::var("ESCUREL_EVENT_CLAIM_BOOT_GRACE_SECS") {
+                Ok(raw) if !raw.trim().is_empty() => {
+                    std::time::Duration::from_secs(raw.trim().parse::<u64>().map_err(|_| {
+                        ConfigError::InvalidValue {
+                            var: "ESCUREL_EVENT_CLAIM_BOOT_GRACE_SECS",
+                            value: raw,
+                            reason: "expected a whole number of seconds (0 = off)",
+                        }
+                    })?)
+                }
+                _ => crate::server::DEFAULT_EVENT_CLAIM_BOOT_GRACE,
+            },
             demo_dir: self.demo_dir.clone(),
             mcp_max_body_bytes: self.mcp_max_body_bytes,
             ingest_max_body_bytes: self.ingest_max_body_bytes,

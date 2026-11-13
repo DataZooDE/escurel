@@ -307,6 +307,12 @@ pub struct ServerConfig {
     /// (`ESCUREL_SHUTDOWN_DRAIN_SECS`, default [`DEFAULT_SHUTDOWN_DRAIN`]). Kept below the
     /// orchestrator's own kill timeout, so a stuck request cannot get the process SIGKILLed mid-write.
     pub shutdown_drain: std::time::Duration,
+    /// How long after start a claim on an event captured before it, with no
+    /// lease row, is withheld for the runner that may still hold the lease
+    /// this process forgot (`ESCUREL_EVENT_CLAIM_BOOT_GRACE_SECS`, default
+    /// [`DEFAULT_EVENT_CLAIM_BOOT_GRACE`], the longest lease a claim may ask
+    /// for; zero turns it off).
+    pub event_claim_boot_grace: std::time::Duration,
     /// Backing store for the admin tenant-CRUD RPCs. `None`
     /// means every tenant CRUD RPC returns
     /// `Status::failed_precondition` — useful for health-only
@@ -517,6 +523,12 @@ impl AppState {
 /// The default graceful-stop drain: below the 30 s most orchestrators allow before SIGKILL.
 pub const DEFAULT_SHUTDOWN_DRAIN: std::time::Duration = std::time::Duration::from_secs(25);
 
+/// The default [`ServerConfig::event_claim_boot_grace`]: the longest lease
+/// `claim_event` grants, so every lease a previous process issued has been
+/// renewed or has lapsed when it ends.
+pub const DEFAULT_EVENT_CLAIM_BOOT_GRACE: std::time::Duration =
+    std::time::Duration::from_secs(crate::mcp::MAX_CLAIM_LEASE_SECS);
+
 #[derive(Clone)]
 pub(crate) struct AppState {
     pub(crate) write_acl: WriteAclMode,
@@ -637,6 +649,31 @@ pub(crate) struct AppState {
 /// a caller that reaches `serve` without going through `build` — same
 /// idempotent-install behaviour this function always had, just no
 /// longer the FIRST place telemetry could come up.
+/// The claims table's boot grace: until `grace` from now, for the events
+/// captured so far. When the capture position cannot be read, every event is
+/// treated as captured before the start — a wait, never a second run.
+async fn boot_grace(
+    indexer: Option<&IndexerHandle>,
+    grace: std::time::Duration,
+) -> Option<crate::event_claims::BootGrace> {
+    if grace.is_zero() {
+        return None;
+    }
+    let watermark_seq = match indexer {
+        None => 0,
+        Some(h) => h.current().max_event_seq().await.unwrap_or_else(|e| {
+            tracing::warn!(error = %e, "event claims: no capture watermark; withholding every pre-boot event");
+            i64::MAX
+        }),
+    };
+    let until_ms = crate::event_claims::now_ms()
+        .saturating_add(i64::try_from(grace.as_millis()).unwrap_or(i64::MAX));
+    Some(crate::event_claims::BootGrace {
+        until_ms,
+        watermark_seq,
+    })
+}
+
 pub async fn serve(
     config: ServerConfig,
     telemetry_guard: Option<escurel_obs::TelemetryGuard>,
@@ -668,9 +705,14 @@ pub async fn serve(
             ),
         ));
     }
-    let event_claims = Arc::new(crate::event_claims::EventClaims::open().map_err(|e| {
-        ServerError::Serve(std::io::Error::other(format!("event_claims table: {e}")))
-    })?);
+    let event_claims = Arc::new(
+        crate::event_claims::EventClaims::open(
+            boot_grace(config.indexer.as_ref(), config.event_claim_boot_grace).await,
+        )
+        .map_err(|e| {
+            ServerError::Serve(std::io::Error::other(format!("event_claims table: {e}")))
+        })?,
+    );
     let state = AppState {
         write_acl: config.write_acl,
         event_acl: config.event_acl,

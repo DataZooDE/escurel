@@ -169,6 +169,9 @@ pub struct ConfigOverrides {
     /// `ESCUREL_AUTH_BRIDGE_KID`): tokens under them are restricted. Pair with
     /// an [`crate::ExtraIssuer::start_with_own_key`] in `extra_issuers`.
     pub bridge_kids: Vec<String>,
+    /// The gateway's claim boot grace (`ESCUREL_EVENT_CLAIM_BOOT_GRACE_SECS`);
+    /// `None` = the production default.
+    pub event_claim_boot_grace: Option<std::time::Duration>,
     /// Boot the gateway in ducklake-reader mode (DuckLake PR 6): the
     /// mutating tool surface and the chat/CRDT/session/event tool
     /// surface are rejected with a typed JSON-RPC error. `false`
@@ -525,6 +528,9 @@ impl EscurelProcess {
             shutdown_drain: overrides
                 .shutdown_drain
                 .unwrap_or(escurel_server::DEFAULT_SHUTDOWN_DRAIN),
+            event_claim_boot_grace: overrides
+                .event_claim_boot_grace
+                .unwrap_or(escurel_server::DEFAULT_EVENT_CLAIM_BOOT_GRACE),
             tenant_store: overrides.tenant_store.clone().or_else(|| {
                 overrides.fixture_tenant_export.then(|| {
                     let root = store_dir
@@ -862,6 +868,13 @@ impl EscurelProcess {
     /// Equivalent to dropping the `EscurelProcess`, but explicit —
     /// tests that need to assert "the port is freed" call this
     /// rather than relying on `Drop` ordering.
+    /// The gateway's indexer, to spawn a second gateway over the same data
+    /// (`ConfigOverrides::indexer`) — a restart that keeps the tenant's state
+    /// and loses the process's memory. `None` when spawned without one.
+    pub fn indexer(&self) -> Option<Arc<Indexer>> {
+        self.indexer.clone()
+    }
+
     pub async fn shutdown(mut self) {
         if let Some(handle) = self.handle.take() {
             handle.shutdown().await;

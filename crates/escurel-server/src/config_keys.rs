@@ -318,6 +318,12 @@ pub const CONFIG_KEYS: &[ConfigKey] = &[
         doc: "days a run transcript (`put_run_transcript`, read via `fetch_blob{run_id}`) is kept; swept every 30 s; `0` keeps them forever",
     },
     ConfigKey {
+        name: "ESCUREL_EVENT_CLAIM_BOOT_GRACE_SECS",
+        component: "Server",
+        default: "3600",
+        doc: "after a gateway start, how long `claim_event` withholds an event captured before the start that has no lease row (`claimed: false`, holder `(recovering)`), so a runner still running it under a lease the restart forgot can `renew_claim` it first. Events captured after the start are claimable at once. The default is the longest lease a claim may ask for; set it to your longest `ESCUREL_RUNNER_CLAIM_LEASE` to let an unheld backlog flow sooner, `0` turns it off",
+    },
+    ConfigKey {
         name: "ESCUREL_SHUTDOWN_DRAIN_SECS",
         component: "Server",
         default: "25",

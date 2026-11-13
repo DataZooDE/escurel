@@ -335,3 +335,62 @@ async fn runtimes_are_admin_written_and_read_with_liveness() {
     let rt = call(&p, &member, "list_runtimes", json!({})).await["runtimes"][0].clone();
     assert_eq!(rt["status"], "stopped", "{rt}");
 }
+
+/// A gateway restart forgets every lease (crew F6). For the boot grace, an
+/// event captured before the restart cannot be claimed by another runner —
+/// only its holder's renew re-creates the lease — while an event captured
+/// after the restart is claimable at once.
+#[tokio::test]
+async fn after_a_restart_a_forgotten_lease_goes_back_to_its_holder_not_to_a_second_runner() {
+    let first = gateway().await;
+    let in_flight = capture(&first, "note").await;
+    let token = admin(&first);
+    let a = json!({ "event_id": in_flight, "holder_id": "runner-a", "lease_secs": 600 });
+    assert_eq!(
+        call(&first, &token, "claim_event", a.clone()).await["claimed"],
+        true
+    );
+
+    // Restart: same tenant data, a new process with an empty claims table.
+    let data = first.indexer().expect("the gateway's indexer");
+    first.shutdown().await;
+    let p = EscurelProcess::spawn(Opts {
+        auth: AuthMode::TestIssuer,
+        config_overrides: escurel_test_support::ConfigOverrides {
+            indexer: Some(data),
+            ..Default::default()
+        },
+        ..Default::default()
+    })
+    .await;
+    let token = admin(&p);
+    let b = json!({ "event_id": in_flight, "holder_id": "runner-b", "lease_secs": 600 });
+
+    let refused = call(&p, &token, "claim_event", b.clone()).await;
+    assert_eq!(refused["claimed"], false, "{refused}");
+    assert_eq!(refused["holder"], "(recovering)", "{refused}");
+
+    let renewed = call(&p, &token, "renew_claim", a).await;
+    assert_eq!(renewed["renewed"], true, "{renewed}");
+    let still = call(&p, &token, "claim_event", b).await;
+    assert_eq!(still["claimed"], false, "{still}");
+    assert!(
+        still["holder"]
+            .as_str()
+            .is_some_and(|h| h.ends_with("#runner-a")),
+        "{still}"
+    );
+
+    let fresh = capture(&p, "note").await;
+    let won = call(
+        &p,
+        &token,
+        "claim_event",
+        json!({ "event_id": fresh, "holder_id": "runner-b" }),
+    )
+    .await;
+    assert_eq!(
+        won["claimed"], true,
+        "a post-restart event is not held: {won}"
+    );
+}

@@ -28,7 +28,7 @@ use crate::event_claims::{ClaimOutcome, EventClaims, Lease, now_ms};
 /// The default lease when a claim names none.
 pub(crate) const DEFAULT_LEASE_SECS: u64 = 60;
 /// A lease longer than an hour is a parked event, not a run in progress.
-const MAX_LEASE_SECS: u64 = 3600;
+pub(crate) const MAX_CLAIM_LEASE_SECS: u64 = 3600;
 /// A runtime is stale once silent for this many reporting intervals.
 const STALE_INTERVALS: u64 = 3;
 
@@ -87,9 +87,9 @@ pub(super) async fn tool_claim(
         )));
     }
     let lease_secs = a.lease_secs.unwrap_or(DEFAULT_LEASE_SECS);
-    if !(1..=MAX_LEASE_SECS).contains(&lease_secs) {
+    if !(1..=MAX_CLAIM_LEASE_SECS).contains(&lease_secs) {
         return Err(JsonRpcError::invalid_params(format!(
-            "{tool}: `lease_secs` is 1..={MAX_LEASE_SECS}, got {lease_secs}"
+            "{tool}: `lease_secs` is 1..={MAX_CLAIM_LEASE_SECS}, got {lease_secs}"
         )));
     }
     let holder = match a
@@ -135,7 +135,18 @@ pub(super) async fn tool_claim(
     let lease_ms = i64::try_from(lease_secs * 1000).unwrap_or(i64::MAX);
     let now = now_ms();
     let outcome: ClaimOutcome = match verb {
-        ClaimVerb::Claim => claims.claim(&a.event_id, &holder, lease_ms, now),
+        ClaimVerb::Claim => {
+            // The capture position only matters while the boot grace is on.
+            let seq = if claims.in_grace(now) {
+                indexer
+                    .event_seq(&a.event_id)
+                    .await
+                    .map_err(|e| JsonRpcError::internal(format!("{tool}: {e}")))?
+            } else {
+                None
+            };
+            claims.claim(&a.event_id, &holder, lease_ms, now, seq)
+        }
         ClaimVerb::Renew => claims.renew(&a.event_id, &holder, lease_ms, now),
     }
     .map_err(|e| JsonRpcError::internal(format!("{tool}: {e}")))?;

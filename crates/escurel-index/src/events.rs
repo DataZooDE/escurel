@@ -1870,6 +1870,51 @@ impl Indexer {
             .next())
     }
 
+    /// The event's position in this tenant's capture sequence (`seq`, assigned
+    /// by the store at insert, never by the caller), or `None` when there is
+    /// no such event. With [`Self::max_event_seq`] it tells an event captured
+    /// before a moment from one captured after it — which a caller-supplied
+    /// `at` cannot.
+    pub async fn event_seq(&self, event_id: &str) -> Result<Option<i64>, IndexerError> {
+        let table = self.events_table();
+        let tenant = self.events_tenant_scope().map(str::to_owned);
+        let scope = if tenant.is_some() {
+            " AND tenant = ?"
+        } else {
+            ""
+        };
+        let sql = format!("SELECT seq FROM {table} WHERE event_id = ?{scope} LIMIT 1");
+        let conn = self.conn.lock().await;
+        let mut stmt = conn.prepare(&sql)?;
+        let mut rows = match &tenant {
+            Some(t) => stmt.query(duckdb::params![event_id, t])?,
+            None => stmt.query(duckdb::params![event_id])?,
+        };
+        Ok(match rows.next()? {
+            Some(row) => row.get::<_, Option<i64>>(0)?,
+            None => None,
+        })
+    }
+
+    /// The highest `seq` captured so far in this tenant (0 when none).
+    pub async fn max_event_seq(&self) -> Result<i64, IndexerError> {
+        let table = self.events_table();
+        let tenant = self.events_tenant_scope().map(str::to_owned);
+        let scope = if tenant.is_some() {
+            " WHERE tenant = ?"
+        } else {
+            ""
+        };
+        let sql = format!("SELECT COALESCE(max(seq), 0) FROM {table}{scope}");
+        let conn = self.conn.lock().await;
+        let mut stmt = conn.prepare(&sql)?;
+        let max: i64 = match &tenant {
+            Some(t) => stmt.query_row(duckdb::params![t], |r| r.get(0))?,
+            None => stmt.query_row([], |r| r.get(0))?,
+        };
+        Ok(max)
+    }
+
     /// The newest `limit` events whose body contains `needle` verbatim (no pattern syntax: an
     /// `_` in an id is not a wildcard). Feeds the `acl.read_referenced` grant, which then parses
     /// each body's wikilinks exactly.
