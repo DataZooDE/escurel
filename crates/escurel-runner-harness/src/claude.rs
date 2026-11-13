@@ -5,8 +5,13 @@
 //! subprocess, registering the escurel gateway as an **HTTP MCP server**
 //! (`--mcp-config`) with the packaged scoped bearer, narrowing the tool
 //! surface (`--allowedTools mcp__escurel__<tool>`), injecting the skill body
-//! as the appended system prompt, and capturing the `--output-format json`
-//! result envelope into a [`HarnessOutcome`].
+//! as the appended system prompt, and capturing the final `result` envelope
+//! of its `--output-format stream-json` output into a [`HarnessOutcome`].
+//!
+//! The session is stream-json both ways (`--input-format stream-json`): the
+//! prompt is the first user message on stdin, and stdin stays open until
+//! every user turn has produced its `result` line, so a further turn can be
+//! written into the live session.
 //!
 //! Per the contract, the adapter performs **no** escurel writes — every
 //! escurel effect flows through the LLM's own `/mcp` tool calls under the
@@ -23,7 +28,7 @@
 use std::time::Duration;
 
 use async_trait::async_trait;
-use escurel_runner_core::TaskContext;
+use escurel_runner_core::{TaskContext, TranscriptEntry, TranscriptKind};
 
 use crate::harness::{Harness, HarnessError, HarnessOutcome, HarnessStatus, Usage};
 
@@ -110,7 +115,7 @@ impl ClaudeHarness {
     fn build_args(&self, task: &TaskContext, mcp_config_path: &str) -> Vec<String> {
         let mut args: Vec<String> = vec![
             // `-p` with no inline value: the prompt is written to the child's
-            // stdin instead. Linux caps a SINGLE argv string at 32 pages
+            // stdin instead, as a stream-json user message. Linux caps a SINGLE argv string at 32 pages
             // (MAX_ARG_STRLEN), independently of the 2 MB total ARG_MAX, so a
             // packaged transcript over ~128 KB made spawn fail with E2BIG and
             // the event permanently undispatchable. stdin has no such limit.
@@ -123,8 +128,14 @@ impl ClaudeHarness {
             // ambient user/project MCP config of whatever host runs the
             // runner.
             "--strict-mcp-config".to_owned(),
+            // stream-json both ways: one JSON object per line, a user turn
+            // in, the session's events and one `result` per turn out.
+            // `-p` refuses stream-json output without `--verbose`.
+            "--input-format".to_owned(),
+            "stream-json".to_owned(),
             "--output-format".to_owned(),
-            "json".to_owned(),
+            "stream-json".to_owned(),
+            "--verbose".to_owned(),
             // Unattended runner: no interactive permission prompts — or, for
             // a planning run (workbench backend P2-5b), claude's own plan
             // mode, which reads and plans but never writes.
@@ -155,6 +166,11 @@ impl Harness for ClaudeHarness {
         NAME
     }
 
+    /// Each injected message is one more stream-json user turn.
+    fn supports_inject(&self) -> bool {
+        true
+    }
+
     async fn run(&self, task: &TaskContext) -> Result<HarnessOutcome, HarnessError> {
         // Write the MCP-server config to a per-run tempfile. Passing it as a
         // path (rather than inline) keeps the scoped bearer out of the argv /
@@ -175,48 +191,173 @@ impl Harness for ClaudeHarness {
         let mcp_config_path = mcp_config.path().to_string_lossy().into_owned();
 
         let args = self.build_args(task, &mcp_config_path);
+        // Held for the attempt: a message sent between attempts waits for
+        // the next one rather than being lost.
+        let mut inbox = match &task.inject {
+            Some(i) => Some(i.open_session().await),
+            None => None,
+        };
 
+        let lines = crate::harness::LineLog::new();
         let output = crate::harness::run_capture(crate::harness::Spawn {
             harness: NAME,
             bin: &self.bin_path,
             args: &args,
             envs: Vec::new(),
-            // `claude -p` reads the prompt until stdin closes.
-            stdin: Some(task.input.as_bytes()),
+            stdin: Some(&user_message(&task.input)),
+            stdout_lines: Some(lines.sender()),
+            // Stdin stays open while a turn is in flight; claude exits at
+            // the EOF sent once the last turn's `result` is out.
+            turns: Some(crate::harness::Turns {
+                inbox: inbox.as_mut(),
+                encode: user_message,
+                turn_ended: is_result_line,
+            }),
             timeout: self.timeout,
             cancel: task.cancel.as_ref(),
         })
-        .await?;
+        .await;
+        lines.transcribe(task, transcript_entries);
 
-        parse_outcome(&output.stdout)
+        parse_outcome(&output?.stdout)
     }
 }
 
-/// Parse the `claude --output-format json` result envelope into a
-/// [`HarnessOutcome`].
+/// One stream-json output line as transcript entries — the one parser of
+/// the claude stream: the outcome's `tool_calls` counts its `tool_use`s.
 ///
-/// The envelope is a single JSON object of (roughly) the shape:
-/// `{"type":"result","subtype":"success","is_error":false,
-///   "result":"<final assistant text>","num_turns":N, ...}`.
-/// We read the fields we can map and tolerate the rest:
+/// - `assistant`: each `tool_use` is a tool call (name, input), each `text`
+///   a message;
+/// - `user`: each `tool_result` is a tool result, or an error when
+///   `is_error`;
+/// - `result`: an error when the turn failed (`is_error`, `error_*`).
 ///
-/// - `ok`/`status` ← `is_error` (false → ok). `subtype == "success"` is the
-///   confirming signal when present.
-/// - `summary` ← the `result` text (truncated), falling back to `subtype`.
-/// - `tool_calls` ← `num_turns` when present (a coarse but real proxy for how
-///   much the model did; the JSON envelope carries no exact tool-call count).
-/// - `produced_instance` ← `None`: the envelope does not name the page the
-///   model wrote; the runner's reconcile reads that back from the gateway.
-/// - `usage` ← the envelope's `usage` block (input = `input_tokens` +
-///   `cache_read_input_tokens` + `cache_creation_input_tokens`),
-///   `total_cost_usd`, and the model from `modelUsage`'s first key. `None`
-///   when the envelope carries no `usage` at all.
+/// A line's own `timestamp` dates its entries.
+pub(crate) fn transcript_entries(line: &str) -> Vec<TranscriptEntry> {
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
+        return Vec::new();
+    };
+    let at = v
+        .get("timestamp")
+        .and_then(serde_json::Value::as_str)
+        .and_then(escurel_runner_core::parse_rfc3339);
+    let content = || {
+        v["message"]["content"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default()
+    };
+    let mut out = Vec::new();
+    match v.get("type").and_then(serde_json::Value::as_str) {
+        Some("assistant") => {
+            for item in content() {
+                match item["type"].as_str() {
+                    Some("tool_use") => out.push(TranscriptEntry::tool_call(
+                        item["name"].as_str().unwrap_or("unknown"),
+                        item.get("input").cloned().unwrap_or_default(),
+                    )),
+                    Some("text") => {
+                        let text = item["text"].as_str().unwrap_or("").trim();
+                        if !text.is_empty() {
+                            out.push(TranscriptEntry::new(TranscriptKind::Message, text));
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        Some("user") => {
+            for item in content() {
+                if item["type"] != "tool_result" {
+                    continue;
+                }
+                let kind = if item["is_error"].as_bool() == Some(true) {
+                    TranscriptKind::Error
+                } else {
+                    TranscriptKind::ToolResult
+                };
+                out.push(TranscriptEntry::new(kind, result_text(&item["content"])));
+            }
+        }
+        Some("result") => {
+            let subtype = v["subtype"].as_str().unwrap_or("");
+            if v["is_error"].as_bool() == Some(true) || subtype.starts_with("error") {
+                let text = v["result"]
+                    .as_str()
+                    .filter(|r| !r.trim().is_empty())
+                    .unwrap_or(subtype);
+                out.push(TranscriptEntry::new(TranscriptKind::Error, text));
+            }
+        }
+        _ => {}
+    }
+    if let Some(at) = at {
+        out = out.into_iter().map(|e| e.at(at)).collect();
+    }
+    out
+}
+
+/// A `tool_result`'s content: a string, or the text of its text blocks.
+fn result_text(content: &serde_json::Value) -> String {
+    match content {
+        serde_json::Value::String(s) => s.clone(),
+        serde_json::Value::Array(items) => items
+            .iter()
+            .filter_map(|i| i["text"].as_str())
+            .collect::<Vec<_>>()
+            .join(" "),
+        _ => String::new(),
+    }
+}
+
+/// One user turn as a stream-json input line.
+fn user_message(text: &str) -> Vec<u8> {
+    let mut line = serde_json::json!({
+        "type": "user",
+        "message": { "role": "user", "content": [{ "type": "text", "text": text }] },
+    })
+    .to_string()
+    .into_bytes();
+    line.push(b'\n');
+    line
+}
+
+/// Whether a stream-json output line is a turn's `result` envelope.
+fn is_result_line(line: &str) -> bool {
+    // Cheap prefilter: most lines are assistant/tool events.
+    line.contains("\"result\"")
+        && serde_json::from_str::<serde_json::Value>(line)
+            .is_ok_and(|v| v.get("type").and_then(serde_json::Value::as_str) == Some("result"))
+}
+
+/// Every turn's `result` envelope out of the stream-json output, in order.
+/// A stdout that is one bare envelope (the `--output-format json` shape) is
+/// read as-is, so a parse error still names what was wrong.
+fn result_envelopes(stdout: &[u8]) -> Result<Vec<serde_json::Value>, HarnessError> {
+    let text = String::from_utf8_lossy(stdout);
+    let lines: Vec<&str> = text.lines().filter(|l| is_result_line(l)).collect();
+    if lines.is_empty() {
+        return serde_json::from_slice(stdout)
+            .map(|v| vec![v])
+            .map_err(|source| HarnessError::BadOutcome {
+                harness: NAME,
+                source,
+            });
+    }
+    lines
+        .into_iter()
+        .map(|l| {
+            serde_json::from_str(l).map_err(|source| HarnessError::BadOutcome {
+                harness: NAME,
+                source,
+            })
+        })
+        .collect()
+}
+
 fn parse_outcome(stdout: &[u8]) -> Result<HarnessOutcome, HarnessError> {
-    let envelope: serde_json::Value =
-        serde_json::from_slice(stdout).map_err(|source| HarnessError::BadOutcome {
-            harness: NAME,
-            source,
-        })?;
+    let envelopes = result_envelopes(stdout)?;
+    let envelope = envelopes.last().expect("at least one envelope");
 
     let is_error = envelope
         .get("is_error")
@@ -247,15 +388,18 @@ fn parse_outcome(stdout: &[u8]) -> Result<HarnessOutcome, HarnessError> {
             }
         });
 
-    let tool_calls = envelope
-        .get("num_turns")
-        .and_then(serde_json::Value::as_u64)
-        .unwrap_or(0) as u32;
+    // The model's own tool calls, from the same parser as the transcript
+    // (`num_turns` counts model turns, which is not the same thing).
+    let tool_calls = String::from_utf8_lossy(stdout)
+        .lines()
+        .flat_map(transcript_entries)
+        .filter(|e| e.kind == TranscriptKind::ToolCall)
+        .count() as u32;
 
     Ok(HarnessOutcome {
         reply: reply.filter(|_| ok),
         result_ref: None,
-        usage: parse_usage(&envelope),
+        usage: session_usage(&envelopes),
         ok,
         status: if ok {
             HarnessStatus::Ok
@@ -268,29 +412,44 @@ fn parse_outcome(stdout: &[u8]) -> Result<HarnessOutcome, HarnessError> {
     })
 }
 
-/// The `usage` block of the result envelope, or `None` when there is none.
-fn parse_usage(envelope: &serde_json::Value) -> Option<Usage> {
-    let usage = envelope.get("usage")?.as_object()?;
-    let count = |k: &str| {
-        usage
-            .get(k)
-            .and_then(serde_json::Value::as_u64)
-            .unwrap_or(0)
-    };
-    Some(Usage {
-        input_tokens: count("input_tokens")
+/// A session's usage over its turns' `result` envelopes, or `None` when no
+/// turn reported any. Each envelope's `usage` is that turn's alone, so the
+/// tokens add up; `total_cost_usd` and `modelUsage` are the session's
+/// running totals, so they come from the last envelope that has them.
+/// (Verified against a real two-turn stream-json session; see the test
+/// `a_multi_turn_session_sums_per_turn_tokens_and_takes_the_running_cost`.)
+fn session_usage(envelopes: &[serde_json::Value]) -> Option<Usage> {
+    let mut total: Option<Usage> = None;
+    for envelope in envelopes {
+        let Some(usage) = envelope.get("usage").and_then(serde_json::Value::as_object) else {
+            continue;
+        };
+        let count = |k: &str| {
+            usage
+                .get(k)
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or(0)
+        };
+        let t = total.get_or_insert_with(Usage::default);
+        t.input_tokens += count("input_tokens")
             + count("cache_read_input_tokens")
-            + count("cache_creation_input_tokens"),
-        output_tokens: count("output_tokens"),
-        billed_tokens: None,
-        cost_usd: envelope
+            + count("cache_creation_input_tokens");
+        t.output_tokens += count("output_tokens");
+        if let Some(cost) = envelope
             .get("total_cost_usd")
-            .and_then(serde_json::Value::as_f64),
-        model: envelope
+            .and_then(serde_json::Value::as_f64)
+        {
+            t.cost_usd = Some(cost);
+        }
+        if let Some(model) = envelope
             .get("modelUsage")
             .and_then(serde_json::Value::as_object)
-            .and_then(|m| m.keys().next().cloned()),
-    })
+            .and_then(|m| m.keys().next().cloned())
+        {
+            t.model = Some(model);
+        }
+    }
+    total
 }
 
 #[cfg(test)]
@@ -408,7 +567,16 @@ mod tests {
             .iter()
             .position(|a| a == "--output-format")
             .expect("--output-format present");
-        assert_eq!(args[of + 1], "json");
+        assert_eq!(args[of + 1], "stream-json");
+        let inf = args
+            .iter()
+            .position(|a| a == "--input-format")
+            .expect("--input-format present");
+        assert_eq!(args[inf + 1], "stream-json");
+        assert!(
+            args.iter().any(|a| a == "--verbose"),
+            "-p needs it for stream-json"
+        );
         let pm = args
             .iter()
             .position(|a| a == "--permission-mode")
@@ -438,7 +606,7 @@ mod tests {
         assert!(outcome.ok);
         assert_eq!(outcome.status, HarnessStatus::Ok);
         assert_eq!(outcome.summary, "folded the event");
-        assert_eq!(outcome.tool_calls, 4);
+        assert_eq!(outcome.tool_calls, 0, "a bare envelope shows no tool_use");
     }
 
     #[test]
@@ -472,6 +640,113 @@ mod tests {
         let outcome = parse_outcome(stdout).expect("parse error envelope");
         assert!(!outcome.ok);
         assert_eq!(outcome.status, HarnessStatus::Failed);
+    }
+
+    #[test]
+    fn the_last_result_line_of_a_stream_is_the_outcome() {
+        let stdout = br#"{"type":"system","subtype":"init","session_id":"s1"}
+{"type":"assistant","message":{"content":[{"type":"text","text":"first"}]}}
+{"type":"result","subtype":"success","is_error":false,"result":"first","num_turns":1}
+{"type":"assistant","message":{"content":[{"type":"text","text":"steered"}]}}
+{"type":"result","subtype":"success","is_error":false,"result":"steered answer","num_turns":3,"usage":{"input_tokens":5,"output_tokens":7}}
+"#;
+        let outcome = parse_outcome(stdout).expect("parse stream");
+        assert!(outcome.ok);
+        assert_eq!(outcome.summary, "steered answer");
+        assert_eq!(outcome.tool_calls, 0, "num_turns is not a tool-call count");
+        assert_eq!(outcome.usage.expect("usage").output_tokens, 7);
+    }
+
+    /// Recorded from a real two-turn `claude -p --input-format stream-json`
+    /// session (claude-code 2.x, 2026-11): each turn's `result` carries that
+    /// turn's `usage` (turn 2's output 49 is its own message, not 80 + 49),
+    /// while `total_cost_usd` and `modelUsage` are the session's running
+    /// totals. Tokens add up across the results; the cost is the last one.
+    #[test]
+    fn a_multi_turn_session_sums_per_turn_tokens_and_takes_the_running_cost() {
+        let stdout = br#"{"type":"system","subtype":"init","session_id":"s1","model":"claude-haiku-5-5"}
+{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"echo hi"}}]}}
+{"type":"user","message":{"content":[{"tool_use_id":"t1","type":"tool_result","content":"hi","is_error":false}]}}
+{"type":"assistant","message":{"content":[{"type":"text","text":"one"}]}}
+{"type":"result","subtype":"success","is_error":false,"result":"one","num_turns":2,"total_cost_usd":0.20389395,"usage":{"input_tokens":4,"cache_creation_input_tokens":195273,"cache_read_input_tokens":168379,"output_tokens":80},"modelUsage":{"claude-haiku-5-5":{"inputTokens":4,"outputTokens":80,"costUSD":0.20389395}}}
+{"type":"system","subtype":"init","session_id":"s1","model":"claude-haiku-5-5"}
+{"type":"assistant","message":{"content":[{"type":"text","text":"Two is prime."}]}}
+{"type":"result","subtype":"success","is_error":false,"result":"Two is prime.","num_turns":1,"total_cost_usd":0.2136006,"usage":{"input_tokens":2,"cache_creation_input_tokens":60,"cache_read_input_tokens":190463,"output_tokens":49},"modelUsage":{"claude-haiku-5-5":{"inputTokens":6,"outputTokens":129,"costUSD":0.2136006}}}
+"#;
+        let usage = parse_outcome(stdout).expect("parse").usage.expect("usage");
+        assert_eq!(
+            usage.input_tokens,
+            (4 + 195_273 + 168_379) + (2 + 60 + 190_463)
+        );
+        assert_eq!(usage.output_tokens, 80 + 49);
+        assert_eq!(usage.cost_usd, Some(0.2136006), "the running total, once");
+        assert_eq!(usage.model.as_deref(), Some("claude-haiku-5-5"));
+    }
+
+    /// Lines recorded from a real `claude -p --output-format stream-json`
+    /// session (2026-11), trimmed: a tool call, its result, the answer, plus
+    /// a failed tool result and an error result.
+    #[test]
+    fn the_stream_normalises_to_calls_results_messages_and_errors() {
+        let lines = [
+            r#"{"type":"system","subtype":"init","session_id":"s1","tools":["Bash"]}"#,
+            r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_1","name":"Bash","input":{"command":"echo hi","description":"Print hi"}}]},"timestamp":"2026-11-13T04:25:54.583Z"}"#,
+            r#"{"type":"user","message":{"content":[{"tool_use_id":"toolu_1","type":"tool_result","content":"hi","is_error":false}]},"timestamp":"2026-11-13T04:25:54.659Z"}"#,
+            r#"{"type":"rate_limit_event","rate_limit_info":{}}"#,
+            r#"{"type":"assistant","message":{"content":[{"type":"text","text":"one"}]}}"#,
+            r#"{"type":"user","message":{"content":[{"tool_use_id":"toolu_2","type":"tool_result","content":[{"type":"text","text":"permission denied"}],"is_error":true}]}}"#,
+            r#"{"type":"result","subtype":"error_max_turns","is_error":true,"result":""}"#,
+            "not json at all",
+        ];
+        let entries: Vec<TranscriptEntry> =
+            lines.iter().flat_map(|l| transcript_entries(l)).collect();
+        let kinds: Vec<TranscriptKind> = entries.iter().map(|e| e.kind).collect();
+        assert_eq!(
+            kinds,
+            [
+                TranscriptKind::ToolCall,
+                TranscriptKind::ToolResult,
+                TranscriptKind::Message,
+                TranscriptKind::Error,
+                TranscriptKind::Error,
+            ]
+        );
+        assert_eq!(entries[0].name.as_deref(), Some("Bash"));
+        assert_eq!(
+            entries[0].args,
+            Some(serde_json::json!({"command":"echo hi","description":"Print hi"}))
+        );
+        assert_eq!(
+            entries[0].at,
+            escurel_runner_core::parse_rfc3339("2026-11-13T04:25:54.583Z"),
+            "the stream's own timestamp dates the entry"
+        );
+        assert_eq!(entries[1].text, "hi");
+        assert_eq!(entries[2].text, "one");
+        assert_eq!(entries[3].text, "permission denied");
+        assert_eq!(entries[4].text, "error_max_turns");
+        let stdout = lines.join("\n");
+        assert_eq!(
+            parse_outcome(format!("{stdout}\n").as_bytes())
+                .expect("parse")
+                .tool_calls,
+            1,
+            "tool_calls is the stream's tool_use count"
+        );
+    }
+
+    #[test]
+    fn a_turn_is_a_stream_json_user_message_line() {
+        let line = user_message("fold \"this\"\nplease");
+        assert_eq!(line.last(), Some(&b'\n'), "newline-terminated");
+        let v: serde_json::Value = serde_json::from_slice(&line).unwrap();
+        assert_eq!(v["type"], "user");
+        assert_eq!(v["message"]["role"], "user");
+        assert_eq!(v["message"]["content"][0]["text"], "fold \"this\"\nplease");
+        assert!(is_result_line(r#"{"type":"result","result":"x"}"#));
+        assert!(!is_result_line(
+            r#"{"type":"assistant","message":{"content":"the \"result\" is"}}"#
+        ));
     }
 
     #[test]

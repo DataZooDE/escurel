@@ -20,6 +20,11 @@ import {
   type ActionRunView,
 } from './runActions';
 import { log } from '../log';
+import { injectTextProblem, steerOffer, steerReply, type SteerReply } from './steer';
+import { loadTranscript } from './transcript';
+import { sendControl } from './controlCommands';
+import { inFlight } from './controlWait';
+import type { TranscriptState } from '../shared/protocol';
 
 const REFETCH_DEBOUNCE_MS = 300;
 
@@ -43,6 +48,8 @@ export class RunController implements vscode.Disposable {
   private readonly views = new Map<string, ActionRunView>();
   private readonly disposers: (() => void)[] = [];
   private readonly loaded = new vscode.EventEmitter<{ runId: string; view: RunView }>();
+  /** A double press of Send must not inject the same message twice. */
+  private readonly steering = inFlight();
   /** What the host last loaded for a run — the only view of it outside the webview. */
   readonly onDidLoad = this.loaded.event;
 
@@ -99,6 +106,35 @@ export class RunController implements vscode.Disposable {
     return true;
   }
 
+  /**
+   * Send `text` to the live run `runId` as one more turn, through the same guarded path the panel
+   * uses. Everything is checked against the host's own loaded view: a run that is not live, or whose
+   * harness takes no messages, is not sent anything.
+   */
+  async steer(runId: string, text: unknown): Promise<SteerReply> {
+    const view = this.views.get(runId);
+    if (!view?.steer?.available)
+      return {
+        sent: false,
+        message:
+          (view?.steer && !view.steer.available && view.steer.reason) ||
+          'This run is not running, so there is nothing to steer.',
+      };
+    if (typeof text !== 'string') return { sent: false, message: 'Write a message first.' };
+    const problem = injectTextProblem(text);
+    if (problem) return { sent: false, message: problem };
+    return this.steering(`${runId}\n${text}`, async () =>
+      steerReply(await sendControl(this.services, { action: 'inject', runId, text })),
+    );
+  }
+
+  /** The transcript of a run open in a panel, read with the host's own view of that run. */
+  async transcript(runId: string): Promise<TranscriptState> {
+    const view = this.views.get(runId);
+    if (!view) return { status: 'error', message: 'Open the run first.' };
+    return loadTranscript(this.services.client, view);
+  }
+
   private wire(runId: string, panel: vscode.WebviewPanel): void {
     let view: RunView | undefined;
     let rootEventId: string | undefined;
@@ -123,9 +159,14 @@ export class RunController implements vscode.Disposable {
         next.controls = visibleRunControls({
           ...next,
           controls: runControls(next.status, await this.services.admin.get()),
-        }).map((control) => control.action === 'approve' && next.skill === 'evolve_run'
-          ? { ...control, label: 'Review search limits' } : control);
+        }).map((control) =>
+          control.action === 'approve' && next.skill === 'evolve_run'
+            ? { ...control, label: 'Review search limits' }
+            : control,
+        );
         if (disposed || mine !== loadSeq) return;
+        const offer = steerOffer(next);
+        if (offer) next.steer = offer;
         view = next;
         this.views.set(runId, next);
         rootEventId = loaded.rootEventId;
@@ -215,6 +256,17 @@ export class RunController implements vscode.Disposable {
         case 'run-control':
         case 'view-skill':
           return void this.handleWebviewMessage(runId, m);
+        case 'load-transcript':
+          post({ type: 'run-transcript', state: { status: 'loading' } });
+          post({ type: 'run-transcript', state: await this.transcript(runId) });
+          return;
+        case 'steer': {
+          const reply = await this.steer(runId, m.text);
+          post({ type: 'steer-result', ...reply });
+          // The injection is recorded as a run event; read it now rather than at the next live push.
+          if (reply.sent) schedule();
+          return;
+        }
       }
     });
 

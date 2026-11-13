@@ -437,6 +437,48 @@ export interface ToolCallRow {
   resultSummary?: string;
 }
 
+/** What a run cost, from `run-finished.usage` (summed over its attempts). */
+export interface RunUsage {
+  inputTokens: number;
+  outputTokens: number;
+  /** Absent when the harness reported tokens but no price. */
+  costUsd?: number;
+  model?: string;
+}
+
+/** A message a person sent the live run (`run-inject`, `run:<id>:inject:<n>`). */
+export interface RunInjection {
+  n: number;
+  text: string;
+  requestedBy?: string;
+  at?: string;
+}
+
+export type TranscriptKind = 'tool_call' | 'tool_result' | 'message' | 'error';
+
+/** One row of a run transcript, cleaned by the host (src/runs/transcript.ts). */
+export interface TranscriptRecord {
+  /** Position in the replay, from 0. */
+  i: number;
+  kind: TranscriptKind;
+  attempt: number;
+  name?: string;
+  /** `sha256:` of the call's arguments: the arguments themselves are never stored. */
+  digest?: string;
+  summary: string;
+  /** Milliseconds after the first record; absent when the record has no readable time. */
+  offsetMs?: number;
+}
+
+/** What the Transcript tab shows. Only `ready` has rows; every other state is said in words. */
+export type TranscriptState =
+  | { status: 'loading' }
+  | { status: 'ready'; records: TranscriptRecord[] }
+  | {
+      status: 'pending' | 'absent' | 'expired' | 'not-found' | 'error';
+      message: string;
+    };
+
 export interface RunView {
   runId: string;
   /** `running | processed | failed | dead_letter | cancelled | planned`. */
@@ -472,12 +514,22 @@ export interface RunView {
   controls?: RunControl[];
   /** The skill the run executes, for Fix skill and for approving a plan. */
   skill?: string;
+  usage?: RunUsage;
+  /** The stored transcript's size (`run-finished.transcript`); absent when none was stored. */
+  transcript?: { records: number; bytes: number };
+  /** Messages people sent this run while it was live, in order. */
+  injections: RunInjection[];
+  /** Filled by the host: whether a message can be sent to this run now (see src/runs/steer.ts). */
+  steer?: { available: true } | { available: false; reason: string };
 }
 
 export type RunHostToWebview =
   | { type: 'run-loading'; runId: string }
   | { type: 'run'; view: RunView }
-  | { type: 'run-error'; message: string; canReconnect: boolean };
+  | { type: 'run-error'; message: string; canReconnect: boolean }
+  | { type: 'run-transcript'; state: TranscriptState }
+  /** The runner's answer to a steer, in words; `sent` clears the box. */
+  | { type: 'steer-result'; sent: boolean; message: string };
 
 export type RunWebviewToHost =
   | { type: 'ready' }
@@ -491,6 +543,10 @@ export type RunWebviewToHost =
   | { type: 'open-produced' }
   | { type: 'run-control'; action: RunControlAction; runId: string; eventId?: string }
   | { type: 'view-skill'; skill: string }
+  /** The Transcript tab was opened (or asks again): the host reads THIS panel's run. */
+  | { type: 'load-transcript' }
+  /** A message for THIS panel's live run; the host checks the run and the text again. */
+  | { type: 'steer'; text: string }
   | { type: 'refresh' };
 
 // ── overview board ───────────────────────────────────────────────────

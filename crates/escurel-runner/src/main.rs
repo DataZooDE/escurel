@@ -50,7 +50,7 @@ use escurel_runner_harness::{
     AgyHarness, ClaudeHarness, CodexHarness, DelegateHarness, EchoHarness, GeminiHarness, Harness,
     MuseHarness, OpenAiCompatHarness, OpenAiPreset, RefusingHarness, Usage,
 };
-use escurel_types::{CaptureEventRequest, Event, ListInboxRequest};
+use escurel_types::{Event, ListInboxRequest};
 use hmac::{Hmac, Mac};
 use serde_json::json;
 use sha2::Sha256;
@@ -89,10 +89,10 @@ struct AppState {
     /// The durable run ledger — the idempotency authority (#149). The gate
     /// consults it before enqueueing so a re-delivered event is dropped.
     ledger: Arc<Ledger>,
-    /// The live runs' cancel handles (workbench backend P2-3a). `POST
-    /// /debug/cancel` and the `escurel:run-control` subscriber stop a run
-    /// through it.
-    cancels: escurel_runner_core::CancelRegistry,
+    /// The live runs (workbench backend P2-3a, #820). `POST /debug/cancel`
+    /// and the `escurel:run-control` subscriber cancel or steer a run
+    /// through its entry.
+    runs: escurel_runner_core::RunRegistry,
     /// Where and as whom to read the gateway when a requeue rebuilds a
     /// trigger from its event (`None` tokens = the dev/legacy path with no
     /// credentials: the bare trigger is enqueued as before).
@@ -222,7 +222,7 @@ async fn main() -> anyhow::Result<()> {
 
     // In-flight quota slots, shared gate → dispatch loop (#158).
     let inflight: InflightSlots = Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
-    let cancels = escurel_runner_core::CancelRegistry::new();
+    let runs = escurel_runner_core::RunRegistry::new();
     let last_poll_ms: Arc<std::sync::atomic::AtomicU64> =
         Arc::new(std::sync::atomic::AtomicU64::new(0));
 
@@ -304,7 +304,7 @@ async fn main() -> anyhow::Result<()> {
                     governor.clone(),
                     Arc::clone(&metrics),
                     Arc::clone(&inflight),
-                    cancels.clone(),
+                    runs.clone(),
                     Arc::new(Notify::new()),
                 )));
             }
@@ -317,7 +317,7 @@ async fn main() -> anyhow::Result<()> {
                 governor.clone(),
                 Arc::clone(&metrics),
                 Arc::clone(&inflight),
-                cancels.clone(),
+                runs.clone(),
                 Arc::clone(&drained),
             ));
         }
@@ -378,23 +378,41 @@ async fn main() -> anyhow::Result<()> {
         }
     }
 
-    // The lint tick (compile-first-wiki G2): opt-in scheduled semantic-health
-    // pass. Every `lint_interval` the runner synthesizes a `lint` invocation
-    // with a deterministic per-window id so the reactive loop drives it exactly
-    // once per window. Disabled unless ESCUREL_RUNNER_LINT_INTERVAL is set.
-    match (config.lint_interval, config.tenant.clone(), tokens.clone()) {
-        (Some(interval), Some(tenant), Some(source)) => {
-            tokio::spawn(lint_tick_loop(
+    // Scheduled triggers (#819): skills that declare `schedule:` are fired by
+    // the runner itself, one deterministic-id event per window. The legacy
+    // lint tick (ESCUREL_RUNNER_LINT_INTERVAL) rides the same loop as a
+    // synthetic entry. Needs a tenant and a token, like the poller.
+    match (config.tenant.clone(), tokens.clone()) {
+        (Some(tenant), Some(source)) => {
+            let extra: Vec<_> = config
+                .lint_interval
+                .map(|i| escurel_runner_core::schedule::ScheduleEntry::lint_interval(&tenant, i))
+                .into_iter()
+                .collect();
+            // A window younger than one tick could open and close unseen.
+            let grace = if config.schedule_grace < config.schedule_tick {
+                tracing::warn!(
+                    target: "escurel_runner",
+                    grace_ms = config.schedule_grace.as_millis() as u64,
+                    tick_ms = config.schedule_tick.as_millis() as u64,
+                    "ESCUREL_RUNNER_SCHEDULE_GRACE is below the schedule tick; using the tick"
+                );
+                config.schedule_tick
+            } else {
+                config.schedule_grace
+            };
+            tokio::spawn(schedule_loop(
                 config.gateway_url.clone(),
-                tenant,
                 source,
-                interval,
+                config.schedule_tick,
+                grace,
+                extra,
                 Arc::clone(&draining),
             ));
         }
-        (Some(_), _, _) => tracing::warn!(
+        _ if config.lint_interval.is_some() => tracing::warn!(
             target: "escurel_runner",
-            "lint tick disabled: ESCUREL_RUNNER_LINT_INTERVAL set but tenant/token missing"
+            "schedules disabled: ESCUREL_RUNNER_LINT_INTERVAL set but tenant/token missing"
         ),
         _ => {}
     }
@@ -418,7 +436,7 @@ async fn main() -> anyhow::Result<()> {
         governor,
         metrics: Arc::clone(&metrics),
         inflight: Arc::clone(&inflight),
-        cancels: cancels.clone(),
+        runs: runs.clone(),
         gateway_url: config.gateway_url.clone(),
         tokens: tokens.clone(),
         last_poll_ms: Arc::clone(&last_poll_ms),
@@ -929,6 +947,8 @@ struct AttemptSink {
     last_error: Option<String>,
     /// Token usage summed over every attempt that reported one (P3-4).
     usage: Option<Usage>,
+    /// Every attempt's transcript records, in order (#822).
+    transcript: Vec<escurel_runner_core::TranscriptRecord>,
 }
 
 impl AttemptSink {
@@ -936,6 +956,101 @@ impl AttemptSink {
     fn add_usage(&mut self, usage: Option<&Usage>) {
         if let Some(u) = usage {
             self.usage.get_or_insert_with(Usage::default).accumulate(u);
+        }
+    }
+}
+
+/// [`escurel_runner_core::resolve_run_agent`], retried with the run's backoff up to its attempts
+/// cap. `Err` names why the pages stayed unreadable.
+async fn resolve_run_agent_retrying(
+    client: &Client,
+    trigger: &Trigger,
+    config: &RunnerConfig,
+) -> Result<
+    (
+        Option<escurel_runner_core::SkillContract>,
+        escurel_runner_core::AgentChoice,
+    ),
+    String,
+> {
+    let tries = config.max_attempts.max(1);
+    let mut last = String::new();
+    for attempt in 1..=tries {
+        match escurel_runner_core::resolve_run_agent(client, trigger).await {
+            Ok(resolved) => return Ok(resolved),
+            Err(e) => {
+                last = e.to_string();
+                tracing::warn!(target: "escurel_runner", event_id = %trigger.event_id, attempt,
+                    error = %e, "the skill or agent page could not be read");
+                if attempt < tries {
+                    tokio::time::sleep(config.retry_backoff).await;
+                }
+            }
+        }
+    }
+    Err(format!(
+        "the skill's contract or its agent page could not be read ({last}); not running the \
+         skill without its agent"
+    ))
+}
+
+/// Store the run's transcript (#822) and return the `{records, bytes,
+/// sha256}` that `run-finished.transcript` records (informational: readers
+/// fetch the transcript by run id). Best-effort like every run
+/// event: a refused upload is logged and counted
+/// (`escurel_runner_run_events_failed_total{kind="transcript"}`) and the run
+/// is unaffected.
+///
+/// Uploaded with a token for exactly this run when the runner mints, so the
+/// gateway's own-run rule applies; a static-bearer runner has no run token
+/// and uses its own admin bearer, which the gateway accepts for any run.
+async fn store_transcript(
+    client: &escurel_client::Client,
+    gateway_url: &str,
+    tokens: &escurel_runner_core::TokenSource,
+    trigger: &escurel_runner_core::Trigger,
+    run: &escurel_runner_core::RunClaims,
+    metrics: &Metrics,
+    records: &[escurel_runner_core::TranscriptRecord],
+) -> Option<escurel_types::run_record::TranscriptSummary> {
+    let (jsonl, _) = escurel_runner_core::to_jsonl(records)?;
+    let run_client = match tokens.mint_agent(&trigger.label_skill, 300, Some(run), None) {
+        Ok(Some(token)) => {
+            match escurel_client::Client::connect(
+                gateway_url,
+                escurel_runner_core::SecretString::from(token),
+            )
+            .await
+            {
+                Ok(c) => Some(c.with_run_id(&run.run_id)),
+                Err(e) => {
+                    record_run_event(metrics, "transcript", Err(e));
+                    return None;
+                }
+            }
+        }
+        Ok(None) => None,
+        Err(e) => {
+            metrics.inc_runner_run_event_failed("transcript");
+            tracing::warn!(target: "escurel_runner", run_id = %run.run_id, error = %e,
+                "transcript: no run token; not stored (best-effort); run unaffected");
+            return None;
+        }
+    };
+    match run_client
+        .as_ref()
+        .unwrap_or(client)
+        .put_run_transcript(&run.run_id, jsonl)
+        .await
+    {
+        Ok(stored) => Some(escurel_types::run_record::TranscriptSummary {
+            records: stored.records,
+            bytes: stored.bytes,
+            sha256: stored.sha256,
+        }),
+        Err(e) => {
+            record_run_event(metrics, "transcript", Err(e));
+            None
         }
     }
 }
@@ -1242,6 +1357,7 @@ async fn enqueue_requeued(state: &AppState, tenant: &str, event_id: &str) {
             manual: None,
             is_system: false,
             chat: None,
+            agent: None,
             tenant: tenant.to_owned(),
             event_id: event_id.to_owned(),
             label_skill: String::new(),
@@ -1426,7 +1542,7 @@ async fn debug_cancel(
         );
     };
     match run_id {
-        Some(run_id) if state.cancels.cancel(&run_id, reason) => {
+        Some(run_id) if state.runs.cancel(&run_id, reason) => {
             tracing::info!(target: "escurel_runner", run_id = %run_id, reason = ?reason, "run cancel requested");
             (
                 StatusCode::OK,
@@ -2072,7 +2188,7 @@ async fn dispatch_loop(
     governor: Governor,
     metrics: Arc<Metrics>,
     inflight: InflightSlots,
-    cancels: escurel_runner_core::CancelRegistry,
+    runs: escurel_runner_core::RunRegistry,
     drained: Arc<Notify>,
 ) {
     // A PROBE, not the client this loop will use.
@@ -2195,7 +2311,7 @@ async fn dispatch_loop(
         // from it and authorises `report_progress` by it, so it is a claim the
         // runner signs, never a header the harness could set.
         // Cancellable from here to the terminal (workbench backend P2-3a).
-        let cancel = cancels.register(run_id.as_str(), config.cancel_grace);
+        let cancel = runs.register(run_id.as_str(), config.cancel_grace);
         let run_claims = escurel_runner_core::RunClaims {
             run_id: run_id.0.clone(),
             root_event_id: trigger.lineage.root_event_id.clone(),
@@ -2209,10 +2325,6 @@ async fn dispatch_loop(
             depth = trigger.lineage.depth,
         );
         let _run_guard = run_span.enter();
-
-        // Acquire a global harness-subprocess permit (#158): bounds concurrent
-        // harness spawns across all tenants. Held across the whole run.
-        let _harness_permit = governor.acquire_harness().await;
 
         // ── async-ops: the workflow INVOCATION event is a control kick, not
         //    harness work ────────────────────────────────────────────────────
@@ -2252,7 +2364,7 @@ async fn dispatch_loop(
                     .lock()
                     .expect("inflight slots mutex")
                     .remove(&trigger.event_id);
-                cancels.finish(run_id.as_str());
+                runs.finish(run_id.as_str());
                 continue;
             }
             match drive_workflow(
@@ -2317,7 +2429,7 @@ async fn dispatch_loop(
                 .lock()
                 .expect("inflight slots mutex")
                 .remove(&trigger.event_id);
-            cancels.finish(run_id.as_str());
+            runs.finish(run_id.as_str());
             continue;
         }
 
@@ -2330,25 +2442,65 @@ async fn dispatch_loop(
         // retry closure because a retry is the same step, not a new choice.
         // The skill's own asks (workbench backend P2-7): a `harness:` on the
         // skill page is honoured like a manual one, within the allow-list.
-        let skill_contract =
-            escurel_runner_core::skill_contract(&client, &trigger.label_skill).await;
-        let skill_harness = skill_contract.as_ref().and_then(|c| c.harness.clone());
-        // Per-skill narrowing of the run's agent token (P3-6): on, the
-        // token carries the skill's write groups — none when the skill
-        // declares no grant or could not be read, which fails closed to an
-        // agent that can write nothing rather than one that writes as admin.
-        let narrow_groups: Option<Vec<String>> = config.agent_narrow.then(|| {
-            skill_contract
-                .as_ref()
-                .map(|c| c.write_groups.clone())
-                .unwrap_or_default()
-        });
-        let step_harness = resolve_harness(&config, &harness, &trigger, skill_harness.as_deref());
+        // The agent profile the run executes as (#823). A page that could not be READ is not an
+        // absent one: retried a few times, and if still unreadable the run ends `failed`
+        // (retriable: the poller re-drives it) BEFORE any token is minted. Never a run on the
+        // runner's own token because the skill's default agent went unread, and never a
+        // dead-letter claiming the agent does not exist.
+        let (skill_contract, agent, agent_unreadable) =
+            match resolve_run_agent_retrying(&client, &trigger, &config).await {
+                Ok((contract, agent)) => (contract, agent, None),
+                Err(e) => (None, escurel_runner_core::AgentChoice::None, Some(e)),
+            };
+        let profile = agent.profile();
+        // An agent's harness and model stand in for the skill's own asks.
+        let skill_harness = profile
+            .and_then(|p| p.harness.clone())
+            .or_else(|| skill_contract.as_ref().and_then(|c| c.harness.clone()));
+        // The skill's write groups: what a narrowed token (P3-6) and an agent
+        // token (#823) carry — none when the skill declares no grant or could
+        // not be read, which fails closed to a token that can write nothing.
+        let write_groups: Vec<String> = skill_contract
+            .as_ref()
+            .map(|c| c.write_groups.clone())
+            .unwrap_or_default();
+        let narrow_groups = config.agent_narrow.then_some(write_groups.as_slice());
+        // An agent narrows a run to what the skill grants, then its own
+        // scopes (enforced by the gateway) narrow that further.
+        let grant = match (profile, narrow_groups) {
+            (Some(profile), _) => escurel_runner_core::RunGrant::Agent {
+                profile,
+                groups: &write_groups,
+            },
+            (None, Some(groups)) => escurel_runner_core::RunGrant::Narrowed(groups),
+            (None, None) => escurel_runner_core::RunGrant::Wide,
+        };
+        let step_harness = match &agent {
+            escurel_runner_core::AgentChoice::Refused(reason) => {
+                tracing::warn!(
+                    target: "escurel_runner",
+                    event_id = %trigger.event_id,
+                    %reason,
+                    "the run's agent cannot be used; refusing the run"
+                );
+                Arc::new(RefusingHarness::agent_refused(reason.clone())) as Arc<dyn Harness>
+            }
+            _ => resolve_harness(&config, &harness, &trigger, skill_harness.as_deref()),
+        };
         // The skill's `model:`, within ESCUREL_RUNNER_MODEL_ALLOW; else, for a
         // chat run, the operator's ESCUREL_RUNNER_CHAT_MODEL.
         // A workflow step (the multi-step kind) takes the harness's long model.
-        let skill_model = skill_contract.as_ref().and_then(|c| c.model.as_deref());
+        let skill_model = profile
+            .and_then(|p| p.model.as_deref())
+            .or_else(|| skill_contract.as_ref().and_then(|c| c.model.as_deref()));
         let (step_harness, step_model) = select_model(&config, step_harness, skill_model, &trigger);
+        // The agent's own concurrency cap (`max_concurrent`), then a global
+        // harness-subprocess permit (#158, bounds spawns across all tenants),
+        // both held across the whole run. Agent first, so a run queued behind
+        // its busy agent holds no global slot.
+        let _run_permits = governor
+            .acquire_run(profile.map(|p| (p.id.as_str(), p.max_concurrent)))
+            .await;
         // The run's lifecycle as `escurel:run` events (workbench backend
         // P1): a projection of the ledger for the humans watching the run,
         // best-effort — a refusal is logged and counted, never acted on.
@@ -2356,6 +2508,8 @@ async fn dispatch_loop(
             run_id: run_id.0.clone(),
             root_event_id: trigger.lineage.root_event_id.clone(),
             trigger_event_id: trigger.event_id.clone(),
+            skill: Some(trigger.label_skill.clone()).filter(|s| !s.is_empty()),
+            agent: profile.map(|p| p.id.clone()),
             parent_run_id: trigger.lineage.parent_run_id.clone(),
             depth: trigger.lineage.depth,
             lineage_path: trigger.lineage.lineage_path.clone(),
@@ -2369,6 +2523,14 @@ async fn dispatch_loop(
                 .as_ref()
                 .map(escurel_runner_core::ManualStart::to_value),
         };
+        // The run's entry learns who runs it, so a control verb that needs
+        // the harness (an injection) can answer and record it.
+        // A harness that takes injections (#820) gets an inbox for them.
+        let inject = runs.attach(
+            run_id.as_str(),
+            run_ctx.clone(),
+            step_harness.supports_inject(),
+        );
         let emit_events = config.emit_run_events;
         if emit_events {
             record_run_event(&metrics, "started", run_ctx.emit_started(&client).await);
@@ -2378,85 +2540,100 @@ async fn dispatch_loop(
         let attempt_sink = std::sync::Mutex::new(AttemptSink::default());
         let (client_ref, ctx_ref, metrics_ref, sink_ref) =
             (&client, &run_ctx, &metrics, &attempt_sink);
-        let report = run_with_retry(&config, |attempt| {
-            // BOUNDED. The gateway client times out one request at 60s, but a
-            // run is not one request — a dozen model turns, each with tool
-            // calls, times the attempts cap. A run that stalled sat `pending`
-            // holding an in-flight quota slot, not terminal enough to block a
-            // re-delivery and not re-drivable either, because the poller's
-            // seen-set already holds its event id.
-            //
-            // A subprocess timeout is transient. A Gemini timeout leaves
-            // provider usage unknown, so retrying could exceed the run budget.
-            // The harness for THIS trigger: a workflow step may declare its
-            // own, and the runner's configured one answers for everything
-            // else.
-            let fut = attempt_run(
-                &trigger,
-                &client,
-                &config,
-                &tokens,
-                step_harness.as_ref(),
-                attempt,
-                Some(&run_claims),
-                narrow_groups.as_deref(),
-                &cancel,
-                sink_ref,
-            );
-            let bound = config.run_timeout;
-            // Every in-process HTTP harness meters the model: an abandoned
-            // attempt's usage is unknown, so a retry could overrun the budget.
-            let gemini_budgeted = meters_model(step_harness.name());
-            async move {
-                let started_at = escurel_runner_core::now_ts();
-                let result = match tokio::time::timeout(bound, fut).await {
-                    Ok(result) => result,
-                    Err(_) if gemini_budgeted => Err(ReconcileError::Permanent(format!(
-                        "model usage unknown: run attempt exceeded {}ms and was abandoned",
-                        bound.as_millis()
-                    ))),
-                    Err(_) => Err(ReconcileError::Transient(format!(
-                        "run attempt exceeded {}s and was abandoned",
-                        bound.as_secs()
-                    ))),
-                };
-                // An abandoned attempt never reached `attempt_run`'s own error
-                // path, so the sink has to hear about it here: a chat run's
-                // failure turn says WHY (`timeout`), and `run-finished.error`
-                // names it.
-                if let Err(e) = &result
-                    && e.to_string().contains("abandoned")
-                    && let Ok(mut s) = sink_ref.lock()
-                {
-                    s.last_error = Some(e.to_string());
-                }
-                if emit_events {
-                    let (outcome, error) = match &result {
-                        Ok(_) => ("ok", None),
-                        Err(ReconcileError::Converged(r)) => ("converged", Some(r.clone())),
-                        Err(ReconcileError::Cancelled(r)) => ("cancelled", Some(r.clone())),
-                        Err(e) if e.to_string().contains("abandoned") => {
-                            ("timeout", Some(e.to_string()))
-                        }
-                        Err(e) => ("failed", Some(e.to_string())),
-                    };
-                    let report = escurel_runner_core::AttemptReport {
-                        attempt,
-                        started_at,
-                        ended_at: escurel_runner_core::now_ts(),
-                        outcome,
-                        error,
-                    };
-                    record_run_event(
-                        metrics_ref,
-                        "attempt",
-                        ctx_ref.emit_attempt(client_ref, &report).await,
-                    );
-                }
-                result
+        if let Some(reason) = &agent_unreadable
+            && let Ok(mut s) = attempt_sink.lock()
+        {
+            s.last_error = Some(reason.clone());
+        }
+        let report = if agent_unreadable.is_some() {
+            escurel_runner_core::RunReport {
+                confirmed: None,
+                converged_no_op: false,
+                failure: None,
+                attempts: 0,
             }
-        })
-        .await;
+        } else {
+            run_with_retry(&config, |attempt| {
+                // BOUNDED. The gateway client times out one request at 60s, but a
+                // run is not one request — a dozen model turns, each with tool
+                // calls, times the attempts cap. A run that stalled sat `pending`
+                // holding an in-flight quota slot, not terminal enough to block a
+                // re-delivery and not re-drivable either, because the poller's
+                // seen-set already holds its event id.
+                //
+                // A subprocess timeout is transient. A Gemini timeout leaves
+                // provider usage unknown, so retrying could exceed the run budget.
+                // The harness for THIS trigger: a workflow step may declare its
+                // own, and the runner's configured one answers for everything
+                // else.
+                let fut = attempt_run(
+                    &trigger,
+                    &client,
+                    &config,
+                    &tokens,
+                    step_harness.as_ref(),
+                    attempt,
+                    Some(&run_claims),
+                    grant,
+                    &cancel,
+                    inject.as_ref(),
+                    sink_ref,
+                );
+                let bound = config.run_timeout;
+                // Every in-process HTTP harness meters the model: an abandoned
+                // attempt's usage is unknown, so a retry could overrun the budget.
+                let gemini_budgeted = meters_model(step_harness.name());
+                async move {
+                    let started_at = escurel_runner_core::now_ts();
+                    let result = match tokio::time::timeout(bound, fut).await {
+                        Ok(result) => result,
+                        Err(_) if gemini_budgeted => Err(ReconcileError::Permanent(format!(
+                            "model usage unknown: run attempt exceeded {}ms and was abandoned",
+                            bound.as_millis()
+                        ))),
+                        Err(_) => Err(ReconcileError::Transient(format!(
+                            "run attempt exceeded {}s and was abandoned",
+                            bound.as_secs()
+                        ))),
+                    };
+                    // An abandoned attempt never reached `attempt_run`'s own error
+                    // path, so the sink has to hear about it here: a chat run's
+                    // failure turn says WHY (`timeout`), and `run-finished.error`
+                    // names it.
+                    if let Err(e) = &result
+                        && e.to_string().contains("abandoned")
+                        && let Ok(mut s) = sink_ref.lock()
+                    {
+                        s.last_error = Some(e.to_string());
+                    }
+                    if emit_events {
+                        let (outcome, error) = match &result {
+                            Ok(_) => ("ok", None),
+                            Err(ReconcileError::Converged(r)) => ("converged", Some(r.clone())),
+                            Err(ReconcileError::Cancelled(r)) => ("cancelled", Some(r.clone())),
+                            Err(e) if e.to_string().contains("abandoned") => {
+                                ("timeout", Some(e.to_string()))
+                            }
+                            Err(e) => ("failed", Some(e.to_string())),
+                        };
+                        let report = escurel_runner_core::AttemptReport {
+                            attempt,
+                            started_at,
+                            ended_at: escurel_runner_core::now_ts(),
+                            outcome,
+                            error,
+                        };
+                        record_run_event(
+                            metrics_ref,
+                            "attempt",
+                            ctx_ref.emit_attempt(client_ref, &report).await,
+                        );
+                    }
+                    result
+                }
+            })
+            .await
+        };
 
         // Outcome → terminal status:
         // - confirmed effect      → `processed` (+ produced instance/version);
@@ -2499,7 +2676,7 @@ async fn dispatch_loop(
             (None, false, _) => ledger.complete(&run_id, RunStatus::Failed, None),
         };
         // The run is no longer live; the requester's reason, if cancelled.
-        let cancel_reason = cancels
+        let cancel_reason = runs
             .finish(run_id.as_str())
             .map(|r| r.unwrap_or_else(|| "cancelled".to_owned()));
         if emit_events {
@@ -2549,14 +2726,32 @@ async fn dispatch_loop(
                     }
                 }
                 (None, false, _) => escurel_runner_core::RunFinish::Failed {
-                    reason: "permanent".to_owned(),
+                    reason: if agent_unreadable.is_some() {
+                        "agent_unreadable".to_owned()
+                    } else {
+                        "permanent".to_owned()
+                    },
                     error: attempt_sink.lock().ok().and_then(|s| s.last_error.clone()),
                 },
             };
             let sink = attempt_sink.lock().map(|s| s.clone()).unwrap_or_default();
+            let transcript = store_transcript(
+                &client,
+                &config.gateway_url,
+                &tokens,
+                &trigger,
+                &run_claims,
+                &metrics,
+                &sink.transcript,
+            )
+            .await;
             if let Some(u) = &sink.usage {
+                // The reported model, else the one this run chose.
+                let model = u.model.as_deref().or(run_ctx.model.as_deref());
                 metrics.add_runner_usage(
                     &trigger.tenant,
+                    &trigger.label_skill,
+                    model.unwrap_or("unknown"),
                     u.input_tokens,
                     u.output_tokens,
                     u.cost_usd,
@@ -2573,7 +2768,8 @@ async fn dispatch_loop(
                         &sink.summary,
                         sink.tool_calls,
                         sink.autonomy,
-                        sink.usage.as_ref().map(|u| serde_json::json!(u)),
+                        sink.usage.clone(),
+                        transcript,
                     )
                     .await,
             );
@@ -2900,11 +3096,12 @@ async fn attempt_run(
     harness: &dyn Harness,
     attempt: u32,
     run: Option<&escurel_runner_core::RunClaims>,
-    narrow: Option<&[String]>,
+    grant: escurel_runner_core::RunGrant<'_>,
     cancel: &escurel_runner_core::Cancel,
+    inject: Option<&escurel_runner_core::InjectInbox>,
     sink: &std::sync::Mutex<AttemptSink>,
 ) -> Result<ConfirmedEffect, ReconcileError> {
-    let mut task: TaskContext = package(trigger, client, config, Some(tokens), run, narrow)
+    let mut task: TaskContext = package(trigger, client, config, Some(tokens), run, grant)
         .await
         .map_err(|e| {
             tracing::warn!(
@@ -2921,6 +3118,9 @@ async fn attempt_run(
             package_error_to_reconcile(e)
         })?;
     task.cancel = Some(cancel.clone());
+    task.inject = inject.cloned();
+    let transcript = escurel_runner_core::TranscriptSink::new(attempt);
+    task.transcript = Some(transcript.clone());
     task.prior_model_tokens = sink
         .lock()
         .ok()
@@ -2944,107 +3144,112 @@ async fn attempt_run(
     // Carried past the match so the read-back below can tell "the harness
     // named a page" from "it named nothing" — the latter is only meaningful
     // once the gateway has also been asked.
-    let (harness_produced, harness_reported_failure, harness_result_ref) =
-        match harness.run(&task).await {
-            Ok(outcome) => {
-                tracing::info!(
-                    target: "escurel_runner",
-                    event_id = %trigger.event_id,
-                    harness = %harness.name(),
-                    attempt,
-                    ok = outcome.ok,
-                    tool_calls = outcome.tool_calls,
-                    produced_instance = ?outcome.produced_instance,
-                    summary = %outcome.summary,
-                    "dispatch: harness completed"
-                );
-                // A planning run (P2-5b) reported its plan and stopped: a
-                // clean terminal with nothing to confirm, never a write to
-                // reconcile.
-                if task.plan_mode {
-                    if let Ok(mut s) = sink.lock() {
-                        s.summary = outcome.summary.clone();
-                        s.tool_calls = outcome.tool_calls;
-                        s.add_usage(outcome.usage.as_ref());
-                    }
-                    return Err(if outcome.ok {
-                        ReconcileError::Converged(
-                            "planned: the harness reported its plan and stopped".to_owned(),
-                        )
-                    } else {
-                        ReconcileError::Permanent(outcome.summary)
-                    });
-                }
+    let ran = harness.run(&task).await;
+    // Whatever the attempt's outcome: a failed attempt's record is the one an
+    // auditor most wants.
+    if let Ok(mut s) = sink.lock() {
+        s.transcript.extend(transcript.take());
+    }
+    let (harness_produced, harness_reported_failure, harness_result_ref) = match ran {
+        Ok(outcome) => {
+            tracing::info!(
+                target: "escurel_runner",
+                event_id = %trigger.event_id,
+                harness = %harness.name(),
+                attempt,
+                ok = outcome.ok,
+                tool_calls = outcome.tool_calls,
+                produced_instance = ?outcome.produced_instance,
+                summary = %outcome.summary,
+                "dispatch: harness completed"
+            );
+            // A planning run (P2-5b) reported its plan and stopped: a
+            // clean terminal with nothing to confirm, never a write to
+            // reconcile.
+            if task.plan_mode {
                 if let Ok(mut s) = sink.lock() {
                     s.summary = outcome.summary.clone();
-                    s.reply = outcome.reply.clone();
                     s.tool_calls = outcome.tool_calls;
                     s.add_usage(outcome.usage.as_ref());
-                    s.autonomy = Some(match task.autonomy {
-                        Autonomy::Auto => "auto",
-                        Autonomy::Review => "review",
-                        Autonomy::Confirm => "confirm",
-                    });
                 }
-                // A self-reported FAILURE is not evidence either.
-                //
-                // This used to return here, before the read-back — which
-                // contradicted the rule stated eight lines below and enforced
-                // everywhere else in this function: the gateway is the authority,
-                // never the harness's own account of itself. Measured in the
-                // cluster on 2026-09-06: a Gemini run created a draft
-                // (`create_draft` → `status: ok`), kept talking, hit the turn cap,
-                // and reported failure. The run was recorded `failed
-                // (retriable re-drive)` for work that had landed — and a re-drive
-                // would have produced a SECOND draft for a page whose rule is
-                // one draft per page.
-                //
-                // So carry the report past the read-back and let it decide. If
-                // the gateway confirms an effect, the run succeeded whatever the
-                // model said; if it confirms nothing, this becomes the permanent
-                // failure it always was, with the harness's own words attached.
-                let reported_failure = (!outcome.ok).then(|| outcome.summary.clone());
-                // NB: "produced no instance + no pre-flagged target" is NOT by
-                // itself a no-op, and treating it as one was a real bug. Both
-                // real LLM adapters hardcode `produced_instance: None` — their
-                // envelopes do not name the page the model wrote — so this fired
-                // on every unflagged `claude`/`codex` run, including ones that
-                // had just written a page and assigned the event. The run was
-                // recorded `processed` with no effect, and never cascaded. Only
-                // the `echo` stub reports a produced instance, which is why the
-                // suite never saw it.
-                //
-                // The gateway is the authority, so ask it first (below) and
-                // decide afterwards. `result_ref` is the harness's own — a produced
-                // artifact the gateway read-back cannot observe — so it rides
-                // through to the confirmed effect verbatim.
-                (
-                    outcome.produced_instance,
-                    reported_failure,
-                    outcome.result_ref,
-                )
+                return Err(if outcome.ok {
+                    ReconcileError::Converged(
+                        "planned: the harness reported its plan and stopped".to_owned(),
+                    )
+                } else {
+                    ReconcileError::Permanent(outcome.summary)
+                });
             }
-            Err(e) => {
-                tracing::warn!(
-                    target: "escurel_runner",
-                    event_id = %trigger.event_id,
-                    attempt,
-                    error = %e,
-                    "dispatch: harness run failed"
-                );
-                if let Ok(mut s) = sink.lock() {
-                    s.last_error = Some(e.to_string());
-                }
-                if meters_model(harness.name())
-                    && !matches!(e, escurel_runner_harness::HarnessError::Preflight { .. })
-                {
-                    return Err(ReconcileError::Permanent(format!(
-                        "model usage unknown after adapter error: {e}"
-                    )));
-                }
-                return Err(harness_error_to_reconcile(&e));
+            if let Ok(mut s) = sink.lock() {
+                s.summary = outcome.summary.clone();
+                s.reply = outcome.reply.clone();
+                s.tool_calls = outcome.tool_calls;
+                s.add_usage(outcome.usage.as_ref());
+                s.autonomy = Some(match task.autonomy {
+                    Autonomy::Auto => "auto",
+                    Autonomy::Review => "review",
+                    Autonomy::Confirm => "confirm",
+                });
             }
-        };
+            // A self-reported FAILURE is not evidence either.
+            //
+            // This used to return here, before the read-back — which
+            // contradicted the rule stated eight lines below and enforced
+            // everywhere else in this function: the gateway is the authority,
+            // never the harness's own account of itself. Measured in the
+            // cluster on 2026-09-06: a Gemini run created a draft
+            // (`create_draft` → `status: ok`), kept talking, hit the turn cap,
+            // and reported failure. The run was recorded `failed
+            // (retriable re-drive)` for work that had landed — and a re-drive
+            // would have produced a SECOND draft for a page whose rule is
+            // one draft per page.
+            //
+            // So carry the report past the read-back and let it decide. If
+            // the gateway confirms an effect, the run succeeded whatever the
+            // model said; if it confirms nothing, this becomes the permanent
+            // failure it always was, with the harness's own words attached.
+            let reported_failure = (!outcome.ok).then(|| outcome.summary.clone());
+            // NB: "produced no instance + no pre-flagged target" is NOT by
+            // itself a no-op, and treating it as one was a real bug. Both
+            // real LLM adapters hardcode `produced_instance: None` — their
+            // envelopes do not name the page the model wrote — so this fired
+            // on every unflagged `claude`/`codex` run, including ones that
+            // had just written a page and assigned the event. The run was
+            // recorded `processed` with no effect, and never cascaded. Only
+            // the `echo` stub reports a produced instance, which is why the
+            // suite never saw it.
+            //
+            // The gateway is the authority, so ask it first (below) and
+            // decide afterwards. `result_ref` is the harness's own — a produced
+            // artifact the gateway read-back cannot observe — so it rides
+            // through to the confirmed effect verbatim.
+            (
+                outcome.produced_instance,
+                reported_failure,
+                outcome.result_ref,
+            )
+        }
+        Err(e) => {
+            tracing::warn!(
+                target: "escurel_runner",
+                event_id = %trigger.event_id,
+                attempt,
+                error = %e,
+                "dispatch: harness run failed"
+            );
+            if let Ok(mut s) = sink.lock() {
+                s.last_error = Some(e.to_string());
+            }
+            if meters_model(harness.name())
+                && !matches!(e, escurel_runner_harness::HarnessError::Preflight { .. })
+            {
+                return Err(ReconcileError::Permanent(format!(
+                    "model usage unknown after adapter error: {e}"
+                )));
+            }
+            return Err(harness_error_to_reconcile(&e));
+        }
+    };
 
     // Don't trust the harness: read back over `/mcp` to confirm the event is
     // processed + bound and the instance's version advanced (#155). For an
@@ -3749,6 +3954,19 @@ impl ControlOutcome {
             new_run_id: None,
         }
     }
+    /// A per-run verb for a run that is not live: the ledger says why.
+    fn not_live(state: &AppState, run_id: &str) -> Self {
+        let detail = match state.ledger.find_run(run_id) {
+            Ok(Some(rec)) => format!("run is {}", rec.status.as_str()),
+            Ok(None) => "unknown run".to_owned(),
+            Err(e) => format!("ledger: {e}"),
+        };
+        Self {
+            outcome: "not_live",
+            detail: Some(detail),
+            new_run_id: None,
+        }
+    }
 }
 
 /// Act on one authorised control request (the gateway already decided who
@@ -3756,6 +3974,7 @@ impl ControlOutcome {
 /// gateway writes).
 async fn act_on_control(
     state: &AppState,
+    client: &Client,
     tenant: &str,
     control: &serde_json::Value,
 ) -> ControlOutcome {
@@ -3773,18 +3992,42 @@ async fn act_on_control(
             let Some(run_id) = text("run_id") else {
                 return ControlOutcome::refused("cancel names a run_id");
             };
-            if state.cancels.cancel(&run_id, text("reason").as_deref()) {
+            if state.runs.cancel(&run_id, text("reason").as_deref()) {
                 return ControlOutcome::done("cancelled");
             }
-            let detail = match state.ledger.find_run(&run_id) {
-                Ok(Some(rec)) => format!("run is {}", rec.status.as_str()),
-                Ok(None) => "unknown run".to_owned(),
-                Err(e) => format!("ledger: {e}"),
+            ControlOutcome::not_live(state, &run_id)
+        }
+        "inject" => {
+            let Some(run_id) = text("run_id") else {
+                return ControlOutcome::refused("inject names a run_id");
             };
-            ControlOutcome {
-                outcome: "not_live",
-                detail: Some(detail),
-                new_run_id: None,
+            let Some(message) = text("text") else {
+                return ControlOutcome::refused("inject carries a text");
+            };
+            // The text goes to the session as it is: a human's own message,
+            // through the run's existing harness, token and tool surface.
+            match state.runs.inject(&run_id, &message) {
+                escurel_runner_core::Injection::Queued { n, run } => {
+                    let by = control["requested_by"].as_str().unwrap_or_default();
+                    record_run_event(
+                        &state.metrics,
+                        "inject",
+                        run.emit_inject(client, n, &message, by).await,
+                    );
+                    ControlOutcome {
+                        outcome: "injected",
+                        detail: Some(format!("injection {n}")),
+                        new_run_id: None,
+                    }
+                }
+                escurel_runner_core::Injection::Unsupported { harness } => ControlOutcome {
+                    outcome: "unsupported",
+                    detail: Some(format!(
+                        "the {harness} harness cannot take a message mid-run"
+                    )),
+                    new_run_id: None,
+                },
+                escurel_runner_core::Injection::NotLive => ControlOutcome::not_live(state, &run_id),
             }
         }
         "retry" => {
@@ -3843,6 +4086,22 @@ async fn act_on_control(
     }
 }
 
+/// The least a runner waits before answering for a run it does not know.
+const CONTROL_STRANGER_GRACE_FLOOR: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// The run a run-scoped control (`cancel` / `inject` / `retry`) names.
+fn run_scoped(control: &serde_json::Value) -> Option<&str> {
+    match control["action"].as_str()? {
+        "cancel" | "inject" | "retry" => control["run_id"].as_str().filter(|s| !s.is_empty()),
+        _ => None,
+    }
+}
+
+/// Whether this runner holds `run_id` live or has it in its ledger.
+fn knows_run(state: &AppState, run_id: &str) -> bool {
+    state.runs.contains(run_id) || matches!(state.ledger.find_run(run_id), Ok(Some(_)))
+}
+
 /// The run-control subscriber (workbench backend P2-3b). Every `interval`
 /// it reads what arrived under `escurel:run-control` since the last poll,
 /// acts on each request, and answers it once under
@@ -3851,6 +4110,13 @@ async fn act_on_control(
 /// a deterministic id per request so a re-read never answers twice. Like
 /// the promotion tail it catches up to the end of the label on boot
 /// without acting: a stale cancel must not fire after a restart.
+///
+/// Every runner of the tenant reads every request, and the result id is
+/// first-writer-wins. So a run-scoped request for a run this runner neither
+/// holds nor has in its ledger is answered only after a grace (3 ticks, at
+/// least [`CONTROL_STRANGER_GRACE_FLOOR`]), and only when no result exists by
+/// then: the runner that owns the run answers first, and a lone runner still
+/// says `not_live`. A stop-gap — run ownership/leases are PR-2 (#818).
 async fn control_tail_loop(
     state: AppState,
     gateway_url: String,
@@ -3870,6 +4136,8 @@ async fn control_tail_loop(
     tail.catch_up(&client).await;
     tracing::info!(target: "escurel_runner", tenant = %tenant, "run-control tail started");
 
+    let grace = interval.saturating_mul(3).max(CONTROL_STRANGER_GRACE_FLOOR);
+    let mut deferred: Vec<(Instant, escurel_types::Event)> = Vec::new();
     let mut ticker = tokio::time::interval(interval);
     loop {
         ticker.tick().await;
@@ -3879,71 +4147,108 @@ async fn control_tail_loop(
         let Some(client) = connect_now(&gateway_url, &tokens).await else {
             continue;
         };
+        let now = Instant::now();
+        let (due, waiting): (Vec<_>, Vec<_>) = deferred.drain(..).partition(|(at, _)| *at <= now);
+        deferred = waiting;
+        for (_, event) in due {
+            if control_answered(&client, &event.event_id).await {
+                continue;
+            }
+            answer_control(&state, &client, &tenant, &event).await;
+        }
         for event in tail.poll(&client).await {
             let control = &event.provenance["control"];
             if !control.is_object() {
                 continue;
             }
-            let action = control["action"].as_str().unwrap_or("").to_owned();
-            let result = act_on_control(&state, &tenant, control).await;
-            tracing::info!(
-                target: "escurel_runner",
-                request = %event.event_id,
-                action = %action,
-                outcome = result.outcome,
-                detail = ?result.detail,
-                "run-control: acted"
-            );
-            let run_id = result
-                .new_run_id
-                .clone()
-                .or_else(|| control["run_id"].as_str().map(str::to_owned));
-            let mut body = json!({
-                "action": action,
-                "outcome": result.outcome,
-                "run_id": control["run_id"],
-                "detail": result.detail,
-            });
-            if let Some(n) = &result.new_run_id {
-                body["new_run_id"] = json!(n);
+            if let Some(run_id) = run_scoped(control)
+                && !knows_run(&state, run_id)
+            {
+                deferred.push((now + grace, event));
+                continue;
             }
-            let mut runner = json!({});
-            if let Some(r) = &run_id {
-                runner["run_id"] = json!(r);
-            }
-            if !event.root_event_id.is_empty() {
-                runner["root_event_id"] = json!(event.root_event_id);
-            }
-            let answer = client
-                .capture_event(escurel_client::CaptureEventRequest {
-                    event_id: format!("run-control-result:{}", event.event_id),
-                    source: "escurel-runner".to_owned(),
-                    mime: "application/json".to_owned(),
-                    label_skill: RUN_CONTROL_RESULT_LABEL.to_owned(),
-                    instance_page_id: event.instance_page_id.clone(),
-                    title: action.clone(),
-                    body: body.to_string(),
-                    provenance: json!({
-                        "runner": runner,
-                        "control": {
-                            "request_event_id": event.event_id,
-                            "requested_by": control["requested_by"],
-                            "action": action,
-                        },
-                    }),
-                    kind: "system".to_owned(),
-                    ..Default::default()
-                })
-                .await;
-            if let Err(e) = answer {
-                tracing::warn!(
-                    target: "escurel_runner",
-                    request = %event.event_id,
-                    error = %e,
-                    "run-control: could not write the result (acted anyway)"
-                );
-            }
+            answer_control(&state, &client, &tenant, &event).await;
         }
+    }
+}
+
+/// Whether some runner already answered the request `request_event_id`.
+async fn control_answered(client: &Client, request_event_id: &str) -> bool {
+    client
+        .list_events(ListEventsRequest {
+            event_id: Some(format!("run-control-result:{request_event_id}")),
+            ..Default::default()
+        })
+        .await
+        .is_ok_and(|page| !page.events.is_empty())
+}
+
+/// Act on one control request and file its `escurel:run-control-result`.
+async fn answer_control(
+    state: &AppState,
+    client: &Client,
+    tenant: &str,
+    event: &escurel_types::Event,
+) {
+    let control = &event.provenance["control"];
+    let action = control["action"].as_str().unwrap_or("").to_owned();
+    let result = act_on_control(state, client, tenant, control).await;
+    tracing::info!(
+        target: "escurel_runner",
+        request = %event.event_id,
+        action = %action,
+        outcome = result.outcome,
+        detail = ?result.detail,
+        "run-control: acted"
+    );
+    let run_id = result
+        .new_run_id
+        .clone()
+        .or_else(|| control["run_id"].as_str().map(str::to_owned));
+    let mut body = json!({
+        "action": action,
+        "outcome": result.outcome,
+        "run_id": control["run_id"],
+        "detail": result.detail,
+    });
+    if let Some(n) = &result.new_run_id {
+        body["new_run_id"] = json!(n);
+    }
+    let mut runner = json!({});
+    if let Some(r) = &run_id {
+        runner["run_id"] = json!(r);
+    }
+    if !event.root_event_id.is_empty() {
+        runner["root_event_id"] = json!(event.root_event_id);
+    }
+    let answer = client
+        .capture_event(escurel_client::CaptureEventRequest {
+            event_id: format!("run-control-result:{}", event.event_id),
+            source: "escurel-runner".to_owned(),
+            mime: "application/json".to_owned(),
+            label_skill: RUN_CONTROL_RESULT_LABEL.to_owned(),
+            instance_page_id: event.instance_page_id.clone(),
+            title: action.clone(),
+            body: body.to_string(),
+            provenance: json!({
+                "runner": runner,
+                "control": {
+                    "request_event_id": event.event_id,
+                    "requested_by": control["requested_by"],
+                    "action": action,
+                },
+            }),
+            kind: "system".to_owned(),
+            ..Default::default()
+        })
+        .await;
+    if let Err(e) = answer {
+        tracing::warn!(
+            target: "escurel_runner",
+            request = %event.event_id,
+            error = %e,
+            "run-control: could not write the result (acted anyway)"
+        );
     }
 }
 
@@ -3968,7 +4273,7 @@ fn status_snapshot(
 ) -> (serde_json::Value, serde_json::Value) {
     let count = |s: RunStatus| state.ledger.count_all_by_status(s).unwrap_or(0);
     let mut live: Vec<serde_json::Value> = state
-        .cancels
+        .runs
         .live()
         .into_iter()
         .map(|run_id| {
@@ -4168,73 +4473,36 @@ async fn status_loop(
     }
 }
 
-/// The deterministic per-window lint invocation id: same `(tenant, window)`
-/// ⇒ same id, so a mid-window restart or overlapping tick collapses via
-/// `capture_event`'s `ON CONFLICT DO NOTHING` — at most one lint run per
-/// window. `window = floor(epoch_secs / interval_secs)`.
-fn lint_window_id(tenant: &str, window: u64) -> String {
-    format!("lint-{tenant}-{window}")
-}
-
-/// The lint tick (compile-first-wiki G2). Every `interval` it synthesizes a
-/// `lint` workflow invocation — a `capture_event` the runner sends to the
-/// gateway, which re-enters the runner's own dispatch via the inbox/webhook.
-/// The gateway stays automation-free: the *runner* owns the decision to act.
+/// The schedule loop (#819). Every `tick` it re-reads the skill catalogue
+/// and fires each schedule's latest window while it is within `grace` (see
+/// [`escurel_runner_core::schedule`] for the no-backfill and budget rules).
+/// The gateway stays automation-free: the *runner* owns the decision to act,
+/// and the captured trigger re-enters its own dispatch via the inbox.
 /// Best-effort and non-panicking, like the poller.
-async fn lint_tick_loop(
+async fn schedule_loop(
     gateway_url: String,
-    tenant: String,
     tokens: Arc<escurel_runner_core::TokenSource>,
-    interval: std::time::Duration,
+    tick: std::time::Duration,
+    grace: std::time::Duration,
+    extra: Vec<escurel_runner_core::schedule::ScheduleEntry>,
     draining: Arc<std::sync::atomic::AtomicBool>,
 ) {
-    // Boot probe; the client is rebuilt each tick so the minted bearer stays
-    // live (see `connect_now`).
-    if connect_now(&gateway_url, &tokens).await.is_none() {
-        tracing::error!(target: "escurel_runner", "lint tick could not build a gateway client; disabled");
-        return;
-    }
-    let secs = interval.as_secs().max(1);
-    tracing::info!(target: "escurel_runner", tenant = %tenant, interval_ms = interval.as_millis() as u64, "lint tick started");
-    let mut ticker = tokio::time::interval(interval);
+    tracing::info!(target: "escurel_runner", tick_ms = tick.as_millis() as u64, lint_shim = !extra.is_empty(), "schedule loop started");
+    let mut scheduler = escurel_runner_core::schedule::Scheduler::new(grace);
+    let mut ticker = tokio::time::interval(tick);
+    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     loop {
         ticker.tick().await;
         if draining.load(std::sync::atomic::Ordering::Relaxed) {
             return;
         }
+        // Rebuilt each tick so a minted bearer stays live (see `connect_now`).
         let Some(client) = connect_now(&gateway_url, &tokens).await else {
-            // Already logged; the next tick retries.
             continue;
         };
-        // Wall-clock window (stable across restarts — the tick is I/O, not the
-        // reducer, so reading the clock here is fine).
-        let window = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs() / secs)
-            .unwrap_or(0);
-        let event_id = lint_window_id(&tenant, window);
-        let run_page = format!("markdown/instances/workflow-run/lint-{window}.md");
-        let req = CaptureEventRequest {
-            event_id: event_id.clone(),
-            source: "runner-lint-tick".to_owned(),
-            mime: "text/plain".to_owned(),
-            label_skill: "lint".to_owned(),
-            instance_page_id: run_page.clone(),
-            title: "scheduled lint".to_owned(),
-            body: "Scheduled semantic-health pass.".to_owned(),
-            provenance: serde_json::json!({
-                "workflow": { "run": run_page, "wf_skill": "lint", "phase": "invoke" }
-            }),
-            ..Default::default()
-        };
-        match client.capture_event(req).await {
-            Ok(_) => {
-                tracing::info!(target: "escurel_runner", window, event_id = %event_id, "lint tick: invocation captured")
-            }
-            Err(e) => {
-                tracing::warn!(target: "escurel_runner", error = %e, "lint tick: capture_event failed; will retry next tick")
-            }
-        }
+        let entries = scheduler.entries(&client, &extra).await;
+        // Wall clock: the windows must agree across restarts and runners.
+        scheduler.tick(&client, &entries, chrono::Utc::now()).await;
     }
 }
 
@@ -4337,6 +4605,7 @@ mod tests {
             manual: None,
             is_system: false,
             chat: None,
+            agent: None,
             tenant: "acme".to_owned(),
             event_id: event_id.to_owned(),
             label_skill: label.to_owned(),
@@ -4411,6 +4680,41 @@ mod tests {
         assert_eq!(m.as_deref(), Some("Qwen3.8-27B"));
         // Gemini has no long model.
         assert_eq!(long_model(&config, "gemini"), None);
+    }
+
+    /// Every name `validate` and the runner's allow-list accept (`KNOWN_HARNESSES`) is a harness
+    /// this runner can build once configured, and nothing it builds is missing from the list (crew
+    /// review PR-1, F17): the two lists used to agree only by convention.
+    #[test]
+    fn every_known_harness_is_buildable_once_configured() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let key = dir.path().join("key");
+        std::fs::write(&key, "sk-test\n").expect("key");
+        let key = key.to_str().expect("utf8").to_owned();
+        let config = RunnerConfig::from_env_with(|k| match k {
+            "ESCUREL_GEMINI_API_KEY" => Some("g-test".to_owned()),
+            "GOOGLE_CLOUD_PROJECT" => Some("p".to_owned()),
+            "ESCUREL_RUNNER_ALIBABA_API_KEY_FILE"
+            | "ESCUREL_RUNNER_HETZNER_API_KEY_FILE"
+            | "ESCUREL_RUNNER_OPENAI_API_KEY_FILE" => Some(key.clone()),
+            "ESCUREL_RUNNER_OPENAI_BASE_URL" => Some("http://127.0.0.1:1/v1".to_owned()),
+            "ESCUREL_RUNNER_OPENAI_MODEL" => Some("m".to_owned()),
+            _ => None,
+        })
+        .expect("config");
+        for name in escurel_types::harness::KNOWN_HARNESSES {
+            assert!(
+                build_harness_named(&config, name).is_some(),
+                "`{name}` is a known harness the runner cannot build"
+            );
+        }
+        for unknown in ["openai", "gpt", ""] {
+            assert!(
+                !escurel_types::harness::is_known_harness(unknown)
+                    && build_harness_named(&config, unknown).is_none(),
+                "`{unknown}`"
+            );
+        }
     }
 
     /// A preset with no key file cannot be built; the run fails closed.

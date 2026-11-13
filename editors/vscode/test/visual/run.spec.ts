@@ -46,3 +46,25 @@ test('run detail trace with what each call asked and got back', async ({ page },
     fullPage: true,
   });
 });
+
+// Steering a live run: the box, its byte count, and the message already sent in the run's record.
+test('run detail steer box on a live run', async ({ page }, testInfo) => {
+  const theme = (testInfo.project.metadata as { theme: string }).theme;
+  await page.goto(`/test/visual/harness/run.html?theme=${theme}&state=steer`);
+  await page.locator('escurel-run-detail .steer-text').waitFor();
+  await expect(page).toHaveScreenshot('run-detail-steer.png', {
+    maxDiffPixelRatio: 0.01,
+    fullPage: true,
+  });
+});
+
+// The transcript replay: the cost chip, the kind filters, and stepping at the third record.
+test('run detail transcript replay', async ({ page }, testInfo) => {
+  const theme = (testInfo.project.metadata as { theme: string }).theme;
+  await page.goto(`/test/visual/harness/run.html?theme=${theme}&state=transcript`);
+  await page.locator('escurel-run-transcript .step-status').waitFor();
+  await expect(page).toHaveScreenshot('run-detail-transcript.png', {
+    maxDiffPixelRatio: 0.01,
+    fullPage: true,
+  });
+});

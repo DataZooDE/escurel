@@ -311,6 +311,53 @@ pub struct PurgeEventsResponse {
     pub audit_event_id: Option<String>,
 }
 
+/// MCP `usage_report` (#821): usage and cost from `run-finished`, grouped.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct UsageReportRequest {
+    /// One or more of `skill`, `agent`, `page`, `model`, `day`.
+    pub group_by: Vec<String>,
+    /// RFC 3339, inclusive. Empty = unbounded.
+    pub since: String,
+    /// RFC 3339, exclusive. Empty = unbounded.
+    pub until: String,
+    /// Only this skill's runs. Empty = every skill.
+    pub skill: String,
+}
+
+/// What a set of runs cost (one `usage_report` row, or its total).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct UsageTotals {
+    /// The row's group values, keyed by axis (absent on the total).
+    #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub group: std::collections::BTreeMap<String, Option<String>>,
+    pub runs: u64,
+    /// Runs per terminal status.
+    pub by_status: std::collections::BTreeMap<String, u64>,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    /// The sum over the PRICED runs only: a run whose harness reported no
+    /// price (codex, a run without usage) adds nothing here and counts in
+    /// `unpriced_runs` instead, so `$0.00` with unpriced runs is "unknown".
+    pub cost_usd: f64,
+    /// Runs whose harness reported a cost (`0` is a price).
+    pub priced_runs: u64,
+    /// Runs whose harness reported no cost: their spend is not in `cost_usd`.
+    pub unpriced_runs: u64,
+}
+
+/// MCP `usage_report` wire keys as named.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct UsageReportResponse {
+    pub group_by: Vec<String>,
+    pub since: Option<String>,
+    pub until: Option<String>,
+    pub rows: Vec<UsageTotals>,
+    pub total: UsageTotals,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct QuotaGetRequest {

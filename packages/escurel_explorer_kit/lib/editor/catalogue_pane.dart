@@ -9,6 +9,7 @@ import '../theme/app_theme.dart';
 import '../widgets/backend_badge.dart';
 import '../widgets/kind_chip.dart';
 import '../widgets/layer_badge.dart';
+import '../widgets/schedule_badge.dart';
 import 'page_form.dart';
 
 /// Left pane — skills catalogue with their instances expandable
@@ -91,6 +92,10 @@ class _SkillTile extends ConsumerWidget {
                           ],
                           if (skill.isBaseLayer) ...[
                             LayerBadge(skillId: skill.id, layer: skill.layer),
+                            const SizedBox(width: 4),
+                          ],
+                          if (skill.schedule != null) ...[
+                            ScheduleBadge(skill: skill),
                             const SizedBox(width: 4),
                           ],
                           if (skill.shadows != null) ...[

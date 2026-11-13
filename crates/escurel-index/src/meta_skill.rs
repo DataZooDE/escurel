@@ -7,7 +7,7 @@
 //!
 //! This module holds the canonical markdown and the protection rules.
 //! The page is auto-shipped at indexer open
-//! ([`crate::Indexer::ensure_meta_skill`]) so every *served* tenant
+//! ([`crate::Indexer::ensure_system_skills`]) so every *served* tenant
 //! exposes it, and protected from removal: an `update_page` that drops
 //! the skill identity or one of the standard sections is rejected
 //! (operators may *append* tenant-specific guidance, never remove the

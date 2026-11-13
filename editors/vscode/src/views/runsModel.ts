@@ -150,6 +150,81 @@ export function foldRuns(events: readonly Event[], opts: FoldOptions): RunRecord
   return out.sort((a, b) => when(b) - when(a));
 }
 
+/**
+ * A scheduled window the runner did not fire because the skill's daily budget was spent (#819): an
+ * `escurel:run` `run-skipped` event. It has no run and no page; it is shown so a budget never fails
+ * silently.
+ */
+export interface SkippedRun {
+  eventId: string;
+  skill: string;
+  reason: string;
+  runsPerDay?: number | undefined;
+  windowStart?: string | undefined;
+  atMs?: number | undefined;
+  /** `invalid_schedule`: the expression as written, and why it cannot be read. */
+  schedule?: string | undefined;
+  error?: string | undefined;
+}
+
+/** The skipped windows among the run events, newest first. */
+export function foldSkipped(events: readonly Event[]): SkippedRun[] {
+  const out: SkippedRun[] = [];
+  for (const e of events) {
+    if (e.label_skill !== 'escurel:run' || e.title !== 'run-skipped') continue;
+    const b = json(e);
+    out.push({
+      eventId: e.event_id,
+      skill: cleanOpt(b.skill, 80) ?? 'a scheduled skill',
+      reason: cleanOpt(b.reason, 80) ?? 'unknown',
+      runsPerDay: typeof b.runs_per_day === 'number' ? b.runs_per_day : undefined,
+      windowStart: cleanOpt(b.window_start, 40),
+      atMs: ms(e.at),
+      schedule: cleanOpt(b.schedule, 120),
+      error: cleanOpt(b.error, 200),
+    });
+  }
+  const when = (s: SkippedRun) => ms(s.windowStart) ?? s.atMs ?? 0;
+  return out.sort((a, b) => when(b) - when(a));
+}
+
+/** Why a window was skipped, in a sentence. */
+function skippedWhy(s: SkippedRun): string {
+  if (s.reason === 'invalid_schedule')
+    return `Not run: the schedule ${s.schedule ? `${s.schedule} ` : ''}of ${s.skill} cannot be read${s.error ? ` (${s.error})` : ''}.`;
+  if (s.reason === 'invalid_budget')
+    return `Not run: the schedule_budget of ${s.skill} cannot be read; runs_per_day must be a positive integer.`;
+  if (s.reason === 'budget')
+    return s.runsPerDay !== undefined
+      ? `Not run: ${s.skill} already ran ${s.runsPerDay} ${s.runsPerDay === 1 ? 'time' : 'times'} on that day (its budget).`
+      : `Not run: ${s.skill} has used its daily budget.`;
+  return `Not run: ${s.reason}.`;
+}
+
+function skippedNode(s: SkippedRun, nowMs: number): RunsNode {
+  const window = parseGatewayTime(s.windowStart);
+  const clock = window ? `${window.toISOString().slice(11, 16)} UTC` : undefined;
+  const ago = s.atMs !== undefined ? shortAgo(new Date(s.atMs).toISOString(), nowMs) : '';
+  return {
+    id: `skipped:${s.eventId}`,
+    kind: 'skipped',
+    label: `Skipped · ${s.skill}`,
+    description: [clock ? `window ${clock}` : '', ago].filter(Boolean).join(' · '),
+    tooltip: [
+      `${s.skill}: scheduled window skipped`,
+      window ? `Window: ${window.toISOString().replace('T', ' ').slice(0, 16)} UTC` : undefined,
+      skippedWhy(s),
+      s.reason === 'budget'
+        ? 'The next day starts a new budget; change schedule_budget on the skill to allow more.'
+        : undefined,
+    ]
+      .filter(Boolean)
+      .join('\n'),
+    contextValue: 'run.skipped',
+    skill: s.skill,
+  };
+}
+
 export interface RunGroups {
   running: RunRecord[];
   waiting: RunRecord[];
@@ -415,10 +490,7 @@ export function describeRunner(
       : health.state === 'draining'
         ? 'Agents are shutting down'
         : 'Agents are running';
-  const parts = [
-    lead,
-    `last seen ${formatAgo(seconds * 1000)}`,
-  ];
+  const parts = [lead, `last seen ${formatAgo(seconds * 1000)}`];
   if (paused) parts[0] = 'Agents are paused: new work waits';
   const verb = paused ? 'Resume' : 'Pause';
   // Honest about the demo: the echo engine folds events by rule, there is no model behind it. Only
@@ -452,7 +524,16 @@ function safeBody(raw: string): RunnerStatusBody {
 // --- the tree -------------------------------------------------------------------------------
 
 export type RunsNodeKind =
-  'insight' | 'dispatch' | 'runner' | 'group' | 'run' | 'reason' | 'more' | 'empty' | 'error';
+  | 'insight'
+  | 'dispatch'
+  | 'runner'
+  | 'group'
+  | 'run'
+  | 'skipped'
+  | 'reason'
+  | 'more'
+  | 'empty'
+  | 'error';
 
 export interface RunsNode {
   /** Stable, so VS Code keeps a group expanded across refreshes. */
@@ -478,7 +559,10 @@ export interface RunsNode {
 const ATTENTION_LIMIT = 10;
 
 /** What the agents row needs of a runner: a `RunnerEntry` without its raw event. */
-export type RunnerRow = Pick<RunnerEntry, 'runnerId' | 'fresh' | 'ageMs' | 'draining' | 'intervalMs'> & {
+export type RunnerRow = Pick<
+  RunnerEntry,
+  'runnerId' | 'fresh' | 'ageMs' | 'draining' | 'intervalMs'
+> & {
   body?: RunnerStatusBody | null | undefined;
 };
 
@@ -495,6 +579,8 @@ export interface TreeInput {
   runners?: readonly RunnerRow[] | undefined;
   isAdmin: boolean;
   error?: string | undefined;
+  /** Scheduled windows the budget skipped (`run-skipped`), newest first. */
+  skipped?: readonly SkippedRun[] | undefined;
 }
 
 /** Everything a person needs to know about one run, with the id only here. */
@@ -628,9 +714,7 @@ export function buildRunsTree(input: TreeInput): RunsNode[] {
           : undefined
         : 'admins only',
       // Open when a runner has stopped: that is what the person should see without a click.
-      ...(runnerRows.length
-        ? { children: runnerRows, expanded: stopped }
-        : {}),
+      ...(runnerRows.length ? { children: runnerRows, expanded: stopped } : {}),
       tooltip: [
         input.runner.text,
         input.runner.engine,
@@ -694,6 +778,22 @@ export function buildRunsTree(input: TreeInput): RunsNode[] {
             ]
           : []),
       ],
+    });
+  }
+
+  // A skipped window has no page, so "Runs for this record" leaves it out; a skill filter keeps its own.
+  const skipped = input.filter.pageId
+    ? []
+    : (input.skipped ?? []).filter((s) => !input.filter.skill || s.skill === input.filter.skill);
+  if (skipped.length) {
+    out.push({
+      id: 'group:skipped',
+      kind: 'group',
+      label: skipped.every((s) => s.reason === 'budget') ? 'Skipped by budget' : 'Skipped',
+      description: String(skipped.length),
+      // Closed: worth knowing, not worth the room; the count says it is there.
+      expanded: false,
+      children: skipped.slice(0, ATTENTION_LIMIT).map((s) => skippedNode(s, input.nowMs)),
     });
   }
 

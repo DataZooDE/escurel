@@ -12,7 +12,15 @@ import { displayStepStatus, runHeading } from '../../src/runs/runTitle';
 import { LitElement, css, html, nothing } from 'lit';
 import type { PropertyValues, TemplateResult } from 'lit';
 import { property, state } from 'lit/decorators.js';
-import type { RunControl, RunView, RunWebviewToHost } from '../../src/shared/protocol';
+import type {
+  RunControl,
+  RunView,
+  RunWebviewToHost,
+  TranscriptState,
+} from '../../src/shared/protocol';
+import { usageChip } from '../../src/shared/usageWords';
+import { INJECT_MAX_BYTES, injectTextProblem } from '../../src/runs/steer';
+import './run-transcript';
 import { formatDateTime, formatDuration } from '../../src/shared/time';
 import { theme } from '../shared/theme.css';
 import { confirmRow, confirmStyles } from '../shared/confirm';
@@ -327,6 +335,120 @@ export class EscurelRunDetail extends LitElement {
       .status-message {
         padding: 24px 0;
       }
+      .cost-chip {
+        background: transparent;
+        border: 1px solid var(--escurel-border);
+        color: var(--vscode-foreground);
+        font-variant-numeric: tabular-nums;
+      }
+      .tabs {
+        display: flex;
+        gap: 2px;
+        margin-top: 20px;
+        border-bottom: 1px solid var(--escurel-border);
+      }
+      .tabs [role='tab'] {
+        font: inherit;
+        background: none;
+        color: var(--escurel-muted);
+        border: 0;
+        border-bottom: 2px solid transparent;
+        padding: 4px 12px;
+        cursor: pointer;
+      }
+      .tabs [role='tab'][aria-selected='true'] {
+        color: var(--vscode-foreground);
+        border-bottom-color: var(--vscode-focusBorder);
+      }
+      .tabs [role='tab']:focus-visible {
+        outline: 2px solid var(--vscode-focusBorder);
+        outline-offset: -2px;
+      }
+      [role='tabpanel'] {
+        padding-top: 4px;
+      }
+      [role='tabpanel'] > section:first-child {
+        margin-top: 12px;
+      }
+      .steer {
+        margin-top: 16px;
+        padding: 8px 12px;
+        border: 1px solid var(--escurel-border);
+        border-left: 4px solid var(--escurel-run);
+        border-radius: 2px;
+      }
+      .steer label {
+        display: block;
+        font-weight: 600;
+        margin-bottom: 4px;
+      }
+      .steer-hint,
+      .steer-unavailable,
+      .steer-count {
+        margin: 2px 0;
+        color: var(--escurel-muted);
+        font-size: 0.9em;
+      }
+      .steer textarea {
+        box-sizing: border-box;
+        width: 100%;
+        min-height: 3.5em;
+        font: inherit;
+        color: var(--vscode-input-foreground);
+        background: var(--vscode-input-background);
+        border: 1px solid var(--vscode-input-border, var(--escurel-border));
+        padding: 4px 6px;
+        resize: vertical;
+      }
+      .steer textarea:focus-visible {
+        outline: 1px solid var(--vscode-focusBorder);
+      }
+      .steer textarea[aria-invalid='true'] {
+        border-color: var(--vscode-inputValidation-errorBorder, var(--vscode-errorForeground));
+      }
+      .steer-row {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        flex-wrap: wrap;
+        margin-top: 4px;
+      }
+      .steer-send {
+        color: var(--vscode-button-foreground);
+        background: var(--vscode-button-background);
+        border: 1px solid var(--vscode-button-border, transparent);
+        padding: 4px 10px;
+        cursor: pointer;
+      }
+      .steer-send:hover:not([aria-disabled='true']) {
+        background: var(--vscode-button-hoverBackground);
+      }
+      .steer-send:focus-visible {
+        outline: 2px solid var(--vscode-focusBorder);
+        outline-offset: 2px;
+      }
+      .steer-send[aria-disabled='true'] {
+        opacity: 0.55;
+        cursor: not-allowed;
+      }
+      .steer-problem,
+      .steer-reply.failed {
+        color: var(--vscode-errorForeground);
+      }
+      .injection {
+        padding: 6px 0;
+        border-bottom: 1px solid var(--escurel-border);
+      }
+      .injection-meta {
+        color: var(--escurel-muted);
+        font-size: 0.9em;
+      }
+      .injection-text {
+        margin: 2px 0 0;
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+        font: inherit;
+      }
       .reconnect,
       .load-more {
         color: var(--vscode-button-foreground);
@@ -341,6 +463,16 @@ export class EscurelRunDetail extends LitElement {
 
   @property({ attribute: false }) view?: RunView;
   @property({ attribute: false }) error?: { message: string; canReconnect: boolean };
+  /** The Transcript tab's content, read by the host when the tab is first opened. */
+  @property({ attribute: false }) transcript?: TranscriptState;
+  /** The host's answer to the last steer. */
+  @property({ attribute: false }) steerReply?: { sent: boolean; message: string };
+  @state() private tab: 'details' | 'transcript' = 'details';
+  @state() private steerText = '';
+  @state() private steerProblem: string | undefined;
+  /** A steer was sent and the host has not answered: a second press would send it twice. */
+  @state() private steerPending = false;
+  private transcriptAsked = false;
   private loadingMore = false;
   /**
    * A control was sent and the run has not been reported again. The host acts on the click and the
@@ -358,7 +490,139 @@ export class EscurelRunDetail extends LitElement {
       this.loadingMore = false;
       this.confirming = undefined;
       this.releaseControls();
+      // The transcript is stored when the run finishes: one that was pending is there now.
+      if (
+        this.transcriptAsked &&
+        this.transcript?.status === 'pending' &&
+        this.view &&
+        this.view.status !== 'running'
+      )
+        this.send({ type: 'load-transcript' });
     }
+    if (changed.has('steerReply') && this.steerReply) {
+      this.steerPending = false;
+      if (this.steerReply.sent) this.steerText = '';
+    }
+  }
+
+  private openTab(tab: 'details' | 'transcript', focus = false): void {
+    this.tab = tab;
+    if (tab === 'transcript' && !this.transcriptAsked) {
+      this.transcriptAsked = true;
+      this.transcript = { status: 'loading' };
+      this.send({ type: 'load-transcript' });
+    }
+    if (focus)
+      void this.updateComplete.then(() =>
+        this.renderRoot.querySelector<HTMLElement>(`#tab-${tab}`)?.focus(),
+      );
+  }
+
+  /** The tablist keys (WAI-ARIA tabs): the arrows move between the two tabs, Home/End to the ends. */
+  private onTabKey(event: KeyboardEvent): void {
+    const to =
+      event.key === 'ArrowRight' || event.key === 'ArrowLeft'
+        ? this.tab === 'details'
+          ? 'transcript'
+          : 'details'
+        : event.key === 'Home'
+          ? 'details'
+          : event.key === 'End'
+            ? 'transcript'
+            : undefined;
+    if (!to) return;
+    event.preventDefault();
+    this.openTab(to, true);
+  }
+
+  private sendSteer(): void {
+    if (this.steerPending) return;
+    const problem = injectTextProblem(this.steerText);
+    this.steerProblem = problem;
+    if (problem) return;
+    this.steerPending = true;
+    this.steerReply = undefined;
+    this.send({ type: 'steer', text: this.steerText });
+  }
+
+  /** The steer box: only on a live run; when its agent cannot read a message, one line says so. */
+  private steerSection(run: RunView): TemplateResult | typeof nothing {
+    const offer = run.steer;
+    if (!offer || run.status !== 'running') return nothing;
+    if (!offer.available)
+      return html`<section class="steer" aria-label="Steer this run">
+        <p class="steer-unavailable">${offer.reason}</p>
+      </section>`;
+    const bytes = new TextEncoder().encode(this.steerText).length;
+    return html`<section class="steer" aria-label="Steer this run">
+      <label for="steer-text">Steer this run</label>
+      <p class="steer-hint" id="steer-hint">
+        The agent reads your message as its next turn, without starting over. Ctrl+Enter sends.
+      </p>
+      <textarea
+        id="steer-text"
+        class="steer-text"
+        aria-label="Message for the running agent"
+        aria-describedby="steer-hint${this.steerProblem ? ' steer-problem' : ''}"
+        aria-invalid=${this.steerProblem ? 'true' : nothing}
+        .value=${this.steerText}
+        @input=${(e: Event) => {
+          this.steerText = (e.target as HTMLTextAreaElement).value;
+          if (this.steerProblem) this.steerProblem = injectTextProblem(this.steerText);
+        }}
+        @keydown=${(e: KeyboardEvent) => {
+          if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+            e.preventDefault();
+            this.sendSteer();
+          }
+        }}
+      ></textarea>
+      <div class="steer-row">
+        <button
+          class="steer-send"
+          aria-disabled=${this.steerPending ? 'true' : nothing}
+          @click=${() => this.sendSteer()}
+        >
+          ${this.steerPending ? 'Sending…' : 'Send to the agent'}
+        </button>
+        <span class="steer-count"
+          >${bytes.toLocaleString('en-US')} / ${INJECT_MAX_BYTES.toLocaleString('en-US')}
+          bytes</span
+        >
+        ${
+          this.steerProblem
+            ? html`<span class="steer-problem" id="steer-problem" role="alert"
+                >${this.steerProblem}</span
+              >`
+            : this.steerReply
+              ? html`<span
+                  class="steer-reply ${this.steerReply.sent ? '' : 'failed'}"
+                  role=${this.steerReply.sent ? 'status' : 'alert'}
+                  >${this.steerReply.message}</span
+                >`
+              : nothing
+        }
+      </div>
+    </section>`;
+  }
+
+  /** What people told the run while it worked: kept as they wrote it. */
+  private injectionsSection(run: RunView): TemplateResult | typeof nothing {
+    if (!run.injections?.length) return nothing;
+    return html`<section aria-label="Messages sent to the run">
+      <h2>Messages sent to the run</h2>
+      ${run.injections.map(
+        (m) =>
+          html`<div class="injection">
+            <div class="injection-meta">
+              #${m.n}${m.requestedBy ? html` · from ${m.requestedBy}` : nothing}${
+                m.at ? html` · ${formatDateTime(m.at)}` : nothing
+              }
+            </div>
+            <pre class="injection-text">${m.text}</pre>
+          </div>`,
+      )}
+    </section>`;
   }
 
   override disconnectedCallback(): void {
@@ -451,6 +715,19 @@ export class EscurelRunDetail extends LitElement {
         <span class="chip status-chip ${run.tone}"
           >${statusIcon(run.status)}${statusWord(run.status)}</span
         >
+        ${
+          run.usage
+            ? (() => {
+                const chip = usageChip(run.usage);
+                return html`<span
+                  class="chip cost-chip"
+                  aria-label=${chip.label}
+                  title=${chip.title}
+                  >${chip.text}</span
+                >`;
+              })()
+            : nothing
+        }
         ${
           (run.controls ?? []).length > 0
             ? html`<div class="controls" role="group" aria-label="Run controls">
@@ -560,7 +837,39 @@ export class EscurelRunDetail extends LitElement {
             </div>`
           : nothing
       }
+      ${this.steerSection(run)}
+      <div
+        class="tabs"
+        role="tablist"
+        aria-label="Run"
+        @keydown=${(e: KeyboardEvent) => this.onTabKey(e)}
+      >
+        ${(['details', 'transcript'] as const).map(
+          (t) =>
+            html`<button
+              role="tab"
+              id="tab-${t}"
+              aria-controls="panel-${t}"
+              aria-selected=${this.tab === t ? 'true' : 'false'}
+              tabindex=${this.tab === t ? '0' : '-1'}
+              @click=${() => this.openTab(t)}
+            >
+              ${t === 'details' ? 'Details' : 'Transcript'}
+            </button>`,
+        )}
+      </div>
+      ${
+        this.tab === 'transcript'
+          ? html`<div role="tabpanel" id="panel-transcript" aria-labelledby="tab-transcript">
+              <escurel-run-transcript .state=${this.transcript}></escurel-run-transcript>
+            </div>`
+          : this.detailsPanel(run)
+      }
+    `;
+  }
 
+  private detailsPanel(run: RunView): TemplateResult {
+    return html`<div role="tabpanel" id="panel-details" aria-labelledby="tab-details">
       <section aria-label="Attempts">
         <h2>Attempts</h2>
         ${
@@ -583,6 +892,7 @@ export class EscurelRunDetail extends LitElement {
             : html`<p class="muted">${emptyAttempts(run.status)}</p>`
         }
       </section>
+      ${this.injectionsSection(run)}
       <section aria-label="Plan">
         <h2>Plan</h2>
         ${
@@ -671,7 +981,7 @@ export class EscurelRunDetail extends LitElement {
             </section>`
           : nothing
       }
-    `;
+    </div>`;
   }
 }
 customElements.define('escurel-run-detail', EscurelRunDetail);

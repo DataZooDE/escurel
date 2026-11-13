@@ -263,6 +263,12 @@ pub enum EventCmd {
         /// 0 means no limit.
         #[arg(long, default_value_t = 0)]
         limit: u32,
+        /// RFC 3339: only events at or after this `at`.
+        #[arg(long)]
+        since: Option<String>,
+        /// RFC 3339: only events before this `at` (exclusive).
+        #[arg(long)]
+        until: Option<String>,
     },
     /// Bind an inbox event to an instance (→ processed).
     Assign {
@@ -305,8 +311,8 @@ pub struct CaptureArgs {
     pub kind: Option<String>,
 }
 
-/// A run's own surface — callable only with a run-bound bearer (the
-/// runner's per-run agent token, which names the run).
+/// A run's own surface — `progress` needs a run-bound bearer (the runner's
+/// per-run agent token, which names the run); `usage` an admin one.
 #[derive(Subcommand, Debug)]
 pub enum RunCmd {
     /// Report the run's WHOLE plan as a snapshot: `--step "read=completed"
@@ -339,6 +345,13 @@ pub enum RunCmd {
         #[arg(long)]
         cursor: Option<String>,
     },
+    /// A finished run's transcript — every tool call, result, message and
+    /// error the harness reported, redacted — one record per element
+    /// (`fetch_blob{run_id}`).
+    Transcript {
+        #[arg(long)]
+        run: String,
+    },
     /// A run's recorded `/mcp` calls, oldest first (`--after <seq>` pages).
     ToolCalls {
         #[arg(long)]
@@ -348,6 +361,9 @@ pub enum RunCmd {
         #[arg(long, default_value_t = 0)]
         after: i64,
     },
+    /// Usage and cost rolled up from finished runs (`usage_report`; needs
+    /// an admin bearer): `--group-by skill,model --since 2026-10-01T00:00:00Z`.
+    Usage(UsageArgs),
     /// Mint a run-bound bearer for an interactive agent working as
     /// `agent:<skill>` on your behalf (workbench backend P2-6).
     MintToken {
@@ -363,6 +379,35 @@ pub enum RunCmd {
         #[arg(long, default_value_t = 0)]
         ttl_secs: u64,
     },
+}
+
+#[derive(Args, Debug)]
+pub struct UsageArgs {
+    /// Axes to group by: skill, agent, page, model, day (comma-separated or repeated).
+    #[arg(long = "group-by", value_delimiter = ',', required = true)]
+    pub group_by: Vec<String>,
+    /// RFC 3339, inclusive.
+    #[arg(long)]
+    pub since: Option<String>,
+    /// RFC 3339, exclusive.
+    #[arg(long)]
+    pub until: Option<String>,
+    /// Only this skill's runs.
+    #[arg(long)]
+    pub skill: Option<String>,
+}
+
+/// `run usage` — an admin tool, so `main` dials it with the admin client.
+pub async fn usage(client: &escurel_client::AdminClient, a: UsageArgs) -> Result<Value> {
+    let resp = client
+        .usage_report(escurel_client::UsageReportRequest {
+            group_by: a.group_by,
+            since: a.since.unwrap_or_default(),
+            until: a.until.unwrap_or_default(),
+            skill: a.skill.unwrap_or_default(),
+        })
+        .await?;
+    Ok(serde_json::to_value(resp)?)
 }
 
 /// Held writes — the review queue for `autonomy: review` skills.
@@ -1085,6 +1130,7 @@ async fn run_cmd(client: &Client, cmd: RunCmd) -> Result<Value> {
                 "steps": resp.steps,
             }))
         }
+        RunCmd::Usage(_) => bail!("`run usage` is dialled with the admin client"),
         RunCmd::Lineage {
             root_event,
             include,
@@ -1100,6 +1146,25 @@ async fn run_cmd(client: &Client, cmd: RunCmd) -> Result<Value> {
                 })
                 .await?;
             Ok(serde_json::to_value(resp)?)
+        }
+        RunCmd::Transcript { run } => {
+            use base64::Engine as _;
+            let resp = client
+                .fetch_blob(escurel_client::FetchBlobRequest {
+                    run_id: run.clone(),
+                    ..Default::default()
+                })
+                .await?;
+            let blob = resp
+                .blob
+                .ok_or_else(|| anyhow::anyhow!("run `{run}` returned no transcript"))?;
+            let bytes = base64::engine::general_purpose::STANDARD.decode(blob.bytes_base64)?;
+            let records = String::from_utf8_lossy(&bytes)
+                .lines()
+                .filter(|l| !l.trim().is_empty())
+                .map(serde_json::from_str)
+                .collect::<Result<Vec<Value>, _>>()?;
+            Ok(json!({ "run_id": run, "records": records }))
         }
         RunCmd::ToolCalls { run, limit, after } => {
             let resp = client
@@ -1176,6 +1241,8 @@ async fn event_cmd(client: &Client, cmd: EventCmd) -> Result<Value> {
             include_system,
             newest_first,
             limit,
+            since,
+            until,
         } => {
             if instance.is_none() && root_event.is_none() && run.is_none() && label.is_none() {
                 anyhow::bail!(
@@ -1192,6 +1259,8 @@ async fn event_cmd(client: &Client, cmd: EventCmd) -> Result<Value> {
                     include_system,
                     newest_first,
                     limit,
+                    since: since.unwrap_or_default(),
+                    until: until.unwrap_or_default(),
                     ..Default::default()
                 })
                 .await?;

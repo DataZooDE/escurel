@@ -52,6 +52,7 @@ pub use admin::{
     TenantCreateRequest, TenantCreateResponse, TenantDeleteRequest, TenantDeleteResponse,
     TenantExportRequest, TenantGetRequest, TenantGetResponse, TenantImportResponse,
     TenantListRequest, TenantListResponse, TenantUpdateRequest, TenantUpdateResponse,
+    UsageReportRequest, UsageReportResponse, UsageTotals,
 };
 pub use error::{Error, JSONRPC_ADMIN_REQUIRED};
 
@@ -100,7 +101,7 @@ pub use escurel_types::{
     ApplyOpRequest, ApplyOpResponse, BlobInfo, CloseSessionRequest, CloseSessionResponse,
     FetchBlobRequest, FetchBlobResponse, ListOpAuthorsRequest, ListOpAuthorsResponse,
     ListSnapshotsRequest, ListSnapshotsResponse, OpAuthor, OpenSessionRequest, OpenSessionResponse,
-    WriteInstanceRequest, WriteInstanceResponse,
+    PutRunTranscriptResponse, WriteInstanceRequest, WriteInstanceResponse,
 };
 // Re-exported so callers don't need to depend on `secrecy` directly
 // just to spell out a token. Keeping the version in sync with this
@@ -614,6 +615,12 @@ impl Client {
         if !req.cursor.is_empty() {
             args["cursor"] = json!(req.cursor);
         }
+        if !req.since.is_empty() {
+            args["since"] = json!(req.since);
+        }
+        if !req.until.is_empty() {
+            args["until"] = json!(req.until);
+        }
         self.transport.call_typed("list_events", args).await
     }
 
@@ -895,8 +902,26 @@ impl Client {
     /// absent page, a non-document page, and a page the caller may not
     /// read (no existence oracle). The transfer is server-capped.
     pub async fn fetch_blob(&self, req: FetchBlobRequest) -> Result<FetchBlobResponse, Error> {
+        let args = serde_json::to_value(&req).unwrap_or_else(|_| json!({}));
+        self.transport.call_typed("fetch_blob", args).await
+    }
+
+    /// Store a run's transcript (#822): `records` is JSONL, already
+    /// redacted. Only the run's own bearer, or a runner's non-run admin
+    /// bearer, may call it.
+    ///
+    /// # Errors
+    /// When the transport or the tool fails (refusals included).
+    pub async fn put_run_transcript(
+        &self,
+        run_id: &str,
+        records: String,
+    ) -> Result<PutRunTranscriptResponse, Error> {
         self.transport
-            .call_typed("fetch_blob", json!({ "page_id": req.page_id }))
+            .call_typed(
+                "put_run_transcript",
+                json!({ "run_id": run_id, "records": records }),
+            )
             .await
     }
 

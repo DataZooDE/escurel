@@ -312,6 +312,12 @@ pub const CONFIG_KEYS: &[ConfigKey] = &[
         doc: "how many `run-progress` snapshots a run keeps (pruned at capture)",
     },
     ConfigKey {
+        name: "ESCUREL_RUN_TRANSCRIPT_RETENTION_DAYS",
+        component: "Server",
+        default: "90",
+        doc: "days a run transcript (`put_run_transcript`, read via `fetch_blob{run_id}`) is kept; swept every 30 s; `0` keeps them forever",
+    },
+    ConfigKey {
         name: "ESCUREL_SHUTDOWN_DRAIN_SECS",
         component: "Server",
         default: "25",
@@ -837,7 +843,7 @@ pub const CONFIG_KEYS: &[ConfigKey] = &[
         name: "ESCUREL_RUNNER_TOKEN",
         component: "Runner",
         default: "—",
-        doc: "tenant-scoped bearer the runner presents to `/mcp`; a static token wins over minting",
+        doc: "tenant-scoped bearer the runner presents to `/mcp`; a static token wins over minting. A runner on a static token cannot mint, so every run of a skill with an `agent:` profile fails (dead-letters) there: agent profiles need a minting runner (`ESCUREL_RUNNER_AUTH_SIGNING_KEY`)",
     },
     ConfigKey {
         name: "ESCUREL_RUNNER_QUEUE_CAP",
@@ -903,7 +909,19 @@ pub const CONFIG_KEYS: &[ConfigKey] = &[
         name: "ESCUREL_RUNNER_LINT_INTERVAL",
         component: "Runner",
         default: "disabled",
-        doc: "how often the runner synthesizes a `lint` event (the scheduled semantic-health pass)",
+        doc: "how often the runner fires the `lint` skill (the scheduled semantic-health pass); a synthetic entry in the schedule loop, kept for compatibility",
+    },
+    ConfigKey {
+        name: "ESCUREL_RUNNER_SCHEDULE_TICK",
+        component: "Runner",
+        default: "30s",
+        doc: "how often the runner looks for skills whose `schedule:` window has opened (the worst-case lateness of a scheduled trigger; zero is refused)",
+    },
+    ConfigKey {
+        name: "ESCUREL_RUNNER_SCHEDULE_GRACE",
+        component: "Runner",
+        default: "15m",
+        doc: "how long after it opens a `schedule:` window may still fire (catch-up after a restart); an older window is not run late. Zero is refused; below the tick it is raised to the tick",
     },
     ConfigKey {
         name: "ESCUREL_RUNNER_LEDGER_PATH",
@@ -999,7 +1017,7 @@ pub const CONFIG_KEYS: &[ConfigKey] = &[
         name: "ESCUREL_RUNNER_AUTH_SIGNING_KEY",
         component: "Runner",
         default: "—",
-        doc: "private key (PEM) the runner signs its minted bearers with",
+        doc: "private key (PEM) the runner signs its minted bearers with; required for agent profiles (`agent:` on a skill), whose runs are minted as the agent",
     },
     ConfigKey {
         name: "ESCUREL_RUNNER_AUTH_SUBJECT",
@@ -1384,6 +1402,18 @@ pub const CONFIG_KEYS: &[ConfigKey] = &[
         component: "TestOnly",
         default: "—",
         doc: "echo harness: only runs of this label idle for ESCUREL_ECHO_SLEEP_MS (tests)",
+    },
+    ConfigKey {
+        name: "ESCUREL_ECHO_STDIN_TURNS",
+        component: "Harness",
+        default: "—",
+        doc: "set by the runner in an echo harness subprocess: stdin is the task line, then injected turns (never set it yourself)",
+    },
+    ConfigKey {
+        name: "ESCUREL_ECHO_TRANSCRIPT",
+        component: "TestOnly",
+        default: "—",
+        doc: "echo harness: print this JSONL file's lines (`{\"transcript\":{kind, name?, args?, text?}}`, `{token}` = the run's bearer) as its stream, for the run transcript (tests)",
     },
     ConfigKey {
         name: "ESCUREL_ECHO_USAGE",

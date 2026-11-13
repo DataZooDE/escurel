@@ -17,6 +17,7 @@
 //! `tests/suite.rs`. A test target's root file resolves `mod x;` against
 //! its *own* directory, so `tests/suite.rs` would look for `tests/x.rs`.
 
+mod agent_profile_scopes;
 mod agent_token_narrowing;
 mod agy_live;
 mod autonomy_default;
@@ -60,11 +61,15 @@ mod recover_without_workflows;
 mod review_no_op;
 mod run_control_subscriber;
 mod run_events;
+mod run_inject;
 mod run_ledger;
+mod run_transcript;
 mod runner_status;
+mod schedule_trigger;
 mod sigterm_drain;
 mod skill_contract_runner;
 mod skill_model;
+mod support;
 mod system_events_not_dispatched;
 mod tail_cursor_durability;
 mod trigger;

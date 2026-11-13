@@ -430,6 +430,30 @@
         "category": "Escurel"
       },
       {
+        "command": "escurel.usage.window",
+        "title": "Usage: choose the time window…",
+        "icon": "$(calendar)",
+        "category": "Escurel"
+      },
+      {
+        "command": "escurel.usage.groupBy",
+        "title": "Usage: group by…",
+        "icon": "$(list-tree)",
+        "category": "Escurel"
+      },
+      {
+        "command": "escurel.usage.refresh",
+        "title": "Refresh usage",
+        "icon": "$(refresh)",
+        "category": "Escurel"
+      },
+      {
+        "command": "escurel.agents.refresh",
+        "title": "Refresh agents",
+        "icon": "$(refresh)",
+        "category": "Escurel"
+      },
+      {
         "command": "escurel.runs.loadMore",
         "title": "Load more runs",
         "category": "Escurel"
@@ -594,6 +618,16 @@
         {
           "id": "escurel.runner",
           "name": "Runs"
+        },
+        {
+          "id": "escurel.usage",
+          "name": "Usage",
+          "visibility": "collapsed"
+        },
+        {
+          "id": "escurel.agents",
+          "name": "Agents",
+          "visibility": "collapsed"
         },
         {
           "id": "escurel.chat",
@@ -999,6 +1033,36 @@
           "command": "escurel.focusMode.exit",
           "when": "view == escurel.knowledge && escurel.focusMode",
           "group": "navigation@8"
+        },
+        {
+          "command": "escurel.usage.window",
+          "when": "view == escurel.usage",
+          "group": "navigation@1"
+        },
+        {
+          "command": "escurel.usage.groupBy",
+          "when": "view == escurel.usage",
+          "group": "navigation@2"
+        },
+        {
+          "command": "escurel.usage.refresh",
+          "when": "view == escurel.usage",
+          "group": "navigation@3"
+        },
+        {
+          "command": "escurel.agents.refresh",
+          "when": "view == escurel.agents",
+          "group": "navigation@1"
+        },
+        {
+          "command": "escurel.explainView",
+          "when": "view == escurel.usage",
+          "group": "navigation@9"
+        },
+        {
+          "command": "escurel.explainView",
+          "when": "view == escurel.agents",
+          "group": "navigation@9"
         }
       ],
       "view/item/context": [

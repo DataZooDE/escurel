@@ -3,7 +3,17 @@ import { DatabaseSync } from 'node:sqlite';
 import { join } from 'node:path';
 import type { FrameLocator, Page } from '@playwright/test';
 import { expect, test, webviewWith, type Stack } from './fixtures';
-import { chooseMenuItem, knowledgeRow, openRow, pane, skillRow } from './helpers';
+import type { UsageReportResponse } from '../../src/client/types';
+import { usageLine } from '../../src/views/usageModel';
+import {
+  chooseMenuItem,
+  filterCommandPalette,
+  knowledgeRow,
+  openRow,
+  pane,
+  runsAction,
+  skillRow,
+} from './helpers';
 
 // One window for the whole file, played in order: each scenario leaves the stack as the next one can
 // use it. Every one asserts what a person would SEE and leaves a screenshot in artifacts/ for a human
@@ -540,8 +550,7 @@ test('the Runs panel is a control center: sections with counts, an insight line,
   await stack.shot('10-runs-panel');
 
   // Filter History to what failed: a title action opens a pick list; nothing else has to change.
-  // The Runner is alone in its container, so its title actions sit in the container's title bar.
-  await page.getByRole('button', { name: /Filter runs/ }).click();
+  await runsAction(page, /Filter runs/);
   const picker = page.locator('.quick-input-widget');
   await expect(picker).toBeVisible();
   await picker
@@ -552,8 +561,147 @@ test('the Runs panel is a control center: sections with counts, an insight line,
   await expect(runner.getByText(/Filtered: failed/)).toBeVisible();
   await expect(runner.getByRole('treeitem', { name: /^Cancelled · / })).toHaveCount(0);
   await stack.shot('10b-runs-filtered');
-  await page.getByRole('button', { name: /Clear run filter/ }).click();
+  await runsAction(page, /Clear run filter/);
   await expect(runner.getByText(/Filtered:/)).toHaveCount(0);
+});
+
+test('a live run is steered from its run detail, then its transcript is replayed step by step', async ({
+  stack,
+}) => {
+  const { page } = stack;
+  const steer = 'Use the 2027 terms, not 2026.';
+  const trigger = await stack.call('capture_event', {
+    label_skill: 'supplier-risk',
+    instance_page_id: 'markdown/instances/customer-order/order-4500124.md',
+    title: 'Steer me',
+    body: 'a run that idles long enough to be steered',
+    mime: 'text/plain',
+    source: 'e2e',
+    provenance: { manual: { mode: 'run' } },
+  });
+  const runner = pane(page, 'Runs');
+  const live = runner.getByRole('treeitem', { name: /order-4500124/ }).first();
+  await expect(live).toBeVisible({ timeout: 60_000 });
+  await live.click();
+  const run = await webviewWith(page, 'escurel-run-detail');
+  const box = run.getByRole('textbox', { name: 'Message for the running agent' });
+  await expect(box).toBeVisible();
+  await box.fill(steer);
+  await stack.shot('11-steer-box');
+  await run.getByRole('button', { name: 'Send to the agent' }).click();
+  await expect(run.locator('.steer-reply')).toHaveText(
+    'Message sent. The agent reads it as its next turn.',
+    { timeout: 30_000 },
+  );
+  // The message is in the run's own record, as written, and the box is gone once the run is over.
+  await expect(run.locator('.injection-text')).toHaveText(steer, { timeout: 30_000 });
+  await expect(run.locator('.status-chip')).not.toContainText('running', { timeout: 60_000 });
+  await expect(run.locator('.steer')).toHaveCount(0);
+  await stack.shot('11b-steered-run');
+
+  // The Transcript tab replays what the agent did; Step through walks it one record at a time.
+  await run.getByRole('tab', { name: 'Transcript' }).click();
+  const replay = run.locator('escurel-run-transcript');
+  await expect(replay.locator('.record')).toHaveCount(4, { timeout: 30_000 });
+  await expect(replay.locator('.record').nth(1)).toContainText('Tool call');
+  await expect(replay.locator('.record').nth(1)).toContainText('expand');
+  await replay.getByRole('button', { name: 'Step through' }).click();
+  await expect(replay.locator('.step-status')).toHaveText('Step 1 of 4: Message');
+  await page.keyboard.press('Enter'); // the focus is on Next
+  await expect(replay.locator('.step-status')).toHaveText('Step 2 of 4: Tool call');
+  await stack.shot('11c-transcript-replay');
+
+  // The agent's draft carries the message: it read it. Leave no draft behind for later scenarios.
+  const drafts = (await stack.call('list_drafts', {})) as {
+    drafts: { draft_id: string; target_page_id: string; content: string; status: string }[];
+  };
+  const steered = drafts.drafts.find(
+    (d) => d.target_page_id.endsWith('order-4500124.md') && d.content.includes(steer),
+  );
+  expect(steered, 'the steered draft').toBeTruthy();
+  for (const d of drafts.drafts.filter(
+    (x) => x.status === 'open' && x.target_page_id.endsWith('order-4500124.md'),
+  ))
+    await stack.call('discard_draft', { draft_id: d.draft_id, reason: 'e2e cleanup' });
+  // A review run leaves its event in the Inbox until its change is decided: take it out, so the
+  // journeys below find their rows where they expect them.
+  await stack.call('assign_event', {
+    event_id: trigger.event_id,
+    instance_page_id: 'markdown/instances/customer-order/order-4500124.md',
+  });
+});
+
+test('Usage asks for an admin, and Agents lists the profiles runs execute as', async ({
+  stack,
+}) => {
+  const { page } = stack;
+  await stack.call(
+    'update_page',
+    {
+      page_id: 'markdown/instances/agent/scribe.md',
+      base_sha256: '',
+      content: [
+        '---',
+        'kind: instance',
+        'skill: agent',
+        'id: scribe',
+        'harness: echo',
+        'skills: ["[[skill::supplier-risk]]"]',
+        'scopes:',
+        '  tools: [expand, create_draft]',
+        '---',
+        '# scribe',
+        '',
+      ].join('\n'),
+    },
+    true,
+  );
+  // Both views sit under Runs, closed until opened: a person who never opens them pays nothing.
+  await page.locator('.pane-header', { hasText: /^Usage/ }).click();
+  const usage = pane(page, 'Usage');
+  await expect(usage.getByText('Usage needs an admin sign-in.')).toBeVisible({ timeout: 30_000 });
+  await page.locator('.pane-header', { hasText: /^Agents/ }).click();
+  const agents = pane(page, 'Agents');
+  await expect(agents.getByRole('treeitem', { name: /^Agent scribe: echo/ })).toBeVisible({
+    timeout: 30_000,
+  });
+  await expect(agents.getByText('Run counts need an admin sign-in.')).toBeVisible();
+  await stack.shot('12-usage-and-agents');
+
+  // As the admin, Usage shows what the real runs above cost — the same figures usage_report
+  // answers (crew review PR-1, F10), wire drift in by_status or the priced counts included.
+  await filterCommandPalette(page, 'Escurel Demo: Sign in as the admin', 'Sign in as the admin');
+  await page.keyboard.press('Enter');
+  const expected = async () => {
+    const report = (await stack.call(
+      'usage_report',
+      { group_by: ['skill'], since: new Date(Date.now() - 7 * 86_400_000).toISOString() },
+      true,
+    )) as unknown as UsageReportResponse;
+    const row = report.rows.find((r) => r.group.skill === 'supplier-risk');
+    expect(row, `supplier-risk ran above: ${JSON.stringify(report)}`).toBeTruthy();
+    return `supplier-risk: ${usageLine(row!)}`;
+  };
+  await expect
+    .poll(
+      async () => {
+        const name = await expected();
+        return (await usage.getByRole('treeitem', { name, exact: true }).count()) === 1
+          ? 'shown'
+          : name;
+      },
+      { message: 'the Usage row matches usage_report', timeout: 30_000 },
+    )
+    .toBe('shown');
+  await expect(usage.getByRole('treeitem', { name: /^All runs: / })).toBeVisible();
+  await stack.shot('12b-usage-as-admin');
+  await filterCommandPalette(page, 'Escurel Demo: Sign in as the member', 'Sign in as the member');
+  await page.keyboard.press('Enter');
+  await expect(usage.getByText('Usage needs an admin sign-in.')).toBeVisible({ timeout: 30_000 });
+
+  // Close them again: the scenarios after this one count what the Runs pane shows.
+  await page.locator('.pane-header', { hasText: /^Usage/ }).click();
+  await page.locator('.pane-header', { hasText: /^Agents/ }).click();
 });
 
 // --- outside systems: a REST portal and an MCP server, real processes the demo started -------------
@@ -1008,7 +1156,7 @@ test('Runs for this record: from a record page to its runs, filtered, and back',
   await expect(runs.getByRole('treeitem', { name: /order-4500152|order-4500140/ })).toHaveCount(0);
   await expect(runs.getByRole('treeitem', { name: /order-4500131/ }).first()).toBeVisible();
   await stack.shot('10c-runs-for-this-record');
-  await page.getByRole('button', { name: /Clear run filter/ }).click();
+  await runsAction(page, /Clear run filter/);
   await expect(runs.getByText(/Filtered:/)).toHaveCount(0);
 });
 
@@ -1017,7 +1165,7 @@ test('the Runs filter has a day range, so "what did the agent do today" is three
 }) => {
   const { page } = stack;
   const runs = pane(page, 'Runs');
-  await page.getByRole('button', { name: /Filter runs/ }).click();
+  await runsAction(page, /Filter runs/);
   const picker = page.locator('.quick-input-widget');
   await expect(picker).toBeVisible();
   await picker
@@ -1027,7 +1175,7 @@ test('the Runs filter has a day range, so "what did the agent do today" is three
   await page.keyboard.press('Enter');
   await expect(runs.getByText(/Filtered: today/)).toBeVisible();
   await stack.shot('10d-runs-today');
-  await page.getByRole('button', { name: /Clear run filter/ }).click();
+  await runsAction(page, /Clear run filter/);
 });
 
 test('Explain this view tells how events, skills, runs and records connect', async ({ stack }) => {

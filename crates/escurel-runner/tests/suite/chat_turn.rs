@@ -8,15 +8,16 @@
 //! harness. The echo answers `echo: <the question>` and lists the focus pages
 //! it was shown, so the test can see what the run was allowed to read.
 
-use std::process::{Child, Command};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use escurel_test_support::{
-    AuthMode, ConfigOverrides, EscurelProcess, FixtureBuilder, Opts, Role, WriteAclMode, free_port,
+    AuthMode, ConfigOverrides, EscurelProcess, FixtureBuilder, Opts, Role, WriteAclMode,
 };
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
+
+use crate::support::{RunnerProcess, RunningRunner, call};
 
 const TENANT: &str = "acme";
 const ALICE: &str = "user:alice";
@@ -38,14 +39,6 @@ const RENEWAL_SKILL: &str =
     "---\nkind: skill\nid: renewal\nautonomy: auto\n---\n# renewal\n\nFold the event in.\n";
 const RENEWAL: &str = "---\nkind: instance\nid: c1\nskill: renewal\n---\n# C1\n";
 const RENEWAL_PAGE: &str = "markdown/instances/renewal/c1.md";
-
-struct ChildGuard(Child);
-impl Drop for ChildGuard {
-    fn drop(&mut self) {
-        let _ = self.0.kill();
-        let _ = self.0.wait();
-    }
-}
 
 async fn gateway() -> EscurelProcess {
     EscurelProcess::spawn(Opts {
@@ -72,22 +65,6 @@ async fn gateway() -> EscurelProcess {
     .await
 }
 
-async fn call(p: &EscurelProcess, token: &str, name: &str, args: Value) -> Value {
-    let body: Value = reqwest::Client::new()
-        .post(p.mcp_url())
-        .header("authorization", format!("Bearer {token}"))
-        .json(&json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/call",
-                       "params": { "name": name, "arguments": args } }))
-        .send()
-        .await
-        .expect("post")
-        .json()
-        .await
-        .expect("json");
-    assert!(body.get("error").is_none(), "{name}: {body}");
-    body["result"]["structuredContent"].clone()
-}
-
 fn group() -> String {
     format!(
         "page-chat:v1:{:x}:{CONVERSATION_PAGE}",
@@ -96,7 +73,7 @@ fn group() -> String {
 }
 
 /// A minted-mode runner on the echo harness (no static bearer).
-fn spawn_runner(gw: &EscurelProcess) -> (ChildGuard, String) {
+fn spawn_runner(gw: &EscurelProcess) -> (RunningRunner, String) {
     spawn_runner_with(gw, true, &[])
 }
 
@@ -106,33 +83,17 @@ fn spawn_runner_with(
     gw: &EscurelProcess,
     minted: bool,
     extra: &[(&str, &str)],
-) -> (ChildGuard, String) {
-    let (signing_key, kid) = gw.signing_material();
-    let listen = format!("127.0.0.1:{}", free_port());
-    let ledger_dir = tempfile::tempdir().expect("tempdir");
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_escurel-runner"));
-    cmd.env("ESCUREL_RUNNER_LISTEN", &listen)
-        .env("ESCUREL_RUNNER_GATEWAY_URL", gw.base_url())
-        .env("ESCUREL_RUNNER_TENANT", TENANT)
-        .env("ESCUREL_RUNNER_HARNESS", "echo")
-        .env(
-            "ESCUREL_RUNNER_LEDGER_PATH",
-            ledger_dir.keep().join("ledger.duckdb"),
-        )
-        .env("ESCUREL_RUNNER_RETRY_BACKOFF", "50ms")
-        .env("ESCUREL_RUNNER_POLL_INTERVAL", "250ms");
+) -> (RunningRunner, String) {
+    let mut runner = RunnerProcess::echo(gw, TENANT);
     if minted {
-        cmd.env_remove("ESCUREL_RUNNER_TOKEN")
-            .env("ESCUREL_RUNNER_AUTH_ISSUER", gw.issuer_url())
-            .env("ESCUREL_RUNNER_AUTH_KID", kid)
-            .env("ESCUREL_RUNNER_AUTH_SIGNING_KEY", &signing_key);
-    } else {
-        cmd.env("ESCUREL_RUNNER_TOKEN", gw.mint_token(TENANT, Role::Admin));
+        runner = runner.minted();
     }
     for (k, v) in extra {
-        cmd.env(k, v);
+        runner = runner.env(k, *v);
     }
-    (ChildGuard(cmd.spawn().expect("spawn runner")), listen)
+    let runner = runner.spawn();
+    let listen = runner.listen().to_owned();
+    (runner, listen)
 }
 
 /// The person's turn: append it, then capture the `chat` event naming it.

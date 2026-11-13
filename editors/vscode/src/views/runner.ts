@@ -26,6 +26,7 @@ import {
 import { registerRunsCommands } from './runsCommands';
 import {
   buildRunsTree,
+  foldSkipped,
   describeRunner,
   filterNote,
   groupRuns,
@@ -222,6 +223,17 @@ export class RunnerTree implements vscode.TreeDataProvider<RunsNode>, vscode.Dis
         item.command = { command: 'escurel.openRun', title: 'Open run', arguments: [node] };
         break;
       }
+      case 'skipped':
+        // Not a run and not a failure: a calm icon, and the word "Skipped" leads the label.
+        item.iconPath = new vscode.ThemeIcon('debug-step-over');
+        // There is no run to open: the skill is where its schedule and budget are set.
+        if (node.skill)
+          item.command = { command: 'escurel.viewSkill', title: 'View skill', arguments: [node.skill] };
+        item.accessibilityInformation = {
+          label: `${node.label}. ${node.description ?? ''}`,
+          role: 'treeitem',
+        };
+        break;
       case 'reason':
         // The second line of the failed row above it: no icon, so it reads as that row's own text.
         item.accessibilityInformation = { label: `Reason: ${node.label}`, role: 'treeitem' };
@@ -390,6 +402,7 @@ export class RunnerTree implements vscode.TreeDataProvider<RunsNode>, vscode.Dis
       runners: this.runners,
       isAdmin: this.adminState === 'admin',
       error: this.loadError,
+      skipped: foldSkipped([...this.snapshot.events.values()]),
     });
     // Only when it changed: a context key write is a round trip to the workbench, and rebuild runs often.
     const paused = runner?.paused ?? false;

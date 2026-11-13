@@ -42,7 +42,11 @@ export interface Skill {
   owner_field: string | null;
   /** Admin callers only; absent for everyone else. */
   acl?: { read?: string[]; create?: string[]; update?: string[]; delete?: string[] };
-  backend: { kind: string; instances?: string; filterable?: Array<{ field: string; column: string }> };
+  backend: {
+    kind: string;
+    instances?: string;
+    filterable?: Array<{ field: string; column: string }>;
+  };
   capabilities: { writable: boolean; granularity: string; search: string; supports_crdt: boolean };
   /** `overlay` (tenant-authored, editable) or `base@<pack>@<version>` (read-only at this node). */
   layer: string;
@@ -51,6 +55,15 @@ export interface Skill {
   autonomy?: string;
   summary?: string;
   harness?: string;
+  /** The cron expression the runner fires the skill on (`CRON_TZ=<zone> ` prefix optional), as written. */
+  schedule?: string;
+  /** True when `schedule` cannot be read: the runner fires nothing (and files `run-skipped`). */
+  schedule_invalid?: boolean;
+  /**
+   * At most `runs_per_day` scheduled triggers per UTC day. `invalid: true` (with `0`) when the
+   * declared budget cannot be read: the runner then fires nothing.
+   */
+  schedule_budget?: { runs_per_day: number; invalid?: boolean };
   /** `/`-separated path of slugs placing the skill in a tree (`sales/orders`); absent = top level. */
   folder?: string;
   /** `record | process | report | helper`; typed as a string so a newer server's value still parses. */
@@ -71,7 +84,12 @@ export interface Skill {
   sources?: Array<string | { title?: string; url?: string }>;
   /** Peacock's pointer to the report skill that charts this skill's instances. */
   viewer?: { report: string; param?: string };
-  overview?: { tile: string; status_field: string; delayed_when: Array<string | number | boolean>; sort_field?: string };
+  overview?: {
+    tile: string;
+    status_field: string;
+    delayed_when: Array<string | number | boolean>;
+    sort_field?: string;
+  };
   /** What a follow-up from this skill can be: see `SkillAction`. Absent when none are declared. */
   actions?: SkillAction[];
   cascade?: { target?: string; max_depth?: number };
@@ -142,6 +160,49 @@ export interface WikilinkParsed {
 
 export interface FetchBlobResponse {
   blob: { content_type: string; size: number; bytes_base64: string } | null;
+}
+
+/** `fetch_blob{run_id}`: the run's transcript as JSONL (`application/x-ndjson`). */
+export interface FetchRunTranscriptResponse {
+  blob: { run_id: string; content_type: string; size: number; bytes_base64: string } | null;
+}
+
+export type UsageDimension = 'skill' | 'agent' | 'page' | 'model' | 'day';
+
+export interface UsageReportRequest {
+  group_by: UsageDimension[];
+  /** RFC 3339, inclusive. */
+  since?: string;
+  /** RFC 3339, exclusive. */
+  until?: string;
+  skill?: string;
+}
+
+export interface UsageTotals {
+  runs: number;
+  /** Runs per terminal status (`processed`, `failed`, `dead_letter`, …). */
+  by_status: Record<string, number>;
+  input_tokens: number;
+  output_tokens: number;
+  /** The sum over the PRICED runs only; an unpriced run's spend is not in it. */
+  cost_usd: number;
+  /** Runs whose harness reported a cost. Absent from an older gateway. */
+  priced_runs?: number;
+  /** Runs whose harness reported no cost (codex, a run without usage). */
+  unpriced_runs?: number;
+}
+
+export interface UsageReportRow extends UsageTotals {
+  group: Partial<Record<UsageDimension, string | null>>;
+}
+
+/** `usage_report` (admin): usage and cost folded from every `run-finished` in the window. */
+export interface UsageReportResponse {
+  group_by: UsageDimension[];
+  since?: string | null;
+  until?: string | null;
+  rows: UsageReportRow[];
+  total: UsageTotals;
 }
 
 export interface ExpandResponse {

@@ -293,6 +293,8 @@ impl Harness for MuseHarness {
             // muse takes its prompt as a FILE PATH in argv, so stdin stays
             // closed rather than piped-and-unwritten.
             stdin: None,
+            stdout_lines: None,
+            turns: None,
             timeout: self.timeout,
             cancel: task.cancel.as_ref(),
         })

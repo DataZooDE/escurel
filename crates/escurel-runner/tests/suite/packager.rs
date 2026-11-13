@@ -23,7 +23,7 @@
 //!    - `allowed_tools` includes `update_page` + `assign_event`.
 
 use escurel_client::{Client, SecretString};
-use escurel_runner_core::{Lineage, RunnerConfig, Trigger, package};
+use escurel_runner_core::{Lineage, RunGrant, RunnerConfig, Trigger, package};
 use escurel_test_support::{AuthMode, EscurelProcess, FixtureBuilder, Opts, Role};
 use escurel_types::WorkflowProvenance;
 use serde_json::{Value, json};
@@ -122,6 +122,7 @@ async fn packages_skill_body_as_instructions_with_event_and_instance() {
         manual: None,
         is_system: false,
         chat: None,
+        agent: None,
         tenant: TENANT.to_owned(),
         event_id: event_id.clone(),
         label_skill: SKILL.to_owned(),
@@ -132,7 +133,7 @@ async fn packages_skill_body_as_instructions_with_event_and_instance() {
     };
 
     let tokens = escurel_runner_core::TokenSource::Static(cfg.token.clone().expect("token"));
-    let ctx = package(&trigger, &client, &cfg, Some(&tokens), None, None)
+    let ctx = package(&trigger, &client, &cfg, Some(&tokens), None, RunGrant::Wide)
         .await
         .expect("package the trigger");
 
@@ -255,6 +256,7 @@ async fn workflow_step_trigger_is_packaged_without_the_event_surface() {
         manual: None,
         is_system: false,
         chat: None,
+        agent: None,
         tenant: TENANT.to_owned(),
         event_id: "STEP-EVT".to_owned(),
         label_skill: SKILL.to_owned(),
@@ -271,7 +273,7 @@ async fn workflow_step_trigger_is_packaged_without_the_event_surface() {
     };
 
     let tokens = escurel_runner_core::TokenSource::Static(cfg.token.clone().expect("token"));
-    let ctx = package(&trigger, &client, &cfg, Some(&tokens), None, None)
+    let ctx = package(&trigger, &client, &cfg, Some(&tokens), None, RunGrant::Wide)
         .await
         .expect("package the workflow-step trigger");
 

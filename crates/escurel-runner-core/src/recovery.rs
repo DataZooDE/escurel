@@ -85,6 +85,7 @@ pub async fn recover_pending(
             manual: None,
             is_system: false,
             chat: None,
+            agent: None,
             tenant: rec.tenant.clone(),
             event_id: rec.event_id.clone(),
             label_skill: String::new(),
@@ -112,12 +113,16 @@ pub async fn recover_pending(
                 );
                 if emit_events {
                     // What the ledger row still knows; the crashed process's
-                    // harness, attempts and summary are gone with it.
+                    // harness, attempts and summary are gone with it. The
+                    // skill and agent are re-read from the event itself.
+                    let (skill, agent) = run_identity(client, &rec.tenant, &rec.event_id).await;
                     let ctx = crate::RunEventCtx {
                         manual: None,
                         run_id: run_id.0.clone(),
                         root_event_id: rec.root_event_id.clone(),
                         trigger_event_id: rec.event_id.clone(),
+                        skill,
+                        agent,
                         parent_run_id: None,
                         depth: rec.depth,
                         lineage_path: vec![rec.event_id.clone()],
@@ -132,7 +137,16 @@ pub async fn recover_pending(
                         held: effect.held,
                     };
                     if let Err(e) = ctx
-                        .emit_finished(client, 0, &finish, "reconciled on restart", 0, None, None)
+                        .emit_finished(
+                            client,
+                            0,
+                            &finish,
+                            "reconciled on restart",
+                            0,
+                            None,
+                            None,
+                            None,
+                        )
                         .await
                     {
                         tracing::warn!(
@@ -160,4 +174,34 @@ pub async fn recover_pending(
         }
     }
     report
+}
+
+/// The skill a recovered run ran and the agent it executed as, resolved from
+/// the triggering event exactly as a fresh dispatch resolves them
+/// ([`crate::agent_for_trigger`]) — so a reconciled run is attributed to the
+/// same agent its re-run would be. `(None, None)` when the event is gone.
+async fn run_identity(
+    client: &Client,
+    tenant: &str,
+    event_id: &str,
+) -> (Option<String>, Option<String>) {
+    let event = client
+        .list_events(escurel_client::ListEventsRequest {
+            event_id: Some(event_id.to_owned()),
+            ..Default::default()
+        })
+        .await
+        .ok()
+        .and_then(|page| page.events.into_iter().next());
+    let Some(event) = event else {
+        return (None, None);
+    };
+    let trigger = Trigger::from_event(&event, tenant.to_owned());
+    // Attribution only (the re-run resolves afresh): an unreadable page leaves the agent unnamed.
+    let agent = crate::resolve_run_agent(client, &trigger)
+        .await
+        .ok()
+        .and_then(|(_, choice)| choice.profile().map(|p| p.id.clone()));
+    let skill = Some(trigger.label_skill).filter(|s| !s.is_empty());
+    (skill, agent)
 }

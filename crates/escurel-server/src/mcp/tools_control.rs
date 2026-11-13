@@ -1,12 +1,13 @@
 //! Controls as events (knowledge-workbench backend P2-2): the authorisation
 //! branch `capture_event` runs for the `escurel:run-control` label.
 //!
-//! A human cancels, retries, pauses, resumes or requeues by capturing a
+//! A human cancels, retries, steers (`inject`), pauses, resumes or requeues
+//! by capturing a
 //! control event; the runner's subscriber acts on it. The gateway stays
 //! automation-free — it decides only WHO may ask WHAT, and stamps who
 //! asked:
 //!
-//! - `cancel` / `retry` name a run. The caller must be allowed to write the
+//! - `cancel` / `retry` / `inject` name a run. The caller must be allowed to write the
 //!   run's target page (the page its `run-started` names), under the same
 //!   `ESCUREL_WRITE_ACL` gate `update_page` applies. An unknown run and a
 //!   forbidden one read the same — `event_not_found` — so the label is no
@@ -14,14 +15,15 @@
 //! - `pause` / `resume` / `requeue` are tenant-wide and admin-only; a
 //!   non-admin reads the same `event_not_found`.
 //! - A malformed request (no action, an unknown one, `cancel` without a
-//!   run, a body that is not JSON) is a caller mistake: plain
-//!   `invalid_params`, no `event_not_found`.
+//!   run, a body that is not JSON, an `inject` without `text` or over
+//!   [`MAX_INJECT_BYTES`]) is a caller mistake: plain `invalid_params`, no
+//!   `event_not_found`.
 //!
 //! The request is stored as bookkeeping (`kind: system`) on the run's
 //! target page — never inbox work, hidden from the default listings,
 //! present in the run's own record (`list_events{run_id}`) and under the
 //! label the runner tails. `provenance.control` is written here from the
-//! token: `{action, run_id?, event_id?, reason?, requested_by}`; a
+//! token: `{action, run_id?, event_id?, reason?, text?, requested_by}`; a
 //! caller-supplied block is replaced, never merged.
 
 use escurel_index::{AclCaller, EventListFilter, Indexer};
@@ -33,7 +35,13 @@ use super::JsonRpcError;
 pub(super) const RUN_CONTROL_LABEL: &str = "escurel:run-control";
 
 /// The actions a control event may carry, and who may ask for them.
-const RUN_ACTIONS: [&str; 2] = ["cancel", "retry"];
+const RUN_ACTIONS: [&str; 3] = ["cancel", "retry", "inject"];
+
+/// The most an `inject` may carry, in UTF-8 bytes. A steer is a human's
+/// message to a live run, not a document: 8 KiB is pages of instructions,
+/// and the cap keeps one control from swelling a model turn or the event
+/// that records it.
+const MAX_INJECT_BYTES: usize = 8 * 1024;
 const TENANT_ACTIONS: [&str; 3] = ["pause", "resume", "requeue"];
 
 /// How far back to look for the run's `run-started` in the run's own
@@ -95,6 +103,28 @@ pub(super) async fn authorise_run_control(
         let Some(run_id) = text(&req["run_id"]) else {
             return Err(mistake(format!("`{action}` names a `run_id`")));
         };
+        if action == "inject" {
+            // `inject` DIRECTS a run (cancel only stops one), and a run's token may be the runner's
+            // admin: a machine caller, which may itself be steered by injected text, never sends one.
+            if caller.agent.is_some() || super::tools_write::is_machine_caller(caller) {
+                return Err(JsonRpcError::invalid_params(
+                    "capture_event: `escurel:run-control`: an agent or run token cannot `inject`"
+                        .to_owned(),
+                )
+                .with_code("agent_scope_denied", false));
+            }
+            // Whitespace alone says nothing to the run.
+            let Some(message) = req["text"].as_str().filter(|t| !t.trim().is_empty()) else {
+                return Err(mistake("`inject` carries a non-empty `text`"));
+            };
+            if message.len() > MAX_INJECT_BYTES {
+                return Err(mistake(format!(
+                    "`inject` `text` is {} bytes; at most {MAX_INJECT_BYTES}",
+                    message.len()
+                )));
+            }
+            control["text"] = json!(message);
+        }
         // The run's own record names its target page on `run-started`.
         let page = indexer
             .list_events_filtered_page(
@@ -123,6 +153,13 @@ pub(super) async fn authorise_run_control(
             let Some(target) = target.as_deref() else {
                 return Err(denied());
             };
+            // `inject` shares cancel's gate, in the deployment's mode: whoever may write the page
+            // could already capture an event whose body is any instruction for a run on it, so
+            // steering grants nothing beyond that. (Forcing `Enforce` here would leave only admins
+            // able to steer in an `off` deployment, as owner-less instances are admin-write there.)
+            // What steering must never do — let a run's own token direct a run — is the
+            // machine-caller refusal above.
+            let write_acl = write_acl.for_page(target, "");
             if write_acl != crate::server::WriteAclMode::Off {
                 let Some(existing) = indexer.read_page_markdown(target).await.map_err(|e| {
                     JsonRpcError::internal(format!("capture_event run-control: {e}"))

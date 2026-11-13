@@ -4,6 +4,9 @@ export type WaitOutcome<R> =
   | { kind: 'timeout'; lookupFailed: boolean }
   | { kind: 'cancelled' };
 
+/** What sending a control ended in: the gateway refused to store it, or the wait for the runner's answer. */
+export type SendOutcome<R> = { kind: 'refused'; message: string } | WaitOutcome<R>;
+
 export interface PollOptions<R> {
   /** Look for the runner's answer; `undefined` = not there yet. */
   find: () => Promise<R | undefined>;

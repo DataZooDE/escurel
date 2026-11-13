@@ -239,8 +239,11 @@ async fn multiple_processes_run_in_parallel_with_independent_data() {
         "b must not see a's customer fixture: {b_skills:?}"
     );
     assert!(
-        b_skills.skills.iter().all(|s| s.id == "escurel"),
-        "b carries only the meta-skill: {b_skills:?}"
+        b_skills
+            .skills
+            .iter()
+            .all(|s| s.id == "escurel" || s.id == "agent"),
+        "b carries only the system skills: {b_skills:?}"
     );
 
     a.shutdown().await;

@@ -8,6 +8,35 @@ derives its version from the tag (`vYYYY.MM.DD` → `YYYY.M.D`, leading zeros dr
 
 ### Added
 
+- **Scheduled skills** (#819). A skill with `schedule:` says so where skills are listed: a chip in the Knowledge
+  tree (`scheduled · next 07:15 UTC`; the tooltip and the skill page's **Schedule** fact give the expression, its
+  zone, the next window and the `schedule_budget`), and a line under it in the Start skill picker. The next window
+  is computed only for a UTC schedule the preview can read; a `CRON_TZ=` zone or an extension it does not know is
+  shown as written, never guessed. A window the runner skipped because the daily budget was spent (`run-skipped`)
+  is listed in the Runs view under **Skipped by budget** (closed, with its count), with the window and the budget in
+  words; a click opens the skill, where the schedule is set.
+
+- **Usage and Agents views** (#821, #823), beside Runs (collapsed until opened; each reads only while it is
+  shown). **Usage** rolls up `usage_report` for the last 24 hours, 7 days or 30 days (title action), grouped by
+  skill, model, agent, day or page (title action): an **All runs** row, then one row per group with its runs,
+  success rate (`by_status.processed / runs`), tokens and cost, most expensive first (days newest first); the
+  tooltip has every status and the token split. It is an admin tool: anyone else sees "Usage needs an admin
+  sign-in." instead of an error. **Agents** lists the `agent` profiles with their harness and model, and in the
+  tooltip what they may run, their tool and write scopes and `max_concurrent`; an admin also sees each one's runs
+  and success rate over 30 days (`usage_report {group_by: [agent]}`, `agent:<id>`). A click opens the agent page.
+
+- **Run detail: transcript, cost and steering** (#820, #821, #822). A **Transcript** tab beside Details replays
+  what the agent did (`fetch_blob {run_id}`), read only when the tab is first opened: one row per tool call,
+  result, message or error, with its name, summary, time from the first record and attempt; toggle buttons filter
+  by kind and **Step through** walks the replay a record at a time (Previous / Next / Show all, or the arrow keys,
+  Home and End on the list). A run still working, one whose agent keeps no transcript, one past the retention
+  (`transcript_expired`) and one not readable (`run_not_found`) each say so in words. A **cost chip** in the
+  header reads `run-finished.usage` (`12.4k in · 860 out · $0.042`, the model in the tooltip and the accessible
+  name). While a run is live and its harness takes messages (`claude`, `echo`), **Steer this run** sends a message
+  as an `inject` run-control (at most 8 KiB, checked before sending; Ctrl+Enter sends) and says the runner's
+  answer: `injected`, `unsupported` or `not_live`; for another harness one line says it cannot be steered. Sent
+  messages (`run-inject`) are listed under **Messages sent to the run**, as written, with who sent them.
+
 - **Inbox row decorator for companion extensions**: `registerInboxDecorator(skill, { decorate?, emptyMessage? })`
   (API v1, additive). `decorate(row, rows)` returns data only (`badge`, `description`, `status`, `hidden`) for the
   rows of one skill; the status picks the icon, sorts decided rows after open ones and feeds the Inbox view badge

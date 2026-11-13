@@ -253,6 +253,14 @@ class FixtureEscurelClient implements EscurelClient {
             // Stability layer (REQ-LAYER-04); absent ⇒ overlay.
             layer: _layerOf(p.frontmatter),
             shadows: isBase ? null : basePins[p.skill],
+            schedule: _schedule(p.frontmatter['schedule']),
+            // Not a cron parser: only a non-string `schedule:` is judged
+            // here; the gateway decides the rest.
+            scheduleInvalid: p.frontmatter['schedule'] != null &&
+                p.frontmatter['schedule'] is! String,
+            scheduleRunsPerDay: _runsPerDay(p.frontmatter['schedule_budget']),
+            scheduleBudgetInvalid:
+                _runsPerDay(p.frontmatter['schedule_budget']) == 0,
           );
         })
         .toList();
@@ -897,6 +905,15 @@ class FixtureEscurelClient implements EscurelClient {
   Future<AuditDrift> adminAudit() async =>
       const AuditDrift(markdownNotInDuckdb: [], indexedButNoMarkdown: []);
 
+  /// The fixture has no runner, so no run ever finished: an empty bill.
+  @override
+  Future<UsageReport> usageReport({
+    required List<String> groupBy,
+    String? since,
+    String? until,
+    String? skill,
+  }) async => const UsageReport(rows: [], total: UsageRow(group: {}, runs: 0));
+
   @override
   Future<WebhookDeliveries> adminWebhookDeliveries({int limit = 100}) async {
     final list = _webhookDeliveries.length > limit
@@ -1323,6 +1340,19 @@ class FixtureEscurelClient implements EscurelClient {
   /// pin, or the `overlay` default when absent.
   static String _layerOf(Map<String, dynamic> fm) =>
       (fm['layer'] as String?) ?? 'overlay';
+
+  /// `schedule:` as the gateway projects it: a string as written, anything
+  /// else as its text (and flagged invalid).
+  static String? _schedule(Object? raw) => raw == null ? null : '$raw';
+
+  /// `schedule_budget.runs_per_day` as the gateway projects it: absent when
+  /// undeclared, the count when it is a positive integer, and `0` (with
+  /// `invalid`) for a declared budget that cannot be read.
+  static int? _runsPerDay(Object? budget) {
+    if (budget == null) return null;
+    final n = budget is Map ? budget['runs_per_day'] : null;
+    return n is int && n > 0 && n <= 0xFFFFFFFF ? n : 0;
+  }
 
   static bool _isBaseLayer(Map<String, dynamic> fm) =>
       _layerOf(fm).startsWith('base@');

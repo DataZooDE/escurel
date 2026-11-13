@@ -80,6 +80,21 @@ void main() {
     expect(find.byKey(const ValueKey('md_inspector.output')), findsOneWidget);
   });
 
+  testWidgets('/inspector/agents opens the Agents panel', (tester) async {
+    tester.view.physicalSize = const Size(1600, 900);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.resetPhysicalSize);
+
+    final client = _buildCorpus();
+    addTearDown(client.close);
+
+    await tester.pumpWidget(_appWith(client, initialLocation: '/inspector/agents'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Dev Inspector — Agents'), findsOneWidget);
+    expect(find.bySemanticsLabel('agents-panel'), findsOneWidget);
+  });
+
   testWidgets('topbar inspector toggle navigates between editor and inspector', (tester) async {
     tester.view.physicalSize = const Size(1600, 900);
     tester.view.devicePixelRatio = 1.0;

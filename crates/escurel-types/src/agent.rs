@@ -540,6 +540,21 @@ pub struct Skill {
     /// runner honours it within its allow-list).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub harness: Option<String>,
+    /// `schedule:` — when the runner fires this skill on its own (#819): a
+    /// 5- or 6-field cron expression, optionally `CRON_TZ=<zone> `-prefixed
+    /// (UTC otherwise), as written. Absent = event-driven only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub schedule: Option<String>,
+    /// The page declares a `schedule:` that cannot be read — not a string, an
+    /// unknown `CRON_TZ=` zone, a malformed cron. `schedule` then carries the
+    /// value as written; the runner fires nothing and files one `run-skipped
+    /// { reason: "invalid_schedule" }` per expression. Omitted when false.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub schedule_invalid: bool,
+    /// `schedule_budget:` — how many scheduled runs a UTC day may start.
+    /// Absent = unbounded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub schedule_budget: Option<ScheduleBudget>,
     /// `folder:` — where the skill sits in a knowledge tree, a `/`-separated path of slugs
     /// (`sales/orders`). Absent = top level. OKF-style hierarchy for clients that render a tree.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -627,6 +642,21 @@ pub struct Skill {
     /// `protected:` — `delete` and/or `move`: removal actions refused with `instance_protected`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub protected: Vec<String>,
+}
+
+/// A skill's `schedule_budget:` (#819): the cap on scheduled runs per UTC day.
+/// A window past the cap is not fired; the runner files a visible
+/// `run-skipped` event in its place.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct ScheduleBudget {
+    pub runs_per_day: u32,
+    /// The page declares a budget that cannot be read (`0`, a string, an
+    /// overflow, no `runs_per_day`). Fails CLOSED: `runs_per_day` is then `0`
+    /// and the runner fires nothing, filing `run-skipped { reason:
+    /// "invalid_budget" }` instead. A malformed cap must never read as no cap.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub invalid: bool,
 }
 
 /// One block of a skill's declared instance layout (`blocks:`). MCP wire
@@ -1034,11 +1064,15 @@ pub struct WebhookDeliveriesResponse {
 
 // ── fetch_blob ────────────────────────────────────────────────────
 
-/// `fetch_blob` arguments. MCP wire key: `page_id`.
+/// `fetch_blob` arguments: exactly one of `page_id` (a document's
+/// original) or `run_id` (a finished run's transcript, #822).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct FetchBlobRequest {
+    #[serde(skip_serializing_if = "String::is_empty")]
     pub page_id: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub run_id: String,
 }
 
 /// The retained original file of a `document`-backed instance. MCP wire
@@ -1047,6 +1081,9 @@ pub struct FetchBlobRequest {
 #[serde(default)]
 pub struct BlobInfo {
     pub page_id: String,
+    /// Set instead of `page_id` for a run transcript (`fetch_blob{run_id}`).
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub run_id: String,
     /// The MIME the upload declared (falling back to a byte sniff for
     /// overlays written before the field existed).
     pub content_type: String,
@@ -1063,6 +1100,16 @@ pub struct BlobInfo {
 #[serde(default)]
 pub struct FetchBlobResponse {
     pub blob: Option<BlobInfo>,
+}
+
+/// `put_run_transcript` result (#822): what was stored for the run.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct PutRunTranscriptResponse {
+    pub records: u64,
+    pub bytes: u64,
+    /// `sha256:<hex>` of the stored bytes.
+    pub sha256: String,
 }
 
 // ── list_snapshots / list_op_authors (CRDT history reads) ─────────

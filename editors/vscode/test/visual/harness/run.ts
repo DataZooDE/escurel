@@ -1,7 +1,12 @@
 import '../../../webview/run/main';
 import { runControls } from '../../../src/runs/controls';
 import type { EscurelRunDetail } from '../../../webview/run/run-detail';
-import { recordedRunView } from '../../component/run-fixtures';
+import {
+  costedRun,
+  liveSteerableRun,
+  recordedRunView,
+  transcriptRecords,
+} from '../../component/run-fixtures';
 
 const el = document.querySelector('escurel-run-detail') as EscurelRunDetail;
 
@@ -66,27 +71,52 @@ const detailView = {
         : '{"page":{"skill":"customer-order","id":"order-4500123"},"frontmatter":{"status":"open","sold_to":"Hoffmann GmbH"}}',
   })),
 };
+// `?state=steer` is a live echo run with the steer box and one message already sent; `?state=transcript`
+// a finished run that reported its cost, with the Transcript tab open and stepping at its third record.
 el.view =
-  state === 'trace-detail'
-    ? detailView
-    : state === 'trace'
-      ? traceView
-      : state
-        ? {
-            ...recorded,
-            status: state,
-            tone: state === 'dead_letter' || state === 'failed' ? 'failed' : 'run',
-            skill: 'supplier-risk',
-            controls: runControls(state, 'not-admin'),
-            ...(state === 'dead_letter' || state === 'failed'
-              ? { failure: 'permanent — harness "refusing" is not allowed for this skill' }
-              : {}),
-          }
-        : recorded;
+  state === 'steer'
+    ? { ...liveSteerableRun, skill: 'supplier-risk', controls: runControls('running', 'not-admin') }
+    : state === 'transcript'
+      ? { ...costedRun, startedAt: recorded.startedAt, skill: 'supplier-risk' }
+      : state === 'trace-detail'
+        ? detailView
+        : state === 'trace'
+          ? traceView
+          : state
+            ? {
+                ...recorded,
+                status: state,
+                tone: state === 'dead_letter' || state === 'failed' ? 'failed' : 'run',
+                skill: 'supplier-risk',
+                controls: runControls(state, 'not-admin'),
+                ...(state === 'dead_letter' || state === 'failed'
+                  ? { failure: 'permanent — harness "refusing" is not allowed for this skill' }
+                  : {}),
+              }
+            : recorded;
 if (state === 'trace-detail') {
   void el.updateComplete.then(() => {
     const rows = el.shadowRoot!.querySelectorAll<HTMLDetailsElement>('.tool-call');
     rows[0]!.open = true;
     rows[2]!.open = true;
+  });
+}
+if (state === 'transcript') {
+  void el.updateComplete.then(async () => {
+    el.shadowRoot!.querySelector<HTMLButtonElement>('#tab-transcript')!.click();
+    el.transcript = { status: 'ready', records: transcriptRecords };
+    await el.updateComplete;
+    const replay = el.shadowRoot!.querySelector('escurel-run-transcript') as HTMLElement & {
+      updateComplete: Promise<unknown>;
+      shadowRoot: ShadowRoot;
+    };
+    await replay.updateComplete;
+    const button = (name: string) =>
+      [...replay.shadowRoot.querySelectorAll('button')].find((b) => b.textContent?.trim() === name);
+    button('Step through')!.click();
+    await replay.updateComplete;
+    button('Next')!.click();
+    await replay.updateComplete;
+    button('Next')!.click();
   });
 }

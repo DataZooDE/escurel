@@ -13,12 +13,17 @@ degradations are tracked in `docs/BACKEND_GAPS.md`.
   run's plan, attempts and tool calls, live, without reload.
 - **Start a skill** from an instance or a thread node: in the background, _first make a plan_ and approve it,
   or in a terminal (a token minted for that one run; the run still shows up in the thread as a governed run).
+  A skill that runs on a schedule shows when it runs next; a window its daily budget skipped shows in Runs.
 - **Control agents and read their history**: the Runs view (secondary sidebar) is a runs control center:
   what is running now (cancel it), what waits for you (approve the plan), what needs attention (the reason on
   its own line; retry it), and the history of past runs, paged and filterable, with a day's summary on top.
   One click opens a run: its plan, attempts and a readable trace of every tool call, with a link to what the
-  run produced. An admin can also requeue a dead letter and pause or resume agents; a human sees those
+  run produced, what it cost, and a Transcript tab that replays everything the agent did, step by step. A live
+  run whose agent takes messages (claude, echo) can be steered: your message becomes its next turn. An admin can also requeue a dead letter and pause or resume agents; a human sees those
   controls deactivated, with the reason, not hidden.
+- **See what agents cost and who they run as**: the Usage view (admins) rolls up runs, success rate, tokens and
+  cost over 24 h / 7 d / 30 d by skill, model, agent, day or page; the Agents view lists the agent profiles runs
+  execute as, with their engine, scopes and how their runs went.
 
 ## Extending Escurel
 

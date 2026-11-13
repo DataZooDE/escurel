@@ -146,7 +146,8 @@ async function main(): Promise<void> {
   const grep = process.env.ESCUREL_TEST_GREP ?? '';
   if (process.env.ESCUREL_REQUIRE_CASCADE === '1') {
     for (const required of [bin, runnerBin, gatewayBin]) {
-      if (!existsSync(required)) throw new Error(`required integration binary is missing: ${required}`);
+      if (!existsSync(required))
+        throw new Error(`required integration binary is missing: ${required}`);
     }
   }
   const basePort = 18000 + Math.floor(Math.random() * 900);
@@ -255,12 +256,25 @@ async function main(): Promise<void> {
       info = started.info;
       const dir = mkdtempSync(join(tmpdir(), 'escurel-vsx-controls-'));
       const log = join(dir, 'runner.log');
+      // Every echo run prints this scripted stream, so each run stores a transcript the Transcript
+      // tab can replay (`run-finished.transcript`, `fetch_blob {run_id}`).
+      const transcript = join(dir, 'transcript.jsonl');
+      writeFileSync(
+        transcript,
+        [
+          { kind: 'message', text: 'Reading the order first.' },
+          { kind: 'tool_call', name: 'expand', args: { page_id: 'the order' } },
+          { kind: 'tool_result', name: 'expand', text: 'the order, read' },
+        ]
+          .map((t) => JSON.stringify({ transcript: t }))
+          .join('\n'),
+      );
       runner = spawn(runnerBin, [], {
         env: runnerEnv(
           process.env,
           info,
           { port: basePort + 6, dir },
-          { ESCUREL_ECHO_SLEEP_MS: '4000' },
+          { ESCUREL_ECHO_SLEEP_MS: '4000', ESCUREL_ECHO_TRANSCRIPT: transcript },
         ),
         stdio: ['ignore', openSync(log, 'a'), openSync(log, 'a')],
       });

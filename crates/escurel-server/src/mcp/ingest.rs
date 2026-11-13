@@ -50,6 +50,26 @@ struct IngestCaller {
     run_id: Option<String>,
     root_event_id: Option<String>,
     agent_skill: Option<String>,
+    /// The agent profile the gateway resolved for an agent-profile token. Always `None` on the REST
+    /// doors (`role_gate::surface_refusal` refuses those tokens there); the MCP `ingest_upload` tool
+    /// carries it, so the agent's `scopes.write` bounds what it may create.
+    agent: Option<escurel_types::agent_profile::AgentProfile>,
+}
+
+impl IngestCaller {
+    /// The ACL view of this caller, for every decision the ingest doors take.
+    fn acl(&self) -> AclCaller<'_> {
+        AclCaller {
+            subject: &self.subject,
+            is_admin: self.is_admin,
+            token_groups: &self.groups,
+            actor: self.actor.as_deref(),
+            run_id: self.run_id.as_deref(),
+            root_event_id: self.root_event_id.as_deref(),
+            agent_skill: self.agent_skill.as_deref(),
+            agent: self.agent.as_ref(),
+        }
+    }
 }
 
 /// Auth (REQ-NF-07) + per-tenant Writes rate-limit gate shared by `/ingest`
@@ -140,6 +160,7 @@ async fn ingest_gate(
                     run_id,
                     root_event_id,
                     agent_skill,
+                    agent: None,
                 },
             ))
         }
@@ -266,6 +287,7 @@ pub(super) async fn tool_ingest_upload(
         run_id: caller.run_id.map(str::to_owned),
         root_event_id: caller.root_event_id.map(str::to_owned),
         agent_skill: caller.agent_skill.map(str::to_owned),
+        agent: caller.agent.cloned(),
     };
     let response = deposit_and_ingest(state, indexer, &ingest_caller, req).await;
     let status = response.status();
@@ -399,12 +421,13 @@ async fn record_and_dispatch_ingest(
         )
             .into_response();
     }
-    // The gateway's own id namespaces (`write-back:*`, `runner-status:*`) are not the caller's to mint:
+    // The gateway's and runner's id namespaces (`write-back:*`, `runner-status:*`, `run:*`, …) are not
+    // the caller's to mint:
     // the same refusal `capture_event` applies, or this door would squat a runner's status record or
     // forge a write-back witness.
     if let Some(reason) = caller_event_id
         .as_deref()
-        .and_then(super::tools_write::reserved_event_id_refusal)
+        .and_then(|id| super::tools_write::reserved_event_id_refusal(id, &caller.acl()))
     {
         return (
             StatusCode::UNPROCESSABLE_ENTITY,
@@ -477,15 +500,7 @@ async fn record_and_dispatch_ingest(
         {
             incoming.insert(field.clone(), json!(subject));
         }
-        let acl_caller = AclCaller {
-            subject,
-            is_admin: caller.is_admin,
-            token_groups: &caller.groups,
-            actor: caller.actor.as_deref(),
-            run_id: caller.run_id.as_deref(),
-            root_event_id: caller.root_event_id.as_deref(),
-            agent_skill: caller.agent_skill.as_deref(),
-        };
+        let acl_caller = caller.acl();
         let may_create = indexer
             .may_write_instance(&acl_caller, sk, None, &Value::Object(incoming))
             .await
@@ -505,15 +520,7 @@ async fn record_and_dispatch_ingest(
     // upload (explicit skill or routed by MIME) into a skill that asks for review must not land here
     // either; a blob cannot be held as a draft, so it is refused with whom to ask.
     if let Some(sk) = handler.as_deref() {
-        let machine = AclCaller {
-            subject,
-            is_admin: caller.is_admin,
-            token_groups: &caller.groups,
-            actor: caller.actor.as_deref(),
-            run_id: caller.run_id.as_deref(),
-            root_event_id: caller.root_event_id.as_deref(),
-            agent_skill: caller.agent_skill.as_deref(),
-        };
+        let machine = caller.acl();
         if super::tools_write::is_machine_caller(&machine)
             && super::tools_write::skill_requires_review(indexer, sk)
                 .await
@@ -1293,6 +1300,8 @@ async fn blob_get_inner(
         run_id: None,
         root_event_id: None,
         agent_skill: None,
+        // Agent tokens never reach `/blob` (`role_gate::surface_refusal`).
+        agent: None,
     };
     match super::tools_read::resolve_readable_blob(&indexer, &caller, page_id).await {
         Ok(Some((content_type, bytes))) => (

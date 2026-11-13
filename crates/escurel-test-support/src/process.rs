@@ -176,8 +176,12 @@ pub struct ConfigOverrides {
     /// gateway's verifier accepts. Requires `AuthMode::TestIssuer`.
     pub signing: bool,
     /// How often the gateway sweeps gateway-minted runs for expiry (P2-6);
-    /// `None` = the production default.
+    /// `None` = the production default. Run transcripts are swept on the
+    /// same tick.
     pub minted_run_sweep: Option<std::time::Duration>,
+    /// How long run transcripts are kept (#822); `None` = forever (a test
+    /// gateway keeps everything unless the test asks).
+    pub run_transcript_retention: Option<std::time::Duration>,
     /// Attach a DuckLake so `state.lake` is `Some` — otherwise always
     /// `None` (see `serve`'s `ServerConfig` construction). Tests for
     /// lake-durability behavior (#567: `/ingest/upload`'s synchronous
@@ -362,9 +366,9 @@ impl EscurelProcess {
                 // Done here rather than in the sync `build_indexer`
                 // because it's an async write through the indexer.
                 indexer
-                    .ensure_meta_skill()
+                    .ensure_system_skills()
                     .await
-                    .expect("escurel-test-support: ensure meta-skill");
+                    .expect("escurel-test-support: ensure system skills");
                 (Some(store_dir), Some(db_dir), Some(indexer), Some(store))
             };
 
@@ -510,6 +514,7 @@ impl EscurelProcess {
             tenant_suspended: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             emit_edit_events: overrides.emit_edit_events,
             run_progress_keep: overrides.run_progress_keep.unwrap_or(50),
+            run_transcript_retention: overrides.run_transcript_retention,
             shutdown_drain: overrides
                 .shutdown_drain
                 .unwrap_or(escurel_server::DEFAULT_SHUTDOWN_DRAIN),
@@ -749,6 +754,22 @@ impl EscurelProcess {
             "EscurelProcess::mint_token_narrowed requires AuthMode::TestIssuer; spawned with a different mode",
         );
         issuer.mint_narrowed(tenant, skill, groups)
+    }
+
+    /// A per-run bearer for the agent profile `agent` (#823) running `skill`,
+    /// as a runner mints it — so a test can forge one naming an agent that does
+    /// not exist, or pin what an existing agent's scopes refuse.
+    pub fn mint_token_for_agent(
+        &self,
+        tenant: &str,
+        agent: &str,
+        skill: &str,
+        groups: &[&str],
+    ) -> String {
+        let issuer = self.issuer.as_ref().expect(
+            "EscurelProcess::mint_token_for_agent requires AuthMode::TestIssuer; spawned with a different mode",
+        );
+        issuer.mint_for_agent(tenant, agent, skill, groups)
     }
 
     /// [`Self::mint_token_for_run`] with the lineage's `trace_id` claim, so a

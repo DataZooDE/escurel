@@ -83,7 +83,10 @@ CLI:
 The Claude adapter runs `claude -p` as an isolated, timed, kill-on-drop
 subprocess: registers the gateway via `--mcp-config`, narrows the surface
 with `--allowedTools mcp__escurel__<tool>`, injects the skill body as the
-appended system prompt, and parses the `--output-format json` envelope.
+appended system prompt, and speaks stream-json both ways
+(`--input-format stream-json --output-format stream-json --verbose`): the
+prompt is a user message on stdin, stdin closes once each turn's `result`
+line is out, and the last `result` envelope is the outcome.
 Default per-run timeout 300 s.
 
 `ESCUREL_RUNNER_CLAUDE_BIN` (default `claude`) exists so a deterministic
@@ -96,8 +99,13 @@ Each adapter parses what its harness reports into the outcome's `usage`
 (`{input_tokens, output_tokens, cost_usd, model}`); the runner sums it over
 the run's attempts, writes it as `run-finished.body.usage` (and so onto the
 lineage's `run` node), and meters it as
-`escurel_runner_tokens_total{tenant,kind=input|output}` and
-`escurel_runner_cost_usd_total{tenant}` on its `/metrics`.
+`escurel_runner_tokens_total{tenant,skill,model,kind=input|output}` and
+`escurel_runner_cost_usd_total{tenant,skill,model}` on its `/metrics`
+(`skill` = the triggering event's label, `model` = the reported model, else
+the one the runner chose, else `unknown`). `run-finished.provenance.runner.skill`
+names the skill too, and the admin tool `usage_report` (CLI `escurel run usage`)
+rolls those rows up by skill, agent, page, model or day over a time window —
+"what did skill X cost this month" without a metrics stack.
 
 | adapter | `input_tokens` | `output_tokens` | `cost_usd` | `model` |
 |---|---|---|---|---|
@@ -216,12 +224,15 @@ run's target page (`processed`, never inbox work) and readable with
 |---|---|---|
 | `run-started` | the ledger admitted the run and a harness is about to run it | `{}` |
 | `run-attempt` | each try ends | `{attempt, started_at, ended_at, outcome: ok \| converged \| failed \| timeout, error?}` |
-| `run-finished` | the ledger reached its terminal | `{status: processed \| failed \| dead_letter \| cancelled \| planned, reason?, error?, attempts, held, summary, tool_calls, produced_instance, produced_version, plan, usage}` — a run that reached a verdict never ends `failed`: a permanent failure (a non-zero harness exit, a refused write, a harness outside the allow-list) dead-letters with `reason: permanent` and the attempt's `error`, as do `retries_exhausted` and `bad_output`, so one refused event costs one run and waits in the DLQ for a `requeue` / `retry`; `plan` is the newest `run-progress` snapshot the agent reported; `usage` is `{input_tokens, output_tokens, cost_usd, model}` summed over the attempts, `null` when no attempt reported any (see *What a run cost*) |
+| `run-finished` | the ledger reached its terminal | `{status: processed \| failed \| dead_letter \| cancelled \| planned, reason?, error?, attempts, held, summary, tool_calls, produced_instance, produced_version, plan, usage, transcript}` — a run that reached a verdict never ends `failed`: a permanent failure (a non-zero harness exit, a refused write, a harness outside the allow-list) dead-letters with `reason: permanent` and the attempt's `error`, as do `retries_exhausted` and `bad_output`, so one refused event costs one run and waits in the DLQ for a `requeue` / `retry`; `plan` is the newest `run-progress` snapshot the agent reported; `usage` is `{input_tokens, output_tokens, cost_usd, model}` summed over the attempts, `null` when no attempt reported any (see *What a run cost*); `transcript` is `{records, bytes, sha256}` of the stored run transcript (informational: read it by run id), `null` when none was stored (see *Run transcripts*) |
 
 `provenance.runner` on each carries `run_id`, `root_event_id`, `event_id`
 (the trigger), `parent_run_id` (a cascade hop's emitting run), `depth`,
 `lineage_path`, `trace_id`, `harness`, `max_attempts`, `attempt`,
-`target_page_id` and, on `run-finished`, `autonomy`. Event ids are
+`target_page_id`, `skill`, `agent` (the agent profile the run executed as,
+when it had one — what `usage_report {group_by: [agent]}` groups by, as
+`agent:<id>`; without one it groups as `agent:<skill>`) and, on
+`run-finished`, `autonomy`. Event ids are
 deterministic (`run:<run_id>:started` / `:attempt:<n>` / `:finished`), so a
 re-emission is idempotent. **The ledger stays the source of truth**: these
 are its projection and are best-effort — a gateway that refuses them (a
@@ -266,7 +277,7 @@ restart if younger than `ESCUREL_RUNNER_TAIL_MAX_AGE`, else skipped.
 
 ## Controls as events (`escurel:run-control`)
 
-A human cancels, retries, pauses, resumes or requeues by capturing an event
+A human cancels, retries, steers, pauses, resumes or requeues by capturing an event
 — there is no control tool, and the gateway does nothing itself; the
 runner's subscriber acts and answers under `escurel:run-control-result`.
 
@@ -276,11 +287,12 @@ runner's subscriber acts and answers under `escurel:run-control-result`.
   "body": "{\"action\":\"cancel\",\"run_id\":\"01H…\",\"reason\":\"wrong document\"}" }
 ```
 
-The body is JSON `{action, run_id?, event_id?, reason?}`:
+The body is JSON `{action, run_id?, event_id?, reason?, text?}`:
 
 | action | names | who may ask |
 |---|---|---|
 | `cancel`, `retry` | `run_id` | anyone allowed to **write the run's target page** (the page its `run-started` names) — the same `ESCUREL_WRITE_ACL` gate as `update_page`; admin always |
+| `inject` | `run_id`, `text` (non-blank, at most 8 KiB) | a PERSON allowed to write the run's target page (as for `cancel`, in the `ESCUREL_WRITE_ACL` mode); a person's admin token always. Never a machine caller (agent-profile, narrowed or run-bound token, admin or not: `agent_scope_denied`) |
 | `pause`, `resume` | — (the caller's tenant) | admin |
 | `requeue` | `event_id` (the dead-lettered event) | admin |
 
@@ -294,10 +306,20 @@ filed on, in the run's own record (`list_events { run_id }`), with
 |---|---|---|
 | `cancel` | `cancelled` | the run was live and is being stopped (see below) |
 | `cancel` | `not_live` | nothing to stop; `detail` says the run's status (or `unknown run`) |
+| `inject` | `injected` | the run was live and its harness takes messages: `text` was queued for the live session (`detail: "injection <n>"`) and recorded as `run:<run_id>:inject:<n>` |
+| `inject` | `unsupported` | the run is live but its harness cannot take a message mid-run (`detail` names the harness; today only `claude` and `echo` can) |
+| `inject` | `not_live` | nothing to steer; `detail` says the run's status (or `unknown run`). Also the answer while the run is still `pending` but its session is ending — the harness's last turn is out and its stdin closed — so a message is never answered `injected` and then dropped |
 | `retry` | `requeued` | a `failed` / `cancelled` / `dead_letter` run is re-driven now as `new_run_id` |
 | `pause` / `resume` | `paused` / `resumed` | the tenant admits nothing / admits again; held events stay in the inbox meanwhile |
 | `requeue` | `requeued` | the dead-lettered event is re-driven as `new_run_id` |
 | any | `refused` | not actionable; `detail` says why (`not dead-lettered: …`, `not retriable: …`) |
+
+With several runners on one tenant every runner reads every request, and
+the result is first-writer-wins. The runner that holds the run (live, or in
+its ledger) answers a `cancel` / `retry` / `inject` at once; a runner that
+has never heard of the run waits a grace (3 control ticks, at least 2 s) and
+answers `not_live` / `refused` only if no result exists by then. So with one
+runner, a run it never held is still answered — just ~2 s later.
 
 The runner keeps its place on the label in its ledger: a request filed
 while no runner was listening is acted on after the restart if it is
@@ -307,14 +329,30 @@ cursor yet) starts from the end of the label.
 
 A denied request and an unknown run both fail with `event_not_found` (no
 existence oracle for runs on pages you may not write). A malformed one —
-no action, an unknown action, `cancel` without a run, a body that is not
-JSON — is a plain `invalid_params`. The stored event is `kind: system`
+no action, an unknown action, `cancel` without a run, an `inject` without
+a `text` or over 8 KiB, a body that is not JSON — is a plain
+`invalid_params`. The stored event is `kind: system`
 (whatever you passed), on the run's target page for `cancel`/`retry` and
 unassigned for the tenant-wide actions, with `provenance.control =
-{action, run_id?, event_id?, reason?, requested_by}` written from your
+{action, run_id?, event_id?, reason?, text?, requested_by}` written from your
 token (a block you supply is replaced). It therefore never shows as inbox
 work; find it under `list_events { run_id }` or
 `list_events { label_skill: "escurel:run-control" }`.
+
+**What an inject does (#820).** The message goes into the run's live
+harness session as one more user turn — `claude` gets a stream-json user
+message, the `echo` harness reads it off its stdin — instead of a cancel and
+a re-trigger that would lose the run's context and spend. It rides the
+run's existing token and tool surface; nothing about the run's authority
+changes. Why the page writer is the bound: they could already capture an
+event that steers a run on that page, so `inject` grants them nothing new.
+It follows `ESCUREL_WRITE_ACL` like `cancel` (under `off` / `log` every
+caller may write the page, so may steer it), and a machine caller never sends
+one, in any mode — an agent steered by injected text must not steer another run. Every queued message is recorded in the run's own record as an
+`escurel:run` system event, `event_id: run:<run_id>:inject:<n>` (n counts
+from 1 per run), `title: run-inject`, `body {n, text, bytes,
+requested_by}` — the text whole, since it is the requester's own message.
+A message that arrives between attempts is read by the next attempt.
 
 **What a cancel does.** The runner stops the harness subprocess (SIGTERM,
 `ESCUREL_RUNNER_CANCEL_GRACE`, SIGKILL; the in-process Gemini loop stops
@@ -407,6 +445,144 @@ cascades only to the `event` skill of a listed `kind: event` action; undeclared 
 (where the hop is pre-flagged; `produced` = the page just written) and
 `cascade.max_depth` (the deepest hop this skill's chains reach; the
 runner's global `ESCUREL_RUNNER_MAX_DEPTH` still caps everything).
+
+## Scheduled triggers (`schedule:`)
+
+A skill page that declares `schedule:` (references/01) is fired by the
+runner itself. Every `ESCUREL_RUNNER_SCHEDULE_TICK` (default 30s — the
+worst-case lateness) the runner re-reads `list_skills`, takes each
+schedule's **latest** window start at or before now, and captures one
+event for it:
+
+- id `sched:<skill>:<window start, RFC 3339 UTC>` (e.g.
+  `sched:digest:2026-11-13T06:15:00Z`), `label_skill: <skill>`,
+  `source: runner-schedule`, `provenance.schedule: {expr, window_start}`;
+- a workflow skill (`backend: {kind: workflow}`) is bound to its run page
+  `markdown/instances/workflow-run/<skill>-<YYYYMMDDTHHMMSSZ>.md` and
+  carries `provenance.workflow: {run, wf_skill, phase: invoke}`; any other
+  skill's trigger is unassigned (the harness picks the page).
+
+**Zones and daylight saving.** A `CRON_TZ=<zone>` schedule is matched in
+that zone's wall-clock time, but its id is always the window's **UTC**
+instant (`sched:digest:2026-11-13T06:15:00Z` for `CRON_TZ=Europe/Berlin 15
+7 * * 1-5`). It fires **once per local wall-clock time**: when the clocks
+fall back and 02:30 happens twice, only the first 02:30 is a window; when
+they spring forward and 02:30 does not exist, that day's window is the first
+instant after the gap (03:00 local). A schedule that must never shift should
+be written in UTC.
+
+The id is the whole idempotency story: a restart, an overlapping tick or a
+second runner computes the same id, and `capture_event` keeps the first.
+**No backfill, bounded catch-up**: a runner that was down for several
+windows fires at most the latest one when it returns, and only while that
+window is younger than `ESCUREL_RUNNER_SCHEDULE_GRACE` (default 15m; raised
+to the tick if set below it). A restart or deploy that spans a window still
+catches it; a 07:15 job does **not** run at 15:00 because the runner booted
+or the page was written then — it waits for tomorrow's 07:15.
+
+**Budget.** With `schedule_budget: {runs_per_day: N}`, before firing a
+window the runner counts the skill's other `sched:<skill>:` triggers
+(`source: runner-schedule`) whose window starts on the same UTC day,
+reading only events captured that day (`list_events { label_skill, since:
+<day start>, until: <next day start + grace> }`) — ordinary events under the
+label, however many, never spend the budget, and `sched:` ids are reserved
+for the runner's own identity, so nobody else can file one. At `N`
+it fires nothing and files instead an `escurel:run` `kind: system` event
+titled `run-skipped`, id `<trigger id>:skipped`, body `{reason: "budget",
+runs_per_day, skill, trigger_event_id, window_start}` — an exhausted
+budget is visible, never silence. A malformed budget (`runs_per_day: 0`, a
+string, no count) fails closed: no window fires, each files the same
+record with `reason: "invalid_budget"`. Several runners on one tenant each check
+and then capture, so on a boundary they can overshoot the cap by up to one
+trigger each: the budget is a cost guard, not an exact quota (accepted).
+
+**An unreadable `schedule:`** (a non-string, an unknown `CRON_TZ=` zone, a
+malformed cron such as `15 7 * * Mo-Fr`) is never silent: `list_skills`
+carries it as written with `schedule_invalid: true`, no window fires, and
+the runner files one `escurel:run` `run-skipped` with id
+`sched:<skill>:invalid:<16 hex of sha256(expr)>` and body `{reason:
+"invalid_schedule", skill, schedule, error}` — one per expression, however
+many ticks, restarts or runners; fixing the expression stops it.
+
+`ESCUREL_RUNNER_LINT_INTERVAL` still works: it adds a synthetic `lint`
+entry (epoch-aligned windows of that length) to the same loop, keeping the
+old lint tick's ids (`lint-<tenant>-<window>`), run page
+(`workflow-run/lint-<window>`) and `source: runner-lint-tick`, so an
+upgrade does not fire the current window twice. Its grace is its interval,
+so every lint window fires, as before.
+
+## Agent profiles: who a run executes as
+
+An ordinary event run (not a workflow step, not a chat turn) may run as an
+**agent profile** (references/01, *Agent profiles*). The runner picks it:
+
+1. the event's `provenance.agent: "[[agent::x]]"`, when `x` lists the run's
+   skill (otherwise the request is ignored, logged);
+2. else the skill page's `agent: "[[agent::x]]"` default — when that agent
+   is missing or does not list the skill the run is **refused** (a permanent
+   failure, `dead_letter`, `run-finished.error` naming the agent), never run
+   with the runner's own token in its place;
+3. else no agent: unchanged behaviour (`agent:<skill>`, admin unless
+   `ESCUREL_RUNNER_AGENT_NARROW=1`).
+
+A page that could not be READ (the gateway did not answer, refused the
+runner's bearer, …) is not a missing one: the runner retries the read with
+the run's backoff up to its attempts cap, and if the skill or agent page
+stays unreadable the run ends `failed` with `reason: agent_unreadable`
+(retriable — the poller re-drives the event) before any token is minted. It
+never runs without the skill's default agent, and never dead-letters
+claiming the agent does not exist.
+
+With an agent, its `harness:` / `model:` stand in for the skill page's (same
+allow-lists — an agent naming a harness outside `ESCUREL_RUNNER_HARNESS_ALLOW`
+is a refused run), its `max_concurrent` caps how many of its runs this runner
+executes at once (a run waiting for its agent's slot holds no global
+`ESCUREL_RUNNER_MAX_HARNESS_PROCS` permit — it takes that only once the agent
+admits it), the harness is offered only the tools in its
+`scopes.tools`, and the run's token is minted as the agent — `escurel:agent`
+plus the skill's write groups, never admin, with the `agent` claim the
+gateway enforces (references/08). A run whose write falls outside the
+agent's `scopes.write` sees it refused with `agent_scope_denied`; the call is
+on `get_run_tool_calls` as `rejected`, and the echo harness fails the run on
+it. A runner on a static `ESCUREL_RUNNER_TOKEN` cannot mint, so an agent run
+there fails rather than writing as the runner. Crash recovery resolves the
+agent through the same function as a fresh run (`resolve_run_agent`: the
+event's `provenance.agent`, then the skill's default): a reconciled run's
+`run-finished` names that agent and skill, and a reset run is re-driven from
+the event by the poller like any other.
+
+### Operator walkthrough: a weekday digest that runs as its own agent
+
+The path a first operator takes, in order — each step is where it usually
+goes wrong.
+
+1. **A minting runner.** Agent runs are minted as the agent, so the runner
+   needs the signing identity (`ESCUREL_RUNNER_AUTH_ISSUER`,
+   `ESCUREL_RUNNER_AUTH_SIGNING_KEY`, `ESCUREL_RUNNER_AUTH_KID`) and **no**
+   `ESCUREL_RUNNER_TOKEN` (a static token wins, cannot mint, and every
+   agent run dead-letters). Put the agent's harness in
+   `ESCUREL_RUNNER_HARNESS_ALLOW` and its model in `ESCUREL_RUNNER_MODEL_ALLOW`
+   (docs/deploy/env.md); outside them the run is refused, not substituted.
+2. **The agent page, as an admin** (only `escurel:admin` may write one):
+   `markdown/instances/agent/digest-bot.md` with `harness: claude`,
+   `model: <id>`, `skills: ["[[skill::digest]]"]`, and the narrowest
+   `scopes.tools` / `scopes.write` that do the job (references/01).
+3. **The skill page.** `agent: "[[agent::digest-bot]]"`, an `acl:` that
+   grants `create` / `update` to the groups the run writes as (the run's
+   token carries the skill's write groups — not admin), and
+   `schedule: "CRON_TZ=Europe/Berlin 15 7 * * 1-5"` with
+   `schedule_budget: {runs_per_day: 1}`.
+4. **`validate` both pages** before writing them: `schedule_invalid`,
+   `schedule_budget_invalid` and the agent codes are errors there, but a
+   write is not refused for them. `list_skills` then shows the schedule —
+   with no `schedule_invalid` beside it.
+5. **Check the first run** after 07:15 Berlin: the trigger is
+   `sched:digest:<the UTC instant>` under `label_skill: digest`; its
+   `run-finished` (`list_events {label_skill: "escurel:run"}`) has
+   `provenance.runner.agent: "digest-bot"` and `body.status: processed`. No
+   run, but an `escurel:run` `run-skipped`? Its `reason` says why
+   (`budget`, `invalid_budget`, `invalid_schedule`). A `dead_letter` naming
+   the agent means step 1 or 2.
 
 ## Chat runs (`provenance.chat_group_id`)
 
@@ -559,8 +735,9 @@ kind of listing is refused as invalid.
 Every `/mcp` call made with a run-bound bearer — the runner's per-run
 agent token, or one from `mint_agent_token` — is recorded on the gateway
 in `run_tool_calls`: the tool, its status — `ok`, `rejected` (the gateway
-answered `ok: false`, e.g. a refused write) or `error` (a JSON-RPC error,
-with its `data.code`) — duration, request and response sizes in bytes, the subject
+answered `ok: false`, e.g. a refused write; `error_code` is its first
+issue's code, such as `agent_scope_denied` or `forbidden`) or `error` (a
+JSON-RPC error, with its `data.code` as `error_code`) — duration, request and response sizes in bytes, the subject
 and the time, plus (`ESCUREL_TOOLCALL_DETAIL=summary`, the default) `args_summary` and
 `result_summary`: a bounded (2 KB), redacted summary of what was asked and what came
 back or why it failed — identifying values (page ids, skills, filters) are kept,
@@ -593,6 +770,60 @@ runner's lines for a run and every gateway line it caused — including
 the runner's own bookkeeping calls, which carry no run claim. The header
 is log correlation only: authorisation, lineage stamping and
 `run_tool_calls` read the token's `run_id` claim, never the header.
+
+## Run transcripts
+
+What the agent itself did — every tool call, its result, what it said, what
+went wrong — is kept per run (#822), so "why did the agent set this field?"
+is answered by replaying the run, not by reading runner logs. Each harness
+adapter normalises its own stream into records:
+
+| harness | source |
+|---|---|
+| `claude` | stream-json: `tool_use` → `tool_call`, `tool_result` → `tool_result` (`error` when `is_error`), assistant text → `message`, a failed `result` → `error` |
+| `codex` | `--json` events: MCP tool-call items → `tool_call` (+ `tool_result` / `error` from the item), `agent_message` → `message`, error events → `error` |
+| `gemini`, `gemini-vertex` | its in-process turns: each function call, its gateway answer, the model's text, and a call refused before the wire |
+| `echo` | the lines of `ESCUREL_ECHO_TRANSCRIPT` (tests script the stream with it) |
+| `agy`, `muse`, `delegate`, `alibaba`, `hetzner`, `openai-compatible` | none yet — `run-finished.transcript` stays `null` |
+
+A record is `{ts, attempt, kind, name?, args_digest?, summary}`: `kind` is
+`tool_call` / `tool_result` / `message` / `error`; arguments are never
+stored, only `args_digest` (`sha256:` of the canonical, key-sorted args
+JSON — the same arguments always digest the same); `summary` is at most 200
+characters, scrubbed of credentials before it is cut: `Bearer …`, JWTs,
+vendor keys (`sk-…`, `AKIA…`/`ASIA…`, `ghp_…`/`github_pat_…`, `AIza…`,
+`xoxb-…`, `AccountKey=…`), every secret-ish `key=value` / `key: value` /
+`"key":"value"` anywhere in the text (compact JSON included; a JSON summary
+is scrubbed by key), DSN passwords, private-key blocks, and the run's own
+bearer. Every attempt's records are kept, in order, each with its `attempt`;
+a run keeps at most 4000 (a final `error` record says how many it dropped).
+
+After the last attempt the runner stores them as JSONL with
+`put_run_transcript` — with a token for exactly that run when it mints, its
+own admin bearer when it runs on a static one — and records
+`run-finished.transcript {records, bytes, sha256}`. The gateway keys the
+bytes by the run (`transcripts/<run_id>.jsonl` in the tenant's lane store,
+never the content-addressed `blobs/` that documents use), and a run's
+transcript is written ONCE: the same bytes again are a no-op, different
+bytes are refused `transcript_exists`. A failed upload never
+fails the run: it is logged and counted
+(`escurel_runner_run_events_failed_total{kind="transcript"}`), and
+`transcript` is `null`. A runner on a static **agent** bearer cannot store
+transcripts (the gateway accepts only the run's own bearer or a non-run admin one).
+
+Replay with `fetch_blob { run_id }` (or `escurel run transcript --run <id>`):
+whoever may read the run's `run-finished` event may read its transcript. The
+bytes come from the run's own key, never from anything the event body
+names; `run:<id>:*` event ids are reserved for the runner's own identity
+(admin, not a machine caller), so a member or a harness cannot pre-file a
+run's `run-finished`.
+Transcripts are deleted `ESCUREL_RUN_TRANSCRIPT_RETENTION_DAYS` after they
+were stored (gateway, default 90; `0` keeps them forever); after that the read
+answers `transcript_expired`. There is no per-tenant override yet. Retention
+deletes transcript keys and nothing else. The retention clock lives in the
+tenant's DuckDB; after an index rebuild the sweep adopts each transcript key
+it finds unregistered as stored at that moment, so it expires one window
+later rather than never.
 
 ## Reading a lineage: `list_lineage`
 

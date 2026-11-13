@@ -11,11 +11,14 @@
 //! run that made progress, so every writer returns the client error for
 //! the caller to log and count, never to act on.
 //!
+//! A human steering the run (#820) adds one `run-inject` per message.
+//!
 //! Event ids are deterministic (`run:<run_id>:started`, `:attempt:<n>`,
-//! `:finished`), so re-emission — a retry, recovery after a crash — is
+//! `:inject:<n>`, `:finished`), so re-emission — a retry, recovery after a crash — is
 //! idempotent through `capture_event`'s first-writer-wins.
 
 use escurel_client::{CaptureEventRequest, Client, Error, ListEventsRequest};
+use escurel_types::run_record::{RunFinishedBody, RunUsage, RunnerProvenance, TranscriptSummary};
 use serde_json::{Value, json};
 
 /// The label every run lifecycle event carries.
@@ -28,6 +31,12 @@ pub struct RunEventCtx {
     pub root_event_id: String,
     /// The event this run was triggered by.
     pub trigger_event_id: String,
+    /// The triggering event's label — the skill the run works for, which
+    /// `usage_report` groups by. `None` when unknown (crash recovery).
+    pub skill: Option<String>,
+    /// The agent profile the run executes as (#823), when it has one —
+    /// what `usage_report`'s `agent` grouping reads.
+    pub agent: Option<String>,
     /// The run that emitted the trigger, for a cascade hop.
     pub parent_run_id: Option<String>,
     pub depth: u32,
@@ -96,34 +105,29 @@ pub fn now_ts() -> String {
 
 impl RunEventCtx {
     fn provenance(&self, extra: Value) -> Value {
-        let mut runner = json!({
-            "run_id": self.run_id,
-            "root_event_id": self.root_event_id,
-            "event_id": self.trigger_event_id,
-            "depth": self.depth,
-            "lineage_path": self.lineage_path,
-            "harness": self.harness,
-            "max_attempts": self.max_attempts,
-        });
-        for (key, value) in [
-            (
-                "parent_run_id",
-                self.parent_run_id.as_deref().map(Value::from),
-            ),
-            ("trace_id", self.trace_id.as_deref().map(Value::from)),
-            ("model", self.model.as_deref().map(Value::from)),
-            (
-                "target_page_id",
-                self.target_page_id.as_deref().map(Value::from),
-            ),
-        ] {
-            if let Some(v) = value {
-                runner[key] = v;
-            }
+        let mut rest = serde_json::Map::new();
+        rest.insert("event_id".to_owned(), json!(self.trigger_event_id));
+        rest.insert("depth".to_owned(), json!(self.depth));
+        rest.insert("lineage_path".to_owned(), json!(self.lineage_path));
+        rest.insert("harness".to_owned(), json!(self.harness));
+        rest.insert("max_attempts".to_owned(), json!(self.max_attempts));
+        if let Some(t) = &self.trace_id {
+            rest.insert("trace_id".to_owned(), json!(t));
         }
         if let Some(m) = &self.manual {
-            runner["manual"] = m.clone();
+            rest.insert("manual".to_owned(), m.clone());
         }
+        let runner = RunnerProvenance {
+            run_id: Some(self.run_id.clone()),
+            root_event_id: Some(self.root_event_id.clone()),
+            skill: self.skill.clone(),
+            agent: self.agent.clone(),
+            model: self.model.clone(),
+            target_page_id: self.target_page_id.clone(),
+            parent_run_id: self.parent_run_id.clone(),
+            rest,
+        };
+        let mut runner = serde_json::to_value(runner).unwrap_or_else(|_| json!({}));
         if let Some(obj) = extra.as_object() {
             for (k, v) in obj {
                 runner[k] = v.clone();
@@ -197,8 +201,31 @@ impl RunEventCtx {
         .await
     }
 
+    /// `run-inject`: the `n`th message a human (`requested_by`) sent the live
+    /// session. The text is recorded whole — it is the requester's own
+    /// message, and auditing who steered a run with what is the point.
+    ///
+    /// # Errors
+    /// As [`Self::emit_started`].
+    pub async fn emit_inject(
+        &self,
+        client: &Client,
+        n: u32,
+        text: &str,
+        requested_by: &str,
+    ) -> Result<(), Error> {
+        self.write(
+            client,
+            &format!("inject:{n}"),
+            "run-inject",
+            json!({ "n": n, "text": text, "bytes": text.len(), "requested_by": requested_by }),
+            json!({ "injected_by": requested_by }),
+        )
+        .await
+    }
+
     /// `run-finished` with the ledger's terminal, the harness's last summary
-    /// and tool-call count, and the run's final plan (the newest
+    /// and tool-call count, the stored transcript, and the run's final plan (the newest
     /// `run-progress` snapshot the agent reported, read back best-effort).
     ///
     /// # Errors
@@ -212,7 +239,8 @@ impl RunEventCtx {
         summary: &str,
         tool_calls: u32,
         autonomy: Option<&str>,
-        usage: Option<Value>,
+        usage: Option<RunUsage>,
+        transcript: Option<TranscriptSummary>,
     ) -> Result<(), Error> {
         let (status, produced, held, reason) = match finish {
             RunFinish::Processed { produced, held } => ("processed", produced.clone(), *held, None),
@@ -224,27 +252,25 @@ impl RunEventCtx {
             RunFinish::Planned => ("planned", None, false, None),
         };
         let plan = self.latest_plan(client).await;
-        let mut body = json!({
-            "status": status,
-            "attempts": attempts,
-            "held": held,
-            "summary": summary,
-            "tool_calls": tool_calls,
-            "produced_instance": produced.as_ref().map(|(p, _)| p.clone()),
-            "produced_version": produced.as_ref().map(|(_, v)| v.clone()),
-            "plan": plan,
-            // `{input_tokens, output_tokens, cost_usd, model}` summed over the
-            // attempts (P3-4); `null` when no attempt reported any.
-            "usage": usage,
-        });
-        if let Some(r) = reason {
-            body["reason"] = json!(r);
-        }
-        if let RunFinish::Failed { error: Some(e), .. }
-        | RunFinish::DeadLetter { error: Some(e), .. } = finish
-        {
-            body["error"] = json!(e);
-        }
+        let error = match finish {
+            RunFinish::Failed { error, .. } | RunFinish::DeadLetter { error, .. } => error.clone(),
+            _ => None,
+        };
+        let body = RunFinishedBody {
+            status: status.to_owned(),
+            attempts,
+            held,
+            summary: summary.to_owned(),
+            tool_calls,
+            produced_instance: produced.as_ref().map(|(p, _)| p.clone()),
+            produced_version: produced.as_ref().map(|(_, v)| v.clone()),
+            plan,
+            usage,
+            transcript,
+            reason,
+            error,
+        };
+        let body = serde_json::to_value(body).unwrap_or_else(|_| json!({}));
         let mut extra = json!({ "attempt": attempts });
         if let Some(a) = autonomy {
             extra["autonomy"] = json!(a);

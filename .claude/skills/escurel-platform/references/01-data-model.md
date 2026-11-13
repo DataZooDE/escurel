@@ -38,13 +38,28 @@ optional; reported on `list_skills`, linted by `validate`):
 - `summary: <one line>` — the purpose a skill list shows. Missing is a
   warning (`summary_missing`; the workbench shows `description` instead);
   over 200 characters is an error (`summary_too_long`).
-- `harness: echo | claude | codex | agy | muse | gemini | delegate` — the
-  adapter the skill asks to run on; anything else is `harness_unknown`.
+- `harness: echo | claude | codex | agy | muse | gemini | gemini-vertex |
+  delegate | alibaba | hetzner | openai-compatible` — the adapter the skill
+  asks to run on (the runner's own list, `escurel_types::harness`); anything
+  else is `harness_unknown`.
   The runner honours it within its own allow-list.
 - `model: <model id>` — the model the skill's runs use instead of the
   runner's configured one (e.g. `gemini-3.5-flash-lite`). A non-string or
   blank value is `model_invalid`. The runner honours it only within
   `ESCUREL_RUNNER_MODEL_ALLOW`; outside it the run fails closed.
+- `schedule: "<cron>"` — the runner fires the skill on its own, once per window (#819). A 5-field
+  cron (minute granularity) or 6-field (leading seconds), optionally prefixed `CRON_TZ=<IANA zone> `
+  (`schedule: "CRON_TZ=Europe/Berlin 15 7 * * 1-5"`); without the prefix it is read in **UTC**. A
+  non-string, an unknown zone or a malformed expression is an error (`schedule_invalid`) — and,
+  since validate is not a write gate, it also fails closed: it reaches `list_skills` as written with
+  `schedule_invalid: true`, nothing fires, and the runner files ONE `run-skipped { reason:
+  "invalid_schedule", skill, schedule, error }` per expression (references/11).
+  `schedule_budget: {runs_per_day: <positive integer>}` caps the triggers whose window starts on one
+  UTC day; malformed is an error (`schedule_budget_invalid`), an unknown sub-key or a budget without a
+  `schedule:` is a warning under the same code. A malformed budget fails CLOSED at the runner: it
+  reaches `list_skills` as `{runs_per_day: 0, invalid: true}` and the runner fires no window, filing
+  `run-skipped { reason: "invalid_budget" }` for each instead — never an uncapped schedule. Both reach `list_skills` as written. How the windows
+  fire (no backfill, the skipped record) is in references/11 *Scheduled triggers*.
 - `generated:`, `verified:`, `status:`, `stale_after:`, `sources:` — the OKF provenance keys, all optional and
   lint-only (a malformed one is a warning). They reach `list_skills` as written; `stale_after` is an
   RFC 3339 instant or an ISO-8601 duration (`P90D`) counted from `verified`, and a client decides what
@@ -491,6 +506,70 @@ that loads it. Worked example: `examples/crm-demo/skills/escurel.md`.
 Do not confuse it with *this* `escurel-platform` skill: the meta-skill is
 content inside a tenant for runtime agents; this skill is developer
 documentation for building the app.
+
+### System skills: `escurel` and `agent`
+
+The meta-skill is one of the **system skills** every served tenant gets at
+boot (`Indexer::ensure_system_skills`); the other is **`agent`** — agent
+profiles (§Agent profiles below). Both are installed only when the tenant has
+no skill page with that id, so a tenant's own page is never clobbered (a
+tenant-authored `agent` page is kept and logged). `list_skills` therefore
+always shows both — count them when you assert on a fresh tenant's catalogue.
+
+`agent` is **admin-only authority**: its skill page, any skill page claiming
+`id: agent`, and every page under `markdown/instances/agent/` are writable by
+`escurel:admin` alone — in every `ESCUREL_WRITE_ACL` mode, `off` and `log`
+included. That is enforced by the write ACL independently of
+the page's own `acl:` block, so neither a widened `acl_defaults`, nor an
+admin's edit of the skill page, nor an instance `acl:` opens agents to
+members (`instance_acl: false` on the shipped page, too).
+
+### Agent profiles: `agent` instances and a skill's `agent:` default
+
+An **agent profile** (#823) is an instance of the `agent` system skill — the
+identity, harness and least-privilege scopes a run executes under, separate
+from the skill whose body is the run's instructions:
+
+```yaml
+# markdown/instances/agent/scribe.md   (admin-written only)
+kind: instance
+skill: agent
+id: scribe
+harness: claude                    # within ESCUREL_RUNNER_HARNESS_ALLOW
+model: claude-sonnet-4             # within ESCUREL_RUNNER_MODEL_ALLOW
+skills: ["[[skill::note]]", "[[skill::triage]]"]   # what it may run
+scopes:
+  tools: [search, expand, update_page, assign_event]  # absent = no tool limit
+  write: ["markdown/instances/note/*"]               # absent = no extra write limit
+max_concurrent: 2                  # runs of this agent at once, per runner
+```
+
+`write` entries are page-id globs: `*` stays inside one path segment, `**`
+crosses them, `?` is one character; a glob carries at most four `**` (one
+with more matches nothing, and `validate` flags it `agent_scopes_invalid`).
+`tools` entries must be tools the gateway declares — `validate` flags an
+unknown name (`serach`) as `agent_scopes_invalid` rather than letting it
+mint an agent refused everything. Scopes only ever **narrow**: the skill's
+own `acl:` grants and the token's skill confinement still apply.
+
+A skill names its default agent with **`agent: "[[agent::scribe]]"`** (quote
+it; an unquoted `[[…]]` is accepted too). An event may ask for one with
+`provenance.agent: "[[agent::x]]"` — honoured only when that agent lists the
+event's skill, else the skill's default applies. A skill whose default agent
+is missing or does not list it is **refused**, never run with a broader token.
+
+`validate` grades both: on an agent page `agent_harness_unknown`,
+`agent_model_invalid`, `agent_skills_invalid`, `agent_scopes_invalid` (a
+malformed scope grants nothing, so it is an error) and
+`agent_max_concurrent_invalid` are **errors**; on a skill page a malformed
+`agent:` is `agent_invalid` (error), an agent with no page is
+`agent_unresolved` and one that does not list the skill is
+`agent_skill_not_listed` (warnings — the skill's runs are refused until fixed).
+`validate` is not a write gate, so the runner fails closed on its own: an
+agent whose `max_concurrent:` is present but not a positive whole number
+(`0`, `"2"`, `-1`) has its runs **refused** (dead-lettered, the error naming
+the key), never run uncapped.
+How the token and the gateway enforce it: references/08.
 
 ## Pages with rendered views: always carry a text alternative
 

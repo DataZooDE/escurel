@@ -744,3 +744,75 @@ async fn admin_rejects_agent_token() {
     );
     h.process.shutdown().await;
 }
+
+/// #821: `run usage` rolls a filed `run-finished` up, and `event list
+/// --since/--until` windows the run label — both through the binary.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn run_usage_and_a_windowed_event_list() {
+    let h = start().await;
+    for (run, at, cost) in [
+        ("r1", "2026-10-01T09:00:00Z", "0.25"),
+        ("r2", "2026-09-01T09:00:00Z", "4.0"),
+    ] {
+        let body = format!(
+            r#"{{"status":"processed","usage":{{"input_tokens":7,"output_tokens":3,"cost_usd":{cost},"model":"m"}}}}"#
+        );
+        let provenance = format!(r#"{{"runner":{{"run_id":"{run}","skill":"customer"}}}}"#);
+        admin(
+            &h,
+            v(&[
+                "event",
+                "capture",
+                "--source",
+                "escurel-runner",
+                "--mime",
+                "application/json",
+                "--label-skill",
+                "escurel:run",
+                "--title",
+                "run-finished",
+                "--kind",
+                "system",
+                "--event-id",
+                &format!("run:{run}:finished"),
+                "--at",
+                at,
+                "--body",
+                &body,
+                "--provenance",
+                &provenance,
+            ]),
+        )
+        .await;
+    }
+    let window = [
+        "--since",
+        "2026-10-01T00:00:00Z",
+        "--until",
+        "2026-11-01T00:00:00Z",
+    ];
+
+    let mut args = v(&["run", "usage", "--group-by", "skill,model"]);
+    args.extend(v(&window));
+    let report = json(&admin(&h, args).await);
+    assert_eq!(
+        report["rows"],
+        serde_json::json!([{ "group": { "skill": "customer", "model": "m" }, "runs": 1,
+            "by_status": { "processed": 1 }, "input_tokens": 7, "output_tokens": 3,
+            "cost_usd": 0.25, "priced_runs": 1, "unpriced_runs": 0 }]),
+        "{report}"
+    );
+    assert_eq!(report["total"]["runs"], 1, "{report}");
+
+    let mut args = v(&["event", "list", "--label", "escurel:run"]);
+    args.extend(v(&window));
+    let listed = json(&admin(&h, args).await);
+    let ids: Vec<&str> = listed["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| e["event_id"].as_str().unwrap())
+        .collect();
+    assert_eq!(ids, ["run:r1:finished"], "{listed}");
+    h.process.shutdown().await;
+}

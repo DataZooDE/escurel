@@ -17,10 +17,7 @@
 //! Bundling and signing live server-side (`escurel-server/src/pack.rs`);
 //! this module never sees the tarball or the secret.
 
-use std::sync::LazyLock;
-
 use escurel_storage::Key;
-use regex::Regex;
 
 use crate::indexer::{Indexer, IndexerError};
 
@@ -44,57 +41,28 @@ pub struct PackSubscription {
     pub signature: String,
 }
 
-/// A DSN carrying inline credentials (`scheme://user:pass@host/…`,
-/// including the empty-password `user:@host` shape — agy review). The
-/// one shape REQ-SQL-05 already banned from markdown; packs ban it
-/// again at the boundary, fail-closed.
-static DSN_WITH_CREDENTIALS: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"[A-Za-z][A-Za-z0-9+.-]*://[^/\s:@]+:[^/\s@]*@").expect("static regex compiles")
-});
-
-/// A PEM/PGP private-key block header, case-insensitive, with or
-/// without the PGP `… BLOCK` suffix (agy review: the strict
-/// `KEY-----` anchor missed `-----BEGIN PGP PRIVATE KEY BLOCK-----`).
-static PRIVATE_KEY_BLOCK: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?i)-----BEGIN [A-Z0-9 ]*PRIVATE KEY( BLOCK)?-----")
-        .expect("static regex compiles")
-});
-
-/// A key-value connection-string credential (`Password=hunter2;`,
-/// `pwd=…`). Restricted to `=`-style assignments so ordinary prose and
-/// YAML documentation (`token: set this via the registry`) doesn't
-/// false-positive; the promotion gate extends the deny set further.
-static KV_PASSWORD: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r#"(?i)\b(password|passwd|pwd)\s*=\s*[^\s;"']+"#).expect("static regex compiles")
-});
-
 /// Fail-closed content-hygiene check for anything leaving the node in a
-/// pack: `Some(reason)` when `content` must NOT be exported. The deny
-/// set is deliberately small and deterministic (a false positive is a
-/// refused export an operator can fix; a false negative is a leaked
-/// credential) and grows with the promotion gate.
+/// pack: `Some(reason)` when `content` must NOT be exported. The deny set
+/// is [`escurel_types::redact::pack_secret`] — one definition of a
+/// credential shape for the pack gate and every scrubber.
 #[must_use]
 pub fn pack_scrub_rejection(path: &str, content: &str) -> Option<String> {
-    if DSN_WITH_CREDENTIALS.is_match(content) {
-        return Some(format!(
+    use escurel_types::redact::PackSecret;
+    Some(match escurel_types::redact::pack_secret(content)? {
+        PackSecret::DsnWithCredentials => format!(
             "pack_secret_detected: page `{path}` contains a DSN with inline \
              credentials; packs are secret-free (INV-SECRETFREE) — register \
              the source via the credential registry and reference it by name"
-        ));
-    }
-    if PRIVATE_KEY_BLOCK.is_match(content) {
-        return Some(format!(
+        ),
+        PackSecret::PrivateKeyBlock => format!(
             "pack_secret_detected: page `{path}` contains a PEM/PGP private-key \
              block; packs are secret-free (INV-SECRETFREE)"
-        ));
-    }
-    if KV_PASSWORD.is_match(content) {
-        return Some(format!(
+        ),
+        PackSecret::KvPassword => format!(
             "pack_secret_detected: page `{path}` contains a `password=`-style \
              connection-string credential; packs are secret-free (INV-SECRETFREE)"
-        ));
-    }
-    None
+        ),
+    })
 }
 
 impl Indexer {

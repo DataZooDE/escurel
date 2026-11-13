@@ -9,6 +9,7 @@ import '../theme/app_theme.dart';
 import '../widgets/kind_chip.dart';
 import '../widgets/wikilink_pill.dart';
 import 'backend_pane.dart';
+import 'page_cost_badge.dart';
 import 'page_form.dart';
 import 'shadow_pane.dart';
 
@@ -125,6 +126,8 @@ class _PageView extends ConsumerWidget {
                   style: text.bodySmall?.copyWith(color: kOnSurfaceVariant),
                 ),
               ),
+              PageCostBadge(pageId: page.pageId),
+              const SizedBox(width: 8),
               if (editable && !editing)
                 Semantics(
                   label: PageFormKeys.editPage,

@@ -9,7 +9,13 @@ import page1 from '../unit/fixtures/lineage/run-tool-calls-page1.json';
 import page2 from '../unit/fixtures/lineage/run-tool-calls-page2.json';
 import { connectRunWebview } from '../../webview/run/main';
 import type { EscurelRunDetail } from '../../webview/run/run-detail';
-import { recordedLastPage, recordedRunView } from './run-fixtures';
+import {
+  costedRun,
+  liveSteerableRun,
+  recordedLastPage,
+  recordedRunView,
+  transcriptRecords,
+} from './run-fixtures';
 
 async function render(view: RunView = recordedRunView): Promise<EscurelRunDetail> {
   const el = await fixture<EscurelRunDetail>(
@@ -686,5 +692,279 @@ describe('cancelling a run asks first, inline', () => {
     btn.click();
     await el.updateComplete;
     expect(el.shadowRoot!.querySelector('.confirm')).to.equal(null);
+  });
+});
+
+describe('<escurel-run-detail> cost, transcript and steering', () => {
+  const capture = (el: Element) => {
+    const sent: RunWebviewToHost[] = [];
+    el.addEventListener('escurel-message', (event) =>
+      sent.push((event as CustomEvent<RunWebviewToHost>).detail),
+    );
+    return sent;
+  };
+  const tab = (el: EscurelRunDetail, name: string) =>
+    qa(el, '[role="tab"]').find((t) => text(t) === name) as HTMLButtonElement;
+
+  it('shows what the run cost as a chip with words a screen reader can read', async () => {
+    const el = await render(costedRun);
+    const chip = q(el, '.cost-chip') as HTMLElement;
+    expect(text(chip)).to.equal('12.4k in · 860 out · $0.042');
+    expect(chip.getAttribute('aria-label')).to.equal(
+      'Cost: 12,400 input tokens, 860 output tokens, $0.042, model claude-sonnet-4',
+    );
+    expect(chip.title).to.contain('claude-sonnet-4');
+  });
+
+  it('draws no cost chip for a run that reported no usage', async () => {
+    const el = await render(recordedRunView);
+    expect(q(el, '.cost-chip') === null).to.equal(true);
+  });
+
+  it('asks for the transcript only when its tab is first opened, and says so while it loads', async () => {
+    const el = await render(costedRun);
+    const sent = capture(el);
+    expect(tab(el, 'Details').getAttribute('aria-selected')).to.equal('true');
+    expect(sent).to.deep.equal([]);
+    tab(el, 'Transcript').click();
+    await el.updateComplete;
+    expect(sent).to.deep.equal([{ type: 'load-transcript' }]);
+    expect(tab(el, 'Transcript').getAttribute('aria-selected')).to.equal('true');
+    const panel = q(el, '[role="tabpanel"] escurel-run-transcript') as HTMLElement & {
+      updateComplete: Promise<unknown>;
+    };
+    await panel.updateComplete;
+    expect(text(panel.shadowRoot!.querySelector('[role="status"]'))).to.equal(
+      'Loading the transcript…',
+    );
+    tab(el, 'Details').click();
+    tab(el, 'Transcript').click();
+    await el.updateComplete;
+    expect(sent).to.have.length(1);
+  });
+
+  it('moves between the tabs with the arrow keys', async () => {
+    const el = await render(costedRun);
+    const details = tab(el, 'Details');
+    details.focus();
+    details.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
+    await el.updateComplete;
+    expect(tab(el, 'Transcript').getAttribute('aria-selected')).to.equal('true');
+    expect(el.shadowRoot!.activeElement === tab(el, 'Transcript')).to.equal(true);
+    expect(tab(el, 'Details').tabIndex).to.equal(-1);
+  });
+
+  it('replays the transcript in order with kind, name, summary, time and attempt', async () => {
+    const el = await render(costedRun);
+    tab(el, 'Transcript').click();
+    el.transcript = { status: 'ready', records: transcriptRecords };
+    await el.updateComplete;
+    const panel = q(el, 'escurel-run-transcript')!;
+    const rows = [...panel.shadowRoot!.querySelectorAll('.record')];
+    expect(rows).to.have.length(5);
+    expect(text(rows[1]!)).to.contain('Tool call');
+    expect(text(rows[1]!)).to.contain('expand');
+    expect(text(rows[1]!)).to.contain('+1.5 s');
+    expect(text(rows[3]!)).to.contain('Error');
+    expect(rows[3]!.classList.contains('error')).to.equal(true);
+    expect(text(rows[4]!)).to.contain('attempt 2');
+    expect(text(rows[4]!)).to.contain('+1 min 5 s');
+  });
+
+  it('filters the replay by kind with pressed toggle buttons', async () => {
+    const el = await render(costedRun);
+    tab(el, 'Transcript').click();
+    el.transcript = { status: 'ready', records: transcriptRecords };
+    await el.updateComplete;
+    const panel = q(el, 'escurel-run-transcript')! as HTMLElement & {
+      updateComplete: Promise<unknown>;
+    };
+    const toggle = (name: string) =>
+      [...panel.shadowRoot!.querySelectorAll('.kind-filter')].find((b) =>
+        text(b).startsWith(name),
+      ) as HTMLButtonElement;
+    expect(text(toggle('Messages'))).to.equal('Messages (2)');
+    expect(toggle('Messages').getAttribute('aria-pressed')).to.equal('true');
+    toggle('Messages').click();
+    toggle('Results').click();
+    await panel.updateComplete;
+    const shown = [...panel.shadowRoot!.querySelectorAll('.record')].map((r) =>
+      r.getAttribute('data-kind'),
+    );
+    expect(shown).to.deep.equal(['tool_call', 'error']);
+    expect(toggle('Messages').getAttribute('aria-pressed')).to.equal('false');
+  });
+
+  it('steps through the replay one record at a time, by button and by keyboard', async () => {
+    const el = await render(costedRun);
+    tab(el, 'Transcript').click();
+    el.transcript = { status: 'ready', records: transcriptRecords };
+    await el.updateComplete;
+    const panel = q(el, 'escurel-run-transcript')! as HTMLElement & {
+      updateComplete: Promise<unknown>;
+    };
+    const button = (name: string) =>
+      [...panel.shadowRoot!.querySelectorAll('button')].find(
+        (b) => text(b) === name,
+      ) as HTMLButtonElement;
+    button('Step through').click();
+    await panel.updateComplete;
+    const visible = () => panel.shadowRoot!.querySelectorAll('.record').length;
+    expect(visible()).to.equal(1);
+    expect(text(panel.shadowRoot!.querySelector('.step-status'))).to.equal('Step 1 of 5: Message');
+    button('Next').click();
+    await panel.updateComplete;
+    expect(visible()).to.equal(2);
+    expect(
+      panel.shadowRoot!.querySelector('.record[aria-current="step"]')?.getAttribute('data-kind'),
+    ).to.equal('tool_call');
+    const list = panel.shadowRoot!.querySelector('.records') as HTMLElement;
+    list.dispatchEvent(new KeyboardEvent('keydown', { key: 'End', bubbles: true }));
+    await panel.updateComplete;
+    expect(visible()).to.equal(5);
+    list.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowLeft', bubbles: true }));
+    await panel.updateComplete;
+    expect(visible()).to.equal(4);
+    expect(button('Next').getAttribute('aria-disabled')).to.equal(null);
+    button('Show all').click();
+    await panel.updateComplete;
+    expect(visible()).to.equal(5);
+    expect(panel.shadowRoot!.querySelector('.step-status') === null).to.equal(true);
+  });
+
+  it('says honestly why there is no transcript', async () => {
+    const el = await render(costedRun);
+    tab(el, 'Transcript').click();
+    for (const [status, message] of [
+      ['expired', 'This run’s transcript has been deleted: it is past the retention period.'],
+      ['absent', 'This run kept no transcript.'],
+      ['pending', 'The transcript is stored when the run finishes.'],
+    ] as const) {
+      el.transcript = { status, message };
+      await el.updateComplete;
+      const panel = q(el, 'escurel-run-transcript')!;
+      await (panel as unknown as { updateComplete: Promise<unknown> }).updateComplete;
+      expect(text(panel.shadowRoot!.querySelector('.transcript-empty'))).to.equal(message);
+    }
+  });
+
+  it('asks again for a transcript that was pending once the run has finished', async () => {
+    const el = await render({ ...costedRun, status: 'running', transcript: undefined });
+    const sent = capture(el);
+    tab(el, 'Transcript').click();
+    el.transcript = {
+      status: 'pending',
+      message: 'The transcript is stored when the run finishes.',
+    };
+    await el.updateComplete;
+    el.view = costedRun;
+    await el.updateComplete;
+    expect(sent.filter((m) => m.type === 'load-transcript')).to.have.length(2);
+  });
+
+  it('offers a steer box on a live run and sends the text exactly once', async () => {
+    const el = await render(liveSteerableRun);
+    const sent = capture(el);
+    const box = q(el, 'textarea.steer-text') as HTMLTextAreaElement;
+    expect(box.getAttribute('aria-label')).to.equal('Message for the running agent');
+    box.value = 'use the 2027 terms';
+    box.dispatchEvent(new Event('input'));
+    await el.updateComplete;
+    const send = q(el, '.steer-send') as HTMLButtonElement;
+    send.click();
+    send.click();
+    expect(sent).to.deep.equal([{ type: 'steer', text: 'use the 2027 terms' }]);
+    el.steerReply = { sent: true, message: 'Message sent. The agent reads it as its next turn.' };
+    await el.updateComplete;
+    expect(text(q(el, '.steer-reply'))).to.equal(
+      'Message sent. The agent reads it as its next turn.',
+    );
+    expect((q(el, 'textarea.steer-text') as HTMLTextAreaElement).value).to.equal('');
+  });
+
+  it('keeps the text when the runner did not take it, and says why', async () => {
+    const el = await render(liveSteerableRun);
+    const box = q(el, 'textarea.steer-text') as HTMLTextAreaElement;
+    box.value = 'please';
+    box.dispatchEvent(new Event('input'));
+    (q(el, '.steer-send') as HTMLButtonElement).click();
+    el.steerReply = {
+      sent: false,
+      message: 'This agent (codex) cannot take a message while it runs.',
+    };
+    await el.updateComplete;
+    expect(text(q(el, '.steer-reply'))).to.contain('cannot take a message');
+    expect(q(el, '.steer-reply')?.getAttribute('role')).to.equal('alert');
+    expect((q(el, 'textarea.steer-text') as HTMLTextAreaElement).value).to.equal('please');
+  });
+
+  it('refuses blank and oversized text before sending, in words', async () => {
+    const el = await render(liveSteerableRun);
+    const sent = capture(el);
+    const box = q(el, 'textarea.steer-text') as HTMLTextAreaElement;
+    box.value = 'x'.repeat(8193);
+    box.dispatchEvent(new Event('input'));
+    await el.updateComplete;
+    (q(el, '.steer-send') as HTMLButtonElement).click();
+    await el.updateComplete;
+    expect(sent).to.deep.equal([]);
+    expect(text(q(el, '.steer-problem'))).to.equal('The message is too long: at most 8 KiB.');
+    expect(box.getAttribute('aria-invalid')).to.equal('true');
+  });
+
+  it('sends with Ctrl+Enter', async () => {
+    const el = await render(liveSteerableRun);
+    const sent = capture(el);
+    const box = q(el, 'textarea.steer-text') as HTMLTextAreaElement;
+    box.value = 'go';
+    box.dispatchEvent(new Event('input'));
+    box.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', ctrlKey: true, bubbles: true }));
+    expect(sent).to.deep.equal([{ type: 'steer', text: 'go' }]);
+  });
+
+  it('explains instead of offering a box when the harness cannot take messages, and hides it when the run is over', async () => {
+    const el = await render({
+      ...liveSteerableRun,
+      harness: 'codex',
+      steer: { available: false, reason: 'The codex agent cannot take a message while it runs.' },
+    });
+    expect(q(el, 'textarea.steer-text') === null).to.equal(true);
+    expect(text(q(el, '.steer-unavailable'))).to.equal(
+      'The codex agent cannot take a message while it runs.',
+    );
+    el.view = { ...liveSteerableRun, status: 'processed', steer: undefined };
+    await el.updateComplete;
+    expect(q(el, '.steer') === null).to.equal(true);
+  });
+
+  it('lists the messages sent to the run, as written, with who sent them', async () => {
+    const el = await render(liveSteerableRun);
+    const rows = qa(el, '.injection');
+    expect(rows).to.have.length(1);
+    expect(text(rows[0]!)).to.contain('ops:jo');
+    expect((rows[0]!.querySelector('.injection-text') as HTMLElement).textContent).to.equal(
+      'use the 2027 terms,\nnot 2026',
+    );
+  });
+
+  it('routes transcript and steer replies from the host', async () => {
+    const api = { postMessage: (_m: RunWebviewToHost) => undefined };
+    const el = await fixture<EscurelRunDetail>(html`<escurel-run-detail></escurel-run-detail>`);
+    const disconnect = connectRunWebview(api, el);
+    try {
+      window.dispatchEvent(
+        new MessageEvent('message', {
+          data: { type: 'run-transcript', state: { status: 'ready', records: transcriptRecords } },
+        }),
+      );
+      window.dispatchEvent(
+        new MessageEvent('message', { data: { type: 'steer-result', sent: false, message: 'no' } }),
+      );
+      await el.updateComplete;
+      expect(el.transcript).to.deep.equal({ status: 'ready', records: transcriptRecords });
+      expect(el.steerReply).to.deep.equal({ sent: false, message: 'no' });
+    } finally {
+      disconnect();
+    }
   });
 });

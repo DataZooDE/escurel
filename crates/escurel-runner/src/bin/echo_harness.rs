@@ -10,6 +10,9 @@
 //!
 //! - **stdin**: a JSON [`escurel_runner_harness::HarnessTask`]
 //!   (`instructions`, `input`, `mcp_endpoint`, `allowed_tools`, `token`).
+//!   With [`ECHO_STDIN_TURNS_ENV`] set, stdin is a conversation instead
+//!   (#820): the task on the first line, then one JSON string per message a
+//!   human injected into the run; the fold note carries them.
 //! - **stdout**: a JSON [`escurel_runner_harness::HarnessOutcome`]
 //!   (`{ ok, status, summary, tool_calls, produced_instance? }`).
 //! - exit `0` on a clean run; non-zero with a stderr message on failure.
@@ -29,19 +32,62 @@
 #[path = "../echo_support/analysis.rs"]
 mod analysis;
 
-use std::io::Read;
+use std::io::{BufRead, Read};
 use std::process::ExitCode;
+use std::sync::Mutex;
 
-use escurel_runner_harness::{HarnessOutcome, HarnessStatus, HarnessTask, Usage};
+use escurel_runner_harness::{
+    ECHO_STDIN_TURNS_ENV, ECHO_TRANSCRIPT_ENV, HarnessOutcome, HarnessStatus, HarnessTask, Usage,
+};
 use serde_json::{Value, json};
+
+/// The messages injected into this run so far, in arrival order.
+static INJECTED: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+/// Read the task line, then collect injected turns in the background for as
+/// long as the run lasts; the runner closes stdin, or the process exits.
+fn read_conversation() -> std::io::Result<String> {
+    let mut stdin = std::io::BufReader::new(std::io::stdin());
+    let mut task = String::new();
+    stdin.read_line(&mut task)?;
+    std::thread::spawn(move || {
+        for line in stdin.lines() {
+            let Ok(line) = line else { break };
+            if let Ok(text) = serde_json::from_str::<String>(&line)
+                && let Ok(mut injected) = INJECTED.lock()
+            {
+                injected.push(text);
+            }
+        }
+    });
+    Ok(task)
+}
+
+/// What the human steered the run with, for the fold note.
+fn steered() -> String {
+    let injected = INJECTED.lock().map(|v| v.clone()).unwrap_or_default();
+    if injected.is_empty() {
+        String::new()
+    } else {
+        format!(" (steered: {})", injected.join("; "))
+    }
+}
 
 fn main() -> ExitCode {
     // Read the packaged task from stdin.
-    let mut buf = String::new();
-    if let Err(e) = std::io::stdin().read_to_string(&mut buf) {
-        eprintln!("echo-harness: could not read task from stdin: {e}");
-        return ExitCode::FAILURE;
-    }
+    let read = if std::env::var_os(ECHO_STDIN_TURNS_ENV).is_some() {
+        read_conversation()
+    } else {
+        let mut buf = String::new();
+        std::io::stdin().read_to_string(&mut buf).map(|_| buf)
+    };
+    let buf = match read {
+        Ok(buf) => buf,
+        Err(e) => {
+            eprintln!("echo-harness: could not read task from stdin: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
     let task: HarnessTask = match serde_json::from_str(&buf) {
         Ok(task) => task,
         Err(e) => {
@@ -50,6 +96,10 @@ fn main() -> ExitCode {
         }
     };
 
+    if let Err(e) = print_scripted_transcript(&task) {
+        eprintln!("echo-harness: {e}");
+        return ExitCode::FAILURE;
+    }
     match run(&task) {
         Ok(outcome) => match serde_json::to_string(&outcome) {
             Ok(s) => {
@@ -66,6 +116,22 @@ fn main() -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+/// Test knob (#822): with [`ECHO_TRANSCRIPT_ENV`] naming a JSONL file,
+/// print each of its lines to stdout first — the stream the adapter builds
+/// the run's transcript from. `{token}` in a line becomes this run's bearer,
+/// so a test can prove the transcript never carries it.
+fn print_scripted_transcript(task: &HarnessTask) -> Result<(), String> {
+    let Some(path) = std::env::var_os(ECHO_TRANSCRIPT_ENV) else {
+        return Ok(());
+    };
+    let script = std::fs::read_to_string(&path)
+        .map_err(|e| format!("could not read {ECHO_TRANSCRIPT_ENV} {path:?}: {e}"))?;
+    for line in script.lines().filter(|l| !l.trim().is_empty()) {
+        println!("{}", line.replace("{token}", &task.token));
+    }
+    Ok(())
 }
 
 /// A blocking MCP-over-HTTP tool call against the packaged endpoint.
@@ -750,11 +816,12 @@ fn run(task: &HarnessTask) -> Result<HarnessOutcome, String> {
         .as_ref()
         .map(|a| format!(" — analysis [[supplier-risk-analysis::{}]]", a.id))
         .unwrap_or_default();
+    let steer = steered();
     let note = match approved_step {
-        Some(step) => {
-            format!("\n- folded event `{event_id}`: {title} (per approved plan: {step}){link}\n")
-        }
-        None => format!("\n- folded event `{event_id}`: {title}{link}\n"),
+        Some(step) => format!(
+            "\n- folded event `{event_id}`: {title} (per approved plan: {step}){steer}{link}\n"
+        ),
+        None => format!("\n- folded event `{event_id}`: {title}{steer}{link}\n"),
     };
     let new_body = format!("{}{}", current_body.trim_end_matches('\n'), note);
     let new_content = format!("{frontmatter}{new_body}");

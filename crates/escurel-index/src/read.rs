@@ -82,6 +82,14 @@ pub struct SkillInfo {
     /// `harness:` — the adapter this skill asks to run on. Advisory here;
     /// the runner honours it within its allow-list.
     pub harness: Option<String>,
+    /// `schedule:` — the cron expression the runner fires this skill on (#819), as written.
+    /// `None` when undeclared. Shape is `check_schedule`'s concern, not this projection's.
+    pub schedule: Option<String>,
+    /// `schedule:` is declared but cannot be read (not a string, or does not parse); `schedule`
+    /// then carries it as written. Projected so a typo is visible, not a silent no-op.
+    pub schedule_invalid: bool,
+    /// `schedule_budget: {runs_per_day}` — `None` when undeclared or not a positive count.
+    pub schedule_budget: Option<escurel_types::ScheduleBudget>,
     /// `folder:` — the `/` path placing this skill in a tree. `None` when undeclared.
     pub folder: Option<String>,
     /// `role:` — `record` | `process` | `report` | `helper` as written. `None` when undeclared.
@@ -744,6 +752,44 @@ fn parse_cascade(fm: &serde_json::Value) -> Option<CascadePolicy> {
     })
 }
 
+/// Project `schedule:` as written, and whether it is unreadable: a value that is not a string is
+/// carried as its JSON text, so the author sees what the runner refused.
+fn parse_schedule(fm: &serde_json::Value) -> (Option<String>, bool) {
+    match fm.get("schedule") {
+        None | Some(serde_json::Value::Null) => (None, false),
+        Some(serde_json::Value::String(_)) => match trimmed_str(fm, "schedule") {
+            Some(expr) => {
+                let invalid = escurel_types::schedule::CronSchedule::parse(&expr).is_err();
+                (Some(expr), invalid)
+            }
+            None => (None, false),
+        },
+        Some(other) => (Some(other.to_string()), true),
+    }
+}
+
+/// Project `schedule_budget: {runs_per_day: N}`. A budget that is declared but not a positive `u32`
+/// is carried as `invalid` (and a cap of `0`), never dropped: dropping it would read a malformed cap
+/// as no cap. `check_schedule` is what tells the author.
+fn parse_schedule_budget(fm: &serde_json::Value) -> Option<escurel_types::ScheduleBudget> {
+    let declared = fm.get("schedule_budget").filter(|v| !v.is_null())?;
+    let runs_per_day = declared
+        .get("runs_per_day")
+        .and_then(serde_json::Value::as_u64)
+        .and_then(|n| u32::try_from(n).ok())
+        .filter(|n| *n > 0);
+    Some(match runs_per_day {
+        Some(runs_per_day) => escurel_types::ScheduleBudget {
+            runs_per_day,
+            invalid: false,
+        },
+        None => escurel_types::ScheduleBudget {
+            runs_per_day: 0,
+            invalid: true,
+        },
+    })
+}
+
 /// Project `autonomy:` from a skill page's indexed frontmatter.
 ///
 /// An ABSENT key is `Auto`: the default the gateway's write gate
@@ -802,6 +848,7 @@ impl Indexer {
         for row in rows {
             let (page_id, fm_json) = row?;
             let fm: serde_json::Value = serde_json::from_str(&fm_json)?;
+            let schedule = parse_schedule(&fm);
             out.push(SkillInfo {
                 id: skill_id(&fm).unwrap_or(page_id),
                 description: fm
@@ -851,6 +898,9 @@ impl Indexer {
                     .map(str::trim)
                     .filter(|s| !s.is_empty())
                     .map(str::to_owned),
+                schedule: schedule.0,
+                schedule_invalid: schedule.1,
+                schedule_budget: parse_schedule_budget(&fm),
                 folder: trimmed_str(&fm, "folder"),
                 role: trimmed_str(&fm, "role"),
                 tags: string_array_field(&fm, "tags"),

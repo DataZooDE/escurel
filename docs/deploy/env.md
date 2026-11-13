@@ -60,6 +60,7 @@ escurel-server.
 | `ESCUREL_AUTH_JWKS_REFRESH_SECS` | 300 | JWKS cache TTL (seconds) |
 | `ESCUREL_AUTH_JWKS_URI` | derived from issuer | explicit JWKS URL (e.g. Triton's `<issuer>/.well-known/jwks.json`) |
 | `ESCUREL_RUN_PROGRESS_KEEP` | 50 | how many `run-progress` snapshots a run keeps (pruned at capture) |
+| `ESCUREL_RUN_TRANSCRIPT_RETENTION_DAYS` | 90 | days a run transcript (`put_run_transcript`, read via `fetch_blob{run_id}`) is kept; swept every 30 s; `0` keeps them forever |
 | `ESCUREL_SHUTDOWN_DRAIN_SECS` | 25 | how long a graceful stop waits for in-flight requests before aborting them (keep below the orchestrator's kill timeout) |
 | `ESCUREL_AUTH_SIGNING_KEY` | — | RSA private key (PKCS#8 or PKCS#1 PEM) the gateway signs `mint_agent_token` bearers with; unset → the tool refuses `unsupported` |
 | `ESCUREL_AUTH_SIGNING_KID` | derived | the `kid` those bearers carry (must be in a trusted JWKS) |
@@ -178,7 +179,7 @@ tenant/token can process `/trigger` but deliberately report unready at
 | `ESCUREL_RUNNER_GATEWAY_URL` | http://127.0.0.1:8080 | base URL of the escurel gateway exposing `/mcp` |
 | `ESCUREL_RUNNER_ENV` | dev | deployment environment stamped on every log record |
 | `ESCUREL_RUNNER_TENANT` | — | tenant whose inbox the poller drains; the poller is off when this or the token is absent |
-| `ESCUREL_RUNNER_TOKEN` | — | tenant-scoped bearer the runner presents to `/mcp`; a static token wins over minting |
+| `ESCUREL_RUNNER_TOKEN` | — | tenant-scoped bearer the runner presents to `/mcp`; a static token wins over minting. A runner on a static token cannot mint, so every run of a skill with an `agent:` profile fails (dead-letters) there: agent profiles need a minting runner (`ESCUREL_RUNNER_AUTH_SIGNING_KEY`) |
 | `ESCUREL_RUNNER_QUEUE_CAP` | 1024 | bound of the dispatch queue (backpressure instead of unbounded growth) |
 | `ESCUREL_RUNNER_SEEN_CAP` | 4096 | bound of the dedup seen-set |
 | `ESCUREL_RUNNER_POLL_INTERVAL` | 30s | interval between inbox polls (`30s`, `1500ms`, `2m`) |
@@ -189,7 +190,9 @@ tenant/token can process `/trigger` but deliberately report unready at
 | `ESCUREL_RUNNER_CHAT_MODEL` | — | the model chat runs use instead of the runner's configured one, unless the skill page names its own `model:` |
 | `ESCUREL_RUNNER_ID` | <HOSTNAME>:<pid> | this runner's name in its status reports |
 | `ESCUREL_RUNNER_CANCEL_GRACE` | 5s | time a cancelled run's subprocess gets between SIGTERM and SIGKILL |
-| `ESCUREL_RUNNER_LINT_INTERVAL` | disabled | how often the runner synthesizes a `lint` event (the scheduled semantic-health pass) |
+| `ESCUREL_RUNNER_LINT_INTERVAL` | disabled | how often the runner fires the `lint` skill (the scheduled semantic-health pass); a synthetic entry in the schedule loop, kept for compatibility |
+| `ESCUREL_RUNNER_SCHEDULE_TICK` | 30s | how often the runner looks for skills whose `schedule:` window has opened (the worst-case lateness of a scheduled trigger; zero is refused) |
+| `ESCUREL_RUNNER_SCHEDULE_GRACE` | 15m | how long after it opens a `schedule:` window may still fire (catch-up after a restart); an older window is not run late. Zero is refused; below the tick it is raised to the tick |
 | `ESCUREL_RUNNER_LEDGER_PATH` | ./escurel-runner-ledger.duckdb | runner-local durable run ledger (its own DuckDB file; use a path under `/data` in a deployment) |
 | `ESCUREL_RUNNER_HARNESS` | echo | harness adapter: `echo`, `claude`, `codex`, `agy`, `muse`, `gemini`, `gemini-vertex`, `alibaba`, `hetzner`, `openai-compatible`, `delegate` |
 | `ESCUREL_RUNNER_CLAUDE_BIN` | claude | path to the `claude` binary |
@@ -205,7 +208,7 @@ tenant/token can process `/trigger` but deliberately report unready at
 | `ESCUREL_RUNNER_AUTH_ISSUER` | — | issuer of the bearers the runner MINTS for itself instead of holding a static token |
 | `ESCUREL_RUNNER_AUTH_AUDIENCE` | escurel | audience of minted bearers |
 | `ESCUREL_RUNNER_AUTH_KID` | derived from the key | `kid` of minted bearers |
-| `ESCUREL_RUNNER_AUTH_SIGNING_KEY` | — | private key (PEM) the runner signs its minted bearers with |
+| `ESCUREL_RUNNER_AUTH_SIGNING_KEY` | — | private key (PEM) the runner signs its minted bearers with; required for agent profiles (`agent:` on a skill), whose runs are minted as the agent |
 | `ESCUREL_RUNNER_AUTH_SUBJECT` | escurel-runner | `sub` of minted bearers (a service principal) |
 | `ESCUREL_RUNNER_AUTH_TTL_SECS` | 1800 | lifetime of each minted gateway bearer, in seconds |
 | `ESCUREL_RUNNER_MAX_TURNS` | the harness default | model-turn bound for the harness |
@@ -278,6 +281,7 @@ set by the runner for a harness subprocess.
 | var | default | meaning |
 |---|---|---|
 | `ESCUREL_MCP_BEARER` | — | set by the runner in a harness subprocess: the scoped bearer for that run (never set it yourself) |
+| `ESCUREL_ECHO_STDIN_TURNS` | — | set by the runner in an echo harness subprocess: stdin is the task line, then injected turns (never set it yourself) |
 
 ## Tooling
 
@@ -307,6 +311,7 @@ test knobs: never set in a deployment.
 | `ESCUREL_ECHO_RESULT_REF` | — | echo harness: attach this result reference (tests) |
 | `ESCUREL_ECHO_SLEEP_MS` | 0 | echo harness: idle this long before finishing, so a test can cancel a run |
 | `ESCUREL_ECHO_SLEEP_SKILL` | — | echo harness: only runs of this label idle for ESCUREL_ECHO_SLEEP_MS (tests) |
+| `ESCUREL_ECHO_TRANSCRIPT` | — | echo harness: print this JSONL file's lines (`{"transcript":{kind, name?, args?, text?}}`, `{token}` = the run's bearer) as its stream, for the run transcript (tests) |
 | `ESCUREL_ECHO_USAGE` | — | echo harness: report this usage (tests) |
 | `ESCUREL_TEST_GDRIVE_EXTENSION` | — | path of a built gdrive extension for the duckvfs tests |
 | `ESCUREL_TEST_MIGRATE_KIND_PAGE_DELAY_MS` | — | sleep this long before each page of `migrate_kind`, to give a CI-sized tenant a long migration window |

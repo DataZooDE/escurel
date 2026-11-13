@@ -126,6 +126,11 @@ pub struct Trigger {
     /// page-bound chat. The dispatch packages it in chat mode and the runner
     /// appends the reply. `None` for every other trigger.
     pub chat: Option<ChatContext>,
+    /// The agent profile the event asks to run as (`provenance.agent`,
+    /// `"[[agent::x]]"` or a bare id; #823). A REQUEST: honoured only when that
+    /// agent lists the run's skill ([`crate::choose_agent`]). An agent can only
+    /// narrow a run, so the capturer naming one is not a privilege.
+    pub agent: Option<String>,
 }
 
 /// The chat turn a [`Trigger`] answers.
@@ -279,8 +284,20 @@ impl Trigger {
             }),
             is_system: event.kind == "system",
             chat,
+            agent: requested_agent(&event.provenance),
         }
     }
+}
+
+/// The agent an event's `provenance.agent` asks for.
+fn requested_agent(provenance: &serde_json::Value) -> Option<String> {
+    let raw = provenance.get("agent")?;
+    escurel_types::agent_profile::link_id(Some(raw), "agent").or_else(|| {
+        raw.as_str()
+            .map(str::trim)
+            .filter(|s| escurel_types::agent_profile::is_valid_agent_id(s))
+            .map(str::to_owned)
+    })
 }
 
 /// The server-stamped `provenance.captured_by` — the verified subject that
@@ -447,6 +464,26 @@ mod tests {
         event.kind = "system".to_owned();
         assert!(Trigger::from_event(&event, "tenant-a").is_system);
         assert!(!Trigger::from_event(&sample_event(), "tenant-a").is_system);
+    }
+
+    #[test]
+    fn an_agent_request_is_read_from_provenance_as_a_link_or_an_id() {
+        for (raw, want) in [
+            (serde_json::json!("[[agent::scribe]]"), Some("scribe")),
+            (serde_json::json!([["agent::scribe"]]), Some("scribe")),
+            (serde_json::json!("scribe"), Some("scribe")),
+            (serde_json::json!("../x"), None),
+            (serde_json::json!(7), None),
+        ] {
+            let mut event = sample_event();
+            event.provenance = serde_json::json!({ "agent": raw });
+            assert_eq!(
+                Trigger::from_event(&event, "t").agent.as_deref(),
+                want,
+                "{raw}"
+            );
+        }
+        assert_eq!(Trigger::from_event(&sample_event(), "t").agent, None);
     }
 
     #[test]

@@ -36,6 +36,11 @@ const VAULT_SKILL: &str =
 const VAULT_PAGE_BODY: &str = "---\nkind: instance\nid: v1\nskill: vault\ncredential: \"agent:renewal\"\n---\n# v1\n\nSECRET-OF-THE-AGENT\n";
 const VAULT_PAGE: &str = "markdown/instances/vault/v1.md";
 
+/// An agent profile confined to notes: a token minted for it must not be able to shed that scope by
+/// minting a workbench child (crew review PR-1, F1).
+const SCRIBE: &str = "---\nkind: instance\nskill: agent\nid: scribe\n\
+    scopes:\n  write: [\"markdown/instances/note/*\"]\n---\n# scribe\n";
+
 async fn start(signing: bool) -> EscurelProcess {
     EscurelProcess::spawn(Opts {
         auth: AuthMode::TestIssuer,
@@ -51,6 +56,7 @@ async fn start(signing: bool) -> EscurelProcess {
                 .skill("vault", VAULT_SKILL)
                 .instance("renewal", "c1", PAGE_BODY)
                 .instance("vault", "v1", VAULT_PAGE_BODY)
+                .instance("agent", "scribe", SCRIBE)
                 .done(),
         ),
     })
@@ -343,4 +349,46 @@ async fn a_run_minted_before_a_restart_is_still_closed_as_expired() {
             .count(),
         1
     );
+}
+
+/// A MACHINE caller (an agent-profile token, a narrowed per-skill token, a run-bound token) cannot
+/// mint: the child carries the caller's groups but none of the agent / skill claims, so it would
+/// shed the agent's `scopes`, the skill confinement and the `/ws` / `/ingest` / `/blob` refusals.
+#[tokio::test]
+async fn a_machine_caller_cannot_mint_a_child_token() {
+    let p = start(true).await;
+    let agent = p.mint_token_for_agent(TENANT, "scribe", "renewal", &["ops"]);
+    let narrowed = p.mint_token_narrowed(TENANT, "renewal", &["ops"]);
+    let run = p.mint_token_for_run(TENANT, Role::Agent, "agent:renewal", "r1", "e1");
+    for (who, token) in [("agent", agent), ("narrowed", narrowed), ("run", run)] {
+        let err = rpc(
+            &p,
+            &token,
+            "mint_agent_token",
+            json!({ "skill": "renewal" }),
+        )
+        .await;
+        assert_eq!(err["error"]["code"], -32001, "{who}: {err}");
+        assert_eq!(
+            err["error"]["data"]["code"], "agent_scope_denied",
+            "{who}: {err}"
+        );
+    }
+    // A workbench token the gateway minted is itself a machine caller: no grandchildren.
+    let alice = p.mint_token_with_sub(TENANT, Role::Agent, "alice");
+    let child = call(
+        &p,
+        &alice,
+        "mint_agent_token",
+        json!({ "skill": "renewal" }),
+    )
+    .await;
+    let err = rpc(
+        &p,
+        child["token"].as_str().unwrap(),
+        "mint_agent_token",
+        json!({ "skill": "renewal" }),
+    )
+    .await;
+    assert_eq!(err["error"]["data"]["code"], "agent_scope_denied", "{err}");
 }

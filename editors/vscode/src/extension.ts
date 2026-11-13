@@ -39,6 +39,8 @@ import { registerApprovePlan, setApprovalConfirm } from './start/approvePlan';
 import { registerNodeCommands } from './commands/nodeCommands';
 import { explainText } from './shared/explain';
 import { registerRunnerView, type RunnerTree } from './views/runner';
+import { registerUsageView, type UsageTree } from './views/usage';
+import { registerAgentsView, type AgentsTree } from './views/agents';
 import { registerImportEvolveProblem } from './evolve/importProblem';
 import { registerPrepareEvolveTrainingSource } from './evolve/prepareSource';
 import { registerEvolveHoldout } from './evolve/registerHoldout';
@@ -76,6 +78,10 @@ export interface EscurelApi {
    */
   canAdmin: () => boolean;
   runner: RunnerTree;
+  /** The Usage view beside Runs (admin `usage_report`). */
+  usage: UsageTree;
+  /** The Agents view beside Runs (the `agent` profiles). */
+  agents: AgentsTree;
   focus: FocusMode;
   overview: OverviewController;
   /** Test seam: replaces the modal that confirms a plan approval (a modal blocks a headless window). */
@@ -119,6 +125,8 @@ export function activate(
   const inbox = InboxTree.register(context, () => services.client, contributions.inboxDecorators);
   const awaiting = AwaitingTree.register(context, () => services.client);
   const runner = registerRunnerView(context, services);
+  const usage = registerUsageView(context, services);
+  const agents = registerAgentsView(context, services);
   EscurelFileSystem.register(
     context,
     () => services.client,
@@ -396,6 +404,8 @@ export function activate(
       threadsTree,
       canAdmin: adminContextValue,
       runner,
+      usage,
+      agents,
       focus,
       overview,
       setApprovalConfirm,

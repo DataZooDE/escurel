@@ -266,6 +266,8 @@ impl Harness for AgyHarness {
             envs: vec![("HOME", home.path().into())],
             // EOF, or `agy` waits for a second turn until the run times out.
             stdin: Some(Self::stdin_message(task).as_bytes()),
+            stdout_lines: None,
+            turns: None,
             timeout: self.timeout,
             cancel: task.cancel.as_ref(),
         })

@@ -190,28 +190,37 @@ pub(super) async fn tool_list_lineage(
                     }
                 }
                 "run-finished" => {
-                    if let Some(s) = body["status"].as_str() {
-                        agg.state = s.to_owned();
+                    // Through the runner's own record type: a renamed key is a build error here.
+                    let fin: escurel_types::run_record::RunFinishedBody =
+                        serde_json::from_value(body.clone()).unwrap_or_default();
+                    if !fin.status.is_empty() {
+                        agg.state = fin.status.clone();
                     }
                     agg.attrs.insert("finished_at".to_owned(), json!(e.at));
-                    for key in [
-                        "summary",
-                        "attempts",
-                        "produced_instance",
-                        "produced_version",
-                        "reason",
-                        "held",
-                        "tool_calls",
-                        "usage",
+                    for (key, present, v) in [
+                        ("summary", body.get("summary").is_some(), json!(fin.summary)),
+                        (
+                            "attempts",
+                            body.get("attempts").is_some(),
+                            json!(fin.attempts),
+                        ),
+                        ("produced_instance", true, json!(fin.produced_instance)),
+                        ("produced_version", true, json!(fin.produced_version)),
+                        ("reason", true, json!(fin.reason)),
+                        ("held", body.get("held").is_some(), json!(fin.held)),
+                        (
+                            "tool_calls",
+                            body.get("tool_calls").is_some(),
+                            json!(fin.tool_calls),
+                        ),
+                        ("usage", true, json!(fin.usage)),
                     ] {
-                        if let Some(v) = body.get(key)
-                            && !v.is_null()
-                        {
-                            agg.attrs.insert(key.to_owned(), v.clone());
+                        if present && !v.is_null() {
+                            agg.attrs.insert(key.to_owned(), v);
                         }
                     }
-                    if !body["plan"].is_null() {
-                        agg.attrs.insert("plan".to_owned(), body["plan"].clone());
+                    if !fin.plan.is_null() {
+                        agg.attrs.insert("plan".to_owned(), fin.plan);
                     }
                     if let Some(v) = runner.get("autonomy") {
                         agg.attrs.insert("autonomy".to_owned(), v.clone());

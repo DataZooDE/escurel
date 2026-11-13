@@ -48,6 +48,15 @@ describe('knowledge model', () => {
     ]);
   });
 
+  it('a scheduled skill says so, with its next window when it can be told (#819)', () => {
+    const now = new Date('2026-11-13T06:20:00Z');
+    expect(chipsForSkill({ ...customer, autonomy: 'auto', schedule: '15 7 * * *' }, now)).toEqual([
+      'auto',
+      'scheduled · next 07:15 UTC',
+    ]);
+    expect(chipsForSkill({ ...customer, autonomy: 'auto' }, now)).toEqual(['auto']);
+  });
+
   it('autonomy absent reads as "review" (hold for review), never as auto', () => {
     const { autonomy, ...noAutonomy } = customer;
     void autonomy;

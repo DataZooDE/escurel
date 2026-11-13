@@ -7,6 +7,7 @@ import { skillFacts } from './freshness';
 import { titleCase } from './page';
 import { pageSlug } from './pageId';
 import type { ActionView } from './protocol';
+import { scheduleWords } from './schedule';
 import { cleanText } from './untrustedText';
 
 export const SKILL_PAGE_INSTANCES = 10;
@@ -169,6 +170,13 @@ export function buildSkillPageModel(
       hint: 'This skill comes from a shared skill pack and is read-only here.',
     });
   if (skill.resource) facts.push({ label: 'Describes', value: cleanText(skill.resource, 300) });
+  const schedule = scheduleWords(skill, new Date(now));
+  if (schedule)
+    facts.push({
+      label: 'Schedule',
+      value: schedule.detail,
+      hint: 'The runner starts this skill by itself at these times; no event is needed.',
+    });
 
   const runs = [...events]
     .sort((a, b) => time(b) - time(a) || b.event_id.localeCompare(a.event_id))

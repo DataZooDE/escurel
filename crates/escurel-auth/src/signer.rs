@@ -50,6 +50,11 @@ pub const TRACE_ID_CLAIM: &str = "trace_id";
 /// any other skill, whatever groups the token also carries. Absent on an
 /// un-narrowed token. Lock-step with `escurel_auth::verifier`.
 pub const SKILL_CLAIM: &str = "skill";
+/// The agent profile a per-run token runs as (#823): the id of an `agent`
+/// instance page. The gateway loads that page itself and enforces its scopes,
+/// so the token names the agent and never carries what it may do.
+/// Lock-step with `escurel_auth::verifier`.
+pub const AGENT_CLAIM: &str = "agent";
 
 /// The run a per-run token belongs to. `trace_id` is the lineage's OTel
 /// trace (one per cascade lineage) when the runner has one.
@@ -361,26 +366,45 @@ impl Signer {
         run: Option<&RunClaims>,
         groups: &[String],
     ) -> Result<String, SignError> {
-        let mut roles = vec!["escurel:agent".to_owned()];
-        for g in groups {
-            let g = g.trim();
-            if g.is_empty()
-                || g.starts_with("escurel:")
-                || matches!(g, "public" | "owner" | "admin")
-                || roles.iter().any(|r| r == g)
-            {
-                continue;
-            }
-            roles.push(g.to_owned());
-        }
         self.mint_agent_with_roles(
             runner_subject,
             label_skill,
             ttl_secs,
             run,
-            roles,
+            narrowed_roles(groups),
             Some(label_skill.to_owned()),
         )
+    }
+
+    /// Mint a per-run bearer for an **agent profile** (#823): the run executes
+    /// as `agent:<agent_id>`, narrowed exactly like
+    /// [`Self::mint_agent_narrowed`] (`escurel:agent` + `groups`, confined to
+    /// `label_skill`), and carrying the [`AGENT_CLAIM`] so the gateway applies
+    /// the profile's own scopes on top. Never `escurel:admin`: an agent is the
+    /// least-privilege identity, so the runner's authority does not leak in.
+    ///
+    /// # Errors
+    /// When signing fails, or either id cannot be an unambiguous subject.
+    pub fn mint_agent_profile(
+        &self,
+        runner_subject: &str,
+        agent_id: &str,
+        label_skill: &str,
+        ttl_secs: u64,
+        run: Option<&RunClaims>,
+        groups: &[String],
+    ) -> Result<String, SignError> {
+        agent_slug(label_skill)?;
+        let mut claims = self.agent_claims(
+            runner_subject,
+            agent_id,
+            ttl_secs,
+            run,
+            narrowed_roles(groups),
+            Some(label_skill.to_owned()),
+        )?;
+        claims[AGENT_CLAIM] = json!(agent_id);
+        self.sign(&claims)
     }
 
     /// Mint an agent confined to the listed output skills. Each skill must
@@ -400,23 +424,12 @@ impl Signer {
         for skill in skills {
             agent_slug(skill)?;
         }
-        let mut roles = vec!["escurel:agent".to_owned()];
-        for group in groups {
-            let group = group.trim();
-            if !group.is_empty()
-                && !group.starts_with("escurel:")
-                && !matches!(group, "public" | "owner" | "admin")
-                && !roles.iter().any(|role| role == group)
-            {
-                roles.push(group.to_owned());
-            }
-        }
         self.mint_agent_with_roles(
             runner_subject,
             label_skill,
             ttl_secs,
             run,
-            roles,
+            narrowed_roles(groups),
             Some(skills.join(",")),
         )
     }
@@ -430,7 +443,28 @@ impl Signer {
         roles: Vec<String>,
         skill_scope: Option<String>,
     ) -> Result<String, SignError> {
-        let slug = agent_slug(label_skill)?;
+        let claims = self.agent_claims(
+            runner_subject,
+            label_skill,
+            ttl_secs,
+            run,
+            roles,
+            skill_scope,
+        )?;
+        self.sign(&claims)
+    }
+
+    /// The claims of a per-run agent bearer whose subject is `agent:<slug>`.
+    fn agent_claims(
+        &self,
+        runner_subject: &str,
+        slug: &str,
+        ttl_secs: u64,
+        run: Option<&RunClaims>,
+        roles: Vec<String>,
+        skill_scope: Option<String>,
+    ) -> Result<serde_json::Value, SignError> {
+        let slug = agent_slug(slug)?;
         let now = now_secs();
         let mut claims = json!({
             "iss": self.issuer,
@@ -452,11 +486,16 @@ impl Signer {
             // Groups are tenant-wide; the skill claim bounds instance writes.
             claims[SKILL_CLAIM] = json!(skill_scope);
         }
+        Ok(claims)
+    }
+
+    /// RS256-sign `claims` under this identity's `kid`.
+    fn sign(&self, claims: &serde_json::Value) -> Result<String, SignError> {
         let mut header = Header::new(Algorithm::RS256);
         header.kid = Some(self.kid.clone());
         Ok(encode(
             &header,
-            &claims,
+            claims,
             &EncodingKey::from_rsa_pem(&self.private_pem)?,
         )?)
     }
@@ -487,6 +526,29 @@ impl Signer {
             &EncodingKey::from_rsa_pem(&self.private_pem)?,
         )?)
     }
+}
+
+/// `escurel:agent` plus `groups`, minus every privileged or structural name.
+///
+/// **Privilege ceiling.** The groups come from a skill page, which any author
+/// of that page can edit, so every `escurel:`-prefixed name and every reserved
+/// structural group (`public`, `owner`, `admin`) is stripped before signing: a
+/// skill page can grant its agent an engagement group, never a privileged role.
+/// A deployment's own admin / operator role VALUES are not known here; the
+/// verifier refuses them on any token carrying an agent or skill claim instead.
+fn narrowed_roles(groups: &[String]) -> Vec<String> {
+    let mut roles = vec!["escurel:agent".to_owned()];
+    for group in groups {
+        let group = group.trim();
+        if !group.is_empty()
+            && !group.starts_with("escurel:")
+            && !matches!(group, "public" | "owner" | "admin")
+            && !roles.iter().any(|role| role == group)
+        {
+            roles.push(group.to_owned());
+        }
+    }
+    roles
 }
 
 /// A `label_skill` usable as the `agent:` half of a token subject.
@@ -634,6 +696,39 @@ mod tests {
         assert!(mint(&[]).is_err());
         assert!(mint(&["triage,private"]).is_err());
         assert!(mint(&["bad/slug"]).is_err());
+    }
+
+    /// #823: an agent-profile token runs as `agent:<agent id>`, names the
+    /// agent in its own claim, is narrowed like any narrowed token and never
+    /// carries admin — whatever groups the skill page offers.
+    #[test]
+    fn an_agent_profile_token_names_the_agent_and_never_carries_admin() {
+        let signer = Signer::build(
+            "https://issuer".into(),
+            "escurel".into(),
+            "acme".into(),
+            None,
+            &test_key(),
+        )
+        .expect("signer");
+        let groups = ["ops".to_owned(), "escurel:admin".to_owned()];
+        let token = signer
+            .mint_agent_profile("escurel-runner", "scribe", "note", 90, None, &groups)
+            .expect("mint");
+        let claims = decode_claims(&token);
+        assert_eq!(claims["sub"], "agent:scribe", "{claims}");
+        assert_eq!(claims[AGENT_CLAIM], "scribe", "{claims}");
+        assert_eq!(claims[SKILL_CLAIM], "note", "{claims}");
+        assert_eq!(claims["act"]["sub"], "escurel-runner", "{claims}");
+        assert_eq!(claims["roles"], json!(["escurel:agent", "ops"]), "{claims}");
+        for (agent, skill) in [("bad/agent", "note"), ("scribe", "bad/skill"), ("", "note")] {
+            assert!(
+                signer
+                    .mint_agent_profile("r", agent, skill, 90, None, &[])
+                    .is_err(),
+                "{agent:?} / {skill:?}"
+            );
+        }
     }
 
     fn decode_claims(token: &str) -> serde_json::Value {

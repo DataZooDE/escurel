@@ -50,13 +50,27 @@ the runner. The runner's own cascade-lineage guard trusts either half of
 that chain, so a hop written by a delegated agent is still recognised as
 the runner's own (`trigger.rs`).
 
-Two limits are deliberate and still true. The run's **authority** is
-unchanged — the minted agent token carries the same `escurel:admin` role
-the runner holds, so this is attribution, not least privilege; narrowing
-the grant per skill is the follow-up that only became possible now that
-the token is per-run at all. And a **static-bearer** runner
-(`ESCUREL_RUNNER_TOKEN`, dev-only) cannot mint, so it keeps writing as
-itself; production runs minted (ADR-0012).
+The run's **authority** is now least privilege wherever an agent profile
+applies (#823). An `agent` instance page (admin-write-only system skill)
+names a harness, model, the skills it may run, `scopes.tools`,
+`scopes.write` page-id globs and `max_concurrent`; a skill names its default
+with `agent: "[[agent::x]]"` and an event may request one via
+`provenance.agent` (honoured only when the agent lists the skill). With an
+agent the run's token is `sub: agent:<agent id>`, `roles: [escurel:agent,
+<the skill's write groups>]` — never `escurel:admin` — plus the `skill`
+claim and an `agent` claim; the `act` chain is unchanged. The gateway is
+authoritative: it reads the agent page itself on every call (never scopes
+from the token), refuses every tool with `agent_unknown` when the page is
+missing, intersects `scopes.tools` with the role gate and bounds every
+write — and every `capture_event` / `assign_event` target — by
+`scopes.write` (`agent_scope_denied`), on top of the skill confinement and
+the group ACL. A skill whose default agent cannot run it is refused, not
+run wide. Without an agent the earlier limit still holds: the token carries
+the runner's `escurel:admin` (attribution only) unless
+`ESCUREL_RUNNER_AGENT_NARROW=1` narrows it to the skill's write groups.
+A **static-bearer** runner (`ESCUREL_RUNNER_TOKEN`, dev-only) cannot mint,
+so it keeps writing as itself and cannot run an agent at all; production
+runs minted (ADR-0012).
 
 A **workflow** run is scoped differently and unchanged: it executes as its
 REQUESTER (async-ops Phase 2c-i), which is a narrowing of authority, not
@@ -179,6 +193,24 @@ Core internal pieces:
 10. Terminal: the cascade quiesces, hits the depth budget, or dead-letters.
     The full lineage is one OTel trace.
 
+### Scheduled triggers (#819)
+
+Step 1 has a second source besides external callers: the runner's
+**schedule loop**. A skill declaring `schedule:` (cron, optional
+`CRON_TZ=` prefix, UTC otherwise) gets one `capture_event` per window, id
+`sched:<skill>:<window-start RFC 3339 UTC>`, `source: runner-schedule`;
+first-writer-wins on that id makes restarts and multiple runners safe. Only
+the latest window fires (no backfill), and only within
+`ESCUREL_RUNNER_SCHEDULE_GRACE` (default 15m) of its start — never late. `schedule_budget.runs_per_day` caps
+a UTC day; a window past the cap is recorded as an `escurel:run`
+`run-skipped` system event (`<trigger id>:skipped`, reason `budget`)
+instead of firing. The legacy lint tick (`ESCUREL_RUNNER_LINT_INTERVAL`) is
+a synthetic entry in the same loop that keeps its `lint-<tenant>-<window>`
+ids. The gateway stays automation-free: the runner owns the decision to
+act. Code: `escurel-runner-core/src/schedule.rs` (grammar in
+`escurel-types/src/schedule.rs`); test:
+`escurel-runner/tests/suite/schedule_trigger.rs`.
+
 ## "Skills as instructions + tools" delivery
 
 - **Instructions** = the `label_skill` page body, fetched via
@@ -212,8 +244,9 @@ tools" honest and the adapter a thin process-management shell.
 
 - **Claude Code CLI** — `claude -p` with `--system-prompt`/`CLAUDE.md`,
   `--mcp-config` (HTTP MCP server → `<gateway>/mcp` + auth header),
-  `--allowedTools`, `--output-format json` (the cleanest tool-call
-  capture).
+  `--allowedTools`, `--input-format stream-json --output-format
+  stream-json --verbose` (the prompt is a user message on stdin, which stays
+  open while a turn is in flight; the outcome is the last `result` line).
 - **Codex CLI** — `codex exec` in an isolated dir (mind the full-auto-writes
   gotcha,
   [`../notes/discovered/2026-05-24-codex-full-auto-writes.md`](../notes/discovered/2026-05-24-codex-full-auto-writes.md));
@@ -224,6 +257,26 @@ tools" honest and the adapter a thin process-management shell.
   is the escurel MCP server via ADK's `MCPToolset` (streamable-HTTP) →
   `/mcp`; emits a JSON outcome on stdout. The heaviest adapter → behind a
   feature flag.
+
+**Steering a live run (#820).** Beside `cancel`, the `escurel:run-control`
+label takes `{action: "inject", run_id, text}` — a human's message for the
+run's live harness session, authorised like `cancel` (whoever may write the
+run's target page; admin always) and capped at 8 KiB of `text`. The trait's
+`supports_inject()` (default `false`) says whether a harness can take one:
+`claude` writes it as one more stream-json user turn and closes stdin only
+once every turn's `result` is out; the `echo` harness reads it off a
+still-open stdin and folds it into its note; `codex exec` reads one prompt
+and offers no follow-up turn into a live session, so it stays `false`.
+The runner's live-run registry holds, per run, the cancel handle and the
+inject sender; each queued message is recorded as an `escurel:run` system
+event `run:<run_id>:inject:<n>` (`title: run-inject`, body `{n, text,
+bytes, requested_by}`) and answered `injected`, `unsupported` or
+`not_live` under `escurel:run-control-result`. The inbox stops accepting
+the moment an attempt's last turn ends (before stdin closes); a message
+accepted just before that is still written as one more turn, and one sent
+after it is answered `not_live` even though the run has not reached its
+terminal yet. A retry's attempt opens the inbox again. An injection never
+changes the run's token or tool surface — it is text into the same session.
 
 Adapter selection is per-`label_skill` (a skill may declare its preferred
 harness in frontmatter) with a runner-level default — data-driven and
@@ -306,6 +359,28 @@ best-effort projection of the ledger — see the consumer skill's
 `11-event-driven-agents.md`). Still deferred: a gateway change-feed for
 `update_page` commits (more automation surface — keep the cascade bridge
 in the runner).
+
+**Run transcripts (#822).** Each harness adapter normalises its own
+structured stream (claude stream-json, codex `--json` events, gemini's
+in-process turns, the echo harness's scripted lines) into transcript
+records `{ts, attempt, kind: tool_call|tool_result|message|error, name?,
+args_digest?, summary}` — one parser per harness: the outcome's `tool_calls`
+count is derived from the same records (for claude that replaces the old
+`num_turns`, which counted model turns, not calls). Arguments never leave
+the runner: `args_digest` is the SHA-256 of the canonical args JSON. Every
+`summary` and `name` goes through `escurel_types::redact::scrub` (the one
+credential-shape module the pack gate and the gateway's tool-call summaries
+share), with the run's own bearer passed as a literal, then is cut to 200
+characters. The runner concatenates every attempt's records, uploads the
+JSONL with the agent-scope tool `put_run_transcript` (only the run's own
+bearer, or a runner's non-run admin bearer; 2 MiB cap; content-addressed
+via `LaneStore::put_blob`), and names the blob on `run-finished.transcript`.
+`fetch_blob {run_id}` reads it back through the `run-finished` event's ACL.
+The gateway tracks transcript blobs in a `run_transcripts` table so its
+periodic sweep (`ESCUREL_RUN_TRANSCRIPT_RETENTION_DAYS`, default 90, `0` =
+forever) deletes transcripts and never a document blob. Not yet: a
+per-tenant retention override (no tenant-settings mechanism exists), and
+transcripts for `agy` / `muse` / `openai` / `delegate`.
 
 The gateway stays automation-free: it still only *notifies*; the runner
 still owns every decision to *act*.
@@ -423,7 +498,7 @@ no `mockall`).
    *Test:* the first true end-to-end — event → instance materialised + event
    `processed`.
 8. **Claude Code adapter** — `claude -p` + `--mcp-config` +
-   `--output-format json`. *Test:* env-guarded; assert the expected `/mcp`
+   stream-json in and out. *Test:* env-guarded; assert the expected `/mcp`
    tool calls against the real gateway.
 9. **Codex adapter** — `codex exec` in an isolated dir. *Test:* env-guarded;
    instance materialised; no stray files outside the run dir.

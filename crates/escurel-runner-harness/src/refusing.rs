@@ -65,6 +65,15 @@ impl RefusingHarness {
         }
     }
 
+    /// A refusing harness for a run whose agent profile (#823) cannot be used —
+    /// `reason` names the agent and why.
+    pub fn agent_refused(reason: impl Into<String>) -> Self {
+        Self {
+            reason: Some(reason.into()),
+            declared: "agent".to_owned(),
+        }
+    }
+
     /// A refusing harness for `harness`, which this runner knows but could not
     /// build for this run (`reason` says why — a key file gone, say).
     pub fn unbuildable(harness: &str, reason: impl Into<String>) -> Self {

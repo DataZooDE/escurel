@@ -222,8 +222,8 @@ fn lane_kinds(data_dir: &Path) -> (usize, usize) {
     walk(&lane_root(data_dir).join("markdown"), &mut files);
     let (mut legacy, mut kind) = (0, 0);
     for f in files {
-        // The server seeds its own meta skill into every tenant; it is not part of the corpus.
-        if f.ends_with("markdown/skills/escurel.md") {
+        // The server seeds its own system skills into every tenant; they are not part of the corpus.
+        if f.ends_with("markdown/skills/escurel.md") || f.ends_with("markdown/skills/agent.md") {
             continue;
         }
         // The store writes through a temp file + rename, so a file listed a moment ago can be gone by

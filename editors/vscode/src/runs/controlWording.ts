@@ -7,6 +7,7 @@ type Action = ControlRequest['action'];
 export function outcomeChannel(outcome: string): 'status' | 'toast' {
   switch (outcome) {
     case 'cancelled':
+    case 'injected':
     case 'requeued':
     case 'paused':
     case 'resumed':
@@ -47,6 +48,8 @@ export function progressTitle(action: Action): string {
   switch (action) {
     case 'cancel':
       return 'Cancelling…';
+    case 'inject':
+      return 'Sending your message to the run…';
     case 'retry':
       return 'Retrying: starts a new run, this attempt stays in history';
     case 'requeue':

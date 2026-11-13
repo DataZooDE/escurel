@@ -151,6 +151,64 @@ async fn ingest_refuses_the_gateway_s_reserved_event_ids_and_still_takes_an_ordi
     s.process.shutdown().await;
 }
 
+/// The runner's own id namespaces (`run:*`, `sched:*`, `lint-*`) are first-writer-wins and read back
+/// by id, so a member (or a harness on a run-bound admin token) pre-filing one would hide a run from
+/// `usage_report`, answer `fetch_blob{run_id}` with a forged blob, or swallow a schedule trigger
+/// (crew review PR-1, F6). Only the runner's identity (an admin that is not a machine caller) files
+/// them, on both doors.
+#[tokio::test]
+async fn the_runner_s_id_namespaces_are_reserved_for_the_runner_s_identity() {
+    let s = setup().await;
+    let member = s
+        .process
+        .mint_token_with_sub(TENANT, Role::Agent, "mallory");
+    let harness = s
+        .process
+        .mint_token_for_run(TENANT, Role::Admin, "agent:x", "r1", "e1");
+    let runner = s.process.mint_token(TENANT, Role::Admin);
+    let ids = [
+        "run:r-victim:finished",
+        "sched:digest:2026-11-13T07:00:00Z",
+        "lint-acme-42",
+    ];
+    for (who, token) in [("member", &member), ("harness", &harness)] {
+        for id in ids {
+            let r = rpc(
+                &s.process,
+                token,
+                "capture_event",
+                json!({ "event_id": id, "source": "x", "label_skill": "memo", "title": "t", "body": "b" }),
+            )
+            .await;
+            assert!(
+                r["error"]["message"]
+                    .as_str()
+                    .is_some_and(|m| m.contains("reserved")),
+                "{who} must not file `{id}`: {r}"
+            );
+            assert!(
+                s.indexer.get_event(id).await.unwrap().is_none(),
+                "{who}: {id}"
+            );
+        }
+        let blob = deposit(&s, "a squatting memo").await;
+        let (st, body) = post_ingest(&s.process, token, &blob, "run:r-victim:started").await;
+        assert!(st.is_client_error(), "{who} /ingest: {st} {body}");
+    }
+    // CONTROL: the runner's own identity files them.
+    for id in ids {
+        let r = rpc(
+            &s.process,
+            &runner,
+            "capture_event",
+            json!({ "event_id": id, "source": "escurel-runner", "label_skill": "memo", "title": "t", "body": "b" }),
+        )
+        .await;
+        assert!(r.get("error").is_none(), "runner files `{id}`: {r}");
+    }
+    s.process.shutdown().await;
+}
+
 async fn seed_witness(s: &Setup) {
     // A write-back witness row, as the gateway files it, under the protected label.
     let admin = s.process.mint_token(TENANT, Role::Admin);

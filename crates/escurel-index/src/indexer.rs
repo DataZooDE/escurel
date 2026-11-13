@@ -304,6 +304,14 @@ pub enum IndexerError {
     #[error("invalid runner status: {0}")]
     InvalidRunnerStatus(String),
 
+    /// A run's transcript is written once; this upload differs from the stored one.
+    #[error("run `{run_id}` already has a different transcript (a transcript is written once)")]
+    TranscriptExists { run_id: String },
+
+    /// A transcript's run id must name exactly one key (no path syntax).
+    #[error("`{0}` is not a usable run id for a transcript")]
+    InvalidTranscriptRunId(String),
+
     #[error("duckdb error: {0}")]
     Duckdb(#[from] duckdb::Error),
     #[error("lane store error: {0}")]
@@ -1014,7 +1022,7 @@ impl Indexer {
         // permanently dirty. Writing the lane first (canonical) then the index
         // (derived) keeps them in sync and makes the index safely rebuildable.
         // `page_id` is the lane key (`markdown/<relpath>`), as `seed_from_dir`
-        // and `ensure_meta_skill` already rely on.
+        // and `ensure_system_skills` already rely on.
         if write_lane {
             let key = Key::new(self.tenant.as_str(), page_id.to_owned())?;
             self.store
@@ -1817,46 +1825,61 @@ impl Indexer {
             .await?)
     }
 
-    /// Idempotently ensure the mandatory `escurel` meta-skill page is
-    /// present and indexed. No-op when a skill page named `escurel`
-    /// already exists — operators may ship their own extended version
-    /// (with appended sections), and re-opening an existing tenant
-    /// must not clobber it.
+    /// Idempotently install every skill escurel ships
+    /// ([`crate::system_skills::SYSTEM_SKILLS`]): the `escurel` meta-skill
+    /// (`docs/contract/agent-interface.md` locked decision 3) and the `agent`
+    /// profile skill (#823). Called at indexer open (binary boot and the test
+    /// harness) so every *served* tenant exposes them.
     ///
-    /// Called at indexer open (binary boot and the test harness) so
-    /// every *served* tenant exposes the navigation doc the agent
-    /// contract promises (`docs/contract/agent-interface.md` locked
-    /// decision 3). Writes the canonical markdown to the LaneStore
-    /// (keeping `audit` clean) and indexes it.
-    pub async fn ensure_meta_skill(&self) -> Result<(), IndexerError> {
-        {
-            let conn = self.conn.lock().await;
-            let n: i64 = conn.query_row(
-                "SELECT count(*) FROM pages WHERE page_type = 'skill' AND slug = ?",
-                params![crate::meta_skill::META_SKILL_ID],
-                |row| row.get(0),
-            )?;
-            if n > 0 {
-                return Ok(());
+    /// A row is skipped when the tenant already has a skill page with that
+    /// id — operators may ship their own extended meta-skill, and re-opening
+    /// an existing tenant must not clobber it. A tenant-authored page for an
+    /// admin-only system skill is kept too, but logged: its instances stay
+    /// admin-write-only whatever its own `acl:` says
+    /// ([`crate::system_skills::is_admin_only_skill`]), so keeping it changes
+    /// its prose, never who may write an agent.
+    pub async fn ensure_system_skills(&self) -> Result<(), IndexerError> {
+        let mut installed = false;
+        for row in crate::system_skills::SYSTEM_SKILLS {
+            // `optional()`, not `ok()`: a DuckDB error must not read as "no page", or the shipped
+            // page would be written over a tenant's own.
+            let existing: Option<String> = {
+                let conn = self.conn.lock().await;
+                duckdb::OptionalExt::optional(conn.query_row(
+                    "SELECT page_id FROM pages WHERE page_type = 'skill' AND slug = ? \
+                     ORDER BY page_id LIMIT 1",
+                    params![row.id],
+                    |r| r.get(0),
+                ))?
+            };
+            if let Some(page_id) = existing {
+                if row.admin_only {
+                    let canonical = page_id == row.page_id
+                        && self.read_page_markdown(&page_id).await?.as_deref()
+                            == Some(row.markdown);
+                    if !canonical {
+                        tracing::warn!(
+                            tenant = %self.tenant.as_str(),
+                            skill = row.id,
+                            %page_id,
+                            "the tenant carries its own page for a system skill; it is kept, and \
+                             its instances stay admin-write-only"
+                        );
+                    }
+                }
+                continue;
             }
+            let key = Key::new(self.tenant.as_str(), row.page_id.to_owned())?;
+            self.store
+                .write(&key, Bytes::from_static(row.markdown.as_bytes()))
+                .await?;
+            self.update_page(row.page_id, row.markdown).await?;
+            installed = true;
         }
-        let key = Key::new(
-            self.tenant.as_str(),
-            crate::meta_skill::META_SKILL_PAGE_ID.to_owned(),
-        )?;
-        self.store
-            .write(
-                &key,
-                Bytes::from_static(crate::meta_skill::META_SKILL_MD.as_bytes()),
-            )
-            .await?;
-        self.update_page(
-            crate::meta_skill::META_SKILL_PAGE_ID,
-            crate::meta_skill::META_SKILL_MD,
-        )
-        .await?;
-        // Make the new block searchable (FTS has no incremental refresh).
-        self.refresh_fts().await?;
+        if installed {
+            // Make the new blocks searchable (FTS has no incremental refresh).
+            self.refresh_fts().await?;
+        }
         Ok(())
     }
 

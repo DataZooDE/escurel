@@ -239,7 +239,7 @@ ledger; the reconciler; workflow-aware recovery; the signed capture webhook; the
 | Piece | Where | For |
 |---|---|---|
 | `writes: existing` + `target_field` + `RunState.targets` | `runner-workflow/src/{spec,step,reduce}.rs`, `runner-core/src/workflow.rs` | G1, G4 |
-| lint tick + `ESCUREL_RUNNER_LINT_INTERVAL` | `escurel-runner/src/main.rs`, `runner-core/src/config.rs` | G2 |
+| lint tick + `ESCUREL_RUNNER_LINT_INTERVAL` (since #819 a synthetic entry in the generic schedule loop) | `escurel-runner-core/src/schedule.rs`, `runner-core/src/config.rs` | G2 |
 | `issue`, `distill-*`, `weave`, `index`, `eval-result` skills + `distill`/`lint`/`eval`/`improve` plans | `runner-workflow/src/corpus.rs` | G1–G4 |
 | feature-gated `eval-result` emit path | `crates/escurel-eval/` | G4 |
 

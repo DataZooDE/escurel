@@ -49,5 +49,14 @@ gateway that verifies tokens plus a minted-mode runner — see
 `scripts/verify-chat.sh`. `?rail=chat` opens the rail on the tab (also
 `links|events|webhooks|members`).
 
+Run usage and cost (`usage_report`, admin-only) shows in two places: the
+page header carries a **cost badge** — what the runs that targeted the page
+cost over the last 30 days (`$0.42 · 7 runs (30d)`), hidden for a non-admin
+(`whoami.is_admin`) or a page no run touched — and the Dev Inspector's
+**Agents** panel (`/inspector/agents`) lists the tenant's agent profiles
+(`agent` instances: harness, model, scopes) with each one's runs, success
+rate and cost. A skill that declares `schedule:` shows its cron (and
+`schedule_budget` cap) in the catalogue and the skills registry.
+
 [heron]: https://github.com/DataZooDE/heron
 [herkules]: https://github.com/DataZooDE/herkules-ui

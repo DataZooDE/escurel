@@ -795,3 +795,52 @@ async fn operator_claim_is_projected_and_admin_alone_is_not_an_operator() {
             .operator
     );
 }
+
+/// A token minted FOR AN AGENT (an `agent` or `skill` claim, or the gateway's workbench purpose) is
+/// never admin or operator, whatever its roles say (crew review PR-1, F9). Its groups come from a
+/// skill page any member may edit; in a deployment that maps an IdP GROUP to admin
+/// (`ESCUREL_AUTH_ADMIN_ROLE_VALUE`), a page listing that group would otherwise mint an admin agent.
+#[tokio::test]
+async fn an_agent_token_listing_the_admin_or_operator_group_is_not_admin() {
+    let server = MockServer::start().await;
+    let keys = make_keys();
+    mock_jwks(&server, &keys).await;
+    let issuer = format!("{}{ISSUER_PATH}", server.uri());
+    let v = OidcVerifier::new(
+        OidcConfig::new(issuer.clone(), AUDIENCE.to_owned())
+            .with_jwks_uri(format!("{issuer}/protocol/openid-connect/certs"))
+            .with_admin_role("roles", "ops-admins")
+            .with_operator_role("ops-root"),
+    );
+    let now = now();
+    let mint = |extra: Value| {
+        let mut claims = json!({
+            "iss": issuer, "aud": AUDIENCE, "sub": "agent:x", "tenant": "acme",
+            "iat": now, "exp": now + 600,
+            "roles": ["escurel:agent", "ops-admins", "ops-root"],
+        });
+        for (k, val) in extra.as_object().unwrap() {
+            claims[k] = val.clone();
+        }
+        sign_token(&keys, claims)
+    };
+    for (what, extra) in [
+        (
+            "agent profile",
+            json!({ "agent": "scribe", "skill": "note" }),
+        ),
+        ("narrowed", json!({ "skill": "note" })),
+        (
+            "workbench",
+            json!({ "purpose": "workbench_agent", "act": { "sub": "alice" } }),
+        ),
+    ] {
+        let ctx = v.verify(&mint(extra)).await.expect("verify");
+        assert_eq!(ctx.role, Role::Agent, "{what} must not be admin");
+        assert!(!ctx.operator, "{what} must not be an operator");
+    }
+    // CONTROL: the same roles on a person's token are admin and operator.
+    let person = v.verify(&mint(json!({}))).await.expect("verify");
+    assert_eq!(person.role, Role::Admin);
+    assert!(person.operator);
+}

@@ -256,6 +256,19 @@ class _CapStubClient implements EscurelClient {
       inner.adminWebhookDeliveries(limit: limit);
 
   @override
+  Future<UsageReport> usageReport({
+    required List<String> groupBy,
+    String? since,
+    String? until,
+    String? skill,
+  }) => inner.usageReport(
+    groupBy: groupBy,
+    since: since,
+    until: until,
+    skill: skill,
+  );
+
+  @override
   Future<int> adminDeleteChatHistory({String? chatGroupId, String? beforeTs}) =>
       inner.adminDeleteChatHistory(
         chatGroupId: chatGroupId,

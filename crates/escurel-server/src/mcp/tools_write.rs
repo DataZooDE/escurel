@@ -287,8 +287,24 @@ pub(super) fn is_machine_caller(caller: &AclCaller<'_>) -> bool {
 /// * `runner-status:<runner_id>` is the one overwritten record `report_runner_status` keeps per runner;
 ///   a squatted row would hide that runner's health behind an inbox row nothing garbage-collects.
 ///
+/// * `run:<id>:*` / `sched:<skill>:<window>` / `lint-<tenant>-<n>` are the runner's run lifecycle,
+///   schedule triggers and lint ticks. They are first-writer-wins and read back by id
+///   (`usage_report`, `fetch_blob{run_id}`, the schedule budget), so a pre-filed row would hide a
+///   run or swallow a trigger: only the bookkeeper (an admin that is not a machine caller, i.e. the
+///   runner's own identity) files them.
+///
 /// Every door that takes a caller-chosen event id (MCP `capture_event`, `/ingest`) asks this first.
-pub(crate) fn reserved_event_id_refusal(event_id: &str) -> Option<String> {
+pub(crate) fn reserved_event_id_refusal(event_id: &str, caller: &AclCaller<'_>) -> Option<String> {
+    const BOOKKEEPER_PREFIXES: [&str; 3] = ["run:", "sched:", "lint-"];
+    if let Some(prefix) = BOOKKEEPER_PREFIXES
+        .iter()
+        .find(|p| event_id.starts_with(**p))
+        && (!caller.is_admin || is_machine_caller(caller))
+    {
+        return Some(format!(
+            "event ids starting with `{prefix}` are reserved for the runner's own identity"
+        ));
+    }
     if event_id.starts_with(crate::write_back::RESERVED_EVENT_ID_PREFIX) {
         return Some(format!(
             "event ids starting with `{}` are reserved for the gateway",
@@ -465,6 +481,25 @@ pub(super) async fn write_acl_refusal(
     page_id: &str,
     content: &str,
 ) -> Result<Option<Value>, JsonRpcError> {
+    // An agent's write scope (#823) answers first, by name: the run's record
+    // and the agent author both need to tell "outside this agent's scope"
+    // apart from "this subject may not write that page".
+    if caller.agent_write_denied(page_id) {
+        let agent = caller.agent.map_or("", |a| a.id.as_str());
+        return Ok(Some(json!({
+            "ok": false,
+            "issues": [{
+                "severity": "error",
+                "code": "agent_scope_denied",
+                "location": "page_id",
+                "message": format!(
+                    "write denied: agent `{agent}` is not scoped to write `{page_id}` \
+                     (its `scopes.write`)"
+                ),
+            }],
+        })));
+    }
+    let write_acl = write_acl.for_page(page_id, content);
     if write_acl == crate::server::WriteAclMode::Off {
         return Ok(None);
     }
@@ -1247,33 +1282,54 @@ pub(super) async fn tool_move_page(
             }],
         }));
     }
-    if write_acl != crate::server::WriteAclMode::Off {
-        let allowed = indexer
-            .may_write_page(&caller, &a.from, &existing)
-            .await
-            .map_err(|e| JsonRpcError::internal(format!("move_page acl: {e}")))?;
-        if !allowed {
-            if write_acl == crate::server::WriteAclMode::Log {
-                tracing::warn!(
-                    subject = %caller.subject,
-                    page_id = %a.from,
-                    "write-ACL would deny this move (log mode) — allowing"
-                );
-            } else {
-                return Ok(json!({
-                    "ok": false,
-                    "issues": [{
-                        "severity": "error",
-                        "code": "forbidden",
-                        "location": "frontmatter",
-                        "message": format!(
-                            "move denied: caller `{}` does not own instance `{}`",
-                            caller.subject, a.from
-                        ),
-                    }],
-                }));
-            }
+    // A move removes `from` and creates `to`, so each id gets the write
+    // decision a write of these bytes there would: the destination is judged
+    // as a create under the skill its path names, for every caller — not only
+    // an agent's scope or the admin-only system paths (#823 hardening).
+    for (page_id, location) in [(&a.from, "frontmatter"), (&a.to, "to")] {
+        if caller.agent_write_denied(page_id) {
+            return Ok(json!({
+                "ok": false,
+                "issues": [{
+                    "severity": "error",
+                    "code": "agent_scope_denied",
+                    "location": location,
+                    "message": format!(
+                        "move denied: agent `{}` is not scoped to write `{page_id}`",
+                        caller.agent.map_or("", |a| a.id.as_str())
+                    ),
+                }],
+            }));
         }
+        let write_acl = write_acl.for_page(page_id, &existing);
+        if write_acl == crate::server::WriteAclMode::Off
+            || indexer
+                .may_write_page(&caller, page_id, &existing)
+                .await
+                .map_err(|e| JsonRpcError::internal(format!("move_page acl: {e}")))?
+        {
+            continue;
+        }
+        if write_acl == crate::server::WriteAclMode::Log {
+            tracing::warn!(
+                subject = %caller.subject,
+                page_id = %page_id,
+                "write-ACL would deny this move (log mode) — allowing"
+            );
+            continue;
+        }
+        return Ok(json!({
+            "ok": false,
+            "issues": [{
+                "severity": "error",
+                "code": "forbidden",
+                "location": location,
+                "message": format!(
+                    "move denied: caller `{}` may not write `{page_id}`",
+                    caller.subject
+                ),
+            }],
+        }));
     }
 
     if let Some(refused) = removal_refusal(indexer, &a.from, "move").await? {
@@ -1472,6 +1528,7 @@ pub(super) async fn tool_delete_page(
     // Write ACL: a delete is an overwrite of the existing page, so the caller
     // must own it (or be admin). Passing the stored content as the write
     // content yields the own-the-existing-page (Verb::Update) decision.
+    let write_acl = write_acl.for_page(&a.page_id, &existing);
     if write_acl != crate::server::WriteAclMode::Off {
         let allowed = indexer
             .may_write_page(&caller, &a.page_id, &existing)
@@ -2114,6 +2171,26 @@ pub(super) fn stamp_captured_by(
     Some(obj)
 }
 
+/// Refuse filing onto `page_id` for an agent whose write scope (#823) does not
+/// reach it. Filing an event into a record — at capture or by assignment —
+/// adds to that record, so it is bounded like a write, whether or not the
+/// event ACL is on: `assign_event` checks the target only for an unassigned
+/// event, which is narrower than an agent's scope must be.
+fn agent_target_refusal(
+    caller: &AclCaller<'_>,
+    tool: &str,
+    page_id: &str,
+) -> Result<(), JsonRpcError> {
+    if page_id.is_empty() || !caller.agent_write_denied(page_id) {
+        return Ok(());
+    }
+    let agent = caller.agent.map_or("", |a| a.id.as_str());
+    Err(JsonRpcError::forbidden(format!(
+        "{tool}: agent `{agent}` is not scoped to write `{page_id}` (its `scopes.write`)"
+    ))
+    .with_code("agent_scope_denied", false))
+}
+
 pub(super) async fn tool_capture_event(
     indexer: &Indexer,
     caller: AclCaller<'_>,
@@ -2124,6 +2201,11 @@ pub(super) async fn tool_capture_event(
     args: Value,
 ) -> Result<Value, JsonRpcError> {
     let mut a: CaptureEventArgs = parse_args(args, "capture_event")?;
+    agent_target_refusal(
+        &caller,
+        "capture_event",
+        a.instance_page_id.as_deref().unwrap_or(""),
+    )?;
     // An event with no `label_skill` is unroutable: the runner selects its
     // system prompt by that label, and `{}` used to mint junk the inbox
     // could never dispatch (API review F4). Refuse at the door.
@@ -2217,9 +2299,14 @@ pub(super) async fn tool_capture_event(
     } else {
         None
     };
-    // Ids in the gateway's own namespaces (`write-back:*`, `runner-status:*`) are addressed by id and
-    // trusted by what reads them: a caller must not be able to file one. The same refusal guards `/ingest`.
-    if let Some(reason) = a.event_id.as_deref().and_then(reserved_event_id_refusal) {
+    // Ids in the gateway's and the runner's own namespaces (`write-back:*`, `runner-status:*`, `run:*`,
+    // `sched:*`, `lint-*`) are addressed by id and trusted by what reads them: a caller must not be
+    // able to file one. The same refusal guards `/ingest`.
+    if let Some(reason) = a
+        .event_id
+        .as_deref()
+        .and_then(|id| reserved_event_id_refusal(id, &caller))
+    {
         return Err(JsonRpcError::invalid_params(format!(
             "capture_event: {reason}"
         )));
@@ -3322,6 +3409,24 @@ pub(super) struct ListEventsArgs {
     /// latest row (the workbench reads `escurel:runner-status` this way).
     #[serde(default)]
     newest_first: bool,
+    /// RFC 3339: only events at or after this `at`.
+    #[serde(default)]
+    since: Option<String>,
+    /// RFC 3339: only events before this `at` (exclusive).
+    #[serde(default)]
+    until: Option<String>,
+}
+
+/// An optional RFC 3339 tool argument, in UTC; empty reads as absent.
+pub(super) fn time_arg(
+    tool: &str,
+    field: &str,
+    raw: Option<&str>,
+) -> Result<Option<escurel_index::EventTs>, JsonRpcError> {
+    raw.filter(|s| !s.trim().is_empty())
+        .map(|s| escurel_index::parse_rfc3339_utc(s, &format!("`{field}`")))
+        .transpose()
+        .map_err(|e| JsonRpcError::invalid_params(format!("{tool}: {e}")))
 }
 
 pub(super) async fn tool_list_events(
@@ -3414,6 +3519,8 @@ pub(super) async fn tool_list_events(
             }
         };
         filter.label_skill = label;
+        filter.since = time_arg("list_events", "since", a.since.as_deref())?;
+        filter.until = time_arg("list_events", "until", a.until.as_deref())?;
         let page = indexer
             .list_events_filtered_page(
                 &filter,
@@ -3505,6 +3612,7 @@ pub(super) async fn tool_assign_event(
     args: Value,
 ) -> Result<Value, JsonRpcError> {
     let a: AssignEventArgs = parse_args(args, "assign_event")?;
+    agent_target_refusal(&caller, "assign_event", &a.instance_page_id)?;
 
     // Claiming an event you may not read is refused as NOT FOUND, using the
     // indexer's own `EventNotFound` so the code and the message are

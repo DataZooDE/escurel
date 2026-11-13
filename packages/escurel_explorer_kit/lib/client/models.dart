@@ -575,7 +575,28 @@ class SkillSummary {
     this.layer = 'overlay',
     this.shadows,
     this.overview,
+    this.schedule,
+    this.scheduleRunsPerDay,
+    this.scheduleInvalid = false,
+    this.scheduleBudgetInvalid = false,
   });
+
+  /// The skill's `schedule:` cron expression, as written, when declared —
+  /// the runner fires it on that cadence (references/11).
+  final String? schedule;
+
+  /// `schedule_budget.runs_per_day` when a budget is declared: the most
+  /// scheduled runs the runner fires per UTC day. `0` with
+  /// [scheduleBudgetInvalid] for a budget that cannot be read.
+  final int? scheduleRunsPerDay;
+
+  /// `schedule_invalid` — the gateway cannot read `schedule:`; the runner
+  /// fires nothing.
+  final bool scheduleInvalid;
+
+  /// `schedule_budget.invalid` — the declared budget cannot be read; the
+  /// runner fires nothing (fails closed).
+  final bool scheduleBudgetInvalid;
 
   /// The backend a skill's instances live in (`markdown` | `sql_view` |
   /// `document`); `markdown` when the skill declares no `backend:` block.
@@ -1140,4 +1161,136 @@ class AuditDrift {
 
   bool get isClean =>
       markdownNotInDuckdb.isEmpty && indexedButNoMarkdown.isEmpty;
+}
+
+/// One rolled-up row of `usage_report`: what the runs in [group] cost.
+/// [group] holds only the dimensions the report was grouped by
+/// (`skill` / `agent` / `page` / `model` / `day`); the total row's is empty.
+class UsageRow {
+  const UsageRow({
+    required this.group,
+    required this.runs,
+    this.byStatus = const {},
+    this.inputTokens = 0,
+    this.outputTokens = 0,
+    this.costUsd = 0,
+    this.pricedRuns = 0,
+    this.unpricedRuns = 0,
+  });
+
+  final Map<String, String> group;
+  final int runs;
+
+  /// Runs per terminal status (`processed`, `failed`, …).
+  final Map<String, int> byStatus;
+  final int inputTokens;
+  final int outputTokens;
+
+  /// The sum over the PRICED runs only — an unpriced run adds nothing.
+  final double costUsd;
+
+  /// Runs whose harness reported a cost.
+  final int pricedRuns;
+
+  /// Runs whose harness reported no cost (codex, a run without usage): their
+  /// spend is not in [costUsd].
+  final int unpricedRuns;
+
+  /// `processed / runs` — the contract's success rate; null with no runs.
+  double? get successRate =>
+      runs == 0 ? null : (byStatus['processed'] ?? 0) / runs;
+
+  factory UsageRow.fromJson(Map<String, dynamic> j) => UsageRow(
+    group: {
+      for (final e in (j['group'] as Map? ?? const {}).entries)
+        if (e.value != null) e.key.toString(): e.value.toString(),
+    },
+    runs: (j['runs'] as num?)?.toInt() ?? 0,
+    byStatus: {
+      for (final e in (j['by_status'] as Map? ?? const {}).entries)
+        e.key.toString(): (e.value as num?)?.toInt() ?? 0,
+    },
+    inputTokens: (j['input_tokens'] as num?)?.toInt() ?? 0,
+    outputTokens: (j['output_tokens'] as num?)?.toInt() ?? 0,
+    costUsd: (j['cost_usd'] as num?)?.toDouble() ?? 0,
+    pricedRuns: (j['priced_runs'] as num?)?.toInt() ?? 0,
+    unpricedRuns: (j['unpriced_runs'] as num?)?.toInt() ?? 0,
+  );
+}
+
+/// `usage_report`: usage and cost folded from every `run-finished` in a
+/// window, one [rows] entry per distinct group plus the [total].
+class UsageReport {
+  const UsageReport({required this.rows, this.total});
+
+  final List<UsageRow> rows;
+  final UsageRow? total;
+
+  factory UsageReport.fromJson(Map<String, dynamic> j) => UsageReport(
+    rows: (j['rows'] as List? ?? const [])
+        .whereType<Map<String, dynamic>>()
+        .map(UsageRow.fromJson)
+        .toList(),
+    total: j['total'] is Map<String, dynamic>
+        ? UsageRow.fromJson(j['total'] as Map<String, dynamic>)
+        : null,
+  );
+
+  /// The rows keyed by one grouping dimension's value (`page`, `agent`, …).
+  Map<String, UsageRow> by(String dim) => {
+    for (final r in rows)
+      if (r.group[dim] != null) r.group[dim]!: r,
+  };
+}
+
+/// An agent profile (#823): an instance of the `agent` system skill — the
+/// harness, model and least-privilege scopes a run executes under.
+class AgentProfile {
+  const AgentProfile({
+    required this.id,
+    required this.pageId,
+    this.harness,
+    this.model,
+    this.skills = const [],
+    this.tools,
+    this.write,
+    this.maxConcurrent,
+  });
+
+  /// The `agent` instance id; runs that act as it report `agent:<id>`.
+  final String id;
+  final String pageId;
+  final String? harness;
+
+  /// Null when the profile pins none (the runner's choice applies).
+  final String? model;
+
+  /// The skill links the agent may run (`[[skill::note]]`), as written.
+  final List<String> skills;
+
+  /// `scopes.tools` / `scopes.write`; null = no limit beyond the skill's.
+  final List<String>? tools;
+  final List<String>? write;
+  final int? maxConcurrent;
+
+  /// The principal key `usage_report{group_by:[agent]}` files its runs under.
+  String get principal => 'agent:$id';
+
+  factory AgentProfile.fromInstance(InstanceSummary i) {
+    final fm = i.frontmatter;
+    final scopes = fm['scopes'] is Map ? fm['scopes'] as Map : const {};
+    List<String>? strings(Object? v) =>
+        v is List ? v.map((e) => e.toString()).toList() : null;
+    final fallbackId = i.id.split('/').last.replaceFirst(RegExp(r'\.md$'), '');
+    return AgentProfile(
+      id: (fm['id'] as String?) ?? fallbackId,
+      pageId: i.id,
+      harness: fm['harness'] as String?,
+      model: fm['model'] as String?,
+      skills: strings(fm['skills']) ?? const [],
+      tools: strings(scopes['tools']),
+      write: strings(scopes['write']),
+      maxConcurrent: (fm['max_concurrent'] as num?)?.toInt(),
+    );
+  }
 }

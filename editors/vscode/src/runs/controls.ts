@@ -1,12 +1,15 @@
 import type { CaptureEventRequest } from '../client';
 import type { RunControl } from '../shared/protocol';
 import type { AdminState } from '../auth/adminState';
+import { injectTextProblem } from './steer';
 
 /** The label a control request is captured under (gateway: `RUN_CONTROL_LABEL`). */
 export const RUN_CONTROL_LABEL = 'escurel:run-control';
 
 export type ControlRequest =
   | { action: 'cancel' | 'retry'; runId?: string | undefined; reason?: string | undefined }
+  /** A message for a live run's session, sent whole (its spacing is the person's). */
+  | { action: 'inject'; runId?: string | undefined; text: string }
   | { action: 'requeue'; eventId?: string | undefined; reason?: string | undefined }
   | { action: 'pause' | 'resume'; reason?: string | undefined };
 
@@ -24,12 +27,17 @@ const need = (value: string | undefined, what: string, action: string): string =
  */
 export function buildControlEvent(req: ControlRequest): CaptureEventRequest {
   const body: Record<string, string> = { action: req.action };
-  if (req.action === 'cancel' || req.action === 'retry') {
+  if (req.action === 'cancel' || req.action === 'retry' || req.action === 'inject') {
     body.run_id = need(req.runId, 'the run (a run id)', req.action);
+  }
+  if (req.action === 'inject') {
+    const problem = injectTextProblem(req.text);
+    if (problem) throw new Error(`inject needs a message: ${problem}`);
+    body.text = req.text;
   } else if (req.action === 'requeue') {
     body.event_id = need(req.eventId, 'the dead-lettered event (an event id)', req.action);
   }
-  const reason = req.reason?.trim();
+  const reason = 'reason' in req ? req.reason?.trim() : undefined;
   if (reason) body.reason = reason;
   return {
     label_skill: RUN_CONTROL_LABEL,

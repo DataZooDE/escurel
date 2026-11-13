@@ -108,6 +108,7 @@ fn member(subject: &str) -> AclCaller<'_> {
         run_id: None,
         root_event_id: None,
         agent_skill: None,
+        agent: None,
     }
 }
 
@@ -121,6 +122,7 @@ fn member_with_groups<'a>(subject: &'a str, groups: &'a [String]) -> AclCaller<'
         run_id: None,
         root_event_id: None,
         agent_skill: None,
+        agent: None,
     }
 }
 
@@ -245,6 +247,7 @@ async fn instance_level_acl_block_overrides_the_skill() {
         run_id: None,
         root_event_id: None,
         agent_skill: None,
+        agent: None,
     };
     assert!(
         h.indexer
@@ -662,6 +665,7 @@ async fn admin_bypasses_owner_visibility() {
         run_id: None,
         root_event_id: None,
         agent_skill: None,
+        agent: None,
     };
     assert!(
         h.indexer

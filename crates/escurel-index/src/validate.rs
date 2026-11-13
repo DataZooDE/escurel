@@ -201,12 +201,9 @@ fn check_connector(page_kind: PageKind, fields: &YamlMapping) -> Option<Issue> {
 /// backend P2-7). Longer belongs in the body.
 pub const SUMMARY_MAX_CHARS: usize = 200;
 
-/// The harness adapters a skill may name (`harness:`). Kept in lock-step
-/// with the runner's `build_harness_named`; a name outside it is a lint
-/// finding here and a refused run there.
-pub const KNOWN_HARNESSES: [&str; 7] = [
-    "echo", "claude", "codex", "agy", "muse", "gemini", "delegate",
-];
+/// The harness adapters a skill may name (`harness:`): the runner's own list,
+/// so a name outside it is a lint finding here and a refused run there.
+pub use escurel_types::harness::KNOWN_HARNESSES;
 
 /// `summary:` on a skill page (workbench backend P2-7): absent is a
 /// warning (the workbench falls back to `description`), over
@@ -288,6 +285,79 @@ fn check_model(page_kind: PageKind, fields: &YamlMapping) -> Option<Issue> {
             .with_suggestion("e.g. `model: gemini-3.8-flash`, within ESCUREL_RUNNER_MODEL_ALLOW"),
         ),
     }
+}
+
+/// `schedule:` and `schedule_budget:` on a skill page (#819). Both are ERRORS when malformed: the
+/// runner fires what the page says, so a schedule it cannot read must not be written. The grammar is
+/// [`escurel_types::schedule::CronSchedule`]'s, the one the runner parses with.
+fn check_schedule(page_kind: PageKind, fields: &YamlMapping) -> Vec<Issue> {
+    let mut issues = Vec::new();
+    if page_kind != PageKind::Skill {
+        return issues;
+    }
+    if let Some(raw) = fields.get("schedule") {
+        let suggestion = "a 5- or 6-field cron expression, optionally zoned: \
+                          `schedule: \"CRON_TZ=Europe/Berlin 15 7 * * 1-5\"` (UTC when unzoned)";
+        let err = match raw.as_str() {
+            Some(expr) => escurel_types::schedule::CronSchedule::parse(expr)
+                .err()
+                .map(|e| format!("`schedule: {expr}`: {e}")),
+            None => Some("`schedule:` must be a string".to_owned()),
+        };
+        if let Some(msg) = err {
+            issues.push(
+                Issue::error("schedule_invalid", "frontmatter.schedule", msg)
+                    .with_suggestion(suggestion),
+            );
+        }
+    }
+    if let Some(raw) = fields.get("schedule_budget") {
+        let invalid = || {
+            Issue::error(
+                "schedule_budget_invalid",
+                "frontmatter.schedule_budget",
+                "`schedule_budget:` is a map with a positive integer `runs_per_day`",
+            )
+            .with_suggestion("write `schedule_budget: {runs_per_day: 5}`")
+        };
+        match raw.as_mapping() {
+            None => issues.push(invalid()),
+            Some(map) => {
+                let count = map
+                    .get("runs_per_day")
+                    .and_then(YamlValue::as_u64)
+                    .and_then(|n| u32::try_from(n).ok());
+                if count.is_none_or(|n| n == 0) {
+                    issues.push(invalid());
+                }
+                for key in map.keys() {
+                    if key.as_str() != Some("runs_per_day") {
+                        issues.push(Issue::warning(
+                            "schedule_budget_invalid",
+                            "frontmatter.schedule_budget",
+                            format!(
+                                "`schedule_budget` has no key `{}`; it is ignored",
+                                yaml_key(key)
+                            ),
+                        ));
+                    }
+                }
+            }
+        }
+        if fields.get("schedule").is_none() {
+            issues.push(Issue::warning(
+                "schedule_budget_invalid",
+                "frontmatter.schedule_budget",
+                "`schedule_budget:` without a `schedule:` caps nothing",
+            ));
+        }
+    }
+    issues
+}
+
+fn yaml_key(key: &YamlValue) -> String {
+    key.as_str()
+        .map_or_else(|| format!("{key:?}"), str::to_owned)
 }
 
 /// The roles a skill may declare (`role:`), as a knowledge tree sorts and icons them.
@@ -565,6 +635,137 @@ fn check_chat_keys(page_kind: PageKind, fields: &YamlMapping) -> Vec<Issue> {
                 .with_suggestion("remove the key, or check its spelling"),
             ),
         }
+    }
+    issues
+}
+
+/// The keys of an `agent` profile page (#823). Errors, because each one is
+/// authority: a malformed `scopes:` would otherwise be enforced as "nothing
+/// allowed" with nobody told why, and an unknown harness is a refused run.
+/// Applied to instances of the `agent` system skill only.
+fn check_agent_keys(page_kind: PageKind, fields: &YamlMapping) -> Vec<Issue> {
+    use escurel_types::agent_profile::{AGENT_SKILL, link_ids};
+    let mut issues = Vec::new();
+    if page_kind != PageKind::Instance
+        || fields.get("skill").and_then(YamlValue::as_str) != Some(AGENT_SKILL)
+    {
+        return issues;
+    }
+    let error =
+        |code: &str, at: &str, msg: &str| Issue::error(code, format!("frontmatter.{at}"), msg);
+    if let Some(h) = fields.get("harness") {
+        match h.as_str().map(str::trim) {
+            Some(name) if KNOWN_HARNESSES.contains(&name) => {}
+            _ => issues.push(
+                error(
+                    "agent_harness_unknown",
+                    "harness",
+                    "`harness:` names no harness adapter",
+                )
+                .with_suggestion(format!("use one of: {}", KNOWN_HARNESSES.join(" | "))),
+            ),
+        }
+    }
+    if fields
+        .get("model")
+        .is_some_and(|m| m.as_str().is_none_or(|s| s.trim().is_empty()))
+    {
+        issues.push(error(
+            "agent_model_invalid",
+            "model",
+            "`model:` must be a non-empty model id",
+        ));
+    }
+    if let Some(skills) = fields.get("skills") {
+        let entries = skills.as_sequence().map_or(0, Vec::len);
+        let json = serde_json::to_value(skills).unwrap_or_default();
+        if skills.as_sequence().is_none() || link_ids(Some(&json), "skill").len() != entries {
+            issues.push(
+                error(
+                    "agent_skills_invalid",
+                    "skills",
+                    "`skills:` must be a list of skill links",
+                )
+                .with_suggestion("write `skills: [\"[[skill::triage]]\", \"[[skill::note]]\"]`"),
+            );
+        }
+    }
+    if let Some(scopes) = fields.get("scopes") {
+        match scopes.as_mapping() {
+            None => issues.push(error(
+                "agent_scopes_invalid",
+                "scopes",
+                "`scopes:` is a map with `tools:` and/or `write:` lists",
+            )),
+            Some(map) => {
+                for (key, value) in map {
+                    let key = key.as_str().unwrap_or("?");
+                    let strings = value.as_sequence().is_some_and(|s| {
+                        s.iter()
+                            .all(|v| v.as_str().is_some_and(|t| !t.trim().is_empty()))
+                    });
+                    match key {
+                        "tools" if strings => {
+                            for unknown in value
+                                .as_sequence()
+                                .into_iter()
+                                .flatten()
+                                .filter_map(|v| v.as_str())
+                                .filter(|t| !escurel_types::tools::is_known_tool(t.trim()))
+                            {
+                                issues.push(error(
+                                    "agent_scopes_invalid",
+                                    "scopes.tools",
+                                    &format!(
+                                        "`{unknown}` is not a tool this gateway declares; the \
+                                         agent could never call it"
+                                    ),
+                                ));
+                            }
+                        }
+                        "write" if strings => {
+                            for deep in value
+                                .as_sequence()
+                                .into_iter()
+                                .flatten()
+                                .filter_map(|v| v.as_str())
+                                .filter(|g| !escurel_types::agent_profile::glob_is_bounded(g))
+                            {
+                                issues.push(error(
+                                    "agent_scopes_invalid",
+                                    "scopes.write",
+                                    &format!(
+                                        "`{deep}` has more than {} `**`; such a glob matches \
+                                         nothing",
+                                        escurel_types::agent_profile::MAX_DOUBLE_STARS
+                                    ),
+                                ));
+                            }
+                        }
+                        "tools" | "write" => issues.push(error(
+                            "agent_scopes_invalid",
+                            &format!("scopes.{key}"),
+                            "a scope is a list of non-empty strings; a malformed one grants nothing",
+                        )),
+                        _ => issues.push(error(
+                            "agent_scopes_invalid",
+                            &format!("scopes.{key}"),
+                            "`scopes:` knows only `tools` and `write`",
+                        )),
+                    }
+                }
+            }
+        }
+    }
+    if fields
+        .get("max_concurrent")
+        .is_some_and(|v| v.as_u64().is_none_or(|n| n == 0))
+    {
+        issues.push(error(
+            "agent_max_concurrent_invalid",
+            "max_concurrent",
+            "`max_concurrent:` must be a positive whole number",
+        ));
     }
     issues
 }
@@ -1213,6 +1414,53 @@ pub(crate) struct SkillContract {
 }
 
 impl Indexer {
+    /// A skill page's `agent: "[[agent::x]]"` default (#823): malformed is an
+    /// error (the runner would refuse every run of the skill); an agent that
+    /// does not exist, or does not list this skill, is a warning — the agent
+    /// may be created after the skill, but until then its runs are refused.
+    async fn check_skill_agent(
+        &self,
+        page_kind: PageKind,
+        fields: &YamlMapping,
+    ) -> Result<Vec<Issue>, IndexerError> {
+        let Some(raw) = fields.get("agent").filter(|_| page_kind == PageKind::Skill) else {
+            return Ok(Vec::new());
+        };
+        let json = serde_json::to_value(raw).unwrap_or_default();
+        let Some(agent) = escurel_types::agent_profile::link_id(Some(&json), "agent") else {
+            return Ok(vec![
+                Issue::error(
+                    "agent_invalid",
+                    "frontmatter.agent",
+                    "`agent:` names the default agent as one `[[agent::<id>]]` link",
+                )
+                .with_suggestion("write `agent: \"[[agent::researcher]]\"`"),
+            ]);
+        };
+        let skill = fields.get("id").and_then(YamlValue::as_str).unwrap_or("");
+        Ok(match self.agent_profile(&agent).await? {
+            None => vec![Issue::warning(
+                "agent_unresolved",
+                "frontmatter.agent",
+                format!(
+                    "agent `{agent}` has no page yet; this skill's runs are refused until it does"
+                ),
+            )],
+            Some(p) if !p.lists_skill(skill) => vec![
+                Issue::warning(
+                    "agent_skill_not_listed",
+                    "frontmatter.agent",
+                    format!(
+                        "agent `{agent}` does not list skill `{skill}`; this skill's runs are \
+                         refused until it does"
+                    ),
+                )
+                .with_suggestion(format!("add `[[skill::{skill}]]` to the agent's `skills:`")),
+            ],
+            Some(_) => Vec::new(),
+        })
+    }
+
     /// Dry-run the indexer's authoring checks on `content` and
     /// return the resulting [`Issue`] list. Writes nothing.
     ///
@@ -1300,6 +1548,12 @@ impl Indexer {
         issues.extend(check_overview(parsed.frontmatter.page_kind, fields));
         issues.extend(check_okf_keys(parsed.frontmatter.page_kind, fields));
         issues.extend(check_chat_keys(parsed.frontmatter.page_kind, fields));
+        issues.extend(check_schedule(parsed.frontmatter.page_kind, fields));
+        issues.extend(check_agent_keys(parsed.frontmatter.page_kind, fields));
+        issues.extend(
+            self.check_skill_agent(parsed.frontmatter.page_kind, fields)
+                .await?,
+        );
         if parsed.frontmatter.page_kind == PageKind::Skill
             && let Some(raw) = fields.get("actions")
         {
@@ -2091,5 +2345,80 @@ mod duration_tests {
         ] {
             assert!(!is_iso_duration(bad), "{bad}");
         }
+    }
+}
+
+#[cfg(test)]
+mod schedule_tests {
+    use super::{PageKind, check_schedule};
+
+    fn codes(page_kind: PageKind, yaml: &str) -> Vec<(String, bool)> {
+        let source = format!("---\nkind: skill\nid: x\n{yaml}\n---\n");
+        let page = escurel_md::parse(&source).unwrap();
+        check_schedule(page_kind, &page.frontmatter.fields)
+            .into_iter()
+            .map(|i| (i.code.clone(), i.severity == super::Severity::Error))
+            .collect()
+    }
+
+    #[test]
+    fn a_well_formed_schedule_and_budget_pass() {
+        for yaml in [
+            "schedule: \"15 7 * * 1-5\"",
+            "schedule: \"*/2 * * * * *\"",
+            "schedule: \"CRON_TZ=Europe/Berlin 15 7 * * 1-5\"\nschedule_budget: {runs_per_day: 5}",
+        ] {
+            assert!(codes(PageKind::Skill, yaml).is_empty(), "{yaml}");
+        }
+    }
+
+    #[test]
+    fn a_bad_cron_or_zone_is_an_error() {
+        for yaml in [
+            "schedule: \"every monday\"",
+            "schedule: \"61 * * * *\"",
+            "schedule: \"CRON_TZ=Mars/Olympus 0 * * * *\"",
+            "schedule: [\"0 * * * *\"]",
+            "schedule: \"\"",
+        ] {
+            assert_eq!(
+                codes(PageKind::Skill, yaml),
+                vec![("schedule_invalid".to_owned(), true)],
+                "{yaml}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_bad_budget_is_an_error_and_odd_ones_warn() {
+        for yaml in [
+            "schedule: \"0 * * * *\"\nschedule_budget: 5",
+            "schedule: \"0 * * * *\"\nschedule_budget: {runs_per_day: 0}",
+            "schedule: \"0 * * * *\"\nschedule_budget: {runs_per_day: -1}",
+            "schedule: \"0 * * * *\"\nschedule_budget: {runs_per_day: many}",
+            "schedule: \"0 * * * *\"\nschedule_budget: {}",
+        ] {
+            assert_eq!(
+                codes(PageKind::Skill, yaml),
+                vec![("schedule_budget_invalid".to_owned(), true)],
+                "{yaml}"
+            );
+        }
+        assert_eq!(
+            codes(
+                PageKind::Skill,
+                "schedule: \"0 * * * *\"\nschedule_budget: {runs_per_day: 2, per_week: 9}"
+            ),
+            vec![("schedule_budget_invalid".to_owned(), false)]
+        );
+        assert_eq!(
+            codes(PageKind::Skill, "schedule_budget: {runs_per_day: 2}"),
+            vec![("schedule_budget_invalid".to_owned(), false)]
+        );
+    }
+
+    #[test]
+    fn only_skill_pages_are_checked() {
+        assert!(codes(PageKind::Instance, "schedule: \"nonsense\"").is_empty());
     }
 }

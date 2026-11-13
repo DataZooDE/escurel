@@ -132,12 +132,27 @@ pub(crate) fn tool_defs() -> Vec<ToolDef> {
             Execution::Deterministic,
             Scope::Agent,
             Touches::READ,
-            "Fetch the original retained file bytes of a document-backed instance (base64 + content type) for a faithful client preview.",
+            "Fetch the original retained file bytes of a document-backed instance (base64 + content type) for a faithful client preview — or, with `run_id` instead of `page_id`, a finished run's transcript (JSONL, `application/x-ndjson`), readable when the run's `run-finished` event is.",
             json!({
                 "type": "object",
-                "required": ["page_id"],
                 "properties": {
-                    "page_id": { "type": "string", "description": "Repo-relative page path, e.g. `markdown/instances/<skill>/<slug>.md` (skills live under `markdown/skills/<id>.md`)." }
+                    "page_id": { "type": "string", "description": "Repo-relative page path, e.g. `markdown/instances/<skill>/<slug>.md` (skills live under `markdown/skills/<id>.md`). Exactly one of `page_id` / `run_id`." },
+                    "run_id": { "type": "string", "description": "A finished run whose transcript to fetch. Refusals carry `data.code`: `run_not_found` (absent or not readable), `transcript_absent`, `transcript_expired`." }
+                }
+            }),
+        ),
+        tool_entry(
+            "put_run_transcript",
+            Execution::Orchestration,
+            Scope::Agent,
+            Touches::INDEX,
+            "Store a run's transcript — JSONL, one `{ts, attempt, kind, name?, args_digest?, summary}` record per line — keyed by the run (at most 2 MiB). Written once per run: the same bytes again are a no-op, different bytes are refused (`transcript_exists`). Runner bookkeeping: only the run's own bearer (its `run_id` claim) or the runner's non-run admin bearer may call it. The runner records `{records, bytes, sha256}` on `run-finished.transcript` (informational); read it back with `fetch_blob{run_id}`.",
+            json!({
+                "type": "object",
+                "required": ["run_id", "records"],
+                "properties": {
+                    "run_id": { "type": "string", "description": "The run the transcript belongs to; must be the bearer's own run." },
+                    "records": { "type": "string", "description": "The transcript as JSONL (one JSON object per line), already redacted." }
                 }
             }),
         ),
@@ -990,7 +1005,8 @@ pub(crate) fn tool_defs() -> Vec<ToolDef> {
                  absent, not an error. Paginated: ONLY a null \
                  `next_cursor` means the listing is complete; it is where this \
                  page ENDED (pass it back as `cursor` to read on or to tail), \
-                 and `has_more: true` says rows already follow.",
+                 and `has_more: true` says rows already follow. `since` / \
+                 `until` (RFC 3339) bound any listing by the event's `at`.",
             json!({
                 "type": "object",
                 "properties": {
@@ -1003,7 +1019,9 @@ pub(crate) fn tool_defs() -> Vec<ToolDef> {
                     "include_system": { "type": "boolean", "description": "Also list `kind: system` rows. Default false." },
                     "newest_first": { "type": "boolean", "description": "Turn the listing around (newest first); with limit 1, the latest row. Default false (oldest first: the tail shape)." },
                     "limit": { "type": "integer", "minimum": 1, "maximum": 10000 },
-                    "cursor": { "type": "string", "description": "Opaque resume cursor from a previous page's next_cursor (listing branch only)." }
+                    "cursor": { "type": "string", "description": "Opaque resume cursor from a previous page's next_cursor (listing branch only)." },
+                    "since": { "type": "string", "description": "RFC 3339: only events at or after this `at`." },
+                    "until": { "type": "string", "description": "RFC 3339: only events before this `at` (exclusive)." }
                 }
             }),
         ),
@@ -1223,6 +1241,31 @@ pub(crate) fn tool_defs() -> Vec<ToolDef> {
                     "keep_latest": { "type": "integer", "minimum": 0, "description": "Keep the newest N events of the label whatever their age." },
                     "apply": { "type": "boolean", "default": false, "description": "Delete for real; the default only counts." },
                     "allow_protected": { "type": "boolean", "default": false }
+                }
+            }),
+        ),
+        tool_entry(
+            "usage_report",
+            Execution::Deterministic,
+            Scope::Admin,
+            Touches::shared(Surface::Events),
+            "Admin: usage and cost rolled up from every `run-finished` in a \
+                 window — runs, runs per terminal status, input/output tokens \
+                 and cost in USD per group of `group_by` (one or more of \
+                 `skill`, `agent`, `page`, `model`, `day`), plus a `total`. \
+                 `since` is inclusive, `until` exclusive; `skill` narrows to \
+                 one skill's runs before grouping.",
+            json!({
+                "type": "object",
+                "required": ["group_by"],
+                "properties": {
+                    "group_by": {
+                        "type": "array", "minItems": 1,
+                        "items": { "type": "string", "enum": ["skill", "agent", "page", "model", "day"] }
+                    },
+                    "since": { "type": "string", "description": "RFC 3339: runs finished at or after this." },
+                    "until": { "type": "string", "description": "RFC 3339: runs finished before this (exclusive)." },
+                    "skill": { "type": "string", "description": "Only this skill's runs." }
                 }
             }),
         ),
@@ -1915,6 +1958,7 @@ fn group_of(name: &str, scope: Scope) -> &'static str {
         | "list_drafts" | "promote_draft" | "discard_draft" => "[REVIEW]",
         "mint_agent_token"
         | "report_progress"
+        | "put_run_transcript"
         | "report_runner_status"
         | "get_run_tool_calls"
         | "list_lineage"
@@ -1974,6 +2018,7 @@ fn annotations_of(name: &str) -> Value {
                 | "admin_audit"
                 | "admin_webhook_deliveries"
                 | "admin_index_query"
+                | "usage_report"
                 | "admin_list_lanes"
                 | "admin_lane_keys"
                 | "admin_lane_blob"
@@ -2426,6 +2471,13 @@ fn output_schema_for(name: &str) -> Option<Value> {
             "nodes": { "type": "array", "description": "[{id, type: event|run|changeset|draft, parent, state, …}]" },
             "next_cursor": { "type": "string", "description": "present iff more events lie past the page" }
         })),
+        "usage_report" => obj(json!({
+            "group_by": { "type": "array" },
+            "since": { "type": ["string", "null"] },
+            "until": { "type": ["string", "null"] },
+            "rows": { "type": "array", "description": "[{group: {skill?, agent?, page?, model?, day?}, runs, by_status, input_tokens, output_tokens, cost_usd, priced_runs, unpriced_runs}]" },
+            "total": { "type": "object", "description": "{runs, by_status, input_tokens, output_tokens, cost_usd, priced_runs, unpriced_runs}" }
+        })),
         "get_run_tool_calls" => obj(json!({
             "run_id": { "type": "string" },
             "calls": { "type": "array" },
@@ -2446,6 +2498,11 @@ fn output_schema_for(name: &str) -> Option<Value> {
         })),
         "fetch_blob" => obj(json!({
             "blob": { "type": ["object", "null"] }
+        })),
+        "put_run_transcript" => obj(json!({
+            "sha256": { "type": "string", "description": "`sha256:<hex>` of the stored bytes" },
+            "records": { "type": "integer" },
+            "bytes": { "type": "integer" }
         })),
         "expand" => obj(json!({
             "page": { "type": ["object", "null"] },

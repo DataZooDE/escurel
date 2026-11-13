@@ -1,13 +1,63 @@
 import { notify } from '../commands/notify';
-import { inFlight, pollControlResult } from './controlWait';
+import { inFlight, pollControlResult, type SendOutcome } from './controlWait';
 import * as vscode from 'vscode';
 import type { Services } from '../services';
 import { buildControlEvent, type ControlRequest } from './controls';
-import { describeControlRefusal, describeOutcome, findControlResult } from './controlResult';
+import {
+  describeControlRefusal,
+  describeOutcome,
+  findControlResult,
+  type ControlResult,
+} from './controlResult';
 import { registerAdminContext } from './adminContext';
 import { asksHere, confirmationFor, outcomeChannel, progressTitle } from './controlWording';
 
-type Action = ControlRequest['action'];
+/** The controls a command sends; a steer is sent from run detail only (it carries the person's text). */
+type Action = Exclude<ControlRequest['action'], 'inject'>;
+
+/** The words for a request the runner has not answered in time. */
+export function timeoutWords(lookupFailed: boolean): string {
+  return lookupFailed
+    ? 'The request was sent, but the answer could not be read. Check the Runs view.'
+    : 'The runner has not answered yet. It acts on requests as it polls.';
+}
+
+/**
+ * Capture one control request and wait for the runner's answer to it. The one path every control
+ * takes, from a command or from run detail, so the request shape and the matching stay in one place.
+ */
+export async function sendControl(
+  services: Services,
+  request: ControlRequest,
+): Promise<SendOutcome<ControlResult>> {
+  let eventId: string;
+  try {
+    eventId = (await services.client.captureEvent(buildControlEvent(request))).event_id;
+  } catch (error) {
+    // Only HERE is a refusal real: the gateway did not take the request.
+    return { kind: 'refused', message: describeControlRefusal(error) };
+  }
+  const runId = 'runId' in request ? request.runId : undefined;
+  return pollControlResult({
+    find: () =>
+      findControlResult(
+        (cursor) =>
+          services.client.listEvents({
+            label_skill: 'escurel:run-control-result',
+            newest_first: true,
+            include_system: true,
+            limit: 50,
+            ...(cursor ? { cursor } : {}),
+          }),
+        { eventId, action: request.action, ...(runId ? { runId } : {}) },
+      ),
+    now: Date.now,
+    sleep: (ms) => new Promise<void>((resolve) => setTimeout(resolve, ms)),
+    timeoutMs: 30_000,
+    intervalMs: 500,
+    cancelled: () => false,
+  });
+}
 export type Argument =
   | string
   | { runId?: string | undefined; eventId?: string | undefined; id?: string | undefined }
@@ -62,14 +112,6 @@ export function registerControlCommands(
       }
       const key = `${action}:${'runId' in request ? (request.runId ?? '') : ''}:${'eventId' in request ? (request.eventId ?? '') : ''}`;
       await once(key, async () => {
-        let eventId: string;
-        try {
-          eventId = (await services.client.captureEvent(buildControlEvent(request))).event_id;
-        } catch (error) {
-          // Only HERE is a refusal real: the gateway did not take the request.
-          void vscode.window.showErrorMessage(describeControlRefusal(error));
-          return;
-        }
         await vscode.window.withProgress(
           {
             // The status bar, not a toast: one line while the runner picks it up.
@@ -77,30 +119,10 @@ export function registerControlCommands(
             title: progressTitle(action),
           },
           async () => {
-            const outcome = await pollControlResult({
-              find: () =>
-                findControlResult(
-                  (cursor) =>
-                    services.client.listEvents({
-                      label_skill: 'escurel:run-control-result',
-                      newest_first: true,
-                      include_system: true,
-                      limit: 50,
-                      ...(cursor ? { cursor } : {}),
-                    }),
-                  {
-                    eventId,
-                    action,
-                    ...('runId' in request && request.runId ? { runId: request.runId } : {}),
-                  },
-                ),
-              now: Date.now,
-              sleep: (ms) => new Promise<void>((resolve) => setTimeout(resolve, ms)),
-              timeoutMs: 30_000,
-              intervalMs: 500,
-              cancelled: () => false,
-            });
-            if (outcome.kind === 'result') {
+            const outcome = await sendControl(services, request);
+            if (outcome.kind === 'refused') {
+              void vscode.window.showErrorMessage(outcome.message);
+            } else if (outcome.kind === 'result') {
               const text = describeOutcome(outcome.result);
               if (outcomeChannel(outcome.result.outcome) === 'status') {
                 vscode.window.setStatusBarMessage(text, 8000);
@@ -114,11 +136,7 @@ export function registerControlCommands(
                 ]);
               }
             } else if (outcome.kind === 'timeout') {
-              void vscode.window.showInformationMessage(
-                outcome.lookupFailed
-                  ? 'The request was sent, but the answer could not be read. Check the Runs view.'
-                  : 'The runner has not answered yet. It acts on requests as it polls.',
-              );
+              void vscode.window.showInformationMessage(timeoutWords(outcome.lookupFailed));
             }
           },
         );

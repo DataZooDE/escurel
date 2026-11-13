@@ -157,6 +157,7 @@ fn analyst(subject: &str) -> AclCaller<'_> {
         run_id: None,
         root_event_id: None,
         agent_skill: None,
+        agent: None,
     }
 }
 
@@ -169,6 +170,7 @@ fn admin(subject: &str) -> AclCaller<'_> {
         run_id: None,
         root_event_id: None,
         agent_skill: None,
+        agent: None,
     }
 }
 

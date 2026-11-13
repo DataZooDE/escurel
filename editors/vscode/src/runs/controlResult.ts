@@ -36,6 +36,10 @@ export function describeOutcome(result: ControlResult): string {
   switch (result.outcome) {
     case 'cancelled':
       return 'Run cancelled.';
+    case 'injected':
+      return 'Message sent. The agent reads it as its next turn.';
+    case 'unsupported':
+      return `This agent${result.detail ? ` (${result.detail})` : ''} cannot take a message while it runs.`;
     case 'not_live':
       return `That run is not running any more${result.detail ? ` (${result.detail})` : ''}.`;
     case 'requeued': {

@@ -14,50 +14,62 @@
 //! [`docs/contract/agent-orchestration.md`]: https://github.com/DataZooDE/escurel/blob/main/docs/contract/agent-orchestration.md
 
 mod admit;
+mod agent;
 mod auth;
-mod cancel;
 mod cascade;
 mod chat_reply;
 mod config;
 mod dispatch;
 mod ledger;
+mod live_runs;
 mod packager;
 mod promotion;
 mod quota;
 mod reconciler;
 mod recovery;
 mod run_events;
+pub mod schedule;
+mod transcript;
 mod trigger;
 mod workflow;
 
 pub use admit::{Admission, LoopLimits, admit};
+pub use agent::{AgentChoice, agent_for_trigger, choose_agent, resolve_run_agent};
 pub use auth::{
     AuthError, ROOT_EVENT_ID_CLAIM, RUN_ID_CLAIM, RunClaims, Signer, TRACE_ID_CLAIM, TokenSource,
 };
-pub use cancel::{Cancel, CancelRegistry, DEFAULT_CANCEL_GRACE};
 pub use cascade::{
     CascadeError, CascadeOutcome, SkillContract, emit_cascade, emit_cascade_with_id, skill_contract,
 };
 pub use chat_reply::{ChatOutcome, post_chat_reply};
-pub use config::{ConfigError, OpenAiProviderConfig, RunnerConfig, ToolSupport};
+pub use config::{
+    ConfigError, DEFAULT_SCHEDULE_TICK, OpenAiProviderConfig, RunnerConfig, ToolSupport,
+};
 pub use dispatch::{DispatchConsumer, DispatchQueue, EnqueueOutcome};
 pub use escurel_runner_workflow::OperationStatus;
 pub use ledger::{
     DeadLetterReason, Ledger, LedgerDecision, LedgerError, RunId, RunRecord, RunStatus,
 };
+pub use live_runs::{
+    Cancel, DEFAULT_CANCEL_GRACE, InjectInbox, InjectSender, InjectSession, Injection, RunRegistry,
+};
 pub use packager::{
     ALLOWED_TOOLS, Autonomy, CHAT_REQUIRES_RUN_TOKENS, Delegation, PLAN_PARAGRAPH, PackageError,
-    REVIEW_TOOLS, TaskContext, WORKFLOW_STEP_TOOLS, bound_page_id, chat_run_token, chat_tools,
-    package, plan_tools,
+    REVIEW_TOOLS, RunGrant, TaskContext, WORKFLOW_STEP_TOOLS, bound_page_id, chat_run_token,
+    chat_tools, package, plan_tools,
+};
+pub use transcript::{
+    MAX_RECORDS_PER_RUN, SUMMARY_MAX_CHARS, TranscriptEntry, TranscriptKind, TranscriptRecord,
+    TranscriptSink, args_digest, parse_rfc3339, to_jsonl,
 };
 
 /// The harness selector for a step that delegates to the agent over A2A
 /// (async-ops Phase 4 slice 3c). Shared here so the packager (which builds the
 /// [`Delegation`]) and the harness adapter (which consumes it) name it
 /// identically without the core→harness dependency the reverse would require.
-pub const DELEGATE_HARNESS: &str = "delegate";
+pub const DELEGATE_HARNESS: &str = escurel_types::harness::DELEGATE;
 pub use promotion::{PromotedDraft, REVIEW_LABEL, cascade_event_id, promoted_draft};
-pub use quota::{Governor, QuotaDecision, QuotaLimits, RunSlot, ThrottleReason};
+pub use quota::{Governor, QuotaDecision, QuotaLimits, RunPermits, RunSlot, ThrottleReason};
 pub use reconciler::{
     ConfirmedEffect, ReconcileError, RunFailure, RunReport, assign_confirmed_write,
     classify_client_error, confirm_draft, confirm_effect, instance_version, run_with_retry,

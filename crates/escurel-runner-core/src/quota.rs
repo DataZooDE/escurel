@@ -114,6 +114,34 @@ pub struct Governor {
     throttled_paused: Arc<AtomicU64>,
     /// Tenants a `pause` control has stopped admission for.
     paused: Arc<Mutex<std::collections::HashSet<String>>>,
+    /// Per-agent run gates (#823 `max_concurrent`), keyed by agent id.
+    agents: Arc<Mutex<HashMap<String, Arc<AgentGate>>>>,
+}
+
+/// One agent's runs in flight and its CURRENT cap. A counter, not a
+/// semaphore: a semaphore is sized once, so a lowered cap would need a fresh
+/// one with every permit free while the old runs still hold theirs.
+#[derive(Debug, Default)]
+struct AgentGate {
+    /// `(in flight, cap)`; the cap is the latest one a caller read off the page.
+    state: Mutex<(u32, u32)>,
+    freed: tokio::sync::Notify,
+}
+
+/// A held agent run slot; frees it on drop.
+#[derive(Debug)]
+pub struct AgentPermit {
+    gate: Arc<AgentGate>,
+}
+
+impl Drop for AgentPermit {
+    fn drop(&mut self) {
+        if let Ok(mut s) = self.gate.state.lock() {
+            s.0 = s.0.saturating_sub(1);
+        }
+        // Every waiter rechecks against the current cap.
+        self.gate.freed.notify_waiters();
+    }
 }
 
 /// A held run slot. Decrements the tenant's in-flight count on drop, so a
@@ -136,6 +164,14 @@ impl Drop for RunSlot {
     }
 }
 
+/// The permits a run holds while it runs ([`Governor::acquire_run`]); dropping
+/// it frees them. Field order is drop order: the global slot goes first.
+#[derive(Debug)]
+pub struct RunPermits {
+    _harness: Option<OwnedSemaphorePermit>,
+    _agent: Option<AgentPermit>,
+}
+
 const WINDOW: Duration = Duration::from_secs(60);
 
 impl Governor {
@@ -150,6 +186,64 @@ impl Governor {
             throttled_max_concurrent: Arc::new(AtomicU64::new(0)),
             throttled_paused: Arc::new(AtomicU64::new(0)),
             paused: Arc::new(Mutex::new(std::collections::HashSet::new())),
+            agents: Arc::new(Mutex::new(HashMap::new())),
+        }
+    }
+
+    /// Await everything a run holds for its lifetime: the agent's own slot
+    /// (`agent` = its id and `max_concurrent`), THEN a global harness permit.
+    ///
+    /// The order is the point. Taking the global permit first let a run queued
+    /// behind its busy agent sit on a global slot it could not use, so one
+    /// saturated agent starved every other run, chat lanes included.
+    pub async fn acquire_run(&self, agent: Option<(&str, Option<u32>)>) -> RunPermits {
+        let agent = match agent {
+            Some((id, max)) => self.acquire_agent(id, max).await,
+            None => None,
+        };
+        RunPermits {
+            _agent: agent,
+            _harness: self.acquire_harness().await,
+        }
+    }
+
+    /// Await a run slot for agent `id` capped at `max` concurrent runs
+    /// (`max_concurrent` on its page); `None` — no slot to hold — when the
+    /// agent sets no cap.
+    ///
+    /// The cap is the one this call read: it replaces the agent's current
+    /// cap, and every waiter is admitted only while the runs in flight are
+    /// under the CURRENT cap. Lowering it (the edit that stops a runaway
+    /// agent) admits nothing until enough runs have finished.
+    async fn acquire_agent(&self, id: &str, max: Option<u32>) -> Option<AgentPermit> {
+        let max = max?.max(1);
+        let gate = {
+            let mut map = self.agents.lock().expect("governor agents mutex");
+            Arc::clone(map.entry(id.to_owned()).or_default())
+        };
+        let raised = {
+            let mut s = gate.state.lock().expect("agent gate mutex");
+            let raised = max > s.1;
+            s.1 = max;
+            raised
+        };
+        if raised {
+            gate.freed.notify_waiters();
+        }
+        loop {
+            // Registered BEFORE the check, so a release between the check and the await is not lost.
+            let mut freed = std::pin::pin!(gate.freed.notified());
+            freed.as_mut().enable();
+            {
+                let mut s = gate.state.lock().expect("agent gate mutex");
+                if s.0 < s.1 {
+                    s.0 += 1;
+                    return Some(AgentPermit {
+                        gate: Arc::clone(&gate),
+                    });
+                }
+            }
+            freed.await;
         }
     }
 
@@ -352,5 +446,112 @@ mod tests {
             1,
             "a dropped permit frees a slot"
         );
+    }
+
+    #[tokio::test]
+    async fn an_agents_cap_bounds_its_own_runs_only() {
+        let gov = Governor::new(limits(1000, 1000, 8));
+        assert!(
+            gov.acquire_agent("free", None).await.is_none(),
+            "no cap, no slot"
+        );
+        let held = gov.acquire_agent("scribe", Some(1)).await.expect("slot");
+        let blocked = tokio::time::timeout(
+            Duration::from_millis(50),
+            gov.acquire_agent("scribe", Some(1)),
+        )
+        .await;
+        assert!(blocked.is_err(), "a second scribe run waits for the first");
+        let _other = gov
+            .acquire_agent("reader", Some(1))
+            .await
+            .expect("another agent's slot");
+        drop(held);
+        let again = tokio::time::timeout(
+            Duration::from_millis(50),
+            gov.acquire_agent("scribe", Some(1)),
+        )
+        .await;
+        assert!(
+            again.is_ok_and(|p| p.is_some()),
+            "freed by the first run's end"
+        );
+    }
+
+    /// Lowering an agent's cap binds the runs already in flight (crew review PR-1, F11): the edit an
+    /// operator makes to stop a runaway agent must not admit new runs. A fresh semaphore per cap
+    /// change used to start with every permit free.
+    #[tokio::test]
+    async fn lowering_a_cap_mid_flight_admits_nothing_until_under_the_new_cap() {
+        let gov = Governor::new(limits(1000, 1000, 8));
+        let a = gov.acquire_agent("scribe", Some(2)).await.expect("slot");
+        let b = gov.acquire_agent("scribe", Some(2)).await.expect("slot");
+        let waiter = {
+            let gov = gov.clone();
+            tokio::spawn(async move { gov.acquire_agent("scribe", Some(1)).await })
+        };
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(!waiter.is_finished(), "two in flight, cap now 1: wait");
+        drop(a);
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(
+            !waiter.is_finished(),
+            "one in flight is not under a cap of 1"
+        );
+        drop(b);
+        let got = tokio::time::timeout(Duration::from_secs(1), waiter)
+            .await
+            .expect("admitted once under the cap")
+            .expect("task");
+        assert!(got.is_some());
+        // Raising it again admits at once.
+        let more = tokio::time::timeout(
+            Duration::from_millis(50),
+            gov.acquire_agent("scribe", Some(3)),
+        )
+        .await;
+        assert!(more.is_ok_and(|p| p.is_some()), "a raised cap admits");
+    }
+
+    /// Under contention an agent run waits for its own cap BEFORE it takes a
+    /// global harness slot: a waiter holding one would starve every other run
+    /// (chat lanes included) for as long as the agent is busy.
+    #[tokio::test]
+    async fn a_run_blocked_on_its_agent_holds_no_global_permit() {
+        let gov = Governor::new(limits(1000, 1000, 2));
+        let first = gov.acquire_run(Some(("scribe", Some(1)))).await;
+        assert_eq!(
+            gov.harness_permits_available(),
+            1,
+            "the first run holds one"
+        );
+
+        let waiter = {
+            let gov = gov.clone();
+            tokio::spawn(async move { gov.acquire_run(Some(("scribe", Some(1)))).await })
+        };
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(!waiter.is_finished(), "the second scribe run waits");
+        assert_eq!(
+            gov.harness_permits_available(),
+            1,
+            "the waiting run must not hold a global slot"
+        );
+        let _chat = gov.acquire_run(None).await;
+        assert_eq!(
+            gov.harness_permits_available(),
+            0,
+            "another run still gets it"
+        );
+        drop(_chat);
+
+        drop(first);
+        let second = tokio::time::timeout(Duration::from_secs(1), waiter)
+            .await
+            .expect("freed by the first run's end")
+            .expect("task");
+        assert_eq!(gov.harness_permits_available(), 1);
+        drop(second);
+        assert_eq!(gov.harness_permits_available(), 2);
     }
 }

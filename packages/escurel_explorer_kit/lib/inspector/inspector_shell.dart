@@ -6,6 +6,7 @@ import '../shell/status_bar.dart';
 import '../shell/topbar.dart';
 import '../state/explorer_nav.dart';
 import '../theme/app_theme.dart';
+import 'agents_panel.dart';
 import 'backend_admin_panel.dart';
 import 'md_inspector_panel.dart';
 import 'tools_panel.dart';
@@ -58,6 +59,14 @@ class InspectorShell extends ConsumerWidget {
                   selected: panelId == 'tools',
                 ),
                 const SizedBox(width: 4),
+                // Profiles are readable by any token; the panel itself
+                // hides the admin-only usage figures for a member.
+                _PanelChip(
+                  id: 'agents',
+                  label: 'Agents',
+                  selected: panelId == 'agents',
+                ),
+                const SizedBox(width: 4),
                 _PanelChip(
                   id: 'lanes',
                   label: 'LaneStore',
@@ -92,6 +101,7 @@ class InspectorShell extends ConsumerWidget {
     return switch (id) {
       'md' => const MdInspectorPanel(),
       'tools' => const ToolsPanel(),
+      'agents' => const AgentsPanel(),
       'backends' => const BackendAdminPanel(),
       _ => _ComingSoonPanel(panelId: id),
     };
@@ -100,6 +110,7 @@ class InspectorShell extends ConsumerWidget {
   String _label(String id) => switch (id) {
     'md' => 'Markdown',
     'tools' => 'Tools',
+    'agents' => 'Agents',
     'lanes' => 'LaneStore',
     'index' => 'Index',
     'backends' => 'Backends',

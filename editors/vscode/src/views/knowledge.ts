@@ -1,6 +1,7 @@
 import { skillFacts } from '../shared/freshness';
 import { errorRowSpec } from './errorRow';
 import { InstancePager } from './instancePager';
+import { scheduleWords } from '../shared/schedule';
 import { autonomyMeaning, backendIcon, backendMeaning, countSkills } from './skillMeaning';
 import * as vscode from 'vscode';
 import type { EscurelClient, Instance, Skill } from '../client';
@@ -147,6 +148,8 @@ export class KnowledgeTree implements vscode.TreeDataProvider<Node> {
         const tags = n.skill.tags?.length ? `\n\ntags: ${n.skill.tags.join(', ')}` : '';
         const facts = skillFacts(n.skill, Date.now()).facts;
         const provenance = facts.length ? `\n\n${facts.join(' · ')}` : '';
+        const scheduled = scheduleWords(n.skill, new Date());
+        const schedule = scheduled ? `\n\n${scheduled.detail}` : '';
         // Compact on purpose: a tooltip covers the rows below it. One line for role, layer and what the
         // gate means; the data source only when it is not plain markdown.
         const gate = `${n.skill.autonomy ?? 'review'}: ${autonomyMeaning(n.skill.autonomy)}`;
@@ -155,7 +158,7 @@ export class KnowledgeTree implements vscode.TreeDataProvider<Node> {
             ? ''
             : `\n\ndata: ${backendMeaning(n.skill.backend.kind)}`;
         item.tooltip = new vscode.MarkdownString(
-          `**${n.skill.title ?? n.skill.id}** — ${n.skill.summary ?? n.skill.description}\n\nrole **${role}**${inferred ? ' (inferred)' : ''} · ${n.readOnly ? '_read-only (' + n.skill.layer + ')_' : 'layer ' + n.skill.layer} · ${gate}${source}${where}${tags}${provenance}`,
+          `**${n.skill.title ?? n.skill.id}** — ${n.skill.summary ?? n.skill.description}\n\nrole **${role}**${inferred ? ' (inferred)' : ''} · ${n.readOnly ? '_read-only (' + n.skill.layer + ')_' : 'layer ' + n.skill.layer} · ${gate}${source}${where}${tags}${provenance}${schedule}`,
         );
         // Data that lives outside the knowledge base gets an icon of its own (cloud, plug, table):
         // where the data comes from matters more at a glance than the role.

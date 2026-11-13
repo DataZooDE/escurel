@@ -13,6 +13,7 @@ import '../client/models.dart';
 import '../state/providers.dart';
 import '../theme/app_theme.dart';
 import '../widgets/breadcrumb_menu.dart';
+import '../widgets/schedule_badge.dart';
 import '../widgets/skill_avatar.dart';
 
 class SkillsMenu extends StatelessWidget {
@@ -117,6 +118,29 @@ class _SkillRow extends StatelessWidget {
                       skill.id,
                       style: text.bodyMedium?.copyWith(color: kOnSurface, fontWeight: FontWeight.w700),
                     ),
+                    if (scheduleLabel(skill) case final schedule?) ...[
+                      const SizedBox(height: 2),
+                      Row(
+                        children: [
+                          Icon(
+                            scheduleBlocked(skill) ? Icons.block : Icons.schedule,
+                            size: 11,
+                            color: kOnSurfaceVariant,
+                          ),
+                          const SizedBox(width: 4),
+                          Flexible(
+                            child: Tooltip(
+                              message: scheduleTooltip(skill),
+                              child: Text(
+                                schedule,
+                                overflow: TextOverflow.ellipsis,
+                                style: text.labelSmall?.copyWith(color: kOnSurfaceVariant),
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ],
                     if (skill.description.isNotEmpty) ...[
                       const SizedBox(height: 2),
                       Text(

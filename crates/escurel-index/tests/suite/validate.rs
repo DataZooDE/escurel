@@ -1027,3 +1027,170 @@ async fn chat_frontmatter_must_be_a_map_with_boolean_page_bound() {
         [("chat_unknown_key".to_owned(), Severity::Warning)]
     );
 }
+
+/// Agent profiles (#823): every key on an `agent` page is authority, so a
+/// malformed one is an error; a skill's `agent:` default is checked against
+/// the agent it names.
+#[tokio::test]
+async fn agent_pages_and_a_skills_agent_default_are_graded() {
+    let h = fresh_harness();
+    h.indexer.ensure_system_skills().await.unwrap();
+    seed(
+        &h,
+        &[
+            SKILL_MEETING,
+            (
+                "markdown/instances/agent/scribe.md",
+                "---\nkind: instance\nskill: agent\nid: scribe\nskills: [\"[[skill::meeting]]\"]\n---\n# scribe\n",
+            ),
+        ],
+    )
+    .await;
+
+    let clean = "---\nkind: instance\nskill: agent\nid: a\nharness: echo\nmodel: m\n\
+        skills: [\"[[skill::meeting]]\", [[skill::customer]]]\n\
+        scopes:\n  tools: [expand]\n  write: [\"markdown/instances/meeting/*\"]\n\
+        max_concurrent: 2\n---\n# a\n";
+    let issues = h
+        .indexer
+        .validate(Some("markdown/instances/agent/a.md"), clean)
+        .await
+        .unwrap();
+    assert!(
+        !codes(&issues).iter().any(|c| c.starts_with("agent_")),
+        "{issues:?}"
+    );
+
+    let broken = "---\nkind: instance\nskill: agent\nid: b\nharness: nope\nmodel: \"\"\n\
+        skills: meeting\nscopes:\n  tools: search\n  read: [x]\nmax_concurrent: 0\n---\n# b\n";
+    let issues = h
+        .indexer
+        .validate(Some("markdown/instances/agent/b.md"), broken)
+        .await
+        .unwrap();
+    let got = codes(&issues);
+    for code in [
+        "agent_harness_unknown",
+        "agent_model_invalid",
+        "agent_skills_invalid",
+        "agent_scopes_invalid",
+        "agent_max_concurrent_invalid",
+    ] {
+        assert!(got.contains(&code), "{code} missing from {got:?}");
+    }
+    assert_eq!(
+        got.iter().filter(|c| **c == "agent_scopes_invalid").count(),
+        2,
+        "a malformed `tools` and an unknown `read`: {got:?}"
+    );
+
+    let skill = |agent: &str| {
+        format!("---\nkind: skill\nid: meeting\ndescription: m\nagent: {agent}\n---\n# meeting\n")
+    };
+    let grade = |content: String| {
+        let ix = &h.indexer;
+        async move {
+            ix.validate(Some("markdown/skills/meeting.md"), &content)
+                .await
+                .unwrap()
+        }
+    };
+    let ok = grade(skill("\"[[agent::scribe]]\"")).await;
+    assert!(!codes(&ok).iter().any(|c| c.starts_with("agent")), "{ok:?}");
+    let unquoted = grade(skill("[[agent::scribe]]")).await;
+    assert!(
+        !codes(&unquoted).iter().any(|c| c.starts_with("agent")),
+        "{unquoted:?}"
+    );
+    assert!(codes(&grade(skill("\"[[agent::ghost]]\"")).await).contains(&"agent_unresolved"));
+    assert!(codes(&grade(skill("scribe")).await).contains(&"agent_invalid"));
+
+    let other =
+        "---\nkind: skill\nid: customer\ndescription: c\nagent: \"[[agent::scribe]]\"\n---\n# c\n";
+    let issues = h
+        .indexer
+        .validate(Some("markdown/skills/customer.md"), other)
+        .await
+        .unwrap();
+    assert!(
+        codes(&issues).contains(&"agent_skill_not_listed"),
+        "{issues:?}"
+    );
+}
+
+/// Every harness the runner can build is one `validate` accepts — the
+/// OpenAI-compatible presets and `gemini-vertex` included — on a skill's
+/// `harness:` and on an agent's alike (#823 hardening: the list had drifted).
+#[tokio::test]
+async fn every_runner_harness_is_a_known_harness() {
+    let h = fresh_harness();
+    h.indexer.ensure_system_skills().await.unwrap();
+    for name in ["alibaba", "hetzner", "openai-compatible", "gemini-vertex"] {
+        let skill = format!(
+            "---\nkind: skill\nid: s\ndescription: d\nsummary: s\nharness: {name}\n---\n# s\n"
+        );
+        let issues = h
+            .indexer
+            .validate(Some("markdown/skills/s.md"), &skill)
+            .await
+            .unwrap();
+        assert!(
+            !codes(&issues).contains(&"harness_unknown"),
+            "skill harness {name}: {issues:?}"
+        );
+        let agent =
+            format!("---\nkind: instance\nskill: agent\nid: a\nharness: {name}\n---\n# a\n");
+        let issues = h
+            .indexer
+            .validate(Some("markdown/instances/agent/a.md"), &agent)
+            .await
+            .unwrap();
+        assert!(
+            !codes(&issues).contains(&"agent_harness_unknown"),
+            "agent harness {name}: {issues:?}"
+        );
+    }
+}
+
+/// `scopes.tools` names tools the gateway declares, and `scopes.write` globs stay cheap (crew review
+/// PR-1, F13 / F17): a typo (`serach`) would mint an agent refused everything with no authoring
+/// error, and a glob with many `**` backtracks exponentially at every write.
+#[tokio::test]
+async fn an_agents_scopes_name_known_tools_and_bounded_globs() {
+    let h = fresh_harness();
+    h.indexer.ensure_system_skills().await.unwrap();
+    let page = |scopes: &str| {
+        format!("---\nkind: instance\nskill: agent\nid: a\nscopes:\n{scopes}---\n# a\n")
+    };
+    let grade = |content: String| {
+        let ix = &h.indexer;
+        async move {
+            ix.validate(Some("markdown/instances/agent/a.md"), &content)
+                .await
+                .unwrap()
+        }
+    };
+    let typo = grade(page("  tools: [expand, serach]\n")).await;
+    let typo_issue = typo
+        .iter()
+        .find(|i| i.code == "agent_scopes_invalid")
+        .unwrap_or_else(|| panic!("an unknown tool is an error: {typo:?}"));
+    assert!(typo_issue.message.contains("serach"), "{typo_issue:?}");
+
+    let deep = grade(page(
+        "  write: [\"markdown/**/a/**/b/**/c/**/d/**/e.md\"]\n",
+    ))
+    .await;
+    assert!(
+        codes(&deep).contains(&"agent_scopes_invalid"),
+        "five `**` in one glob: {deep:?}"
+    );
+    let fine = grade(page(
+        "  tools: [expand, search]\n  write: [\"markdown/**/notes/**\"]\n",
+    ))
+    .await;
+    assert!(
+        !codes(&fine).iter().any(|c| c.starts_with("agent_")),
+        "{fine:?}"
+    );
+}

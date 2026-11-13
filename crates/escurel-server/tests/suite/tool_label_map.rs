@@ -48,6 +48,7 @@ const EXPECTED: &[&str] = &[
     "capture_event:orchestration",
     "describe_endpoint:orchestration",
     "report_progress:orchestration",
+    "put_run_transcript:orchestration",
     "report_runner_status:orchestration",
     "mint_agent_token:orchestration",
     "get_run_tool_calls:deterministic",
@@ -117,6 +118,7 @@ const EXPECTED: &[&str] = &[
     "tenant_update:orchestration",
     "unsubscribe_pack:orchestration",
     "update_page:orchestration",
+    "usage_report:deterministic",
     "validate:deterministic",
     "validate_bindings:orchestration",
     "validate_endpoints:orchestration",
@@ -163,6 +165,42 @@ async fn the_complete_tool_label_map_is_unchanged() {
         "the tool/label map moved.\n  unexpected: {added:?}\n  missing:    {removed:?}\n\
          If this is intended, update EXPECTED in the same commit — and check \
          that nothing crossed the deterministic/orchestration line by accident."
+    );
+    p.shutdown().await;
+}
+
+/// `escurel_types::tools::TOOL_NAMES` (what `validate` grades `scopes.tools` against) is exactly the
+/// registry `tools/list` serves (crew review PR-1, F13). A tool added to `tool_defs` and not to the
+/// catalogue fails here, not as an agent page that cannot name it.
+#[tokio::test]
+async fn the_shared_tool_catalogue_is_the_registry() {
+    let p = EscurelProcess::spawn(Opts {
+        auth: AuthMode::Disabled,
+        ..Default::default()
+    })
+    .await;
+    let body: Value = reqwest::Client::new()
+        .post(p.mcp_url())
+        .json(&json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/list" }))
+        .send()
+        .await
+        .expect("post")
+        .json()
+        .await
+        .expect("json");
+    let served: BTreeSet<String> = body["result"]["tools"]
+        .as_array()
+        .expect("tools array")
+        .iter()
+        .filter_map(|t| t["name"].as_str().map(str::to_owned))
+        .collect();
+    let catalogue: BTreeSet<String> = escurel_types::tools::TOOL_NAMES
+        .iter()
+        .map(|s| (*s).to_owned())
+        .collect();
+    assert_eq!(
+        served, catalogue,
+        "update escurel-types/src/tools.rs with the registry"
     );
     p.shutdown().await;
 }

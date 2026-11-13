@@ -78,9 +78,11 @@ groups come from the skill page, so — as for a run board — every
 agent an engagement group, never a privileged role. A skill that declares
 no write grant runs an agent that can write nothing (the tenant default is
 admin-only), which is why the flag ships off until a corpus's write-ACL
-model is in place. Note that `assign_event` is not write-ACL gated, so a
-narrowed agent whose write was refused can still mark the event processed;
-the echo harness stops on a refused write, and a real skill should too.
+model is in place. Note that `assign_event` checks the write ACL only for an
+UNASSIGNED event, so a narrowed agent whose write was refused can still mark
+an already-filed event processed (an agent profile's `scopes.write` closes
+this for agent runs); the echo harness stops on a refused write, and a real
+skill should too.
 Groups are tenant-wide, so a narrowed token also carries a `skill` claim
 (the target skill's id) and the write ACL refuses an instance write under
 any other skill before it consults the groups — a token narrowed to
@@ -88,12 +90,53 @@ any other skill before it consults the groups — a token narrowed to
 claim on the token that is an authorization input, and only ever a
 restriction.
 
+An **agent-profile token** (#823) is what the runner mints when a run has an
+agent (references/01, *Agent profiles*): `sub: agent:<agent id>`, `act.sub:
+escurel-runner`, the run claims, `roles: [escurel:agent, <the skill's write
+groups>]` — **never `escurel:admin`, whatever `ESCUREL_RUNNER_AGENT_NARROW`
+says** — the `skill` claim, and an **`agent` claim** naming the agent. The
+token carries the agent's NAME only; the gateway reads the agent page itself
+on every `/mcp` call, so a runner (or a forged token) cannot widen what the
+page grants, and an admin's edit narrows the very next call:
+
+- the agent page is missing, archived or not an `agent` instance → **every
+  tool is refused**, JSON-RPC `-32001`, `data.code: agent_unknown`;
+- `scopes.tools` present and the tool not in it → `-32001`,
+  `data.code: agent_scope_denied` (checked with the role gate; it can only
+  remove tools);
+- `scopes.write` present and the page id matches no glob → the write is
+  refused `{ok: false, issues: [{code: agent_scope_denied}]}` — on
+  `update_page`, and as a refusal on every other write path (sessions,
+  drafts, move/delete, promotion), plus `capture_event` / `assign_event`
+  into a page outside the scope (`agent_scope_denied`). This binds even an
+  admin-role token, and an agent token is always write-ACL **enforced**,
+  whatever `ESCUREL_WRITE_ACL` says.
+- `tools/list` on an agent token lists only the tools its `scopes.tools`
+  admits (intersected with the role gate), read from the agent page the same
+  way — so a harness is never offered a tool it would be refused; a token
+  naming no agent page gets `agent_unknown` there too.
+
+A refused call lands on the run's record: `get_run_tool_calls` shows it
+with `status: rejected` (or `error`) and `error_code: agent_scope_denied`.
+Agent tokens are served on `/mcp` only — `/ws`, `/ingest` and `/blob`
+refuse them (`403`, `error: agent_scope_denied`), since only `/mcp` applies
+the scopes. Agent pages themselves are admin-write-only (references/01) **in every
+`ESCUREL_WRITE_ACL` mode**: `off` and `log` relax the ordinary write ACL for a
+rollout, but a write that touches the `agent` system skill — its skill page,
+a page claiming it, anything under `markdown/instances/agent/` — is always
+enforced (fail closed), on every write path (update, delete, move, drafts,
+sessions).
+
 A **workbench agent token** is the same shape minted by the GATEWAY
 (`mint_agent_token`) for an interactive agent with no runner behind it:
 `sub: agent:<skill>`, `act.sub: <the human who asked>`,
-`purpose: workbench_agent`, the run claims, and the human's own authority —
-an admin's mint carries `escurel:admin`, a member's carries their groups
-with every reserved `escurel:` role stripped. The gateway authorises it AS
+`purpose: workbench_agent`, the run claims, and the human's own groups —
+never admin, whoever minted it (an admin who wants admin authority uses their
+own token), with every reserved `escurel:` role stripped. Only a PERSON's
+token mints: an agent-profile, narrowed or run-bound token calling
+`mint_agent_token` is refused `-32001`, `data.code: agent_scope_denied` (the
+child would carry the groups but shed the agent's scopes and skill
+confinement). The gateway authorises it AS
 THE HUMAN: the ACL subject is `act.sub`, the agent is the actor, so what
 the agent writes reads `captured_by: <human>` / `captured_via:
 agent:<skill>`, and an instance owned by the agent principal confers
@@ -102,6 +145,25 @@ a signing identity: `ESCUREL_AUTH_SIGNING_KEY` (an RSA private key some
 trusted issuer's JWKS publishes), `ESCUREL_AUTH_SIGNING_KID`,
 `ESCUREL_AUTH_SIGNING_ISSUER` (defaults to the OIDC issuer). Without it
 the tool answers `unsupported`.
+
+**A token minted for an agent is never admin or operator.** A token carrying
+an `agent` or `skill` claim, or `purpose: workbench_agent`, projects the
+agent role whatever its roles list — including a deployment's own
+`ESCUREL_AUTH_ADMIN_ROLE_VALUE` / `ESCUREL_AUTH_OPERATOR_ROLE_VALUE` when
+those name an IdP group: a skill page (member-writable) names its agent's
+groups, so honouring the mapping there would let a page author mint an
+admin agent.
+
+**Steering a run (`inject`).** A machine caller (any agent-profile, narrowed
+or run-bound token, admin role or not) is refused (`agent_scope_denied`) in
+every mode: a run's own token never directs a run. A person passes the same
+gate as `cancel` — the run's target page's write ACL, in the deployment's
+`ESCUREL_WRITE_ACL` mode. The bound is the page writer, deliberately: whoever
+may write the page could already capture an event whose body tells a run on
+it anything, so `inject` grants no new authority — it only saves the cancel
+and re-trigger. Under `off` / `log` that is every caller, as it is for every
+other write. `inject` does reach a run whose token is the runner's admin; it
+changes what the run is told, not what the run may do.
 
 So: your app's token must carry the right audience, a tenant claim naming
 the tenant, and — only for admin operations — the admin role value. A

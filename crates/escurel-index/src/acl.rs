@@ -60,6 +60,19 @@ pub struct AclCaller<'a> {
     /// token's (tenant-wide) groups cannot reach another skill that happens
     /// to grant the same group. `None` for every other caller.
     pub agent_skill: Option<&'a str>,
+    /// The agent profile a per-run token runs as (#823), as the GATEWAY read
+    /// it from the agent's own page — never from the token. An ACL input and
+    /// only ever a restriction: its `scopes.write` globs bound every write,
+    /// admin or not, on top of the skill confinement and the group grants.
+    pub agent: Option<&'a escurel_types::agent_profile::AgentProfile>,
+}
+
+impl AclCaller<'_> {
+    /// Whether this caller's agent profile forbids writing `page_id`.
+    #[must_use]
+    pub fn agent_write_denied(&self, page_id: &str) -> bool {
+        self.agent.is_some_and(|a| !a.allows_write(page_id))
+    }
 }
 
 /// How many events mentioning an instance [`Indexer::may_read_instance`] inspects for the
@@ -396,7 +409,9 @@ impl Indexer {
         event: &crate::EventInfo,
         target_page_id: &str,
     ) -> Result<bool, IndexerError> {
-        if !self.may_read_event_by_grant(caller, event).await? {
+        if caller.agent_write_denied(target_page_id)
+            || !self.may_read_event_by_grant(caller, event).await?
+        {
             return Ok(false);
         }
         match self.expand(target_page_id, None, None).await? {
@@ -418,6 +433,9 @@ impl Indexer {
         page_id: &str,
         content: &str,
     ) -> Result<bool, IndexerError> {
+        if caller.agent_write_denied(page_id) {
+            return Ok(false);
+        }
         if caller.is_admin {
             return Ok(true);
         }
@@ -472,10 +490,32 @@ impl Indexer {
         page_id: &str,
         content: &str,
     ) -> Result<bool, IndexerError> {
+        // An agent's write scope binds even an admin-role token: it is the
+        // narrowing the agent exists for.
+        if caller.agent_write_denied(page_id) {
+            return Ok(false);
+        }
         if caller.is_admin {
             return Ok(true);
         }
         let parsed = parse(content)?;
+        // An admin-only system skill (`agent`) is authority: neither its page,
+        // a page claiming it, nor an instance under its path is a member's to
+        // write — checked before every grant below can widen it.
+        if crate::system_skills::is_admin_only_path(page_id)
+            || crate::system_skills::declares_admin_only(&parsed.frontmatter)
+        {
+            return Ok(false);
+        }
+        let declared = |key: &str| {
+            parsed
+                .frontmatter
+                .fields
+                .get(key)
+                .and_then(YamlValue::as_str)
+                .unwrap_or("")
+                .to_owned()
+        };
         if parsed.frontmatter.page_kind != PageKind::Instance {
             return Ok(true); // P1: gate instance writes only
         }
@@ -503,13 +543,6 @@ impl Indexer {
         {
             return Ok(true);
         }
-        let skill = parsed
-            .frontmatter
-            .fields
-            .get("skill")
-            .and_then(YamlValue::as_str)
-            .unwrap_or("")
-            .to_owned();
         let incoming_fm: Value = serde_json::from_str(&crate::indexer::mapping_to_json(
             &parsed.frontmatter.fields,
         )?)?;
@@ -517,8 +550,34 @@ impl Indexer {
             .expand(page_id, None, None)
             .await?
             .map(|e| e.frontmatter);
-        self.may_write_instance(caller, &skill, existing_fm.as_ref(), &incoming_fm)
-            .await
+        // Every skill the write touches must grant it: the one the bytes
+        // declare, the one the PATH names and the one the stored page was
+        // written under. Judging the declared skill alone let a member who may
+        // write notes land `skill: note` bytes under `markdown/instances/
+        // customer/` (by `update_page` or by `move_page`), or overwrite a
+        // stored customer by relabelling it — the same three skills
+        // `validate` already consults.
+        let declared_skill = declared("skill");
+        let stored_skill = existing_fm
+            .as_ref()
+            .and_then(|f| f.get("skill"))
+            .and_then(Value::as_str);
+        let path_skill = crate::backend::rows::split_instance_page_id(page_id).map(|(s, _)| s);
+        let mut skills = vec![declared_skill.as_str()];
+        for s in [path_skill, stored_skill].into_iter().flatten() {
+            if !skills.contains(&s) {
+                skills.push(s);
+            }
+        }
+        for skill in skills {
+            if !self
+                .may_write_instance(caller, skill, existing_fm.as_ref(), &incoming_fm)
+                .await?
+            {
+                return Ok(false);
+            }
+        }
+        Ok(true)
     }
 
     /// The deterministic write decision given the caller, the target
@@ -545,8 +604,31 @@ impl Indexer {
         existing_fm: Option<&Value>,
         incoming_fm: &Value,
     ) -> Result<bool, IndexerError> {
+        // No page id is passed here, so the agent scope is checked against the
+        // instance page the skill and id name; with no id to name one, an
+        // agent with a write scope may not write at all.
+        if caller.agent.is_some() {
+            let id = incoming_fm
+                .get("id")
+                .or_else(|| existing_fm.and_then(|f| f.get("id")))
+                .and_then(Value::as_str)
+                .filter(|id| !id.is_empty());
+            let denied = match id {
+                Some(id) => {
+                    caller.agent_write_denied(&crate::backend::rows::instance_page_id(skill, id))
+                }
+                None => caller.agent.is_some_and(|a| a.write.is_some()),
+            };
+            if denied {
+                return Ok(false);
+            }
+        }
         if caller.is_admin {
             return Ok(true);
+        }
+        // A system skill's instances are admin-written, whatever its page grants.
+        if crate::system_skills::is_admin_only_skill(skill) {
+            return Ok(false);
         }
         // A narrowed agent token writes only its named skills' instances,
         // whatever its groups would otherwise reach.
@@ -931,6 +1013,9 @@ impl Indexer {
         caller: &AclCaller<'_>,
         target_page_id: &str,
     ) -> Result<bool, IndexerError> {
+        if caller.agent_write_denied(target_page_id) {
+            return Ok(false);
+        }
         if caller.is_admin {
             return Ok(true);
         }
@@ -946,6 +1031,40 @@ impl Indexer {
             }
             None => Ok(false),
         }
+    }
+
+    /// The agent profile `agent_id` names (#823), read from its own page, or
+    /// `None` when there is no such agent — an id no page can carry, no page,
+    /// a page that is not an `agent` instance, or an archived one. The gateway
+    /// refuses every call of a token whose agent is `None` here.
+    ///
+    /// Read fresh on every call rather than cached: one indexed lookup, and an
+    /// admin's edit narrowing an agent binds its very next call, so there is no
+    /// invalidation to get wrong.
+    pub async fn agent_profile(
+        &self,
+        agent_id: &str,
+    ) -> Result<Option<escurel_types::agent_profile::AgentProfile>, IndexerError> {
+        use escurel_types::agent_profile::{
+            AgentProfile, agent_page_id, is_usable_agent_page, is_valid_agent_id,
+        };
+        if !is_valid_agent_id(agent_id) {
+            return Ok(None);
+        }
+        let Some(page) = self.expand(&agent_page_id(agent_id), None, None).await? else {
+            return Ok(None);
+        };
+        if !is_usable_agent_page(
+            &page.page.skill,
+            page.page.page_kind == PageKind::Instance,
+            &page.frontmatter,
+        ) {
+            return Ok(None);
+        }
+        Ok(Some(AgentProfile::from_frontmatter(
+            agent_id,
+            &page.frontmatter,
+        )))
     }
 
     /// The caller's effective non-structural group set: `public` (always,
