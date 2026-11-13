@@ -17,7 +17,10 @@ merged since v2026.10.29.
    or minting mode) **before** the new image runs — otherwise it takes no inbox work (see *Breaking* below).
 2. Give the people who curate skills `escurel:admin`, or list their group in each skill's `acl.update`.
 3. If a skill page names `model:`, list that model in `ESCUREL_RUNNER_MODEL_ALLOW` (#810), or its runs fail closed.
-4. Changing the embedding provider/model re-embeds the corpus on boot (#815) — plan for it, or keep the model.
+4. **The first boot re-embeds the whole corpus once** (#815): an index created before this release has no recorded
+   embedding model, and an unrecorded model counts as a change. It is staged per batch (old vectors keep serving; a
+   provider failure resumes next boot), but it costs one full embedding pass at the provider's rate limit — schedule
+   it. Changing provider or model later re-embeds again.
 5. Dashboards that match the exact label set of `escurel_runner_cost_usd_total` / `escurel_runner_tokens_total`
    need the new `skill` and `model` labels.
 
