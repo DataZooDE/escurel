@@ -420,3 +420,30 @@ async fn an_unreadable_schedule_fires_nothing_and_says_why_once() {
         "{skipped:?}"
     );
 }
+
+/// A zoned schedule's trigger id is the UTC instant of its window (crew review PR-1, F6), even in a
+/// half-hour-offset zone (Asia/Kolkata, UTC+05:30): never local wall-clock time, never an offset.
+#[tokio::test]
+async fn a_zoned_schedule_names_its_window_in_utc() {
+    const ZONED: &str = "---\nkind: skill\nid: zoned\ndescription: Kolkata.\nautonomy: auto\n\
+        schedule: \"CRON_TZ=Asia/Kolkata */2 * * * * *\"\n---\n# zoned\n\nNote the time.\n";
+    let gw = gateway(&[("zoned", ZONED)]).await;
+    let _runner = spawn_runner(&gw).await;
+    let started = Utc::now();
+    tokio::time::sleep(Duration::from_secs(4)).await;
+    let ids: Vec<String> = events_under(&gw, "zoned")
+        .await
+        .iter()
+        .filter_map(|e| e["event_id"].as_str().map(str::to_owned))
+        .filter(|id| id.starts_with("sched:zoned:"))
+        .collect();
+    assert!(!ids.is_empty(), "the zoned schedule fired");
+    for id in &ids {
+        assert!(id.ends_with('Z'), "a UTC instant, not an offset: {id}");
+    }
+    let windows = trigger_windows(&gw, "zoned").await;
+    for w in &windows {
+        let drift = (*w - started).num_seconds().abs();
+        assert!(drift <= 10, "the window is now in UTC, not 5h30 away: {w}");
+    }
+}

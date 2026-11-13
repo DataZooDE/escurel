@@ -160,6 +160,49 @@ mod tests {
         );
     }
 
+    /// The DST rule (crew review PR-1, F6; references/11): a zoned schedule
+    /// fires ONCE per local wall-clock time. Spring forward — 02:30 does not
+    /// exist on 2027-03-28 in Berlin (02:00 CET jumps to 03:00 CEST): the
+    /// window is the first instant after the gap, 03:00 CEST = 01:00 UTC.
+    #[test]
+    fn a_local_time_skipped_by_spring_forward_fires_at_the_end_of_the_gap() {
+        let s = CronSchedule::parse("CRON_TZ=Europe/Berlin 30 2 * * *").unwrap();
+        // Just before the gap ends: the latest window is still the 27th's
+        // 02:30 CET (01:30 UTC).
+        assert_eq!(
+            s.latest_window_start(utc(2027, 3, 28, 0, 59, 59)),
+            Some(utc(2027, 3, 27, 1, 30, 0))
+        );
+        // From 03:00 CEST on, the 28th's window has opened — at 03:00 local.
+        for now in [utc(2027, 3, 28, 1, 0, 0), utc(2027, 3, 28, 9, 0, 0)] {
+            assert_eq!(
+                s.latest_window_start(now),
+                Some(utc(2027, 3, 28, 1, 0, 0)),
+                "{now}"
+            );
+        }
+    }
+
+    /// Fall back — 02:30 occurs twice on 2026-10-25 in Berlin (03:00 CEST
+    /// falls back to 02:00 CET): only the FIRST occurrence (CEST, 00:30 UTC)
+    /// is a window; the second (CET, 01:30 UTC) is not a new one.
+    #[test]
+    fn a_local_time_repeated_by_fall_back_fires_at_its_first_occurrence_only() {
+        let s = CronSchedule::parse("CRON_TZ=Europe/Berlin 30 2 * * *").unwrap();
+        for now in [
+            utc(2026, 10, 25, 0, 30, 0),
+            utc(2026, 10, 25, 1, 30, 0),
+            utc(2026, 10, 25, 1, 45, 0),
+            utc(2026, 10, 25, 12, 0, 0),
+        ] {
+            assert_eq!(
+                s.latest_window_start(now),
+                Some(utc(2026, 10, 25, 0, 30, 0)),
+                "{now}"
+            );
+        }
+    }
+
     #[test]
     fn malformed_values_are_refused_with_the_reason() {
         assert!(matches!(

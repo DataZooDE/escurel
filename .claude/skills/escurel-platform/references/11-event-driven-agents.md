@@ -462,6 +462,15 @@ event for it:
   carries `provenance.workflow: {run, wf_skill, phase: invoke}`; any other
   skill's trigger is unassigned (the harness picks the page).
 
+**Zones and daylight saving.** A `CRON_TZ=<zone>` schedule is matched in
+that zone's wall-clock time, but its id is always the window's **UTC**
+instant (`sched:digest:2026-11-13T06:15:00Z` for `CRON_TZ=Europe/Berlin 15
+7 * * 1-5`). It fires **once per local wall-clock time**: when the clocks
+fall back and 02:30 happens twice, only the first 02:30 is a window; when
+they spring forward and 02:30 does not exist, that day's window is the first
+instant after the gap (03:00 local). A schedule that must never shift should
+be written in UTC.
+
 The id is the whole idempotency story: a restart, an overlapping tick or a
 second runner computes the same id, and `capture_event` keeps the first.
 **No backfill, bounded catch-up**: a runner that was down for several
