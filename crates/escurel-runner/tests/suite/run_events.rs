@@ -7,11 +7,12 @@
 //! Every run lands on the root event's page as `run-started`, one
 //! `run-attempt` per attempt, and `run-finished` with the ledger's terminal.
 
-use std::process::{Child, Command};
 use std::time::{Duration, Instant};
 
-use escurel_test_support::{AuthMode, EscurelProcess, FixtureBuilder, Opts, Role, free_port};
+use escurel_test_support::{AuthMode, EscurelProcess, FixtureBuilder, Opts, Role};
 use serde_json::{Value, json};
+
+use crate::support::{RunnerProcess, RunningRunner};
 
 const TENANT: &str = "acme";
 const SKILL: &str = "renewal";
@@ -19,29 +20,8 @@ const SKILL_BODY: &str = "---\nkind: skill\nid: renewal\nautonomy: auto\n---\n# 
 const INSTANCE_BODY: &str = "---\nkind: instance\nid: c1\nskill: renewal\n---\n# C1\n\nBASELINE.\n";
 const PAGE: &str = "markdown/instances/renewal/c1.md";
 
-struct ChildGuard(Child);
-impl Drop for ChildGuard {
-    fn drop(&mut self) {
-        let _ = self.0.kill();
-        let _ = self.0.wait();
-    }
-}
-
 async fn call(p: &EscurelProcess, role: Role, name: &str, args: Value) -> Value {
-    let token = p.mint_token(TENANT, role);
-    let body: Value = reqwest::Client::new()
-        .post(p.mcp_url())
-        .header("authorization", format!("Bearer {token}"))
-        .json(&json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/call",
-                       "params": { "name": name, "arguments": args } }))
-        .send()
-        .await
-        .expect("post")
-        .json()
-        .await
-        .expect("json");
-    assert!(body.get("error").is_none(), "{name}: {body}");
-    body["result"]["structuredContent"].clone()
+    crate::support::call(p, &p.mint_token(TENANT, role), name, args).await
 }
 
 async fn gateway() -> EscurelProcess {
@@ -59,25 +39,18 @@ async fn gateway() -> EscurelProcess {
     .await
 }
 
-fn spawn_runner(gw: &EscurelProcess, role: Role, extra: &[(&str, &str)]) -> (ChildGuard, String) {
-    let listen = format!("127.0.0.1:{}", free_port());
-    let ledger_dir = tempfile::tempdir().expect("tempdir");
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_escurel-runner"));
-    cmd.env("ESCUREL_RUNNER_LISTEN", &listen)
-        .env("ESCUREL_RUNNER_GATEWAY_URL", gw.base_url())
-        .env("ESCUREL_RUNNER_TENANT", TENANT)
-        .env("ESCUREL_RUNNER_TOKEN", gw.mint_token(TENANT, role))
-        .env("ESCUREL_RUNNER_HARNESS", "echo")
-        .env(
-            "ESCUREL_RUNNER_LEDGER_PATH",
-            ledger_dir.keep().join("ledger.sqlite"),
-        )
-        .env("ESCUREL_RUNNER_RETRY_BACKOFF", "50ms")
-        .env("ESCUREL_RUNNER_POLL_INTERVAL", "250ms");
+fn spawn_runner(
+    gw: &EscurelProcess,
+    role: Role,
+    extra: &[(&str, &str)],
+) -> (RunningRunner, String) {
+    let mut runner = RunnerProcess::echo(gw, TENANT).static_bearer(gw.mint_token(TENANT, role));
     for (k, v) in extra {
-        cmd.env(k, v);
+        runner = runner.env(k, *v);
     }
-    (ChildGuard(cmd.spawn().expect("spawn runner")), listen)
+    let runner = runner.spawn();
+    let listen = runner.listen().to_owned();
+    (runner, listen)
 }
 
 async fn capture(gw: &EscurelProcess) -> String {
@@ -371,19 +344,13 @@ async fn recovery_writes_the_missing_run_finished_for_an_orphaned_pending_row() 
         }
     };
 
-    let listen = format!("127.0.0.1:{}", free_port());
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_escurel-runner"));
-    cmd.env("ESCUREL_RUNNER_LISTEN", &listen)
-        .env("ESCUREL_RUNNER_GATEWAY_URL", gw.base_url())
-        .env("ESCUREL_RUNNER_TENANT", TENANT)
-        .env("ESCUREL_RUNNER_TOKEN", gw.mint_token(TENANT, Role::Admin))
-        .env("ESCUREL_RUNNER_HARNESS", "echo")
-        .env("ESCUREL_RUNNER_LEDGER_PATH", &ledger_path)
-        .env("ESCUREL_RUNNER_POLL_INTERVAL", "250ms");
-    let _runner = ChildGuard(cmd.spawn().expect("spawn runner"));
+    let runner = RunnerProcess::echo(&gw, TENANT)
+        .ledger(&ledger_path)
+        .spawn();
+    let listen = runner.listen();
 
     // Recovery runs on boot: the row is confirmed and marked processed.
-    let (recovered_run, status) = await_terminal(&listen, &event_id).await;
+    let (recovered_run, status) = await_terminal(listen, &event_id).await;
     assert_eq!(recovered_run, run_id);
     assert_eq!(status, "processed");
 

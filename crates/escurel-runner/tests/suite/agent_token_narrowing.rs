@@ -9,13 +9,14 @@
 //! (a static bearer cannot mint), real echo harness. Default off: the same
 //! corpus with the flag unset writes everything, as before.
 
-use std::process::{Child, Command};
 use std::time::{Duration, Instant};
 
 use escurel_test_support::{
-    AuthMode, ConfigOverrides, EscurelProcess, FixtureBuilder, Opts, Role, WriteAclMode, free_port,
+    AuthMode, ConfigOverrides, EscurelProcess, FixtureBuilder, Opts, Role, WriteAclMode,
 };
 use serde_json::{Value, json};
+
+use crate::support::{RunnerProcess, RunningRunner};
 
 const TENANT: &str = "acme";
 /// Grants its writes to the `ops` group: a narrowed agent carries `ops`.
@@ -24,14 +25,6 @@ acl:\n  create: [ops]\n  update: [ops]\n---\n# renewal\n\nFold the event into th
 /// Declares no write grant: admin-write-only under the tenant default.
 const AUDIT: &str =
     "---\nkind: skill\nid: audit\nautonomy: auto\n---\n# audit\n\nFold the event.\n";
-
-struct ChildGuard(Child);
-impl Drop for ChildGuard {
-    fn drop(&mut self) {
-        let _ = self.0.kill();
-        let _ = self.0.wait();
-    }
-}
 
 fn instance_body(skill: &str) -> String {
     format!("---\nkind: instance\nid: c1\nskill: {skill}\n---\n# C1\n\nBASELINE.\n")
@@ -42,20 +35,7 @@ fn page_id(skill: &str) -> String {
 }
 
 async fn call(p: &EscurelProcess, name: &str, args: Value) -> Value {
-    let token = p.mint_token(TENANT, Role::Admin);
-    let body: Value = reqwest::Client::new()
-        .post(p.mcp_url())
-        .header("authorization", format!("Bearer {token}"))
-        .json(&json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/call",
-                       "params": { "name": name, "arguments": args } }))
-        .send()
-        .await
-        .expect("post")
-        .json()
-        .await
-        .expect("json");
-    assert!(body.get("error").is_none(), "{name}: {body}");
-    body["result"]["structuredContent"].clone()
+    crate::support::call(p, &p.mint_token(TENANT, Role::Admin), name, args).await
 }
 
 async fn gateway() -> EscurelProcess {
@@ -79,30 +59,16 @@ async fn gateway() -> EscurelProcess {
 }
 
 /// A minted-mode runner (its own signing key) driving the echo harness.
-fn spawn_runner(gw: &EscurelProcess, narrow: bool) -> (ChildGuard, String) {
-    let (signing_key, kid) = gw.signing_material();
-    let listen = format!("127.0.0.1:{}", free_port());
-    let ledger_dir = tempfile::tempdir().expect("tempdir");
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_escurel-runner"));
-    cmd.env("ESCUREL_RUNNER_LISTEN", &listen)
-        .env("ESCUREL_RUNNER_GATEWAY_URL", gw.base_url())
-        .env("ESCUREL_RUNNER_TENANT", TENANT)
-        .env_remove("ESCUREL_RUNNER_TOKEN")
-        .env("ESCUREL_RUNNER_AUTH_ISSUER", gw.issuer_url())
-        .env("ESCUREL_RUNNER_AUTH_KID", kid)
-        .env("ESCUREL_RUNNER_AUTH_SIGNING_KEY", &signing_key)
-        .env("ESCUREL_RUNNER_HARNESS", "echo")
-        .env(
-            "ESCUREL_RUNNER_LEDGER_PATH",
-            ledger_dir.keep().join("ledger.duckdb"),
-        )
-        .env("ESCUREL_RUNNER_MAX_ATTEMPTS", "2")
-        .env("ESCUREL_RUNNER_RETRY_BACKOFF", "50ms")
-        .env("ESCUREL_RUNNER_POLL_INTERVAL", "250ms");
+fn spawn_runner(gw: &EscurelProcess, narrow: bool) -> (RunningRunner, String) {
+    let mut runner = RunnerProcess::echo(gw, TENANT)
+        .minted()
+        .env("ESCUREL_RUNNER_MAX_ATTEMPTS", "2");
     if narrow {
-        cmd.env("ESCUREL_RUNNER_AGENT_NARROW", "1");
+        runner = runner.env("ESCUREL_RUNNER_AGENT_NARROW", "1");
     }
-    (ChildGuard(cmd.spawn().expect("spawn runner")), listen)
+    let runner = runner.spawn();
+    let listen = runner.listen().to_owned();
+    (runner, listen)
 }
 
 async fn capture(gw: &EscurelProcess, skill: &str) -> String {
@@ -119,11 +85,11 @@ async fn capture(gw: &EscurelProcess, skill: &str) -> String {
 
 /// The ledger terminal for `event_id`. Fails by name when the runner has already exited (a port a stranger took,
 /// a crash at boot) or when `/debug/run` answered something else for the whole deadline, so a flake says which.
-async fn await_terminal(runner: &mut ChildGuard, listen: &str, event_id: &str) -> String {
+async fn await_terminal(runner: &mut RunningRunner, listen: &str, event_id: &str) -> String {
     let url = format!("http://{listen}/debug/run?tenant={TENANT}&event_id={event_id}");
     let deadline = Instant::now() + Duration::from_secs(60);
     loop {
-        if let Some(status) = runner.0.try_wait().expect("try_wait") {
+        if let Some(status) = runner.exited() {
             panic!("runner at {listen} exited before the run reached a terminal: {status:?}");
         }
         let last = match reqwest::get(&url).await {
