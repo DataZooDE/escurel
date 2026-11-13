@@ -24,9 +24,7 @@ pub async fn export(client: &Client, a: SkillExportArgs) -> Result<Value> {
             skill_md::export(&content).with_context(|| format!("exporting skill `{skill}`"))?,
         );
     }
-    std::fs::create_dir_all(&a.out).with_context(|| format!("creating {}", a.out.display()))?;
-
-    let written = if a.pack {
+    let files: Vec<(PathBuf, Vec<u8>)> = if a.pack {
         // Sorted, as the deterministic tarball expects: re-exporting unchanged
         // skills yields byte-identical bundles.
         let mut entries: Vec<(String, String)> = exported
@@ -35,23 +33,60 @@ pub async fn export(client: &Client, a: SkillExportArgs) -> Result<Value> {
             .collect();
         entries.sort_by(|x, y| x.0.cmp(&y.0));
         let tarball = escurel_types::pack::build_tarball(&entries)?;
-        let path = a.out.join(PACK_FILE);
-        write(&path, &tarball)?;
-        vec![path]
+        vec![(a.out.join(PACK_FILE), tarball)]
     } else {
-        let mut paths = Vec::with_capacity(exported.len());
-        for e in exported {
-            let dir = a.out.join(&e.name);
-            std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
-            let path = dir.join(SKILL_FILE);
-            write(&path, e.skill_md.as_bytes())?;
-            paths.push(path);
+        exported
+            .into_iter()
+            .map(|e| {
+                (
+                    a.out.join(&e.name).join(SKILL_FILE),
+                    e.skill_md.into_bytes(),
+                )
+            })
+            .collect()
+    };
+
+    // Decide every file before writing any: a refusal leaves the directory
+    // exactly as it was, not half-exported.
+    let mut differing = Vec::new();
+    let mut unchanged = Vec::new();
+    for (path, bytes) in &files {
+        match std::fs::read(path) {
+            Ok(existing) if existing == *bytes => unchanged.push(path.clone()),
+            Ok(_) => differing.push(path.display().to_string()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e).with_context(|| format!("reading {}", path.display())),
         }
+    }
+    if !differing.is_empty() && !a.force {
+        bail!(
+            "refusing to overwrite {} (different content: a local edit?); re-run with --force \
+             to replace {}",
+            differing.join(", "),
+            if differing.len() == 1 { "it" } else { "them" }
+        );
+    }
+    let mut written = Vec::with_capacity(files.len());
+    for (path, bytes) in files {
+        if unchanged.contains(&path) {
+            continue;
+        }
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
+        }
+        write(&path, &bytes)?;
+        written.push(path);
+    }
+    let shown = |paths: &[PathBuf]| {
         paths
+            .iter()
+            .map(|p| p.display().to_string())
+            .collect::<Vec<_>>()
     };
     Ok(json!({
         "skills": a.skills,
-        "written": written.iter().map(|p| p.display().to_string()).collect::<Vec<_>>(),
+        "written": shown(&written),
+        "unchanged": shown(&unchanged),
     }))
 }
 
@@ -68,10 +103,12 @@ pub async fn import(client: &Client, a: SkillImportArgs) -> Result<Value> {
 
     // An existing skill is drafted against what is stored now, so promoting
     // the draft cannot overwrite an edit that lands in between.
-    let base_sha256 = stored_skill(client, &imported.skill_id)
-        .await?
-        .map(|(_, sha)| sha)
+    let stored = stored_skill(client, &imported.skill_id).await?;
+    let removed = stored
+        .as_ref()
+        .map(|(page, _)| skill_md::removed_authority_keys(page, &imported.page))
         .unwrap_or_default();
+    let base_sha256 = stored.map(|(_, sha)| sha).unwrap_or_default();
     let target_page_id = skill_page_id(&imported.skill_id);
     let resp = client
         .create_draft(CreateDraftRequest {
@@ -98,6 +135,21 @@ pub async fn import(client: &Client, a: SkillImportArgs) -> Result<Value> {
         ));
         eprintln!(
             "warning: the imported skill sets {keys}; review them before promoting the draft"
+        );
+    }
+    if !removed.is_empty() {
+        // The stored skill is governed by keys this bundle does not carry: a
+        // plain third-party SKILL.md promoted over it would drop its read ACL,
+        // its agent binding, its schedule — silently.
+        let keys = removed.join(", ");
+        out["removed_authority_keys"] = json!(removed);
+        out["removed_authority_note"] = json!(format!(
+            "the stored skill sets {keys} and this draft does not: promoting it removes them"
+        ));
+        eprintln!(
+            "warning: the stored skill `{}` sets {keys}; this draft does not, so promoting it \
+             removes them",
+            imported.skill_id
         );
     }
     if !extra_files.is_empty() {

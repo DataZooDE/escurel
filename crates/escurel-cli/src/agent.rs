@@ -73,6 +73,11 @@ pub struct SkillExportArgs {
     /// `<skill>/SKILL.md` instead of one directory per skill.
     #[arg(long)]
     pub pack: bool,
+    /// Overwrite files that exist with different content. Without it the
+    /// export refuses (writing nothing) rather than clobber a local edit; a
+    /// file that already holds exactly the export is left alone.
+    #[arg(long)]
+    pub force: bool,
 }
 
 #[derive(Args, Debug)]

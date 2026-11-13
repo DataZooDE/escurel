@@ -51,6 +51,10 @@ struct Harness {
 }
 
 async fn start() -> Harness {
+    start_with(Default::default()).await
+}
+
+async fn start_with(config_overrides: escurel_test_support::ConfigOverrides) -> Harness {
     let process = EscurelProcess::spawn(Opts {
         auth: AuthMode::TestIssuer,
         fixtures: Some(
@@ -61,7 +65,7 @@ async fn start() -> Harness {
                 .instance("customer", "acme", ACME)
                 .done(),
         ),
-        config_overrides: Default::default(),
+        config_overrides,
     })
     .await;
     let server = process.base_url().to_owned();
@@ -75,7 +79,13 @@ async fn start() -> Harness {
 
 /// Run the CLI; `Ok(stdout JSON)` on exit 0, `Err(stderr)` otherwise.
 async fn cli(h: &Harness, args: &[&str]) -> Result<Value, String> {
-    let (server, bearer) = (h.server.clone(), h.bearer.clone());
+    cli_as(h, &h.bearer, args).await.map(|(json, _)| json)
+}
+
+/// Run the CLI with `bearer`; `Ok((stdout JSON, stderr))` on exit 0,
+/// `Err(stderr)` otherwise.
+async fn cli_as(h: &Harness, bearer: &str, args: &[&str]) -> Result<(Value, String), String> {
+    let (server, bearer) = (h.server.clone(), bearer.to_owned());
     let args: Vec<String> = args.iter().map(|s| (*s).to_owned()).collect();
     tokio::task::spawn_blocking(move || {
         let out = Command::cargo_bin("escurel")
@@ -85,10 +95,14 @@ async fn cli(h: &Harness, args: &[&str]) -> Result<Value, String> {
             .args(&args)
             .output()
             .unwrap();
+        let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
         if out.status.success() {
-            Ok(serde_json::from_slice(&out.stdout).expect("stdout is JSON"))
+            Ok((
+                serde_json::from_slice(&out.stdout).expect("stdout is JSON"),
+                stderr,
+            ))
         } else {
-            Err(String::from_utf8_lossy(&out.stderr).into_owned())
+            Err(stderr)
         }
     })
     .await
@@ -315,5 +329,136 @@ async fn pack_export_writes_one_deterministic_bundle() {
     .unwrap_err();
     assert!(err.contains("no skill `no-such-skill`"), "{err}");
 
+    h.process.shutdown().await;
+}
+
+/// Exporting into a directory that already holds a skill never clobbers a
+/// local edit (crew U-F8): identical content is a no-op, different content is
+/// refused (nothing written) unless `--force`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn export_refuses_to_overwrite_a_local_edit_without_force() {
+    let h = start().await;
+    let out = tempfile::tempdir().unwrap();
+    let args = [
+        "skill",
+        "export",
+        "triage",
+        "customer",
+        "--out",
+        p(out.path()),
+    ];
+    ok(&h, &args).await;
+    let file = out.path().join("triage").join("SKILL.md");
+    let exported = std::fs::read_to_string(&file).unwrap();
+
+    let again = ok(&h, &args).await;
+    assert_eq!(again["written"], json!([]), "{again}");
+    assert_eq!(again["unchanged"].as_array().unwrap().len(), 2, "{again}");
+
+    let edited = format!("{exported}\nA local note.\n");
+    std::fs::write(&file, &edited).unwrap();
+    std::fs::remove_file(out.path().join("customer").join("SKILL.md")).unwrap();
+    let err = cli(&h, &args)
+        .await
+        .expect_err("a local edit is not clobbered");
+    assert!(err.contains("--force") && err.contains(p(&file)), "{err}");
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), edited);
+    assert!(
+        !out.path().join("customer").join("SKILL.md").exists(),
+        "a refusal writes nothing at all"
+    );
+
+    let forced = ok(&h, &[&args[..], &["--force"]].concat()).await;
+    assert_eq!(forced["written"].as_array().unwrap().len(), 2, "{forced}");
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), exported);
+    h.process.shutdown().await;
+}
+
+/// A plain third-party SKILL.md imported over a governed skill would drop its
+/// authority keys once promoted (crew C-F4): the import names them, on stdout
+/// and as a warning on stderr.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_import_over_a_governed_skill_names_the_authority_keys_it_would_remove() {
+    let h = start().await;
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("SKILL.md"),
+        "---\nname: triage\ndescription: Triage, the community version.\n---\n# triage\n",
+    )
+    .unwrap();
+    let (imported, stderr) = cli_as(&h, &h.bearer, &["skill", "import", p(dir.path())])
+        .await
+        .unwrap();
+    assert_eq!(
+        imported["removed_authority_keys"],
+        json!(["acl", "autonomy", "schedule"]),
+        "{imported}"
+    );
+    assert!(
+        stderr.contains("acl, autonomy, schedule") && stderr.contains("removes them"),
+        "{stderr}"
+    );
+    // A new skill has nothing to lose.
+    let fresh = tempfile::tempdir().unwrap();
+    std::fs::write(
+        fresh.path().join("SKILL.md"),
+        "---\nname: fresh\ndescription: New.\n---\n# fresh\n",
+    )
+    .unwrap();
+    let imported = ok(&h, &["skill", "import", p(fresh.path())]).await;
+    assert!(
+        imported.get("removed_authority_keys").is_none(),
+        "{imported}"
+    );
+    h.process.shutdown().await;
+}
+
+/// Under an enforced write ACL (crew U-F5) a non-curator's import is a draft
+/// and nothing more: the skill does not exist until someone promotes it, and
+/// a curator (admin) can. The draft names the authority it would grant
+/// (`agent:`). NOT pinned here: whether a non-curator may promote their own
+/// import — today the gateway lets any writer promote a skill-page draft,
+/// `agent:` included (reported as a finding, not changed in this PR).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn under_an_enforced_acl_an_import_is_a_draft_a_curator_promotes() {
+    let h = start_with(escurel_test_support::ConfigOverrides {
+        write_acl: Some(escurel_test_support::WriteAclMode::Enforce),
+        ..Default::default()
+    })
+    .await;
+    let bob = h
+        .process
+        .mint_token_with_sub(TENANT, Role::Agent, "member:bob");
+    let curator = h.process.mint_token(TENANT, Role::Admin);
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("SKILL.md"),
+        "---\nname: deployer\ndescription: A playbook.\nmetadata:\n  escurel:\n    \
+         agent: \"[[agent::deploy-bot]]\"\n---\n# deployer\n",
+    )
+    .unwrap();
+    let (drafted, stderr) = cli_as(&h, &bob, &["skill", "import", p(dir.path())])
+        .await
+        .expect("anyone may propose");
+    assert_eq!(drafted["ok"], true, "{drafted}");
+    assert_eq!(drafted["draft"]["author"], "member:bob", "{drafted}");
+    assert_eq!(drafted["authority_keys"], json!(["agent"]), "{drafted}");
+    assert!(stderr.contains("sets agent"), "{stderr}");
+
+    let hr = &h;
+    let listed = |token: String| async move {
+        cli_as(hr, &token, &["skill", "list"]).await.unwrap().0["skills"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|s| s["id"] == "deployer")
+    };
+    assert!(!listed(curator.clone()).await, "a draft is not a write");
+    let draft_id = drafted["draft"]["draft_id"].as_str().unwrap();
+    let (promoted, _) = cli_as(&h, &curator, &["draft", "promote", "--draft", draft_id])
+        .await
+        .expect("the curator promotes");
+    assert_eq!(promoted["ok"], true, "{promoted}");
+    assert!(listed(curator).await);
     h.process.shutdown().await;
 }

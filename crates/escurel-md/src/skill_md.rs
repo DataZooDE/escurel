@@ -241,6 +241,33 @@ pub fn import(skill_md: &str) -> Result<Imported> {
     })
 }
 
+/// The [`AUTHORITY_KEYS`] a stored skill page carries that `imported` (the
+/// page an import would draft) does not: what promoting the draft would
+/// silently drop — a read ACL, an agent binding, a schedule. In
+/// [`AUTHORITY_KEYS`] order; empty when either page does not parse.
+#[must_use]
+pub fn removed_authority_keys(stored: &str, imported: &str) -> Vec<String> {
+    let keys = |page: &str| {
+        crate::split_frontmatter(page)
+            .map(|(fields, _)| {
+                fields
+                    .keys()
+                    .filter_map(|k| k.as_str().map(str::to_owned))
+                    .collect::<Vec<String>>()
+            })
+            .unwrap_or_default()
+    };
+    let (before, after) = (keys(stored), keys(imported));
+    if before.is_empty() || after.is_empty() {
+        return Vec::new();
+    }
+    AUTHORITY_KEYS
+        .iter()
+        .filter(|k| before.iter().any(|b| b == *k) && !after.iter().any(|a| a == *k))
+        .map(|k| (*k).to_owned())
+        .collect()
+}
+
 /// A skill id that is also safe as one path segment: the gateway's skill-id rule, minus a leading
 /// `.` (which would let `..` name the parent directory, or hide the folder).
 #[must_use]
@@ -447,6 +474,22 @@ Again: [[customer::acme]].\n";
         );
         let plain = "---\nname: t\ndescription: d\nlicense: MIT\n---\nx\n";
         assert!(import(plain).unwrap().authority_keys.is_empty());
+    }
+
+    #[test]
+    fn an_import_over_a_governed_skill_names_the_keys_it_would_drop() {
+        let stored = "---\nkind: skill\nid: t\ndescription: d\nacl: {read: [finance]}\n\
+                      agent: \"[[agent::bot]]\"\ntags: [x]\n---\n# t\n";
+        let plain = import("---\nname: t\ndescription: d\n---\n# t\n").unwrap();
+        assert_eq!(
+            removed_authority_keys(stored, &plain.page),
+            ["acl", "agent"]
+        );
+        let keeps = import(
+            "---\nname: t\ndescription: d\nmetadata:\n  escurel:\n    acl: {read: [finance]}\n---\nx\n",
+        )
+        .unwrap();
+        assert_eq!(removed_authority_keys(stored, &keeps.page), ["agent"]);
     }
 
     #[test]

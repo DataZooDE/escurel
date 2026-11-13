@@ -42,7 +42,8 @@ escurel skill list
 escurel instance list --skill customer --order-by-at desc --limit 20
 
 # skills as Anthropic-style SKILL.md (#825; references/12)
-escurel skill export triage customer --out .claude/skills   # <out>/<skill>/SKILL.md each
+escurel skill export triage customer --out .claude/skills   # <out>/<skill>/SKILL.md each; never clobbers a local edit
+escurel skill export triage --out .claude/skills --force    # replace files that differ
 escurel skill export triage customer --pack --out dist      # one deterministic dist/escurel-skills.tar.gz
 escurel skill import ./pdf-tools                            # <dir>/SKILL.md → a DRAFT, never a direct write
 
@@ -204,7 +205,19 @@ drive them over MCP/gRPC or the BFF.
   `authority_keys` with an `authority_note`, and a warning goes to stderr:
   review those before promoting a third-party playbook. (A draft has no
   description field, so the review queue itself shows them only in the
-  draft's content.) A SKILL.md body keeps its line endings both ways.
+  draft's content.) The other direction matters as much: importing over an
+  **existing** skill that carries authority keys the bundle does not (a plain
+  community SKILL.md over a skill with `acl.read: [finance]` or an `agent:`)
+  names them in `removed_authority_keys` with a `removed_authority_note`, and
+  warns on stderr — promoting that draft removes them. Who may promote is the
+  gateway's draft rule, not the importer's: today any caller allowed to write
+  the skill page may promote a skill draft, so "curator-gated" means a person
+  looks before promoting, not that the gateway refuses a non-admin. A SKILL.md
+  body keeps its line endings both ways.
+- `skill export` never clobbers a local edit: a file that already holds
+  exactly the export is left alone (listed under `unchanged`), and a file with
+  different content makes the export refuse — naming it, writing nothing at
+  all — unless `--force` is given. Output: `{skills, written, unchanged}`.
 - `ingest --skill <id>` pins a specific `document`-backend skill and
   triggers that skill's **create-ACL** (a 403 if the caller can't create
   there); omit it to resolve the handling skill from the MIME.
