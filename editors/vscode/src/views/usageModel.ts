@@ -5,7 +5,7 @@ import { describeError } from '../errors';
 import { statusWord } from '../runs/runWording';
 import { pageSlug } from '../shared/pageId';
 import { cleanText } from '../shared/untrustedText';
-import { compactTokens, formatCost, successRate } from '../shared/usageWords';
+import { compactTokens, costWords, successRate } from '../shared/usageWords';
 
 export type UsageWindow = '24h' | '7d' | '30d';
 
@@ -51,7 +51,7 @@ export function usageLine(t: UsageTotals): string {
     `${t.runs} ${t.runs === 1 ? 'run' : 'runs'}`,
     successRate(t),
     `${compactTokens(t.input_tokens + t.output_tokens)} tokens`,
-    formatCost(t.cost_usd),
+    costWords(t).short,
   ]
     .filter(Boolean)
     .join(' · ');
@@ -67,7 +67,7 @@ export function usageDetail(t: UsageTotals): string {
   return [
     statuses,
     `${n(t.input_tokens)} input tokens · ${n(t.output_tokens)} output tokens`,
-    `${formatCost(t.cost_usd)} in all`,
+    costWords(t).detail,
   ]
     .filter(Boolean)
     .join('\n');

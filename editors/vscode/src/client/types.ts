@@ -184,7 +184,12 @@ export interface UsageTotals {
   by_status: Record<string, number>;
   input_tokens: number;
   output_tokens: number;
+  /** The sum over the PRICED runs only; an unpriced run's spend is not in it. */
   cost_usd: number;
+  /** Runs whose harness reported a cost. Absent from an older gateway. */
+  priced_runs?: number;
+  /** Runs whose harness reported no cost (codex, a run without usage). */
+  unpriced_runs?: number;
 }
 
 export interface UsageReportRow extends UsageTotals {

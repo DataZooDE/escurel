@@ -148,7 +148,8 @@ async fn seed(p: &EscurelProcess) {
             usage: Some((300, 30, 1.0)),
         },
         // No usage reported: still a run, and its model comes from the
-        // run's own provenance.
+        // run's own provenance. Its cost is unknown, not $0: it counts as
+        // an unpriced run (crew review PR-1, F5).
         Run {
             id: "r4",
             skill: "hygiene",
@@ -189,16 +190,19 @@ async fn usage_report_sums_runs_per_grouping_within_the_window() {
         by_skill["rows"],
         json!([
             { "group": { "skill": "hygiene" }, "runs": 2, "by_status": { "processed": 2 },
-              "input_tokens": 300, "output_tokens": 30, "cost_usd": 1.0 },
+              "input_tokens": 300, "output_tokens": 30, "cost_usd": 1.0,
+              "priced_runs": 1, "unpriced_runs": 1 },
             { "group": { "skill": "renewal" }, "runs": 2, "by_status": { "failed": 1, "processed": 1 },
-              "input_tokens": 300, "output_tokens": 30, "cost_usd": 0.75 },
+              "input_tokens": 300, "output_tokens": 30, "cost_usd": 0.75,
+              "priced_runs": 2, "unpriced_runs": 0 },
         ]),
         "{by_skill}"
     );
     assert_eq!(
         by_skill["total"],
         json!({ "runs": 4, "by_status": { "failed": 1, "processed": 3 },
-                "input_tokens": 600, "output_tokens": 60, "cost_usd": 1.75 }),
+                "input_tokens": 600, "output_tokens": 60, "cost_usd": 1.75,
+                "priced_runs": 3, "unpriced_runs": 1 }),
         "{by_skill}"
     );
 

@@ -173,7 +173,8 @@ async fn run_finished_carries_the_harness_usage_and_the_runner_meters_it() {
         report["rows"],
         json!([{ "group": { "skill": SKILL, "model": "echo" }, "runs": 1,
                  "by_status": { "processed": 1 }, "input_tokens": 120,
-                 "output_tokens": 45, "cost_usd": 0.0031 }]),
+                 "output_tokens": 45, "cost_usd": 0.0031,
+                 "priced_runs": 1, "unpriced_runs": 0 }]),
         "{report}"
     );
 }

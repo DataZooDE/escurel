@@ -7,6 +7,7 @@ import 'package:escurel_explorer_kit/client/escurel_client.dart';
 import 'package:escurel_explorer_kit/client/models.dart';
 import 'package:escurel_explorer_kit/editor/page_cost_badge.dart';
 import 'package:escurel_explorer_kit/state/providers.dart';
+import 'package:escurel_explorer_kit/state/usage.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -85,6 +86,25 @@ void main() {
     await _pump(tester, _UsageClient(isAdmin: false), _page);
     expect(find.bySemanticsLabel('page-cost-badge'), findsNothing);
     expect(find.textContaining('error'), findsNothing);
+  });
+
+  // Codex reports no price: its runs are not $0 (crew review PR-1, F5).
+  test('unpriced runs are named, and no price at all reads as unavailable', () {
+    final mixed = UsageRow.fromJson({
+      'group': {'page': _page},
+      'runs': 7,
+      'cost_usd': 0.4234,
+      'priced_runs': 5,
+      'unpriced_runs': 2,
+    });
+    expect(mixed.pricedRuns, 5);
+    expect(mixed.unpricedRuns, 2);
+    expect(costLabel(mixed), r'$0.42 · 7 runs, 2 unpriced (30d)');
+    const none = UsageRow(group: {}, runs: 3, unpricedRuns: 3);
+    expect(costLabel(none), 'cost unavailable · 3 runs (30d)');
+    expect(formatCost(none), 'cost unavailable');
+    const priced = UsageRow(group: {}, runs: 1, costUsd: 0.1, pricedRuns: 1);
+    expect(formatCost(priced), r'$0.10');
   });
 
   testWidgets('a page no run targeted shows no badge', (tester) async {

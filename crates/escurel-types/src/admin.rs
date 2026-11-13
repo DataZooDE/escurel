@@ -337,7 +337,14 @@ pub struct UsageTotals {
     pub by_status: std::collections::BTreeMap<String, u64>,
     pub input_tokens: u64,
     pub output_tokens: u64,
+    /// The sum over the PRICED runs only: a run whose harness reported no
+    /// price (codex, a run without usage) adds nothing here and counts in
+    /// `unpriced_runs` instead, so `$0.00` with unpriced runs is "unknown".
     pub cost_usd: f64,
+    /// Runs whose harness reported a cost (`0` is a price).
+    pub priced_runs: u64,
+    /// Runs whose harness reported no cost: their spend is not in `cost_usd`.
+    pub unpriced_runs: u64,
 }
 
 /// MCP `usage_report` wire keys as named.

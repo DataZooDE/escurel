@@ -92,7 +92,7 @@ class AgentsPanel extends ConsumerWidget {
     final row = byAgent[principal];
     if (row == null || row.runs == 0) return 'no runs ($usageWindowLabel)';
     final rate = ((row.successRate ?? 0) * 100).round();
-    return '${formatRuns(row.runs)} · $rate% ok · ${formatUsd(row.costUsd)}';
+    return '${formatRuns(row.runs)} · $rate% ok · ${formatCost(row)}';
   }
 }
 

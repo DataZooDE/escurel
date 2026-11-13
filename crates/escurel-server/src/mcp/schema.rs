@@ -2475,8 +2475,8 @@ fn output_schema_for(name: &str) -> Option<Value> {
             "group_by": { "type": "array" },
             "since": { "type": ["string", "null"] },
             "until": { "type": ["string", "null"] },
-            "rows": { "type": "array", "description": "[{group: {skill?, agent?, page?, model?, day?}, runs, by_status, input_tokens, output_tokens, cost_usd}]" },
-            "total": { "type": "object", "description": "{runs, by_status, input_tokens, output_tokens, cost_usd}" }
+            "rows": { "type": "array", "description": "[{group: {skill?, agent?, page?, model?, day?}, runs, by_status, input_tokens, output_tokens, cost_usd, priced_runs, unpriced_runs}]" },
+            "total": { "type": "object", "description": "{runs, by_status, input_tokens, output_tokens, cost_usd, priced_runs, unpriced_runs}" }
         })),
         "get_run_tool_calls" => obj(json!({
             "run_id": { "type": "string" },

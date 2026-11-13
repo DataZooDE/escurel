@@ -29,8 +29,12 @@ describe('usage in words', () => {
       label: 'Cost: 12,400 input tokens, 860 output tokens, $0.042, model claude-sonnet-4',
       title: 'Input 12,400 tokens · output 860 tokens · $0.042 · model claude-sonnet-4',
     });
-    // No price reported: the chip says tokens only, never "$0".
-    expect(usageChip({ inputTokens: 10, outputTokens: 2 }).text).toBe('10 in · 2 out');
+    // No price reported: the chip says the cost is unknown, never "$0" (crew review PR-1, F5).
+    expect(usageChip({ inputTokens: 10, outputTokens: 2 })).toEqual({
+      text: '10 in · 2 out · cost unavailable',
+      label: 'Cost: 10 input tokens, 2 output tokens, cost unavailable',
+      title: 'Input 10 tokens · output 2 tokens · cost unavailable',
+    });
   });
 
   it('reads the success rate from by_status, and says nothing for no runs', () => {

@@ -70,6 +70,24 @@ describe('usage view model', () => {
     expect(rows[1]!.tooltip).toContain('12,000 input tokens · 2,400 output tokens');
   });
 
+  // Codex reports no price: a total that leaves its spend out must say so (crew review PR-1, F5).
+  it('says how many runs are unpriced, and that the cost is unknown when none is priced', () => {
+    const mixed = {
+      ...report.total,
+      cost_usd: 0.124,
+      priced_runs: 4,
+      unpriced_runs: 2,
+    };
+    const none = { ...report.rows[0]!, cost_usd: 0, priced_runs: 0, unpriced_runs: 2 };
+    const rows = usageRows({ ...report, rows: [none], total: mixed }, 'skill');
+    expect(rows[0]!.description).toBe('6 runs · 83% ok · 15.3k tokens · $0.12 · 2 runs unpriced');
+    expect(rows[0]!.tooltip).toContain(
+      '$0.12 in all; 2 runs unpriced (their harness reported no cost)',
+    );
+    expect(rows[1]!.description).toBe('2 runs · 100% ok · 900 tokens · cost unavailable');
+    expect(rows[1]!.tooltip).toContain('cost unavailable: no run reported a cost');
+  });
+
   it('names agents by their id, pages by their slug, and an empty group plainly', () => {
     const row = (group: UsageReportResponse['rows'][number]['group']) => ({
       ...report.rows[0]!,

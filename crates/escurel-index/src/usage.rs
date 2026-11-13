@@ -77,8 +77,8 @@ pub struct RunBill {
     pub status: String,
     pub input_tokens: u64,
     pub output_tokens: u64,
-    /// `0.0` when the harness priced nothing.
-    pub cost_usd: f64,
+    /// `None` when the harness priced nothing (or reported a nonsense price).
+    pub cost_usd: Option<f64>,
 }
 
 impl RunBill {
@@ -107,10 +107,7 @@ impl RunBill {
             status: text(Some(body.status)).unwrap_or_else(|| "unknown".to_owned()),
             input_tokens: usage.input_tokens,
             output_tokens: usage.output_tokens,
-            cost_usd: usage
-                .cost_usd
-                .filter(|c| c.is_finite() && *c >= 0.0)
-                .unwrap_or(0.0),
+            cost_usd: usage.cost_usd.filter(|c| c.is_finite() && *c >= 0.0),
         })
     }
 
@@ -131,7 +128,13 @@ fn add_bill(t: &mut UsageTotals, r: &RunBill) {
     *t.by_status.entry(r.status.clone()).or_default() += 1;
     t.input_tokens = t.input_tokens.saturating_add(r.input_tokens);
     t.output_tokens = t.output_tokens.saturating_add(r.output_tokens);
-    t.cost_usd += r.cost_usd;
+    match r.cost_usd {
+        Some(c) => {
+            t.cost_usd += c;
+            t.priced_runs += 1;
+        }
+        None => t.unpriced_runs += 1,
+    }
 }
 
 /// `t` as the wire carries it: the cost rounded to the nano-dollar, so a sum
@@ -312,7 +315,7 @@ mod tests {
         );
         let r = RunBill::from_event(&e).unwrap();
         assert_eq!(r.model.as_deref(), Some("chosen"));
-        assert_eq!((r.input_tokens, r.output_tokens, r.cost_usd), (0, 0, 0.0));
+        assert_eq!((r.input_tokens, r.output_tokens, r.cost_usd), (0, 0, None));
     }
 
     #[test]
@@ -363,7 +366,8 @@ mod tests {
         assert_eq!(
             out["total"],
             json!({ "runs": 3, "by_status": { "failed": 1, "processed": 2 },
-                    "input_tokens": 9, "output_tokens": 12, "cost_usd": 1.75 })
+                    "input_tokens": 9, "output_tokens": 12, "cost_usd": 1.75,
+                    "priced_runs": 3, "unpriced_runs": 0 })
         );
 
         let mut only_a = UsageFold::new(&[UsageDim::Model], Some("a".to_owned()));
@@ -373,6 +377,41 @@ mod tests {
             only_a.to_json()["rows"][1]["group"],
             json!({ "model": "m2" })
         );
+    }
+
+    /// Codex reports tokens but no price: that run is unpriced, so a total
+    /// that leaves its spend out says so instead of reading as complete.
+    #[test]
+    fn a_run_with_tokens_but_no_price_is_counted_unpriced() {
+        let mut fold = UsageFold::new(&[UsageDim::Skill], None);
+        fold.add(&finished(
+            "a",
+            "m",
+            "2026-10-01T01:00:00Z",
+            "processed",
+            usage(1, 1, 0.5, "m"),
+        ));
+        fold.add(&finished(
+            "a",
+            "codex",
+            "2026-10-01T02:00:00Z",
+            "processed",
+            json!({ "input_tokens": 9, "output_tokens": 9, "model": "codex" }),
+        ));
+        fold.add(&finished(
+            "a",
+            "m",
+            "2026-10-01T03:00:00Z",
+            "processed",
+            json!({ "input_tokens": 1, "output_tokens": 1, "cost_usd": 0.0, "model": "m" }),
+        ));
+        let t = fold.total();
+        assert_eq!(
+            (t.priced_runs, t.unpriced_runs),
+            (2, 1),
+            "a $0 price is a price"
+        );
+        assert_eq!(t.cost_usd, 0.5);
     }
 
     #[test]

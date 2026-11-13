@@ -47,6 +47,11 @@ class PageCostBadge extends ConsumerWidget {
   }
 }
 
-/// "$0.42 · 7 runs (30d)".
-String costLabel(UsageRow row) =>
-    '${formatUsd(row.costUsd)} · ${formatRuns(row.runs)} ($usageWindowLabel)';
+/// "$0.42 · 7 runs (30d)", "$0.42 · 7 runs, 2 unpriced (30d)" when some runs
+/// reported no price, "cost unavailable · 3 runs (30d)" when none did.
+String costLabel(UsageRow row) {
+  final unpriced = row.unpricedRuns > 0 && row.pricedRuns > 0
+      ? ', ${row.unpricedRuns} unpriced'
+      : '';
+  return '${formatCost(row)} · ${formatRuns(row.runs)}$unpriced ($usageWindowLabel)';
+}

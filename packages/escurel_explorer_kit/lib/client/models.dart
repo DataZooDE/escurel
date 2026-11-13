@@ -1174,6 +1174,8 @@ class UsageRow {
     this.inputTokens = 0,
     this.outputTokens = 0,
     this.costUsd = 0,
+    this.pricedRuns = 0,
+    this.unpricedRuns = 0,
   });
 
   final Map<String, String> group;
@@ -1183,7 +1185,16 @@ class UsageRow {
   final Map<String, int> byStatus;
   final int inputTokens;
   final int outputTokens;
+
+  /// The sum over the PRICED runs only — an unpriced run adds nothing.
   final double costUsd;
+
+  /// Runs whose harness reported a cost.
+  final int pricedRuns;
+
+  /// Runs whose harness reported no cost (codex, a run without usage): their
+  /// spend is not in [costUsd].
+  final int unpricedRuns;
 
   /// `processed / runs` — the contract's success rate; null with no runs.
   double? get successRate =>
@@ -1202,6 +1213,8 @@ class UsageRow {
     inputTokens: (j['input_tokens'] as num?)?.toInt() ?? 0,
     outputTokens: (j['output_tokens'] as num?)?.toInt() ?? 0,
     costUsd: (j['cost_usd'] as num?)?.toDouble() ?? 0,
+    pricedRuns: (j['priced_runs'] as num?)?.toInt() ?? 0,
+    unpricedRuns: (j['unpriced_runs'] as num?)?.toInt() ?? 0,
   );
 }
 

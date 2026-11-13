@@ -23,6 +23,13 @@ const usageWindowLabel = '30d';
 /// A cost as the explorer prints it: `$0.42`.
 String formatUsd(double usd) => '\$${usd.toStringAsFixed(2)}';
 
+/// A row's cost: `$0.42`, or `cost unavailable` when none of its runs was
+/// priced — `$0.00` would read as free.
+String formatCost(UsageRow row) =>
+    row.unpricedRuns > 0 && row.pricedRuns == 0
+    ? 'cost unavailable'
+    : formatUsd(row.costUsd);
+
 /// "7 runs" / "1 run".
 String formatRuns(int n) => '$n ${n == 1 ? 'run' : 'runs'}';
 

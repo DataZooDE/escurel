@@ -17,6 +17,31 @@ export function formatCost(usd: number): string {
   return usd >= 1 ? `$${usd.toFixed(2)}` : `$${Number(usd.toPrecision(2))}`;
 }
 
+/** What the cost of a run, or a run without a price, reads as. */
+export const COST_UNAVAILABLE = 'cost unavailable';
+
+const runsWord = (n: number) => `${n} ${n === 1 ? 'run' : 'runs'}`;
+
+/**
+ * A usage row's cost: `$0.12`, `$0.12 · 2 runs unpriced`, or `cost unavailable` when no run was
+ * priced. `cost_usd` sums the priced runs only, so `$0` beside unpriced runs would be a lie.
+ */
+export function costWords(t: { cost_usd: number; priced_runs?: number; unpriced_runs?: number }): {
+  short: string;
+  detail: string;
+} {
+  const unpriced = t.unpriced_runs ?? 0;
+  if (unpriced > 0 && (t.priced_runs ?? 0) === 0)
+    return { short: COST_UNAVAILABLE, detail: `${COST_UNAVAILABLE}: no run reported a cost` };
+  const cost = formatCost(t.cost_usd);
+  if (unpriced === 0) return { short: cost, detail: `${cost} in all` };
+  const n = runsWord(unpriced);
+  return {
+    short: `${cost} · ${n} unpriced`,
+    detail: `${cost} in all; ${n} unpriced (${unpriced === 1 ? 'its' : 'their'} harness reported no cost)`,
+  };
+}
+
 export interface UsageChip {
   text: string;
   /** The accessible name: the chip's abbreviations spelled out. */
@@ -25,7 +50,7 @@ export interface UsageChip {
 }
 
 export function usageChip(usage: RunUsage): UsageChip {
-  const cost = usage.costUsd !== undefined ? formatCost(usage.costUsd) : undefined;
+  const cost = usage.costUsd !== undefined ? formatCost(usage.costUsd) : COST_UNAVAILABLE;
   const model = usage.model ? `model ${usage.model}` : undefined;
   const input = `${thousands(usage.inputTokens)} input tokens`;
   const output = `${thousands(usage.outputTokens)} output tokens`;
