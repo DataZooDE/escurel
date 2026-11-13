@@ -2,8 +2,18 @@
 //! (knowledge-workbench backend, P1 PR7 — BRD FR-R-1/2/4/5).
 //!
 //! Real gateway, real runner binary, real echo harness. The ledger stays the
-//! source of truth; the events are its projection — best-effort, so a
-//! gateway that refuses them (a non-admin runner bearer) never fails the run.
+//! source of truth; the events are its projection — best-effort: a refusal
+//! is only logged and counted (`record_run_event`), never fails the run.
+//!
+//! No test here makes the gateway refuse them any more. The gateway admits
+//! `run:*` ids, the `escurel:` label and `kind: system` for exactly one
+//! credential, `is_admin && !is_machine` (`tools_write.rs` `bookkeeper`) —
+//! the same predicate `claim_event` requires (`tools_runtimes.rs`), so a
+//! runner that may write them is the only kind that runs anything (it fails
+//! closed on a refused claim). A service-role restriction cannot carve out
+//! the capture either: `claim_event` is admin-scoped and no restricted role
+//! may list it. What is left is the generic body cap, which hits every call.
+//!
 //! Every run lands on the root event's page as `run-started`, one
 //! `run-attempt` per attempt, and `run-finished` with the ledger's terminal.
 
