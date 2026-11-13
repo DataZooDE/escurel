@@ -642,6 +642,11 @@ fn check_chat_keys(page_kind: PageKind, fields: &YamlMapping) -> Vec<Issue> {
 /// `requires: {harness, labels}` on a SKILL page (#818). An ERROR: a
 /// malformed requirement is satisfied by no runner, so the skill's work would
 /// sit in the inbox unclaimed with nobody told why.
+///
+/// `requires.harness` only ROUTES: it picks a runner that offers the harness,
+/// while the run itself uses the skill's `harness:` (or the runner's default).
+/// A skill naming two different ones would route to a runner with one and run
+/// on the other, so that is a warning.
 fn check_requires(page_kind: PageKind, fields: &YamlMapping) -> Vec<Issue> {
     let Some(raw) = fields
         .get("requires")
@@ -651,7 +656,24 @@ fn check_requires(page_kind: PageKind, fields: &YamlMapping) -> Vec<Issue> {
     };
     let json = serde_json::to_value(raw).unwrap_or_default();
     match escurel_types::runtime::Requires::parse(&json) {
-        Ok(_) => Vec::new(),
+        Ok(r) => {
+            let runs_on = fields.get("harness").and_then(|h| h.as_str());
+            match (r.harness.as_deref(), runs_on) {
+                (Some(routed), Some(runs)) if routed != runs => vec![
+                    Issue::warning(
+                        "requires_harness_mismatch",
+                        "frontmatter.requires.harness",
+                        format!(
+                            "`requires.harness: {routed}` routes to a runner offering {routed}, \
+                             but the run uses `harness: {runs}`; `requires.harness` never selects \
+                             the harness"
+                        ),
+                    )
+                    .with_suggestion("name the same harness in both, or drop one of them"),
+                ],
+                _ => Vec::new(),
+            }
+        }
         Err(msg) => vec![
             Issue::error("requires_invalid", "frontmatter.requires", msg).with_suggestion(
                 "write `requires: {harness: codex, labels: [\"site:muc\"]}`; every key is optional",
@@ -2409,6 +2431,20 @@ mod schedule_tests {
             assert_eq!(run(PageKind::Skill, bad), vec!["requires_invalid"], "{bad}");
         }
         assert!(run(PageKind::Instance, "requires: codex").is_empty());
+        assert_eq!(
+            run(
+                PageKind::Skill,
+                "harness: claude\nrequires: {harness: codex}"
+            ),
+            vec!["requires_harness_mismatch"]
+        );
+        assert!(
+            run(
+                PageKind::Skill,
+                "harness: codex\nrequires: {harness: codex}"
+            )
+            .is_empty()
+        );
     }
 
     #[test]

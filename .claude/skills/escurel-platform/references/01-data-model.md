@@ -68,6 +68,10 @@ optional; reported on `list_skills`, linted by `validate`):
   runner that can (references/11 *Several runners*). Malformed is an error (`requires_invalid`;
   `capture_event` refuses a malformed `provenance.requires` with that code) and fails closed: it
   reaches `list_skills` as `requires: {invalid: true}` and no runner takes the work.
+  `requires.harness` only **routes** (to a runner offering it); the run still uses the skill's
+  `harness:` or the runner's default, so a skill naming two different ones gets a
+  `requires_harness_mismatch` warning. The event's requirement can only narrow the skill's
+  (labels add up; two different harnesses match no runner).
 - `generated:`, `verified:`, `status:`, `stale_after:`, `sources:` — the OKF provenance keys, all optional and
   lint-only (a malformed one is a warning). They reach `list_skills` as written; `stale_after` is an
   RFC 3339 instant or an ISO-8601 duration (`P90D`) counted from `verified`, and a client decides what
