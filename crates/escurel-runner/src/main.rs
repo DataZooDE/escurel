@@ -89,10 +89,10 @@ struct AppState {
     /// The durable run ledger — the idempotency authority (#149). The gate
     /// consults it before enqueueing so a re-delivered event is dropped.
     ledger: Arc<Ledger>,
-    /// The live runs' cancel handles (workbench backend P2-3a). `POST
-    /// /debug/cancel` and the `escurel:run-control` subscriber stop a run
-    /// through it.
-    cancels: escurel_runner_core::CancelRegistry,
+    /// The live runs (workbench backend P2-3a, #820). `POST /debug/cancel`
+    /// and the `escurel:run-control` subscriber cancel or steer a run
+    /// through its entry.
+    runs: escurel_runner_core::RunRegistry,
     /// Where and as whom to read the gateway when a requeue rebuilds a
     /// trigger from its event (`None` tokens = the dev/legacy path with no
     /// credentials: the bare trigger is enqueued as before).
@@ -222,7 +222,7 @@ async fn main() -> anyhow::Result<()> {
 
     // In-flight quota slots, shared gate → dispatch loop (#158).
     let inflight: InflightSlots = Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
-    let cancels = escurel_runner_core::CancelRegistry::new();
+    let runs = escurel_runner_core::RunRegistry::new();
     let last_poll_ms: Arc<std::sync::atomic::AtomicU64> =
         Arc::new(std::sync::atomic::AtomicU64::new(0));
 
@@ -304,7 +304,7 @@ async fn main() -> anyhow::Result<()> {
                     governor.clone(),
                     Arc::clone(&metrics),
                     Arc::clone(&inflight),
-                    cancels.clone(),
+                    runs.clone(),
                     Arc::new(Notify::new()),
                 )));
             }
@@ -317,7 +317,7 @@ async fn main() -> anyhow::Result<()> {
                 governor.clone(),
                 Arc::clone(&metrics),
                 Arc::clone(&inflight),
-                cancels.clone(),
+                runs.clone(),
                 Arc::clone(&drained),
             ));
         }
@@ -418,7 +418,7 @@ async fn main() -> anyhow::Result<()> {
         governor,
         metrics: Arc::clone(&metrics),
         inflight: Arc::clone(&inflight),
-        cancels: cancels.clone(),
+        runs: runs.clone(),
         gateway_url: config.gateway_url.clone(),
         tokens: tokens.clone(),
         last_poll_ms: Arc::clone(&last_poll_ms),
@@ -1426,7 +1426,7 @@ async fn debug_cancel(
         );
     };
     match run_id {
-        Some(run_id) if state.cancels.cancel(&run_id, reason) => {
+        Some(run_id) if state.runs.cancel(&run_id, reason) => {
             tracing::info!(target: "escurel_runner", run_id = %run_id, reason = ?reason, "run cancel requested");
             (
                 StatusCode::OK,
@@ -2072,7 +2072,7 @@ async fn dispatch_loop(
     governor: Governor,
     metrics: Arc<Metrics>,
     inflight: InflightSlots,
-    cancels: escurel_runner_core::CancelRegistry,
+    runs: escurel_runner_core::RunRegistry,
     drained: Arc<Notify>,
 ) {
     // A PROBE, not the client this loop will use.
@@ -2195,7 +2195,7 @@ async fn dispatch_loop(
         // from it and authorises `report_progress` by it, so it is a claim the
         // runner signs, never a header the harness could set.
         // Cancellable from here to the terminal (workbench backend P2-3a).
-        let cancel = cancels.register(run_id.as_str(), config.cancel_grace);
+        let cancel = runs.register(run_id.as_str(), config.cancel_grace);
         let run_claims = escurel_runner_core::RunClaims {
             run_id: run_id.0.clone(),
             root_event_id: trigger.lineage.root_event_id.clone(),
@@ -2252,7 +2252,7 @@ async fn dispatch_loop(
                     .lock()
                     .expect("inflight slots mutex")
                     .remove(&trigger.event_id);
-                cancels.finish(run_id.as_str());
+                runs.finish(run_id.as_str());
                 continue;
             }
             match drive_workflow(
@@ -2317,7 +2317,7 @@ async fn dispatch_loop(
                 .lock()
                 .expect("inflight slots mutex")
                 .remove(&trigger.event_id);
-            cancels.finish(run_id.as_str());
+            runs.finish(run_id.as_str());
             continue;
         }
 
@@ -2369,6 +2369,9 @@ async fn dispatch_loop(
                 .as_ref()
                 .map(escurel_runner_core::ManualStart::to_value),
         };
+        // The run's entry learns who runs it, so a control verb that needs
+        // the harness (an injection) can answer and record it.
+        runs.attach(run_id.as_str(), run_ctx.clone(), false);
         let emit_events = config.emit_run_events;
         if emit_events {
             record_run_event(&metrics, "started", run_ctx.emit_started(&client).await);
@@ -2499,7 +2502,7 @@ async fn dispatch_loop(
             (None, false, _) => ledger.complete(&run_id, RunStatus::Failed, None),
         };
         // The run is no longer live; the requester's reason, if cancelled.
-        let cancel_reason = cancels
+        let cancel_reason = runs
             .finish(run_id.as_str())
             .map(|r| r.unwrap_or_else(|| "cancelled".to_owned()));
         if emit_events {
@@ -3773,7 +3776,7 @@ async fn act_on_control(
             let Some(run_id) = text("run_id") else {
                 return ControlOutcome::refused("cancel names a run_id");
             };
-            if state.cancels.cancel(&run_id, text("reason").as_deref()) {
+            if state.runs.cancel(&run_id, text("reason").as_deref()) {
                 return ControlOutcome::done("cancelled");
             }
             let detail = match state.ledger.find_run(&run_id) {
@@ -3968,7 +3971,7 @@ fn status_snapshot(
 ) -> (serde_json::Value, serde_json::Value) {
     let count = |s: RunStatus| state.ledger.count_all_by_status(s).unwrap_or(0);
     let mut live: Vec<serde_json::Value> = state
-        .cancels
+        .runs
         .live()
         .into_iter()
         .map(|run_id| {

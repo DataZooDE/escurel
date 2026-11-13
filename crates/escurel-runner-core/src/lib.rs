@@ -15,12 +15,12 @@
 
 mod admit;
 mod auth;
-mod cancel;
 mod cascade;
 mod chat_reply;
 mod config;
 mod dispatch;
 mod ledger;
+mod live_runs;
 mod packager;
 mod promotion;
 mod quota;
@@ -34,7 +34,6 @@ pub use admit::{Admission, LoopLimits, admit};
 pub use auth::{
     AuthError, ROOT_EVENT_ID_CLAIM, RUN_ID_CLAIM, RunClaims, Signer, TRACE_ID_CLAIM, TokenSource,
 };
-pub use cancel::{Cancel, CancelRegistry, DEFAULT_CANCEL_GRACE};
 pub use cascade::{
     CascadeError, CascadeOutcome, SkillContract, emit_cascade, emit_cascade_with_id, skill_contract,
 };
@@ -45,6 +44,7 @@ pub use escurel_runner_workflow::OperationStatus;
 pub use ledger::{
     DeadLetterReason, Ledger, LedgerDecision, LedgerError, RunId, RunRecord, RunStatus,
 };
+pub use live_runs::{Cancel, DEFAULT_CANCEL_GRACE, InjectInbox, Injection, RunRegistry};
 pub use packager::{
     ALLOWED_TOOLS, Autonomy, CHAT_REQUIRES_RUN_TOKENS, Delegation, PLAN_PARAGRAPH, PackageError,
     REVIEW_TOOLS, TaskContext, WORKFLOW_STEP_TOOLS, bound_page_id, chat_run_token, chat_tools,
