@@ -57,6 +57,10 @@ cost over the last 30 days (`$0.42 · 7 runs (30d)`), hidden for a non-admin
 (`agent` instances: harness, model, scopes) with each one's runs, success
 rate and cost. A skill that declares `schedule:` shows its cron (and
 `schedule_budget` cap) in the catalogue and the skills registry.
+The **Runtimes** panel (`/inspector/runtimes`) lists the registered runners
+(`list_runtimes`): online, stale, stopped or not reporting (in words and by
+icon shape), the harnesses each offers (with CLI versions for an admin), its
+labels, live runs and when it was last seen.
 
 [heron]: https://github.com/DataZooDE/heron
 [herkules]: https://github.com/DataZooDE/herkules-ui

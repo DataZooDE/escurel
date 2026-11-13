@@ -986,6 +986,15 @@ class HttpEscurelClient implements EscurelClient {
   }
 
   @override
+  Future<List<RuntimeInfo>> listRuntimes() async {
+    final r = await _call('list_runtimes', const {});
+    return (r['runtimes'] as List? ?? const [])
+        .whereType<Map<String, dynamic>>()
+        .map(RuntimeInfo.fromJson)
+        .toList();
+  }
+
+  @override
   Future<UsageReport> usageReport({
     required List<String> groupBy,
     String? since,

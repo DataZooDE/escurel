@@ -269,6 +269,9 @@ class _CapStubClient implements EscurelClient {
   );
 
   @override
+  Future<List<RuntimeInfo>> listRuntimes() => inner.listRuntimes();
+
+  @override
   Future<int> adminDeleteChatHistory({String? chatGroupId, String? beforeTs}) =>
       inner.adminDeleteChatHistory(
         chatGroupId: chatGroupId,

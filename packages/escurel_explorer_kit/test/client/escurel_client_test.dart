@@ -226,6 +226,10 @@ class _StubClient implements EscurelClient {
   }) async => throw notYetImplemented('usage_report');
 
   @override
+  Future<List<RuntimeInfo>> listRuntimes() async =>
+      throw notYetImplemented('list_runtimes');
+
+  @override
   Future<int> adminDeleteChatHistory({
     String? chatGroupId,
     String? beforeTs,

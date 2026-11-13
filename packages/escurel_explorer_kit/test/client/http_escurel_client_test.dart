@@ -421,6 +421,54 @@ void main() {
       expect(broke.scheduleRunsPerDay, 0);
     });
 
+    test('list_runtimes parses an admin read and a member read (no versions)', () async {
+      mock.toolHandlers['list_runtimes'] = (args) => {
+        'runtimes': [
+          {
+            'runner_id': 'laptop',
+            'page_id': 'markdown/instances/runtime/laptop.md',
+            'harnesses': [
+              {'name': 'claude', 'version': '2.1.3'},
+            ],
+            'labels': ['site:muc'],
+            'max_concurrent': 2,
+            'claim_holder': 'svc#a',
+            'status': 'online',
+            'last_seen': '2026-11-13T10:00:00Z',
+            'age_s': 12,
+            'stale_after_s': 90,
+            'version': '2026.11.13',
+            'live_runs': 1,
+          },
+          {
+            'runner_id': 'box',
+            'page_id': 'markdown/instances/runtime/box.md',
+            'harnesses': [
+              {'name': 'codex'},
+            ],
+            'labels': <String>[],
+            'max_concurrent': null,
+            'status': 'unknown',
+            'last_seen': null,
+            'age_s': null,
+            'stale_after_s': null,
+            'version': null,
+            'live_runs': 0,
+          },
+        ],
+      };
+      final rs = await client.listRuntimes();
+      expect(rs.map((r) => r.runnerId), ['laptop', 'box']);
+      expect(rs[0].harnesses.single.version, '2.1.3');
+      expect(rs[0].labels, ['site:muc']);
+      expect(rs[0].liveRuns, 1);
+      expect(rs[0].staleAfterS, 90);
+      expect(rs[1].harnesses.single.name, 'codex');
+      expect(rs[1].harnesses.single.version, isNull);
+      expect(rs[1].status, 'unknown');
+      expect(rs[1].maxConcurrent, isNull);
+    });
+
     test('usage_report sends group_by + since and parses rows', () async {
       Map<String, dynamic>? sent;
       mock.toolHandlers['usage_report'] = (args) {

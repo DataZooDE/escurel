@@ -1243,6 +1243,72 @@ class UsageReport {
   };
 }
 
+/// One harness a runtime offers (#818). `version` is the CLI's
+/// `--version` line; null for an in-process harness, a failed probe, or a
+/// non-admin's read (the gateway shows versions to admins only).
+class RuntimeHarness {
+  const RuntimeHarness({required this.name, this.version});
+
+  final String name;
+  final String? version;
+
+  factory RuntimeHarness.fromJson(Map<String, dynamic> j) => RuntimeHarness(
+    name: (j['name'] as String?) ?? '',
+    version: j['version'] as String?,
+  );
+}
+
+/// A registered runner as `list_runtimes` reports it (#818): what it
+/// offers, and whether it is alive (joined from its status record).
+class RuntimeInfo {
+  const RuntimeInfo({
+    required this.runnerId,
+    required this.pageId,
+    required this.status,
+    this.harnesses = const [],
+    this.labels = const [],
+    this.maxConcurrent,
+    this.lastSeen,
+    this.ageS,
+    this.staleAfterS,
+    this.version,
+    this.liveRuns = 0,
+  });
+
+  final String runnerId;
+  final String pageId;
+
+  /// `online` | `stale` | `stopped` | `unknown` (no status record yet).
+  final String status;
+  final List<RuntimeHarness> harnesses;
+  final List<String> labels;
+  final int? maxConcurrent;
+
+  /// RFC 3339: the runner's last status report.
+  final String? lastSeen;
+  final int? ageS;
+  final int? staleAfterS;
+  final String? version;
+  final int liveRuns;
+
+  factory RuntimeInfo.fromJson(Map<String, dynamic> j) => RuntimeInfo(
+    runnerId: (j['runner_id'] as String?) ?? '',
+    pageId: (j['page_id'] as String?) ?? '',
+    status: (j['status'] as String?) ?? 'unknown',
+    harnesses: (j['harnesses'] as List? ?? const [])
+        .whereType<Map<String, dynamic>>()
+        .map(RuntimeHarness.fromJson)
+        .toList(),
+    labels: (j['labels'] as List? ?? const []).map((e) => '$e').toList(),
+    maxConcurrent: (j['max_concurrent'] as num?)?.toInt(),
+    lastSeen: j['last_seen'] as String?,
+    ageS: (j['age_s'] as num?)?.toInt(),
+    staleAfterS: (j['stale_after_s'] as num?)?.toInt(),
+    version: j['version'] as String?,
+    liveRuns: (j['live_runs'] as num?)?.toInt() ?? 0,
+  );
+}
+
 /// An agent profile (#823): an instance of the `agent` system skill — the
 /// harness, model and least-privilege scopes a run executes under.
 class AgentProfile {

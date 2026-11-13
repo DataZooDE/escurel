@@ -914,6 +914,10 @@ class FixtureEscurelClient implements EscurelClient {
     String? skill,
   }) async => const UsageReport(rows: [], total: UsageRow(group: {}, runs: 0));
 
+  /// The fixture has no runner: no runtime registers.
+  @override
+  Future<List<RuntimeInfo>> listRuntimes() async => const [];
+
   @override
   Future<WebhookDeliveries> adminWebhookDeliveries({int limit = 100}) async {
     final list = _webhookDeliveries.length > limit
