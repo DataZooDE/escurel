@@ -103,6 +103,9 @@ pub struct Signer {
     kid: String,
     /// PKCS#1 PEM — the flavour `jsonwebtoken`'s RS256 path accepts.
     private_pem: Vec<u8>,
+    /// The public half, base64url modulus and exponent, for [`Self::public_jwk`].
+    n_b64: String,
+    e_b64: String,
 }
 
 impl std::fmt::Debug for Signer {
@@ -154,6 +157,18 @@ impl Signer {
             tenant,
             kid,
             private_pem,
+            n_b64,
+            e_b64,
+        })
+    }
+
+    /// The public half of the signing key as one RS256 JWK under this
+    /// signer's `kid` — what a verifier's JWKS lists. Never the private key.
+    #[must_use]
+    pub fn public_jwk(&self) -> serde_json::Value {
+        serde_json::json!({
+            "kty": "RSA", "alg": "RS256", "use": "sig",
+            "kid": self.kid, "n": self.n_b64, "e": self.e_b64,
         })
     }
 
@@ -631,6 +646,34 @@ mod tests {
         key.to_pkcs8_pem(rsa::pkcs8::LineEnding::LF)
             .expect("encode")
             .to_string()
+    }
+
+    /// The published JWK is the public half only, and verifies what the
+    /// signer mints (the bridge serves it as its JWKS).
+    #[test]
+    fn the_public_jwk_verifies_the_signers_tokens_and_holds_no_private_part() {
+        let signer = Signer::build(
+            "https://issuer".into(),
+            "escurel".into(),
+            "acme".into(),
+            Some("bridge-key".into()),
+            &test_key(),
+        )
+        .unwrap();
+        let jwk = signer.public_jwk();
+        assert_eq!(jwk["kid"], "bridge-key");
+        for private in ["d", "p", "q", "dp", "dq", "qi"] {
+            assert!(jwk.get(private).is_none(), "{private} leaked: {jwk}");
+        }
+        let token = signer.mint_bridge("user:alice", "msteams", 60).unwrap();
+        let key = jsonwebtoken::DecodingKey::from_rsa_components(
+            jwk["n"].as_str().unwrap(),
+            jwk["e"].as_str().unwrap(),
+        )
+        .unwrap();
+        let mut v = jsonwebtoken::Validation::new(jsonwebtoken::Algorithm::RS256);
+        v.set_audience(&["escurel"]);
+        jsonwebtoken::decode::<serde_json::Value>(&token, &key, &v).expect("verifies");
     }
 
     /// Workbench backend P3-6 (#510 step 2): a NARROWED agent token carries

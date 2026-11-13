@@ -149,8 +149,10 @@ the tool answers `unsupported`.
 **A chat bridge's token is restricted by its key.** `escurel-chat-bridge` signs
 a token for each person it answers with a key of its own, never the gateway's
 main signing key. The gateway lists that key's id in `ESCUREL_AUTH_BRIDGE_KID`
-(the key itself is published by a trusted issuer's JWKS), and a token under it
-is bounded whatever it claims: at most 900 s (`exp - iat` and `exp - now`), never
+(the bridge publishes the key's public half at `GET /.well-known/jwks.json`, which
+the gateway trusts as an extra issuer's `ESCUREL_AUTH_JWKS_URI_<N>`), and a token under it
+is bounded whatever it claims: at most 900 s (`exp - iat`; `exp - now` allows 60 s for a
+bridge clock running ahead, and the bridge mints 840 s), never
 admin or operator, **no roles or groups** (so ACLs that grant by IdP group do not
 reach a person through the bridge — only those naming them, their
 `group_members` groups, or `public`), refused (`401`) if it carries an

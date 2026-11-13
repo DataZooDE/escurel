@@ -17,10 +17,13 @@ struct AppState<C: ChatChannel> {
     version: String,
 }
 
-/// `POST /api/messages`, `GET /healthz` (dependency-free), `GET /version`.
+/// `POST /api/messages`, `GET /healthz` (dependency-free), `GET /version`,
+/// and `GET /.well-known/jwks.json` — the public key the gateway verifies the
+/// bridge's tokens with (`ESCUREL_AUTH_JWKS_URI_<N>`).
 pub fn router<C: ChatChannel>(bridge: Arc<Bridge<C>>, version: String) -> Router {
     Router::new()
         .route("/api/messages", post(messages::<C>))
+        .route("/.well-known/jwks.json", get(jwks_of::<C>))
         .route("/healthz", get(|| async { "ok" }))
         .route("/version", get(version_of::<C>))
         .with_state(Arc::new(AppState { bridge, version }))
@@ -28,6 +31,12 @@ pub fn router<C: ChatChannel>(bridge: Arc<Bridge<C>>, version: String) -> Router
 
 async fn version_of<C: ChatChannel>(State(s): State<Arc<AppState<C>>>) -> String {
     s.version.clone()
+}
+
+async fn jwks_of<C: ChatChannel>(
+    State(s): State<Arc<AppState<C>>>,
+) -> axum::Json<serde_json::Value> {
+    axum::Json(s.bridge.jwks())
 }
 
 /// Verify, admit, answer at once; the turn is worked in the background. A

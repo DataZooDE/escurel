@@ -16,8 +16,16 @@
 //! from the top: the page create is a create-if-absent, the user message has
 //! a fixed `msg_id`, the event a fixed `event_id`, and the runner answers one
 //! `(chat_group_id, user_msg_id)` once.
+//!
+//! A turn has a durable deadline: its admission time plus the reply timeout.
+//! A gateway outage is retried with capped backoff until then — and a
+//! periodic sweep re-works any open turn nothing is working on — so the
+//! person gets the answer once the gateway is back, or, at the deadline, the
+//! timeout notice (sent through the platform, so it needs no gateway). Both
+//! go through [`Bridge::reply`], which sends at most once.
 
-use std::sync::Arc;
+use std::collections::HashSet;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use base64::Engine as _;
@@ -36,8 +44,10 @@ use crate::store::{OpenTurn, Store, TurnState};
 /// Sent when no answer arrived within the reply timeout.
 const TIMED_OUT: &str = "I couldn't get an answer in time. Please ask again.";
 const SEND_ATTEMPTS: u32 = 3;
-/// Tries at a turn before it waits for the next boot.
-const WORK_ATTEMPTS: u32 = 4;
+/// The longest wait between two tries at a turn.
+const MAX_WORK_BACKOFF: Duration = Duration::from_secs(30);
+/// How often open turns nothing is working on are picked up again.
+const SWEEP_INTERVAL: Duration = Duration::from_secs(30);
 
 #[derive(Debug, thiserror::Error)]
 pub enum BridgeError {
@@ -58,6 +68,8 @@ pub struct Bridge<C: ChatChannel> {
     store: Store,
     signer: Signer,
     cfg: BridgeConfig,
+    /// Turn keys a task is working on now, so a sweep never doubles one.
+    working: Mutex<HashSet<String>>,
 }
 
 impl<C: ChatChannel> Bridge<C> {
@@ -68,12 +80,20 @@ impl<C: ChatChannel> Bridge<C> {
             store,
             signer,
             cfg,
+            working: Mutex::new(HashSet::new()),
         })
     }
 
     #[must_use]
     pub fn channel(&self) -> &C {
         &self.channel
+    }
+
+    /// The JWKS a gateway trusts the bridge's tokens through: the public
+    /// half of its signing key, under its kid (`GET /.well-known/jwks.json`).
+    #[must_use]
+    pub fn jwks(&self) -> Value {
+        json!({ "keys": [self.signer.public_jwk()] })
     }
 
     /// Take a verified payload: admit its turn once and work it in the
@@ -85,59 +105,124 @@ impl<C: ChatChannel> Bridge<C> {
         let Some(turn) = self.channel.to_capture(payload) else {
             return Ok(());
         };
-        if !self.store.admit(self.channel.name(), &turn)? {
+        let Some(admitted_ms) = self.store.admit(self.channel.name(), &turn)? else {
             tracing::info!(message_id = %turn.message_id, "chat bridge: replayed message, ignored");
             return Ok(());
-        }
+        };
         self.spawn(OpenTurn {
             turn,
             state: TurnState::Received,
+            admitted_ms,
         });
         Ok(())
     }
 
-    /// Pick up the turns a previous process left unanswered.
+    /// Pick up the open turns nothing is working on: at boot, the ones a
+    /// previous process left; on each sweep, any whose task ended.
     ///
     /// # Errors
     /// The state store cannot be read.
     pub fn resume(self: &Arc<Self>) -> Result<usize, BridgeError> {
         let open = self.store.open_turns(self.channel.name())?;
-        let n = open.len();
+        let mut n = 0;
         for turn in open {
-            self.spawn(turn);
+            n += usize::from(self.spawn(turn));
         }
         Ok(n)
     }
 
-    /// Work a turn in the background. A gateway hiccup is retried (every
-    /// step is idempotent); a person the template cannot map is closed, so
-    /// a restart does not retry them forever. Whatever is still open after
-    /// the last attempt is picked up again by the next boot's [`Self::resume`].
-    fn spawn(self: &Arc<Self>, open: OpenTurn) {
+    /// Re-run [`Self::resume`] every [`SWEEP_INTERVAL`] for as long as the
+    /// bridge lives.
+    pub fn start_sweep(self: &Arc<Self>) {
         let this = Arc::clone(self);
         tokio::spawn(async move {
-            let id = open.turn.key();
-            for attempt in 1..=WORK_ATTEMPTS {
-                match this.work(open.clone()).await {
-                    Ok(()) => return,
-                    Err(e @ BridgeError::NoPrincipal(_)) => {
-                        tracing::warn!(message_id = %id, error = %e, "chat bridge: not answered");
-                        let _ = this
-                            .store
-                            .close(this.channel.name(), &id, TurnState::Unmapped);
-                        return;
-                    }
-                    Err(e) => {
-                        tracing::error!(message_id = %id, attempt, error = %e,
-                            "chat bridge: turn failed");
-                        tokio::time::sleep(Duration::from_secs(2u64.pow(attempt))).await;
-                    }
+            let mut ticker = tokio::time::interval(SWEEP_INTERVAL);
+            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            ticker.tick().await;
+            loop {
+                ticker.tick().await;
+                match this.resume() {
+                    Ok(0) => {}
+                    Ok(n) => tracing::info!(resumed = n, "chat bridge: sweep picked up open turns"),
+                    Err(e) => tracing::warn!(error = %e, "chat bridge: sweep could not read turns"),
                 }
             }
         });
     }
 
-    async fn work(&self, open: OpenTurn) -> Result<(), BridgeError> {
+    /// The moment `open`'s reply is due: admission plus the reply timeout.
+    fn deadline(&self, open: &OpenTurn) -> Instant {
+        let elapsed = u64::try_from(crate::store::now_ms().saturating_sub(open.admitted_ms))
+            .map(Duration::from_millis)
+            .unwrap_or_default();
+        Instant::now() + self.cfg.reply_timeout.saturating_sub(elapsed)
+    }
+
+    /// Work a turn in the background until it is answered or due. A gateway
+    /// outage is retried with capped backoff (every step is idempotent); at
+    /// the deadline the person is told it timed out. A person the template
+    /// cannot map is closed, so nothing retries them forever. `false` when a
+    /// task already works this turn.
+    fn spawn(self: &Arc<Self>, open: OpenTurn) -> bool {
+        let id = open.turn.key();
+        if !self
+            .working
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(id.clone())
+        {
+            return false;
+        }
+        let this = Arc::clone(self);
+        tokio::spawn(async move {
+            let deadline = this.deadline(&open);
+            let mut backoff = this.cfg.poll_interval;
+            let mut attempt = 0u32;
+            loop {
+                attempt += 1;
+                if Instant::now() >= deadline {
+                    this.time_out(&open.turn).await;
+                    break;
+                }
+                match this.work(open.clone(), deadline).await {
+                    Ok(()) => break,
+                    Err(e @ BridgeError::NoPrincipal(_)) => {
+                        tracing::warn!(message_id = %id, error = %e, "chat bridge: not answered");
+                        let _ = this
+                            .store
+                            .close(this.channel.name(), &id, TurnState::Unmapped);
+                        break;
+                    }
+                    Err(e) => {
+                        tracing::error!(message_id = %id, attempt, error = %e,
+                            "chat bridge: turn failed; retrying");
+                        let wait = backoff.min(deadline.saturating_duration_since(Instant::now()));
+                        tokio::time::sleep(wait).await;
+                        backoff = (backoff * 2).min(MAX_WORK_BACKOFF);
+                    }
+                }
+            }
+            this.working
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .remove(&id);
+        });
+        true
+    }
+
+    /// The turn is due with no answer: say so, once.
+    async fn time_out(&self, turn: &InboundTurn) {
+        tracing::warn!(message_id = %turn.message_id, "chat bridge: no answer in time");
+        if let Err(e) = self
+            .reply(turn, "timeout", TIMED_OUT, TurnState::Expired)
+            .await
+        {
+            tracing::error!(message_id = %turn.message_id, error = %e,
+                "chat bridge: could not record the timeout");
+        }
+    }
+
+    async fn work(&self, open: OpenTurn, deadline: Instant) -> Result<(), BridgeError> {
         let turn = &open.turn;
         let name = self.channel.name();
         let principal = principal_for(&self.cfg.principal_template, turn)
@@ -191,7 +276,8 @@ impl<C: ChatChannel> Bridge<C> {
             tracing::info!(message_id = %turn.message_id, event_id = %event.event_id,
                 "chat bridge: turn captured");
         }
-        self.follow(&mut asker, turn, &group, &user_msg_id).await
+        self.follow(&mut asker, turn, &group, &user_msg_id, deadline)
+            .await
     }
 
     /// Wait for the run's assistant turn, showing typing meanwhile, and send
@@ -202,8 +288,8 @@ impl<C: ChatChannel> Bridge<C> {
         turn: &InboundTurn,
         group: &str,
         user_msg_id: &str,
+        deadline: Instant,
     ) -> Result<(), BridgeError> {
-        let deadline = Instant::now() + self.cfg.reply_timeout;
         let mut next_typing = Instant::now();
         while Instant::now() < deadline {
             if let Some((key, text)) = self.answer(&asker.get().await?, group, user_msg_id).await? {
@@ -217,9 +303,8 @@ impl<C: ChatChannel> Bridge<C> {
             }
             tokio::time::sleep(self.cfg.poll_interval).await;
         }
-        tracing::warn!(message_id = %turn.message_id, "chat bridge: no answer in time");
-        self.reply(turn, "timeout", TIMED_OUT, TurnState::Expired)
-            .await
+        self.time_out(turn).await;
+        Ok(())
     }
 
     /// The assistant turn answering `user_msg_id`: its `msg_id` (the reply

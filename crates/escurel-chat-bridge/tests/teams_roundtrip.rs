@@ -191,12 +191,13 @@ impl BotFramework {
 
 // ---- escurel's side ----------------------------------------------------
 
-/// The bridge's own signing key: a JWKS the gateway trusts publishes it under
-/// [`BRIDGE_KID`], which the gateway lists as a bridge kid. It is never the
+/// The bridge's own signing key: the bridge publishes it under [`BRIDGE_KID`]
+/// at `/.well-known/jwks.json`, the JWKS the gateway trusts (the documented
+/// path), and the gateway lists the kid as a bridge kid. It is never the
 /// gateway's main key (the runner's).
 const BRIDGE_KID: &str = "escurel-chat-bridge";
 
-async fn gateway(bridge_key: &ExtraIssuer) -> EscurelProcess {
+async fn gateway(bridge_key: &ExtraIssuer, bridge_jwks: &str) -> EscurelProcess {
     let mut fixtures = FixtureBuilder::new().tenant(TENANT);
     for (page_id, body) in escurel_runner_workflow::corpus::chat_corpus() {
         fixtures = fixtures.page(&page_id, body);
@@ -205,10 +206,7 @@ async fn gateway(bridge_key: &ExtraIssuer) -> EscurelProcess {
         auth: AuthMode::TestIssuer,
         config_overrides: ConfigOverrides {
             write_acl: Some(WriteAclMode::Enforce),
-            extra_issuers: vec![(
-                bridge_key.issuer_url().to_owned(),
-                bridge_key.jwks_url().to_owned(),
-            )],
+            extra_issuers: vec![(bridge_key.issuer_url().to_owned(), bridge_jwks.to_owned())],
             bridge_kids: vec![BRIDGE_KID.to_owned()],
             ..Default::default()
         },
@@ -233,11 +231,19 @@ struct Bridge {
 }
 
 impl Bridge {
-    fn spawn(gw: &EscurelProcess, bridge_key: &ExtraIssuer, bf: &BotFramework) -> Self {
+    /// The bridge on `listen` (kept across restarts: its JWKS URL is in the
+    /// gateway's config), talking to the gateway at `gateway_url`.
+    fn spawn(
+        listen: String,
+        gateway_url: &str,
+        bridge_key: &ExtraIssuer,
+        bf: &BotFramework,
+        extra_env: &[(&str, &str)],
+    ) -> Self {
         let state = tempfile::tempdir().unwrap();
         let (key, kid) = bridge_key.signing_material();
         let env = [
-            ("ESCUREL_BRIDGE_GATEWAY_URL", gw.base_url().to_owned()),
+            ("ESCUREL_BRIDGE_GATEWAY_URL", gateway_url.to_owned()),
             ("ESCUREL_BRIDGE_TENANT", TENANT.to_owned()),
             (
                 "ESCUREL_BRIDGE_AUTH_ISSUER",
@@ -281,10 +287,15 @@ impl Bridge {
         ]
         .into_iter()
         .map(|(k, v)| (k.to_owned(), v))
+        .chain(
+            extra_env
+                .iter()
+                .map(|(k, v)| ((*k).to_owned(), (*v).to_owned())),
+        )
         .collect();
         let mut bridge = Self {
             child: None,
-            listen: String::new(),
+            listen,
             env,
             _state: state,
         };
@@ -293,7 +304,6 @@ impl Bridge {
     }
 
     fn start(&mut self) {
-        self.listen = format!("127.0.0.1:{}", free_port());
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_escurel-chat-bridge"));
         cmd.env("ESCUREL_BRIDGE_LISTEN", &self.listen);
         for (k, v) in &self.env {
@@ -352,17 +362,42 @@ impl Drop for Bridge {
 struct World {
     gw: EscurelProcess,
     bf: BotFramework,
-    _runner: RunningRunner,
+    _runner: Option<RunningRunner>,
     bridge: Bridge,
     _bridge_key: ExtraIssuer,
+    /// Between the bridge and the gateway; only the bridge's link goes down.
+    link: Link,
+}
+
+/// How a test's world differs from the plain one.
+#[derive(Default)]
+struct Setup {
+    /// How long each run idles; `None` starts no runner at all.
+    run_ms: Option<u64>,
+    /// Extra `ESCUREL_BRIDGE_*` settings.
+    bridge_env: Vec<(&'static str, &'static str)>,
 }
 
 async fn world(run_ms: u64) -> World {
+    world_with(Setup {
+        run_ms: Some(run_ms),
+        ..Setup::default()
+    })
+    .await
+}
+
+async fn world_with(setup: Setup) -> World {
     let bridge_key = ExtraIssuer::start_with_own_key(BRIDGE_KID).await;
-    let gw = gateway(&bridge_key).await;
+    let listen = format!("127.0.0.1:{}", free_port());
+    let gw = gateway(
+        &bridge_key,
+        &format!("http://{listen}/.well-known/jwks.json"),
+    )
+    .await;
     let bf = BotFramework::start().await;
-    let runner = runner(&gw, run_ms);
-    let mut bridge = Bridge::spawn(&gw, &bridge_key, &bf);
+    let runner = setup.run_ms.map(|ms| runner(&gw, ms));
+    let link = Link::start(gw.base_url()).await;
+    let mut bridge = Bridge::spawn(listen, &link.url, &bridge_key, &bf, &setup.bridge_env);
     bridge.wait_healthy().await;
     World {
         gw,
@@ -370,6 +405,56 @@ async fn world(run_ms: u64) -> World {
         _runner: runner,
         bridge,
         _bridge_key: bridge_key,
+        link,
+    }
+}
+
+/// A TCP link from the bridge to the gateway that a test can cut and
+/// restore: cut, it closes every open connection and refuses new ones — the
+/// bridge sees the gateway gone, the way a stop-first deploy looks to it.
+struct Link {
+    url: String,
+    up: tokio::sync::watch::Sender<bool>,
+}
+
+impl Link {
+    async fn start(target: &str) -> Self {
+        let target = target
+            .trim_start_matches("http://")
+            .trim_end_matches('/')
+            .to_owned();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let (up, watch) = tokio::sync::watch::channel(true);
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut inbound, _)) = listener.accept().await else {
+                    return;
+                };
+                if !*watch.borrow() {
+                    continue;
+                }
+                let (target, mut watch) = (target.clone(), watch.clone());
+                tokio::spawn(async move {
+                    let Ok(mut outbound) = tokio::net::TcpStream::connect(&target).await else {
+                        return;
+                    };
+                    tokio::select! {
+                        _ = tokio::io::copy_bidirectional(&mut inbound, &mut outbound) => {}
+                        _ = watch.wait_for(|up| !*up) => {}
+                    }
+                });
+            }
+        });
+        Self { url, up }
+    }
+
+    fn cut(&self) {
+        self.up.send_replace(false);
+    }
+
+    fn restore(&self) {
+        self.up.send_replace(true);
     }
 }
 
@@ -767,6 +852,110 @@ async fn a_reply_that_may_have_been_delivered_is_not_sent_again() {
         1,
         "a send that reached the connector is never repeated: {:?}",
         w.bf.activity_types()
+    );
+}
+
+/// The bridge's timeout notice.
+const TIMED_OUT: &str = "I couldn't get an answer in time. Please ask again.";
+
+/// A gateway outage longer than the old four tries (crew U-F2): the bridge
+/// keeps retrying the turn with capped backoff, so once the gateway is back
+/// the person gets exactly one answer — and the bridge was never restarted.
+#[tokio::test]
+async fn a_gateway_outage_mid_turn_still_ends_in_exactly_one_reply_without_a_bridge_restart() {
+    let w = world(0).await;
+    let token = w.bf.token(APP_ID);
+    w.link.cut();
+    let activity = w.bf.message("act-7", "Which customers renew?");
+    assert_eq!(w.bridge.post(Some(&token), &activity).await, StatusCode::OK);
+    // The old loop gave up after four tries, 2+4+8 s apart.
+    tokio::time::sleep(Duration::from_secs(16)).await;
+    assert!(chat_events(&w.gw).await.is_empty(), "nothing got through");
+    w.link.restore();
+
+    let replies = wait_for_replies(&w.bf, 1, Duration::from_secs(60)).await;
+    assert_eq!(replies[0].2["text"], "echo: Which customers renew?");
+    assert_eq!(chat_events(&w.gw).await.len(), 1, "one run");
+    // A later turn is answered too, and the first is not answered again.
+    let later = w.bf.message("act-8", "And who churns?");
+    assert_eq!(w.bridge.post(Some(&token), &later).await, StatusCode::OK);
+    let replies = wait_for_replies(&w.bf, 2, Duration::from_secs(60)).await;
+    assert_eq!(replies.len(), 2, "{:?}", w.bf.activity_types());
+    assert_eq!(replies[1].2["replyToId"], "act-8");
+}
+
+/// No runner, a short reply timeout (crew U-F9): the person is told once that
+/// no answer came, and a restart does not tell them again.
+#[tokio::test]
+async fn with_no_runner_the_timeout_notice_is_sent_exactly_once() {
+    let mut w = world_with(Setup {
+        run_ms: None,
+        bridge_env: vec![("ESCUREL_BRIDGE_REPLY_TIMEOUT", "2s")],
+    })
+    .await;
+    let token = w.bf.token(APP_ID);
+    let first = w.bf.message("act-9", "Which customers renew?");
+    assert_eq!(w.bridge.post(Some(&token), &first).await, StatusCode::OK);
+    let replies = wait_for_replies(&w.bf, 1, Duration::from_secs(30)).await;
+    assert_eq!(replies[0].2["text"], TIMED_OUT);
+    assert_eq!(replies[0].2["replyToId"], "act-9");
+
+    // After a restart (which resumes open turns), a second turn times out
+    // in its turn: the bridge had its chance at the first, and left it.
+    w.bridge.restart();
+    w.bridge.wait_healthy().await;
+    let second = w.bf.message("act-10", "Anyone there?");
+    assert_eq!(w.bridge.post(Some(&token), &second).await, StatusCode::OK);
+    let replies = wait_for_replies(&w.bf, 2, Duration::from_secs(30)).await;
+    let to: Vec<_> = replies.iter().map(|r| r.2["replyToId"].clone()).collect();
+    assert_eq!(to, vec![json!("act-9"), json!("act-10")], "one notice each");
+}
+
+/// A sender the principal template cannot map (no `aadObjectId`, crew U-F9)
+/// gets nothing — no capture, no reply, no retry after a restart — while the
+/// same bridge answers a mapped person before and after.
+#[tokio::test]
+async fn an_unmapped_sender_gets_no_event_and_no_activity_even_after_a_restart() {
+    let mut w = world(0).await;
+    let token = w.bf.token(APP_ID);
+    let mut stranger = w.bf.message("act-11", "Who am I?");
+    stranger["from"]
+        .as_object_mut()
+        .unwrap()
+        .remove("aadObjectId");
+    assert_eq!(w.bridge.post(Some(&token), &stranger).await, StatusCode::OK);
+    // A mapped person's turn after it: once that is answered, the stranger's
+    // earlier turn has been worked.
+    let known = w.bf.message("act-12", "Which customers renew?");
+    assert_eq!(w.bridge.post(Some(&token), &known).await, StatusCode::OK);
+    wait_for_replies(&w.bf, 1, Duration::from_secs(60)).await;
+
+    w.bridge.restart();
+    w.bridge.wait_healthy().await;
+    let again = w.bf.message("act-13", "And who churns?");
+    assert_eq!(w.bridge.post(Some(&token), &again).await, StatusCode::OK);
+    let replies = wait_for_replies(&w.bf, 2, Duration::from_secs(60)).await;
+    let to: Vec<_> = replies.iter().map(|r| r.2["replyToId"].clone()).collect();
+    assert_eq!(to, vec![json!("act-12"), json!("act-13")]);
+    let stranger_activities =
+        w.bf.seen
+            .lock()
+            .unwrap()
+            .activities
+            .iter()
+            .filter(|(path, _, body)| path.contains("act-11") || body["replyToId"] == "act-11")
+            .count();
+    assert_eq!(
+        stranger_activities, 0,
+        "no activity of any kind for the stranger"
+    );
+    let events = chat_events(&w.gw).await;
+    assert_eq!(events.len(), 2, "{events:#?}");
+    assert!(
+        events
+            .iter()
+            .all(|e| e["provenance"]["channel"]["message_id"] != "act-11"),
+        "{events:#?}"
     );
 }
 

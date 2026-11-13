@@ -279,9 +279,12 @@ that `requires:` it.
 
 A separate binary answers 1:1 Microsoft Teams chats from escurel. A Teams message becomes the
 asker's page-chat turn plus a `chat` event, and the runner's reply goes back once. Run it next to a
-verifying gateway and a minted-mode runner. The bridge signs with a key of its OWN, which the
-gateway trusts through a JWKS and restricts by listing its kid in `ESCUREL_AUTH_BRIDGE_KID` (never
-the gateway's or the runner's key; references/08 § chat bridge):
+verifying gateway and a minted-mode runner. The bridge signs with a key of its OWN and serves its
+public half at `GET /.well-known/jwks.json`; the gateway trusts it as one more issuer
+(`ESCUREL_AUTH_OIDC_ISSUER_<N>` = the bridge's `ESCUREL_BRIDGE_AUTH_ISSUER`,
+`ESCUREL_AUTH_JWKS_URI_<N>` = `http://<bridge>/.well-known/jwks.json`) and restricts it by listing
+its kid in `ESCUREL_AUTH_BRIDGE_KID` (never the gateway's or the runner's key; references/08 § chat
+bridge):
 
 ```sh
 cargo build -p escurel-chat-bridge
@@ -294,7 +297,11 @@ ESCUREL_BRIDGE_PRINCIPAL_TEMPLATE='user:{aadObjectId}' ESCUREL_BRIDGE_STATE_PATH
   target/debug/escurel-chat-bridge          # POST /api/messages on :3978
 ```
 
-The tenant needs the chat corpus (`conversation` + `chat`). The principal template is required and
+The tenant needs the chat corpus (`conversation` + `chat`), shipped as files in
+`examples/chat/seed/skills/` (`escurel page update markdown/skills/<s>.md < examples/chat/seed/skills/<s>.md`
+as an admin, or `ESCUREL_SEED_DIR=examples/chat/seed` on a dev gateway). A gateway outage mid-turn is
+retried with capped backoff until the turn's reply deadline (arrival + `ESCUREL_BRIDGE_REPLY_TIMEOUT`),
+then the person gets one timeout notice. The principal template is required and
 must name `{aadObjectId}` or `{userId}` (the bridge refuses a template that maps everyone to one
 subject); it must give the person's own token `sub`, because the bridge signs a token for that
 subject and acts as them. Only explicitly `personal` (1:1) chats from an allowed Entra tenant on the
@@ -303,8 +310,9 @@ subject and acts as them. Only explicitly `personal` (1:1) chats from an allowed
 JWKS (`ESCUREL_BRIDGE_TEAMS_OPENID_METADATA_URL`), the token endpoint
 (`ESCUREL_BRIDGE_TEAMS_TOKEN_URL`) and a connector at the activity's `serviceUrl`, as
 `crates/escurel-chat-bridge/tests/teams_roundtrip.rs` does (`ExtraIssuer::sign` signs the channel
-token, `ExtraIssuer::start_with_own_key` + `ConfigOverrides::bridge_kids` give the bridge its
-restricted key, `RunnerProcess` starts the runner; references/06). Setup and the full env:
+token, `ExtraIssuer::start_with_own_key` gives the bridge its key, the gateway's
+`ConfigOverrides::extra_issuers` points at the bridge's own `/.well-known/jwks.json` and
+`ConfigOverrides::bridge_kids` restricts it, `RunnerProcess` starts the runner; references/06). Setup and the full env:
 `docs/deploy/chat-bridge.md`.
 
 ## The iterate loop

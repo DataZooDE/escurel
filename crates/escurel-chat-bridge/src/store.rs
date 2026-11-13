@@ -68,6 +68,17 @@ impl TurnState {
 pub struct OpenTurn {
     pub turn: InboundTurn,
     pub state: TurnState,
+    /// When the bridge admitted it (Unix ms): the durable start of its reply
+    /// deadline, so a retry or a restart never extends the wait.
+    pub admitted_ms: i64,
+}
+
+/// Unix milliseconds now.
+#[must_use]
+pub fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX))
 }
 
 pub struct Store {
@@ -89,6 +100,7 @@ impl Store {
                  reply_key   TEXT,
                  created_at  TIMESTAMP NOT NULL DEFAULT current_timestamp,
                  updated_at  TIMESTAMP NOT NULL DEFAULT current_timestamp,
+                 admitted_ms BIGINT,
                  PRIMARY KEY (channel, turn_key)
              );",
         )?;
@@ -101,18 +113,20 @@ impl Store {
         self.conn.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    /// Record a new turn; `false` when this message was seen before.
+    /// Record a new turn; its admission time, `None` when this message was
+    /// seen before.
     ///
     /// # Errors
     /// The write fails.
-    pub fn admit(&self, channel: &str, turn: &InboundTurn) -> Result<bool, StoreError> {
+    pub fn admit(&self, channel: &str, turn: &InboundTurn) -> Result<Option<i64>, StoreError> {
         let json = serde_json::to_string(turn)?;
+        let now = now_ms();
         let n = self.conn().execute(
-            "INSERT INTO turns (channel, turn_key, turn, state) VALUES (?, ?, ?, 'received')
-             ON CONFLICT DO NOTHING",
-            params![channel, turn.key(), json],
+            "INSERT INTO turns (channel, turn_key, turn, state, admitted_ms)
+             VALUES (?, ?, ?, 'received', ?) ON CONFLICT DO NOTHING",
+            params![channel, turn.key(), json, now],
         )?;
-        Ok(n == 1)
+        Ok((n == 1).then_some(now))
     }
 
     /// The turn is in escurel: its event exists.
@@ -172,15 +186,19 @@ impl Store {
     pub fn open_turns(&self, channel: &str) -> Result<Vec<OpenTurn>, StoreError> {
         let conn = self.conn();
         let mut stmt = conn.prepare(
-            "SELECT turn, state FROM turns
+            "SELECT turn, state, admitted_ms FROM turns
              WHERE channel = ? AND state IN ('received', 'captured') ORDER BY created_at",
         )?;
         let rows = stmt.query_map(params![channel], |r| {
-            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, Option<i64>>(2)?,
+            ))
         })?;
         let mut out = Vec::new();
         for row in rows {
-            let (json, state) = row?;
+            let (json, state, admitted_ms) = row?;
             out.push(OpenTurn {
                 turn: serde_json::from_str(&json)?,
                 state: if state == TurnState::Captured.as_str() {
@@ -188,6 +206,8 @@ impl Store {
                 } else {
                     TurnState::Received
                 },
+                // A row from before the column: its deadline starts now.
+                admitted_ms: admitted_ms.unwrap_or_else(now_ms),
             });
         }
         Ok(out)
@@ -221,14 +241,15 @@ mod tests {
         let path = dir.path().join("s.duckdb");
         {
             let s = Store::open(&path).unwrap();
-            assert!(s.admit("msteams", &turn("1")).unwrap());
-            assert!(!s.admit("msteams", &turn("1")).unwrap());
+            assert!(s.admit("msteams", &turn("1")).unwrap().is_some());
+            assert!(s.admit("msteams", &turn("1")).unwrap().is_none());
             s.captured("msteams", &turn("1").key(), "ev-1").unwrap();
         }
         let s = Store::open(&path).unwrap();
         let open = s.open_turns("msteams").unwrap();
         assert_eq!(open.len(), 1);
         assert_eq!(open[0].state, TurnState::Captured);
+        assert!(open[0].admitted_ms > 0 && open[0].admitted_ms <= now_ms());
         let key = turn("1").key();
         assert!(s.claim_reply("msteams", &key, "run:r:reply").unwrap());
         assert!(!s.claim_reply("msteams", &key, "run:r:reply").unwrap());

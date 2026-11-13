@@ -54,6 +54,7 @@ pub async fn run(cfg: BridgeConfig) -> Result<(), StartError> {
     let version = cfg.version.clone();
     let bridge = Bridge::new(cfg, channel, store, signer);
     let resumed = bridge.resume()?;
+    bridge.start_sweep();
     let listener = tokio::net::TcpListener::bind(&listen).await?;
     tracing::info!(listen = %listen, resumed, "escurel-chat-bridge listening");
     axum::serve(listener, http::router(bridge, version))

@@ -65,10 +65,17 @@ start it.
 7. **Typing**: while no answer exists, a typing activity every `ESCUREL_BRIDGE_TYPING_INTERVAL`.
 8. **One reply**: when the run's assistant turn (`run:<id>:reply`) appears in the group, the bridge
    claims the reply in its state file, then posts it once, as a reply to the activity. If no answer
-   arrives within `ESCUREL_BRIDGE_REPLY_TIMEOUT` it says so instead.
+   arrives within `ESCUREL_BRIDGE_REPLY_TIMEOUT` of the message's arrival it says so instead
+   (*I couldn't get an answer in time. Please ask again.*), once.
 
-A restarted bridge resumes every unanswered turn from its state file. Each step is idempotent,
-so a restart in the middle sends the reply once. A crash between claiming and posting a reply
+A gateway outage (a stop-first deploy) does not lose a turn: the bridge retries it with backoff
+(starting at `ESCUREL_BRIDGE_POLL_INTERVAL`, doubling, at most 30 s) until it is answered or its
+deadline — arrival plus `ESCUREL_BRIDGE_REPLY_TIMEOUT`, stored with the turn — passes, and a sweep
+every 30 s picks up any open turn nothing is working on. The timeout notice goes to Teams
+directly, so it is sent even if the gateway never came back.
+
+A restarted bridge resumes every unanswered turn from its state file, with the deadline it
+already had. Each step is idempotent, so a restart in the middle sends the reply once. A crash between claiming and posting a reply
 loses that reply rather than risking a second one. For the same reason a post is retried only
 when it provably never left (the connector token could not be fetched, no connection was made,
 or the connector answered `429`). A timeout, a reset after sending or a `5xx` may mean the
@@ -79,10 +86,24 @@ group chat or channel would show one member's answer to everyone in it.
 
 ## The tenant needs
 
-- the chat corpus (`conversation` + `chat` skills,
-  `escurel_runner_workflow::corpus::chat_corpus()`), or your own skills named by
-  `ESCUREL_BRIDGE_CONVERSATION_SKILL` / `ESCUREL_BRIDGE_CHAT_SKILL`;
-- a **minted-mode runner** (chat runs need run tokens, references/11 *Chat runs*);
+- the chat corpus: the `conversation` and `chat` skills, shipped as files in
+  [`examples/chat/seed/skills/`](../../examples/chat/seed/skills/) (byte for byte what
+  `escurel_runner_workflow::corpus::chat_corpus()` holds; a unit test keeps them equal). Install
+  them once with an admin token:
+
+  ```sh
+  export ESCUREL_SERVER=https://escurel.example.com ESCUREL_TOKEN=<admin bearer for the tenant>
+  for s in conversation chat; do
+    escurel page update "markdown/skills/$s.md" < "examples/chat/seed/skills/$s.md"
+  done
+  escurel skill list            # lists conversation and chat
+  ```
+
+  (A dev gateway can instead boot with `ESCUREL_SEED_DIR=examples/chat/seed`.) Or bring your own
+  skills and name them with `ESCUREL_BRIDGE_CONVERSATION_SKILL` / `ESCUREL_BRIDGE_CHAT_SKILL`;
+- a **minted-mode runner** (chat runs need run tokens: `ESCUREL_RUNNER_AUTH_ISSUER` +
+  `ESCUREL_RUNNER_AUTH_SIGNING_KEY`, see the *Chat runs* section of
+  [`references/11`](../../.claude/skills/escurel-platform/references/11-event-driven-agents.md));
 - for attachments, a `document` skill that accepts the type and grants its `create` to the person
   (e.g. `owner_field: owner`, `acl: {create: [owner]}`).
 
@@ -105,25 +126,85 @@ group chat or channel would show one member's answer to everyone in it.
    `ESCUREL_BRIDGE_TEAMS_TOKEN_URL=https://login.microsoftonline.com/<entra tenant id>/oauth2/v2.0/token`.
    The default (`…/botframework.com/…`) is the multi-tenant endpoint.
 
+## The bridge's signing key
+
+Generate the bridge its own RSA key (never the gateway's `ESCUREL_AUTH_SIGNING_KEY` or a
+runner's) and keep it in Secret Manager:
+
+```sh
+openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out escurel-chat-bridge.pem
+```
+
+The bridge serves the **public** half as a JWKS at `GET /.well-known/jwks.json` (one RS256 key under
+`ESCUREL_BRIDGE_AUTH_KID`; the private key never leaves the process). The gateway fetches it from
+there, so the bridge must be reachable from the gateway on its listen port. Do not expose that
+path publicly beyond what `/api/messages` already is; it holds nothing secret.
+
 ## Gateway side
 
-Publish the bridge's public key in a JWKS the gateway trusts (a dedicated issuer added as
-`ESCUREL_AUTH_OIDC_ISSUER_<N>` / `ESCUREL_AUTH_JWKS_URI_<N>`, or the existing issuer's JWKS) and
-set `ESCUREL_AUTH_BRIDGE_KID` on the gateway to its kid. Rotating the bridge key is a JWKS change
-plus both kid settings. The decision and the intended end state (a gateway-side mint, so the
-bridge holds no signing key at all) are in
+Add the bridge as one more trusted issuer and restrict its kid. `<N>` is the next free number in
+the gateway's contiguous `ESCUREL_AUTH_OIDC_ISSUER_2.._N` sequence (a gap stops the scan; use `2`
+if there is no second issuer yet). The issuer string is any URL you choose; it only has to equal
+the bridge's `ESCUREL_BRIDGE_AUTH_ISSUER`. The extra issuer shares the gateway's audience
+(`ESCUREL_AUTH_OIDC_AUDIENCE`, which must equal the bridge's `ESCUREL_BRIDGE_AUTH_AUDIENCE`,
+default `escurel`) and tenant claim.
+
+```sh
+# on the gateway
+ESCUREL_AUTH_OIDC_ISSUER_2=https://chat-bridge.escurel.internal
+ESCUREL_AUTH_JWKS_URI_2=http://escurel-chat-bridge:3978/.well-known/jwks.json
+ESCUREL_AUTH_BRIDGE_KID=escurel-chat-bridge-1
+```
+
+Every token under that kid is restricted (at most 900 s, never admin or operator, no roles or
+groups, no agent or run claims) whatever it says. Rotating the bridge key: generate a new key,
+deploy the bridge with it and a new `ESCUREL_BRIDGE_AUTH_KID`, and set
+`ESCUREL_AUTH_BRIDGE_KID=<old>,<new>` until the old one is gone (the gateway re-reads the JWKS on an
+unknown kid). The decision and the intended end state (a gateway-side mint, so the bridge holds no
+signing key at all) are in
 `docs/notes/discovered/2026-11-13-chat-bridge-restricted-signing-key.md`.
 
 ## Environment
 
-The bridge's variables are the *Bridge* table of [`env.md`](env.md). The minimum is
-`ESCUREL_BRIDGE_GATEWAY_URL`, `ESCUREL_BRIDGE_TENANT`, `ESCUREL_BRIDGE_AUTH_ISSUER`,
-`ESCUREL_BRIDGE_AUTH_KID`,
-`ESCUREL_BRIDGE_AUTH_SIGNING_KEY`, `ESCUREL_BRIDGE_TEAMS_APP_ID`,
-`ESCUREL_BRIDGE_TEAMS_APP_PASSWORD`, `ESCUREL_BRIDGE_TEAMS_ALLOWED_TENANTS` and
-`ESCUREL_BRIDGE_PRINCIPAL_TEMPLATE`.
-Keep `ESCUREL_BRIDGE_STATE_PATH` on the persistent volume (`/data`). Logs are JSON on stdout
+The bridge's variables are the *Bridge* table of [`env.md`](env.md). A complete single-tenant
+deployment (the recommended internal bot):
+
+```sh
+# escurel
+ESCUREL_BRIDGE_GATEWAY_URL=http://escurel:8080
+ESCUREL_BRIDGE_TENANT=acme
+ESCUREL_BRIDGE_AUTH_ISSUER=https://chat-bridge.escurel.internal   # = the gateway's ESCUREL_AUTH_OIDC_ISSUER_<N>
+ESCUREL_BRIDGE_AUTH_KID=escurel-chat-bridge-1                     # = the gateway's ESCUREL_AUTH_BRIDGE_KID
+ESCUREL_BRIDGE_AUTH_SIGNING_KEY_FILE=/run/secrets/escurel-chat-bridge.pem
+ESCUREL_BRIDGE_PRINCIPAL_TEMPLATE=user:{aadObjectId}              # = the person's own token `sub`
+ESCUREL_BRIDGE_STATE_PATH=/data/escurel-chat-bridge.duckdb        # persistent volume
+ESCUREL_BRIDGE_LISTEN=0.0.0.0:3978
+# Microsoft
+ESCUREL_BRIDGE_TEAMS_APP_ID=<Application (client) id>
+ESCUREL_BRIDGE_TEAMS_APP_PASSWORD_FILE=/run/secrets/teams-app-password
+ESCUREL_BRIDGE_TEAMS_ALLOWED_TENANTS=<entra tenant id>
+ESCUREL_BRIDGE_TEAMS_TOKEN_URL=https://login.microsoftonline.com/<entra tenant id>/oauth2/v2.0/token
+```
+
+Without `ESCUREL_BRIDGE_TEAMS_TOKEN_URL` a single-tenant bot gets no connector token, and the only
+symptom is `token endpoint answered 400` in the log. Logs are JSON on stdout
 (`app: escurel-chat-bridge`). `GET /healthz` is dependency-free.
+
+## First-message smoke check
+
+1. `curl -s http://escurel-chat-bridge:3978/healthz` → `ok`, and
+   `curl -s http://escurel-chat-bridge:3978/.well-known/jwks.json` lists one key whose `kid` is
+   `ESCUREL_AUTH_BRIDGE_KID`.
+2. `escurel skill list` shows `conversation` and `chat`; `escurel runtime list` shows a runner
+   `online` (minted mode).
+3. In Teams, open a 1:1 chat with the bot and send *hello*. Within a few seconds the bot shows
+   typing, then answers once.
+4. If nothing comes back, read the bridge log in order: `inbound request refused` (the Bot
+   Framework token: app id, endpoint URL), no `turn captured` (the gateway refused the bridge
+   token: issuer, JWKS URL, kid, audience), `turn captured` but no reply (the runner: minted mode,
+   the `chat` skill), `token endpoint answered 400` (`ESCUREL_BRIDGE_TEAMS_TOKEN_URL`). The captured
+   turn is a `chat` event (`list_events {label_skill: chat}` as an admin) with
+   `captured_by: <the person>` and `captured_via: bridge:msteams`.
 
 ## Not verified without a real tenant
 
