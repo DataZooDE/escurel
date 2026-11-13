@@ -13,19 +13,36 @@ exports.activate = async () => {
   const api = await vscode.extensions.getExtension('datazoo.escurel').activate();
 
   let applied;
+  // Which of the file's two bearers the window uses: the member's (alice) unless a scenario asked
+  // for the admin's (escurelDemo.signInAs), e.g. to read the admin-only Usage view.
+  let role = 'member';
   const apply = () => {
     try {
-      const { bearer } = JSON.parse(fs.readFileSync(file, 'utf8'));
+      const tokens = JSON.parse(fs.readFileSync(file, 'utf8'));
+      const bearer = role === 'admin' ? tokens.admin_bearer : tokens.bearer;
       // Only on change: setting a token reconnects every live socket.
       if (bearer && bearer !== applied) {
         applied = bearer;
-        api.services.auth.refresher.useStaticToken(bearer, 'alice');
+        api.services.auth.refresher.useStaticToken(bearer, role === 'admin' ? 'admin' : 'alice');
       }
     } catch {
       /* the file is replaced by rename; a read in between simply tries again next time */
     }
   };
   apply();
+  vscode.commands.registerCommand('escurelDemo.signInAs', async (asRole) => {
+    role = asRole === 'admin' ? 'admin' : 'member';
+    apply();
+    await vscode.commands.executeCommand('escurel.refresh');
+    await vscode.commands.executeCommand('escurel.usage.refresh');
+  });
+  // The same, from the command palette (a scenario drives the window the way a person would).
+  vscode.commands.registerCommand('escurelDemo.signInAdmin', () =>
+    vscode.commands.executeCommand('escurelDemo.signInAs', 'admin'),
+  );
+  vscode.commands.registerCommand('escurelDemo.signInMember', () =>
+    vscode.commands.executeCommand('escurelDemo.signInAs', 'member'),
+  );
   // The views were drawn BEFORE there was a token (they showed 'not signed in'), and applying a
   // static token does not announce itself the way a real sign-in does. Ask them to load again.
   await vscode.commands.executeCommand('escurel.refresh');

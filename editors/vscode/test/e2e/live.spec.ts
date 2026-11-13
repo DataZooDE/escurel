@@ -3,7 +3,17 @@ import { DatabaseSync } from 'node:sqlite';
 import { join } from 'node:path';
 import type { FrameLocator, Page } from '@playwright/test';
 import { expect, test, webviewWith, type Stack } from './fixtures';
-import { chooseMenuItem, knowledgeRow, openRow, pane, runsAction, skillRow } from './helpers';
+import type { UsageReportResponse } from '../../src/client/types';
+import { usageLine } from '../../src/views/usageModel';
+import {
+  chooseMenuItem,
+  filterCommandPalette,
+  knowledgeRow,
+  openRow,
+  pane,
+  runsAction,
+  skillRow,
+} from './helpers';
 
 // One window for the whole file, played in order: each scenario leaves the stack as the next one can
 // use it. Every one asserts what a person would SEE and leaves a screenshot in artifacts/ for a human
@@ -657,6 +667,38 @@ test('Usage asks for an admin, and Agents lists the profiles runs execute as', a
   });
   await expect(agents.getByText('Run counts need an admin sign-in.')).toBeVisible();
   await stack.shot('12-usage-and-agents');
+
+  // As the admin, Usage shows what the real runs above cost — the same figures usage_report
+  // answers (crew review PR-1, F10), wire drift in by_status or the priced counts included.
+  await filterCommandPalette(page, 'Escurel Demo: Sign in as the admin', 'Sign in as the admin');
+  await page.keyboard.press('Enter');
+  const expected = async () => {
+    const report = (await stack.call(
+      'usage_report',
+      { group_by: ['skill'], since: new Date(Date.now() - 7 * 86_400_000).toISOString() },
+      true,
+    )) as unknown as UsageReportResponse;
+    const row = report.rows.find((r) => r.group.skill === 'supplier-risk');
+    expect(row, `supplier-risk ran above: ${JSON.stringify(report)}`).toBeTruthy();
+    return `supplier-risk: ${usageLine(row!)}`;
+  };
+  await expect
+    .poll(
+      async () => {
+        const name = await expected();
+        return (await usage.getByRole('treeitem', { name, exact: true }).count()) === 1
+          ? 'shown'
+          : name;
+      },
+      { message: 'the Usage row matches usage_report', timeout: 30_000 },
+    )
+    .toBe('shown');
+  await expect(usage.getByRole('treeitem', { name: /^All runs: / })).toBeVisible();
+  await stack.shot('12b-usage-as-admin');
+  await filterCommandPalette(page, 'Escurel Demo: Sign in as the member', 'Sign in as the member');
+  await page.keyboard.press('Enter');
+  await expect(usage.getByText('Usage needs an admin sign-in.')).toBeVisible({ timeout: 30_000 });
+
   // Close them again: the scenarios after this one count what the Runs pane shows.
   await page.locator('.pane-header', { hasText: /^Usage/ }).click();
   await page.locator('.pane-header', { hasText: /^Agents/ }).click();

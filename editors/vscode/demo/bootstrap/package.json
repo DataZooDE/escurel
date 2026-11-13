@@ -10,5 +10,17 @@
   "main": "./extension.js",
   "activationEvents": [
     "onStartupFinished"
-  ]
+  ],
+  "contributes": {
+    "commands": [
+      {
+        "command": "escurelDemo.signInAdmin",
+        "title": "Escurel Demo: Sign in as the admin"
+      },
+      {
+        "command": "escurelDemo.signInMember",
+        "title": "Escurel Demo: Sign in as the member"
+      }
+    ]
+  }
 }
