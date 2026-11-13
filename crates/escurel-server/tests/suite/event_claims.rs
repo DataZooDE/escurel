@@ -187,6 +187,14 @@ async fn only_a_non_machine_admin_identity_may_claim() {
     let body = rpc(&p, &run, "claim_event", json!({ "event_id": event })).await;
     assert_eq!(body["error"]["data"]["code"], "forbidden", "{body}");
 
+    // `x#y` with no holder id would share a lease with `x` naming holder id
+    // `y` (crew C-F6): a subject with `#` cannot claim at all.
+    let hashed = p.mint_token_with_sub(TENANT, Role::Admin, "svc#y");
+    for tool in ["claim_event", "renew_claim"] {
+        let body = rpc(&p, &hashed, tool, json!({ "event_id": event })).await;
+        assert_eq!(body["error"]["data"]["code"], "forbidden", "{tool}: {body}");
+    }
+
     let missing = rpc(&p, &admin(&p), "claim_event", json!({ "event_id": "nope" })).await;
     assert_eq!(
         missing["error"]["data"]["code"], "event_not_found",
@@ -283,7 +291,8 @@ async fn runtimes_are_admin_written_and_read_with_liveness() {
     let token = admin(&p);
     let page = "markdown/instances/runtime/laptop.md";
     let content = "---\nkind: instance\nskill: runtime\nid: laptop\nrunner_id: \"laptop\"\n\
-        harnesses: [{\"name\": \"echo\", \"version\": \"echo 1.0\"}]\n\
+        harnesses: [{\"name\": \"echo\", \"version\": \"echo 1.0\"}, {\"name\": \"codex\", \
+        \"version\": null, \"available\": false, \"probe_error\": \"codex: not found\"}]\n\
         labels: [\"site:muc\"]\nmax_concurrent: 2\nclaim_holder: \"runner:laptop#01abc\"\n\
         ---\n# laptop\n";
     let member = p.mint_token_with_sub(TENANT, Role::Agent, "member:alice");
@@ -311,15 +320,20 @@ async fn runtimes_are_admin_written_and_read_with_liveness() {
     assert_eq!(rt["runner_id"], "laptop", "{listed}");
     assert_eq!(rt["status"], "unknown", "no status record yet: {rt}");
     assert_eq!(
-        rt["harnesses"][0],
-        json!({ "name": "echo", "version": null }),
-        "no CLI versions for a non-admin: {rt}"
+        rt["harnesses"],
+        json!([{ "name": "echo", "version": null, "available": true },
+               { "name": "codex", "version": null, "available": false }]),
+        "no CLI versions or probe errors for a non-admin, but what can run: {rt}"
     );
     assert_eq!(rt["claim_holder"], Value::Null, "{rt}");
     assert_eq!(rt["labels"], json!(["site:muc"]));
     assert_eq!(rt["max_concurrent"], 2);
     let full = call(&p, &token, "list_runtimes", json!({})).await["runtimes"][0].clone();
     assert_eq!(full["harnesses"][0]["version"], "echo 1.0", "{full}");
+    assert_eq!(
+        full["harnesses"][1]["probe_error"], "codex: not found",
+        "{full}"
+    );
     assert_eq!(full["claim_holder"], "runner:laptop#01abc", "{full}");
 
     let report = |state: &str| {

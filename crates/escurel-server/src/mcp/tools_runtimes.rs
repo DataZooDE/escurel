@@ -27,7 +27,7 @@ use serde_json::{Value, json};
 
 use super::tools_write::is_machine_caller;
 use super::{JsonRpcError, parse_args};
-use crate::event_claims::{ClaimOutcome, EventClaims, Lease, now_ms};
+use crate::event_claims::{ClaimOutcome, EventClaims, Lease, PROCESSED, now_ms};
 
 /// The default lease when a claim names none.
 pub(crate) const DEFAULT_LEASE_SECS: u64 = 60;
@@ -82,6 +82,14 @@ pub(super) async fn tool_claim(
         return Err(JsonRpcError::invalid_params(format!(
             "{tool}: only a non-machine admin identity claims events (not a run, agent or \
              bridge token, not a non-admin token)"
+        ))
+        .with_code("forbidden", false));
+    }
+    // A `#` in the subject would make `<sub>#<holder_id>` ambiguous: subject
+    // `x#y` and subject `x` with holder id `y` would share one lease (crew C-F6).
+    if caller.subject.contains('#') {
+        return Err(JsonRpcError::invalid_params(format!(
+            "{tool}: a subject containing `#` cannot hold a claim (the holder would be ambiguous)"
         ))
         .with_code("forbidden", false));
     }
@@ -154,6 +162,16 @@ pub(super) async fn tool_claim(
         ClaimVerb::Renew => claims.renew(&a.event_id, &holder, lease_ms, now),
     }
     .map_err(|e| JsonRpcError::internal(format!("{tool}: {e}")))?;
+    // Assigned between the status read above and the compare-and-set.
+    if outcome.lease.holder == PROCESSED {
+        return Ok(json!({
+            "event_id": a.event_id,
+            "claimed": false,
+            "holder": null,
+            "expires_at": null,
+            "processed": true,
+        }));
+    }
     let (holder, expires_at) = lease_json(&outcome.lease);
     let won = match verb {
         ClaimVerb::Claim => "claimed",
@@ -239,6 +257,7 @@ pub(super) async fn tool_list_runtimes(
         if !caller.is_admin {
             for h in &mut info.harnesses {
                 h.version = None;
+                h.probe_error = None;
             }
             info.version = None;
             info.claim_holder = None;

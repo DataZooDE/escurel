@@ -47,6 +47,14 @@ const SWEEP_SLACK_MS: i64 = 10 * 60 * 1000;
 /// The holder a claim reports while the boot grace withholds an event.
 pub(crate) const RECOVERING: &str = "(recovering)";
 
+/// The holder of the tombstone an assigned event leaves behind: a claim that
+/// read the event as unprocessed just before the assign must still lose.
+pub(crate) const PROCESSED: &str = "(processed)";
+
+/// How long an assign's tombstone outlives it: far past any claim that could
+/// have read the event before it was assigned.
+const TOMBSTONE_MS: i64 = 60 * 60 * 1000;
+
 /// The window after a restart in which leases the gateway forgot may still be
 /// held by a runner.
 #[derive(Debug, Clone, Copy)]
@@ -138,16 +146,23 @@ impl EventClaims {
         self.compare_and_set(event_id, holder, lease_ms, now, false)
     }
 
-    /// The live lease on `event_id`, if any.
+    /// The live lease on `event_id`, if any (an assign's tombstone is none).
     pub(crate) fn live(&self, event_id: &str, now: i64) -> Result<Option<Lease>, duckdb::Error> {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
-        Ok(read(&conn, event_id)?.filter(|l| l.expires_ms > now))
+        Ok(read(&conn, event_id)?.filter(|l| l.expires_ms > now && l.holder != PROCESSED))
     }
 
-    /// Drop the lease on `event_id` (it was assigned: nothing left to claim).
-    pub(crate) fn release(&self, event_id: &str) -> Result<(), duckdb::Error> {
+    /// `event_id` was assigned: nothing left to claim. Its lease becomes a
+    /// tombstone rather than disappearing (crew C-F5): `claim_event` reads
+    /// the event's status before its compare-and-set, under another lock, so
+    /// a claim that read "unprocessed" a moment before the assign would
+    /// otherwise find no row and win.
+    pub(crate) fn release(&self, event_id: &str, now: i64) -> Result<(), duckdb::Error> {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
-        conn.execute("DELETE FROM event_claims WHERE event_id = ?", [event_id])?;
+        conn.execute(
+            "INSERT OR REPLACE INTO event_claims (event_id, holder, expires_ms) VALUES (?, ?, ?)",
+            params![event_id, PROCESSED, now.saturating_add(TOMBSTONE_MS)],
+        )?;
         Ok(())
     }
 
@@ -164,7 +179,7 @@ impl EventClaims {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(current) = read(&conn, event_id)?
             && current.holder != holder
-            && (current.expires_ms > now || !take_lapsed)
+            && (current.expires_ms > now || !take_lapsed || current.holder == PROCESSED)
         {
             return Ok(ClaimOutcome {
                 won: false,
@@ -228,12 +243,27 @@ mod tests {
             "lapsed: claimable"
         );
         assert_eq!(c.live("e1", 1_902).unwrap().unwrap().holder, "b");
-        c.release("e1").unwrap();
-        assert_eq!(c.live("e1", 1_902).unwrap(), None);
         assert!(
-            c.renew("e1", "a", 1_000, 2_000).unwrap().won,
+            c.renew("e2", "a", 1_000, 2_000).unwrap().won,
             "a forgotten lease is re-taken"
         );
+    }
+
+    /// An assign leaves a tombstone (crew C-F5): a claim or renew that read
+    /// the event as unprocessed just before cannot win it afterwards, even
+    /// once the tombstone itself is long past any lease.
+    #[test]
+    fn an_assigned_event_cannot_be_claimed_or_renewed_again() {
+        let c = EventClaims::open(None).unwrap();
+        assert!(c.claim("e1", "a", 1_000, 0, None).unwrap().won);
+        c.release("e1", 500).unwrap();
+        assert_eq!(c.live("e1", 600).unwrap(), None, "no live lease to show");
+        for (who, at) in [("a", 600), ("b", 600), ("b", 500 + TOMBSTONE_MS + 1)] {
+            let lost = c.claim("e1", who, 1_000, at, None).unwrap();
+            assert!(!lost.won, "{who} at {at}");
+            assert_eq!(lost.lease.holder, PROCESSED);
+            assert!(!c.renew("e1", who, 1_000, at).unwrap().won, "{who} at {at}");
+        }
     }
 
     #[test]

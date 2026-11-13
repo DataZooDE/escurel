@@ -1013,7 +1013,7 @@ pub(crate) fn tool_defs() -> Vec<ToolDef> {
             Scope::Agent,
             Touches::READ,
             "List the registered runtimes (runner processes): each `runtime` \
-                 instance you may read, with its harnesses (name + CLI version), \
+                 instance you may read, with its harnesses (name, CLI version, and whether its CLI probe succeeded), \
                  labels and `max_concurrent`, joined with the runner's status \
                  record: `status` online | stale (silent for more than 3 x its \
                  reporting interval) | stopped | unknown, `last_seen`, `age_s`, \
@@ -2531,7 +2531,7 @@ fn output_schema_for(name: &str) -> Option<Value> {
             "processed": { "type": "boolean", "description": "the event is already processed: nothing to claim" }
         })),
         "list_runtimes" => obj(json!({
-            "runtimes": { "type": "array", "description": "[{runner_id, page_id, harnesses: [{name, version}], labels, max_concurrent, claim_holder, status: online|stale|stopped|unknown, last_seen, age_s, stale_after_s, version, live_runs}]" }
+            "runtimes": { "type": "array", "description": "[{runner_id, page_id, harnesses: [{name, version, available, probe_error?}], labels, max_concurrent, claim_holder, status: online|stale|stopped|unknown, last_seen, age_s, stale_after_s, version, live_runs}]" }
         })),
         "report_runner_status" => obj(json!({
             "event_id": { "type": "string", "description": "`runner-status:<runner_id>`" },

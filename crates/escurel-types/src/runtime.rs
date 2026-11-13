@@ -218,13 +218,31 @@ pub struct ClaimEventResponse {
 }
 
 /// One harness a runtime offers, with the CLI version its probe read.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct RuntimeHarness {
     pub name: String,
     /// `<cli> --version`, first line; `None` for an in-process harness or a
     /// probe that failed.
     pub version: Option<String>,
+    /// Whether the runner can run this harness: `false` when its CLI's probe
+    /// failed, and the runner then takes no work that `requires:` it. A page
+    /// written before this field existed reads `true`.
+    pub available: bool,
+    /// Why the probe failed (admin view only), when `available` is `false`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub probe_error: Option<String>,
+}
+
+impl Default for RuntimeHarness {
+    fn default() -> Self {
+        Self {
+            name: String::new(),
+            version: None,
+            available: true,
+            probe_error: None,
+        }
+    }
 }
 
 /// One registered runtime as `list_runtimes` reports it.
@@ -275,6 +293,15 @@ fn is_label(s: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_harness_from_an_older_page_reads_available() {
+        let h: RuntimeHarness =
+            serde_json::from_value(serde_json::json!({ "name": "codex", "version": null }))
+                .unwrap();
+        assert!(h.available);
+        assert_eq!(h.probe_error, None);
+    }
 
     #[test]
     fn an_events_requirement_only_narrows_its_skills() {

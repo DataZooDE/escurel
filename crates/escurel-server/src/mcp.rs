@@ -1611,7 +1611,9 @@ async fn dispatch_tools_call(
             .await?;
             // An assigned event is done: its claim lease has nothing left to guard.
             if let Some(id) = event_id
-                && let Err(e) = state.event_claims.release(&id)
+                && let Err(e) = state
+                    .event_claims
+                    .release(&id, crate::event_claims::now_ms())
             {
                 tracing::warn!(event_id = %id, error = %e, "assign_event: claim not released");
             }
