@@ -8,6 +8,15 @@ derives its version from the tag (`vYYYY.MM.DD` → `YYYY.M.D`, leading zeros dr
 
 ### Added
 
+- **Usage and Agents views** (#821, #823), beside Runs (collapsed until opened; each reads only while it is
+  shown). **Usage** rolls up `usage_report` for the last 24 hours, 7 days or 30 days (title action), grouped by
+  skill, model, agent, day or page (title action): an **All runs** row, then one row per group with its runs,
+  success rate (`by_status.processed / runs`), tokens and cost, most expensive first (days newest first); the
+  tooltip has every status and the token split. It is an admin tool: anyone else sees "Usage needs an admin
+  sign-in." instead of an error. **Agents** lists the `agent` profiles with their harness and model, and in the
+  tooltip what they may run, their tool and write scopes and `max_concurrent`; an admin also sees each one's runs
+  and success rate over 30 days (`usage_report {group_by: [agent]}`, `agent:<id>`). A click opens the agent page.
+
 - **Run detail: transcript, cost and steering** (#820, #821, #822). A **Transcript** tab beside Details replays
   what the agent did (`fetch_blob {run_id}`), read only when the tab is first opened: one row per tool call,
   result, message or error, with its name, summary, time from the first record and attempt; toggle buttons filter

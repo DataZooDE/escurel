@@ -20,6 +20,9 @@ degradations are tracked in `docs/BACKEND_GAPS.md`.
   run produced, what it cost, and a Transcript tab that replays everything the agent did, step by step. A live
   run whose agent takes messages (claude, echo) can be steered: your message becomes its next turn. An admin can also requeue a dead letter and pause or resume agents; a human sees those
   controls deactivated, with the reason, not hidden.
+- **See what agents cost and who they run as**: the Usage view (admins) rolls up runs, success rate, tokens and
+  cost over 24 h / 7 d / 30 d by skill, model, agent, day or page; the Agents view lists the agent profiles runs
+  execute as, with their engine, scopes and how their runs went.
 
 ## Extending Escurel
 
