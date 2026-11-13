@@ -42,7 +42,11 @@ export interface Skill {
   owner_field: string | null;
   /** Admin callers only; absent for everyone else. */
   acl?: { read?: string[]; create?: string[]; update?: string[]; delete?: string[] };
-  backend: { kind: string; instances?: string; filterable?: Array<{ field: string; column: string }> };
+  backend: {
+    kind: string;
+    instances?: string;
+    filterable?: Array<{ field: string; column: string }>;
+  };
   capabilities: { writable: boolean; granularity: string; search: string; supports_crdt: boolean };
   /** `overlay` (tenant-authored, editable) or `base@<pack>@<version>` (read-only at this node). */
   layer: string;
@@ -53,8 +57,13 @@ export interface Skill {
   harness?: string;
   /** The cron expression the runner fires the skill on (`CRON_TZ=<zone> ` prefix optional), as written. */
   schedule?: string;
-  /** Present only with a positive count: at most this many scheduled triggers per UTC day. */
-  schedule_budget?: { runs_per_day: number };
+  /** True when `schedule` cannot be read: the runner fires nothing (and files `run-skipped`). */
+  schedule_invalid?: boolean;
+  /**
+   * At most `runs_per_day` scheduled triggers per UTC day. `invalid: true` (with `0`) when the
+   * declared budget cannot be read: the runner then fires nothing.
+   */
+  schedule_budget?: { runs_per_day: number; invalid?: boolean };
   /** `/`-separated path of slugs placing the skill in a tree (`sales/orders`); absent = top level. */
   folder?: string;
   /** `record | process | report | helper`; typed as a string so a newer server's value still parses. */
@@ -75,7 +84,12 @@ export interface Skill {
   sources?: Array<string | { title?: string; url?: string }>;
   /** Peacock's pointer to the report skill that charts this skill's instances. */
   viewer?: { report: string; param?: string };
-  overview?: { tile: string; status_field: string; delayed_when: Array<string | number | boolean>; sort_field?: string };
+  overview?: {
+    tile: string;
+    status_field: string;
+    delayed_when: Array<string | number | boolean>;
+    sort_field?: string;
+  };
   /** What a follow-up from this skill can be: see `SkillAction`. Absent when none are declared. */
   actions?: SkillAction[];
   cascade?: { target?: string; max_depth?: number };

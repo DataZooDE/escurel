@@ -122,9 +122,22 @@ class _SkillRow extends StatelessWidget {
                       const SizedBox(height: 2),
                       Row(
                         children: [
-                          const Icon(Icons.schedule, size: 11, color: kOnSurfaceVariant),
+                          Icon(
+                            scheduleBlocked(skill) ? Icons.block : Icons.schedule,
+                            size: 11,
+                            color: kOnSurfaceVariant,
+                          ),
                           const SizedBox(width: 4),
-                          Text(schedule, style: text.labelSmall?.copyWith(color: kOnSurfaceVariant)),
+                          Flexible(
+                            child: Tooltip(
+                              message: scheduleTooltip(skill),
+                              child: Text(
+                                schedule,
+                                overflow: TextOverflow.ellipsis,
+                                style: text.labelSmall?.copyWith(color: kOnSurfaceVariant),
+                              ),
+                            ),
+                          ),
                         ],
                       ),
                     ],

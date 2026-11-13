@@ -116,19 +116,44 @@ function when(next: Date, now: Date): string {
   return `${next.toISOString().slice(0, 10)} ${clock}`;
 }
 
-/** A one-line `hint` for a list row and the whole `detail` for a tooltip or a fact. */
+const BLOCKED = 'schedule blocked';
+
+/**
+ * A one-line `hint` for a list row and the whole `detail` for a tooltip or a fact. A schedule or a
+ * budget the gateway flags `invalid` fires nothing at the runner, so it reads as blocked, never as
+ * running.
+ */
 export function scheduleWords(
-  skill: { schedule?: string; schedule_budget?: { runs_per_day?: number } },
+  skill: {
+    schedule?: string;
+    schedule_invalid?: boolean;
+    schedule_budget?: { runs_per_day?: number; invalid?: boolean };
+  },
   now: Date,
 ): { hint: string; detail: string } | undefined {
   const raw = typeof skill.schedule === 'string' ? cleanText(skill.schedule, 120) : '';
   const parsed = raw ? parse(raw) : undefined;
   if (!parsed) return undefined;
+  if (skill.schedule_invalid === true)
+    return {
+      hint: BLOCKED,
+      detail: `Schedule blocked: the schedule ${raw} cannot be read, so the runner fires nothing. Fix the expression; validate names the problem.`,
+    };
+  if (skill.schedule_budget?.invalid === true)
+    return {
+      hint: BLOCKED,
+      detail:
+        'Schedule blocked: schedule_budget.runs_per_day must be a positive integer, so the runner fires nothing.',
+    };
   const next = nextRun(raw, now);
   const budget = skill.schedule_budget?.runs_per_day;
   const detail = [
     `Runs on its own on the schedule ${parsed.expr} (${parsed.zone}).`,
-    next ? `Next run: ${next.toISOString().slice(0, 10)} ${when(next, next)}.` : '',
+    next
+      ? `Next run: ${next.toISOString().slice(0, 10)} ${when(next, next)}.`
+      : parsed.cron && !isUtc(parsed.zone)
+        ? 'Next run not shown for zoned schedules.'
+        : '',
     typeof budget === 'number' && budget > 0
       ? `At most ${budget} ${budget === 1 ? 'run' : 'runs'} a day; a window past that is skipped and recorded.`
       : '',

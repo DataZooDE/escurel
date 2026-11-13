@@ -162,6 +162,9 @@ export interface SkippedRun {
   runsPerDay?: number | undefined;
   windowStart?: string | undefined;
   atMs?: number | undefined;
+  /** `invalid_schedule`: the expression as written, and why it cannot be read. */
+  schedule?: string | undefined;
+  error?: string | undefined;
 }
 
 /** The skipped windows among the run events, newest first. */
@@ -177,6 +180,8 @@ export function foldSkipped(events: readonly Event[]): SkippedRun[] {
       runsPerDay: typeof b.runs_per_day === 'number' ? b.runs_per_day : undefined,
       windowStart: cleanOpt(b.window_start, 40),
       atMs: ms(e.at),
+      schedule: cleanOpt(b.schedule, 120),
+      error: cleanOpt(b.error, 200),
     });
   }
   const when = (s: SkippedRun) => ms(s.windowStart) ?? s.atMs ?? 0;
@@ -185,6 +190,10 @@ export function foldSkipped(events: readonly Event[]): SkippedRun[] {
 
 /** Why a window was skipped, in a sentence. */
 function skippedWhy(s: SkippedRun): string {
+  if (s.reason === 'invalid_schedule')
+    return `Not run: the schedule ${s.schedule ? `${s.schedule} ` : ''}of ${s.skill} cannot be read${s.error ? ` (${s.error})` : ''}.`;
+  if (s.reason === 'invalid_budget')
+    return `Not run: the schedule_budget of ${s.skill} cannot be read; runs_per_day must be a positive integer.`;
   if (s.reason === 'budget')
     return s.runsPerDay !== undefined
       ? `Not run: ${s.skill} already ran ${s.runsPerDay} ${s.runsPerDay === 1 ? 'time' : 'times'} on that day (its budget).`
@@ -205,7 +214,9 @@ function skippedNode(s: SkippedRun, nowMs: number): RunsNode {
       `${s.skill}: scheduled window skipped`,
       window ? `Window: ${window.toISOString().replace('T', ' ').slice(0, 16)} UTC` : undefined,
       skippedWhy(s),
-      'The next day starts a new budget; change schedule_budget on the skill to allow more.',
+      s.reason === 'budget'
+        ? 'The next day starts a new budget; change schedule_budget on the skill to allow more.'
+        : undefined,
     ]
       .filter(Boolean)
       .join('\n'),
@@ -778,7 +789,7 @@ export function buildRunsTree(input: TreeInput): RunsNode[] {
     out.push({
       id: 'group:skipped',
       kind: 'group',
-      label: 'Skipped by budget',
+      label: skipped.every((s) => s.reason === 'budget') ? 'Skipped by budget' : 'Skipped',
       description: String(skipped.length),
       // Closed: worth knowing, not worth the room; the count says it is there.
       expanded: false,

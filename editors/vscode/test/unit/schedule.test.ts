@@ -58,11 +58,34 @@ describe('a schedule in words', () => {
   it('names the zone it cannot compute, and the day when it is not today', () => {
     expect(scheduleWords({ schedule: 'CRON_TZ=Europe/Berlin 15 7 * * *' }, now)).toEqual({
       hint: 'scheduled',
-      detail: 'Runs on its own on the schedule 15 7 * * * (Europe/Berlin).',
+      detail:
+        'Runs on its own on the schedule 15 7 * * * (Europe/Berlin). Next run not shown for zoned schedules.',
     });
     expect(scheduleWords({ schedule: '0 9 * * 1' }, now)?.hint).toBe(
       'scheduled · next Mon 09:00 UTC',
     );
+  });
+
+  // The runner fires nothing for either (crew review PR-1, F3/F4): the words must not say it works.
+  it('says a schedule the gateway cannot read is blocked', () => {
+    expect(scheduleWords({ schedule: '15 7 * * Mo-Fr', schedule_invalid: true }, now)).toEqual({
+      hint: 'schedule blocked',
+      detail:
+        'Schedule blocked: the schedule 15 7 * * Mo-Fr cannot be read, so the runner fires nothing. Fix the expression; validate names the problem.',
+    });
+  });
+
+  it('says a malformed budget blocks the schedule, never that it runs', () => {
+    expect(
+      scheduleWords(
+        { schedule: '15 7 * * 1-5', schedule_budget: { runs_per_day: 0, invalid: true } },
+        now,
+      ),
+    ).toEqual({
+      hint: 'schedule blocked',
+      detail:
+        'Schedule blocked: schedule_budget.runs_per_day must be a positive integer, so the runner fires nothing.',
+    });
   });
 
   it('is nothing for a skill without a schedule', () => {

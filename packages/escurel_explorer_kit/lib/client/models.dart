@@ -577,15 +577,26 @@ class SkillSummary {
     this.overview,
     this.schedule,
     this.scheduleRunsPerDay,
+    this.scheduleInvalid = false,
+    this.scheduleBudgetInvalid = false,
   });
 
   /// The skill's `schedule:` cron expression, as written, when declared —
   /// the runner fires it on that cadence (references/11).
   final String? schedule;
 
-  /// `schedule_budget.runs_per_day`, present only for a positive count:
-  /// the most scheduled runs the runner fires per UTC day.
+  /// `schedule_budget.runs_per_day` when a budget is declared: the most
+  /// scheduled runs the runner fires per UTC day. `0` with
+  /// [scheduleBudgetInvalid] for a budget that cannot be read.
   final int? scheduleRunsPerDay;
+
+  /// `schedule_invalid` — the gateway cannot read `schedule:`; the runner
+  /// fires nothing.
+  final bool scheduleInvalid;
+
+  /// `schedule_budget.invalid` — the declared budget cannot be read; the
+  /// runner fires nothing (fails closed).
+  final bool scheduleBudgetInvalid;
 
   /// The backend a skill's instances live in (`markdown` | `sql_view` |
   /// `document`); `markdown` when the skill declares no `backend:` block.

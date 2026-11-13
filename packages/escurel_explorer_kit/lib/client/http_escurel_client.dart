@@ -386,6 +386,9 @@ class HttpEscurelClient implements EscurelClient {
             scheduleRunsPerDay:
                 ((s['schedule_budget'] as Map?)?['runs_per_day'] as num?)
                     ?.toInt(),
+            scheduleInvalid: s['schedule_invalid'] == true,
+            scheduleBudgetInvalid:
+                (s['schedule_budget'] as Map?)?['invalid'] == true,
           ),
         )
         .toList();

@@ -1015,6 +1015,34 @@ describe('a scheduled window the budget skipped (#819)', () => {
     expect(row!.tooltip).toContain('Not run: digest already ran 2 times on that day (its budget).');
   });
 
+  it('says why a window of an unreadable schedule or budget did not run', () => {
+    const invalid: Event = {
+      ...skipped('typo', '2026-10-04T11:55:00Z', 300),
+      event_id: 'sched:typo:invalid:0123456789abcdef',
+      body: JSON.stringify({
+        reason: 'invalid_schedule',
+        skill: 'typo',
+        schedule: '15 7 * * Mo-Fr',
+        error: 'not a 5- or 6-field cron expression: bad',
+      }),
+    };
+    const budget: Event = {
+      ...skipped('broke', '2026-10-04T11:50:00Z', 600),
+      body: JSON.stringify({ reason: 'invalid_budget', runs_per_day: 0, skill: 'broke' }),
+    };
+    const tree = buildRunsTree(input([invalid, budget]));
+    const group = tree.find((r) => r.id === 'group:skipped')!;
+    expect(group.label).toBe('Skipped');
+    const [first, second] = group.children!;
+    expect(first!.tooltip).toContain(
+      'Not run: the schedule 15 7 * * Mo-Fr of typo cannot be read (not a 5- or 6-field cron expression: bad).',
+    );
+    expect(first!.tooltip).not.toContain('new budget');
+    expect(second!.tooltip).toContain(
+      'Not run: the schedule_budget of broke cannot be read; runs_per_day must be a positive integer.',
+    );
+  });
+
   it('follows the skill filter and hides under a page filter', () => {
     const events = [skipped('digest', '2026-10-04T11:55:00Z', 300)];
     expect(

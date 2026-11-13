@@ -3,14 +3,34 @@ import 'package:flutter/material.dart';
 import '../client/models.dart';
 import '../theme/app_theme.dart';
 
+/// Whether the runner fires nothing for this schedule: the gateway flags the
+/// expression or the budget as unreadable (references/11).
+bool scheduleBlocked(SkillSummary skill) =>
+    skill.scheduleInvalid || skill.scheduleBudgetInvalid;
+
 /// "0 9 * * 1-5 · ≤3/day" — a skill's `schedule:` cron as written, plus its
-/// `schedule_budget.runs_per_day` cap when one is set. Null when the skill
-/// is not scheduled.
+/// `schedule_budget.runs_per_day` cap when one is set; "Schedule blocked ·
+/// `cron`" when the runner fires nothing. Null when the skill is not
+/// scheduled.
 String? scheduleLabel(SkillSummary skill) {
   final cron = skill.schedule;
   if (cron == null || cron.trim().isEmpty) return null;
+  if (scheduleBlocked(skill)) return 'Schedule blocked · $cron';
   final cap = skill.scheduleRunsPerDay;
   return cap == null ? cron : '$cron · ≤$cap/day';
+}
+
+/// The badge's tooltip: what the runner does with this schedule.
+String scheduleTooltip(SkillSummary skill) {
+  if (skill.scheduleInvalid) {
+    return 'Schedule blocked: the schedule cannot be read, so the runner '
+        'fires nothing. Fix the expression; validate names the problem.';
+  }
+  if (skill.scheduleBudgetInvalid) {
+    return 'Schedule blocked: schedule_budget.runs_per_day must be a positive '
+        'integer, so the runner fires nothing.';
+  }
+  return 'scheduled: the runner fires this skill on its cron';
 }
 
 /// Tiny pill on a scheduled skill: the runner fires it on its own cadence
@@ -32,7 +52,7 @@ class ScheduleBadge extends StatelessWidget {
       container: true,
       explicitChildNodes: true,
       child: Tooltip(
-        message: 'scheduled: the runner fires this skill on its cron',
+        message: scheduleTooltip(skill),
         child: Container(
           padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
           decoration: BoxDecoration(
@@ -42,7 +62,11 @@ class ScheduleBadge extends StatelessWidget {
           child: Row(
             mainAxisSize: MainAxisSize.min,
             children: [
-              const Icon(Icons.schedule, size: 9, color: kOnSurfaceVariant),
+              Icon(
+                scheduleBlocked(skill) ? Icons.block : Icons.schedule,
+                size: 9,
+                color: kOnSurfaceVariant,
+              ),
               const SizedBox(width: 3),
               Text(
                 label,
