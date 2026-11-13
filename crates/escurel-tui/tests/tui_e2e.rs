@@ -123,7 +123,10 @@ async fn navigation_flow_renders_corpus() {
     // 2. Drill into the customer skill -> instances contains "acme". The
     // auto-shipped `agent` system skill sorts before it, so step down once.
     assert_eq!(app.current(), &Screen::Skills);
-    assert!(app.on_key(down()).is_none(), "moving the cursor loads nothing");
+    assert!(
+        app.on_key(down()).is_none(),
+        "moving the cursor loads nothing"
+    );
     let req = app
         .on_key(enter())
         .expect("drill into customer should request instances");
