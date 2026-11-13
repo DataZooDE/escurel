@@ -154,15 +154,16 @@ those name an IdP group: a skill page (member-writable) names its agent's
 groups, so honouring the mapping there would let a page author mint an
 admin agent.
 
-**Steering a run (`inject`) is held tighter than cancelling one.** A
-machine caller (any agent-profile, narrowed or run-bound token, admin role
-or not) is refused (`agent_scope_denied`), and the run's target page's
-write ACL is asked **whatever `ESCUREL_WRITE_ACL` says**. The bound is the
-page writer, deliberately: whoever may write the page could already capture
-an event that steers a run on it, so `inject` grants a page writer no new
-authority — it only saves the cancel and re-trigger. `inject` does reach a
-run whose token is the runner's admin; it changes what the run is told, not
-what the run may do.
+**Steering a run (`inject`).** A machine caller (any agent-profile, narrowed
+or run-bound token, admin role or not) is refused (`agent_scope_denied`) in
+every mode: a run's own token never directs a run. A person passes the same
+gate as `cancel` — the run's target page's write ACL, in the deployment's
+`ESCUREL_WRITE_ACL` mode. The bound is the page writer, deliberately: whoever
+may write the page could already capture an event whose body tells a run on
+it anything, so `inject` grants no new authority — it only saves the cancel
+and re-trigger. Under `off` / `log` that is every caller, as it is for every
+other write. `inject` does reach a run whose token is the runner's admin; it
+changes what the run is told, not what the run may do.
 
 So: your app's token must carry the right audience, a tenant claim naming
 the tenant, and — only for admin operations — the admin role value. A

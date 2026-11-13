@@ -153,14 +153,13 @@ pub(super) async fn authorise_run_control(
             let Some(target) = target.as_deref() else {
                 return Err(denied());
             };
-            // `inject` asks the write ACL whatever the deployment's mode: a person who may write the
-            // page could already capture an event that steers a run on it, so the page writer is the
-            // right bound, and an `off` / `log` deployment must not widen it to every caller.
-            let write_acl = if action == "inject" {
-                crate::server::WriteAclMode::Enforce
-            } else {
-                write_acl.for_page(target, "")
-            };
+            // `inject` shares cancel's gate, in the deployment's mode: whoever may write the page
+            // could already capture an event whose body is any instruction for a run on it, so
+            // steering grants nothing beyond that. (Forcing `Enforce` here would leave only admins
+            // able to steer in an `off` deployment, as owner-less instances are admin-write there.)
+            // What steering must never do — let a run's own token direct a run — is the
+            // machine-caller refusal above.
+            let write_acl = write_acl.for_page(target, "");
             if write_acl != crate::server::WriteAclMode::Off {
                 let Some(existing) = indexer.read_page_markdown(target).await.map_err(|e| {
                     JsonRpcError::internal(format!("capture_event run-control: {e}"))

@@ -364,8 +364,8 @@ async fn an_inject_is_authorised_like_a_cancel_and_carries_a_bounded_text() {
 /// page's write ACL is asked whatever `ESCUREL_WRITE_ACL` says. A page writer may still inject: they
 /// could already capture an event that steers a run on that page.
 #[tokio::test]
-async fn inject_refuses_machine_callers_and_always_asks_the_write_acl() {
-    for mode in [WriteAclMode::Off, WriteAclMode::Log] {
+async fn inject_refuses_machine_callers_and_follows_the_write_acl_mode() {
+    for mode in [WriteAclMode::Enforce, WriteAclMode::Off, WriteAclMode::Log] {
         let p = start_in(mode).await;
         let admin = p.mint_token(TENANT, Role::Admin);
         let alice = p.mint_token_with_sub(TENANT, Role::Agent, ALICE);
@@ -378,13 +378,19 @@ async fn inject_refuses_machine_callers_and_always_asks_the_write_acl() {
                 .into();
             req
         };
-        // A stranger to the page: refused even with the ACL off / logging.
-        let e = call_err(&p, &bob, "capture_event", inject()).await;
-        assert_eq!(e["data"]["code"], "event_not_found", "{mode:?}: {e}");
-        // CONTROL: in this mode the same stranger may still CANCEL (that is the mode's meaning).
-        call(&p, &bob, "capture_event", control("cancel", Some(RUN))).await;
+        // A stranger to the page steers exactly when they may cancel: refused under `enforce`,
+        // allowed where the deployment lets every caller write the page (`off` / `log`).
+        if mode == WriteAclMode::Enforce {
+            let e = call_err(&p, &bob, "capture_event", inject()).await;
+            assert_eq!(e["data"]["code"], "event_not_found", "{mode:?}: {e}");
+            let e = call_err(&p, &bob, "capture_event", control("cancel", Some(RUN))).await;
+            assert_eq!(e["data"]["code"], "event_not_found", "{mode:?}: {e}");
+        } else {
+            call(&p, &bob, "capture_event", inject()).await;
+            call(&p, &bob, "capture_event", control("cancel", Some(RUN))).await;
+        }
 
-        // A machine caller, even an admin-role run token, never injects.
+        // A machine caller, even an admin-role run token, never injects, in any mode.
         let harness = p.mint_token_for_run(TENANT, Role::Admin, "agent:x", "r-other", "e-other");
         let narrowed = p.mint_token_narrowed(TENANT, "community_member", &["ops"]);
         for (who, token) in [("harness", &harness), ("narrowed", &narrowed)] {
