@@ -70,6 +70,19 @@ pub enum WriteAclMode {
 }
 
 impl WriteAclMode {
+    /// The mode that governs writing `content` at `page_id`: an admin-only
+    /// system skill's page (an agent profile, #823) is authority over what a
+    /// run may do, so it is always enforced. `off` and `log` relax the
+    /// ordinary ACL for a rollout; they must not open agents to members.
+    #[must_use]
+    pub fn for_page(self, page_id: &str, content: &str) -> Self {
+        if escurel_index::system_skills::is_admin_only_write(page_id, content) {
+            Self::Enforce
+        } else {
+            self
+        }
+    }
+
     /// Parse `ESCUREL_WRITE_ACL` (`off` | `log` | `enforce`); unset or
     /// unknown → [`WriteAclMode::Enforce`] (fail closed: a typo must not switch the gate off).
     #[must_use]

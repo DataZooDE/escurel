@@ -500,8 +500,13 @@ impl Indexer {
         }
         let parsed = parse(content)?;
         // An admin-only system skill (`agent`) is authority: neither its page,
-        // a page claiming its id, nor an instance under its path is a
-        // member's to write — checked before every grant below can widen it.
+        // a page claiming it, nor an instance under its path is a member's to
+        // write — checked before every grant below can widen it.
+        if crate::system_skills::is_admin_only_path(page_id)
+            || crate::system_skills::declares_admin_only(&parsed.frontmatter)
+        {
+            return Ok(false);
+        }
         let declared = |key: &str| {
             parsed
                 .frontmatter
@@ -511,12 +516,6 @@ impl Indexer {
                 .unwrap_or("")
                 .to_owned()
         };
-        if crate::system_skills::is_admin_only_path(page_id)
-            || (parsed.frontmatter.page_kind == PageKind::Skill
-                && crate::system_skills::is_admin_only_skill(&declared("id")))
-        {
-            return Ok(false);
-        }
         if parsed.frontmatter.page_kind != PageKind::Instance {
             return Ok(true); // P1: gate instance writes only
         }
@@ -544,7 +543,6 @@ impl Indexer {
         {
             return Ok(true);
         }
-        let skill = declared("skill");
         let incoming_fm: Value = serde_json::from_str(&crate::indexer::mapping_to_json(
             &parsed.frontmatter.fields,
         )?)?;
@@ -552,8 +550,34 @@ impl Indexer {
             .expand(page_id, None, None)
             .await?
             .map(|e| e.frontmatter);
-        self.may_write_instance(caller, &skill, existing_fm.as_ref(), &incoming_fm)
-            .await
+        // Every skill the write touches must grant it: the one the bytes
+        // declare, the one the PATH names and the one the stored page was
+        // written under. Judging the declared skill alone let a member who may
+        // write notes land `skill: note` bytes under `markdown/instances/
+        // customer/` (by `update_page` or by `move_page`), or overwrite a
+        // stored customer by relabelling it — the same three skills
+        // `validate` already consults.
+        let declared_skill = declared("skill");
+        let stored_skill = existing_fm
+            .as_ref()
+            .and_then(|f| f.get("skill"))
+            .and_then(Value::as_str);
+        let path_skill = crate::backend::rows::split_instance_page_id(page_id).map(|(s, _)| s);
+        let mut skills = vec![declared_skill.as_str()];
+        for s in [path_skill, stored_skill].into_iter().flatten() {
+            if !skills.contains(&s) {
+                skills.push(s);
+            }
+        }
+        for skill in skills {
+            if !self
+                .may_write_instance(caller, skill, existing_fm.as_ref(), &incoming_fm)
+                .await?
+            {
+                return Ok(false);
+            }
+        }
+        Ok(true)
     }
 
     /// The deterministic write decision given the caller, the target

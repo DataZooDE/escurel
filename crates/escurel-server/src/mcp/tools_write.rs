@@ -483,6 +483,7 @@ pub(super) async fn write_acl_refusal(
             }],
         })));
     }
+    let write_acl = write_acl.for_page(page_id, content);
     if write_acl == crate::server::WriteAclMode::Off {
         return Ok(None);
     }
@@ -1265,49 +1266,54 @@ pub(super) async fn tool_move_page(
             }],
         }));
     }
-    // The destination is written too. Only the two path-shaped grants are
-    // asked of it — an agent's write scope and the admin-only system paths —
-    // so a move can never carry a page into what its caller may not create.
-    if caller.agent_write_denied(&a.to)
-        || (!caller.is_admin && escurel_index::system_skills::is_admin_only_path(&a.to))
-    {
+    // A move removes `from` and creates `to`, so each id gets the write
+    // decision a write of these bytes there would: the destination is judged
+    // as a create under the skill its path names, for every caller — not only
+    // an agent's scope or the admin-only system paths (#823 hardening).
+    for (page_id, location) in [(&a.from, "frontmatter"), (&a.to, "to")] {
+        if caller.agent_write_denied(page_id) {
+            return Ok(json!({
+                "ok": false,
+                "issues": [{
+                    "severity": "error",
+                    "code": "agent_scope_denied",
+                    "location": location,
+                    "message": format!(
+                        "move denied: agent `{}` is not scoped to write `{page_id}`",
+                        caller.agent.map_or("", |a| a.id.as_str())
+                    ),
+                }],
+            }));
+        }
+        let write_acl = write_acl.for_page(page_id, &existing);
+        if write_acl == crate::server::WriteAclMode::Off
+            || indexer
+                .may_write_page(&caller, page_id, &existing)
+                .await
+                .map_err(|e| JsonRpcError::internal(format!("move_page acl: {e}")))?
+        {
+            continue;
+        }
+        if write_acl == crate::server::WriteAclMode::Log {
+            tracing::warn!(
+                subject = %caller.subject,
+                page_id = %page_id,
+                "write-ACL would deny this move (log mode) — allowing"
+            );
+            continue;
+        }
         return Ok(json!({
             "ok": false,
             "issues": [{
                 "severity": "error",
-                "code": if caller.agent_write_denied(&a.to) { "agent_scope_denied" } else { "forbidden" },
-                "location": "to",
-                "message": format!("move denied: `{}` may not be written by this caller", a.to),
+                "code": "forbidden",
+                "location": location,
+                "message": format!(
+                    "move denied: caller `{}` may not write `{page_id}`",
+                    caller.subject
+                ),
             }],
         }));
-    }
-    if write_acl != crate::server::WriteAclMode::Off {
-        let allowed = indexer
-            .may_write_page(&caller, &a.from, &existing)
-            .await
-            .map_err(|e| JsonRpcError::internal(format!("move_page acl: {e}")))?;
-        if !allowed {
-            if write_acl == crate::server::WriteAclMode::Log {
-                tracing::warn!(
-                    subject = %caller.subject,
-                    page_id = %a.from,
-                    "write-ACL would deny this move (log mode) — allowing"
-                );
-            } else {
-                return Ok(json!({
-                    "ok": false,
-                    "issues": [{
-                        "severity": "error",
-                        "code": "forbidden",
-                        "location": "frontmatter",
-                        "message": format!(
-                            "move denied: caller `{}` does not own instance `{}`",
-                            caller.subject, a.from
-                        ),
-                    }],
-                }));
-            }
-        }
     }
 
     if let Some(refused) = removal_refusal(indexer, &a.from, "move").await? {
@@ -1506,6 +1512,7 @@ pub(super) async fn tool_delete_page(
     // Write ACL: a delete is an overwrite of the existing page, so the caller
     // must own it (or be admin). Passing the stored content as the write
     // content yields the own-the-existing-page (Verb::Update) decision.
+    let write_acl = write_acl.for_page(&a.page_id, &existing);
     if write_acl != crate::server::WriteAclMode::Off {
         let allowed = indexer
             .may_write_page(&caller, &a.page_id, &existing)

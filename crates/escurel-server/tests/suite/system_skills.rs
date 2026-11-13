@@ -23,17 +23,26 @@ const WIDENED_AGENT_SKILL: &str = "---\nkind: skill\nid: agent\ndescription: wid
 const NOTE: &str = "---\nkind: skill\nid: note\ndescription: n\n\
     acl:\n  create: [public]\n  update: [public]\n---\n# note\n";
 
+/// A skill that declares no `acl:`, so the shipped default (admin-only
+/// writes) governs it.
+const CUSTOMER: &str = "---\nkind: skill\nid: customer\ndescription: c\n---\n# customer\n";
+
 async fn gateway() -> EscurelProcess {
+    gateway_in(WriteAclMode::Enforce).await
+}
+
+async fn gateway_in(mode: WriteAclMode) -> EscurelProcess {
     EscurelProcess::spawn(Opts {
         auth: AuthMode::TestIssuer,
         config_overrides: ConfigOverrides {
-            write_acl: Some(WriteAclMode::Enforce),
+            write_acl: Some(mode),
             ..Default::default()
         },
         fixtures: Some(
             FixtureBuilder::new()
                 .tenant(TENANT)
                 .skill("note", NOTE)
+                .skill("customer", CUSTOMER)
                 .done(),
         ),
     })
@@ -146,4 +155,129 @@ async fn a_member_cannot_move_a_page_into_the_agent_path() {
     )
     .await;
     assert_eq!(moved["ok"], false, "{moved}");
+}
+
+/// `off` and `log` are rollout knobs for the ordinary write ACL. An agent page
+/// is authority over what a run may do, so its gate is not part of that ladder:
+/// it fails closed in every mode.
+#[tokio::test]
+async fn the_agent_gate_holds_when_the_write_acl_is_off_or_log() {
+    for mode in [WriteAclMode::Off, WriteAclMode::Log] {
+        let p = gateway_in(mode).await;
+        // The relaxed mode is real: a member writes a customer, which the
+        // shipped default would refuse under `enforce`.
+        let customer = "---\nkind: instance\nskill: customer\nid: c0\n---\n# c0\n";
+        let ok = write(
+            &p,
+            &member(&p),
+            "markdown/instances/customer/c0.md",
+            customer,
+        )
+        .await;
+        assert_eq!(ok["ok"], true, "{mode:?}: {ok}");
+
+        let refused = write(&p, &member(&p), AGENT_PAGE, RESEARCHER).await;
+        assert_eq!(
+            refused["ok"], false,
+            "{mode:?}: member created an agent: {refused}"
+        );
+
+        let created = write(&p, &admin(&p), AGENT_PAGE, RESEARCHER).await;
+        assert_eq!(created["ok"], true, "{mode:?}: {created}");
+        let edit = RESEARCHER.replace("harness: echo", "harness: claude");
+        let refused = write(&p, &member(&p), AGENT_PAGE, &edit).await;
+        assert_eq!(
+            refused["ok"], false,
+            "{mode:?}: member edited an agent: {refused}"
+        );
+
+        let refused = write(&p, &member(&p), AGENT_SKILL_PAGE, WIDENED_AGENT_SKILL).await;
+        assert_eq!(
+            refused["ok"], false,
+            "{mode:?}: member rewrote the agent skill: {refused}"
+        );
+
+        let refused = call(
+            &p,
+            &member(&p),
+            "delete_page",
+            json!({ "page_id": AGENT_PAGE }),
+        )
+        .await;
+        assert_eq!(
+            refused["ok"], false,
+            "{mode:?}: member deleted an agent: {refused}"
+        );
+
+        let note = "---\nkind: instance\nskill: note\nid: n9\n---\n# n9\n";
+        write(&p, &member(&p), "markdown/instances/note/n9.md", note).await;
+        let moved = call(
+            &p,
+            &member(&p),
+            "move_page",
+            json!({ "from": "markdown/instances/note/n9.md", "to": "markdown/instances/agent/n9.md" }),
+        )
+        .await;
+        assert_eq!(
+            moved["ok"], false,
+            "{mode:?}: member moved into agents: {moved}"
+        );
+
+        let held = call(
+            &p,
+            &member(&p),
+            "create_draft",
+            json!({ "target_page_id": AGENT_PAGE, "content": edit }),
+        )
+        .await;
+        assert_eq!(
+            held["ok"], false,
+            "{mode:?}: member drafted an agent: {held}"
+        );
+
+        let fetched = call(&p, &admin(&p), "expand", json!({ "page_id": AGENT_PAGE })).await;
+        let fetched = fetched.to_string();
+        assert!(
+            fetched.contains("echo") && !fetched.contains("claude"),
+            "{mode:?}: the agent page is unchanged: {fetched}"
+        );
+    }
+}
+
+/// A move creates its destination, so the destination gets the check a create
+/// at that id would: the skill its PATH names, not only the one the moved
+/// page's frontmatter declares (pre-existing gap, every caller).
+#[tokio::test]
+async fn a_move_is_gated_by_the_destination_skill() {
+    let p = gateway().await;
+    let note = "---\nkind: instance\nskill: note\nid: n3\n---\n# n3\n";
+    let ok = write(&p, &member(&p), "markdown/instances/note/n3.md", note).await;
+    assert_eq!(ok["ok"], true, "{ok}");
+
+    let moved = call(
+        &p,
+        &member(&p),
+        "move_page",
+        json!({ "from": "markdown/instances/note/n3.md", "to": "markdown/instances/customer/n3.md" }),
+    )
+    .await;
+    assert_eq!(
+        moved["ok"], false,
+        "a member moved a note into customers: {moved}"
+    );
+    assert_eq!(moved["issues"][0]["location"], "to", "{moved}");
+
+    // The same bytes written straight to the customer path are refused too:
+    // the path's skill gates the create, not the frontmatter's claim.
+    let direct = write(&p, &member(&p), "markdown/instances/customer/n3.md", note).await;
+    assert_eq!(direct["ok"], false, "{direct}");
+
+    let moved = call(
+        &p,
+        &admin(&p),
+        "move_page",
+        json!({ "from": "markdown/instances/note/n3.md", "to": "markdown/instances/customer/n3.md" }),
+    )
+    .await;
+    assert_eq!(moved["ok"], true, "an admin may: {moved}");
 }

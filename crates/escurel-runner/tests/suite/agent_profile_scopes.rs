@@ -341,3 +341,53 @@ async fn an_agents_tool_scope_refuses_what_it_does_not_list() {
         "an agent must not widen its own scopes: {body}"
     );
 }
+
+async fn list_tools(gw: &EscurelProcess, token: &str) -> Value {
+    reqwest::Client::new()
+        .post(gw.mcp_url())
+        .header("authorization", format!("Bearer {token}"))
+        .json(&json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/list" }))
+        .send()
+        .await
+        .expect("post")
+        .json()
+        .await
+        .expect("json")
+}
+
+fn tool_names(body: &Value) -> Vec<String> {
+    body["result"]["tools"]
+        .as_array()
+        .unwrap_or_else(|| panic!("a tool list: {body}"))
+        .iter()
+        .filter_map(|t| t["name"].as_str().map(str::to_owned))
+        .collect()
+}
+
+/// The listing matches what the gateway will let the agent call, so a harness
+/// is never offered a tool every call to which is refused.
+#[tokio::test]
+async fn tools_list_offers_an_agent_only_its_scoped_tools() {
+    let gw = gateway().await;
+    let reader = gw.mint_token_for_agent(TENANT, "reader", "note", &["ops"]);
+    let mut names = tool_names(&list_tools(&gw, &reader).await);
+    names.sort();
+    assert_eq!(
+        names,
+        ["expand", "update_page", "whoami"],
+        "reader's scopes.tools"
+    );
+
+    // An agent with no `scopes.tools` sees what its role sees.
+    let scribe = gw.mint_token_for_agent(TENANT, "scribe", "note", &["ops"]);
+    let plain = gw.mint_token(TENANT, Role::Agent);
+    assert_eq!(
+        tool_names(&list_tools(&gw, &scribe).await),
+        tool_names(&list_tools(&gw, &plain).await)
+    );
+
+    // A token naming no agent page lists nothing: it may call nothing.
+    let forged = gw.mint_token_for_agent(TENANT, "ghost", "note", &["ops"]);
+    let body = list_tools(&gw, &forged).await;
+    assert_eq!(body["error"]["data"]["code"], "agent_unknown", "{body}");
+}

@@ -60,6 +60,32 @@ pub fn is_admin_only_path(page_id: &str) -> bool {
             .is_some_and(|(skill, _)| is_admin_only_skill(skill))
 }
 
+/// Whether writing `content` at `page_id` touches an admin-only system skill:
+/// by path ([`is_admin_only_path`]), or by what the page claims to be — a skill
+/// page declaring an admin-only `id:` or an instance declaring an admin-only
+/// `skill:`. Unparseable content is judged by its path alone.
+///
+/// The one predicate behind both the write ACL and the gateway's
+/// `ESCUREL_WRITE_ACL` ladder: `off` / `log` relax the ordinary ACL, never
+/// this gate (#823).
+#[must_use]
+pub fn is_admin_only_write(page_id: &str, content: &str) -> bool {
+    is_admin_only_path(page_id)
+        || escurel_md::parse(content).is_ok_and(|p| declares_admin_only(&p.frontmatter))
+}
+
+/// Whether a page's frontmatter claims an admin-only system skill.
+pub(crate) fn declares_admin_only(fm: &escurel_md::Frontmatter) -> bool {
+    let field = match fm.page_kind {
+        escurel_md::PageKind::Skill => "id",
+        escurel_md::PageKind::Instance => "skill",
+    };
+    fm.fields
+        .get(field)
+        .and_then(escurel_md::YamlValue::as_str)
+        .is_some_and(is_admin_only_skill)
+}
+
 /// Whether `page_id` is the skill page of an admin-only system skill.
 #[must_use]
 pub fn is_admin_only_skill_page(page_id: &str) -> bool {
@@ -97,5 +123,23 @@ mod tests {
         assert!(!is_admin_only_skill("note"));
         assert!(is_admin_only_skill_page("markdown/skills/agent.md"));
         assert!(!is_admin_only_skill_page("markdown/skills/escurel.md"));
+    }
+
+    #[test]
+    fn an_admin_only_write_is_named_by_path_or_by_claim() {
+        let note = "---\nkind: instance\nskill: note\nid: n\n---\n";
+        assert!(!is_admin_only_write("markdown/instances/note/n.md", note));
+        assert!(is_admin_only_write("markdown/instances/agent/n.md", note));
+        assert!(is_admin_only_write("markdown/skills/agent.md", "garbage"));
+        let claims_agent = "---\nkind: instance\nskill: agent\nid: n\n---\n";
+        assert!(is_admin_only_write(
+            "markdown/instances/note/n.md",
+            claims_agent
+        ));
+        let skill_claims_agent = "---\nkind: skill\nid: agent\n---\n";
+        assert!(is_admin_only_write(
+            "markdown/skills/other.md",
+            skill_claims_agent
+        ));
     }
 }

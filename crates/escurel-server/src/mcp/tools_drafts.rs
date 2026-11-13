@@ -431,6 +431,7 @@ pub(super) async fn tool_create_draft(
     // Rule 1. Same call, same arguments and same three modes as
     // `update_page`'s — a draft is a write in waiting, and the authority to
     // make it is checked when it is written, not when it is approved.
+    let write_acl = write_acl.for_page(&a.target_page_id, &a.content);
     if write_acl != crate::server::WriteAclMode::Off {
         // A write grant, or an `acl.propose` grant: a draft is a proposal, not a write.
         let allowed = indexer

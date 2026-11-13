@@ -184,6 +184,16 @@ canonical markdown is retained for audit. Do not reach for it expecting the
 bytes to be gone. `base_version` is an optimistic-concurrency guard (the
 version you last read); omit it to delete unconditionally.
 
+`move_page` (`from`, `to`) is a write to **both** ids: the source is judged
+like a delete, and the destination like a CREATE of the moved bytes at `to`
+— under the skill its PATH names (`markdown/instances/<skill>/…`) as well as
+the one the frontmatter declares. So a member who may write notes cannot move
+one into `markdown/instances/customer/` when customer writes are restricted;
+the refusal is `{ok: false, issues: [{code: forbidden, location: "to"}]}`
+(`agent_scope_denied` when an agent's `scopes.write` excludes it). The same
+three-skill rule (declared, path, stored) governs `update_page`: relabelling
+`skill:` does not move a write under a laxer skill's grant.
+
 If the bytes DO have to be gone, `purge_page` hard-removes an
 already-archived husk — but it destroys the audit record, so it is
 **admin-role only** (an agent token gets `-32001`); it refuses a live

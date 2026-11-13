@@ -511,7 +511,8 @@ always shows both — count them when you assert on a fresh tenant's catalogue.
 
 `agent` is **admin-only authority**: its skill page, any skill page claiming
 `id: agent`, and every page under `markdown/instances/agent/` are writable by
-`escurel:admin` alone. That is enforced by the write ACL independently of
+`escurel:admin` alone — in every `ESCUREL_WRITE_ACL` mode, `off` and `log`
+included. That is enforced by the write ACL independently of
 the page's own `acl:` block, so neither a widened `acl_defaults`, nor an
 admin's edit of the skill page, nor an instance `acl:` opens agents to
 members (`instance_acl: false` on the shipped page, too).

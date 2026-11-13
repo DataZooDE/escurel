@@ -144,6 +144,7 @@ pub(super) async fn authorise_run_control(
             let Some(target) = target.as_deref() else {
                 return Err(denied());
             };
+            let write_acl = write_acl.for_page(target, "");
             if write_acl != crate::server::WriteAclMode::Off {
                 let Some(existing) = indexer.read_page_markdown(target).await.map_err(|e| {
                     JsonRpcError::internal(format!("capture_event run-control: {e}"))

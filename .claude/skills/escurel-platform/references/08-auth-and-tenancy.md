@@ -111,12 +111,21 @@ page grants, and an admin's edit narrows the very next call:
   into a page outside the scope (`agent_scope_denied`). This binds even an
   admin-role token, and an agent token is always write-ACL **enforced**,
   whatever `ESCUREL_WRITE_ACL` says.
+- `tools/list` on an agent token lists only the tools its `scopes.tools`
+  admits (intersected with the role gate), read from the agent page the same
+  way — so a harness is never offered a tool it would be refused; a token
+  naming no agent page gets `agent_unknown` there too.
 
 A refused call lands on the run's record: `get_run_tool_calls` shows it
 with `status: rejected` (or `error`) and `error_code: agent_scope_denied`.
 Agent tokens are served on `/mcp` only — `/ws`, `/ingest` and `/blob`
 refuse them (`403`, `error: agent_scope_denied`), since only `/mcp` applies
-the scopes. Agent pages themselves are admin-write-only (references/01).
+the scopes. Agent pages themselves are admin-write-only (references/01) **in every
+`ESCUREL_WRITE_ACL` mode**: `off` and `log` relax the ordinary write ACL for a
+rollout, but a write that touches the `agent` system skill — its skill page,
+a page claiming it, anything under `markdown/instances/agent/` — is always
+enforced (fail closed), on every write path (update, delete, move, drafts,
+sessions).
 
 A **workbench agent token** is the same shape minted by the GATEWAY
 (`mint_agent_token`) for an interactive agent with no runner behind it:

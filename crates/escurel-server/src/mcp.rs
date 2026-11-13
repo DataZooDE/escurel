@@ -390,10 +390,24 @@ async fn mcp_inner(
     let result = match req.method.as_str() {
         "initialize" => Ok(initialize_result(&req.params)),
         "ping" => Ok(json!({})),
-        "tools/list" => Ok(restricted_tools_list(
-            schema::tools_list_payload_for(role),
-            restriction.as_ref(),
-        )),
+        "tools/list" => match agent_claim.as_deref() {
+            // An agent token is offered what its `scopes.tools` lets it call,
+            // read from the agent's page exactly as `tools/call` reads it — so
+            // a harness never sees a tool every call to which is refused.
+            Some(id) => {
+                let ix = state.indexer.as_ref().map(IndexerHandle::current);
+                resolve_agent(ix.as_deref(), id).await.map(|agent| {
+                    filter_tools_list(schema::tools_list_payload_for(role), |name| {
+                        restriction.as_ref().is_none_or(|r| r.contains(name))
+                            && agent.allows_tool(name)
+                    })
+                })
+            }
+            None => Ok(filter_tools_list(
+                schema::tools_list_payload_for(role),
+                |name| restriction.as_ref().is_none_or(|r| r.contains(name)),
+            )),
+        },
         "tools/call" => {
             // Per-tool metrics (escurel_tool_calls / _latency_ms):
             // name the tool, time the dispatch, record on completion.
@@ -754,20 +768,15 @@ const OPERATOR_TOOLS: [&str; 5] = [
     "tenant_delete",
 ];
 
-/// `tools/list` for a restricted token: only the tools its role may call.
-fn restricted_tools_list(
-    payload: Value,
-    restriction: Option<&std::collections::BTreeSet<String>>,
-) -> Value {
-    let Some(allowed) = restriction else {
-        return payload;
-    };
+/// `tools/list` narrowed to the tools `allowed` admits: a service-role
+/// restriction, an agent's `scopes.tools`, or both.
+fn filter_tools_list(payload: Value, allowed: impl Fn(&str) -> bool) -> Value {
     let tools: Vec<Value> = payload["tools"]
         .as_array()
         .cloned()
         .unwrap_or_default()
         .into_iter()
-        .filter(|t| t["name"].as_str().is_some_and(|n| allowed.contains(n)))
+        .filter(|t| t["name"].as_str().is_some_and(&allowed))
         .collect();
     json!({ "tools": tools })
 }
@@ -1841,6 +1850,7 @@ async fn tool_open_session(
     // whose it is, and a draft may legitimately propose a page that does not
     // exist yet (`create_draft` accepts a `target_page_id` with no page behind
     // it). Denying absence here would make exactly those drafts uneditable.
+    let write_acl = write_acl.for_page(&page_id, "");
     if draft.is_none()
         && write_acl != crate::server::WriteAclMode::Off
         && let Some(ix) = indexer
@@ -2029,7 +2039,8 @@ async fn tool_apply_op(
             // holding the session id.
             (Some(key), _) if crate::session::draft_id_of_key(&key).is_some() => false,
             (Some(page_id), Some(ix)) => {
-                state.write_acl_for(&caller) == crate::server::WriteAclMode::Off
+                state.write_acl_for(&caller).for_page(&page_id, "")
+                    == crate::server::WriteAclMode::Off
                     || session_write_allowed(ix, &caller, &page_id, None).await?
             }
             // No page behind it, or an unknown session: nothing to protect,
@@ -2247,7 +2258,8 @@ async fn tool_close_session(
             // else's draft is not a page write anyone can inherit.
             (Some(key), _) if crate::session::draft_id_of_key(&key).is_some() => false,
             (Some(page_id), Some(ix)) => {
-                state.write_acl_for(&caller) == crate::server::WriteAclMode::Off
+                state.write_acl_for(&caller).for_page(&page_id, "")
+                    == crate::server::WriteAclMode::Off
                     || session_write_allowed(ix, &caller, &page_id, None).await?
             }
             // No page behind it (session-only server) or an unknown session:
@@ -2396,7 +2408,7 @@ async fn tool_close_session(
             // refusal uses `update_page`'s own denial shape and leaves the
             // session OPEN — the caller can still discard (`commit:
             // false`), mirroring the failing-indexer-write contract below.
-            let write_acl = state.write_acl_for(&caller);
+            let write_acl = state.write_acl_for(&caller).for_page(&page_id, &body);
             if write_acl != crate::server::WriteAclMode::Off
                 && !session_write_allowed(ix, &caller, &page_id, Some(&body)).await?
             {
