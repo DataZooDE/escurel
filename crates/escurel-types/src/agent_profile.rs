@@ -28,6 +28,17 @@ pub fn is_valid_agent_id(id: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-'))
 }
 
+/// Whether a page can serve as an agent profile: an INSTANCE of the `agent`
+/// skill that is not archived. The one rule the runner (choosing an agent) and
+/// the gateway (enforcing its scopes) both apply, so they cannot disagree about
+/// which pages are agents.
+#[must_use]
+pub fn is_usable_agent_page(skill: &str, is_instance: bool, frontmatter: &Value) -> bool {
+    skill == AGENT_SKILL
+        && is_instance
+        && frontmatter.get("archived").and_then(Value::as_bool) != Some(true)
+}
+
 /// One agent profile, read from its page's frontmatter.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct AgentProfile {
@@ -256,6 +267,22 @@ mod tests {
         );
         assert_eq!(link_id(Some(&json!("[[researcher]]")), "agent"), None);
         assert_eq!(link_id(Some(&json!("[[agent::../x]]")), "agent"), None);
+    }
+
+    #[test]
+    fn only_an_unarchived_agent_instance_is_a_usable_agent_page() {
+        let fm = json!({});
+        assert!(is_usable_agent_page(AGENT_SKILL, true, &fm));
+        assert!(
+            !is_usable_agent_page(AGENT_SKILL, false, &fm),
+            "the skill page itself"
+        );
+        assert!(!is_usable_agent_page("note", true, &fm));
+        assert!(!is_usable_agent_page(
+            AGENT_SKILL,
+            true,
+            &json!({ "archived": true })
+        ));
     }
 
     #[test]

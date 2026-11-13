@@ -960,6 +960,40 @@ impl AttemptSink {
     }
 }
 
+/// [`escurel_runner_core::resolve_run_agent`], retried with the run's backoff up to its attempts
+/// cap. `Err` names why the pages stayed unreadable.
+async fn resolve_run_agent_retrying(
+    client: &Client,
+    trigger: &Trigger,
+    config: &RunnerConfig,
+) -> Result<
+    (
+        Option<escurel_runner_core::SkillContract>,
+        escurel_runner_core::AgentChoice,
+    ),
+    String,
+> {
+    let tries = config.max_attempts.max(1);
+    let mut last = String::new();
+    for attempt in 1..=tries {
+        match escurel_runner_core::resolve_run_agent(client, trigger).await {
+            Ok(resolved) => return Ok(resolved),
+            Err(e) => {
+                last = e.to_string();
+                tracing::warn!(target: "escurel_runner", event_id = %trigger.event_id, attempt,
+                    error = %e, "the skill or agent page could not be read");
+                if attempt < tries {
+                    tokio::time::sleep(config.retry_backoff).await;
+                }
+            }
+        }
+    }
+    Err(format!(
+        "the skill's contract or its agent page could not be read ({last}); not running the \
+         skill without its agent"
+    ))
+}
+
 /// Store the run's transcript (#822) and return the `{records, bytes,
 /// sha256}` that `run-finished.transcript` records (informational: readers
 /// fetch the transcript by run id). Best-effort like every run
@@ -2408,12 +2442,16 @@ async fn dispatch_loop(
         // retry closure because a retry is the same step, not a new choice.
         // The skill's own asks (workbench backend P2-7): a `harness:` on the
         // skill page is honoured like a manual one, within the allow-list.
-        let skill_contract =
-            escurel_runner_core::skill_contract(&client, &trigger.label_skill).await;
-        // The agent profile the run executes as (#823).
-        let agent =
-            escurel_runner_core::agent_for_trigger(&client, &trigger, skill_contract.as_ref())
-                .await;
+        // The agent profile the run executes as (#823). A page that could not be READ is not an
+        // absent one: retried a few times, and if still unreadable the run ends `failed`
+        // (retriable: the poller re-drives it) BEFORE any token is minted. Never a run on the
+        // runner's own token because the skill's default agent went unread, and never a
+        // dead-letter claiming the agent does not exist.
+        let (skill_contract, agent, agent_unreadable) =
+            match resolve_run_agent_retrying(&client, &trigger, &config).await {
+                Ok((contract, agent)) => (contract, agent, None),
+                Err(e) => (None, escurel_runner_core::AgentChoice::None, Some(e)),
+            };
         let profile = agent.profile();
         // An agent's harness and model stand in for the skill's own asks.
         let skill_harness = profile
@@ -2502,86 +2540,100 @@ async fn dispatch_loop(
         let attempt_sink = std::sync::Mutex::new(AttemptSink::default());
         let (client_ref, ctx_ref, metrics_ref, sink_ref) =
             (&client, &run_ctx, &metrics, &attempt_sink);
-        let report = run_with_retry(&config, |attempt| {
-            // BOUNDED. The gateway client times out one request at 60s, but a
-            // run is not one request — a dozen model turns, each with tool
-            // calls, times the attempts cap. A run that stalled sat `pending`
-            // holding an in-flight quota slot, not terminal enough to block a
-            // re-delivery and not re-drivable either, because the poller's
-            // seen-set already holds its event id.
-            //
-            // A subprocess timeout is transient. A Gemini timeout leaves
-            // provider usage unknown, so retrying could exceed the run budget.
-            // The harness for THIS trigger: a workflow step may declare its
-            // own, and the runner's configured one answers for everything
-            // else.
-            let fut = attempt_run(
-                &trigger,
-                &client,
-                &config,
-                &tokens,
-                step_harness.as_ref(),
-                attempt,
-                Some(&run_claims),
-                grant,
-                &cancel,
-                inject.as_ref(),
-                sink_ref,
-            );
-            let bound = config.run_timeout;
-            // Every in-process HTTP harness meters the model: an abandoned
-            // attempt's usage is unknown, so a retry could overrun the budget.
-            let gemini_budgeted = meters_model(step_harness.name());
-            async move {
-                let started_at = escurel_runner_core::now_ts();
-                let result = match tokio::time::timeout(bound, fut).await {
-                    Ok(result) => result,
-                    Err(_) if gemini_budgeted => Err(ReconcileError::Permanent(format!(
-                        "model usage unknown: run attempt exceeded {}ms and was abandoned",
-                        bound.as_millis()
-                    ))),
-                    Err(_) => Err(ReconcileError::Transient(format!(
-                        "run attempt exceeded {}s and was abandoned",
-                        bound.as_secs()
-                    ))),
-                };
-                // An abandoned attempt never reached `attempt_run`'s own error
-                // path, so the sink has to hear about it here: a chat run's
-                // failure turn says WHY (`timeout`), and `run-finished.error`
-                // names it.
-                if let Err(e) = &result
-                    && e.to_string().contains("abandoned")
-                    && let Ok(mut s) = sink_ref.lock()
-                {
-                    s.last_error = Some(e.to_string());
-                }
-                if emit_events {
-                    let (outcome, error) = match &result {
-                        Ok(_) => ("ok", None),
-                        Err(ReconcileError::Converged(r)) => ("converged", Some(r.clone())),
-                        Err(ReconcileError::Cancelled(r)) => ("cancelled", Some(r.clone())),
-                        Err(e) if e.to_string().contains("abandoned") => {
-                            ("timeout", Some(e.to_string()))
-                        }
-                        Err(e) => ("failed", Some(e.to_string())),
-                    };
-                    let report = escurel_runner_core::AttemptReport {
-                        attempt,
-                        started_at,
-                        ended_at: escurel_runner_core::now_ts(),
-                        outcome,
-                        error,
-                    };
-                    record_run_event(
-                        metrics_ref,
-                        "attempt",
-                        ctx_ref.emit_attempt(client_ref, &report).await,
-                    );
-                }
-                result
+        if let Some(reason) = &agent_unreadable
+            && let Ok(mut s) = attempt_sink.lock()
+        {
+            s.last_error = Some(reason.clone());
+        }
+        let report = if agent_unreadable.is_some() {
+            escurel_runner_core::RunReport {
+                confirmed: None,
+                converged_no_op: false,
+                failure: None,
+                attempts: 0,
             }
-        })
-        .await;
+        } else {
+            run_with_retry(&config, |attempt| {
+                // BOUNDED. The gateway client times out one request at 60s, but a
+                // run is not one request — a dozen model turns, each with tool
+                // calls, times the attempts cap. A run that stalled sat `pending`
+                // holding an in-flight quota slot, not terminal enough to block a
+                // re-delivery and not re-drivable either, because the poller's
+                // seen-set already holds its event id.
+                //
+                // A subprocess timeout is transient. A Gemini timeout leaves
+                // provider usage unknown, so retrying could exceed the run budget.
+                // The harness for THIS trigger: a workflow step may declare its
+                // own, and the runner's configured one answers for everything
+                // else.
+                let fut = attempt_run(
+                    &trigger,
+                    &client,
+                    &config,
+                    &tokens,
+                    step_harness.as_ref(),
+                    attempt,
+                    Some(&run_claims),
+                    grant,
+                    &cancel,
+                    inject.as_ref(),
+                    sink_ref,
+                );
+                let bound = config.run_timeout;
+                // Every in-process HTTP harness meters the model: an abandoned
+                // attempt's usage is unknown, so a retry could overrun the budget.
+                let gemini_budgeted = meters_model(step_harness.name());
+                async move {
+                    let started_at = escurel_runner_core::now_ts();
+                    let result = match tokio::time::timeout(bound, fut).await {
+                        Ok(result) => result,
+                        Err(_) if gemini_budgeted => Err(ReconcileError::Permanent(format!(
+                            "model usage unknown: run attempt exceeded {}ms and was abandoned",
+                            bound.as_millis()
+                        ))),
+                        Err(_) => Err(ReconcileError::Transient(format!(
+                            "run attempt exceeded {}s and was abandoned",
+                            bound.as_secs()
+                        ))),
+                    };
+                    // An abandoned attempt never reached `attempt_run`'s own error
+                    // path, so the sink has to hear about it here: a chat run's
+                    // failure turn says WHY (`timeout`), and `run-finished.error`
+                    // names it.
+                    if let Err(e) = &result
+                        && e.to_string().contains("abandoned")
+                        && let Ok(mut s) = sink_ref.lock()
+                    {
+                        s.last_error = Some(e.to_string());
+                    }
+                    if emit_events {
+                        let (outcome, error) = match &result {
+                            Ok(_) => ("ok", None),
+                            Err(ReconcileError::Converged(r)) => ("converged", Some(r.clone())),
+                            Err(ReconcileError::Cancelled(r)) => ("cancelled", Some(r.clone())),
+                            Err(e) if e.to_string().contains("abandoned") => {
+                                ("timeout", Some(e.to_string()))
+                            }
+                            Err(e) => ("failed", Some(e.to_string())),
+                        };
+                        let report = escurel_runner_core::AttemptReport {
+                            attempt,
+                            started_at,
+                            ended_at: escurel_runner_core::now_ts(),
+                            outcome,
+                            error,
+                        };
+                        record_run_event(
+                            metrics_ref,
+                            "attempt",
+                            ctx_ref.emit_attempt(client_ref, &report).await,
+                        );
+                    }
+                    result
+                }
+            })
+            .await
+        };
 
         // Outcome → terminal status:
         // - confirmed effect      → `processed` (+ produced instance/version);
@@ -2674,7 +2726,11 @@ async fn dispatch_loop(
                     }
                 }
                 (None, false, _) => escurel_runner_core::RunFinish::Failed {
-                    reason: "permanent".to_owned(),
+                    reason: if agent_unreadable.is_some() {
+                        "agent_unreadable".to_owned()
+                    } else {
+                        "permanent".to_owned()
+                    },
                     error: attempt_sink.lock().ok().and_then(|s| s.last_error.clone()),
                 },
             };

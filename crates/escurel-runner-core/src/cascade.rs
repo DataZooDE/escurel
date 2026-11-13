@@ -96,8 +96,13 @@ pub struct SkillContract {
     pub agent: Option<String>,
 }
 
-/// Read a skill's contract off its page; `None` when the skill cannot be
-/// resolved or expanded (the caller treats that as "nothing declared").
+/// Read a skill's contract off its page; `None` when there is no such page
+/// (the caller treats that as "nothing declared").
+///
+/// # Errors
+/// When the page could not be READ (transport, gateway or auth failure).
+/// Callers must not read that as "nothing declared": a skill's contract names
+/// its default agent and its write groups, so a guess fails open.
 /// The cascade allow-list a skill's `actions:` declares: the `event` skill of every
 /// `kind: event` object (Peacock's form). `kind: prompt` entries are chat turns and restrict
 /// nothing; no actions at all means no restriction (an empty list).
@@ -116,22 +121,31 @@ fn event_skills(fm: &serde_json::Value) -> Vec<String> {
         .unwrap_or_default()
 }
 
-pub async fn skill_contract(client: &Client, skill: &str) -> Option<SkillContract> {
-    let resolved = client
+pub async fn skill_contract(
+    client: &Client,
+    skill: &str,
+) -> Result<Option<SkillContract>, escurel_client::Error> {
+    let resolved = match client
         .resolve(ResolveRequest {
             wikilink: format!("[[{skill}]]"),
             ..Default::default()
         })
         .await
-        .ok()?;
-    let page_id = resolved.page?.page_id;
+    {
+        Ok(r) => r,
+        // A label no wikilink can carry names no skill page.
+        Err(escurel_client::Error::JsonRpc { code: -32602, .. }) => return Ok(None),
+        Err(e) => return Err(e),
+    };
+    let Some(page) = resolved.page else {
+        return Ok(None);
+    };
     let expanded = client
         .expand(ExpandRequest {
-            page_id,
+            page_id: page.page_id,
             ..Default::default()
         })
-        .await
-        .ok()?;
+        .await?;
     let fm = &expanded.frontmatter;
     let text = |v: Option<&serde_json::Value>| {
         v.and_then(|v| v.as_str())
@@ -157,7 +171,7 @@ pub async fn skill_contract(client: &Client, skill: &str) -> Option<SkillContrac
             }
         }
     }
-    Some(SkillContract {
+    Ok(Some(SkillContract {
         harness: text(fm.get("harness")),
         model: text(fm.get("model")),
         actions: event_skills(fm),
@@ -171,7 +185,7 @@ pub async fn skill_contract(client: &Client, skill: &str) -> Option<SkillContrac
         agent: fm
             .get("agent")
             .map(|v| escurel_types::agent_profile::link_id(Some(v), "agent").unwrap_or_default()),
-    })
+    }))
 }
 
 /// The `cascade_target` value meaning "the instance this run just wrote".
@@ -187,6 +201,11 @@ pub enum CascadeError {
     /// The follow-on `capture_event` call against `/mcp` failed.
     #[error("cascade capture_event failed: {0}")]
     Capture(#[source] escurel_client::Error),
+    /// A skill page whose contract bounds the cascade (`actions:`,
+    /// `max_depth`, `cascade_target`) could not be read: no cascade is emitted
+    /// on a guess about its limits.
+    #[error("cascade: skill contract unreadable: {0}")]
+    Contract(#[source] escurel_client::Error),
 }
 
 /// Decide whether a confirmed write should cascade, and if so emit the
@@ -239,6 +258,7 @@ pub async fn emit_cascade_with_id(
     // cap is the only limit).
     let parent = skill_contract(client, &parent_trigger.label_skill)
         .await
+        .map_err(CascadeError::Contract)?
         .unwrap_or_default();
     if !parent.actions.is_empty() && !parent.actions.iter().any(|a| a == &produced_skill) {
         return Ok(CascadeOutcome::NotAllowed { produced_skill });
@@ -268,6 +288,7 @@ pub async fn emit_cascade_with_id(
     // hardcoded.
     let cascade_target = match skill_contract(client, &produced_skill)
         .await
+        .map_err(CascadeError::Contract)?
         .and_then(|c| c.cascade_target)
     {
         // **`produced` — the instance this run just wrote.**

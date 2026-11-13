@@ -34,7 +34,7 @@ mod trigger;
 mod workflow;
 
 pub use admit::{Admission, LoopLimits, admit};
-pub use agent::{AgentChoice, agent_for_trigger, choose_agent};
+pub use agent::{AgentChoice, agent_for_trigger, choose_agent, resolve_run_agent};
 pub use auth::{
     AuthError, ROOT_EVENT_ID_CLAIM, RUN_ID_CLAIM, RunClaims, Signer, TRACE_ID_CLAIM, TokenSource,
 };

@@ -8,7 +8,9 @@
 
 use escurel_client::Client;
 use escurel_types::ExpandRequest;
-use escurel_types::agent_profile::{AGENT_SKILL, AgentProfile, agent_page_id, is_valid_agent_id};
+use escurel_types::agent_profile::{
+    AgentProfile, agent_page_id, is_usable_agent_page, is_valid_agent_id,
+};
 
 /// The agent a run executes as.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -34,18 +36,38 @@ impl AgentChoice {
     }
 }
 
-/// The agent a run of `trigger` executes as — THE resolution, shared by a
-/// fresh dispatch and by crash recovery so both read the same sources: the
-/// event's `provenance.agent` request, then the skill's default (`contract`,
-/// read off its page). A workflow step runs as its requester and a chat turn
-/// as its asker, so neither takes an agent.
+/// The skill's contract and the agent a run of `trigger` executes as — THE
+/// resolution, shared by a fresh dispatch and by crash recovery so both read
+/// the same sources: the event's `provenance.agent` request, then the skill's
+/// default (read off its page). A workflow step runs as its requester and a
+/// chat turn as its asker, so neither takes an agent.
+///
+/// # Errors
+/// When the skill page or an agent page could not be READ (a transport or
+/// gateway error, as opposed to a page that is absent). The caller must not
+/// run on a guess: an unread skill contract would drop a declared default
+/// agent and run on the runner's own token, and an unread agent page would
+/// dead-letter the run as if the agent did not exist.
+pub async fn resolve_run_agent(
+    client: &Client,
+    trigger: &crate::Trigger,
+) -> Result<(Option<crate::SkillContract>, AgentChoice), escurel_client::Error> {
+    let contract = crate::skill_contract(client, &trigger.label_skill).await?;
+    let agent = agent_for_trigger(client, trigger, contract.as_ref()).await?;
+    Ok((contract, agent))
+}
+
+/// [`resolve_run_agent`] with the skill contract already read.
+///
+/// # Errors
+/// When an agent page could not be read (see [`resolve_run_agent`]).
 pub async fn agent_for_trigger(
     client: &Client,
     trigger: &crate::Trigger,
     contract: Option<&crate::SkillContract>,
-) -> AgentChoice {
+) -> Result<AgentChoice, escurel_client::Error> {
     if trigger.workflow.is_some() || trigger.chat.is_some() {
-        return AgentChoice::None;
+        return Ok(AgentChoice::None);
     }
     choose_agent(
         client,
@@ -58,38 +80,45 @@ pub async fn agent_for_trigger(
 
 /// Resolve the agent for a run of `skill`: `requested` from the event,
 /// `default` from the skill page (each an agent id, possibly malformed).
+///
+/// # Errors
+/// When an agent page could not be read (absent is not an error).
 pub async fn choose_agent(
     client: &Client,
     skill: &str,
     requested: Option<&str>,
     default: Option<&str>,
-) -> AgentChoice {
+) -> Result<AgentChoice, escurel_client::Error> {
     let requested = match requested {
-        Some(id) => Some((id, load(client, id).await)),
+        Some(id) => Some((id, load(client, id).await?)),
         None => None,
     };
     let default = match default {
-        Some(id) => Some((id, load(client, id).await)),
+        Some(id) => Some((id, load(client, id).await?)),
         None => None,
     };
-    decide(skill, requested, default)
+    Ok(decide(skill, requested, default))
 }
 
-/// The agent page `id` names, or `None` when there is no usable one.
-async fn load(client: &Client, id: &str) -> Option<AgentProfile> {
+/// The agent page `id` names, `None` when there is no usable one (absent,
+/// archived, not an `agent` instance, or an id no page can carry).
+///
+/// # Errors
+/// When the page could not be READ: that is not "no such agent".
+async fn load(client: &Client, id: &str) -> Result<Option<AgentProfile>, escurel_client::Error> {
     if !is_valid_agent_id(id) {
-        return None;
+        return Ok(None);
     }
     let page = client
         .expand(ExpandRequest {
             page_id: agent_page_id(id),
             ..Default::default()
         })
-        .await
-        .ok()?;
-    let is_agent = page.page.as_ref().is_some_and(|p| p.skill == AGENT_SKILL);
-    let archived = page.frontmatter.get("archived").and_then(|v| v.as_bool()) == Some(true);
-    (is_agent && !archived).then(|| AgentProfile::from_frontmatter(id, &page.frontmatter))
+        .await?;
+    let usable = page.page.as_ref().is_some_and(|p| {
+        is_usable_agent_page(&p.skill, p.page_kind == "instance", &page.frontmatter)
+    });
+    Ok(usable.then(|| AgentProfile::from_frontmatter(id, &page.frontmatter)))
 }
 
 /// The pure half of [`choose_agent`].
@@ -159,6 +188,55 @@ mod tests {
         }
         assert_eq!(
             decide("note", Some(("ghost", None)), None),
+            AgentChoice::None
+        );
+    }
+
+    /// A gateway that does not answer (a real refused connection, not a stub: the boundary under
+    /// test is the runner's handling of a READ error). Before crew review PR-1 F5, an unread skill
+    /// page read as "no default agent" (the run went wide on the runner's token) and an unread agent
+    /// page as "no such agent" (a permanent dead-letter with a false reason). Both are errors now.
+    async fn unreachable_gateway() -> Client {
+        let port = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        Client::connect(
+            &format!("http://127.0.0.1:{port}"),
+            crate::SecretString::from("t".to_owned()),
+        )
+        .await
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn an_unreadable_skill_page_is_an_error_not_no_agent() {
+        let client = unreachable_gateway().await;
+        let event = escurel_types::Event {
+            label_skill: "note".to_owned(),
+            ..Default::default()
+        };
+        let trigger = crate::Trigger::from_event(&event, "acme");
+        assert!(resolve_run_agent(&client, &trigger).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn an_unreadable_agent_page_is_an_error_not_a_refusal() {
+        let client = unreachable_gateway().await;
+        assert!(
+            choose_agent(&client, "note", None, Some("scribe"))
+                .await
+                .is_err()
+        );
+        assert!(
+            choose_agent(&client, "note", Some("scribe"), None)
+                .await
+                .is_err()
+        );
+        // No agent asked for: nothing to read, no error.
+        assert_eq!(
+            choose_agent(&client, "note", None, None).await.unwrap(),
             AgentChoice::None
         );
     }

@@ -1046,7 +1046,7 @@ impl Indexer {
         agent_id: &str,
     ) -> Result<Option<escurel_types::agent_profile::AgentProfile>, IndexerError> {
         use escurel_types::agent_profile::{
-            AGENT_SKILL, AgentProfile, agent_page_id, is_valid_agent_id,
+            AgentProfile, agent_page_id, is_usable_agent_page, is_valid_agent_id,
         };
         if !is_valid_agent_id(agent_id) {
             return Ok(None);
@@ -1054,8 +1054,11 @@ impl Indexer {
         let Some(page) = self.expand(&agent_page_id(agent_id), None, None).await? else {
             return Ok(None);
         };
-        let archived = page.frontmatter.get("archived").and_then(Value::as_bool) == Some(true);
-        if page.page.skill != AGENT_SKILL || page.page.page_kind != PageKind::Instance || archived {
+        if !is_usable_agent_page(
+            &page.page.skill,
+            page.page.page_kind == PageKind::Instance,
+            &page.frontmatter,
+        ) {
             return Ok(None);
         }
         Ok(Some(AgentProfile::from_frontmatter(

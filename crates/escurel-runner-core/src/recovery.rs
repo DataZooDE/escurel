@@ -197,11 +197,11 @@ async fn run_identity(
         return (None, None);
     };
     let trigger = Trigger::from_event(&event, tenant.to_owned());
-    let contract = crate::skill_contract(client, &trigger.label_skill).await;
-    let agent = crate::agent_for_trigger(client, &trigger, contract.as_ref())
+    // Attribution only (the re-run resolves afresh): an unreadable page leaves the agent unnamed.
+    let agent = crate::resolve_run_agent(client, &trigger)
         .await
-        .profile()
-        .map(|p| p.id.clone());
+        .ok()
+        .and_then(|(_, choice)| choice.profile().map(|p| p.id.clone()));
     let skill = Some(trigger.label_skill).filter(|s| !s.is_empty());
     (skill, agent)
 }
