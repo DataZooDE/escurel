@@ -2,7 +2,7 @@
 // instances, open an instance as UI and raw, edit and save a skill with
 // diagnostics, find a page by search.
 import * as assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import * as vscode from 'vscode';
@@ -140,5 +140,24 @@ suite('M1', () => {
       raw: true,
     });
     assert.ok(text.includes(stored.body.trim().split('\n')[0]!), 'the body is the skill page body');
+
+    // A local edit is not clobbered: without a yes, nothing is written.
+    const edited = `${text}\nA local note.\n`;
+    writeFileSync(file.fsPath, edited);
+    const refused = await vscode.commands.executeCommand<vscode.Uri | undefined>(
+      'escurel.exportSkillMd',
+      'markdown/skills/customer.md',
+      vscode.Uri.file(folder),
+    );
+    assert.equal(refused, undefined, 'a differing file is not replaced without a yes');
+    assert.equal(readFileSync(file.fsPath, 'utf8'), edited);
+    const replaced = await vscode.commands.executeCommand<vscode.Uri | undefined>(
+      'escurel.exportSkillMd',
+      'markdown/skills/customer.md',
+      vscode.Uri.file(folder),
+      { overwrite: true },
+    );
+    assert.equal(replaced?.fsPath, file.fsPath);
+    assert.equal(readFileSync(file.fsPath, 'utf8'), text);
   });
 });

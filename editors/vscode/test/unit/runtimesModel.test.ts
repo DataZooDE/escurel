@@ -59,7 +59,33 @@ describe('the Runtimes view rows', () => {
     expect(laptop?.tooltip).toContain('Runner 2026.11.13');
     expect(laptop?.tooltip).toContain('Page: markdown/instances/runtime/laptop.md');
     expect(box?.tooltip).toContain(
-      'Stale: last seen 20 min ago (stale after 1 min 30 s of silence). It takes no work until it reports again.',
+      'Stale: last seen 20 min ago (stale after 1 min 30 s of silence). No recent status report; the runner may be unavailable.',
+    );
+  });
+
+  it('say in words that a harness whose CLI probe failed is unavailable, and why', () => {
+    const [row] = runtimeRows(
+      [
+        {
+          ...online,
+          harnesses: [
+            { name: 'echo', version: null, available: true },
+            {
+              name: 'codex',
+              version: null,
+              available: false,
+              probe_error: '`codex --version` could not start: No such file or directory',
+            },
+          ],
+        },
+      ],
+      now,
+    );
+    expect(row?.description).toBe(
+      'online · echo, codex (unavailable) · repo:escurel, site:muc · 1 live run',
+    );
+    expect(row?.tooltip).toContain(
+      'codex is unavailable: its CLI probe failed (`codex --version` could not start: No such file or directory), so work that requires it goes to another runtime',
     );
   });
 

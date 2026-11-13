@@ -2,7 +2,7 @@ import * as vscode from 'vscode';
 import type { Services } from '../services';
 import { describeError } from '../errors';
 import { readPageMarkdown } from '../fs/read';
-import { SKILL_FILE, exportSkillMd } from '../skills/skillMd';
+import { SKILL_FILE, exportSkillMd, exportWrite } from '../skills/skillMd';
 
 /** What the command is invoked with: a page id, an `escurel:` skill URI (editor title), or a tree row. */
 type Target = string | vscode.Uri | { skill?: { id: string } | string } | undefined;
@@ -19,16 +19,32 @@ function skillPageId(arg: Target): string | undefined {
   return active?.scheme === 'escurel' ? active.path.replace(/^\//, 'markdown/') : undefined;
 }
 
+/** The file's text, or `undefined` when there is none. */
+async function readIfThere(file: vscode.Uri): Promise<string | undefined> {
+  try {
+    return Buffer.from(await vscode.workspace.fs.readFile(file)).toString('utf8');
+  } catch (error) {
+    if (error instanceof vscode.FileSystemError && error.code === 'FileNotFound') return undefined;
+    throw error;
+  }
+}
+
 /**
  * `escurel.exportSkillMd`: write a skill page as `<folder>/<skill>/SKILL.md` for an agent that reads
  * Anthropic-style skills (`references/12`). `folder` skips the picker (tests, other extensions).
- * Returns the written file's URI, or undefined when nothing was written.
+ * A file that already holds exactly the export is left alone; one that differs (a local edit) is
+ * replaced only after the person confirms — or, when called with `folder`, only with
+ * `{ overwrite: true }`. Returns the file's URI, or undefined when nothing was exported.
  */
 export function registerExportSkillMd(context: vscode.ExtensionContext, services: Services): void {
   context.subscriptions.push(
     vscode.commands.registerCommand(
       'escurel.exportSkillMd',
-      async (arg?: Target, folder?: vscode.Uri): Promise<vscode.Uri | undefined> => {
+      async (
+        arg?: Target,
+        folder?: vscode.Uri,
+        options?: { overwrite?: boolean },
+      ): Promise<vscode.Uri | undefined> => {
         const pageId = skillPageId(arg);
         if (!pageId?.startsWith('markdown/skills/')) {
           void vscode.window.showInformationMessage('Open a skill page first, then export it.');
@@ -51,8 +67,20 @@ export function registerExportSkillMd(context: vscode.ExtensionContext, services
             )?.[0];
           if (!into) return undefined;
           const dir = vscode.Uri.joinPath(into, name);
-          await vscode.workspace.fs.createDirectory(dir);
           const file = vscode.Uri.joinPath(dir, SKILL_FILE);
+          const decision = exportWrite(await readIfThere(file), skillMd);
+          if (decision === 'same') return file;
+          if (decision === 'differs') {
+            const overwrite = folder
+              ? options?.overwrite === true
+              : (await vscode.window.showWarningMessage(
+                  `${file.fsPath} already exists with different content (a local edit?). Replace it with the export?`,
+                  { modal: true },
+                  'Replace',
+                )) === 'Replace';
+            if (!overwrite) return undefined;
+          }
+          await vscode.workspace.fs.createDirectory(dir);
           await vscode.workspace.fs.writeFile(file, Buffer.from(skillMd, 'utf8'));
           if (!folder)
             void vscode.window

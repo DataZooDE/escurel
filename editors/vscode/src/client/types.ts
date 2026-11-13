@@ -225,6 +225,10 @@ export interface SkillRequires {
 export interface RuntimeHarness {
   name: string;
   version?: string | null;
+  /** `false` when the harness's CLI probe failed: the runner takes no work that requires it. Absent reads as available. */
+  available?: boolean;
+  /** Why the probe failed (admins only). */
+  probe_error?: string | null;
 }
 
 /** One registered runner as `list_runtimes` reports it (#818). */

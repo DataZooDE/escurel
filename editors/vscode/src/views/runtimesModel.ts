@@ -29,12 +29,31 @@ const STATUS_WORD: Record<RuntimeStatus, string> = {
 const statusOf = (s: string): RuntimeStatus =>
   s === 'online' || s === 'stale' || s === 'stopped' ? s : 'unknown';
 
+/** Said in words, never by colour alone: a harness whose CLI probe failed runs nothing. */
 const harnessWords = (r: Runtime): string =>
   r.harnesses.length
     ? r.harnesses
-        .map((h) => cleanText([h.name, h.version].filter(Boolean).join(' '), 80))
+        .map((h) =>
+          cleanText(
+            [h.name, h.version, h.available === false ? '(unavailable)' : undefined]
+              .filter(Boolean)
+              .join(' '),
+            80,
+          ),
+        )
         .join(', ')
     : 'no harness';
+
+/** One tooltip line per harness the runner cannot run, with why when the read says. */
+const unavailableLines = (r: Runtime): string[] =>
+  r.harnesses
+    .filter((h) => h.available === false)
+    .map(
+      (h) =>
+        `${cleanText(h.name, 64)} is unavailable: its CLI probe failed${
+          h.probe_error ? ` (${cleanText(h.probe_error, 160)})` : ''
+        }, so work that requires it goes to another runtime`,
+    );
 
 const labelWords = (r: Runtime): string =>
   r.labels.length ? r.labels.map((l) => cleanText(l, 64)).join(', ') : 'no labels';
@@ -51,7 +70,7 @@ function statusLine(r: Runtime, status: RuntimeStatus, now: Date): string {
     case 'online':
       return `Online: last seen ${seen || 'recently'}${after}`;
     case 'stale':
-      return `Stale: last seen ${seen || 'a while ago'}${after}. It takes no work until it reports again.`;
+      return `Stale: last seen ${seen || 'a while ago'}${after}. No recent status report; the runner may be unavailable.`;
     case 'stopped':
       return `Stopped: it said it was shutting down${seen ? ` (${seen})` : ''}`;
     case 'unknown':
@@ -76,6 +95,7 @@ export function runtimeRows(runtimes: Runtime[], now: Date = new Date()): Runtim
           label,
           statusLine(r, status, now),
           `Harnesses: ${harnessWords(r)}`,
+          ...unavailableLines(r),
           `Labels: ${labelWords(r)}`,
           ...(r.max_concurrent !== null
             ? [`At most ${plural(r.max_concurrent, 'run')} at once`]

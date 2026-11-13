@@ -127,3 +127,16 @@ function splitFirst(s: string, sep: string): [string, string | undefined] {
   const i = s.indexOf(sep);
   return i < 0 ? [s.trim(), undefined] : [s.slice(0, i).trim(), s.slice(i + 1).trim()];
 }
+
+/**
+ * What exporting `next` over a file that holds `existing` (`undefined`: no file) should do: write a
+ * new file, leave an identical one alone, or not clobber one that differs (a local edit) without
+ * the person's say-so — the CLI's `--force` rule.
+ */
+export function exportWrite(
+  existing: string | undefined,
+  next: string,
+): 'write' | 'same' | 'differs' {
+  if (existing === undefined) return 'write';
+  return existing === next ? 'same' : 'differs';
+}

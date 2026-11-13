@@ -2,7 +2,7 @@ import { readdirSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { parse } from 'yaml';
-import { exportSkillMd } from '../../src/skills/skillMd';
+import { exportSkillMd, exportWrite } from '../../src/skills/skillMd';
 
 // The fixtures the Rust converter (`crates/escurel-md/src/skill_md.rs`) is pinned to as well: one
 // directory per case, each a `page.md` and the `SKILL.md` it exports to.
@@ -60,5 +60,13 @@ describe('exportSkillMd', () => {
     expect(() => exportSkillMd('---\nkind: skill\nid: ..\ndescription: d\n---\nx\n')).toThrow(
       /folder/,
     );
+  });
+});
+
+describe('exportWrite', () => {
+  it('writes a new file, leaves an identical one, and never clobbers a different one silently', () => {
+    expect(exportWrite(undefined, 'x')).toBe('write');
+    expect(exportWrite('x', 'x')).toBe('same');
+    expect(exportWrite('x\nlocal edit\n', 'x')).toBe('differs');
   });
 });

@@ -3,6 +3,10 @@ import { describeError } from '../errors';
 import type { Services } from '../services';
 import { LazyFlatTree, type FlatRead } from './lazyTree';
 import { runtimeRows, type RuntimeRow, type RuntimeStatus } from './runtimesModel';
+import { VisibleTicker } from './visibleTicker';
+
+/** How often a visible Runtimes view re-reads, so liveness on screen keeps up by itself. */
+const REFRESH_MS = 15_000;
 
 /** Shape and colour both differ, and the description says the status in words as well. */
 const STATUS_ICON: Record<RuntimeStatus, [string, string | undefined]> = {
@@ -63,7 +67,11 @@ export function registerRuntimesView(
     showCollapseAll: false,
   });
   tree.bindView(view);
+  const ticker = new VisibleTicker(REFRESH_MS, () => void tree.load());
+  ticker.setVisible(view.visible);
   context.subscriptions.push(
+    ticker,
+    view.onDidChangeVisibility((e) => ticker.setVisible(e.visible)),
     tree,
     view,
     vscode.commands.registerCommand('escurel.runtimes.refresh', () => tree.load()),
