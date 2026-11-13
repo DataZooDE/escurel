@@ -299,7 +299,7 @@ pub(crate) fn reserved_event_id_refusal(event_id: &str, caller: &AclCaller<'_>) 
     if let Some(prefix) = BOOKKEEPER_PREFIXES
         .iter()
         .find(|p| event_id.starts_with(**p))
-        && !(caller.is_admin && !is_machine_caller(caller))
+        && (!caller.is_admin || is_machine_caller(caller))
     {
         return Some(format!(
             "event ids starting with `{prefix}` are reserved for the runner's own identity"
