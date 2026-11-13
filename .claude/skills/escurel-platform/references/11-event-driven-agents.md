@@ -649,7 +649,9 @@ The runner treats an event whose `provenance.chat_group_id` is a `page-chat:` gr
   public ACLs, and through their `group_members` groups, but **not through groups that exist only as a token claim**
   (the event carries no verified group list): a page shared with a group the asker holds only in their token is
   invisible to the run (references/08 § groups). An event captured on someone's
-  behalf (`captured_via`) is refused. The run needs a **minting runner**
+  behalf (`captured_via`) is refused, except a turn a chat bridge relayed
+  (`captured_via: bridge:<channel>`, which only a gateway-restricted bridge token
+  produces — references/08 § chat bridge). The run needs a **minting runner**
   (`ESCUREL_RUNNER_AUTH_ISSUER` + `ESCUREL_RUNNER_AUTH_SIGNING_KEY`); a static
   `ESCUREL_RUNNER_TOKEN` cannot mint the token the reply rule needs.
 - The harness gets the chat skill's body plus a chat framing, and as input the last 20 turns, the

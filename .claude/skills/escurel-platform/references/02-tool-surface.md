@@ -374,7 +374,8 @@ token subject) hang off one of its pages. For those groups:
   or admin rule here. It may append only `role: "assistant"`, only into the
   group named by its root event's `provenance.chat_group_id`, and only when
   that event was captured by the group's owner acting as themselves (no
-  `captured_via`). The caller must be the runner's `agent:<skill>` or, for a
+  `captured_via`, or `captured_via: bridge:<channel>` — a turn a chat bridge
+  relayed for them). The caller must be the runner's `agent:<skill>` or, for a
   gateway-minted token (`mint_agent_token`, verified subject = the person),
   that same person. Anything else is `-32003`.
   Flow: the person appends their `user` turn, captures an event with

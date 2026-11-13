@@ -38,8 +38,11 @@ pub struct GatewayConfig {
     /// The issuer the gateway trusts for this key (its JWKS publishes it).
     pub issuer: String,
     pub audience: String,
-    pub kid: Option<String>,
-    /// RSA private key (PEM) the bridge signs the asker's short-lived token with.
+    /// The bridge key's id: the gateway must list it in `ESCUREL_AUTH_BRIDGE_KID`.
+    pub kid: String,
+    /// The bridge's OWN RSA private key (PEM), published by a JWKS the gateway
+    /// trusts. Never the gateway's main signing key: the gateway restricts
+    /// tokens only under the bridge kid.
     pub signing_key: String,
     pub token_ttl_secs: u64,
 }
@@ -128,12 +131,12 @@ impl BridgeConfig {
                 tenant: req("ESCUREL_BRIDGE_TENANT")?,
                 issuer: req("ESCUREL_BRIDGE_AUTH_ISSUER")?,
                 audience: or("ESCUREL_BRIDGE_AUTH_AUDIENCE", "escurel"),
-                kid: get("ESCUREL_BRIDGE_AUTH_KID"),
+                kid: req("ESCUREL_BRIDGE_AUTH_KID")?,
                 signing_key: secret(
                     "ESCUREL_BRIDGE_AUTH_SIGNING_KEY",
                     "ESCUREL_BRIDGE_AUTH_SIGNING_KEY_FILE",
                 )?,
-                token_ttl_secs: 900,
+                token_ttl_secs: escurel_types::bridge::MAX_TTL_SECS,
             },
             teams: TeamsConfig {
                 app_id: req("ESCUREL_BRIDGE_TEAMS_APP_ID")?,
@@ -250,6 +253,7 @@ mod tests {
             "ESCUREL_BRIDGE_TENANT" => Some("acme".into()),
             "ESCUREL_BRIDGE_AUTH_ISSUER" => Some("https://issuer".into()),
             "ESCUREL_BRIDGE_AUTH_SIGNING_KEY" => Some("pem".into()),
+            "ESCUREL_BRIDGE_AUTH_KID" => Some("bridge-key".into()),
             "ESCUREL_BRIDGE_TEAMS_APP_ID" => Some("app".into()),
             "ESCUREL_BRIDGE_TEAMS_APP_PASSWORD" => Some("pw".into()),
             "ESCUREL_BRIDGE_TEAMS_ALLOWED_TENANTS" => Some("t-1, t-2".into()),

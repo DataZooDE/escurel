@@ -2545,6 +2545,7 @@ name = "escurel-auth"
 version = "1.0.0"
 dependencies = [
  "base64 0.22.1",
+ "escurel-types",
  "jsonwebtoken 9.3.1",
  "rand 0.8.6",
  "reqwest 0.12.28",
@@ -2571,6 +2572,7 @@ dependencies = [
  "escurel-obs",
  "escurel-runner-workflow",
  "escurel-test-support",
+ "escurel-types",
  "jsonwebtoken 9.3.1",
  "reqwest 0.12.28",
  "serde",

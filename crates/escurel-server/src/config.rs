@@ -573,6 +573,10 @@ pub struct AuthConfig {
     /// Escurel trusts both Triton (forwarded inbound bearer) and Carl
     /// (self-minted dashboard token) — see `ESCUREL_AUTH_OIDC_ISSUER_2`.
     pub additional_issuers: Vec<(String, Option<String>)>,
+    /// Key ids a chat bridge signs under (`ESCUREL_AUTH_BRIDGE_KID`, comma-separated): a token
+    /// under one is restricted (short TTL, no roles, groups or run claims, `captured_via:
+    /// bridge:<channel>`). The key itself is published by one of the trusted issuers' JWKS.
+    pub bridge_kids: Vec<String>,
     /// Service roles and the tools each may call (`ESCUREL_AUTH_ROLE_TOOLS`,
     /// `role=tool,tool;role=tool`). A token whose groups carry a listed role may call only those
     /// tools. Empty = no restricted role.
@@ -1303,6 +1307,14 @@ impl EscurelConfig {
                         }
                         extra
                     },
+                    bridge_kids: env
+                        .get("ESCUREL_AUTH_BRIDGE_KID")
+                        .unwrap_or_default()
+                        .split(',')
+                        .map(str::trim)
+                        .filter(|k| !k.is_empty())
+                        .map(str::to_owned)
+                        .collect(),
                     role_tools: crate::role_gate::RoleTools::parse(
                         &env.get("ESCUREL_AUTH_ROLE_TOOLS").unwrap_or_default(),
                     )
@@ -3188,6 +3200,9 @@ impl EscurelConfig {
         }
         for (issuer, jwks_uri) in &auth.additional_issuers {
             cfg = cfg.with_additional_issuer(issuer.clone(), jwks_uri.clone());
+        }
+        for kid in &auth.bridge_kids {
+            cfg = cfg.with_bridge_kid(kid.clone());
         }
         cfg.jwks_refresh = auth.jwks_refresh;
         Some(Arc::new(OidcVerifier::new(cfg)))

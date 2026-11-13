@@ -3,11 +3,14 @@
 //! Each person's chat on a platform is a `conversation` instance they own
 //! (`teams-<hash>`), and its page-bound chat group
 //! (`page-chat:v1:<sha256(asker)>:<page>`) is where the turn and the answer
-//! live — the shape the runner answers in chat mode. Everything is done AS
+//! live — the shape the runner answers in chat mode. Everything is done FOR
 //! THE ASKER: the bridge signs a short-lived token for the mapped principal
-//! with the key the gateway trusts (the runner's minted-mode trust), so the
-//! event reads `captured_by: <asker>` with no `captured_via`, the run executes
-//! with the asker's rights, and a page they cannot read never reaches it.
+//! with its OWN key, whose kid the gateway lists in `ESCUREL_AUTH_BRIDGE_KID`.
+//! The gateway bounds such a token (≤ 900 s, no roles, groups or run claims)
+//! and stamps `captured_via: bridge:msteams` on the event, so it reads
+//! `captured_by: <asker>` relayed by the bridge; the run executes with the
+//! asker's own rights (minus IdP groups, which the bridge does not have), and
+//! a page they cannot read never reaches it.
 //!
 //! Every step is idempotent, so a restarted bridge replays an unfinished turn
 //! from the top: the page create is a create-if-absent, the user message has
@@ -434,12 +437,13 @@ impl<'a, C: ChatChannel> AskerClient<'a, C> {
         {
             return Ok(client.clone());
         }
-        // No groups, no run claims: exactly the person, as their own token
-        // would present them.
+        // The person's subject and nothing else: the gateway grants a
+        // bridge token no roles or groups, so ACLs that grant by IdP group do
+        // not reach the bridge, only those naming the person or `public`.
         let token = self
             .bridge
             .signer
-            .mint_scoped(&self.principal, &[], ttl, None)
+            .mint_bridge(&self.principal, self.bridge.channel.name(), ttl)
             .map_err(|e| BridgeError::Sign(e.to_string()))?;
         let client =
             Client::connect(&self.bridge.cfg.gateway.url, SecretString::from(token)).await?;

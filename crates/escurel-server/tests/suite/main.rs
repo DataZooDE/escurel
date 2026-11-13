@@ -39,6 +39,7 @@ mod body_limits;
 mod boot_progress_open;
 mod boot_sql_policy;
 mod branches;
+mod bridge_token;
 mod changesets;
 mod chat_acl;
 mod chat_cursor;

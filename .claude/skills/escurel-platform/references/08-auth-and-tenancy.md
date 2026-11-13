@@ -146,6 +146,19 @@ trusted issuer's JWKS publishes), `ESCUREL_AUTH_SIGNING_KID`,
 `ESCUREL_AUTH_SIGNING_ISSUER` (defaults to the OIDC issuer). Without it
 the tool answers `unsupported`.
 
+**A chat bridge's token is restricted by its key.** `escurel-chat-bridge` signs
+a token for each person it answers with a key of its own, never the gateway's
+main signing key. The gateway lists that key's id in `ESCUREL_AUTH_BRIDGE_KID`
+(the key itself is published by a trusted issuer's JWKS), and a token under it
+is bounded whatever it claims: at most 900 s (`exp - iat` and `exp - now`), never
+admin or operator, **no roles or groups** (so ACLs that grant by IdP group do not
+reach a person through the bridge — only those naming them, their
+`group_members` groups, or `public`), refused (`401`) if it carries an
+`agent`/`skill`/`run_id`/`root_event_id`/`purpose`/`act` claim or names no valid
+`bridge_channel`. Its actor is `bridge:<channel>`, so what it captures reads
+`captured_by: <person>` / `captured_via: bridge:msteams`; the chat rules accept
+that via and no other.
+
 **A token minted for an agent is never admin or operator.** A token carrying
 an `agent` or `skill` claim, or `purpose: workbench_agent`, projects the
 agent role whatever its roles list — including a deployment's own

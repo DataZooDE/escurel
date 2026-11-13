@@ -46,6 +46,11 @@ pub struct OidcConfig {
     /// and Carl (the self-minted dashboard token); both name the same
     /// [`Self::audience`], differing only in `iss` + signing key.
     pub additional_issuers: Vec<(String, Option<String>)>,
+    /// Key ids a chat-channel bridge signs under (`ESCUREL_AUTH_BRIDGE_KID`).
+    /// A token whose header names one is a BRIDGE token, restricted whatever
+    /// it claims — see [`OidcVerifier::verify`] and `escurel_types::bridge`.
+    /// The key must be the bridge's own, never the gateway's main signing key.
+    pub bridge_kids: Vec<String>,
 }
 
 impl OidcConfig {
@@ -64,7 +69,15 @@ impl OidcConfig {
             jwks_refresh: Duration::from_secs(300),
             jwks_uri: None,
             additional_issuers: Vec::new(),
+            bridge_kids: Vec::new(),
         }
+    }
+
+    /// Treat tokens signed under `kid` as a chat bridge's (restricted).
+    #[must_use]
+    pub fn with_bridge_kid(mut self, kid: impl Into<String>) -> Self {
+        self.bridge_kids.push(kid.into());
+        self
     }
 
     #[must_use]
@@ -196,6 +209,8 @@ pub enum AuthError {
     MissingTenant { tenant_claim: String },
     #[error("token carries purpose `{0}`, which is not accepted at this surface")]
     PurposeRefused(String),
+    #[error("bridge token refused: {0}")]
+    BridgeRefused(String),
 }
 
 /// The `purpose` claim + value on a runner→agent INTERNAL-DELEGATION token
@@ -361,6 +376,9 @@ impl OidcVerifier {
             .map_err(|e| AuthError::Invalid(e.to_string()))?;
 
         let claims = token_data.claims;
+        if self.config.bridge_kids.contains(&kid) {
+            return bridge_context(claims, &self.config.tenant_claim);
+        }
 
         // Defense-in-depth (fleet #801 AD-7): a runner→agent internal-delegation
         // token is signed by the same issuer and verified against the same JWKS
@@ -515,6 +533,78 @@ impl OidcVerifier {
     pub fn config(&self) -> &OidcConfig {
         &self.config
     }
+}
+
+/// A chat bridge's token, under a key the gateway lists as a bridge kid.
+///
+/// The bridge holds a key that can sign for anyone, so the gateway — not the
+/// bridge — bounds what such a token is: it lives at most
+/// [`escurel_types::bridge::MAX_TTL_SECS`], carries no agent, skill, run,
+/// purpose or `act` claim (refused, not ignored: a bridge never mints those,
+/// so one present means the key is being misused), is never admin or
+/// operator, and honours no roles or groups — the gateway does not know the
+/// person's IdP groups here, so group-granted ACLs do not apply. Its actor is
+/// `bridge:<channel>`, stamped as `captured_via` on what it captures.
+fn bridge_context(claims: Claims, tenant_claim: &str) -> Result<AuthContext, AuthError> {
+    use escurel_types::bridge;
+    let refuse = |why: String| Err(AuthError::BridgeRefused(why));
+    for forbidden in [
+        AGENT_CLAIM,
+        SKILL_CLAIM,
+        RUN_ID_CLAIM,
+        ROOT_EVENT_ID_CLAIM,
+        DELEGATION_PURPOSE_CLAIM,
+        ACT_CLAIM,
+    ] {
+        if claims.rest.contains_key(forbidden) {
+            return refuse(format!("a bridge token may not carry `{forbidden}`"));
+        }
+    }
+    let num = |k: &str| claims.rest.get(k).and_then(serde_json::Value::as_u64);
+    let (Some(iat), Some(exp)) = (num("iat"), num("exp")) else {
+        return refuse("a bridge token needs numeric `iat` and `exp`".to_owned());
+    };
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    if exp.saturating_sub(iat) > bridge::MAX_TTL_SECS
+        || exp.saturating_sub(now) > bridge::MAX_TTL_SECS
+    {
+        return refuse(format!(
+            "a bridge token lives at most {}s",
+            bridge::MAX_TTL_SECS
+        ));
+    }
+    let Some(via) = claims
+        .rest
+        .get(bridge::CHANNEL_CLAIM)
+        .and_then(serde_json::Value::as_str)
+        .and_then(bridge::via)
+    else {
+        return refuse(format!(
+            "a bridge token names its channel in `{}`",
+            bridge::CHANNEL_CLAIM
+        ));
+    };
+    let tenant_id = claims
+        .rest
+        .get(tenant_claim)
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| AuthError::MissingTenant {
+            tenant_claim: tenant_claim.to_owned(),
+        })?
+        .to_owned();
+    Ok(AuthContext {
+        subject: claims.sub,
+        tenant_id,
+        role: Role::Agent,
+        operator: false,
+        groups: Vec::new(),
+        actor: Some(via),
+        run: None,
+        agent_skill: None,
+        agent: None,
+    })
 }
 
 fn has_admin_role(claims: &serde_json::Map<String, serde_json::Value>, cfg: &OidcConfig) -> bool {

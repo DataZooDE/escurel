@@ -45,7 +45,7 @@ pub async fn run(cfg: BridgeConfig) -> Result<(), StartError> {
         g.issuer.clone(),
         g.audience.clone(),
         g.tenant.clone(),
-        g.kid.clone(),
+        Some(g.kid.clone()),
         &g.signing_key,
     )
     .map_err(|e| StartError::Signer(e.to_string()))?;

@@ -32,6 +32,7 @@ mod admin;
 mod agent;
 // Namespaced like `pack`: `escurel_types::agent_profile::glob_match` reads better than a flat helper.
 pub mod agent_profile;
+pub mod bridge;
 pub mod call_result;
 mod chat;
 mod core;

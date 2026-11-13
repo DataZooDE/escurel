@@ -902,7 +902,9 @@ impl Indexer {
     ///
     /// * the run's root event exists, names `chat_group_id` in its
     ///   provenance, and was captured by a person acting as themselves
-    ///   (server-stamped `captured_by`, no `captured_via` delegation);
+    ///   (server-stamped `captured_by`, no `captured_via` delegation) or
+    ///   relayed by a chat bridge for them (`captured_via: bridge:<channel>`,
+    ///   which only a gateway-restricted bridge token produces);
     /// * that person's subject hashes to the group's owner hash;
     /// * the caller is either the runner's per-run agent (`agent:<skill>`
     ///   subject) or — for a gateway-minted token, whose verified subject is
@@ -934,7 +936,10 @@ impl Indexer {
             .get("chat_group_id")
             .and_then(Value::as_str)
             != Some(chat_group_id)
-            || event.provenance.get(CAPTURED_VIA_FIELD).is_some()
+            || event.provenance.get(CAPTURED_VIA_FIELD).is_some_and(|via| {
+                !via.as_str()
+                    .is_some_and(escurel_types::bridge::is_bridge_via)
+            })
         {
             return Ok(false);
         }

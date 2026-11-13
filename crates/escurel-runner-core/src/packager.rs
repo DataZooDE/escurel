@@ -241,8 +241,9 @@ pub enum PackageError {
     #[error("chat_requires_run_tokens: a chat run needs a minting runner")]
     ChatRequiresRunTokens,
     /// A chat event whose asker is unknown: not captured by a person acting
-    /// as themselves. Answering it would need someone else's rights.
-    #[error("chat event has no asker (captured_by, without captured_via)")]
+    /// as themselves or through a chat bridge. Answering it would need
+    /// someone else's rights.
+    #[error("chat event has no asker (captured_by, without a non-bridge captured_via)")]
     ChatAskerUnknown,
     /// The turn the chat event names is not in the group's recent history.
     #[error("chat turn {msg_id:?} not found in the conversation")]

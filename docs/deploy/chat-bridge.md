@@ -39,10 +39,16 @@ start it.
    pairwise per app and is *not* the object id; use an issuer (the substrate IdP) whose `sub` is
    derived from the object id, or the bridge identity is a different principal from the person's
    web identity. A sender without the named field gets no answer.
-4. **Acts as that person**: it signs a 15-minute token for the principal with the key in
-   `ESCUREL_BRIDGE_AUTH_SIGNING_KEY` (no groups, no admin). The gateway must trust that key, the
-   same trust a minted-mode runner has. The event therefore reads `captured_by: <person>` with no
-   `captured_via`, and the run answers with the person's read rights.
+4. **Acts for that person**: it signs a 15-minute token for the principal with the bridge's
+   **own** key (`ESCUREL_BRIDGE_AUTH_SIGNING_KEY`, kid `ESCUREL_BRIDGE_AUTH_KID`). Never hand the
+   bridge the gateway's main signing key or a runner's: the bridge is internet-facing, and that
+   key can sign any subject as admin. The gateway lists the bridge kid in
+   `ESCUREL_AUTH_BRIDGE_KID` and restricts every token under it, whatever it says: at most 900 s,
+   never admin or operator, no roles or groups, no agent or run claims. The event reads
+   `captured_by: <person>` and `captured_via: bridge:msteams` (stamped by the gateway), and the
+   run answers with the person's read rights **minus their IdP groups**: the bridge does not know
+   them, so a page shared only with a token-claim group is not visible through Teams (ownership,
+   `group_members` groups and `public` still apply).
 5. Creates the person's **conversation page** for this Teams chat once
    (`markdown/instances/conversation/teams-<hash>.md`, owner-private), appends the message to its
    page-bound chat group (`msg_id` `msteams:<hash of conversation + activity id>`), and captures a
@@ -99,10 +105,20 @@ group chat or channel would show one member's answer to everyone in it.
    `ESCUREL_BRIDGE_TEAMS_TOKEN_URL=https://login.microsoftonline.com/<entra tenant id>/oauth2/v2.0/token`.
    The default (`…/botframework.com/…`) is the multi-tenant endpoint.
 
+## Gateway side
+
+Publish the bridge's public key in a JWKS the gateway trusts (a dedicated issuer added as
+`ESCUREL_AUTH_OIDC_ISSUER_<N>` / `ESCUREL_AUTH_JWKS_URI_<N>`, or the existing issuer's JWKS) and
+set `ESCUREL_AUTH_BRIDGE_KID` on the gateway to its kid. Rotating the bridge key is a JWKS change
+plus both kid settings. The decision and the intended end state (a gateway-side mint, so the
+bridge holds no signing key at all) are in
+`docs/notes/discovered/2026-11-13-chat-bridge-restricted-signing-key.md`.
+
 ## Environment
 
 The bridge's variables are the *Bridge* table of [`env.md`](env.md). The minimum is
-`ESCUREL_BRIDGE_GATEWAY_URL`, `ESCUREL_BRIDGE_TENANT`, `ESCUREL_BRIDGE_AUTH_ISSUER` (+ `_KID`),
+`ESCUREL_BRIDGE_GATEWAY_URL`, `ESCUREL_BRIDGE_TENANT`, `ESCUREL_BRIDGE_AUTH_ISSUER`,
+`ESCUREL_BRIDGE_AUTH_KID`,
 `ESCUREL_BRIDGE_AUTH_SIGNING_KEY`, `ESCUREL_BRIDGE_TEAMS_APP_ID`,
 `ESCUREL_BRIDGE_TEAMS_APP_PASSWORD`, `ESCUREL_BRIDGE_TEAMS_ALLOWED_TENANTS` and
 `ESCUREL_BRIDGE_PRINCIPAL_TEMPLATE`.

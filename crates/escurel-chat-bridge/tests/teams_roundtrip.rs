@@ -2,9 +2,9 @@
 //! in, exactly one reply out, the turn's history under the person's chat group.
 //!
 //! escurel is real throughout: the gateway (`EscurelProcess`, write ACL
-//! enforced), the runner binary in minted mode on the echo harness (it answers
-//! a chat turn with `echo: <the question>`), and the `escurel-chat-bridge`
-//! binary. Only Microsoft's side is a stand-in, served from this file: the
+//! enforced, trusting the bridge's own key as a restricted bridge kid), the
+//! runner binary in minted mode on the echo harness (it answers a chat turn
+//! with `echo: <the question>`), and the `escurel-chat-bridge` binary. Only Microsoft's side is a stand-in, served from this file: the
 //! OpenID metadata + JWKS the channel token is verified against (signed with a
 //! test RSA key), the client-credentials token endpoint, and the connector that
 //! records every activity the bridge sends back.
@@ -191,7 +191,12 @@ impl BotFramework {
 
 // ---- escurel's side ----------------------------------------------------
 
-async fn gateway() -> EscurelProcess {
+/// The bridge's own signing key: a JWKS the gateway trusts publishes it under
+/// [`BRIDGE_KID`], which the gateway lists as a bridge kid. It is never the
+/// gateway's main key (the runner's).
+const BRIDGE_KID: &str = "escurel-chat-bridge";
+
+async fn gateway(bridge_key: &ExtraIssuer) -> EscurelProcess {
     let mut fixtures = FixtureBuilder::new().tenant(TENANT);
     for (page_id, body) in escurel_runner_workflow::corpus::chat_corpus() {
         fixtures = fixtures.page(&page_id, body);
@@ -200,6 +205,11 @@ async fn gateway() -> EscurelProcess {
         auth: AuthMode::TestIssuer,
         config_overrides: ConfigOverrides {
             write_acl: Some(WriteAclMode::Enforce),
+            extra_issuers: vec![(
+                bridge_key.issuer_url().to_owned(),
+                bridge_key.jwks_url().to_owned(),
+            )],
+            bridge_kids: vec![BRIDGE_KID.to_owned()],
             ..Default::default()
         },
         fixtures: Some(fixtures.skill("memo", MEMO_SKILL).done()),
@@ -223,13 +233,16 @@ struct Bridge {
 }
 
 impl Bridge {
-    fn spawn(gw: &EscurelProcess, bf: &BotFramework) -> Self {
+    fn spawn(gw: &EscurelProcess, bridge_key: &ExtraIssuer, bf: &BotFramework) -> Self {
         let state = tempfile::tempdir().unwrap();
-        let (key, kid) = gw.signing_material();
+        let (key, kid) = bridge_key.signing_material();
         let env = [
             ("ESCUREL_BRIDGE_GATEWAY_URL", gw.base_url().to_owned()),
             ("ESCUREL_BRIDGE_TENANT", TENANT.to_owned()),
-            ("ESCUREL_BRIDGE_AUTH_ISSUER", gw.issuer_url()),
+            (
+                "ESCUREL_BRIDGE_AUTH_ISSUER",
+                bridge_key.issuer_url().to_owned(),
+            ),
             ("ESCUREL_BRIDGE_AUTH_KID", kid.to_owned()),
             ("ESCUREL_BRIDGE_AUTH_SIGNING_KEY", key),
             (
@@ -341,19 +354,22 @@ struct World {
     bf: BotFramework,
     _runner: RunningRunner,
     bridge: Bridge,
+    _bridge_key: ExtraIssuer,
 }
 
 async fn world(run_ms: u64) -> World {
-    let gw = gateway().await;
+    let bridge_key = ExtraIssuer::start_with_own_key(BRIDGE_KID).await;
+    let gw = gateway(&bridge_key).await;
     let bf = BotFramework::start().await;
     let runner = runner(&gw, run_ms);
-    let mut bridge = Bridge::spawn(&gw, &bf);
+    let mut bridge = Bridge::spawn(&gw, &bridge_key, &bf);
     bridge.wait_healthy().await;
     World {
         gw,
         bf,
         _runner: runner,
         bridge,
+        _bridge_key: bridge_key,
     }
 }
 
@@ -488,7 +504,10 @@ async fn a_teams_message_gets_exactly_one_reply_and_its_history_lands_under_the_
     let events = chat_events(&w.gw).await;
     assert_eq!(events.len(), 1, "{events:#?}");
     assert_eq!(events[0]["provenance"]["captured_by"], ALICE);
-    assert!(events[0]["provenance"]["captured_via"].is_null());
+    assert_eq!(
+        events[0]["provenance"]["captured_via"], "bridge:msteams",
+        "the gateway stamps that the bridge relayed it"
+    );
 
     // Nothing else follows.
     tokio::time::sleep(Duration::from_secs(2)).await;

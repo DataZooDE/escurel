@@ -202,6 +202,25 @@ impl Signer {
         self.mint_with_roles(subject, &scoped, ttl_secs, run)
     }
 
+    /// Mint a chat bridge's token for the person it answers (#824): `sub`, no
+    /// roles, and the channel in `escurel_types::bridge::CHANNEL_CLAIM`. The
+    /// gateway honours it as a bridge token only under a key it lists in
+    /// `ESCUREL_AUTH_BRIDGE_KID`, and then bounds it whatever it says (see
+    /// the verifier); this method is the shape the bridge signs, not a limit.
+    ///
+    /// # Errors
+    /// When signing fails.
+    pub fn mint_bridge(
+        &self,
+        subject: &str,
+        channel: &str,
+        ttl_secs: u64,
+    ) -> Result<String, SignError> {
+        let mut claims = self.claims(subject, &[], ttl_secs);
+        claims[escurel_types::bridge::CHANNEL_CLAIM] = json!(channel);
+        self.sign(&claims)
+    }
+
     /// Mint an INTERNAL-DELEGATION bearer (fleet #801 Phase 4, AD-7): the token
     /// the runner presents to the AGENT's A2A endpoint when it delegates a domain
     /// step. It reuses the runner's key/kid/JWKS — so the agent verifies it
@@ -507,8 +526,14 @@ impl Signer {
         ttl_secs: u64,
         run: Option<&RunClaims>,
     ) -> Result<String, SignError> {
+        let mut claims = self.claims(subject, roles, ttl_secs);
+        stamp_run(&mut claims, run);
+        self.sign(&claims)
+    }
+
+    fn claims(&self, subject: &str, roles: &[String], ttl_secs: u64) -> serde_json::Value {
         let now = now_secs();
-        let mut claims = json!({
+        json!({
             "iss": self.issuer,
             "aud": self.audience,
             "sub": subject,
@@ -516,15 +541,7 @@ impl Signer {
             "roles": roles,
             "iat": now,
             "exp": now + ttl_secs,
-        });
-        stamp_run(&mut claims, run);
-        let mut header = Header::new(Algorithm::RS256);
-        header.kid = Some(self.kid.clone());
-        Ok(encode(
-            &header,
-            &claims,
-            &EncodingKey::from_rsa_pem(&self.private_pem)?,
-        )?)
+        })
     }
 }
 

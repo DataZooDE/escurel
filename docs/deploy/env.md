@@ -69,6 +69,7 @@ escurel-server.
 | `ESCUREL_AUTH_JWKS_URI_2` | derived from issuer #2 | explicit JWKS URL for the second issuer (e.g. Carl's `<issuer>/jwks.json`) |
 | `ESCUREL_AUTH_OIDC_ISSUER_<N>` | — | further trusted issuers, read as a contiguous `_2.._N` sequence (e.g. `_3` = the escurel-explore BFF's browser auth bridge); a gap stops the scan |
 | `ESCUREL_AUTH_JWKS_URI_<N>` | derived from issuer #N | explicit JWKS URL for the Nth issuer |
+| `ESCUREL_AUTH_BRIDGE_KID` | — | comma-separated key ids a chat bridge (`escurel-chat-bridge`) signs under; the key must be the bridge's own, published by a trusted issuer's JWKS, never the gateway's main signing key. A token under one lives at most 900 s, is never admin or operator, honours no roles or groups (group-granted ACLs do not apply to it), is refused if it carries an `agent`/`skill`/`run_id`/`purpose`/`act` claim, must name its channel in `bridge_channel`, and what it captures is stamped `captured_via: bridge:<channel>` |
 | `ESCUREL_EMBEDDING_PROVIDER` | gemini | `zero`, `gemini`, `alibaba`, `openai-compatible`, or `embeddinggemma` (a candle BERT-family sentence-transformer; ONLY in a binary built with `--features embeddinggemma`: the default build and the image refuse to boot with it). `gemini` with no key falls back to zero; `alibaba`/`openai-compatible` without a key file is a load failure. `hetzner` is refused: it serves no embeddings. Changing the provider or model re-embeds the corpus at the next boot |
 | `ESCUREL_EMBEDDING_OPENAI_BASE_URL` | alibaba: https://dashscope.aliyuncs.com/compatible-mode/v1 | `…/v1` base of the OpenAI-compatible embeddings endpoint (`alibaba`, `openai-compatible`); https, or plain http to loopback only |
 | `ESCUREL_EMBEDDING_OPENAI_API_KEY_FILE` | — (required) | file holding the embeddings API key (a mounted secret); the key itself is never an env var |
@@ -279,10 +280,10 @@ It runs only when started; nothing else reads these.
 | `ESCUREL_BRIDGE_STATE_PATH` | /data/escurel-chat-bridge.duckdb | the bridge's DuckDB state file: one row per platform message (the dedup key) and whether its one reply was sent. Durable state, not a cache: losing it lets a redelivered message be answered again |
 | `ESCUREL_BRIDGE_GATEWAY_URL` | — | REQUIRED: the gateway base URL the bridge calls `/mcp` on |
 | `ESCUREL_BRIDGE_TENANT` | — | REQUIRED: the tenant the bridge's tokens name |
-| `ESCUREL_BRIDGE_AUTH_ISSUER` | — | REQUIRED: the issuer the bridge signs the asker's short-lived token as; the gateway must trust it (the same key material a minted-mode runner holds) |
+| `ESCUREL_BRIDGE_AUTH_ISSUER` | — | REQUIRED: the issuer the bridge signs the asker's short-lived token as; the gateway must trust it (primary or `ESCUREL_AUTH_OIDC_ISSUER_<N>`) and its JWKS must publish the bridge's own key |
 | `ESCUREL_BRIDGE_AUTH_AUDIENCE` | escurel | audience of the tokens the bridge signs |
-| `ESCUREL_BRIDGE_AUTH_KID` | — | `kid` of the signing key as the issuer's JWKS publishes it; unset derives it from the key |
-| `ESCUREL_BRIDGE_AUTH_SIGNING_KEY` | — | RSA private key (PEM, PKCS#1 or PKCS#8) the bridge signs with; never logged. Exactly one of this and `…_FILE` is REQUIRED |
+| `ESCUREL_BRIDGE_AUTH_KID` | — | REQUIRED: `kid` of the bridge's own signing key as the issuer's JWKS publishes it; the gateway must list it in `ESCUREL_AUTH_BRIDGE_KID`, which restricts every token under it |
+| `ESCUREL_BRIDGE_AUTH_SIGNING_KEY` | — | the bridge's OWN RSA private key (PEM, PKCS#1 or PKCS#8); never the gateway's or a runner's signing key, which would let a compromised bridge sign unrestricted tokens. Never logged. Exactly one of this and `…_FILE` is REQUIRED |
 | `ESCUREL_BRIDGE_AUTH_SIGNING_KEY_FILE` | — | path to a file holding the signing key; the alternative to `ESCUREL_BRIDGE_AUTH_SIGNING_KEY` |
 | `ESCUREL_BRIDGE_TEAMS_APP_ID` | — | REQUIRED: the bot's Microsoft app (client) id; the `aud` an inbound Bot Framework token must carry and the client id of the connector token |
 | `ESCUREL_BRIDGE_TEAMS_ALLOWED_TENANTS` | — | REQUIRED: comma-separated Entra tenant ids whose people the bridge answers; an activity whose `conversation.tenantId` / `channelData.tenant.id` is not listed is ignored |

@@ -264,13 +264,15 @@ laptop leaves its unfinished events in the inbox once their lease lapses
 
 A separate binary answers 1:1 Microsoft Teams chats from escurel. A Teams message becomes the
 asker's page-chat turn plus a `chat` event, and the runner's reply goes back once. Run it next to a
-verifying gateway and a minted-mode runner, with the same signing material:
+verifying gateway and a minted-mode runner. The bridge signs with a key of its OWN, which the
+gateway trusts through a JWKS and restricts by listing its kid in `ESCUREL_AUTH_BRIDGE_KID` (never
+the gateway's or the runner's key; references/08 § chat bridge):
 
 ```sh
 cargo build -p escurel-chat-bridge
 ESCUREL_BRIDGE_GATEWAY_URL=<gateway_url> ESCUREL_BRIDGE_TENANT=<tenant> \
-ESCUREL_BRIDGE_AUTH_ISSUER=<issuer_url> ESCUREL_BRIDGE_AUTH_KID=<kid> \
-ESCUREL_BRIDGE_AUTH_SIGNING_KEY=<signing_key> \
+ESCUREL_BRIDGE_AUTH_ISSUER=<bridge issuer_url> ESCUREL_BRIDGE_AUTH_KID=<bridge kid> \
+ESCUREL_BRIDGE_AUTH_SIGNING_KEY=<bridge signing_key> \
 ESCUREL_BRIDGE_TEAMS_APP_ID=<bot app id> ESCUREL_BRIDGE_TEAMS_APP_PASSWORD=<secret> \
 ESCUREL_BRIDGE_TEAMS_ALLOWED_TENANTS=<entra tenant id> \
 ESCUREL_BRIDGE_PRINCIPAL_TEMPLATE='user:{aadObjectId}' ESCUREL_BRIDGE_STATE_PATH=./bridge.duckdb \
@@ -286,7 +288,8 @@ subject and acts as them. Only explicitly `personal` (1:1) chats from an allowed
 JWKS (`ESCUREL_BRIDGE_TEAMS_OPENID_METADATA_URL`), the token endpoint
 (`ESCUREL_BRIDGE_TEAMS_TOKEN_URL`) and a connector at the activity's `serviceUrl`, as
 `crates/escurel-chat-bridge/tests/teams_roundtrip.rs` does (`ExtraIssuer::sign` signs the channel
-token, `RunnerProcess` starts the runner; references/06). Setup and the full env:
+token, `ExtraIssuer::start_with_own_key` + `ConfigOverrides::bridge_kids` give the bridge its
+restricted key, `RunnerProcess` starts the runner; references/06). Setup and the full env:
 `docs/deploy/chat-bridge.md`.
 
 ## The iterate loop

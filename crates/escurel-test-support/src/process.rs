@@ -165,6 +165,10 @@ pub struct ConfigOverrides {
     /// one Escurel also trusts Triton's (or another service's) signer.
     /// Requires an auth mode with a verifier (not `Disabled`).
     pub extra_issuers: Vec<(String, String)>,
+    /// Key ids the gateway treats as a chat bridge's (production
+    /// `ESCUREL_AUTH_BRIDGE_KID`): tokens under them are restricted. Pair with
+    /// an [`crate::ExtraIssuer::start_with_own_key`] in `extra_issuers`.
+    pub bridge_kids: Vec<String>,
     /// Boot the gateway in ducklake-reader mode (DuckLake PR 6): the
     /// mutating tool surface and the chat/CRDT/session/event tool
     /// surface are rejected with a typed JSON-RPC error. `false`
@@ -439,6 +443,9 @@ impl EscurelProcess {
             }
             for (iss, jwks) in &overrides.extra_issuers {
                 cfg = cfg.with_additional_issuer(iss.clone(), Some(jwks.clone()));
+            }
+            for kid in &overrides.bridge_kids {
+                cfg = cfg.with_bridge_kid(kid.clone());
             }
             Arc::new(OidcVerifier::new(cfg))
         });

@@ -844,3 +844,96 @@ async fn an_agent_token_listing_the_admin_or_operator_group_is_not_admin() {
     assert_eq!(person.role, Role::Admin);
     assert!(person.operator);
 }
+
+/// A chat bridge's token (#824): under a kid the gateway lists as a bridge's,
+/// whatever the bridge signs is bounded by the verifier, not by the bridge.
+mod bridge_kid {
+    use super::*;
+
+    fn bridge_verifier(server: &MockServer) -> OidcVerifier {
+        let issuer = format!("{}{ISSUER_PATH}", server.uri());
+        OidcVerifier::new(
+            OidcConfig::new(issuer.clone(), AUDIENCE.to_owned())
+                .with_jwks_uri(format!("{issuer}/protocol/openid-connect/certs"))
+                .with_bridge_kid(KID),
+        )
+    }
+
+    fn claims(server: &MockServer, ttl: u64) -> Value {
+        let now = now();
+        json!({
+            "iss": format!("{}{ISSUER_PATH}", server.uri()), "aud": AUDIENCE,
+            "sub": "user:alice", "tenant": "acme", "iat": now, "exp": now + ttl,
+            "roles": ["escurel:admin", "escurel:operator", "sales"],
+            "bridge_channel": "msteams",
+        })
+    }
+
+    async fn setup() -> (MockServer, TestKeys, OidcVerifier) {
+        let server = MockServer::start().await;
+        let keys = make_keys();
+        mock_jwks(&server, &keys).await;
+        let v = bridge_verifier(&server);
+        (server, keys, v)
+    }
+
+    #[tokio::test]
+    async fn a_bridge_token_is_never_admin_has_no_groups_and_is_acting_via_its_channel() {
+        let (server, keys, v) = setup().await;
+        let ctx = v
+            .verify(&sign_token(&keys, claims(&server, 900)))
+            .await
+            .expect("a 900 s bridge token verifies");
+        assert_eq!(ctx.subject, "user:alice");
+        assert_eq!(ctx.role, Role::Agent, "roles are not honoured");
+        assert!(!ctx.operator);
+        assert!(ctx.groups.is_empty(), "{:?}", ctx.groups);
+        assert_eq!(ctx.actor.as_deref(), Some("bridge:msteams"));
+        assert_eq!(ctx.run, None);
+        // The same token on a verifier with no bridge kid is an ordinary admin
+        // token: the restriction is the kid's, not the claims'.
+        let plain = verifier_pointing_at(&server);
+        let ctx = plain
+            .verify(&sign_token(&keys, claims(&server, 900)))
+            .await
+            .unwrap();
+        assert_eq!(ctx.role, Role::Admin);
+    }
+
+    #[tokio::test]
+    async fn a_long_lived_or_agent_shaped_or_unnamed_bridge_token_is_refused() {
+        let (server, keys, v) = setup().await;
+        let refused = |c: Value| {
+            let token = sign_token(&keys, c);
+            let v = &v;
+            async move {
+                match v.verify(&token).await {
+                    Err(AuthError::BridgeRefused(why)) => why,
+                    other => panic!("expected a bridge refusal, got {other:?}"),
+                }
+            }
+        };
+        assert!(refused(claims(&server, 3600)).await.contains("at most 900"));
+        let mut late = claims(&server, 900);
+        late["iat"] = json!(now() + 3000);
+        late["exp"] = json!(now() + 3600);
+        assert!(refused(late).await.contains("at most 900"));
+        for (claim, value) in [
+            ("agent", json!("deploy-bot")),
+            ("skill", json!("triage")),
+            ("run_id", json!("r-1")),
+            ("root_event_id", json!("e-1")),
+            ("purpose", json!("workbench_agent")),
+            ("act", json!({ "sub": "escurel-runner" })),
+        ] {
+            let mut c = claims(&server, 900);
+            c[claim] = value;
+            assert!(refused(c).await.contains(claim), "{claim}");
+        }
+        for channel in [json!(null), json!("Bridge Runner"), json!(7)] {
+            let mut c = claims(&server, 900);
+            c["bridge_channel"] = channel;
+            assert!(refused(c).await.contains("bridge_channel"));
+        }
+    }
+}
