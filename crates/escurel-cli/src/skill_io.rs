@@ -88,6 +88,18 @@ pub async fn import(client: &Client, a: SkillImportArgs) -> Result<Value> {
         "draft": resp.draft.map(|d| draft_json(d, true)),
         "issues": resp.issues,
     });
+    if !imported.authority_keys.is_empty() {
+        // A third-party bundle can grant reads, name an agent or schedule runs
+        // through `metadata.escurel`; whoever promotes the draft should know.
+        let keys = imported.authority_keys.join(", ");
+        out["authority_keys"] = json!(imported.authority_keys);
+        out["authority_note"] = json!(format!(
+            "this draft sets {keys}: review them before promoting it"
+        ));
+        eprintln!(
+            "warning: the imported skill sets {keys}; review them before promoting the draft"
+        );
+    }
     if !extra_files.is_empty() {
         // escurel keeps a skill as one page; there is no place for a skill's
         // scripts or assets, so they are reported rather than silently dropped.

@@ -9,7 +9,7 @@ use std::path::Path;
 
 use assert_cmd::Command;
 use escurel_test_support::{AuthMode, EscurelProcess, FixtureBuilder, Opts, Role};
-use serde_json::Value;
+use serde_json::{Value, json};
 
 const TENANT: &str = "acme";
 
@@ -220,6 +220,35 @@ async fn an_anthropic_skill_md_imports_as_a_minimal_skill_and_its_files_are_list
     assert_eq!(page["frontmatter"]["id"], "pdf-tools");
     assert_eq!(page["frontmatter"]["skill_md"]["license"], "MIT");
 
+    h.process.shutdown().await;
+}
+
+/// A third-party bundle can carry authority in `metadata.escurel` (crew F13):
+/// the import names those keys so the curator who promotes the draft sees
+/// that it would set them.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_import_names_the_authority_keys_its_bundle_would_set() {
+    let h = start().await;
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("SKILL.md"),
+        "---\nname: playbook\ndescription: A third-party playbook.\nmetadata:\n  escurel:\n    \
+         summary: s\n    acl:\n      read: [public]\n    agent: deploy-bot\n    \
+         schedule: \"0 7 * * 1-5\"\n---\n# playbook\n",
+    )
+    .unwrap();
+    let imported = ok(&h, &["skill", "import", p(dir.path())]).await;
+    assert_eq!(
+        imported["authority_keys"],
+        json!(["acl", "agent", "schedule"]),
+        "{imported}"
+    );
+    assert!(
+        imported["authority_note"]
+            .as_str()
+            .is_some_and(|n| n.contains("acl, agent, schedule")),
+        "{imported}"
+    );
     h.process.shutdown().await;
 }
 

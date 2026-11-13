@@ -198,6 +198,13 @@ drive them over MCP/gRPC or the BFF.
   page's `content_sha256` (`""` for a new skill), for a person to `draft
   promote`. Other files in the directory (scripts, assets) are listed in
   `extra_files` and **not uploaded** — an escurel skill is one page.
+  When the bundle's `metadata.escurel` sets authority (`acl`, `visibility`,
+  `owner_field`, `agent`, `autonomy`, `schedule`, `requires`, `harness`,
+  `model`, `cascade`, `backend`, `promotable`, …) the output names them in
+  `authority_keys` with an `authority_note`, and a warning goes to stderr:
+  review those before promoting a third-party playbook. (A draft has no
+  description field, so the review queue itself shows them only in the
+  draft's content.) A SKILL.md body keeps its line endings both ways.
 - `ingest --skill <id>` pins a specific `document`-backend skill and
   triggers that skill's **create-ACL** (a 403 if the caller can't create
   there); omit it to resolve the handling skill from the MIME.

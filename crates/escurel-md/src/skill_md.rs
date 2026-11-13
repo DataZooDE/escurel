@@ -55,6 +55,31 @@ const PASSTHROUGH: &str = "skill_md";
 /// Where a page sits, stamped by the pack importer: not part of the skill.
 const PLACEMENT: &[&str] = &["layer"];
 
+/// Skill-page keys that grant, route or schedule — authority a curator must
+/// see before promoting a third-party bundle that sets them: who may read or
+/// write (`acl`, …), who a run executes as (`agent`), whether it lands
+/// unreviewed (`autonomy`), when and where it runs (`schedule`, `requires`,
+/// `harness`, `model`), and what it triggers or connects to.
+pub const AUTHORITY_KEYS: &[&str] = &[
+    "acl",
+    "visibility",
+    "owner_field",
+    "instance_acl",
+    "agent",
+    "autonomy",
+    "schedule",
+    "schedule_budget",
+    "requires",
+    "harness",
+    "model",
+    "cascade",
+    "chat",
+    "backend",
+    "promotable",
+    "protected",
+    "immutable",
+];
+
 /// The page id a skill's page lives at.
 #[must_use]
 pub fn skill_page_id(skill_id: &str) -> String {
@@ -137,6 +162,9 @@ pub fn export(page: &str) -> Result<Exported> {
 /// A SKILL.md document turned into an escurel skill page.
 pub struct Imported {
     pub skill_id: String,
+    /// The [`AUTHORITY_KEYS`] the bundle's `metadata.escurel` sets, in its
+    /// order: what the draft would grant or schedule once promoted.
+    pub authority_keys: Vec<String>,
     /// The whole page markdown (`kind: skill`).
     pub page: String,
 }
@@ -188,6 +216,7 @@ pub fn import(skill_md: &str) -> Result<Imported> {
             }
         }
     }
+    let mut authority_keys = Vec::new();
     for (k, value) in escurel {
         // The SKILL.md's own `name`/`description` are the authority for these;
         // a page's placement is the importer's, never the bundle's.
@@ -195,6 +224,9 @@ pub fn import(skill_md: &str) -> Result<Imported> {
             .is_some_and(|k| MAPPED.contains(&k) || PLACEMENT.contains(&k))
         {
             continue;
+        }
+        if let Some(name) = k.as_str().filter(|k| AUTHORITY_KEYS.contains(k)) {
+            authority_keys.push(name.to_owned());
         }
         page.insert(k, value);
     }
@@ -205,6 +237,7 @@ pub fn import(skill_md: &str) -> Result<Imported> {
     Ok(Imported {
         page: crate::render_page(&page, &strip_resolve_hints(body))?,
         skill_id: name,
+        authority_keys,
     })
 }
 
@@ -402,6 +435,18 @@ Again: [[customer::acme]].\n";
             .unwrap()
             .to_string();
         assert!(err.contains("no `name:`"), "{err}");
+    }
+
+    #[test]
+    fn import_names_the_authority_keys_a_bundle_carries() {
+        let md = "---\nname: t\ndescription: d\nmetadata:\n  escurel:\n    tags: [x]\n    \
+                  acl: {read: [public]}\n    agent: deploy-bot\n    autonomy: auto\n---\nx\n";
+        assert_eq!(
+            import(md).unwrap().authority_keys,
+            ["acl", "agent", "autonomy"]
+        );
+        let plain = "---\nname: t\ndescription: d\nlicense: MIT\n---\nx\n";
+        assert!(import(plain).unwrap().authority_keys.is_empty());
     }
 
     #[test]
