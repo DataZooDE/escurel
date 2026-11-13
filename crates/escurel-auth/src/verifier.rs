@@ -387,12 +387,27 @@ impl OidcVerifier {
             })?
             .to_owned();
 
-        let operator = has_role_value(
-            &claims.rest,
-            &self.config.admin_role_claim,
-            &self.config.operator_role_value,
-        );
-        let role = if operator || has_admin_role(&claims.rest, &self.config) {
+        // A token minted FOR AN AGENT is never admin or operator, whatever its roles say: its groups
+        // come from a skill page any member may edit, so in a deployment that maps an IdP group to
+        // admin (`ESCUREL_AUTH_ADMIN_ROLE_VALUE`), a page listing that group would mint an admin agent.
+        let agent_minted = claims.rest.contains_key(AGENT_CLAIM)
+            || claims
+                .rest
+                .get(SKILL_CLAIM)
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|s| !s.is_empty())
+            || claims
+                .rest
+                .get(DELEGATION_PURPOSE_CLAIM)
+                .and_then(serde_json::Value::as_str)
+                == Some(WORKBENCH_AGENT_PURPOSE);
+        let operator = !agent_minted
+            && has_role_value(
+                &claims.rest,
+                &self.config.admin_role_claim,
+                &self.config.operator_role_value,
+            );
+        let role = if !agent_minted && (operator || has_admin_role(&claims.rest, &self.config)) {
             Role::Admin
         } else {
             Role::Agent

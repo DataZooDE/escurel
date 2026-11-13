@@ -528,20 +528,14 @@ impl Signer {
     }
 }
 
-/// A `label_skill` usable as the `agent:` half of a token subject.
-///
-/// Rejected rather than normalised: a skill id that needed cleaning up could
-/// be cleaned into another agent's identity, and an audit trail whose subjects
-/// collide is worse than one that admits it cannot name the actor. Accepts what
-/// a skill page id actually is — letters, digits, `_`, `-`, `.` — and nothing
-/// that could make the subject ambiguous (whitespace, `:` the claim separator,
-/// path syntax).
 /// `escurel:agent` plus `groups`, minus every privileged or structural name.
 ///
 /// **Privilege ceiling.** The groups come from a skill page, which any author
 /// of that page can edit, so every `escurel:`-prefixed name and every reserved
 /// structural group (`public`, `owner`, `admin`) is stripped before signing: a
 /// skill page can grant its agent an engagement group, never a privileged role.
+/// A deployment's own admin / operator role VALUES are not known here; the
+/// verifier refuses them on any token carrying an agent or skill claim instead.
 fn narrowed_roles(groups: &[String]) -> Vec<String> {
     let mut roles = vec!["escurel:agent".to_owned()];
     for group in groups {
@@ -557,6 +551,14 @@ fn narrowed_roles(groups: &[String]) -> Vec<String> {
     roles
 }
 
+/// A `label_skill` usable as the `agent:` half of a token subject.
+///
+/// Rejected rather than normalised: a skill id that needed cleaning up could
+/// be cleaned into another agent's identity, and an audit trail whose subjects
+/// collide is worse than one that admits it cannot name the actor. Accepts what
+/// a skill page id actually is — letters, digits, `_`, `-`, `.` — and nothing
+/// that could make the subject ambiguous (whitespace, `:` the claim separator,
+/// path syntax).
 fn agent_slug(label_skill: &str) -> Result<&str, SignError> {
     let ok = !label_skill.is_empty()
         && !label_skill.contains("..")
