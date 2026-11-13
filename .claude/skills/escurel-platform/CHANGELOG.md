@@ -19,7 +19,8 @@ pin (see `SKILL.md` → "How this skill is installed").
 - **SKILL.md:** `escurel skill export <skill> --as skill-md [--out dir] [--pack]` and `escurel skill import <dir>`
   (a curator-gated draft; the output names any `authority_keys` the file carries) (references/04).
 - **Runner credential (breaking):** every runner needs `escurel:admin` (or minting): a refused `claim_event` now
-  takes nothing on a lone runner too, and a non-admin runner logs the fix at boot (references/09, 11).
+  takes nothing on a lone runner too, and a non-admin runner (or one whose `whoami` is refused) logs the fix
+  at ERROR at boot (references/09, 11).
 - **Skill authority keys (breaking):** adding, removing or changing `acl`, `agent`, `autonomy`, `schedule`,
   `requires`, `harness`, `model`, `cascade`, `actions`, `backend`, `freeze_when`, … on a skill page needs an admin or a member of
   the STORED page's `acl.update`, on every write door (the promoter is judged); refusal `-32003`

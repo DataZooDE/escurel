@@ -733,6 +733,13 @@ fn classify_claim_error(e: &Error) -> ClaimRefusal {
     }
 }
 
+/// Whether `e` says this IDENTITY may not do what it asked (`forbidden`, `-32001`, `-32003`,
+/// `401`/`403`) — the same reading a refused claim gets — rather than a fault worth retrying.
+#[must_use]
+pub fn is_identity_refusal(e: &Error) -> bool {
+    matches!(classify_claim_error(e), ClaimRefusal::Forbidden)
+}
+
 /// Time left on a lease that lapses at `expires_at` (RFC 3339).
 fn remaining(expires_at: Option<&str>) -> Duration {
     expires_at

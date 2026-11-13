@@ -4799,16 +4799,29 @@ async fn claim_preflight(gateway_url: String, tokens: Arc<escurel_runner_core::T
         Ok(me) if !me.is_admin => tracing::error!(
             target: "escurel_runner",
             subject = %me.subject,
-            "the runner credential needs escurel:admin to claim events: this runner takes no \
-             inbox work until it has it — give it an admin credential (ESCUREL_RUNNER_TOKEN / \
-             ESCUREL_RUNNER_TOKEN_FILE with the escurel:admin role, or a minting runner)"
+            "the runner credential needs escurel:admin to claim events: {CLAIM_CREDENTIAL_FIX}"
         ),
         Ok(_) => {}
-        Err(e) => {
-            tracing::debug!(target: "escurel_runner", error = %e, "claim preflight: whoami failed")
-        }
+        // A credential the gateway refuses outright cannot claim either: the same error, the same fix.
+        Err(e) if escurel_runner_core::runtime::is_identity_refusal(&e) => tracing::error!(
+            target: "escurel_runner",
+            error = %e,
+            "the gateway refused the runner credential's whoami, so it cannot claim events either: \
+             {CLAIM_CREDENTIAL_FIX}"
+        ),
+        // Anything else (a timeout, a 5xx) says nothing about the credential; the claims will tell.
+        Err(e) => tracing::warn!(
+            target: "escurel_runner",
+            error = %e,
+            "claim preflight: whoami failed, so whether this runner may claim events is unknown"
+        ),
     }
 }
+
+/// What an operator does about a runner credential that cannot claim.
+const CLAIM_CREDENTIAL_FIX: &str = "this runner takes no inbox work until it has escurel:admin — \
+    give it an admin credential (ESCUREL_RUNNER_TOKEN / ESCUREL_RUNNER_TOKEN_FILE with the \
+    escurel:admin role, or a minting runner)";
 
 /// The CLI a harness runs, for its `--version` probe; `None` for one that
 /// runs in process (gemini, the OpenAI-compatible presets, delegate).

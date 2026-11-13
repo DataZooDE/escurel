@@ -702,3 +702,70 @@ async fn a_runner_whose_claims_are_refused_takes_nothing() {
     let looked = lookup(&gw, &event).await;
     assert_eq!(looked["events"][0]["status"], "inbox", "{looked}");
 }
+
+/// A credential the gateway refuses at boot is said at ERROR with the fix (crew F7), not buried at
+/// debug: here the service-role gate lets the token list skills (so the runner boots) but not ask
+/// `whoami`.
+#[tokio::test]
+async fn a_refused_boot_whoami_is_an_error_naming_the_fix() {
+    use std::io::BufRead as _;
+    let gw = gateway_with(ConfigOverrides {
+        role_tools: Some("runner-blind=list_skills".to_owned()),
+        ..Default::default()
+    })
+    .await;
+    let mut child = std::process::Command::new(escurel_test_support::runner_bin())
+        .env_remove("ESCUREL_RUNNER_TOKEN")
+        .env("ESCUREL_RUNNER_GATEWAY_URL", gw.base_url())
+        .env("ESCUREL_RUNNER_TENANT", TENANT)
+        .env(
+            "ESCUREL_RUNNER_TOKEN",
+            gw.mint_token_with_groups(TENANT, "runner:blind", &["runner-blind"], true),
+        )
+        .env(
+            "ESCUREL_RUNNER_LISTEN",
+            format!("127.0.0.1:{}", escurel_test_support::free_port()),
+        )
+        .env("ESCUREL_RUNNER_HARNESS", "echo")
+        .env(
+            "ESCUREL_RUNNER_LEDGER_PATH",
+            std::env::temp_dir().join(format!("whoami-{}.db", std::process::id())),
+        )
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("spawn escurel-runner");
+    let stdout = child.stdout.take().expect("stdout");
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        for line in std::io::BufReader::new(stdout)
+            .lines()
+            .map_while(Result::ok)
+        {
+            let Ok(record) = serde_json::from_str::<Value>(&line) else {
+                continue;
+            };
+            let said = record["msg"].as_str().unwrap_or_default();
+            if said.contains("whoami") {
+                let _ = tx.send(record);
+            }
+        }
+    });
+    // Polled, not blocked on: the gateway serves from this test's own runtime.
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let record = loop {
+        match rx.try_recv() {
+            Ok(record) => break Some(record),
+            Err(_) if Instant::now() > deadline => break None,
+            Err(_) => tokio::time::sleep(Duration::from_millis(100)).await,
+        }
+    };
+    let _ = child.kill();
+    let _ = child.wait();
+    let record = record.expect("the runner says what happened to its whoami");
+    assert_eq!(record["level"], "error", "{record}");
+    assert!(
+        record["msg"].as_str().unwrap().contains("escurel:admin"),
+        "it names the fix: {record}"
+    );
+}
