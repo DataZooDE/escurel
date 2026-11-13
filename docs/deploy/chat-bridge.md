@@ -166,7 +166,8 @@ than `ESCUREL_AUTH_BRIDGE_KID` is refused. The gateway refuses to start when
 `ESCUREL_AUTH_BRIDGE_KID` is set without `ESCUREL_AUTH_BRIDGE_ISSUER`, when the bridge issuer is not
 one of its trusted issuers, when it has no kid, or when `ESCUREL_AUTH_BRIDGE_TENANT` is missing or
 is not the served tenant (a gateway for another tenant cannot be pointed at this bridge by copying
-its trust settings).
+its trust settings). That pin guards against copied configuration only: for real separation, run one
+bridge with its OWN signing key per tenant and never trust one bridge issuer from two tenants' gateways.
 
 A bridge token is a chat relay, not the person on the agent surface. It may call only what a turn
 needs: `whoami`; `update_page` to *create* (`base_sha256: ""`) an instance of a
