@@ -2,9 +2,10 @@ import { parse, stringify } from 'yaml';
 
 /**
  * An escurel skill page rendered as an Anthropic-style `SKILL.md` (#825) — the
- * editor's twin of the CLI's `escurel skill export` (`crates/escurel-cli/src/skill_md.rs`).
- * Both are tested against the same fixture pair (`crates/escurel-cli/tests/fixtures/skill-md/`),
- * so a rule changed on one side and not the other fails a test. Import stays in the CLI: it
+ * editor's twin of `escurel_md::skill_md::export` (`crates/escurel-md/src/skill_md.rs`, what
+ * `escurel skill export` runs). Both are tested against the same fixtures
+ * (`crates/escurel-md/tests/fixtures/skill-md/<case>/`), so a rule changed on one side and not the
+ * other fails a test. Import stays in the CLI: it
  * goes through `create_draft`, which the editor's review flow already covers.
  *
  * - `id` → `name`, `description` → `description`, the body (the instructions) → the body;
@@ -64,16 +65,20 @@ export function exportSkillMd(page: string): ExportedSkill {
   return { name, skillMd: `---\n${stringify(out)}---\n${body}${resolveHints(body)}` };
 }
 
+/**
+ * The frontmatter mapping and the body. Like `escurel_md::split_frontmatter`, the body is returned
+ * byte for byte (a Windows-authored page keeps its CRLF); only the YAML block tolerates `\r\n`.
+ */
 function splitFrontmatter(page: string): { fields: Mapping; body: string } {
-  const text = page.replace(/^\uFEFF/, '').replace(/\r\n/g, '\n');
-  if (!text.startsWith('---\n')) throw new Error('missing frontmatter');
-  const rest = text.slice(4);
-  const close = rest.match(/^---$/m);
-  if (!close || close.index === undefined) throw new Error('unterminated frontmatter');
-  const fields: unknown = parse(rest.slice(0, close.index)) ?? {};
+  const text = page.replace(/^\uFEFF/, '');
+  const open = /^---\r?\n/.exec(text);
+  if (!open) throw new Error('missing frontmatter');
+  const rest = text.slice(open[0].length);
+  const close = /^---(\r?\n|$)/m.exec(rest);
+  if (!close) throw new Error('unterminated frontmatter');
+  const fields: unknown = parse(rest.slice(0, close.index).replace(/\r\n/g, '\n')) ?? {};
   if (!isMapping(fields)) throw new Error('frontmatter must be a mapping');
-  const after = rest.slice(close.index + 3);
-  return { fields, body: after.startsWith('\n') ? after.slice(1) : after };
+  return { fields, body: rest.slice(close.index + close[0].length) };
 }
 
 /** The appended section: each distinct link once, in document order; empty when there are none. */

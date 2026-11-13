@@ -33,6 +33,7 @@
 
 pub mod legacy;
 pub mod rename;
+pub mod skill_md;
 pub mod wikilink;
 
 // Re-export the YAML types we expose in our public API so downstream

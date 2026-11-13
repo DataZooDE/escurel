@@ -1,5 +1,5 @@
 //! `skill export` / `skill import`: the gateway and filesystem half of the
-//! SKILL.md converter in [`crate::skill_md`].
+//! SKILL.md converter in [`escurel_md::skill_md`].
 
 use std::path::{Path, PathBuf};
 
@@ -8,7 +8,7 @@ use escurel_client::{Client, CreateDraftRequest, ExpandRequest};
 use serde_json::{Value, json};
 
 use crate::agent::{ExportFormat, SkillExportArgs, SkillImportArgs, draft_json};
-use crate::skill_md::{self, SKILL_FILE, skill_page_id};
+use escurel_md::skill_md::{self, SKILL_FILE, skill_page_id};
 
 /// The bundle `skill export --pack` writes.
 const PACK_FILE: &str = "escurel-skills.tar.gz";

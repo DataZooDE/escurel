@@ -1,7 +1,10 @@
 //! escurel skill page ↔ Anthropic-style `SKILL.md` (#825).
 //!
-//! Pure text conversion, no I/O: the `skill export` / `skill import` commands
-//! own the gateway and the filesystem.
+//! Pure text conversion, no I/O: the CLI's `skill export` / `skill import`
+//! commands own the gateway and the filesystem. It lives here, beside the
+//! parser it is built on, so any consumer can use it; the VS Code exporter
+//! (`editors/vscode/src/skills/skillMd.ts`) is pinned to the same fixtures
+//! (`crates/escurel-md/tests/fixtures/skill-md/<case>/`).
 //!
 //! The mapping is lossless in both directions for anything either side can
 //! say:
@@ -18,8 +21,24 @@
 //!   external agent to look each one up with the MCP `resolve` tool. The
 //!   import strips exactly that section again.
 
-use anyhow::{Result, anyhow, bail};
-use escurel_md::{PageKind, YamlMapping, YamlValue};
+use crate::{PageKind, ParseError, YamlMapping, YamlValue};
+
+/// Why a page or a SKILL.md document does not convert.
+#[derive(Debug, thiserror::Error)]
+pub enum SkillMdError {
+    #[error(transparent)]
+    Parse(#[from] ParseError),
+    #[error("{0}")]
+    Refused(String),
+}
+
+type Result<T> = std::result::Result<T, SkillMdError>;
+
+macro_rules! bail {
+    ($($arg:tt)*) => {
+        return Err(SkillMdError::Refused(format!($($arg)*)))
+    };
+}
 
 /// The file an Anthropic skill directory is named after.
 pub const SKILL_FILE: &str = "SKILL.md";
@@ -37,6 +56,7 @@ const PASSTHROUGH: &str = "skill_md";
 const PLACEMENT: &[&str] = &["layer"];
 
 /// The page id a skill's page lives at.
+#[must_use]
 pub fn skill_page_id(skill_id: &str) -> String {
     format!("markdown/skills/{skill_id}.md")
 }
@@ -55,14 +75,14 @@ pub struct Exported {
 /// adds that description to the page — the one direction that is not
 /// lossless.
 pub fn export(page: &str) -> Result<Exported> {
-    let parsed = escurel_md::parse(page)?;
+    let parsed = crate::parse(page)?;
     if parsed.frontmatter.page_kind != PageKind::Skill {
         bail!("not a skill page (`kind: instance`): only skills export as SKILL.md");
     }
     let fields = parsed.frontmatter.fields;
-    let name = str_field(&fields, "id")
-        .ok_or_else(|| anyhow!("skill page has no `id:`"))?
-        .to_owned();
+    let Some(name) = str_field(&fields, "id").map(str::to_owned) else {
+        bail!("skill page has no `id:`");
+    };
     // The name becomes a directory: a stored id that is not a plain slug is not written out.
     if !is_skill_dir_name(&name) {
         bail!(
@@ -109,7 +129,7 @@ pub fn export(page: &str) -> Result<Exported> {
 
     let body = format!("{}{}", parsed.body, resolve_hints(parsed.body));
     Ok(Exported {
-        skill_md: escurel_md::render_page(&out, &body)?,
+        skill_md: crate::render_page(&out, &body)?,
         name,
     })
 }
@@ -124,8 +144,8 @@ pub struct Imported {
 /// Turn a SKILL.md document into an escurel skill page. Refuses a `name` that
 /// is not a valid skill id: it becomes part of the page id.
 pub fn import(skill_md: &str) -> Result<Imported> {
-    let (fields, body) = escurel_md::split_frontmatter(skill_md)
-        .map_err(|e| anyhow!("{SKILL_FILE} frontmatter: {e}"))?;
+    let (fields, body) = crate::split_frontmatter(skill_md)
+        .map_err(|e| SkillMdError::Refused(format!("{SKILL_FILE} frontmatter: {e}")))?;
     let name = match fields.get("name") {
         Some(YamlValue::String(s)) => s.clone(),
         Some(other) => bail!("{SKILL_FILE} `name` must be a string, found {other:?}"),
@@ -183,13 +203,14 @@ pub fn import(skill_md: &str) -> Result<Imported> {
     }
 
     Ok(Imported {
-        page: escurel_md::render_page(&page, &strip_resolve_hints(body))?,
+        page: crate::render_page(&page, &strip_resolve_hints(body))?,
         skill_id: name,
     })
 }
 
 /// A skill id that is also safe as one path segment: the gateway's skill-id rule, minus a leading
 /// `.` (which would let `..` name the parent directory, or hide the folder).
+#[must_use]
 pub fn is_skill_dir_name(name: &str) -> bool {
     escurel_types::is_safe_skill_id(name) && !name.starts_with('.')
 }
@@ -198,7 +219,7 @@ pub fn is_skill_dir_name(name: &str) -> bool {
 /// in document order. Empty when the body cites nothing.
 fn resolve_hints(body: &str) -> String {
     let mut links: Vec<String> = Vec::new();
-    for w in escurel_md::wikilink::parse_wikilinks(body) {
+    for w in crate::wikilink::parse_wikilinks(body) {
         let link = wikilink_text(&w);
         if !links.contains(&link) {
             links.push(link);
@@ -235,7 +256,7 @@ fn strip_resolve_hints(body: &str) -> String {
 
 /// `[[skill::id#anchor@version]]` — the link without its display alias, which
 /// is what `resolve` takes.
-fn wikilink_text(w: &escurel_md::wikilink::WikilinkParsed) -> String {
+fn wikilink_text(w: &crate::wikilink::WikilinkParsed) -> String {
     let mut s = String::from("[[");
     if let Some(skill) = &w.skill {
         s.push_str(skill);
@@ -279,20 +300,7 @@ fields:\n  priority: {kind: enum, values: [low, high]}\n\
 Again: [[customer::acme]].\n";
 
     fn fields_of(page: &str) -> YamlMapping {
-        escurel_md::split_frontmatter(page).unwrap().0
-    }
-
-    /// The fixture pair the VS Code port (`editors/vscode/src/skills/skillMd.ts`) is tested
-    /// against too, so the two renderings cannot drift apart unnoticed.
-    const GOLDEN_PAGE: &str = include_str!("../tests/fixtures/skill-md/page.md");
-    const GOLDEN_SKILL_MD: &str = include_str!("../tests/fixtures/skill-md/SKILL.md");
-
-    #[test]
-    fn export_matches_the_shared_golden_fixture() {
-        let out = export(GOLDEN_PAGE).unwrap();
-        assert_eq!(out.name, "triage");
-        assert_eq!(out.skill_md, GOLDEN_SKILL_MD, "actual:\n{}", out.skill_md);
-        assert_eq!(import(GOLDEN_SKILL_MD).unwrap().page, GOLDEN_PAGE);
+        crate::split_frontmatter(page).unwrap().0
     }
 
     #[test]
@@ -337,8 +345,8 @@ Again: [[customer::acme]].\n";
     fn round_trip_is_lossless() {
         let back = import(&export(SKILL).unwrap().skill_md).unwrap();
         assert_eq!(back.skill_id, "triage");
-        let (orig_fm, orig_body) = escurel_md::split_frontmatter(SKILL).unwrap();
-        let (back_fm, back_body) = escurel_md::split_frontmatter(&back.page).unwrap();
+        let (orig_fm, orig_body) = crate::split_frontmatter(SKILL).unwrap();
+        let (back_fm, back_body) = crate::split_frontmatter(&back.page).unwrap();
         assert_eq!(back_body, orig_body);
         // Order-insensitive: a page's keys are a mapping, not a list.
         let sorted = |m: YamlMapping| {
@@ -354,7 +362,7 @@ Again: [[customer::acme]].\n";
         let page = "---\nkind: skill\nid: t\ndescription: d\n---\nsee [[x::y]]";
         let back = import(&export(page).unwrap().skill_md).unwrap();
         assert_eq!(
-            escurel_md::split_frontmatter(&back.page).unwrap().1,
+            crate::split_frontmatter(&back.page).unwrap().1,
             "see [[x::y]]"
         );
     }
@@ -364,7 +372,7 @@ Again: [[customer::acme]].\n";
         let md = "---\nname: pdf-tools\ndescription: Fill and merge PDFs.\nlicense: MIT\n\
                   metadata:\n  author: someone\n---\n# PDF tools\n\nUse pypdf.\n";
         let page = import(md).unwrap().page;
-        let parsed = escurel_md::parse(&page).expect("a valid escurel page");
+        let parsed = crate::parse(&page).expect("a valid escurel page");
         assert_eq!(parsed.frontmatter.page_kind, PageKind::Skill);
         let fm = parsed.frontmatter.fields;
         assert_eq!(str_field(&fm, "id"), Some("pdf-tools"));

@@ -2772,6 +2772,7 @@ dependencies = [
 name = "escurel-md"
 version = "1.0.0"
 dependencies = [
+ "escurel-types",
  "regex",
  "serde_yaml_ng",
  "thiserror 2.0.18",

@@ -10,6 +10,8 @@ repository.workspace = true
 homepage.workspace = true
 
 [dependencies]
+# The skill-id rule `skill_md` names a SKILL.md directory by.
+escurel-types = { path = "../escurel-types" }
 regex = "1"
 serde_yaml_ng = "0.10"
 thiserror = "2"

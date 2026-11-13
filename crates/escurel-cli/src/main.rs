@@ -31,7 +31,6 @@ mod convert;
 mod kindfix;
 mod output;
 mod skill_io;
-mod skill_md;
 mod workflow;
 
 use anyhow::Result;
