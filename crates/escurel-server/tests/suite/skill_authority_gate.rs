@@ -16,6 +16,17 @@ const PAGE: &str = "markdown/skills/playbook.md";
 /// A governed skill: the `ops` group may change its authority.
 const PLAYBOOK: &str = "---\nkind: skill\nid: playbook\ndescription: How we ship.\n\
     acl:\n  update: [ops]\n---\n# playbook\n";
+/// Owner-written notes: Bob may write a note he owns.
+const NOTE: &str = "---\nkind: skill\nid: note\ndescription: A note.\nowner_field: owner\n\
+    acl:\n  create: [owner]\n  update: [owner]\n---\n# note\n";
+/// A page outside `markdown/skills/`, so only its `kind` says whether it is a skill.
+const RUNBOOK: &str = "markdown/notes/runbook.md";
+/// Bob's note, carrying a schedule and an autonomy as plain data.
+const RUNBOOK_NOTE: &str = "---\nkind: instance\nskill: note\nid: runbook\nowner: member:bob\n\
+    schedule: \"0 9 * * 1\"\nautonomy: auto\n---\n# runbook\n";
+/// The same page as a skill: the schedule now runs it.
+const RUNBOOK_SKILL: &str = "---\nkind: skill\nid: runbook\ndescription: d\nowner: member:bob\n\
+    schedule: \"0 9 * * 1\"\nautonomy: auto\n---\n# runbook\n";
 
 async fn gateway(mode: WriteAclMode) -> EscurelProcess {
     EscurelProcess::spawn(Opts {
@@ -28,6 +39,7 @@ async fn gateway(mode: WriteAclMode) -> EscurelProcess {
             FixtureBuilder::new()
                 .tenant(TENANT)
                 .skill("playbook", PLAYBOOK)
+                .skill("note", NOTE)
                 .done(),
         ),
     })
@@ -260,6 +272,38 @@ async fn a_session_commit_cannot_drop_a_skills_acl() {
         "close_session",
         json!({ "session": session, "commit": true }),
         &["acl"],
+    )
+    .await;
+    p.shutdown().await;
+}
+
+#[tokio::test]
+async fn relabelling_an_instance_as_a_skill_is_a_create() {
+    let p = gateway(WriteAclMode::Enforce).await;
+    ok(&p, &admin(&p), "update_page", write(RUNBOOK, RUNBOOK_NOTE)).await;
+    // Nothing "changed" key by key, but the schedule now runs a skill.
+    refused(
+        &p,
+        &member(&p),
+        "update_page",
+        write(RUNBOOK, RUNBOOK_SKILL),
+        &["autonomy", "schedule"],
+    )
+    .await;
+    p.shutdown().await;
+}
+
+#[tokio::test]
+async fn relabelling_a_skill_as_an_instance_removes_its_keys() {
+    let p = gateway(WriteAclMode::Enforce).await;
+    ok(&p, &admin(&p), "update_page", write(RUNBOOK, RUNBOOK_SKILL)).await;
+    // Bob owns the note it would become, so the ordinary write ACL lets him write it.
+    refused(
+        &p,
+        &member(&p),
+        "update_page",
+        write(RUNBOOK, RUNBOOK_NOTE),
+        &["autonomy", "schedule"],
     )
     .await;
     p.shutdown().await;

@@ -276,6 +276,12 @@ agent, delegated `act` token) never changes them, admin role or not — its
 skill-page edits are held as drafts anyway. `description`, `summary`,
 `fields`, the body and every other key stay free under the ordinary write rule.
 
+A page is a skill page when its path is under `markdown/skills/` or its
+frontmatter says `kind: skill`. Relabelling counts: a page that **becomes** a
+skill (an instance rewritten as `kind: skill`) is judged as a create, so every
+authority key it carries needs an admin even if the instance carried the same
+values as data; a page that **stops** being a skill removes all its keys.
+
 Every write door applies it: `update_page` (branch writes included),
 `promote_draft` and `promote_changeset` (the **promoter** is judged, not the
 draft's author; a changeset refuses before any member lands), the

@@ -488,11 +488,19 @@ impl Indexer {
     /// write would change at `page_id` that `caller` may not change; empty =
     /// go on. `incoming` is the page as it would be, `None` for a removal.
     ///
-    /// Only a skill page is judged (its path, or `kind: skill` on either
-    /// side). A change is allowed to a PERSON who is admin, or who is in the
-    /// STORED page's `acl.update` groups — never the incoming page's: a
+    /// Only a skill page is judged: its path is under `markdown/skills/`, or
+    /// its frontmatter splits to `kind: skill` on either side (the lenient
+    /// split the key diff reads, so a page that fails the full parse is still
+    /// judged). A stored page that does not split at all is judged as a skill
+    /// (fail closed). A page that BECOMES a skill is a create: every key it
+    /// carries counts as changed; one that STOPS being a skill removes them
+    /// all. Otherwise an instance carrying `schedule`/`autonomy` as data
+    /// could be relabelled `kind: skill` with nothing "changed".
+    ///
+    /// A change is allowed to a PERSON who is admin, or who is in the
+    /// STORED skill's `acl.update` groups — never the incoming page's: a
     /// draft that lists its author there would otherwise promote itself. A
-    /// create has no stored page, so a new skill carrying authority keys is
+    /// create has no stored skill, so a new skill carrying authority keys is
     /// an admin's; so is a stored skill without `acl.update`. A machine
     /// (run, narrowed agent, delegated token) never changes them, admin
     /// role or not. The structural `public` group grants nothing here.
@@ -503,26 +511,38 @@ impl Indexer {
         incoming: Option<&str>,
     ) -> Result<Vec<String>, IndexerError> {
         let stored = self.read_page_markdown(page_id).await?;
-        let skill = |md: Option<&str>| {
-            md.and_then(|m| parse(m).ok())
-                .is_some_and(|p| p.frontmatter.page_kind == PageKind::Skill)
-        };
-        if !page_id.starts_with("markdown/skills/") && !skill(stored.as_deref()) && !skill(incoming)
-        {
+        let by_path = page_id.starts_with("markdown/skills/");
+        let stored_fields = stored
+            .as_deref()
+            .map(|md| escurel_md::split_frontmatter(md).map(|(f, _)| f));
+        let was_skill = by_path
+            || match &stored_fields {
+                Some(Ok(fields)) => declares_skill(fields),
+                Some(Err(_)) => true,
+                None => false,
+            };
+        let is_skill = by_path
+            || incoming
+                .and_then(|md| escurel_md::split_frontmatter(md).ok())
+                .is_some_and(|(fields, _)| declares_skill(&fields));
+        if !was_skill && !is_skill {
             return Ok(Vec::new());
         }
-        let changed = escurel_md::skill_md::changed_authority_keys(stored.as_deref(), incoming);
+        // A side that is not a skill carries no authority: comparing against
+        // nothing makes the transition a create (or a removal) of every key.
+        let changed = escurel_md::skill_md::changed_authority_keys(
+            stored.as_deref().filter(|_| was_skill),
+            incoming.filter(|_| is_skill),
+        );
         if changed.is_empty() || caller.is_machine() {
             return Ok(changed);
         }
         if caller.is_admin {
             return Ok(Vec::new());
         }
-        let update = match stored.as_deref().map(parse).transpose() {
-            Ok(Some(page)) => {
-                let fm: Value = serde_json::from_str(&crate::indexer::mapping_to_json(
-                    &page.frontmatter.fields,
-                )?)?;
+        let update = match stored_fields {
+            Some(Ok(fields)) if was_skill => {
+                let fm: Value = serde_json::from_str(&crate::indexer::mapping_to_json(&fields)?)?;
                 crate::read::parse_named_acl(&fm, "acl").and_then(|acl| acl.update)
             }
             _ => None,
@@ -1300,4 +1320,9 @@ fn workflow_produced_run_board(page_id: &str) -> Option<String> {
         return None;
     }
     Some(format!("markdown/instances/workflow-run/{run_slug}.md"))
+}
+
+/// Whether split frontmatter declares `kind: skill`.
+fn declares_skill(fields: &escurel_md::YamlMapping) -> bool {
+    fields.get("kind").and_then(YamlValue::as_str) == Some("skill")
 }
