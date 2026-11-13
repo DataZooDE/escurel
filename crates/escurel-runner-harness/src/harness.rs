@@ -248,12 +248,34 @@ pub(crate) struct Spawn<'a> {
     /// reads its prompt until EOF, so a held-open stdin hangs the run until
     /// the timeout — that is why this closes rather than leaving the handle.
     pub stdin: Option<&'a [u8]>,
+    /// Every stdout line as it arrives (without its newline), for a live
+    /// consumer such as a run transcript. The lines are still accumulated
+    /// into [`std::process::Output::stdout`] for the post-exit parsers.
+    pub stdout_lines: Option<tokio::sync::mpsc::UnboundedSender<String>>,
+    /// Keep stdin open after `stdin` for further user turns. `None` keeps
+    /// the write-then-close default above.
+    pub turns: Option<Turns<'a>>,
     pub timeout: std::time::Duration,
     /// The run's cancel handle (workbench backend P2-3a). On cancel the
     /// child gets SIGTERM, [`escurel_runner_core::Cancel::grace`], then
     /// SIGKILL, and the run reports [`HarnessError::Cancelled`]. `None` =
     /// not cancellable.
     pub cancel: Option<&'a escurel_runner_core::Cancel>,
+}
+
+/// A conversation over stdin: the initial `stdin` payload is turn one, each
+/// message from `inbox` is one more, and stdin closes once every turn the
+/// harness was sent has ended — the EOF a stream-json CLI needs to exit.
+pub(crate) struct Turns<'a> {
+    /// Further user turns, encoded and written as they arrive. `None` (or a
+    /// closed channel) = no more turns will come.
+    pub inbox: Option<&'a mut tokio::sync::mpsc::UnboundedReceiver<String>>,
+    /// One turn's text as the bytes the harness reads (a newline-terminated
+    /// stream-json message, a JSON string line, …).
+    pub encode: fn(&str) -> Vec<u8>,
+    /// Whether a stdout line marks the end of a turn. A harness that never
+    /// says (`|_| false`) keeps stdin open until it exits.
+    pub turn_ended: fn(&str) -> bool,
 }
 
 /// Run `spawn` to completion and return its captured output.
@@ -292,7 +314,9 @@ pub(crate) async fn run_capture(spawn: Spawn<'_>) -> Result<std::process::Output
             source,
         })?;
 
-    // Write the payload, then drop the handle to send EOF.
+    // Write the payload; then drop the handle to send EOF, unless the
+    // harness holds a conversation, which keeps it for the turns to come.
+    let mut open_stdin = None;
     if let Some(payload) = spawn.stdin {
         let mut stdin = child.stdin.take().ok_or_else(|| HarnessError::Io {
             harness,
@@ -301,21 +325,27 @@ pub(crate) async fn run_capture(spawn: Spawn<'_>) -> Result<std::process::Output
         tokio::io::AsyncWriteExt::write_all(&mut stdin, payload)
             .await
             .map_err(|source| HarnessError::Io { harness, source })?;
-        tokio::io::AsyncWriteExt::shutdown(&mut stdin)
-            .await
-            .map_err(|source| HarnessError::Io { harness, source })?;
+        if spawn.turns.is_some() {
+            open_stdin = Some(stdin);
+        } else {
+            tokio::io::AsyncWriteExt::shutdown(&mut stdin)
+                .await
+                .map_err(|source| HarnessError::Io { harness, source })?;
+        }
     }
+    let (encode, turn_ended, mut inbox) = match spawn.turns {
+        Some(t) => (Some(t.encode), Some(t.turn_ended), t.inbox),
+        None => (None, None, None),
+    };
 
     // Read both pipes concurrently with the wait: a child that fills a pipe
     // nobody drains would block, and the wait must stay selectable against
     // the deadline and the cancel handle (which `wait_with_output`, owning
     // the child, is not).
-    let stdout = child.stdout.take().map(|mut h| {
-        tokio::spawn(async move {
-            let mut buf = Vec::new();
-            let _ = tokio::io::AsyncReadExt::read_to_end(&mut h, &mut buf).await;
-            buf
-        })
+    let (ended_tx, mut ended_rx) = tokio::sync::mpsc::unbounded_channel::<()>();
+    let stdout = child.stdout.take().map(|h| {
+        let sink = spawn.stdout_lines.clone();
+        tokio::spawn(stream_stdout(h, sink, turn_ended, ended_tx))
     });
     let stderr = child.stderr.take().map(|mut h| {
         tokio::spawn(async move {
@@ -330,21 +360,55 @@ pub(crate) async fn run_capture(spawn: Spawn<'_>) -> Result<std::process::Output
             None => std::future::pending::<()>().await,
         }
     };
-    let status = tokio::select! {
-        result = child.wait() => result.map_err(|source| HarnessError::Io { harness, source })?,
-        () = tokio::time::sleep(spawn.timeout) => {
-            // The `Child` is dropped on return; `kill_on_drop` reaps it.
-            return Err(HarnessError::Timeout {
-                harness,
-                timeout_ms: spawn.timeout.as_millis() as u64,
-            });
-        }
-        () = cancelled => {
-            let grace = spawn.cancel.map_or(std::time::Duration::ZERO, |c| c.grace);
-            stop_child(&mut child, grace).await;
-            return Err(HarnessError::Cancelled { harness });
+    tokio::pin!(cancelled);
+    let deadline = tokio::time::sleep(spawn.timeout);
+    tokio::pin!(deadline);
+    // Turns sent that the harness has not yet ended: the initial payload is
+    // the first.
+    let mut pending_turns: usize = 1;
+    let status = loop {
+        tokio::select! {
+            // Biased: a buffered turn is written before an ended turn can
+            // close stdin under it.
+            biased;
+            result = child.wait() => {
+                break result.map_err(|source| HarnessError::Io { harness, source })?;
+            }
+            () = &mut deadline => {
+                // The `Child` is dropped on return; `kill_on_drop` reaps it.
+                return Err(HarnessError::Timeout {
+                    harness,
+                    timeout_ms: spawn.timeout.as_millis() as u64,
+                });
+            }
+            () = &mut cancelled => {
+                let grace = spawn.cancel.map_or(std::time::Duration::ZERO, |c| c.grace);
+                stop_child(&mut child, grace).await;
+                return Err(HarnessError::Cancelled { harness });
+            }
+            turn = next_turn(&mut inbox), if open_stdin.is_some() => {
+                match (turn, open_stdin.as_mut(), encode) {
+                    (Some(text), Some(stdin), Some(encode)) => {
+                        tokio::io::AsyncWriteExt::write_all(stdin, &encode(&text))
+                            .await
+                            .map_err(|source| HarnessError::Io { harness, source })?;
+                        pending_turns += 1;
+                    }
+                    // Nobody can send another turn.
+                    _ => inbox = None,
+                }
+            }
+            Some(()) = ended_rx.recv() => {
+                pending_turns = pending_turns.saturating_sub(1);
+                if pending_turns == 0 {
+                    // Dropping the handle is the EOF that ends the session.
+                    open_stdin = None;
+                    inbox = None;
+                }
+            }
         }
     };
+    drop(open_stdin);
     let collect = |h: Option<tokio::task::JoinHandle<Vec<u8>>>| async move {
         match h {
             Some(h) => h.await.unwrap_or_default(),
@@ -366,6 +430,45 @@ pub(crate) async fn run_capture(spawn: Spawn<'_>) -> Result<std::process::Output
         });
     }
     Ok(output)
+}
+
+/// The next turn from `inbox`; pends forever when there is none.
+async fn next_turn(
+    inbox: &mut Option<&mut tokio::sync::mpsc::UnboundedReceiver<String>>,
+) -> Option<String> {
+    match inbox {
+        Some(rx) => rx.recv().await,
+        None => std::future::pending().await,
+    }
+}
+
+/// Read stdout line by line: accumulate every byte for the post-exit
+/// parsers, hand each line to `sink`, and signal `ended` for each line that
+/// closes a turn.
+async fn stream_stdout(
+    pipe: tokio::process::ChildStdout,
+    sink: Option<tokio::sync::mpsc::UnboundedSender<String>>,
+    turn_ended: Option<fn(&str) -> bool>,
+    ended: tokio::sync::mpsc::UnboundedSender<()>,
+) -> Vec<u8> {
+    let mut reader = tokio::io::BufReader::new(pipe);
+    let mut all = Vec::new();
+    loop {
+        let start = all.len();
+        match tokio::io::AsyncBufReadExt::read_until(&mut reader, b'\n', &mut all).await {
+            Ok(0) | Err(_) => break,
+            Ok(_) => {}
+        }
+        let line = String::from_utf8_lossy(&all[start..]);
+        let line = line.trim_end_matches(['\n', '\r']);
+        if turn_ended.is_some_and(|ended_by| ended_by(line)) {
+            let _ = ended.send(());
+        }
+        if let Some(sink) = &sink {
+            let _ = sink.send(line.to_owned());
+        }
+    }
+    all
 }
 
 /// Stop a cancelled child: SIGTERM so a harness that cleans up (a CLI
@@ -444,6 +547,8 @@ mod cancel_tests {
             args: &args,
             envs: Vec::new(),
             stdin: None,
+            stdout_lines: None,
+            turns: None,
             timeout: Duration::from_secs(60),
             cancel: Some(&cancel),
         })
@@ -476,6 +581,8 @@ mod cancel_tests {
             args: &args,
             envs: Vec::new(),
             stdin: None,
+            stdout_lines: None,
+            turns: None,
             timeout: Duration::from_secs(60),
             cancel: Some(&cancel),
         })
@@ -500,11 +607,106 @@ mod cancel_tests {
             args: &args,
             envs: Vec::new(),
             stdin: None,
+            stdout_lines: None,
+            turns: None,
             timeout: Duration::from_secs(10),
             cancel: None,
         })
         .await
         .expect("runs");
         assert_eq!(output.stdout, b"hello");
+    }
+
+    #[tokio::test]
+    async fn stdout_lines_stream_to_the_sink_and_are_still_captured() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let args = sh("printf 'one\\ntwo\\nthree'");
+        let output = run_capture(Spawn {
+            harness: "test",
+            bin: "sh",
+            args: &args,
+            envs: Vec::new(),
+            stdin: None,
+            stdout_lines: Some(tx),
+            turns: None,
+            timeout: Duration::from_secs(10),
+            cancel: None,
+        })
+        .await
+        .expect("runs");
+        assert_eq!(output.stdout, b"one\ntwo\nthree");
+        let mut lines = Vec::new();
+        while let Ok(l) = rx.try_recv() {
+            lines.push(l);
+        }
+        assert_eq!(lines, ["one", "two", "three"]);
+    }
+
+    fn line(text: &str) -> Vec<u8> {
+        format!("{text}\n").into_bytes()
+    }
+
+    /// The shape of a stream-json session: the child answers each stdin
+    /// line with a `done` line and only exits at EOF. A queued turn is
+    /// written, and stdin closes once both turns have ended.
+    #[tokio::test]
+    async fn a_conversation_keeps_stdin_open_until_every_turn_has_ended() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        tx.send("steer".to_owned()).unwrap();
+        let args = sh("while read -r l; do echo \"got $l\"; echo done; done; echo eof");
+        let output = run_capture(Spawn {
+            harness: "test",
+            bin: "sh",
+            args: &args,
+            envs: Vec::new(),
+            stdin: Some(b"first\n"),
+            stdout_lines: None,
+            turns: Some(Turns {
+                inbox: Some(&mut rx),
+                encode: line,
+                turn_ended: |l| l == "done",
+            }),
+            timeout: Duration::from_secs(10),
+            cancel: None,
+        })
+        .await
+        .expect("the child saw EOF and exited");
+        assert_eq!(
+            String::from_utf8_lossy(&output.stdout),
+            "got first\ndone\ngot steer\ndone\neof\n"
+        );
+        drop(tx);
+    }
+
+    /// A harness that never marks a turn ended keeps stdin until it exits;
+    /// turns injected while it runs reach it.
+    #[tokio::test]
+    async fn turns_injected_mid_run_reach_a_harness_that_reads_until_it_is_done() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            let _ = tx.send("mid-run".to_owned());
+            // Held: the harness, not the sender, decides when it is done.
+            tokio::time::sleep(Duration::from_secs(30)).await;
+        });
+        let args = sh("read -r a; read -r b; echo \"$a+$b\"");
+        let output = run_capture(Spawn {
+            harness: "test",
+            bin: "sh",
+            args: &args,
+            envs: Vec::new(),
+            stdin: Some(b"task\n"),
+            stdout_lines: None,
+            turns: Some(Turns {
+                inbox: Some(&mut rx),
+                encode: line,
+                turn_ended: |_| false,
+            }),
+            timeout: Duration::from_secs(10),
+            cancel: None,
+        })
+        .await
+        .expect("runs");
+        assert_eq!(output.stdout, b"task+mid-run\n");
     }
 }

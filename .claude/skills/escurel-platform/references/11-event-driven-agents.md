@@ -83,7 +83,10 @@ CLI:
 The Claude adapter runs `claude -p` as an isolated, timed, kill-on-drop
 subprocess: registers the gateway via `--mcp-config`, narrows the surface
 with `--allowedTools mcp__escurel__<tool>`, injects the skill body as the
-appended system prompt, and parses the `--output-format json` envelope.
+appended system prompt, and speaks stream-json both ways
+(`--input-format stream-json --output-format stream-json --verbose`): the
+prompt is a user message on stdin, stdin closes once each turn's `result`
+line is out, and the last `result` envelope is the outcome.
 Default per-run timeout 300 s.
 
 `ESCUREL_RUNNER_CLAUDE_BIN` (default `claude`) exists so a deterministic

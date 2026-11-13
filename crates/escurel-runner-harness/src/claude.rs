@@ -5,8 +5,13 @@
 //! subprocess, registering the escurel gateway as an **HTTP MCP server**
 //! (`--mcp-config`) with the packaged scoped bearer, narrowing the tool
 //! surface (`--allowedTools mcp__escurel__<tool>`), injecting the skill body
-//! as the appended system prompt, and capturing the `--output-format json`
-//! result envelope into a [`HarnessOutcome`].
+//! as the appended system prompt, and capturing the final `result` envelope
+//! of its `--output-format stream-json` output into a [`HarnessOutcome`].
+//!
+//! The session is stream-json both ways (`--input-format stream-json`): the
+//! prompt is the first user message on stdin, and stdin stays open until
+//! every user turn has produced its `result` line, so a further turn can be
+//! written into the live session.
 //!
 //! Per the contract, the adapter performs **no** escurel writes — every
 //! escurel effect flows through the LLM's own `/mcp` tool calls under the
@@ -110,7 +115,7 @@ impl ClaudeHarness {
     fn build_args(&self, task: &TaskContext, mcp_config_path: &str) -> Vec<String> {
         let mut args: Vec<String> = vec![
             // `-p` with no inline value: the prompt is written to the child's
-            // stdin instead. Linux caps a SINGLE argv string at 32 pages
+            // stdin instead, as a stream-json user message. Linux caps a SINGLE argv string at 32 pages
             // (MAX_ARG_STRLEN), independently of the 2 MB total ARG_MAX, so a
             // packaged transcript over ~128 KB made spawn fail with E2BIG and
             // the event permanently undispatchable. stdin has no such limit.
@@ -123,8 +128,14 @@ impl ClaudeHarness {
             // ambient user/project MCP config of whatever host runs the
             // runner.
             "--strict-mcp-config".to_owned(),
+            // stream-json both ways: one JSON object per line, a user turn
+            // in, the session's events and one `result` per turn out.
+            // `-p` refuses stream-json output without `--verbose`.
+            "--input-format".to_owned(),
+            "stream-json".to_owned(),
             "--output-format".to_owned(),
-            "json".to_owned(),
+            "stream-json".to_owned(),
+            "--verbose".to_owned(),
             // Unattended runner: no interactive permission prompts — or, for
             // a planning run (workbench backend P2-5b), claude's own plan
             // mode, which reads and plans but never writes.
@@ -181,8 +192,15 @@ impl Harness for ClaudeHarness {
             bin: &self.bin_path,
             args: &args,
             envs: Vec::new(),
-            // `claude -p` reads the prompt until stdin closes.
-            stdin: Some(task.input.as_bytes()),
+            stdin: Some(&user_message(&task.input)),
+            stdout_lines: None,
+            // Stdin stays open while a turn is in flight; claude exits at
+            // the EOF sent once the last turn's `result` is out.
+            turns: Some(crate::harness::Turns {
+                inbox: None,
+                encode: user_message,
+                turn_ended: is_result_line,
+            }),
             timeout: self.timeout,
             cancel: task.cancel.as_ref(),
         })
@@ -192,7 +210,44 @@ impl Harness for ClaudeHarness {
     }
 }
 
-/// Parse the `claude --output-format json` result envelope into a
+/// One user turn as a stream-json input line.
+fn user_message(text: &str) -> Vec<u8> {
+    let mut line = serde_json::json!({
+        "type": "user",
+        "message": { "role": "user", "content": [{ "type": "text", "text": text }] },
+    })
+    .to_string()
+    .into_bytes();
+    line.push(b'\n');
+    line
+}
+
+/// Whether a stream-json output line is a turn's `result` envelope.
+fn is_result_line(line: &str) -> bool {
+    // Cheap prefilter: most lines are assistant/tool events.
+    line.contains("\"result\"")
+        && serde_json::from_str::<serde_json::Value>(line)
+            .is_ok_and(|v| v.get("type").and_then(serde_json::Value::as_str) == Some("result"))
+}
+
+/// The last turn's `result` envelope out of the stream-json output. A
+/// stdout that is one bare envelope (the `--output-format json` shape) is
+/// read as-is, so a parse error still names what was wrong.
+fn final_envelope(stdout: &[u8]) -> Result<serde_json::Value, HarnessError> {
+    let text = String::from_utf8_lossy(stdout);
+    if let Some(line) = text.lines().rev().find(|l| is_result_line(l)) {
+        return serde_json::from_str(line).map_err(|source| HarnessError::BadOutcome {
+            harness: NAME,
+            source,
+        });
+    }
+    serde_json::from_slice(stdout).map_err(|source| HarnessError::BadOutcome {
+        harness: NAME,
+        source,
+    })
+}
+
+/// Parse the final `result` envelope of a claude run into a
 /// [`HarnessOutcome`].
 ///
 /// The envelope is a single JSON object of (roughly) the shape:
@@ -212,11 +267,7 @@ impl Harness for ClaudeHarness {
 ///   `total_cost_usd`, and the model from `modelUsage`'s first key. `None`
 ///   when the envelope carries no `usage` at all.
 fn parse_outcome(stdout: &[u8]) -> Result<HarnessOutcome, HarnessError> {
-    let envelope: serde_json::Value =
-        serde_json::from_slice(stdout).map_err(|source| HarnessError::BadOutcome {
-            harness: NAME,
-            source,
-        })?;
+    let envelope = final_envelope(stdout)?;
 
     let is_error = envelope
         .get("is_error")
@@ -408,7 +459,16 @@ mod tests {
             .iter()
             .position(|a| a == "--output-format")
             .expect("--output-format present");
-        assert_eq!(args[of + 1], "json");
+        assert_eq!(args[of + 1], "stream-json");
+        let inf = args
+            .iter()
+            .position(|a| a == "--input-format")
+            .expect("--input-format present");
+        assert_eq!(args[inf + 1], "stream-json");
+        assert!(
+            args.iter().any(|a| a == "--verbose"),
+            "-p needs it for stream-json"
+        );
         let pm = args
             .iter()
             .position(|a| a == "--permission-mode")
@@ -472,6 +532,35 @@ mod tests {
         let outcome = parse_outcome(stdout).expect("parse error envelope");
         assert!(!outcome.ok);
         assert_eq!(outcome.status, HarnessStatus::Failed);
+    }
+
+    #[test]
+    fn the_last_result_line_of_a_stream_is_the_outcome() {
+        let stdout = br#"{"type":"system","subtype":"init","session_id":"s1"}
+{"type":"assistant","message":{"content":[{"type":"text","text":"first"}]}}
+{"type":"result","subtype":"success","is_error":false,"result":"first","num_turns":1}
+{"type":"assistant","message":{"content":[{"type":"text","text":"steered"}]}}
+{"type":"result","subtype":"success","is_error":false,"result":"steered answer","num_turns":3,"usage":{"input_tokens":5,"output_tokens":7}}
+"#;
+        let outcome = parse_outcome(stdout).expect("parse stream");
+        assert!(outcome.ok);
+        assert_eq!(outcome.summary, "steered answer");
+        assert_eq!(outcome.tool_calls, 3);
+        assert_eq!(outcome.usage.expect("usage").output_tokens, 7);
+    }
+
+    #[test]
+    fn a_turn_is_a_stream_json_user_message_line() {
+        let line = user_message("fold \"this\"\nplease");
+        assert_eq!(line.last(), Some(&b'\n'), "newline-terminated");
+        let v: serde_json::Value = serde_json::from_slice(&line).unwrap();
+        assert_eq!(v["type"], "user");
+        assert_eq!(v["message"]["role"], "user");
+        assert_eq!(v["message"]["content"][0]["text"], "fold \"this\"\nplease");
+        assert!(is_result_line(r#"{"type":"result","result":"x"}"#));
+        assert!(!is_result_line(
+            r#"{"type":"assistant","message":{"content":"the \"result\" is"}}"#
+        ));
     }
 
     #[test]

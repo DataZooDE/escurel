@@ -4,12 +4,13 @@
 //! stub executable (a shell script this test writes + `chmod +x`es) that
 //! mimics the `claude` headless CLI's I/O contract. The stub records the
 //! exact argv it was invoked with, reads the `--mcp-config` file the adapter
-//! wrote, and emits a canned `claude --output-format json` result envelope on
-//! stdout. The test then asserts the adapter:
+//! wrote, and speaks the `--input-format stream-json --output-format
+//! stream-json` session contract: one user message per stdin line, one
+//! `result` line per turn, exit at stdin EOF. The test then asserts the adapter:
 //!
 //!   (a) built the correct invocation — `-p <input>`,
 //!       `--append-system-prompt <instructions>`, `--mcp-config <path>`,
-//!       `--output-format json`, `--permission-mode bypassPermissions`, the
+//!       stream-json in and out, `--permission-mode bypassPermissions`, the
 //!       namespaced `--allowedTools mcp__escurel__<tool>`; and that the
 //!       MCP-config file declares the escurel HTTP server with the scoped
 //!       `Authorization: Bearer <token>`;
@@ -29,9 +30,12 @@ const MCP_ENDPOINT: &str = "http://127.0.0.1:8080/mcp";
 
 /// Write an executable stub that stands in for the `claude` CLI. It:
 ///   - dumps its argv (one per line) to `$argv_out`,
-///   - drains **stdin** to `$stdin_out` (this is where the prompt arrives),
+///   - answers each **stdin** line (a stream-json user message: this is
+///     where the prompt arrives) with an assistant event and a `result`
+///     line, recording the lines to `$stdin_out`,
 ///   - copies the `--mcp-config` file it was handed to `$mcp_out`,
-///   - prints a canned success result envelope on stdout, exit 0.
+///   - exits 0 at stdin EOF — which only comes if the adapter closes stdin
+///     once the turn's result is out.
 ///
 /// Returns the path to the stub binary.
 fn write_claude_stub(
@@ -55,10 +59,15 @@ for a in "$@"; do
   fi
   prev="$a"
 done
-# Drain stdin. The adapter must close it, or this blocks until the timeout —
-# which is itself part of the contract being asserted.
-cat > "{stdin_out}"
-printf '%s' '{{"type":"result","subtype":"success","is_error":false,"result":"folded the renewal event","num_turns":3,"session_id":"stub-1"}}'
+: > "{stdin_out}"
+printf '%s\n' '{{"type":"system","subtype":"init","session_id":"stub-1"}}'
+# One turn per stdin line. The adapter must close stdin after the result, or
+# this loop blocks until the timeout — itself part of the contract asserted.
+while IFS= read -r line; do
+  printf '%s\n' "$line" >> "{stdin_out}"
+  printf '%s\n' '{{"type":"assistant","message":{{"content":[{{"type":"text","text":"working"}}]}}}}'
+  printf '%s\n' '{{"type":"result","subtype":"success","is_error":false,"result":"folded the renewal event","num_turns":3,"session_id":"stub-1"}}'
+done
 "#
     );
     std::fs::write(&stub, script).expect("write stub script");
@@ -127,16 +136,24 @@ async fn claude_adapter_builds_invocation_and_parses_real_stub_output() {
         "the input must NOT be in argv: {args:?}"
     );
     let stdin_seen = std::fs::read_to_string(&stdin_out).expect("stub recorded its stdin");
+    let turns: Vec<serde_json::Value> = stdin_seen
+        .lines()
+        .map(|l| serde_json::from_str(l).expect("a stream-json line"))
+        .collect();
+    assert_eq!(turns.len(), 1, "one user turn: {stdin_seen}");
+    assert_eq!(turns[0]["type"], "user");
     assert_eq!(
-        stdin_seen, "INPUT renewal request for globex",
-        "the adapter wrote the prompt to the child's stdin and closed it"
+        turns[0]["message"]["content"][0]["text"], "INPUT renewal request for globex",
+        "the adapter wrote the prompt to the child's stdin as a user message"
     );
 
     assert_eq!(
         after("--append-system-prompt"),
         "SKILLBODY fold customer events"
     );
-    assert_eq!(after("--output-format"), "json");
+    assert_eq!(after("--input-format"), "stream-json");
+    assert_eq!(after("--output-format"), "stream-json");
+    assert!(args.contains(&"--verbose"), "-p needs it for stream-json");
     assert_eq!(after("--permission-mode"), "bypassPermissions");
     assert!(
         args.contains(&"--strict-mcp-config"),

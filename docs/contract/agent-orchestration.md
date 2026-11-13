@@ -212,8 +212,9 @@ tools" honest and the adapter a thin process-management shell.
 
 - **Claude Code CLI** — `claude -p` with `--system-prompt`/`CLAUDE.md`,
   `--mcp-config` (HTTP MCP server → `<gateway>/mcp` + auth header),
-  `--allowedTools`, `--output-format json` (the cleanest tool-call
-  capture).
+  `--allowedTools`, `--input-format stream-json --output-format
+  stream-json --verbose` (the prompt is a user message on stdin, which stays
+  open while a turn is in flight; the outcome is the last `result` line).
 - **Codex CLI** — `codex exec` in an isolated dir (mind the full-auto-writes
   gotcha,
   [`../notes/discovered/2026-05-24-codex-full-auto-writes.md`](../notes/discovered/2026-05-24-codex-full-auto-writes.md));
@@ -423,7 +424,7 @@ no `mockall`).
    *Test:* the first true end-to-end — event → instance materialised + event
    `processed`.
 8. **Claude Code adapter** — `claude -p` + `--mcp-config` +
-   `--output-format json`. *Test:* env-guarded; assert the expected `/mcp`
+   stream-json in and out. *Test:* env-guarded; assert the expected `/mcp`
    tool calls against the real gateway.
 9. **Codex adapter** — `codex exec` in an isolated dir. *Test:* env-guarded;
    instance materialised; no stray files outside the run dir.

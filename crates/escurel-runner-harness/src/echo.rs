@@ -74,6 +74,8 @@ impl Harness for EchoHarness {
             envs: Vec::new(),
             // Streamed in, then closed so the harness's read-to-end completes.
             stdin: Some(&payload),
+            stdout_lines: None,
+            turns: None,
             timeout: self.timeout,
             cancel: task.cancel.as_ref(),
         })
