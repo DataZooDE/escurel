@@ -24,6 +24,9 @@ degradations are tracked in `docs/BACKEND_GAPS.md`.
 - **See what agents cost and who they run as**: the Usage view (admins) rolls up runs, success rate, tokens and
   cost over 24 h / 7 d / 30 d by skill, model, agent, day or page; the Agents view lists the agent profiles runs
   execute as, with their engine, scopes and how their runs went.
+- **See where work runs**: the Runtimes view lists the registered runners, online, stale or stopped, with
+  their harnesses, labels and live runs; a skill's `requires:` shows on its row, and a live run says which
+  runtime holds it.
 
 ## Extending Escurel
 

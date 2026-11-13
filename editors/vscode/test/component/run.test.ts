@@ -287,6 +287,47 @@ describe('<escurel-run-detail>', () => {
     expect(sent).to.deep.equal([{ type: 'open-page', pageId: recordedRunView.targetPageId }]);
   });
 
+  it('says which runtime holds a live run’s event and opens its page (#818)', async () => {
+    const el = await render({
+      ...liveSteerableRun,
+      heldBy: {
+        runtime: 'build-box',
+        pageId: 'markdown/instances/runtime/build-box.md',
+        until: '2026-11-13T06:01:00Z',
+      },
+    });
+    const sent: RunWebviewToHost[] = [];
+    el.addEventListener('escurel-message', (event) =>
+      sent.push((event as CustomEvent<RunWebviewToHost>).detail),
+    );
+    const line = q(el, '[data-testid="run-held-by"]');
+    expect(text(line)).to.match(/^Taken by runtime build-box · lease until /);
+    (q(el, '[data-testid="run-held-by"] button') as HTMLButtonElement).click();
+    expect(sent).to.deep.equal([
+      { type: 'open-page', pageId: 'markdown/instances/runtime/build-box.md' },
+    ]);
+  });
+
+  it('names an unregistered holder without a link, and shows nothing when nobody holds the event', async () => {
+    const el = await render({
+      ...liveSteerableRun,
+      heldBy: { runtime: 'svc#x', until: '2026-11-13T06:01:00Z' },
+    });
+    expect(text(q(el, '[data-testid="run-held-by"]'))).to.match(/^Taken by runtime svc#x · /);
+    expect(q(el, '[data-testid="run-held-by"] button')).to.not.exist;
+    el.view = liveSteerableRun;
+    await el.updateComplete;
+    expect(q(el, '[data-testid="run-held-by"]')).to.not.exist;
+  });
+
+  it('tells a member a runner holds the event when it may not see which one', async () => {
+    const el = await render({ ...liveSteerableRun, heldBy: { until: '2026-11-13T06:01:00Z' } });
+    expect(text(q(el, '[data-testid="run-held-by"]'))).to.match(
+      /^Taken by a runtime \(an admin sees which\) · lease until /,
+    );
+    expect(q(el, '[data-testid="run-held-by"] button')).to.not.exist;
+  });
+
   it('renders a blocked plan step with its status and distinct class', async () => {
     // The recording has no blocked step, so this step is hand-written.
     const el = await render({

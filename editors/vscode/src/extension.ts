@@ -42,6 +42,7 @@ import { explainText } from './shared/explain';
 import { registerRunnerView, type RunnerTree } from './views/runner';
 import { registerUsageView, type UsageTree } from './views/usage';
 import { registerAgentsView, type AgentsTree } from './views/agents';
+import { registerRuntimesView, type RuntimesTree } from './views/runtimes';
 import { registerImportEvolveProblem } from './evolve/importProblem';
 import { registerPrepareEvolveTrainingSource } from './evolve/prepareSource';
 import { registerEvolveHoldout } from './evolve/registerHoldout';
@@ -83,6 +84,8 @@ export interface EscurelApi {
   usage: UsageTree;
   /** The Agents view beside Runs (the `agent` profiles). */
   agents: AgentsTree;
+  /** The Runtimes view beside Runs (`list_runtimes`). */
+  runtimes: RuntimesTree;
   focus: FocusMode;
   overview: OverviewController;
   /** Test seam: replaces the modal that confirms a plan approval (a modal blocks a headless window). */
@@ -129,6 +132,7 @@ export function activate(
   const runner = registerRunnerView(context, services);
   const usage = registerUsageView(context, services);
   const agents = registerAgentsView(context, services);
+  const runtimes = registerRuntimesView(context, services);
   EscurelFileSystem.register(
     context,
     () => services.client,
@@ -408,6 +412,7 @@ export function activate(
       runner,
       usage,
       agents,
+      runtimes,
       focus,
       overview,
       setApprovalConfirm,

@@ -704,6 +704,20 @@ test('Usage asks for an admin, and Agents lists the profiles runs execute as', a
   await page.locator('.pane-header', { hasText: /^Agents/ }).click();
 });
 
+test('Runtimes lists the demo runner online, with the agent it runs', async ({ stack }) => {
+  const { page } = stack;
+  // The demo's real runner registered its runtime page on boot and reports status (#818).
+  await page.locator('.pane-header', { hasText: /^Runtimes/ }).click();
+  const runtimes = pane(page, 'Runtimes');
+  await expect(runtimes.getByRole('treeitem', { name: /^Runtime .+: online · echo/ })).toBeVisible({
+    timeout: 30_000,
+  });
+  await expect(runtimes.getByText(/^\d+ of \d+ online$/)).toBeVisible();
+  await stack.shot('13-runtimes');
+  // Closed again: the scenarios after this one count what the Runs pane shows.
+  await page.locator('.pane-header', { hasText: /^Runtimes/ }).click();
+});
+
 // --- outside systems: a REST portal and an MCP server, real processes the demo started -------------
 
 /** The base URL of one of the demo's outside systems (the launcher wrote its port next to its pid). */

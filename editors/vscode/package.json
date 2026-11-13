@@ -460,6 +460,12 @@
         "category": "Escurel"
       },
       {
+        "command": "escurel.runtimes.refresh",
+        "title": "Refresh runtimes",
+        "icon": "$(refresh)",
+        "category": "Escurel"
+      },
+      {
         "command": "escurel.runs.loadMore",
         "title": "Load more runs",
         "category": "Escurel"
@@ -633,6 +639,11 @@
         {
           "id": "escurel.agents",
           "name": "Agents",
+          "visibility": "collapsed"
+        },
+        {
+          "id": "escurel.runtimes",
+          "name": "Runtimes",
           "visibility": "collapsed"
         },
         {
@@ -1068,6 +1079,16 @@
         {
           "command": "escurel.explainView",
           "when": "view == escurel.agents",
+          "group": "navigation@9"
+        },
+        {
+          "command": "escurel.runtimes.refresh",
+          "when": "view == escurel.runtimes",
+          "group": "navigation@1"
+        },
+        {
+          "command": "escurel.explainView",
+          "when": "view == escurel.runtimes",
           "group": "navigation@9"
         }
       ],

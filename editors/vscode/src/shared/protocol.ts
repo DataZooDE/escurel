@@ -521,6 +521,11 @@ export interface RunView {
   injections: RunInjection[];
   /** Filled by the host: whether a message can be sent to this run now (see src/runs/steer.ts). */
   steer?: { available: true } | { available: false; reason: string };
+  /**
+   * A live run: the runtime holding its trigger event's claim lease (#818); absent when none does.
+   * `runtime` is absent when the caller may not see which runtime it is (a member).
+   */
+  heldBy?: { runtime?: string; pageId?: string; until: string };
 }
 
 export type RunHostToWebview =
