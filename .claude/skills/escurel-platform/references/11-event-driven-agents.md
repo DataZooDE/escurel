@@ -314,6 +314,13 @@ filed on, in the run's own record (`list_events { run_id }`), with
 | `requeue` | `requeued` | the dead-lettered event is re-driven as `new_run_id` |
 | any | `refused` | not actionable; `detail` says why (`not dead-lettered: …`, `not retriable: …`) |
 
+With several runners on one tenant every runner reads every request, and
+the result is first-writer-wins. The runner that holds the run (live, or in
+its ledger) answers a `cancel` / `retry` / `inject` at once; a runner that
+has never heard of the run waits a grace (3 control ticks, at least 2 s) and
+answers `not_live` / `refused` only if no result exists by then. So with one
+runner, a run it never held is still answered — just ~2 s later.
+
 The runner keeps its place on the label in its ledger: a request filed
 while no runner was listening is acted on after the restart if it is
 younger than `ESCUREL_RUNNER_TAIL_MAX_AGE` (default 10 minutes); an older

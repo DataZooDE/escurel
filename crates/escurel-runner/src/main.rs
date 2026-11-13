@@ -4086,6 +4086,22 @@ async fn act_on_control(
     }
 }
 
+/// The least a runner waits before answering for a run it does not know.
+const CONTROL_STRANGER_GRACE_FLOOR: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// The run a run-scoped control (`cancel` / `inject` / `retry`) names.
+fn run_scoped(control: &serde_json::Value) -> Option<&str> {
+    match control["action"].as_str()? {
+        "cancel" | "inject" | "retry" => control["run_id"].as_str().filter(|s| !s.is_empty()),
+        _ => None,
+    }
+}
+
+/// Whether this runner holds `run_id` live or has it in its ledger.
+fn knows_run(state: &AppState, run_id: &str) -> bool {
+    state.runs.contains(run_id) || matches!(state.ledger.find_run(run_id), Ok(Some(_)))
+}
+
 /// The run-control subscriber (workbench backend P2-3b). Every `interval`
 /// it reads what arrived under `escurel:run-control` since the last poll,
 /// acts on each request, and answers it once under
@@ -4094,6 +4110,13 @@ async fn act_on_control(
 /// a deterministic id per request so a re-read never answers twice. Like
 /// the promotion tail it catches up to the end of the label on boot
 /// without acting: a stale cancel must not fire after a restart.
+///
+/// Every runner of the tenant reads every request, and the result id is
+/// first-writer-wins. So a run-scoped request for a run this runner neither
+/// holds nor has in its ledger is answered only after a grace (3 ticks, at
+/// least [`CONTROL_STRANGER_GRACE_FLOOR`]), and only when no result exists by
+/// then: the runner that owns the run answers first, and a lone runner still
+/// says `not_live`. A stop-gap — run ownership/leases are PR-2 (#818).
 async fn control_tail_loop(
     state: AppState,
     gateway_url: String,
@@ -4113,6 +4136,8 @@ async fn control_tail_loop(
     tail.catch_up(&client).await;
     tracing::info!(target: "escurel_runner", tenant = %tenant, "run-control tail started");
 
+    let grace = interval.saturating_mul(3).max(CONTROL_STRANGER_GRACE_FLOOR);
+    let mut deferred: Vec<(Instant, escurel_types::Event)> = Vec::new();
     let mut ticker = tokio::time::interval(interval);
     loop {
         ticker.tick().await;
@@ -4122,71 +4147,108 @@ async fn control_tail_loop(
         let Some(client) = connect_now(&gateway_url, &tokens).await else {
             continue;
         };
+        let now = Instant::now();
+        let (due, waiting): (Vec<_>, Vec<_>) = deferred.drain(..).partition(|(at, _)| *at <= now);
+        deferred = waiting;
+        for (_, event) in due {
+            if control_answered(&client, &event.event_id).await {
+                continue;
+            }
+            answer_control(&state, &client, &tenant, &event).await;
+        }
         for event in tail.poll(&client).await {
             let control = &event.provenance["control"];
             if !control.is_object() {
                 continue;
             }
-            let action = control["action"].as_str().unwrap_or("").to_owned();
-            let result = act_on_control(&state, &client, &tenant, control).await;
-            tracing::info!(
-                target: "escurel_runner",
-                request = %event.event_id,
-                action = %action,
-                outcome = result.outcome,
-                detail = ?result.detail,
-                "run-control: acted"
-            );
-            let run_id = result
-                .new_run_id
-                .clone()
-                .or_else(|| control["run_id"].as_str().map(str::to_owned));
-            let mut body = json!({
-                "action": action,
-                "outcome": result.outcome,
-                "run_id": control["run_id"],
-                "detail": result.detail,
-            });
-            if let Some(n) = &result.new_run_id {
-                body["new_run_id"] = json!(n);
+            if let Some(run_id) = run_scoped(control)
+                && !knows_run(&state, run_id)
+            {
+                deferred.push((now + grace, event));
+                continue;
             }
-            let mut runner = json!({});
-            if let Some(r) = &run_id {
-                runner["run_id"] = json!(r);
-            }
-            if !event.root_event_id.is_empty() {
-                runner["root_event_id"] = json!(event.root_event_id);
-            }
-            let answer = client
-                .capture_event(escurel_client::CaptureEventRequest {
-                    event_id: format!("run-control-result:{}", event.event_id),
-                    source: "escurel-runner".to_owned(),
-                    mime: "application/json".to_owned(),
-                    label_skill: RUN_CONTROL_RESULT_LABEL.to_owned(),
-                    instance_page_id: event.instance_page_id.clone(),
-                    title: action.clone(),
-                    body: body.to_string(),
-                    provenance: json!({
-                        "runner": runner,
-                        "control": {
-                            "request_event_id": event.event_id,
-                            "requested_by": control["requested_by"],
-                            "action": action,
-                        },
-                    }),
-                    kind: "system".to_owned(),
-                    ..Default::default()
-                })
-                .await;
-            if let Err(e) = answer {
-                tracing::warn!(
-                    target: "escurel_runner",
-                    request = %event.event_id,
-                    error = %e,
-                    "run-control: could not write the result (acted anyway)"
-                );
-            }
+            answer_control(&state, &client, &tenant, &event).await;
         }
+    }
+}
+
+/// Whether some runner already answered the request `request_event_id`.
+async fn control_answered(client: &Client, request_event_id: &str) -> bool {
+    client
+        .list_events(ListEventsRequest {
+            event_id: Some(format!("run-control-result:{request_event_id}")),
+            ..Default::default()
+        })
+        .await
+        .is_ok_and(|page| !page.events.is_empty())
+}
+
+/// Act on one control request and file its `escurel:run-control-result`.
+async fn answer_control(
+    state: &AppState,
+    client: &Client,
+    tenant: &str,
+    event: &escurel_types::Event,
+) {
+    let control = &event.provenance["control"];
+    let action = control["action"].as_str().unwrap_or("").to_owned();
+    let result = act_on_control(state, client, tenant, control).await;
+    tracing::info!(
+        target: "escurel_runner",
+        request = %event.event_id,
+        action = %action,
+        outcome = result.outcome,
+        detail = ?result.detail,
+        "run-control: acted"
+    );
+    let run_id = result
+        .new_run_id
+        .clone()
+        .or_else(|| control["run_id"].as_str().map(str::to_owned));
+    let mut body = json!({
+        "action": action,
+        "outcome": result.outcome,
+        "run_id": control["run_id"],
+        "detail": result.detail,
+    });
+    if let Some(n) = &result.new_run_id {
+        body["new_run_id"] = json!(n);
+    }
+    let mut runner = json!({});
+    if let Some(r) = &run_id {
+        runner["run_id"] = json!(r);
+    }
+    if !event.root_event_id.is_empty() {
+        runner["root_event_id"] = json!(event.root_event_id);
+    }
+    let answer = client
+        .capture_event(escurel_client::CaptureEventRequest {
+            event_id: format!("run-control-result:{}", event.event_id),
+            source: "escurel-runner".to_owned(),
+            mime: "application/json".to_owned(),
+            label_skill: RUN_CONTROL_RESULT_LABEL.to_owned(),
+            instance_page_id: event.instance_page_id.clone(),
+            title: action.clone(),
+            body: body.to_string(),
+            provenance: json!({
+                "runner": runner,
+                "control": {
+                    "request_event_id": event.event_id,
+                    "requested_by": control["requested_by"],
+                    "action": action,
+                },
+            }),
+            kind: "system".to_owned(),
+            ..Default::default()
+        })
+        .await;
+    if let Err(e) = answer {
+        tracing::warn!(
+            target: "escurel_runner",
+            request = %event.event_id,
+            error = %e,
+            "run-control: could not write the result (acted anyway)"
+        );
     }
 }
 

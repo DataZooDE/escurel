@@ -172,3 +172,103 @@ async fn a_caller_who_may_not_control_the_run_cannot_inject_into_it() {
         "{page}"
     );
 }
+
+/// Two runners on one gateway (crew review PR-1, F1): both tail
+/// `escurel:run-control`, but only the runner holding the run may answer for
+/// it. The other must not race a `not_live` into the shared, first-writer-wins
+/// `run-control-result:<request>` — the user would be told "not live" for a
+/// message that was delivered, and send it again. The stranger polls ten
+/// times faster than the owner, so without the deferral it answers first.
+#[tokio::test]
+async fn with_two_runners_the_owner_answers_an_inject_and_it_lands_once() {
+    let gw = gateway().await;
+    let admin = gw.mint_token_with_sub(TENANT, Role::Admin, "ops:jo");
+    let a = RunnerProcess::echo(&gw, TENANT)
+        .static_bearer(&admin)
+        .env("ESCUREL_RUNNER_POLL_INTERVAL", "1s")
+        .env("ESCUREL_ECHO_SLEEP_MS", "6000")
+        .spawn();
+    let captured = call(
+        &gw,
+        &admin,
+        "capture_event",
+        json!({ "source": "manual", "mime": "text/plain", "label_skill": "renewal",
+                "instance_page_id": PAGE, "title": "renew", "body": "please renew" }),
+    )
+    .await;
+    let event_id = captured["event_id"].as_str().unwrap().to_owned();
+    let run = a
+        .wait_for_status(&event_id, &["pending"], Duration::from_secs(30))
+        .await;
+    let run_id = run["run_id"].as_str().unwrap().to_owned();
+    wait_for_run_started(&gw, &admin, &run_id).await;
+    // The second runner joins once A holds the run: it tails the same
+    // controls but has never heard of A's run.
+    let mut b = RunnerProcess::echo(&gw, TENANT)
+        .static_bearer(&admin)
+        .env("ESCUREL_RUNNER_POLL_INTERVAL", "100ms")
+        .env("ESCUREL_ECHO_SLEEP_MS", "6000")
+        .spawn();
+    b.wait_healthy().await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    let req = control(
+        &gw,
+        &admin,
+        json!({ "action": "inject", "run_id": run_id, "text": STEER }),
+    )
+    .await;
+    let result = wait_for_result(&gw, &admin, &req).await;
+    assert_eq!(body_of(&result)["outcome"], "injected", "{result}");
+
+    let own = call(&gw, &admin, "list_events", json!({ "run_id": run_id })).await;
+    let injects = own["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|e| e["title"] == "run-inject")
+        .count();
+    assert_eq!(injects, 1, "delivered exactly once: {own}");
+}
+
+/// A runner asked about a run it has never heard of — here one a runner that
+/// is gone ran to its end — still answers, after its grace: `not_live`,
+/// `unknown run`. Nobody else will.
+#[tokio::test]
+async fn a_lone_runner_still_answers_for_a_run_it_never_held() {
+    let gw = gateway().await;
+    let admin = gw.mint_token(TENANT, Role::Admin);
+    let mut gone = RunnerProcess::echo(&gw, TENANT)
+        .static_bearer(&admin)
+        .spawn();
+    let captured = call(
+        &gw,
+        &admin,
+        "capture_event",
+        json!({ "source": "manual", "mime": "text/plain", "label_skill": "renewal",
+                "instance_page_id": PAGE, "title": "renew", "body": "please renew" }),
+    )
+    .await;
+    let event_id = captured["event_id"].as_str().unwrap().to_owned();
+    let run = gone
+        .wait_for_status(&event_id, &["processed"], Duration::from_secs(30))
+        .await;
+    let run_id = run["run_id"].as_str().unwrap().to_owned();
+    gone.kill();
+
+    let mut runner = RunnerProcess::echo(&gw, TENANT)
+        .static_bearer(&admin)
+        .spawn();
+    runner.wait_healthy().await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let req = control(
+        &gw,
+        &admin,
+        json!({ "action": "inject", "run_id": run_id, "text": STEER }),
+    )
+    .await;
+    let result = wait_for_result(&gw, &admin, &req).await;
+    let answer = body_of(&result);
+    assert_eq!(answer["outcome"], "not_live", "{result}");
+    assert_eq!(answer["detail"], "unknown run", "{result}");
+}

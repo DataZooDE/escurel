@@ -296,6 +296,12 @@ impl RunRegistry {
         entry.cancel.is_cancelled().then_some(entry.reason)
     }
 
+    /// Whether `run_id` is live on this runner.
+    #[must_use]
+    pub fn contains(&self, run_id: &str) -> bool {
+        self.entries().contains_key(run_id)
+    }
+
     /// The live run ids.
     #[must_use]
     pub fn live(&self) -> Vec<String> {
