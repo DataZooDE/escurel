@@ -162,7 +162,25 @@ reach a person through the bridge — only those naming them, their
 `agent`/`skill`/`run_id`/`root_event_id`/`purpose`/`act` claim or names no valid
 `bridge_channel`. Its actor is `bridge:<channel>`, so what it captures reads
 `captured_by: <person>` / `captured_via: bridge:msteams`; the chat rules accept
-that via and no other.
+that via and no other. The bridge entry is pinned to one tenant
+(`ESCUREL_AUTH_BRIDGE_TENANT`, required, = the served tenant): a bridge token
+naming another is refused (`401`).
+
+**A bridge token may call only what a chat turn needs** — it is a relay, not the
+person on the agent surface:
+
+| tool | only when |
+|---|---|
+| `whoami` | always |
+| `update_page` | `base_sha256: ""` (create-if-absent) of an instance of a `chat: {page_bound: true}` skill |
+| `append_message` | a `page-chat:` group, `role: user` (the answer is the run's) |
+| `list_messages` | a `page-chat:` group |
+| `capture_event` | `label_skill` = `ESCUREL_AUTH_BRIDGE_CHAT_SKILL` (default `chat`) |
+| `ingest_upload` | always (attachments, as the person) |
+
+Everything else — `expand`, `search`, any edit, any other label — is `-32003`
+(`data.code: forbidden`), and `tools/list` offers only these six. `/ingest`,
+`/blob` and `/ws` answer `403`. The ordinary ACLs still apply on top.
 
 **A token minted for an agent is never admin or operator.** A token carrying
 an `agent` or `skill` claim, or `purpose: workbench_agent`, projects the
@@ -200,8 +218,8 @@ caller's groups, `act.sub` the runner, a gateway-assigned `run_id`; and as a
 machine caller it can neither mint again nor claim. No exception to the
 machine-caller rule was needed. The claim rule is exactly that: any
 **non-machine admin identity** may claim — a runner's admin bearer, and also a
-person's admin token (a non-admin token is refused `-32001`, a run, agent or
-bridge token `-32602` `forbidden`). An admin who claims can park an event away
+person's admin token (a non-admin token is refused `-32001`, a run or agent
+token `-32602` `forbidden`, a bridge token `-32003` before it gets that far). An admin who claims can park an event away
 from every runner for up to an hour, which is no more than an admin can do to
 the event directly. The lease's holder is `<sub>#<holder_id>`: `holder_id` is
 the caller's own label for replicas sharing one credential, not an identity,

@@ -100,6 +100,20 @@ pub(crate) fn surface_refusal(
     surface: &str,
 ) -> Option<axum::response::Response> {
     let ctx = ctx?;
+    // A chat bridge's token relays a turn over `/mcp` and uses none of these
+    // surfaces (crew security F2).
+    if ctx.bridge {
+        return Some(
+            (
+                StatusCode::FORBIDDEN,
+                Json(json!({
+                    "error": "forbidden",
+                    "message": format!("a chat bridge's token may not use `{surface}`"),
+                })),
+            )
+                .into_response(),
+        );
+    }
     if let Some(agent) = &ctx.agent {
         return Some(
             (

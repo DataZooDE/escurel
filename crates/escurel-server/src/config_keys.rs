@@ -384,6 +384,18 @@ pub const CONFIG_KEYS: &[ConfigKey] = &[
         doc: "comma-separated key ids the bridge signs under; a pin on the `ESCUREL_AUTH_BRIDGE_ISSUER` entry: a token from it under any other kid is refused, and so is a token from another issuer under one of these kids. The key must be the bridge's own, never the gateway's main signing key. REQUIRED with `ESCUREL_AUTH_BRIDGE_ISSUER`",
     },
     ConfigKey {
+        name: "ESCUREL_AUTH_BRIDGE_TENANT",
+        component: "Server",
+        default: "—",
+        doc: "the one tenant the bridge's tokens may name; REQUIRED with `ESCUREL_AUTH_BRIDGE_ISSUER` and must equal `ESCUREL_TENANT` (boot fails otherwise), so a gateway for another tenant cannot be configured to trust the same bridge. A bridge token naming another tenant is refused (`401`)",
+    },
+    ConfigKey {
+        name: "ESCUREL_AUTH_BRIDGE_CHAT_SKILL",
+        component: "Server",
+        default: "chat",
+        doc: "the only `label_skill` a bridge token may `capture_event` under (= the bridge's `ESCUREL_BRIDGE_CHAT_SKILL`). A bridge token may call only `whoami`, `update_page` (create-if-absent of a `chat: {page_bound: true}` instance), `append_message` (`role: user`, page-bound groups), `list_messages` (page-bound groups), `capture_event` (this label) and `ingest_upload`; everything else is `-32003`, and `/ingest`, `/blob` and `/ws` answer `403`",
+    },
+    ConfigKey {
         name: "ESCUREL_EMBEDDING_PROVIDER",
         component: "Server",
         default: "gemini",
@@ -1509,7 +1521,7 @@ pub const CONFIG_KEYS: &[ConfigKey] = &[
         name: "ESCUREL_BRIDGE_CHAT_SKILL",
         component: "Bridge",
         default: "chat",
-        doc: "`label_skill` of the captured chat event (the runner answers it in chat mode)",
+        doc: "`label_skill` of the captured chat event (the runner answers it in chat mode); the gateway's `ESCUREL_AUTH_BRIDGE_CHAT_SKILL` must name the same skill",
     },
     ConfigKey {
         name: "ESCUREL_BRIDGE_CONVERSATION_SKILL",

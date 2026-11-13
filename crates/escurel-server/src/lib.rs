@@ -39,6 +39,7 @@
 
 mod auth_gate;
 pub mod boot_progress;
+mod bridge_gate;
 pub mod config;
 pub mod config_keys;
 mod config_probe;

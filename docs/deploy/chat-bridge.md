@@ -156,13 +156,26 @@ ESCUREL_AUTH_OIDC_ISSUER_2=https://chat-bridge.escurel.internal
 ESCUREL_AUTH_JWKS_URI_2=https://escurel-chat-bridge:3978/.well-known/jwks.json
 ESCUREL_AUTH_BRIDGE_ISSUER=https://chat-bridge.escurel.internal   # = ESCUREL_AUTH_OIDC_ISSUER_2
 ESCUREL_AUTH_BRIDGE_KID=escurel-chat-bridge-1
+ESCUREL_AUTH_BRIDGE_TENANT=acme                                    # = ESCUREL_TENANT
+# ESCUREL_AUTH_BRIDGE_CHAT_SKILL=chat                              # = the bridge's ESCUREL_BRIDGE_CHAT_SKILL
 ```
 
 Every token verified against that issuer is restricted (at most 900 s, never admin or operator, no
 roles or groups, no agent or run claims) whatever it says, and a token from it under any kid other
 than `ESCUREL_AUTH_BRIDGE_KID` is refused. The gateway refuses to start when
 `ESCUREL_AUTH_BRIDGE_KID` is set without `ESCUREL_AUTH_BRIDGE_ISSUER`, when the bridge issuer is not
-one of its trusted issuers, or when it has no kid.
+one of its trusted issuers, when it has no kid, or when `ESCUREL_AUTH_BRIDGE_TENANT` is missing or
+is not the served tenant (a gateway for another tenant cannot be pointed at this bridge by copying
+its trust settings).
+
+A bridge token is a chat relay, not the person on the agent surface. It may call only what a turn
+needs: `whoami`; `update_page` to *create* (`base_sha256: ""`) an instance of a
+`chat: {page_bound: true}` skill; `append_message` with `role: user` and `list_messages` on a
+`page-chat:` group; `capture_event` under `ESCUREL_AUTH_BRIDGE_CHAT_SKILL`; `ingest_upload`.
+Anything else is `-32003`, and `/ingest`, `/blob` and `/ws` answer `403`. So the bridge key, if it
+leaks, still lets an attacker chat as a person (and read the answers, which the run gives with that
+person's read rights) and upload files as them, but no longer read or rewrite their records
+directly. Treat the key accordingly.
 
 **Fetch the bridge's JWKS over https** (or a path nobody else can write to, such as a
 loopback-only sidecar). Whoever controls that response decides which keys sign as the bridge. With

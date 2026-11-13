@@ -60,6 +60,9 @@ pub struct OidcConfig {
     /// too (fail closed). The key must be the bridge's own, never the
     /// gateway's main signing key.
     pub bridge_kids: Vec<String>,
+    /// The one tenant a bridge token may name (`ESCUREL_AUTH_BRIDGE_TENANT`);
+    /// a bridge token naming another is refused. `None` = not pinned here.
+    pub bridge_tenant: Option<String>,
 }
 
 impl OidcConfig {
@@ -80,7 +83,15 @@ impl OidcConfig {
             additional_issuers: Vec::new(),
             bridge_issuer: None,
             bridge_kids: Vec::new(),
+            bridge_tenant: None,
         }
+    }
+
+    /// Pin the bridge entry to `tenant` (see [`Self::bridge_tenant`]).
+    #[must_use]
+    pub fn with_bridge_tenant(mut self, tenant: impl Into<String>) -> Self {
+        self.bridge_tenant = Some(tenant.into());
+        self
     }
 
     /// Mark the trusted issuer `issuer` as a chat bridge: every token
@@ -425,7 +436,11 @@ impl OidcVerifier {
 
         let claims = token_data.claims;
         if entry.bridge {
-            return bridge_context(claims, &self.config.tenant_claim);
+            return bridge_context(
+                claims,
+                &self.config.tenant_claim,
+                self.config.bridge_tenant.as_deref(),
+            );
         }
 
         // Defense-in-depth (fleet #801 AD-7): a runner→agent internal-delegation
@@ -606,7 +621,11 @@ fn bridge_lifetime_ok(iat: u64, exp: u64, now: u64) -> bool {
     exp.saturating_sub(iat) <= max && exp.saturating_sub(now) <= max + BRIDGE_CLOCK_SKEW_SECS
 }
 
-fn bridge_context(claims: Claims, tenant_claim: &str) -> Result<AuthContext, AuthError> {
+fn bridge_context(
+    claims: Claims,
+    tenant_claim: &str,
+    pinned_tenant: Option<&str>,
+) -> Result<AuthContext, AuthError> {
     use escurel_types::bridge;
     let refuse = |why: String| Err(AuthError::BridgeRefused(why));
     for forbidden in [
@@ -653,6 +672,13 @@ fn bridge_context(claims: Claims, tenant_claim: &str) -> Result<AuthContext, Aut
             tenant_claim: tenant_claim.to_owned(),
         })?
         .to_owned();
+    if let Some(pinned) = pinned_tenant
+        && tenant_id != pinned
+    {
+        return refuse(format!(
+            "a bridge token names tenant `{tenant_id}`; this bridge serves `{pinned}`"
+        ));
+    }
     Ok(AuthContext {
         subject: claims.sub,
         tenant_id,

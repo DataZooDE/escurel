@@ -378,6 +378,8 @@ async fn mcp_inner(
     // The agent profile the token runs as (#823): a NAME, whose scopes the
     // dispatch reads from the agent's own page — never from the token.
     let agent_claim = auth_ctx.as_ref().and_then(|c| c.agent.clone());
+    // A chat bridge's token (crew security F2): confined to its turn's calls.
+    let bridge = auth_ctx.as_ref().is_some_and(|c| c.bridge);
 
     // JSON-RPC notifications (no `id`, method `notifications/*`) get
     // NO response envelope — the MCP Streamable-HTTP spec says the
@@ -407,7 +409,10 @@ async fn mcp_inner(
             }
             None => Ok(filter_tools_list(
                 schema::tools_list_payload_for(role),
-                |name| restriction.as_ref().is_none_or(|r| r.contains(name)),
+                |name| {
+                    restriction.as_ref().is_none_or(|r| r.contains(name))
+                        && (!bridge || crate::bridge_gate::BRIDGE_TOOLS.contains(&name))
+                },
             )),
         },
         "tools/call" => {
@@ -456,6 +461,7 @@ async fn mcp_inner(
                 agent_skill.as_deref(),
                 agent_claim.as_deref(),
                 restriction.as_ref(),
+                bridge,
                 req.params,
             ))
             .catch_unwind()
@@ -1143,6 +1149,7 @@ async fn dispatch_tools_call(
     agent_skill: Option<&str>,
     agent_claim: Option<&str>,
     restriction: Option<&std::collections::BTreeSet<String>>,
+    bridge: bool,
     params: Value,
 ) -> Result<Value, JsonRpcError> {
     let params: ToolsCallParams = serde_json::from_value(params)
@@ -1249,6 +1256,19 @@ async fn dispatch_tools_call(
             data: None,
         }
         .with_code("role_restricted", false));
+    }
+    // A chat bridge's token: its turn's calls and nothing else (crew security F2).
+    if bridge
+        && let Some(why) = crate::bridge_gate::refusal(
+            &params.name,
+            &params.arguments,
+            &state.bridge_chat_skill,
+            current_indexer.as_deref(),
+        )
+        .await
+        .map_err(|e| JsonRpcError::internal(format!("bridge gate: {e}")))?
+    {
+        return Err(JsonRpcError::forbidden(why));
     }
     // The agent's tool scope, intersected with every gate above and below: it
     // can only take tools away.

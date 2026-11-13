@@ -452,7 +452,9 @@ impl EscurelProcess {
                 cfg = cfg.with_additional_issuer(iss.clone(), Some(jwks.clone()));
             }
             if let Some(issuer) = &overrides.bridge_issuer {
-                cfg = cfg.with_bridge_issuer(issuer.clone());
+                cfg = cfg
+                    .with_bridge_issuer(issuer.clone())
+                    .with_bridge_tenant(served_tenant.clone());
             }
             for kid in &overrides.bridge_kids {
                 cfg = cfg.with_bridge_kid(kid.clone());
@@ -506,6 +508,7 @@ impl EscurelProcess {
                         .expect("ConfigOverrides.role_tools")
                 })
                 .unwrap_or_default(),
+            bridge_chat_skill: escurel_types::bridge::DEFAULT_CHAT_SKILL.to_owned(),
             toolcall_detail: overrides.toolcall_detail.unwrap_or_default(),
             autonomy_lint: overrides.autonomy_lint.unwrap_or_default(),
             // Tests keep their directory-connector fixtures in temp dirs, so the default policy of a

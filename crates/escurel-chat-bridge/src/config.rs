@@ -168,7 +168,10 @@ impl BridgeConfig {
                 })?;
                 t
             },
-            chat_skill: or("ESCUREL_BRIDGE_CHAT_SKILL", "chat"),
+            chat_skill: or(
+                "ESCUREL_BRIDGE_CHAT_SKILL",
+                escurel_types::bridge::DEFAULT_CHAT_SKILL,
+            ),
             conversation_skill: or("ESCUREL_BRIDGE_CONVERSATION_SKILL", "conversation"),
             poll_interval: dur("ESCUREL_BRIDGE_POLL_INTERVAL", Duration::from_secs(1))?,
             typing_interval: dur("ESCUREL_BRIDGE_TYPING_INTERVAL", Duration::from_secs(3))?,

@@ -585,6 +585,13 @@ pub struct AuthConfig {
     /// Key ids the bridge signs under (`ESCUREL_AUTH_BRIDGE_KID`, comma-separated): a pin on the
     /// bridge entry — a token from it under any other kid is refused.
     pub bridge_kids: Vec<String>,
+    /// The one tenant the bridge entry may name (`ESCUREL_AUTH_BRIDGE_TENANT`): required with a
+    /// bridge issuer, and must be the served tenant, so a gateway for another tenant that trusts
+    /// the same bridge issuer refuses to start rather than accept its tokens.
+    pub bridge_tenant: Option<String>,
+    /// The only `label_skill` a bridge token may capture under
+    /// (`ESCUREL_AUTH_BRIDGE_CHAT_SKILL`, default `chat`): the label picks which skill runs.
+    pub bridge_chat_skill: String,
     /// Service roles and the tools each may call (`ESCUREL_AUTH_ROLE_TOOLS`,
     /// `role=tool,tool;role=tool`). A token whose groups carry a listed role may call only those
     /// tools. Empty = no restricted role.
@@ -1326,6 +1333,13 @@ impl EscurelConfig {
                         .filter(|k| !k.is_empty())
                         .map(str::to_owned)
                         .collect(),
+                    bridge_tenant: env
+                        .get("ESCUREL_AUTH_BRIDGE_TENANT")
+                        .filter(|s| !s.is_empty()),
+                    bridge_chat_skill: env
+                        .get("ESCUREL_AUTH_BRIDGE_CHAT_SKILL")
+                        .filter(|s| !s.is_empty())
+                        .unwrap_or_else(|| escurel_types::bridge::DEFAULT_CHAT_SKILL.to_owned()),
                     role_tools: crate::role_gate::RoleTools::parse(
                         &env.get("ESCUREL_AUTH_ROLE_TOOLS").unwrap_or_default(),
                     )
@@ -1348,7 +1362,7 @@ impl EscurelConfig {
         }
 
         if let Some(a) = auth.as_ref() {
-            validate_bridge_trust(a).map_err(ConfigError::Bridge)?;
+            validate_bridge_trust(a, &tenant).map_err(ConfigError::Bridge)?;
         }
 
         // --- signing (optional; workbench backend P2-6) ---
@@ -2586,6 +2600,10 @@ impl EscurelConfig {
                 .as_ref()
                 .map(|a| a.role_tools.clone())
                 .unwrap_or_default(),
+            bridge_chat_skill: self.auth.as_ref().map_or_else(
+                || escurel_types::bridge::DEFAULT_CHAT_SKILL.to_owned(),
+                |a| a.bridge_chat_skill.clone(),
+            ),
             toolcall_detail: crate::ToolcallDetailMode::from_env(),
             // Skill-page `autonomy:` lint (`ESCUREL_AUTONOMY_LINT`): off
             // (default) | log | enforce. Same env-only rollout, for the same
@@ -3234,6 +3252,9 @@ impl EscurelConfig {
         for kid in &auth.bridge_kids {
             cfg = cfg.with_bridge_kid(kid.clone());
         }
+        if let Some(tenant) = &auth.bridge_tenant {
+            cfg = cfg.with_bridge_tenant(tenant.clone());
+        }
         cfg.jwks_refresh = auth.jwks_refresh;
         Some(Arc::new(OidcVerifier::new(cfg)))
     }
@@ -3243,7 +3264,7 @@ impl EscurelConfig {
 /// with no bridge entry to pin, a bridge entry the gateway does not trust, or a
 /// bridge entry with no kid (every token from it would be refused) cannot mean
 /// what the operator wrote.
-fn validate_bridge_trust(a: &AuthConfig) -> Result<(), String> {
+fn validate_bridge_trust(a: &AuthConfig, served_tenant: &str) -> Result<(), String> {
     let Some(bridge) = a.bridge_issuer.as_deref() else {
         return match a.bridge_kids.first() {
             Some(kid) => Err(format!(
@@ -3267,7 +3288,18 @@ fn validate_bridge_trust(a: &AuthConfig) -> Result<(), String> {
                 .to_owned(),
         );
     }
-    Ok(())
+    match a.bridge_tenant.as_deref() {
+        None => Err(
+            "ESCUREL_AUTH_BRIDGE_TENANT is required with ESCUREL_AUTH_BRIDGE_ISSUER: \
+             the one tenant the bridge's tokens may name"
+                .to_owned(),
+        ),
+        Some(t) if t != served_tenant => Err(format!(
+            "ESCUREL_AUTH_BRIDGE_TENANT `{t}` is not the served tenant `{served_tenant}`; \
+             a bridge serves one tenant's gateway"
+        )),
+        Some(_) => Ok(()),
+    }
 }
 
 #[cfg(test)]
@@ -3617,7 +3649,8 @@ mod bridge_config_tests {
         ]);
         assert!(why.contains("ESCUREL_AUTH_BRIDGE_KID"), "{why}");
 
-        let ok = cfg_from(&[
+        let bridge = [
+            ("ESCUREL_TENANT", "acme"),
             ("ESCUREL_AUTH_OIDC_ISSUER_2", BRIDGE),
             (
                 "ESCUREL_AUTH_JWKS_URI_2",
@@ -3625,8 +3658,15 @@ mod bridge_config_tests {
             ),
             ("ESCUREL_AUTH_BRIDGE_ISSUER", BRIDGE),
             ("ESCUREL_AUTH_BRIDGE_KID", "bridge-key"),
-        ])
-        .expect("a bridge entry with a kid starts");
+        ];
+        // The bridge entry is pinned to the served tenant (crew security F2).
+        let why = refused(&bridge);
+        assert!(why.contains("ESCUREL_AUTH_BRIDGE_TENANT"), "{why}");
+        let why = refused(&[&bridge[..], &[("ESCUREL_AUTH_BRIDGE_TENANT", "globex")]].concat());
+        assert!(why.contains("not the served tenant"), "{why}");
+
+        let ok = cfg_from(&[&bridge[..], &[("ESCUREL_AUTH_BRIDGE_TENANT", "acme")]].concat())
+            .expect("a bridge entry with a kid starts");
         let v = ok.build_verifier().expect("a verifier");
         assert_eq!(v.config().bridge_issuer.as_deref(), Some(BRIDGE));
     }

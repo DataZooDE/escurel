@@ -17,6 +17,11 @@ pub const VIA_PREFIX: &str = "bridge:";
 /// The claim a bridge token names its channel in (`msteams`, …).
 pub const CHANNEL_CLAIM: &str = "bridge_channel";
 
+/// The `label_skill` a bridge captures its chat turns under unless configured
+/// otherwise (bridge `ESCUREL_BRIDGE_CHAT_SKILL`, gateway
+/// `ESCUREL_AUTH_BRIDGE_CHAT_SKILL`): the only label a bridge token may use.
+pub const DEFAULT_CHAT_SKILL: &str = "chat";
+
 /// The longest a bridge token may live (`exp - iat`, and `exp - now`).
 pub const MAX_TTL_SECS: u64 = 900;
 

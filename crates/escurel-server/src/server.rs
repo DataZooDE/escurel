@@ -239,6 +239,9 @@ pub struct ServerConfig {
     /// Service roles and the tools each may call (`ESCUREL_AUTH_ROLE_TOOLS`). Empty = no
     /// restricted role. See `docs/design/service-role-gate.md`.
     pub role_tools: crate::role_gate::RoleTools,
+    /// The only `label_skill` a chat bridge's token may capture under
+    /// (`ESCUREL_AUTH_BRIDGE_CHAT_SKILL`, default `chat`).
+    pub bridge_chat_skill: String,
     /// What a run's recorded tool calls keep beyond sizes
     /// (`ESCUREL_TOOLCALL_DETAIL`).
     pub toolcall_detail: ToolcallDetailMode,
@@ -535,6 +538,8 @@ pub(crate) struct AppState {
     pub(crate) event_acl: EventAclMode,
     /// The service-role tool gate (`ESCUREL_AUTH_ROLE_TOOLS`).
     pub(crate) role_tools: Arc<crate::role_gate::RoleTools>,
+    /// The chat bridge's capture label (`ESCUREL_AUTH_BRIDGE_CHAT_SKILL`).
+    pub(crate) bridge_chat_skill: String,
     pub(crate) toolcall_detail: ToolcallDetailMode,
     pub(crate) autonomy_lint: AutonomyLintMode,
     pub(crate) egress: Arc<crate::egress::Egress>,
@@ -717,6 +722,7 @@ pub async fn serve(
         write_acl: config.write_acl,
         event_acl: config.event_acl,
         role_tools: Arc::new(config.role_tools.clone()),
+        bridge_chat_skill: config.bridge_chat_skill.clone(),
         toolcall_detail: config.toolcall_detail,
         autonomy_lint: config.autonomy_lint,
         egress: Arc::new(
