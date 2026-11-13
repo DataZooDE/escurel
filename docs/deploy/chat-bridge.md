@@ -184,7 +184,7 @@ bridge key itself would, but on plain http anyone on the network path gets that 
 reads JWKS over HTTP(S) only; it has no static-file JWKS option. Rotating the bridge key: generate a new key,
 deploy the bridge with it and a new `ESCUREL_BRIDGE_AUTH_KID`, and set
 `ESCUREL_AUTH_BRIDGE_KID=<old>,<new>` until the old one is gone (the gateway re-reads the JWKS on an
-unknown listed kid). The decision and the intended end state (a gateway-side mint, so the bridge holds no
+unknown listed kid, at most once per 30 s). The decision and the intended end state (a gateway-side mint, so the bridge holds no
 signing key at all) are in
 `docs/notes/discovered/2026-11-13-chat-bridge-restricted-signing-key.md`.
 
