@@ -103,7 +103,8 @@ services:
     environment:
       ESCUREL_RUNNER_GATEWAY_URL: http://escurel:8080
       ESCUREL_RUNNER_TENANT: demo
-      # The gateway runs without a verifier, so the token is not checked; the runner wants one set.
+      # The gateway runs without a verifier, so the token is not checked and every caller is admin —
+      # which the runner needs to claim events (a non-admin runner takes no inbox work).
       ESCUREL_RUNNER_TOKEN: unauthenticated-demo
       ESCUREL_RUNNER_HARNESS: echo
       ESCUREL_RUNNER_POLL_INTERVAL: 500ms

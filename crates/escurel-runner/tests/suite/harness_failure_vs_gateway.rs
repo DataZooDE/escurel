@@ -193,7 +193,8 @@ async fn run_until_terminal(draft: bool) -> (Value, EscurelProcess, String) {
     .await;
 
     let model_base = spawn_stub_model(page_id.clone(), draft).await;
-    let token = gateway.mint_token(TENANT, Role::Agent);
+    // The runner credential must be an admin to claim events (a non-admin runner takes nothing).
+    let token = gateway.mint_token(TENANT, Role::Admin);
     let port = free_port();
     // A ledger of this test's own. The default path is a file in the working
     // directory that every runner test shares, so global counts there say
@@ -399,7 +400,8 @@ async fn a_run_that_stalls_is_abandoned_rather_than_held_for_ever() {
     .await;
 
     let model_base = spawn_stalling_model().await;
-    let token = gateway.mint_token(TENANT, Role::Agent);
+    // The runner credential must be an admin to claim events (a non-admin runner takes nothing).
+    let token = gateway.mint_token(TENANT, Role::Admin);
     let port = free_port();
     let ledger = std::env::temp_dir().join(format!(
         "escurel-runner-stall-{}-{port}.sqlite",

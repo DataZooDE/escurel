@@ -670,19 +670,18 @@ async fn a_fleet_runners_undecidable_webhook_is_left_to_the_poller() {
     assert_eq!(run_starts(&gw, &event).await, 1, "one run, on the holder");
 }
 
-/// A labelled runner whose credential may not claim (not an admin) is a
-/// misconfigured fleet member, not an old gateway (crew U-F3): it takes
-/// nothing, so it can never run an event another runner holds. (A lone runner
-/// on such a credential still runs: the single-runner deployment.)
+/// A runner whose credential may not claim (not an admin) takes nothing —
+/// lone or in a fleet (owner decision 2026-11-13; crew U-F3): running the event
+/// anyway could race a runner that holds it. It keeps serving `/healthz`, so an
+/// operator sees the error it logs rather than a crash loop.
 #[tokio::test]
-async fn a_fleet_runner_whose_claims_are_refused_takes_nothing() {
+async fn a_runner_whose_claims_are_refused_takes_nothing() {
     let gw = gateway().await;
     let event = capture(&gw, "note", json!({})).await;
     let refused = healthy(
         RunnerProcess::echo(&gw, TENANT)
             .static_bearer(gw.mint_token_with_groups(TENANT, "runner:member", &[], false))
             .env("ESCUREL_RUNNER_ID", "member")
-            .env("ESCUREL_RUNNER_LABELS", "site:hq")
             .spawn(),
     )
     .await;

@@ -107,7 +107,8 @@ async fn over_quota_triggers_are_throttled_not_all_processed() {
 
     // 3. Spawn the real runner with a LOW per-tenant runs/min budget so a burst
     //    over the budget must throttle within the one-minute window.
-    let token = gateway.mint_token(TENANT, Role::Agent);
+    // The runner credential must be an admin to claim events (a non-admin runner takes nothing).
+    let token = gateway.mint_token(TENANT, Role::Admin);
     let port = free_port();
     let listen = format!("127.0.0.1:{port}");
     let ledger_dir = tempfile::tempdir().expect("tempdir for ledger");

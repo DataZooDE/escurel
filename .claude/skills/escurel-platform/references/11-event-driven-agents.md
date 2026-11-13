@@ -585,14 +585,13 @@ runner admit the event as a lone runner would (the ledger alone decides): a
 gateway older than the tool (`-32601`), and an event it does not store
 (`-32602` `event_not_found`, a synthetic webhook event). An **identity
 refusal** (`-32001` / `-32003` / `401` / `403` / `-32602` `forbidden`, e.g. a
-non-admin runner token) logs an error naming the fix (*the runner credential
-needs escurel:admin to claim*). On a **fleet member** (labels or exclusive) it
-takes **nothing**: such a runner is misconfigured and would otherwise run
-events another runner holds. A **lone** runner (no labels, not exclusive) on a
-non-admin token keeps running as the single-runner deployment it is — but a
-second runner on the same tenant would not be coordinated with it, so give
-every runner of a fleet an admin credential and its labels. A runner with `ESCUREL_RUNNER_LABELS` or `ESCUREL_RUNNER_EXCLUSIVE` also
-checks `whoami` at boot and logs that error when it is not an admin. Any
+non-admin runner token) takes **nothing**, on every runner — lone or in a
+fleet, since a runner cannot know it is alone — and logs an error naming the
+fix (*the runner credential needs escurel:admin to claim events*). Every
+runner also checks `whoami` at boot and logs that error when it is not an
+admin; it keeps serving `/healthz`, so the operator sees the error rather than
+a crash loop. **Give every runner an admin-capable credential** (an
+`escurel:admin` token, or minting mode). Any
 other claim error — another `-32602`, a timeout (2 s), a transport failure, a
 `5xx`, a `429` — is **not taken**: the event stays unclaimed and the next poll
 asks again (a run could not progress without the gateway anyway). So a slow

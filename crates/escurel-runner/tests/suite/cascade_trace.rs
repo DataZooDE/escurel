@@ -112,7 +112,8 @@ async fn one_trace_id_spans_all_cascade_hops() {
 
     // 3. Real runner with a generous depth so SEVERAL hops fire (all sharing
     //    the root), with the budget as the eventual backstop.
-    let token = gateway.mint_token(TENANT, Role::Agent);
+    // The runner credential must be an admin to claim events (a non-admin runner takes nothing).
+    let token = gateway.mint_token(TENANT, Role::Admin);
     let port = free_port();
     let listen = format!("127.0.0.1:{port}");
     let ledger_dir = tempfile::tempdir().expect("tempdir for ledger");

@@ -188,7 +188,8 @@ These are the real sharp edges — each one cost a debugging session.
    bearer and serves tenant `default`; the caller is treated as **admin**,
    which bypasses the group ACL — so the demo folds the spine regardless of
    policy. Against an **OIDC-enforcing** gateway, `ESCUREL_RUNNER_TOKEN` must
-   be a valid JWT for that issuer, and — because the seed `engagement` skill
+   be a valid JWT for that issuer carrying the `escurel:admin` role (a runner
+   whose `claim_event` is refused takes no inbox work), and — because the seed `engagement` skill
    declares `acl.update: [admin, agent-writer]` (group ACL v1) — the token's
    `groups_claim` (default `roles`, configurable via
    `ESCUREL_AUTH_GROUPS_CLAIM`) **must include `agent-writer`** (or the admin

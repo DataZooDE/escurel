@@ -125,7 +125,8 @@ async fn same_event_twice_yields_exactly_one_terminal_run() {
     // 2. Spawn the real runner with a real ledger file in a tempdir.
     let ledger_dir = tempfile::tempdir().expect("tempdir");
     let ledger_path = ledger_dir.path().join("runner-ledger.sqlite");
-    let token = gateway.mint_token(TENANT, Role::Agent);
+    // The runner credential must be an admin to claim events (a non-admin runner takes nothing).
+    let token = gateway.mint_token(TENANT, Role::Admin);
     let port = free_port();
     let listen = format!("127.0.0.1:{port}");
     let base = format!("http://{listen}");

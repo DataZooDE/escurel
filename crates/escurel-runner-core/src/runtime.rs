@@ -19,8 +19,8 @@
 //! gateway does not store answers `event_not_found`; the gate then admits
 //! what it can route, which is the single-runner behaviour. A claim the
 //! gateway REFUSED for this identity (not an admin) takes nothing and logs
-//! the fix: such a runner is a misconfigured fleet member, not an old
-//! gateway. A claim the gateway did not answer (timeout, transport, `5xx`,
+//! the fix, on every runner, lone or not: a runner credential must be an
+//! admin, and such a runner is misconfigured, not talking to an old gateway. A claim the gateway did not answer (timeout, transport, `5xx`,
 //! an unexpected invalid-params) is retried on the next poll, never taken.
 //! Admission is one gateway call per inbox event, in series; bounded
 //! concurrency is a possible follow-up.
@@ -244,13 +244,6 @@ impl RuntimeGate {
     #[must_use]
     pub fn is_lone(&self) -> bool {
         self.labels.is_empty() && !self.exclusive
-    }
-
-    /// Whether this runner needs a claim-capable (admin) identity to do what
-    /// it is configured for: labels or exclusivity mean a fleet.
-    #[must_use]
-    pub fn needs_claims(&self) -> bool {
-        !self.is_lone()
     }
 
     /// The claim lease this gate asks for.
@@ -511,34 +504,19 @@ impl RuntimeGate {
         }
     }
 
-    /// The gateway will not let this identity claim. A fleet member (labels,
-    /// or exclusive) is then misconfigured, and running the event anyway
-    /// would race the runner that holds it: it takes nothing. A lone runner
-    /// (no labels, not exclusive) on a non-admin credential is the
-    /// single-runner deployment the claim layer must not break: it runs as
-    /// before, and is told that a second runner on such a credential would
-    /// not be coordinated.
+    /// The gateway will not let this identity claim: the runner credential is
+    /// not an admin. Running the event anyway could race a runner that holds
+    /// it, and a lone runner cannot know it is alone (owner decision
+    /// 2026-11-13: fail closed for every runner), so it takes nothing and
+    /// says how to fix it.
     fn forbidden(&self, event_id: &str, e: &dyn std::fmt::Display) -> Admit {
-        if self.is_lone() {
-            self.tell_once("\0claim-forbidden", || {
-                tracing::error!(
-                    target: "escurel_runner",
-                    event_id,
-                    error = %e,
-                    "claim_event refused: the runner credential needs escurel:admin to claim; \
-                     running as a lone runner (the ledger alone decides) — a second runner on \
-                     this tenant would run the same events (logged once)"
-                );
-            });
-            return Admit::Take;
-        }
         self.tell_once("\0claim-forbidden", || {
             tracing::error!(
                 target: "escurel_runner",
                 event_id,
                 error = %e,
-                "claim_event refused: the runner credential needs escurel:admin to claim; \
-                 this labelled/exclusive runner takes no inbox work until it has it (logged once)"
+                "claim_event refused: the runner credential needs escurel:admin to claim events; \
+                 this runner takes no inbox work until it has it (logged once)"
             );
         });
         Admit::Refused

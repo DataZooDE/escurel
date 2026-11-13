@@ -48,6 +48,13 @@ Distributed runtimes, SKILL.md interop and a Teams bridge (epic #817: #818, #824
 **Behaviour changes to note:** a third system skill (`runtime`) appears in `list_skills`; the gateway's page-chat
 reply rule and the runner's chat rule accept `captured_via: bridge:<channel>`.
 
+- **Breaking — every runner needs an admin credential.** A runner whose `claim_event` is refused for
+  authorisation (`-32001` / `-32003` / `401` / `403`) now takes **no** inbox work, lone or in a fleet (the
+  lone-runner exception is gone), and logs *the runner credential needs escurel:admin to claim events*; every
+  runner checks `whoami` at boot and logs that error when it is not an admin (it keeps serving `/healthz`). A
+  gateway without claim tools (`-32601`) and synthetic webhook events are unaffected. **Upgrade step:** give the
+  runner an admin-capable credential (`escurel:admin` on `ESCUREL_RUNNER_TOKEN` / `_FILE`, or minting mode)
+  before rolling out. A dev gateway without OIDC treats every caller as admin.
 - **Breaking — skill authority keys need an admin.** A write that adds, removes or changes an authority key
   (`acl`, `agent`, `autonomy`, `schedule`, `requires`, `harness`, `model`, `cascade`, `actions`, `backend`, …;
   `escurel_types::skill_authority`) on a skill page lands only for an `escurel:admin` person or a member of the

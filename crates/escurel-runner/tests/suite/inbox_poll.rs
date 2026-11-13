@@ -95,7 +95,8 @@ async fn poller_pulls_inbox_event_and_dedups_with_webhook() {
     assert!(found, "seeded event must be in the gateway inbox: {inbox}");
 
     // 2. Spawn the real runner, pointed at the gateway, polling fast.
-    let token = gateway.mint_token(TENANT, Role::Agent);
+    // The runner credential must be an admin to claim events (a non-admin runner takes nothing).
+    let token = gateway.mint_token(TENANT, Role::Admin);
     let port = free_port();
     let listen = format!("127.0.0.1:{port}");
     // One ledger file per runner: DuckDB allows a single writer per file, so

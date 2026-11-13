@@ -288,7 +288,8 @@ async fn gemini_case(vertex: bool) {
     let seen = Arc::new(Mutex::new(Seen::default()));
     let model_base = spawn_stub_model(instance_page_id.clone(), Arc::clone(&seen), vertex).await;
 
-    let token = gateway.mint_token(TENANT, Role::Agent);
+    // The runner credential must be an admin to claim events (a non-admin runner takes nothing).
+    let token = gateway.mint_token(TENANT, Role::Admin);
     let listen = format!("127.0.0.1:{}", free_port());
     // Its OWN ledger. Without this the runner falls back to
     // `./escurel-runner-ledger.sqlite` in the crate directory — one file

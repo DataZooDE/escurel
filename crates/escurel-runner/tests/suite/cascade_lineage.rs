@@ -132,7 +132,8 @@ async fn confirmed_cross_skill_write_cascades_a_lineage_tagged_event() {
         .to_owned();
 
     // 3. Spawn the real runner with the echo harness, fast poll.
-    let token = gateway.mint_token(TENANT, Role::Agent);
+    // The runner credential must be an admin to claim events (a non-admin runner takes nothing).
+    let token = gateway.mint_token(TENANT, Role::Admin);
     let port = free_port();
     let listen = format!("127.0.0.1:{port}");
     let ledger_dir = tempfile::tempdir().expect("tempdir for ledger");
@@ -326,7 +327,8 @@ async fn cross_skill_write_to_a_flat_page_id_also_cascades() {
         .expect("capture_event returns an event_id")
         .to_owned();
 
-    let token = gateway.mint_token(TENANT, Role::Agent);
+    // The runner credential must be an admin to claim events (a non-admin runner takes nothing).
+    let token = gateway.mint_token(TENANT, Role::Admin);
     let port = free_port();
     let listen = format!("127.0.0.1:{port}");
     let ledger_dir = tempfile::tempdir().expect("tempdir for ledger");

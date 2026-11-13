@@ -265,9 +265,12 @@ id registers a second `runtime` page while the old one reads `stale`. Two
 runners on one machine need two ledgers and two listen ports. Stopping the
 laptop leaves its unfinished events in the inbox once their lease lapses
 (`ESCUREL_RUNNER_CLAIM_LEASE`); work only it can take waits there for it.
-A labelled or exclusive runner needs an `escurel:admin` credential to claim:
-without one it logs *the runner credential needs escurel:admin to claim* at
-boot and takes no inbox work. On a short-lived service credential, point
+**Every runner needs an `escurel:admin` credential** (a static or file token
+with the admin role, or a minting runner, whose own token is admin): without
+one it logs *the runner credential needs escurel:admin to claim events* at
+boot and takes no inbox work — lone or labelled, it keeps serving `/healthz`
+so the error is what you see. A dev gateway without OIDC treats every caller
+as admin, so any bearer works there. On a short-lived service credential, point
 `ESCUREL_RUNNER_TOKEN_FILE` at a file a sidecar refreshes instead of pasting
 `ESCUREL_RUNNER_TOKEN`: the runner re-reads it whenever it changes, so a
 rotation needs no restart (a pasted token that expires shows only as `401`s

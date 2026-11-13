@@ -283,7 +283,7 @@ async fn main() -> anyhow::Result<()> {
             .collect();
     if let (Some(gate), Some(source)) = (gate.as_ref(), tokens.as_ref()) {
         gate.apply_probe(&escurel_runner_core::runtime::probe_harnesses(&harness_clis).await);
-        if gate.needs_claims() && config.webhook_secret.is_some() {
+        if !gate.is_lone() && config.webhook_secret.is_some() {
             tracing::warn!(
                 target: "escurel_runner",
                 "ESCUREL_RUNNER_LABELS / ESCUREL_RUNNER_EXCLUSIVE with webhook ingress: a webhook \
@@ -294,7 +294,6 @@ async fn main() -> anyhow::Result<()> {
         tokio::spawn(claim_preflight(
             config.gateway_url.clone(),
             Arc::clone(source),
-            gate.needs_claims(),
         ));
         tokio::spawn(lease_renewal_loop(
             config.gateway_url.clone(),
@@ -4782,23 +4781,21 @@ async fn lease_renewal_loop(
 }
 
 /// Say at boot, loudly, when this runner's credential cannot claim (crew
-/// U-F3): a labelled or exclusive runner is a fleet member, and without
-/// `escurel:admin` every claim is refused, so it takes no inbox work. It is
-/// not a reason to refuse to start — webhooks for a lone setup still work.
-async fn claim_preflight(
-    gateway_url: String,
-    tokens: Arc<escurel_runner_core::TokenSource>,
-    needs_claims: bool,
-) {
+/// U-F3; owner decision 2026-11-13): without `escurel:admin` every claim is
+/// refused, so the runner takes no inbox work at all. It is not a reason to
+/// refuse to start: the runner keeps serving `/healthz`, so the operator sees
+/// this error instead of a crash loop.
+async fn claim_preflight(gateway_url: String, tokens: Arc<escurel_runner_core::TokenSource>) {
     let Some(client) = connect_now(&gateway_url, &tokens).await else {
         return;
     };
     match client.whoami().await {
-        Ok(me) if !me.is_admin && needs_claims => tracing::error!(
+        Ok(me) if !me.is_admin => tracing::error!(
             target: "escurel_runner",
             subject = %me.subject,
-            "the runner credential needs escurel:admin to claim: with ESCUREL_RUNNER_LABELS or \
-             ESCUREL_RUNNER_EXCLUSIVE set this runner takes no inbox work until it has it"
+            "the runner credential needs escurel:admin to claim events: this runner takes no \
+             inbox work until it has it — give it an admin credential (ESCUREL_RUNNER_TOKEN / \
+             ESCUREL_RUNNER_TOKEN_FILE with the escurel:admin role, or a minting runner)"
         ),
         Ok(_) => {}
         Err(e) => {

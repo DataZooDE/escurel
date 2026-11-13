@@ -119,7 +119,8 @@ async fn echo_harness_folds_event_into_instance_end_to_end() {
     );
 
     // 3. Spawn the real runner with the echo harness selected, fast poll.
-    let token = gateway.mint_token(TENANT, Role::Agent);
+    // The runner credential must be an admin to claim events (a non-admin runner takes nothing).
+    let token = gateway.mint_token(TENANT, Role::Admin);
     let port = free_port();
     let listen = format!("127.0.0.1:{port}");
     // Its OWN ledger. Without this the runner falls back to
