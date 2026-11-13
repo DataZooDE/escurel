@@ -4,8 +4,11 @@
 //! `acl.update` groups — never the incoming page's, or a draft could add its
 //! author to the ACL and promote itself. `description` and the body stay free.
 //!
-//! Real gateway over HTTP; every write door a skill page has: `update_page`,
-//! `promote_draft`, `delete_page`, `move_page`.
+//! Real gateway over HTTP; every write door a skill page has: `update_page`
+//! (branch writes too), `promote_draft`, `promote_changeset`, `merge_branch`,
+//! the `close_session` commit, `delete_page`, `move_page`, and the pack tools.
+//! Log mode's warning is asserted in `tests/logs_json.rs`, which owns a log
+//! capture.
 
 use escurel_server::WriteAclMode;
 use escurel_test_support::{AuthMode, ConfigOverrides, EscurelProcess, FixtureBuilder, Opts, Role};
@@ -214,14 +217,6 @@ async fn deleting_or_moving_a_governed_skill_needs_its_acl() {
     p.shutdown().await;
 }
 
-#[tokio::test]
-async fn log_mode_logs_and_allows() {
-    let p = gateway(WriteAclMode::Log).await;
-    let open = "---\nkind: skill\nid: playbook\ndescription: How we ship.\n---\n# playbook\n";
-    ok(&p, &member(&p), "update_page", write(PAGE, open)).await;
-    p.shutdown().await;
-}
-
 /// An enforcing gateway with the CRDT backend: sessions, versions, auto-merge.
 async fn crdt_gateway() -> EscurelProcess {
     EscurelProcess::spawn(Opts {
@@ -397,6 +392,107 @@ async fn a_member_cannot_unfreeze_a_skills_instances() {
         "update_page",
         write(PAGE, PLAYBOOK),
         &["freeze_when"],
+    )
+    .await;
+    p.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_changeset_that_changes_a_skills_authority_lands_nothing() {
+    let p = gateway(WriteAclMode::Enforce).await;
+    let bob = member(&p);
+    let note = "markdown/instances/note/n1.md";
+    let first = ok(
+        &p,
+        &bob,
+        "create_draft",
+        json!({ "target_page_id": note, "new_changeset": true,
+                "content": "---\nkind: instance\nskill: note\nid: n1\nowner: member:bob\n---\n# n1\n" }),
+    )
+    .await;
+    let changeset = first["draft"]["changeset_id"].as_str().expect("changeset");
+    let bound = PLAYBOOK.replace("acl:", "agent: \"[[agent::deploy-bot]]\"\nacl:");
+    ok(
+        &p,
+        &bob,
+        "create_draft",
+        json!({ "target_page_id": PAGE, "changeset_id": changeset, "content": bound }),
+    )
+    .await;
+    refused(
+        &p,
+        &bob,
+        "promote_changeset",
+        json!({ "changeset_id": changeset }),
+        &["agent"],
+    )
+    .await;
+    let n1 = rpc(&p, &admin(&p), "expand", json!({ "page_id": note })).await;
+    assert!(
+        n1["result"]["structuredContent"]["body"].is_null(),
+        "the note landed nothing either: {n1}"
+    );
+    assert!(!stored(&p).await.contains("deploy-bot"));
+    p.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_branch_cannot_carry_an_authority_change_to_the_base() {
+    let p = gateway(WriteAclMode::Enforce).await;
+    let bob = member(&p);
+    let bound = PLAYBOOK.replace("acl:", "agent: \"[[agent::deploy-bot]]\"\nacl:");
+    ok(&p, &bob, "create_branch", json!({ "name": "wip" })).await;
+    // Bob's own branch write is judged like any write (the overlay is a new skill page).
+    let mut args = write(PAGE, &bound);
+    args["branch"] = json!("wip");
+    refused(&p, &bob, "update_page", args.clone(), &["acl", "agent"]).await;
+    // An admin puts it on Bob's branch; Bob merging it is still Bob changing the base skill.
+    ok(&p, &admin(&p), "update_page", args).await;
+    refused(
+        &p,
+        &bob,
+        "merge_branch",
+        json!({ "name": "wip" }),
+        &["agent"],
+    )
+    .await;
+    assert!(!stored(&p).await.contains("deploy-bot"), "nothing landed");
+    p.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_machine_with_the_admin_role_never_changes_authority_keys() {
+    let p = gateway(WriteAclMode::Enforce).await;
+    ok(&p, &admin(&p), "update_page", write(RUNBOOK, RUNBOOK_NOTE)).await;
+    // Not a skill path, so the autonomy gate does not hold it as a draft: the authority gate decides.
+    let run = p.mint_token_for_run(TENANT, Role::Admin, "agent:bot", "run-1", "evt-1");
+    refused(
+        &p,
+        &run,
+        "update_page",
+        write(RUNBOOK, RUNBOOK_SKILL),
+        &["autonomy", "schedule"],
+    )
+    .await;
+    // The same write by a person with the admin role lands.
+    ok(&p, &admin(&p), "update_page", write(RUNBOOK, RUNBOOK_SKILL)).await;
+    p.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_stored_acl_update_of_public_grants_a_member_nothing() {
+    let p = gateway(WriteAclMode::Enforce).await;
+    let page = "markdown/skills/open.md";
+    let open =
+        "---\nkind: skill\nid: open\ndescription: o\nacl:\n  update: [public]\n---\n# open\n";
+    ok(&p, &admin(&p), "update_page", write(page, open)).await;
+    let scheduled = open.replace("acl:", "schedule: \"0 9 * * 1\"\nacl:");
+    refused(
+        &p,
+        &member(&p),
+        "update_page",
+        write(page, &scheduled),
+        &["schedule"],
     )
     .await;
     p.shutdown().await;
