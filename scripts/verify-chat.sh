@@ -8,7 +8,8 @@
 # person: whoami → create a conversation → append the turn → capture the
 # `chat` event → poll list_messages for the assistant's answer.
 #
-# Called by scripts/verify-demo.sh; runs on its own too (needs cargo, curl, jq).
+# Called by scripts/verify-demo.sh; runs on its own too (needs cargo — or
+# ESCUREL_BIN_DIR with prebuilt binaries — curl, jq).
 # Exit 0 = the run answered. Logs stay in the printed directory on failure.
 set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -16,12 +17,21 @@ fail() { echo "FAIL: $*" >&2; exit 1; }
 note() { echo ">>> $*"; }
 for c in cargo curl jq sha256sum; do command -v "$c" >/dev/null || fail "$c not on PATH"; done
 
-note "chat: building escurel-test-gateway + escurel-runner"
-cargo build -q -p escurel-test-support --bin escurel-test-gateway \
-  && cargo build -q -p escurel-runner --bins \
-  || fail "cargo build chat stack"
+# ESCUREL_BIN_DIR runs prebuilt binaries (a release build elsewhere) instead.
+if [[ -n "${ESCUREL_BIN_DIR:-}" ]]; then
+  BIN="$ESCUREL_BIN_DIR"
+  for b in escurel-test-gateway escurel-runner; do
+    [[ -x "$BIN/$b" ]] || fail "no $b in ESCUREL_BIN_DIR=$BIN"
+  done
+else
+  note "chat: building escurel-test-gateway + escurel-runner"
+  cargo build -q -p escurel-test-support --bin escurel-test-gateway \
+    && cargo build -q -p escurel-runner --bins \
+    || fail "cargo build chat stack"
+  BIN="$ROOT/target/debug"
+fi
 CHAT_HOME="$(mktemp -d)"
-"$ROOT/target/debug/escurel-test-gateway" --tenant chat --seed "$ROOT/examples/chat/seed" \
+"$BIN/escurel-test-gateway" --tenant chat --seed "$ROOT/examples/chat/seed" \
   --subject verify-demo --write-acl-enforce >"$CHAT_HOME/gateway.json" 2>"$CHAT_HOME/gateway.log" &
 CHAT_GW_PID=$!
 for _ in $(seq 1 120); do [[ -s "$CHAT_HOME/gateway.json" ]] && break; sleep 0.5; done
@@ -37,7 +47,7 @@ env -u ESCUREL_RUNNER_TOKEN \
   ESCUREL_RUNNER_AUTH_SIGNING_KEY="$(cg signing_key)" ESCUREL_RUNNER_HARNESS=echo \
   ESCUREL_RUNNER_LISTEN=127.0.0.1:0 ESCUREL_RUNNER_LEDGER_PATH="$CHAT_HOME/ledger.duckdb" \
   ESCUREL_RUNNER_POLL_INTERVAL=250ms \
-  "$ROOT/target/debug/escurel-runner" >"$CHAT_HOME/runner.log" 2>&1 &
+  "$BIN/escurel-runner" >"$CHAT_HOME/runner.log" 2>&1 &
 CHAT_RUNNER_PID=$!
 trap 'kill "$CHAT_GW_PID" "$CHAT_RUNNER_PID" >/dev/null 2>&1 || true' EXIT
 chat_mcp() {

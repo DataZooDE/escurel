@@ -10,6 +10,9 @@
 #   2. drives the *real backend* via in-page POST /mcp probes — proving
 #      seed + as_of time-travel + scenario overlay + the event/inbox
 #      tools resolve end-to-end, and
+#   2b. seeds an agent profile + two finished runs and asserts the page
+#      cost badge (deep-linked spine page) and the Agents inspector panel
+#      render them, with usage_report probes behind both, and
 #   3. asks the governed chat agent a question on its own verifying stack
 #      (scripts/verify-chat.sh): the real escurel-runner answers it as the
 #      asker — capture → run → result. Captures a screenshot.
@@ -27,6 +30,9 @@
 #   coverage lives in the flutter widget tests + the no-mock Rust
 #   integration tests. Do NOT add ax/JS clicks expecting them to drive
 #   Flutter — they won't.
+#
+# ESCUREL_BIN_DIR=<dir> runs prebuilt escurel-server / escurel-test-gateway /
+# escurel-runner from <dir> instead of cargo; ESCUREL_DEMO_PORT moves the port.
 #
 # Exit 0 = all region labels present + all backend probes passed.
 set -uo pipefail
@@ -57,6 +63,16 @@ if [[ "${BUILD:-1}" == "1" || ! -f "$APP/build/web/index.html" ]]; then
     || fail "flutter build web"
 fi
 
+# ESCUREL_BIN_DIR (as in scripts/*-job.sh) runs prebuilt binaries instead of
+# cargo — a release build elsewhere, say; verify-chat.sh honours it too.
+if [[ -n "${ESCUREL_BIN_DIR:-}" ]]; then
+  [[ -x "$ESCUREL_BIN_DIR/escurel-server" ]] || fail "no escurel-server in ESCUREL_BIN_DIR=$ESCUREL_BIN_DIR"
+  SERVER_CMD=("$ESCUREL_BIN_DIR/escurel-server")
+else
+  SERVER_CMD=(cargo run -q -p escurel-server)
+fi
+mkdir -p "$ROOT/target"
+
 DATA_DIR="$(mktemp -d)"
 note "starting escurel-server (seed=$SEED_DIR, data=$DATA_DIR)"
 # Metrics scraping is irrelevant to the demo and would otherwise bind
@@ -70,7 +86,7 @@ ESCUREL_OBSERVABILITY_METRICS_LISTEN="" \
 ESCUREL_EMBEDDING_PROVIDER="zero" \
 ESCUREL_SQL_FILE_DIRS="$SEED_DIR/sources" \
 ESCUREL_WEBHOOK_URL="$BASE/__webhook_sink" \
-  cargo run -q -p escurel-server >"$ROOT/target/escurel-demo.log" 2>&1 &
+  "${SERVER_CMD[@]}" >"$ROOT/target/escurel-demo.log" 2>&1 &
 SERVER_PID=$!
 cleanup() { "$RODNEY" stop >/dev/null 2>&1 || true; kill "$SERVER_PID" >/dev/null 2>&1 || true; rm -rf "$DATA_DIR"; }
 trap cleanup EXIT
@@ -85,6 +101,41 @@ curl -fsS "$BASE/healthz" >/dev/null 2>&1 || fail "server did not come up"
 note "running scripts/demo-setup.sh against $BASE"
 ESCUREL_DEMO_BASE="$BASE" "$ROOT/scripts/demo-setup.sh" || fail "demo-setup.sh failed"
 
+# --- agents + usage: an agent profile and two finished runs ---------------
+# The cost badge and the Agents panel read usage_report, which folds
+# `run-finished` rows. A real runner cannot run against this gateway (it has
+# no verifier or signing key to mint a run token from — the chat stage below
+# brings its own), so the rows are filed the way the runner files them
+# (`RunEventCtx::emit_finished`): `escurel:run`, `kind: system`, admin-only —
+# open here, as the demo gateway runs without a verifier. They target the
+# engagement spine and act as the `scribe` profile seeded first.
+seed_mcp() {
+  jq -nc --arg name "$1" --argjson args "$2" \
+    '{jsonrpc: "2.0", id: 1, method: "tools/call", params: {name: $name, arguments: $args}}' \
+    | curl -fsS -X POST "$BASE/mcp" -H 'content-type: application/json' --data-binary @-
+}
+note "seeding the scribe agent profile + two run-finished rows"
+SCRIBE_DOC="$(printf -- '---\nkind: instance\nskill: agent\nid: scribe\nharness: echo\nmodel: claude-sonnet-4\nskills: ["[[skill::engagement]]"]\nscopes:\n  tools: [search, expand, update_page]\n  write: ["markdown/instances/engagement/*"]\nmax_concurrent: 2\n---\n# scribe\n\nKeeps engagement spines current.\n')"
+seed_mcp update_page "$(jq -nc --arg c "$SCRIBE_DOC" '{page_id: "markdown/instances/agent/scribe.md", base_sha256: "", content: $c}')" \
+  | jq -e '.result.structuredContent.ok == true' >/dev/null || fail "could not seed the scribe agent profile"
+SPINE_PAGE="$(seed_mcp resolve '{"wikilink":"[[engagement::hoffmann-spine]]"}' | jq -r '.result.structuredContent.page.page_id // empty')"
+[[ -n "$SPINE_PAGE" ]] || fail "could not resolve the spine page for the usage seed"
+RUN_AT="$(date -u -d '-1 hour' +%Y-%m-%dT%H:%M:%SZ)"
+for run in 1:processed:0.30 2:failed:0.12; do
+  IFS=: read -r n status cost <<<"$run"
+  seed_mcp capture_event "$(jq -nc --arg id "verify-demo-$n" --arg page "$SPINE_PAGE" --arg at "$RUN_AT" \
+      --arg status "$status" --argjson cost "$cost" '{
+        event_id: ("run:" + $id + ":finished"), at: $at, source: "escurel-runner",
+        mime: "application/json", label_skill: "escurel:run", instance_page_id: $page,
+        title: "run-finished", kind: "system",
+        body: ({status: $status, attempts: 1,
+                usage: {input_tokens: 1000, output_tokens: 200, cost_usd: $cost, model: "claude-sonnet-4"}} | tojson),
+        provenance: {runner: {run_id: $id, root_event_id: ("ev-" + $id), event_id: ("ev-" + $id),
+                              skill: "engagement", agent: "scribe", harness: "echo",
+                              model: "claude-sonnet-4", target_page_id: $page}}}')" \
+    | jq -e '.result.structuredContent.event_id' >/dev/null || fail "could not file run-finished $n"
+done
+
 mkdir -p "$SHOTS"
 "$RODNEY" start >/dev/null 2>&1 || fail "rodney start"
 note "open $BASE/  (the editor — inbox/events/webhooks/members folded in)"
@@ -97,9 +148,16 @@ note "open $BASE/  (the editor — inbox/events/webhooks/members folded in)"
 # Semantics(label:) with its visible text into one aria-label value
 # (e.g. `tab-events\nEvents`); the `tab-*` tokens are distinct so there's
 # no cross-match. Container labels materialise reliably; nested
-# excludeSemantics chips do not (see SCOPE).
+# excludeSemantics chips do not (see SCOPE). A LEAF node (no semantics
+# children — a top-level excludeSemantics badge such as page-cost-badge) is
+# rendered with its label as text content, not aria-label, so leaves match
+# on their text; leaf_text prints the first such leaf's text (label + value).
+leaf_js() { echo "Array.from(document.querySelectorAll('flt-semantics')).filter(function(e){return (e.getAttribute('aria-label')||'').includes('$1')||(!e.querySelector('flt-semantics')&&(e.textContent||'').includes('$1'))})"; }
 label_count() {
-  "$RODNEY" js "document.querySelectorAll('flt-semantics[aria-label*=\"$1\"]').length" 2>/dev/null
+  "$RODNEY" js "$(leaf_js "$1").length" 2>/dev/null
+}
+leaf_text() {
+  "$RODNEY" js "(function(l){return l.length?(l[0].getAttribute('aria-label')||l[0].textContent):''})($(leaf_js "$1"))" 2>/dev/null
 }
 wait_label() {
   for _ in $(seq 1 30); do
@@ -128,6 +186,20 @@ present tab-chat
 # a Flutter tab: `?rail=chat` opens the rail on it.
 "$RODNEY" open "$BASE/?rail=chat" >/dev/null 2>&1 || fail "rodney open ?rail=chat"
 present chat-panel
+# The per-page cost badge (admin-only; the demo caller is admin): deep-link
+# the seeded spine, whose two runs cost $0.42.
+SPINE_ENC="$(jq -rn --arg p "$SPINE_PAGE" '$p | @uri')"
+"$RODNEY" open "$BASE/#/p/$SPINE_ENC" >/dev/null 2>&1 || fail "rodney open the spine page"
+present page-cost-badge
+badge="$(leaf_text page-cost-badge)"
+[[ "$badge" == *'$0.42 · 2 runs (30d)'* ]] || fail "cost badge should read \$0.42 · 2 runs (30d) (got '$badge')"
+note "probe ok: cost badge = ${badge//$'\n'/ }"
+
+# The Agents inspector panel lists the seeded profile.
+"$RODNEY" open "$BASE/#/inspector/agents" >/dev/null 2>&1 || fail "rodney open /inspector/agents"
+present agents-panel
+present agent-row:scribe
+
 "$RODNEY" open "$BASE/" >/dev/null 2>&1 || fail "rodney reopen /"
 present tab-events
 
@@ -148,6 +220,14 @@ expect_int() {
   [[ "$got" == "$want" ]] || fail "$label: expected $want, got '$got'"
   note "probe ok: $label = $got"
 }
+
+note "probe: usage_report folds the seeded runs (cost badge + Agents panel data)"
+expect_int "whoami is_admin (badge shown)" "$(mcp_int whoami '{}' 'r.is_admin')" "true"
+by_page="r.rows.find(function(x){return x.group.page==='$SPINE_PAGE'})"
+expect_int "spine runs (group_by page)" "$(mcp_int usage_report '{"group_by":["page"]}' "(($by_page)||{}).runs")" "2"
+by_agent="r.rows.find(function(x){return x.group.agent==='agent:scribe'})"
+expect_int "scribe runs~processed (group_by agent)" \
+  "$(mcp_int usage_report '{"group_by":["agent"]}' "(($by_agent)||{}).runs+'~'+((($by_agent)||{}).by_status||{}).processed")" "2~1"
 
 note "probe: seed populated (engagement instances)"
 eng=$(mcp_int list_instances '{"skill_id":"engagement"}' 'r.instances.length')
