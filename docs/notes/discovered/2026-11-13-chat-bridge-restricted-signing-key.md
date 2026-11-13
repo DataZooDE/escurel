@@ -10,10 +10,12 @@ the bridge captured for a person read exactly like one they typed themselves
 was "exactly the person, as their own token would present them" while it
 silently dropped their IdP groups.
 
-**Decision (now).** The bridge holds a key of its own. The gateway lists its kid
-in `ESCUREL_AUTH_BRIDGE_KID`; `OidcVerifier` routes any token under that kid
-through `bridge_context` (`crates/escurel-auth/src/verifier.rs`), which bounds
-it regardless of its claims:
+**Decision (now).** The bridge holds a key of its own. The gateway names the
+bridge's issuer in `ESCUREL_AUTH_BRIDGE_ISSUER` and pins it to the kid in
+`ESCUREL_AUTH_BRIDGE_KID`; `OidcVerifier` routes every token verified against
+that trust entry through `bridge_context`
+(`crates/escurel-auth/src/verifier.rs`), which bounds it regardless of its
+claims:
 
 - `exp - iat` and `exp - now` at most 900 s, else `401`;
 - `agent`, `skill`, `run_id`, `root_event_id`, `purpose`, `act` present → `401`
@@ -43,3 +45,32 @@ own credential.
 **Recognise it next time.** Any service that "acts as a person" by signing
 tokens: ask whose key it holds and what the *gateway* — not the service —
 limits a token under that key to.
+
+## Follow-up: a kid-scoped restriction does not restrict whoever serves the JWKS
+
+**Symptom (crew security review of PR-2, F1).** The first cut keyed the
+restriction on the token's `kid`: `if bridge_kids.contains(&kid) {
+bridge_context(..) }`, checked after the key was fetched from the issuer's
+JWKS. But the bridge's trust entry fetches its JWKS *from the bridge itself*
+(and the deploy guide showed that URL as plain http). Whoever controls that
+response — a compromised bridge host, or anyone on the network path — could
+publish a second key under kid `evil`, sign `{iss: <bridge>, roles:
+[escurel:admin, escurel:operator]}` with it, and the gateway would refresh on
+the unknown kid, verify the signature, find `evil` not in the list, and take
+the **unrestricted** path. The restriction meant to contain a compromised
+bridge was bypassed by exactly a compromised bridge.
+
+**Fix.** The restriction belongs to the trust entry. `ESCUREL_AUTH_BRIDGE_ISSUER`
+marks one configured issuer as the bridge; every token verified against it is
+a bridge token whatever its kid. The kid list stays as a pin, checked before
+any key fetch: a token from the bridge entry under an unlisted kid is refused,
+and so is a token from another entry under a bridge kid. The gateway refuses to
+start when a bridge kid has no bridge issuer, the bridge issuer is not a trusted
+issuer, or the bridge issuer has no kid. Regression test:
+`crates/escurel-auth/tests/oidc.rs` `bridge_entry::a_rogue_kid_in_the_bridge_jwks_with_admin_operator_and_run_claims_is_refused`.
+The deploy guide now says https for the bridge JWKS.
+
+**Recognise it next time.** A restriction keyed on something the restricted
+party chooses (a kid in a key set it publishes, a claim it signs, a header it
+sends) restricts nobody but the honest. Key the restriction on what the
+*verifier* chose — the trust entry the token was verified against.

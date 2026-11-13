@@ -165,9 +165,13 @@ pub struct ConfigOverrides {
     /// one Escurel also trusts Triton's (or another service's) signer.
     /// Requires an auth mode with a verifier (not `Disabled`).
     pub extra_issuers: Vec<(String, String)>,
-    /// Key ids the gateway treats as a chat bridge's (production
-    /// `ESCUREL_AUTH_BRIDGE_KID`): tokens under them are restricted. Pair with
-    /// an [`crate::ExtraIssuer::start_with_own_key`] in `extra_issuers`.
+    /// The trusted issuer that is a chat bridge (production
+    /// `ESCUREL_AUTH_BRIDGE_ISSUER`): every token verified against it is
+    /// restricted. Pair with an [`crate::ExtraIssuer::start_with_own_key`] in
+    /// `extra_issuers` and its kid in [`Self::bridge_kids`].
+    pub bridge_issuer: Option<String>,
+    /// Key ids the bridge entry is pinned to (production
+    /// `ESCUREL_AUTH_BRIDGE_KID`).
     pub bridge_kids: Vec<String>,
     /// The gateway's claim boot grace (`ESCUREL_EVENT_CLAIM_BOOT_GRACE_SECS`);
     /// `None` = the production default.
@@ -446,6 +450,9 @@ impl EscurelProcess {
             }
             for (iss, jwks) in &overrides.extra_issuers {
                 cfg = cfg.with_additional_issuer(iss.clone(), Some(jwks.clone()));
+            }
+            if let Some(issuer) = &overrides.bridge_issuer {
+                cfg = cfg.with_bridge_issuer(issuer.clone());
             }
             for kid in &overrides.bridge_kids {
                 cfg = cfg.with_bridge_kid(kid.clone());

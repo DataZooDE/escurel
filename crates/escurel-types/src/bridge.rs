@@ -1,8 +1,10 @@
 //! A chat-channel bridge acting for a person (#824).
 //!
 //! The bridge (`escurel-chat-bridge`) signs short-lived tokens for the people
-//! it answers, under a key of its own whose `kid` the gateway lists in
-//! `ESCUREL_AUTH_BRIDGE_KID`. The gateway's verifier restricts such a token:
+//! it answers, under a key of its own and an issuer the gateway names in
+//! `ESCUREL_AUTH_BRIDGE_ISSUER` (pinned to the key's `kid`,
+//! `ESCUREL_AUTH_BRIDGE_KID`). The gateway's verifier restricts every token
+//! from that issuer, whatever kid it names:
 //! a short TTL, no roles or groups, no agent or run claims, and an actor of
 //! `bridge:<channel>` — which the gateway stamps into what the token captures
 //! as `captured_via`, so a turn the bridge relayed is told apart from one the

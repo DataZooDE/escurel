@@ -42,8 +42,9 @@ start it.
 4. **Acts for that person**: it signs a 15-minute token for the principal with the bridge's
    **own** key (`ESCUREL_BRIDGE_AUTH_SIGNING_KEY`, kid `ESCUREL_BRIDGE_AUTH_KID`). Never hand the
    bridge the gateway's main signing key or a runner's: the bridge is internet-facing, and that
-   key can sign any subject as admin. The gateway lists the bridge kid in
-   `ESCUREL_AUTH_BRIDGE_KID` and restricts every token under it, whatever it says: at most 900 s,
+   key can sign any subject as admin. The gateway names the bridge's issuer in
+   `ESCUREL_AUTH_BRIDGE_ISSUER` (pinned to its kid, `ESCUREL_AUTH_BRIDGE_KID`) and restricts every
+   token from it, whatever it says and whichever kid it names: at most 900 s,
    never admin or operator, no roles or groups, no agent or run claims. The event reads
    `captured_by: <person>` and `captured_via: bridge:msteams` (stamped by the gateway), and the
    run answers with the person's read rights **minus their IdP groups**: the bridge does not know
@@ -142,7 +143,7 @@ path publicly beyond what `/api/messages` already is; it holds nothing secret.
 
 ## Gateway side
 
-Add the bridge as one more trusted issuer and restrict its kid. `<N>` is the next free number in
+Add the bridge as one more trusted issuer, mark it as the bridge, and pin its kid. `<N>` is the next free number in
 the gateway's contiguous `ESCUREL_AUTH_OIDC_ISSUER_2.._N` sequence (a gap stops the scan; use `2`
 if there is no second issuer yet). The issuer string is any URL you choose; it only has to equal
 the bridge's `ESCUREL_BRIDGE_AUTH_ISSUER`. The extra issuer shares the gateway's audience
@@ -152,15 +153,25 @@ default `escurel`) and tenant claim.
 ```sh
 # on the gateway
 ESCUREL_AUTH_OIDC_ISSUER_2=https://chat-bridge.escurel.internal
-ESCUREL_AUTH_JWKS_URI_2=http://escurel-chat-bridge:3978/.well-known/jwks.json
+ESCUREL_AUTH_JWKS_URI_2=https://escurel-chat-bridge:3978/.well-known/jwks.json
+ESCUREL_AUTH_BRIDGE_ISSUER=https://chat-bridge.escurel.internal   # = ESCUREL_AUTH_OIDC_ISSUER_2
 ESCUREL_AUTH_BRIDGE_KID=escurel-chat-bridge-1
 ```
 
-Every token under that kid is restricted (at most 900 s, never admin or operator, no roles or
-groups, no agent or run claims) whatever it says. Rotating the bridge key: generate a new key,
+Every token verified against that issuer is restricted (at most 900 s, never admin or operator, no
+roles or groups, no agent or run claims) whatever it says, and a token from it under any kid other
+than `ESCUREL_AUTH_BRIDGE_KID` is refused. The gateway refuses to start when
+`ESCUREL_AUTH_BRIDGE_KID` is set without `ESCUREL_AUTH_BRIDGE_ISSUER`, when the bridge issuer is not
+one of its trusted issuers, or when it has no kid.
+
+**Fetch the bridge's JWKS over https** (or a path nobody else can write to, such as a
+loopback-only sidecar). Whoever controls that response decides which keys sign as the bridge. With
+the restriction bound to the issuer and pinned to the kid, a forged key set buys no more than the
+bridge key itself would, but on plain http anyone on the network path gets that much. The gateway
+reads JWKS over HTTP(S) only; it has no static-file JWKS option. Rotating the bridge key: generate a new key,
 deploy the bridge with it and a new `ESCUREL_BRIDGE_AUTH_KID`, and set
 `ESCUREL_AUTH_BRIDGE_KID=<old>,<new>` until the old one is gone (the gateway re-reads the JWKS on an
-unknown kid). The decision and the intended end state (a gateway-side mint, so the bridge holds no
+unknown listed kid). The decision and the intended end state (a gateway-side mint, so the bridge holds no
 signing key at all) are in
 `docs/notes/discovered/2026-11-13-chat-bridge-restricted-signing-key.md`.
 
@@ -173,7 +184,7 @@ deployment (the recommended internal bot):
 # escurel
 ESCUREL_BRIDGE_GATEWAY_URL=http://escurel:8080
 ESCUREL_BRIDGE_TENANT=acme
-ESCUREL_BRIDGE_AUTH_ISSUER=https://chat-bridge.escurel.internal   # = the gateway's ESCUREL_AUTH_OIDC_ISSUER_<N>
+ESCUREL_BRIDGE_AUTH_ISSUER=https://chat-bridge.escurel.internal   # = the gateway's ESCUREL_AUTH_BRIDGE_ISSUER (and _OIDC_ISSUER_<N>)
 ESCUREL_BRIDGE_AUTH_KID=escurel-chat-bridge-1                     # = the gateway's ESCUREL_AUTH_BRIDGE_KID
 ESCUREL_BRIDGE_AUTH_SIGNING_KEY_FILE=/run/secrets/escurel-chat-bridge.pem
 ESCUREL_BRIDGE_PRINCIPAL_TEMPLATE=user:{aadObjectId}              # = the person's own token `sub`

@@ -5,7 +5,8 @@
 //! (`page-chat:v1:<sha256(asker)>:<page>`) is where the turn and the answer
 //! live — the shape the runner answers in chat mode. Everything is done FOR
 //! THE ASKER: the bridge signs a short-lived token for the mapped principal
-//! with its OWN key, whose kid the gateway lists in `ESCUREL_AUTH_BRIDGE_KID`.
+//! with its OWN key, under an issuer the gateway names in
+//! `ESCUREL_AUTH_BRIDGE_ISSUER` (pinned to its kid, `ESCUREL_AUTH_BRIDGE_KID`).
 //! The gateway bounds such a token (≤ 900 s, no roles, groups or run claims)
 //! and stamps `captured_via: bridge:msteams` on the event, so it reads
 //! `captured_by: <asker>` relayed by the bridge; the run executes with the

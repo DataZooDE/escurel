@@ -38,7 +38,8 @@ pub struct GatewayConfig {
     /// The issuer the gateway trusts for this key (its JWKS publishes it).
     pub issuer: String,
     pub audience: String,
-    /// The bridge key's id: the gateway must list it in `ESCUREL_AUTH_BRIDGE_KID`.
+    /// The bridge key's id: the gateway names the bridge's issuer in
+    /// `ESCUREL_AUTH_BRIDGE_ISSUER` and pins it to this kid in `ESCUREL_AUTH_BRIDGE_KID`.
     pub kid: String,
     /// The bridge's OWN RSA private key (PEM), published by a JWKS the gateway
     /// trusts. Never the gateway's main signing key: the gateway restricts

@@ -381,7 +381,7 @@ impl ExtraIssuer {
     /// An issuer with a key of its OWN (not the process-wide test key the
     /// gateway's primary issuer uses), published under `kid` — the shape of
     /// a workload that must not hold the gateway's key, e.g. a chat bridge
-    /// whose kid the gateway lists in `ConfigOverrides::bridge_kids`.
+    /// whose issuer the gateway names in `ConfigOverrides::bridge_issuer`.
     pub async fn start_with_own_key(kid: &str) -> Self {
         let keys: &'static Keys = Box::leak(Box::new(Keys::generate()));
         let kid: &'static str = Box::leak(kid.to_owned().into_boxed_str());

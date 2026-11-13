@@ -146,11 +146,14 @@ trusted issuer's JWKS publishes), `ESCUREL_AUTH_SIGNING_KID`,
 `ESCUREL_AUTH_SIGNING_ISSUER` (defaults to the OIDC issuer). Without it
 the tool answers `unsupported`.
 
-**A chat bridge's token is restricted by its key.** `escurel-chat-bridge` signs
+**A chat bridge's token is restricted by its trust entry.** `escurel-chat-bridge` signs
 a token for each person it answers with a key of its own, never the gateway's
-main signing key. The gateway lists that key's id in `ESCUREL_AUTH_BRIDGE_KID`
-(the bridge publishes the key's public half at `GET /.well-known/jwks.json`, which
-the gateway trusts as an extra issuer's `ESCUREL_AUTH_JWKS_URI_<N>`), and a token under it
+main signing key. The bridge publishes the key's public half at `GET /.well-known/jwks.json`, which
+the gateway trusts as an extra issuer (`ESCUREL_AUTH_OIDC_ISSUER_<N>` +
+`ESCUREL_AUTH_JWKS_URI_<N>`, over https) and names as the bridge in `ESCUREL_AUTH_BRIDGE_ISSUER`,
+pinned to the key's id in `ESCUREL_AUTH_BRIDGE_KID`. EVERY token from that issuer is a bridge
+token whichever kid it names, and one under an unlisted kid is refused (`401`) — the bridge serves
+that JWKS, so a kid-only restriction would not restrict whoever controls it. A bridge token
 is bounded whatever it claims: at most 900 s (`exp - iat`; `exp - now` allows 60 s for a
 bridge clock running ahead, and the bridge mints 840 s), never
 admin or operator, **no roles or groups** (so ACLs that grant by IdP group do not

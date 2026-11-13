@@ -282,9 +282,9 @@ asker's page-chat turn plus a `chat` event, and the runner's reply goes back onc
 verifying gateway and a minted-mode runner. The bridge signs with a key of its OWN and serves its
 public half at `GET /.well-known/jwks.json`; the gateway trusts it as one more issuer
 (`ESCUREL_AUTH_OIDC_ISSUER_<N>` = the bridge's `ESCUREL_BRIDGE_AUTH_ISSUER`,
-`ESCUREL_AUTH_JWKS_URI_<N>` = `http://<bridge>/.well-known/jwks.json`) and restricts it by listing
-its kid in `ESCUREL_AUTH_BRIDGE_KID` (never the gateway's or the runner's key; references/08 § chat
-bridge):
+`ESCUREL_AUTH_JWKS_URI_<N>` = `http://<bridge>/.well-known/jwks.json`, https outside a laptop) and
+restricts it by naming that issuer in `ESCUREL_AUTH_BRIDGE_ISSUER` and its kid in
+`ESCUREL_AUTH_BRIDGE_KID` (never the gateway's or the runner's key; references/08 § chat bridge):
 
 ```sh
 cargo build -p escurel-chat-bridge

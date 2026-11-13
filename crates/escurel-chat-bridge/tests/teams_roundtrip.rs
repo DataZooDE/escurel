@@ -207,6 +207,7 @@ async fn gateway(bridge_key: &ExtraIssuer, bridge_jwks: &str) -> EscurelProcess 
         config_overrides: ConfigOverrides {
             write_acl: Some(WriteAclMode::Enforce),
             extra_issuers: vec![(bridge_key.issuer_url().to_owned(), bridge_jwks.to_owned())],
+            bridge_issuer: Some(bridge_key.issuer_url().to_owned()),
             bridge_kids: vec![BRIDGE_KID.to_owned()],
             ..Default::default()
         },

@@ -46,10 +46,19 @@ pub struct OidcConfig {
     /// and Carl (the self-minted dashboard token); both name the same
     /// [`Self::audience`], differing only in `iss` + signing key.
     pub additional_issuers: Vec<(String, Option<String>)>,
-    /// Key ids a chat-channel bridge signs under (`ESCUREL_AUTH_BRIDGE_KID`).
-    /// A token whose header names one is a BRIDGE token, restricted whatever
-    /// it claims — see [`OidcVerifier::verify`] and `escurel_types::bridge`.
-    /// The key must be the bridge's own, never the gateway's main signing key.
+    /// The trusted issuer that is a chat-channel bridge
+    /// (`ESCUREL_AUTH_BRIDGE_ISSUER`). EVERY token verified against this
+    /// entry is a BRIDGE token, restricted whatever it claims or whichever
+    /// kid it names — see [`OidcVerifier::verify`] and `escurel_types::bridge`.
+    /// The restriction belongs to the trust entry, not to a kid: the bridge
+    /// serves this entry's JWKS, so whoever controls that response can publish
+    /// any kid it likes.
+    pub bridge_issuer: Option<String>,
+    /// Key ids the bridge signs under (`ESCUREL_AUTH_BRIDGE_KID`): an extra
+    /// pin on the bridge entry — a token from it under any other kid is
+    /// refused. A token from another entry under one of these kids is refused
+    /// too (fail closed). The key must be the bridge's own, never the
+    /// gateway's main signing key.
     pub bridge_kids: Vec<String>,
 }
 
@@ -69,11 +78,21 @@ impl OidcConfig {
             jwks_refresh: Duration::from_secs(300),
             jwks_uri: None,
             additional_issuers: Vec::new(),
+            bridge_issuer: None,
             bridge_kids: Vec::new(),
         }
     }
 
-    /// Treat tokens signed under `kid` as a chat bridge's (restricted).
+    /// Mark the trusted issuer `issuer` as a chat bridge: every token
+    /// verified against it is restricted. It must also be configured as the
+    /// primary or an additional issuer.
+    #[must_use]
+    pub fn with_bridge_issuer(mut self, issuer: impl Into<String>) -> Self {
+        self.bridge_issuer = Some(issuer.into());
+        self
+    }
+
+    /// Pin the bridge entry to `kid` (see [`Self::bridge_kids`]).
     #[must_use]
     pub fn with_bridge_kid(mut self, kid: impl Into<String>) -> Self {
         self.bridge_kids.push(kid.into());
@@ -183,6 +202,11 @@ pub struct AuthContext {
     /// string is kept as `Some("")` — it names no agent the gateway can find,
     /// so it fails closed rather than reading as "no agent".
     pub agent: Option<String>,
+    /// The token was verified against the chat-bridge trust entry
+    /// ([`OidcConfig::bridge_issuer`]). An authorization input, and only ever
+    /// a restriction: the gateway confines such a context to the few calls a
+    /// bridge makes (`escurel-server`'s bridge gate).
+    pub bridge: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -257,6 +281,8 @@ struct Claims {
 struct TrustEntry {
     issuer: String,
     jwks: JwksCache,
+    /// This entry is the chat bridge's ([`OidcConfig::bridge_issuer`]).
+    bridge: bool,
 }
 
 pub struct OidcVerifier {
@@ -290,10 +316,12 @@ impl OidcVerifier {
     #[must_use]
     pub fn new(config: OidcConfig) -> Self {
         let mut entries = Vec::with_capacity(1 + config.additional_issuers.len());
+        let is_bridge = |issuer: &str| config.bridge_issuer.as_deref() == Some(issuer);
         // Primary issuer first.
         entries.push(TrustEntry {
             issuer: config.issuer.clone(),
             jwks: JwksCache::new(config.effective_jwks_uri(), config.jwks_refresh),
+            bridge: is_bridge(&config.issuer),
         });
         for (issuer, jwks_uri) in &config.additional_issuers {
             entries.push(TrustEntry {
@@ -302,6 +330,7 @@ impl OidcVerifier {
                     derive_jwks_uri(issuer, jwks_uri.as_deref()),
                     config.jwks_refresh,
                 ),
+                bridge: is_bridge(issuer),
             });
         }
         Self { config, entries }
@@ -337,6 +366,25 @@ impl OidcVerifier {
         // authenticates; a forged `iss` only selects the wrong entry,
         // whose key then fails to verify the signature.
         let entry = self.select_entry(token)?;
+        // The bridge kids pin the bridge entry, both ways, before any key is
+        // fetched: the bridge serves this entry's JWKS, so an unlisted kid
+        // there is a key the gateway never agreed to, and a listed kid under
+        // another entry means the configuration is confused. Refused either
+        // way — never verified as an unrestricted token.
+        match (entry.bridge, self.config.bridge_kids.contains(&kid)) {
+            (true, false) => {
+                return Err(AuthError::BridgeRefused(format!(
+                    "kid `{kid}` is not a bridge kid (ESCUREL_AUTH_BRIDGE_KID)"
+                )));
+            }
+            (false, true) => {
+                return Err(AuthError::BridgeRefused(format!(
+                    "bridge kid `{kid}` under issuer `{}`, which is not the bridge issuer",
+                    entry.issuer
+                )));
+            }
+            _ => {}
+        }
         let key = entry.jwks.key_for_kid(&kid).await?;
         // Validate against exactly the (already allow-listed) header
         // alg. We must not stuff the whole allow-list in here —
@@ -376,7 +424,7 @@ impl OidcVerifier {
             .map_err(|e| AuthError::Invalid(e.to_string()))?;
 
         let claims = token_data.claims;
-        if self.config.bridge_kids.contains(&kid) {
+        if entry.bridge {
             return bridge_context(claims, &self.config.tenant_claim);
         }
 
@@ -502,6 +550,7 @@ impl OidcVerifier {
             run,
             agent_skill,
             agent,
+            bridge: false,
         })
     }
 
@@ -535,7 +584,7 @@ impl OidcVerifier {
     }
 }
 
-/// A chat bridge's token, under a key the gateway lists as a bridge kid.
+/// A chat bridge's token: one verified against the bridge trust entry.
 ///
 /// The bridge holds a key that can sign for anyone, so the gateway — not the
 /// bridge — bounds what such a token is: it lives at most
@@ -614,6 +663,7 @@ fn bridge_context(claims: Claims, tenant_claim: &str) -> Result<AuthContext, Aut
         run: None,
         agent_skill: None,
         agent: None,
+        bridge: true,
     })
 }
 

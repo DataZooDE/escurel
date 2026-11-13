@@ -372,10 +372,16 @@ pub const CONFIG_KEYS: &[ConfigKey] = &[
         doc: "explicit JWKS URL for the Nth issuer",
     },
     ConfigKey {
+        name: "ESCUREL_AUTH_BRIDGE_ISSUER",
+        component: "Server",
+        default: "—",
+        doc: "the trusted issuer that is a chat bridge (`escurel-chat-bridge`); must be `ESCUREL_AUTH_OIDC_ISSUER` or an `ESCUREL_AUTH_OIDC_ISSUER_<N>` (boot fails otherwise, or when `ESCUREL_AUTH_BRIDGE_KID` is set without it). EVERY token verified against this entry is a bridge token, whatever kid it names: it lives at most 900 s, is never admin or operator, honours no roles or groups (group-granted ACLs do not apply to it), is refused if it carries an `agent`/`skill`/`run_id`/`purpose`/`act` claim, must name its channel in `bridge_channel`, and what it captures is stamped `captured_via: bridge:<channel>`. Serve its JWKS over https: whoever controls that response controls which keys sign as the bridge",
+    },
+    ConfigKey {
         name: "ESCUREL_AUTH_BRIDGE_KID",
         component: "Server",
         default: "—",
-        doc: "comma-separated key ids a chat bridge (`escurel-chat-bridge`) signs under; the key must be the bridge's own, published by a trusted issuer's JWKS, never the gateway's main signing key. A token under one lives at most 900 s, is never admin or operator, honours no roles or groups (group-granted ACLs do not apply to it), is refused if it carries an `agent`/`skill`/`run_id`/`purpose`/`act` claim, must name its channel in `bridge_channel`, and what it captures is stamped `captured_via: bridge:<channel>`",
+        doc: "comma-separated key ids the bridge signs under; a pin on the `ESCUREL_AUTH_BRIDGE_ISSUER` entry: a token from it under any other kid is refused, and so is a token from another issuer under one of these kids. The key must be the bridge's own, never the gateway's main signing key. REQUIRED with `ESCUREL_AUTH_BRIDGE_ISSUER`",
     },
     ConfigKey {
         name: "ESCUREL_EMBEDDING_PROVIDER",
@@ -1419,7 +1425,7 @@ pub const CONFIG_KEYS: &[ConfigKey] = &[
         name: "ESCUREL_BRIDGE_AUTH_ISSUER",
         component: "Bridge",
         default: "—",
-        doc: "REQUIRED: the issuer the bridge signs the asker's short-lived token as; the gateway must trust it (primary or `ESCUREL_AUTH_OIDC_ISSUER_<N>`) and its JWKS must publish the bridge's own key",
+        doc: "REQUIRED: the issuer the bridge signs the asker's short-lived token as; the gateway must trust it (primary or `ESCUREL_AUTH_OIDC_ISSUER_<N>`), name it in `ESCUREL_AUTH_BRIDGE_ISSUER`, and its JWKS must publish the bridge's own key",
     },
     ConfigKey {
         name: "ESCUREL_BRIDGE_AUTH_AUDIENCE",
@@ -1431,7 +1437,7 @@ pub const CONFIG_KEYS: &[ConfigKey] = &[
         name: "ESCUREL_BRIDGE_AUTH_KID",
         component: "Bridge",
         default: "—",
-        doc: "REQUIRED: `kid` of the bridge's own signing key as the issuer's JWKS publishes it; the gateway must list it in `ESCUREL_AUTH_BRIDGE_KID`, which restricts every token under it",
+        doc: "REQUIRED: `kid` of the bridge's own signing key as the issuer's JWKS publishes it; the gateway must name the bridge's issuer in `ESCUREL_AUTH_BRIDGE_ISSUER` (which restricts every token from it) and list this kid in `ESCUREL_AUTH_BRIDGE_KID`",
     },
     ConfigKey {
         name: "ESCUREL_BRIDGE_AUTH_SIGNING_KEY",

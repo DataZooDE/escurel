@@ -306,6 +306,10 @@ pub enum ConfigError {
     /// malformed. Fatal at boot: a typo in a security allow-list must not start a gateway.
     #[error("invalid value for ESCUREL_AUTH_ROLE_TOOLS: {0}")]
     RoleTools(String),
+    /// The chat-bridge trust (`ESCUREL_AUTH_BRIDGE_*`) is incomplete or names an issuer the
+    /// gateway does not trust. Fatal at boot: a restriction that cannot bind must not start.
+    #[error("invalid chat-bridge trust: {0}")]
+    Bridge(String),
     #[error("{var} is required when ESCUREL_STORAGE_BACKEND={backend}")]
     MissingStorageField {
         var: &'static str,
@@ -573,9 +577,13 @@ pub struct AuthConfig {
     /// Escurel trusts both Triton (forwarded inbound bearer) and Carl
     /// (self-minted dashboard token) — see `ESCUREL_AUTH_OIDC_ISSUER_2`.
     pub additional_issuers: Vec<(String, Option<String>)>,
-    /// Key ids a chat bridge signs under (`ESCUREL_AUTH_BRIDGE_KID`, comma-separated): a token
-    /// under one is restricted (short TTL, no roles, groups or run claims, `captured_via:
-    /// bridge:<channel>`). The key itself is published by one of the trusted issuers' JWKS.
+    /// The trusted issuer that is a chat bridge (`ESCUREL_AUTH_BRIDGE_ISSUER`): every token
+    /// verified against it is restricted (short TTL, no roles, groups or run claims,
+    /// `captured_via: bridge:<channel>`, a few chat tools only), whatever kid it names. Must be the
+    /// primary or an `ESCUREL_AUTH_OIDC_ISSUER_<N>`.
+    pub bridge_issuer: Option<String>,
+    /// Key ids the bridge signs under (`ESCUREL_AUTH_BRIDGE_KID`, comma-separated): a pin on the
+    /// bridge entry — a token from it under any other kid is refused.
     pub bridge_kids: Vec<String>,
     /// Service roles and the tools each may call (`ESCUREL_AUTH_ROLE_TOOLS`,
     /// `role=tool,tool;role=tool`). A token whose groups carry a listed role may call only those
@@ -1307,6 +1315,9 @@ impl EscurelConfig {
                         }
                         extra
                     },
+                    bridge_issuer: env
+                        .get("ESCUREL_AUTH_BRIDGE_ISSUER")
+                        .filter(|s| !s.is_empty()),
                     bridge_kids: env
                         .get("ESCUREL_AUTH_BRIDGE_KID")
                         .unwrap_or_default()
@@ -1334,6 +1345,10 @@ impl EscurelConfig {
             return Err(ConfigError::RoleTools(format!(
                 "role `{r}` is the admin or operator role value"
             )));
+        }
+
+        if let Some(a) = auth.as_ref() {
+            validate_bridge_trust(a).map_err(ConfigError::Bridge)?;
         }
 
         // --- signing (optional; workbench backend P2-6) ---
@@ -3213,12 +3228,46 @@ impl EscurelConfig {
         for (issuer, jwks_uri) in &auth.additional_issuers {
             cfg = cfg.with_additional_issuer(issuer.clone(), jwks_uri.clone());
         }
+        if let Some(issuer) = &auth.bridge_issuer {
+            cfg = cfg.with_bridge_issuer(issuer.clone());
+        }
         for kid in &auth.bridge_kids {
             cfg = cfg.with_bridge_kid(kid.clone());
         }
         cfg.jwks_refresh = auth.jwks_refresh;
         Some(Arc::new(OidcVerifier::new(cfg)))
     }
+}
+
+/// The chat-bridge trust binds to one trusted issuer (crew security F1): a kid
+/// with no bridge entry to pin, a bridge entry the gateway does not trust, or a
+/// bridge entry with no kid (every token from it would be refused) cannot mean
+/// what the operator wrote.
+fn validate_bridge_trust(a: &AuthConfig) -> Result<(), String> {
+    let Some(bridge) = a.bridge_issuer.as_deref() else {
+        return match a.bridge_kids.first() {
+            Some(kid) => Err(format!(
+                "ESCUREL_AUTH_BRIDGE_KID names `{kid}` but ESCUREL_AUTH_BRIDGE_ISSUER is unset; \
+                 the restriction belongs to the bridge's trust entry"
+            )),
+            None => Ok(()),
+        };
+    };
+    let trusted = a.issuer == bridge || a.additional_issuers.iter().any(|(i, _)| i == bridge);
+    if !trusted {
+        return Err(format!(
+            "ESCUREL_AUTH_BRIDGE_ISSUER `{bridge}` is not a trusted issuer \
+             (ESCUREL_AUTH_OIDC_ISSUER or ESCUREL_AUTH_OIDC_ISSUER_<N>)"
+        ));
+    }
+    if a.bridge_kids.is_empty() {
+        return Err(
+            "ESCUREL_AUTH_BRIDGE_ISSUER is set but ESCUREL_AUTH_BRIDGE_KID lists no kid; \
+             every token from the bridge would be refused"
+                .to_owned(),
+        );
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -3521,5 +3570,64 @@ mod run_transcript_retention_tests {
                 "{bad:?} must be refused"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod bridge_config_tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    const ISS: &str = "https://idp.example/realms/main";
+    const BRIDGE: &str = "https://bridge.example";
+
+    fn cfg_from(pairs: &[(&str, &str)]) -> Result<EscurelConfig, ConfigError> {
+        let mut map: HashMap<String, String> = pairs
+            .iter()
+            .map(|(k, v)| ((*k).to_owned(), (*v).to_owned()))
+            .collect();
+        map.insert("ESCUREL_AUTH_OIDC_ISSUER".into(), ISS.into());
+        EscurelConfig::from_source(&move |k: &str| map.get(k).cloned())
+    }
+
+    fn refused(pairs: &[(&str, &str)]) -> String {
+        match cfg_from(pairs) {
+            Err(ConfigError::Bridge(why)) => why,
+            other => panic!("expected a bridge refusal, got {other:?}"),
+        }
+    }
+
+    /// The bridge restriction belongs to a trust entry (crew security F1), so
+    /// a kid with no entry to pin, or an entry the gateway does not trust,
+    /// is a configuration that cannot mean what it says: refuse to start.
+    #[test]
+    fn a_bridge_kid_needs_a_bridge_issuer_that_is_a_trusted_issuer() {
+        let why = refused(&[("ESCUREL_AUTH_BRIDGE_KID", "bridge-key")]);
+        assert!(why.contains("ESCUREL_AUTH_BRIDGE_ISSUER"), "{why}");
+
+        let why = refused(&[
+            ("ESCUREL_AUTH_BRIDGE_KID", "bridge-key"),
+            ("ESCUREL_AUTH_BRIDGE_ISSUER", BRIDGE),
+        ]);
+        assert!(why.contains("not a trusted issuer"), "{why}");
+
+        let why = refused(&[
+            ("ESCUREL_AUTH_OIDC_ISSUER_2", BRIDGE),
+            ("ESCUREL_AUTH_BRIDGE_ISSUER", BRIDGE),
+        ]);
+        assert!(why.contains("ESCUREL_AUTH_BRIDGE_KID"), "{why}");
+
+        let ok = cfg_from(&[
+            ("ESCUREL_AUTH_OIDC_ISSUER_2", BRIDGE),
+            (
+                "ESCUREL_AUTH_JWKS_URI_2",
+                "https://bridge.example/.well-known/jwks.json",
+            ),
+            ("ESCUREL_AUTH_BRIDGE_ISSUER", BRIDGE),
+            ("ESCUREL_AUTH_BRIDGE_KID", "bridge-key"),
+        ])
+        .expect("a bridge entry with a kid starts");
+        let v = ok.build_verifier().expect("a verifier");
+        assert_eq!(v.config().bridge_issuer.as_deref(), Some(BRIDGE));
     }
 }

@@ -1,7 +1,7 @@
 //! A chat bridge's token at the gateway (#824, crew F1): the bridge signs for
-//! the people it answers with a key of its OWN, which the gateway lists as a
-//! bridge kid (`ConfigOverrides::bridge_kids`, production
-//! `ESCUREL_AUTH_BRIDGE_KID`). Whatever the bridge signs under it, the gateway
+//! the people it answers with a key of its OWN, under an issuer the gateway
+//! names as the bridge's (`ConfigOverrides::bridge_issuer`, production
+//! `ESCUREL_AUTH_BRIDGE_ISSUER`, pinned to `ESCUREL_AUTH_BRIDGE_KID`). Whatever the bridge signs under it, the gateway
 //! bounds it: never admin, no groups, short-lived, no agent/run claims — and
 //! what it captures says the bridge relayed it. Real gateway, real JWKS for
 //! both issuers; no mocks.
@@ -32,6 +32,7 @@ async fn gateway(bridge: &ExtraIssuer) -> EscurelProcess {
         ),
         config_overrides: ConfigOverrides {
             extra_issuers: vec![(bridge.issuer_url().to_owned(), bridge.jwks_url().to_owned())],
+            bridge_issuer: Some(bridge.issuer_url().to_owned()),
             bridge_kids: vec![BRIDGE_KID.to_owned()],
             ..Default::default()
         },

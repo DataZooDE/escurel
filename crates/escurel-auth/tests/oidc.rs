@@ -855,6 +855,7 @@ mod bridge_kid {
         OidcVerifier::new(
             OidcConfig::new(issuer.clone(), AUDIENCE.to_owned())
                 .with_jwks_uri(format!("{issuer}/protocol/openid-connect/certs"))
+                .with_bridge_issuer(issuer.clone())
                 .with_bridge_kid(KID),
         )
     }
@@ -890,8 +891,8 @@ mod bridge_kid {
         assert!(ctx.groups.is_empty(), "{:?}", ctx.groups);
         assert_eq!(ctx.actor.as_deref(), Some("bridge:msteams"));
         assert_eq!(ctx.run, None);
-        // The same token on a verifier with no bridge kid is an ordinary admin
-        // token: the restriction is the kid's, not the claims'.
+        // The same token on a verifier with no bridge entry is an ordinary
+        // admin token: the restriction is the trust entry's, not the claims'.
         let plain = verifier_pointing_at(&server);
         let ctx = plain
             .verify(&sign_token(&keys, claims(&server, 900)))
@@ -935,5 +936,161 @@ mod bridge_kid {
             c["bridge_channel"] = channel;
             assert!(refused(c).await.contains("bridge_channel"));
         }
+    }
+}
+
+/// The bridge restriction belongs to the TRUST ENTRY, not to a kid (crew
+/// security F1): the bridge serves its own entry's JWKS, so whoever controls
+/// that response — a compromised bridge host, or the network path to it — can
+/// publish a key under any kid. A token under such a kid must not escape the
+/// restriction by naming a kid nobody listed.
+mod bridge_entry {
+    use super::*;
+
+    const BRIDGE_PATH: &str = "/bridge";
+    const BRIDGE_KID: &str = "escurel-chat-bridge";
+    const ROGUE_KID: &str = "rogue";
+
+    fn sign_with(keys: &TestKeys, kid: &str, claims: &Value) -> String {
+        let mut header = Header::new(Algorithm::RS256);
+        header.kid = Some(kid.to_owned());
+        let key = EncodingKey::from_rsa_pem(&keys.private_pem).expect("encoding key");
+        encode(&header, claims, &key).expect("sign jwt")
+    }
+
+    /// A gateway trusting a primary issuer and a bridge entry whose JWKS
+    /// publishes the bridge's kid AND a second, rogue one.
+    struct Setup {
+        primary: MockServer,
+        primary_keys: TestKeys,
+        bridge: MockServer,
+        bridge_keys: TestKeys,
+        rogue_keys: TestKeys,
+        verifier: OidcVerifier,
+    }
+
+    impl Setup {
+        async fn start() -> Self {
+            let primary = MockServer::start().await;
+            let primary_keys = make_keys();
+            mock_jwks(&primary, &primary_keys).await;
+            let bridge = MockServer::start().await;
+            let (bridge_keys, rogue_keys) = (make_keys(), make_keys());
+            let jwk = |kid: &str, k: &TestKeys| json!({ "kid": kid, "kty": "RSA", "alg": "RS256", "n": k.n_b64, "e": k.e_b64 });
+            Mock::given(method("GET"))
+                .and(path(format!("{BRIDGE_PATH}/jwks.json")))
+                .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                    "keys": [jwk(BRIDGE_KID, &bridge_keys), jwk(ROGUE_KID, &rogue_keys)]
+                })))
+                .mount(&bridge)
+                .await;
+            let primary_iss = format!("{}{ISSUER_PATH}", primary.uri());
+            let bridge_iss = format!("{}{BRIDGE_PATH}", bridge.uri());
+            let verifier = OidcVerifier::new(
+                OidcConfig::new(primary_iss.clone(), AUDIENCE.to_owned())
+                    .with_jwks_uri(format!("{primary_iss}/protocol/openid-connect/certs"))
+                    .with_additional_issuer(
+                        bridge_iss.clone(),
+                        Some(format!("{bridge_iss}/jwks.json")),
+                    )
+                    .with_bridge_issuer(bridge_iss)
+                    .with_bridge_kid(BRIDGE_KID),
+            );
+            Self {
+                primary,
+                primary_keys,
+                bridge,
+                bridge_keys,
+                rogue_keys,
+                verifier,
+            }
+        }
+
+        fn claims(&self, server: &MockServer, issuer_path: &str) -> Value {
+            let now = now();
+            json!({
+                "iss": format!("{}{issuer_path}", server.uri()), "aud": AUDIENCE,
+                "sub": "user:alice", "tenant": "acme", "iat": now, "exp": now + 600,
+                "roles": ["escurel:admin", "escurel:operator"],
+                "run_id": "r-1", "root_event_id": "e-1",
+                "bridge_channel": "msteams",
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn a_rogue_kid_in_the_bridge_jwks_with_admin_operator_and_run_claims_is_refused() {
+        let s = Setup::start().await;
+        let rogue = sign_with(&s.rogue_keys, ROGUE_KID, &s.claims(&s.bridge, BRIDGE_PATH));
+        match s.verifier.verify(&rogue).await {
+            Err(AuthError::BridgeRefused(why)) => {
+                assert!(why.contains(ROGUE_KID), "{why}");
+            }
+            other => panic!("a rogue bridge kid must be refused, got {other:?}"),
+        }
+        // Even without the run claims a rogue kid is never an admin.
+        let mut plain = s.claims(&s.bridge, BRIDGE_PATH);
+        for k in ["run_id", "root_event_id", "bridge_channel"] {
+            plain.as_object_mut().unwrap().remove(k);
+        }
+        let ctx = s
+            .verifier
+            .verify(&sign_with(&s.rogue_keys, ROGUE_KID, &plain))
+            .await;
+        assert!(ctx.is_err(), "rogue kid without run claims: {ctx:?}");
+    }
+
+    #[tokio::test]
+    async fn the_bridge_kid_is_restricted_and_the_primary_issuer_is_not() {
+        let s = Setup::start().await;
+        let mut c = s.claims(&s.bridge, BRIDGE_PATH);
+        for k in ["run_id", "root_event_id"] {
+            c.as_object_mut().unwrap().remove(k);
+        }
+        let ctx = s
+            .verifier
+            .verify(&sign_with(&s.bridge_keys, BRIDGE_KID, &c))
+            .await
+            .expect("the bridge's own token verifies");
+        assert_eq!(ctx.role, Role::Agent);
+        assert!(!ctx.operator);
+        assert!(
+            ctx.bridge,
+            "a token from the bridge entry is a bridge context"
+        );
+
+        let mut p = s.claims(&s.primary, ISSUER_PATH);
+        for k in ["run_id", "root_event_id", "bridge_channel"] {
+            p.as_object_mut().unwrap().remove(k);
+        }
+        let ctx = s
+            .verifier
+            .verify(&sign_with(&s.primary_keys, KID, &p))
+            .await
+            .expect("a primary token verifies");
+        assert_eq!(ctx.role, Role::Admin);
+        assert!(!ctx.bridge);
+    }
+
+    /// A bridge kid under another entry is refused rather than treated as
+    /// either restricted or ordinary: the kid list is a pin on the bridge
+    /// entry, so meeting it elsewhere means the configuration is confused.
+    #[tokio::test]
+    async fn a_bridge_kid_under_another_entry_is_refused() {
+        let s = Setup::start().await;
+        let primary_iss = format!("{}{ISSUER_PATH}", s.primary.uri());
+        let v = OidcVerifier::new(
+            OidcConfig::new(primary_iss.clone(), AUDIENCE.to_owned())
+                .with_jwks_uri(format!("{primary_iss}/protocol/openid-connect/certs"))
+                .with_bridge_issuer(format!("{}{BRIDGE_PATH}", s.bridge.uri()))
+                .with_bridge_kid(KID),
+        );
+        // A well-formed bridge token in every other respect.
+        let mut p = s.claims(&s.primary, ISSUER_PATH);
+        for k in ["run_id", "root_event_id"] {
+            p.as_object_mut().unwrap().remove(k);
+        }
+        let got = v.verify(&sign_with(&s.primary_keys, KID, &p)).await;
+        assert!(matches!(got, Err(AuthError::BridgeRefused(_))), "{got:?}");
     }
 }
