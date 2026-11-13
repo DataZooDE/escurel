@@ -2617,7 +2617,9 @@ impl EscurelConfig {
                 }
                 _ => crate::mcp::DEFAULT_RUN_PROGRESS_KEEP,
             },
-            run_transcript_retention: run_transcript_retention_from_env()?,
+            run_transcript_retention: run_transcript_retention(
+                std::env::var("ESCUREL_RUN_TRANSCRIPT_RETENTION_DAYS").ok(),
+            )?,
             shutdown_drain: match std::env::var("ESCUREL_SHUTDOWN_DRAIN_SECS") {
                 Ok(raw) if !raw.trim().is_empty() => std::time::Duration::from_secs(
                     raw.trim().parse::<u64>().ok().filter(|n| *n >= 1).ok_or(
@@ -3400,16 +3402,17 @@ mod rerank_config_tests {
     }
 }
 
-/// Whether the listen address (`host:port`) only accepts connections from this machine.
 /// The default for `ESCUREL_RUN_TRANSCRIPT_RETENTION_DAYS`.
 pub const DEFAULT_RUN_TRANSCRIPT_RETENTION_DAYS: u64 = 90;
 
-/// `ESCUREL_RUN_TRANSCRIPT_RETENTION_DAYS` (#822): days a run transcript is
-/// kept; `0` keeps them forever (`None`), unset is
-/// [`DEFAULT_RUN_TRANSCRIPT_RETENTION_DAYS`].
-fn run_transcript_retention_from_env() -> Result<Option<std::time::Duration>, ConfigError> {
-    let days = match std::env::var("ESCUREL_RUN_TRANSCRIPT_RETENTION_DAYS") {
-        Ok(raw) if !raw.trim().is_empty() => {
+/// `ESCUREL_RUN_TRANSCRIPT_RETENTION_DAYS` (#822), as read (`raw`): days a
+/// run transcript is kept; `0` keeps them forever (`None`), unset or blank is
+/// [`DEFAULT_RUN_TRANSCRIPT_RETENTION_DAYS`], anything else refuses to start.
+fn run_transcript_retention(
+    raw: Option<String>,
+) -> Result<Option<std::time::Duration>, ConfigError> {
+    let days = match raw {
+        Some(raw) if !raw.trim().is_empty() => {
             raw.trim()
                 .parse::<u64>()
                 .map_err(|_| ConfigError::InvalidValue {
@@ -3423,6 +3426,7 @@ fn run_transcript_retention_from_env() -> Result<Option<std::time::Duration>, Co
     Ok((days > 0).then(|| std::time::Duration::from_secs(days.saturating_mul(86_400))))
 }
 
+/// Whether the listen address (`host:port`) only accepts connections from this machine.
 fn listener_is_loopback(listen: &str) -> bool {
     match listen.parse::<std::net::SocketAddr>() {
         Ok(addr) => addr.ip().is_loopback(),
@@ -3442,5 +3446,53 @@ pub fn warn_if_cursor_key_unset() {
              after a restart every stored cursor answers invalid_cursor (set a shared key of at least 32 bytes, \
              e.g. `openssl rand -hex 32`, on every replica)"
         );
+    }
+}
+
+/// `ESCUREL_RUN_TRANSCRIPT_RETENTION_DAYS` (crew review PR-1, F13): its three cases pinned here,
+/// not by an integration test that sleeps and would pass under the default too.
+#[cfg(test)]
+mod run_transcript_retention_tests {
+    use super::*;
+    use std::time::Duration;
+
+    fn retention(value: Option<&str>) -> Result<Option<Duration>, ConfigError> {
+        run_transcript_retention(value.map(str::to_owned))
+    }
+
+    const DAY: u64 = 86_400;
+
+    #[test]
+    fn unset_or_blank_is_the_ninety_day_default() {
+        let default = Some(Duration::from_secs(
+            DEFAULT_RUN_TRANSCRIPT_RETENTION_DAYS * DAY,
+        ));
+        assert_eq!(retention(None).unwrap(), default);
+        assert_eq!(retention(Some("  ")).unwrap(), default);
+    }
+
+    #[test]
+    fn zero_keeps_transcripts_forever_and_a_count_is_days() {
+        assert_eq!(retention(Some("0")).unwrap(), None);
+        assert_eq!(
+            retention(Some(" 7 ")).unwrap(),
+            Some(Duration::from_secs(7 * DAY))
+        );
+    }
+
+    #[test]
+    fn anything_else_refuses_to_start() {
+        for bad in ["abc", "-1", "1.5", "7d"] {
+            assert!(
+                matches!(
+                    retention(Some(bad)),
+                    Err(ConfigError::InvalidValue {
+                        var: "ESCUREL_RUN_TRANSCRIPT_RETENTION_DAYS",
+                        ..
+                    })
+                ),
+                "{bad:?} must be refused"
+            );
+        }
     }
 }
