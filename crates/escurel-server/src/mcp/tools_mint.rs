@@ -81,6 +81,19 @@ pub(super) async fn tool_mint_agent_token(
     args: Value,
 ) -> Result<Value, JsonRpcError> {
     let a: MintAgentTokenArgs = parse_args(args, "mint_agent_token")?;
+    // A machine caller must not mint: the child carries the caller's groups but none of its agent
+    // or skill claims, so an agent-profile or narrowed token would shed its `scopes`, its skill
+    // confinement and the `/ws` / `/ingest` / `/blob` refusals in one call.
+    if caller.agent.is_some() || super::tools_write::is_machine_caller(&caller) {
+        return Err(JsonRpcError {
+            code: -32001,
+            message: "mint_agent_token: an agent or run token cannot mint another token (a \
+                      person's own credential mints)"
+                .to_owned(),
+            data: None,
+        }
+        .with_code("agent_scope_denied", false));
+    }
     let Some(signer) = state.signer.as_ref() else {
         return Err(JsonRpcError::invalid_params(
             "mint_agent_token: this gateway has no signing identity (set \
