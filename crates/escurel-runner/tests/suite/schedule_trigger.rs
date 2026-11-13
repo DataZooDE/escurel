@@ -7,13 +7,13 @@
 //! wall clock cover several windows.
 
 use std::collections::HashSet;
-use std::path::Path;
-use std::process::{Child, Command};
 use std::time::{Duration, Instant};
 
 use chrono::{DateTime, Timelike, Utc};
-use escurel_test_support::{AuthMode, EscurelProcess, FixtureBuilder, Opts, Role, free_port};
+use escurel_test_support::{AuthMode, EscurelProcess, FixtureBuilder, Opts, Role};
 use serde_json::{Value, json};
+
+use crate::support::{RunnerProcess, RunningRunner};
 
 const TENANT: &str = "acme";
 const TICK_SKILL: &str = "---\nkind: skill\nid: tick\ndescription: Every two seconds.\n\
@@ -21,14 +21,6 @@ const TICK_SKILL: &str = "---\nkind: skill\nid: tick\ndescription: Every two sec
 const CAPPED_SKILL: &str = "---\nkind: skill\nid: capped\ndescription: Once a day at most.\n\
     autonomy: auto\nschedule: \"*/2 * * * * *\"\nschedule_budget: {runs_per_day: 1}\n---\n\
     # capped\n\nNote the time.\n";
-
-struct ChildGuard(Child);
-impl Drop for ChildGuard {
-    fn drop(&mut self) {
-        let _ = self.0.kill();
-        let _ = self.0.wait();
-    }
-}
 
 async fn gateway(skills: &[(&str, &str)]) -> EscurelProcess {
     let mut fixtures = FixtureBuilder::new().tenant(TENANT);
@@ -43,41 +35,14 @@ async fn gateway(skills: &[(&str, &str)]) -> EscurelProcess {
     .await
 }
 
-/// The runner on the echo harness with a fast schedule tick, its ledger in
-/// `ledger_dir` (shared across a restart). Returns once `/healthz` answers.
-///
-/// The one place this file spawns a runner, so a shared harness can replace it.
-async fn spawn_runner(gw: &EscurelProcess, ledger_dir: &Path) -> (ChildGuard, String) {
-    let listen = format!("127.0.0.1:{}", free_port());
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_escurel-runner"));
-    cmd.env("ESCUREL_RUNNER_LISTEN", &listen)
-        .env("ESCUREL_RUNNER_GATEWAY_URL", gw.base_url())
-        .env("ESCUREL_RUNNER_TENANT", TENANT)
-        .env("ESCUREL_RUNNER_TOKEN", gw.mint_token(TENANT, Role::Admin))
-        .env("ESCUREL_RUNNER_HARNESS", "echo")
-        .env(
-            "ESCUREL_RUNNER_LEDGER_PATH",
-            ledger_dir.join("ledger.duckdb"),
-        )
-        .env("ESCUREL_RUNNER_RETRY_BACKOFF", "50ms")
-        .env("ESCUREL_RUNNER_POLL_INTERVAL", "250ms")
+/// The runner on the echo harness with a fast schedule tick, healthy.
+async fn spawn_runner(gw: &EscurelProcess) -> RunningRunner {
+    let mut runner = RunnerProcess::echo(gw, TENANT)
         .env("ESCUREL_RUNNER_SCHEDULE_TICK", "250ms")
-        .env("ESCUREL_RUNNER_SCHEDULE_GRACE", "2s");
-    let mut runner = ChildGuard(cmd.spawn().expect("spawn escurel-runner"));
-    let url = format!("http://{listen}/healthz");
-    let deadline = Instant::now() + Duration::from_secs(60);
-    loop {
-        if let Some(status) = runner.0.try_wait().expect("try_wait") {
-            panic!("runner exited before it became healthy: {status:?}");
-        }
-        if let Ok(resp) = reqwest::get(&url).await
-            && resp.status().is_success()
-        {
-            return (runner, listen);
-        }
-        assert!(Instant::now() < deadline, "runner never became healthy");
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
+        .env("ESCUREL_RUNNER_SCHEDULE_GRACE", "2s")
+        .spawn();
+    runner.wait_healthy().await;
+    runner
 }
 
 async fn call(gw: &EscurelProcess, name: &str, args: Value) -> Value {
@@ -146,13 +111,11 @@ fn assert_contiguous(windows: &[DateTime<Utc>]) {
     }
 }
 
-async fn await_terminal(listen: &str, event_id: &str) -> String {
-    let url = format!("http://{listen}/debug/run?tenant={TENANT}&event_id={event_id}");
+async fn await_terminal(runner: &RunningRunner, event_id: &str) -> String {
     let deadline = Instant::now() + Duration::from_secs(30);
     loop {
-        if let Ok(resp) = reqwest::get(&url).await
-            && let Ok(v) = resp.json::<Value>().await
-            && let Some(status) = v["status"].as_str()
+        if let Some(run) = runner.debug_run(event_id).await
+            && let Some(status) = run["status"].as_str()
             && status != "pending"
         {
             return status.to_owned();
@@ -177,11 +140,9 @@ fn trigger_id(skill: &str, window: DateTime<Utc>) -> String {
 #[tokio::test]
 async fn a_schedule_fires_once_per_window_across_a_runner_restart() {
     let gw = gateway(&[("tick", TICK_SKILL)]).await;
-    let ledger = tempfile::tempdir().expect("ledger dir");
-
-    let (first, _) = spawn_runner(&gw, ledger.path()).await;
+    let mut runner = spawn_runner(&gw).await;
     tokio::time::sleep(Duration::from_secs(5)).await;
-    drop(first);
+    runner.kill();
     let before = trigger_windows(&gw, "tick").await;
     assert!(
         before.len() >= 2,
@@ -189,7 +150,8 @@ async fn a_schedule_fires_once_per_window_across_a_runner_restart() {
     );
     assert_contiguous(&before);
 
-    let (_second, listen) = spawn_runner(&gw, ledger.path()).await;
+    runner.restart();
+    runner.wait_healthy().await;
     let restarted = Utc::now();
     tokio::time::sleep(Duration::from_secs(4)).await;
     let all = trigger_windows(&gw, "tick").await;
@@ -212,7 +174,7 @@ async fn a_schedule_fires_once_per_window_across_a_runner_restart() {
 
     // The trigger is real work: the first window's run finished, and the
     // restarted runner reads it from the shared ledger.
-    let status = await_terminal(&listen, &trigger_id("tick", before[0])).await;
+    let status = await_terminal(&runner, &trigger_id("tick", before[0])).await;
     assert_eq!(status, "processed", "the scheduled run finished");
 }
 
@@ -220,8 +182,7 @@ async fn a_schedule_fires_once_per_window_across_a_runner_restart() {
 #[tokio::test]
 async fn an_exhausted_budget_skips_the_window_visibly() {
     let gw = gateway(&[("capped", CAPPED_SKILL)]).await;
-    let ledger = tempfile::tempdir().expect("ledger dir");
-    let (_runner, _) = spawn_runner(&gw, ledger.path()).await;
+    let _runner = spawn_runner(&gw).await;
     tokio::time::sleep(Duration::from_secs(5)).await;
 
     let fired = trigger_windows(&gw, "capped").await;
@@ -262,9 +223,8 @@ async fn an_exhausted_budget_skips_the_window_visibly() {
 #[tokio::test]
 async fn two_runners_on_one_schedule_do_not_double_fire() {
     let gw = gateway(&[("tick", TICK_SKILL)]).await;
-    let (a, b) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
-    let _ra = spawn_runner(&gw, a.path()).await;
-    let _rb = spawn_runner(&gw, b.path()).await;
+    let _ra = spawn_runner(&gw).await;
+    let _rb = spawn_runner(&gw).await;
     tokio::time::sleep(Duration::from_secs(5)).await;
     let windows = trigger_windows(&gw, "tick").await;
     assert!(windows.len() >= 2, "{windows:?}");
@@ -285,8 +245,7 @@ async fn a_window_older_than_the_grace_does_not_fire() {
         hour_ago.hour()
     );
     let gw = gateway(&[("tick", TICK_SKILL), ("stale", stale.as_str())]).await;
-    let ledger = tempfile::tempdir().expect("ledger dir");
-    let (_runner, _) = spawn_runner(&gw, ledger.path()).await;
+    let _runner = spawn_runner(&gw).await;
     tokio::time::sleep(Duration::from_secs(3)).await;
 
     assert!(

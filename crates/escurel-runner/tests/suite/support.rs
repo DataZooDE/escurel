@@ -159,10 +159,27 @@ impl RunningRunner {
 
     /// Kill and start again with the same env and the same ledger, on a new
     /// port — the runner's view of a crash and reboot.
-    #[allow(dead_code)] // first callers land with the schedule tests
     pub fn restart(&mut self) {
         self.kill();
         self.start();
+    }
+
+    /// Wait until `/healthz` answers. Panics if the process exits first.
+    pub async fn wait_healthy(&mut self) {
+        let url = format!("{}/healthz", self.base_url());
+        let deadline = Instant::now() + Duration::from_secs(60);
+        loop {
+            if let Some(status) = self.exited() {
+                panic!("runner exited before it became healthy: {status:?}");
+            }
+            if let Ok(resp) = reqwest::get(&url).await
+                && resp.status().is_success()
+            {
+                return;
+            }
+            assert!(Instant::now() < deadline, "runner never became healthy");
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
     }
 
     /// `Some(status)` once the process has exited on its own.
