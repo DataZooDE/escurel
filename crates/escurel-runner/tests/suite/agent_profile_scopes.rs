@@ -110,6 +110,10 @@ async fn gateway() -> EscurelProcess {
 /// A minted-mode runner driving the echo harness. Kept local on purpose:
 /// another slice extracts a shared runner builder for the suite.
 fn spawn_runner(gw: &EscurelProcess) -> (ChildGuard, String) {
+    spawn_runner_with(gw, &[])
+}
+
+fn spawn_runner_with(gw: &EscurelProcess, extra: &[(&str, &str)]) -> (ChildGuard, String) {
     let (signing_key, kid) = gw.signing_material();
     let listen = format!("127.0.0.1:{}", free_port());
     let ledger_dir = tempfile::tempdir().expect("tempdir");
@@ -129,7 +133,8 @@ fn spawn_runner(gw: &EscurelProcess) -> (ChildGuard, String) {
         )
         .env("ESCUREL_RUNNER_MAX_ATTEMPTS", "1")
         .env("ESCUREL_RUNNER_RETRY_BACKOFF", "50ms")
-        .env("ESCUREL_RUNNER_POLL_INTERVAL", "250ms");
+        .env("ESCUREL_RUNNER_POLL_INTERVAL", "250ms")
+        .envs(extra.iter().copied());
     (ChildGuard(cmd.spawn().expect("spawn runner")), listen)
 }
 
@@ -511,5 +516,70 @@ async fn an_agent_with_a_malformed_max_concurrent_is_refused_not_run_uncapped() 
     assert!(
         !writer_of(&gw, "capless").await.0,
         "the instance must be untouched"
+    );
+}
+
+/// `max_concurrent: 1` holds with a real runner (crew review PR-1, F8): two
+/// events for scribe, each run idling 2 s in the echo harness, never overlap —
+/// read from the runs' own `run-started` / `run-finished` (second-granular
+/// `at`, so the second may start in the second the first finished). The
+/// event lane is serial today, so this guards the cap for when it is not.
+#[tokio::test]
+async fn an_agent_capped_at_one_run_never_runs_two_at_once() {
+    let gw = gateway().await;
+    let (mut runner, listen) = spawn_runner_with(&gw, &[("ESCUREL_ECHO_SLEEP_MS", "2000")]);
+    let mut events = Vec::new();
+    for n in 0..2 {
+        let r = call(
+            &gw,
+            "capture_event",
+            json!({ "source": "manual", "mime": "text/plain", "label_skill": "note",
+                    "instance_page_id": page_id("note"), "title": "work item",
+                    "body": format!("ECHO_FOLD_MARKER note {n}") }),
+        )
+        .await;
+        events.push(r["event_id"].as_str().unwrap().to_owned());
+    }
+    for e in &events {
+        let (status, _) = await_terminal(&mut runner, &listen, e).await;
+        assert_eq!(status, "processed", "{e}");
+    }
+    // `run-finished` lands just after the ledger terminal.
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let spans = loop {
+        let runs = call(
+            &gw,
+            "list_events",
+            json!({ "label_skill": "escurel:run", "limit": 200 }),
+        )
+        .await;
+        let at = |event: &str, title: &str| {
+            runs["events"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|e| e["title"] == title && e["provenance"]["runner"]["event_id"] == event)
+                .and_then(|e| e["at"].as_str())
+                .and_then(|t| chrono::DateTime::parse_from_rfc3339(t).ok())
+        };
+        let spans: Vec<_> = events
+            .iter()
+            .filter_map(|e| Some((at(e, "run-started")?, at(e, "run-finished")?)))
+            .collect();
+        if spans.len() == 2 {
+            break spans;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "no run-started/finished pair: {runs}"
+        );
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    };
+    let mut spans = spans;
+    spans.sort();
+    let (first, second) = (spans[0], spans[1]);
+    assert!(
+        second.0 >= first.1,
+        "scribe ran two at once: {first:?} overlaps {second:?}"
     );
 }
