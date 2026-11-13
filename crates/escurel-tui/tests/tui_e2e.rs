@@ -88,6 +88,10 @@ async fn load(source: &DataSource, app: &mut App, req: DataRequest) {
     app.set_data(data);
 }
 
+fn down() -> crossterm::event::KeyEvent {
+    crossterm::event::KeyEvent::from(crossterm::event::KeyCode::Down)
+}
+
 fn enter() -> crossterm::event::KeyEvent {
     crossterm::event::KeyEvent::from(crossterm::event::KeyCode::Enter)
 }
@@ -116,8 +120,10 @@ async fn navigation_flow_renders_corpus() {
         "skills view should list the customer skill:\n{skills_view}"
     );
 
-    // 2. Drill into the customer skill -> instances contains "acme".
+    // 2. Drill into the customer skill -> instances contains "acme". The
+    // auto-shipped `agent` system skill sorts before it, so step down once.
     assert_eq!(app.current(), &Screen::Skills);
+    assert!(app.on_key(down()).is_none(), "moving the cursor loads nothing");
     let req = app
         .on_key(enter())
         .expect("drill into customer should request instances");
