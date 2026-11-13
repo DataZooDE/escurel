@@ -114,13 +114,35 @@ pub struct Governor {
     throttled_paused: Arc<AtomicU64>,
     /// Tenants a `pause` control has stopped admission for.
     paused: Arc<Mutex<std::collections::HashSet<String>>>,
-    /// Per-agent run slots (#823 `max_concurrent`), keyed by agent id, with
-    /// the cap the semaphore was sized for.
-    agents: Arc<Mutex<HashMap<String, AgentSlots>>>,
+    /// Per-agent run gates (#823 `max_concurrent`), keyed by agent id.
+    agents: Arc<Mutex<HashMap<String, Arc<AgentGate>>>>,
 }
 
-/// One agent's cap and the semaphore sized for it.
-type AgentSlots = (u32, Arc<Semaphore>);
+/// One agent's runs in flight and its CURRENT cap. A counter, not a
+/// semaphore: a semaphore is sized once, so a lowered cap would need a fresh
+/// one with every permit free while the old runs still hold theirs.
+#[derive(Debug, Default)]
+struct AgentGate {
+    /// `(in flight, cap)`; the cap is the latest one a caller read off the page.
+    state: Mutex<(u32, u32)>,
+    freed: tokio::sync::Notify,
+}
+
+/// A held agent run slot; frees it on drop.
+#[derive(Debug)]
+pub struct AgentPermit {
+    gate: Arc<AgentGate>,
+}
+
+impl Drop for AgentPermit {
+    fn drop(&mut self) {
+        if let Ok(mut s) = self.gate.state.lock() {
+            s.0 = s.0.saturating_sub(1);
+        }
+        // Every waiter rechecks against the current cap.
+        self.gate.freed.notify_waiters();
+    }
+}
 
 /// A held run slot. Decrements the tenant's in-flight count on drop, so a
 /// concurrency permit is released exactly once the run (success, failure, or
@@ -147,7 +169,7 @@ impl Drop for RunSlot {
 #[derive(Debug)]
 pub struct RunPermits {
     _harness: Option<OwnedSemaphorePermit>,
-    _agent: Option<OwnedSemaphorePermit>,
+    _agent: Option<AgentPermit>,
 }
 
 const WINDOW: Duration = Duration::from_secs(60);
@@ -189,21 +211,40 @@ impl Governor {
     /// (`max_concurrent` on its page); `None` — no slot to hold — when the
     /// agent sets no cap.
     ///
-    /// A changed cap takes a fresh semaphore: runs already holding the old
-    /// one finish under it, new runs queue under the new cap.
-    async fn acquire_agent(&self, id: &str, max: Option<u32>) -> Option<OwnedSemaphorePermit> {
+    /// The cap is the one this call read: it replaces the agent's current
+    /// cap, and every waiter is admitted only while the runs in flight are
+    /// under the CURRENT cap. Lowering it (the edit that stops a runaway
+    /// agent) admits nothing until enough runs have finished.
+    async fn acquire_agent(&self, id: &str, max: Option<u32>) -> Option<AgentPermit> {
         let max = max?.max(1);
-        let sem = {
+        let gate = {
             let mut map = self.agents.lock().expect("governor agents mutex");
-            let entry = map
-                .entry(id.to_owned())
-                .or_insert_with(|| (max, Arc::new(Semaphore::new(max as usize))));
-            if entry.0 != max {
-                *entry = (max, Arc::new(Semaphore::new(max as usize)));
-            }
-            Arc::clone(&entry.1)
+            Arc::clone(map.entry(id.to_owned()).or_default())
         };
-        sem.acquire_owned().await.ok()
+        let raised = {
+            let mut s = gate.state.lock().expect("agent gate mutex");
+            let raised = max > s.1;
+            s.1 = max;
+            raised
+        };
+        if raised {
+            gate.freed.notify_waiters();
+        }
+        loop {
+            // Registered BEFORE the check, so a release between the check and the await is not lost.
+            let mut freed = std::pin::pin!(gate.freed.notified());
+            freed.as_mut().enable();
+            {
+                let mut s = gate.state.lock().expect("agent gate mutex");
+                if s.0 < s.1 {
+                    s.0 += 1;
+                    return Some(AgentPermit {
+                        gate: Arc::clone(&gate),
+                    });
+                }
+            }
+            freed.await;
+        }
     }
 
     /// Stop admitting runs for `tenant` until [`Self::resume`]. In-flight
@@ -435,6 +476,41 @@ mod tests {
             again.is_ok_and(|p| p.is_some()),
             "freed by the first run's end"
         );
+    }
+
+    /// Lowering an agent's cap binds the runs already in flight (crew review PR-1, F11): the edit an
+    /// operator makes to stop a runaway agent must not admit new runs. A fresh semaphore per cap
+    /// change used to start with every permit free.
+    #[tokio::test]
+    async fn lowering_a_cap_mid_flight_admits_nothing_until_under_the_new_cap() {
+        let gov = Governor::new(limits(1000, 1000, 8));
+        let a = gov.acquire_agent("scribe", Some(2)).await.expect("slot");
+        let b = gov.acquire_agent("scribe", Some(2)).await.expect("slot");
+        let waiter = {
+            let gov = gov.clone();
+            tokio::spawn(async move { gov.acquire_agent("scribe", Some(1)).await })
+        };
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(!waiter.is_finished(), "two in flight, cap now 1: wait");
+        drop(a);
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(
+            !waiter.is_finished(),
+            "one in flight is not under a cap of 1"
+        );
+        drop(b);
+        let got = tokio::time::timeout(Duration::from_secs(1), waiter)
+            .await
+            .expect("admitted once under the cap")
+            .expect("task");
+        assert!(got.is_some());
+        // Raising it again admits at once.
+        let more = tokio::time::timeout(
+            Duration::from_millis(50),
+            gov.acquire_agent("scribe", Some(3)),
+        )
+        .await;
+        assert!(more.is_ok_and(|p| p.is_some()), "a raised cap admits");
     }
 
     /// Under contention an agent run waits for its own cap BEFORE it takes a
