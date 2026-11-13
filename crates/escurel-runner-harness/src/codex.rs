@@ -371,21 +371,26 @@ fn preview(v: &serde_json::Value) -> String {
 ///
 /// Codex's event taxonomy is coarser than claude's and has churned across
 /// versions, so we match defensively on the type/item-type strings rather
-/// than pinning one exact schema: any event whose `type` or nested
-/// `item.item_type` contains both an "mcp"/"tool" hint counts. The
-/// deterministic stub pins the shape we emit; this keeps a minor codex
-/// version bump from silently zeroing the count.
+/// than pinning one exact schema: any event whose `type` or item kind
+/// contains both an "mcp"/"tool" hint counts. The item kind is `item.type`
+/// (codex-cli 0.168.0, `tests/fixtures/codex-0.168.0-*.jsonl`), falling back
+/// to the older `item.item_type`. A call arrives as `item.started` then
+/// `item.completed`; only the completed item counts — it carries the
+/// result or error, and counting both would double every call.
 fn is_tool_call_event(event: &serde_json::Value) -> bool {
     let type_str = event
         .get("type")
         .and_then(serde_json::Value::as_str)
         .unwrap_or("");
-    let item_type = event
-        .get("item")
-        .and_then(|i| i.get("item_type"))
-        .and_then(serde_json::Value::as_str)
+    if matches!(type_str, "item.started" | "item.updated") {
+        return false;
+    }
+    let item = &event["item"];
+    let item_kind = item["type"]
+        .as_str()
+        .or_else(|| item["item_type"].as_str())
         .unwrap_or("");
-    let hay = format!("{type_str} {item_type}").to_ascii_lowercase();
+    let hay = format!("{type_str} {item_kind}").to_ascii_lowercase();
     (hay.contains("mcp") && hay.contains("tool")) || hay.contains("tool_call")
 }
 
@@ -567,7 +572,7 @@ mod tests {
     fn the_event_stream_normalises_to_calls_results_messages_and_errors() {
         let lines = [
             "Reading prompt from stdin...",
-            r#"{"type":"item.completed","item":{"id":"i1","type":"mcp_tool_call","item_type":"mcp_tool_call","server":"escurel","tool":"update_page","arguments":{"page_id":"p","content":"x"},"result":{"content":[{"type":"text","text":"ok"}]},"error":null}}"#,
+            r#"{"type":"item.completed","item":{"id":"i1","type":"mcp_tool_call","server":"escurel","tool":"update_page","arguments":{"page_id":"p","content":"x"},"result":{"content":[{"type":"text","text":"ok"}]},"error":null}}"#,
             r#"{"type":"item.completed","item":{"item_type":"mcp_tool_call","tool":"assign_event","arguments":{},"error":{"message":"forbidden"}}}"#,
             r#"{"type":"item.completed","item":{"type":"agent_message","text":"folded"}}"#,
             r#"{"type":"error","message":"model refused"}"#,
@@ -598,6 +603,75 @@ mod tests {
         assert!(!outcome.ok, "the run-level error event fails the run");
         let refused_call_only = parse_outcome("", lines[2].as_bytes()).expect("parse");
         assert!(refused_call_only.ok, "a refused tool call alone does not");
+    }
+
+    /// Unmodified `codex exec --json` stdout from codex-cli 0.168.0 (only
+    /// `thread_id` zeroed), against a throwaway stdio MCP server named
+    /// `escurel` exposing `update_page`. Items carry `item.type`, and a call
+    /// is an `item.started` + `item.completed` pair (crew review PR-1, F2).
+    const REAL_MCP_CALL: &str = include_str!("../tests/fixtures/codex-0.168.0-mcp-call.jsonl");
+    const REAL_MCP_REFUSED: &str =
+        include_str!("../tests/fixtures/codex-0.168.0-mcp-call-refused.jsonl");
+    const REAL_SHELL: &str = include_str!("../tests/fixtures/codex-0.168.0-shell-command.jsonl");
+
+    fn kinds_of(stream: &str) -> (Vec<TranscriptKind>, Vec<TranscriptEntry>) {
+        let entries: Vec<TranscriptEntry> = stream.lines().flat_map(transcript_entries).collect();
+        (entries.iter().map(|e| e.kind).collect(), entries)
+    }
+
+    #[test]
+    fn a_real_mcp_call_is_one_call_and_one_result() {
+        let (kinds, entries) = kinds_of(REAL_MCP_CALL);
+        assert_eq!(
+            kinds,
+            [
+                TranscriptKind::Message,
+                TranscriptKind::ToolCall,
+                TranscriptKind::ToolResult,
+                TranscriptKind::Message,
+            ],
+            "the started/completed pair is one call: {entries:?}"
+        );
+        assert_eq!(entries[1].name.as_deref(), Some("update_page"));
+        assert_eq!(
+            entries[1].args,
+            Some(serde_json::json!({
+                "page_id": "markdown/instances/renewal/c1.md", "content": "hello"
+            }))
+        );
+        let outcome = parse_outcome("done", REAL_MCP_CALL.as_bytes()).expect("parse");
+        assert_eq!(outcome.tool_calls, 1);
+        assert!(outcome.ok);
+    }
+
+    #[test]
+    fn a_real_refused_mcp_call_is_a_call_and_an_error_not_a_failed_run() {
+        let (kinds, entries) = kinds_of(REAL_MCP_REFUSED);
+        assert_eq!(
+            kinds,
+            [
+                TranscriptKind::Message,
+                TranscriptKind::ToolCall,
+                TranscriptKind::Error,
+                TranscriptKind::Message,
+            ],
+            "{entries:?}"
+        );
+        let outcome = parse_outcome("", REAL_MCP_REFUSED.as_bytes()).expect("parse");
+        assert_eq!(outcome.tool_calls, 1);
+        assert!(
+            outcome.ok,
+            "a refused tool call alone does not fail the run"
+        );
+    }
+
+    /// A shell command is not an MCP tool call: `tool_calls` counts calls
+    /// into the gateway, which is what the run's work goes through.
+    #[test]
+    fn a_real_shell_command_is_not_counted_as_a_tool_call() {
+        let outcome = parse_outcome("done", REAL_SHELL.as_bytes()).expect("parse");
+        assert_eq!(outcome.tool_calls, 0);
+        assert!(outcome.ok);
     }
 
     #[test]

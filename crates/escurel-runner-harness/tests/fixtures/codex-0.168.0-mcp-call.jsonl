@@ -1,0 +1,7 @@
+{"type":"thread.started","thread_id":"00000000-0000-0000-0000-000000000000"}
+{"type":"turn.started"}
+{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"I’ll call the update_page tool once with the specified page and content.\n"}}
+{"type":"item.started","item":{"id":"item_1","type":"mcp_tool_call","server":"escurel","tool":"update_page","arguments":{"page_id":"markdown/instances/renewal/c1.md","content":"hello"},"result":null,"error":null,"status":"in_progress"}}
+{"type":"item.completed","item":{"id":"item_1","type":"mcp_tool_call","server":"escurel","tool":"update_page","arguments":{"page_id":"markdown/instances/renewal/c1.md","content":"hello"},"result":{"content":[{"type":"text","text":"ok"}],"structured_content":null},"error":null,"status":"completed"}}
+{"type":"item.completed","item":{"id":"item_2","type":"agent_message","text":"done"}}
+{"type":"turn.completed","usage":{"input_tokens":50161,"cached_input_tokens":45312,"cache_write_input_tokens":0,"output_tokens":106,"reasoning_output_tokens":0}}

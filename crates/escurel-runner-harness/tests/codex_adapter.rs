@@ -78,8 +78,11 @@ cat > "{stdin_out}"
 if [ -n "$out_file" ]; then
   printf '%s' 'folded the renewal event into globex' > "$out_file"
 fi
-# A canned --json event stream: a tool call then a turn completion.
-printf '%s\n' '{{"type":"item.completed","item":{{"item_type":"mcp_tool_call","server":"escurel","tool":"update_page"}}}}'
+# A canned --json event stream: a tool call in today's shape (an
+# `item.type` started/completed pair, as codex-cli 0.168.0 emits it), one in
+# the older `item_type` shape, then a turn completion.
+printf '%s\n' '{{"type":"item.started","item":{{"id":"item_1","type":"mcp_tool_call","server":"escurel","tool":"update_page","status":"in_progress"}}}}'
+printf '%s\n' '{{"type":"item.completed","item":{{"id":"item_1","type":"mcp_tool_call","server":"escurel","tool":"update_page","status":"completed"}}}}'
 printf '%s\n' '{{"type":"item.completed","item":{{"item_type":"mcp_tool_call","server":"escurel","tool":"assign_event"}}}}'
 printf '%s\n' '{{"type":"turn.completed","usage":{{"input_tokens":10,"output_tokens":5}}}}'
 "#
@@ -126,10 +129,9 @@ async fn codex_adapter_builds_invocation_and_parses_real_stub_output() {
     assert!(outcome.ok, "clean exit + final message → ok");
     assert_eq!(outcome.status, HarnessStatus::Ok);
     assert_eq!(outcome.summary, "folded the renewal event into globex");
-    assert!(
-        outcome.tool_calls >= 1,
-        "JSONL tool-call events counted: {}",
-        outcome.tool_calls
+    assert_eq!(
+        outcome.tool_calls, 2,
+        "one call per completed item, in either item shape"
     );
     assert_eq!(outcome.produced_instance, None);
 
