@@ -605,7 +605,9 @@ gateway's inbox, and its poller routes and claims it there. It logs a warning
 at boot when it has both labels/exclusive and a webhook secret. Feed a fleet
 through the poller. `GET /debug/admission?event_id=` on a runner shows its
 last decision on an event (`take`, `unroutable`, `elsewhere`, `done`,
-`retry`, `refused`, `webhook-held`, `webhook-skipped`).
+`retry`, `refused`, `webhook-held`, `webhook-skipped`) as `decision`, and
+what the webhook path did with it as `webhook` (the poller's next tick
+replaces `decision`, never `webhook`).
 
 A runner **outside the cluster** needs no signing key: references/08
 *Runners outside the cluster*.

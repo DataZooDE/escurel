@@ -137,6 +137,16 @@ async fn run_starts(gw: &EscurelProcess, event_id: &str) -> usize {
 
 /// What `runner` decided about inbox event `event_id` (`/debug/admission`).
 async fn admission(runner: &RunningRunner, event_id: &str) -> Option<String> {
+    admission_field(runner, event_id, "decision").await
+}
+
+/// What `runner`'s webhook path did with event `event_id`: kept apart from
+/// [`admission`], which the poller's next tick on the same event replaces.
+async fn webhook_admission(runner: &RunningRunner, event_id: &str) -> Option<String> {
+    admission_field(runner, event_id, "webhook").await
+}
+
+async fn admission_field(runner: &RunningRunner, event_id: &str, field: &str) -> Option<String> {
     let resp = reqwest::get(format!(
         "{}/debug/admission?event_id={event_id}",
         runner.base_url()
@@ -147,7 +157,7 @@ async fn admission(runner: &RunningRunner, event_id: &str) -> Option<String> {
         return None;
     }
     let body: Value = resp.json().await.ok()?;
-    body["decision"].as_str().map(str::to_owned)
+    body[field].as_str().map(str::to_owned)
 }
 
 async fn capture(gw: &EscurelProcess, skill: &str, provenance: Value) -> String {
@@ -657,9 +667,7 @@ async fn a_fleet_runners_undecidable_webhook_is_left_to_the_poller() {
         .unwrap();
     assert_eq!(resp.status(), 202);
     let decided = eventually(Duration::from_secs(20), "the webhook's fate", || async {
-        admission(&blind, &event)
-            .await
-            .filter(|d| d.starts_with("webhook-"))
+        webhook_admission(&blind, &event).await
     })
     .await;
     assert_eq!(decided, "webhook-skipped");

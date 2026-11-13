@@ -800,14 +800,6 @@ async fn trigger(State(state): State<AppState>, headers: HeaderMap, body: Bytes)
                          the poller, which routes and claims it from the inbox"
                     );
                 }
-                gate.note_decision(
-                    &event.event_id,
-                    if hold {
-                        "webhook-held"
-                    } else {
-                        "webhook-skipped"
-                    },
-                );
             }
             if admit == Admit::Take || hold {
                 gate_and_enqueue(
@@ -820,6 +812,16 @@ async fn trigger(State(state): State<AppState>, headers: HeaderMap, body: Bytes)
                     trigger,
                     "webhook",
                 );
+            }
+            // Noted only once any enqueue is on the ledger, so a reader that
+            // sees the outcome also sees the run it did (or did not) start.
+            if admit == Admit::Retry {
+                let outcome = if hold {
+                    "webhook-held"
+                } else {
+                    "webhook-skipped"
+                };
+                gate.note_webhook(&event.event_id, outcome);
             }
         });
         return StatusCode::ACCEPTED;
@@ -1743,17 +1745,21 @@ async fn debug_control(
 
 /// This runner's last admission decision on an inbox event (#818): `take`,
 /// `unroutable`, `elsewhere`, `done`, `retry`, `refused`, or what the webhook
-/// path did with an undecidable one (`webhook-held` / `webhook-skipped`). A
-/// test's positive "this runner had its chance" signal.
+/// path did with an undecidable one (`webhook-held` / `webhook-skipped`). The
+/// webhook's outcome is also reported on its own (`webhook`), since the
+/// poller's next tick replaces `decision`. A test's positive "this runner had
+/// its chance" signal.
 async fn debug_admission(
     State(state): State<AppState>,
     axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
 ) -> impl IntoResponse {
     let event_id = params.get("event_id").map(String::as_str).unwrap_or("");
     match state.gate.as_ref().and_then(|g| g.decision(event_id)) {
-        Some(decision) => (
+        Some((decision, webhook)) => (
             StatusCode::OK,
-            axum::Json(serde_json::json!({ "event_id": event_id, "decision": decision })),
+            axum::Json(serde_json::json!({
+                "event_id": event_id, "decision": decision, "webhook": webhook,
+            })),
         ),
         None => (
             StatusCode::NOT_FOUND,

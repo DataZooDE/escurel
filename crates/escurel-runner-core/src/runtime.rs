@@ -188,6 +188,15 @@ struct Held {
     until: Instant,
 }
 
+/// One event's recorded decisions. The webhook path's outcome is kept apart
+/// from the latest gate decision: the poller re-admits the same inbox event
+/// every tick, and would otherwise overwrite what the webhook did with it.
+#[derive(Default)]
+struct Decisions {
+    last: Option<String>,
+    webhook: Option<String>,
+}
+
 /// How many admission decisions `/debug/admission` remembers.
 const MAX_DECISIONS: usize = 10_000;
 
@@ -208,9 +217,10 @@ pub struct RuntimeGate {
     told: Mutex<HashSet<String>>,
     /// Harnesses whose CLI probe failed: never offered for `requires.harness`.
     unavailable: Mutex<HashSet<String>>,
-    /// The last decision per event (`/debug/admission`): a test's positive
-    /// "this runner had its chance" signal before it asserts an absence.
-    decisions: Mutex<HashMap<String, String>>,
+    /// What this runner decided per event (`/debug/admission`): a test's
+    /// positive "this runner had its chance" signal before it asserts an
+    /// absence.
+    decisions: Mutex<HashMap<String, Decisions>>,
 }
 
 impl RuntimeGate {
@@ -285,24 +295,37 @@ impl RuntimeGate {
             .collect()
     }
 
-    /// The last admission decision for `event_id`, if any.
+    /// The last admission decision for `event_id` (from either path), and
+    /// what the webhook path did with it, if it saw the event.
     #[must_use]
-    pub fn decision(&self, event_id: &str) -> Option<String> {
+    pub fn decision(&self, event_id: &str) -> Option<(Option<String>, Option<String>)> {
         self.decisions
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .get(event_id)
-            .cloned()
+            .map(|d| (d.last.clone(), d.webhook.clone()))
     }
 
-    /// Record what this runner decided about `event_id` (the gate's own
-    /// decision, or what the webhook path then did with it).
-    pub fn note_decision(&self, event_id: &str, decision: &str) {
+    fn note(&self, event_id: &str, apply: impl FnOnce(&mut Decisions)) {
         let mut decisions = self.decisions.lock().unwrap_or_else(|e| e.into_inner());
-        if decisions.len() >= MAX_DECISIONS {
+        if decisions.len() >= MAX_DECISIONS && !decisions.contains_key(event_id) {
             decisions.clear();
         }
-        decisions.insert(event_id.to_owned(), decision.to_owned());
+        apply(decisions.entry(event_id.to_owned()).or_default());
+    }
+
+    /// Record the gate's own decision about `event_id`.
+    pub fn note_decision(&self, event_id: &str, decision: &str) {
+        self.note(event_id, |d| d.last = Some(decision.to_owned()));
+    }
+
+    /// Record what the webhook path did with `event_id`. It is also the
+    /// latest decision, but unlike that it is never overwritten by the poller.
+    pub fn note_webhook(&self, event_id: &str, outcome: &str) {
+        self.note(event_id, |d| {
+            d.last = Some(outcome.to_owned());
+            d.webhook = Some(outcome.to_owned());
+        });
     }
 
     /// Take only work whose SKILL page's `requires:` names one of this
