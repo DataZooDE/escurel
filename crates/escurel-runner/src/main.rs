@@ -748,7 +748,22 @@ async fn trigger(State(state): State<AppState>, headers: HeaderMap, body: Bytes)
             let Some(client) = connect_now(&state.gateway_url, &tokens).await else {
                 return;
             };
-            if gate.admit(&client, &event).await == Admit::Take {
+            // A webhook trigger was already acknowledged (202) and has no
+            // other durable hold on this runner, so an undecidable admission
+            // (`Retry`: the gateway did not answer, the catalogue is not read
+            // yet) keeps it on the ledger, where its run waits for the
+            // gateway (#440) instead of being dropped. The poller, whose
+            // inbox IS the hold, skips such an event until the next tick.
+            let admit = gate.admit(&client, &event).await;
+            if admit == Admit::Retry {
+                tracing::warn!(
+                    target: "escurel_runner",
+                    event_id = %event.event_id,
+                    "webhook trigger admitted without a routing/claim answer from the gateway; \
+                     held on the ledger until the gateway answers dispatch"
+                );
+            }
+            if matches!(admit, Admit::Take | Admit::Retry) {
                 gate_and_enqueue(
                     &state.ledger,
                     &state.queue,

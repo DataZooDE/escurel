@@ -576,7 +576,12 @@ token), an event it does not store or a malformed claim (`-32602`, such as
 **not answer** — a timeout (2 s), a transport failure, a `5xx`, a `429` — is
 not taken: the event stays unclaimed and the next poll asks again (a run could
 not progress without the gateway anyway). So a slow gateway does not let two
-runners start one event.
+runners start one event. That holds for the **poller**, whose inbox is the
+durable hold. A **webhook** trigger (`POST /trigger`) was already acknowledged
+and has no other hold on the runner, so when its admission cannot be decided
+(no answer, catalogue not read yet) it is kept on the ledger and its run waits
+for the gateway, as before (#440) — it is neither routed nor claimed. Feed a
+fleet that relies on `requires:` routing through the poller, not webhooks.
 
 A runner **outside the cluster** needs no signing key: references/08
 *Runners outside the cluster*.
