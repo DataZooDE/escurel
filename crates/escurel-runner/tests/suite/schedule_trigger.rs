@@ -11,7 +11,7 @@ use std::path::Path;
 use std::process::{Child, Command};
 use std::time::{Duration, Instant};
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Timelike, Utc};
 use escurel_test_support::{AuthMode, EscurelProcess, FixtureBuilder, Opts, Role, free_port};
 use serde_json::{Value, json};
 
@@ -61,7 +61,8 @@ async fn spawn_runner(gw: &EscurelProcess, ledger_dir: &Path) -> (ChildGuard, St
         )
         .env("ESCUREL_RUNNER_RETRY_BACKOFF", "50ms")
         .env("ESCUREL_RUNNER_POLL_INTERVAL", "250ms")
-        .env("ESCUREL_RUNNER_SCHEDULE_TICK", "250ms");
+        .env("ESCUREL_RUNNER_SCHEDULE_TICK", "250ms")
+        .env("ESCUREL_RUNNER_SCHEDULE_GRACE", "2s");
     let mut runner = ChildGuard(cmd.spawn().expect("spawn escurel-runner"));
     let url = format!("http://{listen}/healthz");
     let deadline = Instant::now() + Duration::from_secs(60);
@@ -268,4 +269,33 @@ async fn two_runners_on_one_schedule_do_not_double_fire() {
     let windows = trigger_windows(&gw, "tick").await;
     assert!(windows.len() >= 2, "{windows:?}");
     assert_contiguous(&windows);
+}
+
+/// A window older than the catch-up grace does not fire: a daily job whose
+/// time passed an hour ago waits for tomorrow instead of running late. The
+/// two-second skill beside it proves the loop was running all along.
+#[tokio::test]
+async fn a_window_older_than_the_grace_does_not_fire() {
+    let hour_ago = Utc::now() - chrono::Duration::hours(1);
+    let stale = format!(
+        "---\nkind: skill\nid: stale\ndescription: Once a day, an hour ago.\n\
+         autonomy: auto\nschedule: \"{} {} {} * * *\"\n---\n# stale\n",
+        hour_ago.second(),
+        hour_ago.minute(),
+        hour_ago.hour()
+    );
+    let gw = gateway(&[("tick", TICK_SKILL), ("stale", stale.as_str())]).await;
+    let ledger = tempfile::tempdir().expect("ledger dir");
+    let (_runner, _) = spawn_runner(&gw, ledger.path()).await;
+    tokio::time::sleep(Duration::from_secs(3)).await;
+
+    assert!(
+        !trigger_windows(&gw, "tick").await.is_empty(),
+        "the loop runs: the in-grace schedule fired"
+    );
+    assert_eq!(
+        trigger_windows(&gw, "stale").await,
+        Vec::<DateTime<Utc>>::new(),
+        "a window an hour past is outside the 2 s grace and must not fire"
+    );
 }

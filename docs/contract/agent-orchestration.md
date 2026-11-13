@@ -186,7 +186,8 @@ Step 1 has a second source besides external callers: the runner's
 `CRON_TZ=` prefix, UTC otherwise) gets one `capture_event` per window, id
 `sched:<skill>:<window-start RFC 3339 UTC>`, `source: runner-schedule`;
 first-writer-wins on that id makes restarts and multiple runners safe. Only
-the latest window fires (no backfill). `schedule_budget.runs_per_day` caps
+the latest window fires (no backfill), and only within
+`ESCUREL_RUNNER_SCHEDULE_GRACE` (default 15m) of its start — never late. `schedule_budget.runs_per_day` caps
 a UTC day; a window past the cap is recorded as an `escurel:run`
 `run-skipped` system event (`<trigger id>:skipped`, reason `budget`)
 instead of firing. The legacy lint tick (`ESCUREL_RUNNER_LINT_INTERVAL`) is

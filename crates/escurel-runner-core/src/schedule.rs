@@ -7,12 +7,14 @@
 //! first-writer-wins on event ids is what makes a restart, an overlapping
 //! tick or a second runner harmless: they all compute the same id.
 //!
-//! **No backfill.** A runner that was down across several windows fires only
-//! the latest one when it comes back, never the backlog — a schedule says
-//! "keep this fresh", not "run N times". The latest window fires even if it
-//! opened long ago (a daily 07:15 job fires at 15:00 after a runner restart at
-//! 15:00 that day, or on the day the page is first written), because the
-//! alternative is a window silently lost to a deploy.
+//! **No backfill, bounded catch-up.** A runner that was down across several
+//! windows fires at most the latest one when it comes back, never the backlog
+//! — a schedule says "keep this fresh", not "run N times". And it fires that
+//! one only while it is within the catch-up grace
+//! (`ESCUREL_RUNNER_SCHEDULE_GRACE`, default 15m): a restart or a deploy
+//! that spans a window still catches it, but a daily 07:15 job does not run
+//! at 15:00 because the runner booted (or the page was written) then — it
+//! waits for tomorrow's window.
 //!
 //! **Budget.** `schedule_budget: {runs_per_day: N}` caps the triggers whose
 //! window starts on one UTC day. A window past the cap is not fired; an
@@ -75,13 +77,15 @@ pub struct ScheduleEntry {
     /// workflow invocation the driver expects.
     pub workflow: bool,
     pub source: ScheduleSource,
+    /// How long after its start a window may still fire.
+    pub grace: Duration,
 }
 
 impl ScheduleEntry {
     /// The entry a `list_skills` row declares: `None` without `schedule:`,
     /// `Some(Err)` when the expression does not parse.
     #[must_use]
-    pub fn from_skill(skill: &Skill) -> Option<Result<Self, ScheduleError>> {
+    pub fn from_skill(skill: &Skill, grace: Duration) -> Option<Result<Self, ScheduleError>> {
         let expr = skill.schedule.as_deref()?;
         Some(CronSchedule::parse(expr).map(|cron| Self {
             skill: skill.id.clone(),
@@ -89,10 +93,12 @@ impl ScheduleEntry {
             runs_per_day: skill.schedule_budget.map(|b| b.runs_per_day),
             workflow: skill.backend.kind == WORKFLOW_BACKEND,
             source: ScheduleSource::Frontmatter,
+            grace,
         }))
     }
 
-    /// The lint shim: `lint` every `interval`.
+    /// The lint shim: `lint` every `interval`. Its grace is the interval, so
+    /// every window fires within its own span, as the lint tick did.
     #[must_use]
     pub fn lint_interval(tenant: &str, interval: Duration) -> Self {
         Self {
@@ -103,6 +109,7 @@ impl ScheduleEntry {
             source: ScheduleSource::LintInterval {
                 tenant: tenant.to_owned(),
             },
+            grace: interval,
         }
     }
 
@@ -117,6 +124,15 @@ impl ScheduleEntry {
                     .single()
             }
         }
+    }
+
+    /// The window to fire at `now`: the latest one, if it opened no longer
+    /// than `grace` ago.
+    #[must_use]
+    pub fn due_window(&self, now: DateTime<Utc>) -> Option<DateTime<Utc>> {
+        let window = self.latest_window(now)?;
+        let age = (now - window).to_std().unwrap_or_default();
+        (age <= self.grace).then_some(window)
     }
 
     fn expr(&self) -> String {
@@ -244,16 +260,22 @@ pub enum TickOutcome {
 /// The schedule loop's memory: which window each entry last handled, so a
 /// tick inside a window it already fired costs one `list_skills`, nothing
 /// more. Lost on restart, which is safe — the ids collapse the repeat.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct Scheduler {
+    /// The catch-up grace for frontmatter schedules.
+    grace: Duration,
     handled: HashMap<(String, bool), DateTime<Utc>>,
     warned: HashSet<String>,
 }
 
 impl Scheduler {
     #[must_use]
-    pub fn new() -> Self {
-        Self::default()
+    pub fn new(grace: Duration) -> Self {
+        Self {
+            grace,
+            handled: HashMap::new(),
+            warned: HashSet::new(),
+        }
     }
 
     /// The entries the skill catalogue declares, plus `extra` (the lint
@@ -268,7 +290,7 @@ impl Scheduler {
         match client.list_skills(ListSkillsRequest::default()).await {
             Ok(resp) => {
                 for skill in &resp.skills {
-                    match ScheduleEntry::from_skill(skill) {
+                    match ScheduleEntry::from_skill(skill, self.grace) {
                         Some(Ok(entry)) => out.push(entry),
                         Some(Err(e)) => {
                             if self.warned.insert(format!("{}:{e}", skill.id)) {
@@ -296,7 +318,7 @@ impl Scheduler {
     ) -> Vec<TickOutcome> {
         let mut out = Vec::new();
         for entry in entries {
-            let Some(window) = entry.latest_window(now) else {
+            let Some(window) = entry.due_window(now) else {
                 continue;
             };
             let key = (
@@ -390,6 +412,8 @@ mod tests {
     use escurel_types::{ScheduleBudget, SkillBackend};
     use serde_json::Value;
 
+    const GRACE: Duration = Duration::from_secs(15 * 60);
+
     fn utc(s: &str) -> DateTime<Utc> {
         DateTime::parse_from_rfc3339(s).unwrap().with_timezone(&Utc)
     }
@@ -409,7 +433,7 @@ mod tests {
 
     #[test]
     fn a_frontmatter_schedule_ids_its_window_by_start_and_skill() {
-        let e = ScheduleEntry::from_skill(&skill("digest", "0 7 * * *", "markdown"))
+        let e = ScheduleEntry::from_skill(&skill("digest", "0 7 * * *", "markdown"), GRACE)
             .unwrap()
             .unwrap();
         assert_eq!(e.runs_per_day, Some(3));
@@ -432,8 +456,25 @@ mod tests {
     }
 
     #[test]
+    fn a_window_fires_only_within_the_grace() {
+        let e = ScheduleEntry::from_skill(&skill("digest", "15 7 * * *", "markdown"), GRACE)
+            .unwrap()
+            .unwrap();
+        let window = utc("2026-11-13T07:15:00Z");
+        // At the window, and at the edge of the grace: due.
+        assert_eq!(e.due_window(window), Some(window));
+        assert_eq!(e.due_window(utc("2026-11-13T07:30:00Z")), Some(window));
+        // Past the grace: the 07:15 job does not run late at 07:31 or 15:00.
+        assert_eq!(e.due_window(utc("2026-11-13T07:30:01Z")), None);
+        assert_eq!(e.due_window(utc("2026-11-13T15:00:00Z")), None);
+        // The lint shim's grace is its interval: every window is due all along.
+        let lint = ScheduleEntry::lint_interval("acme", Duration::from_secs(1800));
+        assert!(lint.due_window(utc("2026-11-13T09:59:59Z")).is_some());
+    }
+
+    #[test]
     fn a_workflow_skill_gets_a_run_page_per_window() {
-        let e = ScheduleEntry::from_skill(&skill("sweep", "*/2 * * * * *", "workflow"))
+        let e = ScheduleEntry::from_skill(&skill("sweep", "*/2 * * * * *", "workflow"), GRACE)
             .unwrap()
             .unwrap();
         let w = e.latest_window(utc("2026-11-13T09:30:05Z")).unwrap();
@@ -466,7 +507,7 @@ mod tests {
 
     #[test]
     fn a_skipped_record_is_a_system_run_event_naming_the_budget() {
-        let e = ScheduleEntry::from_skill(&skill("digest", "0 7 * * *", "markdown"))
+        let e = ScheduleEntry::from_skill(&skill("digest", "0 7 * * *", "markdown"), GRACE)
             .unwrap()
             .unwrap();
         let w = utc("2026-11-13T07:00:00Z");
@@ -485,11 +526,11 @@ mod tests {
     #[test]
     fn an_unparseable_schedule_is_reported_and_an_absent_one_is_not_an_entry() {
         assert!(matches!(
-            ScheduleEntry::from_skill(&skill("bad", "whenever", "markdown")),
+            ScheduleEntry::from_skill(&skill("bad", "whenever", "markdown"), GRACE),
             Some(Err(_))
         ));
         let mut none = skill("plain", "", "markdown");
         none.schedule = None;
-        assert!(ScheduleEntry::from_skill(&none).is_none());
+        assert!(ScheduleEntry::from_skill(&none, GRACE).is_none());
     }
 }

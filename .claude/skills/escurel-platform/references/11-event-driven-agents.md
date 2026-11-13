@@ -444,10 +444,12 @@ event for it:
 
 The id is the whole idempotency story: a restart, an overlapping tick or a
 second runner computes the same id, and `capture_event` keeps the first.
-**No backfill**: a runner that was down for several windows fires only the
-latest one when it returns — and it does fire that one, even if it opened
-hours ago (a page written at 15:00 with a 07:15 schedule fires at once for
-today's 07:15).
+**No backfill, bounded catch-up**: a runner that was down for several
+windows fires at most the latest one when it returns, and only while that
+window is younger than `ESCUREL_RUNNER_SCHEDULE_GRACE` (default 15m; raised
+to the tick if set below it). A restart or deploy that spans a window still
+catches it; a 07:15 job does **not** run at 15:00 because the runner booted
+or the page was written then — it waits for tomorrow's 07:15.
 
 **Budget.** With `schedule_budget: {runs_per_day: N}`, before firing a
 window the runner counts the skill's other `sched:<skill>:` triggers whose
@@ -461,7 +463,8 @@ budget is visible, never silence.
 entry (epoch-aligned windows of that length) to the same loop, keeping the
 old lint tick's ids (`lint-<tenant>-<window>`), run page
 (`workflow-run/lint-<window>`) and `source: runner-lint-tick`, so an
-upgrade does not fire the current window twice.
+upgrade does not fire the current window twice. Its grace is its interval,
+so every lint window fires, as before.
 
 ## Chat runs (`provenance.chat_group_id`)
 

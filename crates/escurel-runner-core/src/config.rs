@@ -130,6 +130,10 @@ pub const DEFAULT_STATUS_INTERVAL: Duration = Duration::from_secs(5 * 60);
 /// lateness of a scheduled trigger.
 pub const DEFAULT_SCHEDULE_TICK: Duration = Duration::from_secs(30);
 
+/// How long after it opens a schedule window may still fire (#819): the
+/// catch-up a restart or deploy gets, never a late run hours after the fact.
+pub const DEFAULT_SCHEDULE_GRACE: Duration = Duration::from_secs(15 * 60);
+
 /// Default SIGTERM drain timeout (#158): on shutdown the runner stops
 /// accepting new triggers and lets in-flight runs finish, bounded by this
 /// deadline before it exits anyway (a still-pending run is recovered on the
@@ -509,6 +513,12 @@ pub struct RunnerConfig {
     /// `poll_interval`; zero is refused. Source:
     /// `ESCUREL_RUNNER_SCHEDULE_TICK` (default [`DEFAULT_SCHEDULE_TICK`], 30s).
     pub schedule_tick: Duration,
+    /// How long after its start a `schedule:` window may still fire; an
+    /// older latest window is not run late (#819). Zero is refused; the
+    /// runner raises a value below `schedule_tick` to the tick (a window
+    /// must survive at least one tick to be seen). Source:
+    /// `ESCUREL_RUNNER_SCHEDULE_GRACE` (default [`DEFAULT_SCHEDULE_GRACE`], 15m).
+    pub schedule_grace: Duration,
     /// Filesystem path of the runner-local durable run ledger (its own
     /// DuckDB file — the idempotency authority that survives a restart; a
     /// SQLite-era file at the path, or at the old `.sqlite` default beside a
@@ -864,6 +874,12 @@ impl RunnerConfig {
                 .ok_or(ConfigError::InvalidPollInterval { value: raw })?,
             _ => DEFAULT_SCHEDULE_TICK,
         };
+        let schedule_grace = match lookup("ESCUREL_RUNNER_SCHEDULE_GRACE") {
+            Some(raw) if !raw.is_empty() => parse_duration(&raw)
+                .filter(|d| !d.is_zero())
+                .ok_or(ConfigError::InvalidPollInterval { value: raw })?,
+            _ => DEFAULT_SCHEDULE_GRACE,
+        };
 
         let ledger_path = lookup("ESCUREL_RUNNER_LEDGER_PATH")
             .filter(|s| !s.is_empty())
@@ -1110,6 +1126,7 @@ impl RunnerConfig {
             cancel_grace,
             lint_interval,
             schedule_tick,
+            schedule_grace,
             ledger_path,
             harness,
             claude_bin,
@@ -1583,6 +1600,21 @@ mod tests {
         assert_eq!(fast.schedule_tick, Duration::from_millis(250));
         let zero = RunnerConfig::from_env_with(|key| {
             (key == "ESCUREL_RUNNER_SCHEDULE_TICK").then(|| "0".to_owned())
+        });
+        assert!(matches!(zero, Err(ConfigError::InvalidPollInterval { .. })));
+    }
+
+    #[test]
+    fn schedule_grace_defaults_to_15m_parses_and_refuses_zero() {
+        let def = RunnerConfig::from_env_with(|_| None).expect("defaults");
+        assert_eq!(def.schedule_grace, DEFAULT_SCHEDULE_GRACE);
+        let set = RunnerConfig::from_env_with(|key| {
+            (key == "ESCUREL_RUNNER_SCHEDULE_GRACE").then(|| "2s".to_owned())
+        })
+        .expect("schedule grace must parse");
+        assert_eq!(set.schedule_grace, Duration::from_secs(2));
+        let zero = RunnerConfig::from_env_with(|key| {
+            (key == "ESCUREL_RUNNER_SCHEDULE_GRACE").then(|| "0s".to_owned())
         });
         assert!(matches!(zero, Err(ConfigError::InvalidPollInterval { .. })));
     }

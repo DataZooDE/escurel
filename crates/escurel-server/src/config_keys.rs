@@ -912,6 +912,12 @@ pub const CONFIG_KEYS: &[ConfigKey] = &[
         doc: "how often the runner looks for skills whose `schedule:` window has opened (the worst-case lateness of a scheduled trigger; zero is refused)",
     },
     ConfigKey {
+        name: "ESCUREL_RUNNER_SCHEDULE_GRACE",
+        component: "Runner",
+        default: "15m",
+        doc: "how long after it opens a `schedule:` window may still fire (catch-up after a restart); an older window is not run late. Zero is refused; below the tick it is raised to the tick",
+    },
+    ConfigKey {
         name: "ESCUREL_RUNNER_LEDGER_PATH",
         component: "Runner",
         default: "./escurel-runner-ledger.duckdb",

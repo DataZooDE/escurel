@@ -389,10 +389,23 @@ async fn main() -> anyhow::Result<()> {
                 .map(|i| escurel_runner_core::schedule::ScheduleEntry::lint_interval(&tenant, i))
                 .into_iter()
                 .collect();
+            // A window younger than one tick could open and close unseen.
+            let grace = if config.schedule_grace < config.schedule_tick {
+                tracing::warn!(
+                    target: "escurel_runner",
+                    grace_ms = config.schedule_grace.as_millis() as u64,
+                    tick_ms = config.schedule_tick.as_millis() as u64,
+                    "ESCUREL_RUNNER_SCHEDULE_GRACE is below the schedule tick; using the tick"
+                );
+                config.schedule_tick
+            } else {
+                config.schedule_grace
+            };
             tokio::spawn(schedule_loop(
                 config.gateway_url.clone(),
                 source,
                 config.schedule_tick,
+                grace,
                 extra,
                 Arc::clone(&draining),
             ));
@@ -4223,7 +4236,7 @@ async fn status_loop(
 }
 
 /// The schedule loop (#819). Every `tick` it re-reads the skill catalogue
-/// and fires each schedule's latest window (see
+/// and fires each schedule's latest window while it is within `grace` (see
 /// [`escurel_runner_core::schedule`] for the no-backfill and budget rules).
 /// The gateway stays automation-free: the *runner* owns the decision to act,
 /// and the captured trigger re-enters its own dispatch via the inbox.
@@ -4232,11 +4245,12 @@ async fn schedule_loop(
     gateway_url: String,
     tokens: Arc<escurel_runner_core::TokenSource>,
     tick: std::time::Duration,
+    grace: std::time::Duration,
     extra: Vec<escurel_runner_core::schedule::ScheduleEntry>,
     draining: Arc<std::sync::atomic::AtomicBool>,
 ) {
     tracing::info!(target: "escurel_runner", tick_ms = tick.as_millis() as u64, lint_shim = !extra.is_empty(), "schedule loop started");
-    let mut scheduler = escurel_runner_core::schedule::Scheduler::new();
+    let mut scheduler = escurel_runner_core::schedule::Scheduler::new(grace);
     let mut ticker = tokio::time::interval(tick);
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     loop {
