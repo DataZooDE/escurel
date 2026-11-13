@@ -382,6 +382,10 @@ class HttpEscurelClient implements EscurelClient {
             layer: (s['layer'] as String?) ?? 'overlay',
             shadows: s['shadows'] as String?,
             overview: SkillOverview.fromJson(s['overview']),
+            schedule: s['schedule'] as String?,
+            scheduleRunsPerDay:
+                ((s['schedule_budget'] as Map?)?['runs_per_day'] as num?)
+                    ?.toInt(),
           ),
         )
         .toList();
@@ -977,6 +981,21 @@ class HttpEscurelClient implements EscurelClient {
           .toList(),
     );
   }
+
+  @override
+  Future<UsageReport> usageReport({
+    required List<String> groupBy,
+    String? since,
+    String? until,
+    String? skill,
+  }) async => UsageReport.fromJson(
+    await _call('usage_report', {
+      'group_by': groupBy,
+      'since': ?since,
+      'until': ?until,
+      'skill': ?skill,
+    }),
+  );
 
   @override
   Future<WebhookDeliveries> adminWebhookDeliveries({int limit = 100}) async {

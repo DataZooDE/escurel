@@ -575,7 +575,17 @@ class SkillSummary {
     this.layer = 'overlay',
     this.shadows,
     this.overview,
+    this.schedule,
+    this.scheduleRunsPerDay,
   });
+
+  /// The skill's `schedule:` cron expression, as written, when declared —
+  /// the runner fires it on that cadence (references/11).
+  final String? schedule;
+
+  /// `schedule_budget.runs_per_day`, present only for a positive count:
+  /// the most scheduled runs the runner fires per UTC day.
+  final int? scheduleRunsPerDay;
 
   /// The backend a skill's instances live in (`markdown` | `sql_view` |
   /// `document`); `markdown` when the skill declares no `backend:` block.
@@ -1140,4 +1150,71 @@ class AuditDrift {
 
   bool get isClean =>
       markdownNotInDuckdb.isEmpty && indexedButNoMarkdown.isEmpty;
+}
+
+/// One rolled-up row of `usage_report`: what the runs in [group] cost.
+/// [group] holds only the dimensions the report was grouped by
+/// (`skill` / `agent` / `page` / `model` / `day`); the total row's is empty.
+class UsageRow {
+  const UsageRow({
+    required this.group,
+    required this.runs,
+    this.byStatus = const {},
+    this.inputTokens = 0,
+    this.outputTokens = 0,
+    this.costUsd = 0,
+  });
+
+  final Map<String, String> group;
+  final int runs;
+
+  /// Runs per terminal status (`processed`, `failed`, …).
+  final Map<String, int> byStatus;
+  final int inputTokens;
+  final int outputTokens;
+  final double costUsd;
+
+  /// `processed / runs` — the contract's success rate; null with no runs.
+  double? get successRate =>
+      runs == 0 ? null : (byStatus['processed'] ?? 0) / runs;
+
+  factory UsageRow.fromJson(Map<String, dynamic> j) => UsageRow(
+    group: {
+      for (final e in (j['group'] as Map? ?? const {}).entries)
+        if (e.value != null) e.key.toString(): e.value.toString(),
+    },
+    runs: (j['runs'] as num?)?.toInt() ?? 0,
+    byStatus: {
+      for (final e in (j['by_status'] as Map? ?? const {}).entries)
+        e.key.toString(): (e.value as num?)?.toInt() ?? 0,
+    },
+    inputTokens: (j['input_tokens'] as num?)?.toInt() ?? 0,
+    outputTokens: (j['output_tokens'] as num?)?.toInt() ?? 0,
+    costUsd: (j['cost_usd'] as num?)?.toDouble() ?? 0,
+  );
+}
+
+/// `usage_report`: usage and cost folded from every `run-finished` in a
+/// window, one [rows] entry per distinct group plus the [total].
+class UsageReport {
+  const UsageReport({required this.rows, this.total});
+
+  final List<UsageRow> rows;
+  final UsageRow? total;
+
+  factory UsageReport.fromJson(Map<String, dynamic> j) => UsageReport(
+    rows: (j['rows'] as List? ?? const [])
+        .whereType<Map<String, dynamic>>()
+        .map(UsageRow.fromJson)
+        .toList(),
+    total: j['total'] is Map<String, dynamic>
+        ? UsageRow.fromJson(j['total'] as Map<String, dynamic>)
+        : null,
+  );
+
+  /// The rows keyed by one grouping dimension's value (`page`, `agent`, …).
+  Map<String, UsageRow> by(String dim) => {
+    for (final r in rows)
+      if (r.group[dim] != null) r.group[dim]!: r,
+  };
 }

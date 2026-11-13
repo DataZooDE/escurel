@@ -370,6 +370,71 @@ void main() {
       },
     );
 
+    test('list_skills parses schedule + schedule_budget when declared', () async {
+      mock.toolHandlers['list_skills'] = (_) => {
+        'skills': [
+          {
+            'id': 'digest',
+            'description': 'weekday digest',
+            'schedule': '0 9 * * 1-5',
+            'schedule_budget': {'runs_per_day': 3},
+          },
+          {'id': 'note', 'description': 'unscheduled'},
+        ],
+      };
+      final r = await client.listSkills();
+      final digest = r.firstWhere((s) => s.id == 'digest');
+      expect(digest.schedule, '0 9 * * 1-5');
+      expect(digest.scheduleRunsPerDay, 3);
+      final note = r.firstWhere((s) => s.id == 'note');
+      expect(note.schedule, isNull);
+      expect(note.scheduleRunsPerDay, isNull);
+    });
+
+    test('usage_report sends group_by + since and parses rows', () async {
+      Map<String, dynamic>? sent;
+      mock.toolHandlers['usage_report'] = (args) {
+        sent = args;
+        return {
+          'group_by': ['agent'],
+          'rows': [
+            {
+              'group': {'agent': 'agent:scribe'},
+              'runs': 4,
+              'by_status': {'processed': 3, 'failed': 1},
+              'input_tokens': 1200,
+              'output_tokens': 300,
+              'cost_usd': 0.42,
+            },
+          ],
+          'total': {
+            'group': <String, dynamic>{},
+            'runs': 4,
+            'by_status': {'processed': 3, 'failed': 1},
+            'input_tokens': 1200,
+            'output_tokens': 300,
+            'cost_usd': 0.42,
+          },
+        };
+      };
+      final r = await client.usageReport(
+        groupBy: const ['agent'],
+        since: '2026-10-14T00:00:00Z',
+      );
+      expect(sent, {
+        'group_by': ['agent'],
+        'since': '2026-10-14T00:00:00Z',
+      });
+      final row = r.rows.single;
+      expect(row.group, {'agent': 'agent:scribe'});
+      expect(row.runs, 4);
+      expect(row.byStatus, {'processed': 3, 'failed': 1});
+      expect(row.inputTokens, 1200);
+      expect(row.costUsd, closeTo(0.42, 1e-9));
+      expect(row.successRate, closeTo(0.75, 1e-9));
+      expect(r.total?.runs, 4);
+    });
+
     test(
       'list_skills parses the layer pin; base layer gates operator editing',
       () async {

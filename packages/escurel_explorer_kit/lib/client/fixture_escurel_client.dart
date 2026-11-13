@@ -253,6 +253,8 @@ class FixtureEscurelClient implements EscurelClient {
             // Stability layer (REQ-LAYER-04); absent ⇒ overlay.
             layer: _layerOf(p.frontmatter),
             shadows: isBase ? null : basePins[p.skill],
+            schedule: p.frontmatter['schedule'] as String?,
+            scheduleRunsPerDay: _runsPerDay(p.frontmatter['schedule_budget']),
           );
         })
         .toList();
@@ -897,6 +899,15 @@ class FixtureEscurelClient implements EscurelClient {
   Future<AuditDrift> adminAudit() async =>
       const AuditDrift(markdownNotInDuckdb: [], indexedButNoMarkdown: []);
 
+  /// The fixture has no runner, so no run ever finished: an empty bill.
+  @override
+  Future<UsageReport> usageReport({
+    required List<String> groupBy,
+    String? since,
+    String? until,
+    String? skill,
+  }) async => const UsageReport(rows: [], total: UsageRow(group: {}, runs: 0));
+
   @override
   Future<WebhookDeliveries> adminWebhookDeliveries({int limit = 100}) async {
     final list = _webhookDeliveries.length > limit
@@ -1323,6 +1334,13 @@ class FixtureEscurelClient implements EscurelClient {
   /// pin, or the `overlay` default when absent.
   static String _layerOf(Map<String, dynamic> fm) =>
       (fm['layer'] as String?) ?? 'overlay';
+
+  /// `schedule_budget.runs_per_day`, kept only when positive — the server
+  /// omits a zero or absent budget the same way.
+  static int? _runsPerDay(Object? budget) {
+    final n = budget is Map ? budget['runs_per_day'] : null;
+    return n is num && n > 0 ? n.toInt() : null;
+  }
 
   static bool _isBaseLayer(Map<String, dynamic> fm) =>
       _layerOf(fm).startsWith('base@');

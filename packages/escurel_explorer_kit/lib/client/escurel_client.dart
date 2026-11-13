@@ -222,6 +222,16 @@ abstract class EscurelClient {
   /// is set.
   Future<WebhookDeliveries> adminWebhookDeliveries({int limit = 100});
 
+  /// What runs cost (`usage_report`), rolled up from `run-finished` in
+  /// `[since, until)` (RFC 3339) by one or more of `skill` / `agent` /
+  /// `page` / `model` / `day`. Admin-only: a member's call is refused.
+  Future<UsageReport> usageReport({
+    required List<String> groupBy,
+    String? since,
+    String? until,
+    String? skill,
+  });
+
   /// Purge chat history (`admin_delete_chat_history`). GDPR erasure
   /// (group set), retention prune (beforeTs set), or both. Returns
   /// the number of rows removed.
