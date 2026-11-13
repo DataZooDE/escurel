@@ -219,7 +219,15 @@ async fn an_exhausted_budget_skips_the_window_visibly() {
 }
 
 /// Two runners on one gateway with the same schedule: each window still has
-/// one trigger.
+/// one trigger, and its work really runs — counted from the runs' own
+/// `run-finished`, not only from the ids the gateway already dedups (crew
+/// review PR-1, F7). No contiguity: a tick stalled on a busy CI box may miss
+/// a window, which is not what this test is about.
+///
+/// Not asserted: that the harness runs ONCE per window. Today it does not —
+/// both runners' inbox pollers pick up the one trigger and each runs it (as
+/// for any inbox event; nothing claims an event across runners). Run
+/// ownership/leases are PR-2 (#818), which should tighten this to `== 1`.
 #[tokio::test]
 async fn two_runners_on_one_schedule_do_not_double_fire() {
     let gw = gateway(&[("tick", TICK_SKILL)]).await;
@@ -228,7 +236,18 @@ async fn two_runners_on_one_schedule_do_not_double_fire() {
     tokio::time::sleep(Duration::from_secs(5)).await;
     let windows = trigger_windows(&gw, "tick").await;
     assert!(windows.len() >= 2, "{windows:?}");
-    assert_contiguous(&windows);
+    // Let the first windows' runs finish before counting.
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    let runs = events_under(&gw, "escurel:run").await;
+    let ran = |trigger: &str| {
+        runs.iter()
+            .filter(|e| e["title"] == "run-finished")
+            .any(|e| e["provenance"]["runner"]["event_id"] == trigger)
+    };
+    for w in &windows[..2] {
+        let trigger = trigger_id("tick", *w);
+        assert!(ran(&trigger), "{trigger} fired but its work never ran");
+    }
 }
 
 /// A window older than the catch-up grace does not fire: a daily job whose
