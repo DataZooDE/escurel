@@ -257,7 +257,8 @@ Some skill-page keys are **authority**, not description: `acl`, `visibility`,
 `owner_field`, `instance_acl`, `agent`, `autonomy`, `schedule`,
 `schedule_budget`, `requires`, `harness`, `model`, `cascade`, `actions` (its
 `kind: event` entries trigger cascades), `chat`, `backend` (a `kind:
-workflow` backend is a trigger too), `promotable`, `protected`, `immutable`.
+workflow` backend is a trigger too), `promotable`, `protected`, `immutable`,
+`freeze_when`. `layer` has its own guard; descriptive keys are free.
 The list is one constant, `escurel_types::skill_authority::AUTHORITY_KEYS`;
 the SKILL.md importer names the same keys (references/04).
 

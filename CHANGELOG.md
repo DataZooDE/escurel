@@ -56,8 +56,8 @@ reply rule and the runner's chat rule accept `captured_via: bridge:<channel>`.
   runner an admin-capable credential (`escurel:admin` on `ESCUREL_RUNNER_TOKEN` / `_FILE`, or minting mode)
   before rolling out. A dev gateway without OIDC treats every caller as admin.
 - **Breaking — skill authority keys need an admin.** A write that adds, removes or changes an authority key
-  (`acl`, `agent`, `autonomy`, `schedule`, `requires`, `harness`, `model`, `cascade`, `actions`, `backend`, …;
-  `escurel_types::skill_authority`) on a skill page lands only for an `escurel:admin` person or a member of the
+  (`acl`, `agent`, `autonomy`, `schedule`, `requires`, `harness`, `model`, `cascade`, `actions`, `backend`,
+  `freeze_when`, …; `escurel_types::skill_authority`) on a skill page lands only for an `escurel:admin` person or a member of the
   stored page's `acl.update` groups — on `update_page`, `promote_draft` / `promote_changeset` (the promoter is
   judged), the `close_session` commit, `delete_page` and `move_page`. A new skill that sets one is an admin's.
   Refusal: `-32003`, `data.code: authority_keys_need_admin`, `data.keys`. `ESCUREL_WRITE_ACL=log` logs and

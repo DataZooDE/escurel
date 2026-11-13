@@ -21,7 +21,7 @@ pin (see `SKILL.md` → "How this skill is installed").
 - **Runner credential (breaking):** every runner needs `escurel:admin` (or minting): a refused `claim_event` now
   takes nothing on a lone runner too, and a non-admin runner logs the fix at boot (references/09, 11).
 - **Skill authority keys (breaking):** adding, removing or changing `acl`, `agent`, `autonomy`, `schedule`,
-  `requires`, `harness`, `model`, `cascade`, `actions`, `backend`, … on a skill page needs an admin or a member of
+  `requires`, `harness`, `model`, `cascade`, `actions`, `backend`, `freeze_when`, … on a skill page needs an admin or a member of
   the STORED page's `acl.update`, on every write door (the promoter is judged); refusal `-32003`
   `authority_keys_need_admin` with `data.keys` (references/01, 04, 08).
 - **Memory MCP recipe:** new references/12 — wiring Claude Code, Codex and Multica to escurel's `/mcp`.

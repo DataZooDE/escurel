@@ -385,3 +385,19 @@ async fn a_machine_with_the_admin_role_never_writes_a_pack() {
     }
     p.shutdown().await;
 }
+
+#[tokio::test]
+async fn a_member_cannot_unfreeze_a_skills_instances() {
+    let p = gateway(WriteAclMode::Enforce).await;
+    let frozen = PLAYBOOK.replace("acl:", "freeze_when: {status: [closed]}\nacl:");
+    ok(&p, &admin(&p), "update_page", write(PAGE, &frozen)).await;
+    refused(
+        &p,
+        &member(&p),
+        "update_page",
+        write(PAGE, PLAYBOOK),
+        &["freeze_when"],
+    )
+    .await;
+    p.shutdown().await;
+}

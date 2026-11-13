@@ -5,7 +5,14 @@
 //! `harness`, `model`), what it triggers (`cascade`, the `kind: event`
 //! entries of `actions`, a `backend` of `kind: workflow`), what it connects
 //! to (`backend`, `chat`) and how it is governed (`promotable`, `protected`,
-//! `immutable`).
+//! `immutable`, `freeze_when` — deleting the last would unfreeze every
+//! instance it holds).
+//!
+//! Not listed, on purpose: `layer` has its own guard (a base-layer page is
+//! read-only and `update_page` may not fabricate one), and the descriptive
+//! keys (`description`, `summary`, `fields`, `required_frontmatter`, `viewer`,
+//! `stale_after`, …) shape or present data without deciding who may act or
+//! what runs.
 //!
 //! One list, read by two consumers that must agree: the gateway's write gate
 //! (a change to any of these on a skill page needs an admin or the stored
@@ -33,6 +40,7 @@ pub const AUTHORITY_KEYS: &[&str] = &[
     "promotable",
     "protected",
     "immutable",
+    "freeze_when",
 ];
 
 /// Whether `key` is one of the [`AUTHORITY_KEYS`].

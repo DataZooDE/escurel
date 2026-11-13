@@ -523,7 +523,8 @@ documentation for building the app.
 
 `acl`, `visibility`, `owner_field`, `instance_acl`, `agent`, `autonomy`,
 `schedule`, `schedule_budget`, `requires`, `harness`, `model`, `cascade`,
-`actions`, `chat`, `backend`, `promotable`, `protected` and `immutable` decide
+`actions`, `chat`, `backend`, `promotable`, `protected`, `immutable` and
+`freeze_when` decide
 who may read and write, who a run executes as, when it runs and what it
 triggers. Adding, removing or changing any of them on a skill page needs an
 admin, or membership of the **stored** page's `acl.update` groups; a new
