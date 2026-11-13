@@ -119,6 +119,10 @@ pub enum Admit {
     Elsewhere(String),
     /// The event is already processed.
     Done,
+    /// Not decidable now (the skill catalogue could not be read, the gateway
+    /// did not answer a claim in time): left unclaimed, tried again on the
+    /// next poll.
+    Retry,
 }
 
 struct Held {
@@ -183,7 +187,18 @@ impl RuntimeGate {
             return Admit::Take;
         }
         let declared = Requires::declared(event.provenance.get("requires"));
-        let skill = self.skill_requires(client, &event.label_skill).await;
+        // An unknown catalogue is not "no requirement": routing on it would
+        // send a skill that needs `site:muc` to a runner without the label.
+        let Some(skill) = self.skill_requires(client, &event.label_skill).await else {
+            self.tell_once("\0catalogue-unknown", || {
+                tracing::warn!(
+                    target: "escurel_runner",
+                    event_id = %event.event_id,
+                    "the skill catalogue could not be read yet; inbox work waits for it (logged once)"
+                );
+            });
+            return Admit::Retry;
+        };
         let unroutable = declared
             .iter()
             .chain(skill.iter())
@@ -307,7 +322,10 @@ impl RuntimeGate {
         }
     }
 
-    async fn skill_requires(&self, client: &Client, skill: &str) -> Option<Requires> {
+    /// What `skill` requires: `Some(None)` for nothing, `None` when the
+    /// catalogue has never been read (the last one read is used while a
+    /// re-read fails).
+    async fn skill_requires(&self, client: &Client, skill: &str) -> Option<Option<Requires>> {
         let fresh = {
             let cache = self.skills.lock().unwrap_or_else(|e| e.into_inner());
             cache
@@ -316,7 +334,7 @@ impl RuntimeGate {
                 .map(|(_, m)| m.get(skill).cloned())
         };
         if let Some(found) = fresh {
-            return found;
+            return Some(found);
         }
         let listed = tokio::time::timeout(
             ADMIT_CALL_TIMEOUT,
@@ -333,7 +351,7 @@ impl RuntimeGate {
                 let found = map.get(skill).cloned();
                 *self.skills.lock().unwrap_or_else(|e| e.into_inner()) =
                     Some((Instant::now(), map));
-                found
+                Some(found)
             }
             failed => {
                 let e = match failed {
@@ -342,7 +360,7 @@ impl RuntimeGate {
                 };
                 tracing::warn!(target: "escurel_runner", error = %e, "list_skills failed; routing on the last catalogue");
                 let cache = self.skills.lock().unwrap_or_else(|e| e.into_inner());
-                cache.as_ref().and_then(|(_, m)| m.get(skill).cloned())
+                cache.as_ref().map(|(_, m)| m.get(skill).cloned())
             }
         }
     }

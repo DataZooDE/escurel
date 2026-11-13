@@ -531,7 +531,10 @@ a SAP GUI session. Each one:
    offered, every label carried). Anything else is skipped BEFORE claiming —
    it stays in the inbox, visible and unclaimed, for a runner that can; no
    runner dead-letters work it cannot take. Nothing runs it until such a
-   runner comes up: watch `list_runtimes` and the inbox;
+   runner comes up: watch `list_runtimes` and the inbox. A runner that has
+   not yet read the skill catalogue (`list_skills` failing since it started)
+   does not know what a skill requires and takes nothing until it has; once
+   read, a failed re-read routes on the last catalogue;
 3. **claims**: for an event it can take, the runner calls `claim_event`
    (references/02) and starts it only on `claimed: true`. The lease is renewed
    at half-life while the event sits in the inbox (a run keeps it there until

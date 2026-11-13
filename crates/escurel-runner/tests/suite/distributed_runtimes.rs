@@ -10,7 +10,7 @@
 
 use std::time::{Duration, Instant};
 
-use escurel_test_support::{AuthMode, EscurelProcess, FixtureBuilder, Opts, Role};
+use escurel_test_support::{AuthMode, ConfigOverrides, EscurelProcess, FixtureBuilder, Opts, Role};
 use serde_json::{Value, json};
 
 use crate::support::{
@@ -37,7 +37,12 @@ fn page(skill: &str) -> String {
 }
 
 async fn gateway() -> EscurelProcess {
+    gateway_with(ConfigOverrides::default()).await
+}
+
+async fn gateway_with(config_overrides: ConfigOverrides) -> EscurelProcess {
     EscurelProcess::spawn(Opts {
+        config_overrides,
         auth: AuthMode::TestIssuer,
         fixtures: Some(
             FixtureBuilder::new()
@@ -50,7 +55,6 @@ async fn gateway() -> EscurelProcess {
                 .instance("slow", "c1", instance("slow"))
                 .done(),
         ),
-        ..Default::default()
     })
     .await
 }
@@ -348,4 +352,41 @@ async fn concurrent_claims_on_one_event_have_one_winner() {
     let results = set.join_all().await;
     let winners = results.iter().filter(|r| r["claimed"] == true).count();
     assert_eq!(winners, 1, "{results:?}");
+}
+
+/// A runner that cannot read the skill catalogue (crew F7) does not know what
+/// a skill `requires:`, so it must not route the skill's work as if it
+/// required nothing. Here a role gate refuses this runner's `list_skills`
+/// from its first poll: the `field` event (it requires `has:sap-gui`, which
+/// this runner lacks) stays in the inbox, unclaimed and unrun.
+#[tokio::test]
+async fn a_runner_that_cannot_read_the_catalogue_takes_no_work() {
+    let gw = gateway_with(ConfigOverrides {
+        role_tools: Some("runner-blind=list_inbox".to_owned()),
+        ..Default::default()
+    })
+    .await;
+    let event = capture(&gw, "field", json!({})).await;
+    let blind = healthy(
+        RunnerProcess::echo(&gw, TENANT)
+            .static_bearer(gw.mint_token_with_groups(
+                TENANT,
+                "runner:blind",
+                &["runner-blind"],
+                true,
+            ))
+            .env("ESCUREL_RUNNER_ID", "blind")
+            .env("ESCUREL_RUNNER_POLL_INTERVAL", "200ms")
+            .spawn(),
+    )
+    .await;
+    // Many polls' worth of chances.
+    tokio::time::sleep(Duration::from_secs(4)).await;
+    assert!(
+        blind.debug_run(&event).await.is_none(),
+        "the runner took work whose requirement it could not read"
+    );
+    let looked = lookup(&gw, &event).await;
+    assert!(looked.get("claim").is_none(), "{looked}");
+    assert_eq!(looked["events"][0]["status"], "inbox", "{looked}");
 }
