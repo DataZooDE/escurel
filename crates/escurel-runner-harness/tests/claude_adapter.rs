@@ -245,3 +245,122 @@ done
     assert_eq!(texts, ["INPUT first", "STEER use 2027"]);
     drop(tx);
 }
+
+/// A stub `claude` that answers each stdin turn with one `result` line
+/// after `delay` seconds, logs each turn to `stdin_out` as it reads it, and
+/// writes `eof_out` when its stdin closes — then lingers a second before it
+/// exits, as a real CLI winding down would.
+fn write_slow_claude_stub(
+    dir: &std::path::Path,
+    stdin_out: &std::path::Path,
+    eof_out: &std::path::Path,
+    delay: &str,
+) -> std::path::PathBuf {
+    let stub = dir.join("claude-slow.sh");
+    let script = format!(
+        r#"#!/usr/bin/env bash
+set -euo pipefail
+: > "{out}"
+n=0
+while IFS= read -r line; do
+  n=$((n+1))
+  printf '%s\n' "$line" >> "{out}"
+  sleep {delay}
+  printf '{{"type":"result","subtype":"success","is_error":false,"result":"turn %s","num_turns":%s}}\n' "$n" "$n"
+done
+echo eof > "{eof}"
+sleep 1
+"#,
+        out = stdin_out.display(),
+        eof = eof_out.display(),
+    );
+    std::fs::write(&stub, script).expect("write stub");
+    let mut perms = std::fs::metadata(&stub).unwrap().permissions();
+    std::os::unix::fs::PermissionsExt::set_mode(&mut perms, 0o755);
+    std::fs::set_permissions(&stub, perms).unwrap();
+    stub
+}
+
+fn inject_task() -> (TaskContext, escurel_runner_core::InjectSender) {
+    let mut task = TaskContext::for_test(
+        "SKILLBODY".to_owned(),
+        "INPUT first".to_owned(),
+        MCP_ENDPOINT.to_owned(),
+        vec!["update_page".to_owned()],
+        SecretString::from(TOKEN.to_owned()),
+    );
+    let (tx, inbox) = escurel_runner_core::InjectInbox::channel();
+    task.inject = Some(inbox);
+    (task, tx)
+}
+
+async fn wait_for_file(path: &std::path::Path, what: &str) {
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while !std::fs::read_to_string(path).is_ok_and(|s| !s.is_empty()) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the stub never reached {what}"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+fn turn_texts(stdin_out: &std::path::Path) -> Vec<String> {
+    std::fs::read_to_string(stdin_out)
+        .unwrap()
+        .lines()
+        .map(|l| {
+            let v: serde_json::Value = serde_json::from_str(l).unwrap();
+            v["message"]["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .to_owned()
+        })
+        .collect()
+}
+
+/// Crew review PR-1, F9: a message sent while the first turn is still being
+/// worked on (the stub has read it and not answered) is accepted and becomes
+/// the next turn of the same session.
+#[tokio::test]
+async fn a_message_injected_mid_turn_is_delivered_as_the_next_turn() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let stdin_out = dir.path().join("stdin.txt");
+    let eof_out = dir.path().join("eof");
+    let stub = write_slow_claude_stub(dir.path(), &stdin_out, &eof_out, "1");
+    let (task, tx) = inject_task();
+    let harness = ClaudeHarness::new(stub.to_string_lossy().into_owned())
+        .with_timeout(Duration::from_secs(20));
+    let run = tokio::spawn(async move { harness.run(&task).await });
+
+    wait_for_file(&stdin_out, "the first turn").await;
+    assert!(tx.send("STEER mid-turn"), "the live session accepts it");
+
+    let outcome = run.await.unwrap().expect("the session ended at EOF");
+    assert_eq!(outcome.summary, "turn 2", "the injected turn was answered");
+    assert_eq!(turn_texts(&stdin_out), ["INPUT first", "STEER mid-turn"]);
+}
+
+/// Crew review PR-1, F9: once the last turn's `result` is out the session is
+/// ending — stdin is closed even while the process winds down — so a message
+/// is refused (`not_live` at the runner), never accepted and then dropped.
+#[tokio::test]
+async fn a_message_after_the_final_result_is_refused_not_dropped() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let stdin_out = dir.path().join("stdin.txt");
+    let eof_out = dir.path().join("eof");
+    let stub = write_slow_claude_stub(dir.path(), &stdin_out, &eof_out, "0");
+    let (task, tx) = inject_task();
+    let harness = ClaudeHarness::new(stub.to_string_lossy().into_owned())
+        .with_timeout(Duration::from_secs(20));
+    let run = tokio::spawn(async move { harness.run(&task).await });
+
+    // The stub saw its stdin close but has not exited yet.
+    wait_for_file(&eof_out, "its stdin EOF").await;
+    assert!(!run.is_finished(), "the process is still winding down");
+    assert!(!tx.send("STEER too late"), "refused: nothing will read it");
+
+    let outcome = run.await.unwrap().expect("the session ended at EOF");
+    assert_eq!(outcome.summary, "turn 1");
+    assert_eq!(turn_texts(&stdin_out), ["INPUT first"]);
+}
