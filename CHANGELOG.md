@@ -33,6 +33,21 @@ Runs you can see, steer and bill; agents with least privilege; cron schedules (e
 - With several runners, only the runner that holds a run answers its cancel / retry / inject at once; the others defer.
 - codex tool calls are read from `item.type` (codex-cli 0.168 shape) and counted once per completed call.
 
+Distributed runtimes, SKILL.md interop and a Teams bridge (epic #817: #818, #824, #825).
+
+- **Runtimes (#818):** runners register `runtime` pages and route by `requires: {harness, labels}`; gateway
+  `claim_event` / `renew_claim` leases give each event one runner (with a boot grace after a gateway restart);
+  `ESCUREL_RUNNER_EXCLUSIVE` for laptop/on-prem runners; `list_runtimes`, `escurel runtime list`. Scheduled windows
+  run exactly once across runners; the holding runner answers run control.
+- **SKILL.md (#825):** `escurel skill export --as skill-md` / `escurel skill import`, VS Code "Export as SKILL.md",
+  references/12 on escurel as memory MCP for external agents.
+- **Teams (#824):** new `escurel-chat-bridge` binary (in the runner image, off unless configured); see
+  `docs/deploy/chat-bridge.md`. New gateway key `ESCUREL_AUTH_BRIDGE_KID` restricts what a bridge-signed token may do.
+- UI: VS Code Runtimes view, `requires` chips, claim holder in run detail; explore Runtimes panel.
+
+**Behaviour changes to note:** a third system skill (`runtime`) appears in `list_skills`; the gateway's page-chat
+reply rule and the runner's chat rule accept `captured_via: bridge:<channel>`.
+
 ## v2026.10.29
 
 Replies reach the requester, and a service role may reply under a declared label.
