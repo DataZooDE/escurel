@@ -38,8 +38,10 @@ optional; reported on `list_skills`, linted by `validate`):
 - `summary: <one line>` — the purpose a skill list shows. Missing is a
   warning (`summary_missing`; the workbench shows `description` instead);
   over 200 characters is an error (`summary_too_long`).
-- `harness: echo | claude | codex | agy | muse | gemini | delegate` — the
-  adapter the skill asks to run on; anything else is `harness_unknown`.
+- `harness: echo | claude | codex | agy | muse | gemini | gemini-vertex |
+  delegate | alibaba | hetzner | openai-compatible` — the adapter the skill
+  asks to run on (the runner's own list, `escurel_types::harness`); anything
+  else is `harness_unknown`.
   The runner honours it within its own allow-list.
 - `model: <model id>` — the model the skill's runs use instead of the
   runner's configured one (e.g. `gemini-3.5-flash-lite`). A non-string or

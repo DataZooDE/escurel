@@ -1117,3 +1117,37 @@ async fn agent_pages_and_a_skills_agent_default_are_graded() {
         "{issues:?}"
     );
 }
+
+/// Every harness the runner can build is one `validate` accepts — the
+/// OpenAI-compatible presets and `gemini-vertex` included — on a skill's
+/// `harness:` and on an agent's alike (#823 hardening: the list had drifted).
+#[tokio::test]
+async fn every_runner_harness_is_a_known_harness() {
+    let h = fresh_harness();
+    h.indexer.ensure_system_skills().await.unwrap();
+    for name in ["alibaba", "hetzner", "openai-compatible", "gemini-vertex"] {
+        let skill = format!(
+            "---\nkind: skill\nid: s\ndescription: d\nsummary: s\nharness: {name}\n---\n# s\n"
+        );
+        let issues = h
+            .indexer
+            .validate(Some("markdown/skills/s.md"), &skill)
+            .await
+            .unwrap();
+        assert!(
+            !codes(&issues).contains(&"harness_unknown"),
+            "skill harness {name}: {issues:?}"
+        );
+        let agent =
+            format!("---\nkind: instance\nskill: agent\nid: a\nharness: {name}\n---\n# a\n");
+        let issues = h
+            .indexer
+            .validate(Some("markdown/instances/agent/a.md"), &agent)
+            .await
+            .unwrap();
+        assert!(
+            !codes(&issues).contains(&"agent_harness_unknown"),
+            "agent harness {name}: {issues:?}"
+        );
+    }
+}

@@ -201,12 +201,9 @@ fn check_connector(page_kind: PageKind, fields: &YamlMapping) -> Option<Issue> {
 /// backend P2-7). Longer belongs in the body.
 pub const SUMMARY_MAX_CHARS: usize = 200;
 
-/// The harness adapters a skill may name (`harness:`). Kept in lock-step
-/// with the runner's `build_harness_named`; a name outside it is a lint
-/// finding here and a refused run there.
-pub const KNOWN_HARNESSES: [&str; 7] = [
-    "echo", "claude", "codex", "agy", "muse", "gemini", "delegate",
-];
+/// The harness adapters a skill may name (`harness:`): the runner's own list,
+/// so a name outside it is a lint finding here and a refused run there.
+pub use escurel_types::harness::KNOWN_HARNESSES;
 
 /// `summary:` on a skill page (workbench backend P2-7): absent is a
 /// warning (the workbench falls back to `description`), over

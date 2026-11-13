@@ -67,7 +67,7 @@ pub use transcript::{
 /// (async-ops Phase 4 slice 3c). Shared here so the packager (which builds the
 /// [`Delegation`]) and the harness adapter (which consumes it) name it
 /// identically without the core→harness dependency the reverse would require.
-pub const DELEGATE_HARNESS: &str = "delegate";
+pub const DELEGATE_HARNESS: &str = escurel_types::harness::DELEGATE;
 pub use promotion::{PromotedDraft, REVIEW_LABEL, cascade_event_id, promoted_draft};
 pub use quota::{Governor, QuotaDecision, QuotaLimits, RunPermits, RunSlot, ThrottleReason};
 pub use reconciler::{

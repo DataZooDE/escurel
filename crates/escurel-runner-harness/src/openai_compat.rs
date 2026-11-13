@@ -97,9 +97,9 @@ impl Preset {
     #[must_use]
     pub fn name(self) -> &'static str {
         match self {
-            Self::Alibaba => "alibaba",
-            Self::Hetzner => "hetzner",
-            Self::Generic => "openai-compatible",
+            Self::Alibaba => escurel_types::harness::ALIBABA,
+            Self::Hetzner => escurel_types::harness::HETZNER,
+            Self::Generic => escurel_types::harness::OPENAI_COMPATIBLE,
         }
     }
 
@@ -1045,6 +1045,17 @@ mod tests {
         ProviderSettings {
             api_key: key.to_owned(),
             ..ProviderSettings::default()
+        }
+    }
+
+    #[test]
+    fn every_preset_is_a_known_harness() {
+        for p in Preset::ALL {
+            assert!(
+                escurel_types::harness::is_known_harness(p.name()),
+                "{} must be in escurel_types::harness::KNOWN_HARNESSES",
+                p.name()
+            );
         }
     }
 
