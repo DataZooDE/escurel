@@ -596,3 +596,57 @@ async fn a_large_source_file_fits_both_upload_doors_and_a_huge_body_does_not() {
         .unwrap();
     assert_eq!(resp.status(), 413);
 }
+
+/// The MCP door carries the caller's AGENT PROFILE into the create ACL (crew review PR-1, F2): an
+/// agent whose `scopes.write` does not cover a skill cannot materialise a document there through
+/// `ingest_upload`, even though its groups (and the skill's `create: [owner]`) would let it.
+#[tokio::test]
+async fn an_agents_write_scope_bounds_ingest_upload() {
+    let s = setup().await;
+    for (id, page) in [
+        (
+            "notes-only",
+            "---\nkind: instance\nskill: agent\nid: notes-only\nscopes:\n  write: [\"markdown/instances/note/*\"]\n---\n# notes-only\n",
+        ),
+        (
+            "unscoped",
+            "---\nkind: instance\nskill: agent\nid: unscoped\n---\n# unscoped\n",
+        ),
+    ] {
+        s.indexer
+            .update_page(&format!("markdown/instances/agent/{id}.md"), page)
+            .await
+            .unwrap();
+    }
+    let scoped = s
+        .process
+        .mint_token_for_agent(TENANT, "notes-only", "evidence", &["ops"]);
+    let refused = call(
+        &s.process,
+        &scoped,
+        "ingest_upload",
+        args(b"<a>scoped</a>", "application/xml", "evidence", None, None),
+    )
+    .await;
+    assert_eq!(refused["ok"], false, "{refused}");
+    assert_eq!(refused["issues"][0]["http_status"], 403, "{refused}");
+
+    // CONTROL: an agent with no write scope is bounded by its groups alone, and lands.
+    let unscoped = s
+        .process
+        .mint_token_for_agent(TENANT, "unscoped", "evidence", &["ops"]);
+    let ok = call(
+        &s.process,
+        &unscoped,
+        "ingest_upload",
+        args(
+            b"<a>unscoped</a>",
+            "application/xml",
+            "evidence",
+            None,
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(ok["status"], "materialised", "{ok}");
+}
