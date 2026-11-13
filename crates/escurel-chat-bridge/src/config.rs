@@ -136,7 +136,9 @@ impl BridgeConfig {
                     "ESCUREL_BRIDGE_AUTH_SIGNING_KEY",
                     "ESCUREL_BRIDGE_AUTH_SIGNING_KEY_FILE",
                 )?,
-                token_ttl_secs: escurel_types::bridge::MAX_TTL_SECS,
+                // A minute under the gateway's bound, so a bridge clock that
+                // runs a little ahead never mints a token "too long-lived".
+                token_ttl_secs: escurel_types::bridge::MAX_TTL_SECS - 60,
             },
             teams: TeamsConfig {
                 app_id: req("ESCUREL_BRIDGE_TEAMS_APP_ID")?,
@@ -269,6 +271,11 @@ mod tests {
         assert_eq!(c.teams.issuer, BOT_FRAMEWORK_ISSUER);
         assert_eq!(c.listen, "0.0.0.0:3978");
         assert_eq!(c.typing_interval, Duration::from_secs(3));
+        assert_eq!(
+            c.gateway.token_ttl_secs,
+            escurel_types::bridge::MAX_TTL_SECS - 60,
+            "minted under the gateway's bound (crew C-F3)"
+        );
     }
 
     #[test]

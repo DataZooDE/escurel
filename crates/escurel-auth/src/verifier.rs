@@ -545,6 +545,18 @@ impl OidcVerifier {
 /// operator, and honours no roles or groups — the gateway does not know the
 /// person's IdP groups here, so group-granted ACLs do not apply. Its actor is
 /// `bridge:<channel>`, stamped as `captured_via` on what it captures.
+/// How far the bridge host's clock may lead the gateway's (crew C-F3).
+const BRIDGE_CLOCK_SKEW_SECS: u64 = 60;
+
+/// A bridge token's lifetime bound. `exp - iat` is the minter's own claim and
+/// is held to [`escurel_types::bridge::MAX_TTL_SECS`] exactly; `exp - now`
+/// compares two clocks, so a bridge whose clock leads the gateway's by up to
+/// [`BRIDGE_CLOCK_SKEW_SECS`] is not locked out. Expiry itself has no leeway.
+fn bridge_lifetime_ok(iat: u64, exp: u64, now: u64) -> bool {
+    let max = escurel_types::bridge::MAX_TTL_SECS;
+    exp.saturating_sub(iat) <= max && exp.saturating_sub(now) <= max + BRIDGE_CLOCK_SKEW_SECS
+}
+
 fn bridge_context(claims: Claims, tenant_claim: &str) -> Result<AuthContext, AuthError> {
     use escurel_types::bridge;
     let refuse = |why: String| Err(AuthError::BridgeRefused(why));
@@ -567,9 +579,7 @@ fn bridge_context(claims: Claims, tenant_claim: &str) -> Result<AuthContext, Aut
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_secs());
-    if exp.saturating_sub(iat) > bridge::MAX_TTL_SECS
-        || exp.saturating_sub(now) > bridge::MAX_TTL_SECS
-    {
+    if !bridge_lifetime_ok(iat, exp, now) {
         return refuse(format!(
             "a bridge token lives at most {}s",
             bridge::MAX_TTL_SECS
@@ -664,4 +674,29 @@ fn allowed_algorithms() -> &'static [Algorithm] {
         Algorithm::ES256,
         Algorithm::ES384,
     ]
+}
+
+#[cfg(test)]
+mod bridge_lifetime_tests {
+    use super::*;
+
+    /// A bridge whose clock leads the gateway's mints `iat`/`exp` in the
+    /// gateway's future (crew C-F3): within the skew it is accepted; the
+    /// minter's own `exp - iat` stays bounded exactly.
+    #[test]
+    fn a_bridge_clock_a_little_ahead_is_not_locked_out() {
+        let max = escurel_types::bridge::MAX_TTL_SECS;
+        let now = 1_000_000;
+        for lead in [0, 1, 30, BRIDGE_CLOCK_SKEW_SECS] {
+            let iat = now + lead;
+            assert!(bridge_lifetime_ok(iat, iat + max, now), "lead {lead}s");
+            assert!(bridge_lifetime_ok(iat, iat + max - 60, now), "lead {lead}s");
+        }
+        let iat = now + BRIDGE_CLOCK_SKEW_SECS + 1;
+        assert!(!bridge_lifetime_ok(iat, iat + max, now), "too far ahead");
+        assert!(
+            !bridge_lifetime_ok(now, now + max + 1, now),
+            "too long a life"
+        );
+    }
 }
