@@ -6,6 +6,30 @@ loosely [Keep a Changelog](https://keepachangelog.com/). Through the
 follow **`vYYYY.MM.DD`** — the date the binary set was cut (same-day
 re-cuts append `.N`), matching the DataZoo release scheme (cf. erpl).
 
+## Unreleased
+
+Runs you can see, steer and bill; agents with least privilege; cron schedules (epic #817: #819–#823).
+
+- **Steer** a live run with `run_control{action:"inject"}` (claude, echo; codex answers `unsupported`) (#820).
+- **Run transcripts**, redacted and stored per run, read with `fetch_blob{run_id}`; retention via
+  `ESCUREL_RUN_TRANSCRIPT_RETENTION_DAYS` (#822). New table `run_transcripts` (migration 0022).
+- **`usage_report`** cost rollups and `list_events{since, until}`; CLI `escurel run usage` (#821).
+- **Agent profiles** (`agent` system skill, admin-only): the gateway enforces `scopes.tools` and `scopes.write` on
+  run tokens with an `agent` claim, plus per-agent concurrency (#823).
+- **Schedules:** `schedule:` / `schedule_budget:` skill frontmatter, fired by the runner; the lint tick becomes a
+  schedule (`ESCUREL_RUNNER_SCHEDULE_TICK`, `ESCUREL_RUNNER_SCHEDULE_GRACE`) (#819).
+- UI: VS Code transcript tab, cost chip, Steer box, Usage and Agents views, schedule chips; explore cost badge,
+  Agents panel and schedule badge.
+
+**Behaviour changes to note:**
+- Metrics: `escurel_runner_cost_usd_total` and `escurel_runner_tokens_total` gain `skill` and `model` labels —
+  dashboards that sum without `by` are unaffected, ones that match the exact label set need updating.
+- Writes: a page write must be allowed by the declared skill, the path's skill **and** the stored page's skill
+  (relabels and moves can no longer escape the stored skill's ACL); `move_page` checks the destination's ACL.
+- claude runs now use stream-json; `usage` sums every turn, and `tool_calls` counts `tool_use` blocks.
+- Event ids starting `run:`, `sched:` or `lint-` are reserved for the runner's identity.
+- `mint_agent_token` refuses machine callers (agent, narrowed, run and workbench tokens).
+
 ## v2026.10.29
 
 Replies reach the requester, and a service role may reply under a declared label.

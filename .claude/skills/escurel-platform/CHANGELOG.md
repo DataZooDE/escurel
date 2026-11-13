@@ -4,6 +4,28 @@ The skill version tracks the consumer-facing contract, not the Escurel
 binary version. The Escurel repo's checked-out git ref is the true version
 pin (see `SKILL.md` → "How this skill is installed").
 
+## 0.26.0 — steer, transcripts, usage, agent profiles, schedules
+
+- **Steer a live run:** `run_control{action:"inject", run_id, text}` (8 KiB) reaches a running claude or echo run as a
+  new user turn; codex answers `outcome: unsupported`, a finished run `not_live`. Each inject is an `escurel:run`
+  event `run:<id>:inject:<n>`. Machine callers are refused; the page's write ACL always applies (references/02, 11).
+- **Run transcripts:** the runner stores a redacted, normalised transcript per run (`put_run_transcript`, run-token
+  only, written once); read it with `fetch_blob{run_id}`. `run-finished.transcript` is `{records, bytes, sha256}`.
+  Expiry: `ESCUREL_RUN_TRANSCRIPT_RETENTION_DAYS` (references/02, 11).
+- **Cost:** admin `usage_report{since, until, group_by, skill?}` folds `run-finished` usage per skill / agent / page /
+  model / day; `list_events` takes `since` / `until`; CLI `escurel run usage`. Runner cost/token metrics gain `skill`
+  and `model` labels. claude usage now sums every turn and `tool_calls` counts the `tool_use` blocks (references/02, 04, 11).
+- **Agent profiles:** the auto-shipped `agent` system skill (admin-only writes) declares `harness`, `model`, `skills`,
+  `scopes: {tools, write}` and `max_concurrent`. Run tokens carry an `agent` claim; the gateway enforces the scopes
+  itself (`agent_scope_denied`, `agent_unknown`), filters `tools/list`, and never grants admin/operator to an agent
+  token. A page write must now be allowed by the declared skill, the path's skill and the stored page's skill;
+  `move_page` checks the destination ACL. `run:`, `sched:` and `lint-` event ids are reserved for the runner
+  (references/01, 08, 11).
+- **Schedules:** skill frontmatter `schedule: "CRON_TZ=Europe/Berlin 15 7 * * 1-5"` and
+  `schedule_budget: {runs_per_day}`; the runner fires each window once (`sched:<skill>:<RFC3339>`), catches up within
+  `ESCUREL_RUNNER_SCHEDULE_GRACE`, and files `run-skipped` with `reason: budget | invalid_budget`. The lint interval
+  is now a schedule (references/01, 11).
+
 ## 0.25.27 — OpenAI-compatible runner presets and embeddings
 
 The runner takes `ESCUREL_RUNNER_HARNESS=alibaba | hetzner | openai-compatible`, each configured by its own
