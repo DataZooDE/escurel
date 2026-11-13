@@ -271,6 +271,13 @@ only for:
   nothing here). The incoming page's `acl:` is never consulted, so a draft
   cannot add its author and promote itself.
 
+Members of the stored `acl.update` may change `agent` and `autonomy` too, by
+design: an agent serves only the skills its **admin-only** profile lists
+(`skills:` on the `agent` page, references/01), so binding an agent that does
+not list the skill gets the skill nothing of that agent's — the run is
+refused, never run as that agent nor on a wider token. Which skills an agent
+may run as is the admin's decision, made on the agent page.
+
 A **new** skill page carrying any authority key, and a stored skill without
 `acl.update`, are therefore an admin's. A machine caller (run, narrowed
 agent, delegated `act` token) never changes them, admin role or not — its

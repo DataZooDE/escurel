@@ -37,6 +37,11 @@ const MEMO: &str = "---\nkind: skill\nid: memo\nautonomy: auto\nagent: \"[[agent
 /// Defaults to an agent that does not exist: refused, never run wide.
 const ORPHAN: &str = "---\nkind: skill\nid: orphan\nautonomy: auto\nagent: \"[[agent::ghost]]\"\n---\n\
     # orphan\n\nFold the event into the instance.\n";
+/// Binds `reader`, which does not list it: a skill editor may set `agent:` (owner decision
+/// 2026-11-13, crew F6) precisely because binding an agent that does not list the skill gets the
+/// skill nothing of the agent's.
+const STRAY: &str = "---\nkind: skill\nid: stray\nautonomy: auto\nagent: \"[[agent::reader]]\"\n\
+    acl:\n  create: [ops]\n  update: [ops]\n---\n# stray\n\nFold the event into the instance.\n";
 const SCRIBE: &str = "---\nkind: instance\nskill: agent\nid: scribe\nharness: echo\n\
     skills: [\"[[skill::customer]]\", \"[[skill::note]]\", \"[[skill::memo]]\"]\n\
     scopes:\n  write: [\"markdown/instances/note/*\", \"markdown/instances/memo/*\"]\n\
@@ -95,6 +100,8 @@ async fn gateway() -> EscurelProcess {
                 .skill("note", skill("note").as_str())
                 .skill("memo", MEMO)
                 .skill("orphan", ORPHAN)
+                .skill("stray", STRAY)
+                .instance("stray", "c1", instance_body("stray").as_str())
                 .instance("orphan", "c1", instance_body("orphan").as_str())
                 .instance("memo", "c1", instance_body("memo").as_str())
                 .instance("customer", "c1", instance_body("customer").as_str())
@@ -581,5 +588,27 @@ async fn an_agent_capped_at_one_run_never_runs_two_at_once() {
     assert!(
         second.0 >= first.1,
         "scribe ran two at once: {first:?} overlaps {second:?}"
+    );
+}
+
+/// An agent serves only the skills its admin-only profile lists (`skills:`): a skill that binds an
+/// agent which does not list it is refused, never run as that agent nor on a wider token.
+#[tokio::test]
+async fn a_skill_binding_an_agent_that_does_not_list_it_is_not_run_as_that_agent() {
+    let gw = gateway().await;
+    let (mut runner, listen) = spawn_runner(&gw);
+    let event = capture(&gw, "stray").await;
+    assert_ne!(
+        await_terminal(&mut runner, &listen, &event).await.0,
+        "processed"
+    );
+    assert!(
+        !writer_of(&gw, "stray").await.0,
+        "stray's instance must be untouched"
+    );
+    let rows = agent_runs(&gw, 1).await;
+    assert!(
+        !rows.iter().any(|(agent, _)| agent == "agent:reader"),
+        "nothing ran as reader: {rows:?}"
     );
 }
