@@ -2291,10 +2291,6 @@ async fn dispatch_loop(
         );
         let _run_guard = run_span.enter();
 
-        // Acquire a global harness-subprocess permit (#158): bounds concurrent
-        // harness spawns across all tenants. Held across the whole run.
-        let _harness_permit = governor.acquire_harness().await;
-
         // ── async-ops: the workflow INVOCATION event is a control kick, not
         //    harness work ────────────────────────────────────────────────────
         // `start_operation` stamps the kick with a server-owned `phase: "invoke"`
@@ -2469,11 +2465,13 @@ async fn dispatch_loop(
             .and_then(|p| p.model.as_deref())
             .or_else(|| skill_contract.as_ref().and_then(|c| c.model.as_deref()));
         let (step_harness, step_model) = select_model(&config, step_harness, skill_model, &trigger);
-        // The agent's own concurrency cap (`max_concurrent`), held for the run.
-        let _agent_permit = match profile {
-            Some(p) => governor.acquire_agent(&p.id, p.max_concurrent).await,
-            None => None,
-        };
+        // The agent's own concurrency cap (`max_concurrent`), then a global
+        // harness-subprocess permit (#158, bounds spawns across all tenants),
+        // both held across the whole run. Agent first, so a run queued behind
+        // its busy agent holds no global slot.
+        let _run_permits = governor
+            .acquire_run(profile.map(|p| (p.id.as_str(), p.max_concurrent)))
+            .await;
         // The run's lifecycle as `escurel:run` events (workbench backend
         // P1): a projection of the ledger for the humans watching the run,
         // best-effort — a refusal is logged and counted, never acted on.

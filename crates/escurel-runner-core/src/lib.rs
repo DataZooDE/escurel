@@ -69,7 +69,7 @@ pub use transcript::{
 /// identically without the core→harness dependency the reverse would require.
 pub const DELEGATE_HARNESS: &str = "delegate";
 pub use promotion::{PromotedDraft, REVIEW_LABEL, cascade_event_id, promoted_draft};
-pub use quota::{Governor, QuotaDecision, QuotaLimits, RunSlot, ThrottleReason};
+pub use quota::{Governor, QuotaDecision, QuotaLimits, RunPermits, RunSlot, ThrottleReason};
 pub use reconciler::{
     ConfirmedEffect, ReconcileError, RunFailure, RunReport, assign_confirmed_write,
     classify_client_error, confirm_draft, confirm_effect, instance_version, run_with_retry,

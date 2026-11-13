@@ -491,7 +491,9 @@ An ordinary event run (not a workflow step, not a chat turn) may run as an
 With an agent, its `harness:` / `model:` stand in for the skill page's (same
 allow-lists — an agent naming a harness outside `ESCUREL_RUNNER_HARNESS_ALLOW`
 is a refused run), its `max_concurrent` caps how many of its runs this runner
-executes at once, the harness is offered only the tools in its
+executes at once (a run waiting for its agent's slot holds no global
+`ESCUREL_RUNNER_MAX_HARNESS_PROCS` permit — it takes that only once the agent
+admits it), the harness is offered only the tools in its
 `scopes.tools`, and the run's token is minted as the agent — `escurel:agent`
 plus the skill's write groups, never admin, with the `agent` claim the
 gateway enforces (references/08). A run whose write falls outside the

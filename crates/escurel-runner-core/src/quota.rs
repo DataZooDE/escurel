@@ -142,6 +142,14 @@ impl Drop for RunSlot {
     }
 }
 
+/// The permits a run holds while it runs ([`Governor::acquire_run`]); dropping
+/// it frees them. Field order is drop order: the global slot goes first.
+#[derive(Debug)]
+pub struct RunPermits {
+    _harness: Option<OwnedSemaphorePermit>,
+    _agent: Option<OwnedSemaphorePermit>,
+}
+
 const WINDOW: Duration = Duration::from_secs(60);
 
 impl Governor {
@@ -160,13 +168,30 @@ impl Governor {
         }
     }
 
+    /// Await everything a run holds for its lifetime: the agent's own slot
+    /// (`agent` = its id and `max_concurrent`), THEN a global harness permit.
+    ///
+    /// The order is the point. Taking the global permit first let a run queued
+    /// behind its busy agent sit on a global slot it could not use, so one
+    /// saturated agent starved every other run, chat lanes included.
+    pub async fn acquire_run(&self, agent: Option<(&str, Option<u32>)>) -> RunPermits {
+        let agent = match agent {
+            Some((id, max)) => self.acquire_agent(id, max).await,
+            None => None,
+        };
+        RunPermits {
+            _agent: agent,
+            _harness: self.acquire_harness().await,
+        }
+    }
+
     /// Await a run slot for agent `id` capped at `max` concurrent runs
     /// (`max_concurrent` on its page); `None` — no slot to hold — when the
-    /// agent sets no cap. Hold the permit for the run's lifetime.
+    /// agent sets no cap.
     ///
     /// A changed cap takes a fresh semaphore: runs already holding the old
     /// one finish under it, new runs queue under the new cap.
-    pub async fn acquire_agent(&self, id: &str, max: Option<u32>) -> Option<OwnedSemaphorePermit> {
+    async fn acquire_agent(&self, id: &str, max: Option<u32>) -> Option<OwnedSemaphorePermit> {
         let max = max?.max(1);
         let sem = {
             let mut map = self.agents.lock().expect("governor agents mutex");
@@ -410,5 +435,47 @@ mod tests {
             again.is_ok_and(|p| p.is_some()),
             "freed by the first run's end"
         );
+    }
+
+    /// Under contention an agent run waits for its own cap BEFORE it takes a
+    /// global harness slot: a waiter holding one would starve every other run
+    /// (chat lanes included) for as long as the agent is busy.
+    #[tokio::test]
+    async fn a_run_blocked_on_its_agent_holds_no_global_permit() {
+        let gov = Governor::new(limits(1000, 1000, 2));
+        let first = gov.acquire_run(Some(("scribe", Some(1)))).await;
+        assert_eq!(
+            gov.harness_permits_available(),
+            1,
+            "the first run holds one"
+        );
+
+        let waiter = {
+            let gov = gov.clone();
+            tokio::spawn(async move { gov.acquire_run(Some(("scribe", Some(1)))).await })
+        };
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(!waiter.is_finished(), "the second scribe run waits");
+        assert_eq!(
+            gov.harness_permits_available(),
+            1,
+            "the waiting run must not hold a global slot"
+        );
+        let _chat = gov.acquire_run(None).await;
+        assert_eq!(
+            gov.harness_permits_available(),
+            0,
+            "another run still gets it"
+        );
+        drop(_chat);
+
+        drop(first);
+        let second = tokio::time::timeout(Duration::from_secs(1), waiter)
+            .await
+            .expect("freed by the first run's end")
+            .expect("task");
+        assert_eq!(gov.harness_permits_available(), 1);
+        drop(second);
+        assert_eq!(gov.harness_permits_available(), 2);
     }
 }
