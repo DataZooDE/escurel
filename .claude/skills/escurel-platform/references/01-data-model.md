@@ -50,7 +50,10 @@ optional; reported on `list_skills`, linted by `validate`):
 - `schedule: "<cron>"` — the runner fires the skill on its own, once per window (#819). A 5-field
   cron (minute granularity) or 6-field (leading seconds), optionally prefixed `CRON_TZ=<IANA zone> `
   (`schedule: "CRON_TZ=Europe/Berlin 15 7 * * 1-5"`); without the prefix it is read in **UTC**. A
-  non-string, an unknown zone or a malformed expression is an error (`schedule_invalid`).
+  non-string, an unknown zone or a malformed expression is an error (`schedule_invalid`) — and,
+  since validate is not a write gate, it also fails closed: it reaches `list_skills` as written with
+  `schedule_invalid: true`, nothing fires, and the runner files ONE `run-skipped { reason:
+  "invalid_schedule", skill, schedule, error }` per expression (references/11).
   `schedule_budget: {runs_per_day: <positive integer>}` caps the triggers whose window starts on one
   UTC day; malformed is an error (`schedule_budget_invalid`), an unknown sub-key or a budget without a
   `schedule:` is a warning under the same code. A malformed budget fails CLOSED at the runner: it

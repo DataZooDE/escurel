@@ -84,11 +84,21 @@ pub struct ScheduleEntry {
 
 impl ScheduleEntry {
     /// The entry a `list_skills` row declares: `None` without `schedule:`,
-    /// `Some(Err)` when the expression does not parse.
+    /// `Some(Err)` when the expression does not parse (or the gateway flags
+    /// it `schedule_invalid`).
     #[must_use]
     pub fn from_skill(skill: &Skill, grace: Duration) -> Option<Result<Self, ScheduleError>> {
         let expr = skill.schedule.as_deref()?;
-        Some(CronSchedule::parse(expr).map(|cron| Self {
+        let parsed = CronSchedule::parse(expr).and_then(|cron| {
+            if skill.schedule_invalid {
+                Err(ScheduleError::InvalidCron(
+                    "the gateway cannot read it".to_owned(),
+                ))
+            } else {
+                Ok(cron)
+            }
+        });
+        Some(parsed.map(|cron| Self {
             skill: skill.id.clone(),
             cadence: Cadence::Cron(Box::new(cron)),
             runs_per_day: skill.schedule_budget.map(|b| b.runs_per_day),
@@ -253,6 +263,33 @@ impl ScheduleEntry {
     }
 }
 
+/// The `run-skipped` record for a `schedule:` that cannot be read. Its id is
+/// `sched:<skill>:invalid:<sha256(expr), 16 hex>` — one per expression; it
+/// never parses as a window, so the budget count ignores it.
+#[must_use]
+pub fn invalid_schedule_skipped(skill: &str, expr: &str, e: &ScheduleError) -> CaptureEventRequest {
+    use sha2::Digest as _;
+    let digest = sha2::Sha256::digest(expr.as_bytes());
+    let hash: String = digest[..8].iter().map(|b| format!("{b:02x}")).collect();
+    CaptureEventRequest {
+        event_id: format!("sched:{skill}:invalid:{hash}"),
+        source: SCHEDULE_SOURCE.to_owned(),
+        mime: "application/json".to_owned(),
+        label_skill: RUN_EVENT_LABEL.to_owned(),
+        title: "run-skipped".to_owned(),
+        body: json!({
+            "reason": "invalid_schedule",
+            "skill": skill,
+            "schedule": expr,
+            "error": e.to_string(),
+        })
+        .to_string(),
+        provenance: json!({ "schedule": { "expr": expr } }),
+        kind: "system".to_owned(),
+        ..Default::default()
+    }
+}
+
 fn rfc3339(t: DateTime<Utc>) -> String {
     t.to_rfc3339_opts(SecondsFormat::Secs, true)
 }
@@ -302,9 +339,8 @@ impl Scheduler {
                     match ScheduleEntry::from_skill(skill, self.grace) {
                         Some(Ok(entry)) => out.push(entry),
                         Some(Err(e)) => {
-                            if self.warned.insert(format!("{}:{e}", skill.id)) {
-                                tracing::warn!(target: "escurel_runner", skill = %skill.id, error = %e, "schedule: unreadable `schedule:`; not fired");
-                            }
+                            let expr = skill.schedule.as_deref().unwrap_or_default();
+                            self.report_invalid(client, &skill.id, expr, &e).await;
                         }
                         None => {}
                     }
@@ -315,6 +351,29 @@ impl Scheduler {
             }
         }
         out
+    }
+
+    /// Say once per (skill, expression) that a `schedule:` cannot be read: a
+    /// warning and a `run-skipped { reason: "invalid_schedule" }` with an id
+    /// derived from the expression, so a restart or a second runner files
+    /// nothing new. A failed capture is retried next tick.
+    async fn report_invalid(
+        &mut self,
+        client: &Client,
+        skill: &str,
+        expr: &str,
+        e: &ScheduleError,
+    ) {
+        let req = invalid_schedule_skipped(skill, expr, e);
+        if !self.warned.insert(req.event_id.clone()) {
+            return;
+        }
+        tracing::warn!(target: "escurel_runner", skill = %skill, schedule = %expr, error = %e, "schedule: unreadable `schedule:`; not fired");
+        let id = req.event_id.clone();
+        if let Err(err) = client.capture_event(req).await {
+            tracing::warn!(target: "escurel_runner", skill = %skill, error = %err, "schedule: could not file run-skipped (invalid_schedule); retrying next tick");
+            self.warned.remove(&id);
+        }
     }
 
     /// Handle every entry's latest window at `now`. Errors are logged and

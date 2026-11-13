@@ -368,3 +368,55 @@ async fn a_malformed_budget_fires_nothing_and_says_why() {
     let body: Value = serde_json::from_str(skipped[0]["body"].as_str().unwrap()).unwrap();
     assert_eq!(body["reason"], "invalid_budget", "{body}");
 }
+
+/// An unreadable `schedule:` is not silence (crew review PR-1, F3): `list_skills` flags it
+/// `schedule_invalid`, nothing fires, and the runner files ONE `run-skipped { reason:
+/// "invalid_schedule" }` per (skill, expression) — not one per tick, and not one per runner.
+#[tokio::test]
+async fn an_unreadable_schedule_fires_nothing_and_says_why_once() {
+    let gw = gateway(&[]).await;
+    let page = "---\nkind: skill\nid: typo\ndescription: Bad cron.\nautonomy: auto\n\
+        schedule: \"15 7 * * Mo-Fr\"\n---\n# typo\n";
+    call(
+        &gw,
+        "update_page",
+        json!({ "page_id": "markdown/skills/typo.md", "content": page }),
+    )
+    .await;
+    let listed = call(&gw, "list_skills", json!({})).await;
+    let typo = listed["skills"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["id"] == "typo")
+        .cloned()
+        .unwrap_or_else(|| panic!("{listed}"));
+    assert_eq!(typo["schedule"], "15 7 * * Mo-Fr", "{typo}");
+    assert_eq!(typo["schedule_invalid"], true, "{typo}");
+
+    let _ra = spawn_runner(&gw).await;
+    let _rb = spawn_runner(&gw).await;
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    assert!(trigger_windows(&gw, "typo").await.is_empty());
+    let skipped: Vec<Value> = events_under(&gw, "escurel:run")
+        .await
+        .into_iter()
+        .filter(|e| e["title"] == "run-skipped")
+        .collect();
+    assert_eq!(
+        skipped.len(),
+        1,
+        "once per (skill, expression): {skipped:?}"
+    );
+    let body: Value = serde_json::from_str(skipped[0]["body"].as_str().unwrap()).unwrap();
+    assert_eq!(body["reason"], "invalid_schedule", "{body}");
+    assert_eq!(body["skill"], "typo", "{body}");
+    assert_eq!(body["schedule"], "15 7 * * Mo-Fr", "{body}");
+    assert!(
+        skipped[0]["event_id"]
+            .as_str()
+            .unwrap()
+            .starts_with("sched:typo:invalid:"),
+        "{skipped:?}"
+    );
+}

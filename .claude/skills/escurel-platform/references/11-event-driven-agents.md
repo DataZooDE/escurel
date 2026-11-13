@@ -487,6 +487,14 @@ record with `reason: "invalid_budget"`. Several runners on one tenant each check
 and then capture, so on a boundary they can overshoot the cap by up to one
 trigger each: the budget is a cost guard, not an exact quota (accepted).
 
+**An unreadable `schedule:`** (a non-string, an unknown `CRON_TZ=` zone, a
+malformed cron such as `15 7 * * Mo-Fr`) is never silent: `list_skills`
+carries it as written with `schedule_invalid: true`, no window fires, and
+the runner files one `escurel:run` `run-skipped` with id
+`sched:<skill>:invalid:<16 hex of sha256(expr)>` and body `{reason:
+"invalid_schedule", skill, schedule, error}` — one per expression, however
+many ticks, restarts or runners; fixing the expression stops it.
+
 `ESCUREL_RUNNER_LINT_INTERVAL` still works: it adds a synthetic `lint`
 entry (epoch-aligned windows of that length) to the same loop, keeping the
 old lint tick's ids (`lint-<tenant>-<window>`), run page

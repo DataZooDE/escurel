@@ -545,6 +545,12 @@ pub struct Skill {
     /// (UTC otherwise), as written. Absent = event-driven only.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub schedule: Option<String>,
+    /// The page declares a `schedule:` that cannot be read — not a string, an
+    /// unknown `CRON_TZ=` zone, a malformed cron. `schedule` then carries the
+    /// value as written; the runner fires nothing and files one `run-skipped
+    /// { reason: "invalid_schedule" }` per expression. Omitted when false.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub schedule_invalid: bool,
     /// `schedule_budget:` — how many scheduled runs a UTC day may start.
     /// Absent = unbounded.
     #[serde(default, skip_serializing_if = "Option::is_none")]
