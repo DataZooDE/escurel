@@ -756,6 +756,22 @@ impl EscurelProcess {
         issuer.mint_narrowed(tenant, skill, groups)
     }
 
+    /// A per-run bearer for the agent profile `agent` (#823) running `skill`,
+    /// as a runner mints it — so a test can forge one naming an agent that does
+    /// not exist, or pin what an existing agent's scopes refuse.
+    pub fn mint_token_for_agent(
+        &self,
+        tenant: &str,
+        agent: &str,
+        skill: &str,
+        groups: &[&str],
+    ) -> String {
+        let issuer = self.issuer.as_ref().expect(
+            "EscurelProcess::mint_token_for_agent requires AuthMode::TestIssuer; spawned with a different mode",
+        );
+        issuer.mint_for_agent(tenant, agent, skill, groups)
+    }
+
     /// [`Self::mint_token_for_run`] with the lineage's `trace_id` claim, so a
     /// test can assert the gateway joins the run's trace (P3-3).
     pub fn mint_token_for_run_traced(

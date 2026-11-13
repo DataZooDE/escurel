@@ -280,6 +280,20 @@ impl TestIssuer {
         self.resign_with_extra(&token, "skill", json!(skill))
     }
 
+    /// A per-run bearer for an AGENT PROFILE (#823), as the runner mints it:
+    /// [`Self::mint_narrowed`] with `sub: agent:<agent>` and the `agent` claim.
+    pub(crate) fn mint_for_agent(
+        &self,
+        tenant: &str,
+        agent: &str,
+        skill: &str,
+        groups: &[&str],
+    ) -> String {
+        let token = self.mint_narrowed(tenant, skill, groups);
+        let token = self.resign_with_extra(&token, "sub", json!(format!("agent:{agent}")));
+        self.resign_with_extra(&token, "agent", json!(agent))
+    }
+
     /// [`Self::mint_for_run`] plus the lineage's `trace_id` claim (P3-3).
     pub(crate) fn mint_for_run_traced(
         &self,

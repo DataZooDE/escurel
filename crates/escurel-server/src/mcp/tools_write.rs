@@ -465,6 +465,24 @@ pub(super) async fn write_acl_refusal(
     page_id: &str,
     content: &str,
 ) -> Result<Option<Value>, JsonRpcError> {
+    // An agent's write scope (#823) answers first, by name: the run's record
+    // and the agent author both need to tell "outside this agent's scope"
+    // apart from "this subject may not write that page".
+    if caller.agent_write_denied(page_id) {
+        let agent = caller.agent.map_or("", |a| a.id.as_str());
+        return Ok(Some(json!({
+            "ok": false,
+            "issues": [{
+                "severity": "error",
+                "code": "agent_scope_denied",
+                "location": "page_id",
+                "message": format!(
+                    "write denied: agent `{agent}` is not scoped to write `{page_id}` \
+                     (its `scopes.write`)"
+                ),
+            }],
+        })));
+    }
     if write_acl == crate::server::WriteAclMode::Off {
         return Ok(None);
     }
@@ -1244,6 +1262,22 @@ pub(super) async fn tool_move_page(
                 "code": "layer_read_only",
                 "location": "frontmatter",
                 "message": reason,
+            }],
+        }));
+    }
+    // The destination is written too. Only the two path-shaped grants are
+    // asked of it — an agent's write scope and the admin-only system paths —
+    // so a move can never carry a page into what its caller may not create.
+    if caller.agent_write_denied(&a.to)
+        || (!caller.is_admin && escurel_index::system_skills::is_admin_only_path(&a.to))
+    {
+        return Ok(json!({
+            "ok": false,
+            "issues": [{
+                "severity": "error",
+                "code": if caller.agent_write_denied(&a.to) { "agent_scope_denied" } else { "forbidden" },
+                "location": "to",
+                "message": format!("move denied: `{}` may not be written by this caller", a.to),
             }],
         }));
     }
@@ -2114,6 +2148,26 @@ pub(super) fn stamp_captured_by(
     Some(obj)
 }
 
+/// Refuse filing onto `page_id` for an agent whose write scope (#823) does not
+/// reach it. Filing an event into a record — at capture or by assignment —
+/// adds to that record, so it is bounded like a write, whether or not the
+/// event ACL is on: `assign_event` checks the target only for an unassigned
+/// event, which is narrower than an agent's scope must be.
+fn agent_target_refusal(
+    caller: &AclCaller<'_>,
+    tool: &str,
+    page_id: &str,
+) -> Result<(), JsonRpcError> {
+    if page_id.is_empty() || !caller.agent_write_denied(page_id) {
+        return Ok(());
+    }
+    let agent = caller.agent.map_or("", |a| a.id.as_str());
+    Err(JsonRpcError::forbidden(format!(
+        "{tool}: agent `{agent}` is not scoped to write `{page_id}` (its `scopes.write`)"
+    ))
+    .with_code("agent_scope_denied", false))
+}
+
 pub(super) async fn tool_capture_event(
     indexer: &Indexer,
     caller: AclCaller<'_>,
@@ -2124,6 +2178,11 @@ pub(super) async fn tool_capture_event(
     args: Value,
 ) -> Result<Value, JsonRpcError> {
     let mut a: CaptureEventArgs = parse_args(args, "capture_event")?;
+    agent_target_refusal(
+        &caller,
+        "capture_event",
+        a.instance_page_id.as_deref().unwrap_or(""),
+    )?;
     // An event with no `label_skill` is unroutable: the runner selects its
     // system prompt by that label, and `{}` used to mint junk the inbox
     // could never dispatch (API review F4). Refuse at the door.
@@ -3525,6 +3584,7 @@ pub(super) async fn tool_assign_event(
     args: Value,
 ) -> Result<Value, JsonRpcError> {
     let a: AssignEventArgs = parse_args(args, "assign_event")?;
+    agent_target_refusal(&caller, "assign_event", &a.instance_page_id)?;
 
     // Claiming an event you may not read is refused as NOT FOUND, using the
     // indexer's own `EventNotFound` so the code and the message are

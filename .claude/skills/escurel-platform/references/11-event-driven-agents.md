@@ -229,7 +229,10 @@ run's target page (`processed`, never inbox work) and readable with
 `provenance.runner` on each carries `run_id`, `root_event_id`, `event_id`
 (the trigger), `parent_run_id` (a cascade hop's emitting run), `depth`,
 `lineage_path`, `trace_id`, `harness`, `max_attempts`, `attempt`,
-`target_page_id` and, on `run-finished`, `autonomy`. Event ids are
+`target_page_id`, `skill`, `agent` (the agent profile the run executed as,
+when it had one — what `usage_report {group_by: [agent]}` groups by, as
+`agent:<id>`; without one it groups as `agent:<skill>`) and, on
+`run-finished`, `autonomy`. Event ids are
 deterministic (`run:<run_id>:started` / `:attempt:<n>` / `:finished`), so a
 re-emission is idempotent. **The ledger stays the source of truth**: these
 are its projection and are best-effort — a gateway that refuses them (a
@@ -471,6 +474,34 @@ old lint tick's ids (`lint-<tenant>-<window>`), run page
 upgrade does not fire the current window twice. Its grace is its interval,
 so every lint window fires, as before.
 
+## Agent profiles: who a run executes as
+
+An ordinary event run (not a workflow step, not a chat turn) may run as an
+**agent profile** (references/01, *Agent profiles*). The runner picks it:
+
+1. the event's `provenance.agent: "[[agent::x]]"`, when `x` lists the run's
+   skill (otherwise the request is ignored, logged);
+2. else the skill page's `agent: "[[agent::x]]"` default — when that agent
+   is missing or does not list the skill the run is **refused** (a permanent
+   failure, `dead_letter`, `run-finished.error` naming the agent), never run
+   with the runner's own token in its place;
+3. else no agent: unchanged behaviour (`agent:<skill>`, admin unless
+   `ESCUREL_RUNNER_AGENT_NARROW=1`).
+
+With an agent, its `harness:` / `model:` stand in for the skill page's (same
+allow-lists — an agent naming a harness outside `ESCUREL_RUNNER_HARNESS_ALLOW`
+is a refused run), its `max_concurrent` caps how many of its runs this runner
+executes at once, the harness is offered only the tools in its
+`scopes.tools`, and the run's token is minted as the agent — `escurel:agent`
+plus the skill's write groups, never admin, with the `agent` claim the
+gateway enforces (references/08). A run whose write falls outside the
+agent's `scopes.write` sees it refused with `agent_scope_denied`; the call is
+on `get_run_tool_calls` as `rejected`, and the echo harness fails the run on
+it. A runner on a static `ESCUREL_RUNNER_TOKEN` cannot mint, so an agent run
+there fails rather than writing as the runner. Crash recovery re-runs a
+recovered event with the skill's default agent (an event's own request is
+not re-read).
+
 ## Chat runs (`provenance.chat_group_id`)
 
 A question in a page-bound chat is answered by a run. The person:
@@ -622,8 +653,9 @@ kind of listing is refused as invalid.
 Every `/mcp` call made with a run-bound bearer — the runner's per-run
 agent token, or one from `mint_agent_token` — is recorded on the gateway
 in `run_tool_calls`: the tool, its status — `ok`, `rejected` (the gateway
-answered `ok: false`, e.g. a refused write) or `error` (a JSON-RPC error,
-with its `data.code`) — duration, request and response sizes in bytes, the subject
+answered `ok: false`, e.g. a refused write; `error_code` is its first
+issue's code, such as `agent_scope_denied` or `forbidden`) or `error` (a
+JSON-RPC error, with its `data.code` as `error_code`) — duration, request and response sizes in bytes, the subject
 and the time, plus (`ESCUREL_TOOLCALL_DETAIL=summary`, the default) `args_summary` and
 `result_summary`: a bounded (2 KB), redacted summary of what was asked and what came
 back or why it failed — identifying values (page ids, skills, filters) are kept,

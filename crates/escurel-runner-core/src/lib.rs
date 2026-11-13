@@ -14,6 +14,7 @@
 //! [`docs/contract/agent-orchestration.md`]: https://github.com/DataZooDE/escurel/blob/main/docs/contract/agent-orchestration.md
 
 mod admit;
+mod agent;
 mod auth;
 mod cascade;
 mod chat_reply;
@@ -33,6 +34,7 @@ mod trigger;
 mod workflow;
 
 pub use admit::{Admission, LoopLimits, admit};
+pub use agent::{AgentChoice, choose_agent};
 pub use auth::{
     AuthError, ROOT_EVENT_ID_CLAIM, RUN_ID_CLAIM, RunClaims, Signer, TRACE_ID_CLAIM, TokenSource,
 };
@@ -53,8 +55,8 @@ pub use live_runs::{
 };
 pub use packager::{
     ALLOWED_TOOLS, Autonomy, CHAT_REQUIRES_RUN_TOKENS, Delegation, PLAN_PARAGRAPH, PackageError,
-    REVIEW_TOOLS, TaskContext, WORKFLOW_STEP_TOOLS, bound_page_id, chat_run_token, chat_tools,
-    package, plan_tools,
+    REVIEW_TOOLS, RunGrant, TaskContext, WORKFLOW_STEP_TOOLS, bound_page_id, chat_run_token,
+    chat_tools, package, plan_tools,
 };
 pub use transcript::{
     MAX_RECORDS_PER_RUN, SUMMARY_MAX_CHARS, TranscriptEntry, TranscriptKind, TranscriptRecord,

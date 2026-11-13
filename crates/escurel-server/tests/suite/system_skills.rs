@@ -131,3 +131,19 @@ async fn a_widened_agent_skill_page_does_not_open_agents_to_members() {
     let refused = write(&p, &member(&p), AGENT_PAGE, RESEARCHER).await;
     assert_eq!(refused["ok"], false, "{refused}");
 }
+
+#[tokio::test]
+async fn a_member_cannot_move_a_page_into_the_agent_path() {
+    let p = gateway().await;
+    let note = "---\nkind: instance\nskill: note\nid: n2\n---\n# n2\n";
+    let ok = write(&p, &member(&p), "markdown/instances/note/n2.md", note).await;
+    assert_eq!(ok["ok"], true, "{ok}");
+    let moved = call(
+        &p,
+        &member(&p),
+        "move_page",
+        json!({ "from": "markdown/instances/note/n2.md", "to": "markdown/instances/agent/n2.md" }),
+    )
+    .await;
+    assert_eq!(moved["ok"], false, "{moved}");
+}

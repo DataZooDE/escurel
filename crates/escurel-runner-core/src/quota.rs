@@ -114,7 +114,13 @@ pub struct Governor {
     throttled_paused: Arc<AtomicU64>,
     /// Tenants a `pause` control has stopped admission for.
     paused: Arc<Mutex<std::collections::HashSet<String>>>,
+    /// Per-agent run slots (#823 `max_concurrent`), keyed by agent id, with
+    /// the cap the semaphore was sized for.
+    agents: Arc<Mutex<HashMap<String, AgentSlots>>>,
 }
+
+/// One agent's cap and the semaphore sized for it.
+type AgentSlots = (u32, Arc<Semaphore>);
 
 /// A held run slot. Decrements the tenant's in-flight count on drop, so a
 /// concurrency permit is released exactly once the run (success, failure, or
@@ -150,7 +156,29 @@ impl Governor {
             throttled_max_concurrent: Arc::new(AtomicU64::new(0)),
             throttled_paused: Arc::new(AtomicU64::new(0)),
             paused: Arc::new(Mutex::new(std::collections::HashSet::new())),
+            agents: Arc::new(Mutex::new(HashMap::new())),
         }
+    }
+
+    /// Await a run slot for agent `id` capped at `max` concurrent runs
+    /// (`max_concurrent` on its page); `None` — no slot to hold — when the
+    /// agent sets no cap. Hold the permit for the run's lifetime.
+    ///
+    /// A changed cap takes a fresh semaphore: runs already holding the old
+    /// one finish under it, new runs queue under the new cap.
+    pub async fn acquire_agent(&self, id: &str, max: Option<u32>) -> Option<OwnedSemaphorePermit> {
+        let max = max?.max(1);
+        let sem = {
+            let mut map = self.agents.lock().expect("governor agents mutex");
+            let entry = map
+                .entry(id.to_owned())
+                .or_insert_with(|| (max, Arc::new(Semaphore::new(max as usize))));
+            if entry.0 != max {
+                *entry = (max, Arc::new(Semaphore::new(max as usize)));
+            }
+            Arc::clone(&entry.1)
+        };
+        sem.acquire_owned().await.ok()
     }
 
     /// Stop admitting runs for `tenant` until [`Self::resume`]. In-flight
@@ -351,6 +379,36 @@ mod tests {
             gov.harness_permits_available(),
             1,
             "a dropped permit frees a slot"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_agents_cap_bounds_its_own_runs_only() {
+        let gov = Governor::new(limits(1000, 1000, 8));
+        assert!(
+            gov.acquire_agent("free", None).await.is_none(),
+            "no cap, no slot"
+        );
+        let held = gov.acquire_agent("scribe", Some(1)).await.expect("slot");
+        let blocked = tokio::time::timeout(
+            Duration::from_millis(50),
+            gov.acquire_agent("scribe", Some(1)),
+        )
+        .await;
+        assert!(blocked.is_err(), "a second scribe run waits for the first");
+        let _other = gov
+            .acquire_agent("reader", Some(1))
+            .await
+            .expect("another agent's slot");
+        drop(held);
+        let again = tokio::time::timeout(
+            Duration::from_millis(50),
+            gov.acquire_agent("scribe", Some(1)),
+        )
+        .await;
+        assert!(
+            again.is_ok_and(|p| p.is_some()),
+            "freed by the first run's end"
         );
     }
 }

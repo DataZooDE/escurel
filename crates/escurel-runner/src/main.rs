@@ -1322,6 +1322,7 @@ async fn enqueue_requeued(state: &AppState, tenant: &str, event_id: &str) {
             manual: None,
             is_system: false,
             chat: None,
+            agent: None,
             tenant: tenant.to_owned(),
             event_id: event_id.to_owned(),
             label_skill: String::new(),
@@ -2412,23 +2413,67 @@ async fn dispatch_loop(
         // skill page is honoured like a manual one, within the allow-list.
         let skill_contract =
             escurel_runner_core::skill_contract(&client, &trigger.label_skill).await;
-        let skill_harness = skill_contract.as_ref().and_then(|c| c.harness.clone());
-        // Per-skill narrowing of the run's agent token (P3-6): on, the
-        // token carries the skill's write groups — none when the skill
-        // declares no grant or could not be read, which fails closed to an
-        // agent that can write nothing rather than one that writes as admin.
-        let narrow_groups: Option<Vec<String>> = config.agent_narrow.then(|| {
-            skill_contract
-                .as_ref()
-                .map(|c| c.write_groups.clone())
-                .unwrap_or_default()
-        });
-        let step_harness = resolve_harness(&config, &harness, &trigger, skill_harness.as_deref());
+        // The agent profile the run executes as (#823): the event's request,
+        // else the skill's default. A workflow step runs as its requester and a
+        // chat turn as its asker, so neither takes an agent.
+        let agent = if trigger.workflow.is_none() && trigger.chat.is_none() {
+            escurel_runner_core::choose_agent(
+                &client,
+                &trigger.label_skill,
+                trigger.agent.as_deref(),
+                skill_contract.as_ref().and_then(|c| c.agent.as_deref()),
+            )
+            .await
+        } else {
+            escurel_runner_core::AgentChoice::None
+        };
+        let profile = agent.profile();
+        // An agent's harness and model stand in for the skill's own asks.
+        let skill_harness = profile
+            .and_then(|p| p.harness.clone())
+            .or_else(|| skill_contract.as_ref().and_then(|c| c.harness.clone()));
+        // The skill's write groups: what a narrowed token (P3-6) and an agent
+        // token (#823) carry — none when the skill declares no grant or could
+        // not be read, which fails closed to a token that can write nothing.
+        let write_groups: Vec<String> = skill_contract
+            .as_ref()
+            .map(|c| c.write_groups.clone())
+            .unwrap_or_default();
+        let narrow_groups = config.agent_narrow.then_some(write_groups.as_slice());
+        // An agent narrows a run to what the skill grants, then its own
+        // scopes (enforced by the gateway) narrow that further.
+        let grant = match (profile, narrow_groups) {
+            (Some(profile), _) => escurel_runner_core::RunGrant::Agent {
+                profile,
+                groups: &write_groups,
+            },
+            (None, Some(groups)) => escurel_runner_core::RunGrant::Narrowed(groups),
+            (None, None) => escurel_runner_core::RunGrant::Wide,
+        };
+        let step_harness = match &agent {
+            escurel_runner_core::AgentChoice::Refused(reason) => {
+                tracing::warn!(
+                    target: "escurel_runner",
+                    event_id = %trigger.event_id,
+                    %reason,
+                    "the run's agent cannot be used; refusing the run"
+                );
+                Arc::new(RefusingHarness::agent_refused(reason.clone())) as Arc<dyn Harness>
+            }
+            _ => resolve_harness(&config, &harness, &trigger, skill_harness.as_deref()),
+        };
         // The skill's `model:`, within ESCUREL_RUNNER_MODEL_ALLOW; else, for a
         // chat run, the operator's ESCUREL_RUNNER_CHAT_MODEL.
         // A workflow step (the multi-step kind) takes the harness's long model.
-        let skill_model = skill_contract.as_ref().and_then(|c| c.model.as_deref());
+        let skill_model = profile
+            .and_then(|p| p.model.as_deref())
+            .or_else(|| skill_contract.as_ref().and_then(|c| c.model.as_deref()));
         let (step_harness, step_model) = select_model(&config, step_harness, skill_model, &trigger);
+        // The agent's own concurrency cap (`max_concurrent`), held for the run.
+        let _agent_permit = match profile {
+            Some(p) => governor.acquire_agent(&p.id, p.max_concurrent).await,
+            None => None,
+        };
         // The run's lifecycle as `escurel:run` events (workbench backend
         // P1): a projection of the ledger for the humans watching the run,
         // best-effort — a refusal is logged and counted, never acted on.
@@ -2437,6 +2482,7 @@ async fn dispatch_loop(
             root_event_id: trigger.lineage.root_event_id.clone(),
             trigger_event_id: trigger.event_id.clone(),
             skill: Some(trigger.label_skill.clone()).filter(|s| !s.is_empty()),
+            agent: profile.map(|p| p.id.clone()),
             parent_run_id: trigger.lineage.parent_run_id.clone(),
             depth: trigger.lineage.depth,
             lineage_path: trigger.lineage.lineage_path.clone(),
@@ -2488,7 +2534,7 @@ async fn dispatch_loop(
                 step_harness.as_ref(),
                 attempt,
                 Some(&run_claims),
-                narrow_groups.as_deref(),
+                grant,
                 &cancel,
                 inject.as_ref(),
                 sink_ref,
@@ -3005,12 +3051,12 @@ async fn attempt_run(
     harness: &dyn Harness,
     attempt: u32,
     run: Option<&escurel_runner_core::RunClaims>,
-    narrow: Option<&[String]>,
+    grant: escurel_runner_core::RunGrant<'_>,
     cancel: &escurel_runner_core::Cancel,
     inject: Option<&escurel_runner_core::InjectInbox>,
     sink: &std::sync::Mutex<AttemptSink>,
 ) -> Result<ConfirmedEffect, ReconcileError> {
-    let mut task: TaskContext = package(trigger, client, config, Some(tokens), run, narrow)
+    let mut task: TaskContext = package(trigger, client, config, Some(tokens), run, grant)
         .await
         .map_err(|e| {
             tracing::warn!(
@@ -4452,6 +4498,7 @@ mod tests {
             manual: None,
             is_system: false,
             chat: None,
+            agent: None,
             tenant: "acme".to_owned(),
             event_id: event_id.to_owned(),
             label_skill: label.to_owned(),

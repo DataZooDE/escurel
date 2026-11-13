@@ -224,6 +224,33 @@ impl TokenSource {
         }
     }
 
+    /// Mint a run's bearer as the agent profile `agent_id` (#823): narrowed to
+    /// `label_skill` and its write `groups`, naming the agent so the gateway
+    /// applies the agent page's own scopes on top. `None` for a static bearer,
+    /// which cannot mint.
+    pub fn mint_agent_profile(
+        &self,
+        agent_id: &str,
+        label_skill: &str,
+        ttl_secs: u64,
+        run: Option<&RunClaims>,
+        groups: &[String],
+    ) -> Result<Option<String>, AuthError> {
+        match self {
+            Self::Static(_) => Ok(None),
+            Self::Minted {
+                signer, subject, ..
+            } => Ok(Some(signer.mint_agent_profile(
+                subject,
+                agent_id,
+                label_skill,
+                ttl_secs,
+                run,
+                groups,
+            )?)),
+        }
+    }
+
     /// Mint an agent confined to several explicit output skills, subject to
     /// each skill's instance ACL.
     pub fn mint_agent_for_skills(

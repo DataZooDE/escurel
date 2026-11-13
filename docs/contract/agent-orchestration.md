@@ -50,13 +50,27 @@ the runner. The runner's own cascade-lineage guard trusts either half of
 that chain, so a hop written by a delegated agent is still recognised as
 the runner's own (`trigger.rs`).
 
-Two limits are deliberate and still true. The run's **authority** is
-unchanged — the minted agent token carries the same `escurel:admin` role
-the runner holds, so this is attribution, not least privilege; narrowing
-the grant per skill is the follow-up that only became possible now that
-the token is per-run at all. And a **static-bearer** runner
-(`ESCUREL_RUNNER_TOKEN`, dev-only) cannot mint, so it keeps writing as
-itself; production runs minted (ADR-0012).
+The run's **authority** is now least privilege wherever an agent profile
+applies (#823). An `agent` instance page (admin-write-only system skill)
+names a harness, model, the skills it may run, `scopes.tools`,
+`scopes.write` page-id globs and `max_concurrent`; a skill names its default
+with `agent: "[[agent::x]]"` and an event may request one via
+`provenance.agent` (honoured only when the agent lists the skill). With an
+agent the run's token is `sub: agent:<agent id>`, `roles: [escurel:agent,
+<the skill's write groups>]` — never `escurel:admin` — plus the `skill`
+claim and an `agent` claim; the `act` chain is unchanged. The gateway is
+authoritative: it reads the agent page itself on every call (never scopes
+from the token), refuses every tool with `agent_unknown` when the page is
+missing, intersects `scopes.tools` with the role gate and bounds every
+write — and every `capture_event` / `assign_event` target — by
+`scopes.write` (`agent_scope_denied`), on top of the skill confinement and
+the group ACL. A skill whose default agent cannot run it is refused, not
+run wide. Without an agent the earlier limit still holds: the token carries
+the runner's `escurel:admin` (attribution only) unless
+`ESCUREL_RUNNER_AGENT_NARROW=1` narrows it to the skill's write groups.
+A **static-bearer** runner (`ESCUREL_RUNNER_TOKEN`, dev-only) cannot mint,
+so it keeps writing as itself and cannot run an agent at all; production
+runs minted (ADR-0012).
 
 A **workflow** run is scoped differently and unchanged: it executes as its
 REQUESTER (async-ops Phase 2c-i), which is a narrowing of authority, not

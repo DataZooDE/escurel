@@ -90,12 +90,30 @@ impl RoleTools {
 
 /// `403` for a restricted token at a non-tool surface (`/ingest`, `/ingest/upload`, `/blob`,
 /// `/ws`): the gate is deny-by-default and those surfaces are not in any allow-list.
+///
+/// An agent-profile token (#823) is refused here too: only `/mcp` reads the
+/// agent's page and applies its scopes, so a surface that cannot must refuse
+/// it rather than serve it with its narrowing dropped.
 pub(crate) fn surface_refusal(
     state: &crate::server::AppState,
     ctx: Option<&escurel_auth::AuthContext>,
     surface: &str,
 ) -> Option<axum::response::Response> {
     let ctx = ctx?;
+    if let Some(agent) = &ctx.agent {
+        return Some(
+            (
+                StatusCode::FORBIDDEN,
+                Json(json!({
+                    "error": "agent_scope_denied",
+                    "message": format!(
+                        "agent `{agent}` tokens are served on /mcp only, not on `{surface}`"
+                    ),
+                })),
+            )
+                .into_response(),
+        );
+    }
     state.role_tools.restriction(&ctx.groups)?;
     Some(
         (

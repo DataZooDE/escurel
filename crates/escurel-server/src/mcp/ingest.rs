@@ -485,6 +485,8 @@ async fn record_and_dispatch_ingest(
             run_id: caller.run_id.as_deref(),
             root_event_id: caller.root_event_id.as_deref(),
             agent_skill: caller.agent_skill.as_deref(),
+            // Agent tokens never reach `/ingest` (`role_gate::surface_refusal`).
+            agent: None,
         };
         let may_create = indexer
             .may_write_instance(&acl_caller, sk, None, &Value::Object(incoming))
@@ -513,6 +515,8 @@ async fn record_and_dispatch_ingest(
             run_id: caller.run_id.as_deref(),
             root_event_id: caller.root_event_id.as_deref(),
             agent_skill: caller.agent_skill.as_deref(),
+            // Agent tokens never reach `/ingest` (`role_gate::surface_refusal`).
+            agent: None,
         };
         if super::tools_write::is_machine_caller(&machine)
             && super::tools_write::skill_requires_review(indexer, sk)
@@ -1293,6 +1297,8 @@ async fn blob_get_inner(
         run_id: None,
         root_event_id: None,
         agent_skill: None,
+        // Agent tokens never reach `/blob` (`role_gate::surface_refusal`).
+        agent: None,
     };
     match super::tools_read::resolve_readable_blob(&indexer, &caller, page_id).await {
         Ok(Some((content_type, bytes))) => (

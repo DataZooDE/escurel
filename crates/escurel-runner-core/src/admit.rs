@@ -109,6 +109,7 @@ mod tests {
             manual: None,
             is_system: false,
             chat: None,
+            agent: None,
             tenant: "acme".into(),
             event_id: format!("EVT-{depth}"),
             label_skill: "alpha".into(),

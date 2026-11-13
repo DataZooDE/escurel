@@ -516,6 +516,45 @@ the page's own `acl:` block, so neither a widened `acl_defaults`, nor an
 admin's edit of the skill page, nor an instance `acl:` opens agents to
 members (`instance_acl: false` on the shipped page, too).
 
+### Agent profiles: `agent` instances and a skill's `agent:` default
+
+An **agent profile** (#823) is an instance of the `agent` system skill — the
+identity, harness and least-privilege scopes a run executes under, separate
+from the skill whose body is the run's instructions:
+
+```yaml
+# markdown/instances/agent/scribe.md   (admin-written only)
+kind: instance
+skill: agent
+id: scribe
+harness: claude                    # within ESCUREL_RUNNER_HARNESS_ALLOW
+model: claude-sonnet-4             # within ESCUREL_RUNNER_MODEL_ALLOW
+skills: ["[[skill::note]]", "[[skill::triage]]"]   # what it may run
+scopes:
+  tools: [search, expand, update_page, assign_event]  # absent = no tool limit
+  write: ["markdown/instances/note/*"]               # absent = no extra write limit
+max_concurrent: 2                  # runs of this agent at once, per runner
+```
+
+`write` entries are page-id globs: `*` stays inside one path segment, `**`
+crosses them, `?` is one character. Scopes only ever **narrow**: the skill's
+own `acl:` grants and the token's skill confinement still apply.
+
+A skill names its default agent with **`agent: "[[agent::scribe]]"`** (quote
+it; an unquoted `[[…]]` is accepted too). An event may ask for one with
+`provenance.agent: "[[agent::x]]"` — honoured only when that agent lists the
+event's skill, else the skill's default applies. A skill whose default agent
+is missing or does not list it is **refused**, never run with a broader token.
+
+`validate` grades both: on an agent page `agent_harness_unknown`,
+`agent_model_invalid`, `agent_skills_invalid`, `agent_scopes_invalid` (a
+malformed scope grants nothing, so it is an error) and
+`agent_max_concurrent_invalid` are **errors**; on a skill page a malformed
+`agent:` is `agent_invalid` (error), an agent with no page is
+`agent_unresolved` and one that does not list the skill is
+`agent_skill_not_listed` (warnings — the skill's runs are refused until fixed).
+How the token and the gateway enforce it: references/08.
+
 ## Pages with rendered views: always carry a text alternative
 
 When a page is shown graphically by a consumer (a Peacock `viewer:` report, a chart,

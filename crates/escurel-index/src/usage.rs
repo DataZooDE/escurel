@@ -64,14 +64,14 @@ impl UsageDim {
     }
 }
 
-/// The principal a run acted as. Today a run's token is always
-/// `agent:<skill>`; agent profiles will name their own, and this is the one
-/// place that has to learn where to read it from.
+/// The principal a run acted as: `agent:<agent id>` for a run of an agent
+/// profile (#823, `provenance.runner.agent`), else `agent:<skill>` — the
+/// subject a run without one is minted as.
 #[must_use]
 pub fn run_agent(runner: &Value) -> Option<String> {
-    runner["skill"]
-        .as_str()
-        .filter(|s| !s.is_empty())
+    let named = |key: &str| runner[key].as_str().filter(|s| !s.is_empty());
+    named("agent")
+        .or_else(|| named("skill"))
         .map(|s| format!("agent:{s}"))
 }
 
@@ -283,6 +283,19 @@ impl Indexer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_runs_agent_is_its_profile_when_it_ran_as_one() {
+        assert_eq!(
+            run_agent(&json!({ "skill": "note", "agent": "scribe" })).as_deref(),
+            Some("agent:scribe")
+        );
+        assert_eq!(
+            run_agent(&json!({ "skill": "note" })).as_deref(),
+            Some("agent:note")
+        );
+        assert_eq!(run_agent(&json!({ "agent": "" })), None);
+    }
 
     fn finished(skill: &str, model: &str, at: &str, status: &str, usage: Value) -> EventInfo {
         EventInfo {

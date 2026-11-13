@@ -60,6 +60,19 @@ pub struct AclCaller<'a> {
     /// token's (tenant-wide) groups cannot reach another skill that happens
     /// to grant the same group. `None` for every other caller.
     pub agent_skill: Option<&'a str>,
+    /// The agent profile a per-run token runs as (#823), as the GATEWAY read
+    /// it from the agent's own page — never from the token. An ACL input and
+    /// only ever a restriction: its `scopes.write` globs bound every write,
+    /// admin or not, on top of the skill confinement and the group grants.
+    pub agent: Option<&'a escurel_types::agent_profile::AgentProfile>,
+}
+
+impl AclCaller<'_> {
+    /// Whether this caller's agent profile forbids writing `page_id`.
+    #[must_use]
+    pub fn agent_write_denied(&self, page_id: &str) -> bool {
+        self.agent.is_some_and(|a| !a.allows_write(page_id))
+    }
 }
 
 /// How many events mentioning an instance [`Indexer::may_read_instance`] inspects for the
@@ -396,7 +409,9 @@ impl Indexer {
         event: &crate::EventInfo,
         target_page_id: &str,
     ) -> Result<bool, IndexerError> {
-        if !self.may_read_event_by_grant(caller, event).await? {
+        if caller.agent_write_denied(target_page_id)
+            || !self.may_read_event_by_grant(caller, event).await?
+        {
             return Ok(false);
         }
         match self.expand(target_page_id, None, None).await? {
@@ -418,6 +433,9 @@ impl Indexer {
         page_id: &str,
         content: &str,
     ) -> Result<bool, IndexerError> {
+        if caller.agent_write_denied(page_id) {
+            return Ok(false);
+        }
         if caller.is_admin {
             return Ok(true);
         }
@@ -472,6 +490,11 @@ impl Indexer {
         page_id: &str,
         content: &str,
     ) -> Result<bool, IndexerError> {
+        // An agent's write scope binds even an admin-role token: it is the
+        // narrowing the agent exists for.
+        if caller.agent_write_denied(page_id) {
+            return Ok(false);
+        }
         if caller.is_admin {
             return Ok(true);
         }
@@ -488,9 +511,7 @@ impl Indexer {
                 .unwrap_or("")
                 .to_owned()
         };
-        if crate::system_skills::is_admin_only_skill_page(page_id)
-            || crate::backend::rows::split_instance_page_id(page_id)
-                .is_some_and(|(skill, _)| crate::system_skills::is_admin_only_skill(skill))
+        if crate::system_skills::is_admin_only_path(page_id)
             || (parsed.frontmatter.page_kind == PageKind::Skill
                 && crate::system_skills::is_admin_only_skill(&declared("id")))
         {
@@ -559,6 +580,25 @@ impl Indexer {
         existing_fm: Option<&Value>,
         incoming_fm: &Value,
     ) -> Result<bool, IndexerError> {
+        // No page id is passed here, so the agent scope is checked against the
+        // instance page the skill and id name; with no id to name one, an
+        // agent with a write scope may not write at all.
+        if caller.agent.is_some() {
+            let id = incoming_fm
+                .get("id")
+                .or_else(|| existing_fm.and_then(|f| f.get("id")))
+                .and_then(Value::as_str)
+                .filter(|id| !id.is_empty());
+            let denied = match id {
+                Some(id) => {
+                    caller.agent_write_denied(&crate::backend::rows::instance_page_id(skill, id))
+                }
+                None => caller.agent.is_some_and(|a| a.write.is_some()),
+            };
+            if denied {
+                return Ok(false);
+            }
+        }
         if caller.is_admin {
             return Ok(true);
         }
@@ -949,6 +989,9 @@ impl Indexer {
         caller: &AclCaller<'_>,
         target_page_id: &str,
     ) -> Result<bool, IndexerError> {
+        if caller.agent_write_denied(target_page_id) {
+            return Ok(false);
+        }
         if caller.is_admin {
             return Ok(true);
         }
@@ -964,6 +1007,37 @@ impl Indexer {
             }
             None => Ok(false),
         }
+    }
+
+    /// The agent profile `agent_id` names (#823), read from its own page, or
+    /// `None` when there is no such agent — an id no page can carry, no page,
+    /// a page that is not an `agent` instance, or an archived one. The gateway
+    /// refuses every call of a token whose agent is `None` here.
+    ///
+    /// Read fresh on every call rather than cached: one indexed lookup, and an
+    /// admin's edit narrowing an agent binds its very next call, so there is no
+    /// invalidation to get wrong.
+    pub async fn agent_profile(
+        &self,
+        agent_id: &str,
+    ) -> Result<Option<escurel_types::agent_profile::AgentProfile>, IndexerError> {
+        use escurel_types::agent_profile::{
+            AGENT_SKILL, AgentProfile, agent_page_id, is_valid_agent_id,
+        };
+        if !is_valid_agent_id(agent_id) {
+            return Ok(None);
+        }
+        let Some(page) = self.expand(&agent_page_id(agent_id), None, None).await? else {
+            return Ok(None);
+        };
+        let archived = page.frontmatter.get("archived").and_then(Value::as_bool) == Some(true);
+        if page.page.skill != AGENT_SKILL || page.page.page_kind != PageKind::Instance || archived {
+            return Ok(None);
+        }
+        Ok(Some(AgentProfile::from_frontmatter(
+            agent_id,
+            &page.frontmatter,
+        )))
     }
 
     /// The caller's effective non-structural group set: `public` (always,

@@ -89,6 +89,11 @@ pub struct SkillContract {
     /// skill declares no write grant (then a narrowed agent can write
     /// nothing: the tenant default is admin-only).
     pub write_groups: Vec<String>,
+    /// `agent: "[[agent::x]]"` — the agent profile this skill's runs default
+    /// to (#823). A key that is present but names no agent is kept as
+    /// `Some("")`, which resolves to nothing and refuses the run: a malformed
+    /// default must not read as "no agent" and run with a broader token.
+    pub agent: Option<String>,
 }
 
 /// Read a skill's contract off its page; `None` when the skill cannot be
@@ -163,6 +168,9 @@ pub async fn skill_contract(client: &Client, skill: &str) -> Option<SkillContrac
             .and_then(|v| v.as_u64())
             .map(|d| d.min(u64::from(u32::MAX)) as u32),
         write_groups,
+        agent: fm
+            .get("agent")
+            .map(|v| escurel_types::agent_profile::link_id(Some(v), "agent").unwrap_or_default()),
     })
 }
 
@@ -416,6 +424,7 @@ mod tests {
             manual: None,
             is_system: false,
             chat: None,
+            agent: None,
             tenant: "acme".into(),
             event_id: event_id.into(),
             label_skill: label.into(),

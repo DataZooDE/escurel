@@ -481,6 +481,23 @@ fn agent_ttl_secs(cfg: &RunnerConfig) -> u64 {
     cfg.run_timeout.as_secs().max(FLOOR_SECS)
 }
 
+/// The authority an ordinary (non-workflow) run's token carries.
+#[derive(Debug, Clone, Copy)]
+pub enum RunGrant<'a> {
+    /// The runner's own authority under the run's `agent:<skill>` subject
+    /// (#510) — attribution, not a narrowing.
+    Wide,
+    /// Narrowed to the skill and these write groups
+    /// (`ESCUREL_RUNNER_AGENT_NARROW`, P3-6).
+    Narrowed(&'a [String]),
+    /// An agent profile (#823): narrowed to the skill and these write groups,
+    /// running as the agent, whose own page the gateway then enforces.
+    Agent {
+        profile: &'a escurel_types::agent_profile::AgentProfile,
+        groups: &'a [String],
+    },
+}
+
 /// The per-run credential decision for a trigger (async-ops Phase 2c-i / crew
 /// final-review F2).
 enum CallerToken {
@@ -516,7 +533,7 @@ async fn caller_scoped_token(
     cfg: &RunnerConfig,
     tokens: &crate::TokenSource,
     run: Option<&crate::RunClaims>,
-    narrow: Option<&[String]>,
+    grant: RunGrant<'_>,
 ) -> Result<CallerToken, PackageError> {
     let Some(wf) = &trigger.workflow else {
         // An ordinary event-triggered run: mint the run its OWN agent identity
@@ -526,24 +543,48 @@ async fn caller_scoped_token(
         // does a `label_skill` that cannot be an unambiguous subject: losing
         // the attribution is worth less than failing the run, and the run is
         // no more privileged either way.
-        // `narrow` (P3-6, `ESCUREL_RUNNER_AGENT_NARROW`): the skill's own
+        // `Narrowed` (P3-6, `ESCUREL_RUNNER_AGENT_NARROW`): the skill's own
         // write groups instead of admin — the harness writes that skill's
         // instances and nothing else.
-        return Ok(
-            match tokens.mint_agent(&trigger.label_skill, agent_ttl_secs(cfg), run, narrow) {
-                Ok(Some(token)) => CallerToken::Agent { token },
-                Ok(None) => CallerToken::NotWorkflow,
-                Err(e) => {
-                    tracing::warn!(
-                        target: "escurel_runner",
-                        label_skill = %trigger.label_skill,
-                        error = %e,
-                        "per-run agent identity not minted; the run writes as the runner"
-                    );
-                    CallerToken::NotWorkflow
-                }
-            },
-        );
+        let ttl = agent_ttl_secs(cfg);
+        let minted = match grant {
+            RunGrant::Wide => tokens.mint_agent(&trigger.label_skill, ttl, run, None),
+            RunGrant::Narrowed(groups) => {
+                tokens.mint_agent(&trigger.label_skill, ttl, run, Some(groups))
+            }
+            // An agent run must never fall back to the runner's identity: that
+            // would hand it the very authority the agent exists to withhold.
+            RunGrant::Agent { profile, groups } => {
+                return match tokens.mint_agent_profile(
+                    &profile.id,
+                    &trigger.label_skill,
+                    ttl,
+                    run,
+                    groups,
+                ) {
+                    Ok(Some(token)) => Ok(CallerToken::Agent { token }),
+                    Ok(None) => Err(PackageError::Auth(format!(
+                        "agent `{}` needs a minting runner: a static bearer cannot run as an \
+                         agent",
+                        profile.id
+                    ))),
+                    Err(e) => Err(PackageError::Auth(e.to_string())),
+                };
+            }
+        };
+        return Ok(match minted {
+            Ok(Some(token)) => CallerToken::Agent { token },
+            Ok(None) => CallerToken::NotWorkflow,
+            Err(e) => {
+                tracing::warn!(
+                    target: "escurel_runner",
+                    label_skill = %trigger.label_skill,
+                    error = %e,
+                    "per-run agent identity not minted; the run writes as the runner"
+                );
+                CallerToken::NotWorkflow
+            }
+        });
     };
     let board = client
         .expand(ExpandRequest {
@@ -606,15 +647,14 @@ async fn caller_scoped_token(
 /// and authorise `report_progress` without trusting anything the harness
 /// sends; `None` only where no run exists yet (a bare test package).
 ///
-/// `narrow`: `Some(groups)` narrows an ordinary run's agent token to those
-/// write groups (P3-6); `None` keeps the admin grant.
+/// `grant`: the authority an ordinary run's token carries ([`RunGrant`]).
 pub async fn package(
     trigger: &Trigger,
     client: &Client,
     cfg: &RunnerConfig,
     tokens: Option<&crate::TokenSource>,
     run: Option<&crate::RunClaims>,
-    narrow: Option<&[String]>,
+    grant: RunGrant<'_>,
 ) -> Result<TaskContext, PackageError> {
     // Taken from the source at PACKAGE time, not held from boot: a minted
     // bearer is re-minted before it lapses, and a run packaged with an
@@ -639,7 +679,7 @@ pub async fn package(
     // claim), and a model told to call a tool that always refuses spends
     // its whole turn budget on it — seen live on a static-bearer runner.
     let mut can_report_progress = false;
-    let token = match caller_scoped_token(trigger, client, cfg, tokens, run, narrow).await? {
+    let token = match caller_scoped_token(trigger, client, cfg, tokens, run, grant).await? {
         CallerToken::Scoped { token, subject } => {
             requester = Some(subject);
             can_report_progress = run.is_some();
@@ -802,13 +842,18 @@ pub async fn package(
     // never a planning run: the plan is the workflow's.
     let plan_mode =
         trigger.workflow.is_none() && trigger.manual.as_ref().is_some_and(|m| m.mode == "plan");
-    let tools: Vec<&'static str> = if trigger.workflow.is_some() {
+    let mut tools: Vec<&'static str> = if trigger.workflow.is_some() {
         WORKFLOW_STEP_TOOLS.to_vec()
     } else if plan_mode {
         plan_tools()
     } else {
         autonomy.tools().to_vec()
     };
+    // Offer the harness only what its agent may call: the gateway refuses the
+    // rest anyway, and a model told about a tool it cannot use spends turns on it.
+    if let RunGrant::Agent { profile, .. } = grant {
+        tools.retain(|t| profile.allows_tool(t));
+    }
 
     let mut instructions = build_instructions(
         trigger,
@@ -1303,6 +1348,7 @@ mod tests {
             manual: None,
             is_system: false,
             chat: None,
+            agent: None,
             tenant: "acme".into(),
             event_id: "EVT1".into(),
             label_skill: "email".into(),
@@ -1378,6 +1424,7 @@ mod tests {
             manual: None,
             is_system: false,
             chat: None,
+            agent: None,
             tenant: "acme".into(),
             event_id: "01EVENT".into(),
             label_skill: "note".into(),
@@ -1471,6 +1518,7 @@ mod tests {
             manual: None,
             is_system: false,
             chat: None,
+            agent: None,
             tenant: "acme".into(),
             event_id: "EVT1".into(),
             label_skill: "verify-vote".into(),
@@ -1515,6 +1563,7 @@ mod tests {
             manual: None,
             is_system: false,
             chat: None,
+            agent: None,
             tenant: "acme".into(),
             event_id: "EVT1".into(),
             label_skill: "deep-research".into(),
@@ -1602,6 +1651,7 @@ mod tests {
             manual: None,
             is_system: false,
             chat: None,
+            agent: None,
             tenant: "acme".into(),
             event_id: "EVT1".into(),
             label_skill: "meeting".into(),
@@ -1639,6 +1689,7 @@ mod tests {
             manual: None,
             is_system: false,
             chat: None,
+            agent: None,
             tenant: "acme".into(),
             event_id: "EVT1".into(),
             label_skill: "note".into(),
@@ -1686,6 +1737,7 @@ mod tests {
             manual: None,
             is_system: false,
             chat: None,
+            agent: None,
             tenant: "acme".into(),
             event_id: "EVT1".into(),
             label_skill: "note".into(),

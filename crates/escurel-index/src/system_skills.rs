@@ -51,6 +51,15 @@ pub fn is_admin_only_skill(skill: &str) -> bool {
     SYSTEM_SKILLS.iter().any(|s| s.admin_only && s.id == skill)
 }
 
+/// Whether `page_id` is admin-write-only by path: an admin-only system skill's
+/// page, or an instance under it (`markdown/instances/<skill>/…`).
+#[must_use]
+pub fn is_admin_only_path(page_id: &str) -> bool {
+    is_admin_only_skill_page(page_id)
+        || crate::backend::rows::split_instance_page_id(page_id)
+            .is_some_and(|(skill, _)| is_admin_only_skill(skill))
+}
+
 /// Whether `page_id` is the skill page of an admin-only system skill.
 #[must_use]
 pub fn is_admin_only_skill_page(page_id: &str) -> bool {

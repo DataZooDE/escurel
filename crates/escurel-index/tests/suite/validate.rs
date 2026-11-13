@@ -1027,3 +1027,93 @@ async fn chat_frontmatter_must_be_a_map_with_boolean_page_bound() {
         [("chat_unknown_key".to_owned(), Severity::Warning)]
     );
 }
+
+/// Agent profiles (#823): every key on an `agent` page is authority, so a
+/// malformed one is an error; a skill's `agent:` default is checked against
+/// the agent it names.
+#[tokio::test]
+async fn agent_pages_and_a_skills_agent_default_are_graded() {
+    let h = fresh_harness();
+    h.indexer.ensure_system_skills().await.unwrap();
+    seed(
+        &h,
+        &[
+            SKILL_MEETING,
+            (
+                "markdown/instances/agent/scribe.md",
+                "---\nkind: instance\nskill: agent\nid: scribe\nskills: [\"[[skill::meeting]]\"]\n---\n# scribe\n",
+            ),
+        ],
+    )
+    .await;
+
+    let clean = "---\nkind: instance\nskill: agent\nid: a\nharness: echo\nmodel: m\n\
+        skills: [\"[[skill::meeting]]\", [[skill::customer]]]\n\
+        scopes:\n  tools: [expand]\n  write: [\"markdown/instances/meeting/*\"]\n\
+        max_concurrent: 2\n---\n# a\n";
+    let issues = h
+        .indexer
+        .validate(Some("markdown/instances/agent/a.md"), clean)
+        .await
+        .unwrap();
+    assert!(
+        !codes(&issues).iter().any(|c| c.starts_with("agent_")),
+        "{issues:?}"
+    );
+
+    let broken = "---\nkind: instance\nskill: agent\nid: b\nharness: nope\nmodel: \"\"\n\
+        skills: meeting\nscopes:\n  tools: search\n  read: [x]\nmax_concurrent: 0\n---\n# b\n";
+    let issues = h
+        .indexer
+        .validate(Some("markdown/instances/agent/b.md"), broken)
+        .await
+        .unwrap();
+    let got = codes(&issues);
+    for code in [
+        "agent_harness_unknown",
+        "agent_model_invalid",
+        "agent_skills_invalid",
+        "agent_scopes_invalid",
+        "agent_max_concurrent_invalid",
+    ] {
+        assert!(got.contains(&code), "{code} missing from {got:?}");
+    }
+    assert_eq!(
+        got.iter().filter(|c| **c == "agent_scopes_invalid").count(),
+        2,
+        "a malformed `tools` and an unknown `read`: {got:?}"
+    );
+
+    let skill = |agent: &str| {
+        format!("---\nkind: skill\nid: meeting\ndescription: m\nagent: {agent}\n---\n# meeting\n")
+    };
+    let grade = |content: String| {
+        let ix = &h.indexer;
+        async move {
+            ix.validate(Some("markdown/skills/meeting.md"), &content)
+                .await
+                .unwrap()
+        }
+    };
+    let ok = grade(skill("\"[[agent::scribe]]\"")).await;
+    assert!(!codes(&ok).iter().any(|c| c.starts_with("agent")), "{ok:?}");
+    let unquoted = grade(skill("[[agent::scribe]]")).await;
+    assert!(
+        !codes(&unquoted).iter().any(|c| c.starts_with("agent")),
+        "{unquoted:?}"
+    );
+    assert!(codes(&grade(skill("\"[[agent::ghost]]\"")).await).contains(&"agent_unresolved"));
+    assert!(codes(&grade(skill("scribe")).await).contains(&"agent_invalid"));
+
+    let other =
+        "---\nkind: skill\nid: customer\ndescription: c\nagent: \"[[agent::scribe]]\"\n---\n# c\n";
+    let issues = h
+        .indexer
+        .validate(Some("markdown/skills/customer.md"), other)
+        .await
+        .unwrap();
+    assert!(
+        codes(&issues).contains(&"agent_skill_not_listed"),
+        "{issues:?}"
+    );
+}

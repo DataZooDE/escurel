@@ -33,6 +33,9 @@ pub struct RunEventCtx {
     /// The triggering event's label — the skill the run works for, which
     /// `usage_report` groups by. `None` when unknown (crash recovery).
     pub skill: Option<String>,
+    /// The agent profile the run executes as (#823), when it has one —
+    /// what `usage_report`'s `agent` grouping reads.
+    pub agent: Option<String>,
     /// The run that emitted the trigger, for a cascade hop.
     pub parent_run_id: Option<String>,
     pub depth: u32,
@@ -117,6 +120,7 @@ impl RunEventCtx {
             ),
             ("trace_id", self.trace_id.as_deref().map(Value::from)),
             ("skill", self.skill.as_deref().map(Value::from)),
+            ("agent", self.agent.as_deref().map(Value::from)),
             ("model", self.model.as_deref().map(Value::from)),
             (
                 "target_page_id",

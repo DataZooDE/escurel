@@ -373,6 +373,9 @@ async fn mcp_inner(
     // the run writes. Never read for an authorization decision.
     let run = auth_ctx.as_ref().and_then(|c| c.run.clone());
     let agent_skill = auth_ctx.as_ref().and_then(|c| c.agent_skill.clone());
+    // The agent profile the token runs as (#823): a NAME, whose scopes the
+    // dispatch reads from the agent's own page — never from the token.
+    let agent_claim = auth_ctx.as_ref().and_then(|c| c.agent.clone());
 
     // JSON-RPC notifications (no `id`, method `notifications/*`) get
     // NO response envelope — the MCP Streamable-HTTP spec says the
@@ -435,6 +438,7 @@ async fn mcp_inner(
                 actor.as_deref(),
                 run.as_ref(),
                 agent_skill.as_deref(),
+                agent_claim.as_deref(),
                 restriction.as_ref(),
                 req.params,
             ))
@@ -523,13 +527,19 @@ async fn mcp_inner(
                 run.as_ref(),
                 state.indexer.as_ref().map(IndexerHandle::current),
             ) {
-                let error_code = r.as_ref().err().and_then(|e| {
-                    e.data
-                        .as_ref()
-                        .and_then(|d| d.get("code"))
-                        .and_then(Value::as_str)
-                        .map(str::to_owned)
-                });
+                // A rejected write names its first issue's code, so the run's
+                // record says WHY (`agent_scope_denied`, `forbidden`, …).
+                let error_code = match &r {
+                    Err(e) => e.data.as_ref().and_then(|d| d.get("code")),
+                    Ok(v) if rejected => v
+                        .get("structuredContent")
+                        .and_then(|s| s.get("issues"))
+                        .and_then(|i| i.get(0))
+                        .and_then(|i| i.get("code")),
+                    Ok(_) => None,
+                }
+                .and_then(Value::as_str)
+                .map(str::to_owned);
                 let response_bytes = match &r {
                     Ok(v) => v.to_string().len(),
                     Err(e) => e.message.len(),
@@ -1041,6 +1051,34 @@ fn is_rejected_payload(tool: &str, payload: &Value) -> bool {
         && payload.get("dry_run") != Some(&Value::Bool(true))
 }
 
+/// The agent profile a token's `agent` claim names (#823), read by the gateway
+/// from the agent's own page. Every way of not finding it — no indexer, no
+/// such page, a read error — refuses the call with `agent_unknown`: a token
+/// whose narrowing cannot be established may do nothing.
+async fn resolve_agent(
+    indexer: Option<&Indexer>,
+    agent_id: &str,
+) -> Result<escurel_types::agent_profile::AgentProfile, JsonRpcError> {
+    let found = match indexer {
+        Some(ix) => ix.agent_profile(agent_id).await.unwrap_or_else(|e| {
+            tracing::warn!(agent = %agent_id, error = %e, "agent profile unreadable; refusing");
+            None
+        }),
+        None => None,
+    };
+    found.ok_or_else(|| {
+        JsonRpcError {
+            code: -32001,
+            message: format!(
+                "this token runs as agent `{agent_id}`, which has no agent page in this tenant; \
+                 every call is refused"
+            ),
+            data: None,
+        }
+        .with_code("agent_unknown", false)
+    })
+}
+
 /// Tool surface a ducklake reader must reject outright when the
 /// deployment has no relevant shared backend attached. This static list
 /// is now EMPTY of CRDT/session tools — DuckLake PR 10 (Phase B) moved
@@ -1090,6 +1128,7 @@ async fn dispatch_tools_call(
     actor: Option<&str>,
     run: Option<&escurel_auth::RunClaims>,
     agent_skill: Option<&str>,
+    agent_claim: Option<&str>,
     restriction: Option<&std::collections::BTreeSet<String>>,
     params: Value,
 ) -> Result<Value, JsonRpcError> {
@@ -1138,6 +1177,13 @@ async fn dispatch_tools_call(
         }
     }
 
+    // The agent profile (#823), read by the gateway from the agent's own page
+    // on every call — fail closed: a token naming an agent that does not
+    // resolve here may call nothing at all.
+    let agent_profile = match agent_claim {
+        None => None,
+        Some(id) => Some(resolve_agent(current_indexer.as_deref(), id).await?),
+    };
     // Deterministic per-instance ACL caller (escurel-index). The admin
     // role bypasses owner-visibility; a missing role is dev/on-host mode
     // (no verifier, open gateway) and likewise bypasses — there is no
@@ -1154,7 +1200,9 @@ async fn dispatch_tools_call(
         run_id: run.map(|r| r.run_id.as_str()),
         root_event_id: run.and_then(|r| r.root_event_id.as_deref()),
         agent_skill,
+        agent: agent_profile.as_ref(),
     };
+    let write_acl = state.write_acl_for(&caller);
 
     // The admin gate, once, from the registry.
     //
@@ -1188,6 +1236,21 @@ async fn dispatch_tools_call(
             data: None,
         }
         .with_code("role_restricted", false));
+    }
+    // The agent's tool scope, intersected with every gate above and below: it
+    // can only take tools away.
+    if let Some(agent) = &agent_profile
+        && !agent.allows_tool(&params.name)
+    {
+        return Err(JsonRpcError {
+            code: -32001,
+            message: format!(
+                "agent `{}` is not scoped to call `{}` (its `scopes.tools`)",
+                agent.id, params.name
+            ),
+            data: None,
+        }
+        .with_code("agent_scope_denied", false));
     }
     if schema::admin_scope_tools().contains(params.name.as_str()) {
         require_admin(role)?;
@@ -1238,7 +1301,7 @@ async fn dispatch_tools_call(
                 state.quota.as_ref(),
                 tenant_id,
                 caller,
-                state.write_acl,
+                write_acl,
                 params.arguments,
             )
             .await;
@@ -1378,37 +1441,35 @@ async fn dispatch_tools_call(
             {
                 return Ok(refusal);
             }
-            tool_create_draft(state, indexer, caller, state.write_acl, params.arguments).await
+            tool_create_draft(state, indexer, caller, write_acl, params.arguments).await
         }
         "list_drafts" => tool_list_drafts(indexer, caller, params.arguments).await,
         "create_branch" => tool_create_branch(state, indexer, caller, params.arguments).await,
         "list_branches" => tool_list_branches(indexer, caller, params.arguments).await,
         "merge_branch" => {
-            tool_merge_branch(state, indexer, caller, state.write_acl, params.arguments).await
+            tool_merge_branch(state, indexer, caller, write_acl, params.arguments).await
         }
         "abandon_branch" => tool_abandon_branch(indexer, caller, params.arguments).await,
         "get_draft" => tool_get_draft(indexer, caller, params.arguments).await,
         "diff_draft" => tool_diff_draft(indexer, caller, params.arguments).await,
         "list_changesets" => tool_list_changesets(indexer, caller, params.arguments).await,
         "promote_changeset" => {
-            tool_promote_changeset(state, indexer, caller, state.write_acl, params.arguments).await
+            tool_promote_changeset(state, indexer, caller, write_acl, params.arguments).await
         }
         "discard_changeset" => {
             tool_discard_changeset(state, indexer, caller, params.arguments).await
         }
         "promote_draft" => {
-            tool_promote_draft(state, indexer, caller, state.write_acl, params.arguments).await
+            tool_promote_draft(state, indexer, caller, write_acl, params.arguments).await
         }
         "discard_draft" => tool_discard_draft(state, indexer, caller, params.arguments).await,
         "update_page" => {
-            tool_update_page(state, indexer, caller, state.write_acl, params.arguments).await
+            tool_update_page(state, indexer, caller, write_acl, params.arguments).await
         }
         "delete_page" => {
-            tool_delete_page(state, indexer, caller, state.write_acl, params.arguments).await
+            tool_delete_page(state, indexer, caller, write_acl, params.arguments).await
         }
-        "move_page" => {
-            tool_move_page(state, indexer, caller, state.write_acl, params.arguments).await
-        }
+        "move_page" => tool_move_page(state, indexer, caller, write_acl, params.arguments).await,
         "purge_page" => {
             // Destroys the audit record `delete_page` retained — an operator
             // act. Admin-gated like the other audit-destroying tools; the
@@ -1416,18 +1477,9 @@ async fn dispatch_tools_call(
             tool_purge_page(state, indexer, params.arguments).await
         }
         "append_message" => {
-            tool_append_message(
-                indexer,
-                caller,
-                state.write_acl,
-                &state.chat_tx,
-                params.arguments,
-            )
-            .await
+            tool_append_message(indexer, caller, write_acl, &state.chat_tx, params.arguments).await
         }
-        "list_messages" => {
-            tool_list_messages(indexer, caller, state.write_acl, params.arguments).await
-        }
+        "list_messages" => tool_list_messages(indexer, caller, write_acl, params.arguments).await,
         // Event-bus surface. Agent-shaped, so not admin-gated — but it
         // carries the `AclCaller` for the same reason the instance reads
         // do: an inbox event is unreviewed third-party text, and a shared
@@ -1443,7 +1495,7 @@ async fn dispatch_tools_call(
                 indexer,
                 caller,
                 state.event_acl,
-                state.write_acl,
+                write_acl,
                 state.webhook.as_ref(),
                 &state.events_tx,
                 params.arguments,
@@ -1977,7 +2029,7 @@ async fn tool_apply_op(
             // holding the session id.
             (Some(key), _) if crate::session::draft_id_of_key(&key).is_some() => false,
             (Some(page_id), Some(ix)) => {
-                state.write_acl == crate::server::WriteAclMode::Off
+                state.write_acl_for(&caller) == crate::server::WriteAclMode::Off
                     || session_write_allowed(ix, &caller, &page_id, None).await?
             }
             // No page behind it, or an unknown session: nothing to protect,
@@ -2195,7 +2247,7 @@ async fn tool_close_session(
             // else's draft is not a page write anyone can inherit.
             (Some(key), _) if crate::session::draft_id_of_key(&key).is_some() => false,
             (Some(page_id), Some(ix)) => {
-                state.write_acl == crate::server::WriteAclMode::Off
+                state.write_acl_for(&caller) == crate::server::WriteAclMode::Off
                     || session_write_allowed(ix, &caller, &page_id, None).await?
             }
             // No page behind it (session-only server) or an unknown session:
@@ -2344,10 +2396,11 @@ async fn tool_close_session(
             // refusal uses `update_page`'s own denial shape and leaves the
             // session OPEN — the caller can still discard (`commit:
             // false`), mirroring the failing-indexer-write contract below.
-            if state.write_acl != crate::server::WriteAclMode::Off
+            let write_acl = state.write_acl_for(&caller);
+            if write_acl != crate::server::WriteAclMode::Off
                 && !session_write_allowed(ix, &caller, &page_id, Some(&body)).await?
             {
-                if state.write_acl == crate::server::WriteAclMode::Log {
+                if write_acl == crate::server::WriteAclMode::Log {
                     tracing::warn!(
                         subject = %caller.subject,
                         page_id = %page_id,
@@ -2370,15 +2423,9 @@ async fn tool_close_session(
             }
             // The autonomy gate: a MACHINE's commit to a review skill becomes an open draft carrying the
             // session's merged body. The session is closed without a write-through; the page is untouched.
-            if let Some(mut held) = tools_write::hold_if_review_required(
-                state,
-                ix,
-                &caller,
-                state.write_acl,
-                &page_id,
-                &body,
-            )
-            .await?
+            if let Some(mut held) =
+                tools_write::hold_if_review_required(state, ix, &caller, write_acl, &page_id, &body)
+                    .await?
             {
                 if held.get("ok") == Some(&Value::Bool(true)) {
                     let v = sessions

@@ -78,15 +78,45 @@ groups come from the skill page, so — as for a run board — every
 agent an engagement group, never a privileged role. A skill that declares
 no write grant runs an agent that can write nothing (the tenant default is
 admin-only), which is why the flag ships off until a corpus's write-ACL
-model is in place. Note that `assign_event` is not write-ACL gated, so a
-narrowed agent whose write was refused can still mark the event processed;
-the echo harness stops on a refused write, and a real skill should too.
+model is in place. Note that `assign_event` checks the write ACL only for an
+UNASSIGNED event, so a narrowed agent whose write was refused can still mark
+an already-filed event processed (an agent profile's `scopes.write` closes
+this for agent runs); the echo harness stops on a refused write, and a real
+skill should too.
 Groups are tenant-wide, so a narrowed token also carries a `skill` claim
 (the target skill's id) and the write ACL refuses an instance write under
 any other skill before it consults the groups — a token narrowed to
 `renewal` cannot write `billing` even when both grant `ops`. It is the one
 claim on the token that is an authorization input, and only ever a
 restriction.
+
+An **agent-profile token** (#823) is what the runner mints when a run has an
+agent (references/01, *Agent profiles*): `sub: agent:<agent id>`, `act.sub:
+escurel-runner`, the run claims, `roles: [escurel:agent, <the skill's write
+groups>]` — **never `escurel:admin`, whatever `ESCUREL_RUNNER_AGENT_NARROW`
+says** — the `skill` claim, and an **`agent` claim** naming the agent. The
+token carries the agent's NAME only; the gateway reads the agent page itself
+on every `/mcp` call, so a runner (or a forged token) cannot widen what the
+page grants, and an admin's edit narrows the very next call:
+
+- the agent page is missing, archived or not an `agent` instance → **every
+  tool is refused**, JSON-RPC `-32001`, `data.code: agent_unknown`;
+- `scopes.tools` present and the tool not in it → `-32001`,
+  `data.code: agent_scope_denied` (checked with the role gate; it can only
+  remove tools);
+- `scopes.write` present and the page id matches no glob → the write is
+  refused `{ok: false, issues: [{code: agent_scope_denied}]}` — on
+  `update_page`, and as a refusal on every other write path (sessions,
+  drafts, move/delete, promotion), plus `capture_event` / `assign_event`
+  into a page outside the scope (`agent_scope_denied`). This binds even an
+  admin-role token, and an agent token is always write-ACL **enforced**,
+  whatever `ESCUREL_WRITE_ACL` says.
+
+A refused call lands on the run's record: `get_run_tool_calls` shows it
+with `status: rejected` (or `error`) and `error_code: agent_scope_denied`.
+Agent tokens are served on `/mcp` only — `/ws`, `/ingest` and `/blob`
+refuse them (`403`, `error: agent_scope_denied`), since only `/mcp` applies
+the scopes. Agent pages themselves are admin-write-only (references/01).
 
 A **workbench agent token** is the same shape minted by the GATEWAY
 (`mint_agent_token`) for an interactive agent with no runner behind it:

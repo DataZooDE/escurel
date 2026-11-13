@@ -488,6 +488,19 @@ impl ServerHandle {
     }
 }
 
+impl AppState {
+    /// The write-ACL mode for `caller`. An agent-scoped token (#823) is always
+    /// enforced: `off` and `log` are operator rollout knobs for ordinary
+    /// callers, not a way to lift the narrowing an agent exists for.
+    pub(crate) fn write_acl_for(&self, caller: &escurel_index::AclCaller<'_>) -> WriteAclMode {
+        if caller.agent.is_some() {
+            WriteAclMode::Enforce
+        } else {
+            self.write_acl
+        }
+    }
+}
+
 /// The default graceful-stop drain: below the 30 s most orchestrators allow before SIGKILL.
 pub const DEFAULT_SHUTDOWN_DRAIN: std::time::Duration = std::time::Duration::from_secs(25);
 

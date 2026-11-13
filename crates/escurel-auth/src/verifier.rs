@@ -163,6 +163,13 @@ pub struct AuthContext {
     /// refuses an instance write under any other skill. `None` for every
     /// other token.
     pub agent_skill: Option<String>,
+    /// The agent profile a per-run token runs as (`agent` claim, #823). An
+    /// authorization input, and only ever a restriction: the gateway loads the
+    /// named `agent` page itself and enforces its scopes, refusing every tool
+    /// when the page is missing. A claim that is present but not a non-empty
+    /// string is kept as `Some("")` — it names no agent the gateway can find,
+    /// so it fails closed rather than reading as "no agent".
+    pub agent: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -208,7 +215,7 @@ use crate::signer::{
 /// backend P1). Kept in lock-step with
 /// `escurel_runner_core::auth::{RUN_ID_CLAIM, ROOT_EVENT_ID_CLAIM, TRACE_ID_CLAIM}`
 /// — same dependency direction as the delegation constants above.
-use crate::signer::{ROOT_EVENT_ID_CLAIM, RUN_ID_CLAIM, SKILL_CLAIM, TRACE_ID_CLAIM};
+use crate::signer::{AGENT_CLAIM, ROOT_EVENT_ID_CLAIM, RUN_ID_CLAIM, SKILL_CLAIM, TRACE_ID_CLAIM};
 
 /// The run a per-run token belongs to, as the runner minted it: the ledger
 /// run id, the lineage root event, and the lineage's trace when there is
@@ -445,6 +452,12 @@ impl OidcVerifier {
         };
 
         let agent_skill = claim_str(SKILL_CLAIM);
+        let agent = claims.rest.get(AGENT_CLAIM).map(|v| {
+            v.as_str()
+                .filter(|s| !s.is_empty())
+                .unwrap_or_default()
+                .to_owned()
+        });
 
         Ok(AuthContext {
             subject,
@@ -455,6 +468,7 @@ impl OidcVerifier {
             actor,
             run,
             agent_skill,
+            agent,
         })
     }
 

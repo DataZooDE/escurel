@@ -642,6 +642,101 @@ fn check_chat_keys(page_kind: PageKind, fields: &YamlMapping) -> Vec<Issue> {
     issues
 }
 
+/// The keys of an `agent` profile page (#823). Errors, because each one is
+/// authority: a malformed `scopes:` would otherwise be enforced as "nothing
+/// allowed" with nobody told why, and an unknown harness is a refused run.
+/// Applied to instances of the `agent` system skill only.
+fn check_agent_keys(page_kind: PageKind, fields: &YamlMapping) -> Vec<Issue> {
+    use escurel_types::agent_profile::{AGENT_SKILL, link_ids};
+    let mut issues = Vec::new();
+    if page_kind != PageKind::Instance
+        || fields.get("skill").and_then(YamlValue::as_str) != Some(AGENT_SKILL)
+    {
+        return issues;
+    }
+    let error =
+        |code: &str, at: &str, msg: &str| Issue::error(code, format!("frontmatter.{at}"), msg);
+    if let Some(h) = fields.get("harness") {
+        match h.as_str().map(str::trim) {
+            Some(name) if KNOWN_HARNESSES.contains(&name) => {}
+            _ => issues.push(
+                error(
+                    "agent_harness_unknown",
+                    "harness",
+                    "`harness:` names no harness adapter",
+                )
+                .with_suggestion(format!("use one of: {}", KNOWN_HARNESSES.join(" | "))),
+            ),
+        }
+    }
+    if fields
+        .get("model")
+        .is_some_and(|m| m.as_str().is_none_or(|s| s.trim().is_empty()))
+    {
+        issues.push(error(
+            "agent_model_invalid",
+            "model",
+            "`model:` must be a non-empty model id",
+        ));
+    }
+    if let Some(skills) = fields.get("skills") {
+        let entries = skills.as_sequence().map_or(0, Vec::len);
+        let json = serde_json::to_value(skills).unwrap_or_default();
+        if skills.as_sequence().is_none() || link_ids(Some(&json), "skill").len() != entries {
+            issues.push(
+                error(
+                    "agent_skills_invalid",
+                    "skills",
+                    "`skills:` must be a list of skill links",
+                )
+                .with_suggestion("write `skills: [\"[[skill::triage]]\", \"[[skill::note]]\"]`"),
+            );
+        }
+    }
+    if let Some(scopes) = fields.get("scopes") {
+        match scopes.as_mapping() {
+            None => issues.push(error(
+                "agent_scopes_invalid",
+                "scopes",
+                "`scopes:` is a map with `tools:` and/or `write:` lists",
+            )),
+            Some(map) => {
+                for (key, value) in map {
+                    let key = key.as_str().unwrap_or("?");
+                    let strings = value.as_sequence().is_some_and(|s| {
+                        s.iter()
+                            .all(|v| v.as_str().is_some_and(|t| !t.trim().is_empty()))
+                    });
+                    match key {
+                        "tools" | "write" if strings => {}
+                        "tools" | "write" => issues.push(error(
+                            "agent_scopes_invalid",
+                            &format!("scopes.{key}"),
+                            "a scope is a list of non-empty strings; a malformed one grants nothing",
+                        )),
+                        _ => issues.push(error(
+                            "agent_scopes_invalid",
+                            &format!("scopes.{key}"),
+                            "`scopes:` knows only `tools` and `write`",
+                        )),
+                    }
+                }
+            }
+        }
+    }
+    if fields
+        .get("max_concurrent")
+        .is_some_and(|v| v.as_u64().is_none_or(|n| n == 0))
+    {
+        issues.push(error(
+            "agent_max_concurrent_invalid",
+            "max_concurrent",
+            "`max_concurrent:` must be a positive whole number",
+        ));
+    }
+    issues
+}
+
 /// A slug as an action `name` takes: lowercase letters, digits, `-` and `_`.
 fn is_action_slug(s: &str) -> bool {
     !s.is_empty()
@@ -1286,6 +1381,53 @@ pub(crate) struct SkillContract {
 }
 
 impl Indexer {
+    /// A skill page's `agent: "[[agent::x]]"` default (#823): malformed is an
+    /// error (the runner would refuse every run of the skill); an agent that
+    /// does not exist, or does not list this skill, is a warning — the agent
+    /// may be created after the skill, but until then its runs are refused.
+    async fn check_skill_agent(
+        &self,
+        page_kind: PageKind,
+        fields: &YamlMapping,
+    ) -> Result<Vec<Issue>, IndexerError> {
+        let Some(raw) = fields.get("agent").filter(|_| page_kind == PageKind::Skill) else {
+            return Ok(Vec::new());
+        };
+        let json = serde_json::to_value(raw).unwrap_or_default();
+        let Some(agent) = escurel_types::agent_profile::link_id(Some(&json), "agent") else {
+            return Ok(vec![
+                Issue::error(
+                    "agent_invalid",
+                    "frontmatter.agent",
+                    "`agent:` names the default agent as one `[[agent::<id>]]` link",
+                )
+                .with_suggestion("write `agent: \"[[agent::researcher]]\"`"),
+            ]);
+        };
+        let skill = fields.get("id").and_then(YamlValue::as_str).unwrap_or("");
+        Ok(match self.agent_profile(&agent).await? {
+            None => vec![Issue::warning(
+                "agent_unresolved",
+                "frontmatter.agent",
+                format!(
+                    "agent `{agent}` has no page yet; this skill's runs are refused until it does"
+                ),
+            )],
+            Some(p) if !p.lists_skill(skill) => vec![
+                Issue::warning(
+                    "agent_skill_not_listed",
+                    "frontmatter.agent",
+                    format!(
+                        "agent `{agent}` does not list skill `{skill}`; this skill's runs are \
+                         refused until it does"
+                    ),
+                )
+                .with_suggestion(format!("add `[[skill::{skill}]]` to the agent's `skills:`")),
+            ],
+            Some(_) => Vec::new(),
+        })
+    }
+
     /// Dry-run the indexer's authoring checks on `content` and
     /// return the resulting [`Issue`] list. Writes nothing.
     ///
@@ -1374,6 +1516,11 @@ impl Indexer {
         issues.extend(check_okf_keys(parsed.frontmatter.page_kind, fields));
         issues.extend(check_chat_keys(parsed.frontmatter.page_kind, fields));
         issues.extend(check_schedule(parsed.frontmatter.page_kind, fields));
+        issues.extend(check_agent_keys(parsed.frontmatter.page_kind, fields));
+        issues.extend(
+            self.check_skill_agent(parsed.frontmatter.page_kind, fields)
+                .await?,
+        );
         if parsed.frontmatter.page_kind == PageKind::Skill
             && let Some(raw) = fields.get("actions")
         {
