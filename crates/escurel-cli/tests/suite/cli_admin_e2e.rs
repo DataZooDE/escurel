@@ -799,7 +799,7 @@ async fn run_usage_and_a_windowed_event_list() {
         report["rows"],
         serde_json::json!([{ "group": { "skill": "customer", "model": "m" }, "runs": 1,
             "by_status": { "processed": 1 }, "input_tokens": 7, "output_tokens": 3,
-            "cost_usd": 0.25 }]),
+            "cost_usd": 0.25, "priced_runs": 1, "unpriced_runs": 0 }]),
         "{report}"
     );
     assert_eq!(report["total"]["runs"], 1, "{report}");
