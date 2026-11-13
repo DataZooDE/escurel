@@ -27,6 +27,9 @@ const FIELD: &str = "---\nkind: skill\nid: field\nautonomy: auto\n\
 /// Needs the SAP GUI host too; the muc runner idles on it so a kill lands mid-run.
 const SLOW: &str = "---\nkind: skill\nid: slow\nautonomy: auto\n\
     requires: {labels: [\"has:sap-gui\"]}\n---\n# slow\n\nFold the event in.\n";
+/// Runs ON codex, so it needs a runtime whose codex CLI is really there.
+const CODED: &str = "---\nkind: skill\nid: coded\nautonomy: auto\nharness: codex\n\
+    requires: {harness: codex}\n---\n# coded\n\nFold the event in.\n";
 
 fn instance(skill: &str) -> String {
     format!("---\nkind: instance\nid: c1\nskill: {skill}\n---\n# C1\n\nBASELINE.\n")
@@ -50,9 +53,11 @@ async fn gateway_with(config_overrides: ConfigOverrides) -> EscurelProcess {
                 .skill("note", NOTE)
                 .skill("field", FIELD)
                 .skill("slow", SLOW)
+                .skill("coded", CODED)
                 .instance("note", "c1", instance("note"))
                 .instance("field", "c1", instance("field"))
                 .instance("slow", "c1", instance("slow"))
+                .instance("coded", "c1", instance("coded"))
                 .done(),
         ),
     })
@@ -63,36 +68,99 @@ fn admin(gw: &EscurelProcess) -> String {
     gw.mint_token(TENANT, Role::Admin)
 }
 
-/// `hq`: echo only, `site:hq`.
+/// `hq`: echo, plus a codex whose CLI is not installed (its probe fails, so
+/// it is offered for nothing), `site:hq`.
 fn hq(gw: &EscurelProcess) -> RunnerProcess<'_> {
     RunnerProcess::echo(gw, TENANT)
         .static_bearer(gw.mint_token_with_sub(TENANT, Role::Admin, "runner:hq"))
         .env("ESCUREL_RUNNER_ID", "hq")
         .env("ESCUREL_RUNNER_LABELS", "site:hq")
+        .env("ESCUREL_RUNNER_HARNESS_ALLOW", "echo,codex")
+        .env("ESCUREL_RUNNER_CODEX_BIN", "/nonexistent/codex")
         .env("ESCUREL_RUNNER_STATUS_INTERVAL", "1s")
 }
 
-/// `muc`: echo + codex, `site:muc,has:sap-gui`, short leases, idles on `slow`.
-fn muc(gw: &EscurelProcess) -> RunnerProcess<'_> {
+/// `muc`: echo + codex (`codex_bin`), `site:muc,has:sap-gui`, short leases,
+/// idles on `slow`.
+fn muc<'a>(gw: &'a EscurelProcess, codex_bin: &str) -> RunnerProcess<'a> {
     RunnerProcess::echo(gw, TENANT)
         .static_bearer(gw.mint_token_with_sub(TENANT, Role::Admin, "runner:muc"))
         .env("ESCUREL_RUNNER_ID", "muc")
         .env("ESCUREL_RUNNER_LABELS", "site:muc,has:sap-gui")
         .env("ESCUREL_RUNNER_HARNESS_ALLOW", "echo,codex")
-        .env("ESCUREL_RUNNER_CODEX_BIN", "/nonexistent/codex")
+        .env("ESCUREL_RUNNER_CODEX_BIN", codex_bin)
         .env("ESCUREL_RUNNER_STATUS_INTERVAL", "1s")
         .env("ESCUREL_RUNNER_CLAIM_LEASE", "2s")
         .env("ESCUREL_ECHO_SLEEP_MS", "30000")
         .env("ESCUREL_ECHO_SLEEP_SKILL", "slow")
 }
 
+/// A stand-in `codex` CLI that answers its version probe and, run as a
+/// harness, drains the prompt, leaves `ran` behind as proof, and finishes.
+fn codex_stub(dir: &std::path::Path) -> (std::path::PathBuf, std::path::PathBuf) {
+    use std::os::unix::fs::PermissionsExt;
+    let bin = dir.join("codex");
+    let ran = dir.join("ran");
+    std::fs::write(
+        &bin,
+        format!(
+            "#!/bin/sh\nif [ \"$1\" = --version ]; then echo 'codex-stub 0.1'; exit 0; fi\n\
+             cat > /dev/null\necho run >> '{}'\n\
+             echo '{{\"type\":\"turn.completed\",\"usage\":{{\"input_tokens\":1,\"output_tokens\":1}}}}'\n",
+            ran.display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+    (bin, ran)
+}
+
+/// `run-started` records at the gateway for runs of `event_id`, from any
+/// runner: the fleet-wide count a "runs once" assertion needs.
+async fn run_starts(gw: &EscurelProcess, event_id: &str) -> usize {
+    let r = call(
+        gw,
+        &admin(gw),
+        "list_events",
+        json!({ "label_skill": "escurel:run", "limit": 500 }),
+    )
+    .await;
+    r["events"].as_array().map_or(0, |events| {
+        events
+            .iter()
+            .filter(|e| {
+                e["title"] == "run-started" && e["provenance"]["runner"]["event_id"] == event_id
+            })
+            .count()
+    })
+}
+
+/// What `runner` decided about inbox event `event_id` (`/debug/admission`).
+async fn admission(runner: &RunningRunner, event_id: &str) -> Option<String> {
+    let resp = reqwest::get(format!(
+        "{}/debug/admission?event_id={event_id}",
+        runner.base_url()
+    ))
+    .await
+    .ok()?;
+    if !resp.status().is_success() {
+        return None;
+    }
+    let body: Value = resp.json().await.ok()?;
+    body["decision"].as_str().map(str::to_owned)
+}
+
 async fn capture(gw: &EscurelProcess, skill: &str, provenance: Value) -> String {
+    capture_body(gw, skill, provenance, "work").await
+}
+
+async fn capture_body(gw: &EscurelProcess, skill: &str, provenance: Value, body: &str) -> String {
     let r = call(
         gw,
         &admin(gw),
         "capture_event",
         json!({ "source": "test", "mime": "text/plain", "label_skill": skill,
-                "instance_page_id": page(skill), "title": "t", "body": "work",
+                "instance_page_id": page(skill), "title": "t", "body": body,
                 "provenance": provenance }),
     )
     .await;
@@ -174,7 +242,9 @@ async fn work_goes_only_to_the_runtime_that_can_take_it_and_a_dead_one_goes_stal
             .spawn(),
     )
     .await;
-    let mut b = healthy(muc(&gw).spawn()).await;
+    let stub_dir = tempfile::tempdir().unwrap();
+    let (codex, codex_ran) = codex_stub(stub_dir.path());
+    let mut b = healthy(muc(&gw, &codex.display().to_string()).spawn()).await;
 
     // Both register, with their own harness sets and labels.
     let rt_a = eventually(Duration::from_secs(20), "hq's runtime", || async {
@@ -197,17 +267,29 @@ async fn work_goes_only_to_the_runtime_that_can_take_it_and_a_dead_one_goes_stal
             .map(|h| h["name"].as_str().unwrap().to_owned())
             .collect()
     };
-    assert_eq!(names(&rt_a), vec!["echo"], "{rt_a}");
+    assert_eq!(names(&rt_a), vec!["echo", "codex"], "{rt_a}");
     assert_eq!(names(&rt_b), vec!["echo", "codex"], "{rt_b}");
     assert_eq!(
         rt_a["harnesses"][0]["version"], "escurel-echo-harness 1.0",
         "the probe read the CLI's version: {rt_a}"
     );
+    assert_eq!(rt_a["harnesses"][0]["available"], true, "{rt_a}");
     assert_eq!(
-        rt_b["harnesses"][1]["version"],
-        Value::Null,
-        "a CLI that is not there: {rt_b}"
+        (
+            &rt_a["harnesses"][1]["version"],
+            &rt_a["harnesses"][1]["available"]
+        ),
+        (&Value::Null, &json!(false)),
+        "a CLI that is not there is unavailable: {rt_a}"
     );
+    assert!(
+        rt_a["harnesses"][1]["probe_error"]
+            .as_str()
+            .is_some_and(|e| e.contains("/nonexistent/codex")),
+        "the admin view says why: {rt_a}"
+    );
+    assert_eq!(rt_b["harnesses"][1]["version"], "codex-stub 0.1", "{rt_b}");
+    assert_eq!(rt_b["harnesses"][1]["available"], true, "{rt_b}");
     let holder_b = rt_b["claim_holder"].as_str().unwrap().to_owned();
     assert!(holder_b.starts_with("runner:muc#"), "{rt_b}");
 
@@ -220,15 +302,31 @@ async fn work_goes_only_to_the_runtime_that_can_take_it_and_a_dead_one_goes_stal
     })
     .await;
 
-    // Skill-level `requires:` (a label) and event-level `requires:` (a
-    // harness): muc takes both, hq never even records them.
+    // Skill-level `requires:` (a label, a harness) and event-level
+    // `requires:` (a harness): muc takes all three, hq — whose codex CLI is
+    // missing — never even records them. The codex skill really runs on
+    // muc's codex.
     let by_skill = capture(&gw, "field", json!({})).await;
     let by_event = capture(&gw, "note", json!({ "requires": { "harness": "codex" } })).await;
+    let on_codex = capture(&gw, "coded", json!({})).await;
     let anyone = capture(&gw, "note", json!({})).await;
     for e in [&by_skill, &by_event] {
         b.wait_for_status(e, &["processed"], Duration::from_secs(30))
             .await;
     }
+    // The stub does not write the instance, so the run never reconciles; that
+    // it was started on muc's codex CLI is the point.
+    eventually(
+        Duration::from_secs(30),
+        "the codex skill to run on codex",
+        || async {
+            std::fs::read_to_string(&codex_ran)
+                .is_ok_and(|r| !r.is_empty())
+                .then_some(())
+        },
+    )
+    .await;
+    assert!(b.debug_run(&on_codex).await.is_some(), "it ran on muc");
     eventually(
         Duration::from_secs(30),
         "the unconstrained event to run",
@@ -244,11 +342,17 @@ async fn work_goes_only_to_the_runtime_that_can_take_it_and_a_dead_one_goes_stal
         },
     )
     .await;
-    for e in [&by_skill, &by_event] {
+    for e in [&by_skill, &by_event, &on_codex] {
+        assert_eq!(
+            admission(&a, e).await.as_deref(),
+            Some("unroutable"),
+            "hq saw {e} and left it"
+        );
         assert!(a.debug_run(e).await.is_none(), "hq must not claim {e}");
     }
-    assert!(
-        a.debug_run(&anyone).await.is_none() || b.debug_run(&anyone).await.is_none(),
+    assert_eq!(
+        run_starts(&gw, &anyone).await,
+        1,
         "an unconstrained event runs on ONE runtime, not both"
     );
 
@@ -267,10 +371,15 @@ async fn work_goes_only_to_the_runtime_that_can_take_it_and_a_dead_one_goes_stal
     // The lease lapses; the event is still in the inbox and nobody holds it.
     eventually(Duration::from_secs(15), "muc's lease to lapse", || async {
         let looked = lookup(&gw, &stranded).await;
-        looked.get("claim").is_none().then_some(looked)
+        (looked.get("claim").is_none() && looked["events"][0]["status"] == "inbox")
+            .then_some(looked)
     })
     .await;
-    tokio::time::sleep(Duration::from_secs(2)).await;
+    // hq has had its chance at the stranded event once it has run work
+    // captured after the lapse: its poller walked the inbox since.
+    let later = capture_body(&gw, "note", json!({}), "later work").await;
+    a.wait_for_status(&later, &["processed"], Duration::from_secs(30))
+        .await;
     let looked = lookup(&gw, &stranded).await;
     assert!(
         looked.get("claim").is_none(),
@@ -309,7 +418,7 @@ async fn an_inject_to_a_run_on_one_runtime_is_answered_by_that_runtime() {
     let gw = gateway().await;
     let token = admin(&gw);
     let a = healthy(hq(&gw).spawn()).await;
-    let b = healthy(muc(&gw).spawn()).await;
+    let b = healthy(muc(&gw, "/nonexistent/codex").spawn()).await;
 
     let event = capture(&gw, "slow", json!({})).await;
     let run = b
@@ -404,8 +513,12 @@ async fn a_runner_that_cannot_read_the_catalogue_takes_no_work() {
             .spawn(),
     )
     .await;
-    // Many polls' worth of chances.
-    tokio::time::sleep(Duration::from_secs(4)).await;
+    // It had its chance: it looked at the event and could not decide.
+    let decided = eventually(Duration::from_secs(20), "blind's decision", || async {
+        admission(&blind, &event).await
+    })
+    .await;
+    assert_eq!(decided, "retry");
     assert!(
         blind.debug_run(&event).await.is_none(),
         "the runner took work whose requirement it could not read"
@@ -424,7 +537,12 @@ async fn a_runner_that_cannot_read_the_catalogue_takes_no_work() {
 async fn an_exclusive_runner_takes_only_its_skills_and_an_event_can_only_narrow() {
     let gw = gateway().await;
     let a = healthy(hq(&gw).spawn()).await;
-    let b = healthy(muc(&gw).env("ESCUREL_RUNNER_EXCLUSIVE", "true").spawn()).await;
+    let b = healthy(
+        muc(&gw, "/nonexistent/codex")
+            .env("ESCUREL_RUNNER_EXCLUSIVE", "true")
+            .spawn(),
+    )
+    .await;
 
     let plain = capture(&gw, "note", json!({})).await;
     let its_own = capture(&gw, "field", json!({})).await;
@@ -447,7 +565,17 @@ async fn an_exclusive_runner_takes_only_its_skills_and_an_event_can_only_narrow(
         .await;
     a.wait_for_status(&plain, &["processed"], Duration::from_secs(30))
         .await;
-    tokio::time::sleep(Duration::from_secs(3)).await;
+    // Each runner has looked at each event nobody may take, and left it
+    // (`plain` and `its_own` are already processed by the other runner).
+    for runner in [&a, &b] {
+        for e in [&steered, &narrowed] {
+            eventually(Duration::from_secs(20), "a routing decision", || async {
+                let d = admission(runner, e).await?;
+                (d == "unroutable" || d == "done").then_some(())
+            })
+            .await;
+        }
+    }
     for e in [&plain, &steered, &narrowed] {
         assert!(b.debug_run(e).await.is_none(), "exclusive muc took {e}");
     }
@@ -459,4 +587,109 @@ async fn an_exclusive_runner_takes_only_its_skills_and_an_event_can_only_narrow(
         assert_eq!(looked["events"][0]["status"], "inbox", "{looked}");
         assert!(looked.get("claim").is_none(), "{looked}");
     }
+}
+
+/// The gateway grants a claim lease of at most an hour. A runner configured
+/// past it would have every claim refused — and must never read a refusal as
+/// "no other runner" (crew C-F1) — so it refuses to start, naming the key.
+#[tokio::test]
+async fn a_claim_lease_the_gateway_would_refuse_stops_the_runner_at_boot() {
+    let gw = gateway().await;
+    let out = std::process::Command::new(escurel_test_support::runner_bin())
+        .env_remove("ESCUREL_RUNNER_TOKEN")
+        .env("ESCUREL_RUNNER_GATEWAY_URL", gw.base_url())
+        .env("ESCUREL_RUNNER_TENANT", TENANT)
+        .env("ESCUREL_RUNNER_TOKEN", admin(&gw))
+        .env(
+            "ESCUREL_RUNNER_LISTEN",
+            format!("127.0.0.1:{}", escurel_test_support::free_port()),
+        )
+        .env("ESCUREL_RUNNER_HARNESS", "echo")
+        .env("ESCUREL_RUNNER_CLAIM_LEASE", "7200")
+        .output()
+        .expect("run escurel-runner");
+    assert!(!out.status.success(), "it must not start");
+    let said = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        said.contains("ESCUREL_RUNNER_CLAIM_LEASE"),
+        "the error names the key: {said}"
+    );
+}
+
+/// A fleet member's webhook (crew U-F1): muc holds the lease on a slow event;
+/// a labelled runner that cannot read the catalogue gets the same event by
+/// POST /trigger. It cannot route or claim it now, and it is not alone, so it
+/// leaves the event to the poller instead of holding it on its ledger: the
+/// event runs once, on muc.
+#[tokio::test]
+async fn a_fleet_runners_undecidable_webhook_is_left_to_the_poller() {
+    let gw = gateway_with(ConfigOverrides {
+        role_tools: Some("runner-blind=list_inbox".to_owned()),
+        ..Default::default()
+    })
+    .await;
+    let holder = healthy(muc(&gw, "/nonexistent/codex").spawn()).await;
+    let event = capture(&gw, "slow", json!({})).await;
+    let run = holder
+        .wait_for_status(&event, &["pending"], Duration::from_secs(30))
+        .await;
+    wait_for_run_started(&gw, &admin(&gw), run["run_id"].as_str().unwrap()).await;
+
+    let blind = healthy(
+        RunnerProcess::echo(&gw, TENANT)
+            .static_bearer(gw.mint_token_with_groups(
+                TENANT,
+                "runner:blind",
+                &["runner-blind"],
+                true,
+            ))
+            .env("ESCUREL_RUNNER_ID", "blind")
+            .env("ESCUREL_RUNNER_LABELS", "site:hq")
+            .spawn(),
+    )
+    .await;
+    let stored = lookup(&gw, &event).await["events"][0].clone();
+    let resp = reqwest::Client::new()
+        .post(format!("{}/trigger", blind.base_url()))
+        .json(&stored)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 202);
+    let decided = eventually(Duration::from_secs(20), "the webhook's fate", || async {
+        admission(&blind, &event)
+            .await
+            .filter(|d| d.starts_with("webhook-"))
+    })
+    .await;
+    assert_eq!(decided, "webhook-skipped");
+    assert!(
+        blind.debug_run(&event).await.is_none(),
+        "the fleet member ran nothing"
+    );
+    assert_eq!(run_starts(&gw, &event).await, 1, "one run, on the holder");
+}
+
+/// A runner whose credential may not claim (not an admin) is a misconfigured
+/// fleet member, not an old gateway (crew U-F3): it takes nothing, so it can
+/// never run an event another runner holds.
+#[tokio::test]
+async fn a_runner_whose_claims_are_refused_takes_nothing() {
+    let gw = gateway().await;
+    let event = capture(&gw, "note", json!({})).await;
+    let refused = healthy(
+        RunnerProcess::echo(&gw, TENANT)
+            .static_bearer(gw.mint_token_with_groups(TENANT, "runner:member", &[], false))
+            .env("ESCUREL_RUNNER_ID", "member")
+            .spawn(),
+    )
+    .await;
+    let decided = eventually(Duration::from_secs(20), "the member's decision", || async {
+        admission(&refused, &event).await
+    })
+    .await;
+    assert_eq!(decided, "refused");
+    assert!(refused.debug_run(&event).await.is_none(), "it ran nothing");
+    let looked = lookup(&gw, &event).await;
+    assert_eq!(looked["events"][0]["status"], "inbox", "{looked}");
 }

@@ -38,6 +38,8 @@ pub const DEFAULT_PROBE_INTERVAL: Duration = Duration::from_secs(10 * 60);
 
 /// The floor of `ESCUREL_RUNNER_CLAIM_LEASE`'s default (#818).
 pub const DEFAULT_CLAIM_LEASE: Duration = Duration::from_secs(60);
+/// The longest claim lease the gateway grants (its `lease_secs` bound).
+pub const MAX_CLAIM_LEASE: Duration = Duration::from_secs(3600);
 
 /// Default harness adapter the runner dispatches each packaged trigger to.
 /// `echo` is the deterministic real harness (#151); `claude`, `codex`, `agy`
@@ -470,6 +472,11 @@ pub struct RunnerConfig {
     /// Source: `ESCUREL_RUNNER_TOKEN` (unset → `None`; the poller is
     /// disabled when either this or [`Self::tenant`] is absent).
     pub token: Option<String>,
+    /// A file holding the bearer, kept fresh by a sidecar (a laptop or
+    /// on-prem runner on a short-lived service credential): re-read whenever
+    /// it changes, so a rotation needs no restart. Used when
+    /// [`Self::token`] is unset. Source: `ESCUREL_RUNNER_TOKEN_FILE`.
+    pub token_file: Option<String>,
     /// Channel capacity (bound) of the dispatch queue.
     /// Source: `ESCUREL_RUNNER_QUEUE_CAP` (default [`DEFAULT_QUEUE_CAP`]).
     pub queue_cap: usize,
@@ -525,10 +532,11 @@ pub struct RunnerConfig {
     /// rewrites its `runtime` page when they changed (#818). Zero is refused.
     /// Source: `ESCUREL_RUNNER_PROBE_INTERVAL` (default 10m).
     pub probe_interval: Duration,
-    /// How long a `claim_event` lease on an inbox event lasts (#818); the
-    /// poller renews held leases at half-life. Source:
-    /// `ESCUREL_RUNNER_CLAIM_LEASE` (default the larger of 60s and four poll
-    /// intervals, so a slow tick never lets a held lease lapse).
+    /// How long a `claim_event` lease on an inbox event lasts (#818); a
+    /// renewal task renews held leases every third of it. 1s..=1h (the
+    /// gateway's bound) and at least two poll intervals, else a named config
+    /// error. Source: `ESCUREL_RUNNER_CLAIM_LEASE` (default the larger of 60s
+    /// and four poll intervals, capped at 1h).
     pub claim_lease: Duration,
     /// How long a cancelled run's harness subprocess gets between SIGTERM
     /// and SIGKILL (workbench backend P2-3a). Same duration grammar as
@@ -776,7 +784,8 @@ impl RunnerConfig {
     /// The runner's gateway credential, however this deployment supplies it.
     ///
     /// A static `ESCUREL_RUNNER_TOKEN` wins when set, so an existing
-    /// deployment is unaffected. Otherwise, with an issuer and a signing key,
+    /// deployment is unaffected; then `ESCUREL_RUNNER_TOKEN_FILE` (read now,
+    /// re-read when it changes). Otherwise, with an issuer and a signing key,
     /// the runner mints its own — which is the shape a cluster wants: a
     /// pasted bearer expires silently, and a runner whose token has lapsed
     /// still answers `/healthz` and simply stops filing anything.
@@ -792,6 +801,9 @@ impl RunnerConfig {
     ) -> Option<Result<crate::TokenSource, crate::AuthError>> {
         if let Some(token) = &self.token {
             return Some(Ok(crate::TokenSource::Static(token.clone())));
+        }
+        if let Some(path) = &self.token_file {
+            return Some(crate::TokenFile::open(path).map(crate::TokenSource::File));
         }
         let issuer = self.auth_issuer.clone()?;
         let key = signing_key_pem.filter(|k| !k.trim().is_empty())?;
@@ -854,6 +866,9 @@ impl RunnerConfig {
 
         let tenant = lookup("ESCUREL_RUNNER_TENANT").filter(|s| !s.is_empty());
         let token = lookup("ESCUREL_RUNNER_TOKEN").filter(|s| !s.is_empty());
+        let token_file = lookup("ESCUREL_RUNNER_TOKEN_FILE")
+            .map(|s| s.trim().to_owned())
+            .filter(|s| !s.is_empty());
 
         let queue_cap = parse_usize("ESCUREL_RUNNER_QUEUE_CAP", &lookup, DEFAULT_QUEUE_CAP)?;
         let seen_cap = parse_usize("ESCUREL_RUNNER_SEEN_CAP", &lookup, DEFAULT_SEEN_CAP)?;
@@ -1158,10 +1173,7 @@ impl RunnerConfig {
         };
         let probe_interval =
             runtime_duration("ESCUREL_RUNNER_PROBE_INTERVAL", DEFAULT_PROBE_INTERVAL)?;
-        let claim_lease = runtime_duration(
-            "ESCUREL_RUNNER_CLAIM_LEASE",
-            DEFAULT_CLAIM_LEASE.max(poll_interval.saturating_mul(4)),
-        )?;
+        let claim_lease = claim_lease(&lookup, poll_interval)?;
         let harness_allow: Vec<String> = match lookup("ESCUREL_RUNNER_HARNESS_ALLOW") {
             Some(raw) if !raw.trim().is_empty() => raw
                 .split(',')
@@ -1181,6 +1193,7 @@ impl RunnerConfig {
             outbound_bearer,
             tenant,
             token,
+            token_file,
             queue_cap,
             seen_cap,
             poll_interval,
@@ -1249,6 +1262,58 @@ impl RunnerConfig {
             drain_timeout,
         })
     }
+}
+
+/// `ESCUREL_RUNNER_CLAIM_LEASE`, bounded (crew C-F1, C-F2). The gateway
+/// refuses a lease above [`MAX_CLAIM_LEASE`], and a refused claim must never
+/// be mistaken for "no other runner": an out-of-range value is a named
+/// config error, and the derived default (four poll intervals, at least 60s)
+/// is capped. A lease shorter than two poll intervals is refused too: the
+/// poller would see its own running events with their lease lapsed.
+fn claim_lease<F>(lookup: &F, poll_interval: Duration) -> Result<Duration, ConfigError>
+where
+    F: Fn(&str) -> Option<String>,
+{
+    const KEY: &str = "ESCUREL_RUNNER_CLAIM_LEASE";
+    let explicit = lookup(KEY).filter(|raw| !raw.trim().is_empty());
+    let lease = match &explicit {
+        Some(raw) => match parse_duration(raw) {
+            Some(d) if !d.is_zero() && d <= MAX_CLAIM_LEASE => d,
+            _ => {
+                return Err(ConfigError::InvalidRuntimeSetting {
+                    key: KEY,
+                    value: raw.clone(),
+                    reason: "expected a duration from 1s to 60m (the gateway's lease bound), \
+                             e.g. 2m"
+                        .to_owned(),
+                });
+            }
+        },
+        None => DEFAULT_CLAIM_LEASE
+            .max(poll_interval.saturating_mul(4))
+            .min(MAX_CLAIM_LEASE),
+    };
+    if lease < poll_interval.saturating_mul(2) {
+        return Err(match explicit {
+            Some(raw) => ConfigError::InvalidRuntimeSetting {
+                key: KEY,
+                value: raw,
+                reason: format!(
+                    "a claim lease must cover at least two poll intervals \
+                     (ESCUREL_RUNNER_POLL_INTERVAL is {}s)",
+                    poll_interval.as_secs_f64()
+                ),
+            },
+            None => ConfigError::InvalidRuntimeSetting {
+                key: "ESCUREL_RUNNER_POLL_INTERVAL",
+                value: format!("{}s", poll_interval.as_secs_f64()),
+                reason: "a poll interval above 30m leaves no valid claim lease (at most 1h, \
+                         at least two poll intervals)"
+                    .to_owned(),
+            },
+        });
+    }
+    Ok(lease)
 }
 
 /// Parse a positive-`u64` quota env var (must be ≥ 1), falling back to
@@ -1628,6 +1693,62 @@ mod tests {
             empty.ledger_path, DEFAULT_LEDGER_PATH,
             "empty ledger path falls back to the default"
         );
+    }
+
+    fn lease_with(pairs: &[(&str, &str)]) -> Result<Duration, ConfigError> {
+        RunnerConfig::from_env_with(|key| {
+            pairs
+                .iter()
+                .find(|(k, _)| *k == key)
+                .map(|(_, v)| (*v).to_owned())
+        })
+        .map(|c| c.claim_lease)
+    }
+
+    /// The gateway grants 1s..=1h; a runner configured past that would have
+    /// every claim refused, and a refused claim is never "no other runner"
+    /// (crew C-F1). A lease shorter than two polls lapses under its own
+    /// poller (crew C-F2).
+    #[test]
+    fn the_claim_lease_is_bounded_by_the_gateway_and_the_poll() {
+        assert_eq!(lease_with(&[]).unwrap(), Duration::from_secs(120));
+        assert_eq!(
+            lease_with(&[("ESCUREL_RUNNER_POLL_INTERVAL", "20m")]).unwrap(),
+            MAX_CLAIM_LEASE,
+            "the derived default is capped"
+        );
+        assert_eq!(
+            lease_with(&[("ESCUREL_RUNNER_CLAIM_LEASE", "60m")]).unwrap(),
+            MAX_CLAIM_LEASE
+        );
+        for (pairs, key) in [
+            (
+                vec![("ESCUREL_RUNNER_CLAIM_LEASE", "7200")],
+                "ESCUREL_RUNNER_CLAIM_LEASE",
+            ),
+            (
+                vec![("ESCUREL_RUNNER_CLAIM_LEASE", "0s")],
+                "ESCUREL_RUNNER_CLAIM_LEASE",
+            ),
+            (
+                vec![
+                    ("ESCUREL_RUNNER_CLAIM_LEASE", "30s"),
+                    ("ESCUREL_RUNNER_POLL_INTERVAL", "60s"),
+                ],
+                "ESCUREL_RUNNER_CLAIM_LEASE",
+            ),
+            (
+                vec![("ESCUREL_RUNNER_POLL_INTERVAL", "40m")],
+                "ESCUREL_RUNNER_POLL_INTERVAL",
+            ),
+        ] {
+            match lease_with(&pairs) {
+                Err(ConfigError::InvalidRuntimeSetting { key: k, .. }) => {
+                    assert_eq!(k, key, "{pairs:?}");
+                }
+                other => panic!("{pairs:?} must be refused, got {other:?}"),
+            }
+        }
     }
 
     #[test]

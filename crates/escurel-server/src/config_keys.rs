@@ -858,6 +858,12 @@ pub const CONFIG_KEYS: &[ConfigKey] = &[
         doc: "tenant-scoped bearer the runner presents to `/mcp`; a static token wins over minting. A runner on a static token cannot mint, so every run of a skill with an `agent:` profile fails (dead-letters) there: agent profiles need a minting runner (`ESCUREL_RUNNER_AUTH_SIGNING_KEY`)",
     },
     ConfigKey {
+        name: "ESCUREL_RUNNER_TOKEN_FILE",
+        component: "Runner",
+        default: "—",
+        doc: "a file holding the runner's bearer, kept fresh by a sidecar (a laptop or on-prem runner on a short-lived service credential); used when `ESCUREL_RUNNER_TOKEN` is unset, read at startup (an unreadable or empty file refuses to start) and re-read whenever it changes, so a rotated credential is used on the next gateway call (a runner whose calls came back `401` recovers without a restart). Like a static token it cannot mint",
+    },
+    ConfigKey {
         name: "ESCUREL_RUNNER_QUEUE_CAP",
         component: "Runner",
         default: "1024",
@@ -891,7 +897,7 @@ pub const CONFIG_KEYS: &[ConfigKey] = &[
         name: "ESCUREL_RUNNER_LABELS",
         component: "Runner",
         default: "(none)",
-        doc: "comma-separated labels this runner carries (`site:muc,has:sap-gui`); work whose `requires: {labels}` it lacks is left in the inbox for a runner that has them, and the labels are advertised on its `runtime` page",
+        doc: "comma-separated labels this runner carries (`site:muc,has:sap-gui`); work whose `requires: {labels}` it lacks is left in the inbox for a runner that has them, and the labels are advertised on its `runtime` page. A labelled runner is a fleet member: its credential needs `escurel:admin` to claim (an error is logged at boot otherwise, and it takes no inbox work), and a webhook trigger it cannot route or claim at once is left to the poller",
     },
     ConfigKey {
         name: "ESCUREL_RUNNER_EXCLUSIVE",
@@ -903,13 +909,13 @@ pub const CONFIG_KEYS: &[ConfigKey] = &[
         name: "ESCUREL_RUNNER_PROBE_INTERVAL",
         component: "Runner",
         default: "10m",
-        doc: "how often the runner re-probes its harness CLIs (`<cli> --version`) and rewrites its `runtime` page when a version changed, without a restart",
+        doc: "how often the runner re-probes its harness CLIs (`<cli> --version`) and rewrites its `runtime` page when a version or availability changed, without a restart. A CLI whose probe fails is `available: false` and gets no work that `requires:` its harness",
     },
     ConfigKey {
         name: "ESCUREL_RUNNER_CLAIM_LEASE",
         component: "Runner",
-        default: "max(60s, 4 x poll interval)",
-        doc: "how long a `claim_event` lease on an inbox event lasts; the poller renews held leases at half-life, and a dead runner's events become claimable this long after it stopped",
+        default: "max(60s, 4 x poll interval), capped at 60m",
+        doc: "how long a `claim_event` lease on an inbox event lasts: 1s to 60m (the gateway's bound) and at least two poll intervals, or the runner refuses to start naming this key. A renewal task renews held leases every third of the lease, independent of the inbox poll; a dead runner's events become claimable this long after it stopped",
     },
     ConfigKey {
         name: "ESCUREL_RUNNER_HARNESS_ALLOW",

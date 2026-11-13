@@ -53,6 +53,14 @@ pub enum AuthError {
     /// (`ESCUREL_RUNNER_AUTH_SIGNING_KEY` and friends).
     #[error("{0}")]
     Sign(#[from] SignError),
+    /// `ESCUREL_RUNNER_TOKEN_FILE` could not be read, or holds nothing.
+    #[error("ESCUREL_RUNNER_TOKEN_FILE {path}: {reason}")]
+    TokenFile {
+        /// The configured path.
+        path: String,
+        /// Why it is unusable.
+        reason: String,
+    },
 }
 
 /// Where the runner's gateway bearer comes from.
@@ -64,6 +72,12 @@ pub enum TokenSource {
     /// A bearer supplied whole (`ESCUREL_RUNNER_TOKEN`). Returned unchanged,
     /// expiry and all.
     Static(String),
+    /// A bearer a sidecar keeps fresh in a file (`ESCUREL_RUNNER_TOKEN_FILE`).
+    /// Re-read whenever the file changes, so a rotated credential is used on
+    /// the next gateway call — a runner whose call came back `401` recovers
+    /// without a restart. The last good token is kept while the file is
+    /// briefly unreadable mid-rotation.
+    File(TokenFile),
     /// Minted here, and re-minted before it lapses.
     Minted {
         signer: Signer,
@@ -82,6 +96,10 @@ impl std::fmt::Debug for TokenSource {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Static(_) => f.write_str("TokenSource::Static(<redacted>)"),
+            Self::File(file) => f
+                .debug_struct("TokenSource::File")
+                .field("path", &file.path)
+                .finish_non_exhaustive(),
             Self::Minted { subject, .. } => f
                 .debug_struct("TokenSource::Minted")
                 .field("subject", subject)
@@ -98,6 +116,7 @@ impl TokenSource {
     pub fn current(&self) -> Result<String, AuthError> {
         match self {
             Self::Static(t) => Ok(t.clone()),
+            Self::File(file) => file.current(),
             Self::Minted {
                 signer,
                 subject,
@@ -140,7 +159,7 @@ impl TokenSource {
         run: Option<&RunClaims>,
     ) -> Result<Option<String>, AuthError> {
         match self {
-            Self::Static(_) => Ok(None),
+            Self::Static(_) | Self::File(_) => Ok(None),
             Self::Minted {
                 signer, ttl_secs, ..
             } => Ok(Some(signer.mint_scoped(subject, groups, *ttl_secs, run)?)),
@@ -166,7 +185,7 @@ impl TokenSource {
         step: &str,
     ) -> Result<Option<String>, AuthError> {
         match self {
-            Self::Static(_) => Ok(None),
+            Self::Static(_) | Self::File(_) => Ok(None),
             Self::Minted {
                 signer,
                 subject,
@@ -212,7 +231,7 @@ impl TokenSource {
         narrow: Option<&[String]>,
     ) -> Result<Option<String>, AuthError> {
         match self {
-            Self::Static(_) => Ok(None),
+            Self::Static(_) | Self::File(_) => Ok(None),
             Self::Minted {
                 signer, subject, ..
             } => Ok(Some(match narrow {
@@ -237,7 +256,7 @@ impl TokenSource {
         groups: &[String],
     ) -> Result<Option<String>, AuthError> {
         match self {
-            Self::Static(_) => Ok(None),
+            Self::Static(_) | Self::File(_) => Ok(None),
             Self::Minted {
                 signer, subject, ..
             } => Ok(Some(signer.mint_agent_profile(
@@ -262,7 +281,7 @@ impl TokenSource {
         skills: &[&str],
     ) -> Result<Option<String>, AuthError> {
         match self {
-            Self::Static(_) => Ok(None),
+            Self::Static(_) | Self::File(_) => Ok(None),
             Self::Minted {
                 signer, subject, ..
             } => Ok(Some(signer.mint_agent_narrowed_for_skills(
@@ -303,8 +322,75 @@ impl TokenSource {
         match self {
             Self::Minted { subject, .. } => Some(subject.clone()),
             Self::Static(token) => jwt_sub(token),
+            Self::File(file) => file.current().ok().and_then(|t| jwt_sub(&t)),
         }
     }
+}
+
+/// The state behind [`TokenSource::File`].
+pub struct TokenFile {
+    path: std::path::PathBuf,
+    /// `(token, the file's mtime when read)`.
+    cached: Mutex<(String, Option<std::time::SystemTime>)>,
+}
+
+impl TokenFile {
+    /// Read `path` now: a runner configured with a token file it cannot
+    /// read must not start as if it had no credential.
+    ///
+    /// # Errors
+    /// When the file is unreadable or empty.
+    pub fn open(path: impl Into<std::path::PathBuf>) -> Result<Self, AuthError> {
+        let path = path.into();
+        let (token, mtime) = read_token_file(&path)?;
+        Ok(Self {
+            path,
+            cached: Mutex::new((token, mtime)),
+        })
+    }
+
+    fn current(&self) -> Result<String, AuthError> {
+        let mtime = std::fs::metadata(&self.path)
+            .and_then(|m| m.modified())
+            .ok();
+        let mut slot = self.cached.lock().unwrap_or_else(|e| e.into_inner());
+        if mtime.is_some() && mtime != slot.1 {
+            match read_token_file(&self.path) {
+                Ok(fresh) => {
+                    tracing::info!(
+                        target: "escurel_runner",
+                        path = %self.path.display(),
+                        "ESCUREL_RUNNER_TOKEN_FILE changed; using the new credential"
+                    );
+                    *slot = fresh;
+                }
+                Err(e) => tracing::warn!(
+                    target: "escurel_runner",
+                    error = %e,
+                    "ESCUREL_RUNNER_TOKEN_FILE changed but is unusable; keeping the last token"
+                ),
+            }
+        }
+        Ok(slot.0.clone())
+    }
+}
+
+fn read_token_file(
+    path: &std::path::Path,
+) -> Result<(String, Option<std::time::SystemTime>), AuthError> {
+    let err = |reason: String| AuthError::TokenFile {
+        path: path.display().to_string(),
+        reason,
+    };
+    let mtime = std::fs::metadata(path).and_then(|m| m.modified()).ok();
+    let token = std::fs::read_to_string(path)
+        .map_err(|e| err(e.to_string()))?
+        .trim()
+        .to_owned();
+    if token.is_empty() {
+        return Err(err("the file is empty".to_owned()));
+    }
+    Ok((token, mtime))
 }
 
 /// Read the `sub` claim from a JWT WITHOUT verifying the signature. Used only to

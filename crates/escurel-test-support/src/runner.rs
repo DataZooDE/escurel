@@ -52,6 +52,8 @@ enum Auth {
     /// Minted mode: the runner holds the gateway's signing key and mints a
     /// per-run token itself. Required wherever a run token's claims matter.
     Minted,
+    /// A bearer read from a file (`ESCUREL_RUNNER_TOKEN_FILE`).
+    File(PathBuf),
 }
 
 /// Builder for a real runner process on the echo harness.
@@ -85,6 +87,13 @@ impl<'a> RunnerProcess<'a> {
     /// Mint per-run tokens with the gateway's signing key (no static bearer).
     pub fn minted(mut self) -> Self {
         self.auth = Auth::Minted;
+        self
+    }
+
+    /// Read the runner's bearer from `path` (`ESCUREL_RUNNER_TOKEN_FILE`),
+    /// which the test may rewrite under the live runner.
+    pub fn token_file(mut self, path: impl AsRef<Path>) -> Self {
+        self.auth = Auth::File(path.as_ref().to_owned());
         self
     }
 
@@ -137,6 +146,10 @@ impl<'a> RunnerProcess<'a> {
         ];
         match self.auth {
             Auth::Static(token) => env.push(("ESCUREL_RUNNER_TOKEN".into(), token)),
+            Auth::File(path) => env.push((
+                "ESCUREL_RUNNER_TOKEN_FILE".into(),
+                path.display().to_string(),
+            )),
             Auth::Minted => {
                 let (signing_key, kid) = self.gw.signing_material();
                 env.push(("ESCUREL_RUNNER_AUTH_ISSUER".into(), self.gw.issuer_url()));

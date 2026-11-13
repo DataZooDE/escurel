@@ -10,14 +10,20 @@
 //!   cannot satisfy, BEFORE claiming it, so the event stays visible in the
 //!   inbox for a runner that can;
 //! * **claim** — for an event it can take, the gate holds a `claim_event`
-//!   lease (renewed at half-life on later polls), so exactly one runner
-//!   starts it. The ledger stays the local idempotency authority.
+//!   lease, renewed by [`RuntimeGate::renew_held`] on its own ticker (a third
+//!   of the lease), so exactly one runner starts it and a slow inbox tick
+//!   never lets a running event's lease lapse. The ledger stays the local
+//!   idempotency authority.
 //!
-//! A gateway older than the claim tools answers `-32601`; the gate then
-//! admits everything it can route, which is the single-runner behaviour. A
-//! claim the gateway did not answer (timeout, transport, `5xx`) is retried on
-//! the next poll, never taken. Admission is one gateway call per inbox event,
-//! in series; bounded concurrency is a possible follow-up.
+//! A gateway older than the claim tools answers `-32601`, and an event the
+//! gateway does not store answers `event_not_found`; the gate then admits
+//! what it can route, which is the single-runner behaviour. A claim the
+//! gateway REFUSED for this identity (not an admin) takes nothing and logs
+//! the fix: such a runner is a misconfigured fleet member, not an old
+//! gateway. A claim the gateway did not answer (timeout, transport, `5xx`,
+//! an unexpected invalid-params) is retried on the next poll, never taken.
+//! Admission is one gateway call per inbox event, in series; bounded
+//! concurrency is a possible follow-up.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Mutex;
@@ -54,36 +60,53 @@ pub fn harness_set(default: &str, allow: &[String]) -> Vec<String> {
     out
 }
 
-/// Probe each `(name, cli)`: the first line of `<cli> --version`, or `None`
-/// for an in-process harness (no CLI) and for a probe that fails.
+/// Probe each `(name, cli)`: the first line of `<cli> --version`. An
+/// in-process harness (no CLI) is available with no version; a CLI whose
+/// probe fails is UNAVAILABLE, with the reason: a host without the binary (or
+/// with one that cannot start) cannot run the work, so it must not be offered.
 pub async fn probe_harnesses(harnesses: &[(String, Option<String>)]) -> Vec<RuntimeHarness> {
     let mut out = Vec::with_capacity(harnesses.len());
     for (name, cli) in harnesses {
-        let version = match cli {
+        let probed = match cli {
             Some(bin) => probe_version(bin).await,
-            None => None,
+            None => Ok(None),
         };
-        out.push(RuntimeHarness {
-            name: name.clone(),
-            version,
+        out.push(match probed {
+            Ok(version) => RuntimeHarness {
+                name: name.clone(),
+                version,
+                ..RuntimeHarness::default()
+            },
+            Err(why) => RuntimeHarness {
+                name: name.clone(),
+                version: None,
+                available: false,
+                probe_error: Some(why),
+            },
         });
     }
     out
 }
 
-async fn probe_version(bin: &str) -> Option<String> {
+async fn probe_version(bin: &str) -> Result<Option<String>, String> {
     let run = tokio::process::Command::new(bin)
         .arg("--version")
         .stdin(std::process::Stdio::null())
         .kill_on_drop(true)
         .output();
-    let output = tokio::time::timeout(PROBE_TIMEOUT, run).await.ok()?.ok()?;
+    let output = tokio::time::timeout(PROBE_TIMEOUT, run)
+        .await
+        .map_err(|_| format!("`{bin} --version` timed out"))?
+        .map_err(|e| format!("`{bin} --version` could not start: {e}"))?;
     if !output.status.success() {
-        return None;
+        return Err(format!("`{bin} --version` exited with {}", output.status));
     }
     let text = String::from_utf8_lossy(&output.stdout);
-    let line = text.lines().map(str::trim).find(|l| !l.is_empty())?;
-    Some(line.chars().take(MAX_VERSION_LEN).collect())
+    Ok(text
+        .lines()
+        .map(str::trim)
+        .find(|l| !l.is_empty())
+        .map(|line| line.chars().take(MAX_VERSION_LEN).collect()))
 }
 
 /// The `runtime` instance page a runner registers as. JSON values are valid
@@ -125,12 +148,48 @@ pub enum Admit {
     /// did not answer a claim in time): left unclaimed, tried again on the
     /// next poll.
     Retry,
+    /// The gateway refused this runner's identity a claim (it is not an
+    /// admin): nothing is taken, since another runner may hold the event.
+    Refused,
+}
+
+impl Admit {
+    /// The decision's name, as `/debug/admission` reports it.
+    #[must_use]
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Take => "take",
+            Self::Unroutable => "unroutable",
+            Self::Elsewhere(_) => "elsewhere",
+            Self::Done => "done",
+            Self::Retry => "retry",
+            Self::Refused => "refused",
+        }
+    }
+}
+
+/// How a claim the gateway answered with an error is treated.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ClaimRefusal {
+    /// The gateway has no claim tools (`-32601`): admit as a lone runner.
+    Unsupported,
+    /// The gateway does not store the event (`event_not_found`, e.g. a
+    /// synthetic webhook event): nothing to coordinate on, admit it.
+    NotStored,
+    /// This identity may not claim (`forbidden`, `-32001`, `-32003`, `401`,
+    /// `403`): take nothing.
+    Forbidden,
+    /// Anything else may be the gateway being slow or a bug: retry.
+    Transient,
 }
 
 struct Held {
     mine: bool,
     until: Instant,
 }
+
+/// How many admission decisions `/debug/admission` remembers.
+const MAX_DECISIONS: usize = 10_000;
 
 /// The runner's routing + claim gate, shared by the poller and the webhook.
 pub struct RuntimeGate {
@@ -147,6 +206,11 @@ pub struct RuntimeGate {
     held: Mutex<HashMap<String, Held>>,
     claims_unsupported: AtomicBool,
     told: Mutex<HashSet<String>>,
+    /// Harnesses whose CLI probe failed: never offered for `requires.harness`.
+    unavailable: Mutex<HashSet<String>>,
+    /// The last decision per event (`/debug/admission`): a test's positive
+    /// "this runner had its chance" signal before it asserts an absence.
+    decisions: Mutex<HashMap<String, String>>,
 }
 
 impl RuntimeGate {
@@ -169,7 +233,83 @@ impl RuntimeGate {
             held: Mutex::new(HashMap::new()),
             claims_unsupported: AtomicBool::new(false),
             told: Mutex::new(HashSet::new()),
+            unavailable: Mutex::new(HashSet::new()),
+            decisions: Mutex::new(HashMap::new()),
         }
+    }
+
+    /// Whether this runner is effectively alone: no labels and not exclusive,
+    /// so no other runtime exists to route work to instead. Only such a
+    /// runner may keep an undecidable webhook trigger on its ledger (#440).
+    #[must_use]
+    pub fn is_lone(&self) -> bool {
+        self.labels.is_empty() && !self.exclusive
+    }
+
+    /// Whether this runner needs a claim-capable (admin) identity to do what
+    /// it is configured for: labels or exclusivity mean a fleet.
+    #[must_use]
+    pub fn needs_claims(&self) -> bool {
+        !self.is_lone()
+    }
+
+    /// The claim lease this gate asks for.
+    #[must_use]
+    pub fn lease(&self) -> Duration {
+        self.lease
+    }
+
+    /// Apply a harness probe: a harness whose probe failed is no longer
+    /// offered for `requires.harness`, one that recovered is again.
+    pub fn apply_probe(&self, probed: &[RuntimeHarness]) {
+        let down: HashSet<String> = probed
+            .iter()
+            .filter(|h| !h.available)
+            .map(|h| h.name.clone())
+            .collect();
+        let mut unavailable = self.unavailable.lock().unwrap_or_else(|e| e.into_inner());
+        if *unavailable != down {
+            for h in probed.iter().filter(|h| !h.available) {
+                tracing::warn!(
+                    target: "escurel_runner",
+                    harness = %h.name,
+                    error = h.probe_error.as_deref().unwrap_or_default(),
+                    "harness CLI probe failed; work that requires this harness is left for \
+                     another runtime"
+                );
+            }
+            *unavailable = down;
+        }
+    }
+
+    /// The harnesses this runner can run now, default first.
+    fn offered(&self) -> Vec<String> {
+        let unavailable = self.unavailable.lock().unwrap_or_else(|e| e.into_inner());
+        self.harnesses
+            .iter()
+            .filter(|h| !unavailable.contains(*h))
+            .cloned()
+            .collect()
+    }
+
+    /// The last admission decision for `event_id`, if any.
+    #[must_use]
+    pub fn decision(&self, event_id: &str) -> Option<String> {
+        self.decisions
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(event_id)
+            .cloned()
+    }
+
+    /// Record what this runner decided about `event_id` (the gate's own
+    /// decision, or what the webhook path then did with it).
+    pub fn note_decision(&self, event_id: &str, decision: &str) {
+        let mut decisions = self.decisions.lock().unwrap_or_else(|e| e.into_inner());
+        if decisions.len() >= MAX_DECISIONS {
+            decisions.clear();
+        }
+        decisions.insert(event_id.to_owned(), decision.to_owned());
     }
 
     /// Take only work whose SKILL page's `requires:` names one of this
@@ -185,11 +325,12 @@ impl RuntimeGate {
 
     /// Whether a skill's requirement asks for this runner in particular.
     fn asks_for_me(&self, skill: &Requires) -> bool {
+        let offered = self.offered();
         skill.labels.iter().any(|l| self.labels.contains(l))
             || skill
                 .harness
                 .as_ref()
-                .is_some_and(|h| self.harnesses.first() != Some(h) && self.harnesses.contains(h))
+                .is_some_and(|h| self.harnesses.first() != Some(h) && offered.contains(h))
     }
 
     /// The holder string the gateway writes for this runner's leases.
@@ -201,11 +342,17 @@ impl RuntimeGate {
     /// Whether this runner satisfies everything `event` and its skill require.
     #[must_use]
     pub fn routes(&self, event: &Requires) -> bool {
-        event.satisfied_by(&self.harnesses, &self.labels)
+        event.satisfied_by(&self.offered(), &self.labels)
     }
 
     /// Route, then claim. Never claims an event it cannot route.
     pub async fn admit(&self, client: &Client, event: &Event) -> Admit {
+        let admit = self.decide(client, event).await;
+        self.note_decision(&event.event_id, admit.as_str());
+        admit
+    }
+
+    async fn decide(&self, client: &Client, event: &Event) -> Admit {
         // Bookkeeping is never dispatched (the ledger gate drops it): no
         // routing to do and no lease worth a gateway call.
         if event.kind == "system" || event.label_skill.starts_with("escurel:") {
@@ -245,7 +392,7 @@ impl RuntimeGate {
                     event_id = %event.event_id,
                     label_skill = %event.label_skill,
                     requires = %json!(r),
-                    harnesses = ?self.harnesses,
+                    harnesses = ?self.offered(),
                     labels = ?self.labels,
                     "inbox event requires what this runner does not offer; left unclaimed"
                 );
@@ -268,7 +415,11 @@ impl RuntimeGate {
                 Some(h) if !h.mine && h.until > now => {
                     return Admit::Elsewhere(String::new());
                 }
-                Some(h) => h.mine,
+                // A lease of ours that already lapsed is not renewed: the
+                // gateway may have let another runner take it meanwhile, and a
+                // renew during its boot grace would re-create it regardless.
+                // It is claimed afresh, which a live holder wins.
+                Some(h) => h.mine && h.until > now,
                 None => false,
             }
         };
@@ -286,13 +437,94 @@ impl RuntimeGate {
         };
         match tokio::time::timeout(ADMIT_CALL_TIMEOUT, call).await {
             Ok(Ok(r)) => self.record(event_id, &r),
-            Ok(Err(e)) if permanent_claim_refusal(&e) => {
-                let unsupported = matches!(e, Error::JsonRpc { code: -32601, .. });
-                self.no_answer(event_id, unsupported, &e)
-            }
-            Ok(Err(e)) => self.unanswered(event_id, &e),
+            Ok(Err(e)) => match classify_claim_error(&e) {
+                ClaimRefusal::Unsupported => self.no_answer(event_id, true, &e),
+                ClaimRefusal::NotStored => self.no_answer(event_id, false, &e),
+                ClaimRefusal::Forbidden => self.forbidden(event_id, &e),
+                ClaimRefusal::Transient => {
+                    if matches!(e, Error::JsonRpc { code: -32602, .. }) {
+                        // Not a known benign refusal: a bug or a config the
+                        // gateway rejects (an out-of-range lease). Never a
+                        // reason to run unclaimed, and worth an error.
+                        tracing::error!(
+                            target: "escurel_runner",
+                            event_id,
+                            error = %e,
+                            "claim_event refused its arguments; the event waits (nothing is taken)"
+                        );
+                    }
+                    self.unanswered(event_id, &e)
+                }
+            },
             Err(_) => self.unanswered(event_id, &"claim_event timed out"),
         }
+    }
+
+    /// Renew every lease this runner holds that has not lapsed — the runs it
+    /// is executing — independent of the inbox loop, so a slow tick never
+    /// lets one lapse. A lease of ours that already lapsed is dropped from
+    /// the book (it is claimed afresh if the event shows up again), never
+    /// renewed. Call it every third of the lease.
+    pub async fn renew_held(&self, client: &Client) {
+        if self.claims_unsupported.load(Ordering::Relaxed) {
+            return;
+        }
+        let now = Instant::now();
+        let due: Vec<String> = {
+            let mut held = self.held.lock().unwrap_or_else(|e| e.into_inner());
+            held.retain(|_, h| !h.mine || h.until > now);
+            held.iter()
+                .filter(|(_, h)| h.mine)
+                .map(|(id, _)| id.clone())
+                .collect()
+        };
+        for event_id in due {
+            let req = ClaimEventRequest {
+                event_id: event_id.clone(),
+                lease_secs: self.lease.as_secs().max(1),
+                holder_id: self.holder_id.clone(),
+            };
+            match tokio::time::timeout(ADMIT_CALL_TIMEOUT, client.renew_claim(req)).await {
+                Ok(Ok(r)) => {
+                    if !r.processed && !r.claimed {
+                        tracing::error!(
+                            target: "escurel_runner",
+                            event_id = %event_id,
+                            holder = r.holder.as_deref().unwrap_or_default(),
+                            "a lease this runner held is now another holder's"
+                        );
+                    }
+                    self.record(&event_id, &r);
+                }
+                Ok(Err(e)) => tracing::warn!(
+                    target: "escurel_runner",
+                    event_id = %event_id,
+                    error = %e,
+                    "renew_claim failed; retried on the next renewal tick"
+                ),
+                Err(_) => tracing::warn!(
+                    target: "escurel_runner",
+                    event_id = %event_id,
+                    "renew_claim timed out; retried on the next renewal tick"
+                ),
+            }
+        }
+    }
+
+    /// The gateway will not let this identity claim. In a fleet that is a
+    /// misconfigured member, and running the event anyway would race the
+    /// runner that holds it: take nothing, and say how to fix it.
+    fn forbidden(&self, event_id: &str, e: &dyn std::fmt::Display) -> Admit {
+        self.tell_once("\0claim-forbidden", || {
+            tracing::error!(
+                target: "escurel_runner",
+                event_id,
+                error = %e,
+                "claim_event refused: the runner credential needs escurel:admin to claim; \
+                 this runner takes no inbox work until it has it (logged once)"
+            );
+        });
+        Admit::Refused
     }
 
     /// The gateway did not answer the claim (slow, unreachable, failing):
@@ -311,11 +543,9 @@ impl RuntimeGate {
         Admit::Retry
     }
 
-    /// A permanent refusal is not a "no": an event the gateway does not store
-    /// (a synthetic webhook), an identity it will not let claim, or an image
-    /// without the tool (`unsupported`) all fall back to the single-runner
-    /// behaviour — the ledger alone decides. Only a lease another runner HOLDS
-    /// keeps this runner off an event.
+    /// An event the gateway does not store (a synthetic webhook) or an image
+    /// without the tool (`unsupported`) falls back to the single-runner
+    /// behaviour — the ledger alone decides.
     fn no_answer(&self, event_id: &str, unsupported: bool, e: &dyn std::fmt::Display) -> Admit {
         if unsupported {
             self.claims_unsupported.store(true, Ordering::Relaxed);
@@ -455,18 +685,33 @@ pub async fn run_claim_holder(client: &Client, run_id: &str) -> Option<String> {
     looked.claim.map(|c| c.holder)
 }
 
-/// A claim refusal that no retry changes, after which the runner admits the
-/// event as a lone runner would: a gateway without the tool (`-32601`), an
-/// identity it will not let claim (`-32001` admin required, `-32003`
-/// forbidden, `401`/`403`), or an event it does not store / a malformed
-/// claim (`-32602`, e.g. `event_not_found` for a synthetic webhook event).
-/// Anything else — a timeout, a transport failure, a `5xx`/`429`, an
-/// internal error — may be the gateway being slow, and is retried.
-fn permanent_claim_refusal(e: &Error) -> bool {
+/// What a claim error means. Only a gateway without the tool (`-32601`) and
+/// an event it does not store (`-32602` `event_not_found`) are reasons to
+/// admit as a lone runner. An identity refusal (`forbidden`, `-32001` admin
+/// required, `-32003`, `401`/`403`) takes nothing. Everything else — another
+/// invalid-params answer (an out-of-range lease is one), a timeout, a
+/// transport failure, a `5xx`/`429` — is retried: none of it says that no
+/// other runner holds the event.
+fn classify_claim_error(e: &Error) -> ClaimRefusal {
     match e {
-        Error::JsonRpc { code, .. } => matches!(code, -32601 | -32001 | -32003 | -32602),
-        Error::Http { status, .. } => matches!(status, 401 | 403),
-        _ => false,
+        Error::JsonRpc { code: -32601, .. } => ClaimRefusal::Unsupported,
+        Error::JsonRpc {
+            code: -32602,
+            data_code,
+            ..
+        } => match data_code.as_deref() {
+            Some("event_not_found") => ClaimRefusal::NotStored,
+            Some("forbidden") => ClaimRefusal::Forbidden,
+            _ => ClaimRefusal::Transient,
+        },
+        Error::JsonRpc {
+            code: -32001 | -32003,
+            ..
+        } => ClaimRefusal::Forbidden,
+        Error::Http {
+            status: 401 | 403, ..
+        } => ClaimRefusal::Forbidden,
+        _ => ClaimRefusal::Transient,
     }
 }
 
@@ -509,6 +754,7 @@ mod tests {
             &[RuntimeHarness {
                 name: "echo".into(),
                 version: Some("echo 1.0: \"x\"".into()),
+                ..RuntimeHarness::default()
             }],
             &["site:muc".to_owned()],
             4,
@@ -562,39 +808,76 @@ mod tests {
     }
 
     #[test]
-    fn only_a_permanent_claim_refusal_fails_open() {
+    fn only_a_missing_tool_or_an_unstored_event_fails_open() {
         let rpc = |code: i64, data_code: Option<&str>| Error::JsonRpc {
             code,
             message: String::new(),
             data_code: data_code.map(str::to_owned),
             retryable: None,
         };
-        for permanent in [
-            rpc(-32601, None),
-            rpc(-32001, None),
-            rpc(-32602, Some("forbidden")),
-            rpc(-32602, Some("event_not_found")),
-            Error::Http {
-                status: 403,
-                body: String::new(),
-            },
-        ] {
-            assert!(permanent_claim_refusal(&permanent), "{permanent}");
+        let http = |status: u16| Error::Http {
+            status,
+            body: String::new(),
+        };
+        let cases = [
+            (rpc(-32601, None), ClaimRefusal::Unsupported),
+            (
+                rpc(-32602, Some("event_not_found")),
+                ClaimRefusal::NotStored,
+            ),
+            (rpc(-32602, Some("forbidden")), ClaimRefusal::Forbidden),
+            (rpc(-32001, None), ClaimRefusal::Forbidden),
+            (rpc(-32003, None), ClaimRefusal::Forbidden),
+            (http(401), ClaimRefusal::Forbidden),
+            (http(403), ClaimRefusal::Forbidden),
+            // The gateway refusing an out-of-range lease is no licence to run
+            // unclaimed (crew C-F1).
+            (rpc(-32602, None), ClaimRefusal::Transient),
+            (rpc(-32602, Some("bad_lease")), ClaimRefusal::Transient),
+            (rpc(-32603, None), ClaimRefusal::Transient),
+            (
+                rpc(-32000, Some("quota_exhausted")),
+                ClaimRefusal::Transient,
+            ),
+            (http(503), ClaimRefusal::Transient),
+            (http(429), ClaimRefusal::Transient),
+        ];
+        for (e, want) in cases {
+            assert_eq!(classify_claim_error(&e), want, "{e}");
         }
-        for transient in [
-            rpc(-32603, None),
-            rpc(-32000, Some("quota_exhausted")),
-            Error::Http {
-                status: 503,
-                body: String::new(),
-            },
-            Error::Http {
-                status: 429,
-                body: String::new(),
-            },
-        ] {
-            assert!(!permanent_claim_refusal(&transient), "{transient}");
-        }
+    }
+
+    #[tokio::test]
+    async fn a_failed_probe_makes_a_harness_unavailable_and_unrouted() {
+        let probed = probe_harnesses(&[
+            ("echo".to_owned(), None),
+            ("codex".to_owned(), Some("/nonexistent/codex".to_owned())),
+        ])
+        .await;
+        assert!(probed[0].available);
+        assert!(!probed[1].available);
+        assert!(
+            probed[1]
+                .probe_error
+                .as_deref()
+                .is_some_and(|e| e.contains("/nonexistent/codex")),
+            "{probed:?}"
+        );
+        let gate = RuntimeGate::new(
+            "b",
+            Some("svc"),
+            vec!["echo".into(), "codex".into()],
+            vec![],
+            Duration::from_secs(60),
+        );
+        let codex = Requires {
+            harness: Some("codex".into()),
+            ..Requires::default()
+        };
+        assert!(gate.routes(&codex));
+        gate.apply_probe(&probed);
+        assert!(!gate.routes(&codex), "a CLI that is not there runs nothing");
+        assert!(gate.routes(&Requires::default()));
     }
 
     #[test]

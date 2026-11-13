@@ -73,6 +73,7 @@ mod skill_model;
 mod support;
 mod system_events_not_dispatched;
 mod tail_cursor_durability;
+mod token_file_rotation;
 mod trigger;
 mod usage_on_run_finished;
 mod workflow_end_to_end;

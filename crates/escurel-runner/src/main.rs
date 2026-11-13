@@ -239,7 +239,8 @@ async fn main() -> anyhow::Result<()> {
             tracing::error!(
                 target: "escurel_runner",
                 error = %e,
-                "ESCUREL_RUNNER_AUTH_SIGNING_KEY is configured but unusable; refusing to start"
+                "the runner credential (ESCUREL_RUNNER_TOKEN_FILE or \
+                 ESCUREL_RUNNER_AUTH_SIGNING_KEY) is configured but unusable; refusing to start"
             );
             std::process::exit(2);
         }
@@ -270,6 +271,38 @@ async fn main() -> anyhow::Result<()> {
         )),
         _ => None,
     };
+    // The harness CLIs this runner offers, probed once before any work is
+    // admitted: a CLI that is not there must not be routed `requires:` work.
+    let harness_clis: Vec<(String, Option<String>)> =
+        escurel_runner_core::runtime::harness_set(&config.harness, &config.harness_allow)
+            .into_iter()
+            .map(|name| {
+                let cli = harness_cli(&config, &name);
+                (name, cli)
+            })
+            .collect();
+    if let (Some(gate), Some(source)) = (gate.as_ref(), tokens.as_ref()) {
+        gate.apply_probe(&escurel_runner_core::runtime::probe_harnesses(&harness_clis).await);
+        if gate.needs_claims() && config.webhook_secret.is_some() {
+            tracing::warn!(
+                target: "escurel_runner",
+                "ESCUREL_RUNNER_LABELS / ESCUREL_RUNNER_EXCLUSIVE with webhook ingress: a webhook \
+                 trigger this runner cannot route or claim at once is left to the poller; feed \
+                 a fleet through the poller"
+            );
+        }
+        tokio::spawn(claim_preflight(
+            config.gateway_url.clone(),
+            Arc::clone(source),
+            gate.needs_claims(),
+        ));
+        tokio::spawn(lease_renewal_loop(
+            config.gateway_url.clone(),
+            Arc::clone(source),
+            Arc::clone(gate),
+            Arc::clone(&draining),
+        ));
+    }
 
     // In-flight quota slots, shared gate → dispatch loop (#158).
     let inflight: InflightSlots = Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
@@ -527,19 +560,11 @@ async fn main() -> anyhow::Result<()> {
         tokio::spawn(runtime_loop(
             config.gateway_url.clone(),
             source,
+            Arc::clone(gate),
             Registration {
                 runner_id: config.runner_id.clone(),
                 holder: gate.holder().map(str::to_owned),
-                clis: escurel_runner_core::runtime::harness_set(
-                    &config.harness,
-                    &config.harness_allow,
-                )
-                .into_iter()
-                .map(|name| {
-                    let cli = harness_cli(&config, &name);
-                    (name, cli)
-                })
-                .collect(),
+                clis: harness_clis.clone(),
                 labels: config.labels.clone(),
                 max_concurrent: config.max_harness_procs as u64,
             },
@@ -559,6 +584,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/debug/ledger", get(debug_ledger))
         .route("/debug/run", get(debug_run))
         .route("/debug/control", get(debug_control))
+        .route("/debug/admission", get(debug_admission))
         .route("/debug/cancel", post(debug_cancel))
         .with_state(state);
 
@@ -748,22 +774,43 @@ async fn trigger(State(state): State<AppState>, headers: HeaderMap, body: Bytes)
             let Some(client) = connect_now(&state.gateway_url, &tokens).await else {
                 return;
             };
-            // A webhook trigger was already acknowledged (202) and has no
-            // other durable hold on this runner, so an undecidable admission
-            // (`Retry`: the gateway did not answer, the catalogue is not read
-            // yet) keeps it on the ledger, where its run waits for the
-            // gateway (#440) instead of being dropped. The poller, whose
-            // inbox IS the hold, skips such an event until the next tick.
+            // A webhook trigger was already acknowledged (202). For a lone
+            // runner it has no other durable hold, so an undecidable
+            // admission (`Retry`: the gateway did not answer, the catalogue
+            // is not read yet) keeps it on the ledger, where its run waits
+            // for the gateway (#440) instead of being dropped. A fleet
+            // member (labels, or exclusive) must not: another runtime may
+            // hold the event or be the one it is routed to, and the event is
+            // still in the gateway's inbox, so the poller routes and claims
+            // it once the gateway answers.
             let admit = gate.admit(&client, &event).await;
+            let hold = admit == Admit::Retry && gate.is_lone();
             if admit == Admit::Retry {
-                tracing::warn!(
-                    target: "escurel_runner",
-                    event_id = %event.event_id,
-                    "webhook trigger admitted without a routing/claim answer from the gateway; \
-                     held on the ledger until the gateway answers dispatch"
+                if hold {
+                    tracing::warn!(
+                        target: "escurel_runner",
+                        event_id = %event.event_id,
+                        "webhook trigger admitted without a routing/claim answer from the gateway; \
+                         held on the ledger until the gateway answers dispatch"
+                    );
+                } else {
+                    tracing::warn!(
+                        target: "escurel_runner",
+                        event_id = %event.event_id,
+                        "webhook trigger not decidable now (no routing/claim answer); left to \
+                         the poller, which routes and claims it from the inbox"
+                    );
+                }
+                gate.note_decision(
+                    &event.event_id,
+                    if hold {
+                        "webhook-held"
+                    } else {
+                        "webhook-skipped"
+                    },
                 );
             }
-            if matches!(admit, Admit::Take | Admit::Retry) {
+            if admit == Admit::Take || hold {
                 gate_and_enqueue(
                     &state.ledger,
                     &state.queue,
@@ -1691,6 +1738,27 @@ async fn debug_control(
         None => (
             StatusCode::NOT_FOUND,
             axum::Json(serde_json::json!({ "error": "no decision for that request" })),
+        ),
+    }
+}
+
+/// This runner's last admission decision on an inbox event (#818): `take`,
+/// `unroutable`, `elsewhere`, `done`, `retry`, `refused`, or what the webhook
+/// path did with an undecidable one (`webhook-held` / `webhook-skipped`). A
+/// test's positive "this runner had its chance" signal.
+async fn debug_admission(
+    State(state): State<AppState>,
+    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> impl IntoResponse {
+    let event_id = params.get("event_id").map(String::as_str).unwrap_or("");
+    match state.gate.as_ref().and_then(|g| g.decision(event_id)) {
+        Some(decision) => (
+            StatusCode::OK,
+            axum::Json(serde_json::json!({ "event_id": event_id, "decision": decision })),
+        ),
+        None => (
+            StatusCode::NOT_FOUND,
+            axum::Json(serde_json::json!({ "error": "no decision for that event" })),
         ),
     }
 }
@@ -4690,6 +4758,55 @@ struct Registration {
     max_concurrent: u64,
 }
 
+/// Renew the leases this runner holds every third of the lease, on its own
+/// ticker (crew C-F2): renewal tied to the inbox loop let a running event's
+/// lease lapse whenever a tick ran long, and a second runner then took it.
+async fn lease_renewal_loop(
+    gateway_url: String,
+    tokens: Arc<escurel_runner_core::TokenSource>,
+    gate: Arc<RuntimeGate>,
+    draining: Arc<std::sync::atomic::AtomicBool>,
+) {
+    let period = (gate.lease() / 3).max(std::time::Duration::from_millis(200));
+    let mut ticker = tokio::time::interval(period);
+    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    loop {
+        ticker.tick().await;
+        if draining.load(std::sync::atomic::Ordering::Relaxed) {
+            return;
+        }
+        if let Some(client) = connect_now(&gateway_url, &tokens).await {
+            gate.renew_held(&client).await;
+        }
+    }
+}
+
+/// Say at boot, loudly, when this runner's credential cannot claim (crew
+/// U-F3): a labelled or exclusive runner is a fleet member, and without
+/// `escurel:admin` every claim is refused, so it takes no inbox work. It is
+/// not a reason to refuse to start — webhooks for a lone setup still work.
+async fn claim_preflight(
+    gateway_url: String,
+    tokens: Arc<escurel_runner_core::TokenSource>,
+    needs_claims: bool,
+) {
+    let Some(client) = connect_now(&gateway_url, &tokens).await else {
+        return;
+    };
+    match client.whoami().await {
+        Ok(me) if !me.is_admin && needs_claims => tracing::error!(
+            target: "escurel_runner",
+            subject = %me.subject,
+            "the runner credential needs escurel:admin to claim: with ESCUREL_RUNNER_LABELS or \
+             ESCUREL_RUNNER_EXCLUSIVE set this runner takes no inbox work until it has it"
+        ),
+        Ok(_) => {}
+        Err(e) => {
+            tracing::debug!(target: "escurel_runner", error = %e, "claim preflight: whoami failed")
+        }
+    }
+}
+
 /// The CLI a harness runs, for its `--version` probe; `None` for one that
 /// runs in process (gemini, the OpenAI-compatible presets, delegate).
 fn harness_cli(config: &RunnerConfig, name: &str) -> Option<String> {
@@ -4712,6 +4829,7 @@ fn harness_cli(config: &RunnerConfig, name: &str) -> Option<String> {
 async fn runtime_loop(
     gateway_url: String,
     tokens: Arc<escurel_runner_core::TokenSource>,
+    gate: Arc<RuntimeGate>,
     reg: Registration,
     interval: std::time::Duration,
     draining: Arc<std::sync::atomic::AtomicBool>,
@@ -4728,6 +4846,7 @@ async fn runtime_loop(
             return;
         }
         let harnesses = probe_harnesses(&reg.clis).await;
+        gate.apply_probe(&harnesses);
         let seen = registration(&harnesses, &reg.labels, reg.max_concurrent);
         if written.as_ref() == Some(&seen) {
             continue;

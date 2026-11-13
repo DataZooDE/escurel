@@ -265,6 +265,15 @@ id registers a second `runtime` page while the old one reads `stale`. Two
 runners on one machine need two ledgers and two listen ports. Stopping the
 laptop leaves its unfinished events in the inbox once their lease lapses
 (`ESCUREL_RUNNER_CLAIM_LEASE`); work only it can take waits there for it.
+A labelled or exclusive runner needs an `escurel:admin` credential to claim:
+without one it logs *the runner credential needs escurel:admin to claim* at
+boot and takes no inbox work. On a short-lived service credential, point
+`ESCUREL_RUNNER_TOKEN_FILE` at a file a sidecar refreshes instead of pasting
+`ESCUREL_RUNNER_TOKEN`: the runner re-reads it whenever it changes, so a
+rotation needs no restart (a pasted token that expires shows only as `401`s
+in the runner log and the runtime going `stale`). A harness whose CLI is not
+installed shows `available: false` in `escurel runtime list` and gets no work
+that `requires:` it.
 
 ### Teams chat: `escurel-chat-bridge`
 

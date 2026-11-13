@@ -159,8 +159,9 @@ Key settings (full list in `crates/escurel-runner-core/src/config.rs`):
 | `ESCUREL_RUNNER_ID` | `<HOSTNAME>:<pid>` | how this runner names itself in its status reports and its `runtime` page — set a stable one when several runners share a tenant |
 | `ESCUREL_RUNNER_LABELS` | none | what this runner carries for `requires: {labels}` routing, comma-separated (`site:muc,has:sap-gui`) — see *Several runners on one tenant* |
 | `ESCUREL_RUNNER_EXCLUSIVE` | off | take only work whose SKILL page's `requires:` names one of this runner's labels or a harness it offers besides its default; recommended for laptop and on-prem runners — see *Several runners on one tenant* |
-| `ESCUREL_RUNNER_PROBE_INTERVAL` | `10m` | re-probe the harness CLIs' `--version` and rewrite the `runtime` page when one changed |
-| `ESCUREL_RUNNER_CLAIM_LEASE` | max(60s, 4 x poll) | the `claim_event` lease on an inbox event this runner takes; renewed at half-life while it is in the inbox |
+| `ESCUREL_RUNNER_PROBE_INTERVAL` | `10m` | re-probe the harness CLIs' `--version` and rewrite the `runtime` page when a version or availability changed; a CLI whose probe fails gets no `requires:` work |
+| `ESCUREL_RUNNER_CLAIM_LEASE` | max(60s, 4 x poll), at most 60m | the `claim_event` lease on an inbox event this runner takes; 1s..60m and at least two poll intervals, else the runner refuses to start; renewed every third of the lease by its own task |
+| `ESCUREL_RUNNER_TOKEN_FILE` | — | the bearer in a file a sidecar keeps fresh; used when `ESCUREL_RUNNER_TOKEN` is unset, re-read whenever it changes (no restart after a rotation) |
 | `ESCUREL_RUNNER_EMIT_EVENTS` | `true` | write each run's lifecycle as `escurel:run` system events (see *Run lifecycle events*); `false` = the workbench sees events and drafts but no runs |
 | `ESCUREL_RUNNER_AGENT_NARROW` | off | narrow each run's agent token to its target skill: `escurel:agent` + the skill's `acl.create` / `acl.update` groups instead of `escurel:admin` (see references/08 § per-run agent token); a skill with no write grant then runs an agent that can write nothing under `ESCUREL_WRITE_ACL=enforce` |
 | `ESCUREL_RUNNER_MAX_DEPTH` | `8` | cascade depth budget |
@@ -525,7 +526,10 @@ cluster, a developer's laptop with an authenticated CLI, an on-prem host with
 a SAP GUI session. Each one:
 
 1. **registers** a `runtime` page (references/01 *Runtimes*): its harnesses
-   with CLI versions, its `ESCUREL_RUNNER_LABELS`, its capacity. Read them
+   with CLI versions and whether each CLI's probe succeeded (`available`; a
+   harness whose CLI is missing or fails `--version` is `available: false`,
+   with `probe_error` for an admin, and the runner takes no work that
+   `requires:` that harness), its `ESCUREL_RUNNER_LABELS`, its capacity. Read them
    with `list_runtimes` / `escurel runtime list` — `online`, `stale`,
    `stopped` or `unknown`, derived from the runner's status record (it is not
    rewritten per heartbeat);
@@ -545,9 +549,14 @@ a SAP GUI session. Each one:
    does not know what a skill requires and takes nothing until it has; once
    read, a failed re-read routes on the last catalogue;
 3. **claims**: for an event it can take, the runner calls `claim_event`
-   (references/02) and starts it only on `claimed: true`. The lease is renewed
-   at half-life while the event sits in the inbox (a run keeps it there until
-   it is assigned) and released by `assign_event`. A runner that dies mid-run
+   (references/02) and starts it only on `claimed: true`. A renewal task
+   renews every lease the runner holds every third of the lease, independent
+   of the inbox poll (a run keeps its event in the inbox until it is
+   assigned), and `assign_event` releases it. A lease of its own that has
+   already lapsed is never renewed: the runner claims it afresh, which a live
+   holder wins. `ESCUREL_RUNNER_CLAIM_LEASE` must be 1s..60m (the gateway's
+   bound) and at least two poll intervals, or the runner refuses to start
+   naming the key. A runner that dies mid-run
    lets the lease lapse (`ESCUREL_RUNNER_CLAIM_LEASE`); then any runner that
    satisfies the event may claim it, and one that does not leaves it in the
    inbox. A run that fails keeps its lease on the runner that ran it, so that
@@ -560,28 +569,41 @@ while a fresh ledger waits out the old lease. A **gateway** restart forgets
 every lease; for its boot grace (`ESCUREL_EVENT_CLAIM_BOOT_GRACE_SECS`,
 default one maximum lease) an event captured before the restart with no lease
 answers `claimed: false` (`holder: "(recovering)"`) to everyone, and the
-runner still running it re-takes it with its next renew (at half its lease).
+runner still running it re-takes it with its next renew (every third of its
+lease). The gateway lets `renew_claim` re-create a missing pre-boot row for
+**any** non-machine admin identity, not only the old holder — it cannot know
+who held a lease it forgot — so the runner itself only renews leases it holds
+and that have not lapsed.
 So an unheld backlog from before a deploy waits out the grace; set it to your
 longest `ESCUREL_RUNNER_CLAIM_LEASE` to shorten that. Events captured after
 the restart are claimable at once. A **scheduled window** is
 therefore executed by exactly one runner, and a **run-control** request for a
 run is answered by the runner holding that run's claim: another runner that
 does not know the run stays silent while the holder's lease is live, and
-answers `not_live` only once nobody holds it. A **permanent** claim refusal
-lets the runner admit the event as a lone runner would (the ledger alone
-decides): a gateway older than the tool (`-32601`), an identity it will not
-let claim (`-32001` / `-32003` / `401` / `403`, e.g. a non-admin runner
-token), an event it does not store or a malformed claim (`-32602`, such as
-`event_not_found` for a synthetic webhook event). A claim the gateway did
-**not answer** — a timeout (2 s), a transport failure, a `5xx`, a `429` — is
-not taken: the event stays unclaimed and the next poll asks again (a run could
-not progress without the gateway anyway). So a slow gateway does not let two
-runners start one event. That holds for the **poller**, whose inbox is the
-durable hold. A **webhook** trigger (`POST /trigger`) was already acknowledged
-and has no other hold on the runner, so when its admission cannot be decided
-(no answer, catalogue not read yet) it is kept on the ledger and its run waits
-for the gateway, as before (#440) — it is neither routed nor claimed. Feed a
-fleet that relies on `requires:` routing through the poller, not webhooks.
+answers `not_live` only once nobody holds it. Only two claim answers let the
+runner admit the event as a lone runner would (the ledger alone decides): a
+gateway older than the tool (`-32601`), and an event it does not store
+(`-32602` `event_not_found`, a synthetic webhook event). An **identity
+refusal** (`-32001` / `-32003` / `401` / `403` / `-32602` `forbidden`, e.g. a
+non-admin runner token) takes **nothing** and logs an error naming the fix
+(*the runner credential needs escurel:admin to claim*): such a runner is a
+misconfigured fleet member and would otherwise run events another runner
+holds. A runner with `ESCUREL_RUNNER_LABELS` or `ESCUREL_RUNNER_EXCLUSIVE` also
+checks `whoami` at boot and logs that error when it is not an admin. Any
+other claim error — another `-32602`, a timeout (2 s), a transport failure, a
+`5xx`, a `429` — is **not taken**: the event stays unclaimed and the next poll
+asks again (a run could not progress without the gateway anyway). So a slow
+gateway does not let two runners start one event. That holds for the
+**poller**, whose inbox is the durable hold. A **webhook** trigger
+(`POST /trigger`) was already acknowledged; when its admission cannot be
+decided (no answer, catalogue not read yet) a **lone** runner (no labels, not
+exclusive) keeps it on the ledger and its run waits for the gateway (#440). A
+**fleet member** (labels or exclusive) does not: the event is still in the
+gateway's inbox, and its poller routes and claims it there. It logs a warning
+at boot when it has both labels/exclusive and a webhook secret. Feed a fleet
+through the poller. `GET /debug/admission?event_id=` on a runner shows its
+last decision on an event (`take`, `unroutable`, `elsewhere`, `done`,
+`retry`, `refused`, `webhook-held`, `webhook-skipped`).
 
 A runner **outside the cluster** needs no signing key: references/08
 *Runners outside the cluster*.
