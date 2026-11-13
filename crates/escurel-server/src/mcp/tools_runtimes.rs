@@ -4,10 +4,12 @@
 //! * `claim_event` / `renew_claim` — which runner takes an event. A lease row
 //!   in the gateway-local [`EventClaims`](crate::event_claims::EventClaims)
 //!   table, held by the caller's `sub` (qualified by `#<holder_id>` so
-//!   replicas sharing one credential still exclude each other). Machine-only:
-//!   the runner's own admin identity may claim, a run token or a person's
-//!   token may not — a person who could claim could park any event out of
-//!   every runner's reach.
+//!   replicas sharing one credential still exclude each other; `holder_id` is
+//!   never an identity, so no caller can renew another `sub`'s lease). Any
+//!   non-machine admin identity may claim — the runner's own admin bearer, and
+//!   a person's admin token too; a non-admin, run, agent or bridge token may
+//!   not, since one that could claim could park any event out of every
+//!   runner's reach.
 //! * `list_runtimes` — the `runtime` instances the caller may read, each
 //!   joined with its runner's `runner-status:<runner_id>` record, so a reader
 //!   gets online / stale in one call. Liveness is derived here from the
@@ -76,8 +78,8 @@ pub(super) async fn tool_claim(
     let a: ClaimArgs = parse_args(args, tool)?;
     if !caller.is_admin || is_machine_caller(&caller) {
         return Err(JsonRpcError::invalid_params(format!(
-            "{tool}: only a runner's own admin identity claims events (not a run token, not a \
-             person's token)"
+            "{tool}: only a non-machine admin identity claims events (not a run, agent or \
+             bridge token, not a non-admin token)"
         ))
         .with_code("forbidden", false));
     }

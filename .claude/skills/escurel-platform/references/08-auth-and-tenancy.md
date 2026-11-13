@@ -184,12 +184,19 @@ OWN credential instead: a bearer for a service subject (`runner:laptop-jr`)
 with `roles: [escurel:admin]` and no run, agent or actor claims, set as
 `ESCUREL_RUNNER_TOKEN`. That identity is not a machine caller, so it may do
 the runner's bookkeeping — `report_runner_status`, write its `runtime` page
-(admin-only), `claim_event` / `renew_claim` (refused to every person's token
-and to every run token) — and it may call `mint_agent_token` for a per-run
+(admin-only), `claim_event` / `renew_claim` — and it may call `mint_agent_token` for a per-run
 child. The child is what `mint_agent_token` always returns: never admin, the
 caller's groups, `act.sub` the runner, a gateway-assigned `run_id`; and as a
 machine caller it can neither mint again nor claim. No exception to the
-machine-caller rule was needed. Today the runner itself mints run tokens
+machine-caller rule was needed. The claim rule is exactly that: any
+**non-machine admin identity** may claim — a runner's admin bearer, and also a
+person's admin token (a non-admin token is refused `-32001`, a run, agent or
+bridge token `-32602` `forbidden`). An admin who claims can park an event away
+from every runner for up to an hour, which is no more than an admin can do to
+the event directly. The lease's holder is `<sub>#<holder_id>`: `holder_id` is
+the caller's own label for replicas sharing one credential, not an identity,
+so a caller can never renew or take another identity's lease by naming its
+`holder_id`. Today the runner itself mints run tokens
 only in **minted** mode (it holds a signing key); on an operator-issued
 static credential its runs use that credential as before (chat runs are
 refused, see references/11), so give such a runner work that its own

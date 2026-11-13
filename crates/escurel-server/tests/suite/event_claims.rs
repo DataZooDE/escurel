@@ -4,7 +4,7 @@
 //! Real gateway over HTTP, real test issuer. `claim_event` is the
 //! compare-and-set that decides which runner starts an event: N concurrent
 //! claims must yield exactly one winner, a lapsed lease is claimable again,
-//! `assign_event` releases it, and only a runner's own admin identity may
+//! `assign_event` releases it, and only a non-machine admin identity may
 //! claim. `list_runtimes` joins `runtime` pages with the runners' status
 //! records, deriving online / stale / stopped.
 
@@ -168,10 +168,10 @@ async fn a_lease_lapses_renews_and_is_released_by_assign() {
     assert_eq!(after["processed"], true, "{after}");
 }
 
-/// Only the runner's own admin identity claims: a person, and a run token
-/// (even an admin-role one), are refused; a missing event is not found.
+/// Only a non-machine admin identity claims: a non-admin person, and a run
+/// token (even an admin-role one), are refused; a missing event is not found.
 #[tokio::test]
-async fn only_a_runner_identity_may_claim() {
+async fn only_a_non_machine_admin_identity_may_claim() {
     let p = gateway().await;
     let event = capture(&p, "note").await;
     let member = p.mint_token_with_sub(TENANT, Role::Agent, "member:alice");
@@ -393,4 +393,25 @@ async fn after_a_restart_a_forgotten_lease_goes_back_to_its_holder_not_to_a_seco
         won["claimed"], true,
         "a post-restart event is not held: {won}"
     );
+}
+
+/// The holder is `<sub>#<holder_id>` (crew F10): `holder_id` is the caller's
+/// own label, not an identity, so a second admin naming the same holder_id is
+/// a different holder and can neither renew nor take the first one's lease.
+#[tokio::test]
+async fn another_admin_naming_the_same_holder_id_cannot_renew_or_take_the_lease() {
+    let p = gateway().await;
+    let event = capture(&p, "note").await;
+    let a = p.mint_token_with_sub(TENANT, Role::Admin, "runner:a");
+    let b = p.mint_token_with_sub(TENANT, Role::Admin, "runner:b");
+    let args = json!({ "event_id": event, "holder_id": "shared", "lease_secs": 600 });
+
+    let won = call(&p, &a, "claim_event", args.clone()).await;
+    assert_eq!(won["holder"], "runner:a#shared", "{won}");
+    let renew = call(&p, &b, "renew_claim", args.clone()).await;
+    assert_eq!(renew["renewed"], false, "{renew}");
+    assert_eq!(renew["holder"], "runner:a#shared", "{renew}");
+    let claim = call(&p, &b, "claim_event", args).await;
+    assert_eq!(claim["claimed"], false, "{claim}");
+    assert_eq!(claim["holder"], "runner:a#shared", "{claim}");
 }
