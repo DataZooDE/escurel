@@ -209,7 +209,7 @@ with `roles: [escurel:admin]` and no run, agent or actor claims, set as
 refreshes, written to a file named by `ESCUREL_RUNNER_TOKEN_FILE`, which the
 runner re-reads whenever it changes. The subject must not contain `#` (the
 lease holder is `<sub>#<holder_id>`; such a subject cannot claim). A runner
-whose credential is not an admin takes no inbox work in a fleet: its claims
+whose credential is not an admin takes no inbox work: its claims
 are refused, and it logs that the credential needs `escurel:admin`. That identity is not a machine caller, so it may do
 the runner's bookkeeping — `report_runner_status`, write its `runtime` page
 (admin-only), `claim_event` / `renew_claim` — and it may call `mint_agent_token` for a per-run

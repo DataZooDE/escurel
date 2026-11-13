@@ -126,7 +126,7 @@ cargo build -p escurel-runner
 
 ESCUREL_RUNNER_GATEWAY_URL=http://127.0.0.1:8080 \
 ESCUREL_RUNNER_TENANT=<tenant> \
-ESCUREL_RUNNER_TOKEN=<agent bearer, or omit against an unauthenticated dev gateway> \
+ESCUREL_RUNNER_TOKEN=<escurel:admin runner credential (references/08), or omit against an unauthenticated dev gateway> \
 ESCUREL_RUNNER_HARNESS=claude \
   ./target/debug/escurel-runner
 ```
