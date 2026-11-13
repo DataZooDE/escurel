@@ -12,7 +12,9 @@
 //!   runner's reach.
 //! * `list_runtimes` — the `runtime` instances the caller may read, each
 //!   joined with its runner's `runner-status:<runner_id>` record, so a reader
-//!   gets online / stale in one call. Liveness is derived here from the
+//!   gets online / stale in one call. CLI versions and claim holders are an
+//!   admin's view: a non-admin (an agent run included) sees the fleet without
+//!   them, which is all routing needs and less to fingerprint. Liveness is derived here from the
 //!   heartbeat the runner already writes; the page is not rewritten per
 //!   heartbeat (lake snapshot churn).
 
@@ -233,6 +235,13 @@ pub(super) async fn tool_list_runtimes(
             info.stale_after_s = Some(stale_after);
             info.version = body["version"].as_str().map(str::to_owned);
             info.live_runs = body["live_runs"].as_array().map_or(0, |r| r.len() as u64);
+        }
+        if !caller.is_admin {
+            for h in &mut info.harnesses {
+                h.version = None;
+            }
+            info.version = None;
+            info.claim_holder = None;
         }
         runtimes.push(info);
     }

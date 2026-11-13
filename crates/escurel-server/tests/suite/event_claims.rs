@@ -275,7 +275,8 @@ async fn requires_is_validated_on_skills_and_events() {
 }
 
 /// The `runtime` system skill is admin-written; `list_runtimes` derives
-/// liveness from the runner's status record.
+/// liveness from the runner's status record. A non-admin reader sees the
+/// fleet without CLI versions or claim holders (crew F14); an admin sees all.
 #[tokio::test]
 async fn runtimes_are_admin_written_and_read_with_liveness() {
     let p = gateway().await;
@@ -283,7 +284,8 @@ async fn runtimes_are_admin_written_and_read_with_liveness() {
     let page = "markdown/instances/runtime/laptop.md";
     let content = "---\nkind: instance\nskill: runtime\nid: laptop\nrunner_id: \"laptop\"\n\
         harnesses: [{\"name\": \"echo\", \"version\": \"echo 1.0\"}]\n\
-        labels: [\"site:muc\"]\nmax_concurrent: 2\n---\n# laptop\n";
+        labels: [\"site:muc\"]\nmax_concurrent: 2\nclaim_holder: \"runner:laptop#01abc\"\n\
+        ---\n# laptop\n";
     let member = p.mint_token_with_sub(TENANT, Role::Agent, "member:alice");
     let refused = rpc(
         &p,
@@ -310,10 +312,15 @@ async fn runtimes_are_admin_written_and_read_with_liveness() {
     assert_eq!(rt["status"], "unknown", "no status record yet: {rt}");
     assert_eq!(
         rt["harnesses"][0],
-        json!({ "name": "echo", "version": "echo 1.0" })
+        json!({ "name": "echo", "version": null }),
+        "no CLI versions for a non-admin: {rt}"
     );
+    assert_eq!(rt["claim_holder"], Value::Null, "{rt}");
     assert_eq!(rt["labels"], json!(["site:muc"]));
     assert_eq!(rt["max_concurrent"], 2);
+    let full = call(&p, &token, "list_runtimes", json!({})).await["runtimes"][0].clone();
+    assert_eq!(full["harnesses"][0]["version"], "echo 1.0", "{full}");
+    assert_eq!(full["claim_holder"], "runner:laptop#01abc", "{full}");
 
     let report = |state: &str| {
         json!({ "runner_id": "laptop", "state": state, "status_interval_s": 1,
@@ -323,7 +330,9 @@ async fn runtimes_are_admin_written_and_read_with_liveness() {
     let rt = call(&p, &member, "list_runtimes", json!({})).await["runtimes"][0].clone();
     assert_eq!(rt["status"], "online", "{rt}");
     assert_eq!(rt["stale_after_s"], 3, "{rt}");
-    assert_eq!(rt["version"], "9.9.9", "{rt}");
+    assert_eq!(rt["version"], Value::Null, "{rt}");
+    let full = call(&p, &token, "list_runtimes", json!({})).await["runtimes"][0].clone();
+    assert_eq!(full["version"], "9.9.9", "{full}");
     assert_eq!(rt["live_runs"], 1, "{rt}");
     assert!(rt["last_seen"].as_str().is_some(), "{rt}");
 
