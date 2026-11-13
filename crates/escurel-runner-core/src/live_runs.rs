@@ -342,6 +342,8 @@ mod tests {
             max_attempts: 1,
             target_page_id: None,
             manual: None,
+            skill: None,
+            agent: None,
         }
     }
 
