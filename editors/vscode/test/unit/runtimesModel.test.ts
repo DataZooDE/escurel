@@ -175,6 +175,32 @@ describe('a member’s read (no CLI versions, no claim holders)', () => {
     expect(heldBy(claim, [member(online), member(stale)])).toEqual({ until: claim.expires_at });
     expect(heldBy(claim, [])).toEqual({ until: claim.expires_at });
   });
+
+  it('answers for a harness every runtime it can see agrees on, and only then', () => {
+    const claim = { holder: 'svc-runner#02def', expires_at: '2026-11-13T10:01:00Z' };
+    const declaring = (r: Runtime, inject: Record<string, boolean | null>): Runtime => ({
+      ...member(r),
+      harnesses: r.harnesses.map(({ name }) => ({ name, supports_inject: inject[name] ?? null })),
+    });
+    const a = declaring(online, { echo: true, claude: true });
+    const b = declaring(
+      { ...online, runner_id: 'b', harnesses: [{ name: 'echo' }, { name: 'claude' }] },
+      {
+        echo: true,
+        claude: false,
+      },
+    );
+    expect(heldBy(claim, [a, b])).toEqual({
+      until: claim.expires_at,
+      harnesses: [{ name: 'echo', supports_inject: true }],
+    });
+    // A runtime that does not say leaves the others' agreement standing; a disagreement drops it.
+    const silent = declaring({ ...online, runner_id: 'c' }, {});
+    expect(heldBy(claim, [a, silent])?.harnesses).toEqual([
+      { name: 'echo', supports_inject: true },
+      { name: 'claude', supports_inject: true },
+    ]);
+  });
 });
 
 describe('a skill’s requires in words', () => {

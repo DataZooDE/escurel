@@ -168,8 +168,30 @@ export interface HeldBy {
   pageId?: string;
   /** RFC 3339: when the lease lapses unless renewed. */
   until: string;
-  /** The holding runtime's harnesses, so the run's own can be asked whether it takes an inject. */
+  /**
+   * The holding runtime's harnesses, so the run's own can be asked whether it takes an inject. When
+   * the holder is hidden (a member's read), the harnesses every visible runtime agrees on instead.
+   */
   harnesses?: { name: string; supports_inject?: boolean | null }[];
+}
+
+/**
+ * The harnesses whose `supports_inject` every runtime that declares it agrees on. A member cannot tell
+ * which runtime holds a run, but when no runtime it can see says otherwise the answer does not depend
+ * on which one does. A runtime that does not declare leaves the others' answer standing.
+ */
+function agreedHarnesses(runtimes: Runtime[]): { name: string; supports_inject: boolean }[] {
+  const votes = new Map<string, boolean | 'split'>();
+  for (const r of runtimes)
+    for (const h of r.harnesses) {
+      if (typeof h.supports_inject !== 'boolean') continue;
+      const seen = votes.get(h.name);
+      votes.set(
+        h.name,
+        seen === undefined || seen === h.supports_inject ? h.supports_inject : 'split',
+      );
+    }
+  return [...votes].flatMap(([name, v]) => (v === 'split' ? [] : [{ name, supports_inject: v }]));
 }
 
 export function heldBy(claim: EventClaim | undefined, runtimes: Runtime[]): HeldBy | undefined {
@@ -183,7 +205,10 @@ export function heldBy(claim: EventClaim | undefined, runtimes: Runtime[]): Held
       harnesses: r.harnesses.map((h) => ({ name: h.name, supports_inject: h.supports_inject })),
     };
   // Holders are visible (an admin's read) but none matches: a runner that never registered.
-  return runtimes.some((x) => x.claim_holder)
-    ? { runtime: cleanText(claim.holder, 160), until: claim.expires_at }
+  if (runtimes.some((x) => x.claim_holder))
+    return { runtime: cleanText(claim.holder, 160), until: claim.expires_at };
+  const agreed = agreedHarnesses(runtimes);
+  return agreed.length
+    ? { until: claim.expires_at, harnesses: agreed }
     : { until: claim.expires_at };
 }
