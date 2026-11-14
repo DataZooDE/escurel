@@ -284,14 +284,62 @@ fn is_run_id(s: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
 }
 
+/// Whether `caller` may have a token for run `run_id` of `skill`. A run
+/// another identity started is that identity's (minting for it would let one
+/// runner act as another's run and file into its lineage). A runner credential
+/// must also have started the run itself, as a run of `skill`: without that
+/// binding it could name any skill and collect that skill's write groups.
+async fn check_run_binding(
+    indexer: &Indexer,
+    caller: &AclCaller<'_>,
+    run_id: &str,
+    skill: &str,
+) -> Result<(), JsonRpcError> {
+    const TOOL: &str = "mint_run_token";
+    let started = indexer
+        .get_event(&format!("run:{run_id}:started"))
+        .await
+        .map_err(|e| JsonRpcError::internal(format!("{TOOL}: {e}")))?;
+    let refuse = |code: &'static str, why: String| {
+        Err(JsonRpcError::forbidden(format!("{TOOL}: run `{run_id}` {why}")).with_code(code, false))
+    };
+    match started {
+        Some(started)
+            if escurel_index::captured_by(&started.provenance) != Some(caller.subject) =>
+        {
+            refuse(
+                "run_not_yours",
+                "was started by another identity".to_owned(),
+            )
+        }
+        // An admin keeps the rule it always had: any run not left to another identity.
+        _ if caller.is_admin => Ok(()),
+        None => refuse(
+            "run_unknown",
+            "has no `run-started` from this caller (file it before asking for the run's token)"
+                .to_owned(),
+        ),
+        Some(started) if started.provenance["runner"]["skill"].as_str() != Some(skill) => {
+            refuse("run_not_yours", format!("is not a run of `{skill}`"))
+        }
+        Some(_) => Ok(()),
+    }
+}
+
 /// `mint_run_token` (#828): a runner with no signing key of its own gets each
 /// run's token here — exactly what a minting runner signs for itself
 /// (`escurel-runner-core`'s `TokenSource`): an agent-profile token, or one
 /// narrowed to the skill's write groups, or (an admin asking for it) the wide
-/// admin shape, all naming the CALLER as `act.sub`. The groups are read from
-/// the skill page here, never taken from the caller, so a runner credential
-/// cannot mint a group it was not granted; a runner is never given the wide
-/// shape. Writes no `run-started`: the runner files its own lifecycle.
+/// admin shape, all naming the CALLER as `act.sub`.
+///
+/// The token carries the skill's write groups, read from the skill page — so
+/// this is where a keyless runner's authority is bounded. A runner credential
+/// gets a token only for a run it started itself (`run:<id>:started`, which
+/// the runner files before it packages the run) of that very skill, and only
+/// as an agent that lists the skill; a skill no page declares is refused
+/// rather than minted groupless. A runner is never given the wide shape. An
+/// admin may mint for any run another identity has not started. Writes no
+/// `run-started`: the runner files its own lifecycle.
 pub(super) async fn tool_mint_run_token(
     state: &AppState,
     indexer: &Indexer,
@@ -331,43 +379,50 @@ pub(super) async fn tool_mint_run_token(
         RUN_DEFAULT_TTL_SECS,
         RUN_MIN_TTL_SECS..=RUN_MAX_TTL_SECS,
     )?;
-    // A run another identity started is that identity's: minting for it would let one runner act
-    // as another's run (and file into its lineage).
-    let started = indexer
-        .get_event(&format!("run:{}:started", a.run_id))
+    check_run_binding(indexer, &caller, &a.run_id, &a.skill).await?;
+    let Some(skill) = indexer
+        .skill(&a.skill)
         .await
-        .map_err(|e| JsonRpcError::internal(format!("{TOOL}: {e}")))?;
-    if let Some(started) = started
-        && started.provenance["captured_by"].as_str() != Some(caller.subject)
-    {
-        return Err(JsonRpcError::forbidden(format!(
-            "{TOOL}: run `{}` was started by another identity",
-            a.run_id
+        .map_err(|e| JsonRpcError::internal(format!("{TOOL}: {e}")))?
+    else {
+        return Err(JsonRpcError::invalid_params(format!(
+            "{TOOL}: no skill page declares `{}` in this tenant",
+            a.skill
         ))
-        .with_code("run_not_yours", false));
-    }
+        .with_code("skill_unknown", false));
+    };
     let text = |v: &Option<String>| v.as_deref().filter(|s| !s.is_empty()).map(str::to_owned);
     let run = escurel_auth::MintRunClaims {
         run_id: a.run_id.clone(),
         root_event_id: text(&a.root_event_id).unwrap_or_else(|| a.run_id.clone()),
         trace_id: text(&a.trace_id),
     };
-    let groups = indexer
-        .skill_write_groups(&a.skill)
-        .await
-        .map_err(|e| JsonRpcError::internal(format!("{TOOL}: {e}")))?;
+    let groups = escurel_index::write_groups(skill.acl.as_ref());
     let signer = guard.signer;
     let (token, subject) = match text(&a.agent) {
         Some(agent) => {
-            let found = indexer
+            let Some(profile) = indexer
                 .agent_profile(&agent)
                 .await
-                .map_err(|e| JsonRpcError::internal(format!("{TOOL}: {e}")))?;
-            if found.is_none() {
+                .map_err(|e| JsonRpcError::internal(format!("{TOOL}: {e}")))?
+            else {
                 return Err(JsonRpcError::invalid_params(format!(
                     "{TOOL}: no usable agent page `{agent}` in this tenant"
                 ))
                 .with_code("agent_unknown", false));
+            };
+            // The agent page bounds which skills run as the agent: a token for a skill it does not
+            // list would carry that skill's groups under the agent's name.
+            if !profile.lists_skill(&a.skill) {
+                return Err(JsonRpcError {
+                    code: -32001,
+                    message: format!(
+                        "{TOOL}: agent `{agent}` does not list the skill `{}`",
+                        a.skill
+                    ),
+                    data: None,
+                }
+                .with_code("agent_scope_denied", false));
             }
             let token = signer
                 .mint_agent_profile(caller.subject, &agent, &a.skill, ttl, Some(&run), &groups)

@@ -254,6 +254,15 @@ async fn main() -> anyhow::Result<()> {
              (set ESCUREL_RUNNER_AUTH_ISSUER + ESCUREL_RUNNER_AUTH_SIGNING_KEY to answer chat)"
         );
     }
+    // The gateway mints a runner credential's run token only for a run whose `run-started` that
+    // credential filed (`mint_run_token`), so a keyless runner that files none gets no run tokens.
+    if !config.emit_run_events && tokens.as_ref().is_some_and(|t| t.mints_at_gateway()) {
+        tracing::warn!(
+            target: "escurel_runner",
+            "ESCUREL_RUNNER_EMIT_EVENTS is off: the gateway refuses mint_run_token for a run with \
+             no run-started (run_unknown) unless this runner's credential is an admin's"
+        );
+    }
 
     // The routing + claim gate (#818). Its holder id is the ledger's own
     // identity, so a restart on the same ledger keeps the leases it held.

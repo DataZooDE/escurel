@@ -30,6 +30,10 @@ fn skill(id: &str) -> String {
     )
 }
 
+/// A skill no agent lists, granting a group no runner holds.
+const PAYROLL: &str = "---\nkind: skill\nid: payroll\nautonomy: auto\n\
+    acl:\n  create: [finance]\n  update: [finance]\n---\n# payroll\n\nPay people.\n";
+
 const SCRIBE: &str = "---\nkind: instance\nskill: agent\nid: scribe\nharness: echo\n\
     skills: [\"[[skill::customer]]\", \"[[skill::note]]\"]\n\
     scopes:\n  write: [\"markdown/instances/note/*\"]\n---\n# scribe\n";
@@ -56,6 +60,7 @@ async fn gateway() -> EscurelProcess {
                 .tenant(TENANT)
                 .skill("customer", skill("customer").as_str())
                 .skill("note", skill("note").as_str())
+                .skill("payroll", PAYROLL)
                 .instance("customer", "c1", instance_body("customer").as_str())
                 .instance("note", "c1", instance_body("note").as_str())
                 .instance("agent", "scribe", SCRIBE)
@@ -99,6 +104,22 @@ async fn capture(gw: &EscurelProcess, skill: &str) -> String {
     )
     .await;
     r["event_id"].as_str().unwrap().to_owned()
+}
+
+/// File `run:<run_id>:started` for `skill` as the runner holding `token`
+/// does before it asks for the run's token.
+async fn start_run(gw: &EscurelProcess, token: &str, run_id: &str, skill: &str) {
+    let r = rpc(
+        gw,
+        token,
+        "capture_event",
+        json!({ "event_id": format!("run:{run_id}:started"), "source": "escurel-runner",
+                "mime": "application/json", "label_skill": "escurel:run", "kind": "system",
+                "title": "run-started", "body": "{}",
+                "provenance": { "runner": { "run_id": run_id, "skill": skill } } }),
+    )
+    .await;
+    assert!(r.get("error").is_none(), "run-started filed: {r}");
 }
 
 fn claims_of(token: &str) -> Value {
@@ -215,6 +236,8 @@ async fn a_runner_with_only_the_runner_role_runs_an_agent_skill_confined_by_its_
 async fn mint_run_token_signs_the_minted_shape_and_refuses_foreign_runs_and_machines() {
     let gw = gateway().await;
     let ooc = runner_token(&gw, "runner:ooc");
+    start_run(&gw, &ooc, "01RUNA", "note").await;
+    start_run(&gw, &ooc, "01RUNB", "note").await;
     let minted = call(
         &gw,
         &ooc,
@@ -260,15 +283,7 @@ async fn mint_run_token_signs_the_minted_shape_and_refuses_foreign_runs_and_mach
     assert!(c.get("skill").is_none(), "{c}");
 
     // A run another holder started is not this caller's to mint for.
-    call(
-        &gw,
-        &ooc,
-        "capture_event",
-        json!({ "event_id": "run:01RUND:started", "source": "escurel-runner",
-                "mime": "application/json", "label_skill": "escurel:run", "kind": "system",
-                "title": "run-started", "body": "{}" }),
-    )
-    .await;
+    start_run(&gw, &ooc, "01RUND", "note").await;
     let other = runner_token(&gw, "runner:other");
     let body = rpc(
         &gw,
@@ -311,6 +326,7 @@ async fn mint_run_token_signs_the_minted_shape_and_refuses_foreign_runs_and_mach
     )
     .await;
     assert_eq!(body["error"]["data"]["code"], "admin_required", "{body}");
+    start_run(&gw, &ooc, "01RUNH", "note").await;
     let body = rpc(
         &gw,
         &ooc,
@@ -319,4 +335,79 @@ async fn mint_run_token_signs_the_minted_shape_and_refuses_foreign_runs_and_mach
     )
     .await;
     assert_eq!(body["error"]["data"]["code"], "agent_unknown", "{body}");
+}
+
+/// `mint_run_token` is the trust boundary of a keyless runner: the token it
+/// signs carries the skill's write groups, so a runner credential gets one
+/// only for a run it started itself, of that very skill, as an agent that
+/// lists the skill. An admin may mint for any run it has not left to another.
+#[tokio::test]
+async fn mint_run_token_mints_only_for_the_callers_own_run_of_a_listed_skill() {
+    let gw = gateway().await;
+    let ooc = runner_token(&gw, "runner:ooc");
+    let mint = |run: &str, skill: &str, agent: Option<&str>| {
+        let mut args = json!({ "run_id": run, "skill": skill, "ttl_secs": 600 });
+        if let Some(a) = agent {
+            args["agent"] = json!(a);
+        }
+        args
+    };
+    let code = |body: &Value| body["error"]["data"]["code"].clone();
+
+    // A run the caller never started: nothing to mint for.
+    let body = rpc(&gw, &ooc, "mint_run_token", mint("01NONE", "payroll", None)).await;
+    assert_eq!(code(&body), "run_unknown", "{body}");
+
+    // Its own run of `note` does not reach `payroll`'s groups.
+    start_run(&gw, &ooc, "01NOTE", "note").await;
+    let body = rpc(&gw, &ooc, "mint_run_token", mint("01NOTE", "payroll", None)).await;
+    assert_eq!(code(&body), "run_not_yours", "{body}");
+
+    // A run another runner started, of the very skill asked for.
+    let other = runner_token(&gw, "runner:other");
+    start_run(&gw, &other, "01PAY", "payroll").await;
+    let body = rpc(&gw, &ooc, "mint_run_token", mint("01PAY", "payroll", None)).await;
+    assert_eq!(code(&body), "run_not_yours", "{body}");
+
+    // An agent that does not list the skill, even on the caller's own run.
+    start_run(&gw, &ooc, "01OWNPAY", "payroll").await;
+    let body = rpc(
+        &gw,
+        &ooc,
+        "mint_run_token",
+        mint("01OWNPAY", "payroll", Some("scribe")),
+    )
+    .await;
+    assert_eq!(code(&body), "agent_scope_denied", "{body}");
+
+    // A skill no page declares: never a groupless token, not even for an admin.
+    start_run(&gw, &ooc, "01GHOST", "ghost-skill").await;
+    let body = rpc(
+        &gw,
+        &ooc,
+        "mint_run_token",
+        mint("01GHOST", "ghost-skill", None),
+    )
+    .await;
+    assert_eq!(code(&body), "skill_unknown", "{body}");
+    let body = rpc(
+        &gw,
+        &admin(&gw),
+        "mint_run_token",
+        mint("01ADMINGHOST", "ghost-skill", None),
+    )
+    .await;
+    assert_eq!(code(&body), "skill_unknown", "{body}");
+
+    // The happy path: its own run of payroll, no agent.
+    let ok = call(
+        &gw,
+        &ooc,
+        "mint_run_token",
+        mint("01OWNPAY", "payroll", None),
+    )
+    .await;
+    let c = claims_of(ok["token"].as_str().unwrap());
+    assert_eq!(c["roles"], json!(["escurel:agent", "finance"]), "{c}");
+    assert_eq!(c["skill"], "payroll", "{c}");
 }

@@ -162,6 +162,23 @@ fn is_runtime_instance(page_id: &str, parsed: &escurel_md::Page<'_>) -> bool {
             == Some(runtime)
 }
 
+/// The groups a skill's `acl.create` / `acl.update` grant, de-duplicated in
+/// declaration order: what a per-run token narrowed to that skill carries.
+#[must_use]
+pub fn write_groups(acl: Option<&AclPolicy>) -> Vec<String> {
+    let mut groups: Vec<String> = Vec::new();
+    for g in acl
+        .iter()
+        .flat_map(|a| a.create.iter().chain(a.update.iter()).flatten())
+    {
+        let g = g.trim();
+        if !g.is_empty() && !groups.iter().any(|w| w == g) {
+            groups.push(g.to_owned());
+        }
+    }
+    groups
+}
+
 fn subject_hash(subject: &str) -> String {
     format!("{:x}", Sha256::digest(subject.as_bytes()))
 }
@@ -1110,17 +1127,7 @@ impl Indexer {
     /// skill grants no write or does not exist — a token that can write nothing.
     pub async fn skill_write_groups(&self, skill: &str) -> Result<Vec<String>, IndexerError> {
         let acl = self.skill_acl(skill).await?.and_then(|(acl, _, _)| acl);
-        let mut groups: Vec<String> = Vec::new();
-        for g in acl
-            .iter()
-            .flat_map(|a| a.create.iter().chain(a.update.iter()).flatten())
-        {
-            let g = g.trim();
-            if !g.is_empty() && !groups.iter().any(|w| w == g) {
-                groups.push(g.to_owned());
-            }
-        }
-        Ok(groups)
+        Ok(write_groups(acl.as_ref()))
     }
 
     /// The `(acl, owner_field, instance_acl_disabled)` a skill declares, or `None` when no such
@@ -1132,10 +1139,8 @@ impl Indexer {
         skill: &str,
     ) -> Result<Option<(Option<AclPolicy>, Option<String>, bool)>, IndexerError> {
         Ok(self
-            .list_skills()
+            .skill(skill)
             .await?
-            .into_iter()
-            .find(|s| s.id == skill)
             .map(|s| (s.acl, s.owner_field, s.instance_acl_disabled)))
     }
 

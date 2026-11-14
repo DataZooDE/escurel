@@ -269,7 +269,16 @@ credential**, each with a narrow authority of its own. Unlike
   other page write, no admin tool, `list_runtimes` without the admin detail.
   `whoami` answers `service: "runner"`. An out-of-cluster runner holds only
   this and **no signing key**: the gateway mints each run's token
-  (`mint_run_token`, references/02, references/11).
+  (`mint_run_token`, references/02, references/11). **What that reaches:** a
+  run token carries the run skill's `acl.create` / `acl.update` groups (and,
+  as those groups, whatever they may read tenant-wide), so the gateway mints
+  one only for a run whose `run-started` the same credential filed, of that
+  very skill, and — for an agent run — only when the agent page lists the
+  skill. A runner credential therefore reaches the skills it actually runs,
+  never another skill's groups by naming it. It also **reads every event
+  body** in the tenant, including ACL-restricted ones (chat, HR): it must, to
+  decide what to admit. Treat it as a credential with tenant-wide read on the
+  event bus.
 - **`escurel:bridge`** — a chat bridge's service credential (`whoami`
   `service: "bridge"`); its minting tool arrives with the bridge work.
 
