@@ -123,7 +123,9 @@ honest. Also there: `escurel_tool_calls`, `escurel_tool_latency_ms`,
 - **Outbound calls to REST / MCP sources** (`openapi` / `mcp` skills; `ESCUREL_EGRESS_*`): the gateway
   refuses plain http and any loopback / private address by default. For a LOCAL outside system (a mock,
   a service on `127.0.0.1`) start the gateway with `ESCUREL_EGRESS_ALLOW_LOOPBACK=1`; never in
-  production. Tunables: `ESCUREL_EGRESS_MAX_RESPONSE_BYTES` (4 MiB), `_TIMEOUT_MS` (10 000, max 30 000),
+  production. The same flag is the only way a group directory or Teams URL
+  (`ESCUREL_AUTH_{GRAPH,GOOGLE,OKTA,TEAMS}_*_URL`) may be plain http to a local stand-in; otherwise boot
+  refuses it. Tunables: `ESCUREL_EGRESS_MAX_RESPONSE_BYTES` (4 MiB), `_TIMEOUT_MS` (10 000, max 30 000),
   `_MAX_CONCURRENCY` (8), `_RATE_PER_SEC` (50, per tenant+endpoint), `_WRITE_RETRY_BACKOFF_MS` (500).
   Secrets for an endpoint are referenced (`secret_ref`), e.g. `gsm:CRM_TOKEN` reads
   `ESCUREL_SECRET_<TENANT>__CRM_TOKEN` (tenant `acme` → `ESCUREL_SECRET_ACME__CRM_TOKEN`). In Rust tests, `escurel_test_support::ConfigOverrides.egress` takes an
