@@ -285,25 +285,21 @@ that `requires:` it.
 
 ### Teams chat: `escurel-chat-bridge`
 
-A separate binary answers 1:1 Microsoft Teams chats from escurel. A Teams message becomes the
-asker's page-chat turn plus a `chat` event, and the runner's reply goes back once. Run it next to a
-verifying gateway and a minted-mode runner. The bridge signs with a key of its OWN and serves its
-public half at `GET /.well-known/jwks.json`; the gateway trusts it as one more issuer
-(`ESCUREL_AUTH_OIDC_ISSUER_<N>` = the bridge's `ESCUREL_BRIDGE_AUTH_ISSUER`,
-`ESCUREL_AUTH_JWKS_URI_<N>` = `http://<bridge>/.well-known/jwks.json`, https outside a laptop) and
-restricts it by naming that issuer in `ESCUREL_AUTH_BRIDGE_ISSUER`, its kid in
-`ESCUREL_AUTH_BRIDGE_KID` and the served tenant in `ESCUREL_AUTH_BRIDGE_TENANT` (never the
-gateway's or the runner's key; references/08 § chat bridge lists the few tools a bridge token may
-call):
+A separate binary answers Microsoft Teams from escurel: 1:1 chats, and @mentions in group chats and
+channel threads an admin mapped to a group (`chat-channel` pages, references/01). A Teams message
+becomes a page-chat turn plus a `chat` event, and the runner's reply goes back once. Run it next to
+a verifying gateway that can mint (`ESCUREL_AUTH_SIGNING_KEY`), knows how to name a Teams user
+(`ESCUREL_AUTH_BRIDGE_PRINCIPAL_TEMPLATE='user:{aadObjectId}'`) and where their groups live
+(`ESCUREL_AUTH_GROUP_DIRECTORIES=graph|google|okta` plus that provider's keys, `docs/deploy/env.md`),
+and a minted-mode runner. The bridge holds **no signing key**: it gets each turn's token from the
+gateway (`mint_user_token`) on its own `escurel:bridge` credential (references/08):
 
 ```sh
 cargo build -p escurel-chat-bridge
 ESCUREL_BRIDGE_GATEWAY_URL=<gateway_url> ESCUREL_BRIDGE_TENANT=<tenant> \
-ESCUREL_BRIDGE_AUTH_ISSUER=<bridge issuer_url> ESCUREL_BRIDGE_AUTH_KID=<bridge kid> \
-ESCUREL_BRIDGE_AUTH_SIGNING_KEY=<bridge signing_key> \
+ESCUREL_BRIDGE_GATEWAY_TOKEN=<token with roles [escurel:bridge]> \
 ESCUREL_BRIDGE_TEAMS_APP_ID=<bot app id> ESCUREL_BRIDGE_TEAMS_APP_PASSWORD=<secret> \
-ESCUREL_BRIDGE_TEAMS_ALLOWED_TENANTS=<entra tenant id> \
-ESCUREL_BRIDGE_PRINCIPAL_TEMPLATE='user:{aadObjectId}' ESCUREL_BRIDGE_STATE_PATH=./bridge.duckdb \
+ESCUREL_BRIDGE_TEAMS_ALLOWED_TENANTS=<entra tenant id> ESCUREL_BRIDGE_STATE_PATH=./bridge.duckdb \
   target/debug/escurel-chat-bridge          # POST /api/messages on :3978
 ```
 
@@ -311,18 +307,19 @@ The tenant needs the chat corpus (`conversation` + `chat`), shipped as files in
 `examples/chat/seed/skills/` (`escurel page update markdown/skills/<s>.md < examples/chat/seed/skills/<s>.md`
 as an admin, or `ESCUREL_SEED_DIR=examples/chat/seed` on a dev gateway). A gateway outage mid-turn is
 retried with capped backoff until the turn's reply deadline (arrival + `ESCUREL_BRIDGE_REPLY_TIMEOUT`),
-then the person gets one timeout notice. The principal template is required and
-must name `{aadObjectId}` or `{userId}` (the bridge refuses a template that maps everyone to one
-subject); it must give the person's own token `sub`, because the bridge signs a token for that
-subject and acts as them. Only explicitly `personal` (1:1) chats from an allowed Entra tenant on the
-`msteams` channel are answered. A real Teams tenant needs an Entra app and an Azure Bot pointing at a public
-`https://…/api/messages`. A test replaces Microsoft with local HTTP stand-ins: OpenID metadata +
-JWKS (`ESCUREL_BRIDGE_TEAMS_OPENID_METADATA_URL`), the token endpoint
-(`ESCUREL_BRIDGE_TEAMS_TOKEN_URL`) and a connector at the activity's `serviceUrl`, as
-`crates/escurel-chat-bridge/tests/teams_roundtrip.rs` does (`ExtraIssuer::sign` signs the channel
-token, `ExtraIssuer::start_with_own_key` gives the bridge its key, the gateway's
-`ConfigOverrides::extra_issuers` points at the bridge's own `/.well-known/jwks.json` and
-`ConfigOverrides::bridge_kids` restricts it, `RunnerProcess` starts the runner; references/06). Setup and the full env:
+then the person gets one timeout notice. A shared chat the gateway declines (unmapped, the sender
+not in its group, the directory unreachable) gets one polite reply and no run. A real Teams tenant
+needs an Entra app and an Azure Bot pointing at a public `https://…/api/messages`. A test replaces
+the outside world with local HTTP stand-ins, as `crates/escurel-chat-bridge/tests/teams_roundtrip.rs`
+does: Microsoft's OpenID metadata + JWKS (`ESCUREL_BRIDGE_TEAMS_OPENID_METADATA_URL`), token endpoint
+(`ESCUREL_BRIDGE_TEAMS_TOKEN_URL`), members API and connector at the activity's `serviceUrl`
+(`ExtraIssuer::sign` signs the channel token), and the group directories
+(`escurel_test_support::DirectoryStandIn::{graph,google,okta}` with `member_of`, `down` /
+`answer_with(<status>)`; the gateway's `ConfigOverrides { signing: true, bridge_mint:
+Some(bridge_mint(template, vec![stand_in.config("escurel-")], cache)) }`); `RunnerProcess` starts
+the runner (references/06). The deprecated self-signed bridge (`ESCUREL_BRIDGE_AUTH_*` +
+`ESCUREL_BRIDGE_PRINCIPAL_TEMPLATE`, gateway `ESCUREL_AUTH_BRIDGE_ISSUER` / `_KID` / `_TENANT`)
+still runs for this release, 1:1 only and without groups. Setup and the full env:
 `docs/deploy/chat-bridge.md`.
 
 ## The iterate loop

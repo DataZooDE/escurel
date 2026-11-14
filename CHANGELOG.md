@@ -51,6 +51,30 @@ Runner gaps (#827):
   day's first skip files a `run-skipped` record, and a skipped delivery stays skipped. `hook:` event ids are
   reserved like `sched:`.
 
+Chat bridge: gateway-minted turns, directory groups, group chats (#830):
+
+- **`mint_user_token`**: the Teams bridge holds no signing key. On its own `escurel:bridge` credential
+  (`ESCUREL_BRIDGE_GATEWAY_TOKEN[_FILE]`) it gets each turn's token from the gateway, which decides the subject
+  (`ESCUREL_AUTH_BRIDGE_PRINCIPAL_TEMPLATE`, moved from the bridge) and the groups.
+- **Group directories**: `ESCUREL_AUTH_GROUP_DIRECTORIES=graph,google,okta` (any subset) — Microsoft Graph
+  (`transitiveMemberOf`, by Entra object id), Google Cloud Identity (`searchTransitiveGroups`, service-account
+  JWT-bearer, by email) and Okta (`users/{login}/groups`, SSWS token, by email or UPN). The token carries the union,
+  mapped per provider by a prefix and/or a map file; reserved names are never produced. Cached 10 min, a stale
+  answer used for up to 1 h while a directory is down, then one "can't check your access right now" reply. The
+  bridge reads the sender's email / UPN from the Bot Framework conversation-members API. A 1:1 asker now reads what
+  their directory groups may read; the chat run carries those groups (`captured_groups`).
+- **Group chats and channels**: an @mention of the bot in a Teams group chat or channel thread is answered when an
+  admin maps the conversation with a page of the new admin-only `chat-channel` system skill. The run acts as
+  `group:<g>` with `<g>`'s access only, the asker recorded (`asked_by`, `act.sub`) and required to be a member of
+  `<g>`. An unmapped chat or a non-member gets one polite reply and no run. Channel replies go to the thread root.
+- UI: VS Code Knowledge view lists `chat-channel` pages with a "Map Teams conversation" form (admin); explore's
+  Chat tab labels a conversation that acts as a group.
+
+**Deprecated:** the chat bridge signing its own turns (`ESCUREL_BRIDGE_AUTH_ISSUER` / `_KID` / `_SIGNING_KEY` and
+`ESCUREL_BRIDGE_PRINCIPAL_TEMPLATE` on the bridge, `ESCUREL_AUTH_BRIDGE_ISSUER` / `_KID` / `_TENANT` on the gateway).
+It still works for this release (1:1 chats, no groups) and logs a deprecation at both ends; it is removed in the
+next release.
+
 **Behaviour changes to note:**
 - A runner on a static/file token now asks a signing gateway for each run's token, so its ordinary runs write as
   `agent:<skill>` (as a minting runner's do) instead of as the runner.

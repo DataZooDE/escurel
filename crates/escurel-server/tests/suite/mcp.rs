@@ -152,9 +152,9 @@ async fn list_skills_returns_seeded_skills_plus_meta_skill() {
     let result = call_tool(&p, "list_skills", json!({})).await;
     let skills = result["skills"].as_array().expect("skills array");
     let ids: Vec<&str> = skills.iter().filter_map(|s| s["id"].as_str()).collect();
-    // Three seeded skills plus the three system skills every tenant ships:
-    // the `escurel` meta-skill (locked decision 3), `agent` (#823) and
-    // `runtime` (#818).
+    // Three seeded skills plus the system skills every tenant ships: the
+    // `escurel` meta-skill (locked decision 3), `agent` (#823), `runtime`
+    // (#818) and `chat-channel` (#830).
     assert!(ids.contains(&"customer"));
     assert!(ids.contains(&"meeting"));
     assert!(ids.contains(&"query"));
@@ -164,7 +164,8 @@ async fn list_skills_returns_seeded_skills_plus_meta_skill() {
         ids.contains(&"runtime"),
         "runtime skill present; got {ids:?}"
     );
-    assert_eq!(ids.len(), 6);
+    assert!(ids.contains(&"chat-channel"), "chat-channel present; got {ids:?}");
+    assert_eq!(ids.len(), 7);
     p.shutdown().await;
 }
 
