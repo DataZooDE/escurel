@@ -454,7 +454,7 @@ export interface RunInjection {
   at?: string;
 }
 
-export type TranscriptKind = 'tool_call' | 'tool_result' | 'message' | 'error';
+export type TranscriptKind = 'tool_call' | 'tool_result' | 'message' | 'error' | 'command';
 
 /** One row of a run transcript, cleaned by the host (src/runs/transcript.ts). */
 export interface TranscriptRecord {

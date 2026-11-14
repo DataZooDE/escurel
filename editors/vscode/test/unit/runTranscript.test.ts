@@ -5,7 +5,7 @@ import { decodeTranscript, transcriptFailure, transcriptRequest } from '../../sr
 const b64 = (s: string) => Buffer.from(s, 'utf8').toString('base64');
 
 // The wire (put_run_transcript, references/02): JSONL, one `{ts, attempt, kind, name?, args_digest?,
-// summary}` per line, kind one of tool_call / tool_result / message / error.
+// summary}` per line, kind one of tool_call / tool_result / message / error / command.
 const JSONL = [
   { ts: '2026-11-13T06:00:00.000Z', attempt: 1, kind: 'message', summary: 'Reading the order.' },
   {
@@ -35,6 +35,18 @@ describe('run transcript', () => {
     expect(records.map((r) => r.offsetMs)).toEqual([0, 1500, 2000, 65_000]);
     expect(records[1]).toMatchObject({ i: 1, name: 'expand', attempt: 1, digest: 'sha256:abc' });
     expect(records[3]).toMatchObject({ attempt: 2, summary: 'timeout' });
+  });
+
+  it('keeps a shell command the agent ran (codex) as its own kind', () => {
+    const line = JSON.stringify({
+      ts: '2026-11-13T06:00:00Z',
+      attempt: 1,
+      kind: 'command',
+      summary: "/bin/bash -lc 'ls' (exit 0)",
+    });
+    expect(decodeTranscript(b64(line))).toEqual([
+      { i: 0, kind: 'command', attempt: 1, summary: "/bin/bash -lc 'ls' (exit 0)", offsetMs: 0 },
+    ]);
   });
 
   it('keeps the order the runner wrote when timestamps tie or are missing', () => {

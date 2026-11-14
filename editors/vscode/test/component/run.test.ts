@@ -812,6 +812,27 @@ describe('<escurel-run-detail> cost, transcript and steering', () => {
     expect(text(rows[4]!)).to.contain('+1 min 5 s');
   });
 
+  it('shows a shell command the agent ran in words, with its own filter', async () => {
+    const el = await render(costedRun);
+    tab(el, 'Transcript').click();
+    el.transcript = {
+      status: 'ready',
+      records: [
+        ...transcriptRecords,
+        { i: 5, kind: 'command', attempt: 2, summary: "/bin/bash -lc 'ls' (exit 0)" },
+      ],
+    };
+    await el.updateComplete;
+    const panel = q(el, 'escurel-run-transcript')!;
+    const row = panel.shadowRoot!.querySelector('.record[data-kind="command"]')!;
+    expect(text(row)).to.contain('Command');
+    expect(text(row)).to.contain("/bin/bash -lc 'ls' (exit 0)");
+    const filter = [...panel.shadowRoot!.querySelectorAll('.kind-filter')].find((b) =>
+      text(b).startsWith('Commands'),
+    );
+    expect(text(filter!)).to.equal('Commands (1)');
+  });
+
   it('filters the replay by kind with pressed toggle buttons', async () => {
     const el = await render(costedRun);
     tab(el, 'Transcript').click();

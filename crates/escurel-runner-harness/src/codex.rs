@@ -330,6 +330,8 @@ pub(crate) fn transcript_entries(line: &str) -> Vec<TranscriptEntry> {
 ///   `item.tool`, `item.arguments`), followed by a tool result when the
 ///   item carries its `result` or an error when it carries an `error`;
 /// - an error event ([`is_error_event`]) is an error (its `message`);
+/// - a completed `command_execution` item is a command (its `command` and
+///   `exit_code`), never a tool call;
 /// - an `agent_message` item is a message (its `text`).
 fn event_entries(event: &serde_json::Value) -> Vec<TranscriptEntry> {
     let item = &event["item"];
@@ -354,6 +356,18 @@ fn event_entries(event: &serde_json::Value) -> Vec<TranscriptEntry> {
         return vec![TranscriptEntry::new(TranscriptKind::Error, text)];
     }
     let item_type = item["type"].as_str().or_else(|| item["item_type"].as_str());
+    if item_type == Some("command_execution") {
+        // The started item is the same command again, without its exit code.
+        if event["type"] != "item.completed" {
+            return Vec::new();
+        }
+        let command = item["command"].as_str().unwrap_or("(command)");
+        let text = match item["exit_code"].as_i64() {
+            Some(code) => format!("{command} (exit {code})"),
+            None => command.to_owned(),
+        };
+        return vec![TranscriptEntry::new(TranscriptKind::Command, text)];
+    }
     if item_type == Some("agent_message")
         && let Some(text) = item["text"].as_str().filter(|t| !t.trim().is_empty())
     {
@@ -672,6 +686,28 @@ mod tests {
         let outcome = parse_outcome("done", REAL_SHELL.as_bytes()).expect("parse");
         assert_eq!(outcome.tool_calls, 0);
         assert!(outcome.ok);
+    }
+
+    /// #827: the shell command is in the transcript all the same, as a
+    /// `command` record (once: the started item is not the command run),
+    /// with its exit code.
+    #[test]
+    fn a_real_shell_command_is_a_command_record() {
+        let (kinds, entries) = kinds_of(REAL_SHELL);
+        assert_eq!(
+            kinds,
+            [
+                TranscriptKind::Message,
+                TranscriptKind::Command,
+                TranscriptKind::Message,
+            ],
+            "{entries:?}"
+        );
+        assert_eq!(
+            entries[1].text,
+            "/bin/bash -lc 'echo escurel-fixture' (exit 0)"
+        );
+        assert_eq!(entries[1].name, None, "not a tool, so never counted as one");
     }
 
     #[test]

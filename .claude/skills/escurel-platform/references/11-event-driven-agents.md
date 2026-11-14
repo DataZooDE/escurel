@@ -896,13 +896,13 @@ adapter normalises its own stream into records:
 | harness | source |
 |---|---|
 | `claude` | stream-json: `tool_use` → `tool_call`, `tool_result` → `tool_result` (`error` when `is_error`), assistant text → `message`, a failed `result` → `error` |
-| `codex` | `--json` events: MCP tool-call items → `tool_call` (+ `tool_result` / `error` from the item), `agent_message` → `message`, error events → `error` |
+| `codex` | `--json` events: MCP tool-call items → `tool_call` (+ `tool_result` / `error` from the item), `agent_message` → `message`, a completed `command_execution` → `command` (`<command> (exit <code>)`, scrubbed like every summary; not a tool call), error events → `error` |
 | `gemini`, `gemini-vertex` | its in-process turns: each function call, its gateway answer, the model's text, and a call refused before the wire |
 | `echo` | the lines of `ESCUREL_ECHO_TRANSCRIPT` (tests script the stream with it) |
 | `agy`, `muse`, `delegate`, `alibaba`, `hetzner`, `openai-compatible` | none yet — `run-finished.transcript` stays `null` |
 
 A record is `{ts, attempt, kind, name?, args_digest?, summary}`: `kind` is
-`tool_call` / `tool_result` / `message` / `error`; arguments are never
+`tool_call` / `tool_result` / `message` / `error` / `command`; arguments are never
 stored, only `args_digest` (`sha256:` of the canonical, key-sorted args
 JSON — the same arguments always digest the same); `summary` is at most 200
 characters, scrubbed of credentials before it is cut: `Bearer …`, JWTs,

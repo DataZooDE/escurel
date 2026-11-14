@@ -363,7 +363,7 @@ in the runner).
 **Run transcripts (#822).** Each harness adapter normalises its own
 structured stream (claude stream-json, codex `--json` events, gemini's
 in-process turns, the echo harness's scripted lines) into transcript
-records `{ts, attempt, kind: tool_call|tool_result|message|error, name?,
+records `{ts, attempt, kind: tool_call|tool_result|message|error|command, name?,
 args_digest?, summary}` — one parser per harness: the outcome's `tool_calls`
 count is derived from the same records (for claude that replaces the old
 `num_turns`, which counted model turns, not calls). Arguments never leave

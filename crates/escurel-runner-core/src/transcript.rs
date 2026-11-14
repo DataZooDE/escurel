@@ -47,6 +47,10 @@ pub enum TranscriptKind {
     Message,
     /// Something went wrong (a refused call, an error event, a failed result).
     Error,
+    /// The agent ran a shell command (codex `command_execution`): the command
+    /// line and its exit code. Not a tool call — it does not go through the
+    /// gateway — so it is never counted in `tool_calls`.
+    Command,
 }
 
 /// One normalised stream item, as an adapter reads it — before digesting

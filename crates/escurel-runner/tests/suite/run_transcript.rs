@@ -227,3 +227,112 @@ async fn a_finished_run_carries_a_redacted_transcript_its_readers_can_replay() {
     let still = call(&gw, &admin, "fetch_blob", json!({ "run_id": run_id })).await;
     assert_eq!(decoded(&still), jsonl, "a refused put changed nothing");
 }
+
+/// A stand-in `codex` CLI replaying a real codex-cli 0.168.0 `exec --json`
+/// stream (`escurel-runner-harness/tests/fixtures/codex-0.168.0-shell-command.jsonl`)
+/// whose shell command carries a key, as an agent's `curl` would.
+fn codex_stub(dir: &std::path::Path) -> std::path::PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let command = format!("/bin/bash -lc 'curl -H \"x-api-key: {FAKE_KEY}\" https://api.example'");
+    let stream = [
+        json!({"type":"thread.started","thread_id":"00000000-0000-0000-0000-000000000000"}),
+        json!({"type":"turn.started"}),
+        json!({"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"I’ll run the command now.\n"}}),
+        json!({"type":"item.started","item":{"id":"item_1","type":"command_execution","command":command,"aggregated_output":"","exit_code":null,"status":"in_progress"}}),
+        json!({"type":"item.completed","item":{"id":"item_1","type":"command_execution","command":command,"aggregated_output":"{}\n","exit_code":7,"status":"failed"}}),
+        json!({"type":"item.completed","item":{"id":"item_2","type":"agent_message","text":"done"}}),
+        json!({"type":"turn.completed","usage":{"input_tokens":33233,"cached_input_tokens":28544,"output_tokens":49}}),
+    ]
+    .iter()
+    .map(Value::to_string)
+    .collect::<Vec<_>>()
+    .join("\n");
+    let jsonl = dir.join("stream.jsonl");
+    std::fs::write(&jsonl, stream).unwrap();
+    let bin = dir.join("codex");
+    std::fs::write(
+        &bin,
+        format!(
+            "#!/bin/sh\nif [ \"$1\" = --version ]; then echo 'codex-cli 0.168.0'; exit 0; fi\n\
+             cat > /dev/null\ncat '{}'\n",
+            jsonl.display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+    bin
+}
+
+/// #827: a codex run's shell commands are in its transcript as `command`
+/// records, scrubbed like every other record, and are not tool calls.
+#[tokio::test]
+async fn a_codex_shell_command_is_a_redacted_command_record() {
+    let gw = gateway().await;
+    let dir = tempfile::tempdir().unwrap();
+    let codex = codex_stub(dir.path());
+    let admin = gw.mint_token(TENANT, Role::Admin);
+    let runner = RunnerProcess::echo(&gw, TENANT)
+        .minted()
+        .env("ESCUREL_RUNNER_HARNESS", "codex")
+        .env("ESCUREL_RUNNER_CODEX_BIN", codex.display().to_string())
+        .env("ESCUREL_RUNNER_MAX_ATTEMPTS", "1")
+        .spawn();
+    let captured = call(
+        &gw,
+        &admin,
+        "capture_event",
+        json!({ "source": "manual", "mime": "text/plain", "label_skill": "renewal",
+                "instance_page_id": PAGE, "title": "renew", "body": "please renew" }),
+    )
+    .await;
+    let event_id = captured["event_id"].as_str().unwrap().to_owned();
+    let run = runner
+        .wait_for_status(
+            &event_id,
+            &["pending", "processed", "failed", "dead_lettered"],
+            Duration::from_secs(60),
+        )
+        .await;
+    let run_id = run["run_id"].as_str().unwrap().to_owned();
+    // The stub writes nothing, so the run does not reconcile; it finishes all
+    // the same, and run-finished names its transcript.
+    let deadline = std::time::Instant::now() + Duration::from_secs(60);
+    let finished = loop {
+        let events = call(&gw, &admin, "list_events", json!({ "run_id": run_id })).await;
+        if let Some(e) = events["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|e| e["title"] == "run-finished")
+        {
+            break e.clone();
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "no run-finished: {events}"
+        );
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    };
+    assert_eq!(body_of(&finished)["transcript"]["records"], 3, "{finished}");
+    let jsonl = decoded(&call(&gw, &admin, "fetch_blob", json!({ "run_id": run_id })).await);
+    let records: Vec<Value> = jsonl
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    let kinds: Vec<&str> = records
+        .iter()
+        .map(|r| r["kind"].as_str().unwrap())
+        .collect();
+    assert_eq!(kinds, ["message", "command", "message"], "{jsonl}");
+    // The scrubber takes the credential up to the next blank, quote and all.
+    let summary = records[1]["summary"].as_str().unwrap();
+    assert!(
+        summary.starts_with("/bin/bash -lc 'curl -H \"x-api-key: [redacted]")
+            && summary.ends_with(" https://api.example' (exit 7)"),
+        "{jsonl}"
+    );
+    assert!(records[1].get("args_digest").is_none(), "{jsonl}");
+    for secret in ["sk-ant", "FAKEFAKE"] {
+        assert!(!jsonl.contains(secret), "`{secret}` leaked: {jsonl}");
+    }
+}

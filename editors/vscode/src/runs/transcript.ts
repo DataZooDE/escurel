@@ -10,7 +10,7 @@ import { describeError } from '../errors';
 import { parseGatewayTime } from '../shared/time';
 import { cleanText } from '../shared/untrustedText';
 
-const KINDS = new Set<TranscriptKind>(['tool_call', 'tool_result', 'message', 'error']);
+const KINDS = new Set<TranscriptKind>(['tool_call', 'tool_result', 'message', 'error', 'command']);
 /** The runner keeps at most 4000 records per run; anything past that is not a transcript it wrote. */
 const MAX_RECORDS = 4000;
 
