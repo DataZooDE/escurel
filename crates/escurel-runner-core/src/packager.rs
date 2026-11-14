@@ -227,6 +227,12 @@ pub enum PackageError {
     /// A credential is configured but could not be minted.
     #[error("could not mint the runner's gateway bearer: {0}")]
     Auth(String),
+    /// The gateway did not mint the run's token (`mint_run_token`, #828) for a
+    /// reason other than "this gateway cannot mint": a timeout, a 5xx, a
+    /// refusal. Retryable, and never answered by handing the harness the
+    /// runner's own bearer instead.
+    #[error("the gateway did not mint the run's token: {0}")]
+    RunToken(String),
     /// A WORKFLOW run's board carries no `requested_by` (crew final-review F2):
     /// the run must execute as the requester, and falling back to the runner's
     /// admin bearer would reinstate the confused deputy. Fail the run instead of
@@ -525,11 +531,11 @@ enum CallerToken {
 }
 
 /// The run's token from the gateway (`mint_run_token`, #828), for a runner
-/// whose source mints there. `Ok(None)` when it does not (or the gateway
-/// cannot mint), so the caller decides as it always has. An agent run whose
-/// mint the gateway REFUSED fails here: it must never fall back to the
-/// runner's own identity; an ordinary run falls back with a warning, as a
-/// failed local mint does.
+/// whose source mints there. `Ok(None)` only when it does not, or the gateway
+/// said it cannot mint at all (no signing key, an older image): the caller then
+/// decides as it always has. Any other failure — a timeout, a 5xx, a refusal —
+/// fails the attempt (retryably): handing the harness the runner's own bearer
+/// because the gateway blinked would defeat the narrowing the mint exists for.
 async fn gateway_run_token(
     tokens: &crate::TokenSource,
     client: &Client,
@@ -555,19 +561,10 @@ async fn gateway_run_token(
         grant: if wide { "wide" } else { "narrowed" }.to_owned(),
         ttl_secs,
     };
-    match tokens.mint_run(client, req).await {
-        Ok(token) => Ok(token),
-        Err(e) if !agent.is_empty() => Err(PackageError::Auth(e.to_string())),
-        Err(e) => {
-            tracing::warn!(
-                target: "escurel_runner",
-                label_skill = %trigger.label_skill,
-                error = %e,
-                "per-run token not minted by the gateway; the run writes as the runner"
-            );
-            Ok(None)
-        }
-    }
+    tokens
+        .mint_run(client, req)
+        .await
+        .map_err(|e| PackageError::RunToken(e.to_string()))
 }
 
 /// Decide the per-run credential for `trigger`. A workflow run must execute as
@@ -615,8 +612,9 @@ async fn caller_scoped_token(
                 ) {
                     Ok(Some(token)) => Ok(CallerToken::Agent { token }),
                     Ok(None) => Err(PackageError::Auth(format!(
-                        "agent `{}` needs a minting runner: a static bearer cannot run as an \
-                         agent",
+                        "agent `{}` needs a run token minted as the agent: this runner holds no \
+                         signing key and the gateway cannot mint one (give the gateway \
+                         ESCUREL_AUTH_SIGNING_KEY, or the runner ESCUREL_RUNNER_AUTH_SIGNING_KEY)",
                         profile.id
                     ))),
                     Err(e) => Err(PackageError::Auth(e.to_string())),

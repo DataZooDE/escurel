@@ -17,7 +17,7 @@ use escurel_test_support::{
 };
 use serde_json::{Value, json};
 
-use crate::support::{RunnerProcess, call};
+use crate::support::{GatewayProxy, ProxyRule, RunnerProcess, call};
 
 const TENANT: &str = "acme";
 
@@ -46,13 +46,22 @@ fn page_id(skill: &str) -> String {
     format!("markdown/instances/{skill}/c1.md")
 }
 
+/// A skill with no agent: an ordinary run, on the skill's own write groups.
+const PLAIN: &str = "---\nkind: skill\nid: plain\nautonomy: auto\n\
+    acl:\n  create: [ops]\n  update: [ops]\n---\n# plain\n\nFold the event into the instance.\n";
+
 async fn gateway() -> EscurelProcess {
+    gateway_signing(true).await
+}
+
+/// `signing`: whether the gateway holds a signing key (and so can mint run tokens).
+async fn gateway_signing(signing: bool) -> EscurelProcess {
     EscurelProcess::spawn(Opts {
         auth: AuthMode::TestIssuer,
         config_overrides: ConfigOverrides {
             write_acl: Some(WriteAclMode::Enforce),
             event_acl: Some(EventAclMode::Enforce),
-            signing: true,
+            signing,
             ..Default::default()
         },
         fixtures: Some(
@@ -61,13 +70,29 @@ async fn gateway() -> EscurelProcess {
                 .skill("customer", skill("customer").as_str())
                 .skill("note", skill("note").as_str())
                 .skill("payroll", PAYROLL)
+                .skill("plain", PLAIN)
                 .instance("customer", "c1", instance_body("customer").as_str())
                 .instance("note", "c1", instance_body("note").as_str())
+                .instance("plain", "c1", instance_body("plain").as_str())
                 .instance("agent", "scribe", SCRIBE)
                 .done(),
         ),
     })
     .await
+}
+
+/// The body of `run:<run_id>:<suffix>`.
+async fn run_event(gw: &EscurelProcess, run_id: &str, suffix: &str) -> Value {
+    let found = call(
+        gw,
+        &admin(gw),
+        "list_events",
+        json!({ "event_id": format!("run:{run_id}:{suffix}") }),
+    )
+    .await;
+    let event = &found["events"][0];
+    assert!(event.is_object(), "no run:{run_id}:{suffix}: {found}");
+    crate::support::body_of(event)
 }
 
 fn admin(gw: &EscurelProcess) -> String {
@@ -494,14 +519,7 @@ async fn a_revoke_between_attempts_runs_the_next_attempt_on_a_fresh_token() {
         .wait_for_status(&note, &["processed"], Duration::from_secs(60))
         .await;
     let run_id = done["run_id"].as_str().unwrap().to_owned();
-    let first = call(
-        &gw,
-        &admin(&gw),
-        "list_events",
-        json!({ "event_id": format!("run:{run_id}:attempt:1") }),
-    )
-    .await;
-    let first = crate::support::body_of(&first["events"][0]);
+    let first = run_event(&gw, &run_id, "attempt:1").await;
     assert_eq!(first["outcome"], "timeout", "attempt 1 timed out: {first}");
     let page = call(
         &gw,
@@ -515,4 +533,117 @@ async fn a_revoke_between_attempts_runs_the_next_attempt_on_a_fresh_token() {
         "{page}"
     );
     assert_eq!(page["page"]["last_written_by"], "agent:scribe", "{page}");
+}
+
+/// A gateway that FAILS a mint (a 5xx, a timeout, a refusal) is not a gateway
+/// that cannot mint: the attempt fails and is retried, and the harness never
+/// gets the runner's own bearer — here an admin's, which would have folded the
+/// event with the runner's full authority.
+#[tokio::test]
+async fn a_failed_mint_fails_the_attempt_and_never_runs_as_the_runner() {
+    let gw = gateway().await;
+    let proxy = GatewayProxy::start(
+        gw.base_url(),
+        ProxyRule {
+            tool: "mint_run_token",
+            delay: Duration::ZERO,
+            fail_with: Some(503),
+        },
+    )
+    .await;
+    let mut runner = RunnerProcess::echo(&gw, TENANT)
+        .static_bearer(gw.mint_token_with_sub(TENANT, Role::Admin, "runner:hq"))
+        .env("ESCUREL_RUNNER_GATEWAY_URL", &proxy.url)
+        .env("ESCUREL_RUNNER_MAX_ATTEMPTS", "2")
+        .env("ESCUREL_RUNNER_RETRY_BACKOFF", "100ms")
+        .spawn();
+    runner.wait_healthy().await;
+
+    let plain = capture(&gw, "plain").await;
+    let done = runner
+        .wait_for_status(&plain, &["failed", "dead_letter"], Duration::from_secs(60))
+        .await;
+    let run_id = done["run_id"].as_str().unwrap().to_owned();
+    for attempt in ["attempt:1", "attempt:2"] {
+        let a = run_event(&gw, &run_id, attempt).await;
+        assert!(
+            a["error"].as_str().is_some_and(|e| e.contains("mint")),
+            "{attempt} failed on the mint, and was retried: {a}"
+        );
+    }
+    let page = call(
+        &gw,
+        &admin(&gw),
+        "expand",
+        json!({ "page_id": page_id("plain") }),
+    )
+    .await;
+    assert!(
+        page["body"].as_str().unwrap().contains("BASELINE"),
+        "{page}"
+    );
+    assert!(
+        !page["body"].as_str().unwrap().contains("folded event"),
+        "{page}"
+    );
+}
+
+/// Against a gateway with NO signing key, a keyless runner falls back the
+/// documented way: an ordinary run writes as the runner's own subject, and an
+/// agent run is refused with a reason that names the fix — never run on the
+/// runner's own credential.
+#[tokio::test]
+async fn without_a_gateway_signing_key_ordinary_runs_write_as_the_runner_and_agent_runs_refuse() {
+    let gw = gateway_signing(false).await;
+    let mut runner = RunnerProcess::echo(&gw, TENANT)
+        .static_bearer(gw.mint_token_with_groups(
+            TENANT,
+            "runner:ooc",
+            &["escurel:runner", "ops"],
+            false,
+        ))
+        .env("ESCUREL_RUNNER_MAX_ATTEMPTS", "1")
+        .spawn();
+    runner.wait_healthy().await;
+
+    let plain = capture(&gw, "plain").await;
+    runner
+        .wait_for_status(&plain, &["processed"], Duration::from_secs(60))
+        .await;
+    let page = call(
+        &gw,
+        &admin(&gw),
+        "expand",
+        json!({ "page_id": page_id("plain") }),
+    )
+    .await;
+    assert!(
+        page["body"].as_str().unwrap().contains("folded event"),
+        "{page}"
+    );
+    assert_eq!(page["page"]["last_written_by"], "runner:ooc", "{page}");
+
+    let note = capture(&gw, "note").await;
+    let done = runner
+        .wait_for_status(&note, &["failed", "dead_letter"], Duration::from_secs(60))
+        .await;
+    let run_id = done["run_id"].as_str().unwrap().to_owned();
+    let finished = run_event(&gw, &run_id, "finished").await;
+    assert!(
+        finished["error"]
+            .as_str()
+            .is_some_and(|e| e.contains("scribe") && e.contains("ESCUREL_AUTH_SIGNING_KEY")),
+        "{finished}"
+    );
+    let page = call(
+        &gw,
+        &admin(&gw),
+        "expand",
+        json!({ "page_id": page_id("note") }),
+    )
+    .await;
+    assert!(
+        page["body"].as_str().unwrap().contains("BASELINE"),
+        "{page}"
+    );
 }

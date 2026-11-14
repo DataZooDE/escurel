@@ -565,6 +565,28 @@ mod tests {
         assert_eq!(source.current().expect("current"), fresh);
     }
 
+    /// A gateway's "cannot mint" answer is believed for a while, then asked again.
+    #[test]
+    fn the_gateway_cannot_mint_answer_expires() {
+        let now = now_secs();
+        assert!(!recently(0), "never answered");
+        assert!(recently(now), "just answered");
+        assert!(!recently(now - UNSUPPORTED_RETRY_SECS - 1), "long ago");
+        let source = TokenSource::via_gateway(TokenSource::Static("t".into()));
+        assert!(source.mints_at_gateway());
+        if let TokenSource::Gateway { unsupported, .. } = &source {
+            unsupported.store(now, std::sync::atomic::Ordering::Relaxed);
+        }
+        assert!(!source.mints_at_gateway());
+        if let TokenSource::Gateway { unsupported, .. } = &source {
+            unsupported.store(
+                now - UNSUPPORTED_RETRY_SECS - 1,
+                std::sync::atomic::Ordering::Relaxed,
+            );
+        }
+        assert!(source.mints_at_gateway(), "re-probed after the TTL");
+    }
+
     #[test]
     fn a_static_token_is_returned_unchanged() {
         let source = TokenSource::Static("pasted-bearer".into());

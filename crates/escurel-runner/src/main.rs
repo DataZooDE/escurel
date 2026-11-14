@@ -3599,6 +3599,8 @@ async fn attempt_run(
 fn package_error_to_reconcile(e: escurel_runner_core::PackageError) -> ReconcileError {
     match e {
         escurel_runner_core::PackageError::Client { source, .. } => classify_client_error(&source),
+        // The gateway may mint on the next attempt; never run without the run's own token.
+        escurel_runner_core::PackageError::RunToken(why) => ReconcileError::Transient(why),
         other => ReconcileError::Permanent(other.to_string()),
     }
 }

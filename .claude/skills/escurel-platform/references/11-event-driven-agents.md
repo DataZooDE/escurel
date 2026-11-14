@@ -633,8 +633,14 @@ the narrow `escurel:runner` role (references/08, *Built-in service roles*), an
 credential and **no signing key** asks the gateway for each run's token
 (`mint_run_token`, a fresh one per attempt): the same claims a minting runner signs,
 narrowed to the skill's write groups (or the agent profile), never the wide
-admin shape for a runner credential. A gateway without a signing key answers
-`unsupported`, and such a runner's runs then use its own credential as before.
+admin shape for a runner credential. A gateway without a signing key (or an
+image without the tool) answers `unsupported` / `-32601`: only then do the
+runner's **ordinary** runs use its own credential as before, and its agent runs
+fail with a reason naming `ESCUREL_AUTH_SIGNING_KEY`. The runner believes that
+answer for 5 minutes, then asks again, so a gateway that gains its key later
+is picked up without a restart. Any **other** mint failure (a timeout, a 5xx, a
+refusal such as `run_unknown`) fails the attempt, retryably — the harness is
+never handed the runner's own bearer because the gateway blinked.
 Admission claims up to `ESCUREL_RUNNER_ADMIT_CONCURRENCY` (default 8) inbox
 events at once per poll, in inbox order. Any
 other claim error — another `-32602`, a timeout (2 s), a transport failure, a
@@ -692,7 +698,8 @@ agent's `scopes.write` sees it refused with `agent_scope_denied`; the call is
 on `get_run_tool_calls` as `rejected`, and the echo harness fails the run on
 it. A runner on a static `ESCUREL_RUNNER_TOKEN` cannot mint itself: it asks
 the gateway (`mint_run_token`), and where the gateway has no signing key the
-agent run fails rather than writing as the runner. Crash recovery resolves the
+agent run fails (its `run-finished.error` names the missing key) rather than
+writing as the runner. Crash recovery resolves the
 agent through the same function as a fresh run (`resolve_run_agent`: the
 event's `provenance.agent`, then the skill's default): a reconciled run's
 `run-finished` names that agent and skill, and a reset run is re-driven from
