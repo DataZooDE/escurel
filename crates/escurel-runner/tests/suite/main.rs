@@ -69,6 +69,7 @@ mod run_ledger;
 mod run_transcript;
 mod runner_status;
 mod schedule_trigger;
+mod schedule_webhook;
 mod sigterm_drain;
 mod skill_contract_runner;
 mod skill_model;

@@ -363,6 +363,10 @@ pub struct ServerConfig {
     /// `X-Escurel-Webhook-Signature: sha256=<hex>` so the receiver can
     /// trust the POST; `None` (default) leaves the POST unsigned.
     pub webhook_secret: Option<String>,
+    /// The secret a `POST /hooks/schedule/<skill>` must be signed with
+    /// (`ESCUREL_SCHEDULE_WEBHOOK_SECRET`, #827). `None` (default) leaves
+    /// the endpoint unmounted.
+    pub schedule_webhook_secret: Option<String>,
     /// Shared secret signing/verifying skill packs
     /// (`ESCUREL_PACK_SECRET`, REQ-PACK-02). `Some` enables
     /// `export_pack` (packs are signed, always — export refuses without
@@ -603,6 +607,8 @@ pub(crate) struct AppState {
     /// Shared pack-signing secret (`ESCUREL_PACK_SECRET`). `None` →
     /// the pack surface refuses fail-closed.
     pub(crate) pack_secret: Option<String>,
+    /// The schedule-webhook secret (`ESCUREL_SCHEDULE_WEBHOOK_SECRET`, #827).
+    pub(crate) schedule_webhook_secret: Option<String>,
     /// Per-tenant secret keying the async-operation idempotency slug
     /// (`ESCUREL_OPERATION_SLUG_SECRET`, async-ops Phase-4 F-4). `Some` → the
     /// slug is an HMAC a peer cannot compute; `None` (dev) → a peer-computable
@@ -753,6 +759,7 @@ pub async fn serve(
             .clone()
             .map(|url| crate::webhook::Webhook::new(url, config.webhook_secret.clone())),
         pack_secret: config.pack_secret.clone(),
+        schedule_webhook_secret: config.schedule_webhook_secret.clone(),
         operation_slug_secret: config.operation_slug_secret.clone(),
         reader_mode: config.reader_mode,
         lake: config.lake.clone(),
@@ -782,8 +789,16 @@ pub async fn serve(
                 .layer(DefaultBodyLimit::max(config.ingest_max_body_bytes)),
         )
         .route("/blob/{*page_id}", get(crate::mcp::blob_get))
-        .route("/ws", get(ws_upgrade))
-        .with_state(state.clone());
+        .route("/ws", get(ws_upgrade));
+    // #827: off unless a secret guards it.
+    if config.schedule_webhook_secret.is_some() {
+        app = app.route(
+            "/hooks/schedule/{skill}",
+            post(crate::schedule_hook::schedule_hook)
+                .layer(DefaultBodyLimit::max(crate::schedule_hook::MAX_BODY_BYTES)),
+        );
+    }
+    let mut app = app.with_state(state.clone());
 
     // Optional static demo bundle at `/`. Mounted as a fallback so
     // the explicit API routes above always win; `ServeDir` with a

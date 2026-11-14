@@ -60,6 +60,8 @@ mod session;
 pub mod skill_authority;
 // Namespaced: `escurel_types::tools::is_known_tool` reads better than a flat helper.
 pub mod tools;
+// Namespaced: `escurel_types::webhook_signature::verify` names the scheme.
+pub mod webhook_signature;
 mod workflow;
 
 pub use admin::*;

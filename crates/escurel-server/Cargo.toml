@@ -70,6 +70,8 @@ async-trait = "0.1"
 axum = { version = "0.8", features = ["ws"] }
 base64 = "0.22"
 bytes = "1"
+# The schedule webhook's budget day (UTC), as the runner's schedule loop counts it.
+chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
 dashmap = "6"
 # `sink` + `std` are the features `ws.rs` actually uses (Sink/SinkExt/
 # StreamExt on the split socket halves). They are enabled anyway by axum
@@ -86,7 +88,7 @@ escurel-md = { path = "../escurel-md" }
 escurel-obs = { path = "../escurel-obs" }
 escurel-quota = { path = "../escurel-quota" }
 escurel-storage = { path = "../escurel-storage" }
-escurel-types = { path = "../escurel-types", features = ["redact", "tarball"] }
+escurel-types = { path = "../escurel-types", features = ["redact", "schedule", "tarball"] }
 flate2 = "1"
 hmac = "0.12"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }

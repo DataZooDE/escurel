@@ -281,7 +281,7 @@ pub(super) fn is_machine_caller(caller: &AclCaller<'_>) -> bool {
 
 /// Event-id prefixes only the bookkeeper ([`AclCaller::may_keep_books`]: the runner's own
 /// identity, admin or `escurel:runner`) files. One list, so a new runner-owned namespace is one entry.
-const BOOKKEEPER_PREFIXES: &[&str] = &["run:", "sched:", "lint-"];
+const BOOKKEEPER_PREFIXES: &[&str] = &["run:", "sched:", "hook:", "lint-"];
 
 /// Why a caller may not mint `event_id`, when it lies in a namespace the gateway owns.
 ///
@@ -292,7 +292,7 @@ const BOOKKEEPER_PREFIXES: &[&str] = &["run:", "sched:", "lint-"];
 ///   a squatted row would hide that runner's health behind an inbox row nothing garbage-collects.
 ///
 /// * `run:<id>:*` / `sched:<skill>:<window>` / `lint-<tenant>-<n>` are the runner's run lifecycle,
-///   schedule triggers and lint ticks. They are first-writer-wins and read back by id
+///   schedule triggers and lint ticks; `hook:<skill>:<delivery>` the gateway's webhook triggers (#827). They are first-writer-wins and read back by id
 ///   (`usage_report`, `fetch_blob{run_id}`, the schedule budget), so a pre-filed row would hide a
 ///   run or swallow a trigger: only the bookkeeper (an admin that is not a machine caller, i.e. the
 ///   runner's own identity) files them.
@@ -2895,14 +2895,23 @@ pub(super) async fn tool_capture_event(
     // subscriber that received the echo would process a row that does not
     // exist. The echo exists to withhold data from a caller, not to lie to
     // the pipeline.
+    announce_captured(webhook, events_tx, indexer, stored);
+    Ok(event)
+}
+
+/// Announce a stored event to the outbound webhook (the runner) and to the
+/// in-process WS subscribers (#333). Each subscriber's ACL filter runs at
+/// delivery, not here. Every door that captures calls this.
+pub(crate) fn announce_captured(
+    webhook: Option<&crate::webhook::Webhook>,
+    events_tx: &tokio::sync::broadcast::Sender<std::sync::Arc<EventInfo>>,
+    indexer: &Indexer,
+    stored: EventInfo,
+) {
     if let Some(hook) = webhook {
         hook.notify(event_to_json(&stored), indexer.tenant());
     }
-    // Same announcement to in-process WS subscribers (#333) — the STORED
-    // row for the same reason as the webhook above; each subscriber's
-    // ACL filter runs at delivery, not here.
     let _ = events_tx.send(std::sync::Arc::new(stored));
-    Ok(event)
 }
 
 #[derive(Deserialize)]

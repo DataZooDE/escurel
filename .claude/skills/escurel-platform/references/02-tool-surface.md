@@ -479,6 +479,12 @@ them is `escurel:admin`-gated and so not part of the normal agent surface:
   invalid_event_id`) exactly as `capture_event` refuses them
   HTTP routes (not an MCP tool). See `references/01` §Backend axis and the
   repo's `docs/spec/protocol.md` § Instance backends.
+- A skill with `schedule_webhook: true` is fired by a signed `POST /hooks/schedule/<skill>` (#827;
+  an HTTP route, not an MCP tool, mounted only when `ESCUREL_SCHEDULE_WEBHOOK_SECRET` is set): HMAC
+  `X-Escurel-Webhook-Signature` over the raw body, `X-Escurel-Delivery` names the delivery, and the
+  trigger is `hook:<skill>:<delivery>` (a redelivery is one event; `hook:` ids are reserved like
+  `sched:`). It spends the skill's `schedule_budget`. Answers and the skipped record:
+  references/11 *Webhook triggers*.
 
 ## Skill packs (admin)
 

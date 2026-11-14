@@ -25,15 +25,9 @@ use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use hmac::{Hmac, Mac};
 use serde_json::Value;
-use sha2::Sha256;
 
-type HmacSha256 = Hmac<Sha256>;
-
-/// Header carrying the HMAC-SHA256 signature of the POST body, in the
-/// form `sha256=<lowercase-hex>`.
-const SIGNATURE_HEADER: &str = "X-Escurel-Webhook-Signature";
+use escurel_types::webhook_signature::{SIGNATURE_HEADER, sign};
 
 /// How many recent delivery records the in-memory log retains. A live
 /// observability window, not durable history — the buffer is per-process
@@ -198,46 +192,10 @@ async fn req_send(
         .map_err(|e| e.to_string())
 }
 
-/// Compute `sha256=<lowercase-hex>` HMAC-SHA256 of `body` under `secret`.
-fn sign(secret: &str, body: &[u8]) -> String {
-    let mut mac =
-        HmacSha256::new_from_slice(secret.as_bytes()).expect("HMAC accepts a key of any size");
-    mac.update(body);
-    let bytes = mac.finalize().into_bytes();
-    let mut hex = String::with_capacity("sha256=".len() + bytes.len() * 2);
-    hex.push_str("sha256=");
-    for b in bytes {
-        use std::fmt::Write as _;
-        let _ = write!(hex, "{b:02x}");
-    }
-    hex
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
-
-    #[test]
-    fn sign_is_stable_and_sensitive() {
-        let s = sign("k", b"hello");
-        assert!(s.starts_with("sha256="));
-        // 32-byte digest → 64 hex chars after the prefix.
-        assert_eq!(s.len(), "sha256=".len() + 64);
-        assert_eq!(s, sign("k", b"hello"), "deterministic");
-        assert_ne!(s, sign("k2", b"hello"), "key-sensitive");
-        assert_ne!(s, sign("k", b"hello!"), "body-sensitive");
-    }
-
-    #[test]
-    fn known_answer_matches_published_vector() {
-        // HMAC-SHA256("key", "The quick brown fox jumps over the lazy dog")
-        let s = sign("key", b"The quick brown fox jumps over the lazy dog");
-        assert_eq!(
-            s,
-            "sha256=f7bc83f430538424b13298e6aa6fb143ef4d59a14946175997479dbc2d1a3cd8"
-        );
-    }
 
     #[test]
     fn tenant_id_injection_overwrites_any_inbound_value() {

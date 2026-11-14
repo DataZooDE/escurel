@@ -51,25 +51,18 @@ use escurel_runner_harness::{
     AgyHarness, ClaudeHarness, CodexHarness, DelegateHarness, EchoHarness, GeminiHarness, Harness,
     MuseHarness, OpenAiCompatHarness, OpenAiPreset, RefusingHarness, Usage,
 };
+use escurel_types::webhook_signature::{
+    SIGNATURE_HEADER as WEBHOOK_SIGNATURE_HEADER, verify as verify_signature,
+};
 use escurel_types::{Event, ListInboxRequest};
-use hmac::{Hmac, Mac};
 use serde_json::json;
-use sha2::Sha256;
 use tokio::sync::Notify;
-
-type HmacSha256 = Hmac<Sha256>;
 
 /// In-flight quota slots keyed by `event_id` (#158). A slot is held for a
 /// run's whole lifetime (queue → run → terminal) so the tenant's concurrency
 /// budget reflects real in-flight work, not just the instant of admission.
 type InflightSlots =
     Arc<std::sync::Mutex<std::collections::HashMap<String, escurel_runner_core::RunSlot>>>;
-
-/// Header carrying the gateway's HMAC-SHA256 signature of the raw POST
-/// body, in the form `sha256=<lowercase-hex>` (#147). The secret is the
-/// ingress trust anchor; verifying the signature over the raw bytes
-/// before parsing fixes the earlier extractor-ordering flag.
-const WEBHOOK_SIGNATURE_HEADER: &str = "X-Escurel-Webhook-Signature";
 
 /// Shared listener state. Cheap to clone (an `Arc`-backed secret + a
 /// cloneable dispatch-queue producer handle).
@@ -4964,37 +4957,6 @@ async fn runtime_loop(
             }
         }
     }
-}
-
-/// Verify a `sha256=<hex>` HMAC-SHA256 signature over `body` under
-/// `secret`. Returns `false` for a missing/malformed header or any
-/// mismatch. The compare is constant-time via `Mac::verify_slice`.
-fn verify_signature(secret: &str, body: &[u8], presented: Option<&str>) -> bool {
-    let Some(presented) = presented else {
-        return false;
-    };
-    let Some(hex) = presented.strip_prefix("sha256=") else {
-        return false;
-    };
-    let Some(expected) = decode_hex(hex) else {
-        return false;
-    };
-    let mut mac =
-        HmacSha256::new_from_slice(secret.as_bytes()).expect("HMAC accepts a key of any size");
-    mac.update(body);
-    mac.verify_slice(&expected).is_ok()
-}
-
-/// Decode a lowercase/uppercase hex string into bytes. Returns `None`
-/// for odd length or any non-hex digit.
-fn decode_hex(s: &str) -> Option<Vec<u8>> {
-    if !s.len().is_multiple_of(2) {
-        return None;
-    }
-    (0..s.len())
-        .step_by(2)
-        .map(|i| u8::from_str_radix(&s[i..i + 2], 16).ok())
-        .collect()
 }
 
 /// Block until SIGTERM (the orchestrator's graceful-stop signal) or SIGINT

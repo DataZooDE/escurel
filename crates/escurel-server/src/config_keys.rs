@@ -72,6 +72,18 @@ pub const CONFIG_KEYS: &[ConfigKey] = &[
         doc: "shared secret; when set the webhook body is HMAC-SHA256-signed via `X-Escurel-Webhook-Signature: sha256=<hex>` The runner requires the same HMAC signature on inbound `POST /trigger`.",
     },
     ConfigKey {
+        name: "ESCUREL_SCHEDULE_WEBHOOK_SECRET",
+        component: "Server",
+        default: "—",
+        doc: "mounts `POST /hooks/schedule/<skill>` (#827): a skill with `schedule_webhook: true` is fired by a POST whose body is HMAC-SHA256-signed with this secret (`X-Escurel-Webhook-Signature: sha256=<hex>`) and that names its delivery (`X-Escurel-Delivery`, 1-128 of `[A-Za-z0-9._-]`; the trigger is `hook:<skill>:<delivery>`, so a redelivery is one event). Unset = no endpoint",
+    },
+    ConfigKey {
+        name: "ESCUREL_SCHEDULE_WEBHOOK_SECRET_FILE",
+        component: "Server",
+        default: "—",
+        doc: "a file holding `ESCUREL_SCHEDULE_WEBHOOK_SECRET` (trimmed); setting both refuses to start",
+    },
+    ConfigKey {
         name: "ESCUREL_SERVER_LISTEN_HTTP",
         component: "Server",
         default: "0.0.0.0:8080",

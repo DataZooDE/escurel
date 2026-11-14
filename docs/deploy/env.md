@@ -20,6 +20,8 @@ escurel-server.
 | `ESCUREL_SERVER_DATA_DIR` | /data | host-volume root for DuckDB + FsStore + tenants |
 | `ESCUREL_SEED_DIR` | — | markdown corpus seeded into the tenant at boot (idempotent), e.g. `examples/crm-demo` |
 | `ESCUREL_WEBHOOK_URL` | — | outbound capture webhook; fire-and-forget POST of each new `capture_event` (M7) |
+| `ESCUREL_SCHEDULE_WEBHOOK_SECRET` | — | mounts `POST /hooks/schedule/<skill>` (#827): a skill with `schedule_webhook: true` is fired by a POST whose body is HMAC-SHA256-signed with this secret (`X-Escurel-Webhook-Signature: sha256=<hex>`) and that names its delivery (`X-Escurel-Delivery`, 1-128 of `[A-Za-z0-9._-]`; the trigger is `hook:<skill>:<delivery>`, so a redelivery is one event). Unset = no endpoint |
+| `ESCUREL_SCHEDULE_WEBHOOK_SECRET_FILE` | — | a file holding `ESCUREL_SCHEDULE_WEBHOOK_SECRET` (trimmed); setting both refuses to start |
 | `ESCUREL_SERVER_LISTEN_HTTP` | 0.0.0.0:8080 | HTTP listener (MCP/WS/REST) |
 | `ESCUREL_TENANT` | default | single-tenant indexer's tenant id |
 | `ESCUREL_REBUILD_INDEX_ON_BOOT` | if-missing | derived-index boot policy: `if-missing` (reuse an existing DuckDB; rebuild only when absent, and the default everywhere including the container) or `always` (drop + rebuild from the markdown LaneStore each start — re-embeds the whole corpus, so expect minutes) |

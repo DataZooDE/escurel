@@ -90,6 +90,9 @@ pub struct SkillInfo {
     pub schedule_invalid: bool,
     /// `schedule_budget: {runs_per_day}` — `None` when undeclared or not a positive count.
     pub schedule_budget: Option<escurel_types::ScheduleBudget>,
+    /// `schedule_webhook: true` — a signed `POST /hooks/schedule/<skill>` may fire this skill
+    /// (#827). Anything but `true` is `false`.
+    pub schedule_webhook: bool,
     /// `requires: {harness, labels}` (#818) — what a runner needs to take this skill's work.
     /// A malformed one is kept as `invalid` (satisfied by nobody), never dropped.
     pub requires: Option<escurel_types::runtime::Requires>,
@@ -904,6 +907,8 @@ impl Indexer {
                 schedule: schedule.0,
                 schedule_invalid: schedule.1,
                 schedule_budget: parse_schedule_budget(&fm),
+                schedule_webhook: fm.get("schedule_webhook")
+                    == Some(&serde_json::Value::Bool(true)),
                 requires: escurel_types::runtime::Requires::declared(fm.get("requires")),
                 folder: trimmed_str(&fm, "folder"),
                 role: trimmed_str(&fm, "role"),

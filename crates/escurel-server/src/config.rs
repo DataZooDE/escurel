@@ -776,6 +776,10 @@ pub struct EscurelConfig {
     /// it against the same secret. `None` (default) leaves the POST
     /// unsigned.
     pub webhook_secret: Option<String>,
+    /// The secret a `POST /hooks/schedule/<skill>` must be signed with
+    /// (`ESCUREL_SCHEDULE_WEBHOOK_SECRET[_FILE]`, #827). `None` (default)
+    /// leaves the endpoint unmounted.
+    pub schedule_webhook_secret: Option<String>,
     /// Optional shared secret signing/verifying skill packs
     /// (`ESCUREL_PACK_SECRET`, REQ-PACK-02). `None` (default) disables
     /// the pack surface fail-closed: `export_pack` refuses rather than
@@ -1126,6 +1130,10 @@ impl EscurelConfig {
         let pack_secret = env
             .get("ESCUREL_PACK_SECRET")
             .filter(|s| !s.trim().is_empty());
+        let schedule_webhook_secret = schedule_webhook_secret(
+            env.get("ESCUREL_SCHEDULE_WEBHOOK_SECRET"),
+            env.get("ESCUREL_SCHEDULE_WEBHOOK_SECRET_FILE"),
+        )?;
         // Optional per-tenant secret keying the async-operation slug (F-4). An
         // empty value is unset — the slug degrades to a peer-computable hash.
         let operation_slug_secret = env
@@ -1830,6 +1838,7 @@ impl EscurelConfig {
             seed_dir,
             webhook_url,
             webhook_secret,
+            schedule_webhook_secret,
             pack_secret,
             operation_slug_secret,
             metrics_listen,
@@ -2738,6 +2747,7 @@ impl EscurelConfig {
             ingest_max_body_bytes: self.ingest_max_body_bytes,
             webhook_url: self.webhook_url.clone(),
             webhook_secret: self.webhook_secret.clone(),
+            schedule_webhook_secret: self.schedule_webhook_secret.clone(),
             pack_secret: self.pack_secret.clone(),
             operation_slug_secret: self.operation_slug_secret.clone(),
             metrics_listen: self.metrics_listen.clone(),
@@ -3555,6 +3565,70 @@ mod rerank_config_tests {
                 ..
             }
         ));
+    }
+}
+
+/// `ESCUREL_SCHEDULE_WEBHOOK_SECRET` / `_FILE` (#827), as read: `None` when
+/// neither is set (or the value is blank), the secret otherwise. Both set, or
+/// a file that cannot be read or is empty, refuses to start: a webhook that
+/// was meant to be guarded must not come up unguarded or not at all silently.
+fn schedule_webhook_secret(
+    value: Option<String>,
+    file: Option<String>,
+) -> Result<Option<String>, ConfigError> {
+    let value = value.filter(|v| !v.trim().is_empty());
+    let file = file.filter(|f| !f.trim().is_empty());
+    match (value, file) {
+        (Some(_), Some(path)) => Err(ConfigError::InvalidValue {
+            var: "ESCUREL_SCHEDULE_WEBHOOK_SECRET_FILE",
+            value: path,
+            reason: "set either ESCUREL_SCHEDULE_WEBHOOK_SECRET or …_FILE, not both",
+        }),
+        (Some(secret), None) => Ok(Some(secret)),
+        (None, Some(path)) => match std::fs::read_to_string(&path) {
+            Ok(raw) if !raw.trim().is_empty() => Ok(Some(raw.trim().to_owned())),
+            _ => Err(ConfigError::InvalidValue {
+                var: "ESCUREL_SCHEDULE_WEBHOOK_SECRET_FILE",
+                value: path,
+                reason: "could not read a non-empty secret from the file",
+            }),
+        },
+        (None, None) => Ok(None),
+    }
+}
+
+#[cfg(test)]
+mod schedule_webhook_secret_tests {
+    use super::*;
+
+    #[test]
+    fn the_secret_comes_from_the_value_or_the_file_never_both() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("secret");
+        std::fs::write(&file, "from-file\n").unwrap();
+        let path = || Some(file.display().to_string());
+        assert_eq!(schedule_webhook_secret(None, None).unwrap(), None);
+        assert_eq!(
+            schedule_webhook_secret(Some(" ".into()), None).unwrap(),
+            None
+        );
+        assert_eq!(
+            schedule_webhook_secret(Some("s".into()), None)
+                .unwrap()
+                .as_deref(),
+            Some("s")
+        );
+        assert_eq!(
+            schedule_webhook_secret(None, path()).unwrap().as_deref(),
+            Some("from-file")
+        );
+        assert!(schedule_webhook_secret(Some("s".into()), path()).is_err());
+        assert!(schedule_webhook_secret(None, Some("/nonexistent/secret".into())).is_err());
+        std::fs::write(&file, "  \n").unwrap();
+        assert!(
+            schedule_webhook_secret(None, path()).is_err(),
+            "an empty file"
+        );
     }
 }
 

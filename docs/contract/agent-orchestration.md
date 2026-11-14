@@ -211,6 +211,15 @@ act. Code: `escurel-runner-core/src/schedule.rs` (grammar in
 `escurel-types/src/schedule.rs`); test:
 `escurel-runner/tests/suite/schedule_trigger.rs`.
 
+A third source (#827): a skill with `schedule_webhook: true` is fired by a
+signed `POST /hooks/schedule/<skill>` at the gateway (mounted only when
+`ESCUREL_SCHEDULE_WEBHOOK_SECRET` is set), captured as
+`hook:<skill>:<delivery-id>`, `source: schedule-webhook`. The gateway only
+captures the trigger, as it captures any event; its deliveries and the cron
+windows share one `schedule_budget`. Code:
+`escurel-server/src/schedule_hook.rs`; test:
+`escurel-runner/tests/suite/schedule_webhook.rs`.
+
 ## "Skills as instructions + tools" delivery
 
 - **Instructions** = the `label_skill` page body, fetched via

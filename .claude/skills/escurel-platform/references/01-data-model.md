@@ -60,6 +60,10 @@ optional; reported on `list_skills`, linted by `validate`):
   reaches `list_skills` as `{runs_per_day: 0, invalid: true}` and the runner fires no window, filing
   `run-skipped { reason: "invalid_budget" }` for each instead — never an uncapped schedule. Both reach `list_skills` as written. How the windows
   fire (no backfill, the skipped record) is in references/11 *Scheduled triggers*.
+- `schedule_webhook: true` (#827) — a signed `POST /hooks/schedule/<skill>` may fire the skill too
+  (the gateway endpoint exists only when `ESCUREL_SCHEDULE_WEBHOOK_SECRET` is set); anything but a
+  boolean is an error (`schedule_webhook_invalid`). Its deliveries spend the same `schedule_budget`
+  as the cron windows. The endpoint is in references/11 *Webhook triggers*.
 - `requires: {harness: <name>, labels: [<label>, …]}` — what a runner must offer to take this
   skill's work (#818): the harness (its default or one in `ESCUREL_RUNNER_HARNESS_ALLOW`) and
   EVERY label (`ESCUREL_RUNNER_LABELS`, e.g. `site:muc`, `has:sap-gui`). Both keys are optional.
@@ -522,7 +526,7 @@ documentation for building the app.
 ### Authority keys on a skill page
 
 `acl`, `visibility`, `owner_field`, `instance_acl`, `agent`, `autonomy`,
-`schedule`, `schedule_budget`, `requires`, `harness`, `model`, `cascade`,
+`schedule`, `schedule_budget`, `schedule_webhook`, `requires`, `harness`, `model`, `cascade`,
 `actions`, `chat`, `backend`, `promotable`, `protected`, `immutable` and
 `freeze_when` decide
 who may read and write, who a run executes as, when it runs and what it

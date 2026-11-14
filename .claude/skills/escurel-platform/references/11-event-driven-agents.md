@@ -519,6 +519,42 @@ old lint tick's ids (`lint-<tenant>-<window>`), run page
 upgrade does not fire the current window twice. Its grace is its interval,
 so every lint window fires, as before.
 
+### Webhook triggers (`schedule_webhook: true`, #827)
+
+A skill that opts in with `schedule_webhook: true` can also be fired by a
+webhook (a CI job, a GitHub push, another system), at the GATEWAY:
+
+```
+POST /hooks/schedule/<skill>
+X-Escurel-Webhook-Signature: sha256=<hex HMAC-SHA256 of the raw body under ESCUREL_SCHEDULE_WEBHOOK_SECRET>
+X-Escurel-Delivery: <1-128 of A-Z a-z 0-9 . _ ->
+<body, at most 64 KiB of UTF-8; it becomes the event body>
+```
+
+The endpoint exists only when `ESCUREL_SCHEDULE_WEBHOOK_SECRET` (or
+`_FILE`) is set; the signature scheme is the one the runner's `/trigger`
+verifies. Answers, in the order they are checked: `401 bad_signature` (so a
+caller without the secret learns nothing about which skills exist),
+`400 bad_delivery` / `bad_body`, `404 skill_not_triggerable` (no such skill,
+or it did not opt in — one answer), `422 workflow_not_supported` (a
+workflow skill: its `schedule:` still fires it), then:
+
+- `202 {event_id}` — captured `hook:<skill>:<delivery>`, `label_skill:
+  <skill>`, `source: schedule-webhook`, `provenance.webhook: {delivery}`; the
+  runner takes it from the inbox like any event;
+- `200 {event_id, replayed: true}` — that delivery was already captured
+  (first writer wins: a redelivery never runs the skill twice);
+- `200 {event_id, skipped: true, reason, record}` — past the budget: the
+  same `escurel:run` `run-skipped` record the schedule loop files, id
+  `hook:<skill>:<delivery>:skipped`, body `{reason: "budget" |
+  "invalid_budget", runs_per_day, skill, trigger_event_id, delivery}`.
+
+`schedule_budget.runs_per_day` counts cron windows and webhook deliveries
+together (a delivery counts on the UTC day it was captured), at both the
+runner and the gateway. `hook:` ids, like `sched:`, are reserved: no
+caller can pre-file one through `capture_event`.
+
+
 ## Several runners on one tenant (`requires:`, claims, runtimes)
 
 Any number of runners may serve one tenant (#818) — a central one in the

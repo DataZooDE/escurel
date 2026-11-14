@@ -37,7 +37,7 @@ use serde_json::json;
 use crate::RUN_EVENT_LABEL;
 
 /// The `source` of a trigger fired from a skill's own `schedule:`.
-pub const SCHEDULE_SOURCE: &str = "runner-schedule";
+pub use escurel_types::schedule::SCHEDULE_SOURCE;
 /// The `source` the lint shim keeps from the lint tick it replaced.
 const LINT_TICK_SOURCE: &str = "runner-lint-tick";
 /// The skill `backend.kind` whose runs live on a `workflow-run` page.
@@ -255,6 +255,7 @@ impl ScheduleEntry {
     }
 
     /// The window start a trigger id of this entry encodes, if it is one.
+    #[cfg(test)]
     fn window_of(&self, event_id: &str) -> Option<DateTime<Utc>> {
         let rest = event_id.strip_prefix(&self.id_prefix())?;
         DateTime::parse_from_rfc3339(rest)
@@ -436,7 +437,8 @@ async fn fire(
     Ok(TickOutcome::Fired(id))
 }
 
-/// How many of this entry's OTHER triggers have a window on `window`'s UTC
+/// How many of this entry's OTHER triggers — schedule windows and webhook
+/// deliveries alike (`counts_toward_budget`, #827) — fall on `window`'s UTC
 /// day, counted up to `cap` (enough to decide). The window's own trigger is
 /// excluded, so a restart re-handling a window it already fired re-captures
 /// it (a no-op) instead of skipping it.
@@ -448,6 +450,7 @@ async fn fire(
 /// AND a `sched:<skill>:` id, a prefix only the runner's identity may file.
 /// Ordinary events under the label, however many, are paged past and never
 /// counted, and running out of pages is the count, not an exhausted budget.
+/// A webhook trigger is captured on its day, so the same span covers it.
 ///
 /// Several runners on one tenant check-then-capture independently, so on a
 /// window boundary they can overshoot the cap by up to one trigger each. An
@@ -478,13 +481,16 @@ async fn fired_today(
             })
             .await?;
         for event in &page.events {
-            if event.source != SCHEDULE_SOURCE || event.event_id == own {
+            if event.event_id == own {
                 continue;
             }
-            if entry
-                .window_of(&event.event_id)
-                .is_some_and(|w| w.date_naive() == day)
-            {
+            if escurel_types::schedule::counts_toward_budget(
+                &entry.skill,
+                &event.event_id,
+                &event.source,
+                Some(event.at.as_str()),
+                day,
+            ) {
                 count += 1;
                 if count >= cap {
                     return Ok(count);

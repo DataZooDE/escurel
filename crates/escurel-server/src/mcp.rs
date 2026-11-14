@@ -82,6 +82,7 @@ mod tools_transcript;
 mod tools_usage;
 pub use tools_progress::DEFAULT_RUN_PROGRESS_KEEP;
 pub(crate) use tools_transcript::sweep_run_transcripts;
+pub(crate) use tools_write::announce_captured;
 mod tools_read;
 mod tools_write;
 pub(crate) use ingest::{blob_get, ingest, ingest_upload};

@@ -298,7 +298,7 @@ stands. Only an admin may write an agent page.
 
 Some skill-page keys are **authority**, not description: `acl`, `visibility`,
 `owner_field`, `instance_acl`, `agent`, `autonomy`, `schedule`,
-`schedule_budget`, `requires`, `harness`, `model`, `cascade`, `actions` (its
+`schedule_budget`, `schedule_webhook`, `requires`, `harness`, `model`, `cascade`, `actions` (its
 `kind: event` entries trigger cascades), `chat`, `backend` (a `kind:
 workflow` backend is a trigger too), `promotable`, `protected`, `immutable`,
 `freeze_when`. `layer` has its own guard; descriptive keys are free.
