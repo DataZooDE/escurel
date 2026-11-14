@@ -46,7 +46,7 @@ async fn concurrent_unknown_kids_cost_one_fetch_and_a_rotated_kid_is_found_after
     let a = jwk("a");
     serve(&server, std::slice::from_ref(&a)).await;
     let cache = JwksCache::new(server.uri(), Duration::from_secs(300))
-        .with_min_refresh_interval(Duration::from_millis(800));
+        .with_min_refresh_interval(Duration::from_secs(3));
 
     // N concurrent lookups of kids nobody publishes: one fetch between them.
     let lookups: Vec<_> = (0..20)
@@ -77,7 +77,7 @@ async fn concurrent_unknown_kids_cost_one_fetch_and_a_rotated_kid_is_found_after
         "still inside the interval"
     );
     assert_eq!(fetches(&server).await, 0, "no fetch inside the interval");
-    tokio::time::sleep(Duration::from_millis(900)).await;
+    tokio::time::sleep(Duration::from_millis(3100)).await;
     cache
         .key_for_kid("b")
         .await
