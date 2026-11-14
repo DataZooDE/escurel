@@ -4,6 +4,22 @@ The skill version tracks the consumer-facing contract, not the Escurel
 binary version. The Escurel repo's checked-out git ref is the true version
 pin (see `SKILL.md` → "How this skill is installed").
 
+## 0.29.0 — chat bridge through the gateway, directory groups, group chats
+
+- **`mint_user_token`** (an `escurel:bridge` service credential only): the gateway mints each chat turn's token, so the
+  bridge holds no signing key. The turn stays confined to the six chat tools in one tenant, and the subject is checked
+  again (no `group:`/`agent:`/`bridge:`/`svc:`/`escurel:` subjects) (references/02, 08).
+- **Group directories:** `ESCUREL_AUTH_GROUP_DIRECTORIES` = any of `graph`, `google`, `okta`. The asker's groups are the
+  union, cached for 10 min, with a stale answer for up to 1 h in an outage. An explicit map file comes first; a name
+  prefix counts only security groups (Graph), pinned domains (Google) or Okta-managed groups by default. With Graph, the
+  asserted email must match the Entra user (`identity_mismatch`). With no directory, 1:1 turns stay groupless
+  (references/08, 09).
+- **Group chats and channels:** an admin maps a conversation or a channel to a group with the admin-only `chat-channel`
+  skill. The run acts as `group:<g>`, only for members of `<g>`. A mapped chat gives every participant that group's
+  access. An unmapped, ambiguous or directory-less shared chat gets one reply and no run (references/01, 08).
+- **Deprecated:** the bridge's own signing key (`ESCUREL_BRIDGE_AUTH_*`, gateway `ESCUREL_AUTH_BRIDGE_ISSUER/_KID`);
+  removed in the next release (docs/deploy/chat-bridge.md has the migration checklist).
+
 ## 0.28.0 — runner role, gateway-minted run tokens, external agent tokens, runner gaps
 
 - **`escurel:runner` service role:** a runner no longer needs `escurel:admin`. The role reads every event (to admit
