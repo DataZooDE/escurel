@@ -164,7 +164,10 @@ async fn list_skills_returns_seeded_skills_plus_meta_skill() {
         ids.contains(&"runtime"),
         "runtime skill present; got {ids:?}"
     );
-    assert!(ids.contains(&"chat-channel"), "chat-channel present; got {ids:?}");
+    assert!(
+        ids.contains(&"chat-channel"),
+        "chat-channel present; got {ids:?}"
+    );
     assert_eq!(ids.len(), 7);
     p.shutdown().await;
 }
