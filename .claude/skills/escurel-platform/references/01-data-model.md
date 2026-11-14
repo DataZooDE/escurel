@@ -658,7 +658,13 @@ must name exactly one target; anything else is refused at write
 (`chat_channel_invalid`). The gateway reads the mappings fresh on every turn:
 none → the bridge declines the chat once; two naming different groups → refused
 until one goes. The asker must also be a member of the group per the gateway's
-group directories.
+group directories; a gateway with no directory answers no shared chat
+(`chat_channel_no_directory`).
+
+**A mapping discloses the group's access to everyone in the chat.** The answer is
+posted to the conversation, so every participant — non-members of `<group>` and
+external guests included — sees what `<group>` can read whenever a member asks.
+Map a chat only to a group whose content all its participants may see.
 
 ## Pages with rendered views: always carry a text alternative
 

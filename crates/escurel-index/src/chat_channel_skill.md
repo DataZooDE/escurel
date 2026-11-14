@@ -39,3 +39,10 @@ stranger added to a mapped chat cannot use the group's access.
 - `archived: true` — the mapping no longer applies.
 
 The bridge's refusal in an unmapped chat names the ids to put here.
+
+## What a mapping discloses
+
+The answer is posted to the whole conversation. Mapping a chat to `<group>`
+shows everything `<group>` can read to EVERY participant whenever a member
+asks — including people who are not in `<group>` and external guests in the
+chat. Map a chat only to a group whose content everyone in it may see.

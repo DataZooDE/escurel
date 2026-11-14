@@ -67,13 +67,26 @@ Chat bridge: gateway-minted turns, directory groups, group chats (#830):
   admin maps the conversation with a page of the new admin-only `chat-channel` system skill. The run acts as
   `group:<g>` with `<g>`'s access only, the asker recorded (`asked_by`, `act.sub`) and required to be a member of
   `<g>`. An unmapped chat or a non-member gets one polite reply and no run. Channel replies go to the thread root.
-- UI: VS Code Knowledge view lists `chat-channel` pages with a "Map Teams conversation" form (admin); explore's
-  Chat tab labels a conversation that acts as a group.
+- **Safe group naming**: a directory prefix reads only names an admin controls — Graph security groups (Microsoft
+  365 groups with `ESCUREL_AUTH_GRAPH_INCLUDE_M365_GROUPS=true`), Google groups by full address
+  (`ESCUREL_AUTH_GOOGLE_GROUP_DOMAIN` pins domains; `email_local` needs it), Okta `OKTA_GROUP`s
+  (`ESCUREL_AUTH_OKTA_INCLUDE_APP_GROUPS=true` for app groups). The id-keyed map file is the recommended mode.
+- **Identity binding**: with Graph, the bridge's asserted email / UPN must be one of the sender's Graph addresses
+  (`identity_mismatch`; needs `User.Read.All`), an unknown object id mints nothing, and a minted subject can never
+  start with `group:` / `agent:` / `bridge:` / `svc:` / `escurel:`. A turn token is honoured only under the gateway's
+  own signing identity, with every role value stripped.
+- `ESCUREL_AUTH_GROUP_DIRECTORIES` is optional: without it 1:1 turns mint groupless and shared chats get one reply.
+- The bridge's `ESCUREL_BRIDGE_GATEWAY_TOKEN_FILE` is re-read on change and on a 401; a setup mistake replies once
+  and logs the fix; a failed re-mint no longer drops a captured turn's answer.
+- UI: VS Code Knowledge view lists `chat-channel` pages with a "Map Teams conversation" form (admin; one page per
+  conversation, an existing mapping is opened instead of duplicated); explore's Chat tab labels a conversation that
+  acts as a group.
 
 **Deprecated:** the chat bridge signing its own turns (`ESCUREL_BRIDGE_AUTH_ISSUER` / `_KID` / `_SIGNING_KEY` and
 `ESCUREL_BRIDGE_PRINCIPAL_TEMPLATE` on the bridge, `ESCUREL_AUTH_BRIDGE_ISSUER` / `_KID` / `_TENANT` on the gateway).
 It still works for this release (1:1 chats, no groups) and logs a deprecation at both ends; it is removed in the
-next release.
+next release. Migrate with the keep/remove checklist in
+[`docs/deploy/chat-bridge.md` § Migration checklist](docs/deploy/chat-bridge.md#migration-checklist).
 
 **Behaviour changes to note:**
 - A runner on a static/file token now asks a signing gateway for each run's token, so its ordinary runs write as

@@ -290,8 +290,8 @@ channel threads an admin mapped to a group (`chat-channel` pages, references/01)
 becomes a page-chat turn plus a `chat` event, and the runner's reply goes back once. Run it next to
 a verifying gateway that can mint (`ESCUREL_AUTH_SIGNING_KEY`), knows how to name a Teams user
 (`ESCUREL_AUTH_BRIDGE_PRINCIPAL_TEMPLATE='user:{aadObjectId}'`) and where their groups live
-(`ESCUREL_AUTH_GROUP_DIRECTORIES=graph|google|okta` plus that provider's keys, `docs/deploy/env.md`),
-and a minted-mode runner. The bridge holds **no signing key**: it gets each turn's token from the
+(`ESCUREL_AUTH_GROUP_DIRECTORIES=graph|google|okta` plus that provider's keys, `docs/deploy/env.md`;
+leave it unset for a 1:1-only bot with no groups), and a minted-mode runner. The bridge holds **no signing key**: it gets each turn's token from the
 gateway (`mint_user_token`) on its own `escurel:bridge` credential (references/08):
 
 ```sh
@@ -302,6 +302,9 @@ ESCUREL_BRIDGE_TEAMS_APP_ID=<bot app id> ESCUREL_BRIDGE_TEAMS_APP_PASSWORD=<secr
 ESCUREL_BRIDGE_TEAMS_ALLOWED_TENANTS=<entra tenant id> ESCUREL_BRIDGE_STATE_PATH=./bridge.duckdb \
   target/debug/escurel-chat-bridge          # POST /api/messages on :3978
 ```
+
+`ESCUREL_BRIDGE_GATEWAY_TOKEN_FILE` instead of the value is re-read when the file changes and on a
+`401`, so a rotated credential needs no restart.
 
 The tenant needs the chat corpus (`conversation` + `chat`), shipped as files in
 `examples/chat/seed/skills/` (`escurel page update markdown/skills/<s>.md < examples/chat/seed/skills/<s>.md`
