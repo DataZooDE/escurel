@@ -40,7 +40,8 @@ pub fn chat_tools() -> Vec<&'static str> {
         .collect()
 }
 
-/// Mint the run's token: the asker's identity plus the run claims. `None`
+/// Mint the run's token: the asker's identity, the groups the gateway resolved
+/// for a bridge-relayed turn (none otherwise), plus the run claims. `None`
 /// from a static-bearer source is [`PackageError::ChatRequiresRunTokens`].
 ///
 /// # Errors
@@ -56,7 +57,7 @@ pub fn chat_run_token(
         .ok_or(PackageError::ChatAskerUnknown)?;
     let run = run.ok_or(PackageError::ChatRequiresRunTokens)?;
     tokens
-        .mint_scoped(asker, &[], Some(run))
+        .mint_scoped(asker, &turn.asker_groups, Some(run))
         .map_err(|e| PackageError::Auth(e.to_string()))?
         .ok_or(PackageError::ChatRequiresRunTokens)
 }
