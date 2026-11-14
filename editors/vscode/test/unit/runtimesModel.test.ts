@@ -115,6 +115,26 @@ describe('the Runtimes view rows', () => {
   });
 });
 
+describe('which credential a runner holds (#828)', () => {
+  it('says runner or admin in the row and the tooltip, and nothing before it has said', () => {
+    const [box, laptop] = runtimeRows(
+      [
+        { ...online, role: 'runner' },
+        { ...stale, role: 'admin' },
+      ],
+      now,
+    );
+    expect(laptop?.description.endsWith(' · as runner')).toBe(true);
+    expect(laptop?.tooltip).toContain(
+      'Credential: escurel:runner (claims work and keeps its books; not an admin)',
+    );
+    expect(box?.description.endsWith(' · as admin')).toBe(true);
+    const [, plain] = runtimeRows([online, stale], now);
+    expect(plain?.description).not.toContain(' as ');
+    expect(plain?.tooltip).not.toContain('Credential:');
+  });
+});
+
 describe('a member’s read (no CLI versions, no claim holders)', () => {
   const member = (r: Runtime): Runtime => {
     const { claim_holder, ...rest } = r;

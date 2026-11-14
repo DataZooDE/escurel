@@ -249,6 +249,8 @@ export interface Runtime {
   stale_after_s: number | null;
   version: string | null;
   live_runs: number;
+  /** The built-in role the runner's credential holds (#828); absent from an older gateway. */
+  role?: 'admin' | 'runner' | string | null;
 }
 
 export interface ListRuntimesResponse {
@@ -491,6 +493,21 @@ export interface QueryInstanceRequest {
 /** The rows a stored query returned. The gateway names the list `rows`. */
 export interface QueryInstanceResponse {
   rows?: Array<Record<string, unknown>>;
+}
+
+/** `issue_agent_token` (#829): a revocable bearer for an external agent. Admin only. */
+export interface IssueAgentTokenRequest {
+  agent: string;
+  /** Seconds, 3600..=7776000; the gateway's default is 30 days. */
+  ttl_secs?: number;
+}
+
+/** `token` is shown once: never logged, never stored. */
+export interface IssueAgentTokenResponse {
+  token: string;
+  agent: string;
+  subject: string;
+  expires_at: string;
 }
 
 export interface MintAgentTokenResponse {

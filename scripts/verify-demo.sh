@@ -115,7 +115,7 @@ seed_mcp() {
     | curl -fsS -X POST "$BASE/mcp" -H 'content-type: application/json' --data-binary @-
 }
 note "seeding the scribe agent profile + two run-finished rows"
-SCRIBE_DOC="$(printf -- '---\nkind: instance\nskill: agent\nid: scribe\nharness: echo\nmodel: claude-sonnet-4\nskills: ["[[skill::engagement]]"]\nscopes:\n  tools: [search, expand, update_page]\n  write: ["markdown/instances/engagement/*"]\nmax_concurrent: 2\n---\n# scribe\n\nKeeps engagement spines current.\n')"
+SCRIBE_DOC="$(printf -- '---\nkind: instance\nskill: agent\nid: scribe\nharness: echo\nmodel: claude-sonnet-4\nskills: ["[[skill::engagement]]"]\nscopes:\n  tools: [search, expand, update_page]\n  write: ["markdown/instances/engagement/*"]\nmax_concurrent: 2\ntoken_epoch: 1790071200\n---\n# scribe\n\nKeeps engagement spines current.\n')"
 seed_mcp update_page "$(jq -nc --arg c "$SCRIBE_DOC" '{page_id: "markdown/instances/agent/scribe.md", base_sha256: "", content: $c}')" \
   | jq -e '.result.structuredContent.ok == true' >/dev/null || fail "could not seed the scribe agent profile"
 SPINE_PAGE="$(seed_mcp resolve '{"wikilink":"[[engagement::hoffmann-spine]]"}' | jq -r '.result.structuredContent.page.page_id // empty')"
@@ -212,6 +212,11 @@ note "probe ok: cost badge = ${badge//$'\n'/ }"
 "$RODNEY" open "$BASE/#/inspector/agents" >/dev/null 2>&1 || fail "rodney open /inspector/agents"
 present agents-panel
 present agent-row:scribe
+# Its tokens were revoked (`token_epoch`, #829): the panel says since when they are valid.
+tokens_since="$(leaf_text agent-tokens-since:scribe)"
+[[ "$tokens_since" == *'tokens valid since 2026-09-22T10:00:00Z'* ]] \
+  || fail "scribe should read tokens valid since 2026-09-22T10:00:00Z (got '$tokens_since')"
+note "probe ok: agent tokens = ${tokens_since//$'\n'/ }"
 
 # The Runtimes inspector panel lists the seeded runner, online.
 "$RODNEY" open "$BASE/#/inspector/runtimes" >/dev/null 2>&1 || fail "rodney open /inspector/runtimes"

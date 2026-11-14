@@ -17,6 +17,8 @@ export interface AgentProfile {
   /** `scopes.write` page-id globs; absent = no extra write limit. */
   write?: string[];
   maxConcurrent?: number;
+  /** `token_epoch` (Unix seconds, #829): tokens issued before it are refused. */
+  tokenEpoch?: number;
 }
 
 const text = (v: unknown, max = 120): string | undefined =>
@@ -36,6 +38,7 @@ export function agentProfile(instance: Instance): AgentProfile {
   const harness = text(fm.harness);
   const model = text(fm.model);
   const max = typeof fm.max_concurrent === 'number' ? fm.max_concurrent : undefined;
+  const epoch = typeof fm.token_epoch === 'number' ? fm.token_epoch : undefined;
   return {
     id: text(fm.id) ?? cleanText(pageFile(instance.page_id), 120),
     pageId: instance.page_id,
@@ -45,7 +48,32 @@ export function agentProfile(instance: Instance): AgentProfile {
     ...(scopes.tools !== undefined ? { tools: list(scopes.tools) } : {}),
     ...(scopes.write !== undefined ? { write: list(scopes.write) } : {}),
     ...(max !== undefined ? { maxConcurrent: max } : {}),
+    ...(epoch !== undefined ? { tokenEpoch: epoch } : {}),
   };
+}
+
+/** "Tokens valid since …" for an agent whose tokens were revoked (`token_epoch`), else nothing. */
+export function tokensValidSince(p: AgentProfile): string | undefined {
+  if (p.tokenEpoch === undefined) return undefined;
+  const at = new Date(p.tokenEpoch * 1000);
+  return Number.isNaN(at.getTime())
+    ? undefined
+    : `Tokens valid since ${at.toISOString().replace('.000Z', 'Z')}`;
+}
+
+/**
+ * The agent page with `token_epoch` set to `epoch`: what "Revoke tokens" writes through
+ * `update_page`. Every key is written as JSON, which YAML reads as a flow scalar, so no quoting
+ * rule can turn a scope glob or a wikilink into something else; the body is kept as it is.
+ */
+export function withTokenEpoch(
+  frontmatter: Record<string, unknown>,
+  body: string,
+  epoch: number,
+): string {
+  const fm = { ...frontmatter, token_epoch: epoch };
+  const lines = Object.entries(fm).map(([k, v]) => `${k}: ${JSON.stringify(v)}`);
+  return `---\n${lines.join('\n')}\n---\n${body}`;
 }
 
 export interface AgentRow {
@@ -92,6 +120,7 @@ export function agentRows(
           `Tools: ${p.tools ? p.tools.join(', ') || 'none' : 'no limit beyond the skill'}`,
           `Writes: ${p.write ? p.write.join(', ') || 'nothing' : 'no limit beyond the skill'}`,
           ...(p.maxConcurrent !== undefined ? [`At most ${p.maxConcurrent} at once`] : []),
+          tokensValidSince(p) ?? '',
           opts.usage === 'admin-required'
             ? 'Run counts need an admin sign-in.'
             : runs

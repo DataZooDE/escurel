@@ -1339,6 +1339,7 @@ class AgentProfile {
     this.tools,
     this.write,
     this.maxConcurrent,
+    this.tokenEpoch,
   });
 
   /// The `agent` instance id; runs that act as it report `agent:<id>`.
@@ -1356,6 +1357,18 @@ class AgentProfile {
   final List<String>? tools;
   final List<String>? write;
   final int? maxConcurrent;
+
+  /// `token_epoch` (Unix seconds, #829): tokens for this agent issued before
+  /// it were revoked. Null when none ever were.
+  final int? tokenEpoch;
+
+  /// "tokens valid since 2026-09-22T10:00:00Z" once tokens were revoked.
+  String? get tokensValidSince {
+    final epoch = tokenEpoch;
+    if (epoch == null) return null;
+    final at = DateTime.fromMillisecondsSinceEpoch(epoch * 1000, isUtc: true);
+    return 'tokens valid since ${at.toIso8601String().replaceFirst('.000Z', 'Z')}';
+  }
 
   /// The principal key `usage_report{group_by:[agent]}` files its runs under.
   String get principal => 'agent:$id';
@@ -1375,6 +1388,7 @@ class AgentProfile {
       tools: strings(scopes['tools']),
       write: strings(scopes['write']),
       maxConcurrent: (fm['max_concurrent'] as num?)?.toInt(),
+      tokenEpoch: (fm['token_epoch'] as num?)?.toInt(),
     );
   }
 }

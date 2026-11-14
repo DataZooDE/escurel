@@ -39,6 +39,8 @@ import type {
   ListInstancesResponse,
   ListLineageRequest,
   ListLineageResponse,
+  IssueAgentTokenRequest,
+  IssueAgentTokenResponse,
   MintAgentTokenRequest,
   MintAgentTokenResponse,
   OpenSessionRequest,
@@ -277,6 +279,11 @@ export class EscurelClient {
 
   mintAgentToken(req: MintAgentTokenRequest): Promise<MintAgentTokenResponse> {
     return this.call('mint_agent_token', { ...req });
+  }
+
+  /** A revocable bearer for an external agent (#829); the token is shown once. Admin only. */
+  issueAgentToken(req: IssueAgentTokenRequest): Promise<IssueAgentTokenResponse> {
+    return this.call('issue_agent_token', { ...req });
   }
 
   reportProgress(

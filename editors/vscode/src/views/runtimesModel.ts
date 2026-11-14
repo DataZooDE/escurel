@@ -60,6 +60,18 @@ const labelWords = (r: Runtime): string =>
 
 const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
 
+/** Which credential the runner holds (#828), in words; `undefined` before it has said. */
+export function roleWords(role: Runtime['role']): string | undefined {
+  if (role === 'runner') return 'as runner';
+  if (role === 'admin') return 'as admin';
+  return undefined;
+}
+
+const ROLE_LINE: Record<string, string> = {
+  runner: 'Credential: escurel:runner (claims work and keeps its books; not an admin)',
+  admin: 'Credential: escurel:admin',
+};
+
 function statusLine(r: Runtime, status: RuntimeStatus, now: Date): string {
   const seen = formatAge(r.last_seen, now);
   const after =
@@ -90,7 +102,9 @@ export function runtimeRows(runtimes: Runtime[], now: Date = new Date()): Runtim
         label,
         status,
         pageId: r.page_id,
-        description: [STATUS_WORD[status], harnessWords(r), labelWords(r), busy].join(' · '),
+        description: [STATUS_WORD[status], harnessWords(r), labelWords(r), busy, roleWords(r.role)]
+          .filter(Boolean)
+          .join(' · '),
         tooltip: [
           label,
           statusLine(r, status, now),
@@ -101,6 +115,7 @@ export function runtimeRows(runtimes: Runtime[], now: Date = new Date()): Runtim
             ? [`At most ${plural(r.max_concurrent, 'run')} at once`]
             : []),
           `Live runs: ${r.live_runs}`,
+          ...(r.role && ROLE_LINE[r.role] ? [ROLE_LINE[r.role]] : []),
           ...(r.version ? [`Runner ${cleanText(r.version, 60)}`] : []),
           `Page: ${r.page_id}`,
         ].join('\n'),
