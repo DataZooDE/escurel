@@ -1,5 +1,7 @@
 // The Agents view's rows, as pure functions (no `vscode`): agent profiles and what they ran.
+import { EscurelError } from '../client/errors';
 import type { Instance, UsageReportResponse } from '../client/types';
+import { describeError } from '../errors';
 import { pageFile } from '../shared/pageId';
 import { cleanText } from '../shared/untrustedText';
 import { successRate } from '../shared/usageWords';
@@ -100,7 +102,7 @@ export function agentRows(
         description: [engine, runs].filter(Boolean).join(' · '),
         tooltip: [
           p.id,
-          `Agent: ${engine}`,
+          `Harness: ${engine}`,
           `Runs: ${p.skills.length ? p.skills.join(', ') : 'no skill (it runs nothing)'}`,
           `Tools: ${p.tools ? p.tools.join(', ') || 'none' : 'no limit beyond the skill'}`,
           `Writes: ${p.write ? p.write.join(', ') || 'nothing' : 'no limit beyond the skill'}`,
@@ -116,4 +118,15 @@ export function agentRows(
           .join('\n'),
       };
     });
+}
+
+/**
+ * Why "Issue token…" failed, in words an admin can act on. A gateway without a signing key answers
+ * `unsupported`; the raw MCP text says that only in passing.
+ */
+export function issueTokenError(error: unknown): string {
+  if (error instanceof EscurelError && error.kind === 'unsupported') {
+    return 'this gateway has no signing key, so it cannot issue tokens (an operator sets ESCUREL_AUTH_SIGNING_KEY on the gateway)';
+  }
+  return describeError(error);
 }

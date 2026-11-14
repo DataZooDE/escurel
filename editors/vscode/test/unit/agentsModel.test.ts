@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { Instance, UsageReportResponse } from '../../src/client/types';
-import { agentProfile, agentRows, tokensValidSince } from '../../src/views/agentsModel';
+import { EscurelError } from '../../src/client/errors';
+import { agentProfile, agentRows, issueTokenError, tokensValidSince } from '../../src/views/agentsModel';
 
 // An agent profile is an instance of the `agent` system skill (references/01, "Agent profiles");
 // usage_report {group_by: [agent]} keys a run by `agent:<id>`.
@@ -116,5 +117,24 @@ describe('agent tokens (#829)', () => {
     expect(tokensValidSince(agentProfile(scribe))).toBeUndefined();
     const [row] = agentRows([revoked], { usage: undefined, window: 'Last 30 days' });
     expect(row?.tooltip).toContain('Tokens valid since 2026-09-22T10:00:00Z');
+  });
+});
+
+describe('issueTokenError', () => {
+  it('says plainly that a gateway without a signing key cannot issue tokens', () => {
+    const text = issueTokenError(new EscurelError('unsupported', 'MCP error -32602: issue_agent_token: no signing identity'));
+    expect(text).toMatch(/no signing key/);
+    expect(text).toMatch(/ESCUREL_AUTH_SIGNING_KEY/);
+    expect(text).not.toMatch(/MCP error/);
+  });
+  it('falls back to the general wording for anything else', () => {
+    expect(issueTokenError(new EscurelError('forbidden', 'x'))).toMatch(/not allowed/);
+  });
+});
+
+describe('agent tooltip', () => {
+  it('names the harness as the harness', () => {
+    const [row] = agentRows([agentProfile(scribe)], { usage: 'admin-required', window: 'x' });
+    expect(String(row?.tooltip)).toMatch(/Harness: claude/);
   });
 });

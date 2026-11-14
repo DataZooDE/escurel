@@ -2,7 +2,7 @@ import * as vscode from 'vscode';
 import type { UsageReportResponse } from '../client/types';
 import { describeError } from '../errors';
 import type { Services } from '../services';
-import { agentProfile, agentRows, type AgentProfile, type AgentRow } from './agentsModel';
+import { agentProfile, agentRows, issueTokenError, type AgentProfile, type AgentRow } from './agentsModel';
 import { LazyFlatTree, type FlatRead } from './lazyTree';
 import { usageFailure, usageRange } from './usageModel';
 
@@ -113,7 +113,7 @@ async function issueToken(services: Services, row: AgentRow | undefined): Promis
     issued = await services.client.issueAgentToken({ agent: row.label, ttl_secs: ttl.secs });
   } catch (error) {
     void vscode.window.showErrorMessage(
-      `Could not issue a token for agent ${row.label}: ${describeError(error)}`,
+      `Could not issue a token for agent ${row.label}: ${issueTokenError(error)}`,
     );
     return;
   }
