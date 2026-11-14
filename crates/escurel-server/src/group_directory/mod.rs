@@ -247,10 +247,19 @@ impl BridgeMint {
             principal_template: cfg.principal_template.clone(),
             graph_tenant: cfg.graph_tenant().map(str::to_owned),
             directories: GroupDirectories::new(cfg, egress, reserved)?,
-            teams: cfg
-                .teams
-                .as_ref()
-                .map(|t| crate::teams_verify::TeamsVerifier::new(t, egress)),
+            teams: match &cfg.teams {
+                Some(t) => Some(crate::teams_verify::TeamsVerifier::new(t, egress)),
+                None => {
+                    tracing::warn!(
+                        "mint_user_token trusts the chat bridge for WHO asked: a stolen \
+                         escurel:bridge credential could mint a token for anyone. Set \
+                         ESCUREL_AUTH_TEAMS_APP_ID and ESCUREL_AUTH_TEAMS_APP_SECRET[_FILE] (the \
+                         bot's app registration) so the gateway verifies the Teams activity and \
+                         its roster itself"
+                    );
+                    None
+                }
+            },
             limits: crate::rate_limit::MintLimiter::new(cfg.rate),
         })
     }

@@ -131,6 +131,10 @@ Chat bridge hardening (#835):
   at boot that it trusts the bridge for who asked.
 - The bridge drops a turn whose own member lookup answers `404` (the sender is not in the conversation) without a
   reply.
+- With verification on, a conversation kind its Teams id contradicts (a `19:…@thread.v2` group chat called
+  `personal`, a channel turn with no team) is `identity_mismatch`. The Bot Framework keys are fetched with the
+  caller's client (the gateway's egress-vetted one), never through a redirect, and only from an https `jwks_uri`
+  (plain http only to loopback behind the dev flag).
 
 ## v2026.11.13 — BREAKING (runner credential must be admin; skill authority keys need an admin)
 

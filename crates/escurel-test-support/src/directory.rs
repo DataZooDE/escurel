@@ -297,12 +297,15 @@ impl DirectoryStandIn {
             }),
             Kind::Okta => DirectoryConfig::Okta(okta::OktaConfig {
                 auth: if self.oauth {
-                    okta::OktaAuth::ServiceApp {
-                        client_id: OKTA_CLIENT_ID.to_owned(),
-                        private_key: self.key_pem.clone().expect("okta app key"),
-                        key_id: Some("okta-k1".to_owned()),
-                        token_url: format!("{base}/oauth2/v1/token"),
-                    }
+                    okta::OktaAuth::service_app(
+                        OKTA_CLIENT_ID.to_owned(),
+                        &escurel_client::SecretString::from(
+                            self.key_pem.clone().expect("okta app key"),
+                        ),
+                        Some("okta-k1".to_owned()),
+                        format!("{base}/oauth2/v1/token"),
+                    )
+                    .expect("the stand-in's key signs")
                 } else {
                     okta::OktaAuth::ApiToken(OKTA_TOKEN.to_owned())
                 },

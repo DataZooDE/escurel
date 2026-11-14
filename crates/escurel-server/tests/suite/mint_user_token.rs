@@ -1423,3 +1423,28 @@ async fn a_cached_roster_answer_never_vouches_for_another_conversation() {
         "the group chat was asked about, not cached"
     );
 }
+
+/// Crew F12: with verification on, a mapped group chat labelled `personal`
+/// (which would skip the mapping and the membership check) is refused, as is
+/// a channel turn that names no team.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_conversation_kind_its_teams_id_contradicts_is_refused() {
+    let w = verified_world().await;
+    let token = w.bf.token(BOT_APP);
+    for (conversation, why) in [
+        (
+            json!({ "kind": "personal", "id": GROUP_CHAT }),
+            "a group chat as personal",
+        ),
+        (
+            json!({ "kind": "channel", "id": "19:c@thread.tacv2;messageid=1" }),
+            "a channel with no team",
+        ),
+    ] {
+        let mut turn = verified_turn(&w.bf, "29:alice", ALICE_OID, Some(&token));
+        turn["conversation"] = conversation;
+        let (_, body) = call(&w.gw, &bridge_credential(&w.gw), "mint_user_token", turn).await;
+        refused(&body, "identity_mismatch", why);
+    }
+    assert_eq!(member_calls(&w.bf), 0, "refused before the roster is asked");
+}

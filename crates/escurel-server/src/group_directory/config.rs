@@ -62,6 +62,17 @@ pub(crate) fn bridge_refusal<T>(why: String) -> Result<T, ConfigError> {
 /// tests and local development, and only while that dev flag
 /// (`ESCUREL_EGRESS_ALLOW_LOOPBACK`, which warns at boot) is on (#835).
 pub(crate) fn directory_url(key: &str, url: &str, allow_loopback: bool) -> Result<(), ConfigError> {
+    https_url(key, url, allow_loopback, "a directory")
+}
+
+/// [`directory_url`] for any outbound endpoint: `what` names it in the
+/// refusal ("a directory", "a Bot Framework endpoint").
+pub(crate) fn https_url(
+    key: &str,
+    url: &str,
+    allow_loopback: bool,
+    what: &str,
+) -> Result<(), ConfigError> {
     let parsed = reqwest::Url::parse(url)
         .ok()
         .filter(|u| u.host_str().is_some());
@@ -73,8 +84,8 @@ pub(crate) fn directory_url(key: &str, url: &str, allow_loopback: bool) -> Resul
         Some(_) if loopback_http && allow_loopback => Ok(()),
         Some(_) if loopback_http => bridge_refusal(format!(
             "{key} `{url}` is plain http: that is for a local stand-in only, with \
-             ESCUREL_EGRESS_ALLOW_LOOPBACK=true (development and tests); a directory must be \
-             an https URL"
+             ESCUREL_EGRESS_ALLOW_LOOPBACK=true (development and tests); {what} must be an \
+             https URL"
         )),
         _ => bridge_refusal(format!(
             "{key} `{url}` must be an https URL (plain http only to a loopback address, with \
@@ -227,12 +238,13 @@ fn okta_auth(
     let token_url =
         get("ESCUREL_AUTH_OKTA_TOKEN_URL").unwrap_or_else(|| okta::default_token_url(base_url));
     directory_url("ESCUREL_AUTH_OKTA_TOKEN_URL", &token_url, allow_loopback)?;
-    Ok(okta::OktaAuth::ServiceApp {
+    okta::OktaAuth::service_app(
         client_id,
-        private_key,
-        key_id: get("ESCUREL_AUTH_OKTA_KEY_ID"),
+        &secrecy::SecretString::from(private_key),
+        get("ESCUREL_AUTH_OKTA_KEY_ID"),
         token_url,
-    })
+    )
+    .or_else(bridge_refusal)
 }
 
 /// `mint_user_token`'s configuration (#830), validated whole at boot: a
@@ -480,6 +492,6 @@ pub(crate) fn bridge_mint_from(
         cache_ttl: crate::group_directory::DEFAULT_CACHE_TTL,
         stale_ttl: crate::group_directory::DEFAULT_STALE_TTL,
         teams: crate::teams_verify::teams_from(env, allow_loopback)?,
-        rate: crate::teams_verify::rate_from(env)?,
+        rate: crate::rate_limit::rate_from(env)?,
     }))
 }

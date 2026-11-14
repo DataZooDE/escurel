@@ -21,6 +21,7 @@
 use std::sync::Arc;
 
 use escurel_auth::ClientCredentials;
+use secrecy::{ExposeSecret, SecretString};
 
 use super::{
     DirectoryError, DirectoryGroup, DirectoryUser, GroupDirectory, GroupsFuture, MAX_PAGES,
@@ -43,15 +44,45 @@ pub fn default_token_url(base_url: &str) -> String {
 pub enum OktaAuth {
     /// `ssws`: a read-only admin's API token.
     ApiToken(String),
-    /// `oauth`: an API Services app with a public-key client.
+    /// `oauth`: an API Services app with a public-key client. Built with
+    /// [`Self::service_app`]: the key is parsed once, into the credential,
+    /// and kept nowhere else (crew F15).
     ServiceApp {
         client_id: String,
-        /// The app's RSA private key (PEM).
-        private_key: String,
         /// The key's `kid` in the app's JWKS, when the app holds several.
         key_id: Option<String>,
         token_url: String,
+        credentials: Arc<ClientCredentials>,
     },
+}
+
+impl OktaAuth {
+    /// An API Services app signing its assertions with `private_key` (an RSA
+    /// PEM, held as a secret until it is parsed here).
+    ///
+    /// # Errors
+    /// The key is not an RSA private key, as an operator-facing sentence.
+    pub fn service_app(
+        client_id: String,
+        private_key: &SecretString,
+        key_id: Option<String>,
+        token_url: String,
+    ) -> Result<Self, String> {
+        let credentials = ClientCredentials::private_key_jwt(
+            token_url.clone(),
+            client_id.clone(),
+            key_id.clone(),
+            private_key.expose_secret(),
+            SCOPE,
+        )
+        .map_err(|e| format!("ESCUREL_AUTH_OKTA_PRIVATE_KEY: {e}"))?;
+        Ok(Self::ServiceApp {
+            client_id,
+            key_id,
+            token_url,
+            credentials: Arc::new(credentials),
+        })
+    }
 }
 
 /// Which of the sender's fields is their Okta login.
@@ -109,25 +140,15 @@ impl OktaConfig {
         self.credential().map(drop)
     }
 
-    /// One construction for the boot check and the directory.
+    /// The credential the directory sends: the service app's was built
+    /// (and its key checked) with [`OktaAuth::service_app`].
     fn credential(&self) -> Result<Credential, String> {
-        match &self.auth {
-            OktaAuth::ApiToken(token) => Ok(Credential::Ssws(format!("SSWS {token}"))),
-            OktaAuth::ServiceApp {
-                client_id,
-                private_key,
-                key_id,
-                token_url,
-            } => ClientCredentials::private_key_jwt(
-                token_url.clone(),
-                client_id.clone(),
-                key_id.clone(),
-                private_key,
-                SCOPE,
-            )
-            .map(|cc| Credential::ServiceApp(Box::new(cc)))
-            .map_err(|e| format!("ESCUREL_AUTH_OKTA_PRIVATE_KEY: {e}")),
-        }
+        Ok(match &self.auth {
+            OktaAuth::ApiToken(token) => Credential::Ssws(format!("SSWS {token}")),
+            OktaAuth::ServiceApp { credentials, .. } => {
+                Credential::ServiceApp(Arc::clone(credentials))
+            }
+        })
     }
 }
 
@@ -135,7 +156,7 @@ impl OktaConfig {
 enum Credential {
     /// The whole `Authorization` value, `SSWS <token>`.
     Ssws(String),
-    ServiceApp(Box<ClientCredentials>),
+    ServiceApp(Arc<ClientCredentials>),
 }
 
 pub struct OktaDirectory {

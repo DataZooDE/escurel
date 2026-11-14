@@ -131,9 +131,18 @@ impl JwksCache {
             in_flight: Arc::new(Mutex::new(())),
             client: reqwest::Client::builder()
                 .timeout(JWKS_FETCH_TIMEOUT)
+                .redirect(reqwest::redirect::Policy::none())
                 .build()
                 .unwrap_or_default(),
         }
+    }
+
+    /// Fetch with the caller's `client` (its timeout, its address policy)
+    /// instead of the cache's own — the gateway's egress-pinned one, say.
+    #[must_use]
+    pub fn with_client(mut self, client: reqwest::Client) -> Self {
+        self.client = client;
+        self
     }
 
     /// Override the fetch timeout ([`JWKS_FETCH_TIMEOUT`] by default).
@@ -143,6 +152,7 @@ impl JwksCache {
     pub fn with_timeout(mut self, timeout: Duration) -> Self {
         self.client = reqwest::Client::builder()
             .timeout(timeout)
+            .redirect(reqwest::redirect::Policy::none())
             .build()
             .unwrap_or_default();
         self

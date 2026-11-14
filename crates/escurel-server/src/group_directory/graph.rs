@@ -269,11 +269,7 @@ mod tests {
             .mount(&idp)
             .await;
         // The stand-in listens on loopback: the dev flag a local deployment would set.
-        let dev = crate::egress::EgressPolicy::from_source(&|k: &str| {
-            (k == "ESCUREL_EGRESS_ALLOW_LOOPBACK").then(|| "true".to_owned())
-        })
-        .expect("the dev flag parses");
-        let egress = Arc::new(Egress::new(dev));
+        let egress = Arc::new(Egress::new(crate::egress::EgressPolicy::dev()));
         let dir = GraphDirectory::new(
             GraphConfig {
                 tenant_id: "t".into(),

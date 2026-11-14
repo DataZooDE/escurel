@@ -65,11 +65,18 @@ impl TeamsChannel {
             cfg.app_password.clone(),
             cfg.token_scope.clone(),
         );
+        // Keys over https, unless the operator pointed the metadata at a loopback stand-in.
+        let local = reqwest::Url::parse(&cfg.openid_metadata_url).is_ok_and(|u| {
+            u.scheme() == "http"
+                && matches!(u.host_str(), Some("127.0.0.1" | "localhost" | "[::1]"))
+        });
         let verifier = ActivityVerifier::new(
             cfg.app_id.clone(),
             cfg.issuer.clone(),
             cfg.openid_metadata_url.clone(),
-        );
+            client(reqwest::Client::builder()),
+        )
+        .allow_loopback_http(local);
         Self {
             cfg,
             http: client(reqwest::Client::builder()),

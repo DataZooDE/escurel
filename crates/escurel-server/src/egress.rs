@@ -173,6 +173,20 @@ impl EgressPolicy {
         Ok(p)
     }
 
+    /// The development / test policy: exactly what `ESCUREL_EGRESS_ALLOW_LOOPBACK=true` boots
+    /// with, through the same parser (so a test exercises the operator's path, warning
+    /// included), and nothing else changed.
+    ///
+    /// # Panics
+    /// Never: the one key it sets parses.
+    #[must_use]
+    pub fn dev() -> Self {
+        Self::from_source(&|k: &str| {
+            (k == "ESCUREL_EGRESS_ALLOW_LOOPBACK").then(|| "true".to_owned())
+        })
+        .expect("the dev flag parses")
+    }
+
     /// [`Self::from_source`] over the process environment.
     ///
     /// # Errors

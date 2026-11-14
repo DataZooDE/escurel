@@ -33,7 +33,6 @@ use tokio::sync::Mutex;
 use crate::config::{ConfigError, EnvSource, secret_or_file};
 use crate::egress::Egress;
 use crate::group_directory::{DirectoryError, authorized_get};
-use crate::rate_limit::MintRateLimits;
 
 /// The connector hosts a public-cloud Teams bot is called back on.
 pub const DEFAULT_SERVICE_URL_HOSTS: &[&str] = &["smba.trafficmanager.net", "*.botframework.com"];
@@ -54,11 +53,6 @@ pub(crate) const TEAMS_KEYS: &[&str] = &[
     "ESCUREL_AUTH_TEAMS_TOKEN_URL",
     "ESCUREL_AUTH_TEAMS_TOKEN_SCOPE",
     "ESCUREL_AUTH_TEAMS_SERVICE_URL_HOSTS",
-];
-/// The mint caps' keys.
-pub(crate) const RATE_KEYS: &[&str] = &[
-    "ESCUREL_AUTH_BRIDGE_MINT_PER_MINUTE",
-    "ESCUREL_AUTH_BRIDGE_MINT_PER_ASKER_PER_MINUTE",
 ];
 
 /// `ESCUREL_AUTH_TEAMS_*`: the bot's app registration, the Bot Framework
@@ -115,13 +109,14 @@ impl TeamsVerifyConfig {
 pub(crate) fn stray_key(env: &dyn EnvSource) -> Option<&'static str> {
     TEAMS_KEYS
         .iter()
-        .chain(RATE_KEYS)
+        .chain(crate::rate_limit::RATE_KEYS)
         .find(|k| env.get(k).is_some_and(|v| !v.trim().is_empty()))
         .copied()
 }
 
-/// `ESCUREL_AUTH_TEAMS_*`, validated whole: unset is `None` (with one boot
-/// WARN, the gateway then trusts the bridge for who asked); the app id set
+/// `ESCUREL_AUTH_TEAMS_*`, validated whole: unset is `None` (the gateway
+/// then trusts the bridge for who asked; [`crate::group_directory::BridgeMint`]
+/// says so once at boot); the app id set
 /// makes everything else required or defaulted; any other key without it
 /// refuses to start.
 ///
@@ -141,12 +136,6 @@ pub(crate) fn teams_from(
                  app id"
             ));
         }
-        tracing::warn!(
-            "mint_user_token trusts the chat bridge for WHO asked: a stolen escurel:bridge \
-             credential could mint a token for anyone. Set ESCUREL_AUTH_TEAMS_APP_ID and \
-             ESCUREL_AUTH_TEAMS_APP_SECRET[_FILE] (the bot's app registration) so the gateway \
-             verifies the Teams activity and its roster itself"
-        );
         return Ok(None);
     };
     let app_secret = secret_or_file(
@@ -172,7 +161,12 @@ pub(crate) fn teams_from(
         if let Some(url) = get(key) {
             *slot = url;
         }
-        crate::group_directory::config::directory_url(key, slot, allow_loopback)?;
+        crate::group_directory::config::https_url(
+            key,
+            slot,
+            allow_loopback,
+            "a Bot Framework endpoint",
+        )?;
     }
     if let Some(issuer) = get("ESCUREL_AUTH_TEAMS_ISSUER") {
         cfg.issuer = issuer;
@@ -205,34 +199,6 @@ pub(crate) fn teams_from(
     Ok(Some(cfg))
 }
 
-/// `ESCUREL_AUTH_BRIDGE_MINT_PER_MINUTE` / `…_PER_ASKER_PER_MINUTE`: whole
-/// numbers, at least 1.
-///
-/// # Errors
-/// A value that is not a positive whole number.
-pub(crate) fn rate_from(env: &dyn EnvSource) -> Result<MintRateLimits, ConfigError> {
-    let mut limits = MintRateLimits::default();
-    for (key, slot) in [
-        (RATE_KEYS[0], &mut limits.per_credential_per_minute),
-        (RATE_KEYS[1], &mut limits.per_asker_per_minute),
-    ] {
-        let Some(raw) = env.get(key).filter(|v| !v.trim().is_empty()) else {
-            continue;
-        };
-        match raw.trim().parse::<u32>() {
-            Ok(n) if n > 0 => *slot = n,
-            _ => {
-                return Err(ConfigError::InvalidValue {
-                    var: key,
-                    value: raw,
-                    reason: "a whole number of mints per minute, at least 1",
-                });
-            }
-        }
-    }
-    Ok(limits)
-}
-
 /// Why the gateway would not accept the bridge's account of a Teams turn.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum TeamsVerifyError {
@@ -260,7 +226,11 @@ type RosterKey = (String, String, String);
 pub struct TeamsVerifier {
     hosts: Vec<String>,
     ttl: Duration,
-    activity: ActivityVerifier,
+    cfg: TeamsVerifyConfig,
+    /// Built at first use with a client the egress policy vetted and pinned
+    /// to the metadata's host (crew F11): no DNS at boot, no redirects, no
+    /// proxy, a non-public address refused.
+    activity: tokio::sync::OnceCell<ActivityVerifier>,
     connector: ClientCredentials,
     egress: Arc<Egress>,
     roster: Mutex<HashMap<RosterKey, (ConversationMember, Instant)>>,
@@ -272,12 +242,8 @@ impl TeamsVerifier {
         Self {
             hosts: cfg.service_url_hosts.clone(),
             ttl: cfg.roster_ttl.min(ROSTER_TTL),
-            activity: ActivityVerifier::new(
-                cfg.app_id.clone(),
-                cfg.issuer.clone(),
-                cfg.openid_metadata_url.clone(),
-            )
-            .with_refresh_cooldown(cfg.jwks_refresh_cooldown),
+            cfg: cfg.clone(),
+            activity: tokio::sync::OnceCell::new(),
             connector: ClientCredentials::new(
                 cfg.token_url.clone(),
                 cfg.app_id.clone(),
@@ -287,6 +253,36 @@ impl TeamsVerifier {
             egress: Arc::clone(egress),
             roster: Mutex::new(HashMap::new()),
         }
+    }
+
+    /// The activity verifier, its client from the egress policy.
+    async fn activity(&self) -> Result<&ActivityVerifier, TeamsVerifyError> {
+        self.activity
+            .get_or_try_init(|| async {
+                let (http, _) = self
+                    .egress
+                    .client_for(&self.cfg.openid_metadata_url)
+                    .await
+                    .map_err(|e| match e {
+                        crate::egress::EgressError::Unresolvable
+                        | crate::egress::EgressError::Timeout(_)
+                        | crate::egress::EgressError::Transport(_) => {
+                            TeamsVerifyError::Unavailable(e.to_string())
+                        }
+                        other => TeamsVerifyError::Misconfigured(format!(
+                            "ESCUREL_AUTH_TEAMS_OPENID_METADATA: {other}"
+                        )),
+                    })?;
+                Ok(ActivityVerifier::new(
+                    self.cfg.app_id.clone(),
+                    self.cfg.issuer.clone(),
+                    self.cfg.openid_metadata_url.clone(),
+                    http,
+                )
+                .with_refresh_cooldown(self.cfg.jwks_refresh_cooldown)
+                .allow_loopback_http(self.egress.policy().allow_loopback))
+            })
+            .await
     }
 
     /// Who `user_id` is in `conversation_id`, as Microsoft says — after
@@ -309,7 +305,8 @@ impl TeamsVerifier {
         if conversation_id.is_empty() || user_id.is_empty() {
             return unverified("the turn names no conversation or user id");
         }
-        self.activity
+        self.activity()
+            .await?
             .verify(token, service_url)
             .await
             .map_err(|e| match e {
@@ -371,6 +368,34 @@ impl TeamsVerifier {
     }
 }
 
+/// Why the turn's conversation `kind` clearly disagrees with the shape of its
+/// Teams id (crew F12), if it does — a mapped group chat labelled `personal`
+/// would skip the mapping and the membership check. Teams ids: a 1:1 chat is
+/// `a:…`; a group chat (meeting chats too) `19:…@thread.v2`; a channel thread
+/// `19:…@thread.tacv2` or the older `@thread.skype`, maybe `;messageid=…`.
+/// Only clear disagreements are refused: an id of another shape passes.
+pub(crate) fn kind_disagrees(
+    conv: &escurel_types::chat_channel::ConversationRef,
+) -> Option<&'static str> {
+    use escurel_types::chat_channel::ConversationKind as K;
+    let thread = conv.id.starts_with("19:");
+    let channel_thread = conv.id.contains("@thread.tacv2") || conv.id.contains("@thread.skype");
+    match conv.kind {
+        K::Personal if thread => Some("a `19:` thread id is not a 1:1 chat"),
+        K::Group | K::Channel if conv.id.starts_with("a:") => {
+            Some("an `a:` id is a 1:1 chat, not a shared one")
+        }
+        K::Group if channel_thread => Some("a channel thread id is not a group chat"),
+        K::Channel if conv.id.contains("@thread.v2") => {
+            Some("a group-chat id is not a channel thread")
+        }
+        K::Channel if conv.team_id.as_deref().is_none_or(str::is_empty) => {
+            Some("a channel turn names no team")
+        }
+        _ => None,
+    }
+}
+
 /// Whether `host` is on the allow-list: an exact entry, or under a `*.suffix`.
 fn host_allowed(hosts: &[String], host: &str) -> bool {
     let host = host.to_ascii_lowercase();
@@ -385,6 +410,40 @@ fn host_allowed(hosts: &[String], host: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_a_clear_kind_and_id_disagreement_is_refused() {
+        use escurel_types::chat_channel::{ConversationKind as K, ConversationRef};
+        let conv = |kind, id: &str, team: Option<&str>| ConversationRef {
+            kind,
+            id: id.to_owned(),
+            team_id: team.map(str::to_owned),
+            channel_id: None,
+        };
+        for ok in [
+            conv(K::Personal, "a:1personal", None),
+            conv(K::Group, "19:sales@thread.v2", None),
+            conv(K::Group, "19:meeting_x@thread.v2", None),
+            conv(
+                K::Channel,
+                "19:c@thread.tacv2;messageid=1",
+                Some("19:t@thread.tacv2"),
+            ),
+            conv(K::Channel, "19:c@thread.skype", Some("t")),
+            conv(K::Personal, "29:something-else", None),
+        ] {
+            assert_eq!(kind_disagrees(&ok), None, "{ok:?}");
+        }
+        for bad in [
+            conv(K::Personal, "19:sales@thread.v2", None),
+            conv(K::Group, "a:1personal", None),
+            conv(K::Group, "19:c@thread.tacv2", None),
+            conv(K::Channel, "19:sales@thread.v2", Some("t")),
+            conv(K::Channel, "19:c@thread.tacv2", None),
+        ] {
+            assert!(kind_disagrees(&bad).is_some(), "{bad:?}");
+        }
+    }
 
     #[test]
     fn the_allow_list_matches_exact_hosts_and_dot_suffixes_only() {
@@ -435,15 +494,6 @@ mod tests {
                 ]),
                 false
             )
-            .is_err()
-        );
-        assert_eq!(rate_from(&env(&[])).unwrap(), MintRateLimits::default());
-        assert!(rate_from(&env(&[("ESCUREL_AUTH_BRIDGE_MINT_PER_MINUTE", "0")])).is_err());
-        assert!(
-            rate_from(&env(&[(
-                "ESCUREL_AUTH_BRIDGE_MINT_PER_ASKER_PER_MINUTE",
-                "ten"
-            )]))
             .is_err()
         );
     }

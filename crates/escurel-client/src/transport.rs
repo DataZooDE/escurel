@@ -325,7 +325,7 @@ impl McpTransport {
                 message,
                 data_code,
                 retryable,
-                data: data.cloned(),
+                data: data.cloned().map(Box::new),
             });
         }
         let result = body.get("result").cloned().ok_or_else(|| {

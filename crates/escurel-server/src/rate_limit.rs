@@ -58,7 +58,11 @@ impl TokenBucket {
 
 /// One [`TokenBucket`] per key, `per_minute` each, over at most `max_keys`
 /// keys. A full bucket is forgotten first (losslessly); past the bound the
-/// longest-idle one goes.
+/// longest-idle one goes. That eviction can hand an idle key a fresh burst:
+/// someone cycling through more than `max_keys` keys resets the bucket of a
+/// key idle the longest (crew F15). It is accepted, because every mint first
+/// spends a token of its credential's own bucket, so cycling askers is capped
+/// by the credential cap, and a key it resets had been idle anyway.
 pub struct KeyedBuckets {
     per_minute: u32,
     max_keys: usize,
@@ -101,6 +105,11 @@ impl KeyedBuckets {
     }
 
     #[cfg(test)]
+    fn holds(&self, key: &str) -> bool {
+        self.buckets.lock().unwrap().contains_key(key)
+    }
+
+    #[cfg(test)]
     fn len(&self) -> usize {
         self.buckets.lock().unwrap().len()
     }
@@ -122,6 +131,42 @@ impl Default for MintRateLimits {
             per_asker_per_minute: 30,
         }
     }
+}
+
+/// The mint caps' keys.
+pub(crate) const RATE_KEYS: &[&str] = &[
+    "ESCUREL_AUTH_BRIDGE_MINT_PER_MINUTE",
+    "ESCUREL_AUTH_BRIDGE_MINT_PER_ASKER_PER_MINUTE",
+];
+
+/// `ESCUREL_AUTH_BRIDGE_MINT_PER_MINUTE` / `…_PER_ASKER_PER_MINUTE`: whole
+/// numbers, at least 1.
+///
+/// # Errors
+/// A value that is not a positive whole number.
+pub(crate) fn rate_from(
+    env: &dyn crate::config::EnvSource,
+) -> Result<MintRateLimits, crate::config::ConfigError> {
+    let mut limits = MintRateLimits::default();
+    for (key, slot) in [
+        (RATE_KEYS[0], &mut limits.per_credential_per_minute),
+        (RATE_KEYS[1], &mut limits.per_asker_per_minute),
+    ] {
+        let Some(raw) = env.get(key).filter(|v| !v.trim().is_empty()) else {
+            continue;
+        };
+        match raw.trim().parse::<u32>() {
+            Ok(n) if n > 0 => *slot = n,
+            _ => {
+                return Err(crate::config::ConfigError::InvalidValue {
+                    var: key,
+                    value: raw,
+                    reason: "a whole number of mints per minute, at least 1",
+                });
+            }
+        }
+    }
+    Ok(limits)
 }
 
 /// The most bridge credentials / askers a mint limiter tracks at once.
@@ -235,6 +280,43 @@ mod tests {
         assert!(s.note("bridge", "user:one-too-many"));
         assert!(!s.note("bridge", "user:and-another"), "once per minute");
         assert!(!s.note("other-bridge", "user:0"));
+    }
+
+    #[test]
+    fn a_full_bucket_is_forgotten_before_an_idle_empty_one() {
+        let k = KeyedBuckets::new(60, 2);
+        // `full` takes one token and refills within a second; `spent` stays empty for a minute.
+        assert!(k.take("full").is_ok());
+        for _ in 0..60 {
+            let _ = k.take("spent");
+        }
+        assert!(k.take("spent").is_err());
+        std::thread::sleep(Duration::from_millis(1100));
+        assert!(k.take("new").is_ok());
+        assert!(k.holds("spent"), "the empty bucket was kept");
+        assert!(!k.holds("full"), "the refilled one was forgotten");
+        assert_eq!(k.len(), 2);
+    }
+
+    #[test]
+    fn the_caps_parse_as_positive_whole_numbers() {
+        let env = |pairs: &'static [(&'static str, &'static str)]| {
+            move |k: &str| {
+                pairs
+                    .iter()
+                    .find(|(key, _)| *key == k)
+                    .map(|(_, v)| (*v).to_owned())
+            }
+        };
+        assert_eq!(rate_from(&env(&[])).unwrap(), MintRateLimits::default());
+        assert!(rate_from(&env(&[("ESCUREL_AUTH_BRIDGE_MINT_PER_MINUTE", "0")])).is_err());
+        assert!(
+            rate_from(&env(&[(
+                "ESCUREL_AUTH_BRIDGE_MINT_PER_ASKER_PER_MINUTE",
+                "ten"
+            )]))
+            .is_err()
+        );
     }
 
     #[test]

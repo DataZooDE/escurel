@@ -869,6 +869,17 @@ pub(super) async fn tool_mint_user_token(
     let who = match &mint.teams {
         None => Asker::asserted(&a),
         Some(teams) => {
+            if let Some(why) = crate::teams_verify::kind_disagrees(&conv) {
+                tracing::warn!(
+                    why,
+                    "mint_user_token: the turn's conversation kind is not its id's"
+                );
+                return Err(JsonRpcError::forbidden(format!(
+                    "{TOOL}: the asserted conversation kind `{}` disagrees with its Teams id: {why}",
+                    conv.kind.as_str()
+                ))
+                .with_code(mint_codes::IDENTITY_MISMATCH, false));
+            }
             Asker::verified(TOOL, teams, &a, &conv.id, mint.graph_tenant.as_deref()).await?
         }
     };

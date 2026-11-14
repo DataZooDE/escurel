@@ -56,6 +56,7 @@ pub struct ActivityVerifier {
     http: reqwest::Client,
     keys: OnceCell<JwksCache>,
     refresh_cooldown: Duration,
+    allow_loopback_http: bool,
 }
 
 impl std::fmt::Debug for ActivityVerifier {
@@ -68,24 +69,35 @@ impl std::fmt::Debug for ActivityVerifier {
 }
 
 impl ActivityVerifier {
+    /// A verifier fetching the metadata and the keys with `http` — the
+    /// caller's client (crew F11): the gateway hands in one its egress policy
+    /// vetted and pinned, the bridge its own bounded one. Neither should
+    /// follow redirects.
     #[must_use]
     pub fn new(
         app_id: impl Into<String>,
         issuer: impl Into<String>,
         openid_metadata_url: impl Into<String>,
+        http: reqwest::Client,
     ) -> Self {
         Self {
             app_id: app_id.into(),
             issuer: issuer.into(),
             openid_metadata_url: openid_metadata_url.into(),
-            http: reqwest::Client::builder()
-                .timeout(Duration::from_secs(10))
-                .redirect(reqwest::redirect::Policy::none())
-                .build()
-                .unwrap_or_default(),
+            http,
             keys: OnceCell::new(),
             refresh_cooldown: MIN_REFRESH_INTERVAL,
+            allow_loopback_http: false,
         }
+    }
+
+    /// Accept a plain-http `jwks_uri` on a loopback address (a local
+    /// stand-in, behind the deployment's dev flag). Off by default: the keys
+    /// come over https or not at all.
+    #[must_use]
+    pub fn allow_loopback_http(mut self, allow: bool) -> Self {
+        self.allow_loopback_http = allow;
+        self
     }
 
     /// Override the least time between two key fetches an unknown kid (or a
@@ -114,7 +126,19 @@ impl ActivityVerifier {
                 let jwks_uri = meta["jwks_uri"]
                     .as_str()
                     .ok_or_else(|| ActivityTokenError::Keys("metadata has no jwks_uri".into()))?;
+                let usable = reqwest::Url::parse(jwks_uri).is_ok_and(|u| {
+                    u.scheme() == "https"
+                        || (self.allow_loopback_http
+                            && u.scheme() == "http"
+                            && matches!(u.host_str(), Some("127.0.0.1" | "localhost" | "[::1]")))
+                });
+                if !usable {
+                    return Err(ActivityTokenError::Keys(
+                        "the metadata's jwks_uri is not an https URL".into(),
+                    ));
+                }
                 Ok(JwksCache::new(jwks_uri, JWKS_TTL)
+                    .with_client(self.http.clone())
                     .with_min_refresh_interval(self.refresh_cooldown))
             })
             .await

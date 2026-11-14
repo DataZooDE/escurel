@@ -222,9 +222,13 @@ turn: it is never logged and never written to the bridge's state file. For every
    `not_in_conversation` — the roster check, for 1:1 chats, group chats and channels alike; a
    network failure or a `5xx` is `directory_unavailable` (retryable). A positive answer is cached
    for 5 minutes per (serviceUrl, conversation, user);
-3. takes the object id, email, UPN and tenant from **Microsoft's** answer; a bridge-asserted value
+3. refuses a conversation kind the id's shape contradicts (`a:…` is a 1:1 chat, `19:…@thread.v2` a
+   group chat, `19:…@thread.tacv2` a channel thread; a channel turn must name its team):
+   `identity_mismatch`;
+4. takes the object id, email, UPN and tenant from **Microsoft's** answer; a bridge-asserted value
    that disagrees is `identity_mismatch`. The principal template, the directory groups and the
-   chat-channel membership all use Microsoft's values.
+   chat-channel membership all use Microsoft's values. A roster answer without `tenantId` takes the
+   tenant Graph serves; with no Graph tenant either, the mint is refused (`identity_mismatch`).
 
 The bridge drops a `not_in_conversation` or `activity_unverified` turn silently (a WARN in its log,
 no reply, no run): neither is a person's mistake. It does the same, with or without gateway

@@ -94,26 +94,6 @@ pub enum Decline {
 }
 
 impl Decline {
-    fn from_code(code: &str) -> Option<Self> {
-        use escurel_types::chat_channel::mint_codes as c;
-        Some(match code {
-            c::UNMAPPED => Self::Unmapped,
-            c::AMBIGUOUS => Self::Ambiguous,
-            c::NOT_MEMBER => Self::NotMember,
-            c::DIRECTORY_UNAVAILABLE => Self::Unavailable,
-            c::NO_DIRECTORY => Self::NoDirectory,
-            c::RATE_LIMITED => Self::RateLimited,
-            c::IDENTITY_MISMATCH => Self::Misconfigured(c::IDENTITY_MISMATCH),
-            c::TEAMS_MISCONFIGURED => Self::Misconfigured(c::TEAMS_MISCONFIGURED),
-            c::TENANT_NOT_SERVED => Self::Misconfigured(c::TENANT_NOT_SERVED),
-            c::UNSUPPORTED => Self::Misconfigured(c::UNSUPPORTED),
-            c::BRIDGE_REQUIRED => Self::Misconfigured(c::BRIDGE_REQUIRED),
-            "admin_required" => Self::Misconfigured("admin_required"),
-            "agent_scope_denied" => Self::Misconfigured("agent_scope_denied"),
-            _ => return None,
-        })
-    }
-
     /// What an operator changes for a [`Self::Misconfigured`] code.
     fn fix(code: &str) -> &'static str {
         use escurel_types::chat_channel::mint_codes as c;
@@ -188,6 +168,35 @@ impl Decline {
                 .to_owned(),
         }
     }
+}
+
+/// The one table from `mint_user_token`'s refusal codes to what the bridge
+/// does with a turn (crew F15): tell the person once, drop it silently, ask
+/// them to ask again, or give up on the sender. `None`: a plain gateway
+/// error, retried like any other.
+fn classify(code: &str, message: &str) -> Option<BridgeError> {
+    use escurel_types::chat_channel::mint_codes as c;
+    Some(match code {
+        c::UNMAPPED => BridgeError::Declined(Decline::Unmapped),
+        c::AMBIGUOUS => BridgeError::Declined(Decline::Ambiguous),
+        c::NOT_MEMBER => BridgeError::Declined(Decline::NotMember),
+        c::DIRECTORY_UNAVAILABLE => BridgeError::Declined(Decline::Unavailable),
+        c::NO_DIRECTORY => BridgeError::Declined(Decline::NoDirectory),
+        c::RATE_LIMITED => BridgeError::Declined(Decline::RateLimited),
+        c::IDENTITY_MISMATCH => BridgeError::Declined(Decline::Misconfigured(c::IDENTITY_MISMATCH)),
+        c::TEAMS_MISCONFIGURED => {
+            BridgeError::Declined(Decline::Misconfigured(c::TEAMS_MISCONFIGURED))
+        }
+        c::TENANT_NOT_SERVED => BridgeError::Declined(Decline::Misconfigured(c::TENANT_NOT_SERVED)),
+        c::UNSUPPORTED => BridgeError::Declined(Decline::Misconfigured(c::UNSUPPORTED)),
+        c::BRIDGE_REQUIRED => BridgeError::Declined(Decline::Misconfigured(c::BRIDGE_REQUIRED)),
+        "admin_required" => BridgeError::Declined(Decline::Misconfigured("admin_required")),
+        "agent_scope_denied" => BridgeError::Declined(Decline::Misconfigured("agent_scope_denied")),
+        c::NOT_IN_CONVERSATION => BridgeError::Dropped(c::NOT_IN_CONVERSATION),
+        c::ACTIVITY_UNVERIFIED => BridgeError::Unverified,
+        c::NO_PRINCIPAL => BridgeError::NoPrincipal(message.to_owned()),
+        _ => return None,
+    })
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -935,21 +944,7 @@ impl<'a, C: ChatChannel> AskerClient<'a, C> {
                 data_code: Some(code),
                 message,
                 ..
-            } => match Decline::from_code(code) {
-                Some(d) => BridgeError::Declined(d),
-                None if code == escurel_types::chat_channel::mint_codes::NOT_IN_CONVERSATION => {
-                    BridgeError::Dropped(
-                        escurel_types::chat_channel::mint_codes::NOT_IN_CONVERSATION,
-                    )
-                }
-                None if code == escurel_types::chat_channel::mint_codes::ACTIVITY_UNVERIFIED => {
-                    BridgeError::Unverified
-                }
-                None if code == escurel_types::chat_channel::mint_codes::NO_PRINCIPAL => {
-                    BridgeError::NoPrincipal(message.clone())
-                }
-                None => BridgeError::Gateway(e),
-            },
+            } => classify(code, message).unwrap_or(BridgeError::Gateway(e)),
             _ => BridgeError::Gateway(e),
         })?;
         let text = |k: &str| {

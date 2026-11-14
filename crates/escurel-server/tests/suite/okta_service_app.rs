@@ -100,10 +100,7 @@ async fn an_okta_app_that_requires_dpop_is_refused_naming_the_fix() {
     let DirectoryConfig::Okta(cfg) = okta.config("escurel-") else {
         unreachable!()
     };
-    let egress = Arc::new(Egress::new(EgressPolicy {
-        allow_loopback: true,
-        ..Default::default()
-    }));
+    let egress = Arc::new(Egress::new(EgressPolicy::dev()));
     let dir = okta::OktaDirectory::new(cfg, egress).expect("the app key parses");
     match dir.groups_for(ALICE_EMAIL).await {
         Err(DirectoryError::Permanent(why)) => {
