@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { groupProblem, mappingPage, mappingProblem } from '../../src/views/chatChannelModel';
+import {
+  groupProblem,
+  mappingPage,
+  mappingProblem,
+  mappingsOfTarget,
+} from '../../src/views/chatChannelModel';
 
 // The gateway's chat-channel rules (escurel-types::chat_channel): one target, a plain group.
 describe('Map Teams conversation', () => {
@@ -9,7 +14,7 @@ describe('Map Teams conversation', () => {
       conversationId: ' 19:abc@thread.v2 ',
       group: 'sales',
     });
-    expect(page.pageId).toMatch(/^markdown\/instances\/chat-channel\/teams-sales-[0-9a-f]{8}\.md$/);
+    expect(page.pageId).toMatch(/^markdown\/instances\/chat-channel\/teams-[0-9a-f]{8}\.md$/);
     expect(page.content).toContain('skill: chat-channel\n');
     expect(page.content).toContain('channel: msteams\n');
     expect(page.content).toContain('conversation_id: "19:abc@thread.v2"\n');
@@ -48,5 +53,43 @@ describe('Map Teams conversation', () => {
     expect(() => mappingPage({ kind: 'group', conversationId: 'c', group: 'admin' })).toThrow(
       /reserved/,
     );
+  });
+
+  // Crew U-F2: remapping a chat to another group is the same page, and an existing page for the
+  // target (by any id) is found before a second one is written.
+  it('keys the page on the target, so a remap rewrites one page', () => {
+    const sales = mappingPage({
+      kind: 'group',
+      conversationId: '19:abc@thread.v2',
+      group: 'sales',
+    });
+    const ops = mappingPage({ kind: 'group', conversationId: '19:abc@thread.v2', group: 'ops' });
+    expect(ops.pageId).toBe(sales.pageId);
+    expect(ops.content).toContain('group: ops\n');
+    const channel = mappingPage({ kind: 'channel', teamId: 't', channelId: 'c', group: 'sales' });
+    expect(channel.pageId).not.toBe(sales.pageId);
+
+    const existing = [
+      {
+        page_id: 'markdown/instances/chat-channel/hand-written.md',
+        frontmatter: { channel: 'msteams', conversation_id: '19:abc@thread.v2', group: 'sales' },
+      },
+      {
+        page_id: 'markdown/instances/chat-channel/deals.md',
+        frontmatter: { channel: 'msteams', team_id: 't', channel_id: 'c', group: 'sales' },
+      },
+    ];
+    const remap = { kind: 'group' as const, conversationId: ' 19:abc@thread.v2 ', group: 'ops' };
+    expect(mappingsOfTarget(remap, existing).map((m) => m.page_id)).toEqual([
+      'markdown/instances/chat-channel/hand-written.md',
+    ]);
+    expect(
+      mappingsOfTarget({ kind: 'channel', teamId: 't', channelId: 'c', group: 'x' }, existing).map(
+        (m) => m.page_id,
+      ),
+    ).toEqual(['markdown/instances/chat-channel/deals.md']);
+    expect(
+      mappingsOfTarget({ kind: 'group', conversationId: '19:other', group: 'x' }, existing),
+    ).toEqual([]);
   });
 });

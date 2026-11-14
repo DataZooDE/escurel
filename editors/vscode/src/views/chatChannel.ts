@@ -1,11 +1,20 @@
 import * as vscode from 'vscode';
 import { describeError } from '../errors';
 import type { Services } from '../services';
-import { groupProblem, idProblem, mappingPage, type MappingInput } from './chatChannelModel';
+import {
+  CHAT_CHANNEL_SKILL,
+  groupProblem,
+  idProblem,
+  mappingPage,
+  mappingsOfTarget,
+  type MappingInput,
+} from './chatChannelModel';
+import { collectInstances } from './scenariosModel';
 
 /**
  * "Map Teams conversation…" (#830, admin): connect a Teams group chat or channel to an escurel group
- * by writing a `chat-channel` page. Create-only: an existing mapping is edited as a page.
+ * by writing a `chat-channel` page. A conversation already mapped is offered for editing instead of
+ * getting a second, conflicting page.
  */
 export function registerChatChannelCommands(
   context: vscode.ExtensionContext,
@@ -67,6 +76,27 @@ async function mapConversation(services: Services): Promise<boolean> {
   }
   const page = mappingPage(input);
   try {
+    const existing = mappingsOfTarget(
+      input,
+      await collectInstances(
+        services.client.listInstances({ skill_id: CHAT_CHANNEL_SKILL, limit: 500 }),
+        5000,
+      ),
+    );
+    if (existing.length) {
+      const open = 'Open the mapping';
+      const pick = await vscode.window.showWarningMessage(
+        existing.length > 1
+          ? 'This conversation already has more than one chat-channel page; the bot refuses it ' +
+              'until one is left. Open them and delete all but one.'
+          : 'This conversation is already mapped. Change the group on its chat-channel page.',
+        open,
+      );
+      if (pick === open)
+        for (const m of existing)
+          await vscode.commands.executeCommand('escurel.openPage', m.page_id);
+      return false;
+    }
     const res = await services.client.updatePage({
       page_id: page.pageId,
       content: page.content,
