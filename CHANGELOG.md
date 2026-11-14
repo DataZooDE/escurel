@@ -16,12 +16,16 @@ Runners outside the cluster, agents outside escurel, and runner gaps (#827, #828
   `escurel:bridge` value (`ESCUREL_AUTH_BRIDGE_ROLE_VALUE`) is reserved the same way for the chat bridge (#828).
 - **`mint_run_token`**: a runner with a static or file credential and no signing key gets each run's token from
   the gateway — the same claims a minting runner signs, narrowed to the skill's write groups or the agent profile,
-  never the wide admin shape for a runner credential. Agent-profile skills therefore run on such a runner (#828).
+  never the wide admin shape for a runner credential, and only for a run the caller itself started of that skill
+  (as an agent that lists it). Agent-profile skills therefore run on such a runner; a fresh token is minted for
+  every attempt, a failed mint fails the attempt (retryably) rather than running on the runner's own credential,
+  and the run's write is read back with the run's token (#828).
 - **Concurrent admission**: a poll claims up to `ESCUREL_RUNNER_ADMIT_CONCURRENCY` (default 8, 1..=64) inbox events at
   once, in inbox order (#828).
 - **External agent tokens**: `issue_agent_token` / `escurel agent token issue <agent>` (admin) hands Claude Code,
-  Codex or Multica a token that runs as an agent profile, confined by its scopes; `escurel agent token revoke`
-  sets the agent page's new `token_epoch`, and older tokens get `agent_token_revoked` from their next call (#829).
+  Codex or Multica a token that runs as an agent profile, confined by its scopes; `revoke_agent_tokens` /
+  `escurel agent token revoke` (admin) moves the agent page's new `token_epoch` forward on the gateway's clock, and
+  older tokens — external and run tokens — get `agent_token_revoked` from their next call (#829).
 - The shipped `agent` system-skill page is upgraded in place when a tenant never edited it (it gains
   `token_epoch`); an edited page is kept as before.
 - UI: VS Code Agents view "Issue token…" / "Revoke tokens", runner role in the Runtimes view; explore Agents panel
