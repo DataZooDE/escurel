@@ -191,7 +191,8 @@ pub struct BridgeMintConfig {
     /// `ESCUREL_AUTH_BRIDGE_PRINCIPAL_TEMPLATE`, validated by
     /// [`escurel_types::bridge::validate_principal_template`].
     pub principal_template: String,
-    /// `ESCUREL_AUTH_GROUP_DIRECTORIES`, in order; at least one.
+    /// `ESCUREL_AUTH_GROUP_DIRECTORIES`, in order; empty = 1:1 turns only,
+    /// groupless (crew U-F7).
     pub directories: Vec<DirectoryConfig>,
     pub cache_ttl: Duration,
     pub stale_ttl: Duration,
@@ -436,6 +437,13 @@ impl GroupDirectories {
             }
         }
         Ok(())
+    }
+
+    /// Whether no directory is configured: every turn is groupless, and no
+    /// shared chat can be answered (nobody's membership can be checked).
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.providers.is_empty()
     }
 
     /// The union of the escurel groups every directory grants `user`, sorted.

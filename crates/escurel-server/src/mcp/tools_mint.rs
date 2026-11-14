@@ -694,26 +694,28 @@ pub(super) async fn tool_mint_user_token(
     caller: AclCaller<'_>,
     args: Value,
 ) -> Result<Value, JsonRpcError> {
-    use escurel_types::chat_channel::ConversationKind;
+    use escurel_types::chat_channel::{ConversationKind, mint_codes};
     const TOOL: &str = "mint_user_token";
+    /// The one channel whose senders a directory can look up.
+    const CHANNEL: &str = "msteams";
     let a: MintUserTokenArgs = parse_args(args, TOOL)?;
     let guard = MintGuard::check(TOOL, state, &caller)?;
     if caller.service != Some(escurel_types::service_role::ServiceRole::Bridge) {
         return Err(JsonRpcError::forbidden(format!(
             "{TOOL}: only a chat bridge's own credential (escurel:bridge) mints user tokens"
         ))
-        .with_code("bridge_required", false));
+        .with_code(mint_codes::BRIDGE_REQUIRED, false));
     }
     let Some(mint) = state.bridge_mint.as_deref() else {
         return Err(JsonRpcError::invalid_params(format!(
             "{TOOL}: this gateway does not mint for a chat bridge (set \
-             ESCUREL_AUTH_BRIDGE_PRINCIPAL_TEMPLATE and ESCUREL_AUTH_GROUP_DIRECTORIES)"
+             ESCUREL_AUTH_BRIDGE_PRINCIPAL_TEMPLATE)"
         ))
-        .with_code("unsupported", false));
+        .with_code(mint_codes::UNSUPPORTED, false));
     };
-    if a.channel != "msteams" {
+    if a.channel != CHANNEL {
         return Err(JsonRpcError::invalid_params(format!(
-            "{TOOL}: `channel` is `msteams` (the one channel with a directory lookup)"
+            "{TOOL}: `channel` is `{CHANNEL}` (the one channel with a directory lookup)"
         )));
     }
     // With Graph configured, its Entra tenant is the only one whose object ids mean anything here.
@@ -724,7 +726,7 @@ pub(super) async fn tool_mint_user_token(
             "{TOOL}: Entra tenant `{}` is not the one this gateway looks people up in",
             a.tenant_id
         ))
-        .with_code("tenant_not_served", false));
+        .with_code(mint_codes::TENANT_NOT_SERVED, false));
     }
     if !crate::group_directory::is_object_id(&a.aad_object_id) {
         return Err(JsonRpcError::invalid_params(format!(
@@ -741,13 +743,21 @@ pub(super) async fn tool_mint_user_token(
         JsonRpcError::invalid_params(format!(
             "{TOOL}: no escurel principal for this sender: {why}"
         ))
-        .with_code("no_principal", false)
+        .with_code(mint_codes::NO_PRINCIPAL, false)
     })?;
     let conv = a.conversation.unwrap_or_default();
     // A shared conversation needs its mapping before anything is asked of Graph: an unmapped
     // chat is declined the same way whoever writes in it.
     let group = match conv.kind {
         ConversationKind::Personal => None,
+        // Without a directory nobody's membership can be checked, so no shared chat is answered.
+        ConversationKind::Group | ConversationKind::Channel if mint.directories.is_empty() => {
+            return Err(JsonRpcError::forbidden(format!(
+                "{TOOL}: this gateway has no group directory (ESCUREL_AUTH_GROUP_DIRECTORIES), so \
+                 it answers 1:1 chats only"
+            ))
+            .with_code(mint_codes::NO_DIRECTORY, false));
+        }
         ConversationKind::Group | ConversationKind::Channel => {
             let mappings = indexer
                 .chat_channel_mappings(&a.channel, &conv)
@@ -758,13 +768,21 @@ pub(super) async fn tool_mint_user_token(
             groups.dedup();
             match groups.as_slice() {
                 [] => {
-                    return Err(JsonRpcError::forbidden(format!(
-                        "{TOOL}: this {} is not mapped to an escurel group; an admin maps it with \
-                         a `chat-channel` page ({})",
-                        conv.kind.as_str(),
-                        mapping_hint(&conv)
-                    ))
-                    .with_code("chat_channel_unmapped", false));
+                    let why = match conv.mapping_hint() {
+                        Some(ids) => format!(
+                            "this {} is not mapped to an escurel group; an admin maps it with a \
+                             `chat-channel` page ({ids})",
+                            conv.kind.as_str()
+                        ),
+                        None => {
+                            tracing::warn!(conversation = %conv.id,
+                                "mint_user_token: a channel turn named no team or channel id");
+                            "this channel cannot be mapped: the turn names no team and channel id"
+                                .to_owned()
+                        }
+                    };
+                    return Err(JsonRpcError::forbidden(format!("{TOOL}: {why}"))
+                        .with_code(mint_codes::UNMAPPED, false));
                 }
                 [g] => Some((*g).to_owned()),
                 _ => {
@@ -774,7 +792,7 @@ pub(super) async fn tool_mint_user_token(
                         conv.kind.as_str(),
                         groups.join(", ")
                     ))
-                    .with_code("chat_channel_ambiguous", false));
+                    .with_code(mint_codes::AMBIGUOUS, false));
                 }
             }
         }
@@ -802,7 +820,7 @@ pub(super) async fn tool_mint_user_token(
                 ),
                 data: None,
             }
-            .with_code("directory_unavailable", true)
+            .with_code(mint_codes::DIRECTORY_UNAVAILABLE, true)
         })?;
     let ttl = escurel_types::bridge::MAX_TTL_SECS;
     let (subject, roles, act) = match group {
@@ -815,7 +833,7 @@ pub(super) async fn tool_mint_user_token(
                     "{TOOL}: the sender is not a member of `{g}`, the group this {} acts as",
                     conv.kind.as_str()
                 ))
-                .with_code("chat_channel_not_member", false));
+                .with_code(mint_codes::NOT_MEMBER, false));
             }
             (
                 format!("{}{g}", escurel_types::chat_channel::GROUP_SUBJECT_PREFIX),
@@ -858,18 +876,6 @@ fn identity_refusal(tool: &str, e: &crate::group_directory::IdentityError) -> Js
             mint_codes::DIRECTORY_UNAVAILABLE,
             matches!(e, E::Unavailable(_)),
         ),
-    }
-}
-
-/// The ids an admin puts on the `chat-channel` page for `conv`.
-fn mapping_hint(conv: &escurel_types::chat_channel::ConversationRef) -> String {
-    match (&conv.team_id, &conv.channel_id) {
-        (Some(team), Some(channel))
-            if conv.kind == escurel_types::chat_channel::ConversationKind::Channel =>
-        {
-            format!("`team_id: {team}`, `channel_id: {channel}`")
-        }
-        _ => format!("`conversation_id: {}`", conv.id),
     }
 }
 

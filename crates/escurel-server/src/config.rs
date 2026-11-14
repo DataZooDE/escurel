@@ -3814,10 +3814,9 @@ fn bridge_mint_from(
         .filter(|p| !p.is_empty())
         .collect();
     if listed.is_empty() {
-        return bridge_refusal(
-            "ESCUREL_AUTH_GROUP_DIRECTORIES is required with ESCUREL_AUTH_BRIDGE_PRINCIPAL_TEMPLATE \
-             (any of `graph`, `google`, `okta`, comma-separated)"
-                .to_owned(),
+        tracing::info!(
+            "ESCUREL_AUTH_GROUP_DIRECTORIES is unset: the chat bridge's 1:1 turns carry no \
+             groups, and group chats and channels are not answered"
         );
     }
     for (i, p) in listed.iter().enumerate() {

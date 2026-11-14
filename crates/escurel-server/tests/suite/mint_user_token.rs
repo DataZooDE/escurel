@@ -832,3 +832,102 @@ async fn a_bridge_cannot_pair_one_persons_id_with_anothers_email() {
         json!(["sales", "support"])
     );
 }
+
+/// Crew U-F7: a gateway with no group directory still mints 1:1 turns
+/// (groupless), and refuses every shared chat with its own code.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn without_a_directory_one_to_one_turns_mint_groupless_and_shared_chats_are_refused() {
+    let gw = gateway(bridge_mint("user:{aadObjectId}", vec![], None)).await;
+    let minted = mint(&gw, personal_with_email(ALICE_OID, Some(ALICE_EMAIL))).await;
+    assert_eq!(minted["subject"], ALICE);
+    let roles = &claims(minted["token"].as_str().unwrap())["roles"];
+    assert!(
+        roles.is_null() || roles == &json!([]),
+        "no directory, no groups: {roles}"
+    );
+    map_group_chat(&gw, "sales").await;
+    let (_, body) = call(
+        &gw,
+        &bridge_credential(&gw),
+        "mint_user_token",
+        in_group_chat(ALICE_OID),
+    )
+    .await;
+    refused(&body, "chat_channel_no_directory", "a mapped group chat");
+}
+
+/// Crew U-F11: the refusals a bridge must tell apart, each with its code.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn ambiguous_unmappable_unprincipled_and_unsupported_mints_are_refused_by_code() {
+    let w = world().await;
+    let p = &w.gw;
+    // Two pages naming different groups for one chat.
+    map_group_chat(p, "sales").await;
+    let admin = p.mint_token(TENANT, Role::Admin);
+    let (_, wrote) = call(
+        p,
+        &admin,
+        "update_page",
+        json!({ "page_id": "markdown/instances/chat-channel/sales-chat-2.md",
+                "content": format!("---\nkind: instance\nskill: chat-channel\nid: sales-chat-2\n\
+                    channel: msteams\nconversation_id: \"{GROUP_CHAT}\"\ngroup: support\n---\n# again\n") }),
+    )
+    .await;
+    assert_eq!(ok(&wrote, "second map")["ok"], true, "{wrote}");
+    let (_, body) = call(
+        p,
+        &bridge_credential(p),
+        "mint_user_token",
+        in_group_chat(ALICE_OID),
+    )
+    .await;
+    refused(&body, "chat_channel_ambiguous", "two groups for one chat");
+    // A channel turn without its team and channel ids cannot be mapped, and the message says so
+    // instead of suggesting a `conversation_id` page that would never match (crew Q-F7).
+    let mut channel = personal(ALICE_OID);
+    channel["conversation"] = json!({ "kind": "channel", "id": "19:c@thread.tacv2;messageid=1" });
+    let (_, body) = call(p, &bridge_credential(p), "mint_user_token", channel).await;
+    refused(&body, "chat_channel_unmapped", "an unmappable channel");
+    let msg = body["error"]["message"].as_str().unwrap_or_default();
+    assert!(
+        msg.contains("cannot be mapped") && !msg.contains("conversation_id"),
+        "{msg}"
+    );
+
+    // A template field the sender lacks.
+    let user_keyed = gateway(bridge_mint(
+        "{userId}",
+        vec![w.graph.config("escurel-")],
+        None,
+    ))
+    .await;
+    let mut no_user = personal(ALICE_OID);
+    no_user.as_object_mut().unwrap().remove("user_id");
+    let (_, body) = call(
+        &user_keyed,
+        &bridge_credential(&user_keyed),
+        "mint_user_token",
+        no_user,
+    )
+    .await;
+    refused(&body, "no_principal", "no user id for a {userId} template");
+
+    // A gateway that does not mint for a bridge at all.
+    let plain = EscurelProcess::spawn(Opts {
+        auth: AuthMode::TestIssuer,
+        fixtures: Some(FixtureBuilder::new().tenant(TENANT).done()),
+        config_overrides: ConfigOverrides {
+            signing: true,
+            ..Default::default()
+        },
+    })
+    .await;
+    let (_, body) = call(
+        &plain,
+        &bridge_credential(&plain),
+        "mint_user_token",
+        personal(ALICE_OID),
+    )
+    .await;
+    refused(&body, "unsupported", "no bridge minting configured");
+}
