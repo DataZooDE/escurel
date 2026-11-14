@@ -236,6 +236,32 @@ impl Signer {
         self.sign(&claims)
     }
 
+    /// Mint a bridge TURN token at the gateway (`mint_user_token`, #830): the
+    /// person (or the group principal a mapped group chat acts as) as `sub`,
+    /// `groups` as `roles`, the channel in `escurel_types::bridge::CHANNEL_CLAIM`
+    /// and, for a group principal, the person who asked as `act.sub`. The
+    /// verifier recognises the channel claim under this issuer and confines the
+    /// token like a bridge's own; the caller resolves `groups` and keeps every
+    /// reserved or privileged name out of them.
+    ///
+    /// # Errors
+    /// When signing fails.
+    pub fn mint_bridge_turn(
+        &self,
+        subject: &str,
+        channel: &str,
+        groups: &[String],
+        asker: Option<&str>,
+        ttl_secs: u64,
+    ) -> Result<String, SignError> {
+        let mut claims = self.claims(subject, groups, ttl_secs);
+        claims[escurel_types::bridge::CHANNEL_CLAIM] = json!(channel);
+        if let Some(asker) = asker {
+            claims["act"] = json!({ "sub": asker });
+        }
+        self.sign(&claims)
+    }
+
     /// Mint an INTERNAL-DELEGATION bearer (fleet #801 Phase 4, AD-7): the token
     /// the runner presents to the AGENT's A2A endpoint when it delegates a domain
     /// step. It reuses the runner's key/kid/JWKS — so the agent verifies it

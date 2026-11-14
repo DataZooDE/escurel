@@ -253,6 +253,11 @@ pub struct AuthContext {
     /// one. Compared against an agent page's `token_epoch` to revoke the
     /// tokens issued for that agent before it (#829).
     pub issued_at: Option<u64>,
+    /// The person a gateway-minted bridge turn acts for when its subject is
+    /// a GROUP principal (a mapped Teams group chat or channel, #830): the
+    /// token's `act.sub`. Audit lineage only — the authority is the group's
+    /// — stamped as `asked_by` on what the turn captures. `None` otherwise.
+    pub asker: Option<String>,
 }
 
 pub use escurel_types::service_role::ServiceRole;
@@ -479,6 +484,14 @@ impl OidcVerifier {
                 self.config.bridge_tenant.as_deref(),
             );
         }
+        // A bridge TURN token from an ordinary entry (#830): the gateway's own mint for a bridge.
+        // Recognised by the channel claim alone, and only ever MORE confined than an ordinary token.
+        if claims
+            .rest
+            .contains_key(escurel_types::bridge::CHANNEL_CLAIM)
+        {
+            return minted_bridge_context(claims, &self.config);
+        }
 
         // Defense-in-depth (fleet #801 AD-7): a runner→agent internal-delegation
         // token is signed by the same issuer and verified against the same JWKS
@@ -628,6 +641,7 @@ impl OidcVerifier {
             bridge_turn: false,
             service,
             issued_at,
+            asker: None,
         })
     }
 
@@ -661,16 +675,6 @@ impl OidcVerifier {
     }
 }
 
-/// A chat bridge's token: one verified against the bridge trust entry.
-///
-/// The bridge holds a key that can sign for anyone, so the gateway — not the
-/// bridge — bounds what such a token is: it lives at most
-/// [`escurel_types::bridge::MAX_TTL_SECS`], carries no agent, skill, run,
-/// purpose or `act` claim (refused, not ignored: a bridge never mints those,
-/// so one present means the key is being misused), is never admin or
-/// operator, and honours no roles or groups — the gateway does not know the
-/// person's IdP groups here, so group-granted ACLs do not apply. Its actor is
-/// `bridge:<channel>`, stamped as `captured_via` on what it captures.
 /// How far the bridge host's clock may lead the gateway's (crew C-F3).
 const BRIDGE_CLOCK_SKEW_SECS: u64 = 60;
 
@@ -683,23 +687,40 @@ fn bridge_lifetime_ok(iat: u64, exp: u64, now: u64) -> bool {
     exp.saturating_sub(iat) <= max && exp.saturating_sub(now) <= max + BRIDGE_CLOCK_SKEW_SECS
 }
 
-fn bridge_context(
-    claims: Claims,
+/// What every bridge TURN token must be, whoever signed it: no agent, skill,
+/// run or purpose claim (refused, not ignored: no bridge turn carries one, so
+/// one present means a key is being misused), a numeric `iat`/`exp` at most
+/// [`escurel_types::bridge::MAX_TTL_SECS`] apart, a valid channel in
+/// [`escurel_types::bridge::CHANNEL_CLAIM`], and a tenant. `act` is refused
+/// unless `allow_act`. Returns `(iat, captured_via, tenant)`.
+fn bridge_turn_shape(
+    claims: &Claims,
     tenant_claim: &str,
-    pinned_tenant: Option<&str>,
-) -> Result<AuthContext, AuthError> {
+    allow_act: bool,
+) -> Result<(u64, String, String), AuthError> {
     use escurel_types::bridge;
     let refuse = |why: String| Err(AuthError::BridgeRefused(why));
-    for forbidden in [
-        AGENT_CLAIM,
-        SKILL_CLAIM,
-        RUN_ID_CLAIM,
-        ROOT_EVENT_ID_CLAIM,
-        DELEGATION_PURPOSE_CLAIM,
-        ACT_CLAIM,
-    ] {
-        if claims.rest.contains_key(forbidden) {
-            return refuse(format!("a bridge token may not carry `{forbidden}`"));
+    let forbidden: &[&str] = if allow_act {
+        &[
+            AGENT_CLAIM,
+            SKILL_CLAIM,
+            RUN_ID_CLAIM,
+            ROOT_EVENT_ID_CLAIM,
+            DELEGATION_PURPOSE_CLAIM,
+        ]
+    } else {
+        &[
+            AGENT_CLAIM,
+            SKILL_CLAIM,
+            RUN_ID_CLAIM,
+            ROOT_EVENT_ID_CLAIM,
+            DELEGATION_PURPOSE_CLAIM,
+            ACT_CLAIM,
+        ]
+    };
+    for claim in forbidden {
+        if claims.rest.contains_key(*claim) {
+            return refuse(format!("a bridge token may not carry `{claim}`"));
         }
     }
     let num = |k: &str| claims.rest.get(k).and_then(serde_json::Value::as_u64);
@@ -734,12 +755,29 @@ fn bridge_context(
             tenant_claim: tenant_claim.to_owned(),
         })?
         .to_owned();
+    Ok((iat, via, tenant_id))
+}
+
+/// A token a chat bridge signed itself, verified against the bridge trust
+/// entry (the self-signed path, deprecated by #830).
+///
+/// The bridge holds a key that can sign for anyone, so the gateway — not the
+/// bridge — bounds what such a token is ([`bridge_turn_shape`]): never admin
+/// or operator, and honouring no roles, groups or `act` — the gateway does not
+/// know the person's IdP groups here, so group-granted ACLs do not apply. Its
+/// actor is `bridge:<channel>`, stamped as `captured_via` on what it captures.
+fn bridge_context(
+    claims: Claims,
+    tenant_claim: &str,
+    pinned_tenant: Option<&str>,
+) -> Result<AuthContext, AuthError> {
+    let (iat, via, tenant_id) = bridge_turn_shape(&claims, tenant_claim, false)?;
     if let Some(pinned) = pinned_tenant
         && tenant_id != pinned
     {
-        return refuse(format!(
+        return Err(AuthError::BridgeRefused(format!(
             "a bridge token names tenant `{tenant_id}`; this bridge serves `{pinned}`"
-        ));
+        )));
     }
     Ok(AuthContext {
         subject: claims.sub,
@@ -754,6 +792,53 @@ fn bridge_context(
         bridge_turn: true,
         service: None,
         issued_at: Some(iat),
+        asker: None,
+    })
+}
+
+/// A bridge TURN token from an ordinary trust entry: one the gateway minted
+/// itself (`mint_user_token`, #830) for the person a bridge answers, or for
+/// the group principal a mapped group chat acts as.
+///
+/// Confined exactly like a self-signed bridge token ([`bridge_turn_shape`]:
+/// the bridge gate's few tools, at most 900 s, never admin or operator, no
+/// service role), but its groups ARE honoured: the gateway resolved them
+/// itself (Microsoft Graph) and never puts a reserved name there. `act.sub`
+/// names the person who asked when the subject is a group principal — audit
+/// only, like every actor.
+fn minted_bridge_context(claims: Claims, cfg: &OidcConfig) -> Result<AuthContext, AuthError> {
+    let (iat, via, tenant_id) = bridge_turn_shape(&claims, &cfg.tenant_claim, true)?;
+    let asker = match claims.rest.get(ACT_CLAIM) {
+        None => None,
+        Some(act) => Some(
+            act.get("sub")
+                .and_then(serde_json::Value::as_str)
+                .filter(|s| !s.is_empty())
+                .map(str::to_owned)
+                .ok_or_else(|| {
+                    AuthError::BridgeRefused("a bridge token's `act` names a `sub`".to_owned())
+                })?,
+        ),
+    };
+    let groups = claims
+        .rest
+        .get(&cfg.groups_claim)
+        .map(parse_groups_claim)
+        .unwrap_or_default();
+    Ok(AuthContext {
+        subject: claims.sub,
+        tenant_id,
+        role: Role::Agent,
+        operator: false,
+        groups,
+        actor: Some(via),
+        run: None,
+        agent_skill: None,
+        agent: None,
+        bridge_turn: true,
+        service: None,
+        issued_at: Some(iat),
+        asker,
     })
 }
 
