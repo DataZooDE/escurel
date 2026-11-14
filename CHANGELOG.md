@@ -8,7 +8,7 @@ re-cuts append `.N`), matching the DataZoo release scheme (cf. erpl).
 
 ## Unreleased
 
-Runners outside the cluster and agents outside escurel (#828, #829).
+Runners outside the cluster, agents outside escurel, and runner gaps (#827, #828, #829).
 
 - **`escurel:runner` service role** (`ESCUREL_AUTH_RUNNER_ROLE_VALUE`): a runner no longer needs `escurel:admin`. The
   role reads the inbox, claims, keeps the runner's books and writes its own `runtime` page, and nothing else;
@@ -26,6 +26,23 @@ Runners outside the cluster and agents outside escurel (#828, #829).
   `token_epoch`); an edited page is kept as before.
 - UI: VS Code Agents view "Issue token…" / "Revoke tokens", runner role in the Runtimes view; explore Agents panel
   shows "tokens valid since".
+
+Runner gaps (#827):
+
+- **Inject capability from the runtime.** `list_runtimes` `harnesses[].supports_inject` is read from the harness
+  itself (claude, echo: `true`; codex and in-process harnesses: `false`; absent from an older runner = unknown). VS Code
+  no longer guesses from the harness name: the Steer box follows the runtime holding the run, and says when it cannot
+  tell (the runner still answers `unsupported`). The Runtimes view tooltip says which harnesses take a message.
+- **Codex shell commands in the transcript.** A codex `command_execution` is a `command` transcript record (`<command>
+  (exit <code>)`, redacted like every summary), not a tool call; VS Code's transcript tab shows and filters it.
+- **Per-tenant transcript retention.** `tenant_update{transcript_retention_days}` /
+  `escurel admin tenant update --transcript-retention-days <n>` wins over `ESCUREL_RUN_TRANSCRIPT_RETENTION_DAYS`
+  (`0` = forever) and applies on the next sweep, without a restart.
+- **Webhook-fired schedules.** With `ESCUREL_SCHEDULE_WEBHOOK_SECRET[_FILE]` set, a signed
+  `POST /hooks/schedule/<skill>` (`X-Escurel-Webhook-Signature`, `X-Escurel-Delivery`) fires a skill that opts in
+  with `schedule_webhook: true` (a new authority key), captured as `hook:<skill>:<delivery>` (a redelivery is one
+  event). Its deliveries share the skill's `schedule_budget` with the cron windows; past it a `run-skipped` record is
+  filed. `hook:` event ids are reserved like `sched:`.
 
 **Behaviour changes to note:**
 - A runner on a static/file token now asks a signing gateway for each run's token, so its ordinary runs write as
