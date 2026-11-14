@@ -236,13 +236,16 @@ person is told at once *I lost track of your question before I could finish it â
 again*, instead of waiting for the reply timeout.
 
 **What it closes.** A stolen `escurel:bridge` credential alone no longer mints for anyone: each mint
-needs a fresh activity token Microsoft signed for this bot, and the asker is whoever the connector
-says sent it in that conversation.
+needs an unexpired activity token Microsoft signed for this bot. The roster check stops a forged
+person who is in no conversation the bot is in, and forged identity fields: the object id, tenant,
+email and UPN are Microsoft's.
 
-**What it does not close.** An activity token names no user. Someone holding the bridge credential
-**and** a captured, still-valid activity token (they live about an hour) **and** a real
-conversation id can mint for any member of that conversation's roster, for as long as the token is
-valid. Keep the bridge credential short-lived and the bridge's inbound traffic on TLS.
+**What it does not close.** The token binds the bot (`aud`) and the connector (`serviceurl`), not
+the conversation or the person: the Bot Framework signs no activity body. So a stolen bridge
+credential **plus** a captured, unexpired activity token can mint for **any member of any
+conversation the bot is in on that `serviceUrl`**, until the token expires. The gateway logs a WARN
+when one credential mints for more than 50 distinct askers in a minute. Keep the bridge credential
+short-lived and the bridge's inbound traffic on TLS.
 
 Unset, the gateway behaves as before and says once at boot that it trusts the bridge for the
 asker's identity, naming these variables.
@@ -254,6 +257,8 @@ asker's identity, naming these variables.
 `ESCUREL_AUTH_BRIDGE_MINT_PER_ASKER_PER_MINUTE` (default 30) per asker, whichever bridge asks. A
 refused mint is `rate_limited` (retryable, with `retry_after_secs`); the bridge tells the person
 once: *I'm getting a lot of questions right now, please try again in a minute.* `0` refuses to boot.
+The cap is keyed by the credential's subject, so bridge replicas that share one credential share one
+600/min budget; give each replica its own credential (or raise the cap) when that is too few.
 
 ## Gateway side
 

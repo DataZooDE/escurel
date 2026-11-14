@@ -121,9 +121,13 @@ Chat bridge hardening (#835):
 - **Added — mint rate limits**: `ESCUREL_AUTH_BRIDGE_MINT_PER_MINUTE` (600, per bridge credential, before any lookup)
   and `ESCUREL_AUTH_BRIDGE_MINT_PER_ASKER_PER_MINUTE` (30); `rate_limited` (retryable, `retry_after_secs`), told to the
   person once.
-- **Security**: with Teams verification on, a stolen `escurel:bridge` credential alone no longer mints for anyone; it
-  also needs a captured, still-valid activity token and a real conversation id, and then reaches only that
-  conversation's roster. Without it the gateway warns once at boot that it trusts the bridge for who asked.
+- **Security**: with Teams verification on, a stolen `escurel:bridge` credential alone no longer mints for anyone,
+  and forged identity fields (object id, tenant, email, UPN) are refused. It does NOT bind a mint to one
+  conversation: the Bot Framework signs no activity body, so a captured, unexpired activity token plus a stolen
+  bridge credential can mint for any member of any conversation the bot is in on that `serviceUrl`, until the
+  token expires. The roster check stops forging people who are in no such conversation. One credential minting
+  for more than 50 distinct askers in a minute is logged at WARN. Without verification the gateway warns once
+  at boot that it trusts the bridge for who asked.
 - The bridge drops a turn whose own member lookup answers `404` (the sender is not in the conversation) without a
   reply.
 

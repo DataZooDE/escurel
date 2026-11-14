@@ -127,10 +127,50 @@ impl Default for MintRateLimits {
 /// The most bridge credentials / askers a mint limiter tracks at once.
 const MAX_MINT_KEYS: usize = 10_000;
 
+/// One bridge credential minting for more distinct askers than this in a
+/// minute is logged (crew F5): a captured activity token plus a stolen
+/// credential reaches every roster member, so a sweep across people is the
+/// signal worth an alert.
+pub const MANY_ASKERS_PER_MINUTE: usize = 50;
+
 /// The built caps: one bucket set per credential, one per asker.
 pub struct MintLimiter {
     credentials: KeyedBuckets,
     askers: KeyedBuckets,
+    spread: AskerSpread,
+}
+
+/// Distinct askers per credential in the current minute, bounded: at most
+/// [`MAX_MINT_KEYS`] credentials, and no set grows past the threshold.
+#[derive(Default)]
+struct AskerSpread {
+    windows: Mutex<HashMap<String, (Instant, std::collections::HashSet<String>)>>,
+}
+
+impl AskerSpread {
+    /// Count `asker` for `credential`; `true` exactly when this mint takes
+    /// the minute past [`MANY_ASKERS_PER_MINUTE`].
+    fn note(&self, credential: &str, asker: &str) -> bool {
+        let mut map = self.windows.lock().unwrap_or_else(|e| e.into_inner());
+        if !map.contains_key(credential) && map.len() >= MAX_MINT_KEYS {
+            map.retain(|_, (start, _)| start.elapsed() < Duration::from_secs(60));
+            if map.len() >= MAX_MINT_KEYS {
+                return false;
+            }
+        }
+        let (start, seen) = map
+            .entry(credential.to_owned())
+            .or_insert_with(|| (Instant::now(), std::collections::HashSet::new()));
+        if start.elapsed() >= Duration::from_secs(60) {
+            *start = Instant::now();
+            seen.clear();
+        }
+        if seen.len() > MANY_ASKERS_PER_MINUTE || seen.contains(asker) {
+            return false;
+        }
+        seen.insert(asker.to_owned());
+        seen.len() == MANY_ASKERS_PER_MINUTE + 1
+    }
 }
 
 impl MintLimiter {
@@ -139,6 +179,7 @@ impl MintLimiter {
         Self {
             credentials: KeyedBuckets::new(limits.per_credential_per_minute, MAX_MINT_KEYS),
             askers: KeyedBuckets::new(limits.per_asker_per_minute, MAX_MINT_KEYS),
+            spread: AskerSpread::default(),
         }
     }
 
@@ -152,6 +193,16 @@ impl MintLimiter {
     /// The asker's bucket is empty: when to try again.
     pub fn admit_asker(&self, principal: &str) -> Result<(), Duration> {
         self.askers.take(principal)
+    }
+
+    /// Record that `credential` minted for `asker`; WARN once a minute in
+    /// which it mints for more than [`MANY_ASKERS_PER_MINUTE`] people.
+    pub fn note_asker(&self, credential: &str, asker: &str) {
+        if self.spread.note(credential, asker) {
+            tracing::warn!(bridge = %credential, askers = MANY_ASKERS_PER_MINUTE + 1,
+                "mint_user_token: one bridge credential minted for many distinct askers within a \
+                 minute; if that is not a busy bridge, rotate its credential");
+        }
     }
 }
 
@@ -169,6 +220,21 @@ mod tests {
             wait > Duration::from_secs(55) && wait <= Duration::from_secs(60),
             "{wait:?}"
         );
+    }
+
+    #[test]
+    fn many_distinct_askers_on_one_credential_trip_once_per_minute() {
+        let s = AskerSpread::default();
+        for i in 0..MANY_ASKERS_PER_MINUTE {
+            assert!(!s.note("bridge", &format!("user:{i}")));
+            assert!(
+                !s.note("bridge", &format!("user:{i}")),
+                "a repeat is not new"
+            );
+        }
+        assert!(s.note("bridge", "user:one-too-many"));
+        assert!(!s.note("bridge", "user:and-another"), "once per minute");
+        assert!(!s.note("other-bridge", "user:0"));
     }
 
     #[test]

@@ -1323,3 +1323,25 @@ async fn a_refused_bot_credential_is_teams_misconfigured() {
     let (_, body) = call(&w.gw, &bridge_credential(&w.gw), "mint_user_token", turn()).await;
     refused(&body, "not_in_conversation", "a 403 about the user");
 }
+
+/// Crew F5, pinned: the Bot Framework signs no activity body, so a token binds
+/// the bot and the connector, not the conversation. One accepted token
+/// therefore verifies a mint for ANOTHER conversation the sender is in; the
+/// roster check is what stops anyone who is in none.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_activity_token_does_not_bind_its_conversation() {
+    let w = verified_world().await;
+    let token = w.bf.token(BOT_APP);
+    mint(
+        &w.gw,
+        verified_turn(&w.bf, "29:alice", ALICE_OID, Some(&token)),
+    )
+    .await;
+    let mut elsewhere = verified_turn(&w.bf, "29:bob", BOB_OID, Some(&token));
+    elsewhere["conversation"]["id"] = json!("a:1another-personal-chat");
+    let minted = mint(&w.gw, elsewhere).await;
+    assert_eq!(
+        minted["subject"], "user:bob-oid",
+        "the same token, another chat and person"
+    );
+}

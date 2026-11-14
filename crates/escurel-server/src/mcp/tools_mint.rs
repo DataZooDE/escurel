@@ -894,6 +894,7 @@ pub(super) async fn tool_mint_user_token(
     mint.limits
         .admit_asker(&asker)
         .map_err(|wait| rate_limited(TOOL, "this asker", wait))?;
+    mint.limits.note_asker(caller.subject, &asker);
     // A shared conversation needs its mapping before anything is asked of Graph: an unmapped
     // chat is declined the same way whoever writes in it.
     let group = match conv.kind {

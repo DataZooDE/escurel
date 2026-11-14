@@ -177,9 +177,14 @@ registration) the bridge forwards each activity's Bot Framework bearer, and the 
 it (`activity_unverified` when missing, invalid, or bound to a `serviceUrl` other than the turn's
 or off `ESCUREL_AUTH_TEAMS_SERVICE_URL_HOSTS`), asks the connector's roster whether the sender is in
 that conversation (`not_in_conversation`), and takes the object id, tenant, email and UPN from
-Microsoft (`identity_mismatch` when the bridge disagrees). A connector or token endpoint that refuses the gateway's own bot credential is
-`teams_misconfigured` (not retryable; a single-tenant bot needs `ESCUREL_AUTH_TEAMS_TOKEN_URL`). The bridge drops those two codes
-silently. Unset, the gateway trusts the bridge for who asked and warns once at boot. Mints are
+Microsoft (`identity_mismatch` when the bridge disagrees). It does not bind the conversation: the
+Bot Framework signs no activity body, so a stolen bridge credential plus a captured, unexpired
+activity token can still mint for any member of any conversation the bot is in on that
+`serviceUrl`, until the token expires; what the roster check stops is a person in no such
+conversation, and forged identity fields. A connector or token endpoint that refuses the gateway's own bot credential is
+`teams_misconfigured` (not retryable; a single-tenant bot needs `ESCUREL_AUTH_TEAMS_TOKEN_URL`). The bridge drops a refused
+`not_in_conversation` / `activity_unverified` silently, but asks the person to ask again when the
+proof was lost in a restart or expired mid-turn. Unset, the gateway trusts the bridge for who asked and warns once at boot. Mints are
 rate-capped per bridge credential (`ESCUREL_AUTH_BRIDGE_MINT_PER_MINUTE`, 600) and per asker
 (`…_PER_ASKER_PER_MINUTE`, 30): `rate_limited`, retryable; the person is told once to try again
 in a minute.
