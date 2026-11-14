@@ -6,6 +6,32 @@ loosely [Keep a Changelog](https://keepachangelog.com/). Through the
 follow **`vYYYY.MM.DD`** — the date the binary set was cut (same-day
 re-cuts append `.N`), matching the DataZoo release scheme (cf. erpl).
 
+## Unreleased
+
+Runners outside the cluster and agents outside escurel (#828, #829).
+
+- **`escurel:runner` service role** (`ESCUREL_AUTH_RUNNER_ROLE_VALUE`): a runner no longer needs `escurel:admin`. The
+  role reads the inbox, claims, keeps the runner's books and writes its own `runtime` page, and nothing else;
+  `whoami` says `service`, `list_runtimes` shows each runner's `role`. A run token never inherits it. The
+  `escurel:bridge` value (`ESCUREL_AUTH_BRIDGE_ROLE_VALUE`) is reserved the same way for the chat bridge (#828).
+- **`mint_run_token`**: a runner with a static or file credential and no signing key gets each run's token from
+  the gateway — the same claims a minting runner signs, narrowed to the skill's write groups or the agent profile,
+  never the wide admin shape for a runner credential. Agent-profile skills therefore run on such a runner (#828).
+- **Concurrent admission**: a poll claims up to `ESCUREL_RUNNER_ADMIT_CONCURRENCY` (default 8, 1..=64) inbox events at
+  once, in inbox order (#828).
+- **External agent tokens**: `issue_agent_token` / `escurel agent token issue <agent>` (admin) hands Claude Code,
+  Codex or Multica a token that runs as an agent profile, confined by its scopes; `escurel agent token revoke`
+  sets the agent page's new `token_epoch`, and older tokens get `agent_token_revoked` from their next call (#829).
+- The shipped `agent` system-skill page is upgraded in place when a tenant never edited it (it gains
+  `token_epoch`); an edited page is kept as before.
+- UI: VS Code Agents view "Issue token…" / "Revoke tokens", runner role in the Runtimes view; explore Agents panel
+  shows "tokens valid since".
+
+**Behaviour changes to note:**
+- A runner on a static/file token now asks a signing gateway for each run's token, so its ordinary runs write as
+  `agent:<skill>` (as a minting runner's do) instead of as the runner.
+- An agent token without an `iat` claim is refused.
+
 ## v2026.11.13 — BREAKING (runner credential must be admin; skill authority keys need an admin)
 
 The Multica-gap epic (#817): runs you can steer, read and bill, agents with least privilege, cron schedules,

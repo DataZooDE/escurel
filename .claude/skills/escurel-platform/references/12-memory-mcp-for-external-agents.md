@@ -19,14 +19,36 @@ escurel for this — it is the ordinary MCP-over-HTTP surface (`references/03`).
 Check the wiring before handing it to an agent:
 
 ```sh
-ESCUREL_SERVER=https://<gateway> ESCUREL_TOKEN=<token> escurel whoami   # {subject, tenant, is_admin}
+ESCUREL_SERVER=https://<gateway> ESCUREL_TOKEN=<token> escurel whoami   # {subject: "agent:scribe", tenant, is_admin: false}
 ```
 
 ## The token: what exists today
 
 Pick by who the agent acts for. Never give an external agent an admin token.
 
-1. **A person's agent (interactive Claude Code / Codex session).** The
+1. **An agent profile's token (the default for an external agent, #829).**
+   An admin writes an agent page (`references/01`, *Agent profiles*: the
+   `skills` it may run, `scopes.tools`, `scopes.write`) and issues a token
+   that runs as it:
+
+   ```sh
+   escurel agent token issue scribe --ttl 30d   # admin; prints {token, subject, expires_at} ONCE
+   ```
+
+   (`issue_agent_token`, `references/02`). The token is `sub: agent:scribe`,
+   `act.sub: <the issuing admin>`, `escurel:agent` plus the write groups of
+   the skills the agent lists, and the `agent` claim — no run, no skill, never
+   admin. The gateway reads the agent page on **every** call: `tools/list`
+   offers only `scopes.tools`, a write outside `scopes.write` is
+   `agent_scope_denied`, and `/ws`, `/ingest` and `/blob` refuse it. Life 1 h
+   to 90 d (default 30 d). **Revoke** every token issued so far with
+   `escurel agent token revoke scribe` (it sets the page's `token_epoch` to
+   the next second): the next call with an older token is
+   `agent_token_revoked`, while a token issued afterwards works. Needs the
+   gateway's signing key (`ESCUREL_AUTH_SIGNING_KEY`/`_KID`); without one the
+   tool answers `unsupported`. Store the token where the harness reads it (an
+   env var or a secret), never in git; escurel does not keep a copy.
+2. **A person's agent (an interactive Claude Code / Codex session).** The
    person mints a short-lived bearer *for an agent acting for them*:
    `escurel run mint-token --skill <skill> [--ttl-secs N]` (`mint_agent_token`,
    `references/02`). It is `sub: agent:<skill>`, `act.sub: <the person>`,
@@ -34,35 +56,12 @@ Pick by who the agent acts for. Never give an external agent an admin token.
    **no renewal** — mint a new one when it lapses. Whatever the agent writes
    reads `captured_by: <person>` / `captured_via: agent:<skill>`, and its
    drafts and events carry the minted `run_id`, so the session shows up in
-   `list_events{run_id}` and the run transcript. Needs the gateway's signing
-   key (`ESCUREL_AUTH_SIGNING_KEY`/`_KID`); without one the tool answers
-   `unsupported`. Only a person's token can mint — an agent token cannot mint
-   another.
-2. **An unattended board agent (a Multica agent working tickets).** A service
-   credential from the deployment's OIDC issuer (client credentials), with
-   `aud: escurel`, the tenant claim, and a **service role** in its groups that
-   `ESCUREL_AUTH_ROLE_TOOLS` restricts to a tool list, e.g.
-
-   ```sh
-   ESCUREL_AUTH_ROLE_TOOLS="app:board=search,resolve,expand,neighbours,list_skills,list_instances,capture_event,create_draft"
-   ```
-
-   The skills then say what that role may read and propose (`acl.read_events`,
-   `acl.read_referenced`, `acl.propose`; `references/01`). `create_draft`
-   needs an `acl.propose` grant; `capture_event` from such a role must reply
-   to an event it can read. Revocation is by expiry: the gateway verifies
-   self-contained JWTs, so keep the access-token lifetime short
-   (`references/08`, *Service roles*).
-
-**Agent profiles (#823) are not an external-agent credential.** An agent
-profile (`references/01`, *Agent profiles*: `harness`, `model`, `scopes.tools`,
-`scopes.write`) binds tokens that **escurel-runner** mints for runs it
-executes; the gateway does not mint profile tokens for outside callers, and
-`mint_agent_token` takes no agent. To have work done under a profile's
-least-privilege scopes, let the external agent *ask* rather than *do*: it
-files the request with `capture_event` under a skill whose `agent:` names the
-profile, and the runner executes it (`references/11`). For direct calls,
-option 2's role allow-list is today's equivalent of `scopes.tools`.
+   `list_events{run_id}` and the run transcript. Only a person's token can
+   mint — an agent token cannot mint another.
+3. **A service credential from your IdP**, restricted by a role allow-list
+   (`ESCUREL_AUTH_ROLE_TOOLS`, `references/08` *Service roles*), when the
+   deployment already issues one per agent. Revocation is then by expiry
+   only; prefer option 1.
 
 ## Wiring it up
 
@@ -99,8 +98,9 @@ bearer_token_env_var = "ESCUREL_TOKEN"
 
 **Multica** — each Multica agent runs on a coding-agent CLI (Claude Code,
 Codex) and carries its own MCP server list: add escurel there with the same
-URL and `Authorization` header as above, one credential per agent (option 2),
-so the board's agents do not share an identity. Check Multica's agent
+URL and `Authorization` header as above, one issued agent token per Multica
+agent (option 1, one agent page each), so the board's agents do not share an
+identity and each can be revoked on its own. Check Multica's agent
 settings for the exact field names; escurel needs nothing beyond URL + bearer.
 
 ## Which tools to use for memory

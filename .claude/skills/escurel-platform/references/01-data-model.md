@@ -568,6 +568,7 @@ scopes:
   tools: [search, expand, update_page, assign_event]  # absent = no tool limit
   write: ["markdown/instances/note/*"]               # absent = no extra write limit
 max_concurrent: 2                  # runs of this agent at once, per runner
+token_epoch: 1790071200            # Unix seconds: tokens issued before it are revoked (#829)
 ```
 
 `write` entries are page-id globs: `*` stays inside one path segment, `**`
@@ -586,8 +587,9 @@ is missing or does not list it is **refused**, never run with a broader token.
 
 `validate` grades both: on an agent page `agent_harness_unknown`,
 `agent_model_invalid`, `agent_skills_invalid`, `agent_scopes_invalid` (a
-malformed scope grants nothing, so it is an error) and
-`agent_max_concurrent_invalid` are **errors**; on a skill page a malformed
+malformed scope grants nothing, so it is an error),
+`agent_max_concurrent_invalid` and `agent_token_epoch_invalid` (not Unix
+seconds) are **errors**; on a skill page a malformed
 `agent:` is `agent_invalid` (error), an agent with no page is
 `agent_unresolved` and one that does not list the skill is
 `agent_skill_not_listed` (warnings — the skill's runs are refused until fixed).
@@ -595,6 +597,9 @@ malformed scope grants nothing, so it is an error) and
 agent whose `max_concurrent:` is present but not a positive whole number
 (`0`, `"2"`, `-1`) has its runs **refused** (dead-lettered, the error naming
 the key), never run uncapped.
+`token_epoch` revokes every token for the agent issued before it, external
+(`issue_agent_token`) and run tokens alike, from their next call
+(`agent_token_revoked`); `escurel agent token revoke <id>` sets it.
 How the token and the gateway enforce it: references/08.
 
 ### Runtimes: `runtime` instances (written by runners)

@@ -265,11 +265,16 @@ id registers a second `runtime` page while the old one reads `stale`. Two
 runners on one machine need two ledgers and two listen ports. Stopping the
 laptop leaves its unfinished events in the inbox once their lease lapses
 (`ESCUREL_RUNNER_CLAIM_LEASE`); work only it can take waits there for it.
-**Every runner needs an `escurel:admin` credential** (a static or file token
-with the admin role, or a minting runner, whose own token is admin): without
-one it logs *the runner credential needs escurel:admin to claim events* at
-boot and takes no inbox work — lone or labelled, it keeps serving `/healthz`
-so the error is what you see. A dev gateway without OIDC treats every caller
+**Every runner needs an `escurel:runner` or `escurel:admin` credential** (a
+static or file token with one of those roles, or a minting runner, whose own
+token is admin): without one it logs *the runner credential needs
+escurel:runner or escurel:admin to claim events* at boot and takes no inbox
+work — lone or labelled, it keeps serving `/healthz` so the error is what you
+see. **An out-of-cluster runner** (a laptop, an on-prem host) needs only the
+narrow `escurel:runner` role and **no signing key**: it gets each run's token
+from the gateway (`mint_run_token`; the gateway must have
+`ESCUREL_AUTH_SIGNING_KEY`), so agent-profile skills run there too, confined
+by the agent's scopes. `escurel runtime list` shows its `role`. A dev gateway without OIDC treats every caller
 as admin, so any bearer works there. On a short-lived service credential, point
 `ESCUREL_RUNNER_TOKEN_FILE` at a file a sidecar refreshes instead of pasting
 `ESCUREL_RUNNER_TOKEN`: the runner re-reads it whenever it changes, so a

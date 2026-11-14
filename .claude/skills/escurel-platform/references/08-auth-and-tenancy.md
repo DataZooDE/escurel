@@ -19,6 +19,8 @@ issuer's JWKS and reads a small, **configurable** set of claims
 | role list | `admin_role_claim` | `roles` | `roles` |
 | admin grant | `admin_role_value` | `escurel:admin` | `escurel:admin` |
 | operator grant | `ESCUREL_AUTH_OPERATOR_ROLE_VALUE` | `escurel:operator` | `escurel:operator` |
+| runner service role | `ESCUREL_AUTH_RUNNER_ROLE_VALUE` | `escurel:runner` | `escurel:runner` |
+| bridge service role | `ESCUREL_AUTH_BRIDGE_ROLE_VALUE` | `escurel:bridge` | `escurel:bridge` |
 | groups | `ESCUREL_AUTH_GROUPS_CLAIM` | `roles` | `roles` |
 
 A caller's ACL groups are the token's groups (that claim, reserved names removed) **plus** their `group_members`
@@ -250,6 +252,47 @@ subset; admin tools are listed for admin tokens and refused at dispatch
   chat history — by design. Out of scope for a typical consuming app
   except where the app schedules its own retention cron; see
   `references/10`.
+
+## Built-in service roles (#828)
+
+Two role values in the same claim as admin mark a **service's own
+credential**, each with a narrow authority of its own. Unlike
+`ESCUREL_AUTH_ROLE_TOOLS` (a ceiling that can only take tools away), these
+*grant*:
+
+- **`escurel:runner`** — what a runner needs and nothing more. It reads every
+  inbox event (to see what it may claim), calls `claim_event` / `renew_claim`
+  / `mint_run_token` (admin-scope tools, granted to this role by name), files
+  the runner's own records (`run:` / `sched:` / `lint-` ids, `kind: system`,
+  `escurel:` labels, `report_runner_status`, `put_run_transcript`) and writes
+  its own `runtime` instance. Everything else follows its ordinary ACL: no
+  other page write, no admin tool, `list_runtimes` without the admin detail.
+  `whoami` answers `service: "runner"`. An out-of-cluster runner holds only
+  this and **no signing key**: the gateway mints each run's token
+  (`mint_run_token`, references/02, references/11).
+- **`escurel:bridge`** — a chat bridge's service credential (`whoami`
+  `service: "bridge"`); its minting tool arrives with the bridge work.
+
+Both are ignored on a **machine** token (one carrying `run_id`, `skill`,
+`agent` or `act`): a run token a runner minted never inherits the runner
+role. Neither is admin, neither is a group name (stripped from the RBAC
+groups like the admin value), and the four built-in values must differ.
+
+## External agent tokens and revocation (#829)
+
+An admin issues a bearer for an agent that runs **outside** escurel
+(`issue_agent_token`, `escurel agent token issue <agent>`): `sub:
+agent:<id>`, the admin as `act.sub`, `escurel:agent` plus the write groups of
+the agent's skills, the `agent` claim. The gateway enforces the agent page's
+scopes on every call, exactly as for a run (references/12).
+
+**Revocation is an epoch on the agent page.** `token_epoch: <unix seconds>`
+refuses every token for that agent issued before it — external tokens and run
+tokens alike — with `-32001` `agent_token_revoked`, from the next call on (the
+page is read per call). A token with an `agent` claim and no `iat` is refused
+the same way. `escurel agent token revoke <agent>` sets the epoch to the next
+second; a token issued after the revoke carries an `iat` at or past it, so it
+stands. Only an admin may write an agent page.
 
 ## Skill authority keys
 
