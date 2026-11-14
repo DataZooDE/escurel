@@ -58,6 +58,9 @@ const MAX_WORK_BACKOFF: Duration = Duration::from_secs(30);
 /// How often open turns nothing is working on are picked up again.
 const SWEEP_INTERVAL: Duration = Duration::from_secs(30);
 
+/// The longest a turn waits out the gateway's per-credential mint cap.
+const MAX_RATE_WAIT: Duration = Duration::from_secs(10);
+
 /// How many times a turn asks Teams who the sender is before telling them it
 /// cannot check their access (crew U-F6).
 const PROFILE_ATTEMPTS: u32 = 3;
@@ -471,7 +474,7 @@ impl<C: ChatChannel> Bridge<C> {
         let inbound = open.turn.clone();
         let turn = &inbound;
         let name = self.channel.name();
-        let mut asker = AskerClient::new(self, turn, memory);
+        let mut asker = AskerClient::new(self, turn, memory, deadline);
         let (client, principal) = asker.get().await?;
         let page_id = format!(
             "markdown/instances/{}/{}.md",
@@ -763,15 +766,24 @@ struct AskerClient<'a, C: ChatChannel> {
     turn: &'a InboundTurn,
     memory: &'a mut TurnMemory,
     current: Option<(Client, String, Instant)>,
+    /// When the turn's reply is due: a short credential cap is waited out
+    /// only if the answer can still make it (crew F16).
+    deadline: Instant,
 }
 
 impl<'a, C: ChatChannel> AskerClient<'a, C> {
-    fn new(bridge: &'a Bridge<C>, turn: &'a InboundTurn, memory: &'a mut TurnMemory) -> Self {
+    fn new(
+        bridge: &'a Bridge<C>,
+        turn: &'a InboundTurn,
+        memory: &'a mut TurnMemory,
+        deadline: Instant,
+    ) -> Self {
         Self {
             bridge,
             turn,
             memory,
             current: None,
+            deadline,
         }
     }
 
@@ -888,6 +900,7 @@ impl<'a, C: ChatChannel> AskerClient<'a, C> {
             args["activity_token"] = json!(proof.expose_secret());
         }
         let mut reloaded = false;
+        let mut waited = false;
         let minted = loop {
             let service = self.service(&credential.current()).await?;
             match service.call_raw("mint_user_token", args.clone()).await {
@@ -900,7 +913,21 @@ impl<'a, C: ChatChannel> AskerClient<'a, C> {
                     );
                     reloaded = true;
                 }
-                other => break other,
+                other => {
+                    if let Err(e) = &other
+                        && !waited
+                        && let Some(wait) = self.credential_cap_wait(e)
+                    {
+                        tracing::info!(
+                            wait_s = wait.as_secs(),
+                            "chat bridge: the gateway's per-credential mint cap; waiting once"
+                        );
+                        tokio::time::sleep(wait).await;
+                        waited = true;
+                        continue;
+                    }
+                    break other;
+                }
             }
         }
         .map_err(|e| match &e {
@@ -937,6 +964,28 @@ impl<'a, C: ChatChannel> AskerClient<'a, C> {
                 "the gateway answered without a token or subject".to_owned(),
             )),
         }
+    }
+
+    /// How long to wait out a `rate_limited` refusal before one more try: only
+    /// the bridge credential's cap (a busy bridge, not one person asking too
+    /// much), only when it lifts within [`MAX_RATE_WAIT`], and only when the
+    /// answer can still be due before the deadline (crew F16).
+    fn credential_cap_wait(&self, e: &escurel_client::Error) -> Option<Duration> {
+        let escurel_client::Error::JsonRpc {
+            data_code: Some(code),
+            data: Some(data),
+            ..
+        } = e
+        else {
+            return None;
+        };
+        if code != escurel_types::chat_channel::mint_codes::RATE_LIMITED
+            || data["scope"] != "credential"
+        {
+            return None;
+        }
+        let wait = Duration::from_secs(data["retry_after_secs"].as_u64()?);
+        (wait <= MAX_RATE_WAIT && Instant::now() + wait < self.deadline).then_some(wait)
     }
 
     /// The deprecated path: sign the person's token with the bridge's own key.

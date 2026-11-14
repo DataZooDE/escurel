@@ -119,8 +119,9 @@ Chat bridge hardening (#835):
   `identity_mismatch` for a disagreeing bridge. The Bot Framework token check now lives once in
   `escurel_auth::bot_framework`, shared by the bridge and the gateway.
 - **Added — mint rate limits**: `ESCUREL_AUTH_BRIDGE_MINT_PER_MINUTE` (600, per bridge credential, before any lookup)
-  and `ESCUREL_AUTH_BRIDGE_MINT_PER_ASKER_PER_MINUTE` (30); `rate_limited` (retryable, `retry_after_secs`), told to the
-  person once.
+  and `ESCUREL_AUTH_BRIDGE_MINT_PER_ASKER_PER_MINUTE` (30); `rate_limited` (retryable, `retry_after_secs`, `scope`).
+  The bridge waits out a per-credential cap once when it lifts within 10 s; otherwise the person is told once.
+  `escurel_client::Error::JsonRpc` carries the whole `error.data` as `data`.
 - **Security**: with Teams verification on, a stolen `escurel:bridge` credential alone no longer mints for anyone,
   and forged identity fields (object id, tenant, email, UPN) are refused. It does NOT bind a mint to one
   conversation: the Bot Framework signs no activity body, so a captured, unexpired activity token plus a stolen

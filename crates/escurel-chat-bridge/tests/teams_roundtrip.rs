@@ -1802,3 +1802,37 @@ async fn with_gateway_verification_an_expired_activity_token_mid_turn_asks_again
     );
     assert_eq!(chat_events(&w.gw).await.len(), 1, "it had been captured");
 }
+
+/// Crew F16: the per-CREDENTIAL cap (a busy bridge) is waited out once when it
+/// lifts within seconds, so nobody in the burst is turned away.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_short_per_credential_cap_is_waited_out_not_declined() {
+    let w = world_with(Setup {
+        run_ms: Some(0),
+        verify: true,
+        // Six in a burst, then one every ten seconds.
+        mint_rate: Some(escurel_test_support::MintRateLimits {
+            per_credential_per_minute: 6,
+            per_asker_per_minute: 600,
+        }),
+        ..Setup::default()
+    })
+    .await;
+    let token = w.bf.token(APP_ID);
+    for i in 0..7 {
+        w.bridge
+            .post(
+                Some(&token),
+                &w.bf.message(&format!("act-c{i}"), &format!("q{i}")),
+            )
+            .await;
+    }
+    let replies = wait_for_replies(&w.bf, 7, Duration::from_secs(60)).await;
+    let mut texts: Vec<String> = replies
+        .iter()
+        .map(|r| r.2["text"].as_str().unwrap_or_default().to_owned())
+        .collect();
+    texts.sort();
+    let want: Vec<String> = (0..7).map(|i| format!("echo: q{i}")).collect();
+    assert_eq!(texts, want, "every turn answered, none declined");
+}

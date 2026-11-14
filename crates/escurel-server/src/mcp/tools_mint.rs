@@ -797,7 +797,14 @@ impl Asker {
 }
 
 /// A mint refused by a rate cap: retryable, with when to come back.
-fn rate_limited(tool: &str, whose: &str, wait: Duration) -> JsonRpcError {
+/// `scope` is `credential` or `asker`: a bridge may wait out a short
+/// credential cap, never an asker's (crew F16).
+fn rate_limited(tool: &str, scope: &str, wait: Duration) -> JsonRpcError {
+    let whose = if scope == "credential" {
+        "this bridge credential"
+    } else {
+        "this asker"
+    };
     let mut e = JsonRpcError {
         code: -32000,
         message: format!("{tool}: too many mints for {whose}; try again shortly"),
@@ -806,6 +813,7 @@ fn rate_limited(tool: &str, whose: &str, wait: Duration) -> JsonRpcError {
     .with_code(escurel_types::chat_channel::mint_codes::RATE_LIMITED, true);
     if let Some(data) = e.data.as_mut() {
         data["retry_after_secs"] = json!(wait.as_secs_f64().ceil().max(1.0) as u64);
+        data["scope"] = json!(scope);
     }
     tracing::warn!(whose, "mint_user_token: rate limited");
     e
@@ -851,7 +859,7 @@ pub(super) async fn tool_mint_user_token(
     // Before anything is asked of a directory or a connector (#835).
     mint.limits
         .admit_credential(caller.subject)
-        .map_err(|wait| rate_limited(TOOL, "this bridge credential", wait))?;
+        .map_err(|wait| rate_limited(TOOL, "credential", wait))?;
     if a.channel != CHANNEL {
         return Err(JsonRpcError::invalid_params(format!(
             "{TOOL}: `channel` is `{CHANNEL}` (the one channel with a directory lookup)"
@@ -893,7 +901,7 @@ pub(super) async fn tool_mint_user_token(
     })?;
     mint.limits
         .admit_asker(&asker)
-        .map_err(|wait| rate_limited(TOOL, "this asker", wait))?;
+        .map_err(|wait| rate_limited(TOOL, "asker", wait))?;
     mint.limits.note_asker(caller.subject, &asker);
     // A shared conversation needs its mapping before anything is asked of Graph: an unmapped
     // chat is declined the same way whoever writes in it.

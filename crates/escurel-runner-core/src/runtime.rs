@@ -853,6 +853,7 @@ mod tests {
             message: String::new(),
             data_code: data_code.map(str::to_owned),
             retryable: None,
+            data: None,
         };
         let http = |status: u16| Error::Http {
             status,

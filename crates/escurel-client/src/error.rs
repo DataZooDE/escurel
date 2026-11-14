@@ -66,6 +66,9 @@ pub enum Error {
         data_code: Option<String>,
         /// `error.data.retryable` — whether a backoff-and-retry can help.
         retryable: Option<bool>,
+        /// The whole `error.data`, for a refusal's further detail (e.g.
+        /// `mint_user_token`'s `retry_after_secs` / `scope`).
+        data: Option<serde_json::Value>,
     },
 
     /// The tool REFUSED the call: an MCP result flagged `isError: true` whose payload is

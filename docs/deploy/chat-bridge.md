@@ -255,8 +255,10 @@ asker's identity, naming these variables.
 `mint_user_token` is capped with token buckets: `ESCUREL_AUTH_BRIDGE_MINT_PER_MINUTE` (default
 600) per bridge credential, checked before any directory or connector call, and
 `ESCUREL_AUTH_BRIDGE_MINT_PER_ASKER_PER_MINUTE` (default 30) per asker, whichever bridge asks. A
-refused mint is `rate_limited` (retryable, with `retry_after_secs`); the bridge tells the person
-once: *I'm getting a lot of questions right now, please try again in a minute.* `0` refuses to boot.
+refused mint is `rate_limited` (retryable, with `retry_after_secs` and `scope: credential | asker`).
+The bridge waits out a per-credential refusal once when it lifts within 10 s and the reply is still
+due in time; otherwise, and always for a per-asker refusal, it tells the person once: *I'm getting a
+lot of questions right now, please try again in a minute.* `0` refuses to boot.
 The cap is keyed by the credential's subject, so bridge replicas that share one credential share one
 600/min budget; give each replica its own credential (or raise the cap) when that is too few.
 
