@@ -113,6 +113,10 @@ pub struct TenantGetResponse {
 pub struct TenantUpdateRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub spec: Option<TenantSpec>,
+    /// Clear the tenant's `transcript_retention_days`, so it takes the
+    /// gateway's retention again (`spec`'s value is then ignored).
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub clear_transcript_retention: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]

@@ -330,3 +330,70 @@ async fn a_tenant_retention_overrides_the_gateway_default() {
     let kept = call(&p, &admin, "fetch_blob", json!({ "run_id": KEPT })).await;
     assert!(kept["blob"]["bytes_base64"].is_string(), "{kept}");
 }
+
+/// A tenant's `0` keeps its transcripts forever over a gateway retention of
+/// one second; clearing it (`transcript_retention_days: null`) hands the
+/// tenant back to the gateway's, and the next sweep removes them.
+#[tokio::test]
+async fn a_tenant_zero_keeps_transcripts_and_clearing_it_inherits_the_gateway() {
+    use escurel_admin::{FsTenantStore, TenantSpec, TenantStore};
+    let tenants = tempfile::tempdir().unwrap();
+    let store: std::sync::Arc<dyn TenantStore> =
+        std::sync::Arc::new(FsTenantStore::new(tenants.path()));
+    store
+        .create(&TenantSpec {
+            tenant_id: TENANT.to_owned(),
+            display_name: "Carl".to_owned(),
+            transcript_retention_days: Some(0),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    let p = EscurelProcess::spawn(Opts {
+        auth: AuthMode::TestIssuer,
+        config_overrides: ConfigOverrides {
+            minted_run_sweep: Some(Duration::from_millis(200)),
+            run_transcript_retention: Some(Duration::from_secs(1)),
+            tenant_store: Some(store),
+            ..Default::default()
+        },
+        fixtures: Some(
+            FixtureBuilder::new()
+                .tenant(TENANT)
+                .skill("note", SKILL)
+                .done(),
+        ),
+    })
+    .await;
+    let admin = p.mint_token(TENANT, Role::Admin);
+    finish_with_transcript(&p, KEPT, "{\"kind\":\"message\"}\n").await;
+    // Past the gateway's second, several sweeps: the tenant's 0 keeps it.
+    tokio::time::sleep(Duration::from_millis(2500)).await;
+    let kept = call(&p, &admin, "fetch_blob", json!({ "run_id": KEPT })).await;
+    assert!(kept["blob"]["bytes_base64"].is_string(), "{kept}");
+
+    let op = p.mint_operator_token(TENANT);
+    let cleared = call(
+        &p,
+        &op,
+        "tenant_update",
+        json!({ "tenant_id": TENANT, "transcript_retention_days": null }),
+    )
+    .await;
+    assert!(
+        cleared["spec"]["transcript_retention_days"].is_null(),
+        "{cleared}"
+    );
+    let deadline = Instant::now() + Duration::from_secs(15);
+    loop {
+        let r = rpc(&p, &admin, "fetch_blob", json!({ "run_id": KEPT })).await;
+        if r["error"]["data"]["code"] == "transcript_expired" {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "cleared, the gateway's retention never applied: {r}"
+        );
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+}

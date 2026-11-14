@@ -897,13 +897,13 @@ pub const CONFIG_KEYS: &[ConfigKey] = &[
         name: "ESCUREL_RUNNER_TOKEN",
         component: "Runner",
         default: "—",
-        doc: "tenant-scoped bearer the runner presents to `/mcp`; it must carry `escurel:runner` (the narrow runner role) or `escurel:admin` (a runner with neither cannot claim events, so it takes no inbox work and logs the fix at boot). A runner credential with no signing key gets its per-run tokens from the gateway (`mint_run_token`). A static token wins over minting. A runner on a static token cannot mint, so every run of a skill with an `agent:` profile fails (dead-letters) there: agent profiles need a minting runner (`ESCUREL_RUNNER_AUTH_SIGNING_KEY`)",
+        doc: "tenant-scoped bearer the runner presents to `/mcp` — the out-of-cluster runner's credential. Give it `escurel:runner` (the narrow runner role; `escurel:admin` also works, a runner with neither cannot claim events, so it takes no inbox work and logs the fix at boot). It holds no signing key: each run's token, agent-profile runs included, is minted by the gateway (`mint_run_token`, which needs `ESCUREL_AUTH_SIGNING_KEY` on the gateway); a gateway without one runs ordinary runs on this credential and refuses agent runs. Wins over `ESCUREL_RUNNER_TOKEN_FILE` and over minting",
     },
     ConfigKey {
         name: "ESCUREL_RUNNER_TOKEN_FILE",
         component: "Runner",
         default: "—",
-        doc: "a file holding the runner's bearer, kept fresh by a sidecar (a laptop or on-prem runner on a short-lived service credential); used when `ESCUREL_RUNNER_TOKEN` is unset, read at startup (an unreadable or empty file refuses to start) and re-read whenever it changes, so a rotated credential is used on the next gateway call (a runner whose calls came back `401` recovers without a restart). Like a static token it cannot mint",
+        doc: "a file holding the runner's bearer, kept fresh by a sidecar (a laptop or on-prem runner on a short-lived service credential); used when `ESCUREL_RUNNER_TOKEN` is unset, read at startup (an unreadable or empty file refuses to start) and re-read whenever it changes, so a rotated credential is used on the next gateway call (a runner whose calls came back `401` recovers without a restart). Otherwise exactly `ESCUREL_RUNNER_TOKEN`: give it `escurel:runner`, and the gateway mints each run's token (`mint_run_token`)",
     },
     ConfigKey {
         name: "ESCUREL_RUNNER_QUEUE_CAP",
@@ -1107,7 +1107,7 @@ pub const CONFIG_KEYS: &[ConfigKey] = &[
         name: "ESCUREL_RUNNER_AUTH_SIGNING_KEY",
         component: "Runner",
         default: "—",
-        doc: "private key (PEM) the runner signs its minted bearers with; required for agent profiles (`agent:` on a skill), whose runs are minted as the agent",
+        doc: "private key (PEM) for a SELF-MINTING runner (in the cluster, with `ESCUREL_RUNNER_AUTH_ISSUER`): it signs its own bearer and each run's token, agent profiles included. An out-of-cluster runner does not need it — on `ESCUREL_RUNNER_TOKEN` / `_FILE` with `escurel:runner`, the gateway mints its run tokens. Ignored when either token variable is set",
     },
     ConfigKey {
         name: "ESCUREL_RUNNER_AUTH_SUBJECT",

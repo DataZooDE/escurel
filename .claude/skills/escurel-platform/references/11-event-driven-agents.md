@@ -997,7 +997,9 @@ were stored (gateway, default 90; `0` keeps them forever); after that the read
 answers `transcript_expired`. A tenant sets its own with the operator
 `tenant_update{transcript_retention_days}` (CLI `escurel admin tenant update
 --id <t> --transcript-retention-days <n>`, `0` = forever); it wins over the
-gateway's value and applies on the next sweep, without a restart. Retention
+gateway's value and applies on the next sweep, without a restart;
+`--clear-transcript-retention` (`null`) hands the tenant back to the gateway's
+value. Retention
 deletes transcript keys and nothing else. The retention clock lives in the
 tenant's DuckDB; after an index rebuild the sweep adopts each transcript key
 it finds unregistered as stored at that moment, so it expires one window

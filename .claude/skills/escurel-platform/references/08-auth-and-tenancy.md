@@ -203,34 +203,38 @@ and re-trigger. Under `off` / `log` that is every caller, as it is for every
 other write. `inject` does reach a run whose token is the runner's admin; it
 changes what the run is told, not what the run may do.
 
-**Runners outside the cluster (#818).** A runner on a laptop or an on-prem
-host does not get the platform's signing key. The operator issues it its
-OWN credential instead: a bearer for a service subject (`runner:laptop-jr`)
-with `roles: [escurel:admin]` and no run, agent or actor claims, set as
-`ESCUREL_RUNNER_TOKEN` — or, for a short-lived credential a sidecar
-refreshes, written to a file named by `ESCUREL_RUNNER_TOKEN_FILE`, which the
-runner re-reads whenever it changes. The subject must not contain `#` (the
-lease holder is `<sub>#<holder_id>`; such a subject cannot claim). A runner
-whose credential is not an admin takes no inbox work: its claims
-are refused, and it logs that the credential needs `escurel:admin`. That identity is not a machine caller, so it may do
-the runner's bookkeeping — `report_runner_status`, write its `runtime` page
-(admin-only), `claim_event` / `renew_claim` — and it may call `mint_agent_token` for a per-run
-child. The child is what `mint_agent_token` always returns: never admin, the
-caller's groups, `act.sub` the runner, a gateway-assigned `run_id`; and as a
-machine caller it can neither mint again nor claim. No exception to the
-machine-caller rule was needed. The claim rule is exactly that: any
-**non-machine admin identity** may claim — a runner's admin bearer, and also a
-person's admin token (a non-admin token is refused `-32001`, a run or agent
-token `-32602` `forbidden`, a bridge token `-32003` before it gets that far). An admin who claims can park an event away
-from every runner for up to an hour, which is no more than an admin can do to
-the event directly. The lease's holder is `<sub>#<holder_id>`: `holder_id` is
-the caller's own label for replicas sharing one credential, not an identity,
-so a caller can never renew or take another identity's lease by naming its
-`holder_id`. Today the runner itself mints run tokens
-only in **minted** mode (it holds a signing key); on an operator-issued
-static credential its runs use that credential as before (chat runs are
-refused, see references/11), so give such a runner work that its own
-authority should do, and scope it with the credential's groups.
+**Runners outside the cluster (#818, #828).** A runner on a laptop or an
+on-prem host does not get the platform's signing key. One recipe:
+
+1. The operator issues it its OWN credential: a bearer for a service subject
+   (`runner:laptop-jr`) with `roles: [escurel:runner]` (the narrow role
+   below; `escurel:admin` also works but grants far more) and no run, agent
+   or actor claims. Set it as `ESCUREL_RUNNER_TOKEN` — or, for a short-lived
+   credential a sidecar refreshes, write it to the file named by
+   `ESCUREL_RUNNER_TOKEN_FILE`, which the runner re-reads whenever it
+   changes. The subject must not contain `#` (the lease holder is
+   `<sub>#<holder_id>`; such a subject cannot claim).
+2. The **gateway** holds `ESCUREL_AUTH_SIGNING_KEY` (and `_KID` / `_ISSUER`
+   as needed). It mints each run's token for that runner (`mint_run_token`):
+   the same claims a minting runner would sign, agent-profile runs included,
+   bound to a run the runner itself started (see *Built-in service roles*).
+3. The runner holds **no** `ESCUREL_RUNNER_AUTH_SIGNING_KEY`. That key is
+   only for a **self-minting** runner (in the cluster, with
+   `ESCUREL_RUNNER_AUTH_ISSUER`), which signs its own bearer and run tokens.
+
+With a gateway that has no signing key, such a runner's ordinary runs use its
+own credential and its agent runs are refused, naming the missing key
+(references/11). A runner whose credential is neither `escurel:runner` nor
+admin takes no inbox work: its claims are refused, and it logs that the
+credential needs one of them. The claim rule: any **non-machine admin or
+runner identity** may claim — a runner's own credential, and also a person's
+admin token (a non-admin token is refused `-32001`, a run or agent token
+`-32602` `forbidden`, a bridge token `-32003` before it gets that far). An
+admin who claims can park an event away from every runner for up to an hour,
+which is no more than an admin can do to the event directly. The lease's
+holder is `<sub>#<holder_id>`: `holder_id` is the caller's own label for
+replicas sharing one credential, not an identity, so a caller can never renew
+or take another identity's lease by naming its `holder_id`.
 
 So: your app's token must carry the right audience, a tenant claim naming
 the tenant, and — only for admin operations — the admin role value. A

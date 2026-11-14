@@ -49,8 +49,8 @@ pub(super) async fn tool_put_run_transcript(
     let own_run = caller.run_id == Some(a.run_id.as_str());
     if !own_run && !caller.may_keep_books() {
         return Err(JsonRpcError::forbidden(format!(
-            "put_run_transcript: only run `{}`'s own bearer (or the runner's admin bearer) \
-             may store its transcript",
+            "put_run_transcript: only run `{}`'s own bearer (or the runner's own credential: \
+             escurel:runner or escurel:admin) may store its transcript",
             a.run_id
         ))
         .with_code("transcript_not_your_run", false));

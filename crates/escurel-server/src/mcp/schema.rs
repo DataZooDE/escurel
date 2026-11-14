@@ -1751,9 +1751,9 @@ pub(crate) fn tool_defs() -> Vec<ToolDef> {
                         }
                     },
                     "transcript_retention_days": {
-                        "type": "integer",
+                        "type": ["integer", "null"],
                         "minimum": 0,
-                        "description": "Days this tenant's run transcripts are kept, over ESCUREL_RUN_TRANSCRIPT_RETENTION_DAYS; 0 keeps them forever. Applies on the next sweep, no restart."
+                        "description": "Days this tenant's run transcripts are kept, over ESCUREL_RUN_TRANSCRIPT_RETENTION_DAYS; 0 keeps them forever; null clears the override (the gateway's retention again). Applies on the next sweep, no restart."
                     }
                 }
             }),

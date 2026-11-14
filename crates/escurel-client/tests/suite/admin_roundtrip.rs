@@ -183,6 +183,7 @@ async fn tenant_crud_lifecycle_round_trips() {
     let updated = client
         .tenant_update(TenantUpdateRequest {
             spec: Some(spec("globex", "Globex Renamed")),
+            ..Default::default()
         })
         .await
         .unwrap();

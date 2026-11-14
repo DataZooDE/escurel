@@ -536,7 +536,7 @@ the operator's, not an application's, but the names are listed so nothing is a s
 | `tenant_create` | `tenant_id`, `display_name?`, `status?`, `quotas?`, `embedding_provider?` | provision a tenant |
 | `tenant_get` | `tenant_id` | fetch one tenant's spec |
 | `tenant_list` | — | list the tenants |
-| `tenant_update` | `tenant_id`, `display_name?`, `status?`, `quotas?`, `embedding_provider?`, `transcript_retention_days?` | partial update (changing the embedding provider needs a rebuild). `transcript_retention_days` (#827) is how long this tenant's run transcripts are kept, over `ESCUREL_RUN_TRANSCRIPT_RETENTION_DAYS` (`0` = forever); the sweep reads it on its next tick |
+| `tenant_update` | `tenant_id`, `display_name?`, `status?`, `quotas?`, `embedding_provider?`, `transcript_retention_days?` | partial update (changing the embedding provider needs a rebuild). `transcript_retention_days` (#827) is how long this tenant's run transcripts are kept, over `ESCUREL_RUN_TRANSCRIPT_RETENTION_DAYS` (`0` = forever; `null` clears it, back to the gateway's); the sweep reads it on its next tick |
 | `tenant_delete` | `tenant_id`, `confirm` (= the tenant id) | delete a tenant and its on-disk state |
 | `tenant_export` | `tenant_id` | the tenant's canonical markdown as a base64 tar+gz |
 | `tenant_import` | `tenant_id`, `tarball_b64` | import such a tarball into an existing tenant |

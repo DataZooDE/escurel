@@ -104,6 +104,7 @@ escurel ingest ./deck.pdf --content-type application/pdf --title "Q3 deck" --ski
 escurel admin health
 escurel admin tenant create --id acme --name "Acme Corp"
 escurel admin tenant update --id acme --transcript-retention-days 30   # this tenant's run transcripts, over ESCUREL_RUN_TRANSCRIPT_RETENTION_DAYS (0 = forever)
+escurel admin tenant update --id acme --clear-transcript-retention    # back to the gateway's retention
 escurel admin quota  --tenant acme
 escurel admin purge-events --tenant acme --label escurel:runner-status --keep-latest 50   # event-bus retention: DRY RUN (counts); add --apply to delete; --before <RFC3339> bounds by age; audit labels need --allow-protected
 escurel admin rebuild --tenant acme                  # index-only (no lane writes); no default deadline; --timeout-secs N opts in (the rebuild continues server-side)

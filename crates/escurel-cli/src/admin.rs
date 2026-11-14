@@ -258,8 +258,12 @@ pub enum TenantCmd {
         embedding_provider: Option<String>,
         /// Days this tenant's run transcripts are kept, over the gateway's
         /// `ESCUREL_RUN_TRANSCRIPT_RETENTION_DAYS` (#827); `0` keeps them forever.
-        #[arg(long)]
+        #[arg(long, conflicts_with = "clear_transcript_retention")]
         transcript_retention_days: Option<u32>,
+        /// Drop the tenant's own transcript retention: it takes the gateway's
+        /// `ESCUREL_RUN_TRANSCRIPT_RETENTION_DAYS` again.
+        #[arg(long)]
+        clear_transcript_retention: bool,
     },
     Delete {
         #[arg(long)]
@@ -657,6 +661,7 @@ async fn tenant(client: &AdminClient, cmd: TenantCmd) -> Result<Value> {
             status,
             embedding_provider,
             transcript_retention_days,
+            clear_transcript_retention,
         } => {
             // Get-modify-put (#247): fetch the current spec, apply only the
             // provided flags, write it back — so a partial update never
@@ -691,7 +696,10 @@ async fn tenant(client: &AdminClient, cmd: TenantCmd) -> Result<Value> {
                 spec.transcript_retention_days = Some(days);
             }
             let r = client
-                .tenant_update(TenantUpdateRequest { spec: Some(spec) })
+                .tenant_update(TenantUpdateRequest {
+                    spec: Some(spec),
+                    clear_transcript_retention,
+                })
                 .await?;
             Ok(json!({ "tenant": tenant_json(r.spec), "rebuild_required": r.rebuild_required }))
         }
