@@ -948,6 +948,12 @@ pub const CONFIG_KEYS: &[ConfigKey] = &[
         doc: "how long a `claim_event` lease on an inbox event lasts: 1s to 60m (the gateway's bound) and at least two poll intervals, or the runner refuses to start naming this key. A renewal task renews held leases every third of the lease, independent of the inbox poll; a dead runner's events become claimable this long after it stopped",
     },
     ConfigKey {
+        name: "ESCUREL_RUNNER_ADMIT_CONCURRENCY",
+        component: "Runner",
+        default: "8",
+        doc: "how many inbox events one poll admits at once (routing plus a `claim_event` call each), 1..=64; the answers are taken in inbox order, so what is enqueued keeps that order. `1` is the old one-at-a-time admission",
+    },
+    ConfigKey {
         name: "ESCUREL_RUNNER_HARNESS_ALLOW",
         component: "Runner",
         default: "the configured harness",

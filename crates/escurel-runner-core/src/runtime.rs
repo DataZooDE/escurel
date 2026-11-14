@@ -22,8 +22,9 @@
 //! the fix, on every runner, lone or not: a runner credential must be an
 //! admin, and such a runner is misconfigured, not talking to an old gateway. A claim the gateway did not answer (timeout, transport, `5xx`,
 //! an unexpected invalid-params) is retried on the next poll, never taken.
-//! Admission is one gateway call per inbox event, in series; bounded
-//! concurrency is a possible follow-up.
+//! Admission is one gateway call per inbox event, with up to
+//! `ESCUREL_RUNNER_ADMIT_CONCURRENCY` in flight per poll (#828); the answers
+//! are taken in inbox order.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Mutex;

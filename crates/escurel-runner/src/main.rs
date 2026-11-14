@@ -459,6 +459,7 @@ async fn main() -> anyhow::Result<()> {
                 Arc::clone(&draining),
                 Arc::clone(&last_poll_ms),
                 gate.clone(),
+                config.admit_concurrency,
             ));
         }
         _ => {
@@ -3693,6 +3694,7 @@ async fn poll_loop(
     draining: Arc<std::sync::atomic::AtomicBool>,
     last_poll_ms: Arc<std::sync::atomic::AtomicU64>,
     gate: Option<Arc<RuntimeGate>>,
+    admit_concurrency: usize,
 ) {
     // A boot probe only — the per-tick client is built inside the loop.
     // A hoisted one carries a 30-minute minted bearer for the life of the
@@ -3749,13 +3751,16 @@ async fn poll_loop(
         }
         match client.list_inbox(ListInboxRequest::default()).await {
             Ok(resp) => {
-                for event in &resp.events {
-                    // Route and claim BEFORE the ledger sees it (#818): an
-                    // event this runner cannot satisfy, or another holds,
-                    // stays in the inbox untouched by this runner.
-                    if let Some(gate) = &gate
-                        && gate.admit(&client, event).await != Admit::Take
-                    {
+                // Route and claim BEFORE the ledger sees it (#818): an event this runner cannot
+                // satisfy, or another holds, stays in the inbox untouched by this runner. Up to
+                // `admit_concurrency` claims are in flight at once (#828), and `buffered` hands
+                // the answers back in inbox order, so what is enqueued keeps that order.
+                let admitted = match &gate {
+                    Some(gate) => admit_all(gate, &client, &resp.events, admit_concurrency).await,
+                    None => vec![true; resp.events.len()],
+                };
+                for (event, take) in resp.events.iter().zip(admitted) {
+                    if !take {
                         continue;
                     }
                     let trigger = match self_subject.as_deref() {
@@ -3778,6 +3783,27 @@ async fn poll_loop(
             ),
         }
     }
+}
+
+/// Admit `events` through the gate with up to `concurrency` decisions (each a
+/// claim call) in flight; whether each was taken, in the order given.
+async fn admit_all(
+    gate: &RuntimeGate,
+    client: &escurel_client::Client,
+    events: &[escurel_types::Event],
+    concurrency: usize,
+) -> Vec<bool> {
+    use futures_util::StreamExt as _;
+    let decisions: Vec<std::pin::Pin<Box<dyn std::future::Future<Output = Admit> + Send + '_>>> =
+        events
+            .iter()
+            .map(|event| Box::pin(gate.admit(client, event)) as _)
+            .collect();
+    futures_util::stream::iter(decisions)
+        .buffered(concurrency.max(1))
+        .map(|admit| admit == Admit::Take)
+        .collect()
+        .await
 }
 
 /// A cursor over one label's event log — what the runner's subscribers

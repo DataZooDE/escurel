@@ -29,6 +29,7 @@ mod cascade_trace;
 mod chat_turn;
 mod claude_live;
 mod codex_live;
+mod concurrent_admission;
 mod confirm_unflagged;
 mod delegate_a2a;
 mod distributed_runtimes;

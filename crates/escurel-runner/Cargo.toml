@@ -29,6 +29,8 @@ escurel-obs = { path = "../escurel-obs" }
 escurel-runner-core = { path = "../escurel-runner-core" }
 escurel-runner-harness = { path = "../escurel-runner-harness" }
 escurel-types = { path = "../escurel-types" }
+# `buffered` inbox admission (#828): claims in flight together, answers in inbox order.
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
 hmac = "0.12"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "blocking", "json"] }
 # Page frontmatter keeps the order it was written in, however this crate is built.

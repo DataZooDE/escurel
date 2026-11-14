@@ -129,6 +129,12 @@ pub const DEFAULT_TENANT_MAX_CONCURRENT: u64 = 8;
 /// concurrency with a process-wide semaphore regardless of per-tenant limits.
 pub const DEFAULT_MAX_HARNESS_PROCS: usize = 16;
 
+/// Default `ESCUREL_RUNNER_ADMIT_CONCURRENCY`: inbox events admitted at once.
+pub const DEFAULT_ADMIT_CONCURRENCY: usize = 8;
+/// The most inbox events one poll admits at once: past this the gateway sees
+/// a claim burst, not a fleet.
+pub const MAX_ADMIT_CONCURRENCY: usize = 64;
+
 /// Default `ESCUREL_RUNNER_STATUS_INTERVAL`: how often an idle runner reports its health.
 /// Five minutes (it was 30 s: 2,880 event rows a day per runner, each a lake snapshot on
 /// the lake backends; see `docs/notes/discovered/2026-10-16-events-table-read-in-full-on-attached-postgres.md`).
@@ -538,6 +544,11 @@ pub struct RunnerConfig {
     /// error. Source: `ESCUREL_RUNNER_CLAIM_LEASE` (default the larger of 60s
     /// and four poll intervals, capped at 1h).
     pub claim_lease: Duration,
+    /// How many inbox events one poll admits at once (#828): routing plus the
+    /// `claim_event` call each, `buffered` so the inbox order is kept. 1..=64,
+    /// else a named config error. Source: `ESCUREL_RUNNER_ADMIT_CONCURRENCY`
+    /// (default [`DEFAULT_ADMIT_CONCURRENCY`]).
+    pub admit_concurrency: usize,
     /// How long a cancelled run's harness subprocess gets between SIGTERM
     /// and SIGKILL (workbench backend P2-3a). Same duration grammar as
     /// `poll_interval`. Source: `ESCUREL_RUNNER_CANCEL_GRACE` (default
@@ -1181,6 +1192,19 @@ impl RunnerConfig {
         let probe_interval =
             runtime_duration("ESCUREL_RUNNER_PROBE_INTERVAL", DEFAULT_PROBE_INTERVAL)?;
         let claim_lease = claim_lease(&lookup, poll_interval)?;
+        let admit_concurrency = match lookup("ESCUREL_RUNNER_ADMIT_CONCURRENCY") {
+            Some(raw) if !raw.trim().is_empty() => match raw.trim().parse::<usize>() {
+                Ok(n) if (1..=MAX_ADMIT_CONCURRENCY).contains(&n) => n,
+                _ => {
+                    return Err(ConfigError::InvalidRuntimeSetting {
+                        key: "ESCUREL_RUNNER_ADMIT_CONCURRENCY",
+                        value: raw,
+                        reason: "expected a whole number 1..=64".to_owned(),
+                    });
+                }
+            },
+            _ => DEFAULT_ADMIT_CONCURRENCY,
+        };
         let harness_allow: Vec<String> = match lookup("ESCUREL_RUNNER_HARNESS_ALLOW") {
             Some(raw) if !raw.trim().is_empty() => raw
                 .split(',')
@@ -1215,6 +1239,7 @@ impl RunnerConfig {
             exclusive,
             probe_interval,
             claim_lease,
+            admit_concurrency,
             cancel_grace,
             lint_interval,
             schedule_tick,
@@ -1710,6 +1735,33 @@ mod tests {
                 .map(|(_, v)| (*v).to_owned())
         })
         .map(|c| c.claim_lease)
+    }
+
+    #[test]
+    fn admit_concurrency_defaults_to_eight_and_is_bounded() {
+        let with = |v: Option<&str>| {
+            RunnerConfig::from_env_with(|key| {
+                (key == "ESCUREL_RUNNER_ADMIT_CONCURRENCY")
+                    .then(|| v.map(str::to_owned))
+                    .flatten()
+            })
+            .map(|c| c.admit_concurrency)
+        };
+        assert_eq!(with(None).unwrap(), DEFAULT_ADMIT_CONCURRENCY);
+        assert_eq!(with(Some("1")).unwrap(), 1);
+        assert_eq!(with(Some("64")).unwrap(), 64);
+        for bad in ["0", "65", "many", "-1"] {
+            assert!(
+                matches!(
+                    with(Some(bad)),
+                    Err(ConfigError::InvalidRuntimeSetting {
+                        key: "ESCUREL_RUNNER_ADMIT_CONCURRENCY",
+                        ..
+                    })
+                ),
+                "{bad}"
+            );
+        }
     }
 
     /// The gateway grants 1s..=1h; a runner configured past that would have
