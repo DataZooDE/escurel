@@ -17,13 +17,13 @@
 //! Outbound: a client-credentials token from the configured token endpoint,
 //! then `POST {serviceUrl}/v3/conversations/{id}/activities[/{replyToId}]`.
 
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use axum::http::HeaderMap;
-use escurel_auth::JwksCache;
+use escurel_auth::{ClientCredentials, JwksCache};
 use jsonwebtoken::{Algorithm, Validation, decode, decode_header};
 use serde_json::{Value, json};
-use tokio::sync::{Mutex, OnceCell};
+use tokio::sync::OnceCell;
 
 use crate::channel::{Attachment, ChannelError, ChatChannel, InboundError, InboundTurn, UserRef};
 use crate::config::TeamsConfig;
@@ -32,8 +32,6 @@ use crate::config::TeamsConfig;
 const LEEWAY_SECS: u64 = 300;
 /// Re-fetch the signing keys at most this often (and on an unknown `kid`).
 const JWKS_TTL: Duration = Duration::from_secs(3600);
-/// Renew the connector token this long before it expires.
-const TOKEN_MARGIN: Duration = Duration::from_secs(300);
 /// The only Bot Framework channel this implementation answers.
 const CHANNEL_ID: &str = "msteams";
 /// The Teams file-consent attachment that carries a pre-authorised download URL.
@@ -43,17 +41,23 @@ pub struct TeamsChannel {
     cfg: TeamsConfig,
     http: reqwest::Client,
     keys: OnceCell<JwksCache>,
-    token: Mutex<Option<(String, Instant)>>,
+    connector: ClientCredentials,
 }
 
 impl TeamsChannel {
     #[must_use]
     pub fn new(cfg: TeamsConfig) -> Self {
+        let connector = ClientCredentials::new(
+            cfg.token_url.clone(),
+            cfg.app_id.clone(),
+            cfg.app_password.clone(),
+            cfg.token_scope.clone(),
+        );
         Self {
             cfg,
             http: client(reqwest::Client::builder()),
             keys: OnceCell::new(),
-            token: Mutex::new(None),
+            connector,
         }
     }
 
@@ -79,45 +83,10 @@ impl TeamsChannel {
     }
 
     async fn connector_token(&self) -> Result<String, ChannelError> {
-        let mut slot = self.token.lock().await;
-        if let Some((token, renew_at)) = slot.as_ref()
-            && Instant::now() < *renew_at
-        {
-            return Ok(token.clone());
-        }
-        let resp = self
-            .http
-            .post(&self.cfg.token_url)
-            .form(&[
-                ("grant_type", "client_credentials"),
-                ("client_id", self.cfg.app_id.as_str()),
-                ("client_secret", self.cfg.app_password.as_str()),
-                ("scope", self.cfg.token_scope.as_str()),
-            ])
-            .send()
+        self.connector
+            .token(&self.http)
             .await
-            .map_err(|e| ChannelError::Auth(e.to_string()))?;
-        if !resp.status().is_success() {
-            // The body may echo the request; never log it with the secret.
-            return Err(ChannelError::Auth(format!(
-                "token endpoint answered {}",
-                resp.status()
-            )));
-        }
-        let body: Value = resp
-            .json()
-            .await
-            .map_err(|e| ChannelError::Auth(e.to_string()))?;
-        let token = body["access_token"]
-            .as_str()
-            .ok_or_else(|| ChannelError::Auth("no access_token".into()))?
-            .to_owned();
-        let ttl = Duration::from_secs(body["expires_in"].as_u64().unwrap_or(3600));
-        *slot = Some((
-            token.clone(),
-            Instant::now() + ttl.saturating_sub(TOKEN_MARGIN),
-        ));
-        Ok(token)
+            .map_err(|e| ChannelError::Auth(e.to_string()))
     }
 
     async fn post_activity(&self, url: String, body: Value) -> Result<(), ChannelError> {

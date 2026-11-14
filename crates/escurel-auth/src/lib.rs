@@ -17,10 +17,12 @@
 //! jwks_refresh_secs  = 300
 //! ```
 
+mod client_credentials;
 mod jwks;
 mod signer;
 mod verifier;
 
+pub use client_credentials::{ClientCredentials, ClientCredentialsError};
 pub use jwks::{Jwks, JwksCache};
 pub use signer::{
     AGENT_CLAIM, DELEGATION_PURPOSE, PURPOSE_CLAIM, ROOT_EVENT_ID_CLAIM, RUN_ID_CLAIM,
