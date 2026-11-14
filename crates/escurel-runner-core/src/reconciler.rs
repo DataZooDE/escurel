@@ -241,15 +241,21 @@ pub async fn instance_version(
 ///   alone and a retry is a no-op.
 ///
 /// Returns whether it assigned.
+///
+/// `reader` reads the instance and makes the assignment: the run's own client
+/// (its token wrote the page, so it may read and assign to it; a runner
+/// credential may hold none of the skill's groups). `client`, the runner's,
+/// reads the event.
 pub async fn assign_confirmed_write(
     client: &Client,
+    reader: &Client,
     trigger: &Trigger,
     version_before: Option<&str>,
 ) -> Result<bool, ReconcileError> {
     let Some(page_id) = &trigger.instance_page_id else {
         return Ok(false);
     };
-    let Some(version_now) = instance_version(client, page_id).await? else {
+    let Some(version_now) = instance_version(reader, page_id).await? else {
         return Ok(false);
     };
     if Some(version_now.as_str()) == version_before {
@@ -272,7 +278,7 @@ pub async fn assign_confirmed_write(
         return Ok(false);
     }
 
-    client
+    reader
         .assign_event(AssignEventRequest {
             event_id: trigger.event_id.clone(),
             instance_page_id: page_id.clone(),
@@ -282,8 +288,13 @@ pub async fn assign_confirmed_write(
     Ok(true)
 }
 
+/// `reader` reads the confirmed instance back: the run's own client where
+/// there is one (the identity that wrote it — a runner credential may hold
+/// none of the skill's groups and so could not see the page under an enforced
+/// read ACL), else the runner's `client`, which reads the events either way.
 pub async fn confirm_effect(
     client: &Client,
+    reader: &Client,
     trigger: &Trigger,
 ) -> Result<ConfirmedEffect, ReconcileError> {
     let instance_page_id = match &trigger.instance_page_id {
@@ -358,7 +369,7 @@ pub async fn confirm_effect(
     // **content-addressed version** of the read-back instance body — a real,
     // `/mcp`-confirmed marker that advances whenever the instance is written.
     // A missing page (not yet materialised) is not-yet-converged → transient.
-    let expanded = client
+    let expanded = reader
         .expand(ExpandRequest {
             page_id: instance_page_id.clone(),
             ..Default::default()

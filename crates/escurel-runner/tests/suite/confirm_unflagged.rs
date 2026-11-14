@@ -120,7 +120,7 @@ async fn unflagged_trigger_resolves_the_instance_the_agent_assigned() {
         content_hash: None,
     };
 
-    let effect = confirm_effect(&client, &trigger)
+    let effect = confirm_effect(&client, &client, &trigger)
         .await
         .expect("an assigned event must reconcile from the event alone");
 
@@ -187,7 +187,7 @@ async fn unassigned_event_is_not_a_confirmed_effect() {
     };
 
     assert!(
-        confirm_effect(&client, &trigger).await.is_err(),
+        confirm_effect(&client, &client, &trigger).await.is_err(),
         "an event still sitting in the inbox is not a confirmed effect"
     );
 }

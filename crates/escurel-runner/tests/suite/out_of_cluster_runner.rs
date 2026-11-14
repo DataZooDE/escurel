@@ -50,6 +50,11 @@ fn page_id(skill: &str) -> String {
 const PLAIN: &str = "---\nkind: skill\nid: plain\nautonomy: auto\n\
     acl:\n  create: [ops]\n  update: [ops]\n---\n# plain\n\nFold the event into the instance.\n";
 
+/// A skill whose instances only `ops` may READ: a runner credential without
+/// `ops` cannot see the page its run wrote.
+const SECRET: &str = "---\nkind: skill\nid: secret\nautonomy: auto\n\
+    acl:\n  read: [ops]\n  create: [ops]\n  update: [ops]\n---\n# secret\n\nFold the event in.\n";
+
 async fn gateway() -> EscurelProcess {
     gateway_signing(true).await
 }
@@ -71,6 +76,8 @@ async fn gateway_signing(signing: bool) -> EscurelProcess {
                 .skill("note", skill("note").as_str())
                 .skill("payroll", PAYROLL)
                 .skill("plain", PLAIN)
+                .skill("secret", SECRET)
+                .instance("secret", "c1", instance_body("secret").as_str())
                 .instance("customer", "c1", instance_body("customer").as_str())
                 .instance("note", "c1", instance_body("note").as_str())
                 .instance("plain", "c1", instance_body("plain").as_str())
@@ -646,4 +653,56 @@ async fn without_a_gateway_signing_key_ordinary_runs_write_as_the_runner_and_age
         page["body"].as_str().unwrap().contains("BASELINE"),
         "{page}"
     );
+}
+
+/// The read-back that confirms a run's write is made with the run's OWN token
+/// — the identity that wrote it — not the runner's: an `escurel:runner`
+/// credential holds none of the skill's groups, so under an enforced read ACL
+/// it could never see the page and every such run would dead-letter.
+#[tokio::test]
+async fn a_run_is_confirmed_with_its_own_token_under_a_read_acl() {
+    let gw = gateway().await;
+    let runner_cred = runner_token(&gw, "runner:ooc");
+    let body = rpc(
+        &gw,
+        &runner_cred,
+        "expand",
+        json!({ "page_id": page_id("secret") }),
+    )
+    .await;
+    assert!(
+        body["result"]["structuredContent"]["page"].is_null(),
+        "the runner credential cannot read the instance: {body}"
+    );
+    let mut runner = RunnerProcess::echo(&gw, TENANT)
+        .static_bearer(runner_cred)
+        .env("ESCUREL_RUNNER_MAX_ATTEMPTS", "2")
+        .env("ESCUREL_RUNNER_RETRY_BACKOFF", "100ms")
+        .spawn();
+    runner.wait_healthy().await;
+
+    let secret = capture(&gw, "secret").await;
+    let done = runner
+        .wait_for_status(
+            &secret,
+            &["processed", "failed", "dead_letter"],
+            Duration::from_secs(60),
+        )
+        .await;
+    if done["status"] != "processed" {
+        let run_id = done["run_id"].as_str().unwrap();
+        panic!("{done}: {}", run_event(&gw, run_id, "finished").await);
+    }
+    let page = call(
+        &gw,
+        &admin(&gw),
+        "expand",
+        json!({ "page_id": page_id("secret") }),
+    )
+    .await;
+    assert!(
+        page["body"].as_str().unwrap().contains("folded event"),
+        "{page}"
+    );
+    assert_eq!(page["page"]["last_written_by"], "agent:secret", "{page}");
 }

@@ -3353,11 +3353,23 @@ async fn attempt_run(
         ));
     }
 
+    // The instance is read as the identity that writes it: the run's own token
+    // (a runner credential may hold none of the skill's groups, so under an
+    // enforced read ACL it would never see the page). The events are still
+    // read with the runner's.
+    let run_client = Client::connect(
+        &config.gateway_url,
+        SecretString::from(task.token_str().to_owned()),
+    )
+    .await
+    .map_err(|e| ReconcileError::Permanent(format!("the run's token is unusable: {e}")))?;
     // The instance as it stands BEFORE the agent runs, so a write can be told
     // from a run that touched nothing. Only for a pre-flagged auto run, which
     // is the only shape `assign_confirmed_write` acts on.
     let version_before = match (&trigger.instance_page_id, task.autonomy) {
-        (Some(page), Autonomy::Auto) => escurel_runner_core::instance_version(client, page).await?,
+        (Some(page), Autonomy::Auto) => {
+            escurel_runner_core::instance_version(&run_client, page).await?
+        }
         _ => None,
     };
 
@@ -3487,6 +3499,7 @@ async fn attempt_run(
     if task.autonomy == Autonomy::Auto {
         match escurel_runner_core::assign_confirmed_write(
             client,
+            &run_client,
             trigger,
             version_before.as_deref(),
         )
@@ -3513,7 +3526,7 @@ async fn attempt_run(
     }
 
     let confirmed = match task.autonomy {
-        Autonomy::Auto => confirm_effect(client, trigger).await,
+        Autonomy::Auto => confirm_effect(client, &run_client, trigger).await,
         Autonomy::Review | Autonomy::Confirm => confirm_draft(client, trigger).await,
     };
     match confirmed {

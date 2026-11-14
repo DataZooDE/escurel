@@ -96,7 +96,8 @@ pub async fn recover_pending(
             // there is nothing to dedup against.
             content_hash: None,
         };
-        match confirm_effect(client, &trigger).await {
+        // No run token survives a restart: the runner's own credential reads it back.
+        match confirm_effect(client, client, &trigger).await {
             Ok(effect) => {
                 let _ = ledger.complete(
                     &run_id,
