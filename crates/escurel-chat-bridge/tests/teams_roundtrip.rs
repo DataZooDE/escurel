@@ -479,6 +479,8 @@ async fn world_with(setup: Setup) -> World {
     // Alice is in `escurel-sales` by Graph unless a test says otherwise.
     dirs.graph.member_of(ALICE_AAD, &["escurel-sales"]);
     dirs.graph.member_of(BOB_AAD, &["escurel-support"]);
+    dirs.graph.known_as(ALICE_AAD, ALICE_EMAIL, &[]);
+    dirs.graph.known_as(BOB_AAD, BOB_EMAIL, &[]);
     let gw = if setup.self_signed {
         gateway(Trust::SelfSigned(
             &bridge_key,

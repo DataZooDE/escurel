@@ -98,6 +98,10 @@ pub enum DirectoryError {
 pub type GroupsFuture<'a> =
     Pin<Box<dyn Future<Output = Result<Vec<DirectoryGroup>, DirectoryError>> + Send + 'a>>;
 
+/// A directory's answer to "which addresses is this user known by".
+pub type AddressesFuture<'a> =
+    Pin<Box<dyn Future<Output = Result<Vec<String>, DirectoryError>> + Send + 'a>>;
+
 /// One group directory.
 pub trait GroupDirectory: Send + Sync {
     /// `graph`, `google`, `okta`: in logs and cache keys.
@@ -107,6 +111,29 @@ pub trait GroupDirectory: Send + Sync {
     fn lookup_key(&self, user: &DirectoryUser) -> Option<String>;
     /// Every group `key` is (transitively) a member of.
     fn groups_for<'a>(&'a self, key: &'a str) -> GroupsFuture<'a>;
+    /// The addresses (lowercase) the directory knows the user with this
+    /// Entra object id by — `None` for a directory that is not keyed by the
+    /// object id and so cannot bind the bridge's other claims to it.
+    fn addresses_of<'a>(&'a self, _object_id: &'a str) -> Option<AddressesFuture<'a>> {
+        None
+    }
+}
+
+/// Why the bridge's account of a sender does not hold up (crew S-F2).
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum IdentityError {
+    /// The directory does not know the object id: there is no such person.
+    #[error("the directory does not know this sender")]
+    Unknown,
+    /// An asserted `email` / `upn` is none of the sender's addresses.
+    #[error("the asserted `{0}` is not one of the sender's addresses")]
+    Mismatch(&'static str),
+    /// The directory cannot be reached and no recent answer stands in.
+    #[error("{0} (retryable)")]
+    Unavailable(String),
+    /// The directory refused the lookup (a missing permission).
+    #[error("{0}")]
+    Unverified(String),
 }
 
 /// Directory group → escurel group: the explicit map by id first, else the
@@ -356,6 +383,61 @@ impl GroupDirectories {
         })
     }
 
+    /// Bind the bridge's claims to one person (crew S-F2): every directory
+    /// keyed by the object id (Graph) must know it, and any `email` / `upn`
+    /// the bridge asserts — what the email-keyed directories look the
+    /// person up by — must be one of that person's addresses. Without such a
+    /// directory there is nothing to check against, and the bridge is
+    /// trusted for identity (`docs/deploy/chat-bridge.md` says what that
+    /// means).
+    ///
+    /// # Errors
+    /// See [`IdentityError`].
+    pub async fn verify_identity(&self, user: &DirectoryUser) -> Result<(), IdentityError> {
+        for p in &self.providers {
+            let name = p.directory.name();
+            let Some(oid) = user.object_id.as_deref() else {
+                continue;
+            };
+            if p.directory.addresses_of(oid).is_none() {
+                continue;
+            }
+            let fetch = || async {
+                match p.directory.addresses_of(oid) {
+                    Some(f) => f.await,
+                    None => Ok(Vec::new()),
+                }
+            };
+            let slot = (identity_slot(name), oid.to_owned());
+            let addresses = match self.cache.get_or_fetch(slot, false, fetch).await {
+                Ok(a) => a,
+                Err(DirectoryError::NotFound(_)) => return Err(IdentityError::Unknown),
+                Err(DirectoryError::Retryable(why)) => {
+                    return Err(IdentityError::Unavailable(format!("{name}: {why}")));
+                }
+                Err(refused) => {
+                    tracing::error!(directory = name, error = %refused,
+                        "group directory refused the sender's profile; grant the app \
+                         User.Read.All (application) so a bridge's claims can be checked");
+                    return Err(IdentityError::Unverified(format!("{name}: {refused}")));
+                }
+            };
+            for (field, value) in [("email", &user.email), ("upn", &user.upn)] {
+                if let Some(v) = value
+                    && !addresses.iter().any(|a| a.eq_ignore_ascii_case(v))
+                {
+                    tracing::warn!(
+                        directory = name,
+                        field,
+                        "mint_user_token: the bridge asserted an address the sender does not have"
+                    );
+                    return Err(IdentityError::Mismatch(field));
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// The union of the escurel groups every directory grants `user`, sorted.
     ///
     /// # Errors
@@ -418,6 +500,14 @@ impl GroupDirectories {
                 Ok(Vec::new())
             }
         }
+    }
+}
+
+/// The cache slot a provider's identity answers live under, apart from its groups.
+fn identity_slot(provider: &'static str) -> &'static str {
+    match provider {
+        "graph" => "graph:identity",
+        _ => "identity",
     }
 }
 

@@ -21,6 +21,33 @@ pub const GROUP_SUBJECT_PREFIX: &str = "group:";
 /// The longest escurel group name a mapping (or a Graph lookup) yields.
 pub const MAX_GROUP_LEN: usize = 64;
 
+/// The `error.data.code`s `mint_user_token` answers a chat bridge with, in
+/// one place so the gateway and the bridge cannot drift apart (crew Q-F6): a
+/// renamed code would turn a polite refusal into a retry-until-timeout.
+pub mod mint_codes {
+    /// A shared chat no `chat-channel` page maps (or one that cannot be mapped).
+    pub const UNMAPPED: &str = "chat_channel_unmapped";
+    /// Two `chat-channel` pages name different groups for one chat.
+    pub const AMBIGUOUS: &str = "chat_channel_ambiguous";
+    /// The sender is not a member of the group the chat acts as.
+    pub const NOT_MEMBER: &str = "chat_channel_not_member";
+    /// The gateway has no group directory, so it answers no shared chat.
+    pub const NO_DIRECTORY: &str = "chat_channel_no_directory";
+    /// A group directory cannot be reached (retryable).
+    pub const DIRECTORY_UNAVAILABLE: &str = "directory_unavailable";
+    /// No escurel principal for this sender: the template names a field they
+    /// lack, an id is not a plain platform id, or the directory does not know them.
+    pub const NO_PRINCIPAL: &str = "no_principal";
+    /// The asserted email / UPN is not one the directory knows the sender by.
+    pub const IDENTITY_MISMATCH: &str = "identity_mismatch";
+    /// The sender's Entra tenant is not the one the gateway looks people up in.
+    pub const TENANT_NOT_SERVED: &str = "tenant_not_served";
+    /// The gateway does not mint for a chat bridge.
+    pub const UNSUPPORTED: &str = "unsupported";
+    /// The caller is not a chat bridge's own credential.
+    pub const BRIDGE_REQUIRED: &str = "bridge_required";
+}
+
 /// What kind of conversation a turn came from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -55,6 +82,28 @@ pub struct ConversationRef {
     pub team_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub channel_id: Option<String>,
+}
+
+impl ConversationRef {
+    /// The ids an admin names on a `chat-channel` page for this conversation:
+    /// `conversation_id` for a group chat, `team_id` + `channel_id` for a
+    /// channel. `None` for a 1:1 chat, and for a channel whose activity named
+    /// no team or channel — such a channel cannot be mapped at all, and a
+    /// `conversation_id` hint would send the admin to write a page that never
+    /// matches (crew Q-F7).
+    #[must_use]
+    pub fn mapping_hint(&self) -> Option<String> {
+        match self.kind {
+            ConversationKind::Personal => None,
+            ConversationKind::Group => Some(format!("`conversation_id: {}`", self.id)),
+            ConversationKind::Channel => match (&self.team_id, &self.channel_id) {
+                (Some(team), Some(channel)) => {
+                    Some(format!("`team_id: {team}` and `channel_id: {channel}`"))
+                }
+                _ => None,
+            },
+        }
+    }
 }
 
 /// One `chat-channel` page: a group chat (by `conversation_id`) or a channel
@@ -229,6 +278,37 @@ mod tests {
             let err = ChatChannelMapping::from_frontmatter(&fm).unwrap_err();
             assert!(err.contains(why), "{fm}: {err}");
         }
+    }
+
+    #[test]
+    fn the_mapping_hint_names_only_ids_a_page_can_match() {
+        let conv = |kind, team: Option<&str>, channel: Option<&str>| ConversationRef {
+            kind,
+            id: "19:x@thread".into(),
+            team_id: team.map(str::to_owned),
+            channel_id: channel.map(str::to_owned),
+        };
+        assert_eq!(
+            conv(ConversationKind::Group, None, None)
+                .mapping_hint()
+                .as_deref(),
+            Some("`conversation_id: 19:x@thread`")
+        );
+        assert_eq!(
+            conv(ConversationKind::Channel, Some("t"), Some("c"))
+                .mapping_hint()
+                .as_deref(),
+            Some("`team_id: t` and `channel_id: c`")
+        );
+        assert_eq!(
+            conv(ConversationKind::Channel, None, Some("c")).mapping_hint(),
+            None,
+            "a channel without its ids cannot be mapped"
+        );
+        assert_eq!(
+            conv(ConversationKind::Personal, None, None).mapping_hint(),
+            None
+        );
     }
 
     #[test]

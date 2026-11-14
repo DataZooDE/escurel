@@ -784,6 +784,12 @@ pub(super) async fn tool_mint_user_token(
         email: a.email.filter(|e| !e.trim().is_empty()),
         upn: a.upn.filter(|u| !u.trim().is_empty()),
     };
+    // The subject comes from the object id, the email-keyed groups from the email: one person
+    // must hold both, or a bridge could pair someone's identity with someone else's groups.
+    mint.directories
+        .verify_identity(&user)
+        .await
+        .map_err(|e| identity_refusal(TOOL, &e))?;
     let groups = mint
         .directories
         .groups_from_directory(&user)
@@ -832,6 +838,27 @@ pub(super) async fn tool_mint_user_token(
         "conversation_kind": conv.kind.as_str(),
         "expires_at": expires,
     }))
+}
+
+/// A failed identity binding as the tool's refusal.
+fn identity_refusal(tool: &str, e: &crate::group_directory::IdentityError) -> JsonRpcError {
+    use crate::group_directory::IdentityError as E;
+    use escurel_types::chat_channel::mint_codes;
+    match e {
+        E::Unknown => JsonRpcError::invalid_params(format!("{tool}: {e}"))
+            .with_code(mint_codes::NO_PRINCIPAL, false),
+        E::Mismatch(_) => JsonRpcError::forbidden(format!("{tool}: {e}"))
+            .with_code(mint_codes::IDENTITY_MISMATCH, false),
+        E::Unavailable(_) | E::Unverified(_) => JsonRpcError {
+            code: -32000,
+            message: format!("{tool}: the group directory cannot check the sender ({e})"),
+            data: None,
+        }
+        .with_code(
+            mint_codes::DIRECTORY_UNAVAILABLE,
+            matches!(e, E::Unavailable(_)),
+        ),
+    }
 }
 
 /// The ids an admin puts on the `chat-channel` page for `conv`.

@@ -41,6 +41,9 @@ struct State {
     /// lookup key (object id or email) → `(group name, shared)`, where a
     /// shared group is one an ordinary user can create and name.
     members: HashMap<String, Vec<(String, bool)>>,
+    /// Graph: object id → the addresses the user is known by
+    /// (`mail`, `userPrincipalName`, `otherMails`).
+    addresses: HashMap<String, Vec<String>>,
     /// Answer every request with this status instead.
     status: Option<u16>,
     lookups: usize,
@@ -113,6 +116,14 @@ impl DirectoryStandIn {
             Kind::Google => r"^/v1/groups/-/memberships:searchTransitiveGroups$",
             Kind::Okta => r"^/api/v1/users/[^/]+/groups$",
         };
+        if kind == Kind::Graph {
+            let s = Arc::clone(&state);
+            Mock::given(method("GET"))
+                .and(path_regex(r"^/v1\.0/users/[^/]+$"))
+                .respond_with(move |req: &Request| graph_user(&s, req))
+                .mount(&server)
+                .await;
+        }
         let s = Arc::clone(&state);
         Mock::given(method("GET"))
             .and(path_regex(listing))
@@ -139,25 +150,38 @@ impl DirectoryStandIn {
     /// member of these groups, by name (a Google group's name is its email
     /// local part: `escurel-sales` stands for `escurel-sales@acme.example`).
     pub fn member_of(&self, key: &str, groups: &[&str]) {
-        self.add_groups(key, groups, false);
+        self.state.lock().unwrap().members.insert(
+            key.to_owned(),
+            groups.iter().map(|g| ((*g).to_owned(), false)).collect(),
+        );
+    }
+
+    /// Graph: the user with this object id has `mail` (also their UPN) and
+    /// `other` addresses — what the gateway checks a bridge's asserted email
+    /// against (crew S-F2). A user with groups but no addresses has none.
+    pub fn known_as(&self, object_id: &str, mail: &str, other: &[&str]) {
+        let mut all = vec![mail.to_owned()];
+        all.extend(other.iter().map(|a| (*a).to_owned()));
+        self.state
+            .lock()
+            .unwrap()
+            .addresses
+            .insert(object_id.to_owned(), all);
     }
 
     /// `key` is also a member of these groups, which the provider says anyone
     /// may create and name (crew S-F1): a Microsoft 365 group (`groupTypes:
     /// [Unified]`) on Graph, a group outside `acme.example` on Google, an
-    /// `APP_GROUP` on Okta. Their names count for nothing by default.
+    /// `APP_GROUP` on Okta. Their names count for nothing by default. Adds
+    /// to what [`Self::member_of`] set (which replaces).
     pub fn member_of_shared(&self, key: &str, groups: &[&str]) {
-        self.add_groups(key, groups, true);
-    }
-
-    fn add_groups(&self, key: &str, groups: &[&str], shared: bool) {
         self.state
             .lock()
             .unwrap()
             .members
             .entry(key.to_owned())
             .or_default()
-            .extend(groups.iter().map(|g| ((*g).to_owned(), shared)));
+            .extend(groups.iter().map(|g| ((*g).to_owned(), true)));
     }
 
     /// Answer everything with `status` until [`Self::up`].
@@ -238,6 +262,39 @@ pub fn bridge_mint(
         cache_ttl,
         stale_ttl,
     }
+}
+
+/// Graph's `GET /v1.0/users/{id}`: 404 for an object id it knows nothing of.
+fn graph_user(s: &Mutex<State>, req: &Request) -> ResponseTemplate {
+    let st = s.lock().unwrap();
+    if let Some(status) = st.status {
+        return ResponseTemplate::new(status);
+    }
+    if req
+        .headers
+        .get("authorization")
+        .and_then(|v| v.to_str().ok())
+        != Some("Bearer dir-token")
+    {
+        return ResponseTemplate::new(401);
+    }
+    let oid = req
+        .url
+        .path_segments()
+        .and_then(|mut p| p.nth(2))
+        .map(percent_decode)
+        .unwrap_or_default();
+    let addresses = match (st.addresses.get(&oid), st.members.contains_key(&oid)) {
+        (Some(a), _) => a.clone(),
+        (None, true) => Vec::new(),
+        (None, false) => return ResponseTemplate::new(404),
+    };
+    ResponseTemplate::new(200).set_body_json(json!({
+        "id": oid,
+        "mail": addresses.first(),
+        "userPrincipalName": addresses.first(),
+        "otherMails": addresses.iter().skip(1).collect::<Vec<_>>(),
+    }))
 }
 
 /// One listing page, as the provider would answer it.

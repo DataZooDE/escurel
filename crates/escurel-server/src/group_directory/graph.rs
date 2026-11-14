@@ -1,7 +1,9 @@
 //! Microsoft Graph: `GET /v1.0/users/{objectId}/transitiveMemberOf/microsoft.graph.group`,
 //! paged by `@odata.nextLink`, with a client-credentials token (application
 //! permission `GroupMember.Read.All`, admin-consented). Keyed by the Entra
-//! object id Teams names the sender with.
+//! object id Teams names the sender with. The same app reads the sender's
+//! `mail` / `userPrincipalName` / `otherMails` (`User.Read.All`) so the
+//! bridge's asserted email cannot name someone else (crew S-F2).
 //!
 //! The prefix rule reads only a SECURITY group's `displayName` by default: a
 //! Microsoft 365 group (`groupTypes: [Unified]`, every Team is one) is named
@@ -14,8 +16,8 @@ use std::sync::Arc;
 use escurel_auth::ClientCredentials;
 
 use super::{
-    DirectoryError, DirectoryGroup, DirectoryUser, GroupDirectory, GroupsFuture, MAX_PAGES,
-    NameRule, authorized_get, is_object_id,
+    AddressesFuture, DirectoryError, DirectoryGroup, DirectoryUser, GroupDirectory, GroupsFuture,
+    MAX_PAGES, NameRule, authorized_get, is_object_id,
 };
 use crate::egress::Egress;
 
@@ -88,6 +90,39 @@ impl GraphDirectory {
         }
     }
 
+    /// `mail`, `userPrincipalName` and `otherMails` of the user (application
+    /// permission `User.Read.All`), lowercase; a 404 is
+    /// [`DirectoryError::NotFound`].
+    async fn addresses(&self, object_id: &str) -> Result<Vec<String>, DirectoryError> {
+        if !is_object_id(object_id) {
+            return Err(DirectoryError::NotFound("not an object id".to_owned()));
+        }
+        let base = reqwest::Url::parse(&self.base_url)
+            .map_err(|e| DirectoryError::Permanent(e.to_string()))?;
+        let url = format!(
+            "{}/v1.0/users/{object_id}?$select=mail,userPrincipalName,otherMails",
+            self.base_url.trim_end_matches('/')
+        );
+        let (body, _) =
+            authorized_get(&self.egress, &self.credentials, "graph", &base, &url, &[]).await?;
+        let mut out: Vec<String> = ["mail", "userPrincipalName"]
+            .iter()
+            .filter_map(|k| body[*k].as_str())
+            .chain(
+                body["otherMails"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(serde_json::Value::as_str),
+            )
+            .filter(|a| !a.is_empty())
+            .map(str::to_ascii_lowercase)
+            .collect();
+        out.sort();
+        out.dedup();
+        Ok(out)
+    }
+
     async fn fetch(&self, object_id: &str) -> Result<Vec<DirectoryGroup>, DirectoryError> {
         let base = reqwest::Url::parse(&self.base_url)
             .map_err(|e| DirectoryError::Permanent(e.to_string()))?;
@@ -155,6 +190,10 @@ impl GroupDirectory for GraphDirectory {
 
     fn groups_for<'a>(&'a self, key: &'a str) -> GroupsFuture<'a> {
         Box::pin(self.fetch(key))
+    }
+
+    fn addresses_of<'a>(&'a self, object_id: &'a str) -> Option<AddressesFuture<'a>> {
+        Some(Box::pin(self.addresses(object_id)))
     }
 }
 

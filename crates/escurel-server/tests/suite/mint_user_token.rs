@@ -559,6 +559,7 @@ fn personal_with_email(oid: &str, email: Option<&str>) -> Value {
 async fn each_directory_alone_and_a_union_of_two_grant_the_askers_groups() {
     let graph = DirectoryStandIn::graph().await;
     graph.member_of(ALICE_OID, &["escurel-sales"]);
+    graph.known_as(ALICE_OID, ALICE_EMAIL, &[]);
     let google = DirectoryStandIn::google().await;
     google.member_of(ALICE_EMAIL, &["escurel-sales", "escurel-ops"]);
     let okta = DirectoryStandIn::okta().await;
@@ -618,6 +619,7 @@ async fn each_directory_alone_and_a_union_of_two_grant_the_askers_groups() {
 async fn a_group_chat_membership_from_okta_alone_is_enough() {
     let graph = DirectoryStandIn::graph().await;
     graph.member_of(BOB_OID, &["escurel-support"]);
+    graph.known_as(BOB_OID, BOB_EMAIL, &[]);
     let okta = DirectoryStandIn::okta().await;
     okta.member_of(BOB_EMAIL, &["escurel-sales"]);
     let gw = gateway(bridge_mint(
@@ -650,6 +652,7 @@ async fn a_group_chat_membership_from_okta_alone_is_enough() {
 async fn a_directory_status_is_retryable_or_permanent() {
     let graph = DirectoryStandIn::graph().await;
     graph.member_of(ALICE_OID, &["escurel-sales"]);
+    graph.known_as(ALICE_OID, ALICE_EMAIL, &[]);
     let google = DirectoryStandIn::google().await;
     google.member_of(ALICE_EMAIL, &["escurel-ops"]);
     let okta = DirectoryStandIn::okta().await;
@@ -705,6 +708,7 @@ async fn a_directory_status_is_retryable_or_permanent() {
 async fn a_platform_id_cannot_mint_a_group_or_service_subject() {
     let graph = DirectoryStandIn::graph().await;
     graph.member_of(ALICE_OID, &["escurel-sales"]);
+    graph.known_as(ALICE_OID, ALICE_EMAIL, &[]);
     let gw = gateway(bridge_mint(
         "{userId}",
         vec![graph.config("escurel-")],
@@ -730,6 +734,7 @@ async fn a_group_anyone_can_name_grants_nothing_by_default() {
     use escurel_server::group_directory::DirectoryConfig;
     let graph = DirectoryStandIn::graph().await;
     graph.member_of(ALICE_OID, &["escurel-sales"]);
+    graph.known_as(ALICE_OID, ALICE_EMAIL, &[]);
     graph.member_of_shared(ALICE_OID, &["escurel-finance"]);
     let google = DirectoryStandIn::google().await;
     google.member_of_shared(ALICE_EMAIL, &["escurel-finance"]);
@@ -772,5 +777,58 @@ async fn a_group_anyone_can_name_grants_nothing_by_default() {
         roles(&mint(&gw, asker).await),
         json!(["finance", "sales"]),
         "an explicit opt-in counts them"
+    );
+}
+
+/// Crew S-F2: with Graph configured, the email (what Google and Okta key on)
+/// must be one of the addresses Graph knows the object id by, and an object
+/// id Graph does not know mints nothing.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_bridge_cannot_pair_one_persons_id_with_anothers_email() {
+    let graph = DirectoryStandIn::graph().await;
+    graph.member_of(ALICE_OID, &["escurel-support"]);
+    graph.known_as(ALICE_OID, ALICE_EMAIL, &["a.smith@acme.example"]);
+    graph.member_of(BOB_OID, &[]);
+    graph.known_as(BOB_OID, BOB_EMAIL, &[]);
+    let okta = DirectoryStandIn::okta().await;
+    okta.member_of(BOB_EMAIL, &["escurel-finance"]);
+    okta.member_of("a.smith@acme.example", &["escurel-sales"]);
+    let gw = gateway(bridge_mint(
+        "user:{aadObjectId}",
+        vec![graph.config("escurel-"), okta.config("escurel-")],
+        None,
+    ))
+    .await;
+    // Alice's object id with Bob's address: Bob's finance group must not ride on Alice's subject.
+    let (_, body) = call(
+        &gw,
+        &bridge_credential(&gw),
+        "mint_user_token",
+        personal_with_email(ALICE_OID, Some(BOB_EMAIL)),
+    )
+    .await;
+    refused(&body, "identity_mismatch", "alice's id, bob's email");
+    let mut upn = personal(ALICE_OID);
+    upn["upn"] = json!(BOB_EMAIL);
+    let (_, body) = call(&gw, &bridge_credential(&gw), "mint_user_token", upn).await;
+    refused(&body, "identity_mismatch", "alice's id, bob's upn");
+    // An object id Graph does not know is nobody.
+    let (_, body) = call(
+        &gw,
+        &bridge_credential(&gw),
+        "mint_user_token",
+        personal("nobody-oid"),
+    )
+    .await;
+    refused(&body, "no_principal", "an unknown object id");
+    // One of Alice's own addresses (otherMails, any case) is hers.
+    let minted = mint(
+        &gw,
+        personal_with_email(ALICE_OID, Some("A.Smith@acme.example")),
+    )
+    .await;
+    assert_eq!(
+        claims(minted["token"].as_str().unwrap())["roles"],
+        json!(["sales", "support"])
     );
 }
