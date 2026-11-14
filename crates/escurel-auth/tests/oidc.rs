@@ -967,16 +967,14 @@ mod bridge_kid {
         assert!(ctx.groups.is_empty(), "{:?}", ctx.groups);
         assert_eq!(ctx.actor.as_deref(), Some("bridge:msteams"));
         assert_eq!(ctx.run, None);
-        // The same token on a verifier with no bridge entry is a gateway-minted
-        // bridge turn (#830): still confined and never admin — but its groups
-        // are the ones the gateway resolved, so they are honoured.
+        // The same token on a verifier with no bridge entry and no minting
+        // identity is no one's turn (crew S-F6): only the gateway's own mint
+        // carries a turn's groups (`minted_bridge_turn` below).
         let plain = verifier_pointing_at(&server);
-        let ctx = plain
-            .verify(&sign_token(&keys, claims(&server, 900)))
-            .await
-            .unwrap();
-        assert_eq!(ctx.role, Role::Agent);
-        assert!(ctx.bridge_turn);
+        assert!(matches!(
+            plain.verify(&sign_token(&keys, claims(&server, 900))).await,
+            Err(AuthError::BridgeRefused(_))
+        ));
     }
 
     #[tokio::test]
