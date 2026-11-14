@@ -56,10 +56,6 @@ escurel-server.
 | `ESCUREL_AUTH_TENANT_CLAIM` | tenant | JWT claim carrying the tenant id |
 | `ESCUREL_WRITE_ACL` | enforce | per-instance write ACL: `enforce` (reject; the default, also for an unrecognised value) \| `log` (warn but allow) \| `off` (no check, explicit opt-out). Symmetric to the read ACL: owner-or-admin writes; public/no-owner instances are admin-write-only. |
 | `ESCUREL_AUTH_ADMIN_ROLE_CLAIM` | roles | JWT claim listing roles |
-| `ESCUREL_AUTH_ADMIN_ROLE_VALUE` | escurel:admin | role value granting admin |
-| `ESCUREL_AUTH_OPERATOR_ROLE_VALUE` | escurel:operator | role value (in the admin role claim) marking an OPERATOR credential, the only one that may name another tenant in the cross-tenant admin tools (tenant registry, tenant_export/tenant_import) |
-| `ESCUREL_AUTH_RUNNER_ROLE_VALUE` | escurel:runner | role value (in the admin role claim) marking a RUNNER service credential: it claims inbox events, files the runner's lifecycle records, writes its `runtime` page and mints per-run tokens (`mint_run_token`), and is not admin. Ignored on a machine (run/agent/skill/`act`) token |
-| `ESCUREL_AUTH_BRIDGE_ROLE_VALUE` | escurel:bridge | role value (in the admin role claim) marking a chat BRIDGE service credential. Ignored on a machine token |
 | `ESCUREL_AUTH_ROLE_TOOLS` | — | service roles and the only tools each may call, `role=tool,tool;role=tool` (e.g. `app:worker=list_events,expand,create_draft`); a token whose groups carry a listed role is refused every other tool and the `/ingest`, `/blob` and `/ws` surfaces. Agent-scope tools only; boot fails on an unknown tool |
 | `ESCUREL_AUTH_JWKS_REFRESH_SECS` | 300 | JWKS cache TTL (seconds) |
 | `ESCUREL_AUTH_JWKS_URI` | derived from issuer | explicit JWKS URL (e.g. Triton's `<issuer>/.well-known/jwks.json`) |
@@ -185,6 +181,10 @@ read by both the server and the runner.
 | var | default | meaning |
 |---|---|---|
 | `ESCUREL_WEBHOOK_SECRET` | — | shared secret; when set the webhook body is HMAC-SHA256-signed via `X-Escurel-Webhook-Signature: sha256=<hex>` The runner requires the same HMAC signature on inbound `POST /trigger`. |
+| `ESCUREL_AUTH_ADMIN_ROLE_VALUE` | escurel:admin | role value granting admin. The runner reads it too, and never mints it into a person's run token |
+| `ESCUREL_AUTH_OPERATOR_ROLE_VALUE` | escurel:operator | role value (in the admin role claim) marking an OPERATOR credential, the only one that may name another tenant in the cross-tenant admin tools (tenant registry, tenant_export/tenant_import). The runner reads it too, and never mints it into a person's run token |
+| `ESCUREL_AUTH_RUNNER_ROLE_VALUE` | escurel:runner | role value (in the admin role claim) marking a RUNNER service credential: it claims inbox events, files the runner's lifecycle records, writes its `runtime` page and mints per-run tokens (`mint_run_token`), and is not admin. Ignored on a machine (run/agent/skill/`act`) token. The runner reads it too, and never mints it into a person's run token |
+| `ESCUREL_AUTH_BRIDGE_ROLE_VALUE` | escurel:bridge | role value (in the admin role claim) marking a chat BRIDGE service credential. Ignored on a machine token. The runner reads it too, and never mints it into a person's run token |
 | `ESCUREL_OTLP_ENDPOINT` | — | OTLP endpoint (server: fallback of the variable above; runner: its only knob) |
 
 ## Server / Runner / Loader

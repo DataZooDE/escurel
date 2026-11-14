@@ -466,6 +466,15 @@ impl EscurelProcess {
             for kid in &overrides.bridge_kids {
                 cfg = cfg.with_bridge_kid(kid.clone());
             }
+            // As the production config does: a minting gateway honours bridge turns under its own
+            // signing identity only (the test issuer's key, below).
+            if overrides.signing
+                && overrides.bridge_mint.is_some()
+                && let Some(issuer) = &issuer
+            {
+                let (_, kid) = issuer.signing_material();
+                cfg = cfg.with_minting_identity(issuer.issuer_url.clone(), kid);
+            }
             Arc::new(OidcVerifier::new(cfg))
         });
 

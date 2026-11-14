@@ -71,6 +71,12 @@ pub struct OidcConfig {
     /// The one tenant a bridge token may name (`ESCUREL_AUTH_BRIDGE_TENANT`);
     /// a bridge token naming another is refused. `None` = not pinned here.
     pub bridge_tenant: Option<String>,
+    /// The gateway's OWN signing identity, `(issuer, kid)`: the only one
+    /// whose bridge TURN tokens (`mint_user_token`, #830) are honoured with
+    /// their groups. A `bridge_channel` token from any other trusted entry —
+    /// another IdP, a runner key, a bridge's old `ISSUER_<N>` left in place —
+    /// is refused (crew S-F6). `None` = this gateway does not mint turns.
+    pub minting_identity: Option<(String, String)>,
 }
 
 impl OidcConfig {
@@ -92,6 +98,7 @@ impl OidcConfig {
             jwks_uri: None,
             additional_issuers: Vec::new(),
             bridge_issuer: None,
+            minting_identity: None,
             bridge_kids: Vec::new(),
             bridge_tenant: None,
         }
@@ -101,6 +108,17 @@ impl OidcConfig {
     #[must_use]
     pub fn with_bridge_tenant(mut self, tenant: impl Into<String>) -> Self {
         self.bridge_tenant = Some(tenant.into());
+        self
+    }
+
+    /// The gateway's own signing `(issuer, kid)` (see [`Self::minting_identity`]).
+    #[must_use]
+    pub fn with_minting_identity(
+        mut self,
+        issuer: impl Into<String>,
+        kid: impl Into<String>,
+    ) -> Self {
+        self.minting_identity = Some((issuer.into(), kid.into()));
         self
     }
 
@@ -484,12 +502,24 @@ impl OidcVerifier {
                 self.config.bridge_tenant.as_deref(),
             );
         }
-        // A bridge TURN token from an ordinary entry (#830): the gateway's own mint for a bridge.
-        // Recognised by the channel claim alone, and only ever MORE confined than an ordinary token.
+        // A bridge TURN token from an ordinary entry (#830): only the gateway's own mint, under its
+        // own issuer and kid, carries a turn's groups. Any other entry's is a key being misused.
         if claims
             .rest
             .contains_key(escurel_types::bridge::CHANNEL_CLAIM)
         {
+            let own = self
+                .config
+                .minting_identity
+                .as_ref()
+                .is_some_and(|(iss, k)| *iss == entry.issuer && *k == kid);
+            if !own {
+                return Err(AuthError::BridgeRefused(format!(
+                    "a bridge turn token from issuer `{}` (kid `{kid}`), which is not this \
+                     gateway's signing identity",
+                    entry.issuer
+                )));
+            }
             return minted_bridge_context(claims, &self.config);
         }
 
@@ -803,7 +833,9 @@ fn bridge_context(
 /// Confined exactly like a self-signed bridge token ([`bridge_turn_shape`]:
 /// the bridge gate's few tools, at most 900 s, never admin or operator, no
 /// service role), but its groups ARE honoured: the gateway resolved them
-/// itself (Microsoft Graph) and never puts a reserved name there. `act.sub`
+/// itself from its configured group directories (Graph, Google, Okta) and
+/// never puts a reserved name there — any role value is dropped anyway. Only
+/// accepted under [`OidcConfig::minting_identity`]. `act.sub`
 /// names the person who asked when the subject is a group principal — audit
 /// only, like every actor.
 fn minted_bridge_context(claims: Claims, cfg: &OidcConfig) -> Result<AuthContext, AuthError> {
@@ -820,11 +852,22 @@ fn minted_bridge_context(claims: Claims, cfg: &OidcConfig) -> Result<AuthContext
                 })?,
         ),
     };
+    // The gateway never puts a role value here; a token that does is honoured without it, so no
+    // deployment role (a custom admin value included) rides a turn into a run (crew S-F6).
+    let roles = [
+        &cfg.admin_role_value,
+        &cfg.operator_role_value,
+        &cfg.runner_role_value,
+        &cfg.bridge_role_value,
+    ];
     let groups = claims
         .rest
         .get(&cfg.groups_claim)
         .map(parse_groups_claim)
-        .unwrap_or_default();
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|g| escurel_types::chat_channel::is_assignable_group(g) && !roles.contains(&g))
+        .collect();
     Ok(AuthContext {
         subject: claims.sub,
         tenant_id,

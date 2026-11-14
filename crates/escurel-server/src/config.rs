@@ -3321,6 +3321,12 @@ impl EscurelConfig {
         if let Some(tenant) = &auth.bridge_tenant {
             cfg = cfg.with_bridge_tenant(tenant.clone());
         }
+        // A bridge turn's groups are honoured only under the gateway's own signing identity.
+        if self.bridge_mint.is_some()
+            && let Ok(Some(signer)) = self.build_signer()
+        {
+            cfg = cfg.with_minting_identity(signer.issuer(), signer.kid());
+        }
         cfg.jwks_refresh = auth.jwks_refresh;
         Some(Arc::new(OidcVerifier::new(cfg)))
     }

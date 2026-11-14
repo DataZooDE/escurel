@@ -106,6 +106,10 @@ pub struct Signer {
     /// The public half, base64url modulus and exponent, for [`Self::public_jwk`].
     n_b64: String,
     e_b64: String,
+    /// Groups never carried by a token this signer mints for someone else
+    /// ([`Self::mint_scoped`]): the deployment's role values, so a custom
+    /// admin value such as `kb-admins` is stripped like `escurel:admin`.
+    reserved_groups: Vec<String>,
 }
 
 impl std::fmt::Debug for Signer {
@@ -159,6 +163,7 @@ impl Signer {
             private_pem,
             n_b64,
             e_b64,
+            reserved_groups: Vec::new(),
         })
     }
 
@@ -182,6 +187,27 @@ impl Signer {
         // admits only for admin (async-ops F1). This is NOT the identity a
         // background RUN executes under — that is [`Self::mint_scoped`].
         self.mint_with_roles(subject, &["escurel:admin".to_owned()], ttl_secs, None)
+    }
+
+    /// Also strip these values from every [`Self::mint_scoped`] token — the
+    /// deployment's configured admin / operator / runner / bridge role values
+    /// (crew Q-F10).
+    #[must_use]
+    pub fn with_reserved_groups(mut self, groups: Vec<String>) -> Self {
+        self.reserved_groups = groups;
+        self
+    }
+
+    /// The `iss` this signer mints under.
+    #[must_use]
+    pub fn issuer(&self) -> &str {
+        &self.issuer
+    }
+
+    /// The `kid` this signer mints under.
+    #[must_use]
+    pub fn kid(&self) -> &str {
+        &self.kid
     }
 
     /// Mint a **per-run, caller-scoped** bearer (async-ops Phase 2c-i): the
@@ -211,7 +237,7 @@ impl Signer {
     ) -> Result<String, SignError> {
         let scoped: Vec<String> = groups
             .iter()
-            .filter(|g| !g.starts_with("escurel:"))
+            .filter(|g| !g.starts_with("escurel:") && !self.reserved_groups.contains(g))
             .cloned()
             .collect();
         self.mint_with_roles(subject, &scoped, ttl_secs, run)

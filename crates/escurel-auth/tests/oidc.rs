@@ -1190,20 +1190,66 @@ mod minted_bridge_turn {
         })
     }
 
+    /// A gateway whose own signing identity is the test issuer under `KID`.
+    fn gateway_verifier(server: &MockServer) -> OidcVerifier {
+        let issuer = format!("{}{ISSUER_PATH}", server.uri());
+        OidcVerifier::new(
+            OidcConfig::new(issuer.clone(), AUDIENCE.to_owned())
+                .with_jwks_uri(format!("{issuer}/protocol/openid-connect/certs"))
+                .with_admin_role("roles", "kb-admins")
+                .with_minting_identity(issuer, KID),
+        )
+    }
+
     async fn setup() -> (MockServer, TestKeys, OidcVerifier) {
         let server = MockServer::start().await;
         let keys = make_keys();
         mock_jwks(&server, &keys).await;
-        let v = verifier_pointing_at(&server);
+        let v = gateway_verifier(&server);
         (server, keys, v)
+    }
+
+    /// Crew S-F6: only the gateway's own signing identity mints turns; the
+    /// same claims from any other trusted entry (or another kid) are refused.
+    #[tokio::test]
+    async fn a_turn_token_from_anything_but_the_gateways_own_identity_is_refused() {
+        let (server, keys, _) = setup().await;
+        let not_minting = verifier_pointing_at(&server);
+        let token = sign_token(&keys, claims(&server, 900));
+        let got = not_minting.verify(&token).await;
+        assert!(
+            matches!(&got, Err(AuthError::BridgeRefused(why)) if why.contains("signing identity")),
+            "{got:?}"
+        );
+        let issuer = format!("{}{ISSUER_PATH}", server.uri());
+        let other_kid = OidcVerifier::new(
+            OidcConfig::new(issuer.clone(), AUDIENCE.to_owned())
+                .with_jwks_uri(format!("{issuer}/protocol/openid-connect/certs"))
+                .with_minting_identity(issuer, "the-gateways-real-kid"),
+        );
+        assert!(matches!(
+            other_kid.verify(&token).await,
+            Err(AuthError::BridgeRefused(_))
+        ));
     }
 
     #[tokio::test]
     async fn a_minted_turn_keeps_its_groups_and_asker_and_is_never_admin_or_a_service() {
         let (server, keys, v) = setup().await;
         let mut c = claims(&server, 900);
-        c["roles"] = json!(["sales", "escurel:admin", "escurel:bridge"]);
+        c["roles"] = json!([
+            "sales",
+            "escurel:admin",
+            "escurel:bridge",
+            "kb-admins",
+            "admin"
+        ]);
         let ctx = v.verify(&sign_token(&keys, c)).await.expect("verifies");
+        assert_eq!(
+            ctx.groups,
+            ["sales"],
+            "every role value, a custom one included, is dropped (crew S-F6)"
+        );
         assert_eq!(ctx.subject, "group:sales");
         assert!(ctx.bridge_turn, "confined like a bridge token");
         assert_eq!(ctx.role, Role::Agent, "the admin value is not honoured");
