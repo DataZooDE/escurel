@@ -22,8 +22,9 @@
 //! the fix, on every runner, lone or not: a runner credential must be an
 //! admin, and such a runner is misconfigured, not talking to an old gateway. A claim the gateway did not answer (timeout, transport, `5xx`,
 //! an unexpected invalid-params) is retried on the next poll, never taken.
-//! Admission is one gateway call per inbox event, in series; bounded
-//! concurrency is a possible follow-up.
+//! Admission is one gateway call per inbox event, with up to
+//! `ESCUREL_RUNNER_ADMIT_CONCURRENCY` in flight per poll (#828); the answers
+//! are taken in inbox order.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Mutex;
@@ -60,28 +61,41 @@ pub fn harness_set(default: &str, allow: &[String]) -> Vec<String> {
     out
 }
 
-/// Probe each `(name, cli)`: the first line of `<cli> --version`. An
-/// in-process harness (no CLI) is available with no version; a CLI whose
-/// probe fails is UNAVAILABLE, with the reason: a host without the binary (or
-/// with one that cannot start) cannot run the work, so it must not be offered.
-pub async fn probe_harnesses(harnesses: &[(String, Option<String>)]) -> Vec<RuntimeHarness> {
+/// One harness a runner offers, as its probe needs it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HarnessSpec {
+    pub name: String,
+    /// The CLI whose `--version` is probed; `None` for an in-process harness.
+    pub cli: Option<String>,
+    /// What the harness declares (`Harness::supports_inject`), carried onto
+    /// the runtime page so a client reads it instead of guessing.
+    pub supports_inject: bool,
+}
+
+/// Probe each harness: the first line of `<cli> --version`. An in-process
+/// harness (no CLI) is available with no version; a CLI whose probe fails is
+/// UNAVAILABLE, with the reason: a host without the binary (or with one that
+/// cannot start) cannot run the work, so it must not be offered.
+pub async fn probe_harnesses(harnesses: &[HarnessSpec]) -> Vec<RuntimeHarness> {
     let mut out = Vec::with_capacity(harnesses.len());
-    for (name, cli) in harnesses {
-        let probed = match cli {
+    for spec in harnesses {
+        let probed = match &spec.cli {
             Some(bin) => probe_version(bin).await,
             None => Ok(None),
         };
         out.push(match probed {
             Ok(version) => RuntimeHarness {
-                name: name.clone(),
+                name: spec.name.clone(),
                 version,
+                supports_inject: Some(spec.supports_inject),
                 ..RuntimeHarness::default()
             },
             Err(why) => RuntimeHarness {
-                name: name.clone(),
+                name: spec.name.clone(),
                 version: None,
                 available: false,
                 probe_error: Some(why),
+                supports_inject: Some(spec.supports_inject),
             },
         });
     }
@@ -528,7 +542,7 @@ impl RuntimeGate {
     }
 
     /// The gateway will not let this identity claim: the runner credential is
-    /// not an admin. Running the event anyway could race a runner that holds
+    /// neither `escurel:runner` nor an admin. Running the event anyway could race a runner that holds
     /// it, and a lone runner cannot know it is alone (owner decision
     /// 2026-11-13: fail closed for every runner), so it takes nothing and
     /// says how to fix it.
@@ -538,8 +552,8 @@ impl RuntimeGate {
                 target: "escurel_runner",
                 event_id,
                 error = %e,
-                "claim_event refused: the runner credential needs escurel:admin to claim events; \
-                 this runner takes no inbox work until it has it (logged once)"
+                "claim_event refused: the runner credential needs escurel:runner or escurel:admin \
+                 to claim events; this runner takes no inbox work until it has one (logged once)"
             );
         });
         Admit::Refused
@@ -874,9 +888,14 @@ mod tests {
 
     #[tokio::test]
     async fn a_failed_probe_makes_a_harness_unavailable_and_unrouted() {
+        let spec = |name: &str, cli: Option<&str>| HarnessSpec {
+            name: name.to_owned(),
+            cli: cli.map(str::to_owned),
+            supports_inject: false,
+        };
         let probed = probe_harnesses(&[
-            ("echo".to_owned(), None),
-            ("codex".to_owned(), Some("/nonexistent/codex".to_owned())),
+            spec("echo", None),
+            spec("codex", Some("/nonexistent/codex")),
         ])
         .await;
         assert!(probed[0].available);

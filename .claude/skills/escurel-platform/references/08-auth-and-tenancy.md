@@ -19,6 +19,8 @@ issuer's JWKS and reads a small, **configurable** set of claims
 | role list | `admin_role_claim` | `roles` | `roles` |
 | admin grant | `admin_role_value` | `escurel:admin` | `escurel:admin` |
 | operator grant | `ESCUREL_AUTH_OPERATOR_ROLE_VALUE` | `escurel:operator` | `escurel:operator` |
+| runner service role | `ESCUREL_AUTH_RUNNER_ROLE_VALUE` | `escurel:runner` | `escurel:runner` |
+| bridge service role | `ESCUREL_AUTH_BRIDGE_ROLE_VALUE` | `escurel:bridge` | `escurel:bridge` |
 | groups | `ESCUREL_AUTH_GROUPS_CLAIM` | `roles` | `roles` |
 
 A caller's ACL groups are the token's groups (that claim, reserved names removed) **plus** their `group_members`
@@ -201,34 +203,38 @@ and re-trigger. Under `off` / `log` that is every caller, as it is for every
 other write. `inject` does reach a run whose token is the runner's admin; it
 changes what the run is told, not what the run may do.
 
-**Runners outside the cluster (#818).** A runner on a laptop or an on-prem
-host does not get the platform's signing key. The operator issues it its
-OWN credential instead: a bearer for a service subject (`runner:laptop-jr`)
-with `roles: [escurel:admin]` and no run, agent or actor claims, set as
-`ESCUREL_RUNNER_TOKEN` — or, for a short-lived credential a sidecar
-refreshes, written to a file named by `ESCUREL_RUNNER_TOKEN_FILE`, which the
-runner re-reads whenever it changes. The subject must not contain `#` (the
-lease holder is `<sub>#<holder_id>`; such a subject cannot claim). A runner
-whose credential is not an admin takes no inbox work: its claims
-are refused, and it logs that the credential needs `escurel:admin`. That identity is not a machine caller, so it may do
-the runner's bookkeeping — `report_runner_status`, write its `runtime` page
-(admin-only), `claim_event` / `renew_claim` — and it may call `mint_agent_token` for a per-run
-child. The child is what `mint_agent_token` always returns: never admin, the
-caller's groups, `act.sub` the runner, a gateway-assigned `run_id`; and as a
-machine caller it can neither mint again nor claim. No exception to the
-machine-caller rule was needed. The claim rule is exactly that: any
-**non-machine admin identity** may claim — a runner's admin bearer, and also a
-person's admin token (a non-admin token is refused `-32001`, a run or agent
-token `-32602` `forbidden`, a bridge token `-32003` before it gets that far). An admin who claims can park an event away
-from every runner for up to an hour, which is no more than an admin can do to
-the event directly. The lease's holder is `<sub>#<holder_id>`: `holder_id` is
-the caller's own label for replicas sharing one credential, not an identity,
-so a caller can never renew or take another identity's lease by naming its
-`holder_id`. Today the runner itself mints run tokens
-only in **minted** mode (it holds a signing key); on an operator-issued
-static credential its runs use that credential as before (chat runs are
-refused, see references/11), so give such a runner work that its own
-authority should do, and scope it with the credential's groups.
+**Runners outside the cluster (#818, #828).** A runner on a laptop or an
+on-prem host does not get the platform's signing key. One recipe:
+
+1. The operator issues it its OWN credential: a bearer for a service subject
+   (`runner:laptop-jr`) with `roles: [escurel:runner]` (the narrow role
+   below; `escurel:admin` also works but grants far more) and no run, agent
+   or actor claims. Set it as `ESCUREL_RUNNER_TOKEN` — or, for a short-lived
+   credential a sidecar refreshes, write it to the file named by
+   `ESCUREL_RUNNER_TOKEN_FILE`, which the runner re-reads whenever it
+   changes. The subject must not contain `#` (the lease holder is
+   `<sub>#<holder_id>`; such a subject cannot claim).
+2. The **gateway** holds `ESCUREL_AUTH_SIGNING_KEY` (and `_KID` / `_ISSUER`
+   as needed). It mints each run's token for that runner (`mint_run_token`):
+   the same claims a minting runner would sign, agent-profile runs included,
+   bound to a run the runner itself started (see *Built-in service roles*).
+3. The runner holds **no** `ESCUREL_RUNNER_AUTH_SIGNING_KEY`. That key is
+   only for a **self-minting** runner (in the cluster, with
+   `ESCUREL_RUNNER_AUTH_ISSUER`), which signs its own bearer and run tokens.
+
+With a gateway that has no signing key, such a runner's ordinary runs use its
+own credential and its agent runs are refused, naming the missing key
+(references/11). A runner whose credential is neither `escurel:runner` nor
+admin takes no inbox work: its claims are refused, and it logs that the
+credential needs one of them. The claim rule: any **non-machine admin or
+runner identity** may claim — a runner's own credential, and also a person's
+admin token (a non-admin token is refused `-32001`, a run or agent token
+`-32602` `forbidden`, a bridge token `-32003` before it gets that far). An
+admin who claims can park an event away from every runner for up to an hour,
+which is no more than an admin can do to the event directly. The lease's
+holder is `<sub>#<holder_id>`: `holder_id` is the caller's own label for
+replicas sharing one credential, not an identity, so a caller can never renew
+or take another identity's lease by naming its `holder_id`.
 
 So: your app's token must carry the right audience, a tenant claim naming
 the tenant, and — only for admin operations — the admin role value. A
@@ -251,11 +257,70 @@ subset; admin tools are listed for admin tokens and refused at dispatch
   except where the app schedules its own retention cron; see
   `references/10`.
 
+## Built-in service roles (#828)
+
+Two role values in the same claim as admin mark a **service's own
+credential**, each with a narrow authority of its own. Unlike
+`ESCUREL_AUTH_ROLE_TOOLS` (a ceiling that can only take tools away), these
+*grant*:
+
+- **`escurel:runner`** — what a runner needs and nothing more. It reads every
+  inbox event (to see what it may claim), calls `claim_event` / `renew_claim`
+  / `mint_run_token` (admin-scope tools, granted to this role by name), files
+  the runner's own records (`run:` / `sched:` / `lint-` ids, `kind: system`,
+  `escurel:` labels, `report_runner_status`, `put_run_transcript`) and writes
+  its own `runtime` instance — it creates one, or updates one it last wrote;
+  another subject's runtime page (another runner's, or one an admin edited) is
+  refused, so one runner cannot rewrite another's harnesses or labels. Replicas
+  sharing one credential share its pages. Everything else follows its ordinary ACL: no
+  other page write, no admin tool, `list_runtimes` without the admin detail.
+  `whoami` answers `service: "runner"`. An out-of-cluster runner holds only
+  this and **no signing key**: the gateway mints each run's token
+  (`mint_run_token`, references/02, references/11). **What that reaches:** a
+  run token carries the run skill's `acl.create` / `acl.update` groups (and,
+  as those groups, whatever they may read tenant-wide), so the gateway mints
+  one only for a run whose `run-started` the same credential filed, of that
+  very skill, and — for an agent run — only when the agent page lists the
+  skill. A runner credential therefore reaches the skills it actually runs,
+  never another skill's groups by naming it. It also **reads every event
+  body** in the tenant, including ACL-restricted ones (chat, HR): it must, to
+  decide what to admit. Treat it as a credential with tenant-wide read on the
+  event bus.
+- **`escurel:bridge`** — a chat bridge's service credential (`whoami`
+  `service: "bridge"`); its minting tool arrives with the bridge work.
+
+Both are ignored on a **machine** token (one carrying `run_id`, `skill`,
+`agent` or `act`): a run token a runner minted never inherits the runner
+role. Neither is admin, neither is a group name (stripped from the RBAC
+groups like the admin value), and the four built-in values must differ.
+
+## External agent tokens and revocation (#829)
+
+An admin issues a bearer for an agent that runs **outside** escurel
+(`issue_agent_token`, `escurel agent token issue <agent>`): `sub:
+agent:<id>`, the admin as `act.sub`, `escurel:agent` plus the write groups of
+the agent's skills, the `agent` claim. The gateway enforces the agent page's
+scopes on every call, exactly as for a run (references/12).
+
+**Revocation is an epoch on the agent page.** `token_epoch: <unix seconds>`
+refuses every token for that agent issued before it — external tokens and run
+tokens alike — with `-32001` `agent_token_revoked`, from the next call on (the
+page is read per call). A token with an `agent` claim and no `iat` is refused
+the same way. `revoke_agent_tokens` (`escurel agent token revoke <agent>`)
+sets the epoch on the **gateway's** clock to `max(now + 1, current + 1)`:
+strictly increasing, so a client's clock never decides it and revoke → issue
+→ revoke inside one second still refuses the token issued in between. A token
+issued (or a run token minted) after the revoke carries an `iat` raised to the
+epoch, so it stands. **A revoke ends in-flight runs' tokens too:** the attempt
+under way fails on its next call, and a retry — when the run has attempts left
+— runs on a fresh token (a keyless runner asks the gateway for a new token on
+every attempt). Only an admin may write an agent page.
+
 ## Skill authority keys
 
 Some skill-page keys are **authority**, not description: `acl`, `visibility`,
 `owner_field`, `instance_acl`, `agent`, `autonomy`, `schedule`,
-`schedule_budget`, `requires`, `harness`, `model`, `cascade`, `actions` (its
+`schedule_budget`, `schedule_webhook`, `requires`, `harness`, `model`, `cascade`, `actions` (its
 `kind: event` entries trigger cascades), `chat`, `backend` (a `kind:
 workflow` backend is a trigger too), `promotable`, `protected`, `immutable`,
 `freeze_when`. `layer` has its own guard; descriptive keys are free.

@@ -6,10 +6,10 @@
 //!   table, held by the caller's `sub` (qualified by `#<holder_id>` so
 //!   replicas sharing one credential still exclude each other; `holder_id` is
 //!   never an identity, so no caller can renew another `sub`'s lease). Any
-//!   non-machine admin identity may claim — the runner's own admin bearer, and
-//!   a person's admin token too; a non-admin, run, agent or bridge token may
-//!   not, since one that could claim could park any event out of every
-//!   runner's reach.
+//!   bookkeeper may claim (`AclCaller::may_keep_books`: a non-machine admin
+//!   or `escurel:runner` credential — the runner's own bearer, and a person's
+//!   admin token too); a member, run, agent or bridge token may not, since
+//!   one that could claim could park any event out of every runner's reach.
 //! * `list_runtimes` — the `runtime` instances the caller may read, each
 //!   joined with its runner's `runner-status:<runner_id>` record, so a reader
 //!   gets online / stale in one call. CLI versions and claim holders are an
@@ -25,7 +25,6 @@ use escurel_types::runtime::{RUNTIME_SKILL, RuntimeHarness, RuntimeInfo};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use super::tools_write::is_machine_caller;
 use super::{JsonRpcError, parse_args};
 use crate::event_claims::{ClaimOutcome, EventClaims, Lease, PROCESSED, now_ms};
 
@@ -78,10 +77,10 @@ pub(super) async fn tool_claim(
 ) -> Result<Value, JsonRpcError> {
     let tool = verb.tool();
     let a: ClaimArgs = parse_args(args, tool)?;
-    if !caller.is_admin || is_machine_caller(&caller) {
+    if !caller.may_keep_books() {
         return Err(JsonRpcError::invalid_params(format!(
-            "{tool}: only a non-machine admin identity claims events (not a run, agent or \
-             bridge token, not a non-admin token)"
+            "{tool}: only the runner's own identity claims events (a non-machine admin or \
+             escurel:runner credential; not a run, agent or bridge token)"
         ))
         .with_code("forbidden", false));
     }
@@ -253,6 +252,10 @@ pub(super) async fn tool_list_runtimes(
             info.stale_after_s = Some(stale_after);
             info.version = body["version"].as_str().map(str::to_owned);
             info.live_runs = body["live_runs"].as_array().map_or(0, |r| r.len() as u64);
+            info.role = body["role"]
+                .as_str()
+                .filter(|r| matches!(*r, "admin" | "runner"))
+                .map(str::to_owned);
         }
         if !caller.is_admin {
             for h in &mut info.harnesses {

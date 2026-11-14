@@ -55,11 +55,14 @@ pub mod runtime;
 /// `schedule:` cron grammar shared by the validator and the runner (feature `schedule`).
 #[cfg(feature = "schedule")]
 pub mod schedule;
+pub mod service_role;
 mod session;
 // Namespaced: `escurel_types::skill_authority::AUTHORITY_KEYS` says whose keys they are.
 pub mod skill_authority;
 // Namespaced: `escurel_types::tools::is_known_tool` reads better than a flat helper.
 pub mod tools;
+// Namespaced: `escurel_types::webhook_signature::verify` names the scheme.
+pub mod webhook_signature;
 mod workflow;
 
 pub use admin::*;

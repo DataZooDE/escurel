@@ -145,6 +145,8 @@ pub struct ConfigOverrides {
     /// `X-Escurel-Webhook-Signature: sha256=<hex>`. `None` (default)
     /// leaves the POST unsigned.
     pub webhook_secret: Option<String>,
+    /// `ESCUREL_SCHEDULE_WEBHOOK_SECRET` (#827): mounts `POST /hooks/schedule/<skill>`.
+    pub schedule_webhook_secret: Option<String>,
     /// Shared secret signing/verifying skill packs
     /// (production `ESCUREL_PACK_SECRET`). `None` (default) keeps the
     /// pack surface off — `export_pack` refuses fail-closed.
@@ -563,6 +565,7 @@ impl EscurelProcess {
                 .unwrap_or(escurel_server::DEFAULT_MAX_BODY_BYTES),
             webhook_url: overrides.webhook_url.clone(),
             webhook_secret: overrides.webhook_secret.clone(),
+            schedule_webhook_secret: overrides.schedule_webhook_secret.clone(),
             pack_secret: overrides.pack_secret.clone(),
             operation_slug_secret: overrides.operation_slug_secret.clone(),
             // Metrics on their own random port, mirroring production's
@@ -830,6 +833,22 @@ impl EscurelProcess {
             "EscurelProcess::mint_token_with_groups requires AuthMode::TestIssuer; spawned with a different mode",
         );
         issuer.mint_with_groups(tenant, subject, groups, admin)
+    }
+
+    /// Re-sign `token` (one this process's issuer minted) with `claim` set to
+    /// `value` — to add a run claim to a service credential, or move `iat`, and
+    /// prove the gateway's reading of the result. `value: null` blanks it.
+    #[must_use]
+    pub fn resign_token_with_claim(
+        &self,
+        token: &str,
+        claim: &str,
+        value: serde_json::Value,
+    ) -> String {
+        let issuer = self.issuer.as_ref().expect(
+            "EscurelProcess::resign_token_with_claim requires AuthMode::TestIssuer; spawned with a different mode",
+        );
+        issuer.resign_with_extra(token, claim, value)
     }
 
     /// Typed MCP-over-HTTP client targeting this process's HTTP

@@ -11,6 +11,7 @@ const KINDS: { kind: TranscriptKind; glyph: string; word: string; plural: string
   { kind: 'tool_result', glyph: '←', word: 'Result', plural: 'Results' },
   { kind: 'message', glyph: '¶', word: 'Message', plural: 'Messages' },
   { kind: 'error', glyph: '!', word: 'Error', plural: 'Errors' },
+  { kind: 'command', glyph: '$', word: 'Command', plural: 'Commands' },
 ];
 const META = new Map(KINDS.map((k) => [k.kind, k]));
 

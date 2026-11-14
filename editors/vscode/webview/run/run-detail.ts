@@ -383,6 +383,7 @@ export class EscurelRunDetail extends LitElement {
         margin-bottom: 4px;
       }
       .steer-hint,
+      .steer-unknown,
       .steer-unavailable,
       .steer-count {
         margin: 2px 0;
@@ -584,6 +585,7 @@ export class EscurelRunDetail extends LitElement {
       <p class="steer-hint" id="steer-hint">
         The agent reads your message as its next turn, without starting over. Ctrl+Enter sends.
       </p>
+      ${offer.hint ? html`<p class="steer-unknown">${offer.hint}</p>` : nothing}
       <textarea
         id="steer-text"
         class="steer-text"

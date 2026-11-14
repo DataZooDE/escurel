@@ -82,7 +82,9 @@ escurel event inbox  --limit 50
 escurel event list   --instance <page_id> --limit 50
 escurel event list   --label escurel:run --since 2026-10-01T00:00:00Z --until 2026-11-01T00:00:00Z   # a time window on `at`
 escurel run usage    --since 2026-10-01T00:00:00Z --group-by skill,model   # admin: usage + cost rolled up from run-finished
-escurel runtime list                                                         # registered runners: harnesses, labels, online/stale (list_runtimes)
+escurel runtime list                                                         # registered runners: harnesses, labels, online/stale, role (list_runtimes)
+escurel agent token issue scribe --ttl 30d                                   # admin: an external agent's token, printed ONCE (issue_agent_token)
+escurel agent token revoke scribe                                            # admin: refuse every token issued so far (revoke_agent_tokens)
 escurel event assign --event <event_id> --instance <page_id>
 
 # per-chat-group conversation history
@@ -101,6 +103,8 @@ escurel ingest ./deck.pdf --content-type application/pdf --title "Q3 deck" --ski
 # operator surface (admin-role token; `health` needs none)
 escurel admin health
 escurel admin tenant create --id acme --name "Acme Corp"
+escurel admin tenant update --id acme --transcript-retention-days 30   # this tenant's run transcripts, over ESCUREL_RUN_TRANSCRIPT_RETENTION_DAYS (0 = forever)
+escurel admin tenant update --id acme --clear-transcript-retention    # back to the gateway's retention
 escurel admin quota  --tenant acme
 escurel admin purge-events --tenant acme --label escurel:runner-status --keep-latest 50   # event-bus retention: DRY RUN (counts); add --apply to delete; --before <RFC3339> bounds by age; audit labels need --allow-protected
 escurel admin rebuild --tenant acme                  # index-only (no lane writes); no default deadline; --timeout-secs N opts in (the rebuild continues server-side)
@@ -145,7 +149,9 @@ escurel admin pack submit-promotion --tenant acme --candidate-id acme-candidate 
 | `run tool-calls` | `get_run_tool_calls` (`--run`, `--limit`, `--after <seq>`) |
 | `run transcript` | `fetch_blob {run_id}` (`--run`) — the run's transcript, decoded: `{run_id, records:[…]}` |
 | `run usage` | `usage_report` (admin bearer; `--group-by skill,agent,page,model,day`, `--since`, `--until`, `--skill`) |
-| `runtime list` | `list_runtimes` (`claim_event` / `renew_claim` are runner coordination, not in the CLI) |
+| `runtime list` | `list_runtimes` (`claim_event` / `renew_claim` / `mint_run_token` are runner coordination, not in the CLI) |
+| `agent token issue` | `issue_agent_token` (admin bearer; `<agent>`, `--ttl <secs \| 12h \| 30d>`) |
+| `agent token revoke` | `revoke_agent_tokens` (admin bearer; `<agent>`; the gateway moves `token_epoch` forward) |
 | `run lineage` | `list_lineage` (`--root-event <id> [--include events|runs|drafts|tool_calls]… [--limit N] [--cursor]`) |
 | `chat append` / `chat list` | `append_message` / `list_messages` |
 | `session open [<page>] [--draft <id>]\|apply\|close` | `open_session` / `apply_op` / `close_session` |

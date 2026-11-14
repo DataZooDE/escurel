@@ -98,3 +98,122 @@ pub async fn wait_for_result(gw: &EscurelProcess, token: &str, request_id: &str)
         tokio::time::sleep(Duration::from_millis(150)).await;
     }
 }
+
+/// What a [`GatewayProxy`] does to calls of one tool; every other request is
+/// forwarded untouched.
+#[derive(Clone, Copy)]
+pub struct ProxyRule {
+    /// The tool whose `tools/call` the rule applies to.
+    pub tool: &'static str,
+    /// Hold each such call this long before forwarding it.
+    pub delay: Duration,
+    /// Answer each such call with this HTTP status instead of forwarding it.
+    pub fail_with: Option<u16>,
+}
+
+/// A stand-in in front of the real gateway, for a test that needs one tool
+/// slow or failing. It also counts how many calls of that tool were in flight
+/// at once, so a concurrency test measures overlap rather than wall time.
+pub struct GatewayProxy {
+    /// The stand-in's base URL: point `ESCUREL_RUNNER_GATEWAY_URL` here.
+    pub url: String,
+    max_in_flight: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+}
+
+impl GatewayProxy {
+    /// Start the stand-in, forwarding to `upstream`.
+    pub async fn start(upstream: &str, rule: ProxyRule) -> Self {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        use axum::body::Bytes;
+        use axum::extract::State;
+        use axum::http::{HeaderMap, Method, StatusCode, Uri};
+        use axum::response::IntoResponse;
+
+        #[derive(Clone)]
+        struct Shared {
+            upstream: String,
+            rule: ProxyRule,
+            in_flight: Arc<AtomicUsize>,
+            max_in_flight: Arc<AtomicUsize>,
+        }
+
+        async fn forward(
+            State(s): State<Shared>,
+            method: Method,
+            uri: Uri,
+            headers: HeaderMap,
+            body: Bytes,
+        ) -> axum::response::Response {
+            let needle = format!("\"{}\"", s.rule.tool);
+            let ruled = body.windows(needle.len()).any(|w| w == needle.as_bytes());
+            if ruled {
+                let now = s.in_flight.fetch_add(1, Ordering::SeqCst) + 1;
+                s.max_in_flight.fetch_max(now, Ordering::SeqCst);
+                tokio::time::sleep(s.rule.delay).await;
+            }
+            let resp = match (ruled, s.rule.fail_with) {
+                (true, Some(status)) => (
+                    StatusCode::from_u16(status).unwrap(),
+                    "the stand-in fails this call",
+                )
+                    .into_response(),
+                _ => {
+                    let mut req = reqwest::Client::new().request(
+                        reqwest::Method::from_bytes(method.as_str().as_bytes()).unwrap(),
+                        format!(
+                            "{}{}",
+                            s.upstream,
+                            uri.path_and_query().map_or("/", |p| p.as_str())
+                        ),
+                    );
+                    for name in ["authorization", "content-type", "accept"] {
+                        if let Some(v) = headers.get(name).and_then(|v| v.to_str().ok()) {
+                            req = req.header(name, v);
+                        }
+                    }
+                    match req.body(body.to_vec()).send().await {
+                        Ok(resp) => {
+                            let status = StatusCode::from_u16(resp.status().as_u16()).unwrap();
+                            let ctype = resp
+                                .headers()
+                                .get("content-type")
+                                .and_then(|v| v.to_str().ok())
+                                .unwrap_or("application/json")
+                                .to_owned();
+                            let bytes = resp.bytes().await.unwrap_or_default();
+                            (status, [("content-type", ctype)], bytes.to_vec()).into_response()
+                        }
+                        Err(e) => (StatusCode::BAD_GATEWAY, e.to_string()).into_response(),
+                    }
+                }
+            };
+            if ruled {
+                s.in_flight.fetch_sub(1, Ordering::SeqCst);
+            }
+            resp
+        }
+
+        let max_in_flight = Arc::new(AtomicUsize::new(0));
+        let shared = Shared {
+            upstream: upstream.trim_end_matches('/').to_owned(),
+            rule,
+            in_flight: Arc::new(AtomicUsize::new(0)),
+            max_in_flight: max_in_flight.clone(),
+        };
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let app = axum::Router::new().fallback(forward).with_state(shared);
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        Self {
+            url: format!("http://{addr}"),
+            max_in_flight,
+        }
+    }
+
+    /// The most calls of the rule's tool that were in flight at once.
+    pub fn max_in_flight(&self) -> usize {
+        self.max_in_flight.load(std::sync::atomic::Ordering::SeqCst)
+    }
+}

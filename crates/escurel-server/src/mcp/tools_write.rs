@@ -279,6 +279,10 @@ pub(super) fn is_machine_caller(caller: &AclCaller<'_>) -> bool {
     caller.is_machine()
 }
 
+/// Event-id prefixes only the bookkeeper ([`AclCaller::may_keep_books`]: the runner's own
+/// identity, admin or `escurel:runner`) files. One list, so a new runner-owned namespace is one entry.
+const BOOKKEEPER_PREFIXES: &[&str] = &["run:", "sched:", "hook:", "lint-"];
+
 /// Why a caller may not mint `event_id`, when it lies in a namespace the gateway owns.
 ///
 /// * `write-back:<draft>:applied` / `…:<n>:applying|failed` are the promotion bookkeeping: a promote
@@ -288,18 +292,17 @@ pub(super) fn is_machine_caller(caller: &AclCaller<'_>) -> bool {
 ///   a squatted row would hide that runner's health behind an inbox row nothing garbage-collects.
 ///
 /// * `run:<id>:*` / `sched:<skill>:<window>` / `lint-<tenant>-<n>` are the runner's run lifecycle,
-///   schedule triggers and lint ticks. They are first-writer-wins and read back by id
+///   schedule triggers and lint ticks; `hook:<skill>:<delivery>` the gateway's webhook triggers (#827). They are first-writer-wins and read back by id
 ///   (`usage_report`, `fetch_blob{run_id}`, the schedule budget), so a pre-filed row would hide a
 ///   run or swallow a trigger: only the bookkeeper (an admin that is not a machine caller, i.e. the
 ///   runner's own identity) files them.
 ///
 /// Every door that takes a caller-chosen event id (MCP `capture_event`, `/ingest`) asks this first.
 pub(crate) fn reserved_event_id_refusal(event_id: &str, caller: &AclCaller<'_>) -> Option<String> {
-    const BOOKKEEPER_PREFIXES: [&str; 3] = ["run:", "sched:", "lint-"];
     if let Some(prefix) = BOOKKEEPER_PREFIXES
         .iter()
         .find(|p| event_id.starts_with(**p))
-        && (!caller.is_admin || is_machine_caller(caller))
+        && !caller.may_keep_books()
     {
         return Some(format!(
             "event ids starting with `{prefix}` are reserved for the runner's own identity"
@@ -2405,7 +2408,7 @@ pub(super) async fn tool_capture_event(
     // Bookkeeping rights belong to the runner's and the gateway's own admin identity, NOT to a token
     // bound to a run: the runner mints its harnesses ADMIN run tokens, so `is_admin` alone let an
     // agent run file `escurel:run-status`, a system `run-finished`, or a `provenance.workflow` step.
-    let bookkeeper = caller.is_admin && !is_machine_caller(&caller);
+    let bookkeeper = caller.may_keep_books();
     if a.label_skill.starts_with("escurel:")
         && !bookkeeper
         && control.is_none()
@@ -2892,14 +2895,23 @@ pub(super) async fn tool_capture_event(
     // subscriber that received the echo would process a row that does not
     // exist. The echo exists to withhold data from a caller, not to lie to
     // the pipeline.
+    announce_captured(webhook, events_tx, indexer, stored);
+    Ok(event)
+}
+
+/// Announce a stored event to the outbound webhook (the runner) and to the
+/// in-process WS subscribers (#333). Each subscriber's ACL filter runs at
+/// delivery, not here. Every door that captures calls this.
+pub(crate) fn announce_captured(
+    webhook: Option<&crate::webhook::Webhook>,
+    events_tx: &tokio::sync::broadcast::Sender<std::sync::Arc<EventInfo>>,
+    indexer: &Indexer,
+    stored: EventInfo,
+) {
     if let Some(hook) = webhook {
         hook.notify(event_to_json(&stored), indexer.tenant());
     }
-    // Same announcement to in-process WS subscribers (#333) — the STORED
-    // row for the same reason as the webhook above; each subscriber's
-    // ACL filter runs at delivery, not here.
     let _ = events_tx.send(std::sync::Arc::new(stored));
-    Ok(event)
 }
 
 #[derive(Deserialize)]

@@ -460,6 +460,16 @@
         "category": "Escurel"
       },
       {
+        "command": "escurel.agents.issueToken",
+        "title": "Issue token…",
+        "category": "Escurel"
+      },
+      {
+        "command": "escurel.agents.revokeTokens",
+        "title": "Revoke tokens",
+        "category": "Escurel"
+      },
+      {
         "command": "escurel.runtimes.refresh",
         "title": "Refresh runtimes",
         "icon": "$(refresh)",
@@ -764,6 +774,14 @@
     ],
     "menus": {
       "commandPalette": [
+        {
+          "command": "escurel.agents.issueToken",
+          "when": "false"
+        },
+        {
+          "command": "escurel.agents.revokeTokens",
+          "when": "false"
+        },
         {
           "command": "escurel.chat.askAboutRecord",
           "when": "false"
@@ -1093,6 +1111,16 @@
         }
       ],
       "view/item/context": [
+        {
+          "command": "escurel.agents.issueToken",
+          "when": "view == escurel.agents && viewItem == agent && escurel.canAdmin",
+          "group": "2_tokens@1"
+        },
+        {
+          "command": "escurel.agents.revokeTokens",
+          "when": "view == escurel.agents && viewItem == agent && escurel.canAdmin",
+          "group": "2_tokens@2"
+        },
         {
           "command": "escurel.openInstance",
           "when": "view == escurel.knowledge && viewItem == instance",

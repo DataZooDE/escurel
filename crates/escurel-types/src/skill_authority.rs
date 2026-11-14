@@ -1,7 +1,7 @@
 //! The skill-page frontmatter keys that carry AUTHORITY: who may read or
 //! write (`acl`, `visibility`, `owner_field`, `instance_acl`), who a run
 //! executes as (`agent`), whether its writes land unreviewed (`autonomy`),
-//! when and where it runs (`schedule`, `schedule_budget`, `requires`,
+//! when and where it runs (`schedule`, `schedule_budget`, `schedule_webhook`, `requires`,
 //! `harness`, `model`), what it triggers (`cascade`, the `kind: event`
 //! entries of `actions`, a `backend` of `kind: workflow`), what it connects
 //! to (`backend`, `chat`) and how it is governed (`promotable`, `protected`,
@@ -30,6 +30,7 @@ pub const AUTHORITY_KEYS: &[&str] = &[
     "autonomy",
     "schedule",
     "schedule_budget",
+    "schedule_webhook",
     "requires",
     "harness",
     "model",

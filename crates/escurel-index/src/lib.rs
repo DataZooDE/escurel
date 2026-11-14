@@ -63,6 +63,7 @@ pub mod validate;
 
 pub use acl::{
     AclCaller, CAPTURED_BY_FIELD, CAPTURED_VIA_FIELD, captured_by, is_page_chat, page_chat_page_id,
+    write_groups,
 };
 pub use backend::{
     BackendBinding, BackendKind, BindingStatus, Capabilities, Materialized, ROWS_QUERY_TIMEOUT,

@@ -6,6 +6,56 @@ loosely [Keep a Changelog](https://keepachangelog.com/). Through the
 follow **`vYYYY.MM.DD`** — the date the binary set was cut (same-day
 re-cuts append `.N`), matching the DataZoo release scheme (cf. erpl).
 
+## Unreleased
+
+Runners outside the cluster, agents outside escurel, and runner gaps (#827, #828, #829).
+
+- **`escurel:runner` service role** (`ESCUREL_AUTH_RUNNER_ROLE_VALUE`): a runner no longer needs `escurel:admin`. The
+  role reads the inbox, claims, keeps the runner's books and writes its own `runtime` page, and nothing else;
+  `whoami` says `service`, `list_runtimes` shows each runner's `role`. A run token never inherits it. The
+  `escurel:bridge` value (`ESCUREL_AUTH_BRIDGE_ROLE_VALUE`) is reserved the same way for the chat bridge (#828).
+- **`mint_run_token`**: a runner with a static or file credential and no signing key gets each run's token from
+  the gateway — the same claims a minting runner signs, narrowed to the skill's write groups or the agent profile,
+  never the wide admin shape for a runner credential, and only for a run the caller itself started of that skill
+  (as an agent that lists it). Agent-profile skills therefore run on such a runner; a fresh token is minted for
+  every attempt, a failed mint fails the attempt (retryably) rather than running on the runner's own credential,
+  and the run's write is read back with the run's token (#828).
+- **Concurrent admission**: a poll claims up to `ESCUREL_RUNNER_ADMIT_CONCURRENCY` (default 8, 1..=64) inbox events at
+  once, in inbox order (#828).
+- **External agent tokens**: `issue_agent_token` / `escurel agent token issue <agent>` (admin) hands Claude Code,
+  Codex or Multica a token that runs as an agent profile, confined by its scopes; `revoke_agent_tokens` /
+  `escurel agent token revoke` (admin) moves the agent page's new `token_epoch` forward on the gateway's clock, and
+  older tokens — external and run tokens — get `agent_token_revoked` from their next call (#829).
+- The shipped `agent` system-skill page is upgraded in place when a tenant never edited it (it gains
+  `token_epoch`); an edited page is kept as before.
+- UI: VS Code Agents view "Issue token…" / "Revoke tokens", runner role in the Runtimes view; explore Agents panel
+  shows "tokens valid since".
+
+Runner gaps (#827):
+
+- **Inject capability from the runtime.** `list_runtimes` `harnesses[].supports_inject` is read from the harness
+  itself (claude, echo: `true`; codex and in-process harnesses: `false`; absent from an older runner = unknown). VS Code
+  no longer guesses from the harness name: the Steer box follows the runtime holding the run, and says when it cannot
+  tell (the runner still answers `unsupported`). The Runtimes view tooltip says which harnesses take a message.
+- **Codex shell commands in the transcript.** A codex `command_execution` is a `command` transcript record (`<command>
+  (exit <code>)`, redacted like every summary), not a tool call; VS Code's transcript tab shows and filters it.
+- **Per-tenant transcript retention.** `tenant_update{transcript_retention_days}` /
+  `escurel admin tenant update --transcript-retention-days <n>` wins over `ESCUREL_RUN_TRANSCRIPT_RETENTION_DAYS`
+  (`0` = forever) and applies on the next sweep, without a restart.
+- **Webhook-fired schedules.** With `ESCUREL_SCHEDULE_WEBHOOK_SECRET[_FILE]` set, a signed
+  `POST /hooks/schedule/<skill>` fires a skill that opts in with `schedule_webhook: true` (a new authority key),
+  captured as `hook:<skill>:<delivery>` (a redelivery is one event). The signature
+  (`X-Escurel-Webhook-Signature`) covers `escurel-schedule-v1\n<skill>\n<delivery>\n<timestamp>\n<body>`, with
+  `X-Escurel-Delivery` and `X-Escurel-Timestamp` (within 5 minutes), so a captured request cannot be replayed. Its
+  deliveries share the skill's `schedule_budget` with the cron windows, counted under a per-skill lock; past it the
+  day's first skip files a `run-skipped` record, and a skipped delivery stays skipped. `hook:` event ids are
+  reserved like `sched:`.
+
+**Behaviour changes to note:**
+- A runner on a static/file token now asks a signing gateway for each run's token, so its ordinary runs write as
+  `agent:<skill>` (as a minting runner's do) instead of as the runner.
+- An agent token without an `iat` claim is refused.
+
 ## v2026.11.13 — BREAKING (runner credential must be admin; skill authority keys need an admin)
 
 The Multica-gap epic (#817): runs you can steer, read and bill, agents with least privilege, cron schedules,

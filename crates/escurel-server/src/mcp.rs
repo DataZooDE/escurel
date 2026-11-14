@@ -82,6 +82,7 @@ mod tools_transcript;
 mod tools_usage;
 pub use tools_progress::DEFAULT_RUN_PROGRESS_KEEP;
 pub(crate) use tools_transcript::sweep_run_transcripts;
+pub(crate) use tools_write::announce_captured;
 mod tools_read;
 mod tools_write;
 pub(crate) use ingest::{blob_get, ingest, ingest_upload};
@@ -379,7 +380,11 @@ async fn mcp_inner(
     // dispatch reads from the agent's own page — never from the token.
     let agent_claim = auth_ctx.as_ref().and_then(|c| c.agent.clone());
     // A chat bridge's token (crew security F2): confined to its turn's calls.
-    let bridge = auth_ctx.as_ref().is_some_and(|c| c.bridge);
+    let bridge = auth_ctx.as_ref().is_some_and(|c| c.bridge_turn);
+    // The built-in service role (#828) the credential holds for itself.
+    let service = auth_ctx.as_ref().and_then(|c| c.service);
+    // When the token was issued: an agent token issued before its agent's `token_epoch` is revoked.
+    let issued_at = auth_ctx.as_ref().and_then(|c| c.issued_at);
 
     // JSON-RPC notifications (no `id`, method `notifications/*`) get
     // NO response envelope — the MCP Streamable-HTTP spec says the
@@ -400,15 +405,17 @@ async fn mcp_inner(
             // a harness never sees a tool every call to which is refused.
             Some(id) => {
                 let ix = state.indexer.as_ref().map(IndexerHandle::current);
-                resolve_agent(ix.as_deref(), id).await.map(|agent| {
-                    filter_tools_list(schema::tools_list_payload_for(role), |name| {
-                        restriction.as_ref().is_none_or(|r| r.contains(name))
-                            && agent.allows_tool(name)
+                resolve_agent(ix.as_deref(), id, issued_at)
+                    .await
+                    .map(|agent| {
+                        filter_tools_list(schema::tools_list_payload_for(role, service), |name| {
+                            restriction.as_ref().is_none_or(|r| r.contains(name))
+                                && agent.allows_tool(name)
+                        })
                     })
-                })
             }
             None => Ok(filter_tools_list(
-                schema::tools_list_payload_for(role),
+                schema::tools_list_payload_for(role, service),
                 |name| {
                     restriction.as_ref().is_none_or(|r| r.contains(name))
                         && (!bridge || crate::bridge_gate::BRIDGE_TOOLS.contains(&name))
@@ -462,6 +469,8 @@ async fn mcp_inner(
                 agent_claim.as_deref(),
                 restriction.as_ref(),
                 bridge,
+                service,
+                issued_at,
                 req.params,
             ))
             .catch_unwind()
@@ -1074,9 +1083,14 @@ fn is_rejected_payload(tool: &str, payload: &Value) -> bool {
 /// from the agent's own page. Every way of not finding it — no indexer, no
 /// such page, a read error — refuses the call with `agent_unknown`: a token
 /// whose narrowing cannot be established may do nothing.
+///
+/// The page is read on every call, so its `token_epoch` (#829) revokes from the
+/// next call on: a token issued before it — or one with no `iat` to place
+/// against it — is refused `agent_token_revoked`.
 async fn resolve_agent(
     indexer: Option<&Indexer>,
     agent_id: &str,
+    issued_at: Option<u64>,
 ) -> Result<escurel_types::agent_profile::AgentProfile, JsonRpcError> {
     let found = match indexer {
         Some(ix) => ix.agent_profile(agent_id).await.unwrap_or_else(|e| {
@@ -1085,7 +1099,7 @@ async fn resolve_agent(
         }),
         None => None,
     };
-    found.ok_or_else(|| {
+    let agent = found.ok_or_else(|| {
         JsonRpcError {
             code: -32001,
             message: format!(
@@ -1095,7 +1109,19 @@ async fn resolve_agent(
             data: None,
         }
         .with_code("agent_unknown", false)
-    })
+    })?;
+    if !agent.token_stands(issued_at) {
+        return Err(JsonRpcError {
+            code: -32001,
+            message: format!(
+                "this token for agent `{agent_id}` was revoked (issued before the agent's \
+                 `token_epoch`, or carries no `iat`); ask an admin for a new one"
+            ),
+            data: None,
+        }
+        .with_code("agent_token_revoked", false));
+    }
+    Ok(agent)
 }
 
 /// Tool surface a ducklake reader must reject outright when the
@@ -1150,6 +1176,8 @@ async fn dispatch_tools_call(
     agent_claim: Option<&str>,
     restriction: Option<&std::collections::BTreeSet<String>>,
     bridge: bool,
+    service: Option<escurel_auth::ServiceRole>,
+    issued_at: Option<u64>,
     params: Value,
 ) -> Result<Value, JsonRpcError> {
     let params: ToolsCallParams = serde_json::from_value(params)
@@ -1202,7 +1230,7 @@ async fn dispatch_tools_call(
     // resolve here may call nothing at all.
     let agent_profile = match agent_claim {
         None => None,
-        Some(id) => Some(resolve_agent(current_indexer.as_deref(), id).await?),
+        Some(id) => Some(resolve_agent(current_indexer.as_deref(), id, issued_at).await?),
     };
     // Deterministic per-instance ACL caller (escurel-index). The admin
     // role bypasses owner-visibility; a missing role is dev/on-host mode
@@ -1221,6 +1249,7 @@ async fn dispatch_tools_call(
         root_event_id: run.and_then(|r| r.root_event_id.as_deref()),
         agent_skill,
         agent: agent_profile.as_ref(),
+        service,
     };
     let write_acl = state.write_acl_for(&caller);
 
@@ -1285,7 +1314,9 @@ async fn dispatch_tools_call(
         }
         .with_code("agent_scope_denied", false));
     }
-    if schema::admin_scope_tools().contains(params.name.as_str()) {
+    if schema::admin_scope_tools().contains(params.name.as_str())
+        && !(caller.is_runner() && schema::RUNNER_ADMIN_TOOLS.contains(&params.name.as_str()))
+    {
         require_admin(role)?;
     }
     // The tenant registry spans tenants, so it is the operator's, not a tenant admin's.
@@ -1446,11 +1477,20 @@ async fn dispatch_tools_call(
 
     match params.name.as_str() {
         "list_skills" => tool_list_skills(indexer, caller).await,
-        "whoami" => Ok(json!({
-            "subject": caller.subject,
-            "tenant": indexer.tenant(),
-            "is_admin": caller.is_admin,
-        })),
+        "whoami" => {
+            let mut me = json!({
+                "subject": caller.subject,
+                "tenant": indexer.tenant(),
+                "is_admin": caller.is_admin,
+            });
+            if let Some(s) = service {
+                me["service"] = json!(match s {
+                    escurel_auth::ServiceRole::Runner => "runner",
+                    escurel_auth::ServiceRole::Bridge => "bridge",
+                });
+            }
+            Ok(me)
+        }
         "list_instances" => {
             tool_list_instances(indexer, &state.egress, caller, params.arguments).await
         }
@@ -1593,6 +1633,22 @@ async fn dispatch_tools_call(
         "list_runtimes" => tools_runtimes::tool_list_runtimes(indexer, caller).await,
         "mint_agent_token" => {
             tools_mint::tool_mint_agent_token(state, indexer, caller, params.arguments).await
+        }
+        "mint_run_token" => {
+            tools_mint::tool_mint_run_token(state, indexer, caller, params.arguments).await
+        }
+        "issue_agent_token" => {
+            tools_mint::tool_issue_agent_token(state, indexer, caller, params.arguments).await
+        }
+        "revoke_agent_tokens" => {
+            tools_mint::tool_revoke_agent_tokens(
+                state,
+                indexer,
+                caller,
+                write_acl,
+                params.arguments,
+            )
+            .await
         }
         "get_run_tool_calls" => {
             tools_tool_calls::tool_get_run_tool_calls(

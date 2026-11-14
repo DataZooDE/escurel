@@ -26,8 +26,9 @@ pub(crate) fn tool_defs() -> Vec<ToolDef> {
             Execution::Deterministic,
             Scope::Agent,
             Touches::READ,
-            "Who the gateway takes you for: your verified token `subject`, the `tenant`, and \
-             `is_admin`. A client with no identity of its own (a browser app behind a backend) \
+            "Who the gateway takes you for: your verified token `subject`, the `tenant`, \
+             `is_admin`, and `service` (`runner` | `bridge`) when the credential holds a built-in \
+             service role. A client with no identity of its own (a browser app behind a backend) \
              uses `subject` to address its own page chats \
              (`page-chat:v1:<sha256(subject)>:<page_id>`).",
             json!({ "type": "object", "properties": {} }),
@@ -906,6 +907,81 @@ pub(crate) fn tool_defs() -> Vec<ToolDef> {
             }),
         ),
         tool_entry(
+            "mint_run_token",
+            Execution::Orchestration,
+            Scope::Admin,
+            Touches::READ,
+            "Runner bookkeeping: mint one run's bearer for a runner that holds no signing key (an \
+                 out-of-cluster runner on an `escurel:runner` credential). Signs exactly what a \
+                 minting runner signs for itself: `agent:<agent>` with the `agent` claim when \
+                 `agent` is set, else `agent:<skill>` narrowed to the skill's `acl.create` / \
+                 `acl.update` groups (read from the skill page here) and confined to it; `grant: \
+                 wide` (the admin authority) only for an admin caller — a runner asking for it gets \
+                 the narrowed shape. `act.sub` is the caller; the run claims are `run_id`, \
+                 `root_event_id`, `trace_id`. Writes no `run-started` (the runner files its own). \
+                 Callable by an admin or `escurel:runner` credential, never a run or agent token \
+                 (`agent_scope_denied`); a run another identity started is `run_not_yours`; an \
+                 unknown or archived agent is `agent_unknown`; a gateway with no signing key is \
+                 `unsupported`.",
+            json!({
+                "type": "object",
+                "required": ["run_id", "skill"],
+                "properties": {
+                    "run_id": { "type": "string", "maxLength": 128, "description": "The runner's ledger run id ([A-Za-z0-9._-])." },
+                    "root_event_id": { "type": "string", "description": "The lineage root; default: the run id." },
+                    "trace_id": { "type": "string" },
+                    "skill": { "type": "string", "description": "The run's label skill." },
+                    "agent": { "type": "string", "description": "The agent profile the run executes as." },
+                    "grant": { "type": "string", "enum": ["narrowed", "wide"], "description": "Default `narrowed`; `wide` is honoured for an admin caller only." },
+                    "ttl_secs": { "type": "integer", "minimum": 60, "maximum": 86400, "description": "Token life; default 1800." }
+                }
+            }),
+        ),
+        tool_entry(
+            "issue_agent_token",
+            Execution::Orchestration,
+            Scope::Admin,
+            Touches::READ,
+            "Issue a revocable bearer for an EXTERNAL agent (Claude Code, Codex, Multica) that \
+                 runs as the agent profile `agent`: `sub: agent:<agent>`, you as `act.sub`, \
+                 `escurel:agent` plus the write groups of the skills the agent lists, and the \
+                 `agent` claim — so the agent page's `scopes.tools` / `scopes.write` confine it on \
+                 every call, and `/ws`, `/ingest` and `/blob` refuse it. No run or skill claim. \
+                 Revoke every token issued so far with `revoke_agent_tokens` (`escurel agent token \
+                 revoke`): the next call is `agent_token_revoked`. The token is \
+                 returned once; store it where the harness reads it. Admin only, never from a run \
+                 or agent token (`agent_scope_denied`); an unknown or archived agent is \
+                 `agent_unknown`; a gateway with no signing key is `unsupported`.",
+            json!({
+                "type": "object",
+                "required": ["agent"],
+                "properties": {
+                    "agent": { "type": "string", "description": "The agent profile id (`markdown/instances/agent/<agent>.md`)." },
+                    "ttl_secs": { "type": "integer", "minimum": 3600, "maximum": 7776000, "description": "Token life; default 2592000 (30 days)." }
+                }
+            }),
+        ),
+        tool_entry(
+            "revoke_agent_tokens",
+            Execution::Orchestration,
+            Scope::Admin,
+            Touches::INDEX,
+            "Revoke every token issued so far for the agent profile `agent` — external tokens \
+                 (`issue_agent_token`) and run tokens alike: each is `agent_token_revoked` from \
+                 its next call on, including a run in flight (its next attempt mints a fresh \
+                 token). Sets the agent page's `token_epoch` on the gateway's clock, strictly \
+                 increasing, as a one-line change (the page's formatting is kept); a token issued \
+                 afterwards stands. Admin only (`admin_required`); an unknown or archived agent is \
+                 `agent_unknown`.",
+            json!({
+                "type": "object",
+                "required": ["agent"],
+                "properties": {
+                    "agent": { "type": "string", "description": "The agent profile id (`markdown/instances/agent/<agent>.md`)." }
+                }
+            }),
+        ),
+        tool_entry(
             "report_progress",
             Execution::Orchestration,
             Scope::Agent,
@@ -1613,7 +1689,8 @@ pub(crate) fn tool_defs() -> Vec<ToolDef> {
                     "display_name": { "type": "string" },
                     "status": { "type": "string", "enum": ["active", "suspended"] },
                     "quotas": { "type": "object", "description": "Per-tenant quota overrides (same shape as `tenant_update`)." },
-                    "embedding_provider": { "type": "object", "description": "Per-tenant embedding provider (same shape as `tenant_update`)." }
+                    "embedding_provider": { "type": "object", "description": "Per-tenant embedding provider (same shape as `tenant_update`)." },
+                    "transcript_retention_days": { "type": "integer", "minimum": 0, "description": "Days this tenant's run transcripts are kept, over ESCUREL_RUN_TRANSCRIPT_RETENTION_DAYS; 0 keeps them forever." }
                 }
             }),
         ),
@@ -1643,7 +1720,8 @@ pub(crate) fn tool_defs() -> Vec<ToolDef> {
             Scope::Admin,
             Touches::INDEX,
             "Admin: partial-update a tenant's spec — display_name, status \
-                 (active|suspended), quotas, embedding_provider. Changing \
+                 (active|suspended), quotas, embedding_provider, \
+                 transcript_retention_days. Changing \
                  embedding_provider requires a rebuild (`rebuild_required` in the \
                  response).",
             json!({
@@ -1671,6 +1749,11 @@ pub(crate) fn tool_defs() -> Vec<ToolDef> {
                             "model": { "type": "string" },
                             "dim": { "type": "integer" }
                         }
+                    },
+                    "transcript_retention_days": {
+                        "type": ["integer", "null"],
+                        "minimum": 0,
+                        "description": "Days this tenant's run transcripts are kept, over ESCUREL_RUN_TRANSCRIPT_RETENTION_DAYS; 0 keeps them forever; null clears the override (the gateway's retention again). Applies on the next sweep, no restart."
                     }
                 }
             }),
@@ -2454,7 +2537,8 @@ fn output_schema_for(name: &str) -> Option<Value> {
         "whoami" => obj(json!({
             "subject": { "type": "string" },
             "tenant": { "type": "string" },
-            "is_admin": { "type": "boolean" }
+            "is_admin": { "type": "boolean" },
+            "service": { "type": "string", "enum": ["runner", "bridge"], "description": "the built-in service role the credential holds; absent otherwise" }
         })),
         "resolve" => obj(json!({
             "parsed": { "type": "object" },
@@ -2556,6 +2640,25 @@ fn output_schema_for(name: &str) -> Option<Value> {
             "next_after": { "type": ["integer", "null"] }
         })),
         "mint_agent_token" => obj(json!({
+            "token": { "type": "string" },
+            "run_id": { "type": "string" },
+            "root_event_id": { "type": "string" },
+            "subject": { "type": "string" },
+            "expires_at": { "type": "string" }
+        })),
+        "issue_agent_token" => obj(json!({
+            "token": { "type": "string" },
+            "agent": { "type": "string" },
+            "subject": { "type": "string" },
+            "expires_at": { "type": "string" }
+        })),
+        "revoke_agent_tokens" => obj(json!({
+            "agent": { "type": "string" },
+            "page_id": { "type": "string" },
+            "token_epoch": { "type": "integer", "description": "tokens issued before it are refused" },
+            "new_version": { "type": ["string", "null"] }
+        })),
+        "mint_run_token" => obj(json!({
             "token": { "type": "string" },
             "run_id": { "type": "string" },
             "root_event_id": { "type": "string" },
@@ -2708,20 +2811,37 @@ fn tool_entry(
 /// token sees only `scope: "agent"` entries — the tools it can actually
 /// call. Admin — and verifier-less dev mode (`role: None`, treated as
 /// admin everywhere else) — sees the whole surface.
-pub(crate) fn tools_list_payload_for(role: Option<escurel_auth::Role>) -> Value {
+pub(crate) fn tools_list_payload_for(
+    role: Option<escurel_auth::Role>,
+    service: Option<escurel_auth::ServiceRole>,
+) -> Value {
     let payload = tools_list_payload();
     if !matches!(role, Some(escurel_auth::Role::Agent)) {
         return payload;
     }
+    let runner = service == Some(escurel_auth::ServiceRole::Runner);
     let tools: Vec<Value> = payload["tools"]
         .as_array()
         .cloned()
         .unwrap_or_default()
         .into_iter()
-        .filter(|t| t["scope"] == json!("agent"))
+        .filter(|t| {
+            t["scope"] == json!("agent")
+                || (runner
+                    && t["name"]
+                        .as_str()
+                        .is_some_and(|n| RUNNER_ADMIN_TOOLS.contains(&n)))
+        })
         .collect();
     json!({ "tools": tools })
 }
+
+/// The admin-scope tools the RUNNER service role (`escurel:runner`, #828) may call too: its claim
+/// protocol and per-run token minting. Each handler still decides with `AclCaller::may_keep_books`.
+/// A grant by name, not a ceiling: `ESCUREL_AUTH_ROLE_TOOLS` can only take tools away, so a role
+/// that must reach an admin tool needs a list of its own (see
+/// `docs/notes/discovered/2026-11-14-a-role-ceiling-cannot-grant.md`).
+pub(crate) const RUNNER_ADMIN_TOOLS: &[&str] = &["claim_event", "renew_claim", "mint_run_token"];
 
 /// Build an OpenAPI 3.1 document describing escurel's tool surface — the
 /// outbound half of the openapi/mcp story. The real transport is JSON-RPC 2.0

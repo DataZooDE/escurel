@@ -229,6 +229,8 @@ export interface RuntimeHarness {
   available?: boolean;
   /** Why the probe failed (admins only). */
   probe_error?: string | null;
+  /** Whether a live run on it takes a message (`inject_into_run`); absent from an older runner: unknown. */
+  supports_inject?: boolean | null;
 }
 
 /** One registered runner as `list_runtimes` reports it (#818). */
@@ -249,6 +251,8 @@ export interface Runtime {
   stale_after_s: number | null;
   version: string | null;
   live_runs: number;
+  /** The built-in role the runner's credential holds (#828); absent from an older gateway. */
+  role?: 'admin' | 'runner' | string | null;
 }
 
 export interface ListRuntimesResponse {
@@ -491,6 +495,29 @@ export interface QueryInstanceRequest {
 /** The rows a stored query returned. The gateway names the list `rows`. */
 export interface QueryInstanceResponse {
   rows?: Array<Record<string, unknown>>;
+}
+
+/** `issue_agent_token` (#829): a revocable bearer for an external agent. Admin only. */
+export interface IssueAgentTokenRequest {
+  agent: string;
+  /** Seconds, 3600..=7776000; the gateway's default is 30 days. */
+  ttl_secs?: number;
+}
+
+/** `token` is shown once: never logged, never stored. */
+export interface IssueAgentTokenResponse {
+  token: string;
+  agent: string;
+  subject: string;
+  expires_at: string;
+}
+
+/** `revoke_agent_tokens` (#829): the epoch the gateway set; tokens issued before it are refused. */
+export interface RevokeAgentTokensResponse {
+  agent: string;
+  page_id: string;
+  token_epoch: number;
+  new_version?: string | null;
 }
 
 export interface MintAgentTokenResponse {

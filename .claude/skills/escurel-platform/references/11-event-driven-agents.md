@@ -126,7 +126,7 @@ cargo build -p escurel-runner
 
 ESCUREL_RUNNER_GATEWAY_URL=http://127.0.0.1:8080 \
 ESCUREL_RUNNER_TENANT=<tenant> \
-ESCUREL_RUNNER_TOKEN=<escurel:admin runner credential (references/08), or omit against an unauthenticated dev gateway> \
+ESCUREL_RUNNER_TOKEN=<escurel:runner (or escurel:admin) runner credential (references/08), or omit against an unauthenticated dev gateway> \
 ESCUREL_RUNNER_HARNESS=claude \
   ./target/debug/escurel-runner
 ```
@@ -315,7 +315,7 @@ filed on, in the run's own record (`list_events { run_id }`), with
 | `cancel` | `cancelled` | the run was live and is being stopped (see below) |
 | `cancel` | `not_live` | nothing to stop; `detail` says the run's status (or `unknown run`) |
 | `inject` | `injected` | the run was live and its harness takes messages: `text` was queued for the live session (`detail: "injection <n>"`) and recorded as `run:<run_id>:inject:<n>` |
-| `inject` | `unsupported` | the run is live but its harness cannot take a message mid-run (`detail` names the harness; today only `claude` and `echo` can) |
+| `inject` | `unsupported` | the run is live but its harness cannot take a message mid-run (`detail` names the harness; today only `claude` and `echo` can). Read it before offering a steer: the runtime holding the run says so per harness in `list_runtimes` `harnesses[].supports_inject` |
 | `inject` | `not_live` | nothing to steer; `detail` says the run's status (or `unknown run`). Also the answer while the run is still `pending` but its session is ending — the harness's last turn is out and its stdin closed — so a message is never answered `injected` and then dropped |
 | `retry` | `requeued` | a `failed` / `cancelled` / `dead_letter` run is re-driven now as `new_run_id` |
 | `pause` / `resume` | `paused` / `resumed` | the tenant admits nothing / admits again; held events stay in the inbox meanwhile |
@@ -519,6 +519,59 @@ old lint tick's ids (`lint-<tenant>-<window>`), run page
 upgrade does not fire the current window twice. Its grace is its interval,
 so every lint window fires, as before.
 
+### Webhook triggers (`schedule_webhook: true`, #827)
+
+A skill that opts in with `schedule_webhook: true` can also be fired by a
+webhook (a CI job, a GitHub push, another system), at the GATEWAY:
+
+```
+POST /hooks/schedule/<skill>
+X-Escurel-Delivery: <1-128 of A-Z a-z 0-9 . _ ->
+X-Escurel-Timestamp: <Unix seconds, when you send it>
+X-Escurel-Webhook-Signature: sha256=<hex HMAC-SHA256 under ESCUREL_SCHEDULE_WEBHOOK_SECRET of
+    "escurel-schedule-v1\n<skill>\n<delivery>\n<timestamp>\n" followed by the raw body>
+<body, at most 64 KiB of UTF-8; it becomes the event body>
+```
+
+The endpoint exists only when `ESCUREL_SCHEDULE_WEBHOOK_SECRET` (or
+`_FILE`) is set (otherwise a plain 404). The signature binds the skill, the
+delivery id and the send time, so a captured request cannot be replayed under
+a new delivery id, against another skill, or after five minutes
+(`escurel_types::webhook_signature::schedule_message` builds the message; it
+is NOT the body-only scheme of the runner's `/trigger`). Answers, in the order
+they are checked: `413 bad_body` (over 64 KiB — before the signature, which a
+cut body cannot carry), `401 bad_signature` (missing timestamp or a signature
+that does not verify — so a caller without the secret learns nothing about
+which skills exist), `401 stale_timestamp` (more than 5 minutes from the
+gateway's clock), `400 bad_delivery` / `bad_body` (not UTF-8), `404
+skill_not_triggerable` (no such skill, or it did not opt in — one answer),
+`422 workflow_not_supported` (a workflow skill: its `schedule:` still fires
+it), then:
+
+- `202 {event_id}` — captured `hook:<skill>:<delivery>`, `label_skill:
+  <skill>`, `source: schedule-webhook`, `provenance.webhook: {delivery}`; the
+  runner takes it from the inbox like any event;
+- `200 {event_id, replayed: true}` — that delivery was already captured
+  (first writer wins: a redelivery never runs the skill twice);
+- `200 {event_id, skipped: true, replayed: true, record}` — that delivery was
+  already skipped for the budget: it stays skipped, even after midnight or a
+  raised budget;
+- `200 {event_id, skipped: true, reason, record}` — past the budget. The
+  day's first skipped delivery files the same `escurel:run` `run-skipped`
+  record the schedule loop files, id `hook:<skill>:<delivery>:skipped`, body
+  `{reason: "budget" | "invalid_budget", runs_per_day, skill,
+  trigger_event_id, delivery}`; later over-budget deliveries that UTC day are
+  answered with `record: null` and nothing is stored (so a flood cannot grow
+  the event table — and such a delivery, unrecorded, is judged afresh if it
+  is redelivered).
+
+`schedule_budget.runs_per_day` counts cron windows and webhook deliveries
+together (a delivery counts on the UTC day it was captured), at both the
+runner and the gateway; the gateway serialises count and capture per skill,
+so concurrent deliveries cannot overshoot it. `hook:` ids, like `sched:`, are reserved: no
+caller can pre-file one through `capture_event`.
+
+
 ## Several runners on one tenant (`requires:`, claims, runtimes)
 
 Any number of runners may serve one tenant (#818) — a central one in the
@@ -587,11 +640,26 @@ gateway older than the tool (`-32601`), and an event it does not store
 refusal** (`-32001` / `-32003` / `401` / `403` / `-32602` `forbidden`, e.g. a
 non-admin runner token) takes **nothing**, on every runner — lone or in a
 fleet, since a runner cannot know it is alone — and logs an error naming the
-fix (*the runner credential needs escurel:admin to claim events*). Every
-runner also checks `whoami` at boot and logs that error when it is not an
-admin; it keeps serving `/healthz`, so the operator sees the error rather than
-a crash loop. **Give every runner an admin-capable credential** (an
-`escurel:admin` token, or minting mode). Any
+fix (*the runner credential needs escurel:runner or escurel:admin to claim
+events*). Every runner also checks `whoami` at boot and logs that error when
+it is neither (its status record then carries `role: admin | runner`, shown by
+`list_runtimes`); it keeps serving `/healthz`, so the operator sees the error
+rather than a crash loop. **Give every runner a runner-capable credential**:
+the narrow `escurel:runner` role (references/08, *Built-in service roles*), an
+`escurel:admin` token, or minting mode. A runner with a static or file
+credential and **no signing key** asks the gateway for each run's token
+(`mint_run_token`, a fresh one per attempt): the same claims a minting runner signs,
+narrowed to the skill's write groups (or the agent profile), never the wide
+admin shape for a runner credential. A gateway without a signing key (or an
+image without the tool) answers `unsupported` / `-32601`: only then do the
+runner's **ordinary** runs use its own credential as before, and its agent runs
+fail with a reason naming `ESCUREL_AUTH_SIGNING_KEY`. The runner believes that
+answer for 5 minutes, then asks again, so a gateway that gains its key later
+is picked up without a restart. Any **other** mint failure (a timeout, a 5xx, a
+refusal such as `run_unknown`) fails the attempt, retryably — the harness is
+never handed the runner's own bearer because the gateway blinked.
+Admission claims up to `ESCUREL_RUNNER_ADMIT_CONCURRENCY` (default 8) inbox
+events at once per poll, in inbox order. Any
 other claim error — another `-32602`, a timeout (2 s), a transport failure, a
 `5xx`, a `429` — is **not taken**: the event stays unclaimed and the next poll
 asks again (a run could not progress without the gateway anyway). So a slow
@@ -645,8 +713,10 @@ plus the skill's write groups, never admin, with the `agent` claim the
 gateway enforces (references/08). A run whose write falls outside the
 agent's `scopes.write` sees it refused with `agent_scope_denied`; the call is
 on `get_run_tool_calls` as `rejected`, and the echo harness fails the run on
-it. A runner on a static `ESCUREL_RUNNER_TOKEN` cannot mint, so an agent run
-there fails rather than writing as the runner. Crash recovery resolves the
+it. A runner on a static `ESCUREL_RUNNER_TOKEN` cannot mint itself: it asks
+the gateway (`mint_run_token`), and where the gateway has no signing key the
+agent run fails (its `run-finished.error` names the missing key) rather than
+writing as the runner. Crash recovery resolves the
 agent through the same function as a fresh run (`resolve_run_agent`: the
 event's `provenance.agent`, then the skill's default): a reconciled run's
 `run-finished` names that agent and skill, and a reset run is re-driven from
@@ -657,11 +727,13 @@ the event by the poller like any other.
 The path a first operator takes, in order — each step is where it usually
 goes wrong.
 
-1. **A minting runner.** Agent runs are minted as the agent, so the runner
-   needs the signing identity (`ESCUREL_RUNNER_AUTH_ISSUER`,
-   `ESCUREL_RUNNER_AUTH_SIGNING_KEY`, `ESCUREL_RUNNER_AUTH_KID`) and **no**
-   `ESCUREL_RUNNER_TOKEN` (a static token wins, cannot mint, and every
-   agent run dead-letters). Put the agent's harness in
+1. **A runner that can get agent tokens.** Agent runs are minted as the
+   agent: either the runner holds the signing identity
+   (`ESCUREL_RUNNER_AUTH_ISSUER`, `ESCUREL_RUNNER_AUTH_SIGNING_KEY`,
+   `ESCUREL_RUNNER_AUTH_KID`, and **no** `ESCUREL_RUNNER_TOKEN`, which would
+   win), or it runs on an `escurel:runner` credential and the **gateway**
+   has `ESCUREL_AUTH_SIGNING_KEY` (it mints each run's token,
+   `mint_run_token`). With neither, every agent run dead-letters. Put the agent's harness in
    `ESCUREL_RUNNER_HARNESS_ALLOW` and its model in `ESCUREL_RUNNER_MODEL_ALLOW`
    (docs/deploy/env.md); outside them the run is refused, not substituted.
 2. **The agent page, as an admin** (only `escurel:admin` may write one):
@@ -884,13 +956,13 @@ adapter normalises its own stream into records:
 | harness | source |
 |---|---|
 | `claude` | stream-json: `tool_use` → `tool_call`, `tool_result` → `tool_result` (`error` when `is_error`), assistant text → `message`, a failed `result` → `error` |
-| `codex` | `--json` events: MCP tool-call items → `tool_call` (+ `tool_result` / `error` from the item), `agent_message` → `message`, error events → `error` |
+| `codex` | `--json` events: MCP tool-call items → `tool_call` (+ `tool_result` / `error` from the item), `agent_message` → `message`, a completed `command_execution` → `command` (`<command> (exit <code>)`, scrubbed like every summary; not a tool call), error events → `error` |
 | `gemini`, `gemini-vertex` | its in-process turns: each function call, its gateway answer, the model's text, and a call refused before the wire |
 | `echo` | the lines of `ESCUREL_ECHO_TRANSCRIPT` (tests script the stream with it) |
 | `agy`, `muse`, `delegate`, `alibaba`, `hetzner`, `openai-compatible` | none yet — `run-finished.transcript` stays `null` |
 
 A record is `{ts, attempt, kind, name?, args_digest?, summary}`: `kind` is
-`tool_call` / `tool_result` / `message` / `error`; arguments are never
+`tool_call` / `tool_result` / `message` / `error` / `command`; arguments are never
 stored, only `args_digest` (`sha256:` of the canonical, key-sorted args
 JSON — the same arguments always digest the same); `summary` is at most 200
 characters, scrubbed of credentials before it is cut: `Bearer …`, JWTs,
@@ -922,7 +994,12 @@ names; `run:<id>:*` event ids are reserved for the runner's own identity
 run's `run-finished`.
 Transcripts are deleted `ESCUREL_RUN_TRANSCRIPT_RETENTION_DAYS` after they
 were stored (gateway, default 90; `0` keeps them forever); after that the read
-answers `transcript_expired`. There is no per-tenant override yet. Retention
+answers `transcript_expired`. A tenant sets its own with the operator
+`tenant_update{transcript_retention_days}` (CLI `escurel admin tenant update
+--id <t> --transcript-retention-days <n>`, `0` = forever); it wins over the
+gateway's value and applies on the next sweep, without a restart;
+`--clear-transcript-retention` (`null`) hands the tenant back to the gateway's
+value. Retention
 deletes transcript keys and nothing else. The retention clock lives in the
 tenant's DuckDB; after an index rebuild the sweep adopts each transcript key
 it finds unregistered as stored at that moment, so it expires one window

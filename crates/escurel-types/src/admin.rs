@@ -64,6 +64,11 @@ pub struct TenantSpec {
     pub quotas: Option<QuotaOverride>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub embedding_provider: Option<EmbeddingSpec>,
+    /// Days this tenant's run transcripts are kept (#827), over the
+    /// gateway's `ESCUREL_RUN_TRANSCRIPT_RETENTION_DAYS`; `0` keeps them
+    /// forever, `None` takes the gateway's.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub transcript_retention_days: Option<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
@@ -108,6 +113,10 @@ pub struct TenantGetResponse {
 pub struct TenantUpdateRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub spec: Option<TenantSpec>,
+    /// Clear the tenant's `transcript_retention_days`, so it takes the
+    /// gateway's retention again (`spec`'s value is then ignored).
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub clear_transcript_retention: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
@@ -309,6 +318,48 @@ pub struct PurgeEventsResponse {
     pub deleted: u64,
     pub dry_run: bool,
     pub audit_event_id: Option<String>,
+}
+
+/// MCP `issue_agent_token` (#829): a revocable bearer for an external agent.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct IssueAgentTokenRequest {
+    /// The agent profile id.
+    pub agent: String,
+    /// Token life in seconds; 0 = the server's default (30 days).
+    pub ttl_secs: u64,
+}
+
+/// `issue_agent_token` result. `token` is shown once: never log it.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct IssueAgentTokenResponse {
+    pub token: String,
+    pub agent: String,
+    pub subject: String,
+    pub expires_at: String,
+}
+
+impl std::fmt::Debug for IssueAgentTokenResponse {
+    /// Hand-written: a bearer must not reach a log through `{:?}`.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("IssueAgentTokenResponse")
+            .field("agent", &self.agent)
+            .field("subject", &self.subject)
+            .field("expires_at", &self.expires_at)
+            .finish_non_exhaustive()
+    }
+}
+
+/// `revoke_agent_tokens` (#829) result: the epoch the gateway set on the
+/// agent page; every token issued before it is refused.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct RevokeAgentTokensResponse {
+    pub agent: String,
+    pub page_id: String,
+    pub token_epoch: u64,
+    pub new_version: Option<String>,
 }
 
 /// MCP `usage_report` (#821): usage and cost from `run-finished`, grouped.

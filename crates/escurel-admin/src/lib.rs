@@ -50,6 +50,11 @@ pub struct TenantSpec {
     pub quotas: Option<QuotaOverride>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub embedding_provider: Option<EmbeddingSpec>,
+    /// Days this tenant's run transcripts are kept (#827), over the
+    /// gateway's `ESCUREL_RUN_TRANSCRIPT_RETENTION_DAYS`; `0` keeps them
+    /// forever, `None` takes the gateway's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transcript_retention_days: Option<u32>,
 }
 
 /// Why a [`TenantStore`] call failed.
@@ -387,6 +392,7 @@ async fn read_spec_or_default(
             status: TenantStatus::default(),
             quotas: None,
             embedding_provider: None,
+            transcript_retention_days: None,
         }),
         Err(source) => Err(AdminError::Io {
             path: path.to_path_buf(),

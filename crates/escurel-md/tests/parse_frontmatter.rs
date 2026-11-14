@@ -306,3 +306,33 @@ fn render_page_inverts_split_frontmatter() {
     assert!(fields.is_empty());
     assert_eq!(body, "x\n");
 }
+
+#[test]
+fn set_frontmatter_scalar_changes_only_that_line() {
+    let input = "---\nkind: instance\n# who runs this\nskill: agent\nid: scribe\n\
+                 skills: [\"[[skill::note]]\"]   # keep\nscopes:\n  write: ['a/*']\n---\n# scribe\n\nBody.\n";
+    let added = escurel_md::set_frontmatter_scalar(input, "token_epoch", "100").expect("add");
+    assert_eq!(
+        added,
+        input.replacen("---\n# scribe", "token_epoch: 100\n---\n# scribe", 1)
+    );
+    let replaced = escurel_md::set_frontmatter_scalar(&added, "token_epoch", "101").expect("set");
+    assert_eq!(
+        replaced,
+        input.replacen("---\n# scribe", "token_epoch: 101\n---\n# scribe", 1)
+    );
+    // A value that spread over lines is replaced whole; a key that merely starts the same is not it.
+    let spread = "---\nkind: instance\ntoken_epoch:\n  - 1\n  - 2\ntoken_epoch_note: x\n---\nB\n";
+    assert_eq!(
+        escurel_md::set_frontmatter_scalar(spread, "token_epoch", "7").expect("spread"),
+        "---\nkind: instance\ntoken_epoch: 7\ntoken_epoch_note: x\n---\nB\n"
+    );
+    // CRLF pages stay CRLF.
+    let crlf = "---\r\nkind: instance\r\n---\r\nB\r\n";
+    assert_eq!(
+        escurel_md::set_frontmatter_scalar(crlf, "token_epoch", "3").expect("crlf"),
+        "---\r\nkind: instance\r\ntoken_epoch: 3\r\n---\r\nB\r\n"
+    );
+    assert!(escurel_md::set_frontmatter_scalar("no frontmatter", "k", "1").is_err());
+    assert!(escurel_md::set_frontmatter_scalar(input, "token_epoch", "[1, 2").is_err());
+}

@@ -2,7 +2,9 @@
 /// #823) — harness, model and scopes — with each one's last 30 days of
 /// runs and success rate from `usage_report{group_by:[agent]}`. The
 /// profiles are readable by anyone; the usage is admin-only, so a member
-/// sees the profiles with "usage: admin only" instead of a refusal.
+/// sees the profiles with "usage: admin only" instead of a refusal. An agent
+/// whose tokens were revoked (`token_epoch`, #829) says since when they are
+/// valid.
 library;
 
 import 'package:flutter/material.dart';
@@ -143,6 +145,15 @@ class _AgentRow extends StatelessWidget {
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                       style: muted,
+                    ),
+                  // Revoked tokens (#829): the epoch the agent page carries.
+                  if (agent.tokensValidSince case final since?)
+                    Semantics(
+                      label: 'agent-tokens-since:${agent.id}',
+                      value: since,
+                      container: true,
+                      excludeSemantics: true,
+                      child: Text(since, style: muted),
                     ),
                 ],
               ),

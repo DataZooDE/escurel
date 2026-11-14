@@ -454,7 +454,7 @@ export interface RunInjection {
   at?: string;
 }
 
-export type TranscriptKind = 'tool_call' | 'tool_result' | 'message' | 'error';
+export type TranscriptKind = 'tool_call' | 'tool_result' | 'message' | 'error' | 'command';
 
 /** One row of a run transcript, cleaned by the host (src/runs/transcript.ts). */
 export interface TranscriptRecord {
@@ -520,12 +520,17 @@ export interface RunView {
   /** Messages people sent this run while it was live, in order. */
   injections: RunInjection[];
   /** Filled by the host: whether a message can be sent to this run now (see src/runs/steer.ts). */
-  steer?: { available: true } | { available: false; reason: string };
+  steer?: { available: true; hint?: string } | { available: false; reason: string };
   /**
    * A live run: the runtime holding its trigger event's claim lease (#818); absent when none does.
    * `runtime` is absent when the caller may not see which runtime it is (a member).
    */
-  heldBy?: { runtime?: string; pageId?: string; until: string };
+  heldBy?: {
+    runtime?: string;
+    pageId?: string;
+    until: string;
+    harnesses?: { name: string; supports_inject?: boolean | null }[];
+  };
 }
 
 export type RunHostToWebview =

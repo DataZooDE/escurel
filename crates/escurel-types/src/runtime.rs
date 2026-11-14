@@ -232,6 +232,12 @@ pub struct RuntimeHarness {
     /// Why the probe failed (admin view only), when `available` is `false`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub probe_error: Option<String>,
+    /// Whether a live run on this harness takes a human's message
+    /// (`inject_into_run`), as the harness itself declares it. `None` on a
+    /// page an older runner wrote: unknown, not "no" — an inject there is
+    /// still answered by the runner (`unsupported` when it cannot).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub supports_inject: Option<bool>,
 }
 
 impl Default for RuntimeHarness {
@@ -241,6 +247,7 @@ impl Default for RuntimeHarness {
             version: None,
             available: true,
             probe_error: None,
+            supports_inject: None,
         }
     }
 }
@@ -268,6 +275,9 @@ pub struct RuntimeInfo {
     /// The runner's own version and run counts, from its status record.
     pub version: Option<String>,
     pub live_runs: u64,
+    /// The built-in role the runner's credential holds (`admin` | `runner`,
+    /// #828), from its status record; `None` before it has said.
+    pub role: Option<String>,
 }
 
 /// `list_runtimes` result.

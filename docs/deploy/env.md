@@ -20,6 +20,8 @@ escurel-server.
 | `ESCUREL_SERVER_DATA_DIR` | /data | host-volume root for DuckDB + FsStore + tenants |
 | `ESCUREL_SEED_DIR` | — | markdown corpus seeded into the tenant at boot (idempotent), e.g. `examples/crm-demo` |
 | `ESCUREL_WEBHOOK_URL` | — | outbound capture webhook; fire-and-forget POST of each new `capture_event` (M7) |
+| `ESCUREL_SCHEDULE_WEBHOOK_SECRET` | — | mounts `POST /hooks/schedule/<skill>` (#827): a skill with `schedule_webhook: true` is fired by a POST that names its delivery (`X-Escurel-Delivery`, 1-128 of `[A-Za-z0-9._-]`; the trigger is `hook:<skill>:<delivery>`, so a redelivery is one event) and its send time (`X-Escurel-Timestamp`, Unix seconds, within 5 minutes of the gateway's clock), signed with this secret over all of it (`X-Escurel-Webhook-Signature: sha256=<hex HMAC-SHA256 of escurel-schedule-v1\n<skill>\n<delivery>\n<timestamp>\n<body>>`). Unset = no endpoint |
+| `ESCUREL_SCHEDULE_WEBHOOK_SECRET_FILE` | — | a file holding `ESCUREL_SCHEDULE_WEBHOOK_SECRET` (trimmed); setting both refuses to start |
 | `ESCUREL_SERVER_LISTEN_HTTP` | 0.0.0.0:8080 | HTTP listener (MCP/WS/REST) |
 | `ESCUREL_TENANT` | default | single-tenant indexer's tenant id |
 | `ESCUREL_REBUILD_INDEX_ON_BOOT` | if-missing | derived-index boot policy: `if-missing` (reuse an existing DuckDB; rebuild only when absent, and the default everywhere including the container) or `always` (drop + rebuild from the markdown LaneStore each start — re-embeds the whole corpus, so expect minutes) |
@@ -56,11 +58,13 @@ escurel-server.
 | `ESCUREL_AUTH_ADMIN_ROLE_CLAIM` | roles | JWT claim listing roles |
 | `ESCUREL_AUTH_ADMIN_ROLE_VALUE` | escurel:admin | role value granting admin |
 | `ESCUREL_AUTH_OPERATOR_ROLE_VALUE` | escurel:operator | role value (in the admin role claim) marking an OPERATOR credential, the only one that may name another tenant in the cross-tenant admin tools (tenant registry, tenant_export/tenant_import) |
+| `ESCUREL_AUTH_RUNNER_ROLE_VALUE` | escurel:runner | role value (in the admin role claim) marking a RUNNER service credential: it claims inbox events, files the runner's lifecycle records, writes its `runtime` page and mints per-run tokens (`mint_run_token`), and is not admin. Ignored on a machine (run/agent/skill/`act`) token |
+| `ESCUREL_AUTH_BRIDGE_ROLE_VALUE` | escurel:bridge | role value (in the admin role claim) marking a chat BRIDGE service credential. Ignored on a machine token |
 | `ESCUREL_AUTH_ROLE_TOOLS` | — | service roles and the only tools each may call, `role=tool,tool;role=tool` (e.g. `app:worker=list_events,expand,create_draft`); a token whose groups carry a listed role is refused every other tool and the `/ingest`, `/blob` and `/ws` surfaces. Agent-scope tools only; boot fails on an unknown tool |
 | `ESCUREL_AUTH_JWKS_REFRESH_SECS` | 300 | JWKS cache TTL (seconds) |
 | `ESCUREL_AUTH_JWKS_URI` | derived from issuer | explicit JWKS URL (e.g. Triton's `<issuer>/.well-known/jwks.json`) |
 | `ESCUREL_RUN_PROGRESS_KEEP` | 50 | how many `run-progress` snapshots a run keeps (pruned at capture) |
-| `ESCUREL_RUN_TRANSCRIPT_RETENTION_DAYS` | 90 | days a run transcript (`put_run_transcript`, read via `fetch_blob{run_id}`) is kept; swept every 30 s; `0` keeps them forever |
+| `ESCUREL_RUN_TRANSCRIPT_RETENTION_DAYS` | 90 | days a run transcript (`put_run_transcript`, read via `fetch_blob{run_id}`) is kept; swept every 30 s; `0` keeps them forever. A tenant's own `transcript_retention_days` (`tenant_update`) wins over it |
 | `ESCUREL_EVENT_CLAIM_BOOT_GRACE_SECS` | 3600 | after a gateway start, how long `claim_event` withholds an event captured before the start that has no lease row (`claimed: false`, holder `(recovering)`), so a runner still running it under a lease the restart forgot can `renew_claim` it first. Events captured after the start are claimable at once. The default is the longest lease a claim may ask for; set it to your longest `ESCUREL_RUNNER_CLAIM_LEASE` to let an unheld backlog flow sooner, `0` turns it off |
 | `ESCUREL_SHUTDOWN_DRAIN_SECS` | 25 | how long a graceful stop waits for in-flight requests before aborting them (keep below the orchestrator's kill timeout) |
 | `ESCUREL_AUTH_SIGNING_KEY` | — | RSA private key (PKCS#8 or PKCS#1 PEM) the gateway signs `mint_agent_token` bearers with; unset → the tool refuses `unsupported` |
@@ -172,8 +176,8 @@ escurel-runner (the agent runner). For an Evolve/Workbench deployment, probe
 ready after a successful write of its reserved `escurel:runner-status` record
 (`report_runner_status`; an older gateway: a system event)
 and becomes unready when that write is refused, fails, goes stale, or the
-runner starts draining. The runner service credential MUST carry `escurel:admin`
-(or the runner must mint): a runner whose `claim_event` is refused takes no inbox
+runner starts draining. The runner service credential MUST carry `escurel:runner`
+or `escurel:admin` (or the runner must mint): a runner whose `claim_event` is refused takes no inbox
 work and logs the fix at boot. Keep per-run harness credentials caller-scoped. `GET /healthz` remains
 a dependency-free liveness probe. Webhook-only runners without a configured
 tenant/token can process `/trigger` but deliberately report unready at
@@ -185,17 +189,18 @@ tenant/token can process `/trigger` but deliberately report unready at
 | `ESCUREL_RUNNER_GATEWAY_URL` | http://127.0.0.1:8080 | base URL of the escurel gateway exposing `/mcp` |
 | `ESCUREL_RUNNER_ENV` | dev | deployment environment stamped on every log record |
 | `ESCUREL_RUNNER_TENANT` | — | tenant whose inbox the poller drains; the poller is off when this or the token is absent |
-| `ESCUREL_RUNNER_TOKEN` | — | tenant-scoped bearer the runner presents to `/mcp`; it must carry `escurel:admin` (a non-admin runner cannot claim events, so it takes no inbox work and logs the fix at boot). A static token wins over minting. A runner on a static token cannot mint, so every run of a skill with an `agent:` profile fails (dead-letters) there: agent profiles need a minting runner (`ESCUREL_RUNNER_AUTH_SIGNING_KEY`) |
-| `ESCUREL_RUNNER_TOKEN_FILE` | — | a file holding the runner's bearer, kept fresh by a sidecar (a laptop or on-prem runner on a short-lived service credential); used when `ESCUREL_RUNNER_TOKEN` is unset, read at startup (an unreadable or empty file refuses to start) and re-read whenever it changes, so a rotated credential is used on the next gateway call (a runner whose calls came back `401` recovers without a restart). Like a static token it cannot mint |
+| `ESCUREL_RUNNER_TOKEN` | — | tenant-scoped bearer the runner presents to `/mcp` — the out-of-cluster runner's credential. Give it `escurel:runner` (the narrow runner role; `escurel:admin` also works, a runner with neither cannot claim events, so it takes no inbox work and logs the fix at boot). It holds no signing key: each run's token, agent-profile runs included, is minted by the gateway (`mint_run_token`, which needs `ESCUREL_AUTH_SIGNING_KEY` on the gateway); a gateway without one runs ordinary runs on this credential and refuses agent runs. Wins over `ESCUREL_RUNNER_TOKEN_FILE` and over minting |
+| `ESCUREL_RUNNER_TOKEN_FILE` | — | a file holding the runner's bearer, kept fresh by a sidecar (a laptop or on-prem runner on a short-lived service credential); used when `ESCUREL_RUNNER_TOKEN` is unset, read at startup (an unreadable or empty file refuses to start) and re-read whenever it changes, so a rotated credential is used on the next gateway call (a runner whose calls came back `401` recovers without a restart). Otherwise exactly `ESCUREL_RUNNER_TOKEN`: give it `escurel:runner`, and the gateway mints each run's token (`mint_run_token`) |
 | `ESCUREL_RUNNER_QUEUE_CAP` | 1024 | bound of the dispatch queue (backpressure instead of unbounded growth) |
 | `ESCUREL_RUNNER_SEEN_CAP` | 4096 | bound of the dedup seen-set |
 | `ESCUREL_RUNNER_POLL_INTERVAL` | 30s | interval between inbox polls (`30s`, `1500ms`, `2m`) |
 | `ESCUREL_RUNNER_TAIL_MAX_AGE` | 10m | how old a request on a tailed label may be and still be acted on after a restart |
 | `ESCUREL_RUNNER_STATUS_INTERVAL` | 5m | how often the runner refreshes its status record (`runner-status:<runner_id>`) when nothing changed; it travels in the record as `status_interval_s` |
-| `ESCUREL_RUNNER_LABELS` | (none) | comma-separated labels this runner carries (`site:muc,has:sap-gui`); work whose `requires: {labels}` it lacks is left in the inbox for a runner that has them, and the labels are advertised on its `runtime` page. Like every runner, its credential needs `escurel:admin` to claim (an error is logged at boot otherwise, and it takes no inbox work); a webhook trigger it cannot route or claim at once is left to the poller |
+| `ESCUREL_RUNNER_LABELS` | (none) | comma-separated labels this runner carries (`site:muc,has:sap-gui`); work whose `requires: {labels}` it lacks is left in the inbox for a runner that has them, and the labels are advertised on its `runtime` page. Like every runner, its credential needs `escurel:runner` or `escurel:admin` to claim (an error is logged at boot otherwise, and it takes no inbox work); a webhook trigger it cannot route or claim at once is left to the poller |
 | `ESCUREL_RUNNER_EXCLUSIVE` | false | take only inbox work whose SKILL page's `requires:` names one of this runner's labels or a harness it offers besides its default; recommended for laptop and on-prem runners, so they do not race the central runner for the whole inbox and an event's `provenance.requires` cannot steer arbitrary work onto them |
 | `ESCUREL_RUNNER_PROBE_INTERVAL` | 10m | how often the runner re-probes its harness CLIs (`<cli> --version`) and rewrites its `runtime` page when a version or availability changed, without a restart. A CLI whose probe fails is `available: false` and gets no work that `requires:` its harness |
 | `ESCUREL_RUNNER_CLAIM_LEASE` | max(60s, 4 x poll interval), capped at 60m | how long a `claim_event` lease on an inbox event lasts: 1s to 60m (the gateway's bound) and at least two poll intervals, or the runner refuses to start naming this key. A renewal task renews held leases every third of the lease, independent of the inbox poll; a dead runner's events become claimable this long after it stopped |
+| `ESCUREL_RUNNER_ADMIT_CONCURRENCY` | 8 | how many inbox events one poll admits at once (routing plus a `claim_event` call each), 1..=64; the answers are taken in inbox order, so what is enqueued keeps that order. `1` is the old one-at-a-time admission |
 | `ESCUREL_RUNNER_HARNESS_ALLOW` | the configured harness | comma-separated harnesses a manual start may ask for by name; others fail closed |
 | `ESCUREL_RUNNER_MODEL_ALLOW` | — | comma-separated models a skill page's `model:` may pick instead of the runner's configured one; others fail the run closed |
 | `ESCUREL_RUNNER_CHAT_MODEL` | — | the model chat runs use instead of the runner's configured one, unless the skill page names its own `model:` |
@@ -219,7 +224,7 @@ tenant/token can process `/trigger` but deliberately report unready at
 | `ESCUREL_RUNNER_AUTH_ISSUER` | — | issuer of the bearers the runner MINTS for itself instead of holding a static token |
 | `ESCUREL_RUNNER_AUTH_AUDIENCE` | escurel | audience of minted bearers |
 | `ESCUREL_RUNNER_AUTH_KID` | derived from the key | `kid` of minted bearers |
-| `ESCUREL_RUNNER_AUTH_SIGNING_KEY` | — | private key (PEM) the runner signs its minted bearers with; required for agent profiles (`agent:` on a skill), whose runs are minted as the agent |
+| `ESCUREL_RUNNER_AUTH_SIGNING_KEY` | — | private key (PEM) for a SELF-MINTING runner (in the cluster, with `ESCUREL_RUNNER_AUTH_ISSUER`): it signs its own bearer and each run's token, agent profiles included. An out-of-cluster runner does not need it — on `ESCUREL_RUNNER_TOKEN` / `_FILE` with `escurel:runner`, the gateway mints its run tokens. Ignored when either token variable is set |
 | `ESCUREL_RUNNER_AUTH_SUBJECT` | escurel-runner | `sub` of minted bearers (a service principal) |
 | `ESCUREL_RUNNER_AUTH_TTL_SECS` | 1800 | lifetime of each minted gateway bearer, in seconds |
 | `ESCUREL_RUNNER_MAX_TURNS` | the harness default | model-turn bound for the harness |
@@ -356,6 +361,7 @@ test knobs: never set in a deployment.
 | `ESCUREL_ECHO_VERSION_FILE` | — | echo harness: `--version` answers with this file's contents, so a test can change a runner's probed CLI version (#818) |
 | `ESCUREL_ECHO_SLEEP_MS` | 0 | echo harness: idle this long before finishing, so a test can cancel a run |
 | `ESCUREL_ECHO_SLEEP_SKILL` | — | echo harness: only runs of this label idle for ESCUREL_ECHO_SLEEP_MS (tests) |
+| `ESCUREL_ECHO_SLEEP_ONCE` | — | echo harness: a marker path; only the attempt that creates it idles for ESCUREL_ECHO_SLEEP_MS (tests) |
 | `ESCUREL_ECHO_TRANSCRIPT` | — | echo harness: print this JSONL file's lines (`{"transcript":{kind, name?, args?, text?}}`, `{token}` = the run's bearer) as its stream, for the run transcript (tests) |
 | `ESCUREL_ECHO_USAGE` | — | echo harness: report this usage (tests) |
 | `ESCUREL_TEST_GDRIVE_EXTENSION` | — | path of a built gdrive extension for the duckvfs tests |

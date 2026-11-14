@@ -417,8 +417,14 @@ impl Signer {
     /// the profile's own scopes on top. Never `escurel:admin`: an agent is the
     /// least-privilege identity, so the runner's authority does not leak in.
     ///
+    /// `token_epoch` is the agent page's (#829): the token's `iat` is raised to
+    /// it, as for [`Self::mint_external_agent`], so a run minted in the second
+    /// of a revoke stands.
+    ///
     /// # Errors
     /// When signing fails, or either id cannot be an unambiguous subject.
+    // One argument per claim the run token carries; a struct would only rename them.
+    #[allow(clippy::too_many_arguments)]
     pub fn mint_agent_profile(
         &self,
         runner_subject: &str,
@@ -427,6 +433,7 @@ impl Signer {
         ttl_secs: u64,
         run: Option<&RunClaims>,
         groups: &[String],
+        token_epoch: Option<u64>,
     ) -> Result<String, SignError> {
         agent_slug(label_skill)?;
         let mut claims = self.agent_claims(
@@ -438,6 +445,40 @@ impl Signer {
             Some(label_skill.to_owned()),
         )?;
         claims[AGENT_CLAIM] = json!(agent_id);
+        issued_no_earlier_than(&mut claims, token_epoch);
+        self.sign(&claims)
+    }
+
+    /// Mint a bearer for an **external agent** (#829): a harness outside
+    /// escurel (Claude Code, Codex, Multica) acting as the agent profile
+    /// `agent_id`, issued by `issuer_subject` (an admin, kept as `act.sub`).
+    /// `escurel:agent` plus `groups` (privileged names stripped, as for every
+    /// agent token) and the [`AGENT_CLAIM`], so the gateway enforces the agent
+    /// page's scopes; no run and no skill claim — it belongs to no run.
+    ///
+    /// `iat` is `max(now, token_epoch)`: an agent revoked within this second
+    /// (`token_epoch` past the current second) still gets a token that stands.
+    ///
+    /// # Errors
+    /// When signing fails, or `agent_id` cannot be an unambiguous subject.
+    pub fn mint_external_agent(
+        &self,
+        issuer_subject: &str,
+        agent_id: &str,
+        ttl_secs: u64,
+        groups: &[String],
+        token_epoch: Option<u64>,
+    ) -> Result<String, SignError> {
+        let mut claims = self.agent_claims(
+            issuer_subject,
+            agent_id,
+            ttl_secs,
+            None,
+            narrowed_roles(groups),
+            None,
+        )?;
+        claims[AGENT_CLAIM] = json!(agent_id);
+        issued_no_earlier_than(&mut claims, token_epoch);
         self.sign(&claims)
     }
 
@@ -557,6 +598,19 @@ impl Signer {
             "iat": now,
             "exp": now + ttl_secs,
         })
+    }
+}
+
+/// An agent token's `iat` is `max(now, token_epoch)`: the gateway refuses a
+/// token issued before its agent's epoch (#829), and an epoch set in the
+/// current second — or a little ahead of it, by revokes in quick succession —
+/// must not refuse a token minted after the revoke. Every agent mint goes
+/// through here, so the rule cannot differ between them.
+fn issued_no_earlier_than(claims: &mut serde_json::Value, token_epoch: Option<u64>) {
+    if let Some(epoch) = token_epoch
+        && claims["iat"].as_u64().is_some_and(|iat| iat < epoch)
+    {
+        claims["iat"] = json!(epoch);
     }
 }
 
@@ -773,7 +827,7 @@ mod tests {
         .expect("signer");
         let groups = ["ops".to_owned(), "escurel:admin".to_owned()];
         let token = signer
-            .mint_agent_profile("escurel-runner", "scribe", "note", 90, None, &groups)
+            .mint_agent_profile("escurel-runner", "scribe", "note", 90, None, &groups, None)
             .expect("mint");
         let claims = decode_claims(&token);
         assert_eq!(claims["sub"], "agent:scribe", "{claims}");
@@ -784,9 +838,47 @@ mod tests {
         for (agent, skill) in [("bad/agent", "note"), ("scribe", "bad/skill"), ("", "note")] {
             assert!(
                 signer
-                    .mint_agent_profile("r", agent, skill, 90, None, &[])
+                    .mint_agent_profile("r", agent, skill, 90, None, &[], None)
                     .is_err(),
                 "{agent:?} / {skill:?}"
+            );
+        }
+    }
+
+    /// #829: both agent mints raise `iat` to the agent's `token_epoch` — never
+    /// lower it — so a token minted after a revoke stands.
+    #[test]
+    fn every_agent_mint_is_issued_no_earlier_than_the_epoch() {
+        let signer = Signer::build(
+            "https://issuer".into(),
+            "escurel".into(),
+            "acme".into(),
+            None,
+            &test_key(),
+        )
+        .expect("signer");
+        let ahead = now_secs() + 30;
+        let run = |epoch| {
+            decode_claims(
+                &signer
+                    .mint_agent_profile("r", "scribe", "note", 90, None, &[], epoch)
+                    .expect("mint"),
+            )
+        };
+        let external = |epoch| {
+            decode_claims(
+                &signer
+                    .mint_external_agent("ops:jo", "scribe", 90, &[], epoch)
+                    .expect("mint"),
+            )
+        };
+        for claims in [run(Some(ahead)), external(Some(ahead))] {
+            assert_eq!(claims["iat"], json!(ahead), "{claims}");
+        }
+        for claims in [run(Some(1)), external(Some(1)), run(None), external(None)] {
+            assert!(
+                claims["iat"].as_u64().unwrap() >= now_secs() - 5,
+                "{claims}"
             );
         }
     }

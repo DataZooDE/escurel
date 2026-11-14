@@ -107,6 +107,61 @@ impl CronSchedule {
     }
 }
 
+/// The `source` of a trigger the runner fires from a skill's `schedule:`.
+pub const SCHEDULE_SOURCE: &str = "runner-schedule";
+/// The `source` of a trigger a signed `POST /hooks/schedule/<skill>` fired (#827).
+pub const HOOK_SOURCE: &str = "schedule-webhook";
+/// The longest delivery id a webhook trigger's id may carry.
+pub const MAX_DELIVERY_ID_LEN: usize = 128;
+
+/// Whether `id` may name a webhook delivery: 1 to [`MAX_DELIVERY_ID_LEN`]
+/// ASCII letters, digits, `.`, `_` or `-` — it becomes part of an event id.
+#[must_use]
+pub fn is_delivery_id(id: &str) -> bool {
+    (1..=MAX_DELIVERY_ID_LEN).contains(&id.len())
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
+}
+
+/// The event id of the trigger webhook delivery `delivery` fires for `skill`.
+/// First writer wins on it, so a redelivery is the same event.
+#[must_use]
+pub fn hook_event_id(skill: &str, delivery: &str) -> String {
+    format!("hook:{skill}:{delivery}")
+}
+
+/// Whether a captured event is one of `skill`'s triggers on UTC `day`, as
+/// `schedule_budget.runs_per_day` counts them: a schedule trigger whose window
+/// starts that day (`sched:<skill>:<window>`), or a webhook trigger captured
+/// that day (`hook:<skill>:<delivery>`). Both readers of the budget — the
+/// runner's schedule loop and the gateway's webhook — count with this, so one
+/// cap covers both. Only the bookkeeper can file these ids.
+#[must_use]
+pub fn counts_toward_budget(
+    skill: &str,
+    event_id: &str,
+    source: &str,
+    at: Option<&str>,
+    day: chrono::NaiveDate,
+) -> bool {
+    let utc_day = |t: &str| {
+        DateTime::parse_from_rfc3339(t)
+            .ok()
+            .map(|t| t.with_timezone(&Utc).date_naive())
+    };
+    if source == SCHEDULE_SOURCE {
+        return event_id
+            .strip_prefix(&format!("sched:{skill}:"))
+            .and_then(utc_day)
+            == Some(day);
+    }
+    source == HOOK_SOURCE
+        && event_id.starts_with(&format!("hook:{skill}:"))
+        && !event_id.ends_with(":skipped")
+        && at.and_then(utc_day) == Some(day)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -223,5 +278,50 @@ mod tests {
                 "{bad:?} must not parse"
             );
         }
+    }
+
+    #[test]
+    fn schedule_and_webhook_triggers_share_one_daily_budget() {
+        let day = chrono::NaiveDate::from_ymd_opt(2026, 11, 14).unwrap();
+        let at = Some("2026-11-14T09:00:00Z");
+        let counts = |id: &str, source: &str, at: Option<&str>| {
+            counts_toward_budget("report", id, source, at, day)
+        };
+        assert!(counts(
+            "sched:report:2026-11-14T07:15:00Z",
+            SCHEDULE_SOURCE,
+            None
+        ));
+        assert!(!counts(
+            "sched:report:2026-11-13T23:59:00Z",
+            SCHEDULE_SOURCE,
+            at
+        ));
+        assert!(counts("hook:report:gh-1", HOOK_SOURCE, at));
+        assert!(!counts(
+            "hook:report:gh-1",
+            HOOK_SOURCE,
+            Some("2026-11-15T00:00:01Z")
+        ));
+        assert!(!counts("hook:report:gh-1:skipped", HOOK_SOURCE, at));
+        assert!(
+            !counts("hook:other:gh-1", HOOK_SOURCE, at),
+            "another skill's"
+        );
+        assert!(
+            !counts("hook:report:gh-1", "manual", at),
+            "a source the bookkeeper did not file"
+        );
+        assert!(!counts("01HXYZ", "manual", at));
+    }
+
+    #[test]
+    fn a_delivery_id_is_bounded_to_an_event_id_safe_charset() {
+        assert!(is_delivery_id("72d3162e-cc78-11e3-81ab-4c9367dc0958"));
+        assert!(is_delivery_id("a.b_c-1"));
+        for bad in ["", "a b", "a:b", "a/b", "ü", &"x".repeat(129)] {
+            assert!(!is_delivery_id(bad), "{bad}");
+        }
+        assert_eq!(hook_event_id("report", "d-1"), "hook:report:d-1");
     }
 }

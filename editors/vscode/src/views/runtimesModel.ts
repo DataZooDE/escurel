@@ -55,10 +55,34 @@ const unavailableLines = (r: Runtime): string[] =>
         }, so work that requires it goes to another runtime`,
     );
 
+/** Which harness a live run can be steered on (#827), as the runner declared it; undeclared is left out. */
+const injectLines = (r: Runtime): string[] => {
+  const named = (takes: boolean) =>
+    r.harnesses.filter((h) => h.supports_inject === takes).map((h) => cleanText(h.name, 64));
+  const yes = named(true);
+  const no = named(false);
+  return [
+    ...(yes.length ? [`Takes a message while it runs: ${yes.join(', ')}`] : []),
+    ...(no.length ? [`Cannot take a message while it runs: ${no.join(', ')}`] : []),
+  ];
+};
+
 const labelWords = (r: Runtime): string =>
   r.labels.length ? r.labels.map((l) => cleanText(l, 64)).join(', ') : 'no labels';
 
 const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
+
+/** Which credential the runner holds (#828), in words; `undefined` before it has said. */
+export function roleWords(role: Runtime['role']): string | undefined {
+  if (role === 'runner') return 'as runner';
+  if (role === 'admin') return 'as admin';
+  return undefined;
+}
+
+const ROLE_LINE: Record<string, string> = {
+  runner: 'Credential: escurel:runner (claims work and keeps its books; not an admin)',
+  admin: 'Credential: escurel:admin',
+};
 
 function statusLine(r: Runtime, status: RuntimeStatus, now: Date): string {
   const seen = formatAge(r.last_seen, now);
@@ -90,17 +114,21 @@ export function runtimeRows(runtimes: Runtime[], now: Date = new Date()): Runtim
         label,
         status,
         pageId: r.page_id,
-        description: [STATUS_WORD[status], harnessWords(r), labelWords(r), busy].join(' · '),
+        description: [STATUS_WORD[status], harnessWords(r), labelWords(r), busy, roleWords(r.role)]
+          .filter(Boolean)
+          .join(' · '),
         tooltip: [
           label,
           statusLine(r, status, now),
           `Harnesses: ${harnessWords(r)}`,
           ...unavailableLines(r),
+          ...injectLines(r),
           `Labels: ${labelWords(r)}`,
           ...(r.max_concurrent !== null
             ? [`At most ${plural(r.max_concurrent, 'run')} at once`]
             : []),
           `Live runs: ${r.live_runs}`,
+          ...(r.role && ROLE_LINE[r.role] ? [ROLE_LINE[r.role]] : []),
           ...(r.version ? [`Runner ${cleanText(r.version, 60)}`] : []),
           `Page: ${r.page_id}`,
         ].join('\n'),
@@ -140,15 +168,47 @@ export interface HeldBy {
   pageId?: string;
   /** RFC 3339: when the lease lapses unless renewed. */
   until: string;
+  /**
+   * The holding runtime's harnesses, so the run's own can be asked whether it takes an inject. When
+   * the holder is hidden (a member's read), the harnesses every visible runtime agrees on instead.
+   */
+  harnesses?: { name: string; supports_inject?: boolean | null }[];
+}
+
+/**
+ * The harnesses whose `supports_inject` every runtime that declares it agrees on. A member cannot tell
+ * which runtime holds a run, but when no runtime it can see says otherwise the answer does not depend
+ * on which one does. A runtime that does not declare leaves the others' answer standing.
+ */
+function agreedHarnesses(runtimes: Runtime[]): { name: string; supports_inject: boolean }[] {
+  const votes = new Map<string, boolean | 'split'>();
+  for (const r of runtimes)
+    for (const h of r.harnesses) {
+      if (typeof h.supports_inject !== 'boolean') continue;
+      const seen = votes.get(h.name);
+      votes.set(
+        h.name,
+        seen === undefined || seen === h.supports_inject ? h.supports_inject : 'split',
+      );
+    }
+  return [...votes].flatMap(([name, v]) => (v === 'split' ? [] : [{ name, supports_inject: v }]));
 }
 
 export function heldBy(claim: EventClaim | undefined, runtimes: Runtime[]): HeldBy | undefined {
   if (!claim) return undefined;
   const r = runtimes.find((x) => x.claim_holder && x.claim_holder === claim.holder);
   if (r)
-    return { runtime: cleanText(r.runner_id, 120), pageId: r.page_id, until: claim.expires_at };
+    return {
+      runtime: cleanText(r.runner_id, 120),
+      pageId: r.page_id,
+      until: claim.expires_at,
+      harnesses: r.harnesses.map((h) => ({ name: h.name, supports_inject: h.supports_inject })),
+    };
   // Holders are visible (an admin's read) but none matches: a runner that never registered.
-  return runtimes.some((x) => x.claim_holder)
-    ? { runtime: cleanText(claim.holder, 160), until: claim.expires_at }
+  if (runtimes.some((x) => x.claim_holder))
+    return { runtime: cleanText(claim.holder, 160), until: claim.expires_at };
+  const agreed = agreedHarnesses(runtimes);
+  return agreed.length
+    ? { until: claim.expires_at, harnesses: agreed }
     : { until: claim.expires_at };
 }

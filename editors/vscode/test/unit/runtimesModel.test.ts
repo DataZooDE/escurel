@@ -89,6 +89,28 @@ describe('the Runtimes view rows', () => {
     );
   });
 
+  it('say in words which harness takes a message mid-run, leaving out the ones nobody declared', () => {
+    const [row] = runtimeRows(
+      [
+        {
+          ...online,
+          harnesses: [
+            { name: 'echo', version: null, supports_inject: true },
+            { name: 'claude', version: null, supports_inject: true },
+            { name: 'codex', version: null, supports_inject: false },
+            { name: 'agy', version: null },
+          ],
+        },
+      ],
+      now,
+    );
+    expect(row?.tooltip).toContain('Takes a message while it runs: echo, claude');
+    expect(row?.tooltip).toContain('Cannot take a message while it runs: codex');
+    expect(row?.tooltip).not.toContain('agy,');
+    const [old] = runtimeRows([online], now);
+    expect(old?.tooltip).not.toContain('message while it runs');
+  });
+
   it('word a stopped runner and one that never reported', () => {
     const rows = runtimeRows(
       [
@@ -115,6 +137,26 @@ describe('the Runtimes view rows', () => {
   });
 });
 
+describe('which credential a runner holds (#828)', () => {
+  it('says runner or admin in the row and the tooltip, and nothing before it has said', () => {
+    const [box, laptop] = runtimeRows(
+      [
+        { ...online, role: 'runner' },
+        { ...stale, role: 'admin' },
+      ],
+      now,
+    );
+    expect(laptop?.description.endsWith(' · as runner')).toBe(true);
+    expect(laptop?.tooltip).toContain(
+      'Credential: escurel:runner (claims work and keeps its books; not an admin)',
+    );
+    expect(box?.description.endsWith(' · as admin')).toBe(true);
+    const [, plain] = runtimeRows([online, stale], now);
+    expect(plain?.description).not.toContain(' as ');
+    expect(plain?.tooltip).not.toContain('Credential:');
+  });
+});
+
 describe('a member’s read (no CLI versions, no claim holders)', () => {
   const member = (r: Runtime): Runtime => {
     const { claim_holder, ...rest } = r;
@@ -132,6 +174,32 @@ describe('a member’s read (no CLI versions, no claim holders)', () => {
     const claim = { holder: 'svc-runner#02def', expires_at: '2026-11-13T10:01:00Z' };
     expect(heldBy(claim, [member(online), member(stale)])).toEqual({ until: claim.expires_at });
     expect(heldBy(claim, [])).toEqual({ until: claim.expires_at });
+  });
+
+  it('answers for a harness every runtime it can see agrees on, and only then', () => {
+    const claim = { holder: 'svc-runner#02def', expires_at: '2026-11-13T10:01:00Z' };
+    const declaring = (r: Runtime, inject: Record<string, boolean | null>): Runtime => ({
+      ...member(r),
+      harnesses: r.harnesses.map(({ name }) => ({ name, supports_inject: inject[name] ?? null })),
+    });
+    const a = declaring(online, { echo: true, claude: true });
+    const b = declaring(
+      { ...online, runner_id: 'b', harnesses: [{ name: 'echo' }, { name: 'claude' }] },
+      {
+        echo: true,
+        claude: false,
+      },
+    );
+    expect(heldBy(claim, [a, b])).toEqual({
+      until: claim.expires_at,
+      harnesses: [{ name: 'echo', supports_inject: true }],
+    });
+    // A runtime that does not say leaves the others' agreement standing; a disagreement drops it.
+    const silent = declaring({ ...online, runner_id: 'c' }, {});
+    expect(heldBy(claim, [a, silent])?.harnesses).toEqual([
+      { name: 'echo', supports_inject: true },
+      { name: 'claude', supports_inject: true },
+    ]);
   });
 });
 
@@ -164,6 +232,7 @@ describe('which runtime holds an event', () => {
       runtime: 'build-box',
       pageId: stale.page_id,
       until: claim.expires_at,
+      harnesses: [{ name: 'codex', supports_inject: undefined }],
     });
   });
 

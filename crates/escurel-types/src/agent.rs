@@ -82,6 +82,10 @@ pub struct WhoamiResponse {
     pub subject: String,
     pub tenant: String,
     pub is_admin: bool,
+    /// The built-in service role the credential holds (`runner` | `bridge`,
+    /// #828); absent for every other caller.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub service: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]

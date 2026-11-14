@@ -51,25 +51,18 @@ use escurel_runner_harness::{
     AgyHarness, ClaudeHarness, CodexHarness, DelegateHarness, EchoHarness, GeminiHarness, Harness,
     MuseHarness, OpenAiCompatHarness, OpenAiPreset, RefusingHarness, Usage,
 };
+use escurel_types::webhook_signature::{
+    SIGNATURE_HEADER as WEBHOOK_SIGNATURE_HEADER, verify as verify_signature,
+};
 use escurel_types::{Event, ListInboxRequest};
-use hmac::{Hmac, Mac};
 use serde_json::json;
-use sha2::Sha256;
 use tokio::sync::Notify;
-
-type HmacSha256 = Hmac<Sha256>;
 
 /// In-flight quota slots keyed by `event_id` (#158). A slot is held for a
 /// run's whole lifetime (queue → run → terminal) so the tenant's concurrency
 /// budget reflects real in-flight work, not just the instant of admission.
 type InflightSlots =
     Arc<std::sync::Mutex<std::collections::HashMap<String, escurel_runner_core::RunSlot>>>;
-
-/// Header carrying the gateway's HMAC-SHA256 signature of the raw POST
-/// body, in the form `sha256=<lowercase-hex>` (#147). The secret is the
-/// ingress trust anchor; verifying the signature over the raw bytes
-/// before parsing fixes the earlier extractor-ordering flag.
-const WEBHOOK_SIGNATURE_HEADER: &str = "X-Escurel-Webhook-Signature";
 
 /// Shared listener state. Cheap to clone (an `Arc`-backed secret + a
 /// cloneable dispatch-queue producer handle).
@@ -141,6 +134,9 @@ struct AppState {
     /// and the result id first-writer-wins, the stored result alone cannot
     /// show that a runner which does not own the run stayed silent.
     control_decisions: ControlDecisions,
+    /// The built-in role the runner credential holds (`admin` | `runner`), set by the boot
+    /// preflight; `role` on the status record.
+    credential_role: Arc<std::sync::OnceLock<&'static str>>,
 }
 
 /// The last [`ControlDecisions::KEEP`] run-control decisions, by request id.
@@ -218,6 +214,9 @@ async fn main() -> anyhow::Result<()> {
     // Drain flag: shutdown sets it so ingress stops admitting new triggers
     // while in-flight runs finish.
     let draining = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    // Which built-in role the runner credential holds (`admin` | `runner`), once the boot
+    // preflight has asked the gateway; reported on the status record.
+    let credential_role: Arc<std::sync::OnceLock<&'static str>> = Arc::default();
 
     // The runner's gateway credential, built once. A static
     // ESCUREL_RUNNER_TOKEN still wins; otherwise, given an issuer and a
@@ -255,6 +254,15 @@ async fn main() -> anyhow::Result<()> {
              (set ESCUREL_RUNNER_AUTH_ISSUER + ESCUREL_RUNNER_AUTH_SIGNING_KEY to answer chat)"
         );
     }
+    // The gateway mints a runner credential's run token only for a run whose `run-started` that
+    // credential filed (`mint_run_token`), so a keyless runner that files none gets no run tokens.
+    if !config.emit_run_events && tokens.as_ref().is_some_and(|t| t.mints_at_gateway()) {
+        tracing::warn!(
+            target: "escurel_runner",
+            "ESCUREL_RUNNER_EMIT_EVENTS is off: the gateway refuses mint_run_token for a run with \
+             no run-started (run_unknown) unless this runner's credential is an admin's"
+        );
+    }
 
     // The routing + claim gate (#818). Its holder id is the ledger's own
     // identity, so a restart on the same ledger keeps the leases it held.
@@ -273,13 +281,10 @@ async fn main() -> anyhow::Result<()> {
     };
     // The harness CLIs this runner offers, probed once before any work is
     // admitted: a CLI that is not there must not be routed `requires:` work.
-    let harness_clis: Vec<(String, Option<String>)> =
+    let harness_clis: Vec<escurel_runner_core::runtime::HarnessSpec> =
         escurel_runner_core::runtime::harness_set(&config.harness, &config.harness_allow)
             .into_iter()
-            .map(|name| {
-                let cli = harness_cli(&config, &name);
-                (name, cli)
-            })
+            .map(|name| harness_spec(&config, name))
             .collect();
     if let (Some(gate), Some(source)) = (gate.as_ref(), tokens.as_ref()) {
         gate.apply_probe(&escurel_runner_core::runtime::probe_harnesses(&harness_clis).await);
@@ -294,6 +299,7 @@ async fn main() -> anyhow::Result<()> {
         tokio::spawn(claim_preflight(
             config.gateway_url.clone(),
             Arc::clone(source),
+            Arc::clone(&credential_role),
         ));
         tokio::spawn(lease_renewal_loop(
             config.gateway_url.clone(),
@@ -452,6 +458,7 @@ async fn main() -> anyhow::Result<()> {
                 Arc::clone(&draining),
                 Arc::clone(&last_poll_ms),
                 gate.clone(),
+                config.admit_concurrency,
             ));
         }
         _ => {
@@ -529,6 +536,7 @@ async fn main() -> anyhow::Result<()> {
         lineage_trust_subject: tokens.as_ref().and_then(|t| t.subject()).map(Arc::from),
         gate: gate.clone(),
         control_decisions: ControlDecisions::default(),
+        credential_role,
     };
     // The run-control subscriber (workbench backend P2-3b) and the status
     // reporter (P2-4). Same enablement as the poller and the promotion tail.
@@ -3345,11 +3353,23 @@ async fn attempt_run(
         ));
     }
 
+    // The instance is read as the identity that writes it: the run's own token
+    // (a runner credential may hold none of the skill's groups, so under an
+    // enforced read ACL it would never see the page). The events are still
+    // read with the runner's.
+    let run_client = Client::connect(
+        &config.gateway_url,
+        SecretString::from(task.token_str().to_owned()),
+    )
+    .await
+    .map_err(|e| ReconcileError::Permanent(format!("the run's token is unusable: {e}")))?;
     // The instance as it stands BEFORE the agent runs, so a write can be told
     // from a run that touched nothing. Only for a pre-flagged auto run, which
     // is the only shape `assign_confirmed_write` acts on.
     let version_before = match (&trigger.instance_page_id, task.autonomy) {
-        (Some(page), Autonomy::Auto) => escurel_runner_core::instance_version(client, page).await?,
+        (Some(page), Autonomy::Auto) => {
+            escurel_runner_core::instance_version(&run_client, page).await?
+        }
         _ => None,
     };
 
@@ -3479,6 +3499,7 @@ async fn attempt_run(
     if task.autonomy == Autonomy::Auto {
         match escurel_runner_core::assign_confirmed_write(
             client,
+            &run_client,
             trigger,
             version_before.as_deref(),
         )
@@ -3505,7 +3526,7 @@ async fn attempt_run(
     }
 
     let confirmed = match task.autonomy {
-        Autonomy::Auto => confirm_effect(client, trigger).await,
+        Autonomy::Auto => confirm_effect(client, &run_client, trigger).await,
         Autonomy::Review | Autonomy::Confirm => confirm_draft(client, trigger).await,
     };
     match confirmed {
@@ -3591,6 +3612,8 @@ async fn attempt_run(
 fn package_error_to_reconcile(e: escurel_runner_core::PackageError) -> ReconcileError {
     match e {
         escurel_runner_core::PackageError::Client { source, .. } => classify_client_error(&source),
+        // The gateway may mint on the next attempt; never run without the run's own token.
+        escurel_runner_core::PackageError::RunToken(why) => ReconcileError::Transient(why),
         other => ReconcileError::Permanent(other.to_string()),
     }
 }
@@ -3685,6 +3708,7 @@ async fn poll_loop(
     draining: Arc<std::sync::atomic::AtomicBool>,
     last_poll_ms: Arc<std::sync::atomic::AtomicU64>,
     gate: Option<Arc<RuntimeGate>>,
+    admit_concurrency: usize,
 ) {
     // A boot probe only — the per-tick client is built inside the loop.
     // A hoisted one carries a 30-minute minted bearer for the life of the
@@ -3741,13 +3765,16 @@ async fn poll_loop(
         }
         match client.list_inbox(ListInboxRequest::default()).await {
             Ok(resp) => {
-                for event in &resp.events {
-                    // Route and claim BEFORE the ledger sees it (#818): an
-                    // event this runner cannot satisfy, or another holds,
-                    // stays in the inbox untouched by this runner.
-                    if let Some(gate) = &gate
-                        && gate.admit(&client, event).await != Admit::Take
-                    {
+                // Route and claim BEFORE the ledger sees it (#818): an event this runner cannot
+                // satisfy, or another holds, stays in the inbox untouched by this runner. Up to
+                // `admit_concurrency` claims are in flight at once (#828), and `buffered` hands
+                // the answers back in inbox order, so what is enqueued keeps that order.
+                let admitted = match &gate {
+                    Some(gate) => admit_all(gate, &client, &resp.events, admit_concurrency).await,
+                    None => vec![true; resp.events.len()],
+                };
+                for (event, take) in resp.events.iter().zip(admitted) {
+                    if !take {
                         continue;
                     }
                     let trigger = match self_subject.as_deref() {
@@ -3770,6 +3797,27 @@ async fn poll_loop(
             ),
         }
     }
+}
+
+/// Admit `events` through the gate with up to `concurrency` decisions (each a
+/// claim call) in flight; whether each was taken, in the order given.
+async fn admit_all(
+    gate: &RuntimeGate,
+    client: &escurel_client::Client,
+    events: &[escurel_types::Event],
+    concurrency: usize,
+) -> Vec<bool> {
+    use futures_util::StreamExt as _;
+    let decisions: Vec<std::pin::Pin<Box<dyn std::future::Future<Output = Admit> + Send + '_>>> =
+        events
+            .iter()
+            .map(|event| Box::pin(gate.admit(client, event)) as _)
+            .collect();
+    futures_util::stream::iter(decisions)
+        .buffered(concurrency.max(1))
+        .map(|admit| admit == Admit::Take)
+        .collect()
+        .await
 }
 
 /// A cursor over one label's event log — what the runner's subscribers
@@ -4561,6 +4609,7 @@ fn status_snapshot(
             "paused": state.governor.throttled(escurel_runner_core::ThrottleReason::Paused),
         },
         "harness_permits_available": state.governor.harness_permits_available(),
+        "role": state.credential_role.get(),
         "draining": state.draining.load(std::sync::atomic::Ordering::Relaxed),
     });
     let last = state
@@ -4757,8 +4806,8 @@ async fn schedule_loop(
 struct Registration {
     runner_id: String,
     holder: Option<String>,
-    /// `(harness, cli)`: the CLI `--version` is probed on; `None` in-process.
-    clis: Vec<(String, Option<String>)>,
+    /// The harnesses offered, with the CLI `--version` is probed on.
+    clis: Vec<escurel_runner_core::runtime::HarnessSpec>,
     labels: Vec<String>,
     max_concurrent: u64,
 }
@@ -4787,21 +4836,33 @@ async fn lease_renewal_loop(
 }
 
 /// Say at boot, loudly, when this runner's credential cannot claim (crew
-/// U-F3; owner decision 2026-11-13): without `escurel:admin` every claim is
-/// refused, so the runner takes no inbox work at all. It is not a reason to
+/// U-F3; owner decision 2026-11-13): without `escurel:runner` or
+/// `escurel:admin` every claim is refused, so the runner takes no inbox work at
+/// all. The role it does hold is recorded for the status record (`role`), so
+/// the Runtimes view can say which a runner runs as. It is not a reason to
 /// refuse to start: the runner keeps serving `/healthz`, so the operator sees
 /// this error instead of a crash loop.
-async fn claim_preflight(gateway_url: String, tokens: Arc<escurel_runner_core::TokenSource>) {
+async fn claim_preflight(
+    gateway_url: String,
+    tokens: Arc<escurel_runner_core::TokenSource>,
+    role: Arc<std::sync::OnceLock<&'static str>>,
+) {
     let Some(client) = connect_now(&gateway_url, &tokens).await else {
         return;
     };
     match client.whoami().await {
-        Ok(me) if !me.is_admin => tracing::error!(
+        Ok(me) if me.is_admin => {
+            let _ = role.set("admin");
+        }
+        Ok(me) if me.service.as_deref() == Some("runner") => {
+            let _ = role.set("runner");
+        }
+        Ok(me) => tracing::error!(
             target: "escurel_runner",
             subject = %me.subject,
-            "the runner credential needs escurel:admin to claim events: {CLAIM_CREDENTIAL_FIX}"
+            "the runner credential needs escurel:runner or escurel:admin to claim events: \
+             {CLAIM_CREDENTIAL_FIX}"
         ),
-        Ok(_) => {}
         // A credential the gateway refuses outright cannot claim either: the same error, the same fix.
         Err(e) if escurel_runner_core::runtime::is_identity_refusal(&e) => tracing::error!(
             target: "escurel_runner",
@@ -4819,9 +4880,25 @@ async fn claim_preflight(gateway_url: String, tokens: Arc<escurel_runner_core::T
 }
 
 /// What an operator does about a runner credential that cannot claim.
-const CLAIM_CREDENTIAL_FIX: &str = "this runner takes no inbox work until it has escurel:admin — \
-    give it an admin credential (ESCUREL_RUNNER_TOKEN / ESCUREL_RUNNER_TOKEN_FILE with the \
-    escurel:admin role, or a minting runner)";
+const CLAIM_CREDENTIAL_FIX: &str = "this runner takes no inbox work until it has escurel:runner \
+    or escurel:admin — give it a runner credential (ESCUREL_RUNNER_TOKEN / \
+    ESCUREL_RUNNER_TOKEN_FILE with the escurel:runner role; no signing key needed, the gateway \
+    mints its per-run tokens) or an admin one, or make it a minting runner";
+
+/// What the runtime page says about harness `name`. Its inject support is
+/// asked of the harness itself, built the way a run builds it, for the CLI
+/// harnesses only: building an in-process one (gemini without its key) can
+/// end the process, and none of them holds a live session to inject into.
+fn harness_spec(config: &RunnerConfig, name: String) -> escurel_runner_core::runtime::HarnessSpec {
+    let cli = harness_cli(config, &name);
+    let supports_inject =
+        cli.is_some() && build_harness_named(config, &name).is_some_and(|h| h.supports_inject());
+    escurel_runner_core::runtime::HarnessSpec {
+        name,
+        cli,
+        supports_inject,
+    }
+}
 
 /// The CLI a harness runs, for its `--version` probe; `None` for one that
 /// runs in process (gemini, the OpenAI-compatible presets, delegate).
@@ -4904,37 +4981,6 @@ async fn runtime_loop(
             }
         }
     }
-}
-
-/// Verify a `sha256=<hex>` HMAC-SHA256 signature over `body` under
-/// `secret`. Returns `false` for a missing/malformed header or any
-/// mismatch. The compare is constant-time via `Mac::verify_slice`.
-fn verify_signature(secret: &str, body: &[u8], presented: Option<&str>) -> bool {
-    let Some(presented) = presented else {
-        return false;
-    };
-    let Some(hex) = presented.strip_prefix("sha256=") else {
-        return false;
-    };
-    let Some(expected) = decode_hex(hex) else {
-        return false;
-    };
-    let mut mac =
-        HmacSha256::new_from_slice(secret.as_bytes()).expect("HMAC accepts a key of any size");
-    mac.update(body);
-    mac.verify_slice(&expected).is_ok()
-}
-
-/// Decode a lowercase/uppercase hex string into bytes. Returns `None`
-/// for odd length or any non-hex digit.
-fn decode_hex(s: &str) -> Option<Vec<u8>> {
-    if !s.len().is_multiple_of(2) {
-        return None;
-    }
-    (0..s.len())
-        .step_by(2)
-        .map(|i| u8::from_str_radix(&s[i..i + 2], 16).ok())
-        .collect()
 }
 
 /// Block until SIGTERM (the orchestrator's graceful-stop signal) or SIGINT

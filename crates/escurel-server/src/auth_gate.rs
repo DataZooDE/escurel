@@ -133,8 +133,15 @@ pub(crate) fn rbac_groups(
         auth_ctx.map(|c| c.groups.as_slice()).unwrap_or(&[]),
         cfg.map(|c| c.admin_role_value.as_str()),
     );
-    // The operator value is a privilege marker in the same claim: never a group name.
-    strip_admin_value(&groups, cfg.map(|c| c.operator_role_value.as_str()))
+    // The operator, runner and bridge values are privilege markers in the same claim: never group
+    // names, so no ACL can be written against them.
+    [
+        cfg.map(|c| c.operator_role_value.as_str()),
+        cfg.map(|c| c.runner_role_value.as_str()),
+        cfg.map(|c| c.bridge_role_value.as_str()),
+    ]
+    .into_iter()
+    .fold(groups, |groups, value| strip_admin_value(&groups, value))
 }
 
 /// The stripping itself, separated so the security boundary is testable

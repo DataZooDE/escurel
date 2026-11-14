@@ -175,6 +175,47 @@ async fn admin_tenant_crud_lifecycle() {
     .await;
     assert_eq!(json(&updated)["tenant"]["display_name"], "Renamed");
 
+    // #827: a per-tenant transcript retention, kept across a later partial update.
+    let retention = operator(
+        &h,
+        v(&[
+            "admin",
+            "tenant",
+            "update",
+            "--id",
+            "globex",
+            "--transcript-retention-days",
+            "7",
+        ]),
+    )
+    .await;
+    assert_eq!(json(&retention)["tenant"]["transcript_retention_days"], 7);
+    let renamed = operator(
+        &h,
+        v(&[
+            "admin", "tenant", "update", "--id", "globex", "--name", "Again",
+        ]),
+    )
+    .await;
+    assert_eq!(json(&renamed)["tenant"]["transcript_retention_days"], 7);
+    let cleared = operator(
+        &h,
+        v(&[
+            "admin",
+            "tenant",
+            "update",
+            "--id",
+            "globex",
+            "--clear-transcript-retention",
+        ]),
+    )
+    .await;
+    assert!(
+        json(&cleared)["tenant"]["transcript_retention_days"].is_null(),
+        "back to the gateway's retention: {}",
+        json(&cleared)
+    );
+
     let deleted = operator(&h, v(&["admin", "tenant", "delete", "--id", "globex"])).await;
     assert_eq!(json(&deleted)["deleted"], true);
     assert!(!h.tenants_root.join("globex").exists());

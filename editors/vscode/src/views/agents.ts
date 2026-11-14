@@ -2,7 +2,7 @@ import * as vscode from 'vscode';
 import type { UsageReportResponse } from '../client/types';
 import { describeError } from '../errors';
 import type { Services } from '../services';
-import { agentProfile, agentRows, type AgentProfile, type AgentRow } from './agentsModel';
+import { agentProfile, agentRows, issueTokenError, type AgentProfile, type AgentRow } from './agentsModel';
 import { LazyFlatTree, type FlatRead } from './lazyTree';
 import { usageFailure, usageRange } from './usageModel';
 
@@ -78,6 +78,89 @@ export function registerAgentsView(
     tree,
     view,
     vscode.commands.registerCommand('escurel.agents.refresh', () => tree.load()),
+    vscode.commands.registerCommand('escurel.agents.issueToken', (row?: AgentRow) =>
+      issueToken(services, row),
+    ),
+    vscode.commands.registerCommand('escurel.agents.revokeTokens', async (row?: AgentRow) => {
+      if (await revokeTokens(services, row)) await tree.load();
+    }),
   );
   return tree;
+}
+
+/** The lifetimes offered for an external agent's token (the gateway allows 1 h .. 90 d). */
+const TTL_CHOICES = [
+  { label: '30 days', description: 'the default', secs: 30 * 86_400 },
+  { label: '7 days', secs: 7 * 86_400 },
+  { label: '90 days', description: 'the longest the gateway allows', secs: 90 * 86_400 },
+  { label: '1 day', secs: 86_400 },
+];
+
+/**
+ * "Issue token…" (#829): a bearer for an external agent (Claude Code, Codex, Multica) that runs as
+ * this agent profile. The token is shown ONCE in a modal and copied only on request; it is never
+ * written to a log, a setting or the secret store.
+ */
+async function issueToken(services: Services, row: AgentRow | undefined): Promise<void> {
+  if (!row) return;
+  const ttl = await vscode.window.showQuickPick(TTL_CHOICES, {
+    title: `Issue a token for agent ${row.label}`,
+    placeHolder: 'How long the token lives (revoke it any time with "Revoke tokens")',
+  });
+  if (!ttl) return;
+  let issued;
+  try {
+    issued = await services.client.issueAgentToken({ agent: row.label, ttl_secs: ttl.secs });
+  } catch (error) {
+    void vscode.window.showErrorMessage(
+      `Could not issue a token for agent ${row.label}: ${issueTokenError(error)}`,
+    );
+    return;
+  }
+  const copy = 'Copy token';
+  const choice = await vscode.window.showInformationMessage(
+    `Token for agent ${row.label} (${issued.subject}), valid until ${issued.expires_at}.`,
+    {
+      modal: true,
+      detail:
+        "It is shown once and not stored. Copy it into the external agent's MCP configuration " +
+        '(references/12). It can do only what the agent page allows.',
+    },
+    copy,
+  );
+  if (choice === copy) await vscode.env.clipboard.writeText(issued.token);
+}
+
+/**
+ * "Revoke tokens" (#829): the gateway's `revoke_agent_tokens` moves the agent page's
+ * `token_epoch` forward on its own clock, so every token issued so far — external and run tokens
+ * — is refused from its next call on. Confirmed first. True when the tokens were revoked.
+ */
+async function revokeTokens(services: Services, row: AgentRow | undefined): Promise<boolean> {
+  if (!row) return false;
+  const revoke = 'Revoke tokens';
+  const confirmed = await vscode.window.showWarningMessage(
+    `Revoke every token issued so far for agent ${row.label}?`,
+    {
+      modal: true,
+      detail:
+        'External agents using them are refused from their next call. A run of this agent in ' +
+        'flight loses its token too: the attempt under way fails, and a retry (when the run ' +
+        'has attempts left) runs on a fresh token.',
+    },
+    revoke,
+  );
+  if (confirmed !== revoke) return false;
+  try {
+    await services.client.revokeAgentTokens(row.label);
+    void vscode.window.showInformationMessage(
+      `Tokens for agent ${row.label} are revoked; tokens issued from now on work.`,
+    );
+    return true;
+  } catch (error) {
+    void vscode.window.showErrorMessage(
+      `Could not revoke the tokens of agent ${row.label}: ${describeError(error)}`,
+    );
+    return false;
+  }
 }

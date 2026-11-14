@@ -104,6 +104,7 @@ fn member(subject: &str) -> AclCaller<'_> {
         root_event_id: None,
         agent_skill: None,
         agent: None,
+        service: None,
     }
 }
 fn admin<'a>() -> AclCaller<'a> {
@@ -116,6 +117,7 @@ fn admin<'a>() -> AclCaller<'a> {
         root_event_id: None,
         agent_skill: None,
         agent: None,
+        service: None,
     }
 }
 
@@ -539,5 +541,55 @@ async fn system_skills_install_once_and_keep_a_tenants_own_page() {
     assert!(
         !allowed,
         "a member must not create an agent under a widened page"
+    );
+}
+
+/// The `agent` page as v2026.11.13 shipped it, byte for byte.
+const AGENT_PAGE_V2026_11_13: &str = include_str!("../fixtures/agent_skill_v2026.11.13.md");
+
+/// A tenant installed before a system skill changed keeps the OLD shipped page
+/// (installs skip existing pages). One still byte-equal to an earlier shipped
+/// version is upgraded to the current one (#829: `token_epoch` joins the agent
+/// keys); one the tenant edited is kept, as before.
+#[tokio::test]
+async fn an_unedited_earlier_shipped_system_skill_page_is_upgraded_and_an_edited_one_kept() {
+    let old = fresh_harness();
+    seed(
+        &old,
+        &[("markdown/skills/agent.md", AGENT_PAGE_V2026_11_13)],
+    )
+    .await;
+    old.indexer.ensure_system_skills().await.unwrap();
+    let now = old
+        .indexer
+        .read_page_markdown("markdown/skills/agent.md")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_ne!(
+        now, AGENT_PAGE_V2026_11_13,
+        "the old shipped page is replaced"
+    );
+    assert!(now.contains("token_epoch"), "{now}");
+
+    let edited: &'static str = Box::leak(
+        AGENT_PAGE_V2026_11_13
+            .replace(
+                "# agent — who runs a skill",
+                "# agent (ours) — who runs a skill",
+            )
+            .into_boxed_str(),
+    );
+    let own = fresh_harness();
+    seed(&own, &[("markdown/skills/agent.md", edited)]).await;
+    own.indexer.ensure_system_skills().await.unwrap();
+    assert_eq!(
+        own.indexer
+            .read_page_markdown("markdown/skills/agent.md")
+            .await
+            .unwrap()
+            .as_deref(),
+        Some(edited),
+        "a page the tenant edited is theirs"
     );
 }

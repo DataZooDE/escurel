@@ -102,7 +102,7 @@ pub(crate) fn surface_refusal(
     let ctx = ctx?;
     // A chat bridge's token relays a turn over `/mcp` and uses none of these
     // surfaces (crew security F2).
-    if ctx.bridge {
+    if ctx.bridge_turn {
         return Some(
             (
                 StatusCode::FORBIDDEN,

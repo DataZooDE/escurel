@@ -1,5 +1,7 @@
 // The Agents view's rows, as pure functions (no `vscode`): agent profiles and what they ran.
+import { EscurelError } from '../client/errors';
 import type { Instance, UsageReportResponse } from '../client/types';
+import { describeError } from '../errors';
 import { pageFile } from '../shared/pageId';
 import { cleanText } from '../shared/untrustedText';
 import { successRate } from '../shared/usageWords';
@@ -17,6 +19,8 @@ export interface AgentProfile {
   /** `scopes.write` page-id globs; absent = no extra write limit. */
   write?: string[];
   maxConcurrent?: number;
+  /** `token_epoch` (Unix seconds, #829): tokens issued before it are refused. */
+  tokenEpoch?: number;
 }
 
 const text = (v: unknown, max = 120): string | undefined =>
@@ -36,6 +40,7 @@ export function agentProfile(instance: Instance): AgentProfile {
   const harness = text(fm.harness);
   const model = text(fm.model);
   const max = typeof fm.max_concurrent === 'number' ? fm.max_concurrent : undefined;
+  const epoch = typeof fm.token_epoch === 'number' ? fm.token_epoch : undefined;
   return {
     id: text(fm.id) ?? cleanText(pageFile(instance.page_id), 120),
     pageId: instance.page_id,
@@ -45,7 +50,17 @@ export function agentProfile(instance: Instance): AgentProfile {
     ...(scopes.tools !== undefined ? { tools: list(scopes.tools) } : {}),
     ...(scopes.write !== undefined ? { write: list(scopes.write) } : {}),
     ...(max !== undefined ? { maxConcurrent: max } : {}),
+    ...(epoch !== undefined ? { tokenEpoch: epoch } : {}),
   };
+}
+
+/** "Tokens valid since …" for an agent whose tokens were revoked (`token_epoch`), else nothing. */
+export function tokensValidSince(p: AgentProfile): string | undefined {
+  if (p.tokenEpoch === undefined) return undefined;
+  const at = new Date(p.tokenEpoch * 1000);
+  return Number.isNaN(at.getTime())
+    ? undefined
+    : `Tokens valid since ${at.toISOString().replace('.000Z', 'Z')}`;
 }
 
 export interface AgentRow {
@@ -87,11 +102,12 @@ export function agentRows(
         description: [engine, runs].filter(Boolean).join(' · '),
         tooltip: [
           p.id,
-          `Agent: ${engine}`,
+          `Harness: ${engine}`,
           `Runs: ${p.skills.length ? p.skills.join(', ') : 'no skill (it runs nothing)'}`,
           `Tools: ${p.tools ? p.tools.join(', ') || 'none' : 'no limit beyond the skill'}`,
           `Writes: ${p.write ? p.write.join(', ') || 'nothing' : 'no limit beyond the skill'}`,
           ...(p.maxConcurrent !== undefined ? [`At most ${p.maxConcurrent} at once`] : []),
+          tokensValidSince(p) ?? '',
           opts.usage === 'admin-required'
             ? 'Run counts need an admin sign-in.'
             : runs
@@ -102,4 +118,15 @@ export function agentRows(
           .join('\n'),
       };
     });
+}
+
+/**
+ * Why "Issue token…" failed, in words an admin can act on. A gateway without a signing key answers
+ * `unsupported`; the raw MCP text says that only in passing.
+ */
+export function issueTokenError(error: unknown): string {
+  if (error instanceof EscurelError && error.kind === 'unsupported') {
+    return 'this gateway has no signing key, so it cannot issue tokens (an operator sets ESCUREL_AUTH_SIGNING_KEY on the gateway)';
+  }
+  return describeError(error);
 }

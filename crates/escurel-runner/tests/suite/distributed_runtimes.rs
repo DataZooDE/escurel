@@ -769,3 +769,39 @@ async fn a_refused_boot_whoami_is_an_error_naming_the_fix() {
         "it names the fix: {record}"
     );
 }
+
+/// #827: the runtime page says, per harness, whether a live run on it takes
+/// an inject — read from the harness itself, so a client never has to guess.
+/// echo takes one; codex (one prompt in, one result out) does not.
+#[tokio::test]
+async fn the_runtime_page_says_which_harness_takes_an_inject() {
+    let gw = gateway().await;
+    let stub_dir = tempfile::tempdir().unwrap();
+    let (codex, _) = codex_stub(stub_dir.path());
+    let _b = healthy(muc(&gw, &codex.display().to_string()).spawn()).await;
+    let rt = eventually(Duration::from_secs(20), "muc's runtime", || async {
+        runtime(&gw, "muc")
+            .await
+            .filter(|r| r["status"] == "online")
+    })
+    .await;
+    let inject: Vec<(String, Value)> = rt["harnesses"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|h| {
+            (
+                h["name"].as_str().unwrap().to_owned(),
+                h["supports_inject"].clone(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        inject,
+        vec![
+            ("echo".to_owned(), json!(true)),
+            ("codex".to_owned(), json!(false))
+        ],
+        "{rt}"
+    );
+}

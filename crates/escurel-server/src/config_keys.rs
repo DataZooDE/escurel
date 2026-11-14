@@ -72,6 +72,18 @@ pub const CONFIG_KEYS: &[ConfigKey] = &[
         doc: "shared secret; when set the webhook body is HMAC-SHA256-signed via `X-Escurel-Webhook-Signature: sha256=<hex>` The runner requires the same HMAC signature on inbound `POST /trigger`.",
     },
     ConfigKey {
+        name: "ESCUREL_SCHEDULE_WEBHOOK_SECRET",
+        component: "Server",
+        default: "—",
+        doc: "mounts `POST /hooks/schedule/<skill>` (#827): a skill with `schedule_webhook: true` is fired by a POST that names its delivery (`X-Escurel-Delivery`, 1-128 of `[A-Za-z0-9._-]`; the trigger is `hook:<skill>:<delivery>`, so a redelivery is one event) and its send time (`X-Escurel-Timestamp`, Unix seconds, within 5 minutes of the gateway's clock), signed with this secret over all of it (`X-Escurel-Webhook-Signature: sha256=<hex HMAC-SHA256 of escurel-schedule-v1\\n<skill>\\n<delivery>\\n<timestamp>\\n<body>>`). Unset = no endpoint",
+    },
+    ConfigKey {
+        name: "ESCUREL_SCHEDULE_WEBHOOK_SECRET_FILE",
+        component: "Server",
+        default: "—",
+        doc: "a file holding `ESCUREL_SCHEDULE_WEBHOOK_SECRET` (trimmed); setting both refuses to start",
+    },
+    ConfigKey {
         name: "ESCUREL_SERVER_LISTEN_HTTP",
         component: "Server",
         default: "0.0.0.0:8080",
@@ -288,6 +300,18 @@ pub const CONFIG_KEYS: &[ConfigKey] = &[
         doc: "role value (in the admin role claim) marking an OPERATOR credential, the only one that may name another tenant in the cross-tenant admin tools (tenant registry, tenant_export/tenant_import)",
     },
     ConfigKey {
+        name: "ESCUREL_AUTH_RUNNER_ROLE_VALUE",
+        component: "Server",
+        default: "escurel:runner",
+        doc: "role value (in the admin role claim) marking a RUNNER service credential: it claims inbox events, files the runner's lifecycle records, writes its `runtime` page and mints per-run tokens (`mint_run_token`), and is not admin. Ignored on a machine (run/agent/skill/`act`) token",
+    },
+    ConfigKey {
+        name: "ESCUREL_AUTH_BRIDGE_ROLE_VALUE",
+        component: "Server",
+        default: "escurel:bridge",
+        doc: "role value (in the admin role claim) marking a chat BRIDGE service credential. Ignored on a machine token",
+    },
+    ConfigKey {
         name: "ESCUREL_AUTH_ROLE_TOOLS",
         component: "Server",
         default: "—",
@@ -315,7 +339,7 @@ pub const CONFIG_KEYS: &[ConfigKey] = &[
         name: "ESCUREL_RUN_TRANSCRIPT_RETENTION_DAYS",
         component: "Server",
         default: "90",
-        doc: "days a run transcript (`put_run_transcript`, read via `fetch_blob{run_id}`) is kept; swept every 30 s; `0` keeps them forever",
+        doc: "days a run transcript (`put_run_transcript`, read via `fetch_blob{run_id}`) is kept; swept every 30 s; `0` keeps them forever. A tenant's own `transcript_retention_days` (`tenant_update`) wins over it",
     },
     ConfigKey {
         name: "ESCUREL_EVENT_CLAIM_BOOT_GRACE_SECS",
@@ -873,13 +897,13 @@ pub const CONFIG_KEYS: &[ConfigKey] = &[
         name: "ESCUREL_RUNNER_TOKEN",
         component: "Runner",
         default: "—",
-        doc: "tenant-scoped bearer the runner presents to `/mcp`; it must carry `escurel:admin` (a non-admin runner cannot claim events, so it takes no inbox work and logs the fix at boot). A static token wins over minting. A runner on a static token cannot mint, so every run of a skill with an `agent:` profile fails (dead-letters) there: agent profiles need a minting runner (`ESCUREL_RUNNER_AUTH_SIGNING_KEY`)",
+        doc: "tenant-scoped bearer the runner presents to `/mcp` — the out-of-cluster runner's credential. Give it `escurel:runner` (the narrow runner role; `escurel:admin` also works, a runner with neither cannot claim events, so it takes no inbox work and logs the fix at boot). It holds no signing key: each run's token, agent-profile runs included, is minted by the gateway (`mint_run_token`, which needs `ESCUREL_AUTH_SIGNING_KEY` on the gateway); a gateway without one runs ordinary runs on this credential and refuses agent runs. Wins over `ESCUREL_RUNNER_TOKEN_FILE` and over minting",
     },
     ConfigKey {
         name: "ESCUREL_RUNNER_TOKEN_FILE",
         component: "Runner",
         default: "—",
-        doc: "a file holding the runner's bearer, kept fresh by a sidecar (a laptop or on-prem runner on a short-lived service credential); used when `ESCUREL_RUNNER_TOKEN` is unset, read at startup (an unreadable or empty file refuses to start) and re-read whenever it changes, so a rotated credential is used on the next gateway call (a runner whose calls came back `401` recovers without a restart). Like a static token it cannot mint",
+        doc: "a file holding the runner's bearer, kept fresh by a sidecar (a laptop or on-prem runner on a short-lived service credential); used when `ESCUREL_RUNNER_TOKEN` is unset, read at startup (an unreadable or empty file refuses to start) and re-read whenever it changes, so a rotated credential is used on the next gateway call (a runner whose calls came back `401` recovers without a restart). Otherwise exactly `ESCUREL_RUNNER_TOKEN`: give it `escurel:runner`, and the gateway mints each run's token (`mint_run_token`)",
     },
     ConfigKey {
         name: "ESCUREL_RUNNER_QUEUE_CAP",
@@ -915,7 +939,7 @@ pub const CONFIG_KEYS: &[ConfigKey] = &[
         name: "ESCUREL_RUNNER_LABELS",
         component: "Runner",
         default: "(none)",
-        doc: "comma-separated labels this runner carries (`site:muc,has:sap-gui`); work whose `requires: {labels}` it lacks is left in the inbox for a runner that has them, and the labels are advertised on its `runtime` page. Like every runner, its credential needs `escurel:admin` to claim (an error is logged at boot otherwise, and it takes no inbox work); a webhook trigger it cannot route or claim at once is left to the poller",
+        doc: "comma-separated labels this runner carries (`site:muc,has:sap-gui`); work whose `requires: {labels}` it lacks is left in the inbox for a runner that has them, and the labels are advertised on its `runtime` page. Like every runner, its credential needs `escurel:runner` or `escurel:admin` to claim (an error is logged at boot otherwise, and it takes no inbox work); a webhook trigger it cannot route or claim at once is left to the poller",
     },
     ConfigKey {
         name: "ESCUREL_RUNNER_EXCLUSIVE",
@@ -934,6 +958,12 @@ pub const CONFIG_KEYS: &[ConfigKey] = &[
         component: "Runner",
         default: "max(60s, 4 x poll interval), capped at 60m",
         doc: "how long a `claim_event` lease on an inbox event lasts: 1s to 60m (the gateway's bound) and at least two poll intervals, or the runner refuses to start naming this key. A renewal task renews held leases every third of the lease, independent of the inbox poll; a dead runner's events become claimable this long after it stopped",
+    },
+    ConfigKey {
+        name: "ESCUREL_RUNNER_ADMIT_CONCURRENCY",
+        component: "Runner",
+        default: "8",
+        doc: "how many inbox events one poll admits at once (routing plus a `claim_event` call each), 1..=64; the answers are taken in inbox order, so what is enqueued keeps that order. `1` is the old one-at-a-time admission",
     },
     ConfigKey {
         name: "ESCUREL_RUNNER_HARNESS_ALLOW",
@@ -1077,7 +1107,7 @@ pub const CONFIG_KEYS: &[ConfigKey] = &[
         name: "ESCUREL_RUNNER_AUTH_SIGNING_KEY",
         component: "Runner",
         default: "—",
-        doc: "private key (PEM) the runner signs its minted bearers with; required for agent profiles (`agent:` on a skill), whose runs are minted as the agent",
+        doc: "private key (PEM) for a SELF-MINTING runner (in the cluster, with `ESCUREL_RUNNER_AUTH_ISSUER`): it signs its own bearer and each run's token, agent profiles included. An out-of-cluster runner does not need it — on `ESCUREL_RUNNER_TOKEN` / `_FILE` with `escurel:runner`, the gateway mints its run tokens. Ignored when either token variable is set",
     },
     ConfigKey {
         name: "ESCUREL_RUNNER_AUTH_SUBJECT",
@@ -1620,6 +1650,12 @@ pub const CONFIG_KEYS: &[ConfigKey] = &[
         doc: "echo harness: only runs of this label idle for ESCUREL_ECHO_SLEEP_MS (tests)",
     },
     ConfigKey {
+        name: "ESCUREL_ECHO_SLEEP_ONCE",
+        component: "TestOnly",
+        default: "—",
+        doc: "echo harness: a marker path; only the attempt that creates it idles for ESCUREL_ECHO_SLEEP_MS (tests)",
+    },
+    ConfigKey {
         name: "ESCUREL_ECHO_STDIN_TURNS",
         component: "Harness",
         default: "—",
@@ -1735,8 +1771,8 @@ const GROUPS: &[(&str, &str)] = &[
          ready after a successful write of its reserved `escurel:runner-status` record\n\
          (`report_runner_status`; an older gateway: a system event)\n\
          and becomes unready when that write is refused, fails, goes stale, or the\n\
-         runner starts draining. The runner service credential MUST carry `escurel:admin`\n\
-         (or the runner must mint): a runner whose `claim_event` is refused takes no inbox\n\
+         runner starts draining. The runner service credential MUST carry `escurel:runner`\n\
+         or `escurel:admin` (or the runner must mint): a runner whose `claim_event` is refused takes no inbox\n\
          work and logs the fix at boot. Keep per-run harness credentials caller-scoped. `GET /healthz` remains\n\
          a dependency-free liveness probe. Webhook-only runners without a configured\n\
          tenant/token can process `/trigger` but deliberately report unready at\n\

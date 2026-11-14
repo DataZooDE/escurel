@@ -36,8 +36,9 @@ pub use escurel_types::{
     AttachExternalRequest, AttachExternalResponse, AuditRequest, AuditResponse,
     CompactLanesRequest, CompactProgress, DeleteChatHistoryRequest, DeleteChatHistoryResponse,
     EmbeddingReloadRequest, EmbeddingReloadResponse, ExportPackRequest, HealthRequest,
-    HealthResponse, MigrateKindReport, MigrateKindRequest, PackManifest, PurgeEventsRequest,
-    PurgeEventsResponse, QuotaGetRequest, QuotaGetResponse, RebuildProgress, RebuildRequest,
+    HealthResponse, IssueAgentTokenRequest, IssueAgentTokenResponse, MigrateKindReport,
+    MigrateKindRequest, PackManifest, PurgeEventsRequest, PurgeEventsResponse, QuotaGetRequest,
+    QuotaGetResponse, RebuildProgress, RebuildRequest, RevokeAgentTokensResponse,
     TenantCreateRequest, TenantCreateResponse, TenantDeleteRequest, TenantDeleteResponse,
     TenantExportRequest, TenantGetRequest, TenantGetResponse, TenantImportResponse,
     TenantListRequest, TenantListResponse, TenantUpdateRequest, TenantUpdateResponse,
@@ -141,6 +142,11 @@ impl AdminClient {
         if let Some(ep) = spec.embedding_provider {
             args["embedding_provider"] = serde_json::to_value(ep).unwrap_or_default();
         }
+        if req.clear_transcript_retention {
+            args["transcript_retention_days"] = Value::Null;
+        } else if let Some(days) = spec.transcript_retention_days {
+            args["transcript_retention_days"] = days.into();
+        }
         self.transport.call_typed("tenant_update", args).await
     }
 
@@ -233,6 +239,32 @@ impl AdminClient {
             }
         }
         self.transport.call_typed("usage_report", args).await
+    }
+
+    /// Issue a revocable bearer for an external agent that runs as the agent
+    /// profile `req.agent` (`issue_agent_token`, #829). Admin only; revoke it
+    /// with [`Self::revoke_agent_tokens`].
+    pub async fn issue_agent_token(
+        &self,
+        req: IssueAgentTokenRequest,
+    ) -> Result<IssueAgentTokenResponse, Error> {
+        let mut args = json!({ "agent": req.agent });
+        if req.ttl_secs > 0 {
+            args["ttl_secs"] = json!(req.ttl_secs);
+        }
+        self.transport.call_typed("issue_agent_token", args).await
+    }
+
+    /// Revoke every token issued so far for the agent profile `agent`
+    /// (`revoke_agent_tokens`, #829): the gateway moves the page's
+    /// `token_epoch` forward on its own clock. Admin only.
+    pub async fn revoke_agent_tokens(
+        &self,
+        agent: &str,
+    ) -> Result<RevokeAgentTokensResponse, Error> {
+        self.transport
+            .call_typed("revoke_agent_tokens", json!({ "agent": agent }))
+            .await
     }
 
     /// Attach an external read-only source to the gateway's tenant. The

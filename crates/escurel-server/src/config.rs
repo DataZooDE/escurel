@@ -495,6 +495,8 @@ struct TomlAuth {
     admin_role_claim: Option<String>,
     admin_role_value: Option<String>,
     operator_role_value: Option<String>,
+    runner_role_value: Option<String>,
+    bridge_role_value: Option<String>,
     groups_claim: Option<String>,
     jwks_refresh_secs: Option<u64>,
     jwks_uri: Option<String>,
@@ -562,6 +564,11 @@ pub struct AuthConfig {
     /// Role value (same claim as admin) marking an OPERATOR credential: the only one that may
     /// name another tenant in the cross-tenant admin tools.
     pub operator_role_value: String,
+    /// Role value (same claim as admin) marking the RUNNER service credential (#828):
+    /// claims events, keeps the runner's books, mints per-run tokens; not admin.
+    pub runner_role_value: String,
+    /// Role value (same claim as admin) marking the chat BRIDGE service credential.
+    pub bridge_role_value: String,
     /// JWT claim listing the subject's groups for the data-level ACL.
     /// Defaults to the same `roles` claim admin derives from.
     pub groups_claim: String,
@@ -596,6 +603,20 @@ pub struct AuthConfig {
     /// `role=tool,tool;role=tool`). A token whose groups carry a listed role may call only those
     /// tools. Empty = no restricted role.
     pub role_tools: crate::role_gate::RoleTools,
+}
+
+impl AuthConfig {
+    /// The built-in role values (admin, operator, runner, bridge): privilege markers in the roles
+    /// claim, never a configurable tool ceiling and never a group name.
+    #[must_use]
+    pub fn builtin_role_values(&self) -> [&str; 4] {
+        [
+            self.admin_role_value.as_str(),
+            self.operator_role_value.as_str(),
+            self.runner_role_value.as_str(),
+            self.bridge_role_value.as_str(),
+        ]
+    }
 }
 
 /// The gateway's own signing identity (workbench backend P2-6), for
@@ -755,6 +776,10 @@ pub struct EscurelConfig {
     /// it against the same secret. `None` (default) leaves the POST
     /// unsigned.
     pub webhook_secret: Option<String>,
+    /// The secret a `POST /hooks/schedule/<skill>` must be signed with
+    /// (`ESCUREL_SCHEDULE_WEBHOOK_SECRET[_FILE]`, #827). `None` (default)
+    /// leaves the endpoint unmounted.
+    pub schedule_webhook_secret: Option<String>,
     /// Optional shared secret signing/verifying skill packs
     /// (`ESCUREL_PACK_SECRET`, REQ-PACK-02). `None` (default) disables
     /// the pack surface fail-closed: `export_pack` refuses rather than
@@ -1105,6 +1130,10 @@ impl EscurelConfig {
         let pack_secret = env
             .get("ESCUREL_PACK_SECRET")
             .filter(|s| !s.trim().is_empty());
+        let schedule_webhook_secret = schedule_webhook_secret(
+            env.get("ESCUREL_SCHEDULE_WEBHOOK_SECRET"),
+            env.get("ESCUREL_SCHEDULE_WEBHOOK_SECRET_FILE"),
+        )?;
         // Optional per-tenant secret keying the async-operation slug (F-4). An
         // empty value is unset — the slug degrades to a peer-computable hash.
         let operation_slug_secret = env
@@ -1289,6 +1318,16 @@ impl EscurelConfig {
                         toml_cfg.auth.operator_role_value,
                         "escurel:operator",
                     ),
+                    runner_role_value: pick(
+                        "ESCUREL_AUTH_RUNNER_ROLE_VALUE",
+                        toml_cfg.auth.runner_role_value,
+                        "escurel:runner",
+                    ),
+                    bridge_role_value: pick(
+                        "ESCUREL_AUTH_BRIDGE_ROLE_VALUE",
+                        toml_cfg.auth.bridge_role_value,
+                        "escurel:bridge",
+                    ),
                     groups_claim: pick(
                         "ESCUREL_AUTH_GROUPS_CLAIM",
                         toml_cfg.auth.groups_claim,
@@ -1349,16 +1388,29 @@ impl EscurelConfig {
             _ => None,
         };
 
-        // A service role equal to the admin or operator value would restrict every admin token.
+        // A service role equal to a built-in role value would restrict every token holding it.
         if let Some(a) = auth.as_ref()
             && let Some(r) = a
                 .role_tools
                 .roles()
-                .find(|r| *r == a.admin_role_value || *r == a.operator_role_value)
+                .find(|r| a.builtin_role_values().contains(r))
         {
             return Err(ConfigError::RoleTools(format!(
-                "role `{r}` is the admin or operator role value"
+                "role `{r}` is a built-in role value (admin, operator, runner or bridge)"
             )));
+        }
+        // Two built-in roles sharing one value would grant one through the other.
+        if let Some(a) = auth.as_ref() {
+            let values = a.builtin_role_values();
+            for (i, v) in values.iter().enumerate() {
+                if values[..i].contains(v) {
+                    return Err(ConfigError::InvalidValue {
+                        var: "ESCUREL_AUTH_RUNNER_ROLE_VALUE",
+                        value: (*v).to_owned(),
+                        reason: "the admin, operator, runner and bridge role values must differ",
+                    });
+                }
+            }
         }
 
         if let Some(a) = auth.as_ref() {
@@ -1786,6 +1838,7 @@ impl EscurelConfig {
             seed_dir,
             webhook_url,
             webhook_secret,
+            schedule_webhook_secret,
             pack_secret,
             operation_slug_secret,
             metrics_listen,
@@ -2694,6 +2747,7 @@ impl EscurelConfig {
             ingest_max_body_bytes: self.ingest_max_body_bytes,
             webhook_url: self.webhook_url.clone(),
             webhook_secret: self.webhook_secret.clone(),
+            schedule_webhook_secret: self.schedule_webhook_secret.clone(),
             pack_secret: self.pack_secret.clone(),
             operation_slug_secret: self.operation_slug_secret.clone(),
             metrics_listen: self.metrics_listen.clone(),
@@ -3239,6 +3293,10 @@ impl EscurelConfig {
             .with_tenant_claim(auth.tenant_claim.clone())
             .with_admin_role(auth.admin_role_claim.clone(), auth.admin_role_value.clone())
             .with_operator_role(auth.operator_role_value.clone())
+            .with_service_roles(
+                auth.runner_role_value.clone(),
+                auth.bridge_role_value.clone(),
+            )
             .with_groups_claim(auth.groups_claim.clone());
         if let Some(uri) = auth.jwks_uri.clone() {
             cfg = cfg.with_jwks_uri(uri);
@@ -3507,6 +3565,70 @@ mod rerank_config_tests {
                 ..
             }
         ));
+    }
+}
+
+/// `ESCUREL_SCHEDULE_WEBHOOK_SECRET` / `_FILE` (#827), as read: `None` when
+/// neither is set (or the value is blank), the secret otherwise. Both set, or
+/// a file that cannot be read or is empty, refuses to start: a webhook that
+/// was meant to be guarded must not come up unguarded or not at all silently.
+fn schedule_webhook_secret(
+    value: Option<String>,
+    file: Option<String>,
+) -> Result<Option<String>, ConfigError> {
+    let value = value.filter(|v| !v.trim().is_empty());
+    let file = file.filter(|f| !f.trim().is_empty());
+    match (value, file) {
+        (Some(_), Some(path)) => Err(ConfigError::InvalidValue {
+            var: "ESCUREL_SCHEDULE_WEBHOOK_SECRET_FILE",
+            value: path,
+            reason: "set either ESCUREL_SCHEDULE_WEBHOOK_SECRET or …_FILE, not both",
+        }),
+        (Some(secret), None) => Ok(Some(secret)),
+        (None, Some(path)) => match std::fs::read_to_string(&path) {
+            Ok(raw) if !raw.trim().is_empty() => Ok(Some(raw.trim().to_owned())),
+            _ => Err(ConfigError::InvalidValue {
+                var: "ESCUREL_SCHEDULE_WEBHOOK_SECRET_FILE",
+                value: path,
+                reason: "could not read a non-empty secret from the file",
+            }),
+        },
+        (None, None) => Ok(None),
+    }
+}
+
+#[cfg(test)]
+mod schedule_webhook_secret_tests {
+    use super::*;
+
+    #[test]
+    fn the_secret_comes_from_the_value_or_the_file_never_both() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("secret");
+        std::fs::write(&file, "from-file\n").unwrap();
+        let path = || Some(file.display().to_string());
+        assert_eq!(schedule_webhook_secret(None, None).unwrap(), None);
+        assert_eq!(
+            schedule_webhook_secret(Some(" ".into()), None).unwrap(),
+            None
+        );
+        assert_eq!(
+            schedule_webhook_secret(Some("s".into()), None)
+                .unwrap()
+                .as_deref(),
+            Some("s")
+        );
+        assert_eq!(
+            schedule_webhook_secret(None, path()).unwrap().as_deref(),
+            Some("from-file")
+        );
+        assert!(schedule_webhook_secret(Some("s".into()), path()).is_err());
+        assert!(schedule_webhook_secret(None, Some("/nonexistent/secret".into())).is_err());
+        std::fs::write(&file, "  \n").unwrap();
+        assert!(
+            schedule_webhook_secret(None, path()).is_err(),
+            "an empty file"
+        );
     }
 }
 

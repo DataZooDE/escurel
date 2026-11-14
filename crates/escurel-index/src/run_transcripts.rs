@@ -73,6 +73,24 @@ impl Indexer {
         records: u64,
         max_bytes: u64,
     ) -> Result<StoredTranscript, IndexerError> {
+        self.store_run_transcript_at(run_id, jsonl, records, max_bytes, SystemTime::now())
+            .await
+    }
+
+    /// [`Self::store_run_transcript`], recording it as stored at `stored_at`
+    /// — the time retention counts from (an import keeping the original
+    /// age, a test backdating one).
+    ///
+    /// # Errors
+    /// As [`Self::store_run_transcript`].
+    pub async fn store_run_transcript_at(
+        &self,
+        run_id: &str,
+        jsonl: Bytes,
+        records: u64,
+        max_bytes: u64,
+        stored_at: SystemTime,
+    ) -> Result<StoredTranscript, IndexerError> {
         let key = self.transcript_key(run_id)?;
         let bytes = jsonl.len() as u64;
         if bytes > max_bytes {
@@ -123,13 +141,7 @@ impl Indexer {
             conn.execute(
                 "INSERT INTO run_transcripts (run_id, sha256, records, bytes, stored_at) \
                  VALUES (?, ?, ?, ?, CAST(? AS TIMESTAMP))",
-                params![
-                    run_id,
-                    sha256,
-                    records as i64,
-                    bytes as i64,
-                    ts(SystemTime::now())
-                ],
+                params![run_id, sha256, records as i64, bytes as i64, ts(stored_at)],
             )?;
         }
         if let Err(e) = self.store.write(&key, jsonl).await {

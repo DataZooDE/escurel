@@ -24,6 +24,7 @@ scopes:
   tools: [search, expand, update_page, assign_event]
   write: ["markdown/instances/note/*"]
 max_concurrent: 2
+token_epoch: 1790071200
 ---
 # scribe
 ''';
@@ -135,6 +136,22 @@ void main() {
     expect(find.text('echo · default model'), findsOneWidget);
     expect(find.text('tools: any · write: any'), findsOneWidget);
     expect(find.text('no runs (30d)'), findsOneWidget);
+
+    // Revoked tokens (#829): since when the agent's tokens are valid.
+    expect(find.bySemanticsLabel('agent-tokens-since:scribe'), findsOneWidget);
+    expect(
+      find.text('tokens valid since 2026-09-22T10:00:00Z'),
+      findsOneWidget,
+    );
+    // The probe (scripts/verify-demo.sh) reads the visible text off this one node, as its value.
+    expect(
+      tester
+          .getSemantics(find.bySemanticsLabel('agent-tokens-since:scribe'))
+          .getSemanticsData()
+          .value,
+      'tokens valid since 2026-09-22T10:00:00Z',
+    );
+    expect(find.bySemanticsLabel('agent-tokens-since:janitor'), findsNothing);
   });
 
   testWidgets('a non-admin sees the profiles but not the usage', (

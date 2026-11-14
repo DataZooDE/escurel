@@ -638,13 +638,22 @@ fn run(task: &HarnessTask) -> Result<HarnessOutcome, String> {
     // Test-only idle (workbench backend P2-3a): `ESCUREL_ECHO_SLEEP_MS`
     // holds the harness before it acts, so a test can cancel a run that is
     // genuinely in flight. Off unless set.
-    // `ESCUREL_ECHO_SLEEP_SKILL` narrows the idle to one label's runs.
+    // `ESCUREL_ECHO_SLEEP_SKILL` narrows the idle to one label's runs;
+    // `ESCUREL_ECHO_SLEEP_ONCE` (a path) to the first attempt that creates
+    // the file, so a test can time out one attempt and let the retry finish.
     if let Some(ms) = std::env::var("ESCUREL_ECHO_SLEEP_MS")
         .ok()
         .and_then(|v| v.parse::<u64>().ok())
         .filter(|ms| *ms > 0)
         && std::env::var("ESCUREL_ECHO_SLEEP_SKILL").map_or(true, |only| {
             event.get("label_skill").and_then(Value::as_str) == Some(only.as_str())
+        })
+        && std::env::var("ESCUREL_ECHO_SLEEP_ONCE").map_or(true, |marker| {
+            std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(marker)
+                .is_ok()
         })
     {
         std::thread::sleep(std::time::Duration::from_millis(ms));

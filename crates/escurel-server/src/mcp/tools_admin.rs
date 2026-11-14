@@ -1079,6 +1079,18 @@ pub(super) struct TenantSpecArgs {
     quotas: Option<escurel_types::QuotaOverride>,
     #[serde(default)]
     embedding_provider: Option<escurel_types::EmbeddingSpec>,
+    /// Absent = leave it; `null` = clear it (the gateway's retention again).
+    #[serde(default, deserialize_with = "present_or_null")]
+    transcript_retention_days: Option<Option<u32>>,
+}
+
+/// A field that may be absent (`None`), `null` (`Some(None)`) or a value.
+fn present_or_null<'de, D, T>(de: D) -> Result<Option<Option<T>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Option::<T>::deserialize(de).map(Some)
 }
 
 /// Convert the persisted admin spec into the wire spec. The lifecycle/quota/
@@ -1090,6 +1102,7 @@ pub(super) fn admin_to_wire(s: AdminTenantSpec) -> TypesTenantSpec {
         status: s.status,
         quotas: s.quotas,
         embedding_provider: s.embedding_provider,
+        transcript_retention_days: s.transcript_retention_days,
     }
 }
 
@@ -1111,6 +1124,7 @@ pub(super) async fn tool_tenant_create(
         status: a.status.unwrap_or_default(),
         quotas: a.quotas,
         embedding_provider: a.embedding_provider,
+        transcript_retention_days: a.transcript_retention_days.flatten(),
     };
     store.create(&spec).await.map_err(map_admin_err)?;
     to_value(TenantCreateResponse {
@@ -1170,6 +1184,11 @@ pub(super) async fn tool_tenant_update(
         a.embedding_provider.is_some() && a.embedding_provider != spec.embedding_provider;
     if let Some(ep) = a.embedding_provider {
         spec.embedding_provider = Some(ep);
+    }
+    // Read by the transcript sweep on its next tick: no live side effect here. `null` clears the
+    // override, so the tenant takes the gateway's retention again.
+    if let Some(days) = a.transcript_retention_days {
+        spec.transcript_retention_days = days;
     }
     store.update(&spec).await.map_err(map_admin_err)?;
 

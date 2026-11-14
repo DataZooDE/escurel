@@ -5,23 +5,35 @@ import type { SendOutcome } from './controlWait';
 /** The runner refuses an inject whose text is over this many bytes (references/11). */
 export const INJECT_MAX_BYTES = 8192;
 
-/**
- * Harnesses whose live session reads one more user turn. The runner is the authority: it answers
- * `unsupported` for any other, and that answer is still handled. This list only spares the person a
- * box that is bound to fail.
- */
-const TAKES_MESSAGES = new Set(['claude', 'echo']);
-
-export function harnessTakesMessages(harness: string | undefined): boolean {
-  return TAKES_MESSAGES.has((harness ?? '').trim().toLowerCase());
+/** What the runtime holding a run says about its harnesses (`list_runtimes`, #827). */
+export interface HeldHarnesses {
+  harnesses?: { name: string; supports_inject?: boolean | null }[];
 }
 
-/** Whether the steer box is shown: `undefined` hides it, `available: false` explains why it is not offered. */
-export type SteerOffer = { available: true } | { available: false; reason: string };
+/**
+ * Whether `harness` takes a message mid-run, as the runtime holding the run declares it; `undefined`
+ * when nothing says (no runtime visible, an older runner's page). The runner is the authority either
+ * way: it answers `unsupported` for a harness that cannot, and that answer is handled.
+ */
+export function harnessTakesMessages(
+  heldBy: HeldHarnesses | undefined,
+  harness: string | undefined,
+): boolean | undefined {
+  const name = (harness ?? '').trim().toLowerCase();
+  const declared = heldBy?.harnesses?.find((h) => h.name.trim().toLowerCase() === name);
+  return typeof declared?.supports_inject === 'boolean' ? declared.supports_inject : undefined;
+}
+
+/**
+ * Whether the steer box is shown: `undefined` hides it, `available: false` explains why it is not
+ * offered, and `hint` says the runtime did not tell (the box is offered; the runner answers).
+ */
+export type SteerOffer = { available: true; hint?: string } | { available: false; reason: string };
 
 export function steerOffer(run: {
   status: string;
   harness?: string | undefined;
+  heldBy?: HeldHarnesses | undefined;
 }): SteerOffer | undefined {
   if (run.status !== 'running') return undefined;
   const harness = run.harness?.trim();
@@ -30,9 +42,17 @@ export function steerOffer(run: {
       available: false,
       reason: 'This run does not say which agent runs it, so it cannot be steered from here.',
     };
-  return harnessTakesMessages(harness)
-    ? { available: true }
-    : { available: false, reason: `The ${harness} agent cannot take a message while it runs.` };
+  switch (harnessTakesMessages(run.heldBy, harness)) {
+    case true:
+      return { available: true };
+    case false:
+      return { available: false, reason: `The ${harness} agent cannot take a message while it runs.` };
+    case undefined:
+      return {
+        available: true,
+        hint: `Whether the ${harness} agent can take a message is not known here; the runner says if it cannot.`,
+      };
+  }
 }
 
 /** Why `text` would be refused, in words; `undefined` when it may be sent. */

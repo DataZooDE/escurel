@@ -453,6 +453,79 @@ pub async fn usage(client: &escurel_client::AdminClient, a: UsageArgs) -> Result
     Ok(serde_json::to_value(resp)?)
 }
 
+/// Agent profiles (#823) as external agents use them (#829).
+#[derive(Subcommand, Debug)]
+pub enum AgentCmd {
+    /// Tokens for an agent that runs outside escurel (Claude Code, Codex, Multica).
+    #[command(subcommand)]
+    Token(AgentTokenCmd),
+}
+
+#[derive(Subcommand, Debug)]
+pub enum AgentTokenCmd {
+    /// Issue a bearer that runs as the agent profile, confined by its scopes
+    /// (`issue_agent_token`, admin). The token is printed once: store it where
+    /// the harness reads it.
+    Issue {
+        /// The agent profile id (`markdown/instances/agent/<agent>.md`).
+        agent: String,
+        /// Token life: seconds, or a number with `h` / `d` (`12h`, `30d`).
+        /// Default 30d, at most 90d.
+        #[arg(long, value_parser = parse_ttl)]
+        ttl: Option<u64>,
+    },
+    /// Revoke every token issued so far for the agent — external and run
+    /// tokens alike (`revoke_agent_tokens`, admin). The gateway moves the
+    /// page's `token_epoch` forward on its own clock; the next call with an
+    /// older token is `agent_token_revoked`.
+    Revoke {
+        /// The agent profile id.
+        agent: String,
+    },
+}
+
+/// `3600`, `12h`, `30d` → seconds.
+fn parse_ttl(raw: &str) -> Result<u64, String> {
+    let raw = raw.trim();
+    let (num, unit) = match raw.char_indices().last() {
+        Some((i, 'h')) => (&raw[..i], 3600),
+        Some((i, 'd')) => (&raw[..i], 86_400),
+        Some((i, 's')) => (&raw[..i], 1),
+        _ => (raw, 1),
+    };
+    num.parse::<u64>()
+        .ok()
+        .and_then(|n| n.checked_mul(unit))
+        .filter(|n| *n > 0)
+        .ok_or_else(|| format!("`{raw}` is not a duration (seconds, or e.g. `12h`, `30d`)"))
+}
+
+/// `agent token issue` — an admin tool, so `main` dials it with the admin client.
+pub async fn issue_agent_token(
+    client: &escurel_client::AdminClient,
+    agent: String,
+    ttl: Option<u64>,
+) -> Result<Value> {
+    let resp = client
+        .issue_agent_token(escurel_client::IssueAgentTokenRequest {
+            agent,
+            ttl_secs: ttl.unwrap_or(0),
+        })
+        .await?;
+    Ok(serde_json::to_value(resp)?)
+}
+
+/// `agent token revoke` — an admin tool, so `main` dials it with the admin
+/// client. The gateway computes the epoch; this side only names the agent.
+pub async fn revoke_agent_tokens(
+    client: &escurel_client::AdminClient,
+    agent: &str,
+) -> Result<Value> {
+    Ok(serde_json::to_value(
+        client.revoke_agent_tokens(agent).await?,
+    )?)
+}
+
 /// Runner processes that registered themselves (#818).
 #[derive(Subcommand, Debug)]
 pub enum RuntimeCmd {
@@ -676,6 +749,9 @@ pub async fn run(client: &Client, cmd: Command) -> Result<Value> {
         Command::Provenance(ProvenanceCmd::Path(a)) => provenance_path(client, a).await,
         Command::Event(c) => event_cmd(client, c).await,
         Command::Run(c) => run_cmd(client, c).await,
+        Command::Agent(AgentCmd::Token(_)) => {
+            unreachable!("agent token issue|revoke handled in main (admin client)")
+        }
         Command::Runtime(RuntimeCmd::List) => {
             Ok(serde_json::to_value(client.list_runtimes().await?)?)
         }

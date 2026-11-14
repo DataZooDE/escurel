@@ -120,9 +120,7 @@ fn signing_payload(manifest: &PackManifest) -> Vec<u8> {
 /// manifest-sans-signature JSON.
 #[must_use]
 pub fn sign_manifest(manifest: &PackManifest, secret: &str) -> String {
-    let mut mac = HmacSha256::new_from_slice(secret.as_bytes()).expect("hmac accepts any key len");
-    mac.update(&signing_payload(manifest));
-    format!("sha256={:x}", mac.finalize().into_bytes())
+    crate::webhook_signature::sign(secret, &signing_payload(manifest))
 }
 
 /// Verify a pack before trusting it (REQ-PACK-02, fail-closed): the
@@ -134,7 +132,7 @@ pub fn verify_pack(manifest: &PackManifest, tarball: &[u8], secret: &str) -> Res
     let Some(sig_hex) = manifest.signature.strip_prefix("sha256=") else {
         return Err("pack_signature_invalid: manifest signature is not `sha256=<hex>`".to_owned());
     };
-    let Ok(sig_bytes) = hex_decode(sig_hex) else {
+    let Some(sig_bytes) = crate::webhook_signature::decode_hex(sig_hex) else {
         return Err("pack_signature_invalid: manifest signature is not valid hex".to_owned());
     };
     let mut mac = HmacSha256::new_from_slice(secret.as_bytes()).expect("hmac accepts any key len");
@@ -156,15 +154,4 @@ pub fn verify_pack(manifest: &PackManifest, tarball: &[u8], secret: &str) -> Res
         ));
     }
     Ok(())
-}
-
-/// Lowercase/uppercase-hex decode without a new dependency.
-fn hex_decode(s: &str) -> Result<Vec<u8>, ()> {
-    if !s.len().is_multiple_of(2) {
-        return Err(());
-    }
-    (0..s.len())
-        .step_by(2)
-        .map(|i| u8::from_str_radix(&s[i..i + 2], 16).map_err(|_| ()))
-        .collect()
 }

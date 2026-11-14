@@ -47,11 +47,10 @@ pub(super) async fn tool_put_run_transcript(
         ));
     }
     let own_run = caller.run_id == Some(a.run_id.as_str());
-    let runner_admin = caller.is_admin && !super::tools_write::is_machine_caller(&caller);
-    if !own_run && !runner_admin {
+    if !own_run && !caller.may_keep_books() {
         return Err(JsonRpcError::forbidden(format!(
-            "put_run_transcript: only run `{}`'s own bearer (or the runner's admin bearer) \
-             may store its transcript",
+            "put_run_transcript: only run `{}`'s own bearer (or the runner's own credential: \
+             escurel:runner or escurel:admin) may store its transcript",
             a.run_id
         ))
         .with_code("transcript_not_your_run", false));
@@ -163,10 +162,11 @@ pub(super) async fn readable_transcript(
     }
 }
 
-/// Delete transcripts past `ESCUREL_RUN_TRANSCRIPT_RETENTION_DAYS`; a no-op
-/// when they are kept forever.
+/// Delete transcripts past their retention: the served tenant's own
+/// `transcript_retention_days` when its spec sets one, else
+/// `ESCUREL_RUN_TRANSCRIPT_RETENTION_DAYS`; a no-op when they are kept forever.
 pub(crate) async fn sweep_run_transcripts(state: &crate::server::AppState) {
-    let Some(retention) = state.run_transcript_retention else {
+    let Some(retention) = transcript_retention(state).await else {
         return;
     };
     let Some(indexer) = state
@@ -183,5 +183,26 @@ pub(crate) async fn sweep_run_transcripts(state: &crate::server::AppState) {
         Ok(0) => {}
         Ok(n) => tracing::info!(swept = n, "run transcripts past their retention deleted"),
         Err(e) => tracing::warn!(error = %e, "run transcript sweep failed"),
+    }
+}
+
+/// The retention the sweep applies. The tenant spec is read on every tick, so
+/// a `tenant_update` applies without a restart; an unreadable spec falls back
+/// to the gateway's value rather than skipping the sweep.
+async fn transcript_retention(state: &crate::server::AppState) -> Option<std::time::Duration> {
+    let tenant_days = match (state.tenant_store.as_ref(), state.served_tenant.as_deref()) {
+        (Some(store), Some(tenant)) => match store.get(tenant).await {
+            Ok(spec) => spec.and_then(|s| s.transcript_retention_days),
+            Err(e) => {
+                tracing::warn!(error = %e, "transcript sweep: tenant spec unreadable; using the gateway retention");
+                None
+            }
+        },
+        _ => None,
+    };
+    match tenant_days {
+        Some(0) => None,
+        Some(days) => Some(std::time::Duration::from_secs(u64::from(days) * 86_400)),
+        None => state.run_transcript_retention,
     }
 }

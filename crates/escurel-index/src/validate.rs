@@ -344,13 +344,29 @@ fn check_schedule(page_kind: PageKind, fields: &YamlMapping) -> Vec<Issue> {
                 }
             }
         }
-        if fields.get("schedule").is_none() {
+        if fields.get("schedule").is_none() && fields.get("schedule_webhook").is_none() {
             issues.push(Issue::warning(
                 "schedule_budget_invalid",
                 "frontmatter.schedule_budget",
                 "`schedule_budget:` without a `schedule:` caps nothing",
             ));
         }
+    }
+    // #827: the opt-in a signed `POST /hooks/schedule/<skill>` needs. Anything but a boolean is an
+    // error, so `"yes"` is not read as a silent "no".
+    if let Some(raw) = fields.get("schedule_webhook")
+        && raw.as_bool().is_none()
+    {
+        issues.push(
+            Issue::error(
+                "schedule_webhook_invalid",
+                "frontmatter.schedule_webhook",
+                "`schedule_webhook:` is `true` or `false`",
+            )
+            .with_suggestion(
+                "write `schedule_webhook: true` to let a signed webhook fire this skill",
+            ),
+        );
     }
     issues
 }
@@ -809,6 +825,21 @@ fn check_agent_keys(page_kind: PageKind, fields: &YamlMapping) -> Vec<Issue> {
             "max_concurrent",
             "`max_concurrent:` must be a positive whole number",
         ));
+    }
+    // Revocation (#829): a value that is not Unix seconds would revoke nothing the reader
+    // expects, so it is an error rather than a silently ignored key.
+    if fields
+        .get("token_epoch")
+        .is_some_and(|v| v.as_u64().is_none())
+    {
+        issues.push(
+            error(
+                "agent_token_epoch_invalid",
+                "token_epoch",
+                "`token_epoch:` is Unix seconds: tokens for this agent issued before it are refused",
+            )
+            .with_suggestion("`escurel agent token revoke <id>` sets it"),
+        );
     }
     issues
 }
@@ -2455,6 +2486,26 @@ mod schedule_tests {
             "schedule: \"CRON_TZ=Europe/Berlin 15 7 * * 1-5\"\nschedule_budget: {runs_per_day: 5}",
         ] {
             assert!(codes(PageKind::Skill, yaml).is_empty(), "{yaml}");
+        }
+    }
+
+    #[test]
+    fn schedule_webhook_is_a_boolean() {
+        assert!(codes(PageKind::Skill, "schedule_webhook: true").is_empty());
+        assert!(
+            codes(
+                PageKind::Skill,
+                "schedule_webhook: true\nschedule_budget: {runs_per_day: 2}"
+            )
+            .is_empty(),
+            "a budget caps the webhook's runs too"
+        );
+        for bad in ["schedule_webhook: \"yes\"", "schedule_webhook: 1"] {
+            assert_eq!(
+                codes(PageKind::Skill, bad),
+                vec![("schedule_webhook_invalid".to_owned(), true)],
+                "{bad}"
+            );
         }
     }
 

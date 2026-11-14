@@ -299,6 +299,29 @@ pub struct MintAgentTokenResponse {
     pub expires_at: String,
 }
 
+/// `mint_run_token` arguments (#828): one run's bearer, minted by the gateway
+/// for a runner that holds no signing key.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct MintRunTokenRequest {
+    pub run_id: String,
+    /// Empty = the run is its own root.
+    pub root_event_id: String,
+    pub trace_id: String,
+    /// The run's label skill.
+    pub skill: String,
+    /// The agent profile the run executes as; empty = none.
+    pub agent: String,
+    /// `wide` asks for the admin authority (honoured for an admin caller
+    /// only); empty = narrowed.
+    pub grant: String,
+    /// Token life in seconds; 0 = the server's default (1800).
+    pub ttl_secs: u64,
+}
+
+/// `mint_run_token` result: the same shape as [`MintAgentTokenResponse`].
+pub type MintRunTokenResponse = MintAgentTokenResponse;
+
 /// `list_lineage` arguments.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 #[serde(default)]

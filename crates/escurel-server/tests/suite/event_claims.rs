@@ -438,3 +438,311 @@ async fn another_admin_naming_the_same_holder_id_cannot_renew_or_take_the_lease(
     assert_eq!(claim["claimed"], false, "{claim}");
     assert_eq!(claim["holder"], "runner:a#shared", "{claim}");
 }
+
+/// Owner-private and admin-written: no `acl:` grant; `c1` is bob's.
+const CUSTOMER: &str = "---\nkind: skill\nid: customer\ndescription: c\nvisibility: owner\nowner_field: owner\n---\n# customer\n";
+
+async fn gateway_with_customer() -> EscurelProcess {
+    EscurelProcess::spawn(Opts {
+        auth: AuthMode::TestIssuer,
+        config_overrides: escurel_test_support::ConfigOverrides {
+            event_acl: Some(escurel_test_support::EventAclMode::Enforce),
+            write_acl: Some(escurel_test_support::WriteAclMode::Enforce),
+            ..Default::default()
+        },
+        fixtures: Some(
+            FixtureBuilder::new()
+                .tenant(TENANT)
+                .skill("customer", CUSTOMER)
+                .instance(
+                    "customer",
+                    "c1",
+                    "---\nkind: instance\nskill: customer\nid: c1\nowner: \"member:bob\"\n---\n# c1\n",
+                )
+                .done(),
+        ),
+    })
+    .await
+}
+
+/// The narrow `escurel:runner` service role (#828): everything a runner does
+/// for itself — read the inbox, claim, keep its books, register its runtime,
+/// report status — and nothing an admin alone does. A run token carrying the
+/// role is a machine token and holds none of it.
+#[tokio::test]
+async fn a_runner_role_keeps_its_books_and_nothing_more() {
+    let p = gateway_with_customer().await;
+    let runner = p.mint_token_with_groups(TENANT, "runner:hq", &["escurel:runner"], false);
+    let member = p.mint_token_with_sub(TENANT, Role::Agent, "member:alice");
+    let event = call(
+        &p,
+        &admin(&p),
+        "capture_event",
+        json!({ "source": "test", "mime": "text/plain", "label_skill": "customer",
+                "instance_page_id": "markdown/instances/customer/c1.md",
+                "title": "t", "body": "b" }),
+    )
+    .await["event_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+
+    // It sees the events it may claim; a member does not see this one.
+    let ids = |r: &Value| -> Vec<String> {
+        r["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|e| e["event_id"].as_str().unwrap().to_owned())
+            .collect()
+    };
+    assert!(ids(&call(&p, &runner, "list_inbox", json!({})).await).contains(&event));
+    assert!(!ids(&call(&p, &member, "list_inbox", json!({})).await).contains(&event));
+    assert_eq!(
+        ids(&call(&p, &runner, "list_events", json!({ "event_id": event })).await),
+        vec![event.clone()]
+    );
+
+    // Claims and renews; its tools/list offers the claim protocol.
+    let claimed = call(
+        &p,
+        &runner,
+        "claim_event",
+        json!({ "event_id": event, "holder_id": "l1" }),
+    )
+    .await;
+    assert_eq!(claimed["claimed"], true, "{claimed}");
+    let renewed = call(
+        &p,
+        &runner,
+        "renew_claim",
+        json!({ "event_id": event, "holder_id": "l1" }),
+    )
+    .await;
+    assert_eq!(renewed["renewed"], true, "{renewed}");
+    let listed: Value = reqwest::Client::new()
+        .post(p.mcp_url())
+        .header("authorization", format!("Bearer {runner}"))
+        .json(&json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/list" }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let names: Vec<&str> = listed["result"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["name"].as_str().unwrap())
+        .collect();
+    assert!(names.contains(&"claim_event") && names.contains(&"renew_claim"));
+    assert!(!names.contains(&"purge_page"), "no admin tools offered");
+
+    // Keeps its books: lifecycle records, status, its runtime page.
+    call(
+        &p,
+        &runner,
+        "capture_event",
+        json!({ "event_id": "run:r1:started", "source": "escurel-runner",
+                "mime": "application/json", "label_skill": "escurel:run",
+                "kind": "system", "title": "run-started", "body": "{}" }),
+    )
+    .await;
+    call(
+        &p,
+        &runner,
+        "report_runner_status",
+        json!({ "runner_id": "hq", "state": "started", "status_interval_s": 1,
+                "body": json!({ "version": "1" }).to_string() }),
+    )
+    .await;
+    let runtime = "---\nkind: instance\nskill: runtime\nid: hq\nrunner_id: \"hq\"\n\
+        harnesses: [{\"name\": \"echo\", \"version\": \"echo 1.0\"}]\n\
+        claim_holder: \"runner:hq#l1\"\n---\n# hq\n";
+    call(
+        &p,
+        &runner,
+        "update_page",
+        json!({ "page_id": "markdown/instances/runtime/hq.md", "content": runtime }),
+    )
+    .await;
+    let rt = call(&p, &runner, "list_runtimes", json!({})).await["runtimes"][0].clone();
+    assert_eq!(rt["status"], "online", "{rt}");
+    assert_eq!(
+        rt["claim_holder"],
+        Value::Null,
+        "the admin view is not a runner's: {rt}"
+    );
+
+    // Nothing more: no customer write, no runtime page dressed as another skill, no admin tool.
+    let body = rpc(
+        &p,
+        &runner,
+        "update_page",
+        json!({ "page_id": "markdown/instances/customer/c1.md",
+                "content": "---\nkind: instance\nskill: customer\nid: c1\n---\n# c1\n\nRUNNER\n" }),
+    )
+    .await;
+    assert!(
+        body.get("error").is_some() || body["result"]["isError"] == true,
+        "a runner cannot write a customer: {body}"
+    );
+    let body = rpc(
+        &p,
+        &runner,
+        "update_page",
+        json!({ "page_id": "markdown/instances/runtime/x.md",
+                "content": "---\nkind: instance\nskill: agent\nid: x\n---\n# x\n" }),
+    )
+    .await;
+    assert!(
+        body.get("error").is_some() || body["result"]["isError"] == true,
+        "the runtime grant is for runtime instances only: {body}"
+    );
+    let body = rpc(
+        &p,
+        &runner,
+        "purge_page",
+        json!({ "page_id": "markdown/instances/customer/c1.md" }),
+    )
+    .await;
+    assert_eq!(body["error"]["data"]["code"], "admin_required", "{body}");
+
+    // A run token carrying the role is a machine token: no claim, no books.
+    let run = p.resign_token_with_claim(&runner, "run_id", json!("run-9"));
+    let body = rpc(&p, &run, "claim_event", json!({ "event_id": event })).await;
+    assert_eq!(body["error"]["data"]["code"], "admin_required", "{body}");
+    let body = rpc(
+        &p,
+        &run,
+        "report_runner_status",
+        json!({ "runner_id": "hq", "state": "heartbeat", "status_interval_s": 1, "body": "{}" }),
+    )
+    .await;
+    assert!(body.get("error").is_some(), "{body}");
+    let body = rpc(
+        &p,
+        &run,
+        "capture_event",
+        json!({ "event_id": "run:r2:started", "source": "x", "mime": "text/plain",
+                "label_skill": "escurel:run", "kind": "system", "title": "t", "body": "b" }),
+    )
+    .await;
+    assert!(
+        body.get("error").is_some() || body["result"]["isError"] == true,
+        "{body}"
+    );
+}
+
+/// A runner credential keeps ITS OWN `runtime` page: it may create one, and
+/// update one it last wrote, but never overwrite another runner's — that would
+/// let one runner rewrite another's harnesses, labels or inject support. An
+/// admin may write any.
+#[tokio::test]
+async fn a_runner_writes_only_its_own_runtime_page() {
+    let p = gateway_with_customer().await;
+    let hq = p.mint_token_with_groups(TENANT, "runner:hq", &["escurel:runner"], false);
+    let laptop = p.mint_token_with_groups(TENANT, "runner:laptop", &["escurel:runner"], false);
+    let page = |id: &str, note: &str| {
+        format!(
+            "---\nkind: instance\nskill: runtime\nid: {id}\nrunner_id: \"{id}\"\n\
+             harnesses: [{{\"name\": \"echo\"}}]\n---\n# {id}\n\n{note}\n"
+        )
+    };
+    let write = |token: String, id: &'static str, note: &'static str| {
+        let p = &p;
+        async move {
+            rpc(
+                p,
+                &token,
+                "update_page",
+                json!({ "page_id": format!("markdown/instances/runtime/{id}.md"),
+                        "content": page(id, note) }),
+            )
+            .await
+        }
+    };
+    let landed = |body: &Value| {
+        body.get("error").is_none()
+            && body["result"]["isError"] != true
+            && body["result"]["structuredContent"]["ok"] == true
+    };
+
+    let body = write(hq.clone(), "hq", "first").await;
+    assert!(landed(&body), "it creates its own page: {body}");
+    let body = write(hq.clone(), "hq", "again").await;
+    assert!(landed(&body), "and updates it: {body}");
+    let body = write(laptop.clone(), "hq", "hijack").await;
+    assert!(
+        !landed(&body),
+        "another runner's page is not its to write: {body}"
+    );
+    let body = write(laptop.clone(), "laptop", "mine").await;
+    assert!(landed(&body), "{body}");
+    let body = write(admin(&p), "hq", "by an admin").await;
+    assert!(landed(&body), "an admin writes any: {body}");
+    let body = write(hq, "hq", "after the admin").await;
+    assert!(
+        !landed(&body),
+        "the page is no longer the runner's once someone else wrote it: {body}"
+    );
+}
+
+/// The admin tools the runner role is granted by name (`RUNNER_ADMIN_TOOLS`,
+/// read here as what `tools/list` adds for an `escurel:runner` credential)
+/// each refuse a caller that does not keep the runner's books, in the
+/// handler: an admin-role RUN token passes the dispatch's admin gate, so only
+/// the handler's own `may_keep_books` stands between it and the tool.
+#[tokio::test]
+async fn every_runner_granted_admin_tool_refuses_a_non_bookkeeper_in_its_handler() {
+    let p = gateway_with_customer().await;
+    let names = |body: Value| -> std::collections::BTreeSet<String> {
+        body["result"]["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| t["name"].as_str().unwrap().to_owned())
+            .collect()
+    };
+    let list = |token: String| {
+        let p = &p;
+        async move {
+            reqwest::Client::new()
+                .post(p.mcp_url())
+                .header("authorization", format!("Bearer {token}"))
+                .json(&json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/list" }))
+                .send()
+                .await
+                .unwrap()
+                .json::<Value>()
+                .await
+                .unwrap()
+        }
+    };
+    let runner = p.mint_token_with_groups(TENANT, "runner:hq", &["escurel:runner"], false);
+    let member = p.mint_token_with_sub(TENANT, Role::Agent, "member:alice");
+    let granted: Vec<String> = names(list(runner).await)
+        .difference(&names(list(member).await))
+        .cloned()
+        .collect();
+    assert_eq!(granted, ["claim_event", "mint_run_token", "renew_claim"]);
+
+    let machine = p.mint_token_for_run(TENANT, Role::Admin, "agent:customer", "run-x", "root-x");
+    for tool in &granted {
+        let args = if tool == "mint_run_token" {
+            json!({ "run_id": "run-x", "skill": "customer" })
+        } else {
+            json!({ "event_id": "e-1" })
+        };
+        let body = rpc(&p, &machine, tool, args).await;
+        assert!(
+            body.get("error").is_some(),
+            "{tool} must refuse a run token, whatever its role: {body}"
+        );
+        assert_ne!(
+            body["error"]["data"]["code"], "admin_required",
+            "{tool}: refused by the handler, not the dispatch gate: {body}"
+        );
+    }
+}

@@ -60,6 +60,10 @@ optional; reported on `list_skills`, linted by `validate`):
   reaches `list_skills` as `{runs_per_day: 0, invalid: true}` and the runner fires no window, filing
   `run-skipped { reason: "invalid_budget" }` for each instead — never an uncapped schedule. Both reach `list_skills` as written. How the windows
   fire (no backfill, the skipped record) is in references/11 *Scheduled triggers*.
+- `schedule_webhook: true` (#827) — a signed `POST /hooks/schedule/<skill>` may fire the skill too
+  (the gateway endpoint exists only when `ESCUREL_SCHEDULE_WEBHOOK_SECRET` is set); anything but a
+  boolean is an error (`schedule_webhook_invalid`). Its deliveries spend the same `schedule_budget`
+  as the cron windows. The endpoint is in references/11 *Webhook triggers*.
 - `requires: {harness: <name>, labels: [<label>, …]}` — what a runner must offer to take this
   skill's work (#818): the harness (its default or one in `ESCUREL_RUNNER_HARNESS_ALLOW`) and
   EVERY label (`ESCUREL_RUNNER_LABELS`, e.g. `site:muc`, `has:sap-gui`). Both keys are optional.
@@ -522,7 +526,7 @@ documentation for building the app.
 ### Authority keys on a skill page
 
 `acl`, `visibility`, `owner_field`, `instance_acl`, `agent`, `autonomy`,
-`schedule`, `schedule_budget`, `requires`, `harness`, `model`, `cascade`,
+`schedule`, `schedule_budget`, `schedule_webhook`, `requires`, `harness`, `model`, `cascade`,
 `actions`, `chat`, `backend`, `promotable`, `protected`, `immutable` and
 `freeze_when` decide
 who may read and write, who a run executes as, when it runs and what it
@@ -568,6 +572,7 @@ scopes:
   tools: [search, expand, update_page, assign_event]  # absent = no tool limit
   write: ["markdown/instances/note/*"]               # absent = no extra write limit
 max_concurrent: 2                  # runs of this agent at once, per runner
+token_epoch: 1790071200            # Unix seconds: tokens issued before it are revoked (#829)
 ```
 
 `write` entries are page-id globs: `*` stays inside one path segment, `**`
@@ -586,8 +591,9 @@ is missing or does not list it is **refused**, never run with a broader token.
 
 `validate` grades both: on an agent page `agent_harness_unknown`,
 `agent_model_invalid`, `agent_skills_invalid`, `agent_scopes_invalid` (a
-malformed scope grants nothing, so it is an error) and
-`agent_max_concurrent_invalid` are **errors**; on a skill page a malformed
+malformed scope grants nothing, so it is an error),
+`agent_max_concurrent_invalid` and `agent_token_epoch_invalid` (not Unix
+seconds) are **errors**; on a skill page a malformed
 `agent:` is `agent_invalid` (error), an agent with no page is
 `agent_unresolved` and one that does not list the skill is
 `agent_skill_not_listed` (warnings — the skill's runs are refused until fixed).
@@ -595,6 +601,11 @@ malformed scope grants nothing, so it is an error) and
 agent whose `max_concurrent:` is present but not a positive whole number
 (`0`, `"2"`, `-1`) has its runs **refused** (dead-lettered, the error naming
 the key), never run uncapped.
+`token_epoch` revokes every token for the agent issued before it, external
+(`issue_agent_token`) and run tokens alike, from their next call
+(`agent_token_revoked`); `revoke_agent_tokens` (`escurel agent token revoke
+<id>`) moves it forward on the gateway's clock — set it that way rather than by
+hand.
 How the token and the gateway enforce it: references/08.
 
 ### Runtimes: `runtime` instances (written by runners)

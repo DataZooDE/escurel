@@ -10,24 +10,44 @@ import {
   steerReply,
 } from '../../src/runs/steer';
 
-// The runner's contract (references/11, "What an inject does"): only `claude` and `echo` read a
-// message mid-run; the text is non-blank and at most 8 KiB; the result is injected | unsupported |
+// The runner's contract (references/11, "What an inject does"): the runtime page says which harness
+// reads a message mid-run; the text is non-blank and at most 8 KiB; the result is injected | unsupported |
 // not_live.
 describe('steering a live run', () => {
-  it('knows which harnesses take a message mid-run, by name only', () => {
-    expect(harnessTakesMessages('claude')).toBe(true);
-    expect(harnessTakesMessages('echo')).toBe(true);
-    expect(harnessTakesMessages(' Claude ')).toBe(true);
-    for (const other of ['codex', 'gemini', 'agy', 'muse', 'openai', 'delegate', '', undefined])
-      expect(harnessTakesMessages(other)).toBe(false);
+  // The runtime holding the run says, per harness, whether it takes a message (#827): no guess here.
+  const heldBy = (harnesses: { name: string; supports_inject?: boolean }[]) => ({
+    runtime: 'muc',
+    until: '2026-11-14T03:00:00Z',
+    harnesses,
   });
 
-  it('offers the steer box only while the run is live and its harness takes messages', () => {
-    expect(steerOffer({ status: 'running', harness: 'echo' })).toEqual({ available: true });
-    expect(steerOffer({ status: 'processed', harness: 'echo' })).toBeUndefined();
+  it('reads whether the harness takes a message from the runtime that holds the run', () => {
+    const held = heldBy([
+      { name: 'echo', supports_inject: true },
+      { name: 'codex', supports_inject: false },
+      { name: 'claude' },
+    ]);
+    expect(harnessTakesMessages(held, 'echo')).toBe(true);
+    expect(harnessTakesMessages(held, ' Echo ')).toBe(true);
+    expect(harnessTakesMessages(held, 'codex')).toBe(false);
+    // An older runner's page does not say: unknown, not "no".
+    expect(harnessTakesMessages(held, 'claude')).toBeUndefined();
+    expect(harnessTakesMessages(held, 'gemini')).toBeUndefined();
+    expect(harnessTakesMessages(undefined, 'echo')).toBeUndefined();
+  });
+
+  it('offers the steer box only while the run is live and its runtime says the harness takes messages', () => {
+    const held = heldBy([
+      { name: 'echo', supports_inject: true },
+      { name: 'codex', supports_inject: false },
+    ]);
+    expect(steerOffer({ status: 'running', harness: 'echo', heldBy: held })).toEqual({
+      available: true,
+    });
+    expect(steerOffer({ status: 'processed', harness: 'echo', heldBy: held })).toBeUndefined();
     expect(steerOffer({ status: 'planned', harness: 'claude' })).toBeUndefined();
     // Live, but the harness cannot read a message: say so instead of offering a box that fails.
-    expect(steerOffer({ status: 'running', harness: 'codex' })).toEqual({
+    expect(steerOffer({ status: 'running', harness: 'codex', heldBy: held })).toEqual({
       available: false,
       reason: 'The codex agent cannot take a message while it runs.',
     });
@@ -35,6 +55,17 @@ describe('steering a live run', () => {
       available: false,
       reason: 'This run does not say which agent runs it, so it cannot be steered from here.',
     });
+  });
+
+  it('offers the box with a hint when no runtime says, since the runner still answers safely', () => {
+    const unknown = {
+      available: true,
+      hint: 'Whether the claude agent can take a message is not known here; the runner says if it cannot.',
+    };
+    expect(steerOffer({ status: 'running', harness: 'claude' })).toEqual(unknown);
+    expect(
+      steerOffer({ status: 'running', harness: 'claude', heldBy: heldBy([{ name: 'claude' }]) }),
+    ).toEqual(unknown);
   });
 
   it('refuses blank or oversized text the way the gateway would, counting UTF-8 bytes', () => {

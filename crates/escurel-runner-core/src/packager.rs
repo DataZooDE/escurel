@@ -227,6 +227,12 @@ pub enum PackageError {
     /// A credential is configured but could not be minted.
     #[error("could not mint the runner's gateway bearer: {0}")]
     Auth(String),
+    /// The gateway did not mint the run's token (`mint_run_token`, #828) for a
+    /// reason other than "this gateway cannot mint": a timeout, a 5xx, a
+    /// refusal. Retryable, and never answered by handing the harness the
+    /// runner's own bearer instead.
+    #[error("the gateway did not mint the run's token: {0}")]
+    RunToken(String),
     /// A WORKFLOW run's board carries no `requested_by` (crew final-review F2):
     /// the run must execute as the requester, and falling back to the runner's
     /// admin bearer would reinstate the confused deputy. Fail the run instead of
@@ -524,6 +530,43 @@ enum CallerToken {
     MissingRequester,
 }
 
+/// The run's token from the gateway (`mint_run_token`, #828), for a runner
+/// whose source mints there. `Ok(None)` only when it does not, or the gateway
+/// said it cannot mint at all (no signing key, an older image): the caller then
+/// decides as it always has. Any other failure — a timeout, a 5xx, a refusal —
+/// fails the attempt (retryably): handing the harness the runner's own bearer
+/// because the gateway blinked would defeat the narrowing the mint exists for.
+async fn gateway_run_token(
+    tokens: &crate::TokenSource,
+    client: &Client,
+    trigger: &Trigger,
+    run: Option<&crate::RunClaims>,
+    grant: RunGrant<'_>,
+    ttl_secs: u64,
+) -> Result<Option<String>, PackageError> {
+    let (Some(run), true) = (run, tokens.mints_at_gateway()) else {
+        return Ok(None);
+    };
+    let (agent, wide) = match grant {
+        RunGrant::Wide => (String::new(), true),
+        RunGrant::Narrowed(_) => (String::new(), false),
+        RunGrant::Agent { profile, .. } => (profile.id.clone(), false),
+    };
+    let req = escurel_client::MintRunTokenRequest {
+        run_id: run.run_id.clone(),
+        root_event_id: run.root_event_id.clone(),
+        trace_id: run.trace_id.clone().unwrap_or_default(),
+        skill: trigger.label_skill.clone(),
+        agent: agent.clone(),
+        grant: if wide { "wide" } else { "narrowed" }.to_owned(),
+        ttl_secs,
+    };
+    tokens
+        .mint_run(client, req)
+        .await
+        .map_err(|e| PackageError::RunToken(e.to_string()))
+}
+
 /// Decide the per-run credential for `trigger`. A workflow run must execute as
 /// its requester (read from the run board's `requested_by`/`requester_groups`,
 /// which `start_operation` stamped); a board with no requester fails closed
@@ -548,6 +591,10 @@ async fn caller_scoped_token(
         // write groups instead of admin — the harness writes that skill's
         // instances and nothing else.
         let ttl = agent_ttl_secs(cfg);
+        // No key of its own (#828): the gateway mints what this runner would have signed.
+        if let Some(minted) = gateway_run_token(tokens, client, trigger, run, grant, ttl).await? {
+            return Ok(CallerToken::Agent { token: minted });
+        }
         let minted = match grant {
             RunGrant::Wide => tokens.mint_agent(&trigger.label_skill, ttl, run, None),
             RunGrant::Narrowed(groups) => {
@@ -557,7 +604,7 @@ async fn caller_scoped_token(
             // would hand it the very authority the agent exists to withhold.
             RunGrant::Agent { profile, groups } => {
                 return match tokens.mint_agent_profile(
-                    &profile.id,
+                    profile,
                     &trigger.label_skill,
                     ttl,
                     run,
@@ -565,8 +612,9 @@ async fn caller_scoped_token(
                 ) {
                     Ok(Some(token)) => Ok(CallerToken::Agent { token }),
                     Ok(None) => Err(PackageError::Auth(format!(
-                        "agent `{}` needs a minting runner: a static bearer cannot run as an \
-                         agent",
+                        "agent `{}` needs a run token minted as the agent: this runner holds no \
+                         signing key and the gateway cannot mint one (give the gateway \
+                         ESCUREL_AUTH_SIGNING_KEY, or the runner ESCUREL_RUNNER_AUTH_SIGNING_KEY)",
                         profile.id
                     ))),
                     Err(e) => Err(PackageError::Auth(e.to_string())),

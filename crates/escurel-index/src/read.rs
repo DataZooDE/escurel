@@ -90,6 +90,9 @@ pub struct SkillInfo {
     pub schedule_invalid: bool,
     /// `schedule_budget: {runs_per_day}` — `None` when undeclared or not a positive count.
     pub schedule_budget: Option<escurel_types::ScheduleBudget>,
+    /// `schedule_webhook: true` — a signed `POST /hooks/schedule/<skill>` may fire this skill
+    /// (#827). Anything but `true` is `false`.
+    pub schedule_webhook: bool,
     /// `requires: {harness, labels}` (#818) — what a runner needs to take this skill's work.
     /// A malformed one is kept as `invalid` (satisfied by nobody), never dropped.
     pub requires: Option<escurel_types::runtime::Requires>,
@@ -836,14 +839,38 @@ impl Indexer {
     /// catalogue (`docs/contract/agent-interface.md §The tool
     /// surface`). One row per `page_type = 'skill'`.
     pub async fn list_skills(&self) -> Result<Vec<SkillInfo>, IndexerError> {
+        self.skills_where("", &[]).await
+    }
+
+    /// The skill `id` (its overlay when one shadows a base-layer skill), or
+    /// `None` when no skill page has that id. One indexed lookup rather than
+    /// the whole catalogue, for a caller that names one skill per request.
+    pub async fn skill(&self, id: &str) -> Result<Option<SkillInfo>, IndexerError> {
+        Ok(self
+            .skills_where(
+                " AND coalesce(json_extract_string(frontmatter, '$.id'), page_id) = ?",
+                &[id],
+            )
+            .await?
+            .into_iter()
+            .next())
+    }
+
+    /// The skill pages matching `filter` (an SQL fragment ANDed onto the
+    /// `page_type = 'skill'` predicate, bound to `binds`), with shadows folded.
+    async fn skills_where(
+        &self,
+        filter: &str,
+        binds: &[&str],
+    ) -> Result<Vec<SkillInfo>, IndexerError> {
         let conn = self.conn.lock().await;
-        let mut stmt = conn.prepare(
+        let mut stmt = conn.prepare(&format!(
             "SELECT page_id, frontmatter::VARCHAR \
              FROM pages \
-             WHERE page_type = 'skill' \
-             ORDER BY page_id",
-        )?;
-        let rows = stmt.query_map([], |row| {
+             WHERE page_type = 'skill'{filter} \
+             ORDER BY page_id"
+        ))?;
+        let rows = stmt.query_map(duckdb::params_from_iter(binds.iter()), |row| {
             Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
         })?;
 
@@ -904,6 +931,8 @@ impl Indexer {
                 schedule: schedule.0,
                 schedule_invalid: schedule.1,
                 schedule_budget: parse_schedule_budget(&fm),
+                schedule_webhook: fm.get("schedule_webhook")
+                    == Some(&serde_json::Value::Bool(true)),
                 requires: escurel_types::runtime::Requires::declared(fm.get("requires")),
                 folder: trimmed_str(&fm, "folder"),
                 role: trimmed_str(&fm, "role"),

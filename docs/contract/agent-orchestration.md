@@ -211,6 +211,15 @@ act. Code: `escurel-runner-core/src/schedule.rs` (grammar in
 `escurel-types/src/schedule.rs`); test:
 `escurel-runner/tests/suite/schedule_trigger.rs`.
 
+A third source (#827): a skill with `schedule_webhook: true` is fired by a
+signed `POST /hooks/schedule/<skill>` at the gateway (mounted only when
+`ESCUREL_SCHEDULE_WEBHOOK_SECRET` is set), captured as
+`hook:<skill>:<delivery-id>`, `source: schedule-webhook`. The gateway only
+captures the trigger, as it captures any event; its deliveries and the cron
+windows share one `schedule_budget`. Code:
+`escurel-server/src/schedule_hook.rs`; test:
+`escurel-runner/tests/suite/schedule_webhook.rs`.
+
 ## "Skills as instructions + tools" delivery
 
 - **Instructions** = the `label_skill` page body, fetched via
@@ -363,7 +372,7 @@ in the runner).
 **Run transcripts (#822).** Each harness adapter normalises its own
 structured stream (claude stream-json, codex `--json` events, gemini's
 in-process turns, the echo harness's scripted lines) into transcript
-records `{ts, attempt, kind: tool_call|tool_result|message|error, name?,
+records `{ts, attempt, kind: tool_call|tool_result|message|error|command, name?,
 args_digest?, summary}` — one parser per harness: the outcome's `tool_calls`
 count is derived from the same records (for claude that replaces the old
 `num_turns`, which counted model turns, not calls). Arguments never leave
@@ -373,14 +382,17 @@ credential-shape module the pack gate and the gateway's tool-call summaries
 share), with the run's own bearer passed as a literal, then is cut to 200
 characters. The runner concatenates every attempt's records, uploads the
 JSONL with the agent-scope tool `put_run_transcript` (only the run's own
-bearer, or a runner's non-run admin bearer; 2 MiB cap; content-addressed
+bearer, or a runner's own `escurel:runner` / admin credential; 2 MiB cap; content-addressed
 via `LaneStore::put_blob`), and names the blob on `run-finished.transcript`.
 `fetch_blob {run_id}` reads it back through the `run-finished` event's ACL.
 The gateway tracks transcript blobs in a `run_transcripts` table so its
-periodic sweep (`ESCUREL_RUN_TRANSCRIPT_RETENTION_DAYS`, default 90, `0` =
-forever) deletes transcripts and never a document blob. Not yet: a
-per-tenant retention override (no tenant-settings mechanism exists), and
-transcripts for `agy` / `muse` / `openai` / `delegate`.
+periodic sweep deletes transcripts and never a document blob. Retention is
+the tenant's `transcript_retention_days` (`tenant_update`, `escurel admin
+tenant update --transcript-retention-days <n>`) where set — it takes
+precedence over the gateway's `ESCUREL_RUN_TRANSCRIPT_RETENTION_DAYS`
+(default 90), and `0` means forever in either — and a tenant cleared back to
+inherit (`--clear-transcript-retention`, or `null`) uses the gateway's again.
+Not yet: transcripts for `agy` / `muse` / `openai` / `delegate`.
 
 The gateway stays automation-free: it still only *notifies*; the runner
 still owns every decision to *act*.
