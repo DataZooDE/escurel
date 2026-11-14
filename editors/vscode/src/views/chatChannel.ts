@@ -50,7 +50,9 @@ async function mapConversation(services: Services): Promise<boolean> {
     { title: 'Map Teams conversation', placeHolder: 'What should act as an escurel group?' },
   );
   if (!kind) return false;
-  let input: MappingInput;
+  // The target first: a conversation that is already mapped is sent to its page before the
+  // form asks for a group it would not use.
+  let target: MappingInput;
   if (kind.target === 'group') {
     const conversationId = await ask(
       "The group chat's conversation id",
@@ -58,9 +60,7 @@ async function mapConversation(services: Services): Promise<boolean> {
       '19:…@thread.v2',
     );
     if (conversationId === undefined) return false;
-    const group = await ask('The escurel group it acts as', groupProblem, 'sales');
-    if (group === undefined) return false;
-    input = { kind: 'group', conversationId, group };
+    target = { kind: 'group', conversationId, group: '' };
   } else {
     const teamId = await ask('The team id', (v) => idProblem('team id', v), '19:…@thread.tacv2');
     if (teamId === undefined) return false;
@@ -70,14 +70,11 @@ async function mapConversation(services: Services): Promise<boolean> {
       '19:…@thread.tacv2',
     );
     if (channelId === undefined) return false;
-    const group = await ask('The escurel group it acts as', groupProblem, 'sales');
-    if (group === undefined) return false;
-    input = { kind: 'channel', teamId, channelId, group };
+    target = { kind: 'channel', teamId, channelId, group: '' };
   }
-  const page = mappingPage(input);
   try {
     const existing = mappingsOfTarget(
-      input,
+      target,
       await collectInstances(
         services.client.listInstances({ skill_id: CHAT_CHANNEL_SKILL, limit: 500 }),
         5000,
@@ -97,6 +94,15 @@ async function mapConversation(services: Services): Promise<boolean> {
           await vscode.commands.executeCommand('escurel.openPage', m.page_id);
       return false;
     }
+  } catch (error) {
+    void vscode.window.showErrorMessage(`Could not map the conversation: ${describeError(error)}`);
+    return false;
+  }
+  const group = await ask('The escurel group it acts as', groupProblem, 'sales');
+  if (group === undefined) return false;
+  const input: MappingInput = { ...target, group };
+  const page = mappingPage(input);
+  try {
     const res = await services.client.updatePage({
       page_id: page.pageId,
       content: page.content,
