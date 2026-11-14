@@ -177,7 +177,11 @@ impl GroupDirectory for GoogleDirectory {
     }
 
     fn lookup_key(&self, user: &DirectoryUser) -> Option<String> {
-        user.email.clone().filter(|e| is_plain_email(e))
+        // Addresses are case-insensitive; one person is one cache entry.
+        user.email
+            .as_deref()
+            .filter(|e| is_plain_email(e))
+            .map(str::to_ascii_lowercase)
     }
 
     fn groups_for<'a>(&'a self, key: &'a str) -> GroupsFuture<'a> {

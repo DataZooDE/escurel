@@ -198,6 +198,105 @@ impl BridgeMint {
 /// `(provider name, lookup key)`.
 type CacheKey = (&'static str, String);
 
+/// How many refresh locks the cache stripes its keys over: a refresh for one
+/// key waits only for refreshes that hash alike, and the lock set is bounded.
+const REFRESH_STRIPES: usize = 64;
+
+/// What a directory said about a key, and when — the answers shared by every
+/// turn, with a refresh at most once per key at a time (crew Q-F4: concurrent
+/// lookups of one person coalesce, and an older answer can no longer land
+/// after a newer one).
+struct AnswerCache {
+    entries: Mutex<HashMap<CacheKey, (Vec<String>, Instant)>>,
+    refreshing: Vec<Mutex<()>>,
+    fresh: Duration,
+    stale: Duration,
+}
+
+impl AnswerCache {
+    fn new(fresh: Duration, stale: Duration) -> Self {
+        Self {
+            entries: Mutex::new(HashMap::new()),
+            refreshing: (0..REFRESH_STRIPES).map(|_| Mutex::new(())).collect(),
+            fresh,
+            stale,
+        }
+    }
+
+    fn stripe(&self, slot: &CacheKey) -> &Mutex<()> {
+        use std::hash::{BuildHasher, BuildHasherDefault, DefaultHasher};
+        let h = BuildHasherDefault::<DefaultHasher>::default().hash_one(slot);
+        &self.refreshing[usize::try_from(h % REFRESH_STRIPES as u64).unwrap_or(0)]
+    }
+
+    async fn young(&self, slot: &CacheKey) -> Option<Vec<String>> {
+        let entries = self.entries.lock().await;
+        let (answer, at) = entries.get(slot)?;
+        (at.elapsed() < self.fresh).then(|| answer.clone())
+    }
+
+    /// Record `answer` for `slot` now, dropping every entry too old to stand
+    /// in for anything (so the cache holds at most the people seen within
+    /// the stale window).
+    async fn store(&self, slot: CacheKey, answer: Vec<String>) {
+        let keep = self.stale.max(self.fresh);
+        let mut entries = self.entries.lock().await;
+        entries.retain(|_, (_, at)| at.elapsed() < keep);
+        entries.insert(slot, (answer, Instant::now()));
+    }
+
+    /// The answer for `slot`: a young cached one, else `fetch`'s. A
+    /// retryable failure falls back to a cached answer younger than the stale
+    /// window. Any other failure REPLACES the entry — with an empty answer
+    /// when `empty_on_refusal` (a refusal is the directory's current word,
+    /// so a later outage must not resurrect what it revoked, crew Q-F1), or
+    /// by removing it — and is returned.
+    async fn get_or_fetch<F, Fut>(
+        &self,
+        slot: CacheKey,
+        empty_on_refusal: bool,
+        fetch: F,
+    ) -> Result<Vec<String>, DirectoryError>
+    where
+        F: FnOnce() -> Fut,
+        Fut: Future<Output = Result<Vec<String>, DirectoryError>>,
+    {
+        if let Some(answer) = self.young(&slot).await {
+            return Ok(answer);
+        }
+        let _refresh = self.stripe(&slot).lock().await;
+        // Whoever held the lock may have just answered for this key.
+        let cached = self.entries.lock().await.get(&slot).cloned();
+        if let Some((answer, at)) = &cached
+            && at.elapsed() < self.fresh
+        {
+            return Ok(answer.clone());
+        }
+        match fetch().await {
+            Ok(answer) => {
+                self.store(slot, answer.clone()).await;
+                Ok(answer)
+            }
+            Err(DirectoryError::Retryable(why)) => match cached {
+                Some((answer, at)) if at.elapsed() < self.stale => {
+                    tracing::warn!(directory = slot.0, error = %why, age_s = at.elapsed().as_secs(),
+                        "group directory unreachable; using the cached answer");
+                    Ok(answer)
+                }
+                _ => Err(DirectoryError::Retryable(why)),
+            },
+            Err(refused) => {
+                if empty_on_refusal {
+                    self.store(slot, Vec::new()).await;
+                } else {
+                    self.entries.lock().await.remove(&slot);
+                }
+                Err(refused)
+            }
+        }
+    }
+}
+
 struct Provider {
     directory: Box<dyn GroupDirectory>,
     rule: NameRule,
@@ -209,10 +308,8 @@ pub struct GroupDirectories {
     /// Role values a group may never be called (the deployment's admin,
     /// operator, runner and bridge values).
     reserved: Vec<String>,
-    cache_ttl: Duration,
-    stale_ttl: Duration,
     /// `(provider, key)` → the mapped groups and when they were fetched.
-    cache: Mutex<HashMap<CacheKey, (Vec<String>, Instant)>>,
+    cache: AnswerCache,
 }
 
 impl GroupDirectories {
@@ -245,9 +342,7 @@ impl GroupDirectories {
         Ok(Self {
             providers,
             reserved,
-            cache_ttl: cfg.cache_ttl,
-            stale_ttl: cfg.stale_ttl,
-            cache: Mutex::new(HashMap::new()),
+            cache: AnswerCache::new(cfg.cache_ttl, cfg.stale_ttl),
         })
     }
 
@@ -285,45 +380,33 @@ impl GroupDirectories {
             );
             return Ok(Vec::new());
         };
-        let slot = (name, key);
-        let cached = self.cache.lock().await.get(&slot).cloned();
-        if let Some((groups, at)) = &cached
-            && at.elapsed() < self.cache_ttl
-        {
-            return Ok(groups.clone());
-        }
-        match p.directory.groups_for(&slot.1).await {
-            Ok(found) => {
-                let mut groups: Vec<String> = Vec::new();
-                for g in &found {
-                    if let Some(n) = p.rule.apply(g, &self.reserved)
-                        && !groups.contains(&n)
-                    {
-                        groups.push(n);
-                    }
+        let fetch = || async {
+            let found = p.directory.groups_for(&key).await?;
+            let mut groups: Vec<String> = Vec::new();
+            for g in &found {
+                if let Some(n) = p.rule.apply(g, &self.reserved)
+                    && !groups.contains(&n)
+                {
+                    groups.push(n);
                 }
-                self.cache
-                    .lock()
-                    .await
-                    .insert(slot, (groups.clone(), Instant::now()));
-                Ok(groups)
             }
-            Err(DirectoryError::Permanent(why)) => {
-                tracing::warn!(directory = name, error = %why,
+            Ok(groups)
+        };
+        match self
+            .cache
+            .get_or_fetch((name, key.clone()), true, fetch)
+            .await
+        {
+            Ok(groups) => Ok(groups),
+            Err(DirectoryError::Retryable(why)) => {
+                tracing::warn!(directory = name, error = %why, "group directory unreachable");
+                Err(DirectoryError::Retryable(format!("{name}: {why}")))
+            }
+            Err(refused) => {
+                tracing::warn!(directory = name, error = %refused,
                     "group directory refused the lookup; it grants nothing for this sender");
                 Ok(Vec::new())
             }
-            Err(DirectoryError::Retryable(why)) => match cached {
-                Some((groups, at)) if at.elapsed() < self.stale_ttl => {
-                    tracing::warn!(directory = name, error = %why, age_s = at.elapsed().as_secs(),
-                        "group directory unreachable; using the cached answer");
-                    Ok(groups)
-                }
-                _ => {
-                    tracing::warn!(directory = name, error = %why, "group directory unreachable");
-                    Err(DirectoryError::Retryable(format!("{name}: {why}")))
-                }
-            },
         }
     }
 }
@@ -513,11 +596,26 @@ mod tests {
     }
 
     fn dirs(providers: Vec<Fixed>, ttl: Duration, stale: Duration) -> GroupDirectories {
+        dirs_with(
+            providers
+                .into_iter()
+                .map(|f| Box::new(f) as Box<dyn GroupDirectory>)
+                .collect(),
+            ttl,
+            stale,
+        )
+    }
+
+    fn dirs_with(
+        providers: Vec<Box<dyn GroupDirectory>>,
+        ttl: Duration,
+        stale: Duration,
+    ) -> GroupDirectories {
         GroupDirectories {
             providers: providers
                 .into_iter()
-                .map(|f| Provider {
-                    directory: Box::new(f),
+                .map(|directory| Provider {
+                    directory,
                     rule: NameRule {
                         prefix: Some("e-".into()),
                         map: HashMap::new(),
@@ -525,9 +623,7 @@ mod tests {
                 })
                 .collect(),
             reserved: vec![],
-            cache_ttl: ttl,
-            stale_ttl: stale,
-            cache: Mutex::new(HashMap::new()),
+            cache: AnswerCache::new(ttl, stale),
         }
     }
 
@@ -601,5 +697,88 @@ mod tests {
             d.groups_from_directory(&user).await,
             Err(DirectoryError::Retryable(_))
         ));
+    }
+
+    /// Crew Q-F1: a directory that refuses the person (deleted: 404) has
+    /// revoked what it said before; an outage right after must not bring the
+    /// old groups back from the cache.
+    #[tokio::test]
+    async fn a_refusal_replaces_the_cached_answer_so_an_outage_cannot_restore_it() {
+        let provider = fixed("graph", &["e-sales"], false);
+        let fail = Arc::clone(&provider.fail);
+        let d = dirs(vec![provider], Duration::ZERO, DEFAULT_STALE_TTL);
+        let user = DirectoryUser {
+            object_id: Some("o".into()),
+            ..Default::default()
+        };
+        assert_eq!(d.groups_from_directory(&user).await.unwrap(), ["sales"]);
+        *fail.lock().unwrap() = Some(DirectoryError::Permanent("404".into()));
+        assert!(d.groups_from_directory(&user).await.unwrap().is_empty());
+        *fail.lock().unwrap() = Some(DirectoryError::Retryable("503".into()));
+        assert!(
+            d.groups_from_directory(&user).await.unwrap().is_empty(),
+            "the stale fallback serves the refusal, not the groups it revoked"
+        );
+    }
+
+    /// A provider that counts its lookups and takes a while to answer.
+    struct Slow {
+        calls: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    impl GroupDirectory for Slow {
+        fn name(&self) -> &'static str {
+            "graph"
+        }
+        fn lookup_key(&self, user: &DirectoryUser) -> Option<String> {
+            user.object_id.clone()
+        }
+        fn groups_for<'a>(&'a self, _key: &'a str) -> GroupsFuture<'a> {
+            self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Box::pin(async {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                Ok(vec![g("e-sales", "e-sales")])
+            })
+        }
+    }
+
+    /// Crew Q-F4: concurrent turns of one person ask the directory once.
+    #[tokio::test]
+    async fn concurrent_lookups_of_one_person_ask_the_directory_once() {
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let d = Arc::new(dirs_with(
+            vec![Box::new(Slow {
+                calls: Arc::clone(&calls),
+            })],
+            DEFAULT_CACHE_TTL,
+            DEFAULT_STALE_TTL,
+        ));
+        let user = DirectoryUser {
+            object_id: Some("o".into()),
+            ..Default::default()
+        };
+        let lookups: Vec<_> = (0..5)
+            .map(|_| {
+                let (d, user) = (Arc::clone(&d), user.clone());
+                tokio::spawn(async move { d.groups_from_directory(&user).await })
+            })
+            .collect();
+        for l in lookups {
+            assert_eq!(l.await.unwrap().unwrap(), ["sales"]);
+        }
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    /// Crew Q-F4: an entry older than the stale window is dropped, so the
+    /// cache holds only the people seen recently.
+    #[tokio::test]
+    async fn entries_older_than_the_stale_window_are_evicted() {
+        let cache = AnswerCache::new(Duration::ZERO, Duration::from_millis(50));
+        cache.store(("graph", "a".into()), vec!["x".into()]).await;
+        tokio::time::sleep(Duration::from_millis(80)).await;
+        cache.store(("graph", "b".into()), vec![]).await;
+        let entries = cache.entries.lock().await;
+        assert!(!entries.contains_key(&("graph", "a".to_owned())));
+        assert!(entries.contains_key(&("graph", "b".to_owned())));
     }
 }

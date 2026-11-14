@@ -127,11 +127,13 @@ impl GroupDirectory for OktaDirectory {
     }
 
     fn lookup_key(&self, user: &DirectoryUser) -> Option<String> {
+        // Okta logins are case-insensitive; one person is one cache entry.
         match self.cfg.user_key {
-            UserKey::Email => user.email.clone(),
-            UserKey::Upn => user.upn.clone(),
+            UserKey::Email => user.email.as_deref(),
+            UserKey::Upn => user.upn.as_deref(),
         }
         .filter(|k| !k.is_empty() && k.len() <= 254)
+        .map(str::to_ascii_lowercase)
     }
 
     fn groups_for<'a>(&'a self, key: &'a str) -> GroupsFuture<'a> {
