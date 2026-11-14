@@ -19,6 +19,7 @@ use serde_json::Value;
 use tokio::sync::OnceCell;
 
 use crate::JwksCache;
+use crate::jwks::{JwksCacheError, MIN_REFRESH_INTERVAL};
 
 /// The public cloud's OpenID metadata for channel tokens.
 pub const DEFAULT_OPENID_METADATA: &str =
@@ -54,6 +55,7 @@ pub struct ActivityVerifier {
     openid_metadata_url: String,
     http: reqwest::Client,
     keys: OnceCell<JwksCache>,
+    refresh_cooldown: Duration,
 }
 
 impl std::fmt::Debug for ActivityVerifier {
@@ -82,7 +84,16 @@ impl ActivityVerifier {
                 .build()
                 .unwrap_or_default(),
             keys: OnceCell::new(),
+            refresh_cooldown: MIN_REFRESH_INTERVAL,
         }
+    }
+
+    /// Override the least time between two key fetches an unknown kid (or a
+    /// failed fetch) triggers — `jwks::MIN_REFRESH_INTERVAL` by default.
+    #[must_use]
+    pub fn with_refresh_cooldown(mut self, cooldown: Duration) -> Self {
+        self.refresh_cooldown = cooldown;
+        self
     }
 
     async fn keys(&self) -> Result<&JwksCache, ActivityTokenError> {
@@ -103,7 +114,8 @@ impl ActivityVerifier {
                 let jwks_uri = meta["jwks_uri"]
                     .as_str()
                     .ok_or_else(|| ActivityTokenError::Keys("metadata has no jwks_uri".into()))?;
-                Ok(JwksCache::new(jwks_uri, JWKS_TTL))
+                Ok(JwksCache::new(jwks_uri, JWKS_TTL)
+                    .with_min_refresh_interval(self.refresh_cooldown))
             })
             .await
     }
@@ -129,7 +141,11 @@ impl ActivityVerifier {
             .await?
             .endorsed_key_for_kid(&kid)
             .await
-            .map_err(|e| bad(e.to_string()))?;
+            .map_err(|e| match e {
+                // The keys could not be fetched: an outage, not a forgery (crew F1).
+                JwksCacheError::Fetch(why) => ActivityTokenError::Keys(why),
+                other => bad(other.to_string()),
+            })?;
         // A token the Bot Framework issued for another channel this bot is
         // enabled on must not enter the Teams identity path.
         if let Some(channels) = &endorsements

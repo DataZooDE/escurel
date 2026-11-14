@@ -74,6 +74,9 @@ pub struct TeamsVerifyConfig {
     /// Exact hosts, or `*.suffix` for any host under it.
     pub service_url_hosts: Vec<String>,
     pub roster_ttl: Duration,
+    /// The least time between two key fetches after a miss or a failed
+    /// fetch (`jwks::MIN_REFRESH_INTERVAL`); a test shortens it.
+    pub jwks_refresh_cooldown: Duration,
 }
 
 impl std::fmt::Debug for TeamsVerifyConfig {
@@ -102,6 +105,7 @@ impl TeamsVerifyConfig {
                 .map(|h| (*h).to_owned())
                 .collect(),
             roster_ttl: ROSTER_TTL,
+            jwks_refresh_cooldown: escurel_auth::JWKS_MIN_REFRESH_INTERVAL,
         }
     }
 }
@@ -267,7 +271,8 @@ impl TeamsVerifier {
                 cfg.app_id.clone(),
                 cfg.issuer.clone(),
                 cfg.openid_metadata_url.clone(),
-            ),
+            )
+            .with_refresh_cooldown(cfg.jwks_refresh_cooldown),
             connector: ClientCredentials::new(
                 cfg.token_url.clone(),
                 cfg.app_id.clone(),

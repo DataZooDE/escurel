@@ -1713,3 +1713,28 @@ async fn with_gateway_verification_a_rate_limited_asker_is_told_once() {
     assert_eq!(replies.len(), 3, "exactly one notice: {replies:#?}");
     assert_eq!(replies[2].2["text"], "echo: from bob");
 }
+
+/// Crew F1: when the gateway cannot fetch Microsoft's signing keys the turn
+/// is not dropped: the person hears that their access cannot be checked, and
+/// the next question is answered once the keys are back.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn with_gateway_verification_a_signing_key_outage_tells_the_person() {
+    let w = world_with(Setup {
+        run_ms: Some(0),
+        verify: true,
+        ..Setup::default()
+    })
+    .await;
+    // Fetch 0 is the bridge's own inbound check; fetch 1 is the gateway's.
+    w.bf.seen.lock().unwrap().jwks_fail = 1..2;
+    let token = w.bf.token(APP_ID);
+    w.bridge
+        .post(Some(&token), &w.bf.message("act-k1", "hello"))
+        .await;
+    let replies = wait_for_replies(&w.bf, 1, Duration::from_secs(60)).await;
+    assert_eq!(
+        replies[0].2["text"],
+        "I can't check your access right now. Please try again in a few minutes."
+    );
+    w.a_later_turn_is_answered("act-k9", 1).await;
+}

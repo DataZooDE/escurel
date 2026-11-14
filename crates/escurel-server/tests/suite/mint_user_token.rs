@@ -1224,3 +1224,27 @@ async fn mints_are_capped_per_bridge_credential_and_per_asker() {
     // Another credential is not held back by it.
     ok(&mint_as(other, "dave-oid").await, "dave on another bridge");
 }
+
+/// Crew F1: Microsoft's signing keys out of reach is an outage, not a forged
+/// token — retryable, and the next mint after recovery succeeds.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_signing_key_outage_is_retryable_and_recovers() {
+    let w = verified_world().await;
+    w.bf.seen.lock().unwrap().jwks_fail = 0..1;
+    let token = w.bf.token(BOT_APP);
+    let (_, body) = call(
+        &w.gw,
+        &bridge_credential(&w.gw),
+        "mint_user_token",
+        verified_turn(&w.bf, "29:alice", ALICE_OID, Some(&token)),
+    )
+    .await;
+    refused(&body, "directory_unavailable", "the JWKS answered 503");
+    assert_eq!(body["error"]["data"]["retryable"], true, "{body}");
+    let minted = mint(
+        &w.gw,
+        verified_turn(&w.bf, "29:alice", ALICE_OID, Some(&token)),
+    )
+    .await;
+    assert_eq!(minted["subject"], ALICE);
+}

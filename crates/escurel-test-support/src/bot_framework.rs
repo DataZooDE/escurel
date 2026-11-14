@@ -59,6 +59,10 @@ pub struct Seen {
     /// `(conversation id, user id)` pairs the roster does NOT hold (the
     /// person is known, but not in that conversation).
     pub not_in: HashSet<(String, String)>,
+    /// How often `/jwks` was fetched.
+    pub jwks_calls: usize,
+    /// The `/jwks` fetches (by 0-based index) answered `503`.
+    pub jwks_fail: std::ops::Range<usize>,
 }
 
 /// A running Bot Framework stand-in.
@@ -95,9 +99,17 @@ impl BotFrameworkStandIn {
             )
             .route(
                 "/jwks",
-                get(move || {
+                get(move |State(seen): State<Arc<Mutex<Seen>>>| {
                     let k = jwks.clone();
-                    async move { axum::Json(k) }
+                    async move {
+                        let mut seen = seen.lock().unwrap();
+                        let n = seen.jwks_calls;
+                        seen.jwks_calls += 1;
+                        if seen.jwks_fail.contains(&n) {
+                            return Err(StatusCode::SERVICE_UNAVAILABLE);
+                        }
+                        Ok(axum::Json(k))
+                    }
                 }),
             )
             .route("/token", post(token))
@@ -138,6 +150,7 @@ impl BotFrameworkStandIn {
         cfg.issuer = BF_ISSUER.to_owned();
         cfg.token_url = self.token_url();
         cfg.service_url_hosts = vec!["127.0.0.1".to_owned()];
+        cfg.jwks_refresh_cooldown = std::time::Duration::ZERO;
         cfg
     }
 
