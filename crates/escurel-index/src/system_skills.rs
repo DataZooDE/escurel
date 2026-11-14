@@ -1,7 +1,8 @@
 //! Skills escurel itself ships into every served tenant.
 //!
 //! The `escurel` meta-skill was the first ([`crate::meta_skill`]); agent
-//! profiles (#823) add `agent`, and runner registrations (#818) add `runtime`. Each is one row
+//! profiles (#823) add `agent`, runner registrations (#818) add `runtime`, and
+//! shared-chat mappings (#830) add `chat-channel`. Each is one row
 //! of [`SYSTEM_SKILLS`], installed by [`crate::Indexer::ensure_system_skills`]
 //! at indexer open.
 //!
@@ -55,6 +56,13 @@ pub const SYSTEM_SKILLS: &[SystemSkill] = &[
         id: escurel_types::runtime::RUNTIME_SKILL,
         page_id: "markdown/skills/runtime.md",
         markdown: include_str!("runtime_skill.md"),
+        admin_only: true,
+        previous_sha256: &[],
+    },
+    SystemSkill {
+        id: escurel_types::chat_channel::CHAT_CHANNEL_SKILL,
+        page_id: "markdown/skills/chat-channel.md",
+        markdown: include_str!("chat_channel_skill.md"),
         admin_only: true,
         previous_sha256: &[],
     },
@@ -132,9 +140,10 @@ mod tests {
     }
 
     #[test]
-    fn only_the_agent_and_runtime_skills_are_admin_only() {
+    fn only_the_agent_runtime_and_chat_channel_skills_are_admin_only() {
         assert!(is_admin_only_skill("agent"));
         assert!(is_admin_only_skill("runtime"));
+        assert!(is_admin_only_skill("chat-channel"));
         assert!(is_admin_only_path("markdown/instances/runtime/laptop.md"));
         assert!(!is_admin_only_skill("escurel"));
         assert!(!is_admin_only_skill("note"));

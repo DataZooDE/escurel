@@ -698,6 +698,28 @@ fn check_requires(page_kind: PageKind, fields: &YamlMapping) -> Vec<Issue> {
     }
 }
 
+/// A `chat-channel` mapping page (#830): one error naming why it maps
+/// nothing, because a mapping is authority — a page that silently mapped
+/// nothing would leave its chat declined with nobody told why.
+fn check_chat_channel_keys(page_kind: PageKind, fields: &YamlMapping) -> Vec<Issue> {
+    use escurel_types::chat_channel::{CHAT_CHANNEL_SKILL, ChatChannelMapping};
+    if page_kind != PageKind::Instance
+        || fields.get("skill").and_then(YamlValue::as_str) != Some(CHAT_CHANNEL_SKILL)
+    {
+        return Vec::new();
+    }
+    let fm = serde_json::to_value(fields).unwrap_or_default();
+    match ChatChannelMapping::from_frontmatter(&fm) {
+        Ok(_) => Vec::new(),
+        Err(why) => vec![
+            Issue::error("chat_channel_invalid", "frontmatter", why).with_suggestion(
+                "write `channel: msteams`, `group: <escurel group>` and either \
+                 `conversation_id:` or `team_id:` + `channel_id:`",
+            ),
+        ],
+    }
+}
+
 /// The keys of an `agent` profile page (#823). Errors, because each one is
 /// authority: a malformed `scopes:` would otherwise be enforced as "nothing
 /// allowed" with nobody told why, and an unknown harness is a refused run.
@@ -1624,6 +1646,10 @@ impl Indexer {
         issues.extend(check_chat_keys(parsed.frontmatter.page_kind, fields));
         issues.extend(check_schedule(parsed.frontmatter.page_kind, fields));
         issues.extend(check_agent_keys(parsed.frontmatter.page_kind, fields));
+        issues.extend(check_chat_channel_keys(
+            parsed.frontmatter.page_kind,
+            fields,
+        ));
         issues.extend(check_requires(parsed.frontmatter.page_kind, fields));
         issues.extend(
             self.check_skill_agent(parsed.frontmatter.page_kind, fields)

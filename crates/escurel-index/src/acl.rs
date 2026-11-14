@@ -1201,6 +1201,26 @@ impl Indexer {
         }
     }
 
+    /// The `chat-channel` mappings (#830) that cover `conv` on `channel`: the
+    /// non-archived instances whose frontmatter parses and names it. Read
+    /// fresh on every mint, like an agent profile, so an admin's unmapping
+    /// binds the next turn. More than one is the caller's to refuse.
+    pub async fn chat_channel_mappings(
+        &self,
+        channel: &str,
+        conv: &escurel_types::chat_channel::ConversationRef,
+    ) -> Result<Vec<escurel_types::chat_channel::ChatChannelMapping>, IndexerError> {
+        use escurel_types::chat_channel::{CHAT_CHANNEL_SKILL, ChatChannelMapping};
+        Ok(self
+            .list_instances(CHAT_CHANNEL_SKILL, None, None, None, None, None)
+            .await?
+            .into_iter()
+            .filter(|i| i.frontmatter.get("archived").and_then(Value::as_bool) != Some(true))
+            .filter_map(|i| ChatChannelMapping::from_frontmatter(&i.frontmatter).ok())
+            .filter(|m| m.covers(channel, conv))
+            .collect())
+    }
+
     /// The agent profile `agent_id` names (#823), read from its own page, or
     /// `None` when there is no such agent — an id no page can carry, no page,
     /// a page that is not an `agent` instance, or an archived one. The gateway
