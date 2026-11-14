@@ -289,7 +289,7 @@ async fn a_codex_shell_command_is_a_redacted_command_record() {
     let run = runner
         .wait_for_status(
             &event_id,
-            &["pending", "processed", "failed", "dead_lettered"],
+            &["pending", "processed", "failed", "dead_letter"],
             Duration::from_secs(60),
         )
         .await;
