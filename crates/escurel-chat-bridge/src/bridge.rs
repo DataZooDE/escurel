@@ -699,7 +699,7 @@ impl<'a, C: ChatChannel> AskerClient<'a, C> {
             Some(turn.user.id.as_str()),
             turn.user.directory_tenant.as_deref(),
         )
-        .ok_or_else(|| BridgeError::NoPrincipal(format!("template `{template}`")))?;
+        .map_err(|why| BridgeError::NoPrincipal(format!("template `{template}`: {why}")))?;
         let signer = self
             .bridge
             .signer

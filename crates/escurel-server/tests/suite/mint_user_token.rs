@@ -697,3 +697,26 @@ async fn a_directory_status_is_retryable_or_permanent() {
         json!(["ops", "sales", "support"])
     );
 }
+
+/// Crew S-F3: a template that keys on the bridge-supplied `user_id` passes
+/// boot validation, but the subject the ids produce is checked again — a
+/// `user_id` of `group:finance` must not mint the finance group principal.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_platform_id_cannot_mint_a_group_or_service_subject() {
+    let graph = DirectoryStandIn::graph().await;
+    graph.member_of(ALICE_OID, &["escurel-sales"]);
+    let gw = gateway(bridge_mint(
+        "{userId}",
+        vec![graph.config("escurel-")],
+        None,
+    ))
+    .await;
+    for user_id in ["group:finance", "agent:x", "svc:chat-bridge", "29:a/../b"] {
+        let mut args = personal(ALICE_OID);
+        args["user_id"] = json!(user_id);
+        let (_, body) = call(&gw, &bridge_credential(&gw), "mint_user_token", args).await;
+        refused(&body, "no_principal", user_id);
+    }
+    let minted = mint(&gw, personal(ALICE_OID)).await;
+    assert_eq!(minted["subject"], format!("29:{ALICE_OID}"));
+}

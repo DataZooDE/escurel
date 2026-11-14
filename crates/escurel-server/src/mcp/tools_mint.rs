@@ -737,9 +737,9 @@ pub(super) async fn tool_mint_user_token(
         a.user_id.as_deref(),
         Some(&a.tenant_id),
     )
-    .ok_or_else(|| {
+    .map_err(|why| {
         JsonRpcError::invalid_params(format!(
-            "{TOOL}: the principal template names a field this sender lacks"
+            "{TOOL}: no escurel principal for this sender: {why}"
         ))
         .with_code("no_principal", false)
     })?;

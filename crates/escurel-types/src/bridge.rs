@@ -92,25 +92,71 @@ pub fn validate_principal_template(template: &str) -> Result<(), String> {
                 .to_owned(),
         );
     }
-    if template.starts_with(crate::chat_channel::GROUP_SUBJECT_PREFIX) {
+    if let Some(prefix) = reserved_subject_prefix(template) {
         return Err(format!(
-            "must not start with `{}`: that prefix names a group principal",
-            crate::chat_channel::GROUP_SUBJECT_PREFIX
+            "must not start with `{prefix}`: that prefix names a principal that is not a person"
         ));
     }
     Ok(())
 }
 
-/// The escurel subject for a platform user: `template` with `{aadObjectId}`,
-/// `{userId}` and `{tenantId}` filled in. `None` when the template names a
-/// field the user lacks (or has empty) — never a guessed identity.
+/// Subject prefixes that name a principal other than a person: a group
+/// principal (`group:`), an agent, a bridge, a service credential, escurel
+/// itself. A minted person-subject never starts with one, whatever the
+/// template or the platform's ids say (crew S-F3).
+pub const RESERVED_SUBJECT_PREFIXES: [&str; 5] = [
+    crate::chat_channel::GROUP_SUBJECT_PREFIX,
+    "agent:",
+    VIA_PREFIX,
+    "svc:",
+    "escurel:",
+];
+
+/// The reserved prefix `subject` starts with, if any.
 #[must_use]
+pub fn reserved_subject_prefix(subject: &str) -> Option<&'static str> {
+    RESERVED_SUBJECT_PREFIXES
+        .into_iter()
+        .find(|p| subject.starts_with(p))
+}
+
+/// The longest platform id a template placeholder takes.
+pub const MAX_PRINCIPAL_FIELD_LEN: usize = 256;
+
+/// Whether `value` may fill `field`: an object or tenant id is a GUID-like
+/// `[A-Za-z0-9-]` of at most 64; a platform user id (Teams: `29:` and a
+/// base64url string) is `[A-Za-z0-9:._@=-]` of at most
+/// [`MAX_PRINCIPAL_FIELD_LEN`]. Anything with path, query or separator syntax
+/// would let a platform id shape the subject.
+fn is_principal_field(field: &str, value: &str) -> bool {
+    match field {
+        "{userId}" => {
+            value.len() <= MAX_PRINCIPAL_FIELD_LEN
+                && value.chars().all(|c| {
+                    c.is_ascii_alphanumeric() || matches!(c, ':' | '.' | '_' | '@' | '=' | '-')
+                })
+        }
+        _ => value.len() <= 64 && value.chars().all(|c| c.is_ascii_alphanumeric() || c == '-'),
+    }
+}
+
+/// The escurel subject for a platform user: `template` with `{aadObjectId}`,
+/// `{userId}` and `{tenantId}` filled in — never a guessed identity, and never
+/// one the platform's ids could steer into another principal: every value is
+/// checked ([`is_principal_field`]) and the subject must not start with a
+/// [`RESERVED_SUBJECT_PREFIXES`] entry (a template of `{userId}` and a user id
+/// of `group:finance` would otherwise be the finance group).
+///
+/// # Errors
+/// The template names a field the user lacks (or has empty), a value is not a
+/// plain platform id, or the subject would be a reserved principal; as one
+/// sentence.
 pub fn principal_for(
     template: &str,
     aad_object_id: Option<&str>,
     user_id: Option<&str>,
     tenant_id: Option<&str>,
-) -> Option<String> {
+) -> Result<String, String> {
     let mut out = template.to_owned();
     for (field, value) in [
         ("{aadObjectId}", aad_object_id),
@@ -118,10 +164,24 @@ pub fn principal_for(
         ("{tenantId}", tenant_id),
     ] {
         if out.contains(field) {
-            out = out.replace(field, value.filter(|v| !v.is_empty())?);
+            let value = value.filter(|v| !v.is_empty()).ok_or_else(|| {
+                format!("the principal template names `{field}`, which this sender lacks")
+            })?;
+            if !is_principal_field(field, value) {
+                return Err(format!("`{field}` is not a plain platform id"));
+            }
+            out = out.replace(field, value);
         }
     }
-    (!out.is_empty()).then_some(out)
+    if out.is_empty() {
+        return Err("the principal template yields an empty subject".to_owned());
+    }
+    if let Some(prefix) = reserved_subject_prefix(&out) {
+        return Err(format!(
+            "the subject would start with `{prefix}`, which names a principal that is not a person"
+        ));
+    }
+    Ok(out)
 }
 
 #[cfg(test)]
@@ -149,7 +209,11 @@ mod tests {
             ("team:{tenantId}:all", "must name the person"),
             ("user:{aadObjectId", "unclosed"),
             ("user:aadObjectId}", "stray"),
-            ("group:{aadObjectId}", "group principal"),
+            ("group:{aadObjectId}", "not a person"),
+            ("agent:{aadObjectId}", "not a person"),
+            ("svc:{userId}", "not a person"),
+            ("bridge:{userId}", "not a person"),
+            ("escurel:{userId}", "not a person"),
         ] {
             let err = validate_principal_template(template).unwrap_err();
             assert!(err.contains(why), "{template}: {err}");
@@ -168,19 +232,42 @@ mod tests {
     fn the_principal_comes_from_the_template_or_not_at_all() {
         assert_eq!(
             principal_for("user:{aadObjectId}", Some("oid"), Some("29:x"), Some("t")).as_deref(),
-            Some("user:oid")
+            Ok("user:oid")
         );
         assert_eq!(
             principal_for("{tenantId}/{userId}", None, Some("29:x"), Some("t")).as_deref(),
-            Some("t/29:x")
+            Ok("t/29:x")
         );
-        assert_eq!(
-            principal_for("user:{aadObjectId}", None, Some("29:x"), None),
-            None
-        );
-        assert_eq!(
-            principal_for("user:{aadObjectId}", Some(""), None, None),
-            None
-        );
+        assert!(principal_for("user:{aadObjectId}", None, Some("29:x"), None).is_err());
+        assert!(principal_for("user:{aadObjectId}", Some(""), None, None).is_err());
+    }
+
+    /// Crew S-F3: the template passes, but the ids it is filled with must not
+    /// turn a person into a group, an agent, a bridge or a service.
+    #[test]
+    fn a_platform_id_cannot_steer_the_subject_into_another_principal() {
+        for user_id in [
+            "group:finance",
+            "agent:x",
+            "bridge:msteams",
+            "svc:runner",
+            "escurel:admin",
+        ] {
+            let err = principal_for("{userId}", Some("oid"), Some(user_id), Some("t")).unwrap_err();
+            assert!(err.contains("not a person"), "{user_id}: {err}");
+        }
+        for (template, oid, user_id, tenant) in [
+            ("user:{aadObjectId}", "a/b", "29:x", "t"),
+            ("user:{aadObjectId}", "oid?x=1", "29:x", "t"),
+            ("{userId}", "oid", "29:a b", "t"),
+            ("{userId}", "oid", "29:a/../b", "t"),
+            ("{tenantId}:{aadObjectId}", "oid", "29:x", "group:t"),
+        ] {
+            let err = principal_for(template, Some(oid), Some(user_id), Some(tenant)).unwrap_err();
+            assert!(err.contains("plain platform id"), "{template}: {err}");
+        }
+        let long = "x".repeat(MAX_PRINCIPAL_FIELD_LEN + 1);
+        assert!(principal_for("{userId}", None, Some(&long), None).is_err());
+        assert!(principal_for("u:{userId}", None, Some("29:1AbC-d_e=="), None).is_ok());
     }
 }
