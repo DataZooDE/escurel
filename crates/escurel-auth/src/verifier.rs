@@ -239,8 +239,10 @@ pub struct AuthContext {
     /// The token was verified against the chat-bridge trust entry
     /// ([`OidcConfig::bridge_issuer`]). An authorization input, and only ever
     /// a restriction: the gateway confines such a context to the few calls a
-    /// bridge makes (`escurel-server`'s bridge gate).
-    pub bridge: bool,
+    /// bridge makes (`escurel-server`'s bridge gate). A TURN token the bridge
+    /// minted for one person's message — not the bridge's own service
+    /// credential, which is [`ServiceRole::Bridge`] in [`Self::service`].
+    pub bridge_turn: bool,
     /// The built-in service role this credential holds (#828), from the
     /// configured runner / bridge role values. `None` for every machine token
     /// (one carrying `run_id`, `skill`, `agent`, `act` or a workbench purpose):
@@ -253,17 +255,7 @@ pub struct AuthContext {
     pub issued_at: Option<u64>,
 }
 
-/// A built-in service role: a credential a service holds for itself, with a
-/// narrow authority of its own rather than a tool ceiling over a member's
-/// (`ESCUREL_AUTH_ROLE_TOOLS` can only take away; these grant).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ServiceRole {
-    /// `escurel:runner`: claims inbox events, files the runner's lifecycle
-    /// records, registers its `runtime` page and mints per-run tokens.
-    Runner,
-    /// `escurel:bridge`: a chat bridge's service credential.
-    Bridge,
-}
+pub use escurel_types::service_role::ServiceRole;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Role {
@@ -633,7 +625,7 @@ impl OidcVerifier {
             run,
             agent_skill,
             agent,
-            bridge: false,
+            bridge_turn: false,
             service,
             issued_at,
         })
@@ -759,7 +751,7 @@ fn bridge_context(
         run: None,
         agent_skill: None,
         agent: None,
-        bridge: true,
+        bridge_turn: true,
         service: None,
         issued_at: Some(iat),
     })

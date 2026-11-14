@@ -1131,7 +1131,7 @@ mod bridge_entry {
         assert_eq!(ctx.role, Role::Agent);
         assert!(!ctx.operator);
         assert!(
-            ctx.bridge,
+            ctx.bridge_turn,
             "a token from the bridge entry is a bridge context"
         );
 
@@ -1145,7 +1145,7 @@ mod bridge_entry {
             .await
             .expect("a primary token verifies");
         assert_eq!(ctx.role, Role::Admin);
-        assert!(!ctx.bridge);
+        assert!(!ctx.bridge_turn);
     }
 
     /// A bridge kid under another entry is refused rather than treated as

@@ -55,6 +55,7 @@ pub mod runtime;
 /// `schedule:` cron grammar shared by the validator and the runner (feature `schedule`).
 #[cfg(feature = "schedule")]
 pub mod schedule;
+pub mod service_role;
 mod session;
 // Namespaced: `escurel_types::skill_authority::AUTHORITY_KEYS` says whose keys they are.
 pub mod skill_authority;

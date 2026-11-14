@@ -65,11 +65,12 @@ pub struct AclCaller<'a> {
     /// only ever a restriction: its `scopes.write` globs bound every write,
     /// admin or not, on top of the skill confinement and the group grants.
     pub agent: Option<&'a escurel_types::agent_profile::AgentProfile>,
-    /// The caller holds the built-in RUNNER service role (`escurel:runner`,
-    /// #828) on its own credential. Not admin: it passes the bookkeeper gates
-    /// ([`Self::may_keep_books`]), reads events and skill pages, and writes
-    /// `runtime` instances — everything else follows its ordinary ACL.
-    pub runner: bool,
+    /// The built-in service role the caller's own credential holds (#828),
+    /// `None` for every other caller (and for every machine token). A runner
+    /// (`escurel:runner`) is not admin: it passes the bookkeeper gates
+    /// ([`Self::may_keep_books`]), reads events and skill pages, and writes its
+    /// own `runtime` instance — everything else follows its ordinary ACL.
+    pub service: Option<escurel_types::service_role::ServiceRole>,
 }
 
 impl AclCaller<'_> {
@@ -80,7 +81,7 @@ impl AclCaller<'_> {
     /// impersonate the runner that minted it.
     #[must_use]
     pub fn may_keep_books(&self) -> bool {
-        (self.is_admin || self.runner) && !self.is_machine()
+        (self.is_admin || self.is_runner()) && !self.is_machine()
     }
 
     /// Whether this caller may write a `runtime` instance whose stored page is
@@ -89,9 +90,15 @@ impl AclCaller<'_> {
     /// not its to overwrite. Admins are decided before this is asked.
     #[must_use]
     pub fn may_write_runtime(&self, current: Option<&crate::ExpandedPage>) -> bool {
-        self.runner
+        self.is_runner()
             && self.may_keep_books()
             && current.is_none_or(|page| page.last_written_by.as_deref() == Some(self.subject))
+    }
+
+    /// Whether the caller's own credential holds the runner service role.
+    #[must_use]
+    pub fn is_runner(&self) -> bool {
+        self.service == Some(escurel_types::service_role::ServiceRole::Runner)
     }
 
     /// Whether this caller's agent profile forbids writing `page_id`.

@@ -688,3 +688,61 @@ async fn a_runner_writes_only_its_own_runtime_page() {
         "the page is no longer the runner's once someone else wrote it: {body}"
     );
 }
+
+/// The admin tools the runner role is granted by name (`RUNNER_ADMIN_TOOLS`,
+/// read here as what `tools/list` adds for an `escurel:runner` credential)
+/// each refuse a caller that does not keep the runner's books, in the
+/// handler: an admin-role RUN token passes the dispatch's admin gate, so only
+/// the handler's own `may_keep_books` stands between it and the tool.
+#[tokio::test]
+async fn every_runner_granted_admin_tool_refuses_a_non_bookkeeper_in_its_handler() {
+    let p = gateway_with_customer().await;
+    let names = |body: Value| -> std::collections::BTreeSet<String> {
+        body["result"]["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| t["name"].as_str().unwrap().to_owned())
+            .collect()
+    };
+    let list = |token: String| {
+        let p = &p;
+        async move {
+            reqwest::Client::new()
+                .post(p.mcp_url())
+                .header("authorization", format!("Bearer {token}"))
+                .json(&json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/list" }))
+                .send()
+                .await
+                .unwrap()
+                .json::<Value>()
+                .await
+                .unwrap()
+        }
+    };
+    let runner = p.mint_token_with_groups(TENANT, "runner:hq", &["escurel:runner"], false);
+    let member = p.mint_token_with_sub(TENANT, Role::Agent, "member:alice");
+    let granted: Vec<String> = names(list(runner).await)
+        .difference(&names(list(member).await))
+        .cloned()
+        .collect();
+    assert_eq!(granted, ["claim_event", "mint_run_token", "renew_claim"]);
+
+    let machine = p.mint_token_for_run(TENANT, Role::Admin, "agent:customer", "run-x", "root-x");
+    for tool in &granted {
+        let args = if tool == "mint_run_token" {
+            json!({ "run_id": "run-x", "skill": "customer" })
+        } else {
+            json!({ "event_id": "e-1" })
+        };
+        let body = rpc(&p, &machine, tool, args).await;
+        assert!(
+            body.get("error").is_some(),
+            "{tool} must refuse a run token, whatever its role: {body}"
+        );
+        assert_ne!(
+            body["error"]["data"]["code"], "admin_required",
+            "{tool}: refused by the handler, not the dispatch gate: {body}"
+        );
+    }
+}

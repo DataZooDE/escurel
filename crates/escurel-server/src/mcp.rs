@@ -380,7 +380,7 @@ async fn mcp_inner(
     // dispatch reads from the agent's own page — never from the token.
     let agent_claim = auth_ctx.as_ref().and_then(|c| c.agent.clone());
     // A chat bridge's token (crew security F2): confined to its turn's calls.
-    let bridge = auth_ctx.as_ref().is_some_and(|c| c.bridge);
+    let bridge = auth_ctx.as_ref().is_some_and(|c| c.bridge_turn);
     // The built-in service role (#828) the credential holds for itself.
     let service = auth_ctx.as_ref().and_then(|c| c.service);
     // When the token was issued: an agent token issued before its agent's `token_epoch` is revoked.
@@ -1249,7 +1249,7 @@ async fn dispatch_tools_call(
         root_event_id: run.and_then(|r| r.root_event_id.as_deref()),
         agent_skill,
         agent: agent_profile.as_ref(),
-        runner: service == Some(escurel_auth::ServiceRole::Runner),
+        service,
     };
     let write_acl = state.write_acl_for(&caller);
 
@@ -1315,7 +1315,7 @@ async fn dispatch_tools_call(
         .with_code("agent_scope_denied", false));
     }
     if schema::admin_scope_tools().contains(params.name.as_str())
-        && !(caller.runner && schema::RUNNER_ADMIN_TOOLS.contains(&params.name.as_str()))
+        && !(caller.is_runner() && schema::RUNNER_ADMIN_TOOLS.contains(&params.name.as_str()))
     {
         require_admin(role)?;
     }
