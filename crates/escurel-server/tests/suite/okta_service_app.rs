@@ -79,10 +79,7 @@ async fn an_okta_service_app_reads_the_groups_with_one_cached_token() {
     let gw = gateway(&okta).await;
     assert_eq!(minted_roles(&gw).await, json!(["sales", "support"]));
     assert_eq!(minted_roles(&gw).await, json!(["sales", "support"]));
-    assert!(
-        okta.lookups() >= 4,
-        "every turn asked Okta (two pages each)"
-    );
+    assert_eq!(okta.lookups(), 4, "every turn asked Okta (two pages each)");
     assert_eq!(okta.tokens_issued(), 1, "two lookups, one token request");
 
     // A second gateway signs its own assertion: a new `jti`, which the stand-in accepts once.

@@ -1114,6 +1114,46 @@ async fn a_missing_expired_or_foreign_activity_token_is_unverified() {
             "a key not endorsed for Teams",
         ),
         (Some("not-a-jwt".to_owned()), "garbage"),
+        (
+            Some(unsigned(
+                json!({ "alg": "HS256", "typ": "JWT", "kid": TEAMS_KID }),
+                &claims_with(json!({})),
+            )),
+            "HS256 alg confusion",
+        ),
+        (
+            Some(unsigned(
+                json!({ "alg": "none", "typ": "JWT", "kid": TEAMS_KID }),
+                &claims_with(json!({})),
+            )),
+            "alg none",
+        ),
+        (
+            Some(unsigned(
+                json!({ "alg": "RS256", "typ": "JWT" }),
+                &claims_with(json!({})),
+            )),
+            "no kid",
+        ),
+        (
+            Some(w.bf.sign(&claims_with(json!({})), "a-kid-nobody-publishes")),
+            "an unknown kid",
+        ),
+        (
+            Some(w.bf.sign(&claims_with(json!({ "nbf": now + 3600 })), TEAMS_KID)),
+            "nbf beyond the leeway",
+        ),
+        (
+            Some(w.bf.sign(
+                &{
+                    let mut c = claims_with(json!({}));
+                    c.as_object_mut().unwrap().remove("serviceurl");
+                    c
+                },
+                TEAMS_KID,
+            )),
+            "no serviceurl claim",
+        ),
     ];
     for (token, why) in cases {
         let (_, body) = call(
@@ -1192,8 +1232,11 @@ async fn mints_are_capped_per_bridge_credential_and_per_asker() {
         graph.member_of(oid, &["escurel-sales"]);
     }
     let mut cfg = bridge_mint("user:{aadObjectId}", vec![graph.config("escurel-")], None);
+    // A burst of 2 per credential (one more every 30 s) and 1 per asker (one every 60 s): every
+    // refusal below follows its bucket's last token by milliseconds, so a refill cannot land in
+    // between on a slow runner (crew F14).
     cfg.rate = escurel_server::rate_limit::MintRateLimits {
-        per_credential_per_minute: 3,
+        per_credential_per_minute: 2,
         per_asker_per_minute: 1,
     };
     let gw = gateway(cfg).await;
@@ -1204,24 +1247,23 @@ async fn mints_are_capped_per_bridge_credential_and_per_asker() {
         async move { call(gw, &cred, "mint_user_token", personal(oid)).await.1 }
     };
     ok(&mint_as(one.clone(), ALICE_OID).await, "alice's first");
-    // Alice again at once: her own bucket is empty, whichever bridge asks.
-    for cred in [one.clone(), other.clone()] {
-        let body = mint_as(cred, ALICE_OID).await;
-        refused(&body, "rate_limited", "the per-asker cap");
-        assert_eq!(body["error"]["data"]["retryable"], true);
-        assert!(
-            body["error"]["data"]["retry_after_secs"].as_u64().unwrap() >= 1,
-            "{body}"
-        );
-    }
     ok(
         &mint_as(one.clone(), BOB_OID).await,
         "bob on the first bridge",
     );
-    // The first credential has spent its three (alice, alice refused, bob).
     let body = mint_as(one.clone(), "carol-oid").await;
     refused(&body, "rate_limited", "the per-credential cap");
-    // Another credential is not held back by it.
+    assert_eq!(body["error"]["data"]["scope"], "credential", "{body}");
+    assert_eq!(body["error"]["data"]["retryable"], true);
+    assert!(
+        body["error"]["data"]["retry_after_secs"].as_u64().unwrap() >= 1,
+        "{body}"
+    );
+    // Alice again, on another bridge: her own bucket is empty, whichever bridge asks.
+    let body = mint_as(other.clone(), ALICE_OID).await;
+    refused(&body, "rate_limited", "the per-asker cap");
+    assert_eq!(body["error"]["data"]["scope"], "asker", "{body}");
+    // The other credential spent one token on that refusal and is not held back by the first.
     ok(&mint_as(other, "dave-oid").await, "dave on another bridge");
 }
 
@@ -1343,5 +1385,41 @@ async fn an_activity_token_does_not_bind_its_conversation() {
     assert_eq!(
         minted["subject"], "user:bob-oid",
         "the same token, another chat and person"
+    );
+}
+
+/// A JWT with `header` and `claims` and a signature that is no signature: for
+/// the cases refused before any key is consulted.
+fn unsigned(header: Value, claims: &Value) -> String {
+    let b64 = |v: &[u8]| base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(v);
+    format!(
+        "{}.{}.{}",
+        b64(header.to_string().as_bytes()),
+        b64(claims.to_string().as_bytes()),
+        b64(b"not-a-signature")
+    )
+}
+
+/// Crew F9: the roster cache is keyed by the conversation too — Alice's 1:1
+/// answer must not vouch for a group chat she has left.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_cached_roster_answer_never_vouches_for_another_conversation() {
+    let w = verified_world().await;
+    let token = w.bf.token(BOT_APP);
+    mint(
+        &w.gw,
+        verified_turn(&w.bf, "29:alice", ALICE_OID, Some(&token)),
+    )
+    .await;
+    map_group_chat(&w.gw, "sales").await;
+    w.bf.remove_from(GROUP_CHAT, "29:alice");
+    let mut group = verified_turn(&w.bf, "29:alice", ALICE_OID, Some(&token));
+    group["conversation"] = json!({ "kind": "group", "id": GROUP_CHAT });
+    let (_, body) = call(&w.gw, &bridge_credential(&w.gw), "mint_user_token", group).await;
+    refused(&body, "not_in_conversation", "a group chat she is not in");
+    assert_eq!(
+        member_calls(&w.bf),
+        2,
+        "the group chat was asked about, not cached"
     );
 }

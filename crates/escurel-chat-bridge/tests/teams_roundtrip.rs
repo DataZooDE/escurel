@@ -1643,9 +1643,10 @@ async fn with_gateway_verification_a_mapped_group_chat_answers_a_member() {
 }
 
 /// Someone the conversation's roster does not hold — whatever object id the
-/// activity claims — gets no run and no reply: there is no person to tell.
+/// activity claims — is dropped by the BRIDGE's own members lookup (a 404),
+/// before any mint: no run and no reply, there is no person to tell.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn with_gateway_verification_a_forged_sender_gets_no_run_and_no_reply() {
+async fn a_sender_the_roster_lacks_is_dropped_by_the_bridges_own_lookup() {
     let w = world_with(Setup {
         run_ms: Some(0),
         verify: true,
@@ -1835,4 +1836,36 @@ async fn a_short_per_credential_cap_is_waited_out_not_declined() {
     texts.sort();
     let want: Vec<String> = (0..7).map(|i| format!("echo: q{i}")).collect();
     assert_eq!(texts, want, "every turn answered, none declined");
+}
+
+/// Crew F8: the bridge's own lookup succeeds (Teams knows `29:alice`), but
+/// the activity claims Bob's object id; the GATEWAY asks the roster itself,
+/// refuses `identity_mismatch`, and no run starts.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn with_gateway_verification_a_forged_object_id_is_refused_by_the_gateway() {
+    let w = world_with(Setup {
+        run_ms: Some(0),
+        verify: true,
+        ..Setup::default()
+    })
+    .await;
+    let token = w.bf.token(APP_ID);
+    let mut forged = w.bf.message("act-m1", "who renews?");
+    forged["from"] = json!({ "id": "29:alice", "name": "Alice", "aadObjectId": BOB_AAD });
+    w.bridge.post(Some(&token), &forged).await;
+    let replies = wait_for_replies(&w.bf, 1, Duration::from_secs(60)).await;
+    assert!(
+        replies[0].2["text"]
+            .as_str()
+            .unwrap()
+            .contains("isn't set up correctly"),
+        "{:?}",
+        replies[0].2
+    );
+    assert_eq!(
+        w.bf.seen.lock().unwrap().member_calls,
+        2,
+        "the bridge's lookup, then the gateway's own"
+    );
+    assert!(chat_events(&w.gw).await.is_empty(), "no run");
 }

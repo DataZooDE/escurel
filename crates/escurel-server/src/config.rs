@@ -3937,13 +3937,19 @@ mod bridge_config_tests {
                 ],
             ]
             .concat();
-            let cases: [(&str, &[Change]); 6] = [
+            let teams: Vec<Change> = vec![
+                ("ESCUREL_AUTH_TEAMS_APP_ID", Some("bot-app")),
+                ("ESCUREL_AUTH_TEAMS_APP_SECRET", Some("s")),
+            ];
+            let cases: [(&str, &[Change]); 8] = [
                 ("ESCUREL_AUTH_GRAPH_TOKEN_URL", &[]),
                 ("ESCUREL_AUTH_GRAPH_BASE_URL", &[]),
                 ("ESCUREL_AUTH_GOOGLE_TOKEN_URL", &google),
                 ("ESCUREL_AUTH_GOOGLE_BASE_URL", &google),
                 ("ESCUREL_AUTH_OKTA_BASE_URL", &okta),
                 ("ESCUREL_AUTH_OKTA_TOKEN_URL", &okta_app),
+                ("ESCUREL_AUTH_TEAMS_OPENID_METADATA", &teams),
+                ("ESCUREL_AUTH_TEAMS_TOKEN_URL", &teams),
             ];
             for (key, provider) in cases {
                 let at = |url: &'static str, flag: Option<&'static str>| {
@@ -4020,6 +4026,32 @@ mod bridge_config_tests {
                     "a directory without the template",
                     vec![("ESCUREL_AUTH_BRIDGE_PRINCIPAL_TEMPLATE", None)],
                     "ESCUREL_AUTH_BRIDGE_PRINCIPAL_TEMPLATE is not",
+                ),
+                (
+                    "a Teams key without the template",
+                    vec![
+                        ("ESCUREL_AUTH_BRIDGE_PRINCIPAL_TEMPLATE", None),
+                        ("ESCUREL_AUTH_GROUP_DIRECTORIES", None),
+                        ("ESCUREL_AUTH_GRAPH_TENANT_ID", None),
+                        ("ESCUREL_AUTH_GRAPH_CLIENT_ID", None),
+                        ("ESCUREL_AUTH_GRAPH_CLIENT_SECRET", None),
+                        ("ESCUREL_AUTH_GRAPH_GROUP_PREFIX", None),
+                        ("ESCUREL_AUTH_TEAMS_APP_ID", Some("bot-app")),
+                    ],
+                    "ESCUREL_AUTH_TEAMS_APP_ID is set but ESCUREL_AUTH_BRIDGE_PRINCIPAL_TEMPLATE",
+                ),
+                (
+                    "a mint cap without the template",
+                    vec![
+                        ("ESCUREL_AUTH_BRIDGE_PRINCIPAL_TEMPLATE", None),
+                        ("ESCUREL_AUTH_GROUP_DIRECTORIES", None),
+                        ("ESCUREL_AUTH_GRAPH_TENANT_ID", None),
+                        ("ESCUREL_AUTH_GRAPH_CLIENT_ID", None),
+                        ("ESCUREL_AUTH_GRAPH_CLIENT_SECRET", None),
+                        ("ESCUREL_AUTH_GRAPH_GROUP_PREFIX", None),
+                        ("ESCUREL_AUTH_BRIDGE_MINT_PER_MINUTE", Some("100")),
+                    ],
+                    "ESCUREL_AUTH_BRIDGE_MINT_PER_MINUTE is set but ESCUREL_AUTH_BRIDGE_PRINCIPAL_TEMPLATE",
                 ),
                 (
                     "a template that merges people",
