@@ -184,6 +184,10 @@ impl GroupDirectory for GraphDirectory {
         "graph"
     }
 
+    fn setup_hint(&self) -> &'static str {
+        "the Entra app needs the application permissions GroupMember.Read.All and User.Read.All, admin-consented, and ESCUREL_AUTH_GRAPH_TENANT_ID / _CLIENT_ID / _CLIENT_SECRET of that app"
+    }
+
     fn lookup_key(&self, user: &DirectoryUser) -> Option<String> {
         user.object_id.clone().filter(|id| is_object_id(id))
     }

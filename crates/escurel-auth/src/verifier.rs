@@ -730,26 +730,18 @@ fn bridge_turn_shape(
 ) -> Result<(u64, String, String), AuthError> {
     use escurel_types::bridge;
     let refuse = |why: String| Err(AuthError::BridgeRefused(why));
-    let forbidden: &[&str] = if allow_act {
-        &[
-            AGENT_CLAIM,
-            SKILL_CLAIM,
-            RUN_ID_CLAIM,
-            ROOT_EVENT_ID_CLAIM,
-            DELEGATION_PURPOSE_CLAIM,
-        ]
-    } else {
-        &[
-            AGENT_CLAIM,
-            SKILL_CLAIM,
-            RUN_ID_CLAIM,
-            ROOT_EVENT_ID_CLAIM,
-            DELEGATION_PURPOSE_CLAIM,
-            ACT_CLAIM,
-        ]
-    };
+    let act = (!allow_act).then_some(ACT_CLAIM);
+    let forbidden = [
+        AGENT_CLAIM,
+        SKILL_CLAIM,
+        RUN_ID_CLAIM,
+        ROOT_EVENT_ID_CLAIM,
+        DELEGATION_PURPOSE_CLAIM,
+    ]
+    .into_iter()
+    .chain(act);
     for claim in forbidden {
-        if claims.rest.contains_key(*claim) {
+        if claims.rest.contains_key(claim) {
             return refuse(format!("a bridge token may not carry `{claim}`"));
         }
     }

@@ -1,15 +1,23 @@
-//! A chat-channel bridge acting for a person (#824).
+//! A chat-channel bridge acting for a person (#824, #830).
 //!
-//! The bridge (`escurel-chat-bridge`) signs short-lived tokens for the people
-//! it answers, under a key of its own and an issuer the gateway names in
-//! `ESCUREL_AUTH_BRIDGE_ISSUER` (pinned to the key's `kid`,
-//! `ESCUREL_AUTH_BRIDGE_KID`). The gateway's verifier restricts every token
-//! from that issuer, whatever kid it names:
-//! a short TTL, no roles or groups, no agent or run claims, and an actor of
-//! `bridge:<channel>` — which the gateway stamps into what the token captures
-//! as `captured_via`, so a turn the bridge relayed is told apart from one the
-//! person typed themselves. The runner's chat rule and the gateway's page-chat
-//! reply rule accept exactly this via and no other.
+//! The bridge (`escurel-chat-bridge`) holds no signing key. For each turn it
+//! asks the GATEWAY, on its own `escurel:bridge` credential, for a short-lived
+//! token (`mint_user_token`): the gateway decides the subject (its principal
+//! template, [`principal_for`]), the groups (the union over its configured
+//! group directories — Microsoft Graph, Google Cloud Identity, Okta) and, in
+//! a mapped group chat or channel, the group principal the turn acts as. The
+//! token names the channel in [`CHANNEL_CLAIM`]; the gateway's verifier
+//! honours that only under the gateway's own signing identity and confines it:
+//! at most [`MAX_TTL_SECS`], the bridge gate's few tools, never admin, no
+//! role values among its groups, an actor of `bridge:<channel>` — stamped as
+//! `captured_via` on what it captures, so a relayed turn is told apart from
+//! one the person typed themselves. The runner's chat rule and the gateway's
+//! page-chat reply rule accept exactly this via and no other.
+//!
+//! DEPRECATED (removed next release): a bridge that signs the person's token
+//! itself, under an issuer the gateway names in `ESCUREL_AUTH_BRIDGE_ISSUER`
+//! pinned to `ESCUREL_AUTH_BRIDGE_KID`. Such a token carries no groups and
+//! only 1:1 chats are answered.
 
 /// The prefix of a bridge's `captured_via`: `bridge:<channel>`.
 pub const VIA_PREFIX: &str = "bridge:";

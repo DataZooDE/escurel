@@ -126,6 +126,10 @@ impl GroupDirectory for OktaDirectory {
         "okta"
     }
 
+    fn setup_hint(&self) -> &'static str {
+        "ESCUREL_AUTH_OKTA_API_TOKEN must belong to an admin who can read users and groups (Read-only Administrator), and the sender's email (or UPN, ESCUREL_AUTH_OKTA_USER_KEY) must be their Okta login"
+    }
+
     fn lookup_key(&self, user: &DirectoryUser) -> Option<String> {
         // Okta logins are case-insensitive; one person is one cache entry.
         match self.cfg.user_key {

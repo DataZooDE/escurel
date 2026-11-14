@@ -27,6 +27,7 @@
 //! narrows the person's access, never widens it. Only a RETRYABLE failure
 //! (429, 5xx, transport) with no young-enough cached answer refuses the turn.
 
+pub(crate) mod config;
 pub mod google;
 pub mod graph;
 pub mod okta;
@@ -111,6 +112,9 @@ pub trait GroupDirectory: Send + Sync {
     fn lookup_key(&self, user: &DirectoryUser) -> Option<String>;
     /// Every group `key` is (transitively) a member of.
     fn groups_for<'a>(&'a self, key: &'a str) -> GroupsFuture<'a>;
+    /// What an operator checks when this directory refuses the gateway, for
+    /// the first-lookup log line (crew U-F9).
+    fn setup_hint(&self) -> &'static str;
     /// The addresses (lowercase) the directory knows the user with this
     /// Entra object id by — `None` for a directory that is not keyed by the
     /// object id and so cannot bind the bridge's other claims to it.
@@ -338,6 +342,44 @@ impl AnswerCache {
 struct Provider {
     directory: Box<dyn GroupDirectory>,
     rule: NameRule,
+    /// Whether this provider's first answer has been logged.
+    reported: std::sync::atomic::AtomicBool,
+}
+
+impl Provider {
+    fn new(directory: Box<dyn GroupDirectory>, rule: NameRule) -> Self {
+        Self {
+            directory,
+            rule,
+            reported: std::sync::atomic::AtomicBool::new(false),
+        }
+    }
+
+    /// Log how the provider's first lookup went, once per process: an
+    /// operator setting up a directory reads off the gateway log whether it
+    /// works, and if not, what to check — instead of guessing from "not a
+    /// member" replies in Teams (crew U-F9).
+    fn report_first(&self, outcome: &Result<Vec<String>, DirectoryError>) {
+        if self
+            .reported
+            .swap(true, std::sync::atomic::Ordering::Relaxed)
+        {
+            return;
+        }
+        let name = self.directory.name();
+        match outcome {
+            Ok(groups) => tracing::info!(
+                directory = name,
+                groups = groups.len(),
+                "group directory: first lookup answered"
+            ),
+            Err(DirectoryError::Retryable(why)) => tracing::warn!(directory = name, error = %why,
+                "group directory: first lookup could not reach it (retryable)"),
+            Err(refused) => tracing::error!(directory = name, error = %refused,
+                fix = self.directory.setup_hint(),
+                "group directory: first lookup was refused; it grants nothing until this is fixed"),
+        }
+    }
 }
 
 /// The configured directories, the shared mapping step and the shared cache.
@@ -372,10 +414,7 @@ impl GroupDirectories {
                     Box::new(okta::OktaDirectory::new(c.clone(), Arc::clone(egress)))
                 }
             };
-            providers.push(Provider {
-                directory,
-                rule: d.rule().clone(),
-            });
+            providers.push(Provider::new(directory, d.rule().clone()));
         }
         Ok(Self {
             providers,
@@ -492,11 +531,12 @@ impl GroupDirectories {
             }
             Ok(groups)
         };
-        match self
+        let outcome = self
             .cache
             .get_or_fetch((name, key.clone()), true, fetch)
-            .await
-        {
+            .await;
+        p.report_first(&outcome);
+        match outcome {
             Ok(groups) => Ok(groups),
             Err(DirectoryError::Retryable(why)) => {
                 tracing::warn!(directory = name, error = %why, "group directory unreachable");
@@ -733,6 +773,9 @@ mod tests {
         fn name(&self) -> &'static str {
             self.name
         }
+        fn setup_hint(&self) -> &'static str {
+            ""
+        }
         fn lookup_key(&self, user: &DirectoryUser) -> Option<String> {
             if self.by_email {
                 user.email.clone()
@@ -768,12 +811,14 @@ mod tests {
         GroupDirectories {
             providers: providers
                 .into_iter()
-                .map(|directory| Provider {
-                    directory,
-                    rule: NameRule {
-                        prefix: Some("e-".into()),
-                        map: HashMap::new(),
-                    },
+                .map(|directory| {
+                    Provider::new(
+                        directory,
+                        NameRule {
+                            prefix: Some("e-".into()),
+                            map: HashMap::new(),
+                        },
+                    )
                 })
                 .collect(),
             reserved: vec![],
@@ -883,6 +928,9 @@ mod tests {
     impl GroupDirectory for Slow {
         fn name(&self) -> &'static str {
             "graph"
+        }
+        fn setup_hint(&self) -> &'static str {
+            ""
         }
         fn lookup_key(&self, user: &DirectoryUser) -> Option<String> {
             user.object_id.clone()

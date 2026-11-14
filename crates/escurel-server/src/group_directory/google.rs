@@ -70,6 +70,25 @@ impl std::fmt::Debug for GoogleConfig {
     }
 }
 
+impl GoogleConfig {
+    /// The service account's JWT-bearer grant: one construction for the boot
+    /// check and the directory.
+    ///
+    /// # Errors
+    /// The key is not an RSA private key, as an operator-facing sentence.
+    pub fn credentials(&self) -> Result<ClientCredentials, String> {
+        ClientCredentials::jwt_bearer(
+            self.token_url.clone(),
+            self.client_email.clone(),
+            self.subject.clone(),
+            self.private_key_id.clone(),
+            &self.private_key,
+            SCOPE,
+        )
+        .map_err(|e| format!("ESCUREL_AUTH_GOOGLE_SA_KEY_FILE: {e}"))
+    }
+}
+
 pub struct GoogleDirectory {
     base_url: String,
     group_name: GroupName,
@@ -82,15 +101,7 @@ impl GoogleDirectory {
     /// # Errors
     /// The service-account key is not an RSA private key.
     pub fn new(cfg: GoogleConfig, egress: Arc<Egress>) -> Result<Self, String> {
-        let credentials = ClientCredentials::jwt_bearer(
-            cfg.token_url,
-            cfg.client_email,
-            cfg.subject,
-            cfg.private_key_id,
-            &cfg.private_key,
-            SCOPE,
-        )
-        .map_err(|e| format!("ESCUREL_AUTH_GOOGLE_SA_KEY_FILE: {e}"))?;
+        let credentials = cfg.credentials()?;
         Ok(Self {
             base_url: cfg.base_url,
             group_name: cfg.group_name,
@@ -174,6 +185,10 @@ pub(crate) fn is_plain_email(s: &str) -> bool {
 impl GroupDirectory for GoogleDirectory {
     fn name(&self) -> &'static str {
         "google"
+    }
+
+    fn setup_hint(&self) -> &'static str {
+        "searchTransitiveGroups needs a Google Workspace Enterprise or Cloud Identity Premium account; the service account needs domain-wide delegation for the cloud-identity.groups.readonly scope with ESCUREL_AUTH_GOOGLE_SUBJECT a user holding Groups Reader (or the Groups Reader role itself)"
     }
 
     fn lookup_key(&self, user: &DirectoryUser) -> Option<String> {

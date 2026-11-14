@@ -405,13 +405,13 @@ pub const CONFIG_KEYS: &[ConfigKey] = &[
         name: "ESCUREL_AUTH_BRIDGE_KID",
         component: "Server",
         default: "—",
-        doc: "comma-separated key ids the bridge signs under; a pin on the `ESCUREL_AUTH_BRIDGE_ISSUER` entry: a token from it under any other kid is refused, and so is a token from another issuer under one of these kids. The key must be the bridge's own, never the gateway's main signing key. REQUIRED with `ESCUREL_AUTH_BRIDGE_ISSUER`",
+        doc: "DEPRECATED (with `ESCUREL_AUTH_BRIDGE_ISSUER`; removed next release): comma-separated key ids the bridge signs under; a pin on the `ESCUREL_AUTH_BRIDGE_ISSUER` entry: a token from it under any other kid is refused, and so is a token from another issuer under one of these kids. The key must be the bridge's own, never the gateway's main signing key. REQUIRED with `ESCUREL_AUTH_BRIDGE_ISSUER`",
     },
     ConfigKey {
         name: "ESCUREL_AUTH_BRIDGE_TENANT",
         component: "Server",
         default: "—",
-        doc: "the one tenant the bridge's tokens may name; REQUIRED with `ESCUREL_AUTH_BRIDGE_ISSUER` and must equal `ESCUREL_TENANT` (boot fails otherwise), so a gateway for another tenant cannot be configured to trust the same bridge. A bridge token naming another tenant is refused (`401`)",
+        doc: "DEPRECATED (with `ESCUREL_AUTH_BRIDGE_ISSUER`; removed next release): the one tenant the bridge's tokens may name; REQUIRED with `ESCUREL_AUTH_BRIDGE_ISSUER` and must equal `ESCUREL_TENANT` (boot fails otherwise), so a gateway for another tenant cannot be configured to trust the same bridge. A bridge token naming another tenant is refused (`401`)",
     },
     ConfigKey {
         name: "ESCUREL_AUTH_BRIDGE_PRINCIPAL_TEMPLATE",
@@ -1629,7 +1629,7 @@ pub const CONFIG_KEYS: &[ConfigKey] = &[
         name: "ESCUREL_BRIDGE_GATEWAY_TOKEN_FILE",
         component: "Bridge",
         default: "—",
-        doc: "path to a file holding the service credential; the alternative to `ESCUREL_BRIDGE_GATEWAY_TOKEN`",
+        doc: "path to a file holding the service credential; the alternative to `ESCUREL_BRIDGE_GATEWAY_TOKEN`. Read at boot (a missing or empty file refuses to start), re-read whenever its mtime changes and whenever the gateway answers 401, so a sidecar or a secret mount can rotate it without a restart",
     },
     ConfigKey {
         name: "ESCUREL_BRIDGE_AUTH_ISSUER",
@@ -1641,7 +1641,7 @@ pub const CONFIG_KEYS: &[ConfigKey] = &[
         name: "ESCUREL_BRIDGE_AUTH_AUDIENCE",
         component: "Bridge",
         default: "escurel",
-        doc: "audience of the tokens the bridge signs",
+        doc: "DEPRECATED (with `ESCUREL_AUTH_BRIDGE_ISSUER`; removed next release): audience of the tokens the bridge signs",
     },
     ConfigKey {
         name: "ESCUREL_BRIDGE_AUTH_KID",
@@ -1659,7 +1659,7 @@ pub const CONFIG_KEYS: &[ConfigKey] = &[
         name: "ESCUREL_BRIDGE_AUTH_SIGNING_KEY_FILE",
         component: "Bridge",
         default: "—",
-        doc: "path to a file holding the signing key; the alternative to `ESCUREL_BRIDGE_AUTH_SIGNING_KEY`",
+        doc: "DEPRECATED (with `ESCUREL_AUTH_BRIDGE_ISSUER`; removed next release): path to a file holding the signing key; the alternative to `ESCUREL_BRIDGE_AUTH_SIGNING_KEY`",
     },
     ConfigKey {
         name: "ESCUREL_BRIDGE_TEAMS_APP_ID",
