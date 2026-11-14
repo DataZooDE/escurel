@@ -17,7 +17,9 @@ pub mod store;
 pub mod teams;
 
 pub use bridge::{Bridge, BridgeError};
-pub use channel::{Attachment, ChannelError, ChatChannel, InboundError, InboundTurn, UserRef};
+pub use channel::{
+    Attachment, ChannelError, ChatChannel, InboundError, InboundTurn, MemberProfile, UserRef,
+};
 pub use config::{BridgeConfig, ConfigError};
 pub use store::Store;
 
@@ -41,14 +43,33 @@ pub enum StartError {
 pub async fn run(cfg: BridgeConfig) -> Result<(), StartError> {
     let store = Store::open(&cfg.state_path)?;
     let g = &cfg.gateway;
-    let signer = escurel_auth::Signer::build(
-        g.issuer.clone(),
-        g.audience.clone(),
-        g.tenant.clone(),
-        Some(g.kid.clone()),
-        &g.signing_key,
-    )
-    .map_err(|e| StartError::Signer(e.to_string()))?;
+    let signer = match &g.auth {
+        config::GatewayAuth::Service { .. } => None,
+        config::GatewayAuth::SelfSigned {
+            issuer,
+            audience,
+            kid,
+            signing_key,
+            ..
+        } => {
+            tracing::warn!(
+                "DEPRECATED: the bridge signs its turns with its own key (ESCUREL_BRIDGE_AUTH_*); \
+                 give it an escurel:bridge credential in ESCUREL_BRIDGE_GATEWAY_TOKEN[_FILE] so \
+                 the gateway mints them (with the asker's directory groups, and group chats). \
+                 The self-signed path is removed in the next release."
+            );
+            Some(
+                escurel_auth::Signer::build(
+                    issuer.clone(),
+                    audience.clone(),
+                    g.tenant.clone(),
+                    Some(kid.clone()),
+                    signing_key,
+                )
+                .map_err(|e| StartError::Signer(e.to_string()))?,
+            )
+        }
+    };
     let channel = teams::TeamsChannel::new(cfg.teams.clone());
     let listen = cfg.listen.clone();
     let version = cfg.version.clone();
