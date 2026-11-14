@@ -20,6 +20,7 @@
 mod client_credentials;
 mod jwks;
 mod signer;
+mod token_file;
 mod verifier;
 
 pub use client_credentials::{ClientCredentials, ClientCredentialsError};
@@ -29,6 +30,7 @@ pub use signer::{
     RunClaims as MintRunClaims, SKILL_CLAIM, SignError, Signer, TENANT_CLAIM, TRACE_ID_CLAIM,
     WORKBENCH_AGENT_PURPOSE,
 };
+pub use token_file::{TokenFile, TokenFileError};
 pub use verifier::{
     AuthContext, AuthError, OidcConfig, OidcVerifier, Role, RunClaims, ServiceRole,
 };

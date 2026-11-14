@@ -115,10 +115,7 @@ impl std::fmt::Debug for TokenSource {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Static(_) => f.write_str("TokenSource::Static(<redacted>)"),
-            Self::File(file) => f
-                .debug_struct("TokenSource::File")
-                .field("path", &file.path)
-                .finish_non_exhaustive(),
+            Self::File(file) => f.debug_tuple("TokenSource::File").field(&file.0).finish(),
             Self::Gateway { bearer, .. } => f
                 .debug_struct("TokenSource::Gateway")
                 .field("bearer", bearer)
@@ -427,12 +424,9 @@ fn gateway_cannot_mint(e: &escurel_client::Error) -> bool {
     }
 }
 
-/// The state behind [`TokenSource::File`].
-pub struct TokenFile {
-    path: std::path::PathBuf,
-    /// `(token, the file's mtime when read)`.
-    cached: Mutex<(String, Option<std::time::SystemTime>)>,
-}
+/// The state behind [`TokenSource::File`]: the shared
+/// [`escurel_auth::TokenFile`] under `ESCUREL_RUNNER_TOKEN_FILE`.
+pub struct TokenFile(escurel_auth::TokenFile);
 
 impl TokenFile {
     /// Read `path` now: a runner configured with a token file it cannot
@@ -441,56 +435,18 @@ impl TokenFile {
     /// # Errors
     /// When the file is unreadable or empty.
     pub fn open(path: impl Into<std::path::PathBuf>) -> Result<Self, AuthError> {
-        let path = path.into();
-        let (token, mtime) = read_token_file(&path)?;
-        Ok(Self {
-            path,
-            cached: Mutex::new((token, mtime)),
-        })
+        escurel_auth::TokenFile::open("ESCUREL_RUNNER_TOKEN_FILE", path)
+            .map(Self)
+            .map_err(|e| AuthError::TokenFile {
+                path: e.path,
+                reason: e.reason,
+            })
     }
 
+    #[allow(clippy::unnecessary_wraps)]
     fn current(&self) -> Result<String, AuthError> {
-        let mtime = std::fs::metadata(&self.path)
-            .and_then(|m| m.modified())
-            .ok();
-        let mut slot = self.cached.lock().unwrap_or_else(|e| e.into_inner());
-        if mtime.is_some() && mtime != slot.1 {
-            match read_token_file(&self.path) {
-                Ok(fresh) => {
-                    tracing::info!(
-                        target: "escurel_runner",
-                        path = %self.path.display(),
-                        "ESCUREL_RUNNER_TOKEN_FILE changed; using the new credential"
-                    );
-                    *slot = fresh;
-                }
-                Err(e) => tracing::warn!(
-                    target: "escurel_runner",
-                    error = %e,
-                    "ESCUREL_RUNNER_TOKEN_FILE changed but is unusable; keeping the last token"
-                ),
-            }
-        }
-        Ok(slot.0.clone())
+        Ok(self.0.current())
     }
-}
-
-fn read_token_file(
-    path: &std::path::Path,
-) -> Result<(String, Option<std::time::SystemTime>), AuthError> {
-    let err = |reason: String| AuthError::TokenFile {
-        path: path.display().to_string(),
-        reason,
-    };
-    let mtime = std::fs::metadata(path).and_then(|m| m.modified()).ok();
-    let token = std::fs::read_to_string(path)
-        .map_err(|e| err(e.to_string()))?
-        .trim()
-        .to_owned();
-    if token.is_empty() {
-        return Err(err("the file is empty".to_owned()));
-    }
-    Ok((token, mtime))
 }
 
 /// Read the `sub` claim from a JWT WITHOUT verifying the signature. Used only to

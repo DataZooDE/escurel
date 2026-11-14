@@ -47,7 +47,7 @@ pub enum GatewayAuth {
     /// its own `escurel:bridge` credential (`ESCUREL_BRIDGE_GATEWAY_TOKEN[_FILE]`)
     /// and no signing key. The gateway decides the subject, the groups and,
     /// in a group chat or channel, the group principal.
-    Service { token: String },
+    Service { credential: ServiceCredential },
     /// DEPRECATED (removed in the next release): the bridge signs the asker's
     /// token with its OWN key, under an issuer the gateway names in
     /// `ESCUREL_AUTH_BRIDGE_ISSUER` pinned to `kid` (`ESCUREL_AUTH_BRIDGE_KID`).
@@ -61,6 +61,37 @@ pub enum GatewayAuth {
         /// `{aadObjectId}` / `{userId}` / `{tenantId}` → the escurel subject.
         principal_template: String,
     },
+}
+
+/// The bridge's own `escurel:bridge` credential: a value, or a file a
+/// sidecar keeps fresh (`ESCUREL_BRIDGE_GATEWAY_TOKEN_FILE`) — re-read when it
+/// changes and whenever the gateway rejects the token in hand, so a rotation
+/// needs no restart.
+#[derive(Clone)]
+pub enum ServiceCredential {
+    Static(String),
+    File(std::sync::Arc<escurel_auth::TokenFile>),
+}
+
+impl ServiceCredential {
+    /// The credential to present now.
+    #[must_use]
+    pub fn current(&self) -> String {
+        match self {
+            Self::Static(token) => token.clone(),
+            Self::File(file) => file.current(),
+        }
+    }
+
+    /// The gateway rejected the credential: re-read the file. `true` when
+    /// there is a different one to try.
+    #[must_use]
+    pub fn reload(&self) -> bool {
+        match self {
+            Self::Static(_) => false,
+            Self::File(file) => file.reload(),
+        }
+    }
 }
 
 impl std::fmt::Debug for GatewayAuth {
@@ -155,12 +186,9 @@ impl BridgeConfig {
             gateway: GatewayConfig {
                 url: req("ESCUREL_BRIDGE_GATEWAY_URL")?,
                 tenant: req("ESCUREL_BRIDGE_TENANT")?,
-                auth: match secret(
-                    "ESCUREL_BRIDGE_GATEWAY_TOKEN",
-                    "ESCUREL_BRIDGE_GATEWAY_TOKEN_FILE",
-                ) {
-                    Ok(token) => GatewayAuth::Service { token },
-                    Err(ConfigError::Missing(_)) => GatewayAuth::SelfSigned {
+                auth: match service_credential(&get)? {
+                    Some(credential) => GatewayAuth::Service { credential },
+                    None => GatewayAuth::SelfSigned {
                         issuer: req("ESCUREL_BRIDGE_AUTH_ISSUER")
                             .map_err(|_| ConfigError::Missing("ESCUREL_BRIDGE_GATEWAY_TOKEN"))?,
                         audience: or("ESCUREL_BRIDGE_AUTH_AUDIENCE", "escurel"),
@@ -180,11 +208,20 @@ impl BridgeConfig {
                             t
                         },
                     },
-                    Err(other) => return Err(other),
                 },
-                // A minute under the gateway's bound, so a bridge clock that
-                // runs a little ahead never mints a token "too long-lived".
-                token_ttl_secs: escurel_types::bridge::MAX_TTL_SECS - 60,
+                // At most a minute under the gateway's bound, so a bridge clock
+                // that runs a little ahead never mints a token "too long-lived".
+                token_ttl_secs: {
+                    let max = Duration::from_secs(escurel_types::bridge::MAX_TTL_SECS - 60);
+                    let ttl = dur("ESCUREL_BRIDGE_TOKEN_TTL", max)?;
+                    if ttl > max || ttl < Duration::from_secs(2) {
+                        return Err(ConfigError::Refused {
+                            key: "ESCUREL_BRIDGE_TOKEN_TTL",
+                            reason: format!("between 2s and {}s", max.as_secs()),
+                        });
+                    }
+                    ttl.as_secs()
+                },
             },
             teams: TeamsConfig {
                 app_id: req("ESCUREL_BRIDGE_TEAMS_APP_ID")?,
@@ -219,6 +256,26 @@ impl BridgeConfig {
 }
 
 pub use escurel_types::bridge::validate_principal_template;
+
+/// `ESCUREL_BRIDGE_GATEWAY_TOKEN`, else `…_FILE` (read now, so a missing file
+/// refuses to start); `None` when neither is set.
+fn service_credential(
+    get: &impl Fn(&str) -> Option<String>,
+) -> Result<Option<ServiceCredential>, ConfigError> {
+    const KEY: &str = "ESCUREL_BRIDGE_GATEWAY_TOKEN_FILE";
+    if let Some(token) = get("ESCUREL_BRIDGE_GATEWAY_TOKEN") {
+        return Ok(Some(ServiceCredential::Static(token)));
+    }
+    let Some(path) = get(KEY) else {
+        return Ok(None);
+    };
+    escurel_auth::TokenFile::open(KEY, path)
+        .map(|f| Some(ServiceCredential::File(std::sync::Arc::new(f))))
+        .map_err(|e| ConfigError::Refused {
+            key: KEY,
+            reason: format!("{}: {}", e.path, e.reason),
+        })
+}
 
 /// A comma-separated list, trimmed, empties dropped.
 fn list(raw: &str) -> Vec<String> {
@@ -279,7 +336,8 @@ mod tests {
         })
         .unwrap();
         assert!(
-            matches!(c.gateway.auth, GatewayAuth::Service { ref token } if token == "svc-token")
+            matches!(c.gateway.auth, GatewayAuth::Service { ref credential }
+                if credential.current() == "svc-token")
         );
         let err = BridgeConfig::from_env_with(|k| match k {
             "ESCUREL_BRIDGE_AUTH_ISSUER" => None,
@@ -360,5 +418,34 @@ mod tests {
         assert_eq!(parse_duration("2m"), Some(Duration::from_secs(120)));
         assert_eq!(parse_duration("7"), Some(Duration::from_secs(7)));
         assert_eq!(parse_duration("soon"), None);
+    }
+
+    /// The bridge credential from a file is read at boot and re-read on demand.
+    #[test]
+    fn the_gateway_token_file_is_read_now_and_again_after_a_rotation() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("bridge-token");
+        std::fs::write(&path, "first\n").unwrap();
+        let p = path.display().to_string();
+        let cfg = |file: String| {
+            BridgeConfig::from_env_with(move |k| match k {
+                "ESCUREL_BRIDGE_GATEWAY_TOKEN_FILE" => Some(file.clone()),
+                "ESCUREL_BRIDGE_AUTH_ISSUER" => None,
+                _ => minimal(k),
+            })
+        };
+        let GatewayAuth::Service { credential } = cfg(p.clone()).unwrap().gateway.auth else {
+            panic!("the gateway-minted path");
+        };
+        assert_eq!(credential.current(), "first");
+        std::fs::write(&path, "second").unwrap();
+        assert!(credential.reload());
+        assert_eq!(credential.current(), "second");
+        let err = cfg(dir.path().join("missing").display().to_string()).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("ESCUREL_BRIDGE_GATEWAY_TOKEN_FILE"),
+            "{err}"
+        );
     }
 }
