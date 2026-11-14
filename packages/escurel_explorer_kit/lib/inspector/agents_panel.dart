@@ -150,8 +150,9 @@ class _AgentRow extends StatelessWidget {
                   if (agent.tokensValidSince case final since?)
                     Semantics(
                       label: 'agent-tokens-since:${agent.id}',
+                      value: since,
                       container: true,
-                      explicitChildNodes: true,
+                      excludeSemantics: true,
                       child: Text(since, style: muted),
                     ),
                 ],

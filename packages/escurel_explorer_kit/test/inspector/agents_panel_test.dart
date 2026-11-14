@@ -143,6 +143,14 @@ void main() {
       find.text('tokens valid since 2026-09-22T10:00:00Z'),
       findsOneWidget,
     );
+    // The probe (scripts/verify-demo.sh) reads the visible text off this one node, as its value.
+    expect(
+      tester
+          .getSemantics(find.bySemanticsLabel('agent-tokens-since:scribe'))
+          .getSemanticsData()
+          .value,
+      'tokens valid since 2026-09-22T10:00:00Z',
+    );
     expect(find.bySemanticsLabel('agent-tokens-since:janitor'), findsNothing);
   });
 
