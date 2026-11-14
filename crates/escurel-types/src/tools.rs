@@ -8,7 +8,7 @@
 //! tool added there and not here fails the build's tests.
 
 /// Every tool the gateway declares, in registry order.
-pub const TOOL_NAMES: [&str; 99] = [
+pub const TOOL_NAMES: [&str; 100] = [
     "whoami",
     "list_skills",
     "list_instances",
@@ -49,6 +49,7 @@ pub const TOOL_NAMES: [&str; 99] = [
     "get_run_tool_calls",
     "mint_agent_token",
     "mint_run_token",
+    "mint_user_token",
     "issue_agent_token",
     "revoke_agent_tokens",
     "report_progress",

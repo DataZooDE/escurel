@@ -1,0 +1,498 @@
+//! [`DirectoryStandIn`] — the identity provider's side of the gateway's group
+//! lookup (#830), as a local HTTP server, for each of Microsoft Graph, Google
+//! Cloud Identity and Okta: the token endpoint (where the provider has one)
+//! and the group listing, paged one group per page the way each provider
+//! pages (`@odata.nextLink`, `nextPageToken`, `Link: rel="next"`).
+//!
+//! Everything escurel does with the answer is real (the egress policy, the
+//! token and membership caches, the name rule, the union); only the provider
+//! is stood in for. A test can make it answer any status (`429` / `503` are
+//! retryable, `401` / `403` / `404` permanent) and put it back.
+
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+
+use escurel_server::group_directory::{
+    BridgeMintConfig, DirectoryConfig, NameRule, google, graph, okta,
+};
+use serde_json::{Value, json};
+use wiremock::matchers::{method, path, path_regex};
+use wiremock::{Mock, MockServer, Request, ResponseTemplate};
+
+/// The Entra tenant the Graph stand-in serves.
+pub const GRAPH_TENANT: &str = "entra-tenant";
+const GOOGLE_SA: &str = "escurel-groups@test-project.iam.gserviceaccount.com";
+const OKTA_TOKEN: &str = "okta-api-token";
+/// The Google domain the stand-in's admin-made groups are in; a shared group
+/// is in [`GOOGLE_OUTSIDE_DOMAIN`].
+pub const GOOGLE_DOMAIN: &str = "acme.example";
+const GOOGLE_OUTSIDE_DOMAIN: &str = "groups.outside.example";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Kind {
+    Graph,
+    Google,
+    Okta,
+}
+
+#[derive(Default)]
+struct State {
+    /// lookup key (object id or email) → `(group name, shared)`, where a
+    /// shared group is one an ordinary user can create and name.
+    members: HashMap<String, Vec<(String, bool)>>,
+    /// Graph: object id → the addresses the user is known by
+    /// (`mail`, `userPrincipalName`, `otherMails`).
+    addresses: HashMap<String, Vec<String>>,
+    /// Answer every request with this status instead.
+    status: Option<u16>,
+    lookups: usize,
+}
+
+/// A running provider stand-in.
+pub struct DirectoryStandIn {
+    kind: Kind,
+    server: MockServer,
+    state: Arc<Mutex<State>>,
+    /// The Google service-account key the stand-in accepts assertions from.
+    google_key_pem: Option<String>,
+}
+
+impl DirectoryStandIn {
+    pub async fn graph() -> Self {
+        Self::start(Kind::Graph).await
+    }
+
+    pub async fn google() -> Self {
+        Self::start(Kind::Google).await
+    }
+
+    pub async fn okta() -> Self {
+        Self::start(Kind::Okta).await
+    }
+
+    async fn start(kind: Kind) -> Self {
+        let server = MockServer::start().await;
+        let state = Arc::new(Mutex::new(State::default()));
+        let base = server.uri();
+        let token_path = match kind {
+            Kind::Graph => Some(format!("/{GRAPH_TENANT}/oauth2/v2.0/token")),
+            Kind::Google => Some("/token".to_owned()),
+            Kind::Okta => None,
+        };
+        let google_key_pem = (kind == Kind::Google).then(|| {
+            use rsa::pkcs8::EncodePrivateKey;
+            rsa::RsaPrivateKey::new(&mut rand::thread_rng(), 2048)
+                .expect("rsa key")
+                .to_pkcs8_pem(rsa::pkcs8::LineEnding::LF)
+                .expect("pem")
+                .to_string()
+        });
+        // The Google token endpoint checks the assertion the way Google does: signed by the
+        // service account's key, for this endpoint, with the right scope and delegated subject.
+        let google_verify = google_key_pem.as_deref().map(|pem| {
+            use rsa::pkcs8::{DecodePrivateKey, EncodePublicKey};
+            let public = rsa::RsaPrivateKey::from_pkcs8_pem(pem)
+                .expect("pem")
+                .to_public_key()
+                .to_public_key_pem(rsa::pkcs8::LineEnding::LF)
+                .expect("public pem");
+            jsonwebtoken::DecodingKey::from_rsa_pem(public.as_bytes()).expect("decoding key")
+        });
+        let token_url = token_path.as_ref().map(|p| format!("{base}{p}"));
+        if let Some(token_path) = token_path {
+            let s = Arc::clone(&state);
+            let token_url = token_url.clone().unwrap_or_default();
+            Mock::given(method("POST"))
+                .and(path(token_path))
+                .respond_with(move |req: &Request| {
+                    if let Some(status) = s.lock().unwrap().status {
+                        return ResponseTemplate::new(status);
+                    }
+                    let form = String::from_utf8_lossy(&req.body).into_owned();
+                    let ok = match kind {
+                        Kind::Graph => {
+                            form.contains("grant_type=client_credentials")
+                                && form
+                                    .contains("scope=https%3A%2F%2Fgraph.microsoft.com%2F.default")
+                        }
+                        _ => {
+                            form.contains(
+                                "grant_type=urn%3Aietf%3Aparams%3Aoauth%3Agrant-type%3Ajwt-bearer",
+                            ) && google_verify
+                                .as_ref()
+                                .is_some_and(|key| google_assertion_ok(&form, key, &token_url))
+                        }
+                    };
+                    if !ok {
+                        return ResponseTemplate::new(400);
+                    }
+                    ResponseTemplate::new(200).set_body_json(json!({
+                        "token_type": "Bearer", "expires_in": 3600, "access_token": "dir-token"
+                    }))
+                })
+                .mount(&server)
+                .await;
+        }
+        let listing = match kind {
+            Kind::Graph => r"^/v1\.0/users/[^/]+/transitiveMemberOf/microsoft\.graph\.group$",
+            Kind::Google => r"^/v1/groups/-/memberships:searchTransitiveGroups$",
+            Kind::Okta => r"^/api/v1/users/[^/]+/groups$",
+        };
+        if kind == Kind::Graph {
+            let s = Arc::clone(&state);
+            Mock::given(method("GET"))
+                .and(path_regex(r"^/v1\.0/users/[^/]+$"))
+                .respond_with(move |req: &Request| graph_user(&s, req))
+                .mount(&server)
+                .await;
+        }
+        let s = Arc::clone(&state);
+        Mock::given(method("GET"))
+            .and(path_regex(listing))
+            .respond_with(move |req: &Request| listing_page(kind, &base, &s, req))
+            .mount(&server)
+            .await;
+        Self {
+            kind,
+            server,
+            state,
+            google_key_pem,
+        }
+    }
+
+    /// `key` (an object id for Graph, an email for Google and Okta) is a
+    /// member of these groups, by name (a Google group's name is its email
+    /// local part: `escurel-sales` stands for `escurel-sales@acme.example`).
+    pub fn member_of(&self, key: &str, groups: &[&str]) {
+        self.state.lock().unwrap().members.insert(
+            key.to_owned(),
+            groups.iter().map(|g| ((*g).to_owned(), false)).collect(),
+        );
+    }
+
+    /// Graph: the user with this object id has `mail` (also their UPN) and
+    /// `other` addresses — what the gateway checks a bridge's asserted email
+    /// against (crew S-F2). A user with groups but no addresses has none.
+    pub fn known_as(&self, object_id: &str, mail: &str, other: &[&str]) {
+        let mut all = vec![mail.to_owned()];
+        all.extend(other.iter().map(|a| (*a).to_owned()));
+        self.state
+            .lock()
+            .unwrap()
+            .addresses
+            .insert(object_id.to_owned(), all);
+    }
+
+    /// `key` is also a member of these groups, which the provider says anyone
+    /// may create and name (crew S-F1): a Microsoft 365 group (`groupTypes:
+    /// [Unified]`) on Graph, a group outside `acme.example` on Google, an
+    /// `APP_GROUP` on Okta. Their names count for nothing by default. Adds
+    /// to what [`Self::member_of`] set (which replaces).
+    pub fn member_of_shared(&self, key: &str, groups: &[&str]) {
+        self.state
+            .lock()
+            .unwrap()
+            .members
+            .entry(key.to_owned())
+            .or_default()
+            .extend(groups.iter().map(|g| ((*g).to_owned(), true)));
+    }
+
+    /// Answer everything with `status` until [`Self::up`].
+    pub fn answer_with(&self, status: u16) {
+        self.state.lock().unwrap().status = Some(status);
+    }
+
+    /// The provider is unreachable in the retryable way (`503`).
+    pub fn down(&self) {
+        self.answer_with(503);
+    }
+
+    pub fn up(&self) {
+        self.state.lock().unwrap().status = None;
+    }
+
+    /// How many listing pages were asked for.
+    pub fn lookups(&self) -> usize {
+        self.state.lock().unwrap().lookups
+    }
+
+    /// The gateway's provider configuration against this stand-in, counting
+    /// the groups named with `prefix`.
+    pub fn config(&self, prefix: &str) -> DirectoryConfig {
+        let rule = NameRule {
+            prefix: Some(prefix.to_owned()),
+            map: HashMap::new(),
+        };
+        let base = self.server.uri();
+        match self.kind {
+            Kind::Graph => DirectoryConfig::Graph(graph::GraphConfig {
+                tenant_id: GRAPH_TENANT.to_owned(),
+                client_id: "graph-app".to_owned(),
+                client_secret: "not-a-real-secret".to_owned(),
+                token_url: format!("{base}/{GRAPH_TENANT}/oauth2/v2.0/token"),
+                base_url: base,
+                rule,
+                include_m365_groups: false,
+            }),
+            Kind::Google => DirectoryConfig::Google(google::GoogleConfig {
+                client_email: GOOGLE_SA.to_owned(),
+                private_key: self.google_key_pem.clone().expect("google key"),
+                private_key_id: Some("k1".to_owned()),
+                subject: Some("admin@acme.example".to_owned()),
+                token_url: format!("{base}/token"),
+                base_url: base,
+                group_name: google::GroupName::EmailLocal,
+                group_domains: vec![GOOGLE_DOMAIN.to_owned()],
+                rule,
+            }),
+            Kind::Okta => DirectoryConfig::Okta(okta::OktaConfig {
+                base_url: base,
+                api_token: OKTA_TOKEN.to_owned(),
+                user_key: okta::UserKey::Email,
+                rule,
+                include_app_groups: false,
+            }),
+        }
+    }
+}
+
+/// The gateway's `mint_user_token` configuration over `directories`, with
+/// the membership cache's fresh and stale windows (10 min / 1 h in
+/// production) — shorten them to watch both run out.
+#[must_use]
+pub fn bridge_mint(
+    template: &str,
+    directories: Vec<DirectoryConfig>,
+    cache: Option<(Duration, Duration)>,
+) -> BridgeMintConfig {
+    let (cache_ttl, stale_ttl) = cache.unwrap_or((
+        escurel_server::group_directory::DEFAULT_CACHE_TTL,
+        escurel_server::group_directory::DEFAULT_STALE_TTL,
+    ));
+    BridgeMintConfig {
+        principal_template: template.to_owned(),
+        directories,
+        cache_ttl,
+        stale_ttl,
+    }
+}
+
+/// Graph's `GET /v1.0/users/{id}`: 404 for an object id it knows nothing of.
+fn graph_user(s: &Mutex<State>, req: &Request) -> ResponseTemplate {
+    let st = s.lock().unwrap();
+    if let Some(status) = st.status {
+        return ResponseTemplate::new(status);
+    }
+    if req
+        .headers
+        .get("authorization")
+        .and_then(|v| v.to_str().ok())
+        != Some("Bearer dir-token")
+    {
+        return ResponseTemplate::new(401);
+    }
+    let oid = req
+        .url
+        .path_segments()
+        .and_then(|mut p| p.nth(2))
+        .map(percent_decode)
+        .unwrap_or_default();
+    let addresses = match (st.addresses.get(&oid), st.members.contains_key(&oid)) {
+        (Some(a), _) => a.clone(),
+        (None, true) => Vec::new(),
+        (None, false) => return ResponseTemplate::new(404),
+    };
+    ResponseTemplate::new(200).set_body_json(json!({
+        "id": oid,
+        "mail": addresses.first(),
+        "userPrincipalName": addresses.first(),
+        "otherMails": addresses.iter().skip(1).collect::<Vec<_>>(),
+    }))
+}
+
+/// One listing page, as the provider would answer it.
+fn listing_page(kind: Kind, base: &str, s: &Mutex<State>, req: &Request) -> ResponseTemplate {
+    let mut st = s.lock().unwrap();
+    st.lookups += 1;
+    if let Some(status) = st.status {
+        return ResponseTemplate::new(status);
+    }
+    let auth = req
+        .headers
+        .get("authorization")
+        .and_then(|v| v.to_str().ok());
+    let expected = match kind {
+        Kind::Okta => format!("SSWS {OKTA_TOKEN}"),
+        _ => "Bearer dir-token".to_owned(),
+    };
+    if auth != Some(expected.as_str()) {
+        return ResponseTemplate::new(401);
+    }
+    // Graph answers an OData-cast listing only as an advanced query (crew U-F3).
+    if kind == Kind::Graph {
+        let eventual = req
+            .headers
+            .get("consistencylevel")
+            .and_then(|v| v.to_str().ok())
+            == Some("eventual");
+        let counted = req
+            .url
+            .query_pairs()
+            .any(|(k, v)| k == "$count" && v == "true");
+        if !(eventual && counted) {
+            return ResponseTemplate::new(400).set_body_json(json!({ "error": {
+                "code": "Request_UnsupportedQuery",
+                "message": "this query needs ConsistencyLevel: eventual and $count=true" } }));
+        }
+    }
+    let query = |k: &str| {
+        req.url
+            .query_pairs()
+            .find(|(n, _)| n == k)
+            .map(|(_, v)| v.into_owned())
+    };
+    let segment = |i: usize| {
+        req.url
+            .path_segments()
+            .and_then(|mut s| s.nth(i))
+            .map(percent_decode)
+            .unwrap_or_default()
+    };
+    let key = match kind {
+        Kind::Graph => segment(2),
+        Kind::Okta => segment(3),
+        Kind::Google => {
+            let q = query("query").unwrap_or_default();
+            // Google lists only the groups a label clause names; without it the search is refused.
+            if !q.contains("'cloudidentity.googleapis.com/groups.discussion_forum' in labels") {
+                return ResponseTemplate::new(400);
+            }
+            q.split_once("member_key_id=='")
+                .and_then(|(_, rest)| rest.split_once('\''))
+                .map(|(key, _)| key.to_owned())
+                .unwrap_or_default()
+        }
+    };
+    let Some(groups) = st.members.get(&key).cloned() else {
+        return match kind {
+            // Graph and Okta know their users; Google simply finds no groups.
+            Kind::Google => ResponseTemplate::new(200).set_body_json(json!({ "memberships": [] })),
+            _ => ResponseTemplate::new(404),
+        };
+    };
+    let at: usize = query(match kind {
+        Kind::Graph => "$skiptoken",
+        Kind::Google => "pageToken",
+        Kind::Okta => "after",
+    })
+    .and_then(|v| v.parse().ok())
+    .unwrap_or(0);
+    let more = at + 1 < groups.len();
+    let page: Vec<&(String, bool)> = groups.iter().skip(at).take(1).collect();
+    let path = req.url.path();
+    match kind {
+        Kind::Graph => {
+            let value: Vec<Value> = page
+                .iter()
+                .map(|(g, shared)| {
+                    let types: &[&str] = if *shared { &["Unified"] } else { &[] };
+                    json!({ "@odata.type": "#microsoft.graph.group", "id": format!("oid-{g}"),
+                            "displayName": g, "securityEnabled": !shared, "groupTypes": types })
+                })
+                .collect();
+            let mut body = json!({ "value": value });
+            if more {
+                body["@odata.nextLink"] = json!(format!(
+                    "{base}{path}?$select=id,displayName,securityEnabled,groupTypes&$count=true&$skiptoken={}",
+                    at + 1
+                ));
+            }
+            ResponseTemplate::new(200).set_body_json(body)
+        }
+        Kind::Google => {
+            let memberships: Vec<Value> = page
+                .iter()
+                .map(|(g, shared)| {
+                    let domain = if *shared {
+                        GOOGLE_OUTSIDE_DOMAIN
+                    } else {
+                        GOOGLE_DOMAIN
+                    };
+                    json!({
+                        "group": format!("groups/{g}"),
+                        "groupKey": { "id": format!("{g}@{domain}") },
+                        "displayName": g,
+                        "labels": { "cloudidentity.googleapis.com/groups.discussion_forum": "" },
+                    })
+                })
+                .collect();
+            let mut body = json!({ "memberships": memberships });
+            if more {
+                body["nextPageToken"] = json!((at + 1).to_string());
+            }
+            ResponseTemplate::new(200).set_body_json(body)
+        }
+        Kind::Okta => {
+            let body: Vec<Value> = page
+                .iter()
+                .map(|(g, shared)| {
+                    let kind = if *shared { "APP_GROUP" } else { "OKTA_GROUP" };
+                    json!({ "id": format!("00g-{g}"), "type": kind, "profile": { "name": g } })
+                })
+                .collect();
+            let mut resp = ResponseTemplate::new(200).set_body_json(body);
+            if more {
+                resp = resp.insert_header(
+                    "link",
+                    format!("<{base}{path}?after={}&limit=200>; rel=\"next\"", at + 1).as_str(),
+                );
+            }
+            resp
+        }
+    }
+}
+
+fn percent_decode(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%'
+            && i + 2 < bytes.len()
+            && let Ok(b) = u8::from_str_radix(&s[i + 1..i + 3], 16)
+        {
+            out.push(b);
+            i += 3;
+        } else {
+            out.push(bytes[i]);
+            i += 1;
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// Whether a JWT-bearer form carries an assertion the service account signed
+/// for `token_url`, asking for the Cloud Identity scope as the delegated admin.
+fn google_assertion_ok(form: &str, key: &jsonwebtoken::DecodingKey, token_url: &str) -> bool {
+    let Some(assertion) = form.split('&').find_map(|kv| kv.strip_prefix("assertion=")) else {
+        return false;
+    };
+    let mut v = jsonwebtoken::Validation::new(jsonwebtoken::Algorithm::RS256);
+    v.set_audience(&[token_url]);
+    v.set_issuer(&[GOOGLE_SA]);
+    let Ok(data) = jsonwebtoken::decode::<Value>(&percent_decode(assertion), key, &v) else {
+        return false;
+    };
+    data.claims["scope"] == google::SCOPE && data.claims["sub"] == "admin@acme.example"
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn a_percent_escape_at_the_end_of_a_segment_is_decoded() {
+        assert_eq!(super::percent_decode("a%40b%2E"), "a@b.");
+        assert_eq!(super::percent_decode("100%"), "100%");
+    }
+}

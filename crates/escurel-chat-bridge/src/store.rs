@@ -40,6 +40,9 @@ pub enum TurnState {
     Expired,
     /// The principal template could not map the sender.
     Unmapped,
+    /// The gateway declined the turn (an unmapped shared chat, a sender not
+    /// in its group, an unreachable group directory); the notice was posted.
+    Declined,
     /// The platform refused the reply, or never took it after retries.
     SendFailed,
     /// The reply may have been delivered (no success came back after the
@@ -57,6 +60,7 @@ impl TurnState {
             Self::Replied => "replied",
             Self::Expired => "expired",
             Self::Unmapped => "unmapped",
+            Self::Declined => "declined",
             Self::SendFailed => "send_failed",
             Self::SendUncertain => "send_uncertain",
         }
@@ -223,6 +227,7 @@ mod tests {
         InboundTurn {
             message_id: id.to_owned(),
             conversation_id: "c".into(),
+            conversation: Default::default(),
             user: UserRef {
                 id: "u".into(),
                 directory_id: None,

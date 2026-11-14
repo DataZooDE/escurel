@@ -536,17 +536,18 @@ skill that sets one is an admin's. `description`, `summary`, `fields` and
 the body stay free. Who exactly, every write door, and the refusal shape:
 references/08 § Skill authority keys.
 
-### System skills: `escurel`, `agent` and `runtime`
+### System skills: `escurel`, `agent`, `runtime` and `chat-channel`
 
 The meta-skill is one of the **system skills** every served tenant gets at
 boot (`Indexer::ensure_system_skills`); the others are **`agent`** — agent
-profiles (§Agent profiles below) — and **`runtime`** — runner registrations
-(§Runtimes below). Each is installed only when the tenant has
+profiles (§Agent profiles below) —, **`runtime`** — runner registrations
+(§Runtimes below) — and **`chat-channel`** — shared-chat mappings (§Chat
+channels below). Each is installed only when the tenant has
 no skill page with that id, so a tenant's own page is never clobbered (a
 tenant-authored `agent` page is kept and logged). `list_skills` therefore
-always shows all three — count them when you assert on a fresh tenant's catalogue.
+always shows all four — count them when you assert on a fresh tenant's catalogue.
 
-`agent` and `runtime` are **admin-only authority** (said here for `agent`; `runtime` is the same): its skill page, any skill page claiming
+`agent`, `runtime` and `chat-channel` are **admin-only authority** (said here for `agent`; the others are the same): its skill page, any skill page claiming
 `id: agent`, and every page under `markdown/instances/agent/` are writable by
 `escurel:admin` alone — in every `ESCUREL_WRITE_ACL` mode, `off` and `log`
 included. That is enforced by the write ACL independently of
@@ -635,6 +636,35 @@ adds liveness derived from the runner's status record — `online`, `stale`
 author runtime pages by hand; give a stable `ESCUREL_RUNNER_ID` instead, or a
 restarted runner (default id `<host>:<pid>`) registers a new page and the old
 one reads stale.
+
+### Chat channels: `chat-channel` instances (admin-written)
+
+A Teams group chat or channel answered by the chat bridge acts as an escurel
+GROUP principal, never as one member (#830, references/08). An admin says which
+group with one page per conversation (readable and writable by admins only):
+
+```yaml
+kind: instance
+skill: chat-channel
+id: sales-chat
+channel: msteams
+conversation_id: "19:…@thread.v2"   # a group chat; OR team_id + channel_id (a channel, every thread)
+group: sales                        # the turn acts as group:sales with sales's access
+# archived: true                    # disconnects it
+```
+
+`group` is never `public` / `owner` / `admin` or an `escurel:` role, and a page
+must name exactly one target; anything else is refused at write
+(`chat_channel_invalid`). The gateway reads the mappings fresh on every turn:
+none → the bridge declines the chat once; two naming different groups → refused
+until one goes. The asker must also be a member of the group per the gateway's
+group directories; a gateway with no directory answers no shared chat
+(`chat_channel_no_directory`).
+
+**A mapping discloses the group's access to everyone in the chat.** The answer is
+posted to the conversation, so every participant — non-members of `<group>` and
+external guests included — sees what `<group>` can read whenever a member asks.
+Map a chat only to a group whose content all its participants may see.
 
 ## Pages with rendered views: always carry a text alternative
 

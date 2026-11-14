@@ -35,17 +35,76 @@ pub enum ConfigError {
 pub struct GatewayConfig {
     pub url: String,
     pub tenant: String,
-    /// The issuer the gateway trusts for this key (its JWKS publishes it).
-    pub issuer: String,
-    pub audience: String,
-    /// The bridge key's id: the gateway names the bridge's issuer in
-    /// `ESCUREL_AUTH_BRIDGE_ISSUER` and pins it to this kid in `ESCUREL_AUTH_BRIDGE_KID`.
-    pub kid: String,
-    /// The bridge's OWN RSA private key (PEM), published by a JWKS the gateway
-    /// trusts. Never the gateway's main signing key: the gateway restricts
-    /// tokens only under the bridge kid.
-    pub signing_key: String,
+    pub auth: GatewayAuth,
+    /// How long an asker's token lives; the bridge re-asks after half of it.
     pub token_ttl_secs: u64,
+}
+
+/// How the bridge gets each turn's token.
+#[derive(Clone)]
+pub enum GatewayAuth {
+    /// The gateway mints it (`mint_user_token`, #830): the bridge holds only
+    /// its own `escurel:bridge` credential (`ESCUREL_BRIDGE_GATEWAY_TOKEN[_FILE]`)
+    /// and no signing key. The gateway decides the subject, the groups and,
+    /// in a group chat or channel, the group principal.
+    Service { credential: ServiceCredential },
+    /// DEPRECATED (removed in the next release): the bridge signs the asker's
+    /// token with its OWN key, under an issuer the gateway names in
+    /// `ESCUREL_AUTH_BRIDGE_ISSUER` pinned to `kid` (`ESCUREL_AUTH_BRIDGE_KID`).
+    /// Such a token carries no groups, and only 1:1 chats are answered.
+    SelfSigned {
+        issuer: String,
+        audience: String,
+        kid: String,
+        /// Never the gateway's main signing key.
+        signing_key: String,
+        /// `{aadObjectId}` / `{userId}` / `{tenantId}` → the escurel subject.
+        principal_template: String,
+    },
+}
+
+/// The bridge's own `escurel:bridge` credential: a value, or a file a
+/// sidecar keeps fresh (`ESCUREL_BRIDGE_GATEWAY_TOKEN_FILE`) — re-read when it
+/// changes and whenever the gateway rejects the token in hand, so a rotation
+/// needs no restart.
+#[derive(Clone)]
+pub enum ServiceCredential {
+    Static(String),
+    File(std::sync::Arc<escurel_auth::TokenFile>),
+}
+
+impl ServiceCredential {
+    /// The credential to present now.
+    #[must_use]
+    pub fn current(&self) -> String {
+        match self {
+            Self::Static(token) => token.clone(),
+            Self::File(file) => file.current(),
+        }
+    }
+
+    /// The gateway rejected the credential: re-read the file. `true` when
+    /// there is a different one to try.
+    #[must_use]
+    pub fn reload(&self) -> bool {
+        match self {
+            Self::Static(_) => false,
+            Self::File(file) => file.reload(),
+        }
+    }
+}
+
+impl std::fmt::Debug for GatewayAuth {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Service { .. } => f.write_str("Service"),
+            Self::SelfSigned { issuer, kid, .. } => f
+                .debug_struct("SelfSigned")
+                .field("issuer", issuer)
+                .field("kid", kid)
+                .finish_non_exhaustive(),
+        }
+    }
 }
 
 /// The Teams (Bot Framework) channel.
@@ -74,9 +133,6 @@ pub struct BridgeConfig {
     pub state_path: String,
     pub gateway: GatewayConfig,
     pub teams: TeamsConfig,
-    /// `{aadObjectId}` / `{userId}` / `{tenantId}` → the escurel subject.
-    /// Validated at boot by [`validate_principal_template`].
-    pub principal_template: String,
     pub chat_skill: String,
     pub conversation_skill: String,
     pub poll_interval: Duration,
@@ -130,16 +186,42 @@ impl BridgeConfig {
             gateway: GatewayConfig {
                 url: req("ESCUREL_BRIDGE_GATEWAY_URL")?,
                 tenant: req("ESCUREL_BRIDGE_TENANT")?,
-                issuer: req("ESCUREL_BRIDGE_AUTH_ISSUER")?,
-                audience: or("ESCUREL_BRIDGE_AUTH_AUDIENCE", "escurel"),
-                kid: req("ESCUREL_BRIDGE_AUTH_KID")?,
-                signing_key: secret(
-                    "ESCUREL_BRIDGE_AUTH_SIGNING_KEY",
-                    "ESCUREL_BRIDGE_AUTH_SIGNING_KEY_FILE",
-                )?,
-                // A minute under the gateway's bound, so a bridge clock that
-                // runs a little ahead never mints a token "too long-lived".
-                token_ttl_secs: escurel_types::bridge::MAX_TTL_SECS - 60,
+                auth: match service_credential(&get)? {
+                    Some(credential) => GatewayAuth::Service { credential },
+                    None => GatewayAuth::SelfSigned {
+                        issuer: req("ESCUREL_BRIDGE_AUTH_ISSUER")
+                            .map_err(|_| ConfigError::Missing("ESCUREL_BRIDGE_GATEWAY_TOKEN"))?,
+                        audience: or("ESCUREL_BRIDGE_AUTH_AUDIENCE", "escurel"),
+                        kid: req("ESCUREL_BRIDGE_AUTH_KID")?,
+                        signing_key: secret(
+                            "ESCUREL_BRIDGE_AUTH_SIGNING_KEY",
+                            "ESCUREL_BRIDGE_AUTH_SIGNING_KEY_FILE",
+                        )?,
+                        principal_template: {
+                            let t = req("ESCUREL_BRIDGE_PRINCIPAL_TEMPLATE")?;
+                            validate_principal_template(&t).map_err(|reason| {
+                                ConfigError::Refused {
+                                    key: "ESCUREL_BRIDGE_PRINCIPAL_TEMPLATE",
+                                    reason,
+                                }
+                            })?;
+                            t
+                        },
+                    },
+                },
+                // At most a minute under the gateway's bound, so a bridge clock
+                // that runs a little ahead never mints a token "too long-lived".
+                token_ttl_secs: {
+                    let max = Duration::from_secs(escurel_types::bridge::MAX_TTL_SECS - 60);
+                    let ttl = dur("ESCUREL_BRIDGE_TOKEN_TTL", max)?;
+                    if ttl > max || ttl < Duration::from_secs(2) {
+                        return Err(ConfigError::Refused {
+                            key: "ESCUREL_BRIDGE_TOKEN_TTL",
+                            reason: format!("between 2s and {}s", max.as_secs()),
+                        });
+                    }
+                    ttl.as_secs()
+                },
             },
             teams: TeamsConfig {
                 app_id: req("ESCUREL_BRIDGE_TEAMS_APP_ID")?,
@@ -160,14 +242,6 @@ impl BridgeConfig {
                     DEFAULT_ATTACHMENT_HOSTS,
                 )),
             },
-            principal_template: {
-                let t = req("ESCUREL_BRIDGE_PRINCIPAL_TEMPLATE")?;
-                validate_principal_template(&t).map_err(|reason| ConfigError::Refused {
-                    key: "ESCUREL_BRIDGE_PRINCIPAL_TEMPLATE",
-                    reason,
-                })?;
-                t
-            },
             chat_skill: or(
                 "ESCUREL_BRIDGE_CHAT_SKILL",
                 escurel_types::bridge::DEFAULT_CHAT_SKILL,
@@ -181,44 +255,26 @@ impl BridgeConfig {
     }
 }
 
-/// The placeholders a principal template may name.
-pub const PRINCIPAL_PLACEHOLDERS: [&str; 3] = ["{aadObjectId}", "{userId}", "{tenantId}"];
+pub use escurel_types::bridge::validate_principal_template;
 
-/// Refuse a principal template that could map two people to one subject:
-/// every `{…}` must be a known placeholder, and at least one of them must
-/// name the person (`{aadObjectId}` or `{userId}`) — a constant, a misspelt
-/// placeholder (left in as a literal) or a tenant-only template would give
-/// everyone the same identity, and with it each other's private pages.
-///
-/// # Errors
-/// Why the template is refused.
-pub fn validate_principal_template(template: &str) -> Result<(), String> {
-    let mut rest = template;
-    while let Some(open) = rest.find('{') {
-        let after = &rest[open..];
-        let close = after
-            .find('}')
-            .ok_or_else(|| format!("unclosed `{{` in `{template}`"))?;
-        let placeholder = &after[..=close];
-        if !PRINCIPAL_PLACEHOLDERS.contains(&placeholder) {
-            return Err(format!(
-                "unknown placeholder `{placeholder}` (known: {})",
-                PRINCIPAL_PLACEHOLDERS.join(", ")
-            ));
-        }
-        rest = &after[close + 1..];
+/// `ESCUREL_BRIDGE_GATEWAY_TOKEN`, else `…_FILE` (read now, so a missing file
+/// refuses to start); `None` when neither is set.
+fn service_credential(
+    get: &impl Fn(&str) -> Option<String>,
+) -> Result<Option<ServiceCredential>, ConfigError> {
+    const KEY: &str = "ESCUREL_BRIDGE_GATEWAY_TOKEN_FILE";
+    if let Some(token) = get("ESCUREL_BRIDGE_GATEWAY_TOKEN") {
+        return Ok(Some(ServiceCredential::Static(token)));
     }
-    if rest.contains('}') {
-        return Err(format!("stray `}}` in `{template}`"));
-    }
-    if !(template.contains("{aadObjectId}") || template.contains("{userId}")) {
-        return Err(
-            "must name the person (`{aadObjectId}` or `{userId}`): otherwise every sender \
-             maps to one subject"
-                .to_owned(),
-        );
-    }
-    Ok(())
+    let Some(path) = get(KEY) else {
+        return Ok(None);
+    };
+    escurel_auth::TokenFile::open(KEY, path)
+        .map(|f| Some(ServiceCredential::File(std::sync::Arc::new(f))))
+        .map_err(|e| ConfigError::Refused {
+            key: KEY,
+            reason: format!("{}: {}", e.path, e.reason),
+        })
 }
 
 /// A comma-separated list, trimmed, empties dropped.
@@ -269,6 +325,32 @@ mod tests {
     }
 
     #[test]
+    fn a_gateway_token_selects_the_gateway_minted_path_and_needs_no_key() {
+        let c = BridgeConfig::from_env_with(|k| match k {
+            "ESCUREL_BRIDGE_GATEWAY_TOKEN" => Some("svc-token".into()),
+            "ESCUREL_BRIDGE_AUTH_ISSUER"
+            | "ESCUREL_BRIDGE_AUTH_SIGNING_KEY"
+            | "ESCUREL_BRIDGE_AUTH_KID"
+            | "ESCUREL_BRIDGE_PRINCIPAL_TEMPLATE" => None,
+            _ => minimal(k),
+        })
+        .unwrap();
+        assert!(
+            matches!(c.gateway.auth, GatewayAuth::Service { ref credential }
+                if credential.current() == "svc-token")
+        );
+        let err = BridgeConfig::from_env_with(|k| match k {
+            "ESCUREL_BRIDGE_AUTH_ISSUER" => None,
+            _ => minimal(k),
+        })
+        .unwrap_err();
+        assert!(
+            err.to_string().contains("ESCUREL_BRIDGE_GATEWAY_TOKEN"),
+            "{err}"
+        );
+    }
+
+    #[test]
     fn defaults_point_at_microsofts_public_endpoints() {
         let c = BridgeConfig::from_env_with(minimal).unwrap();
         assert_eq!(c.teams.openid_metadata_url, BOT_FRAMEWORK_OPENID_METADATA);
@@ -310,7 +392,7 @@ mod tests {
     }
 
     #[test]
-    fn the_principal_template_is_required_and_has_no_default() {
+    fn the_self_signed_path_needs_its_principal_template() {
         let err = BridgeConfig::from_env_with(|k| {
             (k != "ESCUREL_BRIDGE_PRINCIPAL_TEMPLATE")
                 .then(|| minimal(k))
@@ -321,26 +403,7 @@ mod tests {
     }
 
     #[test]
-    fn a_template_that_maps_everyone_to_one_subject_is_refused() {
-        for (template, why) in [
-            ("alice", "must name the person"),
-            ("user:{aadObjectID}", "unknown placeholder `{aadObjectID}`"),
-            ("{tenantId}", "must name the person"),
-            ("team:{tenantId}:all", "must name the person"),
-            ("user:{aadObjectId", "unclosed"),
-            ("user:aadObjectId}", "stray"),
-        ] {
-            let err = validate_principal_template(template).unwrap_err();
-            assert!(err.contains(why), "{template}: {err}");
-        }
-        for ok in [
-            "user:{aadObjectId}",
-            "{aadObjectId}",
-            "{tenantId}/{userId}",
-            "teams:{tenantId}:{aadObjectId}",
-        ] {
-            validate_principal_template(ok).unwrap_or_else(|e| panic!("{ok}: {e}"));
-        }
+    fn a_template_that_maps_everyone_to_one_subject_is_refused_at_boot() {
         let err = BridgeConfig::from_env_with(|k| match k {
             "ESCUREL_BRIDGE_PRINCIPAL_TEMPLATE" => Some("everyone".into()),
             _ => minimal(k),
@@ -355,5 +418,34 @@ mod tests {
         assert_eq!(parse_duration("2m"), Some(Duration::from_secs(120)));
         assert_eq!(parse_duration("7"), Some(Duration::from_secs(7)));
         assert_eq!(parse_duration("soon"), None);
+    }
+
+    /// The bridge credential from a file is read at boot and re-read on demand.
+    #[test]
+    fn the_gateway_token_file_is_read_now_and_again_after_a_rotation() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("bridge-token");
+        std::fs::write(&path, "first\n").unwrap();
+        let p = path.display().to_string();
+        let cfg = |file: String| {
+            BridgeConfig::from_env_with(move |k| match k {
+                "ESCUREL_BRIDGE_GATEWAY_TOKEN_FILE" => Some(file.clone()),
+                "ESCUREL_BRIDGE_AUTH_ISSUER" => None,
+                _ => minimal(k),
+            })
+        };
+        let GatewayAuth::Service { credential } = cfg(p.clone()).unwrap().gateway.auth else {
+            panic!("the gateway-minted path");
+        };
+        assert_eq!(credential.current(), "first");
+        std::fs::write(&path, "second").unwrap();
+        assert!(credential.reload());
+        assert_eq!(credential.current(), "second");
+        let err = cfg(dir.path().join("missing").display().to_string()).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("ESCUREL_BRIDGE_GATEWAY_TOKEN_FILE"),
+            "{err}"
+        );
     }
 }

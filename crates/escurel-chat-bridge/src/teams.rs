@@ -11,29 +11,38 @@
 //! token the Bot Framework issued for another channel this bot is enabled on
 //! cannot enter the Teams identity path.
 //!
-//! Only a person in an allowed Entra tenant, in an explicitly `personal`
-//! conversation, is answered; everything else is ignored.
+//! Only a person in an allowed Entra tenant is answered: in a `personal` chat,
+//! or — when the message @mentions the bot — in a `groupChat` or a `channel`
+//! thread (each then acts as the group an admin mapped it to, #830; the
+//! mention is stripped). Everything else is ignored.
 //!
 //! Outbound: a client-credentials token from the configured token endpoint,
-//! then `POST {serviceUrl}/v3/conversations/{id}/activities[/{replyToId}]`.
+//! then `POST {serviceUrl}/v3/conversations/{id}/activities[/{replyToId}]`: a
+//! 1:1 chat answers the activity, a group chat posts into the conversation, a
+//! channel answers the thread's root. The sender's email / UPN (for an
+//! email-keyed group directory) comes from
+//! `GET {serviceUrl}/v3/conversations/{id}/members/{userId}` with the same
+//! bearer — no Microsoft permission beyond the bot's own.
 
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use axum::http::HeaderMap;
-use escurel_auth::JwksCache;
+use escurel_auth::{ClientCredentials, JwksCache};
 use jsonwebtoken::{Algorithm, Validation, decode, decode_header};
 use serde_json::{Value, json};
-use tokio::sync::{Mutex, OnceCell};
+use tokio::sync::OnceCell;
 
-use crate::channel::{Attachment, ChannelError, ChatChannel, InboundError, InboundTurn, UserRef};
+use escurel_types::chat_channel::{ConversationKind, ConversationRef};
+
+use crate::channel::{
+    Attachment, ChannelError, ChatChannel, InboundError, InboundTurn, MemberProfile, UserRef,
+};
 use crate::config::TeamsConfig;
 
 /// Clock skew the Bot Framework SDKs allow on `exp` / `nbf`.
 const LEEWAY_SECS: u64 = 300;
 /// Re-fetch the signing keys at most this often (and on an unknown `kid`).
 const JWKS_TTL: Duration = Duration::from_secs(3600);
-/// Renew the connector token this long before it expires.
-const TOKEN_MARGIN: Duration = Duration::from_secs(300);
 /// The only Bot Framework channel this implementation answers.
 const CHANNEL_ID: &str = "msteams";
 /// The Teams file-consent attachment that carries a pre-authorised download URL.
@@ -43,17 +52,23 @@ pub struct TeamsChannel {
     cfg: TeamsConfig,
     http: reqwest::Client,
     keys: OnceCell<JwksCache>,
-    token: Mutex<Option<(String, Instant)>>,
+    connector: ClientCredentials,
 }
 
 impl TeamsChannel {
     #[must_use]
     pub fn new(cfg: TeamsConfig) -> Self {
+        let connector = ClientCredentials::new(
+            cfg.token_url.clone(),
+            cfg.app_id.clone(),
+            cfg.app_password.clone(),
+            cfg.token_scope.clone(),
+        );
         Self {
             cfg,
             http: client(reqwest::Client::builder()),
             keys: OnceCell::new(),
-            token: Mutex::new(None),
+            connector,
         }
     }
 
@@ -79,45 +94,10 @@ impl TeamsChannel {
     }
 
     async fn connector_token(&self) -> Result<String, ChannelError> {
-        let mut slot = self.token.lock().await;
-        if let Some((token, renew_at)) = slot.as_ref()
-            && Instant::now() < *renew_at
-        {
-            return Ok(token.clone());
-        }
-        let resp = self
-            .http
-            .post(&self.cfg.token_url)
-            .form(&[
-                ("grant_type", "client_credentials"),
-                ("client_id", self.cfg.app_id.as_str()),
-                ("client_secret", self.cfg.app_password.as_str()),
-                ("scope", self.cfg.token_scope.as_str()),
-            ])
-            .send()
+        self.connector
+            .token(&self.http)
             .await
-            .map_err(|e| ChannelError::Auth(e.to_string()))?;
-        if !resp.status().is_success() {
-            // The body may echo the request; never log it with the secret.
-            return Err(ChannelError::Auth(format!(
-                "token endpoint answered {}",
-                resp.status()
-            )));
-        }
-        let body: Value = resp
-            .json()
-            .await
-            .map_err(|e| ChannelError::Auth(e.to_string()))?;
-        let token = body["access_token"]
-            .as_str()
-            .ok_or_else(|| ChannelError::Auth("no access_token".into()))?
-            .to_owned();
-        let ttl = Duration::from_secs(body["expires_in"].as_u64().unwrap_or(3600));
-        *slot = Some((
-            token.clone(),
-            Instant::now() + ttl.saturating_sub(TOKEN_MARGIN),
-        ));
-        Ok(token)
+            .map_err(|e| ChannelError::Auth(e.to_string()))
     }
 
     async fn post_activity(&self, url: String, body: Value) -> Result<(), ChannelError> {
@@ -222,12 +202,21 @@ impl ChatChannel for TeamsChannel {
         if a["recipient"]["id"].as_str() == Some(from_id.as_str()) {
             return None;
         }
-        // A page chat is private to one person; a group or channel reply
-        // would show one member's answer to everyone in it. Only an explicit
-        // `personal` counts: a missing type is not evidence of a 1:1 chat.
-        let kind = a["conversation"]["conversationType"].as_str();
-        if kind != Some("personal") {
-            tracing::info!(conversation_type = ?kind, "teams: not a 1:1 chat, ignored");
+        // A 1:1 chat acts as the person. A group chat or a channel thread is shared, so it acts as
+        // the group an admin mapped it to (the gateway decides, #830), and only a message that
+        // @mentions the bot is a question to it. Anything else — a missing type included — is not
+        // evidence of either, and is ignored.
+        let kind = match a["conversation"]["conversationType"].as_str() {
+            Some("personal") => ConversationKind::Personal,
+            Some("groupChat") => ConversationKind::Group,
+            Some("channel") => ConversationKind::Channel,
+            other => {
+                tracing::info!(conversation_type = ?other, "teams: not a known conversation, ignored");
+                return None;
+            }
+        };
+        if kind != ConversationKind::Personal && !mentions(a, a["recipient"]["id"].as_str()?) {
+            tracing::debug!("teams: a shared-chat message that does not mention the bot, ignored");
             return None;
         }
         let tenant = text(&a["conversation"]["tenantId"])
@@ -239,40 +228,106 @@ impl ChatChannel for TeamsChannel {
             tracing::warn!(tenant = ?tenant, "teams: sender's tenant is not allowed, ignored");
             return None;
         }
+        let conversation = ConversationRef {
+            kind,
+            id: conversation_id.clone(),
+            team_id: (kind == ConversationKind::Channel)
+                .then(|| text(&a["channelData"]["team"]["id"]))
+                .flatten(),
+            channel_id: (kind == ConversationKind::Channel)
+                .then(|| text(&a["channelData"]["channel"]["id"]))
+                .flatten(),
+        };
+        // Where the reply goes: a 1:1 chat answers the activity; a group chat posts into the
+        // conversation; a channel answers the thread's ROOT, so the reply lands in the thread.
+        let (reply_mode, reply_to_id) = match kind {
+            ConversationKind::Personal => ("reply", a["id"].clone()),
+            ConversationKind::Group => ("post", Value::Null),
+            ConversationKind::Channel => {
+                ("reply", json!(thread_root(&conversation_id, &message_id)))
+            }
+        };
         Some(InboundTurn {
             message_id,
             conversation_id,
+            conversation,
             user: UserRef {
                 id: from_id,
                 directory_id: text(&a["from"]["aadObjectId"]),
                 directory_tenant: tenant,
                 display_name: text(&a["from"]["name"]),
             },
-            text: strip_mentions(a["text"].as_str().unwrap_or_default()),
+            text: question_text(a, a["recipient"]["id"].as_str()),
             attachments: attachments(a),
             reply_to: json!({
                 "serviceUrl": a["serviceUrl"],
                 "conversation": a["conversation"],
                 "from": a["recipient"],
                 "recipient": a["from"],
-                "replyToId": a["id"],
+                "replyToId": reply_to_id,
+                "mode": reply_mode,
             }),
         })
     }
 
     async fn send_reply(&self, turn: &InboundTurn, text: &str) -> Result<(), ChannelError> {
         let r = &turn.reply_to;
-        let url = format!(
-            "{}/{}",
-            conversation_url(r),
-            path_segment(r["replyToId"].as_str().unwrap_or_default())
-        );
-        let body = json!({
+        let mut body = json!({
             "type": "message", "from": r["from"], "recipient": r["recipient"],
-            "conversation": r["conversation"], "replyToId": r["replyToId"],
-            "text": text, "textFormat": "markdown",
+            "conversation": r["conversation"], "text": text, "textFormat": "markdown",
         });
+        // A turn stored before `mode` existed was a 1:1 reply.
+        let url = if r["mode"].as_str() == Some("post") {
+            conversation_url(r)
+        } else {
+            body["replyToId"] = r["replyToId"].clone();
+            format!(
+                "{}/{}",
+                conversation_url(r),
+                path_segment(r["replyToId"].as_str().unwrap_or_default())
+            )
+        };
         self.post_activity(url, body).await
+    }
+
+    async fn member_profile(&self, turn: &InboundTurn) -> Result<MemberProfile, ChannelError> {
+        let r = &turn.reply_to;
+        let url = format!(
+            "{}/v3/conversations/{}/members/{}",
+            r["serviceUrl"]
+                .as_str()
+                .unwrap_or_default()
+                .trim_end_matches('/'),
+            path_segment(&turn.conversation_id),
+            path_segment(&turn.user.id)
+        );
+        let resp = self
+            .http
+            .get(&url)
+            .bearer_auth(self.connector_token().await?)
+            .send()
+            .await
+            .map_err(|e| ChannelError::Http(e.to_string()))?;
+        if !resp.status().is_success() {
+            return Err(ChannelError::Refused {
+                status: resp.status().as_u16(),
+                body: String::new(),
+            });
+        }
+        let member: Value = resp
+            .json()
+            .await
+            .map_err(|e| ChannelError::Http(e.to_string()))?;
+        let field = |k: &str| {
+            member[k]
+                .as_str()
+                .filter(|v| !v.is_empty())
+                .map(str::to_owned)
+        };
+        Ok(MemberProfile {
+            email: field("email"),
+            upn: field("userPrincipalName"),
+        })
     }
 
     async fn typing(&self, turn: &InboundTurn) -> Result<(), ChannelError> {
@@ -367,18 +422,48 @@ fn path_segment(s: &str) -> String {
     out
 }
 
-/// Drop `<at>…</at>` mentions of the bot and surrounding whitespace.
-fn strip_mentions(text: &str) -> String {
-    let mut out = String::new();
-    let mut rest = text;
-    while let Some(start) = rest.find("<at>") {
-        out.push_str(&rest[..start]);
-        rest = rest[start..]
-            .find("</at>")
-            .map_or("", |end| &rest[start + end + "</at>".len()..]);
+/// Whether the activity @mentions `bot` (a `mention` entity naming it).
+fn mentions(a: &Value, bot: &str) -> bool {
+    a["entities"].as_array().is_some_and(|es| {
+        es.iter()
+            .any(|e| e["type"] == "mention" && e["mentioned"]["id"].as_str() == Some(bot))
+    })
+}
+
+/// A channel thread's root activity: Teams names it in the conversation id
+/// (`19:…@thread.tacv2;messageid=<root>`); a message with none is its own root.
+fn thread_root<'a>(conversation_id: &'a str, message_id: &'a str) -> &'a str {
+    conversation_id
+        .split(';')
+        .find_map(|part| part.strip_prefix("messageid="))
+        .filter(|root| !root.is_empty())
+        .unwrap_or(message_id)
+}
+
+/// The person's question: the message text with the BOT's own mention
+/// removed (crew Q-F8). Other mentions stay, as the plain name — in a group
+/// chat "<at>escurel</at> ask <at>Bob</at> about Q3" is "ask Bob about Q3".
+/// The bot's mention is the text of every `mention` entity naming `bot`
+/// (`<at>{name}</at>` when an entity carries no text).
+fn question_text(a: &Value, bot: Option<&str>) -> String {
+    let mut text = a["text"].as_str().unwrap_or_default().to_owned();
+    let own = a["entities"].as_array().into_iter().flatten().filter(|e| {
+        e["type"] == "mention" && bot.is_some() && e["mentioned"]["id"].as_str() == bot
+    });
+    for e in own {
+        let tag = e["text"].as_str().map(str::to_owned).or_else(|| {
+            e["mentioned"]["name"]
+                .as_str()
+                .map(|n| format!("<at>{n}</at>"))
+        });
+        if let Some(tag) = tag.filter(|t| !t.is_empty()) {
+            text = text.replace(&tag, "");
+        }
     }
-    out.push_str(rest);
-    out.trim().to_owned()
+    text.replace("<at>", "")
+        .replace("</at>", "")
+        .trim()
+        .to_owned()
 }
 
 /// The downloadable attachments of an activity. Teams repeats the message
@@ -431,12 +516,60 @@ mod tests {
     use super::*;
 
     #[test]
-    fn mentions_are_stripped() {
+    fn only_the_bots_own_mention_is_stripped() {
+        let msg = |text: &str, entities: Value| json!({ "text": text, "entities": entities });
+        let bot = json!({ "type": "mention", "text": "<at>escurel</at>",
+                          "mentioned": { "id": "28:bot", "name": "escurel" } });
+        let bob = json!({ "type": "mention", "text": "<at>Bob</at>",
+                          "mentioned": { "id": "29:bob", "name": "Bob" } });
         assert_eq!(
-            strip_mentions("<at>escurel</at> who renews?"),
+            question_text(
+                &msg("<at>escurel</at> who renews?", json!([bot])),
+                Some("28:bot")
+            ),
             "who renews?"
         );
-        assert_eq!(strip_mentions("plain"), "plain");
+        assert_eq!(
+            question_text(
+                &msg(
+                    "<at>escurel</at> ask <at>Bob</at> about Q3",
+                    json!([bot, bob])
+                ),
+                Some("28:bot")
+            ),
+            "ask Bob about Q3",
+            "a colleague's mention stays, as the name"
+        );
+        assert_eq!(
+            question_text(
+                &msg("<at>escurel</at> what about <at>Bob", json!([bot])),
+                Some("28:bot")
+            ),
+            "what about Bob",
+            "an unclosed tag drops nothing after it"
+        );
+        let untexted =
+            json!({ "type": "mention", "mentioned": { "id": "28:bot", "name": "escurel" } });
+        assert_eq!(
+            question_text(
+                &msg("<at>escurel</at> hi", json!([untexted])),
+                Some("28:bot")
+            ),
+            "hi"
+        );
+        assert_eq!(
+            question_text(&msg("plain", json!([])), Some("28:bot")),
+            "plain"
+        );
+    }
+
+    #[test]
+    fn a_channel_reply_goes_to_the_thread_root() {
+        assert_eq!(
+            thread_root("19:c@thread.tacv2;messageid=root-1", "m-5"),
+            "root-1"
+        );
+        assert_eq!(thread_root("19:c@thread.tacv2", "m-5"), "m-5");
     }
 
     #[test]

@@ -113,6 +113,7 @@ mod migrate_kind_job_script;
 mod migrate_kind_sigkill;
 mod migrate_kind_tool;
 mod mint_agent_token;
+mod mint_user_token;
 mod multi_issuer_groups;
 mod mysql_refused;
 mod openai_embeddings;

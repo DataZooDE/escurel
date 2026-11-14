@@ -470,6 +470,12 @@
         "category": "Escurel"
       },
       {
+        "command": "escurel.chatChannel.map",
+        "title": "Map Teams conversation…",
+        "icon": "$(comment-discussion)",
+        "category": "Escurel"
+      },
+      {
         "command": "escurel.runtimes.refresh",
         "title": "Refresh runtimes",
         "icon": "$(refresh)",
@@ -781,6 +787,10 @@
         {
           "command": "escurel.agents.revokeTokens",
           "when": "false"
+        },
+        {
+          "command": "escurel.chatChannel.map",
+          "when": "escurel.canAdmin"
         },
         {
           "command": "escurel.chat.askAboutRecord",
@@ -1120,6 +1130,11 @@
           "command": "escurel.agents.revokeTokens",
           "when": "view == escurel.agents && viewItem == agent && escurel.canAdmin",
           "group": "2_tokens@2"
+        },
+        {
+          "command": "escurel.chatChannel.map",
+          "when": "view == escurel.knowledge && viewItem == skill.chatChannel && escurel.canAdmin",
+          "group": "inline"
         },
         {
           "command": "escurel.openInstance",

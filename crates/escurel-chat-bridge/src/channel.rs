@@ -1,7 +1,7 @@
 //! The seam between a messaging platform and escurel's page chat. Teams is
 //! the one implementation today ([`crate::teams::TeamsChannel`]); Slack fits
-//! the same five verbs: verify a webhook, read a turn out of it, post a reply,
-//! show that work is in progress, download an attachment.
+//! the same verbs: verify a webhook, read a turn out of it, post a reply,
+//! show that work is in progress, download an attachment, look the sender up.
 
 use std::future::Future;
 
@@ -16,6 +16,11 @@ pub struct InboundTurn {
     /// The platform's id for this message (unique within its conversation).
     pub message_id: String,
     pub conversation_id: String,
+    /// What kind of conversation it is, and (a channel) its team and channel:
+    /// a shared one acts as the group an admin mapped it to (#830). Absent on
+    /// a turn stored before group chats were answered: a 1:1 chat.
+    #[serde(default)]
+    pub conversation: escurel_types::chat_channel::ConversationRef,
     /// The platform user as the principal template sees it
     /// (`{aadObjectId}`, `{userId}`, `{tenantId}` for Teams).
     pub user: UserRef,
@@ -55,6 +60,15 @@ pub struct UserRef {
     pub directory_id: Option<String>,
     pub directory_tenant: Option<String>,
     pub display_name: Option<String>,
+}
+
+/// What the platform's member directory says about a sender, beyond the
+/// message: the keys an email-keyed group directory (Google, Okta) looks them
+/// up by (#830).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct MemberProfile {
+    pub email: Option<String>,
+    pub upn: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -141,6 +155,14 @@ pub trait ChatChannel: Send + Sync + 'static {
         turn: &InboundTurn,
         text: &str,
     ) -> impl Future<Output = Result<(), ChannelError>> + Send;
+
+    /// The sender's email / UPN from the platform's member directory, for the
+    /// gateway's group lookup. A failure is the caller's to tolerate: a
+    /// sender with no profile is looked up by what the message carries.
+    fn member_profile(
+        &self,
+        turn: &InboundTurn,
+    ) -> impl Future<Output = Result<MemberProfile, ChannelError>> + Send;
 
     /// Show that an answer is being worked on.
     fn typing(&self, turn: &InboundTurn) -> impl Future<Output = Result<(), ChannelError>> + Send;

@@ -518,7 +518,8 @@ fn untrusted_block<'a>(input: &'a str, kind: &str) -> Option<&'a str> {
 /// mid-run) unless `ESCUREL_ECHO_SLEEP_SKILL` narrows the idle to another
 /// label; `ESCUREL_ECHO_FAIL_CHAT` fails every chat run; `ESCUREL_ECHO_CHAT_DRAFT`
 /// (or a question starting `propose:`) proposes a change to the bound page as a
-/// draft, the way a real agent is told to.
+/// draft, the way a real agent is told to; a question `read: <page_id>` names
+/// the run's subject and whether its token reads that page.
 fn run_chat(task: &HarnessTask, question: &str) -> Result<HarnessOutcome, String> {
     if let Some(ms) = std::env::var("ESCUREL_ECHO_SLEEP_MS")
         .ok()
@@ -547,6 +548,20 @@ fn run_chat(task: &HarnessTask, question: &str) -> Result<HarnessOutcome, String
         .filter_map(|(i, m)| task.input[i + m.len()..].split('"').next())
         .collect();
     let mut reply = format!("echo: {question}");
+    // `read: <page_id>` reports who the run is and whether its token reads the page, so a test can
+    // see the authority a chat run was handed (a bridge turn's directory groups, #830).
+    if let Some(page) = question.trim().strip_prefix("read:").map(str::trim) {
+        let who = mcp.call("whoami", json!({}))?;
+        let readable = mcp
+            .call("expand", json!({ "page_id": page }))
+            .is_ok_and(|r| r["page"].is_object());
+        tool_calls += 2;
+        reply.push_str(&format!(
+            "\n\nas {}: read {page} {}",
+            who["subject"].as_str().unwrap_or("?"),
+            if readable { "ok" } else { "refused" }
+        ));
+    }
     if !focus.is_empty() {
         reply.push_str(&format!("\n\nfocus: {}", focus.join(", ")));
     }

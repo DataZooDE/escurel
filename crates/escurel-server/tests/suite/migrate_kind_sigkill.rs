@@ -223,9 +223,9 @@ fn lane_kinds(data_dir: &Path) -> (usize, usize) {
     let (mut legacy, mut kind) = (0, 0);
     for f in files {
         // The server seeds its own system skills into every tenant; they are not part of the corpus.
-        if ["escurel", "agent", "runtime"]
+        if escurel_index::system_skills::SYSTEM_SKILLS
             .iter()
-            .any(|s| f.ends_with(format!("markdown/skills/{s}.md")))
+            .any(|s| f.ends_with(s.page_id))
         {
             continue;
         }

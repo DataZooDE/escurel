@@ -381,6 +381,8 @@ async fn mcp_inner(
     let agent_claim = auth_ctx.as_ref().and_then(|c| c.agent.clone());
     // A chat bridge's token (crew security F2): confined to its turn's calls.
     let bridge = auth_ctx.as_ref().is_some_and(|c| c.bridge_turn);
+    // A minted group-principal turn's asker (#830), for the audit stamp on its captures.
+    let asker = auth_ctx.as_ref().and_then(|c| c.asker.clone());
     // The built-in service role (#828) the credential holds for itself.
     let service = auth_ctx.as_ref().and_then(|c| c.service);
     // When the token was issued: an agent token issued before its agent's `token_epoch` is revoked.
@@ -468,7 +470,9 @@ async fn mcp_inner(
                 agent_skill.as_deref(),
                 agent_claim.as_deref(),
                 restriction.as_ref(),
-                bridge,
+                bridge.then_some(crate::bridge_gate::BridgeTurn {
+                    asker: asker.as_deref(),
+                }),
                 service,
                 issued_at,
                 req.params,
@@ -1175,7 +1179,7 @@ async fn dispatch_tools_call(
     agent_skill: Option<&str>,
     agent_claim: Option<&str>,
     restriction: Option<&std::collections::BTreeSet<String>>,
-    bridge: bool,
+    bridge: Option<crate::bridge_gate::BridgeTurn<'_>>,
     service: Option<escurel_auth::ServiceRole>,
     issued_at: Option<u64>,
     params: Value,
@@ -1287,7 +1291,7 @@ async fn dispatch_tools_call(
         .with_code("role_restricted", false));
     }
     // A chat bridge's token: its turn's calls and nothing else (crew security F2).
-    if bridge
+    if bridge.is_some()
         && let Some(why) = crate::bridge_gate::refusal(
             &params.name,
             &params.arguments,
@@ -1315,7 +1319,7 @@ async fn dispatch_tools_call(
         .with_code("agent_scope_denied", false));
     }
     if schema::admin_scope_tools().contains(params.name.as_str())
-        && !(caller.is_runner() && schema::RUNNER_ADMIN_TOOLS.contains(&params.name.as_str()))
+        && !schema::service_grants(caller.service, params.name.as_str())
     {
         require_admin(role)?;
     }
@@ -1577,6 +1581,7 @@ async fn dispatch_tools_call(
             tool_capture_event(
                 indexer,
                 caller,
+                bridge,
                 state.event_acl,
                 write_acl,
                 state.webhook.as_ref(),
@@ -1636,6 +1641,9 @@ async fn dispatch_tools_call(
         }
         "mint_run_token" => {
             tools_mint::tool_mint_run_token(state, indexer, caller, params.arguments).await
+        }
+        "mint_user_token" => {
+            tools_mint::tool_mint_user_token(state, indexer, caller, params.arguments).await
         }
         "issue_agent_token" => {
             tools_mint::tool_issue_agent_token(state, indexer, caller, params.arguments).await

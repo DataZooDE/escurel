@@ -704,6 +704,9 @@ pub struct EscurelConfig {
     /// `ESCUREL_AUTH_SIGNING_*` (workbench backend P2-6); `None` = the
     /// gateway cannot mint.
     pub signing: Option<SigningConfig>,
+    /// `ESCUREL_AUTH_BRIDGE_PRINCIPAL_TEMPLATE` + `ESCUREL_AUTH_GROUP_DIRECTORIES` (#830); `None` =
+    /// `mint_user_token` refuses `unsupported`.
+    pub bridge_mint: Option<crate::group_directory::BridgeMintConfig>,
     pub embedding_provider: EmbeddingProvider,
     pub embedding_model: Option<String>,
     pub embedding_device: String,
@@ -1447,6 +1450,10 @@ impl EscurelConfig {
             None => None,
         };
 
+        // --- the chat bridge's minting (#830): principal template + group directories ---
+        let bridge_mint =
+            crate::group_directory::config::bridge_mint_from(env, auth.as_ref(), signing.as_ref())?;
+
         // --- embedding ---
         // Default: hosted Gemini (the binary ships the `gemini` feature). With
         // no API key it falls back to ZeroEmbedder (see `load_gemini`), so
@@ -1814,6 +1821,7 @@ impl EscurelConfig {
             duckvfs,
             auth,
             signing,
+            bridge_mint,
             embedding_provider,
             embedding_model,
             embedding_device,
@@ -2673,6 +2681,7 @@ impl EscurelConfig {
             indexer: Some(indexer_handle),
             verifier,
             signer: self.build_signer()?,
+            bridge_mint: self.bridge_mint.clone(),
             minted_run_sweep: None,
             quota,
             tenant_store: Some(tenant_store),
@@ -3313,6 +3322,12 @@ impl EscurelConfig {
         if let Some(tenant) = &auth.bridge_tenant {
             cfg = cfg.with_bridge_tenant(tenant.clone());
         }
+        // A bridge turn's groups are honoured only under the gateway's own signing identity.
+        if self.bridge_mint.is_some()
+            && let Ok(Some(signer)) = self.build_signer()
+        {
+            cfg = cfg.with_minting_identity(signer.issuer(), signer.kid());
+        }
         cfg.jwks_refresh = auth.jwks_refresh;
         Some(Arc::new(OidcVerifier::new(cfg)))
     }
@@ -3576,19 +3591,36 @@ fn schedule_webhook_secret(
     value: Option<String>,
     file: Option<String>,
 ) -> Result<Option<String>, ConfigError> {
+    secret_or_file(
+        "ESCUREL_SCHEDULE_WEBHOOK_SECRET_FILE",
+        "set either ESCUREL_SCHEDULE_WEBHOOK_SECRET or …_FILE, not both",
+        value,
+        file,
+    )
+}
+
+/// A secret given as a value or as a file named by `file_var`: `None` when
+/// neither is set (or blank); both set (refused with `both_set`), or an
+/// unreadable or empty file, refuses to start.
+pub(crate) fn secret_or_file(
+    file_var: &'static str,
+    both_set: &'static str,
+    value: Option<String>,
+    file: Option<String>,
+) -> Result<Option<String>, ConfigError> {
     let value = value.filter(|v| !v.trim().is_empty());
     let file = file.filter(|f| !f.trim().is_empty());
     match (value, file) {
         (Some(_), Some(path)) => Err(ConfigError::InvalidValue {
-            var: "ESCUREL_SCHEDULE_WEBHOOK_SECRET_FILE",
+            var: file_var,
             value: path,
-            reason: "set either ESCUREL_SCHEDULE_WEBHOOK_SECRET or …_FILE, not both",
+            reason: both_set,
         }),
         (Some(secret), None) => Ok(Some(secret)),
         (None, Some(path)) => match std::fs::read_to_string(&path) {
             Ok(raw) if !raw.trim().is_empty() => Ok(Some(raw.trim().to_owned())),
             _ => Err(ConfigError::InvalidValue {
-                var: "ESCUREL_SCHEDULE_WEBHOOK_SECRET_FILE",
+                var: file_var,
                 value: path,
                 reason: "could not read a non-empty secret from the file",
             }),
@@ -3791,5 +3823,306 @@ mod bridge_config_tests {
             .expect("a bridge entry with a kid starts");
         let v = ok.build_verifier().expect("a verifier");
         assert_eq!(v.config().bridge_issuer.as_deref(), Some(BRIDGE));
+    }
+
+    /// Crew U-F4: the env path an IT admin takes to `mint_user_token`, row by
+    /// row: every boot refusal names the key to fix, and each provider's
+    /// happy path maps to the config the gateway runs with.
+    mod mint_from_env {
+        use super::*;
+        use crate::group_directory::{DirectoryConfig, google, okta};
+
+        const GRAPH: &[(&str, &str)] = &[
+            ("ESCUREL_AUTH_SIGNING_KEY", "pem-not-parsed-here"),
+            (
+                "ESCUREL_AUTH_BRIDGE_PRINCIPAL_TEMPLATE",
+                "user:{aadObjectId}",
+            ),
+            ("ESCUREL_AUTH_GROUP_DIRECTORIES", "graph"),
+            ("ESCUREL_AUTH_GRAPH_TENANT_ID", "tenant-guid"),
+            ("ESCUREL_AUTH_GRAPH_CLIENT_ID", "app-id"),
+            ("ESCUREL_AUTH_GRAPH_CLIENT_SECRET", "s3cret"),
+            ("ESCUREL_AUTH_GRAPH_GROUP_PREFIX", "escurel-"),
+        ];
+
+        /// `(key, Some(v))` sets a key, `(key, None)` removes it.
+        type Change<'a> = (&'a str, Option<&'a str>);
+
+        /// `base` with `changes` applied.
+        fn with(base: &[(&str, &str)], changes: &[Change]) -> Vec<(String, String)> {
+            let mut out: Vec<(String, String)> = base
+                .iter()
+                .map(|(k, v)| ((*k).to_owned(), (*v).to_owned()))
+                .collect();
+            for (k, v) in changes {
+                out.retain(|(key, _)| key != k);
+                if let Some(v) = v {
+                    out.push(((*k).to_owned(), (*v).to_owned()));
+                }
+            }
+            out
+        }
+
+        fn build(pairs: &[(String, String)]) -> Result<EscurelConfig, ConfigError> {
+            let borrowed: Vec<(&str, &str)> = pairs
+                .iter()
+                .map(|(k, v)| (k.as_str(), v.as_str()))
+                .collect();
+            cfg_from(&borrowed)
+        }
+
+        fn sa_key(dir: &std::path::Path) -> String {
+            use rsa::pkcs8::EncodePrivateKey;
+            let pem = rsa::RsaPrivateKey::new(&mut rand::thread_rng(), 2048)
+                .unwrap()
+                .to_pkcs8_pem(rsa::pkcs8::LineEnding::LF)
+                .unwrap()
+                .to_string();
+            let path = dir.join("sa.json");
+            std::fs::write(
+                &path,
+                serde_json::json!({ "client_email": "sa@p.iam.gserviceaccount.com",
+                                    "private_key": pem, "private_key_id": "k1" })
+                .to_string(),
+            )
+            .unwrap();
+            path.display().to_string()
+        }
+
+        #[test]
+        fn every_boot_refusal_names_what_to_fix() {
+            let dir = tempfile::tempdir().unwrap();
+            let file = |name: &str, body: &str| {
+                let p = dir.path().join(name);
+                std::fs::write(&p, body).unwrap();
+                p.display().to_string()
+            };
+            let admin_map = file("admin.json", r#"{"oid-1": "admin"}"#);
+            let bad_map = file("bad.json", "not json");
+            let not_a_key = file("not-a-key.json", r#"{"client_email": "x"}"#);
+            let secret = file("secret", "s3cret");
+            let sa = sa_key(dir.path());
+            let google = [
+                ("ESCUREL_AUTH_GROUP_DIRECTORIES", Some("google")),
+                ("ESCUREL_AUTH_GRAPH_TENANT_ID", None),
+                ("ESCUREL_AUTH_GRAPH_CLIENT_ID", None),
+                ("ESCUREL_AUTH_GRAPH_CLIENT_SECRET", None),
+                ("ESCUREL_AUTH_GRAPH_GROUP_PREFIX", None),
+                ("ESCUREL_AUTH_GOOGLE_SA_KEY_FILE", Some(sa.as_str())),
+                ("ESCUREL_AUTH_GOOGLE_GROUP_PREFIX", Some("escurel-")),
+            ];
+            let rows: Vec<(&str, Vec<Change>, &str)> = vec![
+                (
+                    "a directory without the template",
+                    vec![("ESCUREL_AUTH_BRIDGE_PRINCIPAL_TEMPLATE", None)],
+                    "ESCUREL_AUTH_BRIDGE_PRINCIPAL_TEMPLATE is not",
+                ),
+                (
+                    "a template that merges people",
+                    vec![("ESCUREL_AUTH_BRIDGE_PRINCIPAL_TEMPLATE", Some("everyone"))],
+                    "must name the person",
+                ),
+                (
+                    "a reserved-prefix template",
+                    vec![(
+                        "ESCUREL_AUTH_BRIDGE_PRINCIPAL_TEMPLATE",
+                        Some("svc:{userId}"),
+                    )],
+                    "not a person",
+                ),
+                (
+                    "no signing key",
+                    vec![("ESCUREL_AUTH_SIGNING_KEY", None)],
+                    "ESCUREL_AUTH_SIGNING_KEY",
+                ),
+                (
+                    "groups in another claim",
+                    vec![("ESCUREL_AUTH_GROUPS_CLAIM", Some("groups"))],
+                    "ESCUREL_AUTH_GROUPS_CLAIM",
+                ),
+                (
+                    "an unknown provider",
+                    vec![("ESCUREL_AUTH_GROUP_DIRECTORIES", Some("graph,ldap"))],
+                    "names `ldap`",
+                ),
+                (
+                    "a provider twice",
+                    vec![("ESCUREL_AUTH_GROUP_DIRECTORIES", Some("graph, GRAPH"))],
+                    "twice",
+                ),
+                (
+                    "an unlisted provider's key",
+                    vec![("ESCUREL_AUTH_OKTA_BASE_URL", Some("https://o.okta.com"))],
+                    "ESCUREL_AUTH_OKTA_BASE_URL is set but `okta` is not",
+                ),
+                (
+                    "a missing required key",
+                    vec![("ESCUREL_AUTH_GRAPH_CLIENT_ID", None)],
+                    "ESCUREL_AUTH_GRAPH_CLIENT_ID is required",
+                ),
+                (
+                    "a secret twice",
+                    vec![(
+                        "ESCUREL_AUTH_GRAPH_CLIENT_SECRET_FILE",
+                        Some(secret.as_str()),
+                    )],
+                    "ESCUREL_AUTH_GRAPH_CLIENT_SECRET or …_FILE, not both",
+                ),
+                (
+                    "no secret",
+                    vec![("ESCUREL_AUTH_GRAPH_CLIENT_SECRET", None)],
+                    "ESCUREL_AUTH_GRAPH_CLIENT_SECRET (or …_FILE) is required",
+                ),
+                (
+                    "no mapping rule",
+                    vec![("ESCUREL_AUTH_GRAPH_GROUP_PREFIX", None)],
+                    "without a mapping rule",
+                ),
+                (
+                    "a map naming a reserved group",
+                    vec![(
+                        "ESCUREL_AUTH_GRAPH_GROUP_MAP_FILE",
+                        Some(admin_map.as_str()),
+                    )],
+                    "cannot be a group",
+                ),
+                (
+                    "a map that is not JSON",
+                    vec![("ESCUREL_AUTH_GRAPH_GROUP_MAP_FILE", Some(bad_map.as_str()))],
+                    "not a JSON object",
+                ),
+                (
+                    "a plain-http directory",
+                    vec![("ESCUREL_AUTH_GRAPH_BASE_URL", Some("http://graph.example"))],
+                    "must be an https URL",
+                ),
+                (
+                    "an opt-in that is not a boolean",
+                    vec![("ESCUREL_AUTH_GRAPH_INCLUDE_M365_GROUPS", Some("yes"))],
+                    "`true` or `false`",
+                ),
+                (
+                    "a service-account file that is not a key",
+                    [
+                        &google[..],
+                        &[("ESCUREL_AUTH_GOOGLE_SA_KEY_FILE", Some(not_a_key.as_str()))],
+                    ]
+                    .concat(),
+                    "has no `client_email` / `private_key`",
+                ),
+                (
+                    "an unknown Google naming",
+                    [
+                        &google[..],
+                        &[("ESCUREL_AUTH_GOOGLE_GROUP_NAME", Some("display"))],
+                    ]
+                    .concat(),
+                    "is `email` or `email_local`",
+                ),
+                (
+                    "email_local without pinned domains",
+                    [
+                        &google[..],
+                        &[("ESCUREL_AUTH_GOOGLE_GROUP_NAME", Some("email_local"))],
+                    ]
+                    .concat(),
+                    "needs ESCUREL_AUTH_GOOGLE_GROUP_DOMAIN",
+                ),
+                (
+                    "an unknown Okta user key",
+                    vec![
+                        ("ESCUREL_AUTH_GROUP_DIRECTORIES", Some("graph,okta")),
+                        ("ESCUREL_AUTH_OKTA_BASE_URL", Some("https://o.okta.com")),
+                        ("ESCUREL_AUTH_OKTA_API_TOKEN", Some("t")),
+                        ("ESCUREL_AUTH_OKTA_GROUP_PREFIX", Some("escurel-")),
+                        ("ESCUREL_AUTH_OKTA_USER_KEY", Some("login")),
+                    ],
+                    "is `email` or `upn`",
+                ),
+            ];
+            for (what, changes, want) in rows {
+                let err = build(&with(GRAPH, &changes))
+                    .err()
+                    .unwrap_or_else(|| panic!("{what}: started"));
+                assert!(err.to_string().contains(want), "{what}: {err}");
+            }
+        }
+
+        #[test]
+        fn each_provider_maps_its_keys_to_the_config_it_runs_with() {
+            let graph = build(&with(
+                GRAPH,
+                &[("ESCUREL_AUTH_GRAPH_INCLUDE_M365_GROUPS", Some("true"))],
+            ))
+            .unwrap();
+            let mint = graph.bridge_mint.expect("minting configured");
+            assert_eq!(mint.principal_template, "user:{aadObjectId}");
+            let [DirectoryConfig::Graph(g)] = mint.directories.as_slice() else {
+                panic!("{:?}", mint.directories);
+            };
+            assert_eq!(g.tenant_id, "tenant-guid");
+            assert_eq!(
+                g.token_url,
+                "https://login.microsoftonline.com/tenant-guid/oauth2/v2.0/token"
+            );
+            assert_eq!(g.base_url, "https://graph.microsoft.com");
+            assert_eq!(g.rule.prefix.as_deref(), Some("escurel-"));
+            assert!(g.include_m365_groups);
+
+            let dir = tempfile::tempdir().unwrap();
+            let sa = sa_key(dir.path());
+            let google = build(&with(
+                GRAPH,
+                &[
+                    ("ESCUREL_AUTH_GROUP_DIRECTORIES", Some("google,okta")),
+                    ("ESCUREL_AUTH_GRAPH_TENANT_ID", None),
+                    ("ESCUREL_AUTH_GRAPH_CLIENT_ID", None),
+                    ("ESCUREL_AUTH_GRAPH_CLIENT_SECRET", None),
+                    ("ESCUREL_AUTH_GRAPH_GROUP_PREFIX", None),
+                    ("ESCUREL_AUTH_GOOGLE_SA_KEY_FILE", Some(sa.as_str())),
+                    ("ESCUREL_AUTH_GOOGLE_SUBJECT", Some("admin@acme.example")),
+                    ("ESCUREL_AUTH_GOOGLE_GROUP_PREFIX", Some("escurel-")),
+                    ("ESCUREL_AUTH_GOOGLE_GROUP_NAME", Some("email_local")),
+                    (
+                        "ESCUREL_AUTH_GOOGLE_GROUP_DOMAIN",
+                        Some("Acme.Example, acme.test"),
+                    ),
+                    ("ESCUREL_AUTH_OKTA_BASE_URL", Some("https://o.okta.com")),
+                    ("ESCUREL_AUTH_OKTA_API_TOKEN", Some("ssws")),
+                    ("ESCUREL_AUTH_OKTA_USER_KEY", Some("upn")),
+                    ("ESCUREL_AUTH_OKTA_GROUP_PREFIX", Some("escurel-")),
+                ],
+            ))
+            .unwrap()
+            .bridge_mint
+            .unwrap();
+            let [DirectoryConfig::Google(g), DirectoryConfig::Okta(o)] =
+                google.directories.as_slice()
+            else {
+                panic!("{:?}", google.directories);
+            };
+            assert_eq!(g.client_email, "sa@p.iam.gserviceaccount.com");
+            assert_eq!(g.subject.as_deref(), Some("admin@acme.example"));
+            assert_eq!(g.token_url, google::DEFAULT_TOKEN_URL);
+            assert_eq!(g.group_name, google::GroupName::EmailLocal);
+            assert_eq!(g.group_domains, ["acme.example", "acme.test"]);
+            assert_eq!(o.base_url, "https://o.okta.com");
+            assert_eq!(o.user_key, okta::UserKey::Upn);
+            assert!(!o.include_app_groups);
+
+            // No directory at all is a 1:1-only gateway (crew U-F7), not a refusal.
+            let bare = build(&with(
+                GRAPH,
+                &[
+                    ("ESCUREL_AUTH_GROUP_DIRECTORIES", None),
+                    ("ESCUREL_AUTH_GRAPH_TENANT_ID", None),
+                    ("ESCUREL_AUTH_GRAPH_CLIENT_ID", None),
+                    ("ESCUREL_AUTH_GRAPH_CLIENT_SECRET", None),
+                    ("ESCUREL_AUTH_GRAPH_GROUP_PREFIX", None),
+                ],
+            ))
+            .unwrap();
+            assert!(bare.bridge_mint.unwrap().directories.is_empty());
+        }
     }
 }

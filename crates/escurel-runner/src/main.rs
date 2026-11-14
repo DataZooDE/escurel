@@ -5094,6 +5094,7 @@ mod tests {
             user_msg_id: "m".to_owned(),
             focus: Vec::new(),
             asker: Some("u".to_owned()),
+            asker_groups: Vec::new(),
             received_at: std::time::Instant::now(),
         });
 

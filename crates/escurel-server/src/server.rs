@@ -285,6 +285,11 @@ pub struct ServerConfig {
     /// `mint_agent_token` mints run-bound agent bearers with it. `None` =
     /// the tool refuses `unsupported`. Built from `ESCUREL_AUTH_SIGNING_*`.
     pub signer: Option<Arc<escurel_auth::Signer>>,
+    /// `mint_user_token` (#830): the chat bridge's principal template and the
+    /// group-directory lookup of an asker's groups. `None` = the tool refuses
+    /// `unsupported`. Built from `ESCUREL_AUTH_BRIDGE_PRINCIPAL_TEMPLATE` and
+    /// `ESCUREL_AUTH_GROUP_DIRECTORIES` (+ each provider's keys).
+    pub bridge_mint: Option<crate::group_directory::BridgeMintConfig>,
     /// How often gateway-minted runs are swept for expiry (P2-6); `None` =
     /// every 30 s.
     pub minted_run_sweep: Option<std::time::Duration>,
@@ -558,6 +563,8 @@ pub(crate) struct AppState {
     pub(crate) verifier: Option<Arc<OidcVerifier>>,
     /// The gateway's signing identity for `mint_agent_token` (P2-6).
     pub(crate) signer: Option<Arc<escurel_auth::Signer>>,
+    /// `mint_user_token`'s template and group directories (#830).
+    pub(crate) bridge_mint: Option<Arc<crate::group_directory::BridgeMint>>,
     pub(crate) quota: Option<Arc<QuotaManager>>,
     pub(crate) tenant_store: Option<Arc<dyn TenantStore>>,
     /// Cached suspend flag for the served tenant (#247). Loaded from the
@@ -724,6 +731,42 @@ pub async fn serve(
             ServerError::Serve(std::io::Error::other(format!("event_claims table: {e}")))
         })?,
     );
+    let egress = Arc::new(
+        crate::egress::Egress::new(config.egress.clone())
+            .with_metrics(Arc::clone(&metrics_registry)),
+    );
+    if config
+        .verifier
+        .as_ref()
+        .is_some_and(|v| v.config().bridge_issuer.is_some())
+    {
+        tracing::warn!(
+            "DEPRECATED: ESCUREL_AUTH_BRIDGE_ISSUER / _KID trust a chat bridge's own signing key; \
+             give the bridge an escurel:bridge credential and set \
+             ESCUREL_AUTH_BRIDGE_PRINCIPAL_TEMPLATE + ESCUREL_AUTH_GROUP_DIRECTORIES so the gateway mints \
+             its turns (mint_user_token). The self-signed path is removed in the next release."
+        );
+    }
+    let bridge_mint = match config.bridge_mint.as_ref() {
+        None => None,
+        Some(cfg) => {
+            // A directory group may never be named after one of this deployment's privilege markers.
+            let reserved = config.verifier.as_ref().map_or_else(Vec::new, |v| {
+                let c = v.config();
+                vec![
+                    c.admin_role_value.clone(),
+                    c.operator_role_value.clone(),
+                    c.runner_role_value.clone(),
+                    c.bridge_role_value.clone(),
+                ]
+            });
+            Some(Arc::new(
+                crate::group_directory::BridgeMint::new(cfg, &egress, reserved).map_err(|e| {
+                    ServerError::Serve(std::io::Error::other(format!("group directories: {e}")))
+                })?,
+            ))
+        }
+    };
     let state = AppState {
         write_acl: config.write_acl,
         event_acl: config.event_acl,
@@ -731,16 +774,14 @@ pub async fn serve(
         bridge_chat_skill: config.bridge_chat_skill.clone(),
         toolcall_detail: config.toolcall_detail,
         autonomy_lint: config.autonomy_lint,
-        egress: Arc::new(
-            crate::egress::Egress::new(config.egress.clone())
-                .with_metrics(Arc::clone(&metrics_registry)),
-        ),
+        egress,
         version: config.version.clone(),
         readiness: Arc::clone(&config.readiness),
         served_tenant,
         indexer: config.indexer.clone(),
         verifier: config.verifier.clone(),
         signer: config.signer.clone(),
+        bridge_mint,
         quota: config.quota.clone(),
         tenant_suspended: Arc::clone(&config.tenant_suspended),
         emit_edit_events: config.emit_edit_events,

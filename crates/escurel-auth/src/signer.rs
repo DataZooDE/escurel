@@ -106,6 +106,10 @@ pub struct Signer {
     /// The public half, base64url modulus and exponent, for [`Self::public_jwk`].
     n_b64: String,
     e_b64: String,
+    /// Groups never carried by a token this signer mints for someone else
+    /// ([`Self::mint_scoped`]): the deployment's role values, so a custom
+    /// admin value such as `kb-admins` is stripped like `escurel:admin`.
+    reserved_groups: Vec<String>,
 }
 
 impl std::fmt::Debug for Signer {
@@ -159,6 +163,7 @@ impl Signer {
             private_pem,
             n_b64,
             e_b64,
+            reserved_groups: Vec::new(),
         })
     }
 
@@ -182,6 +187,27 @@ impl Signer {
         // admits only for admin (async-ops F1). This is NOT the identity a
         // background RUN executes under — that is [`Self::mint_scoped`].
         self.mint_with_roles(subject, &["escurel:admin".to_owned()], ttl_secs, None)
+    }
+
+    /// Also strip these values from every [`Self::mint_scoped`] token — the
+    /// deployment's configured admin / operator / runner / bridge role values
+    /// (crew Q-F10).
+    #[must_use]
+    pub fn with_reserved_groups(mut self, groups: Vec<String>) -> Self {
+        self.reserved_groups = groups;
+        self
+    }
+
+    /// The `iss` this signer mints under.
+    #[must_use]
+    pub fn issuer(&self) -> &str {
+        &self.issuer
+    }
+
+    /// The `kid` this signer mints under.
+    #[must_use]
+    pub fn kid(&self) -> &str {
+        &self.kid
     }
 
     /// Mint a **per-run, caller-scoped** bearer (async-ops Phase 2c-i): the
@@ -211,7 +237,7 @@ impl Signer {
     ) -> Result<String, SignError> {
         let scoped: Vec<String> = groups
             .iter()
-            .filter(|g| !g.starts_with("escurel:"))
+            .filter(|g| !g.starts_with("escurel:") && !self.reserved_groups.contains(g))
             .cloned()
             .collect();
         self.mint_with_roles(subject, &scoped, ttl_secs, run)
@@ -233,6 +259,32 @@ impl Signer {
     ) -> Result<String, SignError> {
         let mut claims = self.claims(subject, &[], ttl_secs);
         claims[escurel_types::bridge::CHANNEL_CLAIM] = json!(channel);
+        self.sign(&claims)
+    }
+
+    /// Mint a bridge TURN token at the gateway (`mint_user_token`, #830): the
+    /// person (or the group principal a mapped group chat acts as) as `sub`,
+    /// `groups` as `roles`, the channel in `escurel_types::bridge::CHANNEL_CLAIM`
+    /// and, for a group principal, the person who asked as `act.sub`. The
+    /// verifier recognises the channel claim under this issuer and confines the
+    /// token like a bridge's own; the caller resolves `groups` and keeps every
+    /// reserved or privileged name out of them.
+    ///
+    /// # Errors
+    /// When signing fails.
+    pub fn mint_bridge_turn(
+        &self,
+        subject: &str,
+        channel: &str,
+        groups: &[String],
+        asker: Option<&str>,
+        ttl_secs: u64,
+    ) -> Result<String, SignError> {
+        let mut claims = self.claims(subject, groups, ttl_secs);
+        claims[escurel_types::bridge::CHANNEL_CLAIM] = json!(channel);
+        if let Some(asker) = asker {
+            claims["act"] = json!({ "sub": asker });
+        }
         self.sign(&claims)
     }
 

@@ -148,28 +148,61 @@ trusted issuer's JWKS publishes), `ESCUREL_AUTH_SIGNING_KID`,
 `ESCUREL_AUTH_SIGNING_ISSUER` (defaults to the OIDC issuer). Without it
 the tool answers `unsupported`.
 
-**A chat bridge's token is restricted by its trust entry.** `escurel-chat-bridge` signs
-a token for each person it answers with a key of its own, never the gateway's
-main signing key. The bridge publishes the key's public half at `GET /.well-known/jwks.json`, which
-the gateway trusts as an extra issuer (`ESCUREL_AUTH_OIDC_ISSUER_<N>` +
-`ESCUREL_AUTH_JWKS_URI_<N>`, over https) and names as the bridge in `ESCUREL_AUTH_BRIDGE_ISSUER`,
-pinned to the key's id in `ESCUREL_AUTH_BRIDGE_KID`. EVERY token from that issuer is a bridge
-token whichever kid it names, and one under an unlisted kid is refused (`401`) — the bridge serves
-that JWKS, so a kid-only restriction would not restrict whoever controls it. A bridge token
-is bounded whatever it claims: at most 900 s (`exp - iat`; `exp - now` allows 60 s for a
-bridge clock running ahead, and the bridge mints 840 s), never
-admin or operator, **no roles or groups** (so ACLs that grant by IdP group do not
-reach a person through the bridge — only those naming them, their
-`group_members` groups, or `public`), refused (`401`) if it carries an
-`agent`/`skill`/`run_id`/`root_event_id`/`purpose`/`act` claim or names no valid
-`bridge_channel`. Its actor is `bridge:<channel>`, so what it captures reads
-`captured_by: <person>` / `captured_via: bridge:msteams`; the chat rules accept
-that via and no other. The bridge entry is pinned to one tenant
-(`ESCUREL_AUTH_BRIDGE_TENANT`, required, = the served tenant): a bridge token
-naming another is refused (`401`).
+**A chat bridge's turn token is minted by the gateway** (#830). `escurel-chat-bridge` holds no
+signing key: on its own `escurel:bridge` credential it calls `mint_user_token` once per turn
+(references/02). The gateway decides the subject (`ESCUREL_AUTH_BRIDGE_PRINCIPAL_TEMPLATE`, e.g.
+`user:{aadObjectId}` — it must equal the `sub` the person's own token carries) and the groups: the
+**union** of the sender's memberships in every directory of `ESCUREL_AUTH_GROUP_DIRECTORIES`
+(`graph` by Entra object id, `google` and `okta` by email, which the bridge reads from the Bot
+Framework members API), mapped per provider by `…_GROUP_MAP_FILE` (by group id — prefer it)
+and/or `…_GROUP_PREFIX` — `public` / `owner` / `admin` / `escurel:*` and the deployment's role
+values are never produced. A prefix reads only names an admin controls: Graph security groups
+(Microsoft 365 groups / Teams only with `ESCUREL_AUTH_GRAPH_INCLUDE_M365_GROUPS=true`, since any
+employee can create one), Google groups by their whole address (`ESCUREL_AUTH_GOOGLE_GROUP_DOMAIN`
+pins the domains), Okta `OKTA_GROUP`s (`APP_GROUP`s only with
+`ESCUREL_AUTH_OKTA_INCLUDE_APP_GROUPS=true`); ask who can create a group with your prefix before
+relying on it — the weakest provider in the union decides. Answers are cached 10 min; a stale one
+stands in for up to 1 h while a directory is unreachable, then the turn is refused retryable
+(`directory_unavailable`; the bridge says "can't check your access right now"). A directory
+answering 403/404 (or 401 after one token renewal) adds nothing and replaces its cached answer.
+Without `ESCUREL_AUTH_GROUP_DIRECTORIES` 1:1 turns mint with no groups and shared chats are
+refused (`chat_channel_no_directory`).
 
-**A bridge token may call only what a chat turn needs** — it is a relay, not the
-person on the agent surface:
+**Identity.** The subject comes from the object id, the email-keyed groups from the email. With
+`graph` configured the gateway binds them: the asserted email / UPN must be one of the sender's
+Graph addresses (`identity_mismatch` otherwise), an unknown object id mints nothing
+(`no_principal`), and a template value that is not a plain platform id, or a subject starting
+`group:` / `agent:` / `bridge:` / `svc:` / `escurel:`, is refused (`no_principal`). **Without
+Graph the bridge is trusted for identity.**
+
+The token is a bridge TURN: the verifier honours the `bridge_channel` claim only under the
+gateway's own signing issuer and kid (from any other trusted issuer it is refused) and confines it
+whatever it says — at most 900 s, never admin or operator, no service role, refused (`401`) with an
+`agent`/`skill`/`run_id`/`root_event_id`/`purpose` claim — but, unlike the old self-signed bridge
+token, its **groups are honoured** (minus every configured role value), so ACLs that grant by a directory group reach the person
+through Teams. Its actor is `bridge:<channel>`, so what it captures reads `captured_by: <subject>` /
+`captured_via: bridge:msteams` plus `captured_groups` (the token's groups, which the chat run
+carries) — all server-stamped; a caller's own `captured_groups` / `asked_by` are removed.
+
+**Group principal.** A Teams group chat or channel never acts as one member. An admin maps it to
+an escurel group with a page of the admin-only `chat-channel` system skill (references/01); the
+turn then acts as `group:<g>` (`roles: [<g>]`, the asker as `act.sub`, stamped `asked_by` on its
+captures), and only for a sender who is a member of `<g>` per the directories
+(`chat_channel_not_member` otherwise). The conversation page and its chat group belong to
+`group:<g>`, so a member's own private 1:1 chat stays out of the group's reach. An unmapped chat
+is `chat_channel_unmapped`. The answer is posted to the whole chat: **mapping a chat to `<g>`
+discloses what `<g>` can read to every participant**, guests and non-members included.
+
+**Deprecated: a bridge's own signing key.** Until #830 the bridge signed each turn with a key of
+its own, which the gateway trusted as an extra issuer named in `ESCUREL_AUTH_BRIDGE_ISSUER`
+(pinned to `ESCUREL_AUTH_BRIDGE_KID` and `ESCUREL_AUTH_BRIDGE_TENANT`). That still works for this
+release, with a deprecation warning at boot on both ends: every token from that issuer is a bridge
+token whichever kid it names, an unlisted kid is `401`, and it carries **no roles or groups**
+(only ACLs naming the person, their `group_members` groups or `public` reach them) and no `act`.
+It answers 1:1 chats only, and is removed in the next release.
+
+**A bridge turn token (minted or self-signed) may call only what a chat turn needs** — it is a
+relay, not the person or the group on the agent surface:
 
 | tool | only when |
 |---|---|
@@ -178,7 +211,7 @@ person on the agent surface:
 | `append_message` | a `page-chat:` group, `role: user` (the answer is the run's) |
 | `list_messages` | a `page-chat:` group |
 | `capture_event` | `label_skill` = `ESCUREL_AUTH_BRIDGE_CHAT_SKILL` (default `chat`) |
-| `ingest_upload` | always (attachments, as the person) |
+| `ingest_upload` | always (attachments, as the turn's subject) |
 
 Everything else — `expand`, `search`, any edit, any other label — is `-32003`
 (`data.code: forbidden`), and `tools/list` offers only these six. `/ingest`,
@@ -287,7 +320,18 @@ credential**, each with a narrow authority of its own. Unlike
   decide what to admit. Treat it as a credential with tenant-wide read on the
   event bus.
 - **`escurel:bridge`** — a chat bridge's service credential (`whoami`
-  `service: "bridge"`); its minting tool arrives with the bridge work.
+  `service: "bridge"`): it may call `mint_user_token` (an admin-scope tool
+  granted to this role by name, and refused to everyone else, admins
+  included) and nothing an admin alone may do. **A leaked one** can mint a
+  turn token for any user of the pinned tenant the principal template can
+  name, with that user's directory groups, and for any mapped group principal
+  whose member it can name — each confined to the six chat-relay calls, at
+  most 900 s, never admin. With Graph the claims must agree with Graph; without
+  it the holder can also assert any email to an email-keyed directory. Mints
+  are not tied to a Teams activity, so a captured request replays while the
+  credential lives: fetch it short-lived (client-credentials grant) into
+  `ESCUREL_BRIDGE_GATEWAY_TOKEN_FILE`, which the bridge re-reads on change and
+  on a `401`.
 
 Both are ignored on a **machine** token (one carrying `run_id`, `skill`,
 `agent` or `act`): a run token a runner minted never inherits the runner

@@ -46,6 +46,7 @@ mod config_probe;
 pub mod credential_policy;
 pub mod egress;
 mod event_claims;
+pub mod group_directory;
 mod health;
 mod live_dispatch;
 mod mcp;

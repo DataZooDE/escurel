@@ -74,3 +74,29 @@ The deploy guide now says https for the bridge JWKS.
 party chooses (a kid in a key set it publishes, a claim it signs, a header it
 sends) restricts nobody but the honest. Key the restriction on what the
 *verifier* chose — the trust entry the token was verified against.
+
+## End state (2026-11-14, #830)
+
+The intended end state landed: **the bridge holds no signing key.** It
+authenticates with its own `escurel:bridge` service credential and asks the
+gateway for each turn's token (`mint_user_token`). The gateway decides the
+subject (`ESCUREL_AUTH_BRIDGE_PRINCIPAL_TEMPLATE`), the groups (the union over
+its group directories — Graph, Google, Okta — never the bridge's say-so) and,
+in a group chat or channel, the group principal an admin mapped it to with a
+`chat-channel` page.
+
+The verifier recognises a minted turn by its `bridge_channel` claim under an
+ordinary trust entry and confines it exactly like the old bridge token (the
+bridge gate's six tools, ≤ 900 s, never admin, no service role) — but honours
+its groups, because the gateway, not the bridge, put them there. The lesson
+above still holds and is why this is safe: the restriction keys on what the
+verifier chose (the claim is only ever a further restriction; the groups were
+minted by the gateway's own key), never on what the restricted party asserts.
+What the bridge does assert — the sender's object id and email — selects *whose*
+directory entry is read, so a leaked bridge credential can still act as any
+person in the directory within the chat relay's few calls; that is the
+residual risk of any relay, and why the credential is a rotatable service
+token rather than a key that signs arbitrary claims.
+
+The self-signed path stays for one release with a `DEPRECATED` warning at both
+ends, then goes.

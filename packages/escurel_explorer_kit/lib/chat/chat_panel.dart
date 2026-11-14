@@ -97,7 +97,7 @@ class _ChatPanelState extends ConsumerState<ChatPanel> {
                       title: const Text('Recent'),
                       dense: true,
                       children: [
-                        for (final r in s.recent)
+                        for (final r in s.recent) ...[
                           Semantics(
                             label: 'chat-recent:${r.pageId}',
                             button: true,
@@ -111,6 +111,29 @@ class _ChatPanelState extends ConsumerState<ChatPanel> {
                               onTap: () => c.open(r),
                             ),
                           ),
+                          // A Teams group chat or channel answers as a group, not a person (#830).
+                          if (r.actsAsGroup != null)
+                            Semantics(
+                              label: 'chat-group-principal:${r.pageId}',
+                              container: true,
+                              excludeSemantics: true,
+                              child: Padding(
+                                padding: const EdgeInsets.fromLTRB(
+                                  16,
+                                  0,
+                                  16,
+                                  6,
+                                ),
+                                child: Text(
+                                  'Shared chat · acts as group ${r.actsAsGroup}',
+                                  style: const TextStyle(
+                                    color: kOnSurfaceVariant,
+                                    fontSize: 12,
+                                  ),
+                                ),
+                              ),
+                            ),
+                        ],
                       ],
                     ),
                   const Divider(height: 1),

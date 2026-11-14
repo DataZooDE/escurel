@@ -267,6 +267,9 @@ pub(super) fn blocking_issues<'a>(
             | "frontmatter_required_key_blank_strict" => true,
             // A source nobody can attach (MySQL / MariaDB are refused) must not be stored as configured.
             "connector_not_supported" => true,
+            // A `chat-channel` mapping (#830) is authority: one that maps nothing must not be stored
+            // as if it applied. A new system skill, so no tenant holds such a page yet.
+            "chat_channel_invalid" => true,
             _ => false,
         })
         .collect()
@@ -2242,6 +2245,11 @@ pub(super) fn stamp_captured_by(
         Some(other) => json!({ "provenance": other }),
     };
     obj[escurel_index::CAPTURED_BY_FIELD] = json!(subject);
+    // The bridge-turn stamps (#830) are the gateway's alone: whatever a caller wrote there goes.
+    if let Some(map) = obj.as_object_mut() {
+        map.remove(crate::bridge_gate::ASKED_BY_FIELD);
+        map.remove(crate::bridge_gate::CAPTURED_GROUPS_FIELD);
+    }
     match actor {
         Some(a) => obj[escurel_index::CAPTURED_VIA_FIELD] = json!(a),
         None => {
@@ -2273,9 +2281,13 @@ fn agent_target_refusal(
     .with_code("agent_scope_denied", false))
 }
 
+// The dispatch context it reads is spread over the gateway's state; bundling it for one handler
+// would hide which parts a capture depends on.
+#[allow(clippy::too_many_arguments)]
 pub(super) async fn tool_capture_event(
     indexer: &Indexer,
     caller: AclCaller<'_>,
+    bridge: Option<crate::bridge_gate::BridgeTurn<'_>>,
     event_acl: crate::server::EventAclMode,
     write_acl: crate::server::WriteAclMode,
     webhook: Option<&crate::webhook::Webhook>,
@@ -2769,7 +2781,10 @@ pub(super) async fn tool_capture_event(
         instance_page_id: a.instance_page_id,
         title: a.title,
         body: a.body,
-        provenance: stamp_captured_by(a.provenance, caller.subject, caller.actor),
+        provenance: stamp_captured_by(a.provenance, caller.subject, caller.actor).map(|mut p| {
+            crate::bridge_gate::stamp_turn(&mut p, bridge, caller.token_groups);
+            p
+        }),
         kind,
         root_event_id,
         run_id,

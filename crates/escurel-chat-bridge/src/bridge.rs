@@ -1,17 +1,24 @@
 //! A channel turn → an escurel page-chat turn → one reply.
 //!
-//! Each person's chat on a platform is a `conversation` instance they own
+//! Each chat on a platform is a `conversation` instance its subject owns
 //! (`teams-<hash>`), and its page-bound chat group
-//! (`page-chat:v1:<sha256(asker)>:<page>`) is where the turn and the answer
+//! (`page-chat:v1:<sha256(subject)>:<page>`) is where the turn and the answer
 //! live — the shape the runner answers in chat mode. Everything is done FOR
-//! THE ASKER: the bridge signs a short-lived token for the mapped principal
-//! with its OWN key, under an issuer the gateway names in
-//! `ESCUREL_AUTH_BRIDGE_ISSUER` (pinned to its kid, `ESCUREL_AUTH_BRIDGE_KID`).
-//! The gateway bounds such a token (≤ 900 s, no roles, groups or run claims)
-//! and stamps `captured_via: bridge:msteams` on the event, so it reads
-//! `captured_by: <asker>` relayed by the bridge; the run executes with the
-//! asker's own rights (minus IdP groups, which the bridge does not have), and
-//! a page they cannot read never reaches it.
+//! THE TURN'S SUBJECT, with a short-lived token the GATEWAY mints
+//! (`mint_user_token`, #830) for the bridge's own `escurel:bridge` credential:
+//! in a 1:1 chat the subject is the person, with the groups the gateway
+//! resolved from the organisation's group directories; in a group chat or a
+//! channel it is the group principal (`group:<g>`) an admin mapped the
+//! conversation to, the person recorded as the asker. The gateway bounds the
+//! token (≤ 900 s, the bridge's few tools) and stamps `captured_via:
+//! bridge:msteams` on the event; the run executes with exactly that authority,
+//! and a page it cannot read never reaches it. A chat the gateway declines
+//! (unmapped, the sender not in the group, the directory unreachable) gets one
+//! polite reply and no run.
+//!
+//! DEPRECATED, for one release: with no gateway credential but a signing key
+//! (`ESCUREL_BRIDGE_AUTH_*`) the bridge signs the person's token itself — no
+//! groups, 1:1 chats only.
 //!
 //! Every step is idempotent, so a restarted bridge replays an unfinished turn
 //! from the top: the page create is a create-if-absent, the user message has
@@ -35,11 +42,12 @@ use escurel_client::{
     AppendMessageRequest, CaptureEventRequest, Client, ListMessagesRequest, SecretString,
     UpdatePageRequest,
 };
+use escurel_types::chat_channel::ConversationKind;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
 use crate::channel::{ChatChannel, InboundTurn, short_hash};
-use crate::config::BridgeConfig;
+use crate::config::{BridgeConfig, GatewayAuth};
 use crate::store::{OpenTurn, Store, TurnState};
 
 /// Sent when no answer arrived within the reply timeout.
@@ -50,12 +58,119 @@ const MAX_WORK_BACKOFF: Duration = Duration::from_secs(30);
 /// How often open turns nothing is working on are picked up again.
 const SWEEP_INTERVAL: Duration = Duration::from_secs(30);
 
+/// How many times a turn asks Teams who the sender is before telling them it
+/// cannot check their access (crew U-F6).
+const PROFILE_ATTEMPTS: u32 = 3;
+
+/// Why a turn is not answered: the person is told once.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Decline {
+    /// A shared chat no `chat-channel` page maps (or one that cannot be mapped).
+    Unmapped,
+    /// Two mappings name different groups.
+    Ambiguous,
+    /// The sender is not a member of the mapped group.
+    NotMember,
+    /// The group directory (or Teams' member profile) cannot be reached.
+    Unavailable,
+    /// The gateway has no group directory, so it answers 1:1 chats only.
+    NoDirectory,
+    /// The deprecated self-signed bridge answers 1:1 chats only.
+    OneToOneOnly,
+    /// The bridge or the gateway is set up wrong: asking again cannot help.
+    /// The gateway's code, logged at ERROR with what to fix.
+    Misconfigured(&'static str),
+}
+
+impl Decline {
+    fn from_code(code: &str) -> Option<Self> {
+        use escurel_types::chat_channel::mint_codes as c;
+        Some(match code {
+            c::UNMAPPED => Self::Unmapped,
+            c::AMBIGUOUS => Self::Ambiguous,
+            c::NOT_MEMBER => Self::NotMember,
+            c::DIRECTORY_UNAVAILABLE => Self::Unavailable,
+            c::NO_DIRECTORY => Self::NoDirectory,
+            c::IDENTITY_MISMATCH => Self::Misconfigured(c::IDENTITY_MISMATCH),
+            c::TENANT_NOT_SERVED => Self::Misconfigured(c::TENANT_NOT_SERVED),
+            c::UNSUPPORTED => Self::Misconfigured(c::UNSUPPORTED),
+            c::BRIDGE_REQUIRED => Self::Misconfigured(c::BRIDGE_REQUIRED),
+            "admin_required" => Self::Misconfigured("admin_required"),
+            "agent_scope_denied" => Self::Misconfigured("agent_scope_denied"),
+            _ => return None,
+        })
+    }
+
+    /// What an operator changes for a [`Self::Misconfigured`] code.
+    fn fix(code: &str) -> &'static str {
+        use escurel_types::chat_channel::mint_codes as c;
+        match code {
+            c::UNSUPPORTED => {
+                "the gateway does not mint for a bridge: set ESCUREL_AUTH_BRIDGE_PRINCIPAL_TEMPLATE \
+                 (and ESCUREL_AUTH_SIGNING_KEY) on it"
+            }
+            c::TENANT_NOT_SERVED => {
+                "ESCUREL_BRIDGE_TEAMS_ALLOWED_TENANTS lists a tenant the gateway's \
+                 ESCUREL_AUTH_GRAPH_TENANT_ID does not serve"
+            }
+            c::IDENTITY_MISMATCH => {
+                "Teams' member profile names an email Graph does not know this sender by"
+            }
+            _ => {
+                "ESCUREL_BRIDGE_GATEWAY_TOKEN[_FILE] must be the bridge's own credential with the \
+                 escurel:bridge role (ESCUREL_AUTH_BRIDGE_ROLE_VALUE)"
+            }
+        }
+    }
+
+    /// The one reply the person gets.
+    fn notice(self, turn: &InboundTurn) -> String {
+        match self {
+            Self::Unmapped => match turn.conversation.mapping_hint() {
+                Some(ids) => format!(
+                    "I can't answer in this chat yet: it isn't connected to an escurel group. \
+                     An escurel admin can connect it with a `chat-channel` page naming {ids} and \
+                     the group it should act as."
+                ),
+                None => "I can't answer in this channel: Teams didn't tell me which team and \
+                    channel it is, so it can't be connected to an escurel group."
+                    .to_owned(),
+            },
+            Self::Ambiguous => "I can't answer in this chat: it is connected to more than one \
+                 escurel group. An escurel admin needs to keep just one `chat-channel` page for it."
+                .to_owned(),
+            Self::NotMember => "I can't answer for you here: you're not a member of the escurel \
+                 group this chat is connected to."
+                .to_owned(),
+            Self::Unavailable => {
+                "I can't check your access right now. Please try again in a few minutes.".to_owned()
+            }
+            Self::NoDirectory => "I can't answer in this chat: this bridge has no group \
+                 directory, so it answers shared chats only when one is configured. You can ask \
+                 me 1:1."
+                .to_owned(),
+            Self::OneToOneOnly => {
+                "I only answer 1:1 chats on this bridge. Please message me directly.".to_owned()
+            }
+            Self::Misconfigured(_) => "I can't answer right now: this bot isn't set up \
+                 correctly. Please tell your escurel admin."
+                .to_owned(),
+        }
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum BridgeError {
-    #[error("no escurel principal for this user (template `{0}`)")]
+    #[error("no escurel principal for this user: {0}")]
     NoPrincipal(String),
+    #[error("the gateway declined the turn: {0:?}")]
+    Declined(Decline),
     #[error("signing the asker's token: {0}")]
     Sign(String),
+    #[error("mint_user_token: {0}")]
+    Mint(String),
+    #[error("the sender's Teams member profile: {0}")]
+    Profile(String),
     #[error("gateway: {0}")]
     Gateway(#[from] escurel_client::Error),
     #[error("conversation page refused: {0}")]
@@ -67,20 +182,24 @@ pub enum BridgeError {
 pub struct Bridge<C: ChatChannel> {
     channel: C,
     store: Store,
-    signer: Signer,
+    /// The deprecated self-signed path's key; `None` when the gateway mints.
+    signer: Option<Signer>,
     cfg: BridgeConfig,
+    /// The client on the bridge's own credential, rebuilt when it rotates.
+    service: tokio::sync::Mutex<Option<(String, Client)>>,
     /// Turn keys a task is working on now, so a sweep never doubles one.
     working: Mutex<HashSet<String>>,
 }
 
 impl<C: ChatChannel> Bridge<C> {
     #[must_use]
-    pub fn new(cfg: BridgeConfig, channel: C, store: Store, signer: Signer) -> Arc<Self> {
+    pub fn new(cfg: BridgeConfig, channel: C, store: Store, signer: Option<Signer>) -> Arc<Self> {
         Arc::new(Self {
             channel,
             store,
             signer,
             cfg,
+            service: tokio::sync::Mutex::new(None),
             working: Mutex::new(HashSet::new()),
         })
     }
@@ -90,11 +209,12 @@ impl<C: ChatChannel> Bridge<C> {
         &self.channel
     }
 
-    /// The JWKS a gateway trusts the bridge's tokens through: the public
-    /// half of its signing key, under its kid (`GET /.well-known/jwks.json`).
+    /// The JWKS a gateway trusts the bridge's self-signed tokens through: the
+    /// public half of its signing key, under its kid
+    /// (`GET /.well-known/jwks.json`). Empty when the gateway mints.
     #[must_use]
     pub fn jwks(&self) -> Value {
-        json!({ "keys": [self.signer.public_jwk()] })
+        json!({ "keys": self.signer.iter().map(Signer::public_jwk).collect::<Vec<_>>() })
     }
 
     /// Take a verified payload: admit its turn once and work it in the
@@ -176,22 +296,46 @@ impl<C: ChatChannel> Bridge<C> {
         }
         let this = Arc::clone(self);
         tokio::spawn(async move {
+            let mut open = open;
             let deadline = this.deadline(&open);
             let mut backoff = this.cfg.poll_interval;
             let mut attempt = 0u32;
+            let mut memory = TurnMemory::default();
             loop {
                 attempt += 1;
                 if Instant::now() >= deadline {
                     this.time_out(&open.turn).await;
                     break;
                 }
-                match this.work(open.clone(), deadline).await {
+                match this.work(&mut open, deadline, &mut memory).await {
                     Ok(()) => break,
                     Err(e @ BridgeError::NoPrincipal(_)) => {
                         tracing::warn!(message_id = %id, error = %e, "chat bridge: not answered");
                         let _ = this
                             .store
                             .close(this.channel.name(), &id, TurnState::Unmapped);
+                        break;
+                    }
+                    // Only a turn not yet in escurel is declined: once its question is captured
+                    // a later refusal (a re-mint during an outage) must not drop the answer
+                    // (crew Q-F2) — it is retried like any gateway error until the deadline.
+                    Err(BridgeError::Declined(why)) if open.state == TurnState::Received => {
+                        if let Decline::Misconfigured(code) = why {
+                            tracing::error!(message_id = %id, code, fix = Decline::fix(code),
+                                "chat bridge: the gateway refuses this bridge's turns; fix the \
+                                 configuration");
+                        } else {
+                            tracing::info!(message_id = %id, decline = ?why,
+                                "chat bridge: the gateway declined the turn; telling the person once");
+                        }
+                        let notice = why.notice(&open.turn);
+                        if let Err(e) = this
+                            .reply(&open.turn, "declined", &notice, TurnState::Declined)
+                            .await
+                        {
+                            tracing::error!(message_id = %id, error = %e,
+                                "chat bridge: could not record the decline");
+                        }
                         break;
                     }
                     Err(e) => {
@@ -223,12 +367,17 @@ impl<C: ChatChannel> Bridge<C> {
         }
     }
 
-    async fn work(&self, open: OpenTurn, deadline: Instant) -> Result<(), BridgeError> {
-        let turn = &open.turn;
+    async fn work(
+        &self,
+        open: &mut OpenTurn,
+        deadline: Instant,
+        memory: &mut TurnMemory,
+    ) -> Result<(), BridgeError> {
+        let inbound = open.turn.clone();
+        let turn = &inbound;
         let name = self.channel.name();
-        let principal = principal_for(&self.cfg.principal_template, turn)
-            .ok_or_else(|| BridgeError::NoPrincipal(self.cfg.principal_template.clone()))?;
-        let mut asker = AskerClient::new(self, &principal);
+        let mut asker = AskerClient::new(self, turn, memory);
+        let (client, principal) = asker.get().await?;
         let page_id = format!(
             "markdown/instances/{}/{}.md",
             self.cfg.conversation_skill,
@@ -242,7 +391,6 @@ impl<C: ChatChannel> Bridge<C> {
         let user_msg_id = format!("{name}:{key}");
 
         if open.state == TurnState::Received {
-            let client = asker.get().await?;
             self.ensure_conversation(&client, &page_id, &principal)
                 .await?;
             let content = self.with_attachments(&client, turn).await;
@@ -274,6 +422,7 @@ impl<C: ChatChannel> Bridge<C> {
                 })
                 .await?;
             self.store.captured(name, &key, &event.event_id)?;
+            open.state = TurnState::Captured;
             tracing::info!(message_id = %turn.message_id, event_id = %event.event_id,
                 "chat bridge: turn captured");
         }
@@ -293,7 +442,10 @@ impl<C: ChatChannel> Bridge<C> {
     ) -> Result<(), BridgeError> {
         let mut next_typing = Instant::now();
         while Instant::now() < deadline {
-            if let Some((key, text)) = self.answer(&asker.get().await?, group, user_msg_id).await? {
+            if let Some((key, text)) = self
+                .answer(&asker.get().await?.0, group, user_msg_id)
+                .await?
+            {
                 return self.reply(turn, &key, &text, TurnState::Replied).await;
             }
             if Instant::now() >= next_typing {
@@ -499,60 +651,205 @@ async fn ingest(
     Err(format!("{status}: {detail}"))
 }
 
-/// The asker's client, re-signed before its token gets old.
+/// What a turn learned across its retries: who the sender is (Teams' member
+/// profile) and how often asking failed.
+#[derive(Default)]
+struct TurnMemory {
+    profile: Option<crate::channel::MemberProfile>,
+    profile_failures: u32,
+}
+
+/// The turn's client, re-minted before its token gets old, and the subject
+/// it acts as (the person, or a group principal in a shared chat).
 struct AskerClient<'a, C: ChatChannel> {
     bridge: &'a Bridge<C>,
-    principal: String,
-    current: Option<(Client, Instant)>,
+    turn: &'a InboundTurn,
+    memory: &'a mut TurnMemory,
+    current: Option<(Client, String, Instant)>,
 }
 
 impl<'a, C: ChatChannel> AskerClient<'a, C> {
-    fn new(bridge: &'a Bridge<C>, principal: &str) -> Self {
+    fn new(bridge: &'a Bridge<C>, turn: &'a InboundTurn, memory: &'a mut TurnMemory) -> Self {
         Self {
             bridge,
-            principal: principal.to_owned(),
+            turn,
+            memory,
             current: None,
         }
     }
 
-    async fn get(&mut self) -> Result<Client, BridgeError> {
+    async fn get(&mut self) -> Result<(Client, String), BridgeError> {
         let ttl = self.bridge.cfg.gateway.token_ttl_secs;
         let refresh_after = Duration::from_secs(ttl / 2);
-        if let Some((client, at)) = &self.current
+        // The current token is still good for a while after it is due a refresh.
+        let usable_for = Duration::from_secs(ttl * 3 / 4);
+        if let Some((client, subject, at)) = &self.current
             && at.elapsed() < refresh_after
+        {
+            return Ok((client.clone(), subject.clone()));
+        }
+        let fresh = match &self.bridge.cfg.gateway.auth {
+            GatewayAuth::Service { credential } => self.minted(credential).await,
+            GatewayAuth::SelfSigned {
+                principal_template, ..
+            } => self.self_signed(principal_template, ttl),
+        };
+        let (token, subject) = match (fresh, &self.current) {
+            (Ok(fresh), _) => fresh,
+            // A refresh that fails (an outage, a directory that cannot answer) keeps the token in
+            // hand until it is about to lapse: the turn's answer must not be lost to it (crew Q-F2).
+            (Err(e), Some((client, subject, at))) if at.elapsed() < usable_for => {
+                tracing::warn!(message_id = %self.turn.message_id, error = %e,
+                    "chat bridge: re-minting the turn's token failed; keeping the current one");
+                return Ok((client.clone(), subject.clone()));
+            }
+            (Err(e), _) => return Err(e),
+        };
+        let client =
+            Client::connect(&self.bridge.cfg.gateway.url, SecretString::from(token)).await?;
+        self.current = Some((client.clone(), subject.clone(), Instant::now()));
+        Ok((client, subject))
+    }
+
+    /// Who the sender is beyond the message (their email / UPN, for the
+    /// email-keyed directories), asked once per turn. A transient failure is
+    /// retried with the turn; a refusal, or [`PROFILE_ATTEMPTS`] failures,
+    /// tells the person their access cannot be checked — never a silent
+    /// "not a member" from a lookup that had no email (crew U-F6).
+    async fn profile(&mut self) -> Result<crate::channel::MemberProfile, BridgeError> {
+        if let Some(p) = &self.memory.profile {
+            return Ok(p.clone());
+        }
+        match self.bridge.channel.member_profile(self.turn).await {
+            Ok(p) => {
+                self.memory.profile = Some(p.clone());
+                Ok(p)
+            }
+            Err(e) => {
+                self.memory.profile_failures += 1;
+                let refused = matches!(&e,
+                    crate::channel::ChannelError::Refused { status, .. }
+                        if (400..500).contains(status) && *status != 429);
+                if refused || self.memory.profile_failures >= PROFILE_ATTEMPTS {
+                    tracing::warn!(error = %e, attempts = self.memory.profile_failures,
+                        "chat bridge: the sender's member profile is unavailable");
+                    Err(BridgeError::Declined(Decline::Unavailable))
+                } else {
+                    Err(BridgeError::Profile(e.to_string()))
+                }
+            }
+        }
+    }
+
+    /// The client on the bridge's own credential: one per credential value,
+    /// rebuilt when the credential rotates.
+    async fn service(&self, credential: &str) -> Result<Client, BridgeError> {
+        let mut slot = self.bridge.service.lock().await;
+        if let Some((held, client)) = slot.as_ref()
+            && held == credential
         {
             return Ok(client.clone());
         }
-        // The person's subject and nothing else: the gateway grants a
-        // bridge token no roles or groups, so ACLs that grant by IdP group do
-        // not reach the bridge, only those naming the person or `public`.
-        let token = self
-            .bridge
-            .signer
-            .mint_bridge(&self.principal, self.bridge.channel.name(), ttl)
-            .map_err(|e| BridgeError::Sign(e.to_string()))?;
-        let client =
-            Client::connect(&self.bridge.cfg.gateway.url, SecretString::from(token)).await?;
-        self.current = Some((client.clone(), Instant::now()));
+        let client = Client::connect(
+            &self.bridge.cfg.gateway.url,
+            SecretString::from(credential.to_owned()),
+        )
+        .await?;
+        *slot = Some((credential.to_owned(), client.clone()));
         Ok(client)
     }
-}
 
-/// The escurel subject for a platform user: the template with
-/// `{aadObjectId}`, `{userId}` and `{tenantId}` filled in. `None` when the
-/// template names a field the user lacks — never a guessed identity.
-fn principal_for(template: &str, turn: &InboundTurn) -> Option<String> {
-    let mut out = template.to_owned();
-    for (field, value) in [
-        ("{aadObjectId}", turn.user.directory_id.as_deref()),
-        ("{userId}", Some(turn.user.id.as_str())),
-        ("{tenantId}", turn.user.directory_tenant.as_deref()),
-    ] {
-        if out.contains(field) {
-            out = out.replace(field, value.filter(|v| !v.is_empty())?);
+    /// Ask the gateway for the turn's token (`mint_user_token`) on the
+    /// bridge's own credential. A rejected credential read from a file is
+    /// re-read once — a rotation needs no restart.
+    async fn minted(
+        &mut self,
+        credential: &crate::config::ServiceCredential,
+    ) -> Result<(String, String), BridgeError> {
+        let turn = self.turn;
+        let Some(aad) = turn.user.directory_id.as_deref().filter(|v| !v.is_empty()) else {
+            return Err(BridgeError::NoPrincipal(
+                "the sender has no directory object id".to_owned(),
+            ));
+        };
+        let profile = self.profile().await?;
+        let args = json!({
+            "channel": self.bridge.channel.name(),
+            "tenant_id": turn.user.directory_tenant,
+            "aad_object_id": aad,
+            "user_id": turn.user.id,
+            "email": profile.email,
+            "upn": profile.upn,
+            "conversation": turn.conversation,
+        });
+        let mut reloaded = false;
+        let minted = loop {
+            let service = self.service(&credential.current()).await?;
+            match service.call_raw("mint_user_token", args.clone()).await {
+                Err(escurel_client::Error::Http { status: 401, .. })
+                    if !reloaded && credential.reload() =>
+                {
+                    tracing::info!(
+                        "chat bridge: the gateway rejected the bridge credential; \
+                        retrying with the rotated one"
+                    );
+                    reloaded = true;
+                }
+                other => break other,
+            }
+        }
+        .map_err(|e| match &e {
+            escurel_client::Error::JsonRpc {
+                data_code: Some(code),
+                message,
+                ..
+            } => match Decline::from_code(code) {
+                Some(d) => BridgeError::Declined(d),
+                None if code == escurel_types::chat_channel::mint_codes::NO_PRINCIPAL => {
+                    BridgeError::NoPrincipal(message.clone())
+                }
+                None => BridgeError::Gateway(e),
+            },
+            _ => BridgeError::Gateway(e),
+        })?;
+        let text = |k: &str| {
+            minted[k]
+                .as_str()
+                .filter(|v| !v.is_empty())
+                .map(str::to_owned)
+        };
+        match (text("token"), text("subject")) {
+            (Some(token), Some(subject)) => Ok((token, subject)),
+            _ => Err(BridgeError::Mint(
+                "the gateway answered without a token or subject".to_owned(),
+            )),
         }
     }
-    (!out.is_empty()).then_some(out)
+
+    /// The deprecated path: sign the person's token with the bridge's own key.
+    /// No groups; a shared chat is told once that only 1:1 chats are answered.
+    fn self_signed(&self, template: &str, ttl: u64) -> Result<(String, String), BridgeError> {
+        let turn = self.turn;
+        if turn.conversation.kind != ConversationKind::Personal {
+            return Err(BridgeError::Declined(Decline::OneToOneOnly));
+        }
+        let principal = escurel_types::bridge::principal_for(
+            template,
+            turn.user.directory_id.as_deref(),
+            Some(turn.user.id.as_str()),
+            turn.user.directory_tenant.as_deref(),
+        )
+        .map_err(|why| BridgeError::NoPrincipal(format!("template `{template}`: {why}")))?;
+        let signer = self
+            .bridge
+            .signer
+            .as_ref()
+            .ok_or_else(|| BridgeError::Sign("no signing key".to_owned()))?;
+        let token = signer
+            .mint_bridge(&principal, self.bridge.channel.name(), ttl)
+            .map_err(|e| BridgeError::Sign(e.to_string()))?;
+        Ok((token, principal))
+    }
 }
 
 /// `teams-<32 hex>`: one conversation page per (channel, chat, person).
@@ -571,36 +868,6 @@ fn conversation_instance_id(channel: &str, conversation_id: &str, principal: &st
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::channel::UserRef;
-
-    fn turn(aad: Option<&str>) -> InboundTurn {
-        InboundTurn {
-            message_id: "m".into(),
-            conversation_id: "c".into(),
-            user: UserRef {
-                id: "29:x".into(),
-                directory_id: aad.map(str::to_owned),
-                directory_tenant: Some("t".into()),
-                display_name: None,
-            },
-            text: String::new(),
-            attachments: vec![],
-            reply_to: Value::Null,
-        }
-    }
-
-    #[test]
-    fn the_principal_comes_from_the_template_or_not_at_all() {
-        assert_eq!(
-            principal_for("user:{aadObjectId}", &turn(Some("oid"))).as_deref(),
-            Some("user:oid")
-        );
-        assert_eq!(
-            principal_for("{tenantId}/{userId}", &turn(None)).as_deref(),
-            Some("t/29:x")
-        );
-        assert_eq!(principal_for("user:{aadObjectId}", &turn(None)), None);
-    }
 
     #[test]
     fn one_conversation_page_per_chat_and_person() {

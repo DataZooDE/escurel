@@ -967,14 +967,14 @@ mod bridge_kid {
         assert!(ctx.groups.is_empty(), "{:?}", ctx.groups);
         assert_eq!(ctx.actor.as_deref(), Some("bridge:msteams"));
         assert_eq!(ctx.run, None);
-        // The same token on a verifier with no bridge entry is an ordinary
-        // admin token: the restriction is the trust entry's, not the claims'.
+        // The same token on a verifier with no bridge entry and no minting
+        // identity is no one's turn (crew S-F6): only the gateway's own mint
+        // carries a turn's groups (`minted_bridge_turn` below).
         let plain = verifier_pointing_at(&server);
-        let ctx = plain
-            .verify(&sign_token(&keys, claims(&server, 900)))
-            .await
-            .unwrap();
-        assert_eq!(ctx.role, Role::Admin);
+        assert!(matches!(
+            plain.verify(&sign_token(&keys, claims(&server, 900))).await,
+            Err(AuthError::BridgeRefused(_))
+        ));
     }
 
     #[tokio::test]
@@ -1168,5 +1168,125 @@ mod bridge_entry {
         }
         let got = v.verify(&sign_with(&s.primary_keys, KID, &p)).await;
         assert!(matches!(got, Err(AuthError::BridgeRefused(_))), "{got:?}");
+    }
+}
+
+/// A bridge TURN token the gateway minted itself (`mint_user_token`, #830):
+/// recognised by its channel claim under an ordinary trust entry, confined like
+/// a bridge's own token, but carrying the groups the gateway resolved and, for a
+/// group principal, the asker as `act.sub`.
+mod minted_bridge_turn {
+    use super::*;
+
+    fn claims(server: &MockServer, ttl: u64) -> Value {
+        let now = now();
+        json!({
+            "iss": format!("{}{ISSUER_PATH}", server.uri()), "aud": AUDIENCE,
+            "sub": "group:sales", "tenant": "acme", "iat": now, "exp": now + ttl,
+            "roles": ["sales", "escurel:admin"],
+            "bridge_channel": "msteams", "act": { "sub": "user:alice" },
+        })
+    }
+
+    /// A gateway whose own signing identity is the test issuer under `KID`.
+    fn gateway_verifier(server: &MockServer) -> OidcVerifier {
+        let issuer = format!("{}{ISSUER_PATH}", server.uri());
+        OidcVerifier::new(
+            OidcConfig::new(issuer.clone(), AUDIENCE.to_owned())
+                .with_jwks_uri(format!("{issuer}/protocol/openid-connect/certs"))
+                .with_admin_role("roles", "kb-admins")
+                .with_minting_identity(issuer, KID),
+        )
+    }
+
+    async fn setup() -> (MockServer, TestKeys, OidcVerifier) {
+        let server = MockServer::start().await;
+        let keys = make_keys();
+        mock_jwks(&server, &keys).await;
+        let v = gateway_verifier(&server);
+        (server, keys, v)
+    }
+
+    /// Crew S-F6: only the gateway's own signing identity mints turns; the
+    /// same claims from any other trusted entry (or another kid) are refused.
+    #[tokio::test]
+    async fn a_turn_token_from_anything_but_the_gateways_own_identity_is_refused() {
+        let (server, keys, _) = setup().await;
+        let not_minting = verifier_pointing_at(&server);
+        let token = sign_token(&keys, claims(&server, 900));
+        let got = not_minting.verify(&token).await;
+        assert!(
+            matches!(&got, Err(AuthError::BridgeRefused(why)) if why.contains("signing identity")),
+            "{got:?}"
+        );
+        let issuer = format!("{}{ISSUER_PATH}", server.uri());
+        let other_kid = OidcVerifier::new(
+            OidcConfig::new(issuer.clone(), AUDIENCE.to_owned())
+                .with_jwks_uri(format!("{issuer}/protocol/openid-connect/certs"))
+                .with_minting_identity(issuer, "the-gateways-real-kid"),
+        );
+        assert!(matches!(
+            other_kid.verify(&token).await,
+            Err(AuthError::BridgeRefused(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn a_minted_turn_keeps_its_groups_and_asker_and_is_never_admin_or_a_service() {
+        let (server, keys, v) = setup().await;
+        let mut c = claims(&server, 900);
+        c["roles"] = json!([
+            "sales",
+            "escurel:admin",
+            "escurel:bridge",
+            "kb-admins",
+            "admin"
+        ]);
+        let ctx = v.verify(&sign_token(&keys, c)).await.expect("verifies");
+        assert_eq!(
+            ctx.groups,
+            ["sales"],
+            "every role value, a custom one included, is dropped (crew S-F6)"
+        );
+        assert_eq!(ctx.subject, "group:sales");
+        assert!(ctx.bridge_turn, "confined like a bridge token");
+        assert_eq!(ctx.role, Role::Agent, "the admin value is not honoured");
+        assert!(!ctx.operator);
+        assert_eq!(ctx.service, None, "no service role on a turn token");
+        assert!(ctx.groups.contains(&"sales".to_owned()), "{:?}", ctx.groups);
+        assert_eq!(ctx.actor.as_deref(), Some("bridge:msteams"));
+        assert_eq!(ctx.asker.as_deref(), Some("user:alice"));
+    }
+
+    #[tokio::test]
+    async fn a_minted_turn_is_held_to_the_bridge_shape() {
+        let (server, keys, v) = setup().await;
+        let refused = |c: Value| {
+            let token = sign_token(&keys, c);
+            let v = &v;
+            async move {
+                match v.verify(&token).await {
+                    Err(AuthError::BridgeRefused(why)) => why,
+                    other => panic!("expected a bridge refusal, got {other:?}"),
+                }
+            }
+        };
+        assert!(refused(claims(&server, 3600)).await.contains("at most 900"));
+        for (claim, value) in [
+            ("agent", json!("deploy-bot")),
+            ("skill", json!("triage")),
+            ("run_id", json!("r-1")),
+            ("purpose", json!("workbench_agent")),
+        ] {
+            let mut c = claims(&server, 900);
+            c[claim] = value;
+            assert!(refused(c).await.contains(claim), "{claim}");
+        }
+        let mut c = claims(&server, 900);
+        c["act"] = json!("user:alice");
+        assert!(refused(c).await.contains("act"));
+        let mut c = claims(&server, 900);
+        c["bridge_channel"] = json!("Bridge Runner");
+        assert!(refused(c).await.contains("bridge_channel"));
     }
 }

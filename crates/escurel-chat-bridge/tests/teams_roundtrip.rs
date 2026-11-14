@@ -1,13 +1,19 @@
-//! The Teams chat bridge end to end (#824): a Bot Framework message activity
-//! in, exactly one reply out, the turn's history under the person's chat group.
+//! The Teams chat bridge end to end (#824, #830): a Bot Framework message
+//! activity in, exactly one reply out, the turn's history under its subject's
+//! chat group.
 //!
 //! escurel is real throughout: the gateway (`EscurelProcess`, write ACL
-//! enforced, trusting the bridge's own key as a restricted bridge kid), the
-//! runner binary in minted mode on the echo harness (it answers a chat turn
-//! with `echo: <the question>`), and the `escurel-chat-bridge` binary. Only Microsoft's side is a stand-in, served from this file: the
-//! OpenID metadata + JWKS the channel token is verified against (signed with a
-//! test RSA key), the client-credentials token endpoint, and the connector that
-//! records every activity the bridge sends back.
+//! enforced, minting each turn's token for the bridge's `escurel:bridge`
+//! credential with the asker's groups from the configured group directories),
+//! the runner binary in minted mode on the echo harness (it answers a chat
+//! turn with `echo: <the question>`, and `read: <page>` with whether the run's
+//! token reads it), and the `escurel-chat-bridge` binary. Only the outside
+//! world is a stand-in: Microsoft's Bot Framework, served from this file (the
+//! OpenID metadata + JWKS the channel token is verified against, the
+//! client-credentials token endpoint, the conversation-members API and the
+//! connector that records every activity the bridge sends back), and the group
+//! directories (`DirectoryStandIn`: Microsoft Graph, Google Cloud Identity,
+//! Okta). The deprecated self-signed bridge key is exercised by one test.
 
 use std::process::{Child, Command};
 use std::sync::{Arc, Mutex};
@@ -18,8 +24,8 @@ use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode, Uri};
 use axum::routing::{get, post};
 use escurel_test_support::{
-    AuthMode, ConfigOverrides, EscurelProcess, ExtraIssuer, FixtureBuilder, Opts, Role,
-    RunnerProcess, RunningRunner, WriteAclMode, free_port,
+    AuthMode, ConfigOverrides, DirectoryStandIn, EscurelProcess, ExtraIssuer, FixtureBuilder,
+    GRAPH_TENANT, Opts, Role, RunnerProcess, RunningRunner, WriteAclMode, bridge_mint, free_port,
 };
 use serde_json::{Value, json};
 
@@ -28,8 +34,15 @@ const APP_ID: &str = "test-bot-app";
 const BF_ISSUER: &str = "https://api.botframework.com";
 const ALICE_AAD: &str = "alice-aad-oid";
 const ALICE: &str = "user:alice-aad-oid";
+const ALICE_EMAIL: &str = "alice@acme.example";
+const BOB_AAD: &str = "bob-aad-oid";
+const BOB_EMAIL: &str = "bob@acme.example";
 const CONVERSATION_ID: &str = "a:1teams-personal-chat;messageid=1";
-const ENTRA_TENANT: &str = "entra-tenant";
+const GROUP_CHAT_ID: &str = "19:sales-chat@thread.v2";
+const TEAM_ID: &str = "19:team@thread.tacv2";
+const CHANNEL_ID: &str = "19:deals@thread.tacv2";
+/// The Entra tenant: the one the Graph stand-in serves.
+const ENTRA_TENANT: &str = GRAPH_TENANT;
 /// The stand-in JWKS publishes the test key twice: endorsed for Teams, and
 /// endorsed only for another Bot Framework channel.
 const TEAMS_KID: &str = "bf-teams";
@@ -40,6 +53,11 @@ const WEBCHAT_KID: &str = "bf-webchat";
 const MEMO_SKILL: &str = "---\nkind: skill\nid: memo\ndescription: Text memos.\n\
     owner_field: owner\nacl:\n  create: [owner]\n  read: [owner]\n\
     backend:\n  kind: document\n  accepts: [text/plain]\n---\n# memo\n";
+/// A deal only the `sales` group reads: what a directory group must reach.
+const DEAL_SKILL: &str = "---\nkind: skill\nid: deal\ndescription: A sales deal.\n\
+    acl:\n  read: [sales]\n---\n# deal\n";
+const DEAL_PAGE: &str = "markdown/instances/deal/q3.md";
+const READ_DEAL: &str = "read: markdown/instances/deal/q3.md";
 
 // ---- Microsoft's side --------------------------------------------------
 
@@ -53,6 +71,10 @@ struct Seen {
     /// Record a `message` activity, then drop the connection without an
     /// answer: the reply was delivered, but the bridge cannot know it.
     drop_after_recording: bool,
+    /// Answer the conversation-members API with this status instead.
+    member_status: Option<u16>,
+    /// How often the conversation-members API was asked.
+    member_calls: usize,
 }
 
 struct BotFramework {
@@ -108,6 +130,31 @@ impl BotFramework {
             assert!(!drop_it, "stand-in connector: dropping the connection");
             axum::Json(json!({ "id": "sent-1" }))
         }
+        // The conversation-members API: who a sender is, beyond the message.
+        async fn member(
+            State(seen): State<Arc<Mutex<Seen>>>,
+            uri: Uri,
+        ) -> Result<axum::Json<Value>, StatusCode> {
+            let status = {
+                let mut seen = seen.lock().unwrap();
+                seen.member_calls += 1;
+                seen.member_status
+            };
+            if let Some(status) = status {
+                return Err(StatusCode::from_u16(status).unwrap());
+            }
+            // The bridge percent-encodes the user id as one path segment.
+            let user = uri.path().rsplit('/').next().unwrap_or_default();
+            let (aad, email) = match user {
+                "29%3Aalice" => (ALICE_AAD, ALICE_EMAIL),
+                "29%3Abob" => (BOB_AAD, BOB_EMAIL),
+                _ => return Err(StatusCode::NOT_FOUND),
+            };
+            Ok(axum::Json(
+                json!({ "id": user, "aadObjectId": aad, "email": email,
+                                  "userPrincipalName": email }),
+            ))
+        }
         async fn file() -> &'static str {
             "Globex renews in 2028.\n"
         }
@@ -127,7 +174,7 @@ impl BotFramework {
                 }),
             )
             .route("/token", post(token))
-            .route("/v3/conversations/{*rest}", post(activity))
+            .route("/v3/conversations/{*rest}", post(activity).get(member))
             .route("/files/memo.txt", get(file))
             .with_state(Arc::clone(&seen));
         tokio::spawn(async move {
@@ -177,6 +224,17 @@ impl BotFramework {
             .collect()
     }
 
+    /// `who` @mentions the bot in the group chat [`GROUP_CHAT_ID`].
+    fn group_message(&self, id: &str, text: &str, who: (&str, &str)) -> Value {
+        let mut m = self.message(id, &format!("<at>escurel</at> {text}"));
+        m["from"] = json!({ "id": who.0, "name": "Member", "aadObjectId": who.1 });
+        m["conversation"] = json!({ "id": GROUP_CHAT_ID, "conversationType": "groupChat",
+                                    "tenantId": ENTRA_TENANT });
+        m["entities"] = json!([{ "type": "mention", "text": "<at>escurel</at>",
+                                 "mentioned": { "id": format!("28:{APP_ID}"), "name": "escurel" } }]);
+        m
+    }
+
     fn message(&self, id: &str, text: &str) -> Value {
         json!({
             "type": "message", "id": id, "channelId": "msteams", "serviceUrl": self.base,
@@ -191,27 +249,53 @@ impl BotFramework {
 
 // ---- escurel's side ----------------------------------------------------
 
-/// The bridge's own signing key: the bridge publishes it under [`BRIDGE_KID`]
-/// at `/.well-known/jwks.json`, the JWKS the gateway trusts (the documented
-/// path), and the gateway lists the kid as a bridge kid. It is never the
-/// gateway's main key (the runner's).
+/// The bridge's own signing key, for the DEPRECATED self-signed path only:
+/// the bridge publishes it under [`BRIDGE_KID`] at `/.well-known/jwks.json`,
+/// the JWKS such a gateway trusts as its bridge issuer. Never the gateway's
+/// main key (the runner's).
 const BRIDGE_KID: &str = "escurel-chat-bridge";
 
-async fn gateway(bridge_key: &ExtraIssuer, bridge_jwks: &str) -> EscurelProcess {
+/// How the gateway learns who may do what.
+enum Trust<'a> {
+    /// The gateway mints every turn (`mint_user_token`) with groups from these directories.
+    Minted(escurel_test_support::BridgeMintConfig),
+    /// DEPRECATED: the gateway trusts the bridge's own key at this JWKS.
+    SelfSigned(&'a ExtraIssuer, String),
+}
+
+async fn gateway(trust: Trust<'_>) -> EscurelProcess {
     let mut fixtures = FixtureBuilder::new().tenant(TENANT);
     for (page_id, body) in escurel_runner_workflow::corpus::chat_corpus() {
         fixtures = fixtures.page(&page_id, body);
     }
+    let fixtures = fixtures
+        .skill("memo", MEMO_SKILL)
+        .skill("deal", DEAL_SKILL)
+        .instance(
+            "deal",
+            "q3",
+            "---\nkind: instance\nskill: deal\nid: q3\n---\n# Q3\nGlobex renews.\n",
+        )
+        .done();
+    let mut overrides = ConfigOverrides {
+        write_acl: Some(WriteAclMode::Enforce),
+        ..Default::default()
+    };
+    match trust {
+        Trust::Minted(mint) => {
+            overrides.signing = true;
+            overrides.bridge_mint = Some(mint);
+        }
+        Trust::SelfSigned(key, jwks) => {
+            overrides.extra_issuers = vec![(key.issuer_url().to_owned(), jwks)];
+            overrides.bridge_issuer = Some(key.issuer_url().to_owned());
+            overrides.bridge_kids = vec![BRIDGE_KID.to_owned()];
+        }
+    }
     EscurelProcess::spawn(Opts {
         auth: AuthMode::TestIssuer,
-        config_overrides: ConfigOverrides {
-            write_acl: Some(WriteAclMode::Enforce),
-            extra_issuers: vec![(bridge_key.issuer_url().to_owned(), bridge_jwks.to_owned())],
-            bridge_issuer: Some(bridge_key.issuer_url().to_owned()),
-            bridge_kids: vec![BRIDGE_KID.to_owned()],
-            ..Default::default()
-        },
-        fixtures: Some(fixtures.skill("memo", MEMO_SKILL).done()),
+        config_overrides: overrides,
+        fixtures: Some(fixtures),
     })
     .await
 }
@@ -228,6 +312,8 @@ struct Bridge {
     child: Option<Child>,
     listen: String,
     env: Vec<(String, String)>,
+    /// Where the bridge's stdout (its JSON log) goes, when a test reads it.
+    log: Option<std::path::PathBuf>,
     _state: tempfile::TempDir,
 }
 
@@ -237,28 +323,18 @@ impl Bridge {
     fn spawn(
         listen: String,
         gateway_url: &str,
-        bridge_key: &ExtraIssuer,
+        auth_env: Vec<(&'static str, String)>,
         bf: &BotFramework,
         extra_env: &[(&str, &str)],
+        keep_log: bool,
     ) -> Self {
         let state = tempfile::tempdir().unwrap();
-        let (key, kid) = bridge_key.signing_material();
         let env = [
             ("ESCUREL_BRIDGE_GATEWAY_URL", gateway_url.to_owned()),
             ("ESCUREL_BRIDGE_TENANT", TENANT.to_owned()),
             (
-                "ESCUREL_BRIDGE_AUTH_ISSUER",
-                bridge_key.issuer_url().to_owned(),
-            ),
-            ("ESCUREL_BRIDGE_AUTH_KID", kid.to_owned()),
-            ("ESCUREL_BRIDGE_AUTH_SIGNING_KEY", key),
-            (
                 "ESCUREL_BRIDGE_STATE_PATH",
                 state.path().join("bridge.duckdb").display().to_string(),
-            ),
-            (
-                "ESCUREL_BRIDGE_PRINCIPAL_TEMPLATE",
-                "user:{aadObjectId}".to_owned(),
             ),
             ("ESCUREL_BRIDGE_TYPING_INTERVAL", "200ms".to_owned()),
             ("ESCUREL_BRIDGE_POLL_INTERVAL", "100ms".to_owned()),
@@ -287,6 +363,7 @@ impl Bridge {
             ),
         ]
         .into_iter()
+        .chain(auth_env)
         .map(|(k, v)| (k.to_owned(), v))
         .chain(
             extra_env
@@ -294,10 +371,14 @@ impl Bridge {
                 .map(|(k, v)| ((*k).to_owned(), (*v).to_owned())),
         )
         .collect();
+        // Set before the first start: a restart only to redirect the log raced the old
+        // process for the port under load.
+        let log = keep_log.then(|| state.path().join("bridge.log"));
         let mut bridge = Self {
             child: None,
             listen,
             env,
+            log,
             _state: state,
         };
         bridge.start();
@@ -309,6 +390,9 @@ impl Bridge {
         cmd.env("ESCUREL_BRIDGE_LISTEN", &self.listen);
         for (k, v) in &self.env {
             cmd.env(k, v);
+        }
+        if let Some(log) = &self.log {
+            cmd.stdout(std::fs::File::create(log).expect("bridge log"));
         }
         self.child = Some(cmd.spawn().expect("spawn escurel-chat-bridge"));
     }
@@ -326,15 +410,24 @@ impl Bridge {
     }
 
     async fn wait_healthy(&mut self) {
+        assert!(
+            self.try_healthy().await,
+            "bridge exited before it became healthy"
+        );
+    }
+
+    /// `false` when the bridge exited before it became healthy.
+    async fn try_healthy(&mut self) -> bool {
         let deadline = Instant::now() + Duration::from_secs(30);
         loop {
             if let Some(status) = self.child.as_mut().and_then(|c| c.try_wait().unwrap()) {
-                panic!("bridge exited before it became healthy: {status:?}");
+                eprintln!("bridge exited before it became healthy: {status:?}");
+                return false;
             }
             if let Ok(r) = reqwest::get(format!("http://{}/healthz", self.listen)).await
                 && r.status().is_success()
             {
-                return;
+                return true;
             }
             assert!(Instant::now() < deadline, "bridge never became healthy");
             tokio::time::sleep(Duration::from_millis(100)).await;
@@ -366,8 +459,18 @@ struct World {
     _runner: Option<RunningRunner>,
     bridge: Bridge,
     _bridge_key: ExtraIssuer,
+    /// The group-directory stand-ins (whichever the setup lists are configured).
+    dirs: Dirs,
     /// Between the bridge and the gateway; only the bridge's link goes down.
     link: Link,
+    /// Where `Setup::token_file` put the bridge's credential.
+    token_file: tempfile::TempDir,
+}
+
+struct Dirs {
+    graph: DirectoryStandIn,
+    google: DirectoryStandIn,
+    okta: DirectoryStandIn,
 }
 
 /// How a test's world differs from the plain one.
@@ -377,6 +480,21 @@ struct Setup {
     run_ms: Option<u64>,
     /// Extra `ESCUREL_BRIDGE_*` settings.
     bridge_env: Vec<(&'static str, &'static str)>,
+    /// The group directories the gateway asks; empty = Graph alone.
+    directories: Vec<&'static str>,
+    /// The membership cache's fresh / stale windows; `None` = production.
+    cache: Option<(Duration, Duration)>,
+    /// The DEPRECATED self-signed bridge key instead of the gateway's mint.
+    self_signed: bool,
+    /// Keep the bridge's log for the test to read.
+    keep_log: bool,
+    /// The roles on the bridge's own credential; `None` = `escurel:bridge`.
+    bridge_roles: Option<Vec<&'static str>>,
+    /// The gateway lists no group directory at all.
+    no_directories: bool,
+    /// The bridge reads its credential from this file
+    /// (`ESCUREL_BRIDGE_GATEWAY_TOKEN_FILE`), with this content at boot.
+    token_file: Option<String>,
 }
 
 async fn world(run_ms: u64) -> World {
@@ -389,24 +507,136 @@ async fn world(run_ms: u64) -> World {
 
 async fn world_with(setup: Setup) -> World {
     let bridge_key = ExtraIssuer::start_with_own_key(BRIDGE_KID).await;
+    let token_file = tempfile::tempdir().unwrap();
     let listen = format!("127.0.0.1:{}", free_port());
-    let gw = gateway(
-        &bridge_key,
-        &format!("http://{listen}/.well-known/jwks.json"),
-    )
-    .await;
+    let dirs = Dirs {
+        graph: DirectoryStandIn::graph().await,
+        google: DirectoryStandIn::google().await,
+        okta: DirectoryStandIn::okta().await,
+    };
+    // Alice is in `escurel-sales` by Graph unless a test says otherwise.
+    dirs.graph.member_of(ALICE_AAD, &["escurel-sales"]);
+    dirs.graph.member_of(BOB_AAD, &["escurel-support"]);
+    dirs.graph.known_as(ALICE_AAD, ALICE_EMAIL, &[]);
+    dirs.graph.known_as(BOB_AAD, BOB_EMAIL, &[]);
+    let gw = if setup.self_signed {
+        gateway(Trust::SelfSigned(
+            &bridge_key,
+            format!("http://{listen}/.well-known/jwks.json"),
+        ))
+        .await
+    } else {
+        let listed = if setup.directories.is_empty() {
+            vec!["graph"]
+        } else {
+            setup.directories.clone()
+        };
+        let configs = listed
+            .iter()
+            .filter(|_| !setup.no_directories)
+            .map(|d| match *d {
+                "graph" => dirs.graph.config("escurel-"),
+                "google" => dirs.google.config("escurel-"),
+                _ => dirs.okta.config("escurel-"),
+            })
+            .collect();
+        gateway(Trust::Minted(bridge_mint(
+            "user:{aadObjectId}",
+            configs,
+            setup.cache,
+        )))
+        .await
+    };
     let bf = BotFramework::start().await;
     let runner = setup.run_ms.map(|ms| runner(&gw, ms));
     let link = Link::start(gw.base_url()).await;
-    let mut bridge = Bridge::spawn(listen, &link.url, &bridge_key, &bf, &setup.bridge_env);
-    bridge.wait_healthy().await;
+    let auth_env = if setup.self_signed {
+        let (key, kid) = bridge_key.signing_material();
+        vec![
+            (
+                "ESCUREL_BRIDGE_AUTH_ISSUER",
+                bridge_key.issuer_url().to_owned(),
+            ),
+            ("ESCUREL_BRIDGE_AUTH_KID", kid.to_owned()),
+            ("ESCUREL_BRIDGE_AUTH_SIGNING_KEY", key),
+            (
+                "ESCUREL_BRIDGE_PRINCIPAL_TEMPLATE",
+                "user:{aadObjectId}".to_owned(),
+            ),
+        ]
+    } else {
+        let roles = setup
+            .bridge_roles
+            .clone()
+            .unwrap_or_else(|| vec!["escurel:bridge"]);
+        let credential = gw.mint_token_with_groups(TENANT, "svc:chat-bridge", &roles, false);
+        match &setup.token_file {
+            Some(content) => {
+                let path = token_file.path().join("bridge-token");
+                std::fs::write(&path, content.replace("{credential}", &credential)).unwrap();
+                vec![(
+                    "ESCUREL_BRIDGE_GATEWAY_TOKEN_FILE",
+                    path.display().to_string(),
+                )]
+            }
+            None => vec![("ESCUREL_BRIDGE_GATEWAY_TOKEN", credential)],
+        }
+    };
+    let mut bridge = Bridge::spawn(
+        listen,
+        &link.url,
+        auth_env,
+        &bf,
+        &setup.bridge_env,
+        setup.keep_log,
+    );
+    // `free_port` can lose its port to a parallel test before the bridge binds it; a minted
+    // bridge's port is named nowhere else, so take another (a self-signed one's is the gateway's
+    // JWKS URL and cannot move).
+    let mut tries = 0;
+    while !bridge.try_healthy().await {
+        tries += 1;
+        assert!(
+            tries < 3 && !setup.self_signed,
+            "bridge exited before it became healthy"
+        );
+        bridge.listen = format!("127.0.0.1:{}", free_port());
+        bridge.start();
+    }
     World {
         gw,
         bf,
         _runner: runner,
         bridge,
         _bridge_key: bridge_key,
+        dirs,
         link,
+        token_file,
+    }
+}
+
+impl World {
+    /// The bridge's own credential, as the gateway would issue it.
+    fn bridge_credential(&self) -> String {
+        self.gw
+            .mint_token_with_groups(TENANT, "svc:chat-bridge", &["escurel:bridge"], false)
+    }
+
+    /// A positive "had its chance" signal (crew U-F12): a later 1:1 turn is
+    /// answered, so every turn admitted before it has been worked — a second
+    /// reply that was going to come would be in by now, without a blind sleep.
+    async fn a_later_turn_is_answered(&self, id: &str, replies_before: usize) {
+        let token = self.bf.token(APP_ID);
+        self.bridge
+            .post(Some(&token), &self.bf.message(id, "later"))
+            .await;
+        let replies = wait_for_replies(&self.bf, replies_before + 1, Duration::from_secs(60)).await;
+        assert_eq!(
+            replies.len(),
+            replies_before + 1,
+            "nothing but the later turn's answer arrived: {replies:#?}"
+        );
+        assert_eq!(replies[replies_before].2["text"], "echo: later");
     }
 }
 
@@ -892,6 +1122,7 @@ async fn with_no_runner_the_timeout_notice_is_sent_exactly_once() {
     let mut w = world_with(Setup {
         run_ms: None,
         bridge_env: vec![("ESCUREL_BRIDGE_REPLY_TIMEOUT", "2s")],
+        ..Setup::default()
     })
     .await;
     let token = w.bf.token(APP_ID);
@@ -971,4 +1202,553 @@ fn urlencode(s: &str) -> String {
             }
         })
         .collect()
+}
+
+// ---- #830: gateway-minted turns, directory groups, group chats ------------
+
+/// The reply to `READ_DEAL` when the run's subject `who` reads the deal (`ok`) or not.
+fn read_reply(who: &str, outcome: &str) -> String {
+    format!("echo: {READ_DEAL}\n\nas {who}: read {DEAL_PAGE} {outcome}")
+}
+
+async fn chat_events_with(gw: &EscurelProcess, n: usize) -> Vec<Value> {
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        let events = chat_events(gw).await;
+        if events.len() >= n {
+            return events;
+        }
+        assert!(Instant::now() < deadline, "{n} chat events never arrived");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
+/// A 1:1 asker in `escurel-sales` reads the `read: [sales]` deal, whichever
+/// directory says so — Graph by object id, Google and Okta by the email the
+/// members API names — and through a union of two (this inverts
+/// `bridge_token.rs`'s "a bridge token carries no groups").
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_one_to_one_asker_reads_a_group_page_via_each_directory_and_a_union() {
+    for (directories, graph, google, okta, groups) in [
+        (
+            vec!["graph"],
+            &["escurel-sales"][..],
+            &[][..],
+            &[][..],
+            json!(["sales"]),
+        ),
+        (
+            vec!["google"],
+            &[][..],
+            &["escurel-sales"][..],
+            &[][..],
+            json!(["sales"]),
+        ),
+        (
+            vec!["okta"],
+            &[][..],
+            &[][..],
+            &["escurel-sales"][..],
+            json!(["sales"]),
+        ),
+        (
+            vec!["google", "okta"],
+            &[][..],
+            &["escurel-ops"][..],
+            &["escurel-sales"][..],
+            json!(["ops", "sales"]),
+        ),
+    ] {
+        let what = directories.join("+");
+        let w = world_with(Setup {
+            run_ms: Some(0),
+            directories,
+            ..Setup::default()
+        })
+        .await;
+        w.dirs.graph.member_of(ALICE_AAD, graph);
+        w.dirs.google.member_of(ALICE_EMAIL, google);
+        w.dirs.okta.member_of(ALICE_EMAIL, okta);
+        let token = w.bf.token(APP_ID);
+        assert_eq!(
+            w.bridge
+                .post(Some(&token), &w.bf.message("act-d1", READ_DEAL))
+                .await,
+            StatusCode::OK
+        );
+        let replies = wait_for_replies(&w.bf, 1, Duration::from_secs(60)).await;
+        assert_eq!(replies[0].2["text"], read_reply(ALICE, "ok"), "{what}");
+        let events = chat_events(&w.gw).await;
+        assert_eq!(events[0]["provenance"]["captured_by"], ALICE, "{what}");
+        assert_eq!(events[0]["provenance"]["captured_groups"], groups, "{what}");
+    }
+}
+
+/// CONTROL for the above: the same asker with no directory group is refused
+/// the deal by the run's own token.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_one_to_one_asker_outside_the_group_does_not_read_its_page() {
+    let w = world(0).await;
+    w.dirs.graph.member_of(ALICE_AAD, &["escurel-support"]);
+    let token = w.bf.token(APP_ID);
+    w.bridge
+        .post(Some(&token), &w.bf.message("act-d2", READ_DEAL))
+        .await;
+    let replies = wait_for_replies(&w.bf, 1, Duration::from_secs(60)).await;
+    assert_eq!(replies[0].2["text"], read_reply(ALICE, "refused"));
+}
+
+async fn map_chat(gw: &EscurelProcess, id: &str, target: &str, group: &str) {
+    let admin = gw.mint_token(TENANT, Role::Admin);
+    let wrote = call(
+        gw,
+        &admin,
+        "update_page",
+        json!({ "page_id": format!("markdown/instances/chat-channel/{id}.md"),
+                "content": format!("---\nkind: instance\nskill: chat-channel\nid: {id}\n\
+                    channel: msteams\n{target}\ngroup: {group}\n---\n# {id}\n") }),
+    )
+    .await;
+    assert_eq!(wrote["ok"], true, "{wrote}");
+}
+
+/// A group chat mapped to `sales`: a member's @mention is answered once, in
+/// the conversation, by a run acting as `group:sales`, with the asker
+/// recorded — and the membership comes from Okta alone.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_mapped_group_chat_is_answered_once_as_its_group_for_a_member() {
+    let w = world_with(Setup {
+        run_ms: Some(0),
+        directories: vec!["graph", "okta"],
+        ..Setup::default()
+    })
+    .await;
+    w.dirs.graph.member_of(ALICE_AAD, &["escurel-support"]);
+    w.dirs.okta.member_of(ALICE_EMAIL, &["escurel-sales"]);
+    map_chat(
+        &w.gw,
+        "sales-chat",
+        &format!("conversation_id: \"{GROUP_CHAT_ID}\""),
+        "sales",
+    )
+    .await;
+    let token = w.bf.token(APP_ID);
+    // Without the @mention it is just chatter in the room.
+    let mut chatter =
+        w.bf.group_message("act-g0", READ_DEAL, ("29:alice", ALICE_AAD));
+    chatter.as_object_mut().unwrap().remove("entities");
+    w.bridge.post(Some(&token), &chatter).await;
+    let asked =
+        w.bf.group_message("act-g1", READ_DEAL, ("29:alice", ALICE_AAD));
+    assert_eq!(w.bridge.post(Some(&token), &asked).await, StatusCode::OK);
+
+    let replies = wait_for_replies(&w.bf, 1, Duration::from_secs(60)).await;
+    let (path, _, body) = &replies[0];
+    assert_eq!(body["text"], read_reply("group:sales", "ok"), "{body}");
+    assert_eq!(
+        path,
+        &format!("{}/activities", urlencode(GROUP_CHAT_ID)),
+        "a group-chat answer is an activity in the conversation"
+    );
+    let events = chat_events(&w.gw).await;
+    assert_eq!(
+        events.len(),
+        1,
+        "one run, the mention stripped: {events:#?}"
+    );
+    assert_eq!(events[0]["provenance"]["captured_by"], "group:sales");
+    assert_eq!(events[0]["provenance"]["asked_by"], ALICE);
+    w.a_later_turn_is_answered("act-g9", 1).await;
+}
+
+/// An unmapped group chat: one polite refusal naming how to map it, no run.
+/// A stranger in a mapped chat: one refusal, no run.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_unmapped_chat_or_a_non_member_gets_one_refusal_and_no_run() {
+    let w = world(0).await;
+    let token = w.bf.token(APP_ID);
+    let first =
+        w.bf.group_message("act-u1", "who renews?", ("29:alice", ALICE_AAD));
+    w.bridge.post(Some(&token), &first).await;
+    // The channel retries: still one refusal.
+    w.bridge.post(Some(&token), &first).await;
+    let replies = wait_for_replies(&w.bf, 1, Duration::from_secs(60)).await;
+    let text = replies[0].2["text"].as_str().unwrap();
+    assert!(
+        text.contains("isn't connected")
+            && text.contains(GROUP_CHAT_ID)
+            && text.contains("chat-channel"),
+        "{text}"
+    );
+
+    map_chat(
+        &w.gw,
+        "sales-chat",
+        &format!("conversation_id: \"{GROUP_CHAT_ID}\""),
+        "sales",
+    )
+    .await;
+    let stranger = w.bf.group_message("act-u2", READ_DEAL, ("29:bob", BOB_AAD));
+    w.bridge.post(Some(&token), &stranger).await;
+    let replies = wait_for_replies(&w.bf, 2, Duration::from_secs(60)).await;
+    assert!(
+        replies[1].2["text"]
+            .as_str()
+            .unwrap()
+            .contains("not a member"),
+        "{:?}",
+        replies[1].2
+    );
+    w.a_later_turn_is_answered("act-u9", 2).await;
+    assert_eq!(
+        chat_events(&w.gw).await.len(),
+        1,
+        "no run for either refusal, one for the later turn"
+    );
+}
+
+/// A channel thread: mapped by team and channel, answered on the thread's root.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_channel_thread_is_answered_on_its_root() {
+    let w = world(0).await;
+    map_chat(
+        &w.gw,
+        "deals",
+        &format!("team_id: \"{TEAM_ID}\"\nchannel_id: \"{CHANNEL_ID}\""),
+        "sales",
+    )
+    .await;
+    let thread = format!("{CHANNEL_ID};messageid=root-1");
+    let mut m =
+        w.bf.group_message("act-c5", READ_DEAL, ("29:alice", ALICE_AAD));
+    m["conversation"] = json!({ "id": thread, "conversationType": "channel",
+                                "tenantId": ENTRA_TENANT });
+    m["channelData"] = json!({ "team": { "id": TEAM_ID }, "channel": { "id": CHANNEL_ID },
+                               "tenant": { "id": ENTRA_TENANT } });
+    let token = w.bf.token(APP_ID);
+    assert_eq!(w.bridge.post(Some(&token), &m).await, StatusCode::OK);
+    let replies = wait_for_replies(&w.bf, 1, Duration::from_secs(60)).await;
+    let (path, _, body) = &replies[0];
+    assert_eq!(body["text"], read_reply("group:sales", "ok"));
+    assert_eq!(body["replyToId"], "root-1");
+    assert_eq!(path, &format!("{}/activities/root-1", urlencode(&thread)));
+}
+
+/// The directory down: inside the stale window the cached groups still
+/// answer; past it the person is told once that access cannot be checked.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_directory_outage_uses_the_cache_then_tells_the_person_once() {
+    let w = world_with(Setup {
+        run_ms: Some(0),
+        cache: Some((Duration::from_millis(200), Duration::from_secs(4))),
+        ..Setup::default()
+    })
+    .await;
+    let token = w.bf.token(APP_ID);
+    w.bridge
+        .post(Some(&token), &w.bf.message("act-o1", READ_DEAL))
+        .await;
+    wait_for_replies(&w.bf, 1, Duration::from_secs(60)).await;
+    let asked = w.dirs.graph.lookups();
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    w.dirs.graph.down();
+    w.bridge
+        .post(Some(&token), &w.bf.message("act-o2", READ_DEAL))
+        .await;
+    let replies = wait_for_replies(&w.bf, 2, Duration::from_secs(60)).await;
+    assert!(
+        w.dirs.graph.lookups() > asked,
+        "turn 2 asked the directory (past the fresh window), so the stale answer stood in (crew U-F12)"
+    );
+    assert_eq!(
+        replies[1].2["text"],
+        read_reply(ALICE, "ok"),
+        "the cached groups stand in"
+    );
+    tokio::time::sleep(Duration::from_secs(4)).await;
+    w.bridge
+        .post(Some(&token), &w.bf.message("act-o3", READ_DEAL))
+        .await;
+    let replies = wait_for_replies(&w.bf, 3, Duration::from_secs(60)).await;
+    assert_eq!(
+        replies[2].2["text"],
+        "I can't check your access right now. Please try again in a few minutes."
+    );
+    assert_eq!(replies[2].2["replyToId"], "act-o3");
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    assert_eq!(w.bf.replies().len(), 3);
+    assert_eq!(
+        chat_events_with(&w.gw, 2).await.len(),
+        2,
+        "no run for the third"
+    );
+}
+
+/// The DEPRECATED self-signed path still answers a 1:1 chat for this
+/// release — with no groups — and says it is deprecated.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_self_signed_bridge_key_still_works_and_logs_its_deprecation() {
+    let w = world_with(Setup {
+        run_ms: Some(0),
+        self_signed: true,
+        keep_log: true,
+        ..Setup::default()
+    })
+    .await;
+    let token = w.bf.token(APP_ID);
+    w.bridge
+        .post(Some(&token), &w.bf.message("act-l1", READ_DEAL))
+        .await;
+    let replies = wait_for_replies(&w.bf, 1, Duration::from_secs(60)).await;
+    assert_eq!(
+        replies[0].2["text"],
+        read_reply(ALICE, "refused"),
+        "a self-signed turn carries no groups"
+    );
+    let log = std::fs::read_to_string(w.bridge.log.as_ref().unwrap()).unwrap();
+    assert!(
+        log.lines()
+            .any(|l| l.contains("\"level\":\"warn\"") && l.contains("DEPRECATED")),
+        "{log}"
+    );
+}
+
+/// Crew Q-F2: a turn whose token is re-minted while the group directory is
+/// down still delivers its answer — a refusal after the question is in
+/// escurel is retried, never turned into a decline notice.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_re_mint_during_a_directory_outage_keeps_the_answer() {
+    let w = world_with(Setup {
+        run_ms: Some(6_000),
+        cache: Some((Duration::ZERO, Duration::ZERO)),
+        bridge_env: vec![("ESCUREL_BRIDGE_TOKEN_TTL", "2s")],
+        ..Setup::default()
+    })
+    .await;
+    let token = w.bf.token(APP_ID);
+    w.bridge
+        .post(Some(&token), &w.bf.message("act-r1", "still there?"))
+        .await;
+    chat_events_with(&w.gw, 1).await;
+    // Every re-mint from now on (after 1 s, and again at each retry) is refused retryable.
+    w.dirs.graph.down();
+    tokio::time::sleep(Duration::from_secs(8)).await;
+    w.dirs.graph.up();
+    let replies = wait_for_replies(&w.bf, 1, Duration::from_secs(60)).await;
+    assert_eq!(replies[0].2["text"], "echo: still there?", "{replies:#?}");
+    w.a_later_turn_is_answered("act-r9", 1).await;
+}
+
+/// Crew U-F5: a bridge credential without the bridge role is a
+/// misconfiguration — one prompt reply, an ERROR log naming the fix, no run,
+/// no two-minute retry.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_bridge_credential_without_the_role_gets_one_prompt_reply() {
+    let w = world_with(Setup {
+        run_ms: Some(0),
+        bridge_roles: Some(vec!["sales"]),
+        keep_log: true,
+        ..Setup::default()
+    })
+    .await;
+    let token = w.bf.token(APP_ID);
+    let started = Instant::now();
+    w.bridge
+        .post(Some(&token), &w.bf.message("act-m1", "hello"))
+        .await;
+    let replies = wait_for_replies(&w.bf, 1, Duration::from_secs(20)).await;
+    assert!(
+        started.elapsed() < Duration::from_secs(15),
+        "not retried to the timeout"
+    );
+    assert!(
+        replies[0].2["text"]
+            .as_str()
+            .unwrap()
+            .contains("isn't set up correctly"),
+        "{replies:#?}"
+    );
+    let log = std::fs::read_to_string(w.bridge.log.as_ref().unwrap()).unwrap();
+    assert!(
+        log.lines().any(|l| l.contains("\"level\":\"error\"")
+            && l.contains("admin_required")
+            && l.contains("escurel:bridge")),
+        "{log}"
+    );
+    assert!(chat_events(&w.gw).await.is_empty());
+}
+
+/// Crew U-F6: Teams' member profile failing is "can't check your access" —
+/// at once for a refusal, after a few tries for an outage — never a silent
+/// "not a member".
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_failed_member_lookup_says_access_cannot_be_checked() {
+    let w = world_with(Setup {
+        run_ms: Some(0),
+        directories: vec!["graph", "okta"],
+        ..Setup::default()
+    })
+    .await;
+    w.dirs.okta.member_of(ALICE_EMAIL, &["escurel-sales"]);
+    map_chat(
+        &w.gw,
+        "sales-chat",
+        &format!("conversation_id: \"{GROUP_CHAT_ID}\""),
+        "sales",
+    )
+    .await;
+    let token = w.bf.token(APP_ID);
+    for (i, status) in [403u16, 503].into_iter().enumerate() {
+        w.bf.seen.lock().unwrap().member_status = Some(status);
+        let before = w.bf.seen.lock().unwrap().member_calls;
+        w.bridge
+            .post(
+                Some(&token),
+                &w.bf.group_message(
+                    &format!("act-p{status}"),
+                    READ_DEAL,
+                    ("29:alice", ALICE_AAD),
+                ),
+            )
+            .await;
+        let replies = wait_for_replies(&w.bf, i + 1, Duration::from_secs(60)).await;
+        assert_eq!(
+            replies[i].2["text"],
+            "I can't check your access right now. Please try again in a few minutes.",
+            "{status}"
+        );
+        let asked = w.bf.seen.lock().unwrap().member_calls - before;
+        assert_eq!(
+            asked,
+            if status == 403 { 1 } else { 3 },
+            "{status}: asked {asked} times"
+        );
+    }
+    w.bf.seen.lock().unwrap().member_status = None;
+    assert!(chat_events(&w.gw).await.is_empty(), "no run");
+}
+
+/// Crew U-F8: the deprecated self-signed bridge, mentioned in a group chat,
+/// says once that it answers 1:1 chats only.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_self_signed_bridge_in_a_shared_chat_says_once_it_answers_one_to_one_only() {
+    let w = world_with(Setup {
+        run_ms: Some(0),
+        self_signed: true,
+        ..Setup::default()
+    })
+    .await;
+    let token = w.bf.token(APP_ID);
+    let m = w.bf.group_message("act-s1", "hi", ("29:alice", ALICE_AAD));
+    w.bridge.post(Some(&token), &m).await;
+    w.bridge.post(Some(&token), &m).await;
+    let replies = wait_for_replies(&w.bf, 1, Duration::from_secs(60)).await;
+    assert!(
+        replies[0].2["text"].as_str().unwrap().contains("1:1 chats"),
+        "{replies:#?}"
+    );
+    w.a_later_turn_is_answered("act-s9", 1).await;
+}
+
+/// Crew U-F7: a gateway with no group directory answers 1:1 chats (with no
+/// groups) and tells a shared chat once why it does not answer there.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn without_a_group_directory_a_shared_chat_is_told_once_and_one_to_one_still_works() {
+    let w = world_with(Setup {
+        run_ms: Some(0),
+        no_directories: true,
+        ..Setup::default()
+    })
+    .await;
+    let token = w.bf.token(APP_ID);
+    w.bridge
+        .post(
+            Some(&token),
+            &w.bf.group_message("act-n1", "hi", ("29:alice", ALICE_AAD)),
+        )
+        .await;
+    let replies = wait_for_replies(&w.bf, 1, Duration::from_secs(60)).await;
+    assert!(
+        replies[0].2["text"]
+            .as_str()
+            .unwrap()
+            .contains("no group directory"),
+        "{replies:#?}"
+    );
+    w.a_later_turn_is_answered("act-n9", 1).await;
+    assert_eq!(
+        chat_events(&w.gw).await.len(),
+        1,
+        "a run for the 1:1 turn only"
+    );
+}
+
+/// Crew U-F11: an unmapped channel's notice names the team and channel ids
+/// an admin maps it by; two pages for one chat say it is ambiguous.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_unmapped_channel_names_its_ids_and_a_doubly_mapped_chat_is_ambiguous() {
+    let w = world(0).await;
+    let token = w.bf.token(APP_ID);
+    let mut m = w.bf.group_message("act-c1", "hi", ("29:alice", ALICE_AAD));
+    m["conversation"] = json!({ "id": format!("{CHANNEL_ID};messageid=r1"),
+                                "conversationType": "channel", "tenantId": ENTRA_TENANT });
+    m["channelData"] = json!({ "team": { "id": TEAM_ID }, "channel": { "id": CHANNEL_ID },
+                               "tenant": { "id": ENTRA_TENANT } });
+    w.bridge.post(Some(&token), &m).await;
+    let replies = wait_for_replies(&w.bf, 1, Duration::from_secs(60)).await;
+    let text = replies[0].2["text"].as_str().unwrap();
+    assert!(
+        text.contains(&format!("team_id: {TEAM_ID}"))
+            && text.contains(&format!("channel_id: {CHANNEL_ID}")),
+        "{text}"
+    );
+    for (id, group) in [("one", "sales"), ("two", "support")] {
+        map_chat(
+            &w.gw,
+            id,
+            &format!("conversation_id: \"{GROUP_CHAT_ID}\""),
+            group,
+        )
+        .await;
+    }
+    w.bridge
+        .post(
+            Some(&token),
+            &w.bf.group_message("act-c2", "hi", ("29:alice", ALICE_AAD)),
+        )
+        .await;
+    let replies = wait_for_replies(&w.bf, 2, Duration::from_secs(60)).await;
+    assert!(
+        replies[1].2["text"]
+            .as_str()
+            .unwrap()
+            .contains("more than one"),
+        "{replies:#?}"
+    );
+}
+
+/// The bridge's credential rotates in its file without a restart: a rejected
+/// one is re-read, and a changed file is picked up.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_rotated_bridge_credential_file_is_picked_up_without_a_restart() {
+    let w = world_with(Setup {
+        run_ms: Some(0),
+        token_file: Some("not-a-valid-credential".to_owned()),
+        ..Setup::default()
+    })
+    .await;
+    let token = w.bf.token(APP_ID);
+    w.bridge
+        .post(Some(&token), &w.bf.message("act-k1", "rotated?"))
+        .await;
+    // The gateway rejects the file's credential; the turn keeps retrying.
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    assert!(w.bf.replies().is_empty());
+    std::fs::write(
+        w.token_file.path().join("bridge-token"),
+        w.bridge_credential(),
+    )
+    .unwrap();
+    let replies = wait_for_replies(&w.bf, 1, Duration::from_secs(60)).await;
+    assert_eq!(replies[0].2["text"], "echo: rotated?");
 }

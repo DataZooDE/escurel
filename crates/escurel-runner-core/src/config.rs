@@ -641,6 +641,11 @@ pub struct RunnerConfig {
     /// what keeps a rotation from stranding the identifier.
     /// Source: `ESCUREL_RUNNER_AUTH_KID` (unset → `None`).
     pub auth_kid: Option<String>,
+    /// The deployment's role values (`ESCUREL_AUTH_{ADMIN,OPERATOR,RUNNER,BRIDGE}_ROLE_VALUE`,
+    /// shared with the gateway), never carried by a token this runner mints for a person: a
+    /// custom admin value in a bridge turn's `captured_groups` is dropped like `escurel:admin`
+    /// (crew Q-F10). The `escurel:` defaults are stripped regardless.
+    pub reserved_role_values: Vec<String>,
     /// `sub` claim for minted bearers — a SERVICE principal, since the
     /// runner acts on events whose author has gone home.
     /// Source: `ESCUREL_RUNNER_AUTH_SUBJECT` (default `escurel-runner`).
@@ -836,7 +841,7 @@ impl RunnerConfig {
             )
             .map_err(crate::AuthError::from)
             .map(|signer| crate::TokenSource::Minted {
-                signer,
+                signer: signer.with_reserved_groups(self.reserved_role_values.clone()),
                 subject: self.auth_subject.clone(),
                 ttl_secs: self.auth_ttl_secs,
                 cached: std::sync::Mutex::new(None),
@@ -991,6 +996,17 @@ impl RunnerConfig {
             .filter(|s| !s.is_empty())
             .unwrap_or_else(|| "escurel".to_owned());
         let auth_kid = lookup("ESCUREL_RUNNER_AUTH_KID").filter(|s| !s.is_empty());
+        let reserved_role_values: Vec<String> = [
+            "ESCUREL_AUTH_ADMIN_ROLE_VALUE",
+            "ESCUREL_AUTH_OPERATOR_ROLE_VALUE",
+            "ESCUREL_AUTH_RUNNER_ROLE_VALUE",
+            "ESCUREL_AUTH_BRIDGE_ROLE_VALUE",
+        ]
+        .iter()
+        .filter_map(|k| lookup(k))
+        .map(|v| v.trim().to_owned())
+        .filter(|v| !v.is_empty())
+        .collect();
         let harness_max_turns = lookup("ESCUREL_RUNNER_MAX_TURNS")
             .and_then(|v| v.parse::<u32>().ok())
             .filter(|v| *v > 0);
@@ -1251,6 +1267,7 @@ impl RunnerConfig {
             auth_issuer,
             auth_audience,
             auth_kid,
+            reserved_role_values,
             auth_subject,
             auth_ttl_secs,
             harness_max_turns,
@@ -1405,6 +1422,43 @@ fn parse_duration(raw: &str) -> Option<Duration> {
 
 #[cfg(test)]
 mod tests {
+    /// Crew Q-F10: the deployment's own role values never ride a person's run
+    /// token, even when they arrive as a bridge turn's `captured_groups`.
+    #[test]
+    fn a_configured_role_value_is_never_minted_into_a_persons_run_token() {
+        use base64::Engine as _;
+        use rsa::pkcs8::EncodePrivateKey;
+        let key = rsa::RsaPrivateKey::new(&mut rand::thread_rng(), 2048)
+            .unwrap()
+            .to_pkcs8_pem(rsa::pkcs8::LineEnding::LF)
+            .unwrap()
+            .to_string();
+        let cfg = RunnerConfig::from_env_with(|k| match k {
+            "ESCUREL_RUNNER_AUTH_ISSUER" => Some("https://issuer".into()),
+            "ESCUREL_AUTH_ADMIN_ROLE_VALUE" => Some("kb-admins".into()),
+            "ESCUREL_AUTH_BRIDGE_ROLE_VALUE" => Some("chat-bridges".into()),
+            _ => None,
+        })
+        .unwrap();
+        let tokens = cfg.token_source(Some(&key)).unwrap().unwrap();
+        let token = tokens
+            .mint_scoped(
+                "user:alice",
+                &["sales".into(), "kb-admins".into(), "chat-bridges".into()],
+                None,
+            )
+            .unwrap()
+            .unwrap();
+        let payload = token.split('.').nth(1).unwrap();
+        let claims: serde_json::Value = serde_json::from_slice(
+            &base64::engine::general_purpose::URL_SAFE_NO_PAD
+                .decode(payload)
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(claims["roles"], serde_json::json!(["sales"]));
+    }
+
     use super::*;
 
     #[test]

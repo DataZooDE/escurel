@@ -150,6 +150,12 @@ pub struct ChatContext {
     /// anyone else's rights — a turn captured via a runner or agent is not a
     /// person's question.
     pub asker: Option<String>,
+    /// The groups the asker's turn token held, from the server-stamped
+    /// `provenance.captured_groups` (#830: the gateway resolved them from the
+    /// group directories when it minted a chat bridge's turn). Read only on a
+    /// bridge-relayed turn; the run's token carries exactly these, so the
+    /// answer reads what the person may read. Empty otherwise.
+    pub asker_groups: Vec<String>,
     /// When the runner received the turn, for the time-to-answer metric.
     pub received_at: std::time::Instant,
 }
@@ -182,11 +188,28 @@ impl ChatContext {
         let asker = captured_by(provenance)
             .filter(|_| captured_via(provenance).is_none_or(escurel_types::bridge::is_bridge_via))
             .map(str::to_owned);
+        let asker_groups =
+            if captured_via(provenance).is_some_and(escurel_types::bridge::is_bridge_via) {
+                provenance
+                    .get(escurel_types::bridge::CAPTURED_GROUPS_FIELD)
+                    .and_then(|v| v.as_array())
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(|v| v.as_str())
+                            .filter(|g| escurel_types::chat_channel::is_assignable_group(g))
+                            .map(str::to_owned)
+                            .collect()
+                    })
+                    .unwrap_or_default()
+            } else {
+                Vec::new()
+            };
         Some(Self {
             chat_group_id: chat_group_id.to_owned(),
             user_msg_id: user_msg_id.to_owned(),
             focus,
             asker,
+            asker_groups,
             received_at: std::time::Instant::now(),
         })
     }
@@ -506,6 +529,33 @@ mod tests {
         assert_eq!(asker(Some("bridge:msteams")).as_deref(), Some("user:alice"));
         assert_eq!(asker(Some("escurel-runner")), None);
         assert_eq!(asker(Some("bridge:Not A Channel")), None);
+    }
+
+    /// The gateway's `captured_groups` (#830) ride into the run only on a
+    /// bridge-relayed turn, and never as a reserved name.
+    #[test]
+    fn a_bridge_turns_captured_groups_reach_the_chat_run_and_nothing_else_does() {
+        let groups = |via: Option<&str>| {
+            let mut event = sample_event();
+            event.provenance = serde_json::json!({
+                "chat_group_id": "page-chat:v1:abc:markdown/instances/conversation/x.md",
+                "user_msg_id": "m-1", "captured_by": "user:alice",
+                "captured_groups": ["sales", "admin", "escurel:admin"],
+            });
+            if let Some(v) = via {
+                event.provenance["captured_via"] = serde_json::json!(v);
+            }
+            Trigger::from_event(&event, "t")
+                .chat
+                .map(|c| c.asker_groups)
+                .unwrap_or_default()
+        };
+        assert_eq!(groups(Some("bridge:msteams")), ["sales"]);
+        assert!(
+            groups(None).is_empty(),
+            "a person's own capture carries no groups here"
+        );
+        assert!(groups(Some("escurel-runner")).is_empty());
     }
 
     #[test]

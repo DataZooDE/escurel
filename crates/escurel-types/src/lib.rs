@@ -35,6 +35,7 @@ pub mod agent_profile;
 pub mod bridge;
 pub mod call_result;
 mod chat;
+pub mod chat_channel;
 mod core;
 mod drafts;
 mod events;
