@@ -8,7 +8,32 @@ re-cuts append `.N`), matching the DataZoo release scheme (cf. erpl).
 
 ## Unreleased
 
-Runners outside the cluster, agents outside escurel, and runner gaps (#827, #828, #829).
+## v2026.11.14
+
+Runners outside the cluster without admin, revocable tokens for external agents, and a Teams bridge that holds no
+signing key, reads directory groups (Microsoft Graph, Google, Okta), answers group chats and channels, and can be
+verified by the gateway against the Teams roster (#827, #828, #829, #830, #835).
+
+**Upgrade checklist:**
+1. Optional: give out-of-cluster runners the narrow `escurel:runner` role instead of `escurel:admin`.
+2. A runner on a static/file token now asks a signing gateway for each run's token, so its ordinary runs write as
+   `agent:<skill>` (as a minting runner's do) instead of as the runner. Check ACLs or dashboards that match the
+   runner's subject.
+3. An agent token without an `iat` claim is refused.
+4. Group directory and Teams URLs over plain http (loopback stand-ins only) now need `ESCUREL_EGRESS_ALLOW_LOOPBACK=true`,
+   or the gateway refuses to boot, naming the key and the flag.
+5. Chat bridge: move to gateway-minted turns (`ESCUREL_BRIDGE_GATEWAY_TOKEN[_FILE]` with `escurel:bridge`,
+   `ESCUREL_AUTH_BRIDGE_PRINCIPAL_TEMPLATE` on the gateway), and for production also set the gateway's Teams
+   verification (`ESCUREL_AUTH_TEAMS_APP_ID` / `_APP_SECRET`). See
+   [`docs/deploy/chat-bridge.md`](docs/deploy/chat-bridge.md).
+
+**Deprecated:** the chat bridge signing its own turns (`ESCUREL_BRIDGE_AUTH_ISSUER` / `_KID` / `_SIGNING_KEY` and
+`ESCUREL_BRIDGE_PRINCIPAL_TEMPLATE` on the bridge, `ESCUREL_AUTH_BRIDGE_ISSUER` / `_KID` / `_TENANT` on the gateway).
+It still works for this release (1:1 chats, no groups) and logs a deprecation at both ends; it is removed in the
+next release. Migrate with the keep/remove checklist in
+[`docs/deploy/chat-bridge.md` § Migration checklist](docs/deploy/chat-bridge.md#migration-checklist).
+
+Runners outside the cluster and agents outside escurel (#828, #829):
 
 - **`escurel:runner` service role** (`ESCUREL_AUTH_RUNNER_ROLE_VALUE`): a runner no longer needs `escurel:admin`. The
   role reads the inbox, claims, keeps the runner's books and writes its own `runtime` page, and nothing else;
@@ -82,33 +107,6 @@ Chat bridge: gateway-minted turns, directory groups, group chats (#830):
   conversation, an existing mapping is opened instead of duplicated); explore's Chat tab labels a conversation that
   acts as a group.
 
-Group directories (#835):
-
-- **Okta as an OAuth service app**: `ESCUREL_AUTH_OKTA_AUTH=oauth` with `ESCUREL_AUTH_OKTA_CLIENT_ID` and
-  `ESCUREL_AUTH_OKTA_PRIVATE_KEY[_FILE]` (optional `…_KEY_ID`, `…_TOKEN_URL`, default `<base>/oauth2/v1/token`)
-  reads the groups with a client-credentials token (`private_key_jwt`: a short-lived RS256 assertion, a fresh `jti`
-  each time; scopes `okta.groups.read okta.users.read`), cached until shortly before it expires, instead of an
-  admin's SSWS API token. `ssws` stays the default while `ESCUREL_AUTH_OKTA_API_TOKEN` is set; with neither the boot
-  asks for one, and a key of the other mode is refused. A key that does not parse fails the boot. Okta's "Require
-  DPoP" must be off on the app: escurel sends no DPoP proof, and a token endpoint asking for one is named in the
-  gateway's log as the setting to turn off.
-
-**Behaviour changes to note:**
-- A group directory's `…_BASE_URL` / `…_TOKEN_URL` may be plain http (to a loopback address) only with the dev flag
-  `ESCUREL_EGRESS_ALLOW_LOOPBACK=true`; without it the gateway refuses to boot, naming the key and the flag (#835).
-  A deployment pointing a directory at a local stand-in over http without the flag must set it.
-
-**Deprecated:** the chat bridge signing its own turns (`ESCUREL_BRIDGE_AUTH_ISSUER` / `_KID` / `_SIGNING_KEY` and
-`ESCUREL_BRIDGE_PRINCIPAL_TEMPLATE` on the bridge, `ESCUREL_AUTH_BRIDGE_ISSUER` / `_KID` / `_TENANT` on the gateway).
-It still works for this release (1:1 chats, no groups) and logs a deprecation at both ends; it is removed in the
-next release. Migrate with the keep/remove checklist in
-[`docs/deploy/chat-bridge.md` § Migration checklist](docs/deploy/chat-bridge.md#migration-checklist).
-
-**Behaviour changes to note:**
-- A runner on a static/file token now asks a signing gateway for each run's token, so its ordinary runs write as
-  `agent:<skill>` (as a minting runner's do) instead of as the runner.
-- An agent token without an `iat` claim is refused.
-
 Chat bridge hardening (#835):
 
 - **Added — gateway-side Teams verification** (`ESCUREL_AUTH_TEAMS_APP_ID`, `…_APP_SECRET[_FILE]`, `…_OPENID_METADATA`,
@@ -135,6 +133,16 @@ Chat bridge hardening (#835):
   `personal`, a channel turn with no team) is `identity_mismatch`. The Bot Framework keys are fetched with the
   caller's client (the gateway's egress-vetted one), never through a redirect, and only from an https `jwks_uri`
   (plain http only to loopback behind the dev flag).
+- **Added — Okta as an OAuth service app**: `ESCUREL_AUTH_OKTA_AUTH=oauth` with `ESCUREL_AUTH_OKTA_CLIENT_ID` and
+  `ESCUREL_AUTH_OKTA_PRIVATE_KEY[_FILE]` (optional `…_KEY_ID`, `…_TOKEN_URL`, default `<base>/oauth2/v1/token`)
+  reads the groups with a client-credentials token (`private_key_jwt`: a short-lived RS256 assertion, a fresh `jti`
+  each time; scopes `okta.groups.read okta.users.read`), cached until shortly before it expires, instead of an
+  admin's SSWS API token. `ssws` stays the default while `ESCUREL_AUTH_OKTA_API_TOKEN` is set; with neither the boot
+  asks for one, and a key of the other mode is refused. A key that does not parse fails the boot. Okta's "Require
+  DPoP" must be off on the app: escurel sends no DPoP proof, and a token endpoint asking for one is named in the
+  gateway's log as the setting to turn off.
+- **Changed:** a group directory's or Teams `…_BASE_URL` / `…_TOKEN_URL` may be plain http (to a loopback address)
+  only with `ESCUREL_EGRESS_ALLOW_LOOPBACK=true`.
 
 ## v2026.11.13 — BREAKING (runner credential must be admin; skill authority keys need an admin)
 
