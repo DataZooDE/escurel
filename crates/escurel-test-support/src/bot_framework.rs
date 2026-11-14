@@ -33,9 +33,11 @@ pub const CONNECTOR_TOKEN: &str = "connector-token";
 /// One person on the roster, as the members API answers for them.
 #[derive(Debug, Clone)]
 pub struct RosterMember {
-    pub aad_object_id: String,
+    /// `None` answers without `aadObjectId` (a guest or an anonymous user).
+    pub aad_object_id: Option<String>,
     pub email: String,
-    pub tenant_id: String,
+    /// `None` answers without `tenantId`.
+    pub tenant_id: Option<String>,
 }
 
 /// What the stand-in saw, and how a test bends it.
@@ -156,14 +158,23 @@ impl BotFrameworkStandIn {
 
     /// Put `user_id` on the roster of every conversation.
     pub fn add_member(&self, user_id: &str, aad_object_id: &str, email: &str, tenant_id: &str) {
-        self.seen.lock().unwrap().roster.insert(
-            user_id.to_owned(),
+        self.add_roster_member(
+            user_id,
             RosterMember {
-                aad_object_id: aad_object_id.to_owned(),
+                aad_object_id: Some(aad_object_id.to_owned()),
                 email: email.to_owned(),
-                tenant_id: tenant_id.to_owned(),
+                tenant_id: Some(tenant_id.to_owned()),
             },
         );
+    }
+
+    /// Put `user_id` on every roster as exactly `member` says.
+    pub fn add_roster_member(&self, user_id: &str, member: RosterMember) {
+        self.seen
+            .lock()
+            .unwrap()
+            .roster
+            .insert(user_id.to_owned(), member);
     }
 
     /// Take `user_id` off `conversation_id`'s roster (they stay on others).
@@ -291,10 +302,15 @@ async fn member(
         return Err(StatusCode::NOT_FOUND);
     }
     let m = seen.roster.get(&user).ok_or(StatusCode::NOT_FOUND)?;
-    Ok(axum::Json(json!({
-        "id": user, "name": "Member", "aadObjectId": m.aad_object_id, "email": m.email,
-        "userPrincipalName": m.email, "tenantId": m.tenant_id,
-    })))
+    let mut answer = json!({ "id": user, "name": "Member", "email": m.email,
+                             "userPrincipalName": m.email });
+    if let Some(aad) = &m.aad_object_id {
+        answer["aadObjectId"] = json!(aad);
+    }
+    if let Some(tenant) = &m.tenant_id {
+        answer["tenantId"] = json!(tenant);
+    }
+    Ok(axum::Json(answer))
 }
 
 fn authorization(headers: &HeaderMap) -> String {

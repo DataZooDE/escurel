@@ -1248,3 +1248,51 @@ async fn a_signing_key_outage_is_retryable_and_recovers() {
     .await;
     assert_eq!(minted["subject"], ALICE);
 }
+
+/// Crew F4: the tenant is Microsoft's, else the one Graph serves, never the
+/// bridge's; a roster entry without an object id is nobody.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_roster_answer_without_a_tenant_or_object_id_never_takes_the_bridges() {
+    use escurel_test_support::RosterMember;
+    let w = verified_world().await;
+    let tenantless = |aad: Option<&str>| RosterMember {
+        aad_object_id: aad.map(str::to_owned),
+        email: ALICE_EMAIL.to_owned(),
+        tenant_id: None,
+    };
+    let token = w.bf.token(BOT_APP);
+    // With Graph, its tenant stands in.
+    w.bf.add_roster_member("29:alice", tenantless(Some(ALICE_OID)));
+    let minted = mint(
+        &w.gw,
+        verified_turn(&w.bf, "29:alice", ALICE_OID, Some(&token)),
+    )
+    .await;
+    assert_eq!(minted["subject"], ALICE);
+    // No object id: no principal.
+    w.bf.add_roster_member("29:guest", tenantless(None));
+    let (_, body) = call(
+        &w.gw,
+        &bridge_credential(&w.gw),
+        "mint_user_token",
+        verified_turn(&w.bf, "29:guest", ALICE_OID, Some(&token)),
+    )
+    .await;
+    refused(&body, "no_principal", "no aadObjectId on the roster");
+
+    // Without Graph there is nothing to stand in: refused, whatever the bridge says.
+    let bf = BotFrameworkStandIn::start().await;
+    bf.add_roster_member("29:alice", tenantless(Some(ALICE_OID)));
+    let mut cfg = bridge_mint("user:{aadObjectId}", vec![], None);
+    cfg.teams = Some(bf.gateway_verification(BOT_APP));
+    let gw = gateway(cfg).await;
+    let token = bf.token(BOT_APP);
+    let (_, body) = call(
+        &gw,
+        &bridge_credential(&gw),
+        "mint_user_token",
+        verified_turn(&bf, "29:alice", ALICE_OID, Some(&token)),
+    )
+    .await;
+    refused(&body, "identity_mismatch", "no tenant from Teams, no Graph");
+}

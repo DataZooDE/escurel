@@ -709,6 +709,7 @@ impl Asker {
         teams: &crate::teams_verify::TeamsVerifier,
         a: &MintUserTokenArgs,
         conversation_id: &str,
+        served_tenant: Option<&str>,
     ) -> Result<Self, JsonRpcError> {
         use crate::teams_verify::TeamsVerifyError as E;
         use escurel_types::chat_channel::mint_codes;
@@ -743,11 +744,23 @@ impl Asker {
             .with_code(mint_codes::NO_PRINCIPAL, false));
         };
         let asserted = Self::asserted(a);
-        // Microsoft omitting the tenant leaves the bridge's (it is checked against the served
-        // tenant below); every other field the bridge asserts must be Microsoft's.
-        let tenant_id = member
+        // The tenant is never the bridge's (crew F4): Microsoft's, else the one tenant Graph
+        // serves, else nobody can say — and a template's `{tenantId}` must not be bridge-chosen.
+        let Some(tenant_id) = member
             .tenant_id
-            .unwrap_or_else(|| asserted.tenant_id.clone());
+            .or_else(|| served_tenant.map(str::to_owned))
+        else {
+            tracing::warn!(
+                "mint_user_token: Teams names no tenant for the sender and no Graph \
+                tenant is served"
+            );
+            return Err(JsonRpcError::forbidden(format!(
+                "{tool}: Teams names no tenant for this sender, so the asserted `tenant_id` \
+                 cannot be checked"
+            ))
+            .with_code(mint_codes::IDENTITY_MISMATCH, false));
+        };
+        // Every field the bridge asserts must be Microsoft's.
         for (field, said, truth) in [
             (
                 "aad_object_id",
@@ -845,7 +858,9 @@ pub(super) async fn tool_mint_user_token(
     let conv = a.conversation.clone().unwrap_or_default();
     let who = match &mint.teams {
         None => Asker::asserted(&a),
-        Some(teams) => Asker::verified(TOOL, teams, &a, &conv.id).await?,
+        Some(teams) => {
+            Asker::verified(TOOL, teams, &a, &conv.id, mint.graph_tenant.as_deref()).await?
+        }
     };
     // With Graph configured, its Entra tenant is the only one whose object ids mean anything here.
     if let Some(tenant) = mint.graph_tenant.as_deref()
