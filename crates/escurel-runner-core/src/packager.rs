@@ -607,7 +607,7 @@ async fn caller_scoped_token(
             // would hand it the very authority the agent exists to withhold.
             RunGrant::Agent { profile, groups } => {
                 return match tokens.mint_agent_profile(
-                    &profile.id,
+                    profile,
                     &trigger.label_skill,
                     ttl,
                     run,

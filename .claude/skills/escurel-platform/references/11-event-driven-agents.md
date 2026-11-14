@@ -631,7 +631,7 @@ rather than a crash loop. **Give every runner a runner-capable credential**:
 the narrow `escurel:runner` role (references/08, *Built-in service roles*), an
 `escurel:admin` token, or minting mode. A runner with a static or file
 credential and **no signing key** asks the gateway for each run's token
-(`mint_run_token`, cached per run): the same claims a minting runner signs,
+(`mint_run_token`, a fresh one per attempt): the same claims a minting runner signs,
 narrowed to the skill's write groups (or the agent profile), never the wide
 admin shape for a runner credential. A gateway without a signing key answers
 `unsupported`, and such a runner's runs then use its own credential as before.

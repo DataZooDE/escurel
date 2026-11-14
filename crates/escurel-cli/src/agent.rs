@@ -474,9 +474,10 @@ pub enum AgentTokenCmd {
         #[arg(long, value_parser = parse_ttl)]
         ttl: Option<u64>,
     },
-    /// Revoke every token issued so far for the agent: sets the page's
-    /// `token_epoch` to the next second through `update_page` (admin). The
-    /// next call with an older token is `agent_token_revoked`.
+    /// Revoke every token issued so far for the agent — external and run
+    /// tokens alike (`revoke_agent_tokens`, admin). The gateway moves the
+    /// page's `token_epoch` forward on its own clock; the next call with an
+    /// older token is `agent_token_revoked`.
     Revoke {
         /// The agent profile id.
         agent: String,
@@ -514,57 +515,15 @@ pub async fn issue_agent_token(
     Ok(serde_json::to_value(resp)?)
 }
 
-/// `agent token revoke`: rewrite the agent page with `token_epoch` = the next
-/// second, so every token issued up to now (this second included) is refused
-/// and one issued after it stands. Guarded by the page's version, so a
-/// concurrent edit is refused rather than overwritten.
-async fn revoke_agent_tokens(client: &Client, agent: String) -> Result<Value> {
-    let page_id = escurel_types::agent_profile::agent_page_id(&agent);
-    let page = client
-        .expand(escurel_client::ExpandRequest {
-            page_id: page_id.clone(),
-            ..Default::default()
-        })
-        .await?;
-    let (Some(_), Some(fm)) = (page.page.as_ref(), page.frontmatter.as_object()) else {
-        bail!("no agent page `{page_id}` (or you may not read it)");
-    };
-    let epoch = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs())
-        + 1;
-    let mut fm = fm.clone();
-    fm.insert("token_epoch".to_owned(), json!(epoch));
-    // JSON values are YAML flow scalars, so every key is written as JSON: no quoting rules to get
-    // wrong for a scope glob or a wikilink.
-    let mut content = String::from("---\n");
-    for (key, value) in &fm {
-        content.push_str(&format!("{key}: {value}\n"));
-    }
-    content.push_str("---\n");
-    content.push_str(&page.body);
-    let resp = client
-        .update_page(UpdatePageRequest {
-            page_id: page_id.clone(),
-            content,
-            base_version: page.version.clone(),
-            ..Default::default()
-        })
-        .await?;
-    if !resp.ok {
-        let issues: Vec<String> = resp
-            .issues
-            .iter()
-            .map(|i| format!("{}: {}", i.code, i.message))
-            .collect();
-        bail!("the agent page was not updated: {}", issues.join("; "));
-    }
-    Ok(json!({
-        "agent": agent,
-        "page_id": page_id,
-        "token_epoch": epoch,
-        "new_version": opt(&resp.new_version),
-    }))
+/// `agent token revoke` — an admin tool, so `main` dials it with the admin
+/// client. The gateway computes the epoch; this side only names the agent.
+pub async fn revoke_agent_tokens(
+    client: &escurel_client::AdminClient,
+    agent: &str,
+) -> Result<Value> {
+    Ok(serde_json::to_value(
+        client.revoke_agent_tokens(agent).await?,
+    )?)
 }
 
 /// Runner processes that registered themselves (#818).
@@ -790,11 +749,8 @@ pub async fn run(client: &Client, cmd: Command) -> Result<Value> {
         Command::Provenance(ProvenanceCmd::Path(a)) => provenance_path(client, a).await,
         Command::Event(c) => event_cmd(client, c).await,
         Command::Run(c) => run_cmd(client, c).await,
-        Command::Agent(AgentCmd::Token(AgentTokenCmd::Revoke { agent })) => {
-            revoke_agent_tokens(client, agent).await
-        }
-        Command::Agent(AgentCmd::Token(AgentTokenCmd::Issue { .. })) => {
-            unreachable!("agent token issue handled in main (admin client)")
+        Command::Agent(AgentCmd::Token(_)) => {
+            unreachable!("agent token issue|revoke handled in main (admin client)")
         }
         Command::Runtime(RuntimeCmd::List) => {
             Ok(serde_json::to_value(client.list_runtimes().await?)?)

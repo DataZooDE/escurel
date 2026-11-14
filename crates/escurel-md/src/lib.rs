@@ -99,6 +99,9 @@ pub enum ParseError {
     /// `kind:` was missing or not `skill` / `instance`.
     #[error("frontmatter missing or invalid 'kind' (expected 'skill' or 'instance')")]
     InvalidType,
+    /// An in-place edit ([`set_frontmatter_scalar`]) would change more than the one key.
+    #[error("frontmatter key `{0}` cannot be set in place to that value")]
+    UnpatchableKey(String),
 }
 
 /// Parse a markdown file's frontmatter and split off the body.
@@ -247,6 +250,72 @@ pub fn set_frontmatter_str(
         }
     }
     render_page(&fields, page.body)
+}
+
+/// Set the top-level frontmatter key `key` to the YAML scalar `literal`
+/// **in place**: only that key's line (and any indented continuation lines a
+/// previous value spread over) changes; every other line — comments, key
+/// order, quoting, the body — is kept byte for byte. A key that is absent is
+/// appended as the block's last line.
+///
+/// For a server-owned scalar on a page a human also edits (`token_epoch:` on an
+/// agent page), where re-serialising the whole block ([`set_frontmatter_str`])
+/// would throw the author's formatting away. The result is re-parsed, so a
+/// literal that is not a scalar of its own is refused rather than written.
+///
+/// # Errors
+///
+/// [`ParseError`] when `input` is not a well-formed page, or when the patched
+/// page no longer parses with `key` set to `literal`.
+pub fn set_frontmatter_scalar(input: &str, key: &str, literal: &str) -> Result<String, ParseError> {
+    let before = parse(input)?;
+    let bom = input.len() - strip_bom(input).len();
+    let first = input[bom..]
+        .split_inclusive('\n')
+        .next()
+        .ok_or(ParseError::MissingFrontmatter)?;
+    let eol = if first.ends_with("\r\n") {
+        "\r\n"
+    } else {
+        "\n"
+    };
+    let mut offset = bom + first.len();
+    let mut replace: Option<(usize, usize)> = None;
+    let mut close = None;
+    for line in input[offset..].split_inclusive('\n') {
+        let content = line.trim_end_matches(['\r', '\n']);
+        if content == "---" {
+            close = Some(offset);
+            break;
+        }
+        match &mut replace {
+            // A continuation of the value being replaced: indented, or a blank line inside it.
+            Some((_, end))
+                if *end == offset && (content.starts_with([' ', '\t']) || content.is_empty()) =>
+            {
+                *end += line.len();
+            }
+            None if content
+                .strip_prefix(key)
+                .is_some_and(|rest| rest.starts_with(':')) =>
+            {
+                replace = Some((offset, offset + line.len()));
+            }
+            _ => {}
+        }
+        offset += line.len();
+    }
+    let close = close.ok_or(ParseError::UnterminatedFrontmatter)?;
+    let (start, end) = replace.unwrap_or((close, close));
+    let out = format!("{}{key}: {literal}{eol}{}", &input[..start], &input[end..]);
+    let after = parse(&out)?;
+    let want: YamlValue = serde_yaml_ng::from_str(literal)?;
+    let mut expected = before.frontmatter.fields.clone();
+    expected.insert(YamlValue::String(key.to_owned()), want);
+    if after.frontmatter.fields != expected || after.body != before.body {
+        return Err(ParseError::UnpatchableKey(key.to_owned()));
+    }
+    Ok(out)
 }
 
 /// Locate the closing `---` line. Returns `(yaml_block, body_slice)`

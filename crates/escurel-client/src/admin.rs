@@ -38,11 +38,11 @@ pub use escurel_types::{
     EmbeddingReloadRequest, EmbeddingReloadResponse, ExportPackRequest, HealthRequest,
     HealthResponse, IssueAgentTokenRequest, IssueAgentTokenResponse, MigrateKindReport,
     MigrateKindRequest, PackManifest, PurgeEventsRequest, PurgeEventsResponse, QuotaGetRequest,
-    QuotaGetResponse, RebuildProgress, RebuildRequest, TenantCreateRequest, TenantCreateResponse,
-    TenantDeleteRequest, TenantDeleteResponse, TenantExportRequest, TenantGetRequest,
-    TenantGetResponse, TenantImportResponse, TenantListRequest, TenantListResponse,
-    TenantUpdateRequest, TenantUpdateResponse, UsageReportRequest, UsageReportResponse,
-    UsageTotals,
+    QuotaGetResponse, RebuildProgress, RebuildRequest, RevokeAgentTokensResponse,
+    TenantCreateRequest, TenantCreateResponse, TenantDeleteRequest, TenantDeleteResponse,
+    TenantExportRequest, TenantGetRequest, TenantGetResponse, TenantImportResponse,
+    TenantListRequest, TenantListResponse, TenantUpdateRequest, TenantUpdateResponse,
+    UsageReportRequest, UsageReportResponse, UsageTotals,
 };
 
 /// Typed MCP-over-HTTP client for the Escurel v1 **admin** surface.
@@ -241,7 +241,7 @@ impl AdminClient {
 
     /// Issue a revocable bearer for an external agent that runs as the agent
     /// profile `req.agent` (`issue_agent_token`, #829). Admin only; revoke it
-    /// with the agent page's `token_epoch`.
+    /// with [`Self::revoke_agent_tokens`].
     pub async fn issue_agent_token(
         &self,
         req: IssueAgentTokenRequest,
@@ -251,6 +251,18 @@ impl AdminClient {
             args["ttl_secs"] = json!(req.ttl_secs);
         }
         self.transport.call_typed("issue_agent_token", args).await
+    }
+
+    /// Revoke every token issued so far for the agent profile `agent`
+    /// (`revoke_agent_tokens`, #829): the gateway moves the page's
+    /// `token_epoch` forward on its own clock. Admin only.
+    pub async fn revoke_agent_tokens(
+        &self,
+        agent: &str,
+    ) -> Result<RevokeAgentTokensResponse, Error> {
+        self.transport
+            .call_typed("revoke_agent_tokens", json!({ "agent": agent }))
+            .await
     }
 
     /// Attach an external read-only source to the gateway's tenant. The

@@ -179,6 +179,10 @@ async fn run(cli: Cli) -> Result<()> {
             let client = AdminClient::connect(&cli.server, token).await?;
             agent::issue_agent_token(&client, agent, ttl).await?
         }
+        Command::Agent(agent::AgentCmd::Token(agent::AgentTokenCmd::Revoke { agent })) => {
+            let client = AdminClient::connect(&cli.server, token).await?;
+            agent::revoke_agent_tokens(&client, &agent).await?
+        }
         Command::Workflow(cmd) => {
             let client = Client::connect(&cli.server, token).await?;
             workflow::run(&client, cmd).await?

@@ -61,21 +61,6 @@ export function tokensValidSince(p: AgentProfile): string | undefined {
     : `Tokens valid since ${at.toISOString().replace('.000Z', 'Z')}`;
 }
 
-/**
- * The agent page with `token_epoch` set to `epoch`: what "Revoke tokens" writes through
- * `update_page`. Every key is written as JSON, which YAML reads as a flow scalar, so no quoting
- * rule can turn a scope glob or a wikilink into something else; the body is kept as it is.
- */
-export function withTokenEpoch(
-  frontmatter: Record<string, unknown>,
-  body: string,
-  epoch: number,
-): string {
-  const fm = { ...frontmatter, token_epoch: epoch };
-  const lines = Object.entries(fm).map(([k, v]) => `${k}: ${JSON.stringify(v)}`);
-  return `---\n${lines.join('\n')}\n---\n${body}`;
-}
-
 export interface AgentRow {
   id: string;
   label: string;

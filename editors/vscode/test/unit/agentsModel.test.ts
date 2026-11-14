@@ -1,11 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { Instance, UsageReportResponse } from '../../src/client/types';
-import {
-  agentProfile,
-  agentRows,
-  tokensValidSince,
-  withTokenEpoch,
-} from '../../src/views/agentsModel';
+import { agentProfile, agentRows, tokensValidSince } from '../../src/views/agentsModel';
 
 // An agent profile is an instance of the `agent` system skill (references/01, "Agent profiles");
 // usage_report {group_by: [agent]} keys a run by `agent:<id>`.
@@ -121,19 +116,5 @@ describe('agent tokens (#829)', () => {
     expect(tokensValidSince(agentProfile(scribe))).toBeUndefined();
     const [row] = agentRows([revoked], { usage: undefined, window: 'Last 30 days' });
     expect(row?.tooltip).toContain('Tokens valid since 2026-09-22T10:00:00Z');
-  });
-
-  it('writes the epoch into the page and keeps every other key and the body', () => {
-    const page = withTokenEpoch(
-      { kind: 'instance', skill: 'agent', id: 'scribe', scopes: { write: ['a/*'] } },
-      '# scribe\n\nTakes notes.\n',
-      1_790_071_201,
-    );
-    expect(page).toBe(
-      '---\nkind: "instance"\nskill: "agent"\nid: "scribe"\nscopes: {"write":["a/*"]}\n' +
-        'token_epoch: 1790071201\n---\n# scribe\n\nTakes notes.\n',
-    );
-    const replaced = withTokenEpoch({ id: 'scribe', token_epoch: 1 }, '', 2);
-    expect(replaced).toBe('---\nid: "scribe"\ntoken_epoch: 2\n---\n');
   });
 });

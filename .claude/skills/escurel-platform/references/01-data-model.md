@@ -603,7 +603,9 @@ agent whose `max_concurrent:` is present but not a positive whole number
 the key), never run uncapped.
 `token_epoch` revokes every token for the agent issued before it, external
 (`issue_agent_token`) and run tokens alike, from their next call
-(`agent_token_revoked`); `escurel agent token revoke <id>` sets it.
+(`agent_token_revoked`); `revoke_agent_tokens` (`escurel agent token revoke
+<id>`) moves it forward on the gateway's clock — set it that way rather than by
+hand.
 How the token and the gateway enforce it: references/08.
 
 ### Runtimes: `runtime` instances (written by runners)

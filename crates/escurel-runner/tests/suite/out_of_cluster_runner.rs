@@ -411,3 +411,108 @@ async fn mint_run_token_mints_only_for_the_callers_own_run_of_a_listed_skill() {
     assert_eq!(c["roles"], json!(["escurel:agent", "finance"]), "{c}");
     assert_eq!(c["skill"], "payroll", "{c}");
 }
+
+/// A revoke ends the agent's run tokens too, from the next call on — one
+/// minted before it is `agent_token_revoked` — and a run token minted after
+/// it, within the same second, stands (its `iat` is raised to the epoch).
+#[tokio::test]
+async fn a_revoke_ends_a_run_token_minted_before_it_and_a_later_one_stands() {
+    let gw = gateway().await;
+    let ooc = runner_token(&gw, "runner:ooc");
+    start_run(&gw, &ooc, "01REV", "note").await;
+    let args = json!({ "run_id": "01REV", "skill": "note", "agent": "scribe", "ttl_secs": 600 });
+    let before = call(&gw, &ooc, "mint_run_token", args.clone()).await["token"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let body = rpc(&gw, &before, "whoami", json!({})).await;
+    assert!(body.get("error").is_none(), "{body}");
+
+    call(
+        &gw,
+        &admin(&gw),
+        "revoke_agent_tokens",
+        json!({ "agent": "scribe" }),
+    )
+    .await;
+    let body = rpc(&gw, &before, "whoami", json!({})).await;
+    assert_eq!(
+        body["error"]["data"]["code"], "agent_token_revoked",
+        "{body}"
+    );
+
+    let after = call(&gw, &ooc, "mint_run_token", args).await["token"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert_ne!(after, before);
+    let body = rpc(&gw, &after, "whoami", json!({})).await;
+    assert!(
+        body.get("error").is_none(),
+        "minted after the revoke: {body}"
+    );
+}
+
+/// The runner asks for a fresh run token on every attempt: an agent revoked
+/// while attempt 1 is in flight (which then times out) runs attempt 2 on a
+/// new bearer that the revoke does not reach, instead of retrying the dead one.
+#[tokio::test]
+async fn a_revoke_between_attempts_runs_the_next_attempt_on_a_fresh_token() {
+    let gw = gateway().await;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let marker = dir.path().join("slept");
+    let mut runner = RunnerProcess::echo(&gw, TENANT)
+        .static_bearer(runner_token(&gw, "runner:ooc"))
+        .env("ESCUREL_RUNNER_ID", "ooc")
+        .env("ESCUREL_RUNNER_MAX_ATTEMPTS", "3")
+        .env("ESCUREL_RUNNER_RUN_TIMEOUT", "3s")
+        .env("ESCUREL_RUNNER_RETRY_BACKOFF", "100ms")
+        .env("ESCUREL_ECHO_SLEEP_MS", "8000")
+        .env("ESCUREL_ECHO_SLEEP_ONCE", marker.to_str().unwrap())
+        .spawn();
+    runner.wait_healthy().await;
+
+    let note = capture(&gw, "note").await;
+    // Attempt 1 is asleep in the harness: its token was minted before it started.
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    while !marker.exists() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "attempt 1 never reached the harness"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    call(
+        &gw,
+        &admin(&gw),
+        "revoke_agent_tokens",
+        json!({ "agent": "scribe" }),
+    )
+    .await;
+
+    let done = runner
+        .wait_for_status(&note, &["processed"], Duration::from_secs(60))
+        .await;
+    let run_id = done["run_id"].as_str().unwrap().to_owned();
+    let first = call(
+        &gw,
+        &admin(&gw),
+        "list_events",
+        json!({ "event_id": format!("run:{run_id}:attempt:1") }),
+    )
+    .await;
+    let first = crate::support::body_of(&first["events"][0]);
+    assert_eq!(first["outcome"], "timeout", "attempt 1 timed out: {first}");
+    let page = call(
+        &gw,
+        &admin(&gw),
+        "expand",
+        json!({ "page_id": page_id("note") }),
+    )
+    .await;
+    assert!(
+        page["body"].as_str().unwrap().contains("folded event"),
+        "{page}"
+    );
+    assert_eq!(page["page"]["last_written_by"], "agent:scribe", "{page}");
+}

@@ -49,11 +49,11 @@ pub use admin::{
     EmbeddingReloadRequest, EmbeddingReloadResponse, ExportPackRequest, HealthRequest,
     HealthResponse, IssueAgentTokenRequest, IssueAgentTokenResponse, MigrateKindReport,
     MigrateKindRequest, PackManifest, PurgeEventsRequest, PurgeEventsResponse, QuotaGetRequest,
-    QuotaGetResponse, RebuildProgress, RebuildRequest, TenantCreateRequest, TenantCreateResponse,
-    TenantDeleteRequest, TenantDeleteResponse, TenantExportRequest, TenantGetRequest,
-    TenantGetResponse, TenantImportResponse, TenantListRequest, TenantListResponse,
-    TenantUpdateRequest, TenantUpdateResponse, UsageReportRequest, UsageReportResponse,
-    UsageTotals,
+    QuotaGetResponse, RebuildProgress, RebuildRequest, RevokeAgentTokensResponse,
+    TenantCreateRequest, TenantCreateResponse, TenantDeleteRequest, TenantDeleteResponse,
+    TenantExportRequest, TenantGetRequest, TenantGetResponse, TenantImportResponse,
+    TenantListRequest, TenantListResponse, TenantUpdateRequest, TenantUpdateResponse,
+    UsageReportRequest, UsageReportResponse, UsageTotals,
 };
 pub use error::{Error, JSONRPC_ADMIN_REQUIRED};
 

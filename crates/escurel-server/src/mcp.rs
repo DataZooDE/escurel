@@ -1640,6 +1640,16 @@ async fn dispatch_tools_call(
         "issue_agent_token" => {
             tools_mint::tool_issue_agent_token(state, indexer, caller, params.arguments).await
         }
+        "revoke_agent_tokens" => {
+            tools_mint::tool_revoke_agent_tokens(
+                state,
+                indexer,
+                caller,
+                write_acl,
+                params.arguments,
+            )
+            .await
+        }
         "get_run_tool_calls" => {
             tools_tool_calls::tool_get_run_tool_calls(
                 indexer,

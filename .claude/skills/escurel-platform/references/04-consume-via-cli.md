@@ -84,7 +84,7 @@ escurel event list   --label escurel:run --since 2026-10-01T00:00:00Z --until 20
 escurel run usage    --since 2026-10-01T00:00:00Z --group-by skill,model   # admin: usage + cost rolled up from run-finished
 escurel runtime list                                                         # registered runners: harnesses, labels, online/stale, role (list_runtimes)
 escurel agent token issue scribe --ttl 30d                                   # admin: an external agent's token, printed ONCE (issue_agent_token)
-escurel agent token revoke scribe                                            # admin: refuse every token issued so far (sets the page's token_epoch)
+escurel agent token revoke scribe                                            # admin: refuse every token issued so far (revoke_agent_tokens)
 escurel event assign --event <event_id> --instance <page_id>
 
 # per-chat-group conversation history
@@ -150,7 +150,7 @@ escurel admin pack submit-promotion --tenant acme --candidate-id acme-candidate 
 | `run usage` | `usage_report` (admin bearer; `--group-by skill,agent,page,model,day`, `--since`, `--until`, `--skill`) |
 | `runtime list` | `list_runtimes` (`claim_event` / `renew_claim` / `mint_run_token` are runner coordination, not in the CLI) |
 | `agent token issue` | `issue_agent_token` (admin bearer; `<agent>`, `--ttl <secs \| 12h \| 30d>`) |
-| `agent token revoke` | `update_page` on `markdown/instances/agent/<agent>.md`, setting `token_epoch` to the next second (version-guarded) |
+| `agent token revoke` | `revoke_agent_tokens` (admin bearer; `<agent>`; the gateway moves `token_epoch` forward) |
 | `run lineage` | `list_lineage` (`--root-event <id> [--include events|runs|drafts|tool_calls]… [--limit N] [--cursor]`) |
 | `chat append` / `chat list` | `append_message` / `list_messages` |
 | `session open [<page>] [--draft <id>]\|apply\|close` | `open_session` / `apply_op` / `close_session` |

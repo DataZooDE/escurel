@@ -86,15 +86,16 @@ pub enum TokenSource {
     /// from the gateway's `mint_run_token` (#828) — the out-of-cluster
     /// runner on an `escurel:runner` credential. Its own calls use `bearer`.
     /// A gateway that cannot mint (no signing key, or an older image) is
-    /// remembered, and the run then falls back exactly as a static bearer
-    /// always has.
+    /// remembered for a while, and the run then falls back exactly as a
+    /// static bearer always has.
+    ///
+    /// Run tokens are NOT cached: each attempt asks for its own, so a retry
+    /// after the agent's tokens were revoked runs on a fresh bearer rather
+    /// than the revoked one.
     Gateway {
         bearer: Box<TokenSource>,
-        /// Per-run tokens, by request, with their expiry (Unix seconds).
-        cached:
-            Mutex<std::collections::HashMap<escurel_client::MintRunTokenRequest, (String, u64)>>,
-        /// Set once the gateway answered it cannot mint.
-        unsupported: std::sync::atomic::AtomicBool,
+        /// When the gateway last answered it cannot mint (Unix seconds).
+        unsupported: std::sync::atomic::AtomicU64,
     },
     /// Minted here, and re-minted before it lapses.
     Minted {
@@ -266,13 +267,13 @@ impl TokenSource {
         }
     }
 
-    /// Mint a run's bearer as the agent profile `agent_id` (#823): narrowed to
+    /// Mint a run's bearer as the agent `profile` (#823): narrowed to
     /// `label_skill` and its write `groups`, naming the agent so the gateway
-    /// applies the agent page's own scopes on top. `None` for a static bearer,
-    /// which cannot mint.
+    /// applies the agent page's own scopes on top, issued no earlier than the
+    /// page's `token_epoch`. `None` for a static bearer, which cannot mint.
     pub fn mint_agent_profile(
         &self,
-        agent_id: &str,
+        profile: &escurel_types::agent_profile::AgentProfile,
         label_skill: &str,
         ttl_secs: u64,
         run: Option<&RunClaims>,
@@ -284,11 +285,12 @@ impl TokenSource {
                 signer, subject, ..
             } => Ok(Some(signer.mint_agent_profile(
                 subject,
-                agent_id,
+                &profile.id,
                 label_skill,
                 ttl_secs,
                 run,
                 groups,
+                profile.token_epoch,
             )?)),
         }
     }
@@ -356,23 +358,23 @@ impl TokenSource {
     pub fn via_gateway(bearer: TokenSource) -> Self {
         Self::Gateway {
             bearer: Box::new(bearer),
-            cached: Mutex::default(),
-            unsupported: std::sync::atomic::AtomicBool::new(false),
+            unsupported: std::sync::atomic::AtomicU64::new(0),
         }
     }
 
-    /// Whether this source asks the gateway for its runs' tokens.
+    /// Whether this source asks the gateway for its runs' tokens: a supplied
+    /// bearer, unless the gateway said it cannot mint within the last
+    /// [`UNSUPPORTED_RETRY_SECS`].
     #[must_use]
     pub fn mints_at_gateway(&self) -> bool {
         matches!(self, Self::Gateway { unsupported, .. }
-            if !unsupported.load(std::sync::atomic::Ordering::Relaxed))
+            if !recently(unsupported.load(std::sync::atomic::Ordering::Relaxed)))
     }
 
-    /// A run's token from the gateway's `mint_run_token` (#828), cached per
-    /// request until near its expiry so a retried attempt reuses it. `None`
-    /// for any other source, and once the gateway has said it cannot mint
-    /// (`unsupported`, or an image without the tool): the caller then falls
-    /// back as a static bearer always has.
+    /// A run's token from the gateway's `mint_run_token` (#828), minted fresh
+    /// for every attempt. `None` for any other source, and for a while after
+    /// the gateway said it cannot mint (`unsupported`, or an image without the
+    /// tool): the caller then falls back as a static bearer always has.
     ///
     /// # Errors
     /// When the gateway refuses or fails the mint for any other reason.
@@ -381,37 +383,16 @@ impl TokenSource {
         client: &escurel_client::Client,
         req: escurel_client::MintRunTokenRequest,
     ) -> Result<Option<String>, AuthError> {
-        let Self::Gateway {
-            cached,
-            unsupported,
-            ..
-        } = self
-        else {
+        let Self::Gateway { unsupported, .. } = self else {
             return Ok(None);
         };
-        if unsupported.load(std::sync::atomic::Ordering::Relaxed) {
+        if recently(unsupported.load(std::sync::atomic::Ordering::Relaxed)) {
             return Ok(None);
         }
-        let now = now_secs();
-        let ttl = req.ttl_secs.max(1);
-        let margin = REFRESH_MARGIN_SECS.min(ttl / 2);
-        if let Some((token, _)) = cached
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .get(&req)
-            .filter(|(_, exp)| *exp > now + margin)
-        {
-            return Ok(Some(token.clone()));
-        }
-        match client.mint_run_token(req.clone()).await {
-            Ok(minted) => {
-                let mut slot = cached.lock().unwrap_or_else(|e| e.into_inner());
-                slot.retain(|_, (_, exp)| *exp > now);
-                slot.insert(req, (minted.token.clone(), now + ttl));
-                Ok(Some(minted.token))
-            }
+        match client.mint_run_token(req).await {
+            Ok(minted) => Ok(Some(minted.token)),
             Err(e) if gateway_cannot_mint(&e) => {
-                unsupported.store(true, std::sync::atomic::Ordering::Relaxed);
+                unsupported.store(now_secs(), std::sync::atomic::Ordering::Relaxed);
                 tracing::warn!(
                     target: "escurel_runner",
                     error = %e,
@@ -423,6 +404,16 @@ impl TokenSource {
             Err(e) => Err(AuthError::Gateway(e.to_string())),
         }
     }
+}
+
+/// How long a gateway's "cannot mint" answer is believed before the runner
+/// asks again: a runner that boots before its gateway rolls forward (or before
+/// the gateway's signing key is mounted) recovers without a restart.
+pub const UNSUPPORTED_RETRY_SECS: u64 = 5 * 60;
+
+/// Whether `at` (Unix seconds, `0` = never) is within [`UNSUPPORTED_RETRY_SECS`].
+fn recently(at: u64) -> bool {
+    at != 0 && now_secs() < at.saturating_add(UNSUPPORTED_RETRY_SECS)
 }
 
 /// The gateway said it cannot mint at all, as opposed to refusing this run:

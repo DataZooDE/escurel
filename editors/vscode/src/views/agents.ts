@@ -2,13 +2,7 @@ import * as vscode from 'vscode';
 import type { UsageReportResponse } from '../client/types';
 import { describeError } from '../errors';
 import type { Services } from '../services';
-import {
-  agentProfile,
-  agentRows,
-  withTokenEpoch,
-  type AgentProfile,
-  type AgentRow,
-} from './agentsModel';
+import { agentProfile, agentRows, type AgentProfile, type AgentRow } from './agentsModel';
 import { LazyFlatTree, type FlatRead } from './lazyTree';
 import { usageFailure, usageRange } from './usageModel';
 
@@ -138,9 +132,9 @@ async function issueToken(services: Services, row: AgentRow | undefined): Promis
 }
 
 /**
- * "Revoke tokens" (#829): set the agent page's `token_epoch` to the next second, so every token
- * issued so far is refused from its next call on. Confirmed first; guarded by the page version, so
- * a concurrent edit is refused rather than overwritten. True when the page was updated.
+ * "Revoke tokens" (#829): the gateway's `revoke_agent_tokens` moves the agent page's
+ * `token_epoch` forward on its own clock, so every token issued so far — external and run tokens
+ * — is refused from its next call on. Confirmed first. True when the tokens were revoked.
  */
 async function revokeTokens(services: Services, row: AgentRow | undefined): Promise<boolean> {
   if (!row) return false;
@@ -150,22 +144,15 @@ async function revokeTokens(services: Services, row: AgentRow | undefined): Prom
     {
       modal: true,
       detail:
-        'External agents using them are refused from their next call. Runs of this agent that ' +
-        'are in flight lose their token too and are retried with a new one.',
+        'External agents using them are refused from their next call. A run of this agent in ' +
+        'flight loses its token too: the attempt under way fails, and a retry (when the run ' +
+        'has attempts left) runs on a fresh token.',
     },
     revoke,
   );
   if (confirmed !== revoke) return false;
   try {
-    const page = await services.client.expand({ page_id: row.pageId });
-    if (!page.page) throw new Error('the agent page is gone, or you may not read it');
-    const epoch = Math.floor(Date.now() / 1000) + 1;
-    const res = await services.client.updatePage({
-      page_id: row.pageId,
-      content: withTokenEpoch(page.frontmatter, page.body, epoch),
-      ...(page.version ? { base_version: page.version } : {}),
-    });
-    if (!res.ok) throw new Error(res.issues.map((i) => i.message).join('; ') || 'refused');
+    await services.client.revokeAgentTokens(row.label);
     void vscode.window.showInformationMessage(
       `Tokens for agent ${row.label} are revoked; tokens issued from now on work.`,
     );

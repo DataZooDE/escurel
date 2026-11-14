@@ -269,3 +269,139 @@ async fn only_an_admin_issues_and_only_for_a_live_agent() {
         assert_eq!(body["error"]["code"], -32602, "ttl {ttl}: {body}");
     }
 }
+
+fn epoch_of(body: &Value) -> u64 {
+    body["result"]["structuredContent"]["token_epoch"]
+        .as_u64()
+        .unwrap_or_else(|| panic!("revoke_agent_tokens answers the epoch: {body}"))
+}
+
+/// `revoke_agent_tokens` moves the epoch on the GATEWAY's clock and strictly
+/// forward: revoke → issue → revoke inside one second still refuses the token
+/// issued in between (an epoch of `now + 1` twice would leave it standing).
+#[tokio::test]
+async fn revoke_agent_tokens_moves_the_epoch_strictly_forward() {
+    let p = gateway().await;
+    let first = tool(
+        &p,
+        &admin(&p),
+        "revoke_agent_tokens",
+        json!({ "agent": "scribe" }),
+    )
+    .await;
+    let e1 = epoch_of(&first);
+    assert_eq!(
+        first["result"]["structuredContent"]["agent"], "scribe",
+        "{first}"
+    );
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    assert!(
+        e1 > now.saturating_sub(5) && e1 <= now + 2,
+        "the gateway's now + 1: {e1} vs {now}"
+    );
+
+    let middle = issue(&p, "scribe").await["token"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let ok = tool(&p, &middle, "whoami", json!({})).await;
+    assert!(
+        ok.get("error").is_none(),
+        "issued after the first revoke: {ok}"
+    );
+
+    let second = tool(
+        &p,
+        &admin(&p),
+        "revoke_agent_tokens",
+        json!({ "agent": "scribe" }),
+    )
+    .await;
+    let e2 = epoch_of(&second);
+    assert!(e2 > e1, "strictly increasing: {e1} then {e2}");
+    let body = tool(&p, &middle, "whoami", json!({})).await;
+    assert_eq!(
+        code(&body),
+        "agent_token_revoked",
+        "the middle token: {body}"
+    );
+
+    // A token issued after the second revoke stands, even with the epoch ahead of the clock.
+    let after = issue(&p, "scribe").await["token"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let body = tool(&p, &after, "whoami", json!({})).await;
+    assert!(body.get("error").is_none(), "{body}");
+
+    // Never backwards: past an epoch ahead of the clock, the next one is that epoch + 1.
+    let ahead = e2 + 600;
+    let content = SCRIBE.replacen(
+        "---\n# scribe",
+        &format!("token_epoch: {ahead}\n---\n# scribe"),
+        1,
+    );
+    let body = tool(
+        &p,
+        &admin(&p),
+        "update_page",
+        json!({ "page_id": SCRIBE_PAGE, "content": content }),
+    )
+    .await;
+    assert_eq!(body["result"]["structuredContent"]["ok"], true, "{body}");
+    let third = tool(
+        &p,
+        &admin(&p),
+        "revoke_agent_tokens",
+        json!({ "agent": "scribe" }),
+    )
+    .await;
+    assert_eq!(epoch_of(&third), ahead + 1, "{third}");
+
+    // The page kept its scopes.
+    let page = tool(&p, &admin(&p), "expand", json!({ "page_id": SCRIBE_PAGE })).await;
+    let page = &page["result"]["structuredContent"];
+    assert_eq!(
+        page["frontmatter"]["token_epoch"],
+        json!(ahead + 1),
+        "{page}"
+    );
+    assert_eq!(
+        page["frontmatter"]["scopes"]["write"],
+        json!(["markdown/instances/note/*"]),
+        "{page}"
+    );
+
+    // Admin only, and only for a live agent.
+    let member = p.mint_token_with_sub(TENANT, Role::Agent, "member:alice");
+    let body = tool(
+        &p,
+        &member,
+        "revoke_agent_tokens",
+        json!({ "agent": "scribe" }),
+    )
+    .await;
+    assert_eq!(code(&body), "admin_required", "{body}");
+    let runner = p.mint_token_with_groups(TENANT, "runner:hq", &["escurel:runner"], false);
+    let body = tool(
+        &p,
+        &runner,
+        "revoke_agent_tokens",
+        json!({ "agent": "scribe" }),
+    )
+    .await;
+    assert_eq!(code(&body), "admin_required", "{body}");
+    for agent in ["ghost", "retired", "../scribe"] {
+        let body = tool(
+            &p,
+            &admin(&p),
+            "revoke_agent_tokens",
+            json!({ "agent": agent }),
+        )
+        .await;
+        assert_eq!(code(&body), "agent_unknown", "{agent}: {body}");
+    }
+}

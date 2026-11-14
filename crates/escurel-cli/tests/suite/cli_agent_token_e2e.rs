@@ -83,6 +83,7 @@ async fn an_admin_issues_and_revokes_an_external_agents_token() {
     let (ok, revoked) = cli(&p, &admin, &["agent", "token", "revoke", "scribe"]).await;
     assert!(ok, "{revoked}");
     let epoch = revoked["token_epoch"].as_u64().unwrap();
+    assert_eq!(revoked["agent"], "scribe", "{revoked}");
 
     let (ok, err) = cli(&p, &token, &["whoami"]).await;
     assert!(!ok, "a revoked token is refused: {err}");
@@ -104,6 +105,48 @@ async fn an_admin_issues_and_revokes_an_external_agents_token() {
     );
     assert!(
         page["body"].as_str().unwrap().contains("Takes notes."),
+        "{page}"
+    );
+
+    // The epoch is the gateway's, never the CLI's clock: past an epoch already ahead of every
+    // clock, the next revoke moves it one second further rather than back to "now + 1".
+    let ahead = epoch + 600;
+    let content = SCRIBE.replacen(
+        "---\n# scribe",
+        &format!("token_epoch: {ahead}\n---\n# scribe"),
+        1,
+    );
+    let wrote: Value = reqwest::Client::new()
+        .post(p.mcp_url())
+        .header("authorization", format!("Bearer {admin}"))
+        .json(&json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {
+            "name": "update_page",
+            "arguments": { "page_id": "markdown/instances/agent/scribe.md", "content": content } } }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(wrote["result"]["structuredContent"]["ok"], true, "{wrote}");
+    let (ok, again) = cli(&p, &admin, &["agent", "token", "revoke", "scribe"]).await;
+    assert!(ok, "{again}");
+    assert_eq!(again["token_epoch"], json!(ahead + 1), "{again}");
+    let (ok, page) = cli(
+        &p,
+        &admin,
+        &["page", "expand", "markdown/instances/agent/scribe.md"],
+    )
+    .await;
+    assert!(ok, "{page}");
+    assert_eq!(
+        page["frontmatter"]["token_epoch"],
+        json!(ahead + 1),
+        "{page}"
+    );
+    assert_eq!(
+        page["frontmatter"]["skills"],
+        json!(["[[skill::note]]"]),
         "{page}"
     );
 

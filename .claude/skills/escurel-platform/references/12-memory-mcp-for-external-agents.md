@@ -42,8 +42,8 @@ Pick by who the agent acts for. Never give an external agent an admin token.
    offers only `scopes.tools`, a write outside `scopes.write` is
    `agent_scope_denied`, and `/ws`, `/ingest` and `/blob` refuse it. Life 1 h
    to 90 d (default 30 d). **Revoke** every token issued so far with
-   `escurel agent token revoke scribe` (it sets the page's `token_epoch` to
-   the next second): the next call with an older token is
+   `escurel agent token revoke scribe` (`revoke_agent_tokens`: the gateway
+   moves the page's `token_epoch` forward): the next call with an older token is
    `agent_token_revoked`, while a token issued afterwards works. Needs the
    gateway's signing key (`ESCUREL_AUTH_SIGNING_KEY`/`_KID`); without one the
    tool answers `unsupported`. Store the token where the harness reads it (an

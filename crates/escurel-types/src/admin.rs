@@ -347,6 +347,17 @@ impl std::fmt::Debug for IssueAgentTokenResponse {
     }
 }
 
+/// `revoke_agent_tokens` (#829) result: the epoch the gateway set on the
+/// agent page; every token issued before it is refused.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct RevokeAgentTokensResponse {
+    pub agent: String,
+    pub page_id: String,
+    pub token_epoch: u64,
+    pub new_version: Option<String>,
+}
+
 /// MCP `usage_report` (#821): usage and cost from `run-finished`, grouped.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 #[serde(default)]

@@ -40,8 +40,10 @@ so it is never something a run (or an ordinary member) can widen.
   once (default: unbounded).
 - `token_epoch` — Unix seconds. Every token for this agent issued before it
   is refused (`agent_token_revoked`) from the next call on: the revocation of
-  the external tokens `issue_agent_token` hands out, and of run tokens too.
-  `escurel agent token revoke <id>` sets it to the next second.
+  the external tokens `issue_agent_token` hands out, and of run tokens too:
+  a run in flight loses its token, the attempt under way fails, and a retry
+  runs on a fresh token. `escurel agent token revoke <id>`
+  (`revoke_agent_tokens`) moves it forward on the gateway's clock.
 
 ## Choosing an agent for a run
 
@@ -66,7 +68,8 @@ agent fails (dead-letters) rather than writing with the runner's own token.
 An admin issues a token for an agent that runs outside escurel (Claude Code,
 Codex, Multica) with `escurel agent token issue <id>` (`issue_agent_token`):
 `sub: agent:<id>`, the issuing admin as `act.sub`, the same scopes as a run.
-`escurel agent token revoke <id>` sets `token_epoch`.
+`escurel agent token revoke <id>` (`revoke_agent_tokens`) moves `token_epoch`
+forward.
 
 ## Enforcement
 

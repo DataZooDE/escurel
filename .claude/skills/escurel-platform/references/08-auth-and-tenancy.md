@@ -299,9 +299,15 @@ scopes on every call, exactly as for a run (references/12).
 refuses every token for that agent issued before it — external tokens and run
 tokens alike — with `-32001` `agent_token_revoked`, from the next call on (the
 page is read per call). A token with an `agent` claim and no `iat` is refused
-the same way. `escurel agent token revoke <agent>` sets the epoch to the next
-second; a token issued after the revoke carries an `iat` at or past it, so it
-stands. Only an admin may write an agent page.
+the same way. `revoke_agent_tokens` (`escurel agent token revoke <agent>`)
+sets the epoch on the **gateway's** clock to `max(now + 1, current + 1)`:
+strictly increasing, so a client's clock never decides it and revoke → issue
+→ revoke inside one second still refuses the token issued in between. A token
+issued (or a run token minted) after the revoke carries an `iat` raised to the
+epoch, so it stands. **A revoke ends in-flight runs' tokens too:** the attempt
+under way fails on its next call, and a retry — when the run has attempts left
+— runs on a fresh token (a keyless runner asks the gateway for a new token on
+every attempt). Only an admin may write an agent page.
 
 ## Skill authority keys
 

@@ -425,7 +425,15 @@ pub(super) async fn tool_mint_run_token(
                 .with_code("agent_scope_denied", false));
             }
             let token = signer
-                .mint_agent_profile(caller.subject, &agent, &a.skill, ttl, Some(&run), &groups)
+                .mint_agent_profile(
+                    caller.subject,
+                    &agent,
+                    &a.skill,
+                    ttl,
+                    Some(&run),
+                    &groups,
+                    profile.token_epoch,
+                )
                 .map_err(|e| guard.sign_error(e))?;
             (token, format!("agent:{agent}"))
         }
@@ -504,12 +512,13 @@ pub(super) async fn tool_issue_agent_token(
             ))
             .with_code("agent_unknown", false)
         })?;
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs());
-    // An epoch past the next second is a malformed page (it would revoke every token ever
-    // issued, this one too): say so rather than hand out a token that is refused at once.
-    if profile.token_epoch.is_some_and(|epoch| epoch > now + 1) {
+    // An epoch far past the clock is a malformed page (hand-written, or not Unix seconds): say so
+    // rather than hand out a token dated into the future. Revokes in quick succession move it
+    // ahead by a second each, which this leaves room for.
+    if profile
+        .token_epoch
+        .is_some_and(|epoch| epoch > unix_now() + MAX_EPOCH_LEAD_SECS)
+    {
         return Err(JsonRpcError::invalid_params(format!(
             "{TOOL}: agent `{agent}` has a `token_epoch` in the future; fix the page (it is Unix \
              seconds)"
@@ -541,6 +550,112 @@ pub(super) async fn tool_issue_agent_token(
         "subject": format!("agent:{agent}"),
         "expires_at": expires,
     }))
+}
+
+/// How far ahead of the gateway's clock an agent's `token_epoch` may run
+/// before `issue_agent_token` calls the page malformed.
+const MAX_EPOCH_LEAD_SECS: u64 = 60 * 60;
+
+fn unix_now() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
+}
+
+#[derive(Deserialize)]
+pub(super) struct RevokeAgentTokensArgs {
+    #[serde(default)]
+    agent: String,
+}
+
+/// `revoke_agent_tokens` (#829): every token issued so far for the agent —
+/// external tokens and run tokens alike — is refused from the next call on.
+///
+/// The gateway owns the epoch: `max(now + 1, current + 1)` on ITS clock, so a
+/// client's clock cannot leave recent tokens valid, and strictly increasing,
+/// so revoke → issue → revoke in one second still refuses the token issued in
+/// between (whose `iat` was raised to the first epoch). Written as a one-line
+/// change to the page (its formatting and comments are kept) through
+/// `update_page` with a content-hash guard, so a concurrent edit is retried
+/// against, never overwritten, and the page is validated like any write.
+pub(super) async fn tool_revoke_agent_tokens(
+    state: &AppState,
+    indexer: &Indexer,
+    caller: AclCaller<'_>,
+    write_acl: crate::server::WriteAclMode,
+    args: Value,
+) -> Result<Value, JsonRpcError> {
+    const TOOL: &str = "revoke_agent_tokens";
+    const ATTEMPTS: usize = 3;
+    let a: RevokeAgentTokensArgs = parse_args(args, TOOL)?;
+    if !caller.is_admin || caller.is_machine() {
+        return Err(JsonRpcError::forbidden(format!(
+            "{TOOL}: only an admin's own credential revokes agent tokens"
+        ))
+        .with_code("admin_required", false));
+    }
+    let agent = a.agent.trim();
+    let unknown = || {
+        JsonRpcError::invalid_params(format!(
+            "{TOOL}: no usable agent page `{agent}` in this tenant (missing or archived)"
+        ))
+        .with_code("agent_unknown", false)
+    };
+    let page_id = escurel_types::agent_profile::agent_page_id(agent);
+    for _ in 0..ATTEMPTS {
+        let profile = indexer
+            .agent_profile(agent)
+            .await
+            .map_err(|e| JsonRpcError::internal(format!("{TOOL}: {e}")))?
+            .ok_or_else(unknown)?;
+        let content = indexer
+            .read_page_markdown(&page_id)
+            .await
+            .map_err(|e| JsonRpcError::internal(format!("{TOOL}: {e}")))?
+            .ok_or_else(unknown)?;
+        // A malformed epoch already revokes everything (it reads as the maximum); the next one is
+        // well-formed and past the clock.
+        let current = profile.token_epoch.filter(|e| *e != u64::MAX);
+        let epoch = (unix_now() + 1).max(current.map_or(0, |e| e.saturating_add(1)));
+        let patched =
+            escurel_md::set_frontmatter_scalar(&content, "token_epoch", &epoch.to_string())
+                .map_err(|e| JsonRpcError::internal(format!("{TOOL}: {e}")))?;
+        let base = {
+            use sha2::{Digest, Sha256};
+            format!("{:x}", Sha256::digest(content.as_bytes()))
+        };
+        let wrote = super::tools_write::tool_update_page_ungated(
+            state,
+            indexer,
+            caller,
+            write_acl,
+            json!({ "page_id": page_id, "content": patched, "base_sha256": base }),
+        )
+        .await?;
+        if wrote["ok"] == json!(true) {
+            tracing::info!(subject = %caller.subject, agent = %agent, epoch, "revoke_agent_tokens: revoked");
+            return Ok(json!({
+                "agent": agent,
+                "page_id": page_id,
+                "token_epoch": epoch,
+                "new_version": wrote.get("new_version").cloned().unwrap_or(Value::Null),
+            }));
+        }
+        let conflict = wrote["issues"]
+            .as_array()
+            .is_some_and(|i| i.iter().any(|i| i["code"] == "conflict"));
+        if !conflict {
+            return Err(JsonRpcError::invalid_params(format!(
+                "{TOOL}: the agent page was not updated: {}",
+                wrote["issues"]
+            ))
+            .with_code("validation_failed", false));
+        }
+    }
+    Err(JsonRpcError::internal(format!(
+        "{TOOL}: the agent page kept changing under the revoke; try again"
+    ))
+    .with_code("conflict", true))
 }
 
 /// Close every gateway-minted run whose token has lapsed with no terminal:

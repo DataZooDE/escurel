@@ -512,6 +512,14 @@ export interface IssueAgentTokenResponse {
   expires_at: string;
 }
 
+/** `revoke_agent_tokens` (#829): the epoch the gateway set; tokens issued before it are refused. */
+export interface RevokeAgentTokensResponse {
+  agent: string;
+  page_id: string;
+  token_epoch: number;
+  new_version?: string | null;
+}
+
 export interface MintAgentTokenResponse {
   token: string;
   run_id: string;

@@ -41,6 +41,7 @@ import type {
   ListLineageResponse,
   IssueAgentTokenRequest,
   IssueAgentTokenResponse,
+  RevokeAgentTokensResponse,
   MintAgentTokenRequest,
   MintAgentTokenResponse,
   OpenSessionRequest,
@@ -284,6 +285,14 @@ export class EscurelClient {
   /** A revocable bearer for an external agent (#829); the token is shown once. Admin only. */
   issueAgentToken(req: IssueAgentTokenRequest): Promise<IssueAgentTokenResponse> {
     return this.call('issue_agent_token', { ...req });
+  }
+
+  /**
+   * Revoke every token issued so far for an agent (#829): the gateway moves the page's
+   * `token_epoch` forward on its own clock. Admin only.
+   */
+  revokeAgentTokens(agent: string): Promise<RevokeAgentTokensResponse> {
+    return this.call('revoke_agent_tokens', { agent });
   }
 
   reportProgress(

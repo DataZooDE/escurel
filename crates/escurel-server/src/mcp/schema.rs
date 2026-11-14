@@ -947,8 +947,8 @@ pub(crate) fn tool_defs() -> Vec<ToolDef> {
                  `escurel:agent` plus the write groups of the skills the agent lists, and the \
                  `agent` claim — so the agent page's `scopes.tools` / `scopes.write` confine it on \
                  every call, and `/ws`, `/ingest` and `/blob` refuse it. No run or skill claim. \
-                 Revoke every token issued so far by setting the page's `token_epoch` (`escurel \
-                 agent token revoke`): the next call is `agent_token_revoked`. The token is \
+                 Revoke every token issued so far with `revoke_agent_tokens` (`escurel agent token \
+                 revoke`): the next call is `agent_token_revoked`. The token is \
                  returned once; store it where the harness reads it. Admin only, never from a run \
                  or agent token (`agent_scope_denied`); an unknown or archived agent is \
                  `agent_unknown`; a gateway with no signing key is `unsupported`.",
@@ -958,6 +958,26 @@ pub(crate) fn tool_defs() -> Vec<ToolDef> {
                 "properties": {
                     "agent": { "type": "string", "description": "The agent profile id (`markdown/instances/agent/<agent>.md`)." },
                     "ttl_secs": { "type": "integer", "minimum": 3600, "maximum": 7776000, "description": "Token life; default 2592000 (30 days)." }
+                }
+            }),
+        ),
+        tool_entry(
+            "revoke_agent_tokens",
+            Execution::Orchestration,
+            Scope::Admin,
+            Touches::INDEX,
+            "Revoke every token issued so far for the agent profile `agent` — external tokens \
+                 (`issue_agent_token`) and run tokens alike: each is `agent_token_revoked` from \
+                 its next call on, including a run in flight (its next attempt mints a fresh \
+                 token). Sets the agent page's `token_epoch` on the gateway's clock, strictly \
+                 increasing, as a one-line change (the page's formatting is kept); a token issued \
+                 afterwards stands. Admin only (`admin_required`); an unknown or archived agent is \
+                 `agent_unknown`.",
+            json!({
+                "type": "object",
+                "required": ["agent"],
+                "properties": {
+                    "agent": { "type": "string", "description": "The agent profile id (`markdown/instances/agent/<agent>.md`)." }
                 }
             }),
         ),
@@ -2631,6 +2651,12 @@ fn output_schema_for(name: &str) -> Option<Value> {
             "agent": { "type": "string" },
             "subject": { "type": "string" },
             "expires_at": { "type": "string" }
+        })),
+        "revoke_agent_tokens" => obj(json!({
+            "agent": { "type": "string" },
+            "page_id": { "type": "string" },
+            "token_epoch": { "type": "integer", "description": "tokens issued before it are refused" },
+            "new_version": { "type": ["string", "null"] }
         })),
         "mint_run_token" => obj(json!({
             "token": { "type": "string" },
