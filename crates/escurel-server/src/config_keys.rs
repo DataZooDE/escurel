@@ -465,7 +465,7 @@ pub const CONFIG_KEYS: &[ConfigKey] = &[
         name: "ESCUREL_AUTH_TEAMS_TOKEN_URL",
         component: "Server",
         default: "https://login.microsoftonline.com/botframework.com/oauth2/v2.0/token",
-        doc: "with `ESCUREL_AUTH_TEAMS_APP_ID`: where the gateway gets the bot's connector token (client credentials; https)",
+        doc: "with `ESCUREL_AUTH_TEAMS_APP_ID`: where the gateway gets the bot's connector token (client credentials; https). A single-tenant bot needs `https://login.microsoftonline.com/<entra tenant id>/oauth2/v2.0/token`, the same as the bridge's `ESCUREL_BRIDGE_TEAMS_TOKEN_URL`; a refused token request is `teams_misconfigured`",
     },
     ConfigKey {
         name: "ESCUREL_AUTH_TEAMS_TOKEN_SCOPE",

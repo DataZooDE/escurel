@@ -51,6 +51,9 @@ pub mod mint_codes {
     /// The forwarded activity token is missing, invalid, or bound to another
     /// connector (#835).
     pub const ACTIVITY_UNVERIFIED: &str = "activity_unverified";
+    /// The Teams connector or its token endpoint refuses the gateway's own
+    /// bot credential (`ESCUREL_AUTH_TEAMS_*`): an admin's to fix.
+    pub const TEAMS_MISCONFIGURED: &str = "teams_misconfigured";
     /// Too many mints for this bridge credential or this asker (retryable).
     pub const RATE_LIMITED: &str = "rate_limited";
 }

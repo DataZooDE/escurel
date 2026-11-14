@@ -1296,3 +1296,30 @@ async fn a_roster_answer_without_a_tenant_or_object_id_never_takes_the_bridges()
     .await;
     refused(&body, "identity_mismatch", "no tenant from Teams, no Graph");
 }
+
+/// Crew F6: the connector refusing the GATEWAY's own bot credential is a
+/// misconfiguration an admin fixes, not "try again later" — while a 403 or
+/// 404 about the user stays `not_in_conversation`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_refused_bot_credential_is_teams_misconfigured() {
+    let w = verified_world().await;
+    let token = w.bf.token(BOT_APP);
+    let turn = || verified_turn(&w.bf, "29:alice", ALICE_OID, Some(&token));
+    // The token endpoint refuses the app secret.
+    w.bf.seen.lock().unwrap().token_status = Some(401);
+    let (_, body) = call(&w.gw, &bridge_credential(&w.gw), "mint_user_token", turn()).await;
+    refused(&body, "teams_misconfigured", "the token endpoint refused");
+    assert_eq!(body["error"]["data"]["retryable"], false);
+    // A token, but the connector answers 401 even after a renewal.
+    w.bf.seen.lock().unwrap().token_status = None;
+    w.bf.seen.lock().unwrap().member_status = Some(401);
+    let (_, body) = call(&w.gw, &bridge_credential(&w.gw), "mint_user_token", turn()).await;
+    refused(
+        &body,
+        "teams_misconfigured",
+        "the connector refused the bearer",
+    );
+    w.bf.seen.lock().unwrap().member_status = Some(403);
+    let (_, body) = call(&w.gw, &bridge_credential(&w.gw), "mint_user_token", turn()).await;
+    refused(&body, "not_in_conversation", "a 403 about the user");
+}

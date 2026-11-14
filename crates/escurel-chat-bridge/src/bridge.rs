@@ -101,6 +101,7 @@ impl Decline {
             c::NO_DIRECTORY => Self::NoDirectory,
             c::RATE_LIMITED => Self::RateLimited,
             c::IDENTITY_MISMATCH => Self::Misconfigured(c::IDENTITY_MISMATCH),
+            c::TEAMS_MISCONFIGURED => Self::Misconfigured(c::TEAMS_MISCONFIGURED),
             c::TENANT_NOT_SERVED => Self::Misconfigured(c::TENANT_NOT_SERVED),
             c::UNSUPPORTED => Self::Misconfigured(c::UNSUPPORTED),
             c::BRIDGE_REQUIRED => Self::Misconfigured(c::BRIDGE_REQUIRED),
@@ -123,7 +124,15 @@ impl Decline {
                  ESCUREL_AUTH_GRAPH_TENANT_ID does not serve"
             }
             c::IDENTITY_MISMATCH => {
-                "Teams' member profile names an email Graph does not know this sender by"
+                "the sender's claims disagree with the gateway's source of truth: an email / UPN \
+                 Graph does not know them by, or (with ESCUREL_AUTH_TEAMS_APP_ID) an object id, \
+                 tenant, email or UPN other than the Teams roster's — see the gateway's log"
+            }
+            c::TEAMS_MISCONFIGURED => {
+                "the Teams connector refuses the GATEWAY's bot credential: check \
+                 ESCUREL_AUTH_TEAMS_APP_ID, ESCUREL_AUTH_TEAMS_APP_SECRET[_FILE] and \
+                 ESCUREL_AUTH_TEAMS_TOKEN_URL (a single-tenant bot: the same tenant token URL as \
+                 ESCUREL_BRIDGE_TEAMS_TOKEN_URL)"
             }
             _ => {
                 "ESCUREL_BRIDGE_GATEWAY_TOKEN[_FILE] must be the bridge's own credential with the \

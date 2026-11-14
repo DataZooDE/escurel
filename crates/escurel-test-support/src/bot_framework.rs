@@ -61,6 +61,8 @@ pub struct Seen {
     /// `(conversation id, user id)` pairs the roster does NOT hold (the
     /// person is known, but not in that conversation).
     pub not_in: HashSet<(String, String)>,
+    /// Answer the token endpoint with this status instead.
+    pub token_status: Option<u16>,
     /// How often `/jwks` was fetched.
     pub jwks_calls: usize,
     /// The `/jwks` fetches (by 0-based index) answered `503`.
@@ -244,10 +246,19 @@ fn now_secs() -> u64 {
         .map_or(0, |d| d.as_secs())
 }
 
-async fn token(State(seen): State<Arc<Mutex<Seen>>>, body: String) -> axum::Json<Value> {
-    seen.lock().unwrap().token_requests.push(body);
-    axum::Json(json!({ "token_type": "Bearer", "expires_in": 3600,
-                       "access_token": CONNECTOR_TOKEN }))
+async fn token(
+    State(seen): State<Arc<Mutex<Seen>>>,
+    body: String,
+) -> Result<axum::Json<Value>, StatusCode> {
+    let mut seen = seen.lock().unwrap();
+    seen.token_requests.push(body);
+    if let Some(status) = seen.token_status {
+        return Err(StatusCode::from_u16(status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR));
+    }
+    Ok(axum::Json(
+        json!({ "token_type": "Bearer", "expires_in": 3600,
+                          "access_token": CONNECTOR_TOKEN }),
+    ))
 }
 
 /// The raw path: `Path` would percent-decode the conversation id.

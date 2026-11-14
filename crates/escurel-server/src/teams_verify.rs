@@ -243,9 +243,14 @@ pub enum TeamsVerifyError {
     /// The connector says the user is not in the conversation (404 / 403).
     #[error("the sender is not in this Teams conversation")]
     NotInConversation,
-    /// The connector (or its token endpoint) did not answer.
-    #[error("the Teams connector cannot check the sender: {why}")]
-    Unavailable { why: String, retryable: bool },
+    /// The connector, its token endpoint or the signing keys did not answer
+    /// (retryable).
+    #[error("the Teams connector cannot check the sender: {0}")]
+    Unavailable(String),
+    /// The connector or its token endpoint refused the gateway's OWN
+    /// credential (a 401, a refused token request): only an admin can fix it.
+    #[error("the Teams connector refused the gateway's bot credential: {0}")]
+    Misconfigured(String),
 }
 
 type RosterKey = (String, String, String);
@@ -309,10 +314,7 @@ impl TeamsVerifier {
             .await
             .map_err(|e| match e {
                 ActivityTokenError::BadToken(why) => TeamsVerifyError::Unverified(why),
-                ActivityTokenError::Keys(why) => TeamsVerifyError::Unavailable {
-                    why,
-                    retryable: true,
-                },
+                ActivityTokenError::Keys(why) => TeamsVerifyError::Unavailable(why),
             })?;
         let base = reqwest::Url::parse(service_url)
             .map_err(|_| TeamsVerifyError::Unverified("the serviceUrl is not a URL".into()))?;
@@ -341,18 +343,13 @@ impl TeamsVerifier {
                 DirectoryError::NotFound(_) | DirectoryError::Forbidden(_) => {
                     TeamsVerifyError::NotInConversation
                 }
-                DirectoryError::Retryable(why) => TeamsVerifyError::Unavailable {
-                    why,
-                    retryable: true,
-                },
+                DirectoryError::Retryable(why) => TeamsVerifyError::Unavailable(why),
                 DirectoryError::Unauthorized(why) | DirectoryError::Permanent(why) => {
                     tracing::error!(error = %why,
                         "mint_user_token: the Teams connector refused the gateway; check \
-                         ESCUREL_AUTH_TEAMS_APP_ID / _APP_SECRET");
-                    TeamsVerifyError::Unavailable {
-                        why,
-                        retryable: false,
-                    }
+                         ESCUREL_AUTH_TEAMS_APP_ID, ESCUREL_AUTH_TEAMS_APP_SECRET[_FILE] and \
+                         ESCUREL_AUTH_TEAMS_TOKEN_URL (a single-tenant bot needs its tenant's)");
+                    TeamsVerifyError::Misconfigured(why)
                 }
             })?;
         let member = ConversationMember::from_json(&answer);

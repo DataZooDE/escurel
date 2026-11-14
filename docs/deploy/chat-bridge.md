@@ -202,6 +202,8 @@ asked** (#835):
 # on the gateway — the same values the bridge holds
 ESCUREL_AUTH_TEAMS_APP_ID=<bot app id>                              # = ESCUREL_BRIDGE_TEAMS_APP_ID
 ESCUREL_AUTH_TEAMS_APP_SECRET_FILE=/run/secrets/teams-bot-secret    # = ESCUREL_BRIDGE_TEAMS_APP_PASSWORD
+# A single-tenant bot (recommended): MUST match the bridge's ESCUREL_BRIDGE_TEAMS_TOKEN_URL
+ESCUREL_AUTH_TEAMS_TOKEN_URL=https://login.microsoftonline.com/<entra tenant id>/oauth2/v2.0/token
 # ESCUREL_AUTH_TEAMS_SERVICE_URL_HOSTS=smba.trafficmanager.net,*.botframework.com   # the default
 # ESCUREL_AUTH_TEAMS_OPENID_METADATA / _ISSUER / _TOKEN_URL / _TOKEN_SCOPE           # Bot Framework defaults
 ```
@@ -523,6 +525,12 @@ symptom is `token endpoint answered 400` in the log. Logs are JSON on stdout
    turn is a `chat` event (`list_events {label_skill: chat}` as an admin) with
    `captured_by: <the person>`, `captured_via: bridge:msteams` and the `captured_groups` the
    directories gave.
+7. With gateway verification: a reply that the bot "isn't set up correctly" and
+   `teams_misconfigured` in the gateway log mean the connector or its token endpoint refuses the
+   GATEWAY's bot credential — check `ESCUREL_AUTH_TEAMS_APP_ID`, `ESCUREL_AUTH_TEAMS_APP_SECRET[_FILE]`
+   and `ESCUREL_AUTH_TEAMS_TOKEN_URL` (a single-tenant bot needs the same tenant token URL as the
+   bridge's `ESCUREL_BRIDGE_TEAMS_TOKEN_URL`). `identity_mismatch` names the field (object id,
+   tenant, email, UPN) the bridge's account disagrees with the Teams roster on.
 
 ## Not verified without a real tenant
 

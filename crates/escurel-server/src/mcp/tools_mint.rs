@@ -730,12 +730,14 @@ impl Asker {
                 }
                 E::NotInConversation => JsonRpcError::forbidden(format!("{tool}: {e}"))
                     .with_code(mint_codes::NOT_IN_CONVERSATION, false),
-                E::Unavailable { retryable, .. } => JsonRpcError {
+                E::Unavailable(_) => JsonRpcError {
                     code: -32000,
                     message: format!("{tool}: {e}"),
                     data: None,
                 }
-                .with_code(mint_codes::DIRECTORY_UNAVAILABLE, *retryable),
+                .with_code(mint_codes::DIRECTORY_UNAVAILABLE, true),
+                E::Misconfigured(_) => JsonRpcError::internal(format!("{tool}: {e}"))
+                    .with_code(mint_codes::TEAMS_MISCONFIGURED, false),
             })?;
         let Some(aad_object_id) = member.aad_object_id else {
             return Err(JsonRpcError::invalid_params(format!(
