@@ -64,6 +64,11 @@ pub struct TenantSpec {
     pub quotas: Option<QuotaOverride>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub embedding_provider: Option<EmbeddingSpec>,
+    /// Days this tenant's run transcripts are kept (#827), over the
+    /// gateway's `ESCUREL_RUN_TRANSCRIPT_RETENTION_DAYS`; `0` keeps them
+    /// forever, `None` takes the gateway's.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub transcript_retention_days: Option<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]

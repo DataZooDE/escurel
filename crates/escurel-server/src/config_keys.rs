@@ -327,7 +327,7 @@ pub const CONFIG_KEYS: &[ConfigKey] = &[
         name: "ESCUREL_RUN_TRANSCRIPT_RETENTION_DAYS",
         component: "Server",
         default: "90",
-        doc: "days a run transcript (`put_run_transcript`, read via `fetch_blob{run_id}`) is kept; swept every 30 s; `0` keeps them forever",
+        doc: "days a run transcript (`put_run_transcript`, read via `fetch_blob{run_id}`) is kept; swept every 30 s; `0` keeps them forever. A tenant's own `transcript_retention_days` (`tenant_update`) wins over it",
     },
     ConfigKey {
         name: "ESCUREL_EVENT_CLAIM_BOOT_GRACE_SECS",

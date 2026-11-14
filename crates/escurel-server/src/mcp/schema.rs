@@ -1669,7 +1669,8 @@ pub(crate) fn tool_defs() -> Vec<ToolDef> {
                     "display_name": { "type": "string" },
                     "status": { "type": "string", "enum": ["active", "suspended"] },
                     "quotas": { "type": "object", "description": "Per-tenant quota overrides (same shape as `tenant_update`)." },
-                    "embedding_provider": { "type": "object", "description": "Per-tenant embedding provider (same shape as `tenant_update`)." }
+                    "embedding_provider": { "type": "object", "description": "Per-tenant embedding provider (same shape as `tenant_update`)." },
+                    "transcript_retention_days": { "type": "integer", "minimum": 0, "description": "Days this tenant's run transcripts are kept, over ESCUREL_RUN_TRANSCRIPT_RETENTION_DAYS; 0 keeps them forever." }
                 }
             }),
         ),
@@ -1699,7 +1700,8 @@ pub(crate) fn tool_defs() -> Vec<ToolDef> {
             Scope::Admin,
             Touches::INDEX,
             "Admin: partial-update a tenant's spec — display_name, status \
-                 (active|suspended), quotas, embedding_provider. Changing \
+                 (active|suspended), quotas, embedding_provider, \
+                 transcript_retention_days. Changing \
                  embedding_provider requires a rebuild (`rebuild_required` in the \
                  response).",
             json!({
@@ -1727,6 +1729,11 @@ pub(crate) fn tool_defs() -> Vec<ToolDef> {
                             "model": { "type": "string" },
                             "dim": { "type": "integer" }
                         }
+                    },
+                    "transcript_retention_days": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "description": "Days this tenant's run transcripts are kept, over ESCUREL_RUN_TRANSCRIPT_RETENTION_DAYS; 0 keeps them forever. Applies on the next sweep, no restart."
                     }
                 }
             }),

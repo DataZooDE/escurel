@@ -142,6 +142,9 @@ impl AdminClient {
         if let Some(ep) = spec.embedding_provider {
             args["embedding_provider"] = serde_json::to_value(ep).unwrap_or_default();
         }
+        if let Some(days) = spec.transcript_retention_days {
+            args["transcript_retention_days"] = days.into();
+        }
         self.transport.call_typed("tenant_update", args).await
     }
 

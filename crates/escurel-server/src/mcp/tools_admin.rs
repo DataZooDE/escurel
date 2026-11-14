@@ -1079,6 +1079,8 @@ pub(super) struct TenantSpecArgs {
     quotas: Option<escurel_types::QuotaOverride>,
     #[serde(default)]
     embedding_provider: Option<escurel_types::EmbeddingSpec>,
+    #[serde(default)]
+    transcript_retention_days: Option<u32>,
 }
 
 /// Convert the persisted admin spec into the wire spec. The lifecycle/quota/
@@ -1090,6 +1092,7 @@ pub(super) fn admin_to_wire(s: AdminTenantSpec) -> TypesTenantSpec {
         status: s.status,
         quotas: s.quotas,
         embedding_provider: s.embedding_provider,
+        transcript_retention_days: s.transcript_retention_days,
     }
 }
 
@@ -1111,6 +1114,7 @@ pub(super) async fn tool_tenant_create(
         status: a.status.unwrap_or_default(),
         quotas: a.quotas,
         embedding_provider: a.embedding_provider,
+        transcript_retention_days: a.transcript_retention_days,
     };
     store.create(&spec).await.map_err(map_admin_err)?;
     to_value(TenantCreateResponse {
@@ -1170,6 +1174,10 @@ pub(super) async fn tool_tenant_update(
         a.embedding_provider.is_some() && a.embedding_provider != spec.embedding_provider;
     if let Some(ep) = a.embedding_provider {
         spec.embedding_provider = Some(ep);
+    }
+    // Read by the transcript sweep on its next tick: no live side effect here.
+    if let Some(days) = a.transcript_retention_days {
+        spec.transcript_retention_days = Some(days);
     }
     store.update(&spec).await.map_err(map_admin_err)?;
 

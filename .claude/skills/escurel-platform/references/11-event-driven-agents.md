@@ -934,7 +934,10 @@ names; `run:<id>:*` event ids are reserved for the runner's own identity
 run's `run-finished`.
 Transcripts are deleted `ESCUREL_RUN_TRANSCRIPT_RETENTION_DAYS` after they
 were stored (gateway, default 90; `0` keeps them forever); after that the read
-answers `transcript_expired`. There is no per-tenant override yet. Retention
+answers `transcript_expired`. A tenant sets its own with the operator
+`tenant_update{transcript_retention_days}` (CLI `escurel admin tenant update
+--id <t> --transcript-retention-days <n>`, `0` = forever); it wins over the
+gateway's value and applies on the next sweep, without a restart. Retention
 deletes transcript keys and nothing else. The retention clock lives in the
 tenant's DuckDB; after an index rebuild the sweep adopts each transcript key
 it finds unregistered as stored at that moment, so it expires one window

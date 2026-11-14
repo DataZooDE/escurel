@@ -256,6 +256,10 @@ pub enum TenantCmd {
         /// (#247). Changing it requires a `rebuild` to re-embed.
         #[arg(long)]
         embedding_provider: Option<String>,
+        /// Days this tenant's run transcripts are kept, over the gateway's
+        /// `ESCUREL_RUN_TRANSCRIPT_RETENTION_DAYS` (#827); `0` keeps them forever.
+        #[arg(long)]
+        transcript_retention_days: Option<u32>,
     },
     Delete {
         #[arg(long)]
@@ -349,6 +353,7 @@ fn tenant_json(s: Option<TenantSpec>) -> Value {
             "status": s.status,
             "quotas": s.quotas,
             "embedding_provider": s.embedding_provider,
+            "transcript_retention_days": s.transcript_retention_days,
         }),
         None => Value::Null,
     }
@@ -651,6 +656,7 @@ async fn tenant(client: &AdminClient, cmd: TenantCmd) -> Result<Value> {
             name,
             status,
             embedding_provider,
+            transcript_retention_days,
         } => {
             // Get-modify-put (#247): fetch the current spec, apply only the
             // provided flags, write it back — so a partial update never
@@ -680,6 +686,9 @@ async fn tenant(client: &AdminClient, cmd: TenantCmd) -> Result<Value> {
                     provider: p,
                     ..Default::default()
                 });
+            }
+            if let Some(days) = transcript_retention_days {
+                spec.transcript_retention_days = Some(days);
             }
             let r = client
                 .tenant_update(TenantUpdateRequest { spec: Some(spec) })
