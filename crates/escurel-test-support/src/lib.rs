@@ -44,6 +44,7 @@
 
 mod auth;
 pub mod crdt_testkit;
+mod directory;
 mod fixtures;
 mod mcp_client;
 mod port;
@@ -51,6 +52,7 @@ mod process;
 mod runner;
 
 pub use auth::{AuthMode, ExtraIssuer, Role};
+pub use directory::{DirectoryStandIn, GRAPH_TENANT, bridge_mint};
 pub use escurel_server::egress::EgressPolicy;
 pub use fixtures::{FixtureBuilder, MarkdownBody, TenantFixture};
 pub use mcp_client::{McpError, McpTestClient};

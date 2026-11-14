@@ -35,6 +35,39 @@ pub(crate) const BRIDGE_TOOLS: &[&str] = &[
     "ingest_upload",
 ];
 
+/// A bridge-turn caller, as the gateway stamps its captures (#830).
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct BridgeTurn<'a> {
+    /// The person a group-principal turn acts for (`act.sub`); `None` for a
+    /// 1:1 turn, whose subject already is the person.
+    pub(crate) asker: Option<&'a str>,
+}
+
+/// The server-owned provenance keys a bridge turn's capture carries (#830):
+/// `asked_by` (who asked, when the subject is a group principal) and
+/// `captured_groups` (the groups the turn's token held — the gateway resolved
+/// them, so the runner answers with exactly those). Removed from every other
+/// capture, so no caller can assert them.
+pub(crate) const ASKED_BY_FIELD: &str = "asked_by";
+pub(crate) use escurel_types::bridge::CAPTURED_GROUPS_FIELD;
+
+/// Stamp [`ASKED_BY_FIELD`] / [`CAPTURED_GROUPS_FIELD`] on a provenance object
+/// `stamp_captured_by` already cleared of both.
+pub(crate) fn stamp_turn(provenance: &mut Value, turn: Option<BridgeTurn<'_>>, groups: &[String]) {
+    let (Some(map), Some(turn)) = (provenance.as_object_mut(), turn) else {
+        return;
+    };
+    if let Some(asker) = turn.asker {
+        map.insert(ASKED_BY_FIELD.to_owned(), Value::from(asker));
+    }
+    if !groups.is_empty() {
+        map.insert(
+            CAPTURED_GROUPS_FIELD.to_owned(),
+            Value::from(groups.to_vec()),
+        );
+    }
+}
+
 /// Why a bridge token may not make this call, or `None` when it may.
 ///
 /// # Errors

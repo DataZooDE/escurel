@@ -175,6 +175,11 @@ pub struct ConfigOverrides {
     /// Key ids the bridge entry is pinned to (production
     /// `ESCUREL_AUTH_BRIDGE_KID`).
     pub bridge_kids: Vec<String>,
+    /// `mint_user_token` (#830): the principal template and the group-directory
+    /// lookups, usually [`crate::bridge_mint`] over [`crate::DirectoryStandIn`]s. Needs `signing`.
+    /// With no `egress` override the harness then allows loopback calls, so
+    /// the gateway can reach the stand-in.
+    pub bridge_mint: Option<escurel_server::group_directory::BridgeMintConfig>,
     /// The gateway's claim boot grace (`ESCUREL_EVENT_CLAIM_BOOT_GRACE_SECS`);
     /// `None` = the production default.
     pub event_claim_boot_grace: Option<std::time::Duration>,
@@ -520,8 +525,10 @@ impl EscurelProcess {
                 .egress
                 .unwrap_or_else(|| escurel_server::egress::EgressPolicy {
                     sql_file_dirs: vec![std::env::temp_dir()],
+                    allow_loopback: overrides.bridge_mint.is_some(),
                     ..Default::default()
                 }),
+            bridge_mint: overrides.bridge_mint.clone(),
             listen: "127.0.0.1:0".to_owned(),
             version,
             readiness,

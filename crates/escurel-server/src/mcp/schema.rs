@@ -938,6 +938,50 @@ pub(crate) fn tool_defs() -> Vec<ToolDef> {
             }),
         ),
         tool_entry(
+            "mint_user_token",
+            Execution::Orchestration,
+            Scope::Admin,
+            Touches::READ,
+            "Chat-bridge bookkeeping (#830): mint the token for ONE chat turn, so the bridge \
+                 holds no signing key. Callable only by a chat bridge's own `escurel:bridge` \
+                 credential (`bridge_required`), never a run or agent token \
+                 (`agent_scope_denied`). The gateway decides everything: the subject from \
+                 `ESCUREL_AUTH_BRIDGE_PRINCIPAL_TEMPLATE`, the groups from the union of the \
+                 sender's memberships in every directory in `ESCUREL_AUTH_GROUP_DIRECTORIES` \
+                 (Microsoft Graph by object id, Google Cloud Identity and Okta by email; per-provider \
+                 prefix / map rule, reserved names never produced; cached 10 min, a stale answer \
+                 used for up to 1 h while a directory is down, then `directory_unavailable` — \
+                 retryable). A `personal` conversation acts as the person; a \
+                 `group` chat or a `channel` acts as the group principal `group:<g>` an admin \
+                 mapped it to with a `chat-channel` page, the sender as `act.sub` — \
+                 `chat_channel_unmapped` when no page maps it, `chat_channel_not_member` when the \
+                 sender is not in `<g>`. The token is a bridge turn: at most 900 s, never admin, \
+                 only the bridge's six tools, no `/ingest` `/blob` `/ws`. `unsupported` on a \
+                 gateway with no signing key or no Graph configuration.",
+            json!({
+                "type": "object",
+                "required": ["channel", "tenant_id", "aad_object_id"],
+                "properties": {
+                    "channel": { "type": "string", "enum": ["msteams"] },
+                    "tenant_id": { "type": "string", "description": "The sender's Entra tenant (must be `ESCUREL_AUTH_GRAPH_TENANT_ID` when Graph is configured)." },
+                    "aad_object_id": { "type": "string", "description": "The sender's Entra object id." },
+                    "user_id": { "type": "string", "description": "The sender's channel user id (`{userId}` in the template)." },
+                    "email": { "type": "string", "description": "The sender's email (Google / Okta key), from the Bot Framework members API." },
+                    "upn": { "type": "string", "description": "The sender's user principal name (an Okta key with `ESCUREL_AUTH_OKTA_USER_KEY=upn`)." },
+                    "conversation": {
+                        "type": "object",
+                        "description": "Where the turn was asked; default a personal chat.",
+                        "properties": {
+                            "kind": { "type": "string", "enum": ["personal", "group", "channel"] },
+                            "id": { "type": "string", "description": "The conversation id (for a channel: the thread's)." },
+                            "team_id": { "type": "string" },
+                            "channel_id": { "type": "string" }
+                        }
+                    }
+                }
+            }),
+        ),
+        tool_entry(
             "issue_agent_token",
             Execution::Orchestration,
             Scope::Admin,
@@ -2658,6 +2702,13 @@ fn output_schema_for(name: &str) -> Option<Value> {
             "token_epoch": { "type": "integer", "description": "tokens issued before it are refused" },
             "new_version": { "type": ["string", "null"] }
         })),
+        "mint_user_token" => obj(json!({
+            "token": { "type": "string" },
+            "subject": { "type": "string", "description": "the person, or `group:<g>` in a mapped shared chat" },
+            "asker": { "type": "string", "description": "the person who asked (the principal template)" },
+            "conversation_kind": { "type": "string" },
+            "expires_at": { "type": "string" }
+        })),
         "mint_run_token" => obj(json!({
             "token": { "type": "string" },
             "run_id": { "type": "string" },
@@ -2819,7 +2870,6 @@ pub(crate) fn tools_list_payload_for(
     if !matches!(role, Some(escurel_auth::Role::Agent)) {
         return payload;
     }
-    let runner = service == Some(escurel_auth::ServiceRole::Runner);
     let tools: Vec<Value> = payload["tools"]
         .as_array()
         .cloned()
@@ -2827,10 +2877,9 @@ pub(crate) fn tools_list_payload_for(
         .into_iter()
         .filter(|t| {
             t["scope"] == json!("agent")
-                || (runner
-                    && t["name"]
-                        .as_str()
-                        .is_some_and(|n| RUNNER_ADMIN_TOOLS.contains(&n)))
+                || t["name"]
+                    .as_str()
+                    .is_some_and(|n| service_grants(service, n))
         })
         .collect();
     json!({ "tools": tools })
@@ -2842,6 +2891,19 @@ pub(crate) fn tools_list_payload_for(
 /// that must reach an admin tool needs a list of its own (see
 /// `docs/notes/discovered/2026-11-14-a-role-ceiling-cannot-grant.md`).
 pub(crate) const RUNNER_ADMIN_TOOLS: &[&str] = &["claim_event", "renew_claim", "mint_run_token"];
+
+/// The admin-scope tools the chat BRIDGE service role (`escurel:bridge`, #830) may call: minting
+/// its turns' tokens. The handler still requires the bridge role itself.
+pub(crate) const BRIDGE_ADMIN_TOOLS: &[&str] = &["mint_user_token"];
+
+/// Whether `service` is granted the admin-scope tool `name` by name.
+pub(crate) fn service_grants(service: Option<escurel_auth::ServiceRole>, name: &str) -> bool {
+    match service {
+        Some(escurel_auth::ServiceRole::Runner) => RUNNER_ADMIN_TOOLS.contains(&name),
+        Some(escurel_auth::ServiceRole::Bridge) => BRIDGE_ADMIN_TOOLS.contains(&name),
+        None => false,
+    }
+}
 
 /// Build an OpenAPI 3.1 document describing escurel's tool surface — the
 /// outbound half of the openapi/mcp story. The real transport is JSON-RPC 2.0

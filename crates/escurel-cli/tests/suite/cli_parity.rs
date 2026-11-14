@@ -93,6 +93,12 @@ const COVERAGE: &[(&str, Coverage)] = &[
         "mint_run_token",
         Excluded("runner bookkeeping: a runner with no signing key gets its run tokens here"),
     ),
+    (
+        "mint_user_token",
+        Excluded(
+            "chat-bridge bookkeeping: only a bridge's own escurel:bridge credential mints a turn's token",
+        ),
+    ),
     ("get_run_tool_calls", Agent(&["run", "tool-calls"])),
     (
         "put_run_transcript",
