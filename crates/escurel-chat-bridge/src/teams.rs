@@ -257,7 +257,7 @@ impl ChatChannel for TeamsChannel {
                 directory_tenant: tenant,
                 display_name: text(&a["from"]["name"]),
             },
-            text: strip_mentions(a["text"].as_str().unwrap_or_default()),
+            text: question_text(a, a["recipient"]["id"].as_str()),
             attachments: attachments(a),
             reply_to: json!({
                 "serviceUrl": a["serviceUrl"],
@@ -440,18 +440,30 @@ fn thread_root<'a>(conversation_id: &'a str, message_id: &'a str) -> &'a str {
         .unwrap_or(message_id)
 }
 
-/// Drop `<at>…</at>` mentions of the bot and surrounding whitespace.
-fn strip_mentions(text: &str) -> String {
-    let mut out = String::new();
-    let mut rest = text;
-    while let Some(start) = rest.find("<at>") {
-        out.push_str(&rest[..start]);
-        rest = rest[start..]
-            .find("</at>")
-            .map_or("", |end| &rest[start + end + "</at>".len()..]);
+/// The person's question: the message text with the BOT's own mention
+/// removed (crew Q-F8). Other mentions stay, as the plain name — in a group
+/// chat "<at>escurel</at> ask <at>Bob</at> about Q3" is "ask Bob about Q3".
+/// The bot's mention is the text of every `mention` entity naming `bot`
+/// (`<at>{name}</at>` when an entity carries no text).
+fn question_text(a: &Value, bot: Option<&str>) -> String {
+    let mut text = a["text"].as_str().unwrap_or_default().to_owned();
+    let own = a["entities"].as_array().into_iter().flatten().filter(|e| {
+        e["type"] == "mention" && bot.is_some() && e["mentioned"]["id"].as_str() == bot
+    });
+    for e in own {
+        let tag = e["text"].as_str().map(str::to_owned).or_else(|| {
+            e["mentioned"]["name"]
+                .as_str()
+                .map(|n| format!("<at>{n}</at>"))
+        });
+        if let Some(tag) = tag.filter(|t| !t.is_empty()) {
+            text = text.replace(&tag, "");
+        }
     }
-    out.push_str(rest);
-    out.trim().to_owned()
+    text.replace("<at>", "")
+        .replace("</at>", "")
+        .trim()
+        .to_owned()
 }
 
 /// The downloadable attachments of an activity. Teams repeats the message
@@ -504,12 +516,51 @@ mod tests {
     use super::*;
 
     #[test]
-    fn mentions_are_stripped() {
+    fn only_the_bots_own_mention_is_stripped() {
+        let msg = |text: &str, entities: Value| json!({ "text": text, "entities": entities });
+        let bot = json!({ "type": "mention", "text": "<at>escurel</at>",
+                          "mentioned": { "id": "28:bot", "name": "escurel" } });
+        let bob = json!({ "type": "mention", "text": "<at>Bob</at>",
+                          "mentioned": { "id": "29:bob", "name": "Bob" } });
         assert_eq!(
-            strip_mentions("<at>escurel</at> who renews?"),
+            question_text(
+                &msg("<at>escurel</at> who renews?", json!([bot])),
+                Some("28:bot")
+            ),
             "who renews?"
         );
-        assert_eq!(strip_mentions("plain"), "plain");
+        assert_eq!(
+            question_text(
+                &msg(
+                    "<at>escurel</at> ask <at>Bob</at> about Q3",
+                    json!([bot, bob])
+                ),
+                Some("28:bot")
+            ),
+            "ask Bob about Q3",
+            "a colleague's mention stays, as the name"
+        );
+        assert_eq!(
+            question_text(
+                &msg("<at>escurel</at> what about <at>Bob", json!([bot])),
+                Some("28:bot")
+            ),
+            "what about Bob",
+            "an unclosed tag drops nothing after it"
+        );
+        let untexted =
+            json!({ "type": "mention", "mentioned": { "id": "28:bot", "name": "escurel" } });
+        assert_eq!(
+            question_text(
+                &msg("<at>escurel</at> hi", json!([untexted])),
+                Some("28:bot")
+            ),
+            "hi"
+        );
+        assert_eq!(
+            question_text(&msg("plain", json!([])), Some("28:bot")),
+            "plain"
+        );
     }
 
     #[test]

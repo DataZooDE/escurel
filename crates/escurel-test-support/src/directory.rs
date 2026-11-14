@@ -80,8 +80,29 @@ impl DirectoryStandIn {
             Kind::Google => Some("/token".to_owned()),
             Kind::Okta => None,
         };
+        let google_key_pem = (kind == Kind::Google).then(|| {
+            use rsa::pkcs8::EncodePrivateKey;
+            rsa::RsaPrivateKey::new(&mut rand::thread_rng(), 2048)
+                .expect("rsa key")
+                .to_pkcs8_pem(rsa::pkcs8::LineEnding::LF)
+                .expect("pem")
+                .to_string()
+        });
+        // The Google token endpoint checks the assertion the way Google does: signed by the
+        // service account's key, for this endpoint, with the right scope and delegated subject.
+        let google_verify = google_key_pem.as_deref().map(|pem| {
+            use rsa::pkcs8::{DecodePrivateKey, EncodePublicKey};
+            let public = rsa::RsaPrivateKey::from_pkcs8_pem(pem)
+                .expect("pem")
+                .to_public_key()
+                .to_public_key_pem(rsa::pkcs8::LineEnding::LF)
+                .expect("public pem");
+            jsonwebtoken::DecodingKey::from_rsa_pem(public.as_bytes()).expect("decoding key")
+        });
+        let token_url = token_path.as_ref().map(|p| format!("{base}{p}"));
         if let Some(token_path) = token_path {
             let s = Arc::clone(&state);
+            let token_url = token_url.clone().unwrap_or_default();
             Mock::given(method("POST"))
                 .and(path(token_path))
                 .respond_with(move |req: &Request| {
@@ -98,7 +119,9 @@ impl DirectoryStandIn {
                         _ => {
                             form.contains(
                                 "grant_type=urn%3Aietf%3Aparams%3Aoauth%3Agrant-type%3Ajwt-bearer",
-                            ) && form.contains("assertion=ey")
+                            ) && google_verify
+                                .as_ref()
+                                .is_some_and(|key| google_assertion_ok(&form, key, &token_url))
                         }
                     };
                     if !ok {
@@ -130,14 +153,6 @@ impl DirectoryStandIn {
             .respond_with(move |req: &Request| listing_page(kind, &base, &s, req))
             .mount(&server)
             .await;
-        let google_key_pem = (kind == Kind::Google).then(|| {
-            use rsa::pkcs8::EncodePrivateKey;
-            rsa::RsaPrivateKey::new(&mut rand::thread_rng(), 2048)
-                .expect("rsa key")
-                .to_pkcs8_pem(rsa::pkcs8::LineEnding::LF)
-                .expect("pem")
-                .to_string()
-        });
         Self {
             kind,
             server,
@@ -348,12 +363,17 @@ fn listing_page(kind: Kind, base: &str, s: &Mutex<State>, req: &Request) -> Resp
     let key = match kind {
         Kind::Graph => segment(2),
         Kind::Okta => segment(3),
-        Kind::Google => query("query")
-            .and_then(|q| {
-                let rest = q.split_once("member_key_id=='")?.1;
-                Some(rest.split_once('\'')?.0.to_owned())
-            })
-            .unwrap_or_default(),
+        Kind::Google => {
+            let q = query("query").unwrap_or_default();
+            // Google lists only the groups a label clause names; without it the search is refused.
+            if !q.contains("'cloudidentity.googleapis.com/groups.discussion_forum' in labels") {
+                return ResponseTemplate::new(400);
+            }
+            q.split_once("member_key_id=='")
+                .and_then(|(_, rest)| rest.split_once('\''))
+                .map(|(key, _)| key.to_owned())
+                .unwrap_or_default()
+        }
     };
     let Some(groups) = st.members.get(&key).cloned() else {
         return match kind {
@@ -451,4 +471,28 @@ fn percent_decode(s: &str) -> String {
         }
     }
     String::from_utf8_lossy(&out).into_owned()
+}
+
+/// Whether a JWT-bearer form carries an assertion the service account signed
+/// for `token_url`, asking for the Cloud Identity scope as the delegated admin.
+fn google_assertion_ok(form: &str, key: &jsonwebtoken::DecodingKey, token_url: &str) -> bool {
+    let Some(assertion) = form.split('&').find_map(|kv| kv.strip_prefix("assertion=")) else {
+        return false;
+    };
+    let mut v = jsonwebtoken::Validation::new(jsonwebtoken::Algorithm::RS256);
+    v.set_audience(&[token_url]);
+    v.set_issuer(&[GOOGLE_SA]);
+    let Ok(data) = jsonwebtoken::decode::<Value>(&percent_decode(assertion), key, &v) else {
+        return false;
+    };
+    data.claims["scope"] == google::SCOPE && data.claims["sub"] == "admin@acme.example"
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn a_percent_escape_at_the_end_of_a_segment_is_decoded() {
+        assert_eq!(super::percent_decode("a%40b%2E"), "a@b.");
+        assert_eq!(super::percent_decode("100%"), "100%");
+    }
 }

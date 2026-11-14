@@ -1746,6 +1746,12 @@ pub const CONFIG_KEYS: &[ConfigKey] = &[
         doc: "how long it waits for an answer before telling the person it has none",
     },
     ConfigKey {
+        name: "ESCUREL_BRIDGE_TOKEN_TTL",
+        component: "Bridge",
+        default: "14m",
+        doc: "how long the bridge treats a turn's token as good: it asks for a new one after half of it, and keeps the one in hand through a failed re-mint (an outage) until three quarters of it have passed. At most 14m (the gateway's 15-minute bound, less a minute for clock skew)",
+    },
+    ConfigKey {
         name: "ESCUREL_BRIDGE_ATTACHMENT_MAX_BYTES",
         component: "Bridge",
         default: "10485760",
