@@ -24,6 +24,10 @@ use wiremock::{Mock, MockServer, Request, ResponseTemplate};
 pub const GRAPH_TENANT: &str = "entra-tenant";
 const GOOGLE_SA: &str = "escurel-groups@test-project.iam.gserviceaccount.com";
 const OKTA_TOKEN: &str = "okta-api-token";
+/// The Google domain the stand-in's admin-made groups are in; a shared group
+/// is in [`GOOGLE_OUTSIDE_DOMAIN`].
+pub const GOOGLE_DOMAIN: &str = "acme.example";
+const GOOGLE_OUTSIDE_DOMAIN: &str = "groups.outside.example";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Kind {
@@ -34,8 +38,9 @@ enum Kind {
 
 #[derive(Default)]
 struct State {
-    /// lookup key (object id or email) → group names.
-    members: HashMap<String, Vec<String>>,
+    /// lookup key (object id or email) → `(group name, shared)`, where a
+    /// shared group is one an ordinary user can create and name.
+    members: HashMap<String, Vec<(String, bool)>>,
     /// Answer every request with this status instead.
     status: Option<u16>,
     lookups: usize,
@@ -134,10 +139,25 @@ impl DirectoryStandIn {
     /// member of these groups, by name (a Google group's name is its email
     /// local part: `escurel-sales` stands for `escurel-sales@acme.example`).
     pub fn member_of(&self, key: &str, groups: &[&str]) {
-        self.state.lock().unwrap().members.insert(
-            key.to_owned(),
-            groups.iter().map(|g| (*g).to_owned()).collect(),
-        );
+        self.add_groups(key, groups, false);
+    }
+
+    /// `key` is also a member of these groups, which the provider says anyone
+    /// may create and name (crew S-F1): a Microsoft 365 group (`groupTypes:
+    /// [Unified]`) on Graph, a group outside `acme.example` on Google, an
+    /// `APP_GROUP` on Okta. Their names count for nothing by default.
+    pub fn member_of_shared(&self, key: &str, groups: &[&str]) {
+        self.add_groups(key, groups, true);
+    }
+
+    fn add_groups(&self, key: &str, groups: &[&str], shared: bool) {
+        self.state
+            .lock()
+            .unwrap()
+            .members
+            .entry(key.to_owned())
+            .or_default()
+            .extend(groups.iter().map(|g| ((*g).to_owned(), shared)));
     }
 
     /// Answer everything with `status` until [`Self::up`].
@@ -175,6 +195,7 @@ impl DirectoryStandIn {
                 token_url: format!("{base}/{GRAPH_TENANT}/oauth2/v2.0/token"),
                 base_url: base,
                 rule,
+                include_m365_groups: false,
             }),
             Kind::Google => DirectoryConfig::Google(google::GoogleConfig {
                 client_email: GOOGLE_SA.to_owned(),
@@ -184,6 +205,7 @@ impl DirectoryStandIn {
                 token_url: format!("{base}/token"),
                 base_url: base,
                 group_name: google::GroupName::EmailLocal,
+                group_domains: vec![GOOGLE_DOMAIN.to_owned()],
                 rule,
             }),
             Kind::Okta => DirectoryConfig::Okta(okta::OktaConfig {
@@ -191,6 +213,7 @@ impl DirectoryStandIn {
                 api_token: OKTA_TOKEN.to_owned(),
                 user_key: okta::UserKey::Email,
                 rule,
+                include_app_groups: false,
             }),
         }
     }
@@ -273,18 +296,22 @@ fn listing_page(kind: Kind, base: &str, s: &Mutex<State>, req: &Request) -> Resp
     .and_then(|v| v.parse().ok())
     .unwrap_or(0);
     let more = at + 1 < groups.len();
-    let page: Vec<&String> = groups.iter().skip(at).take(1).collect();
+    let page: Vec<&(String, bool)> = groups.iter().skip(at).take(1).collect();
     let path = req.url.path();
     match kind {
         Kind::Graph => {
             let value: Vec<Value> = page
                 .iter()
-                .map(|g| json!({ "@odata.type": "#microsoft.graph.group", "id": format!("oid-{g}"), "displayName": g }))
+                .map(|(g, shared)| {
+                    let types: &[&str] = if *shared { &["Unified"] } else { &[] };
+                    json!({ "@odata.type": "#microsoft.graph.group", "id": format!("oid-{g}"),
+                            "displayName": g, "securityEnabled": !shared, "groupTypes": types })
+                })
                 .collect();
             let mut body = json!({ "value": value });
             if more {
                 body["@odata.nextLink"] = json!(format!(
-                    "{base}{path}?$select=id,displayName&$skiptoken={}",
+                    "{base}{path}?$select=id,displayName,securityEnabled,groupTypes&$skiptoken={}",
                     at + 1
                 ));
             }
@@ -293,10 +320,15 @@ fn listing_page(kind: Kind, base: &str, s: &Mutex<State>, req: &Request) -> Resp
         Kind::Google => {
             let memberships: Vec<Value> = page
                 .iter()
-                .map(|g| {
+                .map(|(g, shared)| {
+                    let domain = if *shared {
+                        GOOGLE_OUTSIDE_DOMAIN
+                    } else {
+                        GOOGLE_DOMAIN
+                    };
                     json!({
                         "group": format!("groups/{g}"),
-                        "groupKey": { "id": format!("{g}@acme.example") },
+                        "groupKey": { "id": format!("{g}@{domain}") },
                         "displayName": g,
                         "labels": { "cloudidentity.googleapis.com/groups.discussion_forum": "" },
                     })
@@ -311,7 +343,10 @@ fn listing_page(kind: Kind, base: &str, s: &Mutex<State>, req: &Request) -> Resp
         Kind::Okta => {
             let body: Vec<Value> = page
                 .iter()
-                .map(|g| json!({ "id": format!("00g-{g}"), "profile": { "name": g } }))
+                .map(|(g, shared)| {
+                    let kind = if *shared { "APP_GROUP" } else { "OKTA_GROUP" };
+                    json!({ "id": format!("00g-{g}"), "type": kind, "profile": { "name": g } })
+                })
                 .collect();
             let mut resp = ResponseTemplate::new(200).set_body_json(body);
             if more {

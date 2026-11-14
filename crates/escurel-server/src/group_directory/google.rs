@@ -3,6 +3,11 @@
 //! from a service account's JWT-bearer grant (scope
 //! `cloud-identity.groups.readonly`; domain-wide delegation via `subject`, or
 //! the service account holding the Groups Reader role). Keyed by email.
+//!
+//! A group is named by its whole address by default: anyone who may create a
+//! group in ANY domain could otherwise call one `escurel-finance@…` (crew
+//! S-F1). `ESCUREL_AUTH_GOOGLE_GROUP_DOMAIN` pins the domains whose groups'
+//! names count; `email_local` naming needs it.
 
 use std::sync::Arc;
 
@@ -24,11 +29,11 @@ pub const SCOPE: &str = "https://www.googleapis.com/auth/cloud-identity.groups.r
 /// (`ESCUREL_AUTH_GOOGLE_GROUP_NAME`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum GroupName {
-    /// `sales@acme.example` → `sales` (the default).
+    /// The whole group email (the default).
     #[default]
-    EmailLocal,
-    /// The whole group email.
     Email,
+    /// `sales@acme.example` → `sales`; only with pinned domains.
+    EmailLocal,
 }
 
 /// `ESCUREL_AUTH_GOOGLE_*`, with the service-account key already read.
@@ -44,6 +49,9 @@ pub struct GoogleConfig {
     pub token_url: String,
     pub base_url: String,
     pub group_name: GroupName,
+    /// The domains whose groups' names the prefix rule reads
+    /// (`ESCUREL_AUTH_GOOGLE_GROUP_DOMAIN`, lowercase); empty = any domain.
+    pub group_domains: Vec<String>,
     /// Keyed by group email (`groupKey.id`) in the map file.
     pub rule: NameRule,
 }
@@ -56,6 +64,7 @@ impl std::fmt::Debug for GoogleConfig {
             .field("token_url", &self.token_url)
             .field("base_url", &self.base_url)
             .field("group_name", &self.group_name)
+            .field("group_domains", &self.group_domains)
             .field("rule", &self.rule)
             .finish_non_exhaustive()
     }
@@ -64,6 +73,7 @@ impl std::fmt::Debug for GoogleConfig {
 pub struct GoogleDirectory {
     base_url: String,
     group_name: GroupName,
+    group_domains: Vec<String>,
     credentials: ClientCredentials,
     egress: Arc<Egress>,
 }
@@ -84,6 +94,7 @@ impl GoogleDirectory {
         Ok(Self {
             base_url: cfg.base_url,
             group_name: cfg.group_name,
+            group_domains: cfg.group_domains,
             credentials,
             egress,
         })
@@ -121,13 +132,19 @@ impl GoogleDirectory {
                 let Some(id) = m["groupKey"]["id"].as_str() else {
                     continue;
                 };
+                let (local, domain) = id.split_once('@').unwrap_or((id, ""));
                 let name = match self.group_name {
                     GroupName::Email => id,
-                    GroupName::EmailLocal => id.split('@').next().unwrap_or(id),
+                    GroupName::EmailLocal => local,
                 };
                 out.push(DirectoryGroup {
                     id: id.to_owned(),
                     name: name.to_owned(),
+                    name_counts: self.group_domains.is_empty()
+                        || self
+                            .group_domains
+                            .iter()
+                            .any(|d| d.eq_ignore_ascii_case(domain)),
                 });
             }
             page_token = body["nextPageToken"]

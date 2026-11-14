@@ -65,6 +65,12 @@ pub struct DirectoryUser {
 pub struct DirectoryGroup {
     pub id: String,
     pub name: String,
+    /// Whether the prefix rule may read [`Self::name`] at all (crew S-F1): a
+    /// name an ordinary employee can pick — a Microsoft 365 group or Team, a
+    /// Google group outside the pinned domains, an Okta app group — must not
+    /// become an escurel group just by being called `escurel-finance`. The
+    /// map file, keyed by the stable id an admin chose, is not filtered.
+    pub name_counts: bool,
 }
 
 /// Why a directory could not answer.
@@ -94,7 +100,9 @@ pub trait GroupDirectory: Send + Sync {
 }
 
 /// Directory group → escurel group: the explicit map by id first, else the
-/// prefix rule by name (only names with the prefix count, prefix stripped).
+/// prefix rule by name (only names with the prefix count, prefix stripped, and
+/// only for a group whose provider says its name is admin-controlled —
+/// [`DirectoryGroup::name_counts`]).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct NameRule {
     pub prefix: Option<String>,
@@ -113,7 +121,8 @@ impl NameRule {
     pub fn apply(&self, g: &DirectoryGroup, reserved: &[String]) -> Option<String> {
         let name = match self.map.get(&g.id) {
             Some(mapped) => mapped.clone(),
-            None => g.name.strip_prefix(self.prefix.as_deref()?)?.to_owned(),
+            None if g.name_counts => g.name.strip_prefix(self.prefix.as_deref()?)?.to_owned(),
+            None => return None,
         };
         (escurel_types::chat_channel::is_assignable_group(&name) && !reserved.contains(&name))
             .then_some(name)
@@ -421,6 +430,7 @@ mod tests {
         DirectoryGroup {
             id: id.into(),
             name: name.into(),
+            name_counts: true,
         }
     }
 
@@ -453,6 +463,24 @@ mod tests {
             assert_eq!(m("3", bad), None, "{bad}");
         }
         assert_eq!(m("oid-x", "anything"), None, "a mapped reserved name too");
+        let user_named = DirectoryGroup {
+            name_counts: false,
+            ..g("4", "escurel-finance")
+        };
+        assert_eq!(
+            rule.apply(&user_named, &reserved),
+            None,
+            "a name anyone can pick never counts (crew S-F1)"
+        );
+        let mapped = DirectoryGroup {
+            name_counts: false,
+            ..g("oid-ops", "Ops Team")
+        };
+        assert_eq!(
+            rule.apply(&mapped, &reserved).as_deref(),
+            Some("ops"),
+            "the id-keyed map is the admin's own choice"
+        );
         assert!(NameRule::default().is_empty());
     }
 

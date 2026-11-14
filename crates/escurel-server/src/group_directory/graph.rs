@@ -2,6 +2,12 @@
 //! paged by `@odata.nextLink`, with a client-credentials token (application
 //! permission `GroupMember.Read.All`, admin-consented). Keyed by the Entra
 //! object id Teams names the sender with.
+//!
+//! The prefix rule reads only a SECURITY group's `displayName` by default: a
+//! Microsoft 365 group (`groupTypes: [Unified]`, every Team is one) is named
+//! by whoever creates it, which under Entra's defaults is any employee
+//! (crew S-F1). `ESCUREL_AUTH_GRAPH_INCLUDE_M365_GROUPS=true` lets them count
+//! where creating them is restricted; the id-keyed map file counts any group.
 
 use std::sync::Arc;
 
@@ -35,6 +41,9 @@ pub struct GraphConfig {
     pub base_url: String,
     /// Keyed by group object id in the map file; the prefix reads `displayName`.
     pub rule: NameRule,
+    /// Whether a Microsoft 365 (Unified) group's name counts for the prefix
+    /// rule (`ESCUREL_AUTH_GRAPH_INCLUDE_M365_GROUPS`, default no).
+    pub include_m365_groups: bool,
 }
 
 impl std::fmt::Debug for GraphConfig {
@@ -45,12 +54,14 @@ impl std::fmt::Debug for GraphConfig {
             .field("token_url", &self.token_url)
             .field("base_url", &self.base_url)
             .field("rule", &self.rule)
+            .field("include_m365_groups", &self.include_m365_groups)
             .finish_non_exhaustive()
     }
 }
 
 pub struct GraphDirectory {
     base_url: String,
+    include_m365_groups: bool,
     credentials: ClientCredentials,
     egress: Arc<Egress>,
 }
@@ -66,6 +77,7 @@ impl GraphDirectory {
                 SCOPE,
             ),
             base_url: cfg.base_url,
+            include_m365_groups: cfg.include_m365_groups,
             egress,
         }
     }
@@ -74,7 +86,7 @@ impl GraphDirectory {
         let base = reqwest::Url::parse(&self.base_url)
             .map_err(|e| DirectoryError::Permanent(e.to_string()))?;
         let mut url = format!(
-            "{}/v1.0/users/{object_id}/transitiveMemberOf/microsoft.graph.group?$select=id,displayName",
+            "{}/v1.0/users/{object_id}/transitiveMemberOf/microsoft.graph.group?$select=id,displayName,securityEnabled,groupTypes",
             self.base_url.trim_end_matches('/')
         );
         let mut out = Vec::new();
@@ -101,6 +113,7 @@ impl GraphDirectory {
                         Some(DirectoryGroup {
                             id: g["id"].as_str()?.to_owned(),
                             name: g["displayName"].as_str().unwrap_or_default().to_owned(),
+                            name_counts: name_counts(g, self.include_m365_groups),
                         })
                     }),
             );
@@ -115,6 +128,20 @@ impl GraphDirectory {
     }
 }
 
+/// Whether a group's `displayName` is the prefix rule's to read: a security
+/// group's (an admin creates those), and a Microsoft 365 group's only when
+/// the deployment opted in. A missing field counts as the unsafe answer.
+fn name_counts(g: &serde_json::Value, include_m365_groups: bool) -> bool {
+    let unified = g["groupTypes"]
+        .as_array()
+        .is_none_or(|t| t.iter().any(|t| t == "Unified"));
+    if unified {
+        include_m365_groups
+    } else {
+        g["securityEnabled"].as_bool() == Some(true)
+    }
+}
+
 impl GroupDirectory for GraphDirectory {
     fn name(&self) -> &'static str {
         "graph"
@@ -126,5 +153,28 @@ impl GroupDirectory for GraphDirectory {
 
     fn groups_for<'a>(&'a self, key: &'a str) -> GroupsFuture<'a> {
         Box::pin(self.fetch(key))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn only_a_security_groups_name_counts_unless_m365_groups_are_opted_in() {
+        let security = json!({ "securityEnabled": true, "groupTypes": [] });
+        let unified = json!({ "securityEnabled": true, "groupTypes": ["Unified"] });
+        let distribution = json!({ "securityEnabled": false, "groupTypes": [] });
+        let unknown = json!({ "displayName": "escurel-finance" });
+        assert!(name_counts(&security, false));
+        assert!(
+            !name_counts(&unified, false),
+            "a Team is named by its creator"
+        );
+        assert!(name_counts(&unified, true));
+        assert!(!name_counts(&distribution, false));
+        assert!(!name_counts(&distribution, true));
+        assert!(!name_counts(&unknown, false));
     }
 }

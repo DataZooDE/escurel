@@ -474,6 +474,12 @@ pub const CONFIG_KEYS: &[ConfigKey] = &[
         doc: "`graph`: a JSON object, group object id → escurel group, checked before the prefix rule",
     },
     ConfigKey {
+        name: "ESCUREL_AUTH_GRAPH_INCLUDE_M365_GROUPS",
+        component: "Server",
+        default: "false",
+        doc: "`graph`: `true` lets the prefix rule read Microsoft 365 groups (`groupTypes: [Unified]`, every Team) too. By default only security groups' names count, because under Entra's defaults any employee may create a Microsoft 365 group and name it `escurel-finance`; set it only where creating them is restricted. The map file counts any group it names",
+    },
+    ConfigKey {
         name: "ESCUREL_AUTH_GOOGLE_SA_KEY_FILE",
         component: "Server",
         default: "—",
@@ -500,8 +506,14 @@ pub const CONFIG_KEYS: &[ConfigKey] = &[
     ConfigKey {
         name: "ESCUREL_AUTH_GOOGLE_GROUP_NAME",
         component: "Server",
-        default: "email_local",
-        doc: "`google`: what the name rule reads — `email_local` (`sales@acme.example` → `sales`) or `email` (the whole address)",
+        default: "email",
+        doc: "`google`: what the name rule reads — `email` (the whole address: `escurel-sales@acme.example` → `sales@acme.example` with prefix `escurel-`) or `email_local` (`sales`; needs `ESCUREL_AUTH_GOOGLE_GROUP_DOMAIN`, or the same name in any domain would be one group)",
+    },
+    ConfigKey {
+        name: "ESCUREL_AUTH_GOOGLE_GROUP_DOMAIN",
+        component: "Server",
+        default: "— (any domain)",
+        doc: "`google`: comma-separated domains whose groups' names the prefix rule reads (`acme.example`); a group in any other domain counts only through the map file. Required for `ESCUREL_AUTH_GOOGLE_GROUP_NAME=email_local`",
     },
     ConfigKey {
         name: "ESCUREL_AUTH_GOOGLE_GROUP_PREFIX",
@@ -550,6 +562,12 @@ pub const CONFIG_KEYS: &[ConfigKey] = &[
         component: "Server",
         default: "—",
         doc: "`okta`: a JSON object, Okta group id → escurel group",
+    },
+    ConfigKey {
+        name: "ESCUREL_AUTH_OKTA_INCLUDE_APP_GROUPS",
+        component: "Server",
+        default: "false",
+        doc: "`okta`: `true` lets the prefix rule read `APP_GROUP`s (groups an app such as an AD import names) as well as `OKTA_GROUP`s; `BUILT_IN` groups never count. The map file counts any group it names",
     },
     ConfigKey {
         name: "ESCUREL_AUTH_BRIDGE_CHAT_SKILL",

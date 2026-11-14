@@ -3639,6 +3639,7 @@ const DIRECTORY_KEYS: &[(&str, &[&str])] = &[
             "ESCUREL_AUTH_GRAPH_BASE_URL",
             "ESCUREL_AUTH_GRAPH_GROUP_PREFIX",
             "ESCUREL_AUTH_GRAPH_GROUP_MAP_FILE",
+            "ESCUREL_AUTH_GRAPH_INCLUDE_M365_GROUPS",
         ],
     ),
     (
@@ -3649,6 +3650,7 @@ const DIRECTORY_KEYS: &[(&str, &[&str])] = &[
             "ESCUREL_AUTH_GOOGLE_TOKEN_URL",
             "ESCUREL_AUTH_GOOGLE_BASE_URL",
             "ESCUREL_AUTH_GOOGLE_GROUP_NAME",
+            "ESCUREL_AUTH_GOOGLE_GROUP_DOMAIN",
             "ESCUREL_AUTH_GOOGLE_GROUP_PREFIX",
             "ESCUREL_AUTH_GOOGLE_GROUP_MAP_FILE",
         ],
@@ -3662,6 +3664,7 @@ const DIRECTORY_KEYS: &[(&str, &[&str])] = &[
             "ESCUREL_AUTH_OKTA_USER_KEY",
             "ESCUREL_AUTH_OKTA_GROUP_PREFIX",
             "ESCUREL_AUTH_OKTA_GROUP_MAP_FILE",
+            "ESCUREL_AUTH_OKTA_INCLUDE_APP_GROUPS",
         ],
     ),
 ];
@@ -3684,6 +3687,20 @@ fn directory_url(key: &str, url: &str) -> Result<(), ConfigError> {
         bridge_refusal(format!(
             "{key} `{url}` must be an https URL (plain http only to a loopback address)"
         ))
+    }
+}
+
+/// An opt-in that widens which directory groups count: exactly `true` or
+/// `false` (unset = `false`), so a typo never widens anything silently.
+fn directory_flag(env: &dyn EnvSource, key: &str) -> Result<bool, ConfigError> {
+    match env
+        .get(key)
+        .map(|v| v.trim().to_ascii_lowercase())
+        .as_deref()
+    {
+        None | Some("" | "false") => Ok(false),
+        Some("true") => Ok(true),
+        Some(other) => bridge_refusal(format!("{key} `{other}` is `true` or `false`")),
     }
 }
 
@@ -3859,6 +3876,10 @@ fn bridge_mint_from(
                         "ESCUREL_AUTH_GRAPH_GROUP_MAP_FILE",
                         &reserved,
                     )?,
+                    include_m365_groups: directory_flag(
+                        env,
+                        "ESCUREL_AUTH_GRAPH_INCLUDE_M365_GROUPS",
+                    )?,
                 })
             }
             "google" => {
@@ -3888,12 +3909,24 @@ fn bridge_mint_from(
                     .unwrap_or_else(|| google::DEFAULT_BASE_URL.to_owned());
                 directory_url("ESCUREL_AUTH_GOOGLE_TOKEN_URL", &token_url)?;
                 directory_url("ESCUREL_AUTH_GOOGLE_BASE_URL", &base_url)?;
+                let group_domains: Vec<String> = get("ESCUREL_AUTH_GOOGLE_GROUP_DOMAIN")
+                    .unwrap_or_default()
+                    .split(',')
+                    .map(|d| d.trim().to_ascii_lowercase())
+                    .filter(|d| !d.is_empty())
+                    .collect();
                 let group_name = match get("ESCUREL_AUTH_GOOGLE_GROUP_NAME").as_deref() {
-                    None | Some("email_local") => google::GroupName::EmailLocal,
-                    Some("email") => google::GroupName::Email,
+                    None | Some("email") => google::GroupName::Email,
+                    Some("email_local") if group_domains.is_empty() => {
+                        return bridge_refusal(
+                            "ESCUREL_AUTH_GOOGLE_GROUP_NAME `email_local` needs                              ESCUREL_AUTH_GOOGLE_GROUP_DOMAIN: without it `sales@` in any                              domain would be the same group"
+                                .to_owned(),
+                        );
+                    }
+                    Some("email_local") => google::GroupName::EmailLocal,
                     Some(other) => {
                         return bridge_refusal(format!(
-                            "ESCUREL_AUTH_GOOGLE_GROUP_NAME `{other}` is `email_local` or `email`"
+                            "ESCUREL_AUTH_GOOGLE_GROUP_NAME `{other}` is `email` or `email_local`"
                         ));
                     }
                 };
@@ -3915,6 +3948,7 @@ fn bridge_mint_from(
                     token_url,
                     base_url,
                     group_name,
+                    group_domains,
                     rule: directory_rule(
                         env,
                         "ESCUREL_AUTH_GOOGLE_GROUP_PREFIX",
@@ -3956,6 +3990,7 @@ fn bridge_mint_from(
                         "ESCUREL_AUTH_OKTA_GROUP_MAP_FILE",
                         &reserved,
                     )?,
+                    include_app_groups: directory_flag(env, "ESCUREL_AUTH_OKTA_INCLUDE_APP_GROUPS")?,
                 })
             }
         });

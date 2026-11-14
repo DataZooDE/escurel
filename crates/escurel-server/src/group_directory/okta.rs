@@ -3,6 +3,11 @@
 //! read-only admin's). Keyed by email, or by UPN
 //! (`ESCUREL_AUTH_OKTA_USER_KEY=upn`) where Okta logins are UPNs.
 //!
+//! Only an `OKTA_GROUP`'s name (one an Okta admin creates) counts for the
+//! prefix rule by default; an `APP_GROUP` (named by an app's import) counts
+//! with `ESCUREL_AUTH_OKTA_INCLUDE_APP_GROUPS=true`, a `BUILT_IN` one never
+//! (crew S-F1). The id-keyed map file counts any group.
+//!
 //! OAuth for Okta service apps (client credentials with a private key) is not
 //! implemented; `docs/deploy/chat-bridge.md` says so.
 
@@ -31,6 +36,8 @@ pub struct OktaConfig {
     pub user_key: UserKey,
     /// Keyed by group id in the map file; the prefix reads `profile.name`.
     pub rule: NameRule,
+    /// Whether an `APP_GROUP`'s name counts (`ESCUREL_AUTH_OKTA_INCLUDE_APP_GROUPS`).
+    pub include_app_groups: bool,
 }
 
 impl std::fmt::Debug for OktaConfig {
@@ -39,6 +46,7 @@ impl std::fmt::Debug for OktaConfig {
             .field("base_url", &self.base_url)
             .field("user_key", &self.user_key)
             .field("rule", &self.rule)
+            .field("include_app_groups", &self.include_app_groups)
             .finish_non_exhaustive()
     }
 }
@@ -73,6 +81,11 @@ impl OktaDirectory {
                 Some(DirectoryGroup {
                     id: g["id"].as_str()?.to_owned(),
                     name: g["profile"]["name"].as_str().unwrap_or_default().to_owned(),
+                    name_counts: match g["type"].as_str() {
+                        Some("OKTA_GROUP") => true,
+                        Some("APP_GROUP") => self.cfg.include_app_groups,
+                        _ => false,
+                    },
                 })
             }));
             match next_link(&headers) {

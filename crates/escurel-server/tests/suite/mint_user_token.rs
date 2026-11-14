@@ -720,3 +720,57 @@ async fn a_platform_id_cannot_mint_a_group_or_service_subject() {
     let minted = mint(&gw, personal(ALICE_OID)).await;
     assert_eq!(minted["subject"], format!("29:{ALICE_OID}"));
 }
+
+/// Crew S-F1: a group any employee can create and name — a Microsoft 365
+/// group (every Team), a Google group outside the pinned domain, an Okta app
+/// group — called `escurel-finance` grants nothing by default; an explicit
+/// opt-in (or the id-keyed map file) is the only way it counts.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_group_anyone_can_name_grants_nothing_by_default() {
+    use escurel_server::group_directory::DirectoryConfig;
+    let graph = DirectoryStandIn::graph().await;
+    graph.member_of(ALICE_OID, &["escurel-sales"]);
+    graph.member_of_shared(ALICE_OID, &["escurel-finance"]);
+    let google = DirectoryStandIn::google().await;
+    google.member_of_shared(ALICE_EMAIL, &["escurel-finance"]);
+    let okta = DirectoryStandIn::okta().await;
+    okta.member_of_shared(ALICE_EMAIL, &["escurel-finance"]);
+    let roles = |minted: &Value| claims(minted["token"].as_str().unwrap())["roles"].clone();
+    let asker = personal_with_email(ALICE_OID, Some(ALICE_EMAIL));
+
+    let gw = gateway(bridge_mint(
+        "user:{aadObjectId}",
+        vec![
+            graph.config("escurel-"),
+            google.config("escurel-"),
+            okta.config("escurel-"),
+        ],
+        None,
+    ))
+    .await;
+    assert_eq!(
+        roles(&mint(&gw, asker.clone()).await),
+        json!(["sales"]),
+        "only the security group counts"
+    );
+
+    let mut opted_in = graph.config("escurel-");
+    if let DirectoryConfig::Graph(g) = &mut opted_in {
+        g.include_m365_groups = true;
+    }
+    let mut app_groups = okta.config("escurel-");
+    if let DirectoryConfig::Okta(o) = &mut app_groups {
+        o.include_app_groups = true;
+    }
+    let gw = gateway(bridge_mint(
+        "user:{aadObjectId}",
+        vec![opted_in, app_groups],
+        None,
+    ))
+    .await;
+    assert_eq!(
+        roles(&mint(&gw, asker).await),
+        json!(["finance", "sales"]),
+        "an explicit opt-in counts them"
+    );
+}
