@@ -79,6 +79,12 @@ pub enum Decline {
     OneToOneOnly,
     /// The gateway's mint rate limit for this bridge or this asker (#835).
     RateLimited,
+    /// A turn resumed after a restart: its activity proof is gone (it is
+    /// never stored), so a verifying gateway mints nothing for it (crew F2).
+    LostInRestart,
+    /// The activity proof expired while the turn was still being worked
+    /// (a re-mint after capture, crew F3): the person asks again.
+    ProofExpired,
     /// The bridge or the gateway is set up wrong: asking again cannot help.
     /// The gateway's code, logged at ERROR with what to fix.
     Misconfigured(&'static str),
@@ -158,6 +164,13 @@ impl Decline {
             Self::RateLimited => "I'm getting a lot of questions right now, please try again \
                  in a minute."
                 .to_owned(),
+            Self::LostInRestart => {
+                "I lost your question in a restart — please ask again.".to_owned()
+            }
+            Self::ProofExpired => {
+                "I lost track of your question before I could finish it — please ask again."
+                    .to_owned()
+            }
             Self::Misconfigured(_) => "I can't answer right now: this bot isn't set up \
                  correctly. Please tell your escurel admin."
                 .to_owned(),
@@ -171,10 +184,13 @@ pub enum BridgeError {
     NoPrincipal(String),
     #[error("the gateway declined the turn: {0:?}")]
     Declined(Decline),
-    /// Refused with no reply (#835): the sender is not in the conversation,
-    /// or the activity could not be verified — the code says which.
+    /// Refused with no reply (#835): the sender is not in the conversation.
     #[error("dropped without a reply: {0}")]
     Dropped(&'static str),
+    /// The gateway did not accept the turn's activity proof (or there was
+    /// none to forward): what that means depends on the turn (see `spawn`).
+    #[error("the gateway could not verify the turn's activity")]
+    Unverified,
     #[error("signing the asker's token: {0}")]
     Sign(String),
     #[error("mint_user_token: {0}")]
@@ -346,6 +362,44 @@ impl<C: ChatChannel> Bridge<C> {
                         let _ = this
                             .store
                             .close(this.channel.name(), &id, TurnState::Dropped);
+                        break;
+                    }
+                    // A proof the gateway refused before anything was captured: a forged or stale
+                    // activity, nobody to tell. No proof at all (a resumed turn), or a proof that
+                    // expired mid-turn: a person is waiting, so they are asked to ask again — at
+                    // once, never retried until the deadline (crew F2, F3).
+                    Err(BridgeError::Unverified) => {
+                        let why = if memory.proof.is_none() {
+                            Some(Decline::LostInRestart)
+                        } else if open.state == TurnState::Received {
+                            None
+                        } else {
+                            Some(Decline::ProofExpired)
+                        };
+                        let Some(why) = why else {
+                            tracing::warn!(message_id = %id,
+                                code = escurel_types::chat_channel::mint_codes::ACTIVITY_UNVERIFIED,
+                                "chat bridge: the turn was refused without a reply");
+                            let _ = this
+                                .store
+                                .close(this.channel.name(), &id, TurnState::Dropped);
+                            break;
+                        };
+                        tracing::warn!(message_id = %id, decline = ?why,
+                            "chat bridge: the gateway could not verify the turn's activity; \
+                             asking the person to ask again");
+                        if let Err(e) = this
+                            .reply(
+                                &open.turn,
+                                "declined",
+                                &why.notice(&open.turn),
+                                TurnState::Declined,
+                            )
+                            .await
+                        {
+                            tracing::error!(message_id = %id, error = %e,
+                                "chat bridge: could not record the decline");
+                        }
                         break;
                     }
                     // Only a turn not yet in escurel is declined: once its question is captured
@@ -853,9 +907,7 @@ impl<'a, C: ChatChannel> AskerClient<'a, C> {
                     )
                 }
                 None if code == escurel_types::chat_channel::mint_codes::ACTIVITY_UNVERIFIED => {
-                    BridgeError::Dropped(
-                        escurel_types::chat_channel::mint_codes::ACTIVITY_UNVERIFIED,
-                    )
+                    BridgeError::Unverified
                 }
                 None if code == escurel_types::chat_channel::mint_codes::NO_PRINCIPAL => {
                     BridgeError::NoPrincipal(message.clone())

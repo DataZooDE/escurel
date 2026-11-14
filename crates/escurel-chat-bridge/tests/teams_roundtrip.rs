@@ -1738,3 +1738,67 @@ async fn with_gateway_verification_a_signing_key_outage_tells_the_person() {
     );
     w.a_later_turn_is_answered("act-k9", 1).await;
 }
+
+/// Crew F2: a turn the bridge resumes after a restart has lost its activity
+/// proof (never stored), so a verifying gateway mints nothing for it: the
+/// person is asked, once, to ask again — not left in silence.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn with_gateway_verification_a_restart_mid_turn_asks_the_person_to_ask_again() {
+    let mut w = world_with(Setup {
+        run_ms: Some(20_000),
+        verify: true,
+        ..Setup::default()
+    })
+    .await;
+    let token = w.bf.token(APP_ID);
+    let activity = w.bf.message("act-x1", "Which customers renew?");
+    assert_eq!(w.bridge.post(Some(&token), &activity).await, StatusCode::OK);
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while chat_events(&w.gw).await.is_empty() {
+        assert!(Instant::now() < deadline, "the turn was never captured");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    w.bridge.restart();
+    w.bridge.wait_healthy().await;
+    let replies = wait_for_replies(&w.bf, 1, Duration::from_secs(60)).await;
+    assert_eq!(
+        replies[0].2["text"],
+        "I lost your question in a restart — please ask again."
+    );
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    assert_eq!(w.bf.replies().len(), 1, "one notice");
+}
+
+/// Crew F3: the turn's re-mint forwards the same activity token; once it has
+/// expired the gateway refuses it, and the person is asked to ask again at
+/// once instead of waiting for the reply timeout.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn with_gateway_verification_an_expired_activity_token_mid_turn_asks_again() {
+    let w = world_with(Setup {
+        run_ms: Some(60_000),
+        verify: true,
+        // Re-mint every second.
+        bridge_env: vec![("ESCUREL_BRIDGE_TOKEN_TTL", "2s")],
+        ..Setup::default()
+    })
+    .await;
+    // Valid for about six more seconds (the verifiers allow 300 s of skew).
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let token = w.bf.sign(
+        &json!({ "iss": escurel_test_support::BF_ISSUER, "aud": APP_ID,
+                 "serviceurl": w.bf.base, "nbf": now - 400, "iat": now - 400,
+                 "exp": now - 294 }),
+        escurel_test_support::TEAMS_KID,
+    );
+    let activity = w.bf.message("act-e1", "a long question");
+    assert_eq!(w.bridge.post(Some(&token), &activity).await, StatusCode::OK);
+    let replies = wait_for_replies(&w.bf, 1, Duration::from_secs(40)).await;
+    assert_eq!(
+        replies[0].2["text"],
+        "I lost track of your question before I could finish it — please ask again."
+    );
+    assert_eq!(chat_events(&w.gw).await.len(), 1, "it had been captured");
+}

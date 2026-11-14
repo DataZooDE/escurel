@@ -227,8 +227,11 @@ turn: it is never logged and never written to the bridge's state file. For every
 The bridge drops a `not_in_conversation` or `activity_unverified` turn silently (a WARN in its log,
 no reply, no run): neither is a person's mistake. It does the same, with or without gateway
 verification, when its own members-API lookup answers `404`. A turn the bridge resumes after a restart has lost
-its bearer, so a verifying gateway refuses its mint; a turn not yet captured is dropped, a captured
-one ends in the timeout notice.
+its bearer, so a verifying gateway refuses its mint: the person is told once *I lost your question
+in a restart — please ask again* (a stop-first deploy costs the questions in flight their answer,
+not their reply). The turn's re-mints forward the same bearer; once it has expired (a long turn) the
+person is told at once *I lost track of your question before I could finish it — please ask
+again*, instead of waiting for the reply timeout.
 
 **What it closes.** A stolen `escurel:bridge` credential alone no longer mints for anyone: each mint
 needs a fresh activity token Microsoft signed for this bot, and the asker is whoever the connector
