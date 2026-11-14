@@ -410,15 +410,24 @@ impl Bridge {
     }
 
     async fn wait_healthy(&mut self) {
+        assert!(
+            self.try_healthy().await,
+            "bridge exited before it became healthy"
+        );
+    }
+
+    /// `false` when the bridge exited before it became healthy.
+    async fn try_healthy(&mut self) -> bool {
         let deadline = Instant::now() + Duration::from_secs(30);
         loop {
             if let Some(status) = self.child.as_mut().and_then(|c| c.try_wait().unwrap()) {
-                panic!("bridge exited before it became healthy: {status:?}");
+                eprintln!("bridge exited before it became healthy: {status:?}");
+                return false;
             }
             if let Ok(r) = reqwest::get(format!("http://{}/healthz", self.listen)).await
                 && r.status().is_success()
             {
-                return;
+                return true;
             }
             assert!(Instant::now() < deadline, "bridge never became healthy");
             tokio::time::sleep(Duration::from_millis(100)).await;
@@ -581,7 +590,19 @@ async fn world_with(setup: Setup) -> World {
         &setup.bridge_env,
         setup.keep_log,
     );
-    bridge.wait_healthy().await;
+    // `free_port` can lose its port to a parallel test before the bridge binds it; a minted
+    // bridge's port is named nowhere else, so take another (a self-signed one's is the gateway's
+    // JWKS URL and cannot move).
+    let mut tries = 0;
+    while !bridge.try_healthy().await {
+        tries += 1;
+        assert!(
+            tries < 3 && !setup.self_signed,
+            "bridge exited before it became healthy"
+        );
+        bridge.listen = format!("127.0.0.1:{}", free_port());
+        bridge.start();
+    }
     World {
         gw,
         bf,
