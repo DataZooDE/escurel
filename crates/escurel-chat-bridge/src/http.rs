@@ -47,14 +47,14 @@ async fn messages<C: ChatChannel>(
     headers: HeaderMap,
     body: Bytes,
 ) -> StatusCode {
-    let payload = match s.bridge.channel().verify_inbound(&headers, &body).await {
-        Ok(p) => p,
+    let verified = match s.bridge.channel().verify_inbound(&headers, &body).await {
+        Ok(v) => v,
         Err(e) => {
             tracing::warn!(error = %e, "chat bridge: inbound request refused");
             return StatusCode::UNAUTHORIZED;
         }
     };
-    match s.bridge.accept(&payload) {
+    match s.bridge.accept(&verified.payload, verified.proof) {
         Ok(()) => StatusCode::OK,
         Err(e) => {
             tracing::error!(error = %e, "chat bridge: could not admit the message");

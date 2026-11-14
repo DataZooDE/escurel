@@ -188,9 +188,67 @@ the six chat-relay calls (*Gateway side* below), at most 900 s, never admin. Wit
 configured the claims must agree with Graph (a real object id, that person's own email), so the
 holder cannot pair one person's subject with another's groups; **without Graph the gateway trusts
 the bridge for identity**, so the holder can also assert any email to an email-keyed directory.
-Mint requests are not tied to a Bot Framework activity, so a captured request replays for as long
+Unless the gateway verifies the Teams activity itself (*Gateway-side Teams verification* below),
+mint requests are not tied to a Bot Framework activity, so a captured request replays for as long
 as the credential lives. Treat it like an admin credential: Secret Manager, short-lived tokens
 from the client-credentials grant, rotated through the file.
+
+## Gateway-side Teams verification (recommended for production)
+
+Give the gateway the bot's own app registration and it stops trusting the bridge about **who
+asked** (#835):
+
+```sh
+# on the gateway — the same values the bridge holds
+ESCUREL_AUTH_TEAMS_APP_ID=<bot app id>                              # = ESCUREL_BRIDGE_TEAMS_APP_ID
+ESCUREL_AUTH_TEAMS_APP_SECRET_FILE=/run/secrets/teams-bot-secret    # = ESCUREL_BRIDGE_TEAMS_APP_PASSWORD
+# ESCUREL_AUTH_TEAMS_SERVICE_URL_HOSTS=smba.trafficmanager.net,*.botframework.com   # the default
+# ESCUREL_AUTH_TEAMS_OPENID_METADATA / _ISSUER / _TOKEN_URL / _TOKEN_SCOPE           # Bot Framework defaults
+```
+
+The bridge then forwards every inbound activity's Bot Framework bearer (`activity_token`) with the
+turn's `serviceUrl`, conversation id and Teams user id. The bearer lives only in memory for that
+turn: it is never logged and never written to the bridge's state file. For every mint the gateway:
+
+1. verifies the activity token with the same check the bridge runs (issuer, `aud` = the bot's app
+   id, `exp` / `nbf`, a key endorsed for `msteams`, the `serviceurl` claim equal to the turn's
+   `serviceUrl`) and that the `serviceUrl`'s host is on `ESCUREL_AUTH_TEAMS_SERVICE_URL_HOSTS`
+   (exact, or `*.suffix`). Anything else is refused `activity_unverified` **before any request**:
+   the gateway never sends its bot bearer to another host;
+2. asks that connector, through its egress policy and with the bot's own client-credentials token,
+   `GET {serviceUrl}/v3/conversations/{id}/members/{userId}`. A `404` / `403` is
+   `not_in_conversation` — the roster check, for 1:1 chats, group chats and channels alike; a
+   network failure or a `5xx` is `directory_unavailable` (retryable). A positive answer is cached
+   for 5 minutes per (serviceUrl, conversation, user);
+3. takes the object id, email, UPN and tenant from **Microsoft's** answer; a bridge-asserted value
+   that disagrees is `identity_mismatch`. The principal template, the directory groups and the
+   chat-channel membership all use Microsoft's values.
+
+The bridge drops a `not_in_conversation` or `activity_unverified` turn silently (a WARN in its log,
+no reply, no run): neither is a person's mistake. It does the same, with or without gateway
+verification, when its own members-API lookup answers `404`. A turn the bridge resumes after a restart has lost
+its bearer, so a verifying gateway refuses its mint; a turn not yet captured is dropped, a captured
+one ends in the timeout notice.
+
+**What it closes.** A stolen `escurel:bridge` credential alone no longer mints for anyone: each mint
+needs a fresh activity token Microsoft signed for this bot, and the asker is whoever the connector
+says sent it in that conversation.
+
+**What it does not close.** An activity token names no user. Someone holding the bridge credential
+**and** a captured, still-valid activity token (they live about an hour) **and** a real
+conversation id can mint for any member of that conversation's roster, for as long as the token is
+valid. Keep the bridge credential short-lived and the bridge's inbound traffic on TLS.
+
+Unset, the gateway behaves as before and says once at boot that it trusts the bridge for the
+asker's identity, naming these variables.
+
+## Mint rate limits
+
+`mint_user_token` is capped with token buckets: `ESCUREL_AUTH_BRIDGE_MINT_PER_MINUTE` (default
+600) per bridge credential, checked before any directory or connector call, and
+`ESCUREL_AUTH_BRIDGE_MINT_PER_ASKER_PER_MINUTE` (default 30) per asker, whichever bridge asks. A
+refused mint is `rate_limited` (retryable, with `retry_after_secs`); the bridge tells the person
+once: *I'm getting a lot of questions right now, please try again in a minute.* `0` refuses to boot.
 
 ## Gateway side
 
@@ -450,6 +508,10 @@ the providers' documentation and have not been checked against a real tenant:
   `channelData.team.id` / `channel.id`, and `;messageid=<root>` in a channel thread's conversation
   id (the reply goes to that root);
 - the conversation-members API returning `email` / `userPrincipalName` for a tenant user;
+- gateway-side verification (#835): the members API answering `aadObjectId` and `tenantId`, and
+  `404` / `403` for a user not in a group chat or channel; the lifetime of Teams activity tokens
+  (the gateway re-checks the token on a re-mint within the turn); the default connector host list
+  (`smba.trafficmanager.net`, `*.botframework.com`) for the tenant's region and cloud;
 - Graph `transitiveMemberOf` with `GroupMember.Read.All` under admin consent, as an advanced query
   (`$count=true`, `ConsistencyLevel: eventual`), the `securityEnabled` / `groupTypes` fields, and
   its paging; `GET /users/{id}` with `User.Read.All` returning `mail` / `otherMails`;

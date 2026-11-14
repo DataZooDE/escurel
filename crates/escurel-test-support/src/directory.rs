@@ -276,6 +276,8 @@ pub fn bridge_mint(
         directories,
         cache_ttl,
         stale_ttl,
+        teams: None,
+        rate: escurel_server::rate_limit::MintRateLimits::default(),
     }
 }
 
@@ -454,7 +456,7 @@ fn listing_page(kind: Kind, base: &str, s: &Mutex<State>, req: &Request) -> Resp
     }
 }
 
-fn percent_decode(s: &str) -> String {
+pub(crate) fn percent_decode(s: &str) -> String {
     let bytes = s.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());
     let mut i = 0;

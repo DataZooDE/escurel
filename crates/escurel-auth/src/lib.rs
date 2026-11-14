@@ -17,6 +17,7 @@
 //! jwks_refresh_secs  = 300
 //! ```
 
+pub mod bot_framework;
 mod client_credentials;
 mod jwks;
 mod signer;

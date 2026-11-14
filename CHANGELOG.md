@@ -93,6 +93,24 @@ next release. Migrate with the keep/remove checklist in
   `agent:<skill>` (as a minting runner's do) instead of as the runner.
 - An agent token without an `iat` claim is refused.
 
+Chat bridge hardening (#835):
+
+- **Added — gateway-side Teams verification** (`ESCUREL_AUTH_TEAMS_APP_ID`, `…_APP_SECRET[_FILE]`, `…_OPENID_METADATA`,
+  `…_ISSUER`, `…_TOKEN_URL`, `…_TOKEN_SCOPE`, `…_SERVICE_URL_HOSTS`): the bridge forwards each activity's Bot Framework
+  bearer to `mint_user_token` (`activity_token`, `service_url`), and the gateway verifies it, asks the connector's
+  roster whether the sender is in the conversation (1:1, group chat and channel), and uses Microsoft's object id,
+  tenant, email and UPN. New codes `activity_unverified`, `not_in_conversation` (the bridge drops both silently) and
+  `identity_mismatch` for a disagreeing bridge. The Bot Framework token check now lives once in
+  `escurel_auth::bot_framework`, shared by the bridge and the gateway.
+- **Added — mint rate limits**: `ESCUREL_AUTH_BRIDGE_MINT_PER_MINUTE` (600, per bridge credential, before any lookup)
+  and `ESCUREL_AUTH_BRIDGE_MINT_PER_ASKER_PER_MINUTE` (30); `rate_limited` (retryable, `retry_after_secs`), told to the
+  person once.
+- **Security**: with Teams verification on, a stolen `escurel:bridge` credential alone no longer mints for anyone; it
+  also needs a captured, still-valid activity token and a real conversation id, and then reaches only that
+  conversation's roster. Without it the gateway warns once at boot that it trusts the bridge for who asked.
+- The bridge drops a turn whose own member lookup answers `404` (the sender is not in the conversation) without a
+  reply.
+
 ## v2026.11.13 — BREAKING (runner credential must be admin; skill authority keys need an admin)
 
 The Multica-gap epic (#817): runs you can steer, read and bill, agents with least privilege, cron schedules,

@@ -43,6 +43,7 @@
 //! ```
 
 mod auth;
+mod bot_framework;
 pub mod crdt_testkit;
 mod directory;
 mod fixtures;
@@ -52,9 +53,14 @@ mod process;
 mod runner;
 
 pub use auth::{AuthMode, ExtraIssuer, Role};
+pub use bot_framework::{
+    BF_ISSUER, BotFrameworkStandIn, CONNECTOR_TOKEN, RosterMember, Seen as BotFrameworkSeen,
+    TEAMS_KID, WEBCHAT_KID,
+};
 pub use directory::{DirectoryStandIn, GRAPH_TENANT, bridge_mint};
 pub use escurel_server::egress::EgressPolicy;
 pub use escurel_server::group_directory::BridgeMintConfig;
+pub use escurel_server::rate_limit::MintRateLimits;
 pub use fixtures::{FixtureBuilder, MarkdownBody, TenantFixture};
 pub use mcp_client::{McpError, McpTestClient};
 pub use port::free_port;

@@ -53,7 +53,7 @@ pub(crate) fn bridge_refusal<T>(why: String) -> Result<T, ConfigError> {
 }
 
 /// An https URL, or plain http to a loopback address (tests, local development).
-fn directory_url(key: &str, url: &str) -> Result<(), ConfigError> {
+pub(crate) fn directory_url(key: &str, url: &str) -> Result<(), ConfigError> {
     let ok = reqwest::Url::parse(url).is_ok_and(|u| {
         u.host_str().is_some()
             && (u.scheme() == "https"
@@ -149,7 +149,8 @@ pub(crate) fn bridge_mint_from(
     let Some(template) = get("ESCUREL_AUTH_BRIDGE_PRINCIPAL_TEMPLATE") else {
         let stray = get("ESCUREL_AUTH_GROUP_DIRECTORIES")
             .map(|_| "ESCUREL_AUTH_GROUP_DIRECTORIES")
-            .or_else(|| DIRECTORY_KEYS.iter().find_map(|(p, _)| set_key(p)));
+            .or_else(|| DIRECTORY_KEYS.iter().find_map(|(p, _)| set_key(p)))
+            .or_else(|| crate::teams_verify::stray_key(env));
         return match stray {
             Some(k) => bridge_refusal(format!(
                 "{k} is set but ESCUREL_AUTH_BRIDGE_PRINCIPAL_TEMPLATE is not: the group \
@@ -376,5 +377,7 @@ pub(crate) fn bridge_mint_from(
         directories,
         cache_ttl: crate::group_directory::DEFAULT_CACHE_TTL,
         stale_ttl: crate::group_directory::DEFAULT_STALE_TTL,
+        teams: crate::teams_verify::teams_from(env)?,
+        rate: crate::teams_verify::rate_from(env)?,
     }))
 }

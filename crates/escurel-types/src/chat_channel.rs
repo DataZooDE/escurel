@@ -46,6 +46,13 @@ pub mod mint_codes {
     pub const UNSUPPORTED: &str = "unsupported";
     /// The caller is not a chat bridge's own credential.
     pub const BRIDGE_REQUIRED: &str = "bridge_required";
+    /// The Bot Framework says the sender is not in the conversation (#835).
+    pub const NOT_IN_CONVERSATION: &str = "not_in_conversation";
+    /// The forwarded activity token is missing, invalid, or bound to another
+    /// connector (#835).
+    pub const ACTIVITY_UNVERIFIED: &str = "activity_unverified";
+    /// Too many mints for this bridge credential or this asker (retryable).
+    pub const RATE_LIMITED: &str = "rate_limited";
 }
 
 /// What kind of conversation a turn came from.

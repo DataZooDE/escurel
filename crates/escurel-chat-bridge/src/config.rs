@@ -4,13 +4,13 @@
 
 use std::time::Duration;
 
-/// Microsoft's public Bot Framework endpoints — the defaults a real tenant uses.
-pub const BOT_FRAMEWORK_OPENID_METADATA: &str =
-    "https://login.botframework.com/v1/.well-known/openidconfiguration";
-pub const BOT_FRAMEWORK_ISSUER: &str = "https://api.botframework.com";
-pub const BOT_FRAMEWORK_TOKEN_URL: &str =
-    "https://login.microsoftonline.com/botframework.com/oauth2/v2.0/token";
-pub const BOT_FRAMEWORK_SCOPE: &str = "https://api.botframework.com/.default";
+/// Microsoft's public Bot Framework endpoints — the defaults a real tenant
+/// uses, shared with the gateway's own check (#835).
+pub use escurel_auth::bot_framework::{
+    DEFAULT_ISSUER as BOT_FRAMEWORK_ISSUER,
+    DEFAULT_OPENID_METADATA as BOT_FRAMEWORK_OPENID_METADATA,
+    DEFAULT_TOKEN_SCOPE as BOT_FRAMEWORK_SCOPE, DEFAULT_TOKEN_URL as BOT_FRAMEWORK_TOKEN_URL,
+};
 /// Where Teams puts files people share (SharePoint / OneDrive) and the
 /// media it hosts itself.
 pub const DEFAULT_ATTACHMENT_HOSTS: &str = "*.sharepoint.com,*.asm.skype.com";

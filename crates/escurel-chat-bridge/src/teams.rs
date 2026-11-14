@@ -10,6 +10,9 @@
 //! lists the signing key's `endorsements` they must include `msteams`, so a
 //! token the Bot Framework issued for another channel this bot is enabled on
 //! cannot enter the Teams identity path.
+//! The check is `escurel_auth::bot_framework::ActivityVerifier`, the one the
+//! gateway also runs on the forwarded token (#835); the bearer is handed on
+//! with the payload for the turn's mint, never stored.
 //!
 //! Only a person in an allowed Entra tenant is answered: in a `personal` chat,
 //! or — when the message @mentions the bot — in a `groupChat` or a `channel`
@@ -27,31 +30,29 @@
 use std::time::Duration;
 
 use axum::http::HeaderMap;
-use escurel_auth::{ClientCredentials, JwksCache};
-use jsonwebtoken::{Algorithm, Validation, decode, decode_header};
+use escurel_auth::ClientCredentials;
+use escurel_auth::bot_framework::{
+    ActivityTokenError, ActivityVerifier, ConversationMember, TEAMS_CHANNEL as CHANNEL_ID,
+    member_url, path_segment,
+};
+use escurel_client::SecretString;
 use serde_json::{Value, json};
-use tokio::sync::OnceCell;
 
 use escurel_types::chat_channel::{ConversationKind, ConversationRef};
 
 use crate::channel::{
     Attachment, ChannelError, ChatChannel, InboundError, InboundTurn, MemberProfile, UserRef,
+    Verified,
 };
 use crate::config::TeamsConfig;
 
-/// Clock skew the Bot Framework SDKs allow on `exp` / `nbf`.
-const LEEWAY_SECS: u64 = 300;
-/// Re-fetch the signing keys at most this often (and on an unknown `kid`).
-const JWKS_TTL: Duration = Duration::from_secs(3600);
-/// The only Bot Framework channel this implementation answers.
-const CHANNEL_ID: &str = "msteams";
 /// The Teams file-consent attachment that carries a pre-authorised download URL.
 const TEAMS_FILE: &str = "application/vnd.microsoft.teams.file.download.info";
 
 pub struct TeamsChannel {
     cfg: TeamsConfig,
     http: reqwest::Client,
-    keys: OnceCell<JwksCache>,
+    verifier: ActivityVerifier,
     connector: ClientCredentials,
 }
 
@@ -64,33 +65,17 @@ impl TeamsChannel {
             cfg.app_password.clone(),
             cfg.token_scope.clone(),
         );
+        let verifier = ActivityVerifier::new(
+            cfg.app_id.clone(),
+            cfg.issuer.clone(),
+            cfg.openid_metadata_url.clone(),
+        );
         Self {
             cfg,
             http: client(reqwest::Client::builder()),
-            keys: OnceCell::new(),
+            verifier,
             connector,
         }
-    }
-
-    async fn keys(&self) -> Result<&JwksCache, InboundError> {
-        self.keys
-            .get_or_try_init(|| async {
-                let meta: Value = self
-                    .http
-                    .get(&self.cfg.openid_metadata_url)
-                    .send()
-                    .await
-                    .and_then(reqwest::Response::error_for_status)
-                    .map_err(|e| InboundError::Keys(e.to_string()))?
-                    .json()
-                    .await
-                    .map_err(|e| InboundError::Keys(e.to_string()))?;
-                let jwks_uri = meta["jwks_uri"]
-                    .as_str()
-                    .ok_or_else(|| InboundError::Keys("metadata has no jwks_uri".into()))?;
-                Ok(JwksCache::new(jwks_uri, JWKS_TTL))
-            })
-            .await
     }
 
     async fn connector_token(&self) -> Result<String, ChannelError> {
@@ -136,59 +121,33 @@ impl ChatChannel for TeamsChannel {
         &self,
         headers: &HeaderMap,
         body: &[u8],
-    ) -> Result<Value, InboundError> {
+    ) -> Result<Verified, InboundError> {
         let token = headers
             .get(axum::http::header::AUTHORIZATION)
             .and_then(|v| v.to_str().ok())
             .and_then(|v| v.strip_prefix("Bearer "))
             .ok_or(InboundError::MissingToken)?;
-        let header = decode_header(token).map_err(|e| InboundError::BadToken(e.to_string()))?;
-        if header.alg != Algorithm::RS256 {
-            return Err(InboundError::BadToken(format!("alg {:?}", header.alg)));
-        }
-        let kid = header
-            .kid
-            .ok_or_else(|| InboundError::BadToken("no kid".into()))?;
-        let (key, endorsements) = self
-            .keys()
-            .await?
-            .endorsed_key_for_kid(&kid)
-            .await
-            .map_err(|e| InboundError::BadToken(e.to_string()))?;
-        if let Some(channels) = &endorsements
-            && !channels.iter().any(|c| c == CHANNEL_ID)
-        {
-            return Err(InboundError::BadToken(format!(
-                "signing key `{kid}` is not endorsed for {CHANNEL_ID}"
-            )));
-        }
-        let mut validation = Validation::new(Algorithm::RS256);
-        validation.set_issuer(&[&self.cfg.issuer]);
-        validation.set_audience(&[&self.cfg.app_id]);
-        validation.leeway = LEEWAY_SECS;
-        validation.validate_nbf = true;
-        let claims = decode::<Value>(token, &key, &validation)
-            .map_err(|e| InboundError::BadToken(e.to_string()))?
-            .claims;
         let activity: Value =
             serde_json::from_slice(body).map_err(|e| InboundError::Malformed(e.to_string()))?;
+        let service_url = activity["serviceUrl"].as_str().unwrap_or_default();
+        self.verifier
+            .verify(token, service_url)
+            .await
+            .map_err(|e| match e {
+                ActivityTokenError::BadToken(why) => InboundError::BadToken(why),
+                ActivityTokenError::Keys(why) => InboundError::Keys(why),
+            })?;
         if activity["channelId"].as_str() != Some(CHANNEL_ID) {
             return Err(InboundError::BadToken(format!(
                 "not a {CHANNEL_ID} activity (channelId {})",
                 activity["channelId"]
             )));
         }
-        let bound = claims["serviceurl"]
-            .as_str()
-            .or_else(|| claims["serviceUrl"].as_str())
-            .ok_or_else(|| InboundError::BadToken("no serviceurl claim".into()))?;
-        let claimed = activity["serviceUrl"].as_str().unwrap_or_default();
-        if bound.trim_end_matches('/') != claimed.trim_end_matches('/') {
-            return Err(InboundError::BadToken(
-                "the activity's serviceUrl is not the token's".into(),
-            ));
-        }
-        Ok(activity)
+        // The gateway re-checks this token for the turn's mint (#835).
+        Ok(Verified {
+            payload: activity,
+            proof: Some(SecretString::from(token.to_owned())),
+        })
     }
 
     fn to_capture(&self, a: &Value) -> Option<InboundTurn> {
@@ -291,15 +250,10 @@ impl ChatChannel for TeamsChannel {
     }
 
     async fn member_profile(&self, turn: &InboundTurn) -> Result<MemberProfile, ChannelError> {
-        let r = &turn.reply_to;
-        let url = format!(
-            "{}/v3/conversations/{}/members/{}",
-            r["serviceUrl"]
-                .as_str()
-                .unwrap_or_default()
-                .trim_end_matches('/'),
-            path_segment(&turn.conversation_id),
-            path_segment(&turn.user.id)
+        let url = member_url(
+            turn.reply_to["serviceUrl"].as_str().unwrap_or_default(),
+            &turn.conversation_id,
+            &turn.user.id,
         );
         let resp = self
             .http
@@ -318,15 +272,10 @@ impl ChatChannel for TeamsChannel {
             .json()
             .await
             .map_err(|e| ChannelError::Http(e.to_string()))?;
-        let field = |k: &str| {
-            member[k]
-                .as_str()
-                .filter(|v| !v.is_empty())
-                .map(str::to_owned)
-        };
+        let member = ConversationMember::from_json(&member);
         Ok(MemberProfile {
-            email: field("email"),
-            upn: field("userPrincipalName"),
+            email: member.email,
+            upn: member.upn,
         })
     }
 
@@ -406,20 +355,6 @@ fn conversation_url(reply_to: &Value) -> String {
             .trim_end_matches('/'),
         path_segment(reply_to["conversation"]["id"].as_str().unwrap_or_default())
     )
-}
-
-/// Percent-encode everything but RFC 3986 unreserved characters: Teams
-/// conversation ids carry `:`, `;`, `=` and `@`.
-fn path_segment(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for b in s.bytes() {
-        if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'~') {
-            out.push(char::from(b));
-        } else {
-            out.push_str(&format!("%{b:02X}"));
-        }
-    }
-    out
 }
 
 /// Whether the activity @mentions `bot` (a `mention` entity naming it).
@@ -570,11 +505,6 @@ mod tests {
             "root-1"
         );
         assert_eq!(thread_root("19:c@thread.tacv2", "m-5"), "m-5");
-    }
-
-    #[test]
-    fn conversation_ids_are_encoded_as_one_segment() {
-        assert_eq!(path_segment("a:1b;messageid=2"), "a%3A1b%3Bmessageid%3D2");
     }
 
     #[test]

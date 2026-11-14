@@ -168,6 +168,18 @@ answering 403/404 (or 401 after one token renewal) adds nothing and replaces its
 Without `ESCUREL_AUTH_GROUP_DIRECTORIES` 1:1 turns mint with no groups and shared chats are
 refused (`chat_channel_no_directory`).
 
+**The gateway can check the Teams asker itself** (#835, recommended for production). With
+`ESCUREL_AUTH_TEAMS_APP_ID` + `ESCUREL_AUTH_TEAMS_APP_SECRET[_FILE]` (the bot's own app
+registration) the bridge forwards each activity's Bot Framework bearer, and the gateway verifies
+it (`activity_unverified` when missing, invalid, or bound to a `serviceUrl` other than the turn's
+or off `ESCUREL_AUTH_TEAMS_SERVICE_URL_HOSTS`), asks the connector's roster whether the sender is in
+that conversation (`not_in_conversation`), and takes the object id, tenant, email and UPN from
+Microsoft (`identity_mismatch` when the bridge disagrees). The bridge drops those two codes
+silently. Unset, the gateway trusts the bridge for who asked and warns once at boot. Mints are
+rate-capped per bridge credential (`ESCUREL_AUTH_BRIDGE_MINT_PER_MINUTE`, 600) and per asker
+(`…_PER_ASKER_PER_MINUTE`, 30): `rate_limited`, retryable; the person is told once to try again
+in a minute.
+
 **Identity.** The subject comes from the object id, the email-keyed groups from the email. With
 `graph` configured the gateway binds them: the asserted email / UPN must be one of the sender's
 Graph addresses (`identity_mismatch` otherwise), an unknown object id mints nothing

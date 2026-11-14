@@ -674,6 +674,126 @@ pub(super) struct MintUserTokenArgs {
     upn: Option<String>,
     #[serde(default)]
     conversation: Option<escurel_types::chat_channel::ConversationRef>,
+    /// The inbound activity's Bot Framework bearer, forwarded verbatim (#835).
+    #[serde(default)]
+    activity_token: Option<String>,
+    /// The activity's `serviceUrl`: the connector the token is bound to.
+    #[serde(default)]
+    service_url: Option<String>,
+}
+
+/// Who asked, in the terms the rest of the mint keys on: the bridge's
+/// account, or — with the gateway's Teams check (#835) — Microsoft's.
+struct Asker {
+    tenant_id: String,
+    aad_object_id: String,
+    email: Option<String>,
+    upn: Option<String>,
+}
+
+impl Asker {
+    fn asserted(a: &MintUserTokenArgs) -> Self {
+        let present = |v: &Option<String>| v.clone().filter(|v| !v.trim().is_empty());
+        Self {
+            tenant_id: a.tenant_id.clone(),
+            aad_object_id: a.aad_object_id.clone(),
+            email: present(&a.email),
+            upn: present(&a.upn),
+        }
+    }
+
+    /// Microsoft's answer for the turn, refusing a bridge whose account of
+    /// any field disagrees with it (`identity_mismatch`).
+    async fn verified(
+        tool: &str,
+        teams: &crate::teams_verify::TeamsVerifier,
+        a: &MintUserTokenArgs,
+        conversation_id: &str,
+    ) -> Result<Self, JsonRpcError> {
+        use crate::teams_verify::TeamsVerifyError as E;
+        use escurel_types::chat_channel::mint_codes;
+        let member = teams
+            .member(
+                a.activity_token.as_deref(),
+                a.service_url.as_deref().unwrap_or_default(),
+                conversation_id,
+                a.user_id.as_deref().unwrap_or_default(),
+            )
+            .await
+            .map_err(|e| match &e {
+                E::Unverified(why) => {
+                    tracing::warn!(bridge_says = %a.aad_object_id, why = %why,
+                        "mint_user_token: the Teams activity could not be verified");
+                    JsonRpcError::forbidden(format!("{tool}: {e}"))
+                        .with_code(mint_codes::ACTIVITY_UNVERIFIED, false)
+                }
+                E::NotInConversation => JsonRpcError::forbidden(format!("{tool}: {e}"))
+                    .with_code(mint_codes::NOT_IN_CONVERSATION, false),
+                E::Unavailable { retryable, .. } => JsonRpcError {
+                    code: -32000,
+                    message: format!("{tool}: {e}"),
+                    data: None,
+                }
+                .with_code(mint_codes::DIRECTORY_UNAVAILABLE, *retryable),
+            })?;
+        let Some(aad_object_id) = member.aad_object_id else {
+            return Err(JsonRpcError::invalid_params(format!(
+                "{tool}: Teams names no Entra object id for this sender"
+            ))
+            .with_code(mint_codes::NO_PRINCIPAL, false));
+        };
+        let asserted = Self::asserted(a);
+        // Microsoft omitting the tenant leaves the bridge's (it is checked against the served
+        // tenant below); every other field the bridge asserts must be Microsoft's.
+        let tenant_id = member
+            .tenant_id
+            .unwrap_or_else(|| asserted.tenant_id.clone());
+        for (field, said, truth) in [
+            (
+                "aad_object_id",
+                Some(&asserted.aad_object_id),
+                Some(&aad_object_id),
+            ),
+            ("tenant_id", Some(&asserted.tenant_id), Some(&tenant_id)),
+            ("email", asserted.email.as_ref(), member.email.as_ref()),
+            ("upn", asserted.upn.as_ref(), member.upn.as_ref()),
+        ] {
+            if let Some(said) = said.filter(|v| !v.is_empty())
+                && !truth.is_some_and(|t| t.eq_ignore_ascii_case(said))
+            {
+                tracing::warn!(
+                    field,
+                    "mint_user_token: the bridge's account of the sender is not \
+                    Microsoft's"
+                );
+                return Err(JsonRpcError::forbidden(format!(
+                    "{tool}: the asserted `{field}` is not the one Teams knows this sender by"
+                ))
+                .with_code(mint_codes::IDENTITY_MISMATCH, false));
+            }
+        }
+        Ok(Self {
+            tenant_id,
+            aad_object_id,
+            email: member.email,
+            upn: member.upn,
+        })
+    }
+}
+
+/// A mint refused by a rate cap: retryable, with when to come back.
+fn rate_limited(tool: &str, whose: &str, wait: Duration) -> JsonRpcError {
+    let mut e = JsonRpcError {
+        code: -32000,
+        message: format!("{tool}: too many mints for {whose}; try again shortly"),
+        data: None,
+    }
+    .with_code(escurel_types::chat_channel::mint_codes::RATE_LIMITED, true);
+    if let Some(data) = e.data.as_mut() {
+        data["retry_after_secs"] = json!(wait.as_secs_f64().ceil().max(1.0) as u64);
+    }
+    tracing::warn!(whose, "mint_user_token: rate limited");
+    e
 }
 
 /// `mint_user_token` (#830): a chat bridge, on its own `escurel:bridge`
@@ -713,31 +833,40 @@ pub(super) async fn tool_mint_user_token(
         ))
         .with_code(mint_codes::UNSUPPORTED, false));
     };
+    // Before anything is asked of a directory or a connector (#835).
+    mint.limits
+        .admit_credential(caller.subject)
+        .map_err(|wait| rate_limited(TOOL, "this bridge credential", wait))?;
     if a.channel != CHANNEL {
         return Err(JsonRpcError::invalid_params(format!(
             "{TOOL}: `channel` is `{CHANNEL}` (the one channel with a directory lookup)"
         )));
     }
+    let conv = a.conversation.clone().unwrap_or_default();
+    let who = match &mint.teams {
+        None => Asker::asserted(&a),
+        Some(teams) => Asker::verified(TOOL, teams, &a, &conv.id).await?,
+    };
     // With Graph configured, its Entra tenant is the only one whose object ids mean anything here.
     if let Some(tenant) = mint.graph_tenant.as_deref()
-        && a.tenant_id != tenant
+        && who.tenant_id != tenant
     {
         return Err(JsonRpcError::forbidden(format!(
             "{TOOL}: Entra tenant `{}` is not the one this gateway looks people up in",
-            a.tenant_id
+            who.tenant_id
         ))
         .with_code(mint_codes::TENANT_NOT_SERVED, false));
     }
-    if !crate::group_directory::is_object_id(&a.aad_object_id) {
+    if !crate::group_directory::is_object_id(&who.aad_object_id) {
         return Err(JsonRpcError::invalid_params(format!(
             "{TOOL}: `aad_object_id` is the sender's Entra object id"
         )));
     }
     let asker = escurel_types::bridge::principal_for(
         &mint.principal_template,
-        Some(&a.aad_object_id),
+        Some(&who.aad_object_id),
         a.user_id.as_deref(),
-        Some(&a.tenant_id),
+        Some(&who.tenant_id),
     )
     .map_err(|why| {
         JsonRpcError::invalid_params(format!(
@@ -745,7 +874,9 @@ pub(super) async fn tool_mint_user_token(
         ))
         .with_code(mint_codes::NO_PRINCIPAL, false)
     })?;
-    let conv = a.conversation.unwrap_or_default();
+    mint.limits
+        .admit_asker(&asker)
+        .map_err(|wait| rate_limited(TOOL, "this asker", wait))?;
     // A shared conversation needs its mapping before anything is asked of Graph: an unmapped
     // chat is declined the same way whoever writes in it.
     let group = match conv.kind {
@@ -798,9 +929,9 @@ pub(super) async fn tool_mint_user_token(
         }
     };
     let user = crate::group_directory::DirectoryUser {
-        object_id: Some(a.aad_object_id.clone()),
-        email: a.email.filter(|e| !e.trim().is_empty()),
-        upn: a.upn.filter(|u| !u.trim().is_empty()),
+        object_id: Some(who.aad_object_id.clone()),
+        email: who.email,
+        upn: who.upn,
     };
     // The subject comes from the object id, the email-keyed groups from the email: one person
     // must hold both, or a bridge could pair someone's identity with someone else's groups.

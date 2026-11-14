@@ -81,9 +81,14 @@ pub enum DirectoryError {
     /// Try again later: a 429, a 5xx, a timeout, a dropped connection.
     #[error("{0} (retryable)")]
     Retryable(String),
-    /// Asking again will not help: 403, a refused URL, a bad answer.
+    /// Asking again will not help: a refused URL, a bad answer.
     #[error("{0}")]
     Permanent(String),
+    /// The service refused the request (403): a refusal like
+    /// [`Self::Permanent`], told apart for the Teams roster (#835), where it
+    /// means the user is not in the conversation.
+    #[error("{0}")]
+    Forbidden(String),
     /// The directory refused the credential (401): a service token is
     /// renewed and the call tried once more ([`authorized_get`]); after that,
     /// or for a static credential, it is a refusal like [`Self::Permanent`].
@@ -200,6 +205,11 @@ pub struct BridgeMintConfig {
     pub directories: Vec<DirectoryConfig>,
     pub cache_ttl: Duration,
     pub stale_ttl: Duration,
+    /// `ESCUREL_AUTH_TEAMS_*` (#835): the gateway verifies the Teams activity
+    /// and asks its roster itself; `None` trusts the bridge for who asked.
+    pub teams: Option<crate::teams_verify::TeamsVerifyConfig>,
+    /// `ESCUREL_AUTH_BRIDGE_MINT_*PER_MINUTE` (#835).
+    pub rate: crate::rate_limit::MintRateLimits,
 }
 
 impl BridgeMintConfig {
@@ -219,6 +229,10 @@ pub struct BridgeMint {
     /// The Entra tenant the Graph provider serves; `None` without Graph.
     pub graph_tenant: Option<String>,
     pub directories: GroupDirectories,
+    /// The gateway's own check of a Teams asker; `None` trusts the bridge.
+    pub teams: Option<crate::teams_verify::TeamsVerifier>,
+    /// The per-credential and per-asker mint caps.
+    pub limits: crate::rate_limit::MintLimiter,
 }
 
 impl BridgeMint {
@@ -233,6 +247,11 @@ impl BridgeMint {
             principal_template: cfg.principal_template.clone(),
             graph_tenant: cfg.graph_tenant().map(str::to_owned),
             directories: GroupDirectories::new(cfg, egress, reserved)?,
+            teams: cfg
+                .teams
+                .as_ref()
+                .map(|t| crate::teams_verify::TeamsVerifier::new(t, egress)),
+            limits: crate::rate_limit::MintLimiter::new(cfg.rate),
         })
     }
 }
@@ -681,6 +700,7 @@ pub(crate) async fn get_json(
         let why = format!("the directory answered {status}");
         return Err(match status {
             401 => DirectoryError::Unauthorized(why),
+            403 => DirectoryError::Forbidden(why),
             404 => DirectoryError::NotFound(why),
             429 | 500.. => DirectoryError::Retryable(why),
             _ => DirectoryError::Permanent(why),

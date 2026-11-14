@@ -14,6 +14,7 @@ homepage.workspace = true
 document-pdf = ["escurel-server/kreuzberg"]
 
 [dependencies]
+axum = "0.8"
 escurel-types = { path = "../escurel-types" }
 escurel-admin = { path = "../escurel-admin" }
 escurel-auth = { path = "../escurel-auth" }
@@ -38,7 +39,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 tempfile = "3"
 thiserror = "2"
-tokio = { version = "1", default-features = false, features = ["rt-multi-thread", "macros", "sync", "time", "signal"] }
+tokio = { version = "1", default-features = false, features = ["rt-multi-thread", "macros", "sync", "time", "signal", "net"] }
 wiremock = "0.6"
 
 [[bin]]
