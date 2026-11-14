@@ -279,6 +279,10 @@ pub(super) fn is_machine_caller(caller: &AclCaller<'_>) -> bool {
     caller.is_machine()
 }
 
+/// Event-id prefixes only the bookkeeper ([`AclCaller::may_keep_books`]: the runner's own
+/// identity, admin or `escurel:runner`) files. One list, so a new runner-owned namespace is one entry.
+const BOOKKEEPER_PREFIXES: &[&str] = &["run:", "sched:", "lint-"];
+
 /// Why a caller may not mint `event_id`, when it lies in a namespace the gateway owns.
 ///
 /// * `write-back:<draft>:applied` / `…:<n>:applying|failed` are the promotion bookkeeping: a promote
@@ -295,11 +299,10 @@ pub(super) fn is_machine_caller(caller: &AclCaller<'_>) -> bool {
 ///
 /// Every door that takes a caller-chosen event id (MCP `capture_event`, `/ingest`) asks this first.
 pub(crate) fn reserved_event_id_refusal(event_id: &str, caller: &AclCaller<'_>) -> Option<String> {
-    const BOOKKEEPER_PREFIXES: [&str; 3] = ["run:", "sched:", "lint-"];
     if let Some(prefix) = BOOKKEEPER_PREFIXES
         .iter()
         .find(|p| event_id.starts_with(**p))
-        && (!caller.is_admin || is_machine_caller(caller))
+        && !caller.may_keep_books()
     {
         return Some(format!(
             "event ids starting with `{prefix}` are reserved for the runner's own identity"
@@ -2405,7 +2408,7 @@ pub(super) async fn tool_capture_event(
     // Bookkeeping rights belong to the runner's and the gateway's own admin identity, NOT to a token
     // bound to a run: the runner mints its harnesses ADMIN run tokens, so `is_admin` alone let an
     // agent run file `escurel:run-status`, a system `run-finished`, or a `provenance.workflow` step.
-    let bookkeeper = caller.is_admin && !is_machine_caller(&caller);
+    let bookkeeper = caller.may_keep_books();
     if a.label_skill.starts_with("escurel:")
         && !bookkeeper
         && control.is_none()

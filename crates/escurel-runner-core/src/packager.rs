@@ -524,6 +524,52 @@ enum CallerToken {
     MissingRequester,
 }
 
+/// The run's token from the gateway (`mint_run_token`, #828), for a runner
+/// whose source mints there. `Ok(None)` when it does not (or the gateway
+/// cannot mint), so the caller decides as it always has. An agent run whose
+/// mint the gateway REFUSED fails here: it must never fall back to the
+/// runner's own identity; an ordinary run falls back with a warning, as a
+/// failed local mint does.
+async fn gateway_run_token(
+    tokens: &crate::TokenSource,
+    client: &Client,
+    trigger: &Trigger,
+    run: Option<&crate::RunClaims>,
+    grant: RunGrant<'_>,
+    ttl_secs: u64,
+) -> Result<Option<String>, PackageError> {
+    let (Some(run), true) = (run, tokens.mints_at_gateway()) else {
+        return Ok(None);
+    };
+    let (agent, wide) = match grant {
+        RunGrant::Wide => (String::new(), true),
+        RunGrant::Narrowed(_) => (String::new(), false),
+        RunGrant::Agent { profile, .. } => (profile.id.clone(), false),
+    };
+    let req = escurel_client::MintRunTokenRequest {
+        run_id: run.run_id.clone(),
+        root_event_id: run.root_event_id.clone(),
+        trace_id: run.trace_id.clone().unwrap_or_default(),
+        skill: trigger.label_skill.clone(),
+        agent: agent.clone(),
+        grant: if wide { "wide" } else { "narrowed" }.to_owned(),
+        ttl_secs,
+    };
+    match tokens.mint_run(client, req).await {
+        Ok(token) => Ok(token),
+        Err(e) if !agent.is_empty() => Err(PackageError::Auth(e.to_string())),
+        Err(e) => {
+            tracing::warn!(
+                target: "escurel_runner",
+                label_skill = %trigger.label_skill,
+                error = %e,
+                "per-run token not minted by the gateway; the run writes as the runner"
+            );
+            Ok(None)
+        }
+    }
+}
+
 /// Decide the per-run credential for `trigger`. A workflow run must execute as
 /// its requester (read from the run board's `requested_by`/`requester_groups`,
 /// which `start_operation` stamped); a board with no requester fails closed
@@ -548,6 +594,10 @@ async fn caller_scoped_token(
         // write groups instead of admin — the harness writes that skill's
         // instances and nothing else.
         let ttl = agent_ttl_secs(cfg);
+        // No key of its own (#828): the gateway mints what this runner would have signed.
+        if let Some(minted) = gateway_run_token(tokens, client, trigger, run, grant, ttl).await? {
+            return Ok(CallerToken::Agent { token: minted });
+        }
         let minted = match grant {
             RunGrant::Wide => tokens.mint_agent(&trigger.label_skill, ttl, run, None),
             RunGrant::Narrowed(groups) => {

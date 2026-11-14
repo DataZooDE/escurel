@@ -47,8 +47,7 @@ pub(super) async fn tool_put_run_transcript(
         ));
     }
     let own_run = caller.run_id == Some(a.run_id.as_str());
-    let runner_admin = caller.is_admin && !super::tools_write::is_machine_caller(&caller);
-    if !own_run && !runner_admin {
+    if !own_run && !caller.may_keep_books() {
         return Err(JsonRpcError::forbidden(format!(
             "put_run_transcript: only run `{}`'s own bearer (or the runner's admin bearer) \
              may store its transcript",

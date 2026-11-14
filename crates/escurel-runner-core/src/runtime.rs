@@ -528,7 +528,7 @@ impl RuntimeGate {
     }
 
     /// The gateway will not let this identity claim: the runner credential is
-    /// not an admin. Running the event anyway could race a runner that holds
+    /// neither `escurel:runner` nor an admin. Running the event anyway could race a runner that holds
     /// it, and a lone runner cannot know it is alone (owner decision
     /// 2026-11-13: fail closed for every runner), so it takes nothing and
     /// says how to fix it.
@@ -538,8 +538,8 @@ impl RuntimeGate {
                 target: "escurel_runner",
                 event_id,
                 error = %e,
-                "claim_event refused: the runner credential needs escurel:admin to claim events; \
-                 this runner takes no inbox work until it has it (logged once)"
+                "claim_event refused: the runner credential needs escurel:runner or escurel:admin \
+                 to claim events; this runner takes no inbox work until it has one (logged once)"
             );
         });
         Admit::Refused

@@ -495,6 +495,8 @@ struct TomlAuth {
     admin_role_claim: Option<String>,
     admin_role_value: Option<String>,
     operator_role_value: Option<String>,
+    runner_role_value: Option<String>,
+    bridge_role_value: Option<String>,
     groups_claim: Option<String>,
     jwks_refresh_secs: Option<u64>,
     jwks_uri: Option<String>,
@@ -562,6 +564,11 @@ pub struct AuthConfig {
     /// Role value (same claim as admin) marking an OPERATOR credential: the only one that may
     /// name another tenant in the cross-tenant admin tools.
     pub operator_role_value: String,
+    /// Role value (same claim as admin) marking the RUNNER service credential (#828):
+    /// claims events, keeps the runner's books, mints per-run tokens; not admin.
+    pub runner_role_value: String,
+    /// Role value (same claim as admin) marking the chat BRIDGE service credential.
+    pub bridge_role_value: String,
     /// JWT claim listing the subject's groups for the data-level ACL.
     /// Defaults to the same `roles` claim admin derives from.
     pub groups_claim: String,
@@ -596,6 +603,20 @@ pub struct AuthConfig {
     /// `role=tool,tool;role=tool`). A token whose groups carry a listed role may call only those
     /// tools. Empty = no restricted role.
     pub role_tools: crate::role_gate::RoleTools,
+}
+
+impl AuthConfig {
+    /// The built-in role values (admin, operator, runner, bridge): privilege markers in the roles
+    /// claim, never a configurable tool ceiling and never a group name.
+    #[must_use]
+    pub fn builtin_role_values(&self) -> [&str; 4] {
+        [
+            self.admin_role_value.as_str(),
+            self.operator_role_value.as_str(),
+            self.runner_role_value.as_str(),
+            self.bridge_role_value.as_str(),
+        ]
+    }
 }
 
 /// The gateway's own signing identity (workbench backend P2-6), for
@@ -1289,6 +1310,16 @@ impl EscurelConfig {
                         toml_cfg.auth.operator_role_value,
                         "escurel:operator",
                     ),
+                    runner_role_value: pick(
+                        "ESCUREL_AUTH_RUNNER_ROLE_VALUE",
+                        toml_cfg.auth.runner_role_value,
+                        "escurel:runner",
+                    ),
+                    bridge_role_value: pick(
+                        "ESCUREL_AUTH_BRIDGE_ROLE_VALUE",
+                        toml_cfg.auth.bridge_role_value,
+                        "escurel:bridge",
+                    ),
                     groups_claim: pick(
                         "ESCUREL_AUTH_GROUPS_CLAIM",
                         toml_cfg.auth.groups_claim,
@@ -1349,16 +1380,29 @@ impl EscurelConfig {
             _ => None,
         };
 
-        // A service role equal to the admin or operator value would restrict every admin token.
+        // A service role equal to a built-in role value would restrict every token holding it.
         if let Some(a) = auth.as_ref()
             && let Some(r) = a
                 .role_tools
                 .roles()
-                .find(|r| *r == a.admin_role_value || *r == a.operator_role_value)
+                .find(|r| a.builtin_role_values().contains(r))
         {
             return Err(ConfigError::RoleTools(format!(
-                "role `{r}` is the admin or operator role value"
+                "role `{r}` is a built-in role value (admin, operator, runner or bridge)"
             )));
+        }
+        // Two built-in roles sharing one value would grant one through the other.
+        if let Some(a) = auth.as_ref() {
+            let values = a.builtin_role_values();
+            for (i, v) in values.iter().enumerate() {
+                if values[..i].contains(v) {
+                    return Err(ConfigError::InvalidValue {
+                        var: "ESCUREL_AUTH_RUNNER_ROLE_VALUE",
+                        value: (*v).to_owned(),
+                        reason: "the admin, operator, runner and bridge role values must differ",
+                    });
+                }
+            }
         }
 
         if let Some(a) = auth.as_ref() {
@@ -3239,6 +3283,10 @@ impl EscurelConfig {
             .with_tenant_claim(auth.tenant_claim.clone())
             .with_admin_role(auth.admin_role_claim.clone(), auth.admin_role_value.clone())
             .with_operator_role(auth.operator_role_value.clone())
+            .with_service_roles(
+                auth.runner_role_value.clone(),
+                auth.bridge_role_value.clone(),
+            )
             .with_groups_claim(auth.groups_claim.clone());
         if let Some(uri) = auth.jwks_uri.clone() {
             cfg = cfg.with_jwks_uri(uri);

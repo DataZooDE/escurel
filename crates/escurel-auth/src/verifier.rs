@@ -29,6 +29,14 @@ pub struct OidcConfig {
     /// credential as an OPERATOR: the only credential that may act on a tenant other than
     /// its own. Default `"escurel:operator"`. An operator is also an admin.
     pub operator_role_value: String,
+    /// The role value (same claim as admin) that marks a RUNNER service
+    /// credential (#828): it may claim inbox events, keep the runner's books
+    /// and mint per-run tokens, and nothing an admin alone may do. Default
+    /// `"escurel:runner"`.
+    pub runner_role_value: String,
+    /// The role value (same claim as admin) that marks a chat BRIDGE service
+    /// credential. Default `"escurel:bridge"`.
+    pub bridge_role_value: String,
     /// JWT claim name that lists the subject's group/role memberships
     /// for the data-level ACL. Default `"roles"` (the same claim admin
     /// derives from). Parsed leniently — see [`parse_groups_claim`].
@@ -77,6 +85,8 @@ impl OidcConfig {
             admin_role_claim: "roles".to_owned(),
             admin_role_value: "escurel:admin".to_owned(),
             operator_role_value: "escurel:operator".to_owned(),
+            runner_role_value: "escurel:runner".to_owned(),
+            bridge_role_value: "escurel:bridge".to_owned(),
             groups_claim: "roles".to_owned(),
             jwks_refresh: Duration::from_secs(300),
             jwks_uri: None,
@@ -150,6 +160,19 @@ impl OidcConfig {
         self
     }
 
+    /// Rename the role values that mark the runner and bridge service
+    /// credentials (see [`Self::runner_role_value`]).
+    #[must_use]
+    pub fn with_service_roles(
+        mut self,
+        runner: impl Into<String>,
+        bridge: impl Into<String>,
+    ) -> Self {
+        self.runner_role_value = runner.into();
+        self.bridge_role_value = bridge.into();
+        self
+    }
+
     #[must_use]
     pub fn with_groups_claim(mut self, claim: impl Into<String>) -> Self {
         self.groups_claim = claim.into();
@@ -218,6 +241,28 @@ pub struct AuthContext {
     /// a restriction: the gateway confines such a context to the few calls a
     /// bridge makes (`escurel-server`'s bridge gate).
     pub bridge: bool,
+    /// The built-in service role this credential holds (#828), from the
+    /// configured runner / bridge role values. `None` for every machine token
+    /// (one carrying `run_id`, `skill`, `agent`, `act` or a workbench purpose):
+    /// a service role is a property of a service's OWN credential, so a token
+    /// minted for a run never inherits it, whatever its roles say.
+    pub service: Option<ServiceRole>,
+    /// The token's `iat` (issued-at, Unix seconds) when it carries a numeric
+    /// one. Compared against an agent page's `token_epoch` to revoke the
+    /// tokens issued for that agent before it (#829).
+    pub issued_at: Option<u64>,
+}
+
+/// A built-in service role: a credential a service holds for itself, with a
+/// narrow authority of its own rather than a tool ceiling over a member's
+/// (`ESCUREL_AUTH_ROLE_TOOLS` can only take away; these grant).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ServiceRole {
+    /// `escurel:runner`: claims inbox events, files the runner's lifecycle
+    /// records, registers its `runtime` page and mints per-run tokens.
+    Runner,
+    /// `escurel:bridge`: a chat bridge's service credential.
+    Bridge,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -547,6 +592,29 @@ impl OidcVerifier {
             (_, actor) => (claims.sub, actor),
         };
 
+        // A service role belongs to a service's own credential: a machine token (minted for a run,
+        // an agent or a skill, or acting for someone) never carries one, whatever its roles say —
+        // so a run token a runner minted cannot claim events or mint further tokens.
+        let machine = agent_minted || run.is_some() || actor.is_some();
+        let service = if machine {
+            None
+        } else if has_role_value(
+            &claims.rest,
+            &self.config.admin_role_claim,
+            &self.config.runner_role_value,
+        ) {
+            Some(ServiceRole::Runner)
+        } else if has_role_value(
+            &claims.rest,
+            &self.config.admin_role_claim,
+            &self.config.bridge_role_value,
+        ) {
+            Some(ServiceRole::Bridge)
+        } else {
+            None
+        };
+        let issued_at = claims.rest.get("iat").and_then(serde_json::Value::as_u64);
+
         let agent_skill = claim_str(SKILL_CLAIM);
         let agent = claims.rest.get(AGENT_CLAIM).map(|v| {
             v.as_str()
@@ -566,6 +634,8 @@ impl OidcVerifier {
             agent_skill,
             agent,
             bridge: false,
+            service,
+            issued_at,
         })
     }
 
@@ -690,6 +760,8 @@ fn bridge_context(
         agent_skill: None,
         agent: None,
         bridge: true,
+        service: None,
+        issued_at: Some(iat),
     })
 }
 

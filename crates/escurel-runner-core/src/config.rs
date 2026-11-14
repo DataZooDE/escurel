@@ -799,11 +799,18 @@ impl RunnerConfig {
         &self,
         signing_key_pem: Option<&str>,
     ) -> Option<Result<crate::TokenSource, crate::AuthError>> {
+        // A supplied bearer and no key: the runner cannot sign, so its runs get their tokens from
+        // the gateway (`mint_run_token`, #828) — the out-of-cluster runner on `escurel:runner`.
         if let Some(token) = &self.token {
-            return Some(Ok(crate::TokenSource::Static(token.clone())));
+            return Some(Ok(crate::TokenSource::via_gateway(
+                crate::TokenSource::Static(token.clone()),
+            )));
         }
         if let Some(path) = &self.token_file {
-            return Some(crate::TokenFile::open(path).map(crate::TokenSource::File));
+            return Some(
+                crate::TokenFile::open(path)
+                    .map(|file| crate::TokenSource::via_gateway(crate::TokenSource::File(file))),
+            );
         }
         let issuer = self.auth_issuer.clone()?;
         let key = signing_key_pem.filter(|k| !k.trim().is_empty())?;

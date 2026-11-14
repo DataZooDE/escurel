@@ -242,7 +242,8 @@ async fn migrate_legacy_evolve_evidence_keeps_owner_acl_and_exact_bindings() {
                         run_id: None,
                         root_event_id: None,
                         agent_skill: None,
-                        agent: None
+                        agent: None,
+                        runner: false,
                     },
                     skill,
                     &frontmatter
@@ -261,7 +262,8 @@ async fn migrate_legacy_evolve_evidence_keeps_owner_acl_and_exact_bindings() {
                         run_id: None,
                         root_event_id: None,
                         agent_skill: None,
-                        agent: None
+                        agent: None,
+                        runner: false,
                     },
                     skill,
                     &frontmatter

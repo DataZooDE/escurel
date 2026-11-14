@@ -18,7 +18,7 @@ use escurel_index::{AclCaller, Indexer, IndexerError};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use super::tools_write::{is_machine_caller, stamp_captured_by};
+use super::tools_write::stamp_captured_by;
 use super::{JsonRpcError, parse_args};
 
 /// The runner's state at the moment of the report.
@@ -46,10 +46,10 @@ pub(super) async fn tool_report_runner_status(
     args: Value,
 ) -> Result<Value, JsonRpcError> {
     let a: ReportRunnerStatusArgs = parse_args(args, "report_runner_status")?;
-    if !caller.is_admin || is_machine_caller(&caller) {
+    if !caller.may_keep_books() {
         return Err(JsonRpcError::invalid_params(
-            "report_runner_status: a runner's status is written by the runner's own admin \
-             identity; a caller files events with `capture_event`"
+            "report_runner_status: a runner's status is written by the runner's own identity \
+             (admin or escurel:runner); a caller files events with `capture_event`"
                 .to_owned(),
         ));
     }

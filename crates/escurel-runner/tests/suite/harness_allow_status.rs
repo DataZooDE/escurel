@@ -163,6 +163,8 @@ async fn runner_status_harness_allow_list_leaks_no_detail() {
         "runs",
         "throttled",
         "harness_permits_available",
+        // The built-in role the credential holds (`admin` | `runner`), #828: a name, no detail.
+        "role",
         "draining",
         "uptime_s",
         "last_poll_age_ms",

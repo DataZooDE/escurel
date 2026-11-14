@@ -7,7 +7,7 @@
 
 use std::time::Duration;
 
-use escurel_auth::{AuthError, OidcConfig, OidcVerifier, Role};
+use escurel_auth::{AuthError, OidcConfig, OidcVerifier, Role, ServiceRole};
 use jsonwebtoken::{Algorithm, EncodingKey, Header, encode};
 use rsa::pkcs1::EncodeRsaPrivateKey;
 use rsa::traits::PublicKeyParts;
@@ -90,6 +90,82 @@ fn now() -> u64 {
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_secs()
+}
+
+/// The built-in service roles (#828): `escurel:runner` / `escurel:bridge` in the
+/// roles claim project to `AuthContext.service`, renamable like the admin value,
+/// never admin by themselves, and IGNORED on any machine token (run, skill,
+/// agent or `act`) so a token minted for a run cannot inherit them. `iat`
+/// comes out as `issued_at` for the agent-token epoch (#829).
+#[tokio::test]
+async fn service_roles_project_on_a_service_credential_and_never_on_a_machine_token() {
+    let server = MockServer::start().await;
+    let keys = make_keys();
+    mock_jwks(&server, &keys).await;
+    let issuer = format!("{}{ISSUER_PATH}", server.uri());
+    let v = verifier_pointing_at(&server);
+    let now = now();
+    let token = |roles: Value, extra: Value| {
+        let mut c = json!({
+            "iss": issuer, "aud": AUDIENCE, "sub": "runner:hq", "tenant": "acme",
+            "iat": now, "exp": now + 600, "roles": roles,
+        });
+        for (k, val) in extra.as_object().unwrap() {
+            c[k] = val.clone();
+        }
+        sign_token(&keys, c)
+    };
+
+    let ctx = v
+        .verify(&token(json!(["escurel:runner"]), json!({})))
+        .await
+        .unwrap();
+    assert_eq!(ctx.service, Some(ServiceRole::Runner));
+    assert_eq!(ctx.role, Role::Agent, "a runner is not an admin");
+    assert_eq!(ctx.issued_at, Some(now));
+    let ctx = v
+        .verify(&token(json!(["escurel:bridge"]), json!({})))
+        .await
+        .unwrap();
+    assert_eq!(ctx.service, Some(ServiceRole::Bridge));
+    let ctx = v
+        .verify(&token(json!(["escurel:agent"]), json!({})))
+        .await
+        .unwrap();
+    assert_eq!(ctx.service, None);
+
+    for machine in [
+        json!({ "run_id": "01HRUN" }),
+        json!({ "skill": "note" }),
+        json!({ "agent": "scribe" }),
+        json!({ "act": { "sub": "runner:hq" } }),
+    ] {
+        let ctx = v
+            .verify(&token(json!(["escurel:runner"]), machine.clone()))
+            .await
+            .unwrap();
+        assert_eq!(
+            ctx.service, None,
+            "a machine token ({machine}) holds no service role"
+        );
+    }
+
+    // Renamed: the default value is then an ordinary group, the new one the role.
+    let renamed = OidcVerifier::new(
+        OidcConfig::new(issuer.clone(), AUDIENCE.to_owned())
+            .with_jwks_uri(format!("{issuer}/protocol/openid-connect/certs"))
+            .with_service_roles("ops:runner", "ops:bridge"),
+    );
+    let ctx = renamed
+        .verify(&token(json!(["escurel:runner"]), json!({})))
+        .await
+        .unwrap();
+    assert_eq!(ctx.service, None);
+    let ctx = renamed
+        .verify(&token(json!(["ops:runner"]), json!({})))
+        .await
+        .unwrap();
+    assert_eq!(ctx.service, Some(ServiceRole::Runner));
 }
 
 /// The run's identity on a per-run agent token (workbench backend P1):

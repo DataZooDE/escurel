@@ -141,6 +141,9 @@ struct AppState {
     /// and the result id first-writer-wins, the stored result alone cannot
     /// show that a runner which does not own the run stayed silent.
     control_decisions: ControlDecisions,
+    /// The built-in role the runner credential holds (`admin` | `runner`), set by the boot
+    /// preflight; `role` on the status record.
+    credential_role: Arc<std::sync::OnceLock<&'static str>>,
 }
 
 /// The last [`ControlDecisions::KEEP`] run-control decisions, by request id.
@@ -218,6 +221,9 @@ async fn main() -> anyhow::Result<()> {
     // Drain flag: shutdown sets it so ingress stops admitting new triggers
     // while in-flight runs finish.
     let draining = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    // Which built-in role the runner credential holds (`admin` | `runner`), once the boot
+    // preflight has asked the gateway; reported on the status record.
+    let credential_role: Arc<std::sync::OnceLock<&'static str>> = Arc::default();
 
     // The runner's gateway credential, built once. A static
     // ESCUREL_RUNNER_TOKEN still wins; otherwise, given an issuer and a
@@ -294,6 +300,7 @@ async fn main() -> anyhow::Result<()> {
         tokio::spawn(claim_preflight(
             config.gateway_url.clone(),
             Arc::clone(source),
+            Arc::clone(&credential_role),
         ));
         tokio::spawn(lease_renewal_loop(
             config.gateway_url.clone(),
@@ -529,6 +536,7 @@ async fn main() -> anyhow::Result<()> {
         lineage_trust_subject: tokens.as_ref().and_then(|t| t.subject()).map(Arc::from),
         gate: gate.clone(),
         control_decisions: ControlDecisions::default(),
+        credential_role,
     };
     // The run-control subscriber (workbench backend P2-3b) and the status
     // reporter (P2-4). Same enablement as the poller and the promotion tail.
@@ -4561,6 +4569,7 @@ fn status_snapshot(
             "paused": state.governor.throttled(escurel_runner_core::ThrottleReason::Paused),
         },
         "harness_permits_available": state.governor.harness_permits_available(),
+        "role": state.credential_role.get(),
         "draining": state.draining.load(std::sync::atomic::Ordering::Relaxed),
     });
     let last = state
@@ -4787,21 +4796,33 @@ async fn lease_renewal_loop(
 }
 
 /// Say at boot, loudly, when this runner's credential cannot claim (crew
-/// U-F3; owner decision 2026-11-13): without `escurel:admin` every claim is
-/// refused, so the runner takes no inbox work at all. It is not a reason to
+/// U-F3; owner decision 2026-11-13): without `escurel:runner` or
+/// `escurel:admin` every claim is refused, so the runner takes no inbox work at
+/// all. The role it does hold is recorded for the status record (`role`), so
+/// the Runtimes view can say which a runner runs as. It is not a reason to
 /// refuse to start: the runner keeps serving `/healthz`, so the operator sees
 /// this error instead of a crash loop.
-async fn claim_preflight(gateway_url: String, tokens: Arc<escurel_runner_core::TokenSource>) {
+async fn claim_preflight(
+    gateway_url: String,
+    tokens: Arc<escurel_runner_core::TokenSource>,
+    role: Arc<std::sync::OnceLock<&'static str>>,
+) {
     let Some(client) = connect_now(&gateway_url, &tokens).await else {
         return;
     };
     match client.whoami().await {
-        Ok(me) if !me.is_admin => tracing::error!(
+        Ok(me) if me.is_admin => {
+            let _ = role.set("admin");
+        }
+        Ok(me) if me.service.as_deref() == Some("runner") => {
+            let _ = role.set("runner");
+        }
+        Ok(me) => tracing::error!(
             target: "escurel_runner",
             subject = %me.subject,
-            "the runner credential needs escurel:admin to claim events: {CLAIM_CREDENTIAL_FIX}"
+            "the runner credential needs escurel:runner or escurel:admin to claim events: \
+             {CLAIM_CREDENTIAL_FIX}"
         ),
-        Ok(_) => {}
         // A credential the gateway refuses outright cannot claim either: the same error, the same fix.
         Err(e) if escurel_runner_core::runtime::is_identity_refusal(&e) => tracing::error!(
             target: "escurel_runner",
@@ -4819,9 +4840,10 @@ async fn claim_preflight(gateway_url: String, tokens: Arc<escurel_runner_core::T
 }
 
 /// What an operator does about a runner credential that cannot claim.
-const CLAIM_CREDENTIAL_FIX: &str = "this runner takes no inbox work until it has escurel:admin — \
-    give it an admin credential (ESCUREL_RUNNER_TOKEN / ESCUREL_RUNNER_TOKEN_FILE with the \
-    escurel:admin role, or a minting runner)";
+const CLAIM_CREDENTIAL_FIX: &str = "this runner takes no inbox work until it has escurel:runner \
+    or escurel:admin — give it a runner credential (ESCUREL_RUNNER_TOKEN / \
+    ESCUREL_RUNNER_TOKEN_FILE with the escurel:runner role; no signing key needed, the gateway \
+    mints its per-run tokens) or an admin one, or make it a minting runner";
 
 /// The CLI a harness runs, for its `--version` probe; `None` for one that
 /// runs in process (gemini, the OpenAI-compatible presets, delegate).

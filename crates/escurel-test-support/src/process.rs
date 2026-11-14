@@ -832,6 +832,22 @@ impl EscurelProcess {
         issuer.mint_with_groups(tenant, subject, groups, admin)
     }
 
+    /// Re-sign `token` (one this process's issuer minted) with `claim` set to
+    /// `value` — to add a run claim to a service credential, or move `iat`, and
+    /// prove the gateway's reading of the result. `value: null` blanks it.
+    #[must_use]
+    pub fn resign_token_with_claim(
+        &self,
+        token: &str,
+        claim: &str,
+        value: serde_json::Value,
+    ) -> String {
+        let issuer = self.issuer.as_ref().expect(
+            "EscurelProcess::resign_token_with_claim requires AuthMode::TestIssuer; spawned with a different mode",
+        );
+        issuer.resign_with_extra(token, claim, value)
+    }
+
     /// Typed MCP-over-HTTP client targeting this process's HTTP
     /// listener, pre-loaded with a bearer token minted for the default
     /// `"acme"` tenant. Cheap clone of an already-built client — no

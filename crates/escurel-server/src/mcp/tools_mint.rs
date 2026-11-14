@@ -74,6 +74,92 @@ pub(super) fn rfc3339(t: SystemTime) -> String {
     )
 }
 
+/// The policy every gateway mint shares (`mint_agent_token`, `mint_run_token`,
+/// `issue_agent_token`): who may mint at all, with which signing identity, and
+/// for how long. One place, so a new mint tool cannot forget a refusal.
+pub(super) struct MintGuard<'a> {
+    tool: &'static str,
+    pub(super) signer: &'a escurel_auth::Signer,
+}
+
+impl<'a> MintGuard<'a> {
+    /// Refuse a machine caller, a gateway without a signing identity, and a
+    /// restricted caller whose child would shed the restriction.
+    pub(super) fn check(
+        tool: &'static str,
+        state: &'a AppState,
+        caller: &AclCaller<'_>,
+    ) -> Result<Self, JsonRpcError> {
+        // A machine caller must not mint: the child carries the caller's groups but none of its
+        // agent or skill claims, so an agent-profile or narrowed token would shed its `scopes`, its
+        // skill confinement and the `/ws` / `/ingest` / `/blob` refusals in one call.
+        if caller.agent.is_some() || super::tools_write::is_machine_caller(caller) {
+            return Err(JsonRpcError {
+                code: -32001,
+                message: format!(
+                    "{tool}: an agent or run token cannot mint another token (a person's or \
+                     service's own credential mints)"
+                ),
+                data: None,
+            }
+            .with_code("agent_scope_denied", false));
+        }
+        let Some(signer) = state.signer.as_deref() else {
+            return Err(JsonRpcError::invalid_params(format!(
+                "{tool}: this gateway has no signing identity (set ESCUREL_AUTH_SIGNING_KEY, and \
+                 ESCUREL_AUTH_SIGNING_KID / _ISSUER as needed)"
+            ))
+            .with_code("unsupported", false));
+        };
+        // A restricted caller's child inherits the restriction through its groups, which the
+        // minter writes to `roles`. A gateway that reads groups from another claim would see a
+        // child without them, i.e. unrestricted: refuse rather than mint that.
+        if state.role_tools.restriction(caller.token_groups).is_some()
+            && state
+                .verifier
+                .as_ref()
+                .is_some_and(|v| v.config().groups_claim != "roles")
+        {
+            return Err(JsonRpcError::invalid_params(format!(
+                "{tool}: a restricted role cannot mint while ESCUREL_AUTH_GROUPS_CLAIM is not \
+                 `roles` (the child would lose the restriction)"
+            ))
+            .with_code("unsupported", false));
+        }
+        Ok(Self { tool, signer })
+    }
+
+    /// The token's lifetime: `requested`, else `default`, refused outside `bounds`.
+    pub(super) fn ttl(
+        &self,
+        requested: Option<u64>,
+        default: u64,
+        bounds: std::ops::RangeInclusive<u64>,
+    ) -> Result<u64, JsonRpcError> {
+        let ttl = requested.unwrap_or(default);
+        if bounds.contains(&ttl) {
+            Ok(ttl)
+        } else {
+            Err(JsonRpcError::invalid_params(format!(
+                "{}: `ttl_secs` is {}..={}, got {ttl}",
+                self.tool,
+                bounds.start(),
+                bounds.end()
+            )))
+        }
+    }
+
+    /// A signing failure as the caller sees it: an unusable subject is theirs to fix.
+    pub(super) fn sign_error(&self, e: escurel_auth::SignError) -> JsonRpcError {
+        match e {
+            escurel_auth::SignError::UnusableAgentSubject(_) => {
+                JsonRpcError::invalid_params(format!("{}: {e}", self.tool))
+            }
+            other => JsonRpcError::internal(format!("{}: {other}", self.tool)),
+        }
+    }
+}
+
 pub(super) async fn tool_mint_agent_token(
     state: &AppState,
     indexer: &Indexer,
@@ -81,54 +167,14 @@ pub(super) async fn tool_mint_agent_token(
     args: Value,
 ) -> Result<Value, JsonRpcError> {
     let a: MintAgentTokenArgs = parse_args(args, "mint_agent_token")?;
-    // A machine caller must not mint: the child carries the caller's groups but none of its agent
-    // or skill claims, so an agent-profile or narrowed token would shed its `scopes`, its skill
-    // confinement and the `/ws` / `/ingest` / `/blob` refusals in one call.
-    if caller.agent.is_some() || super::tools_write::is_machine_caller(&caller) {
-        return Err(JsonRpcError {
-            code: -32001,
-            message: "mint_agent_token: an agent or run token cannot mint another token (a \
-                      person's own credential mints)"
-                .to_owned(),
-            data: None,
-        }
-        .with_code("agent_scope_denied", false));
-    }
-    let Some(signer) = state.signer.as_ref() else {
-        return Err(JsonRpcError::invalid_params(
-            "mint_agent_token: this gateway has no signing identity (set \
-             ESCUREL_AUTH_SIGNING_KEY, and ESCUREL_AUTH_SIGNING_KID / _ISSUER as needed)"
-                .to_owned(),
-        )
-        .with_code("unsupported", false));
-    };
+    let guard = MintGuard::check("mint_agent_token", state, &caller)?;
     if a.skill.trim().is_empty() {
         return Err(JsonRpcError::invalid_params(
             "mint_agent_token: `skill` is required (the agent runs as `agent:<skill>`)".to_owned(),
         ));
     }
-    // A restricted caller's child inherits the restriction through its groups, which the minter
-    // writes to `roles`. A gateway that reads groups from another claim would see a child without
-    // them, i.e. unrestricted: refuse rather than mint that.
-    if state.role_tools.restriction(caller.token_groups).is_some()
-        && state
-            .verifier
-            .as_ref()
-            .is_some_and(|v| v.config().groups_claim != "roles")
-    {
-        return Err(JsonRpcError::invalid_params(
-            "mint_agent_token: a restricted role cannot mint while ESCUREL_AUTH_GROUPS_CLAIM is \
-             not `roles` (the child would lose the restriction)"
-                .to_owned(),
-        )
-        .with_code("unsupported", false));
-    }
-    let ttl = a.ttl_secs.unwrap_or(DEFAULT_TTL_SECS);
-    if !(MIN_TTL_SECS..=MAX_TTL_SECS).contains(&ttl) {
-        return Err(JsonRpcError::invalid_params(format!(
-            "mint_agent_token: `ttl_secs` is {MIN_TTL_SECS}..={MAX_TTL_SECS}, got {ttl}"
-        )));
-    }
+    let ttl = guard.ttl(a.ttl_secs, DEFAULT_TTL_SECS, MIN_TTL_SECS..=MAX_TTL_SECS)?;
+    let signer = guard.signer;
     let text = |v: &Option<String>| v.as_deref().filter(|s| !s.is_empty()).map(str::to_owned);
     let root_event_id = text(&a.root_event_id);
     let target_page_id = text(&a.target_page_id);
@@ -155,12 +201,7 @@ pub(super) async fn tool_mint_agent_token(
             ttl,
             Some(&run),
         )
-        .map_err(|e| match e {
-            escurel_auth::SignError::UnusableAgentSubject(_) => {
-                JsonRpcError::invalid_params(format!("mint_agent_token: {e}"))
-            }
-            other => JsonRpcError::internal(format!("mint_agent_token: {other}")),
-        })?;
+        .map_err(|e| guard.sign_error(e))?;
     let expires_at = SystemTime::now() + Duration::from_secs(ttl);
     let expires = rfc3339(expires_at);
     let subject = format!("agent:{}", a.skill);
@@ -206,6 +247,150 @@ pub(super) async fn tool_mint_agent_token(
     Ok(json!({
         "token": token,
         "run_id": run_id,
+        "root_event_id": run.root_event_id,
+        "subject": subject,
+        "expires_at": expires,
+    }))
+}
+
+/// `mint_run_token`'s lifetime: a run's own budget, as the runner floors it.
+const RUN_DEFAULT_TTL_SECS: u64 = 30 * 60;
+const RUN_MIN_TTL_SECS: u64 = 60;
+const RUN_MAX_TTL_SECS: u64 = 24 * 60 * 60;
+
+#[derive(Deserialize)]
+pub(super) struct MintRunTokenArgs {
+    #[serde(default)]
+    run_id: String,
+    #[serde(default)]
+    root_event_id: Option<String>,
+    #[serde(default)]
+    trace_id: Option<String>,
+    #[serde(default)]
+    skill: String,
+    #[serde(default)]
+    agent: Option<String>,
+    #[serde(default)]
+    grant: Option<String>,
+    #[serde(default)]
+    ttl_secs: Option<u64>,
+}
+
+/// A run id is an id (the runner's ULIDs), never a path or a claim separator.
+fn is_run_id(s: &str) -> bool {
+    !s.is_empty()
+        && s.len() <= 128
+        && s.chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+}
+
+/// `mint_run_token` (#828): a runner with no signing key of its own gets each
+/// run's token here — exactly what a minting runner signs for itself
+/// (`escurel-runner-core`'s `TokenSource`): an agent-profile token, or one
+/// narrowed to the skill's write groups, or (an admin asking for it) the wide
+/// admin shape, all naming the CALLER as `act.sub`. The groups are read from
+/// the skill page here, never taken from the caller, so a runner credential
+/// cannot mint a group it was not granted; a runner is never given the wide
+/// shape. Writes no `run-started`: the runner files its own lifecycle.
+pub(super) async fn tool_mint_run_token(
+    state: &AppState,
+    indexer: &Indexer,
+    caller: AclCaller<'_>,
+    args: Value,
+) -> Result<Value, JsonRpcError> {
+    const TOOL: &str = "mint_run_token";
+    let a: MintRunTokenArgs = parse_args(args, TOOL)?;
+    let guard = MintGuard::check(TOOL, state, &caller)?;
+    // The dispatch admin gate lets admins and runners in; this is the handler's own word on it.
+    if !caller.may_keep_books() {
+        return Err(JsonRpcError::forbidden(format!(
+            "{TOOL}: only a runner's own credential (escurel:runner or admin) mints run tokens"
+        )));
+    }
+    if !is_run_id(&a.run_id) {
+        return Err(JsonRpcError::invalid_params(format!(
+            "{TOOL}: `run_id` is 1..=128 characters of [A-Za-z0-9._-]"
+        )));
+    }
+    if a.skill.trim().is_empty() {
+        return Err(JsonRpcError::invalid_params(format!(
+            "{TOOL}: `skill` is required (the run's label skill)"
+        )));
+    }
+    let wide = match a.grant.as_deref() {
+        None | Some("") | Some("narrowed") => false,
+        Some("wide") => true,
+        Some(other) => {
+            return Err(JsonRpcError::invalid_params(format!(
+                "{TOOL}: `grant` is `narrowed` or `wide`, got `{other}`"
+            )));
+        }
+    };
+    let ttl = guard.ttl(
+        a.ttl_secs,
+        RUN_DEFAULT_TTL_SECS,
+        RUN_MIN_TTL_SECS..=RUN_MAX_TTL_SECS,
+    )?;
+    // A run another identity started is that identity's: minting for it would let one runner act
+    // as another's run (and file into its lineage).
+    let started = indexer
+        .get_event(&format!("run:{}:started", a.run_id))
+        .await
+        .map_err(|e| JsonRpcError::internal(format!("{TOOL}: {e}")))?;
+    if let Some(started) = started
+        && started.provenance["captured_by"].as_str() != Some(caller.subject)
+    {
+        return Err(JsonRpcError::forbidden(format!(
+            "{TOOL}: run `{}` was started by another identity",
+            a.run_id
+        ))
+        .with_code("run_not_yours", false));
+    }
+    let text = |v: &Option<String>| v.as_deref().filter(|s| !s.is_empty()).map(str::to_owned);
+    let run = escurel_auth::MintRunClaims {
+        run_id: a.run_id.clone(),
+        root_event_id: text(&a.root_event_id).unwrap_or_else(|| a.run_id.clone()),
+        trace_id: text(&a.trace_id),
+    };
+    let groups = indexer
+        .skill_write_groups(&a.skill)
+        .await
+        .map_err(|e| JsonRpcError::internal(format!("{TOOL}: {e}")))?;
+    let signer = guard.signer;
+    let (token, subject) = match text(&a.agent) {
+        Some(agent) => {
+            let found = indexer
+                .agent_profile(&agent)
+                .await
+                .map_err(|e| JsonRpcError::internal(format!("{TOOL}: {e}")))?;
+            if found.is_none() {
+                return Err(JsonRpcError::invalid_params(format!(
+                    "{TOOL}: no usable agent page `{agent}` in this tenant"
+                ))
+                .with_code("agent_unknown", false));
+            }
+            let token = signer
+                .mint_agent_profile(caller.subject, &agent, &a.skill, ttl, Some(&run), &groups)
+                .map_err(|e| guard.sign_error(e))?;
+            (token, format!("agent:{agent}"))
+        }
+        None => {
+            // The wide shape is the admin authority under the run's subject: an admin's to ask
+            // for, never a runner credential's.
+            let token = if wide && caller.is_admin {
+                signer.mint_agent(caller.subject, &a.skill, ttl, Some(&run))
+            } else {
+                signer.mint_agent_narrowed(caller.subject, &a.skill, ttl, Some(&run), &groups)
+            }
+            .map_err(|e| guard.sign_error(e))?;
+            (token, format!("agent:{}", a.skill))
+        }
+    };
+    let expires = rfc3339(SystemTime::now() + Duration::from_secs(ttl));
+    tracing::info!(subject = %caller.subject, agent = %subject, run_id = %a.run_id, ttl, "mint_run_token: minted");
+    Ok(json!({
+        "token": token,
+        "run_id": run.run_id,
         "root_event_id": run.root_event_id,
         "subject": subject,
         "expires_at": expires,

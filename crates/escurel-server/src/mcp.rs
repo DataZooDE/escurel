@@ -380,6 +380,8 @@ async fn mcp_inner(
     let agent_claim = auth_ctx.as_ref().and_then(|c| c.agent.clone());
     // A chat bridge's token (crew security F2): confined to its turn's calls.
     let bridge = auth_ctx.as_ref().is_some_and(|c| c.bridge);
+    // The built-in service role (#828) the credential holds for itself.
+    let service = auth_ctx.as_ref().and_then(|c| c.service);
 
     // JSON-RPC notifications (no `id`, method `notifications/*`) get
     // NO response envelope — the MCP Streamable-HTTP spec says the
@@ -401,14 +403,14 @@ async fn mcp_inner(
             Some(id) => {
                 let ix = state.indexer.as_ref().map(IndexerHandle::current);
                 resolve_agent(ix.as_deref(), id).await.map(|agent| {
-                    filter_tools_list(schema::tools_list_payload_for(role), |name| {
+                    filter_tools_list(schema::tools_list_payload_for(role, service), |name| {
                         restriction.as_ref().is_none_or(|r| r.contains(name))
                             && agent.allows_tool(name)
                     })
                 })
             }
             None => Ok(filter_tools_list(
-                schema::tools_list_payload_for(role),
+                schema::tools_list_payload_for(role, service),
                 |name| {
                     restriction.as_ref().is_none_or(|r| r.contains(name))
                         && (!bridge || crate::bridge_gate::BRIDGE_TOOLS.contains(&name))
@@ -462,6 +464,7 @@ async fn mcp_inner(
                 agent_claim.as_deref(),
                 restriction.as_ref(),
                 bridge,
+                service,
                 req.params,
             ))
             .catch_unwind()
@@ -1150,6 +1153,7 @@ async fn dispatch_tools_call(
     agent_claim: Option<&str>,
     restriction: Option<&std::collections::BTreeSet<String>>,
     bridge: bool,
+    service: Option<escurel_auth::ServiceRole>,
     params: Value,
 ) -> Result<Value, JsonRpcError> {
     let params: ToolsCallParams = serde_json::from_value(params)
@@ -1221,6 +1225,7 @@ async fn dispatch_tools_call(
         root_event_id: run.and_then(|r| r.root_event_id.as_deref()),
         agent_skill,
         agent: agent_profile.as_ref(),
+        runner: service == Some(escurel_auth::ServiceRole::Runner),
     };
     let write_acl = state.write_acl_for(&caller);
 
@@ -1285,7 +1290,9 @@ async fn dispatch_tools_call(
         }
         .with_code("agent_scope_denied", false));
     }
-    if schema::admin_scope_tools().contains(params.name.as_str()) {
+    if schema::admin_scope_tools().contains(params.name.as_str())
+        && !(caller.runner && schema::RUNNER_ADMIN_TOOLS.contains(&params.name.as_str()))
+    {
         require_admin(role)?;
     }
     // The tenant registry spans tenants, so it is the operator's, not a tenant admin's.
@@ -1446,11 +1453,20 @@ async fn dispatch_tools_call(
 
     match params.name.as_str() {
         "list_skills" => tool_list_skills(indexer, caller).await,
-        "whoami" => Ok(json!({
-            "subject": caller.subject,
-            "tenant": indexer.tenant(),
-            "is_admin": caller.is_admin,
-        })),
+        "whoami" => {
+            let mut me = json!({
+                "subject": caller.subject,
+                "tenant": indexer.tenant(),
+                "is_admin": caller.is_admin,
+            });
+            if let Some(s) = service {
+                me["service"] = json!(match s {
+                    escurel_auth::ServiceRole::Runner => "runner",
+                    escurel_auth::ServiceRole::Bridge => "bridge",
+                });
+            }
+            Ok(me)
+        }
         "list_instances" => {
             tool_list_instances(indexer, &state.egress, caller, params.arguments).await
         }
@@ -1593,6 +1609,9 @@ async fn dispatch_tools_call(
         "list_runtimes" => tools_runtimes::tool_list_runtimes(indexer, caller).await,
         "mint_agent_token" => {
             tools_mint::tool_mint_agent_token(state, indexer, caller, params.arguments).await
+        }
+        "mint_run_token" => {
+            tools_mint::tool_mint_run_token(state, indexer, caller, params.arguments).await
         }
         "get_run_tool_calls" => {
             tools_tool_calls::tool_get_run_tool_calls(

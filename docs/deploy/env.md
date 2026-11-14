@@ -56,6 +56,8 @@ escurel-server.
 | `ESCUREL_AUTH_ADMIN_ROLE_CLAIM` | roles | JWT claim listing roles |
 | `ESCUREL_AUTH_ADMIN_ROLE_VALUE` | escurel:admin | role value granting admin |
 | `ESCUREL_AUTH_OPERATOR_ROLE_VALUE` | escurel:operator | role value (in the admin role claim) marking an OPERATOR credential, the only one that may name another tenant in the cross-tenant admin tools (tenant registry, tenant_export/tenant_import) |
+| `ESCUREL_AUTH_RUNNER_ROLE_VALUE` | escurel:runner | role value (in the admin role claim) marking a RUNNER service credential: it claims inbox events, files the runner's lifecycle records, writes its `runtime` page and mints per-run tokens (`mint_run_token`), and is not admin. Ignored on a machine (run/agent/skill/`act`) token |
+| `ESCUREL_AUTH_BRIDGE_ROLE_VALUE` | escurel:bridge | role value (in the admin role claim) marking a chat BRIDGE service credential. Ignored on a machine token |
 | `ESCUREL_AUTH_ROLE_TOOLS` | — | service roles and the only tools each may call, `role=tool,tool;role=tool` (e.g. `app:worker=list_events,expand,create_draft`); a token whose groups carry a listed role is refused every other tool and the `/ingest`, `/blob` and `/ws` surfaces. Agent-scope tools only; boot fails on an unknown tool |
 | `ESCUREL_AUTH_JWKS_REFRESH_SECS` | 300 | JWKS cache TTL (seconds) |
 | `ESCUREL_AUTH_JWKS_URI` | derived from issuer | explicit JWKS URL (e.g. Triton's `<issuer>/.well-known/jwks.json`) |
@@ -172,8 +174,8 @@ escurel-runner (the agent runner). For an Evolve/Workbench deployment, probe
 ready after a successful write of its reserved `escurel:runner-status` record
 (`report_runner_status`; an older gateway: a system event)
 and becomes unready when that write is refused, fails, goes stale, or the
-runner starts draining. The runner service credential MUST carry `escurel:admin`
-(or the runner must mint): a runner whose `claim_event` is refused takes no inbox
+runner starts draining. The runner service credential MUST carry `escurel:runner`
+or `escurel:admin` (or the runner must mint): a runner whose `claim_event` is refused takes no inbox
 work and logs the fix at boot. Keep per-run harness credentials caller-scoped. `GET /healthz` remains
 a dependency-free liveness probe. Webhook-only runners without a configured
 tenant/token can process `/trigger` but deliberately report unready at

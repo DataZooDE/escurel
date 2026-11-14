@@ -71,14 +71,15 @@ pub use escurel_types::{
     ListInboxResponse, ListInstancesRequest, ListInstancesResponse, ListLineageRequest,
     ListLineageResponse, ListMessagesRequest, ListMessagesResponse, ListSkillsRequest,
     ListSkillsResponse, LiveAck, LiveOp, MintAgentTokenRequest, MintAgentTokenResponse,
-    MovePageRequest, MovePageResponse, NeighboursRequest, NeighboursResponse, PageRef, PlanStep,
-    ProvenanceAncestryRequest, ProvenanceAncestryResponse, ProvenancePathRequest,
-    ProvenancePathResponse, ProvenanceReportRequest, ProvenanceReportResponse, PurgePageRequest,
-    PurgePageResponse, QueryInstanceRequest, QueryInstanceResponse, ReportProgressRequest,
-    ReportProgressResponse, ReportRunnerStatusRequest, ReportRunnerStatusResponse, ResolveRequest,
-    ResolveResponse, SearchHit, SearchRequest, SearchResponse, Skill, StoredQueryColumn,
-    TenantSpec, UpdatePageRequest, UpdatePageResponse, ValidateRequest, ValidateResponse,
-    ValidationIssue, WhoamiResponse, WikilinkParsed,
+    MintRunTokenRequest, MintRunTokenResponse, MovePageRequest, MovePageResponse,
+    NeighboursRequest, NeighboursResponse, PageRef, PlanStep, ProvenanceAncestryRequest,
+    ProvenanceAncestryResponse, ProvenancePathRequest, ProvenancePathResponse,
+    ProvenanceReportRequest, ProvenanceReportResponse, PurgePageRequest, PurgePageResponse,
+    QueryInstanceRequest, QueryInstanceResponse, ReportProgressRequest, ReportProgressResponse,
+    ReportRunnerStatusRequest, ReportRunnerStatusResponse, ResolveRequest, ResolveResponse,
+    SearchHit, SearchRequest, SearchResponse, Skill, StoredQueryColumn, TenantSpec,
+    UpdatePageRequest, UpdatePageResponse, ValidateRequest, ValidateResponse, ValidationIssue,
+    WhoamiResponse, WikilinkParsed,
 };
 // Held writes (the `autonomy: review` gate): a draft is a finished change
 // that has not landed, and these are how an app shows a human what is
@@ -714,6 +715,33 @@ impl Client {
             args["trace_id"] = json!(req.trace_id);
         }
         self.transport.call_typed("mint_agent_token", args).await
+    }
+
+    /// Mint one run's bearer at the gateway (`mint_run_token`, #828): for a
+    /// runner on an `escurel:runner` (or admin) credential with no signing
+    /// key. Refused `unsupported` on a gateway with no signing key.
+    ///
+    /// # Errors
+    /// When the transport or the tool fails.
+    pub async fn mint_run_token(
+        &self,
+        req: MintRunTokenRequest,
+    ) -> Result<MintRunTokenResponse, Error> {
+        let mut args = json!({ "run_id": req.run_id, "skill": req.skill });
+        for (key, value) in [
+            ("root_event_id", &req.root_event_id),
+            ("trace_id", &req.trace_id),
+            ("agent", &req.agent),
+            ("grant", &req.grant),
+        ] {
+            if !value.is_empty() {
+                args[key] = json!(value);
+            }
+        }
+        if req.ttl_secs > 0 {
+            args["ttl_secs"] = json!(req.ttl_secs);
+        }
+        self.transport.call_typed("mint_run_token", args).await
     }
 
     /// Report the run's whole plan as a snapshot (`report_progress`). Only a

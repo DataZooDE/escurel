@@ -321,7 +321,12 @@ impl TestIssuer {
     /// Re-sign a token with one extra top-level claim. Keeps the claim shapes
     /// in [`Self::sign_with_roles`] as the single source of truth rather than
     /// duplicating them per variant.
-    fn resign_with_extra(&self, token: &str, claim: &str, value: serde_json::Value) -> String {
+    pub(crate) fn resign_with_extra(
+        &self,
+        token: &str,
+        claim: &str,
+        value: serde_json::Value,
+    ) -> String {
         use base64::Engine as _;
         let payload = token.split('.').nth(1).expect("a JWT has three parts");
         let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD

@@ -268,6 +268,9 @@ pub struct RuntimeInfo {
     /// The runner's own version and run counts, from its status record.
     pub version: Option<String>,
     pub live_runs: u64,
+    /// The built-in role the runner's credential holds (`admin` | `runner`,
+    /// #828), from its status record; `None` before it has said.
+    pub role: Option<String>,
 }
 
 /// `list_runtimes` result.

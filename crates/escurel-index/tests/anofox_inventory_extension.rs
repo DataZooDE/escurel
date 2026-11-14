@@ -227,6 +227,7 @@ fn analyst(subject: &str) -> AclCaller<'_> {
         root_event_id: None,
         agent_skill: None,
         agent: None,
+        runner: false,
     }
 }
 

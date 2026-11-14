@@ -65,9 +65,24 @@ pub struct AclCaller<'a> {
     /// only ever a restriction: its `scopes.write` globs bound every write,
     /// admin or not, on top of the skill confinement and the group grants.
     pub agent: Option<&'a escurel_types::agent_profile::AgentProfile>,
+    /// The caller holds the built-in RUNNER service role (`escurel:runner`,
+    /// #828) on its own credential. Not admin: it passes the bookkeeper gates
+    /// ([`Self::may_keep_books`]), reads events and skill pages, and writes
+    /// `runtime` instances — everything else follows its ordinary ACL.
+    pub runner: bool,
 }
 
 impl AclCaller<'_> {
+    /// Whether this caller keeps the runner's books: claims inbox events,
+    /// files the run lifecycle / schedule / lint records, writes the
+    /// `runtime` directory and mints per-run tokens. An admin or a runner,
+    /// and never a machine caller — a token minted for a run must not
+    /// impersonate the runner that minted it.
+    #[must_use]
+    pub fn may_keep_books(&self) -> bool {
+        (self.is_admin || self.runner) && !self.is_machine()
+    }
+
     /// Whether this caller's agent profile forbids writing `page_id`.
     #[must_use]
     pub fn agent_write_denied(&self, page_id: &str) -> bool {
@@ -131,6 +146,20 @@ fn parse_page_chat(rest: &str) -> Option<(&str, &str, &str)> {
         return None;
     }
     Some((owner_hash, page_id, skill))
+}
+
+/// Whether `page_id` + `parsed` is a `runtime` instance by path AND by its
+/// declared `skill:` — the only admin-only write a runner holds.
+fn is_runtime_instance(page_id: &str, parsed: &escurel_md::Page<'_>) -> bool {
+    let runtime = escurel_types::runtime::RUNTIME_SKILL;
+    parsed.frontmatter.page_kind == PageKind::Instance
+        && crate::backend::rows::split_instance_page_id(page_id).is_some_and(|(s, _)| s == runtime)
+        && parsed
+            .frontmatter
+            .fields
+            .get("skill")
+            .and_then(YamlValue::as_str)
+            == Some(runtime)
 }
 
 fn subject_hash(subject: &str) -> String {
@@ -582,6 +611,12 @@ impl Indexer {
             return Ok(true);
         }
         let parsed = parse(content)?;
+        // The runner keeps its own `runtime` page (#828): the one admin-only
+        // write a runner credential holds, and only for a page that is a
+        // runtime instance both by path and by what it declares.
+        if caller.runner && caller.may_keep_books() && is_runtime_instance(page_id, &parsed) {
+            return Ok(true);
+        }
         // An admin-only system skill (`agent`) is authority: neither its page,
         // a page claiming it, nor an instance under its path is a member's to
         // write — checked before every grant below can widen it.
@@ -854,7 +889,8 @@ impl Indexer {
         caller: &AclCaller<'_>,
         event: &crate::EventInfo,
     ) -> Result<bool, IndexerError> {
-        if caller.is_admin {
+        // A runner reads every event: it must see what it may claim (#828).
+        if caller.is_admin || caller.may_keep_books() {
             return Ok(true);
         }
         // Evolve receipts are lineage-scoped, not page-targeted: the source
@@ -1067,6 +1103,24 @@ impl Indexer {
             .expand(page_id, None, None)
             .await?
             .map(|page| page.frontmatter))
+    }
+
+    /// The groups `skill`'s `acl:` block grants `create` / `update` to, in that order without
+    /// repeats: what a NARROWED per-run token for the skill carries (P3-6, #828). Empty when the
+    /// skill grants no write or does not exist — a token that can write nothing.
+    pub async fn skill_write_groups(&self, skill: &str) -> Result<Vec<String>, IndexerError> {
+        let acl = self.skill_acl(skill).await?.and_then(|(acl, _, _)| acl);
+        let mut groups: Vec<String> = Vec::new();
+        for g in acl
+            .iter()
+            .flat_map(|a| a.create.iter().chain(a.update.iter()).flatten())
+        {
+            let g = g.trim();
+            if !g.is_empty() && !groups.iter().any(|w| w == g) {
+                groups.push(g.to_owned());
+            }
+        }
+        Ok(groups)
     }
 
     /// The `(acl, owner_field, instance_acl_disabled)` a skill declares, or `None` when no such

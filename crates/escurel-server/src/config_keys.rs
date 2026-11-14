@@ -288,6 +288,18 @@ pub const CONFIG_KEYS: &[ConfigKey] = &[
         doc: "role value (in the admin role claim) marking an OPERATOR credential, the only one that may name another tenant in the cross-tenant admin tools (tenant registry, tenant_export/tenant_import)",
     },
     ConfigKey {
+        name: "ESCUREL_AUTH_RUNNER_ROLE_VALUE",
+        component: "Server",
+        default: "escurel:runner",
+        doc: "role value (in the admin role claim) marking a RUNNER service credential: it claims inbox events, files the runner's lifecycle records, writes its `runtime` page and mints per-run tokens (`mint_run_token`), and is not admin. Ignored on a machine (run/agent/skill/`act`) token",
+    },
+    ConfigKey {
+        name: "ESCUREL_AUTH_BRIDGE_ROLE_VALUE",
+        component: "Server",
+        default: "escurel:bridge",
+        doc: "role value (in the admin role claim) marking a chat BRIDGE service credential. Ignored on a machine token",
+    },
+    ConfigKey {
         name: "ESCUREL_AUTH_ROLE_TOOLS",
         component: "Server",
         default: "—",
@@ -873,7 +885,7 @@ pub const CONFIG_KEYS: &[ConfigKey] = &[
         name: "ESCUREL_RUNNER_TOKEN",
         component: "Runner",
         default: "—",
-        doc: "tenant-scoped bearer the runner presents to `/mcp`; it must carry `escurel:admin` (a non-admin runner cannot claim events, so it takes no inbox work and logs the fix at boot). A static token wins over minting. A runner on a static token cannot mint, so every run of a skill with an `agent:` profile fails (dead-letters) there: agent profiles need a minting runner (`ESCUREL_RUNNER_AUTH_SIGNING_KEY`)",
+        doc: "tenant-scoped bearer the runner presents to `/mcp`; it must carry `escurel:runner` (the narrow runner role) or `escurel:admin` (a runner with neither cannot claim events, so it takes no inbox work and logs the fix at boot). A runner credential with no signing key gets its per-run tokens from the gateway (`mint_run_token`). A static token wins over minting. A runner on a static token cannot mint, so every run of a skill with an `agent:` profile fails (dead-letters) there: agent profiles need a minting runner (`ESCUREL_RUNNER_AUTH_SIGNING_KEY`)",
     },
     ConfigKey {
         name: "ESCUREL_RUNNER_TOKEN_FILE",
@@ -915,7 +927,7 @@ pub const CONFIG_KEYS: &[ConfigKey] = &[
         name: "ESCUREL_RUNNER_LABELS",
         component: "Runner",
         default: "(none)",
-        doc: "comma-separated labels this runner carries (`site:muc,has:sap-gui`); work whose `requires: {labels}` it lacks is left in the inbox for a runner that has them, and the labels are advertised on its `runtime` page. Like every runner, its credential needs `escurel:admin` to claim (an error is logged at boot otherwise, and it takes no inbox work); a webhook trigger it cannot route or claim at once is left to the poller",
+        doc: "comma-separated labels this runner carries (`site:muc,has:sap-gui`); work whose `requires: {labels}` it lacks is left in the inbox for a runner that has them, and the labels are advertised on its `runtime` page. Like every runner, its credential needs `escurel:runner` or `escurel:admin` to claim (an error is logged at boot otherwise, and it takes no inbox work); a webhook trigger it cannot route or claim at once is left to the poller",
     },
     ConfigKey {
         name: "ESCUREL_RUNNER_EXCLUSIVE",
@@ -1735,8 +1747,8 @@ const GROUPS: &[(&str, &str)] = &[
          ready after a successful write of its reserved `escurel:runner-status` record\n\
          (`report_runner_status`; an older gateway: a system event)\n\
          and becomes unready when that write is refused, fails, goes stale, or the\n\
-         runner starts draining. The runner service credential MUST carry `escurel:admin`\n\
-         (or the runner must mint): a runner whose `claim_event` is refused takes no inbox\n\
+         runner starts draining. The runner service credential MUST carry `escurel:runner`\n\
+         or `escurel:admin` (or the runner must mint): a runner whose `claim_event` is refused takes no inbox\n\
          work and logs the fix at boot. Keep per-run harness credentials caller-scoped. `GET /healthz` remains\n\
          a dependency-free liveness probe. Webhook-only runners without a configured\n\
          tenant/token can process `/trigger` but deliberately report unready at\n\
