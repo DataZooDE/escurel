@@ -1,7 +1,7 @@
 //! [`DirectoryStandIn`] — the identity provider's side of the gateway's group
 //! lookup (#830), as a local HTTP server, for each of Microsoft Graph, Google
-//! Cloud Identity and Okta: the token endpoint (where the provider has one)
-//! and the group listing, paged one group per page the way each provider
+//! Cloud Identity and Okta (by API token, or as an OAuth service app): the
+//! token endpoint (where the provider has one) and the group listing, paged one group per page the way each provider
 //! pages (`@odata.nextLink`, `nextPageToken`, `Link: rel="next"`).
 //!
 //! Everything escurel does with the answer is real (the egress policy, the
@@ -9,7 +9,7 @@
 //! is stood in for. A test can make it answer any status (`429` / `503` are
 //! retryable, `401` / `403` / `404` permanent) and put it back.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -24,6 +24,10 @@ use wiremock::{Mock, MockServer, Request, ResponseTemplate};
 pub const GRAPH_TENANT: &str = "entra-tenant";
 const GOOGLE_SA: &str = "escurel-groups@test-project.iam.gserviceaccount.com";
 const OKTA_TOKEN: &str = "okta-api-token";
+/// The Okta service app's client id (an OAuth stand-in's assertion issuer).
+const OKTA_CLIENT_ID: &str = "0oa-escurel-groups";
+/// The scopes an Okta service app asks for.
+const OKTA_SCOPES: &str = "okta.groups.read okta.users.read";
 /// The Google domain the stand-in's admin-made groups are in; a shared group
 /// is in [`GOOGLE_OUTSIDE_DOMAIN`].
 pub const GOOGLE_DOMAIN: &str = "acme.example";
@@ -47,6 +51,12 @@ struct State {
     /// Answer every request with this status instead.
     status: Option<u16>,
     lookups: usize,
+    /// Token requests answered with a token.
+    tokens_issued: usize,
+    /// Okta OAuth: the client-assertion `jti`s already used (a replay is refused).
+    seen_jtis: HashSet<String>,
+    /// Okta OAuth: the app requires DPoP, so every token request is refused for want of a proof.
+    dpop: bool,
 }
 
 /// A running provider stand-in.
@@ -54,33 +64,46 @@ pub struct DirectoryStandIn {
     kind: Kind,
     server: MockServer,
     state: Arc<Mutex<State>>,
-    /// The Google service-account key the stand-in accepts assertions from.
-    google_key_pem: Option<String>,
+    /// The key the stand-in accepts assertions from: Google's service
+    /// account, or an Okta service app's.
+    key_pem: Option<String>,
+    /// Okta: the gateway authenticates as an OAuth service app, not by API token.
+    oauth: bool,
 }
 
 impl DirectoryStandIn {
     pub async fn graph() -> Self {
-        Self::start(Kind::Graph).await
+        Self::start(Kind::Graph, false).await
     }
 
     pub async fn google() -> Self {
-        Self::start(Kind::Google).await
+        Self::start(Kind::Google, false).await
     }
 
+    /// Okta, read with an API token (`SSWS`).
     pub async fn okta() -> Self {
-        Self::start(Kind::Okta).await
+        Self::start(Kind::Okta, false).await
     }
 
-    async fn start(kind: Kind) -> Self {
+    /// Okta, read as an OAuth service app: the org authorization server's
+    /// token endpoint checks the client assertion the way Okta does (signed
+    /// by the app's key, `iss` = `sub` = the client id, `aud` = the endpoint,
+    /// short-lived, `jti` never reused), the grant and the scopes; the
+    /// listing then wants that token as `Bearer`.
+    pub async fn okta_oauth() -> Self {
+        Self::start(Kind::Okta, true).await
+    }
+
+    async fn start(kind: Kind, oauth: bool) -> Self {
         let server = MockServer::start().await;
         let state = Arc::new(Mutex::new(State::default()));
         let base = server.uri();
         let token_path = match kind {
             Kind::Graph => Some(format!("/{GRAPH_TENANT}/oauth2/v2.0/token")),
             Kind::Google => Some("/token".to_owned()),
-            Kind::Okta => None,
+            Kind::Okta => oauth.then(|| "/oauth2/v1/token".to_owned()),
         };
-        let google_key_pem = (kind == Kind::Google).then(|| {
+        let key_pem = (kind == Kind::Google || oauth).then(|| {
             use rsa::pkcs8::EncodePrivateKey;
             rsa::RsaPrivateKey::new(&mut rand::thread_rng(), 2048)
                 .expect("rsa key")
@@ -88,9 +111,9 @@ impl DirectoryStandIn {
                 .expect("pem")
                 .to_string()
         });
-        // The Google token endpoint checks the assertion the way Google does: signed by the
-        // service account's key, for this endpoint, with the right scope and delegated subject.
-        let google_verify = google_key_pem.as_deref().map(|pem| {
+        // The token endpoint checks the assertion the way the provider does: signed by the
+        // service account's (app's) key, for this endpoint, with the right scope and subject.
+        let verify = key_pem.as_deref().map(|pem| {
             use rsa::pkcs8::{DecodePrivateKey, EncodePublicKey};
             let public = rsa::RsaPrivateKey::from_pkcs8_pem(pem)
                 .expect("pem")
@@ -106,7 +129,8 @@ impl DirectoryStandIn {
             Mock::given(method("POST"))
                 .and(path(token_path))
                 .respond_with(move |req: &Request| {
-                    if let Some(status) = s.lock().unwrap().status {
+                    let mut st = s.lock().unwrap();
+                    if let Some(status) = st.status {
                         return ResponseTemplate::new(status);
                     }
                     let form = String::from_utf8_lossy(&req.body).into_owned();
@@ -116,17 +140,29 @@ impl DirectoryStandIn {
                                 && form
                                     .contains("scope=https%3A%2F%2Fgraph.microsoft.com%2F.default")
                         }
-                        _ => {
+                        Kind::Google => {
                             form.contains(
                                 "grant_type=urn%3Aietf%3Aparams%3Aoauth%3Agrant-type%3Ajwt-bearer",
-                            ) && google_verify
+                            ) && verify
                                 .as_ref()
                                 .is_some_and(|key| google_assertion_ok(&form, key, &token_url))
+                        }
+                        Kind::Okta => {
+                            if st.dpop {
+                                return ResponseTemplate::new(400).set_body_json(json!({
+                                    "error": "invalid_dpop_proof",
+                                    "error_description": "The DPoP proof JWT header is missing."
+                                }));
+                            }
+                            verify.as_ref().is_some_and(|key| {
+                                okta_assertion_ok(&form, key, &token_url, &mut st.seen_jtis)
+                            })
                         }
                     };
                     if !ok {
                         return ResponseTemplate::new(400);
                     }
+                    st.tokens_issued += 1;
                     ResponseTemplate::new(200).set_body_json(json!({
                         "token_type": "Bearer", "expires_in": 3600, "access_token": "dir-token"
                     }))
@@ -150,14 +186,15 @@ impl DirectoryStandIn {
         let s = Arc::clone(&state);
         Mock::given(method("GET"))
             .and(path_regex(listing))
-            .respond_with(move |req: &Request| listing_page(kind, &base, &s, req))
+            .respond_with(move |req: &Request| listing_page(kind, oauth, &base, &s, req))
             .mount(&server)
             .await;
         Self {
             kind,
             server,
             state,
-            google_key_pem,
+            key_pem,
+            oauth,
         }
     }
 
@@ -218,6 +255,17 @@ impl DirectoryStandIn {
         self.state.lock().unwrap().lookups
     }
 
+    /// How many tokens the token endpoint issued.
+    pub fn tokens_issued(&self) -> usize {
+        self.state.lock().unwrap().tokens_issued
+    }
+
+    /// Okta OAuth: the app now requires DPoP (Okta's "Require Demonstrating
+    /// Proof of Possession"), which escurel does not do.
+    pub fn require_dpop(&self) {
+        self.state.lock().unwrap().dpop = true;
+    }
+
     /// The gateway's provider configuration against this stand-in, counting
     /// the groups named with `prefix`.
     pub fn config(&self, prefix: &str) -> DirectoryConfig {
@@ -238,7 +286,7 @@ impl DirectoryStandIn {
             }),
             Kind::Google => DirectoryConfig::Google(google::GoogleConfig {
                 client_email: GOOGLE_SA.to_owned(),
-                private_key: self.google_key_pem.clone().expect("google key"),
+                private_key: self.key_pem.clone().expect("google key"),
                 private_key_id: Some("k1".to_owned()),
                 subject: Some("admin@acme.example".to_owned()),
                 token_url: format!("{base}/token"),
@@ -248,8 +296,17 @@ impl DirectoryStandIn {
                 rule,
             }),
             Kind::Okta => DirectoryConfig::Okta(okta::OktaConfig {
+                auth: if self.oauth {
+                    okta::OktaAuth::ServiceApp {
+                        client_id: OKTA_CLIENT_ID.to_owned(),
+                        private_key: self.key_pem.clone().expect("okta app key"),
+                        key_id: Some("okta-k1".to_owned()),
+                        token_url: format!("{base}/oauth2/v1/token"),
+                    }
+                } else {
+                    okta::OktaAuth::ApiToken(OKTA_TOKEN.to_owned())
+                },
                 base_url: base,
-                api_token: OKTA_TOKEN.to_owned(),
                 user_key: okta::UserKey::Email,
                 rule,
                 include_app_groups: false,
@@ -315,7 +372,13 @@ fn graph_user(s: &Mutex<State>, req: &Request) -> ResponseTemplate {
 }
 
 /// One listing page, as the provider would answer it.
-fn listing_page(kind: Kind, base: &str, s: &Mutex<State>, req: &Request) -> ResponseTemplate {
+fn listing_page(
+    kind: Kind,
+    oauth: bool,
+    base: &str,
+    s: &Mutex<State>,
+    req: &Request,
+) -> ResponseTemplate {
     let mut st = s.lock().unwrap();
     st.lookups += 1;
     if let Some(status) = st.status {
@@ -326,7 +389,7 @@ fn listing_page(kind: Kind, base: &str, s: &Mutex<State>, req: &Request) -> Resp
         .get("authorization")
         .and_then(|v| v.to_str().ok());
     let expected = match kind {
-        Kind::Okta => format!("SSWS {OKTA_TOKEN}"),
+        Kind::Okta if !oauth => format!("SSWS {OKTA_TOKEN}"),
         _ => "Bearer dir-token".to_owned(),
     };
     if auth != Some(expected.as_str()) {
@@ -488,6 +551,48 @@ fn google_assertion_ok(form: &str, key: &jsonwebtoken::DecodingKey, token_url: &
         return false;
     };
     data.claims["scope"] == google::SCOPE && data.claims["sub"] == "admin@acme.example"
+}
+
+/// Whether an Okta token request is a client-credentials grant for the
+/// groups/users read scopes whose client assertion the app signed for
+/// `token_url`, as the app (`iss` = `sub`), short-lived, with a `jti` not
+/// seen before.
+fn okta_assertion_ok(
+    form: &str,
+    key: &jsonwebtoken::DecodingKey,
+    token_url: &str,
+    seen_jtis: &mut HashSet<String>,
+) -> bool {
+    let Ok(url) = reqwest::Url::parse(&format!("http://form/?{form}")) else {
+        return false;
+    };
+    let form: HashMap<String, String> = url.query_pairs().into_owned().collect();
+    let field = |k: &str| form.get(k).map(String::as_str);
+    if field("grant_type") != Some("client_credentials")
+        || field("scope") != Some(OKTA_SCOPES)
+        || field("client_assertion_type")
+            != Some("urn:ietf:params:oauth:client-assertion-type:jwt-bearer")
+    {
+        return false;
+    }
+    let mut v = jsonwebtoken::Validation::new(jsonwebtoken::Algorithm::RS256);
+    v.set_audience(&[token_url]);
+    v.set_issuer(&[OKTA_CLIENT_ID]);
+    v.set_required_spec_claims(&["exp", "iss", "aud", "sub"]);
+    let Some(Ok(data)) =
+        field("client_assertion").map(|a| jsonwebtoken::decode::<Value>(a, key, &v))
+    else {
+        return false;
+    };
+    let c = &data.claims;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    let short_lived = c["exp"].as_u64().is_some_and(|exp| exp <= now + 300);
+    let fresh_jti = c["jti"]
+        .as_str()
+        .is_some_and(|jti| !jti.is_empty() && seen_jtis.insert(jti.to_owned()));
+    c["sub"] == OKTA_CLIENT_ID && short_lived && fresh_jti
 }
 
 #[cfg(test)]

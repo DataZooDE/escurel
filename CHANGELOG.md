@@ -82,6 +82,22 @@ Chat bridge: gateway-minted turns, directory groups, group chats (#830):
   conversation, an existing mapping is opened instead of duplicated); explore's Chat tab labels a conversation that
   acts as a group.
 
+Group directories (#835):
+
+- **Okta as an OAuth service app**: `ESCUREL_AUTH_OKTA_AUTH=oauth` with `ESCUREL_AUTH_OKTA_CLIENT_ID` and
+  `ESCUREL_AUTH_OKTA_PRIVATE_KEY[_FILE]` (optional `…_KEY_ID`, `…_TOKEN_URL`, default `<base>/oauth2/v1/token`)
+  reads the groups with a client-credentials token (`private_key_jwt`: a short-lived RS256 assertion, a fresh `jti`
+  each time; scopes `okta.groups.read okta.users.read`), cached until shortly before it expires, instead of an
+  admin's SSWS API token. `ssws` stays the default while `ESCUREL_AUTH_OKTA_API_TOKEN` is set; with neither the boot
+  asks for one, and a key of the other mode is refused. A key that does not parse fails the boot. Okta's "Require
+  DPoP" must be off on the app: escurel sends no DPoP proof, and a token endpoint asking for one is named in the
+  gateway's log as the setting to turn off.
+
+**Behaviour changes to note:**
+- A group directory's `…_BASE_URL` / `…_TOKEN_URL` may be plain http (to a loopback address) only with the dev flag
+  `ESCUREL_EGRESS_ALLOW_LOOPBACK=true`; without it the gateway refuses to boot, naming the key and the flag (#835).
+  A deployment pointing a directory at a local stand-in over http without the flag must set it.
+
 **Deprecated:** the chat bridge signing its own turns (`ESCUREL_BRIDGE_AUTH_ISSUER` / `_KID` / `_SIGNING_KEY` and
 `ESCUREL_BRIDGE_PRINCIPAL_TEMPLATE` on the bridge, `ESCUREL_AUTH_BRIDGE_ISSUER` / `_KID` / `_TENANT` on the gateway).
 It still works for this release (1:1 chats, no groups) and logs a deprecation at both ends; it is removed in the

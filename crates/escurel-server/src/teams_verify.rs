@@ -124,7 +124,10 @@ pub(crate) fn stray_key(env: &dyn EnvSource) -> Option<&'static str> {
 /// # Errors
 /// A key without the app id, a missing secret, a URL that is not https, an
 /// empty host list or a malformed host.
-pub(crate) fn teams_from(env: &dyn EnvSource) -> Result<Option<TeamsVerifyConfig>, ConfigError> {
+pub(crate) fn teams_from(
+    env: &dyn EnvSource,
+    allow_loopback: bool,
+) -> Result<Option<TeamsVerifyConfig>, ConfigError> {
     let get = |k: &str| env.get(k).filter(|v| !v.trim().is_empty());
     let refuse = |why: String| Err(ConfigError::Bridge(why));
     let Some(app_id) = get("ESCUREL_AUTH_TEAMS_APP_ID") else {
@@ -165,7 +168,7 @@ pub(crate) fn teams_from(env: &dyn EnvSource) -> Result<Option<TeamsVerifyConfig
         if let Some(url) = get(key) {
             *slot = url;
         }
-        crate::group_directory::config::directory_url(key, slot)?;
+        crate::group_directory::config::directory_url(key, slot, allow_loopback)?;
     }
     if let Some(issuer) = get("ESCUREL_AUTH_TEAMS_ISSUER") {
         cfg.issuer = issuer;
@@ -408,22 +411,28 @@ mod tests {
                     .map(|(_, v)| (*v).to_owned())
             }
         };
-        assert_eq!(teams_from(&env(&[])).unwrap(), None);
-        assert!(teams_from(&env(&[("ESCUREL_AUTH_TEAMS_APP_SECRET", "s")])).is_err());
-        assert!(teams_from(&env(&[("ESCUREL_AUTH_TEAMS_APP_ID", "a")])).is_err());
-        let cfg = teams_from(&env(&[
-            ("ESCUREL_AUTH_TEAMS_APP_ID", "a"),
-            ("ESCUREL_AUTH_TEAMS_APP_SECRET", "s"),
-        ]))
+        assert_eq!(teams_from(&env(&[]), false).unwrap(), None);
+        assert!(teams_from(&env(&[("ESCUREL_AUTH_TEAMS_APP_SECRET", "s")]), false).is_err());
+        assert!(teams_from(&env(&[("ESCUREL_AUTH_TEAMS_APP_ID", "a")]), false).is_err());
+        let cfg = teams_from(
+            &env(&[
+                ("ESCUREL_AUTH_TEAMS_APP_ID", "a"),
+                ("ESCUREL_AUTH_TEAMS_APP_SECRET", "s"),
+            ]),
+            false,
+        )
         .unwrap()
         .unwrap();
         assert_eq!(cfg.service_url_hosts.len(), 2);
         assert!(
-            teams_from(&env(&[
-                ("ESCUREL_AUTH_TEAMS_APP_ID", "a"),
-                ("ESCUREL_AUTH_TEAMS_APP_SECRET", "s"),
-                ("ESCUREL_AUTH_TEAMS_SERVICE_URL_HOSTS", "*.*.x"),
-            ]))
+            teams_from(
+                &env(&[
+                    ("ESCUREL_AUTH_TEAMS_APP_ID", "a"),
+                    ("ESCUREL_AUTH_TEAMS_APP_SECRET", "s"),
+                    ("ESCUREL_AUTH_TEAMS_SERVICE_URL_HOSTS", "*.*.x"),
+                ]),
+                false
+            )
             .is_err()
         );
         assert_eq!(rate_from(&env(&[])).unwrap(), MintRateLimits::default());

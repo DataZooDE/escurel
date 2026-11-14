@@ -154,7 +154,8 @@ signing key: on its own `escurel:bridge` credential it calls `mint_user_token` o
 `user:{aadObjectId}` — it must equal the `sub` the person's own token carries) and the groups: the
 **union** of the sender's memberships in every directory of `ESCUREL_AUTH_GROUP_DIRECTORIES`
 (`graph` by Entra object id, `google` and `okta` by email, which the bridge reads from the Bot
-Framework members API), mapped per provider by `…_GROUP_MAP_FILE` (by group id — prefer it)
+Framework members API; Okta by an admin's API token or, with `ESCUREL_AUTH_OKTA_AUTH=oauth`, as an
+API Services app with a private key), mapped per provider by `…_GROUP_MAP_FILE` (by group id — prefer it)
 and/or `…_GROUP_PREFIX` — `public` / `owner` / `admin` / `escurel:*` and the deployment's role
 values are never produced. A prefix reads only names an admin controls: Graph security groups
 (Microsoft 365 groups / Teams only with `ESCUREL_AUTH_GRAPH_INCLUDE_M365_GROUPS=true`, since any
@@ -167,6 +168,8 @@ stands in for up to 1 h while a directory is unreachable, then the turn is refus
 answering 403/404 (or 401 after one token renewal) adds nothing and replaces its cached answer.
 Without `ESCUREL_AUTH_GROUP_DIRECTORIES` 1:1 turns mint with no groups and shared chats are
 refused (`chat_channel_no_directory`).
+A directory URL must be https; a local stand-in over plain http (loopback only) needs
+`ESCUREL_EGRESS_ALLOW_LOOPBACK=true`, or the gateway refuses to boot.
 
 **The gateway can check the Teams asker itself** (#835, recommended for production). With
 `ESCUREL_AUTH_TEAMS_APP_ID` + `ESCUREL_AUTH_TEAMS_APP_SECRET[_FILE]` (the bot's own app

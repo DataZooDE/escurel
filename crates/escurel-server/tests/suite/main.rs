@@ -116,6 +116,7 @@ mod mint_agent_token;
 mod mint_user_token;
 mod multi_issuer_groups;
 mod mysql_refused;
+mod okta_service_app;
 mod openai_embeddings;
 mod openapi_surface;
 mod ops_visibility;

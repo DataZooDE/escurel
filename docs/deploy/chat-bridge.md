@@ -353,19 +353,51 @@ ESCUREL_AUTH_GOOGLE_GROUP_MAP_FILE=/etc/escurel/google-groups.json   # {"sales@a
 # ESCUREL_AUTH_GOOGLE_GROUP_NAME=email_local                        # sales@acme.example → sales (needs the domain)
 ```
 
-**Okta** (`okta`, by email, or UPN with `ESCUREL_AUTH_OKTA_USER_KEY=upn`). Create an API token
-(Security → API → Tokens) as an admin with a **read-only** role. The gateway calls
-`GET /api/v1/users/{login}/groups` (paged by `Link` headers) with `Authorization: SSWS <token>`;
-the group name is `profile.name`, and only `OKTA_GROUP`s count for the prefix (`APP_GROUP`s with
-`ESCUREL_AUTH_OKTA_INCLUDE_APP_GROUPS=true`). OAuth for Okta service apps (client credentials with a private
-key) is not supported yet — TODO.
+**Okta** (`okta`, by email, or UPN with `ESCUREL_AUTH_OKTA_USER_KEY=upn`). The gateway calls
+`GET /api/v1/users/{login}/groups` (paged by `Link` headers); the group name is `profile.name`, and
+only `OKTA_GROUP`s count for the prefix (`APP_GROUP`s with `ESCUREL_AUTH_OKTA_INCLUDE_APP_GROUPS=true`).
+It authenticates in one of two ways (`ESCUREL_AUTH_OKTA_AUTH`):
+
+- **`oauth` — an API Services app (recommended).** No person's token is involved, and the
+  credential is a key pair rather than a bearer secret.
+  1. Applications → Create App Integration → **API Services**.
+  2. On the app's General tab, Client Credentials → Edit: client authentication **Public key /
+     Private key**; add a key (generate one in Okta and save the private key, or paste your own
+     public JWK). Note the key's **kid** if the app holds more than one. Turn **off** "Require
+     Demonstrating Proof of Possession (DPoP) header in token requests": escurel sends no DPoP
+     proof, and the gateway logs *token endpoint requires DPoP …* at the first lookup until it is off.
+  3. Okta API Scopes → grant **`okta.groups.read`** and **`okta.users.read`**.
+  4. Admin Roles → assign the app **Read-only Administrator** (the scopes alone return 403).
+
+  The gateway posts a `client_credentials` grant to the org authorization server
+  (`<base>/oauth2/v1/token`; a custom authorization server cannot grant `okta.*` scopes), its client
+  authenticated by an RS256 assertion signed with the app's key (`iss` = `sub` = the client id,
+  `aud` = the token URL, valid 5 minutes, a fresh `jti` each time), and reads the groups with
+  `Authorization: Bearer <token>`. The token is reused until shortly before it expires; a 401 renews
+  it once.
+- **`ssws` — an API token** (the default while `ESCUREL_AUTH_OKTA_API_TOKEN` is set). Create one
+  (Security → API → Tokens) as an admin with the **Read-only Administrator** role; it is sent as
+  `Authorization: SSWS <token>` and expires after 30 days unused.
+
+The gateway refuses to boot with neither mode's credential, with keys of both modes, or with a
+private key that does not parse.
 
 ```sh
 ESCUREL_AUTH_OKTA_BASE_URL=https://acme.okta.com
-ESCUREL_AUTH_OKTA_API_TOKEN_FILE=/run/secrets/okta-api-token
+ESCUREL_AUTH_OKTA_AUTH=oauth
+ESCUREL_AUTH_OKTA_CLIENT_ID=0oa…                                    # the API Services app
+ESCUREL_AUTH_OKTA_PRIVATE_KEY_FILE=/run/secrets/okta-app-key.pem     # RSA, PEM
+# ESCUREL_AUTH_OKTA_KEY_ID=…                                         # the key's kid, if several
 ESCUREL_AUTH_OKTA_GROUP_MAP_FILE=/etc/escurel/okta-groups.json       # {"00g…": "sales"}
 # ESCUREL_AUTH_OKTA_GROUP_PREFIX=escurel-
+# or, by API token:
+# ESCUREL_AUTH_OKTA_API_TOKEN_FILE=/run/secrets/okta-api-token      # (ESCUREL_AUTH_OKTA_AUTH=ssws)
 ```
+
+**Local stand-ins.** Every directory `…_BASE_URL` / `…_TOKEN_URL` must be https. Plain http is
+accepted only to a loopback address (`127.0.0.1`, `[::1]`, `localhost`) and only with the egress
+dev flag `ESCUREL_EGRESS_ALLOW_LOOPBACK=true`, which warns at boot and must never be set in
+production; without it the gateway refuses to start, naming the key and the flag.
 
 A sender with no email (the members API gave none) is looked up in Graph only; the email-keyed
 directories add nothing for them.
@@ -517,4 +549,7 @@ the providers' documentation and have not been checked against a real tenant:
   its paging; `GET /users/{id}` with `User.Read.All` returning `mail` / `otherMails`;
 - Cloud Identity `searchTransitiveGroups` with the Groups Reader role or domain-wide delegation,
   the JWT-bearer token exchange, and the `discussion_forum` label filter;
-- Okta `users/{login}/groups` with an SSWS token from a read-only admin, and `Link` paging.
+- Okta `users/{login}/groups` with an SSWS token from a read-only admin, and `Link` paging;
+  the service-app token exchange (`private_key_jwt` at `/oauth2/v1/token`, the `okta.*` scopes,
+  the Read-only Administrator role on the app) and Okta's DPoP error codes
+  (`invalid_dpop_proof`, `use_dpop_nonce`).

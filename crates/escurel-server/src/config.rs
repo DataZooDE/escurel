@@ -1450,9 +1450,24 @@ impl EscurelConfig {
             None => None,
         };
 
+        // The outbound-call policy: read before the group directories, whose plain-http
+        // stand-in URLs only its loopback dev flag admits (#835).
+        let egress =
+            crate::egress::EgressPolicy::from_source(&|k: &str| env.get(k)).map_err(|e| {
+                ConfigError::InvalidValue {
+                    var: e.var,
+                    value: e.value,
+                    reason: e.reason,
+                }
+            })?;
+
         // --- the chat bridge's minting (#830): principal template + group directories ---
-        let bridge_mint =
-            crate::group_directory::config::bridge_mint_from(env, auth.as_ref(), signing.as_ref())?;
+        let bridge_mint = crate::group_directory::config::bridge_mint_from(
+            env,
+            auth.as_ref(),
+            signing.as_ref(),
+            egress.allow_loopback,
+        )?;
 
         // --- embedding ---
         // Default: hosted Gemini (the binary ships the `gemini` feature). With
@@ -1548,14 +1563,6 @@ impl EscurelConfig {
         // Fail closed: unset or a typo enforces (`WriteAclMode::parse`).
         let write_acl =
             crate::WriteAclMode::parse(&env.get("ESCUREL_WRITE_ACL").unwrap_or_default());
-        let egress =
-            crate::egress::EgressPolicy::from_source(&|k: &str| env.get(k)).map_err(|e| {
-                ConfigError::InvalidValue {
-                    var: e.var,
-                    value: e.value,
-                    reason: e.reason,
-                }
-            })?;
 
         let secs_knob = |var: &'static str,
                          default: std::time::Duration|
@@ -3889,6 +3896,86 @@ mod bridge_config_tests {
             path.display().to_string()
         }
 
+        /// An Okta service app's private key (PKCS#8 PEM), in a file.
+        fn okta_app_key(dir: &std::path::Path) -> String {
+            use rsa::pkcs8::EncodePrivateKey;
+            let pem = rsa::RsaPrivateKey::new(&mut rand::thread_rng(), 2048)
+                .unwrap()
+                .to_pkcs8_pem(rsa::pkcs8::LineEnding::LF)
+                .unwrap();
+            let path = dir.join("okta-app.pem");
+            std::fs::write(&path, pem.as_bytes()).unwrap();
+            path.display().to_string()
+        }
+
+        /// #835: plain http to a loopback address is for stand-ins in tests and
+        /// local development, so it needs the egress dev flag; to anything else
+        /// it is refused even with the flag.
+        #[test]
+        fn plain_http_directory_urls_need_the_loopback_dev_flag() {
+            let dir = tempfile::tempdir().unwrap();
+            let sa = sa_key(dir.path());
+            let google: Vec<Change> = vec![
+                ("ESCUREL_AUTH_GROUP_DIRECTORIES", Some("graph,google")),
+                ("ESCUREL_AUTH_GOOGLE_SA_KEY_FILE", Some(sa.as_str())),
+                ("ESCUREL_AUTH_GOOGLE_GROUP_PREFIX", Some("escurel-")),
+            ];
+            let okta: Vec<Change> = vec![
+                ("ESCUREL_AUTH_GROUP_DIRECTORIES", Some("graph,okta")),
+                ("ESCUREL_AUTH_OKTA_BASE_URL", Some("https://o.okta.com")),
+                ("ESCUREL_AUTH_OKTA_API_TOKEN", Some("t")),
+                ("ESCUREL_AUTH_OKTA_GROUP_PREFIX", Some("escurel-")),
+            ];
+            let app_key = okta_app_key(dir.path());
+            let okta_app: Vec<Change> = [
+                &okta[..],
+                &[
+                    ("ESCUREL_AUTH_OKTA_API_TOKEN", None),
+                    ("ESCUREL_AUTH_OKTA_AUTH", Some("oauth")),
+                    ("ESCUREL_AUTH_OKTA_CLIENT_ID", Some("0oa-app")),
+                    ("ESCUREL_AUTH_OKTA_PRIVATE_KEY_FILE", Some(app_key.as_str())),
+                ],
+            ]
+            .concat();
+            let cases: [(&str, &[Change]); 6] = [
+                ("ESCUREL_AUTH_GRAPH_TOKEN_URL", &[]),
+                ("ESCUREL_AUTH_GRAPH_BASE_URL", &[]),
+                ("ESCUREL_AUTH_GOOGLE_TOKEN_URL", &google),
+                ("ESCUREL_AUTH_GOOGLE_BASE_URL", &google),
+                ("ESCUREL_AUTH_OKTA_BASE_URL", &okta),
+                ("ESCUREL_AUTH_OKTA_TOKEN_URL", &okta_app),
+            ];
+            for (key, provider) in cases {
+                let at = |url: &'static str, flag: Option<&'static str>| {
+                    let mut changes = provider.to_vec();
+                    changes.push((key, Some(url)));
+                    changes.push(("ESCUREL_EGRESS_ALLOW_LOOPBACK", flag));
+                    build(&with(GRAPH, &changes))
+                };
+                let err = at("http://127.0.0.1:9/x", None)
+                    .err()
+                    .unwrap_or_else(|| panic!("{key}: loopback http started without the flag"));
+                let why = err.to_string();
+                assert!(
+                    why.contains(key) && why.contains("ESCUREL_EGRESS_ALLOW_LOOPBACK"),
+                    "{key}: {why}"
+                );
+                for (url, flag) in [
+                    ("http://127.0.0.1:9/x", "true"),
+                    ("http://[::1]:9/x", "1"),
+                    ("http://localhost:9/x", "true"),
+                ] {
+                    if let Err(e) = at(url, Some(flag)) {
+                        panic!("{key} {url} with the flag: {e}");
+                    }
+                }
+                let err = at("http://dir.example/x", Some("true"))
+                    .err()
+                    .unwrap_or_else(|| panic!("{key}: non-loopback http started"));
+                assert!(err.to_string().contains(key), "{key}: {err}");
+            }
+        }
+
         #[test]
         fn every_boot_refusal_names_what_to_fix() {
             let dir = tempfile::tempdir().unwrap();
@@ -3902,6 +3989,23 @@ mod bridge_config_tests {
             let not_a_key = file("not-a-key.json", r#"{"client_email": "x"}"#);
             let secret = file("secret", "s3cret");
             let sa = sa_key(dir.path());
+            let app_key = okta_app_key(dir.path());
+            let okta: [Change; 4] = [
+                ("ESCUREL_AUTH_GROUP_DIRECTORIES", Some("graph,okta")),
+                ("ESCUREL_AUTH_OKTA_BASE_URL", Some("https://o.okta.com")),
+                ("ESCUREL_AUTH_OKTA_API_TOKEN", Some("t")),
+                ("ESCUREL_AUTH_OKTA_GROUP_PREFIX", Some("escurel-")),
+            ];
+            let okta_app = [
+                &okta[..],
+                &[
+                    ("ESCUREL_AUTH_OKTA_API_TOKEN", None),
+                    ("ESCUREL_AUTH_OKTA_AUTH", Some("oauth")),
+                    ("ESCUREL_AUTH_OKTA_CLIENT_ID", Some("0oa-app")),
+                    ("ESCUREL_AUTH_OKTA_PRIVATE_KEY_FILE", Some(app_key.as_str())),
+                ],
+            ]
+            .concat();
             let google = [
                 ("ESCUREL_AUTH_GROUP_DIRECTORIES", Some("google")),
                 ("ESCUREL_AUTH_GRAPH_TENANT_ID", None),
@@ -4039,6 +4143,49 @@ mod bridge_config_tests {
                     ],
                     "is `email` or `upn`",
                 ),
+                (
+                    "okta with no way to authenticate",
+                    [&okta[..], &[("ESCUREL_AUTH_OKTA_API_TOKEN", None)]].concat(),
+                    "set ESCUREL_AUTH_OKTA_AUTH",
+                ),
+                (
+                    "an unknown Okta auth",
+                    [&okta[..], &[("ESCUREL_AUTH_OKTA_AUTH", Some("basic"))]].concat(),
+                    "is `ssws` or `oauth`",
+                ),
+                (
+                    "an Okta service app without a client id",
+                    [&okta_app[..], &[("ESCUREL_AUTH_OKTA_CLIENT_ID", None)]].concat(),
+                    "ESCUREL_AUTH_OKTA_CLIENT_ID is required",
+                ),
+                (
+                    "an Okta service app without a key",
+                    [
+                        &okta_app[..],
+                        &[("ESCUREL_AUTH_OKTA_PRIVATE_KEY_FILE", None)],
+                    ]
+                    .concat(),
+                    "ESCUREL_AUTH_OKTA_PRIVATE_KEY (or …_FILE) is required",
+                ),
+                (
+                    "an Okta service app key that is not a PEM key",
+                    [
+                        &okta_app[..],
+                        &[("ESCUREL_AUTH_OKTA_PRIVATE_KEY_FILE", Some(secret.as_str()))],
+                    ]
+                    .concat(),
+                    "ESCUREL_AUTH_OKTA_PRIVATE_KEY: ",
+                ),
+                (
+                    "an Okta service app with an API token too",
+                    [&okta_app[..], &[("ESCUREL_AUTH_OKTA_API_TOKEN", Some("t"))]].concat(),
+                    "ESCUREL_AUTH_OKTA_API_TOKEN is set but ESCUREL_AUTH_OKTA_AUTH is `oauth`",
+                ),
+                (
+                    "an API token with a service app's key",
+                    [&okta[..], &[("ESCUREL_AUTH_OKTA_CLIENT_ID", Some("0oa"))]].concat(),
+                    "ESCUREL_AUTH_OKTA_CLIENT_ID is set but ESCUREL_AUTH_OKTA_AUTH is `ssws`",
+                ),
             ];
             for (what, changes, want) in rows {
                 let err = build(&with(GRAPH, &changes))
@@ -4107,8 +4254,45 @@ mod bridge_config_tests {
             assert_eq!(g.group_name, google::GroupName::EmailLocal);
             assert_eq!(g.group_domains, ["acme.example", "acme.test"]);
             assert_eq!(o.base_url, "https://o.okta.com");
+            assert!(matches!(&o.auth, okta::OktaAuth::ApiToken(t) if t == "ssws"));
             assert_eq!(o.user_key, okta::UserKey::Upn);
             assert!(!o.include_app_groups);
+
+            let app_key = okta_app_key(dir.path());
+            let app = build(&with(
+                GRAPH,
+                &[
+                    ("ESCUREL_AUTH_GROUP_DIRECTORIES", Some("graph,okta")),
+                    ("ESCUREL_AUTH_OKTA_BASE_URL", Some("https://o.okta.com/")),
+                    ("ESCUREL_AUTH_OKTA_AUTH", Some("oauth")),
+                    ("ESCUREL_AUTH_OKTA_CLIENT_ID", Some("0oa-app")),
+                    ("ESCUREL_AUTH_OKTA_PRIVATE_KEY_FILE", Some(app_key.as_str())),
+                    ("ESCUREL_AUTH_OKTA_KEY_ID", Some("kid-1")),
+                    ("ESCUREL_AUTH_OKTA_GROUP_PREFIX", Some("escurel-")),
+                ],
+            ))
+            .unwrap()
+            .bridge_mint
+            .unwrap();
+            let [_, DirectoryConfig::Okta(o)] = app.directories.as_slice() else {
+                panic!("{:?}", app.directories);
+            };
+            let okta::OktaAuth::ServiceApp {
+                client_id,
+                key_id,
+                token_url,
+                ..
+            } = &o.auth
+            else {
+                panic!("{o:?}");
+            };
+            assert_eq!(client_id, "0oa-app");
+            assert_eq!(key_id.as_deref(), Some("kid-1"));
+            assert_eq!(token_url, "https://o.okta.com/oauth2/v1/token");
+            assert!(
+                !format!("{o:?}").contains("PRIVATE KEY"),
+                "the key never prints"
+            );
 
             // No directory at all is a 1:1-only gateway (crew U-F7), not a refusal.
             let bare = build(&with(

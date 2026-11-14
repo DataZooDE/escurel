@@ -430,7 +430,7 @@ impl GroupDirectories {
                     Box::new(google::GoogleDirectory::new(c.clone(), Arc::clone(egress))?)
                 }
                 DirectoryConfig::Okta(c) => {
-                    Box::new(okta::OktaDirectory::new(c.clone(), Arc::clone(egress)))
+                    Box::new(okta::OktaDirectory::new(c.clone(), Arc::clone(egress))?)
                 }
             };
             providers.push(Provider::new(directory, d.rule().clone()));
@@ -591,7 +591,7 @@ fn egress_error(e: &EgressError) -> DirectoryError {
 }
 
 /// A token-endpoint failure as a directory error: 429/5xx and transport pass,
-/// everything else (a revoked secret, a bad key) does not.
+/// everything else (a revoked secret, a bad key, a DPoP demand) does not.
 fn token_error(e: &escurel_auth::ClientCredentialsError) -> DirectoryError {
     use escurel_auth::ClientCredentialsError as E;
     match e {

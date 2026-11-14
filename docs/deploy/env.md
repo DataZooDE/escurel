@@ -89,7 +89,7 @@ escurel-server.
 | `ESCUREL_AUTH_GRAPH_CLIENT_ID` | — | `graph`: REQUIRED, the app registration's client id (application permission `GroupMember.Read.All`, admin-consented) |
 | `ESCUREL_AUTH_GRAPH_CLIENT_SECRET` | — | `graph`: the app's client secret; never logged. Exactly one of this and `…_FILE` is REQUIRED |
 | `ESCUREL_AUTH_GRAPH_CLIENT_SECRET_FILE` | — | `graph`: path to a file holding the client secret |
-| `ESCUREL_AUTH_GRAPH_TOKEN_URL` | https://login.microsoftonline.com/<tenant>/oauth2/v2.0/token | `graph`: the client-credentials token endpoint (https; http only to loopback, for tests) |
+| `ESCUREL_AUTH_GRAPH_TOKEN_URL` | https://login.microsoftonline.com/<tenant>/oauth2/v2.0/token | `graph`: the client-credentials token endpoint (https; plain http only to a loopback stand-in, with `ESCUREL_EGRESS_ALLOW_LOOPBACK`) |
 | `ESCUREL_AUTH_GRAPH_BASE_URL` | https://graph.microsoft.com | `graph`: the Graph base URL; page links are followed on this host only |
 | `ESCUREL_AUTH_GRAPH_GROUP_PREFIX` | — | `graph`: only groups whose display name starts with this count, the prefix stripped (`escurel-` maps `escurel-sales` to `sales`). This and/or `…_GROUP_MAP_FILE` is REQUIRED |
 | `ESCUREL_AUTH_GRAPH_GROUP_MAP_FILE` | — | `graph`: a JSON object, group object id → escurel group, checked before the prefix rule |
@@ -103,8 +103,14 @@ escurel-server.
 | `ESCUREL_AUTH_GOOGLE_GROUP_PREFIX` | — | `google`: only groups whose name starts with this count, the prefix stripped. This and/or `…_GROUP_MAP_FILE` is REQUIRED |
 | `ESCUREL_AUTH_GOOGLE_GROUP_MAP_FILE` | — | `google`: a JSON object, group email (`groupKey.id`) → escurel group |
 | `ESCUREL_AUTH_OKTA_BASE_URL` | — | `okta`: REQUIRED, the org URL, e.g. `https://acme.okta.com` (`/api/v1/users/{login}/groups`) |
-| `ESCUREL_AUTH_OKTA_API_TOKEN` | — | `okta`: an API token of a read-only admin (`Authorization: SSWS …`); never logged. Exactly one of this and `…_FILE` is REQUIRED. OAuth for Okta service apps is not supported yet |
+| `ESCUREL_AUTH_OKTA_AUTH` | `ssws` while `…_API_TOKEN` is set | `okta`: how the gateway authenticates — `ssws` (an admin's API token) or `oauth` (an API Services app: client credentials with a `private_key_jwt` client assertion, scopes `okta.groups.read okta.users.read`, then `Bearer`). With no API token it is REQUIRED; a key of the other mode is refused. The app must have "Require DPoP" off |
+| `ESCUREL_AUTH_OKTA_API_TOKEN` | — | `okta` `ssws`: an API token of a read-only admin (`Authorization: SSWS …`); never logged. Exactly one of this and `…_FILE` is REQUIRED for `ssws` |
 | `ESCUREL_AUTH_OKTA_API_TOKEN_FILE` | — | `okta`: path to a file holding the API token |
+| `ESCUREL_AUTH_OKTA_CLIENT_ID` | — | `okta` `oauth`: REQUIRED, the API Services app's client id (the assertion's `iss` and `sub`) |
+| `ESCUREL_AUTH_OKTA_PRIVATE_KEY` | — | `okta` `oauth`: the app's RSA private key (PEM, PKCS#8 or PKCS#1) that signs the RS256 client assertion; never logged. Exactly one of this and `…_FILE` is REQUIRED for `oauth`; a key that does not parse fails the boot |
+| `ESCUREL_AUTH_OKTA_PRIVATE_KEY_FILE` | — | `okta` `oauth`: path to a file holding the app's private key (PEM) |
+| `ESCUREL_AUTH_OKTA_KEY_ID` | — | `okta` `oauth`: the key's `kid` in the app's public keys, sent in the assertion header; set it when the app holds more than one key |
+| `ESCUREL_AUTH_OKTA_TOKEN_URL` | `<ESCUREL_AUTH_OKTA_BASE_URL>/oauth2/v1/token` | `okta` `oauth`: the token endpoint — the org authorization server's; the `okta.*` management scopes are not granted by a custom authorization server |
 | `ESCUREL_AUTH_OKTA_USER_KEY` | email | `okta`: which of the sender's fields is their Okta login — `email` or `upn` |
 | `ESCUREL_AUTH_OKTA_GROUP_PREFIX` | — | `okta`: only groups whose `profile.name` starts with this count, the prefix stripped. This and/or `…_GROUP_MAP_FILE` is REQUIRED |
 | `ESCUREL_AUTH_OKTA_GROUP_MAP_FILE` | — | `okta`: a JSON object, Okta group id → escurel group |
@@ -143,7 +149,7 @@ escurel-server.
 | `ESCUREL_APPEND_COMPACT_MIN_FILES` | 8 | the publish task rewrites a lake-backed append table (events, drafts, chat) to one file only once it holds this many data files, so an idle tick uploads nothing and a read opens at most this many files; values below 2 mean "whenever a table has more than one file" (the old every-tick behaviour is `1`) |
 | `ESCUREL_SNAPSHOT_KEEP` | 5 | how many DuckLake snapshots to retain after a successful publish; the GC pass never touches the current snapshot |
 | `ESCUREL_WRITER_LEASE` | on | ducklake-writer single-writer boot guard (#371): a catalog advisory lock refused when another live writer holds it; `off` disables — only if you guarantee a single writer yourself |
-| `ESCUREL_EGRESS_ALLOW_LOOPBACK` | false | outbound connector calls (REST/MCP rows, write-back) may reach `127.0.0.1`. `1`/`true`/`0`/`false` only. **Dev and tests only** — never in production (SSRF guard); any other value fails the boot |
+| `ESCUREL_EGRESS_ALLOW_LOOPBACK` | false | outbound connector calls (REST/MCP rows, write-back) may reach `127.0.0.1`, and a group directory's `…_BASE_URL` / `…_TOKEN_URL` may be plain http to a loopback stand-in (without it the boot refuses them). `1`/`true`/`0`/`false` only. **Dev and tests only** — never in production (SSRF guard); any other value fails the boot |
 | `ESCUREL_EGRESS_MAX_RESPONSE_BYTES` | 4194304 | cap on one upstream response (streamed; over the cap → the call fails). Whole number ≥ 1 |
 | `ESCUREL_EGRESS_TIMEOUT_MS` | 10000 | total timeout of one upstream call; clamped to 30000. Whole number ≥ 1 |
 | `ESCUREL_EGRESS_MAX_CONCURRENCY` | 8 | simultaneous upstream calls per endpoint. Whole number ≥ 1 |

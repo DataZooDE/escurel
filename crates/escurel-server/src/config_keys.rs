@@ -513,7 +513,7 @@ pub const CONFIG_KEYS: &[ConfigKey] = &[
         name: "ESCUREL_AUTH_GRAPH_TOKEN_URL",
         component: "Server",
         default: "https://login.microsoftonline.com/<tenant>/oauth2/v2.0/token",
-        doc: "`graph`: the client-credentials token endpoint (https; http only to loopback, for tests)",
+        doc: "`graph`: the client-credentials token endpoint (https; plain http only to a loopback stand-in, with `ESCUREL_EGRESS_ALLOW_LOOPBACK`)",
     },
     ConfigKey {
         name: "ESCUREL_AUTH_GRAPH_BASE_URL",
@@ -594,16 +594,52 @@ pub const CONFIG_KEYS: &[ConfigKey] = &[
         doc: "`okta`: REQUIRED, the org URL, e.g. `https://acme.okta.com` (`/api/v1/users/{login}/groups`)",
     },
     ConfigKey {
+        name: "ESCUREL_AUTH_OKTA_AUTH",
+        component: "Server",
+        default: "`ssws` while `…_API_TOKEN` is set",
+        doc: "`okta`: how the gateway authenticates — `ssws` (an admin's API token) or `oauth` (an API Services app: client credentials with a `private_key_jwt` client assertion, scopes `okta.groups.read okta.users.read`, then `Bearer`). With no API token it is REQUIRED; a key of the other mode is refused. The app must have \"Require DPoP\" off",
+    },
+    ConfigKey {
         name: "ESCUREL_AUTH_OKTA_API_TOKEN",
         component: "Server",
         default: "—",
-        doc: "`okta`: an API token of a read-only admin (`Authorization: SSWS …`); never logged. Exactly one of this and `…_FILE` is REQUIRED. OAuth for Okta service apps is not supported yet",
+        doc: "`okta` `ssws`: an API token of a read-only admin (`Authorization: SSWS …`); never logged. Exactly one of this and `…_FILE` is REQUIRED for `ssws`",
     },
     ConfigKey {
         name: "ESCUREL_AUTH_OKTA_API_TOKEN_FILE",
         component: "Server",
         default: "—",
         doc: "`okta`: path to a file holding the API token",
+    },
+    ConfigKey {
+        name: "ESCUREL_AUTH_OKTA_CLIENT_ID",
+        component: "Server",
+        default: "—",
+        doc: "`okta` `oauth`: REQUIRED, the API Services app's client id (the assertion's `iss` and `sub`)",
+    },
+    ConfigKey {
+        name: "ESCUREL_AUTH_OKTA_PRIVATE_KEY",
+        component: "Server",
+        default: "—",
+        doc: "`okta` `oauth`: the app's RSA private key (PEM, PKCS#8 or PKCS#1) that signs the RS256 client assertion; never logged. Exactly one of this and `…_FILE` is REQUIRED for `oauth`; a key that does not parse fails the boot",
+    },
+    ConfigKey {
+        name: "ESCUREL_AUTH_OKTA_PRIVATE_KEY_FILE",
+        component: "Server",
+        default: "—",
+        doc: "`okta` `oauth`: path to a file holding the app's private key (PEM)",
+    },
+    ConfigKey {
+        name: "ESCUREL_AUTH_OKTA_KEY_ID",
+        component: "Server",
+        default: "—",
+        doc: "`okta` `oauth`: the key's `kid` in the app's public keys, sent in the assertion header; set it when the app holds more than one key",
+    },
+    ConfigKey {
+        name: "ESCUREL_AUTH_OKTA_TOKEN_URL",
+        component: "Server",
+        default: "`<ESCUREL_AUTH_OKTA_BASE_URL>/oauth2/v1/token`",
+        doc: "`okta` `oauth`: the token endpoint — the org authorization server's; the `okta.*` management scopes are not granted by a custom authorization server",
     },
     ConfigKey {
         name: "ESCUREL_AUTH_OKTA_USER_KEY",
@@ -843,7 +879,7 @@ pub const CONFIG_KEYS: &[ConfigKey] = &[
         name: "ESCUREL_EGRESS_ALLOW_LOOPBACK",
         component: "Server",
         default: "false",
-        doc: "outbound connector calls (REST/MCP rows, write-back) may reach `127.0.0.1`. `1`/`true`/`0`/`false` only. **Dev and tests only** — never in production (SSRF guard); any other value fails the boot",
+        doc: "outbound connector calls (REST/MCP rows, write-back) may reach `127.0.0.1`, and a group directory's `…_BASE_URL` / `…_TOKEN_URL` may be plain http to a loopback stand-in (without it the boot refuses them). `1`/`true`/`0`/`false` only. **Dev and tests only** — never in production (SSRF guard); any other value fails the boot",
     },
     ConfigKey {
         name: "ESCUREL_EGRESS_MAX_RESPONSE_BYTES",
