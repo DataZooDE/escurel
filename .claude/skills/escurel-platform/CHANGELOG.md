@@ -4,6 +4,19 @@ The skill version tracks the consumer-facing contract, not the Escurel
 binary version. The Escurel repo's checked-out git ref is the true version
 pin (see `SKILL.md` → "How this skill is installed").
 
+## 0.30.0 — chat bridge hardening (#835)
+
+- **The gateway checks the Teams asker itself** (opt-in, `ESCUREL_AUTH_TEAMS_APP_ID` + `_APP_SECRET[_FILE]`):
+  `mint_user_token` takes `activity_token` and `service_url`. The gateway verifies the forwarded Bot Framework token,
+  then asks the connector roster for the sender, and takes the object id, email, UPN and tenant from Microsoft.
+  - New codes: `activity_unverified`, `not_in_conversation`, `teams_misconfigured`.
+  - What a captured token still reaches is documented (references/02, 08).
+- **Mint rate limits:** per bridge credential and per asker (`ESCUREL_AUTH_BRIDGE_MINT_PER_MINUTE`,
+  `…_PER_ASKER_PER_MINUTE`). A refusal is `rate_limited` with `scope` and `retry_after_secs` (references/02, 08).
+- **Okta service apps:** `ESCUREL_AUTH_OKTA_AUTH=oauth` with a private-key client (`private_key_jwt`) (references/08).
+- **Changed:** plain-http directory and Teams URLs are accepted only to loopback, and only with
+  `ESCUREL_EGRESS_ALLOW_LOOPBACK=true` (references/09).
+
 ## 0.29.0 — chat bridge through the gateway, directory groups, group chats
 
 - **`mint_user_token`** (an `escurel:bridge` service credential only): the gateway mints each chat turn's token, so the
